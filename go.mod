@@ -85,3 +85,5 @@ require (
 )
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.10
+
+replace github.com/unxed/vtui => ./third_party/vtui

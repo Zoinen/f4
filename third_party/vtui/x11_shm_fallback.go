@@ -1,0 +1,21 @@
+//go:build freebsd || openbsd || netbsd || dragonfly || darwin || windows || illumos || solaris
+
+package vtui
+
+import (
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
+)
+
+var (
+	shmId   int
+	shmAddr uintptr
+	shmData []byte
+)
+
+func setupX11SHM() {}
+
+func x11shmInit(conn *xgb.Conn, id int) uint32 { return 0 }
+func x11shmDetach(conn *xgb.Conn, seg uint32)  {}
+func x11shmPutImage(conn *xgb.Conn, wid xproto.Window, gc xproto.Gcontext, w, h2 uint16, minY, maxY int, seg uint32) {
+}
