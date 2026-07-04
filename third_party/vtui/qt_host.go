@@ -209,6 +209,18 @@ func (h *QtHost) handleMessage(msg map[string]any) {
 		})
 	case "clipboard_set":
 		SetClipboard(qtString(msg, "text"))
+	case "ui_action":
+		action := msg
+		if nested, ok := msg["action"].(map[string]any); ok {
+			action = nested
+		}
+		if FrameManager != nil {
+			FrameManager.PostTask(func() {
+				if FrameManager.HandleSemanticAction(action) {
+					FrameManager.Redraw()
+				}
+			})
+		}
 	case "quit":
 		if FrameManager != nil {
 			FrameManager.PostTask(func() {

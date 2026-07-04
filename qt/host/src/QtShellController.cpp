@@ -245,6 +245,13 @@ void QtShellController::sendClipboardSet(const QString &text)
     });
 }
 
+void QtShellController::sendUiAction(const QVariantMap &action)
+{
+    QVariantMap message = action;
+    message.insert(QStringLiteral("type"), QStringLiteral("ui_action"));
+    sendMessage(message);
+}
+
 void QtShellController::sendQuit()
 {
     sendMessage({{QStringLiteral("type"), QStringLiteral("quit")}});
@@ -349,7 +356,12 @@ void QtShellController::processBuffer()
             msgpack::object_handle handle = msgpack::unpack(payload.constData(), static_cast<size_t>(payload.size()));
             QVariant decoded = unpackObject(handle.get());
             if (decoded.metaType().id() == QMetaType::QVariantMap) {
-                emit messageReceived(decoded.toMap());
+                const QVariantMap message = decoded.toMap();
+                if (message.value(QStringLiteral("type")).toString() == QStringLiteral("scene")) {
+                    m_scene = message;
+                    emit sceneChanged();
+                }
+                emit messageReceived(message);
             }
         } catch (const std::exception &e) {
             emit fatalError(QStringLiteral("Failed to decode IPC frame: %1").arg(QString::fromUtf8(e.what())));

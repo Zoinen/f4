@@ -20,6 +20,7 @@ type QtRenderer struct {
 
 	pendingPalette []uint32
 	pendingFrame   map[string]any
+	pendingScene   map[string]any
 	closed         bool
 }
 
@@ -118,6 +119,12 @@ func (r *QtRenderer) Render(buf, shadow []CharInfo, width, height int, forceRedr
 	r.mu.Unlock()
 }
 
+func (r *QtRenderer) SetSemanticScene(scene map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingScene = scene
+}
+
 func (r *QtRenderer) Flush() {
 	var messages []map[string]any
 
@@ -136,6 +143,10 @@ func (r *QtRenderer) Flush() {
 	if r.pendingFrame != nil {
 		messages = append(messages, r.pendingFrame)
 		r.pendingFrame = nil
+	}
+	if r.pendingScene != nil {
+		messages = append(messages, r.pendingScene)
+		r.pendingScene = nil
 	}
 	if r.cursorDirty {
 		messages = append(messages, map[string]any{

@@ -1182,6 +1182,10 @@ func (fm *frameManager) renderPhase() {
 			fm.OnRender(fm.scr)
 		}
 
+		if semanticRenderer, ok := fm.scr.Renderer.(SemanticSceneRenderer); ok {
+			semanticRenderer.SetSemanticScene(fm.ExportSemanticScene())
+		}
+
 		// Draw Workspace count [N] and highlight if background needs attention
 		if len(fm.Screens) > 1 {
 			hasAttention := false
