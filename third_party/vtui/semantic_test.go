@@ -61,6 +61,76 @@ func TestSemanticActionActivatesButton(t *testing.T) {
 	}
 }
 
+func TestSemanticMenuBarCoordinatesAndActivation(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	FrameManager.Init(scr)
+
+	mb := NewMenuBar(nil)
+	mb.SetPosition(0, 0, 79, 0)
+	mb.Items = []MenuBarItem{
+		{Label: "&Left", SubItems: []MenuItem{{Text: "&One", Command: 101}}},
+		{Label: "&Files", SubItems: []MenuItem{{Text: "&Two", Command: 102}}},
+	}
+	FrameManager.MenuBar = mb
+	FrameManager.Push(NewDesktop())
+
+	scene := FrameManager.ExportSemanticScene()
+	menu := scene["menuBar"].(map[string]any)
+	items := menu["items"].([]map[string]any)
+	if items[0]["x"] != 2 {
+		t.Fatalf("first menu x = %v, want 2", items[0]["x"])
+	}
+	if items[0]["w"].(int) <= 0 || items[1]["x"].(int) <= items[0]["x"].(int) {
+		t.Fatalf("unexpected menu item metrics: %#v", items)
+	}
+
+	if !FrameManager.HandleSemanticAction(map[string]any{
+		"action": "menuBar.activate",
+		"index":  float64(1),
+	}) {
+		t.Fatal("menu bar action was not handled")
+	}
+	if !mb.Active || mb.SelectPos != 1 {
+		t.Fatalf("menu bar state: active=%v selected=%d", mb.Active, mb.SelectPos)
+	}
+	if FrameManager.GetTopFrameType() != TypeMenu {
+		t.Fatalf("top frame type = %v, want TypeMenu", FrameManager.GetTopFrameType())
+	}
+}
+
+func TestSemanticSceneAdapterCanPromoteLegacyScene(t *testing.T) {
+	oldAdapter := AppSceneAdapter
+	defer func() { AppSceneAdapter = oldAdapter }()
+
+	AppSceneAdapter = func(ctx *SemanticContext, legacy map[string]any) map[string]any {
+		if legacy["type"] != "scene" {
+			t.Fatalf("legacy scene type = %v, want scene", legacy["type"])
+		}
+		return map[string]any{
+			"type":    "scene",
+			"schema":  "app",
+			"version": 2,
+			"width":   ctx.Width,
+			"height":  ctx.Height,
+			"legacy":  legacy,
+		}
+	}
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	FrameManager.Init(scr)
+	FrameManager.Push(NewDesktop())
+
+	scene := FrameManager.ExportSemanticScene()
+	if scene["schema"] != "app" || scene["version"] != 2 {
+		t.Fatalf("adapter scene = %#v, want app schema v2", scene)
+	}
+	if scene["legacy"] == nil {
+		t.Fatalf("adapter scene did not keep legacy fallback: %#v", scene)
+	}
+}
+
 func TestQtRendererFlushesSemanticScene(t *testing.T) {
 	var wire bytes.Buffer
 	renderer := NewQtRendererWithSender(nil, &qtMessageSender{w: &wire})

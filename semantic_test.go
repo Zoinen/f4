@@ -36,6 +36,9 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	if node["cursor"] != 1 {
 		t.Fatalf("cursor = %v, want 1", node["cursor"])
 	}
+	if node["path"] != tmp {
+		t.Fatalf("path = %v, want %s", node["path"], tmp)
+	}
 	if node["selectedCount"] != 1 {
 		t.Fatalf("selectedCount = %v, want 1", node["selectedCount"])
 	}
@@ -79,7 +82,7 @@ func TestPanelsFrameSemanticActionAcceptsQMLNumbers(t *testing.T) {
 	}
 
 	if !pf.HandleSemanticAction(map[string]any{
-		"action": "panel_cursor",
+		"action": "panel.cursor",
 		"side":   float64(0),
 		"index":  float64(2),
 	}) {
@@ -90,7 +93,7 @@ func TestPanelsFrameSemanticActionAcceptsQMLNumbers(t *testing.T) {
 	}
 
 	if !pf.HandleSemanticAction(map[string]any{
-		"action": "activate_panel",
+		"action": "panel.activate",
 		"side":   float64(1),
 	}) {
 		t.Fatal("activate panel action was not handled")

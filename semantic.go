@@ -53,46 +53,46 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 	switch semanticString(action["action"]) {
-	case "activate_panel":
+	case "activate_panel", "panel.activate":
 		side := semanticInt(action["side"])
 		if side >= 0 && side < len(pf.panels) {
 			pf.activeIdx = side
 			pf.lastKey = 0
 			return true
 		}
-	case "panel_cursor":
+	case "panel_cursor", "panel.cursor":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			fsp.SetCursorIndex(semanticInt(action["index"]))
 			return true
 		}
-	case "panel_open":
+	case "panel_open", "panel.open":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			idx := semanticInt(action["index"])
 			pf.setActivePanelForAction(action)
 			fsp.SetCursorIndex(idx)
 			return pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
 		}
-	case "panel_toggle_selection":
+	case "panel_toggle_selection", "panel.toggleSelection":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			fsp.ToggleSelection(semanticInt(action["index"]))
 			return true
 		}
-	case "panel_refresh":
+	case "panel_refresh", "panel.refresh":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			fsp.ReadDirectory()
 			return true
 		}
-	case "submit_command":
+	case "submit_command", "command.submit":
 		if text := semanticString(action["text"]); text != "" && pf.cmdLine != nil {
 			pf.cmdLine.Edit.SetText(text)
 		}
 		return pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
-	case "set_command_text":
+	case "set_command_text", "command.setText":
 		if pf.cmdLine != nil {
 			pf.cmdLine.Edit.SetText(semanticString(action["text"]))
 			return true
 		}
-	case "emit_command":
+	case "emit_command", "command.emit":
 		return vtui.FrameManager.EmitCommand(semanticInt(action["command"]), action["args"])
 	}
 	return false

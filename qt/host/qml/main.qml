@@ -26,8 +26,44 @@ ApplicationWindow {
     property color chromeBg: "#202833"
     property color chromeText: "#d7e0ea"
 
+    function isAppScene() {
+        return scene.schema === "app" && scene.shell !== undefined
+    }
+
     function frames() {
         return scene.frames || []
+    }
+
+    function overlayFrames() {
+        if (!isAppScene())
+            return frames()
+        var out = []
+        var menus = scene.menus || []
+        var dialogs = scene.dialogs || []
+        for (var i = 0; i < menus.length; ++i)
+            out.push(menus[i])
+        for (var j = 0; j < dialogs.length; ++j)
+            out.push(dialogs[j])
+        return out
+    }
+
+    function shellFrame() {
+        return scene.shell || firstFrame("panels") || ({})
+    }
+
+    function activeSurface() {
+        if (scene.surface)
+            return scene.surface
+        return topFrame()
+    }
+
+    function keyBarHeight() {
+        return root.scene.keyBar ? Math.max(26, root.ch * 1.35) : 0
+    }
+
+    function commandLineHeight(shell) {
+        var cmd = shell && shell.commandLine ? shell.commandLine : null
+        return cmd && cmd.visible !== false ? Math.max(24, root.ch * 1.2) : 0
     }
 
     function firstFrame(kind) {
@@ -45,9 +81,9 @@ ApplicationWindow {
     }
 
     function needsFallbackGrid() {
-        var top = topFrame()
+        var top = isAppScene() ? activeSurface() : topFrame()
         if (!top)
-            return true
+            return !isAppScene()
         return top.fallback === true || top.kind === "fallback" || containsFallback(top)
     }
 
@@ -102,6 +138,7 @@ ApplicationWindow {
         anchors.fill: parent
         controller: qtShell
         focus: true
+        z: 0
         opacity: root.needsFallbackGrid() ? 1.0 : 0.0
         visible: true
         Component.onCompleted: forceActiveFocus()
@@ -110,6 +147,7 @@ ApplicationWindow {
     Item {
         id: semanticLayer
         anchors.fill: parent
+        z: 10
         visible: !root.needsFallbackGrid()
 
         Rectangle {
@@ -122,7 +160,7 @@ ApplicationWindow {
             menu: root.scene.menuBar || ({})
             anchors.left: parent.left
             anchors.right: parent.right
-            height: Math.max(28, root.ch * 1.35)
+            height: root.isAppScene() ? 32 : root.pxH((root.scene.menuBar && root.scene.menuBar.h) || 1)
             z: 20
         }
 
@@ -130,7 +168,7 @@ ApplicationWindow {
             id: mainSurface
             anchors.fill: parent
             sourceComponent: {
-                var top = root.topFrame()
+                var top = root.activeSurface()
                 if (top && top.kind === "viewer")
                     return documentSurface
                 if (top && top.kind === "editor")
@@ -146,7 +184,7 @@ ApplicationWindow {
             Item {
                 id: panelsRoot
                 anchors.fill: parent
-                property var frame: root.firstFrame("panels") || ({})
+                property var frame: root.shellFrame()
                 property var panelList: frame.panels || []
 
                 Loader {
@@ -183,16 +221,17 @@ ApplicationWindow {
         Component {
             id: documentSurface
             DocumentSurface {
-                frame: root.topFrame() || ({})
+                frame: root.activeSurface() || ({})
             }
         }
 
         Repeater {
-            model: root.frames()
+            model: root.overlayFrames()
             delegate: Loader {
                 property var frame: modelData
+                anchors.fill: parent
                 active: frame.kind === "dialog" || frame.kind === "window" || frame.kind === "menu"
-                sourceComponent: frame.kind === "menu" ? menuPopupComponent : dialogComponent
+                sourceComponent: frame.kind === "menu" ? menuPopupComponent : dialogOverlayComponent
                 onLoaded: {
                     if (item && item.frame !== undefined)
                         item.frame = frame
@@ -223,15 +262,28 @@ ApplicationWindow {
         color: root.chromeBg
         visible: menu.items !== undefined
 
-        Row {
+        function activateAt(localX) {
+            var items = menu.items || []
+            for (var i = 0; i < items.length; ++i) {
+                var item = items[i]
+                var x1 = root.pxX(item.x)
+                var x2 = x1 + root.pxW(item.w)
+                if (localX >= x1 && localX < x2) {
+                    if (item.disabled !== true)
+                        root.action({ "action": "menuBar.activate", "index": item.index })
+                    return
+                }
+            }
+        }
+
+        Item {
             anchors.fill: parent
-            anchors.leftMargin: 8
-            spacing: 2
             Repeater {
                 model: menu.items || []
                 delegate: Rectangle {
+                    x: root.pxX(modelData.x)
                     height: parent.height
-                    width: Math.max(68, label.implicitWidth + 24)
+                    width: root.pxW(modelData.w)
                     color: modelData.index === menu.selected && menu.active ? root.selectedBg : "transparent"
 
                     Text {
@@ -241,38 +293,40 @@ ApplicationWindow {
                         color: modelData.disabled ? root.mutedText : root.chromeText
                         font.pixelSize: 13
                     }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: {
-                            if (modelData.command)
-                                root.action({ "action": "emit_command", "command": modelData.command })
-                        }
-                    }
                 }
             }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            onClicked: (mouse) => parent.activateAt(mouse.x)
         }
     }
 
     component FilePanelView: Rectangle {
         id: panelRoot
         property var panel: ({})
+        property bool nativeLayout: root.isAppScene()
+        property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? semanticMenu.height : 0)
 
-        x: root.pxX(panel.x)
-        y: root.pxY(panel.y)
-        width: root.pxW(panel.w)
-        height: root.pxH(panel.h)
+        x: nativeLayout ? Math.round((panel.side || 0) * root.width / 2) : root.pxX(panel.x)
+        y: nativeLayout ? semanticMenu.height : root.pxY(panel.y) + topChromeOffset
+        width: nativeLayout ? Math.ceil(root.width / 2) : root.pxW(panel.w)
+        height: nativeLayout ? Math.max(1, root.height - semanticMenu.height - root.commandLineHeight(root.shellFrame()) - root.keyBarHeight()) : Math.max(1, root.pxH(panel.h) - topChromeOffset)
         color: panel.active ? root.panelBg : root.panelBgAlt
         border.width: panel.active ? 2 : 1
         border.color: panel.active ? root.activeBorder : root.panelBorder
         clip: true
 
         Rectangle {
+            id: panelHeader
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
             height: Math.max(25, root.ch * 1.25)
             color: panel.active ? "#26364a" : "#1c2531"
+            z: 2
 
             Text {
                 anchors.left: parent.left
@@ -308,6 +362,7 @@ ApplicationWindow {
             model: panel.entries || []
             currentIndex: panel.cursor || 0
             boundsBehavior: Flickable.StopAtBounds
+            z: 1
 
             delegate: Rectangle {
                 width: ListView.view.width
@@ -362,10 +417,10 @@ ApplicationWindow {
                     anchors.fill: parent
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                     onClicked: {
-                        root.action({ "action": "activate_panel", "side": panel.side })
-                        root.action({ "action": "panel_cursor", "side": panel.side, "index": modelData.index })
+                        root.action({ "action": "panel.activate", "side": panel.side })
+                        root.action({ "action": "panel.cursor", "side": panel.side, "index": modelData.index })
                     }
-                    onDoubleClicked: root.action({ "action": "panel_open", "side": panel.side, "index": modelData.index })
+                    onDoubleClicked: root.action({ "action": "panel.open", "side": panel.side, "index": modelData.index })
                 }
             }
 
@@ -403,10 +458,12 @@ ApplicationWindow {
 
     component CommandLineView: Rectangle {
         property var commandLine: ({})
+        property var shell: root.shellFrame()
+        property bool nativeLayout: root.isAppScene()
 
-        x: root.pxX(commandLine.x)
-        y: root.pxY(commandLine.y)
-        width: root.pxW(commandLine.w)
+        x: nativeLayout ? 0 : root.pxX(commandLine.x)
+        y: nativeLayout ? root.height - root.keyBarHeight() - root.commandLineHeight(shell) : root.pxY(commandLine.y)
+        width: nativeLayout ? root.width : root.pxW(commandLine.w)
         height: Math.max(24, root.pxH(commandLine.h))
         visible: commandLine.visible !== false
         color: "#171d25"
@@ -503,16 +560,28 @@ ApplicationWindow {
 
     component GenericDialog: Rectangle {
         property var frame: ({})
+        property bool nativeLayout: root.isAppScene()
 
-        x: Math.max(12, root.pxX(frame.x))
-        y: Math.max(semanticMenu.height + 8, root.pxY(frame.y))
-        width: Math.min(root.width - 24, root.pxW(frame.w))
-        height: Math.min(root.height - 36, root.pxH(frame.h))
+        width: nativeLayout ? Math.min(root.width - 48, Math.max(420, root.width * 0.44)) : Math.min(root.width - 24, root.pxW(frame.w))
+        height: nativeLayout ? Math.min(root.height - 96, Math.max(180, root.pxH(frame.h))) : Math.min(root.height - 36, root.pxH(frame.h))
+        x: nativeLayout ? Math.round((root.width - width) / 2) : Math.max(12, root.pxX(frame.x))
+        y: nativeLayout ? Math.round((root.height - height) / 2) : Math.max(semanticMenu.height + 8, root.pxY(frame.y))
         color: "#202833"
         border.width: 1
         border.color: root.activeBorder
         radius: 6
         clip: true
+
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            hoverEnabled: true
+            preventStealing: true
+            onPressed: (mouse) => { mouse.accepted = true }
+            onReleased: (mouse) => { mouse.accepted = true }
+            onPositionChanged: (mouse) => { mouse.accepted = true }
+            onWheel: (wheel) => { wheel.accepted = true }
+        }
 
         Text {
             anchors.left: parent.left
@@ -535,7 +604,7 @@ ApplicationWindow {
             height: 30
             text: "×"
             visible: frame.showClose === true
-            onClicked: root.action({ "target": frame.id, "action": "close" })
+            onClicked: root.action({ "target": frame.id, "action": "dialog.close" })
         }
 
         Item {
@@ -616,7 +685,7 @@ ApplicationWindow {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: root.action({ "target": widget.id, "action": "focus" })
+                    onClicked: root.action({ "target": widget.id, "action": "control.focus" })
                 }
             }
         }
@@ -626,7 +695,7 @@ ApplicationWindow {
             Button {
                 text: root.cleanText(widget.text)
                 enabled: widget.disabled !== true
-                onClicked: root.action({ "target": widget.id, "action": "activate" })
+                onClicked: root.action({ "target": widget.id, "action": "control.activate" })
             }
         }
 
@@ -637,7 +706,7 @@ ApplicationWindow {
                 checked: widget.state === 1
                 tristate: widget.threeState === true
                 enabled: widget.disabled !== true
-                onClicked: root.action({ "target": widget.id, "action": "toggle" })
+                onClicked: root.action({ "target": widget.id, "action": "control.toggle" })
             }
         }
 
@@ -658,7 +727,7 @@ ApplicationWindow {
                     delegate: RadioButton {
                         text: root.cleanText(modelData)
                         checked: widget.kind === "radioGroup" ? index === widget.selected : !!(widget.states && widget.states[index])
-                        onClicked: root.action({ "target": widget.id, "action": "select", "index": index })
+                        onClicked: root.action({ "target": widget.id, "action": "control.select", "index": index })
                     }
                 }
             }
@@ -677,7 +746,7 @@ ApplicationWindow {
                     font.pixelSize: 13
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: root.action({ "target": widget.id, "action": "select", "index": index })
+                        onClicked: root.action({ "target": widget.id, "action": "control.select", "index": index })
                     }
                 }
             }
@@ -792,7 +861,7 @@ ApplicationWindow {
                 }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: root.action({ "target": widget.id, "action": "focus" })
+                    onClicked: root.action({ "target": widget.id, "action": "control.focus" })
                 }
             }
         }
@@ -802,7 +871,7 @@ ApplicationWindow {
             Button {
                 text: root.cleanText(widget.text)
                 enabled: widget.disabled !== true
-                onClicked: root.action({ "target": widget.id, "action": "activate" })
+                onClicked: root.action({ "target": widget.id, "action": "control.activate" })
             }
         }
 
@@ -813,7 +882,7 @@ ApplicationWindow {
                 checked: widget.state === 1
                 tristate: widget.threeState === true
                 enabled: widget.disabled !== true
-                onClicked: root.action({ "target": widget.id, "action": "toggle" })
+                onClicked: root.action({ "target": widget.id, "action": "control.toggle" })
             }
         }
 
@@ -834,7 +903,7 @@ ApplicationWindow {
                     delegate: RadioButton {
                         text: root.cleanText(modelData)
                         checked: widget.kind === "radioGroup" ? index === widget.selected : !!(widget.states && widget.states[index])
-                        onClicked: root.action({ "target": widget.id, "action": "select", "index": index })
+                        onClicked: root.action({ "target": widget.id, "action": "control.select", "index": index })
                     }
                 }
             }
@@ -853,7 +922,7 @@ ApplicationWindow {
                     font.pixelSize: 13
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: root.action({ "target": widget.id, "action": "select", "index": index })
+                        onClicked: root.action({ "target": widget.id, "action": "control.select", "index": index })
                     }
                 }
             }
@@ -879,9 +948,24 @@ ApplicationWindow {
     }
 
     Component {
-        id: dialogComponent
-        GenericDialog {
-            frame: ({})
+        id: dialogOverlayComponent
+        Item {
+            property var frame: ({})
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                hoverEnabled: true
+                preventStealing: true
+                onPressed: (mouse) => { mouse.accepted = true }
+                onReleased: (mouse) => { mouse.accepted = true }
+                onPositionChanged: (mouse) => { mouse.accepted = true }
+                onWheel: (wheel) => { wheel.accepted = true }
+            }
+
+            GenericDialog {
+                frame: parent.frame
+            }
         }
     }
 
@@ -899,13 +983,19 @@ ApplicationWindow {
             z: 160
 
             ListView {
-                anchors.fill: parent
-                anchors.margins: 4
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                anchors.topMargin: root.ch
+                anchors.bottomMargin: root.ch
+                anchors.leftMargin: 1
+                anchors.rightMargin: 1
                 model: frame.items || []
                 clip: true
                 delegate: Rectangle {
                     width: ListView.view.width
-                    height: modelData.separator ? 8 : Math.max(22, root.ch * 1.1)
+                    height: root.ch
                     color: modelData.index === frame.selected ? root.selectedBg : "transparent"
 
                     Rectangle {
@@ -945,9 +1035,9 @@ ApplicationWindow {
                         enabled: !modelData.separator && !modelData.disabled
                         onClicked: {
                             if (modelData.command)
-                                root.action({ "action": "emit_command", "command": modelData.command })
+                                root.action({ "action": "command.emit", "command": modelData.command })
                             else
-                                root.action({ "target": frame.id, "action": "menu_activate", "index": modelData.index })
+                                root.action({ "target": frame.id, "action": "menu.activate", "index": modelData.index })
                         }
                     }
                 }

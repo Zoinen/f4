@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
 )
 
@@ -14,6 +15,10 @@ type SemanticContext struct {
 	Height       int
 	ActiveScreen int
 }
+
+type SemanticSceneAdapter func(ctx *SemanticContext, legacy map[string]any) map[string]any
+
+var AppSceneAdapter SemanticSceneAdapter
 
 type SemanticProvider interface {
 	SemanticNode(ctx *SemanticContext) map[string]any
@@ -92,6 +97,11 @@ func (fm *frameManager) ExportSemanticScene() map[string]any {
 	}
 	if len(fm.Screens) > 1 {
 		scene["workspaceCount"] = len(fm.Screens)
+	}
+	if AppSceneAdapter != nil {
+		if adapted := AppSceneAdapter(ctx, scene); adapted != nil {
+			return adapted
+		}
 	}
 	return scene
 }
@@ -261,8 +271,11 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 	items := make([]map[string]any, 0, len(mb.Items))
 	for i, item := range mb.Items {
 		clean, hotkey, _ := ParseAmpersandString(item.Label)
+		itemX := mb.GetItemX(i)
 		items = append(items, map[string]any{
 			"index":    i,
+			"x":        itemX,
+			"w":        semanticMenuBarItemWidth(mb, i),
 			"text":     clean,
 			"rawText":  item.Label,
 			"hotkey":   stringOrEmpty(hotkey),
@@ -283,6 +296,17 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 		"selected": mb.SelectPos,
 		"items":    items,
 	}
+}
+
+func semanticMenuBarItemWidth(mb *MenuBar, index int) int {
+	if index < 0 || index >= len(mb.Items) {
+		return 0
+	}
+	if index < len(mb.Items)-1 {
+		return mb.GetItemX(index+1) - mb.GetItemX(index)
+	}
+	clean, _, _ := ParseAmpersandString(mb.Items[index].Label)
+	return runewidth.StringWidth("  " + clean + "  ")
 }
 
 func semanticVMenu(menu *VMenu) map[string]any {
@@ -431,6 +455,17 @@ func (fm *frameManager) HandleSemanticAction(action map[string]any) bool {
 	if kind, _ := action["kind"].(string); kind == "command" {
 		return fm.EmitCommand(semanticInt(action["command"]), action["args"])
 	}
+	if semanticString(action["action"]) == "menu_bar_activate" || semanticString(action["action"]) == "menuBar.activate" {
+		if mb := fm.GetActiveMenuBar(); mb != nil {
+			idx := semanticInt(action["index"])
+			if idx >= 0 && idx < len(mb.Items) {
+				mb.Active = true
+				mb.ActivateSubMenu(idx)
+				fm.Redraw()
+				return true
+			}
+		}
+	}
 	for i := len(fm.frames) - 1; i >= 0; i-- {
 		if h, ok := fm.frames[i].(SemanticActionHandler); ok && h.HandleSemanticAction(action) {
 			fm.Redraw()
@@ -453,10 +488,10 @@ func (fm *frameManager) HandleSemanticAction(action map[string]any) bool {
 func handleSemanticFrameAction(frame Frame, target string, action map[string]any) bool {
 	if SemanticID(frame) == target {
 		switch semanticString(action["action"]) {
-		case "close":
+		case "close", "dialog.close", "window.close":
 			frame.Close()
 			return true
-		case "menu_activate":
+		case "menu_activate", "menu.activate":
 			if menu, ok := frame.(*VMenu); ok {
 				idx := semanticInt(action["index"])
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
@@ -488,14 +523,14 @@ func handleSemanticChildrenAction(children []UIElement, target string, action ma
 
 func handleSemanticElementAction(el UIElement, action map[string]any) bool {
 	switch semanticString(action["action"]) {
-	case "focus":
+	case "focus", "control.focus":
 		el.SetFocus(true)
 		return true
-	case "activate":
+	case "activate", "control.activate":
 		return el.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
-	case "toggle":
+	case "toggle", "control.toggle":
 		return el.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' ', InputSource: "qt_semantic"})
-	case "set_text":
+	case "set_text", "control.setText":
 		if edit, ok := el.(*Edit); ok {
 			edit.SetText(semanticString(action["text"]))
 			if edit.OnTextChange != nil {
@@ -503,12 +538,12 @@ func handleSemanticElementAction(el UIElement, action map[string]any) bool {
 			}
 			return true
 		}
-	case "insert_text":
+	case "insert_text", "control.insertText":
 		if edit, ok := el.(*Edit); ok {
 			edit.InsertString(semanticString(action["text"]))
 			return true
 		}
-	case "select":
+	case "select", "control.select":
 		idx := semanticInt(action["index"])
 		switch w := el.(type) {
 		case *RadioGroup:
