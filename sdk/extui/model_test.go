@@ -1,4 +1,4 @@
-package uimodel
+package extui
 
 import "testing"
 

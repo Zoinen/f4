@@ -18,24 +18,40 @@ int main(int argc, char *argv[])
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Qt/QML sidecar renderer for f4"));
     parser.addHelpOption();
-    const QCommandLineOption connectOption(QStringLiteral("f4-qt-connect"), QStringLiteral("Host:port to connect back to."), QStringLiteral("address"));
-    const QCommandLineOption nonceOption(QStringLiteral("f4-qt-nonce"), QStringLiteral("One-time handshake nonce."), QStringLiteral("nonce"));
-    const QCommandLineOption colsOption(QStringLiteral("f4-qt-cols"), QStringLiteral("Initial grid columns."), QStringLiteral("cols"), QStringLiteral("100"));
-    const QCommandLineOption rowsOption(QStringLiteral("f4-qt-rows"), QStringLiteral("Initial grid rows."), QStringLiteral("rows"), QStringLiteral("30"));
-    parser.addOptions({connectOption, nonceOption, colsOption, rowsOption});
+    const QCommandLineOption connectOption(QStringLiteral("f4-ext-connect"), QStringLiteral("Host:port to connect back to."), QStringLiteral("address"));
+    const QCommandLineOption nonceOption(QStringLiteral("f4-ext-nonce"), QStringLiteral("One-time handshake nonce."), QStringLiteral("nonce"));
+    const QCommandLineOption colsOption(QStringLiteral("f4-ext-cols"), QStringLiteral("Initial grid columns."), QStringLiteral("cols"), QStringLiteral("100"));
+    const QCommandLineOption rowsOption(QStringLiteral("f4-ext-rows"), QStringLiteral("Initial grid rows."), QStringLiteral("rows"), QStringLiteral("30"));
+    const QCommandLineOption legacyConnectOption(QStringLiteral("f4-qt-connect"), QStringLiteral("Legacy host:port option."), QStringLiteral("address"));
+    const QCommandLineOption legacyNonceOption(QStringLiteral("f4-qt-nonce"), QStringLiteral("Legacy nonce option."), QStringLiteral("nonce"));
+    const QCommandLineOption legacyColsOption(QStringLiteral("f4-qt-cols"), QStringLiteral("Legacy initial grid columns."), QStringLiteral("cols"));
+    const QCommandLineOption legacyRowsOption(QStringLiteral("f4-qt-rows"), QStringLiteral("Legacy initial grid rows."), QStringLiteral("rows"));
+    parser.addOptions({connectOption,
+                       nonceOption,
+                       colsOption,
+                       rowsOption,
+                       legacyConnectOption,
+                       legacyNonceOption,
+                       legacyColsOption,
+                       legacyRowsOption});
     parser.process(app);
 
-    const QString connectAddress = parser.value(connectOption);
-    const QString nonce = parser.value(nonceOption);
+    const auto optionValue = [&parser](const QCommandLineOption &primary, const QCommandLineOption &fallback) {
+        const QString primaryValue = parser.value(primary);
+        return primaryValue.isEmpty() ? parser.value(fallback) : primaryValue;
+    };
+
+    const QString connectAddress = optionValue(connectOption, legacyConnectOption);
+    const QString nonce = optionValue(nonceOption, legacyNonceOption);
     if (connectAddress.isEmpty() || nonce.isEmpty()) {
-        qCritical("f4-qt-host requires --f4-qt-connect and --f4-qt-nonce");
+        qCritical("f4-qt-host requires --f4-ext-connect and --f4-ext-nonce");
         return 2;
     }
 
     bool colsOk = false;
     bool rowsOk = false;
-    const int cols = parser.value(colsOption).toInt(&colsOk);
-    const int rows = parser.value(rowsOption).toInt(&rowsOk);
+    const int cols = optionValue(colsOption, legacyColsOption).toInt(&colsOk);
+    const int rows = optionValue(rowsOption, legacyRowsOption).toInt(&rowsOk);
     if (!colsOk || !rowsOk || cols <= 0 || rows <= 0) {
         qCritical("Invalid initial terminal size");
         return 2;

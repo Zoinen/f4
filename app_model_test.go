@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/unxed/f4/internal/uimodel"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 )
 
@@ -56,7 +56,7 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	}
 
 	scene := BuildAppSceneFromLegacy(&vtui.SemanticContext{Width: 100, Height: 40}, legacy)
-	if scene["schema"] != uimodel.Schema || scene["version"] != uimodel.SceneVersion {
+	if scene["schema"] != extui.Schema || scene["version"] != extui.SceneVersion {
 		t.Fatalf("unexpected app scene envelope: %#v", scene)
 	}
 	if scene["legacy"] == nil || scene["frames"] == nil {

@@ -8,12 +8,12 @@ require (
 	github.com/mattn/go-runewidth v0.0.15
 	github.com/mholt/archives v0.1.5
 	github.com/pkg/sftp v1.13.6
-	github.com/unxed/sevenzip v0.0.0-20260630191852-ff33261d1c4c
-	github.com/unxed/tar v0.1.116
+	github.com/unxed/sevenzip v0.0.0-20260704211908-25d317f8295f
+	github.com/unxed/tar v0.1.118
 	github.com/unxed/vtinput v0.1.0
-	github.com/unxed/vtui v0.1.3
-	github.com/unxed/zip v0.1.119
-	github.com/unxed/zipper v0.1.122
+	github.com/unxed/vtui v0.1.7
+	github.com/unxed/zip v0.1.124
+	github.com/unxed/zipper v0.1.128
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/crypto v0.46.0
 	golang.org/x/sys v0.46.0
@@ -33,14 +33,14 @@ require (
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/emmansun/base64 v0.9.0 // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
-	github.com/go-webgpu/goffi v0.5.5 // indirect
+	github.com/go-webgpu/goffi v0.5.6 // indirect
 	github.com/go-webgpu/webgpu v0.5.2 // indirect
-	github.com/gogpu/gg v0.50.1 // indirect
+	github.com/gogpu/gg v0.50.2 // indirect
 	github.com/gogpu/gogpu v0.42.0 // indirect
 	github.com/gogpu/gpucontext v0.21.0 // indirect
 	github.com/gogpu/gputypes v0.5.1 // indirect
 	github.com/gogpu/naga v0.17.15 // indirect
-	github.com/gogpu/wgpu v0.30.8 // indirect
+	github.com/gogpu/wgpu v0.30.9 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -64,15 +64,15 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/tetratelabs/wazero v1.8.2 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
-	github.com/unxed/archives v0.0.0-20260630191919-217343e2e721 // indirect
+	github.com/unxed/archives v0.0.0-20260704211952-684041740ef0 // indirect
 	github.com/unxed/keytrans v0.1.27 // indirect
 	github.com/unxed/localecp v0.1.4 // indirect
 	github.com/unxed/par2 v0.1.2 // indirect
 	github.com/unxed/winkeys v0.1.0 // indirect
 	github.com/unxed/xkb-go v0.1.8 // indirect
-	github.com/unxed/xz v0.1.39 // indirect
+	github.com/unxed/xz v0.1.41 // indirect
 	github.com/unxed/zipcharset v0.1.4 // indirect
-	github.com/unxed/zlib4go v0.1.11 // indirect
+	github.com/unxed/zlib4go v0.1.15 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yalue/native_endian v1.0.2 // indirect
 	github.com/zzl/go-win32api/v2 v2.1.0 // indirect
@@ -85,5 +85,3 @@ require (
 )
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.10
-
-replace github.com/unxed/vtui => ./third_party/vtui

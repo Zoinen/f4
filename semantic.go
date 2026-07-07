@@ -8,47 +8,198 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/piecetable"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
+// SemanticNode экспортирует PanelsFrame в семантическое дерево ShellModel
 func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	x1, y1, x2, y2 := pf.GetPosition()
-	node := map[string]any{
-		"id":             vtui.SemanticID(pf),
-		"kind":           "panels",
-		"title":          strings.TrimSpace(pf.GetTitle()),
-		"type":           int(pf.GetType()),
-		"x":              x1,
-		"y":              y1,
-		"w":              x2 - x1 + 1,
-		"h":              y2 - y1 + 1,
-		"activePanel":    pf.activeIdx,
-		"showPanels":     pf.showPanels,
-		"showKeyBar":     pf.showKeyBar,
-		"terminalBusy":   pf.isPtyBusy(),
-		"terminalActive": !pf.showPanels,
+	shell := extui.ShellModel{
+		ID:             vtui.SemanticID(pf),
+		Title:          strings.TrimSpace(pf.GetTitle()),
+		Mode:           "panels",
+		ActivePanel:    pf.activeIdx,
+		ShowPanels:     pf.showPanels,
+		ShowKeyBar:     pf.showKeyBar,
+		TerminalBusy:   pf.isPtyBusy(),
+		TerminalActive: !pf.showPanels,
+	}
+	if !pf.showPanels {
+		shell.Mode = "terminal"
 	}
 
-	panels := make([]map[string]any, 0, len(pf.panels))
 	for i, panel := range pf.panels {
-		if sp, ok := panel.(interface {
-			SemanticPanelNode(ctx *vtui.SemanticContext, side int, active bool) map[string]any
-		}); ok {
-			panels = append(panels, sp.SemanticPanelNode(ctx, i, i == pf.activeIdx))
+		if fsp, ok := panel.(*FileSystemPanel); ok {
+			shell.Panels = append(shell.Panels, fsp.semanticPanelModel(ctx, i, i == pf.activeIdx))
 		}
 	}
-	node["panels"] = panels
+
 	if pf.cmdLine != nil {
-		node["commandLine"] = pf.cmdLine.SemanticNode(ctx)
+		shell.CommandLine = pf.cmdLine.semanticModel(ctx)
 	}
 	if pf.termView != nil {
-		node["terminal"] = pf.termView.SemanticNode(ctx)
+		shell.Terminal = pf.termView.semanticModel(ctx)
 	}
 	if MacroMgr != nil && MacroMgr.Recording {
-		node["macroRecording"] = true
+		shell.MacroRecording = true
 	}
-	return node
+
+	return shell.ToMap()
+}
+
+// HandleSemanticAction обрабатывает нативные GUI-действия для ViewerView
+func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
+	target := semanticString(action["target"])
+	if vtui.SemanticID(vv) != target {
+		return false
+	}
+
+	switch semanticString(action["action"]) {
+	case "viewer.scroll":
+		offset := int64(semanticInt(action["offset"]))
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > vv.backend.Size() {
+			offset = vv.backend.Size()
+		}
+		if vv.HexMode {
+			offset &= ^int64(0xF)
+		} else {
+			offset = vv.backend.FindLineStart(offset)
+		}
+		vv.TopOffset = offset
+		return true
+	case "control.focus":
+		vv.SetFocus(true)
+		return true
+	}
+	return false
+}
+
+// HandleSemanticAction глобально маршрутизирует семантические действия из внешнего GUI
+func HandleSemanticAction(action map[string]any) bool {
+	if action == nil {
+		return false
+	}
+	if kind, _ := action["kind"].(string); kind == "command" {
+		return vtui.FrameManager.EmitCommand(semanticInt(action["command"]), action["args"])
+	}
+	if semanticString(action["action"]) == "menu_bar_activate" || semanticString(action["action"]) == "menuBar.activate" {
+		if mb := vtui.FrameManager.GetActiveMenuBar(); mb != nil {
+			idx := semanticInt(action["index"])
+			if idx >= 0 && idx < len(mb.Items) {
+				mb.Active = true
+				mb.ActivateSubMenu(idx)
+				vtui.FrameManager.Redraw()
+				return true
+			}
+		}
+	}
+
+	activeIdx := vtui.FrameManager.ActiveIdx
+	frames := vtui.FrameManager.GetActiveFrames(activeIdx)
+	for i := len(frames) - 1; i >= 0; i-- {
+		if h, ok := frames[i].(vtui.SemanticActionHandler); ok && h.HandleSemanticAction(action) {
+			vtui.FrameManager.Redraw()
+			return true
+		}
+	}
+
+	target := semanticString(action["target"])
+	if target == "" {
+		return false
+	}
+	for i := len(frames) - 1; i >= 0; i-- {
+		if handleSemanticFrameAction(frames[i], target, action) {
+			vtui.FrameManager.Redraw()
+			return true
+		}
+	}
+	return false
+}
+
+func handleSemanticFrameAction(frame vtui.Frame, target string, action map[string]any) bool {
+	if vtui.SemanticID(frame) == target {
+		switch semanticString(action["action"]) {
+		case "close", "dialog.close", "window.close":
+			frame.Close()
+			return true
+		case "menu_activate", "menu.activate":
+			if menu, ok := frame.(*vtui.VMenu); ok {
+				idx := semanticInt(action["index"])
+				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
+					menu.SetSelectPos(idx)
+					return menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
+				}
+			}
+		}
+	}
+	if c, ok := frame.(vtui.Container); ok {
+		return handleSemanticChildrenAction(c.GetChildren(), target, action)
+	}
+	return false
+}
+
+func handleSemanticChildrenAction(children []vtui.UIElement, target string, action map[string]any) bool {
+	for _, child := range children {
+		if vtui.SemanticID(child) == target {
+			return handleSemanticElementAction(child, action)
+		}
+		if c, ok := child.(vtui.Container); ok {
+			if handleSemanticChildrenAction(c.GetChildren(), target, action) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handleSemanticElementAction(el vtui.UIElement, action map[string]any) bool {
+	switch semanticString(action["action"]) {
+	case "focus", "control.focus":
+		el.SetFocus(true)
+		return true
+	case "activate", "control.activate":
+		return el.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
+	case "toggle", "control.toggle":
+		return el.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' ', InputSource: "qt_semantic"})
+	case "set_text", "control.setText":
+		if edit, ok := el.(*vtui.Edit); ok {
+			edit.SetText(semanticString(action["text"]))
+			if edit.OnTextChange != nil {
+				edit.OnTextChange(edit.GetText())
+			}
+			return true
+		}
+	case "insert_text", "control.insertText":
+		if edit, ok := el.(*vtui.Edit); ok {
+			edit.InsertString(semanticString(action["text"]))
+			return true
+		}
+	case "select", "control.select":
+		idx := semanticInt(action["index"])
+		switch w := el.(type) {
+		case *vtui.RadioGroup:
+			if idx >= 0 && idx < len(w.Items) {
+				w.SetData(idx)
+				return true
+			}
+		case *vtui.ListBox:
+			if idx >= 0 && idx < len(w.Items) {
+				w.SetSelectPos(idx)
+				return true
+			}
+		case *vtui.ComboBox:
+			if idx >= 0 && idx < len(w.Menu.Items) {
+				w.Menu.SetSelectPos(idx)
+				w.Edit.SetText(w.Menu.Items[idx].Text)
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
@@ -116,9 +267,8 @@ func (pf *PanelsFrame) panelForSemanticAction(action map[string]any) *FileSystem
 	return nil
 }
 
-func (fp *FileSystemPanel) SemanticPanelNode(ctx *vtui.SemanticContext, side int, active bool) map[string]any {
-	x1, y1, x2, y2 := fp.GetPosition()
-	entries := make([]map[string]any, 0, len(fp.entries))
+func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
+	var entries []extui.FileEntryModel
 	selectedCount := 0
 	var selectedSize int64
 	var totalSize int64
@@ -130,49 +280,42 @@ func (fp *FileSystemPanel) SemanticPanelNode(ctx *vtui.SemanticContext, side int
 			selectedCount++
 			selectedSize += entry.Size
 		}
-		entries = append(entries, map[string]any{
-			"index":          i,
-			"name":           entry.Name,
-			"size":           entry.Size,
-			"sizeText":       semanticFileSize(entry),
-			"isDir":          entry.IsDir,
-			"isUp":           entry.Name == "..",
-			"isHidden":       entry.IsHidden,
-			"isExecutable":   entry.IsExecutable,
-			"isCached":       entry.IsCached,
-			"selected":       entry.Selected,
-			"sizeCalculated": entry.SizeCalculated,
-			"mtime":          entry.MTime.Format("2006-01-02 15:04"),
-			"mode":           entry.Mode,
+		entries = append(entries, extui.FileEntryModel{
+			Index:          i,
+			Name:           entry.Name,
+			Size:           entry.Size,
+			SizeText:       semanticFileSize(entry),
+			IsDir:          entry.IsDir,
+			IsUp:           entry.Name == "..",
+			IsHidden:       entry.IsHidden,
+			IsExecutable:   entry.IsExecutable,
+			IsCached:       entry.IsCached,
+			Selected:       entry.Selected,
+			SizeCalculated: entry.SizeCalculated,
+			MTime:          entry.MTime.Format("2006-01-02 15:04"),
+			Mode:           entry.Mode,
 		})
 	}
 
-	return map[string]any{
-		"id":            vtui.SemanticID(fp),
-		"kind":          "filePanel",
-		"side":          side,
-		"active":        active,
-		"x":             x1,
-		"y":             y1,
-		"w":             x2 - x1 + 1,
-		"h":             y2 - y1 + 1,
-		"path":          fp.vfs.GetPath(),
-		"title":         fp.frame.GetTitle(),
-		"viewMode":      int(fp.viewMode),
-		"viewModeName":  viewModeName(fp.viewMode),
-		"sortMode":      int(fp.sortMode),
-		"sortModeName":  sortModeName(fp.sortMode),
-		"sortReverse":   fp.sortReverse,
-		"cursor":        fp.GetCursorIndex(),
-		"top":           fp.table.TopPos,
-		"loading":       fp.isLoading,
-		"fastFind":      fp.fastFindMode,
-		"fastFindText":  fp.fastFindStr,
-		"selectedCount": selectedCount,
-		"selectedSize":  selectedSize,
-		"totalCount":    len(fp.entries),
-		"totalSize":     totalSize,
-		"entries":       entries,
+	return extui.PanelModel{
+		ID:            vtui.SemanticID(fp),
+		Side:          side,
+		Active:        active,
+		Path:          fp.vfs.GetPath(),
+		Title:         fp.frame.GetTitle(),
+		ViewMode:      viewModeName(fp.viewMode),
+		SortMode:      sortModeName(fp.sortMode),
+		SortReverse:   fp.sortReverse,
+		Cursor:        fp.GetCursorIndex(),
+		Top:           fp.table.TopPos,
+		Loading:       fp.isLoading,
+		FastFind:      fp.fastFindMode,
+		FastFindText:  fp.fastFindStr,
+		SelectedCount: selectedCount,
+		SelectedSize:  selectedSize,
+		TotalCount:    len(fp.entries),
+		TotalSize:     totalSize,
+		Entries:       entries,
 	}
 }
 
@@ -213,26 +356,19 @@ func sortModeName(mode SortMode) string {
 	}
 }
 
-func (cl *CommandLine) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	x1, y1, x2, y2 := cl.GetPosition()
-	return map[string]any{
-		"id":         vtui.SemanticID(cl),
-		"kind":       "commandLine",
-		"x":          x1,
-		"y":          y1,
-		"w":          x2 - x1 + 1,
-		"h":          y2 - y1 + 1,
-		"visible":    cl.IsVisible(),
-		"focused":    cl.IsFocused(),
-		"prompt":     cl.Prompt,
-		"promptRuns": semanticRunsFromCells(cl.RichPrompt),
-		"text":       cl.Edit.GetText(),
-		"empty":      cl.IsEmpty(),
+func (cl *CommandLine) semanticModel(ctx *vtui.SemanticContext) *extui.CommandLineModel {
+	return &extui.CommandLineModel{
+		ID:         vtui.SemanticID(cl),
+		Visible:    cl.IsVisible(),
+		Focused:    cl.IsFocused(),
+		Prompt:     cl.Prompt,
+		PromptRuns: semanticRunsFromCells(cl.RichPrompt),
+		Text:       cl.Edit.GetText(),
+		Empty:      cl.IsEmpty(),
 	}
 }
 
-func (tv *TerminalView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	x1, y1, x2, y2 := tv.GetPosition()
+func (tv *TerminalView) semanticModel(ctx *vtui.SemanticContext) *extui.TerminalModel {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
@@ -257,7 +393,7 @@ func (tv *TerminalView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		}
 	}
 
-	rows := make([]map[string]any, 0, tv.Height)
+	var rows []extui.TextRowModel
 	for y := 0; y < tv.Height && y < len(buf); y++ {
 		drawY := y + offset
 		if tv.UseAltScreen {
@@ -266,58 +402,50 @@ func (tv *TerminalView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		if drawY < 0 || drawY >= tv.Height {
 			continue
 		}
-		rows = append(rows, map[string]any{
-			"index": drawY,
-			"runs":  semanticRunsFromCells(buf[y]),
+		rows = append(rows, extui.TextRowModel{
+			Index: drawY,
+			Runs:  semanticRunsFromCells(buf[y]),
 		})
 	}
 
-	return map[string]any{
-		"id":        vtui.SemanticID(tv),
-		"kind":      "terminal",
-		"x":         x1,
-		"y":         y1,
-		"w":         x2 - x1 + 1,
-		"h":         y2 - y1 + 1,
-		"visible":   tv.IsVisible(),
-		"focused":   tv.IsFocused(),
-		"title":     tv.Title,
-		"altScreen": tv.UseAltScreen,
-		"busy":      tv.Muted,
-		"cursorX":   tv.CursorX,
-		"cursorY":   tv.CursorY + offset,
-		"rows":      rows,
+	return &extui.TerminalModel{
+		ID:        vtui.SemanticID(tv),
+		Title:     tv.Title,
+		Visible:   tv.IsVisible(),
+		Focused:   tv.IsFocused(),
+		AltScreen: tv.UseAltScreen,
+		Busy:      tv.Muted,
+		CursorX:   tv.CursorX,
+		CursorY:   tv.CursorY + offset,
+		Rows:      rows,
 	}
 }
 
 func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	x1, y1, x2, y2 := vv.GetPosition()
 	rows := vv.semanticRows()
 	mode := "text"
 	if vv.HexMode {
 		mode = "hex"
 	}
-	return map[string]any{
-		"id":        vtui.SemanticID(vv),
-		"kind":      "viewer",
-		"title":     vv.GetTitle(),
-		"path":      vv.path,
-		"baseName":  semanticBaseName(vv.vfs, vv.path),
-		"x":         x1,
-		"y":         y1,
-		"w":         x2 - x1 + 1,
-		"h":         y2 - y1 + 1,
-		"mode":      mode,
-		"hexMode":   vv.HexMode,
-		"wrapMode":  vv.WrapMode,
-		"busy":      vv.Busy,
-		"topOffset": vv.TopOffset,
-		"size":      vv.backend.Size(),
-		"rows":      rows,
+
+	surface := extui.SurfaceModel{
+		ID:        vtui.SemanticID(vv),
+		Kind:      "viewer",
+		Title:     vv.GetTitle(),
+		Path:      vv.path,
+		BaseName:  semanticBaseName(vv.vfs, vv.path),
+		Mode:      mode,
+		HexMode:   vv.HexMode,
+		WrapMode:  vv.WrapMode,
+		Busy:      vv.Busy,
+		TopOffset: vv.TopOffset,
+		Size:      vv.backend.Size(),
+		Rows:      rows,
 	}
+	return surface.ToMap()
 }
 
-func (vv *ViewerView) semanticRows() []map[string]any {
+func (vv *ViewerView) semanticRows() []extui.TextRowModel {
 	if vv.backend == nil {
 		return nil
 	}
@@ -330,9 +458,9 @@ func (vv *ViewerView) semanticRows() []map[string]any {
 		return nil
 	}
 	if vv.Busy {
-		return []map[string]any{{"index": 0, "text": " [ Loading... ] "}}
+		return []extui.TextRowModel{{Index: 0, Text: " [ Loading... ] "}}
 	}
-	rows := make([]map[string]any, 0, contentHeight)
+	var rows []extui.TextRowModel
 	if vv.HexMode {
 		currOffset := vv.TopOffset &^ 0xF
 		for y := 0; y < contentHeight && currOffset < vv.backend.Size(); y++ {
@@ -340,10 +468,10 @@ func (vv *ViewerView) semanticRows() []map[string]any {
 			if err != nil && err != piecetable.ErrLoading {
 				break
 			}
-			rows = append(rows, map[string]any{
-				"index":  y,
-				"offset": currOffset,
-				"text":   semanticHexLine(currOffset, data),
+			rows = append(rows, extui.TextRowModel{
+				Index:  y,
+				Offset: currOffset,
+				Text:   semanticHexLine(currOffset, data),
 			})
 			currOffset += 16
 		}
@@ -357,14 +485,14 @@ func (vv *ViewerView) semanticRows() []map[string]any {
 		}
 		data, err := vv.backend.ReadAt(currOffset, width*4)
 		if err == piecetable.ErrLoading {
-			rows = append(rows, map[string]any{"index": y, "offset": currOffset, "text": " [ Loading... ] "})
+			rows = append(rows, extui.TextRowModel{Index: y, Offset: currOffset, Text: " [ Loading... ] "})
 			break
 		}
 		if err != nil || len(data) == 0 {
 			break
 		}
 		lineLen, textLen := semanticViewerLineLen(data, width, vv.WrapMode)
-		rows = append(rows, map[string]any{"index": y, "offset": currOffset, "text": string(data[:textLen])})
+		rows = append(rows, extui.TextRowModel{Index: y, Offset: currOffset, Text: string(data[:textLen])})
 		if lineLen <= 0 {
 			break
 		}
@@ -421,33 +549,81 @@ func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, text
 }
 
 func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	x1, y1, x2, y2 := ev.GetPosition()
 	rows := ev.semanticRows()
-	return map[string]any{
-		"id":           vtui.SemanticID(ev),
-		"kind":         "editor",
-		"title":        ev.GetTitle(),
-		"path":         ev.filePath,
-		"baseName":     semanticBaseName(ev.vfs, ev.filePath),
-		"x":            x1,
-		"y":            y1,
-		"w":            x2 - x1 + 1,
-		"h":            y2 - y1 + 1,
-		"dirty":        ev.modified,
-		"saving":       ev.saving,
-		"wordWrap":     ev.WordWrap,
-		"overtype":     ev.overtype,
-		"cursorLine":   ev.CursorLine,
-		"cursorPos":    ev.CursorPos,
-		"scrollTop":    ev.ScrollTopRow,
-		"scrollLeft":   ev.ScrollLeft,
-		"selection":    ev.selActive,
-		"rows":         rows,
-		"autocomplete": ev.semanticAutocomplete(),
+
+	surface := extui.SurfaceModel{
+		ID:           vtui.SemanticID(ev),
+		Kind:         "editor",
+		Title:        ev.GetTitle(),
+		Path:         ev.filePath,
+		BaseName:     semanticBaseName(ev.vfs, ev.filePath),
+		Busy:         ev.IsBusy(),
+		Dirty:        ev.modified,
+		Saving:       ev.saving,
+		WordWrap:     ev.WordWrap,
+		Overtype:     ev.overtype,
+		CursorLine:   ev.CursorLine,
+		CursorPos:    ev.CursorPos,
+		ScrollTop:    ev.ScrollTopRow,
+		ScrollLeft:   ev.ScrollLeft,
+		Selection:    ev.selActive,
+		Rows:         rows,
+		Autocomplete: ev.semanticAutocomplete(),
 	}
+	return surface.ToMap()
 }
 
-func (ev *EditorView) semanticRows() []map[string]any {
+// GetText возвращает текущий текст редактора из PieceTable
+func (ev *EditorView) GetText() string {
+	if ev.pt == nil {
+		return ""
+	}
+	return ev.pt.String()
+}
+
+// HandleSemanticAction обрабатывает нативные GUI-действия для EditorView
+func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
+	target := semanticString(action["target"])
+	if vtui.SemanticID(ev) != target {
+		return false
+	}
+
+	switch semanticString(action["action"]) {
+	case "editor.setText":
+		text := semanticString(action["text"])
+		ev.SetText(text)
+		return true
+	case "editor.insertText":
+		text := semanticString(action["text"])
+		ev.PasteText(text)
+		return true
+	case "editor.deleteSelection":
+		ev.DeleteSelection()
+		return true
+	case "editor.undo":
+		ev.Undo()
+		return true
+	case "editor.redo":
+		ev.Redo()
+		return true
+	case "editor.save":
+		ev.SaveToFile(nil)
+		return true
+	case "editor.search":
+		pattern := semanticString(action["pattern"])
+		caseSensitive := semanticBool(action["case"])
+		reverse := semanticBool(action["reverse"])
+		next := semanticBool(action["next"])
+		ev.Search(pattern, caseSensitive, reverse, next)
+		return true
+	case "control.focus":
+		ev.SetFocus(true)
+		return true
+	}
+	return false
+}
+
+func (ev *EditorView) semanticRows() []extui.TextRowModel {
 	if ev.pt == nil || ev.li == nil || ev.engine == nil {
 		return nil
 	}
@@ -457,7 +633,7 @@ func (ev *EditorView) semanticRows() []map[string]any {
 		return nil
 	}
 	startLogLine, startFragIdx := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
-	rows := make([]map[string]any, 0, height)
+	var rows []extui.TextRowModel
 	for logIdx := startLogLine; logIdx < ev.li.LineCount() && len(rows) < height; logIdx++ {
 		frags := ev.engine.GetFragments(logIdx)
 		baseVRow := ev.engine.GetRowOffset(logIdx)
@@ -472,12 +648,12 @@ func (ev *EditorView) semanticRows() []map[string]any {
 			} else if err != nil {
 				text = ""
 			}
-			rows = append(rows, map[string]any{
-				"index":       len(rows),
-				"visualRow":   baseVRow + fIdx,
-				"logicalLine": logIdx,
-				"offset":      frag.ByteOffsetStart,
-				"text":        text,
+			rows = append(rows, extui.TextRowModel{
+				Index:       len(rows),
+				VisualRow:   baseVRow + fIdx,
+				LogicalLine: logIdx,
+				Offset:      int64(frag.ByteOffsetStart),
+				Text:        text,
 			})
 			if len(rows) >= height {
 				break
@@ -502,11 +678,11 @@ func (ev *EditorView) semanticAutocomplete() map[string]any {
 	}
 }
 
-func semanticRunsFromCells(cells []vtui.CharInfo) []map[string]any {
+func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 	if len(cells) == 0 {
 		return nil
 	}
-	runs := make([]map[string]any, 0, 8)
+	var runs []extui.RunModel
 	var b strings.Builder
 	var attr uint64
 	haveRun := false
@@ -514,9 +690,9 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []map[string]any {
 		if !haveRun {
 			return
 		}
-		runs = append(runs, map[string]any{
-			"text": b.String(),
-			"attr": attr,
+		runs = append(runs, extui.RunModel{
+			Text: b.String(),
+			Attr: attr,
 		})
 		b.Reset()
 	}
@@ -591,4 +767,17 @@ func semanticInt(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+func semanticBool(v any) bool {
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	if n, ok := v.(int); ok {
+		return n != 0
+	}
+	if f, ok := v.(float64); ok {
+		return f != 0
+	}
+	return false
 }

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/unxed/f4/internal/uimodel"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 )
 
@@ -13,7 +13,7 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 	if legacy == nil {
 		return nil
 	}
-	scene := uimodel.Scene{
+	scene := extui.Scene{
 		Width:          semanticInt(legacy["width"]),
 		Height:         semanticInt(legacy["height"]),
 		ActiveScreen:   semanticInt(legacy["activeScreen"]),
@@ -39,12 +39,12 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.KeyBar = &k
 	}
 	if toast := appMap(legacy["toast"]); toast != nil {
-		scene.Toast = &uimodel.ToastModel{Message: semanticString(toast["message"])}
+		scene.Toast = &extui.ToastModel{Message: semanticString(toast["message"])}
 	}
 
 	for _, frame := range appMapSlice(legacy["frames"]) {
 		switch semanticString(frame["kind"]) {
-		case "panels":
+		case "panels", "shell":
 			shell := appShellFromLegacy(frame)
 			scene.Shell = &shell
 		case "menu":
@@ -57,7 +57,7 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		}
 	}
 	if scene.Shell != nil && scene.Surface == nil && scene.Shell.TerminalActive && scene.Shell.Terminal != nil {
-		scene.Surface = &uimodel.SurfaceModel{
+		scene.Surface = &extui.SurfaceModel{
 			ID:    scene.Shell.Terminal.ID,
 			Kind:  "terminal",
 			Title: scene.Shell.Terminal.Title,
@@ -68,8 +68,8 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 	return scene.ToMap()
 }
 
-func appShellFromLegacy(node map[string]any) uimodel.ShellModel {
-	shell := uimodel.ShellModel{
+func appShellFromLegacy(node map[string]any) extui.ShellModel {
+	shell := extui.ShellModel{
 		ID:             semanticString(node["id"]),
 		Title:          semanticString(node["title"]),
 		Mode:           "panels",
@@ -97,8 +97,8 @@ func appShellFromLegacy(node map[string]any) uimodel.ShellModel {
 	return shell
 }
 
-func appPanelFromLegacy(node map[string]any) uimodel.PanelModel {
-	panel := uimodel.PanelModel{
+func appPanelFromLegacy(node map[string]any) extui.PanelModel {
+	panel := extui.PanelModel{
 		ID:            semanticString(node["id"]),
 		Side:          semanticInt(node["side"]),
 		Active:        appBool(node["active"]),
@@ -123,8 +123,8 @@ func appPanelFromLegacy(node map[string]any) uimodel.PanelModel {
 	return panel
 }
 
-func appEntryFromLegacy(node map[string]any) uimodel.FileEntryModel {
-	return uimodel.FileEntryModel{
+func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
+	return extui.FileEntryModel{
 		Index:          semanticInt(node["index"]),
 		Name:           semanticString(node["name"]),
 		Size:           appInt64(node["size"]),
@@ -141,8 +141,8 @@ func appEntryFromLegacy(node map[string]any) uimodel.FileEntryModel {
 	}
 }
 
-func appCommandLineFromLegacy(node map[string]any) uimodel.CommandLineModel {
-	return uimodel.CommandLineModel{
+func appCommandLineFromLegacy(node map[string]any) extui.CommandLineModel {
+	return extui.CommandLineModel{
 		ID:         semanticString(node["id"]),
 		Visible:    appBoolDefault(node["visible"], true),
 		Focused:    appBool(node["focused"]),
@@ -153,8 +153,8 @@ func appCommandLineFromLegacy(node map[string]any) uimodel.CommandLineModel {
 	}
 }
 
-func appTerminalFromLegacy(node map[string]any) uimodel.TerminalModel {
-	term := uimodel.TerminalModel{
+func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
+	term := extui.TerminalModel{
 		ID:        semanticString(node["id"]),
 		Title:     semanticString(node["title"]),
 		Visible:   appBoolDefault(node["visible"], true),
@@ -170,8 +170,8 @@ func appTerminalFromLegacy(node map[string]any) uimodel.TerminalModel {
 	return term
 }
 
-func appSurfaceFromLegacy(node map[string]any) uimodel.SurfaceModel {
-	surface := uimodel.SurfaceModel{
+func appSurfaceFromLegacy(node map[string]any) extui.SurfaceModel {
+	surface := extui.SurfaceModel{
 		ID:           semanticString(node["id"]),
 		Kind:         semanticString(node["kind"]),
 		Title:        semanticString(node["title"]),
@@ -200,8 +200,8 @@ func appSurfaceFromLegacy(node map[string]any) uimodel.SurfaceModel {
 	return surface
 }
 
-func appTextRowFromLegacy(node map[string]any) uimodel.TextRowModel {
-	return uimodel.TextRowModel{
+func appTextRowFromLegacy(node map[string]any) extui.TextRowModel {
+	return extui.TextRowModel{
 		Index:       semanticInt(node["index"]),
 		VisualRow:   semanticInt(node["visualRow"]),
 		LogicalLine: semanticInt(node["logicalLine"]),
@@ -211,8 +211,8 @@ func appTextRowFromLegacy(node map[string]any) uimodel.TextRowModel {
 	}
 }
 
-func appMenuFromLegacy(node map[string]any, role string) uimodel.MenuModel {
-	menu := uimodel.MenuModel{
+func appMenuFromLegacy(node map[string]any, role string) extui.MenuModel {
+	menu := extui.MenuModel{
 		ID:       semanticString(node["id"]),
 		Role:     role,
 		Title:    semanticString(node["title"]),
@@ -226,8 +226,8 @@ func appMenuFromLegacy(node map[string]any, role string) uimodel.MenuModel {
 	return menu
 }
 
-func appMenuItemFromLegacy(node map[string]any) uimodel.MenuItemModel {
-	item := uimodel.MenuItemModel{
+func appMenuItemFromLegacy(node map[string]any) extui.MenuItemModel {
+	item := extui.MenuItemModel{
 		Index:     semanticInt(node["index"]),
 		Text:      semanticString(node["text"]),
 		RawText:   semanticString(node["rawText"]),
@@ -244,14 +244,14 @@ func appMenuItemFromLegacy(node map[string]any) uimodel.MenuItemModel {
 	return item
 }
 
-func appKeyBarFromLegacy(node map[string]any) uimodel.KeyBarModel {
-	keyBar := uimodel.KeyBarModel{
+func appKeyBarFromLegacy(node map[string]any) extui.KeyBarModel {
+	keyBar := extui.KeyBarModel{
 		ID:       semanticString(node["id"]),
 		Visible:  appBoolDefault(node["visible"], true),
 		Modifier: semanticString(node["modifier"]),
 	}
 	for _, item := range appMapSlice(node["items"]) {
-		keyBar.Items = append(keyBar.Items, uimodel.KeyBarItemModel{
+		keyBar.Items = append(keyBar.Items, extui.KeyBarItemModel{
 			Index: semanticInt(item["index"]),
 			Key:   semanticString(item["key"]),
 			Text:  semanticString(item["text"]),
@@ -260,8 +260,8 @@ func appKeyBarFromLegacy(node map[string]any) uimodel.KeyBarModel {
 	return keyBar
 }
 
-func appDialogFromLegacy(node map[string]any) uimodel.DialogModel {
-	dlg := uimodel.DialogModel{
+func appDialogFromLegacy(node map[string]any) extui.DialogModel {
+	dlg := extui.DialogModel{
 		ID:        semanticString(node["id"]),
 		Kind:      semanticString(node["kind"]),
 		Title:     semanticString(node["title"]),
@@ -277,8 +277,8 @@ func appDialogFromLegacy(node map[string]any) uimodel.DialogModel {
 	return dlg
 }
 
-func appControlFromLegacy(node map[string]any) uimodel.ControlModel {
-	ctrl := uimodel.ControlModel{
+func appControlFromLegacy(node map[string]any) extui.ControlModel {
+	ctrl := extui.ControlModel{
 		ID:         semanticString(node["id"]),
 		Kind:       semanticString(node["kind"]),
 		Visible:    appBoolDefault(node["visible"], true),
@@ -304,10 +304,10 @@ func appControlFromLegacy(node map[string]any) uimodel.ControlModel {
 	return ctrl
 }
 
-func appRunsFromLegacy(value any) []uimodel.RunModel {
-	var runs []uimodel.RunModel
+func appRunsFromLegacy(value any) []extui.RunModel {
+	var runs []extui.RunModel
 	for _, run := range appMapSlice(value) {
-		runs = append(runs, uimodel.RunModel{
+		runs = append(runs, extui.RunModel{
 			Text: semanticString(run["text"]),
 			Attr: uint64(appInt64(run["attr"])),
 		})

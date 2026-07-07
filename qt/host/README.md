@@ -13,9 +13,9 @@ cmake --build build --config RelWithDebInfo
 
 Runtime lookup order from Go:
 
-1. `F4_QT_HOST_PATH`
+1. `F4_EXT_UI_PATH`
 2. a host executable next to the `f4` binary
 3. `qt/host/build/bin/<config>/f4-qt-host` for local development
 
 The protocol is a 4-byte big-endian length prefix followed by a MessagePack map.
-The first version renders vtui cells in a custom `VtuiGridItem`; additional QML panels or sibling modules, including a future editable-package integration with `ZoinGallery`, can be imported around that item later.
+The host accepts the upstream ExtUI `--f4-ext-*` startup arguments and keeps the older `--f4-qt-*` names as a compatibility fallback. It renders vtui cells in a custom `VtuiGridItem` while using semantic `sdk/extui` scenes for QML-native panels, menus, dialogs, document surfaces, and future sibling modules such as a possible editable-package integration with `ZoinGallery`.

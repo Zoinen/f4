@@ -150,7 +150,7 @@ QtShellController::QtShellController(const QString &connectAddress,
     , m_initialRows(rows)
 {
     if (!parseConnectAddress(connectAddress)) {
-        emit fatalError(QStringLiteral("Invalid --f4-qt-connect address: %1").arg(connectAddress));
+        emit fatalError(QStringLiteral("Invalid ExtUI connect address: %1").arg(connectAddress));
         return;
     }
 
@@ -262,11 +262,17 @@ void QtShellController::onConnected()
     m_connected = true;
     emit connectedChanged();
 
+    const int cellWidth = 10;
+    const int cellHeight = 20;
     sendMessage({
         {QStringLiteral("type"), QStringLiteral("hello")},
         {QStringLiteral("nonce"), m_nonce},
         {QStringLiteral("cols"), m_initialCols},
         {QStringLiteral("rows"), m_initialRows},
+        {QStringLiteral("pixelWidth"), m_initialCols * cellWidth},
+        {QStringLiteral("pixelHeight"), m_initialRows * cellHeight},
+        {QStringLiteral("cellWidth"), cellWidth},
+        {QStringLiteral("cellHeight"), cellHeight},
     });
 }
 

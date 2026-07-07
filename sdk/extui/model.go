@@ -1,4 +1,4 @@
-package uimodel
+package extui
 
 const (
 	Schema       = "app"
@@ -7,6 +7,7 @@ const (
 
 type M = map[string]any
 
+// Scene является корневым объектом для экспорта состояния f4
 type Scene struct {
 	Width          int
 	Height         int
@@ -486,9 +487,15 @@ func (c ControlModel) ToMap() M {
 		"password":   c.Password,
 		"cursor":     c.Cursor,
 		"left":       c.Left,
-		"selected":   c.Selected,
-		"items":      c.Items,
-		"rows":       c.Rows,
+	}
+	if len(c.Selected) > 0 {
+		out["selected"] = c.Selected
+	}
+	if len(c.Items) > 0 {
+		out["items"] = c.Items
+	}
+	if len(c.Rows) > 0 {
+		out["rows"] = c.Rows
 	}
 	if len(c.Children) > 0 {
 		out["children"] = controlsToMaps(c.Children)

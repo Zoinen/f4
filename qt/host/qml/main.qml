@@ -48,7 +48,7 @@ ApplicationWindow {
     }
 
     function shellFrame() {
-        return scene.shell || firstFrame("panels") || ({})
+        return scene.shell || firstFrame("shell") || firstFrame("panels") || ({})
     }
 
     function activeSurface() {

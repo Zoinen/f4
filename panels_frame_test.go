@@ -203,7 +203,7 @@ func TestPanelsFrame_ProcessMouse_DoubleClick(t *testing.T) {
 }
 
 func setupMockPanelsFrame() *PanelsFrame {
-	pf := &PanelsFrame{activeIdx: 1, showPanels: true, showKeyBar: true}
+	pf := &PanelsFrame{activeIdx: 1, showPanels: true, showKeyBar: true, showLeftPanel: true, showRightPanel: true}
 	pf.pty = &mockPty{}
 	pf.termView = NewTerminalView(80, 24)
 	// Initialize MenuBar with enough items to satisfy updateMenuCheckmarks (needs index 0 and 4)
