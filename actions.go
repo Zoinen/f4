@@ -1583,7 +1583,8 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		comboStyle.Menu.SetSelectPos(selected)
 		comboStyle.Edit.SetText(names[selected])
 	}
-	lblStyle := vtui.NewLabel(0, 0, Msg("AppearanceSettings.Style"), comboStyle)
+	lblStyle := vtui.NewText(0, 0, Msg("AppearanceSettings.Style"), 0)
+	lblStyle.FocusLink = comboStyle
 	defaultMenuAction := comboStyle.Menu.OnAction
 	comboStyle.Menu.OnAction = func(idx int) {
 		defaultMenuAction(idx)
