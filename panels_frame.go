@@ -150,6 +150,7 @@ func NewPanelsFrame() *PanelsFrame {
 		{Label: "&" + Msg("Menu.Options"), SubItems: []vtui.MenuItem{
 			{Text: "&" + Msg("Menu.PanelSettings"), Command: CmPanelSettings},
 			{Text: "&" + Msg("Menu.EditorSettings"), Command: CmEditorSettings},
+			{Text: "&" + Msg("Menu.AppearanceSettings"), Command: CmAppearanceSettings},
 			{Text: "&" + Msg("Menu.ConfirmationsSettings"), Command: CmConfirmationsSettings},
 			{Separator: true},
 			{Text: "&" + Msg("Menu.Options.Plugins"), Command: CmPlugins},
@@ -1410,6 +1411,9 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return true
 	case CmEditorSettings:
 		actionEditorSettings(pf)
+		return true
+	case CmAppearanceSettings:
+		actionAppearanceSettings(pf)
 		return true
 	case CmConfirmationsSettings:
 		actionConfirmationsSettings(pf)

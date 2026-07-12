@@ -287,24 +287,24 @@ func SetupUI() {
 
 	SetDefaultF4Palette()
 	InitLang()
+	LoadConfig()
+	if err := ApplyColorStyle(AppConfig.ColorStyle); err != nil {
+		vtui.DebugLog("COLORS: %v; falling back to Modern", err)
+		AppConfig.ColorStyle = "Modern"
+		_ = ApplyColorStyle(AppConfig.ColorStyle)
+	}
 	vtui.GlobalHistoryProvider = NewF4HistoryProvider()
 	GlobalFileState = NewF4FileStateProvider()
 	vtinput.Logger = vtui.DebugLog // Pipe vtinput logs to vtui's debug logger
 	vtui.GlobalClipboardAccessManager = NewF4ClipboardAuth()
 	RegisterDrive("Null VFS", func() vfs.VFS { return vfs.NewNullVFS(50 * 1024 * 1024) }) // 50 MB/s
 
-	configDir, err := os.UserConfigDir()
-	if err == nil {
-		configPath := filepath.Join(configDir, "f4", "farcolors.ini")
-		ini := LoadIni(configPath)
-		InitColors(ini)
-	}
+	configDir, _ := os.UserConfigDir()
 
 	os.MkdirAll(filepath.Join(configDir, "f4"), 0755)
 	MacroMgr = NewMacroManager(filepath.Join(configDir, "f4", "key_macros.ini"))
 	vtui.FrameManager.EventFilter = MacroMgr.Filter
 	LoadSession()
-	LoadConfig()
 	vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
 	vtui.FrameManager.Push(vtui.NewDesktop())
 

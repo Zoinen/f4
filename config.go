@@ -11,6 +11,7 @@ import (
 )
 
 type F4Config struct {
+	ColorStyle              string
 	ShowHiddenFiles         bool
 	HighlightDir            bool
 	SavePanelPaths          bool
@@ -37,6 +38,7 @@ type F4Config struct {
 }
 
 var AppConfig = F4Config{
+	ColorStyle:              "Modern",
 	ShowHiddenFiles:         true,
 	HighlightDir:            true,
 	SavePanelPaths:          true,
@@ -92,6 +94,7 @@ func LoadConfig() {
 	}
 
 	AppConfig.ShowHiddenFiles = ini.GetString("Panel", "ShowHiddenFiles", "1") == "1"
+	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Modern")
 	AppConfig.HighlightDir = ini.GetString("Panel", "HighlightDir", "1") == "1"
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
 	AppConfig.KeepTerminalCursor = ini.GetString("Panel", "KeepTerminalCursor", "0") == "1"
@@ -129,6 +132,8 @@ func SaveConfig() {
 	os.MkdirAll(filepath.Dir(path), 0755)
 
 	var sb strings.Builder
+	sb.WriteString("[Interface]\n")
+	sb.WriteString(fmt.Sprintf("ColorStyle = %s\n\n", AppConfig.ColorStyle))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("HighlightDir = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.HighlightDir]))

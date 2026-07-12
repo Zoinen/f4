@@ -26,6 +26,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 
 	// 1. Set some non-default values
 	AppConfig.ShowHiddenFiles = false
+	AppConfig.ColorStyle = "Classic"
 	AppConfig.HighlightDir = true
 	AppConfig.SavePanelPaths = false
 	AppConfig.EditorCrosshair = true
@@ -36,11 +37,15 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 
 	// 3. Reset to defaults
 	AppConfig.ShowHiddenFiles = true
+	AppConfig.ColorStyle = "Modern"
 	AppConfig.HighlightDir = false
 	AppConfig.EditorCrosshair = false
 
 	// 4. Load
 	LoadConfig()
+	if AppConfig.ColorStyle != "Classic" {
+		t.Errorf("LoadConfig failed to restore color style: %q", AppConfig.ColorStyle)
+	}
 
 	// 5. Verify
 	if AppConfig.ShowHiddenFiles {

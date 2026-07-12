@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"io"
 	"os"
 	"strings"
 )
@@ -13,14 +14,23 @@ type IniFile struct {
 
 // LoadIni reads an INI file into memory. Returns an empty struct if file is missing.
 func LoadIni(filename string) *IniFile {
-	ini := &IniFile{data: make(map[string]map[string]string)}
 	f, err := os.Open(filename)
 	if err != nil {
-		return ini
+		return newIniFile()
 	}
 	defer f.Close()
+	return ParseIni(f)
+}
 
-	scanner := bufio.NewScanner(f)
+func newIniFile() *IniFile {
+	return &IniFile{data: make(map[string]map[string]string)}
+}
+
+// ParseIni reads INI data from an arbitrary source.
+func ParseIni(r io.Reader) *IniFile {
+	ini := newIniFile()
+
+	scanner := bufio.NewScanner(r)
 	section := ""
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
