@@ -467,7 +467,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		width--
 	}
 
-	bgAttr := vtui.Palette[ColCommandLineUserScreen]
+	bgAttr := vtui.Palette[ColEditorText]
 	selAttr := vtui.Palette[vtui.ColDialogEditSelected]
 
 	if ev.saving {

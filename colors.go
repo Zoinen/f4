@@ -29,6 +29,7 @@ const (
 	ColViewerArrows
 	ColViewerScrollbar
 
+	ColEditorText
 	ColEditorCrosshair
 
 	LastF4PaletteColor
@@ -89,6 +90,7 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColViewerArrows] = vtui.SetIndexBoth(0, 14, 0)
 	vtui.Palette[ColViewerScrollbar] = vtui.SetIndexBoth(0, 8, 0)
 
+	vtui.Palette[ColEditorText] = vtui.SetIndexBoth(0, 7, 0)
 	vtui.Palette[ColEditorCrosshair] = vtui.SetRGBBoth(0, 0xD3D7CF, 0x222222)
 }
 
@@ -140,6 +142,7 @@ var colorMap = map[string]int{
 	"Viewer.Status":                    ColViewerStatus,
 	"Viewer.Arrows":                    ColViewerArrows,
 	"Viewer.Scrollbar":                 ColViewerScrollbar,
+	"Editor.Text":                      ColEditorText,
 	"Editor.Scrollbar":                 vtui.ColTableBox,
 }
 
