@@ -44,6 +44,7 @@ func TestColors_InitColors_FromIni(t *testing.T) {
 [farcolors]
 Panel.Text = foreground:#FF0000 | background:#0000FF
 CommandLine.Prompt = foreground:#00FF00
+CommandLine.UserScreen = foreground:#D0D0D0 | background:#010203
 `
 	if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 		t.Fatalf("Failed to write mock INI: %v", err)
@@ -65,5 +66,8 @@ CommandLine.Prompt = foreground:#00FF00
 	promptAttr := vtui.Palette[ColCommandLinePrompt]
 	if vtui.GetRGBFore(promptAttr) != 0x00FF00 {
 		t.Errorf("Expected foreground Green #00FF00, got %06X", vtui.GetRGBFore(promptAttr))
+	}
+	if vtui.ThemePalette[0] != 0x010203 {
+		t.Errorf("Expected terminal background #010203, got %06X", vtui.ThemePalette[0])
 	}
 }

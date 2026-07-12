@@ -151,4 +151,8 @@ func InitColors(ini *IniFile) {
 			vtui.Palette[idx] = ParseFarColor(expr, vtui.Palette[idx])
 		}
 	}
+
+	// Terminal history uses indexed background color 0 for default and blank cells.
+	// Keep it in sync with the configurable user-screen background.
+	vtui.ThemePalette[0] = vtui.GetRGBBack(vtui.Palette[ColCommandLineUserScreen])
 }
