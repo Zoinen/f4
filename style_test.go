@@ -50,6 +50,12 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	if got := vtui.GetRGBBack(vtui.Palette[ColPanelText]); got != 0x0000A0 {
 		t.Fatalf("classic panel background: got %06X", got)
 	}
+	if got := vtui.GetRGBBack(vtui.Palette[vtui.ColKeyBarNum]); got != 0x000000 {
+		t.Fatalf("classic key bar gap background: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[vtui.ColKeyBarText]); got != 0x000000 {
+		t.Fatalf("classic key bar label text: got %06X", got)
+	}
 }
 
 func styleNames(styles []ColorStyle) []string {

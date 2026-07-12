@@ -1562,9 +1562,10 @@ func actionConfirmationsSettings(pf *PanelsFrame) {
 }
 
 func actionAppearanceSettings(pf *PanelsFrame) {
-	const width, height = 48, 9
+	const width, height = 40, 10
 	dlg := vtui.NewCenteredDialog(width, height, Msg("AppearanceSettings.Title"))
 	dlg.ShowClose = true
+	originalStyle := AppConfig.ColorStyle
 
 	styles := AvailableColorStyles()
 	names := make([]string, len(styles))
@@ -1576,13 +1577,22 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		}
 	}
 
-	comboStyle := vtui.NewComboBox(0, 0, 28, names)
+	comboStyle := vtui.NewComboBox(0, 0, 24, names)
 	comboStyle.DropdownOnly = true
 	if len(names) > 0 {
 		comboStyle.Menu.SetSelectPos(selected)
 		comboStyle.Edit.SetText(names[selected])
 	}
 	lblStyle := vtui.NewLabel(0, 0, Msg("AppearanceSettings.Style"), comboStyle)
+	defaultMenuAction := comboStyle.Menu.OnAction
+	comboStyle.Menu.OnAction = func(idx int) {
+		defaultMenuAction(idx)
+		if idx >= 0 && idx < len(names) {
+			if err := ApplyColorStyle(names[idx]); err == nil {
+				pf.RefreshAll()
+			}
+		}
+	}
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 	btnOk.IsDefault = true
 	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
@@ -1593,11 +1603,8 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	dlg.AddItem(btnCancel)
 
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	row := vtui.NewHBoxLayout(0, 0, width-4, 1)
-	row.Spacing = 1
-	row.Add(lblStyle, vtui.Margins{}, vtui.AlignLeft)
-	row.Add(comboStyle, vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(row, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(lblStyle, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(comboStyle, vtui.Margins{Top: 1}, vtui.AlignCenter)
 
 	buttons := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	buttons.HorizontalAlign = vtui.AlignCenter
@@ -1607,16 +1614,16 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	vbox.Add(buttons, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Apply()
 
-	btnCancel.OnClick = func() { dlg.Close() }
+	btnCancel.OnClick = func() {
+		_ = ApplyColorStyle(originalStyle)
+		dlg.Close()
+		pf.RefreshAll()
+	}
 	btnOk.OnClick = func() {
 		if len(names) == 0 {
 			return
 		}
 		name := names[comboStyle.Menu.SelectPos]
-		if err := ApplyColorStyle(name); err != nil {
-			vtui.ShowMessage(Msg("AppearanceSettings.Title"), err.Error(), []string{Msg("vtui.Ok")})
-			return
-		}
 		AppConfig.ColorStyle = name
 		SaveConfig()
 		dlg.Close()
