@@ -56,6 +56,12 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	if got := vtui.GetRGBFore(vtui.Palette[vtui.ColKeyBarText]); got != 0x000000 {
 		t.Fatalf("classic key bar label text: got %06X", got)
 	}
+	if got := vtui.GetRGBBack(vtui.Palette[ColViewerText]); got != 0x0000A0 {
+		t.Fatalf("classic viewer background: got %06X", got)
+	}
+	if got := vtui.GetRGBBack(vtui.Palette[ColEditorText]); got != 0x0000A0 {
+		t.Fatalf("classic editor background: got %06X", got)
+	}
 }
 
 func styleNames(styles []ColorStyle) []string {
