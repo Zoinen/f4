@@ -29,8 +29,7 @@ type F4FileStateProvider struct {
 }
 
 func NewF4FileStateProvider() *F4FileStateProvider {
-	cfgDir, _ := os.UserConfigDir()
-	p := filepath.Join(cfgDir, "f4", "file_states.json")
+	p := filepath.Join(GetF4ConfigDir(), "file_states.json")
 	fs := &F4FileStateProvider{
 		path:  p,
 		Limit: 1000,

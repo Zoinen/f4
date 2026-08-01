@@ -193,6 +193,12 @@ func (r *ExtUiRenderer) SetCursor(x, y int, visible bool, shape vtui.CursorShape
 	r.cursorShape = shape
 	r.cursorDirty = true
 }
+func (r *ExtUiRenderer) SetWindowTitle(title string) {
+	_ = r.send.Send(map[string]any{
+		"type":  "title",
+		"title": title,
+	})
+}
 
 func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, forceRedraw bool) {
 	if width <= 0 || height <= 0 || len(buf) == 0 {
@@ -479,8 +485,8 @@ func (h *ExtUiHost) handleMessage(msg map[string]any) {
 	case "mouse":
 		h.sendEvent(&vtinput.InputEvent{
 			Type:            vtinput.MouseEventType,
-			MouseX:          uint16(extUiInt(msg, "x")),
-			MouseY:          uint16(extUiInt(msg, "y")),
+			MouseX:          int16(extUiInt(msg, "x")),
+			MouseY:          int16(extUiInt(msg, "y")),
 			ButtonState:     uint32(extUiInt(msg, "button")),
 			MouseEventFlags: uint32(extUiInt(msg, "flags")),
 			KeyDown:         extUiBool(msg, "down"),
@@ -490,8 +496,8 @@ func (h *ExtUiHost) handleMessage(msg map[string]any) {
 	case "wheel":
 		h.sendEvent(&vtinput.InputEvent{
 			Type:            vtinput.MouseEventType,
-			MouseX:          uint16(extUiInt(msg, "x")),
-			MouseY:          uint16(extUiInt(msg, "y")),
+			MouseX:          int16(extUiInt(msg, "x")),
+			MouseY:          int16(extUiInt(msg, "y")),
 			WheelDirection:  extUiInt(msg, "dir"),
 			ControlKeyState: vtinput.ControlKeyState(uint32(extUiInt(msg, "mods"))),
 			InputSource:     "extui",

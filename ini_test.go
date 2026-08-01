@@ -40,3 +40,28 @@ func TestIniFile_MissingFile(t *testing.T) {
 		t.Errorf("Expected fallback value on missing file")
 	}
 }
+
+func TestIniFile_EnvOverride(t *testing.T) {
+	ini := newIniFile()
+
+	// 1. Set environment variables
+	t.Setenv("F4_PANEL_SHOW_HIDDEN_FILES", "0")
+	t.Setenv("f4_system_confirm_exit", "1")
+
+	// 2. Read values (should prioritize env)
+	val1 := ini.GetString("Panel", "ShowHiddenFiles", "default")
+	if val1 != "0" {
+		t.Errorf("Expected env override '0', got %q", val1)
+	}
+
+	val2 := ini.GetString("System", "ConfirmExit", "default")
+	if val2 != "1" {
+		t.Errorf("Expected env override '1', got %q", val2)
+	}
+
+	// 3. Fallback to default/file if env is empty
+	val3 := ini.GetString("Panel", "HighlightDir", "default_val")
+	if val3 != "default_val" {
+		t.Errorf("Expected default 'default_val', got %q", val3)
+	}
+}

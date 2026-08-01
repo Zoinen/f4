@@ -90,6 +90,17 @@ func TestPanelsFrame_ArkanoidHotkey(t *testing.T) {
 	if len(vtui.FrameManager.Screens) != initialScreens+1 {
 		t.Error("Second Arkanoid launch erroneously created a duplicate screen")
 	}
+
+	// Clean up Arkanoid to prevent background loop leak
+	arkFrame := arkScreen.Frames[0].(*ArkanoidFrame)
+	arkFrame.Close()
+	for i := 0; i < 20; i++ {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 func TestPanelsFrame_SelectionByMask(t *testing.T) {
 	pf := NewPanelsFrame()
@@ -152,6 +163,208 @@ func TestPanelsFrame_SelectionByMask(t *testing.T) {
 		t.Error("Selection dialog was not shown")
 	}
 }
+func TestPanelsFrame_DriveMenuListsAssignedBookmarks(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "f4", "settings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfg, "f4", "settings", "bookmarks.ini"),
+		[]byte("[6]\nPath="+target+"\nPlugin=\nPluginData=\nPluginFile=\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	pf.showDriveMenu(1)
+	menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if !ok {
+		t.Fatalf("drive menu not shown, top frame is %T", vtui.FrameManager.GetTopFrame())
+	}
+
+	row := -1
+	for i, it := range menu.Items {
+		if strings.HasPrefix(it.Text, "&6  ") {
+			row = i
+		}
+		for _, empty := range []string{"&0  ", "&1  ", "&9  "} {
+			if strings.HasPrefix(it.Text, empty) {
+				t.Errorf("unassigned slot listed: %q", it.Text)
+			}
+		}
+	}
+	if row == -1 {
+		t.Fatalf("assigned bookmark missing from the drive menu: %#v", menu.Items)
+	}
+	// Long paths are cut from the front, so only the tail is guaranteed.
+	if !strings.HasSuffix(menu.Items[row].Text, filepath.Base(target)) {
+		t.Errorf("row %q should show the bookmarked path", menu.Items[row].Text)
+	}
+	if !menu.Items[row-1].Separator {
+		t.Errorf("bookmarks should start after a separator, got %#v", menu.Items[row-1])
+	}
+
+	// Pressing the slot digit moves the panel the menu was opened for —
+	// the whole point of the entry: Alt+F2 then 6.
+	fsp := pf.panels[1].(*FileSystemPanel)
+	menu.SetSelectPos(0)
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_6, Char: '6',
+	})
+	if got := fsp.vfs.GetPath(); got != target {
+		t.Errorf("panel at %q, want %q", got, target)
+	}
+}
+
+// settleFrames does what the render loop does between keystrokes: run the
+// tasks frames posted, then drop the ones that closed themselves.
+func settleFrames(t *testing.T) {
+	t.Helper()
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			continue
+		case <-time.After(200 * time.Millisecond):
+		}
+		break
+	}
+	for _, f := range append([]vtui.Frame(nil), openFrames()...) {
+		if f.IsDone() {
+			vtui.FrameManager.RemoveFrame(f)
+		}
+	}
+}
+
+func openFrames() []vtui.Frame {
+	return vtui.FrameManager.Screens[vtui.FrameManager.ActiveIdx].Frames
+}
+
+// findDriveMenu returns the top-most drive menu on the stack. Unrelated
+// tasks (the update check, for one) can push frames above it.
+func findDriveMenu(t *testing.T) *vtui.VMenu {
+	t.Helper()
+	frames := openFrames()
+	for i := len(frames) - 1; i >= 0; i-- {
+		if m, ok := frames[i].(*vtui.VMenu); ok && m.GetTitle() == " Drive " {
+			return m
+		}
+	}
+	t.Fatalf("drive menu not on the frame stack: %#v", frames)
+	return nil
+}
+
+func findBookmarksDialog(t *testing.T) *bookmarksFrame {
+	t.Helper()
+	frames := openFrames()
+	for i := len(frames) - 1; i >= 0; i-- {
+		if d, ok := frames[i].(*bookmarksFrame); ok {
+			return d
+		}
+	}
+	t.Fatalf("bookmarks dialog not on the frame stack: %#v", frames)
+	return nil
+}
+
+func bookmarkRow(t *testing.T, menu *vtui.VMenu) int {
+	t.Helper()
+	for i, it := range menu.Items {
+		if strings.HasPrefix(it.Text, "&6  ") {
+			return i
+		}
+	}
+	t.Fatalf("bookmark row missing: %#v", menu.Items)
+	return -1
+}
+
+func TestPanelsFrame_DriveMenuBookmarkKeys(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "f4", "settings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ini := filepath.Join(cfg, "f4", "settings", "bookmarks.ini")
+	target := t.TempDir()
+	write := func() {
+		if err := os.WriteFile(ini,
+			[]byte("[6]\nPath="+target+"\nPlugin=\nPluginData=\nPluginFile=\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write()
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	press := func(menu *vtui.VMenu, vk uint16) {
+		menu.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk,
+		})
+	}
+
+	// F4 on the bookmark row opens the dialog on that slot, and closing
+	// the dialog brings the drive menu back.
+	pf.showDriveMenu(1)
+	menu := findDriveMenu(t)
+	menu.SetSelectPos(bookmarkRow(t, menu))
+	press(menu, vtinput.VK_F4)
+	settleFrames(t)
+	dlg := findBookmarksDialog(t)
+	if dlg.SelectPos != 6 {
+		t.Errorf("dialog opened on slot %d, want 6", dlg.SelectPos)
+	}
+	press(dlg.VMenu, vtinput.VK_ESCAPE)
+	settleFrames(t)
+	if !dlg.IsDone() {
+		t.Fatal("Esc did not close the dialog")
+	}
+	settleFrames(t)
+	menu = findDriveMenu(t) // reopened by the dialog's close hook
+	if menu.IsDone() {
+		t.Fatal("drive menu did not come back after the dialog closed")
+	}
+
+	// Ins opens the dialog from any row, always at the first slot.
+	menu.SetSelectPos(0)
+	press(menu, vtinput.VK_INSERT)
+	settleFrames(t)
+	dlg = findBookmarksDialog(t)
+	if dlg.SelectPos != 0 {
+		t.Errorf("Ins opened the dialog on slot %d, want 0", dlg.SelectPos)
+	}
+	press(dlg.VMenu, vtinput.VK_ESCAPE)
+	settleFrames(t)
+	dlg.IsDone()
+	settleFrames(t)
+
+	// Del clears the slot, and the menu that comes back no longer lists it.
+	menu = findDriveMenu(t)
+	menu.SetSelectPos(bookmarkRow(t, menu))
+	press(menu, vtinput.VK_DELETE)
+	settleFrames(t)
+	data, err := os.ReadFile(ini)
+	if err != nil {
+		t.Fatalf("read ini: %v", err)
+	}
+	if strings.Contains(string(data), "[6]") {
+		t.Errorf("Del did not clear the slot on disk:\n%s", data)
+	}
+	menu = findDriveMenu(t)
+	for _, it := range menu.Items {
+		if strings.HasPrefix(it.Text, "&6  ") {
+			t.Errorf("cleared bookmark still listed: %q", it.Text)
+		}
+	}
+}
+
 func TestPanelsFrame_GetActivePTY(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -439,6 +652,149 @@ func TestPanelsFrame_Clone(t *testing.T) {
 	clone.activeIdx = 1
 	if pf.activeIdx == 1 {
 		t.Error("Clone should be independent from its parent")
+	}
+}
+
+func TestPanelsFrame_CtrlBrackets_Insertion(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+
+	tmp := t.TempDir()
+	leftPath := filepath.Join(tmp, "left")
+	rightPath := filepath.Join(tmp, "right")
+	os.MkdirAll(leftPath, 0755)
+	os.MkdirAll(rightPath, 0755)
+
+	lp.vfs.SetPath(leftPath)
+	rp.vfs.SetPath(rightPath)
+
+	// 1. Тест Ctrl+[ (Путь левой панели)
+	pf.cmdLine.Clear()
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_OEM_4,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	gotLeft := pf.cmdLine.Edit.GetText()
+	expectedLeft := leftPath
+	if gotLeft != expectedLeft {
+		t.Errorf("Ctrl+[ failed: expected %q, got %q", expectedLeft, gotLeft)
+	}
+
+	// 2. Тест Ctrl+] (Путь правой панели)
+	pf.cmdLine.Clear()
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_OEM_6,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	gotRight := pf.cmdLine.Edit.GetText()
+	expectedRight := rightPath
+	if gotRight != expectedRight {
+		t.Errorf("Ctrl+] failed: expected %q, got %q", expectedRight, gotRight)
+	}
+}
+func TestPanelsFrame_CtrlArrows_CommandLineNavigation(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	pf.showPanels = true
+	pf.cmdLine.Edit.SetText("word1 word2 word3")
+
+	// Перемещаем курсор в конец строки
+	pf.cmdLine.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_END,
+	})
+
+	// 1. Тест Ctrl+Left (Прыжок к началу "word3", оффсет 12)
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	// Вставляем символ 'X' в текущую позицию курсора
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:    vtinput.KeyEventType,
+		KeyDown: true,
+		Char:    'X',
+	})
+
+	gotText := pf.cmdLine.Edit.GetText()
+	expectedLeft := "word1 word2 Xword3"
+	if gotText != expectedLeft {
+		t.Errorf("Ctrl+Left word navigation failed with panels enabled: expected %q, got %q", expectedLeft, gotText)
+	}
+
+	// 2. Тест Ctrl+Right (Прыжок в конец "Xword3")
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RIGHT,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	// Вставляем символ 'Y'
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:    vtinput.KeyEventType,
+		KeyDown: true,
+		Char:    'Y',
+	})
+
+	gotText = pf.cmdLine.Edit.GetText()
+	expectedRight := "word1 word2 Xword3Y"
+	if gotText != expectedRight {
+		t.Errorf("Ctrl+Right word navigation failed with panels enabled: expected %q, got %q", expectedRight, gotText)
+	}
+}
+func TestPanelsFrame_AlwaysShowMenuBar(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	pf := NewPanelsFrame()
+	defer pf.Close()
+
+	origAlways := AppConfig.AlwaysShowMenuBar
+	defer func() { AppConfig.AlwaysShowMenuBar = origAlways }()
+
+	// 1. Test when AlwaysShowMenuBar is false (default)
+	AppConfig.AlwaysShowMenuBar = false
+
+	pf.showPanels = true
+	pf.ResizeConsole(80, 25)
+
+	fspL := pf.panels[0].(*FileSystemPanel)
+	if fspL.Y1 != 0 {
+		t.Errorf("Expected panels to start at row 0 by default, got %d", fspL.Y1)
+	}
+
+	// 2. Test when AlwaysShowMenuBar is true (panels shifted down)
+	AppConfig.AlwaysShowMenuBar = true
+	pf.ResizeConsole(80, 25)
+
+	if fspL.Y1 != 1 {
+		t.Errorf("Expected panels to start at row 1 when AlwaysShowMenuBar is true, got %d", fspL.Y1)
+	}
+
+	// 3. Test that hiding panels collapses the menu bar space for terminal
+	pf.showPanels = false
+	pf.ResizeConsole(80, 25)
+
+	if pf.termView.Y1 != 0 {
+		t.Errorf("Expected terminal to start at row 0 when panels are hidden, got %d", pf.termView.Y1)
 	}
 }
 func TestPanelsFrame_Clone_TerminalData(t *testing.T) {
@@ -1495,6 +1851,20 @@ func TestExecuteDummyOp_HeadlessMode(t *testing.T) {
 	if !newScreen.Transparent {
 		t.Error("Headless screen should be transparent")
 	}
+
+	// Clean up and cancel the task to prevent background leak
+	dlg := newScreen.Frames[0].(*vtui.Window)
+	dlg.SetExitCode(1) // Cancels the taskCtx
+	if dlg.OnResult != nil {
+		dlg.OnResult(1)
+	}
+	for i := 0; i < 20; i++ {
+		select {
+		case task := <-fm.TaskChan:
+			task()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func TestPanelsFrame_TerminalForwarding_Legacy(t *testing.T) {
@@ -1621,6 +1991,7 @@ func TestPanelsFrame_ProcessMouse_RightDoubleClickNoEnter(t *testing.T) {
 
 func TestPanelsFrame_CommandRouting_FKeys(t *testing.T) {
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	// Mock exit behavior to check F10
 	fm := vtui.FrameManager
 	fm.Init(vtui.NewSilentScreenBuf())
@@ -1651,6 +2022,7 @@ func TestPanelsFrame_CommandRouting_FKeys(t *testing.T) {
 
 func TestPanelsFrame_QuitConfirmation_Cancel(t *testing.T) {
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	fm := vtui.FrameManager
 	fm.Init(vtui.NewSilentScreenBuf())
 	fm.Push(pf)
@@ -1674,6 +2046,7 @@ func TestPanelsFrame_QuitConfirmation_Cancel(t *testing.T) {
 }
 func TestPanelsFrame_F9Context(t *testing.T) {
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 
 	// 1. Test Left Panel context
@@ -1756,8 +2129,14 @@ func TestPanelsFrame_CopyShortcuts(t *testing.T) {
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_INSERT, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == "target.txt" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := vtui.GetClipboard(); got != "target.txt" {
-		t.Errorf("Ctrl+Ins failed: expected 'target.txt', got %q", got)
+		t.Fatalf("Ctrl+Ins failed: expected 'target.txt', got %q", got)
 	}
 
 	// 2. Test Ctrl+F (Full Path)
@@ -1767,8 +2146,15 @@ func TestPanelsFrame_CopyShortcuts(t *testing.T) {
 		VirtualKeyCode: 'F', ControlKeyState: vtinput.LeftCtrlPressed,
 	})
 	expectedPath := fsp.vfs.Join(fsp.vfs.GetPath(), "target.txt")
+
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == expectedPath {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := vtui.GetClipboard(); got != expectedPath {
-		t.Errorf("Ctrl+F failed: expected %q, got %q", expectedPath, got)
+		t.Fatalf("Ctrl+F failed: expected %q, got %q", expectedPath, got)
 	}
 }
 func TestLayout_F4ActionDialogs_Validity(t *testing.T) {
@@ -1837,6 +2223,13 @@ func TestLayout_F4ActionDialogs_Validity(t *testing.T) {
 		vtui.AssertLayout(t, dlg)
 		fm.Pop()
 	})
+
+	t.Run("AppearanceSettingsDialog", func(t *testing.T) {
+		actionAppearanceSettings(pf)
+		dlg := fm.GetTopFrame().(vtui.Container)
+		vtui.AssertLayout(t, dlg)
+		fm.Pop()
+	})
 }
 
 func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
@@ -1894,6 +2287,42 @@ func TestPanelsFrame_DriveMenu_TerminalBusy(t *testing.T) {
 	// Menu should NOT open
 	if vtui.FrameManager.GetTopFrameType() == vtui.TypeMenu {
 		t.Error("Drive menu opened while terminal was busy")
+	}
+}
+
+func TestPanelsFrame_TerminalTabAutoComplete(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	// 1. Hide panels
+	pf.showPanels = false
+
+	// 2. Add history item starting with "cd" to guarantee a match
+	pf.cmdLine.Edit.History = []string{"cd_test_dir"}
+	pf.cmdLine.Edit.SetText("cd")
+
+	// 3. Press Tab
+	handled := pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_TAB,
+	})
+
+	if !handled {
+		t.Error("Expected Tab to be handled as autocomplete trigger when panels are hidden")
+	}
+
+	// 4. Verify AutoCompleteMenu is pushed
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil {
+		t.Error("Expected AutoCompleteMenu to be on top of the frame stack")
+	} else {
+		// Clean up
+		vtui.FrameManager.Pop()
 	}
 }
 
@@ -1994,6 +2423,17 @@ func TestPanelsFrame_ShiftInsert_Fallthrough(t *testing.T) {
 	// 1. Prepare clipboard
 	testText := "ClipboardPayload"
 	vtui.SetClipboard(testText)
+
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == testText {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if vtui.GetClipboard() != testText {
+		t.Fatalf("Failed to set clipboard to %q", testText)
+	}
 
 	// 2. Ensure panel is active (should NOT handle Shift+Ins)
 	pf.activeIdx = 0
@@ -2341,6 +2781,10 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	pf.panels[0] = lp
 	pf.panels[1] = rp
 	pf.activeIdx = 0
+	defer pf.Close()
+
+	waitForLoad(t, lp)
+	waitForLoad(t, rp)
 
 	// Test 1: Navigate to absolute path inside the archive
 	targetPath := filepath.Join(zipPath, "inner_dir")
@@ -2348,6 +2792,7 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("NavigateToPath failed to enter archive: %s", targetPath)
 	}
+	waitForLoad(t, lp)
 
 	// Verify VFS switched to ArchiveVFS
 	if _, isOS := lp.vfs.(*vfs.OSVFS); isOS {
@@ -2364,11 +2809,13 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("Failed to navigate to archive root: %s", zipPath)
 	}
+	waitForLoad(t, lp)
 
 	ok = pf.NavigateToPath(lp, "..")
 	if !ok {
 		t.Fatal("Failed to navigate '..' from archive root")
 	}
+	waitForLoad(t, lp)
 
 	// Verify we switched back to OSVFS pointing to tmpDir
 	if _, isOS := lp.vfs.(*vfs.OSVFS); !isOS {
@@ -2500,6 +2947,369 @@ func TestArchiveBulkExtract_ProgressTracking(t *testing.T) {
 		t.Errorf("file2.txt mismatch: %q (err: %v)", string(b2), err)
 	}
 }
+func TestPanelsFrame_ShiftF5_KeyInterception(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	fsp := pf.panels[0].(*FileSystemPanel)
+	fsp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "cursor_file.txt"}},
+	}
+	fsp.Refresh()
+	fsp.SetCursorIndex(1) // Focus on cursor_file.txt
+	pf.activeIdx = 0
+
+	// Send Shift-F5 key
+	handled := pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F5,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+
+	if !handled {
+		t.Fatal("Shift-F5 was not handled by PanelsFrame")
+	}
+
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil || !strings.Contains(top.GetTitle(), "Copy") {
+		t.Errorf("Expected Copy dialog on top after Shift-F5, got %v", top)
+	}
+
+	// Cleanup
+	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+func TestPanelsFrame_MouseForwarding_ToPTY(t *testing.T) {
+	pf := setupMockPanelsFrame()
+	pty := pf.pty.(*mockPty)
+	defer pf.Close()
+
+	// Setup: hidden panels and mouse tracking enabled in terminal
+	pf.showPanels = false
+	pf.termView.MouseTrackingMode = 1000
+	pf.termView.MouseSGRMode = true
+
+	// Simulate left click at (10, 10)
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		KeyDown:         true,
+		MouseX:          10,
+		MouseY:          10,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		ControlKeyState: 0,
+	}
+
+	handled := pf.ProcessMouse(ev)
+	if !handled {
+		t.Fatal("Mouse event should be handled by PanelsFrame when panels are hidden")
+	}
+
+	// PTY must receive SGR 1006 sequence: \x1b[<0;11;11M (1-based coords)
+	expected := "\x1b[<0;11;11M"
+	if !strings.Contains(pty.String(), expected) {
+		t.Errorf("PTY did not receive expected mouse sequence. Got: %q, want to contain: %q", pty.String(), expected)
+	}
+}
+func TestPanelsFrame_NoCtrlOInterception_InAltScreen(t *testing.T) {
+	pf := setupMockPanelsFrame()
+	pty := pf.pty.(*mockPty)
+	defer pf.Close()
+
+	pf.showPanels = false
+	pf.termView.UseAltScreen = true
+
+	// Send Ctrl+O
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_O,
+		Char:            15, // Ctrl+O character code
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	// Panels must remain hidden (f4 must NOT intercept Ctrl+O when terminal app is active)
+	if pf.showPanels {
+		t.Error("f4 erroneously intercepted Ctrl+O while terminal app was active")
+	}
+
+	// PTY must receive the Ctrl+O byte (\x0f)
+	if !strings.Contains(pty.String(), "\x0f") {
+		t.Errorf("PTY did not receive Ctrl+O byte. Got: %q", pty.String())
+	}
+}
+
+func TestPanelsFrame_ShiftF9_SaveSettings(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	// Создаем временный файл конфигурации
+	tmp, err := os.CreateTemp("", "settings-*.ini")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+	tmp.Close()
+
+	oldGetPath := getUserConfigIniPath
+	getUserConfigIniPath = func() string { return tmp.Name() }
+	getConfigIniPaths = func() []string { return []string{tmp.Name()} }
+	defer func() {
+		getUserConfigIniPath = oldGetPath
+	}()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	// Отправляем хоткей Shift+F9
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F9,
+		ControlKeyState: vtinput.ShiftPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Shift+F9 keypress")
+	}
+
+	// Проверяем, что файл настроек действительно был записан на диск
+	info, err := os.Stat(tmp.Name())
+	if err != nil || info.Size() == 0 {
+		t.Error("Expected Shift+F9 to write settings to ini file")
+	}
+}
+
+type mockUpdateVFS struct {
+	vfs.NullVFS
+}
+
+func (m *mockUpdateVFS) GetPath() string { return "/" }
+func (m *mockUpdateVFS) IsAtRoot() bool  { return true }
+func (m *mockUpdateVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
+	onChunk([]vfs.VFSItem{
+		{Name: "test_file.txt", Size: 100, IsDir: false},
+	})
+	return nil
+}
+
+func TestPanelsFrame_MiddleClick_LaunchesFile(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	// Подставляем стабильный mockUpdateVFS для панели
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+	fsp.vfs = &mockUpdateVFS{}
+	fsp.ReadDirectory()
+
+	// Даем немного времени асинхронной горутине на наполнение
+	time.Sleep(50 * time.Millisecond)
+	fsp.SetCursorIndex(0)
+
+	// Симулируем клик колесом мыши по первой строке
+	ev := &vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		MouseX:      int16(fsp.X1 + 5),
+		MouseY:      int16(fsp.Y1 + 1), // Клик по первой строке
+		ButtonState: vtinput.FromLeft2ndButtonPressed,
+		KeyDown:     true,
+	}
+
+	if !pf.ProcessMouse(ev) {
+		t.Error("Expected PanelsFrame to handle middle click mouse event")
+	}
+}
+
+func TestPanelsFrame_CtrlBackslash_GoesToRoot(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "a", "b", "c")
+	os.MkdirAll(sub, 0755)
+	fsp.vfs.SetPath(sub)
+
+	// Отправляем Ctrl+\
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_OEM_5,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Ctrl+\\")
+	}
+
+	expectedRoot := "/"
+	if runtime.GOOS == "windows" {
+		expectedRoot = filepath.VolumeName(tmp) + string(os.PathSeparator)
+	}
+	if filepath.Clean(fsp.vfs.GetPath()) != filepath.Clean(expectedRoot) {
+		t.Errorf("Ctrl+\\ failed to go to root: expected %q, got %q", expectedRoot, fsp.vfs.GetPath())
+	}
+}
+
+func TestPanelsFrame_CtrlPgUp_GoesToParentOrDriveMenu(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "sub")
+	os.MkdirAll(sub, 0755)
+	fsp.vfs.SetPath(sub)
+
+	// Отправляем Ctrl+PgUp
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_PRIOR,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Ctrl+PgUp")
+	}
+
+	// 1. Должны подняться на один уровень до tmp
+	if filepath.Clean(fsp.vfs.GetPath()) != filepath.Clean(tmp) {
+		t.Errorf("Ctrl+PgUp failed to go up: expected %q, got %q", tmp, fsp.vfs.GetPath())
+	}
+	if fsp.pendingSelection != "sub" {
+		t.Errorf("Ctrl+PgUp should position cursor on 'sub', got %q", fsp.pendingSelection)
+	}
+
+	// 2. Поднимаемся все дальше до физического корня системы
+	for !fsp.vfs.IsAtRoot() {
+		if err := fsp.vfs.SetPath(".."); err != nil {
+			break
+		}
+	}
+
+	// Отправляем Ctrl+PgUp на корне диска -> должно открыться Drive Menu
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Ctrl+PgUp at root")
+	}
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil || top.GetType() != vtui.TypeMenu || !strings.Contains(top.GetTitle(), "Drive") {
+		t.Errorf("Expected Drive menu on top when pressing Ctrl+PgUp at root, got %v", top)
+	}
+}
+
+func TestPanelsFrame_CtrlPgDn_EntersDir(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "sub")
+	os.MkdirAll(sub, 0755)
+	fsp.vfs.SetPath(tmp)
+
+	fsp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "sub", IsDir: true}},
+	}
+	fsp.Refresh()
+	fsp.SelectName("sub")
+
+	// Отправляем Ctrl+PgDn
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_NEXT,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Ctrl+PgDn")
+	}
+
+	// Так как на панели симулируется Enter, путь должен измениться на sub
+	if filepath.Clean(fsp.vfs.GetPath()) != filepath.Clean(sub) {
+		t.Errorf("Ctrl+PgDn failed to enter directory: expected %q, got %q", sub, fsp.vfs.GetPath())
+	}
+}
+
+func TestPanelsFrame_Ctrl1AndCtrl2_ViewModes(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+
+	// 1. Изначально устанавливаем режим Medium
+	fsp.SetViewMode(ViewModeMedium)
+
+	// 2. Отправляем Ctrl+2 -> должен переключить на Detailed
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  '2',
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	if fsp.viewMode != ViewModeDetailed {
+		t.Errorf("Expected viewMode to be Detailed, got %v", fsp.viewMode)
+	}
+
+	// 3. Отправляем Ctrl+1 -> должен переключить обратно на Medium
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  '1',
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	if fsp.viewMode != ViewModeMedium {
+		t.Errorf("Expected viewMode to be Medium, got %v", fsp.viewMode)
+	}
+}
 
 type mockTaskReporter struct{}
 
@@ -2507,3 +3317,757 @@ func (m *mockTaskReporter) UpdateScan(currentPath string, files, dirs int64) {}
 func (m *mockTaskReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 }
 func (m *mockTaskReporter) IsCancelled() bool { return false }
+
+func TestPanelsFrame_CaptureCommands(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	vtui.SetDefaultPalette()
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+
+	vtui.SetClipboard("")
+
+	cmdStr := "clip:<< echo f4_capture_test"
+	if runtime.GOOS == "windows" {
+		cmdStr = "clip:<< cmd.exe /c echo f4_capture_test"
+	}
+
+	pf.cmdLine.Edit.SetText(cmdStr)
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_RETURN,
+	})
+
+	// Wait for async execution via TaskChan
+	timeout := time.After(5 * time.Second)
+	found := false
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for clip:<< task to complete")
+		default:
+		}
+		if strings.Contains(vtui.GetClipboard(), "f4_capture_test") {
+			found = true
+			break
+		}
+		if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
+			title := vtui.FrameManager.GetTopFrame().GetTitle()
+			if strings.Contains(title, "Error") {
+				var msg string
+				if dlg, ok := vtui.FrameManager.GetTopFrame().(vtui.Container); ok {
+					for _, child := range dlg.GetChildren() {
+						if txt, ok := child.(*vtui.Text); ok {
+							msg += txt.GetText() + " "
+						}
+					}
+				}
+				t.Fatalf("Execution failed, error dialog shown: %s - %s", title, msg)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if !found {
+		t.Error("Output was not copied to clipboard")
+	}
+}
+func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	tmp := t.TempDir()
+	lp.vfs.SetPath(tmp)
+
+	// Create dummy file and folder
+	os.WriteFile(filepath.Join(tmp, "doc.txt"), []byte("data"), 0644)
+	os.Mkdir(filepath.Join(tmp, "sub"), 0755)
+
+	lp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "sub", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "doc.txt", IsDir: false}},
+	}
+	lp.Refresh()
+	pf.activeIdx = 0
+
+	// 1. Test Shift+Enter on file "doc.txt"
+	lp.SetCursorIndex(2)
+	handled := pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if !handled {
+		t.Error("Expected Shift+Enter on file to be handled by PanelsFrame")
+	}
+
+	// 2. Test Shift+Enter on folder "sub"
+	lp.SetCursorIndex(1)
+	handled = pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if !handled {
+		t.Error("Expected Shift+Enter on folder to be handled by PanelsFrame")
+	}
+
+	// 3. Test Shift+Enter on parent folder ".."
+	lp.SetCursorIndex(0)
+	handled = pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if !handled {
+		t.Error("Expected Shift+Enter on '..' to be handled by PanelsFrame")
+	}
+
+	// 4. Test on non-local VFS (e.g. NullVFS) -> should show warning but remain handled
+	lp.vfs = vfs.NewNullVFS(0)
+	lp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "file.txt"}}}
+	lp.Refresh()
+	lp.SetCursorIndex(0)
+
+	handled = pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if !handled {
+		t.Error("Expected Shift+Enter on non-local VFS to be handled (with warning dialog)")
+	}
+
+	// Clean up any warning dialog pushed on top
+	if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
+		vtui.FrameManager.GetTopFrame().SetExitCode(-1)
+		vtui.FrameManager.Pop()
+	}
+}
+
+type mockNestedVFS struct {
+	mockUpdateVFS
+	parent vfs.VFS
+}
+
+func (m *mockNestedVFS) ParentVFS() vfs.VFS { return m.parent }
+func (m *mockNestedVFS) Close() error       { return nil }
+
+func TestPanelsFrame_CtrlPgUp_EscapesNestedVFS(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.panels[pf.activeIdx].(*FileSystemPanel)
+	tmp := t.TempDir()
+
+	parentVfs := vfs.NewOSVFS(tmp)
+	nested := &mockNestedVFS{parent: parentVfs}
+	fsp.vfs = nested
+	fsp.providerEntryName = "test.zip"
+
+	// Отправляем Ctrl+PgUp на корне вложенной VFS
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_PRIOR,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle Ctrl+PgUp on nested VFS")
+	}
+
+	// Должны выйти в родительскую VFS и сфокусироваться на "test.zip"
+	if fsp.vfs != parentVfs {
+		t.Error("Ctrl+PgUp failed to escape nested VFS to parent")
+	}
+	if fsp.pendingSelection != "test.zip" {
+		t.Errorf("Expected pendingSelection 'test.zip', got %q", fsp.pendingSelection)
+	}
+}
+
+// TestPanelsFrame_CtrlP_TogglesPassivePanel exercises issue #197:
+// Ctrl+P should hide/show the panel opposite the currently active one,
+// leaving the active panel untouched.
+func TestPanelsFrame_CtrlP_TogglesPassivePanel(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	send := func(pf *PanelsFrame) {
+		pf.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode:  vtinput.VK_P,
+			ControlKeyState: vtinput.LeftCtrlPressed,
+		})
+	}
+
+	// Active = right (setupMockPanelsFrame's default), Ctrl+P hides left.
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	if pf.activeIdx != 1 || !pf.showLeftPanel || !pf.showRightPanel || !pf.showPanels {
+		t.Fatalf("mock frame precondition: activeIdx=%d L=%v R=%v show=%v",
+			pf.activeIdx, pf.showLeftPanel, pf.showRightPanel, pf.showPanels)
+	}
+	send(pf)
+	if pf.showLeftPanel || !pf.showRightPanel {
+		t.Errorf("active=right: Ctrl+P should hide left only, got L=%v R=%v",
+			pf.showLeftPanel, pf.showRightPanel)
+	}
+	if pf.activeIdx != 1 {
+		t.Errorf("Ctrl+P must not move the active panel, got activeIdx=%d", pf.activeIdx)
+	}
+	if !pf.showPanels {
+		t.Errorf("one panel still visible, showPanels should stay true")
+	}
+
+	// Second press restores the hidden side.
+	send(pf)
+	if !pf.showLeftPanel || !pf.showRightPanel {
+		t.Errorf("Ctrl+P again should restore left, got L=%v R=%v",
+			pf.showLeftPanel, pf.showRightPanel)
+	}
+
+	// Symmetric case: active = left, Ctrl+P hides right.
+	pf.activeIdx = 0
+	send(pf)
+	if !pf.showLeftPanel || pf.showRightPanel {
+		t.Errorf("active=left: Ctrl+P should hide right only, got L=%v R=%v",
+			pf.showLeftPanel, pf.showRightPanel)
+	}
+	if pf.activeIdx != 0 {
+		t.Errorf("Ctrl+P must not move the active panel, got activeIdx=%d", pf.activeIdx)
+	}
+
+	// Toggle the last visible panel off — no panels left, showPanels drops.
+	pf.activeIdx = 1
+	pf.showLeftPanel = false
+	pf.showRightPanel = true
+	pf.showPanels = true
+	send(pf) // active=right, so this touches left; left was false → becomes true
+	if !pf.showLeftPanel {
+		t.Fatalf("setup for last-visible test: expected left to come back, got L=%v", pf.showLeftPanel)
+	}
+	// Now hide right via Ctrl+F2 to isolate: only left visible, active=right (invalid state
+	// that Ctrl+F2's auto-switch would fix; here we just want to test Ctrl+P's showPanels math).
+	pf.showLeftPanel = true
+	pf.showRightPanel = false
+	pf.showPanels = true
+	pf.activeIdx = 0 // active on the visible panel
+	send(pf)         // active=left, toggles right; right was false → becomes true
+	if !pf.showRightPanel {
+		t.Errorf("Ctrl+P should have shown the right panel again, got R=%v", pf.showRightPanel)
+	}
+}
+
+func panelWidth(p Panel) int  { x1, _, x2, _ := p.GetPosition(); return x2 - x1 + 1 }
+func panelHeight(p Panel) int { _, y1, _, y2 := p.GetPosition(); return y2 - y1 + 1 }
+
+// TestPanelsFrame_CtrlArrows_ResizePanels exercises the far2l-style
+// panel resize keys: Ctrl+Left/Right shift the width split, Ctrl+Up/Down
+// shrink/grow the panel-vs-terminal split. Requires empty cmdline;
+// non-empty cmdline must fall through to word-navigation.
+func TestPanelsFrame_CtrlArrows_ResizePanels(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	send := func(pf *PanelsFrame, vk uint16) {
+		pf.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode:  vk,
+			ControlKeyState: vtinput.LeftCtrlPressed,
+		})
+	}
+
+	// Width: Ctrl+Left moves the split to the left (widthDecrement +1,
+	// left panel shrinks, right grows) — arrow follows the boundary,
+	// matching far2l / Far3 / far2m. Ctrl+Right does the reverse.
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	baseLeft := panelWidth(pf.panels[0])
+
+	send(pf, vtinput.VK_LEFT)
+	if pf.widthDecrement != 1 {
+		t.Errorf("Ctrl+Left: widthDecrement=%d, want 1", pf.widthDecrement)
+	}
+	if got := panelWidth(pf.panels[0]); got != baseLeft-1 {
+		t.Errorf("Ctrl+Left: left panel width=%d, want %d", got, baseLeft-1)
+	}
+
+	send(pf, vtinput.VK_RIGHT)
+	send(pf, vtinput.VK_RIGHT)
+	if pf.widthDecrement != -1 {
+		t.Errorf("Ctrl+Right twice: widthDecrement=%d, want -1", pf.widthDecrement)
+	}
+	if got := panelWidth(pf.panels[0]); got != baseLeft+1 {
+		t.Errorf("Ctrl+Right twice: left panel width=%d, want %d", got, baseLeft+1)
+	}
+
+	// Non-empty cmdline: Ctrl+Left/Right must NOT resize.
+	pf.widthDecrement = 0
+	pf.ResizeConsole(80, 25)
+	pf.cmdLine.Edit.SetText("hello")
+	send(pf, vtinput.VK_LEFT)
+	if pf.widthDecrement != 0 {
+		t.Errorf("non-empty cmdline: widthDecrement changed to %d, want 0", pf.widthDecrement)
+	}
+	pf.cmdLine.Edit.SetText("")
+
+	// Height: Ctrl+Up shrinks the panel area from the bottom (both
+	// leftHeightDecrement and rightHeightDecrement +1, moving both
+	// panels' bottom edge up in lockstep). Ctrl+Down reverses it.
+	// Ctrl+Down at 0 must clamp, not go negative.
+	pf.leftHeightDecrement = 0
+	pf.rightHeightDecrement = 0
+	pf.ResizeConsole(80, 25)
+	basePanelH := panelHeight(pf.panels[0])
+
+	send(pf, vtinput.VK_UP)
+	if pf.leftHeightDecrement != 1 || pf.rightHeightDecrement != 1 {
+		t.Errorf("Ctrl+Up: heightDecrements=%d/%d, want 1/1",
+			pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+	if got := panelHeight(pf.panels[0]); got != basePanelH-1 {
+		t.Errorf("Ctrl+Up: panel height=%d, want %d", got, basePanelH-1)
+	}
+	if got := panelHeight(pf.panels[1]); got != basePanelH-1 {
+		t.Errorf("Ctrl+Up: right panel height=%d, want %d", got, basePanelH-1)
+	}
+
+	send(pf, vtinput.VK_DOWN)
+	send(pf, vtinput.VK_DOWN) // Second Down at 0 should be a no-op (clamp).
+	if pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0 {
+		t.Errorf("Ctrl+Down past 0: heightDecrements=%d/%d, want 0/0 (clamp)",
+			pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+
+	// Width clamp: on an 80-col terminal, maxWD = 40 - 10 = 30. Push
+	// past it with Ctrl+Left (the direction that bumps widthDecrement +1).
+	pf.widthDecrement = 0
+	pf.ResizeConsole(80, 25)
+	for i := 0; i < 40; i++ {
+		send(pf, vtinput.VK_LEFT)
+	}
+	if pf.widthDecrement != 30 {
+		t.Errorf("width clamp: widthDecrement=%d, want 30", pf.widthDecrement)
+	}
+}
+
+// TestPanelsFrame_CtrlClear_ResetsLayoutDecrements verifies that Ctrl+Clear
+// (NumPad 5 with NumLock off) zeroes widthDecrement / leftHeightDecrement /
+// rightHeightDecrement in one shot, matching far2l's Ctrl+Clear.
+func TestPanelsFrame_CtrlClear_ResetsLayoutDecrements(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	pf.widthDecrement = 5
+	pf.leftHeightDecrement = 3
+	pf.rightHeightDecrement = 4
+	AppConfig.WidthDecrement = 5
+	AppConfig.LeftHeightDecrement = 3
+	AppConfig.RightHeightDecrement = 4
+	defer func() {
+		AppConfig.WidthDecrement = 0
+		AppConfig.LeftHeightDecrement = 0
+		AppConfig.RightHeightDecrement = 0
+	}()
+
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_CLEAR,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	if pf.widthDecrement != 0 || pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0 {
+		t.Errorf("Ctrl+Clear: fields = %d/%d/%d, want 0/0/0",
+			pf.widthDecrement, pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+	if AppConfig.WidthDecrement != 0 || AppConfig.LeftHeightDecrement != 0 || AppConfig.RightHeightDecrement != 0 {
+		t.Errorf("Ctrl+Clear: AppConfig = %d/%d/%d, want 0/0/0",
+			AppConfig.WidthDecrement, AppConfig.LeftHeightDecrement, AppConfig.RightHeightDecrement)
+	}
+}
+
+// TestPanelsFrame_LayoutDecrements_InitFromAppConfig verifies that a
+// fresh PanelsFrame picks up saved layout offsets from AppConfig so a
+// restart restores the last on-disk state.
+func TestPanelsFrame_LayoutDecrements_InitFromAppConfig(t *testing.T) {
+	oldW, oldL, oldR := AppConfig.WidthDecrement, AppConfig.LeftHeightDecrement, AppConfig.RightHeightDecrement
+	AppConfig.WidthDecrement = -3
+	AppConfig.LeftHeightDecrement = 4
+	AppConfig.RightHeightDecrement = 5
+	defer func() {
+		AppConfig.WidthDecrement, AppConfig.LeftHeightDecrement, AppConfig.RightHeightDecrement = oldW, oldL, oldR
+	}()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+
+	if pf.widthDecrement != -3 || pf.leftHeightDecrement != 4 || pf.rightHeightDecrement != 5 {
+		t.Errorf("init from AppConfig: got %d/%d/%d, want -3/4/5",
+			pf.widthDecrement, pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+}
+
+// TestPanelsFrame_CtrlShiftArrows_AsymmetricHeight exercises far2l's
+// Ctrl+Shift+Up / Ctrl+Shift+Down: bumps only the ACTIVE panel's height
+// decrement, leaving the other panel untouched. Same gate as plain
+// Ctrl+Up/Down (panels visible + cmdline empty).
+func TestPanelsFrame_CtrlShiftArrows_AsymmetricHeight(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	send := func(pf *PanelsFrame, vk uint16) {
+		pf.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode:  vk,
+			ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+		})
+	}
+
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	// Baseline: both decrements 0.
+	if pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0 {
+		t.Fatalf("precondition: expected 0/0, got %d/%d",
+			pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+	baseLeftH := panelHeight(pf.panels[0])
+	baseRightH := panelHeight(pf.panels[1])
+
+	// Active = right (mock default). Ctrl+Shift+Up bumps only right.
+	send(pf, vtinput.VK_UP)
+	if pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 1 {
+		t.Errorf("active=right Ctrl+Shift+Up: got %d/%d, want 0/1",
+			pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+	if panelHeight(pf.panels[0]) != baseLeftH {
+		t.Errorf("left panel changed unexpectedly")
+	}
+	if panelHeight(pf.panels[1]) != baseRightH-1 {
+		t.Errorf("right panel height=%d, want %d",
+			panelHeight(pf.panels[1]), baseRightH-1)
+	}
+	if AppConfig.RightHeightDecrement != 1 {
+		t.Errorf("AppConfig.RightHeightDecrement=%d, want 1",
+			AppConfig.RightHeightDecrement)
+	}
+	AppConfig.RightHeightDecrement = 0 // cleanup for later tests
+
+	// Ctrl+Shift+Down on active=right undoes it.
+	send(pf, vtinput.VK_DOWN)
+	if pf.rightHeightDecrement != 0 {
+		t.Errorf("Ctrl+Shift+Down: rightHeightDecrement=%d, want 0",
+			pf.rightHeightDecrement)
+	}
+
+	// Switch to left, Ctrl+Shift+Up bumps left only.
+	pf.activeIdx = 0
+	send(pf, vtinput.VK_UP)
+	if pf.leftHeightDecrement != 1 || pf.rightHeightDecrement != 0 {
+		t.Errorf("active=left Ctrl+Shift+Up: got %d/%d, want 1/0",
+			pf.leftHeightDecrement, pf.rightHeightDecrement)
+	}
+	AppConfig.LeftHeightDecrement = 0 // cleanup
+
+	// Clamp: Ctrl+Shift+Down on a zero-decrement panel must not go negative.
+	pf.leftHeightDecrement = 0
+	send(pf, vtinput.VK_DOWN)
+	if pf.leftHeightDecrement != 0 {
+		t.Errorf("Ctrl+Shift+Down past 0: leftHeightDecrement=%d, want 0 (clamp)",
+			pf.leftHeightDecrement)
+	}
+
+	// Non-empty cmdline: Ctrl+Shift+Up/Down must NOT resize.
+	pf.leftHeightDecrement = 0
+	pf.cmdLine.Edit.SetText("hello")
+	send(pf, vtinput.VK_UP)
+	if pf.leftHeightDecrement != 0 {
+		t.Errorf("non-empty cmdline: leftHeightDecrement changed to %d, want 0",
+			pf.leftHeightDecrement)
+	}
+	pf.cmdLine.Edit.SetText("")
+}
+
+func TestPanelsFrame_ProcessMouse_HoverWheel(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+
+	// Make both panels visible and set right as active
+	pf.activeIdx = 1
+	pf.showPanels = true
+	pf.showLeftPanel = true
+	pf.showRightPanel = true
+
+	// Clear async loading
+	if lp.cancelLoad != nil {
+		lp.cancelLoad()
+	}
+	lp.isLoading = false
+	if rp.cancelLoad != nil {
+		rp.cancelLoad()
+	}
+	rp.isLoading = false
+
+	// Create test entries
+	lp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "L1"}},
+		{VFSItem: vfs.VFSItem{Name: "L2"}},
+		{VFSItem: vfs.VFSItem{Name: "L3"}},
+	}
+	lp.Refresh()
+	lp.SetCursorIndex(0)
+
+	rp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "R1"}},
+		{VFSItem: vfs.VFSItem{Name: "R2"}},
+		{VFSItem: vfs.VFSItem{Name: "R3"}},
+	}
+	rp.Refresh()
+	rp.SetCursorIndex(0)
+
+	// 1. Simulate mouse wheel over the LEFT panel (hover scroll)
+	lx1, ly1, _, _ := lp.GetPosition()
+
+	ev := &vtinput.InputEvent{
+		Type:           vtinput.MouseEventType,
+		MouseX:         int16(lx1 + 2),
+		MouseY:         int16(ly1 + 2),
+		WheelDirection: -1, // Down scroll -> should move cursor down
+	}
+
+	handled := pf.ProcessMouse(ev)
+	if !handled {
+		t.Fatal("Mouse wheel event was not handled")
+	}
+
+	// Active panel should remain right (1)
+	if pf.activeIdx != 1 {
+		t.Errorf("Expected active panel to remain 1, got %d", pf.activeIdx)
+	}
+
+	// Left panel's cursor should have moved down to index 1 (L2)
+	if lp.GetCursorIndex() != 1 {
+		t.Errorf("Expected left panel cursor to scroll down to 1, got %d", lp.GetCursorIndex())
+	}
+
+	// Right panel's cursor should still be 0 (unscrolled)
+	if rp.GetCursorIndex() != 0 {
+		t.Errorf("Expected right panel cursor to remain 0, got %d", rp.GetCursorIndex())
+	}
+}
+
+func TestPanelsFrame_ProcessMouse_HoverWheel_AltPanel(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+
+	// Make both panels visible and set right as active
+	pf.activeIdx = 1
+	pf.showPanels = true
+	pf.showLeftPanel = true
+	pf.showRightPanel = true
+
+	// Clear async loading
+	if lp.cancelLoad != nil {
+		lp.cancelLoad()
+	}
+	lp.isLoading = false
+	if rp.cancelLoad != nil {
+		rp.cancelLoad()
+	}
+	rp.isLoading = false
+
+	// Add an AltPanel (QuickViewPanel) on the Left (0) slot
+	qv := NewQuickViewPanel(lp)
+	pf.altPanels[0] = qv
+
+	lx1, ly1, _, _ := lp.GetPosition()
+
+	// Simulate wheel over the left slot (where QuickView is)
+	ev := &vtinput.InputEvent{
+		Type:           vtinput.MouseEventType,
+		MouseX:         int16(lx1 + 2),
+		MouseY:         int16(ly1 + 2),
+		WheelDirection: -1, // Down scroll
+	}
+
+	handled := pf.ProcessMouse(ev)
+	if !handled {
+		t.Fatal("Mouse wheel over AltPanel not handled")
+	}
+}
+func TestPanelsFrame_ProcessMouse_HoverWheel_Medium_Boundaries(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+
+	// Set left panel as active, medium view mode
+	pf.activeIdx = 0
+	pf.showPanels = true
+	pf.showLeftPanel = true
+	pf.showRightPanel = true
+
+	// Clear async loading
+	if lp.cancelLoad != nil {
+		lp.cancelLoad()
+	}
+	lp.isLoading = false
+	if rp.cancelLoad != nil {
+		rp.cancelLoad()
+	}
+	rp.isLoading = false
+
+	// Create 45 items to fill multiple columns
+	var entries []*fileEntry
+	for i := 0; i < 45; i++ {
+		entries = append(entries, &fileEntry{VFSItem: vfs.VFSItem{Name: fmt.Sprintf("F%d", i)}})
+	}
+	lp.entries = entries
+	lp.Refresh()
+
+	H := lp.table.ViewHeight
+	if H <= 0 {
+		H = 1
+	}
+
+	// Set cursor to the first row of the second column (idx = H)
+	lp.SetCursorIndex(H)
+
+	// TopPos should be 0
+	lp.table.TopPos = 0
+	lp.Refresh()
+
+	if lp.GetCursorIndex() != H {
+		t.Fatalf("Setup failed: expected cursor index %d, got %d", H, lp.GetCursorIndex())
+	}
+
+	// 1. Simulate mouse wheel UP over the left panel
+	lx1, ly1, _, _ := lp.GetPosition()
+	ev := &vtinput.InputEvent{
+		Type:           vtinput.MouseEventType,
+		MouseX:         int16(lx1 + 2),
+		MouseY:         int16(ly1 + 2),
+		WheelDirection: 1, // Up scroll
+	}
+
+	handled := pf.ProcessMouse(ev)
+	if !handled {
+		t.Fatal("Mouse wheel up event not handled")
+	}
+
+	// Cursor should have jumped to the last row of the first column (index H - 1)
+	expectedIdx := H - 1
+	if lp.GetCursorIndex() != expectedIdx {
+		t.Errorf("Expected cursor to jump to first column index %d, got %d", expectedIdx, lp.GetCursorIndex())
+	}
+}
+
+func TestPanelsFrame_ProcessMouse_HoverWheel_Detailed_Boundaries(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+
+	// Set left panel as active, detailed view mode
+	pf.activeIdx = 0
+	pf.showPanels = true
+	pf.showLeftPanel = true
+	pf.showRightPanel = true
+
+	// Clear async loading
+	if lp.cancelLoad != nil {
+		lp.cancelLoad()
+	}
+	lp.isLoading = false
+	if rp.cancelLoad != nil {
+		rp.cancelLoad()
+	}
+	rp.isLoading = false
+
+	lp.SetViewMode(ViewModeDetailed)
+
+	H := lp.table.ViewHeight
+	if H <= 0 {
+		H = 1
+	}
+
+	// Create items to fill more than screen height
+	var entries []*fileEntry
+	for i := 0; i < H+10; i++ {
+		entries = append(entries, &fileEntry{VFSItem: vfs.VFSItem{Name: fmt.Sprintf("F%d", i)}})
+	}
+	lp.entries = entries
+	lp.Refresh()
+
+	totalItems := len(lp.entries)
+
+	// Set cursor to the last item
+	lp.SetCursorIndex(totalItems - 1)
+	lp.Refresh()
+
+	lastIdx := lp.GetCursorIndex()
+
+	// 1. Simulate mouse wheel DOWN over the left panel
+	lx1, ly1, _, _ := lp.GetPosition()
+	ev := &vtinput.InputEvent{
+		Type:           vtinput.MouseEventType,
+		MouseX:         int16(lx1 + 2),
+		MouseY:         int16(ly1 + 2),
+		WheelDirection: -1, // Down scroll
+	}
+
+	handled := pf.ProcessMouse(ev)
+	if !handled {
+		t.Fatal("Mouse wheel down event not handled")
+	}
+
+	// Cursor should remain at the last item
+	if lp.GetCursorIndex() != lastIdx {
+		t.Errorf("Expected cursor to remain at the last item %d, got %d", lastIdx, lp.GetCursorIndex())
+	}
+}

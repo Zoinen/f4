@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/unxed/f4/piecetable"
@@ -420,22 +421,43 @@ func (s *userMenuState) pushLevel(items []UserMenuItem, title string, initialSel
 			})
 		}
 
-		// Ctrl+F4 edits the menu via a temp file, matching far2l
-		// usermenu.cpp:619-678: dump the current root tree as FarMenu.ini
-		// text, open the temp file in the editor, on close parse it back
-		// and write it to the real source path in that source's native
-		// format. If the user didn't change anything we skip the save; if
-		// parsing fails we surface an error and keep the original intact.
+		// F4 on a menu item: edit in-place using dialogs.
+		if e.VirtualKeyCode == vtinput.VK_F4 && !ctrl && !shift && !alt {
+			pos := menu.SelectPos
+			if pos >= 0 && pos < len(menu.Items) {
+				if idx, ok := menu.Items[pos].UserData.(int); ok && idx >= 0 && idx < len(items) {
+					it := items[idx]
+					menu.Close()
+					vtui.FrameManager.PostTask(func() {
+						showEditItemDialog(s, menu, items, idx, false, it.IsSubmenu())
+					})
+					return true
+				}
+			}
+			return true
+		}
+		// Ctrl+F4 edits the menu via a temp file in the text editor.
 		if e.VirtualKeyCode == vtinput.VK_F4 && ctrl && !shift && !alt {
 			openInExternalEditor()
 			return true
 		}
-		// Insert: in far2l this pops a "command or submenu?" dialog and
-		// then the per-item edit form. We don't have that form yet, so
-		// fall back to the bulk Ctrl+F4 editor — the user can append a
-		// new section by hand. Eventually we'll grow a proper dialog.
-		if e.VirtualKeyCode == vtinput.VK_INSERT && !ctrl && !shift && !alt {
-			openInExternalEditor()
+		// Insert or Ctrl+N: show dialog to add a command or submenu.
+		if (e.VirtualKeyCode == vtinput.VK_INSERT || (e.VirtualKeyCode == vtinput.VK_N && ctrl)) && !shift && !alt {
+			pos := menu.SelectPos
+			insertIdx := 0
+			if pos >= 0 && pos < len(menu.Items) {
+				if idx, ok := menu.Items[pos].UserData.(int); ok {
+					insertIdx = idx
+				}
+			}
+			dlg := vtui.ShowMessage(" User menu ", "Add to menu:", []string{"&Command", "&Submenu", "Cancel"})
+			dlg.OnResult = func(code int) {
+				if code == 0 { // Command
+					showEditItemDialog(s, menu, items, insertIdx, true, false)
+				} else if code == 1 { // Submenu
+					showEditItemDialog(s, menu, items, insertIdx, true, true)
+				}
+			}
 			return true
 		}
 		// Del: confirm and remove the item under the cursor.
@@ -661,6 +683,157 @@ func (s *userMenuState) goBack(current *vtui.VMenu) {
 	vtui.FrameManager.PostTask(func() {
 		s.openCurrent(sel)
 	})
+}
+
+func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuItem, idx int, isCreate bool, isSubmenu bool) {
+	title := " Edit User Menu "
+	if isCreate {
+		if isSubmenu {
+			title = " Create Submenu "
+		} else {
+			title = " Create User Menu "
+		}
+	} else {
+		if isSubmenu {
+			title = " Edit Submenu "
+		}
+	}
+
+	hotkey := ""
+	label := ""
+	cmdText := ""
+	if !isCreate && idx >= 0 && idx < len(items) {
+		it := items[idx]
+		hotkey = it.HotKey
+		label = it.Label
+		if !isSubmenu {
+			sep := "; "
+			if runtime.GOOS == "windows" {
+				sep = " & "
+			}
+			cmdText = strings.Join(it.Commands, sep)
+		}
+	}
+
+	width := 56
+	height := 11
+	if !isSubmenu {
+		height = 14
+	}
+
+	dlg := vtui.NewCenteredDialog(width, height, title)
+	dlg.ShowClose = true
+
+	editHotkey := vtui.NewEdit(0, 0, 10, hotkey)
+	editLabel := vtui.NewEdit(0, 0, 36, label)
+	var editCommand *vtui.Edit
+	if !isSubmenu {
+		editCommand = vtui.NewEdit(0, 0, 36, cmdText)
+	}
+
+	makeRow := func(labelText string, edit vtui.UIElement) *vtui.HBoxLayout {
+		hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
+		l := vtui.NewLabel(0, 0, padLabel(labelText), edit)
+		dlg.AddItem(l)
+		dlg.AddItem(edit)
+		hbox.Add(l, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		hbox.Add(edit, vtui.Margins{}, vtui.AlignFill)
+		return hbox
+	}
+
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	vbox.Add(makeRow("Hot &key:", editHotkey), vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(makeRow("&Label:", editLabel), vtui.Margins{Top: 1}, vtui.AlignFill)
+	if !isSubmenu {
+		vbox.Add(makeRow("&Command:", editCommand), vtui.Margins{Top: 1}, vtui.AlignFill)
+	}
+
+	btnOk := vtui.NewButton(0, 0, "&Save")
+	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnOk.IsDefault = true
+
+	btnHbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	btnHbox.HorizontalAlign = vtui.AlignCenter
+	btnHbox.Spacing = 2
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+	btnHbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	btnHbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+
+	vbox.Add(btnHbox, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Apply()
+
+	btnCancel.OnClick = func() { dlg.Close() }
+	btnOk.OnClick = func() {
+		hkey := editHotkey.GetText()
+		lbl := editLabel.GetText()
+		if lbl == "" {
+			vtui.ShowMessageOn(dlg, " Error ", "Label cannot be empty", []string{"&Ok"})
+			return
+		}
+
+		var cmds []string
+		if !isSubmenu && editCommand != nil {
+			cText := editCommand.GetText()
+			if cText != "" {
+				sep := "; "
+				if runtime.GOOS == "windows" {
+					sep = " & "
+				}
+				cmds = strings.Split(cText, sep)
+				for i, cmd := range cmds {
+					cmds[i] = strings.TrimSpace(cmd)
+				}
+			}
+		}
+
+		var newItem UserMenuItem
+		if isSubmenu {
+			newItem = UserMenuItem{
+				HotKey:  hkey,
+				Label:   lbl,
+				Submenu: []UserMenuItem{},
+			}
+		} else {
+			newItem = UserMenuItem{
+				HotKey:   hkey,
+				Label:    lbl,
+				Commands: cmds,
+			}
+		}
+
+		newItems := make([]UserMenuItem, 0, len(items)+1)
+		if isCreate {
+			insertIdx := idx
+			if insertIdx < 0 {
+				insertIdx = 0
+			}
+			if insertIdx > len(items) {
+				insertIdx = len(items)
+			}
+			newItems = append(newItems, items[:insertIdx]...)
+			newItems = append(newItems, newItem)
+			newItems = append(newItems, items[insertIdx:]...)
+		} else {
+			newItems = append(newItems, items...)
+			if idx >= 0 && idx < len(newItems) {
+				newItems[idx] = newItem
+			}
+		}
+
+		s.replaceCurrentItems(newItems)
+		if s.saveRoot() {
+			dlg.Close()
+			current.Close()
+			targetIdx := idx
+			vtui.FrameManager.PostTask(func() {
+				s.openCurrent(targetIdx)
+			})
+		}
+	}
+
+	dlg.SetFocusedItem(editLabel)
+	vtui.FrameManager.Push(dlg)
 }
 
 // editCurrentMenuInExternalEditor implements the Ctrl+F4 flow modelled
@@ -903,11 +1076,15 @@ func executeMenuCommands(pf *PanelsFrame, commands []string) {
 		return
 	}
 
-	// Join with ';' so multiple commands run sequentially in one shell.
+	// Join so multiple commands run sequentially in one shell.
 	// We lose the panel-follows-cd nicety that far2l gets from intercepting
 	// each cd in cmdline, but the user can still use a single "cd" command
 	// per menu item to get that effect.
-	joined := strings.Join(lines, "; ")
+	separator := "; "
+	if runtime.GOOS == "windows" {
+		separator = " & "
+	}
+	joined := strings.Join(lines, separator)
 	pf.cmdLine.Edit.SetText(joined)
 	pf.ProcessKey(&vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,

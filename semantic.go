@@ -21,6 +21,8 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		Mode:           "panels",
 		ActivePanel:    pf.activeIdx,
 		ShowPanels:     pf.showPanels,
+		ShowLeftPanel:  pf.showLeftPanel,
+		ShowRightPanel: pf.showRightPanel,
 		ShowKeyBar:     pf.showKeyBar,
 		TerminalBusy:   pf.isPtyBusy(),
 		TerminalActive: !pf.showPanels,
@@ -44,8 +46,27 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if MacroMgr != nil && MacroMgr.Recording {
 		shell.MacroRecording = true
 	}
+	if reason := pf.semanticGridFallbackReason(); reason != "" {
+		shell.Fallback = true
+		shell.FallbackReason = reason
+	}
 
 	return shell.ToMap()
+}
+
+func (pf *PanelsFrame) semanticGridFallbackReason() string {
+	for _, panel := range pf.altPanels {
+		if panel != nil {
+			return "native model unavailable for " + panel.Kind() + " panel"
+		}
+	}
+	if pf.showPanels && (!pf.showLeftPanel || !pf.showRightPanel) {
+		return "native model unavailable for hidden panel layout"
+	}
+	if pf.showPanels && (pf.widthDecrement != 0 || pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
+		return "native model unavailable for resized panel layout"
+	}
+	return ""
 }
 
 // HandleSemanticAction обрабатывает нативные GUI-действия для ViewerView
@@ -536,6 +557,10 @@ func semanticHexLine(offset int64, data []byte) string {
 
 func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, textLen int) {
 	visualWidth := 0
+	tabSize := 8
+	if AppConfig.EditorTabSize > 0 {
+		tabSize = AppConfig.EditorTabSize
+	}
 	for lineLen < len(data) {
 		r, size := utf8.DecodeRune(data[lineLen:])
 		if r == '\n' {
@@ -546,7 +571,15 @@ func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, text
 			lineLen += size
 			continue
 		}
-		rw := runewidth.RuneWidth(r)
+		rw := 1
+		if r == '\t' {
+			rw = tabSize - (visualWidth % tabSize)
+		} else {
+			rw = runewidth.RuneWidth(r)
+			if rw <= 0 {
+				rw = 1
+			}
+		}
 		if wrap && visualWidth+rw > width {
 			return lineLen, textLen
 		}
@@ -626,7 +659,7 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		caseSensitive := semanticBool(action["case"])
 		reverse := semanticBool(action["reverse"])
 		next := semanticBool(action["next"])
-		ev.Search(pattern, caseSensitive, reverse, next)
+		ev.Search(pattern, caseSensitive, reverse, false, false, next)
 		return true
 	case "control.focus":
 		ev.SetFocus(true)

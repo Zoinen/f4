@@ -33,18 +33,61 @@ type ViewerView struct {
 	lastKnownSize int64
 
 	scrollBar *vtui.ScrollBar
+
+	OnClose  func()
+	Codepage int
 }
 
 func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, error) {
-	backend, err := NewViewerBackend(ctx, v, path)
+	f, err := v.Open(ctx, path)
 	if err != nil {
 		return nil, err
 	}
+
+	size := f.Size()
+	detectLen := 16 * 1024
+	if int64(detectLen) > size {
+		detectLen = int(size)
+	}
+	header := make([]byte, detectLen)
+	_, _ = f.ReadAt(ctx, header, 0)
+
+	cpID := vfs.DetectEncoding(header, AppConfig.ViewerAutodetectCodePage, AppConfig.ViewerDefaultCodePage)
+
+	var backend *ViewerBackend
+	bCtx, bCancel := context.WithCancel(context.Background())
+	if cpID == 65001 {
+		backend = &ViewerBackend{
+			file:      f,
+			size:      size,
+			ctx:       bCtx,
+			cancelCtx: bCancel,
+		}
+	} else {
+		fullData := make([]byte, size)
+		_, _ = f.ReadAt(ctx, fullData, 0)
+		f.Close()
+
+		decoded, err := vfs.DecodeBytes(fullData, cpID)
+		if err != nil {
+			decoded = fullData
+			cpID = 65001
+		}
+		memFile := &vfs.MemoryReadAtCloser{Data: decoded}
+		backend = &ViewerBackend{
+			file:      memFile,
+			size:      int64(len(decoded)),
+			ctx:       bCtx,
+			cancelCtx: bCancel,
+		}
+	}
+
 	vv := &ViewerView{
 		backend:  backend,
 		vfs:      v,
 		path:     path,
 		WrapMode: true,
+		Codepage: cpID,
 	}
 	vv.scrollBar = vtui.NewScrollBar(0, 0, 0)
 	vv.scrollBar.SetOwner(vv)
@@ -211,8 +254,6 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 					maxOffset = 0
 				}
 			}
-		} else if vv.eofVisible {
-			maxOffset = int(vv.TopOffset)
 		}
 		vv.scrollBar.SetParams(int(vv.TopOffset), 0, maxOffset)
 		vv.scrollBar.Show(scr)
@@ -299,6 +340,10 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 		textLen := 0
 		visualWidth := 0
 		foundNewline := false
+		tabSize := 8
+		if AppConfig.EditorTabSize > 0 {
+			tabSize = AppConfig.EditorTabSize
+		}
 
 		for lineLen < len(data) {
 			r, size := utf8.DecodeRune(data[lineLen:])
@@ -312,7 +357,15 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 				continue
 			}
 
-			rw := runewidth.RuneWidth(r)
+			rw := 1
+			if r == '\t' {
+				rw = tabSize - (visualWidth % tabSize)
+			} else {
+				rw = runewidth.RuneWidth(r)
+				if rw <= 0 {
+					rw = 1
+				}
+			}
 			if vv.WrapMode && visualWidth+rw > width {
 				// Wrap occurred
 				break
@@ -322,7 +375,38 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 			textLen = lineLen
 		}
 
-		scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(string(data[:textLen]), attr))
+		// Build []vtui.CharInfo for the line
+		var cells []vtui.CharInfo
+		lineBytes := data[:textLen]
+		visualCol := 0
+
+		for len(lineBytes) > 0 {
+			r, size := utf8.DecodeRune(lineBytes)
+			lineBytes = lineBytes[size:]
+
+			if r == '\t' {
+				w := tabSize - (visualCol % tabSize)
+				for i := 0; i < w; i++ {
+					cells = append(cells, vtui.CharInfo{Char: ' ', Attributes: attr})
+				}
+				visualCol += w
+			} else {
+				displayRune, w := vtui.SanitizeRune(r)
+				if r < 0x20 || r == 0x7F {
+					displayRune = ' '
+				}
+				if w > 0 {
+					charVal := uint64(displayRune)
+					for i := 0; i < w; i++ {
+						cells = append(cells, vtui.CharInfo{Char: charVal, Attributes: attr})
+						charVal = uint64(vtui.WideCharFiller)
+					}
+					visualCol += w
+				}
+			}
+		}
+
+		scr.Write(vv.X1, vv.Y1+1+y, cells)
 		currOffset += int64(lineLen)
 
 		if !foundNewline && !vv.WrapMode {
@@ -358,6 +442,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 	if e.VirtualKeyCode == vtinput.VK_TAB && ctrl {
 		return false
 	}
@@ -385,6 +470,19 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			vv.TopOffset &= ^0xF
 		}
 		return true
+	case vtinput.VK_F6:
+		vtui.FrameManager.EmitCommand(CmSwitchToEditor, vv)
+		return true
+
+	case vtinput.VK_F8:
+		if shift {
+			vv.showCodepageDialog()
+		} else {
+			next := vfs.GetNextFastSwitchCodepage(vv.Codepage)
+			vv.ReloadWithCodepage(next)
+			vtui.ShowToast(fmt.Sprintf("Codepage: %d", next), time.Second)
+		}
+		return true
 
 	case vtinput.VK_DOWN:
 		if vv.eofVisible {
@@ -407,13 +505,25 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			if err == nil && len(data) > 0 {
 				lineLen := 0
 				visualWidth := 0
+				tabSize := 8
+				if AppConfig.EditorTabSize > 0 {
+					tabSize = AppConfig.EditorTabSize
+				}
 				for lineLen < len(data) {
 					r, size := utf8.DecodeRune(data[lineLen:])
 					if r == '\n' {
 						lineLen += size
 						break
 					}
-					rw := runewidth.RuneWidth(r)
+					rw := 1
+					if r == '\t' {
+						rw = tabSize - (visualWidth % tabSize)
+					} else {
+						rw = runewidth.RuneWidth(r)
+						if rw <= 0 {
+							rw = 1
+						}
+					}
 					if vv.WrapMode && visualWidth+rw > width {
 						break
 					}
@@ -537,6 +647,10 @@ func (vv *ViewerView) jumpToEnd() {
 		var offsets []int64
 		currOff := startOff
 
+		tabSize := 8
+		if AppConfig.EditorTabSize > 0 {
+			tabSize = AppConfig.EditorTabSize
+		}
 		for currOff < vv.backend.Size() {
 			if ctx.Err() != nil {
 				return
@@ -567,7 +681,15 @@ func (vv *ViewerView) jumpToEnd() {
 						lineLen += size
 						continue
 					}
-					rw := runewidth.RuneWidth(r)
+					rw := 1
+					if r == '\t' {
+						rw = tabSize - (visualWidth % tabSize)
+					} else {
+						rw = runewidth.RuneWidth(r)
+						if rw <= 0 {
+							rw = 1
+						}
+					}
 					if vv.WrapMode && visualWidth+rw > width {
 						break
 					}
@@ -591,6 +713,72 @@ func (vv *ViewerView) jumpToEnd() {
 			vtui.FrameManager.Redraw()
 		})
 	})
+}
+func (vv *ViewerView) ReloadWithCodepage(cpID int) {
+	f, err := vv.vfs.Open(context.Background(), vv.path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	size := f.Size()
+	var backend *ViewerBackend
+	if cpID == 65001 {
+		backend = &ViewerBackend{
+			file: f,
+			size: size,
+			ctx:  context.Background(),
+		}
+	} else {
+		fullData := make([]byte, size)
+		_, _ = f.ReadAt(context.Background(), fullData, 0)
+		decoded, err := vfs.DecodeBytes(fullData, cpID)
+		if err != nil {
+			decoded = fullData
+			cpID = 65001
+		}
+		memFile := &vfs.MemoryReadAtCloser{Data: decoded}
+		backend = &ViewerBackend{
+			file: memFile,
+			size: int64(len(decoded)),
+			ctx:  context.Background(),
+		}
+	}
+
+	vv.backend.Close()
+	vv.backend = backend
+	vv.Codepage = cpID
+	vv.TopOffset = 0
+	vtui.FrameManager.Redraw()
+}
+
+func (vv *ViewerView) showCodepageDialog() {
+	menu := vtui.NewVMenu(" Code pages ")
+	for _, cp := range vfs.AvailableCodepages {
+		menu.AddItem(vtui.MenuItem{Text: fmt.Sprintf("%5d  %s", cp.ID, cp.Name)})
+	}
+
+	w, h := 45, len(vfs.AvailableCodepages)+2
+	if h > 15 {
+		h = 15
+	}
+	x := (vv.X2 - vv.X1 - w) / 2
+	y := (vv.Y2 - vv.Y1 - h) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	menu.SetPosition(x, y, x+w-1, y+h-1)
+
+	menu.OnAction = func(idx int) {
+		menu.Close()
+		if idx >= 0 && idx < len(vfs.AvailableCodepages) {
+			vv.ReloadWithCodepage(vfs.AvailableCodepages[idx].ID)
+		}
+	}
+	vtui.FrameManager.Push(menu)
 }
 
 func (vv *ViewerView) ProcessMouse(e *vtinput.InputEvent) bool {
@@ -620,6 +808,9 @@ func (vv *ViewerView) Close() {
 		vv.backend.Close()
 	}
 	vv.BaseFrame.Close()
+	if vv.OnClose != nil {
+		vv.OnClose()
+	}
 }
 
 func (vv *ViewerView) GetKeyLabels() *vtui.KeySet {

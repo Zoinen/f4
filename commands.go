@@ -41,5 +41,16 @@ const (
 	CmEditorSettings
 	CmAppearanceSettings
 	CmConfirmationsSettings
+	CmLanguage
 	CmPlugins
+	CmUpdateSettings
+	CmBookmarks
+	CmSwitchToViewer
+	CmSwitchToEditor
+	CmReplace
+	CmPlugRing
+	// CmBookmarkEmptySlot is never emitted: the bookmarks dialog tags its
+	// empty rows with it and keeps it in FrameManager.DisabledCommands so
+	// vtui renders them dimmed and ignores Enter on them.
+	CmBookmarkEmptySlot
 )

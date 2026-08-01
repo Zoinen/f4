@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"sync"
 
 	"github.com/unxed/f4/plugins/archive"
@@ -52,6 +53,9 @@ func (pm *PluginManager) LoadAll() {
 	for _, path := range AppConfig.RegisteredPlugins {
 		pm.LoadExternalPlugin(path)
 	}
+
+	// 3. Load PlugRing plugins
+	pm.loadPlugRing()
 }
 
 func (pm *PluginManager) LoadExternalPlugin(path string) {
@@ -63,6 +67,43 @@ func (pm *PluginManager) LoadExternalPlugin(path string) {
 		vtui.DebugLog("Loaded RPC plugin: %s", p.GetName())
 	} else {
 		vtui.DebugLog("Failed RPC plugin %s: %v", path, err)
+	}
+}
+func (pm *PluginManager) loadPlugRing() {
+	installed := GetInstalledPlugRingItems()
+	plugringDir := filepath.Join(GetF4ConfigDir(), "plugring")
+	for id, item := range installed {
+		if item.Entrypoint != "" {
+			// We build a pseudo-path that NewRPCPlugin will handle specifically later if needed,
+			// but since NewRPCPlugin uses exec.Command directly, we pass the command.
+			// The RPCPlugin execution logic will need to handle splitting by spaces if it's a shell command.
+			p := NewRPCPlugRing(filepath.Join(plugringDir, id), item.Entrypoint)
+			if err := p.Init(pm.api); err == nil {
+				pm.mu.Lock()
+				pm.plugins = append(pm.plugins, p)
+				pm.mu.Unlock()
+				vtui.DebugLog("Loaded PlugRing RPC plugin: %s", p.GetName())
+			} else {
+				vtui.DebugLog("Failed PlugRing RPC plugin %s: %v", id, err)
+			}
+		}
+	}
+}
+func (pm *PluginManager) loadSinglePlugRingItem(item PlugRingItem) {
+	if item.Entrypoint == "" {
+		return
+	}
+	plugringDir := filepath.Join(GetF4ConfigDir(), "plugring")
+	pluginDir := filepath.Join(plugringDir, item.ID)
+
+	p := NewRPCPlugRing(pluginDir, item.Entrypoint)
+	if err := p.Init(pm.api); err == nil {
+		pm.mu.Lock()
+		pm.plugins = append(pm.plugins, p)
+		pm.mu.Unlock()
+		vtui.DebugLog("Hot-loaded PlugRing RPC plugin: %s", p.GetName())
+	} else {
+		vtui.DebugLog("Failed to hot-load PlugRing RPC plugin %s: %v", item.ID, err)
 	}
 }
 

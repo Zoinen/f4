@@ -1,6 +1,13 @@
 package main
 
-import "github.com/unxed/vtui"
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/unxed/vtui"
+)
 
 const (
 	ColPanelText = vtui.LastPaletteColor + iota
@@ -144,6 +151,27 @@ var colorMap = map[string]int{
 	"Viewer.Scrollbar":                 ColViewerScrollbar,
 	"Editor.Text":                      ColEditorText,
 	"Editor.Scrollbar":                 vtui.ColTableBox,
+
+	// Warnings
+	"WarnDialog.Text":                      vtui.ColWarnText,
+	"WarnDialog.Highlight":                 vtui.ColWarnHighlightText,
+	"WarnDialog.Box":                       vtui.ColWarnBox,
+	"WarnDialog.Box.Title":                 vtui.ColWarnBoxTitle,
+	"WarnDialog.Box.Title.Highlight":       vtui.ColWarnHighlightBoxTitle,
+	"WarnDialog.Edit":                      vtui.ColWarnEdit,
+	"WarnDialog.Button":                    vtui.ColWarnButton,
+	"WarnDialog.Button.Selected":           vtui.ColWarnSelectedButton,
+	"WarnDialog.Button.Highlight":          vtui.ColWarnHighlightButton,
+	"WarnDialog.Button.Highlight.Selected": vtui.ColWarnHighlightSelectedButton,
+	"WarnDialog.Edit.Unchanged":            vtui.ColWarnEdit,
+	"WarnDialog.Edit.Selected":             vtui.ColWarnSelectedButton,
+
+	// Help
+	"Help.Text":         vtui.ColHelpText,
+	"Help.Bold":         vtui.ColHelpBold,
+	"Help.Link":         vtui.ColHelpLink,
+	"Help.SelectedLink": vtui.ColHelpSelectedLink,
+	"Help.Box":          vtui.ColHelpBox,
 }
 
 // InitColors parses the farcolors section and applies it to the vtui.Palette
@@ -158,4 +186,121 @@ func InitColors(ini *IniFile) {
 	// Terminal history uses indexed background color 0 for default and blank cells.
 	// Keep it in sync with the configurable user-screen background.
 	vtui.ThemePalette[0] = vtui.GetRGBBack(vtui.Palette[ColCommandLineUserScreen])
+}
+
+// FormatFarColor serializes a vtui palette color attribute to a farcolors.ini string.
+func FormatFarColor(attr uint64) string {
+	var fg, bg uint32
+	if attr&vtui.IsFgRGB != 0 {
+		fg = vtui.GetRGBFore(attr)
+	} else {
+		fg = vtui.ThemePalette[vtui.GetIndexFore(attr)]
+	}
+
+	if attr&vtui.IsBgRGB != 0 {
+		bg = vtui.GetRGBBack(attr)
+	} else {
+		bg = vtui.ThemePalette[vtui.GetIndexBack(attr)]
+	}
+
+	return fmt.Sprintf("foreground:#%06x | background:#%06x", fg, bg)
+}
+
+// ExportColors writes the current palette to a farcolors.ini file.
+func ExportColors(path string) error {
+	var sb strings.Builder
+	sb.WriteString("[farcolors]\n")
+
+	groups := []struct {
+		name string
+		keys []string
+	}{
+		{
+			name: "Panel",
+			keys: []string{
+				"Panel.Box", "Panel.Cursor", "Panel.Cursor.Selected", "Panel.Dir",
+				"Panel.Scrollbar", "Panel.Text", "Panel.Text.Highlight", "Panel.Text.Info",
+				"Panel.Text.Selected", "Panel.Title", "Panel.Title.Column", "Panel.Title.Selected",
+				"Table.Box", "Scrollbar",
+			},
+		},
+		{
+			name: "Dialog",
+			keys: []string{
+				"Dialog.Box", "Dialog.Box.Title", "Dialog.Box.Title.Highlight",
+				"Dialog.Text", "Dialog.Highlight", "Dialog.Edit", "Dialog.Edit.Selected",
+				"Dialog.Edit.Unchanged", "Dialog.Button", "Dialog.Button.Selected",
+				"Dialog.Button.Highlight", "Dialog.Button.Highlight.Selected",
+			},
+		},
+		{
+			name: "Warning message",
+			keys: []string{
+				"WarnDialog.Box", "WarnDialog.Box.Title", "WarnDialog.Box.Title.Highlight",
+				"WarnDialog.Text", "WarnDialog.Highlight", "WarnDialog.Edit", "WarnDialog.Edit.Selected",
+				"WarnDialog.Edit.Unchanged", "WarnDialog.Button", "WarnDialog.Button.Selected",
+				"WarnDialog.Button.Highlight", "WarnDialog.Button.Highlight.Selected",
+			},
+		},
+		{
+			name: "Menu",
+			keys: []string{
+				"Menu.Box", "Menu.Title", "Menu.Text", "Menu.Text.Selected",
+				"Menu.Highlight", "Menu.Highlight.Selected",
+			},
+		},
+		{
+			name: "Horizontal menu",
+			keys: []string{
+				"MenuBar.Text", "MenuBar.Text.Selected", "MenuBar.Highlight",
+				"MenuBar.Highlight.Selected",
+			},
+		},
+		{
+			name: "Key bar",
+			keys: []string{
+				"KeyBar.Numbers", "KeyBar.Labels",
+			},
+		},
+		{
+			name: "Command line",
+			keys: []string{
+				"CommandLine.Prompt", "CommandLine.Text", "CommandLine.Text.Selected",
+				"CommandLine.UserScreen",
+			},
+		},
+		{
+			name: "Viewer",
+			keys: []string{
+				"Viewer.Text", "Viewer.Status", "Viewer.Arrows", "Viewer.Scrollbar",
+			},
+		},
+		{
+			name: "Editor",
+			keys: []string{
+				"Editor.Text", "Editor.Scrollbar",
+			},
+		},
+		{
+			name: "Help",
+			keys: []string{
+				"Help.Text", "Help.Bold", "Help.Link", "Help.SelectedLink", "Help.Box",
+			},
+		},
+	}
+
+	for _, g := range groups {
+		sb.WriteString(fmt.Sprintf("\n# %s\n", g.name))
+		sort.Strings(g.keys)
+		for _, k := range g.keys {
+			idx, ok := colorMap[k]
+			if !ok {
+				continue
+			}
+			attr := vtui.Palette[idx]
+			sb.WriteString(fmt.Sprintf("%s = %s\n", k, FormatFarColor(attr)))
+		}
+	}
+
+	return os.WriteFile(path, []byte(sb.String()), 0644)
 }

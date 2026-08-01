@@ -4,6 +4,7 @@ import (
 	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,65 @@ Editor.Text = foreground:#A0A0A0 | background:#232323
 	}
 	if got := vtui.GetRGBBack(vtui.Palette[ColEditorText]); got != 0x232323 {
 		t.Errorf("Expected editor background #232323, got %06X", got)
+	}
+}
+
+func TestColors_ExportColors_Grouped(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	tmpDir := t.TempDir()
+	iniPath := filepath.Join(tmpDir, "exported_colors.ini")
+
+	// Export current palette
+	err := ExportColors(iniPath)
+	if err != nil {
+		t.Fatalf("ExportColors failed: %v", err)
+	}
+
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("Failed to read exported file: %v", err)
+	}
+
+	content := string(data)
+
+	// Check that section is present
+	if !strings.Contains(content, "[farcolors]") {
+		t.Error("Exported file missing [farcolors] section")
+	}
+
+	// Check that group comments are present
+	expectedHeaders := []string{
+		"# Panel",
+		"# Dialog",
+		"# Warning message",
+		"# Menu",
+		"# Horizontal menu",
+		"# Key bar",
+		"# Command line",
+		"# Viewer",
+		"# Editor",
+		"# Help",
+	}
+
+	for _, h := range expectedHeaders {
+		if !strings.Contains(content, h) {
+			t.Errorf("Exported file missing expected category header %q", h)
+		}
+	}
+
+	// Check that specific newly-added keys are exported correctly under their groups
+	expectedKeys := []string{
+		"WarnDialog.Box",
+		"WarnDialog.Text",
+		"Help.Text",
+		"Help.Link",
+	}
+
+	for _, k := range expectedKeys {
+		if !strings.Contains(content, k+" = ") {
+			t.Errorf("Exported file missing expected key %q", k)
+		}
 	}
 }

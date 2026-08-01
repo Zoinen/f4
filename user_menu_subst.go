@@ -24,6 +24,9 @@ import (
 //	!?title?init!   prompt the user for input; init is the prefilled value
 //	!#              switch subsequent tokens to the passive panel
 //	!^              switch subsequent tokens back to the active panel
+//	!~!             file name under cursor without extension
+//	!/!             current directory path without trailing slash
+//	!:              current drive letter or scheme with colon
 //
 // In addition, $VAR and ${VAR} are expanded via os.ExpandEnv after the
 // far2l-style tokens are resolved.
@@ -138,10 +141,48 @@ func SubstFileName(cmd string, ctx *SubstContext) SubstResult {
 			i += 3
 			continue
 		}
+		// !~!  →  file name without extension
+		if strings.HasPrefix(rest, "!~!") {
+			ext := filepath.Ext(panel.CurrentFile)
+			out.WriteString(strings.TrimSuffix(panel.CurrentFile, ext))
+			i += 3
+			continue
+		}
 		// !\!  →  current directory
 		if strings.HasPrefix(rest, "!\\!") {
 			out.WriteString(panel.CurDir)
 			i += 3
+			continue
+		}
+		// !/!  →  current directory path without trailing slash
+		if strings.HasPrefix(rest, "!/!") {
+			dir := panel.CurDir
+			if len(dir) > 1 && (strings.HasSuffix(dir, "/") || strings.HasSuffix(dir, "\\")) {
+				dir = dir[:len(dir)-1]
+			}
+			out.WriteString(dir)
+			i += 3
+			continue
+		}
+		// !:  →  current drive letter or scheme with colon (e.g. C:)
+		if strings.HasPrefix(rest, "!:") {
+			vol := ""
+			if len(panel.CurDir) >= 2 && panel.CurDir[1] == ':' {
+				c := panel.CurDir[0]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+					vol = string(panel.CurDir[:2])
+				}
+			}
+			if vol == "" {
+				vol = filepath.VolumeName(panel.CurDir)
+				if vol == "" {
+					if strings.HasPrefix(panel.CurDir, "/") {
+						vol = "/"
+					}
+				}
+			}
+			out.WriteString(vol)
+			i += 2
 			continue
 		}
 		// !&  →  space-joined marked basenames. far2l does not quote;

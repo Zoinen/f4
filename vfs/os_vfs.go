@@ -49,8 +49,17 @@ func (v *OSVFS) SetPath(path string) error {
 		return err
 	}
 
-	// Resolve symlinks/junctions to avoid ACL issues on the link itself (e.g. "Documents and Settings")
-	if resolved, errEval := filepath.EvalSymlinks(abs); errEval == nil {
+	// Сначала пробуем проверить оригинальный путь напрямую.
+	// Если он существует, доступен и является директорией (симлинком на нее),
+	// мы сохраняем оригинальный визуальный путь в панели без принудительного разыменования!
+	if st, errStat := os.Stat(prepareOSPath(abs)); errStat == nil && st.IsDir() {
+		goto verify
+	}
+
+	// Если мы получили ошибку (например, Permission Denied на системном джанкшене Windows
+	// "Documents and Settings"), то только тогда пытаемся принудительно разыменовать симлинк.
+	if resolved, errEval := filepath.EvalSymlinks(prepareOSPath(abs)); errEval == nil {
+		resolved = stripExtendedPrefix(resolved)
 		if runtime.GOOS == "windows" {
 			origVol := filepath.VolumeName(abs)
 			resVol := filepath.VolumeName(resolved)
@@ -93,11 +102,11 @@ func (v *OSVFS) SetPath(path string) error {
 	}
 
 verify:
-	st, err := os.Stat(abs)
+	st, err := os.Stat(prepareOSPath(abs))
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: SetPath: Permission denied for %q, checking via sudo...", abs)
-			item, sudoErr := globalSudoClient.Stat(abs)
+			item, sudoErr := globalSudoClient.Stat(prepareOSPath(abs))
 			if sudoErr == nil {
 				if item.IsDir {
 					vtui.DebugLog("VFS: Path changed to %q (via sudo Stat)", abs)
@@ -123,19 +132,19 @@ verify:
 func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem)) error {
 	// Try to open the directory
 	dirPath := path
-	f, err := os.Open(dirPath)
+	f, err := os.Open(prepareOSPath(dirPath))
 	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
 		// Try to resolve protected junctions (e.g. "Documents and Settings")
 		if resolved, ok := wellKnownJunction(dirPath); ok {
 			vtui.DebugLog("VFS: ReadDir: resolved junction %q -> %q", dirPath, resolved)
 			dirPath = resolved
-			f, err = os.Open(dirPath)
+			f, err = os.Open(prepareOSPath(dirPath))
 		}
 	}
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for ReadDir(%q), attempting sudo...", dirPath)
-			items, sudoErr := globalSudoClient.ReadDir(dirPath)
+			items, sudoErr := globalSudoClient.ReadDir(prepareOSPath(dirPath))
 			if sudoErr == nil {
 				vtui.DebugLog("VFS: Sudo ReadDir(%q) SUCCESS, items: %d", dirPath, len(items))
 				if len(items) > 0 && onChunk != nil {
@@ -204,11 +213,11 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	if ctx.Err() != nil {
 		return VFSItem{}, ctx.Err()
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(prepareOSPath(path))
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Stat(%q), attempting sudo...", path)
-			item, sudoErr := globalSudoClient.Stat(path)
+			item, sudoErr := globalSudoClient.Stat(prepareOSPath(path))
 			if sudoErr == nil {
 				vtui.DebugLog("VFS: Sudo Stat(%q) SUCCESS", path)
 				return item, nil
@@ -250,10 +259,10 @@ func (v *OSVFS) MkDir(ctx context.Context, path string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	err := os.MkdirAll(path, 0755)
+	err := os.MkdirAll(prepareOSPath(path), 0755)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for MkDir(%q), attempting sudo...", path)
-		return globalSudoClient.MkDir(path, 0755)
+		return globalSudoClient.MkDir(prepareOSPath(path), 0755)
 	}
 	return err
 }
@@ -262,9 +271,9 @@ func (v *OSVFS) Remove(ctx context.Context, path string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	err := os.RemoveAll(path)
+	err := os.RemoveAll(prepareOSPath(path))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return globalSudoClient.Remove(path)
+		return globalSudoClient.Remove(prepareOSPath(path))
 	}
 	return err
 }
@@ -273,9 +282,9 @@ func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	err := os.Rename(old, new)
+	err := os.Rename(prepareOSPath(old), prepareOSPath(new))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return globalSudoClient.Rename(old, new)
+		return globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new))
 	}
 	return err
 }
@@ -287,13 +296,13 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	// Try native first
 	var errMode error
 	if item.UnixMode != 0 {
-		errMode = os.Chmod(path, os.FileMode(item.UnixMode))
+		errMode = os.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
 	}
 
 	var errOwn error
 	if runtime.GOOS != "windows" {
 		if item.Uid != -1 && item.Gid != -1 {
-			errOwn = os.Chown(path, item.Uid, item.Gid)
+			errOwn = os.Chown(prepareOSPath(path), item.Uid, item.Gid)
 		}
 	}
 
@@ -307,15 +316,15 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 		if mtime.IsZero() {
 			mtime = atime
 		}
-		errTime = os.Chtimes(path, atime, mtime)
+		errTime = os.Chtimes(prepareOSPath(path), atime, mtime)
 	}
 
-	errPlat := applyPlatformAttributes(path, item)
+	errPlat := applyPlatformAttributes(prepareOSPath(path), item)
 
 	// If any operation failed due to permissions, try sudo
 	if (os.IsPermission(errMode) || os.IsPermission(errOwn) || os.IsPermission(errTime) || os.IsPermission(errPlat)) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: SetAttributes permission denied, trying sudo for %q", path)
-		return globalSudoClient.SetAttributes(path, item)
+		return globalSudoClient.SetAttributes(prepareOSPath(path), item)
 	}
 
 	if errMode != nil {
@@ -369,15 +378,15 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(prepareOSPath(path))
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(prepareOSPath(path))
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Open(%q), attempting sudo...", path)
-			sudoF, sudoErr := globalSudoClient.Open(path, os.O_RDONLY, 0)
+			sudoF, sudoErr := globalSudoClient.Open(prepareOSPath(path), os.O_RDONLY, 0)
 			if sudoErr == nil {
 				info, _ := sudoF.Stat()
 				vtui.DebugLog("VFS: Sudo Open(%q) SUCCESS, size: %d", path, info.Size())
@@ -399,14 +408,14 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(prepareOSPath(path))
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.Create(path)
+	f, err := os.Create(prepareOSPath(path))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for Create(%q), attempting sudo...", path)
-		return globalSudoClient.Open(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		return globalSudoClient.Open(prepareOSPath(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	}
 	return f, err
 }
@@ -446,4 +455,38 @@ func wellKnownJunction(path string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// prepareOSPath adds the \\?\ prefix on Windows to prevent the Win32 API
+// from automatically stripping trailing dots and spaces from file names.
+func prepareOSPath(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if strings.HasPrefix(abs, `\\?\`) {
+		return abs
+	}
+	if strings.HasPrefix(abs, `\\`) {
+		return `\\?\UNC\` + abs[2:]
+	}
+	return `\\?\` + abs
+}
+
+// stripExtendedPrefix removes the \\?\ prefix from paths returned by OS functions
+// (like EvalSymlinks) so they display nicely in the UI.
+func stripExtendedPrefix(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	if strings.HasPrefix(p, `\\?\UNC\`) {
+		return `\\` + p[8:]
+	}
+	if strings.HasPrefix(p, `\\?\`) {
+		return p[4:]
+	}
+	return p
 }

@@ -1,0 +1,241 @@
+[Language]
+Name=English
+Code=en
+Author=f4 Team
+
+[Strings]
+vtui.Ok=&Ok
+vtui.Cancel=Cancel
+Panel.Other=&Other panel
+Panel.Column.Name=Name
+Panel.Column.Size=Size
+Panel.UpDir=UP-DIR
+Panel.SelectedInfo=Bytes: %s, files: %d, folders: %d
+Panels.Prompt=>
+Edit.NewFileTitle= Create New File
+Edit.NewFilePrompt=File &name:
+MakeFolder.Title= Create Folder
+MakeFolder.Prompt=Create the &folder:
+Delete.Title= Delete
+Delete.Confirm=Do you want to delete\n%s?
+Delete.Btn=&Delete
+Copy.Title= Copy
+Copy.Prompt=Copy %d item(s) to:
+Copy.Btn=&Copy
+Move.Title= Move
+Move.Prompt=Rename or move %d item(s) to:
+Move.Btn=&Rename
+Btn.OverwriteAll=Overwrite &All
+Btn.SkipAll=S&kip All
+Btn.Retry=&Retry
+Btn.Ignore=&Ignore
+Operation.Error=Operation failed:\n%s
+Op.ClonePanels=&Clone panels to new workspace
+Op.SwitchHint=Ctrl+Tab to switch windows
+Op.DummyTitle= Dummy Operation
+Op.DummyText=This is a dummy 5-minute operation.\nChoose background mode:
+Viewer.Title= View
+Viewer.ModeText=Text
+Viewer.ModeHex=Hex
+Viewer.SearchTitle= Search
+Search.CaseSensitive=&Case sensitive
+Search.Reverse=&Reverse search
+Select.Title= Select
+Deselect.Title= Deselect
+Quit.Title= Exit
+Quit.Confirm=Do you want to leave f4?
+Quit.Btn=&Leave
+Select.Mask=&Enter selection mask:
+
+Macro.AssignTitle= Assign Macro
+Macro.AssignPrompt=Press the desired key combination
+Macro.AssignCancel=Press Esc to cancel
+
+Menu.Language=Language
+Menu.Left=Left
+Menu.Files=Files
+Menu.Commands=Commands
+Menu.Options=Options
+Menu.Right=Right
+Menu.Exit=E&xit
+
+Menu.Files.View=View
+Menu.Files.Edit=Edit
+Menu.Files.Copy=Copy
+Menu.Files.RenMov=Rename or move
+Menu.Files.MkDir=Make folder
+Menu.Files.Delete=Delete
+Menu.Left.Medium=Medium
+Menu.Left.Detailed=Detailed
+Menu.Commands.FindFile=Find file
+Menu.Commands.Bookmarks=Bookmarks
+Menu.SortName=Name
+Menu.SortExt=Extension
+Menu.SortTime=Time
+Menu.SortSize=Size
+Menu.SortUnsorted=Unsorted
+Menu.PanelSettings=Panel settings
+Menu.EditorSettings=Editor settings
+Menu.AppearanceSettings=Appearance settings
+Menu.ConfirmationsSettings=Confirmations
+Menu.AutoUpdateSettings=Auto &update
+Menu.Options.Plugins=Manage plugins
+
+EditorSettings.Title= Editor settings
+EditorSettings.AutoComplete=Enable &Autocomplete
+EditorSettings.Mask=Active for f&ile masks:
+PanelSettings.Title= Panel settings
+PanelSettings.ShowHidden=Show &hidden and system files
+PanelSettings.HighlightDir=H&ighlight folders
+PanelSettings.SavePaths=Save panel &paths on exit
+PanelSettings.KeepCursor=Don't touch terminal &cursor style
+PanelSettings.VimHotkeys=Enable &Vim-like hotkeys (j, k, dd, cc, mm)
+PanelSettings.SyncPanelLoad=S&ynchronous panel loading (disable cache/chunking)
+PanelSettings.DefaultMode=Default operation &mode:
+PanelSettings.PathDisplay=File path in progress:
+
+AppearanceSettings.Title= Appearance settings
+AppearanceSettings.Style=Application &style:
+AppearanceSettings.Font=GUI F&ont (Path/Name):
+AppearanceSettings.FontSize=GUI Font Si&ze:
+AppearanceSettings.TitleTemplate=Window &Title Template:
+AppearanceSettings.ExportBtn=E&xport Scheme
+
+ConfirmationsSettings.Title= Confirmations
+ConfirmationsSettings.Copy=Confirm on &copy
+ConfirmationsSettings.Move=Confirm on &move
+ConfirmationsSettings.Delete=Confirm on &delete
+ConfirmationsSettings.Exit=Confirm on e&xit
+UpdateSettings.Title= Auto Update
+UpdateSettings.Channel=Update &channel:
+UpdateSettings.Interval=Check &interval:
+UpdateSettings.BtnCheck=C&heck now
+FindFile.Title= Find File
+FindFile.MaskPrompt=A filemask or several filemasks:
+FindFile.TextPrompt=Containing text:
+FindFile.BtnFind=&Find
+History.FoldersTitle= Folders History
+History.CommandsTitle= Commands History
+UserMenu.LocalMenuTitle=Local menu
+UserMenu.MainMenuTitle=Main menu
+UserMenu.MainMenuFAR=FAR
+
+Language.Title= Languages
+Language.Changed=Language changed.\nSome UI elements require application restart\nto fully apply the new language.
+
+History.Title= History
+History.EmptyFolders=Folders history is empty.
+History.EmptyCommands=Command history is empty.
+
+Error.Title= Error
+Warning.Title= Warning
+Info.Title= Info
+
+ExtEdit.TempError=Cannot create temp file: %v
+
+FileOp.AlreadyOpened=File is already opened:\n%s
+FileOp.AlreadyViewed=File is already being viewed:\n%s
+FileOp.BtnCurrent=&Current
+FileOp.BtnReload=&Reload
+FileOp.BtnNewInstance=&New instance
+FileOp.CannotEditDir=Cannot edit a directory.
+FileOp.CannotViewDir=Cannot view a directory.
+FileOp.CannotOpenSpecial=Cannot open special files (Named Pipes, Sockets, Devices).
+
+Dialog.RenameTitle= Rename
+Dialog.RenamePrompt=Rename '%s' to:
+
+Op.Queue=Queue
+Op.Background=Background panel clone
+Op.Foreground=Foreground lock
+Op.PathNameOnly=Name only
+Op.PathFullPath=Full path
+Op.PathSrcDst=Source -> Destination
+
+Plugins.Title= Manage Plugins (RPC)
+Plugins.BtnAdd=&Add
+Plugins.BtnRemove=&Remove
+Plugins.BtnClose=&Close
+
+InfoPanel.Title= Information
+InfoPanel.Computer=Computer name
+InfoPanel.User=User name
+InfoPanel.FilesystemTitle=Filesystem
+InfoPanel.CurrentDir=Current directory
+InfoPanel.Total=Total bytes
+InfoPanel.Free=Free bytes
+InfoPanel.Label=Volume label
+InfoPanel.Serial=Serial number
+InfoPanel.Mount=Mount point
+InfoPanel.MaxFilename=Max filename length
+InfoPanel.Flags=Flags
+InfoPanel.MemoryTitle=Memory
+InfoPanel.MemLoad=Memory load
+InfoPanel.MemTotal=Total memory
+InfoPanel.MemFree=Free memory
+InfoPanel.MemShared=Shared memory
+InfoPanel.MemBuffered=Buffer memory
+InfoPanel.SwapTotal=Total paging file
+InfoPanel.SwapFree=Free paging file
+InfoPanel.UnitsHint= B: bytes ↔ human
+
+QuickView.Title= Quick view
+QuickView.NoSelection=<no selection>
+QuickView.ParentDir=Parent directory
+QuickView.Folder=Folder
+QuickView.FileCount=Files
+QuickView.FolderCount=Folders
+QuickView.Size=Size
+QuickView.Binary=<binary content — hex preview>
+QuickView.ReadError=Read failed
+
+Bookmarks.Title= Bookmarks
+Bookmarks.RowPrefix=[RCtrl | Ctrl+Alt] +
+Bookmarks.EmptySlot=<empty>
+Bookmarks.BottomHint= Del Ins F4 Shift+Up Shift+Down
+Bookmarks.LoadError=Failed to load bookmarks:\n%v
+Bookmarks.SaveError=Failed to save bookmarks:\n%v
+Bookmarks.EditTitle= Edit bookmark path
+Bookmarks.EditPrompt=&Path:
+
+KeyBar.F1=Help
+KeyBar.F2=Menu
+KeyBar.F2Wrap=Wrap
+KeyBar.F2Unwrap=Unwrap
+KeyBar.F3=View
+KeyBar.F4=Edit
+KeyBar.F5=Copy
+KeyBar.F6=RenMov
+KeyBar.F7=MkDir
+KeyBar.F8=Delete
+KeyBar.F9=ConfMenu
+KeyBar.F10=Quit
+KeyBar.F11=Plugin
+KeyBar.F12=Screen
+
+KeyBar.AltF1=Left
+KeyBar.AltF2=Right
+KeyBar.AltF3=Hex
+KeyBar.AltF7=Find
+KeyBar.AltF8=History
+KeyBar.AltF12=Folders
+KeyBar.CtrlF1=Left
+KeyBar.CtrlF2=Right
+KeyBar.CtrlF3=Name
+KeyBar.CtrlF4=Ext
+KeyBar.CtrlF5=Time
+KeyBar.CtrlF6=Size
+KeyBar.CtrlF7=Unsort
+
+KeyBar.EditorF1=Help
+KeyBar.EditorF2=Save
+KeyBar.EditorF3=Wrap
+KeyBar.EditorF5=White
+KeyBar.EditorF7=Search
+KeyBar.EditorF10=Quit
+KeyBar.ViewerF1=Help
+KeyBar.ViewerF2=Wrap
+KeyBar.ViewerF3=Exit
+KeyBar.ViewerF4=Hex
+KeyBar.ViewerF7=Search
+KeyBar.ViewerF10=Quit

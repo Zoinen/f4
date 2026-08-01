@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,11 +92,8 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 	t.TotalText = fmt.Sprintf("Files: %d, Dirs: %d", files, dirs)
 	t.mu.Unlock()
 
-	vtui.FrameManager.PostTask(func() {
-		GlobalQueueManager.RefreshUI()
-	})
+	GlobalQueueManager.RequestRefresh()
 }
-
 func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 	t.mu.Lock()
 	if t.State == "Done" || t.State == "Error" || t.State == "Cancelled" {
@@ -106,12 +104,17 @@ func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct in
 	t.CurrentFile = filename
 	t.Progress = totalPct
 	t.TotalText = totalText
-	t.Speed = speedText
+
+	// Extract clean speed from composite timeSpeedText string if applicable
+	displaySpeed := speedText
+	if len(speedText) >= 37 {
+		displaySpeed = strings.TrimSpace(speedText[37:])
+	}
+	t.Speed = displaySpeed
+
 	t.mu.Unlock()
 
-	vtui.FrameManager.PostTask(func() {
-		GlobalQueueManager.RefreshUI()
-	})
+	GlobalQueueManager.RequestRefresh()
 }
 
 func (t *QueueTask) IsCancelled() bool {
@@ -122,11 +125,12 @@ func (t *QueueTask) IsCancelled() bool {
 }
 
 type OpQueueManager struct {
-	mu         sync.Mutex
-	tasks      []*QueueTask
-	nextID     int
-	activeKeys map[string]bool
-	frame      *QueueFrame
+	mu             sync.Mutex
+	tasks          []*QueueTask
+	nextID         int
+	activeKeys     map[string]bool
+	frame          *QueueFrame
+	refreshPending bool
 }
 
 var GlobalQueueManager *OpQueueManager
@@ -136,6 +140,22 @@ func init() {
 		activeKeys: make(map[string]bool),
 	}
 	go GlobalQueueManager.workerLoop()
+}
+func (qm *OpQueueManager) RequestRefresh() {
+	qm.mu.Lock()
+	if qm.refreshPending {
+		qm.mu.Unlock()
+		return
+	}
+	qm.refreshPending = true
+	qm.mu.Unlock()
+
+	vtui.FrameManager.PostTask(func() {
+		qm.mu.Lock()
+		qm.refreshPending = false
+		qm.mu.Unlock()
+		qm.RefreshUI()
+	})
 }
 
 func getResourceKey(v vfs.VFS) string {

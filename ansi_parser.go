@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"strconv"
@@ -49,89 +50,102 @@ func (p *AnsiParser) Process(data []byte) {
 		return
 	}
 
-	strData := string(data)
-	// Эвристика: скрываем эхо технических команд синхронизации (Linux far2l и Windows f4),
-	// чтобы они не мусорили в логе и на экране.
-	if strings.HasPrefix(strData, "set +H; cd ") {
-		// Unix: отрезаем префикс far2l
-		idx := strings.Index(strData, "}\r\n")
+	// Heuristics: Hide background sync commands.
+	// We MUST use bytes.* functions to avoid string() casts which destroy
+	// incomplete UTF-8 sequences (e.g. when ConPTY splits a wide character chunk).
+	if bytes.HasPrefix(data, []byte(" set +H; cd ")) {
+		idx := bytes.Index(data, []byte("}\r\n"))
 		if idx != -1 {
-			strData = strData[idx+3:]
+			data = data[idx+3:]
 		}
 	}
 
-	// Unix: Вырезаем фоновые команды синхронизации директории
-	if strings.HasPrefix(strData, "set +H; { printf") {
-		idx := strings.Index(strData, "}\r\n")
+	if bytes.HasPrefix(data, []byte(" set +H; { printf")) {
+		idx := bytes.Index(data, []byte("}\r\n"))
 		if idx != -1 {
-			strData = strData[idx+3:]
+			data = data[idx+3:]
+		}
+	}
+
+	if bytes.HasPrefix(data, []byte(" { printf")) {
+		idx := bytes.Index(data, []byte("}\r\n"))
+		if idx != -1 {
+			data = data[idx+3:]
 		}
 	}
 
 	for {
-		startIdx := strings.Index(strData, " cd '")
+		startIdx := bytes.Index(data, []byte(" cd '"))
 		if startIdx == -1 {
 			break
 		}
-		endIdx := strings.Index(strData[startIdx:], "' # f4_sync")
+		endIdx := bytes.Index(data[startIdx:], []byte("' # f4_sync"))
 		if endIdx != -1 {
 			actualEnd := startIdx + endIdx + len("' # f4_sync")
-			if actualEnd < len(strData) && strData[actualEnd] == '\r' {
+			if actualEnd < len(data) && data[actualEnd] == '\r' {
 				actualEnd++
 			}
-			if actualEnd < len(strData) && strData[actualEnd] == '\n' {
+			if actualEnd < len(data) && data[actualEnd] == '\n' {
 				actualEnd++
 			}
 			vtui.DebugLog("ANSI_PARSER: Excising background Unix CD sync")
-			strData = strData[:startIdx] + "\r\x1b[2K" + strData[actualEnd:]
+			newData := make([]byte, 0, startIdx+5+len(data)-actualEnd)
+			newData = append(newData, data[:startIdx]...)
+			newData = append(newData, []byte("\r\x1b[2K")...)
+			newData = append(newData, data[actualEnd:]...)
+			data = newData
 			continue
 		}
 		break
 	}
 
-	// Windows f4: Вырезаем техническую команду смены папки из любого места в буфере.
-	// Это скрывает cd даже если он пришел вместе с промптом shell (screen scraping).
+	// Windows f4 sync commands excision
 	for {
-		startIdx := strings.Index(strData, "cd /d \"")
+		startIdx := bytes.Index(data, []byte("cd /d \""))
 		if startIdx == -1 {
 			break
 		}
 
-		endIdx := strings.Index(strData[startIdx:], "\" & ")
+		endIdx := bytes.Index(data[startIdx:], []byte("\" & "))
 		if endIdx != -1 {
-			if strings.HasPrefix(strData[startIdx+endIdx:], "\" & rem f4_sync") {
+			if bytes.HasPrefix(data[startIdx+endIdx:], []byte("\" & rem f4_sync")) {
 				actualEnd := startIdx + endIdx + len("\" & rem f4_sync")
-				if actualEnd < len(strData) && strData[actualEnd] == '\r' {
+				if actualEnd < len(data) && data[actualEnd] == '\r' {
 					actualEnd++
 				}
-				if actualEnd < len(strData) && strData[actualEnd] == '\n' {
+				if actualEnd < len(data) && data[actualEnd] == '\n' {
 					actualEnd++
 				}
-				if actualEnd < len(strData) && strData[actualEnd] == '\r' {
+				if actualEnd < len(data) && data[actualEnd] == '\r' {
 					actualEnd++
 				}
-				if actualEnd < len(strData) && strData[actualEnd] == '\n' {
+				if actualEnd < len(data) && data[actualEnd] == '\n' {
 					actualEnd++
 				}
 				vtui.DebugLog("ANSI_PARSER: Excising background Windows CD sync")
-				strData = strData[:startIdx] + "\r\x1b[2K" + strData[actualEnd:]
+				newData := make([]byte, 0, startIdx+5+len(data)-actualEnd)
+				newData = append(newData, data[:startIdx]...)
+				newData = append(newData, []byte("\r\x1b[2K")...)
+				newData = append(newData, data[actualEnd:]...)
+				data = newData
 				continue
 			} else {
-				actualEnd := startIdx + endIdx + 4 // +4 чтобы захватить и "\" & "
+				actualEnd := startIdx + endIdx + 4
 				vtui.DebugLog("ANSI_PARSER: Excising technical Windows CD sync from buffer")
-				strData = strData[:startIdx] + strData[actualEnd:]
+				newData := make([]byte, 0, startIdx+len(data)-actualEnd)
+				newData = append(newData, data[:startIdx]...)
+				newData = append(newData, data[actualEnd:]...)
+				data = newData
 				continue
 			}
 		}
 		break
 	}
 
-	data = []byte(strData)
 	if len(data) == 0 {
 		return
 	}
 
-	// vtui.DebugLog("ANSI_PARSER: Processing %d bytes: [% 02X] (as string: %q)", len(data), data, strData)
 	for _, b := range data {
 		// vtui.DebugLog("PARSER: Byte 0x%02X State %v", b, p.State)
 		switch p.State {
@@ -324,6 +338,28 @@ func (p *AnsiParser) handleCSI(cmd byte) {
 			switch s {
 			case "1":
 				p.term.ApplicationCursorKeys = isSet
+			case "7":
+				p.term.AutoWrap = isSet
+			case "1000":
+				if isSet {
+					p.term.MouseTrackingMode = 1000
+				} else {
+					p.term.MouseTrackingMode = 0
+				}
+			case "1002":
+				if isSet {
+					p.term.MouseTrackingMode = 1002
+				} else {
+					p.term.MouseTrackingMode = 0
+				}
+			case "1003":
+				if isSet {
+					p.term.MouseTrackingMode = 1003
+				} else {
+					p.term.MouseTrackingMode = 0
+				}
+			case "1006":
+				p.term.MouseSGRMode = isSet
 			case "1049", "47":
 				p.term.SetAltScreen(isSet)
 				if isSet {

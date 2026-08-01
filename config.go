@@ -1,71 +1,174 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/unxed/vtui"
 )
 
+var (
+	cachedF4ConfigDir string
+	configDirOnce     sync.Once
+)
+
+func GetF4ConfigDir() string {
+	configDirOnce.Do(func() {
+		exe, err := osExecutable()
+		if err != nil {
+			exe = os.Args[0]
+		}
+		exeDir := filepath.Dir(exe)
+
+		// Ищем Far.exe.ini (имя_бинарника.ini) или f4.ini в папке программы
+		iniPath := exe + ".ini"
+		if _, err := os.Stat(iniPath); os.IsNotExist(err) {
+			iniPath = filepath.Join(exeDir, "f4.ini")
+		}
+
+		useSystemProfiles := true
+		if _, err := os.Stat(iniPath); err == nil {
+			ini := ParseIni(bytesReader(iniPath))
+			if ini.GetString("General", "UseSystemProfiles", "1") == "0" {
+				useSystemProfiles = false
+			}
+		}
+
+		if !useSystemProfiles {
+			cachedF4ConfigDir = filepath.Join(exeDir, "Profile")
+			_ = os.MkdirAll(cachedF4ConfigDir, 0755)
+		} else {
+			sysDir, _ := os.UserConfigDir()
+			cachedF4ConfigDir = filepath.Join(sysDir, "f4")
+		}
+	})
+	return cachedF4ConfigDir
+}
+
+func bytesReader(p string) io.Reader {
+	b, _ := os.ReadFile(p)
+	return bytes.NewReader(b)
+}
+
+func resetConfigDirForTest() {
+	configDirOnce = sync.Once{}
+	cachedF4ConfigDir = ""
+}
+
 type F4Config struct {
-	ColorStyle              string
-	ShowHiddenFiles         bool
-	HighlightDir            bool
-	SavePanelPaths          bool
-	KeepTerminalCursor      bool
-	CommandLineAutoComplete bool
-	VimHotkeys              bool
-	SyncPanelLoad           bool
-	EditorAutoComplete      bool
-	EditorAutoCompleteMask  string
-	EditorExpandTabs        int
-	EditorAutoIndent        bool
-	EditorCursorBeyondEOL   bool
-	EditorTabSize           int
-	EditorUseEditorConfig   bool
-	EditorCrosshair         bool
-	UseExternalEditor       bool
-	ExternalEditorCommand   string
-	RegisteredPlugins       []string
-	ConfirmCopy             bool
-	ConfirmMove             bool
-	ConfirmDelete           bool
-	ConfirmExit             bool
-	DefaultFileOpMode       int
+	ColorStyle               string
+	Language                 string
+	AlwaysShowMenuBar        bool
+	ShowHiddenFiles          bool
+	HighlightDir             bool
+	SavePanelPaths           bool
+	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
+	KeepTerminalCursor       bool
+	CommandLineAutoComplete  bool
+	VimHotkeys               bool
+	SyncPanelLoad            bool
+	EditorAutoComplete       bool
+	EditorAutoCompleteMask   string
+	EditorExpandTabs         int
+	EditorAutoIndent         bool
+	EditorCursorBeyondEOL    bool
+	EditorTabSize            int
+	EditorUseEditorConfig    bool
+	EditorCrosshair          bool
+	UseExternalEditor        bool
+	ExternalEditorCommand    string
+	EditorAutodetectCodePage bool
+	EditorDefaultCodePage    int
+	ViewerAutodetectCodePage bool
+	ViewerDefaultCodePage    int
+	RegisteredPlugins        []string
+	ConfirmCopy              bool
+	ConfirmMove              bool
+	ConfirmDelete            bool
+	ConfirmExit              bool
+	DeleteCancelFocused      bool
+	DefaultFileOpMode        int
+	FileOpPathDisplay        int
+	GuiFont                  string
+	GuiFontSize              int
+	GuiCols                  int
+	GuiRows                  int
+	ConsoleTitleTemplate     string
+	UpdateChannel            int    // 0 = Stable, 1 = Nightly
+	UpdateInterval           int    // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
+	LastUpdateCheck          int64  // Unix timestamp
+	LastUpdateVersion        string // Version string or PublishedAt timestamp
+
+	// [Layout] mirrors far2l's config.ini section of the same name so
+	// a config shared with far2l keeps working in both. Adjusted by
+	// Ctrl+Left/Right (width split) and Ctrl+Up/Down (panel/terminal
+	// vertical split, applied symmetrically to both height fields).
+	// Ctrl+Clear resets all three to 0.
+	WidthDecrement       int
+	LeftHeightDecrement  int
+	RightHeightDecrement int
+
+	// LayoutExtras is any [Layout] key we don't recognise (e.g. far2l's
+	// FullscreenHelp, PanelsDisposition). Read at LoadConfig and written
+	// back verbatim on SaveConfig so f4 doesn't strip far2l-only options
+	// from a shared config file.
+	LayoutExtras map[string]string
 }
 
 var AppConfig = F4Config{
-	ColorStyle:              "Modern",
-	ShowHiddenFiles:         true,
-	HighlightDir:            true,
-	SavePanelPaths:          true,
-	KeepTerminalCursor:      false,
-	CommandLineAutoComplete: true,
-	VimHotkeys:              false,
-	SyncPanelLoad:           false,
-	EditorAutoComplete:      true,
-	EditorAutoCompleteMask:  "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
-	EditorExpandTabs:        0,
-	EditorAutoIndent:        true,
-	EditorCursorBeyondEOL:   false,
-	EditorTabSize:           4,
-	EditorUseEditorConfig:   true,
-	EditorCrosshair:         false,
-	UseExternalEditor:       false,
-	ExternalEditorCommand:   "",
-	ConfirmCopy:             true,
-	ConfirmMove:             true,
-	ConfirmDelete:           true,
-	ConfirmExit:             true,
-	DefaultFileOpMode:       0,
+	ColorStyle:               "Modern",
+	Language:                 "en",
+	AlwaysShowMenuBar:        false,
+	ShowHiddenFiles:          true,
+	HighlightDir:             true,
+	SavePanelPaths:           true,
+	InfoPanelBytes:           false,
+	KeepTerminalCursor:       false,
+	CommandLineAutoComplete:  true,
+	VimHotkeys:               false,
+	SyncPanelLoad:            false,
+	EditorAutoComplete:       true,
+	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
+	EditorExpandTabs:         0,
+	EditorAutoIndent:         true,
+	EditorCursorBeyondEOL:    false,
+	EditorTabSize:            4,
+	EditorUseEditorConfig:    true,
+	EditorCrosshair:          false,
+	UseExternalEditor:        false,
+	ExternalEditorCommand:    "",
+	EditorAutodetectCodePage: true,
+	EditorDefaultCodePage:    65001,
+	ViewerAutodetectCodePage: true,
+	ViewerDefaultCodePage:    65001,
+	ConfirmCopy:              true,
+	ConfirmMove:              true,
+	ConfirmDelete:            true,
+	ConfirmExit:              true,
+	DeleteCancelFocused:      true,
+	DefaultFileOpMode:        0,
+	FileOpPathDisplay:        0,
+	GuiFont:                  "",
+	GuiFontSize:              18,
+	GuiCols:                  100,
+	GuiRows:                  30,
+	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
+	UpdateChannel:            0,
+	UpdateInterval:           3, // Default to Weekly
+	LastUpdateCheck:          0,
+	LastUpdateVersion:        "",
 }
 
 var getUserConfigIniPath = func() string {
-	configDir, _ := os.UserConfigDir()
-	return filepath.Join(configDir, "f4", "settings.ini")
+	return filepath.Join(GetF4ConfigDir(), "settings.ini")
 }
 
 var getConfigIniPaths = func() []string {
@@ -95,8 +198,15 @@ func LoadConfig() {
 
 	AppConfig.ShowHiddenFiles = ini.GetString("Panel", "ShowHiddenFiles", "1") == "1"
 	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Modern")
+	AppConfig.Language = ini.GetString("Interface", "Language", "en")
+	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
+	AppConfig.AlwaysShowMenuBar = ini.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
+	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
+		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
+	}
 	AppConfig.HighlightDir = ini.GetString("Panel", "HighlightDir", "1") == "1"
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
+	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	AppConfig.KeepTerminalCursor = ini.GetString("Panel", "KeepTerminalCursor", "0") == "1"
 	AppConfig.CommandLineAutoComplete = ini.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
 	AppConfig.VimHotkeys = ini.GetString("Panel", "VimHotkeys", "0") == "1"
@@ -106,6 +216,25 @@ func LoadConfig() {
 	AppConfig.ConfirmMove = ini.GetString("System", "ConfirmMove", "1") == "1"
 	AppConfig.ConfirmDelete = ini.GetString("System", "ConfirmDelete", "1") == "1"
 	AppConfig.ConfirmExit = ini.GetString("System", "ConfirmExit", "1") == "1"
+	AppConfig.DeleteCancelFocused = ini.GetString("System", "DeleteCancelFocused", "1") == "1"
+	fmt.Sscanf(ini.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &AppConfig.FileOpPathDisplay)
+	AppConfig.GuiFont = ini.GetString("Appearance", "GuiFont", "")
+	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", "18"), "%d", &AppConfig.GuiFontSize)
+	if AppConfig.GuiFontSize <= 0 {
+		AppConfig.GuiFontSize = 18
+	}
+	fmt.Sscanf(ini.GetString("Appearance", "GuiCols", "100"), "%d", &AppConfig.GuiCols)
+	if AppConfig.GuiCols <= 0 {
+		AppConfig.GuiCols = 100
+	}
+	fmt.Sscanf(ini.GetString("Appearance", "GuiRows", "30"), "%d", &AppConfig.GuiRows)
+	if AppConfig.GuiRows <= 0 {
+		AppConfig.GuiRows = 30
+	}
+	fmt.Sscanf(ini.GetString("Update", "Channel", "0"), "%d", &AppConfig.UpdateChannel)
+	fmt.Sscanf(ini.GetString("Update", "Interval", "3"), "%d", &AppConfig.UpdateInterval)
+	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
+	AppConfig.LastUpdateVersion = ini.GetString("Update", "LastVersion", "")
 
 	AppConfig.EditorAutoComplete = ini.GetString("Editor", "AutoComplete", "1") == "1"
 	AppConfig.EditorAutoCompleteMask = ini.GetString("Editor", "AutoCompleteMask", "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json")
@@ -116,6 +245,10 @@ func LoadConfig() {
 	AppConfig.EditorCursorBeyondEOL = ini.GetString("Editor", "CursorBeyondEOL", "0") == "1"
 	AppConfig.EditorUseEditorConfig = ini.GetString("Editor", "UseEditorConfig", "1") == "1"
 	AppConfig.EditorCrosshair = ini.GetString("Editor", "Crosshair", "0") == "1"
+	AppConfig.EditorAutodetectCodePage = ini.GetString("Editor", "AutodetectCodePage", "1") == "1"
+	fmt.Sscanf(ini.GetString("Editor", "DefaultCodePage", "65001"), "%d", &AppConfig.EditorDefaultCodePage)
+	AppConfig.ViewerAutodetectCodePage = ini.GetString("Viewer", "AutodetectCodePage", "1") == "1"
+	fmt.Sscanf(ini.GetString("Viewer", "DefaultCodePage", "65001"), "%d", &AppConfig.ViewerDefaultCodePage)
 	AppConfig.UseExternalEditor = ini.GetString("Editor", "UseExternalEditor", "0") == "1"
 	AppConfig.ExternalEditorCommand = ini.GetString("Editor", "ExternalEditorCommand", "")
 	plugStr := ini.GetString("Plugins", "List", "")
@@ -125,6 +258,23 @@ func LoadConfig() {
 	AppConfig.EditorTabSize = 4
 	fmt.Sscanf(ini.GetString("Editor", "TabSize", "4"), "%d", &AppConfig.EditorTabSize)
 
+	// [Layout] — three known keys plus round-trip storage for anything else.
+	fmt.Sscanf(ini.GetString("Layout", "WidthDecrement", "0"), "%d", &AppConfig.WidthDecrement)
+	fmt.Sscanf(ini.GetString("Layout", "LeftHeightDecrement", "0"), "%d", &AppConfig.LeftHeightDecrement)
+	fmt.Sscanf(ini.GetString("Layout", "RightHeightDecrement", "0"), "%d", &AppConfig.RightHeightDecrement)
+	AppConfig.LayoutExtras = nil
+	if layout, ok := ini.data["Layout"]; ok {
+		for k, v := range layout {
+			switch k {
+			case "WidthDecrement", "LeftHeightDecrement", "RightHeightDecrement":
+				continue
+			}
+			if AppConfig.LayoutExtras == nil {
+				AppConfig.LayoutExtras = make(map[string]string)
+			}
+			AppConfig.LayoutExtras[k] = v
+		}
+	}
 }
 
 func SaveConfig() {
@@ -133,22 +283,40 @@ func SaveConfig() {
 
 	var sb strings.Builder
 	sb.WriteString("[Interface]\n")
-	sb.WriteString(fmt.Sprintf("ColorStyle = %s\n\n", AppConfig.ColorStyle))
+	sb.WriteString(fmt.Sprintf("ColorStyle = %s\n", AppConfig.ColorStyle))
+	sb.WriteString(fmt.Sprintf("Language = %s\n", AppConfig.Language))
+	sb.WriteString(fmt.Sprintf("ConsoleTitleTemplate = %s\n", AppConfig.ConsoleTitleTemplate))
+	sb.WriteString(fmt.Sprintf("AlwaysShowMenuBar = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar]))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("HighlightDir = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.HighlightDir]))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
+	sb.WriteString(fmt.Sprintf("InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes]))
 	sb.WriteString(fmt.Sprintf("KeepTerminalCursor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.KeepTerminalCursor]))
 	sb.WriteString(fmt.Sprintf("CommandLineAutoComplete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.CommandLineAutoComplete]))
 	sb.WriteString(fmt.Sprintf("VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.VimHotkeys]))
 	sb.WriteString(fmt.Sprintf("SyncPanelLoad = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SyncPanelLoad]))
 	sb.WriteString(fmt.Sprintf("DefaultFileOpMode = %d\n", AppConfig.DefaultFileOpMode))
+	sb.WriteString(fmt.Sprintf("FileOpPathDisplay = %d\n", AppConfig.FileOpPathDisplay))
 
 	sb.WriteString("\n[System]\n")
 	sb.WriteString(fmt.Sprintf("ConfirmCopy = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmCopy]))
 	sb.WriteString(fmt.Sprintf("ConfirmMove = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmMove]))
 	sb.WriteString(fmt.Sprintf("ConfirmDelete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmDelete]))
 	sb.WriteString(fmt.Sprintf("ConfirmExit = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmExit]))
+	sb.WriteString(fmt.Sprintf("DeleteCancelFocused = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.DeleteCancelFocused]))
+
+	sb.WriteString("\n[Appearance]\n")
+	sb.WriteString(fmt.Sprintf("GuiFont = %s\n", AppConfig.GuiFont))
+	sb.WriteString(fmt.Sprintf("GuiFontSize = %d\n", AppConfig.GuiFontSize))
+	sb.WriteString(fmt.Sprintf("GuiCols = %d\n", AppConfig.GuiCols))
+	sb.WriteString(fmt.Sprintf("GuiRows = %d\n", AppConfig.GuiRows))
+
+	sb.WriteString("\n[Update]\n")
+	sb.WriteString(fmt.Sprintf("Channel = %d\n", AppConfig.UpdateChannel))
+	sb.WriteString(fmt.Sprintf("Interval = %d\n", AppConfig.UpdateInterval))
+	sb.WriteString(fmt.Sprintf("LastCheck = %d\n", AppConfig.LastUpdateCheck))
+	sb.WriteString(fmt.Sprintf("LastVersion = %s\n", AppConfig.LastUpdateVersion))
 	sb.WriteString("\n[Editor]\n")
 	sb.WriteString(fmt.Sprintf("AutoComplete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorAutoComplete]))
 	sb.WriteString(fmt.Sprintf("AutoCompleteMask = %s\n", AppConfig.EditorAutoCompleteMask))
@@ -161,8 +329,38 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("TabSize = %d\n", AppConfig.EditorTabSize))
 	sb.WriteString(fmt.Sprintf("UseExternalEditor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.UseExternalEditor]))
 	sb.WriteString(fmt.Sprintf("ExternalEditorCommand = %s\n", AppConfig.ExternalEditorCommand))
+	sb.WriteString(fmt.Sprintf("AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorAutodetectCodePage]))
+	sb.WriteString(fmt.Sprintf("DefaultCodePage = %d\n", AppConfig.EditorDefaultCodePage))
+
+	sb.WriteString("\n[Viewer]\n")
+	sb.WriteString(fmt.Sprintf("AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ViewerAutodetectCodePage]))
+	sb.WriteString(fmt.Sprintf("DefaultCodePage = %d\n", AppConfig.ViewerDefaultCodePage))
 	sb.WriteString("\n[Plugins]\n")
 	sb.WriteString(fmt.Sprintf("List = %s\n", strings.Join(AppConfig.RegisteredPlugins, "|")))
+
+	// [Layout]: emit our three keys plus any unrecognised keys we loaded
+	// (round-trip). Keys are written alphabetically to match far2l's
+	// on-disk order, so a diff against far2l's config.ini stays minimal.
+	layoutKeys := map[string]string{
+		"WidthDecrement":       fmt.Sprintf("%d", AppConfig.WidthDecrement),
+		"LeftHeightDecrement":  fmt.Sprintf("%d", AppConfig.LeftHeightDecrement),
+		"RightHeightDecrement": fmt.Sprintf("%d", AppConfig.RightHeightDecrement),
+	}
+	for k, v := range AppConfig.LayoutExtras {
+		if _, taken := layoutKeys[k]; taken {
+			continue
+		}
+		layoutKeys[k] = v
+	}
+	names := make([]string, 0, len(layoutKeys))
+	for k := range layoutKeys {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	sb.WriteString("\n[Layout]\n")
+	for _, k := range names {
+		sb.WriteString(fmt.Sprintf("%s=%s\n", k, layoutKeys[k]))
+	}
 
 	err := os.WriteFile(path, []byte(sb.String()), 0644)
 	if err != nil {
@@ -172,3 +370,24 @@ func SaveConfig() {
 
 	vtui.DebugLog("CONFIG: Saved application settings to %s", path)
 }
+
+// RequestSaveConfig schedules a debounced SaveConfig call. Multiple calls
+// within the debounce window collapse into a single write. Used by the
+// panel-resize hotkeys, where holding Ctrl+Arrow can fire many times per
+// second and we don't want to fsync on every keystroke. The final value
+// still lands on disk because the shutdown path calls SaveConfig directly.
+func RequestSaveConfig() {
+	saveConfigTimerMu.Lock()
+	defer saveConfigTimerMu.Unlock()
+	if saveConfigTimer != nil {
+		saveConfigTimer.Stop()
+	}
+	saveConfigTimer = time.AfterFunc(saveConfigDebounce, SaveConfig)
+}
+
+var (
+	saveConfigTimerMu sync.Mutex
+	saveConfigTimer   *time.Timer
+)
+
+const saveConfigDebounce = 500 * time.Millisecond

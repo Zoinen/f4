@@ -152,6 +152,50 @@ tab_width = 4
 		t.Errorf("EditorConfig failed for .txt: style=%d, size=%d", evTxt.ExpandTabs, evTxt.TabSize)
 	}
 }
+func TestEditor_DeleteLine(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("line1\nline2\nline3"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	ev.CursorLine = 1
+	ev.CursorPos = 2
+
+	ev.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_Y,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	expected := "line1\nline3"
+	if ev.pt.String() != expected {
+		t.Errorf("Expected %q, got %q", expected, ev.pt.String())
+	}
+
+	if ev.CursorLine != 1 {
+		t.Errorf("Expected CursorLine 1, got %d", ev.CursorLine)
+	}
+
+	ev.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_Y,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+
+	expected2 := "line1"
+	if ev.pt.String() != expected2 {
+		t.Errorf("Expected %q, got %q", expected2, ev.pt.String())
+	}
+
+	if ev.CursorLine != 0 || ev.CursorPos != 5 {
+		t.Errorf("Cursor misplaced after last line delete: Line %d, Pos %d", ev.CursorLine, ev.CursorPos)
+	}
+
+	ev.Undo()
+	if ev.pt.String() != "line1\nline3" {
+		t.Errorf("Undo last line delete failed, got %q", ev.pt.String())
+	}
+}
 
 func TestEditor_Tab_MaterializeBeyondEOL(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())

@@ -15,8 +15,7 @@ type F4HistoryProvider struct {
 }
 
 func NewF4HistoryProvider() *F4HistoryProvider {
-	cfgDir, _ := os.UserConfigDir()
-	p := filepath.Join(cfgDir, "f4", "history.json")
+	p := filepath.Join(GetF4ConfigDir(), "history.json")
 	hp := &F4HistoryProvider{
 		path: p,
 		data: make(map[string][]string),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -149,13 +150,25 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 	}
 
 	actionDesc := "Copy"
+	actionTitle := "Copying"
+	dialogTitle := " Copying... "
 	if isMove {
 		actionDesc = "Move"
+		actionTitle = "Moving"
+		dialogTitle = " Moving... "
+	} else if srcVfs.ParentVFS() != nil && dstVfs.ParentVFS() == nil {
+		actionDesc = "Extract"
+		actionTitle = "Extracting"
+		dialogTitle = " Extracting... "
+	} else if srcVfs.ParentVFS() == nil && dstVfs.ParentVFS() != nil {
+		actionDesc = "Archive"
+		actionTitle = "Archiving"
+		dialogTitle = " Archiving... "
 	}
 	desc := fmt.Sprintf("%d item(s) -> %s", len(names), vtui.TruncateMiddle(destInput, 15))
 
 	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
-		// ctx is wrapped below with globalAwareReporter
+		startTime := time.Now()
 		dirToEnsure := destPath
 		if !isTargetDir {
 			dirToEnsure = dstVfs.Dir(destPath)
@@ -174,7 +187,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 
 		var totalStats vfs.OpStats
 		scanErr := error(nil)
-		lastScanUpdate := time.Now()
+		lastScanUpdate := startTime
 		totalStats, scanErr = vfs.CalculateStats(ctx, srcVfs, srcVfs.GetPath(), names, func(currentPath string, stats vfs.OpStats) {
 			now := time.Now()
 			if now.Sub(lastScanUpdate) > 50*time.Millisecond {
@@ -192,8 +205,6 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 		}
 
 		tracker := NewFileOpTracker(totalStats)
-
-		startTime := time.Now()
 		lastUpdate := startTime
 		lastSpeedUpdate := startTime
 		bytesSinceLastSpeedUpdate := int64(0)
@@ -277,10 +288,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 				filePct, _, currName := tracker.GetProgress()
 				processed, total := tracker.GetStats()
 
-				action := "Copying"
-				if isMove {
-					action = "Moving"
-				}
+				action := actionTitle
 				gTotalText, gTotalPct, gTimeSpeedText := getGlobalStats(action)
 
 				if gTotalPct >= lastLoggedPct+5 || now.Sub(lastLoggedTime) >= 5*time.Second {
@@ -356,7 +364,13 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 						if itemStat.IsDir {
 							tracker.DirDone()
 						} else {
-							tracker.StartFile(name, itemStat.Size)
+							displayString := name
+							if AppConfig.FileOpPathDisplay == 1 {
+								displayString = srcPath
+							} else if AppConfig.FileOpPathDisplay == 2 {
+								displayString = srcPath + " -> " + targetItemPath
+							}
+							tracker.StartFile(displayString, itemStat.Size)
 							tracker.UpdateBytes(int(itemStat.Size))
 							tracker.FileDone()
 						}
@@ -399,11 +413,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 		}
 		GlobalQueueManager.Enqueue(task)
 	} else { // Foreground or Background
-		title := " Copying... "
-		if isMove {
-			title = " Moving... "
-		}
-		dlg := NewFileOpProgressDialog(title)
+		dlg := NewFileOpProgressDialog(dialogTitle)
 		var taskCtx *vtui.TaskContext
 		dlg.btnCancel.OnClick = func() { dlg.SetExitCode(1) }
 		dlg.OnResult = func(code int) {
@@ -499,7 +509,11 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 			}
 			fullPath := activeVfs.Join(activeVfs.GetPath(), name)
 
-			tracker.StartFile(name, 0)
+			displayString := name
+			if AppConfig.FileOpPathDisplay > 0 {
+				displayString = fullPath
+			}
+			tracker.StartFile(displayString, 0)
 			updateUI(true)
 			handleArchiveIndexDelete(ctx, activeVfs, fullPath)
 
@@ -672,21 +686,31 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
-	if realSrc == realDst {
-		return fmt.Errorf("cannot copy folder into itself (source equals destination)")
+	cleanSrc := filepath.ToSlash(filepath.Clean(realSrc))
+	cleanDst := filepath.ToSlash(filepath.Clean(realDst))
+
+	if runtime.GOOS == "windows" {
+		cleanSrc = strings.ToLower(cleanSrc)
+		cleanDst = strings.ToLower(cleanDst)
 	}
 
-	// Используем "/" как универсальный разделитель для внутренних проверок путей,
-	// чтобы избежать проблем при копировании между Windows и Linux серверами.
-	if !strings.HasSuffix(realSrc, "/") && !strings.HasSuffix(realSrc, "\\") {
-		realSrc += "/"
+	if cleanSrc == cleanDst {
+		if stat.IsDir {
+			return fmt.Errorf("cannot copy folder into itself (source equals destination)")
+		}
+		return fmt.Errorf("cannot copy file onto itself (source equals destination)")
 	}
-	// Нормализуем оба пути к одному виду слэшей для корректного сравнения префиксов
-	compareSrc := filepath.ToSlash(realSrc)
-	compareDst := filepath.ToSlash(realDst)
 
-	if strings.HasPrefix(compareDst, compareSrc) {
-		return fmt.Errorf("cannot copy folder into itself (destination is a subfolder)")
+	prefixSrc := cleanSrc
+	if !strings.HasSuffix(prefixSrc, "/") {
+		prefixSrc += "/"
+	}
+
+	if strings.HasPrefix(cleanDst, prefixSrc) {
+		if stat.IsDir {
+			return fmt.Errorf("cannot copy folder into itself (destination is a subfolder)")
+		}
+		return fmt.Errorf("cannot copy file into its own subfolder")
 	}
 
 	dstStat, err := dstVfs.Stat(ctx, destPath)
@@ -735,7 +759,13 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 	itemName := dstVfs.Base(destPath)
 	if state.Tracker != nil {
-		state.Tracker.StartFile(itemName, stat.Size)
+		displayString := itemName
+		if AppConfig.FileOpPathDisplay == 1 {
+			displayString = srcPath
+		} else if AppConfig.FileOpPathDisplay == 2 {
+			displayString = srcPath + " -> " + destPath
+		}
+		state.Tracker.StartFile(displayString, stat.Size)
 		if state.UpdateUI != nil {
 			state.UpdateUI(false)
 		}

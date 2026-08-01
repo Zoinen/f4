@@ -755,6 +755,9 @@ type mockClipAuthManager struct {
 }
 
 func (m *mockClipAuthManager) Authorize(id string) int {
+	if m == nil {
+		return 0
+	}
 	if m.authorized {
 		return 1 // Allow Once
 	}
@@ -777,6 +780,13 @@ func TestAnsiParser_OSC52_Read_Security(t *testing.T) {
 	// Test 2: Allowed access
 	vtui.GlobalClipboardAccessManager = &mockClipAuthManager{authorized: true}
 	vtui.SetClipboard("secret_data")
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == "secret_data" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	parser.Process([]byte("\x1b]52;c;?\x07"))
 
 	var out string
@@ -806,8 +816,80 @@ func TestAnsiParser_OSC52_Write_Success(t *testing.T) {
 	// OSC 52 ; selection (c) ; data (b64) BEL
 	parser.Process([]byte(fmt.Sprintf("\x1b]52;c;%s\x07", b64)))
 
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == testStr {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	got := vtui.GetClipboard()
 	if got != testStr {
 		t.Errorf("Expected clipboard to be %q, got %q", testStr, got)
+	}
+}
+func TestAnsiParser_Excision_UTF8_Safety(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	p := NewAnsiParser(tv, nil)
+
+	// Simulation: Windows sync command followed by the first byte of 'П' (0xD0)
+	// In the old implementation string(data) would have corrupted 0xD0 if it was at the end of a chunk.
+	syncCmd := []byte("cd /d \"C:\\\" & rem f4_sync\r\n\r\n")
+	partialUTF8 := []byte{0xD0}
+
+	p.Process(append(syncCmd, partialUTF8...))
+
+	// Sync command must be excised
+	logStr := string(tv.GetAllLogBytes())
+	if strings.Contains(logStr, "f4_sync") {
+		t.Error("Sync command was not correctly excised from byte buffer")
+	}
+
+	// Partial UTF-8 must be preserved in the parser's internal buffer
+	if len(p.runeBuf) != 1 || p.runeBuf[0] != 0xD0 {
+		t.Errorf("Partial UTF-8 byte was lost or corrupted during excision. Buffer: %v", p.runeBuf)
+	}
+
+	// Completing the sequence: sending 0x9F (second byte of 'П')
+	p.Process([]byte{0x9F})
+	if tv.Lines[tv.CursorY][0].Char != 'П' {
+		t.Errorf("UTF-8 sequence was not correctly assembled after excision. Got: %c", rune(tv.Lines[tv.CursorY][0].Char))
+	}
+}
+
+func TestAnsiParser_DECSET_Modes(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	p := NewAnsiParser(tv, nil)
+
+	// 1. AutoWrap (CSI ? 7 h/l)
+	tv.AutoWrap = true
+	p.Process([]byte("\x1b[?7l"))
+	if tv.AutoWrap {
+		t.Error("CSI ? 7 l failed to disable AutoWrap")
+	}
+	p.Process([]byte("\x1b[?7h"))
+	if !tv.AutoWrap {
+		t.Error("CSI ? 7 h failed to enable AutoWrap")
+	}
+
+	// 2. Mouse Tracking (1000, 1002, 1003)
+	p.Process([]byte("\x1b[?1000h"))
+	if tv.MouseTrackingMode != 1000 {
+		t.Errorf("Expected MouseTrackingMode 1000, got %d", tv.MouseTrackingMode)
+	}
+	p.Process([]byte("\x1b[?1002h"))
+	if tv.MouseTrackingMode != 1002 {
+		t.Errorf("Expected MouseTrackingMode 1002, got %d", tv.MouseTrackingMode)
+	}
+	p.Process([]byte("\x1b[?1000l"))
+	if tv.MouseTrackingMode != 0 {
+		t.Error("Mouse tracking was not disabled by CSI ? 1000 l")
+	}
+
+	// 3. Mouse SGR Mode (1006)
+	tv.MouseSGRMode = false
+	p.Process([]byte("\x1b[?1006h"))
+	if !tv.MouseSGRMode {
+		t.Error("CSI ? 1006 h failed to enable MouseSGRMode")
 	}
 }

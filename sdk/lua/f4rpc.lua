@@ -8,6 +8,9 @@ local f4rpc = {
     handlers = {},
     pending = {},
     nextID = 1,
+    SHIFT = 16,
+    CTRL = 8,
+    ALT = 2,
 }
 
 -- Disable output buffering for real-time RPC communication

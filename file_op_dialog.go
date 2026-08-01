@@ -82,12 +82,22 @@ func (d *FileOpProgressDialog) UpdateScan(currentPath string, files, dirs int64)
 func (d *FileOpProgressDialog) UpdateTransfer(action string, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 	safeName := runewidth.Truncate(action+": "+filename, 54, "...")
 	d.lblCurrent.SetText(safeName)
-	d.pbCurrent.SetVisible(true)
-	d.pbCurrent.SetPercent(currentPct)
+
+	if currentPct >= 0 {
+		d.pbCurrent.SetVisible(true)
+		d.pbCurrent.SetPercent(currentPct)
+	} else {
+		d.pbCurrent.SetVisible(false)
+	}
 
 	d.lblTotal.SetText(runewidth.Truncate(totalText, 54, "..."))
-	d.pbTotal.SetVisible(true)
-	d.pbTotal.SetPercent(totalPct)
+
+	if totalPct >= 0 {
+		d.pbTotal.SetVisible(true)
+		d.pbTotal.SetPercent(totalPct)
+	} else {
+		d.pbTotal.SetVisible(false)
+	}
 
 	d.lblSpeed.SetVisible(true)
 	d.lblSpeed.SetText(speedText)

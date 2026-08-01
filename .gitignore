@@ -1,4 +1,5 @@
 debug*log
+.DS_Store
 plugins/dummy/f4-dummy-plugin
 f4
 f4.exe

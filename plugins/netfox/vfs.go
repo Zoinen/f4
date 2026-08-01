@@ -15,12 +15,14 @@ import (
 )
 
 type NetFoxConfig struct {
-	Type    string            `json:"Type"`
-	Host    string            `json:"Host"`
-	Port    string            `json:"Port"`
-	User    string            `json:"User"`
-	Pass    string            `json:"Pass"`
-	Options map[string]string `json:"Options,omitempty"`
+	Type     string            `json:"Type"`
+	Host     string            `json:"Host"`
+	Port     string            `json:"Port"`
+	User     string            `json:"User"`
+	Pass     string            `json:"Pass"`
+	Timeout  string            `json:"Timeout,omitempty"`
+	Codepage string            `json:"Codepage,omitempty"`
+	Options  map[string]string `json:"Options,omitempty"`
 }
 
 type NetFoxVFS struct {
@@ -53,6 +55,12 @@ func (v *NetFoxVFS) getConfigs() map[string]NetFoxConfig {
 	for k, cfg := range configs {
 		if cfg.Pass != "" {
 			cfg.Pass = deobfuscate(cfg.Pass)
+			configs[k] = cfg
+		}
+	}
+	for k, cfg := range configs {
+		if cfg.Codepage == "" {
+			cfg.Codepage = "65001"
 			configs[k] = cfg
 		}
 	}

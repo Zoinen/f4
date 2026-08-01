@@ -54,6 +54,30 @@ func TestSubst_Extension(t *testing.T) {
 		t.Fatalf("got %q", r.Command)
 	}
 }
+func TestSubst_NameWithoutExtension(t *testing.T) {
+	r := subst(t, "echo !~!", baseCtx())
+	if r.Command != "echo main" {
+		t.Fatalf("got %q", r.Command)
+	}
+}
+
+func TestSubst_DirNoTrailingSlash(t *testing.T) {
+	ctx := baseCtx()
+	ctx.Active.CurDir = "/home/me/work/"
+	r := subst(t, "echo !/!", ctx)
+	if r.Command != "echo /home/me/work" {
+		t.Fatalf("got %q", r.Command)
+	}
+}
+
+func TestSubst_DriveLetter(t *testing.T) {
+	ctx := baseCtx()
+	ctx.Active.CurDir = "C:\\Windows\\System32"
+	r := subst(t, "echo !:", ctx)
+	if r.Command != "echo C:" {
+		t.Fatalf("got %q", r.Command)
+	}
+}
 
 func TestSubst_ExtensionNoFile(t *testing.T) {
 	ctx := baseCtx()

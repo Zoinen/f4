@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -116,5 +117,135 @@ Crosshair = 1
 	}
 	if !AppConfig.HighlightDir {
 		t.Error("Default value (HighlightDir=true) was incorrectly overwritten.")
+	}
+}
+
+func TestConfig_GuiFontPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Переопределяем путь к конфигурационному файлу для тестов
+	oldPathFunc := getUserConfigIniPath
+	getUserConfigIniPath = func() string {
+		return filepath.Join(tmpDir, "settings.ini")
+	}
+	defer func() { getUserConfigIniPath = oldPathFunc }()
+
+	// Задаем тестовые значения
+	AppConfig.GuiFont = "UbuntuMono-Regular"
+	AppConfig.GuiFontSize = 22
+	SaveConfig()
+
+	// Сбрасываем текущую конфигурацию в памяти
+	AppConfig.GuiFont = ""
+	AppConfig.GuiFontSize = 0
+
+	// Читаем заново из временного файла
+	LoadConfig()
+
+	if AppConfig.GuiFont != "UbuntuMono-Regular" {
+		t.Errorf("Expected GuiFont to be 'UbuntuMono-Regular', got %q", AppConfig.GuiFont)
+	}
+	if AppConfig.GuiFontSize != 22 {
+		t.Errorf("Expected GuiFontSize to be 22, got %d", AppConfig.GuiFontSize)
+	}
+}
+
+func TestConfig_GuiDimensionsPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldPathFunc := getUserConfigIniPath
+	getUserConfigIniPath = func() string {
+		return filepath.Join(tmpDir, "settings.ini")
+	}
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = oldPathFunc
+		AppConfig = oldCfg
+	}()
+
+	// 1. Задаем тестовые значения
+	AppConfig.GuiCols = 120
+	AppConfig.GuiRows = 45
+	AppConfig.ConfirmExit = false
+
+	SaveConfig()
+
+	// 2. Сбрасываем текущую конфигурацию в памяти
+	AppConfig.GuiCols = 0
+	AppConfig.GuiRows = 0
+	AppConfig.ConfirmExit = true
+
+	// 3. Читаем заново из временного файла
+	LoadConfig()
+
+	// 4. Проверяем корректность восстановления
+	if AppConfig.GuiCols != 120 {
+		t.Errorf("Expected GuiCols to be 120, got %d", AppConfig.GuiCols)
+	}
+	if AppConfig.GuiRows != 45 {
+		t.Errorf("Expected GuiRows to be 45, got %d", AppConfig.GuiRows)
+	}
+	if AppConfig.ConfirmExit {
+		t.Error("Expected ConfirmExit to be loaded as false, got true")
+	}
+}
+
+// TestConfig_LayoutRoundTrip verifies that the [Layout] section persists
+// our three known keys and round-trips any unknown keys (e.g. far2l's
+// FullscreenHelp / PanelsDisposition) untouched on save.
+func TestConfig_LayoutRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	iniPath := filepath.Join(tmpDir, "settings.ini")
+
+	origUserPathFunc := getUserConfigIniPath
+	origPathsFunc := getConfigIniPaths
+	getUserConfigIniPath = func() string { return iniPath }
+	getConfigIniPaths = func() []string { return []string{iniPath} }
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = origUserPathFunc
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+
+	// Seed a config file with our three keys AND two far2l-only keys.
+	seed := "[Layout]\n" +
+		"WidthDecrement=3\n" +
+		"LeftHeightDecrement=5\n" +
+		"RightHeightDecrement=7\n" +
+		"FullscreenHelp=1\n" +
+		"PanelsDisposition=2\n"
+	if err := os.WriteFile(iniPath, []byte(seed), 0644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+
+	LoadConfig()
+	if AppConfig.WidthDecrement != 3 || AppConfig.LeftHeightDecrement != 5 || AppConfig.RightHeightDecrement != 7 {
+		t.Errorf("LoadConfig [Layout] values: W=%d L=%d R=%d, want 3/5/7",
+			AppConfig.WidthDecrement, AppConfig.LeftHeightDecrement, AppConfig.RightHeightDecrement)
+	}
+	if AppConfig.LayoutExtras["FullscreenHelp"] != "1" || AppConfig.LayoutExtras["PanelsDisposition"] != "2" {
+		t.Errorf("LoadConfig extras: %v", AppConfig.LayoutExtras)
+	}
+
+	// Save and re-read the file — extras must survive verbatim.
+	AppConfig.WidthDecrement = -2
+	SaveConfig()
+	out, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	body := string(out)
+	for _, want := range []string{
+		"[Layout]",
+		"FullscreenHelp=1",
+		"LeftHeightDecrement=5",
+		"PanelsDisposition=2",
+		"RightHeightDecrement=7",
+		"WidthDecrement=-2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SaveConfig missing %q in output:\n%s", want, body)
+		}
 	}
 }

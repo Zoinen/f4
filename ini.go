@@ -67,10 +67,34 @@ func (ini *IniFile) Merge(other *IniFile) {
 
 // GetString safely retrieves a value or returns the default.
 func (ini *IniFile) GetString(section, key, def string) string {
+	// First check environment variables for overrides (e.g. F4_PANEL_SHOW_HIDDEN_FILES)
+	envUpper := "F4_" + strings.ToUpper(section) + "_" + camelToSnake(key)
+	if val := os.Getenv(envUpper); val != "" {
+		return val
+	}
+	envLower := strings.ToLower(envUpper)
+	if val := os.Getenv(envLower); val != "" {
+		return val
+	}
+
 	if sec, ok := ini.data[section]; ok {
 		if val, ok := sec[key]; ok {
 			return val
 		}
 	}
 	return def
+}
+
+func camelToSnake(s string) string {
+	var res []rune
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			prev := res[len(res)-1]
+			if prev != '_' && !(prev >= 'A' && prev <= 'Z') {
+				res = append(res, '_')
+			}
+		}
+		res = append(res, r)
+	}
+	return strings.ToUpper(string(res))
 }

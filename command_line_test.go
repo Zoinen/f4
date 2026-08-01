@@ -55,8 +55,9 @@ func TestCommandLine_History(t *testing.T) {
 	cl.Edit.AddHistory("cd /tmp")
 	cl.Edit.AddHistory("ls -la") // Duplicate of a previous one, but not the latest
 
-	if len(cl.Edit.History) != 3 {
-		t.Errorf("Expected history length 3, got %d", len(cl.Edit.History))
+	// With DeduplicateHistory = true, the duplicate "ls -la" is moved to top, removing the older one.
+	if len(cl.Edit.History) != 2 {
+		t.Errorf("Expected history length 2, got %d", len(cl.Edit.History))
 	}
 
 	// 2. Test navigation
@@ -83,7 +84,7 @@ func TestCommandLine_History(t *testing.T) {
 	// 3. Test duplicate prevention (consecutive)
 	cl.Edit.AddHistory("pwd")
 	cl.Edit.AddHistory("pwd")
-	if len(cl.Edit.History) != 4 { // Only one "pwd" should be added
+	if len(cl.Edit.History) != 3 { // Only one "pwd" should be added, total items: ["pwd", "ls -la", "cd /tmp"]
 		t.Errorf("Duplicate history prevention failed, length: %d", len(cl.Edit.History))
 	}
 

@@ -81,6 +81,9 @@ ApplicationWindow {
     }
 
     function needsFallbackGrid() {
+        var shell = shellFrame()
+        if (shell && shell.fallback === true)
+            return true
         var top = isAppScene() ? activeSurface() : topFrame()
         if (!top)
             return !isAppScene()

@@ -49,8 +49,10 @@ func main() {
 
 	vtui.SetupStderrLog()
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
+	LoadConfig() // Load config early to apply GUI font settings
 
 	defer func() {
+		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
 		if r := recover(); r != nil {
 			vtui.DebugLog("FATAL PANIC IN MAIN: %v", r)
 			crashPath := vtui.RecordCrash(r, nil)
@@ -74,6 +76,12 @@ func main() {
 	var guiBackend string
 	var ttyMode bool
 	var version bool
+	var attachedMode bool
+
+	exeName := filepath.Base(absExecPath)
+	if strings.Contains(strings.ToLower(exeName), "gui") {
+		guiMode = true
+	}
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -143,6 +151,8 @@ func main() {
 			return
 		case "--tty":
 			ttyMode = true
+		case "--attached":
+			attachedMode = true
 		case "--sudo-dispatcher":
 			if flagVal != "" {
 				sudoDispatcher = flagVal
@@ -154,7 +164,7 @@ func main() {
 	}
 
 	if version {
-		fmt.Println(vtui.GetVersionInfo())
+		fmt.Println(getFormattedVersionInfo())
 		return
 	}
 
@@ -188,6 +198,7 @@ func main() {
 	}
 
 	if guiMode {
+		checkAndDetach(attachedMode)
 		if guiBackend != "" {
 			if err := RunGui(guiBackend); err != nil {
 				fmt.Fprintf(os.Stderr, "\n[f4] FATAL GUI ERROR: %v\n", err)
@@ -203,10 +214,29 @@ func main() {
 	}
 
 	// Default auto-detect mode (neither --gui nor --tty specified)
-	if err := tryRunDefaultGui(); err != nil {
-		vtui.DebugLog("MAIN: Falling back to console mode: %v", err)
-		ManageSessions()
+	if shouldTryGui() {
+		checkAndDetach(attachedMode)
+		if err := tryRunDefaultGui(); err != nil {
+			vtui.DebugLog("MAIN: GUI auto-detect failed after detach: %v", err)
+			os.Exit(1)
+		}
+		return
 	}
+
+	vtui.DebugLog("MAIN: Falling back to console mode")
+	ManageSessions()
+}
+
+func shouldTryGui() bool {
+	if runtime.GOOS == "windows" {
+		// On Windows, we compile separate binaries for console (f4.exe) and GUI (f4-gui.exe).
+		// We do not auto-detect GUI mode; it must be requested via filename or --gui flag.
+		return false
+	}
+	if runtime.GOOS == "darwin" {
+		return true
+	}
+	return os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != ""
 }
 
 func tryRunDefaultGui() error {
@@ -282,12 +312,13 @@ func InitCore() *vtui.ScreenBuf {
 }
 
 func SetupUI() {
-	vtui.ConfigDiskLogging(true)
-	vtui.DebugLog("=== F4 STARTUP [%s] PID:%d ===", vtui.GetVersionInfo(), os.Getpid())
+	vtui.ConfigDiskLogging(os.Getenv("VTUI_DEBUG") != "")
+	vtui.DebugLog("=== F4 STARTUP [%s] PID:%d ===", getFormattedVersionInfo(), os.Getpid())
 
 	SetDefaultF4Palette()
-	InitLang()
 	LoadConfig()
+	InitLang()
+	InitHelpSystem()
 	if err := ApplyColorStyle(AppConfig.ColorStyle); err != nil {
 		vtui.DebugLog("COLORS: %v; falling back to Modern", err)
 		AppConfig.ColorStyle = "Modern"
@@ -299,10 +330,31 @@ func SetupUI() {
 	vtui.GlobalClipboardAccessManager = NewF4ClipboardAuth()
 	RegisterDrive("Null VFS", func() vfs.VFS { return vfs.NewNullVFS(50 * 1024 * 1024) }) // 50 MB/s
 
-	configDir, _ := os.UserConfigDir()
+	configDir := GetF4ConfigDir()
 
-	os.MkdirAll(filepath.Join(configDir, "f4"), 0755)
-	MacroMgr = NewMacroManager(filepath.Join(configDir, "f4", "key_macros.ini"))
+	// Initialize File Highlighting
+	highlightPath := filepath.Join(configDir, "highlight.ini")
+	if _, err := os.Stat(highlightPath); os.IsNotExist(err) {
+		createDefaultHighlightIni(highlightPath)
+	}
+	if _, err := os.Stat(highlightPath); err == nil {
+		highlightIni := LoadIni(highlightPath)
+		GlobalFileHighlighter.LoadFromIni(highlightIni)
+	}
+
+	// Прокидываем путь портативного конфига в изолированные пакеты vtui и vfs
+	vtui.CrashDirBase = filepath.Dir(configDir)
+	vfs.CustomConfigDir = configDir
+
+	// Load legacy color overrides if they exist
+	legacyColorsPath := filepath.Join(configDir, "farcolors.ini")
+	if _, err := os.Stat(legacyColorsPath); err == nil {
+		legacyIni := LoadIni(legacyColorsPath)
+		InitColors(legacyIni)
+	}
+
+	os.MkdirAll(configDir, 0755)
+	MacroMgr = NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
 	vtui.FrameManager.EventFilter = MacroMgr.Filter
 	LoadSession()
 	vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
@@ -316,6 +368,16 @@ func SetupUI() {
 	if AppConfig.SavePanelPaths {
 		lp := panels.panels[0].(*FileSystemPanel)
 		rp := panels.panels[1].(*FileSystemPanel)
+
+		// Восстанавливаем режимы отображения и типы сортировки панелей
+		lp.viewMode = ViewMode(LastLeftViewMode)
+		lp.sortMode = SortMode(LastLeftSortMode)
+		lp.sortReverse = LastLeftSortRev
+
+		rp.viewMode = ViewMode(LastRightViewMode)
+		rp.sortMode = SortMode(LastRightSortMode)
+		rp.sortReverse = LastRightSortRev
+
 		if LastLeftPath != "" && panels.NavigateToPath(lp, LastLeftPath) {
 			// Navigated successfully
 		} else {
@@ -335,11 +397,16 @@ func SetupUI() {
 		lp.pendingSelection = LastLeftCursor
 		rp.pendingSelection = LastRightCursor
 		panels.activeIdx = LastActivePanel
+
+		panels.showPanels = LastShowPanels
+		panels.showLeftPanel = LastShowLeft
+		panels.showRightPanel = LastShowRight
 	}
 	vtui.FrameManager.Push(panels)
 
 	vtui.FrameManager.MenuBar = panels.menuBar
 	vtui.FrameManager.KeyBar = panels.keyBar
+	vtui.FrameManager.OnRender = UpdateWindowTitle
 
 	noPlugins := false
 	for _, arg := range os.Args {
@@ -355,11 +422,16 @@ func SetupUI() {
 	} else {
 		vtui.DebugLog("CORE: Plugins disabled by --no-plugins flag")
 	}
+
+	// Background update check
+	if AppConfig.UpdateInterval > 0 {
+		go CheckForUpdates(panels, false)
+		go CheckForPluginUpdates()
+	}
 }
 
 var getSessionIniPath = func() string {
-	configDir, _ := os.UserConfigDir()
-	return filepath.Join(configDir, "f4", "session.ini")
+	return filepath.Join(GetF4ConfigDir(), "session.ini")
 }
 
 func LoadSession() {
@@ -372,16 +444,32 @@ func LoadSession() {
 	LastEditorSearch = ini.GetString("EditorSearch", "Pattern", "")
 	LastEditorSearchCase = ini.GetString("EditorSearch", "CaseSensitive", "0") == "1"
 	LastEditorSearchReverse = ini.GetString("EditorSearch", "Reverse", "0") == "1"
+	LastEditorSearchRegexp = ini.GetString("EditorSearch", "Regexp", "0") == "1"
+	LastEditorSearchWholeWord = ini.GetString("EditorSearch", "WholeWord", "0") == "1"
 
 	LastFindFileMask = ini.GetString("FindFile", "Mask", "*")
 	LastFindFileText = ini.GetString("FindFile", "Text", "")
 
-	LastLeftPath = ini.GetString("Session", "LeftPath", "")
-	LastRightPath = ini.GetString("Session", "RightPath", "")
-	LastLeftCursor = ini.GetString("Session", "LeftCursor", "")
-	LastRightCursor = ini.GetString("Session", "RightCursor", "")
+	// Восстанавливаем состояние левой панели
+	LastLeftPath = ini.GetString("Panel/Left", "Folder", "")
+	LastLeftCursor = ini.GetString("Panel/Left", "CurFile", "")
+	fmt.Sscanf(ini.GetString("Panel/Left", "ViewMode", "0"), "%d", &LastLeftViewMode)
+	fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &LastLeftSortMode)
+	LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
+
+	// Восстанавливаем состояние правой панели
+	LastRightPath = ini.GetString("Panel/Right", "Folder", "")
+	LastRightCursor = ini.GetString("Panel/Right", "CurFile", "")
+	fmt.Sscanf(ini.GetString("Panel/Right", "ViewMode", "0"), "%d", &LastRightViewMode)
+	fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &LastRightSortMode)
+	LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
+
+	// Восстанавливаем глобальное состояние сессии
 	activeStr := ini.GetString("Session", "ActivePanel", "1")
 	fmt.Sscanf(activeStr, "%d", &LastActivePanel)
+	LastShowPanels = ini.GetString("Session", "ShowPanels", "1") == "1"
+	LastShowLeft = ini.GetString("Session", "ShowLeft", "1") == "1"
+	LastShowRight = ini.GetString("Session", "ShowRight", "1") == "1"
 
 	vtui.DebugLog("SESSION: Loaded state from %s", path)
 }
@@ -390,17 +478,38 @@ func SaveSession() {
 	path := getSessionIniPath()
 	os.MkdirAll(filepath.Dir(path), 0755)
 
+	if vtui.FrameManager != nil {
+		w := vtui.FrameManager.GetScreenSize()
+		h := vtui.FrameManager.GetScreenHeight()
+		if w > 0 && h > 0 {
+			if AppConfig.GuiCols != w || AppConfig.GuiRows != h {
+				AppConfig.GuiCols = w
+				AppConfig.GuiRows = h
+				SaveConfig()
+			}
+		}
+	}
+
 	if AppConfig.SavePanelPaths && vtui.FrameManager != nil {
 		for _, s := range vtui.FrameManager.Screens {
 			for _, f := range s.Frames {
 				if pf, ok := f.(*PanelsFrame); ok {
 					LastLeftPath, LastRightPath = pf.GetPaths()
 					LastActivePanel = pf.activeIdx
+					LastShowPanels = pf.showPanels
+					LastShowLeft = pf.showLeftPanel
+					LastShowRight = pf.showRightPanel
 					if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
 						LastLeftCursor = fsp.GetSelectedName()
+						LastLeftViewMode = int(fsp.viewMode)
+						LastLeftSortMode = int(fsp.sortMode)
+						LastLeftSortRev = fsp.sortReverse
 					}
 					if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
 						LastRightCursor = fsp.GetSelectedName()
+						LastRightViewMode = int(fsp.viewMode)
+						LastRightSortMode = int(fsp.sortMode)
+						LastRightSortRev = fsp.sortReverse
 					}
 					goto found
 				}
@@ -414,17 +523,32 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("Pattern = %s\n", LastEditorSearch))
 	sb.WriteString(fmt.Sprintf("CaseSensitive = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchCase]))
 	sb.WriteString(fmt.Sprintf("Reverse = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchReverse]))
+	sb.WriteString(fmt.Sprintf("Regexp = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchRegexp]))
+	sb.WriteString(fmt.Sprintf("WholeWord = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchWholeWord]))
 
 	sb.WriteString("\n[FindFile]\n")
 	sb.WriteString(fmt.Sprintf("Mask = %s\n", LastFindFileMask))
 	sb.WriteString(fmt.Sprintf("Text = %s\n", LastFindFileText))
 
 	sb.WriteString("\n[Session]\n")
-	sb.WriteString(fmt.Sprintf("LeftPath = %s\n", LastLeftPath))
-	sb.WriteString(fmt.Sprintf("RightPath = %s\n", LastRightPath))
-	sb.WriteString(fmt.Sprintf("LeftCursor = %s\n", LastLeftCursor))
-	sb.WriteString(fmt.Sprintf("RightCursor = %s\n", LastRightCursor))
 	sb.WriteString(fmt.Sprintf("ActivePanel = %d\n", LastActivePanel))
+	sb.WriteString(fmt.Sprintf("ShowPanels = %d\n", map[bool]int{true: 1, false: 0}[LastShowPanels]))
+	sb.WriteString(fmt.Sprintf("ShowLeft = %d\n", map[bool]int{true: 1, false: 0}[LastShowLeft]))
+	sb.WriteString(fmt.Sprintf("ShowRight = %d\n", map[bool]int{true: 1, false: 0}[LastShowRight]))
+
+	sb.WriteString("\n[Panel/Left]\n")
+	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastLeftPath))
+	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastLeftCursor))
+	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastLeftViewMode))
+	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastLeftSortMode))
+	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortRev]))
+
+	sb.WriteString("\n[Panel/Right]\n")
+	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastRightPath))
+	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastRightCursor))
+	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastRightViewMode))
+	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastRightSortMode))
+	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev]))
 
 	err := os.WriteFile(path, []byte(sb.String()), 0644)
 	if err != nil {
@@ -433,4 +557,78 @@ func SaveSession() {
 	}
 
 	vtui.DebugLog("SESSION: Saved state to %s", path)
+}
+
+func getFormattedVersionInfo() string {
+	return getLongVersionInfo()
+}
+
+func formatVersionSHA(v string) string {
+	runes := []rune(v)
+	var res []rune
+	i := 0
+	for i < len(runes) {
+		if i+8 <= len(runes) && isHexSequence(runes[i:i+8]) {
+			isStandalone := true
+			if i > 0 && isHexChar(runes[i-1]) {
+				isStandalone = false
+			}
+			if i+8 < len(runes) && isHexChar(runes[i+8]) {
+				isStandalone = false
+			}
+			if isStandalone {
+				res = append(res, runes[i:i+7]...)
+				i += 8
+				continue
+			}
+		}
+		res = append(res, runes[i])
+		i++
+	}
+	return string(res)
+}
+
+func isHexSequence(s []rune) bool {
+	for _, r := range s {
+		if !isHexChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexChar(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+func createDefaultHighlightIni(path string) {
+	content := `[Highlight_0]
+Name = Executables
+Mask = *.exe, *.bat, *.cmd, *.sh, *.bash
+IncludeAttributes = Executable
+NormalColor = foreground:#8AE234
+SelectedColor = foreground:#8AE234 | background:#0000A0
+CursorColor = foreground:#8AE234 | background:#00AAAA
+
+[Highlight_1]
+Name = Archives
+Mask = *.zip, *.rar, *.tar, *.gz, *.7z, *.tgz, *.bz2, *.xz, *.zst
+NormalColor = foreground:#AD7FA8
+SelectedColor = foreground:#AD7FA8 | background:#0000A0
+CursorColor = foreground:#AD7FA8 | background:#00AAAA
+
+[Highlight_2]
+Name = Hidden Files
+IncludeAttributes = Hidden
+NormalColor = foreground:#729FCF
+SelectedColor = foreground:#729FCF | background:#0000A0
+CursorColor = foreground:#729FCF | background:#00AAAA
+
+[Highlight_3]
+Name = Directories
+IncludeAttributes = Directory
+NormalColor = foreground:#FFFFFF
+SelectedColor = foreground:#FFFFFF | background:#0000A0
+CursorColor = foreground:#FFFFFF | background:#00AAAA
+`
+	_ = os.WriteFile(path, []byte(content), 0644)
 }

@@ -91,6 +91,7 @@ func TestLayout_SearchResultsDialog(t *testing.T) {
 	found := []FoundFile{{Path: filepath.FromSlash("/tmp/test.txt"), Item: vfs.VFSItem{Name: "test.txt", Size: 123}}}
 
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	ShowSearchResults(pf, v, found)
 
 	dlg := vtui.FrameManager.GetTopFrame().(vtui.Container)

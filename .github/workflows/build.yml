@@ -74,6 +74,14 @@ jobs:
         # Build core
         go build $GCFLAGS -ldflags="$LDFLAGS" -o build/f4$EXT .
 
+        # Build GUI-only binary for Windows (no console flash)
+        if [ "$GOOS" = "windows" ]; then
+          go build $GCFLAGS -ldflags="$LDFLAGS -H windowsgui" -o build/f4-gui$EXT .
+        fi
+
+        # Copy language and help assets
+        cp -r lang help build/
+
         # Build internal dummy plugin
         cd plugins/dummy_internal
         go build $GCFLAGS -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT .

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 	"strings"
@@ -62,6 +63,9 @@ type TerminalView struct {
 	ApplicationCursorKeys bool
 	KittyFlags            int
 	KittyFlagsStack       []int
+	AutoWrap              bool
+	MouseTrackingMode     int
+	MouseSGRMode          bool
 
 	clipboardChunks []byte
 	pty             PtyBackend
@@ -78,6 +82,7 @@ func NewTerminalView(w, h int) *TerminalView {
 	tv := &TerminalView{
 		Width:     w,
 		Height:    h,
+		AutoWrap:  true,
 		authCache: make(map[string]int),
 	}
 	tv.ResetBuffer(w, h)
@@ -401,11 +406,14 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 	}
 
 	if tv.CursorX >= tv.Width {
-		if !tv.UseAltScreen && tv.CursorY >= 0 && tv.CursorY < tv.Height {
-			tv.WrapFlags[tv.CursorY] = true // Soft wrap (reached edge)
+		if tv.AutoWrap {
+			if !tv.UseAltScreen && tv.CursorY >= 0 && tv.CursorY < tv.Height {
+				tv.WrapFlags[tv.CursorY] = true // Soft wrap (reached edge)
+			}
+			tv.newline()
+		} else {
+			tv.CursorX = tv.Width - 1 // Overwrite last character instead of wrapping
 		}
-		// vtui.DebugLog("TERM_VIEW: Soft Wrap at X=%d, Y=%d", tv.CursorX, tv.CursorY)
-		tv.newline()
 	}
 
 	buf := tv.getBuffer()
@@ -1133,7 +1141,7 @@ func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
 		text := stk.PopString()
 		title := stk.PopString()
 		vtui.FrameManager.PostTask(func() {
-			vtui.ShowMessage(" "+title+" ", text, []string{"&Ok"})
+			vtui.ShowToast(title+": "+text, 3*time.Second)
 		})
 	case 'f': // FKey titles
 		for i := 0; i < 12; i++ {

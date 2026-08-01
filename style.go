@@ -21,8 +21,7 @@ type ColorStyle struct {
 }
 
 var getUserStylesDir = func() string {
-	configDir, _ := os.UserConfigDir()
-	return filepath.Join(configDir, "f4", "styles")
+	return filepath.Join(GetF4ConfigDir(), "styles")
 }
 
 func styleFromIni(fallbackName string, ini *IniFile) ColorStyle {

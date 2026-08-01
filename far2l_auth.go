@@ -16,8 +16,7 @@ type F4ClipboardAuth struct {
 }
 
 func NewF4ClipboardAuth() *F4ClipboardAuth {
-	cfgDir, _ := os.UserConfigDir()
-	p := filepath.Join(cfgDir, "f4", "tty_clipboard", "autheds")
+	p := filepath.Join(GetF4ConfigDir(), "tty_clipboard", "autheds")
 	os.MkdirAll(filepath.Dir(p), 0755)
 
 	auths := make(map[string]bool)

@@ -704,3 +704,37 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 		t.Errorf("expected content1, got %q", string(data1))
 	}
 }
+
+type mockTickerReporter struct {
+	calls int
+}
+
+func (m *mockTickerReporter) UpdateScan(string, int64, int64) {}
+func (m *mockTickerReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	m.calls++
+}
+func (m *mockTickerReporter) IsCancelled() bool { return false }
+
+// TestIssue149_TimeTicksDuringBlockingIO ensures that the progress dialog receives
+// continuous time updates even when the underlying archive I/O is blocked.
+// This addresses the "Time updates unevenly/jumps" user claim.
+func TestIssue149_TimeTicksDuringBlockingIO(t *testing.T) {
+	ctx := context.Background()
+	done := make(chan struct{})
+	rep := &mockTickerReporter{}
+
+	getStatus := func() (string, string, int) {
+		return "Extracting", "file.txt", 50
+	}
+
+	go runProgressTicker(ctx, done, rep, getStatus)
+
+	// Simulate blocking I/O for 1.2 seconds
+	time.Sleep(1200 * time.Millisecond)
+	close(done)
+
+	// The ticker runs every 250ms. In 1.2 seconds, it should tick at least 4 times.
+	if rep.calls < 4 {
+		t.Errorf("Expected progress ticker to fire at least 4 times during blocking I/O, but got %d", rep.calls)
+	}
+}

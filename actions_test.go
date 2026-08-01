@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
@@ -172,7 +173,7 @@ Loop:
 			task()
 
 			// Если выскочил диалог ошибки удаления (AskError), нажимаем Skip
-			if fm.GetTopFrameType() == vtui.TypeDialog && strings.Contains(fm.GetTopFrame().GetTitle(), "Error") {
+			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Error " {
 				if dlg, ok := fm.GetTopFrame().(vtui.Container); ok {
 					for _, itm := range dlg.GetChildren() {
 						if b, ok := itm.(*vtui.Button); ok && strings.Contains(b.GetText(), "Skip") {
@@ -283,7 +284,7 @@ Loop:
 		select {
 		case task := <-fm.TaskChan:
 			task()
-			if !retryClicked && fm.GetTopFrameType() == vtui.TypeDialog && strings.Contains(fm.GetTopFrame().GetTitle(), "Error") {
+			if !retryClicked && fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Error " {
 				clickDialogButton(t, fm.GetTopFrame().(vtui.Container), "Retry")
 				retryClicked = true
 			}
@@ -343,7 +344,7 @@ Loop:
 		select {
 		case task := <-fm.TaskChan:
 			task()
-			if fm.GetTopFrameType() == vtui.TypeDialog && strings.Contains(fm.GetTopFrame().GetTitle(), "Error") {
+			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Error " {
 				clickDialogButton(t, fm.GetTopFrame().(vtui.Container), "Abort")
 				break Loop
 			}
@@ -408,7 +409,7 @@ Loop:
 		case task := <-fm.TaskChan:
 			task()
 
-			if !skipAllClicked && fm.GetTopFrameType() == vtui.TypeDialog && strings.Contains(fm.GetTopFrame().GetTitle(), "Error") {
+			if !skipAllClicked && fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Error " {
 				clickDialogButton(t, fm.GetTopFrame().(vtui.Container), "Skip All")
 				skipAllClicked = true
 			}
@@ -623,6 +624,66 @@ func TestActionCopyMove_TrailingSlash(t *testing.T) {
 	top.SetExitCode(-1)
 	vtui.FrameManager.Pop()
 }
+func TestActionCopy_ShiftF5_Prefill(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	fspSrc := pf.panels[0].(*FileSystemPanel)
+
+	// Setup actual existing paths using t.TempDir()
+	tmpDir := t.TempDir()
+	srcPath := filepath.Join(tmpDir, "src")
+	os.MkdirAll(srcPath, 0755)
+
+	if err := fspSrc.vfs.SetPath(srcPath); err != nil {
+		t.Fatalf("Failed to set src VFS path: %v", err)
+	}
+
+	// Mock entries so we have a file under the cursor
+	fspSrc.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "test.txt", IsDir: false}},
+	}
+	fspSrc.SetCursorIndex(0)
+	pf.activeIdx = 0
+
+	// Trigger Shift-F5 (Copy in place)
+	actionCopyInPlace(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil || top.GetTitle() != " Copy " {
+		t.Fatalf("Expected Copy dialog, got %v", top)
+	}
+
+	dlg, ok := top.(vtui.Container)
+	if !ok {
+		t.Fatal("Copy dialog not found on top")
+	}
+
+	var editDest *vtui.Edit
+	for _, itm := range dlg.GetChildren() {
+		if e, ok := itm.(*vtui.Edit); ok {
+			editDest = e
+			break
+		}
+	}
+
+	if editDest == nil {
+		t.Fatal("Destination edit field not found in dialog")
+	}
+
+	txt := editDest.GetText()
+	if txt != "test.txt" {
+		t.Errorf("Expected prefilled name 'test.txt', got %q", txt)
+	}
+
+	// Cleanup
+	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
 
 func TestActionNewFile_Flow(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -639,6 +700,61 @@ func TestActionNewFile_Flow(t *testing.T) {
 	if top == nil || top.GetTitle() != Msg("Edit.NewFileTitle") {
 		t.Errorf("Expected New File dialog, got %v", top)
 	}
+}
+func TestDelete_FocusCustomization(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fsp := pf.panels[0].(*FileSystemPanel)
+	fsp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "test.txt"}}}
+	pf.activeIdx = 0
+
+	origDelFocus := AppConfig.DeleteCancelFocused
+	defer func() { AppConfig.DeleteCancelFocused = origDelFocus }()
+
+	// 1. Тест режима по умолчанию (фокус на Cancel)
+	AppConfig.DeleteCancelFocused = true
+	actionDelete(pf)
+
+	dlg1 := fm.GetTopFrame().(vtui.Container)
+	var btnCancel *vtui.Button
+	for _, child := range dlg1.GetChildren() {
+		if b, ok := child.(*vtui.Button); ok && strings.Contains(b.GetText(), "Cancel") {
+			btnCancel = b
+			break
+		}
+	}
+	if btnCancel == nil {
+		t.Fatal("Cancel button not found")
+	}
+	if !btnCancel.IsFocused() {
+		t.Error("Expected 'Cancel' button to be focused by default")
+	}
+	fm.Pop()
+
+	// 2. Тест кастомного режима (фокус на Delete/OK)
+	AppConfig.DeleteCancelFocused = false
+	actionDelete(pf)
+
+	dlg2 := fm.GetTopFrame().(vtui.Container)
+	var btnDel *vtui.Button
+	for _, child := range dlg2.GetChildren() {
+		if b, ok := child.(*vtui.Button); ok && strings.Contains(b.GetText(), "Delete") {
+			btnDel = b
+			break
+		}
+	}
+	if btnDel == nil {
+		t.Fatal("Delete button not found")
+	}
+	if !btnDel.IsFocused() {
+		t.Error("Expected 'Delete' button to be focused after customization")
+	}
+	fm.Pop()
 }
 func TestActionOpenEditor_AlreadyOpened(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -880,22 +996,58 @@ func TestSession_DiskPersistence(t *testing.T) {
 	LastRightCursor = "file.b"
 	LastActivePanel = 0
 
+	LastLeftViewMode = 1
+	LastRightViewMode = 0
+	LastLeftSortMode = 3
+	LastRightSortMode = 2
+	LastLeftSortRev = true
+	LastRightSortRev = false
+
+	LastShowPanels = false
+	LastShowLeft = true
+	LastShowRight = false
+
 	SaveSession()
 
 	// Сбрасываем и загружаем
-	LastEditorSearch = ""
 	LastLeftPath = ""
 	LastRightPath = ""
 	LastLeftCursor = ""
 	LastRightCursor = ""
 	LastActivePanel = 1
+
+	LastLeftViewMode = 0
+	LastRightViewMode = 1
+	LastLeftSortMode = 0
+	LastRightSortMode = 0
+	LastLeftSortRev = false
+	LastRightSortRev = true
+
+	LastShowPanels = true
+	LastShowLeft = false
+	LastShowRight = true
+
 	LoadSession()
 
 	if LastEditorSearch != "disk-test" || LastLeftPath != "/path/a" || LastLeftCursor != "file.a" || LastActivePanel != 0 {
 		t.Errorf("Disk persistence failed. Search:%q, LeftPath:%q, LeftCursor:%q, Active:%d",
 			LastEditorSearch, LastLeftPath, LastLeftCursor, LastActivePanel)
 	}
+
+	if LastLeftViewMode != 1 || LastRightViewMode != 0 || LastLeftSortMode != 3 || LastRightSortMode != 2 {
+		t.Errorf("View/Sort modes persistence failed. LeftVM:%d, RightVM:%d, LeftSM:%d, RightSM:%d",
+			LastLeftViewMode, LastRightViewMode, LastLeftSortMode, LastRightSortMode)
+	}
+
+	if !LastLeftSortRev || LastRightSortRev {
+		t.Errorf("Sort directions persistence failed. LeftRev:%v, RightRev:%v", LastLeftSortRev, LastRightSortRev)
+	}
+
+	if LastShowPanels || !LastShowLeft || LastShowRight {
+		t.Errorf("Panel visibility persistence failed. Show:%v, Left:%v, Right:%v", LastShowPanels, LastShowLeft, LastShowRight)
+	}
 }
+
 func TestActionPanelSettings_Flow(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()
@@ -942,6 +1094,43 @@ func TestActionPanelSettings_Flow(t *testing.T) {
 	}
 
 	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+func TestActionLanguage_Flow(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	// 1. Вызываем диалог выбора языка
+	actionLanguage(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil {
+		t.Fatalf("Expected menu, got nil")
+	}
+
+	menu, ok := top.(*vtui.VMenu)
+	if !ok {
+		t.Fatalf("Expected VMenu for Language selection, got %T", top)
+	}
+
+	// 2. Проверяем, что в списке есть как минимум дефолтный English
+	foundEnglish := false
+	for _, itm := range menu.Items {
+		if itm.Text == "English" {
+			foundEnglish = true
+			break
+		}
+	}
+	if !foundEnglish {
+		t.Errorf("English language option not found in menu")
+	}
+
+	// 3. Закрываем
+	menu.Close()
 	vtui.FrameManager.Pop()
 }
 func TestActionManagePlugins_Flow(t *testing.T) {
@@ -1132,6 +1321,7 @@ func TestActionOpenViewer_ProgressTask(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 
 	called := false
@@ -1173,4 +1363,313 @@ LoopOpen:
 	}
 
 	t.Log("SUCCESS: Progress dialog was correctly displayed during slow file load.")
+}
+
+func TestActionCommandHistory_Flow(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	pf.cmdLine.Edit.History = nil
+	actionCommandHistory(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil || !strings.Contains(top.GetTitle(), "History") {
+		t.Fatalf("Expected empty history warning dialog, got %v", top)
+	}
+	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+
+	pf.cmdLine.Edit.History = []string{"cmd1", "cmd2"}
+	actionCommandHistory(pf)
+
+	top = vtui.FrameManager.GetTopFrame()
+	if top == nil || top.GetTitle() != Msg("History.CommandsTitle") {
+		t.Fatalf("Expected Command History dialog, got %v", top)
+	}
+
+	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+
+func TestActionCommandHistory_Deletion(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	pf.cmdLine.Edit.History = []string{"cmd1", "cmd2", "cmd3"}
+	actionCommandHistory(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	menu, ok := top.(*vtui.VMenu)
+	if !ok {
+		t.Fatalf("Expected VMenu on top, got %T", top)
+	}
+
+	menu.SetSelectPos(1)
+
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_DELETE,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+
+	history := pf.cmdLine.Edit.History
+	if len(history) != 2 || history[0] != "cmd1" || history[1] != "cmd3" {
+		t.Errorf("Expected history [cmd1, cmd3], got %v", history)
+	}
+
+	if menu.ItemCount != 2 {
+		t.Errorf("Expected 2 menu items, got %d", menu.ItemCount)
+	}
+
+	menu.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+func TestActionAppearanceSettings_SaveCursor(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	origVal := AppConfig.KeepTerminalCursor
+	defer func() { AppConfig.KeepTerminalCursor = origVal }()
+
+	AppConfig.KeepTerminalCursor = false
+
+	actionAppearanceSettings(pf)
+	top := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	var chkCursor *vtui.Checkbox
+	for _, itm := range top.GetChildren() {
+		if c, ok := itm.(*vtui.Checkbox); ok {
+			if strings.Contains(strings.ToLower(c.GetText()), "cursor") {
+				chkCursor = c
+				break
+			}
+		}
+	}
+	if chkCursor == nil {
+		t.Fatal("KeepTerminalCursor checkbox not found in Appearance Settings")
+	}
+
+	if chkCursor.State != 0 {
+		t.Error("Expected checkbox to be unchecked initially")
+	}
+
+	chkCursor.State = 1
+	clickDialogButton(t, top, "Ok")
+
+	for i := 0; i < 10; i++ {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+		}
+	}
+
+	if !AppConfig.KeepTerminalCursor {
+		t.Error("KeepTerminalCursor was not saved to AppConfig")
+	}
+}
+
+func TestPanelsFrame_RunAdvancedProgressTask(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	done := make(chan struct{})
+	workerBlock := make(chan struct{})
+	var reporter vfs.TaskReporter
+
+	pf.RunAdvancedProgressTask("Test Action", false, func(ctx context.Context, rep vfs.TaskReporter) error {
+		reporter = rep
+		close(done)
+		<-workerBlock
+		return nil
+	}, nil)
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for progress task worker to run")
+	}
+
+	// Wait for the dialog to appear on top
+	timeout := time.After(2 * time.Second)
+	var dlg *FileOpProgressDialog
+	for dlg == nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && top.GetTitle() == "Test Action" {
+				dlg = top.(*FileOpProgressDialog)
+			}
+		case <-timeout:
+			t.Fatal("Timeout waiting for dialog to appear")
+		}
+	}
+
+	reporter.UpdateTransfer("Running", "item", 75, "Total Info", 35, "10 MB/s")
+
+	// Wait for UI to update with progress
+	timeout = time.After(2 * time.Second)
+	for !dlg.pbCurrent.IsVisible() || dlg.pbCurrent.Percent != 75 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for progress update to render")
+		}
+	}
+
+	if !dlg.pbCurrent.IsVisible() || dlg.pbCurrent.Percent != 75 {
+		t.Errorf("Current progress bar not updated: visible=%v, pct=%d", dlg.pbCurrent.IsVisible(), dlg.pbCurrent.Percent)
+	}
+	if !dlg.pbTotal.IsVisible() || dlg.pbTotal.Percent != 35 {
+		t.Errorf("Total progress bar not updated: visible=%v, pct=%d", dlg.pbTotal.IsVisible(), dlg.pbTotal.Percent)
+	}
+	if dlg.lblSpeed.GetText() != "10 MB/s" {
+		t.Errorf("Speed label not updated, got %q", dlg.lblSpeed.GetText())
+	}
+
+	// Close dialog and unblock worker
+	close(workerBlock)
+	dlg.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+
+type mockExtractionVFS struct {
+	vfs.VFS
+	parent vfs.VFS
+}
+
+func (m *mockExtractionVFS) ParentVFS() vfs.VFS { return m.parent }
+
+func TestExecuteFileOp_ContextualTitles(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("data"), 0644)
+
+	parent := vfs.NewOSVFS(srcDir)
+	srcVfs := &mockExtractionVFS{VFS: parent, parent: parent}
+	dstVfs := vfs.NewOSVFS(t.TempDir())
+
+	done := make(chan struct{})
+	ExecuteFileOp(nil, srcVfs, dstVfs, []string{"data.txt"}, dstVfs.GetPath(), false, 2, func() {
+		close(done)
+	})
+
+	timeout := time.After(2 * time.Second)
+	var dlg *FileOpProgressDialog
+	for dlg == nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && strings.Contains(top.GetTitle(), "Extracting") {
+				dlg = top.(*FileOpProgressDialog)
+			}
+		case <-timeout:
+			t.Fatal("Timeout waiting for Extracting dialog to appear")
+		}
+	}
+
+	for vtui.FrameManager.GetTopFrame() != nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			if top := vtui.FrameManager.GetTopFrame(); top != nil && top.IsDone() {
+				vtui.FrameManager.Pop()
+			}
+		case <-timeout:
+			t.Fatal("Timeout waiting for copy operation to complete")
+		}
+	}
+}
+
+type mockInvalidVFS struct {
+	vfs.VFS
+}
+
+func (m *mockInvalidVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, error) {
+	return nil, os.ErrInvalid
+}
+func (m *mockInvalidVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
+	return vfs.VFSItem{Name: "special", IsDir: false}, nil
+}
+
+func TestActionOpenEditor_SpecialFileRejection(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	v := &mockInvalidVFS{VFS: vfs.NewOSVFS(t.TempDir())}
+	pf := NewPanelsFrame()
+	defer pf.Close()
+
+	actionOpenEditor(pf, v, "special")
+
+	timeout := time.After(1 * time.Second)
+	foundError := false
+Loop:
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && strings.Contains(top.GetTitle(), "Error") {
+				foundError = true
+				break Loop
+			}
+		case <-timeout:
+			break Loop
+		}
+	}
+	if !foundError {
+		t.Error("Expected error dialog for special file in editor")
+	}
+}
+
+func TestActionOpenViewer_SpecialFileRejection(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	v := &mockInvalidVFS{VFS: vfs.NewOSVFS(t.TempDir())}
+	pf := NewPanelsFrame()
+	defer pf.Close()
+
+	actionOpenViewer(pf, v, "special")
+
+	timeout := time.After(1 * time.Second)
+	foundError := false
+Loop:
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && strings.Contains(top.GetTitle(), "Error") {
+				foundError = true
+				break Loop
+			}
+		case <-timeout:
+			break Loop
+		}
+	}
+	if !foundError {
+		t.Error("Expected error dialog for special file in viewer")
+	}
 }

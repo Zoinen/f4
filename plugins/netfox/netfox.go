@@ -88,8 +88,12 @@ func (w *netFoxVFSWrapper) ProcessPanelKey(app vfs.App, e *vtinput.InputEvent) b
 
 func (p *NetFoxPlugin) Init(api vfs.HostAPI) error {
 	api.RegisterDrive("NetFox", func() vfs.VFS {
-		cfgDir, _ := os.UserConfigDir()
-		return &netFoxVFSWrapper{NewNetFoxVFS(filepath.Join(cfgDir, "f4", "NetFox.json"))}
+		cfgDir := vfs.CustomConfigDir
+		if cfgDir == "" {
+			sysDir, _ := os.UserConfigDir()
+			cfgDir = filepath.Join(sysDir, "f4")
+		}
+		return &netFoxVFSWrapper{NewNetFoxVFS(filepath.Join(cfgDir, "NetFox.json"))}
 	})
 	return nil
 }

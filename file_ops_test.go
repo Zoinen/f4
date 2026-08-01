@@ -512,7 +512,10 @@ func TestExecuteFileOp_OptimizedRenameConflict(t *testing.T) {
 	os.WriteFile(filepath.Join(tmp, "dst.txt"), []byte("destination"), 0644)
 
 	// Execute Move
-	ExecuteFileOp(nil, v, v, []string{"src.txt"}, "dst.txt", true, 2, nil)
+	done := make(chan struct{})
+	ExecuteFileOp(nil, v, v, []string{"src.txt"}, "dst.txt", true, 2, func() {
+		close(done)
+	})
 
 	// Drain task queue. Since we are moving a file onto an existing one,
 	// it should trigger AskOverwrite, which creates a dialog.
@@ -522,7 +525,8 @@ func TestExecuteFileOp_OptimizedRenameConflict(t *testing.T) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && top.GetTitle() == " Warning " {
 				foundDialog = true
 				goto done
 			}
@@ -539,8 +543,11 @@ done:
 		top := vtui.FrameManager.GetTopFrame()
 		if top != nil {
 			top.SetExitCode(-1) // Simulate Cancel/Esc
+			if top.IsDone() {
+				vtui.FrameManager.Pop()
+			}
 			// Pump tasks to allow the worker to receive the result and exit
-			for i := 0; i < 10; i++ {
+			for i := 0; i < 20; i++ {
 				select {
 				case task := <-vtui.FrameManager.TaskChan:
 					task()
@@ -548,6 +555,12 @@ done:
 				}
 			}
 		}
+	}
+	// Wait for the background goroutine to fully exit
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for background ExecuteFileOp to exit")
 	}
 }
 func TestExecuteFileOp_SkipAll_Integrity(t *testing.T) {
@@ -807,23 +820,31 @@ func TestExecuteFileOp_Move_PermissionDenied_Recovery(t *testing.T) {
 	os.Chmod(dstDir, 0444)
 	defer os.Chmod(dstDir, 0755)
 
+	done := make(chan struct{})
 	v := vfs.NewOSVFS("/")
-	ExecuteFileOp(nil, v, v, []string{srcFile}, dstDir, true, 2, nil)
+	ExecuteFileOp(nil, v, v, []string{srcFile}, dstDir, true, 2, func() {
+		close(done)
+	})
 
 	// Pump tasks. It should hit AskError. We simulate "Abort".
 	timeout := time.After(500 * time.Millisecond)
 loop:
 	for {
 		select {
+		case <-done:
+			break loop
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			if top := vtui.FrameManager.GetTopFrame(); top != nil {
+			if top := vtui.FrameManager.GetTopFrame(); top != nil && top.GetTitle() == " Error " {
 				top.SetExitCode(2) // Abort
+				if top.IsDone() {
+					vtui.FrameManager.Pop()
+				}
 			}
 		case <-time.After(100 * time.Millisecond):
 			break loop
 		case <-timeout:
-			break loop
+			t.Fatal("Timeout waiting for permission denied Move to abort")
 		}
 	}
 
@@ -848,6 +869,43 @@ func TestExecuteFileOp_MoveIntoSelf_Circular(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "folder into itself") {
 		t.Errorf("Expected circular copy protection error, got: %v", err)
+	}
+}
+func TestRecursiveCopy_SelfAndSubfolderProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	v := vfs.NewOSVFS(tmpDir)
+	tCtx := &vtui.TaskContext{Context: context.Background()}
+
+	// 1. Folder self-copy
+	folderPath := filepath.Join(tmpDir, "myfolder")
+	os.MkdirAll(folderPath, 0755)
+
+	err := recursiveCopy(tCtx.Context, v, folderPath, v, folderPath, &FileOpState{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "folder into itself") {
+		t.Errorf("Expected folder self-copy error, got: %v", err)
+	}
+
+	// 2. Folder into subfolder
+	subPath := filepath.Join(folderPath, "sub")
+	err = recursiveCopy(tCtx.Context, v, folderPath, v, subPath, &FileOpState{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "subfolder") {
+		t.Errorf("Expected folder into subfolder error, got: %v", err)
+	}
+
+	// 3. File self-copy
+	filePath := filepath.Join(tmpDir, "myfile.txt")
+	os.WriteFile(filePath, []byte("data"), 0644)
+
+	err = recursiveCopy(tCtx.Context, v, filePath, v, filePath, &FileOpState{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "file onto itself") {
+		t.Errorf("Expected file self-copy error, got: %v", err)
+	}
+
+	// 4. File into own subfolder
+	fileSubPath := filepath.Join(filePath, "sub")
+	err = recursiveCopy(tCtx.Context, v, filePath, v, fileSubPath, &FileOpState{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "subfolder") {
+		t.Errorf("Expected file into subfolder error, got: %v", err)
 	}
 }
 func TestRecursiveCopy_SubfolderDeepRecursion(t *testing.T) {
@@ -1442,6 +1500,63 @@ func TestFileOps_FormatSize(t *testing.T) {
 	}
 }
 
+func TestFileOps_PathDisplay(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+
+	srcVfs := vfs.NewOSVFS(tmpSrc)
+	dstVfs := vfs.NewOSVFS(tmpDst)
+
+	os.WriteFile(filepath.Join(tmpSrc, "display.txt"), []byte("data"), 0644)
+
+	orig := AppConfig.FileOpPathDisplay
+	defer func() { AppConfig.FileOpPathDisplay = orig }()
+
+	AppConfig.FileOpPathDisplay = 1
+	tracker1 := NewFileOpTracker(vfs.OpStats{Files: 1, Bytes: 4})
+	var capturedName1 string
+	state := &FileOpState{
+		Tracker: tracker1,
+		Buffer:  make([]byte, 1024),
+		UpdateUI: func(force bool) {
+			_, _, name := tracker1.GetProgress()
+			if name != "" {
+				capturedName1 = name
+			}
+		},
+	}
+	err := recursiveCopy(context.Background(), srcVfs, filepath.Join(tmpSrc, "display.txt"), dstVfs, filepath.Join(tmpDst, "display.txt"), state, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedName1 != filepath.Join(tmpSrc, "display.txt") {
+		t.Errorf("Expected currentName to be full source path, got %q", capturedName1)
+	}
+
+	AppConfig.FileOpPathDisplay = 2
+	tracker2 := NewFileOpTracker(vfs.OpStats{Files: 1, Bytes: 4})
+	var capturedName2 string
+	state2 := &FileOpState{
+		Tracker: tracker2,
+		Buffer:  make([]byte, 1024),
+		UpdateUI: func(force bool) {
+			_, _, name := tracker2.GetProgress()
+			if name != "" {
+				capturedName2 = name
+			}
+		},
+	}
+	err = recursiveCopy(context.Background(), srcVfs, filepath.Join(tmpSrc, "display.txt"), dstVfs, filepath.Join(tmpDst, "display_new.txt"), state2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(tmpSrc, "display.txt") + " -> " + filepath.Join(tmpDst, "display_new.txt")
+	if capturedName2 != expected {
+		t.Errorf("Expected currentName to be source -> dest, got %q", capturedName2)
+	}
+}
+
 func TestFileOps_CalculateStats_Integration(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmp := t.TempDir()
@@ -1528,15 +1643,22 @@ func TestExecuteFileOp_Move_FinalizeFailure(t *testing.T) {
 	srcVfs := &mockFailingRemoveVFS{VFS: vfs.NewOSVFS(tmpSrc)}
 	dstVfs := vfs.NewOSVFS(tmpDst)
 
-	ExecuteFileOp(nil, srcVfs, dstVfs, []string{"ghost.txt"}, tmpDst, true, 2, nil)
+	done := make(chan struct{})
+	ExecuteFileOp(nil, srcVfs, dstVfs, []string{"ghost.txt"}, tmpDst, true, 2, func() {
+		close(done)
+	})
 
 	// Pump
-	for i := 0; i < 100; i++ {
+	timeout := time.After(2 * time.Second)
+loop:
+	for {
 		select {
+		case <-done:
+			break loop
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		default:
-			time.Sleep(5 * time.Millisecond)
+		case <-timeout:
+			t.Fatal("Timeout waiting for Move_FinalizeFailure to complete")
 		}
 	}
 
@@ -1563,7 +1685,10 @@ func TestExecuteFileOp_ForegroundIntegrity(t *testing.T) {
 	dstVfs := vfs.NewOSVFS(tmpDst)
 
 	// Запускаем в режиме 2 (Foreground)
-	ExecuteFileOp(nil, srcVfs, dstVfs, []string{"direct.txt"}, tmpDst, false, 2, nil)
+	done := make(chan struct{})
+	ExecuteFileOp(nil, srcVfs, dstVfs, []string{"direct.txt"}, tmpDst, false, 2, func() {
+		close(done)
+	})
 
 	// В этом режиме должен сразу появиться диалог прогресса
 	foundDialog := false
@@ -1602,6 +1727,12 @@ Loop:
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	// Wait for the background goroutine to fully exit
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for background ExecuteFileOp to exit")
 	}
 }
 

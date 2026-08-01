@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,28 @@ func TestPanelsFrameSemanticActionAcceptsQMLNumbers(t *testing.T) {
 	}
 	if pf.activeIdx != 1 {
 		t.Fatalf("activeIdx = %d, want 1", pf.activeIdx)
+	}
+}
+
+func TestPanelsFrameSemanticGridFallbackForUpstreamPanelLayouts(t *testing.T) {
+	pf := &PanelsFrame{showPanels: true, showLeftPanel: true, showRightPanel: true}
+	if reason := pf.semanticGridFallbackReason(); reason != "" {
+		t.Fatalf("default panel layout unexpectedly requires fallback: %q", reason)
+	}
+
+	pf.widthDecrement = 1
+	if reason := pf.semanticGridFallbackReason(); reason == "" {
+		t.Fatal("resized panel layout should require fallback")
+	}
+	pf.widthDecrement = 0
+	pf.showRightPanel = false
+	if reason := pf.semanticGridFallbackReason(); reason == "" {
+		t.Fatal("hidden panel layout should require fallback")
+	}
+	pf.showRightPanel = true
+	pf.altPanels[0] = &InfoPanel{}
+	if reason := pf.semanticGridFallbackReason(); !strings.Contains(reason, "info") {
+		t.Fatalf("info panel fallback reason = %q", reason)
 	}
 }
 

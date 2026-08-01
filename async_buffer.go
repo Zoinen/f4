@@ -45,6 +45,28 @@ func (b *AsyncBuffer) Size() int {
 	return b.size
 }
 
+// Prewarm synchronously loads the first chunk so the first render
+// never sees ErrLoading, avoiding a brief [Loading...] flash.
+func (b *AsyncBuffer) prewarm() {
+	if b.size == 0 {
+		return
+	}
+	sz := b.chunkSize
+	if sz > b.size {
+		sz = b.size
+	}
+	data := make([]byte, sz)
+	n, err := b.file.ReadAt(b.ctx, data, 0)
+	if b.ctx.Err() != nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err == nil || err == io.EOF {
+		b.loaded[0] = data[:n]
+	}
+}
+
 func (b *AsyncBuffer) Read(offset, length int) ([]byte, error) {
 	if offset < 0 || offset >= b.size || length <= 0 {
 		return nil, nil

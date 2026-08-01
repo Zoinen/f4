@@ -470,7 +470,11 @@ int VtuiGridItem::modifiersFromEvent(Qt::KeyboardModifiers modifiers) const
     if (modifiers.testFlag(Qt::ShiftModifier)) {
         result |= ShiftPressed;
     }
-    if (modifiers.testFlag(Qt::ControlModifier)) {
+    if (modifiers.testFlag(Qt::ControlModifier)
+#ifdef Q_OS_MACOS
+        || modifiers.testFlag(Qt::MetaModifier)
+#endif
+    ) {
         result |= LeftCtrlPressed;
     }
     if (modifiers.testFlag(Qt::AltModifier)) {

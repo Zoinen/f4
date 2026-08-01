@@ -60,3 +60,45 @@ func TestTranslateInput_Win32(t *testing.T) {
 		t.Errorf("Expected %q, got %q", expected, res)
 	}
 }
+func TestTranslateMouseInput(t *testing.T) {
+	tests := []struct {
+		name string
+		e    *vtinput.InputEvent
+		want string
+	}{
+		{
+			"Left Click Press",
+			&vtinput.InputEvent{KeyDown: true, MouseX: 10, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed},
+			"\x1b[<0;11;6M",
+		},
+		{
+			"Left Click Release",
+			&vtinput.InputEvent{KeyDown: false, MouseX: 10, MouseY: 5},
+			"\x1b[<3;11;6m",
+		},
+		{
+			"Right Click Move",
+			&vtinput.InputEvent{KeyDown: true, MouseX: 20, MouseY: 15, ButtonState: vtinput.RightmostButtonPressed, MouseEventFlags: vtinput.MouseMoved},
+			"\x1b[<34;21;16M",
+		},
+		{
+			"Wheel Up with Shift",
+			&vtinput.InputEvent{WheelDirection: 1, MouseX: 0, MouseY: 0, ControlKeyState: vtinput.ShiftPressed},
+			"\x1b[<68;1;1M",
+		},
+		{
+			"Wheel Down with Ctrl+Alt",
+			&vtinput.InputEvent{WheelDirection: -1, MouseX: 5, MouseY: 5, ControlKeyState: vtinput.LeftCtrlPressed | vtinput.LeftAltPressed},
+			"\x1b[<89;6;6M",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TranslateMouseInput(tt.e)
+			if got != tt.want {
+				t.Errorf("TranslateMouseInput() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

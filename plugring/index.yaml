@@ -1,0 +1,10 @@
+- id: "hello-plugring"
+  name: "Hello PlugRing"
+  version: "1.0.2"
+  author: "f4 Team"
+  description: "A test plugin to verify single-file mechanics and hotkeys."
+  url: "file://plugring/hello_plugring.lua"
+  entrypoint: "lua hello_plugring.lua"
+  dependencies:
+    - lua
+  setup_cmd: "cp ../../sdk/lua/f4rpc.lua . 2>/dev/null || curl -sLO https://raw.githubusercontent.com/unxed/f4/main/sdk/lua/f4rpc.lua || copy ..\\..\\sdk\\lua\\f4rpc.lua ."

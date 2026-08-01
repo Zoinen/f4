@@ -9,7 +9,7 @@ import "github.com/unxed/vtinput"
 type coreAPI struct{}
 
 func (c *coreAPI) GetVersion() string {
-	return "v0.1.1-alpha" // 0.1.0 was a dummy value used during development
+	return getShortVersionInfo()
 }
 
 func (c *coreAPI) Log(msg string) {

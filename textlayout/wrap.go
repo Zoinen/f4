@@ -220,7 +220,7 @@ func (we *WrapEngine) GetFragments(logLineIdx int) []LineFragment {
 			} else if r >= 0x7F {
 				w = runewidth.RuneWidth(r)
 			}
-			if w < 0 {
+			if w <= 0 {
 				w = 1
 			}
 

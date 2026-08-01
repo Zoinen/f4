@@ -29,10 +29,14 @@ type ShellModel struct {
 	Mode           string
 	ActivePanel    int
 	ShowPanels     bool
+	ShowLeftPanel  bool
+	ShowRightPanel bool
 	ShowKeyBar     bool
 	TerminalBusy   bool
 	TerminalActive bool
 	MacroRecording bool
+	Fallback       bool
+	FallbackReason string
 	Panels         []PanelModel
 	CommandLine    *CommandLineModel
 	Terminal       *TerminalModel
@@ -263,11 +267,17 @@ func (s ShellModel) ToMap() M {
 		"mode":           s.Mode,
 		"activePanel":    s.ActivePanel,
 		"showPanels":     s.ShowPanels,
+		"showLeftPanel":  s.ShowLeftPanel,
+		"showRightPanel": s.ShowRightPanel,
 		"showKeyBar":     s.ShowKeyBar,
 		"terminalBusy":   s.TerminalBusy,
 		"terminalActive": s.TerminalActive,
 		"macroRecording": s.MacroRecording,
 		"panels":         panelsToMaps(s.Panels),
+	}
+	if s.Fallback {
+		out["fallback"] = true
+		out["reason"] = s.FallbackReason
 	}
 	if s.CommandLine != nil {
 		out["commandLine"] = s.CommandLine.ToMap()

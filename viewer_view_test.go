@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -397,6 +398,61 @@ func TestViewerView_HexModeToggle(t *testing.T) {
 	}
 
 }
+
+func TestViewerView_TabRendering(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tmpDir := t.TempDir()
+	tmp := filepath.Join(tmpDir, "tab.txt")
+	// "a\tb" -> tab should expand to spaces
+	os.WriteFile(tmp, []byte("a\tb"), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, tmp)
+	if err != nil {
+		t.Fatalf("Failed to create ViewerView: %v", err)
+	}
+	defer vv.Close()
+
+	vv.SetPosition(0, 0, 10, 2) // Width 11
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(11, 3)
+	vtui.FrameManager.Init(scr)
+
+	vv.Show(scr)
+
+	// Wait for background loader
+	deadline := time.Now().Add(2 * time.Second)
+	for len(vv.lineOffsets) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("Timeout waiting for tab view fetch")
+		}
+		vv.Show(scr)
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	vv.Show(scr)
+
+	// Tab size is AppConfig.EditorTabSize (default 4).
+	// "a" (col 0) -> "\t" starts at col 1, should take 3 spaces to reach col 4.
+	// "b" should be at col 4.
+	cell := scr.GetCell(4, 1) // Y=1 is content row
+	if cell.Char != 'b' {
+		t.Errorf("Tab expansion failed. Expected 'b' at column 4, got '%c' (U+%04X)", rune(cell.Char), cell.Char)
+	}
+
+	// Columns 1, 2, 3 should be empty spaces (' ')
+	for x := 1; x <= 3; x++ {
+		c := scr.GetCell(x, 1)
+		if c.Char != ' ' {
+			t.Errorf("Expected space at col %d, got '%c'", x, rune(c.Char))
+		}
+	}
+}
 func TestViewerView_EndJump_BusyState(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmp := filepath.Join(t.TempDir(), "large.txt")
@@ -511,8 +567,8 @@ func TestViewerView_ScrollbarEOFAlignment(t *testing.T) {
 	// Вызываем Show, чтобы сработала логика SetParams внутри DisplayObject
 	vv.Show(scr)
 
-	if int(vv.TopOffset) != vv.scrollBar.Max {
-		t.Errorf("Text Mode: TopOffset (%d) != ScrollBar.Max (%d) at EOF", vv.TopOffset, vv.scrollBar.Max)
+	if vv.scrollBar.Max != int(vv.backend.Size()) {
+		t.Errorf("Text Mode: ScrollBar.Max (%d) != Size (%d) at EOF", vv.scrollBar.Max, vv.backend.Size())
 	}
 
 	// --- 2. Проверка в Hex режиме ---
@@ -528,5 +584,99 @@ func TestViewerView_ScrollbarEOFAlignment(t *testing.T) {
 	// Дополнительно: проверяем, что TopOffset в Hex выровнен по 16 байт
 	if vv.TopOffset%16 != 0 {
 		t.Errorf("Hex Mode: TopOffset (%d) is not aligned to 16 bytes", vv.TopOffset)
+	}
+}
+func TestViewerView_ScrollbarStability(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	tmpDir := t.TempDir()
+	tmp := filepath.Join(tmpDir, "stability_test.txt")
+	os.WriteFile(tmp, []byte(strings.Repeat("line\n", 200)), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, tmp)
+	if err != nil {
+		t.Fatalf("Failed to create ViewerView: %v", err)
+	}
+	defer vv.Close()
+
+	vv.SetPosition(0, 0, 40, 10)
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(41, 11)
+
+	vv.eofVisible = true
+	vv.TopOffset = 10
+
+	// Trigger initial show to start background fetch
+	vv.Show(scr)
+
+	// Pump tasks to wait for background fetch to complete and scrollbar to initialize
+	timeout := time.After(2 * time.Second)
+	for vv.scrollBar.Max == 0 {
+		select {
+		case task := <-fm.TaskChan:
+			task()
+			vv.Show(scr)
+		case <-timeout:
+			t.Fatal("Timeout waiting for scrollbar Max to be populated")
+		}
+	}
+
+	if vv.scrollBar.Max != int(vv.backend.Size()) {
+		t.Errorf("Expected scrollbar Max to remain stable at %d even when eofVisible is true, got %d", vv.backend.Size(), vv.scrollBar.Max)
+	}
+}
+func TestViewerView_Codepages_Load(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "oem.txt")
+
+	raw := []byte{0x8f, 0xe0, 0xa8, 0xa2, 0xa5, 0xe2}
+	os.WriteFile(path, raw, 0644)
+
+	oldDefault := AppConfig.ViewerDefaultCodePage
+	AppConfig.ViewerDefaultCodePage = 866
+	defer func() { AppConfig.ViewerDefaultCodePage = oldDefault }()
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vv.Close()
+
+	if vv.Codepage != 866 {
+		t.Errorf("Expected detected codepage 866, got %d", vv.Codepage)
+	}
+
+	_, err = vv.backend.ReadAt(0, 12)
+	if err != piecetable.ErrLoading {
+		t.Fatalf("Expected ErrLoading on first read, got %v", err)
+	}
+
+	var data []byte
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("Timeout waiting for codepage viewer fetch")
+		}
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		data, err = vv.backend.ReadAt(0, 12)
+		if err == nil {
+			break
+		}
+	}
+
+	if string(data) != "Привет" {
+		t.Errorf("Viewer failed to decode CP866: expected 'Привет', got %q", string(data))
 	}
 }

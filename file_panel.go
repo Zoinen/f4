@@ -43,16 +43,22 @@ func (m *mediumRow) GetCellText(col int) string {
 		return ""
 	}
 	e := m.fp.entries[idx]
-	if e.IsDir {
-		if e.Name == ".." {
-			return ".."
-		}
-		if AppConfig.HighlightDir {
-			return e.Name
-		}
-		return string(os.PathSeparator) + e.Name
+	if e.Name == ".." {
+		return ".."
 	}
-	return e.Name
+	name := e.Name
+	marker := GlobalFileHighlighter.GetMarker(&e.VFSItem)
+	if marker != "" {
+		name = marker + " " + name
+	}
+
+	if e.IsDir {
+		if AppConfig.HighlightDir {
+			return name
+		}
+		return string(os.PathSeparator) + name
+	}
+	return name
 }
 
 func (m *mediumRow) IsColSelected(col int) bool {
@@ -83,9 +89,14 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	}
 	e := m.fp.entries[idx]
 	attr := defaultAttr
-	if AppConfig.HighlightDir && e.IsDir && e.Name != ".." {
+	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor])
+
+	attr = GlobalFileHighlighter.GetColor(&e.VFSItem, attr, e.Selected, isCursor)
+
+	if attr == defaultAttr && AppConfig.HighlightDir && e.IsDir && e.Name != ".." {
 		attr = vtui.Palette[ColPanelDir]
 	}
+
 	if e.IsCached {
 		attr = vtui.DimColor(attr)
 	}
@@ -116,16 +127,21 @@ func (f *fileEntry) IsSelected() bool {
 func (f *fileEntry) GetCellText(col int) string {
 	switch col {
 	case 0:
-		if f.IsDir {
-			if f.Name == ".." {
-				return ".."
-			}
-			if AppConfig.HighlightDir {
-				return f.Name
-			}
-			return string(os.PathSeparator) + f.Name
+		if f.Name == ".." {
+			return ".."
 		}
-		return f.Name
+		name := f.Name
+		marker := GlobalFileHighlighter.GetMarker(&f.VFSItem)
+		if marker != "" {
+			name = marker + " " + name
+		}
+		if f.IsDir {
+			if AppConfig.HighlightDir {
+				return name
+			}
+			return string(os.PathSeparator) + name
+		}
+		return name
 	case 1:
 		if f.IsDir {
 			if f.SizeCalculated {
@@ -142,9 +158,14 @@ func (f *fileEntry) GetCellText(col int) string {
 }
 func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	attr := defaultAttr
-	if AppConfig.HighlightDir && f.IsDir && f.Name != ".." {
+	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor])
+
+	attr = GlobalFileHighlighter.GetColor(&f.VFSItem, attr, f.Selected, isCursor)
+
+	if attr == defaultAttr && AppConfig.HighlightDir && f.IsDir && f.Name != ".." {
 		attr = vtui.Palette[ColPanelDir]
 	}
+
 	if f.IsCached {
 		attr = vtui.DimColor(attr)
 	}
@@ -169,13 +190,14 @@ type FileSystemPanel struct {
 	cursorIdx           int
 	lastRightClickedIdx int
 
-	loadCtx          context.Context
-	cancelLoad       context.CancelFunc
-	isLoading        bool
-	loadingTimer     *time.Timer
-	pendingSelection string
-	fastFindMode     bool
-	fastFindStr      string
+	loadCtx           context.Context
+	cancelLoad        context.CancelFunc
+	isLoading         bool
+	loadingTimer      *time.Timer
+	pendingSelection  string
+	providerEntryName string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	fastFindMode      bool
+	fastFindStr       string
 
 	sortMode    SortMode
 	sortReverse bool
@@ -184,6 +206,7 @@ type FileSystemPanel struct {
 	dirCache     map[string]dirCacheEntry
 
 	isCheckingRefresh bool
+	currentTitle      string
 }
 
 func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
@@ -432,7 +455,8 @@ func (fp *FileSystemPanel) updateTitle(err error) {
 	} else if fp.isLoading {
 		title += " [Loading...]"
 	}
-	fp.frame.SetTitle(title)
+	fp.currentTitle = title
+	fp.frame.SetTitle("")
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
@@ -708,26 +732,28 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			fp.lastDirMTime = dirStat.MTime
 			fp.isLoading = false
 			if err != nil && err != context.Canceled {
-				// For permission errors, go back to parent and show the error.
-				if os.IsPermission(err) {
+				if os.IsNotExist(err) && !fp.vfs.IsAtRoot() && !keepEntries {
+					// If the directory disappeared (e.g., deleted from other panel),
+					// attempt to go up one level silently.
+					vtui.DebugLog("PANEL[%p]: Directory disappeared, attempting to go up. Error: %v", fp, err)
+					fp.vfs.SetPath("..")
+					fp.readDirectoryEx(true)
+					return
+				}
+
+				// For permission or network errors, go back to parent and show the error.
+				if !fp.vfs.IsAtRoot() && !keepEntries {
 					folderName := filepath.Base(path)
 					fp.vfs.SetPath("..")
 					fp.pendingSelection = folderName
 					fp.updateTitle(err)
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err), []string{"&Ok"})
 					return
-				} else if !fp.vfs.IsAtRoot() && !keepEntries {
-					// If the directory disappeared (e.g., deleted from other panel),
-					// attempt to go up one level instead of showing error.
-					vtui.DebugLog("PANEL[%p]: Directory inaccessible, attempting to go up. Error: %v", fp, err)
-					fp.vfs.SetPath("..")
-					fp.readDirectoryEx(true)
-					return
-				} else {
-					fp.updateTitle(err)
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err), []string{"&Ok"})
-					return
 				}
+
+				fp.updateTitle(err)
+				vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err), []string{"&Ok"})
+				return
 			} else {
 				fp.updateTitle(nil)
 			}
@@ -799,7 +825,26 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		sortChar = strings.ToUpper(sortChar)
 	}
 
-	scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo(sortChar, vtui.Palette[ColPanelTitle]))
+	titleAttr := vtui.Palette[ColPanelTitle]
+	if fp.currentTitle != "" {
+		availW := (fp.X2 - fp.X1) - 8
+		if availW < 5 {
+			availW = 5
+		}
+		displayTitle := fp.currentTitle
+		if runewidth.StringWidth(displayTitle) > availW {
+			displayTitle = vtui.TruncateMiddle(displayTitle, availW)
+		}
+
+		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo("[", titleAttr))
+		scr.Write(fp.X1+3, fp.Y1, vtui.StringToCharInfo(sortChar, titleAttr))
+		scr.Write(fp.X1+4, fp.Y1, vtui.StringToCharInfo("─", titleAttr))
+		scr.Write(fp.X1+5, fp.Y1, vtui.StringToCharInfo(displayTitle, titleAttr))
+		scr.Write(fp.X1+5+runewidth.StringWidth(displayTitle), fp.Y1, vtui.StringToCharInfo("]", titleAttr))
+	} else {
+		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo(sortChar, titleAttr))
+	}
+
 	fp.table.SetFocus(fp.IsFocused())
 	fp.table.Show(scr)
 
@@ -853,7 +898,8 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 
 	var selSize int64
-	var selCount int
+	var selFiles int
+	var selDirs int
 	var totSize int64
 	var totCount int
 
@@ -864,8 +910,10 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 				totSize += e.Size
 			}
 			if e.Selected {
-				selCount++
-				if !e.IsDir {
+				if e.IsDir {
+					selDirs++
+				} else {
+					selFiles++
 					selSize += e.Size
 				}
 			}
@@ -873,8 +921,8 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 
 	totalStr := ""
-	if selCount > 0 {
-		totalStr = fmt.Sprintf(" %s (%d/%d) %s ", formatSize(selSize), selCount, totCount, formatSize(totSize))
+	if selFiles > 0 || selDirs > 0 {
+		totalStr = fmt.Sprintf(" "+Msg("Panel.SelectedInfo")+" ", formatIntWithSpaces(selSize), selFiles, selDirs)
 	} else if totCount > 0 {
 		totalStr = fmt.Sprintf(" %s (%d) ", formatSize(totSize), totCount)
 	}
@@ -1105,7 +1153,12 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 					fp.vfs.Close()
 
 					fp.vfs = parent
-					fp.pendingSelection = fp.vfs.Base(oldPath)
+					if fp.providerEntryName != "" {
+						fp.pendingSelection = fp.providerEntryName
+						fp.providerEntryName = ""
+					} else {
+						fp.pendingSelection = fp.vfs.Base(oldPath)
+					}
 					fp.ReadDirectory()
 					return true
 				}
@@ -1147,10 +1200,12 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 							if err != nil {
 								fp.isLoading = false
 								fp.updateTitle(err)
+								fp.pendingSelection = selected.Name
 								fp.ReadDirectory() // Возвращаемся к списку соединений
 								vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selected.Name, err), []string{"&Ok"})
 								return
 							}
+							fp.providerEntryName = selected.Name
 							fp.vfs = newVfs
 							fp.pendingSelection = ".."
 							fp.ReadDirectory()
@@ -1177,6 +1232,77 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 	if fp.fastFindMode && e.ButtonState != 0 {
 		fp.fastFindMode = false
 		vtui.FrameManager.Redraw()
+	}
+
+	if e.WheelDirection != 0 {
+		// Determine direction: up is -1, down is 1
+		direction := 1
+		if e.WheelDirection > 0 {
+			direction = -1
+		}
+
+		H := fp.table.ViewHeight
+		if H <= 0 {
+			H = 1
+		}
+
+		if fp.viewMode == ViewModeDetailed {
+			// Detailed view (1-column)
+			idx := fp.GetCursorIndex()
+			newIdx := idx + direction
+			if newIdx < 0 {
+				newIdx = 0
+			}
+			if newIdx >= len(fp.entries) {
+				newIdx = len(fp.entries) - 1
+			}
+
+			// Scroll the list if possible, keeping the cursor visually stable
+			newTop := fp.table.TopPos + direction
+			maxTop := len(fp.entries) - H
+			if maxTop < 0 {
+				maxTop = 0
+			}
+			if newTop < 0 {
+				newTop = 0
+			}
+			if newTop > maxTop {
+				newTop = maxTop
+			}
+
+			fp.table.TopPos = newTop
+			fp.SetCursorIndex(newIdx)
+			fp.Refresh()
+			return true
+		} else {
+			// Medium/Brief view (2-column)
+			idx := fp.GetCursorIndex()
+			newIdx := idx + direction
+			if newIdx < 0 {
+				newIdx = 0
+			}
+			if newIdx >= len(fp.entries) {
+				newIdx = len(fp.entries) - 1
+			}
+
+			// Scroll the list if possible, keeping the cursor visually stable
+			newTop := fp.table.TopPos + direction
+			maxTop := len(fp.entries) - 2*H
+			if maxTop < 0 {
+				maxTop = 0
+			}
+			if newTop < 0 {
+				newTop = 0
+			}
+			if newTop > maxTop {
+				newTop = maxTop
+			}
+
+			fp.table.TopPos = newTop
+			fp.SetCursorIndex(newIdx)
+			fp.Refresh()
+			return true
+		}
 	}
 
 	handled := fp.table.ProcessMouse(e)

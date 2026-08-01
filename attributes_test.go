@@ -51,6 +51,7 @@ func TestAttributesDialog_StatFailure(t *testing.T) {
 		statErr: os.ErrPermission,
 	}
 	pf := NewPanelsFrame()
+	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 	fsp := pf.getActivePanel()
 	fsp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "locked.txt"}}}
@@ -781,6 +782,72 @@ func TestAttributesDialog_WindowsSetTime(t *testing.T) {
 	if !capturedItem.MTime.Equal(expected) {
 		t.Errorf("Windows MTime update failed. Expected %v, got %v", expected, capturedItem.MTime)
 	}
+}
+func TestAttributesDialog_SecurityButton(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+
+	// 1. Test local VFS -> button should be enabled
+	mockVFS := &mockMetadataVFS{
+		VFS: vfs.NewOSVFS(t.TempDir()),
+	}
+	item := vfs.VFSItem{Name: "winfile.exe", MTime: time.Now()}
+	showAttributesWindows(nil, mockVFS, "winfile.exe", item)
+	dlg := fm.GetTopFrame().(vtui.Container)
+
+	var btnSec *vtui.Button
+	walkUI(dlg.(vtui.UIElement), func(el vtui.UIElement) bool {
+		if b, ok := el.(*vtui.Button); ok {
+			clean, _, _ := vtui.ParseAmpersandString(b.GetText())
+			if strings.Contains(clean, "Security") {
+				btnSec = b
+			}
+		}
+		return true
+	})
+
+	if btnSec == nil {
+		t.Fatal("Security button not found in Windows attributes dialog")
+	}
+
+	if btnSec.IsDisabled() {
+		t.Error("Security button should be enabled for local OSVFS files")
+	}
+
+	// Click button to make sure it doesn't panic on any platform
+	if btnSec.OnClick != nil {
+		btnSec.OnClick()
+	}
+
+	fm.GetTopFrame().SetExitCode(-1)
+	fm.Pop()
+
+	// 2. Test non-local VFS (e.g. NullVFS) -> button should be disabled
+	mockNullVFS := vfs.NewNullVFS(0)
+	showAttributesWindows(nil, mockNullVFS, "winfile.exe", item)
+	dlgNull := fm.GetTopFrame().(vtui.Container)
+
+	var btnSecNull *vtui.Button
+	walkUI(dlgNull.(vtui.UIElement), func(el vtui.UIElement) bool {
+		if b, ok := el.(*vtui.Button); ok {
+			clean, _, _ := vtui.ParseAmpersandString(b.GetText())
+			if strings.Contains(clean, "Security") {
+				btnSecNull = b
+			}
+		}
+		return true
+	})
+
+	if btnSecNull == nil {
+		t.Fatal("Security button not found in non-local Windows attributes dialog")
+	}
+
+	if !btnSecNull.IsDisabled() {
+		t.Error("Security button should be disabled for non-local VFS files")
+	}
+
+	fm.GetTopFrame().SetExitCode(-1)
+	fm.Pop()
 }
 func TestDialogTaskPump_OverlayResilience(t *testing.T) {
 	fm := vtui.FrameManager

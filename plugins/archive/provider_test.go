@@ -2,10 +2,13 @@ package archive
 
 import (
 	"context"
-	"github.com/unxed/f4/vfs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
+
+	"github.com/unxed/f4/vfs"
 )
 
 func TestArchiveProvider_Properties(t *testing.T) {
@@ -36,6 +39,25 @@ func TestArchiveProvider_CanOpen(t *testing.T) {
 	os.WriteFile(tmpTxt, []byte("plain text"), 0644)
 	if p.CanOpen(ctx, nil, tmpTxt) {
 		t.Errorf("Expected CanOpen=false for %q", tmpTxt)
+	}
+}
+func TestArchiveProvider_CanOpen_SpecialFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFO not supported on Windows in this test")
+	}
+	p := &ArchiveProvider{}
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	fifoPath := filepath.Join(tmpDir, "test.fifo")
+
+	err := syscall.Mkfifo(fifoPath, 0666)
+	if err != nil {
+		t.Fatalf("Mkfifo failed: %v", err)
+	}
+
+	parent := vfs.NewOSVFS(tmpDir)
+	if p.CanOpen(ctx, parent, "test.fifo") {
+		t.Error("Expected CanOpen=false for FIFO file")
 	}
 }
 

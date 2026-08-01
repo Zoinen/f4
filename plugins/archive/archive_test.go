@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,11 +89,12 @@ type mockAppForProgress struct {
 	mu          sync.Mutex
 }
 
-func (m *mockAppForProgress) GetActivePanelVFS() vfs.VFS  { return m.activeVfs }
-func (m *mockAppForProgress) GetPassivePanelVFS() vfs.VFS { return m.passiveVfs }
-func (m *mockAppForProgress) GetSelectedNames() []string  { return m.names }
-func (m *mockAppForProgress) GetSelectedName() string     { return m.names[0] }
-func (m *mockAppForProgress) RefreshAll()                 {}
+func (m *mockAppForProgress) GetActivePanelVFS() vfs.VFS      { return m.activeVfs }
+func (m *mockAppForProgress) GetPassivePanelVFS() vfs.VFS     { return m.passiveVfs }
+func (m *mockAppForProgress) GetSelectedNames() []string      { return m.names }
+func (m *mockAppForProgress) GetSelectedName() string         { return m.names[0] }
+func (m *mockAppForProgress) RefreshAll()                     {}
+func (m *mockAppForProgress) SetPendingSelection(name string) {}
 func (m *mockAppForProgress) RunProgressTask(title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -108,6 +110,31 @@ func (m *mockAppForProgress) RunProgressTask(title, startMsg string, forked bool
 	onComplete(err)
 	close(m.done)
 }
+
+type mockReporter struct {
+	m *mockAppForProgress
+}
+
+func (r *mockReporter) UpdateScan(currentPath string, files, dirs int64) {}
+func (r *mockReporter) IsCancelled() bool                                { return false }
+func (r *mockReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	r.m.mu.Lock()
+	r.m.progressPct = append(r.m.progressPct, totalPct)
+	r.m.progressMsg = append(r.m.progressMsg, fmt.Sprintf("%s: %s | %s | %s", action, filename, totalText, speedText))
+	r.m.mu.Unlock()
+}
+
+func (m *mockAppForProgress) RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter vfs.TaskReporter) error, onComplete func(err error)) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	reporter := &mockReporter{m: m}
+
+	err := worker(ctx, reporter)
+	onComplete(err)
+	close(m.done)
+}
+
 func (m *mockAppForProgress) Message(title, msg string, buttons []string) int { return 0 }
 func (m *mockAppForProgress) InputBox(title, prompt, defaultText string, callback func(string)) {
 	callback(defaultText)
@@ -151,15 +178,15 @@ func TestActionExtractArchive_ProgressUpdates(t *testing.T) {
 		t.Error("Extraction progress percentage was never updated")
 	}
 
-	hasExtractionMessage := false
+	hasSpeedInfo := false
 	for _, msg := range app.progressMsg {
-		if strings.Contains(msg, "Extracting") {
-			hasExtractionMessage = true
+		if strings.Contains(msg, "/s") && strings.Contains(msg, "files") && strings.Contains(msg, "Extracting") {
+			hasSpeedInfo = true
 			break
 		}
 	}
-	if !hasExtractionMessage {
-		t.Error("Expected extraction status message, but none were recorded")
+	if !hasSpeedInfo {
+		t.Errorf("Expected extraction status message to contain real progress (speed and files), got: %v", app.progressMsg)
 	}
 }
 
@@ -189,14 +216,101 @@ func TestActionAddArchive_ProgressUpdates(t *testing.T) {
 		t.Error("Archiving progress percentage was never updated")
 	}
 
-	hasArchivingMessage := false
+	hasSpeedInfo := false
 	for _, msg := range app.progressMsg {
-		if strings.Contains(msg, "Archiving") || strings.Contains(msg, "Scanning") {
-			hasArchivingMessage = true
+		if strings.Contains(msg, "/s") && strings.Contains(msg, "files") && strings.Contains(msg, "Archiving") {
+			hasSpeedInfo = true
 			break
 		}
 	}
-	if !hasArchivingMessage {
-		t.Error("Expected archiving status message, but none were recorded")
+	if !hasSpeedInfo {
+		t.Errorf("Expected archiving status message to contain real progress (speed and files), got: %v", app.progressMsg)
+	}
+}
+
+type mockCancelApp struct {
+	t          *testing.T
+	activeVfs  vfs.VFS
+	passiveVfs vfs.VFS
+	names      []string
+	done       chan struct{}
+	err        error
+}
+
+func (m *mockCancelApp) GetActivePanelVFS() vfs.VFS      { return m.activeVfs }
+func (m *mockCancelApp) GetPassivePanelVFS() vfs.VFS     { return m.passiveVfs }
+func (m *mockCancelApp) GetSelectedNames() []string      { return m.names }
+func (m *mockCancelApp) GetSelectedName() string         { return m.names[0] }
+func (m *mockCancelApp) RefreshAll()                     {}
+func (m *mockCancelApp) SetPendingSelection(name string) {}
+func (m *mockCancelApp) RunProgressTask(title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	update := func(msg string, percent int) {
+		cancel()
+	}
+	m.err = worker(ctx, update)
+	onComplete(m.err)
+	close(m.done)
+}
+
+type mockCancelReporter struct {
+	m      *mockCancelApp
+	cancel context.CancelFunc
+}
+
+func (r *mockCancelReporter) UpdateScan(currentPath string, files, dirs int64) {}
+func (r *mockCancelReporter) IsCancelled() bool                                { return false }
+func (r *mockCancelReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	r.cancel()
+}
+
+func (m *mockCancelApp) RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter vfs.TaskReporter) error, onComplete func(err error)) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reporter := &mockCancelReporter{m: m, cancel: cancel}
+	m.err = worker(ctx, reporter)
+	onComplete(m.err)
+	close(m.done)
+}
+
+func (m *mockCancelApp) Message(title, msg string, buttons []string) int { return 0 }
+func (m *mockCancelApp) InputBox(title, prompt, defaultText string, callback func(string)) {
+	callback(defaultText)
+}
+func (m *mockCancelApp) Menu(title string, items []string, callback func(int)) {}
+
+func TestActionExtractArchive_Cancellation(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpDir := t.TempDir()
+	srcZip := filepath.Join(tmpDir, "test_cancel.zip")
+
+	f, _ := os.Create(srcZip)
+	zw := zip.NewWriter(f)
+	for i := 0; i < 100; i++ {
+		fw, _ := zw.Create(fmt.Sprintf("file_%d.txt", i))
+		fw.Write([]byte("some data to simulate work"))
+	}
+	zw.Close()
+	f.Close()
+
+	destDir := filepath.Join(tmpDir, "output_cancel")
+	os.Mkdir(destDir, 0755)
+
+	activeVfs := vfs.NewOSVFS(tmpDir)
+	passiveVfs := vfs.NewOSVFS(destDir)
+
+	app := &mockCancelApp{
+		t:          t,
+		activeVfs:  activeVfs,
+		passiveVfs: passiveVfs,
+		names:      []string{"test_cancel.zip"},
+		done:       make(chan struct{}),
+	}
+
+	actionExtractArchive(app)
+	<-app.done
+
+	if app.err != context.Canceled {
+		t.Errorf("Expected context.Canceled, got: %v", app.err)
 	}
 }

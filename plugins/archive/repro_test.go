@@ -25,12 +25,17 @@ type mockOverwriteApp struct {
 	done           chan struct{}
 }
 
-func (m *mockOverwriteApp) GetActivePanelVFS() vfs.VFS  { return m.v }
-func (m *mockOverwriteApp) GetPassivePanelVFS() vfs.VFS { return m.v }
-func (m *mockOverwriteApp) GetSelectedNames() []string  { return m.names }
-func (m *mockOverwriteApp) GetSelectedName() string     { return m.names[0] }
-func (m *mockOverwriteApp) RefreshAll()                 {}
+func (m *mockOverwriteApp) GetActivePanelVFS() vfs.VFS      { return m.v }
+func (m *mockOverwriteApp) GetPassivePanelVFS() vfs.VFS     { return m.v }
+func (m *mockOverwriteApp) GetSelectedNames() []string      { return m.names }
+func (m *mockOverwriteApp) GetSelectedName() string         { return m.names[0] }
+func (m *mockOverwriteApp) RefreshAll()                     {}
+func (m *mockOverwriteApp) SetPendingSelection(name string) {}
 func (m *mockOverwriteApp) RunProgressTask(title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
+	m.progressCalled = true
+	close(m.done)
+}
+func (m *mockOverwriteApp) RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter vfs.TaskReporter) error, onComplete func(err error)) {
 	m.progressCalled = true
 	close(m.done)
 }

@@ -168,10 +168,14 @@ func appShellFromLegacy(node map[string]any) extui.ShellModel {
 		Mode:           "panels",
 		ActivePanel:    semanticInt(node["activePanel"]),
 		ShowPanels:     appBoolDefault(node["showPanels"], true),
+		ShowLeftPanel:  appBoolDefault(node["showLeftPanel"], true),
+		ShowRightPanel: appBoolDefault(node["showRightPanel"], true),
 		ShowKeyBar:     appBoolDefault(node["showKeyBar"], true),
 		TerminalBusy:   appBool(node["terminalBusy"]),
 		TerminalActive: appBool(node["terminalActive"]),
 		MacroRecording: appBool(node["macroRecording"]),
+		Fallback:       appBool(node["fallback"]),
+		FallbackReason: semanticString(node["reason"]),
 	}
 	if shell.TerminalActive {
 		shell.Mode = "terminal"

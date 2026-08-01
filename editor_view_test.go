@@ -795,7 +795,7 @@ func TestEditorView_WhitespaceRendering(t *testing.T) {
 	ev := NewEditorView(pt, nil, "")
 	defer ev.Close()
 	ev.ShowWhitespaces = true
-	cells := ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0)
+	cells := ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
 
 	// '·' is U+00B7 (183)
 	if cells[1].Char != 183 {
@@ -807,7 +807,7 @@ func TestEditorView_WhitespaceRendering(t *testing.T) {
 	}
 
 	ev.ShowWhitespaces = false
-	cells = ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0)
+	cells = ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
 	if cells[1].Char != ' ' {
 		t.Errorf("Expected space for space when ShowWhitespaces is OFF, got %d", cells[1].Char)
 	}
@@ -1604,7 +1604,7 @@ func TestEditorView_Search_Basic(t *testing.T) {
 	ev.SetPosition(0, 0, 80, 24)
 
 	// Запускаем поиск слова "fox" (вперед, регистронезависимо)
-	ev.Search("fox", false, false, false)
+	ev.Search("fox", false, false, false, false, false)
 
 	// Прокачиваем задачи из очереди (PostTask), так как поиск асинхронный
 	timeout := time.After(1 * time.Second)
@@ -1645,7 +1645,7 @@ func TestEditorView_Search_Next(t *testing.T) {
 	ev.SetPosition(0, 0, 80, 24)
 
 	// 1. Находим первое вхождение
-	ev.Search("match", false, false, false)
+	ev.Search("match", false, false, false, false, false)
 
 	timeout := time.After(1 * time.Second)
 	for !ev.selActive {
@@ -1663,7 +1663,7 @@ func TestEditorView_Search_Next(t *testing.T) {
 
 	// 2. Ищем следующее (Find Next)
 	ev.selActive = false // Сбрасываем для проверки нового результата
-	ev.Search("match", false, false, true)
+	ev.Search("match", false, false, false, false, true)
 
 	timeout = time.After(1 * time.Second)
 	for !ev.selActive {
@@ -1691,7 +1691,7 @@ func TestEditorView_Search_CaseInsensitive(t *testing.T) {
 	ev.SetPosition(0, 0, 80, 24)
 
 	// Ищем "caps" маленькими буквами
-	ev.Search("caps", false, false, false)
+	ev.Search("caps", false, false, false, false, false)
 
 	timeout := time.After(1 * time.Second)
 	for !ev.selActive {
@@ -1715,7 +1715,7 @@ func TestEditorView_Search_NotFound(t *testing.T) {
 	defer ev.Close()
 
 	// Ищем то, чего нет
-	ev.Search("missing", false, false, false)
+	ev.Search("missing", false, false, false, false, false)
 
 	// Ждем появления сообщения об ошибке (оно создается через ShowMessage)
 	timeout := time.After(1 * time.Second)
@@ -1748,7 +1748,7 @@ func TestEditorView_Search_CaseSensitive(t *testing.T) {
 	ev.SetPosition(0, 0, 80, 24)
 
 	// Ищем "match" (строчными) с учетом регистра. Должно найти второе слово.
-	ev.Search("match", true, false, false)
+	ev.Search("match", true, false, false, false, false)
 
 	timeout := time.After(1 * time.Second)
 	for !ev.selActive {
@@ -1779,7 +1779,7 @@ func TestEditorView_Search_Backward(t *testing.T) {
 	ev.CursorPos = 25
 
 	// Ищем "match" назад
-	ev.Search("match", false, true, false)
+	ev.Search("match", false, true, false, false, false)
 
 	timeout := time.After(1 * time.Second)
 	for !ev.selActive {
@@ -1813,7 +1813,7 @@ func TestEditorView_Search_ShiftF7_Reverse(t *testing.T) {
 	// Should find the 'e' at index 12.
 	ev.selActive = false
 	ev.CursorPos = 13
-	ev.Search("e", false, true, false)
+	ev.Search("e", false, true, false, false, false)
 
 	timeout := time.After(1 * time.Second)
 	for !ev.selActive {
@@ -2811,7 +2811,7 @@ func TestEditorView_Search_Reverse_StartAtZero(t *testing.T) {
 	ev.CursorPos = 0 // Start at beginning
 
 	// Reverse search from 0 should exit instantly, not hang
-	ev.Search("match", false, true, false)
+	ev.Search("match", false, true, false, false, false)
 
 	timeout := time.After(2 * time.Second)
 	select {
@@ -3071,6 +3071,123 @@ func TestEditorView_StateRestoration_BoundaryClamping(t *testing.T) {
 
 	if ev.CursorLine != 0 {
 		t.Errorf("Clamping failed. Expected line 0, got %d", ev.CursorLine)
+	}
+}
+func TestEditorView_CharacterWidthConsistency(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte{0x01, 0x00, 'a'})
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	_, col2 := ev.engine.LogicalToVisual(2)
+	cells := ev.fillCells(nil, []byte{0x01, 0x00, 'a'}, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+
+	if col2 != 2 {
+		t.Errorf("Expected LogicalToVisual col 2, got %d", col2)
+	}
+	if len(cells) != 3 {
+		t.Errorf("Expected 3 cells rendered for control chars + 'a' to prevent disappearing, got %d", len(cells))
+	}
+	for i, cell := range cells {
+		if cell.Char == 0 {
+			t.Errorf("Cell at index %d has character code 0, which might disappear in terminal rendering", i)
+		}
+	}
+}
+
+func TestEditorView_CrosshairStateAndNoLeak(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	oldCrosshair := AppConfig.EditorCrosshair
+	AppConfig.EditorCrosshair = true
+	defer func() { AppConfig.EditorCrosshair = oldCrosshair }()
+
+	pt := piecetable.New([]byte("line1\nline2\nline3"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 11)
+
+	ev.CursorLine = 1
+	ev.CursorPos = 2
+	ev.SetFocus(true)
+
+	ev.Show(scr)
+
+	crossAttr := vtui.Palette[ColEditorCrosshair]
+	crossBG := vtui.GetRGBBack(crossAttr)
+
+	activeRowCell := scr.GetCell(5, 2)
+	if vtui.GetRGBBack(activeRowCell.Attributes) != crossBG {
+		t.Errorf("Expected active row Y=2 to have crosshair background %06X, got %06X", crossBG, vtui.GetRGBBack(activeRowCell.Attributes))
+	}
+
+	nonActiveRowCell := scr.GetCell(5, 1)
+	if vtui.GetRGBBack(nonActiveRowCell.Attributes) == crossBG {
+		t.Error("Non-active row erroneously has crosshair background (sticking/leakage)")
+	}
+
+	verticalCell := scr.GetCell(2, 1)
+	if vtui.GetRGBBack(verticalCell.Attributes) != crossBG {
+		t.Errorf("Expected vertical crosshair column X=2 on non-active row Y=1 to have crosshair background, got %06X", vtui.GetRGBBack(verticalCell.Attributes))
+	}
+
+	ev.CursorLine = 0
+	ev.CursorPos = 0
+	ev.Show(scr)
+
+	activeRowCellAfter := scr.GetCell(5, 2)
+	if vtui.GetRGBBack(activeRowCellAfter.Attributes) == crossBG {
+		t.Error("Crosshair background leaked/stuck on row 2 after cursor moved away")
+	}
+}
+func TestEditorView_ZeroAndDoubleWidthConsistency(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	text := []byte("a\u0301世b")
+	pt := piecetable.New(text)
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	_, colA := ev.engine.LogicalToVisual(1)
+	_, colCombining := ev.engine.LogicalToVisual(3)
+	_, colCJK := ev.engine.LogicalToVisual(6)
+	_, colB := ev.engine.LogicalToVisual(7)
+
+	cells := ev.fillCells(nil, text, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+
+	if colA != 1 {
+		t.Errorf("Expected column after 'a' to be 1, got %d", colA)
+	}
+	if colCombining != 2 {
+		t.Errorf("Expected column after combining char to be 2, got %d", colCombining)
+	}
+	if colCJK != 4 {
+		t.Errorf("Expected column after CJK char to be 4, got %d", colCJK)
+	}
+	if colB != 5 {
+		t.Errorf("Expected column after 'b' to be 5, got %d", colB)
+	}
+
+	if len(cells) != 5 {
+		t.Errorf("Expected exactly 5 cells rendered (1 for 'a', 1 for combining, 2 for CJK, 1 for 'b'), got %d", len(cells))
+	}
+
+	if cells[0].Char != 'a' {
+		t.Errorf("Expected cells[0] to be 'a', got %c", rune(cells[0].Char))
+	}
+	if cells[2].Char != '世' {
+		t.Errorf("Expected cells[2] to be '世', got %c", rune(cells[2].Char))
+	}
+	if cells[3].Char != uint64(vtui.WideCharFiller) {
+		t.Errorf("Expected cells[3] to be WideCharFiller, got %d", cells[3].Char)
+	}
+	if cells[4].Char != 'b' {
+		t.Errorf("Expected cells[4] to be 'b', got %c", rune(cells[4].Char))
 	}
 }
 
@@ -3439,7 +3556,7 @@ func TestEditorView_SearchPersistence(t *testing.T) {
 	// 1. Выполняем поиск
 	ev1 := NewEditorView(piecetable.New([]byte("data")), nil, "f1.txt")
 	defer ev1.Close()
-	ev1.Search("pattern", true, true, false)
+	ev1.Search("pattern", true, true, false, false, false)
 
 	// Дожидаемся завершения асинхронного поиска
 	timeout := time.After(1 * time.Second)
@@ -3606,5 +3723,410 @@ func TestEditor_OverwriteMode(t *testing.T) {
 	}
 	if ev.CursorPos != 2 {
 		t.Errorf("Cursor did not advance: expected 2, got %d", ev.CursorPos)
+	}
+}
+
+func TestDeleteLinePreservesVisualColumn(t *testing.T) {
+	pt := piecetable.New([]byte("line 1 text\nline 2\nline 3 standard"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	ev.CursorBeyondEOL = true
+
+	// Position cursor at line 1 (0-based index 0), column 20 (beyond end of "line 1 text" which is 11 chars)
+	ev.CursorLine = 0
+	ev.CursorPos = 11
+	ev.CursorVirtualSpaces = 9
+	ev.updateDesiredVisualCol()
+
+	if ev.DesiredVisualCol != 20 {
+		t.Errorf("Expected DesiredVisualCol to be 20, got %d", ev.DesiredVisualCol)
+	}
+
+	// Delete current line (line 1)
+	ev.DeleteCurrentLine()
+
+	// The new current line is "line 2" (length 6)
+	if ev.CursorLine != 0 {
+		t.Errorf("Expected CursorLine to remain 0, got %d", ev.CursorLine)
+	}
+
+	// We expect the cursor to stay at visual column 20
+	if ev.CursorVirtualSpaces != 14 { // 20 - 6 (len of "line 2")
+		t.Errorf("Expected CursorVirtualSpaces to be 14, got %d", ev.CursorVirtualSpaces)
+	}
+
+	if ev.DesiredVisualCol != 20 {
+		t.Errorf("Expected DesiredVisualCol to remain 20, got %d", ev.DesiredVisualCol)
+	}
+}
+
+func TestEditorViewInsertOverwriteCursorShape(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pt := piecetable.New([]byte("hello world"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	ev.ResizeConsole(80, 25)
+
+	vtui.FrameManager.Push(desktopWindowWrapper{ev})
+
+	// Симулируем рендеринг, чтобы обновить состояние ScreenBuf
+	ev.Show(scr)
+	scr.Flush()
+
+	// По умолчанию overtype = false, курсор должен быть Underline
+	if ev.overtype {
+		t.Error("Expected default overtype mode to be false")
+	}
+
+	_, cy := scr.GetCursorPos()
+	// Проверяем форму курсора на активной строке
+	if cy >= 0 {
+		_, _, _, shape := scr.GetCursorStateForTesting()
+		if shape != vtui.CursorShapeUnderline {
+			t.Errorf("Expected cursor shape to be Underline, got %v", shape)
+		}
+	}
+
+	// Нажимаем Insert
+	ev.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_INSERT,
+	})
+
+	// Проверяем, что режим сменился на overtype
+	if !ev.overtype {
+		t.Error("Expected overtype mode to be true after pressing Insert")
+	}
+
+	// Рендерим заново
+	ev.Show(scr)
+	scr.Flush()
+
+	// Теперь форма курсора должна быть Block
+	if cy >= 0 {
+		_, _, _, shape := scr.GetCursorStateForTesting()
+		if shape != vtui.CursorShapeBlock {
+			t.Errorf("Expected cursor shape to be Block after toggling overtype, got %v", shape)
+		}
+	}
+}
+
+type desktopWindowWrapper struct {
+	*EditorView
+}
+
+func (d desktopWindowWrapper) GetType() vtui.FrameType {
+	return vtui.TypeUser
+}
+
+func TestEditorView_Replace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("abc 123 abc"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.Replace("abc", "def", true, false, false, false, true)
+
+	timeout := time.After(1 * time.Second)
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("timeout")
+		}
+		if ev.pt.String() == "def 123 def" {
+			break
+		}
+	}
+}
+
+func TestEditorView_MouseSelection(t *testing.T) {
+	pt := piecetable.New([]byte("hello world"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 0, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+	})
+
+	if !ev.selActive {
+		t.Fatal("Selection should be active")
+	}
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 5, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.MouseMoved,
+	})
+
+	min, max := ev.getSelectionRange()
+	if min != 0 || max != 5 {
+		t.Errorf("Expected range 0:5, got %d:%d", min, max)
+	}
+}
+func TestEditorView_RectangularSelection_Copy(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("line1\nline2\nline3"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.rectSelActive = true
+	ev.rectSelStartLine = 0
+	ev.rectSelStartCol = 1
+	ev.CursorLine = 2
+	ev.CursorPos = 5
+
+	vtui.SetClipboard("")
+	ev.CopySelection()
+
+	expected := "ine1\nine2\nine3"
+	if vtui.GetClipboard() != expected {
+		t.Errorf("Rectangular Copy failed: expected %q, got %q", expected, vtui.GetClipboard())
+	}
+}
+
+func TestEditorView_RectangularSelection_Delete(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("line1\nline2\nline3"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.rectSelActive = true
+	ev.rectSelStartLine = 0
+	ev.rectSelStartCol = 1
+	ev.CursorLine = 2
+	ev.CursorPos = 4
+
+	ev.DeleteSelection()
+
+	expected := "l1\nl2\nl3"
+	if ev.pt.String() != expected {
+		t.Errorf("Rectangular Delete failed: expected %q, got %q", expected, ev.pt.String())
+	}
+}
+func TestEditorView_RectangularSelection_Paste(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("123\n456"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	GlobalLastClipboardWasRectangular = true
+	ev.CursorLine = 0
+	ev.CursorPos = 1 // после '1'
+
+	ev.PasteText("AB\nCD")
+
+	expected := "1AB23\n4CD56"
+	if ev.pt.String() != expected {
+		t.Errorf("Rectangular Paste failed: expected %q, got %q", expected, ev.pt.String())
+	}
+
+	GlobalLastClipboardWasRectangular = false
+}
+func TestEditorView_RegexpSearchReplace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("abc 123 abc"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.Replace(`abc (\d+) abc`, "found $1", true, false, true, false, true)
+
+	timeout := time.After(1 * time.Second)
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("timeout")
+		}
+		if ev.pt.String() == "found 123" {
+			break
+		}
+	}
+}
+
+func TestEditorView_RegexpSearch_CaseAndReverse(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("Match match Match"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	// 1. Регистрозависимый поиск вперед: ищем "match" -> должен найти второй "match" (индекс 6)
+	ev.Search("match", true, false, true, false, false)
+
+	timeout := time.After(1 * time.Second)
+	for !ev.selActive {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Forward regex search failed")
+		}
+	}
+	if ev.selAnchorOffset != 6 {
+		t.Errorf("Expected first match at index 6, got %d", ev.selAnchorOffset)
+	}
+
+	// 2. Регистронезависимый поиск назад с конца: ищем "match" -> должен найти третий "Match" (индекс 12)
+	ev.selActive = false
+	ev.CursorPos = 17
+	ev.Search("match", false, true, true, false, false)
+
+	timeout = time.After(1 * time.Second)
+	for !ev.selActive {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Reverse regex search failed")
+		}
+	}
+	if ev.selAnchorOffset != 12 {
+		t.Errorf("Expected reverse match at index 12, got %d", ev.selAnchorOffset)
+	}
+}
+
+func TestEditorView_WholeWordSearchReplace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("apple pineapple apple"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.Replace("apple", "orange", true, false, false, true, true)
+
+	timeout := time.After(1 * time.Second)
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("timeout")
+		}
+		if ev.pt.String() == "orange pineapple orange" {
+			break
+		}
+	}
+}
+func TestEditorView_Codepages_LoadSave(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "cyrillic.txt")
+
+	raw := []byte{0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2}
+	os.WriteFile(path, raw, 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	f, err := v.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	size := f.Size()
+	fullData := make([]byte, size)
+	_, _ = f.ReadAt(context.Background(), fullData, 0)
+	f.Close()
+
+	decoded, err := vfs.DecodeBytes(fullData, 1251)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pt := piecetable.New(decoded)
+	ev := NewEditorView(pt, v, path)
+	ev.Codepage = 1251
+	defer ev.Close()
+
+	if ev.pt.String() != "Привет" {
+		t.Errorf("Load failed: expected 'Привет', got %q", ev.pt.String())
+	}
+
+	ev.CursorPos = 12
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: '!'})
+
+	ev.SaveToFile(nil)
+
+	timeout := time.After(2 * time.Second)
+	for ev.saving {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Save timed out")
+		}
+	}
+
+	savedRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := []byte{0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x21}
+	if !bytes.Equal(savedRaw, expected) {
+		t.Errorf("Save failed: expected raw bytes %v, got %v", expected, savedRaw)
+	}
+}
+
+func TestEditorView_DoubleClick_SelectWord(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("hello world"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 8, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.DoubleClick,
+	})
+
+	if !ev.selActive {
+		t.Fatal("Selection should be active")
+	}
+
+	min, max := ev.getSelectionRange()
+	if min != 6 || max != 11 {
+		t.Errorf("Word selection failed: expected [6:11], got [%d:%d]", min, max)
+	}
+}
+
+func TestEditorView_MouseSelection_Release(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("data"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 2, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+	})
+
+	if !ev.selActive {
+		t.Fatal("Selection should start active on mouse down")
+	}
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: false,
+		MouseX: 2, MouseY: 1, ButtonState: 0,
+	})
+
+	if ev.selActive {
+		t.Error("Simple click without dragging should turn off selection on mouse release")
 	}
 }

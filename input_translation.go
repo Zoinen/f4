@@ -29,6 +29,57 @@ func formatTilde(mod int, code int) string {
 	return fmt.Sprintf("\x1b[%d~", code)
 }
 
+func TranslateMouseInput(e *vtinput.InputEvent) string {
+	cb := 0
+	isRelease := false
+
+	if e.WheelDirection != 0 {
+		if e.WheelDirection > 0 {
+			cb = 64 // Wheel up
+		} else {
+			cb = 65 // Wheel down
+		}
+	} else {
+		if !e.KeyDown {
+			cb = 3 // Release
+			isRelease = true
+		} else {
+			switch e.ButtonState {
+			case vtinput.FromLeft1stButtonPressed:
+				cb = 0
+			case vtinput.FromLeft2ndButtonPressed:
+				cb = 1
+			case vtinput.RightmostButtonPressed:
+				cb = 2
+			default:
+				cb = 3
+				isRelease = true
+			}
+		}
+
+		if (e.MouseEventFlags & vtinput.MouseMoved) != 0 {
+			cb += 32
+		}
+	}
+
+	if (e.ControlKeyState & vtinput.ShiftPressed) != 0 {
+		cb += 4
+	}
+	if (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0 {
+		cb += 8
+	}
+	if (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0 {
+		cb += 16
+	}
+
+	endChar := "M"
+	if isRelease {
+		endChar = "m"
+	}
+
+	return fmt.Sprintf("\x1b[<%d;%d;%d%s", cb, e.MouseX+1, e.MouseY+1, endChar)
+}
+
 func TranslateLegacySpecialKey(e *vtinput.InputEvent, appCursorKeys bool) string {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0

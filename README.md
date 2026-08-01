@@ -34,15 +34,12 @@ To upgrade later: `brew upgrade f4`. Both Apple Silicon (arm64) and Intel (amd64
 This project is built around several core philosophical and technical principles:
 
 1. **The Go Experiment:** Testing the viability of building a heavy-duty TUI in Go. Go provides cross-platform compilation out of the box, fast development, and zero dependency hell (e.g., an x64 Linux binary runs on any x64 Linux without external library issues).
-2. **AI-Driven:** Active use of modern, powerful LLMs like Gemini 3.1 Pro for test-driven development and code generation. LLMs write Go exceptionally well.
-3. **Test-Driven Development (TDD):** Ensuring core stability and behavioral correctness from the start.
-4. **Memory Management:** Go has a Garbage Collector (GC), but we use local optimizations (like a zero-allocation rendering loop) to bypass GC lag where it matters, keeping UI freezes unnoticeable.
-5. **Far Heritage:** Copying all successful concepts from Far (screen buffer, frame manager, etc.). Keeping internal structures and their names as close to the original C++ versions as possible to lower the entry barrier for developers familiar with Far APIs.
-6. **Iterative Scope:** First, replicate 1:1 everything in `far2l` that is personally needed by the author (on Linux). Next, cover everything else in `far2l`. Finally, port useful additions that appeared in Far3.
-7. **Consistent UX:** Adherence to a strict set of [Navigation and Interaction Guidelines](UX_GUIDELINES.md) that blend the best of classic TUI paradigms.
-8. **Bazaar Policy:** Openness to community contributions and patches.
+2. **AI-only. Canaries included:** Every line of code in this project is AI-generated. Instead of manually reviewing every change, we rely on an extensive test suite that serves as canaries in a coal mine: if the AI breaks something, the tests fail first. If you'd like to contribute, please include tests with your changes whenever possible.
+3. **Far Heritage:** Copying all successful concepts from Far (screen buffer, frame manager, etc.). Keeping internal structures and their names as close to the original C++ versions as possible to lower the entry barrier for developers familiar with Far APIs.
+4. **Consistent UX:** Adherence to a strict set of [Navigation and Interaction Guidelines](UX_GUIDELINES.md) that blend the best of classic TUI paradigms.
+5. **Bazaar Policy:** Openness to community contributions and patches.
 
-*Trade-offs:* The compiled binary is currently ~20MB, which might not fit in highly constrained environments like home routers.
+*Trade-offs:* The compiled binary is currently ~50MB, which might not fit in highly constrained environments like home routers.
 
 ### UI & Input
 
@@ -61,7 +58,6 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 *   `--gui=gogpu`: Use the hardware-accelerated (GPU) renderer.
 *   `--gui=x11`: Use native X11 windowing (Linux/BSD/macOS).
 *   `--gui=wayland`: Use native Wayland windowing (Linux/BSD).
-*   `--gui=purex11`: Use experimental pure Go X11 backend (no Xlib dependency).
 
 Example:
 ```bash
@@ -88,6 +84,8 @@ Example:
 
 1. **Asynchronous VFS:** Built from the ground up to be non-blocking, supporting live streaming of directory contents and lazy-loading of file data. See [VFS Architecture](VFS.md).
 2. **FISH+ Protocol (Coming Soon):** A revolutionary remote file management protocol that offloads indexing, searching, and patching to the server. See [FISH+ Concept](FISH+.md).
+3. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
+4. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
 
 ---
 
@@ -114,6 +112,23 @@ Example:
 
 ---
 
+## Development & Contribution Guidelines
+
+To maintain the performance and quality of `f4`, all contributors (including AI assistants) must adhere to these development guidelines:
+
+1. **Licensing and IP Cleanliness:** `f4` is licensed under the **BSD 3-Clause License**. Since `far2l` is GPL-licensed, you **must not** copy, translate, or adapt GPL-licensed code from `far2l` or Far Manager directly. All implementations of Far/far2l concepts must be clean-room, independent rewrites.
+2. **Rigorous Testing:** Every new feature, VFS provider, or bug fix must be accompanied by automated tests. Verify your changes by running `go test ./...` before submitting a pull request.
+3. **Code Formatting:** Code must be formatted strictly according to Go standards. Always run `gofmt -s -w .` on your changes before committing.
+4. **Memory Optimization:** Avoid heap allocations in hot paths or loops to prevent Garbage Collection (GC) latency. Optimize hot spots creatively, utilizing local pooling or zero-allocation paradigms.
+5. **FFI and Native Interoperability:** Avoid CGO to preserve easy cross-compilation. If native interoperability is necessary, utilize the `unxed/pureffi` library for fast, non-CGO FFI.
+6. **Language:** All code, comments, documentation, and commit messages must be in English to facilitate international collaboration.
+7. **Plan-First & Fail-Fast:** For complex tasks, start with a clear plan, break the work into incremental, logical chunks, and focus on failing fast to catch architectural flaws early.
+
+Recommended instruction for LLMs:
+
+> If the task is large, break it down into multiple responses and start with a plan. For complex tasks, use an iterative, incremental approach similar to Agile or RUP. Follow the "fail fast" principle. Write tests for the generated code immediately. Use English for comments and similar elements to facilitate international collaboration. Keep licensing compliance in mind: for example, you cannot copy code verbatim—or nearly verbatim—from a GPL project into a BSD project; you must implement your own solution for the same problem. In garbage-collected languages, avoid allocating memory within hot loops.
+
+---
 ### Getting Started (Ubuntu)
 
 **1. Install Prerequisites**

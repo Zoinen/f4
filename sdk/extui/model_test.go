@@ -8,10 +8,12 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 		Height:       40,
 		ActiveScreen: 1,
 		Shell: &ShellModel{
-			ID:          "shell",
-			Mode:        "panels",
-			ActivePanel: 1,
-			ShowPanels:  true,
+			ID:             "shell",
+			Mode:           "panels",
+			ActivePanel:    1,
+			ShowPanels:     true,
+			Fallback:       true,
+			FallbackReason: "unsupported panel layout",
 			Panels: []PanelModel{{
 				ID:     "panel:right",
 				Side:   1,
@@ -32,6 +34,9 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	shell := out["shell"].(map[string]any)
 	if shell["kind"] != "shell" || shell["activePanel"] != 1 {
 		t.Fatalf("unexpected shell: %#v", shell)
+	}
+	if shell["fallback"] != true || shell["reason"] != "unsupported panel layout" {
+		t.Fatalf("unexpected fallback metadata: %#v", shell)
 	}
 	panels := shell["panels"].([]map[string]any)
 	if panels[0]["path"] != "/tmp" {

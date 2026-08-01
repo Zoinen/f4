@@ -93,13 +93,13 @@ func actionExtractArchive(app vfs.App) {
 		waitLock = (res == 0)
 	}
 
-	app.RunProgressTask(" Extracting... ", "Preparing to extract...", false, func(ctx context.Context, update func(msg string, percent int)) error {
+	app.RunAdvancedProgressTask(" Extracting... ", false, func(ctx context.Context, reporter vfs.TaskReporter) error {
 		if waitLock {
-			update("Waiting in queue...", -1)
+			reporter.UpdateTransfer("Waiting", "in queue...", -1, "", -1, "")
 			vfs.GlobalArchiveLockManager.Lock(srcPath)
 			defer vfs.GlobalArchiveLockManager.Unlock(srcPath)
 		}
-		update("Extracting files...", -1)
+		reporter.UpdateTransfer("Extracting", "files...", -1, "", -1, "")
 
 		ex, err := archive.NewExtractor(srcPath, destDir, archive.Options{Xattrs: false, SafeWrites: true})
 		if err != nil {
@@ -109,8 +109,36 @@ func actionExtractArchive(app vfs.App) {
 
 		done := make(chan struct{})
 		defer close(done)
+		startTime := time.Now()
+
+		showProgress := func() {
+			bytes, entries := ex.Written()
+			elapsed := time.Since(startTime)
+			speed := float64(0)
+			if elapsed.Seconds() > 0 {
+				speed = float64(bytes) / elapsed.Seconds()
+			}
+			speedStr := formatSize(int64(speed)) + "/s"
+
+			elapsedStr := fmt.Sprintf("Time: %02d:%02d:%02d", int(elapsed.Hours()), int(elapsed.Minutes())%60, int(elapsed.Seconds())%60)
+
+			// Нам также нужно поправить и второе вхождение в actionAddArchive:
+			timeSpeedText := fmt.Sprintf("%-16s %-21s %15s", elapsedStr, "", speedStr)
+
+			totalText := fmt.Sprintf("Total: %s", formatSize(bytes))
+
+			currFile := fmt.Sprintf("%d files", entries)
+			if fp, ok := ex.(interface{ CurrentFile() string }); ok {
+				if name := fp.CurrentFile(); name != "" {
+					currFile = name
+				}
+			}
+
+			reporter.UpdateTransfer("Extracting", currFile, -1, totalText, -1, timeSpeedText)
+		}
+		showProgress()
+
 		go func() {
-			pct := 0
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
 			for {
@@ -120,8 +148,7 @@ func actionExtractArchive(app vfs.App) {
 				case <-done:
 					return
 				case <-ticker.C:
-					pct = (pct + 2) % 100
-					update("Extracting files...", pct)
+					showProgress()
 				}
 			}
 		}()
@@ -192,20 +219,21 @@ func actionAddArchive(app vfs.App) {
 				}
 			}
 
-			app.RunProgressTask(" Archiving... ", "Gathering files...", false, func(ctx context.Context, update func(msg string, percent int)) error {
+			app.RunAdvancedProgressTask(" Archiving... ", false, func(ctx context.Context, reporter vfs.TaskReporter) error {
 				if waitLock {
-					update("Waiting in queue...", -1)
+					reporter.UpdateTransfer("Waiting", "in queue...", -1, "", -1, "")
 					vfs.GlobalArchiveLockManager.Lock(absArcPath)
 					defer vfs.GlobalArchiveLockManager.Unlock(absArcPath)
 				}
-				update("Gathering files...", -1)
+				reporter.UpdateTransfer("Archiving", "files...", -1, "", -1, "")
 
 				fileMap := make(map[string]os.FileInfo)
-				for i, n := range names {
+				var totalBytes int64
+				for _, n := range names {
 					if ctx.Err() != nil {
 						return ctx.Err()
 					}
-					update(fmt.Sprintf("Scanning: %s", n), (i*100)/len(names))
+					reporter.UpdateScan(n, int64(len(fileMap)), 0)
 
 					fullPath := activeVfs.Join(activeVfs.GetPath(), n)
 					if osvfs, ok := activeVfs.(*vfs.OSVFS); ok {
@@ -213,6 +241,9 @@ func actionAddArchive(app vfs.App) {
 						filepath.Walk(absPath, func(p string, fi os.FileInfo, e error) error {
 							if e == nil {
 								fileMap[p] = fi
+								if !fi.IsDir() {
+									totalBytes += fi.Size()
+								}
 							}
 							return nil
 						})
@@ -227,8 +258,46 @@ func actionAddArchive(app vfs.App) {
 
 				done := make(chan struct{})
 				defer close(done)
+				startTime := time.Now()
+
+				showProgress := func() {
+					bytes, entries := a.Written()
+					elapsed := time.Since(startTime)
+					speed := float64(0)
+					if elapsed.Seconds() > 0 {
+						speed = float64(bytes) / elapsed.Seconds()
+					}
+
+					pct := -1
+					if totalBytes > 0 {
+						pct = int((bytes * 100) / totalBytes)
+					}
+					if pct > 100 {
+						pct = 100
+					}
+
+					speedStr := formatSize(int64(speed)) + "/s"
+
+					etaStr := "Remaining: ??:??:??"
+					if totalBytes > 0 && bytes > 0 && elapsed.Seconds() > 0.5 {
+						ratio := float64(bytes) / float64(totalBytes)
+						etaSecs := (elapsed.Seconds() / ratio) - elapsed.Seconds()
+						if etaSecs >= 0 && etaSecs < 3600*100 {
+							etaDur := time.Duration(etaSecs * float64(time.Second))
+							etaStr = fmt.Sprintf("Remaining: %02d:%02d:%02d", int(etaDur.Hours()), int(etaDur.Minutes())%60, int(etaDur.Seconds())%60)
+						}
+					}
+
+					elapsedStr := fmt.Sprintf("Time: %02d:%02d:%02d", int(elapsed.Hours()), int(elapsed.Minutes())%60, int(elapsed.Seconds())%60)
+					timeSpeedText := fmt.Sprintf("%-16s %-21s %15s", elapsedStr, etaStr, speedStr)
+
+					totalText := fmt.Sprintf("Total: %s / %s", formatSize(bytes), formatSize(totalBytes))
+
+					reporter.UpdateTransfer("Archiving", fmt.Sprintf("%d files", entries), -1, totalText, pct, timeSpeedText)
+				}
+				showProgress()
+
 				go func() {
-					pct := 0
 					ticker := time.NewTicker(100 * time.Millisecond)
 					defer ticker.Stop()
 					for {
@@ -238,8 +307,7 @@ func actionAddArchive(app vfs.App) {
 						case <-done:
 							return
 						case <-ticker.C:
-							pct = (pct + 2) % 100
-							update("Archiving files...", pct)
+							showProgress()
 						}
 					}
 				}()
@@ -248,6 +316,9 @@ func actionAddArchive(app vfs.App) {
 			}, func(err error) {
 				if err != nil && err != context.Canceled {
 					go app.Message(" Error ", fmt.Sprintf("Archiving failed:\n%v", err), []string{"&Ok"})
+				}
+				if err == nil {
+					app.SetPendingSelection(name)
 				}
 				app.RefreshAll()
 			})

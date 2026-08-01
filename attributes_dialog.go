@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
 	"time"
 
 	"os/user"
@@ -18,6 +21,32 @@ func padLabel(s string) string {
 		s += " "
 	}
 	return s
+}
+func isLocalOSVFS(v any) bool {
+	if v == nil {
+		return false
+	}
+	val := reflect.ValueOf(v)
+	if val.Kind() == reflect.Interface {
+		val = val.Elem()
+	}
+	if val.Kind() == reflect.Ptr {
+		if _, ok := val.Interface().(*vfs.OSVFS); ok {
+			return true
+		}
+		val = val.Elem()
+	}
+	if val.Kind() == reflect.Struct {
+		for i := 0; i < val.NumField(); i++ {
+			field := val.Field(i)
+			if field.CanInterface() {
+				if isLocalOSVFS(field.Interface()) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func ShowAttributesDialog(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSItem) {
@@ -255,7 +284,7 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 }
 
 func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSItem) {
-	width, height := 60, 17
+	width, height := 60, 20
 	dlg := vtui.NewCenteredDialog(width, height, " Attributes ")
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
@@ -271,6 +300,10 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 	dlg.AddItem(gbAttr)
 	mainVBox.Add(gbAttr, vtui.Margins{Top: 1}, vtui.AlignFill)
 
+	gbAdv := vtui.NewGroupBox(0, 0, 54, 3, " Advanced NTFS Flags ")
+	dlg.AddItem(gbAdv)
+	mainVBox.Add(gbAdv, vtui.Margins{Top: 1}, vtui.AlignFill)
+
 	editMTime := vtui.NewEdit(0, 0, 20, item.MTime.Format(timeFormat))
 	lblTime := vtui.NewLabel(0, 0, padLabel("Last write:"), editMTime)
 	rowTime := vtui.NewHBoxLayout(0, 0, 54, 1)
@@ -282,13 +315,42 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 
 	btnSet := vtui.NewButton(0, 0, "Set")
 	btnSet.IsDefault = true
+	btnSec := vtui.NewButton(0, 0, "&Security")
 	btnCancel := vtui.NewButton(0, 0, "Cancel")
+
+	var osPath string
+	if isLocalOSVFS(v) {
+		if abs, err := v.Abs(path); err == nil {
+			if runtime.GOOS == "windows" {
+				if (len(abs) >= 2 && abs[1] == ':') || strings.HasPrefix(abs, "\\\\") {
+					osPath = abs
+				}
+			} else {
+				if strings.HasPrefix(abs, "/") {
+					osPath = abs
+				}
+			}
+		}
+	}
+	if osPath == "" {
+		btnSec.SetDisabled(true)
+	}
+
+	btnSec.OnClick = func() {
+		if osPath != "" {
+			showNativePropertiesOS(osPath)
+		}
+	}
+
 	rowBtns := vtui.NewHBoxLayout(0, 0, 54, 1)
 	rowBtns.HorizontalAlign = vtui.AlignCenter
 	rowBtns.Spacing = 2
 	rowBtns.Add(btnSet, vtui.Margins{}, vtui.AlignTop)
+	rowBtns.Add(btnSec, vtui.Margins{}, vtui.AlignTop)
 	rowBtns.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+
 	dlg.AddItem(btnSet)
+	dlg.AddItem(btnSec)
 	dlg.AddItem(btnCancel)
 	mainVBox.Add(rowBtns, vtui.Margins{Top: 1}, vtui.AlignFill)
 
@@ -326,6 +388,40 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 	gbVBox.Add(chkSY, vtui.Margins{}, vtui.AlignLeft)
 	gbVBox.Add(chkAR, vtui.Margins{}, vtui.AlignLeft)
 	gbVBox.Apply()
+
+	var advFlags []string
+	if (item.WinAttrs & 0x00000800) != 0 {
+		advFlags = append(advFlags, "Compressed")
+	}
+	if (item.WinAttrs & 0x00004000) != 0 {
+		advFlags = append(advFlags, "Encrypted")
+	}
+	if (item.WinAttrs & 0x00000400) != 0 {
+		advFlags = append(advFlags, "Reparse Point")
+	}
+	if (item.WinAttrs & 0x00000200) != 0 {
+		advFlags = append(advFlags, "Sparse")
+	}
+	if (item.WinAttrs & 0x00001000) != 0 {
+		advFlags = append(advFlags, "Offline")
+	}
+	if (item.WinAttrs & 0x00002000) != 0 {
+		advFlags = append(advFlags, "Not Content Indexed")
+	}
+	if (item.WinAttrs & 0x00000010) != 0 {
+		advFlags = append(advFlags, "Directory")
+	}
+
+	advStr := "None"
+	if len(advFlags) > 0 {
+		advStr = strings.Join(advFlags, ", ")
+	}
+
+	lblAdv := vtui.NewText(0, 0, vtui.TruncateMiddle(advStr, 50), vtui.Palette[vtui.ColDialogText])
+	gbAdv.AddItem(lblAdv)
+	gbAdvVBox := vtui.NewVBoxLayout(gbAdv.X1+2, gbAdv.Y1+1, gbAdv.X2-gbAdv.X1-4, 1)
+	gbAdvVBox.Add(lblAdv, vtui.Margins{}, vtui.AlignLeft)
+	gbAdvVBox.Apply()
 
 	btnSet.OnClick = func() {
 		if nt, err := time.ParseInLocation(timeFormat, editMTime.GetText(), time.Local); err == nil {

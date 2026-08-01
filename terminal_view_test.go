@@ -251,15 +251,15 @@ func TestTerminalView_ProcessFar2lInteract_Notification(t *testing.T) {
 	tv.ProcessFar2lInteract(stk)
 
 	// Pump task queue
-	foundDialog := false
+	foundToast := false
 	timeout := time.After(500 * time.Millisecond)
 Loop:
 	for {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
-				foundDialog = true
+			if vtui.FrameManager.GetActiveToast() != "" {
+				foundToast = true
 				break Loop
 			}
 		case <-timeout:
@@ -267,8 +267,8 @@ Loop:
 		}
 	}
 
-	if !foundDialog {
-		t.Error("Notification APC did not result in a Message Box")
+	if !foundToast {
+		t.Error("Notification APC did not result in a Toast")
 	}
 }
 
@@ -423,32 +423,42 @@ func TestTerminalView_WideCharAlignment(t *testing.T) {
 		t.Errorf("Character after wide char misaligned: expected 'A' at index 2, got %c", rune(tv.Lines[0][2].Char))
 	}
 }
-func TestTerminalView_AutoWrap(t *testing.T) {
+func TestTerminalView_AutoWrap_Behavior(t *testing.T) {
 	width := 10
 	tv := NewTerminalView(width, 5)
 	defer tv.Close()
 	tv.SetCursor(0, 0)
 
-	// Write 10 characters (fill line)
+	// 1. Test ON state (default)
+	tv.AutoWrap = true
 	for i := 0; i < 10; i++ {
 		tv.PutChar('X', 0)
 	}
-
-	if tv.CursorX != 10 { // On the edge
-		t.Errorf("CursorX should be 10, got %d", tv.CursorX)
+	tv.PutChar('Y', 0) // Should wrap
+	if tv.CursorY != 1 || tv.CursorX != 1 || tv.Lines[1][0].Char != 'Y' {
+		t.Error("AutoWrap ON behavior failed")
 	}
 
-	// Write 11th character. Auto-wrap should occur.
-	tv.PutChar('Y', 0)
+	// 2. Test OFF state
+	tv.ResetBuffer(width, 5)
+	tv.AutoWrap = false
+	tv.SetCursor(0, 0)
+	for i := 0; i < 10; i++ {
+		tv.PutChar('A', 0)
+	}
+	if tv.CursorX != 10 {
+		t.Errorf("Expected X=10, got %d", tv.CursorX)
+	}
 
-	if tv.CursorY != 1 {
-		t.Errorf("Auto-wrap failed: CursorY should be 1, got %d", tv.CursorY)
+	tv.PutChar('B', 0) // Should OVERWRITE last char instead of wrapping
+	if tv.CursorY != 0 {
+		t.Errorf("AutoWrap OFF: expected CursorY=0, got %d", tv.CursorY)
 	}
-	if tv.CursorX != 1 {
-		t.Errorf("Auto-wrap failed: CursorX should be 1, got %d", tv.CursorX)
+	if tv.CursorX != 10 {
+		t.Errorf("AutoWrap OFF: expected CursorX=10, got %d", tv.CursorX)
 	}
-	if tv.Lines[1][0].Char != 'Y' {
-		t.Errorf("Auto-wrap failed: 'Y' should be at (0, 1), got %c", rune(tv.Lines[1][0].Char))
+	if tv.Lines[0][9].Char != 'B' {
+		t.Errorf("AutoWrap OFF: expected 'B' at (9,0), got '%c'", rune(tv.Lines[0][9].Char))
 	}
 }
 func TestTerminalView_VTEMirror_PromptOverwrite(t *testing.T) {
@@ -1125,6 +1135,13 @@ func TestIssue117_OSC52_Read_SecurityDenial(t *testing.T) {
 	parser1 := NewAnsiParser(tv, pty1)
 	vtui.GlobalClipboardAccessManager = &mockDenyingAuth{retVal: 0}
 	vtui.SetClipboard("sensitive_data")
+
+	for i := 0; i < 50; i++ {
+		if vtui.GetClipboard() == "secret_data" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	parser1.Process([]byte("\x1b]52;c;?\x07"))
 	if pty1.Len() > 0 {

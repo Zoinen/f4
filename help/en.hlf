@@ -1,0 +1,49 @@
+@Contents
+$f4 Help Index (Version: %Ver)
+f4 is an experimental Far Manager / far2l clone in Go.
+
+~Viewer / Editor keys~ViewerEditor@
+~Panel navigation~PanelNav@
+~View README.md~README@
+
+@Panels
+$f4 Help Index (Version: %Ver)
+f4 is an experimental Far Manager / far2l clone in Go.
+
+~Viewer / Editor keys~ViewerEditor@
+~Panel navigation~PanelNav@
+~View README.md~README@
+
+@ViewerEditor
+$Viewer & Editor Keys
+Editor:
+  F2            - Save
+  F3            - Toggle word wrap
+  F5            - Toggle show whitespaces
+  F7            - Search
+  Ctrl+Y        - Delete line
+  Ctrl+Z        - Undo
+  Ctrl+Shift+Z  - Redo
+  Ctrl+A        - Select all
+  Esc / F10     - Exit
+
+Viewer:
+  F2            - Toggle wrap
+  F4            - Toggle hex mode
+  F7            - Search
+  Esc / F10     - Exit
+
+@PanelNav
+$Panel Navigation
+  Tab           - Switch active panel
+  Alt+F1/F2     - Left/Right drive menu
+  Ctrl+O        - Toggle panels / terminal view
+  Ctrl+Tab      - Cycle workspaces
+  Ctrl+W        - Close workspace
+  Ctrl+N        - Fork active panel to new workspace
+  Insert        - Select file/folder
+  Ctrl+A        - View file attributes
+  Alt+F7        - Find file
+  Alt+F8        - Command history
+  Alt+F12       - Folders history
+  F11           - Plugin menu
