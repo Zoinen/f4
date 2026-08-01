@@ -13,6 +13,7 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 	if legacy == nil {
 		return nil
 	}
+	autocompletes := appActiveAutocompleteMenus()
 	scene := extui.Scene{
 		Width:          semanticInt(legacy["width"]),
 		Height:         semanticInt(legacy["height"]),
@@ -43,6 +44,9 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 	}
 
 	for _, frame := range appMapSlice(legacy["frames"]) {
+		if autocompletes.isLegacyFrame(frame) {
+			continue
+		}
 		switch semanticString(frame["kind"]) {
 		case "panels", "shell":
 			shell := appShellFromLegacy(frame)
@@ -56,6 +60,7 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 			scene.Surface = &surface
 		}
 	}
+	appAppendAutocompleteMenus(&scene, autocompletes)
 	if scene.Shell != nil && scene.Surface == nil && scene.Shell.TerminalActive && scene.Shell.Terminal != nil {
 		scene.Surface = &extui.SurfaceModel{
 			ID:    scene.Shell.Terminal.ID,
@@ -66,6 +71,94 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		}
 	}
 	return scene.ToMap()
+}
+
+type appAutocompleteMenu struct {
+	menu     *vtui.AutoCompleteMenu
+	id       string
+	windowID string
+	x        int
+	y        int
+	w        int
+	h        int
+}
+
+type appAutocompleteMenus []appAutocompleteMenu
+
+func appActiveAutocompleteMenus() appAutocompleteMenus {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	var out appAutocompleteMenus
+	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+		ac, ok := frame.(*vtui.AutoCompleteMenu)
+		if !ok || !ac.HasMatches() {
+			continue
+		}
+		x1, y1, x2, y2 := ac.GetPosition()
+		out = append(out, appAutocompleteMenu{
+			menu:     ac,
+			id:       vtui.SemanticID(ac),
+			windowID: vtui.SemanticID(&ac.Window),
+			x:        x1,
+			y:        y1,
+			w:        x2 - x1 + 1,
+			h:        y2 - y1 + 1,
+		})
+	}
+	return out
+}
+
+func (menus appAutocompleteMenus) isLegacyFrame(frame map[string]any) bool {
+	kind := semanticString(frame["kind"])
+	if kind != "dialog" && kind != "window" {
+		return false
+	}
+	id := semanticString(frame["id"])
+	x := semanticInt(frame["x"])
+	y := semanticInt(frame["y"])
+	w := semanticInt(frame["w"])
+	h := semanticInt(frame["h"])
+	for _, item := range menus {
+		if id != "" && (id == item.id || id == item.windowID) {
+			return true
+		}
+		if x == item.x && y == item.y && w == item.w && h == item.h && semanticString(frame["title"]) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func appAppendAutocompleteMenus(scene *extui.Scene, autocompletes appAutocompleteMenus) {
+	if scene == nil {
+		return
+	}
+
+	for _, item := range autocompletes {
+		ac := item.menu
+		menu := extui.MenuModel{
+			ID:       item.id,
+			Role:     "autocomplete",
+			Title:    "Autocomplete",
+			Active:   true,
+			Selected: 0,
+			Legacy: extui.M{
+				"x": item.x,
+				"y": item.y,
+				"w": item.w,
+				"h": item.h,
+			},
+		}
+		for i, match := range ac.Matches {
+			menu.Items = append(menu.Items, extui.MenuItemModel{
+				Index:   i,
+				Text:    match,
+				RawText: match,
+			})
+		}
+		scene.Menus = append(scene.Menus, menu)
+	}
 }
 
 func appShellFromLegacy(node map[string]any) extui.ShellModel {

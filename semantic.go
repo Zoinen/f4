@@ -237,6 +237,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if text := semanticString(action["text"]); text != "" && pf.cmdLine != nil {
 			pf.cmdLine.Edit.SetText(text)
 		}
+		closeActiveAutocompleteMenus()
 		return pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
 	case "set_command_text", "command.setText":
 		if pf.cmdLine != nil {
@@ -247,6 +248,17 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return vtui.FrameManager.EmitCommand(semanticInt(action["command"]), action["args"])
 	}
 	return false
+}
+
+func closeActiveAutocompleteMenus() {
+	if vtui.FrameManager == nil {
+		return
+	}
+	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+		if _, ok := frame.(*vtui.AutoCompleteMenu); ok {
+			frame.Close()
+		}
+	}
 }
 
 func (pf *PanelsFrame) setActivePanelForAction(action map[string]any) {

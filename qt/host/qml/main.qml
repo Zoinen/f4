@@ -231,7 +231,9 @@ ApplicationWindow {
                 property var frame: modelData
                 anchors.fill: parent
                 active: frame.kind === "dialog" || frame.kind === "window" || frame.kind === "menu"
-                sourceComponent: frame.kind === "menu" ? menuPopupComponent : dialogOverlayComponent
+                sourceComponent: frame.kind === "menu"
+                                 ? (frame.role === "autocomplete" ? autocompletePopupComponent : menuPopupComponent)
+                                 : dialogOverlayComponent
                 onLoaded: {
                     if (item && item.frame !== undefined)
                         item.frame = frame
@@ -970,74 +972,155 @@ ApplicationWindow {
     }
 
     Component {
-        id: menuPopupComponent
-        Rectangle {
+        id: autocompletePopupComponent
+        Item {
+            id: autocompleteOverlay
             property var frame: ({})
-            x: root.pxX(frame.x)
-            y: root.pxY(frame.y)
-            width: root.pxW(frame.w)
-            height: root.pxH(frame.h)
-            color: "#202833"
-            border.width: 1
-            border.color: root.panelBorder
-            z: 160
+            property var items: frame.items || []
+            readonly property real preferredX: root.pxX(frame.x || 0)
+            readonly property real preferredY: root.pxY(frame.y || 0)
+            readonly property real preferredW: root.pxW(frame.w || Math.max(24, root.scene.width || 80))
+            readonly property real rowHeight: Math.max(22, root.ch * 1.15)
+            readonly property real maxHeight: Math.max(rowHeight + 8, root.height - semanticMenu.height - root.commandLineHeight(root.shellFrame()) - root.keyBarHeight() - 18)
 
-            ListView {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                anchors.topMargin: root.ch
-                anchors.bottomMargin: root.ch
-                anchors.leftMargin: 1
-                anchors.rightMargin: 1
-                model: frame.items || []
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                hoverEnabled: true
+                preventStealing: true
+                onPressed: (mouse) => { mouse.accepted = true }
+                onReleased: (mouse) => { mouse.accepted = true }
+                onPositionChanged: (mouse) => { mouse.accepted = true }
+                onWheel: (wheel) => { wheel.accepted = false }
+            }
+
+            Rectangle {
+                x: Math.max(6, Math.min(autocompleteOverlay.preferredX, root.width - width - 6))
+                y: Math.max(semanticMenu.height + 6, Math.min(autocompleteOverlay.preferredY, root.height - height - root.keyBarHeight() - 6))
+                width: Math.max(220, Math.min(autocompleteOverlay.preferredW, root.width - 12))
+                height: Math.min(autocompleteOverlay.maxHeight, Math.max(1, Math.min(12, autocompleteList.count)) * autocompleteOverlay.rowHeight + 8)
+                color: "#202833"
+                radius: 4
+                border.width: 1
+                border.color: root.panelBorder
                 clip: true
-                delegate: Rectangle {
-                    width: ListView.view.width
-                    height: root.ch
-                    color: modelData.index === frame.selected ? root.selectedBg : "transparent"
+                z: 170
 
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: 1
-                        color: "#44505f"
-                        visible: modelData.separator
+                ListView {
+                    id: autocompleteList
+                    anchors.fill: parent
+                    anchors.margins: 4
+                    model: autocompleteOverlay.items
+                    clip: true
+                    currentIndex: Math.max(0, autocompleteOverlay.frame.selected || 0)
+                    boundsBehavior: Flickable.StopAtBounds
+                    interactive: contentHeight > height
+
+                    delegate: Rectangle {
+                        width: ListView.view.width
+                        height: autocompleteOverlay.rowHeight
+                        radius: 3
+                        color: mouseArea.containsMouse || index === autocompleteList.currentIndex ? root.selectedBg : "transparent"
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            text: root.cleanText(modelData.text)
+                            color: root.textColor
+                            font.pixelSize: 13
+                            elide: Text.ElideRight
+                        }
+
+                        MouseArea {
+                            id: mouseArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton
+                            onEntered: autocompleteList.currentIndex = index
+                            onClicked: root.action({ "target": autocompleteOverlay.frame.id, "action": "command.submit", "text": root.cleanText(modelData.text) })
+                        }
                     }
+                }
+            }
+        }
+    }
 
-                    Text {
-                        anchors.left: parent.left
-                        anchors.right: shortcut.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: 8
-                        text: root.cleanText(modelData.text)
-                        color: modelData.disabled ? root.mutedText : root.textColor
-                        font.pixelSize: 13
-                        visible: !modelData.separator
-                        elide: Text.ElideRight
-                    }
+    Component {
+        id: menuPopupComponent
+        Item {
+            id: menuOverlay
+            property var frame: ({})
 
-                    Text {
-                        id: shortcut
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.rightMargin: 8
-                        text: root.cleanText(modelData.shortcut)
-                        color: root.mutedText
-                        font.pixelSize: 12
-                        visible: !modelData.separator
-                    }
+            Rectangle {
+                x: root.pxX(menuOverlay.frame.x)
+                y: root.pxY(menuOverlay.frame.y)
+                width: root.pxW(menuOverlay.frame.w)
+                height: root.pxH(menuOverlay.frame.h)
+                color: "#202833"
+                border.width: 1
+                border.color: root.panelBorder
+                z: 160
 
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: !modelData.separator && !modelData.disabled
-                        onClicked: {
-                            if (modelData.command)
-                                root.action({ "action": "command.emit", "command": modelData.command })
-                            else
-                                root.action({ "target": frame.id, "action": "menu.activate", "index": modelData.index })
+                ListView {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.topMargin: root.ch
+                    anchors.bottomMargin: root.ch
+                    anchors.leftMargin: 1
+                    anchors.rightMargin: 1
+                    model: menuOverlay.frame.items || []
+                    clip: true
+                    delegate: Rectangle {
+                        width: ListView.view.width
+                        height: root.ch
+                        color: modelData.index === menuOverlay.frame.selected ? root.selectedBg : "transparent"
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 1
+                            color: "#44505f"
+                            visible: modelData.separator
+                        }
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: shortcut.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 8
+                            text: root.cleanText(modelData.text)
+                            color: modelData.disabled ? root.mutedText : root.textColor
+                            font.pixelSize: 13
+                            visible: !modelData.separator
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            id: shortcut
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.rightMargin: 8
+                            text: root.cleanText(modelData.shortcut)
+                            color: root.mutedText
+                            font.pixelSize: 12
+                            visible: !modelData.separator
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: !modelData.separator && !modelData.disabled
+                            onClicked: {
+                                if (modelData.command)
+                                    root.action({ "action": "command.emit", "command": modelData.command })
+                                else
+                                    root.action({ "target": menuOverlay.frame.id, "action": "menu.activate", "index": modelData.index })
+                            }
                         }
                     }
                 }

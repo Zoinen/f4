@@ -236,17 +236,29 @@ void VtuiGridItem::mouseMoveEvent(QMouseEvent *event)
 
 void VtuiGridItem::wheelEvent(QWheelEvent *event)
 {
+    if (isTouchpadScroll(event)) {
+        m_wheelRemainder = 0;
+        event->accept();
+        return;
+    }
+
     if (!m_controller) {
         return;
     }
 
     const int delta = event->angleDelta().y();
     if (delta == 0) {
+        event->accept();
         return;
     }
 
     const QPoint cell = cellForPosition(event->position());
-    m_controller->sendWheel(cell.x(), cell.y(), delta > 0 ? 1 : -1, modifiersFromEvent(event->modifiers()));
+    m_wheelRemainder += delta;
+    while (std::abs(m_wheelRemainder) >= 120) {
+        const int dir = m_wheelRemainder > 0 ? 1 : -1;
+        m_controller->sendWheel(cell.x(), cell.y(), dir, modifiersFromEvent(event->modifiers()));
+        m_wheelRemainder -= dir * 120;
+    }
     event->accept();
 }
 
@@ -544,6 +556,18 @@ int VtuiGridItem::keyChar(const QKeyEvent *event) const
         return 0;
     }
     return static_cast<int>(codepoint);
+}
+
+bool VtuiGridItem::isTouchpadScroll(const QWheelEvent *event) const
+{
+    if (!event->pixelDelta().isNull()) {
+        return true;
+    }
+    if (event->phase() != Qt::NoScrollPhase) {
+        return true;
+    }
+    return event->source() == Qt::MouseEventSynthesizedBySystem
+        || event->source() == Qt::MouseEventSynthesizedByQt;
 }
 
 void VtuiGridItem::sendMouseEvent(QMouseEvent *event, int flags, bool down)

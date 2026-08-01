@@ -68,6 +68,7 @@ private:
     int buttonState(Qt::MouseButton button) const;
     int keyToVk(const QKeyEvent *event) const;
     int keyChar(const QKeyEvent *event) const;
+    bool isTouchpadScroll(const QWheelEvent *event) const;
     void sendMouseEvent(QMouseEvent *event, int flags, bool down);
     void maybeSendResize();
 
@@ -83,6 +84,7 @@ private:
     int m_rows = 0;
     int m_lastSentCols = 0;
     int m_lastSentRows = 0;
+    int m_wheelRemainder = 0;
     int m_cursorX = 0;
     int m_cursorY = 0;
     int m_cursorShape = 0;
