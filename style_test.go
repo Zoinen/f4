@@ -43,6 +43,15 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	if got := vtui.GetRGBBack(vtui.Palette[ColPanelText]); got != 0x232323 {
 		t.Fatalf("modern panel background: got %06X", got)
 	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelCursor]); got != 0xAAAAAA {
+		t.Fatalf("modern panel cursor text: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedText]); got != 0xF1EC0E {
+		t.Fatalf("modern selected panel text: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedCursor]); got != 0xF1EC0E {
+		t.Fatalf("modern selected panel cursor text: got %06X", got)
+	}
 
 	if err := ApplyColorStyle("Classic"); err != nil {
 		t.Fatal(err)
