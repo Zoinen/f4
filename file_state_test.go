@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -60,5 +61,25 @@ func TestF4FileStateProvider_SaveAndRestore(t *testing.T) {
 	}
 	if stateV.ViewerOffset != 500 || stateV.ViewerWrap != false || stateV.ViewerHex != true {
 		t.Errorf("Incorrect saved viewer state: %+v", stateV)
+	}
+}
+
+func TestF4FileStateProvider_AsyncSaveUpdatesMemoryAndDisk(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "file_states_async.json")
+	fs := &F4FileStateProvider{
+		path:  dbPath,
+		Limit: 10,
+		Data:  make(map[string]*FileState),
+	}
+
+	fs.SaveEditorStateAsync("main.go", 12, 7, 3, 1, true)
+	state := fs.GetState("main.go")
+	if state == nil || state.EditorLine != 12 || state.EditorPos != 7 {
+		t.Fatalf("async save did not update in-memory state immediately: %+v", state)
+	}
+
+	fs.Flush()
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("async state was not persisted after Flush: %v", err)
 	}
 }

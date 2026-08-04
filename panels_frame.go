@@ -124,8 +124,13 @@ type PanelsFrame struct {
 	showRightPanel bool
 	wide           bool
 	widePanel      int // -1 for normal split, 0/1 for the slot occupying the full width
-	lastW          int
-	lastH          int
+	// panelMouseCapture owns a complete button-down/move/release gesture.
+	// Without it, dragging a row across the split can accidentally start the
+	// other panel's scrollbar (or vice versa).
+	panelMouseCapture Panel
+	middleMouseDown   bool
+	lastW             int
+	lastH             int
 
 	// Panel geometry offsets, adjusted by Ctrl+Left/Right (width) and
 	// Ctrl+Up/Down (height). Names and semantics match far2l's [Layout]:
@@ -1471,6 +1476,11 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		actionFoldersHistory(pf)
 		return true
 	}
+	// Ctrl+F12: Sort modes
+	if e.VirtualKeyCode == vtinput.VK_F12 && ctrl && !alt && !shift && e.KeyDown {
+		actionSortMenu(pf)
+		return true
+	}
 
 	// F11: Plugin Menu
 	if e.VirtualKeyCode == vtinput.VK_F11 && !alt && !ctrl && !shift && e.KeyDown {
@@ -1627,7 +1637,9 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	if ctrl && !alt && !shift && e.KeyDown {
+	lctrl := (e.ControlKeyState & vtinput.LeftCtrlPressed) != 0
+	rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
+	if lctrl && !rctrl && !alt && !shift && e.KeyDown {
 		switch e.VirtualKeyCode {
 		case '1':
 			pf.setPanelViewMode(pf.activeIdx, ViewModeBrief)
@@ -2233,7 +2245,7 @@ func (pf *PanelsFrame) handleTerminalMouseSelection(e *vtinput.InputEvent) bool 
 			return false
 		}
 		if pty := pf.getActivePTY(); pty != nil {
-			text := vtui.GetClipboard()
+			text := tv.readClipboard()
 			if text != "" {
 				if tv.BracketedPasteMode {
 					pty.Write([]byte("\x1b[200~" + text + "\x1b[201~"))
@@ -2328,6 +2340,31 @@ func (pf *PanelsFrame) handleTerminalMouseSelection(e *vtinput.InputEvent) bool 
 	return false
 }
 
+// processMiddleMouseGesture recognizes exactly one initial middle-button down
+// and owns all following move/release events until the gesture is complete.
+// The trigger result is true only for that first down.
+func (pf *PanelsFrame) processMiddleMouseGesture(e *vtinput.InputEvent) (handled, trigger bool) {
+	// Some Windows mice report wheel rotation with the middle-button bit still
+	// set while the wheel is held. Rotation is never a click and must continue
+	// to the regular wheel-routing path.
+	if e.WheelDirection != 0 {
+		return false, false
+	}
+	isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
+	if pf.middleMouseDown {
+		if !isMove && (e.ButtonState&vtinput.FromLeft2ndButtonPressed == 0 || !e.KeyDown) {
+			pf.middleMouseDown = false
+		}
+		return true, false
+	}
+
+	if e.ButtonState&vtinput.FromLeft2ndButtonPressed != 0 && e.KeyDown && !isMove {
+		pf.middleMouseDown = true
+		return true, true
+	}
+	return false, false
+}
+
 func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	// If panels are hidden, route relevant mouse events to PTY immediately
 	if !pf.showPanels {
@@ -2349,7 +2386,29 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	mx, my := int(e.MouseX), int(e.MouseY)
 
-	if pf.searchFirstMode() && e.ButtonState != 0 && e.KeyDown && pf.cmdLine.IsVisible() {
+	// A middle-button gesture that already emitted Enter owns its remaining
+	// motion/release events and must not fall through to panels or scrollbars.
+	if pf.middleMouseDown && e.WheelDirection == 0 {
+		pf.processMiddleMouseGesture(e)
+		return true
+	}
+
+	// Keep every mouse gesture routed to the panel where its initial press
+	// occurred. MouseMoved is checked first because some backends report moves
+	// with ButtonState=0; releases are the non-move event with no held button
+	// (or KeyDown=false on tty/X11 backends).
+	if pf.panelMouseCapture != nil {
+		captured := pf.panelMouseCapture
+		captured.ProcessMouse(e)
+		isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
+		isRelease := !isMove && (e.ButtonState == 0 || !e.KeyDown)
+		if isRelease {
+			pf.panelMouseCapture = nil
+		}
+		return true
+	}
+
+	if pf.searchFirstMode() && e.WheelDirection == 0 && e.ButtonState != 0 && e.KeyDown && pf.cmdLine.IsVisible() {
 		x1, y1, x2, y2 := pf.cmdLine.GetPosition()
 		if mx >= x1 && mx <= x2 && my >= y1 && my <= y2 {
 			pf.setCommandLineFocus(true)
@@ -2359,7 +2418,7 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 
 	// Активация меню кликом мыши на нулевую строку (AlwaysShowMenuBar)
-	if AppConfig.AlwaysShowMenuBar && pf.showPanels && my == 0 && e.ButtonState != 0 {
+	if AppConfig.AlwaysShowMenuBar && pf.showPanels && my == 0 && e.WheelDirection == 0 && e.ButtonState != 0 {
 		pf.menuBar.Active = true
 		pf.menuBar.ProcessMouse(e)
 		return true
@@ -2373,7 +2432,7 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	// Enter branch below can't launch a file the user can't see.
 	// Wheel events fall through to the wheel branch and its
 	// normal alt-panel-first routing.
-	if pf.showPanels && e.ButtonState != 0 {
+	if pf.showPanels && e.WheelDirection == 0 && e.ButtonState != 0 {
 		if i := pf.hitAltPanel(mx, my); i >= 0 {
 			// Click on an alt panel activates its side, same as
 			// a click on a file panel does.
@@ -2393,15 +2452,17 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Global middle-click (wheel click) intercept for PanelsFrame.
-	// When panels are shown, clicking the middle mouse button anywhere on screen
-	// triggers the Enter handler, launching the selected file in the active panel.
-	if e.ButtonState == vtinput.FromLeft2ndButtonPressed && e.KeyDown {
-		pf.ProcessKey(&vtinput.InputEvent{
-			Type:           vtinput.KeyEventType,
-			KeyDown:        true,
-			VirtualKeyCode: vtinput.VK_RETURN,
-		})
+	// Global middle-click (wheel click) intercept for PanelsFrame. Only the
+	// initial down emits Enter; held-button MouseMoved events are consumed by
+	// the gesture state above.
+	if handled, trigger := pf.processMiddleMouseGesture(e); handled {
+		if trigger {
+			pf.ProcessKey(&vtinput.InputEvent{
+				Type:           vtinput.KeyEventType,
+				KeyDown:        true,
+				VirtualKeyCode: vtinput.VK_RETURN,
+			})
+		}
 		return true
 	}
 
@@ -2452,6 +2513,7 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 		x1, y1, x2, y2 := p.GetPosition()
 		if mx >= x1 && mx <= x2 && my >= y1 && my <= y2 {
+			isInitialPress := e.ButtonState != 0 && e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0
 			if pf.activeIdx != i && e.ButtonState != 0 {
 				pf.activeIdx = i
 				pf.lastKey = 0
@@ -2460,13 +2522,28 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 			if pf.searchFirstMode() && e.ButtonState != 0 {
 				pf.setCommandLineFocus(false)
 			}
+			if isInitialPress && e.ButtonState&vtinput.RightmostButtonPressed != 0 {
+				if fsp, ok := p.(*FileSystemPanel); ok {
+					if _, header := fsp.headerSortModeAt(mx, my); header {
+						actionSortMenu(pf)
+						return true
+					}
+				}
+			}
+			if isInitialPress {
+				pf.panelMouseCapture = p
+			}
 
 			handled := p.ProcessMouse(e)
 			if handled && e.KeyDown {
+				scrollBarHandled := false
+				if fsp, ok := p.(*FileSystemPanel); ok {
+					scrollBarHandled = fsp.scrollMouseActive || fsp.headerMouseActive
+				}
 				isLeftDoubleClick := (e.MouseEventFlags&vtinput.DoubleClick) != 0 && (e.ButtonState&vtinput.FromLeft1stButtonPressed) != 0
 				isMiddleClick := (e.ButtonState & vtinput.FromLeft2ndButtonPressed) != 0
 
-				if isLeftDoubleClick || isMiddleClick {
+				if !scrollBarHandled && (isLeftDoubleClick || isMiddleClick) {
 					pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 				}
 			}

@@ -198,7 +198,7 @@ type editorState struct {
 
 func (ev *EditorView) Close() {
 	if GlobalFileState != nil && ev.filePath != "" {
-		GlobalFileState.SaveEditorState(ev.filePath, ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.WordWrap)
+		GlobalFileState.SaveEditorStateAsync(ev.filePath, ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.WordWrap)
 	}
 	if ev.indexCancel != nil {
 		ev.indexCancel()
@@ -649,6 +649,27 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, fragSyntax, startVCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
 
 			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
+
+			lineBg := bgAttr
+			if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
+				lineBg = ch.GetLineBackground(logIdx, bgAttr)
+			}
+			fillBg := lineBg
+			if isCrossRow && horzCrossAttr != 0 {
+				if horzCrossAttr&vtui.IsBgRGB != 0 {
+					fillBg = vtui.SetRGBBack(fillBg, vtui.GetRGBBack(horzCrossAttr))
+				} else {
+					fillBg = vtui.SetIndexBack(fillBg, vtui.GetIndexBack(horzCrossAttr))
+				}
+			}
+			startX := ev.X1 - ev.ScrollLeft + len(ev.renderCells)
+			if startX < ev.X1 {
+				startX = ev.X1
+			}
+			maxX := ev.X1 + width - 1
+			if startX <= maxX {
+				scr.FillRect(startX, currY, maxX, currY, ' ', fillBg)
+			}
 
 			if absVRow == curVRow {
 				scr.SetCursorPos(ev.X1+curVCol+ev.CursorVirtualSpaces-ev.ScrollLeft, currY)

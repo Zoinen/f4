@@ -161,6 +161,12 @@ const (
 	ViewModeWide
 )
 
+const (
+	panelSizeColumnWidth     = 11
+	panelModifiedColumnWidth = 14
+	panelDragScrollInterval  = 75 * time.Millisecond
+)
+
 type SortMode int
 
 const (
@@ -223,17 +229,24 @@ type dirCacheEntry struct {
 }
 type FileSystemPanel struct {
 	vtui.ScreenObject
-	table               *vtui.Table
-	frame               *vtui.BorderedFrame
-	vfs                 vfs.VFS
-	entries             []*fileEntry
-	selectedItems       map[string]bool
-	viewMode            ViewMode
-	wide                bool
-	cursorIdx           int
-	lastRightClickedIdx int
-	rightDragActive     bool
-	rightDragSelect     bool
+	table                *vtui.Table
+	scrollBar            *vtui.ScrollBar
+	scrollMouseActive    bool
+	headerMouseActive    bool
+	frame                *vtui.BorderedFrame
+	vfs                  vfs.VFS
+	entries              []*fileEntry
+	selectedItems        map[string]bool
+	viewMode             ViewMode
+	wide                 bool
+	cursorIdx            int
+	lastRightClickedIdx  int
+	rightDragActive      bool
+	rightDragSelect      bool
+	rowDragButton        uint32
+	dragScrollDirection  int
+	dragScrollTimer      *time.Timer
+	dragScrollGeneration uint64
 
 	loadCtx            context.Context
 	cancelLoad         context.CancelFunc
@@ -292,6 +305,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	fp.table.ColorTitleIdx = ColPanelColumnTitle
 	fp.table.ColorBoxIdx = ColPanelBox
 	fp.table.ShowScrollBar = false
+	fp.initScrollBar()
 	fp.SetCanFocus(true)
 	fp.SetPosition(x, y, x+w-1, y+h-1)
 	fp.SetViewMode(ViewModeMedium)
@@ -361,6 +375,7 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 			fp.sortReverse = false
 		}
 	}
+	fp.updateSortColumnTitles()
 	fp.ReadDirectory()
 }
 
@@ -482,6 +497,75 @@ func (fp *FileSystemPanel) processRightDrag(idx int) {
 	fp.lastRightClickedIdx = idx
 }
 
+func (fp *FileSystemPanel) stopDragAutoScroll() {
+	fp.dragScrollDirection = 0
+	fp.dragScrollGeneration++
+	if fp.dragScrollTimer != nil {
+		fp.dragScrollTimer.Stop()
+		fp.dragScrollTimer = nil
+	}
+}
+
+func (fp *FileSystemPanel) dragAutoScrollStep(direction int) bool {
+	oldTop := fp.table.TopPos
+	fp.setPanelScrollTop(oldTop + direction)
+	if fp.table.TopPos == oldTop {
+		return false
+	}
+
+	if fp.rightDragActive {
+		fp.processRightDrag(fp.GetCursorIndex())
+		fp.Refresh()
+		vtui.FrameManager.Redraw()
+	}
+	return true
+}
+
+func (fp *FileSystemPanel) scheduleDragAutoScroll(generation uint64) {
+	fp.dragScrollTimer = time.AfterFunc(panelDragScrollInterval, func() {
+		vtui.FrameManager.PostTask(func() {
+			if generation != fp.dragScrollGeneration || fp.dragScrollDirection == 0 {
+				return
+			}
+			if !fp.dragAutoScrollStep(fp.dragScrollDirection) {
+				fp.stopDragAutoScroll()
+				return
+			}
+			fp.scheduleDragAutoScroll(generation)
+		})
+	})
+}
+
+func (fp *FileSystemPanel) updateDragAutoScroll(mouseY int) bool {
+	direction := 0
+	contentTop := fp.table.Y1 + fp.table.MarginTop
+	contentBottom := contentTop + fp.table.ViewHeight - 1
+	if mouseY < contentTop {
+		direction = -1
+	} else if mouseY > contentBottom {
+		direction = 1
+	}
+
+	if direction == 0 {
+		fp.stopDragAutoScroll()
+		return false
+	}
+	if direction == fp.dragScrollDirection && fp.dragScrollTimer != nil {
+		return true
+	}
+
+	fp.stopDragAutoScroll()
+	fp.dragScrollDirection = direction
+	fp.dragScrollGeneration++
+	generation := fp.dragScrollGeneration
+	if !fp.dragAutoScrollStep(direction) {
+		fp.stopDragAutoScroll()
+		return true
+	}
+	fp.scheduleDragAutoScroll(generation)
+	return true
+}
+
 func (fp *FileSystemPanel) setAllItemsSelected(state bool) {
 	for idx := range fp.entries {
 		fp.SetItemSelected(idx, state)
@@ -510,6 +594,325 @@ func (fp *FileSystemPanel) gridColumnCount() int {
 	default:
 		return 1
 	}
+}
+
+func (fp *FileSystemPanel) columnSortMode(column int) (SortMode, bool) {
+	if column < 0 || column >= len(fp.table.Columns) {
+		return SortUnsorted, false
+	}
+	switch fp.effectiveViewMode() {
+	case ViewModeWide:
+		switch column {
+		case 0:
+			return SortName, true
+		case 1:
+			return SortSize, true
+		case 2:
+			return SortTime, true
+		}
+	case ViewModeDetailed:
+		if column == 0 {
+			return SortName, true
+		}
+		if column == 1 {
+			return SortSize, true
+		}
+	default:
+		return SortName, true
+	}
+	return SortUnsorted, false
+}
+
+func (fp *FileSystemPanel) sortIsAscending() bool {
+	switch fp.sortMode {
+	case SortTime, SortSize:
+		// Their base comparators are newest/largest first.
+		return fp.sortReverse
+	default:
+		return !fp.sortReverse
+	}
+}
+
+func sortModeTitle(mode SortMode) string {
+	switch mode {
+	case SortName:
+		return Msg("Menu.SortName")
+	case SortExt:
+		return Msg("Menu.SortExt")
+	case SortTime:
+		return Msg("Menu.SortTime")
+	case SortSize:
+		return Msg("Menu.SortSize")
+	}
+	return ""
+}
+
+func composePanelColumnTitle(left, right string, width int) string {
+	if right == "" || width <= 0 {
+		return left
+	}
+	right = runewidth.Truncate(right, width, "")
+	rightWidth := runewidth.StringWidth(right)
+	if rightWidth >= width {
+		return right
+	}
+	left = runewidth.Truncate(left, width-rightWidth-1, "")
+	padding := width - runewidth.StringWidth(left) - rightWidth
+	return left + strings.Repeat(" ", padding) + right
+}
+
+func hiddenSortColumnTitle(mode SortMode, ascending bool, width int) string {
+	arrow := "↓"
+	if ascending {
+		arrow = "↑"
+	}
+	// Preserve brackets and the direction arrow on narrow Brief columns;
+	// truncate only the localized sort name when the full label cannot fit.
+	labelWidth := width - runewidth.StringWidth("[]"+arrow)
+	if labelWidth <= 0 {
+		return runewidth.Truncate(arrow, width, "")
+	}
+	label := runewidth.Truncate(sortModeTitle(mode), labelWidth, "")
+	return "[" + label + "]" + arrow
+}
+
+func (fp *FileSystemPanel) updateSortColumnTitles() {
+	visibleSortColumn := false
+	for column := range fp.table.Columns {
+		title := Msg("Panel.Column.Name")
+		switch fp.effectiveViewMode() {
+		case ViewModeWide:
+			if column == 1 {
+				title = Msg("Panel.Column.Size")
+			} else if column == 2 {
+				title = Msg("Panel.Column.Modified")
+			}
+		case ViewModeDetailed:
+			if column == 1 {
+				title = Msg("Panel.Column.Size")
+			}
+		}
+
+		mode, sortable := fp.columnSortMode(column)
+		if sortable && fp.sortMode != SortUnsorted && fp.sortMode == mode {
+			arrow := " ↓"
+			if fp.sortIsAscending() {
+				arrow = " ↑"
+			}
+			title += arrow
+			visibleSortColumn = true
+		}
+		fp.table.Columns[column].Title = title
+	}
+
+	if fp.sortMode != SortUnsorted && !visibleSortColumn && len(fp.table.Columns) > 0 {
+		right := hiddenSortColumnTitle(
+			fp.sortMode, fp.sortIsAscending(), fp.table.Columns[0].Width)
+		fp.table.Columns[0].Title = composePanelColumnTitle(
+			Msg("Panel.Column.Name"), right, fp.table.Columns[0].Width)
+	}
+}
+
+func (fp *FileSystemPanel) headerSortModeAt(x, y int) (SortMode, bool) {
+	if !fp.table.ShowHeader || y != fp.table.Y1 || x < fp.table.X1 || x > fp.table.X2 {
+		return SortUnsorted, false
+	}
+	columnX := fp.table.X1
+	for column, tableColumn := range fp.table.Columns {
+		if x >= columnX && x < columnX+tableColumn.Width {
+			return fp.columnSortMode(column)
+		}
+		columnX += tableColumn.Width
+		if column < len(fp.table.Columns)-1 {
+			// The separator itself is not a sortable column header.
+			if x == columnX {
+				return SortUnsorted, false
+			}
+			columnX++
+		}
+	}
+	return SortUnsorted, false
+}
+
+// panelScrollMetrics maps the panel's item-based scrolling onto the
+// row-based coordinates expected by vtui.ScrollBar. Multi-column modes show
+// two or three times as many entries in the same vertical space, so using the
+// table's raw ItemCount would produce an oversized scroll range and a thumb
+// that is much too small.
+func (fp *FileSystemPanel) panelScrollMetrics() (height, visibleItems, maxTop, virtualMax, virtualValue int) {
+	height = fp.table.ViewHeight
+	if height <= 0 {
+		return
+	}
+
+	columns := fp.gridColumnCount()
+	visibleItems = height * columns
+	maxTop = len(fp.entries) - visibleItems
+	if maxTop <= 0 {
+		maxTop = 0
+		return
+	}
+
+	virtualRows := (len(fp.entries) + columns - 1) / columns
+	virtualMax = virtualRows - height
+	if virtualMax <= 0 {
+		virtualMax = 1
+	}
+
+	top := fp.table.TopPos
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	virtualValue = (top*virtualMax + maxTop/2) / maxTop
+	return
+}
+
+func (fp *FileSystemPanel) initScrollBar() {
+	fp.scrollBar = vtui.NewScrollBar(0, 0, 0)
+	fp.scrollBar.SetOwner(fp)
+	fp.scrollBar.SetVisible(true)
+	fp.scrollBar.OnScroll = func(value int) {
+		_, _, maxTop, virtualMax, _ := fp.panelScrollMetrics()
+		if maxTop == 0 || virtualMax == 0 {
+			return
+		}
+		fp.setPanelScrollTop((value*maxTop + virtualMax/2) / virtualMax)
+	}
+	fp.scrollBar.OnStep = func(step int) {
+		_, visibleItems, _, _, _ := fp.panelScrollMetrics()
+		delta := 1
+		if step < 0 {
+			delta = -1
+		}
+		if step == -2 || step == 2 {
+			delta *= visibleItems
+		}
+		fp.setPanelScrollTop(fp.table.TopPos + delta)
+	}
+}
+
+func (fp *FileSystemPanel) syncScrollBar() bool {
+	if fp.scrollBar == nil {
+		return false
+	}
+	height, _, maxTop, virtualMax, virtualValue := fp.panelScrollMetrics()
+	if height <= 2 || maxTop == 0 {
+		// Keep the previous range until button release so vtui.ScrollBar can
+		// cancel an in-progress drag or auto-repeat even if a refresh made the
+		// scrollbar unnecessary while the button was held.
+		if !fp.scrollMouseActive {
+			fp.scrollBar.SetParams(0, 0, 0)
+		}
+		return false
+	}
+	y1 := fp.table.Y1 + fp.table.MarginTop
+	fp.scrollBar.SetPosition(fp.X2, y1, fp.X2, y1+height-1)
+	fp.scrollBar.PgStep = height
+	fp.scrollBar.SetParams(virtualValue, 0, virtualMax)
+	return true
+}
+
+func (fp *FileSystemPanel) setPanelScrollTop(top int) {
+	_, _, maxTop, _, _ := fp.panelScrollMetrics()
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+
+	delta := top - fp.table.TopPos
+	if delta == 0 {
+		return
+	}
+	idx := fp.GetCursorIndex() + delta
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(fp.entries) {
+		idx = len(fp.entries) - 1
+	}
+
+	fp.table.TopPos = top
+	fp.SetCursorIndex(idx)
+	fp.Refresh()
+	vtui.FrameManager.Redraw()
+}
+
+func (fp *FileSystemPanel) drawScrollBar(scr *vtui.ScreenBuf) {
+	if !fp.syncScrollBar() {
+		return
+	}
+	height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+	vtui.DrawScrollBar(scr, fp.scrollBar.X1, fp.scrollBar.Y1, height,
+		fp.scrollBar.Value, fp.scrollBar.Max+height, vtui.Palette[ColPanelScrollbar])
+}
+
+// drawCursorSeparators restores the cursor background on column separators.
+// vtui.Table draws all separators in one pass after drawing its rows, which
+// otherwise overwrites the cursor attributes in single-entry-per-row modes.
+func (fp *FileSystemPanel) drawCursorSeparators(scr *vtui.ScreenBuf) {
+	if fp.gridColumnCount() != 1 || !fp.table.ShowSeparators || !fp.table.IsFocused() {
+		return
+	}
+
+	y := fp.table.Y1 + fp.table.MarginTop + fp.table.SelectPos - fp.table.TopPos
+	if y < fp.table.Y1+fp.table.MarginTop || y > fp.table.Y2 {
+		return
+	}
+
+	x := fp.table.X1
+	for column := 0; column < len(fp.table.Columns)-1; column++ {
+		x += fp.table.Columns[column].Width
+		// Keep the separator's own foreground and copy only the rendered
+		// cursor cell's background. The separator must not inherit the file
+		// name/highlighter foreground color.
+		cursorAttr := scr.GetCell(x-1, y).Attributes
+		attr := vtui.Palette[fp.table.ColorBoxIdx]
+		if cursorAttr&vtui.IsBgRGB != 0 {
+			attr = vtui.SetRGBBack(attr, vtui.GetRGBBack(cursorAttr))
+		} else {
+			attr = vtui.SetIndexBack(attr, vtui.GetIndexBack(cursorAttr))
+		}
+		attr = (attr &^ vtui.BackgroundIntensity) | (cursorAttr & vtui.BackgroundIntensity)
+		scr.Write(x, y, vtui.StringToCharInfo("│", attr))
+		x++
+	}
+}
+
+func (fp *FileSystemPanel) processScrollBarMouse(e *vtinput.InputEvent) bool {
+	if fp.scrollBar == nil {
+		return false
+	}
+	// Releases must reach ScrollBar so it can stop dragging and auto-repeat.
+	if e.ButtonState == 0 {
+		fp.scrollBar.ProcessMouse(e)
+		fp.scrollMouseActive = false
+		fp.syncScrollBar()
+		return false
+	}
+	if e.ButtonState&vtinput.FromLeft1stButtonPressed == 0 {
+		return false
+	}
+	if fp.scrollMouseActive {
+		// Once a scrollbar owns the press, moving over file rows must not
+		// turn the same gesture into row selection.
+		fp.scrollBar.ProcessMouse(e)
+		return true
+	}
+	// A scrollbar interaction can only start on the initial button-down,
+	// never when an existing row drag merely crosses the scrollbar.
+	if !e.KeyDown || e.MouseEventFlags&vtinput.MouseMoved != 0 || !fp.syncScrollBar() {
+		return false
+	}
+	handled := fp.scrollBar.ProcessMouse(e)
+	if handled {
+		fp.scrollMouseActive = true
+	}
+	return handled
 }
 
 func (fp *FileSystemPanel) configureCellSelection() {
@@ -963,6 +1366,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 func (fp *FileSystemPanel) Refresh() {
 	idx := fp.GetCursorIndex()
+	fp.updateSortColumnTitles()
 	if fp.gridColumnCount() == 1 {
 		rows := make([]vtui.TableRow, len(fp.entries))
 		for i, e := range fp.entries {
@@ -977,29 +1381,18 @@ func (fp *FileSystemPanel) Refresh() {
 		fp.table.SetRows(rows)
 	}
 	fp.SetCursorIndex(idx)
+	_, _, maxTop, _, _ := fp.panelScrollMetrics()
+	if fp.table.TopPos > maxTop {
+		fp.table.TopPos = maxTop
+		fp.SetCursorIndex(idx)
+	}
 }
 
 func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	fp.frame.Show(scr)
-	// Sort indicator in top-left
-	sortChar := "n"
-	switch fp.sortMode {
-	case SortExt:
-		sortChar = "x"
-	case SortTime:
-		sortChar = "t"
-	case SortSize:
-		sortChar = "s"
-	case SortUnsorted:
-		sortChar = "u"
-	}
-	if fp.sortReverse {
-		sortChar = strings.ToUpper(sortChar)
-	}
-
 	titleAttr := vtui.Palette[ColPanelTitle]
 	if fp.currentTitle != "" {
-		availW := (fp.X2 - fp.X1) - 8
+		availW := (fp.X2 - fp.X1) - 6
 		if availW < 5 {
 			availW = 5
 		}
@@ -1008,13 +1401,9 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			displayTitle = vtui.TruncateMiddle(displayTitle, availW)
 		}
 
-		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo("[", titleAttr))
-		scr.Write(fp.X1+3, fp.Y1, vtui.StringToCharInfo(sortChar, titleAttr))
-		scr.Write(fp.X1+4, fp.Y1, vtui.StringToCharInfo("─", titleAttr))
-		scr.Write(fp.X1+5, fp.Y1, vtui.StringToCharInfo(displayTitle, titleAttr))
-		scr.Write(fp.X1+5+runewidth.StringWidth(displayTitle), fp.Y1, vtui.StringToCharInfo("]", titleAttr))
-	} else {
-		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo(sortChar, titleAttr))
+		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo(" ", titleAttr))
+		scr.Write(fp.X1+3, fp.Y1, vtui.StringToCharInfo(displayTitle, titleAttr))
+		scr.Write(fp.X1+3+runewidth.StringWidth(displayTitle), fp.Y1, vtui.StringToCharInfo(" ", titleAttr))
 	}
 
 	// Search-first keeps the active panel cursor visible while keyboard focus
@@ -1029,6 +1418,8 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		fp.table.SetFocus(fp.IsFocused())
 	}
 	fp.table.Show(scr)
+	fp.drawCursorSeparators(scr)
+	fp.drawScrollBar(scr)
 
 	if fp.Y2-fp.Y1+1 > 6 {
 		p := vtui.NewPainter(scr)
@@ -1176,23 +1567,25 @@ func (fp *FileSystemPanel) Resize(w, h int) {
 
 	switch fp.effectiveViewMode() {
 	case ViewModeWide:
-		nameW := w - 2 - 2 - 12 - 14
+		nameW := w - 2 - 2 - panelSizeColumnWidth - panelModifiedColumnWidth
 		if nameW < 1 {
 			nameW = 1
 		}
 		fp.table.Columns = []vtui.TableColumn{
 			{Title: Msg("Panel.Column.Name"), Width: nameW},
-			{Title: Msg("Panel.Column.Size"), Width: 12, Alignment: vtui.AlignRight},
-			{Title: Msg("Panel.Column.Modified"), Width: 14},
+			{Title: Msg("Panel.Column.Size"), Width: panelSizeColumnWidth, Alignment: vtui.AlignRight},
+			{Title: Msg("Panel.Column.Modified"), Width: panelModifiedColumnWidth},
 		}
 	case ViewModeDetailed:
-		nameW := w - 15 - 2
+		// The panel's inner table is w-2 characters wide. The size column
+		// consumes 11 and its separator consumes 1, leaving w-14 for Name.
+		nameW := w - 14
 		if nameW < 5 {
 			nameW = 5
 		}
 		fp.table.Columns = []vtui.TableColumn{
 			{Title: Msg("Panel.Column.Name"), Width: nameW},
-			{Title: Msg("Panel.Column.Size"), Width: 12, Alignment: vtui.AlignRight},
+			{Title: Msg("Panel.Column.Size"), Width: panelSizeColumnWidth, Alignment: vtui.AlignRight},
 		}
 	default:
 		columnCount := fp.gridColumnCount()
@@ -1212,6 +1605,7 @@ func (fp *FileSystemPanel) Resize(w, h int) {
 		}
 		fp.table.Columns = columns
 	}
+	fp.updateSortColumnTitles()
 	fp.Refresh()
 }
 
@@ -1537,9 +1931,33 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 
-	if e.ButtonState == 0 {
+	isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
+	isRelease := !isMove && (e.ButtonState == 0 || !e.KeyDown)
+	if isRelease {
 		fp.lastRightClickedIdx = -1
 		fp.rightDragActive = false
+		fp.headerMouseActive = false
+		fp.rowDragButton = 0
+		fp.stopDragAutoScroll()
+	}
+
+	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&
+		e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
+		if mode, ok := fp.headerSortModeAt(int(e.MouseX), int(e.MouseY)); ok {
+			fp.headerMouseActive = true
+			fp.SetSortMode(mode)
+			return true
+		}
+	}
+
+	if fp.processScrollBarMouse(e) {
+		return true
+	}
+
+	if isMove && fp.rowDragButton != 0 {
+		if fp.updateDragAutoScroll(int(e.MouseY)) {
+			return true
+		}
 	}
 
 	if fp.fastFindMode && e.ButtonState != 0 {
@@ -1618,9 +2036,12 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	if e.ButtonState == vtinput.RightmostButtonPressed && e.KeyDown {
+	isRightDragMove := isMove && fp.rightDragActive &&
+		(e.ButtonState&vtinput.RightmostButtonPressed != 0 || e.ButtonState == 0)
+	if e.ButtonState == vtinput.RightmostButtonPressed && e.KeyDown || isRightDragMove {
 		idx := fp.mouseEntryIndex(int(e.MouseX), int(e.MouseY))
 		if idx >= 0 {
+			fp.rowDragButton = vtinput.RightmostButtonPressed
 			fp.SetCursorIndex(idx)
 			if fp.entries[idx].Name == ".." {
 				return true
@@ -1647,6 +2068,9 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	handled := fp.table.ProcessMouse(e)
 	if handled {
+		if e.KeyDown && !isMove && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			fp.rowDragButton = vtinput.FromLeft1stButtonPressed
+		}
 		// Sync absolute index from table's visual selection
 		if fp.gridColumnCount() == 1 {
 			fp.cursorIdx = fp.table.SelectPos

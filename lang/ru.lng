@@ -78,6 +78,7 @@ Menu.SortExt=Расширение
 Menu.SortTime=Время
 Menu.SortSize=Размер
 Menu.SortUnsorted=Без сортировки
+Sort.Title=Сортировка
 Menu.PanelSettings=Настройки панелей
 Menu.EditorSettings=Настройки редактора
 Menu.ColorerSettings=Настройки &Colorer

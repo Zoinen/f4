@@ -17,6 +17,163 @@ import (
 	"time"
 )
 
+type mouseCaptureTestPanel struct {
+	vtui.ScreenObject
+	events []vtinput.InputEvent
+}
+
+func (p *mouseCaptureTestPanel) ProcessKey(*vtinput.InputEvent) bool { return false }
+func (p *mouseCaptureTestPanel) ProcessMouse(e *vtinput.InputEvent) bool {
+	p.events = append(p.events, *e)
+	return true
+}
+func (p *mouseCaptureTestPanel) GetSelectedName() string { return "" }
+
+func TestPanelsFrame_MouseGestureStaysWithOriginPanel(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.NavigationMode = NavigationClassic
+	AppConfig.AlwaysShowMenuBar = false
+
+	left := &mouseCaptureTestPanel{}
+	right := &mouseCaptureTestPanel{}
+	left.SetPosition(0, 0, 39, 20)
+	right.SetPosition(40, 0, 79, 20)
+	pf := &PanelsFrame{
+		panels:         [2]Panel{left, right},
+		showPanels:     true,
+		showLeftPanel:  true,
+		showRightPanel: true,
+	}
+
+	// Start in the left panel, move across the right panel, then release
+	// there. Every event must still be delivered to the left panel.
+	pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 5, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed,
+	})
+	pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 79, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.MouseMoved,
+	})
+	pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, MouseX: 79, MouseY: 5,
+	})
+
+	if len(left.events) != 3 || len(right.events) != 0 {
+		t.Fatalf("cross-panel drag delivered left=%d right=%d events; want 3,0", len(left.events), len(right.events))
+	}
+	if pf.panelMouseCapture != nil {
+		t.Fatal("panel mouse capture was not released")
+	}
+
+	// A new gesture after release is free to start in the right panel.
+	pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 79, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed,
+	})
+	if len(right.events) != 1 || pf.panelMouseCapture != right {
+		t.Fatalf("new right-panel gesture was not captured: events=%d capture=%T", len(right.events), pf.panelMouseCapture)
+	}
+}
+
+func TestPanelsFrame_MiddleMouseGestureTriggersOnce(t *testing.T) {
+	pf := &PanelsFrame{}
+
+	handled, trigger := pf.processMiddleMouseGesture(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.FromLeft2ndButtonPressed,
+	})
+	if !handled || !trigger || !pf.middleMouseDown {
+		t.Fatalf("initial middle down: handled=%v trigger=%v active=%v", handled, trigger, pf.middleMouseDown)
+	}
+
+	// Windows keeps KeyDown=true and the middle-button bit set on every move.
+	for i := 0; i < 3; i++ {
+		handled, trigger = pf.processMiddleMouseGesture(&vtinput.InputEvent{
+			Type: vtinput.MouseEventType, KeyDown: true,
+			ButtonState:     vtinput.FromLeft2ndButtonPressed,
+			MouseEventFlags: vtinput.MouseMoved,
+		})
+		if !handled || trigger || !pf.middleMouseDown {
+			t.Fatalf("middle move %d retriggered: handled=%v trigger=%v active=%v", i, handled, trigger, pf.middleMouseDown)
+		}
+	}
+
+	// Wheel rotation while the middle button is held is a scroll event, not
+	// another press. The gesture remains active until the actual release.
+	handled, trigger = pf.processMiddleMouseGesture(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState:    vtinput.FromLeft2ndButtonPressed,
+		WheelDirection: 1,
+	})
+	if handled || trigger || !pf.middleMouseDown {
+		t.Fatalf("held-middle wheel classified as click: handled=%v trigger=%v active=%v", handled, trigger, pf.middleMouseDown)
+	}
+
+	// A backend may report motion with ButtonState=0; MouseMoved still makes
+	// it part of the active gesture rather than a release.
+	handled, trigger = pf.processMiddleMouseGesture(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, MouseEventFlags: vtinput.MouseMoved,
+	})
+	if !handled || trigger || !pf.middleMouseDown {
+		t.Fatalf("buttonless move ended gesture: handled=%v trigger=%v active=%v", handled, trigger, pf.middleMouseDown)
+	}
+
+	handled, trigger = pf.processMiddleMouseGesture(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if !handled || trigger || pf.middleMouseDown {
+		t.Fatalf("middle release: handled=%v trigger=%v active=%v", handled, trigger, pf.middleMouseDown)
+	}
+
+	_, trigger = pf.processMiddleMouseGesture(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.FromLeft2ndButtonPressed,
+	})
+	if !trigger {
+		t.Fatal("new middle down after release did not trigger")
+	}
+}
+
+func TestPanelsFrame_MiddleHeldWheelRoutesToPanel(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.NavigationMode = NavigationClassic
+	AppConfig.AlwaysShowMenuBar = false
+
+	left := &mouseCaptureTestPanel{}
+	right := &mouseCaptureTestPanel{}
+	left.SetPosition(0, 0, 39, 20)
+	right.SetPosition(40, 0, 79, 20)
+	pf := &PanelsFrame{
+		panels:          [2]Panel{left, right},
+		showPanels:      true,
+		showLeftPanel:   true,
+		showRightPanel:  true,
+		middleMouseDown: true,
+	}
+
+	if !pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 5, MouseY: 5,
+		ButtonState:    vtinput.FromLeft2ndButtonPressed,
+		WheelDirection: -1,
+	}) {
+		t.Fatal("held-middle wheel was not handled")
+	}
+	if len(left.events) != 1 || left.events[0].WheelDirection != -1 {
+		t.Fatalf("wheel was not routed to active panel: events=%#v", left.events)
+	}
+	if !pf.middleMouseDown {
+		t.Fatal("wheel rotation prematurely ended middle-button gesture")
+	}
+
+	pf.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if pf.middleMouseDown {
+		t.Fatal("middle-button release was not recognized after wheel rotation")
+	}
+}
+
 func TestPanelsFrame_Layout(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
@@ -799,6 +956,99 @@ func TestPanelsFrame_MenuCommands(t *testing.T) {
 		t.Errorf("Sort menu checkmark not updated, got %q", sortText)
 	}
 }
+
+func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fsp := pf.getActivePanel()
+	fsp.sortMode = SortTime
+	fsp.sortReverse = false
+
+	if !pf.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_F12,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}) {
+		t.Fatal("Ctrl+F12 was not handled")
+	}
+
+	menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if !ok {
+		t.Fatalf("Ctrl+F12 top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
+	}
+	if len(menu.Items) != 5 {
+		t.Fatalf("sort menu has %d items, want 5", len(menu.Items))
+	}
+	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
+	menuX1, menuY1, menuX2, menuY2 := menu.GetPosition()
+	if menuX1+menuX2 != panelX1+panelX2 || menuY1+menuY2 != panelY1+panelY2 {
+		t.Fatalf("sort menu (%d,%d)-(%d,%d) is not centered in panel (%d,%d)-(%d,%d)",
+			menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2)
+	}
+	if menu.SelectPos != int(SortTime) || !strings.HasPrefix(menu.Items[SortTime].Text, "✓ ") {
+		t.Fatalf("current sort not selected/marked: pos=%d item=%q", menu.SelectPos, menu.Items[SortTime].Text)
+	}
+	for idx, shortcut := range []string{"Ctrl+F3", "Ctrl+F4", "Ctrl+F5", "Ctrl+F6", "Ctrl+F7"} {
+		if menu.Items[idx].Shortcut != shortcut {
+			t.Errorf("sort menu shortcut %d = %q, want %q", idx, menu.Items[idx].Shortcut, shortcut)
+		}
+	}
+
+	menu.SetSelectPos(int(SortSize))
+	menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	if fsp.sortMode != SortSize {
+		t.Fatalf("sort menu selection set mode %v, want SortSize", fsp.sortMode)
+	}
+	menu.Close()
+	vtui.FrameManager.Pop()
+}
+
+func TestPanelsFrame_RightClickHeaderOpensPanelCenteredSortMenu(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.activeIdx = 1
+	left := pf.panels[0].(*FileSystemPanel)
+
+	if !pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(left.table.X1), MouseY: int16(left.table.Y1),
+		ButtonState: vtinput.RightmostButtonPressed,
+	}) {
+		t.Fatal("right click on column header was not handled")
+	}
+	if pf.activeIdx != 0 {
+		t.Fatalf("right-clicked left panel was not activated: active=%d", pf.activeIdx)
+	}
+	if pf.panelMouseCapture != nil {
+		t.Fatal("header context click incorrectly captured a file-panel drag")
+	}
+
+	menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if !ok {
+		t.Fatalf("right-click header top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
+	}
+	panelX1, panelY1, panelX2, panelY2 := left.GetPosition()
+	menuX1, menuY1, menuX2, menuY2 := menu.GetPosition()
+	if menuX1+menuX2 != panelX1+panelX2 || menuY1+menuY2 != panelY1+panelY2 {
+		t.Fatalf("context sort menu (%d,%d)-(%d,%d) is not centered in left panel (%d,%d)-(%d,%d)",
+			menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2)
+	}
+	menu.Close()
+	vtui.FrameManager.Pop()
+}
+
 func TestPanelsFrame_RefreshOnFocus(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -3568,6 +3818,18 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 
 	// 1. Изначально устанавливаем режим Medium
 	fsp.SetViewMode(ViewModeMedium)
+	oldHotkeys := GlobalHotkeysMgr
+	GlobalHotkeysMgr = NewHotkeyManager("")
+	defer func() { GlobalHotkeysMgr = oldHotkeys }()
+	macroFilter := &MacroManager{Macros: make(map[string]map[string][]*vtinput.InputEvent)}
+	rightCtrl3 := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: '3', ControlKeyState: vtinput.RightCtrlPressed}
+	if macroFilter.Filter(rightCtrl3) {
+		t.Fatal("RightCtrl+3 was consumed by the configurable hotkey filter")
+	}
+	pf.ProcessKey(rightCtrl3)
+	if fsp.viewMode != ViewModeMedium {
+		t.Fatalf("RightCtrl+3 changed panel mode to %v", fsp.viewMode)
+	}
 
 	for _, tc := range []struct {
 		key  uint16

@@ -2,29 +2,10 @@ package main
 
 import (
 	"testing"
-	"time"
 
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
-
-// seedClipboard writes a value and polls back until vtui.GetClipboard
-// returns it, so later assertions aren't racing an async SetClipboard
-// goroutine that a preceding test may have left in flight against a
-// slow xclip/wl-copy fallback.
-func seedClipboard(t *testing.T, text string) {
-	t.Helper()
-	vtui.SetClipboard(text)
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if vtui.GetClipboard() == text {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-		vtui.SetClipboard(text) // re-assert against any concurrent writer
-	}
-	t.Fatalf("could not stabilise clipboard to %q; got %q", text, vtui.GetClipboard())
-}
 
 // seedRow writes a plain ASCII string into tv.Lines[row] starting at
 // column 0. Preserves existing right-side padding.
@@ -391,8 +372,8 @@ func TestPanelsFrame_TerminalMouseSelect_DragHostShapes(t *testing.T) {
 
 func TestPanelsFrame_TerminalMouseSelect_RightClickPastes(t *testing.T) {
 	pf, pty := panelsFrameWithMouseSelect(t)
+	pf.termView.clipboardReader = func() string { return "pasted" }
 
-	seedClipboard(t, "pasted")
 	pf.ProcessMouse(&vtinput.InputEvent{
 		Type: vtinput.MouseEventType, KeyDown: true,
 		ButtonState: vtinput.RightmostButtonPressed,
@@ -406,8 +387,8 @@ func TestPanelsFrame_TerminalMouseSelect_RightClickPastes(t *testing.T) {
 func TestPanelsFrame_TerminalMouseSelect_RightClickPasteBracketed(t *testing.T) {
 	pf, pty := panelsFrameWithMouseSelect(t)
 	pf.termView.BracketedPasteMode = true
+	pf.termView.clipboardReader = func() string { return "pasted" }
 
-	seedClipboard(t, "pasted")
 	pf.ProcessMouse(&vtinput.InputEvent{
 		Type: vtinput.MouseEventType, KeyDown: true,
 		ButtonState: vtinput.RightmostButtonPressed,

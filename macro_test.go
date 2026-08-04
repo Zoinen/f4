@@ -187,6 +187,37 @@ func TestKeyNormalization(t *testing.T) {
 	}
 }
 
+func TestPanelBookmarkHotkeysKeepRightCtrlDistinct(t *testing.T) {
+	tests := []struct {
+		name string
+		key  uint16
+		mods vtinput.ControlKeyState
+		want bool
+	}{
+		{name: "right ctrl goto", key: vtinput.VK_1, mods: vtinput.RightCtrlPressed, want: true},
+		{name: "right ctrl save", key: vtinput.VK_2, mods: vtinput.RightCtrlPressed | vtinput.ShiftPressed, want: true},
+		{name: "left ctrl view mode", key: vtinput.VK_3, mods: vtinput.LeftCtrlPressed, want: false},
+		{name: "left ctrl alt alias", key: vtinput.VK_4, mods: vtinput.LeftCtrlPressed | vtinput.LeftAltPressed, want: true},
+		{name: "right ctrl home", key: vtinput.VK_OEM_3, mods: vtinput.RightCtrlPressed, want: true},
+		{name: "right ctrl shifted home", key: vtinput.VK_OEM_3, mods: vtinput.RightCtrlPressed | vtinput.ShiftPressed, want: false},
+		{name: "unrelated right ctrl key", key: vtinput.VK_A, mods: vtinput.RightCtrlPressed, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &vtinput.InputEvent{
+				Type:            vtinput.KeyEventType,
+				KeyDown:         true,
+				VirtualKeyCode:  tc.key,
+				ControlKeyState: tc.mods,
+			}
+			if got := isPanelBookmarkHotkey(e); got != tc.want {
+				t.Fatalf("isPanelBookmarkHotkey() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMacroPlaybackLogic(t *testing.T) {
 	mgr := NewMacroManager("unused.ini")
 

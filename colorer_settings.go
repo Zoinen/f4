@@ -59,16 +59,16 @@ func colorerCrossAttr(region string, base uint64) uint64 {
 	if !colorerIsActive() {
 		return base
 	}
-	style, ok := colorerSchemeExactStyle(region)
-	if !ok {
+	rd := colorerGetRegionDefine(region)
+	if rd == nil {
 		return base
 	}
 	attr := base
-	if style.hasFore {
-		attr = vtui.SetRGBFore(attr, style.fore)
+	if rd.IsForeSet {
+		attr = vtui.SetRGBFore(attr, rd.Fore)
 	}
-	if style.hasBack {
-		attr = vtui.SetRGBBack(attr, style.back)
+	if rd.IsBackSet {
+		attr = vtui.SetRGBBack(attr, rd.Back)
 	}
 	return attr
 }
@@ -103,14 +103,18 @@ func actionColorerSettings(pf *PanelsFrame) {
 
 	// The catalog carries a machine name and a human description; the machine
 	// name is what the config stores, so the two lists are kept in step.
-	schemeNames := []string{""}
-	schemeItems := []string{Msg("ColorerSettings.BuiltIn")}
+	schemeNames := []string{}
+	schemeItems := []string{}
 	for _, scheme := range ListColorerSchemes() {
 		schemeNames = append(schemeNames, scheme.Name)
 		schemeItems = append(schemeItems, colorerSchemeLabel(scheme))
 	}
+	if len(schemeItems) == 0 {
+		schemeNames = append(schemeNames, "")
+		schemeItems = append(schemeItems, "")
+	}
 	selectedScheme := 0
-	for i := 1; i < len(schemeNames); i++ {
+	for i := 0; i < len(schemeNames); i++ {
 		if strings.EqualFold(schemeNames[i], AppConfig.EditorColorerScheme) {
 			selectedScheme = i
 			break

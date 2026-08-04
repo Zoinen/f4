@@ -78,6 +78,7 @@ Menu.SortExt=Extension
 Menu.SortTime=Time
 Menu.SortSize=Size
 Menu.SortUnsorted=Unsorted
+Sort.Title=Sort by
 Menu.PanelSettings=Panel settings
 Menu.EditorSettings=Editor settings
 Menu.ColorerSettings=C&olorer settings

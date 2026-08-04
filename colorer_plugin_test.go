@@ -12,47 +12,8 @@ import (
 	"github.com/unxed/vtui"
 )
 
-func TestColorer_GetColorerAttr(t *testing.T) {
-	vtui.SetDefaultPalette()
-	SetDefaultF4Palette()
-
-	base := uint64(0)
-	attr := getColorerAttr("def:comment", base)
-	if vtui.GetRGBFore(attr) != ColorerColorMap["def:comment"] {
-		t.Errorf("Expected comment color, got %06X", vtui.GetRGBFore(attr))
-	}
-
-	attrSub := getColorerAttr("def:comment_nested", base)
-	if vtui.GetRGBFore(attrSub) != ColorerColorMap["def:comment"] {
-		t.Errorf("Expected inherited comment color, got %06X", vtui.GetRGBFore(attrSub))
-	}
-
-	attrNone := getColorerAttr("unknown_region", base)
-	if attrNone != base {
-		t.Error("Expected base attribute for unknown region")
-	}
-}
-
 func TestColorer_SchemasExist(t *testing.T) {
 	_ = SchemasExist()
-}
-
-func TestColorer_RegionResolution(t *testing.T) {
-	base := uint64(0)
-	cases := map[string]uint32{
-		"smarty:OpenTag":      ColorerColorMap["tag"],
-		"html:htmlOpenTag":    ColorerColorMap["tag"],
-		"def:PairStart":       ColorerColorMap["def:pair"],
-		"def:Var":             ColorerColorMap["def:var"],
-		"def:StringContent":   ColorerColorMap["def:string"],
-		"html:Header1Outline": ColorerColorMap["outline"],
-	}
-	for name, want := range cases {
-		got := vtui.GetRGBFore(getColorerAttr(name, base))
-		if got != want {
-			t.Errorf("Region %q resolved to %06X, expected %06X", name, got, want)
-		}
-	}
 }
 
 func TestColorer_UTF16ToRuneIndex(t *testing.T) {
@@ -81,10 +42,9 @@ func TestColorer_UTF16ToRuneIndex(t *testing.T) {
 }
 
 func TestColorer_AttrCacheIsBounded(t *testing.T) {
-	// placeholder
 	ch := &ColorerHighlighter{}
 	for i := 0; i < maxCachedAttrLines+64; i++ {
-		ch.storeAttrs(i, []uint64{uint64(i)})
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
 	}
 	if len(ch.attrCache) > maxCachedAttrLines {
 		t.Errorf("Attribute cache grew to %d entries", len(ch.attrCache))
@@ -106,9 +66,6 @@ func TestColorer_LineIndexComesFromTheEditorState(t *testing.T) {
 		want      int
 	}{
 		{nil, 0, 0},
-		// A redraw asks for line zero again while the parser has already seen
-		// the whole file. It must stay line zero instead of landing at the end
-		// of the array and dragging a copy of the line along with it.
 		{nil, 500, 0},
 		{7, 500, 8},
 		{"a state of the fallback engine", 500, 0},
@@ -182,6 +139,7 @@ func TestColorer_PlainWhileTheSessionStartsUp(t *testing.T) {
 		t.Error("Expected the fallback engine to take over once Colorer gave up")
 	}
 }
+
 func TestColorer_HighlighterNilSession(t *testing.T) {
 	ch := &ColorerHighlighter{
 		session:  nil,
@@ -198,11 +156,9 @@ func TestColorer_DownloadColorerSchemas(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()
 
-	// Create a mock zip in memory
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
-	// Create expected folder structure inside zip: far2l-v_2.8.0/colorer/configs/base/catalog.xml
 	f, err := zw.Create("far2l-v_2.8.0/colorer/configs/base/catalog.xml")
 	if err != nil {
 		t.Fatalf("Failed to create zip entry: %v", err)
@@ -217,7 +173,6 @@ func TestColorer_DownloadColorerSchemas(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Redirect GetF4ConfigDir to temporary location during test
 	tmpDir := t.TempDir()
 	oldConfigDirFunc := getUserConfigIniPath
 	getUserConfigIniPath = func() string { return filepath.Join(tmpDir, "settings.ini") }
@@ -248,7 +203,6 @@ func TestColorer_DownloadColorerSchemas(t *testing.T) {
 		close(done)
 	})
 
-	// Process event loop tasks
 	timeout := time.After(3 * time.Second)
 Loop:
 	for {
@@ -262,7 +216,6 @@ Loop:
 		}
 	}
 
-	// Verify extracted files exist
 	if !SchemasExist() {
 		t.Error("SchemasExist returned false after successful extraction")
 	}

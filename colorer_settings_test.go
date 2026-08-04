@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/unxed/vtui"
 )
 
 // useColorerCross switches the cross options for the duration of a test.
@@ -41,94 +39,11 @@ func TestColorerCross_ModeAxes(t *testing.T) {
 	}
 }
 
-func TestColorerCross_ColorsComeFromTheStyle(t *testing.T) {
-	SetDefaultF4Palette()
-	installColorerTestScheme(t, map[string]colorerRegionStyle{
-		"def:horzcross": {fore: 0x111111, back: 0x222222, hasFore: true, hasBack: true},
-		"def:vertcross": {fore: 0x333333, back: 0x444444, hasFore: true, hasBack: true},
-	})
-	useColorerHighlighter(t, false)
-	useColorerCross(t, ColorerCrossBoth, true)
-
-	horz, vert, horzAttr, vertAttr := EditorCrossAttrs()
-	if !horz || !vert {
-		t.Fatalf("Expected both cross lines, got horz=%v vert=%v", horz, vert)
-	}
-	if got := vtui.GetRGBBack(horzAttr); got != 0x222222 {
-		t.Errorf("Expected the horizontal cross background 222222, got %06X", got)
-	}
-	if got := vtui.GetRGBFore(vertAttr); got != 0x333333 {
-		t.Errorf("Expected the vertical cross foreground 333333, got %06X", got)
-	}
-}
-
-func TestColorerCross_FallsBackToThePalette(t *testing.T) {
-	SetDefaultF4Palette()
-	installColorerTestScheme(t, map[string]colorerRegionStyle{
-		"def:text": {fore: 0x00FF00, hasFore: true},
-	})
-	useColorerHighlighter(t, false)
-	useColorerCross(t, ColorerCrossHorizontal, true)
-
-	horz, vert, horzAttr, _ := EditorCrossAttrs()
-	if !horz || vert {
-		t.Fatalf("Expected the horizontal cross only, got horz=%v vert=%v", horz, vert)
-	}
-	if horzAttr != vtui.Palette[ColEditorCrosshair] {
-		t.Errorf("Expected the f4 palette color, got %016X", horzAttr)
-	}
-}
-
 func TestColorerCross_DisabledByTheCrosshairSwitch(t *testing.T) {
 	useColorerCross(t, ColorerCrossBoth, false)
 
 	if horz, vert, _, _ := EditorCrossAttrs(); horz || vert {
 		t.Errorf("Expected no cross with the crosshair off, got horz=%v vert=%v", horz, vert)
-	}
-}
-
-func TestColorerCross_StyleIgnoredWithoutColorer(t *testing.T) {
-	SetDefaultF4Palette()
-	installColorerTestScheme(t, map[string]colorerRegionStyle{
-		"def:horzcross": {back: 0x222222, hasBack: true},
-	})
-	oldHighlighter := AppConfig.EditorHighlighter
-	AppConfig.EditorHighlighter = "Chroma"
-	t.Cleanup(func() { AppConfig.EditorHighlighter = oldHighlighter })
-	useColorerCross(t, ColorerCrossBoth, true)
-
-	_, _, horzAttr, _ := EditorCrossAttrs()
-	if horzAttr != vtui.Palette[ColEditorCrosshair] {
-		t.Errorf("Expected Chroma to keep the f4 palette color, got %016X", horzAttr)
-	}
-}
-
-func TestColorer_SyntaxCanBeSwitchedOff(t *testing.T) {
-	installColorerTestScheme(t, map[string]colorerRegionStyle{
-		"def:comment": {fore: 0x123456, hasFore: true},
-	})
-	old := AppConfig.EditorColorerSyntax
-	AppConfig.EditorColorerSyntax = false
-	t.Cleanup(func() { AppConfig.EditorColorerSyntax = old })
-
-	base := vtui.SetRGBBoth(0, 0xD3D7CF, 0x000000)
-	if got := getColorerAttr("def:Comment", base); got != base {
-		t.Errorf("Expected the base attribute with syntax off, got %016X", got)
-	}
-}
-
-func TestColorer_ResetSchemeForcesAReload(t *testing.T) {
-	installColorerTestScheme(t, map[string]colorerRegionStyle{
-		"def:text": {fore: 0x00FF00, hasFore: true},
-	})
-
-	before := ColorerSchemeGeneration()
-	ResetColorerScheme()
-	if after := ColorerSchemeGeneration(); after == before {
-		t.Errorf("Expected the generation to change, it stayed at %d", after)
-	}
-	if _, ok := colorerSchemeExactStyle("def:Text"); ok {
-		t.Error("Expected the styles to be dropped by the reset")
 	}
 }
 

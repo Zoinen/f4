@@ -59,6 +59,9 @@ func main() {
 
 	defer func() {
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
+		if GlobalFileState != nil {
+			GlobalFileState.Flush()
+		}
 		if r := recover(); r != nil {
 			vtui.DebugLog("FATAL PANIC IN MAIN: %v", r)
 			crashPath := vtui.RecordCrash(r, nil)

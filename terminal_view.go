@@ -68,6 +68,8 @@ type TerminalView struct {
 	MouseSGRMode          bool
 
 	clipboardChunks []byte
+	clipboardReader func() string
+	clipboardWriter func(string)
 	pty             PtyBackend
 	kitty           *KittyGraphics
 	images          []terminalImage
@@ -104,6 +106,23 @@ func NewTerminalView(w, h int) *TerminalView {
 	}
 	tv.ResetBuffer(w, h)
 	return tv
+}
+
+func (tv *TerminalView) readClipboard() string {
+	if tv.clipboardReader != nil {
+		return tv.clipboardReader()
+	}
+	return vtui.GetClipboard()
+}
+
+func (tv *TerminalView) writeClipboard(text string) {
+	if tv.clipboardWriter != nil {
+		tv.clipboardWriter(text)
+		return
+	}
+	if !vtui.SetOSClipboard(text) {
+		vtui.SetClipboard(text)
+	}
 }
 
 func (tv *TerminalView) CloneStateFrom(other *TerminalView) {
@@ -1510,7 +1529,11 @@ func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
 			tv.mu.Unlock()
 			reply.PushU8(1)
 		case 'e':
-			vtui.SetClipboard("")
+			if tv.clipboardWriter != nil {
+				tv.clipboardWriter("")
+			} else {
+				vtui.SetClipboard("")
+			}
 			tv.mu.Lock()
 			tv.clipboardChunks = nil
 			tv.mu.Unlock()
@@ -1536,15 +1559,13 @@ func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
 			fullData := append(tv.clipboardChunks, textBytes...)
 			tv.clipboardChunks = nil
 			tv.mu.Unlock()
-			if !vtui.SetOSClipboard(string(fullData)) {
-				vtui.SetClipboard(string(fullData))
-			}
+			tv.writeClipboard(string(fullData))
 			// Guest expects: dataID (U64) + status (U8)
 			reply.PushU64(0)
 			reply.PushU8(1)
 		case 'g':
 			_ = stk.PopU32() // fmt
-			clipData := vtui.GetClipboard()
+			clipData := tv.readClipboard()
 			if len(clipData) > 64*1024 {
 				clipData = clipData[:64*1024]
 			}

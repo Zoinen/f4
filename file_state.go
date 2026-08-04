@@ -21,11 +21,13 @@ type FileState struct {
 }
 
 type F4FileStateProvider struct {
-	mu    sync.Mutex
-	path  string
-	Limit int
-	Order []string
-	Data  map[string]*FileState
+	mu      sync.Mutex
+	writeMu sync.Mutex
+	saveWG  sync.WaitGroup
+	path    string
+	Limit   int
+	Order   []string
+	Data    map[string]*FileState
 }
 
 func NewF4FileStateProvider() *F4FileStateProvider {
@@ -60,17 +62,29 @@ func (fs *F4FileStateProvider) load() {
 }
 
 func (fs *F4FileStateProvider) save() {
+	fs.writeMu.Lock()
+	defer fs.writeMu.Unlock()
+
 	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	os.MkdirAll(filepath.Dir(fs.path), 0755)
 	type DiskFormat struct {
 		Order []string
 		Data  map[string]*FileState
 	}
-	df := DiskFormat{Order: fs.Order, Data: fs.Data}
+	df := DiskFormat{
+		Order: append([]string(nil), fs.Order...),
+		Data:  make(map[string]*FileState, len(fs.Data)),
+	}
+	for path, state := range fs.Data {
+		copy := *state
+		df.Data[path] = &copy
+	}
+	statePath := fs.path
+	fs.mu.Unlock()
+
+	os.MkdirAll(filepath.Dir(statePath), 0755)
 	file, err := json.MarshalIndent(df, "", "  ")
 	if err == nil {
-		os.WriteFile(fs.path, file, 0644)
+		os.WriteFile(statePath, file, 0644)
 	}
 }
 
@@ -107,6 +121,16 @@ func (fs *F4FileStateProvider) touch(path string) *FileState {
 }
 
 func (fs *F4FileStateProvider) SaveEditorState(path string, line, pos, top, left int, wrap bool) {
+	fs.updateEditorState(path, line, pos, top, left, wrap)
+	fs.save()
+}
+
+func (fs *F4FileStateProvider) SaveEditorStateAsync(path string, line, pos, top, left int, wrap bool) {
+	fs.updateEditorState(path, line, pos, top, left, wrap)
+	fs.saveAsync()
+}
+
+func (fs *F4FileStateProvider) updateEditorState(path string, line, pos, top, left int, wrap bool) {
 	fs.mu.Lock()
 	state := fs.touch(path)
 	state.EditorLine = line
@@ -115,15 +139,38 @@ func (fs *F4FileStateProvider) SaveEditorState(path string, line, pos, top, left
 	state.EditorLeft = left
 	state.EditorWrap = wrap
 	fs.mu.Unlock()
-	fs.save()
 }
 
 func (fs *F4FileStateProvider) SaveViewerState(path string, offset int64, wrap, hex bool) {
+	fs.updateViewerState(path, offset, wrap, hex)
+	fs.save()
+}
+
+func (fs *F4FileStateProvider) SaveViewerStateAsync(path string, offset int64, wrap, hex bool) {
+	fs.updateViewerState(path, offset, wrap, hex)
+	fs.saveAsync()
+}
+
+func (fs *F4FileStateProvider) updateViewerState(path string, offset int64, wrap, hex bool) {
 	fs.mu.Lock()
 	state := fs.touch(path)
 	state.ViewerOffset = offset
 	state.ViewerWrap = wrap
 	state.ViewerHex = hex
 	fs.mu.Unlock()
-	fs.save()
+}
+
+func (fs *F4FileStateProvider) saveAsync() {
+	fs.saveWG.Add(1)
+	go func() {
+		defer fs.saveWG.Done()
+		fs.save()
+	}()
+}
+
+// Flush waits for state writes queued by editor and viewer close operations.
+// Application shutdown uses it so an immediate exit cannot lose the last
+// cursor or viewer position.
+func (fs *F4FileStateProvider) Flush() {
+	fs.saveWG.Wait()
 }

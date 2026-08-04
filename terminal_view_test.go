@@ -93,6 +93,8 @@ func TestTerminalView_HandleFar2lAPC_Garbage(t *testing.T) {
 func TestTerminalView_ProcessFar2lInteract_Clipboard(t *testing.T) {
 	tv := NewTerminalView(80, 24)
 	defer tv.Close()
+	clipboard := ""
+	tv.clipboardWriter = func(text string) { clipboard = text }
 	pty := &mockPty{}
 	tv.pty = pty
 
@@ -136,7 +138,7 @@ func TestTerminalView_ProcessFar2lInteract_Clipboard(t *testing.T) {
 	stk.PushU8(3)   // ID
 	tv.ProcessFar2lInteract(stk)
 
-	got := vtui.GetClipboard()
+	got := clipboard
 	if !strings.HasPrefix(got, "Part1-") || !strings.Contains(got, "Part2") {
 		t.Errorf("Chunked clipboard transfer failed. Got %q", got)
 	}

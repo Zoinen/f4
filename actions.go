@@ -195,6 +195,67 @@ func actionCommandHistory(pf *PanelsFrame) {
 	vtui.FrameManager.Push(menu)
 }
 
+func actionSortMenu(pf *PanelsFrame) {
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return
+	}
+
+	entries := []struct {
+		mode     SortMode
+		labelKey string
+		shortcut string
+	}{
+		{mode: SortName, labelKey: "Menu.SortName", shortcut: "Ctrl+F3"},
+		{mode: SortExt, labelKey: "Menu.SortExt", shortcut: "Ctrl+F4"},
+		{mode: SortTime, labelKey: "Menu.SortTime", shortcut: "Ctrl+F5"},
+		{mode: SortSize, labelKey: "Menu.SortSize", shortcut: "Ctrl+F6"},
+		{mode: SortUnsorted, labelKey: "Menu.SortUnsorted", shortcut: "Ctrl+F7"},
+	}
+
+	menu := vtui.NewVMenu(Msg("Sort.Title"))
+	selected := 0
+	for idx, entry := range entries {
+		prefix := "  "
+		if entry.mode == fsp.sortMode {
+			prefix = "✓ "
+			selected = idx
+		}
+		menu.AddItem(vtui.MenuItem{
+			Text:     prefix + Msg(entry.labelKey),
+			Shortcut: entry.shortcut,
+		})
+	}
+	menu.SetSelectPos(selected)
+	menu.OnAction = func(idx int) {
+		if idx < 0 || idx >= len(entries) {
+			return
+		}
+		fsp.SetSortMode(entries[idx].mode)
+		pf.updateMenuCheckmarks()
+		vtui.FrameManager.Redraw()
+	}
+
+	w, h := 36, len(entries)+2
+	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
+	panelW := panelX2 - panelX1 + 1
+	panelH := panelY2 - panelY1 + 1
+	maxW := panelW - 2
+	if maxW < 1 {
+		maxW = panelW
+	}
+	if w > maxW {
+		w = maxW
+	}
+	if h > panelH {
+		h = panelH
+	}
+	x := panelX1 + (panelW-w)/2
+	y := panelY1 + (panelH-h)/2
+	menu.SetPosition(x, y, x+w-1, y+h-1)
+	vtui.FrameManager.Push(menu)
+}
+
 func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64) {
 	cmdStr := AppConfig.ExternalEditorCommand
 	if cmdStr == "" {

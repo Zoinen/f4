@@ -261,6 +261,28 @@ func (m *MacroManager) GetCurrentArea() string {
 	}
 	return "Other"
 }
+
+// isPanelBookmarkHotkey identifies far2l-compatible folder bookmark keys.
+// They must reach PanelsFrame before macro and configurable hotkey handling,
+// because EventToFarString intentionally normalizes left and right Ctrl.
+func isPanelBookmarkHotkey(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+
+	rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
+	lctrl := (e.ControlKeyState & vtinput.LeftCtrlPressed) != 0
+	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	isGoto := (rctrl && !shift && !alt) || ((lctrl || rctrl) && alt && !shift)
+	isSave := (rctrl && shift && !alt) || ((lctrl || rctrl) && alt && shift)
+
+	if e.VirtualKeyCode >= vtinput.VK_0 && e.VirtualKeyCode <= vtinput.VK_9 {
+		return isGoto || isSave
+	}
+	return e.VirtualKeyCode == vtinput.VK_OEM_3 && isGoto
+}
+
 func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.KeyEventType {
 		return false
@@ -308,9 +330,13 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 		return false
 	}
 
+	currentArea := m.GetCurrentArea()
+	if currentArea == "Shell" && isPanelBookmarkHotkey(e) {
+		return false
+	}
+
 	// Check if this key triggers a macro
 	keyStr := EventToFarString(e)
-	currentArea := m.GetCurrentArea()
 
 	if areaMacros, ok := m.Macros[currentArea]; ok {
 		if seq, ok := areaMacros[keyStr]; ok {

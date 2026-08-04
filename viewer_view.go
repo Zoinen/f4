@@ -816,7 +816,7 @@ func (vv *ViewerView) ResizeConsole(w, h int) { vv.SetPosition(0, 0, w-1, h-2) }
 
 func (vv *ViewerView) Close() {
 	if GlobalFileState != nil && vv.path != "" {
-		GlobalFileState.SaveViewerState(vv.path, vv.TopOffset, vv.WrapMode, vv.HexMode)
+		GlobalFileState.SaveViewerStateAsync(vv.path, vv.TopOffset, vv.WrapMode, vv.HexMode)
 	}
 	if vv.backend != nil {
 		vv.backend.Close()
