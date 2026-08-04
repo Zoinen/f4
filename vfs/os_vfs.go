@@ -184,6 +184,17 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 				isExec = info.Mode().Perm()&0111 != 0
 			}
 			isDir := e.IsDir()
+			isSymlink := e.Type()&os.ModeSymlink != 0
+			// Windows NTFS junctions are reparse points but Go doesn't
+			// always report them via ModeSymlink — the classification
+			// has drifted across releases (ModeSymlink / ModeIrregular).
+			// Treat the FILE_ATTRIBUTE_REPARSE_POINT bit as authoritative
+			// so the scanner's leaf mode actually stops at things like
+			// C:\Users\<user>\AppData\Local\Application Data instead of
+			// walking into the self-loop.
+			if !isSymlink && info != nil && isReparsePoint(info) {
+				isSymlink = true
+			}
 			// If it's not a direct directory, it might be a symlink or a Windows Junction.
 			// If it's not a regular file, ask the OS to resolve the final target.
 			if !isDir && !e.Type().IsRegular() {
@@ -192,14 +203,23 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 				}
 			}
 
-			items = append(items, VFSItem{
+			entryPath := filepath.Join(dirPath, e.Name())
+			item := VFSItem{
 				Name:         e.Name(),
 				Size:         size,
 				IsDir:        isDir,
+				IsSymlink:    isSymlink,
 				MTime:        mtime,
 				IsExecutable: isExec,
-				IsHidden:     isHidden(filepath.Join(dirPath, e.Name()), e.Name(), info),
-			})
+				IsHidden:     isHidden(entryPath, e.Name(), info),
+			}
+			// Cheap variant: on Unix stat.Blocks is already loaded
+			// alongside FileInfo, so filling PhysicalSize here is free.
+			// On Windows this is a no-op — the scan path pays for
+			// GetCompressedFileSize lazily via Stat() when it actually
+			// needs the number (see vfs/scanner.go).
+			fillPhysicalSizeCheap(&item, info)
+			items = append(items, item)
 		}
 
 		if len(items) > 0 && onChunk != nil {
@@ -239,6 +259,7 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 
 	// Platform specific time extraction
 	fillPlatformTimes(&item, info)
+	fillPhysicalSize(&item, info, prepareOSPath(path))
 
 	return item, nil
 }

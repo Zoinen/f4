@@ -88,7 +88,7 @@ func (p *PTY) Run(name string, args ...string) error {
 	p.Cmd.Stdin = p.Slave
 	p.Cmd.Stdout = p.Slave
 	p.Cmd.Stderr = p.Slave
-	p.Cmd.Env = append(os.Environ(), "F4_NESTED=1")
+	p.Cmd.Env = terminalChildEnv()
 	p.Cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,
@@ -117,13 +117,19 @@ func (p *PTY) IsBusy() bool {
 }
 
 func (p *PTY) SetSize(cols, rows int) {
+	p.SetSizePixels(cols, rows, 0, 0)
+}
+
+// SetSizePixels also reports the size of the window in pixels, which is how
+// a program in the terminal learns the shape of a character cell.
+func (p *PTY) SetSizePixels(cols, rows, xpixel, ypixel int) {
 	size := struct {
 		Row, Col, Xpixel, Ypixel uint16
 	}{
 		Row:    uint16(rows),
 		Col:    uint16(cols),
-		Xpixel: 0,
-		Ypixel: 0,
+		Xpixel: ptyPixels(xpixel),
+		Ypixel: ptyPixels(ypixel),
 	}
 	_, _, _ = syscall.Syscall(syscall.SYS_IOCTL, p.Master.Fd(), unix.TIOCSWINSZ, uintptr(unsafe.Pointer(&size)))
 }

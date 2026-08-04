@@ -42,3 +42,10 @@ func (c *coreAPI) RegisterGlobalHotkey(vk uint16, mods vtinput.ControlKeyState, 
 func (c *coreAPI) RegisterPluginMenuItem(label string, handler func(app vfs.App)) {
 	RegisterPluginMenuItem(label, handler)
 }
+func (c *coreAPI) RunAction(name string) bool {
+	resChan := make(chan bool, 1)
+	vtui.FrameManager.PostTask(func() {
+		resChan <- RunAction(name)
+	})
+	return <-resChan
+}

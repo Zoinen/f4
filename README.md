@@ -7,7 +7,7 @@
 | :--- | :--- | :--- |
 | **Windows** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-amd64.zip) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-arm64.zip) |
 | **macOS** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-arm64.tar.gz) |
-| **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) |
+| **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) |
 | **FreeBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-arm64.tar.gz) |
 | **DragonflyBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-dragonfly-amd64.tar.gz) |
 | **OpenBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-openbsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-openbsd-arm64.tar.gz) |
@@ -48,6 +48,7 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 *   **Modern Terminals Only:** Primary target is actively developed terminals (Konsole, kitty, iTerm2, Windows Terminal). Other terminals won't allow replicating Far's UI accurately.
 *   **Input (`vtinput`):** Built as a separate library to handle advanced protocols like the [Kitty Keyboard Protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) and [Win32 Input Mode](https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md). This is strictly required for distinguishing combinations like `Ctrl+Enter` or `Shift+Tab`.
 *   **Framework (`vtui`):** A custom UI framework built from scratch in the style of Far, borrowing responsive layout features (like window resizing and anchors) from Turbo Vision. Ideally, it should cover all capabilities of Far's UI kit and Turbo Vision (excluding non-relevant features like custom serialization engines).
+*   **Word Navigation:** `Ctrl+Left`/`Ctrl+Right` and their `Shift` variants follow the exact word boundary rules of `far2l`, down to its intentional asymmetry between moving and selecting. See [Word Navigation Rules](WORDNAV.md).
 
 ### GUI Mode & Backends
 
@@ -150,6 +151,14 @@ cd f4
 cd f4
 go mod tidy
 CGO_ENABLED=0 go build .
+```
+
+The generated platform icons are committed to the repository, so a normal
+build does not need an image converter. If `assets/icon/f4.svg` is changed,
+regenerate PNG, ICO, ICNS, and Windows resources on any supported OS with:
+
+```bash
+go generate
 ```
 
 **4. Run**

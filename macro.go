@@ -21,6 +21,10 @@ type MacroManager struct {
 	Buffer    []*vtinput.InputEvent
 	iniPath   string
 	StartArea string
+	// Lua is the Far-compatible macro engine, present only when the user has
+	// macros. Recorded macros keep working either way: this is a second
+	// backend, not a replacement.
+	Lua *LuaMacroEngine
 }
 
 func NewMacroManager(iniPath string) *MacroManager {
@@ -324,6 +328,25 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 		}
 	}
 
+	// Recorded macros win over scripted ones, as they do in Far.
+	if m.Lua != nil && m.Lua.Trigger(currentArea, e) {
+		vtui.DebugLog("MACRO: Running Lua macro for %s in area %s", keyStr, currentArea)
+		return true
+	}
+
+	// Hotkey Manager evaluation (System actions)
+	if hm := GlobalHotkeysMgr; hm != nil {
+		if actionName := hm.GetAction(currentArea, keyStr); actionName != "" {
+			if strings.EqualFold(actionName, "none") {
+				return true // Intercept and silence (explicitly unbound)
+			}
+			vtui.DebugLog("HOTKEY: Executing action %s for %s in area %s", actionName, keyStr, currentArea)
+			if RunAction(actionName) {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
@@ -492,27 +515,62 @@ func (f *MacroAssignFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 	keyDesc := key
 	var msg string
-	if len(f.mgr.Buffer) == 0 {
+
+	removedIni := false
+	if f.mgr.Macros[area] != nil {
 		if _, exists := f.mgr.Macros[area][key]; exists {
 			delete(f.mgr.Macros[area], key)
+			removedIni = true
+		}
+	}
+	if !removedIni && f.mgr.Macros["Common"] != nil {
+		if _, exists := f.mgr.Macros["Common"][key]; exists {
+			delete(f.mgr.Macros["Common"], key)
+			removedIni = true
+			area = "Common"
+		}
+	}
+
+	removedLua := false
+	if f.mgr.Lua != nil && f.mgr.Lua.Remove(area, key) {
+		scriptDir := filepath.Join(GetF4ConfigDir(), "Macros", "scripts")
+		scriptPath := filepath.Join(scriptDir, RecordedMacroFileName(area, key))
+		os.Remove(scriptPath)
+		removedLua = true
+	}
+
+	if len(f.mgr.Buffer) == 0 {
+		if removedIni || removedLua {
 			msg = fmt.Sprintf("Macro removed from key:\n%s\nArea: %s", keyDesc, area)
-		} else if commonArea, ok := f.mgr.Macros["Common"]; ok {
-			if _, exists := commonArea[key]; exists {
-				delete(f.mgr.Macros["Common"], key)
-				msg = fmt.Sprintf("Macro removed from key:\n%s\nArea: Common", keyDesc)
-			} else {
-				msg = fmt.Sprintf("No macro found for key:\n%s", keyDesc)
-			}
 		} else {
 			msg = fmt.Sprintf("No macro found for key:\n%s", keyDesc)
 		}
+		if removedIni {
+			f.mgr.Save()
+		}
 	} else {
-		f.mgr.Macros[area][key] = f.mgr.Buffer
-		msg = fmt.Sprintf("Macro assigned to key:\n%s\nArea: %s", keyDesc, area)
+		if removedIni {
+			f.mgr.Save()
+		}
+		if AppConfig.MacroRecordFormat == 1 {
+			scriptDir := filepath.Join(GetF4ConfigDir(), "Macros", "scripts")
+			err := f.mgr.SaveRecordedMacro(scriptDir, area, key, "", f.mgr.Buffer)
+			if err != nil {
+				msg = fmt.Sprintf("Failed to save Lua macro:\n%v", err)
+			} else {
+				msg = fmt.Sprintf("Lua macro assigned to key:\n%s\nArea: %s", keyDesc, area)
+			}
+		} else {
+			if f.mgr.Macros[area] == nil {
+				f.mgr.Macros[area] = make(map[string][]*vtinput.InputEvent)
+			}
+			f.mgr.Macros[area][key] = f.mgr.Buffer
+			f.mgr.Save()
+			msg = fmt.Sprintf("Macro assigned to key:\n%s\nArea: %s", keyDesc, area)
+		}
 	}
 
 	f.mgr.Buffer = nil
-	f.mgr.Save()
 	f.SetExitCode(0)
 
 	vtui.FrameManager.PostTask(func() {

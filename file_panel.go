@@ -30,29 +30,53 @@ type mediumRow struct {
 	r  int
 }
 
+type panelEntryRow struct {
+	fp    *FileSystemPanel
+	entry *fileEntry
+}
+
+func (r *panelEntryRow) GetCellText(col int) string {
+	if col == 0 && len(r.fp.table.Columns) > 0 {
+		return formatPanelFileName(r.entry, r.fp.table.Columns[0].Width)
+	}
+	return r.entry.GetCellText(col)
+}
+
+func (r *panelEntryRow) IsSelected() bool {
+	return r.entry.IsSelected()
+}
+
+func (r *panelEntryRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
+	return r.entry.GetCellAttr(col, defaultAttr)
+}
+
 func (m *mediumRow) GetCellText(col int) string {
 	H := m.fp.table.ViewHeight
 	if H <= 0 {
 		H = 1
 	}
-	idx := m.r
-	if col == 1 {
-		idx += H
-	}
+	idx := m.r + col*H
 	if idx >= len(m.fp.entries) {
 		return ""
 	}
 	e := m.fp.entries[idx]
-	if e.Name == ".." {
+	width := 0
+	if col >= 0 && col < len(m.fp.table.Columns) {
+		width = m.fp.table.Columns[col].Width
+	}
+	return formatPanelFileName(e, width)
+}
+
+func (f *fileEntry) displayName(name string) string {
+	if f.Name == ".." {
 		return ".."
 	}
-	name := e.Name
-	marker := GlobalFileHighlighter.GetMarker(&e.VFSItem)
+	marker := GlobalFileHighlighter.GetMarker(&f.VFSItem)
 	if marker != "" {
 		name = marker + " " + name
 	}
 
-	if e.IsDir {
+	if f.IsDir {
 		if AppConfig.HighlightDir {
 			return name
 		}
@@ -61,15 +85,43 @@ func (m *mediumRow) GetCellText(col int) string {
 	return name
 }
 
+func splitFileExtension(name string) (string, string) {
+	lastDot := strings.LastIndex(name, ".")
+	if lastDot <= 0 || lastDot == len(name)-1 {
+		return name, ""
+	}
+	return name[:lastDot], name[lastDot+1:]
+}
+
+func formatPanelFileName(entry *fileEntry, width int) string {
+	if !AppConfig.SeparateFileExtensions || entry.IsDir || entry.Name == ".." || width <= 0 {
+		return entry.displayName(entry.Name)
+	}
+	base, extension := splitFileExtension(entry.Name)
+	if extension == "" {
+		return entry.displayName(entry.Name)
+	}
+
+	extensionWidth := runewidth.StringWidth(extension)
+	extensionFieldWidth := extensionWidth
+	if extensionFieldWidth < 3 {
+		extensionFieldWidth = 3
+	}
+	extensionText := extension + strings.Repeat(" ", extensionFieldWidth-extensionWidth)
+	if extensionFieldWidth >= width {
+		return runewidth.Truncate(extensionText, width, "")
+	}
+	left := runewidth.Truncate(entry.displayName(base), width-extensionFieldWidth-1, "")
+	padding := width - runewidth.StringWidth(left) - extensionFieldWidth
+	return left + strings.Repeat(" ", padding) + extensionText
+}
+
 func (m *mediumRow) IsColSelected(col int) bool {
 	H := m.fp.table.ViewHeight
 	if H <= 0 {
 		H = 1
 	}
-	idx := m.r
-	if col == 1 {
-		idx += H
-	}
+	idx := m.r + col*H
 	if idx >= len(m.fp.entries) {
 		return false
 	}
@@ -80,10 +132,7 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	if H <= 0 {
 		H = 1
 	}
-	idx := m.r
-	if col == 1 {
-		idx += H
-	}
+	idx := m.r + col*H
 	if idx >= len(m.fp.entries) {
 		return defaultAttr
 	}
@@ -108,6 +157,8 @@ type ViewMode int
 const (
 	ViewModeMedium ViewMode = iota
 	ViewModeDetailed
+	ViewModeBrief
+	ViewModeWide
 )
 
 type SortMode int
@@ -127,21 +178,7 @@ func (f *fileEntry) IsSelected() bool {
 func (f *fileEntry) GetCellText(col int) string {
 	switch col {
 	case 0:
-		if f.Name == ".." {
-			return ".."
-		}
-		name := f.Name
-		marker := GlobalFileHighlighter.GetMarker(&f.VFSItem)
-		if marker != "" {
-			name = marker + " " + name
-		}
-		if f.IsDir {
-			if AppConfig.HighlightDir {
-				return name
-			}
-			return string(os.PathSeparator) + name
-		}
-		return name
+		return f.displayName(f.Name)
 	case 1:
 		if f.IsDir {
 			if f.SizeCalculated {
@@ -153,6 +190,11 @@ func (f *fileEntry) GetCellText(col int) string {
 			return ""
 		}
 		return formatIntWithSpaces(f.Size)
+	case 2:
+		if f.MTime.IsZero() {
+			return ""
+		}
+		return f.MTime.Format("02.01.06 15:04")
 	}
 	return ""
 }
@@ -187,17 +229,21 @@ type FileSystemPanel struct {
 	entries             []*fileEntry
 	selectedItems       map[string]bool
 	viewMode            ViewMode
+	wide                bool
 	cursorIdx           int
 	lastRightClickedIdx int
+	rightDragActive     bool
+	rightDragSelect     bool
 
-	loadCtx           context.Context
-	cancelLoad        context.CancelFunc
-	isLoading         bool
-	loadingTimer      *time.Timer
-	pendingSelection  string
-	providerEntryName string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	fastFindMode      bool
-	fastFindStr       string
+	loadCtx            context.Context
+	cancelLoad         context.CancelFunc
+	isLoading          bool
+	loadingTimer       *time.Timer
+	pendingSelection   string
+	providerEntryName  string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	fastFindMode       bool
+	fastFindStr        string
+	showInactiveCursor bool
 
 	sortMode    SortMode
 	sortReverse bool
@@ -207,6 +253,21 @@ type FileSystemPanel struct {
 
 	isCheckingRefresh bool
 	currentTitle      string
+
+	// lastLoadedPath is the path readDirectoryEx last saw; used to
+	// detect a directory switch so selectedItems can be dropped
+	// (selection is per-directory, matches far/far2l).
+	lastLoadedPath string
+
+	// shiftSessionActive / shiftSessionMode implement FAR-style
+	// Shift+nav selection. The mode (select vs deselect) is
+	// decided on the first Shift+nav from the state of the row
+	// under the cursor and held until Shift is released, so all
+	// following Shift+nav keys in the same "session" apply that
+	// same mode. Any event other than a Shift+nav key closes
+	// the session — the next Shift+nav starts a new one.
+	shiftSessionActive bool
+	shiftSessionMode   bool // true = select, false = deselect
 }
 
 func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
@@ -352,14 +413,112 @@ func (fp *FileSystemPanel) sortEntries() {
 }
 
 func (fp *FileSystemPanel) SetViewMode(mode ViewMode) {
+	if mode == ViewModeWide {
+		fp.SetWide(true)
+		return
+	}
 	fp.viewMode = mode
-	if mode == ViewModeMedium {
+	fp.wide = false
+	fp.configureCellSelection()
+	fp.Resize(fp.X2-fp.X1+1, fp.Y2-fp.Y1+1)
+}
+
+// mouseEntryIndex returns the entry under the mouse. Multi-column panel modes
+// are filled from top to bottom and then from left to right, so the visual
+// column contributes a full table height to the entry index.
+func (fp *FileSystemPanel) mouseEntryIndex(mouseX, mouseY int) int {
+	if mouseX < fp.table.X1 || mouseX > fp.table.X2 {
+		return -1
+	}
+
+	row := mouseY - (fp.table.Y1 + fp.table.MarginTop)
+	if row < 0 || row >= fp.table.ViewHeight {
+		return -1
+	}
+
+	column := 0
+	if fp.gridColumnCount() > 1 {
+		column = -1
+		columnX := fp.table.X1
+		for i, tableColumn := range fp.table.Columns {
+			if mouseX >= columnX && mouseX < columnX+tableColumn.Width {
+				column = i
+				break
+			}
+			columnX += tableColumn.Width + 1 // one-character separator
+		}
+		if column < 0 {
+			return -1
+		}
+	}
+
+	idx := fp.table.TopPos + row + column*fp.table.ViewHeight
+	if idx < 0 || idx >= len(fp.entries) {
+		return -1
+	}
+	return idx
+}
+
+func (fp *FileSystemPanel) processRightDrag(idx int) {
+	if !fp.rightDragActive {
+		fp.rightDragActive = true
+		fp.rightDragSelect = !fp.entries[idx].Selected
+		fp.lastRightClickedIdx = idx
+		fp.SetItemSelected(idx, fp.rightDragSelect)
+		return
+	}
+
+	from := fp.lastRightClickedIdx
+	step := 1
+	if idx < from {
+		step = -1
+	}
+	for current := from; ; current += step {
+		fp.SetItemSelected(current, fp.rightDragSelect)
+		if current == idx {
+			break
+		}
+	}
+	fp.lastRightClickedIdx = idx
+}
+
+func (fp *FileSystemPanel) setAllItemsSelected(state bool) {
+	for idx := range fp.entries {
+		fp.SetItemSelected(idx, state)
+	}
+}
+
+func (fp *FileSystemPanel) SetWide(wide bool) {
+	fp.wide = wide
+	fp.configureCellSelection()
+	fp.Resize(fp.X2-fp.X1+1, fp.Y2-fp.Y1+1)
+}
+
+func (fp *FileSystemPanel) effectiveViewMode() ViewMode {
+	if fp.wide {
+		return ViewModeWide
+	}
+	return fp.viewMode
+}
+
+func (fp *FileSystemPanel) gridColumnCount() int {
+	switch fp.effectiveViewMode() {
+	case ViewModeBrief:
+		return 3
+	case ViewModeMedium:
+		return 2
+	default:
+		return 1
+	}
+}
+
+func (fp *FileSystemPanel) configureCellSelection() {
+	if fp.gridColumnCount() > 1 {
 		fp.table.CellSelection = true
 	} else {
 		fp.table.CellSelection = false
 		fp.table.SelectCol = 0
 	}
-	fp.Resize(fp.X2-fp.X1+1, fp.Y2-fp.Y1+1)
 }
 
 func (fp *FileSystemPanel) GetCursorIndex() int {
@@ -386,7 +545,7 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 	fp.cursorIdx = idx
 
 	// Sync table visual state
-	if fp.viewMode == ViewModeDetailed {
+	if fp.gridColumnCount() == 1 {
 		fp.table.SetSelectPos(fp.cursorIdx)
 		fp.table.SelectCol = 0
 		if fp.fastFindMode {
@@ -407,15 +566,15 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 		// 1. Ensure TopPos is sane for the current cursor
 		if fp.cursorIdx < fp.table.TopPos {
 			fp.table.TopPos = fp.cursorIdx
-		} else if fp.cursorIdx >= fp.table.TopPos+2*H {
-			fp.table.TopPos = fp.cursorIdx - 2*H + 1
+		} else if fp.cursorIdx >= fp.table.TopPos+fp.gridColumnCount()*H {
+			fp.table.TopPos = fp.cursorIdx - fp.gridColumnCount()*H + 1
 		}
 
 		// Far-style 2-column scrolling: ensure cursorIdx is in [TopPos, TopPos + 2*H)
 		if fp.cursorIdx < fp.table.TopPos {
 			fp.table.TopPos = fp.cursorIdx
-		} else if fp.cursorIdx >= fp.table.TopPos+2*H {
-			fp.table.TopPos = fp.cursorIdx - 2*H + 1
+		} else if fp.cursorIdx >= fp.table.TopPos+fp.gridColumnCount()*H {
+			fp.table.TopPos = fp.cursorIdx - fp.gridColumnCount()*H + 1
 		}
 
 		if fp.fastFindMode && H > 2 {
@@ -480,6 +639,19 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 	// 1. Устанавливаем флаг, но НЕ обновляем UI немедленно, чтобы избежать мерцания
 	path := fp.vfs.GetPath()
+
+	// Drop persistent selection when we've navigated to a different
+	// directory. Without this the map (keyed by bare filename)
+	// silently re-applies to any incoming entry with a matching
+	// name — e.g. .claude selected in ~/f4 would come back
+	// pre-selected in ~/scc or ~. Same rule far/far2l use:
+	// selection is per-directory.
+	if fp.lastLoadedPath != "" && fp.lastLoadedPath != path {
+		for k := range fp.selectedItems {
+			delete(fp.selectedItems, k)
+		}
+	}
+	fp.lastLoadedPath = path
 
 	if fp.pendingSelection == "" {
 		oldName := fp.getRawSelectedName()
@@ -791,10 +963,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 func (fp *FileSystemPanel) Refresh() {
 	idx := fp.GetCursorIndex()
-	if fp.viewMode == ViewModeDetailed {
+	if fp.gridColumnCount() == 1 {
 		rows := make([]vtui.TableRow, len(fp.entries))
 		for i, e := range fp.entries {
-			rows[i] = e
+			rows[i] = &panelEntryRow{fp: fp, entry: e}
 		}
 		fp.table.SetRows(rows)
 	} else {
@@ -845,7 +1017,17 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		scr.Write(fp.X1+2, fp.Y1, vtui.StringToCharInfo(sortChar, titleAttr))
 	}
 
-	fp.table.SetFocus(fp.IsFocused())
+	// Search-first keeps the active panel cursor visible while keyboard focus
+	// is in the command line, but renders it with dedicated inactive colors.
+	if fp.showInactiveCursor {
+		fp.table.ColorSelectedTextIdx = ColPanelInactiveCursor
+		fp.table.ColorItemSelectCursorIdx = ColPanelInactiveSelectedCursor
+		fp.table.SetFocus(true)
+	} else {
+		fp.table.ColorSelectedTextIdx = ColPanelCursor
+		fp.table.ColorItemSelectCursorIdx = ColPanelSelectedCursor
+		fp.table.SetFocus(fp.IsFocused())
+	}
 	fp.table.Show(scr)
 
 	if fp.Y2-fp.Y1+1 > 6 {
@@ -992,7 +1174,18 @@ func (fp *FileSystemPanel) SetPosition(x1, y1, x2, y2 int) {
 func (fp *FileSystemPanel) Resize(w, h int) {
 	fp.SetPosition(fp.X1, fp.Y1, fp.X1+w-1, fp.Y1+h-1)
 
-	if fp.viewMode == ViewModeDetailed {
+	switch fp.effectiveViewMode() {
+	case ViewModeWide:
+		nameW := w - 2 - 2 - 12 - 14
+		if nameW < 1 {
+			nameW = 1
+		}
+		fp.table.Columns = []vtui.TableColumn{
+			{Title: Msg("Panel.Column.Name"), Width: nameW},
+			{Title: Msg("Panel.Column.Size"), Width: 12, Alignment: vtui.AlignRight},
+			{Title: Msg("Panel.Column.Modified"), Width: 14},
+		}
+	case ViewModeDetailed:
 		nameW := w - 15 - 2
 		if nameW < 5 {
 			nameW = 5
@@ -1001,17 +1194,51 @@ func (fp *FileSystemPanel) Resize(w, h int) {
 			{Title: Msg("Panel.Column.Name"), Width: nameW},
 			{Title: Msg("Panel.Column.Size"), Width: 12, Alignment: vtui.AlignRight},
 		}
-	} else {
-		colW := (w - 2 - 1) / 2 // 2 borders, 1 separator
-		if colW < 5 {
-			colW = 5
+	default:
+		columnCount := fp.gridColumnCount()
+		available := w - 2 - (columnCount - 1)
+		if available < columnCount {
+			available = columnCount
 		}
-		fp.table.Columns = []vtui.TableColumn{
-			{Title: Msg("Panel.Column.Name"), Width: colW},
-			{Title: Msg("Panel.Column.Name"), Width: w - 2 - colW - 1},
+		columns := make([]vtui.TableColumn, columnCount)
+		remaining := available
+		for i := range columns {
+			width := remaining / (columnCount - i)
+			if width < 1 {
+				width = 1
+			}
+			columns[i] = vtui.TableColumn{Title: Msg("Panel.Column.Name"), Width: width}
+			remaining -= width
 		}
+		fp.table.Columns = columns
 	}
 	fp.Refresh()
+}
+
+// isShiftSelectNavKey reports whether a virtual key is a navigation
+// key that participates in the Shift+nav selection session. The set
+// mirrors the nav switch below so any change stays in sync.
+func isShiftSelectNavKey(vk uint16) bool {
+	switch vk {
+	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
+		vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
+		return true
+	}
+	return false
+}
+
+// shiftSelectDirection returns +1 for keys that move the cursor
+// forward (Down/Right/PgDn/End) and -1 for backward (Up/Left/
+// PgUp/Home). Used to look past a ".." starting row so
+// session-mode detection can still see a real, selectable row.
+func shiftSelectDirection(vk uint16) int {
+	switch vk {
+	case vtinput.VK_DOWN, vtinput.VK_RIGHT, vtinput.VK_NEXT, vtinput.VK_END:
+		return 1
+	case vtinput.VK_UP, vtinput.VK_LEFT, vtinput.VK_PRIOR, vtinput.VK_HOME:
+		return -1
+	}
+	return 0
 }
 
 func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
@@ -1023,6 +1250,27 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+
+	// Detailed view has no horizontal cell navigation. Outside Vim mode,
+	// reuse plain Left/Right as Page Up/Page Down while preserving the rest
+	// of the event (notably Shift selection).
+	if fp.viewMode == ViewModeDetailed && AppConfig.NavigationMode != NavigationVim && !ctrl && !alt &&
+		(e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
+		mapped := *e
+		if e.VirtualKeyCode == vtinput.VK_LEFT {
+			mapped.VirtualKeyCode = vtinput.VK_PRIOR
+		} else {
+			mapped.VirtualKeyCode = vtinput.VK_NEXT
+		}
+		e = &mapped
+	}
+
+	// Close the shift-selection session on anything other than a
+	// Shift+nav key so the next Shift+nav re-decides its mode
+	// from the row under the cursor.
+	if !(shift && isShiftSelectNavKey(e.VirtualKeyCode)) {
+		fp.shiftSessionActive = false
+	}
 
 	if fp.fastFindMode {
 		switch e.VirtualKeyCode {
@@ -1072,7 +1320,8 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		}
 	} else {
-		if e.Char != 0 && alt && !ctrl && unicode.IsPrint(e.Char) {
+		searchFirstInput := AppConfig.NavigationMode == NavigationSearchFirst && fp.IsFocused() && !alt
+		if e.Char != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(e.Char) {
 			fp.fastFindMode = true
 			fp.fastFindStr = string(unicode.ToLower(e.Char))
 			fp.doFastFind(0)
@@ -1092,18 +1341,70 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
+		// FAR-style Shift+nav selection.
+		//
+		// The session concept unifies "select" and "deselect"
+		// across every navigation key: the first Shift+nav decides
+		// the mode from the state of the row under the cursor
+		// (unselected → we're selecting; selected → we're
+		// deselecting), and every subsequent Shift+nav in the same
+		// session applies that same mode. Releasing Shift (or any
+		// non-nav key) closes the session; the next Shift+nav
+		// starts a new one, potentially with the opposite mode.
+		//
+		// Range width is per-key: Up/Down affect just the starting
+		// row (session grows by one row per tap); Left/Right in
+		// grid, PgUp/PgDn, Home/End paint the whole [start..new]
+		// sweep. ".." is skipped inside SetItemSelected.
+		startIdx := fp.GetCursorIndex()
+
 		if shift {
-			idx := fp.GetCursorIndex()
-			fp.ToggleSelection(idx)
+			if !fp.shiftSessionActive {
+				fp.shiftSessionActive = true
+				// Decide session mode from the state of the row
+				// under the cursor. If it's ".." (never selectable),
+				// look past it in the direction of movement to
+				// find the first real row — otherwise the ".."
+				// start would always resolve to "select" and users
+				// couldn't clear a selection with Shift+End/etc
+				// from the top of the list.
+				modeIdx := startIdx
+				if startIdx >= 0 && startIdx < len(fp.entries) &&
+					fp.entries[startIdx].Name == ".." {
+					if dir := shiftSelectDirection(e.VirtualKeyCode); dir != 0 {
+						for i := startIdx + dir; i >= 0 && i < len(fp.entries); i += dir {
+							if fp.entries[i].Name != ".." {
+								modeIdx = i
+								break
+							}
+						}
+					}
+				}
+				if modeIdx >= 0 && modeIdx < len(fp.entries) &&
+					fp.entries[modeIdx].Name != ".." &&
+					fp.entries[modeIdx].Selected {
+					fp.shiftSessionMode = false
+				} else {
+					fp.shiftSessionMode = true
+				}
+			}
+			fp.SetItemSelected(startIdx, fp.shiftSessionMode)
 		}
 
-		idx := fp.GetCursorIndex()
+		isMultiStep := false
+		switch e.VirtualKeyCode {
+		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
+			isMultiStep = true
+		}
+
+		idx := startIdx
 		H := fp.table.ViewHeight
 		if H <= 0 {
 			H = 1
 		}
 
-		if fp.viewMode == ViewModeMedium {
+		handled := false
+		if columns := fp.gridColumnCount(); columns > 1 {
 			switch e.VirtualKeyCode {
 			case vtinput.VK_UP:
 				idx--
@@ -1114,9 +1415,9 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			case vtinput.VK_RIGHT:
 				idx += H
 			case vtinput.VK_PRIOR:
-				idx -= H * 2
+				idx -= H * columns
 			case vtinput.VK_NEXT:
-				idx += H * 2
+				idx += H * columns
 			case vtinput.VK_HOME:
 				idx = 0
 			case vtinput.VK_END:
@@ -1125,15 +1426,26 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				return false
 			}
 			fp.SetCursorIndex(idx)
-			return true
+			handled = true
 		} else {
 			// In Detailed mode, we let the table handle navigation but sync our index back
-			handled := fp.table.ProcessKey(e)
-			if handled {
+			if fp.table.ProcessKey(e) {
 				fp.cursorIdx = fp.table.SelectPos
+				handled = true
 			}
-			return handled
 		}
+
+		if shift && handled && isMultiStep {
+			newIdx := fp.GetCursorIndex()
+			lo, hi := startIdx, newIdx
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			for i := lo; i <= hi; i++ {
+				fp.SetItemSelected(i, fp.shiftSessionMode)
+			}
+		}
+		return handled
 
 	case vtinput.VK_RETURN:
 		idx := fp.GetCursorIndex()
@@ -1227,6 +1539,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	if e.ButtonState == 0 {
 		fp.lastRightClickedIdx = -1
+		fp.rightDragActive = false
 	}
 
 	if fp.fastFindMode && e.ButtonState != 0 {
@@ -1246,7 +1559,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			H = 1
 		}
 
-		if fp.viewMode == ViewModeDetailed {
+		if fp.gridColumnCount() == 1 {
 			// Detailed view (1-column)
 			idx := fp.GetCursorIndex()
 			newIdx := idx + direction
@@ -1275,7 +1588,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			fp.Refresh()
 			return true
 		} else {
-			// Medium/Brief view (2-column)
+			// Medium/Brief grid view.
 			idx := fp.GetCursorIndex()
 			newIdx := idx + direction
 			if newIdx < 0 {
@@ -1287,7 +1600,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 
 			// Scroll the list if possible, keeping the cursor visually stable
 			newTop := fp.table.TopPos + direction
-			maxTop := len(fp.entries) - 2*H
+			maxTop := len(fp.entries) - fp.gridColumnCount()*H
 			if maxTop < 0 {
 				maxTop = 0
 			}
@@ -1305,10 +1618,37 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
+	if e.ButtonState == vtinput.RightmostButtonPressed && e.KeyDown {
+		idx := fp.mouseEntryIndex(int(e.MouseX), int(e.MouseY))
+		if idx >= 0 {
+			fp.SetCursorIndex(idx)
+			if fp.entries[idx].Name == ".." {
+				return true
+			}
+			if e.MouseEventFlags&vtinput.DoubleClick != 0 {
+				// Windows reports the second press as a double-click. The first
+				// press has already established whether this is a select or
+				// deselect operation, so propagate its result to the whole panel.
+				state := fp.entries[idx].Selected
+				fp.setAllItemsSelected(state)
+				fp.rightDragActive = true
+				fp.rightDragSelect = state
+				fp.lastRightClickedIdx = idx
+				fp.Refresh()
+				return true
+			}
+			fp.processRightDrag(idx)
+			fp.Refresh()
+			return true
+		}
+		// Keep the drag captured while the pointer temporarily leaves a file row.
+		return fp.rightDragActive
+	}
+
 	handled := fp.table.ProcessMouse(e)
 	if handled {
 		// Sync absolute index from table's visual selection
-		if fp.viewMode == ViewModeDetailed {
+		if fp.gridColumnCount() == 1 {
 			fp.cursorIdx = fp.table.SelectPos
 		} else {
 			H := fp.table.ViewHeight
@@ -1325,19 +1665,6 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 				fp.SetCursorIndex(len(fp.entries) - 1)
 			} else {
 				fp.cursorIdx = newIdx
-			}
-		}
-	}
-
-	if e.ButtonState != 0 && e.KeyDown {
-		idx := fp.GetCursorIndex()
-		if idx < len(fp.entries) {
-			if e.ButtonState == vtinput.RightmostButtonPressed {
-				if fp.entries[idx].Name != ".." && fp.lastRightClickedIdx != idx {
-					fp.ToggleSelection(idx)
-					fp.lastRightClickedIdx = idx
-				}
-				return true
 			}
 		}
 	}
@@ -1363,6 +1690,44 @@ func (fp *FileSystemPanel) getRawSelectedName() string {
 		return ""
 	}
 	return fp.entries[idx].Name
+}
+
+// SetSelectedByName picks or unpicks an entry by name and reports whether the
+// panel shows such an entry at all. It is how the picture gallery keeps the
+// panel underneath in step with what the reader has picked; a panel that has
+// walked away to another directory simply answers no.
+func (fp *FileSystemPanel) SetSelectedByName(name string, state bool) bool {
+	for i, e := range fp.entries {
+		if e.Name == name {
+			fp.SetItemSelected(i, state)
+			return true
+		}
+	}
+	return false
+}
+
+// IsNameSelected reports whether an entry has been picked explicitly.
+func (fp *FileSystemPanel) IsNameSelected(name string) bool {
+	return fp.selectedItems[name]
+}
+
+// ImageSiblings lists the pictures of this panel in the order it shows them,
+// together with the position of the one under the cursor, or minus one when
+// the cursor is not on a picture.
+func (fp *FileSystemPanel) ImageSiblings() ([]string, int) {
+	current := fp.getRawSelectedName()
+	names := make([]string, 0, len(fp.entries))
+	index := -1
+	for _, e := range fp.entries {
+		if e.IsDir || e.Name == ".." || !IsImageFile(e.Name) {
+			continue
+		}
+		if e.Name == current {
+			index = len(names)
+		}
+		names = append(names, e.Name)
+	}
+	return names, index
 }
 
 // SelectName searches for an entry by name and moves the cursor to it.

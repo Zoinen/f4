@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 42 42">
+  <defs>
+    <style>
+      .cls-1 {
+        stroke: #db4961;
+      }
+
+      .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11 {
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      .cls-1, .cls-3, .cls-4, .cls-5, .cls-6, .cls-7, .cls-8, .cls-9, .cls-10, .cls-11 {
+        fill: none;
+        stroke-width: 1.7px;
+      }
+
+      .cls-2 {
+        fill: url(#radial-gradient);
+        stroke: url(#linear-gradient);
+        stroke-width: 1.4px;
+      }
+
+      .cls-3 {
+        stroke: #fac84b;
+      }
+
+      .cls-4 {
+        stroke: #989531;
+      }
+
+      .cls-5 {
+        stroke: #f48b10;
+      }
+
+      .cls-6 {
+        stroke: #b65cb5;
+      }
+
+      .cls-7 {
+        stroke: #a6a442;
+      }
+
+      .cls-8 {
+        stroke: #ee5669;
+      }
+
+      .cls-9 {
+        stroke: #cccd4a;
+      }
+
+      .cls-10 {
+        stroke: #ed566d;
+      }
+
+      .cls-11 {
+        stroke: #43a4c7;
+      }
+    </style>
+    <radialGradient id="radial-gradient" cx="21" cy="25.3" fx="21" fy="25.3" r="40" gradientTransform="translate(0 26.3) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#36312d"/>
+      <stop offset=".5" stop-color="#21201f"/>
+      <stop offset="1" stop-color="#16181a"/>
+    </radialGradient>
+    <linearGradient id="linear-gradient" x1="2" y1="24.2" x2="40" y2="-13.7" gradientTransform="translate(0 26.3) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b18f6d"/>
+      <stop offset="1" stop-color="#57443b"/>
+    </linearGradient>
+  </defs>
+  <!-- Generator: Adobe Illustrator 28.7.10, SVG Export Plug-In . SVG Version: 1.2.0 Build 236)  -->
+  <g>
+    <g id="Layer_1">
+      <g id="Layer_1-2" data-name="Layer_1">
+        <path class="cls-2" d="M35.6,41H6.4c-3,0-5.4-2.4-5.4-5.4V6.4C1,3.4,3.4,1,6.4,1h29.2c3,0,5.4,2.4,5.4,5.4v29.2c0,3-2.4,5.4-5.4,5.4ZM1,30.6h40M21,1v29.6"/>
+        <line class="cls-1" x1="11.4" y1="37.5" x2="14.9" y2="37.5"/>
+        <line class="cls-9" x1="6.2" y1="8" x2="11.4" y2="8"/>
+        <line class="cls-3" x1="6.2" y1="13.2" x2="15.8" y2="13.2"/>
+        <line class="cls-8" x1="6.2" y1="18.4" x2="9.7" y2="18.4"/>
+        <line class="cls-4" x1="6.2" y1="23.6" x2="13.2" y2="23.6"/>
+        <line class="cls-10" x1="26.2" y1="8" x2="31.4" y2="8"/>
+        <line class="cls-6" x1="26.2" y1="13.2" x2="35.8" y2="13.2"/>
+        <line class="cls-5" x1="26.2" y1="18.4" x2="29.7" y2="18.4"/>
+        <line class="cls-11" x1="26.2" y1="23.6" x2="33.2" y2="23.6"/>
+        <polyline class="cls-7" points="6.2 34 8 35.8 6.2 37.5"/>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -336,7 +336,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		Active:        active,
 		Path:          fp.vfs.GetPath(),
 		Title:         fp.frame.GetTitle(),
-		ViewMode:      viewModeName(fp.viewMode),
+		ViewMode:      viewModeName(fp.effectiveViewMode()),
 		SortMode:      sortModeName(fp.sortMode),
 		SortReverse:   fp.sortReverse,
 		Cursor:        fp.GetCursorIndex(),
@@ -367,8 +367,12 @@ func semanticFileSize(entry *fileEntry) string {
 
 func viewModeName(mode ViewMode) string {
 	switch mode {
+	case ViewModeBrief:
+		return "brief"
 	case ViewModeDetailed:
 		return "detailed"
+	case ViewModeWide:
+		return "wide"
 	default:
 		return "medium"
 	}

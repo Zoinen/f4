@@ -29,6 +29,9 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 }
 
 func ManageSessions() {
+	stopWindowAppearanceManager := startWindowsConsoleWindowAppearanceManager()
+	defer stopWindowAppearanceManager()
+
 	InitCore()
 
 	restore, err := vtui.PrepareTerminal()

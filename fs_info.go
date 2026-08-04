@@ -11,4 +11,5 @@ type FSInfo struct {
 	Mount       string // mount point / drive root
 	MaxFilename int    // Statfs.Namelen on Linux, MAX_PATH-derived on Windows
 	Flags       string // "rw,relatime" (Linux) / decoded volume flags (Windows)
+	ClusterSize uint64 // fs cluster / block size in bytes; 0 = unknown
 }

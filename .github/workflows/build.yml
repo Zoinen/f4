@@ -6,6 +6,7 @@ on:
     tags: [ "v*.*.*" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,7 +15,7 @@ jobs:
     strategy:
       matrix:
         goos: [linux, windows, darwin, freebsd, dragonfly, openbsd, netbsd, illumos, solaris]
-        goarch: [amd64, arm64]
+        goarch: [amd64, arm64, arm]
         exclude:
           - goos: dragonfly
             goarch: arm64
@@ -22,6 +23,22 @@ jobs:
             goarch: arm64
           - goos: solaris
             goarch: arm64
+          - goos: windows
+            goarch: arm
+          - goos: darwin
+            goarch: arm
+          - goos: freebsd
+            goarch: arm
+          - goos: dragonfly
+            goarch: arm
+          - goos: openbsd
+            goarch: arm
+          - goos: netbsd
+            goarch: arm
+          - goos: illumos
+            goarch: arm
+          - goos: solaris
+            goarch: arm
     env:
       CGO_ENABLED: 0
 
@@ -46,6 +63,15 @@ jobs:
           echo "Please run 'gofmt -s -w .' locally and commit the changes."
           exit 1
         fi
+
+    - name: Verify generated application icons
+      if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      run: |
+        go generate
+        git diff --exit-code -- \
+          assets/icon/generated \
+          rsrc_windows_amd64.syso \
+          rsrc_windows_arm64.syso
 
     - name: Run Tests
       if: matrix.goos == 'linux' && matrix.goarch == 'amd64' || (matrix.goos == 'windows' && matrix.goarch == 'amd64')
@@ -82,6 +108,21 @@ jobs:
         # Copy language and help assets
         cp -r lang help build/
 
+        # Add freedesktop launch metadata and the application icon to Linux archives.
+        if [ "$GOOS" = "linux" ]; then
+          mkdir -p build/share/applications
+          cp packaging/linux/f4.desktop build/share/applications/
+          for size in 16 24 28 30 32 36 42 48 56 64 128 256 512 1024; do
+            icon_dir="build/share/icons/hicolor/${size}x${size}/apps"
+            mkdir -p "$icon_dir"
+            cp "assets/icon/generated/f4-${size}.png" \
+              "$icon_dir/io.github.unxed.f4.png"
+          done
+          mkdir -p build/share/icons/hicolor/scalable/apps
+          cp assets/icon/f4.svg \
+            build/share/icons/hicolor/scalable/apps/io.github.unxed.f4.svg
+        fi
+
         # Build internal dummy plugin
         cd plugins/dummy_internal
         go build $GCFLAGS -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT .
@@ -93,6 +134,23 @@ jobs:
         else
           # Создаем архив в корне, упаковывая содержимое build (без самой папки build)
           tar -czvf f4-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz -C build .
+        fi
+
+        if [ "${{ matrix.goos }}" = "darwin" ]; then
+          VERSION="0.0.${GITHUB_RUN_NUMBER}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          APP="F4.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp build/f4 "$APP/Contents/MacOS/f4"
+          chmod +x "$APP/Contents/MacOS/f4"
+          cp assets/icon/generated/f4.icns "$APP/Contents/Resources/f4.icns"
+          sed -e "s/__VERSION__/$VERSION/g" \
+              -e "s/__BUILD_VERSION__/$GITHUB_RUN_NUMBER/g" \
+              packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          zip -r "f4-${{ matrix.goos }}-${{ matrix.goarch }}.app.zip" "$APP"
         fi
 
     - name: Upload Artifact

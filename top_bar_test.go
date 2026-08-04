@@ -40,6 +40,31 @@ func TestTopBar_Show(t *testing.T) {
 	}
 }
 
+func TestTopBar_AttributeCallback(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 5)
+
+	tb := NewTopBar(func() string { return "picked" })
+	tb.SetPosition(0, 0, 39, 0)
+	tb.SetVisible(true)
+
+	tb.GetAttr = func() uint64 { return imageTilePickedAttr }
+	tb.Show(scr)
+	if got := scr.GetCell(0, 0).Attributes; got != imageTilePickedAttr {
+		t.Errorf("the callback colour must win, got %016X", got)
+	}
+
+	// A callback with nothing to say leaves the palette in charge.
+	tb.GetAttr = func() uint64 { return 0 }
+	tb.Show(scr)
+	if got, want := scr.GetCell(0, 0).Attributes, vtui.Palette[ColViewerStatus]; got != want {
+		t.Errorf("expected the palette colour %016X, got %016X", want, got)
+	}
+}
+
 func TestTopBar_NilCallbackAndInvisible(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()

@@ -59,14 +59,14 @@ func (pm *PluginManager) LoadAll() {
 }
 
 func (pm *PluginManager) LoadExternalPlugin(path string) {
-	p := NewRPCPlugin(path)
+	p := newPluginForEntrypoint("", path)
 	if err := p.Init(pm.api); err == nil {
 		pm.mu.Lock()
 		pm.plugins = append(pm.plugins, p)
 		pm.mu.Unlock()
-		vtui.DebugLog("Loaded RPC plugin: %s", p.GetName())
+		vtui.DebugLog("Loaded plugin: %s", p.GetName())
 	} else {
-		vtui.DebugLog("Failed RPC plugin %s: %v", path, err)
+		vtui.DebugLog("Failed plugin %s: %v", path, err)
 	}
 }
 func (pm *PluginManager) loadPlugRing() {
@@ -77,7 +77,7 @@ func (pm *PluginManager) loadPlugRing() {
 			// We build a pseudo-path that NewRPCPlugin will handle specifically later if needed,
 			// but since NewRPCPlugin uses exec.Command directly, we pass the command.
 			// The RPCPlugin execution logic will need to handle splitting by spaces if it's a shell command.
-			p := NewRPCPlugRing(filepath.Join(plugringDir, id), item.Entrypoint)
+			p := newPluginForPlugRingItem(filepath.Join(plugringDir, id), item)
 			if err := p.Init(pm.api); err == nil {
 				pm.mu.Lock()
 				pm.plugins = append(pm.plugins, p)
@@ -96,7 +96,7 @@ func (pm *PluginManager) loadSinglePlugRingItem(item PlugRingItem) {
 	plugringDir := filepath.Join(GetF4ConfigDir(), "plugring")
 	pluginDir := filepath.Join(plugringDir, item.ID)
 
-	p := NewRPCPlugRing(pluginDir, item.Entrypoint)
+	p := newPluginForPlugRingItem(pluginDir, item)
 	if err := p.Init(pm.api); err == nil {
 		pm.mu.Lock()
 		pm.plugins = append(pm.plugins, p)

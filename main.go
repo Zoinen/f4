@@ -1,3 +1,5 @@
+//go:generate go -C tools/icons run .
+
 package main
 
 import (
@@ -46,6 +48,10 @@ func main() {
 		vfs.RunSudoDispatcher(sudoDispatcher)
 		return
 	}
+
+	// Setup crash/stderr location before any logging starts; in portable mode
+	// this keeps crash reports inside <configDir>\crashes (Profile\crashes).
+	vtui.CrashDirFull = filepath.Join(GetF4ConfigDir(), "crashes")
 
 	vtui.SetupStderrLog()
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
@@ -142,6 +148,13 @@ func main() {
 				cpuprofile = os.Args[i+1]
 				i++
 			}
+		case "--new-plugin":
+			pluginName := flagVal
+			if pluginName == "" && i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
+				pluginName = os.Args[i+1]
+				i++
+			}
+			os.Exit(RunNewPlugin(pluginName, os.Stdout, os.Stderr))
 		case "-test-plugins":
 			vtui.ConfigDiskLogging(true)
 			vtui.DebugLog("--- PLUGIN TEST MODE ---")
@@ -342,8 +355,8 @@ func SetupUI() {
 		GlobalFileHighlighter.LoadFromIni(highlightIni)
 	}
 
-	// Прокидываем путь портативного конфига в изолированные пакеты vtui и vfs
-	vtui.CrashDirBase = filepath.Dir(configDir)
+	// CrashDirFull задаётся рано (см. main()); здесь только повторная
+	// синхронизация для vfs, чтобы конфиг портативного режима был единым.
 	vfs.CustomConfigDir = configDir
 
 	// Load legacy color overrides if they exist
@@ -354,7 +367,9 @@ func SetupUI() {
 	}
 
 	os.MkdirAll(configDir, 0755)
+	GlobalHotkeysMgr = NewHotkeyManager(filepath.Join(configDir, "hotkeys.ini"))
 	MacroMgr = NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
+	MacroMgr.LoadLuaMacros(filepath.Join(configDir, "Macros", "scripts"))
 	vtui.FrameManager.EventFilter = MacroMgr.Filter
 	LoadSession()
 	vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
@@ -370,11 +385,19 @@ func SetupUI() {
 		rp := panels.panels[1].(*FileSystemPanel)
 
 		// Восстанавливаем режимы отображения и типы сортировки панелей
-		lp.viewMode = ViewMode(LastLeftViewMode)
+		leftMode := ViewMode(LastLeftViewMode)
+		if leftMode != ViewModeMedium && leftMode != ViewModeDetailed && leftMode != ViewModeBrief {
+			leftMode = ViewModeMedium
+		}
+		lp.SetViewMode(leftMode)
 		lp.sortMode = SortMode(LastLeftSortMode)
 		lp.sortReverse = LastLeftSortRev
 
-		rp.viewMode = ViewMode(LastRightViewMode)
+		rightMode := ViewMode(LastRightViewMode)
+		if rightMode != ViewModeMedium && rightMode != ViewModeDetailed && rightMode != ViewModeBrief {
+			rightMode = ViewModeMedium
+		}
+		rp.SetViewMode(rightMode)
 		rp.sortMode = SortMode(LastRightSortMode)
 		rp.sortReverse = LastRightSortRev
 
@@ -401,6 +424,13 @@ func SetupUI() {
 		panels.showPanels = LastShowPanels
 		panels.showLeftPanel = LastShowLeft
 		panels.showRightPanel = LastShowRight
+		if LastWidePanel == 0 || LastWidePanel == 1 {
+			panels.wide = true
+			panels.widePanel = LastWidePanel
+			panels.activeIdx = LastWidePanel
+			panels.showPanels = true
+		}
+		panels.ResizeConsole(width, height)
 	}
 	vtui.FrameManager.Push(panels)
 
@@ -467,6 +497,11 @@ func LoadSession() {
 	// Восстанавливаем глобальное состояние сессии
 	activeStr := ini.GetString("Session", "ActivePanel", "1")
 	fmt.Sscanf(activeStr, "%d", &LastActivePanel)
+	LastWidePanel = -1
+	fmt.Sscanf(ini.GetString("Session", "WidePanel", "-1"), "%d", &LastWidePanel)
+	if LastWidePanel < -1 || LastWidePanel > 1 {
+		LastWidePanel = -1
+	}
 	LastShowPanels = ini.GetString("Session", "ShowPanels", "1") == "1"
 	LastShowLeft = ini.GetString("Session", "ShowLeft", "1") == "1"
 	LastShowRight = ini.GetString("Session", "ShowRight", "1") == "1"
@@ -496,6 +531,10 @@ func SaveSession() {
 				if pf, ok := f.(*PanelsFrame); ok {
 					LastLeftPath, LastRightPath = pf.GetPaths()
 					LastActivePanel = pf.activeIdx
+					LastWidePanel = -1
+					if pf.wide {
+						LastWidePanel = pf.widePanel
+					}
 					LastShowPanels = pf.showPanels
 					LastShowLeft = pf.showLeftPanel
 					LastShowRight = pf.showRightPanel
@@ -532,6 +571,7 @@ func SaveSession() {
 
 	sb.WriteString("\n[Session]\n")
 	sb.WriteString(fmt.Sprintf("ActivePanel = %d\n", LastActivePanel))
+	sb.WriteString(fmt.Sprintf("WidePanel = %d\n", LastWidePanel))
 	sb.WriteString(fmt.Sprintf("ShowPanels = %d\n", map[bool]int{true: 1, false: 0}[LastShowPanels]))
 	sb.WriteString(fmt.Sprintf("ShowLeft = %d\n", map[bool]int{true: 1, false: 0}[LastShowLeft]))
 	sb.WriteString(fmt.Sprintf("ShowRight = %d\n", map[bool]int{true: 1, false: 0}[LastShowRight]))

@@ -795,7 +795,7 @@ func TestEditorView_WhitespaceRendering(t *testing.T) {
 	ev := NewEditorView(pt, nil, "")
 	defer ev.Close()
 	ev.ShowWhitespaces = true
-	cells := ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+	cells := ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0, 0)
 
 	// '·' is U+00B7 (183)
 	if cells[1].Char != 183 {
@@ -807,7 +807,7 @@ func TestEditorView_WhitespaceRendering(t *testing.T) {
 	}
 
 	ev.ShowWhitespaces = false
-	cells = ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+	cells = ev.fillCells(nil, []byte("a b\tc"), 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0, 0)
 	if cells[1].Char != ' ' {
 		t.Errorf("Expected space for space when ShowWhitespaces is OFF, got %d", cells[1].Char)
 	}
@@ -3081,7 +3081,7 @@ func TestEditorView_CharacterWidthConsistency(t *testing.T) {
 	ev.SetPosition(0, 0, 80, 24)
 
 	_, col2 := ev.engine.LogicalToVisual(2)
-	cells := ev.fillCells(nil, []byte{0x01, 0x00, 'a'}, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+	cells := ev.fillCells(nil, []byte{0x01, 0x00, 'a'}, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0, 0)
 
 	if col2 != 2 {
 		t.Errorf("Expected LogicalToVisual col 2, got %d", col2)
@@ -3158,7 +3158,7 @@ func TestEditorView_ZeroAndDoubleWidthConsistency(t *testing.T) {
 	_, colCJK := ev.engine.LogicalToVisual(6)
 	_, colB := ev.engine.LogicalToVisual(7)
 
-	cells := ev.fillCells(nil, text, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0)
+	cells := ev.fillCells(nil, text, 0, 0, 0, false, 0, 0, nil, 0, false, -1, 0, 0, 0)
 
 	if colA != 1 {
 		t.Errorf("Expected column after 'a' to be 1, got %d", colA)
@@ -3471,11 +3471,43 @@ func TestEditorView_WordJumps_DifferentDividers(t *testing.T) {
 	ev.li.Rebuild(pt)
 	ev.CursorPos = 0
 
-	// Ctrl+Right должен остановиться на первом слэше (смена типа разделителя)
+	// A change of divider kind is not a word boundary in far2l, so the whole
+	// run is crossed in a single jump (issue #280).
 	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT, ControlKeyState: vtinput.LeftCtrlPressed})
 
+	if ev.CursorPos != 6 {
+		t.Errorf("EditorView expected stop on index 6, got %d", ev.CursorPos)
+	}
+}
+
+func TestEditorView_WordJumps_DividerBetweenWords(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("foo.bar"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.li.Rebuild(pt)
+	ev.CursorPos = 0
+
+	// far2l stops at the end of the word, then jumps straight to the end of
+	// the line: the divider itself is not a landing spot.
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT, ControlKeyState: vtinput.LeftCtrlPressed})
 	if ev.CursorPos != 3 {
-		t.Errorf("EditorView expected stop on index 3, got %d", ev.CursorPos)
+		t.Errorf("first Ctrl+Right: expected 3, got %d", ev.CursorPos)
+	}
+
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT, ControlKeyState: vtinput.LeftCtrlPressed})
+	if ev.CursorPos != 7 {
+		t.Errorf("second Ctrl+Right: expected 7, got %d", ev.CursorPos)
+	}
+
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT, ControlKeyState: vtinput.LeftCtrlPressed})
+	if ev.CursorPos != 4 {
+		t.Errorf("first Ctrl+Left: expected 4, got %d", ev.CursorPos)
+	}
+
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT, ControlKeyState: vtinput.LeftCtrlPressed})
+	if ev.CursorPos != 0 {
+		t.Errorf("second Ctrl+Left: expected 0, got %d", ev.CursorPos)
 	}
 }
 
@@ -4128,5 +4160,66 @@ func TestEditorView_MouseSelection_Release(t *testing.T) {
 
 	if ev.selActive {
 		t.Error("Simple click without dragging should turn off selection on mouse release")
+	}
+}
+
+// TestEditorView_InsertTextAtCursor covers the shared insert path
+// the new Ctrl+[/Ctrl+]/Ctrl+Enter shortcuts use — appends bytes
+// at cursor, updates line index, advances cursor by len(data).
+// Cursor mid-word split is the interesting case.
+func TestEditorView_InsertTextAtCursor(t *testing.T) {
+	pt := piecetable.New([]byte("abcxyz"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 79, 24)
+	ev.CursorPos = 3
+
+	ev.insertTextAtCursor([]byte("/tmp/f4"))
+	if got := pt.String(); got != "abc/tmp/f4xyz" {
+		t.Errorf("insert = %q, want abc/tmp/f4xyz", got)
+	}
+	if ev.CursorPos != 3+len("/tmp/f4") {
+		t.Errorf("cursor = %d, want %d", ev.CursorPos, 3+len("/tmp/f4"))
+	}
+	if !ev.modified {
+		t.Error("modified flag should be set after insert")
+	}
+}
+
+// TestEditorView_DeleteSpacersForward exercises Ctrl+Del from
+// issue #289: eat every space and tab between the cursor and the
+// first non-spacer byte, leave everything else alone.
+func TestEditorView_DeleteSpacersForward(t *testing.T) {
+	cases := []struct {
+		name     string
+		src      string
+		cursor   int
+		want     string
+		wantCurs int
+	}{
+		{"leading-spaces", "abc    def", 3, "abcdef", 3},
+		{"tabs-mixed", "abc \t \tdef", 3, "abcdef", 3},
+		{"no-spacers", "abcdef", 3, "abcdef", 3},
+		{"at-eof", "abc   ", 3, "abc", 3},
+		{"cursor-on-non-spacer", "aaa bbb", 0, "aaa bbb", 0},
+		{"only-spacers-mid-file", "x   \n  y", 1, "x\n  y", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pt := piecetable.New([]byte(tc.src))
+			ev := NewEditorView(pt, nil, "")
+			defer ev.Close()
+			ev.SetPosition(0, 0, 79, 24)
+			ev.CursorLine = 0
+			ev.CursorPos = tc.cursor
+
+			ev.deleteSpacersForward()
+			if got := pt.String(); got != tc.want {
+				t.Errorf("pt = %q, want %q", got, tc.want)
+			}
+			if ev.CursorPos != tc.wantCurs {
+				t.Errorf("cursor = %d, want %d", ev.CursorPos, tc.wantCurs)
+			}
+		})
 	}
 }

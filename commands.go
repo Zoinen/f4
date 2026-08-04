@@ -13,10 +13,14 @@ const (
 	CmBackground
 	CmMkDir
 	CmNew
+	CmLeftBrief
 	CmLeftMedium
 	CmLeftDetailed
+	CmLeftWide
+	CmRightBrief
 	CmRightMedium
 	CmRightDetailed
+	CmRightWide
 	CmFileChanged
 	CmFindFile
 	CmSortName
@@ -39,10 +43,13 @@ const (
 	CmExtractArchive
 	CmPanelSettings
 	CmEditorSettings
+	CmColorerSettings
 	CmAppearanceSettings
 	CmConfirmationsSettings
 	CmLanguage
+	CmHelpLanguage
 	CmPlugins
+	CmHotkeyConfig
 	CmUpdateSettings
 	CmBookmarks
 	CmSwitchToViewer

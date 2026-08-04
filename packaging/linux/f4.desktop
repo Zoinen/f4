@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=f4
+GenericName=File Manager
+Comment=Far Manager / far2l-style file manager
+Exec=f4 --gui
+TryExec=f4
+Icon=io.github.unxed.f4
+Terminal=false
+Categories=System;FileManager;

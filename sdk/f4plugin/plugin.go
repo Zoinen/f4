@@ -28,6 +28,11 @@ func (h *Host) GetVersion() string {
 	_ = h.sess.Call("Host.GetVersion", nil, &ver)
 	return ver
 }
+func (h *Host) RunAction(name string) bool {
+	var res bool
+	_ = h.sess.Call("Host.RunAction", name, &res)
+	return res
+}
 
 // VFSItem mirrors the core's vfs.VFSItem format.
 type VFSItem struct {

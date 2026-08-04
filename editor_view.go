@@ -209,6 +209,9 @@ func (ev *EditorView) Close() {
 	if ev.file != nil {
 		ev.file.Close()
 	}
+	if closer, ok := ev.highlighter.(io.Closer); ok {
+		closer.Close()
+	}
 	ev.BaseFrame.Close()
 	if ev.OnClose != nil {
 		ev.OnClose()
@@ -260,7 +263,25 @@ func NewEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string) *EditorVie
 			}
 		}
 	}
-	ev.highlighter = vtui.GetHighlighter(path, "")
+	switch {
+	case strings.EqualFold(AppConfig.EditorHighlighter, "None"):
+		ev.highlighter = nil
+	case strings.EqualFold(AppConfig.EditorHighlighter, "Colorer") && SchemasExist():
+		firstLine := ""
+		if probeLen := pt.Size(); probeLen > 0 {
+			if probeLen > 1024 {
+				probeLen = 1024
+			}
+			b, _ := pt.GetRange(0, probeLen)
+			firstLine = string(b)
+			if idx := strings.IndexAny(firstLine, "\r\n"); idx >= 0 {
+				firstLine = firstLine[:idx]
+			}
+		}
+		ev.highlighter = newColorerHighlighter(ev, filepath.Base(path), firstLine, vtui.GetHighlighter(path, ""))
+	default:
+		ev.highlighter = vtui.GetHighlighter(path, "")
+	}
 	ev.scrollBar = vtui.NewScrollBar(0, 0, 0)
 	ev.scrollBar.SetOwner(ev)
 	ev.scrollBar.OnScroll = func(v int) {
@@ -469,7 +490,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		width--
 	}
 
-	bgAttr := vtui.Palette[ColEditorText]
+	bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
 	selAttr := vtui.Palette[vtui.ColDialogEditSelected]
 
 	if ev.saving {
@@ -483,26 +504,34 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 	curVRow, curVCol := ev.engine.LogicalToVisual(curOffset)
 
 	crossVRow, crossVCol := -1, -1
-	var crossAttr uint64
-	if AppConfig.EditorCrosshair && ev.IsFocused() {
-		crossVRow = curVRow
-		crossVCol = curVCol + ev.CursorVirtualSpaces
-		crossAttr = vtui.Palette[ColEditorCrosshair]
+	var horzCrossAttr, vertCrossAttr uint64
+	if showHorz, showVert, hAttr, vAttr := EditorCrossAttrs(); ev.IsFocused() {
+		if showHorz {
+			crossVRow = curVRow
+			horzCrossAttr = hAttr
+		}
+		if showVert {
+			crossVCol = curVCol + ev.CursorVirtualSpaces
+			vertCrossAttr = vAttr
+		}
 	}
 
 	// Clear the entire editor text area
 	scr.FillRect(ev.X1, ev.Y1+1, ev.X2, ev.Y2, ' ', bgAttr)
 
+	// Horizontal line
 	if crossVRow != -1 {
-		// Horizontal line
 		cy := ev.Y1 + 1 + crossVRow - ev.ScrollTopRow
 		if cy >= ev.Y1+1 && cy <= ev.Y2 {
-			scr.FillRect(ev.X1, cy, ev.X1+width-1, cy, ' ', crossAttr)
+			scr.FillRect(ev.X1, cy, ev.X1+width-1, cy, ' ', horzCrossAttr)
 		}
-		// Vertical line
+	}
+
+	// Vertical line
+	if crossVCol != -1 {
 		cx := ev.X1 + crossVCol - ev.ScrollLeft
 		if cx >= ev.X1 && cx < ev.X1+width {
-			scr.FillRect(cx, ev.Y1+1, cx, ev.Y2, ' ', crossAttr)
+			scr.FillRect(cx, ev.Y1+1, cx, ev.Y2, ' ', vertCrossAttr)
 		}
 	}
 
@@ -617,7 +646,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 
 			_, startVCol := ev.engine.LogicalToVisual(frag.ByteOffsetStart)
 			isCrossRow := (absVRow == crossVRow)
-			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, fragSyntax, startVCol, isCrossRow, crossVCol, crossAttr, absVRow)
+			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, fragSyntax, startVCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
 
 			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
 
@@ -696,6 +725,17 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+
+	// Alt+Ins — global screen grabber (far/far2l parity). Handled here
+	// so it works even when the editor is the top frame.
+	if e.Type == vtinput.KeyEventType && e.KeyDown && e.VirtualKeyCode == vtinput.VK_INSERT && alt {
+		ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+		shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+		if !ctrl && !shift {
+			OpenGrabber()
+			return true
+		}
+	}
 	// 1. Processing Bracketed Paste (events arrive outside KeyDown)
 	if e.Type == vtinput.PasteEventType {
 		if e.PasteStart {
@@ -762,6 +802,33 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	//alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+
+	// Panel-side shortcuts (issue #289): while the editor is on top,
+	// forward the current panel context into the buffer. Same key
+	// assignments as PanelsFrame binds on the command line.
+	if ctrl && !alt && !shift {
+		switch {
+		case e.VirtualKeyCode == vtinput.VK_OEM_4 || e.Char == '[':
+			if s := leftPanelPathForEditor(); s != "" {
+				ev.insertTextAtCursor([]byte(s))
+			}
+			return true
+		case e.VirtualKeyCode == vtinput.VK_OEM_6 || e.Char == ']':
+			if s := rightPanelPathForEditor(); s != "" {
+				ev.insertTextAtCursor([]byte(s))
+			}
+			return true
+		case e.VirtualKeyCode == vtinput.VK_RETURN:
+			if s := activePanelNameForEditor(); s != "" {
+				ev.insertTextAtCursor([]byte(s))
+			}
+			return true
+		case e.VirtualKeyCode == vtinput.VK_DELETE:
+			ev.deleteSpacersForward()
+			return true
+		}
+	}
+
 	// --- Autocomplete Interception ---
 	if ev.acEnabled && len(ev.acMatches) > 0 {
 		if e.VirtualKeyCode == vtinput.VK_TAB {
@@ -1110,11 +1177,7 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 					if vRow == startVRow {
 						for currRuneIdx > 0 {
 							prev, curr := runes[currRuneIdx-1], runes[currRuneIdx]
-							pCat, cCat := getCharCategory(prev), getCharCategory(curr)
-							if (shift && pCat != catSpace && cCat == catSpace) ||
-								(pCat == catSpace && cCat == catWord) ||
-								(pCat == catSpace && cCat == catDivider) ||
-								(pCat == catDivider && cCat == catWord) {
+							if stopBeforeRuneLeft(prev, curr, shift) {
 								break
 							}
 							currRuneIdx--
@@ -1194,28 +1257,7 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 					if vRow == startVRow {
 						for currRuneIdx < len(runes) {
 							prev, curr := runes[currRuneIdx-1], runes[currRuneIdx]
-							pCat, cCat := getCharCategory(prev), getCharCategory(curr)
-							stop := false
-							if shift && pCat != catSpace && cCat == catSpace {
-								stop = true
-							}
-							if pCat == catWord && cCat == catDivider {
-								stop = true
-							}
-							if pCat == catSpace && cCat == catWord {
-								stop = true
-							}
-							if pCat == catSpace && cCat == catDivider {
-								stop = true
-							}
-							if pCat == catDivider && cCat == catWord {
-								stop = true
-							}
-							if pCat == catDivider && cCat == catDivider && prev != curr {
-								stop = true
-							}
-
-							if stop {
+							if stopBeforeRuneRight(prev, curr, shift) {
 								break
 							}
 
@@ -1534,7 +1576,7 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 	return false
 }
 
-func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, crossAttr uint64, visualRow int) []vtui.CharInfo {
+func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
 	target = target[:0]
 	currByte := 0
 	charIdx := 0
@@ -1573,11 +1615,11 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 		}
 
 		// Horizontal crosshair line applies to the entire character in the active row
-		if isCrossRow && crossAttr != 0 {
-			if crossAttr&vtui.IsBgRGB != 0 {
-				attr = vtui.SetRGBBack(attr, vtui.GetRGBBack(crossAttr))
+		if isCrossRow && horzCrossAttr != 0 {
+			if horzCrossAttr&vtui.IsBgRGB != 0 {
+				attr = vtui.SetRGBBack(attr, vtui.GetRGBBack(horzCrossAttr))
 			} else {
-				attr = vtui.SetIndexBack(attr, vtui.GetIndexBack(crossAttr))
+				attr = vtui.SetIndexBack(attr, vtui.GetIndexBack(horzCrossAttr))
 			}
 		}
 
@@ -1607,11 +1649,11 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 			for j := 0; j < w; j++ {
 				cellAttr := attr
 				// Vertical crosshair line: apply ONLY to the specific cell index
-				if !isCrossRow && (visualCol+j == crossVCol) && crossAttr != 0 {
-					if crossAttr&vtui.IsBgRGB != 0 {
-						cellAttr = vtui.SetRGBBack(cellAttr, vtui.GetRGBBack(crossAttr))
+				if !isCrossRow && (visualCol+j == crossVCol) && vertCrossAttr != 0 {
+					if vertCrossAttr&vtui.IsBgRGB != 0 {
+						cellAttr = vtui.SetRGBBack(cellAttr, vtui.GetRGBBack(vertCrossAttr))
 					} else {
-						cellAttr = vtui.SetIndexBack(cellAttr, vtui.GetIndexBack(crossAttr))
+						cellAttr = vtui.SetIndexBack(cellAttr, vtui.GetIndexBack(vertCrossAttr))
 					}
 				}
 				target = append(target, vtui.CharInfo{Char: charVal, Attributes: cellAttr})
@@ -2621,6 +2663,141 @@ func (ev *EditorView) getSelectionRange() (int, int) {
 	return min, max
 }
 
+// findPanelsFrameAnyScreen locates a PanelsFrame on any of the
+// frame manager's screens. The plain findPanelsFrame() only walks
+// the active screen — that works for macros invoked from panel
+// mode, but fails from a full-screen editor (added via AddScreen,
+// so the editor is the active screen and the panels frame lives
+// on the previous one). Kept editor-local so we don't broaden
+// findPanelsFrame's contract and change the behaviour for macros.
+func findPanelsFrameAnyScreen() *PanelsFrame {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	for _, s := range vtui.FrameManager.Screens {
+		for _, f := range s.Frames {
+			if pf, ok := f.(*PanelsFrame); ok {
+				return pf
+			}
+		}
+	}
+	return nil
+}
+
+// leftPanelPathForEditor / rightPanelPathForEditor return the
+// on-screen visually-left / visually-right file panel's path, or
+// "" if the panels frame isn't available. Deliberately uses the
+// same visualLeftFSP / visualRightFSP resolvers PanelsFrame uses
+// for its own Ctrl+[/Ctrl+] command-line binds, so after Ctrl+U
+// the editor stays in lock-step with the panel behaviour instead
+// of routing by stale slot index.
+func leftPanelPathForEditor() string {
+	pf := findPanelsFrameAnyScreen()
+	if pf == nil {
+		return ""
+	}
+	if fsp := pf.visualLeftFSP(); fsp != nil {
+		return fsp.vfs.GetPath()
+	}
+	return ""
+}
+
+func rightPanelPathForEditor() string {
+	pf := findPanelsFrameAnyScreen()
+	if pf == nil {
+		return ""
+	}
+	if fsp := pf.visualRightFSP(); fsp != nil {
+		return fsp.vfs.GetPath()
+	}
+	return ""
+}
+
+// activePanelNameForEditor returns the currently-selected file name
+// on the active file panel, or "" if there isn't one. Not
+// distinguishing "no selection" from "no panel" — both yield ""
+// which the caller treats as a no-op.
+func activePanelNameForEditor() string {
+	pf := findPanelsFrameAnyScreen()
+	if pf == nil {
+		return ""
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return ""
+	}
+	return fsp.GetSelectedName()
+}
+
+// insertTextAtCursor writes bytes at the cursor position, taking
+// care of an active selection (deleted first), any accumulated
+// virtual-space column past EOL (materialised as real spaces before
+// the insert), and the bookkeeping the rest of the editor expects
+// after an edit — undo checkpoint, line-index update, cache
+// invalidation, cursor advance, autocomplete refresh.
+func (ev *EditorView) insertTextAtCursor(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	ev.saveUndo(opOther)
+	if ev.selActive || ev.rectSelActive {
+		ev.inGroup = true
+		ev.DeleteSelection()
+		ev.inGroup = false
+	}
+	ev.modified = true
+	offset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	if ev.CursorVirtualSpaces > 0 {
+		virtSpaces := []byte(strings.Repeat(" ", ev.CursorVirtualSpaces))
+		ev.pt.Insert(offset, virtSpaces)
+		ev.li.UpdateAfterInsert(offset, virtSpaces)
+		offset += ev.CursorVirtualSpaces
+		ev.CursorPos += ev.CursorVirtualSpaces
+		ev.CursorVirtualSpaces = 0
+	}
+	ev.pt.Insert(offset, data)
+	ev.li.UpdateAfterInsert(offset, data)
+	ev.invalidateStates(ev.CursorLine)
+	ev.engine.InvalidateFrom(ev.CursorLine)
+	ev.CursorPos += len(data)
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+	if ev.acEnabled {
+		ev.updateAutocomplete()
+	}
+}
+
+// deleteSpacersForward removes every run of spaces and tabs starting
+// at the cursor, stopping at the first non-spacer byte (or EOF). No-
+// op when the cursor is already on a non-spacer. Matches FAR's
+// Ctrl+Del behaviour word-for-word — "spacer" is the same tokeniser
+// term the issue uses.
+func (ev *EditorView) deleteSpacersForward() {
+	offset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	total := ev.pt.Size()
+	if offset >= total {
+		return
+	}
+	count := 0
+	for offset+count < total {
+		b, _ := ev.pt.GetRange(offset+count, 1)
+		if len(b) == 0 || (b[0] != ' ' && b[0] != '\t') {
+			break
+		}
+		count++
+	}
+	if count == 0 {
+		return
+	}
+	ev.saveUndo(opOther)
+	ev.modified = true
+	ev.pt.Delete(offset, count)
+	ev.li.UpdateAfterDelete(offset, count)
+	ev.invalidateStates(ev.CursorLine)
+	ev.engine.InvalidateFrom(ev.CursorLine)
+	ev.ensureCursorVisible()
+}
+
 func (ev *EditorView) CopySelection() {
 	if ev.rectSelActive {
 		GlobalLastClipboardWasRectangular = true
@@ -3133,22 +3310,6 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 			})
 		})
 	})
-}
-
-const (
-	catSpace = iota
-	catDivider
-	catWord
-)
-
-func getCharCategory(r rune) int {
-	if r == ' ' || r == '\t' {
-		return catSpace
-	}
-	if strings.ContainsRune("~!%^&*()+|{}:\"<>?`-=\\[];',./", r) {
-		return catDivider
-	}
-	return catWord
 }
 
 // updateAutocomplete scans nearby lines for words matching the current prefix.

@@ -16,6 +16,8 @@ const (
 	ColPanelInfoText
 	ColPanelCursor
 	ColPanelSelectedCursor
+	ColPanelInactiveCursor
+	ColPanelInactiveSelectedCursor
 	ColPanelTitle
 	ColPanelSelectedTitle
 	ColPanelColumnTitle
@@ -28,6 +30,7 @@ const (
 	ColPanelDir
 
 	ColCommandLinePrompt
+	ColCommandLineInactivePrompt
 	ColCommandLineText
 	ColCommandLineSelectedText
 
@@ -67,6 +70,8 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColPanelSelectedText] = vtui.SetRGBBoth(0, yellow, blue)
 	vtui.Palette[ColPanelCursor] = vtui.SetRGBBoth(0, black, cyan)
 	vtui.Palette[ColPanelSelectedCursor] = vtui.SetRGBBoth(0, yellow, cyan)
+	vtui.Palette[ColPanelInactiveCursor] = vtui.SetRGBBoth(0, 0xD3D7CF, 0x555753)
+	vtui.Palette[ColPanelInactiveSelectedCursor] = vtui.SetRGBBoth(0, yellow, 0x555753)
 	vtui.Palette[ColPanelBox] = vtui.SetRGBBoth(0, 0x00FFFF, blue)
 	vtui.Palette[ColPanelTitle] = vtui.SetRGBBoth(0, 0x00FFFF, blue)
 	vtui.Palette[ColPanelColumnTitle] = vtui.SetRGBBoth(0, yellow, blue)
@@ -81,9 +86,10 @@ func SetDefaultF4Palette() {
 
 	// Command line / User screen (Using terminal default background, Index 0)
 	vtui.Palette[ColCommandLineUserScreen] = vtui.SetIndexBoth(0, 7, 0)
-	vtui.Palette[ColCommandLinePrompt] = vtui.SetIndexBoth(0, 11, 0)       // Light Cyan on Black
-	vtui.Palette[ColCommandLineText] = vtui.SetIndexBoth(0, 15, 0)         // White on Black
-	vtui.Palette[ColCommandLineSelectedText] = vtui.SetIndexBoth(0, 0, 11) // Black on Light Cyan
+	vtui.Palette[ColCommandLinePrompt] = vtui.SetIndexBoth(0, 11, 0)        // Light Cyan on Black
+	vtui.Palette[ColCommandLineInactivePrompt] = vtui.SetIndexBoth(0, 8, 0) // Gray on Black
+	vtui.Palette[ColCommandLineText] = vtui.SetIndexBoth(0, 15, 0)          // White on Black
+	vtui.Palette[ColCommandLineSelectedText] = vtui.SetIndexBoth(0, 0, 11)  // Black on Light Cyan
 
 	// Editor selection: inverse of UserScreen
 	vtui.Palette[vtui.ColDialogEditSelected] = vtui.SetIndexBoth(0, 0, 7)
@@ -121,6 +127,8 @@ var colorMap = map[string]int{
 	"Panel.Text.Info":                  ColPanelInfoText,
 	"Panel.Cursor":                     ColPanelCursor,
 	"Panel.Cursor.Selected":            ColPanelSelectedCursor,
+	"Panel.Cursor.Inactive":            ColPanelInactiveCursor,
+	"Panel.Cursor.Inactive.Selected":   ColPanelInactiveSelectedCursor,
 	"Panel.Title":                      ColPanelTitle,
 	"Panel.Title.Selected":             ColPanelSelectedTitle,
 	"Panel.Title.Column":               ColPanelColumnTitle,
@@ -141,6 +149,7 @@ var colorMap = map[string]int{
 	"Dialog.Edit.Selected":             vtui.ColDialogEditSelected,
 	"CommandLine.UserScreen":           ColCommandLineUserScreen,
 	"CommandLine.Prompt":               ColCommandLinePrompt,
+	"CommandLine.Prompt.Inactive":      ColCommandLineInactivePrompt,
 	"CommandLine.Text":                 ColCommandLineText,
 	"CommandLine.Text.Selected":        ColCommandLineSelectedText,
 	"KeyBar.Numbers":                   vtui.ColKeyBarNum,
@@ -218,7 +227,8 @@ func ExportColors(path string) error {
 		{
 			name: "Panel",
 			keys: []string{
-				"Panel.Box", "Panel.Cursor", "Panel.Cursor.Selected", "Panel.Dir",
+				"Panel.Box", "Panel.Cursor", "Panel.Cursor.Selected", "Panel.Cursor.Inactive",
+				"Panel.Cursor.Inactive.Selected", "Panel.Dir",
 				"Panel.Scrollbar", "Panel.Text", "Panel.Text.Highlight", "Panel.Text.Info",
 				"Panel.Text.Selected", "Panel.Title", "Panel.Title.Column", "Panel.Title.Selected",
 				"Table.Box", "Scrollbar",
@@ -265,7 +275,7 @@ func ExportColors(path string) error {
 		{
 			name: "Command line",
 			keys: []string{
-				"CommandLine.Prompt", "CommandLine.Text", "CommandLine.Text.Selected",
+				"CommandLine.Prompt", "CommandLine.Prompt.Inactive", "CommandLine.Text", "CommandLine.Text.Selected",
 				"CommandLine.UserScreen",
 			},
 		},

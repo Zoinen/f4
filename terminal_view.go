@@ -69,6 +69,11 @@ type TerminalView struct {
 
 	clipboardChunks []byte
 	pty             PtyBackend
+	kitty           *KittyGraphics
+	images          []terminalImage
+	kittyKeySeq     uint64
+	cellW           int
+	cellH           int
 
 	Muted         bool
 	lastCharWasCR bool
@@ -76,6 +81,18 @@ type TerminalView struct {
 
 	OnTitleChange func(string)
 	OnBusyChange  func(bool)
+
+	// --- Mouse-driven text selection over the visible viewport ---
+	// Coordinates are absolute (screen) columns/rows, chosen so the
+	// highlight stays visually anchored while PTY output scrolls the
+	// underlying grid — matches xterm-style selection semantics.
+	selActive  bool
+	selStartX  int
+	selStartY  int
+	selEndX    int
+	selEndY    int
+	selBlock   bool
+	showOffset int // last vertical "visual gravity" offset applied in Show
 }
 
 func NewTerminalView(w, h int) *TerminalView {
@@ -145,6 +162,7 @@ func (tv *TerminalView) CloneStateFrom(other *TerminalView) {
 	tv.KittyFlags = other.KittyFlags
 	tv.KittyFlagsStack = append([]int(nil), other.KittyFlagsStack...)
 	tv.pty = other.pty
+	tv.images = append([]terminalImage(nil), other.images...)
 
 	vtui.DebugLog("TERM_VIEW: CloneStateFrom completed. Cleaning active row for new shell.")
 
@@ -186,6 +204,7 @@ func (tv *TerminalView) ResetBuffer(w, h int) {
 	tv.Lines = makeBuf()
 	tv.AltLines = makeBuf()
 	tv.WrapFlags = make([]bool, h)
+	tv.images = nil
 
 	// Сброс параметров прокрутки и курсора
 	tv.Width, tv.Height = w, h
@@ -510,6 +529,7 @@ func (tv *TerminalView) scrollUp(top, bottom, n int) {
 			tv.WrapFlags[bottom] = false
 		}
 	}
+	tv.kittyScrollPlacements(top, bottom, n)
 }
 func (tv *TerminalView) ScrollDown(top, bottom, n int) {
 	tv.mu.Lock()
@@ -548,6 +568,7 @@ func (tv *TerminalView) scrollDown(top, bottom, n int) {
 			tv.WrapFlags[top] = false
 		}
 	}
+	tv.kittyScrollPlacements(top, bottom, -n)
 }
 
 func (tv *TerminalView) DeleteCharacters(n int, attr uint64) {
@@ -701,6 +722,7 @@ func (tv *TerminalView) EraseDisplay(mode int, attr uint64) {
 		tv.CursorX = 0
 		tv.CursorY = 0
 		tv.lastCharWasCR = true
+		tv.kittyClearPlacements(tv.UseAltScreen)
 		for i := range buf {
 			for j := range buf[i] {
 				buf[i][j] = vtui.CharInfo{Char: ' ', Attributes: attr}
@@ -773,6 +795,11 @@ func (tv *TerminalView) SetAltScreen(enable bool) {
 		tv.CursorX, tv.CursorY = 0, 0
 	} else {
 		tv.CursorX, tv.CursorY = tv.savedX, tv.savedY
+		// The alternate screen is discarded rather than remembered: the
+		// next program to raise it is given an empty one, and the erase on
+		// the way in proves it. Its pictures go with it, or they would keep
+		// their pixels alive for as long as the session lasts.
+		tv.kittyClearPlacements(true)
 	}
 	tv.UseAltScreen = enable
 }
@@ -801,6 +828,17 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 	defer tv.mu.Unlock()
 
 	// Очищаем всю область терминала черным цветом
+	// The placement layer needs the real size of a cell to turn the pixel
+	// geometry of an image into a rectangle of cells, and so does the
+	// program running in the terminal, which learns it from the pty.
+	if cw, ch := scr.Graphics().CellSize(); cw > 0 && ch > 0 && (cw != tv.cellW || ch != tv.cellH) {
+		tv.cellW, tv.cellH = cw, ch
+		tv.syncPtyPixelSize()
+		// A span we chose ourselves was worked out from the old cell, and
+		// on the new one it would stretch the picture.
+		tv.kittyRecomputeSpans()
+	}
+
 	scr.FillRect(tv.X1, tv.Y1, tv.X1+tv.Width-1, tv.Y1+tv.Height-1, ' ', DefaultTermAttr)
 
 	buf := tv.Lines
@@ -820,11 +858,22 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 		if tv.CursorY > lowestRow {
 			lowestRow = tv.CursorY // Убеждаемся, что курсор также остается видимым
 		}
+		// A picture occupies rows that hold no text of their own, and
+		// gravity must not push it out of the visible area.
+		for i := range tv.images {
+			if tv.images[i].Alt {
+				continue
+			}
+			if bottom := tv.images[i].Row + tv.images[i].Rows - 1; bottom > lowestRow {
+				lowestRow = bottom
+			}
+		}
 		// Visual Gravity: сдвигаем весь активный рендер вниз, если он не достает до дна
 		if lowestRow < tv.Height-1 {
 			offset = (tv.Height - 1) - lowestRow
 		}
 	}
+	tv.showOffset = offset
 
 	for y, line := range buf {
 		if y >= tv.Height {
@@ -840,6 +889,12 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 		}
 	}
 
+	tv.kittyDrawPlacements(scr, offset)
+
+	if tv.selActive {
+		tv.paintSelectionHighlight(scr)
+	}
+
 	if tv.IsVisible() && tv.IsFocused() {
 		cursorDrawY := tv.Y1 + tv.CursorY + offset
 		if tv.UseAltScreen {
@@ -850,6 +905,306 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 			scr.SetCursorVisible(true)
 		}
 	}
+}
+
+// selectionScreenRect returns the normalised screen-coordinate
+// rectangle currently painted as selection, clamped to the terminal's
+// visible area. Ok is false when there's no active selection.
+func (tv *TerminalView) selectionScreenRect() (x1, y1, x2, y2 int, ok bool) {
+	if !tv.selActive {
+		return 0, 0, 0, 0, false
+	}
+	x1, x2 = tv.selStartX, tv.selEndX
+	if x1 > x2 {
+		x1, x2 = x2, x1
+	}
+	y1, y2 = tv.selStartY, tv.selEndY
+	if y1 > y2 {
+		y1, y2 = y2, y1
+	}
+	if x1 < tv.X1 {
+		x1 = tv.X1
+	}
+	if y1 < tv.Y1 {
+		y1 = tv.Y1
+	}
+	if x2 > tv.X1+tv.Width-1 {
+		x2 = tv.X1 + tv.Width - 1
+	}
+	if y2 > tv.Y1+tv.Height-1 {
+		y2 = tv.Y1 + tv.Height - 1
+	}
+	if x1 > x2 || y1 > y2 {
+		return 0, 0, 0, 0, false
+	}
+	return x1, y1, x2, y2, true
+}
+
+// paintSelectionHighlight inverts fg↔bg for every cell inside the
+// selection area. Stream selections span from the start column on the
+// first row to the end column on the last row, filling middle rows
+// edge-to-edge; block selections are strict rectangles.
+func (tv *TerminalView) paintSelectionHighlight(scr *vtui.ScreenBuf) {
+	x1, y1, x2, y2, ok := tv.selectionScreenRect()
+	if !ok {
+		return
+	}
+	rowLeft := func(y int) int {
+		if tv.selBlock {
+			return x1
+		}
+		if y == y1 && !singleRow(y1, y2) {
+			return normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, true)
+		}
+		if y == y1 && singleRow(y1, y2) {
+			return x1
+		}
+		return tv.X1
+	}
+	rowRight := func(y int) int {
+		if tv.selBlock {
+			return x2
+		}
+		if y == y2 && !singleRow(y1, y2) {
+			return normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, false)
+		}
+		if y == y2 && singleRow(y1, y2) {
+			return x2
+		}
+		return tv.X1 + tv.Width - 1
+	}
+	for y := y1; y <= y2; y++ {
+		l, r := rowLeft(y), rowRight(y)
+		if l < tv.X1 {
+			l = tv.X1
+		}
+		if r > tv.X1+tv.Width-1 {
+			r = tv.X1 + tv.Width - 1
+		}
+		for x := l; x <= r; x++ {
+			ci := scr.GetCell(x, y)
+			ci.Attributes = invertAttrColors(ci.Attributes)
+			scr.Write(x, y, []vtui.CharInfo{ci})
+		}
+	}
+}
+
+func singleRow(y1, y2 int) bool { return y1 == y2 }
+
+// normalizedStart returns the column that starts / ends a stream
+// selection across multiple rows. When returnStart is true it returns
+// the left edge on the row that owns the top-most anchor; otherwise
+// it returns the right edge on the row that owns the bottom-most.
+func normalizedStart(sx, sy, ex, ey int, returnStart bool) int {
+	topX, botX := sx, ex
+	if sy > ey {
+		topX, botX = ex, sx
+	}
+	if returnStart {
+		return topX
+	}
+	return botX
+}
+
+// HasSelection reports whether the terminal currently owns a
+// user-driven text selection over its viewport.
+func (tv *TerminalView) HasSelection() bool {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	return tv.selActive
+}
+
+// StartSelection begins a new selection anchored at the given
+// screen-absolute cell. block controls stream vs. rectangular mode.
+func (tv *TerminalView) StartSelection(x, y int, block bool) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.selActive = true
+	tv.selBlock = block
+	tv.selStartX, tv.selStartY = x, y
+	tv.selEndX, tv.selEndY = x, y
+}
+
+// ExtendSelection moves the loose end of an active selection.
+func (tv *TerminalView) ExtendSelection(x, y int) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	if !tv.selActive {
+		return
+	}
+	tv.selEndX, tv.selEndY = x, y
+}
+
+// ClearSelection drops the highlight without touching the clipboard.
+func (tv *TerminalView) ClearSelection() {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.selActive = false
+}
+
+// SelectionIsEmpty reports whether the current selection covers a
+// single cell (i.e. a click without drag).
+func (tv *TerminalView) SelectionIsEmpty() bool {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	return !tv.selActive || (tv.selStartX == tv.selEndX && tv.selStartY == tv.selEndY)
+}
+
+// gridRowForScreenY maps a screen-absolute Y to the index into
+// tv.Lines / tv.AltLines that is currently visible at that row, or
+// -1 if the row falls outside the visible viewport.
+func (tv *TerminalView) gridRowForScreenY(y int) int {
+	off := 0
+	if !tv.UseAltScreen {
+		off = tv.showOffset
+	}
+	logical := y - tv.Y1 - off
+	if logical < 0 || logical >= tv.Height {
+		return -1
+	}
+	return logical
+}
+
+// ExtractSelection returns the plain-text content of the current
+// selection, read from the terminal's own grid. Trailing spaces on
+// stream-selected rows are trimmed; block selections keep alignment.
+// WideCharFiller cells are skipped so wide glyphs don't emit stray
+// runes.
+func (tv *TerminalView) ExtractSelection() string {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	if !tv.selActive {
+		return ""
+	}
+	x1, y1, x2, y2, ok := tv.selectionScreenRect()
+	if !ok {
+		return ""
+	}
+
+	buf := tv.Lines
+	if tv.UseAltScreen {
+		buf = tv.AltLines
+	}
+
+	var sb strings.Builder
+	for y := y1; y <= y2; y++ {
+		gy := tv.gridRowForScreenY(y)
+		if gy < 0 || gy >= len(buf) {
+			if y < y2 {
+				sb.WriteByte('\n')
+			}
+			continue
+		}
+		row := buf[gy]
+
+		var l, r int
+		if tv.selBlock {
+			l, r = x1, x2
+		} else if y1 == y2 {
+			l, r = x1, x2
+		} else if y == y1 {
+			l = normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, true)
+			r = tv.X1 + tv.Width - 1
+		} else if y == y2 {
+			l = tv.X1
+			r = normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, false)
+		} else {
+			l = tv.X1
+			r = tv.X1 + tv.Width - 1
+		}
+		if l < tv.X1 {
+			l = tv.X1
+		}
+		if r > tv.X1+tv.Width-1 {
+			r = tv.X1 + tv.Width - 1
+		}
+
+		var line []rune
+		for x := l; x <= r; x++ {
+			ci := row[x-tv.X1]
+			if ci.Char == vtui.WideCharFiller {
+				continue
+			}
+			ch := rune(ci.Char)
+			if ch == 0 {
+				ch = ' '
+			}
+			line = append(line, ch)
+		}
+		if !tv.selBlock {
+			sb.WriteString(strings.TrimRight(string(line), " "))
+		} else {
+			sb.WriteString(string(line))
+		}
+		if y < y2 {
+			sb.WriteByte('\n')
+		}
+	}
+	return sb.String()
+}
+
+// SelectWordAt sets a selection covering the whitespace-delimited
+// word under the given screen cell. If the cell is whitespace,
+// nothing changes.
+func (tv *TerminalView) SelectWordAt(x, y int) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	gy := tv.gridRowForScreenY(y)
+	if gy < 0 {
+		return
+	}
+	buf := tv.Lines
+	if tv.UseAltScreen {
+		buf = tv.AltLines
+	}
+	if gy >= len(buf) {
+		return
+	}
+	row := buf[gy]
+	col := x - tv.X1
+	if col < 0 || col >= len(row) {
+		return
+	}
+	isWord := func(ch uint64) bool {
+		if ch == 0 || ch == vtui.WideCharFiller {
+			return false
+		}
+		return ch != ' '
+	}
+	if !isWord(row[col].Char) {
+		return
+	}
+	left := col
+	for left > 0 && isWord(row[left-1].Char) {
+		left--
+	}
+	right := col
+	for right < len(row)-1 && isWord(row[right+1].Char) {
+		right++
+	}
+	tv.selActive = true
+	tv.selBlock = false
+	tv.selStartX, tv.selStartY = tv.X1+left, y
+	tv.selEndX, tv.selEndY = tv.X1+right, y
+}
+
+// SelectLineAt selects the whole visible row at the given screen Y.
+func (tv *TerminalView) SelectLineAt(y int) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	if tv.gridRowForScreenY(y) < 0 {
+		return
+	}
+	tv.selActive = true
+	tv.selBlock = false
+	tv.selStartX, tv.selStartY = tv.X1, y
+	tv.selEndX, tv.selEndY = tv.X1+tv.Width-1, y
+}
+
+// InTerminalArea reports whether a screen cell falls inside the
+// terminal's visible viewport.
+func (tv *TerminalView) InTerminalArea(x, y int) bool {
+	return x >= tv.X1 && x <= tv.X1+tv.Width-1 && y >= tv.Y1 && y <= tv.Y1+tv.Height-1
 }
 
 func (tv *TerminalView) Resize(w, h int) {
@@ -973,6 +1328,11 @@ func (tv *TerminalView) Resize(w, h int) {
 	tv.ScrollTop = 0
 	tv.ScrollBottom = h - 1
 
+	// The pictures follow the text through the reflow, and then take
+	// whatever room the new size gives them.
+	tv.kittyResizePlacements(yShift-yOffset, h)
+	tv.kittyRecomputeSpans()
+
 	if !tv.UseAltScreen {
 		tv.CursorY = tv.CursorY - yOffset + yShift
 		if tv.CursorY < 0 {
@@ -1026,6 +1386,73 @@ func (tv *TerminalView) HandleFar2lAPC(s string) {
 			go tv.ProcessFar2lInteract(decoded)
 		}
 	}
+}
+
+// CellSize reports the pixel size of one character cell as the host renderer
+// last told us, falling back to the size the terminal advertises when nobody
+// knows better.
+func (tv *TerminalView) CellSize() (int, int) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	return tv.cellSizeUnsafe()
+}
+
+func (tv *TerminalView) cellSizeUnsafe() (int, int) {
+	cw, ch := tv.cellW, tv.cellH
+	if cw <= 0 {
+		cw = kittyFallbackCellW
+	}
+	if ch <= 0 {
+		ch = kittyFallbackCellH
+	}
+	return cw, ch
+}
+
+// syncPtyPixelSize tells the child how large its terminal is in pixels. The
+// caller holds the lock.
+func (tv *TerminalView) syncPtyPixelSize() {
+	if tv.pty == nil {
+		return
+	}
+	sizer, ok := tv.pty.(PtyPixelSizer)
+	if !ok {
+		return
+	}
+	cw, ch := tv.cellSizeUnsafe()
+	sizer.SetSizePixels(tv.Width, tv.Height, tv.Width*cw, tv.Height*ch)
+}
+
+// kittyGraphics lazily creates the receiver of the kitty graphics protocol:
+// a session that never sends an image never pays for one.
+func (tv *TerminalView) kittyGraphics() *KittyGraphics {
+	tv.mu.Lock()
+	kg := tv.kitty
+	tv.mu.Unlock()
+	if kg != nil {
+		return kg
+	}
+
+	kg = NewKittyGraphics(func(b []byte) {
+		if tv.pty != nil {
+			tv.pty.Write(b)
+		}
+	})
+	// The placement layer is attached before the receiver becomes reachable,
+	// so the two locks are never taken at the same time.
+	kg.SetDisplay(kittyDisplay{tv})
+
+	tv.mu.Lock()
+	if tv.kitty == nil {
+		tv.kitty = kg
+	}
+	kg = tv.kitty
+	tv.mu.Unlock()
+	return kg
+}
+
+// HandleKittyAPC consumes one graphics escape code, without the leading G.
+func (tv *TerminalView) HandleKittyAPC(s string) {
+	tv.kittyGraphics().Handle(s)
 }
 
 func (tv *TerminalView) HandleOSC133(payload string) {

@@ -32,8 +32,14 @@ func ParseIni(r io.Reader) *IniFile {
 
 	scanner := bufio.NewScanner(r)
 	section := ""
+	isFirst := true
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
+		if isFirst {
+			line = strings.TrimPrefix(line, "\xef\xbb\xbf")
+			isFirst = false
+		}
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = line[1 : len(line)-1]
 			if ini.data[section] == nil {

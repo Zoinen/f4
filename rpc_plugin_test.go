@@ -7,6 +7,7 @@ import (
 	"github.com/unxed/vtui"
 	"github.com/vmihailenco/msgpack/v5"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -77,8 +78,7 @@ func TestRPCPlugin_VFS_Proxy(t *testing.T) {
 func TestRPCPlugin_Highlighter_Proxy(t *testing.T) {
 	coreSess, pluginSess := setupTestSessions()
 
-	p := &RPCPlugin{sess: coreSess}
-	h := &rpcHighlighter{p: p}
+	h := &rpcHighlighter{transport: coreSess}
 
 	pluginSess.Register("VFS.Highlight", func(data msgpack.RawMessage) (any, error) {
 		return HighlightRes{Attrs: []uint64{42, 42}, Next: "state2"}, nil
@@ -194,5 +194,28 @@ func TestRPCPlugin_Progress_Cancellation(t *testing.T) {
 	_ = pluginSess.Call("Host.IsProgressCancelled", nil, &isCancelled)
 	if !isCancelled {
 		t.Error("Plugin failed to detect cancellation through RPC")
+	}
+}
+func TestRPCPlugin_NativePermissionDenied(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldConfigDir := cachedF4ConfigDir
+	cachedF4ConfigDir = tmpDir
+	defer func() { cachedF4ConfigDir = oldConfigDir }()
+
+	pluginPermissionStore = LoadPermissionStore(DefaultPermissionStorePath())
+
+	pluginPath := "denied_plugin"
+	err := PluginPermissions().Remember(pluginPath, PermissionNative, PermissionDeny)
+	if err != nil {
+		t.Fatalf("Failed to seed permission: %v", err)
+	}
+
+	p := NewRPCPlugin(pluginPath)
+	err = p.Init(&coreAPI{})
+	if err == nil {
+		t.Fatal("Expected Init to fail due to Denied Native permission")
+	}
+	if !strings.Contains(err.Error(), "is not allowed to run a program of its own") {
+		t.Errorf("Unexpected error message: %v", err)
 	}
 }

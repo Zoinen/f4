@@ -25,6 +25,7 @@ func fsInfo(path string) (FSInfo, bool) {
 		Total:       uint64(st.Blocks) * bs,
 		Free:        uint64(st.Bavail) * bs,
 		MaxFilename: int(st.Namelen),
+		ClusterSize: bs,
 	}
 	// Enrich with mount point / fs type / flags from /proc/mounts when
 	// available (Linux). Non-fatal on other unices — /proc simply

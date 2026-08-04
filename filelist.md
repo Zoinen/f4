@@ -1,5 +1,5 @@
 # Project Structure
-Last updated: 2026-08-01 17:38:36
+Last updated: 2026-08-04 07:43:17
 
 ```text
 .
@@ -14,6 +14,33 @@ Last updated: 2026-08-01 17:38:36
 ├── archive_index_test.go
 ├── arkanoid.go
 ├── arkanoid_test.go
+├── assets
+│   └── icon
+│       ├── f4-16.svg
+│       ├── f4-24.svg
+│       ├── f4-30.svg
+│       ├── f4-32.svg
+│       ├── f4-36.svg
+│       ├── f4-42.svg
+│       ├── f4.svg
+│       ├── generated
+│       │   ├── f4-1024.png
+│       │   ├── f4-128.png
+│       │   ├── f4-16.png
+│       │   ├── f4-24.png
+│       │   ├── f4-256.png
+│       │   ├── f4-28.png
+│       │   ├── f4-30.png
+│       │   ├── f4-32.png
+│       │   ├── f4-36.png
+│       │   ├── f4-42.png
+│       │   ├── f4-48.png
+│       │   ├── f4-512.png
+│       │   ├── f4-56.png
+│       │   ├── f4-64.png
+│       │   ├── f4.icns
+│       │   └── f4.ico
+│       └── README.md
 ├── async_buffer.go
 ├── async_buffer_test.go
 ├── attributes_dialog.go
@@ -24,6 +51,17 @@ Last updated: 2026-08-01 17:38:36
 ├── bookmarks_dialog_test.go
 ├── bookmarks.go
 ├── bookmarks_test.go
+├── child_env.go
+├── child_env_test.go
+├── colorer_downloader.go
+├── colorer_hrc.go
+├── colorer_hrc_test.go
+├── colorer_hrd.go
+├── colorer_hrd_test.go
+├── colorer_plugin.go
+├── colorer_plugin_test.go
+├── colorer_settings.go
+├── colorer_settings_test.go
 ├── colors.go
 ├── colors_test.go
 ├── command_line.go
@@ -31,6 +69,11 @@ Last updated: 2026-08-01 17:38:36
 ├── commands.go
 ├── config.go
 ├── config_test.go
+├── cpu_info_darwin.go
+├── cpu_info.go
+├── cpu_info_linux.go
+├── cpu_info_other.go
+├── cpu_info_windows.go
 ├── detach_unix.go
 ├── detach_windows.go
 ├── drives_unix.go
@@ -46,6 +89,21 @@ Last updated: 2026-08-01 17:38:36
 ├── farcolor_test.go
 ├── farmenu_file.go
 ├── farmenu_file_test.go
+├── ffibridge
+│   ├── bridge.go
+│   ├── bridge_test.go
+│   ├── callback.go
+│   ├── convert.go
+│   ├── convert_test.go
+│   ├── kind.go
+│   ├── libc.go
+│   ├── memory.go
+│   ├── memory_test.go
+│   ├── signature.go
+│   ├── signature_test.go
+│   ├── sys_ffi.go
+│   └── sys_stub.go
+├── FFI.md
 ├── filelist_update.sh
 ├── file_op_dialog.go
 ├── file_op_dialog_test.go
@@ -60,6 +118,7 @@ Last updated: 2026-08-01 17:38:36
 ├── find_file.go
 ├── find_file_test.go
 ├── FISH+.md
+├── fs_info_darwin.go
 ├── fs_info.go
 ├── fs_info_linux.go
 ├── fs_info_other.go
@@ -70,16 +129,43 @@ Last updated: 2026-08-01 17:38:36
 ├── .gitignore
 ├── go.mod
 ├── go.sum
+├── gpu_info_darwin.go
+├── gpu_info.go
+├── gpu_info_linux.go
+├── gpu_info_other.go
+├── gpu_info_windows.go
 ├── gui_unix.go
 ├── gui_windows.go
+├── help
+│   ├── en.hlf
+│   └── ru.hlf
 ├── help.go
-├── help.hlf
 ├── help_test.go
 ├── highlight_files.go
 ├── highlight_files_test.go
 ├── HIGHLIGHTING.md
 ├── history_provider.go
 ├── history_provider_test.go
+├── I18N.md
+├── image_bmp.go
+├── image_decode.go
+├── image_decode_test.go
+├── image_formats_test.go
+├── image_gallery.go
+├── image_gallery_test.go
+├── image_pipeline.go
+├── image_pipeline_test.go
+├── image_preview.go
+├── image_preview_test.go
+├── image_qoi.go
+├── image_slideshow.go
+├── image_slideshow_test.go
+├── image_transform.go
+├── image_transform_test.go
+├── image_view.go
+├── image_view_orient_test.go
+├── image_view_overlay_test.go
+├── image_view_test.go
 ├── info_panel.go
 ├── info_panel_test.go
 ├── ini.go
@@ -88,17 +174,50 @@ Last updated: 2026-08-01 17:38:36
 ├── input_translation_test.go
 ├── issue149_test.go
 ├── issue54_test.go
+├── kitty_graphics.go
+├── kitty_graphics_test.go
+├── kitty_metrics_test.go
+├── kitty_placements.go
+├── kitty_placements_test.go
+├── lang
+│   ├── en.lng
+│   └── ru.lng
 ├── lang.go
 ├── lang_test.go
 ├── LICENSE
 ├── LUA.md
+├── luaplug
+│   ├── convert.go
+│   ├── convert_test.go
+│   ├── f4rpc.go
+│   ├── ffi.go
+│   ├── ffi_test.go
+│   ├── goid.go
+│   ├── luastate_test.go
+│   ├── runtime.go
+│   ├── runtime_test.go
+│   └── sandbox.go
+├── lua_plugin.go
+├── lua_plugin_test.go
+├── macro_export.go
+├── macro_export_test.go
 ├── macro.go
+├── macro_host.go
+├── macro_lua_api.go
+├── macro_lua.go
+├── macro_lua_test.go
+├── MACROS.md
 ├── macro_test.go
 ├── main.go
 ├── mem_info.go
 ├── mem_info_linux.go
 ├── mem_info_other.go
 ├── mem_info_windows.go
+├── packaging
+│   ├── linux
+│   │   └── f4.desktop
+│   └── macos
+│       └── Info.plist
 ├── panels_frame.go
 ├── panels_frame_test.go
 ├── piecetable
@@ -106,6 +225,15 @@ Last updated: 2026-08-01 17:38:36
 │   ├── lineindex_test.go
 │   ├── piecetable.go
 │   └── piecetable_test.go
+├── plughost_ffi.go
+├── plughost_ffi_test.go
+├── plughost.go
+├── plugin_identity_test.go
+├── plugin_permissions.go
+├── plugin_permissions_test.go
+├── plugin_permissions_ui.go
+├── plugin_permissions_ui_test.go
+├── PLUGIN_PLAN.md
 ├── plugins
 │   ├── archive
 │   │   ├── archive.go
@@ -141,8 +269,22 @@ Last updated: 2026-08-01 17:38:36
 │       ├── ssh_pty.go
 │       ├── vfs_abs_test.go
 │       └── vfs.go
+├── plugin_scaffold.go
+├── plugin_scaffold_test.go
 ├── plugins.go
 ├── PLUGINS.md
+├── plugring
+│   ├── hello_plugring.lua
+│   └── index.yaml
+├── plugring.go
+├── PLUGRING.md
+├── plugring_meta.go
+├── plugring_meta_test.go
+├── plugring_policy_test.go
+├── plugring_rows_test.go
+├── plugring_test.go
+├── plugring_ui.go
+├── plugring_ui_test.go
 ├── portable_test.go
 ├── pty_bsd.go
 ├── pty_darwin.go
@@ -162,6 +304,8 @@ Last updated: 2026-08-01 17:38:36
 ├── rpc_plugin_test.go
 ├── rpc_vfs.go
 ├── rpc_vfs_test.go
+├── rsrc_windows_amd64.syso
+├── rsrc_windows_arm64.syso
 ├── screenshot.png
 ├── sdk
 │   ├── extui
@@ -206,6 +350,27 @@ Last updated: 2026-08-01 17:38:36
 ├── title_test.go
 ├── title_unix.go
 ├── title_windows.go
+├── tools
+│   └── icons
+│       ├── go.mod
+│       ├── go.sum
+│       ├── main.go
+│       ├── main_test.go
+│       └── third_party
+│           └── oksvg
+│               ├── definitions.go
+│               ├── draw.go
+│               ├── .gitignore
+│               ├── go.mod
+│               ├── icon_cursor.go
+│               ├── LICENSE
+│               ├── path_cursor.go
+│               ├── path_style.go
+│               ├── public.go
+│               ├── README.md
+│               ├── svg_icon.go
+│               ├── svg_path.go
+│               └── utils.go
 ├── top_bar.go
 ├── top_bar_test.go
 ├── translate_kitty.go
@@ -235,6 +400,10 @@ Last updated: 2026-08-01 17:38:36
 │   ├── os_vfs_dot_test.go
 │   ├── os_vfs.go
 │   ├── os_vfs_junction_stub.go
+│   ├── os_vfs_physical_other.go
+│   ├── os_vfs_physical_test.go
+│   ├── os_vfs_physical_unix.go
+│   ├── os_vfs_physical_windows.go
 │   ├── os_vfs_platform_unix.go
 │   ├── os_vfs_platform_windows.go
 │   ├── os_vfs_posix_atimespec.go
@@ -263,7 +432,11 @@ Last updated: 2026-08-01 17:38:36
 ├── viewer_backend.go
 ├── viewer_backend_test.go
 ├── viewer_view.go
-└── viewer_view_test.go
+├── viewer_view_test.go
+├── wasm_plugin.go
+├── wasm_plugin_test.go
+├── window_icon_windows.go
+└── window_icon_windows_test.go
 
-19 directories, 243 files
+34 directories, 401 files
 ```

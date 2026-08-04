@@ -257,17 +257,44 @@ echo "running"
 	done := make(chan struct{})
 	var installErr error
 
-	actionInstallPlugRingItem(pf, nil, item, func() {
+	// Installing an entry that breaks the distribution policy asks first,
+	// and nobody is here to press a button, so the dialogs are answered as
+	// they appear. Message blocks its caller until then, and the caller
+	// must not be the goroutine that pumps the queue.
+	answered := map[*vtui.Window]bool{}
+	answer := func() {
+		top, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+		if !ok || top == nil || top.OnResult == nil || answered[top] {
+			return
+		}
+		title := top.GetTitle()
+		if strings.Contains(title, "Installing Plugin") {
+			return // Don't cancel the progress dialog
+		}
+		answered[top] = true
+		top.OnResult(0) // "Install Anyway"
+		top.SetExitCode(-1)
+		vtui.FrameManager.Pop()
+	}
+
+	go actionInstallPlugRingItem(pf, nil, item, func() {
 		close(done)
 	})
 
 	// Drain task queue to process async download and installation
 	timeout := time.After(3 * time.Second)
+	// A dialog can be waiting while the queue is empty, so look for one on
+	// a tick too, not only after a task has run.
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
 Loop:
 	for {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
+			answer()
+		case <-tick.C:
+			answer()
 		case <-done:
 			break Loop
 		case <-timeout:
@@ -288,10 +315,9 @@ Loop:
 		t.Error("Plugin manifest.json was not created")
 	}
 
-	// Verify setup_cmd execution
-	setupLog, err := os.ReadFile(filepath.Join(pluginDir, "setup.log"))
-	if err != nil || !strings.Contains(string(setupLog), "setup complete") {
-		t.Errorf("setup_cmd execution failed or log missing. Log: %q, err: %v", string(setupLog), err)
+	// Verify setup_cmd is ignored
+	if _, err := os.Stat(filepath.Join(pluginDir, "setup.log")); !os.IsNotExist(err) {
+		t.Error("setup_cmd was executed, but it should have been ignored per policy")
 	}
 
 	// 4. Verify GetInstalledPlugRingItems detects it

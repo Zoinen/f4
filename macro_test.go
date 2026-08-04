@@ -628,3 +628,45 @@ WaitLoop:
 		t.Error("Expected macro to be deleted")
 	}
 }
+func TestMacro_ReassignAndCleanup(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "reassign_macros.ini")
+	mgr := NewMacroManager(tmpFile)
+	mgr.StartArea = "Common"
+
+	key := EventToFarString(&vtinput.InputEvent{VirtualKeyCode: vtinput.VK_F3})
+	mgr.Macros["Common"] = map[string][]*vtinput.InputEvent{
+		key: {
+			&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3},
+		},
+	}
+	mgr.Save()
+
+	host := newFakeMacroHost()
+	engine, _ := NewLuaMacroEngine(host)
+	mgr.Lua = engine
+
+	scriptDir := filepath.Join(GetF4ConfigDir(), "Macros", "scripts")
+	os.MkdirAll(scriptDir, 0755)
+	scriptPath := filepath.Join(scriptDir, RecordedMacroFileName("Common", key))
+	os.WriteFile(scriptPath, []byte(""), 0644)
+
+	_ = engine.LoadString("test", `Macro { area = "Common"; key = "F3"; action = function() end }`)
+
+	mgr.Buffer = nil
+	assignFrame := NewMacroAssignFrame(mgr)
+	assignFrame.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_F3,
+	})
+
+	if _, ok := mgr.Macros["Common"][key]; ok {
+		t.Error("Macro should be deleted from INI")
+	}
+	if engine.Find("Common", "F3") != nil {
+		t.Error("Macro should be deleted from Lua Engine")
+	}
+	if _, err := os.Stat(scriptPath); !os.IsNotExist(err) {
+		t.Error("Lua script file should be deleted from disk")
+	}
+}

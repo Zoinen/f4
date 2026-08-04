@@ -64,7 +64,7 @@ func (p *SolarisPTY) Run(name string, args ...string) error {
 	p.Cmd.Stdin = p.Slave
 	p.Cmd.Stdout = p.Slave
 	p.Cmd.Stderr = p.Slave
-	p.Cmd.Env = append(os.Environ(), "F4_NESTED=1")
+	p.Cmd.Env = terminalChildEnv()
 	p.Cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid: true, // Создаем новую сессию для управления TTY
 	}

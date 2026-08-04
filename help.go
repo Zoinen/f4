@@ -75,7 +75,7 @@ func InitHelpSystem() {
 	versionedEnglishHelp := strings.ReplaceAll(defaultHelpData, "%Ver", getLongVersionInfo())
 	files["help.hlf"] = versionedEnglishHelp
 
-	lang := AppConfig.Language
+	lang := AppConfig.HelpLanguage
 	if lang == "" {
 		lang = "en"
 	}

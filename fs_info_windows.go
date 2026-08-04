@@ -6,9 +6,17 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// GetDiskFreeSpaceW isn't bound by golang.org/x/sys/windows (only its
+// Ex variant is). We need the non-Ex version because it's the one
+// that returns sectors-per-cluster / bytes-per-sector, from which the
+// cluster (allocation-unit) size is derived. Uses the kernel32
+// LazyDLL declared in mem_info_windows.go.
+var procGetDiskFreeSpaceW = kernel32.NewProc("GetDiskFreeSpaceW")
 
 // fsInfo returns filesystem info for the drive containing path.
 // ok=false if the value can't be determined.
@@ -38,6 +46,21 @@ func fsInfo(path string) (FSInfo, bool) {
 	}
 	info.Total = totalBytes
 	info.Free = freeAvail
+
+	// Cluster (allocation-unit) size — only available via the non-Ex
+	// GetDiskFreeSpace. Silent failure keeps ClusterSize at 0 so the
+	// consumer can gracefully hide the Physical/Ratio/Cluster rows.
+	var sectorsPerCluster, bytesPerSector, freeClusters, totalClusters uint32
+	r, _, _ := procGetDiskFreeSpaceW.Call(
+		uintptr(unsafe.Pointer(rootPtr)),
+		uintptr(unsafe.Pointer(&sectorsPerCluster)),
+		uintptr(unsafe.Pointer(&bytesPerSector)),
+		uintptr(unsafe.Pointer(&freeClusters)),
+		uintptr(unsafe.Pointer(&totalClusters)),
+	)
+	if r != 0 {
+		info.ClusterSize = uint64(sectorsPerCluster) * uint64(bytesPerSector)
+	}
 
 	// Volume label / serial / max filename length / flags / fs name.
 	var (

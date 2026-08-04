@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -279,6 +280,9 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 }
 
 func TestFileSystemPanel_Initialization(t *testing.T) {
+	if ViewModeMedium != 0 || ViewModeDetailed != 1 {
+		t.Fatalf("legacy view mode values changed: Medium=%d Detailed=%d", ViewModeMedium, ViewModeDetailed)
+	}
 	// Verify that NewFileSystemPanel initializes with valid geometry to prevent collapsed panels
 	x, y, w, h := 10, 5, 40, 20
 	fp := NewFileSystemPanel(x, y, w, h, vfs.NewOSVFS("."))
@@ -335,6 +339,97 @@ func TestMediumRow_GetCellText(t *testing.T) {
 	}
 	if mRow.GetCellText(1) != "Right" {
 		t.Errorf("Expected 'Right', got %q", mRow.GetCellText(1))
+	}
+}
+
+func TestBriefRowAndColumns(t *testing.T) {
+	fp := NewFileSystemPanel(0, 0, 90, 12, vfs.NewOSVFS("."))
+	fp.entries = make([]*fileEntry, 20)
+	for i := range fp.entries {
+		fp.entries[i] = &fileEntry{VFSItem: vfs.VFSItem{Name: fmt.Sprintf("file-%d", i)}}
+	}
+	fp.SetViewMode(ViewModeBrief)
+	if len(fp.table.Columns) != 3 || !fp.table.CellSelection {
+		t.Fatalf("Brief layout has %d columns, CellSelection=%v", len(fp.table.Columns), fp.table.CellSelection)
+	}
+	row := &mediumRow{fp: fp, r: 0}
+	h := fp.table.ViewHeight
+	for col := 0; col < 3; col++ {
+		want := fmt.Sprintf("file-%d", col*h)
+		if got := row.GetCellText(col); got != want {
+			t.Errorf("column %d = %q, want %q", col, got, want)
+		}
+	}
+	fp.SetCursorIndex(2*h + 1)
+	if fp.table.SelectCol != 2 || fp.table.SelectPos != 1 {
+		t.Errorf("Brief cursor mapping: pos=%d col=%d, want pos=1 col=2", fp.table.SelectPos, fp.table.SelectCol)
+	}
+}
+
+func TestFileEntryModifiedCell(t *testing.T) {
+	entry := &fileEntry{VFSItem: vfs.VFSItem{MTime: time.Date(2026, 8, 4, 12, 34, 0, 0, time.Local)}}
+	if got := entry.GetCellText(2); got != "04.08.26 12:34" {
+		t.Fatalf("modified cell = %q", got)
+	}
+	entry.MTime = time.Time{}
+	if got := entry.GetCellText(2); got != "" {
+		t.Fatalf("zero modified cell = %q, want empty", got)
+	}
+}
+
+func TestFormatPanelFileNameSeparateExtension(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.SeparateFileExtensions = true
+	AppConfig.HighlightDir = true
+
+	entry := &fileEntry{VFSItem: vfs.VFSItem{Name: "report.txt"}}
+	if got, want := formatPanelFileName(entry, 20), "report           txt"; got != want {
+		t.Fatalf("separate extension = %q, want %q", got, want)
+	}
+	entry.Name = "source.go"
+	if got, want := formatPanelFileName(entry, 20), "source           go "; got != want {
+		t.Fatalf("short extension = %q, want %q", got, want)
+	}
+	entry.Name = "archive.longext"
+	if got, want := formatPanelFileName(entry, 20), "archive      longext"; got != want {
+		t.Fatalf("long extension = %q, want %q", got, want)
+	}
+	if got := runewidth.StringWidth(formatPanelFileName(entry, 20)); got != 20 {
+		t.Fatalf("formatted width = %d, want 20", got)
+	}
+
+	for _, name := range []string{"README", ".gitignore", "trailing."} {
+		entry.Name = name
+		if got := formatPanelFileName(entry, 20); got != name {
+			t.Errorf("name %q unexpectedly split: %q", name, got)
+		}
+	}
+
+	entry.Name = "folder.ext"
+	entry.IsDir = true
+	if got := formatPanelFileName(entry, 20); got != "folder.ext" {
+		t.Fatalf("directory extension was separated: %q", got)
+	}
+}
+
+func TestSeparateExtensionAppliesToEveryViewMode(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.SeparateFileExtensions = true
+
+	fp := NewFileSystemPanel(0, 0, 90, 12, vfs.NewOSVFS("."))
+	fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "sample.go"}}}
+	for _, mode := range []ViewMode{ViewModeBrief, ViewModeMedium, ViewModeDetailed, ViewModeWide} {
+		fp.SetViewMode(mode)
+		fp.Refresh()
+		text := fp.table.Rows[0].GetCellText(0)
+		if !strings.HasPrefix(text, "sample") || !strings.HasSuffix(text, "go ") {
+			t.Errorf("mode %v did not separate extension: %q", mode, text)
+		}
+		if got, want := runewidth.StringWidth(text), fp.table.Columns[0].Width; got != want {
+			t.Errorf("mode %v formatted width=%d, want %d", mode, got, want)
+		}
 	}
 }
 
@@ -447,7 +542,12 @@ func TestFileSystemPanel_MultiSelect(t *testing.T) {
 		t.Errorf("Cursor should move to 2, got %d", fp.GetCursorIndex())
 	}
 
-	// 3. Select file2.txt via Shift+Down
+	// 3. Shift+Down at cursor=2 (file2.txt).
+	//    Single-step Up/Down keep FAR's per-tap semantics: only the
+	//    starting row is toggled; the cursor moves to the next row
+	//    but that row is left alone (the next tap decides what to
+	//    do with it). Range-paint is reserved for multi-step jumps
+	//    (Home/End/PgUp/PgDn/Left/Right in grid mode).
 	fp.ProcessKey(&vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN, ControlKeyState: vtinput.ShiftPressed,
 	})
@@ -455,11 +555,272 @@ func TestFileSystemPanel_MultiSelect(t *testing.T) {
 	if !fp.entries[2].Selected {
 		t.Error("file2.txt (index 2) should be selected after Shift+Down")
 	}
+	if fp.entries[3].Selected {
+		t.Error("file3.txt (index 3) must NOT be selected — Shift+Down is single-step, next row is left alone")
+	}
+	if fp.GetCursorIndex() != 3 {
+		t.Errorf("Cursor should move to 3, got %d", fp.GetCursorIndex())
+	}
 
-	// 4. Verify results
+	// 4. Verify results — file1 (from Ins) + file2 (from Shift+Down).
 	names := fp.GetSelectedNames()
 	if len(names) != 2 || names[0] != "file1.txt" || names[1] != "file2.txt" {
 		t.Errorf("GetSelectedNames returned wrong result: %v", names)
+	}
+}
+
+// TestFileSystemPanel_ShiftMultiStepSwipe covers the long-jump
+// shift keys: they select every row the cursor sweeps over. It's
+// additive — starting on ".." works (nothing to toggle, we just
+// paint from there onward), and a second swipe over already-
+// selected rows grows the selection instead of flipping it off.
+func TestFileSystemPanel_ShiftMultiStepSwipe(t *testing.T) {
+	tmp := t.TempDir()
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		os.WriteFile(filepath.Join(tmp, n), []byte(n), 0644)
+	}
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(tmp))
+	fp.viewMode = ViewModeDetailed
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "a"}},
+		{VFSItem: vfs.VFSItem{Name: "b"}},
+		{VFSItem: vfs.VFSItem{Name: "c"}},
+		{VFSItem: vfs.VFSItem{Name: "d"}},
+		{VFSItem: vfs.VFSItem{Name: "e"}},
+	}
+	fp.Refresh()
+
+	// Cursor on ".." (idx 0). Shift+End should still paint a..e —
+	// starting on an unselectable row is not a reason to skip the
+	// sweep. This exact scenario used to return zero selections.
+	fp.SetCursorIndex(0)
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_END,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	for _, want := range []string{"a", "b", "c", "d", "e"} {
+		for _, e := range fp.entries {
+			if e.Name == want && !e.Selected {
+				t.Errorf(`Shift+End starting on "..": expected %q selected`, want)
+			}
+		}
+	}
+
+	// Repeating the sweep from "e" back with Shift+Home must NOT
+	// deselect anything — swipes are additive. Everything from ".."
+	// (skipped) through "a" is already selected, and the return
+	// trip leaves the selection intact.
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_HOME,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	for _, want := range []string{"a", "b", "c", "d", "e"} {
+		for _, e := range fp.entries {
+			if e.Name == want && !e.Selected {
+				t.Errorf("Shift+Home return sweep must not deselect %q", want)
+			}
+		}
+	}
+}
+
+// TestFileSystemPanel_ShiftSessionModeDecidedOnFirstKey covers
+// FAR-style session semantic: the first Shift+nav decides "select"
+// or "deselect" based on the starting row, every subsequent Shift+
+// nav in the same session applies that same mode, and any non-
+// Shift-nav event closes the session so the next Shift+nav re-
+// decides.
+func TestFileSystemPanel_ShiftSessionModeDecidedOnFirstKey(t *testing.T) {
+	tmp := t.TempDir()
+	for _, n := range []string{"a", "b", "c", "d", "e"} {
+		os.WriteFile(filepath.Join(tmp, n), []byte(n), 0644)
+	}
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(tmp))
+	fp.viewMode = ViewModeDetailed
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "a"}},
+		{VFSItem: vfs.VFSItem{Name: "b"}},
+		{VFSItem: vfs.VFSItem{Name: "c"}},
+		{VFSItem: vfs.VFSItem{Name: "d"}},
+		{VFSItem: vfs.VFSItem{Name: "e"}},
+	}
+	fp.Refresh()
+
+	shiftDown := &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_DOWN,
+		ControlKeyState: vtinput.ShiftPressed,
+	}
+	plainDown := &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_DOWN,
+	}
+
+	// Session 1: start on unselected "a" (idx 1) → session picks
+	// "select" mode. Two Shift+Down keystrokes should select "a"
+	// and "b" one after another.
+	fp.SetCursorIndex(1)
+	fp.ProcessKey(shiftDown)
+	fp.ProcessKey(shiftDown)
+	if !fp.entries[1].Selected || !fp.entries[2].Selected {
+		t.Errorf("session-1 select: a=%v b=%v, want both true",
+			fp.entries[1].Selected, fp.entries[2].Selected)
+	}
+	if fp.entries[3].Selected {
+		t.Error("session-1 select: 'c' must not be selected yet — cursor stopped at 'c'")
+	}
+
+	// Plain Down closes the session. Cursor moves from c to d
+	// without selecting anything.
+	fp.ProcessKey(plainDown)
+	if fp.shiftSessionActive {
+		t.Error("plain Down must close the shift-selection session")
+	}
+
+	// Session 2: cursor now on "d". Move it back to "b" (still
+	// selected from session 1) to prove the mode re-decides.
+	fp.SetCursorIndex(2)
+	fp.ProcessKey(shiftDown)
+	// b was selected → session mode = deselect. b should be
+	// unselected now, cursor moved to c.
+	if fp.entries[2].Selected {
+		t.Error("session-2 first Shift+Down on selected 'b' should deselect it")
+	}
+	// Another Shift+Down: c was selected? no, c wasn't selected
+	// after session 1. deselect on an already-unselected row is
+	// a no-op — still unselected.
+	fp.ProcessKey(shiftDown)
+	if fp.entries[3].Selected {
+		t.Error("session-2 mode is deselect; 'c' must stay unselected")
+	}
+}
+
+// TestFileSystemPanel_ShiftSessionDeselectFromParentDir covers the
+// asymmetric case: cursor on ".." (unselectable) and everything
+// below already selected. Session mode has to look past ".." at
+// the first real row in the direction of movement; otherwise
+// Shift+End would always start in "select" mode and there'd be
+// no way to clear the panel selection from that position.
+func TestFileSystemPanel_ShiftSessionDeselectFromParentDir(t *testing.T) {
+	tmp := t.TempDir()
+	for _, n := range []string{"a", "b", "c"} {
+		os.WriteFile(filepath.Join(tmp, n), []byte(n), 0644)
+	}
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(tmp))
+	fp.viewMode = ViewModeDetailed
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "a"}},
+		{VFSItem: vfs.VFSItem{Name: "b"}},
+		{VFSItem: vfs.VFSItem{Name: "c"}},
+	}
+	// Pre-select everything by hand — this is the state the user
+	// would land in after a first Shift+End sweep.
+	fp.entries[1].Selected = true
+	fp.entries[2].Selected = true
+	fp.entries[3].Selected = true
+	fp.selectedItems = map[string]bool{"a": true, "b": true, "c": true}
+	fp.Refresh()
+
+	// Cursor on ".." (idx 0). Shift+End should look past ".." to
+	// "a" (selected) and pick "deselect" mode, then clear a..c.
+	fp.SetCursorIndex(0)
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_END,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	for _, want := range []string{"a", "b", "c"} {
+		for _, e := range fp.entries {
+			if e.Name == want && e.Selected {
+				t.Errorf("Shift+End from '..': expected %q deselected", want)
+			}
+		}
+	}
+}
+
+// TestFileSystemPanel_ShiftRangeSkipsParentDir makes sure the ".."
+// row is never selected by a shift-sweep, matching the same rule
+// SetItemSelected / ToggleSelection already enforce for Ins.
+func TestFileSystemPanel_ShiftRangeSkipsParentDir(t *testing.T) {
+	tmp := t.TempDir()
+	os.WriteFile(filepath.Join(tmp, "a"), []byte("a"), 0644)
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(tmp))
+	fp.viewMode = ViewModeDetailed
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "a"}},
+	}
+	fp.Refresh()
+
+	// Cursor on "a"; Shift+Home should not select ".."
+	fp.SetCursorIndex(1)
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_HOME,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if fp.entries[0].Selected {
+		t.Error(`Shift-sweep must not select the ".." parent-dir row`)
+	}
+}
+
+// TestFileSystemPanel_SelectionClearedOnDirChange guards against
+// the map[filename]→selected persisting between directories: a
+// row with the same name in a sibling dir used to inherit the
+// old selection. readDirectoryEx now drops the map when the path
+// changes.
+func TestFileSystemPanel_SelectionClearedOnDirChange(t *testing.T) {
+	// Two sibling directories, each with a file named "same".
+	parent := t.TempDir()
+	a := filepath.Join(parent, "a")
+	b := filepath.Join(parent, "b")
+	os.MkdirAll(a, 0755)
+	os.MkdirAll(b, 0755)
+	os.WriteFile(filepath.Join(a, "same"), []byte("a"), 0644)
+	os.WriteFile(filepath.Join(b, "same"), []byte("b"), 0644)
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(a))
+	fp.viewMode = ViewModeDetailed
+	// Simulate a completed load of directory `a` with "same" selected.
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "same"}},
+	}
+	fp.selectedItems = map[string]bool{"same": true}
+	fp.entries[1].Selected = true
+	fp.lastLoadedPath = a
+
+	// Now navigate to sibling `b`. readDirectoryEx should notice
+	// the path changed and drop the persistent selection so the
+	// "same" file in `b` starts unselected.
+	fp.vfs.SetPath(b)
+	fp.ReadDirectory()
+
+	// Drain any async loader tasks the ReadDirectory scheduled.
+	timeout := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			break drain
+		}
+	}
+
+	for _, e := range fp.entries {
+		if e.Name == "same" && e.Selected {
+			t.Error(`"same" in sibling directory should NOT inherit selection from previous dir`)
+		}
+	}
+	if fp.selectedItems["same"] {
+		t.Error("selectedItems should have been cleared on directory change")
 	}
 }
 
@@ -574,6 +935,147 @@ func TestFileSystemPanel_RightClick_ResetOnRelease(t *testing.T) {
 		t.Error("Item should have been unselected after button release and re-click")
 	}
 }
+
+func TestFileSystemPanel_RightDragAppliesToSkippedRows(t *testing.T) {
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS("."))
+	fp.SetViewMode(ViewModeDetailed)
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "f1"}},
+		{VFSItem: vfs.VFSItem{Name: "f2"}},
+		{VFSItem: vfs.VFSItem{Name: "f3"}},
+		{VFSItem: vfs.VFSItem{Name: "f4"}},
+	}
+	fp.Refresh()
+
+	dataY := fp.table.Y1 + fp.table.MarginTop
+	rightDown := func(idx int) {
+		fp.ProcessMouse(&vtinput.InputEvent{
+			Type: vtinput.MouseEventType, KeyDown: true,
+			MouseX: int16(fp.table.X1), MouseY: int16(dataY + idx),
+			ButtonState: vtinput.RightmostButtonPressed,
+		})
+	}
+	release := func(idx int) {
+		fp.ProcessMouse(&vtinput.InputEvent{
+			Type:   vtinput.MouseEventType,
+			MouseX: int16(fp.table.X1), MouseY: int16(dataY + idx),
+		})
+	}
+
+	// Only the endpoints emit events; f2 and f3 must still be selected.
+	rightDown(1)
+	rightDown(4)
+	for idx := 1; idx <= 4; idx++ {
+		if !fp.entries[idx].Selected {
+			t.Errorf("entry %d was skipped while selecting", idx)
+		}
+	}
+
+	release(4)
+
+	// Starting a new drag on a selected item fixes the operation to deselect,
+	// including skipped rows while moving in the opposite direction.
+	rightDown(4)
+	rightDown(1)
+	for idx := 1; idx <= 4; idx++ {
+		if fp.entries[idx].Selected {
+			t.Errorf("entry %d was skipped while deselecting", idx)
+		}
+	}
+}
+
+func TestFileSystemPanel_RightDragTracksGridColumn(t *testing.T) {
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS("."))
+	fp.SetViewMode(ViewModeMedium)
+
+	height := fp.table.ViewHeight
+	fp.entries = make([]*fileEntry, height*2)
+	for idx := range fp.entries {
+		fp.entries[idx] = &fileEntry{VFSItem: vfs.VFSItem{Name: fmt.Sprintf("f%d", idx)}}
+	}
+	fp.Refresh()
+
+	startIdx := height - 2
+	endIdx := height + 1
+	dataY := fp.table.Y1 + fp.table.MarginTop
+	leftX := fp.table.X1
+	rightX := fp.table.X1 + fp.table.Columns[0].Width + 1
+
+	fp.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(leftX), MouseY: int16(dataY + height - 2),
+		ButtonState: vtinput.RightmostButtonPressed,
+	})
+	fp.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(rightX), MouseY: int16(dataY + 1),
+		ButtonState: vtinput.RightmostButtonPressed,
+	})
+
+	if fp.GetCursorIndex() != endIdx {
+		t.Fatalf("cursor index = %d, want %d", fp.GetCursorIndex(), endIdx)
+	}
+	for idx := startIdx; idx <= endIdx; idx++ {
+		if !fp.entries[idx].Selected {
+			t.Errorf("grid entry %d was skipped", idx)
+		}
+	}
+}
+
+func TestFileSystemPanel_RightDoubleClickAppliesToWholePanel(t *testing.T) {
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS("."))
+	fp.SetViewMode(ViewModeDetailed)
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "f1"}},
+		{VFSItem: vfs.VFSItem{Name: "f2"}},
+		{VFSItem: vfs.VFSItem{Name: "f3"}},
+	}
+	fp.Refresh()
+
+	dataY := fp.table.Y1 + fp.table.MarginTop
+	rightClick := func(idx int, flags uint32) {
+		fp.ProcessMouse(&vtinput.InputEvent{
+			Type: vtinput.MouseEventType, KeyDown: true,
+			MouseX: int16(fp.table.X1), MouseY: int16(dataY + idx),
+			ButtonState: vtinput.RightmostButtonPressed, MouseEventFlags: flags,
+		})
+	}
+	release := func(idx int) {
+		fp.ProcessMouse(&vtinput.InputEvent{
+			Type:   vtinput.MouseEventType,
+			MouseX: int16(fp.table.X1), MouseY: int16(dataY + idx),
+		})
+	}
+
+	// The first press selects f1; the second press spreads that state to all.
+	rightClick(1, 0)
+	release(1)
+	rightClick(1, vtinput.DoubleClick)
+	for idx := 1; idx < len(fp.entries); idx++ {
+		if !fp.entries[idx].Selected {
+			t.Errorf("entry %d was not selected by right double-click", idx)
+		}
+	}
+	if fp.entries[0].Selected {
+		t.Error("parent directory entry must not be selected")
+	}
+
+	release(1)
+
+	// Starting on selected f2 makes the first press deselect it; the second
+	// press spreads deselection to the whole panel.
+	rightClick(2, 0)
+	release(2)
+	rightClick(2, vtinput.DoubleClick)
+	for idx := 1; idx < len(fp.entries); idx++ {
+		if fp.entries[idx].Selected {
+			t.Errorf("entry %d was not deselected by right double-click", idx)
+		}
+	}
+}
+
 func TestFileSystemPanel_IncrementalInteraction(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(t.TempDir()))

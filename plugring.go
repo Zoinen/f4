@@ -29,6 +29,16 @@ type PlugRingItem struct {
 	Entrypoint   string   `json:"entrypoint" yaml:"entrypoint"`
 	SetupCmd     string   `json:"setup_cmd" yaml:"setup_cmd"`
 	Dependencies []string `json:"dependencies" yaml:"dependencies"`
+	// Category groups the plugin in the catalog, the way plugring.farmanager.com
+	// does. Empty means PlugRingCategoryOther.
+	Category string `json:"category" yaml:"category"`
+	// Permissions maps a permission the plugin needs onto the author's own
+	// explanation of why, which is what the user is shown when asked.
+	Permissions map[string]string `json:"permissions" yaml:"permissions"`
+	// Runtimes names the interpreters or runtimes the plugin works with, so
+	// that f4 can tell whether it can run the thing before installing it
+	// rather than after. Empty is inferred from the entrypoint.
+	Runtimes []string `json:"runtimes" yaml:"runtimes"`
 }
 
 // FetchCatalog downloads and parses the plugin catalog.
@@ -39,7 +49,7 @@ func FetchCatalog(ctx context.Context) ([]PlugRingItem, error) {
 			var items []PlugRingItem
 			if yaml.Unmarshal(data, &items) == nil {
 				vtui.DebugLog("PLUGRING: Loaded catalog from local file")
-				return items, nil
+				return NormalizePlugRingCatalog(items), nil
 			}
 		}
 	}
@@ -72,7 +82,7 @@ func FetchCatalog(ctx context.Context) ([]PlugRingItem, error) {
 		return nil, fmt.Errorf("failed to parse catalog YAML: %w", err)
 	}
 
-	return items, nil
+	return NormalizePlugRingCatalog(items), nil
 }
 
 // ResolveAssetURL replaces platform-specific placeholders in the download URL.

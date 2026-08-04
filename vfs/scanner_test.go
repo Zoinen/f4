@@ -177,9 +177,17 @@ func TestGenericScan_Errors(t *testing.T) {
 			return VFSItem{Name: "dir", IsDir: true}
 		}
 
-		_, err := GenericScan(context.Background(), mv, "/", []string{"dir"}, nil)
-		if err == nil || err.Error() != "readdir failed" {
-			t.Errorf("Expected readdir error, got %v", err)
+		// ReadDir errors are swallowed by the scanner — matches
+		// far2l's ScanTree, which silently steps over permission-
+		// denied subtrees so the walk returns partial totals rather
+		// than aborting on the first sudo-only directory. The scan
+		// should return no error and just count the parent dir.
+		stats, err := GenericScan(context.Background(), mv, "/", []string{"dir"}, nil)
+		if err != nil {
+			t.Errorf("ReadDir failure should be swallowed, got %v", err)
+		}
+		if stats.Dirs != 1 {
+			t.Errorf("Dirs = %d, want 1 (root dir counted even when ReadDir fails)", stats.Dirs)
 		}
 	})
 }
@@ -226,4 +234,166 @@ type mockFastVFS struct {
 func (m *mockFastVFS) Scan(ctx context.Context, basePath string, names []string, cb ScanCallback) (OpStats, error) {
 	m.scanCalled = true
 	return OpStats{Bytes: 999, Files: 1, Dirs: 1}, nil
+}
+
+// TestGenericScan_SymlinkDirLeafVsFollow verifies both walk modes on
+// a tree with a symlink-to-directory. Layout:
+//
+//	root/
+//	  real/
+//	    a.bin (100)
+//	    b.bin (50)
+//	  link -> real
+//
+// FollowSymlinkDirs=true (default; copy/move pre-scan) walks
+// root/link/* a second time, so files/bytes are doubled. false
+// (QuickView) counts the link once as a leaf — same numbers `find`
+// and far2l would report.
+func TestGenericScan_SymlinkDirLeafVsFollow(t *testing.T) {
+	tmp := t.TempDir()
+	real := filepath.Join(tmp, "real")
+	if err := os.Mkdir(real, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.bin"), make([]byte, 100), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "b.bin"), make([]byte, 50), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(tmp, "link")); err != nil {
+		t.Skipf("cannot create symlink (fs may not support it): %v", err)
+	}
+
+	v := NewOSVFS(tmp)
+
+	// Follow-through mode: two file entries under real/ plus two more
+	// under link/ (walked as if it were a directory) — 4 files, 300 B.
+	follow, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{FollowSymlinkDirs: true}, nil)
+	if err != nil {
+		t.Fatalf("follow scan: %v", err)
+	}
+	if follow.Files != 4 || follow.Bytes != 300 {
+		t.Errorf("follow: Files=%d Bytes=%d, want 4/300", follow.Files, follow.Bytes)
+	}
+
+	// Leaf mode: link counted once as a plain entry — 2 file entries
+	// (a.bin + b.bin) + 1 for the link, and only real's bytes.
+	leaf, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{FollowSymlinkDirs: false}, nil)
+	if err != nil {
+		t.Fatalf("leaf scan: %v", err)
+	}
+	if leaf.Files != 3 {
+		t.Errorf("leaf: Files=%d, want 3 (2 real files + 1 symlink counted as leaf)", leaf.Files)
+	}
+	// Symlink's Size is the length of the target path — some bytes but
+	// certainly less than the sum of the two files it points at (150).
+	// The important assertion is that we did NOT double-count real/'s
+	// contents through the link.
+	if leaf.Bytes >= follow.Bytes {
+		t.Errorf("leaf.Bytes (%d) should be well below follow.Bytes (%d)", leaf.Bytes, follow.Bytes)
+	}
+	if leaf.Bytes < 150 {
+		t.Errorf("leaf.Bytes (%d) should include the two real files (150) + symlink target length", leaf.Bytes)
+	}
+}
+
+// TestGenericScan_FileSymlinkDoesNotDoublePhysical guards against the
+// bug that shipped briefly on this branch: the scanner's lazy-Stat
+// fallback would resolve a symlink and add the target's blocks to
+// PhysicalBytes — but the same target was already counted through its
+// direct path, so every file-symlink inflated physical by its target's
+// footprint.
+//
+// Uses a RELATIVE short symlink target so ext4's "fast symlink" path
+// stores the link inside the inode (Blocks=0). That's the pathological
+// case for the bug — Lstat leaves PhysicalSize at 0, the gate opens,
+// and v.Stat then resolves the link and returns the target's blocks.
+// A long (>60 char) symlink target would allocate a block for the
+// link text (Blocks>0) and legitimately skip the gate.
+func TestGenericScan_FileSymlinkDoesNotDoublePhysical(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "t.bin")
+	// 64 KiB — big enough that a duplicate contribution is unmistakable
+	// against the noise of a symlink's own inode blocks.
+	const targetSize = 64 * 1024
+	if err := os.WriteFile(target, make([]byte, targetSize), 0644); err != nil {
+		t.Fatal(err)
+	}
+	v := NewOSVFS(tmp)
+	before, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.PhysicalBytes <= 0 {
+		t.Skip("filesystem doesn't report per-file blocks (no PhysicalSize path)")
+	}
+
+	// Relative short target => fast symlink (Blocks=0 on ext4).
+	if err := os.Symlink("t.bin", filepath.Join(tmp, "l")); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	for _, follow := range []bool{true, false} {
+		got, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{FollowSymlinkDirs: follow}, nil)
+		if err != nil {
+			t.Fatalf("follow=%v: %v", follow, err)
+		}
+		delta := got.PhysicalBytes - before.PhysicalBytes
+		if delta >= int64(targetSize) {
+			t.Errorf("follow=%v: adding a link to a %d-byte target grew PhysicalBytes by %d — target was double-counted through the link",
+				follow, targetSize, delta)
+		}
+	}
+}
+
+// TestGenericScan_HardLinkDedup checks that DedupInodes matches
+// far2l's ScannedINodes behaviour: a file reachable via N hard
+// links counts once, not N times, in every OpStats field.
+//
+// Layout:
+//
+//	root/
+//	  original (8192)
+//	  link1   (hard link -> original)
+//	  link2   (hard link -> original)
+func TestGenericScan_HardLinkDedup(t *testing.T) {
+	tmp := t.TempDir()
+	orig := filepath.Join(tmp, "original")
+	if err := os.WriteFile(orig, make([]byte, 8192), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(orig, filepath.Join(tmp, "link1")); err != nil {
+		t.Skipf("cannot create hard link: %v", err)
+	}
+	if err := os.Link(orig, filepath.Join(tmp, "link2")); err != nil {
+		t.Skipf("cannot create hard link: %v", err)
+	}
+
+	v := NewOSVFS(tmp)
+
+	// Without dedup: 3 files, 3× the bytes. Preserves historical
+	// copy/move pre-scan behaviour.
+	nodedup, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{FollowSymlinkDirs: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodedup.Files != 3 {
+		t.Errorf("no-dedup: Files=%d, want 3 (each hard link counted)", nodedup.Files)
+	}
+	if nodedup.Bytes != 3*8192 {
+		t.Errorf("no-dedup: Bytes=%d, want %d (3×)", nodedup.Bytes, 3*8192)
+	}
+
+	// With dedup: 1 file, one contribution. Matches far2l's Ctrl+Q.
+	dedup, err := CalculateStatsWithOptions(context.Background(), v, tmp, []string{"."}, ScanOptions{DedupInodes: true, FollowSymlinkDirs: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dedup.Files != 1 {
+		t.Errorf("dedup: Files=%d, want 1 (three hard links to same inode counted once)", dedup.Files)
+	}
+	if dedup.Bytes != 8192 {
+		t.Errorf("dedup: Bytes=%d, want 8192 (only original's bytes)", dedup.Bytes)
+	}
 }

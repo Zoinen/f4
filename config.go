@@ -66,14 +66,20 @@ func resetConfigDirForTest() {
 type F4Config struct {
 	ColorStyle               string
 	Language                 string
+	HelpLanguage             string
 	AlwaysShowMenuBar        bool
 	ShowHiddenFiles          bool
 	HighlightDir             bool
+	SeparateFileExtensions   bool
 	SavePanelPaths           bool
 	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
+	InfoPanelCPUGPU          bool // Ctrl+L info panel: show CPU and GPU sections (off by default)
+	EscTogglePanels          bool // ESC toggles panels visibility (Far ships this as a macro; on by default)
 	KeepTerminalCursor       bool
+	AnnounceKittyTerm        bool // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
 	CommandLineAutoComplete  bool
-	VimHotkeys               bool
+	NavigationMode           PanelNavigationMode
+	SearchCommandStayFocused bool
 	SyncPanelLoad            bool
 	EditorAutoComplete       bool
 	EditorAutoCompleteMask   string
@@ -86,9 +92,18 @@ type F4Config struct {
 	UseExternalEditor        bool
 	ExternalEditorCommand    string
 	EditorAutodetectCodePage bool
+	EditorHighlighter        string
+	EditorColorerScheme      string
+	EditorColorerBackground  bool
+	EditorColorerSyntax      bool
+	EditorColorerCatalog     string
+	EditorCrossMode          int
 	EditorDefaultCodePage    int
 	ViewerAutodetectCodePage bool
 	ViewerDefaultCodePage    int
+	SlideShowDelay           int
+	ImageExternalTimeout     int
+	ImageDecoderPriority     string
 	RegisteredPlugins        []string
 	ConfirmCopy              bool
 	ConfirmMove              bool
@@ -97,6 +112,7 @@ type F4Config struct {
 	DeleteCancelFocused      bool
 	DefaultFileOpMode        int
 	FileOpPathDisplay        int
+	MacroRecordFormat        int
 	GuiFont                  string
 	GuiFontSize              int
 	GuiCols                  int
@@ -126,14 +142,20 @@ type F4Config struct {
 var AppConfig = F4Config{
 	ColorStyle:               "Modern",
 	Language:                 "en",
+	HelpLanguage:             "en",
 	AlwaysShowMenuBar:        false,
 	ShowHiddenFiles:          true,
 	HighlightDir:             true,
+	SeparateFileExtensions:   false,
 	SavePanelPaths:           true,
 	InfoPanelBytes:           false,
+	InfoPanelCPUGPU:          false,
+	EscTogglePanels:          true,
 	KeepTerminalCursor:       false,
+	AnnounceKittyTerm:        true,
 	CommandLineAutoComplete:  true,
-	VimHotkeys:               false,
+	NavigationMode:           NavigationClassic,
+	SearchCommandStayFocused: false,
 	SyncPanelLoad:            false,
 	EditorAutoComplete:       true,
 	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
@@ -146,9 +168,18 @@ var AppConfig = F4Config{
 	UseExternalEditor:        false,
 	ExternalEditorCommand:    "",
 	EditorAutodetectCodePage: true,
+	EditorHighlighter:        "Chroma",
+	EditorColorerScheme:      "",
+	EditorColorerBackground:  true,
+	EditorColorerSyntax:      true,
+	EditorColorerCatalog:     "",
+	EditorCrossMode:          ColorerCrossBoth,
 	EditorDefaultCodePage:    65001,
 	ViewerAutodetectCodePage: true,
 	ViewerDefaultCodePage:    65001,
+	SlideShowDelay:           defaultSlideShowDelay,
+	ImageExternalTimeout:     defaultImageExternalTimeout,
+	ImageDecoderPriority:     "",
 	ConfirmCopy:              true,
 	ConfirmMove:              true,
 	ConfirmDelete:            true,
@@ -184,6 +215,17 @@ var getConfigIniPaths = func() []string {
 	return []string{"/etc/f4/settings.ini", userPath}
 }
 
+// normalizeHighlighter maps an arbitrary config value to one of the engines
+// the editor knows about, falling back to the default one.
+func normalizeHighlighter(name string) string {
+	for _, known := range []string{"Chroma", "Colorer", "None"} {
+		if strings.EqualFold(name, known) {
+			return known
+		}
+	}
+	return "Chroma"
+}
+
 func LoadConfig() {
 	paths := getConfigIniPaths()
 	ini := &IniFile{data: make(map[string]map[string]string)}
@@ -199,17 +241,29 @@ func LoadConfig() {
 	AppConfig.ShowHiddenFiles = ini.GetString("Panel", "ShowHiddenFiles", "1") == "1"
 	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Modern")
 	AppConfig.Language = ini.GetString("Interface", "Language", "en")
+	AppConfig.HelpLanguage = ini.GetString("Interface", "HelpLanguage", "en")
 	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
 	AppConfig.AlwaysShowMenuBar = ini.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
 	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
 		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
 	AppConfig.HighlightDir = ini.GetString("Panel", "HighlightDir", "1") == "1"
+	AppConfig.SeparateFileExtensions = ini.GetString("Panel", "SeparateFileExtensions", "0") == "1"
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
 	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
+	AppConfig.InfoPanelCPUGPU = ini.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
+	AppConfig.EscTogglePanels = ini.GetString("Panel", "EscTogglePanels", "1") == "1"
 	AppConfig.KeepTerminalCursor = ini.GetString("Panel", "KeepTerminalCursor", "0") == "1"
 	AppConfig.CommandLineAutoComplete = ini.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
-	AppConfig.VimHotkeys = ini.GetString("Panel", "VimHotkeys", "0") == "1"
+	if mode := ini.GetString("Panel", "NavigationMode", ""); mode != "" {
+		AppConfig.NavigationMode = ParsePanelNavigationMode(mode)
+	} else if ini.GetString("Panel", "VimHotkeys", "0") == "1" {
+		// Migration from settings written before NavigationMode was introduced.
+		AppConfig.NavigationMode = NavigationVim
+	} else {
+		AppConfig.NavigationMode = NavigationClassic
+	}
+	AppConfig.SearchCommandStayFocused = ini.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
 	AppConfig.SyncPanelLoad = ini.GetString("Panel", "SyncPanelLoad", "0") == "1"
 	fmt.Sscanf(ini.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &AppConfig.DefaultFileOpMode)
 	AppConfig.ConfirmCopy = ini.GetString("System", "ConfirmCopy", "1") == "1"
@@ -217,6 +271,8 @@ func LoadConfig() {
 	AppConfig.ConfirmDelete = ini.GetString("System", "ConfirmDelete", "1") == "1"
 	AppConfig.ConfirmExit = ini.GetString("System", "ConfirmExit", "1") == "1"
 	AppConfig.DeleteCancelFocused = ini.GetString("System", "DeleteCancelFocused", "1") == "1"
+	AppConfig.AnnounceKittyTerm = ini.GetString("System", "AnnounceKittyTerm", "1") == "1"
+	fmt.Sscanf(ini.GetString("System", "MacroRecordFormat", "0"), "%d", &AppConfig.MacroRecordFormat)
 	fmt.Sscanf(ini.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &AppConfig.FileOpPathDisplay)
 	AppConfig.GuiFont = ini.GetString("Appearance", "GuiFont", "")
 	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", "18"), "%d", &AppConfig.GuiFontSize)
@@ -246,9 +302,31 @@ func LoadConfig() {
 	AppConfig.EditorUseEditorConfig = ini.GetString("Editor", "UseEditorConfig", "1") == "1"
 	AppConfig.EditorCrosshair = ini.GetString("Editor", "Crosshair", "0") == "1"
 	AppConfig.EditorAutodetectCodePage = ini.GetString("Editor", "AutodetectCodePage", "1") == "1"
+	AppConfig.EditorHighlighter = normalizeHighlighter(ini.GetString("Editor", "Highlighter", "Chroma"))
+	AppConfig.EditorColorerScheme = ini.GetString("Editor", "ColorerScheme", "")
+	AppConfig.EditorColorerBackground = ini.GetString("Editor", "ColorerBackground", "1") == "1"
+	AppConfig.EditorColorerSyntax = ini.GetString("Editor", "ColorerSyntax", "1") == "1"
+	AppConfig.EditorColorerCatalog = ini.GetString("Editor", "ColorerCatalog", "")
+	AppConfig.EditorCrossMode = ColorerCrossBoth
+	fmt.Sscanf(ini.GetString("Editor", "CrossMode", "3"), "%d", &AppConfig.EditorCrossMode)
+	if AppConfig.EditorCrossMode < ColorerCrossOff || AppConfig.EditorCrossMode > ColorerCrossBoth {
+		AppConfig.EditorCrossMode = ColorerCrossBoth
+	}
 	fmt.Sscanf(ini.GetString("Editor", "DefaultCodePage", "65001"), "%d", &AppConfig.EditorDefaultCodePage)
 	AppConfig.ViewerAutodetectCodePage = ini.GetString("Viewer", "AutodetectCodePage", "1") == "1"
 	fmt.Sscanf(ini.GetString("Viewer", "DefaultCodePage", "65001"), "%d", &AppConfig.ViewerDefaultCodePage)
+	AppConfig.SlideShowDelay = defaultSlideShowDelay
+	fmt.Sscanf(ini.GetString("Images", "SlideShowDelay", "5"), "%d", &AppConfig.SlideShowDelay)
+	if AppConfig.SlideShowDelay <= 0 {
+		AppConfig.SlideShowDelay = defaultSlideShowDelay
+	}
+	AppConfig.ImageExternalTimeout = defaultImageExternalTimeout
+	fmt.Sscanf(ini.GetString("Images", "ExternalTimeout", "20"), "%d", &AppConfig.ImageExternalTimeout)
+	if AppConfig.ImageExternalTimeout <= 0 {
+		AppConfig.ImageExternalTimeout = defaultImageExternalTimeout
+	}
+	AppConfig.ImageDecoderPriority = ini.GetString("Images", "DecoderPriority", "")
+	SetImageDecoderPriorities(ParseImageDecoderPriorities(AppConfig.ImageDecoderPriority))
 	AppConfig.UseExternalEditor = ini.GetString("Editor", "UseExternalEditor", "0") == "1"
 	AppConfig.ExternalEditorCommand = ini.GetString("Editor", "ExternalEditorCommand", "")
 	plugStr := ini.GetString("Plugins", "List", "")
@@ -285,16 +363,23 @@ func SaveConfig() {
 	sb.WriteString("[Interface]\n")
 	sb.WriteString(fmt.Sprintf("ColorStyle = %s\n", AppConfig.ColorStyle))
 	sb.WriteString(fmt.Sprintf("Language = %s\n", AppConfig.Language))
+	sb.WriteString(fmt.Sprintf("HelpLanguage = %s\n", AppConfig.HelpLanguage))
 	sb.WriteString(fmt.Sprintf("ConsoleTitleTemplate = %s\n", AppConfig.ConsoleTitleTemplate))
 	sb.WriteString(fmt.Sprintf("AlwaysShowMenuBar = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar]))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("HighlightDir = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.HighlightDir]))
+	sb.WriteString(fmt.Sprintf("SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SeparateFileExtensions]))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
 	sb.WriteString(fmt.Sprintf("InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes]))
+	sb.WriteString(fmt.Sprintf("InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelCPUGPU]))
+	sb.WriteString(fmt.Sprintf("EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EscTogglePanels]))
 	sb.WriteString(fmt.Sprintf("KeepTerminalCursor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.KeepTerminalCursor]))
 	sb.WriteString(fmt.Sprintf("CommandLineAutoComplete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.CommandLineAutoComplete]))
-	sb.WriteString(fmt.Sprintf("VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.VimHotkeys]))
+	sb.WriteString(fmt.Sprintf("NavigationMode = %s\n", AppConfig.NavigationMode.String()))
+	sb.WriteString(fmt.Sprintf("SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SearchCommandStayFocused]))
+	// Keep the legacy key synchronized for older f4 versions and shared configs.
+	sb.WriteString(fmt.Sprintf("VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.NavigationMode == NavigationVim]))
 	sb.WriteString(fmt.Sprintf("SyncPanelLoad = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SyncPanelLoad]))
 	sb.WriteString(fmt.Sprintf("DefaultFileOpMode = %d\n", AppConfig.DefaultFileOpMode))
 	sb.WriteString(fmt.Sprintf("FileOpPathDisplay = %d\n", AppConfig.FileOpPathDisplay))
@@ -305,6 +390,8 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("ConfirmDelete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmDelete]))
 	sb.WriteString(fmt.Sprintf("ConfirmExit = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmExit]))
 	sb.WriteString(fmt.Sprintf("DeleteCancelFocused = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.DeleteCancelFocused]))
+	sb.WriteString(fmt.Sprintf("AnnounceKittyTerm = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AnnounceKittyTerm]))
+	sb.WriteString(fmt.Sprintf("MacroRecordFormat = %d\n", AppConfig.MacroRecordFormat))
 
 	sb.WriteString("\n[Appearance]\n")
 	sb.WriteString(fmt.Sprintf("GuiFont = %s\n", AppConfig.GuiFont))
@@ -330,11 +417,21 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("UseExternalEditor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.UseExternalEditor]))
 	sb.WriteString(fmt.Sprintf("ExternalEditorCommand = %s\n", AppConfig.ExternalEditorCommand))
 	sb.WriteString(fmt.Sprintf("AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorAutodetectCodePage]))
+	sb.WriteString(fmt.Sprintf("Highlighter = %s\n", AppConfig.EditorHighlighter))
+	sb.WriteString(fmt.Sprintf("ColorerScheme = %s\n", AppConfig.EditorColorerScheme))
+	sb.WriteString(fmt.Sprintf("ColorerBackground = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorColorerBackground]))
+	sb.WriteString(fmt.Sprintf("ColorerSyntax = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorColorerSyntax]))
+	sb.WriteString(fmt.Sprintf("ColorerCatalog = %s\n", AppConfig.EditorColorerCatalog))
+	sb.WriteString(fmt.Sprintf("CrossMode = %d\n", AppConfig.EditorCrossMode))
 	sb.WriteString(fmt.Sprintf("DefaultCodePage = %d\n", AppConfig.EditorDefaultCodePage))
 
 	sb.WriteString("\n[Viewer]\n")
 	sb.WriteString(fmt.Sprintf("AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ViewerAutodetectCodePage]))
 	sb.WriteString(fmt.Sprintf("DefaultCodePage = %d\n", AppConfig.ViewerDefaultCodePage))
+	sb.WriteString("\n[Images]\n")
+	sb.WriteString(fmt.Sprintf("SlideShowDelay = %d\n", AppConfig.SlideShowDelay))
+	sb.WriteString(fmt.Sprintf("ExternalTimeout = %d\n", AppConfig.ImageExternalTimeout))
+	sb.WriteString(fmt.Sprintf("DecoderPriority = %s\n", AppConfig.ImageDecoderPriority))
 	sb.WriteString("\n[Plugins]\n")
 	sb.WriteString(fmt.Sprintf("List = %s\n", strings.Join(AppConfig.RegisteredPlugins, "|")))
 

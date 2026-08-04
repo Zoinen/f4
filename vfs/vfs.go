@@ -39,6 +39,7 @@ type HostAPI interface {
 	RegisterDrive(name string, factory func() VFS)
 	RegisterGlobalHotkey(vk uint16, mods vtinput.ControlKeyState, handler func(app App))
 	RegisterPluginMenuItem(label string, handler func(app App))
+	RunAction(name string) bool
 }
 
 // VFSItem represents a generic file or directory entry.
@@ -50,6 +51,27 @@ type VFSItem struct {
 	Mode         string
 	IsExecutable bool
 	IsHidden     bool
+	// IsSymlink is true when the entry is a filesystem symlink (or a
+	// Windows reparse point that Go reports as a symlink). IsDir may
+	// still be true for symlink-to-directory — the two flags are
+	// orthogonal, and callers that want find/far2l-style "leaf" scan
+	// semantics should treat any IsSymlink as a leaf regardless of
+	// IsDir. Populated by OSVFS.ReadDir; other VFSes leave it false.
+	IsSymlink bool
+	// Device / Inode identify the underlying filesystem object so a
+	// scanner can dedup hard links (same inode reached through
+	// multiple paths in one walk). Both zero means "not populated" —
+	// the scanner then simply doesn't dedup, matching prior behaviour.
+	// Populated by OSVFS on Unix (stat.Dev/Ino). Windows and remote
+	// VFSes leave them zero.
+	Device uint64
+	Inode  uint64
+	// PhysicalSize is the real on-disk footprint of the item (compressed
+	// size on NTFS / actual allocated blocks on Unix). Zero means the
+	// platform didn't populate it (network VFSes, non-Unix/-Windows).
+	// Consumers that display "physical size" should hide the metric
+	// entirely when the accumulated total is 0.
+	PhysicalSize int64
 	// Metadata for Attributes dialog
 	ATime    time.Time // Last Access
 	CTime    time.Time // Creation (Win) or Status Change (Unix)

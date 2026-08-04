@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -20,9 +19,21 @@ import (
 type plugRingRow struct {
 	item   PlugRingItem
 	status string
+	// header is set on a category heading, which is a row with no plugin
+	// behind it.
+	header string
+	// note says why this entry cannot be used here, and takes the place of
+	// the description when it does.
+	note string
 }
 
 func (r plugRingRow) GetCellText(col int) string {
+	if r.header != "" {
+		if col == 0 {
+			return r.header
+		}
+		return ""
+	}
 	switch col {
 	case 0:
 		return r.item.Name
@@ -33,18 +44,69 @@ func (r plugRingRow) GetCellText(col int) string {
 	case 3:
 		return r.item.Author
 	case 4:
-		return runewidth.Truncate(r.item.Description, 40, "...")
+		text := r.item.Description
+		if r.note != "" {
+			text = r.note
+		}
+		return runewidth.Truncate(text, 40, "...")
 	}
 	return ""
 }
 
 func (r plugRingRow) GetCellAttr(col int, def uint64) uint64 {
-	if r.status == "Update" {
-		return vtui.SetRGBFore(def, 0xFCE94F) // Yellow
-	} else if r.status == "Installed" {
-		return vtui.SetRGBFore(def, 0x8AE234) // Green
+	switch {
+	case r.header != "":
+		return themedForeground(def, vtui.ColDialogHighlightText)
+	case r.note != "":
+		return vtui.DimColor(def)
+	case r.status == "Update":
+		return themedForeground(def, vtui.ColDialogHighlightText)
+	case r.status == "Installed":
+		return themedForeground(def, vtui.ColDialogText)
 	}
 	return def
+}
+
+// BuildPlugRingRows lays a catalog out as a table: a heading per category,
+// then its plugins.
+//
+// It returns a parallel slice saying which plugin each row belongs to, with a
+// nil where a heading is. The table is indexed by position, so without that
+// slice pressing Enter on the "Archives" heading would install whichever
+// plugin happened to sit at the same index.
+func BuildPlugRingRows(items []PlugRingItem, installed map[string]PlugRingItem) ([]vtui.TableRow, []*PlugRingItem) {
+	order, grouped := GroupPlugRingByCategory(items)
+
+	rows := make([]vtui.TableRow, 0, len(items)+len(order))
+	selectable := make([]*PlugRingItem, 0, len(items)+len(order))
+
+	for _, category := range order {
+		rows = append(rows, plugRingRow{header: PlugRingCategoryTitle(category)})
+		selectable = append(selectable, nil)
+
+		for _, item := range grouped[category] {
+			entry := item
+
+			status := "Not installed"
+			if inst, ok := installed[entry.ID]; ok {
+				if inst.Version != entry.Version {
+					status = "Update"
+				} else {
+					status = "Installed"
+				}
+			}
+
+			note := ""
+			if ok, reason := PlugRingItemRunsHere(entry); !ok {
+				status = "Unavailable"
+				note = reason
+			}
+
+			rows = append(rows, plugRingRow{item: entry, status: status, note: note})
+			selectable = append(selectable, &entry)
+		}
+	}
+	return rows, selectable
 }
 
 func actionPlugRing(pf *PanelsFrame) {
@@ -59,6 +121,7 @@ func actionPlugRing(pf *PanelsFrame) {
 		{Title: "Author", Width: 10},
 		{Title: "Description", Width: w - 4 - 16 - 8 - 13 - 10 - 5}, // 5 is for borders and scrollbar
 	})
+	useDialogTableColors(table)
 	table.ShowScrollBar = true
 
 	btnInstall := vtui.NewButton(0, 0, "&Install/Update")
@@ -88,6 +151,9 @@ func actionPlugRing(pf *PanelsFrame) {
 	btnClose.OnClick = func() { dlg.Close() }
 
 	var items []PlugRingItem
+	// shown[i] is the plugin on row i, or nil when row i is a category
+	// heading.
+	var shown []*PlugRingItem
 
 	refresh := func() {
 		table.SetRows(nil)
@@ -101,19 +167,8 @@ func actionPlugRing(pf *PanelsFrame) {
 					return
 				}
 				items = fetched
-				installed := GetInstalledPlugRingItems()
-				rows := make([]vtui.TableRow, len(items))
-				for i, itm := range items {
-					status := "Not installed"
-					if inst, ok := installed[itm.ID]; ok {
-						if inst.Version != itm.Version {
-							status = "Update"
-						} else {
-							status = "Installed"
-						}
-					}
-					rows[i] = plugRingRow{item: itm, status: status}
-				}
+				var rows []vtui.TableRow
+				rows, shown = BuildPlugRingRows(items, GetInstalledPlugRingItems())
 				table.SetRows(rows)
 				vtui.FrameManager.Redraw()
 			})
@@ -122,16 +177,23 @@ func actionPlugRing(pf *PanelsFrame) {
 
 	btnRefresh.OnClick = refresh
 
-	btnInstall.OnClick = func() {
+	// selected is nil on a category heading, which is not a plugin.
+	selected := func() *PlugRingItem {
 		idx := table.SelectPos
-		if idx >= 0 && idx < len(items) {
-			actionInstallPlugRingItem(pf, dlg, items[idx], refresh)
+		if idx >= 0 && idx < len(shown) {
+			return shown[idx]
+		}
+		return nil
+	}
+
+	btnInstall.OnClick = func() {
+		if item := selected(); item != nil {
+			actionInstallPlugRingItem(pf, dlg, *item, refresh)
 		}
 	}
 	btnRemove.OnClick = func() {
-		idx := table.SelectPos
-		if idx >= 0 && idx < len(items) {
-			actionRemovePlugRingItem(pf, dlg, items[idx], refresh)
+		if item := selected(); item != nil {
+			actionRemovePlugRingItem(pf, dlg, *item, refresh)
 		}
 	}
 
@@ -143,17 +205,47 @@ func actionPlugRing(pf *PanelsFrame) {
 	refresh()
 }
 
+// entrypointNeedsInterpreterOnPath reports whether the first word of an
+// entrypoint is a command that must already exist on the user's PATH. A bare
+// .lua or .wasm entrypoint names a file f4 runs itself, so there is nothing to
+// look up, and warning that "notes.lua" is missing would send the user looking
+// for a package that does not exist.
+func entrypointNeedsInterpreterOnPath(entrypoint string) bool {
+	if IsLuaEntrypoint(entrypoint) || IsWasmEntrypoint(entrypoint) {
+		return false
+	}
+	fields := strings.Fields(entrypoint)
+	if len(fields) == 0 {
+		return false
+	}
+	interpreter := fields[0]
+	return !strings.ContainsAny(interpreter, "/\\") && !strings.HasPrefix(interpreter, ".")
+}
+
 func actionInstallPlugRingItem(pf *PanelsFrame, parent *vtui.Window, item PlugRingItem, refresh func()) {
+	// 0. The distribution policy, enforced rather than merely documented.
+	// An entry that breaks it is not installed silently; the user is told
+	// exactly what is wrong and may insist, because the catalog in the wild
+	// predates the rule.
+	if problem := PlugRingItemProblem(item); problem != "" {
+		msg := fmt.Sprintf("This catalog entry does not meet f4's distribution policy:\n\n%s\n\nSee PLUGRING.md. Installing anyway is your decision.", problem)
+		if pf.Message(" Policy Warning ", msg, []string{"&Install Anyway", "Cancel"}) != 0 {
+			return
+		}
+	}
+	if ok, reason := PlugRingItemRunsHere(item); !ok {
+		msg := fmt.Sprintf("This plugin %s.\n\nIt will install, but f4 will not be able to run it.", reason)
+		if pf.Message(" Cannot Run Here ", msg, []string{"&Install Anyway", "Cancel"}) != 0 {
+			return
+		}
+	}
 	// 1. Implicit dependency check from Entrypoint interpreter
-	parts := strings.Fields(item.Entrypoint)
-	if len(parts) > 0 {
-		interpreter := parts[0]
-		if !strings.ContainsAny(interpreter, "/\\") && !strings.HasPrefix(interpreter, ".") {
-			if _, err := exec.LookPath(interpreter); err != nil {
-				msg := fmt.Sprintf("Warning: This plugin requires '%s' to run, but it was not found in your system's PATH.\n\nPlease install '%s' first, or the plugin might fail to load.", interpreter, interpreter)
-				if pf.Message(" Missing Dependency ", msg, []string{"&Install Anyway", "Cancel"}) != 0 {
-					return
-				}
+	if entrypointNeedsInterpreterOnPath(item.Entrypoint) {
+		interpreter := strings.Fields(item.Entrypoint)[0]
+		if _, err := exec.LookPath(interpreter); err != nil {
+			msg := fmt.Sprintf("Warning: This plugin requires '%s' to run, but it was not found in your system's PATH.\n\nPlease install '%s' first, or the plugin might fail to load.", interpreter, interpreter)
+			if pf.Message(" Missing Dependency ", msg, []string{"&Install Anyway", "Cancel"}) != 0 {
+				return
 			}
 		}
 	}
@@ -255,20 +347,13 @@ func actionInstallPlugRingItem(pf *PanelsFrame, parent *vtui.Window, item PlugRi
 			}
 		}
 
+		// setup_cmd used to be run here: an arbitrary shell command, with the
+		// user's privileges, at install time, from a catalog entry nobody
+		// reads. That is worse than shipping a binary, and no confirmation
+		// dialog makes it acceptable, so it is not run at all. A plugin that
+		// needs a build step does not belong in this catalog.
 		if item.SetupCmd != "" {
-			update("Running setup commands...", -1)
-			var cmd *exec.Cmd
-			if runtime.GOOS == "windows" {
-				cmd = exec.CommandContext(ctx, "cmd.exe", "/c", item.SetupCmd)
-			} else {
-				cmd = exec.CommandContext(ctx, "sh", "-c", item.SetupCmd)
-			}
-			cmd.Dir = pluginDir
-			out, cmdErr := cmd.CombinedOutput()
-			if cmdErr != nil {
-				os.RemoveAll(pluginDir)
-				return fmt.Errorf("setup command failed: %v\nOutput: %s", cmdErr, string(out))
-			}
+			vtui.DebugLog("PLUGRING: ignoring setup_cmd of %q: %s", item.ID, item.SetupCmd)
 		}
 
 		manifestData, _ := json.MarshalIndent(item, "", "  ")
@@ -302,6 +387,11 @@ func actionRemovePlugRingItem(pf *PanelsFrame, parent *vtui.Window, item PlugRin
 	dlg := vtui.ShowMessageOn(parent, " Remove Plugin ", fmt.Sprintf("Do you want to completely remove %s?", item.Name), []string{"&Remove", "Cancel"})
 	dlg.OnResult = func(code int) {
 		if code == 0 {
+			// Grants belong to the plugin, not to its id. Leaving them
+			// behind would hand them to whatever is installed here next.
+			if err := PluginPermissions().Forget(item.ID); err != nil {
+				vtui.DebugLog("PLUGRING: cannot drop the permissions of %q: %v", item.ID, err)
+			}
 			err := os.RemoveAll(pluginDir)
 			if err != nil {
 				vtui.ShowMessageOn(parent, " Error ", fmt.Sprintf("Removal failed:\n%v", err), []string{"&Ok"})

@@ -6,20 +6,19 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/unxed/f4/sdk/f4rpc"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 )
 
 // RPCVFS acts as a local proxy that forwards VFS calls to the plugin process over RPC.
 type RPCVFS struct {
-	sess      *f4rpc.Session
+	sess      PluginTransport
 	driveName string
 	path      string
 }
 
 type rpcFileWrapper struct {
-	sess *f4rpc.Session
+	sess PluginTransport
 	id   uint32
 	size int64
 }
@@ -47,7 +46,7 @@ func (w *rpcFileWrapper) Close() error {
 }
 
 type rpcWriteWrapper struct {
-	sess *f4rpc.Session
+	sess PluginTransport
 	id   uint32
 }
 
@@ -65,7 +64,7 @@ func (w *rpcWriteWrapper) Close() error {
 	return w.sess.Call("VFS.CloseFile", req, nil)
 }
 
-func NewRPCVFS(sess *f4rpc.Session, driveName string) *RPCVFS {
+func NewRPCVFS(sess PluginTransport, driveName string) *RPCVFS {
 	return &RPCVFS{
 		sess:      sess,
 		driveName: driveName,

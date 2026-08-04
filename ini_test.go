@@ -65,3 +65,17 @@ func TestIniFile_EnvOverride(t *testing.T) {
 		t.Errorf("Expected default 'default_val', got %q", val3)
 	}
 }
+
+func TestIniFile_UTF8BOM(t *testing.T) {
+	tmpFile := "test_config_bom.ini"
+	defer os.Remove(tmpFile)
+
+	// Prepend UTF-8 BOM \xef\xbb\xbf
+	content := "\xef\xbb\xbf[Settings]\nTheme = Dark\n"
+	os.WriteFile(tmpFile, []byte(content), 0644)
+
+	ini := LoadIni(tmpFile)
+	if ini.GetString("Settings", "Theme", "Light") != "Dark" {
+		t.Errorf("Expected Theme=Dark (parsed despite UTF-8 BOM), got %s", ini.GetString("Settings", "Theme", "Light"))
+	}
+}

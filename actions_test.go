@@ -410,8 +410,15 @@ Loop:
 			task()
 
 			if !skipAllClicked && fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Error " {
-				clickDialogButton(t, fm.GetTopFrame().(vtui.Container), "Skip All")
-				skipAllClicked = true
+				if dlg, ok := fm.GetTopFrame().(vtui.Container); ok {
+					for _, itm := range dlg.GetChildren() {
+						if b, ok := itm.(*vtui.Button); ok && (strings.Contains(b.GetText(), "Skip All") || strings.Contains(b.GetText(), "S&kip All") || strings.Contains(b.GetText(), "ропустить")) {
+							b.OnClick()
+							skipAllClicked = true
+							break
+						}
+					}
+				}
 			}
 
 			// Ждем финальный диалог со списком ошибок
@@ -995,6 +1002,7 @@ func TestSession_DiskPersistence(t *testing.T) {
 	LastLeftCursor = "file.a"
 	LastRightCursor = "file.b"
 	LastActivePanel = 0
+	LastWidePanel = 1
 
 	LastLeftViewMode = 1
 	LastRightViewMode = 0
@@ -1015,6 +1023,7 @@ func TestSession_DiskPersistence(t *testing.T) {
 	LastLeftCursor = ""
 	LastRightCursor = ""
 	LastActivePanel = 1
+	LastWidePanel = -1
 
 	LastLeftViewMode = 0
 	LastRightViewMode = 1
@@ -1033,6 +1042,9 @@ func TestSession_DiskPersistence(t *testing.T) {
 		t.Errorf("Disk persistence failed. Search:%q, LeftPath:%q, LeftCursor:%q, Active:%d",
 			LastEditorSearch, LastLeftPath, LastLeftCursor, LastActivePanel)
 	}
+	if LastWidePanel != 1 {
+		t.Errorf("Wide panel persistence failed: got %d, want 1", LastWidePanel)
+	}
 
 	if LastLeftViewMode != 1 || LastRightViewMode != 0 || LastLeftSortMode != 3 || LastRightSortMode != 2 {
 		t.Errorf("View/Sort modes persistence failed. LeftVM:%d, RightVM:%d, LeftSM:%d, RightSM:%d",
@@ -1045,6 +1057,22 @@ func TestSession_DiskPersistence(t *testing.T) {
 
 	if LastShowPanels || !LastShowLeft || LastShowRight {
 		t.Errorf("Panel visibility persistence failed. Show:%v, Left:%v, Right:%v", LastShowPanels, LastShowLeft, LastShowRight)
+	}
+}
+
+func TestSession_OldFileDefaultsWideOff(t *testing.T) {
+	tmpDir := t.TempDir()
+	origPathFunc := getSessionIniPath
+	getSessionIniPath = func() string { return filepath.Join(tmpDir, "session.ini") }
+	defer func() { getSessionIniPath = origPathFunc }()
+
+	if err := os.WriteFile(getSessionIniPath(), []byte("[Session]\nActivePanel = 0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	LastWidePanel = 1
+	LoadSession()
+	if LastWidePanel != -1 {
+		t.Fatalf("old session enabled Wide: got %d, want -1", LastWidePanel)
 	}
 }
 
@@ -1168,6 +1196,11 @@ func TestActionManagePlugins_Flow(t *testing.T) {
 	}
 	btnRem.OnClick()
 
+	confirmDlg, _ := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if confirmDlg != nil && confirmDlg.OnResult != nil {
+		confirmDlg.OnResult(0)
+	}
+
 	if len(AppConfig.RegisteredPlugins) != 0 {
 		t.Error("Plugin was not removed from config")
 	}
@@ -1176,23 +1209,6 @@ func TestActionManagePlugins_Flow(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := "my_plugin.sh"
 	os.WriteFile(filepath.Join(tmpDir, testFile), []byte("#!/bin/sh"), 0755)
-
-	pluginVfs := &dialogVFSAdapter{v: vfs.NewOSVFS(tmpDir)}
-
-	foundFile := false
-	err := pluginVfs.ReadDir(context.Background(), tmpDir, func(items []vtui.FSItem) {
-		for _, itm := range items {
-			if itm.Name == testFile {
-				foundFile = true
-			}
-		}
-	})
-	if err != nil {
-		t.Fatalf("Adapter ReadDir failed: %v", err)
-	}
-	if !foundFile {
-		t.Errorf("Adapter failed to find test file %s", testFile)
-	}
 
 	newPath := filepath.Join(tmpDir, testFile)
 	AppConfig.RegisteredPlugins = append(AppConfig.RegisteredPlugins, newPath)
@@ -1479,6 +1495,65 @@ func TestActionAppearanceSettings_SaveCursor(t *testing.T) {
 
 	if !AppConfig.KeepTerminalCursor {
 		t.Error("KeepTerminalCursor was not saved to AppConfig")
+	}
+}
+
+// TestActionAppearanceSettings_CancelPreservesPalette locks in the
+// fix: farcolors.ini overrides applied at startup were wiped when
+// the user opened Appearance settings and pressed Cancel, because
+// the dialog restored via ApplyColorStyle(originalStyle) — a clean
+// re-apply of the named base style with no room for runtime
+// overrides. Snapshot-and-copy the whole palette instead, so
+// Cancel returns exactly what was on screen before the dialog
+// opened, regardless of where the tweak came from.
+func TestActionAppearanceSettings_CancelPreservesPalette(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	// Simulate a farcolors.ini override: bump one palette slot to
+	// a sentinel value the base style would never produce. If Cancel
+	// restores by name it clobbers this back to the style default;
+	// if it restores by palette snapshot the sentinel survives.
+	const sentinel uint64 = 0xDEADBEEFCAFE0001
+	origAtIdx := vtui.Palette[ColPanelText]
+	vtui.Palette[ColPanelText] = sentinel
+	defer func() { vtui.Palette[ColPanelText] = origAtIdx }()
+
+	actionAppearanceSettings(pf)
+	top := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	// Trigger live preview: pick a style different from the current
+	// one so ApplyColorStyle actually runs and overwrites the
+	// sentinel. Any built-in style other than the current one works.
+	var combo *vtui.ComboBox
+	for _, itm := range top.GetChildren() {
+		if c, ok := itm.(*vtui.ComboBox); ok {
+			combo = c
+			break
+		}
+	}
+	if combo == nil {
+		t.Fatal("style combobox not found in Appearance dialog")
+	}
+	// Pick the *other* end of the list — different from whatever
+	// index the config currently points to.
+	target := 0
+	if combo.Menu.SelectPos == 0 && len(combo.Menu.Items) > 1 {
+		target = len(combo.Menu.Items) - 1
+	}
+	combo.Menu.OnAction(target)
+	if vtui.Palette[ColPanelText] == sentinel {
+		t.Fatal("test setup: live preview didn't overwrite the sentinel — need a different palette slot or style pair")
+	}
+
+	clickDialogButton(t, top, "Cancel")
+
+	if got := vtui.Palette[ColPanelText]; got != sentinel {
+		t.Errorf("Cancel dropped the override: palette[ColPanelText]=%016x, want sentinel %016x", got, sentinel)
 	}
 }
 

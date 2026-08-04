@@ -21,6 +21,9 @@ Editor:
   F3            - Toggle word wrap
   F5            - Toggle show whitespaces
   F7            - Search
+  Ctrl+Left     - Previous word boundary
+  Ctrl+Right    - Next word boundary
+  Ctrl+Shift+Left/Right - Select by words
   Ctrl+Y        - Delete line
   Ctrl+Z        - Undo
   Ctrl+Shift+Z  - Redo

@@ -40,7 +40,9 @@ func NewViewerBackend(ctx context.Context, v vfs.VFS, path string) (*ViewerBacke
 }
 
 func (b *ViewerBackend) Close() error {
-	b.cancelCtx()
+	if b.cancelCtx != nil {
+		b.cancelCtx()
+	}
 	return b.file.Close()
 }
 

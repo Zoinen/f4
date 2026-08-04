@@ -25,6 +25,7 @@ var (
 	LastLeftCursor   = ""
 	LastRightCursor  = ""
 	LastActivePanel  = 1
+	LastWidePanel    = -1
 
 	LastLeftViewMode  = 0
 	LastRightViewMode = 0
@@ -487,6 +488,28 @@ func actionOpenEditor(pf *PanelsFrame, v vfs.VFS, path string) {
 }
 
 func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
+	if AppConfig.EditorHighlighter == "Colorer" && !SchemasExist() {
+		go func() {
+			msg := "Colorer syntax highlighting schemas are missing.\nWould you like to download them from elfmz/far2l GitHub?"
+			if pf.Message(" Download Colorer Schemas ", msg, []string{"&Yes", "&No"}) == 0 {
+				DownloadColorerSchemas(pf, func(success bool) {
+					vtui.FrameManager.PostTask(func() {
+						if !success {
+							AppConfig.EditorHighlighter = "Chroma"
+							SaveConfig()
+						}
+						openEditorInternal(pf, v, path)
+					})
+				})
+			} else {
+				vtui.FrameManager.PostTask(func() {
+					AppConfig.EditorHighlighter = "Chroma"
+					openEditorInternal(pf, v, path)
+				})
+			}
+		}()
+		return
+	}
 	if _, isLocal := v.(*vfs.OSVFS); isLocal {
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			var f vfs.ReadAtCloser
@@ -627,7 +650,88 @@ func actionOpenViewer(pf *PanelsFrame, v vfs.VFS, path string) {
 	openViewerInternal(pf, v, path)
 }
 
+// tryOpenImageViewer opens the picture viewer when the file looks like an
+// image and the backend can actually show one. It returns false to let the
+// ordinary viewer handle the file.
+func tryOpenImageViewer(pf *PanelsFrame, v vfs.VFS, path string) bool {
+	if pf == nil || !IsImageFile(path) {
+		return false
+	}
+	scr := vtui.FrameManager.Screen()
+	if scr == nil || !scr.SupportsGraphics() {
+		return false
+	}
+
+	// The list is taken here, on the UI thread, while the panel is still
+	// the one the reader was looking at.
+	siblings, index := imageSiblingPaths(pf, v, path)
+
+	// The gallery and the panel share one selection, so that the file
+	// operations afterwards act on what the reader picked among the
+	// thumbnails. What the panel had picked already is taken here, on the UI
+	// thread, for the same reason the sibling list is.
+	fsp := pf.getActivePanel()
+	picked := make(map[string]bool)
+	if fsp != nil && v != nil {
+		for _, sibling := range siblings {
+			if fsp.IsNameSelected(v.Base(sibling)) {
+				picked[sibling] = true
+			}
+		}
+	}
+
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		iv, err := NewImageView(ctx.Context, v, path)
+		ctx.RunOnUI(func() {
+			if err != nil {
+				vtui.DebugLog("IMAGE: failed to open %s: %v", path, err)
+				vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open image:\n%v", err), []string{"&Ok"})
+				return
+			}
+			iv.SetSiblings(siblings, index)
+			iv.SetSelection(picked)
+			if fsp != nil && v != nil {
+				iv.OnSelect = func(sibling string, on bool) {
+					if fsp.SetSelectedByName(v.Base(sibling), on) {
+						fsp.Refresh()
+					}
+				}
+			}
+			iv.ResizeConsole(pf.lastW, pf.lastH)
+			vtui.FrameManager.AddScreen(iv)
+		})
+	})
+	return true
+}
+
+// imageSiblingPaths lists the pictures next to this one, in the order the
+// active panel shows them. A panel looking somewhere else has nothing to say
+// about this file, and then the viewer simply shows one picture.
+func imageSiblingPaths(pf *PanelsFrame, v vfs.VFS, path string) ([]string, int) {
+	if pf == nil || v == nil {
+		return nil, -1
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil || fsp.vfs == nil {
+		return nil, -1
+	}
+	dir := v.Dir(path)
+	if fsp.vfs.GetPath() != dir {
+		return nil, -1
+	}
+
+	names, index := fsp.ImageSiblings()
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, v.Join(dir, name))
+	}
+	return paths, index
+}
+
 func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
+	if tryOpenImageViewer(pf, v, path) {
+		return
+	}
 	if _, isLocal := v.(*vfs.OSVFS); isLocal {
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			if v != nil {
@@ -1169,7 +1273,7 @@ func actionCopyInPlace(pf *PanelsFrame) {
 	})
 }
 func actionEditorSettings(pf *PanelsFrame) {
-	width, height := 78, 23
+	width, height := 78, 27
 	dlg := vtui.NewCenteredDialog(width, height, Msg("EditorSettings.Title"))
 	dlg.ShowClose = true
 
@@ -1185,6 +1289,37 @@ func actionEditorSettings(pf *PanelsFrame) {
 		comboExpand.Edit.SetText(comboExpand.Menu.Items[AppConfig.EditorExpandTabs].Text)
 	}
 	lblExpand := vtui.NewLabel(0, 0, "Expand t&abs:", comboExpand)
+	engines := []string{"Chroma", "Colorer", "None"}
+	selectedEngine := 0
+	for i, eng := range engines {
+		if strings.EqualFold(eng, AppConfig.EditorHighlighter) {
+			selectedEngine = i
+			break
+		}
+	}
+	comboHighlighter := vtui.NewComboBox(0, 0, 40, engines)
+	comboHighlighter.DropdownOnly = true
+	comboHighlighter.Menu.SetSelectPos(selectedEngine)
+	comboHighlighter.Edit.SetText(engines[selectedEngine])
+	lblHighlighter := vtui.NewLabel(0, 0, "Hi&ghlighter:", comboHighlighter)
+	schemeNames := []string{""}
+	schemeItems := []string{"(built-in)"}
+	for _, scheme := range ListColorerSchemes() {
+		schemeNames = append(schemeNames, scheme.Name)
+		schemeItems = append(schemeItems, colorerSchemeLabel(scheme))
+	}
+	selectedScheme := 0
+	for i := 1; i < len(schemeNames); i++ {
+		if strings.EqualFold(schemeNames[i], AppConfig.EditorColorerScheme) {
+			selectedScheme = i
+			break
+		}
+	}
+	comboScheme := vtui.NewComboBox(0, 0, 40, schemeItems)
+	comboScheme.DropdownOnly = true
+	comboScheme.Menu.SetSelectPos(selectedScheme)
+	comboScheme.Edit.SetText(schemeItems[selectedScheme])
+	lblScheme := vtui.NewLabel(0, 0, "Colorer st&yle:", comboScheme)
 
 	editTabSize := vtui.NewEdit(0, 0, 4, fmt.Sprintf("%d", AppConfig.EditorTabSize))
 	editTabSize.ClearSelection()
@@ -1214,6 +1349,10 @@ func actionEditorSettings(pf *PanelsFrame) {
 	if AppConfig.EditorCrosshair {
 		chkCrosshair.State = 1
 	}
+	chkColorerBg := vtui.NewCheckbox(0, 0, "Colorer &background", false)
+	if AppConfig.EditorColorerBackground {
+		chkColorerBg.State = 1
+	}
 
 	editMask := vtui.NewEdit(0, 0, 56, AppConfig.EditorAutoCompleteMask)
 	lblMask := vtui.NewLabel(0, 0, Msg("EditorSettings.Mask"), editMask)
@@ -1233,6 +1372,10 @@ func actionEditorSettings(pf *PanelsFrame) {
 	// 2. Add to Dialog in desired focus order
 	dlg.AddItem(lblExpand)
 	dlg.AddItem(comboExpand)
+	dlg.AddItem(lblHighlighter)
+	dlg.AddItem(comboHighlighter)
+	dlg.AddItem(lblScheme)
+	dlg.AddItem(comboScheme)
 	dlg.AddItem(lblTabSize)
 	dlg.AddItem(editTabSize)
 	dlg.AddItem(chkAutoIndent)
@@ -1240,6 +1383,7 @@ func actionEditorSettings(pf *PanelsFrame) {
 	dlg.AddItem(chkEditorConfig)
 	dlg.AddItem(chkAuto)
 	dlg.AddItem(chkCrosshair)
+	dlg.AddItem(chkColorerBg)
 	dlg.AddItem(lblMask)
 	dlg.AddItem(editMask)
 	dlg.AddItem(chkExtEdit)
@@ -1256,6 +1400,14 @@ func actionEditorSettings(pf *PanelsFrame) {
 	rowTabs.Add(lblExpand, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowTabs.Add(comboExpand, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowTabs, vtui.Margins{}, vtui.AlignFill)
+	rowHighlighter := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowHighlighter.Add(lblHighlighter, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowHighlighter.Add(comboHighlighter, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowHighlighter, vtui.Margins{Top: 1}, vtui.AlignFill)
+	rowScheme := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowScheme.Add(lblScheme, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowScheme.Add(comboScheme, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowScheme, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	rowTabSize := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	rowTabSize.Add(lblTabSize, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -1265,6 +1417,7 @@ func actionEditorSettings(pf *PanelsFrame) {
 	col1 := vtui.NewVBoxLayout(0, 0, (width-4)/2, 5)
 	col1.Add(chkAutoIndent, vtui.Margins{}, vtui.AlignLeft)
 	col1.Add(chkEditorConfig, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	col1.Add(chkColorerBg, vtui.Margins{Top: 1}, vtui.AlignLeft)
 
 	col2 := vtui.NewVBoxLayout(0, 0, (width-4)/2, 5)
 	col2.Add(chkCursorEOL, vtui.Margins{}, vtui.AlignLeft)
@@ -1297,6 +1450,12 @@ func actionEditorSettings(pf *PanelsFrame) {
 	// 4. Logic
 	btnCancel.OnClick = func() { dlg.Close() }
 	btnOk.OnClick = func() {
+		AppConfig.EditorHighlighter = comboHighlighter.Menu.Items[comboHighlighter.Menu.SelectPos].Text
+		AppConfig.EditorColorerScheme = ""
+		if pos := comboScheme.Menu.SelectPos; pos > 0 && pos < len(schemeNames) {
+			AppConfig.EditorColorerScheme = schemeNames[pos]
+		}
+		SetColorerScheme(AppConfig.EditorColorerScheme)
 		AppConfig.EditorExpandTabs = comboExpand.Menu.SelectPos
 		fmt.Sscanf(editTabSize.GetText(), "%d", &AppConfig.EditorTabSize)
 		if AppConfig.EditorTabSize <= 0 {
@@ -1308,6 +1467,7 @@ func actionEditorSettings(pf *PanelsFrame) {
 		AppConfig.EditorUseEditorConfig = chkEditorConfig.State == 1
 		AppConfig.EditorAutoComplete = chkAuto.State == 1
 		AppConfig.EditorCrosshair = chkCrosshair.State == 1
+		AppConfig.EditorColorerBackground = chkColorerBg.State == 1
 		AppConfig.EditorAutoCompleteMask = editMask.GetText()
 		AppConfig.UseExternalEditor = chkExtEdit.State == 1
 		AppConfig.ExternalEditorCommand = editExtCmd.GetText()
@@ -1562,7 +1722,8 @@ func actionFindFile(pf *PanelsFrame) {
 	vtui.FrameManager.Push(dlg)
 }
 func actionPanelSettings(pf *PanelsFrame) {
-	dlg := vtui.NewCenteredDialog(60, 24, Msg("PanelSettings.Title"))
+	const dialogHeight = 33
+	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
 	chkHidden := vtui.NewCheckbox(0, 0, Msg("PanelSettings.ShowHidden"), false)
@@ -1577,6 +1738,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 		chkHighlight.State = 1
 	}
 
+	chkSeparateExtensions := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SeparateExtensions"), false)
+	if AppConfig.SeparateFileExtensions {
+		chkSeparateExtensions.State = 1
+	}
+
 	chkPaths := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SavePaths"), false)
 	chkPaths.State = 0
 	if AppConfig.SavePanelPaths {
@@ -1588,10 +1754,26 @@ func actionPanelSettings(pf *PanelsFrame) {
 	if AppConfig.CommandLineAutoComplete {
 		chkCmdAc.State = 1
 	}
-	chkVim := vtui.NewCheckbox(0, 0, Msg("PanelSettings.VimHotkeys"), false)
-	chkVim.State = 0
-	if AppConfig.VimHotkeys {
-		chkVim.State = 1
+
+	lblNavigation := vtui.NewText(0, 0, Msg("PanelSettings.Navigation"), 0)
+	navigation := vtui.NewRadioGroup(0, 0, 1, []string{
+		Msg("PanelSettings.NavigationClassic"),
+		Msg("PanelSettings.NavigationVim"),
+		Msg("PanelSettings.NavigationSearch"),
+	})
+	navigation.Selected = int(AppConfig.NavigationMode)
+	// RadioGroup does not expose its keyboard focus index, so advance it to
+	// the selected row to make Space operate on the visibly selected mode.
+	for i := 0; i < navigation.Selected; i++ {
+		navigation.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	}
+	chkStayFocused := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SearchStayFocused"), false)
+	if AppConfig.SearchCommandStayFocused {
+		chkStayFocused.State = 1
+	}
+	chkStayFocused.SetDisabled(AppConfig.NavigationMode != NavigationSearchFirst)
+	navigation.OnChange = func(selected int) {
+		chkStayFocused.SetDisabled(PanelNavigationMode(selected) != NavigationSearchFirst)
 	}
 
 	chkSync := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SyncPanelLoad"), false)
@@ -1604,6 +1786,18 @@ func actionPanelSettings(pf *PanelsFrame) {
 	chkAlwaysMenu.State = 0
 	if AppConfig.AlwaysShowMenuBar {
 		chkAlwaysMenu.State = 1
+	}
+
+	chkCPUGPU := vtui.NewCheckbox(0, 0, Msg("PanelSettings.InfoPanelCPUGPU"), false)
+	chkCPUGPU.State = 0
+	if AppConfig.InfoPanelCPUGPU {
+		chkCPUGPU.State = 1
+	}
+
+	chkEscToggle := vtui.NewCheckbox(0, 0, Msg("PanelSettings.EscTogglePanels"), false)
+	chkEscToggle.State = 0
+	if AppConfig.EscTogglePanels {
+		chkEscToggle.State = 1
 	}
 
 	modes := []string{Msg("Op.Queue"), Msg("Op.Background"), Msg("Op.Foreground")}
@@ -1620,33 +1814,52 @@ func actionPanelSettings(pf *PanelsFrame) {
 	comboPath.Edit.SetText(pathModes[AppConfig.FileOpPathDisplay])
 	lblPath := vtui.NewLabel(0, 0, Msg("PanelSettings.PathDisplay"), comboPath)
 
+	macroModes := []string{"key_macros.ini (Legacy)", "Macros/scripts/*.lua"}
+	comboMacro := vtui.NewComboBox(0, 0, 30, macroModes)
+	comboMacro.DropdownOnly = true
+	comboMacro.Menu.SetSelectPos(AppConfig.MacroRecordFormat)
+	comboMacro.Edit.SetText(macroModes[AppConfig.MacroRecordFormat])
+	lblMacro := vtui.NewLabel(0, 0, "Record macros to:", comboMacro)
+
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 	btnOk.IsDefault = true
 	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	dlg.AddItem(chkHidden)
 	dlg.AddItem(chkHighlight)
+	dlg.AddItem(chkSeparateExtensions)
 	dlg.AddItem(chkPaths)
 	dlg.AddItem(chkCmdAc)
-	dlg.AddItem(chkVim)
+	dlg.AddItem(lblNavigation)
+	dlg.AddItem(navigation)
+	dlg.AddItem(chkStayFocused)
 	dlg.AddItem(chkSync)
 	dlg.AddItem(chkAlwaysMenu)
+	dlg.AddItem(chkCPUGPU)
+	dlg.AddItem(chkEscToggle)
 	dlg.AddItem(lblMode)
 	dlg.AddItem(comboMode)
 	dlg.AddItem(lblPath)
 	dlg.AddItem(comboPath)
+	dlg.AddItem(lblMacro)
+	dlg.AddItem(comboMacro)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 54-4, 24-4)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 54-4, dialogHeight-4)
 	vbox.Add(chkHidden, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkHighlight, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkSeparateExtensions, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkPaths, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCmdAc, vtui.Margins{Top: 1}, vtui.AlignLeft)
-	vbox.Add(chkVim, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(lblNavigation, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(navigation, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(chkStayFocused, vtui.Margins{Left: 2}, vtui.AlignLeft)
 
 	vbox.Add(chkSync, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkAlwaysMenu, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkCPUGPU, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkEscToggle, vtui.Margins{Top: 1}, vtui.AlignLeft)
 
 	rowMode := vtui.NewHBoxLayout(0, 0, 54-4, 1)
 	rowMode.Add(lblMode, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -1657,6 +1870,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 	rowPath.Add(lblPath, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowPath.Add(comboPath, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowPath, vtui.Margins{Top: 1}, vtui.AlignFill)
+
+	rowMacro := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowMacro.Add(lblMacro, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowMacro.Add(comboMacro, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowMacro, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	hbox := vtui.NewHBoxLayout(0, 0, 54-4, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
@@ -1671,13 +1889,19 @@ func actionPanelSettings(pf *PanelsFrame) {
 	btnOk.OnClick = func() {
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
 		AppConfig.HighlightDir = chkHighlight.State == 1
+		AppConfig.SeparateFileExtensions = chkSeparateExtensions.State == 1
 		AppConfig.SavePanelPaths = chkPaths.State == 1
 		AppConfig.CommandLineAutoComplete = chkCmdAc.State == 1
-		AppConfig.VimHotkeys = chkVim.State == 1
+		AppConfig.NavigationMode = PanelNavigationMode(navigation.Selected)
+		AppConfig.SearchCommandStayFocused = chkStayFocused.State == 1
 		AppConfig.SyncPanelLoad = chkSync.State == 1
 		AppConfig.AlwaysShowMenuBar = chkAlwaysMenu.State == 1
+		AppConfig.InfoPanelCPUGPU = chkCPUGPU.State == 1
+		AppConfig.EscTogglePanels = chkEscToggle.State == 1
 		AppConfig.DefaultFileOpMode = comboMode.Menu.SelectPos
 		AppConfig.FileOpPathDisplay = comboPath.Menu.SelectPos
+		AppConfig.MacroRecordFormat = comboMacro.Menu.SelectPos
+		pf.applyNavigationMode()
 		SaveConfig()
 		dlg.Close()
 		pf.ResizeConsole(pf.lastW, pf.lastH)
@@ -1842,7 +2066,12 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	const width, height = 60, 19
 	dlg := vtui.NewCenteredDialog(width, height, Msg("AppearanceSettings.Title"))
 	dlg.ShowClose = true
-	originalStyle := AppConfig.ColorStyle
+	// Snapshot the whole palette (not just the style name) so a
+	// Cancel restores every runtime tweak — farcolors.ini overrides
+	// loaded at startup, Colorer editor-background pushes, anything
+	// else that touched vtui.Palette. Re-applying originalStyle
+	// alone would wipe those.
+	originalPalette := append([]uint64(nil), vtui.Palette...)
 
 	styles := AvailableColorStyles()
 	names := make([]string, len(styles))
@@ -1975,8 +2204,8 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	}
 
 	dlg.OnResult = func(code int) {
-		if code < 0 {
-			_ = ApplyColorStyle(originalStyle)
+		if code < 0 && len(originalPalette) == len(vtui.Palette) {
+			copy(vtui.Palette, originalPalette)
 		}
 		vtui.FrameManager.Redraw()
 	}
@@ -1984,24 +2213,6 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	vtui.FrameManager.Push(dlg)
 }
 
-type dialogVFSAdapter struct {
-	v vfs.VFS
-}
-
-func (a *dialogVFSAdapter) GetPath() string         { return a.v.GetPath() }
-func (a *dialogVFSAdapter) SetPath(p string) error  { return a.v.SetPath(p) }
-func (a *dialogVFSAdapter) Join(e ...string) string { return a.v.Join(e...) }
-func (a *dialogVFSAdapter) Dir(p string) string     { return a.v.Dir(p) }
-func (a *dialogVFSAdapter) Base(p string) string    { return a.v.Base(p) }
-func (a *dialogVFSAdapter) ReadDir(ctx context.Context, p string, onChunk func([]vtui.FSItem)) error {
-	return a.v.ReadDir(ctx, p, func(chunk []vfs.VFSItem) {
-		var items []vtui.FSItem
-		for _, c := range chunk {
-			items = append(items, vtui.FSItem{Name: c.Name, IsDir: c.IsDir})
-		}
-		onChunk(items)
-	})
-}
 func actionManagePlugins(pf *PanelsFrame) {
 	width, height := 60, 16
 	dlg := vtui.NewCenteredDialog(width, height, Msg("Plugins.Title"))
@@ -2011,11 +2222,14 @@ func actionManagePlugins(pf *PanelsFrame) {
 
 	btnAdd := vtui.NewButton(0, 0, Msg("Plugins.BtnAdd"))
 	btnDel := vtui.NewButton(0, 0, Msg("Plugins.BtnRemove"))
+	btnPerms := vtui.NewButton(0, 0, Msg("Plugins.BtnPermissions"))
+	btnPerms.OnClick = func() { actionPluginPermissions(PluginPermissions()) }
 	btnClose := vtui.NewButton(0, 0, Msg("Plugins.BtnClose"))
 
 	dlg.AddItem(lb)
 	dlg.AddItem(btnAdd)
 	dlg.AddItem(btnDel)
+	dlg.AddItem(btnPerms)
 	dlg.AddItem(btnClose)
 
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
@@ -2026,6 +2240,7 @@ func actionManagePlugins(pf *PanelsFrame) {
 	hbox.Spacing = 2
 	hbox.Add(btnAdd, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnDel, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnPerms, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnClose, vtui.Margins{}, vtui.AlignTop)
 
 	vbox.Add(hbox, vtui.Margins{}, vtui.AlignFill)
@@ -2038,8 +2253,7 @@ func actionManagePlugins(pf *PanelsFrame) {
 				startPath = fsp.vfs.GetPath()
 			}
 		}
-		pluginVfs := &dialogVFSAdapter{v: vfs.NewOSVFS(startPath)}
-		vtui.SelectFileDialog(" Add Plugin ", startPath, pluginVfs, func(path string) {
+		showPluginFileDialog(dlg, startPath, func(path string) {
 			if path != "" {
 				AppConfig.RegisteredPlugins = append(AppConfig.RegisteredPlugins, path)
 				SaveConfig()
@@ -2056,17 +2270,154 @@ func actionManagePlugins(pf *PanelsFrame) {
 	btnDel.OnClick = func() {
 		idx := lb.SelectPos
 		if idx >= 0 && idx < len(AppConfig.RegisteredPlugins) {
-			AppConfig.RegisteredPlugins = append(AppConfig.RegisteredPlugins[:idx], AppConfig.RegisteredPlugins[idx+1:]...)
-			SaveConfig()
-			lb.Items = AppConfig.RegisteredPlugins
-			lb.UpdateRows()
-			vtui.ShowMessageOn(dlg, " Info ", "Plugin removed from config.\nRestart f4 to fully unload the process.", []string{"&Ok"})
+			pluginPath := AppConfig.RegisteredPlugins[idx]
+			confirm := vtui.ShowMessageOn(dlg, " Confirm ", "Remove plugin:\n"+vtui.TruncateMiddle(pluginPath, 40)+"?", []string{"&Remove", "Cancel"})
+			confirm.OnResult = func(code int) {
+				if code == 0 {
+					AppConfig.RegisteredPlugins = append(AppConfig.RegisteredPlugins[:idx], AppConfig.RegisteredPlugins[idx+1:]...)
+					SaveConfig()
+					lb.Items = AppConfig.RegisteredPlugins
+					lb.UpdateRows()
+					vtui.ShowMessageOn(dlg, " Info ", "Plugin removed from config.\nRestart f4 to fully unload the process.", []string{"&Ok"})
+				}
+			}
 		}
 	}
 
 	btnClose.OnClick = func() { dlg.Close() }
 
+	lb.OnKeyDown = func(e *vtinput.InputEvent) bool {
+		if !e.KeyDown {
+			return false
+		}
+		switch e.VirtualKeyCode {
+		case vtinput.VK_INSERT:
+			btnAdd.OnClick()
+			return true
+		case vtinput.VK_DELETE, vtinput.VK_F8:
+			btnDel.OnClick()
+			return true
+		}
+		return false
+	}
+
 	vtui.FrameManager.Push(dlg)
+}
+
+func showPluginFileDialog(parent *vtui.Window, startPath string, onSelect func(string)) {
+	w, h := 70, 22
+	dlg := vtui.NewCenteredDialog(w, h, " Add Plugin ")
+	dlg.ShowClose = true
+
+	lbl := vtui.NewLabel(0, 0, "Select plugin file:", nil)
+	edit := vtui.NewEdit(0, 0, w-4, startPath)
+	lb := vtui.NewListBox(0, 0, w-4, h-10, nil)
+
+	btnOk := vtui.NewButton(0, 0, "&Ok")
+	btnOk.IsDefault = true
+	btnCancel := vtui.NewButton(0, 0, "Cancel")
+
+	dlg.AddItem(lbl)
+	dlg.AddItem(edit)
+	dlg.AddItem(lb)
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+
+	loadDir := func(dir string) {
+		dir = filepath.Clean(dir)
+		entries, err := os.ReadDir(dir)
+		var items []string
+
+		parentDir := filepath.Dir(dir)
+		if parentDir != dir {
+			items = append(items, "..")
+		}
+
+		if err == nil {
+			var dirs []string
+			var files []string
+			for _, e := range entries {
+				name := e.Name()
+				isDir := e.IsDir()
+				if !isDir && (e.Type()&os.ModeSymlink != 0) {
+					if stat, err := os.Stat(filepath.Join(dir, name)); err == nil {
+						isDir = stat.IsDir()
+					}
+				}
+				if isDir {
+					dirs = append(dirs, string(filepath.Separator)+name)
+				} else {
+					files = append(files, name)
+				}
+			}
+			items = append(items, dirs...)
+			items = append(items, files...)
+		}
+		lb.Items = items
+		lb.UpdateRows()
+		edit.SetText(dir)
+		vtui.FrameManager.Redraw()
+	}
+
+	if stat, err := os.Stat(startPath); err == nil && !stat.IsDir() {
+		loadDir(filepath.Dir(startPath))
+		edit.SetText(startPath)
+	} else {
+		loadDir(startPath)
+	}
+
+	lb.OnAction = func(idx int) {
+		if idx < 0 || idx >= len(lb.Items) {
+			return
+		}
+		item := lb.Items[idx]
+		currDir := filepath.Dir(edit.GetText())
+
+		if stat, err := os.Stat(edit.GetText()); err == nil && stat.IsDir() {
+			currDir = edit.GetText()
+		}
+
+		if item == ".." {
+			parentDir := filepath.Dir(currDir)
+			if parentDir == "" {
+				parentDir = "/"
+			}
+			loadDir(parentDir)
+		} else if strings.HasPrefix(item, string(filepath.Separator)) {
+			loadDir(filepath.Join(currDir, item[1:]))
+		} else {
+			edit.SetText(filepath.Join(currDir, item))
+			btnOk.OnClick()
+		}
+	}
+
+	btnOk.OnClick = func() {
+		path := edit.GetText()
+		if stat, err := os.Stat(path); err == nil && stat.IsDir() {
+			loadDir(path)
+			return
+		}
+		dlg.Close()
+		onSelect(path)
+	}
+	btnCancel.OnClick = func() { dlg.Close() }
+
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, w-4, h-3)
+	vbox.Add(lbl, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(edit, vtui.Margins{Top: 1, Bottom: 1}, vtui.AlignLeft)
+	vbox.Add(lb, vtui.Margins{}, vtui.AlignFill)
+
+	hbox := vtui.NewHBoxLayout(0, 0, w-4, 1)
+	hbox.HorizontalAlign = vtui.AlignCenter
+	hbox.Spacing = 2
+	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+
+	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Apply()
+
+	dlg.SetFocusedItem(edit)
+	vtui.FrameManager.PushToFrameScreen(parent, dlg)
 }
 
 func actionFileAttributes(pf *PanelsFrame) {
@@ -2152,6 +2503,71 @@ func actionLanguage(pf *PanelsFrame) {
 		InitLang()
 		vtui.FrameManager.PostTask(func() {
 			vtui.ShowMessage(Msg("Info.Title"), Msg("Language.Changed"), []string{Msg("vtui.Ok")})
+			vtui.FrameManager.Redraw()
+		})
+	}
+
+	vtui.FrameManager.Push(menu)
+}
+func actionHelpLanguage(pf *PanelsFrame) {
+	type langInfo struct {
+		code string
+		name string
+	}
+	langs := []langInfo{{"en", "English"}}
+
+	exeDir := filepath.Dir(os.Args[0])
+	userDir := filepath.Join(GetF4ConfigDir(), "help")
+
+	dirs := []string{filepath.Join(exeDir, "help"), userDir, "help"}
+	seen := map[string]bool{"en": true}
+
+	for _, d := range dirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".hlf") {
+				code := strings.TrimSuffix(e.Name(), ".hlf")
+				if !seen[code] {
+					name := strings.ToUpper(code)
+					if code == "ru" {
+						name = "Русский"
+					}
+					langs = append(langs, langInfo{code, name})
+					seen[code] = true
+				}
+			}
+		}
+	}
+
+	menu := vtui.NewVMenu(Msg("HelpLanguage.Title"))
+	currIdx := 0
+	for i, l := range langs {
+		menu.AddItem(vtui.MenuItem{Text: l.name})
+		if l.code == AppConfig.HelpLanguage {
+			currIdx = i
+		}
+	}
+
+	scrW := vtui.FrameManager.GetScreenSize()
+	scrH := vtui.FrameManager.GetScreenHeight()
+	w, h := 30, len(langs)+2
+	if h > 15 {
+		h = 15
+	}
+	x := (scrW - w) / 2
+	y := (scrH - h) / 2
+	menu.SetPosition(x, y, x+w-1, y+h-1)
+	menu.SetSelectPos(currIdx)
+
+	menu.OnAction = func(idx int) {
+		AppConfig.HelpLanguage = langs[idx].code
+		SaveConfig()
+		InitHelpSystem()
+		vtui.FrameManager.PostTask(func() {
+			vtui.ShowMessage(Msg("Info.Title"), Msg("HelpLanguage.Changed"), []string{Msg("vtui.Ok")})
 			vtui.FrameManager.Redraw()
 		})
 	}
