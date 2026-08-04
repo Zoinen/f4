@@ -86,7 +86,7 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColPanelDir] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
 	vtui.Palette[ColPanelFastFindNoMatch] = vtui.SetRGBBoth(0, 0xD75F5F, blue)
 	vtui.Palette[ColPanelSelectedInfo] = vtui.Palette[ColPanelSelectedText]
-	vtui.Palette[ColPanelScrollbar] = vtui.Palette[ColPanelBox]
+	vtui.Palette[ColPanelScrollbar] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
 
 	// Command line / User screen (Using terminal default background, Index 0)
 	vtui.Palette[ColCommandLineUserScreen] = vtui.SetIndexBoth(0, 7, 0)

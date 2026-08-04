@@ -1093,6 +1093,10 @@ func TestFileSystemPanel_DragAutoScrollStopsOnRelease(t *testing.T) {
 }
 
 func TestFileSystemPanel_ScrollBarMetricsAllViewModes(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
+
 	for _, tc := range []struct {
 		name    string
 		mode    ViewMode
@@ -1140,6 +1144,9 @@ func TestFileSystemPanel_ScrollBarMetricsAllViewModes(t *testing.T) {
 func TestFileSystemPanel_ScrollBarDrawAndMouse(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
 
 	fp := newPanelScrollTestFixture(ViewModeMedium, 0)
 	capacity := fp.table.ViewHeight * fp.gridColumnCount()
@@ -1210,6 +1217,10 @@ func TestFileSystemPanel_ScrollBarDrawAndMouse(t *testing.T) {
 }
 
 func TestFileSystemPanel_ScrollBarHiddenWhenGridFits(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
+
 	fp := newPanelScrollTestFixture(ViewModeBrief, 0)
 	fp.entries = make([]*fileEntry, fp.table.ViewHeight*fp.gridColumnCount())
 	fp.table.TopPos = 4
@@ -1225,6 +1236,103 @@ func TestFileSystemPanel_ScrollBarHiddenWhenGridFits(t *testing.T) {
 	dataY := fp.table.Y1 + fp.table.MarginTop
 	if got := scr.GetCell(fp.X2, dataY).Char; got != 0 {
 		t.Fatalf("scrollbar drawn for fitting Brief grid: %q", rune(got))
+	}
+}
+
+func TestFileSystemPanel_ScrollBarDisabledByDefault(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarOff
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 50)
+	if fp.syncScrollBar() {
+		t.Fatal("disabled panel scrollbar reported itself visible")
+	}
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.drawScrollBar(scr)
+	y := fp.table.Y1 + fp.table.MarginTop
+	if got := scr.GetCell(fp.X2, y).Char; got != 0 {
+		t.Fatalf("disabled panel scrollbar drew %q", rune(got))
+	}
+	if fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.X2), MouseY: int16(y),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("disabled panel scrollbar handled mouse input")
+	}
+}
+
+func TestMinimalPanelScrollThumbUsesWholeHeight(t *testing.T) {
+	position, length := minimalPanelScrollThumb(10, 0, 20)
+	if position != 0 || length != 3 {
+		t.Fatalf("top thumb = position %d length %d, want 0,3", position, length)
+	}
+	position, bottomLength := minimalPanelScrollThumb(10, 20, 20)
+	if bottomLength != length || position+bottomLength != 10 {
+		t.Fatalf("bottom thumb = position %d length %d, want it to touch row 10", position, bottomLength)
+	}
+}
+
+func TestFileSystemPanel_MinimalScrollBarDrawAndMouse(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 50)
+	fp.Refresh()
+	if !fp.syncScrollBar() {
+		t.Fatal("minimal scrollbar was hidden for overflowing content")
+	}
+	height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+	caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.drawScrollBar(scr)
+	for offset := 0; offset < height; offset++ {
+		cell := scr.GetCell(fp.scrollBar.X1, fp.scrollBar.Y1+offset)
+		inHandle := offset >= caretPos && offset < caretPos+caretLength
+		if inHandle {
+			if cell.Char != '│' || cell.Attributes != vtui.Palette[ColPanelScrollbar] {
+				t.Fatalf("minimal handle cell %d = %q/%#x, want bright border", offset, rune(cell.Char), cell.Attributes)
+			}
+		} else if cell.Char != 0 {
+			t.Fatalf("minimal scrollbar drew track or arrow at offset %d: %q", offset, rune(cell.Char))
+		}
+	}
+
+	outsideHandleY := fp.scrollBar.Y1 + caretPos + caretLength
+	if outsideHandleY <= fp.scrollBar.Y2 && fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.scrollBar.X1), MouseY: int16(outsideHandleY),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("minimal scrollbar handled a click on the invisible track")
+	}
+	if !fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.scrollBar.X1), MouseY: int16(fp.scrollBar.Y1 + caretPos),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("minimal scrollbar did not capture its handle")
+	}
+	if !fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 0, MouseY: int16(fp.scrollBar.Y2),
+		ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.MouseMoved,
+	}) {
+		t.Fatal("minimal scrollbar did not drag its captured handle")
+	}
+	_, _, maxTop, _, _ := fp.panelScrollMetrics()
+	if fp.table.TopPos != maxTop {
+		t.Fatalf("minimal handle drag ended at top %d, want %d", fp.table.TopPos, maxTop)
+	}
+	fp.processScrollBarMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if fp.scrollMouseActive {
+		t.Fatal("minimal scrollbar kept mouse capture after release")
 	}
 }
 
