@@ -257,6 +257,9 @@ const imageMaxPixels = 64 << 20
 
 // LoadImage reads a file through the VFS and decodes it.
 func LoadImage(ctx context.Context, v vfs.VFS, path string) (*vtui.ImageSurface, string, error) {
+	if v == nil {
+		return nil, "", fmt.Errorf("image VFS is nil")
+	}
 	f, err := v.Open(ctx, path)
 	if err != nil {
 		return nil, "", err

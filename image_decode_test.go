@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,6 +10,12 @@ import (
 
 	"github.com/unxed/vtui"
 )
+
+func TestLoadImageRejectsNilVFS(t *testing.T) {
+	if _, _, err := LoadImage(context.Background(), nil, "test.png"); err == nil {
+		t.Fatal("nil VFS must return an error")
+	}
+}
 
 func makeTestPNG(t *testing.T, w, h int, c color.RGBA) []byte {
 	t.Helper()
