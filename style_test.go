@@ -65,6 +65,12 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedCursor]); got != 0xF1EC0E {
 		t.Fatalf("modern selected panel cursor text: got %06X", got)
 	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelScrollbar]); got != 0x5A5A5A {
+		t.Fatalf("modern full panel scrollbar: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelMinimalScrollbar]); got != 0xA0A0A0 {
+		t.Fatalf("modern minimal panel scrollbar: got %06X", got)
+	}
 
 	if err := ApplyColorStyle("Classic"); err != nil {
 		t.Fatal(err)

@@ -63,6 +63,36 @@ func resetConfigDirForTest() {
 	cachedF4ConfigDir = ""
 }
 
+type PanelScrollbarMode int
+
+const (
+	PanelScrollbarOff PanelScrollbarMode = iota
+	PanelScrollbarMinimal
+	PanelScrollbarFull
+)
+
+func (m PanelScrollbarMode) String() string {
+	switch m {
+	case PanelScrollbarMinimal:
+		return "minimal"
+	case PanelScrollbarFull:
+		return "full"
+	default:
+		return "off"
+	}
+}
+
+func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "minimal":
+		return PanelScrollbarMinimal
+	case "full":
+		return PanelScrollbarFull
+	default:
+		return PanelScrollbarOff
+	}
+}
+
 type F4Config struct {
 	ColorStyle               string
 	Language                 string
@@ -71,7 +101,7 @@ type F4Config struct {
 	ShowHiddenFiles          bool
 	HighlightDir             bool
 	SeparateFileExtensions   bool
-	ShowPanelScrollbars      bool
+	PanelScrollbarMode       PanelScrollbarMode
 	SavePanelPaths           bool
 	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
 	InfoPanelCPUGPU          bool // Ctrl+L info panel: show CPU and GPU sections (off by default)
@@ -148,7 +178,7 @@ var AppConfig = F4Config{
 	ShowHiddenFiles:          true,
 	HighlightDir:             true,
 	SeparateFileExtensions:   false,
-	ShowPanelScrollbars:      false,
+	PanelScrollbarMode:       PanelScrollbarMinimal,
 	SavePanelPaths:           true,
 	InfoPanelBytes:           false,
 	InfoPanelCPUGPU:          false,
@@ -251,7 +281,20 @@ func LoadConfig() {
 	}
 	AppConfig.HighlightDir = ini.GetString("Panel", "HighlightDir", "1") == "1"
 	AppConfig.SeparateFileExtensions = ini.GetString("Panel", "SeparateFileExtensions", "0") == "1"
-	AppConfig.ShowPanelScrollbars = ini.GetString("Panel", "ShowPanelScrollbars", "0") == "1"
+	if mode := ini.GetString("Panel", "PanelScrollbarMode", ""); mode != "" {
+		AppConfig.PanelScrollbarMode = ParsePanelScrollbarMode(mode)
+	} else {
+		// Migration from the short-lived boolean setting. When neither setting
+		// exists, use the new default: the minimal scrollbar.
+		switch ini.GetString("Panel", "ShowPanelScrollbars", "") {
+		case "1":
+			AppConfig.PanelScrollbarMode = PanelScrollbarFull
+		case "0":
+			AppConfig.PanelScrollbarMode = PanelScrollbarOff
+		default:
+			AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
+		}
+	}
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
 	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	AppConfig.InfoPanelCPUGPU = ini.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
@@ -373,7 +416,7 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("HighlightDir = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.HighlightDir]))
 	sb.WriteString(fmt.Sprintf("SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SeparateFileExtensions]))
-	sb.WriteString(fmt.Sprintf("ShowPanelScrollbars = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowPanelScrollbars]))
+	sb.WriteString(fmt.Sprintf("PanelScrollbarMode = %s\n", AppConfig.PanelScrollbarMode.String()))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
 	sb.WriteString(fmt.Sprintf("InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes]))
 	sb.WriteString(fmt.Sprintf("InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelCPUGPU]))

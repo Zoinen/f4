@@ -341,6 +341,7 @@ type FileSystemPanel struct {
 	table                *vtui.Table
 	scrollBar            *vtui.ScrollBar
 	scrollMouseActive    bool
+	minimalScrollDragGap int
 	headerMouseActive    bool
 	frame                *vtui.BorderedFrame
 	vfs                  vfs.VFS
@@ -905,7 +906,7 @@ func (fp *FileSystemPanel) initScrollBar() {
 }
 
 func (fp *FileSystemPanel) syncScrollBar() bool {
-	if fp.scrollBar == nil || !AppConfig.ShowPanelScrollbars {
+	if fp.scrollBar == nil || AppConfig.PanelScrollbarMode == PanelScrollbarOff {
 		return false
 	}
 	height, _, maxTop, virtualMax, virtualValue := fp.panelScrollMetrics()
@@ -957,8 +958,40 @@ func (fp *FileSystemPanel) drawScrollBar(scr *vtui.ScreenBuf) {
 		return
 	}
 	height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+	if AppConfig.PanelScrollbarMode == PanelScrollbarMinimal {
+		caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+		attr := vtui.Palette[ColPanelMinimalScrollbar]
+		for offset := 0; offset < caretLength; offset++ {
+			scr.Write(fp.scrollBar.X1, fp.scrollBar.Y1+caretPos+offset,
+				vtui.StringToCharInfo("│", attr))
+		}
+		return
+	}
 	vtui.DrawScrollBar(scr, fp.scrollBar.X1, fp.scrollBar.Y1, height,
 		fp.scrollBar.Value, fp.scrollBar.Max+height, vtui.Palette[ColPanelScrollbar])
+}
+
+func minimalPanelScrollThumb(height, value, maximum int) (position, length int) {
+	if height <= 0 || maximum <= 0 {
+		return 0, 0
+	}
+	itemsCount := maximum + height
+	length = (height*height + itemsCount/2) / itemsCount
+	if length < 1 {
+		length = 1
+	}
+	if length >= height {
+		length = height - 1
+	}
+	maxPosition := height - length
+	if value < 0 {
+		value = 0
+	}
+	if value > maximum {
+		value = maximum
+	}
+	position = (value*maxPosition + maximum/2) / maximum
+	return position, length
 }
 
 // drawCursorSeparators restores the cursor background on column separators.
@@ -994,18 +1027,56 @@ func (fp *FileSystemPanel) drawCursorSeparators(scr *vtui.ScreenBuf) {
 }
 
 func (fp *FileSystemPanel) processScrollBarMouse(e *vtinput.InputEvent) bool {
-	if fp.scrollBar == nil || !AppConfig.ShowPanelScrollbars {
+	if fp.scrollBar == nil || AppConfig.PanelScrollbarMode == PanelScrollbarOff {
 		return false
 	}
 	// Releases must reach ScrollBar so it can stop dragging and auto-repeat.
 	if e.ButtonState == 0 {
-		fp.scrollBar.ProcessMouse(e)
+		if AppConfig.PanelScrollbarMode == PanelScrollbarFull {
+			fp.scrollBar.ProcessMouse(e)
+		}
 		fp.scrollMouseActive = false
+		fp.minimalScrollDragGap = 0
 		fp.syncScrollBar()
 		return false
 	}
 	if e.ButtonState&vtinput.FromLeft1stButtonPressed == 0 {
 		return false
+	}
+	if AppConfig.PanelScrollbarMode == PanelScrollbarMinimal {
+		if fp.scrollMouseActive {
+			height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+			_, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+			maxPosition := height - caretLength
+			position := int(e.MouseY) - fp.scrollBar.Y1 - fp.minimalScrollDragGap
+			if position < 0 {
+				position = 0
+			}
+			if position > maxPosition {
+				position = maxPosition
+			}
+			value := 0
+			if maxPosition > 0 {
+				value = (position*fp.scrollBar.Max + maxPosition/2) / maxPosition
+			}
+			_, _, maxTop, virtualMax, _ := fp.panelScrollMetrics()
+			if virtualMax > 0 {
+				fp.setPanelScrollTop((value*maxTop + virtualMax/2) / virtualMax)
+			}
+			return true
+		}
+		if !e.KeyDown || e.MouseEventFlags&vtinput.MouseMoved != 0 || !fp.syncScrollBar() || int(e.MouseX) != fp.scrollBar.X1 {
+			return false
+		}
+		height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+		caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+		y := int(e.MouseY) - fp.scrollBar.Y1
+		if y < caretPos || y >= caretPos+caretLength {
+			return false
+		}
+		fp.scrollMouseActive = true
+		fp.minimalScrollDragGap = y - caretPos
+		return true
 	}
 	if fp.scrollMouseActive {
 		// Once a scrollbar owns the press, moving over file rows must not

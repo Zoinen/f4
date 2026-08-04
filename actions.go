@@ -1779,10 +1779,16 @@ func actionPanelSettings(pf *PanelsFrame) {
 		chkSeparateExtensions.State = 1
 	}
 
-	chkShowScrollbars := vtui.NewCheckbox(0, 0, Msg("PanelSettings.ShowScrollbars"), false)
-	if AppConfig.ShowPanelScrollbars {
-		chkShowScrollbars.State = 1
+	scrollbarModes := []string{
+		Msg("PanelSettings.ScrollbarsOff"),
+		Msg("PanelSettings.ScrollbarsMinimal"),
+		Msg("PanelSettings.ScrollbarsFull"),
 	}
+	comboScrollbars := vtui.NewComboBox(0, 0, 30, scrollbarModes)
+	comboScrollbars.DropdownOnly = true
+	comboScrollbars.Menu.SetSelectPos(int(AppConfig.PanelScrollbarMode))
+	comboScrollbars.Edit.SetText(scrollbarModes[AppConfig.PanelScrollbarMode])
+	lblScrollbars := vtui.NewLabel(0, 0, Msg("PanelSettings.Scrollbars"), comboScrollbars)
 
 	chkPaths := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SavePaths"), false)
 	chkPaths.State = 0
@@ -1869,7 +1875,8 @@ func actionPanelSettings(pf *PanelsFrame) {
 	dlg.AddItem(chkHidden)
 	dlg.AddItem(chkHighlight)
 	dlg.AddItem(chkSeparateExtensions)
-	dlg.AddItem(chkShowScrollbars)
+	dlg.AddItem(lblScrollbars)
+	dlg.AddItem(comboScrollbars)
 	dlg.AddItem(chkPaths)
 	dlg.AddItem(chkCmdAc)
 	dlg.AddItem(lblNavigation)
@@ -1892,7 +1899,10 @@ func actionPanelSettings(pf *PanelsFrame) {
 	vbox.Add(chkHidden, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkHighlight, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkSeparateExtensions, vtui.Margins{Top: 1}, vtui.AlignLeft)
-	vbox.Add(chkShowScrollbars, vtui.Margins{}, vtui.AlignLeft)
+	rowScrollbars := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowScrollbars.Add(lblScrollbars, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowScrollbars.Add(comboScrollbars, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowScrollbars, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(chkPaths, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCmdAc, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(lblNavigation, vtui.Margins{Top: 1}, vtui.AlignLeft)
@@ -1932,7 +1942,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
 		AppConfig.HighlightDir = chkHighlight.State == 1
 		AppConfig.SeparateFileExtensions = chkSeparateExtensions.State == 1
-		AppConfig.ShowPanelScrollbars = chkShowScrollbars.State == 1
+		AppConfig.PanelScrollbarMode = PanelScrollbarMode(comboScrollbars.Menu.SelectPos)
 		AppConfig.SavePanelPaths = chkPaths.State == 1
 		AppConfig.CommandLineAutoComplete = chkCmdAc.State == 1
 		AppConfig.NavigationMode = PanelNavigationMode(navigation.Selected)
