@@ -82,6 +82,7 @@ type FileOpState struct {
 	Anchor       vtui.Frame
 	Buffer       []byte
 	IsMove       bool
+	S2SDir       int // 0: unknown, 1: push, 2: pull, 3: disabled
 }
 
 // formatSize formats a byte count into a human-readable string.
@@ -112,16 +113,21 @@ func formatIntWithSpaces(n int64) string {
 	return res.String()
 }
 
-func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, destInput string, isMove bool, mode int, onComplete func()) {
-	destPath := destInput
-	if !dstVfs.IsAbs(destPath) {
-		if !strings.ContainsAny(destInput, "/\\") && destInput != "." && destInput != ".." {
-			destPath = srcVfs.Join(srcVfs.GetPath(), destInput)
-			dstVfs = srcVfs
-		} else {
-			destPath = dstVfs.Join(dstVfs.GetPath(), destPath)
-		}
+func resolveFileOpDestination(srcVfs, dstVfs vfs.VFS, destInput string) (vfs.VFS, string) {
+	// The passive panel supplies the initial absolute destination shown in the
+	// dialog. Once the user enters a relative path, however, it is relative to
+	// the active (source) panel, just like other panel path operations.
+	if dstVfs.IsAbs(destInput) {
+		return dstVfs, destInput
 	}
+	if srcVfs.IsAbs(destInput) {
+		return srcVfs, destInput
+	}
+	return srcVfs, srcVfs.Join(srcVfs.GetPath(), destInput)
+}
+
+func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, destInput string, isMove bool, mode int, onComplete func()) {
+	dstVfs, destPath := resolveFileOpDestination(srcVfs, dstVfs, destInput)
 
 	isTargetDir := len(names) > 1
 	if !isTargetDir {
@@ -354,7 +360,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 				targetItemPath = dstVfs.Join(destPath, name)
 			}
 
-			if isMove && srcVfs == dstVfs {
+			if isMove && vfs.SameSession(srcVfs, dstVfs) {
 				if _, err := dstVfs.Stat(ctx, targetItemPath); err != nil {
 					if err := srcVfs.Rename(ctx, srcPath, targetItemPath); err == nil {
 						vtui.DebugLog("FILEOP: Optimized server-side rename: %s -> %s", srcPath, targetItemPath)
@@ -656,6 +662,22 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 	}
 }
 
+// closeOnce wraps a Close so that it can be called explicitly where its
+// error matters and still be left in a defer as a safety net. A writer that
+// buffers — every network file system does, FISH+ among them — only sends
+// its last chunk from Close, so a copy is not finished until Close has
+// succeeded, and a dropped error there leaves a truncated file behind while
+// the panel reports success.
+func closeOnce(c io.Closer) func() error {
+	closed := false
+	return func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return c.Close()
+	}
+}
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) error {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
@@ -835,6 +857,100 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
+	// Optimize using server-side copy if both VFS share the same session/connection
+	if ssc, ok := dstVfs.(vfs.ServerSideCopier); ok && vfs.SameSession(srcVfs, dstVfs) {
+		err := ssc.Copy(ctx, srcPath, destPathForFile)
+		if err == nil {
+			if state.Tracker != nil {
+				state.Tracker.UpdateBytes(int(stat.Size))
+				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
+				state.Tracker.FileDone()
+				if state.UpdateUI != nil {
+					state.UpdateUI(false)
+				}
+			}
+			return nil
+		}
+		vtui.DebugLog("FILEOP: Server-side copy failed, falling back to streaming: %v", err)
+	}
+
+	// Optimize using server-to-server direct copy if they are on different hosts,
+	// but we can run commands on one of them and have connection info for the other.
+	if state.S2SDir != 3 { // Not disabled
+		pushed, pulled := false, false
+
+		tryPush := state.S2SDir == 0 || state.S2SDir == 1
+		tryPull := state.S2SDir == 0 || state.S2SDir == 2
+
+		if tryPush {
+			if rner, ok1 := srcVfs.(vfs.CommandRunner); ok1 {
+				if cip, ok2 := dstVfs.(vfs.ConnectionInfoProvider); ok2 {
+					if host, port, user, ok := cip.ConnectionInfo(); ok {
+						var scpDst string
+						if user != "" {
+							scpDst = fmt.Sprintf("%s@%s:%q", user, host, destPathForFile)
+						} else {
+							scpDst = fmt.Sprintf("%s:%q", host, destPathForFile)
+						}
+
+						scpCmd := fmt.Sprintf("scp -o ConnectTimeout=10 -P %s -o StrictHostKeyChecking=no -p %q %s",
+							port, srcPath, scpDst)
+						vtui.DebugLog("FILEOP: Attempting server-to-server push: %s", scpCmd)
+						codePush, errPush := rner.RunCommand(ctx, srcVfs.Dir(srcPath), scpCmd, nil)
+						if errPush == nil && codePush == 0 {
+							pushed = true
+							state.S2SDir = 1
+						} else {
+							vtui.DebugLog("FILEOP: Server-to-server push failed (code: %d): %v", codePush, errPush)
+						}
+					}
+				}
+			}
+		}
+
+		if !pushed && tryPull {
+			if rner, ok1 := dstVfs.(vfs.CommandRunner); ok1 {
+				if cip, ok2 := srcVfs.(vfs.ConnectionInfoProvider); ok2 {
+					if host, port, user, ok := cip.ConnectionInfo(); ok {
+						var scpSrc string
+						if user != "" {
+							scpSrc = fmt.Sprintf("%s@%s:%q", user, host, srcPath)
+						} else {
+							scpSrc = fmt.Sprintf("%s:%q", host, srcPath)
+						}
+
+						scpCmd := fmt.Sprintf("scp -o ConnectTimeout=10 -P %s -o StrictHostKeyChecking=no -p %s %q",
+							port, scpSrc, destPathForFile)
+						vtui.DebugLog("FILEOP: Attempting server-to-server pull: %s", scpCmd)
+						codePull, errPull := rner.RunCommand(ctx, dstVfs.Dir(destPathForFile), scpCmd, nil)
+						if errPull == nil && codePull == 0 {
+							pulled = true
+							state.S2SDir = 2
+						} else {
+							vtui.DebugLog("FILEOP: Server-to-server pull failed (code: %d): %v", codePull, errPull)
+						}
+					}
+				}
+			}
+		}
+
+		if pushed || pulled {
+			if state.Tracker != nil {
+				state.Tracker.UpdateBytes(int(stat.Size))
+				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
+				state.Tracker.FileDone()
+				if state.UpdateUI != nil {
+					state.UpdateUI(false)
+				}
+			}
+			return nil
+		} else if state.S2SDir == 0 {
+			// If both probed and failed (or couldn't even probe), disable S2S for this operation
+			state.S2SDir = 3
+			vtui.DebugLog("FILEOP: Server-to-server copy disabled after probing failed or unavailable")
+		}
+	}
+
 	var srcFile vfs.ReadAtCloser
 	for {
 		srcFile, err = srcVfs.Open(ctx, srcPath)
@@ -868,9 +984,10 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
+	closeDst := closeOnce(dstFile)
 	copySuccess := false
 	defer func() {
-		dstFile.Close()
+		closeDst()
 		if !copySuccess {
 			dstVfs.Remove(context.Background(), destPathForFile)
 		}
@@ -902,6 +1019,9 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
+	if cerr := closeDst(); cerr != nil {
+		return cerr
+	}
 	copySuccess = true
 
 	if copySuccess {

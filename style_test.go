@@ -20,11 +20,24 @@ func TestAvailableColorStylesIncludesBuiltInsAndUserStyles(t *testing.T) {
 	}
 
 	styles := AvailableColorStyles()
-	if len(styles) != 3 {
-		t.Fatalf("expected Modern, Classic, and Solarized; got %v", styleNames(styles))
+	if len(styles) != 4 {
+		t.Fatalf("expected 4 styles (Modern, Classic, Far2l Dark, Solarized); got %v", styleNames(styles))
 	}
-	if styles[0].Name != "Modern" || styles[1].Name != "Classic" || styles[2].Name != "Solarized" {
-		t.Fatalf("unexpected style order: %v", styleNames(styles))
+	if styles[0].Name != "Modern" || styles[1].Name != "Classic" {
+		t.Fatalf("first two styles should be Modern and Classic, got %v", styleNames(styles[:2]))
+	}
+	// Check that both Far2l Dark and Solarized are present
+	foundFar2l, foundSolarized := false, false
+	for _, s := range styles {
+		if s.Name == "Far2l Dark" {
+			foundFar2l = true
+		}
+		if s.Name == "Solarized" {
+			foundSolarized = true
+		}
+	}
+	if !foundFar2l || !foundSolarized {
+		t.Fatalf("expected Far2l Dark and Solarized, got %v", styleNames(styles))
 	}
 }
 
@@ -51,6 +64,12 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	}
 	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedCursor]); got != 0xF1EC0E {
 		t.Fatalf("modern selected panel cursor text: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelScrollbar]); got != 0x5A5A5A {
+		t.Fatalf("modern full panel scrollbar: got %06X", got)
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelMinimalScrollbar]); got != 0xA0A0A0 {
+		t.Fatalf("modern minimal panel scrollbar: got %06X", got)
 	}
 
 	if err := ApplyColorStyle("Classic"); err != nil {

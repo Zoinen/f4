@@ -2,10 +2,48 @@ package main
 
 import (
 	"fmt"
-	"github.com/unxed/vtui"
 	"strings"
 	"testing"
+
+	"github.com/unxed/vtui"
 )
+
+func TestFileOpProgressDialogBackgroundButton(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	d := NewFileOpProgressDialog(" Test ")
+
+	// An operation that cannot be left running gets no such button, which is
+	// most of them: closing the window of a copy has to stop the copy.
+	if d.btnBackground != nil {
+		t.Fatal("the background button appeared without being asked for")
+	}
+
+	called := 0
+	d.EnableBackground(func() { called++ })
+	if d.btnBackground == nil {
+		t.Fatal("EnableBackground added no button")
+	}
+	d.btnBackground.OnClick()
+	if called != 1 {
+		t.Errorf("the button called back %d times, want 1", called)
+	}
+
+	// Asking twice replaces the callback rather than growing a second
+	// button, since a dialog can be reconfigured as an operation goes on.
+	first := d.btnBackground
+	d.EnableBackground(func() { called += 10 })
+	if d.btnBackground != first {
+		t.Error("a second background button was added")
+	}
+	d.btnBackground.OnClick()
+	if called != 11 {
+		t.Errorf("the replaced callback did not take over: %d", called)
+	}
+	vtui.AssertLayout(t, d)
+}
 
 func TestFileOpProgressDialog_Layout(t *testing.T) {
 	vtui.SetDefaultPalette()

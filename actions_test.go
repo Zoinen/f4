@@ -723,33 +723,14 @@ func TestDelete_FocusCustomization(t *testing.T) {
 	origDelFocus := AppConfig.DeleteCancelFocused
 	defer func() { AppConfig.DeleteCancelFocused = origDelFocus }()
 
-	// 1. Тест режима по умолчанию (фокус на Cancel)
-	AppConfig.DeleteCancelFocused = true
-	actionDelete(pf)
-
-	dlg1 := fm.GetTopFrame().(vtui.Container)
-	var btnCancel *vtui.Button
-	for _, child := range dlg1.GetChildren() {
-		if b, ok := child.(*vtui.Button); ok && strings.Contains(b.GetText(), "Cancel") {
-			btnCancel = b
-			break
-		}
-	}
-	if btnCancel == nil {
-		t.Fatal("Cancel button not found")
-	}
-	if !btnCancel.IsFocused() {
-		t.Error("Expected 'Cancel' button to be focused by default")
-	}
-	fm.Pop()
-
-	// 2. Тест кастомного режима (фокус на Delete/OK)
+	// 1. By default the destructive action is focused, matching the other
+	// confirmation dialogs and allowing Enter to confirm it.
 	AppConfig.DeleteCancelFocused = false
 	actionDelete(pf)
 
-	dlg2 := fm.GetTopFrame().(vtui.Container)
+	dlg1 := fm.GetTopFrame().(vtui.Container)
 	var btnDel *vtui.Button
-	for _, child := range dlg2.GetChildren() {
+	for _, child := range dlg1.GetChildren() {
 		if b, ok := child.(*vtui.Button); ok && strings.Contains(b.GetText(), "Delete") {
 			btnDel = b
 			break
@@ -759,7 +740,27 @@ func TestDelete_FocusCustomization(t *testing.T) {
 		t.Fatal("Delete button not found")
 	}
 	if !btnDel.IsFocused() {
-		t.Error("Expected 'Delete' button to be focused after customization")
+		t.Error("Expected 'Delete' button to be focused by default")
+	}
+	fm.Pop()
+
+	// 2. The safety option can still explicitly focus Cancel.
+	AppConfig.DeleteCancelFocused = true
+	actionDelete(pf)
+
+	dlg2 := fm.GetTopFrame().(vtui.Container)
+	var btnCancel *vtui.Button
+	for _, child := range dlg2.GetChildren() {
+		if b, ok := child.(*vtui.Button); ok && strings.Contains(b.GetText(), "Cancel") {
+			btnCancel = b
+			break
+		}
+	}
+	if btnCancel == nil {
+		t.Fatal("Cancel button not found")
+	}
+	if !btnCancel.IsFocused() {
+		t.Error("Expected 'Cancel' button to be focused when configured")
 	}
 	fm.Pop()
 }
@@ -1239,7 +1240,7 @@ func TestActionRename_CacheAndSelection(t *testing.T) {
 	pf.activeIdx = 0
 
 	// Заполняем кэш данными
-	fsp.dirCache[fsp.vfs.GetPath()] = dirCacheEntry{items: []vfs.VFSItem{{Name: "old.txt"}}}
+	fsp.dirCache[fsp.cacheKey(fsp.vfs.GetPath())] = dirCacheEntry{items: []vfs.VFSItem{{Name: "old.txt"}}}
 
 	// 1. Тест успешного переименования
 	// Перехватываем InputBox внутри actionRename (в тестах он не блокирует)
@@ -1252,11 +1253,11 @@ func TestActionRename_CacheAndSelection(t *testing.T) {
 	fsp.vfs.Rename(context.Background(), oldPath, newPath)
 
 	// Выполняем UI-часть из actionRename (успех)
-	delete(fsp.dirCache, fsp.vfs.GetPath())
+	delete(fsp.dirCache, fsp.cacheKey(fsp.vfs.GetPath()))
 	fsp.pendingSelection = newName
 	pf.RefreshAll()
 
-	if _, ok := fsp.dirCache[fsp.vfs.GetPath()]; ok {
+	if _, ok := fsp.dirCache[fsp.cacheKey(fsp.vfs.GetPath())]; ok {
 		t.Error("Cache was not cleared after rename")
 	}
 	if fsp.pendingSelection != "new.txt" {
@@ -1317,7 +1318,8 @@ func (m *mockRenameVFS) Rename(ctx context.Context, old, new string) error {
 
 type mockSlowVFS struct {
 	vfs.VFS
-	onOpen func()
+	onOpen    func()
+	openDelay time.Duration
 }
 
 func (m *mockSlowVFS) GetPath() string     { return "/mock" }
@@ -1328,6 +1330,15 @@ func (m *mockSlowVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 func (m *mockSlowVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
 	if m.onOpen != nil {
 		m.onOpen()
+	}
+	if m.openDelay > 0 {
+		timer := time.NewTimer(m.openDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	tmp, _ := os.CreateTemp("", "f4mock-*")
 	return &vfs.TempFileWrapper{File: tmp, SizeVal: 0, TempPath: tmp.Name()}, nil
@@ -1342,6 +1353,10 @@ func TestActionOpenViewer_ProgressTask(t *testing.T) {
 
 	called := false
 	mv := &mockSlowVFS{
+		// Leave a generous observation window after the delayed dialog appears;
+		// loaded Windows CI can otherwise schedule the UI drain only after Open
+		// has already completed and legitimately closed it.
+		openDelay: openingProgressDelay + 500*time.Millisecond,
 		onOpen: func() {
 			called = true
 		},
@@ -1379,6 +1394,45 @@ LoopOpen:
 	}
 
 	t.Log("SUCCESS: Progress dialog was correctly displayed during slow file load.")
+}
+
+func TestActionOpenViewer_FastTaskDoesNotFlashProgressDialog(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	called := false
+	mv := &mockSlowVFS{onOpen: func() { called = true }}
+	actionOpenViewer(pf, mv, "/mock/file.txt")
+
+	deadline := time.NewTimer(openingProgressDelay + 150*time.Millisecond)
+	defer deadline.Stop()
+	foundProgress := false
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			for _, screen := range vtui.FrameManager.Screens {
+				for _, frame := range screen.Frames {
+					if strings.Contains(frame.GetTitle(), "Opening") {
+						foundProgress = true
+					}
+				}
+			}
+		case <-deadline.C:
+			if !called {
+				t.Fatal("mock VFS Open was not called")
+			}
+			if foundProgress {
+				t.Fatal("fast viewer open flashed a delayed progress dialog")
+			}
+			return
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
 }
 
 func TestActionCommandHistory_Flow(t *testing.T) {
@@ -1746,5 +1800,53 @@ Loop:
 	}
 	if !foundError {
 		t.Error("Expected error dialog for special file in viewer")
+	}
+}
+func TestActionEditFile_DirectoryRedirectsToAttributes(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	tmpDir := t.TempDir()
+	subDirName := "sub_folder"
+	subDirPath := filepath.Join(tmpDir, subDirName)
+	if err := os.Mkdir(subDirPath, 0755); err != nil {
+		t.Fatalf("Failed to create sub directory: %v", err)
+	}
+
+	v := vfs.NewOSVFS(tmpDir)
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	fsp := pf.panels[0].(*FileSystemPanel)
+	fsp.vfs = v
+	fsp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: subDirName, IsDir: true}},
+	}
+	fsp.SetCursorIndex(1) // Focus on "sub_folder"
+	pf.activeIdx = 0
+
+	// Trigger Edit (F4)
+	actionEditFile(pf)
+
+	// Wait for the async task that reads Stat and shows the Attributes dialog
+	timeout := time.After(2 * time.Second)
+	foundAttributes := false
+	for !foundAttributes {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil && strings.Contains(top.GetTitle(), "Attributes") {
+				foundAttributes = true
+			}
+		case <-timeout:
+			t.Fatal("Timeout waiting for Attributes dialog to open on F4")
+		}
+	}
+
+	if !foundAttributes {
+		t.Error("Expected Attributes dialog to open when pressing F4 on a directory")
 	}
 }

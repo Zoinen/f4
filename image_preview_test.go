@@ -160,3 +160,12 @@ func TestImagePipelinePreviewAbsent(t *testing.T) {
 		t.Errorf("a file without a thumbnail has no preview: %+v", res)
 	}
 }
+
+func TestImageQuickPreviewSkipsNonJPEGWithoutOpeningIt(t *testing.T) {
+	// A nil VFS makes any attempted Open fail with "no file system". PNG is
+	// rejected by its format before that point, avoiding remote I/O entirely.
+	_, _, err := imageQuickPreview(context.Background(), nil, "a.png")
+	if err == nil || err.Error() != "embedded preview is only supported for JPEG files" {
+		t.Fatalf("PNG preview error = %v", err)
+	}
+}

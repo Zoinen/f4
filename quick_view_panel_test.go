@@ -23,7 +23,7 @@ func TestPanelsFrame_CtrlQ_TogglesQuickView(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 
 	send := func(vk uint16, mods vtinput.ControlKeyState) {
-		pf.ProcessKey(&vtinput.InputEvent{
+		pressKey(pf, &vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true,
 			VirtualKeyCode:  vk,
 			ControlKeyState: mods,
@@ -69,7 +69,7 @@ func TestPanelsFrame_CtrlLQ_CoexistOnDifferentSides(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 
 	send := func(vk uint16) {
-		pf.ProcessKey(&vtinput.InputEvent{
+		pressKey(pf, &vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true,
 			VirtualKeyCode:  vk,
 			ControlKeyState: vtinput.LeftCtrlPressed,
@@ -82,7 +82,7 @@ func TestPanelsFrame_CtrlLQ_CoexistOnDifferentSides(t *testing.T) {
 		t.Fatalf("expected InfoPanel on left, got %T", pf.altPanels[0])
 	}
 	// Tab to left (so info is now on active side).
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	if pf.activeIdx != 0 {
 		t.Fatalf("Tab: expected activeIdx=0, got %d", pf.activeIdx)
 	}
@@ -250,7 +250,7 @@ func TestPanelsFrame_QuickViewWheel_ActivePanelScrolls(t *testing.T) {
 	fsp.Refresh()
 
 	// Ctrl+Q — alt lands on left (opposite of active=right).
-	pf.ProcessKey(&vtinput.InputEvent{
+	pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_Q, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -259,7 +259,7 @@ func TestPanelsFrame_QuickViewWheel_ActivePanelScrolls(t *testing.T) {
 
 	// Tab — active moves to left (alt slot). From now on wheel should
 	// hit the alt, regardless of mouse pointer.
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	pf.Show(scr)
 
 	before := q.scrollY
@@ -556,7 +556,7 @@ func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 
 	// Install a QuickView (Ctrl+Q). Active panel is right (activeIdx=1),
 	// so alt lands on left (index 0).
-	pf.ProcessKey(&vtinput.InputEvent{
+	pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_Q, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -565,7 +565,7 @@ func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 	}
 
 	before := AppConfig.InfoPanelBytes
-	pf.ProcessKey(&vtinput.InputEvent{
+	pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_B,
 	})

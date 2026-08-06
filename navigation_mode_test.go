@@ -99,28 +99,177 @@ func TestSearchFirstKeyboardRoutingAndFocusToggle(t *testing.T) {
 		t.Fatal("search-first must start with panel focus")
 	}
 
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'b', VirtualKeyCode: 'B'})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'b', VirtualKeyCode: 'B'})
 	if !left.fastFindMode || left.fastFindStr != "b" || left.GetSelectedName() != "beta.txt" {
 		t.Fatalf("plain input did not start fast find: mode=%v text=%q selected=%q", left.fastFindMode, left.fastFindStr, left.GetSelectedName())
 	}
 
 	grave := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'ё', VirtualKeyCode: vtinput.VK_OEM_3}
-	pf.ProcessKey(grave)
+	pressKey(pf, grave)
 	if !pf.commandLineFocused || !pf.cmdLine.IsFocused() || left.IsFocused() || left.fastFindMode {
 		t.Fatal("grave key did not move focus to command line and close fast find")
 	}
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'x', VirtualKeyCode: 'X'})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'x', VirtualKeyCode: 'X'})
 	if got := pf.cmdLine.Edit.GetText(); got != "x" {
 		t.Fatalf("command input got %q, want x", got)
 	}
 
-	pf.ProcessKey(grave)
+	pressKey(pf, grave)
 	if pf.commandLineFocused || pf.cmdLine.Edit.GetText() != "x" {
 		t.Fatal("second grave must return to panel without clearing command text")
 	}
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 	if got := pf.cmdLine.Edit.GetText(); got != "x" {
 		t.Fatalf("panel Enter executed retained command text: %q", got)
+	}
+}
+
+func TestSearchFirstFastFindCtrlEnterNavigation(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+	AppConfig.CommandLineAutoComplete = false
+
+	pf, left, _ := newSearchFirstTestFrame(t)
+	left.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "alpha.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "beta.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "bravo.txt"}},
+	}
+	left.Refresh()
+
+	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'b', VirtualKeyCode: 'B'})
+	if got := left.GetSelectedName(); got != "beta.txt" {
+		t.Fatalf("initial Fast Find selected %q, want beta.txt", got)
+	}
+
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if got := left.GetSelectedName(); got != "bravo.txt" {
+		t.Fatalf("Ctrl+Enter selected %q, want bravo.txt", got)
+	}
+	if !left.fastFindMode || left.fastFindStr != "b" || !pf.cmdLine.IsEmpty() {
+		t.Fatal("Ctrl+Enter must keep Fast Find active without changing the command line")
+	}
+
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	if got := left.GetSelectedName(); got != "beta.txt" {
+		t.Fatalf("Ctrl+Shift+Enter selected %q, want beta.txt", got)
+	}
+
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_ESCAPE,
+	})
+	if left.fastFindMode || left.fastFindStr != "" {
+		t.Fatal("Esc must close Fast Find")
+	}
+	if !pf.showPanels {
+		t.Fatal("Esc used to close Fast Find must not hide the panels")
+	}
+}
+
+func TestClassicFastFindEscapeDoesNotHidePanels(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationClassic
+	AppConfig.EscTogglePanels = true
+
+	pf, left, _ := newSearchFirstTestFrame(t)
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		Char:            'b',
+		VirtualKeyCode:  'B',
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	if !left.fastFindMode {
+		t.Fatal("Alt+B did not start Fast Find in classic navigation")
+	}
+
+	escapeDown := &vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_ESCAPE,
+	}
+	pf.ProcessKey(escapeDown)
+	if left.fastFindMode || left.fastFindStr != "" {
+		t.Fatal("Esc did not close classic Fast Find")
+	}
+	if !pf.showPanels {
+		t.Fatal("Esc used to close classic Fast Find hid the panels")
+	}
+}
+
+func TestClassicFastFindF2TogglesAnywhereMatching(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationClassic
+
+	pf, left, _ := newSearchFirstTestFrame(t)
+	left.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "inside-target.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "target-prefix.txt"}},
+	}
+	left.Refresh()
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		Char:            't',
+		VirtualKeyCode:  'T',
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	if got := left.GetSelectedName(); got != "target-prefix.txt" {
+		t.Fatalf("prefix Fast Find selected %q, want target-prefix.txt", got)
+	}
+
+	f2 := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2}
+	if !pf.ProcessKey(f2) || left.fastFindStr != "*t" {
+		t.Fatal("F2 did not enable anywhere matching in Fast Find")
+	}
+	if got := left.GetSelectedName(); got != "target-prefix.txt" {
+		t.Fatalf("anywhere Fast Find moved away from current match to %q", got)
+	}
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if got := left.GetSelectedName(); got != "inside-target.txt" {
+		t.Fatalf("next anywhere match selected %q, want inside-target.txt", got)
+	}
+	if !pf.ProcessKey(f2) || left.fastFindStr != "t" {
+		t.Fatal("second F2 did not restore prefix matching")
+	}
+	if got := left.GetSelectedName(); got != "target-prefix.txt" {
+		t.Fatalf("restored prefix Fast Find selected %q, want target-prefix.txt", got)
+	}
+
+	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE})
+	left.SetCursorIndex(0)
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		Char:            '*',
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 't', VirtualKeyCode: 'T'})
+	if left.fastFindStr != "*t" {
+		t.Fatalf("manually entered anywhere query = %q, want *t", left.fastFindStr)
+	}
+	if got := left.GetSelectedName(); got != "inside-target.txt" {
+		t.Fatalf("manual leading star selected %q, want inside-target.txt", got)
 	}
 }
 
@@ -132,10 +281,10 @@ func TestSearchFirstFocusToggleAcceptsGUITextOnlyGraveEvents(t *testing.T) {
 	for _, char := range []rune{'`', 'ё'} {
 		pf, _, _ := newSearchFirstTestFrame(t)
 		event := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: char}
-		if !pf.ProcessKey(event) || !pf.commandLineFocused {
+		if !pressKey(pf, event) || !pf.commandLineFocused {
 			t.Fatalf("text-only %q event did not focus command line", char)
 		}
-		if !pf.ProcessKey(event) || pf.commandLineFocused {
+		if !pressKey(pf, event) || pf.commandLineFocused {
 			t.Fatalf("second text-only %q event did not restore panel focus", char)
 		}
 		if !pf.cmdLine.IsEmpty() {
@@ -158,7 +307,7 @@ func TestSearchFirstAltGraveInsertsBacktickInCommandFocus(t *testing.T) {
 		pf, _, _ := newSearchFirstTestFrame(t)
 		pf.setCommandLineFocus(true)
 		pf.cmdLine.Edit.SetText("echo ")
-		if !pf.ProcessKey(event) {
+		if !pressKey(pf, event) {
 			t.Fatalf("Alt+grave event was not handled: %+v", event)
 		}
 		if got := pf.cmdLine.Edit.GetText(); got != "echo `" {
@@ -179,7 +328,7 @@ func TestSearchFirstCommandEnterPolicyAndTab(t *testing.T) {
 	pf, _, _ := newSearchFirstTestFrame(t)
 	pf.setCommandLineFocus(true)
 	pf.cmdLine.Edit.SetText("exit")
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 	if pf.commandLineFocused {
 		t.Fatal("default Enter policy must return focus to panel")
 	}
@@ -187,17 +336,17 @@ func TestSearchFirstCommandEnterPolicyAndTab(t *testing.T) {
 	AppConfig.SearchCommandStayFocused = true
 	pf.setCommandLineFocus(true)
 	pf.cmdLine.Edit.SetText("exit")
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 	if !pf.commandLineFocused {
 		t.Fatal("stay-focused policy lost command-line focus")
 	}
 	active := pf.activeIdx
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	if pf.activeIdx != active {
 		t.Fatal("Tab in command focus switched panels")
 	}
 	pf.setCommandLineFocus(false)
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	if pf.activeIdx == active {
 		t.Fatal("Tab in panel focus did not switch panels")
 	}
@@ -234,7 +383,7 @@ func TestSearchFirstHistoryAndPromptFocusColors(t *testing.T) {
 
 	pf.cmdLine.Edit.History = []string{"previous command"}
 	pf.cmdLine.Edit.HistoryPos = -1
-	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
 	if got := pf.cmdLine.Edit.GetText(); got != "previous command" {
 		t.Fatalf("Up in command focus did not navigate history: %q", got)
 	}
@@ -334,8 +483,8 @@ func TestDetailedArrowRoutingByNavigationFocus(t *testing.T) {
 	left.SetViewMode(ViewModeDetailed)
 	left.SetCursorIndex(0)
 	pf.cmdLine.Edit.SetText("abcd")
-	pf.ProcessKey(key(vtinput.VK_LEFT))
-	pf.ProcessKey(typeChar('X'))
+	pressKey(pf, key(vtinput.VK_LEFT))
+	pressKey(pf, typeChar('X'))
 	if got := pf.cmdLine.Edit.GetText(); got != "abcXd" {
 		t.Fatalf("Classic non-empty command line did not own Left: %q", got)
 	}
@@ -344,7 +493,7 @@ func TestDetailedArrowRoutingByNavigationFocus(t *testing.T) {
 	}
 
 	pf.cmdLine.Clear()
-	pf.ProcessKey(key(vtinput.VK_RIGHT))
+	pressKey(pf, key(vtinput.VK_RIGHT))
 	if left.GetCursorIndex() == 0 {
 		t.Fatal("Classic empty command line did not page the Detailed panel")
 	}
@@ -352,7 +501,7 @@ func TestDetailedArrowRoutingByNavigationFocus(t *testing.T) {
 	AppConfig.NavigationMode = NavigationSearchFirst
 	pf.applyNavigationMode()
 	left.SetCursorIndex(0)
-	pf.ProcessKey(key(vtinput.VK_RIGHT))
+	pressKey(pf, key(vtinput.VK_RIGHT))
 	if left.GetCursorIndex() == 0 {
 		t.Fatal("Search-first panel focus did not page the Detailed panel")
 	}
@@ -360,8 +509,8 @@ func TestDetailedArrowRoutingByNavigationFocus(t *testing.T) {
 	panelPos := left.GetCursorIndex()
 	pf.setCommandLineFocus(true)
 	pf.cmdLine.Edit.SetText("abcd")
-	pf.ProcessKey(key(vtinput.VK_LEFT))
-	pf.ProcessKey(typeChar('X'))
+	pressKey(pf, key(vtinput.VK_LEFT))
+	pressKey(pf, typeChar('X'))
 	if got := pf.cmdLine.Edit.GetText(); got != "abcXd" {
 		t.Fatalf("Search-first command focus did not own Left: %q", got)
 	}

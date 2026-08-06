@@ -1,8 +1,15 @@
 # Project Structure
-Last updated: 2026-08-04 07:43:17
 
 ```text
 .
+├── action_copyname_parent_test.go
+├── action_marked_clipboard_test.go
+├── action_menu.go
+├── action_menu_test.go
+├── action_menu_visibility_test.go
+├── action_registry.go
+├── action_registry_test.go
+├── action_restore_selection_test.go
 ├── actions.go
 ├── actions_test.go
 ├── ansi_parser.go
@@ -47,6 +54,10 @@ Last updated: 2026-08-04 07:43:17
 ├── attributes_dialog_unix.go
 ├── attributes_dialog_windows.go
 ├── attributes_test.go
+├── background_jobs.go
+├── background_jobs_session_test.go
+├── background_jobs_test.go
+├── background_jobs_window.go
 ├── bookmarks_dialog.go
 ├── bookmarks_dialog_test.go
 ├── bookmarks.go
@@ -54,10 +65,6 @@ Last updated: 2026-08-04 07:43:17
 ├── child_env.go
 ├── child_env_test.go
 ├── colorer_downloader.go
-├── colorer_hrc.go
-├── colorer_hrc_test.go
-├── colorer_hrd.go
-├── colorer_hrd_test.go
 ├── colorer_plugin.go
 ├── colorer_plugin_test.go
 ├── colorer_settings.go
@@ -76,9 +83,16 @@ Last updated: 2026-08-04 07:43:17
 ├── cpu_info_windows.go
 ├── detach_unix.go
 ├── detach_windows.go
+├── dragdrop.go
+├── DRAGDROP.md
+├── dragdrop_test.go
 ├── drives_unix.go
 ├── drives_windows.go
+├── editor_delta_test.go
 ├── editor_features_test.go
+├── editor_restore_keys_test.go
+├── editor_target_line_test.go
+├── editor_veto_test.go
 ├── editor_view_ads_test.go
 ├── editor_view.go
 ├── editor_view_test.go
@@ -89,20 +103,6 @@ Last updated: 2026-08-04 07:43:17
 ├── farcolor_test.go
 ├── farmenu_file.go
 ├── farmenu_file_test.go
-├── ffibridge
-│   ├── bridge.go
-│   ├── bridge_test.go
-│   ├── callback.go
-│   ├── convert.go
-│   ├── convert_test.go
-│   ├── kind.go
-│   ├── libc.go
-│   ├── memory.go
-│   ├── memory_test.go
-│   ├── signature.go
-│   ├── signature_test.go
-│   ├── sys_ffi.go
-│   └── sys_stub.go
 ├── FFI.md
 ├── filelist_update.sh
 ├── file_op_dialog.go
@@ -114,10 +114,14 @@ Last updated: 2026-08-04 07:43:17
 ├── file_panel.go
 ├── file_panel_test.go
 ├── file_state.go
+├── file_state_key_test.go
 ├── file_state_test.go
 ├── find_file.go
 ├── find_file_test.go
 ├── FISH+.md
+├── FISH_PLUS_S2S.md
+├── folder_history_actions_test.go
+├── folder_history_navigation_test.go
 ├── fs_info_darwin.go
 ├── fs_info.go
 ├── fs_info_linux.go
@@ -134,22 +138,40 @@ Last updated: 2026-08-04 07:43:17
 ├── gpu_info_linux.go
 ├── gpu_info_other.go
 ├── gpu_info_windows.go
+├── grabber.go
+├── grabber_test.go
 ├── gui_unix.go
 ├── gui_windows.go
 ├── help
 │   ├── en.hlf
+│   ├── README.md
 │   └── ru.hlf
 ├── help.go
+├── help_keys_ru_test.go
+├── help_keys_test.go
+├── help_lang_test.go
+├── help_search.go
+├── help_search_test.go
 ├── help_test.go
 ├── highlight_files.go
 ├── highlight_files_test.go
 ├── HIGHLIGHTING.md
+├── history_dialog.go
+├── history_dialog_test.go
+├── history_hint_test.go
 ├── history_provider.go
 ├── history_provider_test.go
+├── hotkeys.go
+├── hotkeys_test.go
+├── hotkeys_ui.go
+├── hotkeys_ui_test.go
 ├── I18N.md
+├── IDEAS.md
 ├── image_bmp.go
 ├── image_decode.go
 ├── image_decode_test.go
+├── image_external.go
+├── image_external_test.go
 ├── image_formats_test.go
 ├── image_gallery.go
 ├── image_gallery_test.go
@@ -160,6 +182,7 @@ Last updated: 2026-08-04 07:43:17
 ├── image_qoi.go
 ├── image_slideshow.go
 ├── image_slideshow_test.go
+├── IMAGES_PLAN.md
 ├── image_transform.go
 ├── image_transform_test.go
 ├── image_view.go
@@ -174,6 +197,7 @@ Last updated: 2026-08-04 07:43:17
 ├── input_translation_test.go
 ├── issue149_test.go
 ├── issue54_test.go
+├── keybar_injected_test.go
 ├── kitty_graphics.go
 ├── kitty_graphics_test.go
 ├── kitty_metrics_test.go
@@ -183,6 +207,8 @@ Last updated: 2026-08-04 07:43:17
 │   ├── en.lng
 │   └── ru.lng
 ├── lang.go
+├── lang_packs.go
+├── lang_packs_test.go
 ├── lang_test.go
 ├── LICENSE
 ├── LUA.md
@@ -199,6 +225,7 @@ Last updated: 2026-08-04 07:43:17
 │   └── sandbox.go
 ├── lua_plugin.go
 ├── lua_plugin_test.go
+├── macro_ctrlletter_test.go
 ├── macro_export.go
 ├── macro_export_test.go
 ├── macro.go
@@ -213,6 +240,8 @@ Last updated: 2026-08-04 07:43:17
 ├── mem_info_linux.go
 ├── mem_info_other.go
 ├── mem_info_windows.go
+├── navigation_mode.go
+├── navigation_mode_test.go
 ├── packaging
 │   ├── linux
 │   │   └── f4.desktop
@@ -256,19 +285,78 @@ Last updated: 2026-08-04 07:43:17
 │   │   └── README.md
 │   ├── dummy_rpc
 │   │   └── main.go
-│   └── netfox
-│       ├── crypto.go
-│       ├── crypto_test.go
+│   ├── netfox
+│   │   ├── crypto.go
+│   │   ├── crypto_test.go
+│   │   ├── dev
+│   │   │   ├── README.md
+│   │   │   └── unxed_f4_issue_316.json
+│   │   ├── dialog.go
+│   │   ├── dialog_test.go
+│   │   ├── fish_clone_session_test.go
+│   │   ├── fish_dialer_test.go
+│   │   ├── fishplus
+│   │   │   ├── cancel_test.go
+│   │   │   ├── cand
+│   │   │   ├── exec.go
+│   │   │   ├── exec_test.go
+│   │   │   ├── fs.go
+│   │   │   ├── fs_test.go
+│   │   │   ├── hash.go
+│   │   │   ├── hash_test.go
+│   │   │   ├── helper.sh
+│   │   │   ├── job.go
+│   │   │   ├── job_test.go
+│   │   │   ├── keepalive.go
+│   │   │   ├── keepalive_test.go
+│   │   │   ├── ls.go
+│   │   │   ├── ls_test.go
+│   │   │   ├── mutate.go
+│   │   │   ├── mutate_test.go
+│   │   │   ├── patch.go
+│   │   │   ├── patch_test.go
+│   │   │   ├── read.go
+│   │   │   ├── read_test.go
+│   │   │   ├── script.go
+│   │   │   ├── script_test.go
+│   │   │   ├── search.go
+│   │   │   ├── search_test.go
+│   │   │   ├── session.go
+│   │   │   ├── session_test.go
+│   │   │   ├── sizes
+│   │   │   ├── write.go
+│   │   │   └── write_test.go
+│   │   ├── fish_reconnect_entry_test.go
+│   │   ├── fish_reconnect_test.go
+│   │   ├── fish_vfs.go
+│   │   ├── fish_vfs_test.go
+│   │   ├── ftp_vfs.go
+│   │   ├── netfox.go
+│   │   ├── netfox_test.go
+│   │   ├── registry.go
+│   │   ├── sftp_vfs.go
+│   │   ├── ssh_dial.go
+│   │   ├── ssh_pty.go
+│   │   ├── vfs_abs_test.go
+│   │   └── vfs.go
+│   └── visren
+│       ├── config.go
 │       ├── dialog.go
 │       ├── dialog_test.go
-│       ├── ftp_vfs.go
-│       ├── netfox.go
-│       ├── netfox_test.go
-│       ├── registry.go
-│       ├── sftp_vfs.go
-│       ├── ssh_pty.go
-│       ├── vfs_abs_test.go
-│       └── vfs.go
+│       ├── editor.go
+│       ├── editor_test.go
+│       ├── engine_test.go
+│       ├── LICENSE.upstream
+│       ├── masks.go
+│       ├── metadata.go
+│       ├── metadata_test.go
+│       ├── model.go
+│       ├── plugin.go
+│       ├── plugin_test.go
+│       ├── rename.go
+│       ├── rename_test.go
+│       ├── replace.go
+│       └── transforms.go
 ├── plugin_scaffold.go
 ├── plugin_scaffold_test.go
 ├── plugins.go
@@ -299,13 +387,17 @@ Last updated: 2026-08-04 07:43:17
 ├── quick_view_panel.go
 ├── quick_view_panel_test.go
 ├── README.md
+├── reconnect.go
+├── reconnect_test.go
+├── remote_command.go
+├── resolve_command_other.go
+├── resolve_command_windows.go
+├── REVIEW.md
 ├── rpc_lua_test.go
 ├── rpc_plugin.go
 ├── rpc_plugin_test.go
 ├── rpc_vfs.go
 ├── rpc_vfs_test.go
-├── rsrc_windows_amd64.syso
-├── rsrc_windows_arm64.syso
 ├── screenshot.png
 ├── sdk
 │   ├── extui
@@ -330,14 +422,17 @@ Last updated: 2026-08-04 07:43:17
 ├── solaris_streams.go
 ├── solaris_streams_mock_test.go
 ├── solaris_streams_test.go
+├── style_far2l_test.go
 ├── style.go
 ├── styles
 │   ├── classic.ini
+│   ├── far2l_dark.ini
 │   └── modern.ini
 ├── style_test.go
 ├── terminal_log_vfs.go
 ├── terminal_log_vfs_test.go
 ├── TERMINAL.md
+├── terminal_selection_test.go
 ├── terminal_view.go
 ├── terminal_view_test.go
 ├── test_main_test.go
@@ -346,36 +441,44 @@ Last updated: 2026-08-04 07:43:17
 ├── textlayout
 │   ├── wrap.go
 │   └── wrap_test.go
+├── themed_table.go
 ├── title.go
 ├── title_test.go
 ├── title_unix.go
 ├── title_windows.go
 ├── tools
-│   └── icons
-│       ├── go.mod
-│       ├── go.sum
-│       ├── main.go
-│       ├── main_test.go
-│       └── third_party
-│           └── oksvg
-│               ├── definitions.go
-│               ├── draw.go
-│               ├── .gitignore
-│               ├── go.mod
-│               ├── icon_cursor.go
-│               ├── LICENSE
-│               ├── path_cursor.go
-│               ├── path_style.go
-│               ├── public.go
-│               ├── README.md
-│               ├── svg_icon.go
-│               ├── svg_path.go
-│               └── utils.go
+│   ├── fishplus_probe.sh
+│   ├── fishplus_testlab
+│   │   ├── fishclient.py
+│   │   ├── TESTLAB.md
+│   │   └── test_patch.py
+│   ├── icons
+│   │   ├── go.mod
+│   │   ├── go.sum
+│   │   ├── main.go
+│   │   ├── main_test.go
+│   │   └── third_party
+│   │       └── oksvg
+│   │           ├── definitions.go
+│   │           ├── draw.go
+│   │           ├── .gitignore
+│   │           ├── go.mod
+│   │           ├── icon_cursor.go
+│   │           ├── LICENSE
+│   │           ├── path_cursor.go
+│   │           ├── path_style.go
+│   │           ├── public.go
+│   │           ├── README.md
+│   │           ├── svg_icon.go
+│   │           ├── svg_path.go
+│   │           └── utils.go
+│   └── test_runner.sh
 ├── top_bar.go
 ├── top_bar_test.go
 ├── translate_kitty.go
 ├── translate_kitty_test.go
 ├── updater.go
+├── updater_repro_test.go
 ├── updater_test.go
 ├── user_menu.go
 ├── user_menu_ini.go
@@ -400,6 +503,7 @@ Last updated: 2026-08-04 07:43:17
 │   ├── os_vfs_dot_test.go
 │   ├── os_vfs.go
 │   ├── os_vfs_junction_stub.go
+│   ├── os_vfs_noreplace_test.go
 │   ├── os_vfs_physical_other.go
 │   ├── os_vfs_physical_test.go
 │   ├── os_vfs_physical_unix.go
@@ -414,6 +518,11 @@ Last updated: 2026-08-04 07:43:17
 │   ├── os_vfs_windows.go
 │   ├── os_vfs_windows_test.go
 │   ├── privileges_windows.go
+│   ├── rename_noreplace_darwin.go
+│   ├── rename_noreplace.go
+│   ├── rename_noreplace_linux.go
+│   ├── rename_noreplace_unix.go
+│   ├── rename_noreplace_windows.go
 │   ├── scanner.go
 │   ├── scanner_test.go
 │   ├── sudo_askpass_unix.go
@@ -433,10 +542,13 @@ Last updated: 2026-08-04 07:43:17
 ├── viewer_backend_test.go
 ├── viewer_view.go
 ├── viewer_view_test.go
+├── visren_editor_bridge.go
 ├── wasm_plugin.go
 ├── wasm_plugin_test.go
 ├── window_icon_windows.go
-└── window_icon_windows_test.go
+├── window_icon_windows_test.go
+├── word_nav.go
+└── word_nav_test.go
 
-34 directories, 401 files
+37 directories, 511 files
 ```

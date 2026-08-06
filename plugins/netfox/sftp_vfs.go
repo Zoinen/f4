@@ -4,17 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"os"
 	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
@@ -45,47 +42,7 @@ func (v *SFTPVFS) encodePath(p string) string {
 
 func NewSFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, cp string) (*SFTPVFS, error) {
 	vtui.DebugLog("NET: Initiating SFTP connection to %s:%s (user: %s)", host, port, user)
-	auths := []ssh.AuthMethod{}
-
-	if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-		if agentConn, err := net.Dial("unix", sock); err == nil {
-			auths = append(auths, ssh.PublicKeysCallback(agent.NewClient(agentConn).Signers))
-			defer agentConn.Close()
-		}
-	}
-
-	home, _ := os.UserHomeDir()
-	for _, keyName := range []string{"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"} {
-		keyPath := filepath.Join(home, ".ssh", keyName)
-		if keyBytes, err := os.ReadFile(keyPath); err == nil {
-			signer, err := ssh.ParsePrivateKey(keyBytes)
-			if err != nil && pass != "" {
-				signer, err = ssh.ParsePrivateKeyWithPassphrase(keyBytes, []byte(pass))
-			}
-			if err == nil {
-				auths = append(auths, ssh.PublicKeys(signer))
-			}
-		}
-	}
-
-	if pass != "" {
-		auths = append(auths, ssh.Password(pass))
-	}
-
-	timeoutDur := time.Duration(timeout) * time.Second
-	if timeoutDur <= 0 {
-		timeoutDur = 15 * time.Second
-	}
-
-	config := &ssh.ClientConfig{
-		User:            user,
-		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         timeoutDur,
-	}
-
-	addr := host + ":" + port
-	sshClient, err := ssh.Dial("tcp", addr, config)
+	sshClient, err := DialSSH(host, port, user, pass, timeout)
 	if err != nil {
 		return nil, err
 	}

@@ -53,6 +53,17 @@ func (pf *PanelsFrame) GetPassivePanelVFS() vfs.VFS { return pf.Passive().(*File
 func (pf *PanelsFrame) GetSelectedNames() []string {
 	return pf.Active().(*FileSystemPanel).GetSelectedNames()
 }
+func (pf *PanelsFrame) GetMarkedNames() []string {
+	if panel := pf.getActivePanel(); panel != nil {
+		return panel.GetMarkedNames()
+	}
+	return nil
+}
+func (pf *PanelsFrame) ReplaceMarkedNames(names []string) {
+	if panel := pf.getActivePanel(); panel != nil {
+		panel.ReplaceMarkedNames(names)
+	}
+}
 func (pf *PanelsFrame) GetSelectedName() string {
 	return pf.Active().(*FileSystemPanel).GetSelectedName()
 }
@@ -83,6 +94,58 @@ func (pf *PanelsFrame) insertPathToCmdLine(path string) {
 	}
 }
 
+// handlePanelPathEditHotkey inserts a panel path into the focused dialog edit.
+// It lives in the frame-level event filter because modal dialogs otherwise
+// consume Ctrl+[ and Ctrl+] before PanelsFrame can see them.
+func handlePanelPathEditHotkey(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+	ctrl := e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	alt := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
+	shift := e.ControlKeyState&vtinput.ShiftPressed != 0
+	left := e.VirtualKeyCode == vtinput.VK_OEM_4 || e.Char == '['
+	right := e.VirtualKeyCode == vtinput.VK_OEM_6 || e.Char == ']'
+	if !ctrl || alt || shift || (!left && !right) || vtui.FrameManager == nil {
+		return false
+	}
+
+	top := vtui.FrameManager.GetTopFrame()
+	focusContainer, ok := top.(vtui.FocusContainer)
+	if !ok {
+		return false
+	}
+	edit, ok := focusContainer.GetFocusedItem().(*vtui.Edit)
+	if !ok || edit.IsDisabled() {
+		return false
+	}
+
+	var pf *PanelsFrame
+	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	for i := len(frames) - 1; i >= 0; i-- {
+		if candidate, ok := frames[i].(*PanelsFrame); ok {
+			pf = candidate
+			break
+		}
+	}
+	if pf == nil {
+		return false
+	}
+
+	var panel *FileSystemPanel
+	if left {
+		panel = pf.visualLeftFSP()
+	} else {
+		panel = pf.visualRightFSP()
+	}
+	if panel == nil || panel.vfs == nil || panel.vfs.GetPath() == "" {
+		return false
+	}
+	edit.InsertString(panel.vfs.GetPath())
+	vtui.FrameManager.Redraw()
+	return true
+}
+
 type PanelController interface {
 	ProcessPanelKey(app vfs.App, e *vtinput.InputEvent) bool
 }
@@ -103,16 +166,18 @@ type Panel interface {
 // PanelsFrame is the main frame of the f4 manager, containing left and right panels.
 type PanelsFrame struct {
 	vtui.BaseFrame
-	panels [2]Panel
+	panels  [2]Panel
+	dragOut dragOutState
 	// altPanels[i] holds an alternate view (Info / Quick view / Tree)
 	// covering slot i's file panel. When non-nil it's rendered in
 	// place of panels[i]; panels[i] stays alive underneath and is
 	// still the "logical" panel for command dispatch. Alt panels
 	// never take focus (see AltPanel in info_panel.go).
-	altPanels      [2]AltPanel
-	activeIdx      int // 0 for left, 1 for right
-	executing      bool
-	returnToPanels bool
+	altPanels        [2]AltPanel
+	activeIdx        int    // 0 for left, 1 for right
+	folderHistoryPos [2]int // position in provider's newest-first folder history
+	executing        bool
+	returnToPanels   bool
 
 	menuBar *vtui.MenuBar
 	cmdLine *CommandLine
@@ -221,7 +286,7 @@ func (pf *PanelsFrame) Active() Panel  { return pf.panels[pf.activeIdx] }
 func (pf *PanelsFrame) Passive() Panel { return pf.panels[1-pf.activeIdx] }
 
 func NewPanelsFrame() *PanelsFrame {
-	pf := &PanelsFrame{activeIdx: 1, widePanel: -1}
+	pf := &PanelsFrame{activeIdx: 1, widePanel: -1, folderHistoryPos: [2]int{-1, -1}}
 	pf.SetHelp("Panels")
 	pf.showKeyBar = true
 	pf.showPanels = true
@@ -234,68 +299,7 @@ func NewPanelsFrame() *PanelsFrame {
 
 	pf.menuBar = vtui.NewMenuBar(nil)
 	pf.menuBar.SetOwner(pf)
-	pf.menuBar.Items = []vtui.MenuBarItem{
-		// Using Command routing (TV style) instead of hardcoded indices
-		{Label: "&" + Msg("Menu.Left"), SubItems: []vtui.MenuItem{
-			{Text: "&" + Msg("Menu.Left.Brief"), Shortcut: "Ctrl+1", Command: CmLeftBrief},
-			{Text: "&" + Msg("Menu.Left.Medium"), Shortcut: "Ctrl+2", Command: CmLeftMedium},
-			{Text: "&" + Msg("Menu.Left.Detailed"), Shortcut: "Ctrl+3", Command: CmLeftDetailed},
-			{Text: "&" + Msg("Menu.Left.Wide"), Shortcut: "Ctrl+4", Command: CmLeftWide},
-			{Separator: true},
-			{Text: "&" + Msg("Menu.SortName"), Shortcut: "Ctrl+F3", Command: CmLeftSortName},
-			{Text: "&" + Msg("Menu.SortExt"), Shortcut: "Ctrl+F4", Command: CmLeftSortExt},
-			{Text: "&" + Msg("Menu.SortTime"), Shortcut: "Ctrl+F5", Command: CmLeftSortTime},
-			{Text: "&" + Msg("Menu.SortSize"), Shortcut: "Ctrl+F6", Command: CmLeftSortSize},
-			{Text: "&" + Msg("Menu.SortUnsorted"), Shortcut: "Ctrl+F7", Command: CmLeftSortUnsorted},
-			{Separator: true},
-			{Text: "Bac&kground", Command: CmBackground},
-			{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
-		}},
-		{Label: "&" + Msg("Menu.Files"), SubItems: []vtui.MenuItem{
-			{Text: "&" + Msg("Menu.Files.View"), Shortcut: "F3", Command: CmView},
-			{Text: "&" + Msg("Menu.Files.Edit"), Shortcut: "F4", Command: CmEdit},
-			{Text: "&" + Msg("Menu.Files.Copy"), Shortcut: "F5", Command: CmCopy},
-			{Text: "&" + Msg("Menu.Files.RenMov"), Shortcut: "F6", Command: CmMove},
-			{Text: "&" + Msg("Menu.Files.MkDir"), Shortcut: "F7", Command: CmMkDir},
-			{Text: "&" + Msg("Menu.Files.Delete"), Shortcut: "F8", Command: CmDelete},
-		}},
-		{Label: "&" + Msg("Menu.Commands"), SubItems: []vtui.MenuItem{
-			{Text: "&" + Msg("Menu.Commands.FindFile"), Shortcut: "Alt+F7", Command: CmFindFile},
-			{Text: "&" + Msg("Menu.Commands.Bookmarks"), Command: CmBookmarks},
-		}},
-		// Uncomment to test crash logging
-		//{Label: "&" + Msg("Menu.Options"), SubItems: []vtui.MenuItem{{Text: "Placeholder"}}},
-		{Label: "&" + Msg("Menu.Options"), SubItems: []vtui.MenuItem{
-			{Text: "&" + Msg("Menu.Language"), Command: CmLanguage},
-			{Text: "&" + Msg("Menu.HelpLanguage"), Command: CmHelpLanguage},
-			{Separator: true},
-			{Text: "&" + Msg("Menu.PanelSettings"), Command: CmPanelSettings},
-			{Text: "&" + Msg("Menu.EditorSettings"), Command: CmEditorSettings},
-			{Text: Msg("Menu.ColorerSettings"), Command: CmColorerSettings},
-			{Text: "&" + Msg("Menu.AppearanceSettings"), Command: CmAppearanceSettings},
-			{Text: "&" + Msg("Menu.ConfirmationsSettings"), Command: CmConfirmationsSettings},
-			{Separator: true},
-			{Text: "Hot&keys Configuration", Command: CmHotkeyConfig},
-			{Separator: true},
-			{Text: Msg("Menu.AutoUpdateSettings"), Command: CmUpdateSettings},
-			{Separator: true},
-			{Text: "&" + Msg("Menu.Options.Plugins"), Command: CmPlugins},
-			{Separator: true},
-			{Text: "f4 Plug&Ring", Command: CmPlugRing},
-		}},
-		{Label: "&" + Msg("Menu.Right"), SubItems: []vtui.MenuItem{
-			{Text: "&" + Msg("Menu.Left.Brief"), Shortcut: "Ctrl+1", Command: CmRightBrief},
-			{Text: "&" + Msg("Menu.Left.Medium"), Shortcut: "Ctrl+2", Command: CmRightMedium},
-			{Text: "&" + Msg("Menu.Left.Detailed"), Shortcut: "Ctrl+3", Command: CmRightDetailed},
-			{Text: "&" + Msg("Menu.Left.Wide"), Shortcut: "Ctrl+4", Command: CmRightWide},
-			{Separator: true},
-			{Text: "&" + Msg("Menu.SortName"), Shortcut: "Ctrl+F3", Command: CmRightSortName},
-			{Text: "&" + Msg("Menu.SortExt"), Shortcut: "Ctrl+F4", Command: CmRightSortExt},
-			{Text: "&" + Msg("Menu.SortTime"), Shortcut: "Ctrl+F5", Command: CmRightSortTime},
-			{Text: "&" + Msg("Menu.SortSize"), Shortcut: "Ctrl+F6", Command: CmRightSortSize},
-			{Text: "&" + Msg("Menu.SortUnsorted"), Shortcut: "Ctrl+F7", Command: CmRightSortUnsorted},
-		}},
-	}
+	pf.menuBar.Items = pf.buildMenuItems()
 	// We no longer need pf.menuBar.OnCommand for routing!
 	pf.cmdLine = NewCommandLine(Msg("Panels.Prompt"))
 	if AppConfig.NavigationMode == NavigationSearchFirst {
@@ -334,6 +338,7 @@ func NewPanelsFrame() *PanelsFrame {
 	// Parser will be fully initialized in initPTY once pty is ready
 	pf.initPTY()
 	pf.termView.pty = pf.pty
+	installPanelDropTarget(pf)
 
 	return pf
 }
@@ -376,6 +381,37 @@ func (pf *PanelsFrame) setCommandLineFocus(focused bool) {
 	vtui.FrameManager.Redraw()
 }
 
+// insertSelectedFileName is shared by the bindable Ctrl+Enter action and the
+// frame-level safety net for a key event that bypasses hotkey dispatch. Keeping
+// the operation here prevents a modified Enter from ever degrading into plain
+// directory activation.
+func (pf *PanelsFrame) insertSelectedFileName() bool {
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return false
+	}
+	name := fsp.GetSelectedName()
+	if name == "" {
+		return false
+	}
+	// Escape spaces and special characters for shell commands.
+	if strings.ContainsAny(name, " &|;<>()$`\\\"'") {
+		if runtime.GOOS == "windows" {
+			if !strings.HasPrefix(name, "\"") {
+				name = "\"" + name + "\""
+			}
+		} else if !strings.HasPrefix(name, "'") {
+			name = "'" + strings.ReplaceAll(name, "'", "'\\''") + "'"
+		}
+	}
+	txt := pf.cmdLine.Edit.GetText()
+	if len(txt) > 0 && txt[len(txt)-1] != ' ' {
+		pf.cmdLine.InsertString(" ")
+	}
+	pf.cmdLine.InsertString(name)
+	return true
+}
+
 // applyNavigationMode resets transient focus when the setting is changed.
 func (pf *PanelsFrame) applyNavigationMode() {
 	pf.commandLineFocused = false
@@ -393,6 +429,64 @@ func (pf *PanelsFrame) applyNavigationMode() {
 			fsp.showInactiveCursor = false
 		}
 	}
+}
+
+// leftMenu builds the custom side menu for the left panel. View and
+// sort modes act on a fixed side through Cm commands, so they stay
+// command-routed rather than generated from the action registry.
+func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
+	return vtui.MenuBarItem{Label: "&" + Msg("Menu.Left"), SubItems: []vtui.MenuItem{
+		{Text: "&" + Msg("Menu.Left.Brief"), Command: CmLeftBrief},
+		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmLeftMedium},
+		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmLeftDetailed},
+		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmLeftWide},
+		{Separator: true},
+		{Text: "&" + Msg("Menu.SortName"), Command: CmLeftSortName},
+		{Text: "&" + Msg("Menu.SortExt"), Command: CmLeftSortExt},
+		{Text: "&" + Msg("Menu.SortTime"), Command: CmLeftSortTime},
+		{Text: "&" + Msg("Menu.SortSize"), Command: CmLeftSortSize},
+		{Text: "&" + Msg("Menu.SortUnsorted"), Command: CmLeftSortUnsorted},
+		{Separator: true},
+		{Text: "Bac&kground", Command: CmBackground},
+		{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
+	}}
+}
+
+// rightMenu builds the custom side menu for the right panel.
+func (pf *PanelsFrame) rightMenu() vtui.MenuBarItem {
+	return vtui.MenuBarItem{Label: "&" + Msg("Menu.Right"), SubItems: []vtui.MenuItem{
+		{Text: "&" + Msg("Menu.Left.Brief"), Command: CmRightBrief},
+		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmRightMedium},
+		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmRightDetailed},
+		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmRightWide},
+		{Separator: true},
+		{Text: "&" + Msg("Menu.SortName"), Command: CmRightSortName},
+		{Text: "&" + Msg("Menu.SortExt"), Command: CmRightSortExt},
+		{Text: "&" + Msg("Menu.SortTime"), Command: CmRightSortTime},
+		{Text: "&" + Msg("Menu.SortSize"), Command: CmRightSortSize},
+		{Text: "&" + Msg("Menu.SortUnsorted"), Command: CmRightSortUnsorted},
+	}}
+}
+
+// buildMenuItems assembles the main menu: the custom Left/Right panel
+// menus around the Files/Commands/Options menus generated from the
+// action registry. With panels hidden, the Terminal-area menu is shown.
+func (pf *PanelsFrame) buildMenuItems() []vtui.MenuBarItem {
+	if !pf.showPanels {
+		return BuildMenuBarItems("Terminal")
+	}
+	items := []vtui.MenuBarItem{pf.leftMenu()}
+	items = append(items, BuildMenuBarItems("Shell")...)
+	return append(items, pf.rightMenu())
+}
+
+// GetMenuBar returns the main menu bar. Items are rebuilt on every
+// call, so shortcuts and checkmarks always follow the active bindings
+// and the current panel state.
+func (pf *PanelsFrame) GetMenuBar() *vtui.MenuBar {
+	pf.menuBar.Items = pf.buildMenuItems()
+	pf.updateMenuCheckmarks()
+	return pf.menuBar
 }
 
 func getMenuText(current, target ViewMode, label string) string {
@@ -659,13 +753,18 @@ func (pf *PanelsFrame) Close() {
 
 	for _, p := range pf.panels {
 		if fsp, ok := p.(*FileSystemPanel); ok && fsp != nil {
+			fsp.cancelProviderOpen()
 			if fsp.cancelLoad != nil {
 				fsp.cancelLoad()
 			}
-			if fsp.loadingTimer != nil {
-				fsp.loadingTimer.Stop()
-			}
+			fsp.stopLoadingAnimation()
 		}
+	}
+	for i, alt := range pf.altPanels {
+		if closer, ok := alt.(interface{ Close() }); ok {
+			closer.Close()
+		}
+		pf.altPanels[i] = nil
 	}
 
 	if pf.pty != nil {
@@ -1020,18 +1119,94 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 
 }
 
-func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
+// InterceptPluginKey lets global plugin hotkeys and the active panel's
+// PanelController consume a key before built-in hotkey dispatch. It is
+// called from MacroManager.Filter, so plugins keep their priority over
+// the default bindings.
+func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 
-	// Alt+Ins opens the screen grabber — matches far/far2l's
-	// non-remappable global hotkey. Intercepted before the AltScreen
-	// raw-forwarding branch so the grabber still opens over mc/htop.
-	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_INSERT && alt && !ctrl && !shift {
-		OpenGrabber()
+	// Check global hotkeys (ignoring Lock and Enhanced keys)
+	for _, hk := range GlobalHotkeys {
+		hkCtrl := (hk.Mods & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+		hkAlt := (hk.Mods & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+		hkShift := (hk.Mods & vtinput.ShiftPressed) != 0
+
+		if e.VirtualKeyCode == hk.VK && ctrl == hkCtrl && alt == hkAlt && shift == hkShift {
+			hk.Handler(pf)
+			return true
+		}
+	}
+
+	// Panel Controller interception (allows plugins to override default keys)
+	if pf.showPanels {
+		if fsp := pf.getActivePanel(); fsp != nil {
+			if pc, ok := fsp.vfs.(PanelController); ok {
+				if pc.ProcessPanelKey(pf, e) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// VetoActionKey reports modal input states in which the panels must see
+// the key before the global hotkey dispatcher. During fast find,
+// printable characters and the gray selection keys belong to the
+// panel's own search input.
+func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown || !pf.showPanels {
+		return false
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil || !fsp.fastFindMode {
+		// A focused alt panel gets its own keys first: e.g. F2 toggles
+		// wrap in quick view and must not fire Panel.UserMenu.
+		if e.VirtualKeyCode == vtinput.VK_F2 && pf.activeIdx >= 0 && pf.activeIdx < len(pf.altPanels) {
+			if a := pf.altPanels[pf.activeIdx]; a != nil && a.IsFocused() {
+				return true
+			}
+		}
+		return false
+	}
+	if e.Char != 0 {
 		return true
 	}
+	// Fast Find owns plain Esc, plain Delete, plain F2 (search mode toggle) and
+	// Ctrl+Enter; the filter must not turn them into Panel.Toggle,
+	// Panel.UserMenu or Panel.InsertFileName.
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if e.VirtualKeyCode == vtinput.VK_ESCAPE && !ctrl && !alt && !shift {
+		return true
+	}
+	if e.VirtualKeyCode == vtinput.VK_DELETE && !ctrl && !alt && !shift {
+		return true
+	}
+	if e.VirtualKeyCode == vtinput.VK_F2 && !ctrl && !alt && !shift {
+		return true
+	}
+	if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt {
+		return true
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_ADD, vtinput.VK_SUBTRACT, vtinput.VK_MULTIPLY:
+		return true
+	}
+	return false
+}
+
+func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 
 	// Raw input mode check at the very top. If an interactive AltScreen app is active (e.g. mc, htop),
 	// we forward ALL keys to PTY, except workspace switcher keys (Ctrl+Tab in standard mode, Ctrl+Shift+Tab in advanced).
@@ -1086,26 +1261,16 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Check global hotkeys (ignoring Lock and Enhanced keys)
-	for _, hk := range GlobalHotkeys {
-		hkCtrl := (hk.Mods & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
-		hkAlt := (hk.Mods & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
-		hkShift := (hk.Mods & vtinput.ShiftPressed) != 0
-
-		if e.VirtualKeyCode == hk.VK && e.KeyDown && ctrl == hkCtrl && alt == hkAlt && shift == hkShift {
-			hk.Handler(pf)
-			return true
-		}
-	}
-
-	// Panel Controller interception (allows plugins to override default keys)
-	if pf.showPanels {
-		fsp := pf.getActivePanel()
-		if fsp != nil {
-			if pc, ok := fsp.vfs.(PanelController); ok {
-				if pc.ProcessPanelKey(pf, e) {
-					return true
-				}
+	// Fast Find owns Esc, Delete, F2 and Ctrl+Enter before in-frame hotkeys and
+	// command-line handling. Delegate them to the panel's normal handler.
+	if pf.showPanels && e.KeyDown {
+		if fsp := pf.getActivePanel(); fsp != nil && fsp.fastFindMode {
+			isFindEnter := e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt
+			isFindModeToggle := e.VirtualKeyCode == vtinput.VK_F2 && !ctrl && !alt && !shift
+			plainEscape := e.VirtualKeyCode == vtinput.VK_ESCAPE && !ctrl && !alt && !shift
+			plainDelete := e.VirtualKeyCode == vtinput.VK_DELETE && !ctrl && !alt && !shift
+			if plainEscape || plainDelete || isFindEnter || isFindModeToggle {
+				return fsp.ProcessKey(e)
 			}
 		}
 	}
@@ -1157,265 +1322,9 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		// Editor view checks paste events internally, so we let it fall through if panels are shown
 	}
 
-	// Intercept F3/F4 for terminal log before raw input mode
-	if !pf.showPanels && e.KeyDown {
-		isCtrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
-		isShift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
-		isAlt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
-		isAppRunning := pf.termView.UseAltScreen || pf.isPtyBusy()
-
-		if !isAlt {
-			if e.VirtualKeyCode == vtinput.VK_F3 {
-				if isCtrl && isShift {
-					actionViewTerminalLog(pf)
-					return true
-				} else if !isCtrl && !isShift && !isAppRunning {
-					actionViewTerminalLog(pf)
-					return true
-				}
-			}
-			if e.VirtualKeyCode == vtinput.VK_F4 {
-				if isCtrl && isShift {
-					actionEditTerminalLog(pf)
-					return true
-				} else if !isCtrl && !isShift && !isAppRunning {
-					actionEditTerminalLog(pf)
-					return true
-				}
-			}
-		}
-	}
-
-	// Ctrl+O toggles panels visibility (must intercept before raw input mode)
-	if e.VirtualKeyCode == vtinput.VK_O && ctrl && !alt && !shift && e.KeyDown {
-		pf.exitWide()
-		pf.showPanels = !pf.showPanels
-		if pf.showPanels && !pf.showLeftPanel && !pf.showRightPanel {
-			pf.showLeftPanel = true
-			pf.showRightPanel = true
-		}
-		vtui.FrameManager.HardRefresh()
-		if pf.showPanels {
-			pf.RefreshAll()
-		}
-		return true
-	}
-
-	// ESC toggles panels visibility — mirrors the "hide panels"
-	// macro shipped with FAR. Only fires when there's nothing more
-	// contextual for ESC to do. Both branches require an empty
-	// command line so ESC still clears typed input / resets the
-	// history-navigation position (the ESC-clears-cmdline handler
-	// further down keeps working on a non-empty line):
-	//   * panels visible + empty cmdLine → hide panels;
-	//   * panels hidden + empty cmdLine + quiet terminal (no
-	//     AltScreen, no busy PTY) → show panels back. Busy/AltScreen
-	//     leaves ESC to the running app (vim, less, htop, …).
-	if AppConfig.EscTogglePanels && e.VirtualKeyCode == vtinput.VK_ESCAPE && !alt && !ctrl && !shift && e.KeyDown && pf.cmdLine.IsEmpty() {
-		if pf.showPanels {
-			pf.exitWide()
-			pf.showPanels = false
-			vtui.FrameManager.HardRefresh()
-			return true
-		}
-		if !pf.termView.UseAltScreen && !pf.isPtyBusy() {
-			pf.exitWide()
-			pf.showPanels = true
-			if !pf.showLeftPanel && !pf.showRightPanel {
-				pf.showLeftPanel = true
-				pf.showRightPanel = true
-			}
-			vtui.FrameManager.HardRefresh()
-			pf.RefreshAll()
-			return true
-		}
-	}
-
-	// Ctrl+F1 toggles left panel
-	if e.VirtualKeyCode == vtinput.VK_F1 && ctrl && !alt && !shift && e.KeyDown {
-		pf.exitWide()
-		pf.showLeftPanel = !pf.showLeftPanel
-		pf.showPanels = pf.showLeftPanel || pf.showRightPanel
-		if !pf.showLeftPanel && pf.showPanels {
-			pf.activeIdx = 1
-		}
-		vtui.FrameManager.HardRefresh()
-		if pf.showPanels {
-			pf.RefreshAll()
-		}
-		return true
-	}
-	// Ctrl+F2 toggles right panel
-	if e.VirtualKeyCode == vtinput.VK_F2 && ctrl && !alt && !shift && e.KeyDown {
-		pf.exitWide()
-		pf.showRightPanel = !pf.showRightPanel
-		pf.showPanels = pf.showLeftPanel || pf.showRightPanel
-		if !pf.showRightPanel && pf.showPanels {
-			pf.activeIdx = 0
-		}
-		vtui.FrameManager.HardRefresh()
-		if pf.showPanels {
-			pf.RefreshAll()
-		}
-		return true
-	}
-
-	// Ctrl+L toggles the info panel; Ctrl+Q the quick-view panel.
-	// Both go through toggleAltPanel with the same three-step logic
-	// borrowed from far2l's ChangePanel: close the ACTIVE-side alt
-	// if it's already this kind, else close the PASSIVE-side one if
-	// it is, else open a new one on the passive side. Ctrl+T (Tree)
-	// will plug in the same way. Closes #196 (Ctrl+L).
-	if e.VirtualKeyCode == vtinput.VK_L && ctrl && !alt && !shift && e.KeyDown {
-		pf.toggleAltPanel("info", func(src *FileSystemPanel) AltPanel { return NewInfoPanel(src) })
-		return true
-	}
-	if e.VirtualKeyCode == vtinput.VK_Q && ctrl && !alt && !shift && e.KeyDown {
-		pf.toggleAltPanel("quick_view", func(src *FileSystemPanel) AltPanel { return NewQuickViewPanel(src) })
-		return true
-	}
-
-	// `B` (plain, no modifiers) flips number formatting between the
-	// human-readable form (GiB/MiB/…) and far2l's raw-bytes-with-
-	// separators presentation. Fires while an info panel OR a quick
-	// view panel is visible; otherwise `B` still goes to fast-find as
-	// usual. Persists to settings.ini via the debounced save.
-	if e.VirtualKeyCode == vtinput.VK_B && !ctrl && !alt && !shift && e.KeyDown {
-		hasAlt := false
-		for _, a := range pf.altPanels {
-			if a != nil && (a.Kind() == "info" || a.Kind() == "quick_view") {
-				hasAlt = true
-				break
-			}
-		}
-		if hasAlt {
-			AppConfig.InfoPanelBytes = !AppConfig.InfoPanelBytes
-			RequestSaveConfig()
-			vtui.FrameManager.HardRefresh()
-			return true
-		}
-	}
-
-	// Ctrl+P toggles the passive panel — the one not currently active.
-	// Complements Ctrl+F1/F2 (toggle a specific panel by side) and
-	// Ctrl+O (toggle both), matching far/far2l (issue #197).
-	if e.VirtualKeyCode == vtinput.VK_P && ctrl && !alt && !shift && e.KeyDown {
-		pf.exitWide()
-		if pf.activeIdx == 0 {
-			pf.showRightPanel = !pf.showRightPanel
-		} else {
-			pf.showLeftPanel = !pf.showLeftPanel
-		}
-		pf.showPanels = pf.showLeftPanel || pf.showRightPanel
-		vtui.FrameManager.HardRefresh()
-		if pf.showPanels {
-			pf.RefreshAll()
-		}
-		return true
-	}
-
-	// Ctrl+Left / Ctrl+Right — panel width resize when panels are visible
-	// and the command line is empty (far2l's FilePanels::ProcessKey gate).
-	// With a non-empty cmdline, fall through to word navigation instead.
-	if (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) && ctrl && !alt && !shift && e.KeyDown {
-		if pf.showPanels && pf.cmdLine.Edit.GetText() == "" {
-			// Match far2l: Ctrl+Left bumps WidthDecrement, moving the
-			// split to the left (left panel shrinks, right grows).
-			// Ctrl+Right does the reverse. This is the arrow-follows-
-			// boundary intuition and lines up with Far3/far2m.
-			delta := -1
-			if e.VirtualKeyCode == vtinput.VK_LEFT {
-				delta = 1
-			}
-			next := pf.widthDecrement + delta
-			if maxWD := (pf.lastW / 2) - 10; maxWD > 0 && next <= maxWD && next >= -maxWD {
-				pf.widthDecrement = next
-				AppConfig.WidthDecrement = next
-				RequestSaveConfig()
-				pf.ResizeConsole(pf.lastW, pf.lastH)
-				vtui.FrameManager.HardRefresh()
-			}
-			return true
-		}
-		if pf.cmdLine.IsVisible() {
-			pf.cmdLine.ProcessKey(e)
-			return true
-		}
-	}
-
-	// Ctrl+Up / Ctrl+Down — grow/shrink the panel-area vs terminal-area
-	// split. In far2l this drives both LeftHeightDecrement and
-	// RightHeightDecrement symmetrically. We bump both fields in
-	// lockstep here; the asymmetric Ctrl+Shift+Up/Down handler right
-	// below adjusts only the active panel.
-	if (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) && ctrl && !alt && !shift && e.KeyDown {
-		if pf.showPanels && pf.cmdLine.Edit.GetText() == "" {
-			// Ctrl+Up moves the panels' bottom edge up (shrinks them,
-			// exposes more terminal). Ctrl+Down does the reverse.
-			delta := -1
-			if e.VirtualKeyCode == vtinput.VK_UP {
-				delta = 1
-			}
-			nextL := pf.leftHeightDecrement + delta
-			nextR := pf.rightHeightDecrement + delta
-			maxHD := pf.lastH - 7
-			if nextL >= 0 && nextR >= 0 && (maxHD <= 0 || (nextL <= maxHD && nextR <= maxHD)) {
-				pf.leftHeightDecrement = nextL
-				pf.rightHeightDecrement = nextR
-				AppConfig.LeftHeightDecrement = nextL
-				AppConfig.RightHeightDecrement = nextR
-				RequestSaveConfig()
-				pf.ResizeConsole(pf.lastW, pf.lastH)
-				vtui.FrameManager.HardRefresh()
-			}
-			return true
-		}
-	}
-
-	// Ctrl+Shift+Up / Ctrl+Shift+Down — adjust only the *active* panel's
-	// height, giving an asymmetric split. Matches far2l's behavior on the
-	// same keys.
-	if (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) && ctrl && !alt && shift && e.KeyDown {
-		if pf.showPanels && pf.cmdLine.Edit.GetText() == "" {
-			delta := -1
-			if e.VirtualKeyCode == vtinput.VK_UP {
-				delta = 1
-			}
-			cur := &pf.rightHeightDecrement
-			cfg := &AppConfig.RightHeightDecrement
-			if pf.activeIdx == 0 {
-				cur = &pf.leftHeightDecrement
-				cfg = &AppConfig.LeftHeightDecrement
-			}
-			next := *cur + delta
-			maxHD := pf.lastH - 7
-			if next >= 0 && (maxHD <= 0 || next <= maxHD) {
-				*cur = next
-				*cfg = next
-				RequestSaveConfig()
-				pf.ResizeConsole(pf.lastW, pf.lastH)
-				vtui.FrameManager.HardRefresh()
-			}
-			return true
-		}
-	}
-
-	// Ctrl+Clear (NumPad 5 with NumLock off) resets all three layout
-	// decrements to 0, matching far2l's Ctrl+Clear.
-	if e.VirtualKeyCode == vtinput.VK_CLEAR && ctrl && !alt && !shift && e.KeyDown {
-		if pf.showPanels && (pf.widthDecrement != 0 || pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
-			pf.widthDecrement = 0
-			pf.leftHeightDecrement = 0
-			pf.rightHeightDecrement = 0
-			AppConfig.WidthDecrement = 0
-			AppConfig.LeftHeightDecrement = 0
-			AppConfig.RightHeightDecrement = 0
-			RequestSaveConfig()
-			pf.ResizeConsole(pf.lastW, pf.lastH)
-			vtui.FrameManager.HardRefresh()
-		}
-		return true
-	}
+	// Ctrl+O (Panel.Toggle) and Esc (Panel.Toggle:EscToggle) are handled
+	// by the hotkey dispatcher; F3/F4 for the terminal log are bound in
+	// the Terminal area with the TerminalQuiet condition.
 
 	// Raw input mode fallback for active shell commands (non-AltScreen, e.g. ping).
 	// We forward text and navigation to PTY, but let global shortcuts (Ctrl+O) fall through.
@@ -1431,160 +1340,23 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 
-	// Drive menus (Only if terminal is NOT busy)
-
-	if e.VirtualKeyCode == vtinput.VK_F1 && alt && !ctrl && !shift && e.KeyDown {
-		pf.showDriveMenu(0)
-		return true
-	}
-	if e.VirtualKeyCode == vtinput.VK_F2 && alt && !ctrl && !shift && e.KeyDown {
-		pf.showDriveMenu(1)
-		return true
-	}
-
-	// F2: user menu (FarMenu.ini local → near binary → main_menu.ini).
-	if e.VirtualKeyCode == vtinput.VK_F2 && !alt && !ctrl && !shift && e.KeyDown {
-		ShowUserMenu(pf)
-		return true
-	}
-
-	// Ctrl+A: Attributes
-	if e.VirtualKeyCode == vtinput.VK_A && ctrl && !alt && !shift && e.KeyDown {
-		actionFileAttributes(pf)
-		return true
-	}
-
-	// Alt+F5: Dummy Long Operation for debugging
-	if e.VirtualKeyCode == vtinput.VK_F5 && alt && !ctrl && e.KeyDown {
-		pf.showDummyOpDialog()
-		return true
-	}
-
-	// Alt+F7: Find file
-	if e.VirtualKeyCode == vtinput.VK_F7 && alt && !ctrl && !shift && e.KeyDown {
-		return vtui.FrameManager.EmitCommand(CmFindFile, nil)
-	}
-
-	// Alt+F8: Command History
-	if e.VirtualKeyCode == vtinput.VK_F8 && alt && !ctrl && !shift && e.KeyDown {
-		actionCommandHistory(pf)
-		return true
-	}
-
-	// Alt+F12: Folders History
-	if e.VirtualKeyCode == vtinput.VK_F12 && alt && !ctrl && !shift && e.KeyDown {
-		actionFoldersHistory(pf)
-		return true
-	}
-	// Ctrl+F12: Sort modes
-	if e.VirtualKeyCode == vtinput.VK_F12 && ctrl && !alt && !shift && e.KeyDown {
-		actionSortMenu(pf)
-		return true
-	}
-
-	// F11: Plugin Menu
-	if e.VirtualKeyCode == vtinput.VK_F11 && !alt && !ctrl && !shift && e.KeyDown {
-		pf.showPluginMenu()
-		return true
-	}
-
-	// Shift+F9 - Save Settings (Far compatible)
-	if e.VirtualKeyCode == vtinput.VK_F9 && shift && !ctrl && !alt && e.KeyDown {
-		SaveConfig()
-		SaveSession()
-		vtui.ShowToast("Settings saved", 2*time.Second)
-		return true
-	}
-
-	// Alt+F9 - Toggle window size (Far compatible)
-	if e.VirtualKeyCode == vtinput.VK_F9 && alt && !ctrl && !shift && e.KeyDown {
-		targetCols, targetRows := AppConfig.GuiCols, AppConfig.GuiRows
-		if pf.lastW == AppConfig.GuiCols && pf.lastH == AppConfig.GuiRows {
-			targetCols, targetRows = AppConfig.GuiCols+40, AppConfig.GuiRows+15
-		}
-
-		// 1. Посылаем xterm-последовательность изменения размера для консольного режима
-		os.Stdout.WriteString(fmt.Sprintf("\x1b[8;%d;%dt", targetRows, targetCols))
-		os.Stdout.Sync()
-
-		// 2. Для графического режима вызываем принудительный ресайз окна ОС
-		if vtui.FrameManager != nil {
-			vtui.FrameManager.ResizeWindow(targetCols, targetRows)
-		}
-		return true
-	}
-
-	// Ctrl+\ - Go to VFS root (Far compatible)
-	if (e.VirtualKeyCode == vtinput.VK_OEM_5 || e.Char == '\\') && ctrl && !alt && !shift && e.KeyDown {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			rootPath := "/"
-			if runtime.GOOS == "windows" {
-				rootPath = string(os.PathSeparator)
-				if _, isOS := fsp.vfs.(*vfs.OSVFS); isOS {
-					rootPath = filepath.VolumeName(fsp.vfs.GetPath()) + string(os.PathSeparator)
-				}
-			}
-			pf.NavigateToPath(fsp, rootPath)
+	// Char fallbacks for terminals that report Ctrl+\ / Ctrl+[ / Ctrl+]
+	// with an unexpected virtual key code: the canonical bindings live
+	// in the action registry (Panel.GoRoot / Panel.InsertLeftPath /
+	// Panel.InsertRightPath).
+	if e.Char == '\\' && ctrl && !alt && !shift && e.KeyDown {
+		if RunAction("Panel.GoRoot") {
 			return true
 		}
 	}
-
-	// Ctrl+[ - Insert left panel path into command line (Far compatible)
-	if (e.VirtualKeyCode == vtinput.VK_OEM_4 || e.Char == '[') && ctrl && !alt && !shift && e.KeyDown {
-		if fsp := pf.visualLeftFSP(); fsp != nil {
-			pf.insertPathToCmdLine(fsp.vfs.GetPath())
+	if e.Char == '[' && ctrl && !alt && !shift && e.KeyDown {
+		if RunAction("Panel.InsertLeftPath") {
 			return true
 		}
 	}
-
-	// Ctrl+] - Insert right panel path into command line (Far compatible)
-	if (e.VirtualKeyCode == vtinput.VK_OEM_6 || e.Char == ']') && ctrl && !alt && !shift && e.KeyDown {
-		if fsp := pf.visualRightFSP(); fsp != nil {
-			pf.insertPathToCmdLine(fsp.vfs.GetPath())
+	if e.Char == ']' && ctrl && !alt && !shift && e.KeyDown {
+		if RunAction("Panel.InsertRightPath") {
 			return true
-		}
-	}
-
-	// Ctrl+PgUp - Go to parent directory or open Drive Menu at root (Far compatible)
-	if e.VirtualKeyCode == vtinput.VK_PRIOR && ctrl && !alt && !shift && e.KeyDown {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			if fsp.vfs.IsAtRoot() {
-				if fsp.vfs.ParentVFS() == nil {
-					pf.showDriveMenu(pf.activeIdx)
-				} else {
-					// Выходим из архива или сетевого соединения NetFox в родительскую систему VFS
-					pf.NavigateToPath(fsp, "..")
-				}
-			} else {
-				oldPath := fsp.vfs.GetPath()
-				if err := fsp.vfs.SetPath(".."); err == nil {
-					fsp.pendingSelection = fsp.vfs.Base(oldPath)
-					fsp.ReadDirectory()
-				} else {
-					pf.NavigateToPath(fsp, "..")
-				}
-			}
-			return true
-		}
-	}
-
-	// Ctrl+PgDn / Ctrl+Shift+PgDn - Enter directory or archive (Far compatible)
-	if e.VirtualKeyCode == vtinput.VK_NEXT && ctrl && !alt && e.KeyDown {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			idx := fsp.GetCursorIndex()
-			if idx >= 0 && idx < len(fsp.entries) {
-				selected := fsp.entries[idx]
-				isDir := selected.IsDir
-				isArchive := false
-				if !isDir {
-					fullPath := fsp.vfs.Join(fsp.vfs.GetPath(), selected.Name)
-					isArchive = vfs.FindProvider(context.Background(), fsp.vfs, fullPath) != nil
-				}
-				if isDir || isArchive {
-					pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
-					return true
-				}
-			}
 		}
 	}
 
@@ -1637,96 +1409,19 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	lctrl := (e.ControlKeyState & vtinput.LeftCtrlPressed) != 0
-	rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
-	if lctrl && !rctrl && !alt && !shift && e.KeyDown {
-		switch e.VirtualKeyCode {
-		case '1':
-			pf.setPanelViewMode(pf.activeIdx, ViewModeBrief)
-			return true
-		case '2':
-			pf.setPanelViewMode(pf.activeIdx, ViewModeMedium)
-			return true
-		case '3':
-			pf.setPanelViewMode(pf.activeIdx, ViewModeDetailed)
-			return true
-		case '4':
-			pf.setWidePanel(pf.activeIdx)
-			return true
-		}
-	}
-
 	if !e.KeyDown {
 		return false
 	}
 
-	// Ctrl+F or Ctrl+Ins on panels: copy to clipboard
-	if pf.showPanels && pf.cmdLine.IsEmpty() && ctrl && !alt && !shift && e.KeyDown {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			idx := fsp.GetCursorIndex()
-			if idx >= 0 && idx < len(fsp.entries) {
-				entry := fsp.entries[idx]
-				if entry.Name != ".." {
-					if e.VirtualKeyCode == 'F' {
-						fullPath := fsp.vfs.Join(fsp.vfs.GetPath(), entry.Name)
-						vtui.SetClipboard(fullPath)
-						return true
-					}
-					if e.VirtualKeyCode == vtinput.VK_INSERT {
-						vtui.SetClipboard(entry.Name)
-						return true
-					}
-				}
-			}
-		}
-	}
-	// Standard keys for file operations
-	switch e.VirtualKeyCode {
-	case vtinput.VK_F1:
-		return vtui.FrameManager.EmitCommand(vtui.CmHelp, nil)
-	case vtinput.VK_F3:
-		if ctrl {
-			return vtui.FrameManager.EmitCommand(CmSortName, nil)
-		}
-		return vtui.FrameManager.EmitCommand(CmView, nil)
-	case vtinput.VK_F4:
-		if ctrl {
-			return vtui.FrameManager.EmitCommand(CmSortExt, nil)
-		}
-		if shift {
-			return vtui.FrameManager.EmitCommand(CmNew, nil)
-		}
-		return vtui.FrameManager.EmitCommand(CmEdit, nil)
-	case vtinput.VK_F5:
-		if ctrl {
-			return vtui.FrameManager.EmitCommand(CmSortTime, nil)
-		}
-		if shift {
-			actionCopyInPlace(pf)
-			return true
-		}
-		return vtui.FrameManager.EmitCommand(CmCopy, nil)
-	case vtinput.VK_F6:
-		if shift {
-			return vtui.FrameManager.EmitCommand(CmRename, nil)
-		}
-		if ctrl {
-			return vtui.FrameManager.EmitCommand(CmSortSize, nil)
-		}
-		return vtui.FrameManager.EmitCommand(CmMove, nil)
-	case vtinput.VK_F7:
-		if ctrl {
-			return vtui.FrameManager.EmitCommand(CmSortUnsorted, nil)
-		}
-		return vtui.FrameManager.EmitCommand(CmMkDir, nil)
-	case vtinput.VK_F8:
-		return vtui.FrameManager.EmitCommand(CmDelete, nil)
-	case vtinput.VK_F10:
-		return vtui.FrameManager.EmitCommand(vtui.CmQuit, nil)
-	case vtinput.VK_F9:
+	// F9 opens the main menu (other F-keys are action bindings now).
+	if e.VirtualKeyCode == vtinput.VK_F9 {
 		pos := 0 // Left
 		if pf.activeIdx == 1 {
 			pos = 4 // Right
+		}
+		pf.GetMenuBar()
+		if pos >= len(pf.menuBar.Items) {
+			pos = 0
 		}
 		pf.menuBar.Active = true
 		pf.menuBar.ActivateSubMenu(pos)
@@ -1801,85 +1496,16 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Ctrl+Enter inserts selected file name
-	if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl {
-		name := pf.Active().GetSelectedName()
-		if name != "" {
-			// Escape spaces and special characters for shell commands
-			if strings.ContainsAny(name, " &|;<>()$`\\\"'") {
-				if runtime.GOOS == "windows" {
-					if !strings.HasPrefix(name, "\"") {
-						name = "\"" + name + "\""
-					}
-				} else {
-					if !strings.HasPrefix(name, "'") {
-						name = "'" + strings.ReplaceAll(name, "'", "'\\''") + "'"
-					}
-				}
-			}
-			txt := pf.cmdLine.Edit.GetText()
-			// Add space if the line is not empty and doesn't end with a space.
-			if len(txt) > 0 && txt[len(txt)-1] != ' ' {
-				pf.cmdLine.InsertString(" ")
-			}
-			pf.cmdLine.InsertString(name)
-		}
-		return true
-	}
-
-	if e.VirtualKeyCode == vtinput.VK_RETURN && shift && !ctrl && !alt {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			idx := fsp.GetCursorIndex()
-			if idx >= 0 && idx < len(fsp.entries) {
-				name := fsp.entries[idx].Name
-				var fullPath string
-				if name == ".." {
-					fullPath = fsp.vfs.GetPath()
-				} else {
-					fullPath = fsp.vfs.Join(fsp.vfs.GetPath(), name)
-				}
-
-				if _, isLocal := fsp.vfs.(*vfs.OSVFS); isLocal {
-					go func() {
-						var cmd *exec.Cmd
-						switch runtime.GOOS {
-						case "linux":
-							cmd = exec.Command("xdg-open", fullPath)
-						case "windows":
-							if fsp.entries[idx].IsDir || name == ".." {
-								cmd = exec.Command("explorer.exe", fullPath)
-							} else {
-								cmd = exec.Command("explorer.exe", "/select,", fullPath)
-							}
-						case "darwin":
-							cmd = exec.Command("open", fullPath)
-						}
-						if cmd != nil {
-							_ = cmd.Run()
-						}
-					}()
-					return true
-				} else {
-					vtui.ShowMessage(" Error ", "Cannot open remote paths in system explorer.", []string{"&Ok"})
-					return true
-				}
-			}
-		}
-	}
-
-	// Ctrl+R forces panels refresh
-	if e.VirtualKeyCode == vtinput.VK_R && ctrl && !alt && !shift {
-		pf.RefreshAll()
-		return true
-	}
-
-	// Ctrl+U swaps panels
-	if e.VirtualKeyCode == vtinput.VK_U && ctrl {
-		return vtui.FrameManager.EmitCommand(CmSwapPanels, nil)
-	}
-
 	// Enter handling
 	if e.VirtualKeyCode == vtinput.VK_RETURN {
+		// The hotkey filter normally handles Ctrl+Enter. Keep an in-frame
+		// fallback because platform input and injected events can bypass that
+		// filter; under no circumstances should Ctrl+Enter become plain Enter
+		// and enter the selected directory.
+		if ctrl && !alt && !shift && pf.showPanels {
+			pf.insertSelectedFileName()
+			return true
+		}
 		commandInputActive := !pf.searchFirstMode() || pf.commandLineFocused || !pf.showPanels
 		if commandInputActive && !pf.cmdLine.IsEmpty() {
 			cmd := pf.cmdLine.Edit.GetText()
@@ -1966,6 +1592,23 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 
+			// A remote filesystem may support commands without exposing an
+			// interactive PTY. Android FISH+ deliberately uses this shape over ADB
+			// shell_v2: route the typed command to its job runner instead of falling
+			// through to the local Windows shell. SSH-backed FISH+ keeps using its
+			// PTY below, preserving the full interactive terminal experience.
+			if fsp := pf.getActivePanel(); fsp != nil && !vfsHasRemotePTY(fsp.vfs) {
+				if runner, ok := fsp.vfs.(vfs.CommandRunner); ok {
+					pf.cmdLine.Clear()
+					pf.cmdLine.Edit.HistoryPos = -1
+					if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
+						pf.setCommandLineFocus(false)
+					}
+					showRemoteCommandOutput(pf, runner, fsp.vfs.GetPath(), cmd)
+					return true
+				}
+			}
+
 			// Fallthrough for regular commands or if directory change failed (to show error in terminal)
 			activePty := pf.getActivePTY()
 			if activePty != nil {
@@ -1974,7 +1617,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
 					if _, isOS := fsp.vfs.(*vfs.OSVFS); isOS {
 						path = fsp.vfs.GetPath()
-					} else if _, isPty := fsp.vfs.(vfs.PtyProvider); isPty {
+					} else if vfsHasRemotePTY(fsp.vfs) {
 						path = fsp.vfs.GetPath()
 						isWindowsShell = false
 					}
@@ -1984,6 +1627,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				isBackground := false
 				if !isWindowsShell {
 					isBackground = strings.HasSuffix(strings.TrimSpace(cmd), "&")
+				}
+
+				if isWindowsShell {
+					cmd = resolveWindowsCommand(cmd)
 				}
 
 				if isWindowsShell {
@@ -2008,9 +1655,9 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 						// Managed foreground command
 						if path != "" {
 							sqPath := strings.ReplaceAll(path, "'", "'\\''")
-							fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && { printf \"\\033]133;C\\007\"; %s ; printf \"\\033]133;D\\007\"; }\r", sqPath, cmd)
+							fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", sqPath, cmd)
 						} else {
-							fullWireCmd = fmt.Sprintf(" { printf \"\\033]133;C\\007\"; %s ; printf \"\\033]133;D\\007\"; }\r", cmd)
+							fullWireCmd = fmt.Sprintf(" { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", cmd)
 						}
 						pf.executing = true
 						pf.returnToPanels = pf.showPanels
@@ -2065,58 +1712,40 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Selection by mask (+, -, *) logic
-	// Intercepted only if fastFind is not active
-	if pf.showPanels && AppConfig.NavigationMode != NavigationSearchFirst && !alt && !ctrl {
-		isFastFind := false
-		if fsp := pf.getActivePanel(); fsp != nil && fsp.fastFindMode {
-			isFastFind = true
-		}
-
-		if !isFastFind {
-			isSelectKey := false
-			var selectChar rune
-
-			switch e.VirtualKeyCode {
-			case vtinput.VK_ADD:
-				isSelectKey = true
-				selectChar = '+'
-			case vtinput.VK_SUBTRACT:
-				isSelectKey = true
-				selectChar = '-'
-			case vtinput.VK_MULTIPLY:
-				isSelectKey = true
-				selectChar = '*'
-			default:
-				if pf.cmdLine.IsEmpty() {
-					if e.Char == '+' || e.Char == '-' || e.Char == '*' {
-						isSelectKey = true
-						selectChar = e.Char
-					}
-				}
+	// Selection by mask (+, -, *) typed as plain characters on an empty
+	// command line. The gray numpad keys are bound to the corresponding
+	// actions (Panel.SelectGroup / DeselectGroup / InvertSelection);
+	// both paths are suspended while fast find is active.
+	if pf.showPanels && AppConfig.NavigationMode != NavigationSearchFirst && !alt && !ctrl && pf.cmdLine.IsEmpty() {
+		if e.Char == '+' || e.Char == '-' || e.Char == '*' {
+			isFastFind := false
+			if fsp := pf.getActivePanel(); fsp != nil && fsp.fastFindMode {
+				isFastFind = true
 			}
-
-			if isSelectKey {
-				fsp := pf.getActivePanel()
-				if fsp != nil {
-					switch selectChar {
-					case '*':
-						fsp.InvertSelection()
-					case '+':
-						vtui.InputBox(Msg("Select.Title"), Msg("Select.Mask"), "*", func(mask string) {
-							fsp.ApplyMaskSelection(mask, true)
-						})
-					case '-':
-						vtui.InputBox(Msg("Deselect.Title"), Msg("Select.Mask"), "*", func(mask string) {
-							fsp.ApplyMaskSelection(mask, false)
-						})
-					}
-					return true
+			if !isFastFind {
+				switch e.Char {
+				case '+':
+					RunAction("Panel.SelectGroup")
+				case '-':
+					RunAction("Panel.DeselectGroup")
+				case '*':
+					RunAction("Panel.InvertSelection")
 				}
+				return true
 			}
 		}
 	}
 	// 2. Try global hotkeys handled by PanelsFrame
+	// Ctrl+Shift+Left / Ctrl+Shift+Right open the drive menu for the
+	// corresponding visual panel without changing the active panel.
+	if (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) && ctrl && !alt && shift && e.KeyDown && pf.showPanels {
+		panelIdx := 0
+		if e.VirtualKeyCode == vtinput.VK_RIGHT {
+			panelIdx = 1
+		}
+		pf.showDriveMenu(panelIdx)
+		return true
+	}
 
 	// Tab switches panels
 	if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
@@ -2154,11 +1783,14 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Ctrl+B toggles KeyBar
-	if e.VirtualKeyCode == vtinput.VK_B && ctrl {
-		pf.showKeyBar = !pf.showKeyBar
-		pf.ResizeConsole(pf.lastW, pf.lastH)
-		return true
+	// With a non-empty command line, Ctrl+Left/Right are word navigation
+	// in the command line; the panel-split resize actions on the same
+	// keys are gated by the EmptyCommandLine condition and lose.
+	if (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) && ctrl && !alt && !shift && e.KeyDown && pf.showPanels && !pf.cmdLine.IsEmpty() {
+		if pf.cmdLine.IsVisible() {
+			pf.cmdLine.ProcessKey(e)
+			return true
+		}
 	}
 
 	// 3. Try Active Panel
@@ -2179,7 +1811,18 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// 4. Fallback: pass to CommandLine (handles text, Backspace, Delete, etc.)
+	// 4. Injected-event fallback: synthesized key events (a KeyBar mouse
+	// click, InjectEvents from a widget) bypass FrameManager.EventFilter
+	// and therefore skip the hotkey manager the F-key actions moved into
+	// after the KeyBind refactor. Route them through the same lookup so
+	// clicking F3/F4/F5/… on the bottom bar still triggers View/Edit/Copy.
+	// Real key events reach ProcessKey only when Filter already declined
+	// them, so re-checking here is a no-op for those.
+	if MacroMgr.LookupHotkey(e) {
+		return true
+	}
+
+	// 5. Fallback: pass to CommandLine (handles text, Backspace, Delete, etc.)
 	if (!pf.searchFirstMode() || pf.commandLineFocused || !pf.showPanels) && pf.cmdLine.ProcessKey(e) {
 		pf.cmdLine.SetFocus(true)
 		return true
@@ -2385,6 +2028,9 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 
 	mx, my := int(e.MouseX), int(e.MouseY)
+	if pf.processDragOutGesture(e, mx, my) {
+		return true
+	}
 
 	// A middle-button gesture that already emitted Enter owns its remaining
 	// motion/release events and must not fall through to panels or scrollbars.
@@ -2514,6 +2160,20 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 		x1, y1, x2, y2 := p.GetPosition()
 		if mx >= x1 && mx <= x2 && my >= y1 && my <= y2 {
 			isInitialPress := e.ButtonState != 0 && e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0
+			// Context menus target the clicked side without activating it or
+			// moving its cursor.
+			if isInitialPress && e.ButtonState&vtinput.RightmostButtonPressed != 0 {
+				if fsp, ok := p.(*FileSystemPanel); ok {
+					if fsp.pathTitleHitTest(mx, my) {
+						pf.showDriveMenu(i)
+						return true
+					}
+					if _, header := fsp.headerSortModeAt(mx, my); header {
+						actionSortMenuForPanel(pf, fsp)
+						return true
+					}
+				}
+			}
 			if pf.activeIdx != i && e.ButtonState != 0 {
 				pf.activeIdx = i
 				pf.lastKey = 0
@@ -2521,14 +2181,6 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 			}
 			if pf.searchFirstMode() && e.ButtonState != 0 {
 				pf.setCommandLineFocus(false)
-			}
-			if isInitialPress && e.ButtonState&vtinput.RightmostButtonPressed != 0 {
-				if fsp, ok := p.(*FileSystemPanel); ok {
-					if _, header := fsp.headerSortModeAt(mx, my); header {
-						actionSortMenu(pf)
-						return true
-					}
-				}
 			}
 			if isInitialPress {
 				pf.panelMouseCapture = p
@@ -2861,22 +2513,8 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 	area := MacroMgr.GetCurrentArea()
 
-	resolveLabel := func(keyPrefix, keyNum string, fallback string) string {
-		keyStr := keyPrefix + keyNum
-		if hm := GlobalHotkeysMgr; hm != nil {
-			if actName := hm.GetAction(area, keyStr); actName != "" {
-				if strings.EqualFold(actName, "none") {
-					return ""
-				}
-				if act, ok := GetAction(actName); ok {
-					return act.Label
-				}
-			}
-		}
-		return fallback
-	}
-
 	f2 := Msg("KeyBar.F2")
+	overrideF2 := false
 	if pf.showPanels && pf.activeIdx >= 0 && pf.activeIdx < len(pf.altPanels) {
 		if a := pf.altPanels[pf.activeIdx]; a != nil && a.IsFocused() && a.Kind() == "quick_view" {
 			if q, ok := a.(*QuickViewPanel); ok {
@@ -2885,53 +2523,31 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 				} else {
 					f2 = Msg("KeyBar.F2Wrap")
 				}
+				overrideF2 = true
 			}
 		}
 	}
 
-	normal := vtui.KeyBarLabels{}
-	defaultsNormal := []string{
-		Msg("KeyBar.F1"), f2, Msg("KeyBar.F3"), Msg("KeyBar.F4"),
-		Msg("KeyBar.F5"), Msg("KeyBar.F6"), Msg("KeyBar.F7"), Msg("KeyBar.F8"),
-		Msg("KeyBar.F9"), Msg("KeyBar.F10"), Msg("KeyBar.F11"), Msg("KeyBar.F12"),
+	fallbacks := &vtui.KeySet{
+		Normal: vtui.KeyBarLabels{
+			Msg("KeyBar.F1"), f2, Msg("KeyBar.F3"), Msg("KeyBar.F4"),
+			Msg("KeyBar.F5"), Msg("KeyBar.F6"), Msg("KeyBar.F7"), Msg("KeyBar.F8"),
+			Msg("KeyBar.F9"), Msg("KeyBar.F10"), Msg("KeyBar.F11"), Msg("KeyBar.F12"),
+		},
+		Shift: vtui.KeyBarLabels{"", "", "", "", "", "Rename", "", "", "Save", "", "", ""},
+		Alt: vtui.KeyBarLabels{
+			Msg("KeyBar.AltF1"), Msg("KeyBar.AltF2"), Msg("KeyBar.AltF3"), "",
+			"", "", Msg("KeyBar.AltF7"), Msg("KeyBar.AltF8"), "", "", "", Msg("KeyBar.AltF12"),
+		},
+		Ctrl: vtui.KeyBarLabels{
+			Msg("KeyBar.CtrlF1"), Msg("KeyBar.CtrlF2"), Msg("KeyBar.CtrlF3"), Msg("KeyBar.CtrlF4"), Msg("KeyBar.CtrlF5"), Msg("KeyBar.CtrlF6"), Msg("KeyBar.CtrlF7"), "", "", "", "Fork", "Close",
+		},
 	}
-	for i := 0; i < 12; i++ {
-		keyNum := fmt.Sprintf("F%d", i+1)
-		normal[i] = resolveLabel("", keyNum, defaultsNormal[i])
+	res := KeyBarLabelsForArea(area, fallbacks)
+	if overrideF2 {
+		res.Normal[1] = f2
 	}
-
-	shift := vtui.KeyBarLabels{}
-	defaultsShift := []string{"", "", "", "", "", "Rename", "", "", "Save", "", "", ""}
-	for i := 0; i < 12; i++ {
-		keyNum := fmt.Sprintf("F%d", i+1)
-		shift[i] = resolveLabel("Shift", keyNum, defaultsShift[i])
-	}
-
-	alt := vtui.KeyBarLabels{}
-	defaultsAlt := []string{
-		Msg("KeyBar.AltF1"), Msg("KeyBar.AltF2"), Msg("KeyBar.AltF3"), "",
-		"", "", Msg("KeyBar.AltF7"), Msg("KeyBar.AltF8"), "", "", "", Msg("KeyBar.AltF12"),
-	}
-	for i := 0; i < 12; i++ {
-		keyNum := fmt.Sprintf("F%d", i+1)
-		alt[i] = resolveLabel("Alt", keyNum, defaultsAlt[i])
-	}
-
-	ctrl := vtui.KeyBarLabels{}
-	defaultsCtrl := []string{
-		Msg("KeyBar.CtrlF1"), Msg("KeyBar.CtrlF2"), Msg("KeyBar.CtrlF3"), Msg("KeyBar.CtrlF4"), Msg("KeyBar.CtrlF5"), Msg("KeyBar.CtrlF6"), Msg("KeyBar.CtrlF7"), "", "", "", "Fork", "Close",
-	}
-	for i := 0; i < 12; i++ {
-		keyNum := fmt.Sprintf("F%d", i+1)
-		ctrl[i] = resolveLabel("Ctrl", keyNum, defaultsCtrl[i])
-	}
-
-	return &vtui.KeySet{
-		Normal: normal,
-		Shift:  shift,
-		Alt:    alt,
-		Ctrl:   ctrl,
-	}
+	return res
 }
 
 func (pf *PanelsFrame) GetType() vtui.FrameType { return vtui.TypeUser + 1 }
@@ -2988,6 +2604,13 @@ func (pf *PanelsFrame) showDummyOpDialog() {
 // RunProgressTask encapsulates the boilerplate for creating a progress dialog,
 // running a background task with cancellation, and optionally forking the workspace.
 func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
+	pf.runProgressTaskAfter(0, title, startMsg, forked, worker, onComplete)
+}
+
+// runProgressTaskAfter starts the worker immediately but postpones showing its
+// dialog. A task that completes before delay never creates a visible screen,
+// avoiding a one-frame flash for fast remote operations.
+func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
 	dlg := vtui.NewCenteredDialog(50, 12, title)
 	dlg.AttentionSuppressed = true
 
@@ -3020,7 +2643,16 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 		}
 	}
 
-	vtui.FrameManager.PostTask(func() {
+	done := make(chan struct{})
+	dialogShown := false // accessed only from UI tasks
+	showDialog := func() {
+		if delay > 0 {
+			select {
+			case <-done:
+				return
+			default:
+			}
+		}
 		if forked && pf != nil {
 			clone := pf.Clone()
 			vtui.FrameManager.AddScreen(clone)
@@ -3028,7 +2660,19 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 		} else {
 			vtui.FrameManager.AddScreenHeadless(dlg)
 		}
-	})
+		dialogShown = true
+	}
+
+	var showTimer *time.Timer
+	if delay > 0 {
+		showTimer = time.AfterFunc(delay, func() {
+			vtui.FrameManager.PostTask(showDialog)
+		})
+	} else {
+		// Preserve the existing immediate-dialog contract for callers that do
+		// not opt into a delay.
+		vtui.FrameManager.PostTask(showDialog)
+	}
 
 	taskCtx = vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		update := func(msg string, percent int) {
@@ -3045,8 +2689,14 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 			})
 		}
 		err := worker(ctx.Context, update)
+		close(done)
+		if showTimer != nil {
+			showTimer.Stop()
+		}
 		ctx.RunOnUI(func() {
-			dlg.Close()
+			if dialogShown {
+				dlg.Close()
+			}
 			if onComplete != nil {
 				onComplete(err)
 			}
@@ -3241,7 +2891,7 @@ func (pf *PanelsFrame) syncPTYDirectory(path string, v vfs.VFS) bool {
 	sync := false
 	if _, isOS := v.(*vfs.OSVFS); isOS {
 		sync = true
-	} else if _, isPty := v.(vfs.PtyProvider); isPty {
+	} else if vfsHasRemotePTY(v) {
 		sync = true
 		isWindowsShell = false
 	}
@@ -3263,6 +2913,16 @@ func (pf *PanelsFrame) syncPTYDirectory(path string, v vfs.VFS) bool {
 	return false
 }
 
+func vfsHasRemotePTY(v vfs.VFS) bool {
+	if _, ok := v.(vfs.PtyProvider); !ok {
+		return false
+	}
+	if availability, ok := v.(vfs.PtyAvailability); ok {
+		return availability.PtyAvailable()
+	}
+	return true
+}
+
 func (pf *PanelsFrame) getActivePTYUnsafe() PtyBackend {
 	if pf.remotePtys == nil {
 		pf.remotePtys = make(map[vfs.VFS]PtyBackend)
@@ -3273,7 +2933,7 @@ func (pf *PanelsFrame) getActivePTYUnsafe() PtyBackend {
 		activeVfs = fsp.vfs
 	}
 
-	if pp, ok := activeVfs.(vfs.PtyProvider); ok {
+	if pp, ok := activeVfs.(vfs.PtyProvider); ok && vfsHasRemotePTY(activeVfs) {
 		if pty, exists := pf.remotePtys[activeVfs]; exists {
 			return pty
 		}
@@ -3457,9 +3117,7 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			// Important: reset isLoading so the clone doesn't think it's still
 			// waiting for that cancelled initial load.
 			cloneFsp.isLoading = false
-			if cloneFsp.loadingTimer != nil {
-				cloneFsp.loadingTimer.Stop()
-			}
+			cloneFsp.stopLoadingAnimation()
 
 			cloneFsp.vfs.SetPath(fsp.vfs.GetPath())
 			cloneFsp.SetViewMode(fsp.viewMode)
@@ -3467,7 +3125,7 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.sortMode = fsp.sortMode
 			cloneFsp.sortReverse = fsp.sortReverse
 
-			cloneFsp.dirCache = make(map[string]dirCacheEntry)
+			cloneFsp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 			for k, v := range fsp.dirCache {
 				cloneFsp.dirCache[k] = v
 			}
@@ -3563,10 +3221,12 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// 1. Other panel (focused by default)
 	menu.AddItem(vtui.MenuItem{Text: Msg("Panel.Other"), UserData: func(fsp *FileSystemPanel) {
 		otherFsp := pf.panels[1-panelIdx].(*FileSystemPanel)
+		fsp.cancelProviderOpen()
 		if fsp.vfs != nil {
 			fsp.vfs.Close()
 		}
 		fsp.vfs = otherFsp.vfs.Clone()
+		fsp.showCurrentVFSLoadingRows()
 		fsp.ReadDirectory()
 		pf.RefreshAll()
 	}})
@@ -3786,6 +3446,7 @@ func (pf *PanelsFrame) clearBookmarkSlot(slot int, menu *vtui.VMenu, reopen func
 
 func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 	if newVFS != nil {
+		fsp.cancelProviderOpen()
 		if fsp.vfs != nil {
 			fsp.vfs.Close()
 			pf.ptyMutex.Lock()
@@ -3795,9 +3456,10 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 			}
 			pf.ptyMutex.Unlock()
 		}
-		fsp.dirCache = make(map[string]dirCacheEntry)
+		fsp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 		fsp.providerEntryName = ""
 		fsp.vfs = newVFS
+		fsp.showCurrentVFSLoadingRows()
 		fsp.ReadDirectory()
 		pf.RefreshAll()
 	}
@@ -3806,6 +3468,10 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 	if targetPath == "" {
 		return false
 	}
+	// An explicit command/history navigation supersedes a provider mount that
+	// has not installed its child VFS yet.
+	providerOpenCanceled := fsp.providerOpenTask != nil
+	fsp.cancelProviderOpen()
 
 	// 1. Handle "cd .." at the root of a nested VFS (e.g. escaping an archive)
 	if targetPath == ".." && fsp.vfs.IsAtRoot() && fsp.vfs.ParentVFS() != nil {
@@ -3820,8 +3486,9 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 		}
 		pf.ptyMutex.Unlock()
 
-		fsp.dirCache = make(map[string]dirCacheEntry)
+		fsp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 		fsp.vfs = parent
+		fsp.showCurrentVFSLoadingRows()
 		if fsp.providerEntryName != "" {
 			fsp.pendingSelection = fsp.providerEntryName
 			fsp.providerEntryName = ""
@@ -3906,14 +3573,133 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 		}
 	}
 
-	// 3. Try simple SetPath on current VFS (handles relative paths and absolute paths within same VFS)
-	if err := fsp.vfs.SetPath(targetPath); err == nil {
+	// 3. Change path on the current VFS. Remote VFSes may take the optimistic,
+	// no-I/O route here; ReadDirectory validates the target in the background
+	// while a cached view can become interactive immediately.
+	if err := fsp.setKnownDirectoryPath(targetPath); err == nil {
 		fsp.pendingSelection = ".."
 		fsp.ReadDirectory()
 		return true
 	}
 
+	if providerOpenCanceled {
+		// No replacement VFS/read was started, so restore the manager panel's
+		// loading state after superseding its pending provider transition.
+		fsp.isLoading = false
+		fsp.stopLoadingAnimation()
+		fsp.updateTitle(nil)
+		vtui.FrameManager.Redraw()
+	}
 	return false
+}
+
+func sameFolderHistoryPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// folderHistoryStep resolves a move in newest-first provider storage.
+// direction < 0 means Back (towards older entries), direction > 0 means
+// Forward (towards newer entries).
+func folderHistoryStep(history []string, current string, pos, direction int) (int, string, bool) {
+	if len(history) == 0 || direction == 0 {
+		return pos, "", false
+	}
+	if pos < 0 || pos >= len(history) || !sameFolderHistoryPath(history[pos], current) {
+		pos = -1
+		for i, path := range history {
+			if sameFolderHistoryPath(path, current) {
+				pos = i
+				break
+			}
+		}
+	}
+
+	target := pos - 1
+	if direction < 0 {
+		target = pos + 1
+		if pos == -1 {
+			target = 0
+		}
+	} else if pos == -1 {
+		return pos, "", false
+	}
+	if target < 0 || target >= len(history) {
+		return pos, "", false
+	}
+	return target, history[target], true
+}
+
+func (pf *PanelsFrame) folderHistoryPanelIndex(fsp *FileSystemPanel) int {
+	for i, panel := range pf.panels {
+		if panelFSP, ok := panel.(*FileSystemPanel); ok && panelFSP == fsp {
+			return i
+		}
+	}
+	return pf.activeIdx
+}
+
+func (pf *PanelsFrame) navigateFolderHistory(fsp *FileSystemPanel, path string, pos int) bool {
+	if fsp == nil || path == "" {
+		return false
+	}
+	// Folder history is a panel navigation action, so it ends the transient
+	// fast-find session before changing the directory.
+	fsp.fastFindMode = false
+	fsp.fastFindStr = ""
+	fsp.suppressFolderHistoryPath = path
+	if !pf.NavigateToPath(fsp, path) {
+		fsp.suppressFolderHistoryPath = ""
+		return false
+	}
+	idx := pf.folderHistoryPanelIndex(fsp)
+	if idx >= 0 && idx < len(pf.folderHistoryPos) {
+		pf.folderHistoryPos[idx] = pos
+	}
+	return true
+}
+
+// navigateAvailableFolderHistory tries history entries in storage-index order
+// until one can actually be opened. A positive step walks towards older MRU
+// entries; a negative step walks towards newer entries.
+func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, history []string, startPos, step int) bool {
+	if step == 0 {
+		return false
+	}
+	for pos := startPos; pos >= 0 && pos < len(history); pos += step {
+		if pf.navigateFolderHistory(fsp, history[pos], pos) {
+			return true
+		}
+	}
+	return false
+}
+
+func (pf *PanelsFrame) moveFolderHistory(fsp *FileSystemPanel, direction int) bool {
+	if fsp == nil || vtui.GlobalHistoryProvider == nil {
+		return false
+	}
+	history := vtui.GlobalHistoryProvider.LoadHistory("folders")
+	idx := pf.folderHistoryPanelIndex(fsp)
+	pos := -1
+	if idx >= 0 && idx < len(pf.folderHistoryPos) {
+		pos = pf.folderHistoryPos[idx]
+	}
+	targetPos, _, ok := folderHistoryStep(history, fsp.vfs.GetPath(), pos, direction)
+	if !ok {
+		return false
+	}
+	step := -1
+	if direction < 0 {
+		step = 1
+	}
+	return pf.navigateAvailableFolderHistory(fsp, history, targetPos, step)
 }
 
 func expandPathEnv(s string) string {

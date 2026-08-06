@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/unxed/f4/vfs"
 )
 
 var GlobalFileState *F4FileStateProvider
@@ -173,4 +176,42 @@ func (fs *F4FileStateProvider) saveAsync() {
 // cursor or viewer position.
 func (fs *F4FileStateProvider) Flush() {
 	fs.saveWG.Wait()
+}
+
+// FileStateKey returns the key a file's saved editor and viewer state lives
+// under. A path on its own does not identify a file: /etc/hosts on a FISH+ host
+// and /etc/hosts here are different files, and so is the same path on a second
+// host. The key therefore carries which file system the path was on. A local
+// path is left bare, both because it needs no qualifier and because that is how
+// the states already on disk are written.
+func FileStateKey(v vfs.VFS, path string) string {
+	if v == nil {
+		return path
+	}
+	abs, err := v.Abs(path)
+	if err != nil || abs == "" {
+		abs = path
+	}
+	ns := vfsStateNamespace(v)
+	if ns == "" {
+		return abs
+	}
+	return ns + ":" + abs
+}
+
+// vfsStateNamespace names the file system a path belongs to. A remote site
+// already has a name the user sees in the panel title, and that is exactly the
+// distinction being drawn here. Anything else falls back to its type, which
+// tells a local file from an archive member but not one archive from another —
+// see REVIEW.md.
+func vfsStateNamespace(v vfs.VFS) string {
+	if _, isLocal := v.(*vfs.OSVFS); isLocal {
+		return ""
+	}
+	if tp, ok := v.(vfs.TitleProvider); ok {
+		if title := tp.GetTitle(); title != "" {
+			return title
+		}
+	}
+	return fmt.Sprintf("%T", v)
 }

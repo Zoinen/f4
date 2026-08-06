@@ -334,7 +334,6 @@ func SetupUI() {
 	SetDefaultF4Palette()
 	LoadConfig()
 	InitLang()
-	InitHelpSystem()
 	if err := ApplyColorStyle(AppConfig.ColorStyle); err != nil {
 		vtui.DebugLog("COLORS: %v; falling back to Modern", err)
 		AppConfig.ColorStyle = "Modern"
@@ -344,7 +343,7 @@ func SetupUI() {
 	GlobalFileState = NewF4FileStateProvider()
 	vtinput.Logger = vtui.DebugLog // Pipe vtinput logs to vtui's debug logger
 	vtui.GlobalClipboardAccessManager = NewF4ClipboardAuth()
-	RegisterDrive("Null VFS", func() vfs.VFS { return vfs.NewNullVFS(50 * 1024 * 1024) }) // 50 MB/s
+	// RegisterDrive("Null VFS", func() vfs.VFS { return vfs.NewNullVFS(50 * 1024 * 1024) }) // 50 MB/s
 
 	configDir := GetF4ConfigDir()
 
@@ -373,6 +372,10 @@ func SetupUI() {
 	GlobalHotkeysMgr = NewHotkeyManager(filepath.Join(configDir, "hotkeys.ini"))
 	MacroMgr = NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
 	MacroMgr.LoadLuaMacros(filepath.Join(configDir, "Macros", "scripts"))
+	// Help is initialized after the hotkey manager: key binding topics
+	// are generated from the action registry and must reflect the
+	// user's overrides from hotkeys.ini.
+	InitHelpSystem()
 	vtui.FrameManager.EventFilter = MacroMgr.Filter
 	LoadSession()
 	vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
@@ -436,10 +439,23 @@ func SetupUI() {
 		panels.ResizeConsole(width, height)
 	}
 	vtui.FrameManager.Push(panels)
+	previousEventFilter := vtui.FrameManager.EventFilter
+	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
+		if previousEventFilter != nil && previousEventFilter(e) {
+			return true
+		}
+		if handlePanelPathEditHotkey(e) {
+			return true
+		}
+		return handleHelpSearchHotkey(e)
+	}
 
 	vtui.FrameManager.MenuBar = panels.menuBar
 	vtui.FrameManager.KeyBar = panels.keyBar
-	vtui.FrameManager.OnRender = UpdateWindowTitle
+	vtui.FrameManager.OnRender = func(scr *vtui.ScreenBuf) {
+		UpdateWindowTitle(scr)
+		renderHelpSearch(scr)
+	}
 
 	noPlugins := false
 	for _, arg := range os.Args {

@@ -391,14 +391,14 @@ func (r queueRow) GetCellAttr(col int, def uint64) uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.State == "Error" {
-		return vtui.SetRGBFore(def, 0xFF0000)
-	} // Red
+		return themedForeground(def, vtui.ColWarnHighlightBoxTitle)
+	}
 	if t.State == "Done" {
-		return vtui.SetRGBFore(def, 0x00FF00)
-	} // Green
+		return themedForeground(def, vtui.ColDialogText)
+	}
 	if t.State == "Running" || t.State == "Scanning" {
-		return vtui.SetRGBFore(def, 0x00FFFF)
-	} // Cyan
+		return themedForeground(def, vtui.ColDialogHighlightText)
+	}
 	if t.State == "Cancelled" {
 		return vtui.DimColor(def)
 	}
@@ -433,6 +433,7 @@ func NewQueueFrame() *QueueFrame {
 		{Title: "Speed", Width: 12},
 	}
 	qf.table = vtui.NewTable(0, 0, scrW-4, scrH-6, cols)
+	useDialogTableColors(qf.table)
 	qf.table.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
 	qf.table.ShowScrollBar = true
 

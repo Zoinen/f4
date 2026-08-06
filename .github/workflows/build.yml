@@ -107,6 +107,8 @@ jobs:
 
         # Copy language and help assets
         cp -r lang help build/
+        mkdir -p build/licenses
+        cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
 
         # Add freedesktop launch metadata and the application icon to Linux archives.
         if [ "$GOOS" = "linux" ]; then

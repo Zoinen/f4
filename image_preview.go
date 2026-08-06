@@ -32,6 +32,15 @@ const (
 
 // imageQuickPreview returns the small copy the file carries inside itself.
 func imageQuickPreview(ctx context.Context, v vfs.VFS, path string) (*vtui.ImageSurface, string, error) {
+	// The extractor below understands an Exif APP1 segment in a JPEG. PNG,
+	// GIF and the other image formats cannot possibly yield such a preview,
+	// so avoid a pointless remote open plus a 256 KiB range read before the
+	// real decoder opens the file again.
+	switch imageExtension(path) {
+	case "jpg", "jpeg", "jfif":
+	default:
+		return nil, "", fmt.Errorf("embedded preview is only supported for JPEG files")
+	}
 	head, err := imageReadHead(ctx, v, path, imagePreviewHeadSize)
 	if err != nil {
 		return nil, "", err

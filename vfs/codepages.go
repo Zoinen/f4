@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/unxed/localecp"
+	"github.com/unxed/vtui"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/unicode"
@@ -26,10 +26,10 @@ var AvailableCodepages []Codepage
 func init() {
 	AvailableCodepages = []Codepage{
 		{65001, "UTF-8", unicode.UTF8},
+		{11111, "1251 ANSI (Cyrillic)", nil},
+		{22222, "866 OEM (Russian)", nil},
 		{1200, "UTF-16 (Little endian)", unicode.UTF16(unicode.LittleEndian, unicode.UseBOM)},
 		{1201, "UTF-16 (Big endian)", unicode.UTF16(unicode.BigEndian, unicode.UseBOM)},
-		{11111, "System ANSI", nil},
-		{22222, "System OEM", nil},
 		{1251, "Windows-1251 (Cyrillic)", charmap.Windows1251},
 		{866, "CP866 (Cyrillic OEM)", charmap.CodePage866},
 		{20866, "KOI8-R (Cyrillic)", charmap.KOI8R},
@@ -38,6 +38,22 @@ func init() {
 		{850, "CP850 (Western OEM)", charmap.CodePage850},
 		{852, "CP852 (Slavic OEM)", charmap.CodePage852},
 	}
+}
+
+func DisplayCodepageName(id int) string {
+	if id == 11111 {
+		return "ANSI"
+	}
+	if id == 22222 {
+		return "OEM"
+	}
+	if id == 65001 {
+		return "UTF-8"
+	}
+	if cp, ok := FindCodepage(id); ok {
+		return cp.Name
+	}
+	return fmt.Sprintf("%d", id)
 }
 
 func FindCodepage(id int) (Codepage, bool) {
@@ -56,15 +72,23 @@ func DecodeBytes(data []byte, cpID int) ([]byte, error) {
 
 	var decoder *encoding.Decoder
 	if cpID == 11111 {
-		decoder = localecp.ANSIDecoder
+		if enc := GetSystemANSIEncoding(); enc != nil {
+			decoder = enc.NewDecoder()
+		}
 	} else if cpID == 22222 {
-		decoder = localecp.OEMDecoder
+		if enc := GetSystemOEMEncoding(); enc != nil {
+			decoder = enc.NewDecoder()
+		}
 	} else {
 		cp, ok := FindCodepage(cpID)
 		if !ok || cp.Enc == nil {
 			return data, fmt.Errorf("unsupported codepage: %d", cpID)
 		}
 		decoder = cp.Enc.NewDecoder()
+	}
+
+	if decoder == nil {
+		return data, fmt.Errorf("decoder is nil for codepage: %d", cpID)
 	}
 
 	return decoder.Bytes(data)
@@ -77,12 +101,12 @@ func EncodeBytes(data []byte, cpID int) ([]byte, error) {
 
 	var encoder *encoding.Encoder
 	if cpID == 11111 {
-		encoder = localecp.ANSIEncoder
+		if enc := GetSystemANSIEncoding(); enc != nil {
+			encoder = enc.NewEncoder()
+		}
 	} else if cpID == 22222 {
-		if systemOEM := GetSystemOEMEncoding(); systemOEM != nil {
-			encoder = systemOEM.NewEncoder()
-		} else {
-			encoder = charmap.CodePage437.NewEncoder()
+		if enc := GetSystemOEMEncoding(); enc != nil {
+			encoder = enc.NewEncoder()
 		}
 	} else {
 		cp, ok := FindCodepage(cpID)
@@ -90,6 +114,10 @@ func EncodeBytes(data []byte, cpID int) ([]byte, error) {
 			return data, fmt.Errorf("unsupported codepage: %d", cpID)
 		}
 		encoder = cp.Enc.NewEncoder()
+	}
+
+	if encoder == nil {
+		return data, fmt.Errorf("encoder is nil for codepage: %d", cpID)
 	}
 
 	return encoder.Bytes(data)
@@ -129,14 +157,16 @@ func GetCodepageDecoderEncoder(cp string) (*encoding.Decoder, *encoding.Encoder)
 	}
 	id, _ := strconv.Atoi(cp)
 	if id == 11111 {
-		return localecp.ANSIDecoder, localecp.ANSIEncoder
+		if enc := GetSystemANSIEncoding(); enc != nil {
+			return enc.NewDecoder(), enc.NewEncoder()
+		}
+		return nil, nil
 	}
 	if id == 22222 {
-		var enc *encoding.Encoder
-		if systemOEM := GetSystemOEMEncoding(); systemOEM != nil {
-			enc = systemOEM.NewEncoder()
+		if enc := GetSystemOEMEncoding(); enc != nil {
+			return enc.NewDecoder(), enc.NewEncoder()
 		}
-		return localecp.OEMDecoder, enc
+		return nil, nil
 	}
 	if cpObj, ok := FindCodepage(id); ok && cpObj.Enc != nil {
 		return cpObj.Enc.NewDecoder(), cpObj.Enc.NewEncoder()
@@ -233,4 +263,68 @@ func GetNextFastSwitchCodepage(current int) int {
 		}
 	}
 	return 65001
+}
+func BuildCodepageMenuItems(currentCpID int, autoDetect bool) ([]vtui.MenuItem, int) {
+	var items []vtui.MenuItem
+	currIdx := 0
+
+	addHeader := func(title string) {
+		items = append(items, vtui.MenuItem{Text: title, Separator: true})
+	}
+
+	addCP := func(cp Codepage) {
+		if cp.ID == 1251 || cp.ID == 866 {
+			return // Exclude duplicate 1251 and 866 from the UI menu
+		}
+		var text string
+		if cp.ID == 11111 || cp.ID == 22222 {
+			text = cp.Name // Don't show technical "11111" / "22222" IDs
+		} else {
+			text = fmt.Sprintf("%5d  %s", cp.ID, cp.Name)
+		}
+
+		if cp.ID == currentCpID && !autoDetect {
+			text = "√ " + text
+			currIdx = len(items)
+		} else {
+			text = "  " + text
+		}
+		items = append(items, vtui.MenuItem{
+			Text:     text,
+			UserData: cp.ID,
+		})
+	}
+
+	autoText := "  Auto-detect "
+	if autoDetect {
+		autoText = "√ Auto-detect "
+		currIdx = 0
+	}
+	items = append(items, vtui.MenuItem{
+		Text:     autoText,
+		UserData: -1,
+	})
+
+	addHeader(" System ")
+	for _, cp := range AvailableCodepages {
+		if cp.ID == 11111 || cp.ID == 22222 {
+			addCP(cp)
+		}
+	}
+
+	addHeader(" Unicode ")
+	for _, cp := range AvailableCodepages {
+		if cp.ID == 65001 || cp.ID == 1200 || cp.ID == 1201 {
+			addCP(cp)
+		}
+	}
+
+	addHeader(" Other ")
+	for _, cp := range AvailableCodepages {
+		if cp.ID != 11111 && cp.ID != 22222 && cp.ID != 65001 && cp.ID != 1200 && cp.ID != 1201 {
+			addCP(cp)
+		}
+	}
+
+	return items, currIdx
 }

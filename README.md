@@ -84,9 +84,10 @@ Example:
 ### Special Features
 
 1. **Asynchronous VFS:** Built from the ground up to be non-blocking, supporting live streaming of directory contents and lazy-loading of file data. See [VFS Architecture](VFS.md).
-2. **FISH+ Protocol (Coming Soon):** A revolutionary remote file management protocol that offloads indexing, searching, and patching to the server. See [FISH+ Concept](FISH+.md).
-3. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
-4. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
+2. **FISH+ Protocol:** Remote file management that offloads indexing, searching, patching and long-running jobs to the server. See [FISH+](FISH+.md).
+3. **Android Filesystem:** A dedicated Android drive discovers devices through the local ADB server and selects FISH+ or an ADB Sync v1/v2 fallback for the session. See [Android filesystem](plugins/android/README.md).
+4. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
+5. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
 
 ---
 

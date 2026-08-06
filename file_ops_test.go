@@ -276,6 +276,106 @@ func TestRecursiveCopy_AskError_Stub(t *testing.T) {
 		t.Error("Failed to create PanelsFrame")
 	}
 }
+
+type mockS2SVFS struct {
+	vfs.VFS
+	runCommand func(ctx context.Context, dir, command string, cb func(line string)) (int, error)
+	connInfo   func() (host, port, user string, ok bool)
+}
+
+func (m *mockS2SVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+	if m.runCommand != nil {
+		return m.runCommand(ctx, dir, command, cb)
+	}
+	return 0, fmt.Errorf("unsupported")
+}
+
+func (m *mockS2SVFS) ConnectionInfo() (host, port, user string, ok bool) {
+	if m.connInfo != nil {
+		return m.connInfo()
+	}
+	return "localhost", "22", "user", true
+}
+
+func (m *mockS2SVFS) GetCapabilities() vfs.VFSCapabilities {
+	return vfs.VFSCapabilities{HasRandomAccess: true}
+}
+
+func TestRecursiveCopy_S2SProbing(t *testing.T) {
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+
+	srcFile := filepath.Join(tmpSrc, "s2s.bin")
+	os.WriteFile(srcFile, []byte("s2s_data"), 0644)
+	dstFile := filepath.Join(tmpDst, "s2s.bin")
+
+	var pushedCmd string
+	var pulledCmd string
+
+	srcMock := &mockS2SVFS{
+		VFS: vfs.NewOSVFS(tmpSrc),
+		runCommand: func(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+			pushedCmd = command
+			// Force push to fail with exit code 1, but no protocol error
+			return 1, nil
+		},
+		connInfo: func() (host, port, user string, ok bool) {
+			return "hostA", "22", "userA", true
+		},
+	}
+
+	dstMock := &mockS2SVFS{
+		VFS: vfs.NewOSVFS(tmpDst),
+		runCommand: func(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+			pulledCmd = command
+			return 0, nil // Pull succeeds
+		},
+		connInfo: func() (host, port, user string, ok bool) {
+			return "hostB", "22", "userB", true
+		},
+	}
+
+	state := &FileOpState{}
+	ctx := context.Background()
+
+	err := recursiveCopy(ctx, srcMock, srcFile, dstMock, dstFile, state, 0)
+	if err != nil {
+		t.Fatalf("recursiveCopy failed during S2S: %v", err)
+	}
+
+	if pushedCmd == "" {
+		t.Error("Expected push attempt on source VFS")
+	}
+	if !strings.Contains(pushedCmd, "scp") || !strings.Contains(pushedCmd, "userB@hostB") {
+		t.Errorf("Unexpected push command: %q", pushedCmd)
+	}
+
+	if pulledCmd == "" {
+		t.Error("Expected pull fallback attempt on dest VFS")
+	}
+	if !strings.Contains(pulledCmd, "scp") || !strings.Contains(pulledCmd, "userA@hostA") {
+		t.Errorf("Unexpected pull command: %q", pulledCmd)
+	}
+
+	if state.S2SDir != 2 {
+		t.Errorf("Expected S2SDir state to be 2 (pull), got %d", state.S2SDir)
+	}
+
+	// Now run again with S2SDir set to 2; it should directly pull and skip push
+	pushedCmd = ""
+	pulledCmd = ""
+	err = recursiveCopy(ctx, srcMock, srcFile, dstMock, dstFile, state, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushedCmd != "" {
+		t.Error("Expected push to be skipped when S2SDir is 2")
+	}
+	if pulledCmd == "" {
+		t.Error("Expected pull to be executed directly when S2SDir is 2")
+	}
+}
+
 func TestMkDir_ErrorHandling(t *testing.T) {
 	tmp := t.TempDir()
 	v := vfs.NewOSVFS(tmp)
@@ -380,7 +480,7 @@ func TestFileOp_PathLogic(t *testing.T) {
 			}
 		}
 
-		finalPath := filepath.Join(tmpDst, "deep", "path", "target.txt")
+		finalPath := filepath.Join(tmpSrc, "deep", "path", "target.txt")
 		if _, err := os.Stat(finalPath); os.IsNotExist(err) {
 			t.Error("Failed to create parent directories during rename-copy")
 		}
@@ -401,7 +501,7 @@ func TestFileOp_PathLogic(t *testing.T) {
 			}
 		}
 
-		finalPath := filepath.Join(tmpDst, "new_dir", "source2.txt")
+		finalPath := filepath.Join(tmpSrc, "new_dir", "source2.txt")
 		if _, err := os.Stat(finalPath); os.IsNotExist(err) {
 			t.Error("Trailing slash did not trigger directory creation for single file")
 		}
@@ -1575,50 +1675,32 @@ func TestFileOps_CalculateStats_Integration(t *testing.T) {
 	}
 }
 func TestExecuteFileOp_PathInterpretations(t *testing.T) {
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmpSrc := t.TempDir()
 	tmpDst := t.TempDir()
 	srcVfs := vfs.NewOSVFS(tmpSrc)
 	dstVfs := vfs.NewOSVFS(tmpDst)
 
-	os.WriteFile(filepath.Join(tmpSrc, "f1.txt"), []byte("content"), 0644)
-
-	t.Run("Copy to dot", func(t *testing.T) {
-		// Копирование f1.txt в "." (текущая директория пассивной панели)
-		ExecuteFileOp(nil, srcVfs, dstVfs, []string{"f1.txt"}, ".", false, 2, nil)
-
-		// Pump
-		for i := 0; i < 50; i++ {
-			select {
-			case task := <-vtui.FrameManager.TaskChan:
-				task()
-			default:
-				time.Sleep(2 * time.Millisecond)
+	tests := []struct {
+		name     string
+		input    string
+		wantVFS  vfs.VFS
+		wantPath string
+	}{
+		{name: "simple name", input: "renamed.txt", wantVFS: srcVfs, wantPath: filepath.Join(tmpSrc, "renamed.txt")},
+		{name: "nested relative path", input: filepath.Join("test", "nested"), wantVFS: srcVfs, wantPath: filepath.Join(tmpSrc, "test", "nested")},
+		{name: "current directory", input: ".", wantVFS: srcVfs, wantPath: filepath.Clean(tmpSrc)},
+		{name: "parent directory", input: "..", wantVFS: srcVfs, wantPath: filepath.Dir(tmpSrc)},
+		{name: "passive absolute path", input: tmpDst, wantVFS: dstVfs, wantPath: tmpDst},
+		{name: "active absolute path", input: tmpSrc, wantVFS: dstVfs, wantPath: tmpSrc},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotVFS, gotPath := resolveFileOpDestination(srcVfs, dstVfs, tt.input)
+			if gotVFS != tt.wantVFS || gotPath != tt.wantPath {
+				t.Fatalf("resolve(%q) = (%T, %q), want (%T, %q)", tt.input, gotVFS, gotPath, tt.wantVFS, tt.wantPath)
 			}
-		}
-		if _, err := os.Stat(filepath.Join(tmpDst, "f1.txt")); err != nil {
-			t.Error("Copy to '.' failed to preserve filename in target")
-		}
-	})
-
-	t.Run("Copy with trailing slash (force dir)", func(t *testing.T) {
-		// Копирование f1.txt в "newdir/" -> f1.txt должен оказаться внутри newdir
-		target := "newdir" + string(os.PathSeparator)
-		ExecuteFileOp(nil, srcVfs, dstVfs, []string{"f1.txt"}, target, false, 2, nil)
-
-		for i := 0; i < 50; i++ {
-			select {
-			case task := <-vtui.FrameManager.TaskChan:
-				task()
-			default:
-				time.Sleep(2 * time.Millisecond)
-			}
-		}
-		finalPath := filepath.Join(tmpDst, "newdir", "f1.txt")
-		if _, err := os.Stat(finalPath); err != nil {
-			t.Error("Trailing slash did not force directory creation")
-		}
-	})
+		})
+	}
 }
 
 type mockFailingRemoveVFS struct {
@@ -1733,6 +1815,117 @@ Loop:
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for background ExecuteFileOp to exit")
+	}
+}
+
+// closeErrVFS hands out writers whose Close fails, which is how a buffering
+// remote file system reports that its last chunk never arrived.
+type closeErrVFS struct {
+	vfs.VFS
+	closeErr error
+	closes   int
+}
+
+func (v *closeErrVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
+	w, err := v.VFS.Create(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return &closeErrWriter{w: w, owner: v}, nil
+}
+
+type closeErrWriter struct {
+	w     io.WriteCloser
+	owner *closeErrVFS
+}
+
+func (w *closeErrWriter) Write(p []byte) (int, error) { return w.w.Write(p) }
+
+func (w *closeErrWriter) Close() error {
+	w.owner.closes++
+	w.w.Close()
+	return w.owner.closeErr
+}
+
+type countingCloser struct {
+	closes int
+	err    error
+}
+
+func (c *countingCloser) Close() error {
+	c.closes++
+	return c.err
+}
+
+func TestCloseOnceClosesOnceAndReportsTheError(t *testing.T) {
+	c := &countingCloser{err: fmt.Errorf("flush failed")}
+	closeIt := closeOnce(c)
+	if err := closeIt(); err == nil || !strings.Contains(err.Error(), "flush failed") {
+		t.Fatalf("first close returned %v, want the underlying error", err)
+	}
+	// The defer that follows an explicit close must be a no-op, not a
+	// second Close on a writer that already tore its buffer down.
+	if err := closeIt(); err != nil {
+		t.Errorf("second close returned %v, want nil", err)
+	}
+	if c.closes != 1 {
+		t.Errorf("Close called %d times, want 1", c.closes)
+	}
+}
+
+func TestRecursiveCopyFailsWhenTheDestinationCloseFails(t *testing.T) {
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+	srcFile := filepath.Join(tmpSrc, "file.txt")
+	if err := os.WriteFile(srcFile, []byte("some content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstFile := filepath.Join(tmpDst, "file.txt")
+
+	dstVfs := &closeErrVFS{VFS: vfs.NewOSVFS(tmpDst), closeErr: fmt.Errorf("flush failed")}
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tCtx := vtui.RunAsync(func(c *vtui.TaskContext) {})
+	defer tCtx.Cancel()
+
+	err := recursiveCopy(tCtx.Context, vfs.NewOSVFS(tmpSrc), srcFile, dstVfs, dstFile, &FileOpState{}, 0)
+	if err == nil || !strings.Contains(err.Error(), "flush failed") {
+		t.Fatalf("recursiveCopy returned %v, want the close error", err)
+	}
+	if _, statErr := os.Stat(dstFile); statErr == nil {
+		t.Error("an incomplete destination was left behind")
+	}
+	if dstVfs.closes != 1 {
+		t.Errorf("Close called %d times, want 1", dstVfs.closes)
+	}
+}
+
+func TestRecursiveCopyClosesTheDestinationBeforeSucceeding(t *testing.T) {
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+	srcFile := filepath.Join(tmpSrc, "file.txt")
+	content := []byte("some content")
+	if err := os.WriteFile(srcFile, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	dstFile := filepath.Join(tmpDst, "file.txt")
+
+	dstVfs := &closeErrVFS{VFS: vfs.NewOSVFS(tmpDst)}
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tCtx := vtui.RunAsync(func(c *vtui.TaskContext) {})
+	defer tCtx.Cancel()
+
+	if err := recursiveCopy(tCtx.Context, vfs.NewOSVFS(tmpSrc), srcFile, dstVfs, dstFile, &FileOpState{}, 0); err != nil {
+		t.Fatalf("recursiveCopy: %v", err)
+	}
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("reading the copy: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("copied %q, want %q", got, content)
+	}
+	if dstVfs.closes != 1 {
+		t.Errorf("Close called %d times, want 1", dstVfs.closes)
 	}
 }
 

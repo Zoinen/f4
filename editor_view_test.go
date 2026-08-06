@@ -282,7 +282,7 @@ func TestEditorView_SaveFile(t *testing.T) {
 
 	// 4. Simulate pressing F2 (Save)
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) // Needed for PostTask to work
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2})
 
 	// 5. Wait for async save to finish by processing tasks
 	timeout := time.After(1 * time.Second)
@@ -734,13 +734,13 @@ func TestEditorView_F3_ToggleWordWrap(t *testing.T) {
 	ev.WordWrap = true
 
 	// Press F3 (Wait, make sure your code uses VK_F3 now)
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
 	if ev.WordWrap {
 		t.Error("F3 failed to disable WordWrap")
 	}
 
 	// Press F3 again
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
 	if !ev.WordWrap {
 		t.Error("F3 failed to re-enable WordWrap")
 	}
@@ -759,8 +759,8 @@ func TestEditorView_Labels(t *testing.T) {
 	if ks.Normal[1] != "Save" { // F2
 		t.Errorf("Expected F2 to be 'Save', got %q", ks.Normal[1])
 	}
-	if ks.Normal[9] != "Quit" { // F10
-		t.Errorf("Expected F10 to be 'Quit', got %q", ks.Normal[9])
+	if ks.Normal[9] != "Exit" { // F10
+		t.Errorf("Expected F10 to be 'Exit', got %q", ks.Normal[9])
 	}
 }
 func TestEditorView_DefaultsAndToggles(t *testing.T) {
@@ -777,13 +777,13 @@ func TestEditorView_DefaultsAndToggles(t *testing.T) {
 	}
 
 	// 2. Toggle F3 (Wrap)
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3})
 	if !ev.WordWrap {
 		t.Error("F3 failed to toggle WordWrap to ON")
 	}
 
 	// 3. Toggle F5 (Whitespaces)
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F5})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F5})
 	if !ev.ShowWhitespaces {
 		t.Error("F5 failed to toggle ShowWhitespaces to ON")
 	}
@@ -1033,6 +1033,75 @@ func TestEditorView_GetTitle(t *testing.T) {
 	defer ev2.Close()
 	if ev2.GetTitle() != "Editor" {
 		t.Errorf("GetTitle failed for empty path: %s", ev2.GetTitle())
+	}
+
+	// Internal editor workflows can hide a temporary filename.
+	ev3 := NewEditorView(pt, nil, "f4-visren-temporary.txt")
+	defer ev3.Close()
+	ev3.DisplayTitle = "Rename list of files"
+	if ev3.GetTitle() != "Rename list of files" {
+		t.Errorf("GetTitle ignored DisplayTitle: %s", ev3.GetTitle())
+	}
+}
+func TestViewerView_CodepageSwitch_Crash(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpFile := filepath.Join(t.TempDir(), "test_viewer_cp.txt")
+	err := os.WriteFile(tmpFile, []byte("Hello World\nLine 2\nLine 3"), 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v := vfs.NewOSVFS(filepath.Dir(tmpFile))
+	vv, err := NewViewerView(context.Background(), v, tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create ViewerView: %v", err)
+	}
+	defer vv.Close()
+	vv.SetPosition(0, 0, 80, 24)
+
+	// Simulate double codepage switch (F8, F8)
+	vv.ReloadWithCodepage(11111) // ANSI
+	vv.ReloadWithCodepage(22222) // OEM
+
+	// Trigger render to make sure it doesn't crash during drawing
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vv.Show(scr)
+
+	// Exit the viewer (F3 / Close)
+	vv.Close()
+}
+
+func TestEditorView_CodepageDialog_DynamicHeight(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	scrH := 10 // Very small screen height
+	vtui.FrameManager.Screen().AllocBuf(80, scrH)
+
+	pt := piecetable.New(nil)
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, scrH-1)
+
+	ev.showCodepageDialog()
+
+	// The dialog should be the top frame
+	top := vtui.FrameManager.GetTopFrame()
+	menu, ok := top.(*vtui.VMenu)
+	if !ok {
+		t.Fatal("Expected top frame to be VMenu")
+	}
+
+	_, _, _, y2 := menu.GetPosition()
+	menuHeight := y2 - menu.Y1 + 1
+
+	expectedMaxH := scrH - 2
+	if menuHeight > expectedMaxH {
+		t.Errorf("Codepage dialog height %d exceeds maximum allowed %d for screen height %d", menuHeight, expectedMaxH, scrH)
+	}
+
+	if menu.SelectPos < 0 || menu.SelectPos >= len(menu.Items) {
+		t.Errorf("Selected position %d out of bounds", menu.SelectPos)
 	}
 }
 func TestEditorView_AsyncIndexing(t *testing.T) {
@@ -1330,7 +1399,7 @@ func TestEditorView_SelectAll(t *testing.T) {
 	defer ev.Close()
 
 	// Ctrl+A
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_A, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -1446,7 +1515,7 @@ func TestEditorView_FarX_SmartCut(t *testing.T) {
 	ev.selActive = true
 	ev.selAnchorOffset = 0
 	ev.CursorPos = 6 // "Select"
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_X, ControlKeyState: vtinput.LeftCtrlPressed})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_X, ControlKeyState: vtinput.LeftCtrlPressed})
 	if pt.String() != " me\nNext line" {
 		t.Errorf("Ctrl+X Cut failed: %q", pt.String())
 	}
@@ -1465,7 +1534,7 @@ func TestEditorView_FarSelectAll_Behavior(t *testing.T) {
 	ev := NewEditorView(pt, nil, "")
 	defer ev.Close()
 
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_A, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -1507,7 +1576,7 @@ func TestEditorView_FarSelectAll(t *testing.T) {
 	ev := NewEditorView(pt, nil, "")
 	defer ev.Close()
 
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_A, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -1572,7 +1641,7 @@ func TestEditorView_FarX_CutVsDown(t *testing.T) {
 	ev.selAnchorOffset = 0
 	ev.CursorPos = 4 // Выделено "Some"
 
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_X, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
@@ -1846,7 +1915,7 @@ func TestEditorView_Search_ShiftF7_Reverse(t *testing.T) {
 	ev.selActive = false
 	LastEditorSearchReverse = true
 	vtui.DebugLog("TEST_SEARCH: Triggering Search 2. Current CursorPos: %d", ev.CursorPos)
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_F7, ControlKeyState: vtinput.ShiftPressed,
 	})
@@ -1904,7 +1973,7 @@ func TestEditorView_SaveFailure_NoDataLoss(t *testing.T) {
 	}
 
 	// 2. Attempt to save (F2)
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2})
+	pressKey(ev, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2})
 
 	// Process async tasks
 	timeout := time.After(2 * time.Second)
@@ -2293,7 +2362,7 @@ func TestEditorView_ModificationStress(t *testing.T) {
 		if op.ctrl {
 			ctrlFlag = vtinput.LeftCtrlPressed
 		}
-		ev.ProcessKey(&vtinput.InputEvent{
+		pressKey(ev, &vtinput.InputEvent{
 			Type:            vtinput.KeyEventType,
 			KeyDown:         true,
 			Char:            rune(op.char),
@@ -3036,8 +3105,10 @@ func TestEditorView_StateRestoration_Interference(t *testing.T) {
 	ev.targetLine = 2 // Хотим прыгнуть на 3-ю строку
 	ev.targetPos = 0
 
-	// Имитируем, что пользователь нажал клавишу (например, влево) до завершения индексации
-	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT})
+	// Имитируем, что пользователь нажал клавишу (например, вправо) до завершения
+	// индексации. Клавиша должна реально сдвинуть курсор: нажатие, которое ничего
+	// не изменило, вмешательством пользователя больше не считается.
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT})
 
 	if ev.targetLine != -1 {
 		t.Error("User intervention must cancel pending state restoration")
@@ -3725,7 +3796,7 @@ func TestEditor_InsertToggle(t *testing.T) {
 	}
 
 	// Нажимаем Insert
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
 		VirtualKeyCode: vtinput.VK_INSERT,
@@ -3824,7 +3895,7 @@ func TestEditorViewInsertOverwriteCursorShape(t *testing.T) {
 	}
 
 	// Нажимаем Insert
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
 		VirtualKeyCode: vtinput.VK_INSERT,
@@ -4111,6 +4182,99 @@ func TestEditorView_Codepages_LoadSave(t *testing.T) {
 	expected := []byte{0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x21}
 	if !bytes.Equal(savedRaw, expected) {
 		t.Errorf("Save failed: expected raw bytes %v, got %v", expected, savedRaw)
+	}
+}
+func TestEditorView_Codepages_PreserveEditsOnSwitch(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "edit_cp.txt")
+	os.WriteFile(path, []byte("Initial text"), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	pt := piecetable.New([]byte("Initial text"))
+	ev := NewEditorView(pt, v, path)
+	defer ev.Close()
+	ev.Codepage = 65001
+
+	// Modify text
+	ev.SetText("Modified text")
+
+	// Switch codepage to 11111 (ANSI)
+	ev.ReloadWithCodepage(11111)
+
+	// User modifications must NOT be reverted to "Initial text"
+	if strings.Contains(ev.GetText(), "Initial text") {
+		t.Error("ReloadWithCodepage reverted unsaved user edits to disk content")
+	}
+	if ev.Codepage != 11111 {
+		t.Errorf("Expected Codepage 11111, got %d", ev.Codepage)
+	}
+}
+
+func TestEditorView_Codepages_Convert(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	pt := piecetable.New([]byte("Привет"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+
+	ev.Codepage = 1251 // Windows-1251 (Cyrillic)
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.showConvertCodepageDialog()
+	ev.Codepage = 866
+	ev.modified = true
+
+	if ev.pt.String() != "Привет" {
+		t.Errorf("Convert failed: expected 'Привет' to be preserved in memory, got %q", ev.pt.String())
+	}
+	if ev.Codepage != 866 {
+		t.Errorf("Expected Codepage to be 866, got %d", ev.Codepage)
+	}
+}
+func TestEditorView_Codepages_AutoDetect(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "auto_cp.txt")
+	os.WriteFile(path, []byte{0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2}, 0644) // "Привет" in CP1251
+
+	v := vfs.NewOSVFS(tmpDir)
+	f, err := v.Open(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	pt := piecetable.New([]byte("Initial"))
+	ev := NewEditorView(pt, v, path)
+	defer ev.Close()
+	ev.file = f
+
+	AppConfig.EditorAutodetectCodePage = true
+	AppConfig.EditorDefaultCodePage = 11111 // ANSI
+	ev.ReloadWithAutoDetect()
+
+	if ev.Codepage != 11111 {
+		t.Errorf("Expected autodetect to fall back to 11111 (ANSI) for non-UTF-8 file, got %d", ev.Codepage)
+	}
+}
+
+func TestEditorView_Codepages_KeyBarLabel(t *testing.T) {
+	pt := piecetable.New(nil)
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+
+	ev.Codepage = 65001 // UTF-8
+	labels := ev.GetKeyLabels()
+	if labels.Normal[7] != "ANSI" {
+		t.Errorf("Expected F8 KeyBar label to be 'ANSI', got %q", labels.Normal[7])
+	}
+
+	ev.Codepage = 11111 // ANSI
+	labels = ev.GetKeyLabels()
+	if labels.Normal[7] != "OEM" {
+		t.Errorf("Expected F8 KeyBar label to be 'OEM', got %q", labels.Normal[7])
 	}
 }
 

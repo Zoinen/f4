@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/text/encoding/charmap"
@@ -144,5 +145,84 @@ func TestCodepages_MemoryReadAtCloser(t *testing.T) {
 	n3, err3 := m.Read(context.Background(), buf)
 	if n3 != 0 || err3 != io.EOF {
 		t.Errorf("Expected standard Read to return EOF, got n=%d, err=%v", n3, err3)
+	}
+}
+func TestCodepages_DisplayCodepageName(t *testing.T) {
+	tests := []struct {
+		id   int
+		want string
+	}{
+		{11111, "ANSI"},
+		{22222, "OEM"},
+		{65001, "UTF-8"},
+		{1200, "UTF-16 (Little endian)"},
+		{20866, "KOI8-R (Cyrillic)"},
+		{99999, "99999"},
+	}
+	for _, tt := range tests {
+		if got := DisplayCodepageName(tt.id); got != tt.want {
+			t.Errorf("DisplayCodepageName(%d) = %q, want %q", tt.id, got, tt.want)
+		}
+	}
+}
+
+func TestCodepages_BuildCodepageMenuItems(t *testing.T) {
+	items, currIdx := BuildCodepageMenuItems(11111, false)
+	if len(items) == 0 {
+		t.Fatal("BuildCodepageMenuItems returned empty items")
+	}
+
+	// First item should be Auto-detect
+	if !strings.Contains(items[0].Text, "Auto-detect") {
+		t.Errorf("Expected first item to be Auto-detect, got %q", items[0].Text)
+	}
+
+	// Should contain group headers
+	hasSystem, hasUnicode, hasOther := false, false, false
+	for _, item := range items {
+		if item.Separator {
+			if strings.Contains(item.Text, "System") {
+				hasSystem = true
+			}
+			if strings.Contains(item.Text, "Unicode") {
+				hasUnicode = true
+			}
+			if strings.Contains(item.Text, "Other") {
+				hasOther = true
+			}
+		}
+	}
+
+	if !hasSystem || !hasUnicode || !hasOther {
+		t.Errorf("Missing group headers: System=%v, Unicode=%v, Other=%v", hasSystem, hasUnicode, hasOther)
+	}
+
+	// Selected index should point to System ANSI
+	if currIdx <= 0 || currIdx >= len(items) {
+		t.Errorf("Invalid selected index %d", currIdx)
+	}
+}
+func TestCodepages_BuildCodepageMenuItems_AutoDetect(t *testing.T) {
+	items, currIdx := BuildCodepageMenuItems(11111, true)
+	if len(items) == 0 {
+		t.Fatal("Empty menu items")
+	}
+	if currIdx != 0 {
+		t.Errorf("Expected active index to be 0 (Auto-detect), got %d", currIdx)
+	}
+	if !strings.Contains(items[0].Text, "√") {
+		t.Errorf("Expected Auto-detect to have a checkmark, got %q", items[0].Text)
+	}
+}
+
+func TestCodepages_SafeDecodeEncodeErrors(t *testing.T) {
+	_, err := DecodeBytes([]byte("test"), 99999)
+	if err == nil {
+		t.Error("Expected error for unsupported decode CP ID, got nil")
+	}
+
+	_, err = EncodeBytes([]byte("test"), 99999)
+	if err == nil {
+		t.Error("Expected error for unsupported encode CP ID, got nil")
 	}
 }

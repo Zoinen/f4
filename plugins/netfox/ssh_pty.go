@@ -16,7 +16,14 @@ func NewSSHPty(client *ssh.Client) (*SSHPty, error) {
 	if err != nil {
 		return nil, err
 	}
-	modes := ssh.TerminalModes{ssh.ECHO: 1}
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 38400,
+		ssh.TTY_OP_OSPEED: 38400,
+		ssh.ICANON:        1,
+		ssh.ISIG:          1,
+		ssh.IUTF8:         1,
+	}
 	if err := sess.RequestPty("xterm-256color", 24, 80, modes); err != nil {
 		sess.Close()
 		return nil, err

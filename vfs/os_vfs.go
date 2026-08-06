@@ -309,6 +309,17 @@ func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 	}
 	return err
 }
+
+// RenameNoReplace renames an OS object without ever replacing an unrelated
+// destination. It is intentionally an OSVFS capability rather than part of
+// the general VFS contract: virtual filesystems may have different atomicity
+// guarantees. VisRen uses it to preserve Win32 MoveFile semantics on Unix.
+func (v *OSVFS) RenameNoReplace(ctx context.Context, old, new string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return renameNoReplace(prepareOSPath(old), prepareOSPath(new))
+}
 func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) error {
 	if ctx.Err() != nil {
 		return ctx.Err()

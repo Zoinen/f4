@@ -41,7 +41,7 @@ func (r hotkeyRow) GetCellAttr(col int, def uint64) uint64 {
 }
 
 func actionHotkeyConfig(pf *PanelsFrame) {
-	w, h := 78, 22
+	w, h := 120, 48
 	dlg := vtui.NewCenteredDialog(w, h, " Hotkey Configurator ")
 	dlg.ShowClose = true
 
@@ -50,7 +50,7 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 		{Title: "Key", Width: 12},
 		{Title: "Area", Width: 10},
 		{Title: "When", Width: 12},
-		{Title: "Description", Width: 16},
+		{Title: "Description", Width: 60, Alignment: vtui.AlignFill},
 	})
 	useDialogTableColors(table)
 	table.ShowScrollBar = true
@@ -102,11 +102,11 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 				}
 				hkRows = append(hkRows, hotkeyRow{
 					Action:    act.Name,
-					Label:     act.Label,
+					Label:     plainLabel(act.DisplayLabel()),
 					Area:      area,
 					Key:       key,
 					Condition: cond,
-					Desc:      act.Description,
+					Desc:      act.DisplayDescription(),
 				})
 				assignedActions[strings.ToLower(act.Name)] = true
 			}
@@ -116,18 +116,18 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 			if !assignedActions[strings.ToLower(act.Name)] {
 				hkRows = append(hkRows, hotkeyRow{
 					Action:    act.Name,
-					Label:     act.Label,
-					Area:      "",
+					Label:     plainLabel(act.DisplayLabel()),
+					Area:      act.Area, // unassigned, shown under the action's native area
 					Key:       "",
 					Condition: "",
-					Desc:      act.Description,
+					Desc:      act.DisplayDescription(),
 				})
 			}
 		}
 
 		sort.Slice(hkRows, func(i, j int) bool {
 			if hkRows[i].Area != hkRows[j].Area {
-				// Empty area (unassigned) goes last
+				// Rows without an area (shouldn't happen) go last
 				if hkRows[i].Area == "" {
 					return false
 				}

@@ -335,25 +335,37 @@ Loop:
 	// Process confirmation dialog and removal
 	timeout = time.After(2 * time.Second)
 	removedSimulated := false
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			// Auto-confirm removal dialog
-			if !removedSimulated {
-				if top := vtui.FrameManager.GetTopFrame(); top != nil && strings.Contains(top.GetTitle(), "Remove Plugin") {
+		case <-ticker.C:
+		}
+		// Check for dialogs after processing any task or tick
+		if !removedSimulated {
+			top := vtui.FrameManager.GetTopFrame()
+			if top != nil {
+				title := top.GetTitle()
+				if strings.Contains(title, "Remove Plugin") {
 					if dlg, ok := top.(*vtui.Window); ok && dlg.OnResult != nil {
 						removedSimulated = true
 						dlg.OnResult(0) // Click Remove
 						top.SetExitCode(-1)
 						vtui.FrameManager.Pop()
 					}
+				} else if strings.Contains(title, "Info") {
+					t.Fatal("Plugin is not installed, removal aborted")
 				}
 			}
+		}
+		select {
 		case <-removeDone:
 			goto VerifiedRemoval
 		case <-timeout:
 			t.Fatal("Timeout waiting for plugin removal")
+		default:
 		}
 	}
 

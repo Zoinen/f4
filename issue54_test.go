@@ -40,7 +40,7 @@ func TestIssue54_History(t *testing.T) {
 	pf.activeIdx = 0
 
 	// 3. Trigger Enter on the script
-	pf.ProcessKey(&vtinput.InputEvent{
+	pressKey(pf, &vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
 		VirtualKeyCode: vtinput.VK_RETURN,

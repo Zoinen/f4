@@ -701,24 +701,24 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 
 	hotkey := ""
 	label := ""
-	cmdText := ""
+	var cmdLines []string
 	if !isCreate && idx >= 0 && idx < len(items) {
 		it := items[idx]
 		hotkey = it.HotKey
 		label = it.Label
 		if !isSubmenu {
-			sep := "; "
-			if runtime.GOOS == "windows" {
-				sep = " & "
-			}
-			cmdText = strings.Join(it.Commands, sep)
+			cmdLines = append([]string(nil), it.Commands...)
 		}
 	}
 
+	// Number of visible rows in the multiline command field. Six matches
+	// FAR's edit-menu-item dialog and comfortably shows short scripts.
+	const cmdRowsVisible = 6
 	width := 56
 	height := 11
 	if !isSubmenu {
-		height = 14
+		// Extra rows for the multiline command box + one for its label row.
+		height = 11 + cmdRowsVisible + 1
 	}
 
 	dlg := vtui.NewCenteredDialog(width, height, title)
@@ -726,9 +726,10 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 
 	editHotkey := vtui.NewEdit(0, 0, 10, hotkey)
 	editLabel := vtui.NewEdit(0, 0, 36, label)
-	var editCommand *vtui.Edit
+	var editCommand *vtui.MultiLineEdit
 	if !isSubmenu {
-		editCommand = vtui.NewEdit(0, 0, 36, cmdText)
+		editCommand = vtui.NewMultiLineEdit(0, 0, width-4, cmdRowsVisible, "")
+		editCommand.SetLines(cmdLines)
 	}
 
 	makeRow := func(labelText string, edit vtui.UIElement) *vtui.HBoxLayout {
@@ -745,7 +746,16 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 	vbox.Add(makeRow("Hot &key:", editHotkey), vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(makeRow("&Label:", editLabel), vtui.Margins{Top: 1}, vtui.AlignFill)
 	if !isSubmenu {
-		vbox.Add(makeRow("&Command:", editCommand), vtui.Margins{Top: 1}, vtui.AlignFill)
+		// Multi-line command box: label sits on its own row above the box
+		// (FAR's edit-menu-item dialog layout) so the multi-row edit
+		// doesn't leave the label floating next to just its first row.
+		cmdLabel := vtui.NewLabel(0, 0, "&Command:", editCommand)
+		dlg.AddItem(cmdLabel)
+		dlg.AddItem(editCommand)
+		cmdBox := vtui.NewHBoxLayout(0, 0, width-4, cmdRowsVisible)
+		cmdBox.Add(editCommand, vtui.Margins{}, vtui.AlignFill)
+		vbox.Add(cmdLabel, vtui.Margins{Top: 1}, vtui.AlignLeft)
+		vbox.Add(cmdBox, vtui.Margins{}, vtui.AlignFill)
 	}
 
 	btnOk := vtui.NewButton(0, 0, "&Save")
@@ -774,16 +784,19 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 
 		var cmds []string
 		if !isSubmenu && editCommand != nil {
-			cText := editCommand.GetText()
-			if cText != "" {
-				sep := "; "
-				if runtime.GOOS == "windows" {
-					sep = " & "
+			for _, ln := range editCommand.GetLines() {
+				ln = strings.TrimRight(ln, " \t\r")
+				// Drop leading/trailing blank rows but keep interior ones,
+				// because a blank line inside a script can still be
+				// intentional (visual grouping in a shell block).
+				if ln == "" && len(cmds) == 0 {
+					continue
 				}
-				cmds = strings.Split(cText, sep)
-				for i, cmd := range cmds {
-					cmds[i] = strings.TrimSpace(cmd)
-				}
+				cmds = append(cmds, ln)
+			}
+			// Drop trailing blank lines.
+			for len(cmds) > 0 && strings.TrimSpace(cmds[len(cmds)-1]) == "" {
+				cmds = cmds[:len(cmds)-1]
 			}
 		}
 

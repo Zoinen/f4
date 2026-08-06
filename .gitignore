@@ -3,6 +3,9 @@ debug*log
 plugins/dummy/f4-dummy-plugin
 f4
 f4.exe
+f4.exe~
+f4-gui.exe
+f4.ini
 plugins/dummy_internal/f4-internal-dummy-plugin
 plugins/dummy_rpc/f4-rpc-dummy-plugin
 dummy_rpc_plugin
@@ -11,3 +14,7 @@ qt/host/build/
 qt/host/CMakeUserPresets.json
 qt/host/.qt/
 screenshots/
+Profile/
+afix.ap
+afailed.*
+.codex-build/

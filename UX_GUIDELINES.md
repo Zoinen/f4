@@ -6,6 +6,46 @@ This document outlines the core principles of user experience (UX) and navigatio
 
 The goal is to create an environment that is instantly familiar to veterans of TUI applications while remaining discoverable and consistent for new users. We achieve this by ensuring that every navigation key has a clear, context-dependent purpose, maximizing user efficiency and respecting "muscle memory".
 
+### 0. The Golden Rule: One Action, Three Faces
+
+Every interactive capability of `f4` (everything above `vtui` widget internals like `Checkbox.ProcessKey`) MUST exist in three equivalent forms, all driven by a single entry in the action registry (`action_registry.go`):
+
+1. **A clickable menu or KeyBar item.** Menus (`F9`, available in the panels, the editor and the viewer) and KeyBar labels are generated from the registry, never hardcoded.
+2. **A macro command.** The action's `Name` (e.g. `Editor.Save`) is callable from macros via `Actions.Run(...)`.
+3. **A hotkey.** Default bindings ship with the action (`DefaultKeys`) and users can rebind them in the Hotkey Configurator.
+
+The built-in help pages for key bindings are generated from the same registry, so documentation, menus, KeyBar and actual behavior can never drift apart.
+
+### 0.1. Adding a New Action: Checklist
+
+1. **Implement the handler next to its Area's owner**, as a method of the
+   view that does the work (e.g. `(*ViewerView).showCodepageDialog`,
+   `(*PanelsFrame).moveFolderHistory`). The registry entry only
+   dispatches:
+   ```go
+   Handler: withViewer(func(vv *ViewerView) { vv.showCodepageDialog() })
+   ```
+   Keep `action_registry.go` thin — no business logic beyond a small
+   glue closure. If the handler needs the frame, use the `withPF` /
+   `withEditor` / `withViewer` adapters; they resolve the top frame of
+   the matching type and silently do nothing when it is absent.
+2. **Register the action** with every field that applies: `Name`
+   (`Area.Verb` style), `Area`, `DefaultKeys` (Far-style, optional
+   `:Condition` per key), `MenuPath` (empty = key-only action),
+   `Checked` for toggles, `MenuSeparatorBefore` for menu grouping.
+3. **Localize**: add `LabelKey`/`DescKey` entries to both `lang/en.lng`
+   and `lang/ru.lng` (`Action.<Name>` and `Action.<Name>.Desc`).
+   `Label`/`Description` remain the English fallbacks. Menus get a
+   first-letter hotkey automatically unless the label carries its own
+   `&` marker.
+4. **Do not add a hardcoded key handler** in any `ProcessKey`. If the
+   key must lose to a modal input state (fast find, autocomplete),
+   extend that frame's `VetoActionKey` instead.
+5. **Tests**: drive keys through the `pressKey` test helper (filter →
+   ProcessKey), never through a bare `ProcessKey` call for action keys.
+   Menus, KeyBar labels and the generated help topics pick the new
+   action up for free — assert them instead of duplicating key tables.
+
 ### 1. The Four Tiers of Navigation
 
 Every interactive screen in `vtui` adheres to a hierarchical navigation model. This ensures there is always a way to move focus, from global workspace management to specific character input.

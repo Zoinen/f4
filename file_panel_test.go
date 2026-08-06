@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"os"
+	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,12 +52,15 @@ func TestFileEntry_GetCellText(t *testing.T) {
 		t.Errorf("Parent dir (..) should have UP-DIR placeholder, got: %q", upDir.GetCellText(1))
 	}
 
-	// Test IsCached coloring
+	// Cached rows are deliberately indistinguishable from fresh rows. The
+	// loading spinner in the panel title is the sole visual refresh indicator.
 	cachedFile := &fileEntry{VFSItem: vfs.VFSItem{Name: "cache.txt"}, IsCached: true}
+	freshFile := &fileEntry{VFSItem: vfs.VFSItem{Name: "cache.txt"}}
 	baseAttr := uint64(0x00AABBCC) // Mock color
 	cachedAttr := cachedFile.GetCellAttr(0, baseAttr)
-	if cachedAttr == baseAttr {
-		t.Error("Cached file should return a modified (dimmed) attribute, got same")
+	freshAttr := freshFile.GetCellAttr(0, baseAttr)
+	if cachedAttr != freshAttr {
+		t.Errorf("cached attribute %#x differs from fresh attribute %#x", cachedAttr, freshAttr)
 	}
 }
 func TestFileEntry_HighlightDir(t *testing.T) {
@@ -103,23 +111,370 @@ func TestFileSystemPanel_FocusLoss_FastFind(t *testing.T) {
 
 type mockTitleVFS struct {
 	vfs.OSVFS
-	title string
+	title      string
+	panelTitle string
 }
 
-func (m *mockTitleVFS) GetTitle() string { return m.title }
+func (m *mockTitleVFS) GetTitle() string         { return m.title }
+func (m *mockTitleVFS) PanelTitle(string) string { return m.panelTitle }
+
+type mockCacheSessionVFS struct {
+	*mockTitleVFS
+	session any
+}
+
+func (m *mockCacheSessionVFS) SessionKey() any { return m.session }
+
+type panelStatCountingVFS struct {
+	*vfs.NullVFS
+	currentPath string
+	parent      vfs.VFS
+	stats       map[string]vfs.VFSItem
+	statCalls   atomic.Int64
+}
+
+// stagedPanelVFS lets cache-transition tests hold ReadDir between chunks while
+// the panel remains interactive. The release/delivered channels are paired by
+// chunk index.
+type stagedPanelVFS struct {
+	*vfs.NullVFS
+	parent    vfs.VFS
+	chunks    [][]vfs.VFSItem
+	started   chan struct{}
+	release   []chan struct{}
+	delivered []chan struct{}
+}
+
+type queuedNavigationVFS struct {
+	*vfs.NullVFS
+	pathMu             sync.RWMutex
+	currentPath        string
+	checkedPathCalls   atomic.Int64
+	optimisticCalls    atomic.Int64
+	readDirCalls       atomic.Int64
+	firstReadStarted   chan struct{}
+	releaseFirstRead   chan struct{}
+	firstReadStartOnce sync.Once
+	items              map[string][]vfs.VFSItem
+}
+
+const providerTestRoot = "provider-test://"
+
+type blockingProviderManagerVFS struct {
+	*vfs.NullVFS
+	rowName                string
+	setPathCalls           atomic.Int64
+	blockNextRead          atomic.Bool
+	blockedReadStarted     chan struct{}
+	releaseBlockedRead     chan struct{}
+	blockedReadStartedOnce sync.Once
+}
+
+func newBlockingProviderManagerVFS(rowName string) *blockingProviderManagerVFS {
+	return &blockingProviderManagerVFS{
+		NullVFS:            vfs.NewNullVFS(0),
+		rowName:            rowName,
+		blockedReadStarted: make(chan struct{}),
+		releaseBlockedRead: make(chan struct{}),
+	}
+}
+
+func (m *blockingProviderManagerVFS) GetPath() string  { return providerTestRoot }
+func (m *blockingProviderManagerVFS) GetTitle() string { return "Provider test" }
+func (m *blockingProviderManagerVFS) IsAtRoot() bool   { return true }
+func (m *blockingProviderManagerVFS) Join(elem ...string) string {
+	if len(elem) == 0 {
+		return ""
+	}
+	return providerTestRoot + strings.TrimPrefix(elem[len(elem)-1], "/")
+}
+func (m *blockingProviderManagerVFS) SetPath(p string) error {
+	m.setPathCalls.Add(1)
+	return fmt.Errorf("provider test manager has no directory %q: %w", p, os.ErrNotExist)
+}
+func (m *blockingProviderManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.VFSItem)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.blockNextRead.CompareAndSwap(true, false) {
+		m.blockedReadStartedOnce.Do(func() { close(m.blockedReadStarted) })
+		select {
+		case <-m.releaseBlockedRead:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if onChunk != nil {
+		onChunk([]vfs.VFSItem{{Name: m.rowName}})
+	}
+	return nil
+}
+
+type trackedMountedVFS struct {
+	*vfs.NullVFS
+	parent     vfs.VFS
+	closeCalls atomic.Int64
+}
+
+func (m *trackedMountedVFS) ParentVFS() vfs.VFS { return m.parent }
+func (m *trackedMountedVFS) Close() error {
+	m.closeCalls.Add(1)
+	return nil
+}
+
+type blockingMountProvider struct {
+	source      *blockingProviderManagerVFS
+	result      *trackedMountedVFS
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	openCalls   atomic.Int64
+}
+
+func newBlockingMountProvider(source *blockingProviderManagerVFS) *blockingMountProvider {
+	return &blockingMountProvider{
+		source:  source,
+		result:  &trackedMountedVFS{NullVFS: vfs.NewNullVFS(0), parent: source},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (*blockingMountProvider) Name() string  { return "blocking-provider-test" }
+func (*blockingMountProvider) Priority() int { return 10000 }
+func (p *blockingMountProvider) CanOpen(_ context.Context, parent vfs.VFS, target string) bool {
+	return parent == p.source && target == providerTestRoot+p.source.rowName
+}
+func (p *blockingMountProvider) Open(_ context.Context, parent vfs.VFS, _ string) (vfs.VFS, error) {
+	p.openCalls.Add(1)
+	p.startedOnce.Do(func() { close(p.started) })
+	<-p.release // deliberately models a provider that completes after cancellation
+	p.result.parent = parent
+	return p.result, nil
+}
+
+func newQueuedNavigationVFS() *queuedNavigationVFS {
+	return &queuedNavigationVFS{
+		NullVFS:          vfs.NewNullVFS(0),
+		currentPath:      "/",
+		firstReadStarted: make(chan struct{}),
+		releaseFirstRead: make(chan struct{}, 1),
+		items: map[string][]vfs.VFSItem{
+			"/":       {{Name: "sdcard", IsDir: true}},
+			"/sdcard": {{Name: "photo.jpg"}},
+		},
+	}
+}
+
+func (q *queuedNavigationVFS) GetPath() string {
+	q.pathMu.RLock()
+	defer q.pathMu.RUnlock()
+	return q.currentPath
+}
+
+func (q *queuedNavigationVFS) IsAtRoot() bool { return q.GetPath() == "/" }
+
+func (q *queuedNavigationVFS) SetPath(p string) error {
+	q.checkedPathCalls.Add(1)
+	time.Sleep(300 * time.Millisecond)
+	return q.SetPathOptimistic(p)
+}
+
+func (q *queuedNavigationVFS) SetPathOptimistic(p string) error {
+	q.optimisticCalls.Add(1)
+	if !path.IsAbs(p) {
+		p = path.Join(q.GetPath(), p)
+	}
+	q.pathMu.Lock()
+	q.currentPath = path.Clean(p)
+	q.pathMu.Unlock()
+	return nil
+}
+
+func (q *queuedNavigationVFS) Stat(context.Context, string) (vfs.VFSItem, error) {
+	return vfs.VFSItem{Name: "/", IsDir: true}, nil
+}
+
+func (q *queuedNavigationVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
+	call := q.readDirCalls.Add(1)
+	if call == 1 {
+		q.firstReadStartOnce.Do(func() { close(q.firstReadStarted) })
+		select {
+		case <-q.releaseFirstRead:
+		case <-ctx.Done():
+			// Deliberately remain active until the test releases us. This models
+			// a FISH response that has to reach its terminator after cancellation.
+			<-q.releaseFirstRead
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if onChunk != nil {
+		onChunk(q.items[path.Clean(p)])
+	}
+	return nil
+}
+
+func newStagedPanelVFS(chunks ...[]vfs.VFSItem) *stagedPanelVFS {
+	s := &stagedPanelVFS{
+		NullVFS:   vfs.NewNullVFS(0),
+		parent:    vfs.NewNullVFS(0),
+		chunks:    chunks,
+		started:   make(chan struct{}),
+		release:   make([]chan struct{}, len(chunks)),
+		delivered: make([]chan struct{}, len(chunks)),
+	}
+	for i := range chunks {
+		s.release[i] = make(chan struct{}, 1)
+		s.delivered[i] = make(chan struct{})
+	}
+	return s
+}
+
+func (s *stagedPanelVFS) GetPath() string     { return "/" }
+func (s *stagedPanelVFS) IsAtRoot() bool      { return true }
+func (s *stagedPanelVFS) ParentVFS() vfs.VFS  { return s.parent }
+func (s *stagedPanelVFS) Dir(p string) string { return path.Dir(p) }
+func (s *stagedPanelVFS) GetTitle() string    { return "staged-device" }
+func (s *stagedPanelVFS) Stat(context.Context, string) (vfs.VFSItem, error) {
+	return vfs.VFSItem{Name: "/", IsDir: true}, nil
+}
+func (s *stagedPanelVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.VFSItem)) error {
+	close(s.started)
+	for i, chunk := range s.chunks {
+		select {
+		case <-s.release[i]:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if onChunk != nil {
+			onChunk(chunk)
+		}
+		close(s.delivered[i])
+	}
+	return nil
+}
+
+func (m *panelStatCountingVFS) GetPath() string { return m.currentPath }
+func (m *panelStatCountingVFS) IsAtRoot() bool  { return m.currentPath == "/" }
+func (m *panelStatCountingVFS) Dir(p string) string {
+	return path.Dir(p)
+}
+func (m *panelStatCountingVFS) ParentVFS() vfs.VFS { return m.parent }
+func (m *panelStatCountingVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
+	m.statCalls.Add(1)
+	if item, ok := m.stats[p]; ok {
+		return item, nil
+	}
+	return m.NullVFS.Stat(ctx, p)
+}
+
+func TestFileSystemPanel_ReadDirectoryReusesRootStatForUpEntry(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	oldSyncPanelLoad := AppConfig.SyncPanelLoad
+	AppConfig.SyncPanelLoad = true
+	defer func() { AppConfig.SyncPanelLoad = oldSyncPanelLoad }()
+
+	want := vfs.VFSItem{
+		Name:     "/",
+		IsDir:    true,
+		MTime:    time.Unix(100, 0),
+		ATime:    time.Unix(200, 0),
+		CTime:    time.Unix(300, 0),
+		UnixMode: 0751,
+		Uid:      1000,
+		Gid:      1001,
+	}
+	mounted := &panelStatCountingVFS{
+		NullVFS:     vfs.NewNullVFS(0),
+		currentPath: "/",
+		parent:      vfs.NewNullVFS(0),
+		stats:       map[string]vfs.VFSItem{"/": want},
+	}
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, mounted)
+	waitForLoad(t, fp)
+
+	if got := mounted.statCalls.Load(); got != 1 {
+		t.Fatalf("Stat calls for mounted root = %d, want 1", got)
+	}
+	if len(fp.entries) == 0 || fp.entries[0].Name != ".." {
+		t.Fatalf("mounted root has no up entry: %+v", fp.entries)
+	}
+	up := fp.entries[0].VFSItem
+	if !up.MTime.Equal(want.MTime) || !up.ATime.Equal(want.ATime) || !up.CTime.Equal(want.CTime) ||
+		up.UnixMode != want.UnixMode || up.Uid != want.Uid || up.Gid != want.Gid {
+		t.Fatalf("up entry metadata = %+v, want metadata from %+v", up, want)
+	}
+	if !fp.lastDirMTime.Equal(want.MTime) {
+		t.Fatalf("lastDirMTime = %v, want %v", fp.lastDirMTime, want.MTime)
+	}
+}
+
+func TestFileSystemPanel_ReadDirectoryStatsDistinctParent(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	oldSyncPanelLoad := AppConfig.SyncPanelLoad
+	AppConfig.SyncPanelLoad = true
+	defer func() { AppConfig.SyncPanelLoad = oldSyncPanelLoad }()
+
+	dirMTime := time.Unix(100, 0)
+	parentMTime := time.Unix(200, 0)
+	mounted := &panelStatCountingVFS{
+		NullVFS:     vfs.NewNullVFS(0),
+		currentPath: "/child",
+		stats: map[string]vfs.VFSItem{
+			"/child": {Name: "child", IsDir: true, MTime: dirMTime, UnixMode: 0700},
+			"/":      {Name: "/", IsDir: true, MTime: parentMTime, UnixMode: 0755},
+		},
+	}
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, mounted)
+	waitForLoad(t, fp)
+
+	if got := mounted.statCalls.Load(); got != 2 {
+		t.Fatalf("Stat calls for child and distinct parent = %d, want 2", got)
+	}
+	if len(fp.entries) == 0 || fp.entries[0].Name != ".." {
+		t.Fatalf("child directory has no up entry: %+v", fp.entries)
+	}
+	up := fp.entries[0].VFSItem
+	if !up.MTime.Equal(parentMTime) || up.UnixMode != 0755 {
+		t.Fatalf("up entry metadata = %+v, want distinct parent metadata", up)
+	}
+	if !fp.lastDirMTime.Equal(dirMTime) {
+		t.Fatalf("lastDirMTime = %v, want current directory time %v", fp.lastDirMTime, dirMTime)
+	}
+}
 
 func TestFileSystemPanel_UpdateTitle_WithProvider(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	v := &mockTitleVFS{OSVFS: *vfs.NewOSVFS("/tmp"), title: "user@host"}
 	fp := NewFileSystemPanel(0, 0, 40, 20, v)
 
-	// Reset loading flag to avoid [Loading...] suffix
+	// Reset loading flag to avoid the spinner suffix.
 	fp.isLoading = false
 	fp.updateTitle(nil)
 
 	got := fp.currentTitle
 	if !strings.Contains(got, "user@host:") {
 		t.Errorf("Expected title to contain 'user@host:', got %q", got)
+	}
+
+	v.panelTitle = `Pixel:\sdcard\Download`
+	fp.updateTitle(nil)
+	if got := fp.currentTitle; got != `Pixel:\sdcard\Download` {
+		t.Errorf("custom panel title = %q", got)
+	}
+}
+
+func TestPanelLoadingSpinnerFramesOccupyOneCell(t *testing.T) {
+	for _, frame := range panelLoadingPulse {
+		if width := runewidth.StringWidth(frame); width != 1 {
+			t.Fatalf("spinner frame %q occupies %d cells, want 1", frame, width)
+		}
 	}
 }
 
@@ -410,6 +765,14 @@ func TestFormatPanelFileNameSeparateExtension(t *testing.T) {
 	entry.IsDir = true
 	if got := formatPanelFileName(entry, 20); got != "folder.ext" {
 		t.Fatalf("directory extension was separated: %q", got)
+	}
+
+	entry = &fileEntry{VFSItem: vfs.VFSItem{
+		Name:        "V2454A (192.168.1.100:38477)",
+		NoExtension: true,
+	}}
+	if got := formatPanelFileName(entry, 40); got != entry.Name {
+		t.Fatalf("extensionless virtual row was split: %q", got)
 	}
 }
 
@@ -904,6 +1267,141 @@ func newPanelScrollTestFixture(mode ViewMode, entryCount int) *FileSystemPanel {
 	return fp
 }
 
+func TestPanelFileNameMatchSpans_AlignedExtension(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.SeparateFileExtensions = true
+
+	entry := &fileEntry{VFSItem: vfs.VFSItem{Name: "report.json"}}
+	spans := panelFileNameMatchSpans(entry, 16, 0, len([]rune("report.jso")))
+	if len(spans) != 2 {
+		t.Fatalf("match spans = %#v, want base and extension spans", spans)
+	}
+	if spans[0] != (panelMatchSpan{start: 0, width: 6}) {
+		t.Fatalf("base span = %#v, want start 0 width 6", spans[0])
+	}
+	if spans[1] != (panelMatchSpan{start: 12, width: 3}) {
+		t.Fatalf("extension span = %#v, want start 12 width 3", spans[1])
+	}
+}
+
+func TestPanelFileNameMatchSpans_NoExtension(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.SeparateFileExtensions = true
+
+	entry := &fileEntry{VFSItem: vfs.VFSItem{
+		Name:        "V2454A (192.168.1.100:38477)",
+		NoExtension: true,
+	}}
+	start := strings.Index(entry.Name, "100:38477")
+	got := panelFileNameMatchSpans(entry, 40, start, len("100:38477"))
+	want := []panelMatchSpan{{start: start, width: len("100:38477")}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("virtual-row match spans = %#v, want %#v", got, want)
+	}
+}
+
+func TestPanelFileNameMatchSpans_Anywhere(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.SeparateFileExtensions = true
+
+	entry := &fileEntry{VFSItem: vfs.VFSItem{Name: "report.json"}}
+	if got := panelFileNameMatchSpans(entry, 16, 2, 4); len(got) != 1 || got[0] != (panelMatchSpan{start: 2, width: 4}) {
+		t.Fatalf("middle-of-name spans = %#v, want start 2 width 4", got)
+	}
+	if got := panelFileNameMatchSpans(entry, 16, 8, 3); len(got) != 1 || got[0] != (panelMatchSpan{start: 13, width: 3}) {
+		t.Fatalf("middle-of-extension spans = %#v, want start 13 width 3", got)
+	}
+}
+
+func TestFileSystemPanel_DrawFastFindMatches(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.SeparateFileExtensions = false
+
+	fp := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	fp.viewMode = ViewModeDetailed
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "alpha.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "beta.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "alpine.txt"}},
+	}
+	fp.Resize(40, 12)
+	fp.Refresh()
+	fp.table.SetFocus(true)
+	fp.fastFindMode = true
+	fp.fastFindStr = "alp"
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.table.Show(scr)
+	y := fp.table.Y1 + fp.table.MarginTop
+	beforeCursor := scr.GetCell(fp.table.X1, y).Attributes
+	beforeNonMatch := scr.GetCell(fp.table.X1, y+1).Attributes
+
+	fp.drawFastFindMatches(scr)
+	matchColor := vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight])
+	for _, row := range []int{0, 2} {
+		for x := 0; x < 3; x++ {
+			cell := scr.GetCell(fp.table.X1+x, y+row)
+			if got := vtui.GetRGBFore(cell.Attributes); got != matchColor {
+				t.Fatalf("row %d match cell %d foreground = %#06x, want %#06x", row, x, got, matchColor)
+			}
+		}
+	}
+	afterCursor := scr.GetCell(fp.table.X1, y).Attributes
+	if vtui.GetRGBBack(afterCursor) != vtui.GetRGBBack(beforeCursor) {
+		t.Fatalf("match highlight changed cursor background: before %#x after %#x", beforeCursor, afterCursor)
+	}
+	if got := scr.GetCell(fp.table.X1, y+1).Attributes; got != beforeNonMatch {
+		t.Fatalf("non-matching row color changed: before %#x after %#x", beforeNonMatch, got)
+	}
+}
+
+func TestFileSystemPanel_DrawFastFindMatchesInEveryGridColumn(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.SeparateFileExtensions = false
+
+	for _, mode := range []ViewMode{ViewModeBrief, ViewModeMedium} {
+		fp := NewFileSystemPanel(0, 0, 60, 12, vfs.NewOSVFS(t.TempDir()))
+		fp.viewMode = mode
+		fp.Resize(60, 12)
+		height := fp.table.ViewHeight
+		count := height * fp.gridColumnCount()
+		fp.entries = make([]*fileEntry, count)
+		for idx := range fp.entries {
+			fp.entries[idx] = &fileEntry{VFSItem: vfs.VFSItem{Name: fmt.Sprintf("other-%d", idx)}}
+		}
+		for column := 0; column < fp.gridColumnCount(); column++ {
+			fp.entries[column*height].Name = fmt.Sprintf("match-%d", column)
+		}
+		fp.Refresh()
+		fp.fastFindMode = true
+		fp.fastFindStr = "match"
+
+		scr := vtui.NewSilentScreenBuf()
+		scr.AllocBuf(60, 12)
+		fp.table.Show(scr)
+		fp.drawFastFindMatches(scr)
+		wantForeground := vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight])
+		x := fp.table.X1
+		y := fp.table.Y1 + fp.table.MarginTop
+		for column, tableColumn := range fp.table.Columns {
+			if got := vtui.GetRGBFore(scr.GetCell(x, y).Attributes); got != wantForeground {
+				t.Fatalf("mode %v column %d foreground = %#06x, want %#06x", mode, column, got, wantForeground)
+			}
+			x += tableColumn.Width + 1
+		}
+	}
+}
+
 func TestFileSystemPanel_DragAutoScrollContinuesAndStops(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	for _, mode := range []ViewMode{ViewModeBrief, ViewModeMedium, ViewModeDetailed, ViewModeWide} {
@@ -975,6 +1473,10 @@ func TestFileSystemPanel_DragAutoScrollStopsOnRelease(t *testing.T) {
 }
 
 func TestFileSystemPanel_ScrollBarMetricsAllViewModes(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
+
 	for _, tc := range []struct {
 		name    string
 		mode    ViewMode
@@ -1022,6 +1524,9 @@ func TestFileSystemPanel_ScrollBarMetricsAllViewModes(t *testing.T) {
 func TestFileSystemPanel_ScrollBarDrawAndMouse(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
 
 	fp := newPanelScrollTestFixture(ViewModeMedium, 0)
 	capacity := fp.table.ViewHeight * fp.gridColumnCount()
@@ -1092,6 +1597,10 @@ func TestFileSystemPanel_ScrollBarDrawAndMouse(t *testing.T) {
 }
 
 func TestFileSystemPanel_ScrollBarHiddenWhenGridFits(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarFull
+
 	fp := newPanelScrollTestFixture(ViewModeBrief, 0)
 	fp.entries = make([]*fileEntry, fp.table.ViewHeight*fp.gridColumnCount())
 	fp.table.TopPos = 4
@@ -1107,6 +1616,103 @@ func TestFileSystemPanel_ScrollBarHiddenWhenGridFits(t *testing.T) {
 	dataY := fp.table.Y1 + fp.table.MarginTop
 	if got := scr.GetCell(fp.X2, dataY).Char; got != 0 {
 		t.Fatalf("scrollbar drawn for fitting Brief grid: %q", rune(got))
+	}
+}
+
+func TestFileSystemPanel_ScrollBarDisabled(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarOff
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 50)
+	if fp.syncScrollBar() {
+		t.Fatal("disabled panel scrollbar reported itself visible")
+	}
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.drawScrollBar(scr)
+	y := fp.table.Y1 + fp.table.MarginTop
+	if got := scr.GetCell(fp.X2, y).Char; got != 0 {
+		t.Fatalf("disabled panel scrollbar drew %q", rune(got))
+	}
+	if fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.X2), MouseY: int16(y),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("disabled panel scrollbar handled mouse input")
+	}
+}
+
+func TestMinimalPanelScrollThumbUsesWholeHeight(t *testing.T) {
+	position, length := minimalPanelScrollThumb(10, 0, 20)
+	if position != 0 || length != 3 {
+		t.Fatalf("top thumb = position %d length %d, want 0,3", position, length)
+	}
+	position, bottomLength := minimalPanelScrollThumb(10, 20, 20)
+	if bottomLength != length || position+bottomLength != 10 {
+		t.Fatalf("bottom thumb = position %d length %d, want it to touch row 10", position, bottomLength)
+	}
+}
+
+func TestFileSystemPanel_MinimalScrollBarDrawAndMouse(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 50)
+	fp.Refresh()
+	if !fp.syncScrollBar() {
+		t.Fatal("minimal scrollbar was hidden for overflowing content")
+	}
+	height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+	caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.drawScrollBar(scr)
+	for offset := 0; offset < height; offset++ {
+		cell := scr.GetCell(fp.scrollBar.X1, fp.scrollBar.Y1+offset)
+		inHandle := offset >= caretPos && offset < caretPos+caretLength
+		if inHandle {
+			if cell.Char != '│' || cell.Attributes != vtui.Palette[ColPanelMinimalScrollbar] {
+				t.Fatalf("minimal handle cell %d = %q/%#x, want bright border", offset, rune(cell.Char), cell.Attributes)
+			}
+		} else if cell.Char != 0 {
+			t.Fatalf("minimal scrollbar drew track or arrow at offset %d: %q", offset, rune(cell.Char))
+		}
+	}
+
+	outsideHandleY := fp.scrollBar.Y1 + caretPos + caretLength
+	if outsideHandleY <= fp.scrollBar.Y2 && fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.scrollBar.X1), MouseY: int16(outsideHandleY),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("minimal scrollbar handled a click on the invisible track")
+	}
+	if !fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(fp.scrollBar.X1), MouseY: int16(fp.scrollBar.Y1 + caretPos),
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("minimal scrollbar did not capture its handle")
+	}
+	if !fp.processScrollBarMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 0, MouseY: int16(fp.scrollBar.Y2),
+		ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.MouseMoved,
+	}) {
+		t.Fatal("minimal scrollbar did not drag its captured handle")
+	}
+	_, _, maxTop, _, _ := fp.panelScrollMetrics()
+	if fp.table.TopPos != maxTop {
+		t.Fatalf("minimal handle drag ended at top %d, want %d", fp.table.TopPos, maxTop)
+	}
+	fp.processScrollBarMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if fp.scrollMouseActive {
+		t.Fatal("minimal scrollbar kept mouse capture after release")
 	}
 }
 
@@ -1634,6 +2240,7 @@ func TestFileSystemPanel_FastFind(t *testing.T) {
 		{VFSItem: vfs.VFSItem{Name: "apple"}},
 		{VFSItem: vfs.VFSItem{Name: "banana"}},
 		{VFSItem: vfs.VFSItem{Name: "cherry"}},
+		{VFSItem: vfs.VFSItem{Name: "dog"}},
 		{VFSItem: vfs.VFSItem{Name: "cat"}},
 	}
 	fp.Refresh()
@@ -1679,31 +2286,68 @@ func TestFileSystemPanel_FastFind(t *testing.T) {
 	if fp.fastFindStr != "c" {
 		t.Errorf("Expected search string 'c' after backspace, got %q", fp.fastFindStr)
 	}
-	if fp.GetSelectedName() != "cherry" {
-		t.Errorf("Cursor should jump back to 'cherry', got %q", fp.GetSelectedName())
+	if fp.GetSelectedName() != "cat" {
+		t.Errorf("Cursor should stay on the current matching 'cat', got %q", fp.GetSelectedName())
 	}
 
-	// 4. Down arrow (next match)
+	// 4. Ctrl+Enter finds the next match and keeps Fast Find active.
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if fp.GetSelectedName() != "cherry" {
+		t.Errorf("Ctrl+Enter should wrap to 'cherry', got %q", fp.GetSelectedName())
+	}
+	if !fp.fastFindMode || fp.fastFindStr != "c" {
+		t.Fatal("Ctrl+Enter should keep Fast Find active")
+	}
+
+	// 5. Ctrl+Shift+Enter finds the previous match.
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	if fp.GetSelectedName() != "cat" {
+		t.Errorf("Ctrl+Shift+Enter should wrap back to 'cat', got %q", fp.GetSelectedName())
+	}
+
+	// 6. Down closes Fast Find and performs ordinary one-row navigation.
+	fp.SetCursorIndex(3) // cherry
 	fp.ProcessKey(&vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
 		VirtualKeyCode: vtinput.VK_DOWN,
 	})
-	if fp.GetSelectedName() != "cat" {
-		t.Errorf("Down arrow should jump to 'cat', got %q", fp.GetSelectedName())
+	if got := fp.GetSelectedName(); got != "dog" {
+		t.Errorf("Down after closing Fast Find selected %q, want dog", got)
+	}
+	if fp.fastFindMode || fp.fastFindStr != "" {
+		t.Fatal("Down should close Fast Find")
 	}
 
-	// 5. Up arrow (prev match)
+	// 7. Up follows the same rule and moves to the previous ordinary item.
+	fp.SetCursorIndex(5) // cat
+	fp.fastFindMode = true
+	fp.fastFindStr = "c"
 	fp.ProcessKey(&vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
 		VirtualKeyCode: vtinput.VK_UP,
 	})
-	if fp.GetSelectedName() != "cherry" {
-		t.Errorf("Up arrow should jump back to 'cherry', got %q", fp.GetSelectedName())
+	if got := fp.GetSelectedName(); got != "dog" {
+		t.Errorf("Up after closing Fast Find selected %q, want dog", got)
+	}
+	if fp.fastFindMode || fp.fastFindStr != "" {
+		t.Fatal("Up should close Fast Find")
 	}
 
-	// 6. Escape to cancel
+	// 8. Escape to cancel.
+	fp.fastFindMode = true
+	fp.fastFindStr = "c"
 	fp.ProcessKey(&vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
@@ -1713,7 +2357,7 @@ func TestFileSystemPanel_FastFind(t *testing.T) {
 		t.Error("Escape should exit FastFind mode")
 	}
 
-	// 7. Navigation keys should deactivate FastFind
+	// 10. Navigation keys should deactivate FastFind
 	fp.fastFindMode = true
 	fp.fastFindStr = "c"
 	fp.ProcessKey(&vtinput.InputEvent{
@@ -1727,11 +2371,14 @@ func TestFileSystemPanel_FastFind(t *testing.T) {
 }
 func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
 
 	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "test-file.txt"}}}
+	fp.Refresh()
 	fp.fastFindMode = true
 	fp.fastFindStr = "test"
 
@@ -1762,6 +2409,34 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	}
 	if !foundText {
 		t.Error("FastFind search string 'test' not found in ScreenBuf")
+	}
+
+	inputX, inputY := fp.X1+11, fp.Y2-1
+	matchingAttr := scr.GetCell(inputX, inputY).Attributes
+	if got, want := vtui.GetRGBFore(matchingAttr), vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight]); got != want {
+		t.Fatalf("matching query foreground = %#06x, want %#06x", got, want)
+	}
+	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
+		t.Fatalf("matching query background = %#06x, want dialog background %#06x", got, want)
+	}
+
+	fp.fastFindStr = "*test"
+	fp.Show(scr)
+	if got := scr.GetCell(inputX, inputY).Char; got != '*' {
+		t.Fatalf("anywhere-mode marker = %q, want '*'", rune(got))
+	}
+	if got := scr.GetCell(inputX+1, inputY).Char; got != 't' {
+		t.Fatalf("query after anywhere-mode marker starts with %q, want 't'", rune(got))
+	}
+
+	fp.fastFindStr = "missing"
+	fp.Show(scr)
+	missingAttr := scr.GetCell(inputX, inputY).Attributes
+	if got, want := vtui.GetRGBFore(missingAttr), vtui.GetRGBFore(vtui.Palette[ColPanelFastFindNoMatch]); got != want {
+		t.Fatalf("missing query foreground = %#06x, want %#06x", got, want)
+	}
+	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
+		t.Fatalf("missing query background = %#06x, want dialog background %#06x", got, want)
 	}
 }
 
@@ -1835,6 +2510,35 @@ func TestFileSystemPanel_FastFind_XLat(t *testing.T) {
 
 	if fp.GetSelectedName() != "заметка.txt" {
 		t.Errorf("XLat FastFind (reverse) failed: expected 'заметка.txt', got %q", fp.GetSelectedName())
+	}
+}
+
+func TestFileSystemPanel_FastFindStartsAtCurrentItem(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(t.TempDir()))
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "match-before.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "other.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "match-after.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "tail.txt"}},
+	}
+	fp.Refresh()
+	fp.fastFindMode = true
+	fp.fastFindStr = "match"
+
+	fp.SetCursorIndex(1)
+	fp.doFastFind(0)
+	if got := fp.GetSelectedName(); got != "match-after.txt" {
+		t.Fatalf("search from middle selected %q, want match-after.txt", got)
+	}
+	fp.doFastFind(0)
+	if got := fp.GetSelectedName(); got != "match-after.txt" {
+		t.Fatalf("search moved away from matching current item to %q", got)
+	}
+	fp.SetCursorIndex(3)
+	fp.doFastFind(0)
+	if got := fp.GetSelectedName(); got != "match-before.txt" {
+		t.Fatalf("wrapped search selected %q, want match-before.txt", got)
 	}
 }
 
@@ -1958,6 +2662,36 @@ func TestFileSystemPanel_DirectoryCache(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanel_DirectoryCacheIsScopedBySession(t *testing.T) {
+	connA, connB := new(int), new(int)
+	newDevice := func(title string, session any) *mockCacheSessionVFS {
+		return &mockCacheSessionVFS{
+			mockTitleVFS: &mockTitleVFS{OSVFS: *vfs.NewOSVFS("/"), title: title},
+			session:      session,
+		}
+	}
+	deviceA := newDevice("SM_G930F (serial-a) [FISH+]", connA)
+	deviceASecondView := newDevice("SM_G930F (serial-a) [FISH+]", connA)
+	deviceB := newDevice("MiTV (serial-b) [FISH+]", connB)
+	sameTitleNewSession := newDevice("SM_G930F (serial-a) [FISH+]", connB)
+
+	fp := &FileSystemPanel{
+		vfs:      deviceA,
+		dirCache: make(map[dirCacheKey]dirCacheEntry),
+	}
+	fp.saveToCache("/", []vfs.VFSItem{{Name: "only-on-a.txt"}})
+
+	if _, ok := fp.dirCache[directoryCacheKey(deviceASecondView, "/")]; !ok {
+		t.Fatal("a second pooled view of the same session did not reuse its cache")
+	}
+	if _, ok := fp.dirCache[directoryCacheKey(deviceB, "/")]; ok {
+		t.Fatal("two Android devices shared the cached root path")
+	}
+	if _, ok := fp.dirCache[directoryCacheKey(sameTitleNewSession, "/")]; ok {
+		t.Fatal("a replacement session reused stale cache from the old connection")
+	}
+}
+
 func TestFileSystemPanel_CacheEviction(t *testing.T) {
 	fp := &FileSystemPanel{}
 	for i := 0; i < 60; i++ {
@@ -1970,7 +2704,7 @@ func TestFileSystemPanel_CacheEviction(t *testing.T) {
 	}
 
 	// The first inserted path "/path/0" should be evicted
-	if _, ok := fp.dirCache["/path/0"]; ok {
+	if _, ok := fp.dirCache[fp.cacheKey("/path/0")]; ok {
 		t.Error("Oldest entry was not evicted")
 	}
 }
@@ -2135,6 +2869,45 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanel_SetSortModeUsesModeDefaultDirection(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewNullVFS(0))
+	if fp.cancelLoad != nil {
+		fp.cancelLoad()
+	}
+
+	tests := []struct {
+		name      string
+		mode      SortMode
+		ascending bool
+	}{
+		{name: "name ascending", mode: SortName, ascending: true},
+		{name: "extension ascending", mode: SortExt, ascending: true},
+		{name: "time descending", mode: SortTime, ascending: false},
+		{name: "size descending", mode: SortSize, ascending: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Enter from another mode so this is the first activation, not the
+			// repeated-activation toggle path.
+			fp.sortMode = SortUnsorted
+			fp.sortReverse = true
+			fp.SetSortMode(tc.mode)
+			if fp.sortReverse {
+				t.Fatalf("first activation left sortReverse enabled for mode %v", tc.mode)
+			}
+			if got := fp.sortIsAscending(); got != tc.ascending {
+				t.Fatalf("first activation ascending = %v, want %v", got, tc.ascending)
+			}
+
+			fp.SetSortMode(tc.mode)
+			if !fp.sortReverse || fp.sortIsAscending() == tc.ascending {
+				t.Fatalf("second activation did not reverse mode %v", tc.mode)
+			}
+		})
+	}
+}
+
 func TestFileSystemPanel_SortColumnIndicators(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -2251,6 +3024,15 @@ func TestDummyFailure(t *testing.T) {
 }
 */
 // waitForLoad is a test helper to wait for a panel's async loading to complete.
+func waitForPanelSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for %s", description)
+	}
+}
+
 func waitForLoad(t *testing.T, fp *FileSystemPanel) {
 	t.Helper()
 	timeout := time.After(2 * time.Second)
@@ -2416,7 +3198,7 @@ func TestFileSystemPanel_Cache_FullCycle(t *testing.T) {
 	waitForLoad(t, fp)
 
 	// 3. Verify cache was populated
-	if _, ok := fp.dirCache[tmpDir]; !ok {
+	if _, ok := fp.dirCache[fp.cacheKey(tmpDir)]; !ok {
 		t.Fatal("Cache not populated after initial read")
 	}
 	if len(fp.entries) != 3 { // .., a.txt, b.txt
@@ -2484,6 +3266,616 @@ func TestFileSystemPanel_Cache_FullCycle(t *testing.T) {
 		t.Error("'c.txt' not found after async update")
 	}
 }
+
+func TestFileSystemPanel_CacheSwapPreservesLiveCursorAndMarks(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	remote := newStagedPanelVFS(
+		[]vfs.VFSItem{{Name: "aardvark.txt"}, {Name: "alpha.txt"}},
+		[]vfs.VFSItem{{Name: "beta.txt"}, {Name: "delta.txt"}, {Name: "gamma.txt"}},
+	)
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	fp.vfs = remote
+	fp.lastLoadedPath = remote.GetPath()
+	fp.pendingSelection = ".."
+	fp.selectedItems = map[string]bool{"alpha.txt": true}
+	fp.saveToCache(remote.GetPath(), []vfs.VFSItem{
+		{Name: "alpha.txt"},
+		{Name: "beta.txt"},
+		{Name: "gamma.txt"},
+	})
+
+	fp.readDirectoryEx(false)
+	waitForPanelSignal(t, remote.started, "staged ReadDir to start")
+
+	entryIndex := func(name string) int {
+		for i, entry := range fp.entries {
+			if entry.Name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	alpha := entryIndex("alpha.txt")
+	beta := entryIndex("beta.txt")
+	gamma := entryIndex("gamma.txt")
+	if alpha < 0 || beta < 0 || gamma < 0 {
+		t.Fatalf("cached entries missing: %+v", fp.entries)
+	}
+	if !fp.entries[alpha].Selected {
+		t.Fatal("cached alpha.txt did not restore its mark")
+	}
+
+	// These actions happen after the gray cache is visible and while ReadDir
+	// is blocked, which is the exact interaction that used to be overwritten.
+	fp.SetCursorIndex(beta)
+	fp.SetItemSelected(alpha, false)
+	fp.SetItemSelected(gamma, true)
+
+	remote.release[0] <- struct{}{}
+	waitForPanelSignal(t, remote.delivered[0], "first fresh chunk")
+	if got := fp.getRawSelectedName(); got != "beta.txt" {
+		t.Fatalf("first chunk moved cached cursor to %q, want beta.txt", got)
+	}
+	for _, entry := range fp.entries {
+		if entry.Name != ".." && !entry.IsCached {
+			t.Fatalf("partial fresh chunk replaced cached row %q", entry.Name)
+		}
+	}
+	if fp.entries[entryIndex("alpha.txt")].Selected || !fp.entries[entryIndex("gamma.txt")].Selected {
+		t.Fatal("marks changed while the first fresh chunk was pending")
+	}
+
+	remote.release[1] <- struct{}{}
+	waitForLoad(t, fp)
+
+	if got := fp.getRawSelectedName(); got != "beta.txt" {
+		t.Fatalf("atomic cache swap moved cursor to %q, want beta.txt", got)
+	}
+	if got := fp.GetCursorIndex(); got != 3 { // .., aardvark, alpha, beta
+		t.Fatalf("beta.txt cursor index = %d, want shifted index 3", got)
+	}
+	for _, entry := range fp.entries {
+		if entry.IsCached {
+			t.Fatalf("fresh row %q is still marked as cached", entry.Name)
+		}
+	}
+	alpha = entryIndex("alpha.txt")
+	gamma = entryIndex("gamma.txt")
+	if alpha < 0 || gamma < 0 {
+		t.Fatalf("fresh entries missing: %+v", fp.entries)
+	}
+	if fp.entries[alpha].Selected || fp.selectedItems["alpha.txt"] {
+		t.Fatal("alpha.txt deselection was lost during cache swap")
+	}
+	if !fp.entries[gamma].Selected || !fp.selectedItems["gamma.txt"] {
+		t.Fatal("gamma.txt mark was lost during cache swap")
+	}
+}
+
+func TestFileSystemPanel_CacheSwapUsesNearestRowWhenFocusedItemDisappears(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	remote := newStagedPanelVFS(
+		[]vfs.VFSItem{{Name: "alpha.txt"}},
+		[]vfs.VFSItem{{Name: "gamma.txt"}},
+	)
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	fp.vfs = remote
+	fp.lastLoadedPath = remote.GetPath()
+	fp.pendingSelection = ".."
+	fp.saveToCache(remote.GetPath(), []vfs.VFSItem{
+		{Name: "alpha.txt"},
+		{Name: "beta.txt"},
+		{Name: "gamma.txt"},
+	})
+
+	fp.readDirectoryEx(false)
+	waitForPanelSignal(t, remote.started, "staged ReadDir to start")
+	for i, entry := range fp.entries {
+		if entry.Name == "beta.txt" {
+			fp.SetCursorIndex(i)
+			fp.SetItemSelected(i, true)
+			break
+		}
+	}
+	if got := fp.getRawSelectedName(); got != "beta.txt" {
+		t.Fatalf("failed to focus cached beta.txt, got %q", got)
+	}
+
+	remote.release[0] <- struct{}{}
+	waitForPanelSignal(t, remote.delivered[0], "first fresh chunk")
+	remote.release[1] <- struct{}{}
+	waitForLoad(t, fp)
+
+	if got := fp.getRawSelectedName(); got != "gamma.txt" {
+		t.Fatalf("removed beta.txt should fall through to nearest row gamma.txt, got %q", got)
+	}
+	if fp.selectedItems["beta.txt"] {
+		t.Fatal("mark for removed beta.txt survived fresh directory replacement")
+	}
+}
+
+func TestFileSystemPanel_DirectoryLoadQueueKeepsOnlyLatest(t *testing.T) {
+	fp := &FileSystemPanel{}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	latestRan := make(chan struct{})
+	var middleRuns atomic.Int64
+
+	fp.enqueueDirectoryLoad(func() {
+		close(firstStarted)
+		<-releaseFirst
+	})
+	waitForPanelSignal(t, firstStarted, "first directory load")
+	fp.enqueueDirectoryLoad(func() { middleRuns.Add(1) })
+	fp.enqueueDirectoryLoad(func() { close(latestRan) })
+	close(releaseFirst)
+	waitForPanelSignal(t, latestRan, "latest directory load")
+
+	if got := middleRuns.Load(); got != 0 {
+		t.Fatalf("superseded pending load ran %d times", got)
+	}
+}
+
+func TestFileSystemPanel_HeldEnterDuringProviderOpenIsCoalesced(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	manager := newBlockingProviderManagerVFS("SM_G930F (serial)")
+	provider := newBlockingMountProvider(manager)
+	vfs.RegisterProvider(provider)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(provider.release) }) }
+	t.Cleanup(release)
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		fp.cancelProviderOpen()
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+	if got := fp.getRawSelectedName(); got != manager.rowName {
+		t.Fatalf("initial manager cursor = %q, want %q", got, manager.rowName)
+	}
+
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("first provider Enter was not handled")
+	}
+	waitForPanelSignal(t, provider.started, "blocked provider open")
+	if got := fp.getRawSelectedName(); got != manager.rowName {
+		t.Fatalf("provider transition exposed synthetic row %q", got)
+	}
+
+	for i := 0; i < 50; i++ {
+		if !fp.ProcessKey(enter) {
+			t.Fatalf("repeated provider Enter %d was not consumed", i)
+		}
+	}
+	if got := provider.openCalls.Load(); got != 1 {
+		t.Fatalf("held Enter started %d provider opens, want 1", got)
+	}
+	if got := manager.setPathCalls.Load(); got != 0 {
+		t.Fatalf("held Enter made %d manager SetPath calls", got)
+	}
+	if fp.vfs != manager {
+		t.Fatalf("panel left manager before provider completed: %T", fp.vfs)
+	}
+
+	release()
+	deadline := time.After(2 * time.Second)
+	for fp.providerOpenTask != nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatal("timeout waiting for provider completion")
+		}
+	}
+	waitForLoad(t, fp)
+	if fp.vfs != provider.result {
+		t.Fatalf("provider result was not installed: %T", fp.vfs)
+	}
+	if got := fp.getRawSelectedName(); got != ".." {
+		t.Fatalf("mounted root cursor = %q, want real parent row", got)
+	}
+
+	// Once the real child exists, a later repeat may activate its genuine ".."
+	// and return to the cached manager view.
+	if !fp.ProcessKey(enter) {
+		t.Fatal("Enter on mounted parent row was not handled")
+	}
+	waitForLoad(t, fp)
+	if fp.vfs != manager {
+		t.Fatalf("parent row did not restore manager: %T", fp.vfs)
+	}
+	if got := provider.result.closeCalls.Load(); got != 1 {
+		t.Fatalf("mounted VFS close calls = %d, want 1", got)
+	}
+	if got := fp.getRawSelectedName(); got != manager.rowName {
+		t.Fatalf("manager cursor after return = %q, want %q", got, manager.rowName)
+	}
+}
+
+func TestFileSystemPanel_HeldEnterReturnWithSyncLoadNeverActivatesStaleUpRow(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = true
+	defer func() { AppConfig = oldConfig }()
+
+	manager := newBlockingProviderManagerVFS("SM_G930F (sync-load)")
+	provider := newBlockingMountProvider(manager)
+	vfs.RegisterProvider(provider)
+	var providerReleaseOnce sync.Once
+	releaseProvider := func() { providerReleaseOnce.Do(func() { close(provider.release) }) }
+	var managerReleaseOnce sync.Once
+	releaseManager := func() { managerReleaseOnce.Do(func() { close(manager.releaseBlockedRead) }) }
+	t.Cleanup(releaseProvider)
+	t.Cleanup(releaseManager)
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		fp.cancelProviderOpen()
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("provider Enter was not handled")
+	}
+	waitForPanelSignal(t, provider.started, "provider open before sync-load return")
+	releaseProvider()
+	deadline := time.After(2 * time.Second)
+	for fp.providerOpenTask != nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatal("timeout waiting for mounted provider")
+		}
+	}
+	waitForLoad(t, fp)
+	if fp.vfs != provider.result || fp.getRawSelectedName() != ".." {
+		t.Fatalf("mounted provider view = %T cursor=%q, want child parent row", fp.vfs, fp.getRawSelectedName())
+	}
+
+	// SyncPanelLoad deliberately does not render the manager cache. Hold its
+	// fresh ReadDir so the interval that used to expose the child's stale ".."
+	// is deterministic.
+	manager.blockNextRead.Store(true)
+	if !fp.ProcessKey(enter) {
+		t.Fatal("Enter on mounted parent row was not handled")
+	}
+	if fp.vfs != manager {
+		t.Fatalf("mounted parent row did not install manager: %T", fp.vfs)
+	}
+	waitForPanelSignal(t, manager.blockedReadStarted, "blocked manager refresh after child return")
+	if len(fp.entries) != 0 {
+		t.Fatalf("manager root retained stale child rows: %+v", fp.entries)
+	}
+
+	// Empty loading rows make ordinary repeats harmless. Also inject the exact
+	// stale row from the regression to verify the root-without-parent safety net
+	// independently of the atomic loading view.
+	for i := 0; i < 50; i++ {
+		_ = fp.ProcessKey(enter)
+	}
+	fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+	fp.SetCursorIndex(0)
+	fp.Refresh()
+	for i := 0; i < 50; i++ {
+		if !fp.ProcessKey(enter) {
+			t.Fatalf("stale root parent repeat %d was not consumed", i)
+		}
+	}
+	if got := manager.setPathCalls.Load(); got != 0 {
+		t.Fatalf("held Enter made %d manager SetPath calls", got)
+	}
+	if got := provider.openCalls.Load(); got != 1 {
+		t.Fatalf("held Enter started %d provider opens before manager listing, want 1", got)
+	}
+
+	releaseManager()
+	waitForLoad(t, fp)
+	if got := fp.getRawSelectedName(); got != manager.rowName {
+		t.Fatalf("fresh manager cursor = %q, want %q", got, manager.rowName)
+	}
+	if got := manager.setPathCalls.Load(); got != 0 {
+		t.Fatalf("fresh manager swap followed %d stale parent paths", got)
+	}
+}
+
+func TestFileSystemPanel_StaleProviderCompletionCannotHijackPanel(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	manager := newBlockingProviderManagerVFS("slow-device")
+	provider := newBlockingMountProvider(manager)
+	vfs.RegisterProvider(provider)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(provider.release) }) }
+	t.Cleanup(release)
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		fp.cancelProviderOpen()
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("provider Enter was not handled")
+	}
+	waitForPanelSignal(t, provider.started, "stale provider open")
+
+	// Model a VFS switch performed elsewhere. Even without the normal explicit
+	// cancellation hook, the captured source identity must reject the late Open.
+	replacement := vfs.NewNullVFS(0)
+	fp.vfs = replacement
+	fp.isLoading = false
+	fp.providerEntryName = "replacement-provider"
+	fp.pendingSelection = "replacement-selection"
+	release()
+
+	deadline := time.After(2 * time.Second)
+	for provider.result.closeCalls.Load() == 0 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatal("timeout waiting for stale provider cleanup")
+		}
+	}
+	if fp.vfs != replacement {
+		t.Fatalf("stale provider hijacked panel with %T", fp.vfs)
+	}
+	if fp.providerOpenTask != nil {
+		t.Fatal("stale provider left transition latched")
+	}
+	if got := provider.result.closeCalls.Load(); got != 1 {
+		t.Fatalf("stale provider result close calls = %d, want 1", got)
+	}
+	if fp.providerEntryName != "replacement-provider" || fp.pendingSelection != "replacement-selection" {
+		t.Fatalf("stale completion changed new panel state: provider=%q selection=%q", fp.providerEntryName, fp.pendingSelection)
+	}
+}
+
+func TestPanelsFrame_FailedNavigationRestoresCanceledProviderLoadingState(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	manager := newBlockingProviderManagerVFS("slow-device-for-navigation")
+	provider := newBlockingMountProvider(manager)
+	vfs.RegisterProvider(provider)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(provider.release) }) }
+	t.Cleanup(release)
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		fp.cancelProviderOpen()
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("provider Enter was not handled")
+	}
+	waitForPanelSignal(t, provider.started, "provider canceled by navigation")
+	if !fp.isLoading || fp.providerOpenTask == nil {
+		t.Fatal("provider transition was not marked active")
+	}
+
+	pf := &PanelsFrame{}
+	if pf.NavigateToPath(fp, "missing-directory") {
+		t.Fatal("manager accepted missing navigation target")
+	}
+	if fp.providerOpenTask != nil {
+		t.Fatal("failed navigation did not cancel provider transition")
+	}
+	if fp.isLoading {
+		t.Fatal("failed navigation left canceled provider loading state active")
+	}
+
+	release()
+	deadline := time.After(2 * time.Second)
+	for provider.result.closeCalls.Load() == 0 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatal("timeout waiting for canceled provider cleanup")
+		}
+	}
+	if fp.vfs != manager {
+		t.Fatalf("canceled provider replaced manager with %T", fp.vfs)
+	}
+}
+
+func TestFileSystemPanel_CachedEnterStaysResponsiveAndCoalescesRefresh(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	remote := newQueuedNavigationVFS()
+	t.Cleanup(func() {
+		select {
+		case remote.releaseFirstRead <- struct{}{}:
+		default:
+		}
+	})
+	fp.vfs = remote
+	fp.lastLoadedPath = "/"
+	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	fp.saveToCache("/", remote.items["/"])
+	fp.saveToCache("/sdcard", remote.items["/sdcard"])
+	fp.pendingSelection = "sdcard"
+
+	// Start a root refresh and leave it in the same state as an in-flight
+	// FISH response that must drain after cancellation.
+	fp.readDirectoryEx(false)
+	waitForPanelSignal(t, remote.firstReadStarted, "blocked root refresh")
+	time.Sleep(220 * time.Millisecond) // let the old loading timer enter TaskChan
+
+	start := time.Now()
+	if !fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+	}) {
+		t.Fatal("Enter on cached sdcard was not handled")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("cached Enter blocked for %s", elapsed)
+	}
+	if got := remote.checkedPathCalls.Load(); got != 0 {
+		t.Fatalf("cached Enter made %d checked/remote SetPath calls", got)
+	}
+	if got := remote.GetPath(); got != "/sdcard" {
+		t.Fatalf("path after cached Enter = %q, want /sdcard", got)
+	}
+	if got := fp.currentTitle; !strings.Contains(got, "/sdcard") || !strings.HasSuffix(got, panelLoadingPulse[0]) {
+		t.Fatalf("loading title was not updated immediately: %q", got)
+	}
+	if got := fp.getRawSelectedName(); got != ".." {
+		t.Fatalf("sdcard cache was not rendered synchronously, cursor = %q", got)
+	}
+
+	initialLoadingTitle := fp.currentTitle
+	pulseDeadline := time.After(time.Second)
+	for fp.currentTitle == initialLoadingTitle {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-pulseDeadline:
+			t.Fatalf("loading marker did not pulse from %q", initialLoadingTitle)
+		}
+	}
+	if got := fp.currentTitle; !strings.Contains(got, "/sdcard") || !strings.HasSuffix(got, panelLoadingPulse[1]) {
+		t.Fatalf("pulsed title lost the current path or marker: %q", got)
+	}
+
+	// Execute any old animation task after the new cache is already visible. It
+	// must recognize its canceled context and leave the new rows untouched.
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			goto oldTimerDrained
+		}
+	}
+oldTimerDrained:
+	if got := fp.getRawSelectedName(); got != ".." || remote.GetPath() != "/sdcard" {
+		t.Fatalf("stale loading timer damaged new cache: path=%q cursor=%q", remote.GetPath(), got)
+	}
+
+	// Simulate held Enter. Cached /sdcard and / alternate synchronously, while
+	// the pending backend refresh is replaced rather than appended to a FIFO.
+	for i := 0; i < 40; i++ {
+		if !fp.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+		}) {
+			t.Fatalf("repeated Enter %d was not handled", i)
+		}
+	}
+	if got := remote.GetPath(); got != "/sdcard" {
+		t.Fatalf("path after repeated Enter = %q, want /sdcard", got)
+	}
+	if got := remote.readDirCalls.Load(); got != 1 {
+		t.Fatalf("%d backend reads started while the first was active, want 1", got)
+	}
+	if got := remote.checkedPathCalls.Load(); got != 0 {
+		t.Fatalf("repeated cached Enter made %d checked/remote SetPath calls", got)
+	}
+
+	remote.releaseFirstRead <- struct{}{}
+	waitForLoad(t, fp)
+	if got := remote.readDirCalls.Load(); got != 2 {
+		t.Fatalf("backend reads after release = %d, want active + latest only", got)
+	}
+	if got := fp.getRawSelectedName(); got != ".." {
+		t.Fatalf("fresh /sdcard replacement moved cursor to %q", got)
+	}
+	if got := fp.currentTitle; got != "/sdcard" {
+		t.Fatalf("completed load title = %q, want marker-free /sdcard", got)
+	}
+}
+
+func TestPanelsFrame_NavigateToCachedRemotePathIsOptimistic(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	remote := newQueuedNavigationVFS()
+	t.Cleanup(func() {
+		select {
+		case remote.releaseFirstRead <- struct{}{}:
+		default:
+		}
+	})
+	fp.vfs = remote
+	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	fp.saveToCache("/sdcard", remote.items["/sdcard"])
+
+	pf := &PanelsFrame{}
+	start := time.Now()
+	if !pf.NavigateToPath(fp, "sdcard") {
+		t.Fatal("NavigateToPath rejected cached remote directory")
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("NavigateToPath blocked for %s", elapsed)
+	}
+	if got := remote.checkedPathCalls.Load(); got != 0 {
+		t.Fatalf("NavigateToPath made %d checked/remote SetPath calls", got)
+	}
+	if got := remote.optimisticCalls.Load(); got != 1 {
+		t.Fatalf("NavigateToPath made %d optimistic path changes, want 1", got)
+	}
+	if got := remote.GetPath(); got != "/sdcard" {
+		t.Fatalf("NavigateToPath path = %q, want /sdcard", got)
+	}
+	if got := fp.getRawSelectedName(); got != ".." {
+		t.Fatalf("cached target was not rendered synchronously, cursor = %q", got)
+	}
+
+	waitForPanelSignal(t, remote.firstReadStarted, "background target refresh")
+	remote.releaseFirstRead <- struct{}{}
+	waitForLoad(t, fp)
+}
+
 func TestFileSystemPanel_LiveSelectionPreservation(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmpDir := t.TempDir()

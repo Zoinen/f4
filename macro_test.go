@@ -59,6 +59,32 @@ Sequence=Up Up CtrlEnter Esc F5 Down ShiftF5 Esc Esc
 	}
 }
 
+func TestEnterAndNumEnterUseCorrectFarKeyNames(t *testing.T) {
+	mainEnter := &vtinput.InputEvent{
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+	numEnter := &vtinput.InputEvent{
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.EnhancedKey,
+	}
+	if got := EventToFarString(mainEnter); got != "CtrlEnter" {
+		t.Fatalf("main Enter = %q, want CtrlEnter", got)
+	}
+	if got := EventToFarString(numEnter); got != "CtrlNumEnter" {
+		t.Fatalf("numeric Enter = %q, want CtrlNumEnter", got)
+	}
+
+	parsedMain := ParseFarKey("CtrlEnter")
+	if parsedMain.VirtualKeyCode != vtinput.VK_RETURN || parsedMain.ControlKeyState&vtinput.EnhancedKey != 0 {
+		t.Fatalf("parsed CtrlEnter = %#v, want non-enhanced Return", parsedMain)
+	}
+	parsedNum := ParseFarKey("CtrlNumEnter")
+	if parsedNum.VirtualKeyCode != vtinput.VK_RETURN || parsedNum.ControlKeyState&vtinput.EnhancedKey == 0 {
+		t.Fatalf("parsed CtrlNumEnter = %#v, want enhanced Return", parsedNum)
+	}
+}
+
 type mockAreaFrame struct {
 	vtui.BaseFrame
 	typ   vtui.FrameType
@@ -215,6 +241,112 @@ func TestPanelBookmarkHotkeysKeepRightCtrlDistinct(t *testing.T) {
 				t.Fatalf("isPanelBookmarkHotkey() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMacroFastFindEscapeBypassesPanelToggle(t *testing.T) {
+	oldCfg := AppConfig
+	oldHotkeys := GlobalHotkeysMgr
+	oldMacroMgr := MacroMgr
+	defer func() {
+		AppConfig = oldCfg
+		GlobalHotkeysMgr = oldHotkeys
+		MacroMgr = oldMacroMgr
+	}()
+
+	AppConfig.NavigationMode = NavigationClassic
+	MacroMgr = nil
+	pf, left, _ := newSearchFirstTestFrame(t)
+	vtui.FrameManager.Push(pf)
+	vtui.FrameManager.SyncCurrentScreen()
+	defer func() {
+		pf.Close()
+		vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	}()
+
+	GlobalHotkeysMgr = NewHotkeyManager("")
+	GlobalHotkeysMgr.Bind("Shell", "Esc", "Panel.Toggle")
+	mgr := NewMacroManager("")
+	escape := &vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_ESCAPE,
+	}
+
+	left.fastFindMode = true
+	left.fastFindStr = "a"
+	if mgr.Filter(escape) {
+		t.Fatal("macro filter consumed Esc while Fast Find was active")
+	}
+	if !pf.showPanels {
+		t.Fatal("Panel.Toggle hid panels before Fast Find handled Esc")
+	}
+	if !pf.ProcessKey(escape) {
+		t.Fatal("PanelsFrame did not handle Fast Find Esc")
+	}
+	if left.fastFindMode || left.fastFindStr != "" || !pf.showPanels {
+		t.Fatalf("Esc result: mode=%v text=%q panels=%v", left.fastFindMode, left.fastFindStr, pf.showPanels)
+	}
+
+	// The bypass is contextual: without Fast Find, the configured Esc action
+	// must still run normally.
+	pf.showPanels = true
+	if !mgr.Filter(escape) {
+		t.Fatal("Esc without Fast Find did not invoke Panel.Toggle")
+	}
+	if pf.showPanels {
+		t.Fatal("Panel.Toggle did not hide panels without Fast Find")
+	}
+}
+
+func TestMacroFastFindDeleteBypassesPanelToggle(t *testing.T) {
+	oldCfg := AppConfig
+	oldHotkeys := GlobalHotkeysMgr
+	oldMacroMgr := MacroMgr
+	defer func() {
+		AppConfig = oldCfg
+		GlobalHotkeysMgr = oldHotkeys
+		MacroMgr = oldMacroMgr
+	}()
+
+	AppConfig.NavigationMode = NavigationClassic
+	AppConfig.EscTogglePanels = true
+	MacroMgr = nil
+	pf, left, _ := newSearchFirstTestFrame(t)
+	vtui.FrameManager.Push(pf)
+	vtui.FrameManager.SyncCurrentScreen()
+	defer func() {
+		pf.Close()
+		vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	}()
+
+	GlobalHotkeysMgr = NewHotkeyManager("")
+	mgr := NewMacroManager("")
+	deleteKey := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_DELETE,
+		ControlKeyState: vtinput.EnhancedKey,
+	}
+
+	left.fastFindMode = true
+	left.fastFindStr = "a"
+	if mgr.Filter(deleteKey) {
+		t.Fatal("macro filter consumed Delete while Fast Find was active")
+	}
+	if !pf.ProcessKey(deleteKey) {
+		t.Fatal("PanelsFrame did not handle Fast Find Delete")
+	}
+	if !left.fastFindMode || left.fastFindStr != "a" || !pf.showPanels {
+		t.Fatalf("Delete changed Fast Find: mode=%v text=%q panels=%v", left.fastFindMode, left.fastFindStr, pf.showPanels)
+	}
+
+	left.fastFindMode = false
+	if !mgr.Filter(deleteKey) {
+		t.Fatal("Delete without Fast Find did not invoke Panel.Toggle")
+	}
+	if pf.showPanels {
+		t.Fatal("Panel.Toggle did not hide panels without Fast Find")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 
@@ -138,6 +139,10 @@ func GetSystemShell() string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		return "/bin/sh"
+	}
+	base := filepath.Base(shell)
+	if base == "fish" || base == "csh" || base == "tcsh" {
+		return "bash"
 	}
 	return shell
 }

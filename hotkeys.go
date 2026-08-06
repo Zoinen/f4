@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/unxed/vtui"
 )
 
 // HotkeyManager handles mapping of key combinations to application actions.
@@ -28,6 +30,9 @@ var conditionRegistry = map[string]func() bool{
 		return false
 	},
 	"esctoggle": func() bool {
+		if !AppConfig.EscTogglePanels {
+			return false
+		}
 		if pf := findPanelsFrameAnyScreen(); pf != nil {
 			if !pf.cmdLine.IsEmpty() {
 				return false
@@ -39,11 +44,40 @@ var conditionRegistry = map[string]func() bool{
 		}
 		return false
 	},
+	// noaltscreenapp gates keys that must reach an interactive AltScreen
+	// application (mc, htop) instead of triggering f4's own actions.
+	"noaltscreenapp": func() bool {
+		if pf := findPanelsFrameAnyScreen(); pf != nil {
+			return pf.showPanels || !pf.termView.UseAltScreen
+		}
+		return false
+	},
+	// terminalquiet reports a hidden-panels terminal with no AltScreen app
+	// and no busy PTY, so F3/F4 may open the terminal log instead of
+	// being forwarded to the running application.
+	"terminalquiet": func() bool {
+		if pf := findPanelsFrameAnyScreen(); pf != nil {
+			return !pf.termView.UseAltScreen && !pf.isPtyBusy()
+		}
+		return false
+	},
+	// altpanelvisible reports that an info or quick-view panel is shown,
+	// gating the plain-letter toggles that belong to those panels.
+	"altpanelvisible": func() bool {
+		if pf := findPanelsFrameAnyScreen(); pf != nil {
+			for _, a := range pf.altPanels {
+				if a != nil && (a.Kind() == "info" || a.Kind() == "quick_view") {
+					return true
+				}
+			}
+		}
+		return false
+	},
 }
 
 // GetConditions returns the user-friendly names of all registered conditions.
 func GetConditions() []string {
-	return []string{"None", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle"}
+	return []string{"None", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp"}
 }
 
 // RegisterCondition adds a dynamic boolean check accessible by hotkey bindings.
@@ -135,63 +169,36 @@ func FormatKeyForUI(key string) string {
 	return strings.Join(parts, "+")
 }
 
+// initDefaults builds the default bindings from the action registry.
+// The registry is the single source of truth: every action carrying
+// DefaultKeys gets them bound in its Area (plus any DefaultAreas).
+// A key entry may carry a ":Condition" suffix (e.g. "Esc:EscToggle").
 func (hm *HotkeyManager) initDefaults() {
-	hm.Defaults = map[string]map[string]string{
-		"Shell": {
-			"F3":      "File.View",
-			"F4":      "File.Edit",
-			"F5":      "File.Copy",
-			"F6":      "File.Move",
-			"F7":      "File.MakeDir",
-			"F8":      "File.Delete",
-			"ShiftF4": "File.New",
-			"ShiftF6": "File.Rename",
-			"AltF7":   "File.Find",
-			"CtrlO":   "Panel.Toggle",
-			"CtrlU":   "Panel.Swap",
-			"CtrlR":   "Panel.Rescan",
-			"AltF12":  "Panel.FoldersHistory",
-			"AltF8":   "Panel.CommandHistory",
-			"Esc":     "Panel.Toggle:EscToggle",
-			"Ctrl1":   "Panel.ViewBrief",
-			"Ctrl2":   "Panel.ViewMedium",
-			"Ctrl3":   "Panel.ViewDetailed",
-			"Ctrl4":   "Panel.ViewWide",
-		},
-		"Editor": {
-			"F2":         "Editor.Save",
-			"F3":         "Editor.WordWrap",
-			"F5":         "Editor.ShowWhitespaces",
-			"F6":         "Editor.SwitchToViewer",
-			"F7":         "Editor.Search",
-			"ShiftF7":    "Editor.SearchNext",
-			"CtrlF7":     "Editor.Replace",
-			"F8":         "Editor.CodepageNext",
-			"ShiftF8":    "Editor.CodepageMenu",
-			"F10":        "Editor.Quit",
-			"Esc":        "Editor.Quit",
-			"F4":         "Editor.Quit",
-			"CtrlA":      "Editor.SelectAll",
-			"CtrlY":      "Editor.DeleteLine",
-			"CtrlZ":      "Editor.Undo",
-			"CtrlShiftZ": "Editor.Redo",
-		},
-		"Viewer": {
-			"Esc":     "Viewer.Quit",
-			"F10":     "Viewer.Quit",
-			"F3":      "Viewer.Quit",
-			"F2":      "Viewer.WrapMode",
-			"F4":      "Viewer.HexMode",
-			"F6":      "Viewer.SwitchToEditor",
-			"F8":      "Viewer.CodepageNext",
-			"ShiftF8": "Viewer.CodepageMenu",
-			"F7":      "Viewer.Search",
-		},
-		"Terminal": {
-			"CtrlO": "Panel.Toggle",
-			"Esc":   "Panel.Toggle:EscToggle",
-		},
-		"Common": {},
+	hm.Defaults = make(map[string]map[string]string)
+	for _, a := range GetOrderedActions() {
+		if len(a.DefaultKeys) == 0 {
+			continue
+		}
+		areas := append([]string{a.Area}, a.DefaultAreas...)
+		for _, area := range areas {
+			if area == "" {
+				continue
+			}
+			for _, keySpec := range a.DefaultKeys {
+				key, cond, _ := strings.Cut(keySpec, ":")
+				if key == "" {
+					continue
+				}
+				binding := a.Name
+				if cond != "" {
+					binding += ":" + cond
+				}
+				if hm.Defaults[area] == nil {
+					hm.Defaults[area] = make(map[string]string)
+				}
+				hm.Defaults[area][key] = binding
+			}
+		}
 	}
 }
 
@@ -318,4 +325,38 @@ func (hm *HotkeyManager) Unbind(area, key string) {
 	if binds, ok := hm.Bindings[area]; ok {
 		delete(binds, key)
 	}
+}
+
+// KeyBarLabelsForArea resolves F1-F12 keybar labels for the given area
+// through the active hotkey bindings, falling back to the provided
+// defaults when a key has no binding. A key explicitly unbound ("None")
+// gets an empty label.
+func KeyBarLabelsForArea(area string, fallbacks *vtui.KeySet) *vtui.KeySet {
+	var fbNormal, fbShift, fbAlt, fbCtrl vtui.KeyBarLabels
+	if fallbacks != nil {
+		fbNormal, fbShift, fbAlt, fbCtrl = fallbacks.Normal, fallbacks.Shift, fallbacks.Alt, fallbacks.Ctrl
+	}
+	resolve := func(prefix, keyNum, fb string) string {
+		if hm := GlobalHotkeysMgr; hm != nil {
+			if actName := hm.GetAction(area, prefix+keyNum); actName != "" {
+				if strings.EqualFold(actName, "none") {
+					return ""
+				}
+				if act, ok := GetAction(actName); ok {
+					return plainLabel(act.DisplayLabel())
+				}
+			}
+		}
+		return fb
+	}
+
+	set := &vtui.KeySet{}
+	for i := 0; i < 12; i++ {
+		keyNum := fmt.Sprintf("F%d", i+1)
+		set.Normal[i] = resolve("", keyNum, fbNormal[i])
+		set.Shift[i] = resolve("Shift", keyNum, fbShift[i])
+		set.Alt[i] = resolve("Alt", keyNum, fbAlt[i])
+		set.Ctrl[i] = resolve("Ctrl", keyNum, fbCtrl[i])
+	}
+	return set
 }

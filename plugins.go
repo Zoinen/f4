@@ -4,10 +4,12 @@ import (
 	"path/filepath"
 	"sync"
 
+	androidfs "github.com/unxed/f4/plugins/android"
 	"github.com/unxed/f4/plugins/archive"
 	"github.com/unxed/f4/plugins/chroma"
 	"github.com/unxed/f4/plugins/dummy_internal"
 	"github.com/unxed/f4/plugins/netfox"
+	"github.com/unxed/f4/plugins/visren"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -112,7 +114,9 @@ func (pm *PluginManager) loadInternal() {
 		&chroma.Plugin{},
 		&dummy_internal.InternalDummyPlugin{},
 		&archive.ArchivePlugin{},
+		androidfs.NewPlugin(),
 		&netfox.NetFoxPlugin{},
+		&visren.Plugin{},
 	}
 
 	for _, p := range plugins {

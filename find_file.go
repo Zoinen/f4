@@ -18,6 +18,11 @@ type FoundFile struct {
 	Item vfs.VFSItem
 }
 
+// maxRemoteFindResults caps what a remote search brings back in one answer.
+// The local walk has no such limit because it costs nothing to keep going;
+// a remote one pays for every hit on the wire.
+const maxRemoteFindResults = 10000
+
 // ExecuteFindFile initiates a background search and displays a progress dialog.
 func ExecuteFindFile(pf *PanelsFrame, v vfs.VFS, startDir, mask, text string) {
 	dlg := vtui.NewCenteredDialog(60, 9, " Searching... ")
@@ -140,7 +145,31 @@ func ExecuteFindFile(pf *PanelsFrame, v vfs.VFS, startDir, mask, text string) {
 			})
 		}
 
-		err := walk(startDir)
+		// A file system that can search its own tree does the walking there:
+		// one request instead of a round trip per directory, and a remote
+		// grep instead of downloading every candidate only to reject it.
+		var err error
+		searched := false
+		if finder, ok := v.(vfs.FileFinder); ok {
+			updateUI(startDir, true)
+			hits, findErr := finder.FindFiles(ctx.Context, startDir, vfs.FindQuery{
+				Masks:      masks,
+				Text:       text,
+				IgnoreCase: true,
+				Limit:      maxRemoteFindResults,
+			})
+			if findErr == nil {
+				for _, hit := range hits {
+					found = append(found, FoundFile{Path: hit.Path, Item: hit.Item})
+				}
+				searched = true
+			} else if ctx.Err() == nil {
+				vtui.DebugLog("FIND: remote search unavailable, walking instead: %v", findErr)
+			}
+		}
+		if !searched {
+			err = walk(startDir)
+		}
 		updateUI(startDir, true) // Guarantee final state rendering
 
 		ctx.RunOnUI(func() {

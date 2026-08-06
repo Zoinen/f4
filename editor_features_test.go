@@ -159,7 +159,7 @@ func TestEditor_DeleteLine(t *testing.T) {
 	ev.CursorLine = 1
 	ev.CursorPos = 2
 
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_Y,
@@ -175,7 +175,7 @@ func TestEditor_DeleteLine(t *testing.T) {
 		t.Errorf("Expected CursorLine 1, got %d", ev.CursorLine)
 	}
 
-	ev.ProcessKey(&vtinput.InputEvent{
+	pressKey(ev, &vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_Y,

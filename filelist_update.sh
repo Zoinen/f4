@@ -5,7 +5,6 @@ OUTPUT="filelist.md"
 
 # Create or overwrite the file with a header
 echo "# Project Structure" > "$OUTPUT"
-echo "Last updated: $(date '+%Y-%m-%d %H:%M:%S')" >> "$OUTPUT"
 echo "" >> "$OUTPUT"
 echo "\`\`\`text" >> "$OUTPUT"
 

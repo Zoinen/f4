@@ -114,7 +114,7 @@ func actionPlugRing(pf *PanelsFrame) {
 	dlg := vtui.NewCenteredDialog(w, h, " f4 PlugRing ")
 	dlg.ShowClose = true
 
-	table := vtui.NewTable(0, 0, w-4, h-5, []vtui.TableColumn{
+	table := vtui.NewTable(0, 0, w-4, h-6, []vtui.TableColumn{
 		{Title: "Name", Width: 16},
 		{Title: "Version", Width: 8},
 		{Title: "Status", Width: 13},

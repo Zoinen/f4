@@ -14,16 +14,16 @@ require (
 	github.com/unxed/archives v0.0.0-20260728171610-555945c76813
 	github.com/unxed/colorer4go v0.1.5
 	github.com/unxed/ffibridge v0.1.0
-	github.com/unxed/localecp v0.1.4
 	github.com/unxed/sevenzip v0.0.0-20260704211908-25d317f8295f
 	github.com/unxed/tar v0.1.126
 	github.com/unxed/vtinput v0.1.2
-	github.com/unxed/vtui v0.1.105
+	github.com/unxed/vtui v0.1.117
 	github.com/unxed/zip v0.1.127
-	github.com/unxed/zipper v0.1.144
+	github.com/unxed/zipper v0.1.145
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/yuin/gopher-lua v1.1.1
 	golang.org/x/crypto v0.53.0
+	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.44.0
 	golang.org/x/text v0.40.0
@@ -45,11 +45,11 @@ require (
 	github.com/go-webgpu/goffi v0.6.3 // indirect
 	github.com/go-webgpu/webgpu v0.5.5 // indirect
 	github.com/gogpu/gg v0.50.11 // indirect
-	github.com/gogpu/gogpu v0.48.5 // indirect
+	github.com/gogpu/gogpu v0.50.0 // indirect
 	github.com/gogpu/gpucontext v0.24.0 // indirect
 	github.com/gogpu/gputypes v0.5.1 // indirect
 	github.com/gogpu/naga v0.18.0 // indirect
-	github.com/gogpu/wgpu v0.30.35 // indirect
+	github.com/gogpu/wgpu v0.30.36 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
@@ -74,6 +74,7 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/unxed/keytrans v0.1.30 // indirect
+	github.com/unxed/localecp v0.1.4 // indirect
 	github.com/unxed/par2 v0.1.2 // indirect
 	github.com/unxed/winkeys v0.1.1 // indirect
 	github.com/unxed/xkb-go v0.1.8 // indirect
@@ -86,7 +87,6 @@ require (
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.design/x/clipboard v0.7.0 // indirect
 	golang.org/x/exp v0.0.0-20190731235908-ec7cb31e5a56 // indirect
-	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/mobile v0.0.0-20230301163155-e0f57694e12c // indirect
 	golang.org/x/sync v0.22.0 // indirect
 )

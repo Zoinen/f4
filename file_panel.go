@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	"strings"
@@ -22,6 +24,7 @@ import (
 type fileEntry struct {
 	vfs.VFSItem
 	Selected       bool
+	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
 	IsCached       bool
 }
@@ -33,6 +36,11 @@ type mediumRow struct {
 type panelEntryRow struct {
 	fp    *FileSystemPanel
 	entry *fileEntry
+}
+
+type panelMatchSpan struct {
+	start int
+	width int
 }
 
 func (r *panelEntryRow) GetCellText(col int) string {
@@ -93,8 +101,12 @@ func splitFileExtension(name string) (string, string) {
 	return name[:lastDot], name[lastDot+1:]
 }
 
+func shouldSeparatePanelExtension(entry *fileEntry) bool {
+	return AppConfig.SeparateFileExtensions && !entry.IsDir && !entry.NoExtension && entry.Name != ".."
+}
+
 func formatPanelFileName(entry *fileEntry, width int) string {
-	if !AppConfig.SeparateFileExtensions || entry.IsDir || entry.Name == ".." || width <= 0 {
+	if !shouldSeparatePanelExtension(entry) || width <= 0 {
 		return entry.displayName(entry.Name)
 	}
 	base, extension := splitFileExtension(entry.Name)
@@ -114,6 +126,110 @@ func formatPanelFileName(entry *fileEntry, width int) string {
 	left := runewidth.Truncate(entry.displayName(base), width-extensionFieldWidth-1, "")
 	padding := width - runewidth.StringWidth(left) - extensionFieldWidth
 	return left + strings.Repeat(" ", padding) + extensionText
+}
+
+func clippedPanelMatchSpan(start, width, cellWidth int) (panelMatchSpan, bool) {
+	if start < 0 {
+		width += start
+		start = 0
+	}
+	if start >= cellWidth || width <= 0 {
+		return panelMatchSpan{}, false
+	}
+	if start+width > cellWidth {
+		width = cellWidth - start
+	}
+	return panelMatchSpan{start: start, width: width}, width > 0
+}
+
+func panelFileNameMatchSpans(entry *fileEntry, width, matchStartRunes, matchedRunes int) []panelMatchSpan {
+	if matchStartRunes < 0 || matchedRunes <= 0 || width <= 0 {
+		return nil
+	}
+	nameRunes := []rune(entry.Name)
+	if matchStartRunes >= len(nameRunes) {
+		return nil
+	}
+	matchEndRunes := matchStartRunes + matchedRunes
+	if matchEndRunes > len(nameRunes) {
+		matchEndRunes = len(nameRunes)
+	}
+	prefixWidth := 0
+	if entry.Name != ".." {
+		prefixWidth = runewidth.StringWidth(entry.displayName(""))
+	}
+
+	if !shouldSeparatePanelExtension(entry) {
+		if span, ok := clippedPanelMatchSpan(
+			prefixWidth+runewidth.StringWidth(string(nameRunes[:matchStartRunes])),
+			runewidth.StringWidth(string(nameRunes[matchStartRunes:matchEndRunes])), width,
+		); ok {
+			return []panelMatchSpan{span}
+		}
+		return nil
+	}
+
+	base, extension := splitFileExtension(entry.Name)
+	if extension == "" {
+		if span, ok := clippedPanelMatchSpan(
+			prefixWidth+runewidth.StringWidth(string(nameRunes[:matchStartRunes])),
+			runewidth.StringWidth(string(nameRunes[matchStartRunes:matchEndRunes])), width,
+		); ok {
+			return []panelMatchSpan{span}
+		}
+		return nil
+	}
+
+	baseRunes := []rune(base)
+	extensionRunes := []rune(extension)
+	extensionFieldWidth := runewidth.StringWidth(extension)
+	if extensionFieldWidth < 3 {
+		extensionFieldWidth = 3
+	}
+
+	spans := make([]panelMatchSpan, 0, 2)
+	baseMatchStart := matchStartRunes
+	if baseMatchStart < 0 {
+		baseMatchStart = 0
+	}
+	baseMatchEnd := matchEndRunes
+	if baseMatchEnd > len(baseRunes) {
+		baseMatchEnd = len(baseRunes)
+	}
+	if baseMatchStart < baseMatchEnd && extensionFieldWidth < width {
+		leftWidth := width - extensionFieldWidth - 1
+		if span, ok := clippedPanelMatchSpan(
+			prefixWidth+runewidth.StringWidth(string(baseRunes[:baseMatchStart])),
+			runewidth.StringWidth(string(baseRunes[baseMatchStart:baseMatchEnd])), leftWidth,
+		); ok {
+			spans = append(spans, span)
+		}
+	}
+
+	// The separating dot is intentionally hidden when extensions are aligned.
+	// Continue highlighting at the right-aligned extension after that dot.
+	extensionNameStart := len(baseRunes) + 1
+	extensionMatchStart := matchStartRunes - extensionNameStart
+	if extensionMatchStart < 0 {
+		extensionMatchStart = 0
+	}
+	extensionMatchEnd := matchEndRunes - extensionNameStart
+	if extensionMatchEnd > len(extensionRunes) {
+		extensionMatchEnd = len(extensionRunes)
+	}
+	if extensionMatchStart < extensionMatchEnd {
+		extensionStart := width - extensionFieldWidth
+		if extensionStart < 0 {
+			extensionStart = 0
+		}
+		if span, ok := clippedPanelMatchSpan(
+			extensionStart+runewidth.StringWidth(string(extensionRunes[:extensionMatchStart])),
+			runewidth.StringWidth(string(extensionRunes[extensionMatchStart:extensionMatchEnd])), width,
+		); ok {
+			spans = append(spans, span)
+		}
+	}
+	return spans
 }
 
 func (m *mediumRow) IsColSelected(col int) bool {
@@ -146,9 +262,6 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 		attr = vtui.Palette[ColPanelDir]
 	}
 
-	if e.IsCached {
-		attr = vtui.DimColor(attr)
-	}
 	return attr
 }
 
@@ -162,10 +275,13 @@ const (
 )
 
 const (
-	panelSizeColumnWidth     = 11
-	panelModifiedColumnWidth = 14
-	panelDragScrollInterval  = 75 * time.Millisecond
+	panelSizeColumnWidth      = 11
+	panelModifiedColumnWidth  = 14
+	panelDragScrollInterval   = 75 * time.Millisecond
+	panelLoadingPulseInterval = 100 * time.Millisecond
 )
+
+var panelLoadingPulse = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type SortMode int
 
@@ -214,9 +330,6 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 		attr = vtui.Palette[ColPanelDir]
 	}
 
-	if f.IsCached {
-		attr = vtui.DimColor(attr)
-	}
 	return attr
 }
 
@@ -227,11 +340,24 @@ type dirCacheEntry struct {
 	items []vfs.VFSItem
 	time  time.Time
 }
+
+// dirCacheKey qualifies a path with the filesystem it belongs to. Remote
+// roots are commonly all named "/"; using the path alone briefly showed one
+// Android device's cached directory while another device was being loaded.
+// A shared-session identity preserves the fast preview across pooled FISH+
+// views. Other comparable VFS implementations are scoped to their exact
+// instance, giving a safe cache miss rather than a false hit after reopening.
+type dirCacheKey struct {
+	identity      any
+	qualifiedPath string
+}
+
 type FileSystemPanel struct {
 	vtui.ScreenObject
 	table                *vtui.Table
 	scrollBar            *vtui.ScrollBar
 	scrollMouseActive    bool
+	minimalScrollDragGap int
 	headerMouseActive    bool
 	frame                *vtui.BorderedFrame
 	vfs                  vfs.VFS
@@ -248,21 +374,28 @@ type FileSystemPanel struct {
 	dragScrollTimer      *time.Timer
 	dragScrollGeneration uint64
 
-	loadCtx            context.Context
-	cancelLoad         context.CancelFunc
-	isLoading          bool
-	loadingTimer       *time.Timer
-	pendingSelection   string
-	providerEntryName  string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	fastFindMode       bool
-	fastFindStr        string
-	showInactiveCursor bool
+	loadCtx                   context.Context
+	cancelLoad                context.CancelFunc
+	isLoading                 bool
+	loadingTimer              *time.Timer
+	loadingFrame              int
+	loadingGeneration         uint64
+	loadQueueMu               sync.Mutex
+	loadWorkerActive          bool
+	pendingDirectoryLoad      func()
+	providerOpenTask          *vtui.TaskContext
+	pendingSelection          string
+	providerEntryName         string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath string // one-shot: history/menu navigation must not reorder MRU
+	fastFindMode              bool
+	fastFindStr               string
+	showInactiveCursor        bool
 
 	sortMode    SortMode
 	sortReverse bool
 
 	lastDirMTime time.Time
-	dirCache     map[string]dirCacheEntry
+	dirCache     map[dirCacheKey]dirCacheEntry
 
 	isCheckingRefresh bool
 	currentTitle      string
@@ -292,7 +425,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		table:               vtui.NewTable(x+1, y+1, w-2, h-2, nil),
 		viewMode:            ViewModeMedium,
 		lastRightClickedIdx: -1,
-		dirCache:            make(map[string]dirCacheEntry),
+		dirCache:            make(map[dirCacheKey]dirCacheEntry),
 		selectedItems:       make(map[string]bool),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
@@ -313,22 +446,63 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	return fp
 }
 
-func (fp *FileSystemPanel) saveToCache(path string, items []vfs.VFSItem) {
-	if fp.dirCache == nil {
-		fp.dirCache = make(map[string]dirCacheEntry)
+func directoryCacheKey(fs vfs.VFS, path string) dirCacheKey {
+	key := dirCacheKey{qualifiedPath: FileStateKey(fs, path)}
+	if identity, ok := fs.(vfs.SessionIdentity); ok {
+		if sessionKey := identity.SessionKey(); sessionKey != nil {
+			key.identity = sessionKey
+			return key
+		}
 	}
-	fp.dirCache[path] = dirCacheEntry{items: items, time: time.Now()}
+	// VFS is an interface and implementations are not required to be
+	// comparable. Every built-in VFS is pointer-backed, but keep the fallback
+	// safe for plugins that use a slice/map-bearing value implementation.
+	if fs != nil && reflect.TypeOf(fs).Comparable() {
+		key.identity = fs
+	}
+	return key
+}
+
+// sameVFSInstance is deliberately stricter than cache identity. Two pooled
+// remote views may share cached directory data, but an asynchronous provider
+// transition belongs to the exact parent object it was started from.
+func sameVFSInstance(a, b vfs.VFS) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb || !ta.Comparable() {
+		return false
+	}
+	return a == b
+}
+
+func (fp *FileSystemPanel) cacheKey(path string) dirCacheKey {
+	return directoryCacheKey(fp.vfs, path)
+}
+
+func (fp *FileSystemPanel) saveToCache(path string, items []vfs.VFSItem) {
+	fp.saveToCacheKey(fp.cacheKey(path), items)
+}
+
+func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem) {
+	if fp.dirCache == nil {
+		fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	}
+	fp.dirCache[key] = dirCacheEntry{items: items, time: time.Now()}
 
 	if len(fp.dirCache) > maxDirCache {
-		var oldestPath string
+		var oldestKey dirCacheKey
 		var oldestTime time.Time
-		for p, entry := range fp.dirCache {
-			if oldestPath == "" || entry.time.Before(oldestTime) {
-				oldestPath = p
+		hasOldest := false
+		for candidate, entry := range fp.dirCache {
+			if !hasOldest || entry.time.Before(oldestTime) {
+				oldestKey = candidate
 				oldestTime = entry.time
+				hasOldest = true
 			}
 		}
-		delete(fp.dirCache, oldestPath)
+		delete(fp.dirCache, oldestKey)
 	}
 }
 func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
@@ -368,12 +542,10 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 		fp.sortReverse = !fp.sortReverse
 	} else {
 		fp.sortMode = mode
-		// Far по умолчанию сортирует время и размер по убыванию
-		if mode == SortTime || mode == SortSize {
-			fp.sortReverse = true
-		} else {
-			fp.sortReverse = false
-		}
+		// Every mode's base comparator is its desired first-use direction:
+		// name/extension ascend, while time/size descend. Repeated activation
+		// below toggles that direction uniformly for hotkeys, menus and headers.
+		fp.sortReverse = false
 	}
 	fp.updateSortColumnTitles()
 	fp.ReadDirectory()
@@ -795,7 +967,7 @@ func (fp *FileSystemPanel) initScrollBar() {
 }
 
 func (fp *FileSystemPanel) syncScrollBar() bool {
-	if fp.scrollBar == nil {
+	if fp.scrollBar == nil || AppConfig.PanelScrollbarMode == PanelScrollbarOff {
 		return false
 	}
 	height, _, maxTop, virtualMax, virtualValue := fp.panelScrollMetrics()
@@ -847,8 +1019,40 @@ func (fp *FileSystemPanel) drawScrollBar(scr *vtui.ScreenBuf) {
 		return
 	}
 	height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+	if AppConfig.PanelScrollbarMode == PanelScrollbarMinimal {
+		caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+		attr := vtui.Palette[ColPanelMinimalScrollbar]
+		for offset := 0; offset < caretLength; offset++ {
+			scr.Write(fp.scrollBar.X1, fp.scrollBar.Y1+caretPos+offset,
+				vtui.StringToCharInfo("│", attr))
+		}
+		return
+	}
 	vtui.DrawScrollBar(scr, fp.scrollBar.X1, fp.scrollBar.Y1, height,
 		fp.scrollBar.Value, fp.scrollBar.Max+height, vtui.Palette[ColPanelScrollbar])
+}
+
+func minimalPanelScrollThumb(height, value, maximum int) (position, length int) {
+	if height <= 0 || maximum <= 0 {
+		return 0, 0
+	}
+	itemsCount := maximum + height
+	length = (height*height + itemsCount/2) / itemsCount
+	if length < 1 {
+		length = 1
+	}
+	if length >= height {
+		length = height - 1
+	}
+	maxPosition := height - length
+	if value < 0 {
+		value = 0
+	}
+	if value > maximum {
+		value = maximum
+	}
+	position = (value*maxPosition + maximum/2) / maximum
+	return position, length
 }
 
 // drawCursorSeparators restores the cursor background on column separators.
@@ -884,18 +1088,56 @@ func (fp *FileSystemPanel) drawCursorSeparators(scr *vtui.ScreenBuf) {
 }
 
 func (fp *FileSystemPanel) processScrollBarMouse(e *vtinput.InputEvent) bool {
-	if fp.scrollBar == nil {
+	if fp.scrollBar == nil || AppConfig.PanelScrollbarMode == PanelScrollbarOff {
 		return false
 	}
 	// Releases must reach ScrollBar so it can stop dragging and auto-repeat.
 	if e.ButtonState == 0 {
-		fp.scrollBar.ProcessMouse(e)
+		if AppConfig.PanelScrollbarMode == PanelScrollbarFull {
+			fp.scrollBar.ProcessMouse(e)
+		}
 		fp.scrollMouseActive = false
+		fp.minimalScrollDragGap = 0
 		fp.syncScrollBar()
 		return false
 	}
 	if e.ButtonState&vtinput.FromLeft1stButtonPressed == 0 {
 		return false
+	}
+	if AppConfig.PanelScrollbarMode == PanelScrollbarMinimal {
+		if fp.scrollMouseActive {
+			height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+			_, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+			maxPosition := height - caretLength
+			position := int(e.MouseY) - fp.scrollBar.Y1 - fp.minimalScrollDragGap
+			if position < 0 {
+				position = 0
+			}
+			if position > maxPosition {
+				position = maxPosition
+			}
+			value := 0
+			if maxPosition > 0 {
+				value = (position*fp.scrollBar.Max + maxPosition/2) / maxPosition
+			}
+			_, _, maxTop, virtualMax, _ := fp.panelScrollMetrics()
+			if virtualMax > 0 {
+				fp.setPanelScrollTop((value*maxTop + virtualMax/2) / virtualMax)
+			}
+			return true
+		}
+		if !e.KeyDown || e.MouseEventFlags&vtinput.MouseMoved != 0 || !fp.syncScrollBar() || int(e.MouseX) != fp.scrollBar.X1 {
+			return false
+		}
+		height := fp.scrollBar.Y2 - fp.scrollBar.Y1 + 1
+		caretPos, caretLength := minimalPanelScrollThumb(height, fp.scrollBar.Value, fp.scrollBar.Max)
+		y := int(e.MouseY) - fp.scrollBar.Y1
+		if y < caretPos || y >= caretPos+caretLength {
+			return false
+		}
+		fp.scrollMouseActive = true
+		fp.minimalScrollDragGap = y - caretPos
+		return true
 	}
 	if fp.scrollMouseActive {
 		// Once a scrollbar owns the press, moving over file rows must not
@@ -1005,24 +1247,150 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 }
 
 func (fp *FileSystemPanel) updateTitle(err error) {
-	title := fp.vfs.GetPath()
-	if tp, ok := fp.vfs.(vfs.TitleProvider); ok {
-		if prefix := tp.GetTitle(); prefix != "" {
-			title = prefix + ":" + title
+	path := fp.vfs.GetPath()
+	title := ""
+	if tp, ok := fp.vfs.(vfs.PanelTitleProvider); ok {
+		title = tp.PanelTitle(path)
+	}
+	if title == "" {
+		title = path
+		if tp, ok := fp.vfs.(vfs.TitleProvider); ok {
+			if prefix := tp.GetTitle(); prefix != "" {
+				title = prefix + ":" + title
+			}
 		}
 	}
 
 	if err != nil && err != context.Canceled {
 		title += " [Error]"
 	} else if fp.isLoading {
-		title += " [Loading...]"
+		title += " " + panelLoadingPulse[fp.loadingFrame%len(panelLoadingPulse)]
 	}
 	fp.currentTitle = title
 	fp.frame.SetTitle("")
 }
 
+func (fp *FileSystemPanel) stopLoadingAnimation() {
+	fp.loadingGeneration++
+	if fp.loadingTimer != nil {
+		fp.loadingTimer.Stop()
+		fp.loadingTimer = nil
+	}
+}
+
+func (fp *FileSystemPanel) startLoadingAnimation() {
+	fp.stopLoadingAnimation()
+	fp.loadingFrame = 0
+	fp.updateTitle(nil)
+	vtui.FrameManager.Redraw()
+
+	generation := fp.loadingGeneration
+	var scheduleNext func()
+	scheduleNext = func() {
+		fp.loadingTimer = time.AfterFunc(panelLoadingPulseInterval, func() {
+			vtui.FrameManager.PostTask(func() {
+				if !fp.isLoading || fp.loadingGeneration != generation {
+					return
+				}
+				fp.loadingFrame = (fp.loadingFrame + 1) % len(panelLoadingPulse)
+				fp.updateTitle(nil)
+				vtui.FrameManager.Redraw()
+				scheduleNext()
+			})
+		})
+	}
+	scheduleNext()
+}
+
+func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
+	if y != fp.Y1 || fp.currentTitle == "" {
+		return false
+	}
+	availW := (fp.X2 - fp.X1) - 6
+	if availW < 5 {
+		availW = 5
+	}
+	displayTitle := fp.currentTitle
+	if runewidth.StringWidth(displayTitle) > availW {
+		displayTitle = vtui.TruncateMiddle(displayTitle, availW)
+	}
+	// Include the one-cell padding drawn on both sides of the path.
+	return x >= fp.X1+2 && x <= fp.X1+3+runewidth.StringWidth(displayTitle)
+}
+
 func (fp *FileSystemPanel) ReadDirectory() {
 	fp.readDirectoryEx(false)
+}
+
+// enqueueDirectoryLoad keeps at most one backend read running and one newer
+// read waiting. Repeated navigation replaces the pending closure instead of
+// creating a FIFO of stale Stat/ReadDir goroutines. The running request is
+// cancelled by readDirectoryEx; it may still need to drain one FISH+ response,
+// after which only the most recent path is allowed to start.
+func (fp *FileSystemPanel) enqueueDirectoryLoad(load func()) {
+	fp.loadQueueMu.Lock()
+	if fp.loadWorkerActive {
+		fp.pendingDirectoryLoad = load
+		fp.loadQueueMu.Unlock()
+		return
+	}
+	fp.loadWorkerActive = true
+	fp.loadQueueMu.Unlock()
+
+	go func() {
+		next := load
+		for next != nil {
+			next()
+
+			fp.loadQueueMu.Lock()
+			next = fp.pendingDirectoryLoad
+			fp.pendingDirectoryLoad = nil
+			if next == nil {
+				fp.loadWorkerActive = false
+			}
+			fp.loadQueueMu.Unlock()
+		}
+	}()
+}
+
+// cancelProviderOpen invalidates an asynchronous VFS mount before asking its
+// context to stop. A completion already queued on the UI thread will see that
+// it no longer owns the transition and close any VFS it produced instead of
+// replacing the panel's newer file system.
+func (fp *FileSystemPanel) cancelProviderOpen() {
+	if task := fp.providerOpenTask; task != nil {
+		fp.providerOpenTask = nil
+		task.Cancel()
+	}
+}
+
+// showCurrentVFSLoadingRows atomically stops the panel from exposing rows that
+// belonged to a VFS it has just left. ReadDirectory will replace this minimal
+// view immediately from cache when allowed; without a cache (or when
+// SyncPanelLoad deliberately bypasses it), only a real parent row is safe to
+// keep interactive while the new listing is in flight.
+func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
+	fp.entries = nil
+	if fp.vfs != nil && (!fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil) {
+		fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+	}
+	fp.SetCursorIndex(0)
+	fp.Refresh()
+	vtui.FrameManager.Redraw()
+}
+
+// setKnownDirectoryPath takes the no-I/O route offered by remote VFSes when
+// the target came from a panel row. Cancel first so the old background refresh
+// starts leaving the shared session before the new cache is rendered.
+func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
+	if setter, ok := fp.vfs.(vfs.OptimisticPathSetter); ok {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+			fp.cancelLoad = nil
+		}
+		return setter.SetPathOptimistic(target)
+	}
+	return fp.vfs.SetPath(target)
 }
 
 func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
@@ -1030,18 +1398,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		fp.cancelLoad()
 		fp.cancelLoad = nil
 	}
-	if fp.loadingTimer != nil {
-		fp.loadingTimer.Stop()
-		fp.loadingTimer = nil
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	fp.loadCtx = ctx
 	fp.cancelLoad = cancel
 	fp.isLoading = true
+	fp.startLoadingAnimation()
 
-	// 1. Устанавливаем флаг, но НЕ обновляем UI немедленно, чтобы избежать мерцания
-	path := fp.vfs.GetPath()
+	loadVFS := fp.vfs
+	path := loadVFS.GetPath()
+	cacheKey := directoryCacheKey(loadVFS, path)
+	loadAtRoot := loadVFS.IsAtRoot()
+	showUpEntry := !loadAtRoot || loadVFS.ParentVFS() != nil
 
 	// Drop persistent selection when we've navigated to a different
 	// directory. Without this the map (keyed by bare filename)
@@ -1064,16 +1431,18 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	}
 
 	hasCache := false
+	cacheInitialCursorName := ""
+	cacheInitialCursorIndex := -1
 	if !keepEntries {
 		if fp.dirCache == nil {
-			fp.dirCache = make(map[string]dirCacheEntry)
+			fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 		}
-		if cached, ok := fp.dirCache[path]; ok && !AppConfig.SyncPanelLoad {
+		if cached, ok := fp.dirCache[cacheKey]; ok && !AppConfig.SyncPanelLoad {
 			hasCache = true
 			vtui.DebugLog("PANEL: Using cached entries for %s", path)
 			fp.entries = nil
 
-			if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
+			if showUpEntry {
 				fp.entries = append(fp.entries, &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
 			}
 
@@ -1095,52 +1464,36 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				for i, entry := range fp.entries {
 					if entry.Name == target {
 						fp.SetCursorIndex(i)
+						fp.pendingSelection = ""
 						break
 					}
 				}
 			}
 			fp.Refresh()
+			cacheInitialCursorName = fp.getRawSelectedName()
+			cacheInitialCursorIndex = fp.GetCursorIndex()
 			vtui.FrameManager.Redraw()
 		}
 	}
 
 	isFirstChunk := true
-
-	// 2. Таймер для индикатора "Loading..." (появится через 200мс если VFS тормозит)
-	fp.loadingTimer = time.AfterFunc(200*time.Millisecond, func() {
-		vtui.FrameManager.PostTask(func() {
-			// Если данные всё еще не пришли (isFirstChunk == true), только тогда "портим" UI
-			if fp.isLoading && isFirstChunk {
-				if !keepEntries && !hasCache {
-					fp.entries = nil
-					if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
-						fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
-					}
-					fp.SetCursorIndex(0)
-					fp.Refresh()
-				}
-				// Теперь, когда таймаут вышел, показываем [Loading...] в заголовке
-				fp.updateTitle(nil)
-				vtui.FrameManager.Redraw()
-			}
-		})
-	})
-
-	go func() {
-		dirStat, _ := fp.vfs.Stat(ctx, path)
-		var upItemStat vfs.VFSItem
-		hasUpItemStat := false
-		if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
-			parentPath := fp.vfs.Dir(path)
-			if pStat, err := fp.vfs.Stat(ctx, parentPath); err == nil {
-				upItemStat = pStat
-				hasUpItemStat = true
-			}
+	if !keepEntries && !hasCache {
+		fp.entries = nil
+		if showUpEntry {
+			fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
 		}
+		fp.SetCursorIndex(0)
+		fp.Refresh()
+		vtui.FrameManager.Redraw()
+	}
 
+	fp.enqueueDirectoryLoad(func() {
+		if ctx.Err() != nil {
+			return
+		}
 		var accumulated []vfs.VFSItem
 
-		err := fp.vfs.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
+		err := loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -1149,7 +1502,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 
-			if AppConfig.SyncPanelLoad {
+			// A cached directory is already a complete, interactive view. Keep it
+			// on screen while all real chunks are collected and replace it once,
+			// atomically, in the completion task. Rendering partial real chunks
+			// would make the panel jump and could overwrite user interaction with
+			// a stale pendingSelection.
+			if AppConfig.SyncPanelLoad || hasCache {
 				return
 			}
 
@@ -1168,35 +1526,25 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			vtui.FrameManager.PostTask(func() {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || fp.loadCtx != ctx {
 					return
 				}
 
+				currentSelected := fp.getRawSelectedName()
 				if fp.pendingSelection == "" {
-					uName := fp.getRawSelectedName()
-					if uName != "" && uName != ".." {
-						fp.pendingSelection = uName
+					if currentSelected != "" && currentSelected != ".." {
+						fp.pendingSelection = currentSelected
 					}
 				}
 
 				if isFirstChunk {
 					fp.entries = nil
-					if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
+					if showUpEntry {
 						upItem := vfs.VFSItem{Name: "..", IsDir: true}
-						if hasUpItemStat {
-							upItem.MTime = upItemStat.MTime
-							upItem.ATime = upItemStat.ATime
-							upItem.CTime = upItemStat.CTime
-							upItem.UnixMode = upItemStat.UnixMode
-							upItem.Uid = upItemStat.Uid
-							upItem.Gid = upItemStat.Gid
-						}
 						fp.entries = []*fileEntry{{VFSItem: upItem}}
 					}
 					isFirstChunk = false
 				}
-
-				currentSelected := fp.GetSelectedName()
 
 				// Apply persistent selection to incoming items
 				for _, e := range newEntries {
@@ -1241,29 +1589,127 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		if ctx.Err() != nil {
 			return
 		}
-		vtui.FrameManager.PostTask(func() {
+
+		// The listing is the only mandatory request and gets the shared remote
+		// session first. Directory timestamps and metadata for ".." are useful
+		// decoration/auto-refresh state, so fetch them only after ReadDir and
+		// skip them entirely when the listing failed or was superseded.
+		var dirStat vfs.VFSItem
+		var upItemStat vfs.VFSItem
+		hasUpItemStat := false
+		if err == nil {
+			var dirStatErr error
+			dirStat, dirStatErr = loadVFS.Stat(ctx, path)
 			if ctx.Err() != nil {
+				return
+			}
+			if showUpEntry {
+				parentPath := loadVFS.Dir(path)
+				if parentPath == path && dirStatErr == nil {
+					upItemStat = dirStat
+					hasUpItemStat = true
+				} else if pStat, statErr := loadVFS.Stat(ctx, parentPath); statErr == nil {
+					upItemStat = pStat
+					hasUpItemStat = true
+				}
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		vtui.FrameManager.PostTask(func() {
+			if ctx.Err() != nil || fp.loadCtx != ctx {
 				return
 			}
 
 			if err == nil {
-				fp.saveToCache(path, accumulated)
-
-				// Clean up persistent selection state (remove non-existent files)
-				validNames := make(map[string]bool)
-				for _, e := range fp.entries {
-					validNames[e.Name] = true
-				}
-				for name := range fp.selectedItems {
-					if !validNames[name] {
-						delete(fp.selectedItems, name)
-					}
-				}
+				fp.saveToCacheKey(cacheKey, accumulated)
 			}
 
-			if AppConfig.SyncPanelLoad && err == nil {
+			if hasCache && err == nil {
+				// The cached rows stayed interactive during ReadDir. Snapshot their
+				// live state immediately before replacing them; this is deliberately
+				// done in the UI task rather than when the load was started.
+				liveCursorName := fp.getRawSelectedName()
+				liveCursorIndex := fp.GetCursorIndex()
+				liveCursorOffset := liveCursorIndex - fp.table.TopPos
+				cursorMoved := liveCursorName != cacheInitialCursorName || liveCursorIndex != cacheInitialCursorIndex
+
+				if fp.selectedItems == nil {
+					fp.selectedItems = make(map[string]bool)
+				}
+				for _, entry := range fp.entries {
+					if entry.Name == ".." {
+						continue
+					}
+					if entry.Selected {
+						fp.selectedItems[entry.Name] = true
+					} else {
+						delete(fp.selectedItems, entry.Name)
+					}
+				}
+
 				fp.entries = nil
-				if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
+				if showUpEntry {
+					upItem := vfs.VFSItem{Name: "..", IsDir: true}
+					if hasUpItemStat {
+						upItem.MTime = upItemStat.MTime
+						upItem.ATime = upItemStat.ATime
+						upItem.CTime = upItemStat.CTime
+						upItem.UnixMode = upItemStat.UnixMode
+						upItem.Uid = upItemStat.Uid
+						upItem.Gid = upItemStat.Gid
+					}
+					fp.entries = []*fileEntry{{VFSItem: upItem}}
+				}
+
+				for _, item := range accumulated {
+					if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+						continue
+					}
+					entry := &fileEntry{VFSItem: item}
+					if fp.selectedItems[item.Name] {
+						entry.Selected = true
+					}
+					fp.entries = append(fp.entries, entry)
+				}
+				fp.sortEntries()
+
+				// An unresolved navigation target still wins if the user did not
+				// move on the cache. Once the cursor moved, the live cached row is
+				// the user's latest and therefore authoritative choice.
+				target := liveCursorName
+				if fp.pendingSelection != "" && !cursorMoved {
+					target = fp.pendingSelection
+				}
+				newCursorIndex := -1
+				for i, entry := range fp.entries {
+					if entry.Name == target {
+						newCursorIndex = i
+						break
+					}
+				}
+				if newCursorIndex < 0 {
+					newCursorIndex = liveCursorIndex
+				}
+				if newCursorIndex >= len(fp.entries) {
+					newCursorIndex = len(fp.entries) - 1
+				}
+				if newCursorIndex < 0 {
+					newCursorIndex = 0
+				}
+
+				newTop := newCursorIndex - liveCursorOffset
+				if newTop < 0 {
+					newTop = 0
+				}
+				fp.table.TopPos = newTop
+				fp.SetCursorIndex(newCursorIndex)
+				fp.pendingSelection = ""
+				isFirstChunk = false
+			} else if AppConfig.SyncPanelLoad && err == nil {
+				fp.entries = nil
+				if showUpEntry {
 					upItem := vfs.VFSItem{Name: "..", IsDir: true}
 					if hasUpItemStat {
 						upItem.MTime = upItemStat.MTime
@@ -1299,28 +1745,49 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				isFirstChunk = false
 			}
 
-			// Останавливаем таймер. Если он не успел сработать — заголовок так и не моргнул.
-			if fp.loadingTimer != nil {
-				fp.loadingTimer.Stop()
+			if err == nil {
+				// Clean up persistent selection only after the fresh list has been
+				// built. With a cache, doing this earlier would compare the marks
+				// against stale rows rather than the completed ReadDir result.
+				validNames := make(map[string]bool, len(fp.entries))
+				for _, e := range fp.entries {
+					validNames[e.Name] = true
+				}
+				for name := range fp.selectedItems {
+					if !validNames[name] {
+						delete(fp.selectedItems, name)
+					}
+				}
 			}
+
+			fp.stopLoadingAnimation()
+			suppressFolderHistory := sameFolderHistoryPath(path, fp.suppressFolderHistoryPath)
+			fp.suppressFolderHistoryPath = ""
 
 			fp.lastDirMTime = dirStat.MTime
 			fp.isLoading = false
 			if err != nil && err != context.Canceled {
-				if os.IsNotExist(err) && !fp.vfs.IsAtRoot() && !keepEntries {
+				// A session that died is a question rather than a message: the
+				// panel can often be had back, and going up a level or showing
+				// an error would throw away the answer before it was asked.
+				if fp.offerPanelReconnect(err, keepEntries) {
+					return
+				}
+				if os.IsNotExist(err) && !loadAtRoot && !keepEntries {
 					// If the directory disappeared (e.g., deleted from other panel),
 					// attempt to go up one level silently.
 					vtui.DebugLog("PANEL[%p]: Directory disappeared, attempting to go up. Error: %v", fp, err)
-					fp.vfs.SetPath("..")
-					fp.readDirectoryEx(true)
+					_ = fp.setKnownDirectoryPath("..")
+					fp.ReadDirectory()
 					return
 				}
 
 				// For permission or network errors, go back to parent and show the error.
-				if !fp.vfs.IsAtRoot() && !keepEntries {
+				if !loadAtRoot && !keepEntries {
 					folderName := filepath.Base(path)
-					fp.vfs.SetPath("..")
+					_ = fp.setKnownDirectoryPath("..")
 					fp.pendingSelection = folderName
+					fp.ReadDirectory()
 					fp.updateTitle(err)
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err), []string{"&Ok"})
 					return
@@ -1335,7 +1802,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 			if isFirstChunk {
 				fp.entries = nil
-				if !fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil {
+				if showUpEntry {
 					upItem := vfs.VFSItem{Name: "..", IsDir: true}
 					if hasUpItemStat {
 						upItem.MTime = upItemStat.MTime
@@ -1353,7 +1820,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if fp.pendingSelection != "" {
 				fp.SelectName(fp.pendingSelection)
 				fp.pendingSelection = ""
-			} else if err == nil && !isFirstChunk {
+			} else if err == nil && !isFirstChunk && !suppressFolderHistory {
 				// Path changed successfully, record in history
 				AddFolderHistory(path)
 			}
@@ -1361,7 +1828,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			fp.Refresh()
 			vtui.FrameManager.Redraw()
 		})
-	}()
+	})
 }
 
 func (fp *FileSystemPanel) Refresh() {
@@ -1418,6 +1885,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		fp.table.SetFocus(fp.IsFocused())
 	}
 	fp.table.Show(scr)
+	fp.drawFastFindMatches(scr)
 	fp.drawCursorSeparators(scr)
 	fp.drawScrollBar(scr)
 
@@ -1544,10 +2012,96 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			searchStr = string(runes[1:])
 		}
 
-		p.DrawString(fx1+2, fy1+1, searchStr, vtui.Palette[vtui.ColDialogText])
+		searchColor := vtui.Palette[ColPanelFastFindNoMatch]
+		if fp.fastFindHasMatches() {
+			searchColor = vtui.Palette[vtui.ColMenuHighlight]
+		}
+		searchAttr := fastFindMatchAttr(vtui.Palette[vtui.ColDialogText], searchColor)
+		p.DrawString(fx1+2, fy1+1, searchStr, searchAttr)
 
 		scr.SetCursorPos(fx1+2+runewidth.StringWidth(searchStr), fy1+1)
 		scr.SetCursorVisible(true)
+	}
+}
+
+func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes int, ok bool) {
+	if !fp.fastFindMode || fp.fastFindStr == "" {
+		return 0, 0, false
+	}
+	queryText := fp.fastFindStr
+	anywhere := strings.HasPrefix(queryText, "*")
+	if anywhere {
+		queryText = strings.TrimPrefix(queryText, "*")
+	}
+	if queryText == "" {
+		return 0, 0, anywhere
+	}
+	nameLower := strings.ToLower(name)
+	for _, query := range []string{
+		strings.ToLower(queryText),
+		strings.ToLower(vtui.GlobalXlator.TranscodeString(queryText)),
+	} {
+		if query == "" {
+			continue
+		}
+		byteOffset := strings.Index(nameLower, query)
+		if byteOffset >= 0 && (anywhere || byteOffset == 0) {
+			return len([]rune(nameLower[:byteOffset])), len([]rune(query)), true
+		}
+	}
+	return 0, 0, false
+}
+
+func (fp *FileSystemPanel) fastFindHasMatches() bool {
+	for _, entry := range fp.entries {
+		if _, _, ok := fp.fastFindMatch(entry.Name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func fastFindMatchAttr(baseAttr, matchAttr uint64) uint64 {
+	if matchAttr&vtui.IsFgRGB != 0 {
+		return vtui.SetRGBFore(baseAttr, vtui.GetRGBFore(matchAttr))
+	}
+	return vtui.SetIndexFore(baseAttr, vtui.GetIndexFore(matchAttr))
+}
+
+func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
+	if !fp.fastFindMode || fp.fastFindStr == "" || !fp.table.IsVisible() {
+		return
+	}
+	height := fp.table.ViewHeight
+	if height <= 0 {
+		return
+	}
+	columns := fp.gridColumnCount()
+	matchAttr := vtui.Palette[vtui.ColMenuHighlight]
+
+	for rowOffset := 0; rowOffset < height; rowOffset++ {
+		row := fp.table.TopPos + rowOffset
+		y := fp.table.Y1 + fp.table.MarginTop + rowOffset
+		x := fp.table.X1
+		for column := 0; column < columns && column < len(fp.table.Columns); column++ {
+			entryIndex := row
+			if columns > 1 {
+				entryIndex += column * height
+			}
+			cellWidth := fp.table.Columns[column].Width
+			if entryIndex >= 0 && entryIndex < len(fp.entries) {
+				entry := fp.entries[entryIndex]
+				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.Name)
+				for _, span := range panelFileNameMatchSpans(entry, cellWidth, matchStart, matchedRunes) {
+					for cellOffset := 0; cellOffset < span.width; cellOffset++ {
+						cell := scr.GetCell(x+span.start+cellOffset, y)
+						cell.Attributes = fastFindMatchAttr(cell.Attributes, matchAttr)
+						scr.Write(x+span.start+cellOffset, y, []vtui.CharInfo{cell})
+					}
+				}
+			}
+			x += cellWidth + 1
+		}
 	}
 }
 
@@ -1639,6 +2193,22 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 	if !e.KeyDown {
 		return false
 	}
+	if fp.providerOpenTask != nil {
+		// A provider row has started an asynchronous mount, but there is no
+		// child VFS to navigate yet. Autorepeat Enter must be idempotent here;
+		// once the real child is installed, later repeats may navigate it.
+		if e.VirtualKeyCode == vtinput.VK_RETURN {
+			return true
+		}
+		if e.VirtualKeyCode == vtinput.VK_ESCAPE {
+			fp.cancelProviderOpen()
+			fp.isLoading = false
+			fp.stopLoadingAnimation()
+			fp.updateTitle(nil)
+			vtui.FrameManager.Redraw()
+			return true
+		}
+	}
 
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 
@@ -1667,6 +2237,14 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	if fp.fastFindMode {
+		if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN {
+			fp.fastFindMode = false
+			fp.fastFindStr = ""
+			vtui.FrameManager.Redraw()
+			// Reprocess the key as ordinary panel navigation now that Fast Find
+			// no longer owns it.
+			return fp.ProcessKey(e)
+		}
 		switch e.VirtualKeyCode {
 		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
 			fp.fastFindMode = false
@@ -1676,6 +2254,25 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 		case vtinput.VK_ESCAPE:
 			fp.fastFindMode = false
 			fp.fastFindStr = ""
+			vtui.FrameManager.Redraw()
+			return true
+		case vtinput.VK_DELETE:
+			// Fast Find keeps its insertion point at the end, so forward Delete
+			// has nothing to remove. Consume it here rather than allowing the
+			// panel-level Del binding to hide the panels.
+			return true
+		}
+		if e.VirtualKeyCode == vtinput.VK_F2 && !shift && !ctrl && !alt {
+			if strings.HasPrefix(fp.fastFindStr, "*") {
+				fp.fastFindStr = strings.TrimPrefix(fp.fastFindStr, "*")
+			} else {
+				fp.fastFindStr = "*" + fp.fastFindStr
+			}
+			if fp.fastFindStr == "" {
+				fp.fastFindMode = false
+			} else {
+				fp.doFastFind(0)
+			}
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -1699,6 +2296,15 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 		if e.VirtualKeyCode == vtinput.VK_DOWN {
 			fp.doFastFind(1)
+			vtui.FrameManager.Redraw()
+			return true
+		}
+		if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt {
+			dir := 1
+			if shift {
+				dir = -1
+			}
+			fp.doFastFind(dir)
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -1852,20 +2458,27 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				parent := fp.vfs.ParentVFS()
 				isRoot := fp.vfs.IsAtRoot()
 
-				if parent != nil && isRoot {
-					oldPath := fp.vfs.GetPath()
+				if isRoot {
+					if parent != nil {
+						oldPath := fp.vfs.GetPath()
 
-					// Закрываем текущую систему (удаляем временные файлы)
-					fp.vfs.Close()
+						fp.cancelProviderOpen()
+						// Закрываем текущую систему (удаляем временные файлы)
+						fp.vfs.Close()
 
-					fp.vfs = parent
-					if fp.providerEntryName != "" {
-						fp.pendingSelection = fp.providerEntryName
-						fp.providerEntryName = ""
-					} else {
-						fp.pendingSelection = fp.vfs.Base(oldPath)
+						fp.vfs = parent
+						if fp.providerEntryName != "" {
+							fp.pendingSelection = fp.providerEntryName
+							fp.providerEntryName = ""
+						} else {
+							fp.pendingSelection = fp.vfs.Base(oldPath)
+						}
+						fp.showCurrentVFSLoadingRows()
+						fp.ReadDirectory()
 					}
-					fp.ReadDirectory()
+					// A root without a parent has nowhere to go. This is also a
+					// final safety net for a stale ".." row left by an asynchronous
+					// VFS transition: never turn it into manager.Join(root, "..").
 					return true
 				}
 			}
@@ -1874,7 +2487,7 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				oldPath := fp.vfs.GetPath()
 				newPath := fp.vfs.Join(oldPath, selected.Name)
 				vtui.DebugLog("PANEL: Navigating %q -> %q", oldPath, newPath)
-				if err := fp.vfs.SetPath(newPath); err == nil {
+				if err := fp.setKnownDirectoryPath(newPath); err == nil {
 					if selected.Name == ".." {
 						fp.pendingSelection = fp.vfs.Base(oldPath)
 					} else {
@@ -1892,28 +2505,61 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				// Просим VFS реестр подобрать провайдера для этого файла
 				fullPath := fp.vfs.Join(fp.vfs.GetPath(), selected.Name)
 				if provider := vfs.FindProvider(context.Background(), fp.vfs, fullPath); provider != nil {
-					// Мгновенная реакция UI: показываем ".." для возможности отмены
-					fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
-					fp.isLoading = true
-					fp.updateTitle(nil)
-					fp.Refresh()
-					fp.SetCursorIndex(0)
-					vtui.FrameManager.Redraw()
+					// The rows must continue to belong to the manager VFS until Open
+					// actually succeeds. In particular, a synthetic actionable ".."
+					// here would turn held Enter into manager.Join(root, "..").
+					if fp.cancelLoad != nil {
+						fp.cancelLoad()
+						fp.cancelLoad = nil
+					}
+					fp.stopLoadingAnimation()
 
-					vtui.RunAsync(func(ctx *vtui.TaskContext) {
-						newVfs, err := provider.Open(ctx.Context, fp.vfs, fullPath)
+					sourceVFS := fp.vfs
+					sourcePath := sourceVFS.GetPath()
+					selectedName := selected.Name
+					fp.isLoading = true
+					fp.startLoadingAnimation()
+					fp.Refresh()
+
+					fp.providerOpenTask = vtui.RunAsync(func(ctx *vtui.TaskContext) {
+						newVfs, err := provider.Open(ctx.Context, sourceVFS, fullPath)
+						if err == nil && newVfs == nil {
+							err = fmt.Errorf("provider %s returned no file system", provider.Name())
+						}
 						ctx.RunOnUI(func() {
-							if err != nil {
-								fp.isLoading = false
-								fp.updateTitle(err)
-								fp.pendingSelection = selected.Name
-								fp.ReadDirectory() // Возвращаемся к списку соединений
-								vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selected.Name, err), []string{"&Ok"})
+							// A drive change, cancellation, or a newer transition makes this
+							// result stale. Never let it hijack the panel; returned VFSes own
+							// resources and must be closed explicitly.
+							if fp.providerOpenTask != ctx {
+								if newVfs != nil {
+									_ = newVfs.Close()
+								}
 								return
 							}
-							fp.providerEntryName = selected.Name
+							fp.providerOpenTask = nil
+							if !sameVFSInstance(fp.vfs, sourceVFS) || fp.vfs.GetPath() != sourcePath {
+								if newVfs != nil {
+									_ = newVfs.Close()
+								}
+								return
+							}
+							if err != nil {
+								if newVfs != nil {
+									_ = newVfs.Close()
+								}
+								fp.isLoading = false
+								fp.updateTitle(err)
+								fp.pendingSelection = selectedName
+								fp.ReadDirectory() // Возвращаемся к списку соединений
+								vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selectedName, err), []string{"&Ok"})
+								return
+							}
+							fp.providerEntryName = selectedName
 							fp.vfs = newVfs
+							// From this point the row belongs to the real mounted VFS and is
+							// safe for a subsequent autorepeat Enter to activate.
 							fp.pendingSelection = ".."
+							fp.showCurrentVFSLoadingRows()
 							fp.ReadDirectory()
 						})
 					})
@@ -1962,6 +2608,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	if fp.fastFindMode && e.ButtonState != 0 {
 		fp.fastFindMode = false
+		fp.fastFindStr = ""
 		vtui.FrameManager.Redraw()
 	}
 
@@ -2188,23 +2835,52 @@ func (fp *FileSystemPanel) GetSelectedNames() []string {
 	return names
 }
 
+// GetMarkedNames returns only explicitly marked panel items, in panel order.
+// Unlike GetSelectedNames it deliberately does not fall back to the cursor.
+func (fp *FileSystemPanel) GetMarkedNames() []string {
+	names := make([]string, 0)
+	for _, entry := range fp.entries {
+		if entry.Selected && entry.Name != ".." {
+			names = append(names, entry.Name)
+		}
+	}
+	return names
+}
+
+// ReplaceMarkedNames atomically replaces the explicit panel selection.
+func (fp *FileSystemPanel) ReplaceMarkedNames(names []string) {
+	selected := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		selected[name] = struct{}{}
+	}
+	for _, entry := range fp.entries {
+		_, entry.Selected = selected[entry.Name]
+	}
+	fp.Refresh()
+}
+
 // GetSuccessorName determines which file should receive focus after the current
 // selection (or focused item) is deleted or moved.
 func (fp *FileSystemPanel) doFastFind(dir int) {
 	if fp.fastFindStr == "" {
 		return
 	}
-	searchLower := strings.ToLower(fp.fastFindStr)
-	searchXlat := strings.ToLower(vtui.GlobalXlator.TranscodeString(fp.fastFindStr))
 	startIdx := fp.GetCursorIndex()
 
 	checkMatch := func(i int) bool {
-		nameLower := strings.ToLower(fp.entries[i].Name)
-		return strings.HasPrefix(nameLower, searchLower) || strings.HasPrefix(nameLower, searchXlat)
+		_, _, ok := fp.fastFindMatch(fp.entries[i].Name)
+		return ok
 	}
 
 	if dir == 0 {
-		for i := 0; i < len(fp.entries); i++ {
+		for i := startIdx; i < len(fp.entries); i++ {
+			if checkMatch(i) {
+				fp.SetCursorIndex(i)
+				fp.Refresh()
+				return
+			}
+		}
+		for i := 0; i < startIdx; i++ {
 			if checkMatch(i) {
 				fp.SetCursorIndex(i)
 				fp.Refresh()
@@ -2244,7 +2920,34 @@ func (fp *FileSystemPanel) doFastFind(dir int) {
 	}
 }
 
+// SaveSelection snapshots the current selection into fileEntry.PrevSelected.
+// Called by every mass-selection operation (mask select/deselect, invert,
+// select-all/deselect-all) so that RestoreSelection has a well-defined
+// state to bring back. Mirrors far2l's FileList::SaveSelection().
+func (fp *FileSystemPanel) SaveSelection() {
+	for _, e := range fp.entries {
+		e.PrevSelected = e.Selected
+	}
+}
+
+// RestoreSelection swaps the current selection with the last snapshot taken
+// by SaveSelection. Because the swap goes both ways, pressing Ctrl+M twice
+// returns to the state you started from. Mirrors far2l's
+// FileList::RestoreSelection().
+func (fp *FileSystemPanel) RestoreSelection() {
+	for i, e := range fp.entries {
+		if e.Name == ".." {
+			continue
+		}
+		saved := e.PrevSelected
+		e.PrevSelected = e.Selected
+		fp.SetItemSelected(i, saved)
+	}
+	vtui.FrameManager.Redraw()
+}
+
 func (fp *FileSystemPanel) InvertSelection() {
+	fp.SaveSelection()
 	for i, e := range fp.entries {
 		if e.Name != ".." {
 			fp.SetItemSelected(i, !e.Selected)
@@ -2263,6 +2966,7 @@ func (fp *FileSystemPanel) ApplyMaskSelection(mask string, state bool) {
 	}
 	maskLower := strings.ToLower(mask)
 
+	fp.SaveSelection()
 	for i, e := range fp.entries {
 		if e.Name == ".." {
 			continue

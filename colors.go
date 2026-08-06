@@ -27,7 +27,9 @@ const (
 	ColCommandLineUserScreen
 	ColPanelBox
 	ColPanelScrollbar
+	ColPanelMinimalScrollbar
 	ColPanelDir
+	ColPanelFastFindNoMatch
 
 	ColCommandLinePrompt
 	ColCommandLineInactivePrompt
@@ -41,6 +43,8 @@ const (
 
 	ColEditorText
 	ColEditorCrosshair
+	ColEditorStatus
+	ColEditorScrollbar
 
 	LastF4PaletteColor
 )
@@ -81,8 +85,10 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColPanelSelectedTitle] = vtui.Palette[ColPanelTitle]
 	vtui.Palette[ColPanelTotalInfo] = vtui.Palette[ColPanelText]
 	vtui.Palette[ColPanelDir] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
+	vtui.Palette[ColPanelFastFindNoMatch] = vtui.SetRGBBoth(0, 0xD75F5F, blue)
 	vtui.Palette[ColPanelSelectedInfo] = vtui.Palette[ColPanelSelectedText]
 	vtui.Palette[ColPanelScrollbar] = vtui.Palette[ColPanelBox]
+	vtui.Palette[ColPanelMinimalScrollbar] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
 
 	// Command line / User screen (Using terminal default background, Index 0)
 	vtui.Palette[ColCommandLineUserScreen] = vtui.SetIndexBoth(0, 7, 0)
@@ -105,6 +111,8 @@ func SetDefaultF4Palette() {
 
 	vtui.Palette[ColEditorText] = vtui.SetIndexBoth(0, 7, 0)
 	vtui.Palette[ColEditorCrosshair] = vtui.SetRGBBoth(0, 0xD3D7CF, 0x222222)
+	vtui.Palette[ColEditorStatus] = vtui.Palette[ColViewerStatus]
+	vtui.Palette[ColEditorScrollbar] = vtui.Palette[ColPanelScrollbar]
 }
 
 // colorMap links farcolors.ini keys to vtui.Palette indices.
@@ -134,7 +142,9 @@ var colorMap = map[string]int{
 	"Panel.Title.Column":               ColPanelColumnTitle,
 	"Panel.Box":                        ColPanelBox,
 	"Panel.Scrollbar":                  ColPanelScrollbar,
+	"Panel.Scrollbar.Minimal":          ColPanelMinimalScrollbar,
 	"Panel.Dir":                        ColPanelDir,
+	"Panel.FastFindNoMatch":            ColPanelFastFindNoMatch,
 	"Dialog.Text":                      vtui.ColDialogText,
 	"Dialog.Highlight":                 vtui.ColDialogHighlightText,
 	"Dialog.Box":                       vtui.ColDialogBox,
@@ -159,7 +169,8 @@ var colorMap = map[string]int{
 	"Viewer.Arrows":                    ColViewerArrows,
 	"Viewer.Scrollbar":                 ColViewerScrollbar,
 	"Editor.Text":                      ColEditorText,
-	"Editor.Scrollbar":                 vtui.ColTableBox,
+	"Editor.Scrollbar":                 ColEditorScrollbar,
+	"Editor.Status":                    ColEditorStatus,
 
 	// Warnings
 	"WarnDialog.Text":                      vtui.ColWarnText,
@@ -181,6 +192,7 @@ var colorMap = map[string]int{
 	"Help.Link":         vtui.ColHelpLink,
 	"Help.SelectedLink": vtui.ColHelpSelectedLink,
 	"Help.Box":          vtui.ColHelpBox,
+	"Help.Box.Title":    vtui.ColHelpBoxTitle,
 }
 
 // InitColors parses the farcolors section and applies it to the vtui.Palette
@@ -228,8 +240,8 @@ func ExportColors(path string) error {
 			name: "Panel",
 			keys: []string{
 				"Panel.Box", "Panel.Cursor", "Panel.Cursor.Selected", "Panel.Cursor.Inactive",
-				"Panel.Cursor.Inactive.Selected", "Panel.Dir",
-				"Panel.Scrollbar", "Panel.Text", "Panel.Text.Highlight", "Panel.Text.Info",
+				"Panel.Cursor.Inactive.Selected", "Panel.Dir", "Panel.FastFindNoMatch",
+				"Panel.Scrollbar", "Panel.Scrollbar.Minimal", "Panel.Text", "Panel.Text.Highlight", "Panel.Text.Info",
 				"Panel.Text.Selected", "Panel.Title", "Panel.Title.Column", "Panel.Title.Selected",
 				"Table.Box", "Scrollbar",
 			},
@@ -288,13 +300,13 @@ func ExportColors(path string) error {
 		{
 			name: "Editor",
 			keys: []string{
-				"Editor.Text", "Editor.Scrollbar",
+				"Editor.Text", "Editor.Scrollbar", "Editor.Status",
 			},
 		},
 		{
 			name: "Help",
 			keys: []string{
-				"Help.Text", "Help.Bold", "Help.Link", "Help.SelectedLink", "Help.Box",
+				"Help.Text", "Help.Bold", "Help.Link", "Help.SelectedLink", "Help.Box", "Help.Box.Title",
 			},
 		},
 	}

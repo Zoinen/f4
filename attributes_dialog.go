@@ -284,13 +284,13 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 }
 
 func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSItem) {
-	width, height := 60, 20
+	width, height := 60, 22
 	dlg := vtui.NewCenteredDialog(width, height, " Attributes ")
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
 	const timeFormat = "02.01.2006 15:04:05"
 
-	mainVBox := vtui.NewVBoxLayout(x+3, y+1, width-6, height-3)
+	mainVBox := vtui.NewVBoxLayout(x+3, y+2, width-6, height-4)
 
 	lblFile := vtui.NewText(0, 0, "File: "+vtui.TruncateMiddle(v.Base(path), 46), vtui.Palette[vtui.ColDialogText])
 	dlg.AddItem(lblFile)

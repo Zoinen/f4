@@ -1,13 +1,171 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+type testPanelInfoVFS struct {
+	*vfs.NullVFS
+
+	mu        sync.Mutex
+	cached    map[string]vfs.PanelInfoSnapshot
+	fresh     map[string]bool
+	lastReq   vfs.PanelInfoRequest
+	refreshFn func(context.Context, vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error)
+	publish   bool
+}
+
+func newTestPanelInfoVFS() *testPanelInfoVFS {
+	return &testPanelInfoVFS{
+		NullVFS: vfs.NewNullVFS(0),
+		cached:  make(map[string]vfs.PanelInfoSnapshot),
+		fresh:   make(map[string]bool),
+		publish: true,
+	}
+}
+
+func newStableInfoTestPanel(x, y, w, h int, filesystem vfs.VFS, entries []*fileEntry) *FileSystemPanel {
+	fsp := NewFileSystemPanel(x, y, w, h, filesystem)
+	// NewFileSystemPanel starts its real directory load immediately. Provider
+	// tests install a synthetic row set, so cancel that constructor load first;
+	// otherwise its queued completion can replace the rows while an async info
+	// refresh test is draining the shared UI-task queue.
+	if fsp.cancelLoad != nil {
+		fsp.cancelLoad()
+		fsp.cancelLoad = nil
+	}
+	if fsp.loadingTimer != nil {
+		fsp.loadingTimer.Stop()
+		fsp.loadingTimer = nil
+	}
+	fsp.isLoading = false
+	fsp.entries = entries
+	fsp.SetCursorIndex(0)
+	fsp.Refresh()
+	return fsp
+}
+
+func (v *testPanelInfoVFS) PanelInfoKey(req vfs.PanelInfoRequest) string {
+	if req.SelectedName != "" {
+		return req.SelectedName
+	}
+	return req.Path
+}
+
+func (v *testPanelInfoVFS) CachedPanelInfo(req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.lastReq = req
+	key := v.PanelInfoKey(req)
+	return v.cached[key], v.fresh[key]
+}
+
+func (v *testPanelInfoVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+	if v.refreshFn == nil {
+		return vfs.PanelInfoSnapshot{}, nil
+	}
+	snapshot, err := v.refreshFn(ctx, req)
+	if err == nil && v.publish {
+		v.mu.Lock()
+		v.cached[v.PanelInfoKey(req)] = snapshot
+		v.fresh[v.PanelInfoKey(req)] = true
+		v.mu.Unlock()
+	}
+	return snapshot, err
+}
+
+func testInfoSnapshot(model string, memory uint64) vfs.PanelInfoSnapshot {
+	return vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:       "device",
+			TitleKey: "TestInfoPanel.MissingDeviceTitle",
+			Title:    "Android device",
+			Fields: []vfs.PanelInfoField{
+				{ID: "model", LabelKey: "TestInfoPanel.MissingModel", Label: "Model", Value: model},
+				{ID: "memory", LabelKey: "TestInfoPanel.MissingMemory", Label: "Device memory", Kind: vfs.PanelInfoBytes, Bytes: memory},
+			},
+		}},
+	}
+}
+
+func infoPanelHasRow(ip *InfoPanel, label, value string) bool {
+	for _, row := range ip.rows {
+		if row.label == label && row.value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func infoPanelHasSection(ip *InfoPanel, title string) bool {
+	for _, row := range ip.rows {
+		if row.label == "" && strings.Contains(row.text, title) {
+			return true
+		}
+	}
+	return false
+}
+
+func infoPanelHasUsageMeter(ip *InfoPanel, label string) bool {
+	for i := 0; i+1 < len(ip.rows); i++ {
+		first, second := ip.rows[i], ip.rows[i+1]
+		if first.label == label && first.copyable && first.usageBarWidth > 0 &&
+			second.label == label && !second.copyable {
+			return true
+		}
+	}
+	return false
+}
+
+func runInfoPanelUITasksUntil(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for !done() {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline.C:
+			t.Fatal("timed out waiting for information-panel refresh completion")
+		}
+	}
+}
+
+func drainInfoPanelUITasks(t *testing.T) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	quiet := time.NewTimer(100 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			if !quiet.Stop() {
+				select {
+				case <-quiet.C:
+				default:
+				}
+			}
+			quiet.Reset(100 * time.Millisecond)
+		case <-quiet.C:
+			return
+		case <-deadline.C:
+			t.Fatal("UI task queue did not become quiet")
+		}
+	}
+}
 
 // TestPanelsFrame_CtrlL_TogglesInfoPanel exercises far2l's Ctrl+L:
 //   - first press installs an InfoPanel on the passive side, keeping
@@ -23,7 +181,7 @@ func TestPanelsFrame_CtrlL_TogglesInfoPanel(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 
 	send := func(vk uint16, mods vtinput.ControlKeyState) {
-		pf.ProcessKey(&vtinput.InputEvent{
+		pressKey(pf, &vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true,
 			VirtualKeyCode:  vk,
 			ControlKeyState: mods,
@@ -135,6 +293,709 @@ func TestInfoPanel_ShowRenders(t *testing.T) {
 	}
 }
 
+func TestInfoPanel_AuthoritativeProviderReplacesLocalHostStats(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 40)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	if err := provider.SetPath("/sdcard"); err != nil {
+		t.Fatal(err)
+	}
+	provider.cached["SM-G930F"] = testInfoSnapshot("SM-G930F", 4*1024*1024*1024)
+	provider.fresh["SM-G930F"] = true
+
+	fsp := newStableInfoTestPanel(0, 0, 50, 39, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "SM-G930F", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 39)
+
+	oldBytes := AppConfig.InfoPanelBytes
+	defer func() { AppConfig.InfoPanelBytes = oldBytes }()
+	AppConfig.InfoPanelBytes = false
+	ip.Show(scr)
+
+	if !infoPanelHasSection(ip, "Android device") {
+		t.Fatal("provider section was not rendered")
+	}
+	if !infoPanelHasRow(ip, "Model", "SM-G930F") {
+		t.Fatal("provider model row was not rendered")
+	}
+	if !infoPanelHasRow(ip, "Device memory", formatBytesHuman(4*1024*1024*1024)) {
+		t.Fatal("provider byte field did not use the information-panel formatter")
+	}
+	if infoPanelHasRow(ip, Msg("InfoPanel.Computer"), "") {
+		t.Fatal("authoritative provider must replace, not augment, local computer data")
+	}
+	for _, row := range ip.rows {
+		if row.label == Msg("InfoPanel.Computer") || row.label == Msg("InfoPanel.User") {
+			t.Fatalf("local host row %q leaked into authoritative provider view", row.label)
+		}
+	}
+	if infoPanelHasSection(ip, Msg("InfoPanel.MemoryTitle")) {
+		t.Fatal("local memory section leaked into authoritative provider view")
+	}
+	if !infoPanelHasRow(ip, Msg("InfoPanel.CurrentDir"), provider.GetPath()) {
+		t.Fatal("remote current directory should remain visible")
+	}
+
+	AppConfig.InfoPanelBytes = true
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Device memory", formatBytesCommas(4*1024*1024*1024)) {
+		t.Fatal("B units mode did not apply to provider byte fields")
+	}
+}
+
+func TestInfoPanel_ProviderTracksCurrentSelectionFromCache(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["first"] = testInfoSnapshot("Pixel", 1)
+	provider.cached["second"] = testInfoSnapshot("Galaxy", 2)
+	provider.fresh["first"] = true
+	provider.fresh["second"] = true
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider, []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "first", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "second", IsDir: true}},
+	})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+
+	fsp.SetCursorIndex(0)
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "Pixel") {
+		t.Fatal("first selected device was not rendered from cache")
+	}
+	fsp.SetCursorIndex(1)
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "Galaxy") {
+		t.Fatal("selection change was not reflected immediately from cache")
+	}
+	if infoPanelHasRow(ip, "Model", "Pixel") {
+		t.Fatal("old selected device remained visible after selection change")
+	}
+	provider.mu.Lock()
+	lastReq := provider.lastReq
+	provider.mu.Unlock()
+	if lastReq.SelectedName != "second" {
+		t.Fatalf("provider request SelectedName = %q, want second", lastReq.SelectedName)
+	}
+}
+
+func TestInfoPanel_ProviderRefreshRunsInBackground(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = testInfoSnapshot("cached", 1)
+	provider.fresh["device"] = false
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider.refreshFn = func(ctx context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+		close(started)
+		select {
+		case <-release:
+			return testInfoSnapshot("fresh", 2), nil
+		case <-ctx.Done():
+			return vfs.PanelInfoSnapshot{}, ctx.Err()
+		}
+	}
+
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	ip.Show(scr)
+
+	if !infoPanelHasRow(ip, "Model", "cached") {
+		t.Fatal("stale cache must render immediately while refresh is pending")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background refresh did not start")
+	}
+	if !infoPanelHasRow(ip, "Model", "cached") {
+		t.Fatal("background refresh changed rows before it completed")
+	}
+	close(release)
+	runInfoPanelUITasksUntil(t, func() bool { return ip.infoTask == nil })
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "fresh") {
+		t.Fatal("completed background refresh was not rendered")
+	}
+}
+
+func TestInfoPanel_IgnoresLateRefreshForPreviousSelection(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["first"] = testInfoSnapshot("first cached", 1)
+	provider.fresh["first"] = false
+	provider.cached["second"] = testInfoSnapshot("second cached", 2)
+	provider.fresh["second"] = true
+	started := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	provider.refreshFn = func(_ context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+		close(started)
+		<-release // deliberately ignore cancellation to simulate a late transport reply
+		close(returned)
+		return testInfoSnapshot("late first", 3), nil
+	}
+
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider, []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "first", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "second", IsDir: true}},
+	})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	fsp.SetCursorIndex(0)
+	ip.Show(scr)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first selection refresh did not start")
+	}
+
+	fsp.SetCursorIndex(1)
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "second cached") {
+		t.Fatal("second selection cache did not replace first immediately")
+	}
+	close(release)
+	<-returned
+	drainInfoPanelUITasks(t)
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "second cached") {
+		t.Fatal("late completion for previous selection overwrote current device")
+	}
+	if infoPanelHasRow(ip, "Model", "late first") {
+		t.Fatal("late previous-selection data leaked into the current view")
+	}
+}
+
+func TestInfoPanel_IgnoresLateRefreshFromReplacedVFSWithSameKey(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	oldProvider := newTestPanelInfoVFS()
+	oldProvider.cached["device"] = testInfoSnapshot("old cached", 1)
+	oldProvider.fresh["device"] = false
+	started := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	oldProvider.refreshFn = func(_ context.Context, _ vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+		close(started)
+		<-release // simulate a transport that returns after cancellation
+		close(returned)
+		return testInfoSnapshot("late old VFS", 2), nil
+	}
+	newProvider := newTestPanelInfoVFS()
+	newProvider.cached["device"] = testInfoSnapshot("new VFS", 3)
+	newProvider.fresh["device"] = true
+
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, oldProvider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	ip.Show(scr)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("old VFS refresh did not start")
+	}
+
+	// A provider mount can replace fsp.vfs while keeping the same selected row
+	// and cache key. Source identity, not the key alone, must invalidate it.
+	fsp.vfs = newProvider
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "new VFS") {
+		t.Fatal("replacement VFS cache was not rendered")
+	}
+	close(release)
+	<-returned
+	drainInfoPanelUITasks(t)
+	ip.Show(scr)
+	if !infoPanelHasRow(ip, "Model", "new VFS") || infoPanelHasRow(ip, "Model", "late old VFS") {
+		t.Fatal("late result from replaced VFS overwrote the current source")
+	}
+}
+
+func TestInfoPanel_KeepsRefreshResultWhenProviderDoesNotPublishCache(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = testInfoSnapshot("stale cache", 1)
+	provider.fresh["device"] = false
+	provider.publish = false
+	provider.refreshFn = func(context.Context, vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+		return testInfoSnapshot("returned refresh", 2), nil
+	}
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	ip.Show(scr)
+	runInfoPanelUITasksUntil(t, func() bool { return ip.infoTask == nil })
+	ip.Show(scr)
+
+	if !infoPanelHasRow(ip, "Model", "returned refresh") {
+		t.Fatal("stale CachedPanelInfo overwrote the provider's successful returned snapshot")
+	}
+	if infoPanelHasRow(ip, "Model", "stale cache") {
+		t.Fatal("stale cache remained visible after a successful direct refresh")
+	}
+}
+
+func TestInfoPanel_PassesRawParentSelectionToProvider(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached[".."] = testInfoSnapshot("parent", 1)
+	provider.fresh[".."] = true
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	ip.Show(scr)
+
+	provider.mu.Lock()
+	lastReq := provider.lastReq
+	provider.mu.Unlock()
+	if lastReq.SelectedName != ".." {
+		t.Fatalf("SelectedName = %q, want raw parent row", lastReq.SelectedName)
+	}
+}
+
+func TestInfoPanel_PreservesCursorRowAcrossSnapshotExpansion(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 35)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	baseline := testInfoSnapshot("phone", 1)
+	provider.cached["device"] = baseline
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 50, 34, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 34)
+	ip.SetFocus(true)
+	ip.Show(scr)
+	for i := range ip.rows {
+		if ip.rows[i].label == "Device memory" {
+			ip.cursor = i
+			break
+		}
+	}
+
+	expanded := baseline
+	expanded.Sections = append([]vfs.PanelInfoSection(nil), baseline.Sections...)
+	expanded.Sections[0].Fields = append([]vfs.PanelInfoField{
+		{ID: "android", Label: "Android", Value: "8.0"},
+		{ID: "build", Label: "Build", Value: "R16NW"},
+	}, baseline.Sections[0].Fields...)
+	provider.mu.Lock()
+	provider.cached["device"] = expanded
+	provider.mu.Unlock()
+	ip.Show(scr)
+	if ip.cursor < 0 || ip.cursor >= len(ip.rows) || ip.rows[ip.cursor].label != "Device memory" {
+		t.Fatalf("cursor moved to row %d (%q) after snapshot expansion", ip.cursor, func() string {
+			if ip.cursor >= 0 && ip.cursor < len(ip.rows) {
+				return ip.rows[ip.cursor].label
+			}
+			return ""
+		}())
+	}
+}
+
+func TestInfoPanel_CopyUsesFullProviderValueWhenDisplayIsTruncated(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(60, 30)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	fullModel := strings.Repeat("long-model-", 8)
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = testInfoSnapshot(fullModel, 1)
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 30, 29, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 29, 29)
+	ip.SetFocus(true)
+	ip.Show(scr)
+
+	for i := range ip.rows {
+		if ip.rows[i].label != "Model" {
+			continue
+		}
+		if ip.rows[i].value != fullModel {
+			t.Fatalf("row retained value %q, want full provider value", ip.rows[i].value)
+		}
+		if ip.rows[i].text == "" || strings.Contains(ip.rows[i].text, fullModel) {
+			t.Fatal("test premise failed: long value was not visually truncated")
+		}
+		// copyCurrent copies infoRow.value verbatim (covered separately by
+		// TestInfoPanel_CopyCopiesValue). Keeping this test off the live Windows
+		// clipboard avoids interference from another foreground process.
+		return
+	}
+	t.Fatal("provider Model row not found")
+}
+
+func TestInfoPanel_ShortPanelScrollsToLowerProviderRows(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(50, 12)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	fields := make([]vfs.PanelInfoField, 0, 16)
+	for i := 0; i < 16; i++ {
+		fields = append(fields, vfs.PanelInfoField{
+			ID:    fmt.Sprintf("field_%02d", i),
+			Label: fmt.Sprintf("Field %02d", i),
+			Value: fmt.Sprintf("Value %02d", i),
+		})
+	}
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:     "device",
+			Title:  "Android device",
+			Fields: fields,
+		}},
+	}
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 50, 12, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 11)
+	ip.SetFocus(true)
+	ip.Show(scr)
+
+	visibleRows := ip.Y2 - ip.Y1 - 1
+	if len(ip.rows) <= visibleRows {
+		t.Fatalf("test premise failed: %d logical rows fit in %d-row viewport", len(ip.rows), visibleRows)
+	}
+	if !infoPanelHasRow(ip, "Field 15", "Value 15") {
+		t.Fatal("lower provider row was clipped out of the logical row list")
+	}
+
+	ip.setCursorToLastCopyable()
+	ip.Show(scr)
+	if ip.scrollTop == 0 {
+		t.Fatal("End did not scroll a short Info panel")
+	}
+	if ip.cursor < ip.scrollTop || ip.cursor >= ip.scrollTop+visibleRows {
+		t.Fatalf("cursor %d is outside viewport [%d, %d)", ip.cursor, ip.scrollTop, ip.scrollTop+visibleRows)
+	}
+	got := ip.rows[ip.cursor]
+	if got.label != Msg("InfoPanel.CurrentDir") || got.y < ip.Y1+1 || got.y > ip.Y2-1 {
+		t.Fatalf("last row after scroll = label %q, screen y %d", got.label, got.y)
+	}
+}
+
+func TestInfoPanel_RendersUsageAsTwoLineMeter(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(60, 20)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:    "status",
+			Title: "Device status",
+			Fields: []vfs.PanelInfoField{{
+				ID: "memory", Label: "Memory", Kind: vfs.PanelInfoUsage,
+				TotalBytes: 1000, AvailableBytes: 500,
+			}},
+		}},
+	}
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 60, 20, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 59, 19)
+	ip.SetFocus(true)
+
+	oldBytes := AppConfig.InfoPanelBytes
+	defer func() { AppConfig.InfoPanelBytes = oldBytes }()
+	AppConfig.InfoPanelBytes = false
+	ip.Show(scr)
+
+	assertMeter := func(used, total string) {
+		t.Helper()
+		for i := 0; i+1 < len(ip.rows); i++ {
+			first, second := ip.rows[i], ip.rows[i+1]
+			if first.label != "Memory" || !first.copyable {
+				continue
+			}
+			if second.label != "Memory" || second.copyable {
+				t.Fatalf("usage continuation = %#v, want non-copyable Memory row", second)
+			}
+			if strings.Contains(first.text, "[") || strings.Contains(first.text, "]") || !strings.Contains(first.text, "50%") {
+				t.Fatalf("meter line %q is not a bracketless 50%% progress bar", first.text)
+			}
+			if !strings.Contains(second.text, Msg("InfoPanel.UsedShort")) ||
+				!strings.Contains(second.text, used) || !strings.Contains(second.text, total) {
+				t.Fatalf("legend line %q does not contain used %q and total %q", second.text, used, total)
+			}
+			if !strings.Contains(first.value, used) || !strings.Contains(first.value, total) {
+				t.Fatalf("copy value %q does not retain both usage values", first.value)
+			}
+
+			percentStart := strings.Index(first.text, "50%")
+			filledAttr, unfilledAttr := panelInfoUsageAttrs(vtui.Palette[ColPanelCursor])
+			for offset := 0; offset < len("50%"); offset++ {
+				insideOffset := percentStart + offset - first.usageBarStart
+				wantAttr := unfilledAttr
+				if insideOffset >= 0 && insideOffset < first.usageBarFilled {
+					wantAttr = filledAttr
+				}
+				cell := scr.GetCell(ip.X1+1+percentStart+offset, first.y)
+				if cell.Attributes != wantAttr {
+					t.Fatalf("percentage cell %q at bar offset %d: attr=%#x, want %#x",
+						rune(cell.Char), insideOffset, cell.Attributes, wantAttr)
+				}
+			}
+			unfilledCell := scr.GetCell(ip.X1+1+first.usageBarStart+first.usageBarWidth-1, first.y)
+			_, baseBackground := panelInfoAttrColors(vtui.Palette[ColPanelCursor])
+			if got := vtui.GetRGBBack(unfilledCell.Attributes); got == baseBackground {
+				t.Fatalf("unfilled bar background %#x is indistinguishable from panel background", got)
+			}
+			if got, filledBackground := vtui.GetRGBBack(unfilledCell.Attributes), vtui.GetRGBBack(filledAttr); got == filledBackground {
+				t.Fatalf("unfilled bar background %#x is indistinguishable from filled background", got)
+			}
+			return
+		}
+		t.Fatal("two-line Memory meter not found")
+	}
+
+	assertMeter(formatBytes(500), formatBytes(1000))
+	AppConfig.InfoPanelBytes = true
+	ip.Show(scr)
+	assertMeter(formatBytesCommas(500), formatBytesCommas(1000))
+}
+
+func TestInfoPanel_AlignsAllUsageMetersToNarrowestWidth(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(64, 24)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{
+			{ID: "short", Title: "Short labels", Fields: []vfs.PanelInfoField{
+				{ID: "memory", Label: "RAM", Kind: vfs.PanelInfoUsage, TotalBytes: 1000, AvailableBytes: 250},
+				{ID: "storage", Label: "Storage", Kind: vfs.PanelInfoUsage, TotalBytes: 2000, AvailableBytes: 1000},
+			}},
+			{ID: "long", Title: "Long labels", Fields: []vfs.PanelInfoField{
+				{ID: "paging", Label: "Very long paging file", Kind: vfs.PanelInfoUsage, TotalBytes: 4000, AvailableBytes: 1000},
+			}},
+		},
+	}
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 64, 24, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 63, 23)
+	ip.Show(scr)
+
+	innerW := ip.X2 - ip.X1 - 1
+	width, start, count := 0, -1, 0
+	for _, row := range ip.rows {
+		if row.usageContinuation || row.usageMeterWidth <= 0 {
+			continue
+		}
+		count++
+		if width == 0 {
+			width = row.usageMeterWidth
+			start = row.usageBarStart
+		}
+		if row.usageMeterWidth != width || row.usageBarStart != start {
+			t.Fatalf("meter %q = width %d start %d, want shared width %d start %d",
+				row.label, row.usageMeterWidth, row.usageBarStart, width, start)
+		}
+		if row.usageBarStart+row.usageBarWidth != innerW {
+			t.Fatalf("meter %q right edge = %d, want %d", row.label,
+				row.usageBarStart+row.usageBarWidth, innerW)
+		}
+	}
+	if count != 3 {
+		t.Fatalf("aligned meter count = %d, want 3", count)
+	}
+	// The longest label determines the minimum natural width. A short label
+	// must therefore leave padding before the exact same meter column.
+	if row := func() infoRow {
+		for _, candidate := range ip.rows {
+			if candidate.label == "RAM" && !candidate.usageContinuation {
+				return candidate
+			}
+		}
+		return infoRow{}
+	}(); !strings.Contains(row.text, "RAM ") || row.usageMeterWidth == 0 {
+		t.Fatalf("short-label meter was not rebuilt into the shared column: %#v", row)
+	}
+}
+
+func TestInfoPanel_LocalResourcesUseUsageMeters(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 60)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	tmp := t.TempDir()
+	fsp := newStableInfoTestPanel(0, 0, 50, 59, vfs.NewOSVFS(tmp), nil)
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 59)
+	ip.Show(scr)
+
+	if fs, ok := fsInfo(tmp); ok && fs.Total > 0 {
+		if !infoPanelHasUsageMeter(ip, Msg("InfoPanel.Space")) {
+			t.Fatal("local filesystem capacity was not rendered with the reusable usage meter")
+		}
+		if infoPanelHasRow(ip, Msg("InfoPanel.Total"), formatBytes(fs.Total)) ||
+			infoPanelHasRow(ip, Msg("InfoPanel.Free"), formatBytes(fs.Free)) {
+			t.Fatal("legacy filesystem total/free rows remained alongside the usage meter")
+		}
+	}
+
+	if mem, ok := memInfo(); ok && mem.Total > 0 {
+		if !infoPanelHasUsageMeter(ip, Msg("InfoPanel.Memory")) {
+			t.Fatal("physical memory was not rendered with the reusable usage meter")
+		}
+		if mem.SwapTotal > 0 && !infoPanelHasUsageMeter(ip, Msg("InfoPanel.PagingFile")) {
+			t.Fatal("paging space was not rendered with the reusable usage meter")
+		}
+	}
+}
+
+func TestInfoPanel_NarrowProviderRowsStayInsideFrame(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(20, 12)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:    "device",
+			Title: "Android device with a deliberately long title",
+			Fields: []vfs.PanelInfoField{{
+				ID:    "long",
+				Label: "A deliberately long provider label",
+				Value: "value",
+			}},
+		}},
+	}
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 10, 12, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 9, 11) // inner width is only eight cells
+	ip.SetFocus(true)
+	ip.Show(scr)
+
+	innerW := ip.X2 - ip.X1 - 1
+	for _, row := range ip.rows {
+		if width := runewidth.StringWidth(row.text); width > innerW {
+			t.Fatalf("row %q is %d cells wide, frame interior is %d", row.text, width, innerW)
+		}
+	}
+}
+
+func TestInfoPanel_MissingCachedCursorRowFallsBackNearby(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(50, 8)
+	vtui.FrameManager.Init(scr)
+	vtui.SetDefaultPalette()
+
+	provider := newTestPanelInfoVFS()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:    "device",
+			Title: "Android device",
+			Fields: []vfs.PanelInfoField{
+				{ID: "model", Label: "Model", Value: "SM-G930F"},
+				{ID: "serial", Label: "Serial", Value: "serial"},
+				{ID: "state", Label: "State", Value: "device"},
+				{ID: "product", Label: "Product", Value: "herolte"},
+			},
+		}},
+	}
+	provider.fresh["device"] = true
+	fsp := newStableInfoTestPanel(0, 0, 50, 7, provider,
+		[]*fileEntry{{VFSItem: vfs.VFSItem{Name: "device", IsDir: true}}})
+	ip := NewInfoPanel(fsp)
+	ip.SetPosition(0, 0, 49, 6)
+	ip.SetFocus(true)
+	ip.Show(scr)
+	for i := range ip.rows {
+		if ip.rows[i].label == "State" {
+			ip.cursor = i
+			break
+		}
+	}
+	ip.scrollTop = 1
+	ip.Show(scr)
+	oldOffset := ip.cursor - ip.scrollTop
+
+	provider.mu.Lock()
+	provider.cached["device"] = vfs.PanelInfoSnapshot{
+		Authoritative: true,
+		Sections: []vfs.PanelInfoSection{{
+			ID:    "device",
+			Title: "Android device",
+			Fields: []vfs.PanelInfoField{
+				{ID: "model", Label: "Model", Value: "SM-G930F"},
+				{ID: "serial", Label: "Serial", Value: "serial"},
+				{ID: "android", Label: "Android", Value: "7.0"},
+				{ID: "build", Label: "Build", Value: "NRD90M"},
+				{ID: "abi", Label: "ABI", Value: "arm64-v8a"},
+			},
+		}},
+	}
+	provider.mu.Unlock()
+	ip.Show(scr)
+
+	if ip.cursor < 0 || ip.cursor >= len(ip.rows) {
+		t.Fatalf("cursor became invalid after schema replacement: %d", ip.cursor)
+	}
+	if got := ip.rows[ip.cursor].label; got != "Android" {
+		t.Fatalf("missing State row fell back to %q, want nearby Android row", got)
+	}
+	if got := ip.cursor - ip.scrollTop; got != oldOffset {
+		t.Fatalf("cursor screen offset changed from %d to %d", oldOffset, got)
+	}
+}
+
 // TestPanelsFrame_B_TogglesInfoPanelUnits verifies that `B` (plain,
 // no modifiers) flips AppConfig.InfoPanelBytes while an info panel is
 // visible, and falls through to fast-find otherwise.
@@ -149,7 +1010,7 @@ func TestPanelsFrame_B_TogglesInfoPanelUnits(t *testing.T) {
 	AppConfig.InfoPanelBytes = false
 
 	send := func(vk uint16) bool {
-		return pf.ProcessKey(&vtinput.InputEvent{
+		return pressKey(pf, &vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true,
 			VirtualKeyCode: vk,
 		})
@@ -163,7 +1024,7 @@ func TestPanelsFrame_B_TogglesInfoPanelUnits(t *testing.T) {
 	}
 
 	// Install info panel on passive side, then `B` should flip units.
-	pf.ProcessKey(&vtinput.InputEvent{
+	pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode:  vtinput.VK_L,
 		ControlKeyState: vtinput.LeftCtrlPressed,

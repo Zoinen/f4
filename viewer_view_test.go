@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,51 @@ import (
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+type trackedReadRange struct {
+	offset int64
+	length int
+}
+
+type tailTrackingFile struct {
+	size int64
+	mu   sync.Mutex
+	read []trackedReadRange
+}
+
+func (f *tailTrackingFile) Size() int64  { return f.size }
+func (f *tailTrackingFile) Close() error { return nil }
+func (f *tailTrackingFile) Read(ctx context.Context, p []byte) (int, error) {
+	return f.ReadAt(ctx, p, 0)
+}
+func (f *tailTrackingFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if off >= f.size {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if remaining := f.size - off; int64(n) > remaining {
+		n = int(remaining)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	f.mu.Lock()
+	f.read = append(f.read, trackedReadRange{offset: off, length: n})
+	f.mu.Unlock()
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *tailTrackingFile) ranges() []trackedReadRange {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]trackedReadRange(nil), f.read...)
+}
 
 type mockCloseFile struct {
 	vfs.ReadAtCloser
@@ -117,6 +164,64 @@ func TestViewerView_NavigationAndEOF(t *testing.T) {
 		t.Errorf("VK_DOWN should be blocked when eofVisible is true. Offset changed from %d to %d", oldOffset, vv.TopOffset)
 	}
 }
+
+func TestViewerView_EndJumpReadsOnlyTailOfLargeFile(t *testing.T) {
+	const fileSize = int64(392077017)
+	for _, tc := range []struct {
+		name string
+		wrap bool
+	}{{name: "wrapped", wrap: true}, {name: "unwrapped", wrap: false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+			file := &tailTrackingFile{size: fileSize}
+			indexer := &indexingVFS{offsets: []int64{0}, total: 1}
+			ctx, cancel := context.WithCancel(context.Background())
+			backend := &ViewerBackend{
+				file:         file,
+				size:         fileSize,
+				indexer:      indexer,
+				totalLines:   -1,
+				totalForSize: -1,
+				ctx:          ctx,
+				cancelCtx:    cancel,
+			}
+			vv := &ViewerView{backend: backend, WrapMode: tc.wrap}
+			defer vv.Close()
+			vv.SetPosition(0, 0, 120, 40)
+
+			if !vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_END}) {
+				t.Fatal("End was not handled")
+			}
+			deadline := time.After(2 * time.Second)
+			for vv.Busy || vv.TopOffset == 0 {
+				select {
+				case task := <-vtui.FrameManager.TaskChan:
+					task()
+				case <-deadline:
+					t.Fatal("tail-only End jump timed out")
+				}
+			}
+
+			if indexer.calls != 0 {
+				t.Fatalf("End jump made %d whole-file line-index calls", indexer.calls)
+			}
+			ranges := file.ranges()
+			if len(ranges) != 1 {
+				t.Fatalf("End jump made %d range reads, want one: %+v", len(ranges), ranges)
+			}
+			if ranges[0].length > 256*1024 {
+				t.Fatalf("End jump read %d bytes, want at most one 256 KiB window", ranges[0].length)
+			}
+			if ranges[0].offset < fileSize-256*1024 {
+				t.Fatalf("End jump read from offset %d, want only the file tail", ranges[0].offset)
+			}
+			if vv.TopOffset < fileSize-256*1024 {
+				t.Fatalf("End jump landed at %d, outside the final cache window", vv.TopOffset)
+			}
+		})
+	}
+}
+
 func TestViewerView_MouseScrollbar(t *testing.T) {
 	vtui.SetDefaultPalette()
 	// Create a file with enough content to scroll
@@ -380,7 +485,7 @@ func TestViewerView_HexModeToggle(t *testing.T) {
 	vv.TopOffset = 10
 
 	// Toggle Hex Mode
-	vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
 
 	if !vv.HexMode {
 		t.Error("F4 failed to toggle HexMode")
@@ -392,7 +497,7 @@ func TestViewerView_HexModeToggle(t *testing.T) {
 	}
 
 	// Toggle back to Text
-	vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
 	if vv.HexMode {
 		t.Error("F4 failed to toggle back to TextMode")
 	}
@@ -572,7 +677,7 @@ func TestViewerView_ScrollbarEOFAlignment(t *testing.T) {
 	}
 
 	// --- 2. Проверка в Hex режиме ---
-	vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
 	// В Hex режиме jumpToEnd отрабатывает мгновенно, если данные в кэше
 	vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_END})
 	vv.Show(scr)
@@ -678,5 +783,76 @@ func TestViewerView_Codepages_Load(t *testing.T) {
 
 	if string(data) != "Привет" {
 		t.Errorf("Viewer failed to decode CP866: expected 'Привет', got %q", string(data))
+	}
+}
+func TestViewerView_Codepages_AutoDetect(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "auto_view.txt")
+	os.WriteFile(path, []byte("plain ascii is valid utf8"), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vv.Close()
+
+	AppConfig.ViewerAutodetectCodePage = true
+	AppConfig.ViewerDefaultCodePage = 11111 // ANSI
+	vv.ReloadWithAutoDetect()
+
+	if vv.Codepage != 65001 {
+		t.Errorf("Expected autodetect to recognize valid UTF-8/ASCII as 65001, got %d", vv.Codepage)
+	}
+}
+
+func TestViewerView_Codepages_KeyBarLabel(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "dummy_view.txt")
+	os.WriteFile(path, []byte("content"), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vv.Close()
+
+	vv.Codepage = 65001 // UTF-8
+	labels := vv.GetKeyLabels()
+	if labels.Normal[7] != "ANSI" {
+		t.Errorf("Expected F8 KeyBar label to be 'ANSI' for UTF-8 viewer, got %q", labels.Normal[7])
+	}
+
+	vv.Codepage = 22222 // OEM
+	labels = vv.GetKeyLabels()
+	if labels.Normal[7] != "UTF-8" {
+		t.Errorf("Expected F8 KeyBar label to be 'UTF-8' for OEM viewer, got %q", labels.Normal[7])
+	}
+}
+func TestViewerView_Codepages_MultipleSwitchNoCrash(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "switch_test.txt")
+	os.WriteFile(path, []byte("Test content for codepage switch"), 0644)
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, path)
+	if err != nil {
+		t.Fatalf("Failed to create ViewerView: %v", err)
+	}
+
+	// Switch codepages twice (F8, F8)
+	vv.ReloadWithCodepage(11111)
+	vv.ReloadWithCodepage(22222)
+	vv.ReloadWithCodepage(65001)
+
+	// Close viewer (F3 exit)
+	vv.Close()
+
+	if !vv.IsDone() {
+		t.Error("ViewerView failed to close cleanly after codepage switches")
 	}
 }

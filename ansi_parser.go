@@ -60,14 +60,14 @@ func (p *AnsiParser) Process(data []byte) {
 		}
 	}
 
-	if bytes.HasPrefix(data, []byte(" set +H; { printf")) {
+	if bytes.HasPrefix(data, []byte(" set +H; { trap")) {
 		idx := bytes.Index(data, []byte("}\r\n"))
 		if idx != -1 {
 			data = data[idx+3:]
 		}
 	}
 
-	if bytes.HasPrefix(data, []byte(" { printf")) {
+	if bytes.HasPrefix(data, []byte(" { trap")) {
 		idx := bytes.Index(data, []byte("}\r\n"))
 		if idx != -1 {
 			data = data[idx+3:]

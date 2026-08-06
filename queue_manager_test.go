@@ -292,6 +292,44 @@ func TestQueueFrame_GetTitle(t *testing.T) {
 	}
 }
 
+func TestQueueFrameUsesDialogThemeColors(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	qf := NewQueueFrame()
+	if qf.table.ColorTextIdx != vtui.ColDialogText ||
+		qf.table.ColorSelectedTextIdx != vtui.ColDialogSelectedButton ||
+		qf.table.ColorTitleIdx != vtui.ColDialogHighlightText ||
+		qf.table.ColorBoxIdx != vtui.ColDialogBox {
+		t.Fatalf("queue table does not use dialog palette: text=%d selected=%d title=%d box=%d",
+			qf.table.ColorTextIdx, qf.table.ColorSelectedTextIdx, qf.table.ColorTitleIdx, qf.table.ColorBoxIdx)
+	}
+
+	def := vtui.SetRGBBoth(0, 0x112233, 0x445566)
+	tests := []struct {
+		state      string
+		paletteIdx int
+	}{
+		{state: "Error", paletteIdx: vtui.ColWarnHighlightBoxTitle},
+		{state: "Done", paletteIdx: vtui.ColDialogText},
+		{state: "Running", paletteIdx: vtui.ColDialogHighlightText},
+		{state: "Scanning", paletteIdx: vtui.ColDialogHighlightText},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			got := (queueRow{task: &QueueTask{State: tt.state}}).GetCellAttr(0, def)
+			want := themedForeground(def, tt.paletteIdx)
+			if got != want {
+				t.Fatalf("%s attr = %#x, want themed attr %#x", tt.state, got, want)
+			}
+			if vtui.GetRGBBack(got) != vtui.GetRGBBack(def) {
+				t.Fatalf("%s changed row background", tt.state)
+			}
+		})
+	}
+}
+
 func TestQueueManager_BackgroundWorkspace(t *testing.T) {
 	fm := vtui.FrameManager
 	fm.Init(vtui.NewSilentScreenBuf())

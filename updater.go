@@ -142,7 +142,9 @@ func CheckForUpdates(pf *PanelsFrame, manual bool) {
 	if AppConfig.UpdateChannel == 1 {
 		updateKey = assetUpdated
 		displayTime := assetUpdated
-		if len(displayTime) >= 16 {
+		if t, err := time.Parse(time.RFC3339, assetUpdated); err == nil {
+			displayTime = t.Local().Format("2006-01-02 15:04")
+		} else if len(displayTime) >= 16 {
 			displayTime = strings.Replace(displayTime[:16], "T", " ", 1)
 		}
 		displayVersion = "Nightly (" + displayTime + ")"
@@ -255,7 +257,7 @@ func performUpdate(pf *PanelsFrame, url string, isTarGz bool, newTag, publishedA
 		}
 
 		if err != nil {
-			return fmt.Errorf("failed to extract/install update: %w\n(Check permissions or try running as administrator/root)", err)
+			return fmt.Errorf("failed to extract/install update: %w\n(Close other f4 instances, check Task Manager for ghost f4 processes, or try running as admin/root)", err)
 		}
 
 		return nil

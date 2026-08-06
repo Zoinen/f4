@@ -124,6 +124,11 @@ ported macro fails where it uses the missing thing, not on the line before.
 `akey()` returns the key that started this macro, which is useful when one
 macro is bound to several keys.
 
+`Actions.Run("Editor.Save")` runs a registered f4 action by name and returns
+whether it fired. Everything f4 can do interactively — every menu item and
+every hotkey — is a registered action, so this is the macro doorway to all of
+it. Action names are listed in the Hotkey Configurator.
+
 `exit()` ends the macro. Keys queued before it are still sent.
 
 `msgbox(text, title)` shows a message. `far.Message(text, title)` does the

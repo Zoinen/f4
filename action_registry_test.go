@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/unxed/vtui"
+)
 
 func TestActionRegistry(t *testing.T) {
 	called := false
@@ -49,5 +53,30 @@ func TestActionRegistry(t *testing.T) {
 	// Test missing action
 	if RunAction("Missing.Action") {
 		t.Error("RunAction should return false for missing action")
+	}
+}
+
+func TestAction_PanelToggleHidden(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	original := AppConfig.ShowHiddenFiles
+	defer func() { AppConfig.ShowHiddenFiles = original }()
+
+	if !RunAction("Panel.ToggleHidden") {
+		t.Fatal("Panel.ToggleHidden did not run")
+	}
+	if AppConfig.ShowHiddenFiles == original {
+		t.Errorf("Panel.ToggleHidden did not flip ShowHiddenFiles (was %v, still %v)", original, AppConfig.ShowHiddenFiles)
+	}
+
+	if !RunAction("Panel.ToggleHidden") {
+		t.Fatal("Panel.ToggleHidden did not run on second call")
+	}
+	if AppConfig.ShowHiddenFiles != original {
+		t.Errorf("Panel.ToggleHidden second call did not restore ShowHiddenFiles (want %v, got %v)", original, AppConfig.ShowHiddenFiles)
 	}
 }

@@ -1,0 +1,754 @@
+package fishplus
+
+import (
+	"bufio"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// MaxLineLen caps a single protocol line. Payload lines are produced by
+// remote tools (ls, stat, grep), so they are bounded by path and match
+// lengths; anything bigger means the stream went out of sync.
+const MaxLineLen = 1 << 20
+
+// MaxFrameLen caps a single binary frame. The client never asks for more
+// than this, so a bigger frame means either a confused helper or a hostile
+// host trying to make the panel allocate a disk worth of memory.
+const MaxFrameLen = 64 << 20
+
+// ErrBroken is returned once a session lost synchronization with the remote
+// helper. Such a session cannot be repaired, the caller has to reconnect.
+var ErrBroken = errors.New("fishplus: session is out of sync")
+
+// RemoteError carries a failure reported by the remote helper itself.
+type RemoteError struct {
+	Cmd string
+	Msg string
+}
+
+func (e *RemoteError) Error() string {
+	if e.Cmd == "" {
+		return "fishplus: remote error: " + e.Msg
+	}
+	return "fishplus: " + e.Cmd + ": " + e.Msg
+}
+
+// Features describes what the remote host is capable of, as detected by the
+// helper script during startup.
+type Features struct {
+	Proto int
+	Raw   string
+	names map[string]bool
+}
+
+// Has reports whether the remote helper announced the named feature.
+func (f Features) Has(name string) bool { return f.names[name] }
+
+// Names returns the announced feature names in a stable order.
+func (f Features) Names() []string {
+	out := make([]string, 0, len(f.names))
+	for name := range f.names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ListingMode returns the metadata backend the helper picked for itself,
+// announced as "mode:<name>" among the features.
+func (f Features) ListingMode() string {
+	for name := range f.names {
+		if strings.HasPrefix(name, "mode:") {
+			return strings.TrimPrefix(name, "mode:")
+		}
+	}
+	return ""
+}
+
+// Response is the outcome of a single request.
+type Response struct {
+	// Lines holds the textual payload, newlines stripped.
+	Lines []string
+	// Data holds the concatenated binary payload of a data request.
+	Data []byte
+	// Status is either "ok" or "err".
+	Status string
+	// Msg is the optional message that follows the status.
+	Msg string
+}
+
+// BootstrapMethod selects how the embedded helper reaches the remote shell.
+// The zero value deliberately preserves the original streaming bootstrap.
+type BootstrapMethod uint8
+
+const (
+	// BootstrapScriptLines uploads the compact helper as newline-delimited
+	// source after a small bootstrap has taken control of the shell input.
+	BootstrapScriptLines BootstrapMethod = iota
+	// BootstrapBase64Line sends one printable-ASCII line containing the
+	// complete base64-encoded helper. It avoids per-line shell read overhead.
+	BootstrapBase64Line
+)
+
+// HandshakeOptions controls helper upload. Callers that do not need a
+// specialized transport should keep using Handshake, whose behavior is
+// unchanged.
+type HandshakeOptions struct {
+	Bootstrap BootstrapMethod
+}
+
+// OK reports whether the remote helper completed the request successfully.
+func (r *Response) OK() bool { return r.Status == "ok" }
+
+// Err converts a failed response into an error, cmd is used for context.
+func (r *Response) Err(cmd string) error {
+	if r.OK() {
+		return nil
+	}
+	return &RemoteError{Cmd: cmd, Msg: r.Msg}
+}
+
+// Session speaks the FISH+ protocol over a duplex byte stream, typically the
+// stdin/stdout pair of a remote shell started through ssh. All requests are
+// serialized: the protocol is strictly request/response over one stream.
+type Session struct {
+	mu          sync.Mutex
+	featuresMu  sync.RWMutex
+	requestGate chan struct{}
+	closeCh     chan struct{}
+	w           io.Writer
+	r           *bufio.Reader
+	closer      io.Closer
+	token       string
+	seq         uint64
+	feats       Features
+	broken      bool
+	lastUse     time.Time
+	closing     atomic.Bool
+	closeOnce   sync.Once
+	closeErr    error
+}
+
+// NewSession wires a session to the remote shell's stdin and stdout. closer
+// may be nil; when set it must be safe to close locally and is closed by
+// Close, which also makes the remote helper exit because its stdin hits EOF.
+func NewSession(stdin io.Writer, stdout io.Reader, closer io.Closer) *Session {
+	s := &Session{
+		requestGate: make(chan struct{}, 1),
+		closeCh:     make(chan struct{}),
+		w:           stdin,
+		r:           bufio.NewReaderSize(stdout, 64*1024),
+		closer:      closer,
+		token:       newToken(),
+		lastUse:     time.Now(),
+	}
+	s.requestGate <- struct{}{}
+	return s
+}
+
+// acquireRequest waits for the strictly serial protocol stream without
+// joining an uncancellable sync.Mutex queue. Superseded panel loads cancel
+// their contexts while another response is still being drained; they must
+// disappear here so the newest live request is the only waiter left.
+func (s *Session) acquireRequest(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.closeCh:
+		return ErrBroken
+	case <-s.requestGate:
+	}
+	if err := ctx.Err(); err != nil {
+		s.releaseRequest()
+		return err
+	}
+	if s.closing.Load() {
+		s.releaseRequest()
+		return ErrBroken
+	}
+	return nil
+}
+
+func (s *Session) tryAcquireRequest() bool {
+	select {
+	case <-s.requestGate:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) releaseRequest() { s.requestGate <- struct{}{} }
+
+func newToken() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Rather than failing the connection, fall back to a fixed token:
+		// it only protects against accidental collisions with payload.
+		return "f4f1shplusf4f1"
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+// Token returns the random terminator token of this session.
+func (s *Session) Token() string { return s.token }
+
+// Features returns what the remote helper announced during the handshake.
+func (s *Session) Features() Features {
+	// Features have their own lock because GetCapabilities is often called
+	// from the UI thread and must not wait for an unrelated remote request that
+	// currently owns the protocol mutex.
+	s.featuresMu.RLock()
+	defer s.featuresMu.RUnlock()
+	return s.feats
+}
+
+// Broken reports whether the session lost synchronization.
+func (s *Session) Broken() bool {
+	if s.closing.Load() {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.broken
+}
+
+// IdleFor is how long it has been since the session last carried a request.
+// It is what tells a session nobody is using from one that is merely between
+// two chunks of a copy, which is the only distinction a keepalive needs.
+func (s *Session) IdleFor() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Since(s.lastUse)
+}
+
+// Handshake uploads the helper script and waits for its banner. Everything
+// the remote shell printed before the banner (motd, shell warnings) is
+// discarded.
+func (s *Session) Handshake(ctx context.Context) error {
+	return s.HandshakeWithOptions(ctx, HandshakeOptions{})
+}
+
+// HandshakeWithOptions uploads the helper using the requested bootstrap and
+// waits for its banner. BootstrapBase64Line is useful for Android and other
+// shells where feeding the helper through read one line at a time is costly.
+func (s *Session) HandshakeWithOptions(ctx context.Context, opts HandshakeOptions) error {
+	if err := s.acquireRequest(ctx); err != nil {
+		return err
+	}
+	defer s.releaseRequest()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing.Load() || s.broken {
+		return ErrBroken
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch opts.Bootstrap {
+	case BootstrapScriptLines:
+		if _, err := io.WriteString(s.w, BootstrapLine(s.token)); err != nil {
+			s.broken = true
+			return err
+		}
+		if err := s.waitForReady(ctx); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(s.w, HelperScript(s.token)+HelperEndMarker+"\n"); err != nil {
+			s.broken = true
+			return err
+		}
+	case BootstrapBase64Line:
+		if _, err := io.WriteString(s.w, Base64BootstrapLine(s.token)); err != nil {
+			s.broken = true
+			return err
+		}
+		if err := s.waitForReady(ctx); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("fishplus: unsupported bootstrap method %d", opts.Bootstrap)
+	}
+	resp, err := s.readResponse(ctx, 0, false)
+	if err != nil {
+		return err
+	}
+	if !resp.OK() {
+		s.broken = true
+		return &RemoteError{Cmd: "handshake", Msg: resp.Msg}
+	}
+	feats, err := parseBanner(resp.Msg)
+	if err != nil {
+		s.broken = true
+		return err
+	}
+	if feats.Proto != ProtocolVersion {
+		s.broken = true
+		return fmt.Errorf("fishplus: remote speaks protocol %d, expected %d", feats.Proto, ProtocolVersion)
+	}
+	s.featuresMu.Lock()
+	s.feats = feats
+	s.featuresMu.Unlock()
+	return nil
+}
+
+func parseBanner(msg string) (Features, error) {
+	fields := strings.Fields(msg)
+	if len(fields) < 2 || fields[0] != "FISHPLUS" {
+		return Features{}, fmt.Errorf("fishplus: unexpected banner %q", msg)
+	}
+	proto, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return Features{}, fmt.Errorf("fishplus: unexpected protocol version %q", fields[1])
+	}
+	feats := Features{
+		Proto: proto,
+		Raw:   strings.Join(fields[2:], " "),
+		names: make(map[string]bool, len(fields)),
+	}
+	for _, name := range fields[2:] {
+		feats.names[name] = true
+	}
+	return feats, nil
+}
+
+// maxBootstrapLines bounds how much login noise is skipped while waiting
+// for the shell to report itself ready. A motd is long; it is not endless.
+const maxBootstrapLines = 1000
+
+// waitForReady consumes whatever the login printed until the bootstrap says
+// it is running. Sending the helper before that is what the whole two step
+// upload exists to avoid.
+func (s *Session) waitForReady(ctx context.Context) error {
+	marker := ReadyMarker(s.token)
+	for i := 0; i < maxBootstrapLines; i++ {
+		if err := ctx.Err(); err != nil {
+			s.broken = true
+			return err
+		}
+		line, err := s.readLine()
+		if err != nil {
+			s.broken = true
+			return err
+		}
+		if strings.Contains(line, marker) {
+			return nil
+		}
+	}
+	s.broken = true
+	return fmt.Errorf("fishplus: the remote shell never reported being ready")
+}
+
+// Exec runs a command that takes only short tokens as arguments. A token
+// must be non-empty and free of whitespace; anything path shaped belongs in
+// ExecPath instead.
+func (s *Session) Exec(ctx context.Context, cmd string, args ...string) (*Response, error) {
+	return s.exec(ctx, false, cmd, args, nil)
+}
+
+// ExecPath runs a command that operates on a path. The path travels on a
+// line of its own, verbatim whenever the channel can carry it: only a path
+// containing a newline (or starting with the escape marker) is base64
+// encoded. Staying out of base64 keeps a fork per request off the remote
+// host and keeps the traffic readable in a protocol log.
+func (s *Session) ExecPath(ctx context.Context, cmd, path string, args ...string) (*Response, error) {
+	return s.exec(ctx, false, cmd, args, []string{path})
+}
+
+// ExecPaths runs a command that operates on more than one path, each on a
+// line of its own and in the order given. Rename is the first such command.
+func (s *Session) ExecPaths(ctx context.Context, cmd string, paths []string, args ...string) (*Response, error) {
+	return s.exec(ctx, false, cmd, args, paths)
+}
+
+// ExecData and ExecPathData behave like Exec and ExecPath but also accept
+// binary frames: a line "#<n>" followed by exactly n raw bytes.
+func (s *Session) ExecData(ctx context.Context, cmd string, args ...string) (*Response, error) {
+	return s.exec(ctx, true, cmd, args, nil)
+}
+
+func (s *Session) ExecPathData(ctx context.Context, cmd, path string, args ...string) (*Response, error) {
+	return s.exec(ctx, true, cmd, args, []string{path})
+}
+
+// EncodePathLine renders a path as one protocol line, escaping it only when
+// a raw line would not survive the round trip.
+func EncodePathLine(p string) string {
+	if p == "" || strings.HasPrefix(p, "~") || strings.ContainsAny(p, "\r\n") {
+		return "~" + base64.StdEncoding.EncodeToString([]byte(p))
+	}
+	return p
+}
+
+// ExecPayload runs a command that carries a payload of its own after the
+// path lines. A raw payload is exactly the announced number of bytes with
+// nothing around it; an encoded one is a single base64 line, which the
+// remote helper can consume with the shell alone and which therefore stays
+// exact on hosts whose dd cannot stop on a byte boundary.
+func (s *Session) ExecPayload(ctx context.Context, cmd string, paths, args []string, payload []byte, encoded bool) (*Response, error) {
+	return s.execFull(ctx, false, cmd, args, paths, payload, encoded, nil)
+}
+
+// ExecStream runs a command whose request body the caller writes itself,
+// after the path lines and before the answer is read. A command whose
+// payload is interleaved with descriptions of it cannot be handed over as
+// one slice, which is what patch needs.
+func (s *Session) ExecStream(ctx context.Context, cmd string, paths, args []string, body func(w io.Writer) error) (*Response, error) {
+	return s.execFull(ctx, false, cmd, args, paths, nil, false, body)
+}
+
+// MarkBroken poisons the session after the caller found out, by means the
+// session itself cannot see, that the two sides disagree about how much of
+// the stream has been consumed.
+func (s *Session) MarkBroken() {
+	if s.closing.Load() {
+		return
+	}
+	s.mu.Lock()
+	s.broken = true
+	s.mu.Unlock()
+}
+
+func (s *Session) exec(ctx context.Context, binary bool, cmd string, args, paths []string) (*Response, error) {
+	return s.execFull(ctx, binary, cmd, args, paths, nil, false, nil)
+}
+
+func (s *Session) execFull(ctx context.Context, binary bool, cmd string, args, paths []string, payload []byte, encoded bool, body func(w io.Writer) error) (*Response, error) {
+	if cmd == "" || strings.ContainsAny(cmd, " \t\r\n") {
+		return nil, fmt.Errorf("fishplus: invalid command %q", cmd)
+	}
+	for _, arg := range args {
+		if arg == "" || strings.ContainsAny(arg, " \t\r\n") {
+			return nil, fmt.Errorf("fishplus: invalid argument %q for command %q", arg, cmd)
+		}
+	}
+	if err := s.acquireRequest(ctx); err != nil {
+		return nil, err
+	}
+	defer s.releaseRequest()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing.Load() || s.broken {
+		return nil, ErrBroken
+	}
+	// The idle clock is refreshed when the request is done rather than when it
+	// started, under the lock the request already holds: a read that took ten
+	// minutes was ten minutes of activity, not ten minutes of silence.
+	defer func() { s.lastUse = time.Now() }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.seq++
+	id := s.seq
+	var req strings.Builder
+	req.WriteString(strconv.FormatUint(id, 10))
+	req.WriteByte(' ')
+	req.WriteString(cmd)
+	for _, arg := range args {
+		req.WriteByte(' ')
+		req.WriteString(arg)
+	}
+	req.WriteByte('\n')
+	for _, p := range paths {
+		req.WriteString(EncodePathLine(p))
+		req.WriteByte('\n')
+	}
+	if encoded {
+		// The line is written even for an empty payload: the helper reads
+		// one line per encoded request and would otherwise wait for a line
+		// that never comes.
+		req.WriteString(base64.StdEncoding.EncodeToString(payload))
+		req.WriteByte('\n')
+	}
+	if _, err := io.WriteString(s.w, req.String()); err != nil {
+		s.broken = true
+		return nil, err
+	}
+	if !encoded && len(payload) > 0 {
+		// The raw payload carries no terminator of its own: the remote
+		// helper reads exactly as many bytes as the request announced, so
+		// a stray newline here would end up at the head of the next
+		// request.
+		if _, err := s.w.Write(payload); err != nil {
+			s.broken = true
+			return nil, err
+		}
+	}
+	if body != nil {
+		// A body that stops halfway leaves the remote host waiting for
+		// bytes that will never come, so there is no recovering the stream.
+		if err := body(s.w); err != nil {
+			s.broken = true
+			return nil, err
+		}
+	}
+	return s.readResponse(ctx, id, binary)
+}
+
+func (s *Session) readResponse(ctx context.Context, id uint64, binary bool) (*Response, error) {
+	prefix := "." + s.token + " " + strconv.FormatUint(id, 10) + " "
+	resp := &Response{}
+	for {
+		if err := ctx.Err(); err != nil {
+			// The response is only half-read. Reading forward to the
+			// terminator puts the stream back where the next request
+			// expects it, which costs the rest of one answer and saves a
+			// whole reconnect.
+			if drainErr := s.drainToTerminator(prefix, binary); drainErr != nil {
+				s.broken = true
+			}
+			return nil, err
+		}
+		line, err := s.readLine()
+		if err != nil {
+			s.broken = true
+			return nil, err
+		}
+		// The handshake is the one place where the terminator may not start
+		// its line: a motd, a shell warning or the echo of the uploaded
+		// script on a pseudo terminal can end without a newline and glue
+		// itself to the banner. Later responses are strict, the helper
+		// controls every byte by then.
+		if id == 0 {
+			if at := strings.Index(line, prefix); at > 0 {
+				line = line[at:]
+			}
+		}
+		if strings.HasPrefix(line, prefix) {
+			status, msg, _ := strings.Cut(strings.TrimSpace(line[len(prefix):]), " ")
+			if status != "ok" && status != "err" {
+				s.broken = true
+				return nil, fmt.Errorf("fishplus: bad terminator %q", line)
+			}
+			resp.Status = status
+			resp.Msg = strings.TrimSpace(msg)
+			return resp, nil
+		}
+		if id == 0 {
+			// Pre-handshake noise, drop it.
+			continue
+		}
+		if binary && strings.HasPrefix(line, "#") {
+			n, convErr := strconv.Atoi(line[1:])
+			if convErr != nil || n < 0 || n > MaxFrameLen {
+				s.broken = true
+				return nil, fmt.Errorf("fishplus: bad data frame header %q", line)
+			}
+			buf := make([]byte, n)
+			if _, err := io.ReadFull(s.r, buf); err != nil {
+				s.broken = true
+				return nil, err
+			}
+			resp.Data = append(resp.Data, buf...)
+			continue
+		}
+		resp.Lines = append(resp.Lines, line)
+	}
+}
+
+// DrainAfterCancelTimeout bounds how long the client will keep reading an
+// answer nobody wants any more. Past it the session is worth less than the
+// wait, and a reconnect is the cheaper answer.
+var DrainAfterCancelTimeout = 10 * time.Second
+
+// drainToTerminator reads and discards the rest of a response. It is what
+// makes cancelling a request survivable: the terminator is unforgeable, so
+// finding it means the stream is back at a request boundary no matter what
+// the remote tools printed on the way.
+//
+// It cannot interrupt a read that is already blocked — nothing here can, and
+// the ordinary path has the same property — so the deadline is checked
+// between lines rather than during one.
+func (s *Session) drainToTerminator(prefix string, binary bool) error {
+	deadline := time.Now().Add(DrainAfterCancelTimeout)
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("fishplus: the remote host did not finish a cancelled answer within %s", DrainAfterCancelTimeout)
+		}
+		line, err := s.readLine()
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(line, prefix) {
+			return nil
+		}
+		if !binary || !strings.HasPrefix(line, "#") {
+			continue
+		}
+		// A frame header has to be honoured even while discarding, or its
+		// payload would be read as lines and a byte that happens to be a
+		// newline would look like a boundary.
+		n, convErr := strconv.Atoi(line[1:])
+		if convErr != nil || n < 0 || n > MaxFrameLen {
+			return fmt.Errorf("fishplus: bad data frame header %q while draining", line)
+		}
+		if _, err := io.CopyN(io.Discard, s.r, int64(n)); err != nil {
+			return err
+		}
+	}
+}
+func (s *Session) readLine() (string, error) {
+	var buf []byte
+	for {
+		chunk, err := s.r.ReadSlice('\n')
+		if len(buf)+len(chunk) > MaxLineLen {
+			return "", fmt.Errorf("fishplus: response line exceeds %d bytes", MaxLineLen)
+		}
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		break
+	}
+	return strings.TrimRight(string(buf), "\r\n"), nil
+}
+
+// Ping asks the remote helper to echo the payload back. It doubles as a
+// keepalive and as a synchronization check.
+func (s *Session) Ping(ctx context.Context, payload string) (string, error) {
+	resp, err := s.ExecPath(ctx, "ping", payload)
+	if err != nil {
+		return "", err
+	}
+	if err := resp.Err("ping"); err != nil {
+		return "", err
+	}
+	return strings.Join(resp.Lines, "\n"), nil
+}
+
+// Noop is the cheapest possible round trip.
+func (s *Session) Noop(ctx context.Context) error {
+	resp, err := s.Exec(ctx, "noop")
+	if err != nil {
+		return err
+	}
+	return resp.Err("noop")
+}
+
+// TryNoop validates an idle session without queueing behind another request.
+// attempted is false when the protocol mutex is already owned, which lets a
+// session pool open an independent connection instead of freezing a new panel
+// behind a long copy or scan. Once the noop has gone onto the wire it must
+// finish or the stream is no longer reusable; cancellation therefore closes
+// the transport to interrupt a peer that stopped answering.
+func (s *Session) TryNoop(ctx context.Context) (attempted bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s.closing.Load() {
+		return false, ErrBroken
+	}
+	// Once a noop is on the wire, a timeout must interrupt its blocked read.
+	// Without a closer the caller could return, but the worker would leak while
+	// holding both the protocol mutex and request gate forever.
+	if s.closer == nil {
+		return false, nil
+	}
+	if !s.tryAcquireRequest() {
+		return false, nil
+	}
+	if !s.mu.TryLock() {
+		s.releaseRequest()
+		return false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		s.mu.Unlock()
+		s.releaseRequest()
+		return false, err
+	}
+	done := make(chan error, 1)
+	// 0 means the response is still in flight, 1 means the worker owns normal
+	// completion, and 2 means the timeout path owns transport interruption.
+	// This makes the response/timeout boundary deterministic: a completed noop
+	// never loses the select lottery and gets its healthy session closed.
+	var outcome atomic.Uint32
+	go func() {
+		err := s.noopLocked(ctx)
+		outcome.CompareAndSwap(0, 1)
+		s.mu.Unlock()
+		s.releaseRequest()
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		return true, err
+	case <-ctx.Done():
+		if !outcome.CompareAndSwap(0, 2) {
+			// The response finished before cancellation won ownership. Wait for
+			// the worker's small local cleanup rather than closing a synchronized
+			// and otherwise healthy transport.
+			return true, <-done
+		}
+		// Close reaches an available transport without waiting for s.mu. That
+		// makes the blocked read fail and always poisons this half-read stream.
+		_ = s.Close()
+		return true, ctx.Err()
+	}
+}
+
+// noopLocked is the specialized request path used by TryNoop after it has
+// acquired s.mu with TryLock. Calling Exec here would attempt to lock it again.
+func (s *Session) noopLocked(ctx context.Context) error {
+	if s.closing.Load() || s.broken {
+		return ErrBroken
+	}
+	defer func() { s.lastUse = time.Now() }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.seq++
+	id := s.seq
+	if _, err := io.WriteString(s.w, strconv.FormatUint(id, 10)+" noop\n"); err != nil {
+		s.broken = true
+		return err
+	}
+	resp, err := s.readResponse(ctx, id, false)
+	if err != nil {
+		return err
+	}
+	return resp.Err("noop")
+}
+
+// Close tears the session down. The remote helper terminates on its own once
+// its stdin reaches EOF, so no farewell command is sent: a stuck remote must
+// never be able to block the UI thread inside Close.
+func (s *Session) Close() error {
+	s.closing.Store(true)
+	s.closeOnce.Do(func() {
+		// Wake requests waiting for the protocol gate even if the transport has
+		// no closer (or its Close cannot interrupt a currently blocked read).
+		// The active request still owns requestGate and may finish draining, but
+		// no new caller should remain queued behind a session that is closing.
+		close(s.closeCh)
+		// Interrupt a request blocked in Read without first waiting for the
+		// protocol mutex it owns. Closing a net.Conn/ShellStream is local and
+		// cannot wait for a farewell from a stuck remote.
+		if s.closer != nil {
+			s.closeErr = s.closer.Close()
+		}
+		// A Session may deliberately have no closer. Then a peer can leave a
+		// read blocked forever and there is nothing here that can wake it.
+		// closing is authoritative; update the lock-protected flag only when
+		// doing so cannot make Close wait for that peer.
+		if s.mu.TryLock() {
+			s.broken = true
+			s.mu.Unlock()
+		}
+	})
+	return s.closeErr
+}

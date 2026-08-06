@@ -114,44 +114,46 @@ func NewImageView(ctx context.Context, v vfs.VFS, path string) (*ImageView, erro
 	iv.gfxKey = fmt.Sprintf("f4.imageview:%p", iv)
 
 	iv.index = -1
-	iv.topBar = NewTopBar(func() string {
-		base := iv.path
-		if v != nil {
-			base = v.Base(iv.path)
-		} else {
-			base = filepath.Base(iv.path)
-		}
+	iv.topBar = NewTopBar(
+		func() string {
+			base := iv.path
+			if v != nil {
+				base = v.Base(iv.path)
+			} else {
+				base = filepath.Base(iv.path)
+			}
+			return " " + base
+		},
+		func() string {
+			state := iv.decoder
+			switch {
+			case iv.err != nil:
+				state = "error: " + iv.err.Error()
+			case iv.loading:
+				state += ", loading"
+			case iv.preview:
+				state += ", preview"
+			}
+			if iv.slideStop != nil {
+				state += ", slideshow"
+			}
 
-		state := iv.decoder
-		switch {
-		case iv.err != nil:
-			state = "error: " + iv.err.Error()
-		case iv.loading:
-			state += ", loading"
-		case iv.preview:
-			state += ", preview"
-		}
-		if iv.slideStop != nil {
-			state += ", slideshow"
-		}
+			position := ""
+			if iv.index >= 0 && len(iv.siblings) > 1 {
+				position = fmt.Sprintf(" │ %d/%d", iv.index+1, len(iv.siblings))
+			}
 
-		position := ""
-		if iv.index >= 0 && len(iv.siblings) > 1 {
-			position = fmt.Sprintf(" │ %d/%d", iv.index+1, len(iv.siblings))
-		}
+			position += iv.pickMark()
 
-		position += iv.pickMark()
-
-		// The scale of the last frame is the honest one: it already knows
-		// how large the window is.
-		scale := iv.lastScale
-		if scale <= 0 {
-			scale = iv.zoom
-		}
-		return fmt.Sprintf(" %s │ %dx%d │ %d%%%s │ %s ",
-			base, iv.display().Width, iv.display().Height,
-			int(scale*100+0.5), position, state)
-	})
+			scale := iv.lastScale
+			if scale <= 0 {
+				scale = iv.zoom
+			}
+			return fmt.Sprintf(" %dx%d │ %d%%%s │ %s ",
+				iv.display().Width, iv.display().Height,
+				int(scale*100+0.5), position, state)
+		},
+	)
 	iv.topBar.GetAttr = iv.titleAttr
 	iv.topBar.SetVisible(true)
 	iv.SetCanFocus(true)

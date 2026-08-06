@@ -200,6 +200,9 @@ face of the bridge and `Host.FFI.*` the protocol underneath it for guests
   check inside `RPCPlugin.Init()`. It queries the permission gate before spawning
   any subprocess, gracefully refusing to load the plugin if denied. Headless test
   scenarios are auto-approved to prevent blocking runs.
+- **Step 6.2: Complete API Documentation.** `PLUGINS.md` was completely rewritten to include
+  comprehensive API documentation, object model comparisons with classic Far and modern editors,
+  and a step-by-step PlugRing publication guide. Historical rationale was consolidated.
 - **Step 4c: choosing where `Ctrl+.` records to.** Implemented a configuration
   option (`MacroRecordFormat`) with a UI selector in Panel Settings. Overwriting or
   deleting recorded macros clears them from both backends to prevent conflicts.

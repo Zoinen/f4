@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -58,10 +60,16 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 	bCtx, bCancel := context.WithCancel(context.Background())
 	if cpID == 65001 {
 		backend = &ViewerBackend{
-			file:      f,
-			size:      size,
-			ctx:       bCtx,
-			cancelCtx: bCancel,
+			file:         f,
+			size:         size,
+			path:         path,
+			totalLines:   -1,
+			totalForSize: -1,
+			ctx:          bCtx,
+			cancelCtx:    bCancel,
+		}
+		if indexer, ok := v.(vfs.LineIndexer); ok {
+			backend.indexer = indexer
 		}
 	} else {
 		fullData := make([]byte, size)
@@ -75,10 +83,13 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		}
 		memFile := &vfs.MemoryReadAtCloser{Data: decoded}
 		backend = &ViewerBackend{
-			file:      memFile,
-			size:      int64(len(decoded)),
-			ctx:       bCtx,
-			cancelCtx: bCancel,
+			file:         memFile,
+			size:         int64(len(decoded)),
+			path:         path,
+			totalLines:   -1,
+			totalForSize: -1,
+			ctx:          bCtx,
+			cancelCtx:    bCancel,
 		}
 	}
 
@@ -121,46 +132,47 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		vtui.FrameManager.Redraw()
 	}
 	vv.menuBar = vtui.NewMenuBar(nil)
-	vv.menuBar.Items = []vtui.MenuBarItem{
-		{Label: "&File", SubItems: []vtui.MenuItem{{Text: "E&xit", Command: vtui.CmClose}}},
-		{Label: "&View", SubItems: []vtui.MenuItem{{Text: "&Hex", Command: vtui.CmDefault}, {Text: "&Wrap"}}},
-		{Label: "&Options", SubItems: []vtui.MenuItem{{Text: "&Settings"}}},
-	}
-	vv.topBar = NewTopBar(func() string {
-		percent := 0
-		size := vv.backend.Size()
-		if size > 0 {
-			viewHeightBytes := int64(vv.Y2 - vv.Y1)
+	vv.topBar = NewTopBar(
+		func() string {
+			base := ""
+			if vv.vfs != nil {
+				base = vv.vfs.Base(vv.path)
+			} else {
+				base = filepath.Base(vv.path)
+			}
+			return " " + base
+		},
+		func() string {
+			percent := 0
+			size := vv.backend.Size()
+			if size > 0 {
+				viewHeightBytes := int64(vv.Y2 - vv.Y1)
+				if vv.HexMode {
+					viewHeightBytes *= 16
+				} else {
+					viewHeightBytes *= 80
+				}
+				if size <= viewHeightBytes {
+					percent = 100
+				} else {
+					denominator := size - viewHeightBytes
+					percent = int((vv.TopOffset * 100) / denominator)
+				}
+				if percent < 0 {
+					percent = 0
+				}
+				if percent > 100 {
+					percent = 100
+				}
+			}
+			mode := Msg("Viewer.ModeText")
 			if vv.HexMode {
-				viewHeightBytes *= 16
-			} else {
-				viewHeightBytes *= 80
+				mode = Msg("Viewer.ModeHex")
 			}
-			if size <= viewHeightBytes {
-				percent = 100
-			} else {
-				denominator := size - viewHeightBytes
-				percent = int((vv.TopOffset * 100) / denominator)
-			}
-			if percent < 0 {
-				percent = 0
-			}
-			if percent > 100 {
-				percent = 100
-			}
-		}
-		mode := Msg("Viewer.ModeText")
-		if vv.HexMode {
-			mode = Msg("Viewer.ModeHex")
-		}
-		base := ""
-		if vv.vfs != nil {
-			base = vv.vfs.Base(vv.path)
-		} else {
-			base = filepath.Base(vv.path)
-		}
-		return fmt.Sprintf(" %s │ %s │ %d%% ", base, mode, percent)
-	})
+			cpName := vfs.DisplayCodepageName(vv.Codepage)
+			return fmt.Sprintf(" %s │ %s │ %d%%     ", cpName, mode, percent)
+		},
+	)
 	vv.topBar.SetVisible(true)
 	vv.SetCanFocus(true)
 	vv.SetFocus(true)
@@ -180,7 +192,11 @@ func (vv *ViewerView) SetPosition(x1, y1, x2, y2 int) {
 	}
 }
 
+// GetMenuBar returns the viewer's menu bar. Items are regenerated from
+// the action registry on every call, so shortcuts and toggle states are
+// always current.
 func (vv *ViewerView) GetMenuBar() *vtui.MenuBar {
+	vv.menuBar.Items = BuildMenuBarItems("Viewer")
 	return vv.menuBar
 }
 
@@ -442,16 +458,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
-	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	if e.VirtualKeyCode == vtinput.VK_TAB && ctrl {
 		return false
-	}
-
-	// Alt+Ins — global screen grabber (far/far2l parity).
-	if e.VirtualKeyCode == vtinput.VK_INSERT && alt && !ctrl && !shift {
-		OpenGrabber()
-		return true
 	}
 
 	//height := int64(vv.Y2 - vv.Y1 + 1)
@@ -463,34 +472,6 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 	contentHeight := int64(vv.Y2 - vv.Y1) // height - 1 (status line)
 
 	switch e.VirtualKeyCode {
-	case vtinput.VK_ESCAPE, vtinput.VK_F10, vtinput.VK_F3:
-		vv.Close()
-		return true
-
-	case vtinput.VK_F2:
-		vv.WrapMode = !vv.WrapMode
-		return true
-
-	case vtinput.VK_F4:
-		vv.HexMode = !vv.HexMode
-		if vv.HexMode {
-			vv.TopOffset &= ^int64(0xF)
-		}
-		return true
-	case vtinput.VK_F6:
-		vtui.FrameManager.EmitCommand(CmSwitchToEditor, vv)
-		return true
-
-	case vtinput.VK_F8:
-		if shift {
-			vv.showCodepageDialog()
-		} else {
-			next := vfs.GetNextFastSwitchCodepage(vv.Codepage)
-			vv.ReloadWithCodepage(next)
-			vtui.ShowToast(fmt.Sprintf("Codepage: %d", next), time.Second)
-		}
-		return true
-
 	case vtinput.VK_DOWN:
 		if vv.eofVisible {
 			return true // Prevent scrolling past End of File
@@ -589,11 +570,77 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 	case vtinput.VK_END:
 		vv.jumpToEnd()
 		return true
+
+	case vtinput.VK_F8:
+		if alt {
+			vv.askGoto()
+			return true
+		}
+	}
+
+	// Injected-event fallback: KeyBar mouse clicks reach ProcessKey via
+	// InjectEvents, which skips FrameManager.EventFilter and therefore the
+	// hotkey manager. Route them through the same lookup so clicking F2/F5/
+	// F7/… on the bottom bar triggers the configured Viewer action.
+	if MacroMgr.LookupHotkey(e) {
+		return true
 	}
 
 	return false
 }
 
+// askGoto prompts for a position. In text mode that is a line number, which
+// only means something once someone has counted the newlines; in hex mode it
+// is a byte offset, which needs no counting at all.
+func (vv *ViewerView) askGoto() {
+	title, prompt := " Go to line ", "Line number:"
+	if vv.HexMode {
+		title, prompt = " Go to offset ", "Byte offset:"
+	}
+	vtui.InputBoxOn(vv, title, prompt, "", func(s string) {
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil || n < 0 {
+			return
+		}
+		vv.gotoPosition(n)
+	})
+}
+
+func (vv *ViewerView) gotoPosition(n int64) {
+	if vv.HexMode {
+		size := vv.backend.Size()
+		if n >= size {
+			n = size - 1
+		}
+		if n < 0 {
+			n = 0
+		}
+		vv.TopOffset = n &^ 0xF
+		vtui.FrameManager.Redraw()
+		return
+	}
+
+	// Finding a line can mean a remote round trip or, on a file system that
+	// cannot index, a walk over the file, so it does not happen on the UI
+	// thread and the user can cancel it.
+	vv.Busy = true
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		off, ok := vv.backend.LineStart(ctx.Context, n)
+		ctx.RunOnUI(func() {
+			vv.Busy = false
+			if !ok {
+				if ctx.Err() == nil {
+					vtui.ShowMessageOn(vv, " Go to line ",
+						fmt.Sprintf("Line %d is past the end of the file.", n), []string{"&Ok"})
+				}
+				return
+			}
+			vv.TopOffset = off
+			vv.eofVisible = false
+			vtui.FrameManager.Redraw()
+		})
+	})
+}
 func (vv *ViewerView) jumpToEnd() {
 	contentHeight := int64(vv.Y2 - vv.Y1)
 	if vv.HexMode {
@@ -627,14 +674,17 @@ func (vv *ViewerView) jumpToEnd() {
 			chunkSize = 16 * 1024
 		}
 
+		// Ctrl+End must be a random-access operation. A remote line index has
+		// to scan the entire file to count its lines; for a binary file that
+		// usually yields line 1 at offset 0 and makes the viewer download the
+		// whole file as well. One backend cache window is enough to lay out the
+		// final screen, including wrapped text, and maps to a bounded FISH+
+		// range read regardless of the file size.
+		const tailWindow = 192 * 1024
+		if chunkSize < tailWindow {
+			chunkSize = tailWindow
+		}
 		startOff := vv.backend.Size() - chunkSize
-		if startOff < 0 {
-			startOff = 0
-		}
-
-		if startOff < vv.backend.Size()-1024*1024 {
-			startOff = vv.backend.Size() - 1024*1024
-		}
 		if startOff < 0 {
 			startOff = 0
 		}
@@ -649,8 +699,6 @@ func (vv *ViewerView) jumpToEnd() {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-		startOff = vv.backend.FindLineStart(startOff)
-
 		var offsets []int64
 		currOff := startOff
 
@@ -722,6 +770,10 @@ func (vv *ViewerView) jumpToEnd() {
 	})
 }
 func (vv *ViewerView) ReloadWithCodepage(cpID int) {
+	if vv.Codepage == cpID {
+		return
+	}
+
 	f, err := vv.vfs.Open(context.Background(), vv.path)
 	if err != nil {
 		return
@@ -732,15 +784,22 @@ func (vv *ViewerView) ReloadWithCodepage(cpID int) {
 	if cpID == 65001 {
 		bCtx, bCancel := context.WithCancel(context.Background())
 		backend = &ViewerBackend{
-			file:      f,
-			size:      size,
-			ctx:       bCtx,
-			cancelCtx: bCancel,
+			file:         f,
+			size:         size,
+			path:         vv.path,
+			totalLines:   -1,
+			totalForSize: -1,
+			ctx:          bCtx,
+			cancelCtx:    bCancel,
+		}
+		if indexer, ok := vv.vfs.(vfs.LineIndexer); ok {
+			backend.indexer = indexer
 		}
 	} else {
 		defer f.Close()
 		fullData := make([]byte, size)
 		_, _ = f.ReadAt(context.Background(), fullData, 0)
+
 		decoded, err := vfs.DecodeBytes(fullData, cpID)
 		if err != nil {
 			decoded = fullData
@@ -749,35 +808,65 @@ func (vv *ViewerView) ReloadWithCodepage(cpID int) {
 		memFile := &vfs.MemoryReadAtCloser{Data: decoded}
 		bCtx, bCancel := context.WithCancel(context.Background())
 		backend = &ViewerBackend{
-			file:      memFile,
-			size:      int64(len(decoded)),
-			ctx:       bCtx,
-			cancelCtx: bCancel,
+			file:         memFile,
+			size:         int64(len(decoded)),
+			path:         vv.path,
+			totalLines:   -1,
+			totalForSize: -1,
+			ctx:          bCtx,
+			cancelCtx:    bCancel,
 		}
 	}
 
 	oldBackend := vv.backend
 	vv.backend = backend
 	vv.Codepage = cpID
-	vv.TopOffset = 0
+	vv.TopOffset = vv.backend.FindLineStart(vv.TopOffset)
+
 	if oldBackend != nil {
 		oldBackend.Close()
 	}
 	vtui.FrameManager.Redraw()
 }
 
+func (vv *ViewerView) ReloadWithAutoDetect() {
+	f, err := vv.vfs.Open(context.Background(), vv.path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	size := f.Size()
+	detectLen := 16 * 1024
+	if int64(detectLen) > size {
+		detectLen = int(size)
+	}
+	header := make([]byte, detectLen)
+	_, _ = f.ReadAt(context.Background(), header, 0)
+
+	cpID := vfs.DetectEncoding(header, AppConfig.ViewerAutodetectCodePage, AppConfig.ViewerDefaultCodePage)
+	vv.ReloadWithCodepage(cpID)
+}
+
 func (vv *ViewerView) showCodepageDialog() {
+	items, currIdx := vfs.BuildCodepageMenuItems(vv.Codepage, AppConfig.ViewerAutodetectCodePage)
 	menu := vtui.NewVMenu(" Code pages ")
-	for _, cp := range vfs.AvailableCodepages {
-		menu.AddItem(vtui.MenuItem{Text: fmt.Sprintf("%5d  %s", cp.ID, cp.Name)})
+	for _, item := range items {
+		menu.AddItem(item)
 	}
 
-	w, h := 45, len(vfs.AvailableCodepages)+2
-	if h > 15 {
-		h = 15
+	w, h := 45, len(items)+2
+	scrW := vtui.FrameManager.GetScreenSize()
+	scrH := vtui.FrameManager.GetScreenHeight()
+	maxH := scrH - 2
+	if maxH < 5 {
+		maxH = 5
 	}
-	x := (vv.X2 - vv.X1 - w) / 2
-	y := (vv.Y2 - vv.Y1 - h) / 2
+	if h > maxH {
+		h = maxH
+	}
+	x := (scrW - w) / 2
+	y := (scrH - h) / 2
 	if x < 0 {
 		x = 0
 	}
@@ -788,10 +877,22 @@ func (vv *ViewerView) showCodepageDialog() {
 
 	menu.OnAction = func(idx int) {
 		menu.Close()
-		if idx >= 0 && idx < len(vfs.AvailableCodepages) {
-			vv.ReloadWithCodepage(vfs.AvailableCodepages[idx].ID)
+		if idx >= 0 && idx < len(menu.Items) {
+			if cpID, ok := menu.Items[idx].UserData.(int); ok {
+				if cpID == -1 {
+					AppConfig.ViewerAutodetectCodePage = !AppConfig.ViewerAutodetectCodePage
+					SaveConfig()
+					vv.ReloadWithAutoDetect()
+				} else {
+					AppConfig.ViewerAutodetectCodePage = false
+					AppConfig.ViewerDefaultCodePage = cpID
+					SaveConfig()
+					vv.ReloadWithCodepage(cpID)
+				}
+			}
 		}
 	}
+	menu.SetSelectPos(currIdx)
 	vtui.FrameManager.Push(menu)
 }
 
@@ -816,7 +917,7 @@ func (vv *ViewerView) ResizeConsole(w, h int) { vv.SetPosition(0, 0, w-1, h-2) }
 
 func (vv *ViewerView) Close() {
 	if GlobalFileState != nil && vv.path != "" {
-		GlobalFileState.SaveViewerStateAsync(vv.path, vv.TopOffset, vv.WrapMode, vv.HexMode)
+		GlobalFileState.SaveViewerStateAsync(FileStateKey(vv.vfs, vv.path), vv.TopOffset, vv.WrapMode, vv.HexMode)
 	}
 	if vv.backend != nil {
 		vv.backend.Close()
@@ -828,12 +929,25 @@ func (vv *ViewerView) Close() {
 }
 
 func (vv *ViewerView) GetKeyLabels() *vtui.KeySet {
-	return &vtui.KeySet{
+	nextCp := vfs.GetNextFastSwitchCodepage(vv.Codepage)
+	nextCpName := vfs.DisplayCodepageName(nextCp)
+
+	fallbacks := &vtui.KeySet{
 		Normal: vtui.KeyBarLabels{
 			Msg("KeyBar.ViewerF1"), Msg("KeyBar.ViewerF2"), Msg("KeyBar.ViewerF3"), Msg("KeyBar.ViewerF4"),
-			"", "", Msg("KeyBar.ViewerF7"), "", "", Msg("KeyBar.ViewerF10"),
+			"", "", Msg("KeyBar.ViewerF7"), nextCpName, "", Msg("KeyBar.ViewerF10"),
+		},
+		Alt: vtui.KeyBarLabels{
+			"", "", "", "", "", "", "", Msg("KeyBar.ViewerAltF8"), "", "",
 		},
 	}
+	res := KeyBarLabelsForArea("Viewer", fallbacks)
+	if hm := GlobalHotkeysMgr; hm != nil {
+		if hm.GetAction("Viewer", "F8") == "Viewer.CodepageNext" {
+			res.Normal[7] = nextCpName
+		}
+	}
+	return res
 }
 
 func (vv *ViewerView) GetType() vtui.FrameType { return vtui.TypeUser + 3 }

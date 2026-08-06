@@ -730,11 +730,20 @@ func (q *QuickViewPanel) refreshCache(path string, item fileEntry) {
 		return
 	}
 	buf = buf[:n]
-	if looksBinary(buf) {
+
+	cpID := vfs.DetectEncoding(buf, AppConfig.ViewerAutodetectCodePage, AppConfig.ViewerDefaultCodePage)
+	var decodedBuf []byte = buf
+	if cpID != 65001 {
+		if decoded, err := vfs.DecodeBytes(buf, cpID); err == nil {
+			decodedBuf = decoded
+		}
+	}
+
+	if looksBinary(decodedBuf) {
 		q.cacheBinary = true
 		q.cacheLines = hexDumpLines(buf)
 	} else {
-		lines := splitTextLines(string(buf))
+		lines := splitTextLines(string(decodedBuf))
 		if n := len(lines); n > 0 && lines[n-1] == "" {
 			lines = lines[:n-1]
 		}

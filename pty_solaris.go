@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -65,6 +66,10 @@ func GetSystemShell() string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		return "/bin/sh"
+	}
+	base := filepath.Base(shell)
+	if base == "fish" || base == "csh" || base == "tcsh" {
+		return "bash"
 	}
 	return shell
 }
