@@ -470,11 +470,7 @@ func (d *dummyReporter) UpdateTransfer(action, filename string, currentPct int, 
 func (d *dummyReporter) IsCancelled() bool { return false }
 
 func TestArchiveVFSCopyBulk(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "f4-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	zipPath := filepath.Join(tmpDir, "test.zip")
 	f, err := os.Create(zipPath)
@@ -543,11 +539,7 @@ func TestArchiveVFSCopyBulk(t *testing.T) {
 	}
 }
 func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "f4-test-tar-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	tarPath := filepath.Join(tmpDir, "test.tar")
 	f, err := os.Create(tarPath)
@@ -625,11 +617,7 @@ func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
 }
 
 func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "f4-test-queue-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	zipPath := filepath.Join(tmpDir, "test.zip")
 	f, err := os.Create(zipPath)

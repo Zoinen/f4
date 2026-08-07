@@ -67,8 +67,8 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	for i, item := range items {
 		gotNames[i] = item.Name
 		gotExecutable[i] = item.IsExecutable
-		if item.IsDir {
-			t.Errorf("device row %q unexpectedly marked as directory", item.Name)
+		if !item.IsDir {
+			t.Errorf("device row %q is not marked as directory", item.Name)
 		}
 		if !item.NoExtension {
 			t.Errorf("device row %q may be mistaken for a filename with an extension", item.Name)
@@ -85,6 +85,13 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	if !reflect.DeepEqual(gotExecutable, []bool{true, false, false}) {
 		t.Fatalf("executable flags = %#v", gotExecutable)
 	}
+	statItem, err := manager.Stat(context.Background(), "Pixel 9 (serial-z)")
+	if err != nil {
+		t.Fatalf("Stat online device: %v", err)
+	}
+	if !statItem.IsDir {
+		t.Fatalf("Stat online device is not a directory: %#v", statItem)
+	}
 
 	// Refresh performs discovery again and atomically replaces stale rows.
 	source.devices = []DeviceInfo{{Serial: "new", State: DeviceStateOnline, Model: "New phone"}}
@@ -100,6 +107,13 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	}
 	if _, err := manager.Stat(context.Background(), "Pixel 9 (serial-z)"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale device Stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestDeviceProviderOpensVirtualDirectories(t *testing.T) {
+	provider := &deviceProvider{}
+	if !provider.OpensVirtualDirectories() {
+		t.Fatal("device provider does not open directory-rendered device rows")
 	}
 }
 

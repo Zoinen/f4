@@ -37,9 +37,9 @@ drop, because gogpu reports nothing before it. The destination comes from
 the pointer rather than from the position gogpu reports, which is always
 0,0; see vtui's DRAGDROP.md. It needs gogpu v0.50.0 or later.
 
-Dragging out under gogpu works from gogpu 0.50.1 on. Everything that broke
-it was in gogpu's own XDND source and is fixed upstream; on 0.50.0 the
-gesture is handed over, runs, and comes back cancelled every time.
+Both directions under gogpu need gogpu 0.50.1 or later. Before it, a drag
+out reached no target and every drop landed in the first cell of the
+screen; everything that caused either was in gogpu itself.
 
 ## When nothing happens
 

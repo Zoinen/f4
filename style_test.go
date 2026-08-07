@@ -21,23 +21,23 @@ func TestAvailableColorStylesIncludesBuiltInsAndUserStyles(t *testing.T) {
 
 	styles := AvailableColorStyles()
 	if len(styles) != 4 {
-		t.Fatalf("expected 4 styles (Modern, Classic, Far2l Dark, Solarized); got %v", styleNames(styles))
+		t.Fatalf("expected 4 styles (Modern, Classic, Default Dark, Solarized); got %v", styleNames(styles))
 	}
 	if styles[0].Name != "Modern" || styles[1].Name != "Classic" {
 		t.Fatalf("first two styles should be Modern and Classic, got %v", styleNames(styles[:2]))
 	}
-	// Check that both Far2l Dark and Solarized are present
-	foundFar2l, foundSolarized := false, false
+	// Check that both Default Dark and Solarized are present
+	foundDefaultDark, foundSolarized := false, false
 	for _, s := range styles {
-		if s.Name == "Far2l Dark" {
-			foundFar2l = true
+		if s.Name == "Default Dark" {
+			foundDefaultDark = true
 		}
 		if s.Name == "Solarized" {
 			foundSolarized = true
 		}
 	}
-	if !foundFar2l || !foundSolarized {
-		t.Fatalf("expected Far2l Dark and Solarized, got %v", styleNames(styles))
+	if !foundDefaultDark || !foundSolarized {
+		t.Fatalf("expected Default Dark and Solarized, got %v", styleNames(styles))
 	}
 }
 
@@ -46,6 +46,10 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	userDir := t.TempDir()
 	getUserStylesDir = func() string { return userDir }
 	defer func() { getUserStylesDir = oldDir }()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
 
 	if err := ApplyColorStyle("Modern"); err != nil {
 		t.Fatal(err)

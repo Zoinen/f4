@@ -1969,7 +1969,7 @@ func (ev *EditorView) GetKeyLabels() *vtui.KeySet {
 	return res
 }
 func (ev *EditorView) showSearchDialog() {
-	dlgW, dlgH := 60, 15
+	dlgW, dlgH := 66, 15
 	dlg := vtui.NewCenteredDialog(dlgW, dlgH, Msg("Viewer.SearchTitle"))
 	dlg.ShowClose = true
 
@@ -2180,7 +2180,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 }
 
 func (ev *EditorView) showReplaceDialog() {
-	dlgW, dlgH := 60, 19
+	dlgW, dlgH := 66, 19
 	dlg := vtui.NewCenteredDialog(dlgW, dlgH, " Replace ")
 	dlg.ShowClose = true
 

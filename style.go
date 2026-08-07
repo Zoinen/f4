@@ -91,14 +91,35 @@ func AvailableColorStyles() []ColorStyle {
 	return styles
 }
 
+// userColorOverridesPath points at the personal farcolors.ini that sits on top
+// of whichever style is active. It is a variable for the same reason
+// getUserStylesDir is: tests need to point it somewhere harmless.
+var userColorOverridesPath = func() string {
+	return filepath.Join(GetF4ConfigDir(), "farcolors.ini")
+}
+
+// ApplyColorStyle rebuilds the palette from scratch: built-in defaults, then
+// the named style, then the user's own farcolors.ini. Every caller goes
+// through here, so switching styles at runtime lands on exactly the palette a
+// restart would produce — previously the overrides were applied only during
+// startup and silently disappeared until the next launch.
 func ApplyColorStyle(name string) error {
 	for _, style := range AvailableColorStyles() {
 		if strings.EqualFold(style.Name, name) {
 			vtui.SetDefaultPalette()
 			SetDefaultF4Palette()
-			InitColors(style.ini)
+			ApplyColorIni(style.ini)
+			if path := userColorOverridesPath(); fileExists(path) {
+				ApplyColorIni(LoadIni(path))
+			}
+			FinishColors()
 			return nil
 		}
 	}
 	return fmt.Errorf("color style %q not found", name)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

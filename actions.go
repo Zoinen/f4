@@ -1029,6 +1029,12 @@ func actionViewerSearch(vv *ViewerView) {
 }
 
 func actionExecute(pf *PanelsFrame, v vfs.VFS, dir, name, path string) {
+	// User-defined file associations for Enter (mirrors far2l F9 →
+	// Commands → File associations). A matching association intercepts
+	// before the runnable / xdg-open fallback; no match → default flow.
+	if tryFileAssociation(pf, AssocExecute) {
+		return
+	}
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		if _, isLocal := v.(*vfs.OSVFS); isLocal {
 			if fi, err := os.Stat(path); err == nil {
@@ -1180,6 +1186,11 @@ func actionViewFile(pf *PanelsFrame) {
 			actionCalcDirSize(pf, fsp, idx)
 			return
 		}
+		// A matching View association intercepts before the built-in
+		// viewer, so users can wire F3 to feh, less, or anything else.
+		if tryFileAssociation(pf, AssocView) {
+			return
+		}
 		name := fsp.GetSelectedName()
 		path := fsp.vfs.Join(fsp.vfs.GetPath(), name)
 		actionOpenViewer(pf, fsp.vfs, path)
@@ -1258,6 +1269,11 @@ func actionEditFile(pf *PanelsFrame) {
 		}
 		if fsp.entries[idx].IsDir {
 			actionFileAttributes(pf)
+			return
+		}
+		// A matching Edit association intercepts before the built-in
+		// editor (or the external one if UseExternalEditor is on).
+		if tryFileAssociation(pf, AssocEdit) {
 			return
 		}
 		name := fsp.GetSelectedName()
@@ -2033,7 +2049,7 @@ func actionFindFile(pf *PanelsFrame) {
 	vtui.FrameManager.Push(dlg)
 }
 func actionPanelSettings(pf *PanelsFrame) {
-	const dialogHeight = 34
+	const dialogHeight = 36
 	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
@@ -2043,10 +2059,10 @@ func actionPanelSettings(pf *PanelsFrame) {
 		chkHidden.State = 1
 	}
 
-	chkHighlight := vtui.NewCheckbox(0, 0, Msg("PanelSettings.HighlightDir"), false)
-	chkHighlight.State = 0
-	if AppConfig.HighlightDir {
-		chkHighlight.State = 1
+	chkDirPrefix := vtui.NewCheckbox(0, 0, Msg("PanelSettings.ShowDirPrefix"), false)
+	chkDirPrefix.State = 0
+	if AppConfig.ShowDirPrefix {
+		chkDirPrefix.State = 1
 	}
 
 	chkSeparateExtensions := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SeparateExtensions"), false)
@@ -2059,7 +2075,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 		Msg("PanelSettings.ScrollbarsMinimal"),
 		Msg("PanelSettings.ScrollbarsFull"),
 	}
-	comboScrollbars := vtui.NewComboBox(0, 0, 30, scrollbarModes)
+	comboScrollbars := vtui.NewComboBox(0, 0, 24, scrollbarModes)
 	comboScrollbars.DropdownOnly = true
 	comboScrollbars.Menu.SetSelectPos(int(AppConfig.PanelScrollbarMode))
 	comboScrollbars.Edit.SetText(scrollbarModes[AppConfig.PanelScrollbarMode])
@@ -2123,21 +2139,21 @@ func actionPanelSettings(pf *PanelsFrame) {
 	}
 
 	modes := []string{Msg("Op.Queue"), Msg("Op.Background"), Msg("Op.Foreground")}
-	comboMode := vtui.NewComboBox(0, 0, 30, modes)
+	comboMode := vtui.NewComboBox(0, 0, 24, modes)
 	comboMode.DropdownOnly = true
 	comboMode.Menu.SetSelectPos(AppConfig.DefaultFileOpMode)
 	comboMode.Edit.SetText(modes[AppConfig.DefaultFileOpMode])
 	lblMode := vtui.NewLabel(0, 0, Msg("PanelSettings.DefaultMode"), comboMode)
 
 	pathModes := []string{Msg("Op.PathNameOnly"), Msg("Op.PathFullPath"), Msg("Op.PathSrcDst")}
-	comboPath := vtui.NewComboBox(0, 0, 30, pathModes)
+	comboPath := vtui.NewComboBox(0, 0, 24, pathModes)
 	comboPath.DropdownOnly = true
 	comboPath.Menu.SetSelectPos(AppConfig.FileOpPathDisplay)
 	comboPath.Edit.SetText(pathModes[AppConfig.FileOpPathDisplay])
 	lblPath := vtui.NewLabel(0, 0, Msg("PanelSettings.PathDisplay"), comboPath)
 
 	macroModes := []string{"key_macros.ini (Legacy)", "Macros/scripts/*.lua"}
-	comboMacro := vtui.NewComboBox(0, 0, 30, macroModes)
+	comboMacro := vtui.NewComboBox(0, 0, 24, macroModes)
 	comboMacro.DropdownOnly = true
 	comboMacro.Menu.SetSelectPos(AppConfig.MacroRecordFormat)
 	comboMacro.Edit.SetText(macroModes[AppConfig.MacroRecordFormat])
@@ -2148,7 +2164,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	dlg.AddItem(chkHidden)
-	dlg.AddItem(chkHighlight)
+	dlg.AddItem(chkDirPrefix)
 	dlg.AddItem(chkSeparateExtensions)
 	dlg.AddItem(lblScrollbars)
 	dlg.AddItem(comboScrollbars)
@@ -2170,11 +2186,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 54-4, dialogHeight-4)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, dialogHeight-4)
 	vbox.Add(chkHidden, vtui.Margins{}, vtui.AlignLeft)
-	vbox.Add(chkHighlight, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkDirPrefix, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkSeparateExtensions, vtui.Margins{Top: 1}, vtui.AlignLeft)
-	rowScrollbars := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowScrollbars := vtui.NewHBoxLayout(0, 0, 56, 1)
 	rowScrollbars.Add(lblScrollbars, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowScrollbars.Add(comboScrollbars, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowScrollbars, vtui.Margins{}, vtui.AlignFill)
@@ -2188,22 +2204,22 @@ func actionPanelSettings(pf *PanelsFrame) {
 	vbox.Add(chkCPUGPU, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkEscToggle, vtui.Margins{Top: 1}, vtui.AlignLeft)
 
-	rowMode := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowMode := vtui.NewHBoxLayout(0, 0, 56, 1)
 	rowMode.Add(lblMode, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowMode.Add(comboMode, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowMode, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	rowPath := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowPath := vtui.NewHBoxLayout(0, 0, 56, 1)
 	rowPath.Add(lblPath, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowPath.Add(comboPath, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowPath, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	rowMacro := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	rowMacro := vtui.NewHBoxLayout(0, 0, 56, 1)
 	rowMacro.Add(lblMacro, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowMacro.Add(comboMacro, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowMacro, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	hbox := vtui.NewHBoxLayout(0, 0, 54-4, 1)
+	hbox := vtui.NewHBoxLayout(0, 0, 56, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
 	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
@@ -2215,7 +2231,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	btnCancel.OnClick = func() { dlg.Close() }
 	btnOk.OnClick = func() {
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
-		AppConfig.HighlightDir = chkHighlight.State == 1
+		AppConfig.ShowDirPrefix = chkDirPrefix.State == 1
 		AppConfig.SeparateFileExtensions = chkSeparateExtensions.State == 1
 		AppConfig.PanelScrollbarMode = PanelScrollbarMode(comboScrollbars.Menu.SelectPos)
 		AppConfig.SavePanelPaths = chkPaths.State == 1
@@ -2238,6 +2254,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 
 	vtui.FrameManager.Push(dlg)
 }
+
 func actionConfirmationsSettings(pf *PanelsFrame) {
 	dlg := vtui.NewCenteredDialog(44, 13, Msg("ConfirmationsSettings.Title"))
 	dlg.ShowClose = true
@@ -2391,7 +2408,7 @@ func actionUpdateSettings(pf *PanelsFrame) {
 }
 
 func actionAppearanceSettings(pf *PanelsFrame) {
-	const width, height = 60, 19
+	const width, height = 60, 21
 	dlg := vtui.NewCenteredDialog(width, height, Msg("AppearanceSettings.Title"))
 	dlg.ShowClose = true
 	// Snapshot the whole palette (not just the style name) so a
@@ -2444,6 +2461,12 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		chkCursor.State = 1
 	}
 
+	chkContrast := vtui.NewCheckbox(0, 0, Msg("AppearanceSettings.ColorCorrection"), false)
+	chkContrast.State = 0
+	if AppConfig.EnforceColorCorrection {
+		chkContrast.State = 1
+	}
+
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 	btnOk.IsDefault = true
 	btnExport := vtui.NewButton(0, 0, Msg("AppearanceSettings.ExportBtn"))
@@ -2458,6 +2481,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	dlg.AddItem(lblTitle)
 	dlg.AddItem(editTitle)
 	dlg.AddItem(chkCursor)
+	dlg.AddItem(chkContrast)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnExport)
 	dlg.AddItem(btnCancel)
@@ -2484,6 +2508,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	vbox.Add(rowTitle, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	vbox.Add(chkCursor, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkContrast, vtui.Margins{Top: 1}, vtui.AlignLeft)
 
 	buttons := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	buttons.HorizontalAlign = vtui.AlignCenter
@@ -2520,6 +2545,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		}
 		AppConfig.KeepTerminalCursor = chkCursor.State == 1
 		vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
+		AppConfig.EnforceColorCorrection = chkContrast.State == 1
 		SaveConfig()
 
 		dlg.SetExitCode(1)

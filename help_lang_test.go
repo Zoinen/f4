@@ -10,13 +10,9 @@ import (
 )
 
 func TestHelpLanguageSwitch(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "f4-help-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
-	err = os.MkdirAll(filepath.Join(tempDir, "help"), 0755)
+	err := os.MkdirAll(filepath.Join(tempDir, "help"), 0755)
 	if err != nil {
 		t.Fatalf("failed to create help dir: %v", err)
 	}

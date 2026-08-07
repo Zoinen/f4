@@ -1,13 +1,12 @@
 package vfs
 
 import (
+	"github.com/unxed/localecp"
+
 	"context"
 	"io"
-	"os"
 	"strings"
 	"testing"
-
-	"golang.org/x/text/encoding/charmap"
 )
 
 func TestCodepages_Basic(t *testing.T) {
@@ -35,33 +34,21 @@ func TestCodepages_Basic(t *testing.T) {
 }
 
 func TestCodepages_GetSystemEncoding(t *testing.T) {
-	origLang := os.Getenv("LANG")
-	origLcAll := os.Getenv("LC_ALL")
-	defer func() {
-		os.Setenv("LANG", origLang)
-		os.Setenv("LC_ALL", origLcAll)
-	}()
-
-	os.Setenv("LC_ALL", "")
-
-	os.Setenv("LANG", "ru_RU.UTF-8")
 	oem := GetSystemOEMEncoding()
 	ansi := GetSystemANSIEncoding()
-	if oem != charmap.CodePage866 {
-		t.Errorf("Expected CP866 for RU, got %v", oem)
+
+	if oem == nil {
+		t.Fatal("expected GetSystemOEMEncoding to return non-nil encoding")
 	}
-	if ansi != charmap.Windows1251 {
-		t.Errorf("Expected CP1251 for RU, got %v", ansi)
+	if ansi == nil {
+		t.Fatal("expected GetSystemANSIEncoding to return non-nil encoding")
 	}
 
-	os.Setenv("LANG", "cs_CZ.UTF-8")
-	oemCS := GetSystemOEMEncoding()
-	ansiCS := GetSystemANSIEncoding()
-	if oemCS != charmap.CodePage852 {
-		t.Errorf("Expected CP852 for CS, got %v", oemCS)
+	if oem != localecp.OEMEncoding {
+		t.Errorf("expected OEM encoding %v, got %v", localecp.OEMEncoding, oem)
 	}
-	if ansiCS != charmap.Windows1250 {
-		t.Errorf("Expected CP1250 for CS, got %v", ansiCS)
+	if ansi != localecp.ANSIEncoding {
+		t.Errorf("expected ANSI encoding %v, got %v", localecp.ANSIEncoding, ansi)
 	}
 }
 

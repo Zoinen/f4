@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
@@ -16,10 +15,6 @@ func TestOpenSolarisPTY_AllocationSequence(t *testing.T) {
 		t.Fatalf("OpenSolarisPTY failed: %v", err)
 	}
 	defer pty.Close()
-
-	// Удаление временных файлов-заглушек после теста
-	defer os.Remove(pty.Master.Name())
-	defer os.Remove(pty.Slave.Name())
 
 	// 1. Проверяем правильность полученного имени слейва
 	if pty.Name != "/dev/pts/42" {

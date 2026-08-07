@@ -5,17 +5,17 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
-
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
+	"github.com/woozymasta/png"
+	_ "image/gif"
+	_ "image/jpeg"
 )
 
 // ImageDecoder describes one way of turning file bytes into pixels. Several
@@ -285,16 +285,55 @@ func LoadImage(ctx context.Context, v vfs.VFS, path string) (*vtui.ImageSurface,
 	return DecodeImageContext(ctx, path, data[:n])
 }
 
-func decodeImageWithStdlib(data []byte) (*vtui.ImageSurface, error) {
-	img, _, err := image.Decode(bytes.NewReader(data))
+func decodeStdImageStream(r io.Reader) (*vtui.ImageSurface, error) {
+	img, _, err := image.Decode(r)
 	if err != nil {
 		return nil, err
+	}
+	return surfaceFromDecodedImage(img)
+}
+
+// surfaceFromDecodedImage maps 8-bit RGBA/NRGBA pixels straight to the
+// surface, skipping the copy+unpremultiply pass; others go via the generic
+// converter.
+func surfaceFromDecodedImage(img image.Image) (*vtui.ImageSurface, error) {
+	var dx, dy, stride int
+	var pix []byte
+	switch m := img.(type) {
+	case *image.NRGBA:
+		dx, dy, stride, pix = m.Rect.Dx(), m.Rect.Dy(), m.Stride, m.Pix
+	case *image.RGBA:
+		dx, dy, stride, pix = m.Rect.Dx(), m.Rect.Dy(), m.Stride, m.Pix
+	}
+	if dx > 0 && dy > 0 {
+		if surf := vtui.NewImageSurfaceFromPix(dx, dy, stride, pix); surf != nil && surf.Valid() {
+			return surf, nil
+		}
 	}
 	surf := vtui.NewImageSurfaceFromImage(img)
 	if surf == nil {
 		return nil, fmt.Errorf("unsupported image geometry")
 	}
 	return surf, nil
+}
+
+// decodeImageWithStdlib routes PNG to a faster decoder; the magic bytes,
+// not the extension, decide.
+func decodeImageWithStdlib(data []byte) (*vtui.ImageSurface, error) {
+	if isPNG(data) {
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		return surfaceFromDecodedImage(img)
+	}
+	return decodeStdImageStream(bytes.NewReader(data))
+}
+
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+func isPNG(data []byte) bool {
+	return len(data) >= len(pngSignature) && bytes.Equal(data[:len(pngSignature)], pngSignature)
 }
 
 func init() {

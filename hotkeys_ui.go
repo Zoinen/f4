@@ -45,7 +45,7 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 	dlg := vtui.NewCenteredDialog(w, h, " Hotkey Configurator ")
 	dlg.ShowClose = true
 
-	table := vtui.NewTable(0, 0, w-4, h-5, []vtui.TableColumn{
+	table := vtui.NewTable(0, 0, w-4, h-6, []vtui.TableColumn{
 		{Title: "Command", Width: 20},
 		{Title: "Key", Width: 12},
 		{Title: "Area", Width: 10},

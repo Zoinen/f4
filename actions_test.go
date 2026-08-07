@@ -984,11 +984,7 @@ func TestActionFindFile_Persistence(t *testing.T) {
 
 func TestSession_DiskPersistence(t *testing.T) {
 	// Создаем временную директорию для теста
-	tmpDir, err := os.MkdirTemp("", "f4-session-test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Перехватываем путь к ini файлу (в реальном коде он завязан на os.UserConfigDir)
 	// Для теста мы просто вручную вызовем SaveSession и проверим результат в файле.
@@ -1340,8 +1336,7 @@ func (m *mockSlowVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, err
 		case <-timer.C:
 		}
 	}
-	tmp, _ := os.CreateTemp("", "f4mock-*")
-	return &vfs.TempFileWrapper{File: tmp, SizeVal: 0, TempPath: tmp.Name()}, nil
+	return &vfs.MemoryReadAtCloser{Data: []byte("mock")}, nil
 }
 
 func TestActionOpenViewer_ProgressTask(t *testing.T) {

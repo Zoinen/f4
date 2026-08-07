@@ -58,8 +58,24 @@ the cursor, so that is defensible, but it is not the same test the keyboard now
 applies, and a click that lands on the cursor's own position cancels the jump
 for nothing.
 
+## Automated Layout Verification
+
+An automated layout validation suite has been implemented in `f4/dialog_layouts_test.go`.
+It acts as a single source of truth by iterating over all actions from `action_registry.go` and verifying their layout constraints (overlaps, border collisions, and multi-language overflows) across all available translation packs.
+
+- When creating or modifying dialogs, developers no longer need to write custom test logic; the layout test suite automatically discovers them as long as they are registered as standard actions.
+## File Association Test Race Condition Fixed
+We resolved a test-flake race condition in `TestFileAssociation_PickerRunsChosenCommand` where asynchronous panel refreshes (`f4/file_associations_dispatch_test.go`) would overwrite manually-mocked panel entries with actual repository root files (such as `.git`). This was fixed by physically creating the mock files and directories within the temporary test directory on disk before triggering the refresh.
+
 ## The indexer's batch size is a constant nobody has measured
 
 500 line offsets per batch, 64 KB per read. Both were picked to keep the UI
 thread from being flooded by a local file, and neither has been measured
-against a link where a read is a round trip.
+against a link where a read is a round trip.### Postponed far2l Color Porting (Roadmap / Future Tasks)
+
+The following color entities and features from `far2l` have been explicitly postponed during the initial alignment phase and remain on our future roadmap:
+- **Explicit Disabled Colors:** Transition to dedicated disabled color slots from themes/palette instead of using the dynamically computed `DimColor` fallback.
+- **Granular Lists & Comboboxes:** Support custom coloring for `Dialog.List.*` and `Dialog.Combo.*` sub-elements.
+- **Default Buttons:** Map and apply styling for `Dialog.DefaultButton.*` elements.
+- **Editor & Viewer Selection:** Map and support dedicated selection slots `Editor.Text.Selected` / `Viewer.Text.Selected` (currently falls back to standard text selection).
+- **Secondary Widgets:** Support `Clock`, `Panel.ScreensNumber`, and `Panel.DragText` slots.

@@ -50,8 +50,12 @@ func TestGenerateKeysHelpTopic_PanelNav(t *testing.T) {
 
 	for _, want := range []string{
 		"F3             - Open file in viewer",
-		"Ctrl+O / Esc   - Show or hide panels",
-		"Alt+F1         - Show the drive menu for the left panel",
+		// Panel.Toggle picked up Del and NumDel as aliases (#351), and
+		// keysFor sorts + joins them alphabetically, so the emitted
+		// prefix is now "Ctrl+O / Del / Esc / NumDel".
+		"Ctrl+O / Del / Esc / NumDel - Show or hide panels",
+		// Alt+F1 gained Ctrl+Shift+Left as an alias (same PR).
+		"Alt+F1 / Ctrl+Shift+Left - Show the drive menu for the left panel",
 		"Ctrl+PgUp      - Go to parent directory",
 		"Shift+Enter    - Open current file in the system file manager",
 		"Ctrl+Shift+F3 / F3 - Open terminal log in viewer",

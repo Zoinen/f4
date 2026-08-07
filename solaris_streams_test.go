@@ -16,7 +16,6 @@ func TestMockSolarisStreams_Lifecycle(t *testing.T) {
 		t.Fatalf("Failed to open mock master: %v", err)
 	}
 	defer master.Close()
-	defer os.Remove(master.Name())
 
 	// 2. Получаем имя слейва
 	slaveName, err := mock.GetPtsName(master)
@@ -33,7 +32,6 @@ func TestMockSolarisStreams_Lifecycle(t *testing.T) {
 		t.Fatalf("Failed to open mock slave: %v", err)
 	}
 	defer slave.Close()
-	defer os.Remove(slave.Name())
 
 	// 4. Пушим STREAMS модули (как это делает Illumos)
 	err = mock.IoctlPush(slave, "ptem")

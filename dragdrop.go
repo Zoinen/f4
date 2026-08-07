@@ -1,10 +1,10 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -308,7 +308,39 @@ func (pf *PanelsFrame) startDragOut(fsp *FileSystemPanel) bool {
 	names := fsp.GetMarkedNames()
 	paths, ok := localDragPaths(fsp, names)
 	if !ok {
-		vtui.ShowToast("Dragging files out of an archive or a network panel is not supported yet", 3*time.Second)
+		tempDir, err := os.MkdirTemp("", "f4drag-*")
+		if err != nil {
+			vtui.DebugLog("DND: failed to create temp dir for drag out: %v", err)
+			return false
+		}
+
+		src := fsp.vfs
+		dst := vfs.NewOSVFS(tempDir)
+
+		ExecuteFileOp(pf, src, dst, names, tempDir, false, 1, func() {
+			var dragPaths []string
+			for _, name := range names {
+				p := filepath.Join(tempDir, name)
+				if _, err := os.Stat(p); err == nil {
+					dragPaths = append(dragPaths, p)
+				}
+			}
+			if len(dragPaths) == 0 {
+				os.RemoveAll(tempDir)
+				return
+			}
+
+			payload := vtui.DragPayload{Kinds: []string{"text/uri-list"}, Paths: dragPaths}
+			go func() {
+				action, err := vtui.StartDrag(payload, vtui.DropCopy)
+				if err != nil {
+					vtui.DebugLog("DND: drag out failed: %v", err)
+				} else {
+					vtui.DebugLog("DND: drag out finished as %s", action)
+				}
+				os.RemoveAll(tempDir)
+			}()
+		})
 		return true
 	}
 

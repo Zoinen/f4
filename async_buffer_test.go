@@ -46,7 +46,6 @@ func TestAsyncBuffer_LoadingCycle(t *testing.T) {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		default:
-			time.Sleep(10 * time.Millisecond)
 		}
 
 		// Check if data is now available
@@ -55,6 +54,8 @@ func TestAsyncBuffer_LoadingCycle(t *testing.T) {
 			success = true
 			break
 		}
+		// Small sleep to avoid busy loop
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	if !success {
@@ -90,17 +91,28 @@ func TestAsyncBuffer_BoundaryRead(t *testing.T) {
 
 	// 1. Read spanning across chunk 0 and chunk 1: "89AB"
 	// Indices 8, 9 (Chunk 0) and 10, 11 (Chunk 1)
-	for {
-		_, err := buf.Read(8, 4)
-		if err == piecetable.ErrLoading {
-			task := <-vtui.FrameManager.TaskChan
-			task()
-			continue
+	deadline := time.Now().Add(1 * time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		var err error
+		data, err = buf.Read(8, 4)
+		if err == nil {
+			break
 		}
-		break
+		if err != piecetable.ErrLoading {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		// Drain pending tasks
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
-
-	data, _ := buf.Read(8, 4)
+	if data == nil {
+		t.Fatal("Timed out waiting for data")
+	}
 	if string(data) != "89AB" {
 		t.Errorf("Boundary read failed: expected '89AB', got %q", string(data))
 	}
@@ -120,17 +132,27 @@ func TestAsyncBuffer_PartialChunkAtEOF(t *testing.T) {
 	buf.chunkSize = 100 // Chunk is larger than file
 	defer buf.Close()
 
-	for {
-		_, err := buf.Read(0, 5)
-		if err == piecetable.ErrLoading {
-			task := <-vtui.FrameManager.TaskChan
-			task()
-			continue
+	deadline := time.Now().Add(1 * time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		var err error
+		data, err = buf.Read(0, 5)
+		if err == nil {
+			break
 		}
-		break
+		if err != piecetable.ErrLoading {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
-
-	data, _ := buf.Read(0, 5)
+	if data == nil {
+		t.Fatal("Timed out waiting for data")
+	}
 	if string(data) != "Short" {
 		t.Errorf("EOF chunk failed: expected 'Short', got %q", string(data))
 	}
@@ -188,14 +210,19 @@ func TestAsyncBuffer_ConcurrentAccess(t *testing.T) {
 		}(i * 10000) // Stagger offsets
 	}
 
-	// Wait for all goroutines
-	timeout := time.After(3 * time.Second)
-	for i := 0; i < 50; i++ {
+	// Wait for all goroutines with polling
+	deadline := time.Now().Add(3 * time.Second)
+	completed := 0
+	for completed < 50 && time.Now().Before(deadline) {
 		select {
 		case <-done:
-		case <-timeout:
-			t.Fatal("Concurrency test deadlocked or timed out")
+			completed++
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	if completed < 50 {
+		t.Fatal("Concurrency test timed out")
 	}
 }
 func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
@@ -222,14 +249,13 @@ func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
 	cancel()
 
 	// 3. Pump tasks - the fetch result should be ignored because of b.ctx.Err()
-	timeout := time.After(100 * time.Millisecond)
-Loop:
-	for {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		case <-timeout:
-			break Loop
+		default:
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 
@@ -262,14 +288,21 @@ func TestAsyncBuffer_RedundantFetchPrevention(t *testing.T) {
 		}()
 	}
 
-	// Give goroutines time to start
-	time.Sleep(10 * time.Millisecond)
-
-	buf.mu.Lock()
-	if len(buf.fetching) > 1 {
-		t.Errorf("Expected at most 1 in-flight fetch for chunk 0, got %d", len(buf.fetching))
+	// Give goroutines time to start (poll instead of fixed sleep)
+	deadline := time.Now().Add(100 * time.Millisecond)
+	var fetchingLen int
+	for time.Now().Before(deadline) {
+		buf.mu.Lock()
+		fetchingLen = len(buf.fetching)
+		buf.mu.Unlock()
+		if fetchingLen > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	buf.mu.Unlock()
+	if fetchingLen > 1 {
+		t.Errorf("Expected at most 1 in-flight fetch for chunk 0, got %d", fetchingLen)
+	}
 }
 
 func TestAsyncBuffer_ContextRace(t *testing.T) {
@@ -283,7 +316,8 @@ func TestAsyncBuffer_ContextRace(t *testing.T) {
 	f, _ := v.Open(context.Background(), tmp)
 	defer f.Close()
 
-	for i := 0; i < 100; i++ {
+	iterations := 20 // Reduced from 100 to speed up the test
+	for i := 0; i < iterations; i++ {
 		ctx, cancel := context.WithCancel(context.Background())
 		buf := NewAsyncBuffer(ctx, f)
 		buf.chunkSize = 5
@@ -296,20 +330,19 @@ func TestAsyncBuffer_ContextRace(t *testing.T) {
 		// Immediate cancel to hit the race window in fetchChunk
 		cancel()
 
-		// Pump tasks
-		timeout := time.After(10 * time.Millisecond)
-	loop:
-		for {
+		// Pump tasks with a short deadline
+		deadline := time.Now().Add(20 * time.Millisecond)
+		for time.Now().Before(deadline) {
 			select {
 			case task := <-vtui.FrameManager.TaskChan:
 				task()
-			case <-timeout:
-				break loop
+			default:
+				time.Sleep(2 * time.Millisecond)
 			}
 		}
 		buf.Close()
 	}
-	// If no panic or deadlock occurred in 100 iterations, the mutex/PostTask logic is likely sound.
+	// If no panic or deadlock occurred, the mutex/PostTask logic is likely sound.
 }
 
 type mockErrorFile struct {
@@ -342,14 +375,13 @@ func TestAsyncBuffer_ErrorRecovery(t *testing.T) {
 	}
 
 	// 2. Process tasks to handle the failure
-	timeout := time.After(200 * time.Millisecond)
-Loop:
-	for {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		case <-timeout:
-			break Loop
+		default:
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 

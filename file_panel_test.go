@@ -20,10 +20,6 @@ import (
 )
 
 func TestFileEntry_GetCellText(t *testing.T) {
-	// Ensure predictable environment for this test
-	orig := AppConfig.HighlightDir
-	AppConfig.HighlightDir = false
-	defer func() { AppConfig.HighlightDir = orig }()
 	// Mock entries
 	file := &fileEntry{VFSItem: vfs.VFSItem{Name: "test.txt", Size: 1024, IsDir: false}}
 	dir := &fileEntry{VFSItem: vfs.VFSItem{Name: "work", IsDir: true}}
@@ -32,7 +28,7 @@ func TestFileEntry_GetCellText(t *testing.T) {
 	if file.GetCellText(0) != "test.txt" {
 		t.Errorf("File name mismatch: %s", file.GetCellText(0))
 	}
-	if dir.GetCellText(0) != string(os.PathSeparator)+"work" {
+	if dir.GetCellText(0) != "work" {
 		t.Errorf("Dir name mismatch: %s", dir.GetCellText(0))
 	}
 
@@ -67,33 +63,41 @@ func TestFileEntry_HighlightDir(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 
-	// Protect global config
-	oldCfg := AppConfig
-	defer func() { AppConfig = oldCfg }()
+	oldRules := GlobalFileHighlighter.Rules
+	defer func() { GlobalFileHighlighter.Rules = oldRules }()
+
+	// Load default rules
+	iniData := `[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+Mark = /
+NormalColor = foreground:#FFFFFF
+`
+	ini := ParseIni(strings.NewReader(iniData))
+	GlobalFileHighlighter.LoadFromIni(ini)
 
 	dir := &fileEntry{VFSItem: vfs.VFSItem{Name: "work", IsDir: true}}
 
-	// 1. Without highlighting
-	AppConfig.HighlightDir = false
+	// Column 0 should have the marker '/' prepended
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
 
-	if dir.GetCellText(0) != string(os.PathSeparator)+"work" {
-		t.Errorf("Expected separator prefix when HighlightDir is false, got %q", dir.GetCellText(0))
-	}
-	if dir.GetCellAttr(0, 0) != 0 {
-		t.Error("Expected default attribute when HighlightDir is false")
-	}
-
-	// 2. With highlighting
-	AppConfig.HighlightDir = true
-	if dir.GetCellText(0) != "work" {
-		t.Errorf("Expected raw name when HighlightDir is true, got %q", dir.GetCellText(0))
-	}
-	if dir.GetCellAttr(0, 0) != vtui.Palette[ColPanelDir] {
-		t.Error("Expected ColPanelDir attribute when HighlightDir is true")
+	// 1. By default, ShowDirPrefix is false, so no prefix should be shown
+	AppConfig.ShowDirPrefix = false
+	if got, want := dir.GetCellText(0), "work"; got != want {
+		t.Errorf("Expected dir name without prefix, got %q, want %q", got, want)
 	}
 
-	// Reset global state
-	AppConfig.HighlightDir = false
+	// 2. When ShowDirPrefix is true, the marker '/' should be prepended (no space)
+	AppConfig.ShowDirPrefix = true
+	if got, want := dir.GetCellText(0), "/work"; got != want {
+		t.Errorf("Expected dir name with '/' prefix, got %q, want %q", got, want)
+	}
+
+	// Color should match ColPanelText (since foreground:#FFFFFF resolves to truecolor or index, but we just want a non-zero attribute)
+	if attr := dir.GetCellAttr(0, 0); attr == 0 {
+		t.Error("Expected highlighted attribute for directory")
+	}
 }
 
 func TestFileSystemPanel_FocusLoss_FastFind(t *testing.T) {
@@ -158,6 +162,63 @@ type queuedNavigationVFS struct {
 	items              map[string][]vfs.VFSItem
 }
 
+// absoluteRecoveryVFS models AFC's path contract: panel navigation may set an
+// absolute path optimistically, but a bare ".." is rejected. SystemData is
+// visible in the container root while iOS denies listing its contents.
+type absoluteRecoveryVFS struct {
+	*vfs.NullVFS
+	pathMu       sync.RWMutex
+	currentPath  string
+	readDirCalls atomic.Int64
+}
+
+func newAbsoluteRecoveryVFS() *absoluteRecoveryVFS {
+	return &absoluteRecoveryVFS{NullVFS: vfs.NewNullVFS(0), currentPath: "/SystemData"}
+}
+
+func (v *absoluteRecoveryVFS) GetPath() string {
+	v.pathMu.RLock()
+	defer v.pathMu.RUnlock()
+	return v.currentPath
+}
+
+func (v *absoluteRecoveryVFS) IsAtRoot() bool { return v.GetPath() == "/" }
+func (*absoluteRecoveryVFS) Dir(p string) string {
+	return path.Dir(p)
+}
+func (*absoluteRecoveryVFS) Base(p string) string {
+	return path.Base(p)
+}
+func (*absoluteRecoveryVFS) Join(elem ...string) string {
+	return path.Join(elem...)
+}
+func (v *absoluteRecoveryVFS) SetPath(p string) error { return v.SetPathOptimistic(p) }
+func (v *absoluteRecoveryVFS) SetPathOptimistic(p string) error {
+	if !path.IsAbs(p) {
+		return fmt.Errorf("absolute path required: %q", p)
+	}
+	v.pathMu.Lock()
+	v.currentPath = path.Clean(p)
+	v.pathMu.Unlock()
+	return nil
+}
+func (*absoluteRecoveryVFS) Stat(context.Context, string) (vfs.VFSItem, error) {
+	return vfs.VFSItem{Name: "/", IsDir: true}, nil
+}
+func (v *absoluteRecoveryVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
+	v.readDirCalls.Add(1)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if path.Clean(p) == "/SystemData" {
+		return fmt.Errorf("read dir /SystemData: AFC status 10: %w", os.ErrPermission)
+	}
+	if onChunk != nil {
+		onChunk([]vfs.VFSItem{{Name: "SystemData", IsDir: true}})
+	}
+	return nil
+}
+
 const providerTestRoot = "provider-test://"
 
 type blockingProviderManagerVFS struct {
@@ -205,7 +266,7 @@ func (m *blockingProviderManagerVFS) ReadDir(ctx context.Context, _ string, onCh
 		}
 	}
 	if onChunk != nil {
-		onChunk([]vfs.VFSItem{{Name: m.rowName}})
+		onChunk([]vfs.VFSItem{{Name: m.rowName, IsDir: true}})
 	}
 	return nil
 }
@@ -225,6 +286,7 @@ func (m *trackedMountedVFS) Close() error {
 type blockingMountProvider struct {
 	source      *blockingProviderManagerVFS
 	result      *trackedMountedVFS
+	virtualDirs bool
 	started     chan struct{}
 	release     chan struct{}
 	startedOnce sync.Once
@@ -233,15 +295,15 @@ type blockingMountProvider struct {
 
 func newBlockingMountProvider(source *blockingProviderManagerVFS) *blockingMountProvider {
 	return &blockingMountProvider{
-		source:  source,
+		source: source, virtualDirs: true,
 		result:  &trackedMountedVFS{NullVFS: vfs.NewNullVFS(0), parent: source},
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started: make(chan struct{}), release: make(chan struct{}),
 	}
 }
 
-func (*blockingMountProvider) Name() string  { return "blocking-provider-test" }
-func (*blockingMountProvider) Priority() int { return 10000 }
+func (*blockingMountProvider) Name() string                    { return "blocking-provider-test" }
+func (*blockingMountProvider) Priority() int                   { return 10000 }
+func (p *blockingMountProvider) OpensVirtualDirectories() bool { return p.virtualDirs }
 func (p *blockingMountProvider) CanOpen(_ context.Context, parent vfs.VFS, target string) bool {
 	return parent == p.source && target == providerTestRoot+p.source.rowName
 }
@@ -613,6 +675,12 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 
 	fp.Show(scr)
 
+	// Verify that the color of the bottom bar is ColPanelSelectedInfo when items are selected
+	cell := scr.GetCell(40, 23)
+	if cell.Attributes != vtui.Palette[ColPanelSelectedInfo] {
+		t.Errorf("Expected Selected Info color %X, got %X", vtui.Palette[ColPanelSelectedInfo], cell.Attributes)
+	}
+
 	var sb strings.Builder
 	for x := 0; x < 80; x++ {
 		cell := scr.GetCell(x, 23)
@@ -631,6 +699,19 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 	}
 	if !strings.Contains(result, "folders:1") {
 		t.Errorf("Expected bottom bar to contain 'folders:1', got: %q", result)
+	}
+
+	// Clear selection to check ColPanelTotalInfo
+	for _, e := range fp.entries {
+		e.Selected = false
+	}
+	fp.selectedItems = make(map[string]bool)
+	fp.Refresh()
+	fp.Show(scr)
+
+	cell = scr.GetCell(40, 23)
+	if cell.Attributes != vtui.Palette[ColPanelTotalInfo] {
+		t.Errorf("Expected Total Info color %X, got %X", vtui.Palette[ColPanelTotalInfo], cell.Attributes)
 	}
 }
 
@@ -736,7 +817,7 @@ func TestFormatPanelFileNameSeparateExtension(t *testing.T) {
 	oldConfig := AppConfig
 	defer func() { AppConfig = oldConfig }()
 	AppConfig.SeparateFileExtensions = true
-	AppConfig.HighlightDir = true
+	AppConfig.ShowDirPrefix = false
 
 	entry := &fileEntry{VFSItem: vfs.VFSItem{Name: "report.txt"}}
 	if got, want := formatPanelFileName(entry, 20), "report           txt"; got != want {
@@ -1344,7 +1425,7 @@ func TestFileSystemPanel_DrawFastFindMatches(t *testing.T) {
 	beforeNonMatch := scr.GetCell(fp.table.X1, y+1).Attributes
 
 	fp.drawFastFindMatches(scr)
-	matchColor := vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight])
+	matchColor := vtui.GetRGBFore(vtui.Palette[ColPanelHighlightText])
 	for _, row := range []int{0, 2} {
 		for x := 0; x < 3; x++ {
 			cell := scr.GetCell(fp.table.X1+x, y+row)
@@ -1390,7 +1471,7 @@ func TestFileSystemPanel_DrawFastFindMatchesInEveryGridColumn(t *testing.T) {
 		scr.AllocBuf(60, 12)
 		fp.table.Show(scr)
 		fp.drawFastFindMatches(scr)
-		wantForeground := vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight])
+		wantForeground := vtui.GetRGBFore(vtui.Palette[ColPanelHighlightText])
 		x := fp.table.X1
 		y := fp.table.Y1 + fp.table.MarginTop
 		for column, tableColumn := range fp.table.Columns {
@@ -3054,6 +3135,68 @@ func waitForLoad(t *testing.T, fp *FileSystemPanel) {
 		}
 	}
 }
+
+func TestFileSystemPanel_PermissionFailureRestoresAbsoluteParentWithoutDialogLoop(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = true
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	remote := newAbsoluteRecoveryVFS()
+	fp := NewFileSystemPanel(0, 0, 60, 20, remote)
+	t.Cleanup(func() {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+
+	if got := remote.GetPath(); got != "/" {
+		t.Fatalf("path after denied /SystemData read = %q, want root", got)
+	}
+	if got := remote.readDirCalls.Load(); got != 2 {
+		t.Fatalf("ReadDir calls = %d, want one denied child read and one root recovery read", got)
+	}
+	if got := fp.getRawSelectedName(); got != "SystemData" {
+		t.Fatalf("cursor after recovery = %q, want denied folder", got)
+	}
+
+	countLiveErrors := func() int {
+		count := 0
+		for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+			if frame.GetType() == vtui.TypeDialog && !frame.IsDone() && frame.GetTitle() == " Error " {
+				count++
+			}
+		}
+		return count
+	}
+	trackedDialog := fp.directoryErrorDialog
+	if trackedDialog == nil || trackedDialog.IsDone() {
+		t.Fatal("directory error dialog was not tracked as a live dialog")
+	}
+	liveBeforeDuplicate := countLiveErrors()
+
+	// Even if another completion reports an error before the user presses OK,
+	// this panel must keep its existing modal. Other tests may have left their
+	// own dialogs in the process-wide FrameManager, so compare against the
+	// baseline instead of assuming this is the only dialog globally.
+	fp.showDirectoryError(" Error ", "second asynchronous failure")
+	if fp.directoryErrorDialog != trackedDialog {
+		t.Fatal("duplicate failure replaced the tracked directory error dialog")
+	}
+	if got := countLiveErrors(); got != liveBeforeDuplicate {
+		t.Fatalf("live directory error dialogs after duplicate = %d, want unchanged %d", got, liveBeforeDuplicate)
+	}
+	trackedDialog.SetExitCode(0)
+	if fp.directoryErrorDialog != nil {
+		t.Fatal("closing the error dialog did not clear its deduplication slot")
+	}
+}
+
 func TestFileSystemPanel_StructLiteralLazySelection(t *testing.T) {
 	// Create panel as a struct literal (nil selectedItems map)
 	fp := &FileSystemPanel{}
@@ -3428,6 +3571,35 @@ func TestFileSystemPanel_DirectoryLoadQueueKeepsOnlyLatest(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanel_OrdinaryDirectoryDoesNotUseFileProvider(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	manager := newBlockingProviderManagerVFS("backup.zip")
+	provider := newBlockingMountProvider(manager)
+	provider.virtualDirs = false
+	vfs.RegisterProvider(provider)
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("directory Enter was not handled")
+	}
+	if got := provider.openCalls.Load(); got != 0 {
+		t.Fatalf("ordinary directory started %d provider opens", got)
+	}
+	if got := manager.setPathCalls.Load(); got != 1 {
+		t.Fatalf("ordinary directory made %d SetPath calls, want 1", got)
+	}
+}
+
 func TestFileSystemPanel_HeldEnterDuringProviderOpenIsCoalesced(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	manager := newBlockingProviderManagerVFS("SM_G930F (serial)")
@@ -3724,6 +3896,10 @@ func TestFileSystemPanel_CachedEnterStaysResponsiveAndCoalescesRefresh(t *testin
 	AppConfig.SyncPanelLoad = false
 	AppConfig.ShowHiddenFiles = true
 	defer func() { AppConfig = oldConfig }()
+
+	oldDisable := DisableLoadingAnimationInTests
+	DisableLoadingAnimationInTests = false
+	defer func() { DisableLoadingAnimationInTests = oldDisable }()
 
 	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
 	waitForLoad(t, fp)

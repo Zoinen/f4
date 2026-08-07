@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/plugins/archive"
 	"github.com/unxed/f4/plugins/chroma"
 	"github.com/unxed/f4/plugins/dummy_internal"
+	iosfs "github.com/unxed/f4/plugins/ios"
 	"github.com/unxed/f4/plugins/netfox"
 	"github.com/unxed/f4/plugins/visren"
 	"github.com/unxed/f4/vfs"
@@ -115,6 +116,7 @@ func (pm *PluginManager) loadInternal() {
 		&dummy_internal.InternalDummyPlugin{},
 		&archive.ArchivePlugin{},
 		androidfs.NewPlugin(),
+		iosfs.NewPlugin(),
 		&netfox.NetFoxPlugin{},
 		&visren.Plugin{},
 	}

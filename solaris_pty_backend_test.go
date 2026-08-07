@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
@@ -15,10 +14,6 @@ func TestSolarisPTY_PtyBackend_Lifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSolarisPTY failed: %v", err)
 	}
-
-	// Удаление временных файлов-заглушек после теста
-	defer os.Remove(pty.Master.Name())
-	defer os.Remove(pty.Slave.Name())
 
 	// 2. Тестируем запуск дочернего процесса (PtyBackend.Run)
 	// Запустим стандартную команду Unix "echo" для проверки потоков ввода-вывода.
@@ -55,8 +50,6 @@ func TestSolarisPTY_IdleState_And_SetSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSolarisPTY failed: %v", err)
 	}
-	defer os.Remove(pty.Master.Name())
-	defer os.Remove(pty.Slave.Name())
 
 	// 1. Тестируем вызов SetSize
 	pty.SetSize(120, 43)
@@ -95,8 +88,6 @@ func TestSolarisPTY_RawIO(t *testing.T) {
 		t.Fatalf("OpenSolarisPTY failed: %v", err)
 	}
 	defer pty.Close()
-	defer os.Remove(pty.Master.Name())
-	defer os.Remove(pty.Slave.Name())
 
 	// Запись в мастер-дескриптор
 	inputData := []byte("test-data-io")

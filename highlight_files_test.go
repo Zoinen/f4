@@ -61,6 +61,10 @@ func TestFileHighlighter_GetColor(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
+
 	iniData := `[Highlight_0]
 Name = Executables
 Mask = *.exe, *.sh
@@ -450,5 +454,59 @@ func TestHighlightRule_DateTypes(t *testing.T) {
 	}
 	if !ruleCreate.Match(&item) {
 		t.Error("DateCreated matching failed (should have passed)")
+	}
+}
+
+func TestFileHighlighter_GetColor_ContrastCorrection(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = true
+	defer func() { AppConfig = oldCfg }()
+
+	// Low contrast rule: Dark Gray on Black background
+	iniData := `[Highlight_0]
+Name = DarkOnBlack
+Mask = *.txt
+NormalColor = foreground:#111111 | background:#000000
+`
+	ini := ParseIni(strings.NewReader(iniData))
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini)
+
+	item := vfs.VFSItem{Name: "doc.txt"}
+	attr := highlighter.GetColor(&item, 0, false, false)
+
+	fg := vtui.GetRGBFore(attr)
+	bg := vtui.GetRGBBack(attr)
+
+	dE := deltaE2000(rgbToLAB(toRGBF(fg)), rgbToLAB(toRGBF(bg)))
+	if dE < 29.0 {
+		t.Errorf("highlighter left deltaE2000 at %.2f, want the ~30 far2l aims for", dE)
+	}
+}
+func TestFileHighlighter_CursorSemantics(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	iniData := `[Highlight_0]
+Name = Executables
+Mask = *.exe
+NormalColor = foreground:#00FF00
+`
+	ini := ParseIni(strings.NewReader(iniData))
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini)
+
+	// Item under cursor (default cursor attribute is ColPanelCursor)
+	cursorAttr := vtui.Palette[ColPanelCursor]
+	item := vfs.VFSItem{Name: "app.exe"}
+
+	got := highlighter.GetColor(&item, cursorAttr, false, true)
+
+	// Since the rule has no CursorColor defined, it must remain the default cursorAttr!
+	if got != cursorAttr {
+		t.Errorf("Expected cursor color to be untouched, got %X, want %X", got, cursorAttr)
 	}
 }

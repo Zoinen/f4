@@ -86,8 +86,9 @@ Example:
 1. **Asynchronous VFS:** Built from the ground up to be non-blocking, supporting live streaming of directory contents and lazy-loading of file data. See [VFS Architecture](VFS.md).
 2. **FISH+ Protocol:** Remote file management that offloads indexing, searching, patching and long-running jobs to the server. See [FISH+](FISH+.md).
 3. **Android Filesystem:** A dedicated Android drive discovers devices through the local ADB server and selects FISH+ or an ADB Sync v1/v2 fallback for the session. See [Android filesystem](plugins/android/README.md).
-4. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
-5. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
+4. **iPhone Filesystem:** The native iOS drive discovers trusted Apple devices and exposes Media, exported application containers, app groups, and crash reports through AFC, House Arrest, and CoreDevice. See [iPhone filesystem](plugins/ios/README.md).
+5. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
+6. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
 
 ---
 
@@ -134,7 +135,7 @@ Recommended instruction for LLMs:
 ### Getting Started (Ubuntu)
 
 **1. Install Prerequisites**
-Ensure you have Go (1.24 or newer) installed:
+Ensure you have Go (1.26 or newer) installed:
 ```bash
 sudo apt update
 sudo apt install golang git

@@ -33,6 +33,9 @@ func (m *MockSolarisStreams) Open(path string, flag int, perm os.FileMode) (*os.
 		m.openFiles[path] = true
 		// Создаем фиктивный файл в /tmp для эмуляции дескриптора
 		f, err := os.CreateTemp("", "mock_ptmx_*")
+		if err == nil {
+			os.Remove(f.Name()) // Unlink immediately to prevent leaks
+		}
 		return f, err
 	}
 
@@ -41,6 +44,9 @@ func (m *MockSolarisStreams) Open(path string, flag int, perm os.FileMode) (*os.
 		m.openFiles[path] = true
 		m.pushedMods[path] = []string{}
 		f, err := os.CreateTemp("", "mock_pts_*")
+		if err == nil {
+			os.Remove(f.Name()) // Unlink immediately to prevent leaks
+		}
 		return f, err
 	}
 

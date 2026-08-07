@@ -19,11 +19,7 @@ import (
 // by another process during an update.
 func TestUpdateFailureMessageRepro(t *testing.T) {
 	// 1. Setup a dummy "executable" in a temp directory
-	tmpDir, err := os.MkdirTemp("", "f4-update-repro-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	exeName := "f4"
 	if runtime.GOOS == "windows" {
@@ -40,7 +36,7 @@ func TestUpdateFailureMessageRepro(t *testing.T) {
 	// we'll either lock it or make the dir non-writable.
 	var lockHandle *os.File
 	if runtime.GOOS == "windows" {
-		lockHandle, err = os.OpenFile(exePath, os.O_RDWR, 0)
+		_, err := os.OpenFile(exePath, os.O_RDWR, 0)
 		if err != nil {
 			t.Fatal("Failed to create a lock on the file:", err)
 		}

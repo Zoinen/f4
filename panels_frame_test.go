@@ -1713,19 +1713,19 @@ func TestPanelsFrame_AutoRefresh(t *testing.T) {
 	pf.Show(scr)
 
 	// Pump the TaskChan to execute RunAsync and RunOnUI
-	timeout := time.After(2 * time.Second)
-pump:
-	for {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			if fsp.isLoading {
-				break pump // Success: it triggered a refresh
-			}
-		case <-timeout:
-			t.Fatal("AutoRefresh failed to trigger ReadDirectory after MTime change")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if fsp.isLoading {
+			return // Success: it triggered a refresh
 		}
 	}
+	t.Fatal("AutoRefresh failed to trigger ReadDirectory after MTime change")
 }
 func TestPanelsFrame_ResizingIntegration(t *testing.T) {
 	vtui.SetDefaultPalette()
@@ -1929,28 +1929,35 @@ func TestPanelsFrame_Clone_SelectionPreservation(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 	fsp := pf.panels[0].(*FileSystemPanel)
 	fsp.vfs.SetPath(tmp)
-	fsp.ReadDirectory() // Explicitly start loading the temp directory
+	fsp.ReadDirectory()
 
-	// 1. Wait for initial load to finish
-	timeout := time.After(2 * time.Second)
-	for fsp.isLoading {
+	// Wait for initial load
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		case <-timeout:
-			t.Fatal("Timeout waiting for initial load")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !fsp.isLoading {
+			break
 		}
 	}
-	// Drain UI queue
+	if fsp.isLoading {
+		t.Fatal("Timeout waiting for initial load")
+	}
+	// Drain remaining tasks
 	for i := 0; i < 10; i++ {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		default:
+			break
 		}
 	}
 
-	// 2. Select "selected.txt" (should be at index 2, as 0:.., 1:normal, 2:selected)
+	// Select "selected.txt"
 	found := false
 	for i, e := range fsp.entries {
 		if e.Name == "selected.txt" {
@@ -1963,31 +1970,29 @@ func TestPanelsFrame_Clone_SelectionPreservation(t *testing.T) {
 		t.Fatal("Setup failed: 'selected.txt' not found in entries")
 	}
 
-	// 3. Perform Clone
+	// Clone
 	clone := pf.Clone()
 	defer clone.Close()
 	cloneFsp := clone.panels[0].(*FileSystemPanel)
 
-	// 4. Clone triggers async ReadDirectory. Wait for it.
-	timeout = time.After(2 * time.Second)
-	for cloneFsp.isLoading {
-		select {
-		case task := <-vtui.FrameManager.TaskChan:
-			task()
-		case <-timeout:
-			t.Fatal("Timeout waiting for clone load")
-		}
-	}
-	// Final drain
-	for i := 0; i < 10; i++ {
+	// Wait for clone load
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !cloneFsp.isLoading {
+			break
 		}
 	}
+	if cloneFsp.isLoading {
+		t.Fatal("Timeout waiting for clone load")
+	}
 
-	// 5. Verify preservation
+	// Verify preservation
 	foundInClone := false
 	for _, e := range cloneFsp.entries {
 		if e.Name == "selected.txt" {
@@ -3351,18 +3356,24 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 
-	// Дожидаемся завершения первичной инициализации обеих панелей,
-	// чтобы их фоновые вызовы Stat не перекрывались с нашим моком.
-	for pf.panels[0].(*FileSystemPanel).isLoading || pf.panels[1].(*FileSystemPanel).isLoading {
+	// Wait for initial load of both panels to finish.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		case <-time.After(1 * time.Second):
-			t.Fatal("Timeout waiting for initial load")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !pf.panels[0].(*FileSystemPanel).isLoading && !pf.panels[1].(*FileSystemPanel).isLoading {
+			break
 		}
 	}
+	if pf.panels[0].(*FileSystemPanel).isLoading || pf.panels[1].(*FileSystemPanel).isLoading {
+		t.Fatal("Initial load did not finish in time")
+	}
 
-	// Настраиваем VFS с блокирующим Stat
+	// Setup VFS with a blocking Stat
 	block := make(chan struct{})
 	mv := &mockSlowStatVFS{
 		OSVFS:     *vfs.NewOSVFS(t.TempDir()),
@@ -3371,16 +3382,21 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 
 	fsp := pf.panels[0].(*FileSystemPanel)
 	fsp.vfs = mv
-	fsp.lastDirMTime = time.Now().Add(-1 * time.Hour) // Эмулируем старое время
+	fsp.lastDirMTime = time.Now().Add(-1 * time.Hour)
 	fsp.isCheckingRefresh = false
 
-	// 1. Первый вызов Show() должен инициировать авто-обновление
+	// First Show() should trigger auto-refresh
 	pf.lastAutoRefresh = time.Now().Add(-5 * time.Second)
 	pf.Show(vtui.NewSilentScreenBuf())
 
-	// Даем немного времени RunAsync запуститься
-	time.Sleep(20 * time.Millisecond)
-
+	// Give RunAsync a moment to start
+	deadline = time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if fsp.isCheckingRefresh {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if !fsp.isCheckingRefresh {
 		t.Error("Expected isCheckingRefresh to be true while Stat is pending")
 	}
@@ -3388,31 +3404,29 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 		t.Error("Expected the auto refresh to have called Stat")
 	}
 
-	// 2. Повторный вызов Show() НЕ должен инициировать второй Stat, пока первый висит.
-	// Считаем от текущего значения: подмена VFS могла оставить позади и
-	// фоновое чтение каталога, которое обращается к тому же Stat, и оно к
-	// защите от повторного запроса отношения не имеет.
+	// Second Show() must NOT trigger another Stat while the first is pending.
 	before := mv.statCalls.Load()
 	pf.lastAutoRefresh = time.Now().Add(-5 * time.Second)
 	pf.Show(vtui.NewSilentScreenBuf())
-
 	if after := mv.statCalls.Load(); after != before {
 		t.Errorf("Anti-spam failed: Stat called %d more times while one was pending", after-before)
 	}
 
-	// 3. Разблокируем Stat и проверяем сброс флага
+	// Unblock Stat and verify the flag is reset.
 	close(block)
-
-	// Прокачиваем очередь задач до завершения Stat и RunOnUI
-	timeout := time.After(1 * time.Second)
-	for fsp.isCheckingRefresh {
+	deadline = time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-		case <-timeout:
-			t.Fatal("isCheckingRefresh was never reset to false")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !fsp.isCheckingRefresh {
+			return
 		}
 	}
+	t.Fatal("isCheckingRefresh was never reset to false")
 }
 
 type vimTestHandler struct {
@@ -3600,6 +3614,7 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("Failed to navigate to archive root: %s", zipPath)
 	}
+	// Use waitForLoad which is defined in file_panel_test.go
 	waitForLoad(t, lp)
 
 	ok = pf.NavigateToPath(lp, "..")

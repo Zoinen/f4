@@ -660,16 +660,16 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 	}
 
 	baseAttr := vtui.Palette[ColCommandLinePrompt]
-	// Use colors as close as possible to classic bash, while keeping the base background
-	greenAttr := vtui.SetRGBFore(baseAttr, 0x8AE234) // Bright green
-	blueAttr := vtui.SetRGBFore(baseAttr, 0x729FCF)  // Bright blue
-	defAttr := vtui.SetRGBFore(baseAttr, 0xFFFFFF)   // White
+	// Only the user@host part gets a colour of its own, the way bash shows it.
+	// Everything else stays on CommandLine.Prefix so the prompt follows the
+	// active theme instead of a hardcoded blue and white.
+	greenAttr := vtui.SetRGBFore(baseAttr, 0x8AE234)
 
 	var prompt []vtui.CharInfo
 	prompt = append(prompt, vtui.StringToCharInfo(userHostStr, greenAttr)...)
-	prompt = append(prompt, vtui.StringToCharInfo(sepStr, defAttr)...)
-	prompt = append(prompt, vtui.StringToCharInfo(displayPath, blueAttr)...)
-	prompt = append(prompt, vtui.StringToCharInfo(suffixStr, defAttr)...)
+	prompt = append(prompt, vtui.StringToCharInfo(sepStr, baseAttr)...)
+	prompt = append(prompt, vtui.StringToCharInfo(displayPath, baseAttr)...)
+	prompt = append(prompt, vtui.StringToCharInfo(suffixStr, baseAttr)...)
 
 	return prompt
 }
@@ -2813,6 +2813,14 @@ func (pf *PanelsFrame) toggleAltPanel(kind string, factory func(src *FileSystemP
 				tryClose(pf.altPanels[opp])
 			}
 			pf.altPanels[opp] = factory(fsp)
+			// If the opposite side is currently hidden (Ctrl+F1/F2), un-hide
+			// it — otherwise the alt panel installs into an invisible slot
+			// and Ctrl+L / Ctrl+Q look like a no-op.
+			if opp == 0 {
+				pf.showLeftPanel = true
+			} else {
+				pf.showRightPanel = true
+			}
 		}
 	}
 	pf.ResizeConsole(pf.lastW, pf.lastH)

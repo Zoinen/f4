@@ -141,6 +141,15 @@ type ColorerScheme struct {
 }
 
 func ListColorerSchemes() []ColorerScheme {
+	// Fast path: return cached list if already loaded.
+	schemesCacheMu.RLock()
+	if cachedSchemes != nil {
+		defer schemesCacheMu.RUnlock()
+		return cachedSchemes
+	}
+	schemesCacheMu.RUnlock()
+
+	// Slow path: load schemes from disk.
 	configsDir := ColorerConfigsDir()
 	session, err := acquireColorerSession(configsDir)
 	if err != nil {
@@ -159,7 +168,23 @@ func ListColorerSchemes() []ColorerScheme {
 			Description: inst.Description,
 		})
 	}
-	return schemes
+
+	// Store in cache.
+	schemesCacheMu.Lock()
+	if cachedSchemes == nil {
+		cachedSchemes = schemes
+	}
+	schemesCacheMu.Unlock()
+
+	return cachedSchemes
+}
+
+// ResetColorerSchemesCache clears the cached scheme list.
+// Useful for tests that need to simulate a fresh environment.
+func ResetColorerSchemesCache() {
+	schemesCacheMu.Lock()
+	cachedSchemes = nil
+	schemesCacheMu.Unlock()
 }
 
 func colorerSchemeLabel(scheme ColorerScheme) string {
@@ -173,6 +198,11 @@ var (
 	schemeMu         sync.Mutex
 	schemeName       string
 	schemeGeneration uint64
+
+	// cachedSchemes holds the list of Colorer schemes loaded from disk.
+	// It is populated lazily on the first call to ListColorerSchemes().
+	cachedSchemes  []ColorerScheme
+	schemesCacheMu sync.RWMutex
 )
 
 func SetColorerScheme(name string) {

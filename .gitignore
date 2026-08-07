@@ -14,6 +14,8 @@ qt/host/build/
 qt/host/CMakeUserPresets.json
 qt/host/.qt/
 screenshots/
+rsrc_windows_amd64.syso
+rsrc_windows_arm64.syso
 Profile/
 afix.ap
 afailed.*

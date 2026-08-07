@@ -506,9 +506,7 @@ func TestMacro_KeyUpConsumption(t *testing.T) {
 }
 
 func TestMacro_CancelEsc(t *testing.T) {
-	tmpPath := filepath.Join(os.TempDir(), "esc.ini")
-	os.Remove(tmpPath)
-	defer os.Remove(tmpPath)
+	tmpPath := filepath.Join(t.TempDir(), "esc.ini")
 
 	mgr := NewMacroManager(tmpPath)
 	mgr.Recording = true

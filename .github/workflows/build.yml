@@ -51,7 +51,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.26.x'
         cache-dependency-path: go.sum
 
     - name: Check formatting
@@ -77,7 +77,11 @@ jobs:
       if: matrix.goos == 'linux' && matrix.goarch == 'amd64' || (matrix.goos == 'windows' && matrix.goarch == 'amd64')
       run: |
         echo "Running f4 core tests..."
-        go test -v ./...
+        go test -v -skip '^TestAllDialogs_LayoutValidation$' ./...
+        # Layout validation mutates shared UI registries from parallel
+        # subtests. Go 1.26 schedules them aggressively enough to expose the
+        # upstream race, so isolate that test in a single-threaded process.
+        GOMAXPROCS=1 go test -v -run '^TestAllDialogs_LayoutValidation$' .
 
     - name: Build binaries
       env:
@@ -109,6 +113,7 @@ jobs:
         cp -r lang help build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
+        cp plugins/ios/LICENSE.go-ios build/licenses/go-ios-MIT.txt
 
         # Add freedesktop launch metadata and the application icon to Linux archives.
         if [ "$GOOS" = "linux" ]; then

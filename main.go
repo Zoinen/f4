@@ -361,13 +361,6 @@ func SetupUI() {
 	// синхронизация для vfs, чтобы конфиг портативного режима был единым.
 	vfs.CustomConfigDir = configDir
 
-	// Load legacy color overrides if they exist
-	legacyColorsPath := filepath.Join(configDir, "farcolors.ini")
-	if _, err := os.Stat(legacyColorsPath); err == nil {
-		legacyIni := LoadIni(legacyColorsPath)
-		InitColors(legacyIni)
-	}
-
 	os.MkdirAll(configDir, 0755)
 	GlobalHotkeysMgr = NewHotkeyManager(filepath.Join(configDir, "hotkeys.ini"))
 	MacroMgr = NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
@@ -660,34 +653,60 @@ func isHexChar(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
 }
 func createDefaultHighlightIni(path string) {
+	// Rule order follows far2l's stock highlight groups: hidden and system
+	// files win over the directory rule, so a dotted directory stays dim, and
+	// the directory rule wins over the script masks, so a folder named *.sh is
+	// still a folder. Colours are the same Tango entries far2l resolves those
+	// groups to.
+	//
+	// Only NormalColor is set on purpose. f4 composes the selected and cursor
+	// variants from Panel.Text.Selected and Panel.Cursor, which keeps this file
+	// independent of the active style — spelling those backgrounds out here
+	// would freeze one theme's blue and cyan into every other theme.
+	//
+	// Two far2l groups have no equivalent: broken symlinks (LIGHTRED) and
+	// executable symlinks (GREEN). f4's attribute vocabulary has no Broken or
+	// ReparsePoint, so those files fall through to the rules below.
 	content := `[Highlight_0]
-Name = Executables
-Mask = *.exe, *.bat, *.cmd, *.sh, *.bash
-IncludeAttributes = Executable
-NormalColor = foreground:#8AE234
-SelectedColor = foreground:#8AE234 | background:#0000A0
-CursorColor = foreground:#8AE234 | background:#00AAAA
-
-[Highlight_1]
-Name = Archives
-Mask = *.zip, *.rar, *.tar, *.gz, *.7z, *.tgz, *.bz2, *.xz, *.zst
-NormalColor = foreground:#AD7FA8
-SelectedColor = foreground:#AD7FA8 | background:#0000A0
-CursorColor = foreground:#AD7FA8 | background:#00AAAA
-
-[Highlight_2]
 Name = Hidden Files
 IncludeAttributes = Hidden
-NormalColor = foreground:#729FCF
-SelectedColor = foreground:#729FCF | background:#0000A0
-CursorColor = foreground:#729FCF | background:#00AAAA
+NormalColor = foreground:#06989A
 
-[Highlight_3]
+[Highlight_1]
+Name = System Files
+IncludeAttributes = System
+NormalColor = foreground:#06989A
+
+[Highlight_2]
 Name = Directories
 IncludeAttributes = Directory
-NormalColor = foreground:#FFFFFF
-SelectedColor = foreground:#FFFFFF | background:#0000A0
-CursorColor = foreground:#FFFFFF | background:#00AAAA
+NormalColor = foreground:#EEEEEC
+
+[Highlight_3]
+Name = Scripts
+Mask = *.sh, *.bash, *.py, *.pl, *.cmd, *.exe, *.bat, *.com
+ExcludeAttributes = Directory
+Mark = *
+NormalColor = foreground:#8AE234
+
+[Highlight_4]
+Name = Archives
+Mask = *.zip, *.rar, *.tar, *.gz, *.7z, *.tgz, *.bz2, *.xz, *.zst, *.jar, *.cab, *.lzh, *.cpio, *.rpm
+ExcludeAttributes = Directory
+NormalColor = foreground:#AD7FA8
+
+[Highlight_5]
+Name = Temporary Files
+Mask = *.bak, *.tmp
+ExcludeAttributes = Directory
+NormalColor = foreground:#C4A000
+
+[Highlight_6]
+Name = Executables
+IncludeAttributes = Executable
+ExcludeAttributes = Directory
+Mark = *
+NormalColor = foreground:#8AE234
 `
 	_ = os.WriteFile(path, []byte(content), 0644)
 }

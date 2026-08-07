@@ -320,13 +320,27 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 
 	for _, rule := range fh.Rules {
 		if rule.Match(item) {
-			colorExpr := rule.NormalStr
-			if isCursor && isSelected && rule.SelectedCursorStr != "" {
-				colorExpr = rule.SelectedCursorStr
-			} else if isCursor && rule.CursorStr != "" {
-				colorExpr = rule.CursorStr
-			} else if isSelected && rule.SelectedStr != "" {
-				colorExpr = rule.SelectedStr
+			colorExpr := ""
+			if isCursor {
+				if isSelected {
+					if rule.SelectedCursorStr != "" {
+						colorExpr = rule.SelectedCursorStr
+					} else if rule.CursorStr != "" {
+						colorExpr = rule.CursorStr
+					}
+				} else {
+					if rule.CursorStr != "" {
+						colorExpr = rule.CursorStr
+					}
+				}
+			} else if isSelected {
+				if rule.SelectedStr != "" {
+					colorExpr = rule.SelectedStr
+				}
+			} else {
+				if rule.NormalStr != "" {
+					colorExpr = rule.NormalStr
+				}
 			}
 
 			if colorExpr != "" {
@@ -336,12 +350,29 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 
 			// Если каскадная обработка выключена, сразу возвращаем результат
 			if !rule.ContinueProcessing {
-				return attr
+				if matchedAny {
+					if AppConfig.EnforceColorCorrection {
+						fg, bg := GetColorRGBBoth(attr)
+						nfg := CorrectContrast(fg, bg)
+						if nfg != fg {
+							attr = vtui.SetRGBFore(attr, nfg)
+						}
+					}
+					return attr
+				}
+				return defaultAttr
 			}
 		}
 	}
 
 	if matchedAny {
+		if AppConfig.EnforceColorCorrection {
+			fg, bg := GetColorRGBBoth(attr)
+			nfg := CorrectContrast(fg, bg)
+			if nfg != fg {
+				attr = vtui.SetRGBFore(attr, nfg)
+			}
+		}
 		return attr
 	}
 	return defaultAttr

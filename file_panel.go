@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -80,17 +81,23 @@ func (f *fileEntry) displayName(name string) string {
 		return ".."
 	}
 	marker := GlobalFileHighlighter.GetMarker(&f.VFSItem)
+	prefix := ""
+	if f.IsDir {
+		if AppConfig.ShowDirPrefix {
+			if marker == "/" {
+				marker = ""
+			}
+			prefix = "/"
+		} else {
+			if marker == "/" {
+				marker = ""
+			}
+		}
+	}
 	if marker != "" {
 		name = marker + " " + name
 	}
-
-	if f.IsDir {
-		if AppConfig.HighlightDir {
-			return name
-		}
-		return string(os.PathSeparator) + name
-	}
-	return name
+	return prefix + name
 }
 
 func splitFileExtension(name string) (string, string) {
@@ -258,10 +265,6 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 
 	attr = GlobalFileHighlighter.GetColor(&e.VFSItem, attr, e.Selected, isCursor)
 
-	if attr == defaultAttr && AppConfig.HighlightDir && e.IsDir && e.Name != ".." {
-		attr = vtui.Palette[ColPanelDir]
-	}
-
 	return attr
 }
 
@@ -326,10 +329,6 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 
 	attr = GlobalFileHighlighter.GetColor(&f.VFSItem, attr, f.Selected, isCursor)
 
-	if attr == defaultAttr && AppConfig.HighlightDir && f.IsDir && f.Name != ".." {
-		attr = vtui.Palette[ColPanelDir]
-	}
-
 	return attr
 }
 
@@ -384,6 +383,7 @@ type FileSystemPanel struct {
 	loadWorkerActive          bool
 	pendingDirectoryLoad      func()
 	providerOpenTask          *vtui.TaskContext
+	directoryErrorDialog      *vtui.Window
 	pendingSelection          string
 	providerEntryName         string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
 	suppressFolderHistoryPath string // one-shot: history/menu navigation must not reorder MRU
@@ -415,6 +415,8 @@ type FileSystemPanel struct {
 	shiftSessionActive bool
 	shiftSessionMode   bool // true = select, false = deselect
 }
+
+var DisableLoadingAnimationInTests = true
 
 func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	path := vfs.GetPath()
@@ -1284,6 +1286,11 @@ func (fp *FileSystemPanel) startLoadingAnimation() {
 	fp.updateTitle(nil)
 	vtui.FrameManager.Redraw()
 
+	// In tests, do not run the infinite timer loop to prevent task queue leakage.
+	if DisableLoadingAnimationInTests && flag.Lookup("test.v") != nil {
+		return
+	}
+
 	generation := fp.loadingGeneration
 	var scheduleNext func()
 	scheduleNext = func() {
@@ -1391,6 +1398,37 @@ func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
 		return setter.SetPathOptimistic(target)
 	}
 	return fp.vfs.SetPath(target)
+}
+
+// showDirectoryError keeps asynchronous refresh failures from stacking modal
+// dialogs. A failed recovery may schedule another read before the user closes
+// the first message; only the first live dialog should remain actionable.
+func (fp *FileSystemPanel) showDirectoryError(title, message string) {
+	if fp.directoryErrorDialog != nil && !fp.directoryErrorDialog.IsDone() {
+		return
+	}
+	dlg := vtui.ShowMessage(title, message, []string{"&Ok"})
+	fp.directoryErrorDialog = dlg
+	dlg.OnResult = func(int) {
+		if fp.directoryErrorDialog == dlg {
+			fp.directoryErrorDialog = nil
+		}
+	}
+}
+
+// moveToParentAfterLoadFailure restores a panel using the VFS' canonical
+// absolute parent path. Passing a bare ".." is not portable: remote VFSes such
+// as AFC deliberately reject it as a possible domain-root escape.
+func (fp *FileSystemPanel) moveToParentAfterLoadFailure(loadVFS vfs.VFS, failedPath string) bool {
+	parentPath := loadVFS.Dir(failedPath)
+	if parentPath == "" || parentPath == failedPath {
+		return false
+	}
+	if err := fp.setKnownDirectoryPath(parentPath); err != nil {
+		vtui.DebugLog("PANEL[%p]: Failed to restore parent %q after reading %q: %v", fp, parentPath, failedPath, err)
+		return false
+	}
+	return true
 }
 
 func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
@@ -1774,27 +1812,30 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					return
 				}
 				if os.IsNotExist(err) && !loadAtRoot && !keepEntries {
-					// If the directory disappeared (e.g., deleted from other panel),
-					// attempt to go up one level silently.
+					if !fp.moveToParentAfterLoadFailure(loadVFS, path) {
+						fp.updateTitle(err)
+						fp.showDirectoryError(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err))
+						return
+					}
 					vtui.DebugLog("PANEL[%p]: Directory disappeared, attempting to go up. Error: %v", fp, err)
-					_ = fp.setKnownDirectoryPath("..")
 					fp.ReadDirectory()
 					return
 				}
 
 				// For permission or network errors, go back to parent and show the error.
 				if !loadAtRoot && !keepEntries {
-					folderName := filepath.Base(path)
-					_ = fp.setKnownDirectoryPath("..")
-					fp.pendingSelection = folderName
-					fp.ReadDirectory()
-					fp.updateTitle(err)
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err), []string{"&Ok"})
+					if fp.moveToParentAfterLoadFailure(loadVFS, path) {
+						fp.pendingSelection = loadVFS.Base(path)
+						fp.ReadDirectory()
+					} else {
+						fp.updateTitle(err)
+					}
+					fp.showDirectoryError(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err))
 					return
 				}
 
 				fp.updateTitle(err)
-				vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err), []string{"&Ok"})
+				fp.showDirectoryError(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err))
 				return
 			} else {
 				fp.updateTitle(nil)
@@ -1892,7 +1933,10 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	if fp.Y2-fp.Y1+1 > 6 {
 		p := vtui.NewPainter(scr)
 		attrBox := vtui.Palette[ColPanelBox]
-		attrInfo := vtui.Palette[ColPanelInfoText]
+		// far2l paints the per-file status line with COL_PANELTEXT;
+		// COL_PANELINFOTEXT (Panel.Text.Info) belongs to the info panel and
+		// quick view, which use it in info_panel.go and quick_view_panel.go.
+		attrInfo := vtui.Palette[ColPanelText]
 
 		p.DrawLine(fp.X1+1, fp.Y2-2, fp.X2-1, fp.Y2-2, '─', attrBox, false, false)
 		scr.Write(fp.X1, fp.Y2-2, vtui.StringToCharInfo("├", attrBox))
@@ -1962,14 +2006,16 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 
 	totalStr := ""
+	var attrTotal uint64
 	if selFiles > 0 || selDirs > 0 {
 		totalStr = fmt.Sprintf(" "+Msg("Panel.SelectedInfo")+" ", formatIntWithSpaces(selSize), selFiles, selDirs)
+		attrTotal = vtui.Palette[ColPanelSelectedInfo]
 	} else if totCount > 0 {
 		totalStr = fmt.Sprintf(" %s (%d) ", formatSize(totSize), totCount)
+		attrTotal = vtui.Palette[ColPanelTotalInfo]
 	}
 
 	if totalStr != "" {
-		attrTotal := vtui.Palette[ColPanelTitle]
 		totalW := runewidth.StringWidth(totalStr)
 		availBottom := fp.X2 - fp.X1 - 1
 		if totalW < availBottom {
@@ -2077,7 +2123,7 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 		return
 	}
 	columns := fp.gridColumnCount()
-	matchAttr := vtui.Palette[vtui.ColMenuHighlight]
+	matchAttr := vtui.Palette[ColPanelHighlightText]
 
 	for rowOffset := 0; rowOffset < height; rowOffset++ {
 		row := fp.table.TopPos + rowOffset
@@ -2483,6 +2529,79 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 
+			// A provider transition can represent a virtual directory just as well
+			// as an archive-like file. Try it before ordinary SetPath navigation so
+			// those rows can truthfully use IsDir and receive directory rendering.
+			fullPath := fp.vfs.Join(fp.vfs.GetPath(), selected.Name)
+			provider := vfs.FindProvider(context.Background(), fp.vfs, fullPath)
+			if selected.IsDir && provider != nil {
+				directoryProvider, ok := provider.(vfs.VirtualDirectoryProvider)
+				if !ok || !directoryProvider.OpensVirtualDirectories() {
+					provider = nil
+				}
+			}
+			if provider != nil {
+				// The rows must continue to belong to the manager VFS until Open
+				// actually succeeds. In particular, a synthetic actionable ".."
+				// here would turn held Enter into manager.Join(root, "..").
+				if fp.cancelLoad != nil {
+					fp.cancelLoad()
+					fp.cancelLoad = nil
+				}
+				fp.stopLoadingAnimation()
+
+				sourceVFS := fp.vfs
+				sourcePath := sourceVFS.GetPath()
+				selectedName := selected.Name
+				fp.isLoading = true
+				fp.startLoadingAnimation()
+				fp.Refresh()
+
+				fp.providerOpenTask = vtui.RunAsync(func(ctx *vtui.TaskContext) {
+					newVfs, err := provider.Open(ctx.Context, sourceVFS, fullPath)
+					if err == nil && newVfs == nil {
+						err = fmt.Errorf("provider %s returned no file system", provider.Name())
+					}
+					ctx.RunOnUI(func() {
+						// A drive change, cancellation, or a newer transition makes this
+						// result stale. Never let it hijack the panel; returned VFSes own
+						// resources and must be closed explicitly.
+						if fp.providerOpenTask != ctx {
+							if newVfs != nil {
+								_ = newVfs.Close()
+							}
+							return
+						}
+						fp.providerOpenTask = nil
+						if !sameVFSInstance(fp.vfs, sourceVFS) || fp.vfs.GetPath() != sourcePath {
+							if newVfs != nil {
+								_ = newVfs.Close()
+							}
+							return
+						}
+						if err != nil {
+							if newVfs != nil {
+								_ = newVfs.Close()
+							}
+							fp.isLoading = false
+							fp.updateTitle(err)
+							fp.pendingSelection = selectedName
+							fp.ReadDirectory() // Возвращаемся к списку соединений
+							vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selectedName, err), []string{"&Ok"})
+							return
+						}
+						fp.providerEntryName = selectedName
+						fp.vfs = newVfs
+						// From this point the row belongs to the real mounted VFS and is
+						// safe for a subsequent autorepeat Enter to activate.
+						fp.pendingSelection = ".."
+						fp.showCurrentVFSLoadingRows()
+						fp.ReadDirectory()
+					})
+				})
+				return true
+			}
+
 			if selected.IsDir {
 				oldPath := fp.vfs.GetPath()
 				newPath := fp.vfs.Join(oldPath, selected.Name)
@@ -2498,70 +2617,6 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 				} else {
 					vtui.FrameManager.PostTask(func() {
 						vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err), []string{"&Ok"})
-					})
-					return true
-				}
-			} else {
-				// Просим VFS реестр подобрать провайдера для этого файла
-				fullPath := fp.vfs.Join(fp.vfs.GetPath(), selected.Name)
-				if provider := vfs.FindProvider(context.Background(), fp.vfs, fullPath); provider != nil {
-					// The rows must continue to belong to the manager VFS until Open
-					// actually succeeds. In particular, a synthetic actionable ".."
-					// here would turn held Enter into manager.Join(root, "..").
-					if fp.cancelLoad != nil {
-						fp.cancelLoad()
-						fp.cancelLoad = nil
-					}
-					fp.stopLoadingAnimation()
-
-					sourceVFS := fp.vfs
-					sourcePath := sourceVFS.GetPath()
-					selectedName := selected.Name
-					fp.isLoading = true
-					fp.startLoadingAnimation()
-					fp.Refresh()
-
-					fp.providerOpenTask = vtui.RunAsync(func(ctx *vtui.TaskContext) {
-						newVfs, err := provider.Open(ctx.Context, sourceVFS, fullPath)
-						if err == nil && newVfs == nil {
-							err = fmt.Errorf("provider %s returned no file system", provider.Name())
-						}
-						ctx.RunOnUI(func() {
-							// A drive change, cancellation, or a newer transition makes this
-							// result stale. Never let it hijack the panel; returned VFSes own
-							// resources and must be closed explicitly.
-							if fp.providerOpenTask != ctx {
-								if newVfs != nil {
-									_ = newVfs.Close()
-								}
-								return
-							}
-							fp.providerOpenTask = nil
-							if !sameVFSInstance(fp.vfs, sourceVFS) || fp.vfs.GetPath() != sourcePath {
-								if newVfs != nil {
-									_ = newVfs.Close()
-								}
-								return
-							}
-							if err != nil {
-								if newVfs != nil {
-									_ = newVfs.Close()
-								}
-								fp.isLoading = false
-								fp.updateTitle(err)
-								fp.pendingSelection = selectedName
-								fp.ReadDirectory() // Возвращаемся к списку соединений
-								vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selectedName, err), []string{"&Ok"})
-								return
-							}
-							fp.providerEntryName = selectedName
-							fp.vfs = newVfs
-							// From this point the row belongs to the real mounted VFS and is
-							// safe for a subsequent autorepeat Enter to activate.
-							fp.pendingSelection = ".."
-							fp.showCurrentVFSLoadingRows()
-							fp.ReadDirectory()
-						})
 					})
 					return true
 				}

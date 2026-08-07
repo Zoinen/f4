@@ -251,15 +251,16 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { actionEditFile(pf) }),
 	})
 	RegisterAction(Action{
-		Name:        "File.New",
-		Area:        "Shell",
-		Label:       "New File",
-		LabelKey:    "Action.File.New",
-		Description: "Create and open a new file in editor",
-		DescKey:     "Action.File.New.Desc",
-		DefaultKeys: []string{"ShiftF4"},
-		MenuPath:    "Files",
-		Handler:     withPF(func(pf *PanelsFrame) { actionNewFile(pf) }),
+		Name:         "File.New",
+		Area:         "Shell",
+		Label:        "New File",
+		LabelKey:     "Action.File.New",
+		Description:  "Create and open a new file in editor",
+		DescKey:      "Action.File.New.Desc",
+		DefaultKeys:  []string{"ShiftF4:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Files",
+		Handler:      withPF(func(pf *PanelsFrame) { actionNewFile(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "File.Copy",
@@ -306,15 +307,16 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { actionRename(pf) }),
 	})
 	RegisterAction(Action{
-		Name:        "File.MakeDir",
-		Area:        "Shell",
-		Label:       "Make Folder",
-		LabelKey:    "Menu.Files.MkDir",
-		Description: "Create a new directory",
-		DescKey:     "Action.File.MakeDir.Desc",
-		DefaultKeys: []string{"F7"},
-		MenuPath:    "Files",
-		Handler:     withPF(func(pf *PanelsFrame) { actionMkDir(pf) }),
+		Name:         "File.MakeDir",
+		Area:         "Shell",
+		Label:        "Make Folder",
+		LabelKey:     "Menu.Files.MkDir",
+		Description:  "Create a new directory",
+		DescKey:      "Action.File.MakeDir.Desc",
+		DefaultKeys:  []string{"F7:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Files",
+		Handler:      withPF(func(pf *PanelsFrame) { actionMkDir(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "File.Delete",
@@ -457,15 +459,26 @@ func init() {
 	})
 
 	RegisterAction(Action{
-		Name:        "Panel.UserMenu",
+		Name:         "Panel.UserMenu",
+		Area:         "Shell",
+		Label:        "User Menu",
+		LabelKey:     "Action.Panel.UserMenu",
+		Description:  "Show the user menu",
+		DescKey:      "Action.Panel.UserMenu.Desc",
+		DefaultKeys:  []string{"F2:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Commands",
+		Handler:      withPF(func(pf *PanelsFrame) { ShowUserMenu(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.FileAssociations",
 		Area:        "Shell",
-		Label:       "User Menu",
-		LabelKey:    "Action.Panel.UserMenu",
-		Description: "Show the user menu",
-		DescKey:     "Action.Panel.UserMenu.Desc",
-		DefaultKeys: []string{"F2"},
+		Label:       "File Associations…",
+		LabelKey:    "Action.Panel.FileAssociations",
+		Description: "Configure per-mask commands for Enter, F3 and F4",
+		DescKey:     "Action.Panel.FileAssociations.Desc",
 		MenuPath:    "Commands",
-		Handler:     withPF(func(pf *PanelsFrame) { ShowUserMenu(pf) }),
+		Handler:     withPF(func(pf *PanelsFrame) { ShowFileAssociations(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "File.Find",
@@ -905,14 +918,15 @@ func init() {
 		Handler:             withPF(func(pf *PanelsFrame) { vtui.FrameManager.EmitCommand(CmPlugRing, nil) }),
 	})
 	RegisterAction(Action{
-		Name:        "App.SaveSettings",
-		Area:        "Shell",
-		Label:       "Save Settings",
-		LabelKey:    "Action.App.SaveSettings",
-		Description: "Save settings and session",
-		DescKey:     "Action.App.SaveSettings.Desc",
-		DefaultKeys: []string{"ShiftF9"},
-		MenuPath:    "Options",
+		Name:         "App.SaveSettings",
+		Area:         "Shell",
+		Label:        "Save Settings",
+		LabelKey:     "Action.App.SaveSettings",
+		Description:  "Save settings and session",
+		DescKey:      "Action.App.SaveSettings.Desc",
+		DefaultKeys:  []string{"ShiftF9:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Options",
 		Handler: withPF(func(pf *PanelsFrame) {
 			SaveConfig()
 			SaveSession()
@@ -1038,12 +1052,13 @@ func init() {
 		}),
 	})
 	RegisterAction(Action{
-		Name:        "Panel.TogglePassivePanel",
-		Area:        "Shell",
-		Label:       "Toggle Passive Panel",
-		Description: "Show or hide the passive panel",
-		DescKey:     "Action.Panel.TogglePassivePanel.Desc",
-		DefaultKeys: []string{"CtrlP"},
+		Name:         "Panel.TogglePassivePanel",
+		Area:         "Shell",
+		Label:        "Toggle Passive Panel",
+		Description:  "Show or hide the passive panel",
+		DescKey:      "Action.Panel.TogglePassivePanel.Desc",
+		DefaultKeys:  []string{"CtrlP:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *PanelsFrame) {
 			pf.exitWide()
 			if pf.activeIdx == 0 {
@@ -1340,22 +1355,24 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { vtui.FrameManager.EmitCommand(CmSortUnsorted, nil) }),
 	})
 	RegisterAction(Action{
-		Name:        "Panel.LeftDriveMenu",
-		Area:        "Shell",
-		Label:       "Left Drive Menu",
-		Description: "Show the drive menu for the left panel",
-		DescKey:     "Action.Panel.LeftDriveMenu.Desc",
-		DefaultKeys: []string{"AltF1", "CtrlShiftLeft"},
-		Handler:     withPF(func(pf *PanelsFrame) { pf.showDriveMenu(0) }),
+		Name:         "Panel.LeftDriveMenu",
+		Area:         "Shell",
+		Label:        "Left Drive Menu",
+		Description:  "Show the drive menu for the left panel",
+		DescKey:      "Action.Panel.LeftDriveMenu.Desc",
+		DefaultKeys:  []string{"AltF1:NoAltScreenApp", "CtrlShiftLeft:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		Handler:      withPF(func(pf *PanelsFrame) { pf.showDriveMenu(0) }),
 	})
 	RegisterAction(Action{
-		Name:        "Panel.RightDriveMenu",
-		Area:        "Shell",
-		Label:       "Right Drive Menu",
-		Description: "Show the drive menu for the right panel",
-		DescKey:     "Action.Panel.RightDriveMenu.Desc",
-		DefaultKeys: []string{"AltF2", "CtrlShiftRight"},
-		Handler:     withPF(func(pf *PanelsFrame) { pf.showDriveMenu(1) }),
+		Name:         "Panel.RightDriveMenu",
+		Area:         "Shell",
+		Label:        "Right Drive Menu",
+		Description:  "Show the drive menu for the right panel",
+		DescKey:      "Action.Panel.RightDriveMenu.Desc",
+		DefaultKeys:  []string{"AltF2:NoAltScreenApp", "CtrlShiftRight:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		Handler:      withPF(func(pf *PanelsFrame) { pf.showDriveMenu(1) }),
 	})
 	RegisterAction(Action{
 		Name:        "Panel.EnterDirectory",
@@ -1423,13 +1440,14 @@ func init() {
 		}),
 	})
 	RegisterAction(Action{
-		Name:        "App.Quit",
-		Area:        "Shell",
-		Label:       "Quit",
-		Description: "Quit f4",
-		DescKey:     "Action.App.Quit.Desc",
-		DefaultKeys: []string{"F10"},
-		Handler:     func() bool { return vtui.FrameManager.EmitCommand(vtui.CmQuit, nil) },
+		Name:         "App.Quit",
+		Area:         "Shell",
+		Label:        "Quit",
+		Description:  "Quit f4",
+		DescKey:      "Action.App.Quit.Desc",
+		DefaultKeys:  []string{"F10:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
+		Handler:      func() bool { return vtui.FrameManager.EmitCommand(vtui.CmQuit, nil) },
 	})
 	RegisterAction(Action{
 		Name:        "Debug.DummyOperation",

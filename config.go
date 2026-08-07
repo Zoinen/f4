@@ -99,7 +99,7 @@ type F4Config struct {
 	HelpLanguage             string
 	AlwaysShowMenuBar        bool
 	ShowHiddenFiles          bool
-	HighlightDir             bool
+	ShowDirPrefix            bool
 	SeparateFileExtensions   bool
 	PanelScrollbarMode       PanelScrollbarMode
 	SavePanelPaths           bool
@@ -149,8 +149,9 @@ type F4Config struct {
 	GuiCols                  int
 	GuiRows                  int
 	ConsoleTitleTemplate     string
-	UpdateChannel            int    // 0 = Stable, 1 = Nightly
-	UpdateInterval           int    // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
+	UpdateChannel            int // 0 = Stable, 1 = Nightly
+	UpdateInterval           int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
+	EnforceColorCorrection   bool
 	LastUpdateCheck          int64  // Unix timestamp
 	LastUpdateVersion        string // Version string or PublishedAt timestamp
 
@@ -176,7 +177,7 @@ var AppConfig = F4Config{
 	HelpLanguage:             "en",
 	AlwaysShowMenuBar:        false,
 	ShowHiddenFiles:          true,
-	HighlightDir:             true,
+	ShowDirPrefix:            false,
 	SeparateFileExtensions:   false,
 	PanelScrollbarMode:       PanelScrollbarMinimal,
 	SavePanelPaths:           true,
@@ -226,6 +227,7 @@ var AppConfig = F4Config{
 	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
 	UpdateChannel:            0,
 	UpdateInterval:           3, // Default to Weekly
+	EnforceColorCorrection:   true,
 	LastUpdateCheck:          0,
 	LastUpdateVersion:        "",
 }
@@ -272,6 +274,11 @@ func LoadConfig() {
 
 	AppConfig.ShowHiddenFiles = ini.GetString("Panel", "ShowHiddenFiles", "1") == "1"
 	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Modern")
+	// "Far2l Dark" was an approximate port of the far2l theme "default dark".
+	// It has been replaced by an exact one; carry existing configs over.
+	if strings.EqualFold(AppConfig.ColorStyle, "Far2l Dark") {
+		AppConfig.ColorStyle = "Default Dark"
+	}
 	AppConfig.Language = ini.GetString("Interface", "Language", "en")
 	AppConfig.HelpLanguage = ini.GetString("Interface", "HelpLanguage", "en")
 	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
@@ -279,7 +286,7 @@ func LoadConfig() {
 	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
 		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
-	AppConfig.HighlightDir = ini.GetString("Panel", "HighlightDir", "1") == "1"
+	AppConfig.ShowDirPrefix = ini.GetString("Panel", "ShowDirPrefix", "0") == "1"
 	AppConfig.SeparateFileExtensions = ini.GetString("Panel", "SeparateFileExtensions", "0") == "1"
 	if mode := ini.GetString("Panel", "PanelScrollbarMode", ""); mode != "" {
 		AppConfig.PanelScrollbarMode = ParsePanelScrollbarMode(mode)
@@ -333,6 +340,7 @@ func LoadConfig() {
 	if AppConfig.GuiRows <= 0 {
 		AppConfig.GuiRows = 30
 	}
+	AppConfig.EnforceColorCorrection = ini.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
 	fmt.Sscanf(ini.GetString("Update", "Channel", "0"), "%d", &AppConfig.UpdateChannel)
 	fmt.Sscanf(ini.GetString("Update", "Interval", "3"), "%d", &AppConfig.UpdateInterval)
 	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
@@ -414,7 +422,7 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("AlwaysShowMenuBar = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar]))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
-	sb.WriteString(fmt.Sprintf("HighlightDir = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.HighlightDir]))
+	sb.WriteString(fmt.Sprintf("ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowDirPrefix]))
 	sb.WriteString(fmt.Sprintf("SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SeparateFileExtensions]))
 	sb.WriteString(fmt.Sprintf("PanelScrollbarMode = %s\n", AppConfig.PanelScrollbarMode.String()))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
@@ -439,6 +447,9 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("DeleteCancelFocused = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.DeleteCancelFocused]))
 	sb.WriteString(fmt.Sprintf("AnnounceKittyTerm = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AnnounceKittyTerm]))
 	sb.WriteString(fmt.Sprintf("MacroRecordFormat = %d\n", AppConfig.MacroRecordFormat))
+
+	sb.WriteString("\n[Dialogs]\n")
+	sb.WriteString(fmt.Sprintf("EnforceColorCorrection = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EnforceColorCorrection]))
 
 	sb.WriteString("\n[Appearance]\n")
 	sb.WriteString(fmt.Sprintf("GuiFont = %s\n", AppConfig.GuiFont))

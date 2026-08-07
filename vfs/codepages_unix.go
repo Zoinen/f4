@@ -3,12 +3,16 @@
 
 package vfs
 
-import "golang.org/x/text/encoding"
+import (
+	"golang.org/x/text/encoding"
+
+	"github.com/unxed/localecp"
+)
 
 func getWindowsOEMCP() encoding.Encoding {
-	return nil
+	return localecp.OEMEncoding
 }
 
 func getWindowsACP() encoding.Encoding {
-	return nil
+	return localecp.ANSIEncoding
 }

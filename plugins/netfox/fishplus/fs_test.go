@@ -53,6 +53,29 @@ func TestParseFindEntrySymlinkToDir(t *testing.T) {
 		t.Error("a symlink must not be reported as a directory itself")
 	}
 }
+func TestParseFindEntryFreeBSD(t *testing.T) {
+	// FreeBSD 15 supports find -printf, but its output lacks the fractional
+	// seconds that GNU find produces.
+	e, err := parseFindEntry("d d 22 1785914714 1785914719 1785914714 755 1002 1002 .")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if e.Name != "." {
+		t.Errorf("Name = %q", e.Name)
+	}
+	if e.Size != 22 || e.Uid != 1002 || e.Gid != 1002 {
+		t.Errorf("Size/Uid/Gid = %d/%d/%d", e.Size, e.Uid, e.Gid)
+	}
+	if e.Mode != 0040755 {
+		t.Errorf("Mode = %o, want %o", e.Mode, 0040755)
+	}
+	if !e.IsDir() || e.IsSymlink() || e.IsRegular() {
+		t.Error("directory misclassified")
+	}
+	if e.MTime.Unix() != 1785914714 {
+		t.Errorf("MTime = %v", e.MTime)
+	}
+}
 
 func TestParseStatEntry(t *testing.T) {
 	e, err := parseStatEntry("41ed 4096 1785869231 1785869230 1785869229 0 0 /tmp/x/sub dir")

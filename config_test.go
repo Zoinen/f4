@@ -28,7 +28,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	// 1. Set some non-default values
 	AppConfig.ShowHiddenFiles = false
 	AppConfig.ColorStyle = "Classic"
-	AppConfig.HighlightDir = true
+	AppConfig.ShowDirPrefix = true
 	AppConfig.SavePanelPaths = false
 	AppConfig.EditorCrosshair = true
 	AppConfig.EditorColorerBackground = false
@@ -43,7 +43,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	// 3. Reset to defaults
 	AppConfig.ShowHiddenFiles = true
 	AppConfig.ColorStyle = "Modern"
-	AppConfig.HighlightDir = false
+	AppConfig.ShowDirPrefix = false
 	AppConfig.EditorCrosshair = false
 	AppConfig.EditorColorerBackground = true
 	AppConfig.SeparateFileExtensions = false
@@ -60,8 +60,8 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	if AppConfig.ShowHiddenFiles {
 		t.Error("LoadConfig failed to restore ShowHiddenFiles")
 	}
-	if !AppConfig.HighlightDir {
-		t.Error("LoadConfig failed to restore HighlightDir")
+	if !AppConfig.ShowDirPrefix {
+		t.Error("LoadConfig failed to restore ShowDirPrefix")
 	}
 	if AppConfig.SavePanelPaths {
 		t.Error("LoadConfig failed to restore SavePanelPaths")
@@ -235,7 +235,6 @@ Crosshair = 1
 	// Reset config to defaults before loading
 	AppConfig = F4Config{
 		ShowHiddenFiles:         true,
-		HighlightDir:            true,
 		EditorTabSize:           4,
 		EditorCrosshair:         false,
 		CommandLineAutoComplete: true, // A default that shouldn't be touched
@@ -252,8 +251,8 @@ Crosshair = 1
 	if !AppConfig.EditorCrosshair {
 		t.Error("User config (Crosshair=1) was not loaded.")
 	}
-	if !AppConfig.HighlightDir {
-		t.Error("Default value (HighlightDir=true) was incorrectly overwritten.")
+	if !AppConfig.CommandLineAutoComplete {
+		t.Error("Default value (CommandLineAutoComplete=true) was incorrectly overwritten.")
 	}
 }
 

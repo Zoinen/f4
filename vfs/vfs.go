@@ -295,6 +295,14 @@ type VFSProvider interface {
 	Open(ctx context.Context, parent VFS, path string) (VFS, error)
 }
 
+// VirtualDirectoryProvider marks a provider whose entry is deliberately
+// rendered as a directory even though opening it mounts another VFS instead
+// of calling SetPath on the current one.
+type VirtualDirectoryProvider interface {
+	VFSProvider
+	OpensVirtualDirectories() bool
+}
+
 var providers []VFSProvider
 
 func RegisterProvider(p VFSProvider) {
