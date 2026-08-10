@@ -263,6 +263,24 @@ func init() {
 		Handler:      withPF(func(pf *PanelsFrame) { actionNewFile(pf) }),
 	})
 	RegisterAction(Action{
+		Name:        "File.ApplyCommand",
+		Area:        "Shell",
+		Label:       "Apply command",
+		LabelKey:    "Action.File.ApplyCommand",
+		Description: "Apply a command template to selected files or the current file",
+		DescKey:     "Action.File.ApplyCommand.Desc",
+		DefaultKeys: []string{"CtrlG"},
+		MenuPath:    "Files",
+		Visible:     panelCanApplyCommand,
+		Handler: func() bool {
+			if pf := findPanelsFrame(); pf != nil {
+				actionApplyCommand(pf)
+				return true
+			}
+			return false
+		},
+	})
+	RegisterAction(Action{
 		Name:        "File.Copy",
 		Area:        "Shell",
 		Label:       "Copy",

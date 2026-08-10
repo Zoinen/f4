@@ -1,39 +1,89 @@
 package netfox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/text/encoding"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
-import "golang.org/x/text/encoding"
-
 type SFTPVFS struct {
-	parent  vfs.VFS
-	client  *sftp.Client
-	ssh     *ssh.Client
-	path    string
-	title   string
-	decoder *encoding.Decoder
-	encoder *encoding.Encoder
+	parent    vfs.VFS
+	client    *sftp.Client
+	ssh       *ssh.Client
+	shared    *sftpConnectionRefs
+	codepage  string
+	pathMu    sync.RWMutex
+	path      string
+	title     string
+	decoder   *encoding.Decoder
+	closeOnce sync.Once
+}
+
+type sftpConnectionRefs struct {
+	sync.Mutex
+	refs   int
+	client *sftp.Client
+	ssh    *ssh.Client
+}
+
+func (r *sftpConnectionRefs) retain() {
+	if r == nil {
+		return
+	}
+	r.Lock()
+	r.refs++
+	r.Unlock()
+}
+
+func (r *sftpConnectionRefs) release() error {
+	if r == nil {
+		return nil
+	}
+	r.Lock()
+	if r.refs > 0 {
+		r.refs--
+	}
+	last := r.refs == 0
+	client, sshClient := r.client, r.ssh
+	if last {
+		r.client, r.ssh = nil, nil
+	}
+	r.Unlock()
+	if !last {
+		return nil
+	}
+	if client != nil {
+		_ = client.Close()
+	}
+	if sshClient != nil {
+		return sshClient.Close()
+	}
+	return nil
 }
 
 func (v *SFTPVFS) encodePath(p string) string {
-	if v.encoder == nil {
+	_, encoder := vfs.GetCodepageDecoderEncoder(v.codepage)
+	if encoder == nil {
 		return p
 	}
-	encoded, err := v.encoder.Bytes([]byte(p))
+	encoded, err := encoder.Bytes([]byte(p))
 	if err == nil {
 		return string(encoded)
 	}
@@ -64,29 +114,48 @@ func NewSFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, cp s
 		title = user + "@" + host
 	}
 
-	dec, enc := vfs.GetCodepageDecoderEncoder(cp)
+	dec, _ := vfs.GetCodepageDecoderEncoder(cp)
+	shared := &sftpConnectionRefs{refs: 1, client: sftpClient, ssh: sshClient}
 	return &SFTPVFS{
-		parent:  parent,
-		client:  sftpClient,
-		ssh:     sshClient,
-		path:    pwd,
-		title:   title,
-		decoder: dec,
-		encoder: enc,
+		parent:   parent,
+		client:   sftpClient,
+		ssh:      sshClient,
+		shared:   shared,
+		path:     pwd,
+		title:    title,
+		decoder:  dec,
+		codepage: cp,
 	}, nil
+}
+
+// EncodeCommandListANSI applies the same configured filename codepage used by
+// this panel. A fresh encoder keeps parallel Apply workers independent.
+func (v *SFTPVFS) EncodeCommandListANSI(text []byte) ([]byte, error) {
+	_, encoder := vfs.GetCodepageDecoderEncoder(v.codepage)
+	if encoder == nil {
+		return append([]byte(nil), text...), nil
+	}
+	return encoder.Bytes(text)
 }
 
 func (v *SFTPVFS) GetTitle() string { return v.title }
 
-func (v *SFTPVFS) IsAtRoot() bool      { return v.path == "/" || v.path == "" }
-func (v *SFTPVFS) GetPath() string     { return v.path }
+func (v *SFTPVFS) IsAtRoot() bool {
+	p := v.GetPath()
+	return p == "/" || p == ""
+}
+func (v *SFTPVFS) GetPath() string {
+	v.pathMu.RLock()
+	defer v.pathMu.RUnlock()
+	return v.path
+}
 func (v *SFTPVFS) IsAbs(p string) bool { return path.IsAbs(p) }
 func (v *SFTPVFS) SetPath(p string) error {
 	var target string
 	if path.IsAbs(p) {
 		target = p
 	} else {
-		target = v.Join(v.path, p)
+		target = v.Join(v.GetPath(), p)
 	}
 	target = path.Clean(target)
 	info, err := v.client.Stat(v.encodePath(target))
@@ -96,7 +165,9 @@ func (v *SFTPVFS) SetPath(p string) error {
 	if !info.IsDir() {
 		return os.ErrInvalid
 	}
+	v.pathMu.Lock()
 	v.path = target
+	v.pathMu.Unlock()
 	return nil
 }
 
@@ -115,7 +186,8 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		}
 
 		isDir := e.IsDir()
-		if !isDir && (e.Mode()&os.ModeSymlink != 0) {
+		isSymlink := e.Mode()&os.ModeSymlink != 0
+		if !isDir && isSymlink {
 			if target, err := v.client.Stat(v.encodePath(v.Join(p, e.Name()))); err == nil {
 				isDir = target.IsDir()
 			}
@@ -142,7 +214,7 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		}
 
 		items = append(items, vfs.VFSItem{
-			Name: name, Size: e.Size(), IsDir: isDir,
+			Name: name, Size: e.Size(), IsDir: isDir, IsSymlink: isSymlink,
 			MTime: e.ModTime(), IsExecutable: e.Mode().Perm()&0111 != 0,
 			IsHidden: strings.HasPrefix(name, "."),
 			UnixMode: unixMode, Uid: uid, Gid: gid, ATime: aTime,
@@ -190,7 +262,7 @@ func (v *SFTPVFS) Abs(p string) (string, error) {
 	if path.IsAbs(p) {
 		return path.Clean(p), nil
 	}
-	return v.Join(v.path, p), nil
+	return v.Join(v.GetPath(), p), nil
 }
 func (v *SFTPVFS) Base(p string) string { return path.Base(p) }
 func (v *SFTPVFS) Dir(p string) string  { return path.Dir(p) }
@@ -290,17 +362,31 @@ func (v *SFTPVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) 
 }
 func (v *SFTPVFS) ParentVFS() vfs.VFS { return v.parent }
 func (v *SFTPVFS) Close() error {
-	if v.client != nil {
-		v.client.Close()
-	}
-	if v.ssh != nil {
-		return v.ssh.Close()
-	}
-	return nil
+	var err error
+	v.closeOnce.Do(func() {
+		if v.shared != nil {
+			err = v.shared.release()
+			return
+		}
+		if v.client != nil {
+			_ = v.client.Close()
+		}
+		if v.ssh != nil {
+			err = v.ssh.Close()
+		}
+	})
+	return err
 }
 func (v *SFTPVFS) Clone() vfs.VFS {
-	// Re-auth is complex; return self reference.
-	return v
+	if v.shared == nil {
+		return v
+	}
+	v.shared.retain()
+	decoder, _ := vfs.GetCodepageDecoderEncoder(v.codepage)
+	return &SFTPVFS{
+		parent: v.parent, client: v.client, ssh: v.ssh, shared: v.shared,
+		codepage: v.codepage, path: v.GetPath(), title: v.title, decoder: decoder,
+	}
 }
 
 func (v *SFTPVFS) OpenPty(cols, rows int) (any, error) {
@@ -312,6 +398,270 @@ func (v *SFTPVFS) OpenPty(cols, rows int) (any, error) {
 	pty.Run("")
 	return pty, nil
 }
+
+// CommandRunnerInfo describes commands executed in independent SSH sessions.
+// A modest cap avoids opening an unbounded number of channels on servers with
+// conservative MaxSessions settings while still permitting useful parallelism.
+func (*SFTPVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
+	return vfs.CommandRunnerInfo{Dialect: vfs.CommandDialectPOSIX, MaxParallel: 4}
+}
+
+// RunCommand starts a new SSH session rather than borrowing either the SFTP
+// subsystem's channel or the panel's interactive PTY. The current directory is
+// resolved before opening that session, so later panel navigation cannot move
+// a command that is already being dispatched.
+func (v *SFTPVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if v.ssh == nil {
+		return 0, errors.New("sftp: SSH connection is unavailable")
+	}
+	if strings.TrimSpace(command) == "" {
+		return 0, errors.New("sftp: empty shell command")
+	}
+
+	base := v.GetPath()
+	cwd := dir
+	if cwd == "" {
+		cwd = base
+	} else if path.IsAbs(cwd) {
+		cwd = path.Clean(cwd)
+	} else {
+		cwd = path.Join(base, cwd)
+	}
+	if cwd == "" {
+		cwd = "/"
+	}
+	if strings.IndexByte(cwd, 0) >= 0 {
+		return 0, errors.New("sftp: command directory contains NUL")
+	}
+
+	session, err := v.ssh.NewSession()
+	if err != nil {
+		return 0, err
+	}
+	codec, err := v.commandCodec()
+	if err != nil {
+		_ = session.Close()
+		return 0, err
+	}
+	return runSFTPCommandSessionWithCodec(ctx, &liveSFTPCommandSession{Session: session}, cwd, command, cb, codec)
+}
+
+type sftpCommandCodec struct {
+	encode func(string) (string, error)
+	decode func([]byte) string
+}
+
+func (v *SFTPVFS) commandCodec() (sftpCommandCodec, error) {
+	if v.codepage == "" || v.codepage == "65001" {
+		return sftpCommandCodec{}, nil
+	}
+	if v.codepage == "1200" || v.codepage == "1201" {
+		return sftpCommandCodec{}, fmt.Errorf("sftp: UTF-16 panel codepages cannot carry shell commands")
+	}
+	_, probe := vfs.GetCodepageDecoderEncoder(v.codepage)
+	if probe == nil {
+		return sftpCommandCodec{}, fmt.Errorf("sftp: unsupported command codepage %q", v.codepage)
+	}
+	return sftpCommandCodec{
+		encode: func(command string) (string, error) {
+			_, encoder := vfs.GetCodepageDecoderEncoder(v.codepage)
+			encoded, err := encoder.Bytes([]byte(command))
+			return string(encoded), err
+		},
+		decode: func(output []byte) string {
+			decoder, _ := vfs.GetCodepageDecoderEncoder(v.codepage)
+			if decoder != nil {
+				if decoded, err := decoder.Bytes(output); err == nil {
+					return strings.ToValidUTF8(string(decoded), "\uFFFD")
+				}
+			}
+			return strings.ToValidUTF8(string(output), "\uFFFD")
+		},
+	}, nil
+}
+
+type sftpCommandSession interface {
+	Configure(stdout, stderr io.Writer)
+	Start(command string) error
+	Wait() error
+	Signal(signal ssh.Signal) error
+	Close() error
+}
+
+type liveSFTPCommandSession struct{ *ssh.Session }
+
+func (s *liveSFTPCommandSession) Configure(stdout, stderr io.Writer) {
+	s.Stdin = strings.NewReader("")
+	s.Stdout = stdout
+	s.Stderr = stderr
+}
+
+func runSFTPCommandSession(
+	ctx context.Context,
+	session sftpCommandSession,
+	dir, command string,
+	cb func(line string),
+) (int, error) {
+	return runSFTPCommandSessionWithCodec(ctx, session, dir, command, cb, sftpCommandCodec{})
+}
+
+func runSFTPCommandSessionWithCodec(
+	ctx context.Context,
+	session sftpCommandSession,
+	dir, command string,
+	cb func(line string),
+	codec sftpCommandCodec,
+) (int, error) {
+	defer session.Close()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	lines := newSFTPCommandLineWriterWithDecoder(cb, codec.decode)
+	session.Configure(lines, lines)
+	// Keep the closing syntax on its own line so a valid trailing shell comment
+	// in the user's raw command cannot comment it out.
+	wrapper := "cd " + quoteSFTPCommandArgument(dir) + " && (\n" + command + "\n)"
+	if codec.encode != nil {
+		var err error
+		wrapper, err = codec.encode(wrapper)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err := session.Start(wrapper); err != nil {
+		return 0, err
+	}
+
+	wait := make(chan error, 1)
+	go func() { wait <- session.Wait() }()
+
+	select {
+	case err := <-wait:
+		lines.Flush()
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return sftpCommandExitStatus(err)
+	case <-ctx.Done():
+		// Servers are not required to honor signals. Closing this command's
+		// independent channel after SIGKILL guarantees Wait is released without
+		// disturbing SFTP transfers or other Apply workers.
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		<-wait
+		lines.Flush()
+		return 0, ctx.Err()
+	}
+}
+
+func sftpCommandExitStatus(err error) (int, error) {
+	if err == nil {
+		return 0, nil
+	}
+	var status interface{ ExitStatus() int }
+	if errors.As(err, &status) {
+		return status.ExitStatus(), nil
+	}
+	return 0, err
+}
+
+func quoteSFTPCommandArgument(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+type sftpCommandLineWriter struct {
+	mu      sync.Mutex
+	pending []byte
+	cb      func(string)
+	decode  func([]byte) string
+}
+
+const sftpCommandOutputChunkBytes = 64 << 10
+
+func newSFTPCommandLineWriter(cb func(string)) *sftpCommandLineWriter {
+	return newSFTPCommandLineWriterWithDecoder(cb, nil)
+}
+
+func newSFTPCommandLineWriterWithDecoder(cb func(string), decode func([]byte) string) *sftpCommandLineWriter {
+	return &sftpCommandLineWriter{cb: cb, decode: decode}
+}
+
+func (w *sftpCommandLineWriter) decoded(line []byte) string {
+	if w.decode != nil {
+		return w.decode(line)
+	}
+	return strings.ToValidUTF8(string(line), "\uFFFD")
+}
+
+func (w *sftpCommandLineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if n == 0 || w.cb == nil {
+		return n, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		i := bytes.IndexByte(w.pending, '\n')
+		if i < 0 && len(w.pending) <= sftpCommandOutputChunkBytes {
+			break
+		}
+		end, consumed := i, i+1
+		if i < 0 || i > sftpCommandOutputChunkBytes {
+			end = sftpCommandOutputChunkEnd(w.pending, sftpCommandOutputChunkBytes)
+			consumed = end
+		}
+		line := w.pending[:end]
+		if len(line) != 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		w.cb(w.decoded(line))
+		w.pending = w.pending[consumed:]
+	}
+	return n, nil
+}
+
+func sftpCommandOutputChunkEnd(data []byte, limit int) int {
+	if len(data) <= limit {
+		return len(data)
+	}
+	end := limit
+	for end > 0 && end < len(data) && !utf8.RuneStart(data[end]) {
+		end--
+	}
+	if end == 0 {
+		return limit
+	}
+	return end
+}
+
+func (w *sftpCommandLineWriter) Flush() {
+	if w.cb == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return
+	}
+	line := w.pending
+	if line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	w.cb(w.decoded(line))
+	w.pending = nil
+}
+
+var (
+	_ io.Writer                     = (*sftpCommandLineWriter)(nil)
+	_ vfs.CommandRunner             = (*SFTPVFS)(nil)
+	_ vfs.CommandRunnerInfoProvider = (*SFTPVFS)(nil)
+	_ vfs.CommandListANSIEncoder    = (*SFTPVFS)(nil)
+)
 
 type sftpProvider struct{}
 

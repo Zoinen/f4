@@ -1079,10 +1079,22 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 // can read stdin, print for an hour or never end without any of that
 // reaching the request stream the panel is using.
 func (v *FishVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
-	if !v.client().CanRun() {
+	if !v.CommandRunnerAvailable() {
 		return 0, fishplus.ErrNoJobs
 	}
 	return v.client().Run(ctx, v.abs(dir), command, cb)
+}
+
+func (v *FishVFS) CommandRunnerAvailable() bool {
+	client := v.client()
+	return client != nil && client.CanRun()
+}
+
+// CommandRunnerInfo reports the remote shell syntax and the transport's real
+// concurrency limit. A FISH+ connection serializes protocol requests, so
+// advertising more workers would only reorder queued requests locally.
+func (*FishVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
+	return vfs.CommandRunnerInfo{Dialect: vfs.CommandDialectPOSIX, MaxParallel: 1}
 }
 
 // FindDuplicates implements vfs.DuplicateFinder. Only the paths of the files
@@ -1179,8 +1191,10 @@ func (v *FishVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem)
 			return err
 		}
 	}
-	if err := v.client().Chown(ctx, target, item.Uid, item.Gid); err != nil {
-		return err
+	if item.Uid >= 0 || item.Gid >= 0 {
+		if err := v.client().Chown(ctx, target, item.Uid, item.Gid); err != nil {
+			return err
+		}
 	}
 	mtime, atime := item.MTime, item.ATime
 	if mtime.IsZero() {
@@ -1188,6 +1202,9 @@ func (v *FishVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem)
 	}
 	if atime.IsZero() {
 		atime = mtime
+	}
+	if mtime.IsZero() || atime.IsZero() {
+		return nil
 	}
 	return v.client().Chtimes(ctx, target, mtime, atime)
 }
@@ -1222,7 +1239,12 @@ func (v *FishVFS) CloneForParent(parent vfs.VFS) *FishVFS {
 	}
 }
 
-var _ vfs.PanelInfoProvider = (*FishVFS)(nil)
+var (
+	_ vfs.PanelInfoProvider                 = (*FishVFS)(nil)
+	_ vfs.CommandRunner                     = (*FishVFS)(nil)
+	_ vfs.CommandRunnerInfoProvider         = (*FishVFS)(nil)
+	_ vfs.CommandRunnerAvailabilityProvider = (*FishVFS)(nil)
+)
 
 // Close releases this view. The session itself goes away with its last
 // user, and closing the same view twice is harmless: a panel may well be

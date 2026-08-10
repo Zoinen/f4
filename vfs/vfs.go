@@ -331,6 +331,43 @@ type CommandRunner interface {
 	RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error)
 }
 
+// CommandDialect describes the syntax understood by a CommandRunner.
+type CommandDialect uint8
+
+const (
+	CommandDialectUnknown CommandDialect = iota
+	CommandDialectPOSIX
+	CommandDialectCmd
+	CommandDialectPowerShell
+)
+
+// CommandLiteralPercentEnv is reserved by F4's cmd.exe argument compiler.
+// CommandDialectCmd runners define it as one literal percent character.
+const CommandLiteralPercentEnv = "F4_APPLY_LITERAL_PERCENT_8C1E"
+
+type CommandRunnerInfo struct {
+	Dialect     CommandDialect
+	MaxParallel int
+}
+
+type CommandRunnerInfoProvider interface {
+	CommandRunnerInfo() CommandRunnerInfo
+}
+
+type CommandRunnerAvailabilityProvider interface {
+	CommandRunnerAvailable() bool
+}
+
+type CommandListANSIEncoder interface {
+	EncodeCommandListANSI(text []byte) ([]byte, error)
+}
+
+// PrivateCommandFileCreator creates a command list file with private
+// permissions from the moment it becomes visible on the command host.
+type PrivateCommandFileCreator interface {
+	CreatePrivateCommandFile(ctx context.Context, path string) (io.WriteCloser, error)
+}
+
 // DuplicateProgress reports how far a duplicate search has got. Total is how
 // many files turned out to be worth reading at all, which is known only once
 // the tree has been walked, so it is not the number of files in it.

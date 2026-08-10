@@ -356,25 +356,31 @@ type dirCacheKey struct {
 
 type FileSystemPanel struct {
 	vtui.ScreenObject
-	table                *vtui.Table
-	scrollBar            *vtui.ScrollBar
-	scrollMouseActive    bool
-	minimalScrollDragGap int
-	headerMouseActive    bool
-	frame                *vtui.BorderedFrame
-	vfs                  vfs.VFS
-	entries              []*fileEntry
-	selectedItems        map[string]bool
-	viewMode             ViewMode
-	wide                 bool
-	cursorIdx            int
-	lastRightClickedIdx  int
-	rightDragActive      bool
-	rightDragSelect      bool
-	rowDragButton        uint32
-	dragScrollDirection  int
-	dragScrollTimer      *time.Timer
-	dragScrollGeneration uint64
+	table                 *vtui.Table
+	scrollBar             *vtui.ScrollBar
+	scrollMouseActive     bool
+	minimalScrollDragGap  int
+	headerMouseActive     bool
+	frame                 *vtui.BorderedFrame
+	vfs                   vfs.VFS
+	entries               []*fileEntry
+	selectedItems         map[string]bool
+	previousSelection     map[string]bool
+	previousSelectionVFS  vfs.VFS
+	previousSelectionPath string
+	selectionEpoch        map[string]uint64
+	selectionEpochNext    uint64
+	directoryEpoch        uint64
+	viewMode              ViewMode
+	wide                  bool
+	cursorIdx             int
+	lastRightClickedIdx   int
+	rightDragActive       bool
+	rightDragSelect       bool
+	rowDragButton         uint32
+	dragScrollDirection   int
+	dragScrollTimer       *time.Timer
+	dragScrollGeneration  uint64
 
 	loadCtx                   context.Context
 	cancelLoad                context.CancelFunc
@@ -432,6 +438,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		lastRightClickedIdx: -1,
 		dirCache:            make(map[dirCacheKey]dirCacheEntry),
 		selectedItems:       make(map[string]bool),
+		selectionEpoch:      make(map[string]uint64),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.frame.ColorBoxIdx = ColPanelBox
@@ -514,10 +521,18 @@ func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
 	if idx >= 0 && idx < len(fp.entries) {
 		e := fp.entries[idx]
 		if e.Name != ".." {
+			if e.Selected == state {
+				return
+			}
 			e.Selected = state
 			if fp.selectedItems == nil {
 				fp.selectedItems = make(map[string]bool)
 			}
+			if fp.selectionEpoch == nil {
+				fp.selectionEpoch = make(map[string]uint64)
+			}
+			fp.selectionEpochNext++
+			fp.selectionEpoch[e.Name] = fp.selectionEpochNext
 			if state {
 				fp.selectedItems[e.Name] = true
 			} else {
@@ -525,6 +540,31 @@ func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
 			}
 		}
 	}
+}
+
+func (fp *FileSystemPanel) previousSelectionMatches(filesystem vfs.VFS, path string) bool {
+	return fp != nil && fp.previousSelectionVFS != nil && filesystem != nil &&
+		sameVFSInstance(fp.previousSelectionVFS, filesystem) && fp.previousSelectionPath == path
+}
+
+func (fp *FileSystemPanel) clearPreviousSelection() {
+	if fp == nil {
+		return
+	}
+	fp.previousSelection = nil
+	fp.previousSelectionVFS = nil
+	fp.previousSelectionPath = ""
+	for _, entry := range fp.entries {
+		entry.PrevSelected = false
+	}
+}
+
+func (fp *FileSystemPanel) applyPersistentSelection(entry *fileEntry, filesystem vfs.VFS, path string) {
+	if fp == nil || entry == nil || entry.Name == ".." {
+		return
+	}
+	entry.Selected = fp.selectedItems[entry.Name]
+	entry.PrevSelected = fp.previousSelectionMatches(filesystem, path) && fp.previousSelection[entry.Name]
 }
 
 func (fp *FileSystemPanel) ToggleSelection(idx int) {
@@ -1450,6 +1490,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	cacheKey := directoryCacheKey(loadVFS, path)
 	loadAtRoot := loadVFS.IsAtRoot()
 	showUpEntry := !loadAtRoot || loadVFS.ParentVFS() != nil
+	if fp.previousSelectionVFS != nil && !fp.previousSelectionMatches(loadVFS, path) {
+		fp.clearPreviousSelection()
+	}
 
 	// Drop persistent selection when we've navigated to a different
 	// directory. Without this the map (keyed by bare filename)
@@ -1461,6 +1504,8 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		for k := range fp.selectedItems {
 			delete(fp.selectedItems, k)
 		}
+		fp.directoryEpoch++
+		fp.selectionEpoch = make(map[string]uint64)
 	}
 	fp.lastLoadedPath = path
 
@@ -1492,9 +1537,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					continue
 				}
 				entry := &fileEntry{VFSItem: item, IsCached: true}
-				if fp.selectedItems[item.Name] {
-					entry.Selected = true
-				}
+				fp.applyPersistentSelection(entry, loadVFS, path)
 				fp.entries = append(fp.entries, entry)
 			}
 
@@ -1589,9 +1632,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 				// Apply persistent selection to incoming items
 				for _, e := range newEntries {
-					if fp.selectedItems[e.Name] {
-						e.Selected = true
-					}
+					fp.applyPersistentSelection(e, loadVFS, path)
 				}
 
 				fp.entries = append(fp.entries, newEntries...)
@@ -1709,9 +1750,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						continue
 					}
 					entry := &fileEntry{VFSItem: item}
-					if fp.selectedItems[item.Name] {
-						entry.Selected = true
-					}
+					fp.applyPersistentSelection(entry, loadVFS, path)
 					fp.entries = append(fp.entries, entry)
 				}
 				fp.sortEntries()
@@ -1769,9 +1808,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						continue
 					}
 					entry := &fileEntry{VFSItem: item}
-					if fp.selectedItems[item.Name] {
-						entry.Selected = true
-					}
+					fp.applyPersistentSelection(entry, loadVFS, path)
 					newEntries = append(newEntries, entry)
 				}
 				fp.entries = append(fp.entries, newEntries...)
@@ -1797,6 +1834,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				for name := range fp.selectedItems {
 					if !validNames[name] {
 						delete(fp.selectedItems, name)
+					}
+				}
+				if fp.previousSelectionMatches(loadVFS, path) {
+					for name := range fp.previousSelection {
+						if !validNames[name] {
+							delete(fp.previousSelection, name)
+						}
 					}
 				}
 			}
@@ -2840,6 +2884,38 @@ func (fp *FileSystemPanel) IsNameSelected(name string) bool {
 	return fp.selectedItems[name]
 }
 
+type panelSelectionToken struct {
+	panel          *FileSystemPanel
+	vfs            vfs.VFS
+	path           string
+	name           string
+	directoryEpoch uint64
+	selectionEpoch uint64
+}
+
+func (fp *FileSystemPanel) captureSelectionToken(name string) (panelSelectionToken, bool) {
+	if fp == nil || !fp.IsNameSelected(name) || fp.vfs == nil {
+		return panelSelectionToken{}, false
+	}
+	return panelSelectionToken{
+		panel:          fp,
+		vfs:            fp.vfs,
+		path:           fp.vfs.GetPath(),
+		name:           name,
+		directoryEpoch: fp.directoryEpoch,
+		selectionEpoch: fp.selectionEpoch[name],
+	}, true
+}
+
+func (fp *FileSystemPanel) clearSelectionIfUnchanged(token panelSelectionToken) bool {
+	if fp == nil || token.panel != fp || fp.vfs == nil || !sameVFSInstance(fp.vfs, token.vfs) || fp.vfs.GetPath() != token.path ||
+		fp.directoryEpoch != token.directoryEpoch || fp.selectionEpoch[token.name] != token.selectionEpoch ||
+		!fp.IsNameSelected(token.name) {
+		return false
+	}
+	return fp.SetSelectedByName(token.name, false)
+}
+
 // ImageSiblings lists the pictures of this panel in the order it shows them,
 // together with the position of the one under the cursor, or minus one when
 // the cursor is not on a picture.
@@ -2983,8 +3059,19 @@ func (fp *FileSystemPanel) doFastFind(dir int) {
 // select-all/deselect-all) so that RestoreSelection has a well-defined
 // state to bring back. Mirrors far2l's FileList::SaveSelection().
 func (fp *FileSystemPanel) SaveSelection() {
+	previous := make(map[string]bool)
 	for _, e := range fp.entries {
 		e.PrevSelected = e.Selected
+		if e.Name != ".." && e.Selected {
+			previous[e.Name] = true
+		}
+	}
+	fp.previousSelection = previous
+	fp.previousSelectionVFS = fp.vfs
+	if fp.vfs != nil {
+		fp.previousSelectionPath = fp.vfs.GetPath()
+	} else {
+		fp.previousSelectionPath = ""
 	}
 }
 
@@ -2993,13 +3080,27 @@ func (fp *FileSystemPanel) SaveSelection() {
 // returns to the state you started from. Mirrors far2l's
 // FileList::RestoreSelection().
 func (fp *FileSystemPanel) RestoreSelection() {
+	saved := fp.previousSelection
+	if fp.vfs == nil || !fp.previousSelectionMatches(fp.vfs, fp.vfs.GetPath()) {
+		saved = nil
+	}
+	current := make(map[string]bool)
 	for i, e := range fp.entries {
 		if e.Name == ".." {
 			continue
 		}
-		saved := e.PrevSelected
+		if e.Selected {
+			current[e.Name] = true
+		}
 		e.PrevSelected = e.Selected
-		fp.SetItemSelected(i, saved)
+		fp.SetItemSelected(i, saved[e.Name])
+	}
+	fp.previousSelection = current
+	fp.previousSelectionVFS = fp.vfs
+	if fp.vfs != nil {
+		fp.previousSelectionPath = fp.vfs.GetPath()
+	} else {
+		fp.previousSelectionPath = ""
 	}
 	vtui.FrameManager.Redraw()
 }

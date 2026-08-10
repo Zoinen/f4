@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -62,7 +63,7 @@ type QueueTask struct {
 	ID          int
 	Type        string
 	Desc        string
-	State       string // Queued, Scanning, Running, Done, Error, Cancelled
+	State       string // Queued, Starting, Scanning, Running, Cancelling, Done, Error, Cancelled
 	Progress    int
 	TotalText   string
 	Speed       string
@@ -72,16 +73,35 @@ type QueueTask struct {
 	Preconditions []OpPrecondition
 	ResKeys       []string
 
-	Run        func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error
-	OnComplete func()
+	Run         func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error
+	OpenDetails func(anchor vtui.Frame)
+	Finalize    func()
+	OnComplete  func()
 
 	ctx    context.Context
 	cancel context.CancelFunc
+	// queuedFinalizing distinguishes a queued task whose asynchronous teardown
+	// is already scheduled from a running task in the ordinary Cancelling state.
+	queuedFinalizing bool
+
+	completionOnce sync.Once
+	finalizeOnce   sync.Once
+}
+
+func (t *QueueTask) finalize() {
+	if t == nil {
+		return
+	}
+	t.finalizeOnce.Do(func() {
+		if t.Finalize != nil {
+			t.Finalize()
+		}
+	})
 }
 
 func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 	t.mu.Lock()
-	if t.State == "Done" || t.State == "Error" || t.State == "Cancelled" {
+	if queueTaskTerminal(t.State) || t.State == "Cancelling" {
 		vtui.DebugLog("QUEUE_DEBUG: UpdateScan ignored for Task %d (State: %s)", t.ID, t.State)
 		t.mu.Unlock()
 		return
@@ -96,7 +116,7 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 }
 func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 	t.mu.Lock()
-	if t.State == "Done" || t.State == "Error" || t.State == "Cancelled" {
+	if queueTaskTerminal(t.State) || t.State == "Cancelling" {
 		t.mu.Unlock()
 		return
 	}
@@ -122,6 +142,18 @@ func (t *QueueTask) IsCancelled() bool {
 		return t.ctx.Err() != nil
 	}
 	return false
+}
+
+func queueTaskTerminal(state string) bool {
+	return state == "Done" || state == "Error" || state == "Cancelled"
+}
+
+func queueTaskActive(state string) bool {
+	return state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running" || state == "Cancelling"
+}
+
+func queueTaskCancellable(state string) bool {
+	return state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running"
 }
 
 type OpQueueManager struct {
@@ -193,10 +225,16 @@ func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 		qm.mu.Lock()
 		defer qm.mu.Unlock()
 		for _, t := range qm.tasks {
-			if t.ID == id && (t.State == "Queued" || t.State == "Starting" || t.State == "Scanning" || t.State == "Running") {
-				vtui.ShowToast("Background operation started. Press Ctrl+Tab for Queue.", 4*time.Second)
-				break
+			if t.ID != id {
+				continue
 			}
+			t.mu.Lock()
+			active := queueTaskActive(t.State)
+			t.mu.Unlock()
+			if active {
+				vtui.ShowToast("Background operation started. Press Ctrl+Tab for Queue.", 4*time.Second)
+			}
+			break
 		}
 	}(task.ID)
 }
@@ -208,14 +246,19 @@ func (qm *OpQueueManager) EnsureQueueWorkspace() {
 	for _, s := range vtui.FrameManager.Screens {
 		for _, f := range s.Frames {
 			if qf, ok := f.(*QueueFrame); ok {
+				qm.mu.Lock()
 				qm.frame = qf
+				qm.mu.Unlock()
 				return
 			}
 		}
 	}
 
-	qm.frame = NewQueueFrame()
-	vtui.FrameManager.AddScreenBackground(qm.frame)
+	frame := NewQueueFrame()
+	vtui.FrameManager.AddScreenBackground(frame)
+	qm.mu.Lock()
+	qm.frame = frame
+	qm.mu.Unlock()
 }
 
 func (qm *OpQueueManager) ActiveTasksCount() int {
@@ -224,7 +267,7 @@ func (qm *OpQueueManager) ActiveTasksCount() int {
 	count := 0
 	for _, t := range qm.tasks {
 		t.mu.Lock()
-		isActive := t.State == "Queued" || t.State == "Starting" || t.State == "Scanning" || t.State == "Running"
+		isActive := queueTaskActive(t.State)
 		t.mu.Unlock()
 		if isActive {
 			count++
@@ -233,10 +276,110 @@ func (qm *OpQueueManager) ActiveTasksCount() int {
 	return count
 }
 
-func (qm *OpQueueManager) RefreshUI() {
-	if qm.frame != nil {
-		qm.frame.UpdateTasks(qm.tasks)
+// Cancel requests cancellation without pretending that work or teardown has
+// already stopped. Both queued and executing tasks remain active as Cancelling
+// until Finalize or executeTask has unwound off the UI thread.
+func (qm *OpQueueManager) Cancel(id int) bool {
+	qm.mu.Lock()
+	var cancel context.CancelFunc
+	var complete *QueueTask
+	found := false
+	for _, t := range qm.tasks {
+		if t.ID != id {
+			continue
+		}
+		t.mu.Lock()
+		switch t.State {
+		case "Queued":
+			// Stay active while asynchronous Finalize releases resources captured
+			// at enqueue time; it publishes the terminal state when finished.
+			t.State = "Cancelling"
+			t.queuedFinalizing = true
+			cancel = t.cancel
+			complete = t
+			found = true
+		case "Starting", "Scanning", "Running":
+			t.State = "Cancelling"
+			cancel = t.cancel
+			found = true
+		case "Cancelling":
+			if !t.queuedFinalizing {
+				cancel = t.cancel
+				found = true
+			}
+		}
+		t.mu.Unlock()
+		break
 	}
+	qm.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if complete != nil {
+		qm.RequestRefresh()
+		// Plugin/VFS teardown can block. Keep the task active as Cancelling and
+		// finish it off-thread so CancelAll can signal every task promptly and
+		// the UI never waits inside a button or quit callback.
+		go func() {
+			complete.finalize()
+			complete.mu.Lock()
+			complete.queuedFinalizing = false
+			complete.State = "Cancelled"
+			complete.ErrorMsg = nil
+			complete.mu.Unlock()
+			qm.postTaskCompletion(complete)
+		}()
+	} else if found {
+		qm.RequestRefresh()
+	}
+	return found
+}
+
+// CancelAll requests cancellation for every task that has not reached a
+// terminal state. It intentionally does not wait: shutdown paths must be able
+// to signal all operations before tearing down the UI.
+func (qm *OpQueueManager) CancelAll() {
+	qm.mu.Lock()
+	ids := make([]int, 0, len(qm.tasks))
+	for _, t := range qm.tasks {
+		t.mu.Lock()
+		if queueTaskActive(t.State) {
+			ids = append(ids, t.ID)
+		}
+		t.mu.Unlock()
+	}
+	qm.mu.Unlock()
+
+	for _, id := range ids {
+		qm.Cancel(id)
+	}
+}
+
+func (qm *OpQueueManager) RefreshUI() {
+	qm.mu.Lock()
+	frame := qm.frame
+	tasks := append([]*QueueTask(nil), qm.tasks...)
+	qm.mu.Unlock()
+	if frame != nil {
+		frame.UpdateTasks(tasks)
+	}
+}
+
+// postTaskCompletion serializes all terminal paths through one UI callback.
+// In particular, Cancel and workerLoop race while a task is Queued: whichever
+// path claims it is responsible for completion, and completionOnce protects
+// against any future path accidentally posting the callback a second time.
+func (qm *OpQueueManager) postTaskCompletion(t *QueueTask) {
+	t.finalize()
+	t.completionOnce.Do(func() {
+		vtui.FrameManager.PostTask(func() {
+			if t.OnComplete != nil {
+				t.OnComplete()
+			}
+			qm.RefreshUI()
+		})
+	})
 }
 
 func (qm *OpQueueManager) workerLoop() {
@@ -280,52 +423,71 @@ func (qm *OpQueueManager) workerLoop() {
 
 func (qm *OpQueueManager) executeTask(t *QueueTask) {
 	vtui.DebugLog("QUEUE_DEBUG: Executing Task %d (%s)", t.ID, t.Type)
+	var taskErr error
 	if t.Run == nil {
-		t.State = "Error"
-		t.ErrorMsg = fmt.Errorf("internal error: task run function is nil")
-		qm.mu.Lock()
-		for _, rk := range t.ResKeys {
-			qm.activeKeys[rk] = false
-		}
-		qm.mu.Unlock()
-		return
+		taskErr = fmt.Errorf("internal error: task run function is nil")
 	}
-	conflict := false
+	if taskErr == nil && t.ctx != nil {
+		taskErr = t.ctx.Err()
+	}
 	for _, pc := range t.Preconditions {
-		st, err := pc.Vfs.Stat(context.Background(), pc.Path)
+		if taskErr != nil {
+			break
+		}
+		ctx := t.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		st, err := pc.Vfs.Stat(ctx, pc.Path)
 		if err != nil {
-			conflict = true
-			t.ErrorMsg = fmt.Errorf("conflict: missing %s", pc.Path)
+			if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				taskErr = context.Canceled
+			} else {
+				taskErr = fmt.Errorf("conflict: missing %s", pc.Path)
+			}
 			break
 		}
 		if st.MTime != pc.MTime || st.Size != pc.Size || st.IsDir != pc.IsDir {
-			conflict = true
-			t.ErrorMsg = fmt.Errorf("conflict: modified %s", pc.Path)
+			taskErr = fmt.Errorf("conflict: modified %s", pc.Path)
 			break
 		}
 	}
 
-	var err error
-	if conflict {
-		t.mu.Lock()
-		t.State = "Error"
-		t.mu.Unlock()
-	} else {
-		err = t.Run(t.ctx, t, qm.frame)
-		t.mu.Lock()
-		if err != nil {
-			if err == context.Canceled {
-				t.State = "Cancelled"
-			} else {
-				t.State = "Error"
-				t.ErrorMsg = err
-			}
-		} else {
-			t.State = "Done"
-			t.Progress = 100
-		}
-		t.mu.Unlock()
+	if taskErr == nil && t.ctx != nil {
+		taskErr = t.ctx.Err()
 	}
+	if taskErr == nil {
+		runCtx := t.ctx
+		if runCtx == nil {
+			runCtx = context.Background()
+		}
+		qm.mu.Lock()
+		anchor := qm.frame
+		qm.mu.Unlock()
+		taskErr = t.Run(runCtx, t, anchor)
+	}
+
+	// Finalize before publishing a terminal state. Shutdown waits by counting
+	// active states, so this ordering guarantees captured VFS sessions and
+	// other task-owned resources are gone when the count reaches zero.
+	t.finalize()
+
+	t.mu.Lock()
+	ctxCancelled := t.ctx != nil && errors.Is(t.ctx.Err(), context.Canceled)
+	switch {
+	case errors.Is(taskErr, context.Canceled) || ctxCancelled:
+		t.State = "Cancelled"
+		t.ErrorMsg = nil
+	case taskErr != nil:
+		t.State = "Error"
+		t.ErrorMsg = taskErr
+	default:
+		t.State = "Done"
+		t.Progress = 100
+		t.ErrorMsg = nil
+	}
+	finalState := t.State
+	t.mu.Unlock()
 
 	qm.mu.Lock()
 	for _, rk := range t.ResKeys {
@@ -333,14 +495,9 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 	}
 	qm.mu.Unlock()
 
-	vtui.DebugLog("QUEUE_DEBUG: Task %d finalized with state %s. Posting OnComplete.", t.ID, t.State)
+	vtui.DebugLog("QUEUE_DEBUG: Task %d finalized with state %s. Posting OnComplete.", t.ID, finalState)
 
-	vtui.FrameManager.PostTask(func() {
-		if t.OnComplete != nil {
-			t.OnComplete()
-		}
-		qm.RefreshUI()
-	})
+	qm.postTaskCompletion(t)
 }
 
 type QueueFrame struct {
@@ -365,7 +522,7 @@ func (r queueRow) GetCellText(col int) string {
 	case 2:
 		return t.Type
 	case 3:
-		if t.State == "Running" || t.State == "Scanning" {
+		if t.State == "Running" || t.State == "Scanning" || t.State == "Cancelling" {
 			return t.CurrentFile
 		}
 		return t.Desc
@@ -399,7 +556,7 @@ func (r queueRow) GetCellAttr(col int, def uint64) uint64 {
 	if t.State == "Running" || t.State == "Scanning" {
 		return themedForeground(def, vtui.ColDialogHighlightText)
 	}
-	if t.State == "Cancelled" {
+	if t.State == "Cancelled" || t.State == "Cancelling" {
 		return vtui.DimColor(def)
 	}
 	return def
@@ -436,6 +593,7 @@ func NewQueueFrame() *QueueFrame {
 	useDialogTableColors(qf.table)
 	qf.table.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
 	qf.table.ShowScrollBar = true
+	qf.table.OnAction = func(idx int) { qf.openTaskDetails(idx) }
 
 	btnCancel := vtui.NewButton(0, 0, Msg("Queue.BtnCancel"))
 	btnClear := vtui.NewButton(0, 0, Msg("Queue.BtnClear"))
@@ -463,16 +621,10 @@ func NewQueueFrame() *QueueFrame {
 			t.mu.Lock()
 			state := t.State
 			t.mu.Unlock()
-			if state == "Queued" || state == "Running" || state == "Scanning" || state == "Starting" {
+			if queueTaskCancellable(state) {
 				vtui.ShowMessageOn(qf, " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", t.ID)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
 					if c == 0 {
-						if t.cancel != nil {
-							t.cancel()
-						}
-						t.mu.Lock()
-						t.State = "Cancelled"
-						t.mu.Unlock()
-						qf.UpdateTasks(qf.tasks)
+						GlobalQueueManager.Cancel(t.ID)
 					}
 				}
 			}
@@ -484,7 +636,7 @@ func NewQueueFrame() *QueueFrame {
 		var active []*QueueTask
 		for _, t := range GlobalQueueManager.tasks {
 			t.mu.Lock()
-			isDone := t.State == "Done" || t.State == "Cancelled" || t.State == "Error"
+			isDone := queueTaskTerminal(t.State)
 			t.mu.Unlock()
 			if !isDone {
 				active = append(active, t)
@@ -510,13 +662,34 @@ func (qf *QueueFrame) UpdateTasks(tasks []*QueueTask) {
 
 func (qf *QueueFrame) GetType() vtui.FrameType { return vtui.TypeUser }
 
+func (qf *QueueFrame) openTaskDetails(idx int) {
+	if idx < 0 || idx >= len(qf.tasks) {
+		return
+	}
+	t := qf.tasks[idx]
+	t.mu.Lock()
+	openDetails := t.OpenDetails
+	isErr := t.State == "Error"
+	errMsg := t.ErrorMsg
+	t.mu.Unlock()
+
+	if openDetails != nil {
+		openDetails(qf)
+	} else if isErr && errMsg != nil {
+		dlg := vtui.ShowMessageOn(qf, " Error Details ", errMsg.Error(), []string{"&Ok"})
+		dlg.IsWarning = true
+	}
+}
+
 func (qf *QueueFrame) ProcessKey(e *vtinput.InputEvent) bool {
-	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_F10) {
+	ctrlW := e.KeyDown && e.VirtualKeyCode == vtinput.VK_W &&
+		(e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0
+	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_F10 || ctrlW) {
 		active := false
 		GlobalQueueManager.mu.Lock()
 		for _, t := range GlobalQueueManager.tasks {
 			t.mu.Lock()
-			isActive := t.State == "Queued" || t.State == "Starting" || t.State == "Scanning" || t.State == "Running"
+			isActive := queueTaskActive(t.State)
 			t.mu.Unlock()
 			if isActive {
 				active = true
@@ -535,23 +708,12 @@ func (qf *QueueFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 
-	// Pressing Enter on an Error task can show details
+	// A task may expose live progress or a retained final result. Errors that do
+	// not provide richer details keep the existing message fallback.
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_RETURN {
 		idx := qf.table.SelectPos
 		if idx >= 0 && idx < len(qf.tasks) {
-			t := qf.tasks[idx]
-			t.mu.Lock()
-			isErr := t.State == "Error"
-			errMsg := t.ErrorMsg
-			t.mu.Unlock()
-
-			if isErr && errMsg != nil {
-				// "Error Details" is an error dialog — the plain "Error"
-				// title would auto-detect as a warning, but this one does
-				// not match the legacy whitelist. Flip explicitly (#379).
-				dlg := vtui.ShowMessageOn(qf, " Error Details ", errMsg.Error(), []string{"&Ok"})
-				dlg.IsWarning = true
-			}
+			qf.openTaskDetails(idx)
 			return true
 		}
 	}

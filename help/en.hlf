@@ -566,6 +566,51 @@ Viewer:
 $Panel Navigation
 This topic is generated dynamically from the action registry.
 
+@ApplyCmd
+$Apply command (Ctrl+G)
+Apply command runs a command template for marked panel entries in panel order,
+or for the current entry when nothing is marked. Directories are included;
+the parent row (..) is never processed. Processed marks can be restored with
+Ctrl+M.
+
+Sequential runs one command at a time. Parallel uses the selected worker
+limit. Queue runs one sequential batch in the background. All modes execute
+on the host that owns the active panel and provide one cancellable transcript.
+Commands are noninteractive and receive closed standard input.
+
+The transcript window can be resized or expanded with F5 and may be closed
+while commands continue to run. Closing it does not cancel the batch; use
+Cancel for that. Send to editor opens the currently retained transcript in a
+new editable workspace.
+
+Scalar substitutions are inserted verbatim: quote them in the template when
+needed, for example tool "!.!". A leading @ suppresses the displayed expanded
+command but not its output. Environment variables are expanded by the target
+shell.
+
+Common substitutions:
+  !!       literal exclamation mark
+  !.!      current name with extension
+  !        current name without the final extension
+  !`       extension without the dot
+  !~       short name without extension (long-name fallback when unavailable)
+  !-!/!+! short name with extension (long-name fallback when unavailable)
+  !\ or !/ current panel directory
+  !=\ or !=/ resolved real directory
+  !:       drive or filesystem root
+  !?!      description (currently empty)
+  !&       selected names inline
+  !&~/Q/q  short names / force quoting / quote only when needed
+  !@...!   temporary file containing long selected names
+  !$...!   temporary file containing short selected names
+  !?title?initial! value requested once before the batch starts
+  !# / !^  switch to passive / active panel
+  ![ / !]  switch to left / right panel
+
+Active-panel !& and list-file tokens run once for the captured selection.
+List modifiers: F full paths, Q quoted entries, S forward slashes, A target
+encoding, U UTF-8 with BOM, W UTF-16LE.
+
 @ShellNav
 $Panel Navigation Keys
   Tab           - Switch active panel

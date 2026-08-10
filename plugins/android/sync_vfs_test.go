@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,19 +285,116 @@ func TestSyncVFSRunCommandUsesDeviceDirectoryAndStreamsOutput(t *testing.T) {
 		}, nil
 	})
 	var lines []string
-	code, err := fs.RunCommand(context.Background(), "/sd card/a'b", "ls -la", func(line string) {
+	code, err := fs.RunCommand(context.Background(), "/sd card/a'b", "ls -la # note", func(line string) {
 		lines = append(lines, line)
 	})
 	if err != nil || code != 7 {
 		t.Fatalf("RunCommand = code %d, err %v", code, err)
 	}
-	wantCommand := "cd '/sd card/a'\"'\"'b' && ( ls -la )"
+	wantCommand := "cd '/sd card/a'\"'\"'b' && (\nls -la # note\n) </dev/null"
 	if gotCommand != wantCommand {
 		t.Fatalf("device command = %q, want %q", gotCommand, wantCommand)
 	}
 	wantLines := []string{"first", "", "second", "warning"}
 	if !reflect.DeepEqual(lines, wantLines) {
 		t.Fatalf("output lines = %#v, want %#v", lines, wantLines)
+	}
+}
+
+func TestSyncVFSRunCommandStreamsMergedPacketOrder(t *testing.T) {
+	client := &fakeSyncFS{entries: map[string]SyncEntry{}, files: map[string][]byte{}}
+	fs := newSyncVFS(nil, "serial", "phone", client, func(context.Context, string, string) (shellResult, error) {
+		t.Fatal("collected compatibility runner was called")
+		return shellResult{}, nil
+	})
+	var gotCommand string
+	fs.stream = func(_ context.Context, serial, command string, emit func([]byte)) (int, error) {
+		if serial != "serial" {
+			t.Fatalf("serial = %q", serial)
+		}
+		gotCommand = command
+		emit([]byte("stdout"))
+		emit([]byte("+stderr\r\n"))
+		emit([]byte("tail"))
+		return 7, nil
+	}
+
+	var lines []string
+	code, err := fs.RunCommand(context.Background(), "/sd card/a'b", "ls -la", func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil || code != 7 {
+		t.Fatalf("RunCommand = code %d, err %v", code, err)
+	}
+	if want := "cd '/sd card/a'\"'\"'b' && (\nls -la\n) </dev/null"; gotCommand != want {
+		t.Fatalf("device command = %q, want %q", gotCommand, want)
+	}
+	if want := []string{"stdout+stderr", "tail"}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("merged lines = %#v, want %#v", lines, want)
+	}
+}
+
+func TestSyncVFSRunCommandStreamingCancellationFlushesPartialLine(t *testing.T) {
+	client := &fakeSyncFS{entries: map[string]SyncEntry{}, files: map[string][]byte{}}
+	fs := newSyncVFS(nil, "serial", "phone", client, nil)
+	started := make(chan struct{})
+	fs.stream = func(ctx context.Context, _, _ string, emit func([]byte)) (int, error) {
+		emit([]byte("partial"))
+		close(started)
+		<-ctx.Done()
+		return -1, ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var lines []string
+	done := make(chan error, 1)
+	go func() {
+		_, err := fs.RunCommand(ctx, "/", "sleep", func(line string) { lines = append(lines, line) })
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunCommand error = %v, want context.Canceled", err)
+	}
+	if want := []string{"partial"}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("flushed output = %#v, want %#v", lines, want)
+	}
+}
+
+func TestAndroidCommandLineWriterBoundsUnterminatedOutput(t *testing.T) {
+	var chunks []string
+	w := newAndroidCommandLineWriter(func(line string) { chunks = append(chunks, line) })
+	payload := bytes.Repeat([]byte{'x'}, androidCommandOutputChunkBytes*2+17)
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.pending) > androidCommandOutputChunkBytes {
+		t.Fatalf("pending output = %d bytes", len(w.pending))
+	}
+	w.Flush()
+	total := 0
+	for _, chunk := range chunks {
+		if len(chunk) > androidCommandOutputChunkBytes {
+			t.Fatalf("callback chunk = %d bytes", len(chunk))
+		}
+		total += len(chunk)
+	}
+	if total != len(payload) {
+		t.Fatalf("streamed bytes = %d, want %d", total, len(payload))
+	}
+}
+
+func TestAndroidCommandLineWriterDoesNotSplitUTF8Rune(t *testing.T) {
+	var chunks []string
+	w := newAndroidCommandLineWriter(func(line string) { chunks = append(chunks, line) })
+	payload := append(bytes.Repeat([]byte{'x'}, androidCommandOutputChunkBytes-1), []byte("яz")...)
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	w.Flush()
+	if got := strings.Join(chunks, ""); got != string(payload) {
+		t.Fatalf("joined chunks lost UTF-8 data at boundary: %q", got[len(got)-8:])
 	}
 }
 
@@ -338,5 +436,24 @@ func TestSyncVFSCreateAndSetAttributes(t *testing.T) {
 		if commands[i] != want[i] {
 			t.Errorf("command %d = %q, want %q", i, commands[i], want[i])
 		}
+	}
+}
+
+func TestSyncVFSCreatePrivateCommandFileUsesSendMode0600(t *testing.T) {
+	client := &fakeSyncFS{entries: map[string]SyncEntry{}, files: map[string][]byte{}}
+	fs := newSyncVFS(nil, "serial", "phone", client, nil)
+	var creator vfs.PrivateCommandFileCreator = fs
+	w, err := creator.CreatePrivateCommandFile(context.Background(), "/data/local/tmp/list")
+	if err != nil {
+		t.Fatalf("CreatePrivateCommandFile: %v", err)
+	}
+	if _, err := io.WriteString(w, "private\n"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if client.sendPath != "/data/local/tmp/list" || client.sendMode != 0600 || string(client.files[client.sendPath]) != "private\n" {
+		t.Fatalf("private send = path %q mode %#o data %q", client.sendPath, client.sendMode, client.files[client.sendPath])
 	}
 }

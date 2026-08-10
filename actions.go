@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2142,7 +2143,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	// blank lines between them (see #298). Blank rows are kept only at
 	// transitions between widget kinds (checkbox↔combo↔radio↔button)
 	// so groups still read as groups.
-	const dialogHeight = 32
+	const dialogHeight = 35
 	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
@@ -2218,6 +2219,8 @@ func actionPanelSettings(pf *PanelsFrame) {
 	if AppConfig.SyncPanelLoad {
 		chkSync.State = 1
 	}
+	editApplyWorkers := vtui.NewEdit(0, 0, 12, strconv.Itoa(AppConfig.ApplyCommandParallelism))
+	lblApplyWorkers := vtui.NewLabel(0, 0, Msg("PanelSettings.ApplyWorkers"), editApplyWorkers)
 
 	chkAlwaysMenu := vtui.NewCheckbox(0, 0, Msg("PanelSettings.AlwaysShowMenuBar"), false)
 	chkAlwaysMenu.State = 0
@@ -2274,6 +2277,8 @@ func actionPanelSettings(pf *PanelsFrame) {
 	dlg.AddItem(navigation)
 	dlg.AddItem(chkStayFocused)
 	dlg.AddItem(chkSync)
+	dlg.AddItem(lblApplyWorkers)
+	dlg.AddItem(editApplyWorkers)
 	dlg.AddItem(chkAlwaysMenu)
 	dlg.AddItem(chkCPUGPU)
 	dlg.AddItem(chkEscToggle)
@@ -2307,7 +2312,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 	vbox.Add(chkStayFocused, vtui.Margins{Left: 2}, vtui.AlignLeft)
 	// Third checkbox cluster.
 	vbox.Add(chkSync, vtui.Margins{Top: 1}, vtui.AlignLeft)
-	vbox.Add(chkAlwaysMenu, vtui.Margins{}, vtui.AlignLeft)
+	rowApplyWorkers := vtui.NewHBoxLayout(0, 0, 56, 1)
+	rowApplyWorkers.Add(lblApplyWorkers, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowApplyWorkers.Add(editApplyWorkers, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowApplyWorkers, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(chkAlwaysMenu, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCPUGPU, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkEscToggle, vtui.Margins{}, vtui.AlignLeft)
 
@@ -2337,6 +2346,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 
 	btnCancel.OnClick = func() { dlg.Close() }
 	btnOk.OnClick = func() {
+		applyWorkers, err := strconv.Atoi(strings.TrimSpace(editApplyWorkers.GetText()))
+		if err != nil || applyWorkers < 0 {
+			vtui.ShowMessageOn(dlg, Msg("ApplyCommand.InvalidWorkersTitle"), Msg("ApplyCommand.InvalidWorkers"), []string{Msg("vtui.Ok")})
+			return
+		}
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
 		AppConfig.ShowDirPrefix = chkDirPrefix.State == 1
 		AppConfig.ShowHighlightMarks = chkHighlightMarks.State == 1
@@ -2347,6 +2361,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 		AppConfig.NavigationMode = PanelNavigationMode(navigation.Selected)
 		AppConfig.SearchCommandStayFocused = chkStayFocused.State == 1
 		AppConfig.SyncPanelLoad = chkSync.State == 1
+		AppConfig.ApplyCommandParallelism = applyWorkers
 		AppConfig.AlwaysShowMenuBar = chkAlwaysMenu.State == 1
 		AppConfig.InfoPanelCPUGPU = chkCPUGPU.State == 1
 		AppConfig.EscTogglePanels = chkEscToggle.State == 1

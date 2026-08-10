@@ -303,6 +303,7 @@ func performUpdate(pf *PanelsFrame, url, archiveKind, newTag, publishedAt string
 		dlg := vtui.ShowMessage(" Update Successful ", "f4 has been updated successfully.\nPlease restart the application to apply changes.", []string{"E&xit now", "&Later"})
 		dlg.OnResult = func(code int) {
 			if code == 0 {
+				cancelOperationsForShutdown()
 				vtui.FrameManager.Shutdown()
 			}
 		}
