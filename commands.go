@@ -60,4 +60,7 @@ const (
 	// empty rows with it and keeps it in FrameManager.DisabledCommands so
 	// vtui renders them dimmed and ignores Enter on them.
 	CmBookmarkEmptySlot
+	// Appended to preserve numeric values of existing public commands.
+	CmLeftGallery
+	CmRightGallery
 )

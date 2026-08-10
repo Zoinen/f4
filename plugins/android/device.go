@@ -204,7 +204,9 @@ func openSyncDevice(ctx context.Context, parent vfs.VFS, server *Server, device 
 		stdout, stderr, exitCode, err := server.RunShell(ctx, serial, command)
 		return shellResult{Stdout: stdout, Stderr: stderr, ExitCode: exitCode}, err
 	}
-	return newSyncVFS(parent, device.Serial, deviceSessionTitle(device), syncClientFS{client: client}, run), nil
+	mounted := newSyncVFS(parent, device.Serial, deviceSessionTitle(device), syncClientFS{client: client}, run)
+	mounted.stream = server.RunShellStream
+	return mounted, nil
 }
 
 // NewPlugin constructs the built-in Android drive around one shared ADB server

@@ -117,5 +117,9 @@ require (
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.13
 
+// The native host owns cursor blinking, so its renderer opts out of vtui's
+// terminal-oriented 250 ms redraw heartbeat. Keep this small fork until that
+// renderer capability is available in an upstream vtui release.
+replace github.com/unxed/vtui => ./third_party/vtui
+
 //replace github.com/unxed/colorer4go => ../../../dev/colorer4go
-//replace github.com/unxed/vtui => ../../../dev/vtui

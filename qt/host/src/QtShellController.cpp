@@ -176,12 +176,18 @@ void QtShellController::sendResize(int cols, int rows)
 
 void QtShellController::sendKey(int vk, int ch, bool down, int mods)
 {
+    sendKeyEvent(vk, ch, down, mods, false);
+}
+
+void QtShellController::sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat)
+{
     sendMessage({
         {QStringLiteral("type"), QStringLiteral("key")},
         {QStringLiteral("vk"), vk},
         {QStringLiteral("char"), ch},
         {QStringLiteral("down"), down},
         {QStringLiteral("mods"), mods},
+        {QStringLiteral("repeat"), repeat},
     });
 }
 

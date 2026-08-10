@@ -875,6 +875,16 @@ func TestPanelsFrame_KeyHandling(t *testing.T) {
 		t.Error("Ctrl+O did not show panels again")
 	}
 
+	// An individually hidden side must not survive a full Ctrl+O
+	// hide/show cycle: the global toggle restores the canonical pair.
+	pf.showRightPanel = false
+	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, ControlKeyState: vtinput.LeftCtrlPressed})
+	pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, ControlKeyState: vtinput.LeftCtrlPressed})
+	if !pf.showPanels || !pf.showLeftPanel || !pf.showRightPanel {
+		t.Errorf("Ctrl+O did not restore both panels: show=%v left=%v right=%v",
+			pf.showPanels, pf.showLeftPanel, pf.showRightPanel)
+	}
+
 	// 3. Test Ctrl+Enter to insert filename
 	pf.activeIdx = 0
 	if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
@@ -926,9 +936,21 @@ func TestPanelsFrame_MenuCommands(t *testing.T) {
 		t.Error("Right panel mode not changed to Detailed")
 	}
 
+	pf.HandleCommand(CmLeftGallery, nil)
+	if pf.panels[0].(*FileSystemPanel).presentation != PanelPresentationGallery {
+		t.Error("Left panel presentation not changed to Gallery")
+	}
+	if galleryText := pf.menuBar.Items[0].SubItems[4].Text; !strings.HasPrefix(galleryText, "√") {
+		t.Errorf("Gallery menu checkmark not updated, got %q", galleryText)
+	}
+	pf.HandleCommand(CmLeftDetailed, nil)
+	if pf.panels[0].(*FileSystemPanel).presentation != PanelPresentationList {
+		t.Error("Text view command did not restore List presentation")
+	}
+
 	for _, menuIndex := range []int{0, 4} {
 		items := pf.menuBar.Items[menuIndex].SubItems
-		for i, shortcut := range []string{"Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4"} {
+		for i, shortcut := range []string{"Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5"} {
 			if items[i].Shortcut != shortcut {
 				t.Errorf("view shortcut %d in menu %d = %q, want %s", i, menuIndex, items[i].Shortcut, shortcut)
 			}
@@ -951,7 +973,7 @@ func TestPanelsFrame_MenuCommands(t *testing.T) {
 	if !strings.HasPrefix(menuText, "√") {
 		t.Errorf("Menu checkmark not updated, got %q", menuText)
 	}
-	sortText := pf.menuBar.Items[0].SubItems[7].Text
+	sortText := pf.menuBar.Items[0].SubItems[8].Text
 	if !strings.HasPrefix(sortText, "√") {
 		t.Errorf("Sort menu checkmark not updated, got %q", sortText)
 	}
@@ -1566,7 +1588,7 @@ func TestPanelsFrame_HistoryNavigation_HiddenPanels(t *testing.T) {
 	}
 }
 func TestPanelsFrame_EnterAddsToHistory(t *testing.T) {
-	pf := NewPanelsFrame()
+	pf := setupMockPanelsFrame()
 	defer pf.Close()
 	pf.cmdLine.Edit.SetText("ls -la")
 
@@ -1825,6 +1847,15 @@ func TestPanelsFrame_SwapPanels(t *testing.T) {
 	fspR.vfs.SetPath(pathR)
 	fspL.SetViewMode(ViewModeDetailed)
 	fspR.SetViewMode(ViewModeMedium)
+	fspL.SetPresentation(PanelPresentationGallery)
+	fspR.SetPresentation(PanelPresentationList)
+	if !fspL.SetGalleryLayout(GalleryLayoutColumns, 3) ||
+		!fspL.SetGalleryDensity(GalleryLayoutColumns, 37) ||
+		!fspR.SetGalleryLayout(GalleryLayoutIcons, 0) ||
+		!fspR.SetGalleryDensity(GalleryLayoutIcons, 139) {
+		t.Fatal("failed to configure Gallery renderer state")
+	}
+	fspR.SetPresentation(PanelPresentationList)
 
 	pf.activeIdx = 0 // Active is Left
 
@@ -1850,6 +1881,16 @@ func TestPanelsFrame_SwapPanels(t *testing.T) {
 	// 4. Verify state preservation
 	if fspR.viewMode != ViewModeMedium {
 		t.Error("Swapped panel did not preserve its ViewMode")
+	}
+	if fspL.presentation != PanelPresentationGallery || fspR.presentation != PanelPresentationList {
+		t.Error("Swapped panels did not preserve their presentations")
+	}
+	if fspL.galleryLayoutMode != GalleryLayoutColumns ||
+		fspL.galleryColumnCount != 3 ||
+		fspL.galleryDensity(GalleryLayoutColumns) != 37 ||
+		fspR.galleryLayoutMode != GalleryLayoutIcons ||
+		fspR.galleryDensity(GalleryLayoutIcons) != 139 {
+		t.Error("Swapped panels did not preserve their Gallery renderer state")
 	}
 }
 
@@ -2202,6 +2243,12 @@ func TestPanelsFrame_Clone_Comprehensive(t *testing.T) {
 	// 1. Setup specific state on the left panel
 	fsp := pf.Left().(*FileSystemPanel)
 	fsp.SetViewMode(ViewModeDetailed)
+	fsp.SetPresentation(PanelPresentationGallery)
+	if !fsp.SetGalleryLayout(GalleryLayoutColumns, 3) ||
+		!fsp.SetGalleryDensity(GalleryLayoutColumns, 39) ||
+		!fsp.SetGalleryDensity(GalleryLayoutGrid, 196) {
+		t.Fatal("failed to configure Gallery renderer state")
+	}
 	fsp.sortMode = SortSize
 	fsp.sortReverse = true
 	fsp.entries = []*fileEntry{
@@ -2227,6 +2274,21 @@ func TestPanelsFrame_Clone_Comprehensive(t *testing.T) {
 	cloneFsp := clone.Left().(*FileSystemPanel)
 	if cloneFsp.viewMode != ViewModeDetailed {
 		t.Error("Clone failed to preserve ViewMode")
+	}
+	if cloneFsp.presentation != PanelPresentationGallery {
+		t.Error("Clone failed to preserve Gallery presentation")
+	}
+	if cloneFsp.galleryLayoutMode != GalleryLayoutColumns ||
+		cloneFsp.galleryColumnCount != 3 ||
+		cloneFsp.galleryDensity(GalleryLayoutColumns) != 39 ||
+		cloneFsp.galleryDensity(GalleryLayoutGrid) != 196 ||
+		cloneFsp.galleryLayoutRevision != fsp.galleryLayoutRevision {
+		t.Fatalf("Clone failed to preserve Gallery renderer state: %#v",
+			capturePanelGallerySessionState(cloneFsp))
+	}
+	cloneFsp.galleryDensities[GalleryLayoutGrid] = 250
+	if fsp.galleryDensity(GalleryLayoutGrid) != 196 {
+		t.Fatal("cloned Gallery density map aliases the source panel")
 	}
 	if cloneFsp.sortMode != SortSize || !cloneFsp.sortReverse {
 		t.Error("Clone failed to preserve sort state")
@@ -2376,6 +2438,196 @@ func TestPanelsFrame_CommandLineEnter(t *testing.T) {
 	// PTY должен получить команду
 	if !strings.Contains(string(pty.written), "ls -la") {
 		t.Errorf("PTY did not receive command. Got: %q", string(pty.written))
+	}
+}
+
+func TestPanelsFrame_CommandLineEnterWithoutPTYKeepsPanelsAndCommand(t *testing.T) {
+	path := t.TempDir()
+	left := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	right := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	pf := &PanelsFrame{
+		panels:         [2]Panel{left, right},
+		activeIdx:      1,
+		showPanels:     true,
+		showLeftPanel:  true,
+		showRightPanel: true,
+		cmdLine:        NewCommandLine(">"),
+		termView:       NewTerminalView(80, 24),
+	}
+	pf.cmdLine.Edit.SetText("ls -la")
+	pf.cmdLine.Edit.History = []string{"older"}
+
+	if !pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_RETURN,
+	}) {
+		t.Fatal("Enter was not handled")
+	}
+	if !pf.showPanels {
+		t.Fatal("panels were hidden even though no PTY accepted the command")
+	}
+	if got := pf.cmdLine.Edit.GetText(); got != "ls -la" {
+		t.Fatalf("unexecuted command was changed or cleared: %q", got)
+	}
+	if got := pf.cmdLine.Edit.History; len(got) != 1 || got[0] != "older" {
+		t.Fatalf("unexecuted command changed history: %#v", got)
+	}
+	if pf.executing || pf.returnToPanels || pf.termView.Muted {
+		t.Fatalf("failed dispatch changed execution state: executing=%v return=%v muted=%v",
+			pf.executing, pf.returnToPanels, pf.termView.Muted)
+	}
+}
+
+type rejectingCommandPTY struct {
+	mockPty
+	writes int
+	short  bool
+}
+
+func (p *rejectingCommandPTY) Write(b []byte) (int, error) {
+	p.writes++
+	if p.short {
+		return len(b) - 1, nil
+	}
+	return 0, fmt.Errorf("test PTY write failure")
+}
+
+func TestPanelsFrameCommandWriteFailureKeepsPanelsCommandAndState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		short bool
+	}{
+		{name: "error"},
+		{name: "short write", short: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir()
+			left := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+			right := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+			pty := &rejectingCommandPTY{short: tc.short}
+			pf := &PanelsFrame{
+				panels:         [2]Panel{left, right},
+				activeIdx:      1,
+				showPanels:     true,
+				showLeftPanel:  true,
+				showRightPanel: true,
+				cmdLine:        NewCommandLine(">"),
+				termView:       NewTerminalView(80, 24),
+				pty:            pty,
+			}
+			pf.cmdLine.Edit.SetText("ls -la")
+			pf.cmdLine.Edit.History = []string{"older"}
+
+			if !pf.ProcessKey(&vtinput.InputEvent{
+				Type:           vtinput.KeyEventType,
+				KeyDown:        true,
+				VirtualKeyCode: vtinput.VK_RETURN,
+			}) {
+				t.Fatal("Enter was not handled")
+			}
+			if pty.writes != 1 {
+				t.Fatalf("PTY write attempts = %d, want 1", pty.writes)
+			}
+			if !pf.showPanels {
+				t.Fatal("panels were hidden after the PTY rejected the command")
+			}
+			if got := pf.cmdLine.Edit.GetText(); got != "ls -la" {
+				t.Fatalf("rejected command was changed or cleared: %q", got)
+			}
+			if got := pf.cmdLine.Edit.History; len(got) != 1 || got[0] != "older" {
+				t.Fatalf("rejected command changed history: %#v", got)
+			}
+			if pf.executing || pf.returnToPanels || pf.termView.Muted {
+				t.Fatalf("rejected dispatch changed execution state: executing=%v return=%v muted=%v",
+					pf.executing, pf.returnToPanels, pf.termView.Muted)
+			}
+		})
+	}
+}
+
+type synchronousEchoPTY struct {
+	mockPty
+	parser *AnsiParser
+}
+
+func (p *synchronousEchoPTY) Write(b []byte) (int, error) {
+	p.written = append(p.written, b...)
+	// Model the race from a real local PTY: echo can be consumed by the read
+	// goroutine before Write returns. Split it so the old whole-buffer heuristic
+	// cannot hide a wrapper that was only accidentally delivered atomically.
+	mid := len(b) / 2
+	p.parser.Process(b[:mid])
+	p.parser.Process(b[mid:])
+	p.parser.Process([]byte("\r\n\x1b]133;C\x07F4_OUTPUT_OK\r\n\x1b]133;D\x07"))
+	return len(b), nil
+}
+
+func TestPanelsFrameCommandMutesBeforeSynchronousPTYEcho(t *testing.T) {
+	path := t.TempDir()
+	left := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	right := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	tv := NewTerminalView(100, 24)
+	pty := &synchronousEchoPTY{}
+	parser := NewAnsiParser(tv, pty)
+	pty.parser = parser
+	pf := &PanelsFrame{
+		panels:         [2]Panel{left, right},
+		activeIdx:      1,
+		showPanels:     true,
+		showLeftPanel:  true,
+		showRightPanel: true,
+		cmdLine:        NewCommandLine(">"),
+		termView:       tv,
+		parser:         parser,
+		pty:            pty,
+	}
+	pf.cmdLine.Edit.SetText("echo F4_USER_COMMAND")
+
+	if !pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_RETURN,
+	}) {
+		t.Fatal("Enter was not handled")
+	}
+
+	got := string(tv.GetAllLogBytes())
+	if !strings.Contains(got, "echo F4_USER_COMMAND") || !strings.Contains(got, "F4_OUTPUT_OK") {
+		t.Fatalf("clean command/output missing after synchronous PTY echo: %q", got)
+	}
+	for _, technical := range []string{"set +H", "FARVTRESULT", `printf "\033]133`} {
+		if strings.Contains(got, technical) {
+			t.Fatalf("technical wrapper leaked through pre-Write race (%q): %q", technical, got)
+		}
+	}
+	if tv.Muted || tv.pendingCleanCommand != "" {
+		t.Fatalf("managed command did not settle: muted=%v pending=%q", tv.Muted, tv.pendingCleanCommand)
+	}
+}
+
+func TestPanelsFrameResizeSizesTerminalWithoutPTY(t *testing.T) {
+	pf := &PanelsFrame{
+		panels:         [2]Panel{&mouseCaptureTestPanel{}, &mouseCaptureTestPanel{}},
+		showPanels:     true,
+		showKeyBar:     true,
+		showLeftPanel:  true,
+		showRightPanel: true,
+		termView:       NewTerminalView(80, 24),
+		menuBar:        vtui.NewMenuBar(nil),
+		cmdLine:        NewCommandLine(">"),
+		keyBar:         vtui.NewKeyBar(),
+	}
+
+	pf.ResizeConsole(100, 30)
+
+	if pf.termView.Width != 100 || pf.termView.Height != 29 {
+		t.Fatalf("terminal without PTY stayed %dx%d, want 100x29",
+			pf.termView.Width, pf.termView.Height)
+	}
+	if pf.termView.X1 != 0 || pf.termView.Y1 != 0 || pf.termView.X2 != 99 || pf.termView.Y2 != 28 {
+		t.Fatalf("terminal viewport = (%d,%d)-(%d,%d), want (0,0)-(99,28)",
+			pf.termView.X1, pf.termView.Y1, pf.termView.X2, pf.termView.Y2)
 	}
 }
 
@@ -3334,6 +3586,39 @@ func TestPanelsFrame_PromptTruncation(t *testing.T) {
 	})
 }
 
+func TestPanelsFramePromptReservesVisualHalfForExternalGUI(t *testing.T) {
+	oldFM := *vtui.FrameManager
+	defer func() { *vtui.FrameManager = oldFM }()
+
+	scr := vtui.NewScreenBuf()
+	scr.AllocBuf(80, 25)
+	scr.Renderer = &ExtUiRenderer{}
+	vtui.FrameManager.Init(scr)
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	fsp := pf.getActivePanel()
+	fsp.vfs = vfs.NewNullVFS(0)
+	fsp.vfs.SetPath(filepath.FromSlash(
+		"/very/long/directory/path/that/needs/the/wider/external/gui/prompt/allowance"))
+
+	prompt := pf.buildPrompt()
+	visibleLen := 0
+	for _, cell := range prompt {
+		if cell.Char != vtui.WideCharFiller {
+			visibleLen++
+		}
+	}
+	if visibleLen <= 45 {
+		t.Fatalf("external GUI prompt still uses terminal half-width cap: %d", visibleLen)
+	}
+	if visibleLen > 65 {
+		t.Fatalf("external GUI prompt failed to reserve input space: %d", visibleLen)
+	}
+}
+
 type mockSlowStatVFS struct {
 	vfs.OSVFS
 	// Stat is called from background goroutines and read from the test, so
@@ -4076,7 +4361,7 @@ func TestPanelsFrame_CtrlPgDn_EntersDir(t *testing.T) {
 	}
 }
 
-func TestPanelsFrame_CtrlViewModes(t *testing.T) {
+func TestPanelsFrame_CtrlViewAndGalleryModes(t *testing.T) {
 	vtui.SetDefaultPalette()
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
@@ -4091,6 +4376,9 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 
 	// 1. Изначально устанавливаем режим Medium
 	fsp.SetViewMode(ViewModeMedium)
+	fsp.SetPresentation(PanelPresentationList)
+
+	// Right Ctrl is reserved for folder bookmarks and must not select a view.
 	oldHotkeys := GlobalHotkeysMgr
 	GlobalHotkeysMgr = NewHotkeyManager("")
 	defer func() { GlobalHotkeysMgr = oldHotkeys }()
@@ -4104,6 +4392,17 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 		t.Fatalf("RightCtrl+3 changed panel mode to %v", fsp.viewMode)
 	}
 
+	// Ctrl+5 selects Gallery without changing the textual fallback mode.
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  '5',
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if fsp.presentation != PanelPresentationGallery || fsp.viewMode != ViewModeMedium {
+		t.Fatalf("Ctrl+5 got presentation=%q viewMode=%v", fsp.presentation, fsp.viewMode)
+	}
+
 	for _, tc := range []struct {
 		key  uint16
 		mode ViewMode
@@ -4112,6 +4411,9 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 		if fsp.viewMode != tc.mode || pf.widePanel != -1 {
 			t.Errorf("Ctrl+%c: mode=%v wide=%d, want mode=%v wide=-1", tc.key, fsp.viewMode, pf.widePanel, tc.mode)
 		}
+	}
+	if fsp.presentation != PanelPresentationList {
+		t.Errorf("Ctrl+2 did not restore List presentation: %q", fsp.presentation)
 	}
 
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: '4', ControlKeyState: vtinput.LeftCtrlPressed})
@@ -4138,6 +4440,42 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 	rightX1, _, _, _ := pf.panels[1].GetPosition()
 	if leftX2+1 != rightX1 {
 		t.Errorf("split geometry was not restored: left x2=%d right x1=%d", leftX2, rightX1)
+	}
+}
+
+func TestPanelsFrame_ShiftF12TogglesGuiPresentation(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldPath := getUserConfigIniPath
+	oldConfig := AppConfig
+	getUserConfigIniPath = func() string { return filepath.Join(tmpDir, "settings.ini") }
+	defer func() {
+		getUserConfigIniPath = oldPath
+		AppConfig = oldConfig
+	}()
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	AppConfig.GuiPresentation = GuiPresentationGUI
+
+	handled := pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F12,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if !handled || AppConfig.GuiPresentation != GuiPresentationText {
+		t.Fatalf("Shift+F12 handled=%v presentation=%q", handled, AppConfig.GuiPresentation)
+	}
+
+	pf.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F12,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if AppConfig.GuiPresentation != GuiPresentationGUI {
+		t.Fatalf("second Shift+F12 presentation=%q", AppConfig.GuiPresentation)
 	}
 }
 
@@ -4899,5 +5237,155 @@ func TestPanelsFrame_ProcessMouse_HoverWheel_Detailed_Boundaries(t *testing.T) {
 	// Cursor should remain at the last item
 	if lp.GetCursorIndex() != lastIdx {
 		t.Errorf("Expected cursor to remain at the last item %d, got %d", lastIdx, lp.GetCursorIndex())
+	}
+}
+
+func TestPanelsFrameRapidTabDetection(t *testing.T) {
+	if panelSwitchSyncDelay <= panelSwitchRepeatWindow {
+		t.Fatalf("settle delay %v must outlive repeat window %v",
+			panelSwitchSyncDelay, panelSwitchRepeatWindow)
+	}
+	pf := &PanelsFrame{}
+	start := time.Unix(100, 0)
+	if pf.notePanelSwitch(start, false) {
+		t.Fatal("first panel switch must synchronize immediately")
+	}
+	if !pf.notePanelSwitch(start.Add(panelSwitchRepeatWindow/2), false) {
+		t.Fatal("key-repeat panel switch was not classified as rapid")
+	}
+	if pf.notePanelSwitch(start.Add(panelSwitchRepeatWindow*2), false) {
+		t.Fatal("panel switch after the repeat window remained deferred")
+	}
+	if !pf.notePanelSwitch(start.Add(time.Second), true) {
+		t.Fatal("native autorepeat hint was ignored after the initial repeat delay")
+	}
+}
+
+func TestPanelsFrameRapidTabReturningToSyncedPanelRearmsSettleTimer(t *testing.T) {
+	leftPath := t.TempDir()
+	rightPath := t.TempDir()
+	left := &FileSystemPanel{vfs: vfs.NewOSVFS(leftPath)}
+	right := &FileSystemPanel{vfs: vfs.NewOSVFS(rightPath)}
+	pf := &PanelsFrame{
+		panels:            [2]Panel{left, right},
+		activeIdx:         1,
+		showPanels:        true,
+		cmdLine:           NewCommandLine(">"),
+		lastPtyPath:       leftPath,
+		lastPtyVFS:        left.vfs,
+		lastPanelSwitchAt: time.Now(),
+	}
+	defer pf.cancelPendingPTYDirectorySync()
+
+	if !pf.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_TAB,
+	}) {
+		t.Fatal("rapid Tab was not handled")
+	}
+	if pf.activeIdx != 0 {
+		t.Fatalf("active panel = %d, want left panel", pf.activeIdx)
+	}
+	if !pf.deferPtySync || pf.ptySyncTimer == nil {
+		t.Fatal("return to the already-synced panel did not arm the settle timer")
+	}
+	if pf.pendingPtyPath != leftPath || pf.pendingPtyVFS != left.vfs {
+		t.Fatalf("pending sync = (%q, %T), want left panel", pf.pendingPtyPath, pf.pendingPtyVFS)
+	}
+
+	firstGeneration := pf.ptySyncGeneration
+	firstTimer := pf.ptySyncTimer
+	pf.queuePTYDirectorySync(leftPath, left.vfs)
+	if pf.ptySyncGeneration != firstGeneration+1 {
+		t.Fatalf("same-target repeat did not advance generation: got %d want %d",
+			pf.ptySyncGeneration, firstGeneration+1)
+	}
+	if pf.ptySyncTimer == nil || pf.ptySyncTimer == firstTimer {
+		t.Fatal("same-target repeat did not restart the settle timer")
+	}
+}
+
+func TestPanelsFrameFlushesOnlyLatestDeferredPTYDirectory(t *testing.T) {
+	left := &FileSystemPanel{vfs: vfs.NewOSVFS(t.TempDir())}
+	rightPath := t.TempDir()
+	right := &FileSystemPanel{vfs: vfs.NewOSVFS(rightPath)}
+	pty := &mockPty{}
+	pf := &PanelsFrame{
+		panels:    [2]Panel{left, right},
+		activeIdx: 1,
+		pty:       pty,
+	}
+	pf.ptySyncGeneration = 2
+	pf.pendingPtyPath = rightPath
+	pf.pendingPtyVFS = right.vfs
+	pf.flushPendingPTYDirectorySync(1)
+	if got := pty.String(); got != "" {
+		t.Fatalf("stale deferred sync wrote to PTY: %q", got)
+	}
+
+	pf.flushPendingPTYDirectorySync(2)
+	if got := pty.String(); !strings.Contains(got, rightPath) {
+		t.Fatalf("latest active path was not synchronized: %q", got)
+	}
+	if pf.lastPtyPath != rightPath || pf.lastPtyVFS != right.vfs {
+		t.Fatalf("last synchronized path not updated: %q", pf.lastPtyPath)
+	}
+}
+
+func TestPanelsFrameDeferredPTYSyncSkipsAlreadySynchronizedDirectory(t *testing.T) {
+	path := t.TempDir()
+	panel := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	pty := &mockPty{}
+	pf := &PanelsFrame{
+		panels:       [2]Panel{panel, panel},
+		activeIdx:    0,
+		pty:          pty,
+		lastPtyPath:  path,
+		lastPtyVFS:   panel.vfs,
+		deferPtySync: true,
+	}
+	pf.ptySyncGeneration = 1
+	pf.pendingPtyPath = path
+	pf.pendingPtyVFS = panel.vfs
+
+	pf.flushPendingPTYDirectorySync(1)
+	if got := pty.String(); got != "" {
+		t.Fatalf("already-synchronized deferred target wrote to PTY: %q", got)
+	}
+	if pf.deferPtySync {
+		t.Fatal("settled no-op sync left PTY deferral active")
+	}
+}
+
+type busyPanelSyncPTY struct {
+	mockPty
+}
+
+func (*busyPanelSyncPTY) IsBusy() bool { return true }
+
+func TestPanelsFrameDeferredPTYSyncNeverWritesIntoBusyProcess(t *testing.T) {
+	path := t.TempDir()
+	panel := &FileSystemPanel{vfs: vfs.NewOSVFS(path)}
+	pty := &busyPanelSyncPTY{}
+	pf := &PanelsFrame{
+		panels:       [2]Panel{panel, panel},
+		activeIdx:    0,
+		pty:          pty,
+		deferPtySync: true,
+	}
+	pf.ptySyncGeneration = 1
+	pf.pendingPtyPath = path
+	pf.pendingPtyVFS = panel.vfs
+
+	pf.flushPendingPTYDirectorySync(1)
+	if got := pty.String(); got != "" {
+		t.Fatalf("deferred cwd command was written into busy process: %q", got)
+	}
+	if pf.lastPtyPath != "" || pf.lastPtyVFS != nil {
+		t.Fatal("busy process was incorrectly recorded as synchronized")
+	}
+	if pf.deferPtySync {
+		t.Fatal("busy callback left stale timer deferral active")
 	}
 }

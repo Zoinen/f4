@@ -132,6 +132,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		vtui.FrameManager.Redraw()
 	}
 	vv.menuBar = vtui.NewMenuBar(nil)
+	vv.menuBar.SetOwner(vv)
 	vv.topBar = NewTopBar(
 		func() string {
 			base := ""

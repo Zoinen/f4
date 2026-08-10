@@ -206,6 +206,24 @@ func TestOSVFS_Abs_Consistency(t *testing.T) {
 		t.Errorf("Abs failed: expected %q, got %q", expected, abs)
 	}
 }
+
+func TestOSVFS_LocalPathProvider(t *testing.T) {
+	root := t.TempDir()
+	v := NewOSVFS(root)
+
+	provider, ok := any(v).(LocalPathProvider)
+	if !ok {
+		t.Fatal("OSVFS does not implement LocalPathProvider")
+	}
+	got, err := provider.LocalPath("preview.jpg")
+	if err != nil {
+		t.Fatalf("LocalPath returned error: %v", err)
+	}
+	want := filepath.Join(root, "preview.jpg")
+	if got != want {
+		t.Fatalf("LocalPath = %q, want %q", got, want)
+	}
+}
 func TestOSVFS_Abs_CWD_Independence(t *testing.T) {
 	// Create a folder structure: /tmp/root/subdir
 	tmp := t.TempDir()

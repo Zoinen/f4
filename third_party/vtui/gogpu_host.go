@@ -1,0 +1,705 @@
+//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !arm
+
+package vtui
+
+import (
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gogpu/gg/text"
+	"github.com/gogpu/gogpu"
+	"github.com/gogpu/gpucontext"
+	"github.com/unxed/vtinput"
+)
+
+var (
+	debugLastMouseX, debugLastMouseY float64 = -1, -1
+	debugLastCtxW, debugLastCtxH     int     = -1, -1
+)
+
+type GogpuHost struct {
+	mu              sync.Mutex
+	app             *gogpu.App
+	reader          *vtinput.Reader
+	scr             *ScreenBuf
+	cols, rows      int
+	cellW, cellH    int
+	face            text.Face
+	mouseBtn        uint32
+	currentMods     vtinput.ControlKeyState
+	pendingKeyEvent *vtinput.InputEvent
+	pendingKeyTimer *time.Timer
+	lastRuneForVK   map[uint16]rune
+	lastVK          uint16
+	lCtrl, rCtrl    bool
+	lAlt, rAlt      bool
+	lShift, rShift  bool
+
+	// Cached sizes to prevent deadlocks and speed up GetTerminalSize
+	lastAppW, lastAppH int
+	resizePending      bool
+	// dragOut is the gesture waiting for the main loop to hand it to
+	// gogpu, or nil. One pointer, so one gesture at a time.
+	dragOut *gogpuDragRequest
+}
+
+func (h *GogpuHost) sendEvent(ev *vtinput.InputEvent) {
+	if h.reader == nil || h.reader.EventChan == nil {
+		return
+	}
+	select {
+	case h.reader.EventChan <- ev:
+	default:
+		// Drop intermediate mouse move events when queue is full to prevent clogging
+		if ev.Type == vtinput.MouseEventType && (ev.MouseEventFlags&vtinput.MouseMoved) != 0 {
+			return
+		}
+		// For non-move critical events, attempt a secondary non-blocking send without spawning goroutines
+		select {
+		case h.reader.EventChan <- ev:
+		default:
+			DebugLog("GOGPU_HOST: dropped event due to full buffer: %s", ev.String())
+		}
+	}
+}
+
+func isSpecialOrModifiedKey(vk uint16, mods vtinput.ControlKeyState) bool {
+	if (mods & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed | vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0 {
+		return true
+	}
+	switch vk {
+	case vtinput.VK_ESCAPE, vtinput.VK_RETURN, vtinput.VK_TAB, vtinput.VK_BACK, vtinput.VK_DELETE, vtinput.VK_INSERT,
+		vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
+		vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT,
+		vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL,
+		vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT,
+		vtinput.VK_MENU, vtinput.VK_LMENU, vtinput.VK_RMENU,
+		vtinput.VK_LWIN, vtinput.VK_RWIN, vtinput.VK_APPS,
+		vtinput.VK_CAPITAL, vtinput.VK_NUMLOCK, vtinput.VK_SCROLL:
+		return true
+	}
+	if vk >= vtinput.VK_F1 && vk <= vtinput.VK_F24 {
+		return true
+	}
+	return false
+}
+
+func (h *GogpuHost) syncMods(vk uint16, mods gpucontext.Modifiers, isDown bool) vtinput.ControlKeyState {
+	if isDown {
+		if vk == vtinput.VK_LCONTROL {
+			h.lCtrl = true
+		}
+		if vk == vtinput.VK_RCONTROL {
+			h.rCtrl = true
+		}
+		if vk == vtinput.VK_LMENU {
+			h.lAlt = true
+		}
+		if vk == vtinput.VK_RMENU {
+			h.rAlt = true
+		}
+		if vk == vtinput.VK_LSHIFT {
+			h.lShift = true
+		}
+		if vk == vtinput.VK_RSHIFT {
+			h.rShift = true
+		}
+	} else {
+		if vk == vtinput.VK_LCONTROL {
+			h.lCtrl = false
+		}
+		if vk == vtinput.VK_RCONTROL {
+			h.rCtrl = false
+		}
+		if vk == vtinput.VK_LMENU {
+			h.lAlt = false
+		}
+		if vk == vtinput.VK_RMENU {
+			h.rAlt = false
+		}
+		if vk == vtinput.VK_LSHIFT {
+			h.lShift = false
+		}
+		if vk == vtinput.VK_RSHIFT {
+			h.rShift = false
+		}
+	}
+
+	var sysMods vtinput.ControlKeyState
+	if mods.HasShift() {
+		sysMods |= vtinput.ShiftPressed
+	}
+	if mods.HasControl() {
+		if h.rCtrl {
+			sysMods |= vtinput.RightCtrlPressed
+		} else {
+			sysMods |= vtinput.LeftCtrlPressed
+		}
+	}
+	if mods.HasAlt() {
+		if h.rAlt {
+			sysMods |= vtinput.RightAltPressed
+		} else {
+			sysMods |= vtinput.LeftAltPressed
+		}
+	}
+
+	h.currentMods = sysMods
+	return sysMods
+}
+
+func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp func()) error {
+	// DX12: use naga DXIL backend instead of HLSL->FXC
+	// to avoid 2-6s shader compilation via d3dcompiler_47.dll
+	if os.Getenv("GOGPU_DX12_DXIL") == "" {
+		api := os.Getenv("GOGPU_GRAPHICS_API")
+		if api == "" || strings.EqualFold(api, "dx12") || strings.EqualFold(api, "d3d12") || strings.EqualFold(api, "directx") {
+			os.Setenv("GOGPU_DX12_DXIL", "1")
+		}
+	}
+	face, cellW, cellH := loadGogpuFont(fontName, fontSize)
+
+	fmt.Fprintf(os.Stdout, "GOGPU_HOST: Starting RunGogpuHost %dx%d (Cell: %dx%d)\n", cols, rows, cellW, cellH)
+	DebugLog("GOGPU_HOST: Starting RunGogpuHost %dx%d (Cell: %dx%d)", cols, rows, cellW, cellH)
+
+	config := gogpu.DefaultConfig().
+		WithTitle(AppName).
+		WithSize(cols*cellW, rows*cellH)
+
+	fmt.Fprintln(os.Stdout, "GOGPU_HOST: Creating gogpu.App...")
+	app := gogpu.NewApp(config)
+	fmt.Fprintln(os.Stdout, "GOGPU_HOST: gogpu.App created successfully")
+
+	host := &GogpuHost{
+		app:      app,
+		cols:     cols,
+		rows:     rows,
+		cellW:    cellW,
+		cellH:    cellH,
+		face:     face,
+		lastAppW: cols * cellW,
+		lastAppH: rows * cellH,
+	}
+
+	scr := NewScreenBuf()
+	host.scr = scr
+	scr.AllocBuf(cols, rows)
+	renderer := NewGogpuRenderer(host, face, cellW, cellH)
+	scr.Renderer = renderer
+	scr.Graphics().SetProtocol(GraphicsNative)
+	scr.Graphics().SetCellSize(cellW, cellH)
+
+	FrameManager.Init(scr)
+
+	pr, _ := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	host.reader = reader
+
+	app.OnClose(func() {
+		FrameManager.EmitCommand(CmQuit, nil)
+	})
+	// Files dropped on the window by other applications arrive here; the
+	// drag and drop core takes them from the backend to whatever the
+	// application registered as its target.
+	app.OnDragDrop(host.handleFileDrop)
+	SetDragBackend(host)
+	logGogpuDragEnvironment()
+	// A drag out has to begin on this loop: on Windows and X11 gogpu's
+	// drag source is a modal loop of its own, and everywhere the window
+	// belongs to this thread.
+	app.OnUpdate(func(float64) { host.pumpDragOut() })
+
+	app.EventSource().OnKeyPress(func(key gpucontext.Key, mods gpucontext.Modifiers) {
+		vk := gogpuKeyToVK(key)
+		if vk != 0 {
+			DebugLog("GOGPU_HOST_EVENT: OnKeyPress key=%v, vk=%d", key, vk)
+		}
+
+		host.mu.Lock()
+		currMods := host.syncMods(vk, mods, true)
+
+		if host.pendingKeyEvent != nil {
+			if host.pendingKeyTimer != nil {
+				host.pendingKeyTimer.Stop()
+			}
+			if host.pendingKeyEvent.Char == 0 && host.lastRuneForVK != nil {
+				host.pendingKeyEvent.Char = host.lastRuneForVK[host.pendingKeyEvent.VirtualKeyCode]
+			}
+			host.sendEvent(host.pendingKeyEvent)
+			host.pendingKeyEvent = nil
+		}
+
+		if vk != 0 {
+			host.lastVK = vk
+			ev := &vtinput.InputEvent{
+				Type:            vtinput.KeyEventType,
+				KeyDown:         true,
+				VirtualKeyCode:  vk,
+				ControlKeyState: currMods,
+			}
+
+			if isSpecialOrModifiedKey(vk, currMods) {
+				host.sendEvent(ev)
+			} else {
+				if host.lastRuneForVK != nil {
+					ev.Char = host.lastRuneForVK[vk]
+				}
+				host.pendingKeyEvent = ev
+				host.pendingKeyTimer = time.AfterFunc(10*time.Millisecond, func() {
+					host.mu.Lock()
+					defer host.mu.Unlock()
+					if host.pendingKeyEvent != nil {
+						if host.pendingKeyEvent.Char == 0 && host.lastRuneForVK != nil {
+							host.pendingKeyEvent.Char = host.lastRuneForVK[host.pendingKeyEvent.VirtualKeyCode]
+						}
+						host.sendEvent(host.pendingKeyEvent)
+						host.pendingKeyEvent = nil
+					}
+				})
+			}
+		}
+		host.mu.Unlock()
+	})
+
+	app.EventSource().OnTextInput(func(text string) {
+		DebugLog("GOGPU_HOST_EVENT: OnTextInput text=%q", text)
+		host.mu.Lock()
+		defer host.mu.Unlock()
+
+		runes := []rune(text)
+		if len(runes) == 0 {
+			return
+		}
+
+		if host.lastRuneForVK == nil {
+			host.lastRuneForVK = make(map[uint16]rune)
+		}
+
+		if host.pendingKeyEvent != nil {
+			if host.pendingKeyTimer != nil {
+				host.pendingKeyTimer.Stop()
+			}
+			host.pendingKeyEvent.Char = runes[0]
+			host.lastRuneForVK[host.pendingKeyEvent.VirtualKeyCode] = runes[0]
+			host.sendEvent(host.pendingKeyEvent)
+			host.pendingKeyEvent = nil
+
+			for i := 1; i < len(runes); i++ {
+				host.sendEvent(&vtinput.InputEvent{
+					Type:            vtinput.KeyEventType,
+					KeyDown:         true,
+					Char:            runes[i],
+					ControlKeyState: host.currentMods,
+				})
+			}
+		} else {
+			if host.lastVK != 0 {
+				host.lastRuneForVK[host.lastVK] = runes[0]
+			}
+			for _, r := range runes {
+				host.sendEvent(&vtinput.InputEvent{
+					Type:            vtinput.KeyEventType,
+					KeyDown:         true,
+					Char:            r,
+					ControlKeyState: host.currentMods,
+				})
+			}
+		}
+	})
+
+	app.EventSource().OnKeyRelease(func(key gpucontext.Key, mods gpucontext.Modifiers) {
+		vk := gogpuKeyToVK(key)
+
+		host.mu.Lock()
+		currMods := host.syncMods(vk, mods, false)
+
+		if host.pendingKeyEvent != nil {
+			if host.pendingKeyTimer != nil {
+				host.pendingKeyTimer.Stop()
+			}
+			if host.pendingKeyEvent.Char == 0 && host.lastRuneForVK != nil {
+				host.pendingKeyEvent.Char = host.lastRuneForVK[host.pendingKeyEvent.VirtualKeyCode]
+			}
+			host.sendEvent(host.pendingKeyEvent)
+			host.pendingKeyEvent = nil
+		}
+
+		host.mu.Unlock()
+
+		if vk == 0 {
+			return
+		}
+		host.sendEvent(&vtinput.InputEvent{
+			Type:            vtinput.KeyEventType,
+			KeyDown:         false,
+			VirtualKeyCode:  vk,
+			ControlKeyState: currMods,
+		})
+	})
+
+	app.EventSource().OnMousePress(func(button gpucontext.MouseButton, x, y float64) {
+		var btn uint32
+		switch button {
+		case gpucontext.MouseButtonLeft:
+			btn = uint32(vtinput.FromLeft1stButtonPressed)
+		case gpucontext.MouseButtonRight:
+			btn = uint32(vtinput.RightmostButtonPressed)
+		case gpucontext.MouseButtonMiddle:
+			btn = uint32(vtinput.FromLeft2ndButtonPressed)
+		default:
+			btn = uint32(vtinput.FromLeft1stButtonPressed)
+		}
+
+		host.mu.Lock()
+		host.mouseBtn = btn
+		cW := host.cellW
+		cH := host.cellH
+		host.mu.Unlock()
+
+		host.sendEvent(&vtinput.InputEvent{
+			Type:        vtinput.MouseEventType,
+			MouseX:      int16(x / float64(cW)),
+			MouseY:      int16(y / float64(cH)),
+			KeyDown:     true,
+			ButtonState: btn,
+		})
+	})
+
+	app.EventSource().OnMouseRelease(func(button gpucontext.MouseButton, x, y float64) {
+		host.mu.Lock()
+		host.mouseBtn = 0
+		cW := host.cellW
+		cH := host.cellH
+		host.mu.Unlock()
+
+		host.sendEvent(&vtinput.InputEvent{
+			Type:        vtinput.MouseEventType,
+			MouseX:      int16(x / float64(cW)),
+			MouseY:      int16(y / float64(cH)),
+			KeyDown:     false,
+			ButtonState: 0,
+		})
+	})
+
+	app.EventSource().OnMouseMove(func(x, y float64) {
+		host.mu.Lock()
+		btn := host.mouseBtn
+		cW := host.cellW
+		cH := host.cellH
+		host.mu.Unlock()
+
+		if btn != 0 {
+			host.sendEvent(&vtinput.InputEvent{
+				Type:            vtinput.MouseEventType,
+				MouseX:          int16(x / float64(cW)),
+				MouseY:          int16(y / float64(cH)),
+				MouseEventFlags: vtinput.MouseMoved,
+				ButtonState:     btn,
+				ControlKeyState: host.currentMods,
+			})
+		}
+	})
+
+	app.EventSource().OnScroll(func(dx float64, dy float64) {
+		host.mu.Lock()
+		cW := host.cellW
+		cH := host.cellH
+		host.mu.Unlock()
+
+		mx, my := app.Input().Mouse().Position()
+
+		// Multiply scroll lines to match preferred user experience
+		steps := int(math.Abs(dy) * float64(getSystemScrollLines()))
+		if steps == 0 {
+			return
+		}
+		dir := -1
+		if dy < 0 {
+			dir = 1
+		}
+		for i := 0; i < steps; i++ {
+			host.sendEvent(&vtinput.InputEvent{
+				Type:           vtinput.MouseEventType,
+				MouseX:         int16(float64(mx) / float64(cW)),
+				MouseY:         int16(float64(my) / float64(cH)),
+				WheelDirection: dir,
+			})
+		}
+		// Request a redraw to ensure the UI updates instantly in event-driven mode
+		app.RequestRedraw()
+	})
+
+	var infoLogged sync.Once
+	app.OnDraw(func(dc *gogpu.Context) {
+		w, h := dc.Width(), dc.Height()
+
+		host.mu.Lock()
+		sizeChanged := (host.lastAppW != w || host.lastAppH != h)
+		host.lastAppW, host.lastAppH = w, h
+		if sizeChanged {
+			host.resizePending = true
+		}
+		host.mu.Unlock()
+
+		if sizeChanged && host.reader != nil && host.reader.EventChan != nil {
+			host.sendEvent(&vtinput.InputEvent{Type: vtinput.ResizeEventType})
+		}
+
+		infoLogged.Do(func() {
+			if provider := app.GPUContextProvider(); provider != nil {
+				info := provider.AdapterInfo()
+				fmt.Fprintf(os.Stdout, "GOGPU_HOST_ON_DRAW: Adapter confirmed: %q, Type: %v\n", info.Name, info.Type)
+				DebugLog("GOGPU_HOST_ON_DRAW: Adapter confirmed: %q, Type: %v", info.Name, info.Type)
+			}
+		})
+
+		if gogpuRenderer, ok := host.scr.Renderer.(*GogpuRenderer); ok {
+			gogpuRenderer.DrawToScreen(dc)
+		}
+	})
+
+	GetTerminalSize = func() (int, int, error) {
+		host.mu.Lock()
+		defer host.mu.Unlock()
+
+		w, h := host.lastAppW, host.lastAppH
+
+		if host.cellW > 0 && host.cellH > 0 && w > 0 && h > 0 {
+			c := w / host.cellW
+			r := h / host.cellH
+			if c != host.cols || r != host.rows {
+				host.cols = c
+				host.rows = r
+			}
+		}
+		return host.cols, host.rows, nil
+	}
+
+	setupApp()
+
+	go func() {
+		w, h := app.Size()
+		fw, fh := app.PhysicalSize()
+		fmt.Fprintf(os.Stdout, "GOGPU_HOST: Before Run(). App Size (Log): %dx%d. App PhysicalSize: %dx%d. ScaleFactor: %f\n", w, h, fw, fh, app.ScaleFactor())
+		DebugLog("GOGPU_HOST: Before Run(). App Size (Log): %dx%d. App PhysicalSize: %dx%d. ScaleFactor: %f", w, h, fw, fh, app.ScaleFactor())
+
+		provider := app.GPUContextProvider()
+		if provider != nil {
+			info := provider.AdapterInfo()
+			fmt.Fprintf(os.Stdout, "GOGPU_HOST: Adapter: Name=%q, Type=%v\n", info.Name, info.Type)
+			DebugLog("GOGPU_HOST: Adapter: Name=%q, Type=%v", info.Name, info.Type)
+		}
+
+		fmt.Fprintln(os.Stdout, "GOGPU_HOST: FrameManager starting...")
+		DebugLog("GOGPU_HOST: FrameManager starting...")
+		FrameManager.Run(reader)
+		fmt.Fprintln(os.Stdout, "GOGPU_HOST: FrameManager exited. Forcing app shutdown to prevent blue screen hang.")
+		DebugLog("GOGPU_HOST: FrameManager exited. Forcing app shutdown to prevent blue screen hang.")
+		os.Exit(0)
+	}()
+
+	fmt.Fprintln(os.Stdout, "GOGPU_HOST: Calling app.Run()...")
+	err := app.Run()
+	fmt.Fprintf(os.Stdout, "GOGPU_HOST: app.Run() exited with: %v\n", err)
+	return err
+}
+
+func loadGogpuFont(fontName string, size float64) (text.Face, int, int) {
+	if size <= 0 {
+		size = 16.0
+	}
+	for _, p := range getFontCandidates(fontName) {
+		if _, err := os.Stat(p); err == nil {
+			src, err := text.NewFontSourceFromFile(p)
+			if err == nil {
+				face := src.Face(size)
+				metrics := face.Metrics()
+				adv := face.Advance("A")
+				cellH := int(metrics.Ascent + metrics.Descent + 0.5)
+				cellW := int(adv + 0.5)
+				if cellW == 0 {
+					cellW = 8
+				}
+				if cellH == 0 {
+					cellH = 16
+				}
+				fmt.Fprintf(os.Stdout, "GOGPU_DIAG_FONT: Loaded File=%s RequestSize=%.1f, Cell: %dx%d\n", p, size, cellW, cellH)
+				DebugLog("GOGPU_DIAG_FONT: File=%s RequestSize=%.1f", p, size)
+				DebugLog("GOGPU_DIAG_FONT: Metrics: Ascent=%.2f Descent=%.2f LineGap=%.2f AdvanceA=%.2f",
+					float64(metrics.Ascent), float64(metrics.Descent), float64(metrics.LineGap), adv)
+				DebugLog("GOGPU_DIAG_FONT: Calculated Cell: %dx%d", cellW, cellH)
+				return face, cellW, cellH
+			}
+		}
+	}
+	return nil, 8, 16
+}
+
+func gogpuKeyToVK(k gpucontext.Key) uint16 {
+	switch k {
+	case gpucontext.KeyEscape:
+		return vtinput.VK_ESCAPE
+	case gpucontext.KeyF1:
+		return vtinput.VK_F1
+	case gpucontext.KeyF2:
+		return vtinput.VK_F2
+	case gpucontext.KeyF3:
+		return vtinput.VK_F3
+	case gpucontext.KeyF4:
+		return vtinput.VK_F4
+	case gpucontext.KeyF5:
+		return vtinput.VK_F5
+	case gpucontext.KeyF6:
+		return vtinput.VK_F6
+	case gpucontext.KeyF7:
+		return vtinput.VK_F7
+	case gpucontext.KeyF8:
+		return vtinput.VK_F8
+	case gpucontext.KeyF9:
+		return vtinput.VK_F9
+	case gpucontext.KeyF10:
+		return vtinput.VK_F10
+	case gpucontext.KeyF11:
+		return vtinput.VK_F11
+	case gpucontext.KeyF12:
+		return vtinput.VK_F12
+	case gpucontext.KeyInsert:
+		return vtinput.VK_INSERT
+	case gpucontext.KeyDelete:
+		return vtinput.VK_DELETE
+	case gpucontext.KeyHome:
+		return vtinput.VK_HOME
+	case gpucontext.KeyEnd:
+		return vtinput.VK_END
+	case gpucontext.KeyPageUp:
+		return vtinput.VK_PRIOR
+	case gpucontext.KeyPageDown:
+		return vtinput.VK_NEXT
+	case gpucontext.KeyUp:
+		return vtinput.VK_UP
+	case gpucontext.KeyDown:
+		return vtinput.VK_DOWN
+	case gpucontext.KeyLeft:
+		return vtinput.VK_LEFT
+	case gpucontext.KeyRight:
+		return vtinput.VK_RIGHT
+	case gpucontext.KeyBackspace:
+		return vtinput.VK_BACK
+	case gpucontext.KeyEnter:
+		return vtinput.VK_RETURN
+	case gpucontext.KeyTab:
+		return vtinput.VK_TAB
+	case gpucontext.KeySpace:
+		return vtinput.VK_SPACE
+	case gpucontext.KeyLeftControl:
+		return vtinput.VK_LCONTROL
+	case gpucontext.KeyRightControl:
+		return vtinput.VK_RCONTROL
+	case gpucontext.KeyLeftShift:
+		return vtinput.VK_LSHIFT
+	case gpucontext.KeyRightShift:
+		return vtinput.VK_RSHIFT
+	case gpucontext.KeyLeftAlt:
+		return vtinput.VK_LMENU
+	case gpucontext.KeyRightAlt:
+		return vtinput.VK_RMENU
+	case gpucontext.KeyA:
+		return vtinput.VK_A
+	case gpucontext.KeyB:
+		return vtinput.VK_B
+	case gpucontext.KeyC:
+		return vtinput.VK_C
+	case gpucontext.KeyD:
+		return vtinput.VK_D
+	case gpucontext.KeyE:
+		return vtinput.VK_E
+	case gpucontext.KeyF:
+		return vtinput.VK_F
+	case gpucontext.KeyG:
+		return vtinput.VK_G
+	case gpucontext.KeyH:
+		return vtinput.VK_H
+	case gpucontext.KeyI:
+		return vtinput.VK_I
+	case gpucontext.KeyJ:
+		return vtinput.VK_J
+	case gpucontext.KeyK:
+		return vtinput.VK_K
+	case gpucontext.KeyL:
+		return vtinput.VK_L
+	case gpucontext.KeyM:
+		return vtinput.VK_M
+	case gpucontext.KeyN:
+		return vtinput.VK_N
+	case gpucontext.KeyO:
+		return vtinput.VK_O
+	case gpucontext.KeyP:
+		return vtinput.VK_P
+	case gpucontext.KeyQ:
+		return vtinput.VK_Q
+	case gpucontext.KeyR:
+		return vtinput.VK_R
+	case gpucontext.KeyS:
+		return vtinput.VK_S
+	case gpucontext.KeyT:
+		return vtinput.VK_T
+	case gpucontext.KeyU:
+		return vtinput.VK_U
+	case gpucontext.KeyV:
+		return vtinput.VK_V
+	case gpucontext.KeyW:
+		return vtinput.VK_W
+	case gpucontext.KeyX:
+		return vtinput.VK_X
+	case gpucontext.KeyY:
+		return vtinput.VK_Y
+	case gpucontext.KeyZ:
+		return vtinput.VK_Z
+	case gpucontext.Key0:
+		return vtinput.VK_0
+	case gpucontext.Key1:
+		return vtinput.VK_1
+	case gpucontext.Key2:
+		return vtinput.VK_2
+	case gpucontext.Key3:
+		return vtinput.VK_3
+	case gpucontext.Key4:
+		return vtinput.VK_4
+	case gpucontext.Key5:
+		return vtinput.VK_5
+	case gpucontext.Key6:
+		return vtinput.VK_6
+	case gpucontext.Key7:
+		return vtinput.VK_7
+	case gpucontext.Key8:
+		return vtinput.VK_8
+	case gpucontext.Key9:
+		return vtinput.VK_9
+	case gpucontext.KeyMinus:
+		return vtinput.VK_OEM_MINUS
+	case gpucontext.KeyEqual:
+		return vtinput.VK_OEM_PLUS
+	case gpucontext.KeyLeftBracket:
+		return vtinput.VK_OEM_4
+	case gpucontext.KeyRightBracket:
+		return vtinput.VK_OEM_6
+	case gpucontext.KeyBackslash:
+		return vtinput.VK_OEM_5
+	case gpucontext.KeySemicolon:
+		return vtinput.VK_OEM_1
+	case gpucontext.KeyApostrophe:
+		return vtinput.VK_OEM_7
+	case gpucontext.KeyComma:
+		return vtinput.VK_OEM_COMMA
+	case gpucontext.KeyPeriod:
+		return vtinput.VK_OEM_PERIOD
+	case gpucontext.KeySlash:
+		return vtinput.VK_OEM_2
+	}
+	return 0
+}

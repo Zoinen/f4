@@ -62,6 +62,19 @@ func TestRunAgainstLocalShell(t *testing.T) {
 		t.Errorf("output = %v, want both streams in order", lines)
 	}
 
+	// Polling counts complete lines. A command is allowed to exit without a
+	// trailing newline; its final record still has to reach the line callback.
+	lines, code, err = c.RunOutput(ctx, dir, "printf 'first\\ntail'")
+	if err != nil {
+		t.Fatalf("unterminated output: %v", err)
+	}
+	if code != 0 {
+		t.Errorf("unterminated output exit status = %d, want 0", code)
+	}
+	if len(lines) != 2 || lines[0] != "first" || lines[1] != "tail" {
+		t.Errorf("unterminated output = %q, want [first tail]", lines)
+	}
+
 	if _, _, err := c.RunOutput(ctx, filepath.Join(dir, "no such dir"), "true"); err == nil {
 		t.Error("a command in a directory that does not exist was accepted")
 	}

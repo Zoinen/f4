@@ -128,6 +128,11 @@ type VFS interface {
 
 	ParentVFS() VFS // Returns the underlying VFS if this is a virtual mount, or nil
 
+	// Clone returns a view suitable for work that can outlive the panel that
+	// requested it. Background consumers retain a distinct clone until Close;
+	// returning the receiver is therefore appropriate only when its lifetime is
+	// shared independently (for example by reference counting) or Close is a
+	// no-op. Returning nil reports that the VFS cannot be captured safely.
 	Clone() VFS
 	Close() error
 }
@@ -212,6 +217,14 @@ type PanelInfoProvider interface {
 	PanelInfoKey(PanelInfoRequest) string
 	CachedPanelInfo(PanelInfoRequest) (PanelInfoSnapshot, bool)
 	RefreshPanelInfo(context.Context, PanelInfoRequest) (PanelInfoSnapshot, error)
+}
+
+// LocalPathProvider is implemented by VFS backends whose entries can be read
+// directly through a platform filesystem path. Native frontends use this
+// optional capability for previews without coupling the core VFS interface to
+// local storage.
+type LocalPathProvider interface {
+	LocalPath(path string) (string, error)
 }
 
 type BulkCopier interface {
@@ -329,6 +342,61 @@ type CommandRunner interface {
 	// output to cb as it arrives, returning the exit status. A non-zero
 	// status is not an error: the command ran and said something.
 	RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error)
+}
+
+// CommandDialect describes the command language understood by a
+// CommandRunner. It is deliberately about syntax rather than the operating
+// system: a Windows host may expose PowerShell, cmd.exe, or a POSIX shell.
+type CommandDialect uint8
+
+const (
+	CommandDialectUnknown CommandDialect = iota
+	CommandDialectPOSIX
+	CommandDialectCmd
+	CommandDialectPowerShell
+)
+
+// CommandLiteralPercentEnv is reserved by F4's cmd.exe argument compiler.
+// A CommandDialectCmd runner must define it as a single percent character.
+// cmd variable expansion is non-recursive, which lets a generated argument
+// carry a literal filename such as %PATH% without expanding it as user input.
+const CommandLiteralPercentEnv = "F4_APPLY_LITERAL_PERCENT_8C1E"
+
+// CommandRunnerInfo describes optional capabilities of a CommandRunner.
+// MaxParallel limits the number of commands a caller should run at once. A
+// value of zero means the provider does not impose a limit.
+type CommandRunnerInfo struct {
+	Dialect     CommandDialect
+	MaxParallel int
+}
+
+// CommandRunnerInfoProvider may be implemented alongside CommandRunner. It is
+// optional so existing VFS plugins and test runners remain source-compatible.
+type CommandRunnerInfoProvider interface {
+	CommandRunnerInfo() CommandRunnerInfo
+}
+
+// CommandRunnerAvailabilityProvider lets a negotiated or device-backed VFS
+// hide command actions when its current connection lacks an executor.
+type CommandRunnerAvailabilityProvider interface {
+	CommandRunnerAvailable() bool
+}
+
+// CommandListANSIEncoder is an optional command-host capability used for
+// Apply list files with the A modifier. Implementations encode UTF-8 text in
+// the panel's configured legacy codepage; returning the input unchanged is
+// appropriate when that codepage is UTF-8.
+type CommandListANSIEncoder interface {
+	EncodeCommandListANSI(text []byte) ([]byte, error)
+}
+
+// PrivateCommandFileCreator is an optional command-host capability for Apply
+// list files. The returned file must be private from the moment it is
+// materialized (mode 0600 on Unix-like hosts), rather than relying on a later
+// SetAttributes call. This matters for streaming transports whose Create does
+// not publish the remote file until Close.
+type PrivateCommandFileCreator interface {
+	CreatePrivateCommandFile(ctx context.Context, path string) (io.WriteCloser, error)
 }
 
 // DuplicateProgress reports how far a duplicate search has got. Total is how

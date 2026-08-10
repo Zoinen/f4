@@ -292,6 +292,7 @@ func NewEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string) *EditorVie
 		vtui.FrameManager.Redraw()
 	}
 	ev.menuBar = vtui.NewMenuBar(nil)
+	ev.menuBar.SetOwner(ev)
 
 	ev.topBar = NewTopBar(
 		func() string {
@@ -2825,7 +2826,13 @@ func findPanelsFrameAnyScreen() *PanelsFrame {
 	if vtui.FrameManager == nil {
 		return nil
 	}
-	for _, s := range vtui.FrameManager.Screens {
+	if pf := findPanelsFrame(); pf != nil {
+		return pf
+	}
+	for i, s := range vtui.FrameManager.Screens {
+		if i == vtui.FrameManager.ActiveIdx {
+			continue
+		}
 		for _, f := range s.Frames {
 			if pf, ok := f.(*PanelsFrame); ok && !pf.closed {
 				return pf

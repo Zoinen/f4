@@ -77,9 +77,10 @@ type TerminalView struct {
 	cellW           int
 	cellH           int
 
-	Muted         bool
-	lastCharWasCR bool
-	authCache     map[string]int
+	Muted               bool
+	pendingCleanCommand string
+	lastCharWasCR       bool
+	authCache           map[string]int
 
 	OnTitleChange func(string)
 	OnBusyChange  func(bool)
@@ -262,6 +263,37 @@ func (tv *TerminalView) SetMuted(muted bool) {
 	defer tv.mu.Unlock()
 	tv.Muted = muted
 }
+
+// PrepareCleanCommand mutes the terminal before a managed shell command is
+// written. The clean user-facing command is emitted only when OSC 133;C proves
+// that the shell accepted the wire command and is starting its output. This
+// ordering prevents the shell from racing the caller and leaking the technical
+// wrapper before SetMuted takes effect.
+func (tv *TerminalView) PrepareCleanCommand(cleanCmd string) {
+	tv.mu.Lock()
+	tv.pendingCleanCommand = cleanCmd
+	tv.Muted = true
+	tv.mu.Unlock()
+}
+
+// CancelPreparedCleanCommand restores the idle state when the PTY write did
+// not accept the command. Nothing is printed for a command that never ran.
+func (tv *TerminalView) CancelPreparedCleanCommand() {
+	tv.mu.Lock()
+	tv.pendingCleanCommand = ""
+	tv.Muted = false
+	tv.mu.Unlock()
+}
+
+func (tv *TerminalView) beginPreparedCleanCommand() string {
+	tv.mu.Lock()
+	cleanCmd := tv.pendingCleanCommand
+	tv.pendingCleanCommand = ""
+	tv.Muted = false
+	tv.mu.Unlock()
+	return cleanCmd
+}
+
 func (tv *TerminalView) PrintCleanCommand(cleanCmd string) {
 	// Печатаем команду строго там, где сейчас находится курсор терминала (у промпта)
 	for _, r := range cleanCmd {
@@ -1477,7 +1509,10 @@ func (tv *TerminalView) HandleKittyAPC(s string) {
 func (tv *TerminalView) HandleOSC133(payload string) {
 	vtui.DebugLog("TERM_OSC133: %s", payload)
 	if payload == "C" {
-		tv.SetMuted(false)
+		cleanCmd := tv.beginPreparedCleanCommand()
+		if cleanCmd != "" {
+			tv.PrintCleanCommand(cleanCmd)
+		}
 		if tv.OnBusyChange != nil {
 			tv.OnBusyChange(true)
 		}

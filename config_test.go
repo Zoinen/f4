@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.SeparateFileExtensions = true
 	AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
 	AppConfig.MacroRecordFormat = 1
+	AppConfig.ApplyCommandParallelism = 0
 
 	// 2. Save
 	SaveConfig()
@@ -49,6 +51,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.SeparateFileExtensions = false
 	AppConfig.PanelScrollbarMode = PanelScrollbarOff
 	AppConfig.MacroRecordFormat = 0
+	AppConfig.ApplyCommandParallelism = 1
 
 	// 4. Load
 	LoadConfig()
@@ -83,6 +86,26 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if AppConfig.MacroRecordFormat != 1 {
 		t.Error("LoadConfig failed to restore MacroRecordFormat")
+	}
+	if AppConfig.ApplyCommandParallelism != 0 {
+		t.Errorf("ApplyCommandParallelism = %d, want Unlimited (0)", AppConfig.ApplyCommandParallelism)
+	}
+}
+
+func TestConfig_ApplyCommandParallelismDefaultsToLogicalCPUs(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Panel]\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() { getConfigIniPaths = origPathsFunc; AppConfig = oldCfg }()
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+	AppConfig.ApplyCommandParallelism = 0
+	LoadConfig()
+	if AppConfig.ApplyCommandParallelism != runtime.NumCPU() {
+		t.Fatalf("ApplyCommandParallelism = %d, want %d", AppConfig.ApplyCommandParallelism, runtime.NumCPU())
 	}
 }
 
@@ -268,11 +291,13 @@ func TestConfig_GuiFontPersistence(t *testing.T) {
 
 	// Задаем тестовые значения
 	AppConfig.GuiFont = "UbuntuMono-Regular"
+	AppConfig.GuiUseSystemMonospace = false
 	AppConfig.GuiFontSize = 22
 	SaveConfig()
 
 	// Сбрасываем текущую конфигурацию в памяти
 	AppConfig.GuiFont = ""
+	AppConfig.GuiUseSystemMonospace = true
 	AppConfig.GuiFontSize = 0
 
 	// Читаем заново из временного файла
@@ -283,6 +308,9 @@ func TestConfig_GuiFontPersistence(t *testing.T) {
 	}
 	if AppConfig.GuiFontSize != 22 {
 		t.Errorf("Expected GuiFontSize to be 22, got %d", AppConfig.GuiFontSize)
+	}
+	if AppConfig.GuiUseSystemMonospace {
+		t.Error("Expected GuiUseSystemMonospace to remain disabled")
 	}
 }
 
@@ -302,6 +330,8 @@ func TestConfig_GuiDimensionsPersistence(t *testing.T) {
 	// 1. Задаем тестовые значения
 	AppConfig.GuiCols = 120
 	AppConfig.GuiRows = 45
+	AppConfig.GuiPresentation = GuiPresentationText
+	AppConfig.QmlIconSet = QmlIconSetSystem
 	AppConfig.ConfirmExit = false
 
 	SaveConfig()
@@ -309,6 +339,8 @@ func TestConfig_GuiDimensionsPersistence(t *testing.T) {
 	// 2. Сбрасываем текущую конфигурацию в памяти
 	AppConfig.GuiCols = 0
 	AppConfig.GuiRows = 0
+	AppConfig.GuiPresentation = GuiPresentationGUI
+	AppConfig.QmlIconSet = QmlIconSetLucide
 	AppConfig.ConfirmExit = true
 
 	// 3. Читаем заново из временного файла
@@ -321,8 +353,38 @@ func TestConfig_GuiDimensionsPersistence(t *testing.T) {
 	if AppConfig.GuiRows != 45 {
 		t.Errorf("Expected GuiRows to be 45, got %d", AppConfig.GuiRows)
 	}
+	if AppConfig.GuiPresentation != GuiPresentationText {
+		t.Errorf("Expected text GUI presentation, got %q", AppConfig.GuiPresentation)
+	}
+	if AppConfig.QmlIconSet != QmlIconSetSystem {
+		t.Errorf("Expected system QML icons, got %q", AppConfig.QmlIconSet)
+	}
 	if AppConfig.ConfirmExit {
 		t.Error("Expected ConfirmExit to be loaded as false, got true")
+	}
+}
+
+func TestGuiPresentationModeNormalization(t *testing.T) {
+	if got := parseGuiPresentationMode(" TEXT "); got != GuiPresentationText {
+		t.Fatalf("parse text = %q", got)
+	}
+	if got := parseGuiPresentationMode("unsupported"); got != GuiPresentationGUI {
+		t.Fatalf("invalid mode should fall back to GUI, got %q", got)
+	}
+	if got := nextGuiPresentationMode(GuiPresentationGUI); got != GuiPresentationText {
+		t.Fatalf("next GUI mode = %q", got)
+	}
+	if got := nextGuiPresentationMode(GuiPresentationText); got != GuiPresentationGUI {
+		t.Fatalf("next text mode = %q", got)
+	}
+}
+
+func TestQmlIconSetModeNormalization(t *testing.T) {
+	if got := parseQmlIconSetMode(" SYSTEM "); got != QmlIconSetSystem {
+		t.Fatalf("parse system = %q", got)
+	}
+	if got := parseQmlIconSetMode("unsupported"); got != QmlIconSetLucide {
+		t.Fatalf("invalid icon set should fall back to Lucide, got %q", got)
 	}
 }
 

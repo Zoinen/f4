@@ -1,8 +1,25 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
+
+func registerMenuTestAction(t *testing.T, action Action) {
+	t.Helper()
+	key := strings.ToLower(action.Name)
+	previous, existed := actionRegistry[key]
+	previousOrder := append([]string(nil), actionOrder...)
+	t.Cleanup(func() {
+		if existed {
+			actionRegistry[key] = previous
+		} else {
+			delete(actionRegistry, key)
+		}
+		actionOrder = previousOrder
+	})
+	RegisterAction(action)
+}
 
 func TestBuildMenuBarItems_Editor(t *testing.T) {
 	old := GlobalHotkeysMgr
@@ -126,13 +143,59 @@ func TestBuildMenuBarItems_Terminal(t *testing.T) {
 	}
 }
 
+func TestBuildMenuBarItems_TerminalShortcutIsStableAndConditionAware(t *testing.T) {
+	oldManager := GlobalHotkeysMgr
+	oldCondition, hadCondition := conditionRegistry["menushortcutpreferred"]
+	conditionActive := true
+	RegisterCondition("MenuShortcutPreferred", func() bool { return conditionActive })
+	defer func() {
+		GlobalHotkeysMgr = oldManager
+		if hadCondition {
+			conditionRegistry["menushortcutpreferred"] = oldCondition
+		} else {
+			delete(conditionRegistry, "menushortcutpreferred")
+		}
+	}()
+
+	registerMenuTestAction(t, Action{
+		Name:        "Terminal.TestStableShortcut",
+		Area:        "Terminal",
+		Label:       "Stable shortcut",
+		DefaultKeys: []string{"F13:MenuShortcutPreferred", "CtrlShiftF13"},
+		MenuPath:    "File",
+	})
+	GlobalHotkeysMgr = NewHotkeyManager("")
+
+	shortcutForTestAction := func() string {
+		items := BuildMenuBarItems("Terminal")
+		for _, item := range items[0].SubItems {
+			if item.Text == "&Stable shortcut" {
+				return item.Shortcut
+			}
+		}
+		return ""
+	}
+
+	for i := 0; i < 100; i++ {
+		if got := shortcutForTestAction(); got != "F13" {
+			t.Fatalf("active preferred shortcut changed on rebuild %d: got %q", i, got)
+		}
+	}
+	conditionActive = false
+	for i := 0; i < 100; i++ {
+		if got := shortcutForTestAction(); got != "Ctrl+Shift+F13" {
+			t.Fatalf("fallback shortcut changed on rebuild %d: got %q", i, got)
+		}
+	}
+}
+
 func TestBuildMenuBarItems_OnClickRunsAction(t *testing.T) {
 	old := GlobalHotkeysMgr
 	GlobalHotkeysMgr = NewHotkeyManager("")
 	defer func() { GlobalHotkeysMgr = old }()
 
 	clicked := false
-	RegisterAction(Action{
+	registerMenuTestAction(t, Action{
 		Name:     "Test.MenuClick",
 		Area:     "Editor",
 		Label:    "Click me",

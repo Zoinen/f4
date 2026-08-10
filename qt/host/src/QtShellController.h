@@ -28,6 +28,7 @@ public:
 
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
+    void sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat);
     Q_INVOKABLE void sendText(const QString &text, int mods = 0);
     Q_INVOKABLE void sendMouse(int x, int y, int button, int flags, bool down, int mods);
     Q_INVOKABLE void sendWheel(int x, int y, int dir, int mods);

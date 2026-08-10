@@ -112,6 +112,7 @@ type F4Config struct {
 	NavigationMode           PanelNavigationMode
 	SearchCommandStayFocused bool
 	SyncPanelLoad            bool
+	ApplyCommandParallelism  int // 0 = unlimited; absent config defaults to runtime.NumCPU()
 	EditorAutoComplete       bool
 	EditorAutoCompleteMask   string
 	EditorExpandTabs         int
@@ -145,9 +146,12 @@ type F4Config struct {
 	FileOpPathDisplay        int
 	MacroRecordFormat        int
 	GuiFont                  string
+	GuiUseSystemMonospace    bool
 	GuiFontSize              int
 	GuiCols                  int
 	GuiRows                  int
+	GuiPresentation          GuiPresentationMode
+	QmlIconSet               QmlIconSetMode
 	ConsoleTitleTemplate     string
 	UpdateChannel            int // 0 = Stable, 1 = Nightly
 	UpdateInterval           int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
@@ -171,6 +175,43 @@ type F4Config struct {
 	LayoutExtras map[string]string
 }
 
+type GuiPresentationMode string
+
+const (
+	GuiPresentationGUI  GuiPresentationMode = "gui"
+	GuiPresentationText GuiPresentationMode = "text"
+)
+
+func parseGuiPresentationMode(value string) GuiPresentationMode {
+	if strings.EqualFold(strings.TrimSpace(value), string(GuiPresentationText)) {
+		return GuiPresentationText
+	}
+	return GuiPresentationGUI
+}
+
+func nextGuiPresentationMode(current GuiPresentationMode) GuiPresentationMode {
+	if parseGuiPresentationMode(string(current)) == GuiPresentationText {
+		return GuiPresentationGUI
+	}
+	return GuiPresentationText
+}
+
+// QmlIconSetMode selects icons only for the Qt/QML sidecar. Other GUI and
+// terminal renderers deliberately ignore this setting.
+type QmlIconSetMode string
+
+const (
+	QmlIconSetLucide QmlIconSetMode = "lucide"
+	QmlIconSetSystem QmlIconSetMode = "system"
+)
+
+func parseQmlIconSetMode(value string) QmlIconSetMode {
+	if strings.EqualFold(strings.TrimSpace(value), string(QmlIconSetSystem)) {
+		return QmlIconSetSystem
+	}
+	return QmlIconSetLucide
+}
+
 var AppConfig = F4Config{
 	ColorStyle:               "Modern",
 	Language:                 "en",
@@ -190,6 +231,7 @@ var AppConfig = F4Config{
 	NavigationMode:           NavigationClassic,
 	SearchCommandStayFocused: false,
 	SyncPanelLoad:            false,
+	ApplyCommandParallelism:  runtime.NumCPU(),
 	EditorAutoComplete:       true,
 	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
 	EditorExpandTabs:         0,
@@ -221,9 +263,12 @@ var AppConfig = F4Config{
 	DefaultFileOpMode:        0,
 	FileOpPathDisplay:        0,
 	GuiFont:                  "",
-	GuiFontSize:              18,
+	GuiUseSystemMonospace:    true,
+	GuiFontSize:              defaultGuiFontSize(runtime.GOOS),
 	GuiCols:                  100,
 	GuiRows:                  30,
+	GuiPresentation:          GuiPresentationGUI,
+	QmlIconSet:               QmlIconSetLucide,
 	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
 	UpdateChannel:            0,
 	UpdateInterval:           3, // Default to Weekly
@@ -318,6 +363,11 @@ func LoadConfig() {
 	}
 	AppConfig.SearchCommandStayFocused = ini.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
 	AppConfig.SyncPanelLoad = ini.GetString("Panel", "SyncPanelLoad", "0") == "1"
+	AppConfig.ApplyCommandParallelism = runtime.NumCPU()
+	fmt.Sscanf(ini.GetString("Panel", "ApplyCommandParallelism", fmt.Sprintf("%d", runtime.NumCPU())), "%d", &AppConfig.ApplyCommandParallelism)
+	if AppConfig.ApplyCommandParallelism < 0 {
+		AppConfig.ApplyCommandParallelism = runtime.NumCPU()
+	}
 	fmt.Sscanf(ini.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &AppConfig.DefaultFileOpMode)
 	AppConfig.ConfirmCopy = ini.GetString("System", "ConfirmCopy", "1") == "1"
 	AppConfig.ConfirmMove = ini.GetString("System", "ConfirmMove", "1") == "1"
@@ -328,9 +378,11 @@ func LoadConfig() {
 	fmt.Sscanf(ini.GetString("System", "MacroRecordFormat", "0"), "%d", &AppConfig.MacroRecordFormat)
 	fmt.Sscanf(ini.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &AppConfig.FileOpPathDisplay)
 	AppConfig.GuiFont = ini.GetString("Appearance", "GuiFont", "")
-	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", "18"), "%d", &AppConfig.GuiFontSize)
+	AppConfig.GuiUseSystemMonospace = ini.GetString("Appearance", "GuiUseSystemMonospace", "1") == "1"
+	defaultFontSize := defaultGuiFontSize(runtime.GOOS)
+	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", fmt.Sprintf("%d", defaultFontSize)), "%d", &AppConfig.GuiFontSize)
 	if AppConfig.GuiFontSize <= 0 {
-		AppConfig.GuiFontSize = 18
+		AppConfig.GuiFontSize = defaultFontSize
 	}
 	fmt.Sscanf(ini.GetString("Appearance", "GuiCols", "100"), "%d", &AppConfig.GuiCols)
 	if AppConfig.GuiCols <= 0 {
@@ -341,6 +393,8 @@ func LoadConfig() {
 		AppConfig.GuiRows = 30
 	}
 	AppConfig.EnforceColorCorrection = ini.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
+	AppConfig.GuiPresentation = parseGuiPresentationMode(ini.GetString("Appearance", "GuiPresentation", string(GuiPresentationGUI)))
+	AppConfig.QmlIconSet = parseQmlIconSetMode(ini.GetString("Appearance", "QmlIconSet", string(QmlIconSetLucide)))
 	fmt.Sscanf(ini.GetString("Update", "Channel", "0"), "%d", &AppConfig.UpdateChannel)
 	fmt.Sscanf(ini.GetString("Update", "Interval", "3"), "%d", &AppConfig.UpdateInterval)
 	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
@@ -436,6 +490,7 @@ func SaveConfig() {
 	// Keep the legacy key synchronized for older f4 versions and shared configs.
 	sb.WriteString(fmt.Sprintf("VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.NavigationMode == NavigationVim]))
 	sb.WriteString(fmt.Sprintf("SyncPanelLoad = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SyncPanelLoad]))
+	sb.WriteString(fmt.Sprintf("ApplyCommandParallelism = %d\n", AppConfig.ApplyCommandParallelism))
 	sb.WriteString(fmt.Sprintf("DefaultFileOpMode = %d\n", AppConfig.DefaultFileOpMode))
 	sb.WriteString(fmt.Sprintf("FileOpPathDisplay = %d\n", AppConfig.FileOpPathDisplay))
 
@@ -453,9 +508,12 @@ func SaveConfig() {
 
 	sb.WriteString("\n[Appearance]\n")
 	sb.WriteString(fmt.Sprintf("GuiFont = %s\n", AppConfig.GuiFont))
+	sb.WriteString(fmt.Sprintf("GuiUseSystemMonospace = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.GuiUseSystemMonospace]))
 	sb.WriteString(fmt.Sprintf("GuiFontSize = %d\n", AppConfig.GuiFontSize))
 	sb.WriteString(fmt.Sprintf("GuiCols = %d\n", AppConfig.GuiCols))
 	sb.WriteString(fmt.Sprintf("GuiRows = %d\n", AppConfig.GuiRows))
+	sb.WriteString(fmt.Sprintf("GuiPresentation = %s\n", parseGuiPresentationMode(string(AppConfig.GuiPresentation))))
+	sb.WriteString(fmt.Sprintf("QmlIconSet = %s\n", parseQmlIconSetMode(string(AppConfig.QmlIconSet))))
 
 	sb.WriteString("\n[Update]\n")
 	sb.WriteString(fmt.Sprintf("Channel = %d\n", AppConfig.UpdateChannel))

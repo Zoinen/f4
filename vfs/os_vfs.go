@@ -274,6 +274,13 @@ func (v *OSVFS) Abs(path string) (string, error) {
 	return filepath.Join(v.currentPath, path), nil
 }
 
+// LocalPath exposes the native path for frontends which can decode local files
+// directly. It deliberately mirrors Abs while keeping preview capability an
+// optional VFS interface.
+func (v *OSVFS) LocalPath(path string) (string, error) {
+	return v.Abs(path)
+}
+
 func (v *OSVFS) Base(path string) string { return filepath.Base(path) }
 func (v *OSVFS) Dir(path string) string  { return filepath.Dir(path) }
 func (v *OSVFS) MkDir(ctx context.Context, path string) error {

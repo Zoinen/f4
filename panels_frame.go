@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/unxed/f4/vfs"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -227,7 +228,15 @@ type PanelsFrame struct {
 
 	lastPtyPath string
 	lastPtyVFS  vfs.VFS
-	closed      bool
+
+	lastPanelSwitchAt time.Time
+	deferPtySync      bool
+	ptySyncMu         sync.Mutex
+	ptySyncTimer      *time.Timer
+	ptySyncGeneration uint64
+	pendingPtyPath    string
+	pendingPtyVFS     vfs.VFS
+	closed            bool
 
 	// Terminal mouse-selection state. Kept in PanelsFrame because
 	// mouse routing lives here; the highlight and text extraction
@@ -440,6 +449,7 @@ func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmLeftMedium},
 		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmLeftDetailed},
 		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmLeftWide},
+		{Text: "&" + Msg("Menu.Left.Gallery"), Command: CmLeftGallery},
 		{Separator: true},
 		{Text: "&" + Msg("Menu.SortName"), Command: CmLeftSortName},
 		{Text: "&" + Msg("Menu.SortExt"), Command: CmLeftSortExt},
@@ -459,6 +469,7 @@ func (pf *PanelsFrame) rightMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmRightMedium},
 		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmRightDetailed},
 		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmRightWide},
+		{Text: "&" + Msg("Menu.Left.Gallery"), Command: CmRightGallery},
 		{Separator: true},
 		{Text: "&" + Msg("Menu.SortName"), Command: CmRightSortName},
 		{Text: "&" + Msg("Menu.SortExt"), Command: CmRightSortExt},
@@ -489,7 +500,14 @@ func (pf *PanelsFrame) GetMenuBar() *vtui.MenuBar {
 	return pf.menuBar
 }
 
-func getMenuText(current, target ViewMode, label string) string {
+func getMenuText(presentation PanelPresentation, current, target ViewMode, label string) string {
+	if presentation == PanelPresentationList && current == target {
+		return "√" + label
+	}
+	return " " + label
+}
+
+func getPresentationMenuText(current, target PanelPresentation, label string) string {
 	if current == target {
 		return "√" + label
 	}
@@ -508,10 +526,12 @@ var commandToActionName = map[int]string{
 	CmLeftMedium:            "Panel.ViewMedium",
 	CmLeftDetailed:          "Panel.ViewDetailed",
 	CmLeftWide:              "Panel.ViewWide",
+	CmLeftGallery:           "Panel.ViewGallery",
 	CmRightBrief:            "Panel.ViewBrief",
 	CmRightMedium:           "Panel.ViewMedium",
 	CmRightDetailed:         "Panel.ViewDetailed",
 	CmRightWide:             "Panel.ViewWide",
+	CmRightGallery:          "Panel.ViewGallery",
 	CmView:                  "File.View",
 	CmEdit:                  "File.Edit",
 	CmCopy:                  "File.Copy",
@@ -531,22 +551,26 @@ var commandToActionName = map[int]string{
 }
 
 func (pf *PanelsFrame) updateMenuCheckmarks() {
-	if pf.panels[0] == nil || pf.panels[1] == nil || pf.menuBar == nil || len(pf.menuBar.Items) < 5 {
+	if pf.panels[0] == nil || pf.panels[1] == nil || pf.menuBar == nil || len(pf.menuBar.Items) < 2 {
 		return
 	}
-	if len(pf.menuBar.Items[0].SubItems) < 10 || len(pf.menuBar.Items[4].SubItems) < 10 {
+	rightMenuIdx := len(pf.menuBar.Items) - 1
+	if len(pf.menuBar.Items[0].SubItems) < 11 || len(pf.menuBar.Items[rightMenuIdx].SubItems) < 11 {
 		return
 	}
 
 	lMode, rMode := ViewModeMedium, ViewModeMedium
 	lSort, rSort := SortName, SortName
+	lPresentation, rPresentation := PanelPresentationList, PanelPresentationList
 	if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
 		lMode = fsp.viewMode
 		lSort = fsp.sortMode
+		lPresentation = fsp.presentation
 	}
 	if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
 		rMode = fsp.viewMode
 		rSort = fsp.sortMode
+		rPresentation = fsp.presentation
 	}
 
 	if pf.wide && pf.widePanel == 0 {
@@ -560,15 +584,17 @@ func (pf *PanelsFrame) updateMenuCheckmarks() {
 		key  string
 	}{{ViewModeBrief, "Brief"}, {ViewModeMedium, "Medium"}, {ViewModeDetailed, "Detailed"}, {ViewModeWide, "Wide"}}
 	for i, item := range modeItems {
-		pf.menuBar.Items[0].SubItems[i].Text = getMenuText(lMode, item.mode, "&"+Msg("Menu.Left."+item.key))
-		pf.menuBar.Items[4].SubItems[i].Text = getMenuText(rMode, item.mode, "&"+Msg("Menu.Left."+item.key))
+		pf.menuBar.Items[0].SubItems[i].Text = getMenuText(lPresentation, lMode, item.mode, "&"+Msg("Menu.Left."+item.key))
+		pf.menuBar.Items[rightMenuIdx].SubItems[i].Text = getMenuText(rPresentation, rMode, item.mode, "&"+Msg("Menu.Left."+item.key))
 	}
+	pf.menuBar.Items[0].SubItems[4].Text = getPresentationMenuText(lPresentation, PanelPresentationGallery, "&"+Msg("Menu.Left.Gallery"))
+	pf.menuBar.Items[rightMenuIdx].SubItems[4].Text = getPresentationMenuText(rPresentation, PanelPresentationGallery, "&"+Msg("Menu.Left.Gallery"))
 	for i, item := range []struct {
 		mode SortMode
 		key  string
 	}{{SortName, "SortName"}, {SortExt, "SortExt"}, {SortTime, "SortTime"}, {SortSize, "SortSize"}, {SortUnsorted, "SortUnsorted"}} {
-		pf.menuBar.Items[0].SubItems[i+5].Text = getSortMenuText(lSort, item.mode, "&"+Msg("Menu."+item.key))
-		pf.menuBar.Items[4].SubItems[i+5].Text = getSortMenuText(rSort, item.mode, "&"+Msg("Menu."+item.key))
+		pf.menuBar.Items[0].SubItems[i+6].Text = getSortMenuText(lSort, item.mode, "&"+Msg("Menu."+item.key))
+		pf.menuBar.Items[rightMenuIdx].SubItems[i+6].Text = getSortMenuText(rSort, item.mode, "&"+Msg("Menu."+item.key))
 	}
 
 	// Update shortcuts dynamically from HotkeyManager
@@ -638,6 +664,19 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 	}
 
 	maxPromptLen := pf.lastW / 2
+	// The external GUI renders command-line text with proportional pixel
+	// geometry inside terminal-sized cells. Half of the logical columns is
+	// therefore only about one third of the visible row. Allow three quarters
+	// of the cell count there, which is visually close to half the row while
+	// retaining the other half as useful command-input space. Text renderers
+	// keep the traditional half-width commander prompt.
+	if vtui.FrameManager != nil {
+		if scr := vtui.FrameManager.Screen(); scr != nil {
+			if _, externalGUI := scr.Renderer.(*ExtUiRenderer); externalGUI {
+				maxPromptLen = pf.lastW * 3 / 4
+			}
+		}
+	}
 	if maxPromptLen < 30 {
 		maxPromptLen = pf.lastW - 15
 	}
@@ -750,6 +789,7 @@ func (pf *PanelsFrame) Close() {
 	defer pf.ptyMutex.Unlock()
 
 	pf.closed = true
+	pf.cancelPendingPTYDirectorySync()
 
 	for _, p := range pf.panels {
 		if fsp, ok := p.(*FileSystemPanel); ok && fsp != nil {
@@ -787,6 +827,9 @@ func (pf *PanelsFrame) setWidePanel(idx int) {
 	if idx >= 0 {
 		pf.activeIdx = idx
 		pf.showPanels = true
+		if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok {
+			fsp.SetPresentation(PanelPresentationList)
+		}
 	}
 	if pf.lastW > 0 && pf.lastH > 0 {
 		pf.ResizeConsole(pf.lastW, pf.lastH)
@@ -806,6 +849,18 @@ func (pf *PanelsFrame) setPanelViewMode(idx int, mode ViewMode) {
 	pf.exitWide()
 	if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok {
 		fsp.SetViewMode(mode)
+		fsp.SetPresentation(PanelPresentationList)
+	}
+	pf.updateMenuCheckmarks()
+}
+
+func (pf *PanelsFrame) setPanelPresentation(idx int, presentation PanelPresentation) {
+	if idx < 0 || idx > 1 {
+		return
+	}
+	pf.exitWide()
+	if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok {
+		fsp.SetPresentation(presentation)
 	}
 	pf.updateMenuCheckmarks()
 }
@@ -831,6 +886,12 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		termH = 0
 	}
 
+	// Terminal geometry belongs to the viewport, not to PTY availability. In
+	// particular, a failed/asynchronous PTY allocation must not leave the
+	// initial 80x24 buffer painted into a larger console.
+	pf.termView.SetPosition(0, contentY1, w-1, termY2)
+	pf.termView.Resize(w, termH)
+
 	if pf.pty != nil {
 		pf.ptyMutex.Lock()
 		cw, ch := pf.termView.CellSize()
@@ -839,9 +900,6 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 			setPtySize(remotePty, w, termH, cw, ch)
 		}
 		pf.ptyMutex.Unlock()
-
-		pf.termView.SetPosition(0, contentY1, w-1, termY2)
-		pf.termView.Resize(w, termH)
 	}
 
 	// 2. Panel Area: Leaves one additional line for the f4 CommandLine.
@@ -985,7 +1043,14 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 		if fsp := pf.getActivePanel(); fsp != nil {
 			currentPath := fsp.vfs.GetPath()
 			if currentPath != pf.lastPtyPath || fsp.vfs != pf.lastPtyVFS {
-				if pf.syncPTYDirectory(currentPath, fsp.vfs) {
+				if pf.deferPtySync {
+					// Normally the Tab handler has already armed this timer.
+					// Keep this fallback for a switch made while the PTY was
+					// busy: its first idle redraw must still settle the shell
+					// directory without synchronizing during the busy period.
+					pf.queuePTYDirectorySync(currentPath, fsp.vfs)
+				} else if pf.syncPTYDirectory(currentPath, fsp.vfs) {
+					pf.cancelPendingPTYDirectorySync()
 					pf.lastPtyPath = currentPath
 					pf.lastPtyVFS = fsp.vfs
 				}
@@ -1208,6 +1273,13 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 
+	// Presentation switching belongs to the external-GUI bridge and must stay
+	// global even when no panel has been constructed yet.
+	if e.VirtualKeyCode == vtinput.VK_F12 && shift && !ctrl && !alt && e.KeyDown {
+		toggleGuiPresentation()
+		return true
+	}
+
 	// Raw input mode check at the very top. If an interactive AltScreen app is active (e.g. mc, htop),
 	// we forward ALL keys to PTY, except workspace switcher keys (Ctrl+Tab in standard mode, Ctrl+Shift+Tab in advanced).
 	if !pf.showPanels && pf.termView.UseAltScreen {
@@ -1417,7 +1489,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.VirtualKeyCode == vtinput.VK_F9 {
 		pos := 0 // Left
 		if pf.activeIdx == 1 {
-			pos = 4 // Right
+			pos = len(pf.menuBar.Items) - 1 // Right
 		}
 		pf.GetMenuBar()
 		if pos >= len(pf.menuBar.Items) {
@@ -1509,8 +1581,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		commandInputActive := !pf.searchFirstMode() || pf.commandLineFocused || !pf.showPanels
 		if commandInputActive && !pf.cmdLine.IsEmpty() {
 			cmd := pf.cmdLine.Edit.GetText()
-			pf.cmdLine.Edit.AddHistory(cmd)
-			pf.cmdLine.Edit.HistoryPos = -1
+			recordHistory := func() {
+				pf.cmdLine.Edit.AddHistory(cmd)
+				pf.cmdLine.Edit.HistoryPos = -1
+			}
 
 			trimmedCmd := strings.TrimSpace(cmd)
 			lowerCmd := strings.ToLower(trimmedCmd)
@@ -1550,6 +1624,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				isDirChange = true
 				targetPath = string(os.PathSeparator)
 			} else if lowerCmd == "exit" {
+				recordHistory()
 				pf.cmdLine.Clear()
 				if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
 					pf.setCommandLineFocus(false)
@@ -1563,6 +1638,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				action := lowerCmd[:idx]
 				actualCmd := strings.TrimSpace(trimmedCmd[idx+3:])
 
+				recordHistory()
 				pf.cmdLine.Clear()
 				if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
 					pf.setCommandLineFocus(false)
@@ -1576,6 +1652,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
 					targetPath = expandPathEnv(targetPath)
 					if pf.NavigateToPath(fsp, targetPath) {
+						recordHistory()
 						pf.cmdLine.Clear()
 						if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
 							pf.setCommandLineFocus(false)
@@ -1599,6 +1676,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			// PTY below, preserving the full interactive terminal experience.
 			if fsp := pf.getActivePanel(); fsp != nil && !vfsHasRemotePTY(fsp.vfs) {
 				if runner, ok := fsp.vfs.(vfs.CommandRunner); ok {
+					recordHistory()
 					pf.cmdLine.Clear()
 					pf.cmdLine.Edit.HistoryPos = -1
 					if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
@@ -1611,66 +1689,97 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 			// Fallthrough for regular commands or if directory change failed (to show error in terminal)
 			activePty := pf.getActivePTY()
-			if activePty != nil {
-				var path string
-				isWindowsShell := runtime.GOOS == "windows"
-				if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
-					if _, isOS := fsp.vfs.(*vfs.OSVFS); isOS {
-						path = fsp.vfs.GetPath()
-					} else if vfsHasRemotePTY(fsp.vfs) {
-						path = fsp.vfs.GetPath()
-						isWindowsShell = false
-					}
+			if activePty == nil {
+				// PTY setup is asynchronous and can also fail (for example when the
+				// system PTY pool is exhausted). Keep both the panels and command
+				// intact so Enter never switches to a dead 80x24 terminal and loses
+				// the command the user was trying to run.
+				return true
+			}
+			var path string
+			isWindowsShell := runtime.GOOS == "windows"
+			if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
+				if _, isOS := fsp.vfs.(*vfs.OSVFS); isOS {
+					path = fsp.vfs.GetPath()
+				} else if vfsHasRemotePTY(fsp.vfs) {
+					path = fsp.vfs.GetPath()
+					isWindowsShell = false
 				}
+			}
 
-				var fullWireCmd string
-				isBackground := false
-				if !isWindowsShell {
-					isBackground = strings.HasSuffix(strings.TrimSpace(cmd), "&")
-				}
+			var fullWireCmd string
+			isBackground := false
+			if !isWindowsShell {
+				isBackground = strings.HasSuffix(strings.TrimSpace(cmd), "&")
+			}
 
-				if isWindowsShell {
-					cmd = resolveWindowsCommand(cmd)
-				}
+			if isWindowsShell {
+				cmd = resolveWindowsCommand(cmd)
+			}
 
-				if isWindowsShell {
-					// Use a combined command for reliable excision in AnsiParser: cd /d "path" & command
-					if path != "" {
-						fullWireCmd = fmt.Sprintf("cd /d \"%s\" & %s\r", path, cmd)
-					} else {
-						fullWireCmd = fmt.Sprintf("%s\r", cmd)
-					}
-					pf.executing = true
-					pf.returnToPanels = pf.showPanels
+			if isWindowsShell {
+				// Use a combined command for reliable excision in AnsiParser: cd /d "path" & command
+				if path != "" {
+					fullWireCmd = fmt.Sprintf("cd /d \"%s\" & %s\r", path, cmd)
 				} else {
-					// Unix
-					if isBackground {
-						if path != "" {
-							sqPath := strings.ReplaceAll(path, "'", "'\\''")
-							fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && %s\r", sqPath, cmd)
-						} else {
-							fullWireCmd = " " + cmd + "\r"
-						}
+					fullWireCmd = fmt.Sprintf("%s\r", cmd)
+				}
+			} else {
+				// Unix
+				if isBackground {
+					if path != "" {
+						sqPath := strings.ReplaceAll(path, "'", "'\\''")
+						fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && %s\r", sqPath, cmd)
 					} else {
-						// Managed foreground command
-						if path != "" {
-							sqPath := strings.ReplaceAll(path, "'", "'\\''")
-							fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", sqPath, cmd)
-						} else {
-							fullWireCmd = fmt.Sprintf(" { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", cmd)
-						}
-						pf.executing = true
-						pf.returnToPanels = pf.showPanels
+						fullWireCmd = " " + cmd + "\r"
+					}
+				} else {
+					// Managed foreground command
+					if path != "" {
+						sqPath := strings.ReplaceAll(path, "'", "'\\''")
+						fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", sqPath, cmd)
+					} else {
+						fullWireCmd = fmt.Sprintf(" { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", cmd)
 					}
 				}
+			}
 
-				if !isWindowsShell {
-					pf.termView.PrintCleanCommand(cmd)
-					if !isBackground {
-						pf.termView.SetMuted(true)
-					}
+			managedForeground := !isWindowsShell && !isBackground
+			trackedCommand := isWindowsShell || !isBackground
+			previousExecuting := pf.executing
+			previousReturnToPanels := pf.returnToPanels
+			if managedForeground {
+				// Mute before Write: the shell can echo the technical wrapper from
+				// another goroutine before Write itself returns.
+				pf.termView.PrepareCleanCommand(cmd)
+			}
+			if trackedCommand {
+				// Establish completion state before the shell can answer with OSC D.
+				// A failed write rolls these fields back below.
+				pf.executing = true
+				pf.returnToPanels = pf.showPanels
+			}
+
+			wire := []byte(fullWireCmd)
+			written, err := activePty.Write(wire)
+			if err == nil && written != len(wire) {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				if managedForeground {
+					pf.termView.CancelPreparedCleanCommand()
 				}
-				activePty.Write([]byte(fullWireCmd))
+				if trackedCommand {
+					pf.executing = previousExecuting
+					pf.returnToPanels = previousReturnToPanels
+				}
+				vtui.DebugLog("PTY: Failed to dispatch command: %v", err)
+				return true
+			}
+
+			recordHistory()
+			if !isWindowsShell && isBackground {
+				pf.termView.PrintCleanCommand(cmd)
 			}
 
 			pf.cmdLine.Clear()
@@ -1750,7 +1859,22 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// Tab switches panels
 	if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
 		if pf.showPanels && (!pf.searchFirstMode() || !pf.commandLineFocused) {
+			rapidSwitch := pf.notePanelSwitch(time.Now(), e.RepeatCount > 1)
+			if !rapidSwitch {
+				pf.deferPtySync = false
+				pf.cancelPendingPTYDirectorySync()
+			}
 			pf.activeIdx = 1 - pf.activeIdx
+			if rapidSwitch {
+				pf.deferPtySync = true
+				// Re-arm on every repeat, including a return to the panel
+				// whose path is already synchronized. Otherwise that return
+				// is invisible to Show(), and the previous timer fires in the
+				// middle of a still-held Tab burst.
+				if fsp := pf.getActivePanel(); fsp != nil {
+					pf.queuePTYDirectorySync(fsp.vfs.GetPath(), fsp.vfs)
+				}
+			}
 			if pf.wide {
 				pf.widePanel = pf.activeIdx
 				pf.ResizeConsole(pf.lastW, pf.lastH)
@@ -2248,6 +2372,7 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 			dlg := vtui.ShowMessage(Msg("Quit.Title"), msg, []string{Msg("Quit.Btn"), Msg("vtui.Cancel")})
 			dlg.OnResult = func(code int) {
 				if code == 0 {
+					cancelOperationsForShutdown()
 					SaveSession()
 					if pf.pty != nil {
 						pf.pty.Close()
@@ -2256,6 +2381,7 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 				}
 			}
 		} else {
+			cancelOperationsForShutdown()
 			SaveSession()
 			if pf.pty != nil {
 				pf.pty.Close()
@@ -2407,6 +2533,12 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 	case CmRightWide:
 		pf.setWidePanel(1)
 		return true
+	case CmLeftGallery:
+		pf.setPanelPresentation(0, PanelPresentationGallery)
+		return true
+	case CmRightGallery:
+		pf.setPanelPresentation(1, PanelPresentationGallery)
+		return true
 
 	case CmLeftSortName:
 		if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
@@ -2508,6 +2640,31 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return true
 	}
 	return false
+}
+
+func cancelOperationsForShutdown() {
+	cancelAllForegroundApplyCommands()
+	if GlobalQueueManager != nil {
+		GlobalQueueManager.CancelAll()
+	}
+	if GlobalBackgroundJobs != nil {
+		GlobalBackgroundJobs.CancelAll()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		queued, background := 0, 0
+		if GlobalQueueManager != nil {
+			queued = GlobalQueueManager.ActiveTasksCount()
+		}
+		if GlobalBackgroundJobs != nil {
+			background = GlobalBackgroundJobs.ActiveCount()
+		}
+		if queued == 0 && background == 0 && activeForegroundApplyCommandCount() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cleanupAllApplyCommandResources()
 }
 
 func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
@@ -2913,12 +3070,117 @@ func (pf *PanelsFrame) syncPTYDirectory(path string, v vfs.VFS) bool {
 		if isWindowsShell {
 			activePty.Write([]byte(fmt.Sprintf("cd /d \"%s\" & rem f4_sync\r", path)))
 		} else {
-			sqPath := strings.ReplaceAll(path, "'", "'\\''")
-			activePty.Write([]byte(fmt.Sprintf(" cd '%s' # f4_sync\r", sqPath)))
+			command := unixPTYDirectorySyncCommand(path)
+			if runtime.GOOS == "darwin" && pf.parser != nil {
+				pf.parser.expectBackgroundSyncEcho(strings.TrimSuffix(command, "\r"))
+			}
+			activePty.Write([]byte(command))
 		}
 		return true
 	}
 	return false
+}
+
+const (
+	panelSwitchRepeatWindow = 120 * time.Millisecond
+	// The settle deadline must outlive the whole interval that we still
+	// classify as key repeat. Otherwise a slow 90-119 ms repeat can arrive
+	// after the timer has already injected a mid-burst shell sync.
+	panelSwitchSyncDelay = panelSwitchRepeatWindow + 20*time.Millisecond
+)
+
+func (pf *PanelsFrame) notePanelSwitch(now time.Time, repeatHint bool) bool {
+	rapid := repeatHint || (!pf.lastPanelSwitchAt.IsZero() && now.Sub(pf.lastPanelSwitchAt) < panelSwitchRepeatWindow)
+	pf.lastPanelSwitchAt = now
+	return rapid
+}
+
+// queuePTYDirectorySync collapses a key-repeat burst into one final shell cwd
+// update. The first Tab after a quiet period is still synchronized immediately;
+// only subsequent rapid toggles are deferred. Command execution independently
+// prefixes the active path, so a command entered during this short settling
+// window still runs in the correct directory.
+func (pf *PanelsFrame) queuePTYDirectorySync(path string, targetVFS vfs.VFS) {
+	pf.ptySyncMu.Lock()
+	// A repeated target is still a new burst event. Always advance the
+	// generation and restart the timer so the deadline is measured from the
+	// most recent panel switch rather than the first time this side appeared.
+	pf.ptySyncGeneration++
+	generation := pf.ptySyncGeneration
+	pf.pendingPtyPath = path
+	pf.pendingPtyVFS = targetVFS
+	if pf.ptySyncTimer != nil {
+		pf.ptySyncTimer.Stop()
+	}
+	pf.ptySyncTimer = time.AfterFunc(panelSwitchSyncDelay, func() {
+		if vtui.FrameManager == nil {
+			return
+		}
+		vtui.FrameManager.PostTask(func() {
+			pf.flushPendingPTYDirectorySync(generation)
+		})
+	})
+	pf.ptySyncMu.Unlock()
+}
+
+func (pf *PanelsFrame) flushPendingPTYDirectorySync(generation uint64) {
+	pf.ptySyncMu.Lock()
+	if generation != pf.ptySyncGeneration {
+		pf.ptySyncMu.Unlock()
+		return
+	}
+	path := pf.pendingPtyPath
+	targetVFS := pf.pendingPtyVFS
+	pf.pendingPtyPath = ""
+	pf.pendingPtyVFS = nil
+	pf.ptySyncTimer = nil
+	pf.ptySyncMu.Unlock()
+
+	pf.deferPtySync = false
+	if pf.closed {
+		return
+	}
+	// A foreground command may have started after the panel switch queued this
+	// callback. Never inject the cwd synchronization command into its stdin;
+	// the first idle Show pass will observe lastPtyPath still being stale and
+	// synchronize the final active directory safely.
+	if pf.isPtyBusy() {
+		return
+	}
+	active := pf.getActivePanel()
+	if active == nil || active.vfs != targetVFS || active.vfs.GetPath() != path {
+		return
+	}
+	if path == pf.lastPtyPath && targetVFS == pf.lastPtyVFS {
+		return
+	}
+	if pf.syncPTYDirectory(path, targetVFS) {
+		pf.lastPtyPath = path
+		pf.lastPtyVFS = targetVFS
+	}
+}
+
+func (pf *PanelsFrame) cancelPendingPTYDirectorySync() {
+	pf.ptySyncMu.Lock()
+	pf.ptySyncGeneration++
+	if pf.ptySyncTimer != nil {
+		pf.ptySyncTimer.Stop()
+	}
+	pf.ptySyncTimer = nil
+	pf.pendingPtyPath = ""
+	pf.pendingPtyVFS = nil
+	pf.ptySyncMu.Unlock()
+}
+
+func unixPTYDirectorySyncCommand(path string) string {
+	sqPath := strings.ReplaceAll(path, "'", "'\\''")
+	if runtime.GOOS == "darwin" {
+		// Interactive zsh disables INTERACTIVE_COMMENTS by default, so
+		// "# f4_sync" becomes two extra arguments to cd. Use a no-op
+		// command as the private echo-excision marker instead.
+		return fmt.Sprintf(" cd '%s'; : f4_sync\r", sqPath)
+	}
+	return fmt.Sprintf(" cd '%s' # f4_sync\r", sqPath)
 }
 
 func vfsHasRemotePTY(v vfs.VFS) bool {
@@ -3129,6 +3391,11 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 
 			cloneFsp.vfs.SetPath(fsp.vfs.GetPath())
 			cloneFsp.SetViewMode(fsp.viewMode)
+			cloneFsp.SetPresentation(fsp.presentation)
+			cloneFsp.galleryLayoutMode = fsp.galleryLayoutMode
+			cloneFsp.galleryColumnCount = fsp.galleryColumnCount
+			cloneFsp.galleryDensities = cloneGalleryDensities(fsp.galleryDensities)
+			cloneFsp.galleryLayoutRevision = fsp.galleryLayoutRevision
 			cloneFsp.cursorIdx = fsp.cursorIdx
 			cloneFsp.sortMode = fsp.sortMode
 			cloneFsp.sortReverse = fsp.sortReverse
@@ -3141,6 +3408,14 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.selectedItems = make(map[string]bool)
 			for k, v := range fsp.selectedItems {
 				cloneFsp.selectedItems[k] = v
+			}
+			if fsp.previousSelectionMatches(fsp.vfs, fsp.vfs.GetPath()) {
+				cloneFsp.previousSelection = make(map[string]bool, len(fsp.previousSelection))
+				for name, selected := range fsp.previousSelection {
+					cloneFsp.previousSelection[name] = selected
+				}
+				cloneFsp.previousSelectionVFS = cloneFsp.vfs
+				cloneFsp.previousSelectionPath = cloneFsp.vfs.GetPath()
 			}
 			// Copying selectedItems without copying the path they
 			// belong to would trip readDirectoryEx's "path changed
@@ -3155,8 +3430,9 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.entries = make([]*fileEntry, len(fsp.entries))
 			for j, e := range fsp.entries {
 				cloneFsp.entries[j] = &fileEntry{
-					VFSItem:  e.VFSItem,
-					Selected: e.Selected,
+					VFSItem:      e.VFSItem,
+					Selected:     e.Selected,
+					PrevSelected: e.PrevSelected,
 				}
 			}
 			cloneFsp.Refresh() // Populate table rows from copied entries

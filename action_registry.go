@@ -155,7 +155,7 @@ func plainLabel(s string) string {
 func init() {
 	withPF := func(fn func(pf *PanelsFrame)) func() bool {
 		return func() bool {
-			if pf := findPanelsFrameAnyScreen(); pf != nil {
+			if pf := findPanelsFrame(); pf != nil {
 				fn(pf)
 				return true
 			}
@@ -168,9 +168,12 @@ func init() {
 			if vtui.FrameManager == nil {
 				return false
 			}
-			if ev, ok := vtui.FrameManager.GetTopFrame().(*EditorView); ok {
-				fn(ev)
-				return true
+			frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+			for i := len(frames) - 1; i >= 0; i-- {
+				if ev, ok := frames[i].(*EditorView); ok {
+					fn(ev)
+					return true
+				}
 			}
 			return false
 		}
@@ -181,9 +184,12 @@ func init() {
 			if vtui.FrameManager == nil {
 				return false
 			}
-			if vv, ok := vtui.FrameManager.GetTopFrame().(*ViewerView); ok {
-				fn(vv)
-				return true
+			frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+			for i := len(frames) - 1; i >= 0; i-- {
+				if vv, ok := frames[i].(*ViewerView); ok {
+					fn(vv)
+					return true
+				}
 			}
 			return false
 		}
@@ -261,6 +267,18 @@ func init() {
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Files",
 		Handler:      withPF(func(pf *PanelsFrame) { actionNewFile(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "File.ApplyCommand",
+		Area:        "Shell",
+		Label:       "Apply command",
+		LabelKey:    "Action.File.ApplyCommand",
+		Description: "Apply a command template to selected files or the current file",
+		DescKey:     "Action.File.ApplyCommand.Desc",
+		DefaultKeys: []string{"CtrlG"},
+		MenuPath:    "Files",
+		Visible:     panelCanApplyCommand,
+		Handler:     withPF(func(pf *PanelsFrame) { actionApplyCommand(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "File.Copy",
@@ -1001,14 +1019,16 @@ func init() {
 		Handler: withPF(func(pf *PanelsFrame) {
 			pf.exitWide()
 			pf.showPanels = !pf.showPanels
-			if pf.showPanels && !pf.showLeftPanel && !pf.showRightPanel {
+			if pf.showPanels {
+				// A full hide/show cycle restores the canonical two-panel layout;
+				// individually hidden sides are only preserved until Ctrl+O.
 				pf.showLeftPanel = true
 				pf.showRightPanel = true
 			}
+			// Visibility is presentation-only. Do not call RefreshAll here:
+			// native renderers retain their catalog and viewport while covered,
+			// and Show already performs the normal MTime-based auto-refresh.
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1026,9 +1046,6 @@ func init() {
 				pf.activeIdx = 1
 			}
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1046,9 +1063,6 @@ func init() {
 				pf.activeIdx = 0
 			}
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1068,9 +1082,6 @@ func init() {
 			}
 			pf.showPanels = pf.showLeftPanel || pf.showRightPanel
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1308,6 +1319,16 @@ func init() {
 		DescKey:     "Action.Panel.ViewWide.Desc",
 		DefaultKeys: []string{"Ctrl4"},
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setWidePanel(pf.activeIdx) }),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.ViewGallery",
+		Area:        "Shell",
+		Label:       "Gallery Mode",
+		Description: "Set active panel to gallery presentation",
+		DefaultKeys: []string{"Ctrl5"},
+		Handler: withPF(func(pf *PanelsFrame) {
+			pf.setPanelPresentation(pf.activeIdx, PanelPresentationGallery)
+		}),
 	})
 	RegisterAction(Action{
 		Name:        "Panel.SortByName",

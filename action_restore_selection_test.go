@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/unxed/f4/vfs"
@@ -78,6 +80,40 @@ func TestFileSystemPanel_RestoreSelection_LeavesParentAlone(t *testing.T) {
 	fsp.RestoreSelection()
 	if fsp.entries[0].Selected {
 		t.Error("RestoreSelection propagated selection to the '..' entry")
+	}
+}
+
+func TestFileSystemPanel_PreviousSelectionIsDirectoryScoped(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "same.txt"), []byte(dir), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pf := seedPanelForRestore(t, nil)
+	fsp := pf.getActivePanel()
+	fsp.vfs = vfs.NewOSVFS(first)
+	fsp.ReadDirectory()
+	waitForLoad(t, fsp)
+	if !fsp.SetSelectedByName("same.txt", true) {
+		t.Fatal("first directory entry missing")
+	}
+	fsp.SaveSelection()
+	fsp.SetSelectedByName("same.txt", false)
+
+	if err := fsp.vfs.SetPath(second); err != nil {
+		t.Fatal(err)
+	}
+	fsp.ReadDirectory()
+	waitForLoad(t, fsp)
+	fsp.RestoreSelection()
+	if fsp.IsNameSelected("same.txt") {
+		t.Fatal("Ctrl+M applied the prior directory's same-named selection")
 	}
 }
 

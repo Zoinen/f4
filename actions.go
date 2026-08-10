@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,12 +30,16 @@ var (
 	LastActivePanel  = 1
 	LastWidePanel    = -1
 
-	LastLeftViewMode  = 0
-	LastRightViewMode = 0
-	LastLeftSortMode  = 0
-	LastRightSortMode = 0
-	LastLeftSortRev   = false
-	LastRightSortRev  = false
+	LastLeftViewMode      = 0
+	LastRightViewMode     = 0
+	LastLeftPresentation  = PanelPresentationList
+	LastRightPresentation = PanelPresentationList
+	LastLeftGalleryState  = defaultPanelGallerySessionState()
+	LastRightGalleryState = defaultPanelGallerySessionState()
+	LastLeftSortMode      = 0
+	LastRightSortMode     = 0
+	LastLeftSortRev       = false
+	LastRightSortRev      = false
 
 	LastShowPanels = true
 	LastShowLeft   = true
@@ -2049,7 +2054,7 @@ func actionFindFile(pf *PanelsFrame) {
 	vtui.FrameManager.Push(dlg)
 }
 func actionPanelSettings(pf *PanelsFrame) {
-	const dialogHeight = 36
+	const dialogHeight = 38
 	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
@@ -2119,6 +2124,8 @@ func actionPanelSettings(pf *PanelsFrame) {
 	if AppConfig.SyncPanelLoad {
 		chkSync.State = 1
 	}
+	editApplyWorkers := vtui.NewEdit(0, 0, 12, strconv.Itoa(AppConfig.ApplyCommandParallelism))
+	lblApplyWorkers := vtui.NewLabel(0, 0, Msg("PanelSettings.ApplyWorkers"), editApplyWorkers)
 
 	chkAlwaysMenu := vtui.NewCheckbox(0, 0, "Always show &menu bar", false)
 	chkAlwaysMenu.State = 0
@@ -2174,6 +2181,8 @@ func actionPanelSettings(pf *PanelsFrame) {
 	dlg.AddItem(navigation)
 	dlg.AddItem(chkStayFocused)
 	dlg.AddItem(chkSync)
+	dlg.AddItem(lblApplyWorkers)
+	dlg.AddItem(editApplyWorkers)
 	dlg.AddItem(chkAlwaysMenu)
 	dlg.AddItem(chkCPUGPU)
 	dlg.AddItem(chkEscToggle)
@@ -2200,6 +2209,10 @@ func actionPanelSettings(pf *PanelsFrame) {
 	vbox.Add(navigation, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkStayFocused, vtui.Margins{Left: 2}, vtui.AlignLeft)
 	vbox.Add(chkSync, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	rowApplyWorkers := vtui.NewHBoxLayout(0, 0, 56, 1)
+	rowApplyWorkers.Add(lblApplyWorkers, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowApplyWorkers.Add(editApplyWorkers, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowApplyWorkers, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Add(chkAlwaysMenu, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCPUGPU, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkEscToggle, vtui.Margins{Top: 1}, vtui.AlignLeft)
@@ -2230,6 +2243,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 
 	btnCancel.OnClick = func() { dlg.Close() }
 	btnOk.OnClick = func() {
+		applyWorkers, err := strconv.Atoi(strings.TrimSpace(editApplyWorkers.GetText()))
+		if err != nil || applyWorkers < 0 {
+			vtui.ShowMessageOn(dlg, Msg("ApplyCommand.InvalidWorkersTitle"), Msg("ApplyCommand.InvalidWorkers"), []string{Msg("vtui.Ok")})
+			return
+		}
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
 		AppConfig.ShowDirPrefix = chkDirPrefix.State == 1
 		AppConfig.SeparateFileExtensions = chkSeparateExtensions.State == 1
@@ -2239,6 +2257,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 		AppConfig.NavigationMode = PanelNavigationMode(navigation.Selected)
 		AppConfig.SearchCommandStayFocused = chkStayFocused.State == 1
 		AppConfig.SyncPanelLoad = chkSync.State == 1
+		AppConfig.ApplyCommandParallelism = applyWorkers
 		AppConfig.AlwaysShowMenuBar = chkAlwaysMenu.State == 1
 		AppConfig.InfoPanelCPUGPU = chkCPUGPU.State == 1
 		AppConfig.EscTogglePanels = chkEscToggle.State == 1
@@ -2408,7 +2427,7 @@ func actionUpdateSettings(pf *PanelsFrame) {
 }
 
 func actionAppearanceSettings(pf *PanelsFrame) {
-	const width, height = 60, 21
+	const width, height = 60, 24
 	dlg := vtui.NewCenteredDialog(width, height, Msg("AppearanceSettings.Title"))
 	dlg.ShowClose = true
 	// Snapshot the whole palette (not just the style name) so a
@@ -2445,8 +2464,35 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 			}
 		}
 	}
+
+	iconSetNames := []string{
+		Msg("AppearanceSettings.IconSetLucide"),
+		Msg("AppearanceSettings.IconSetSystem"),
+	}
+	comboIconSet := vtui.NewComboBox(0, 0, 24, iconSetNames)
+	comboIconSet.DropdownOnly = true
+	iconSetIndex := 0
+	if parseQmlIconSetMode(string(AppConfig.QmlIconSet)) == QmlIconSetSystem {
+		iconSetIndex = 1
+	}
+	comboIconSet.Menu.SetSelectPos(iconSetIndex)
+	comboIconSet.Edit.SetText(iconSetNames[iconSetIndex])
+	lblIconSet := vtui.NewText(0, 0, Msg("AppearanceSettings.IconSet"), 0)
+	lblIconSet.FocusLink = comboIconSet
+
 	editFont := vtui.NewEdit(0, 0, 30, AppConfig.GuiFont)
 	lblFont := vtui.NewLabel(0, 0, Msg("AppearanceSettings.Font"), editFont)
+	chkSystemMonospace := vtui.NewCheckbox(0, 0, Msg("AppearanceSettings.UseSystemMonospace"), false)
+	if AppConfig.GuiUseSystemMonospace {
+		chkSystemMonospace.State = 1
+	}
+	updateFontEditor := func() {
+		usePlatformFont := chkSystemMonospace.State == 1 && (runtime.GOOS == "windows" || runtime.GOOS == "darwin")
+		lblFont.SetDisabled(usePlatformFont)
+		editFont.SetDisabled(usePlatformFont)
+	}
+	chkSystemMonospace.OnChange = func(int) { updateFontEditor() }
+	updateFontEditor()
 
 	editSize := vtui.NewEdit(0, 0, 6, fmt.Sprintf("%d", AppConfig.GuiFontSize))
 	editSize.Validator = &vtui.IntRangeValidator{Min: 6, Max: 72}
@@ -2474,6 +2520,9 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 
 	dlg.AddItem(lblStyle)
 	dlg.AddItem(comboStyle)
+	dlg.AddItem(lblIconSet)
+	dlg.AddItem(comboIconSet)
+	dlg.AddItem(chkSystemMonospace)
 	dlg.AddItem(lblFont)
 	dlg.AddItem(editFont)
 	dlg.AddItem(lblSize)
@@ -2491,6 +2540,12 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	rowStyle.Add(lblStyle, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowStyle.Add(comboStyle, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(rowStyle, vtui.Margins{}, vtui.AlignFill)
+
+	rowIconSet := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowIconSet.Add(lblIconSet, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowIconSet.Add(comboIconSet, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowIconSet, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(chkSystemMonospace, vtui.Margins{Top: 1}, vtui.AlignLeft)
 
 	rowFont := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	rowFont.Add(lblFont, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -2535,13 +2590,20 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		if len(names) > 0 {
 			AppConfig.ColorStyle = names[comboStyle.Menu.SelectPos]
 		}
-		fontChanged := AppConfig.GuiFont != editFont.GetText() || fmt.Sprintf("%d", AppConfig.GuiFontSize) != editSize.GetText()
+		useSystemMonospace := chkSystemMonospace.State == 1
+		fontChanged := AppConfig.GuiUseSystemMonospace != useSystemMonospace || AppConfig.GuiFont != editFont.GetText() || fmt.Sprintf("%d", AppConfig.GuiFontSize) != editSize.GetText()
+		newIconSet := QmlIconSetLucide
+		if comboIconSet.Menu.SelectPos == 1 {
+			newIconSet = QmlIconSetSystem
+		}
+		AppConfig.QmlIconSet = newIconSet
 
 		AppConfig.ConsoleTitleTemplate = editTitle.GetText()
+		AppConfig.GuiUseSystemMonospace = useSystemMonospace
 		AppConfig.GuiFont = editFont.GetText()
 		fmt.Sscanf(editSize.GetText(), "%d", &AppConfig.GuiFontSize)
 		if AppConfig.GuiFontSize <= 0 {
-			AppConfig.GuiFontSize = 18
+			AppConfig.GuiFontSize = defaultGuiFontSize(runtime.GOOS)
 		}
 		AppConfig.KeepTerminalCursor = chkCursor.State == 1
 		vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
@@ -2552,7 +2614,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 
 		if fontChanged {
 			vtui.FrameManager.PostTask(func() {
-				vtui.ShowMessage(" Appearance ", "Font changes in GUI mode will take effect\nafter application restart.", []string{"&Ok"})
+				vtui.ShowMessage(" Appearance ", Msg("AppearanceSettings.RestartRequired"), []string{"&Ok"})
 			})
 		}
 	}

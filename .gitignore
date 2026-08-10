@@ -11,8 +11,12 @@ plugins/dummy_rpc/f4-rpc-dummy-plugin
 dummy_rpc_plugin
 _failed_tests_f4.log
 qt/host/build/
+qt/host/build-*/
 qt/host/CMakeUserPresets.json
 qt/host/.qt/
+build/qwindowkit-src/
+build/qwindowkit-build/
+build/qwindowkit-install/
 screenshots/
 rsrc_windows_amd64.syso
 rsrc_windows_arm64.syso
@@ -20,3 +24,4 @@ Profile/
 afix.ap
 afailed.*
 .codex-build/
+.qa-gallery-modes/

@@ -354,7 +354,7 @@ func SetupUI() {
 	}
 	if _, err := os.Stat(highlightPath); err == nil {
 		highlightIni := LoadIni(highlightPath)
-		GlobalFileHighlighter.LoadFromIni(highlightIni)
+		GlobalFileHighlighter.LoadFromIniAt(highlightIni, filepath.Dir(highlightPath))
 	}
 
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная
@@ -379,6 +379,7 @@ func SetupUI() {
 
 	panels := NewPanelsFrame()
 	panels.ResizeConsole(width, height)
+	restorePanelPresentations(panels)
 	if AppConfig.SavePanelPaths {
 		lp := panels.panels[0].(*FileSystemPanel)
 		rp := panels.panels[1].(*FileSystemPanel)
@@ -496,6 +497,8 @@ func LoadSession() {
 	LastLeftPath = ini.GetString("Panel/Left", "Folder", "")
 	LastLeftCursor = ini.GetString("Panel/Left", "CurFile", "")
 	fmt.Sscanf(ini.GetString("Panel/Left", "ViewMode", "0"), "%d", &LastLeftViewMode)
+	LastLeftPresentation = parsePanelPresentation(ini.GetString("Panel/Left", "Presentation", string(PanelPresentationList)))
+	LastLeftGalleryState = loadPanelGallerySessionState(ini, "Panel/Left")
 	fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &LastLeftSortMode)
 	LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
 
@@ -503,6 +506,8 @@ func LoadSession() {
 	LastRightPath = ini.GetString("Panel/Right", "Folder", "")
 	LastRightCursor = ini.GetString("Panel/Right", "CurFile", "")
 	fmt.Sscanf(ini.GetString("Panel/Right", "ViewMode", "0"), "%d", &LastRightViewMode)
+	LastRightPresentation = parsePanelPresentation(ini.GetString("Panel/Right", "Presentation", string(PanelPresentationList)))
+	LastRightGalleryState = loadPanelGallerySessionState(ini, "Panel/Right")
 	fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &LastRightSortMode)
 	LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
 
@@ -521,6 +526,32 @@ func LoadSession() {
 	vtui.DebugLog("SESSION: Loaded state from %s", path)
 }
 
+func loadPanelGallerySessionState(ini *IniFile, section string) panelGallerySessionState {
+	state := defaultPanelGallerySessionState()
+	if mode, ok := parseGalleryLayoutMode(ini.GetString(section, "GalleryLayout", "")); ok {
+		state.LayoutMode = mode
+	}
+	if raw := ini.GetString(section, "GalleryColumns", ""); raw != "" {
+		var columns int
+		if _, err := fmt.Sscanf(raw, "%d", &columns); err == nil &&
+			columns >= minGalleryColumnCount && columns <= maxGalleryColumnCount {
+			state.ColumnCount = columns
+		}
+	}
+	for _, mode := range galleryLayoutModes {
+		key := "GalleryDensity" + strings.ToUpper(string(mode[:1])) + string(mode[1:])
+		raw := ini.GetString(section, key, "")
+		if raw == "" {
+			continue
+		}
+		var density int
+		if _, err := fmt.Sscanf(raw, "%d", &density); err == nil {
+			state.Densities[mode] = clampGalleryDensity(mode, density)
+		}
+	}
+	return state
+}
+
 func SaveSession() {
 	path := getSessionIniPath()
 	os.MkdirAll(filepath.Dir(path), 0755)
@@ -537,10 +568,15 @@ func SaveSession() {
 		}
 	}
 
-	if AppConfig.SavePanelPaths && vtui.FrameManager != nil {
+	if vtui.FrameManager != nil {
 		for _, s := range vtui.FrameManager.Screens {
 			for _, f := range s.Frames {
 				if pf, ok := f.(*PanelsFrame); ok {
+					capturePanelPresentations(pf)
+					if !AppConfig.SavePanelPaths {
+						goto found
+					}
+
 					LastLeftPath, LastRightPath = pf.GetPaths()
 					LastActivePanel = pf.activeIdx
 					LastWidePanel = -1
@@ -592,6 +628,8 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastLeftPath))
 	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastLeftCursor))
 	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastLeftViewMode))
+	sb.WriteString(fmt.Sprintf("Presentation = %s\n", parsePanelPresentation(string(LastLeftPresentation))))
+	writePanelGallerySessionState(&sb, LastLeftGalleryState)
 	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastLeftSortMode))
 	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortRev]))
 
@@ -599,6 +637,8 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastRightPath))
 	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastRightCursor))
 	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastRightViewMode))
+	sb.WriteString(fmt.Sprintf("Presentation = %s\n", parsePanelPresentation(string(LastRightPresentation))))
+	writePanelGallerySessionState(&sb, LastRightGalleryState)
 	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastRightSortMode))
 	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev]))
 
@@ -609,6 +649,77 @@ func SaveSession() {
 	}
 
 	vtui.DebugLog("SESSION: Saved state to %s", path)
+}
+
+func writePanelGallerySessionState(sb *strings.Builder, state panelGallerySessionState) {
+	state = clonePanelGallerySessionState(state)
+	sb.WriteString(fmt.Sprintf("GalleryLayout = %s\n", state.LayoutMode))
+	sb.WriteString(fmt.Sprintf("GalleryColumns = %d\n", state.ColumnCount))
+	for _, mode := range galleryLayoutModes {
+		if density, ok := state.Densities[mode]; ok {
+			key := "GalleryDensity" + strings.ToUpper(string(mode[:1])) + string(mode[1:])
+			sb.WriteString(fmt.Sprintf("%s = %d\n", key, density))
+		}
+	}
+}
+
+func restorePanelPresentations(panels *PanelsFrame) {
+	if panels == nil {
+		return
+	}
+	if len(panels.panels) > 0 {
+		if panel, ok := panels.panels[0].(*FileSystemPanel); ok {
+			panel.presentation = parsePanelPresentation(string(LastLeftPresentation))
+			restorePanelGallerySessionState(panel, LastLeftGalleryState)
+		}
+	}
+	if len(panels.panels) > 1 {
+		if panel, ok := panels.panels[1].(*FileSystemPanel); ok {
+			panel.presentation = parsePanelPresentation(string(LastRightPresentation))
+			restorePanelGallerySessionState(panel, LastRightGalleryState)
+		}
+	}
+	panels.updateMenuCheckmarks()
+}
+
+func capturePanelPresentations(panels *PanelsFrame) {
+	if panels == nil {
+		return
+	}
+	if len(panels.panels) > 0 {
+		if panel, ok := panels.panels[0].(*FileSystemPanel); ok {
+			LastLeftPresentation = parsePanelPresentation(string(panel.presentation))
+			LastLeftGalleryState = capturePanelGallerySessionState(panel)
+		}
+	}
+	if len(panels.panels) > 1 {
+		if panel, ok := panels.panels[1].(*FileSystemPanel); ok {
+			LastRightPresentation = parsePanelPresentation(string(panel.presentation))
+			LastRightGalleryState = capturePanelGallerySessionState(panel)
+		}
+	}
+}
+
+func restorePanelGallerySessionState(panel *FileSystemPanel, saved panelGallerySessionState) {
+	if panel == nil {
+		return
+	}
+	saved = clonePanelGallerySessionState(saved)
+	panel.galleryLayoutMode = saved.LayoutMode
+	panel.galleryColumnCount = saved.ColumnCount
+	panel.galleryDensities = cloneGalleryDensities(saved.Densities)
+	panel.galleryLayoutRevision = 1
+}
+
+func capturePanelGallerySessionState(panel *FileSystemPanel) panelGallerySessionState {
+	if panel == nil {
+		return defaultPanelGallerySessionState()
+	}
+	return clonePanelGallerySessionState(panelGallerySessionState{
+		LayoutMode:  panel.galleryLayoutMode,
+		ColumnCount: panel.galleryColumnCount,
+		Densities:   panel.galleryDensities,
+	})
 }
 
 func getFormattedVersionInfo() string {

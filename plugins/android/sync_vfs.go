@@ -1,6 +1,7 @@
 package androidfs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/unxed/f4/vfs"
 )
@@ -60,6 +62,11 @@ type shellResult struct {
 
 type shellCommandFunc func(context.Context, string, string) (shellResult, error)
 
+// shellCommandStreamFunc is the production command path. shellCommandFunc is
+// retained alongside it because mutations need collected stderr for error
+// messages and because it is the established constructor/test seam.
+type shellCommandStreamFunc func(context.Context, string, string, func([]byte)) (int, error)
+
 // SyncVFS is the compatibility backend used when the device shell cannot run
 // the FISH+ helper. Sync connections are operation-scoped, while mutations that
 // ADB Sync does not express are executed by the ordinary unprivileged shell.
@@ -70,6 +77,7 @@ type SyncVFS struct {
 	path   string
 	client syncFS
 	run    shellCommandFunc
+	stream shellCommandStreamFunc
 
 	panelInfoMu sync.RWMutex
 	panelInfo   vfs.PanelInfoProvider
@@ -286,18 +294,29 @@ func (s *SyncVFS) runChecked(ctx context.Context, command string) error {
 }
 
 // RunCommand gives the compatibility Sync backend the same command-line
-// behavior as Android FISH+. ADB shell_v2 returns stdout and stderr
-// separately, so preserve lines within each stream and append stderr after
-// stdout; the exit status remains the device shell's status.
+// behavior as Android FISH+. Production mounts use the streaming shell-v2
+// path, whose callback receives stdout and stderr in packet order. The
+// collected runner remains a source-compatible fallback for tests and older
+// construction paths.
 func (s *SyncVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
-	if s.run == nil {
+	if s.stream == nil && s.run == nil {
 		return 0, errors.New("android: shell command runner is unavailable")
 	}
 	if strings.TrimSpace(command) == "" {
 		return 0, errors.New("android: empty shell command")
 	}
 	target := s.abs(dir)
-	wrapped := "cd " + quoteShellArg(target) + " && ( " + command + " )"
+	// Keep the closing syntax on its own line so a valid trailing shell comment
+	// cannot comment it out. The whole group remains non-interactive.
+	wrapped := "cd " + quoteShellArg(target) + " && (\n" + command + "\n) </dev/null"
+	if s.stream != nil {
+		lines := newAndroidCommandLineWriter(cb)
+		code, err := s.stream(ctx, s.serial, wrapped, func(output []byte) {
+			_, _ = lines.Write(output)
+		})
+		lines.Flush()
+		return code, err
+	}
 	result, err := s.run(ctx, s.serial, wrapped)
 	if err != nil {
 		return result.ExitCode, err
@@ -305,6 +324,12 @@ func (s *SyncVFS) RunCommand(ctx context.Context, dir, command string, cb func(l
 	emitShellLines(result.Stdout, cb)
 	emitShellLines(result.Stderr, cb)
 	return result.ExitCode, nil
+}
+
+// CommandRunnerInfo describes the device-side shell. Each ADB shell_v2 call
+// owns its transport, so a small bounded group can safely execute in parallel.
+func (*SyncVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
+	return vfs.CommandRunnerInfo{Dialect: vfs.CommandDialectPOSIX, MaxParallel: 4}
 }
 
 func emitShellLines(output []byte, cb func(line string)) {
@@ -318,6 +343,77 @@ func emitShellLines(output []byte, cb func(line string)) {
 	for _, line := range lines {
 		cb(strings.TrimSuffix(line, "\r"))
 	}
+}
+
+type androidCommandLineWriter struct {
+	mu      sync.Mutex
+	pending []byte
+	cb      func(string)
+}
+
+const androidCommandOutputChunkBytes = 64 << 10
+
+func newAndroidCommandLineWriter(cb func(string)) *androidCommandLineWriter {
+	return &androidCommandLineWriter{cb: cb}
+}
+
+func (w *androidCommandLineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if n == 0 || w.cb == nil {
+		return n, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	for {
+		i := bytes.IndexByte(w.pending, '\n')
+		if i < 0 && len(w.pending) <= androidCommandOutputChunkBytes {
+			break
+		}
+		end, consumed := i, i+1
+		if i < 0 || i > androidCommandOutputChunkBytes {
+			end = androidCommandOutputChunkEnd(w.pending, androidCommandOutputChunkBytes)
+			consumed = end
+		}
+		line := w.pending[:end]
+		if len(line) != 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		w.cb(strings.ToValidUTF8(string(line), "\uFFFD"))
+		w.pending = w.pending[consumed:]
+	}
+	return n, nil
+}
+
+func androidCommandOutputChunkEnd(data []byte, limit int) int {
+	if len(data) <= limit {
+		return len(data)
+	}
+	end := limit
+	for end > 0 && end < len(data) && !utf8.RuneStart(data[end]) {
+		end--
+	}
+	if end == 0 {
+		return limit
+	}
+	return end
+}
+
+func (w *androidCommandLineWriter) Flush() {
+	if w.cb == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return
+	}
+	line := w.pending
+	if line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	w.cb(strings.ToValidUTF8(string(line), "\uFFFD"))
+	w.pending = nil
 }
 
 func (s *SyncVFS) shellTestDir(ctx context.Context, p string) (bool, error) {
@@ -387,6 +483,17 @@ func (s *SyncVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) 
 	return s.client.Send(ctx, target, 0644, time.Now())
 }
 
+// CreatePrivateCommandFile sends Apply list files with their private mode in
+// the ADB Sync SEND request. Sync does not materialize the remote file until
+// DATA/DONE, so chmod-before-write cannot secure it.
+func (s *SyncVFS) CreatePrivateCommandFile(ctx context.Context, p string) (io.WriteCloser, error) {
+	target, err := s.mutationTarget(p)
+	if err != nil {
+		return nil, err
+	}
+	return s.client.Send(ctx, target, 0600, time.Now())
+}
+
 func (s *SyncVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem) error {
 	target, err := s.mutationTarget(p)
 	if err != nil {
@@ -438,13 +545,16 @@ func (s *SyncVFS) ParentVFS() vfs.VFS { return s.parent }
 func (s *SyncVFS) Clone() vfs.VFS {
 	return &SyncVFS{
 		parent: s.parent, serial: s.serial, title: s.title, path: s.path,
-		client: s.client, run: s.run, panelInfo: s.panelInfoProvider(),
+		client: s.client, run: s.run, stream: s.stream, panelInfo: s.panelInfoProvider(),
 	}
 }
 func (s *SyncVFS) Close() error { return nil }
 
-var _ vfs.PanelInfoProvider = (*SyncVFS)(nil)
-var _ vfs.CommandRunner = (*SyncVFS)(nil)
+var (
+	_ vfs.PanelInfoProvider         = (*SyncVFS)(nil)
+	_ vfs.CommandRunner             = (*SyncVFS)(nil)
+	_ vfs.CommandRunnerInfoProvider = (*SyncVFS)(nil)
+)
 
 // syncReadFile streams ordinary sequential reads directly from RECV. A caller
 // that asks for ReadAt triggers one local materialization, because the Sync

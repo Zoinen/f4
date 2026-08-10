@@ -678,6 +678,30 @@ func closeOnce(c io.Closer) func() error {
 		return c.Close()
 	}
 }
+
+// canonicalOSPath resolves symlinks in the longest existing prefix and then
+// reattaches any not-yet-created path components. filepath.EvalSymlinks on the
+// complete destination is insufficient for copy operations because that path
+// commonly does not exist yet (and on macOS /var aliases /private/var).
+func canonicalOSPath(path string) string {
+	current := filepath.Clean(path)
+	missing := make([]string, 0, 4)
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) error {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
@@ -698,14 +722,10 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	realDst := absDst
 
 	if _, ok := srcVfs.(*vfs.OSVFS); ok {
-		if resolved, err := filepath.EvalSymlinks(absSrc); err == nil {
-			realSrc = resolved
-		}
+		realSrc = canonicalOSPath(absSrc)
 	}
 	if _, ok := dstVfs.(*vfs.OSVFS); ok {
-		if resolved, err := filepath.EvalSymlinks(absDst); err == nil {
-			realDst = resolved
-		}
+		realDst = canonicalOSPath(absDst)
 	}
 
 	cleanSrc := filepath.ToSlash(filepath.Clean(realSrc))

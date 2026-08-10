@@ -12,7 +12,7 @@ func RunGui(backend string) error {
 	if backend == "qt" || strings.HasPrefix(backend, "ext:") {
 		return RunExternalUIWithMapping(backend)
 	}
-	return vtui.RunInGUIWindow(AppConfig.GuiCols, AppConfig.GuiRows, backend, AppConfig.GuiFont, float64(AppConfig.GuiFontSize), func() {
+	return vtui.RunInGUIWindow(AppConfig.GuiCols, AppConfig.GuiRows, backend, effectiveGuiFont(), float64(AppConfig.GuiFontSize), func() {
 		SetupUI()
 	})
 }

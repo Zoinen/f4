@@ -260,6 +260,21 @@ func (r *BackgroundJobRegistry) CancelAll() {
 	}
 }
 
+func (r *BackgroundJobRegistry) ActiveCount() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, entry := range r.jobs {
+		if !entry.state.Done {
+			count++
+		}
+	}
+	return count
+}
+
 // OnChange registers a callback fired whenever the list changes, so a window
 // showing it can redraw. It is called with no lock held.
 func (r *BackgroundJobRegistry) OnChange(fn func()) {
