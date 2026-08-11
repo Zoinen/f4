@@ -12,3 +12,7 @@ func handleArchiveIndexOp(srcVfs vfs.VFS, oldPath string, dstVfs vfs.VFS, newPat
 }
 
 func handleArchiveIndexDelete(ctx context.Context, v vfs.VFS, p string) {}
+
+func collectArchiveIndexes(ctx context.Context, v vfs.VFS, p string) []string { return nil }
+
+func removeArchiveIndexes(indexes []string) {}

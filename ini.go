@@ -31,6 +31,8 @@ func ParseIni(r io.Reader) *IniFile {
 	ini := newIniFile()
 
 	scanner := bufio.NewScanner(r)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024) // 10MB maximum line length
 	section := ""
 	isFirst := true
 	for scanner.Scan() {

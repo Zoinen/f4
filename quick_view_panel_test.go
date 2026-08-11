@@ -661,7 +661,8 @@ func TestQuickView_ImageGraphicsNotSupported(t *testing.T) {
 
 	// Pre-seed cacheKey to skip async file loading during Test
 	path := fsp.vfs.Join(fsp.vfs.GetPath(), "dummy.png")
-	q.cacheKey = path
+	q.cacheKey = makeQuickViewSelectionKey(fsp.vfs, path, fsp.entries[0].VFSItem)
+	q.cacheValid = true
 	q.cacheImage = true
 	q.imageSurf = vtui.NewImageSurface(1, 1)
 

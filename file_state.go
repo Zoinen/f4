@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/unxed/f4/vfs"
@@ -194,6 +195,9 @@ func FileStateKey(v vfs.VFS, path string) string {
 	}
 	ns := vfsStateNamespace(v)
 	if ns == "" {
+		return abs
+	}
+	if strings.HasPrefix(abs, ns+":") {
 		return abs
 	}
 	return ns + ":" + abs

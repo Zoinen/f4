@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,15 +16,16 @@ import (
 // fakeMacroHost stands in for f4's UI so the engine can be tested without a
 // terminal. That it is possible at all is the point of the MacroHost seam.
 type fakeMacroHost struct {
-	mu       sync.Mutex
-	area     string
-	panels   map[bool]MacroPanelInfo
-	cmdLine  string
-	width    int
-	height   int
-	injected []*vtinput.InputEvent
-	messages []string
-	logs     []string
+	mu         sync.Mutex
+	area       string
+	panels     map[bool]MacroPanelInfo
+	cmdLine    string
+	width      int
+	height     int
+	injected   []*vtinput.InputEvent
+	messages   []string
+	logs       []string
+	pluginCall func(context.Context, string, []any) ([]any, error)
 }
 
 func newFakeMacroHost() *fakeMacroHost {
@@ -79,6 +81,13 @@ func (h *fakeMacroHost) RunAction(name string) bool {
 	defer h.mu.Unlock()
 	h.logs = append(h.logs, "action:"+name)
 	return true
+}
+
+func (h *fakeMacroHost) CallPlugin(ctx context.Context, id string, args []any) ([]any, error) {
+	if h.pluginCall == nil {
+		return nil, errMacroCallProviderNotFound
+	}
+	return h.pluginCall(ctx, id, args)
 }
 
 func (h *fakeMacroHost) injectedKeys() []string {

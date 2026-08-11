@@ -1,0 +1,647 @@
+@Contents
+$f4 Yardım Dizini (Sürüm: %Ver)
+f4, Go dilinde yazılmış deneysel bir Far Manager / far2l kopyasıdır.
+
+~Görüntüleyici / Düzenleyici tuşları~ViewerEditor@
+~Panel gezinmesi~PanelNav@
+~Görsel Dosya Yeniden Adlandırma (VisRen)~VisRen@
+~README.md dosyasını görüntüle~README@
+
+@VisRen
+$Görsel Dosya Yeniden Adlandırma (VisRen)
+
+VisRen, F4'ün yerleşik görsel toplu yeniden adlandırıcısıdır.
+Herhangi bir şey değiştirilmeden önce her yeni ismi oluşturur
+ve kaynak ile hedef isimleri yan yana gösterir.
+Yalnızca yerel dosya sistemindeki dosya ve dizinlerle çalışır.
+
+Panel öğeleri işaretlenirse, VisRen bunları panel sırasına göre
+açar. Hiçbir öğe işaretlenmemişse, panel imlecinin altındaki
+öğeyi kullanır. Üst dizin ".." asla kullanılmaz. F11 tuşuna
+basıp "Görsel Dosya Yeniden Adlandırma"yı seçerek VisRen'i
+açabilirsiniz; atanan menü harfi de bunu etkinleştirebilir.
+
+~Hızlı başlangıç ve iletişim kutusu alanları~VisRenQuickStart@
+~İsim maskeleri, uzantılar, aralıklar ve sayaçlar~VisRenMasks@
+~Büyük/küçük harf dönüşümü, çevriyazı ve işlem sırası~VisRenTransforms@
+~Tarihler, ID3, görüntü/EXIF ve dosya sürümleri~VisRenMetadata@
+~Arama, düz değiştirme ve düzenli ifadeler~VisRenSearch@
+~Önizleme gezinmesi, klavye ve fare referansı~VisRenPreview@
+~Yeniden adlandırma listesini UTF-8 düzenleyicide düzenleme~VisRenEditor@
+~Yeniden adlandırma yürütmesi, hatalar, günlük ve Geri Al~VisRenRename@
+~Taşınabilir dosya ismi kuralları ve sınırlamalar~VisRenSafety@
+~Pratik tarifler~VisRenExamples@
+
+Uygulama, daha katı dosya ismi/düzenleyici doğrulaması,
+kararlı rastgele değerler ve taşınabilir meta veriler ile
+FarPlugins VisRen 3.2.0'ı takip eder.
+
+@VisRenQuickStart
+$VisRen: hızlı başlangıç ve iletişim kutusu alanları
+
+#Tipik bir yeniden adlandırma#
+
+  1. Gerekli dosyaları/dizinleri Ins ile işaretleyin veya yalnızca
+     bir öğe gerekiyorsa panel imlecini o öğenin üzerine getirin.
+  2. F11'e basın ve VisRen'i seçin.
+  3. İsim ve uzantı için maskeler girin. Varsayılan [N] ve [E]
+     her iki parçayı da değişmeden tutar.
+  4. İsteğe bağlı olarak Aranan ve Şunla değiştir metnini girin.
+     Odak Aranan alanında başlar; Tab tuşu doğrudan Şunla değiştir'e
+     geçer.
+  5. Her hedefi inceleyin. F3, geçerli satır için tam kaynağı,
+     hedefi veya hata teşhisini gösterir.
+  6. Yeniden Adlandır'ı seçin veya varsayılan düğmede Enter'a basın.
+
+#İsim ve Uzantı#
+
+Bu iki alan, hedef taban ismini ve uzantıyı ayrı ayrı oluşturur.
+Uzantı alanı noktayı içermez. Boş bir uzantı sonucu uzantıyı
+kaldırır. Düz metin yazıldığı gibi kopyalanır; parantezli
+ifadeler kaynak metni, sayaçları, meta verileri ekler.
+
+Son nokta kaynak ismini ve uzantısını ayırır. Böylece
+archive.tar.gz archive.tar ismine ve gz uzantısına sahiptir.
+README'nin uzantısı yoktur. .gitignore gibi bir nokta dosyasının
+boş bir ismi ve gitignore uzantısı vardır.
+
+#Şablonlar ve [+]#
+
+İsim şablonları ve Uzantı şablonları listeleri, karşılık gelen
+maske için geçerli ifadeler içerir. Bir girişin seçilmesi
+yalnızca onu vurgular. [+] düğmesi, seçili şablonu imlecin
+bulunduğu yere ekler ve orijinal VisRen'de olduğu gibi odağı
+ilgili maskeye geri döndürür.
+Bir şablon listesi odaktayken Ins tuşu geçerli girişi ekler
+ve odağı listede tutar. Aralık ve sayaç yer tutucuları
+eklendiğinde kullanılabilir değerler haline gelir.
+
+#Arama kontrolleri#
+
+Arama ve değiştirme, her iki maske de tek bir tam dosya ismi
+oluşturduktan sonra uygulanır. Büyük/küçük harf duyarlı başlangıçta
+etkindir. Düzenli ifade, düz arama ile regex modu arasında
+geçiş yapar. Ayrıntılar Arama konusunda verilmiştir.
+
+#Canlı önizleme ve teşhis#
+
+Her düzenleme önizlemeyi günceller. Bir maske, aralık, sayaç,
+regex veya ortaya çıkan dosya ismi geçersizse, tüm hedefler
+<Error!> olur. Yeniden Adlandır ve F4 Düzenleyici devre dışı
+bırakılır. F3 gerçek teşhisi gösterir.
+
+Dört düzenleme alanı F4'ün geçmişini kullanır. Yeniden
+adlandırma için kullanılan değerler geçmişlerine eklenir.
+[T] için kelime ayırıcılar, VisRen kullanıcı yapılandırmasında
+ayrı olarak saklanır.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenMasks
+$VisRen: maskeler, aralıklar, sayaçlar ve kaçış karakterleri
+
+#Temel ifadeler#
+
+  [N]          Son uzantı olmadan orijinal isim.
+  [E]          Öndeki noktası olmadan orijinal uzantı.
+  [[]          Düz bir açılış köşeli parantezi.
+  []]          Düz bir kapanış köşeli parantezi.
+
+İfadelerin dışındaki tüm metinler düz metindir. Kapanış parantezi,
+kapatılmamış bir açılış parantezi veya bilinmeyen ifade hatadır.
+
+#Aralıklar#
+
+Bir aralık hemen N veya E'yi takip eder. Konumlar baytları
+değil, Unicode karakterlerini sayar ve 1'den başlar. Negatif
+bir konum sondan geriye doğru sayar. Aynı biçimler E ile de
+çalışır, örneğin [E1-3].
+
+abcdefghij kaynak ismi için:
+
+  [N2]         b                 tek karakter
+  [N2-5]       bcde              2'den 5'e kadar olan konumlar
+  [N2,5]       bcdef             konum 2'den başlayan beş karakter
+  [N2-]        bcdefghij         konum 2'den sonuna kadar
+  [N-2]        i                 sondan ikinci karakter
+  [N2--5]      bcdef             konum 2'den sondan beşinciye kadar
+  [N-8-5]      cde               sondan 8. ile sondan 5. arası
+  [N-8,5]      cdefg             sondan 8.'den başlayan 5 karakter
+  [N-5-]       fghij             sondan beşinciden sonuna kadar
+
+Sınır dışı bir parça mümkün olan yerde kesilir veya boş bir
+sonuç üretir. Sıfır konumu ve ters aralık hatadır. Açılır
+menüdeki aralık şablonu en uzun kaynak ismini kullanır.
+
+#Sayaçlar#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+İlk basamaklar ilk değeri ve minimum görüntüleme genişliğini
+belirler. En fazla dokuz basamak içerebilirler. +step atlanırsa,
+adım 1'dir. Sayaç önizleme sırasını takip eder, bu nedenle
+Ctrl+Up/Down veya sürükleyip bırakmak atanan değerleri
+değiştirir. Genişlik bir minimumdur: değerler kesilmez.
+
+#İfadeleri birleştirme#
+
+İfadeler ve düz metinler serbestçe birleştirilebilir. Örneğin,
+[C001+1]_[N1-12] üç basamaklı bir dizi, bir alt çizgi ve eski
+ismin ilk on iki karakterini oluşturur. Dönüştürme ifadeleri
+metin eklemez; parçasını Dönüşümler konusunda açıklandığı
+gibi değiştirirler.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenTransforms
+$VisRen: dönüşümler ve işlem sırası
+
+#Büyük/küçük harf dönüşümleri#
+
+  [L]          Tüm maske sonucunu küçük harfe dönüştür.
+  [U]          Büyük harfe dönüştür.
+  [F]          İlk karakteri büyük harf yap; gerisini küçük yap.
+  [T]          Her kelimenin ilk karakterini büyük harf yap.
+  [M]          "Sanatçı - başlık" stilinde müzik ismi biçimlendir.
+
+[T], varsayılan olarak "-. _&" kelime ayırıcılarını kullanır.
+Ayırıcı karakterleri düzenlemek için her iki şablon
+listesinde de [T]'yi seçin ve F4'e basın. En fazla 18 karakter
+VisRen yapılandırmasında saklanır ve daha sonra yeniden kullanılır.
+
+[M], sanatçı ve başlık arasındaki " - " veya "_-_" öğesini tanır.
+Sanatçı kelimeleri ilk harfleri büyük olacak şekilde
+biçimlendirilir; başlık bir büyük harfle başlar ve geri kalanı
+küçük harf olur.
+
+Bir maskede birden fazla harf dönüştürme ifadesi varsa,
+öncelik şu sırayla sabittir: [L], [U], [F], [T], [M].
+Yalnızca en yüksek önceliğe sahip olan uygulanır.
+
+#Çevriyazı (Transliterasyon)#
+
+  [TL]         Rus Kiril alfabesini VisRen Latin yazımına dönüştür.
+  [TR]         Bu Latin yazımını tekrar Rus Kiril alfabesine dönüştür.
+
+Eşleme, orijinal VisRen tablosudur: örneğin ё -> jo, ж -> zh,
+х -> kh, щ -> shh, ю -> ju ve я -> ja. Harf büyüklüğü/küçüklüğü
+mümkün olan yerlerde korunur. Tersine dönüştürme, eşleşen
+en uzun Latin dizisini seçer. Hem [TL] hem de [TR] mevcutsa,
+[TL] önceliklidir.
+
+#Kesin işlem sırası#
+
+  1. İsim ve uzantı ifadeleri genişletilir.
+  2. Uzantı boş olmadığında iki parça bir noktayla birleştirilir.
+  3. Arama/Değiştirme, bu tam dosya ismine uygulanır.
+  4. Sonuç, son noktasında tekrar bölünür.
+  5. Çevriyazı, maskesi isteyen parçaya uygulanır.
+  6. Seçilen harf dönüşümü en son uygulanır.
+  7. Son tek dosya ismi bileşeni doğrulanır.
+
+Bu sıra önemlidir. Harf dönüştürme, parçasına eklenen
+değiştirme metnini de etkilerken, Arama oluşturulan
+uzantıyla eşleşebilir.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenMetadata
+$VisRen: tarihler ve dosya meta verileri
+
+Meta veriler tembelce okunur ve her kaynak öğe için bir kez
+önbelleğe alınır. Eksik veya desteklenmeyen alanlar boş
+bir dizeye genişler ve önizlemeyi durdurmaz.
+
+#Dosya zaman damgaları ve oturum değerleri#
+
+  [DM]         Yerel saatte son değiştirilme tarihi: YYYY.MM.DD
+  [TM]         Yerel saatte son değiştirilme saati: hh-mm-ss
+  [R]          0 ile 32767 arasında rastgele ondalık sayı
+
+[R], iletişim kutusu açıldığında bir kez atanır. Maskeler
+düzenlenirken sabit kalır ve satırlar yeniden sıralandığında
+kaynağını takip eder. Yeni bir VisRen oturumu yeni değerler atar.
+
+#MP3 / ID3#
+
+Parça numarası ifadesi bir açılış parantezi, ASCII sayı işareti
+(No. ASCII) ve bir kapanış parantezidir. Kalan ifadeler şunlardır:
+
+  [t]          Parça başlığı
+  [a]          Sanatçı
+  [l]          Albüm
+  [y]          Yıl/tarih
+  [g]          Tür
+
+Bir ID3v2 etiketi varsa ID3v2.3 ve ID3v2.4 çerçeveleri tercih edilir.
+Aksi takdirde, parça numarası ve tür tablosu dahil ID3v1.1 kullanılır.
+Desteklenen ID3 kodlamaları arasında UTF-8 ve UTF-16 bulunur.
+
+#Görüntüler ve EXIF#
+
+  [c]          JPEG EXIF kamera üreticisi
+  [m]          JPEG EXIF kamera modeli
+  [d]          Çekim tarihi: YYYY.MM.DD hh-mm-ss
+  [r]          GENİŞLİKxYÜKSEKLİK olarak piksel boyutları
+
+Boyutlar JPEG, BMP, GIF ve PNG için kullanılabilir. EXIF üreticisi,
+modeli ve çekim tarihi JPEG'den okunur. Kullanılabilir EXIF yoksa,
+[d] değiştirilme tarihini kullanır. Küçük harf [m]/[r]'nin
+meta veri, büyük harf [M]/[R]'nin dönüştürme/rastgele ifadeler
+olduğuna dikkat edin.
+
+#Çalan dosya sürümü#
+
+  [V]          Windows PE .exe veya .dll kaynağından sürüm
+
+PE sürüm verileri, desteklenen her işletim sisteminde yerel
+olarak ayrıştırılır. Kullanılabilir bir sabit sürümü olmayan
+bir dosya [V]'yi boş bir dizeye genişletir.
+
+Yol ayırıcılar veya diğer yasaklı dosya ismi karakterleri
+içeren meta veri metni atılır veya doğrulamada yakalanır.
+Etiketler kontrolünüz dışındaki dosyalardan geldiğinde
+önizlemeyi her zaman inceleyin.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenSearch
+$VisRen: Bul, Değiştir ve düzenli ifadeler
+
+Arama/Değiştirme, oluşturulan nokta ve uzantı da dahil olmak
+üzere her iki maske tarafından üretilen tam isim üzerinde çalışır.
+Boş bir Aranan alanı bu aşamayı devre dışı bırakır. Örtüşmeyen
+her eşleşme değiştirilir.
+
+#Düz mod#
+
+Düzenli ifade işaretsizken, Aranan metin düz metindir.
+Büyük/küçük harf duyarlı işaretliyken, Dosya ve dosya farklıdır.
+İşaretsizken, eşleştirme küçük harfli metni karşılaştırır;
+değiştirme yazıldığı gibi tam olarak eklenir.
+
+Örnek: [N] ve [E] maskeleri, "draft_" için Aranan ve boş bir
+Şunla değiştir değeri, taslak_rapor.txt dosyasını rapor.txt
+dosyasına dönüştürür.
+
+#Düzenli ifade modu#
+
+F4'ün Go/coregex tarzı motoru için Düzenli ifadeyi etkinleştirin.
+Bir desen doğrudan veya /desen/i olarak girilebilir. Eğik çizgi
+formunda, düz bir eğik çizgiyi \/ olarak yazın. İsteğe bağlı i
+bayrağı büyük/küçük harf yoksayar. Büyük/küçük harf duyarlı
+seçeneğini temizlemek aynı şeyi yapar.
+
+Değiştirme başvuruları tam eşleşme için $0 ve yakalama grupları
+için $1 ile $9 arasını kullanır. Örneğin, 001-rapor.txt üzerinde:
+
+  Aranan:          /(\d+)-([^.]+)/
+  Şunla değiştir:  $2-$1
+  Sonuç:           rapor-001.txt
+
+Hatalı biçimlendirilmiş bir desen, sonlandırılmamış /desen/
+veya desteklenmeyen bir bayrak önizlemenin <Error!> göstermesine
+neden olur, yeniden adlandırmayı devre dışı bırakır ve F3 ile
+teşhis gösterir.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+Orijinal isimde bulunan eşleşmeler sol önizleme sütununda
+vurgulanır. Vurgulama, Büyük/küçük harf duyarlı ve regex takip
+eder, her görünür eşleşmeyi işaretler ve sütun kaydırılırken
+hizalı kalır. Şunla değiştir tarafından yayılan metin sağ
+sütunda vurgulanır. Düzenli bir ifade için bu, tam genişletilmiş
+değiştirmeyi içerir; boş bir değiştirmenin vurgusu yoktur.
+
+@VisRenPreview
+$VisRen: önizleme, klavye ve fare
+
+Sol önizleme sütunu kaynaktır; sağ ise hedeftir.
+İletişim kutusu açıldığında ilk satır geçerlidir, klavye odağı
+ise Aranan'da başlar. F12 odağı önizlemeye taşır; oradan İsim
+maskesine döner.
+
+Liste görünür önizlemeden daha uzun olduğunda, sağ kenarında
+dikey bir kaydırma çubuğu belirir. Okları, yolu ve sürüklenebilir
+çubuğu listeyi kaydırır; fare tekerleği önizleme üzerinde de
+çalışır. Her satır sığdığında kaydırma çubuğu kaybolur.
+
+#Genel tuşlar#
+
+  F1                   Bu yardımı aç.
+  F2                   Yeniden adlandırma günlüğünü aç/kapat.
+  F3                   Tam isimleri veya hata teşhisini göster.
+  F4                   Listeyi düzenleyicide aç.
+  [T] şablonunda F4    Kelime ayırıcıları düzenle.
+  F5                   İletişim kutusunu büyüt/geri yükle.
+  F6                   Mevcut Geri Al işlemini yükle.
+  F8                   Onayladıktan sonra günlüğü temizle.
+  F12                  Odağı önizlemeye/önizlemeden taşı.
+  Alt+N                İsim maskesine odaklan.
+  Alt+E                Uzantı maskesine odaklan.
+  Alt+S                Aranan alanına odaklan.
+  Alt+P                Şunla değiştir alanına odaklan.
+  Alt+C                Büyük/küçük harf duyarlılığını aç/kapat.
+  Alt+G                Düzenli ifadeyi aç/kapat.
+  Alt+T                İsim şablon listesine odaklan.
+  Alt+L                Uzantı şablon listesine odaklan.
+  Enter                Yeniden Adlandır eylemini etkinleştir.
+  Esc                  İletişim kutusunu kapat.
+
+#Önizleme odaktayken tuşlar#
+
+  Yukarı/Aşağı         Geçerli satırı taşı.
+  Home/End             İlk/son satıra git.
+  PgUp/PgDn            Bir önizleme sayfası kadar git.
+  Del                   Satırı yalnızca bu işlemden kaldır.
+  Ctrl+Yukarı/Aşağı     Satırları yeniden sırala; sayaçlar izler.
+  Ctrl+Sol/Sağ          Sütun ayırıcıyı taşı.
+  Ctrl+Num5             Ayırıcıyı ortala ve kaydırmayı sıfırla.
+  Alt+Sol/Sağ           Kaynak sütununu yatay olarak kaydır.
+  Sol/Sağ               Hedef sütununu yatay olarak kaydır.
+  Ctrl+PgUp             VisRen'i kapat ve kaynak öğeye dön.
+
+#Şablonlar ve fare#
+
+  Şablon listesinde Ins, geçerli şablonu maskesine ekler.
+  Yeniden sıralamak için satırı sol düğmeyle sürükleyin.
+  Tam isimleri/teşhisi göstermek için satıra sağ tıklayın.
+  Paneldeki o kaynağa dönmek için satıra çift sol tıklayın.
+  Büyütmek/geri yüklemek için kontrolüne tıklayın.
+  Açıp kapatmak için günlüğü kaydet işaretine tıklayın;
+  günlüğü temizlemek için satırın kalanına tıklayın.
+
+Terminalin yeniden boyutlandırılması ve F5, eşit iki sütunlu
+bir önizleme bölmesini geri yükler. Ayırıcı ve yatay kaydırma
+değişiklikleri daha sonra tekrar uygulanabilir.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenEditor
+$VisRen: listeyi UTF-8 düzenleyicide düzenleme
+
+F4 dışa aktarım biçimini açık eylem düğmeleriyle sorar, ardından
+F4'ün düzenleyicisinde "Dosyaların yeniden adlandırma listesi"
+başlıklı geçici bir UTF-8 belgesi açar:
+
+  Kaynak + hedef       "kaynak ismi"    "hedef ismi"
+  Yalnızca hedefler                     "hedef ismi"
+
+Her değer tırnak içine alınmıştır. İsim içindeki tırnaklar, ters
+eğik çizgiler ve kontroller kaçışlı dize gösterimini kullanır.
+Çevreleyen tırnakları sağlam tutun.
+
+#Sıkı doğrulama#
+
+Düzenleyici kapandığında VisRen şunları gerektirir:
+
+  - önizleme ile tam olarak aynı sayıda satır;
+  - seçilen moda göre tam olarak bir veya iki tırnaklı sütun;
+  - alıntılanan değerler dışında fazladan metin olmaması;
+  - iki sütunlu modda değiştirilmemiş bir kaynak sütunu;
+  - her hedef için geçerli bir taşınabilir dosya ismi bileşeni.
+
+Satır eklemeyin veya kaldırmayın. İki sütunlu modda kaynak
+kimliği ve satır sırası tam olarak kalmalıdır; yalnızca
+hedefler değişebilir. Tek sütunlu modda, her hedef satır
+konumuna göre kaynağına bağlı kalır. Bu kontroller, yeniden
+adlandırmadan önce kaynak değişikliklerini yakalar.
+
+Hatada VisRen nedeni bildirir ve Tekrar düzenle'yi teklif eder.
+Düzenleyici içeriğiniz korunarak hatalı satırda yeniden açılır.
+Geçerli düzenlenmiş bir liste, düzenleyici kapandığında
+yeniden adlandırmayı başlatır. Liste bayt bayt aynıysa ancak
+maske değişiklikleri içeriyorsa, onay ister.
+
+Önizleme <Error!> içerdiğinde veya bir Geri Al listesi
+görüntülendiğinde Düzenleyici devre dışı bırakılır.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenRename
+$VisRen: yürütme, hatalar, günlük ve Geri Al
+
+#Sıralı yeniden adlandırma#
+
+Satırlar geçerli sıralarında yukarıdan aşağıya doğru bir kez
+işlenir. Değiştirilmeyen bir isim atlanır. İletişim kutusu
+açıldıktan sonra kaybolan bir kaynak da atlanır. Dosyalar ve
+dizinler aynı kuralları kullanır.
+
+Başka bir nesneye ait olan hedefin üzerine asla yazılmaz.
+Gerektiğinde geçici bir isim kullanılarak aynı nesnenin yalnızca
+büyük/küçük harf yeniden adlandırması desteklenir. Diğer
+döngüler aşamalandırılmaz: örneğin a -> b ve b -> a normalde
+orijinal VisRen gibi bir hedef mevcut hatasına ulaşır.
+
+#Çalışma zamanı hataları#
+
+İzinler, meşgul/kopyalanmış hedefler, platform sınırları ve
+diğer dosya sistemi hataları şunları sunar:
+
+  Yeniden Dene         Aynı satırı tekrar deneyin.
+  Atla                 Bu kaynağı değiştirmeden bırakın ve devam edin.
+  Tümünü atla          Daha sonraki hataları tekrar sormadan atlayın.
+  İptal                Durdurun; kalan satırları işlemeyin.
+
+İşlem işlemsel değildir. Başarılı olan yeniden adlandırmalar
+Atla veya İptal'den sonra yerinde kalır. Başarısız ve
+işlenmemiş kaynaklar yeniden deneme için panelde işaretli kalır.
+Tamamlama mesajı kaç satırın başarılı olduğunu bildirir.
+
+#Yeniden adlandırma günlüğü#
+
+Yeni bir iletişim kutusu açıldığında yeniden adlandırmayı
+günlüğe kaydetme etkindir. Onay işareti, başarılı çiftlerin
+belleğe kaydedileceği anlamına gelir. F2 veya tıklanabilir
+işaret, kaydı açıp kapatır. Günlük diske yazılmaz ve F4
+çıktığında kaybolur. Yalnızca en son yeniden adlandırma
+işlemindeki başarılı çiftleri ve dizini depolar; etiketteki
+sondaki * işareti, bir günlüğün mevcut olduğunu belirtir.
+
+F8 veya günlük satırına tıklamak günlüğü temizler. Günlük
+kaydı devre dışıyken yeniden adlandırma çalıştırmak da geri
+alınacak bir toplu işlem bırakmaz.
+
+#Geri Al (F6)#
+
+F6, son toplu işlemi ters sırada yükler ve kaynak isimlerine
+dönen hedefleri gösterir. Başlık, kaydedilen dizini gösterir.
+Yeniden Adlandır'ı seçin ve Geri Al'ı onaylayın veya normal
+yeniden adlandırma moduna dönmek için Hayır yanıtını verin.
+
+Geri Al aynı üzerine yazmama ve hata kurallarını kullanır.
+Başlamadan önce kaydedilen dizine geçer. Yalnızca bir kısmı
+başarılı olsa bile denemeden sonra günlük temizlenirken,
+çözümlenmemiş öğeler işaretli kalır.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenSafety
+$VisRen: dosya ismi güvenliği ve sınırlamaları
+
+Değiştirilen her hedef tek bir taşınabilir dosya ismi bileşeni
+olmalıdır. VisRen şunları reddeder:
+
+  - boş bir isim, "." veya "..";
+  - kontrol karakterleri (U+0020 veya NUL altındaki değerler);
+  - <, >, :, ", *, ?, /, ters eğik çizgi veya dikey çubuk;
+  - sonda boşluk veya nokta;
+  - büyük/küçük harf veya uzantıdan bağımsız olarak CON,
+    PRN, AUX, NUL, COM1..COM9 veya LPT1..LPT9 DOS aygıtı.
+
+Eğik çizgi, bir öğeyi başka bir dizine taşıyamaz. Değiştirilmemiş
+bir kaynak ismine izin verilir ve bu mevcut kaynak yeni
+oluşturulan bir isim olarak taşınabilir kuralları geçmese
+bile basitçe atlanır.
+
+Önizleme doğrulaması maske sözdizimi ve hataları yakalar.
+Hedefleri rezerve etmez. Mevcut hedefler, yinelenen sonuçlar,
+izinler, dosya sistemi uzunluk sınırları ve döngüler yine de
+bir çalışma zamanı hatası üretebilir. Üzerine yazılmaz.
+
+Meta veriler eksik veya hatalı biçimlendirilmiş olabilir ve
+boş metne genişler. Ayırıcıları dikkatlice kullanın ve her
+zaman önizlemeyi kontrol edin. VisRen asla bir işlem (transaction)
+oluşturmaz veya döngüler için geçici isimler uydurmaz.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@VisRenExamples
+$VisRen: pratik tarifler
+
+#Dosyaları numaralandır ve uzantıları normalleştir#
+
+  İsim maskesi:       [C001+1]_[N]
+  Uzantı maskesi:     [E][L]
+
+001_Eski isim.jpg, 002_Diğer isim.jpg ve benzerlerini üretir.
+Sayaç farklı bir diziyi izleyecekse önce önizlemeyi sıralayın.
+
+#Sabit genişlikteki bir ismin yalnızca yararlı bir bölümünü tutun#
+
+  Kaynak:             20260805_rapor_son.txt
+  İsim maskesi:       [N10-21]
+  Uzantı maskesi:     [E]
+  Sonuç:              rapor_son.txt
+
+#Değişmez bir öneki kaldır#
+
+  Maskeler:           [N] ve [E]
+  Aranan:             taslak_
+  Şunla değiştir:     (boş)
+
+#Regex gruplarını değiştir#
+
+  Kaynak:             001-rapor.txt
+  Aranan:             /(\d+)-([^.]+)/
+  Şunla değiştir:     $2-$1
+  Sonuç:              rapor-001.txt
+
+#Etiketlerden MP3 dosyalarını adlandır#
+
+  İsim maskesi:       [a] - [t]
+  Uzantı maskesi:     [E][L]
+
+Parça numarası önekleri sayaçla veya Tarihler ve meta veriler
+konusunda açıklanan ID3 parça ifadesiyle yapılabilir. Eksik
+sanatçı veya başlık etiketleri boş metne genişler, önizlemede
+ayırıcıları inceleyin.
+
+#Fotoğrafları çekim zamanı ve boyutlarına göre adlandır#
+
+  İsim maskesi:       [d]_[r]_[C001]
+  Uzantı maskesi:     [E][L]
+
+JPEG, mevcut olduğunda EXIF çekim zamanını kullanır; desteklenen
+diğer görüntüler [d] için dosya değiştirilme zamanını kullanır.
+
+#Çevriyazı uygula ve köşeli parantezler ekle#
+
+  İsim maskesi:       [[]arşiv[]]_[N][TL]
+  Uzantı maskesi:     [E][L]
+
+Пример.TXT kaynağı, VisRen'in orijinal çevriyazı tablosuyla
+[arşiv]_Primer.txt olur.
+
+VisRen içindekilere dönmek için Backspace tuşuna basın.
+
+@Panels
+$f4 Yardım Dizini (Sürüm: %Ver)
+f4, Go dilinde yazılmış deneysel bir Far Manager / far2l kopyasıdır.
+
+~Görüntüleyici / Düzenleyici tuşları~ViewerEditor@
+~Panel gezinmesi~PanelNav@
+~README.md dosyasını görüntüle~README@
+
+@ViewerEditor
+$Görüntüleyici ve Düzenleyici Tuşları
+Bu konu eylem defterinden dinamik olarak oluşturulmuştur.
+
+@ViewerNav
+$Gezinme Tuşları
+Düzenleyici:
+  Ctrl+Sol      - Önceki kelime sınırı
+  Ctrl+Sağ      - Sonraki kelime sınırı
+  Ctrl+Shift+Sol/Sağ - Kelimelere göre seç
+  Home/End      - Satır başı / sonu
+  PgUp/PgDn     - Sayfa yukarı / aşağı
+
+Görüntüleyici:
+  Yukarı/Aşağı  - Bir satır kaydır
+  PgUp/PgDn     - Bir sayfa kaydır
+  Home/End      - Dosya başı / sonu
+
+@PanelNav
+$Panel Gezinmesi
+Bu konu eylem defterinden dinamik olarak oluşturulmuştur.
+
+@ShellNav
+$Panel Gezinme Tuşları
+  Tab           - Etkin paneli değiştir
+  Insert        - Dosya/klasör seç
+  Ctrl+Tab      - Çalışma alanları arasında geçiş yap
+  Ctrl+W        - Çalışma alanını kapat
+  Ctrl+N        - Etkin paneli yeni çalışma alanına klonla
+
+@History
+$Komut Geçmişi (Alt+F8)
+    Komut geçmişi, önceden yürütülen komutların listesini gösterir.
+İmleç tuşlarının yanı sıra aşağıdaki klavye kısayolları da kullanılabilir:
+
+  Seçili komutu komut satırına yapıştır             Enter
+  (Sol tıklama da aynı işlevi görür)
+  İletişim kutusunu iptal et                        Esc, F10
+
+  Alt dize / önek artımlı aramasını değiştir        F2
+  Görünür girişleri filtrelemek için herhangi bir karakter yazın
+  Son filtre karakterini kaldırmak için Backspace'e basın
+
+  Geçerli geçmiş öğesini sil                        Shift+Del
+  Tüm komut geçmişini temizle (onaylı)              Del
+
+  Seçili komutu panoya kopyala                      Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Klasör Geçmişi (Alt+F12)
+    Klasör geçmişi, önceden ziyaret edilen dizinlerin listesini gösterir.
+İmleç tuşlarının yanı sıra aşağıdaki klavye kısayolları da kullanılabilir:
+
+  Etkin panelde seçili klasöre git                  Enter
+  (Sol tıklama da aynı işlevi görür)
+  Pasif panelde seçili klasöre git                  Shift+Enter
+  Seçili yolu komut satırına ekle                   Ctrl+Enter
+  İletişim kutusunu iptal et                        Esc, F10
+
+  Alt dize / önek artımlı aramasını değiştir        F2
+  Görünür girişleri filtrelemek için herhangi bir karakter yazın
+  Son filtre karakterini kaldırmak için Backspace'e basın
+
+  Geçerli geçmiş öğesini sil                        Shift+Del
+  Tüm klasör geçmişini temizle (onaylı)             Del
+  Yolları artık mevcut olmayan girişleri kaldır (onaylı) Ctrl+R
+
+  Seçili yolu panoya kopyala                        Ctrl+C, Ctrl+Ins

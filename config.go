@@ -17,6 +17,7 @@ import (
 
 var (
 	cachedF4ConfigDir string
+	cachedF4Portable  bool
 	configDirOnce     sync.Once
 )
 
@@ -43,6 +44,7 @@ func GetF4ConfigDir() string {
 		}
 
 		if !useSystemProfiles {
+			cachedF4Portable = true
 			cachedF4ConfigDir = filepath.Join(exeDir, "Profile")
 			_ = os.MkdirAll(cachedF4ConfigDir, 0755)
 		} else {
@@ -53,6 +55,14 @@ func GetF4ConfigDir() string {
 	return cachedF4ConfigDir
 }
 
+// IsPortableProfile reports whether f4.ini selected the executable-local
+// Profile directory. It shares GetF4ConfigDir's once-only detection so plugin
+// initialization cannot disagree with the directory already in use.
+func IsPortableProfile() bool {
+	_ = GetF4ConfigDir()
+	return cachedF4Portable
+}
+
 func bytesReader(p string) io.Reader {
 	b, _ := os.ReadFile(p)
 	return bytes.NewReader(b)
@@ -61,6 +71,7 @@ func bytesReader(p string) io.Reader {
 func resetConfigDirForTest() {
 	configDirOnce = sync.Once{}
 	cachedF4ConfigDir = ""
+	cachedF4Portable = false
 }
 
 type PanelScrollbarMode int
@@ -96,22 +107,29 @@ func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
 type F4Config struct {
 	ColorStyle               string
 	Language                 string
+	FallbackLanguage         string
 	HelpLanguage             string
 	AlwaysShowMenuBar        bool
+	WorkspaceTabMode         int
+	CtrlTabShowsMenu         bool
+	AltNumberSwitchesTabs    bool
 	ShowHiddenFiles          bool
 	ShowDirPrefix            bool
+	ShowHighlightMarks       bool
 	SeparateFileExtensions   bool
 	PanelScrollbarMode       PanelScrollbarMode
 	SavePanelPaths           bool
 	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
 	InfoPanelCPUGPU          bool // Ctrl+L info panel: show CPU and GPU sections (off by default)
 	EscTogglePanels          bool // ESC toggles panels visibility (Far ships this as a macro; on by default)
+	TerminalCtrlNWorkspace   bool // reserve Ctrl+N in terminal views for cloning panels to a workspace
 	KeepTerminalCursor       bool
 	AnnounceKittyTerm        bool // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
 	CommandLineAutoComplete  bool
 	NavigationMode           PanelNavigationMode
 	SearchCommandStayFocused bool
 	SyncPanelLoad            bool
+	ApplyCommandParallelism  int // 0 = unlimited; absent config defaults to runtime.NumCPU()
 	EditorAutoComplete       bool
 	EditorAutoCompleteMask   string
 	EditorExpandTabs         int
@@ -139,12 +157,14 @@ type F4Config struct {
 	ConfirmCopy              bool
 	ConfirmMove              bool
 	ConfirmDelete            bool
+	UseTrash                 bool
 	ConfirmExit              bool
 	DeleteCancelFocused      bool
 	DefaultFileOpMode        int
 	FileOpPathDisplay        int
 	MacroRecordFormat        int
 	GuiFont                  string
+	GuiUseSystemMonospace    bool
 	GuiFontSize              int
 	GuiCols                  int
 	GuiRows                  int
@@ -152,6 +172,7 @@ type F4Config struct {
 	UpdateChannel            int // 0 = Stable, 1 = Nightly
 	UpdateInterval           int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
 	EnforceColorCorrection   bool
+	HighlightPriority        int    // 0 = User wins, 1 = Theme wins
 	LastUpdateCheck          int64  // Unix timestamp
 	LastUpdateVersion        string // Version string or PublishedAt timestamp
 
@@ -174,22 +195,29 @@ type F4Config struct {
 var AppConfig = F4Config{
 	ColorStyle:               "Modern",
 	Language:                 "en",
+	FallbackLanguage:         "",
 	HelpLanguage:             "en",
 	AlwaysShowMenuBar:        false,
+	WorkspaceTabMode:         int(vtui.WorkspaceTabsOnCtrl),
+	CtrlTabShowsMenu:         false,
+	AltNumberSwitchesTabs:    true,
 	ShowHiddenFiles:          true,
 	ShowDirPrefix:            false,
+	ShowHighlightMarks:       false,
 	SeparateFileExtensions:   false,
 	PanelScrollbarMode:       PanelScrollbarMinimal,
 	SavePanelPaths:           true,
 	InfoPanelBytes:           false,
 	InfoPanelCPUGPU:          false,
 	EscTogglePanels:          true,
+	TerminalCtrlNWorkspace:   true,
 	KeepTerminalCursor:       false,
 	AnnounceKittyTerm:        true,
 	CommandLineAutoComplete:  true,
 	NavigationMode:           NavigationClassic,
 	SearchCommandStayFocused: false,
 	SyncPanelLoad:            false,
+	ApplyCommandParallelism:  runtime.NumCPU(),
 	EditorAutoComplete:       true,
 	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
 	EditorExpandTabs:         0,
@@ -216,18 +244,21 @@ var AppConfig = F4Config{
 	ConfirmCopy:              true,
 	ConfirmMove:              true,
 	ConfirmDelete:            true,
+	UseTrash:                 false,
 	ConfirmExit:              true,
 	DeleteCancelFocused:      false,
 	DefaultFileOpMode:        0,
 	FileOpPathDisplay:        0,
 	GuiFont:                  "",
-	GuiFontSize:              18,
+	GuiUseSystemMonospace:    true,
+	GuiFontSize:              defaultGuiFontSize(runtime.GOOS),
 	GuiCols:                  100,
 	GuiRows:                  30,
 	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
 	UpdateChannel:            0,
 	UpdateInterval:           3, // Default to Weekly
 	EnforceColorCorrection:   true,
+	HighlightPriority:        0,
 	LastUpdateCheck:          0,
 	LastUpdateVersion:        "",
 }
@@ -273,20 +304,32 @@ func LoadConfig() {
 	}
 
 	AppConfig.ShowHiddenFiles = ini.GetString("Panel", "ShowHiddenFiles", "1") == "1"
-	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Modern")
+	AppConfig.ColorStyle = ini.GetString("Interface", "ColorStyle", "Fonokai")
 	// "Far2l Dark" was an approximate port of the far2l theme "default dark".
 	// It has been replaced by an exact one; carry existing configs over.
 	if strings.EqualFold(AppConfig.ColorStyle, "Far2l Dark") {
 		AppConfig.ColorStyle = "Default Dark"
 	}
 	AppConfig.Language = ini.GetString("Interface", "Language", "en")
+	AppConfig.FallbackLanguage = ini.GetString("Interface", "FallbackLanguage", "")
 	AppConfig.HelpLanguage = ini.GetString("Interface", "HelpLanguage", "en")
 	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
 	AppConfig.AlwaysShowMenuBar = ini.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
+	switch strings.ToLower(ini.GetString("Interface", "WorkspaceTabMode", "ctrl")) {
+	case "always":
+		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
+	case "ctrl":
+		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
+	default:
+		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
+	}
+	AppConfig.CtrlTabShowsMenu = strings.EqualFold(ini.GetString("Interface", "CtrlTabMode", "direct"), "menu")
+	AppConfig.AltNumberSwitchesTabs = ini.GetString("Interface", "AltNumberSwitchesTabs", "1") != "0"
 	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
 		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
 	AppConfig.ShowDirPrefix = ini.GetString("Panel", "ShowDirPrefix", "0") == "1"
+	AppConfig.ShowHighlightMarks = ini.GetString("Panel", "ShowHighlightMarks", "0") == "1"
 	AppConfig.SeparateFileExtensions = ini.GetString("Panel", "SeparateFileExtensions", "0") == "1"
 	if mode := ini.GetString("Panel", "PanelScrollbarMode", ""); mode != "" {
 		AppConfig.PanelScrollbarMode = ParsePanelScrollbarMode(mode)
@@ -306,6 +349,7 @@ func LoadConfig() {
 	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	AppConfig.InfoPanelCPUGPU = ini.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
 	AppConfig.EscTogglePanels = ini.GetString("Panel", "EscTogglePanels", "1") == "1"
+	AppConfig.TerminalCtrlNWorkspace = ini.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
 	AppConfig.KeepTerminalCursor = ini.GetString("Panel", "KeepTerminalCursor", "0") == "1"
 	AppConfig.CommandLineAutoComplete = ini.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
 	if mode := ini.GetString("Panel", "NavigationMode", ""); mode != "" {
@@ -318,19 +362,27 @@ func LoadConfig() {
 	}
 	AppConfig.SearchCommandStayFocused = ini.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
 	AppConfig.SyncPanelLoad = ini.GetString("Panel", "SyncPanelLoad", "0") == "1"
+	AppConfig.ApplyCommandParallelism = runtime.NumCPU()
+	fmt.Sscanf(ini.GetString("Panel", "ApplyCommandParallelism", fmt.Sprintf("%d", runtime.NumCPU())), "%d", &AppConfig.ApplyCommandParallelism)
+	if AppConfig.ApplyCommandParallelism < 0 {
+		AppConfig.ApplyCommandParallelism = runtime.NumCPU()
+	}
 	fmt.Sscanf(ini.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &AppConfig.DefaultFileOpMode)
 	AppConfig.ConfirmCopy = ini.GetString("System", "ConfirmCopy", "1") == "1"
 	AppConfig.ConfirmMove = ini.GetString("System", "ConfirmMove", "1") == "1"
 	AppConfig.ConfirmDelete = ini.GetString("System", "ConfirmDelete", "1") == "1"
+	AppConfig.UseTrash = ini.GetString("System", "UseTrash", "0") == "1"
 	AppConfig.ConfirmExit = ini.GetString("System", "ConfirmExit", "1") == "1"
 	AppConfig.DeleteCancelFocused = ini.GetString("System", "DeleteCancelFocused", "0") == "1"
 	AppConfig.AnnounceKittyTerm = ini.GetString("System", "AnnounceKittyTerm", "1") == "1"
 	fmt.Sscanf(ini.GetString("System", "MacroRecordFormat", "0"), "%d", &AppConfig.MacroRecordFormat)
 	fmt.Sscanf(ini.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &AppConfig.FileOpPathDisplay)
 	AppConfig.GuiFont = ini.GetString("Appearance", "GuiFont", "")
-	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", "18"), "%d", &AppConfig.GuiFontSize)
+	AppConfig.GuiUseSystemMonospace = ini.GetString("Appearance", "GuiUseSystemMonospace", "1") == "1"
+	defaultFontSize := defaultGuiFontSize(runtime.GOOS)
+	fmt.Sscanf(ini.GetString("Appearance", "GuiFontSize", fmt.Sprintf("%d", defaultFontSize)), "%d", &AppConfig.GuiFontSize)
 	if AppConfig.GuiFontSize <= 0 {
-		AppConfig.GuiFontSize = 18
+		AppConfig.GuiFontSize = defaultFontSize
 	}
 	fmt.Sscanf(ini.GetString("Appearance", "GuiCols", "100"), "%d", &AppConfig.GuiCols)
 	if AppConfig.GuiCols <= 0 {
@@ -341,6 +393,7 @@ func LoadConfig() {
 		AppConfig.GuiRows = 30
 	}
 	AppConfig.EnforceColorCorrection = ini.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
+	fmt.Sscanf(ini.GetString("Appearance", "HighlightPriority", "0"), "%d", &AppConfig.HighlightPriority)
 	fmt.Sscanf(ini.GetString("Update", "Channel", "0"), "%d", &AppConfig.UpdateChannel)
 	fmt.Sscanf(ini.GetString("Update", "Interval", "3"), "%d", &AppConfig.UpdateInterval)
 	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
@@ -417,18 +470,34 @@ func SaveConfig() {
 	sb.WriteString("[Interface]\n")
 	sb.WriteString(fmt.Sprintf("ColorStyle = %s\n", AppConfig.ColorStyle))
 	sb.WriteString(fmt.Sprintf("Language = %s\n", AppConfig.Language))
+	sb.WriteString(fmt.Sprintf("FallbackLanguage = %s\n", AppConfig.FallbackLanguage))
 	sb.WriteString(fmt.Sprintf("HelpLanguage = %s\n", AppConfig.HelpLanguage))
 	sb.WriteString(fmt.Sprintf("ConsoleTitleTemplate = %s\n", AppConfig.ConsoleTitleTemplate))
-	sb.WriteString(fmt.Sprintf("AlwaysShowMenuBar = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar]))
+	sb.WriteString(fmt.Sprintf("AlwaysShowMenuBar = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar]))
+	workspaceTabMode := "multiple"
+	if AppConfig.WorkspaceTabMode == int(vtui.WorkspaceTabsAlways) {
+		workspaceTabMode = "always"
+	} else if AppConfig.WorkspaceTabMode == int(vtui.WorkspaceTabsOnCtrl) {
+		workspaceTabMode = "ctrl"
+	}
+	ctrlTabMode := "direct"
+	if AppConfig.CtrlTabShowsMenu {
+		ctrlTabMode = "menu"
+	}
+	sb.WriteString(fmt.Sprintf("WorkspaceTabMode = %s\n", workspaceTabMode))
+	sb.WriteString(fmt.Sprintf("CtrlTabMode = %s\n", ctrlTabMode))
+	sb.WriteString(fmt.Sprintf("AltNumberSwitchesTabs = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AltNumberSwitchesTabs]))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowDirPrefix]))
+	sb.WriteString(fmt.Sprintf("ShowHighlightMarks = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHighlightMarks]))
 	sb.WriteString(fmt.Sprintf("SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SeparateFileExtensions]))
 	sb.WriteString(fmt.Sprintf("PanelScrollbarMode = %s\n", AppConfig.PanelScrollbarMode.String()))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
 	sb.WriteString(fmt.Sprintf("InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes]))
 	sb.WriteString(fmt.Sprintf("InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelCPUGPU]))
 	sb.WriteString(fmt.Sprintf("EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EscTogglePanels]))
+	sb.WriteString(fmt.Sprintf("TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.TerminalCtrlNWorkspace]))
 	sb.WriteString(fmt.Sprintf("KeepTerminalCursor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.KeepTerminalCursor]))
 	sb.WriteString(fmt.Sprintf("CommandLineAutoComplete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.CommandLineAutoComplete]))
 	sb.WriteString(fmt.Sprintf("NavigationMode = %s\n", AppConfig.NavigationMode.String()))
@@ -436,6 +505,7 @@ func SaveConfig() {
 	// Keep the legacy key synchronized for older f4 versions and shared configs.
 	sb.WriteString(fmt.Sprintf("VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.NavigationMode == NavigationVim]))
 	sb.WriteString(fmt.Sprintf("SyncPanelLoad = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SyncPanelLoad]))
+	sb.WriteString(fmt.Sprintf("ApplyCommandParallelism = %d\n", AppConfig.ApplyCommandParallelism))
 	sb.WriteString(fmt.Sprintf("DefaultFileOpMode = %d\n", AppConfig.DefaultFileOpMode))
 	sb.WriteString(fmt.Sprintf("FileOpPathDisplay = %d\n", AppConfig.FileOpPathDisplay))
 
@@ -443,6 +513,7 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("ConfirmCopy = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmCopy]))
 	sb.WriteString(fmt.Sprintf("ConfirmMove = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmMove]))
 	sb.WriteString(fmt.Sprintf("ConfirmDelete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmDelete]))
+	sb.WriteString(fmt.Sprintf("UseTrash = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.UseTrash]))
 	sb.WriteString(fmt.Sprintf("ConfirmExit = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ConfirmExit]))
 	sb.WriteString(fmt.Sprintf("DeleteCancelFocused = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.DeleteCancelFocused]))
 	sb.WriteString(fmt.Sprintf("AnnounceKittyTerm = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AnnounceKittyTerm]))
@@ -453,9 +524,11 @@ func SaveConfig() {
 
 	sb.WriteString("\n[Appearance]\n")
 	sb.WriteString(fmt.Sprintf("GuiFont = %s\n", AppConfig.GuiFont))
+	sb.WriteString(fmt.Sprintf("GuiUseSystemMonospace = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.GuiUseSystemMonospace]))
 	sb.WriteString(fmt.Sprintf("GuiFontSize = %d\n", AppConfig.GuiFontSize))
 	sb.WriteString(fmt.Sprintf("GuiCols = %d\n", AppConfig.GuiCols))
 	sb.WriteString(fmt.Sprintf("GuiRows = %d\n", AppConfig.GuiRows))
+	sb.WriteString(fmt.Sprintf("HighlightPriority = %d\n", AppConfig.HighlightPriority))
 
 	sb.WriteString("\n[Update]\n")
 	sb.WriteString(fmt.Sprintf("Channel = %d\n", AppConfig.UpdateChannel))
@@ -546,3 +619,18 @@ var (
 )
 
 const saveConfigDebounce = 500 * time.Millisecond
+
+func createDefaultHighlightIni(path string) {
+	content := `# User highlight rules.
+#
+# f4 applies file highlighting rules from both the active Color Style (Theme)
+# and this file. By default, rules in this file have higher priority.
+#
+# You can add your custom highlight groups here (e.g. Mask = *.mp3).
+# Default groups (Hidden, Executables, Directories) are already defined
+# by the active Color Style, so you don't need to duplicate them unless
+# you specifically want to override the theme's colors.
+
+`
+	_ = os.WriteFile(path, []byte(content), 0644)
+}

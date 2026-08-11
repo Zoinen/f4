@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/unxed/vtui"
+	"github.com/unxed/zip"
 )
 
 func SchemasExist() bool {

@@ -5,7 +5,9 @@ package androidfs
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -251,6 +253,174 @@ func (s *Server) OpenShellRaw(ctx context.Context, serial, command string) (io.R
 // output in stdout because that protocol has no stderr or exit-code channels.
 func (s *Server) RunShell(ctx context.Context, serial, command string) (stdout, stderr []byte, exitCode int, err error) {
 	return s.runShell(ctx, serial, command, 0)
+}
+
+// RunShellStream runs command and delivers stdout and stderr bytes live in the
+// order their shell-v2 packets arrive. Callback chunks are bounded and valid
+// only for the duration of the callback. Legacy shells are streamed through
+// their already-merged byte channel; a randomized terminal marker recovers
+// the status that their protocol does not carry.
+func (s *Server) RunShellStream(ctx context.Context, serial, command string, cb func([]byte)) (exitCode int, err error) {
+	if strings.IndexByte(command, 0) >= 0 {
+		return -1, errors.New("adb shell: command contains NUL")
+	}
+	features, err := s.Features(ctx, serial)
+	if err != nil {
+		return -1, err
+	}
+	if !features["shell_v2"] {
+		return s.runLegacyShellStream(ctx, serial, command, cb)
+	}
+	return s.runShellV2Stream(ctx, serial, command, cb)
+}
+
+func (s *Server) runLegacyShellStream(ctx context.Context, serial, command string, cb func([]byte)) (int, error) {
+	marker, err := newLegacyShellStatusMarker()
+	if err != nil {
+		return -1, err
+	}
+	const statusVariable = "__f4_apply_status"
+	wrapped := "sh -c " + quoteShellArg(command) + " </dev/null; " + statusVariable + "=$?; printf " +
+		quoteShellArg(marker+"%u") + " \"$" + statusVariable + "\""
+	conn, err := s.openServiceConn(ctx, serial, "shell:"+wrapped)
+	if err != nil {
+		return -1, err
+	}
+	defer conn.Close()
+	stop := interruptConnOnCancel(ctx, conn)
+	defer stop()
+
+	output := newLegacyShellStatusParser(marker, cb)
+	buffer := make([]byte, shellWriteChunk)
+	for {
+		n, readErr := conn.Read(buffer)
+		if n > 0 {
+			output.Write(buffer[:n])
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return output.Finish()
+			}
+			output.Flush()
+			return -1, errorAfterContext(ctx, readErr)
+		}
+	}
+}
+
+const (
+	legacyShellStatusMarkerPrefix = "__f4_status_"
+	legacyShellStatusNonceBytes   = 16
+	legacyShellStatusMaxDigits    = 10
+)
+
+func newLegacyShellStatusMarker() (string, error) {
+	var nonce [legacyShellStatusNonceBytes]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("adb legacy shell: generate status marker: %w", err)
+	}
+	return legacyShellStatusMarkerPrefix + hex.EncodeToString(nonce[:]) + "__", nil
+}
+
+// legacyShellStatusParser withholds only enough trailing output to recognize
+// the randomized status marker. Everything before that bounded tail remains
+// live, while the marker itself never reaches the command transcript.
+type legacyShellStatusParser struct {
+	marker  []byte
+	pending []byte
+	cb      func([]byte)
+}
+
+func newLegacyShellStatusParser(marker string, cb func([]byte)) *legacyShellStatusParser {
+	return &legacyShellStatusParser{marker: []byte(marker), cb: cb}
+}
+
+func (p *legacyShellStatusParser) Write(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	p.pending = append(p.pending, data...)
+	keep := len(p.marker) + legacyShellStatusMaxDigits
+	if len(p.pending) <= keep {
+		return
+	}
+	emit := len(p.pending) - keep
+	emitShellStreamChunks(p.pending[:emit], p.cb)
+	copy(p.pending, p.pending[emit:])
+	p.pending = p.pending[:keep]
+}
+
+func (p *legacyShellStatusParser) Finish() (int, error) {
+	markerAt := bytes.LastIndex(p.pending, p.marker)
+	if markerAt < 0 {
+		p.Flush()
+		return -1, errors.New("adb legacy shell: stream ended without a status marker")
+	}
+	status := p.pending[markerAt+len(p.marker):]
+	code, err := strconv.ParseUint(string(status), 10, 8)
+	if err != nil {
+		p.Flush()
+		return -1, fmt.Errorf("adb legacy shell: invalid status %q: %w", status, err)
+	}
+	emitShellStreamChunks(p.pending[:markerAt], p.cb)
+	p.pending = nil
+	return int(code), nil
+}
+
+func (p *legacyShellStatusParser) Flush() {
+	emitShellStreamChunks(p.pending, p.cb)
+	p.pending = nil
+}
+
+func (s *Server) runShellV2Stream(ctx context.Context, serial, command string, cb func([]byte)) (int, error) {
+	conn, err := s.openServiceConn(ctx, serial, "shell,v2,raw:"+command)
+	if err != nil {
+		return -1, err
+	}
+	defer conn.Close()
+	stop := interruptConnOnCancel(ctx, conn)
+	defer stop()
+
+	for {
+		id, payload, readErr := readShellPacket(conn)
+		if readErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return -1, ctxErr
+			}
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
+				return -1, fmt.Errorf("adb shell-v2: stream ended without an exit packet: %w", readErr)
+			}
+			return -1, readErr
+		}
+		switch id {
+		case shellIDStdout, shellIDStderr:
+			emitShellStreamChunks(payload, cb)
+		case shellIDExit:
+			code, parseErr := parseShellExit(payload)
+			if parseErr != nil {
+				return -1, parseErr
+			}
+			return code, nil
+		case shellIDCloseStdin, shellIDWindowSize:
+			// A command runner does not write stdin and uses a raw, non-PTY
+			// service, so neither packet carries output.
+		default:
+			return -1, fmt.Errorf("adb shell-v2: unexpected packet id %d", id)
+		}
+	}
+}
+
+func emitShellStreamChunks(payload []byte, cb func([]byte)) {
+	if cb == nil {
+		return
+	}
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > shellWriteChunk {
+			chunk = chunk[:shellWriteChunk]
+		}
+		cb(chunk)
+		payload = payload[len(chunk):]
+	}
 }
 
 // RunShellLimited is RunShell with a client-side stdout bound. Device-info

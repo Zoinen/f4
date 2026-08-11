@@ -207,6 +207,7 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 			item := VFSItem{
 				Name:         e.Name(),
 				Size:         size,
+				SizeKnown:    true,
 				IsDir:        isDir,
 				IsSymlink:    isSymlink,
 				MTime:        mtime,
@@ -233,7 +234,8 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	if ctx.Err() != nil {
 		return VFSItem{}, ctx.Err()
 	}
-	info, err := os.Stat(prepareOSPath(path))
+	preparedPath := prepareOSPath(path)
+	linkInfo, err := os.Lstat(preparedPath)
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Stat(%q), attempting sudo...", path)
@@ -246,11 +248,23 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 		}
 		return VFSItem{}, err
 	}
+	isSymlink := linkInfo.Mode()&os.ModeSymlink != 0 || isReparsePoint(linkInfo)
+	info := linkInfo
+	if isSymlink {
+		// Preserve the historical Stat view of the target while exposing that
+		// the selected entry itself is a link/junction. Broken links remain
+		// addressable as leaf entries.
+		if targetInfo, targetErr := os.Stat(preparedPath); targetErr == nil {
+			info = targetInfo
+		}
+	}
 
 	item := VFSItem{
 		Name:         info.Name(),
 		Size:         info.Size(),
+		SizeKnown:    true,
 		IsDir:        info.IsDir(),
+		IsSymlink:    isSymlink,
 		MTime:        info.ModTime(),
 		UnixMode:     uint32(info.Mode().Perm()),
 		IsExecutable: info.Mode().Perm()&0111 != 0,
@@ -259,7 +273,7 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 
 	// Platform specific time extraction
 	fillPlatformTimes(&item, info)
-	fillPhysicalSize(&item, info, prepareOSPath(path))
+	fillPhysicalSize(&item, info, preparedPath)
 
 	return item, nil
 }
@@ -302,6 +316,9 @@ func (v *OSVFS) Remove(ctx context.Context, path string) error {
 func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if overwrite, known := DestinationOverwrite(ctx); known && !overwrite {
+		return v.RenameNoReplace(ctx, old, new)
 	}
 	err := os.Rename(prepareOSPath(old), prepareOSPath(new))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
@@ -373,11 +390,12 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 
 func (v *OSVFS) GetCapabilities() VFSCapabilities {
 	return VFSCapabilities{
-		HasServerSideCopy:  true,
-		HasServerSideMove:  true,
-		HasRandomAccess:    true,
-		HasSearch:          false,
-		HasUnixPermissions: runtime.GOOS != "windows",
+		HasServerSideCopy:        true,
+		HasServerSideMove:        true,
+		HasRandomAccess:          true,
+		HasSearch:                false,
+		HasUnixPermissions:       runtime.GOOS != "windows",
+		HasAtomicNoReplaceRename: true,
 	}
 }
 
@@ -440,16 +458,34 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	fi, err := os.Stat(prepareOSPath(path))
+	prepared := prepareOSPath(path)
+	fi, err := os.Stat(prepared)
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.Create(prepareOSPath(path))
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	createMode := os.FileMode(0o666)
+	if overwrite, known := DestinationOverwrite(ctx); known && !overwrite {
+		// O_EXCL makes the editor's unique sibling creation collision-safe and
+		// closes the Stat/Create race. Do not include O_TRUNC in this mode: an
+		// existing path must remain byte-for-byte untouched.
+		flags = os.O_CREATE | os.O_WRONLY | os.O_EXCL
+		// Newly staged/copied data must not be exposed through a permissive
+		// umask window before the caller restores its final metadata.
+		createMode = 0o600
+	}
+	f, err := os.OpenFile(prepared, flags, createMode)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for Create(%q), attempting sudo...", path)
-		return globalSudoClient.Open(prepareOSPath(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		return globalSudoClient.Open(prepared, flags, uint32(createMode))
 	}
-	return f, err
+	if err != nil {
+		// Converting a nil *os.File directly to io.WriteCloser creates a
+		// non-nil interface. Return a literal nil so callers cannot accidentally
+		// use a writer after O_EXCL or another open failure.
+		return nil, err
+	}
+	return f, nil
 }
 
 func (v *OSVFS) ParentVFS() VFS {

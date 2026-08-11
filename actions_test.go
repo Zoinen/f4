@@ -185,7 +185,7 @@ Loop:
 			}
 
 			// Ждем, когда на вершине стека окажется диалог с заголовком " Deletion Errors "
-			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Deletion Errors " {
+			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == Msg("FileOp.DeletionErrors") {
 				break Loop
 			}
 
@@ -422,7 +422,7 @@ Loop:
 			}
 
 			// Ждем финальный диалог со списком ошибок
-			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == " Deletion Errors " {
+			if fm.GetTopFrameType() == vtui.TypeDialog && fm.GetTopFrame().GetTitle() == Msg("FileOp.DeletionErrors") {
 				break Loop
 			}
 
@@ -529,6 +529,32 @@ func TestActionExecute_HistoryQuoting(t *testing.T) {
 	lastHistory := pf.cmdLine.Edit.History[0]
 	if !strings.Contains(lastHistory, "\"name with spaces.exe\"") {
 		t.Errorf("History entry with spaces must be quoted, got: %q", lastHistory)
+	}
+}
+func TestImportFar2lHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	hstPath := filepath.Join(tmpDir, "commands.hst")
+	content := `[SavedHistory]
+Lines="cmd1\ncmd2\ncmd3"
+Extras="/dir1\n/dir2\n/dir3"
+Locks=100
+Times=804c4587aa28dd01 004e237daa28dd01 0021f27baa28dd01
+`
+	os.WriteFile(hstPath, []byte(content), 0644)
+
+	recs, err := importFar2lHistory(hstPath)
+	if err != nil {
+		t.Fatalf("importFar2lHistory failed: %v", err)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("Expected 3 records, got %d", len(recs))
+	}
+
+	if recs[0].Name != "cmd1" || recs[0].Extra != "/dir1" || !recs[0].Lock {
+		t.Errorf("Record 0 mismatch: %+v", recs[0])
+	}
+	if recs[1].Name != "cmd2" || recs[1].Extra != "/dir2" || recs[1].Lock {
+		t.Errorf("Record 1 mismatch: %+v", recs[1])
 	}
 }
 func TestActionDelete_SuccessorLogic(t *testing.T) {
@@ -764,6 +790,38 @@ func TestDelete_FocusCustomization(t *testing.T) {
 	}
 	fm.Pop()
 }
+
+// TestActionDelete_UsesWarnPalette_Issue379 pins the fix for #379:
+// delete is destructive, so the confirmation dialog must render on the
+// red WarnDialog palette instead of the neutral one.
+func TestActionDelete_UsesWarnPalette_Issue379(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fsp := pf.panels[0].(*FileSystemPanel)
+	fsp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "goner.txt"}, Selected: true}}
+	pf.activeIdx = 0
+
+	actionDelete(pf)
+
+	top := fm.GetTopFrame()
+	if top == nil {
+		t.Fatal("Delete confirmation dialog was not shown")
+	}
+	dlg, ok := top.(*vtui.Window)
+	if !ok {
+		t.Fatalf("Top frame is not a *vtui.Window, got %T", top)
+	}
+	if !dlg.IsWarning {
+		t.Error("Delete confirmation must render on the WarnDialog palette (see #379)")
+	}
+	fm.Pop()
+}
+
 func TestActionOpenEditor_AlreadyOpened(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()
@@ -799,8 +857,13 @@ func TestActionOpenEditor_AlreadyOpened(t *testing.T) {
 	// Attempt second open
 	actionOpenEditor(pf, v, path)
 
-	// Wait for warning dialog
-	foundWarning := false
+	// Wait for the reprompt dialog. Per #379 this is a choice
+	// ("switch / reload / new instance / cancel"), not a warning —
+	// so the dialog now carries the semantic FileOp.AlreadyOpenedTitle
+	// and must render on the neutral (non-warning) palette.
+	wantTitle := Msg("FileOp.AlreadyOpenedTitle")
+	found := false
+	var foundWin *vtui.Window
 	timeout = time.After(2 * time.Second)
 Loop:
 	for {
@@ -809,8 +872,11 @@ Loop:
 			task()
 			if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
 				top := vtui.FrameManager.GetTopFrame()
-				if top != nil && strings.Contains(top.GetTitle(), "Warning") {
-					foundWarning = true
+				if top != nil && top.GetTitle() == wantTitle {
+					found = true
+					if w, ok := top.(*vtui.Window); ok {
+						foundWin = w
+					}
 					break Loop
 				}
 			}
@@ -819,8 +885,11 @@ Loop:
 		}
 	}
 
-	if !foundWarning {
-		t.Error("Expected warning dialog when trying to open an already opened file")
+	if !found {
+		t.Errorf("Expected reprompt dialog with title %q when trying to open an already opened file", wantTitle)
+	}
+	if foundWin != nil && foundWin.IsWarning {
+		t.Error("Already-opened dialog must not render as a warning (see #379)")
 	}
 }
 
@@ -859,8 +928,11 @@ func TestActionOpenViewer_AlreadyOpened(t *testing.T) {
 	// Attempt second open
 	actionOpenViewer(pf, v, path)
 
-	// Wait for warning dialog
-	foundWarning := false
+	// Same rationale as TestActionOpenEditor_AlreadyOpened above:
+	// per #379 the reprompt is a neutral choice, not a warning.
+	wantTitle := Msg("FileOp.AlreadyViewedTitle")
+	found := false
+	var foundWin *vtui.Window
 	timeout = time.After(2 * time.Second)
 Loop:
 	for {
@@ -869,8 +941,11 @@ Loop:
 			task()
 			if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
 				top := vtui.FrameManager.GetTopFrame()
-				if top != nil && strings.Contains(top.GetTitle(), "Warning") {
-					foundWarning = true
+				if top != nil && top.GetTitle() == wantTitle {
+					found = true
+					if w, ok := top.(*vtui.Window); ok {
+						foundWin = w
+					}
 					break Loop
 				}
 			}
@@ -879,8 +954,11 @@ Loop:
 		}
 	}
 
-	if !foundWarning {
-		t.Error("Expected warning dialog when trying to open an already viewed file")
+	if !found {
+		t.Errorf("Expected reprompt dialog with title %q when trying to open an already viewed file", wantTitle)
+	}
+	if foundWin != nil && foundWin.IsWarning {
+		t.Error("Already-viewed dialog must not render as a warning (see #379)")
 	}
 }
 
@@ -1506,8 +1584,8 @@ func TestActionAppearanceSettings_SaveCursor(t *testing.T) {
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 
-	origVal := AppConfig.KeepTerminalCursor
-	defer func() { AppConfig.KeepTerminalCursor = origVal }()
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
 
 	AppConfig.KeepTerminalCursor = false
 
@@ -1544,6 +1622,46 @@ func TestActionAppearanceSettings_SaveCursor(t *testing.T) {
 
 	if !AppConfig.KeepTerminalCursor {
 		t.Error("KeepTerminalCursor was not saved to AppConfig")
+	}
+}
+
+func TestActionAppearanceSettingsSavesSystemMonospace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	oldConfig := AppConfig
+	oldPath := getUserConfigIniPath
+	getUserConfigIniPath = func() string { return filepath.Join(t.TempDir(), "settings.ini") }
+	defer func() {
+		AppConfig = oldConfig
+		getUserConfigIniPath = oldPath
+	}()
+	AppConfig.GuiUseSystemMonospace = true
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	actionAppearanceSettings(pf)
+	top := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	var systemFont *vtui.Checkbox
+	for _, child := range top.GetChildren() {
+		checkbox, ok := child.(*vtui.Checkbox)
+		if ok && checkbox.GetText() == Msg("AppearanceSettings.UseSystemMonospace") {
+			systemFont = checkbox
+			break
+		}
+	}
+	if systemFont == nil {
+		t.Fatal("system monospace checkbox not found in Appearance Settings")
+	}
+	if systemFont.State != 1 {
+		t.Fatal("system monospace checkbox must be enabled by default")
+	}
+	systemFont.Toggle()
+	clickDialogButton(t, top, "Ok")
+	if AppConfig.GuiUseSystemMonospace {
+		t.Fatal("system monospace setting was not saved")
 	}
 }
 
@@ -1604,6 +1722,60 @@ func TestActionAppearanceSettings_CancelPreservesPalette(t *testing.T) {
 	if got := vtui.Palette[ColPanelText]; got != sentinel {
 		t.Errorf("Cancel dropped the override: palette[ColPanelText]=%016x, want sentinel %016x", got, sentinel)
 	}
+}
+
+func TestActionAppearanceSettings_LivePreviewRecolorsExistingLabels(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	SetDefaultF4Palette()
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	actionAppearanceSettings(pf)
+	frame := vtui.FrameManager.GetTopFrame()
+	top := frame.(vtui.Container)
+
+	var combo *vtui.ComboBox
+	var label *vtui.Text
+	for _, item := range top.GetChildren() {
+		switch control := item.(type) {
+		case *vtui.ComboBox:
+			if combo == nil {
+				combo = control
+			}
+		case *vtui.Text:
+			if label == nil {
+				label = control
+			}
+		}
+	}
+	if combo == nil || label == nil {
+		t.Fatal("Appearance dialog style combobox or label not found")
+	}
+
+	before := vtui.Palette[vtui.ColDialogText]
+	target := -1
+	for idx := range combo.Menu.Items {
+		combo.Menu.OnAction(idx)
+		if vtui.Palette[vtui.ColDialogText] != before {
+			target = idx
+			break
+		}
+	}
+	if target < 0 {
+		t.Fatal("no available style changes Dialog.Text; cannot verify live preview")
+	}
+
+	frame.Show(scr)
+	_, y, x, _ := label.GetPosition()
+	if got, want := scr.GetCell(x, y).Attributes, vtui.Palette[vtui.ColDialogText]; got != want {
+		t.Fatalf("existing Appearance label kept stale color %#x after style switch, want %#x", got, want)
+	}
+
+	clickDialogButton(t, top, "Cancel")
 }
 
 func TestPanelsFrame_RunAdvancedProgressTask(t *testing.T) {

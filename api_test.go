@@ -16,6 +16,13 @@ func (m *mockVFSProvider) Priority() int { return 1 }
 func (m *mockVFSProvider) CanOpen(ctx context.Context, parent vfs.VFS, path string) bool {
 	return path == "api-test-path"
 }
+
+type mockURIProvider struct{}
+
+func (*mockURIProvider) Scheme() string { return "core-api-uri-test" }
+func (*mockURIProvider) OpenURI(context.Context, vfs.VFS, string) (vfs.VFS, error) {
+	return nil, nil
+}
 func (m *mockVFSProvider) Open(ctx context.Context, parent vfs.VFS, path string) (vfs.VFS, error) {
 	return nil, nil
 }
@@ -84,10 +91,23 @@ Loop:
 
 func TestCoreAPI_Registrations(t *testing.T) {
 	api := &coreAPI{}
+	pluginRegistryMu.Lock()
+	initialDrives := append([]DriveEntry(nil), DriveRegistry...)
+	initialHotkeyEntries := append([]HotkeyEntry(nil), GlobalHotkeys...)
+	initialMenuItems := append([]PluginMenuItem(nil), PluginMenuItems...)
+	pluginRegistryMu.Unlock()
+	t.Cleanup(func() {
+		pluginRegistryMu.Lock()
+		DriveRegistry = initialDrives
+		GlobalHotkeys = initialHotkeyEntries
+		PluginMenuItems = initialMenuItems
+		pluginRegistryMu.Unlock()
+	})
 
 	// 1. RegisterVFSProvider
 	p := &mockVFSProvider{}
 	api.RegisterVFSProvider(p)
+	t.Cleanup(func() { vfs.UnregisterProvider(p) })
 	found := vfs.FindProvider(context.Background(), nil, "api-test-path")
 	if found != p {
 		t.Error("VFS provider was not registered correctly")
@@ -108,14 +128,24 @@ func TestCoreAPI_Registrations(t *testing.T) {
 		t.Error("Drive was not registered correctly")
 	}
 
-	// 4. RegisterGlobalHotkey
+	// 4. RegisterURIProvider
+	up := &mockURIProvider{}
+	if err := api.RegisterURIProvider(up); err != nil {
+		t.Fatalf("RegisterURIProvider: %v", err)
+	}
+	t.Cleanup(func() { vfs.UnregisterURIProvider(up.Scheme()) })
+	if got := vfs.FindURIProvider("CORE-API-URI-TEST://profile/path"); got != up {
+		t.Error("URI provider was not registered correctly")
+	}
+
+	// 5. RegisterGlobalHotkey
 	initialHotkeys := len(GlobalHotkeys)
 	api.RegisterGlobalHotkey(0x41, vtinput.ShiftPressed, func(app vfs.App) {})
 	if len(GlobalHotkeys) != initialHotkeys+1 || GlobalHotkeys[len(GlobalHotkeys)-1].VK != 0x41 {
 		t.Error("Hotkey was not registered correctly")
 	}
 
-	// 5. RegisterPluginMenuItem
+	// 6. RegisterPluginMenuItem
 	initialPlugins := len(PluginMenuItems)
 	api.RegisterPluginMenuItem("My Plugin", func(app vfs.App) {})
 	if len(PluginMenuItems) != initialPlugins+1 || PluginMenuItems[len(PluginMenuItems)-1].Label != "My Plugin" {

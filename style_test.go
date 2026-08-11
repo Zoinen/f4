@@ -20,8 +20,11 @@ func TestAvailableColorStylesIncludesBuiltInsAndUserStyles(t *testing.T) {
 	}
 
 	styles := AvailableColorStyles()
-	if len(styles) != 4 {
-		t.Fatalf("expected 4 styles (Modern, Classic, Default Dark, Solarized); got %v", styleNames(styles))
+	// The built-in set grows with the repo (Fonokai landed after this
+	// test was first written); accept "the built-ins plus our
+	// Solarized" without pinning the exact count.
+	if len(styles) < 4 {
+		t.Fatalf("expected at least 4 styles (built-ins + user Solarized); got %v", styleNames(styles))
 	}
 	if styles[0].Name != "Modern" || styles[1].Name != "Classic" {
 		t.Fatalf("first two styles should be Modern and Classic, got %v", styleNames(styles[:2]))
@@ -66,8 +69,46 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedText]); got != 0xF1EC0E {
 		t.Fatalf("modern selected panel text: got %06X", got)
 	}
+	if got := vtui.GetRGBFore(vtui.Palette[ColPanelHighlightText]); got != 0xC678DD {
+		t.Fatalf("modern fast-find match highlight: got %06X", got)
+	}
 	if got := vtui.GetRGBFore(vtui.Palette[ColPanelSelectedCursor]); got != 0xF1EC0E {
 		t.Fatalf("modern selected panel cursor text: got %06X", got)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelSelectedTitle]); fg != 0xFFFFFF || bg != 0x434343 {
+		t.Fatalf("modern selected panel title: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelTotalInfo]); fg != 0xD0D0D0 || bg != 0x232323 {
+		t.Fatalf("modern panel total info: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelSelectedInfo]); fg != 0xF1EC0E || bg != 0x3B6290 {
+		t.Fatalf("modern panel selected info: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabs]); fg != 0xAAAAAA || bg != 0x000000 {
+		t.Fatalf("modern workspace tabs: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsActive]); fg != 0xFFFFFF || bg != 0x232323 {
+		t.Fatalf("modern active workspace tab: got %06X on %06X", fg, bg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAccent]); fg != 0x7FAFE3 {
+		t.Fatalf("modern workspace tab accent: got %06X", fg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAttention]); fg != 0xFF9F43 {
+		t.Fatalf("modern workspace tab attention: got %06X", fg)
+	}
+	if _, editBG := GetColorRGBBoth(vtui.Palette[vtui.ColDialogEdit]); editBG != 0x232323 {
+		t.Fatalf("modern dialog edit background: got %06X", editBG)
+	}
+	for name, idx := range map[string]int{
+		"text":      vtui.ColDialogComboText,
+		"highlight": vtui.ColDialogComboHighlight,
+		"box":       vtui.ColDialogComboBox,
+		"title":     vtui.ColDialogComboTitle,
+		"scrollbar": vtui.ColDialogComboScrollbar,
+	} {
+		if _, bg := GetColorRGBBoth(vtui.Palette[idx]); bg != 0x232323 {
+			t.Fatalf("modern dialog combo %s background: got %06X, want edit background 232323", name, bg)
+		}
 	}
 	if got := vtui.GetRGBFore(vtui.Palette[ColPanelScrollbar]); got != 0x5A5A5A {
 		t.Fatalf("modern full panel scrollbar: got %06X", got)
@@ -93,6 +134,74 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 	}
 	if got := vtui.GetRGBBack(vtui.Palette[ColEditorText]); got != 0x0000A0 {
 		t.Fatalf("classic editor background: got %06X", got)
+	}
+}
+
+func TestApplyColorStyleFonokaiWorkspaceTabs(t *testing.T) {
+	oldDir := getUserStylesDir
+	getUserStylesDir = func() string { return t.TempDir() }
+	defer func() { getUserStylesDir = oldDir }()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
+
+	if err := ApplyColorStyle("Fonokai"); err != nil {
+		t.Fatal(err)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabs]); fg != 0xA69F94 || bg != 0x292620 {
+		t.Fatalf("fonokai inactive workspace tabs: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsActive]); fg != 0xEEEEEC || bg != 0x37322C {
+		t.Fatalf("fonokai active workspace tab: got %06X on %06X", fg, bg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAccent]); fg != 0xE6B450 {
+		t.Fatalf("fonokai workspace tab accent: got %06X", fg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAttention]); fg != 0xEC6A2C {
+		t.Fatalf("fonokai workspace tab attention: got %06X", fg)
+	}
+	if _, textBG := GetColorRGBBoth(vtui.Palette[vtui.ColDialogComboText]); textBG != 0xC4B8A8 {
+		t.Fatalf("fonokai combo dropdown background: got %06X", textBG)
+	} else if _, boxBG := GetColorRGBBoth(vtui.Palette[vtui.ColDialogComboBox]); boxBG != textBG {
+		t.Fatalf("fonokai combo border background: got %06X, want dropdown background %06X", boxBG, textBG)
+	}
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(20, 6)
+	combo := vtui.NewComboBox(0, 0, 10, []string{"One", "Two"})
+	combo.Menu.SetPosition(0, 0, 10, 4)
+	combo.Menu.Show(scr)
+	borderBG := vtui.GetRGBBack(scr.GetCell(0, 2).Attributes)
+	itemBG := vtui.GetRGBBack(scr.GetCell(2, 2).Attributes)
+	if borderBG != itemBG {
+		t.Fatalf("rendered fonokai combo border background %06X differs from dropdown row %06X", borderBG, itemBG)
+	}
+}
+
+func TestApplyColorStyleDefaultDarkWorkspaceTabs(t *testing.T) {
+	oldDir := getUserStylesDir
+	userDir := t.TempDir()
+	getUserStylesDir = func() string { return userDir }
+	defer func() { getUserStylesDir = oldDir }()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
+
+	if err := ApplyColorStyle("Default Dark"); err != nil {
+		t.Fatal(err)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabs]); fg != 0x8F9696 || bg != 0x252A2B {
+		t.Fatalf("default dark inactive workspace tabs: got %06X on %06X", fg, bg)
+	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsActive]); fg != 0xEEEEEC || bg != 0x2E3436 {
+		t.Fatalf("default dark active workspace tab: got %06X on %06X", fg, bg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAccent]); fg != 0xFCE94F {
+		t.Fatalf("default dark workspace tab accent: got %06X", fg)
+	}
+	if fg, _ := GetColorRGBBoth(vtui.Palette[ColPanelWorkspaceTabsAttention]); fg != 0xEF2929 {
+		t.Fatalf("default dark workspace tab attention: got %06X", fg)
 	}
 }
 

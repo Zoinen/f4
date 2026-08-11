@@ -113,6 +113,8 @@ func ApplyColorStyle(name string) error {
 				ApplyColorIni(LoadIni(path))
 			}
 			FinishColors()
+			GlobalFileHighlighter.LoadThemeRules(style.ini)
+			configureWorkspaceTabColors()
 			return nil
 		}
 	}

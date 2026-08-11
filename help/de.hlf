@@ -1,0 +1,636 @@
+@Contents
+$f4-Hilfe-Index (Version: %Ver)
+f4 ist ein experimenteller Klon von Far Manager / far2l in Go.
+
+~Tastenkombinationen für Viewer / Editor~ViewerEditor@
+~Panel-Navigation~PanelNav@
+~Visual File Renamer (VisRen)~VisRen@
+~README.md anzeigen~README@
+
+@VisRen
+$Visual File Renamer (VisRen)
+
+VisRen ist das native visuelle Stapel-Umbenennungswerkzeug von F4. Es baut
+jedes neue Name auf, bevor irgendetwas geändert wird, und zeigt Quell- und
+Zielnamen nebeneinander an. Es funktioniert mit Dateien und Verzeichnissen auf
+einem lokalen Dateisystempanel.
+
+Wenn Panelelemente markiert sind, öffnet VisRen diese in der Panelreihenfolge.
+Wenn keine Elemente markiert sind, wird das Element unter dem Panelcursor
+verwendet. Der übergeordnete Eintrag ".." wird niemals verwendet. Öffnen Sie
+VisRen mit F11 und wählen Sie "Visual File Renamer". Der zugewiesene Menübuchstabe
+kann es ebenfalls aktivieren.
+
+~Schnellstart und Dialogfelder~VisRenQuickStart@
+~Namensmasken, Erweiterungen, Bereiche, Zähler und Escapes~VisRenMasks@
+~Groß-/Kleinschreibung, Transliteration und Verarbeitungsreihenfolge~VisRenTransforms@
+~Daten, ID3, Bild/EXIF und ausführbare Metadaten~VisRenMetadata@
+~Suche, einfache Ersetzung und reguläre Ausdrücke~VisRenSearch@
+~Vorschau-Navigation, Tastatur- und Mausreferenz~VisRenPreview@
+~Bearbeiten der Umbenennungsliste im UTF-8-Editor~VisRenEditor@
+~Umbenennung ausführen, Fehler, Protokoll und Rückgängig machen~VisRenRename@
+~Tragbare Dateinamensregeln und wichtige Einschränkungen~VisRenSafety@
+~Praktische Rezepte~VisRenExamples@
+
+Die Implementierung folgt FarPlugins VisRen 3.2.0, mit strengerer Dateinamens-
+und Editorvalidierung, stabilen Zufallswerten und tragbaren Metadaten.
+
+@VisRenQuickStart
+$VisRen: Schnellstart und Dialogfelder
+
+#Eine typische Umbenennung#
+
+  1. Markieren Sie die gewünschten Dateien/Verzeichnisse mit Einfg, oder
+     platzieren Sie den Panelcursor auf ein Element, falls nur dieses benötigt wird.
+  2. Drücken Sie F11 und wählen Sie VisRen.
+  3. Geben Sie Masken für den Namen und die Erweiterung ein. Die Standardwerte
+     [N] und [E] behalten beide Teile unverändert bei.
+  4. Geben Sie optional Text für "Suchen nach" und "Ersetzen durch" ein. Der
+     Fokus beginnt in "Suchen nach"; Tab bewegt sich direkt zu "Ersetzen durch".
+  5. Überprüfen Sie jedes Ziel. F3 zeigt den vollständigen Quell-, Zielnamen oder
+     die Diagnose für die aktuelle Zeile an.
+  6. Wählen Sie Umbenennen oder drücken Sie die Eingabetaste auf der Standardtaste.
+
+#Name und Erweiterung#
+
+Diese beiden Felder bauen den Ziel-Basiselementnamen und die Erweiterung separat
+auf. Das Erweiterungsfeld enthält den Punkt nicht. Ein leeres Erweiterungsergebnis
+entfernt die Erweiterung. Literaltext wird wie eingegeben kopiert; eingeklammerte
+Ausdrücke fügen Quelltext, Zähler, Metadaten oder Transformationen ein.
+
+Der letzte Punkt trennt den Quellnamen und die Erweiterung. Daher hat archive.tar.gz
+den Namen archive.tar und die Erweiterung gz. README hat keine Erweiterung. Eine
+Punktdatei wie .gitignore hat einen leeren Namen und die Erweiterung gitignore.
+
+#Vorlagen und [+]#
+
+Die Namensvorlagen- und Erweiterungsvorlagen-Listen enthalten Ausdrücke, die für
+die entsprechende Maske gültig sind. Das Auswählen eines Eintrags wählt ihn nur aus.
+Die Schaltfläche [+] fügt diese ausgewählte Vorlage am Cursor ein und gibt den
+Fokus wieder an die entsprechende Maske zurück, genau wie beim Original-VisRen.
+Wenn eine Vorlagenliste den Fokus hat, fügt Einfg deren aktuellen Eintrag ein,
+während der Fokus in der Liste bleibt. Bereichs- und Zähler-Platzhalter werden
+beim Einfügen zu nutzbaren Werten.
+
+#Suchsteuerungen#
+
+Suche und Ersetzung werden angewendet, nachdem beide Masken einen vollständigen
+Dateinamen aufgebaut haben. "Groß-/Kleinschreibung" ist anfangs aktiviert.
+"Regulärer Ausdruck" schaltet zwischen literalem Suchen und Regex-Modus um. Details
+finden Sie im Thema "Suche".
+
+#Live-Vorschau und Diagnose#
+
+Jede Bearbeitung aktualisiert die Vorschau. Wenn eine Maske, ein Bereich, ein
+Zähler, ein Regex oder ein resultierender Dateiname ungültig ist, werden alle
+Ziele zu <Error!>. Umbenennen und F4-Editor sind deaktiviert. F3 zeigt die
+tatsächliche Diagnose an.
+
+Die vier Bearbeitungsfelder verwenden den Verlauf von F4. Für "Umbenennen" verwendete
+Werte werden zu ihren Verläufen hinzugefügt. Worttrennzeichen für [T] werden separat
+in der VisRen-Benutzerkonfiguration gespeichert.
+
+Drücken Sie die Rücktaste (Backspace), um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenMasks
+$VisRen: Masken, Bereiche, Zähler und Escapes
+
+#Grundlegende Ausdrücke#
+
+  [N]          Originalname ohne die letzte Erweiterung.
+  [E]          Originalerweiterung ohne ihren führenden Punkt.
+  [[]          Ein literales öffnendes eckiges Klammerzeichen.
+  []]          Ein literales schließendes eckiges Klammerzeichen.
+
+Der gesamte Text außerhalb von Ausdrücken ist literal. Eine verwaiste schließende
+Klammer, eine nicht geschlossene öffnende Klammer oder ein unbekannter Ausdruck
+ist ein Fehler.
+
+#Bereiche#
+
+Ein Bereich folgt unmittelbar auf N oder E. Positionen zählen Unicode-Zeichen,
+nicht Bytes, und beginnen bei 1. Eine negative Position zählt rückwärts vom
+Ende. Die gleichen Formen funktionieren mit E, zum Beispiel [E1-3].
+
+Für den Quellnamen abcdefghij:
+
+  [N2]         b                 ein Zeichen
+  [N2-5]       bcde              Positionen 2 bis einschließlich 5
+  [N2,5]       bcdef             fünf Zeichen beginnend an Position 2
+  [N2-]        bcdefghij         Position 2 bis zum Ende
+  [N-2]        i                 zweites Zeichen vom Ende
+  [N2--5]      bcdef             Position 2 bis zum fünften Zeichen vom Ende
+  [N-8-5]      cde               achtes-vom-Ende bis fünftes-vom-Ende
+  [N-8,5]      cdefg             fünf Zeichen beginnend achtes vom Ende
+  [N-5-]       fghij             fünftes vom Ende bis zum Ende
+
+Ein Teil außerhalb der Grenzen wird nach Möglichkeit abgeschnitten oder ergibt ein
+leeres Ergebnis. Position Null und ein umgekehrter Bereich sind Fehler. Die
+Bereichsvorlage aus dem Dropdown verwendet den längsten Quellnamen oder die
+Erweiterung.
+
+#Zähler#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Die Anfangsziffern legen den ersten Wert und die minimale Anzeigebreite fest. Sie
+dürfen höchstens neun Ziffern enthalten. Wenn +Schritt weggelassen wird, ist der Schritt
+1. Der Zähler folgt der Reihenfolge der Vorschau, so dass Strg+Auf/Ab oder
+Drag-and-Drop zugewiesene Werte ändert. Die Breite ist ein Minimum: größere Werte
+werden nicht abgeschnitten.
+
+#Kombinieren von Ausdrücken#
+
+Ausdrücke und Literale können frei kombiniert werden. Zum Beispiel erzeugt
+[C001+1]_[N1-12] eine dreistellige Sequenz, einen Unterstrich und die ersten zwölf
+Zeichen des alten Namens. Transformationsausdrücke fügen keinen Text hinzu; sie
+ändern den Teil wie im Transformations-Thema beschrieben.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenTransforms
+$VisRen: Transformationen und Verarbeitungsreihenfolge
+
+#Falltransformationen#
+
+  [L]          Konvertiert das gesamte Maskenergebnis in Kleinbuchstaben.
+  [U]          Konvertiert es in Großbuchstaben.
+  [F]          Ersten Buchstaben groß schreiben; den Rest klein schreiben.
+  [T]          Ersten Buchstaben jedes Wortes groß schreiben.
+  [M]          Einen Musiknamen im Stil "Künstler - Titel" formatieren.
+
+[T] verwendet standardmäßig die Worttrennzeichen "-. _&". Wählen Sie [T] in einer
+der beiden Vorlagenlisten aus und drücken Sie F4, um die Trennzeichen zu bearbeiten.
+Höchstens 18 Zeichen werden in der VisRen-Konfiguration gespeichert und später
+wiederverwendet.
+
+[M] erkennt " - " oder "_-_" zwischen Künstler und Titel. Künstlerwörter werden
+im Titel-Stil formatiert (Title Case); der Titel beginnt mit einem Großbuchstaben
+und wird ansonsten kleingeschrieben. Die russische Konjunktion, die im
+Künstlernamen "und" bedeutet, wird kleingeschrieben, was dem Originalverhalten von
+VisRen entspricht.
+
+Wenn mehrere Falltransformationen in einer Maske vorkommen, ist die Priorität in
+dieser Reihenfolge festgelegt: [L], [U], [F], [T], [M]. Nur die mit der höchsten
+Priorität wird angewendet.
+
+#Transliteration#
+
+  [TL]         Transliteriert russisches Kyrillisch in die VisRen-Latein-Schreibweise.
+  [TR]         Konvertiert diese Latein-Schreibweise zurück in russisches Kyrillisch.
+
+Die Zuordnung entspricht der Original-VisRen-Tabelle: zum Beispiel ё -> jo, ж -> zh,
+х -> kh, щ -> shh, ю -> ju und я -> ja. Die Groß-/Kleinschreibung wird nach Möglichkeit
+beibehalten. Die umgekehrte Konvertierung wählt die längste passende lateinische
+Sequenz. Wenn sowohl [TL] als auch [TR] vorhanden sind, hat [TL] Priorität.
+
+#Genaue Verarbeitungsreihenfolge#
+
+  1. Namens- und Erweiterungsausdrücke werden erweitert.
+  2. Die beiden Teile werden mit einem Punkt verbunden, wenn die Erweiterung nicht leer ist.
+  3. "Suchen/Ersetzen" wird auf diesen vollständigen Dateinamen angewendet.
+  4. Das Ergebnis wird an seinem letzten Punkt erneut aufgeteilt.
+  5. Die Transliteration wird auf den Teil angewendet, dessen Maske dies angefordert hat.
+  6. Die ausgewählte Falltransformation wird zuletzt angewendet.
+  7. Die endgültige einzelne Dateinamenskomponente wird validiert.
+
+Diese Reihenfolge ist wichtig. Eine Falltransformation wirkt sich auch auf den durch
+"Suchen/Ersetzen" eingefügten Text in diesem Teil aus, während die Suche mit der
+generierten Erweiterung übereinstimmen kann.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenMetadata
+$VisRen: Daten und Datei-Metadaten
+
+Metadaten werden verzögert (lazy) gelesen und einmal für jedes Quellelement
+gespeichert. Fehlende oder nicht unterstützte Felder werden zu einer leeren
+Zeichenfolge erweitert und stoppen die Vorschau nicht.
+
+#Dateizeitstempel und Sitzungswerte#
+
+  [DM]         Letztes Änderungsdatum in Ortszeit: YYYY.MM.DD
+  [TM]         Letzte Änderungszeit in Ortszeit: hh-mm-ss
+  [R]          Zufällige Dezimalzahl von 0 bis 32767
+
+[R] wird einmal zugewiesen, wenn sich der Dialog öffnet. Es bleibt stabil, während
+Masken bearbeitet werden, und folgt seiner Quelle, wenn Zeilen neu geordnet werden.
+Eine neue VisRen-Sitzung weist neue Werte zu.
+
+#MP3 / ID3#
+
+Der Titelnummern-Ausdruck ist eine öffnende Klammer, das ASCII-Nummernsymbol
+(U+0023) und eine schließende Klammer. Die übrigen Ausdrücke sind:
+
+  [t]          Titel des Tracks
+  [a]          Künstler
+  [l]          Album
+  [y]          Jahr/Datum
+  [g]          Genre
+
+ID3v2.3- und ID3v2.4-Frames werden bevorzugt, wenn ein ID3v2-Tag vorhanden ist.
+Andernfalls wird ID3v1.1 verwendet, einschließlich dessen Titelnummer und
+Genre-Tabelle. Unterstützte ID3-Kodierungen umfassen Legacy-Systemtext, UTF-8 und
+UTF-16.
+
+#Bilder und EXIF#
+
+  [c]          JPEG-EXIF-Kamerahersteller
+  [m]          JPEG-EXIF-Kameramodell
+  [d]          Aufnahmedatum: YYYY.MM.DD hh-mm-ss
+  [r]          Pixelabmessungen als BREITExHÖHE
+
+Abmessungen sind für JPEG, BMP, GIF und PNG verfügbar. EXIF-Hersteller, -Modell und
+-Aufnahmedatum werden aus JPEG gelesen. Wenn kein verwendbares EXIF-Datum vorhanden
+ist, verwendet [d] dessen Änderungsdatum und -zeit. Beachten Sie, dass kleingeschriebene
+[m]/[r] Metadaten sind, während großgeschriebene [M]/[R] Transformations- bzw.
+Zufallsausdrücke sind.
+
+#Ausführbare Version#
+
+  [V]          Feste Dateiversion aus einer Windows-PE-.exe- oder -.dll-Ressource
+
+PE-Versionsdaten werden auf jedem unterstützten Betriebssystem nativ analysiert. Eine
+Datei ohne verwendbare feste Version erweitert [V] zu einer leeren Zeichenfolge.
+
+Metadatentext, der Pfadtrenner oder andere verbotene Dateinamenzeichen enthält,
+wird verworfen oder von der endgültigen Dateinamensvalidierung erfasst. Überprüfen Sie
+immer die Vorschau, wenn Tags aus Dateien stammen, die Sie nicht kontrollieren.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenSearch
+$VisRen: Suche, Ersetzung und reguläre Ausdrücke
+
+Suche/Ersetzung wird auf den vollständigen Namen angewendet, der von beiden Masken
+erzeugt wurde, einschließlich des generierten Punkts und der Erweiterung. Ein leeres
+"Suchen nach"-Feld deaktiviert diese Stufe. Jede nicht überlappende Übereinstimmung
+wird ersetzt.
+
+#Einfacher Modus#
+
+Wenn "Regulärer Ausdruck" deaktiviert ist, ist "Suchen nach" literaler Text. Wenn
+"Groß-/Kleinschreibung" aktiviert ist, unterscheiden sich "Datei" und "datei". Wenn
+deaktiviert, vergleicht der Abgleich kleingeschriebenen Text; die Ersetzung wird
+genau wie eingegeben eingefügt.
+
+Beispiel: Masken [N] und [E], "Suchen nach" "entwurf_" und ein leerer
+Ersetzungswert verwandeln entwurf_bericht.txt in bericht.txt.
+
+#Regulärer-Ausdrucks-Modus#
+
+Aktivieren Sie "Regulärer Ausdruck" für die auf Go/coregex basierende Engine von F4.
+Ein Muster kann direkt oder als /muster/i eingegeben werden. Schreiben Sie in der
+Slash-Form einen literalen Slash als \/. Das optionale Suffix "i" ignoriert die
+Groß-/Kleinschreibung. Das Deaktivieren von "Groß-/Kleinschreibung" bewirkt dasselbe.
+Kein anderes Suffix-Flag als "i" wird akzeptiert.
+
+Ersetzungsreferenzen verwenden $0 für die vollständige Übereinstimmung und $1 bis $9
+für Erfassungsgruppen. Zum Beispiel bei 001-bericht.txt:
+
+  Suchen nach:      /(\d+)-([^.]+)/
+  Ersetzen durch:   $2-$1
+  Ergebnis:         bericht-001.txt
+
+Ein fehlerhaftes Muster, ein nicht geschlossenes /muster/ oder ein nicht unterstütztes
+Flag lässt die Vorschau <Error!> anzeigen, deaktiviert Umbenennen und den Editor
+und macht die Parserdiagnose über F3 zugänglich.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+Im Originalnamen gefundene Übereinstimmungen werden in der linken Vorschauspalte
+farblich hervorgehoben. Die Hervorhebung folgt "Groß-/Kleinschreibung" und "Regulärer
+Ausdruck", markiert jede sichtbare Übereinstimmung und bleibt beim Scrollen
+ausgerichtet. Durch "Ersetzen durch" erzeugter Text wird in der rechten Spalte
+hervorgehoben. Bei einem regulären Ausdruck umfasst dies die vollständige erweiterte
+Ersetzung; eine leere Ersetzung hat keinen sichtbaren Text zum Hervorheben.
+
+@VisRenPreview
+$VisRen: Vorschau, Tastatur und Maus
+
+Die linke Vorschauspalte ist die Quelle; die rechte ist das Ziel. Die erste Zeile
+ist aktuell, wenn sich der Dialog öffnet, während der Tastaturfokus in "Suchen nach"
+beginnt. F12 verschiebt den Fokus auf die Vorschau; von dort kehrt er zur Namensmaske
+zurück.
+
+Wenn die Liste höher als die sichtbare Vorschau ist, erscheint eine vertikale Bildlaufleiste
+an ihrem rechten Rand. Ihre Pfeile, Spur und der ziehbare Schieber scrollen die Liste;
+das Mausrad funktioniert ebenfalls über der Vorschau. Die Bildlaufleiste verschwindet
+automatisch, wenn jede Zeile passt.
+
+#Allgemeine Tasten#
+
+  F1                   Diese Hilfe öffnen.
+  F2                   Aufzeichnung des Umbenennungsprotokolls umschalten.
+  F3                   Vollständige Namen oder die aktuelle Fehlerdiagnose anzeigen.
+  F4                   Die Liste im Editor öffnen.
+  F4 auf [T]-Vorlage   Worttrennzeichen für Titel-Stil (Title Case) bearbeiten.
+  F5                   Dialog maximieren/wiederherstellen.
+  F6                   Die verfügbare Rückgängig-Operation laden.
+  F8                   Das Umbenennungsprotokoll nach Bestätigung löschen.
+  F12                  Fokus in die/aus der Vorschau verschieben.
+  Alt+N                Fokus auf die Namensmaske setzen.
+  Alt+E                Fokus auf die Erweiterungsmaske setzen.
+  Alt+S                Fokus auf "Suchen nach" setzen.
+  Alt+P                Fokus auf "Ersetzen durch" setzen.
+  Alt+C                "Groß-/Kleinschreibung" umschalten.
+  Alt+G                "Regulärer Ausdruck" umschalten.
+  Alt+T                Fokus auf die Namensvorlagen-Liste setzen.
+  Alt+L                Fokus auf die Erweiterungsvorlagen-Liste setzen.
+  Eingabetaste         Die standardmäßige Aktion "Umbenennen" ausführen.
+  Esc                  Den Dialog schließen, ohne umzubenennen.
+
+#Tasten, während die Vorschau den Fokus hat#
+
+  Auf/Ab               Die aktuelle Zeile verschieben.
+  Pos1/Ende            Zur ersten/letzten Zeile wechseln.
+  BildAuf/BildAb       Um eine Vorschauseite blättern.
+  Entf                 Die Zeile nur aus diesem Vorgang entfernen.
+  Strg+Auf/Ab          Zeilen neu ordnen; Zähler folgen der neuen Reihenfolge.
+  Strg+Links/Rechts    Den Spaltenteiler verschieben.
+  Strg+Num5            Den Teiler zentrieren und beide Scroll-Offsets zurücksetzen.
+  Alt+Links/Rechts     Die Quellspalte horizontal scrollen.
+  Links/Rechts         Die Zielspalte horizontal scrollen.
+  Strg+BildAuf         VisRen schließen und zum Quellelement auf dem Panel zurückkehren.
+
+#Vorlagen und Maus#
+
+  Einfg in einer Vorlagenliste fügt die aktuelle Vorlage in ihre Maske ein.
+  Ziehen Sie eine Vorschauzeile mit der linken Taste, um sie neu zu ordnen.
+  Klicken Sie mit der rechten Maustaste auf eine Vorschauzeile, um deren vollständige
+  Namen/Diagnose anzuzeigen.
+  Doppelklicken Sie mit der linken Maustaste auf eine Zeile, um zu dieser Quelle auf dem
+  Panel zurückzukehren.
+  Klicken Sie auf das Zoom-Steuerelement im Titel, um das Fenster zu maximieren/wiederherzustellen.
+  Klicken Sie auf die Markierung "Umbenennung protokollieren", um die Aufzeichnung umzuschalten;
+  klicken Sie auf den Rest der Zeile, um ein vorhandenes Protokoll nach Bestätigung zu löschen.
+
+Terminal-Größenänderung und F5 stellen eine gleichmäßige zweispaltige Vorschauaufteilung wieder
+her. Manuelle Teiler- und Horizontal-Scroll-Änderungen können danach wieder angewendet werden.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenEditor
+$VisRen: Bearbeiten der Liste im UTF-8-Editor
+
+F4 fragt nach dem Exportformat mit expliziten Aktionsschaltflächen und öffnet dann
+ein temporäres UTF-8-Dokument mit dem Titel "Rename list of files" im Editor von F4:
+
+  Quelle + Ziel        "Quellname"    "Zielname"
+  Nur Ziele                           "Zielname"
+
+Jeder Wert ist in Anführungszeichen eingeschlossen. Anführungszeichen, Backslashes
+und Steuerzeichen innerhalb eines Namens verwenden die escaped String-Notation. Halten
+Sie die umgebenden Anführungszeichen intakt.
+
+#Strenge Validierung#
+
+Wenn der Editor schließt, verlangt VisRen:
+
+  - exakt die gleiche Anzahl von Zeilen wie in der Vorschau;
+  - exakt eine oder zwei Spalten in Anführungszeichen, je nach gewähltem Modus;
+  - keinen zusätzlichen Text außerhalb der Anführungszeichenwerte;
+  - eine unveränderte Quellspalte im zweispaltigen Modus;
+  - eine gültige tragbare Dateinamenskomponente für jedes Ziel.
+
+Fügen Sie keine Zeilen hinzu oder entfernen Sie sie. Im zweispaltigen Modus müssen
+die Quellidentität und die Zeilenreihenfolge exakt übereinstimmen; nur Ziele dürfen
+sich ändern. Im einspaltigen Modus bleibt jedes Ziel durch die Zeilenposition an seine
+Quelle gebunden. Diese Prüfungen erfassen Quelländerungen oder fehlerhafte Anführungszeichen
+vor dem Umbenennen.
+
+Bei einem Fehler meldet VisRen den Grund und bietet "Znovu bearbeiten" (Erneut bearbeiten)
+an. Der Editor öffnet sich wieder an der fehlerhaften Zeile, wobei Ihr Inhalt erhalten
+bleibt. Eine gültige bearbeitete Liste startet das sequentielle Umbenennen, sobald der
+Editor schließt. Wenn die generierte Liste bytegenau unverändert ist, aber Maskenänderungen
+enthält, fragt VisRen vor der Verwendung nach einer Bestätigung.
+
+Der Editor ist deaktiviert, während die Vorschau <Error!> enthält oder eine
+Rückgängig-Liste angezeigt wird.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenRename
+$VisRen: Ausführung, Fehler, Protokoll und Rückgängig machen
+
+#Sequentielles Umbenennen#
+
+Zeilen werden nacheinander von oben nach unten in ihrer aktuellen Reihenfolge
+verarbeitet. Ein unveränderter Name wird übersprungen. Eine Quelle, die nach dem Öffnen
+des Dialogs verschwunden ist, wird ebenfalls übersprungen. Für Dateien und Verzeichnisse
+gelten die gleichen Regeln.
+
+Ein Ziel, das einem anderen Objekt gehört, wird niemals überschrieben. Eine reine
+Groß-/Kleinschreibungs-Umbenennung desselben Objekts wird unterstützt, wobei bei Bedarf
+ein temporärer Name verwendet wird. Andere Zyklen werden nicht stufenweise ausgeführt:
+zum Beispiel führt a -> b und b -> a normalerweise zu einem "Ziel existiert bereits"-Fehler,
+genau wie beim Original-VisRen.
+
+#Laufzeitfehler#
+
+Berechtigungen, belegte/doppelte Ziele, Plattformgrenzen und andere Dateisystemfehler
+bieten folgende Optionen:
+
+  Wiederholen          Versuchen Sie dieselbe Zeile erneut.
+  Überspringen         Lassen Sie diese Quelle unverändert und fahren Sie fort.
+  Alle überspringen   Spätere Fehler überspringen, ohne erneut zu fragen.
+  Abbrechen            Anhalten; die verbleibenden Zeilen nicht verarbeiten.
+
+Der Vorgang ist nicht transaktional. Erfolgreiche frühere Umbenennungen bleiben nach
+Überspringen oder Abbrechen bestehen. Fehlgeschlagene und unverarbeitete Quellen bleiben
+auf dem Panel für einen erneuten Versuch markiert. Die Abschlussmeldung meldet, wie viele
+Zeilen erfolgreich waren.
+
+#Umbenennungsprotokoll#
+
+Die Protokollierung ist aktiviert, wenn sich ein neuer Dialog öffnet. Ihr Häkchen
+bedeutet, dass erfolgreiche Paare im Speicher aufgezeichnet werden. F2 oder die
+anklickbare Markierung schaltet die Aufzeichnung um. Das Protokoll wird nicht auf die
+Festplatte geschrieben und geht verloren, wenn F4 beendet wird. Es speichert nur die
+erfolgreichen Paare und das Verzeichnis des letzten Umbenennungsvorgangs; ein nachgestelltes
+* auf dem Label bedeutet, dass ein Protokoll verfügbar ist.
+
+F8 oder das Anklicken des Rests der Protokollzeile löscht dieses nach Bestätigung.
+Das Ausführen einer Umbenennung bei deaktivierter Protokollierung hinterlässt ebenfalls
+keinen Rückgängig-Stapel.
+
+#Rückgängig machen (F6)#
+
+F6 lädt den letzten Stapel in umgekehrter Reihenfolge und zeigt Ziele, die zu den
+Quellnamen zurückkehren. Der Titel zeigt das gespeicherte Verzeichnis an. Wählen Sie
+Umbenennen und bestätigen Sie das Rückgängigmachen, oder antworten Sie mit Nein, um zum
+normalen Umbenennungsmodus zurückzukehren.
+
+Rückgängig machen verwendet dieselben Regeln für Nicht-Überschreiben und Fehler. Es
+wechselt in das gespeicherte Verzeichnis, bevor es startet. Das Protokoll wird nach
+dem Versuch gelöscht, selbst wenn nur ein Teil erfolgreich war, während ungelöste
+Elemente markiert bleiben.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenSafety
+$VisRen: Dateinamenssicherheit und Einschränkungen
+
+Jedes geänderte Ziel muss eine einzige tragbare Dateinamenskomponente sein. VisRen
+weist Folgendes ab:
+
+  - einen leeren Namen, "." oder "..";
+  - Steuerzeichen (Unicode-Werte unter U+0020 oder NUL);
+  - <, >, :, ", *, ?, /, Backslash oder vertikaler Strich;
+  - ein nachgestelltes Leerzeichen oder einen Punkt;
+  - DOS-Geräte-Basisnamen CON, PRN, AUX, NUL, COM1..COM9 oder LPT1..LPT9,
+    unabhängig von Groß-/Kleinschreibung oder Erweiterung.
+
+Ein Schrägstrich (Slash) kann ein Element nicht in ein anderes Verzeichnis verschieben. Ein
+unveränderter Quellname ist zulässig und wird einfach übersprungen, selbst wenn diese
+vorhandene Quelle die tragbaren Regeln als neu generierter Name nicht bestehen würde.
+
+Die Vorschauvalidierung erfasst Maskensyntax- und tragbare Namensfehler. Sie reserviert
+keine Ziele im Voraus. Vorhandene Ziele, doppelte Ergebnisse, Berechtigungen,
+Systemlängenbeschränkungen und Zyklen können immer noch zu einem Laufzeitfehler führen.
+Kein Ziel wird überschrieben.
+
+Metadaten können fehlen oder fehlerhaft sein und werden dann zu leerem Text erweitert.
+Verwenden Sie Trennzeichen sorgfältig und überprüfen Sie immer die Vorschau. VisRen erstellt
+niemals eine Transaktion oder erfindet temporäre Namen für Zyklen aus mehreren Elementen.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@VisRenExamples
+$VisRen: Praktische Rezepte
+
+#Dateien nummerieren und Erweiterungen normalisieren#
+
+  Namensmaske:         [C001+1]_[N]
+  Erweiterungsmaske:   [E][L]
+
+Erzeugt 001_Alter Name.jpg, 002_Anderer Name.jpg und so weiter. Ordnen Sie die
+Vorschau zuerst neu, wenn der Zähler einer anderen Sequenz folgen soll.
+
+#Nur einen nützlichen Teil eines Namens mit fester Breite behalten#
+
+  Quelle:              20260805_bericht_final.txt
+  Namensmaske:         [N10-21]
+  Erweiterungsmaske:   [E]
+  Ergebnis:            bericht_final.txt
+
+#Ein literales Präfix entfernen#
+
+  Masken:              [N] und [E]
+  Suchen nach:         entwurf_
+  Ersetzen durch:      (leer)
+
+#Regex-Gruppen vertauschen#
+
+  Quelle:              001-bericht.txt
+  Suchen nach:         /(\d+)-([^.]+)/
+  Ersetzen durch:      $2-$1
+  Ergebnis:            bericht-001.txt
+
+#MP3-Dateien nach Tags benennen#
+
+  Namensmaske:         [a] - [t]
+  Erweiterungsmaske:   [E][L]
+
+Titelnummern-Präfixe können mit dem Zähler oder mit dem ID3-Titelnummern-Ausdruck
+erstellt werden, der im Thema "Daten und Metadaten" beschrieben ist. Fehlende
+Künstler- oder Titel-Tags werden zu leerem Text erweitert, überprüfen Sie daher die
+Trennzeichen in der Vorschau.
+
+#Fotos nach Aufnahmezeit und Abmessungen benennen#
+
+  Namensmaske:         [d]_[r]_[C001]
+  Erweiterungsmaske:   [E][L]
+
+JPEG verwendet das EXIF-Aufnahmedatum, falls vorhanden; andere unterstützte Bilder
+verwenden das Dateiänderungsdatum für [d].
+
+#Transliterieren und literale Klammern hinzufügen#
+
+  Namensmaske:         [[]archiv[]]_[N][TL]
+  Erweiterungsmaske:   [E][L]
+
+Die Quelle Пример.TXT wird mit der originalen Transliterationstabelle von
+VisRen zu [archiv]_Primer.txt.
+
+Drücken Sie die Rücktaste, um zum VisRen-Inhaltsverzeichnis zurückzukehren.
+
+@Panels
+$f4-Hilfe-Index (Version: %Ver)
+f4 ist ein experimenteller Klon von Far Manager / far2l in Go.
+
+~Tastenkombinationen für Viewer / Editor~ViewerEditor@
+~Panel-Navigation~PanelNav@
+~README.md anzeigen~README@
+
+@ViewerEditor
+$Viewer- & Editor-Tastenkombinationen
+Dieses Thema wird dynamisch aus dem Aktionsregister generiert.
+
+@ViewerNav
+$Navigationstasten
+Editor:
+  Strg+Links    - Zur vorherigen Wortgrenze
+  Strg+Rechts   - Zur nächsten Wortgrenze
+  Strg+Umschalt+Links/Rechts - Nach Wörtern auswählen
+  Pos1/Ende     - Zeilenanfang / -ende
+  BildAuf/BildAb - Seite nach oben / unten
+
+Viewer:
+  Auf/Ab        - Eine Zeile scrollen
+  BildAuf/BildAb - Eine Seite scrollen
+  Pos1/Ende     - Dateianfang / -ende
+
+@PanelNav
+$Panel-Navigation
+Dieses Thema wird dynamisch aus dem Aktionsregister generiert.
+
+@ShellNav
+$Panel-Navigations-Tasten
+  Tab           - Aktives Panel wechseln
+  Einfg         - Datei/Ordner markieren
+  Strg+Tab      - Arbeitsbereiche durchlaufen
+  Strg+W        - Arbeitsbereich schließen
+  Strg+N        - Aktives Panel in neuen Arbeitsbereich klonen
+
+@History
+$Befehlsverlauf (Alt+F8)
+    Der Befehlsverlauf zeigt die Liste der zuvor ausgeführten Befehle an.
+Zusätzlich zu den Cursortasten stehen folgende Tastenkombinationen zur Verfügung:
+
+  Ausgewählten Befehl in die Befehlszeile einfügen Eingabetaste
+  (Linksklick bewirkt dasselbe)
+  Dialog abbrechen                                  Esc, F10
+
+  Inkrementelle Teilstring- / Präfixsuche umschalten F2
+  Geben Sie ein beliebiges Zeichen ein, um die sichtbaren Einträge zu filtern
+  Rücktaste (Backspace) entfernt das letzte Filterzeichen
+
+  Das aktuelle Verlaufselement löschen             Umschalt+Entf
+  Den gesamten Befehlsverlauf löschen (bestätigt)  Entf
+
+  Den ausgewählten Befehl in die Zwischenablage kopieren Strg+C, Strg+Einfg
+
+@HistoryFolders
+$Ordnerverlauf (Alt+F12)
+    Der Ordnerverlauf zeigt die Liste der zuvor besuchten Verzeichnisse an.
+Zusätzlich zu den Cursortasten stehen folgende Tastenkombinationen zur Verfügung:
+
+  Gehe zum ausgewählten Ordner auf dem aktiven Panel Eingabetaste
+  (Linksklick bewirkt dasselbe)
+  Gehe zum ausgewählten Ordner auf dem passiven Panel Umschalt+Eingabetaste
+  Ausgewählten Pfad in die Befehlszeile einfügen    Strg+Eingabetaste
+  Dialog abbrechen                                  Esc, F10
+
+  Inkrementelle Teilstring- / Präfixsuche umschalten F2
+  Geben Sie ein beliebiges Zeichen ein, um die sichtbaren Einträge zu filtern
+  Rücktaste (Backspace) entfernt das letzte Filterzeichen
+
+  Das aktuelle Verlaufselement löschen             Umschalt+Entf
+  Den gesamten Ordnerverlauf löschen (bestätigt)   Entf
+  Einträge mit nicht existierenden Pfaden entfernen (bestätigt) Strg+R
+
+  Den ausgewählten Pfad in die Zwischenablage kopieren Strg+C, Strg+Einfg

@@ -68,7 +68,10 @@ func TestExecuteFindFile_MaskMatching(t *testing.T) {
 			// If a message box appears, the search finished
 			if vtui.FrameManager.GetTopFrameType() == vtui.TypeDialog {
 				frame := vtui.FrameManager.GetTopFrame()
-				if frame != nil && frame.GetTitle() == " Search Results " {
+				// The title comes from the localization table, so comparing it
+				// with an English literal makes this test depend on both the
+				// active language and on how the INI parser trims the value.
+				if frame != nil && frame.GetTitle() == Msg("FindFile.SearchResultsTitle") {
 					isDone = true
 					// Search successfully finished and showed the results dialog
 				}

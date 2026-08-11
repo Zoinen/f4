@@ -72,8 +72,17 @@ type FishDialer func(ctx context.Context) (io.Writer, io.Reader, io.Closer, erro
 type fishConn struct {
 	client *fishplus.Client
 	ka     *fishplus.Keepalive
-	dial   FishDialer
-	closer io.Closer
+	// dial and opts describe how to bring the primary shell flavor up. A
+	// site the first attempt cannot reach — a Windows peer whose sshd
+	// answers "exec /bin/sh" with a PowerShell parse error — is served by
+	// dialAlt/optsAlt instead. Once a fallback succeeds it becomes the
+	// primary, so every reconnect after the first goes straight to the
+	// flavor that actually works.
+	dial    FishDialer
+	opts    fishplus.HandshakeOptions
+	dialAlt FishDialer
+	optsAlt fishplus.HandshakeOptions
+	closer  io.Closer
 
 	mu     sync.Mutex
 	refs   int
@@ -112,7 +121,8 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 		c.mu.Unlock()
 		return fresh, nil
 	}
-	dial := c.dial
+	dial, opts := c.dial, c.opts
+	dialAlt, optsAlt := c.dialAlt, c.optsAlt
 	c.mu.Unlock()
 
 	if dial == nil {
@@ -122,13 +132,8 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 	// Dialling and the handshake happen outside the lock: both take as long as
 	// the network takes, and holding the lock would stall every other view of
 	// this connection for that whole time.
-	stdin, stdout, closer, err := dial(ctx)
+	sess, usedAlt, closer, err := establishWithFallback(ctx, dial, opts, dialAlt, optsAlt)
 	if err != nil {
-		return nil, err
-	}
-	sess := fishplus.NewSession(stdin, stdout, closer)
-	if err := sess.Handshake(ctx); err != nil {
-		sess.Close()
 		return nil, err
 	}
 	client := fishplus.NewClient(sess)
@@ -157,6 +162,12 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 	c.client = client
 	c.ka = fishplus.StartKeepalive(client, fishplus.DefaultKeepaliveInterval)
 	c.closer = closer
+	if usedAlt {
+		// The fallback answered where the primary did not. Promote it so
+		// every reconnect after this one goes straight to what works, and
+		// the primary is only tried again if the new primary also fails.
+		c.dial, c.opts, c.dialAlt, c.optsAlt = c.dialAlt, c.optsAlt, c.dial, c.opts
+	}
 	c.mu.Unlock()
 
 	oldKA.Stop()
@@ -208,14 +219,28 @@ func NewFishVFSOnStreamWithOptions(ctx context.Context, parent vfs.VFS, stdin io
 // that a site that cannot be reached fails at open time rather than at the
 // first request.
 func NewFishVFSOnDialer(ctx context.Context, parent vfs.VFS, dial FishDialer, title string) (*FishVFS, error) {
+	return NewFishVFSOnDialers(ctx, parent, dial, fishplus.HandshakeOptions{}, nil, fishplus.HandshakeOptions{}, title)
+}
+
+// NewFishVFSOnDialers is NewFishVFSOnDialer with a fallback: a peer the
+// first (dial, opts) pair cannot bring a helper up on is retried with the
+// second pair. Meant for sites where the shell flavor is not known at
+// open time — a POSIX login shell wins the common case, and a PowerShell
+// peer answers only after the retry. Once the fallback succeeds it is
+// promoted to primary, so every reconnect after the first goes straight
+// to the flavor that actually works. A nil dialAlt means no fallback.
+func NewFishVFSOnDialers(ctx context.Context, parent vfs.VFS, dial FishDialer, opts fishplus.HandshakeOptions, dialAlt FishDialer, optsAlt fishplus.HandshakeOptions, title string) (*FishVFS, error) {
 	if dial == nil {
 		return nil, ErrNoDialer
 	}
-	stdin, stdout, closer, err := dial(ctx)
+	sess, usedAlt, closer, err := establishWithFallback(ctx, dial, opts, dialAlt, optsAlt)
 	if err != nil {
 		return nil, err
 	}
-	return newFishVFSOnStream(ctx, parent, stdin, stdout, closer, title, dial, fishplus.HandshakeOptions{})
+	if usedAlt {
+		dial, opts, dialAlt, optsAlt = dialAlt, optsAlt, dial, opts
+	}
+	return newFishVFSFromSession(parent, sess, closer, title, dial, opts, dialAlt, optsAlt), nil
 }
 
 func newFishVFSOnStream(ctx context.Context, parent vfs.VFS, stdin io.Writer, stdout io.Reader, closer io.Closer, title string, dial FishDialer, opts fishplus.HandshakeOptions) (*FishVFS, error) {
@@ -224,23 +249,111 @@ func newFishVFSOnStream(ctx context.Context, parent vfs.VFS, stdin io.Writer, st
 		sess.Close()
 		return nil, err
 	}
+	return newFishVFSFromSession(parent, sess, closer, title, dial, opts, nil, fishplus.HandshakeOptions{}), nil
+}
+
+// newFishVFSFromSession wraps an already-handshaked session in a FishVFS,
+// used by every construction path so the wrapper stays in one place.
+func newFishVFSFromSession(parent vfs.VFS, sess *fishplus.Session, closer io.Closer, title string, dial FishDialer, opts fishplus.HandshakeOptions, dialAlt FishDialer, optsAlt fishplus.HandshakeOptions) *FishVFS {
 	client := fishplus.NewClient(sess)
-	cwd, err := client.Pwd(ctx)
+	cwd, err := client.Pwd(context.Background())
 	if err != nil || !path.IsAbs(cwd) {
 		cwd = "/"
 	}
 	return &FishVFS{
 		parent: parent,
 		conn: &fishConn{
-			client: client,
-			refs:   1,
-			ka:     fishplus.StartKeepalive(client, fishplus.DefaultKeepaliveInterval),
-			dial:   dial,
-			closer: closer,
+			client:  client,
+			refs:    1,
+			ka:      fishplus.StartKeepalive(client, fishplus.DefaultKeepaliveInterval),
+			dial:    dial,
+			opts:    opts,
+			dialAlt: dialAlt,
+			optsAlt: optsAlt,
+			closer:  closer,
 		},
 		path:  cwd,
 		title: title,
-	}, nil
+	}
+}
+
+// establishSession dials, brings up the helper with the given handshake
+// options, and returns a session that is ready to serve requests. The
+// closer returned is the one the dialer supplied; it is closed with the
+// session on failure and stored on fishConn on success.
+func establishSession(ctx context.Context, dial FishDialer, opts fishplus.HandshakeOptions) (*fishplus.Session, io.Closer, error) {
+	stdin, stdout, closer, err := dial(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess := fishplus.NewSession(stdin, stdout, closer)
+	if err := sess.HandshakeWithOptions(ctx, opts); err != nil {
+		sess.Close()
+		return nil, nil, err
+	}
+	return sess, closer, nil
+}
+
+// establishWithFallback tries the primary (dial, opts) pair first and
+// falls back to (dialAlt, optsAlt) only when the primary handshake fails
+// — that is, after the transport already answered. A dial-level failure
+// is returned as-is: the network cannot be worked around by trying a
+// different shell. A nil dialAlt disables the fallback, which is what
+// callers with a known-good flavor pass. The bool report tells the caller
+// which pair produced the session so it can promote the fallback for
+// future reconnects.
+func establishWithFallback(ctx context.Context, dial FishDialer, opts fishplus.HandshakeOptions, dialAlt FishDialer, optsAlt fishplus.HandshakeOptions) (*fishplus.Session, bool, io.Closer, error) {
+	sess, closer, err := establishSession(ctx, dial, opts)
+	if err == nil {
+		return sess, false, closer, nil
+	}
+	// A dial failure — no route, refused, auth — has no shell flavor to
+	// try. Only a handshake failure means the transport is fine but the
+	// far side did not recognize the bootstrap; only then is the fallback
+	// worth trying.
+	if _, isRemoteErr := err.(*fishplus.RemoteError); !isRemoteErr && !isHandshakeFailure(err) {
+		return nil, false, nil, err
+	}
+	if dialAlt == nil {
+		return nil, false, nil, err
+	}
+	sessAlt, closerAlt, errAlt := establishSession(ctx, dialAlt, optsAlt)
+	if errAlt != nil {
+		// The original error is more informative — the alt was a guess,
+		// the primary is what the caller configured.
+		return nil, false, nil, err
+	}
+	return sessAlt, true, closerAlt, nil
+}
+
+// isHandshakeFailure recognizes the errors HandshakeWithOptions raises
+// when the far side answered but did not speak the expected protocol.
+// A read that failed because the transport is broken should not trigger
+// a shell-flavor retry, since neither flavor would fare any better.
+func isHandshakeFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// The far side hung up while the bootstrap was being uploaded or
+	// waited for. That is what a Windows peer does with the POSIX attempt:
+	// sshd resolves the exec request to powershell.exe -c "exec /bin/sh",
+	// PowerShell fails to parse it, prints to stderr — which the dialer
+	// discards — and exits, closing the channel. Measured against a real
+	// sshd this arrives as EOF within half a second, and it is the most
+	// direct evidence there is that this flavor is the wrong one.
+	//
+	// The dial already succeeded by the time this runs, so an EOF here is
+	// a shell that would not stay, not a network that will not carry.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	msg := err.Error()
+	// The two phrases parseBanner / HandshakeWithOptions build for
+	// "answered but wrong": one for the banner shape, one for the version.
+	return strings.Contains(msg, "unexpected banner") ||
+		strings.Contains(msg, "remote speaks protocol") ||
+		strings.Contains(msg, "never reported being ready") ||
+		strings.Contains(msg, "bad terminator")
 }
 
 // sshShell ties the lifetime of the remote shell and of the connection that
@@ -280,6 +393,34 @@ func (s *sshShell) OpenPty(cols, rows int) (any, error) {
 // account's login shell may well be csh, fish or something else that does not
 // speak the POSIX syntax the helper is written in.
 func sshFishDialer(host, port, user, pass string, timeout int) FishDialer {
+	return sshFishDialerWith(host, port, user, pass, timeout, func(s *ssh.Session) error {
+		return s.Start("exec /bin/sh")
+	})
+}
+
+// sshFishDialerPwsh is the fallback for a Windows peer. It asks sshd to
+// run "powershell.exe -NoLogo -NoProfile" rather than sess.Shell(): the
+// exec request resolves through the DefaultShell of the peer, which is
+// cmd.exe on a stock OpenSSH-Server-Windows install, so a bare shell
+// request would land the helper in cmd — which does not understand a
+// single line of PowerShell. Routing through
+// "cmd.exe /c powershell.exe -NoLogo -NoProfile" instead lets cmd fork
+// PowerShell for us; a peer whose DefaultShell is already powershell.exe
+// or pwsh pays for a nested launch (~200 ms) but the same helper runs
+// on both. No pseudo-terminal is requested for the same reason as the
+// POSIX side: a ConPTY would echo every request back and inject VT
+// sequences.
+func sshFishDialerPwsh(host, port, user, pass string, timeout int) FishDialer {
+	return sshFishDialerWith(host, port, user, pass, timeout, func(s *ssh.Session) error {
+		return s.Start("powershell.exe -NoLogo -NoProfile")
+	})
+}
+
+// sshFishDialerWith is what both flavors share. The only thing they
+// disagree about is how they ask sshd to give them the shell: exec+cmd
+// on POSIX (which bypasses an exotic login shell), plain shell on
+// Windows (which respects DefaultShell).
+func sshFishDialerWith(host, port, user, pass string, timeout int, startShell func(*ssh.Session) error) FishDialer {
 	return func(ctx context.Context) (io.Writer, io.Reader, io.Closer, error) {
 		// DialSSH carries a timeout of its own and cannot be interrupted, so
 		// the context is honoured where it can be: before the dial, and again
@@ -316,7 +457,7 @@ func sshFishDialer(host, port, user, pass string, timeout int) FishDialer {
 			return nil, nil, nil, err
 		}
 		sess.Stderr = io.Discard
-		if err := sess.Start("exec /bin/sh"); err != nil {
+		if err := startShell(sess); err != nil {
 			shell.Close()
 			return nil, nil, nil, err
 		}
@@ -340,7 +481,17 @@ func NewFishVFS(parent vfs.VFS, host, port, user, pass string, timeout int) (*Fi
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sshTimeout(timeout))
 	defer cancel()
-	v, err := NewFishVFSOnDialer(ctx, parent, sshFishDialer(host, port, user, pass, timeout), title)
+	// The primary flavor is POSIX (exec /bin/sh + line bootstrap): the
+	// bulk of hosts a panel opens are Linux or a BSD, and the client's
+	// existing tests exercise that path in every commit. A Windows peer
+	// with sshd's DefaultShell set to powershell.exe answers the POSIX
+	// bootstrap with a parse error; the fallback dialer catches that,
+	// asks sshd for a plain shell (which resolves to PowerShell on
+	// Windows), and delivers the base64-encoded helper.ps1 through it.
+	v, err := NewFishVFSOnDialers(ctx, parent,
+		sshFishDialer(host, port, user, pass, timeout), fishplus.HandshakeOptions{},
+		sshFishDialerPwsh(host, port, user, pass, timeout), fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapBase64LinePwsh},
+		title)
 	if err != nil {
 		return nil, err
 	}
@@ -718,13 +869,28 @@ func (v *FishVFS) Search(ctx context.Context, p, pattern string) (chan int64, er
 // A symlink is reported as found without resolving it: the alternative is a
 // round trip per hit, which would give back what the whole command saves.
 func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([]vfs.FoundEntry, error) {
-	entries, err := v.client().Find(ctx, v.abs(dir), fishplus.FindOptions{
+	opts := fishplus.FindOptions{
 		Masks:      q.Masks,
 		Text:       q.Text,
 		Fixed:      true,
 		IgnoreCase: q.IgnoreCase,
 		Limit:      q.Limit,
-	})
+	}
+	// The client's Progress speaks fishplus.FindProgress; the caller
+	// asked for vfs.FindProgress. One field-for-field bridge, so a
+	// panel dialog that plumbs a progress callback through FindQuery
+	// gets P lines from a Windows peer without knowing anything about
+	// job protocols.
+	if q.Progress != nil {
+		opts.Progress = func(p fishplus.FindProgress) {
+			q.Progress(vfs.FindProgress{
+				Scanned: p.Scanned,
+				Found:   p.Found,
+				Path:    p.Path,
+			})
+		}
+	}
+	entries, err := v.client().Find(ctx, v.abs(dir), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -749,6 +915,101 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 		})
 	}
 	return out, nil
+}
+
+// PtyChangeDirCommand implements vfs.PtyShellIntegration. The panel's
+// PTY channel runs the peer's DefaultShell — cmd.exe on a stock
+// OpenSSH-Server-Windows host, whatever the login shell is on a POSIX
+// host. Send syntax the actual PTY shell understands, converting the
+// path from the wire's Cygwin shape (/c/Users/foo) to what the shell
+// wants (C:\Users\foo for cmd, /c/Users/foo unchanged for POSIX).
+//
+// f4_sync is a stray marker helper.sh's own log filter can strip: cmd
+// keeps it as a rem comment, POSIX keeps it as a shell comment.
+func (v *FishVFS) PtyChangeDirCommand(dir string) []byte {
+	if v.peerIsWindows() {
+		winDir := fishplus.WirePathToWindows(dir)
+		if winDir == "" {
+			return nil
+		}
+		return []byte(fmt.Sprintf("cd /d \"%s\" & rem f4_sync\r", winDir))
+	}
+	sq := strings.ReplaceAll(dir, "'", "'\\''")
+	return []byte(fmt.Sprintf(" cd '%s' # f4_sync\r", sq))
+}
+
+// PtyRunCommand implements vfs.PtyShellIntegration. Same shell-flavor
+// split as PtyChangeDirCommand: cmd wants "cd /d \"path\" & command",
+// POSIX wants "cd 'path' && command". An empty dir skips the cd.
+func (v *FishVFS) PtyRunCommand(dir, command string) []byte {
+	if command == "" {
+		return nil
+	}
+	if v.peerIsWindows() {
+		if dir == "" {
+			return []byte(fmt.Sprintf("%s\r", command))
+		}
+		winDir := fishplus.WirePathToWindows(dir)
+		if winDir == "" {
+			return []byte(fmt.Sprintf("%s\r", command))
+		}
+		return []byte(fmt.Sprintf("cd /d \"%s\" & %s\r", winDir, command))
+	}
+	if dir == "" {
+		return []byte(fmt.Sprintf(" %s\r", command))
+	}
+	sq := strings.ReplaceAll(dir, "'", "'\\''")
+	return []byte(fmt.Sprintf(" cd '%s' && %s\r", sq, command))
+}
+
+// PtyInterrupt implements vfs.PtyShellIntegration. cmd.exe over ConPTY
+// and every POSIX shell treat a raw ETX (0x03) as SIGINT / Ctrl+C; no
+// flavor-specific wrapping is needed.
+func (v *FishVFS) PtyInterrupt() []byte {
+	return []byte{0x03}
+}
+
+// PtyInitSequence implements vfs.PtyShellIntegration. On a Windows peer
+// it sets cmd's PROMPT so that every prompt cmd draws — every time a
+// command finishes — embeds an OSC 133 D marker. The ANSI parser in
+// terminal_view.go then fires OnBusyChange(false), which is what makes
+// panels_frame return to panels after a cmdline command completes. This
+// is the same trick panels_frame.go uses for the local Windows PTY
+// (see the os.Setenv("PROMPT", ...) around initPTY).
+//
+// $E is cmd's PROMPT syntax for ESC; $E\ is the OSC ST terminator
+// (\x1b\); $P and $G are the standard current-path-and-'>' pieces. The
+// leading @ suppresses cmd's echo of the prompt-setup line in batch
+// contexts; interactive cmd on ConPTY still echoes it, so the second
+// half of the line is a cls that wipes the cmd banner + copyright +
+// the echoed setup line, leaving the panel-terminal view starting on
+// the first marker-embedded prompt with no visible init noise.
+func (v *FishVFS) PtyInitSequence() []byte {
+	if !v.peerIsWindows() {
+		return nil
+	}
+	return []byte("@prompt $E]133;D$E\\$P$G & cls\r")
+}
+
+// peerIsWindows reports whether the FISH+ helper on the peer announced
+// itself as PowerShell (flavor:pwsh feature). A Windows peer's PTY
+// channel is what needs cmd-shaped commands; a POSIX peer keeps the
+// original bash-style templates.
+func (v *FishVFS) peerIsWindows() bool {
+	c := v.client()
+	if c == nil {
+		return false
+	}
+	s := c.Session()
+	if s == nil {
+		return false
+	}
+	for _, n := range s.Features().Names() {
+		if n == "flavor:pwsh" {
+			return true
+		}
+	}
+	return false
 }
 
 // opStatsFromScan converts what the remote walk counted. PhysicalBytes stays
@@ -818,10 +1079,22 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 // can read stdin, print for an hour or never end without any of that
 // reaching the request stream the panel is using.
 func (v *FishVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
-	if !v.client().CanRun() {
+	if !v.CommandRunnerAvailable() {
 		return 0, fishplus.ErrNoJobs
 	}
 	return v.client().Run(ctx, v.abs(dir), command, cb)
+}
+
+func (v *FishVFS) CommandRunnerAvailable() bool {
+	client := v.client()
+	return client != nil && client.CanRun()
+}
+
+// CommandRunnerInfo reports the remote shell syntax and the transport's real
+// concurrency limit. A FISH+ connection serializes protocol requests, so
+// advertising more workers would only reorder queued requests locally.
+func (*FishVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
+	return vfs.CommandRunnerInfo{Dialect: vfs.CommandDialectPOSIX, MaxParallel: 1}
 }
 
 // FindDuplicates implements vfs.DuplicateFinder. Only the paths of the files
@@ -918,8 +1191,10 @@ func (v *FishVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem)
 			return err
 		}
 	}
-	if err := v.client().Chown(ctx, target, item.Uid, item.Gid); err != nil {
-		return err
+	if item.Uid >= 0 || item.Gid >= 0 {
+		if err := v.client().Chown(ctx, target, item.Uid, item.Gid); err != nil {
+			return err
+		}
 	}
 	mtime, atime := item.MTime, item.ATime
 	if mtime.IsZero() {
@@ -927,6 +1202,9 @@ func (v *FishVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem)
 	}
 	if atime.IsZero() {
 		atime = mtime
+	}
+	if mtime.IsZero() || atime.IsZero() {
+		return nil
 	}
 	return v.client().Chtimes(ctx, target, mtime, atime)
 }
@@ -961,7 +1239,12 @@ func (v *FishVFS) CloneForParent(parent vfs.VFS) *FishVFS {
 	}
 }
 
-var _ vfs.PanelInfoProvider = (*FishVFS)(nil)
+var (
+	_ vfs.PanelInfoProvider                 = (*FishVFS)(nil)
+	_ vfs.CommandRunner                     = (*FishVFS)(nil)
+	_ vfs.CommandRunnerInfoProvider         = (*FishVFS)(nil)
+	_ vfs.CommandRunnerAvailabilityProvider = (*FishVFS)(nil)
+)
 
 // Close releases this view. The session itself goes away with its last
 // user, and closing the same view twice is harmless: a panel may well be

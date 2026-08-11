@@ -42,7 +42,7 @@ func (r hotkeyRow) GetCellAttr(col int, def uint64) uint64 {
 
 func actionHotkeyConfig(pf *PanelsFrame) {
 	w, h := 120, 48
-	dlg := vtui.NewCenteredDialog(w, h, " Hotkey Configurator ")
+	dlg := vtui.NewCenteredDialog(w, h, Msg("Hotkeys.Title"))
 	dlg.ShowClose = true
 
 	table := vtui.NewTable(0, 0, w-4, h-6, []vtui.TableColumn{
@@ -55,9 +55,9 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 	useDialogTableColors(table)
 	table.ShowScrollBar = true
 
-	btnAssign := vtui.NewButton(0, 0, "&Assign")
-	btnUnbind := vtui.NewButton(0, 0, "&Unbind")
-	btnClose := vtui.NewButton(0, 0, "&Close")
+	btnAssign := vtui.NewButton(0, 0, Msg("Hotkeys.BtnAssign"))
+	btnUnbind := vtui.NewButton(0, 0, Msg("Hotkeys.BtnUnbind"))
+	btnClose := vtui.NewButton(0, 0, Msg("Hotkeys.BtnClose"))
 
 	dlg.AddItem(table)
 	dlg.AddItem(btnAssign)
@@ -177,7 +177,7 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 }
 
 func showAreaSelectDialog(actionName, defaultArea, defaultCond string, onComplete func()) {
-	dlg := vtui.NewCenteredDialog(40, 11, " Select Area & Condition ")
+	dlg := vtui.NewCenteredDialog(40, 11, Msg("Hotkeys.SelectTitle"))
 	dlg.ShowClose = true
 
 	if defaultArea == "" {
@@ -209,12 +209,12 @@ func showAreaSelectDialog(actionName, defaultArea, defaultCond string, onComplet
 	comboCond.Menu.SetSelectPos(cIdx)
 	comboCond.Edit.SetText(conds[cIdx])
 
-	btnOk := vtui.NewButton(0, 0, "Next >")
+	btnOk := vtui.NewButton(0, 0, Msg("Hotkeys.BtnNext"))
 	btnOk.IsDefault = true
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
-	lbl := vtui.NewLabel(0, 0, "Area: ", combo)
-	lblCond := vtui.NewLabel(0, 0, "When: ", comboCond)
+	lbl := vtui.NewLabel(0, 0, Msg("Hotkeys.LabelArea"), combo)
+	lblCond := vtui.NewLabel(0, 0, Msg("Hotkeys.LabelWhen"), comboCond)
 
 	dlg.AddItem(lbl)
 	dlg.AddItem(combo)
@@ -273,7 +273,7 @@ type HotkeyAssignFrame struct {
 
 func NewHotkeyAssignFrame(actionName, area string, onComplete func()) *HotkeyAssignFrame {
 	width, height := 42, 9
-	base := vtui.NewCenteredDialog(width, height, " Assign Hotkey ")
+	base := vtui.NewCenteredDialog(width, height, Msg("Hotkeys.AssignTitle"))
 	f := &HotkeyAssignFrame{
 		Window:     *base,
 		actionName: actionName,

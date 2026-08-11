@@ -39,6 +39,25 @@ func TestOSVFSRenameNoReplace(t *testing.T) {
 	}
 }
 
+func TestOSVFSRenameHonorsNoOverwriteContext(t *testing.T) {
+	dir := t.TempDir()
+	filesystem := NewOSVFS(dir)
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := filesystem.Rename(WithDestinationOverwrite(context.Background(), false), source, target); !errors.Is(err, ErrDestinationExists) {
+		t.Fatalf("Rename error = %v, want ErrDestinationExists", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "target" {
+		t.Fatalf("target changed to %q, %v", got, err)
+	}
+}
+
 func TestOSVFSRenameNoReplaceDirectory(t *testing.T) {
 	dir := t.TempDir()
 	v := NewOSVFS(dir)

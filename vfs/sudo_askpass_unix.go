@@ -109,9 +109,9 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 
 		edit := vtui.NewPasswordEdit(0, 0, 35, "")
 		lbl := vtui.NewLabel(0, 0, prompt, edit)
-		btnOk := vtui.NewButton(0, 0, "&Ok")
+		btnOk := vtui.NewButton(0, 0, vtui.Msg("vtui.Ok"))
 		btnOk.IsDefault = true
-		btnCancel := vtui.NewButton(0, 0, "Cancel")
+		btnCancel := vtui.NewButton(0, 0, vtui.Msg("vtui.Cancel"))
 
 		dlg.AddItem(lbl)
 		dlg.AddItem(edit)

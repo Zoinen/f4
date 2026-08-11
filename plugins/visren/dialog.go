@@ -685,6 +685,9 @@ func (d *Dialog) restoreNormalView() {
 func (d *Dialog) onRename() {
 	if d.undoMode {
 		confirm := vtui.ShowMessageOn(d, " "+tr("VisRen.Undo", "Undo")+" ", tr("VisRen.UndoQuestion", "Undo the recorded rename operation?"), []string{"&Yes", "&No", "Cancel"})
+		// Destructive — renames files back — render on the WarnDialog
+		// palette so the confirmation reads as an alarm. See #379.
+		confirm.IsWarning = true
 		confirm.OnResult = func(choice int) {
 			switch choice {
 			case 0:
@@ -776,7 +779,7 @@ func (d *Dialog) showDetails() {
 		text := vtui.NewText(details.X1+3, details.Y1+8+idx, line, vtui.Palette[vtui.ColDialogText])
 		details.AddItem(text)
 	}
-	ok := vtui.NewButton(details.X1+33, details.Y1+13, "&Ok")
+	ok := vtui.NewButton(details.X1+33, details.Y1+13, vtui.Msg("vtui.Ok"))
 	ok.IsDefault = true
 	ok.OnClick = details.Close
 	details.AddItem(ok)
@@ -831,6 +834,9 @@ func (d *Dialog) clearUndoLog() {
 		return
 	}
 	confirm := vtui.ShowMessageOn(d, " "+tr("VisRen.Undo", "Undo")+" ", tr("VisRen.ClearLog", "Clear the rename log?"), []string{"&Yes", "&No"})
+	// Destructive — wipes the undo history, taking away the ability to
+	// undo the last rename. Render on the WarnDialog palette. See #379.
+	confirm.IsWarning = true
 	confirm.OnResult = func(code int) {
 		if code == 0 {
 			d.plugin.setUndo("", nil)

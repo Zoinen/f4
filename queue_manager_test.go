@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -199,8 +200,11 @@ func TestQueueManager_ConflictDetection(t *testing.T) {
 		}
 	}
 
-	if task.State != "Error" || task.ErrorMsg == nil {
-		t.Errorf("Expected conflict error, got state %s", task.State)
+	task.mu.Lock()
+	state, taskErr := task.State, task.ErrorMsg
+	task.mu.Unlock()
+	if state != "Error" || taskErr == nil {
+		t.Errorf("Expected conflict error, got state %s", state)
 	}
 }
 
@@ -361,8 +365,9 @@ func TestQueueManager_BackgroundWorkspace(t *testing.T) {
 		}
 	}
 
-	// Проверяем, что новый экран (вставленный в начало, индекс 0) содержит QueueFrame
-	qScreen := fm.Screens[0]
+	// Background workspaces are placed immediately to the right of their
+	// source workspace, matching the tab bar's insertion order.
+	qScreen := fm.Screens[1]
 	found := false
 	for _, f := range qScreen.Frames {
 		if _, ok := f.(*QueueFrame); ok {
@@ -374,10 +379,9 @@ func TestQueueManager_BackgroundWorkspace(t *testing.T) {
 		t.Error("QueueFrame not found at index 0")
 	}
 
-	// Проверяем, что фокус остался на исходном экране.
-	// Так как мы вставили в начало, индекс активного экрана должен был сдвинуться на 1.
-	if fm.ActiveIdx != 1 {
-		t.Errorf("Focus pointer tracking failed. ActiveIdx: %d, expected 1", fm.ActiveIdx)
+	// The original workspace remains active and keeps its index.
+	if fm.ActiveIdx != 0 {
+		t.Errorf("Focus pointer tracking failed. ActiveIdx: %d, expected 0", fm.ActiveIdx)
 	}
 }
 
@@ -404,6 +408,15 @@ func TestQueueFrame_InputLock(t *testing.T) {
 	handledF10 := qf.ProcessKey(evF10)
 	if !handledF10 {
 		t.Error("QueueFrame should swallow F10 when tasks are active")
+	}
+
+	// Ctrl+W is a global workspace-close fallback and must be swallowed too.
+	evCtrlW := &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_W,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+	if !qf.ProcessKey(evCtrlW) {
+		t.Error("QueueFrame should swallow Ctrl+W when tasks are active")
 	}
 
 	// Завершаем задачи
@@ -446,4 +459,335 @@ func TestQueueManager_ArchiveResourceKey(t *testing.T) {
 	if key != expectedKey {
 		t.Errorf("Expected resource key %q, got %q (failed to inherit ParentVFS disk lock)", expectedKey, key)
 	}
+}
+
+func TestQueueManagerCancelRunningWaitsForRunToUnwind(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	allowReturn := make(chan struct{})
+	finished := make(chan struct{})
+	task := &QueueTask{
+		ID:      1,
+		State:   "Starting",
+		ResKeys: []string{"resource"},
+		ctx:     ctx,
+		cancel:  cancel,
+		Run: func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
+			close(started)
+			<-ctx.Done()
+			<-allowReturn
+			return fmt.Errorf("run cleanup: %w", ctx.Err())
+		},
+	}
+	qm := &OpQueueManager{
+		tasks:      []*QueueTask{task},
+		activeKeys: map[string]bool{"resource": true},
+	}
+
+	go func() {
+		qm.executeTask(task)
+		close(finished)
+	}()
+	<-started
+
+	if !qm.Cancel(task.ID) {
+		t.Fatal("Cancel did not find the running task")
+	}
+	task.mu.Lock()
+	state := task.State
+	task.mu.Unlock()
+	if state != "Cancelling" {
+		t.Fatalf("state immediately after Cancel = %q, want Cancelling", state)
+	}
+	if got := qm.ActiveTasksCount(); got != 1 {
+		t.Fatalf("ActiveTasksCount while Run is unwinding = %d, want 1", got)
+	}
+
+	// Late worker progress must not resurrect a task after cancellation starts.
+	task.UpdateScan("late scan", 1, 0)
+	task.UpdateTransfer("apply", "late file", 50, "1/2", 50, "")
+	task.mu.Lock()
+	state = task.State
+	task.mu.Unlock()
+	if state != "Cancelling" {
+		t.Fatalf("late progress changed state to %q, want Cancelling", state)
+	}
+
+	close(allowReturn)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("executeTask did not finish after Run unwound")
+	}
+
+	task.mu.Lock()
+	state = task.State
+	err := task.ErrorMsg
+	task.mu.Unlock()
+	if state != "Cancelled" {
+		t.Fatalf("final state = %q, want Cancelled", state)
+	}
+	if err != nil {
+		t.Fatalf("cancelled task retained error %v", err)
+	}
+	if got := qm.ActiveTasksCount(); got != 0 {
+		t.Fatalf("ActiveTasksCount after unwind = %d, want 0", got)
+	}
+	qm.mu.Lock()
+	resourceActive := qm.activeKeys["resource"]
+	qm.mu.Unlock()
+	if resourceActive {
+		t.Fatal("resource key remained active after cancellation completed")
+	}
+}
+
+func TestQueueManagerCancelQueuedAndCancelAll(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	queuedCtx, queuedCancel := context.WithCancel(context.Background())
+	runningCtx, runningCancel := context.WithCancel(context.Background())
+	cancellingCtx, cancellingCancel := context.WithCancel(context.Background())
+	queued := &QueueTask{ID: 1, State: "Queued", ctx: queuedCtx, cancel: queuedCancel}
+	running := &QueueTask{ID: 2, State: "Running", ctx: runningCtx, cancel: runningCancel}
+	cancelling := &QueueTask{ID: 3, State: "Cancelling", ctx: cancellingCtx, cancel: cancellingCancel}
+	done := &QueueTask{ID: 4, State: "Done"}
+	qm := &OpQueueManager{
+		tasks:      []*QueueTask{queued, running, cancelling, done},
+		activeKeys: make(map[string]bool),
+	}
+
+	qm.CancelAll()
+	deadline := time.Now().Add(time.Second)
+	for {
+		queued.mu.Lock()
+		queuedDone := queued.State == "Cancelled"
+		queued.mu.Unlock()
+		if queuedDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued cancellation did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	for _, tt := range []struct {
+		task      *QueueTask
+		wantState string
+		wantErr   error
+	}{
+		{queued, "Cancelled", context.Canceled},
+		{running, "Cancelling", context.Canceled},
+		{cancelling, "Cancelling", context.Canceled},
+		{done, "Done", nil},
+	} {
+		tt.task.mu.Lock()
+		state := tt.task.State
+		tt.task.mu.Unlock()
+		if state != tt.wantState {
+			t.Errorf("task %d state = %q, want %q", tt.task.ID, state, tt.wantState)
+		}
+		if !errorsAreSame(tt.task.ctx, tt.wantErr) {
+			t.Errorf("task %d context error = %v, want %v", tt.task.ID, contextError(tt.task.ctx), tt.wantErr)
+		}
+	}
+}
+
+func TestQueueManagerCancelQueuedCompletesExactlyOnce(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	completeCalls := 0
+	task := &QueueTask{
+		ID:     1,
+		State:  "Queued",
+		ctx:    ctx,
+		cancel: cancel,
+		OnComplete: func() {
+			completeCalls++
+		},
+	}
+	qm := &OpQueueManager{
+		tasks:      []*QueueTask{task},
+		activeKeys: make(map[string]bool),
+	}
+
+	if !qm.Cancel(task.ID) {
+		t.Fatal("Cancel did not find the queued task")
+	}
+	if qm.Cancel(task.ID) {
+		t.Fatal("a second Cancel treated the terminal task as cancellable")
+	}
+	// Simulate a competing/future finalization path. The task completion guard
+	// must still allow only the callback already posted by Cancel.
+	qm.postTaskCompletion(task)
+
+	quiet := time.NewTimer(100 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case uiTask := <-vtui.FrameManager.TaskChan:
+			uiTask()
+		case <-quiet.C:
+			if completeCalls != 1 {
+				t.Fatalf("OnComplete called %d times, want exactly once", completeCalls)
+			}
+			if ctx.Err() != context.Canceled {
+				t.Fatalf("queued task context = %v, want context.Canceled", ctx.Err())
+			}
+			return
+		}
+	}
+}
+
+func TestQueueManagerCancelQueuedStaysActiveUntilFinalizeReturns(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	finalizeStarted := make(chan struct{})
+	allowFinalize := make(chan struct{})
+	task := &QueueTask{
+		ID: 1, State: "Queued", ctx: ctx, cancel: cancel,
+		Finalize: func() {
+			close(finalizeStarted)
+			<-allowFinalize
+		},
+	}
+	qm := &OpQueueManager{tasks: []*QueueTask{task}, activeKeys: make(map[string]bool)}
+	if !qm.Cancel(task.ID) {
+		t.Fatal("Cancel did not report the queued task")
+	}
+	<-finalizeStarted
+
+	if got := qm.ActiveTasksCount(); got != 1 {
+		t.Fatalf("ActiveTasksCount during Finalize = %d, want 1", got)
+	}
+	task.mu.Lock()
+	state := task.State
+	task.mu.Unlock()
+	if state != "Cancelling" {
+		t.Fatalf("state during Finalize = %q, want Cancelling", state)
+	}
+
+	close(allowFinalize)
+	deadline := time.Now().Add(time.Second)
+	for {
+		task.mu.Lock()
+		state = task.State
+		task.mu.Unlock()
+		if state == "Cancelled" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued task did not finish cancellation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if state != "Cancelled" || qm.ActiveTasksCount() != 0 {
+		t.Fatalf("after Finalize state=%q active=%d, want Cancelled/0", state, qm.ActiveTasksCount())
+	}
+}
+
+func TestQueueManagerWrappedCancellationIsCancelled(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	task := &QueueTask{
+		ID:     1,
+		State:  "Starting",
+		ctx:    ctx,
+		cancel: cancel,
+		Run: func(context.Context, TaskReporter, vtui.Frame) error {
+			return fmt.Errorf("wrapped: %w", context.Canceled)
+		},
+	}
+	qm := &OpQueueManager{tasks: []*QueueTask{task}, activeKeys: make(map[string]bool)}
+
+	qm.executeTask(task)
+
+	task.mu.Lock()
+	state := task.State
+	task.mu.Unlock()
+	if state != "Cancelled" {
+		t.Fatalf("wrapped context cancellation produced state %q, want Cancelled", state)
+	}
+}
+
+func TestQueueFrameEnterOpensTaskDetails(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	qf := NewQueueFrame()
+	called := false
+	var gotAnchor vtui.Frame
+	task := &QueueTask{
+		ID:    1,
+		State: "Running",
+		OpenDetails: func(anchor vtui.Frame) {
+			called = true
+			gotAnchor = anchor
+		},
+	}
+	qf.UpdateTasks([]*QueueTask{task})
+	qf.table.SelectPos = 0
+
+	e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !qf.ProcessKey(e) {
+		t.Fatal("Enter on a task with details was not handled")
+	}
+	if !called {
+		t.Fatal("Enter did not invoke QueueTask.OpenDetails")
+	}
+	if gotAnchor != qf {
+		t.Fatalf("OpenDetails anchor = %T, want QueueFrame", gotAnchor)
+	}
+}
+
+func TestCancelOperationsForShutdownCancelsQueueAndBackgroundJobs(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	originalQueue := GlobalQueueManager
+	originalJobs := GlobalBackgroundJobs
+	defer func() {
+		GlobalQueueManager = originalQueue
+		GlobalBackgroundJobs = originalJobs
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	queued := &QueueTask{ID: 1, State: "Queued", ctx: ctx, cancel: cancel}
+	GlobalQueueManager = &OpQueueManager{
+		tasks:      []*QueueTask{queued},
+		activeKeys: make(map[string]bool),
+	}
+	GlobalBackgroundJobs = NewBackgroundJobRegistry()
+	backgroundCancelled := false
+	var background *BackgroundJob
+	background = GlobalBackgroundJobs.Start("test job", func() {
+		backgroundCancelled = true
+		background.Finish()
+	})
+
+	cancelOperationsForShutdown()
+
+	queued.mu.Lock()
+	state := queued.State
+	queued.mu.Unlock()
+	if state != "Cancelled" || ctx.Err() != context.Canceled {
+		t.Fatalf("queued task after shutdown cancellation: state=%q context=%v", state, ctx.Err())
+	}
+	if !backgroundCancelled {
+		t.Fatal("background-job registry was not cancelled during shutdown")
+	}
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.Err()
+}
+
+func errorsAreSame(ctx context.Context, want error) bool {
+	return contextError(ctx) == want
 }

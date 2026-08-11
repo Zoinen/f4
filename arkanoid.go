@@ -763,7 +763,7 @@ func (af *ArkanoidFrame) checkHighScore() {
 func (af *ArkanoidFrame) showHighScoresDialog() {
 	loadArkScores()
 	af.RunOnUI(func() {
-		dlg := vtui.NewCenteredDialog(42, 15, " High Scores ")
+		dlg := vtui.NewCenteredDialog(42, 15, Msg("Arkanoid.HighScores"))
 		dlg.ShowClose = true
 
 		var lines []string

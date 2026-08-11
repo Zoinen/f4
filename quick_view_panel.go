@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -30,15 +31,25 @@ type QuickViewPanel struct {
 
 	// Cache the last-computed preview so we don't re-read the file /
 	// re-scan the directory on every redraw.
-	cacheKey     string // full path we last previewed
-	cacheDir     bool   // whether cache is for a directory or file
+	cacheKey     quickViewSelectionKey
+	cacheValid   bool
+	cacheDir     bool // whether cache is for a directory or file
 	cacheBinary  bool
 	cacheImage   bool // whether cache is an image
+	cacheLoading bool
+	cacheLabel   string
 	imageSurf    *vtui.ImageSurface
 	imageLoadGen uint64
 	gfxKey       string
 	cacheLines   []string // raw preview lines (source lines or hex rows)
 	cacheReadErr error
+
+	// Specialized providers may inspect an entire media/container header, so
+	// they run away from the UI thread. previewGen rejects a late result after
+	// the cursor, VFS session or file revision changed, even if provider code
+	// did not return promptly when previewCancel was fired.
+	previewCancel context.CancelFunc
+	previewGen    uint64
 
 	// Async recursive scan state for the directory case. Guarded by
 	// scanMu so the goroutine and the UI thread can share it. scanGen
@@ -79,6 +90,17 @@ type QuickViewPanel struct {
 	displayToSource []int
 	displayWrap     bool
 	displayWidth    int
+}
+
+// quickViewSelectionKey prevents identical-looking paths from different VFS
+// sessions sharing a preview. Revision is preferred when a provider supplies
+// one; size and mtime keep ordinary files responsive to a refreshed listing.
+type quickViewSelectionKey struct {
+	source   dirCacheKey
+	revision string
+	size     int64
+	mtimeNS  int64
+	isDir    bool
 }
 
 // NewQuickViewPanel creates a quick-view panel over src's slot.
@@ -265,7 +287,9 @@ func (q *QuickViewPanel) Show(scr *vtui.ScreenBuf) {
 	idx := q.src.GetCursorIndex()
 	if idx < 0 || idx >= len(q.src.entries) {
 		q.cancelScan()
-		q.cacheKey = ""
+		q.cancelFilePreview()
+		q.imageLoadGen++
+		q.cacheValid = false
 		writeLine(" " + Msg("QuickView.NoSelection"))
 		return
 	}
@@ -285,8 +309,9 @@ func (q *QuickViewPanel) Show(scr *vtui.ScreenBuf) {
 	} else {
 		path = q.src.vfs.Join(q.src.vfs.GetPath(), item.Name)
 	}
-	if path != q.cacheKey {
-		q.refreshCache(path, *item)
+	key := makeQuickViewSelectionKey(q.src.vfs, path, item.VFSItem)
+	if !q.cacheValid || key != q.cacheKey {
+		q.refreshCache(key, path, *item)
 		q.scrollY = 0
 		q.scrollX = 0
 		q.displayLines = nil
@@ -477,7 +502,12 @@ func (q *QuickViewPanel) cancelScan() {
 // when the QuickView panel is being removed (Ctrl+Q toggle-off,
 // Ctrl+L replacing it, etc.), so the scan goroutine doesn't outlive
 // the panel it's populating.
-func (q *QuickViewPanel) Close() { q.cancelScan() }
+func (q *QuickViewPanel) Close() {
+	q.cancelScan()
+	q.cancelFilePreview()
+	q.imageLoadGen++
+	q.cacheValid = false
+}
 
 func (q *QuickViewPanel) renderFile(item *fileEntry, innerW int, writeLine func(string), attr uint64, scr *vtui.ScreenBuf) {
 	// Header block (name + size + optional binary note). Two rows.
@@ -488,7 +518,11 @@ func (q *QuickViewPanel) renderFile(item *fileEntry, innerW int, writeLine func(
 		writeLine(" " + Msg("QuickView.ReadError") + ": " + q.cacheReadErr.Error())
 		return
 	}
-	if q.cacheImage {
+	if q.cacheLoading {
+		writeLine(" " + Msg("QuickView.Loading"))
+	} else if q.cacheLabel != "" {
+		writeLine(" " + q.cacheLabel)
+	} else if q.cacheImage {
 		writeLine(" " + Msg("QuickView.Image"))
 	} else if q.cacheBinary {
 		writeLine(" " + Msg("QuickView.Binary"))
@@ -496,6 +530,9 @@ func (q *QuickViewPanel) renderFile(item *fileEntry, innerW int, writeLine func(
 		writeLine("")
 	}
 	writeLine(" " + strings.Repeat("─", innerW-2))
+	if q.cacheLoading {
+		return
+	}
 
 	if q.cacheImage {
 		q.renderImage(innerW, writeLine, attr, scr)
@@ -668,14 +705,18 @@ func trimLeftCells(s string, cells int) string {
 	return ""
 }
 
-// refreshCache reads a fresh preview for path. Best-effort: errors
-// are captured into cache*Err so the render path can surface them
-// without blowing up.
-func (q *QuickViewPanel) refreshCache(path string, item fileEntry) {
-	q.cacheKey = path
+// refreshCache starts a fresh preview for path. Best-effort errors are stored
+// in cacheReadErr so rendering remains side-effect free.
+func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, item fileEntry) {
+	q.cancelFilePreview()
+	q.imageLoadGen++
+	q.cacheKey = key
+	q.cacheValid = true
 	q.cacheDir = item.IsDir
 	q.cacheBinary = false
 	q.cacheImage = false
+	q.cacheLoading = false
+	q.cacheLabel = ""
 	q.imageSurf = nil
 	q.cacheLines = nil
 	q.cacheReadErr = nil
@@ -688,18 +729,18 @@ func (q *QuickViewPanel) refreshCache(path string, item fileEntry) {
 
 	if IsImageFile(path) {
 		q.cacheImage = true
-		q.imageLoadGen++
 		gen := q.imageLoadGen
+		source := q.src.vfs
 
-		if res, ok := ImagePipe.PreviewSync(context.Background(), q.src.vfs, path); ok {
+		if res, ok := ImagePipe.PreviewSync(context.Background(), source, path); ok {
 			if res.Surface != nil && res.Surface.Valid() {
 				q.imageSurf = res.Surface
 			}
 		}
 
-		ImagePipe.Load(q.src.vfs, path, func(res ImageResult) {
+		ImagePipe.Load(source, path, func(res ImageResult) {
 			vtui.FrameManager.PostTask(func() {
-				if q.imageLoadGen == gen {
+				if q.imageLoadGen == gen && q.cacheValid && q.cacheKey == key {
 					if res.Err != nil {
 						q.cacheReadErr = res.Err
 					} else if res.Surface != nil && res.Surface.Valid() {
@@ -712,43 +753,132 @@ func (q *QuickViewPanel) refreshCache(path string, item fileEntry) {
 		return
 	}
 
-	// Regular file: read up to previewMax bytes, split into lines or
-	// classify as binary. Small budget (16 KiB) keeps this cheap even
-	// on network VFSes.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	rc, err := q.src.vfs.Open(ctx, path)
-	if err != nil {
-		q.cacheReadErr = err
+	request := vfs.QuickViewRequest{VFS: q.src.vfs, Path: path, Item: item.VFSItem}
+	providers := vfs.QuickViewProvidersFor(request)
+	if len(providers) != 0 {
+		q.startFilePreview(key, request, providers)
 		return
+	}
+
+	q.applyFilePreview(loadDefaultQuickView(context.Background(), request.VFS, request.Path))
+}
+
+type quickViewFileResult struct {
+	label  string
+	lines  []string
+	binary bool
+	err    error
+}
+
+func makeQuickViewSelectionKey(filesystem vfs.VFS, path string, item vfs.VFSItem) quickViewSelectionKey {
+	return quickViewSelectionKey{
+		source:   directoryCacheKey(filesystem, path),
+		revision: item.Revision,
+		size:     item.Size,
+		mtimeNS:  item.MTime.UnixNano(),
+		isDir:    item.IsDir,
+	}
+}
+
+// startFilePreview tries matching providers in priority order away from the
+// UI thread. Only an explicit ErrQuickViewUnsupported advances to the next
+// provider; an actual parse/read error is useful information and is shown.
+func (q *QuickViewPanel) startFilePreview(key quickViewSelectionKey, request vfs.QuickViewRequest, providers []vfs.QuickViewProvider) {
+	ctx, cancel := context.WithCancel(context.Background())
+	q.previewCancel = cancel
+	gen := q.previewGen
+	q.cacheLoading = true
+
+	go func() {
+		var loaded quickViewFileResult
+		handled := false
+		for _, provider := range providers {
+			result, err := provider.Preview(ctx, request)
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, vfs.ErrQuickViewUnsupported) {
+				continue
+			}
+			handled = true
+			if err != nil {
+				loaded.err = fmt.Errorf("%s: %w", provider.Name(), err)
+			} else {
+				loaded.label = result.Label
+				loaded.lines = append([]string(nil), result.Lines...)
+			}
+			break
+		}
+		if !handled {
+			loaded = loadDefaultQuickView(ctx, request.VFS, request.Path)
+		}
+		if ctx.Err() != nil {
+			return
+		}
+
+		vtui.FrameManager.PostTask(func() {
+			if q.previewGen != gen || !q.cacheValid || q.cacheKey != key {
+				return
+			}
+			q.previewCancel = nil
+			q.applyFilePreview(loaded)
+			vtui.FrameManager.HardRefresh()
+		})
+	}()
+}
+
+func (q *QuickViewPanel) cancelFilePreview() {
+	if q.previewCancel != nil {
+		q.previewCancel()
+		q.previewCancel = nil
+	}
+	q.previewGen++
+}
+
+func (q *QuickViewPanel) applyFilePreview(result quickViewFileResult) {
+	q.cacheLoading = false
+	q.cacheLabel = result.label
+	q.cacheBinary = result.binary
+	q.cacheLines = append(q.cacheLines[:0], result.lines...)
+	q.cacheReadErr = result.err
+	q.displayLines = nil
+	q.displayToSource = nil
+}
+
+// loadDefaultQuickView preserves the existing 16 KiB/500 ms text-or-hex
+// fallback. It can run synchronously for unmatched files or in the provider
+// worker after every specialized provider declined the file.
+func loadDefaultQuickView(parent context.Context, filesystem vfs.VFS, path string) quickViewFileResult {
+	ctx, cancel := context.WithTimeout(parent, 500*time.Millisecond)
+	defer cancel()
+	rc, err := filesystem.Open(ctx, path)
+	if err != nil {
+		return quickViewFileResult{err: err}
 	}
 	defer rc.Close()
 	buf := make([]byte, previewMax)
-	n, rerr := rc.ReadAt(ctx, buf, 0)
-	if rerr != nil && rerr != io.EOF {
-		q.cacheReadErr = rerr
-		return
+	n, readErr := rc.ReadAt(ctx, buf, 0)
+	if readErr != nil && readErr != io.EOF {
+		return quickViewFileResult{err: readErr}
 	}
 	buf = buf[:n]
 
 	cpID := vfs.DetectEncoding(buf, AppConfig.ViewerAutodetectCodePage, AppConfig.ViewerDefaultCodePage)
-	var decodedBuf []byte = buf
+	decodedBuf := buf
 	if cpID != 65001 {
-		if decoded, err := vfs.DecodeBytes(buf, cpID); err == nil {
+		if decoded, decodeErr := vfs.DecodeBytes(buf, cpID); decodeErr == nil {
 			decodedBuf = decoded
 		}
 	}
 
 	if looksBinary(decodedBuf) {
-		q.cacheBinary = true
-		q.cacheLines = hexDumpLines(buf)
-	} else {
-		lines := splitTextLines(string(decodedBuf))
-		if n := len(lines); n > 0 && lines[n-1] == "" {
-			lines = lines[:n-1]
-		}
-		q.cacheLines = lines
+		return quickViewFileResult{binary: true, lines: hexDumpLines(buf)}
 	}
+	lines := splitTextLines(string(decodedBuf))
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return quickViewFileResult{lines: lines}
 }
 
 const previewMax = 16 * 1024

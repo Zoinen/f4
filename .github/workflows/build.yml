@@ -102,11 +102,11 @@ jobs:
         fi
 
         # Build core
-        go build $GCFLAGS -ldflags="$LDFLAGS" -o build/f4$EXT .
+        go build -trimpath $GCFLAGS -ldflags="$LDFLAGS" -o build/f4$EXT .
 
         # Build GUI-only binary for Windows (no console flash)
         if [ "$GOOS" = "windows" ]; then
-          go build $GCFLAGS -ldflags="$LDFLAGS -H windowsgui" -o build/f4-gui$EXT .
+          go build -trimpath $GCFLAGS -ldflags="$LDFLAGS -H windowsgui" -o build/f4-gui$EXT .
         fi
 
         # Copy language and help assets
@@ -132,7 +132,7 @@ jobs:
 
         # Build internal dummy plugin
         cd plugins/dummy_internal
-        go build $GCFLAGS -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT .
+        go build -trimpath $GCFLAGS -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT .
 
     - name: Package
       run: |

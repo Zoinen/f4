@@ -29,6 +29,7 @@ func (h *luaTestHostAPI) Message(msg string) { h.logs = append(h.logs, msg) }
 
 func (h *luaTestHostAPI) RegisterHighlighter(p vtui.HighlighterProvider) {}
 func (h *luaTestHostAPI) RegisterVFSProvider(p vfs.VFSProvider)          {}
+func (h *luaTestHostAPI) RegisterURIProvider(p vfs.URIProvider) error    { return nil }
 
 func (h *luaTestHostAPI) RegisterDrive(name string, factory func() vfs.VFS) {
 	h.drives[name] = factory

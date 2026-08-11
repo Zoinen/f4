@@ -17,6 +17,7 @@ import (
 
 func main() {
 	vtui.AppName = "f4"
+	installConsoleCtrlHandler()
 	var sudoDispatcher string
 
 	// Initialize SudoClient immediately for all process types
@@ -59,6 +60,10 @@ func main() {
 
 	defer func() {
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
+		if GlobalPluginManager != nil {
+			GlobalPluginManager.CloseAll()
+		}
+		shutdownProcessEnvironmentRuntime()
 		if GlobalFileState != nil {
 			GlobalFileState.Flush()
 		}
@@ -333,6 +338,12 @@ func SetupUI() {
 
 	SetDefaultF4Palette()
 	LoadConfig()
+	ctrlTabMode := vtui.WorkspaceCtrlTabDirect
+	if AppConfig.CtrlTabShowsMenu {
+		ctrlTabMode = vtui.WorkspaceCtrlTabMenu
+	}
+	vtui.FrameManager.ConfigureWorkspaceTabs(vtui.WorkspaceTabMode(AppConfig.WorkspaceTabMode), ctrlTabMode)
+	vtui.FrameManager.ConfigureWorkspaceAltNumberSwitch(AppConfig.AltNumberSwitchesTabs)
 	InitLang()
 	if err := ApplyColorStyle(AppConfig.ColorStyle); err != nil {
 		vtui.DebugLog("COLORS: %v; falling back to Modern", err)
@@ -370,6 +381,24 @@ func SetupUI() {
 	// user's overrides from hotkeys.ini.
 	InitHelpSystem()
 	vtui.FrameManager.EventFilter = MacroMgr.Filter
+
+	pluginsDisabled := false
+	for _, arg := range os.Args {
+		if arg == "--no-plugins" {
+			pluginsDisabled = true
+			break
+		}
+	}
+	if !pluginsDisabled {
+		GlobalPluginManager = NewPluginManager()
+		// Built-ins only register local capabilities and must be ready before
+		// LoadSession restores provider-owned visual panel paths.
+		GlobalPluginManager.LoadInternal()
+	} else {
+		GlobalPluginManager = nil
+		vtui.DebugLog("CORE: Plugins disabled by --no-plugins flag")
+	}
+
 	LoadSession()
 	vtui.ManageCursorStyle = !AppConfig.KeepTerminalCursor
 	vtui.FrameManager.Push(vtui.NewDesktop())
@@ -379,59 +408,34 @@ func SetupUI() {
 
 	panels := NewPanelsFrame()
 	panels.ResizeConsole(width, height)
-	if AppConfig.SavePanelPaths {
-		lp := panels.panels[0].(*FileSystemPanel)
-		rp := panels.panels[1].(*FileSystemPanel)
-
-		// Восстанавливаем режимы отображения и типы сортировки панелей
-		leftMode := ViewMode(LastLeftViewMode)
-		if leftMode != ViewModeMedium && leftMode != ViewModeDetailed && leftMode != ViewModeBrief {
-			leftMode = ViewModeMedium
-		}
-		lp.SetViewMode(leftMode)
-		lp.sortMode = SortMode(LastLeftSortMode)
-		lp.sortReverse = LastLeftSortRev
-
-		rightMode := ViewMode(LastRightViewMode)
-		if rightMode != ViewModeMedium && rightMode != ViewModeDetailed && rightMode != ViewModeBrief {
-			rightMode = ViewModeMedium
-		}
-		rp.SetViewMode(rightMode)
-		rp.sortMode = SortMode(LastRightSortMode)
-		rp.sortReverse = LastRightSortRev
-
-		if LastLeftPath != "" && panels.NavigateToPath(lp, LastLeftPath) {
-			// Navigated successfully
-		} else {
-			if LastLeftPath != "" {
-				lp.vfs.SetPath(LastLeftPath)
-			}
-			lp.ReadDirectory()
-		}
-		if LastRightPath != "" && panels.NavigateToPath(rp, LastRightPath) {
-			// Navigated successfully
-		} else {
-			if LastRightPath != "" {
-				rp.vfs.SetPath(LastRightPath)
-			}
-			rp.ReadDirectory()
-		}
-		lp.pendingSelection = LastLeftCursor
-		rp.pendingSelection = LastRightCursor
-		panels.activeIdx = LastActivePanel
-
-		panels.showPanels = LastShowPanels
-		panels.showLeftPanel = LastShowLeft
-		panels.showRightPanel = LastShowRight
-		if LastWidePanel == 0 || LastWidePanel == 1 {
-			panels.wide = true
-			panels.widePanel = LastWidePanel
-			panels.activeIdx = LastWidePanel
-			panels.showPanels = true
-		}
-		panels.ResizeConsole(width, height)
+	states := LastWorkspaceSessions
+	if len(states) == 0 && AppConfig.SavePanelPaths {
+		states = []workspaceSessionState{legacyWorkspaceSession()}
+	}
+	if len(states) > 0 {
+		applyWorkspaceSession(panels, states[0], width, height, AppConfig.SavePanelPaths)
 	}
 	vtui.FrameManager.Push(panels)
+	if len(LastWorkspaceSessions) > 1 {
+		// AddScreenBackground inserts immediately after the active workspace;
+		// restore from right to left to preserve the saved tab order.
+		for i := len(LastWorkspaceSessions) - 1; i >= 1; i-- {
+			state := LastWorkspaceSessions[i]
+			extra := NewPanelsFrame()
+			applyWorkspaceSession(extra, state, width, height, AppConfig.SavePanelPaths)
+			vtui.FrameManager.AddScreenBackground(extra)
+		}
+	}
+	if len(LastWorkspaceSessions) > 0 {
+		numbers := make([]int, len(LastWorkspaceSessions))
+		for i, state := range LastWorkspaceSessions {
+			numbers[i] = state.Number
+		}
+		vtui.FrameManager.RestoreScreenNumbers(numbers)
+		if LastActiveWorkspace > 0 && LastActiveWorkspace < len(vtui.FrameManager.Screens) {
+			vtui.FrameManager.SwitchScreen(LastActiveWorkspace)
+		}
+	}
 	previousEventFilter := vtui.FrameManager.EventFilter
 	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
 		if previousEventFilter != nil && previousEventFilter(e) {
@@ -450,19 +454,11 @@ func SetupUI() {
 		renderHelpSearch(scr)
 	}
 
-	noPlugins := false
-	for _, arg := range os.Args {
-		if arg == "--no-plugins" {
-			noPlugins = true
-			break
-		}
-	}
-
-	if !noPlugins {
-		GlobalPluginManager = NewPluginManager()
-		go GlobalPluginManager.LoadAll()
-	} else {
-		vtui.DebugLog("CORE: Plugins disabled by --no-plugins flag")
+	// External plugins may post a permission dialog or call Host.RunAction
+	// during Init. Start them only after session restoration and initial frame
+	// construction, and never wait for them before the UI event loop starts.
+	if GlobalPluginManager != nil {
+		GlobalPluginManager.StartExternal()
 	}
 
 	// Background update check
@@ -517,6 +513,7 @@ func LoadSession() {
 	LastShowPanels = ini.GetString("Session", "ShowPanels", "1") == "1"
 	LastShowLeft = ini.GetString("Session", "ShowLeft", "1") == "1"
 	LastShowRight = ini.GetString("Session", "ShowRight", "1") == "1"
+	LastWorkspaceSessions, LastActiveWorkspace = loadWorkspaceSessions(ini)
 
 	vtui.DebugLog("SESSION: Loaded state from %s", path)
 }
@@ -537,36 +534,19 @@ func SaveSession() {
 		}
 	}
 
-	if AppConfig.SavePanelPaths && vtui.FrameManager != nil {
-		for _, s := range vtui.FrameManager.Screens {
-			for _, f := range s.Frames {
-				if pf, ok := f.(*PanelsFrame); ok {
-					LastLeftPath, LastRightPath = pf.GetPaths()
-					LastActivePanel = pf.activeIdx
-					LastWidePanel = -1
-					if pf.wide {
-						LastWidePanel = pf.widePanel
-					}
-					LastShowPanels = pf.showPanels
-					LastShowLeft = pf.showLeftPanel
-					LastShowRight = pf.showRightPanel
-					if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
-						LastLeftCursor = fsp.GetSelectedName()
-						LastLeftViewMode = int(fsp.viewMode)
-						LastLeftSortMode = int(fsp.sortMode)
-						LastLeftSortRev = fsp.sortReverse
-					}
-					if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
-						LastRightCursor = fsp.GetSelectedName()
-						LastRightViewMode = int(fsp.viewMode)
-						LastRightSortMode = int(fsp.sortMode)
-						LastRightSortRev = fsp.sortReverse
-					}
-					goto found
+	if vtui.FrameManager != nil {
+		if states, active := captureWorkspaceSessions(); len(states) > 0 {
+			if !AppConfig.SavePanelPaths {
+				for i := range states {
+					states[i].Left.Path, states[i].Right.Path = "", ""
+					states[i].Left.Cursor, states[i].Right.Cursor = "", ""
 				}
 			}
+			LastWorkspaceSessions, LastActiveWorkspace = states, active
+			if AppConfig.SavePanelPaths {
+				setLegacyWorkspaceSession(states[0])
+			}
 		}
-	found:
 	}
 
 	var sb strings.Builder
@@ -601,6 +581,7 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastRightViewMode))
 	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastRightSortMode))
 	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev]))
+	writeWorkspaceSessions(&sb, LastWorkspaceSessions, LastActiveWorkspace)
 
 	err := os.WriteFile(path, []byte(sb.String()), 0644)
 	if err != nil {
@@ -651,62 +632,4 @@ func isHexSequence(s []rune) bool {
 
 func isHexChar(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
-}
-func createDefaultHighlightIni(path string) {
-	// Rule order follows far2l's stock highlight groups: hidden and system
-	// files win over the directory rule, so a dotted directory stays dim, and
-	// the directory rule wins over the script masks, so a folder named *.sh is
-	// still a folder. Colours are the same Tango entries far2l resolves those
-	// groups to.
-	//
-	// Only NormalColor is set on purpose. f4 composes the selected and cursor
-	// variants from Panel.Text.Selected and Panel.Cursor, which keeps this file
-	// independent of the active style — spelling those backgrounds out here
-	// would freeze one theme's blue and cyan into every other theme.
-	//
-	// Two far2l groups have no equivalent: broken symlinks (LIGHTRED) and
-	// executable symlinks (GREEN). f4's attribute vocabulary has no Broken or
-	// ReparsePoint, so those files fall through to the rules below.
-	content := `[Highlight_0]
-Name = Hidden Files
-IncludeAttributes = Hidden
-NormalColor = foreground:#06989A
-
-[Highlight_1]
-Name = System Files
-IncludeAttributes = System
-NormalColor = foreground:#06989A
-
-[Highlight_2]
-Name = Directories
-IncludeAttributes = Directory
-NormalColor = foreground:#EEEEEC
-
-[Highlight_3]
-Name = Scripts
-Mask = *.sh, *.bash, *.py, *.pl, *.cmd, *.exe, *.bat, *.com
-ExcludeAttributes = Directory
-Mark = *
-NormalColor = foreground:#8AE234
-
-[Highlight_4]
-Name = Archives
-Mask = *.zip, *.rar, *.tar, *.gz, *.7z, *.tgz, *.bz2, *.xz, *.zst, *.jar, *.cab, *.lzh, *.cpio, *.rpm
-ExcludeAttributes = Directory
-NormalColor = foreground:#AD7FA8
-
-[Highlight_5]
-Name = Temporary Files
-Mask = *.bak, *.tmp
-ExcludeAttributes = Directory
-NormalColor = foreground:#C4A000
-
-[Highlight_6]
-Name = Executables
-IncludeAttributes = Executable
-ExcludeAttributes = Directory
-Mark = *
-NormalColor = foreground:#8AE234
-`
-	_ = os.WriteFile(path, []byte(content), 0644)
 }

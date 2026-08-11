@@ -230,6 +230,267 @@ func TestRunShellV2SeparatesChannelsAndExitCode(t *testing.T) {
 	dialer.assertDone()
 }
 
+func TestRunShellStreamV2PreservesPacketOrderAndStreamsLive(t *testing.T) {
+	releaseExit := make(chan struct{})
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host-serial:SERIAL:features")
+			writeTestHostReply(t, conn, "shell_v2")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:transport:SERIAL")
+			writeTestStatus(t, conn, "OKAY")
+			expectTestRequest(t, conn, "shell,v2,raw:do work")
+			writeTestStatus(t, conn, "OKAY")
+			_ = writeShellPacket(conn, shellIDStdout, []byte("out-"))
+			_ = writeShellPacket(conn, shellIDStderr, []byte("err\n"))
+			<-releaseExit
+			_ = writeShellPacket(conn, shellIDStdout, []byte("tail"))
+			_ = writeShellPacket(conn, shellIDExit, []byte{7})
+		},
+	)
+
+	chunks := make(chan string, 3)
+	done := make(chan struct {
+		code int
+		err  error
+	}, 1)
+	go func() {
+		code, err := server.RunShellStream(context.Background(), "SERIAL", "do work", func(chunk []byte) {
+			chunks <- string(chunk)
+		})
+		done <- struct {
+			code int
+			err  error
+		}{code, err}
+	}()
+
+	for i, want := range []string{"out-", "err\n"} {
+		select {
+		case got := <-chunks:
+			if got != want {
+				t.Fatalf("chunk %d = %q, want %q", i, got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("chunk %d was not streamed before exit", i)
+		}
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("RunShellStream returned before exit packet: %+v", result)
+	default:
+	}
+	close(releaseExit)
+	if got := <-chunks; got != "tail" {
+		t.Fatalf("final chunk = %q, want tail", got)
+	}
+	result := <-done
+	if result.err != nil || result.code != 7 {
+		t.Fatalf("RunShellStream = (%d, %v), want (7, nil)", result.code, result.err)
+	}
+	dialer.assertDone()
+}
+
+func TestRunShellStreamV2BoundsCallbackChunks(t *testing.T) {
+	payload := bytes.Repeat([]byte{'x'}, shellWriteChunk*2+17)
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host-serial:SERIAL:features")
+			writeTestHostReply(t, conn, "shell_v2")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:transport:SERIAL")
+			writeTestStatus(t, conn, "OKAY")
+			expectTestRequest(t, conn, "shell,v2,raw:large")
+			writeTestStatus(t, conn, "OKAY")
+			_ = writeShellPacket(conn, shellIDStdout, payload)
+			_ = writeShellPacket(conn, shellIDExit, []byte{0})
+		},
+	)
+
+	total, calls := 0, 0
+	code, err := server.RunShellStream(context.Background(), "SERIAL", "large", func(chunk []byte) {
+		calls++
+		total += len(chunk)
+		if len(chunk) > shellWriteChunk {
+			t.Errorf("callback chunk = %d bytes", len(chunk))
+		}
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("RunShellStream = (%d, %v)", code, err)
+	}
+	if total != len(payload) || calls != 3 {
+		t.Fatalf("streamed %d bytes in %d calls, want %d bytes in 3", total, calls, len(payload))
+	}
+	dialer.assertDone()
+}
+
+func TestRunShellStreamCancellationInterruptsPacketRead(t *testing.T) {
+	serviceReady := make(chan struct{})
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host-serial:SERIAL:features")
+			writeTestHostReply(t, conn, "shell_v2")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:transport:SERIAL")
+			writeTestStatus(t, conn, "OKAY")
+			expectTestRequest(t, conn, "shell,v2,raw:sleep")
+			writeTestStatus(t, conn, "OKAY")
+			close(serviceReady)
+			_, _ = io.Copy(io.Discard, conn)
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := server.RunShellStream(ctx, "SERIAL", "sleep", nil)
+		done <- err
+	}()
+	<-serviceReady
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunShellStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunShellStream did not unblock after cancellation")
+	}
+	dialer.assertDone()
+}
+
+func TestRunShellStreamLegacyRecoversSuccessStatusAndStreamsLive(t *testing.T) {
+	releaseStatus := make(chan struct{})
+	wantOutput := strings.Repeat("x", 256) + "\ntail"
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host-serial:OLD:features")
+			writeTestHostReply(t, conn, "stat_v2")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:transport:OLD")
+			writeTestStatus(t, conn, "OKAY")
+			service := readTestRequest(t, conn)
+			const prefix = "shell:sh -c 'do work' </dev/null; __f4_apply_status=$?; printf '"
+			const suffix = "%u' \"$__f4_apply_status\""
+			if !strings.HasPrefix(service, prefix) || !strings.HasSuffix(service, suffix) {
+				t.Errorf("legacy shell service = %q", service)
+				return
+			}
+			marker := strings.TrimSuffix(strings.TrimPrefix(service, prefix), suffix)
+			if len(marker) != len(legacyShellStatusMarkerPrefix)+legacyShellStatusNonceBytes*2+2 ||
+				!strings.HasPrefix(marker, legacyShellStatusMarkerPrefix) || !strings.HasSuffix(marker, "__") {
+				t.Errorf("legacy status marker = %q", marker)
+				return
+			}
+			writeTestStatus(t, conn, "OKAY")
+			_, _ = io.WriteString(conn, wantOutput)
+			<-releaseStatus
+			// Split the marker to exercise framing independently of socket reads.
+			mid := len(marker) / 2
+			_, _ = io.WriteString(conn, marker[:mid])
+			_, _ = io.WriteString(conn, marker[mid:]+"0")
+		},
+	)
+
+	var (
+		mu     sync.Mutex
+		output bytes.Buffer
+	)
+	live := make(chan struct{}, 1)
+	done := make(chan struct {
+		code int
+		err  error
+	}, 1)
+	go func() {
+		code, err := server.RunShellStream(context.Background(), "OLD", "do work", func(chunk []byte) {
+			if len(chunk) > shellWriteChunk {
+				t.Errorf("callback chunk = %d bytes", len(chunk))
+			}
+			mu.Lock()
+			_, _ = output.Write(chunk)
+			mu.Unlock()
+			select {
+			case live <- struct{}{}:
+			default:
+			}
+		})
+		done <- struct {
+			code int
+			err  error
+		}{code, err}
+	}()
+
+	select {
+	case <-live:
+		// Output larger than the bounded marker tail arrives before status.
+	case <-time.After(time.Second):
+		t.Fatal("legacy output was not streamed before command completion")
+	}
+	close(releaseStatus)
+	var result struct {
+		code int
+		err  error
+	}
+	select {
+	case result = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("legacy RunShellStream did not finish")
+	}
+	if result.err != nil || result.code != 0 {
+		t.Fatalf("RunShellStream = (%d, %v), want (0, nil)", result.code, result.err)
+	}
+	mu.Lock()
+	gotOutput := output.String()
+	mu.Unlock()
+	if gotOutput != wantOutput {
+		t.Fatalf("legacy output = %q, want %q", gotOutput, wantOutput)
+	}
+	dialer.assertDone()
+}
+
+func TestRunShellStreamLegacyCancellationInterruptsRead(t *testing.T) {
+	serviceReady := make(chan struct{})
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host-serial:OLD:features")
+			writeTestHostReply(t, conn, "stat_v2")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:transport:OLD")
+			writeTestStatus(t, conn, "OKAY")
+			service := readTestRequest(t, conn)
+			if !strings.HasPrefix(service, "shell:sh -c 'sleep' </dev/null;") {
+				t.Errorf("legacy shell service = %q", service)
+				return
+			}
+			writeTestStatus(t, conn, "OKAY")
+			close(serviceReady)
+			_, _ = io.Copy(io.Discard, conn)
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := server.RunShellStream(ctx, "OLD", "sleep", nil)
+		done <- err
+	}()
+	<-serviceReady
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunShellStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("legacy RunShellStream did not unblock after cancellation")
+	}
+	dialer.assertDone()
+}
+
 func TestShellStreamFramesStdin(t *testing.T) {
 	server, dialer := testServer(t,
 		func(conn net.Conn) {

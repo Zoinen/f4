@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -267,7 +268,7 @@ func TestActionFoldersHistory_HelpTopic(t *testing.T) {
 // an empty "topic not found" page.
 func TestHistoryHelpTopics_LoadedInHelpEngine(t *testing.T) {
 	InitHelpSystem()
-	for _, name := range []string{"History", "HistoryFolders"} {
+	for _, name := range []string{"History", "HistoryFolders", "HistoryViewEdit"} {
 		if topic := vtui.GlobalHelpEngine.GetTopic(name); topic == nil {
 			t.Errorf("help topic %q not registered in engine", name)
 		}
@@ -307,6 +308,92 @@ func TestActionCommandHistory_MouseClickPastesEntry(t *testing.T) {
 	}
 	if !menu.IsDone() {
 		t.Error("menu should be closed after click accept")
+	}
+}
+
+func TestActionCommandHistory_PathColumnAndInsertion(t *testing.T) {
+	initHistoryTestScreen(t)
+	previous := vtui.GlobalHistoryProvider
+	provider := stubHistoryProvider{"cmdline": {"echo newest"}}
+	vtui.GlobalHistoryProvider = &provider
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+
+	path := filepath.Join(t.TempDir(), "folder with space")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rememberCommandHistoryPath("echo newest", path, provider["cmdline"])
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(120, 40)
+	actionCommandHistory(pf)
+	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	search := activeHistorySearch
+	if search == nil || search.selectedSecondary() != path || !search.showSecond {
+		t.Fatalf("path column was not initialized: search=%#v", search)
+	}
+
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F2,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if search.showSecond {
+		t.Fatal("Ctrl+F2 did not hide the path column")
+	}
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F2,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if !search.showSecond {
+		t.Fatal("Ctrl+F2 did not restore the path column")
+	}
+
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	want := `"` + path + `"`
+	if runtime.GOOS != "windows" {
+		want = "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
+	}
+	if got := pf.cmdLine.Edit.GetText(); got != want {
+		t.Fatalf("Ctrl+Shift+Enter inserted %q, want %q", got, want)
+	}
+}
+
+func TestActionCommandHistory_CtrlPgDnNavigatesToStoredPath(t *testing.T) {
+	initHistoryTestScreen(t)
+	previous := vtui.GlobalHistoryProvider
+	provider := stubHistoryProvider{"cmdline": {"echo newest"}}
+	vtui.GlobalHistoryProvider = &provider
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+
+	target := t.TempDir()
+	rememberCommandHistoryPath("echo newest", target, provider["cmdline"])
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(120, 40)
+	actionCommandHistory(pf)
+	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_NEXT,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if got := pf.getActivePanel().vfs.GetPath(); got != target {
+		t.Fatalf("Ctrl+PgDn navigated to %q, want %q", got, target)
+	}
+	if !menu.IsDone() {
+		t.Fatal("history menu stayed open after Ctrl+PgDn")
 	}
 }
 

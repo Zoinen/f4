@@ -118,8 +118,9 @@ func TestHotkeyManager_ShellDefaults_Issue289(t *testing.T) {
 		expected string
 	}{
 		{"CtrlH", "Panel.ToggleHidden"},
-		{"ShiftDel", "File.Delete"},
-		{"ShiftNumDel", "File.Delete"},
+		{"F8", "File.Delete"},
+		{"ShiftDel", "File.DeletePermanent"},
+		{"ShiftNumDel", "File.DeletePermanent"},
 	}
 	for _, tc := range cases {
 		if got := hm.GetAction("Shell", tc.key); got != tc.expected {

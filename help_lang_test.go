@@ -23,6 +23,9 @@ func TestHelpLanguageSwitch(t *testing.T) {
 		t.Fatalf("failed to write test hlf: %v", err)
 	}
 
+	// Ensure GetF4ConfigDir's once-only detector cannot overwrite the test
+	// override on its first call from InitHelpSystem.
+	_ = GetF4ConfigDir()
 	oldF4ConfigDir := cachedF4ConfigDir
 	cachedF4ConfigDir = tempDir
 	defer func() { cachedF4ConfigDir = oldF4ConfigDir }()
@@ -35,5 +38,40 @@ func TestHelpLanguageSwitch(t *testing.T) {
 		t.Errorf("expected TestTopic to be loaded from ru.hlf")
 	} else if topic.Name != "TestTopic" || len(topic.Lines) == 0 || !strings.Contains(topic.Lines[0], "Russian Help Content") {
 		t.Logf("Found TestTopic: %+v", topic)
+	}
+}
+
+func TestHelpAndLangCompleteness(t *testing.T) {
+	langs, err := filepath.Glob("lang/*.lng")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helps, err := filepath.Glob("help/*.hlf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	langSet := make(map[string]bool)
+	for _, l := range langs {
+		base := filepath.Base(l)
+		langSet[strings.TrimSuffix(base, ".lng")] = true
+	}
+
+	helpSet := make(map[string]bool)
+	for _, h := range helps {
+		base := filepath.Base(h)
+		helpSet[strings.TrimSuffix(base, ".hlf")] = true
+	}
+
+	for l := range langSet {
+		if !helpSet[l] {
+			t.Errorf("Language %q has a .lng file but is missing a corresponding .hlf help file.", l)
+		}
+	}
+
+	for h := range helpSet {
+		if !langSet[h] {
+			t.Errorf("Language %q has a .hlf help file but is missing a corresponding .lng file.", h)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,6 +57,7 @@ type MacroHost interface {
 	InjectKeys(keys []*vtinput.InputEvent)
 	Log(format string, args ...any)
 	RunAction(name string) bool
+	CallPlugin(context.Context, string, []any) ([]any, error)
 }
 
 // LuaMacro is one Macro{} declaration.

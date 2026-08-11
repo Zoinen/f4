@@ -1,0 +1,3 @@
+# Hardcoded UI captions that predate the localization audit.
+# One entry per line: file, constructor and the quoted literal, tab separated.
+# The list may only shrink. See L10N_PLAN.md, stages S0 and S6.

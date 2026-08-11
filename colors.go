@@ -23,6 +23,10 @@ const (
 	ColPanelColumnTitle
 	ColPanelTotalInfo
 	ColPanelSelectedInfo
+	ColPanelWorkspaceTabs
+	ColPanelWorkspaceTabsActive
+	ColPanelWorkspaceTabsAccent
+	ColPanelWorkspaceTabsAttention
 
 	ColCommandLineUserScreen
 	ColPanelBox
@@ -82,11 +86,15 @@ func SetDefaultF4Palette() {
 
 	vtui.Palette[ColPanelHighlightText] = vtui.Palette[ColPanelText]
 	vtui.Palette[ColPanelInfoText] = vtui.Palette[ColPanelText]
-	vtui.Palette[ColPanelSelectedTitle] = vtui.Palette[ColPanelTitle]
+	vtui.Palette[ColPanelSelectedTitle] = vtui.SetRGBBoth(0, 0x00FFFF, 0x3030C0)
 	vtui.Palette[ColPanelTotalInfo] = vtui.Palette[ColPanelText]
 	vtui.Palette[ColPanelDir] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
 	vtui.Palette[ColPanelFastFindNoMatch] = vtui.SetRGBBoth(0, 0xD75F5F, blue)
 	vtui.Palette[ColPanelSelectedInfo] = vtui.Palette[ColPanelSelectedText]
+	vtui.Palette[ColPanelWorkspaceTabs] = vtui.SetRGBBoth(0, 0x00FFFF, 0x000058)
+	vtui.Palette[ColPanelWorkspaceTabsActive] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
+	vtui.Palette[ColPanelWorkspaceTabsAccent] = vtui.SetRGBBoth(0, yellow, 0)
+	vtui.Palette[ColPanelWorkspaceTabsAttention] = vtui.SetRGBBoth(0, 0xFF8700, 0)
 	vtui.Palette[ColPanelScrollbar] = vtui.Palette[ColPanelBox]
 	vtui.Palette[ColPanelMinimalScrollbar] = vtui.SetRGBBoth(0, 0xFFFFFF, blue)
 
@@ -170,6 +178,10 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "Panel.FastFindNoMatch", Index: ColPanelFastFindNoMatch, Group: "Panel", ConstantName: "ColPanelFastFindNoMatch"},
 	{Canonical: "Panel.Info.Total", Index: ColPanelTotalInfo, Group: "Panel", ConstantName: "ColPanelTotalInfo", Aliases: []string{"Panel.TotalInfo"}},
 	{Canonical: "Panel.Info.Selected", Index: ColPanelSelectedInfo, Group: "Panel", ConstantName: "ColPanelSelectedInfo", Aliases: []string{"Panel.SelectedInfo"}},
+	{Canonical: "Panel.Tabs", Index: ColPanelWorkspaceTabs, Group: "Panel", ConstantName: "ColPanelWorkspaceTabs"},
+	{Canonical: "Panel.Tabs.Active", Index: ColPanelWorkspaceTabsActive, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsActive"},
+	{Canonical: "Panel.Tabs.Accent", Index: ColPanelWorkspaceTabsAccent, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsAccent"},
+	{Canonical: "Panel.Tabs.Attention", Index: ColPanelWorkspaceTabsAttention, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsAttention"},
 	{Canonical: "Table.Box", Index: vtui.ColTableBox, Group: "Panel", ConstantName: "ColTableBox"},
 	{Canonical: "Scrollbar", Index: vtui.ColScrollBar, Group: "Panel", ConstantName: "ColScrollBar"},
 
@@ -206,7 +218,7 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "WarnDialog.Button.Highlight", Index: vtui.ColWarnHighlightButton, Group: "Warning message", ConstantName: "ColWarnHighlightButton"},
 	{Canonical: "WarnDialog.Button.Highlight.Selected", Index: vtui.ColWarnHighlightSelectedButton, Group: "Warning message", ConstantName: "ColWarnHighlightSelectedButton"},
 	{Canonical: "WarnDialog.Edit.Unchanged", Index: vtui.ColWarnEdit, Group: "Warning message", ConstantName: "ColWarnEdit"},
-	{Canonical: "WarnDialog.Edit.Selected", Index: vtui.ColWarnSelectedButton, Group: "Warning message", ConstantName: "ColWarnSelectedButton"},
+	{Canonical: "WarnDialog.Edit.Selected", Index: vtui.ColWarnEdit, Group: "Warning message", ConstantName: "ColWarnEdit"},
 
 	// Key bar Group
 	{Canonical: "Keybar.Num", Index: vtui.ColKeyBarNum, Group: "Key bar", ConstantName: "ColKeyBarNum", Aliases: []string{"KeyBar.Numbers"}},
@@ -344,6 +356,15 @@ func GetColorRGBBoth(attr uint64) (fg uint32, bg uint32) {
 		bg = vtui.ThemePalette[vtui.GetIndexBack(attr)]
 	}
 	return fg, bg
+}
+
+func configureWorkspaceTabColors() {
+	vtui.FrameManager.ConfigureWorkspaceTabColors(
+		vtui.Palette[ColPanelWorkspaceTabs],
+		vtui.Palette[ColPanelWorkspaceTabsActive],
+		vtui.Palette[ColPanelWorkspaceTabsAccent],
+		vtui.Palette[ColPanelWorkspaceTabsAttention],
+	)
 }
 
 // GetLuminance returns the WCAG relative luminance of a packed 0xRRGGBB value.

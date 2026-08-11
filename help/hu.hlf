@@ -1,0 +1,590 @@
+@Contents
+$Súgó (Verzió: %Ver)
+Az f4 a Far Manager / far2l fájlkezelő kísérleti klónja Go nyelven.
+
+~Szerkesztő és nézegető gyorsbillentyűk~ViewerEditor@
+~Navigáció a paneleken~PanelNav@
+~Vizuális fájl-átnevezés (VisRen)~VisRen@
+~README.md megjelenítése~README@
+
+@VisRen
+$Vizuális fájl-átnevezés (VisRen)
+
+A VisRen egy beépített eszköz a fájlok vizuális csoportos átnevezésére az f4-ben.
+Minden új fájlnevet összeállít a módosítások végrehajtása előtt, és egymás mellett
+megjeleníti az eredeti és a célneveket. A helyi fájlrendszer panelén lévő fájlokkal és
+mappákkal működik.
+
+Ha a panelen ki vannak jelölve elemek, a VisRen a panelen lévő sorrendjükben nyitja
+meg őket. Ha nincsenek kijelölt elemek, a panel kurzora alatti elem lesz használva. A
+szülőkönyvtár ".." soha nem lesz használva. A VisRen megnyitásához nyomja meg az F11-et,
+és válassza a "Vizuális fájl-átnevezés" menüpontot; vagy aktiválható a menüben hozzárendelt
+gyorsbillentyűvel is.
+
+~Gyorsindítás és dialógusmezők~VisRenQuickStart@
+~Fájlnévmaszkok, kiterjesztések, tartományok, számlálók és idézőjelek~VisRenMasks@
+~Kis- és nagybetűs módosítások, transzliteráció és végrehajtási sorrend~VisRenTransforms@
+~Dátumok, ID3, képek/EXIF és fájlverzió~VisRenMetadata@
+~Keresés, egyszerű csere és reguláris kifejezések~VisRenSearch@
+~Navigáció az előnézetben, billentyűzet és egér~VisRenPreview@
+~A lista szerkesztése UTF-8 szerkesztőben~VisRenEditor@
+~Átnevezés végrehajtása, hibák, napló és visszavonás~VisRenRename@
+~Fájlnevek biztonsága és korlátozások~VisRenSafety@
+~Gyakorlati receptek~VisRenExamples@
+
+A megvalósítás a FarPlugins VisRen 3.2.0-n alapul, de szigorúbb fájlnév- és
+szerkesztő-ellenőrzéssel, stabil véletlenszámokkal és hordozható metaadatokkal egészül ki.
+
+@VisRenQuickStart
+$VisRen: Gyorsindítás és dialógusmezők
+
+#Tipikus átnevezés#
+
+  1. Jelölje ki a kívánt fájlokat/mappákat az Ins gombbal, vagy vigye a panel
+     kurzorát az elemre, ha csak arra van szüksége.
+  2. Nyomja meg az F11-et és válassza a VisRen-t.
+  3. Adja meg a név és a kiterjesztés maszkját. Az [N] és [E] alapértelmezett értékek
+     mindkét részt változatlanul hagyják az eredeti névből.
+  4. Opcionálisan írjon be szöveget a "Keresés" és "Csere erre" mezőkbe. A fókusz a
+     "Keresés" mezőben kezdődik; a Tab billentyű közvetlenül a "Csere erre" mezőbe lép.
+  5. Ellenőrizze az egyes célneveket. Az F3 billentyű megjeleníti az aktuális sor
+     teljes eredeti nevét, új nevét vagy diagnosztikáját.
+  6. Válassza az "Átnevezés" lehetőséget, vagy nyomja meg az Entert az alapértelmezett gombon.
+
+#Név és kiterjesztés#
+
+Ez a két mező külön-külön állítja össze a cél alapnevet és a kiterjesztést. A kiterjesztés
+mező nem tartalmaz pontot. A kiterjesztés üres eredménye teljesen eltávolítja azt. A sima
+szöveg szó szerint másolódik; a szögletes zárójelben lévő kifejezések behelyettesítik az eredeti
+szöveget, számlálókat, metaadatokat vagy transzformációkat.
+
+Az utolsó pont választja el az eredeti nevet és a kiterjesztést. Például az archive.tar.gz
+neve archive.tar és kiterjesztése gz. A README-nek nincs kiterjesztése. Az olyan rejtett fájloknál,
+mint a .gitignore, a név üres, a kiterjesztés pedig gitignore.
+
+#Sablonok és [+]#
+
+A "Név sablonok" és "Kiterjesztés sablonok" listák a megfelelő maszkhoz érvényes kifejezéseket
+tartalmaznak. Egy elem kiválasztása csak kijelöli azt. A [+] gomb beilleszti ezt a kiválasztott
+sablont a kurzor pozíciójára, és visszaállítja a fókuszt a megfelelő maszkra – pontosan úgy, mint
+az eredeti VisRen-ben. Ha a sablonlistának van fókusza, az Ins beilleszti az aktuális elemet,
+miközben a fókusz a listában marad. A tartomány és a számláló helyettesítő karakterei a beillesztéskor
+válnak érvényes értékekké.
+
+#Keresési lehetőségek#
+
+A keresés és csere a teljes név összeállítása után történik mindkét maszkkal, beleértve a generált
+pontot és kiterjesztést is. A "Kis- és nagybetűk megkülönböztetése" mező kezdetben aktív. A
+"Reguláris kifejezés" vált a sima keresés és a regex mód között.
+
+#Élő előnézet és diagnosztika#
+
+Minden szerkesztés azonnal frissíti az előnézetet. Ha a maszk, tartomány, számláló, regex vagy a
+kapott név érvénytelen, minden célmezőben <Error!> jelenik meg. Az átnevezés és a szerkesztő gombok
+le vannak tiltva. Az F3 megjeleníti a tényleges diagnosztikát.
+
+A négy szövegmező az F4 előzményeket használja. Az átnevezéshez használt értékek bekerülnek a megfelelő
+előzményekbe. A [T] szóelválasztói külön kerülnek mentésre a VisRen felhasználói konfigurációjában.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenMasks
+$VisRen: maszkok, tartományok, számlálók és idézőjelek
+
+#Alapvető kifejezések#
+
+  [N]          Eredeti név az utolsó kiterjesztés nélkül.
+  [E]          Eredeti kiterjesztés a kezdő pont nélkül.
+  [[]          Szó szerinti nyitó szögletes zárójel.
+  []]          Szó szerinti záró szögletes zárójel.
+
+A kifejezéseken kívüli összes szöveg szó szerinti. Egy magányos záró szögletes zárójel, egy lezáratlan
+nyitó zárójel vagy egy ismeretlen kifejezés hibának minősül.
+
+#Tartományok#
+
+A tartomány közvetlenül az N vagy az E után következik. A pozíciók Unicode karaktereket számolnak, nem
+bájtokat, és 1-től kezdődnek. A negatív pozíció a végétől számolja a pozíciót. Ugyanezek a formák
+működnek az E-vel is, például [E1-3].
+
+Az eredeti abcdefghij név esetén:
+
+  [N2]         b                 egy karakter
+  [N2-5]       bcde              2. és 5. pozíció között, beleértve
+  [N2,5]       bcdef             öt karakter a 2. pozíciótól kezdve
+  [N2-]        bcdefghij         2. pozíciótól a végéig
+  [N-2]        i                 második karakter a végétől
+  [N2--5]      bcdef             2. pozíciótól a végétől számított ötödik karakterig
+  [N-8-5]      cde               nyolcadik a végétől az ötödikig a végétől
+  [N-8,5]      cdefg             öt karakter a végétől számított nyolcadiktól kezdve
+  [N-5-]       fghij             ötödik a végétől a végéig
+
+A tartományon kívüli rész lehetőség szerint levágásra kerül vagy üres eredményt ad. A nulla pozíció
+és a fordított tartomány hibák. A menüben található tartománysablon a leghosszabb eredeti nevet vagy
+kiterjesztést használja.
+
+#Számlálók#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+A kezdő számjegyek határozzák meg az első értéket és a minimális megjelenítési szélességet. Legfeljebb
+kilenc számjegyet tartalmazhat. Ha a +lépés elmarad, a lépéskövetés 1. A számláló követi a sorok aktuális
+sorrendjét: a Ctrl+Up/Down és a vonszolás megváltoztatja a hozzárendelt értékeket. A szélesség minimális –
+a nagyobb számok nem lesznek levágva.
+
+#Kifejezések kombinálása#
+
+A kifejezések és a szó szerinti szövegek szabadon kombinálhatók. Például a [C001+1]_[N1-12] egy
+háromjegyű számot hoz létre, aláhúzást és a régi név első tizenkét karakterét. A transzformációk
+nem adnak hozzá szöveget; megváltoztatják a név kész részét a megfelelő témakörben leírtak szerint.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenTransforms
+$VisRen: transzformációk és végrehajtási sorrend
+
+#Kis- és nagybetűs módosítások#
+
+  [L]          A maszk teljes eredményének kisbetűssé alakítása.
+  [U]          Nagybetűssé alakítása.
+  [F]          Az első karakter nagybetűs, a többi kisbetűs.
+  [T]          Minden szó első karaktere nagybetűs.
+  [M]          A zenei név formázása "Előadó - Cím".
+
+A [T] alapértelmezés szerint a "-. _&" szóelválasztókat használja. Válassza ki a [T]-t bármelyik sablonlistában,
+és nyomja meg az F4-et az elválasztók szerkesztéséhez. A VisRen konfiguráció legfeljebb 18 karaktert ment el,
+amelyeket a legközelebbi alkalommal is használ.
+
+Az [M] felismeri a " - " vagy "_-_" karaktereket az előadó és a szám között. Az előadó szavait "minden szó
+nagybetűs" (Title Case) stílusúra alakítja; a dal címe egyetlen nagybetűvel kezdődik, a többi kisbetűs. A
+ruszisztikus "a" kötőszó az előadó nevében kisbetűs marad, ami megfelel a VisRen eredeti viselkedésének.
+
+Ha egy maszkban több kis- és nagybetűs kifejezés is szerepel, a prioritás rögzített: [L], [U], [F], [T], [M].
+Csak az első hajtódik végre ebből a listából.
+
+#Transzliteráció#
+
+  [TL]         Orosz cirill betűk átírása latin betűkre a VisRen táblázat szerint.
+  [TR]         A latin betűk visszaalakítása orosz cirill betűkké.
+
+A leképezés megfelel az eredeti VisRen táblázatnak: például ё -> jo, ж -> zh, х -> kh,
+щ -> shh, ю -> ju és я -> ja. A kis- és nagybetűk megkülönböztetése lehetőség szerint megmarad.
+A visszaalakítás a leghosszabb egyező latin sorozatot választja. Ha mind a [TL], mind a [TR] jelen van,
+a [TL] élvez prioritást.
+
+#Pontos feldolgozási sorrend#
+
+  1. A név és a kiterjesztés kifejezései kibontásra kerülnek.
+  2. A két rész ponttal kapcsolódik össze, ha a kiterjesztés nem üres.
+  3. Az így összeállított teljes néven történik a keresés és a csere.
+  4. Az eredmény ismét felosztásra kerül az utolsó pont alapján.
+  5. A megadott részre végrehajtódik az átírás (transzliteráció).
+  6. Utolsó lépésként a kijelölt kis- és nagybetűs módosítás hajtódik végre.
+  7. Ellenőrzésre kerül a kész fájlnév-komponens.
+
+Ez a folyamat nagyon fontos. A kis- és nagybetűs módosítás a beillesztett szövegre is hatással van,
+míg a keresés illeszkedhet a generált kiterjesztésre is.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenMetadata
+$VisRen: fájlok adatai és metaadatai
+
+A metaadatok beolvasása késleltetett (lazy), és minden forrásfájlra egyszer kerül tárolásra.
+A hiányzó vagy nem támogatott mezők helyére üres karakterlánc kerül, és nem okoznak hibát
+az előnézetben.
+
+#Fájlok időbélyegei és munkamenet értékei#
+
+  [DM]         Utolsó módosítás dátuma helyi idő szerint: YYYY.MM.DD
+  [TM]         Utolsó módosítás ideje helyi idő szerint: hh-mm-ss
+  [R]          Véletlenszám 0 és 32767 között
+
+Az [R] egyszer kerül hozzárendelésre a dialógusablak megnyitásakor. Stabil marad a maszkok szerkesztése
+során, és a sorával együtt mozog. Új VisRen munkamenetben új értékek kerülnek kiosztásra.
+
+#MP3 és ID3#
+
+A zeneszám számának kifejezése egy nyitó zárójelből, egy kettőskereszt karakterből (U+0023) és egy záró
+zárójelből áll ( [#] ). A többi mező:
+
+  [t]          Dal címe
+  [a]          Előadó
+  [l]          Album
+  [y]          Év vagy dátum
+  [g]          Műfaj
+
+ID3v2 létezése esetén az ID3v2.3 vagy ID3v2.4 keretek előnyben részesülnek. Ellenkező esetben az
+ID3v1.1 kerül használatra, beleértve a sorszámot és a műfajtáblázatot. A támogatott kódolások közé tartozik
+a rendszer alapértelmezett szövege, az UTF-8 és az UTF-16.
+
+#Képek és EXIF#
+
+  [c]          Kamera gyártója a JPEG EXIF-ből
+  [m]          Kamera modellje a JPEG EXIF-ből
+  [d]          Kép készítésének dátuma: YYYY.MM.DD hh-mm-ss
+  [r]          Kép méretei: SZÉLESSÉGxMAGASSÁG
+
+A méretek JPEG, BMP, GIF és PNG formátumoknál érhetők el. A gyártó, modell és dátum EXIF a JPEG-ből kerül
+beolvasásra. Ha nem áll rendelkezésre használható EXIF dátum, a [d] a fájl utolsó módosítási dátumát használja.
+A kis [m]/[r] metaadatok, míg a nagy [M]/[R] a regiszter módot, illetve a véletlenszámot jelenti.
+
+#Futtatható fájl verziója#
+
+  [V]          Verzió a Windows PE .exe/.dll erőforrásokból
+
+A PE verzió elemzése natívan működik minden támogatott operációs rendszeren. Használható verzió nélküli
+fájl esetén a [V] üres karakterláncot ad vissza.
+
+Az útvonal-elválasztókat vagy más tiltott karaktereket tartalmazó metaadat-szövegek elvetésre kerülnek,
+vagy a végső név-ellenőrzés során fennakadnak. Mindig ellenőrizze az előnézetet, ha a címkék olyan
+fájlokból származnak, amelyeket nem Ön irányít.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenSearch
+$VisRen: keresés, egyszerű csere és reguláris kifejezések
+
+A keresés és csere a teljes név összeállítása után történik mindkét maszkkal, beleértve a generált
+pontot és kiterjesztést is. Az üres "Keresés" mező kikapcsolja ezt a lépést. Minden nem átfedő
+egyezést lecserél.
+
+#Egyszerű mód#
+
+Ha a "Reguláris kifejezés" nem aktív, a keresett szöveg szó szerinti. A "Kis- és nagybetűk megkülönböztetése"
+bejelölésével a "Fájl" és a "fájl" különbözik. Bejelölés nélkül a kis- és nagybetűk figyelmen kívül hagyásával
+történik az összehasonlítás; a csere pontosan a megadott módon történik.
+
+Például: [N] és [E] maszkok, keresés: "draft_", a csere pedig üres, a "draft_report.txt"-ből "report.txt" lesz.
+
+#Reguláris kifejezés mód#
+
+Kapcsolja be a "Reguláris kifejezés" opciót az f4 reguláris kifejezés-motorhoz (Go/coregex alapú).
+A mintát közvetlenül vagy /minta/i formában lehet megadni. A formátumban a szó szerinti perjelet \/ módon
+kell leírni. Az opcionális i zászló figyelmen kívül hagyja a kis- és nagybetűket. A kikapcsolt
+"Kis- és nagybetűk megkülönböztetése" ugyanezt teszi. Az i-n kívül más zászlót nem fogad el.
+
+A csoportokra való hivatkozások a cserében a $0-t használják a teljes egyezésre, és a $1-$9-et a zárójeles
+csoportokra. Például a 001-report.txt esetén:
+
+  Keresés:          /(\d+)-([^.]+)/
+  Csere erre:       $2-$1
+  Eredmény:         report-001.txt
+
+A hibás minta, a lezáratlan /minta/ forma vagy az ismeretlen zászló <Error!> jelzést ad az előnézetben,
+és letiltja az átnevezést és a szerkesztőt. A diagnosztika az F3 alatt érhető el.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+A megtalált egyezések az eredeti névben színesen kiemelve jelennek meg az előnézet bal oldali oszlopában.
+A kiemelés figyelembe veszi a "Kis- és nagybetűk megkülönböztetése" és a "Reguláris kifejezés" opciókat,
+megjelöl minden látható egyezést, és görgetés közben is megmarad. A "Csere erre" mező által létrehozott szöveg
+a jobb oldali oszlopban lesz kiemelve. Reguláris kifejezés esetén a teljes kibontott csoport kiemelésre kerül;
+üres csere esetén nincs kiemelhető látható szöveg.
+
+@VisRenPreview
+$VisRen: előnézet, billentyűzet és egér
+
+Az előnézet bal oldali oszlopa a forrás; a jobb oldali a cél. A dialógusablak megnyitásakor az első sor
+aktív, miközben a fókusz a "Keresés" mezőben kezdődik. Az F12 áthelyezi a fókuszt az előnézetre; innen
+visszatér a névmaszkra.
+
+Ha a teljes lista nem fér be a megjelenítési területre, a jobb szélén egy függőleges görgetősáv jelenik meg.
+Működnek a nyilak, a sávra kattintás, a csúszka húzása és az egérgörgő is a lista felett. Amikor minden sor
+újra befér, a görgetősáv automatikusan eltűnik.
+
+#Általános billentyűk#
+
+  F1                   Ezen súgó megnyitása.
+  F2                   Naplózás be-/kikapcsolása.
+  F3                   Teljes nevek vagy az aktuális sor diagnosztikájának megjelenítése.
+  F4                   A lista megnyitása a szerkesztőben.
+  F4 a [T] sablonon     Szóelválasztók szerkesztése.
+  F5                   A dialógusablak maximalizálása/helyreállítása.
+  F6                   Elérhető visszavonási lépés betöltése.
+  F8                   Átnevezési napló törlése megerősítés után.
+  F12                  Fókusz áthelyezése a listára vagy vissza.
+  Alt+N                Fókusz a névmaszkra.
+  Alt+E                Fókusz a kiterjesztésmaszkra.
+  Alt+S                Fókusz a "Keresés" mezőre.
+  Alt+P                Fókusz a "Csere erre" mezőre.
+  Alt+C                "Kis- és nagybetűk megkülönböztetése" átváltása.
+  Alt+G                "Reguláris kifejezés" átváltása.
+  Alt+T                Fókusz a név sablonokra.
+  Alt+L                Fókusz a kiterjesztés sablonokra.
+  Enter                Az "Átnevezés" fő művelet végrehajtása.
+  Esc                  A dialógusablak bezárása átnevezés nélkül.
+
+#Billentyűk, ha a fókusz a listában van#
+
+  Up/Down              Szomszédos sorra lépés.
+  Home/End             Első/utolsó sor.
+  PgUp/PgDn            Lapozás.
+  Del                  Sor eltávolítása csak ebből a műveletből.
+  Ctrl+Up/Down         Sorrend megváltoztatása; módosítja a számlálókat.
+  Ctrl+Left/Right      Oszlopelválasztó áthelyezése.
+  Ctrl+Num5            Középre igazítás és eltolás visszaállítása.
+  Alt+Left/Right       A forrás oszlop vízszintes görgetése.
+  Left/Right           A cél oszlop vízszintes görgetése.
+  Ctrl+PgUp            VisRen bezárása és visszatérés a forráshoz a panelen.
+
+#Sablonok és egér#
+
+  Az Ins a sablonlistában beilleszti a kiválasztott sablont a maszkba.
+  Az egér bal gombjával történő vonszolással megváltoztathatja a sorok sorrendjét.
+  A jobb egérgomb egy soron megjeleníti a teljes nevet/hibát.
+  A bal egérgombbal történő dupla kattintás visszatér a forráshoz a panelen.
+  A címsorban lévő ikonra kattintás maximalizálja/helyreállítja az ablakot.
+  Az "Átnevezés naplózása" opcióra kattintás átváltja a rögzítést; a sor többi
+  részére kattintva megerősítés után törölheti a meglévő naplót.
+
+A terminál átméretezése és az F5 billentyű visszaállítja az előnézet egyenletes elosztását. A kézi
+elválasztó- és eltolásbeállítások ezután újra elvégezhetők.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenEditor
+$VisRen: a lista szerkesztése UTF-8 szerkesztőben
+
+An F4 billentyű felajánlja az exportálást explicit formátumokban, majd megnyit egy ideiglenes UTF-8
+dokumentumot "Rename list of files" néven az f4 beépített szerkesztőjében:
+
+  Forrás + cél         "eredeti név"    "új név"
+  Csak célok                            "új név"
+
+Minden érték idézőjelbe van zárva. Az idézőjelek, a fordított perjelek és a vezérlőkarakterek
+a névben escarolva (escapelve) vannak írva. Ne változtassa meg a külső idézőjeleket.
+
+#Szigorú ellenőrzés#
+
+A szerkesztő bezárása után a VisRen megköveteli:
+
+  - pontosan ugyanannyi sort, mint az előnézetben;
+  - pontosan egy vagy két idézőjeles oszlopot a választott módtól függően;
+  - semmilyen extra szöveget az idézőjeles értékeken kívül;
+  - a változatlan forrás oszlopot a kétoszlopos módban;
+  - érvényes hordozható komponenst minden célnévhez.
+
+A szerkesztőben nem lehet sorokat hozzáadni, eltávolítani vagy áthelyezni. A kétoszlopos módban csak
+a cél oszlop módosítható. Ezeknek az ellenőrzéseknek köszönhetően a sérült idézőjelek vagy a forrás
+nem szándékos módosításai biztonságosan kiderülnek a művelet megkezdése előtt.
+
+Hiba esetén a VisRen elmagyarázza az okot, és felajánlja a "Szerkesztés újra" lehetőséget. A szerkesztő
+újra megnyílik a hibás soron az Ön szövegének megtartásával. Az érvényes módosított lista a szerkesztő
+bezárása után elindítja a szekvenciális átnevezést. Ha a generált lista bájt-szinten nem változott,
+de maszkváltozásokat tartalmaz, a VisRen megerősítést kér a megkezdés előtt.
+
+A szerkesztő le van tiltva, ha az előnézet <Error!>-t tartalmaz, vagy a visszavonás előnézeti módjában.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenRename
+$VisRen: átnevezés végrehajtása, hibák, napló és visszavonás
+
+#Szekvenciális átnevezés#
+
+A sorok egymás után fentről lefelé kerülnek feldolgozásra a jelenlegi sorrendben. A változatlan név
+kimarad. A forrás, amely a dialógusablak megnyitása után eltűnt, szintén kimarad. A fájlokra és
+mappákra ugyanazok a szabályok vonatkoznak.
+
+Idegen létező objektum soha nem íródik felül. Támogatott az ugyanazon objektum kis- és nagybetűs
+módosítása; szükség esetén az f4 egyedi ideiglenes nevet használ. A többi ciklus nem bontódik fázisokra:
+például az a -> b és b -> a általában foglalt cél hibával végződik, mint az eredeti VisRen-ben.
+
+#Hibák indításkor#
+
+Hozzáférési hibák, foglalt vagy duplikált meghatározások és egyéb hibák esetén az alábbi opciókat kínálja:
+
+  Újra (Retry)         Ugyanazon sor megismétlése.
+  Kihagyás (Skip)      A forrás változatlanul hagyása és folytatás.
+  Mindet kihagyja      További hibák megerősítésének mellőzése és folytatás.
+  Mégsem (Cancel)      Leállítás; a hátralévő sorok feldolgozásának mellőzése.
+
+A művelet nem tranzakció. A már végrehajtott átnevezések a kihagyás vagy megszakítás után is érvényben
+maradnak. A sikertelen és feldolgozatlan források a panelen kijelölve maradnak. A végső üzenet megmutatja
+a sikeresen feldolgozott sorok számát.
+
+#Átnevezési napló#
+
+A dialógusablak megnyitásakor a naplózás mindig be van kapcsolva. Az "Átnevezés naplózása" jelölőnégyzet
+bejelölése azt jelenti, hogy a sikeres párok rögzítésre kerülnek a memóriában. Az F2 vagy a parancsikonra
+kattintás átváltja a rögzítést. A napló nem íródik lemezre, és az f4 bezárásakor eltűnik. Csak a sikeres
+párok és az utolsó művelet könyvtára kerül tárolásra; a leírás mögötti csillag jelzi, hogy a visszavonás
+elérhető.
+
+Az F8 billentyű vagy a sor többi részére kattintva megerősítés után törölheti a naplót. A kikapcsolt
+naplózással végzett átnevezések szintén nem hoznak létre visszavonási csomagot.
+
+#Visszavonás (F6)#
+
+Az F6 betölti az utolsó csomagot fordított sorrendben: az új neveknek vissza kell térniük az eredetihez.
+A címsorban megjelenik a mentett könyvtár. Válassza az "Átnevezés" lehetőséget, és erősítse meg a visszavonást.
+A "Nem" válasz visszaállítja a normál átnevezési módot.
+
+A visszavonásra ugyanazok a szabályok vonatkoznak a felülírás tilalmáról és a hiba-változatokról. Megkezdése
+előtt az f4 átvált a mentett könyvtárba. A kísérlet után a napló törlődik, még akkor is, ha a visszavonás
+csak részben sikerült, és a megoldatlan elemek kijelölve maradnak.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenSafety
+$VisRen: fájlnevek biztonsága és korlátozások
+
+Minden megváltoztatott névnek egyetlen hordozható fájlnév-komponensnek kell lennie. A VisRen tiltja:
+
+  - üres név, "." és "..";
+  - vezérlőkarakterek U+0020 alatt és NUL;
+  - <, >, :, ", *, ?, /, fordított és függőleges perjel;
+  - szóköz vagy pont a végén;
+  - DOS eszköznevek: CON, PRN, AUX, NUL, COM1..COM9 és LPT1..LPT9, függetlenül a kis- és nagybetűktől
+    és a kiterjesztéstől.
+
+A perjelet nem lehet használni másik könyvtárba való áthelyezésre. A változatlan eredeti név megengedett
+és egyszerűen kihagyásra kerül, még akkor is, ha az új név létrehozásakor nem menne át a hordozható
+ellenőrzésen.
+
+Az előzetes ellenőrzés feltárja a maszk- és a hordozható név-hibákat, de nem foglalja le előre a célokat.
+Létező cél, két sor azonos eredménye, hozzáférési jogok, a hosszúság rendszerkorlátozásai és a ciklusok
+továbbra is hibát okozhatnak a végrehajtás során. A cél felülírására nem kerül sor.
+
+A hiányzó vagy sérült metaadatok helyére üres szöveg kerül. Óvatosan adjon meg elválasztókat a metaadat-
+maszkokban, és mindig ellenőrizze az eredményt. A VisRen nem hoz létre tranzakciót, és nem választ
+ideiglenes neveket a több elemből álló ciklusokhoz.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@VisRenExamples
+$VisRen: gyakorlati receptek
+
+#Számozás és kisbetűk a kiterjesztéseknél#
+
+  Névmaszk:          [C001+1]_[N]
+  Kiterjesztésmaszk: [E][L]
+
+Az eredmény 001_Régi név.jpg, 002_Másik név.jpg és így tovább lesz. Ha a számokat más sorrendben
+szeretné, először rendezze át a sorokat.
+
+#Név egy rögzített hosszúságú részének megtartása#
+
+  Eredeti név:       20260805_report_final.txt
+  Névmaszk:          [N10-21]
+  Kiterjesztésmaszk: [E]
+  Eredmény:          report_final.txt
+
+#Doslovný prefix eltávolítása#
+
+  Maszkok:           [N] és [E]
+  Keresés:           draft_
+  Csere:             (üres)
+
+#Regex csoportok felcserélése#
+
+  Eredeti név:       001-report.txt
+  Keresés:           /(\d+)-([^.]+)/
+  Csere erre:        $2-$1
+  Eredmény:          report-001.txt
+
+#MP3 átnevezése tagok alapján#
+
+  Névmaszk:          [a] - [t]
+  Kiterjesztésmaszk: [E][L]
+
+A zeneszám száma hozzáadható számlálóval vagy a metaadatok részben leírt ID3 kifejezéssel ( [#] ).
+Az üres előadó- és dalcím-tagok üres szöveget adnak, ezért ellenőrizze az elválasztókat az előnézetben.
+
+#Fényképek elnevezése dátum és méret alapján#
+
+  Névmaszk:          [d]_[r]_[C001]
+  Kiterjesztésmaszk: [E][L]
+
+JPEG képeknél az EXIF készítési dátum kerül használatra, ha létezik. Más támogatott képeknél a [d]
+a fájl módosítási idejét veszi alapul.
+
+#Transzliteráció és szó szerinti zárójelek#
+
+  Névmaszk:          [[]archive[]]_[N][TL]
+  Kiterjesztésmaszk: [E][L]
+
+Az eredeti Пример.TXT átalakul [archive]_Primer.txt-re az eredeti VisRen átírási táblázat szerint.
+
+Nyomja meg a Backspace billentyűt a VisRen tartalomjegyzékéhez való visszatéréshez.
+
+@Panels
+$Súgó (Verzió: %Ver)
+Az f4 a Far Manager / far2l fájlkezelő kísérleti klónja Go nyelven.
+
+~Szerkesztő és nézegető gyorsbillentyűk~ViewerEditor@
+~Navigáció a paneleken~PanelNav@
+~README.md megjelenítése~README@
+
+@ViewerEditor
+$Szerkesztő és nézegető gyorsbillentyűk
+Ez a szekció dinamikusan generálódik az akcióregiszterből.
+
+@ViewerNav
+$Navigációs billentyűk
+Szerkesztő:
+  Ctrl+Left     - Az előző szó határához
+  Ctrl+Right    - A következő szó határához
+  Ctrl+Shift+Left/Right - Kijelölés szavanként
+  Home/End      - Sor eleje / vége
+  PgUp/PgDn     - Oldal fel / le
+
+Nézegető:
+  Up/Down       - Görgetés egy sorral
+  PgUp/PgDn     - Görgetés egy oldallal
+  Home/End      - Fájl eleje / vége
+
+@PanelNav
+$Navigáció a paneleken
+Ez a szekció dinamikusan generálódik az akcióregiszterből.
+
+@ShellNav
+$Navigációs billentyűk a paneleken
+  Tab           - Aktív panel váltása
+  Insert        - Fájl/mappa kijelölése
+  Ctrl+Tab      - Munkaterületek közötti váltás
+  Ctrl+W        - Aktuális munkaterület bezárása
+  Ctrl+N        - Aktuális panel duplikálása új munkaterületre
+
+@History
+$Parancselőzmények (Alt+F8)
+    A parancselőzmények a korábban futtatott parancsok listáját mutatják.
+A kurzorbillentyűkön kívül az alábbi gyorsbillentyűk érhetők el:
+
+  Kiválasztott parancs beillesztése a parancssorba  Enter
+  (Az egérkattintás ugyanígy működik)
+  Dialógusablak bezárása                            Esc, F10
+
+  Keresési mód váltása (részstring / elejétől)      F2
+  Bármely karakter beírása szűri a listát
+  A Backspace törli az utolsó szűrőkaraktert
+
+  Aktuális bejegyzés törlése az előzményekből       Shift+Del
+  Teljes parancselőzmény törlése (megerősítéssel)    Del
+
+  Kiválasztott parancs másolása a vágólapra         Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Mappaelőzmények (Alt+F12)
+    A mappaelőzmények a korábban látogatott könyvtárak listáját mutatják.
+A kurzorbillentyűkön kívül az alábbi gyorsbillentyűk érhetők el:
+
+  Ugrás a kiválasztott mappára az aktív panelen      Enter
+  (Az egérkattintás ugyanígy működik)
+  Ugrás a kiválasztott mappára a passzív panelen     Shift+Enter
+  Útvonal beillesztése a parancssorba                Ctrl+Enter
+  Dialógusablak bezárása                            Esc, F10
+
+  Keresési mód váltása (részstring / elejétől)      F2
+  Bármely karakter beírása szűri a listát
+  A Backspace törli az utolsó szűrőkaraktert
+
+  Aktuális bejegyzés törlése az előzményekből       Shift+Del
+  Teljes mappaelőzmény törlése (megerősítéssel)      Del
+  Nem létező útvonalak törlése (megerősítéssel)      Ctrl+R
+
+  Kiválasztott útvonal másolása a vágólapra         Ctrl+C, Ctrl+Ins

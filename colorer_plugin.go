@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	colorer "github.com/unxed/colorer4go"
 	"github.com/unxed/vtui"
@@ -44,17 +46,45 @@ func applyColorerStyle(base uint64, style *colorer.RegionDefine) uint64 {
 	return attr
 }
 
-func colorerUTF16ToRuneIndex(line string) []int {
-	index := make([]int, 0, len(line)+1)
-	runeIdx := 0
-	for _, r := range line {
-		index = append(index, runeIdx)
-		if r > 0xFFFF {
-			index = append(index, runeIdx)
-		}
-		runeIdx++
+// colorerLineRuneCount reports how many indexing units Colorer uses for a
+// line, which is also how many attributes the editor needs for it.
+//
+// Colorer keeps a line in its legacy UnicodeString, one element per code
+// point. Its UTF-8 decoder in strings/legacy/CString.cpp writes a whole
+// decoded code point into a single wchar_t, 32 bits wide under wasi-sdk, and
+// never builds a surrogate pair; strings/legacy/Character.h states that the
+// library has no surrogate support at all. Region offsets are therefore rune
+// indices. They are not UTF-16 unit indices, which is what this file used to
+// assume, and the difference showed as colours sliding one position left
+// after every astral character on the line and staying there.
+//
+// Malformed UTF-8 is the one place the two counts can still drift: Go yields
+// one replacement rune per bad byte, while Colorer's decoder swallows the
+// continuation bytes of a truncated sequence. See REVIEW.md.
+func colorerLineRuneCount(line string) int {
+	return utf8.RuneCountInString(line)
+}
+
+// colorerRegionRunes fits a region Colorer reported onto the attribute slice
+// of a line holding lineRunes runes. The offsets pass through unchanged,
+// because they are already rune indices; only the clamping is work. A
+// negative end means the region runs to the end of the line, which the caller
+// also paints the rest of the row with, so it is reported through toEOL.
+func colorerRegionRunes(start, end, lineRunes int) (int, int, bool) {
+	toEOL := end < 0
+	if toEOL || end > lineRunes {
+		end = lineRunes
 	}
-	return append(index, runeIdx)
+	if start < 0 {
+		start = 0
+	}
+	if start > lineRunes {
+		start = lineRunes
+	}
+	if end < start {
+		end = start
+	}
+	return start, end, toEOL
 }
 
 func colorerLineIndex(prevState any, known int) int {
@@ -81,7 +111,110 @@ var (
 	colorerIdleDir string
 )
 
+func ensureFonokaiSchema(configsDir string) {
+	catalogPath := filepath.Join(configsDir, "base", "catalog.xml")
+	if _, err := os.Stat(catalogPath); os.IsNotExist(err) {
+		return
+	}
+
+	hrdDir := filepath.Join(configsDir, "base", "hrd", "rgb")
+	hrdPath := filepath.Join(hrdDir, "fonokai.hrd")
+
+	_ = os.MkdirAll(hrdDir, 0755)
+
+	fonokaiHRDContent := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE hrd PUBLIC "-//Cail Lomecb//DTD Colorer HRD take5//EN"
+  "http://colorer.sf.net/2003/hrd.dtd">
+<hrd xmlns="http://colorer.sf.net/2003/hrd">
+
+  <assign name="def:Text" fore="#dbd3c4" back="#37322c"/>
+  <assign name="def:HorzCross" fore="#dbd3c4" back="#2e2a24"/>
+  <assign name="def:VertCross" fore="#dbd3c4" back="#2e2a24"/>
+
+  <assign name="def:Number" fore="#e6cf70"/>
+  <assign name="def:NumberDec" fore="#e6cf70"/>
+  <assign name="def:NumHex" fore="#e6cf70"/>
+  <assign name="def:NumberBin" fore="#e6cf70"/>
+  <assign name="def:NumberOct" fore="#e6cf70"/>
+  <assign name="def:NumberFloat" fore="#e6cf70"/>
+  <assign name="def:NumberSuffix" fore="#e6b450"/>
+
+  <assign name="def:String" fore="#ec6a2c"/>
+  <assign name="def:StringContent" fore="#ec6a2c"/>
+  <assign name="def:StringEdge" fore="#a04020"/>
+  <assign name="def:CharacterContent" fore="#ec6a2c"/>
+
+  <assign name="def:Comment" fore="#6a6458"/>
+  <assign name="def:CommentContent" fore="#6a6458" style="1"/>
+  <assign name="def:CommentDoc" fore="#c4b8a8"/>
+
+  <assign name="def:Symbol" fore="#e6b450"/>
+  <assign name="def:SymbolStrong" fore="#e6cf70"/>
+  <assign name="def:Prefix" fore="#ec6a2c"/>
+  <assign name="def:PrefixStrong" fore="#a04020"/>
+
+  <assign name="def:Operator" fore="#e6b450"/>
+
+  <assign name="def:Keyword" fore="#a04020" style="1"/>
+  <assign name="def:KeywordStrong" fore="#a04020"/>
+  <assign name="def:ClassKeyword" fore="#e6cf70" style="1"/>
+  <assign name="def:TypeKeyword" fore="#e6cf70"/>
+
+  <assign name="def:Function"/>
+  <assign name="def:Register" fore="#e6b450"/>
+  <assign name="def:Constant" fore="#ec6a2c"/>
+  <assign name="def:BooleanConstant" fore="#ec6a2c"/>
+
+  <assign name="def:Var" />
+  <assign name="def:VarStrong" fore="#e6cf70"/>
+  <assign name="def:Identifier" fore="#dbd3c4"/>
+
+  <assign name="def:Directive" fore="#a04020"/>
+  <assign name="def:Param" fore="#e6b450"/>
+
+  <assign name="def:Tag" fore="#a04020"/>
+  <assign name="def:OpenTag" fore="#ec6a2c"/>
+  <assign name="def:CloseTag" fore="#ec6a2c"/>
+
+  <assign name="def:Label" fore="#e6cf70"/>
+  <assign name="def:LabelStrong" fore="#37322c" back="#e6b450"/>
+
+  <assign name="def:Insertion" fore="#dbd3c4" back="#2e2a24"/>
+  <assign name="def:InsertionStart" fore="#37322c" back="#e6cf70"/>
+  <assign name="def:InsertionEnd" fore="#37322c" back="#e6cf70"/>
+
+  <assign name="def:Error" fore="#eeeeec" back="#c44500"/>
+  <assign name="def:ErrorText" fore="#e6cf70"/>
+  <assign name="def:TODO" fore="#eeeeec" back="#a04020"/>
+  <assign name="def:Debug" fore="#eeeeec" back="#a04020"/>
+
+  <assign name="def:Path" fore="#e6b450"/>
+  <assign name="def:URL" fore="#ec6a2c"/>
+  <assign name="def:EMail" fore="#ec6a2c"/>
+
+  <assign name="def:Date" fore="#e6cf70"/>
+  <assign name="def:Time" fore="#e6cf70"/>
+
+  <assign name="def:PairStart" fore="#37322c" back="#e6b450"/>
+  <assign name="def:PairEnd" fore="#37322c" back="#e6b450"/>
+</hrd>
+`
+	_ = os.WriteFile(hrdPath, []byte(fonokaiHRDContent), 0644)
+
+	catalogRGBPath := filepath.Join(configsDir, "base", "hrd", "catalog-rgb.xml")
+	data, err := os.ReadFile(catalogRGBPath)
+	if err == nil {
+		content := string(data)
+		if !strings.Contains(content, "name=\"Fonokai\"") {
+			entry := "\n        <hrd class=\"rgb\" name=\"Fonokai\" description=\"Fonokai\">\n            <location link=\"&hrd;/rgb/fonokai.hrd\"/>\n        </hrd>\n"
+			_ = os.WriteFile(catalogRGBPath, []byte(content+entry), 0644)
+		}
+	}
+}
+
 func acquireColorerSession(configsDir string) (*colorer.Session, error) {
+	ensureFonokaiSchema(configsDir)
+
 	colorerPoolMu.Lock()
 	if colorerIdle != nil && colorerIdleDir == configsDir {
 		session := colorerIdle
@@ -429,51 +562,32 @@ func (ch *ColorerHighlighter) Highlight(line string, prevState any, baseAttr uin
 		return nil, logIdx
 	}
 
-	unitToRune := colorerUTF16ToRuneIndex(line)
-	lineUnits := len(unitToRune) - 1
-	attrs := make([]uint64, unitToRune[lineUnits])
+	lineRunes := colorerLineRuneCount(line)
+	attrs := make([]uint64, lineRunes)
 	for i := range attrs {
 		attrs[i] = baseAttr
 	}
 
 	eolBg := baseAttr
 	for _, reg := range regions {
-		start, end := reg.Start, reg.End
-		if start < 0 {
-			start = 0
-		}
-		if end < 0 {
-			if AppConfig.EditorColorerSyntax {
-				rd := colorer.RegionDefine{
-					Fore:      reg.Fore,
-					Back:      reg.Back,
-					Style:     reg.Style,
-					IsForeSet: reg.IsForeSet,
-					IsBackSet: reg.IsBackSet,
-				}
-				eolBg = applyColorerStyle(eolBg, &rd)
-			}
-			end = lineUnits
-		} else if end > lineUnits {
-			end = lineUnits
-		}
-		if start >= end {
+		if !AppConfig.EditorColorerSyntax {
 			continue
 		}
-		startRune := unitToRune[start]
-		endRune := unitToRune[end]
 
-		if AppConfig.EditorColorerSyntax {
-			rd := colorer.RegionDefine{
-				Fore:      reg.Fore,
-				Back:      reg.Back,
-				Style:     reg.Style,
-				IsForeSet: reg.IsForeSet,
-				IsBackSet: reg.IsBackSet,
-			}
-			for i := startRune; i < endRune && i < len(attrs); i++ {
-				attrs[i] = applyColorerStyle(attrs[i], &rd)
-			}
+		start, end, toEOL := colorerRegionRunes(reg.Start, reg.End, lineRunes)
+		rd := colorer.RegionDefine{
+			Fore:      reg.Fore,
+			Back:      reg.Back,
+			Style:     reg.Style,
+			IsForeSet: reg.IsForeSet,
+			IsBackSet: reg.IsBackSet,
+		}
+
+		if toEOL {
+			eolBg = applyColorerStyle(eolBg, &rd)
+		}
+		for i := start; i < end; i++ {
+			attrs[i] = applyColorerStyle(attrs[i], &rd)
 		}
 	}
 

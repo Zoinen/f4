@@ -304,7 +304,7 @@ func TestUserMenu_InteractiveEdit(t *testing.T) {
 	showEditItemDialog(s, vtui.NewVMenu("dummy"), s.rootItems, 0, false, false)
 
 	top := vtui.FrameManager.GetTopFrame()
-	if top == nil || top.GetTitle() != " Edit User Menu " {
+	if top == nil || top.GetTitle() != Msg("UserMenu.EditTitle") {
 		t.Fatalf("Expected Edit User Menu dialog, got %v", top)
 	}
 

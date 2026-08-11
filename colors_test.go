@@ -44,6 +44,9 @@ func TestColors_SetDefaultF4Palette(t *testing.T) {
 	if vtui.Palette[ColPanelSelectedInfo] != vtui.Palette[ColPanelSelectedText] {
 		t.Errorf("ColPanelSelectedInfo default mismatch: expected %016X, got %016X", vtui.Palette[ColPanelSelectedText], vtui.Palette[ColPanelSelectedInfo])
 	}
+	if fg, bg := GetColorRGBBoth(vtui.Palette[ColPanelSelectedTitle]); fg != 0x00FFFF || bg != 0x3030C0 {
+		t.Errorf("ColPanelSelectedTitle default mismatch: got %06X on %06X", fg, bg)
+	}
 }
 
 func TestColors_InitColors_FromIni(t *testing.T) {

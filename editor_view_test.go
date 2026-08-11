@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
@@ -11,7 +12,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1027,12 +1030,18 @@ func TestEditorView_GetTitle(t *testing.T) {
 	if ev1.GetTitle() != "Edit: syslog" {
 		t.Errorf("GetTitle failed for valid path: %s", ev1.GetTitle())
 	}
+	if ev1.GetWorkspaceTabTitle() != "✎ syslog" {
+		t.Errorf("GetWorkspaceTabTitle failed for valid path: %s", ev1.GetWorkspaceTabTitle())
+	}
 
 	// Without path
 	ev2 := NewEditorView(pt, nil, "")
 	defer ev2.Close()
 	if ev2.GetTitle() != "Editor" {
 		t.Errorf("GetTitle failed for empty path: %s", ev2.GetTitle())
+	}
+	if ev2.GetWorkspaceTabTitle() != "✎ Editor" {
+		t.Errorf("GetWorkspaceTabTitle failed for empty path: %s", ev2.GetWorkspaceTabTitle())
 	}
 
 	// Internal editor workflows can hide a temporary filename.
@@ -1041,6 +1050,9 @@ func TestEditorView_GetTitle(t *testing.T) {
 	ev3.DisplayTitle = "Rename list of files"
 	if ev3.GetTitle() != "Rename list of files" {
 		t.Errorf("GetTitle ignored DisplayTitle: %s", ev3.GetTitle())
+	}
+	if ev3.GetWorkspaceTabTitle() != "✎ Rename list of files" {
+		t.Errorf("GetWorkspaceTabTitle ignored DisplayTitle: %s", ev3.GetWorkspaceTabTitle())
 	}
 }
 func TestViewerView_CodepageSwitch_Crash(t *testing.T) {
@@ -2155,9 +2167,715 @@ type mockFailingWriteVFS struct {
 	vfs.VFS
 }
 
+type opaqueEditorPathVFS struct {
+	vfs.VFS
+	joined []string
+}
+
+func (*opaqueEditorPathVFS) Base(string) string { return "report.txt" }
+func (*opaqueEditorPathVFS) Dir(string) string {
+	return "cloud://gdrive/connection/g:item:parent-id"
+}
+func (m *opaqueEditorPathVFS) Join(parts ...string) string {
+	m.joined = append([]string(nil), parts...)
+	return "cloud://gdrive/connection/g:new:parent-id:" + parts[len(parts)-1]
+}
+
+func TestEditorTempSiblingUsesVFSPathAlgebraForOpaqueURI(t *testing.T) {
+	filesystem := &opaqueEditorPathVFS{}
+	original := "cloud://gdrive/connection/g:item:immutable-id"
+	tempPath, err := editorTempSiblingWithToken(filesystem, original, "fixed-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tempPath != "cloud://gdrive/connection/g:new:parent-id:.f4tmp-fixed-token" {
+		t.Fatalf("temporary sibling = %q", tempPath)
+	}
+	if len(filesystem.joined) != 2 || filesystem.joined[0] != "cloud://gdrive/connection/g:item:parent-id" || filesystem.joined[1] != ".f4tmp-fixed-token" {
+		t.Fatalf("Join arguments = %#v", filesystem.joined)
+	}
+	if strings.HasPrefix(tempPath, original) {
+		t.Fatalf("opaque identifier was corrupted by suffixing: %q", tempPath)
+	}
+}
+
+func TestEditorTempSiblingDoesNotOverflowLongBasename(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, strings.Repeat("a", 240))
+	tempPath, err := editorTempSiblingWithToken(vfs.NewOSVFS(dir), original, "fixed-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Base(tempPath); got != ".f4tmp-fixed-token" {
+		t.Fatalf("temporary basename = %q", got)
+	}
+}
+
+func TestAlternateDataStreamRejectsCloudURIOnWindows(t *testing.T) {
+	if isAlternateDataStream("cloud://gdrive/connection/g:item:immutable-id") {
+		t.Fatal("cloud URI was misclassified as an NTFS alternate data stream")
+	}
+}
+
+type editorCloudSaveReader struct {
+	*bytes.Reader
+	size int64
+}
+
+func (r *editorCloudSaveReader) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.ReadAt(p, off)
+}
+
+func (r *editorCloudSaveReader) Read(ctx context.Context, p []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
+}
+
+func (*editorCloudSaveReader) Close() error  { return nil }
+func (r *editorCloudSaveReader) Size() int64 { return r.size }
+
+type editorCloudSaveWriter struct {
+	bytes.Buffer
+	onWrite func()
+	onClose func([]byte)
+}
+
+type editorStageModeWriter struct {
+	io.WriteCloser
+	path    string
+	onWrite func(os.FileMode)
+}
+
+func (w *editorStageModeWriter) Write(p []byte) (int, error) {
+	info, err := os.Stat(w.path)
+	if err != nil {
+		return 0, err
+	}
+	w.onWrite(info.Mode().Perm())
+	return w.WriteCloser.Write(p)
+}
+
+type editorStageModeVFS struct {
+	vfs.VFS
+	mu       sync.Mutex
+	observed []os.FileMode
+}
+
+func (m *editorStageModeVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
+	w, err := m.VFS.Create(ctx, p)
+	if err != nil || !strings.HasPrefix(m.VFS.Base(p), ".f4tmp-") {
+		return w, err
+	}
+	return &editorStageModeWriter{WriteCloser: w, path: p, onWrite: func(mode os.FileMode) {
+		m.mu.Lock()
+		m.observed = append(m.observed, mode)
+		m.mu.Unlock()
+	}}, nil
+}
+
+func (w *editorCloudSaveWriter) Close() error {
+	w.onClose(append([]byte(nil), w.Bytes()...))
+	return nil
+}
+
+func (w *editorCloudSaveWriter) Write(p []byte) (int, error) {
+	if w.onWrite != nil {
+		w.onWrite()
+	}
+	return w.Buffer.Write(p)
+}
+
+type editorCloudSaveVFS struct {
+	*vfs.NullVFS
+
+	mu               sync.Mutex
+	original         string
+	parent           string
+	data             map[string][]byte
+	created          []string
+	createPolicies   []bool
+	createKnown      []bool
+	renamed          [][2]string
+	renamePolicies   []bool
+	renameKnown      []bool
+	removed          []string
+	renameErr        error
+	skipRenameCommit bool
+	openErr          error
+	writeCalls       int
+	attributeCalls   []string
+	attributesErr    func(string, vfs.VFSItem) error
+	capabilities     vfs.VFSCapabilities
+	beforeRename     func()
+}
+
+func newEditorCloudSaveVFS(initial []byte) *editorCloudSaveVFS {
+	filesystem := &editorCloudSaveVFS{
+		NullVFS:  vfs.NewNullVFS(0),
+		original: "cloud://gdrive/connection/g:item:immutable-id",
+		parent:   "cloud://gdrive/connection/g:item:parent-id",
+		data:     make(map[string][]byte),
+	}
+	filesystem.data[filesystem.original] = append([]byte(nil), initial...)
+	return filesystem
+}
+
+func (m *editorCloudSaveVFS) Base(p string) string {
+	if p == m.original {
+		return "report.txt"
+	}
+	if marker := strings.LastIndex(p, "g:new:"); marker >= 0 {
+		return p[marker+len("g:new:"):]
+	}
+	return m.NullVFS.Base(p)
+}
+
+func (m *editorCloudSaveVFS) Dir(string) string { return m.parent }
+
+func (m *editorCloudSaveVFS) Join(parts ...string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return m.parent + "/g:new:" + parts[len(parts)-1]
+}
+
+func (m *editorCloudSaveVFS) Abs(p string) (string, error) { return p, nil }
+
+func (m *editorCloudSaveVFS) GetCapabilities() vfs.VFSCapabilities {
+	return m.capabilities
+}
+
+func (m *editorCloudSaveVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
+	if err := ctx.Err(); err != nil {
+		return vfs.VFSItem{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	data, ok := m.data[p]
+	if !ok {
+		return vfs.VFSItem{}, os.ErrNotExist
+	}
+	return vfs.VFSItem{Name: m.Base(p), Size: int64(len(data))}, nil
+}
+
+func (m *editorCloudSaveVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
+	overwrite, known := vfs.DestinationOverwrite(ctx)
+	m.mu.Lock()
+	m.created = append(m.created, p)
+	m.createPolicies = append(m.createPolicies, overwrite)
+	m.createKnown = append(m.createKnown, known)
+	m.mu.Unlock()
+	return &editorCloudSaveWriter{onWrite: func() {
+		m.mu.Lock()
+		m.writeCalls++
+		m.mu.Unlock()
+	}, onClose: func(data []byte) {
+		m.mu.Lock()
+		m.data[p] = data
+		m.mu.Unlock()
+	}}, nil
+}
+
+func (m *editorCloudSaveVFS) Rename(ctx context.Context, oldPath, newPath string) error {
+	overwrite, known := vfs.DestinationOverwrite(ctx)
+	if m.beforeRename != nil {
+		m.beforeRename()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.renamed = append(m.renamed, [2]string{oldPath, newPath})
+	m.renamePolicies = append(m.renamePolicies, overwrite)
+	m.renameKnown = append(m.renameKnown, known)
+	if known && !overwrite {
+		if _, exists := m.data[newPath]; exists && newPath != oldPath {
+			return os.ErrExist
+		}
+	}
+	if !m.skipRenameCommit {
+		// Model a provider which commits the replacement before reporting a later
+		// cleanup failure. This is the dangerous state where retrying Remove(old)
+		// can delete the newly authoritative object behind an opaque alias.
+		m.data[newPath] = append([]byte(nil), m.data[oldPath]...)
+		delete(m.data, oldPath)
+	}
+	return m.renameErr
+}
+
+func (m *editorCloudSaveVFS) Remove(ctx context.Context, p string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removed = append(m.removed, p)
+	delete(m.data, p)
+	return nil
+}
+
+func (m *editorCloudSaveVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if m.openErr != nil {
+		err := m.openErr
+		m.mu.Unlock()
+		return nil, err
+	}
+	data, ok := m.data[p]
+	data = append([]byte(nil), data...)
+	m.mu.Unlock()
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return &editorCloudSaveReader{Reader: bytes.NewReader(data), size: int64(len(data))}, nil
+}
+
+func (m *editorCloudSaveVFS) SetAttributes(_ context.Context, p string, item vfs.VFSItem) error {
+	m.mu.Lock()
+	m.attributeCalls = append(m.attributeCalls, p)
+	errFn := m.attributesErr
+	m.mu.Unlock()
+	if errFn != nil {
+		return errFn(p, item)
+	}
+	return nil
+}
+
+type editorDeltaSaveVFS struct{ *editorCloudSaveVFS }
+
+// editorLocalSaveVFS keeps the deterministic in-memory save behavior above,
+// while exposing an OSVFS marker to isLocalOSVFS.  The editor intentionally
+// applies stage-permission and metadata guarantees only to local filesystems.
+// Keeping Local as a named field avoids inheriting a second, ambiguous VFS
+// method set.
+type editorLocalSaveVFS struct {
+	*editorCloudSaveVFS
+	Local *vfs.OSVFS
+}
+
+func newEditorLocalSaveVFS(t *testing.T, initial []byte) (*editorCloudSaveVFS, vfs.VFS) {
+	t.Helper()
+	base := newEditorCloudSaveVFS(initial)
+	delete(base.data, base.original)
+	base.original = "/virtual/report.txt"
+	base.parent = "/virtual"
+	base.data[base.original] = append([]byte(nil), initial...)
+	return base, &editorLocalSaveVFS{
+		editorCloudSaveVFS: base,
+		Local:              vfs.NewOSVFS(t.TempDir()),
+	}
+}
+
+func (m *editorDeltaSaveVFS) PatchFile(ctx context.Context, src, dst string, pieces []vfs.PatchPiece) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	overwrite, known := vfs.DestinationOverwrite(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if known && !overwrite {
+		if _, exists := m.data[dst]; exists {
+			return os.ErrExist
+		}
+	}
+	source, exists := m.data[src]
+	if !exists {
+		return os.ErrNotExist
+	}
+	var result []byte
+	for _, piece := range pieces {
+		if piece.Data != nil {
+			result = append(result, piece.Data...)
+			continue
+		}
+		end := piece.Offset + piece.Length
+		if piece.Offset < 0 || piece.Length < 0 || end < piece.Offset || end > int64(len(source)) {
+			return io.ErrUnexpectedEOF
+		}
+		result = append(result, source[piece.Offset:end]...)
+	}
+	m.data[dst] = result
+	return nil
+}
+
+func waitEditorSave(t *testing.T, editor *EditorView) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for editor.saving {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline.C:
+			t.Fatal("timeout waiting for editor save")
+		}
+	}
+}
+
+func assertNoEditorTempSiblings(t *testing.T, original string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(original))
+	if err != nil {
+		t.Fatalf("read editor destination directory: %v", err)
+	}
+	prefix := ".f4tmp-"
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			t.Fatalf("editor temporary sibling leaked after failed save: %q", entry.Name())
+		}
+	}
+}
+
+func runEditorCloudSave(t *testing.T, filesystem *editorCloudSaveVFS, content string) {
+	t.Helper()
+	editor := NewEditorView(piecetable.New([]byte(content)), filesystem, filesystem.original)
+	editor.modified = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+	editor.Close()
+}
+
+func TestEditorViewCloudSaveStagesSiblingInsteadOfOriginal(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS([]byte("old"))
+	runEditorCloudSave(t, filesystem, "new contents")
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 1 {
+		t.Fatalf("Create calls = %#v, want one staged create", filesystem.created)
+	}
+	tempPath := filesystem.created[0]
+	if tempPath == filesystem.original {
+		t.Fatal("cloud save wrote directly to the original opaque URI")
+	}
+	if !strings.HasPrefix(tempPath, filesystem.parent+"/g:new:.f4tmp-") {
+		t.Fatalf("staged path = %q, want a sibling of the original", tempPath)
+	}
+	if len(filesystem.renamed) != 1 || filesystem.renamed[0] != [2]string{tempPath, filesystem.original} {
+		t.Fatalf("Rename calls = %#v", filesystem.renamed)
+	}
+	if !filesystem.renameKnown[0] || !filesystem.renamePolicies[0] {
+		t.Fatalf("Rename overwrite decision = (%v, %v), want explicit true", filesystem.renamePolicies[0], filesystem.renameKnown[0])
+	}
+	if got := string(filesystem.data[filesystem.original]); got != "new contents" {
+		t.Fatalf("committed contents = %q", got)
+	}
+}
+
+func TestEditorViewPartialRenameAfterCommitDoesNotRemoveStage(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS([]byte("old"))
+	filesystem.renameErr = &vfs.PartialOperationError{
+		Operation: "remote replacement cleanup",
+		Completed: []string{filesystem.original},
+		Failed:    []string{"backup"},
+		Err:       errors.New("backup cleanup failed"),
+	}
+	runEditorCloudSave(t, filesystem, "committed despite error")
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 1 || len(filesystem.renamed) != 1 {
+		t.Fatalf("Create/Rename calls = %#v / %#v", filesystem.created, filesystem.renamed)
+	}
+	if len(filesystem.removed) != 0 {
+		t.Fatalf("Save retried destructive cleanup after partial commit: Remove calls = %#v", filesystem.removed)
+	}
+	if got := string(filesystem.data[filesystem.original]); got != "committed despite error" {
+		t.Fatalf("provider-committed contents = %q", got)
+	}
+}
+
+func TestEditorViewDefinitiveRenameFailureCleansUniqueStageOnce(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS([]byte("old"))
+	filesystem.renameErr = os.ErrPermission
+	runEditorCloudSave(t, filesystem, "staged")
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 1 || len(filesystem.removed) != 1 {
+		t.Fatalf("Create/Remove calls = %#v / %#v", filesystem.created, filesystem.removed)
+	}
+	if filesystem.removed[0] != filesystem.created[0] {
+		t.Fatalf("removed %q, want stage %q", filesystem.removed[0], filesystem.created[0])
+	}
+}
+
+func TestEditorViewCloudTempCreatesAreUniqueAndNoReplace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS([]byte("old"))
+	runEditorCloudSave(t, filesystem, "first")
+	runEditorCloudSave(t, filesystem, "second")
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 2 {
+		t.Fatalf("Create calls = %#v, want two", filesystem.created)
+	}
+	if filesystem.created[0] == filesystem.created[1] {
+		t.Fatalf("two saves reused temporary path %q", filesystem.created[0])
+	}
+	for index := range filesystem.created {
+		if !filesystem.createKnown[index] || filesystem.createPolicies[index] {
+			t.Fatalf("Create[%d] overwrite decision = (%v, %v), want explicit false", index, filesystem.createPolicies[index], filesystem.createKnown[index])
+		}
+	}
+}
+
+func TestEditorViewCreateNewSaveDoesNotReplaceRacingDestination(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS(nil)
+	filesystem.capabilities.HasAtomicNoReplaceRename = true
+	delete(filesystem.data, filesystem.original)
+	filesystem.beforeRename = func() {
+		filesystem.mu.Lock()
+		filesystem.data[filesystem.original] = []byte("created by another writer")
+		filesystem.mu.Unlock()
+	}
+
+	editor := newEditorView(piecetable.New([]byte("generated report")), filesystem, filesystem.original, false)
+	editor.modified = true
+	editor.unsavedBaseline = true
+	editor.createNewTarget = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+	defer editor.Close()
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if got := string(filesystem.data[filesystem.original]); got != "created by another writer" {
+		t.Fatalf("racing destination was replaced with %q", got)
+	}
+	if len(filesystem.renameKnown) != 1 || !filesystem.renameKnown[0] || filesystem.renamePolicies[0] {
+		t.Fatalf("create-new rename overwrite decision = (%v, %v), want explicit false", filesystem.renamePolicies, filesystem.renameKnown)
+	}
+	if !editor.modified || !editor.createNewTarget {
+		t.Fatal("failed create-new save was incorrectly marked clean")
+	}
+}
+
+func TestEditorViewCreateNewSaveRejectsVFSWithoutAtomicNoReplace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS(nil)
+	delete(filesystem.data, filesystem.original)
+	editor := newEditorView(piecetable.New([]byte("generated report")), filesystem, filesystem.original, false)
+	editor.modified = true
+	editor.unsavedBaseline = true
+	editor.createNewTarget = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+	defer editor.Close()
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 0 || len(filesystem.renamed) != 0 {
+		t.Fatalf("unsupported VFS was mutated: Create=%#v Rename=%#v", filesystem.created, filesystem.renamed)
+	}
+	if !editor.modified || !editor.createNewTarget {
+		t.Fatal("rejected create-new save was incorrectly marked clean")
+	}
+}
+
+func TestEditorViewIdentityPreservingCloudSaveUpdatesOriginalDirectly(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	filesystem := newEditorCloudSaveVFS([]byte("old"))
+	filesystem.capabilities.HasIdentityPreservingWrite = true
+	runEditorCloudSave(t, filesystem, "same object, new contents")
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.created) != 1 || filesystem.created[0] != filesystem.original {
+		t.Fatalf("Create calls = %#v, want direct existing-object update", filesystem.created)
+	}
+	if !filesystem.createKnown[0] || !filesystem.createPolicies[0] {
+		t.Fatalf("direct update overwrite decision = (%v, %v), want explicit true", filesystem.createPolicies[0], filesystem.createKnown[0])
+	}
+	if len(filesystem.renamed) != 0 {
+		t.Fatalf("identity-preserving save unexpectedly renamed: %#v", filesystem.renamed)
+	}
+	if got := string(filesystem.data[filesystem.original]); got != "same object, new contents" {
+		t.Fatalf("updated contents = %q", got)
+	}
+}
+
+func TestEditorViewLocalStageIsPrivateBeforeFirstWrite(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "private.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	filesystem := &editorStageModeVFS{VFS: vfs.NewOSVFS(dir)}
+	editor := NewEditorView(piecetable.New([]byte("sensitive replacement")), filesystem, path)
+	editor.modified = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+	editor.Close()
+
+	filesystem.mu.Lock()
+	defer filesystem.mu.Unlock()
+	if len(filesystem.observed) == 0 {
+		t.Fatal("stage writer did not observe a write")
+	}
+	for _, mode := range filesystem.observed {
+		// Go's Windows FileMode synthesizes 0666 from DOS attributes; access is
+		// governed by the inherited DACL, so Unix group/other bits are not an
+		// observable security signal there.
+		if runtime.GOOS != "windows" && mode&0o077 != 0 {
+			t.Fatalf("stage was group/world accessible during write: mode %o", mode)
+		}
+	}
+}
+
+func newLazyEditorCloudSaveView(t *testing.T, filesystem vfs.VFS, original string, source []byte) *EditorView {
+	t.Helper()
+	reader := &editorCloudSaveReader{Reader: bytes.NewReader(source), size: int64(len(source))}
+	buffer := NewAsyncBuffer(context.Background(), reader)
+	editor := NewEditorView(piecetable.NewWithBuffer(buffer), filesystem, original)
+	editor.file = reader
+	editor.asyncBuf = buffer
+	return editor
+}
+
+func requireEditorSaveDialog(t *testing.T) {
+	t.Helper()
+	if vtui.FrameManager.GetTopFrameType() != vtui.TypeDialog {
+		t.Fatal("save failure/partial completion was not surfaced to the user")
+	}
+}
+
+func TestEditorViewDefinitiveRenameFailureKeepsLazyBufferRecoverable(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	source := bytes.Repeat([]byte("0123456789abcdef"), 40*1024)
+	base := newEditorCloudSaveVFS(source)
+	base.renameErr = os.ErrPermission
+	base.skipRenameCommit = true
+	filesystem := &editorDeltaSaveVFS{editorCloudSaveVFS: base}
+	editor := newLazyEditorCloudSaveView(t, filesystem, base.original, source)
+	defer editor.Close()
+
+	prefix := []byte("edited-before-failed-rename:")
+	editor.pt.Insert(0, prefix)
+	editor.modified = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+
+	if !editor.modified {
+		t.Fatal("definitive rename failure cleared the editor's modified state")
+	}
+	// The delta writer never read unchanged pieces. This forces a previously
+	// untouched AsyncBuffer chunk to load after Rename failed; closing the old
+	// buffer before finalization makes this wait forever.
+	tail := []byte(":still-editable")
+	editor.pt.Insert(editor.pt.Size(), tail)
+	want := string(prefix) + string(source) + string(tail)
+	if got := waitPtString(t, editor.pt); got != want {
+		t.Fatalf("editor contents after failed rename = %d bytes, want %d", len(got), len(want))
+	}
+}
+
+func TestEditorViewCommittedSaveReopenFailureIsSurfacedAndRecoverable(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	source := bytes.Repeat([]byte("abcdefghij"), 64*1024)
+	base := newEditorCloudSaveVFS(source)
+	filesystem := &editorDeltaSaveVFS{editorCloudSaveVFS: base}
+	editor := newLazyEditorCloudSaveView(t, filesystem, base.original, source)
+	defer editor.Close()
+
+	prefix := []byte("committed:")
+	editor.pt.Insert(0, prefix)
+	editor.modified = true
+	base.openErr = errors.New("transient reopen failure")
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+
+	requireEditorSaveDialog(t)
+	base.mu.Lock()
+	committed := append([]byte(nil), base.data[base.original]...)
+	base.mu.Unlock()
+	if want := append(append([]byte(nil), prefix...), source...); !bytes.Equal(committed, want) {
+		t.Fatal("provider did not commit the expected contents before reopen failed")
+	}
+	// Reopen failure must not strand the editor on a canceled lazy buffer.
+	tail := []byte(":recoverable")
+	editor.pt.Insert(editor.pt.Size(), tail)
+	want := string(prefix) + string(source) + string(tail)
+	if got := waitPtString(t, editor.pt); got != want {
+		t.Fatalf("editor contents after reopen failure = %d bytes, want %d", len(got), len(want))
+	}
+}
+
+func TestEditorViewStageHardeningFailureAbortsBeforeFirstWrite(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	base, filesystem := newEditorLocalSaveVFS(t, []byte("old"))
+	base.attributesErr = func(p string, _ vfs.VFSItem) error {
+		if strings.Contains(base.Base(p), ".f4tmp-") {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	editor := NewEditorView(piecetable.New([]byte("sensitive replacement")), filesystem, base.original)
+	defer editor.Close()
+	editor.modified = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+
+	requireEditorSaveDialog(t)
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if base.writeCalls != 0 {
+		t.Fatalf("stage received %d Write calls after private-mode hardening failed", base.writeCalls)
+	}
+	if got := string(base.data[base.original]); got != "old" {
+		t.Fatalf("hardening failure changed original contents to %q", got)
+	}
+	if len(base.renamed) != 0 {
+		t.Fatalf("hardening failure still finalized a stage: %#v", base.renamed)
+	}
+	if !editor.modified {
+		t.Fatal("hardening failure cleared the editor's modified state")
+	}
+}
+
+func TestEditorViewMetadataRestoreFailureIsSurfacedAfterCommit(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	base, filesystem := newEditorLocalSaveVFS(t, []byte("old"))
+	base.attributesErr = func(p string, _ vfs.VFSItem) error {
+		if p == base.original {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	editor := NewEditorView(piecetable.New([]byte("committed replacement")), filesystem, base.original)
+	defer editor.Close()
+	editor.modified = true
+	editor.SaveToFile(nil)
+	waitEditorSave(t, editor)
+
+	requireEditorSaveDialog(t)
+	base.mu.Lock()
+	committed := string(base.data[base.original])
+	renames := len(base.renamed)
+	base.mu.Unlock()
+	if committed != "committed replacement" || renames != 1 {
+		t.Fatalf("content commit = %q, renames = %d", committed, renames)
+	}
+	if editor.modified {
+		t.Fatal("metadata-only partial failure left successfully committed content marked dirty")
+	}
+}
+
 func (m *mockFailingWriteVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
 	// Fail if it's the temp file (atomic save) or if it's the target file itself (old direct save tests)
-	if strings.HasSuffix(path, ".f4tmp") || strings.HasSuffix(path, "important.txt") || strings.HasSuffix(path, "persist.txt") {
+	if strings.Contains(path, ".f4tmp-") || strings.HasSuffix(path, "important.txt") || strings.HasSuffix(path, "persist.txt") {
 		return &failingWriter{}, nil
 	}
 	return m.VFS.Create(ctx, path)
@@ -2220,10 +2938,8 @@ func TestEditorView_Save_IOErrorRecovery(t *testing.T) {
 		t.Errorf("Memory state corrupted. Expected 'Initial Data!', got %q", ev.pt.String())
 	}
 
-	// Ensure temp file was cleaned up (handled by vfs.Remove in save logic)
-	if _, err := os.Stat(path + ".f4tmp"); !os.IsNotExist(err) {
-		t.Error("Temporary file was not cleaned up after failed save")
-	}
+	// Ensure the randomized temp sibling was cleaned up by the save logic.
+	assertNoEditorTempSiblings(t, path)
 }
 func TestEditorView_Save_CreateFailure(t *testing.T) {
 	// Verifies that if the Create (truncate) fails (e.g., target file is locked or read-only),
@@ -2740,11 +3456,8 @@ func TestEditorView_Save_Atomic_Cleanup(t *testing.T) {
 		t.Error("Original file was corrupted after failed atomic save")
 	}
 
-	// 2. Check temp file is GONE
-	tempFile := path + ".f4tmp"
-	if _, err := os.Stat(tempFile); !os.IsNotExist(err) {
-		t.Error("Temporary file .f4tmp was leaked after failed save")
-	}
+	// 2. Check the randomized temp sibling is GONE.
+	assertNoEditorTempSiblings(t, path)
 }
 
 func TestEditorView_Save_AsyncRetry(t *testing.T) {

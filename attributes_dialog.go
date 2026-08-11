@@ -62,7 +62,7 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 	// Увеличиваем высоту до 24, чтобы кнопкам было просторно
 	width, height := 70, 24
 
-	dlg := vtui.NewCenteredDialog(width, height, " Attributes ")
+	dlg := vtui.NewCenteredDialog(width, height, Msg("Attributes.Title"))
 	dlg.ShowClose = true
 
 	x, y := dlg.X1, dlg.Y1
@@ -102,9 +102,9 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 	mainVBox.Add(rowTime, vtui.Margins{Top: 0}, vtui.AlignFill)
 
 	// Buttons
-	btnSet := vtui.NewButton(0, 0, "Set")
+	btnSet := vtui.NewButton(0, 0, Msg("Attributes.BtnSet"))
 	btnSet.IsDefault = true
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 	rowBtns := vtui.NewHBoxLayout(0, 0, 66, 1)
 	rowBtns.HorizontalAlign = vtui.AlignCenter
 	rowBtns.Spacing = 2
@@ -163,11 +163,11 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 	makeRow := func(label string, bitOff uint) {
 		row := vtui.NewHBoxLayout(0, 0, 60, 1)
 		lbl := vtui.NewText(0, 0, padLabel(label), vtui.Palette[vtui.ColDialogText])
-		r := vtui.NewCheckbox(0, 0, "Read", false)
+		r := vtui.NewCheckbox(0, 0, Msg("Attributes.Read"), false)
 		r.State = map[bool]int{true: 1}[(item.UnixMode&(0400>>bitOff)) != 0]
-		w := vtui.NewCheckbox(0, 0, "Write", false)
+		w := vtui.NewCheckbox(0, 0, Msg("Attributes.Write"), false)
 		w.State = map[bool]int{true: 1}[(item.UnixMode&(0200>>bitOff)) != 0]
-		x_ := vtui.NewCheckbox(0, 0, "Execute", false)
+		x_ := vtui.NewCheckbox(0, 0, Msg("Attributes.Execute"), false)
 		x_.State = map[bool]int{true: 1}[(item.UnixMode&(0100>>bitOff)) != 0]
 		row.Add(lbl, vtui.Margins{Right: 1}, vtui.AlignLeft)
 		row.Add(r, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -285,7 +285,7 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 
 func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSItem) {
 	width, height := 60, 22
-	dlg := vtui.NewCenteredDialog(width, height, " Attributes ")
+	dlg := vtui.NewCenteredDialog(width, height, Msg("Attributes.Title"))
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
 	const timeFormat = "02.01.2006 15:04:05"
@@ -313,10 +313,10 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 	dlg.AddItem(editMTime)
 	mainVBox.Add(rowTime, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	btnSet := vtui.NewButton(0, 0, "Set")
+	btnSet := vtui.NewButton(0, 0, Msg("Attributes.BtnSet"))
 	btnSet.IsDefault = true
-	btnSec := vtui.NewButton(0, 0, "&Security")
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnSec := vtui.NewButton(0, 0, Msg("Attributes.BtnSecurity"))
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	var osPath string
 	if isLocalOSVFS(v) {
@@ -361,10 +361,10 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 
 	// Apply second pass for GroupBox
 	gbVBox := vtui.NewVBoxLayout(gbAttr.X1+2, gbAttr.Y1+1, gbAttr.X2-gbAttr.X1-4, 4)
-	chkRO := vtui.NewCheckbox(0, 0, "&Read only", false)
-	chkHD := vtui.NewCheckbox(0, 0, "&Hidden", false)
-	chkSY := vtui.NewCheckbox(0, 0, "&System", false)
-	chkAR := vtui.NewCheckbox(0, 0, "&Archive", false)
+	chkRO := vtui.NewCheckbox(0, 0, Msg("Attributes.ReadOnly"), false)
+	chkHD := vtui.NewCheckbox(0, 0, Msg("Attributes.Hidden"), false)
+	chkSY := vtui.NewCheckbox(0, 0, Msg("Attributes.System"), false)
+	chkAR := vtui.NewCheckbox(0, 0, Msg("Attributes.Archive"), false)
 
 	if (item.WinAttrs & 1) != 0 {
 		chkRO.State = 1

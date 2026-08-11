@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"time"
 
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -157,6 +159,28 @@ func (f4MacroHost) RunAction(name string) bool {
 	return onUI(func() bool {
 		return RunAction(name)
 	})
+}
+
+func (f4MacroHost) CallPlugin(ctx context.Context, id string, args []any) ([]any, error) {
+	callContext := onUI(func() (snapshot vfs.MacroCallContext) {
+		frame := findPanelsFrame()
+		if frame == nil {
+			return snapshot
+		}
+		panel := frame.getActivePanel()
+		if panel == nil || panel.vfs == nil {
+			return snapshot
+		}
+		dir := panel.vfs.GetPath()
+		name := panel.GetSelectedName()
+		path := ""
+		if name != "" && name != ".." {
+			path = panel.vfs.Join(dir, name)
+		}
+		snapshot.Current = vfs.FileRef{VFS: panel.vfs, Dir: dir, Name: name, Path: path}
+		return snapshot
+	})
+	return dispatchMacroPluginCall(ctx, id, callContext, args)
 }
 
 // LoadLuaMacros starts the Far-compatible macro engine and reads dir, which is

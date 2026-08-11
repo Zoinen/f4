@@ -636,6 +636,8 @@ func (s *userMenuState) deleteAt(current *vtui.VMenu, items []UserMenuItem) {
 	dlg := vtui.ShowMessage(" User menu ",
 		fmt.Sprintf("Delete menu item:\n\n  %s", label),
 		[]string{"&Delete", "Cancel"})
+	// Destructive — render on the WarnDialog palette (see #379).
+	dlg.IsWarning = true
 	dlg.OnResult = func(code int) {
 		if code == 0 {
 			apply()
@@ -686,16 +688,16 @@ func (s *userMenuState) goBack(current *vtui.VMenu) {
 }
 
 func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuItem, idx int, isCreate bool, isSubmenu bool) {
-	title := " Edit User Menu "
+	title := Msg("UserMenu.EditTitle")
 	if isCreate {
 		if isSubmenu {
-			title = " Create Submenu "
+			title = Msg("UserMenu.CreateSubmenuTitle")
 		} else {
-			title = " Create User Menu "
+			title = Msg("UserMenu.CreateTitle")
 		}
 	} else {
 		if isSubmenu {
-			title = " Edit Submenu "
+			title = Msg("UserMenu.EditSubmenuTitle")
 		}
 	}
 
@@ -743,13 +745,13 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 	}
 
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	vbox.Add(makeRow("Hot &key:", editHotkey), vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(makeRow("&Label:", editLabel), vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(makeRow(Msg("UserMenu.LabelHotkey"), editHotkey), vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(makeRow(Msg("UserMenu.LabelLabel"), editLabel), vtui.Margins{Top: 1}, vtui.AlignFill)
 	if !isSubmenu {
 		// Multi-line command box: label sits on its own row above the box
 		// (FAR's edit-menu-item dialog layout) so the multi-row edit
 		// doesn't leave the label floating next to just its first row.
-		cmdLabel := vtui.NewLabel(0, 0, "&Command:", editCommand)
+		cmdLabel := vtui.NewLabel(0, 0, Msg("UserMenu.LabelCommand"), editCommand)
 		dlg.AddItem(cmdLabel)
 		dlg.AddItem(editCommand)
 		cmdBox := vtui.NewHBoxLayout(0, 0, width-4, cmdRowsVisible)
@@ -758,8 +760,8 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 		vbox.Add(cmdBox, vtui.Margins{}, vtui.AlignFill)
 	}
 
-	btnOk := vtui.NewButton(0, 0, "&Save")
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnOk := vtui.NewButton(0, 0, Msg("vtui.Save"))
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 	btnOk.IsDefault = true
 
 	btnHbox := vtui.NewHBoxLayout(0, 0, width-4, 1)

@@ -104,6 +104,11 @@ func HandleSemanticAction(action map[string]any) bool {
 	if action == nil {
 		return false
 	}
+	actionName := semanticString(action["action"])
+	target := semanticString(action["target"])
+	if strings.HasPrefix(actionName, "workspace.") || actionName == "tab.activate" || strings.HasPrefix(target, "workspace-") {
+		return vtui.FrameManager.HandleSemanticAction(action)
+	}
 	if kind, _ := action["kind"].(string); kind == "command" {
 		return vtui.FrameManager.EmitCommand(semanticInt(action["command"]), action["args"])
 	}
@@ -128,7 +133,7 @@ func HandleSemanticAction(action map[string]any) bool {
 		}
 	}
 
-	target := semanticString(action["target"])
+	target = semanticString(action["target"])
 	if target == "" {
 		return false
 	}

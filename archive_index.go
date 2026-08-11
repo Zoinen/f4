@@ -27,12 +27,27 @@ func handleArchiveIndexOp(srcVfs vfs.VFS, oldPath string, dstVfs vfs.VFS, newPat
 	if !isTarArchive(oldPath) {
 		return
 	}
+	// Standard tar indexes are local sidecars. Treating a cloud:// URI as an
+	// OS path creates a bogus "cloud:" tree on Windows and can never migrate a
+	// useful index to or from a remote object.
+	if _, ok := srcVfs.(*vfs.OSVFS); !ok {
+		return
+	}
+	if _, ok := dstVfs.(*vfs.OSVFS); !ok {
+		return
+	}
 
-	absOld, _ := srcVfs.Abs(oldPath)
-	absNew, _ := dstVfs.Abs(newPath)
+	absOld, oldErr := srcVfs.Abs(oldPath)
+	absNew, newErr := dstVfs.Abs(newPath)
+	if oldErr != nil || newErr != nil {
+		return
+	}
 
-	oldIdx, _ := tar.GetStandardIndexPath(absOld)
-	newIdx, _ := tar.GetStandardIndexPath(absNew)
+	oldIdx, oldErr := tar.GetStandardIndexPath(absOld)
+	newIdx, newErr := tar.GetStandardIndexPath(absNew)
+	if oldErr != nil || newErr != nil {
+		return
+	}
 
 	if _, err := os.Stat(oldIdx); err == nil {
 		if isMove {
@@ -59,26 +74,53 @@ func handleArchiveIndexOp(srcVfs vfs.VFS, oldPath string, dstVfs vfs.VFS, newPat
 }
 
 func handleArchiveIndexDelete(ctx context.Context, v vfs.VFS, p string) {
+	removeArchiveIndexes(collectArchiveIndexes(ctx, v, p))
+}
+
+// collectArchiveIndexes snapshots companion indexes before their source is
+// deleted or moved to trash. Removal happens only after the filesystem
+// mutation succeeds; deleting an index first would corrupt state on failure.
+func collectArchiveIndexes(ctx context.Context, v vfs.VFS, p string) []string {
+	if ctx.Err() != nil {
+		return nil
+	}
+	// Standard tar indexes are local sidecar/cache files. A remote VFS cannot
+	// own one, and recursively walking it here would defeat the O(selected
+	// roots) trash path used for cloud directories.
+	if _, local := v.(*vfs.OSVFS); !local {
+		return nil
+	}
 	st, err := v.Stat(ctx, p)
 	if err != nil {
-		return
+		return nil
 	}
 
-	if st.IsDir {
+	if st.IsDir && !st.IsSymlink {
+		var indexes []string
 		v.ReadDir(ctx, p, func(items []vfs.VFSItem) {
 			for _, itm := range items {
-				if itm.Name == ".." {
+				if ctx.Err() != nil || itm.Name == ".." {
 					continue
 				}
-				handleArchiveIndexDelete(ctx, v, v.Join(p, itm.Name))
+				indexes = append(indexes, collectArchiveIndexes(ctx, v, v.Join(p, itm.Name))...)
 			}
 		})
+		return indexes
 	} else if isTarArchive(p) {
 		abs, _ := v.Abs(p)
 		idx, _ := tar.GetStandardIndexPath(abs)
 		if _, err := os.Stat(idx); err == nil {
-			vtui.DebugLog("FILEOP: Deleting archive index: %s", idx)
-			os.Remove(idx)
+			return []string{idx}
+		}
+	}
+	return nil
+}
+
+func removeArchiveIndexes(indexes []string) {
+	for _, idx := range indexes {
+		vtui.DebugLog("FILEOP: Deleting archive index after successful source deletion: %s", idx)
+		if err := os.Remove(idx); err != nil && !os.IsNotExist(err) {
+			vtui.DebugLog("FILEOP: Cannot delete archive index %s: %v", idx, err)
 		}
 	}
 }

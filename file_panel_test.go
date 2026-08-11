@@ -129,6 +129,13 @@ type mockCacheSessionVFS struct {
 
 func (m *mockCacheSessionVFS) SessionKey() any { return m.session }
 
+type mockStableCacheVFS struct {
+	*mockCacheSessionVFS
+	stable any
+}
+
+func (m *mockStableCacheVFS) DirectoryCacheKey() any { return m.stable }
+
 type panelStatCountingVFS struct {
 	*vfs.NullVFS
 	currentPath string
@@ -2773,6 +2780,62 @@ func TestFileSystemPanel_DirectoryCacheIsScopedBySession(t *testing.T) {
 	}
 }
 
+func TestDirectoryCacheIdentitySurvivesReconnection(t *testing.T) {
+	stable := "cloud-profile-version"
+	first := &mockStableCacheVFS{
+		mockCacheSessionVFS: &mockCacheSessionVFS{mockTitleVFS: &mockTitleVFS{OSVFS: *vfs.NewOSVFS("/"), title: "Cloud"}, session: new(int)},
+		stable:              stable,
+	}
+	second := &mockStableCacheVFS{
+		mockCacheSessionVFS: &mockCacheSessionVFS{mockTitleVFS: &mockTitleVFS{OSVFS: *vfs.NewOSVFS("/"), title: "Cloud"}, session: new(int)},
+		stable:              stable,
+	}
+	if got, want := directoryCacheKey(first, "Cloud:"+string(os.PathSeparator)+"Photos"), directoryCacheKey(second, "Cloud:"+string(os.PathSeparator)+"Photos"); got != want {
+		t.Fatalf("stable directory cache keys differ across reconnect: %#v != %#v", got, want)
+	}
+}
+
+func TestFileSystemPanelShowsStandaloneCacheBeforeProviderOpen(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	separator := string(os.PathSeparator)
+	target := "zoin.shadow:" + separator + "Photos"
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	if fp.cancelLoad != nil {
+		fp.cancelLoad()
+		fp.cancelLoad = nil
+	}
+	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	fp.dirCache[dirCacheKey{identity: "old-cloud-session", qualifiedPath: target}] = dirCacheEntry{
+		items: []vfs.VFSItem{{Name: "cached.jpg", Size: 42}},
+		time:  time.Now(),
+	}
+	if !fp.showCachedStandalonePath(target) {
+		t.Fatal("standalone visual path did not reuse its cached listing")
+	}
+	if len(fp.entries) != 2 || fp.entries[0].Name != ".." || fp.entries[1].Name != "cached.jpg" || !fp.entries[1].IsCached {
+		t.Fatalf("cached preview entries = %#v", fp.entries)
+	}
+	foreign := "/"
+	if os.PathSeparator == '/' {
+		foreign = "\\"
+	}
+	if strings.Contains(target, foreign) {
+		t.Fatalf("native visual target %q contains foreign separator %q", target, foreign)
+	}
+}
+
+func TestDirectoryCacheKeyRejectsNonComparableSessionIdentity(t *testing.T) {
+	device := &mockCacheSessionVFS{
+		mockTitleVFS: &mockTitleVFS{OSVFS: *vfs.NewOSVFS("/"), title: "invalid session key"},
+		session:      []byte("not comparable"),
+	}
+	cache := make(map[dirCacheKey]dirCacheEntry)
+	cache[directoryCacheKey(device, "/")] = dirCacheEntry{}
+	if len(cache) != 1 {
+		t.Fatal("directory cache rejected safe fallback identity")
+	}
+}
+
 func TestFileSystemPanel_CacheEviction(t *testing.T) {
 	fp := &FileSystemPanel{}
 	for i := 0; i < 60; i++ {
@@ -2865,6 +2928,46 @@ func TestFileSystemPanel_TitleDoesNotContainSortIndicator(t *testing.T) {
 		t.Fatalf("changing sort mode changed the path title prefix to %q", got)
 	}
 }
+
+func TestFileSystemPanel_CurrentTitleUsesSelectedColor(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	fp := NewFileSystemPanel(0, 0, 40, 24, v)
+	fp.currentTitle = "C:\\work"
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	oldTitle := vtui.Palette[ColPanelTitle]
+	oldSelectedTitle := vtui.Palette[ColPanelSelectedTitle]
+	defer func() {
+		vtui.Palette[ColPanelTitle] = oldTitle
+		vtui.Palette[ColPanelSelectedTitle] = oldSelectedTitle
+	}()
+	vtui.Palette[ColPanelTitle] = 0x1111
+	vtui.Palette[ColPanelSelectedTitle] = 0x2222
+
+	fp.SetFocus(false)
+	fp.Show(scr)
+	if got := scr.GetCell(3, 0).Attributes; got != vtui.Palette[ColPanelTitle] {
+		t.Fatalf("inactive title attributes = %#x; want %#x", got, vtui.Palette[ColPanelTitle])
+	}
+
+	fp.SetFocus(true)
+	fp.Show(scr)
+	if got := scr.GetCell(3, 0).Attributes; got != vtui.Palette[ColPanelSelectedTitle] {
+		t.Fatalf("active title attributes = %#x; want %#x", got, vtui.Palette[ColPanelSelectedTitle])
+	}
+
+	// Search-first keeps the current panel visually active while the command
+	// line owns keyboard focus.
+	fp.SetFocus(false)
+	fp.showInactiveCursor = true
+	fp.Show(scr)
+	if got := scr.GetCell(3, 0).Attributes; got != vtui.Palette[ColPanelSelectedTitle] {
+		t.Fatalf("current title with command-line focus attributes = %#x; want %#x", got, vtui.Palette[ColPanelSelectedTitle])
+	}
+}
+
 func TestFileSystemPanel_FastFind_Visibility(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	// Создаем много файлов, чтобы список мог скроллиться
@@ -4052,6 +4155,45 @@ func TestPanelsFrame_NavigateToCachedRemotePathIsOptimistic(t *testing.T) {
 	waitForLoad(t, fp)
 }
 
+func TestFileSystemPanelCachedNavigateUpSelectsFolderLeft(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	remote := newQueuedNavigationVFS()
+	if err := remote.SetPathOptimistic("/sdcard"); err != nil {
+		t.Fatal(err)
+	}
+	remote.optimisticCalls.Store(0)
+	fp.vfs = remote
+	fp.lastLoadedPath = "/sdcard"
+	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	fp.saveToCache("/", remote.items["/"])
+	fp.saveToCache("/sdcard", remote.items["/sdcard"])
+	fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true}}
+	fp.SetCursorIndex(0)
+
+	if !fp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}) {
+		t.Fatal("Enter on cached parent row was not handled")
+	}
+	if got := remote.GetPath(); got != "/" {
+		t.Fatalf("path after cached navigate-up = %q, want /", got)
+	}
+	if got := fp.getRawSelectedName(); got != "sdcard" {
+		t.Fatalf("cached parent listing selected %q, want folder left sdcard", got)
+	}
+	waitForPanelSignal(t, remote.firstReadStarted, "background parent refresh")
+	remote.releaseFirstRead <- struct{}{}
+	waitForLoad(t, fp)
+	if got := fp.getRawSelectedName(); got != "sdcard" {
+		t.Fatalf("fresh parent listing selected %q, want folder left sdcard", got)
+	}
+}
+
 func TestFileSystemPanel_LiveSelectionPreservation(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmpDir := t.TempDir()
@@ -4210,5 +4352,40 @@ func TestFileSystemPanel_PendingSelectionPriority(t *testing.T) {
 
 	if fp.GetSelectedName() != "new_name.txt" {
 		t.Errorf("Cursor failed to snap to the renamed file. On: %q", fp.GetSelectedName())
+	}
+}
+func TestFileEntry_HighlightMarks(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	oldRules := GlobalFileHighlighter.Rules
+	defer func() { GlobalFileHighlighter.Rules = oldRules }()
+
+	iniData := `[Highlight_0]
+Name = TestGo
+Mask = *.go
+Mark = •
+NormalColor = foreground:#00FF00
+`
+	ini := ParseIni(strings.NewReader(iniData))
+	GlobalFileHighlighter.LoadFromIni(ini)
+
+	entry := &fileEntry{
+		VFSItem: vfs.VFSItem{Name: "main.go", IsDir: false},
+	}
+
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+
+	AppConfig.ShowHighlightMarks = false
+	if got := entry.GetCellText(0); got != "main.go" {
+		t.Errorf("Expected name without marker when ShowHighlightMarks=false, got %q", got)
+	}
+
+	AppConfig.ShowHighlightMarks = true
+	text := entry.GetCellText(0)
+	expectedText := "• main.go"
+	if text != expectedText {
+		t.Errorf("Marker integration in GetCellText failed: got %q, want %q", text, expectedText)
 	}
 }

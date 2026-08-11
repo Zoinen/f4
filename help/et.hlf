@@ -1,0 +1,578 @@
+@Contents
+$f4 Abi (Versioon: %Ver)
+f4 on eksperimentaalne Far Manager / far2l failihalduri kloon Go keeles.
+
+~Vaataja / redaktori kiirklahvid~ViewerEditor@
+~Paneeli navigatsioon~PanelNav@
+~Visuaalne failide ümbernimetamine (VisRen)~VisRen@
+~Näita README.md~README@
+
+@VisRen
+$Visuaalne failide ümbernimetamine (VisRen)
+
+VisRen on f4 sisse-ehitatud tööriist failide visuaalseks rühmiti ümbernimetamiseks.
+See koostab iga uue nime enne muudatuste tegemist ja kuvab algsed ning sihtnimed
+kõrvuti. Töötab failide ja kataloogidega kohalikul failisüsteemi paneelil.
+
+Kui paneeli elemendid on märgistatud, avab VisRen need paneeli järjekorras. Kui ühtegi
+elementi pole märgistatud, kasutatakse elementu paneeli kursori all. Ülemkausta „..“
+ei kasutata kunagi. Ava VisRen vajutades F11 ja valides „Visuaalne failide ümbernimetamine“;
+menüüsse määratud kiirklahv võib selle samuti aktiveerida.
+
+~Kiirjuhend ja dialoogi väljad~VisRenQuickStart@
+~Nime maskid, laiendid, vahemikud, loendurid ja sulgude eripärad~VisRenMasks@
+~Suur- ja väiketähtede teisendamine, transliteratsioon ja käsitlemise järjekord~VisRenTransforms@
+~Kuupäevad, ID3, pildi/EXIF ja faili versiooni metandmed~VisRenMetadata@
+~Otsing, lihtne asendamine ja regulaaravaldised~VisRenSearch@
+~Eelvaate navigeerimine, klaviatuur ja hiir~VisRenPreview@
+~Nimekirja redigeerimine UTF-8 redaktoris~VisRenEditor@
+~Ümbernimetamise täitmine, vead, logi ja tühistamine~VisRenRename@
+~Portatiivsete failinimede reeglid ja olulised piirangud~VisRenSafety@
+~Praktilised retseptid~VisRenExamples@
+
+Realizatsioon pagrādīta uz FarPlugins VisRen 3.2.0, bet papildināta ar stingrāku failu
+nosaukumu ja redaktora tikrināšanu, stabilām atsitiktinėmis vērtībām un pārnesamiem metadatiem.
+
+@VisRenQuickStart
+$VisRen: kiirjuhend ja dialoogi väljad
+
+#Tüüpiline ümbernimetamine#
+
+  1. Märgista vajalikud failid/kataloogid klahviga Ins või aseta paneeli kursor
+     ühele elemendile, kui sul on vaja ainult seda.
+  2. Vajuta F11 ja vali VisRen.
+  3. Sisesta nime ja laiendi maskid. Vaikimisi [N] ja [E] säilitavad algse nime
+     mõlemad osad muutmata.
+  4. Vajadusel täida lahtrid „Otsi“ ja „Asenda millega“. Fookus algab lahtris
+     „Otsi“; Tab viib otse lahtrisse „Asenda millega“.
+  5. Kontrolli iga sihtnime. F3 kuvab täieliku algse nime, uue nime või
+     praeguse rea diagnostika.
+  6. Vali „Nimeta ümber“ vai vajuta Enter vaikimisi nupul.
+
+#Vardas un plėtinys#
+
+Šie du laukai atskirai sudaro naują bazinį nosaukumu un plėtinį. Plėtinio laukelī
+nav punkta. Tukšs plėtinio rezultatas to pilnībā pašalina. Paprastas tekstas
+kopijuojamas pažodžiui; laužtiniuose skliaustuose esantys reiškiniai įterpia pradinį
+tekstą, skaitiklius, metaduomenis arba transformacijas.
+
+Pēdējais punkts atdala pradinį nosaukumu un plėtinį. Pavyzdžiui, archive.tar.gz
+turi nosaukumu archive.tar un plėtinį gz. README neturi plėtinio. Slēptas fails,
+toks kaip .gitignore, turi tuščią nosaukumu un plėtinį gitignore.
+
+#Šablonai un [+]#
+
+Sarakstos „Nosaukuma šablonai“ un „Paplašinājuma šablonai“ ir attiecīgajai maskai derīgas
+izteiksmes. Izvēloties elementu, tas tiek tikai iezīmēts. [+] poga ievieto šo izvēlēto
+šablonu kursora pozīcijā un atgriež fokusu uz attiecīgo masku – tieši tāpat kā
+oriģinālajā VisRen. Ja šablonu sarakstam ir fokuss, Ins ievieto pašreizējo elementu, bet
+fokuss paliek sarakstā. Rāmja un skaitītāja aizvietotāji ievietojot kļūst par derīgām vērtībām.
+
+#Meklēšanas iestatījumi#
+
+Meklēšana un aizvietošana tiek veikta visā nosaukumā, kas izveidots ar abām maskām, ieskaitot
+punktu un paplašinājumu. Lauks „Reģistrjūtīgs“ sākotnēji ir aktīvs. „Regulārā izteiksme“
+pārslēdz starp parastu paiešku un regex režīmu.
+
+#Dzīvais priekšskatījums un diagnostika#
+
+Jebkura rediģēšana uzreiz atjaunina divas priekšskatījuma kolonnas. Ja kļūdaina kaukė, rāmis,
+skaitītājs, regex vai galīgais vārds, visās rindās parādās <Error!>. Pārdēvēšanas un
+redaktora palaišanas pogas tiek bloķētas. F3 rāda patieso iemeslu.
+
+Četri tekstveida lauki izmanto F4 vēsturi. Vērtības, ar kurām palaista pārdēvēšana,
+tiek ierakstītas attiecīgajās vēsturēs. Vārdu atdalītāji, kas paredzēti [T], tiek saglabāti
+atsevišķi VisRen lietotāja iestatījumos.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenMasks
+$VisRen: maskas, rāmji, skaitītāji un pēdiņas
+
+#Pamatizteiksmes#
+
+  [N]          Sākotnējais nosaukums bez pēdējā paplašinājuma.
+  [E]          Sākotnējais paplašinājums bez sākuma punkta.
+  [[]          Burtiska atveroša kvadrātiekava.
+  []]          Burtiska aizveroša kvadrātiekava.
+
+Visas teksts ārpus izteiksmēm ir burtisks. Atsitiktis aizverošā iekava, neaizvērta
+atverošā iekava vai nezināma izteiksme tiek uzskatīta par kļūdu.
+
+#Rāmji#
+
+Rāmis seko uzreiz pēc N vai E. Pozīcijas skaita Unicode rakstzīmes, nevis baitus, un
+sākas no 1. Negatīva pozīcija skaitās no gala. Tās pašas formas darbojas ar E, pavyzdžiui, [E1-3].
+
+Sākotnējam vārdam abcdefghij:
+
+  [N2]         b                 viena rakstzīme
+  [N2-5]       bcde              pozīcijas no 2 līdz 5 ieskaitot
+  [N2,5]       bcdef             piecas rakstzīmes, sākot no 2
+  [N2-]        bcdefghij         no 2 rakstzīmes līdz galam
+  [N-2]        i                 otrā rakstzīme no gala
+  [N2--5]      bcdef             no 2 līdz piektajai rakstzīmei no gala
+  [N-8-5]      cde               no 8 no gala līdz 5 no gala
+  [N-8,5]      cdefg             piecas rakstzīmes no 8 no gala
+  [N-5-]       fghij             no 5 no gala līdz galam
+
+Daļa ārpus robežām pēc iespējas tiek saīsināta vai dod tukšu rindu. Nulle pozīcija un
+pretējs rāmis ir kļūdas. Rāmja šablons no saraksta ievieto garākā sākotnējā
+nosaukuma vai paplašinājuma garumu.
+
+#Skaitītāji#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Sākuma cipari nosaka pirmo vērtību un minimālo platumu. To var būt ne vairāk kā
+deviņi. Ja +žingsnis ir izlaists, žingsnis ir 1. Skaitītājs seko pašreizējai eilučių
+secībai: Ctrl+Up/Down un vilkšana maina piešķirtos numurus. Platums ir minimālais –
+lielāki skaitļi netiek saīsināti.
+
+#Izteiksmju apvienošana#
+
+Izteiksmes un parastu tekstu ir atļauts apvienot. Pavyzdžiui, [C001+1]_[N1-12] dod trīsciparu
+numuru, pasvītrojumu un pirmos divpadsmit vecā vārda simbolus. Transformāciju izteiksmes pašas
+tekstu nepievieno, bet maina paruoštą nosaukuma daļu.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenTransforms
+$VisRen: transformāciju un apstrādes secība
+
+#Reģistra maiņa#
+
+  [L]          Visu ar mazajiem burtiem.
+  [U]          Visu ar lielajiem burtiem.
+  [F]          Pirmā rakstzīme lielā, pārējās mazās.
+  [T]          Pirmās rakstzīmes visiem vārdiem lielās.
+  [M]          Mūzikas „Izpildītājs - skaņdarbs“ apstrāde.
+
+[T] izmanto vārdu atdalītājus „-. _&“. Izvēlieties [T] jebkurā šablonu sarakstā un nospiediet
+F4, lai tos mainītu. VisRen saglabā līdz 18 simboliem lietotāja iestatījumos un izmanto
+tos tālāk.
+
+[M] atpazīst „ - „ vai „_-_“ starp izpildītāju un skaņdarbu. Katrs izpildītāja vārds tiek sākts
+ar lielu burtu, bet skaņdarbā tikai pirmais vārds tiek sākts ar lielu. Atsevišķs krievu saiklis „и“
+izpildītāja vārdā tiek pārveidots par mazo burtu, kas atbilst oriģinālajai VisRen uzvedībai.
+
+Ja vienā maskā ir vairākas reģistra transformācijas, prioritāte ie fiksēta: [L], [U],
+[F], [T], [M]. Tiek izpildīta tylko pirma no šī saraksta.
+
+#Transliterācija#
+
+  [TL]         Krievu kirilica uz VisRen Latin tabulu.
+  [TR]         Atpakaļejošā konvertācija no Latin uz krievu kirilicu.
+
+Tiek izmantota oriģinālā VisRen tabula: pavyzdžiui ё -> jo, ж -> zh, х -> kh, щ -> shh, ю -> ju,
+я -> ja. Reģistrs pēc iespējas tiek saglabāts. Veicot atpakaļejošo konvertāciju, tiek izvēlēts
+ilgākais sutapimas. Ja ir gan [TL], gan [TR], prioritāte tiek dota [TL].
+
+#Tiksli apstrādes secība#
+
+  1. Tiek izvērstas vārda un paplašinājuma izteiksmes.
+  2. Daļas tiek savienotas ar punktu, ja paplašinājums nav tukšs.
+  3. Pēc pilna nosaukuma tiek veikta meklēšana un aizvietošana.
+  4. Rezultāts vēlreiz tiek sadalīts pēc pēdējā punkta.
+  5. Attiecīgā daļa tiek transliterēta.
+  6. Pēdējā darbība ir izvēlētā reģistra maiņa.
+  7. Tiek pārbaudīts pabeigtais faila nosaukuma komponents.
+
+Tāpēc reģistra maiņa darbojas arī uz ierakstīto aizvietošanas tekstu, bet meklēšana var sutapti ar
+sugeneruotu paplašinājumu.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenMetadata
+$VisRen: datumi un failu metadati
+
+Metadati tiek lasīti lēni (lazy load) un kešoti vienreiz katram avota elementam.
+Trūkstošie vai neatbalstītie lauki virst par tukšu virkni un neaptur priekšskatījumu.
+
+#Failo laiks un sesijas vērtības#
+
+  [DM]         Pēdējās modifikācijas datums vietējā laikā: YYYY.MM.DD
+  [TM]         Pēdējās modifikācijas laiks vietējā laikā: hh-mm-ss
+  [R]          Atsitiktis decimālskaitlis no 0 līdz 32767
+
+[R] tiek piešķirts vienreiz, atverot dįalogu. Tas nemainās rediģējot maskas un pārvietojas
+kopā ar savu rindu. Jaunā VisRen sesijā tiek piešķirtas jaunas vērtības.
+
+#MP3 un ID3#
+
+Kūrinio numura izteiksme sastāv no atverošās iekavas, parasta ASCII simbola „grotelės“
+U+0023 un aizverošās iekavas ( [#] ). Kiti laukai:
+
+  [t]          Kūrinio nosaukums
+  [a]          Izpildītājs
+  [l]          Albums
+  [y]          Gads vai datums
+  [g]          Žanrs
+
+Ja ir ID3v2, tiek izmantoti tā ID3v2.3 vai ID3v2.4 kadri. Citādi tiek lasīts ID3v1.1, ieskaitot
+kūrinio numuru un žanru tabulu. Tiek atbalstīti sistēmas noklusētā kodēšana, UTF-8 un UTF-16.
+
+#Attēli un EXIF#
+
+  [c]          Kameras ražotājs no EXIF JPEG
+  [m]          Kameras modelis no EXIF JPEG
+  [d]          Fotografēšanas datums: YYYY.MM.DD hh-mm-ss
+  [r]          Attēla izmērs: PLOTISxAUKŠTIS
+
+Izmērs tiek nolasīts no JPEG, BMP, GIF un PNG. Ražotājs, modelis un EXIF datums tiek nolasīti no JPEG.
+Ja derīgas EXIF datums nav, [d] izmanto attēla modifikācijas laiku. Mazie [m]/[r] – metadati,
+bet lielie [M]/[R] – reģistra režīms un atsitiktinis skaitlis.
+
+#Vykdomojo faila versija#
+
+  [V]          Fiksētā versija no PE faila .exe/.dll resursa
+
+PE resursas tiek analizēts ar integrētu kodu visās atbalstītajajās OS. Ja derīgas versijas nav,
+[V] dod tukšu rindu.
+
+Metadatu tekstas ar ceļa atdalītājiem vai citiem aizliegtiem simboliem tiek noraidīts vai
+tiek bloķēts galīgā tikrinimo laikā. Vienmēr pārbaudiet priekšskatījumu strādājot ar svešiem tagiem.
+
+Lai atgrieztos pie VisRen satura, paspauskite Backspace.
+
+@VisRenSearch
+$VisRen: meklēšana, aizvietošana un regulārās izteiksmes
+
+Meklēšana un aizvietošana tiek veikta visā nosaukumā, kas izveidots ar abām maskām, ieskaitot
+punktu un paplašinājumu. Tukšs lauks „Meklēt“ atspējo šo posmu. Tiek aizvietoti visi nepārklājošie atbilstības gadījumi.
+
+#Paprastasis režīms#
+
+Ja „Regulārā izteiksme“ ir izslēgta, iepazīstamais teksts ir burtisks. Ar atzīmēto lauku
+„Reģistrjūtīgs“ File un file skaitās dažādi. Bez šī iestatījuma Unicode burtu reģistrs
+tiek ignorēts, bet aizvietojums tiek ievietots tāds, kāds ievests.
+
+Piemērs: maskas [N] un [E], meklēšana "draft_" un tukšs aizvietojums pārvērš draft_report.txt par report.txt.
+
+#Regulāro izteiksmju režīms#
+
+Ieslēdziet „Regulārā izteiksme“, lai izmantotu F4 regex dzinēju. Šablonu var ievest tieši
+vai kā /izteiksme/i. Formā ar slīpsvītrām pati slīpsvītra tiek rakstīta kā \/, bet neobligātā i vėliavėlė
+ieslēdz paiešku neatkarīgi no reģistra. Noņemts reģistra lauks dara to pašu. Kitas vėliavėlės
+pēc aizverošās slīpsvītras netiek pieņemtas.
+
+Aizvietojuma rindā $0 nozīmē visu sutapimą, bet $1 ... $9 – grupas iekavās. Pavyzdžiui, failam
+001-report.txt:
+
+  Meklēt:          /(\d+)-([^.]+)/
+  Aizvietot:       $2-$1
+  Rezultāts:       report-001.txt
+
+Kļūdaina izteiksme, neaizvērta forma /izteiksme/ vai nezināma vėliavėlė rāda <Error!>, bloķē
+pārdēvēšanu un redaktoru. Diagnostika ir pieejama spriežot pēc F3.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+Atrastie sutapimai sākotnējā vārdā tiek izcelti ar krāsu kreisajā priekšskatījuma kolonnā. Izcelšana
+ņem vērā „Reģistrjūtīgs“ un „Regulārā izteiksme“ iestatījumus, atzīmē visus redzamos sutapimus un
+tiek saglabāta rullējot. Teksts, kas izveidots ar lauku „Aizvietot ar“, tiek izcelts labajā kolonnā.
+Regulārās izteiksmes gadījumā tiek izcelta visa izplestā aizvietojuma daļa; ja aizvietojums istubks,
+redzama teksta izcelšanai nav.
+
+@VisRenPreview
+$VisRen: priekšskatījums, tastatūra un pele
+
+Kreisajā pusē tiek rādīts sākotnējais nosaukums, labajā – aprēķinātais galīgais. Atverot dįalogu pirmā
+rinda ir aktīva, bet tastatūras fokuss stāv laukā „Meklēt“. F12 pārvieto fokusu uz sarakstu un atpakaļ.
+
+Ja visas rindas netiek ietilpinātas priekšskatījuma apgabalā, labajā malā parādās vertikālā ritjosla.
+Darbojas bultiņas, klikšķi uz ceļa, slīdņa vilkšana un peles ritentiņš virs saraksta. Kada visas
+rindas atkal ietilpst, josla automātiski izzūd.
+
+#Vispārējie taustiņi#
+
+  F1                   Atvērt šo palīdzību.
+  F2                   Ieslēgt/izslēgt žurnāla ierakstīšanu.
+  F3                   Pilni nosaukumi vai rindas diagnostika.
+  F4                   Atvērt sarakstu redaktorā.
+  F4 uz [T] šablona    Mainīt vārdu atdalītājus.
+  F5                   Izkliedēt/atjaunot dįalogu.
+  F6                   Ielādēt pieejamo atcelšanu.
+  F8                   Izdzēst žurnālu pēc apstiprinājuma.
+  F12                  Pārvietot fokusu uz sarakstu vai atpakaļ.
+  Alt+N                Pāriet uz vārda masku.
+  Alt+E                Pāriet uz paplašinājuma masku.
+  Alt+S                Pāriet uz lauku „Meklēt“.
+  Alt+P                Pāriet uz lauku „Aizvietot“.
+  Alt+C                Pārslēgt „Reģistrjūtīgs“.
+  Alt+G                Pārslēgt „Regulārā izteiksme“.
+  Alt+T                Pāriet pie vārda šabloniem.
+  Alt+L                Pāriet pie paplašinājuma šabloniem.
+  Enter                Veikt galveno „Pārdēvēt“.
+  Esc                  Aizvērt dįalogu bez pārdēvēšanas.
+
+#Taustiņi esot fokusā sarakstā#
+
+  Up/Down              Pāriet uz kaimiņu rindu.
+  Home/End             Pirmā/pēdējā rinda.
+  PgUp/PgDn            Pāriet uz lapu.
+  Del                  Noņemt rindu tikai no šīs darbības.
+  Ctrl+Up/Down         Mainīt secību; maina skaitītājus.
+  Ctrl+Left/Right      Pārvietot stulpelių skirtuką.
+  Ctrl+Num5            Centrēt un atiestatīt prasukimą.
+  Alt+Left/Right       Prasukt sākotnējo stulpelių.
+  Left/Right           Prasukt galīgo stulpelių.
+  Ctrl+PgUp            Aizvērt VisRen un atgriezties pie avota.
+
+#Šabloni un pele#
+
+  Ins šablonu sarakstā ievieto izvēlēto šablonu maskā.
+  Vilkšana ar kreiso pogu maina rindu secību.
+  Labā poga uz rindas rāda pilnus nosaukumus/kļūdu.
+  Dubultklikšķis atgriež pie sākotnējā elementa panelī.
+  Klikšķis uz ikonas virsrakstā izkliedē/atjauno logu.
+  Klikšķis uz žurnāla zīmes pārslēdz ierakstīšanu; uz atlikušās rindas
+  daļas – iztīra esošo žurnālu pēc apstiprinājuma.
+
+Termināļa keitimas un F5 atkal padala sarakstu divās vienādās skiltīs. Pēc tam ritjoslu un
+iestatījumus var pielāgot manuāli.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenEditor
+$VisRen: sąrašo redagavimas UTF-8
+
+F4 piedāvā skaidrus variantus un atver pagaidu dokumentu UTF-8 „Failu pārdēvēšanas saraksts“
+iebūvētajā F4 redaktorā:
+
+  Avots + mērķis      "sākotnējais vārds"    "galīgais vārds"
+  Tikai jauni                               "galīgais vārds"
+
+Katra vērtība tiek ielikta pēdiņās. Pēdiņas, atpakaļejošā slīpsvītra un vadības simboli vārdā
+tiek ierakstīti ar ekranēšanu. Neizdzēsiet ārējās pēdiņas.
+
+#Stingra pārbaude#
+
+Aizverot redaktoru VisRen pieprasa:
+
+  - precīzi tikpat rindu, cik bija priekšskatījumā;
+  - vienu vai divas kolonnas pēdiņās pēc izvēlētā režīma;
+  - nekāda sveša teksta ārpus pēdiņām;
+  - nemainīgu sākotnējo kolonnu divu kolonnu režīmā;
+  - pieļaujamu pārnesamu komponentu katram galīgajam vārdam.
+
+Redaktorā nevar pievienot, dzēst un mainīt rindu secību. Divu kolonnu režīmā
+ir atļauts mainīt tikai galīgo. Pārbaužu dēļ izkropļotas pēdiņas un nejauša avota
+izmaiņa tiek droši atklāta pirms darbības uzsākšanas.
+
+Kļūdas gadījumā VisRen paskaidro iemeslu un piedāvā „Labot“. Redaktors vēlreiz atvērsies
+problēmu rindā, saglabājot jūsu tekstu. Derīgs izmainītais saraksts palaiž secīgu
+pārdēvēšanu pēc redaktora aizvēršanas. Ja ar maskām izveidotais saraksts nav mainījies baitos, bet satur
+jaunus nosaukumus, VisRen vispirms pieprasa apstiprinājumu.
+
+Redaktors nav pieejams, ja priekšskatījumā ir <Error!> vai atcelšanas režīmā.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenRename
+$VisRen: izpilde, kļūdas, žurnāli un atcelšana
+
+#Secīga pārdēvēšana#
+
+Rindas tiek apstrādātas pa vienai no augšas uz leju pašreizējā secībā. Nemainīgs nosaukums
+tiek izlaists. Avots, kas pazuda pēc dįaloga atvēršanas, arī tiek izlaists. Failiem un
+mapēm ir spēkā vieni un tie paši noteikumi.
+
+Svešs eksistējošs objekts nekad netiek pārrakstīts. Tiek atbalstīta tikai tā paša objekta vārda
+reģistra maiņa; ja nepieciešams, F4 izmanto unikālu pagaidu vārdu. Citi ciklai netiek sadalīti fāzēs:
+pavyzdžiui, kad a virsta b un b virsta a, tas parasti rada parastu aizņemtā mērķa kļūdu.
+
+#Kļūdas izpildes laikā#
+
+Piekļuves kļūdas, aizņemti vai dublēti mērķi un citas kļūdas piedāvā variantus:
+
+  Atkārtot             Atkārtot to pašu rindu.
+  Izlaist              Nemainīt avotu un turpināt.
+  Izlaist visus        Neklasificēt kļūdas un turpināt.
+  Atcelt               Apturēt, neapstrādājot atlikumu.
+
+Operācija nav transakcija. Jau veiksmīgie pārdēvējumi saglabājas pēc izlaišanas vai atcelšanas.
+Neveiksmīgie un neapstrādātie avoti paliek atzīmēti panelī. Galīgais pranešimas rāda veiksmīgi
+apstrādāto rindu skaitu.
+
+#Pārdēvēšanas žurnāls#
+
+Katru reizi atverot dįalogu, žurnāla ierakstīšana ir ieslēgta. Varde rindā „Pārdēvēšanas žurnāls“
+nozīmē, ka veiksmīgās pāri tiks ierakstīti atmiņā. F2 vai uzklikšķināšana uz zīmes pārslēdz
+ierakstīšanu. Žurnāls netiek rakstīts diskā un izejot no F4 izzūd. Tiek saglabāti tylko sėkmingos
+pāri un pēdējās operācijas katalogs; zvaigznīte pēc uzraksta nozīmē, ka atcelšana ir pieejama.
+
+F8 vai uzklikšķināšana uz atlikušās rindas daļas iztīra žurnālu pēc apstiprinājuma. Pārdēvēšana
+ar izslēgtu ierakstīšanu arī nepaliek paketi atcelšanai.
+
+#Atcelšana (F6)#
+
+F6 ielādē pēdējo žurnālu atpakaļejošā secībā: jauniem nosaukumiem ir jāatgriezties pie sākotnējiem.
+Virsrakstā rādās saglabātais katalogs. Izvēlieties „Pārdēvēt“ un apstipriniet atcelšanu.
+Atbilde „Nē“ atgriež parasto pārdēvēšanas režīmu.
+
+Atcelšanai ir spēkā tie paši noteikumi par nepārrakstīšanu un kļūdu variantiem. Pirms
+sākuma F4 pāriet uz saglabāto katalogu. Pēc mēģinājuma žurnāls tiek dzēsts, pat ja atcelšana
+veikta tikai daļēji, bet neatrisinātie elementi paliek atzīmēti.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@VisRenSafety
+$VisRen: failu nosaukumu drošība un ierobežojumi
+
+Katram mainītajam mērķim jābūt vienam pārnesamam faila nosaukuma komponentam. VisRen aizliedz:
+
+  - tukšu vārdu, „.“ un „..“;
+  - vadības simbolus zem U+0020 un NUL;
+  - <, >, :, ", *, ?, /, atpakaļejošo un vertikālo svītru;
+  - atstarpi vai punktu galā;
+  - DOS ierīču nosaukumus CON, PRN, AUX, NUL, COM1..COM9 un LPT1..LPT9 neatkarīgi no reģistra un paplašinājuma.
+
+Slīpsvītru nevar izmantot pārvietošanai uz citu mapi. Nepakeistas pradinis nosaukums ir atļauts un
+vienkārši tiek izlaists, pat ja veidojot jaunu nosaukumu tas nepraeitų pārnesamo pārbaudi.
+
+Iepriekšējā pārbaude randa maskas un pārnesamā vārda kļūdas, bet nerezervē mērķus iepriekš.
+Esošais mērķis, vienāds divu rindu rezultāts, tiesības, sistēmas garuma ierobežojumi un
+ciklai joprojām var radīt kļūdu izpildes laikā. Mērķa pārrakstīšanas nebūs.
+
+Trūkstošie vai bojātie metadati virst par tukšu tekstu. Uzmanīgi pievienojiet atdalītājus metadatu
+maskās un vienmēr pārbaudiet rezultātu. VisRen nesukuria transakcijas un parenka pagaidu vārdus ciklams
+no vairākiem elementiem.
+
+Lai atgrieztos pie VisRen satura, paspauskite Backspace.
+
+@VisRenExamples
+$VisRen: praktiskas receptes
+
+#Failu numurēšana un mazie burti paplašinājumos#
+
+  Vārda maska:         [C001+1]_[N]
+  Paplašinājuma maska: [E][L]
+
+Gausis 001_Senas vardas.jpg, 002_Kitas vardas.jpg un tā tālāk. Ja skaitļi ir vajadzīgi citā secībā,
+vispirms pārkārtojiet rindas.
+
+#Palikt fiksuoto ilgio vārda daļu#
+
+  Sākotnējais vārds:     20260805_report_final.txt
+  Vārda maska:         [N10-21]
+  Paplašinājuma maska: [E]
+  Rezultāts:          report_final.txt
+
+#Pašalinti burtinį prefiksu#
+
+  Kaukės:              [N] un [E]
+  Ieškoti:            draft_
+  Pakeisti:            tuščia rinda
+
+#Sukeisti vietomis regex grupes#
+
+  Sākotnējais vārds:     001-report.txt
+  Ieškoti:            /(\d+)-([^.]+)/
+  Pakeisti:            $2-$1
+  Rezultāts:          report-001.txt
+
+#Pavadinti MP3 pēc tagiem#
+
+  Vārda maska:         [a] - [t]
+  Paplašinājuma maska: [E][L]
+
+Dziesmas numuru var pievienot ar skaitītāju vai ID3 izteiksmi, kas aprakstīta metadatu sadaļā. Tukši
+izpildītāja un nosaukuma tagi dod tukšu tekstu, tāpēc pārbaudiet atdalītājus priekšskatījumā.
+
+#Pavadinti fotogrāfijas pēc datuma un izmēra#
+
+  Vārda maska:         [d]_[r]_[C001]
+  Paplašinājuma maska: [E][L]
+
+JPEG tiek izmantota fotografēšanas data EXIF, ja tā ir. Citiem atbalstītiem attēliem [d] ņem faila pakeitimo
+laiku.
+
+#Transliterācija un burtiskās iekavas#
+
+  Vārda maska:         [[]archive[]]_[N][TL]
+  Paplašinājuma maska: [E][L]
+
+Sākotnējais Пример.TXT virst par [archive]_Primer.txt pēc oriģinālās VisRen transliterācijas tabulas.
+
+Lai atgrieztos pie VisRen satura, nospiediet Backspace.
+
+@Panels
+$f4 Palīdzība (Versija: %Ver)
+f4 ir eksperimentāls Far Manager / far2l failu pārvaldnieka klons Go valodā.
+
+~Skatītāja / redaktora taustiņi~ViewerEditor@
+~Paneļu navigācija~PanelNav@
+~README.md rādīšana~README@
+
+@ViewerEditor
+$Skatītāja un redaktora taustiņi
+Šī sadaļa tiek ģenerēta dinamiski no darbību reģistra.
+
+@ViewerNav
+$Navigācijas taustiņi
+Redaktors:
+  Ctrl+Left     - Uz iepriekšējā vārda robežu
+  Ctrl+Right    - Uz nākamā vārda robežu
+  Ctrl+Shift+Left/Right - Atlasīšana pa vārdiem
+  Home/End      - Rindas sākums / gals
+  PgUp/PgDn     - Lapa augšup / lejup
+
+Skatītājs:
+  Up/Down       - Prasukt rindu
+  PgUp/PgDn     - Prasukt lapu
+  Home/End      - Failo sākums / gals
+
+@PanelNav
+$Paneļu navigācija
+Šī sadaļa tiek ģenerēta dinamiski no darbību reģistra.
+
+@ShellNav
+$Navigācijas taustiņi paneļos
+  Tab           - Pārslēgt aktīvo paneli
+  Insert        - Atzīmēt failu/mapi
+  Ctrl+Tab      - Pārslēgt darba telpas
+  Ctrl+W        - Aizvērt pašreizējo darba telpu
+  Ctrl+N        - Klonēt aktīvo paneli jaunā telpā
+
+@History
+$Komandu vēsture (Alt+F8)
+    Komandu vēsture rāda iepriekš izpildīto komandu sarakstu.
+Papildus kursora taustiņiem ir pieejami šie īsinājumtaustiņi:
+
+  Ievietot izvēlēto komandu komandrindā             Enter
+  (Peles klikšķis darbojas tāpat)
+  Atcelt dįalogu                                       Esc, F10
+
+  Pārslēgt meklēšanas režīmu (daļējas / no sākuma)     F2
+  Ievadot jebkuru rakstzīmi, saraksts tiek filtrēts
+  Backspace noņem pēdējo filtra rakstzīmi
+
+  Dzēst pašreizējo ierakstu no vēstures                Shift+Del
+  Notīrīt visu komandu vēsturi (ar apstiprinājumu)     Del
+
+  Kopēt izvēlēto komandu starpliktuvē                 Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Mapju vēsture (Alt+F12)
+    Mapju vēsture rāda iepriekš apmeklēto direktoriju sarakstu.
+Papildus kursora taustiņiem ir pieejami šie īsinājumtaustiņi:
+
+  Iet uz izvēlēto mapi aktīvajā panelī                 Enter
+  (Peles klikšķis darbojas tāpat)
+  Iet uz izvēlēto mapi pasīvajā panelī                 Shift+Enter
+  Ievietot ceļu komandrindā                            Ctrl+Enter
+  Atcelt dįalogu                                       Esc, F10
+
+  Pārslēgt meklēšanas režīmu (daļējas / no sākuma)     F2
+  Ievadot jebkuru rakstzīmi, saraksts tiek filtrēts
+  Backspace noņem pēdējo filtra rakstzīmi
+
+  Dzēst pašreizējo ierakstu no vēstures                Shift+Del
+  Notīrīt visu mapju vēsturi (ar apstiprinājumu)       Del
+  Notīrīt neeksistējošus ceļus                         Ctrl+R
+
+  Kopēt izvēlēto ceļu starpliktuvē                     Ctrl+C, Ctrl+Ins

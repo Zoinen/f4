@@ -16,6 +16,7 @@
     ├── api.go
     ├── api_test.go
     ├── appearance_settings_test.go
+    ├── ARABIC_L10N.md
     ├── archive_index_fallback.go
     ├── archive_index.go
     ├── archive_index_test.go
@@ -64,6 +65,12 @@
     ├── bookmarks_test.go
     ├── child_env.go
     ├── child_env_test.go
+    ├── colorer
+    │   └── configs
+    │       └── base
+    │           └── hrd
+    │               └── rgb
+    │                   └── fonokai.hrd
     ├── colorer_downloader.go
     ├── colorer_plugin.go
     ├── colorer_plugin_test.go
@@ -79,6 +86,8 @@
     ├── commands.go
     ├── config.go
     ├── config_test.go
+    ├── console_ctrl_handler_other.go
+    ├── console_ctrl_handler_windows.go
     ├── cpu_info_darwin.go
     ├── cpu_info.go
     ├── cpu_info_linux.go
@@ -152,13 +161,37 @@
     ├── grabber_test.go
     ├── gui_unix.go
     ├── gui_windows.go
+    ├── hardcoded_strings_test.go
     ├── help
+    │   ├── ar.hlf
+    │   ├── be.hlf
+    │   ├── cs.hlf
+    │   ├── de.hlf
     │   ├── en.hlf
+    │   ├── es.hlf
+    │   ├── et.hlf
+    │   ├── fi.hlf
+    │   ├── he.hlf
+    │   ├── hi.hlf
+    │   ├── hu.hlf
+    │   ├── hy.hlf
+    │   ├── ja.hlf
+    │   ├── ka.hlf
+    │   ├── ko.hlf
+    │   ├── lt.hlf
+    │   ├── lv.hlf
+    │   ├── pl.hlf
     │   ├── README.md
-    │   └── ru.hlf
+    │   ├── ru.hlf
+    │   ├── tr.hlf
+    │   ├── uk.hlf
+    │   └── zh.hlf
     ├── help.go
+    ├── help_keys_ar_test.go
+    ├── help_keys_he_test.go
     ├── help_keys_ru_test.go
     ├── help_keys_test.go
+    ├── help_keys_tr_test.go
     ├── help_lang_test.go
     ├── help_search.go
     ├── help_search_test.go
@@ -218,11 +251,36 @@
     ├── kitty_placements.go
     ├── kitty_placements_test.go
     ├── lang
+    │   ├── ar.lng
+    │   ├── be.lng
+    │   ├── coverage_baseline.txt
+    │   ├── cs.lng
+    │   ├── de.lng
     │   ├── en.lng
-    │   └── ru.lng
+    │   ├── es.lng
+    │   ├── et.lng
+    │   ├── fi.lng
+    │   ├── he.lng
+    │   ├── hi.lng
+    │   ├── hu.lng
+    │   ├── hy.lng
+    │   ├── hi.lng
+    │   ├── ja.lng
+    │   ├── ka.lng
+    │   ├── ko.lng
+    │   ├── lt.lng
+    │   ├── lv.lng
+    │   ├── pl.lng
+    │   ├── ru.lng
+    │   ├── tr.lng
+    │   ├── uk.lng
+    │   └── zh.lng
+    ├── lang_consistency_test.go
+    ├── lang_contamination_test.go
     ├── lang.go
     ├── lang_packs.go
     ├── lang_packs_test.go
+    ├── lang_scripts_test.go
     ├── lang_test.go
     ├── LICENSE
     ├── LUA.md
@@ -318,6 +376,9 @@
     │   │   └── README.md
     │   ├── dummy_rpc
     │   │   └── main.go
+    │   ├── id3editor
+    │   │   ├── plugin.go
+    │   │   └── plugin_test.go
     │   ├── ios
     │   │   ├── afc_vfs.go
     │   │   ├── afc_vfs_test.go
@@ -374,6 +435,7 @@
     │   │   │   ├── fs_test.go
     │   │   │   ├── hash.go
     │   │   │   ├── hash_test.go
+    │   │   │   ├── helper.ps1
     │   │   │   ├── helper.sh
     │   │   │   ├── job.go
     │   │   │   ├── job_test.go
@@ -385,15 +447,20 @@
     │   │   │   ├── mutate_test.go
     │   │   │   ├── patch.go
     │   │   │   ├── patch_test.go
+    │   │   │   ├── paths.go
+    │   │   │   ├── paths_test.go
     │   │   │   ├── read.go
     │   │   │   ├── read_test.go
     │   │   │   ├── script.go
+    │   │   │   ├── script_pwsh_test.go
     │   │   │   ├── script_test.go
     │   │   │   ├── search.go
     │   │   │   ├── search_test.go
     │   │   │   ├── session.go
+    │   │   │   ├── session_pwsh_test.go
     │   │   │   ├── session_test.go
     │   │   │   ├── sizes
+    │   │   │   ├── WINDOWS_PORT.md
     │   │   │   ├── write.go
     │   │   │   └── write_test.go
     │   │   ├── fish_reconnect_entry_test.go
@@ -495,12 +562,15 @@
     ├── solaris_streams_mock_test.go
     ├── solaris_streams_test.go
     ├── style_combo_colors_test.go
+    ├── style_completeness_test.go
     ├── style_default_dark_test.go
     ├── style.go
     ├── style_overrides_test.go
     ├── styles
     │   ├── classic.ini
     │   ├── default_dark.ini
+    │   ├── fonokai.ini
+    │   ├── fonokai.md
     │   └── modern.ini
     ├── style_test.go
     ├── terminal_log_vfs.go
@@ -509,6 +579,9 @@
     ├── terminal_selection_test.go
     ├── terminal_view.go
     ├── terminal_view_test.go
+    ├── TERMINAL_WINDOWS.md
+    ├── test_cache_helper_test.go
+    ├── test_fallback_lang_test.go
     ├── test_main_test.go
     ├── TEST_OPTIMIZATION_PLAN.md
     ├── test_plugins.sh
@@ -522,11 +595,16 @@
     ├── title_unix.go
     ├── title_windows.go
     ├── tools
+    │   ├── find_hardcoded.go
     │   ├── fishplus_probe.sh
     │   ├── fishplus_testlab
     │   │   ├── fishclient.py
     │   │   ├── TESTLAB.md
     │   │   └── test_patch.py
+    │   ├── hardcode
+    │   │   ├── hardcode.go
+    │   │   └── hardcode_test.go
+    │   ├── hardcoded_baseline.txt
     │   ├── icons
     │   │   ├── go.mod
     │   │   ├── go.sum
@@ -624,6 +702,7 @@
     ├── window_icon_windows.go
     ├── window_icon_windows_test.go
     ├── word_nav.go
-    └── word_nav_test.go
+    ├── word_nav_test.go
+    └── workspace_routing_test.go
     
-    42 directories, 583 files
+    49 directories, 654 files

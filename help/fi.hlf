@@ -1,0 +1,595 @@
+@Contents
+$Ohje f4 (Versio: %Ver)
+f4 on kokeellinen Far Manager / far2l -tiedostonhallintaohjelman klooni Go-kielellä.
+
+~Muokkaimen ja katselimen pikanäppäimet~ViewerEditor@
+~Paneelinavigointi~PanelNav@
+~Visuaalinen tiedostojen nimeäminen (VisRen)~VisRen@
+~Näytä README.md~README@
+
+@VisRen
+$Visuaalinen tiedostojen nimeäminen (VisRen)
+
+VisRen on sisäänrakennettu työkalu tiedostojen visuaaliseen eränimeämiseen f4:ssä. Se
+koostaa jokaisen uuden nimen ennen muutosten tekemistä ja näyttää alkuperäisen ja
+kohdenimen rinnakkain. Se toimii paikallisen tiedostojärjestelmän paneelissa olevien
+tiedostojen ja kansioiden kanssa.
+
+Jos paneelin kohteet on valittu, VisRen avaa ne siinä järjestyksessä kuin ne ovat
+paneelissa. Jos kohteita ei ole valittu, käytetään paneelin kohdistimen alla olevaa kohdetta.
+Yläkansiota ".." ei koskaan käytetä. VisRen avataan painamalla F11 ja valitsemalla
+"Visuaalinen tiedostojen nimeäminen"; se voidaan aktivoida myös valikossa määritetyllä
+pikanäppäimellä.
+
+~Pikaopas ja valintaikkunan kentät~VisRenQuickStart@
+~Tiedostonimimaskit, tunnisteet, alueet, laskurit ja lainausmerkit~VisRenMasks@
+~Kirjainkoon muutokset, translitterointi ja käsittelyjärjestys~VisRenTransforms@
+~Päivämäärät, ID3, kuvat/EXIF ja tiedostoversio~VisRenMetadata@
+~Haku, yksinkertainen korvaaminen ja säännölliset lausekkeet~VisRenSearch@
+~Navigointi esikatselussa, näppäimistö ja hiiri~VisRenPreview@
+~Luettelon muokkaaminen UTF-8-editorissa~VisRenEditor@
+~Nimeämisen suorittaminen, virheet, loki ja kumoaminen~VisRenRename@
+~Nimien turvallisuus ja rajoitukset~VisRenSafety@
+~Käytännön reseptejä~VisRenExamples@
+
+Toteutus perustuu FarPlugins VisRen 3.2.0 -versioon, mutta sitä on täydennetty tiukemmalla
+tiedostonimien ja muokkaimen tarkistuksella, stabiileilla satunnaisluvuilla ja siirrettävillä metatiedoilla.
+
+@VisRenQuickStart
+$VisRen: Pikaopas ja valintaikkunan kentät
+
+#Tyypillinen nimeäminen#
+
+  1. Valitse haluamasi tiedostot/kansiot Ins-näppäimellä tai siirrä paneelin kohdistin
+     kohteen päälle, jos tarvitset vain sen.
+  2. Paina F11 ja valitse VisRen.
+  3. Syötä nimen ja tunnisteen maskit. Oletusarvot [N] ja [E] jättävät molemmat
+     osat alkuperäisestä nimestä ennalleen.
+  4. Voit halutessasi kirjoittaa tekstiä kenttiin "Haku" ja "Korvaa". Kohdistus alkaa
+     kentästä "Haku"; Tab-näppäin siirtää sinut suoraan kenttään "Korvaa".
+  5. Tarkista jokainen kohdenimi. F3-näppäin näyttää nykyisen rivin täydellisen
+     alkuperäisen nimen, uuden nimen tai diagnostiikan.
+  6. Valitse "Nimeä" tai paina Enter oletuspainikkeesta.
+
+#Nimi ja tunniste#
+
+Nämä kaksi kenttää koostavat kohdeperusnimen ja kohdetunnisteen erikseen. Tunniste-
+kenttä ei sisällä pistettä. Tyhjä tunnisteen tulos poistaa sen kokonaan. Tavallinen teksti
+kopioidaan sellaisenaan; hakasulkeissa olevat lausekkeet korvataan alkuperäisellä
+tekstillä, laskureilla, metatiedoilla tai muunnoksilla.
+
+Viimeinen piste erottaa alkuperäisen nimen ja tunnisteen. Esimerkiksi archive.tar.gz-
+tiedostolla on nimi archive.tar ja tunniste gz. README-tiedostolla ei ole tunnistetta.
+Piilotetulla tiedostolla, kuten .gitignore, on tyhjä nimi ja tunniste gitignore.
+
+#Mallit ja [+]#
+
+Luettelot "Nimimallit" ja "Tunnistemallit" sisältävät vastaavalle maskille kelvollisia
+lausekkeita. Kohteen valitseminen vain korostaa sen. [+] -painike lisää tämän valitun
+mallin kohdistimen kohdalle ja palauttaa kohdistuksen vastaavaan maskiin – aivan kuten
+alkuperäisessä VisRenissä. Jos malliluettelolla on kohdistus, Ins lisää nykyisen kohteen
+kohdistuksen jäädessä luetteloon. Alueen ja laskurin paikkamerkit tulevat voimaan, kun ne lisätään.
+
+#Hakuvaihtoehdot#
+
+Haku ja korvaaminen suoritetaan sen jälkeen, kun koko nimi on koostettu molemmilla maskeilla,
+mukaan lukien luotu piste ja tunniste. "Kirjainkoko" -kenttä on aluksi aktiivinen. "Säännöllinen
+lauseke" vaihtaa tavallisen haun ja regex-tilan välillä.
+
+#Reaaliaikainen esikatselu ja diagnostiikka#
+
+Jokainen muokkaus päivittää esikatselun välittömästi. Jos maski, alue, laskuri, regex tai saatu
+nimi on virheellinen, kaikki kohdekentät näyttävät <Error!>. Nimeämispainike ja editoripainike
+on estetty. F3 näyttää todellisen diagnostiikan.
+
+Neljä tekstikenttää käyttävät F4-historiaa. Nimeämisessä käytetyt arvot lisätään vastaaviin
+historioihin. [T]:n sananerottimet tallennetaan erikseen VisRen-käyttäjäasetuksiin.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenMasks
+$VisRen: maskit, alueet, laskurit ja lainausmerkit
+
+#Peruslausekkeet#
+
+  [N]          Alkuperäinen nimi ilman viimeistä tunnistetta.
+  [E]          Alkuperäinen tunniste ilman alkupistettä.
+  [[]          Doslovinen avaava hakasulku.
+  []]          Doslovinen sulkeva hakasulku.
+
+Kaikki lausekkeiden ulkopuolinen teksti on doslovista. Yksinäinen sulkeva sulku, sulkeutumaton
+avaava sulku tai tuntematon lauseke katsotaan virheeksi.
+
+#Alueet#
+
+Alue seuraa välittömästi N:n tai E:n jälkeen. Sijainnit laskevat Unicode-merkkejä, eivät
+tavuja, ja alkavat 1:stä. Negatiivinen sijainti laskee sijainnin lopusta. Samat muodot
+toimivat myös E:n kanssa, esimerkiksi [E1-3].
+
+Alkuperäiselle nimelle abcdefghij:
+
+  [N2]         b                 yksi merkki
+  [N2-5]       bcde              sijainnit 2–5 mukaan lukien
+  [N2,5]       bcdef             viisi merkkiä alkaen sijainnista 2
+  [N2-]        bcdefghij         sijainnista 2 loppuun saakka
+  [N-2]        i                 toinen merkki lopusta
+  [N2--5]      bcdef             sijainnista 2 viidenteen merkkiin lopusta
+  [N-8-5]      cde               kahdeksas lopusta viidenteen lopusta
+  [N-8,5]      cdefg             viisi merkkiä alkaen kahdeksannesta lopusta
+  [N-5-]       fghij             viides lopusta loppuun saakka
+
+Alueen ulkopuolinen osa leikataan mahdollisuuksien mukaan tai antaa tyhjän tuloksen. Nollasijainti
+ja käänteinen alue ovat virheitä. Valikon aluemalli käyttää pisintä alkuperäistä nimeä tai
+tunnistetta.
+
+#Laskurit#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Aloitusnumerot määrittävät ensimmäisen arvon ja vähimmäisnäyttöleveyden. Se voi sisältää
+enintään yhdeksän numeroa. Jos +vaihe puuttuu, vaihe on 1. Laskuri seuraa rivien nykyistä
+järjestystystä: Ctrl+Up/Down ja vääntäminen muuttavat määritettyjä arvoja. Leveys on vähimmäisleveys –
+suurempia numeroita ei leikata.
+
+#Lausekkeiden yhdistäminen#
+
+Lausekkeita ja doslovista tekstiä voidaan vapaasti yhdistellä. Esimerkiksi [C001+1]_[N1-12] luo
+kolminumeroisen luvun, alaviivan ja vanhan nimen kaksitoista ensimmäistä merkkiä. Muunnokset
+eivät lisää tekstiä; ne muuttavat nimen valmiin osan vastaavassa aiheessa kuvatulla tavalla.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenTransforms
+$VisRen: muunnokset ja käsittelyjärjestys
+
+#Kirjainkoon muutokset#
+
+  [L]          Muunna maskin koko tulos pieniksi kirjaimiksi.
+  [U]          Muunna se suuraakkosiksi.
+  [F]          Ensimmäinen merkki suuri, muut pieniä.
+  [T]          Jokaisen sanan ensimmäinen merkki suuri.
+  [M]          Musiikkinimen muotoilu "Artisti - Kappale".
+
+[T] käyttää oletuksena sananerottimia "-. _&". Valitse [T] missä tahansa malliluettelossa ja
+paina F4 erottimien muokkaamiseksi. VisRen-asetuksiin tallennetaan enintään 18 merkkiä,
+joita käytetään myös seuraavalla kerralla.
+
+[M] tunnistaa merkit " - " tai "_-_" artistin ja kappaleen välillä. Artistin sanat muunnetaan
+"jokainen sana suurella" (Title Case) -tyyliseksi; kappaleen nimi alkaa yhdellä suuraakkosella
+ja muut ovat pieniä. Venäjän konjunktio "a" artistin nimessä pysyy pienenä, mikä vastaa
+VisRenin alkuperäistä toimintaa.
+
+Jos yhdessä maskissa on useita kirjainkoon lausekkeita, ensisijaisuus on kiinteä: [L], [U], [F], [T], [M].
+Vain ensimmäinen suoritetaan tästä luettelosta.
+
+#Translitterointi#
+
+  [TL]         Venäjän kyrillisten kirjainten translitterointi latinalaisiksi VisRen-taulukon mukaan.
+  [TR]         Tämän latinalaisen tekstin muuntaminen takaisin venäjän kyrillisiksi kirjaimiksi.
+
+Vastaavuus vastaa alkuperäistä VisRen-taulukkoa: esimerkiksi ё -> jo, ж -> zh, х -> kh,
+щ -> shh, ю -> ju ja я -> ja. Kirjainkoko säilytetään mahdollisuuksien mukaan. Käänteinen
+muunnos valitsee pisimmän vastaavan latinalaisen sarjan. Jos sekä [TL] että [TR] ovat läsnä,
+[TL] on etusijalla.
+
+#Tarkka käsittelyjärjestys#
+
+  1. Nimen ja tunnisteen lausekkeet puretaan.
+  2. Molemmat osat yhdistetään pisteellä, jos tunniste ei ole tyhjä.
+  3. Näin koostetulle koko nimelle suoritetaan haku ja korvaaminen.
+  4. Tulos jaetaan uudelleen viimeisen pisteen perusteella.
+  5. Määritetylle osalle suoritetaan translitterointi.
+  6. Viimeisenä vaiheena suoritetaan valitun kirjainkoon muutos.
+  7. Valmis tiedostonimen komponentti tarkistetaan.
+
+Tämä prosessi on erittäin tärkeä. Kirjainkoon muutos vaikuttaa myös korvaamalla lisättyyn
+tekstiin, kun taas haku voi sopia myös luotuun tunnisteeseen.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenMetadata
+$VisRen: tiedostojen tiedot ja metatiedot
+
+Metatiedot luetaan viivästetysti (lazy) ja tallennetaan kerran kullekin lähdekohteelle.
+Puuttuvat tai ei-tuetut kentät korvataan tyhjällä merkkijonolla, eivätkä ne aiheuta virhettä
+esikatselussa.
+
+#Tiedostojen aikaleimat ja istunnon arvot#
+
+  [DM]         Viimeisimmän muutoksen päivämäärä paikallista aikaa: YYYY.MM.DD
+  [TM]         Viimeisimmän muutoksen kellonaika paikallista aikaa: hh-mm-ss
+  [R]          Satunnaisluku väliltä 0–32767
+
+[R] määritetään kerran valintaikkunaa avattaessa. Se pysyy vakaana maskeja muokattaessa
+ja siirtyy rivinsä mukana. Uudessa VisRen-istunnossa määritetään uudet arvot.
+
+#MP3 ja ID3#
+
+Kappaleen numeron lauseke koostuu avaavasta sulkeesta, ristikkomerkistä (U+0023) ja sulkevasta
+sulkeesta ( [#] ). Muut kentät ovat:
+
+  [t]          Kappaleen nimi
+  [a]          Artisti
+  [l]          Albumi
+  [y]          Vuosi tai päivämäärä
+  [g]          Genre
+
+ID3v2:n ollessa olemassa etusijalla ovat ID3v2.3- tai ID3v2.4-kehykset. Muussa tapauksessa
+käytetään ID3v1.1-versiota, mukaan lukien numero ja genretaulukko. Tuettuja koodauksia ovat
+järjestelmän oletusteksti, UTF-8 ja UTF-16.
+
+#Kuvat ja EXIF#
+
+  [c]          Kameran valmistaja JPEG EXIF -tiedoista
+  [m]          Kameran malli JPEG EXIF -tiedoista
+  [d]          Kuvanottopäivämäärä: YYYY.MM.DD hh-mm-ss
+  [r]          Kuvan mitat: LEVEYSxKORKEUS
+
+Mitat ovat käytettävissä JPEG-, BMP-, GIF- ja PNG-muodoissa. Valmistaja, malli ja päivämäärä EXIF-tiedoista
+luetaan JPEG-kuvista. Jos käyttökelpoista EXIF-päivämäärää ei ole saatavilla, [d] käyttää tiedoston
+viimeisintä muokkauspäivämäärää. Pienet [m]/[r] ovat metatietoja, kun taas suuret [M]/[R] tarkoittavat
+rekisteritilaa tai satunnaisnumeraa.
+
+#Suoritettavan tiedoston versio#
+
+  [V]          Versio Windows PE .exe/.dll -resursseista
+
+PE-version analysointi toimii natiivisti kaikissa tuetuissa käyttöjärjestelmissä. Tiedostolle,
+jolla ei ole käyttökelpoista versiota, [V] antaa tyhjän merkkijonon.
+
+Polun erottimia tai muita kiellettyjä merkkejä sisältävät metatietotekstit hylätään tai ne
+jäävät kiinni nimen lopullisessa tarkistuksessa. Tarkista aina esikatselu, jos tunnisteet ovat peräisin
+tiedostoista, joita et hallitse.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenSearch
+$VisRen: haku, yksinkertainen korvaaminen ja säännölliset lausekkeet
+
+Haku ja korvaaminen suoritetaan sen jälkeen, kun koko nimi on koostettu molemmilla maskeilla,
+mukaan lukien luotu piste ja tunniste. Tyhjä "Haku" -kenttä poistaa tämän vaiheen käytöstä.
+Kaikki ei-päällekkäiset osumat korvataan.
+
+#Tavallinen tila#
+
+Jos "Säännöllinen lauseke" ei ole aktiivinen, hakuteksti on doslovinen. "Kirjainkoko" -asetuksella
+"Tiedosto" ja "tiedosto" eroavat toisistaan. Ilman asetusta vertailu tehdään kirjainkoosta
+riippumatta; korvaus lisätään täsmälleen sellaisena kuin se on annettu.
+
+Esimerkiksi: maskit [N] ja [E], haku "draft_" ja tyhjä korvaus muuttavat "draft_report.txt"-tiedoston
+nimeksi "report.txt".
+
+#Säännöllisen lausekkeen tila#
+
+Aktivoi "Säännöllinen lauseke" f4-regex-moottoria varten (perustuu Go/coregex-kirjastoon).
+Kuvio voidaan antaa suoraan tai muodossa /kuvio/i. Tässä muodossa doslovinen vinoviiva on kirjoitettava
+muodossa \/. Valinnainen i-lippu ohittaa kirjainkoon. Valitsematon "Kirjainkoko" tekee saman.
+Muita lippuja kuin i ei hyväksytä.
+
+Viittaukset ryhmiin korvauksessa käyttävät merkintää $0 koko osumalle ja $1–$9 sulkeissa oleville
+ryhmille. Esimerkiksi tiedostolle "001-report.txt":
+
+  Haku:              /(\d+)-([^.]+)/
+  Korvaa:            $2-$1
+  Tulos:             report-001.txt
+
+Virheellinen kuvio, sulkeutumaton /kuvio/ -muoto tai tuntematon lippu näyttää esikatselussa <Error!>
+ja estää nimeämisen ja editorin. Diagnostiikka on saatavilla F3-näppäimen alla.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+Löydetyt osumat alkuperäisessä nimessä näkyvät väreillä korostettuina esikatselun vasemmassa sarakkeessa.
+Korostus noudattaa "Kirjainkoko" - ja "Säännöllinen lauseke" -vaihtoehtoja, merkitsee kaikki näkyvät
+osumat ja säilyy rullattaessa. "Korvaa" -kentän luoma teksti korostetaan oikeassa sarakkeessa.
+Säännöllisen lausekkeen tapauksessa korostetaan koko avattu ryhmä; tyhjän korvauksen tapauksessa
+ei ole näkyvää tekstiä korostettavaksi.
+
+@VisRenPreview
+$VisRen: esikatselu, näppäimistö ja hiiri
+
+Esikatselun vasen sarake on lähde; oikea on kohde. Valintaikkunan avautuessa ensimmäinen rivi
+on aktiivinen, kun taas kohdistus alkaa kentästä "Haku". F12 siirtää kohdistuksen esikatseluun;
+sieltä se palaa nimimaskiin.
+
+Jos koko luettelo ei mahdu näyttöalueelle, oikeaan reunaan ilmestyy pystysuora rullauspalkki.
+Nuolet, palkin napsauttaminen, liukusäätimen vetäminen ja hiiren rulla luettelon päällä toimivat.
+Kun kaikki rivit mahtuvat taas alueelle, rullauspalkki katoaa automaattisesti.
+
+#Yleiset näppäimet#
+
+  F1                   Avaa tämä ohje.
+  F2                   Kytke lokin kirjaaminen päälle/pois.
+  F3                   Näytä täydelliset nimet tai nykyisen rivin diagnostiikka.
+  F4                   Avaa luettelo editorissa.
+  F4 [T]-mallilla      Muokkaa sananerottimia.
+  F5                   Maksimoi/palauta valintaikkuna.
+  F6                   Lataa käytettävissä oleva kumoamisvaihe.
+  F8                   Poista nimeämisloki vahvistuksen jälkeen.
+  F12                  Siirrä kohdistus luetteloon tai takaisin.
+  Alt+N                Kohdistus nimimaskiin.
+  Alt+E                Kohdistus tunnistemaskiin.
+  Alt+S                Kohdistus "Haku" -kenttään.
+  Alt+P                Kohdistus "Korvaa" -kenttään.
+  Alt+C                Vaihda "Kirjainkoko" -tilaa.
+  Alt+G                Vaihda "Säännöllinen lauseke" -tilaa.
+  Alt+T                Kohdistus nimimalleihin.
+  Alt+L                Kohdistus tunnistemalleihin.
+  Enter                Suorita päätoiminto "Nimeä".
+  Esc                  Sulje valintaikkuna nimeämättä tiedostoja.
+
+#Näppäimet, kun kohdistus on luettelossa#
+
+  Up/Down              Siirry viereiselle riville.
+  Home/End             Ensimmäinen/viimeinen rivi.
+  PgUp/PgDn            Sivun navigointi.
+  Del                  Poista rivi vain tästä toiminnosta.
+  Ctrl+Up/Down         Muuta järjestystä; muuttaa laskureita.
+  Ctrl+Left/Right      Siirrä sarakkeiden erotinta.
+  Ctrl+Num5            Keskittää ja nollaa siirtymän.
+  Alt+Left/Right       Rullaa lähdesaraketta vaakasuunnassa.
+  Left/Right           Rullaa kohdesaraketta vaakasuunnassa.
+  Ctrl+PgUp            Sulje VisRen ja palaa lähteeseen paneelissa.
+
+#Mallit ja hiiri#
+
+  Ins malliluettelossa lisää valitun mallin maskiin.
+  Hiiren vasemmalla painikkeella vetämällä voit muuttaa rivien järjestystä.
+  Oikea painike rivillä näyttää täydellisen nimen/virheen.
+  Kaksoisnapsautus hiiren vasemmalla painikkeella palaa lähteeseen paneelissa.
+  Otsikkopalkin kuvakkeen napsauttaminen maksimoi/palauttaa ikkunan.
+  Napsauttamalla "Tallenna lokiin" -valintaa vaihdat tallennusta; napsauttamalla rivin
+  muuta osaa voit poistaa olemassa olevan lokin vahvistuksen jälkeen.
+
+Terminaalin koon muuttaminen ja F5-näppäin palauttavat esikatselun tasaisen jaon. Manuaaliset
+erottimen ja siirtymän asetukset voidaan tehdä sen jälkeen uudelleen.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenEditor
+$VisRen: luettelon muokkaaminen UTF-8-editorissa
+
+F4-näppäin tarjoaa vientiä eksplisiittisissä muodoissa ja avaa sitten väliaikaisen UTF-8-
+asiakirjan nimellä "Rename list of files" f4-sisäänrakennetussa editorissa:
+
+  Lähde + kohde        "alkuperäinen nimi"    "uusi nimi"
+  Vain kohteet                                "uusi nimi"
+
+Jokainen arvo on suljettu lainausmerkkeihin. Lainausmerkit, kenoviivat ja ohjausmerkit
+nimen sisällä kirjoitetaan eskapoituina. Älä muuta ulompia lainausmerkkejä.
+
+#Tiukka tarkistus#
+
+Editorin sulkemisen jälkeen VisRen vaatii:
+
+  - täsmälleen saman määrän rivejä kuin esikatselussa;
+  - täsmälleen yhden tai kaksi saraketta lainausmerkeissä valitusta tilasta riippuen;
+  - ei mitään ylimääräistä tekstiä lainausmerkeissä olevien arvojen ulkopuolella;
+  - muuttumattoman lähdesarakkeen kaksisarakkeisessa tilassa;
+  - kelvollisen siirrettävän komponentin jokaiselle kohdenimelle.
+
+Editorissa ei voi lisätä, poistaa eikä siirtää rivejä. Kaksisarakkeisessa tilassa voi muuttaa
+vain kohdesaraketta. Näiden tarkistusten ansiosta vioittuneet lainausmerkit tai lähteen
+tahattomat muutokset havaitaan turvallisesti ennen toiminnon aloittamista.
+
+Virheen sattuessa VisRen selittää syyn ja tarjoaa "Muokkaa uudelleen" -vaihtoehdon. Editori
+avautuu uudelleen virheelliselle riville säilyttäen tekstisi. Kelvollinen muutettu luettelo
+aloittaa sekvenssinimeämisen editorin sulkemisen jälkeen. Jos luotu luettelo ei ole muuttunut
+tavutasolla, mutta sisältää maskimuutoksia, VisRen vaatii vahvistuksen ennen aloittamista.
+
+Editori on poistettu käytöstä, jos esikatselu sisältää <Error!> tai kumoamisen esikatselutilassa.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenRename
+$VisRen: nimeämisen suorittaminen, virheet, loki ja kumoaminen
+
+#Sekvenssinimeäminen#
+
+Rivit käsitellään peräkkäin ylhäältä alas nykyisessä järjestyksessä. Muuttumaton nimi
+jätetään väliin. Lähde, joka katosi valintaikkunan avaamisen jälkeen, jätetään myös väliin.
+Tiedostoille ja kansioille pätevät samat säännöt.
+
+Toista olemassa olevaa kohdetta ei koskaan korvata. Saman kohteen kirjainkoon muuttamista
+tuetaan; tarvittaessa f4 käyttää yksilöllistä väliaikaista nimeä. Muita syklejä ei jaeta
+vaiheisiin: esimerkiksi a -> b ja b -> a päättyvät yleensä varatun kohteen virheeseen,
+kuten alkuperäisessä VisRenissä.
+
+#Virheet käynnistettäessä#
+
+Käyttöoikeusvirheet, varatut tai päällekkäiset määritykset ja muut virheet tarjoavat vaihtoehtoja:
+
+  Yritä uudelleen       Toista sama rivi.
+  Ohita                 Jätä lähde ennalleen ja jatka.
+  Ohita kaikki          Ohita muiden virheiden vahvistaminen ja jatka.
+  Peruuta               Pysäytä; älä käsittele jäljellä olevia rivejä.
+
+Toiminto ei ole tranzaktio. Jo suoritetut nimeämiset jäävät voimaan ohittamisen tai peruutuksen
+jälkeen. Epäonnistuneet ja käsittelemättömät lähteet jäävät paneelissa valituiksi.
+Lopullinen viesti näyttää onnistuneesti käsiteltyjen rivien määrän.
+
+#Nimeämisloki#
+
+Valintaikkunaa avattaessa lokiin tallennus on aina päällä. "Tallenna nimeämiset" -valinta
+tarkoittaa, että onnistuneet parit kirjataan muistiin. F2 tai napsautus pikakuvaketta vaihtaa
+tallennusta. Loki ei kirjoiteta levylle, ja se katoaa, kun f4 suljetaan. Vain onnistuneet
+parit ja viimeisimmän toiminnon kansio tallennetaan; tähtimerkki kuvauksen perässä tarkoittaa,
+että kumoaminen on käytettävissä.
+
+F8-näppäin tai napsautus rivin muuta osaa poistaa lokin vahvistuksen jälkeen. Ilman lokiin
+tallennusta tehdyistä nimeämisistä ei myöskään luoda kumoamispakettia.
+
+#Kumoaminen (F6)#
+
+F6 lataa viimeisimmän paketin käänteisessä järjestyksessä: uudet nimet on palautettava
+alkuperäisiksi. Otsikossa näkyy tallennettu kansio. Valitse "Nimeä" ja vahvista kumoaminen.
+Vastaus "Ei" palauttaa normaalin nimeämistilan.
+
+Kumoamiseen pätevät samat säännöt korvaamisen kiellosta ja virhevaihtoehdoista. Ennen aloittamista
+f4 siirtyy tallennettuun kansioon. Yrityksen jälkeen loki tyhjennetään, vaikka kumoaminen olisi
+onnistunut vain osittain, ja selvittämättömät kohteet jäävät valituiksi.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenSafety
+$VisRen: nimien turvallisuus ja rajoitukset
+
+Jokaisen muutetun nimen on oltava yksi siirrettävä tiedostonimen komponentti. VisRen kieltää:
+
+  - tyhjä nimi, "." ja "..";
+  - ohjausmerkit alle U+0020 ja NUL;
+  - <, >, :, ", *, ?, /, kenoviiva ja pystyviiva (|);
+  - välilyönti tai piste lopussa;
+  - DOS-laite-nimet: CON, PRN, AUX, NUL, COM1..COM9 ja LPT1..LPT9 riippumatta kirjainkoosta
+    and tunnisteesta.
+
+Vinoviivaa ei voi käyttää toiseen kansioon siirtämiseen. Muuttumaton alkuperäinen nimi on
+sallittu ja se jätetään yksinkertaisesti väliin, vaikka se ei uutta nimeä luotaessa menisi
+läpi siirrettävästä tarkistuksesta.
+
+Esitarkistus paljastaa maskin ja siirrettävän nimen virheet, mutta se ei varaa kohteita etukäteen.
+Olemassa oleva kohde, kahden rivin sama tulos, käyttöoikeudet, pituuden järjestelmärajoitukset ja
+syklit voivat edelleen aiheuttaa virheen suorituksen aikana. Kohdetta ei korvata.
+
+Puuttuvat tai vioittuneet metatiedot korvataan tyhjällä tekstillä. Lisää varovasti erottimia
+metatietomaskeihin ja tarkista aina tulos. VisRen ei luo tranzaktiota eikä valitse väliaikaisia
+nimiä useamman elementin sykleille.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@VisRenExamples
+$VisRen: käytännön reseptejä
+
+#Numerointi ja pienet kirjaimet tunnisteissa#
+
+  Nimimaski:         [C001+1]_[N]
+  Tunnistemaski:     [E][L]
+
+Tuloksena on 001_Vanha nimi.jpg, 002_Toinen nimi.jpg ja niin edelleen. Jos tarvitset numerot
+muussa järjestyksessä, järjestä rivit ensin uudelleen.
+
+#Nimen tietyn pituisen osan säilyttäminen#
+
+  Alkuperäinen nimi: 20260805_report_final.txt
+  Nimimaski:         [N10-21]
+  Tunnistemaski:     [E]
+  Tulos:             report_final.txt
+
+#Doslovinen etuliitteen poistaminen#
+
+  Maskit:            [N] ja [E]
+  Haku:              draft_
+  Korvaa:            (tyhjä)
+
+#Regex-ryhmien vaihtaminen keskenään#
+
+  Alkuperäinen nimi: 001-report.txt
+  Haku:              /(\d+)-([^.]+)/
+  Korvaa:            $2-$1
+  Tulos:             report-001.txt
+
+#MP3-tiedostojen nimeäminen tunnisteiden perusteella#
+
+  Nimimaski:         [a] - [t]
+  Tunnistemaski:     [E][L]
+
+Kappaleen numero voidaan lisätä laskurilla tai metatieto-osiossa kuvatulla ID3-lausekkeella ( [#] ).
+Tyhjät artistin ja kappaleen nimen tunnisteet antavat tyhjän tekstin, joten tarkista erottimet
+esikatselussa.
+
+#Valokuvien nimeäminen päivämäärän ja koon mukaan#
+
+  Nimimaski:         [d]_[r]_[C001]
+  Tunnistemaski:     [E][L]
+
+JPEG-kuville käytetään EXIF-kuvauspäivämäärää, jos se on olemassa. Muille tuetuille kuville [d]
+ottaa tiedoston muokkausajan.
+
+#Translitterointi ja dosloviset sulkeet#
+
+  Nimimaski:         [[]archive[]]_[N][TL]
+  Tunnistemaski:     [E][L]
+
+Alkuperäinen Пример.TXT muuttuu nimeksi [archive]_Primer.txt alkuperäisen VisRen-translitterointi-
+taulukon mukaan.
+
+Paina Backspace-näppäintä palataksesi VisRen-sisällysluetteloon.
+
+@Panels
+$Ohje f4 (Versio: %Ver)
+f4 on kokeellinen Far Manager / far2l -tiedostonhallintaohjelman klooni Go-kielellä.
+
+~Muokkaimen ja katselimen pikanäppäimet~ViewerEditor@
+~Paneelinavigointi~PanelNav@
+~Näytä README.md~README@
+
+@ViewerEditor
+$Muokkaimen ja katselimen pikanäppäimet
+Tämä osio luodaan dynaamisesti toimintorekisteristä.
+
+@ViewerNav
+$Navigointinäppäimet
+Editori:
+  Ctrl+Left     - Edellisen sanan rajalle
+  Ctrl+Right    - Seuraavan sanan rajalle
+  Ctrl+Shift+Left/Right - Valinta sanoittain
+  Home/End      - Rivin alku / loppu
+  PgUp/PgDn     - Sivu ylös / alas
+
+Katselin:
+  Up/Down       - Vieritä rivillä
+  PgUp/PgDn     - Vieritä sivulla
+  Home/End      - Tiedoston alku / loppu
+
+@PanelNav
+$Paneelinavigointi
+Tämä osio luodaan dynaamisesti toimintorekisteristä.
+
+@ShellNav
+$Navigointinäppäimet paneeleissa
+  Tab           - Vaihda aktiivista paneelia
+  Insert        - Merkitse tiedosto/kansio
+  Ctrl+Tab      - Vaihda työtilojen välillä
+  Ctrl+W        - Sulje nykyinen työtila
+  Ctrl+N        - Monista nykyinen paneeli uuteen työtilaan
+
+@History
+$Komentohistoria (Alt+F8)
+    Komentohistoria näyttää luettelon aiemmin suoritetuista komennoista.
+Nuolinäppäinten lisäksi käytettävissä ovat seuraavat pikanäppäimet:
+
+  Lisää valittu komento komentoriville              Enter
+  (Hiiren napsautus toimii samalla tavalla)
+  Sulje valintaikkuna                               Esc, F10
+
+  Vaihda hakutilaa (osamerkkijono / alusta alkaen)   F2
+  Minkä tahansa merkin kirjoittaminen suodattaa luettelon
+  Backspace poistaa viimeisen suodatusmerkin
+
+  Poista nykyinen merkintä historiasta              Shift+Del
+  Tyhjennä koko komentohistoria (vahvistuksella)    Del
+
+  Kopioi valittu komento leikepöydälle              Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Kansiohistoria (Alt+F12)
+    Kansiohistoria näyttää luettelon aiemmin vierailluista kansioista.
+Nuolinäppäinten lisäksi käytettävissä ovat seuraavat pikanäppäimet:
+
+  Siirry valittuun kansioon aktiivisessa paneelissa  Enter
+  (Hiiren napsautus toimii samalla tavalla)
+  Siirry valittuun kansioon passiivisessa paneelissa  Shift+Enter
+  Lisää polku komentoriville                         Ctrl+Enter
+  Sulje valintaikkuna                               Esc, F10
+
+  Vaihda hakutilaa (osamerkkijono / alusta alkaen)   F2
+  Minkä tahansa merkin kirjoittaminen suodattaa luettelon
+  Backspace poistaa viimeisen suodatusmerkin
+
+  Poista nykyinen merkintä historiasta              Shift+Del
+  Tyhjennä koko kansiohistoria (vahvistuksella)     Del
+  Poista olemattomat polut (vahvistuksella)         Ctrl+R
+
+  Kopioi valittu polku leikepöydälle                Ctrl+C, Ctrl+Ins

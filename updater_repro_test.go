@@ -84,8 +84,7 @@ func TestUpdateFailureMessageRepro(t *testing.T) {
 	pf := NewPanelsFrame()
 	pf.ResizeConsole(80, 25)
 
-	// performUpdate(pf *PanelsFrame, url string, isTarGz bool, newTag, publishedAt string)
-	performUpdate(pf, ts.URL, false, "v9.9.9", "2026-08-05T12:00:00Z")
+	performUpdate(pf, ts.URL, "zip", "v9.9.9", "2026-08-05T12:00:00Z")
 
 	// 7. Wait for the background task to hit the error and show the dialog by pumping TaskChan
 	var capturedError string

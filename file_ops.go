@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/f4/vfs"
@@ -19,17 +25,108 @@ type globalAwareReporter struct {
 	getGlobal func(action string) (string, int, string)
 	tracker   *FileOpTracker
 	onBytes   func(int)
+	// providerProgress becomes true once the source or destination reports
+	// its own network transfer. The later local copy from a materialized cache
+	// must then not count the same bytes or speed a second time.
+	providerProgress atomic.Bool
+	phaseMu          sync.Mutex
+	phaseAction      string
+	phasePercent     int
+	phaseCount       int
+	phaseIndex       int
+	phaseProgress    [2]int
+	bytePhase        int
+	sourceBytes      int64
+	fileSize         int64
 }
 
 func (w *globalAwareReporter) StartFile(name string, size int64) {
+	w.StartFileKnown(name, size, true, 1, 0)
+}
+
+func (w *globalAwareReporter) StartFileKnown(name string, size int64, sizeKnown bool, phases, bytePhase int) {
+	if phases < 1 {
+		phases = 1
+	}
+	if phases > len(w.phaseProgress) {
+		phases = len(w.phaseProgress)
+	}
+	if bytePhase < 0 || bytePhase >= phases {
+		bytePhase = 0
+	}
+	w.providerProgress.Store(false)
+	w.phaseMu.Lock()
+	w.phaseAction = ""
+	w.phasePercent = 0
+	w.phaseCount = phases
+	w.phaseIndex = 0
+	w.phaseProgress = [2]int{}
+	w.bytePhase = bytePhase
+	w.sourceBytes = 0
+	w.fileSize = size
+	w.phaseMu.Unlock()
 	if w.tracker != nil {
-		w.tracker.StartFile(name, size)
+		w.tracker.StartFileKnown(name, size, sizeKnown)
+	}
+}
+
+func (w *globalAwareReporter) SetCurrentSize(size int64) {
+	if size <= 0 {
+		return
+	}
+	w.phaseMu.Lock()
+	if w.fileSize <= 0 {
+		w.fileSize = size
+	}
+	w.phaseMu.Unlock()
+	if w.tracker != nil {
+		w.tracker.SetCurrentSize(size)
 	}
 }
 
 func (w *globalAwareReporter) UpdateBytes(n int) {
+	if n <= 0 {
+		return
+	}
+	if w.providerProgress.Load() {
+		w.phaseMu.Lock()
+		bytePhase := w.bytePhase
+		w.phaseMu.Unlock()
+		if bytePhase == 0 {
+			return
+		}
+	}
+	w.phaseMu.Lock()
+	w.sourceBytes += int64(n)
+	sourceBytes, size, phases, bytePhase := w.sourceBytes, w.fileSize, w.phaseCount, w.bytePhase
+	if bytePhase > 0 && !w.providerProgress.Load() {
+		// A cached/materialized source can complete without emitting a network
+		// phase. Treat it as instant before counting destination streaming.
+		w.phaseProgress[0] = 100
+	}
+	w.phaseMu.Unlock()
+	if phases < 1 {
+		phases = 1
+	}
 	if w.tracker != nil {
-		w.tracker.UpdateBytes(n)
+		if phases > 1 && size > 0 {
+			percent := int(sourceBytes * 100 / size)
+			if percent > 100 {
+				percent = 100
+			}
+			w.phaseMu.Lock()
+			if percent > w.phaseProgress[bytePhase] {
+				w.phaseProgress[bytePhase] = percent
+			}
+			logicalPercent := 0
+			for i := 0; i < phases; i++ {
+				logicalPercent += w.phaseProgress[i]
+			}
+			w.phaseMu.Unlock()
+			w.tracker.SetCurrentPercent(logicalPercent / phases)
+		} else {
+			w.tracker.UpdateBytes(n)
+		}
 	}
 	if w.onBytes != nil {
 		w.onBytes(n)
@@ -62,6 +159,65 @@ func (w *globalAwareReporter) IsCancelled() bool {
 }
 
 func (w *globalAwareReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	if (action == "Uploading" || action == "Downloading") && w.tracker != nil && currentPct >= 0 {
+		if action == "Downloading" {
+			w.providerProgress.Store(true)
+		}
+		if currentPct > 100 {
+			currentPct = 100
+		}
+		w.phaseMu.Lock()
+		if action != w.phaseAction {
+			w.phaseAction = action
+			if w.phaseCount > 1 && action == "Uploading" {
+				w.phaseIndex = w.phaseCount - 1
+				if w.fileSize == 0 {
+					// EOF on a known empty source has no byte callback. Reaching the
+					// upload phase proves only the source half, not remote commit.
+					w.phaseProgress[0] = 100
+				}
+			} else {
+				w.phaseIndex = 0
+			}
+			// Visible per-phase progress restarts for a distinct action. Logical
+			// aggregate progress below remains monotonic through phaseProgress.
+			w.phasePercent = 0
+		}
+		if currentPct < w.phasePercent {
+			currentPct = w.phasePercent
+		}
+		previousPhasePercent := w.phasePercent
+		w.phasePercent = currentPct
+		phases, phaseIndex := w.phaseCount, w.phaseIndex
+		if currentPct > w.phaseProgress[phaseIndex] {
+			w.phaseProgress[phaseIndex] = currentPct
+		}
+		logicalPercent := 0
+		for i := 0; i < phases && i < len(w.phaseProgress); i++ {
+			logicalPercent += w.phaseProgress[i]
+		}
+		w.phaseMu.Unlock()
+		if phases < 1 {
+			phases = 1
+		}
+
+		if phases > 1 {
+			logicalPercent /= phases
+		} else {
+			logicalPercent = currentPct
+		}
+		trackerDelta := w.tracker.SetCurrentPercent(logicalPercent)
+		phaseDelta := w.tracker.BytesBetweenPercents(previousPhasePercent, currentPct)
+		if phaseDelta < trackerDelta {
+			phaseDelta = trackerDelta
+		}
+		if phaseDelta > 0 && w.onBytes != nil {
+			w.onBytes(phaseDelta)
+		}
+		// Retries within one transfer phase are monotonic. A real phase change
+		// (materialize source -> upload destination) intentionally starts a new
+		// current-file bar while total progress remains commit-reserved.
+	}
 	gTotalText, gTotalPct, gTimeSpeedText := w.getGlobal(action)
 	displayFileName := filename
 	if totalText != "" && !strings.HasPrefix(totalText, "Total:") && !strings.HasPrefix(totalText, "Extracting:") && !strings.HasPrefix(totalText, "Moving:") && !strings.HasPrefix(totalText, "Copying:") {
@@ -77,6 +233,8 @@ type FileOpState struct {
 	SkipAll      bool
 	SkippedCount int
 	OnBytes      func(int)
+	StartFile    func(name string, size int64, sizeKnown bool, phases, bytePhase int)
+	SetFileSize  func(size int64)
 	Tracker      *FileOpTracker
 	UpdateUI     func(force bool)
 	Anchor       vtui.Frame
@@ -114,6 +272,10 @@ func formatIntWithSpaces(n int64) string {
 }
 
 func resolveFileOpDestination(srcVfs, dstVfs vfs.VFS, destInput string) (vfs.VFS, string) {
+	return resolveFileOpDestinationAt(srcVfs, dstVfs, srcVfs.GetPath(), destInput)
+}
+
+func resolveFileOpDestinationAt(srcVfs, dstVfs vfs.VFS, srcBasePath, destInput string) (vfs.VFS, string) {
 	// The passive panel supplies the initial absolute destination shown in the
 	// dialog. Once the user enters a relative path, however, it is relative to
 	// the active (source) panel, just like other panel path operations.
@@ -123,11 +285,113 @@ func resolveFileOpDestination(srcVfs, dstVfs vfs.VFS, destInput string) (vfs.VFS
 	if srcVfs.IsAbs(destInput) {
 		return srcVfs, destInput
 	}
-	return srcVfs, srcVfs.Join(srcVfs.GetPath(), destInput)
+	return srcVfs, srcVfs.Join(srcBasePath, destInput)
+}
+
+func transferItemName(srcVFS vfs.VFS, srcPath string, dstVFS vfs.VFS, fallback string) string {
+	fallback = safeTransferItemName(dstVFS, fallback)
+	provider, ok := srcVFS.(vfs.TransferNameProvider)
+	if !ok {
+		return fallback
+	}
+	name := provider.TransferName(srcPath, dstVFS)
+	if name == "" {
+		return fallback
+	}
+	// A transfer name is one destination entry, never a path. Treat an
+	// invalid plugin answer as a request for the safe display-name fallback.
+	if !isSafeTransferItemName(dstVFS, name) {
+		return fallback
+	}
+	return name
+}
+
+func isSafeTransferItemName(dstVFS vfs.VFS, name string) bool {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '\x00') || strings.ContainsAny(name, `/\\`) {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"|?*`, r) {
+			return false
+		}
+	}
+	if strings.HasSuffix(name, " ") || strings.HasSuffix(name, ".") || windowsReservedTransferName(name) {
+		return false
+	}
+	return dstVFS == nil || dstVFS.Base(name) == name
+}
+
+// safeTransferItemName turns an untrusted display label into exactly one
+// portable destination entry. A hash is added whenever characters change so
+// distinct remote labels cannot silently collapse onto the same local file.
+func safeTransferItemName(dstVFS vfs.VFS, original string) string {
+	if isSafeTransferItemName(dstVFS, original) {
+		return original
+	}
+	var b strings.Builder
+	for _, r := range original {
+		switch {
+		case r < 0x20 || r == 0x7f || strings.ContainsRune(`<>:"/\\|?*`, r):
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	name := strings.TrimRight(b.String(), " .")
+	if name == "" || name == "." || name == ".." {
+		name = "item"
+	}
+	if windowsReservedTransferName(name) {
+		name = "_" + name
+	}
+	sum := sha256.Sum256([]byte(original))
+	suffix := fmt.Sprintf(" [%x]", sum[:4])
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	name = base + suffix + ext
+	if !isSafeTransferItemName(dstVFS, name) {
+		name = fmt.Sprintf("item-%x", sum[:8])
+	}
+	return name
+}
+
+func windowsReservedTransferName(name string) bool {
+	base := name
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(strings.TrimRight(base, " "))
+	switch base {
+	case "CON", "PRN", "AUX", "NUL", "CLOCK$":
+		return true
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9' {
+		return true
+	}
+	return false
+}
+
+func transferNamesAreIdentity(srcVFS, dstVFS vfs.VFS, srcBasePath string, names []string) bool {
+	for _, name := range names {
+		srcPath := srcVFS.Join(srcBasePath, name)
+		if transferItemName(srcVFS, srcPath, dstVFS, name) != name {
+			return false
+		}
+	}
+	return true
 }
 
 func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, destInput string, isMove bool, mode int, onComplete func()) {
-	dstVfs, destPath := resolveFileOpDestination(srcVfs, dstVfs, destInput)
+	ExecuteFileOpAt(pf, srcVfs, dstVfs, srcVfs.GetPath(), names, destInput, isMove, mode, onComplete)
+}
+
+// ExecuteFileOpAt uses the source directory captured at the user-action
+// boundary. Panel VFS instances are navigable, so consulting GetPath after a
+// goroutine or queued task starts can otherwise target same-named files in a
+// different directory.
+func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
+	names = append([]string(nil), names...)
+	dstVfs, destPath := resolveFileOpDestinationAt(srcVfs, dstVfs, srcBasePath, destInput)
 
 	isTargetDir := len(names) > 1
 	if !isTargetDir {
@@ -148,9 +412,9 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 
 	var preconds []OpPrecondition
 	for _, name := range names {
-		if st, err := srcVfs.Stat(context.Background(), srcVfs.Join(srcVfs.GetPath(), name)); err == nil {
+		if st, err := srcVfs.Stat(context.Background(), srcVfs.Join(srcBasePath, name)); err == nil {
 			preconds = append(preconds, OpPrecondition{
-				Vfs: srcVfs, Path: srcVfs.Join(srcVfs.GetPath(), name), MTime: st.MTime, Size: st.Size, IsDir: st.IsDir,
+				Vfs: srcVfs, Path: srcVfs.Join(srcBasePath, name), MTime: st.MTime, Size: st.Size, IsDir: st.IsDir,
 			})
 		}
 	}
@@ -194,7 +458,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 		var totalStats vfs.OpStats
 		scanErr := error(nil)
 		lastScanUpdate := startTime
-		totalStats, scanErr = vfs.CalculateStats(ctx, srcVfs, srcVfs.GetPath(), names, func(currentPath string, stats vfs.OpStats) {
+		totalStats, scanErr = vfs.CalculateStats(ctx, srcVfs, srcBasePath, names, func(currentPath string, stats vfs.OpStats) {
 			now := time.Now()
 			if now.Sub(lastScanUpdate) > 50*time.Millisecond {
 				lastScanUpdate = now
@@ -225,7 +489,7 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 			processed, total := tracker.GetStats()
 
 			var totalText string
-			if total.Bytes > 0 {
+			if total.Bytes > 0 && total.UnknownSizeFiles == 0 {
 				totalText = fmt.Sprintf("Total: %s / %s", formatSize(processed.Bytes), formatSize(total.Bytes))
 			} else {
 				totalText = fmt.Sprintf("Total: %d / %d items", processed.Files+processed.Dirs, total.Files+total.Dirs)
@@ -237,6 +501,12 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 			const ItemOverhead = 32 * 1024
 			vProcessed := float64(processed.Bytes + (processed.Files+processed.Dirs)*ItemOverhead)
 			vTotal := float64(total.Bytes + (total.Files+total.Dirs)*ItemOverhead)
+			if total.UnknownSizeFiles > 0 {
+				// The byte denominator is incomplete by definition. Base ETA on
+				// the already normalized item/percentage progress instead.
+				vProcessed = float64(totalPct)
+				vTotal = 100
+			}
 
 			etaStr := "Remaining: ??:??:??"
 			if vTotal > 0 && vProcessed > 0 && elapsed.Seconds() > 0.5 {
@@ -324,26 +594,30 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 		}
 
 		state := &FileOpState{
-			Tracker:  tracker,
-			UpdateUI: updateUI,
-			OnBytes: func(n int) {
-				tracker.UpdateBytes(n)
-				bytesSinceLastSpeedUpdate += int64(n)
-				updateUI(false)
-			},
-			Anchor: anchor,
-			Buffer: make([]byte, 128*1024),
-			IsMove: isMove,
+			Tracker:     tracker,
+			UpdateUI:    updateUI,
+			StartFile:   wrapRep.StartFileKnown,
+			SetFileSize: wrapRep.SetCurrentSize,
+			OnBytes:     wrapRep.UpdateBytes,
+			Anchor:      anchor,
+			Buffer:      make([]byte, 128*1024),
+			IsMove:      isMove,
 		}
 
 		updateUI(true)
 		// OPTIMIZATION: Check if the source VFS supports bulk copying (e.g. for sequential archives)
-		if !isMove && srcVfs != dstVfs {
+		// BulkCopier's legacy API is relative to mutable VFS state. Restrict it
+		// to foreground work, where the source panel cannot navigate underneath
+		// the operation; queued/background work uses captured absolute paths.
+		if mode == 2 && !isMove && !sameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) {
 			if bulkCopier, ok := srcVfs.(vfs.BulkCopier); ok {
 				err := bulkCopier.CopyBulk(ctx, names, dstVfs, destPath, wrapRep)
 				if err == nil {
 					updateUI(true)
 					return nil
+				}
+				if operationMustNotRetry(err) {
+					return err
 				}
 				vtui.DebugLog("FILEOP: Bulk copy failed, falling back to sequential: %v", err)
 			}
@@ -354,35 +628,38 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 				return ctx.Err()
 			}
 
-			srcPath := srcVfs.Join(srcVfs.GetPath(), name)
+			srcPath := srcVfs.Join(srcBasePath, name)
 			targetItemPath := destPath
 			if isTargetDir {
-				targetItemPath = dstVfs.Join(destPath, name)
+				targetName := transferItemName(srcVfs, srcPath, dstVfs, name)
+				targetItemPath = dstVfs.Join(destPath, targetName)
 			}
 
 			if isMove && vfs.SameSession(srcVfs, dstVfs) {
-				if _, err := dstVfs.Stat(ctx, targetItemPath); err != nil {
-					if err := srcVfs.Rename(ctx, srcPath, targetItemPath); err == nil {
-						vtui.DebugLog("FILEOP: Optimized server-side rename: %s -> %s", srcPath, targetItemPath)
-						handleArchiveIndexOp(srcVfs, srcPath, dstVfs, targetItemPath, true)
+				renamed, err := tryOptimizedRename(ctx, srcVfs, dstVfs, srcPath, targetItemPath)
+				if err != nil {
+					return err
+				}
+				if renamed {
+					vtui.DebugLog("FILEOP: Optimized server-side rename: %s -> %s", srcPath, targetItemPath)
+					handleArchiveIndexOp(srcVfs, srcPath, dstVfs, targetItemPath, true)
 
-						itemStat, _ := dstVfs.Stat(ctx, targetItemPath)
-						if itemStat.IsDir {
-							tracker.DirDone()
-						} else {
-							displayString := name
-							if AppConfig.FileOpPathDisplay == 1 {
-								displayString = srcPath
-							} else if AppConfig.FileOpPathDisplay == 2 {
-								displayString = srcPath + " -> " + targetItemPath
-							}
-							tracker.StartFile(displayString, itemStat.Size)
-							tracker.UpdateBytes(int(itemStat.Size))
-							tracker.FileDone()
+					itemStat, _ := dstVfs.Stat(ctx, targetItemPath)
+					if itemStat.IsDir {
+						tracker.DirDone()
+					} else {
+						displayString := name
+						if AppConfig.FileOpPathDisplay == 1 {
+							displayString = srcPath
+						} else if AppConfig.FileOpPathDisplay == 2 {
+							displayString = srcPath + " -> " + targetItemPath
 						}
-						updateUI(true)
-						continue
+						wrapRep.StartFileKnown(displayString, itemStat.Size, itemStat.SizeKnown || itemStat.Size > 0, 1, 0)
+						tracker.UpdateBytes(int(itemStat.Size))
+						tracker.FileDone()
 					}
+					updateUI(true)
+					continue
 				}
 			}
 
@@ -392,7 +669,14 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 			}
 
 			if isMove && state.SkippedCount == 0 {
-				srcVfs.Remove(ctx, srcPath)
+				if err := srcVfs.Remove(ctx, srcPath); err != nil {
+					return &vfs.PartialOperationError{
+						Operation: "move source cleanup",
+						Completed: []string{targetItemPath},
+						Failed:    []string{srcPath},
+						Err:       err,
+					}
+				}
 			}
 			updateUI(true)
 		}
@@ -459,26 +743,82 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 }
 
 func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode int, onComplete func()) {
+	ExecuteDeleteOpWithDisposition(pf, activeVfs, names, mode, vfs.DeletePermanently, onComplete)
+}
+
+func deletePathWithDisposition(ctx context.Context, filesystem vfs.VFS, path string, disposition vfs.DeleteDisposition) error {
+	switch disposition {
+	case vfs.DeleteToTrash:
+		return vfs.MoveToTrash(ctx, filesystem, path)
+	case vfs.DeletePermanently:
+		return filesystem.Remove(ctx, path)
+	default:
+		return fmt.Errorf("unknown delete disposition: %d", disposition)
+	}
+}
+
+func calculateDeleteStats(ctx context.Context, filesystem vfs.VFS, basePath string, names []string, disposition vfs.DeleteDisposition, cb vfs.ScanCallback) (vfs.OpStats, error) {
+	switch disposition {
+	case vfs.DeleteToTrash:
+		if err := ctx.Err(); err != nil {
+			return vfs.OpStats{}, err
+		}
+		return vfs.OpStats{Files: int64(len(names))}, nil
+	case vfs.DeletePermanently:
+		return vfs.CalculateStats(ctx, filesystem, basePath, names, cb)
+	default:
+		return vfs.OpStats{}, fmt.Errorf("unknown delete disposition: %d", disposition)
+	}
+}
+
+// ExecuteDeleteOpWithDisposition performs either a recoverable trash move or
+// a permanent Remove. disposition is an explicit task argument instead of a
+// config lookup so a queued operation cannot change meaning while waiting.
+func ExecuteDeleteOpWithDisposition(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode int, disposition vfs.DeleteDisposition, onComplete func()) {
+	ExecuteDeleteOpWithDispositionAt(pf, activeVfs, activeVfs.GetPath(), names, mode, disposition, onComplete)
+}
+
+// ExecuteDeleteOpWithDispositionAt performs deletion relative to a directory
+// captured before asynchronous scheduling.
+func ExecuteDeleteOpWithDispositionAt(pf *PanelsFrame, activeVfs vfs.VFS, basePath string, names []string, mode int, disposition vfs.DeleteDisposition, onComplete func()) {
+	// The panel and its VFS may navigate while a queued operation is waiting.
+	// Capture the directory alongside the disposition so the task cannot drift
+	// onto identically named items in a later directory.
+	names = append([]string(nil), names...)
 	var preconds []OpPrecondition
 	for _, name := range names {
-		if st, err := activeVfs.Stat(context.Background(), activeVfs.Join(activeVfs.GetPath(), name)); err == nil {
+		fullPath := activeVfs.Join(basePath, name)
+		if st, err := activeVfs.Stat(context.Background(), fullPath); err == nil {
 			preconds = append(preconds, OpPrecondition{
-				Vfs: activeVfs, Path: activeVfs.Join(activeVfs.GetPath(), name), MTime: st.MTime, Size: st.Size, IsDir: st.IsDir,
+				Vfs: activeVfs, Path: fullPath, MTime: st.MTime, Size: st.Size, IsDir: st.IsDir,
 			})
 		}
 	}
-	desc := fmt.Sprintf("Delete %d item(s)", len(names))
+	toTrash := disposition == vfs.DeleteToTrash
+	descKey := "Delete.QueuePermanent"
+	progressVerbKey := "Delete.ProgressPermanent"
+	progressTitleKey := "Delete.ProgressTitlePermanent"
+	failedKey := "Delete.FailedPermanent"
+	if toTrash {
+		descKey = "Delete.QueueTrash"
+		progressVerbKey = "Delete.ProgressTrash"
+		progressTitleKey = "Delete.ProgressTitleTrash"
+		failedKey = "Delete.FailedTrash"
+	}
+	desc := fmt.Sprintf(Msg(descKey), len(names))
 
 	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
 		ctx = context.WithValue(ctx, vfs.ReporterKey, reporter)
 		var totalStats vfs.OpStats
-		scanErr := error(nil)
-		totalStats, scanErr = vfs.CalculateStats(ctx, activeVfs, activeVfs.GetPath(), names, func(currentPath string, stats vfs.OpStats) {
+		// Native/service trash operations move each selected root as one
+		// object. calculateDeleteStats therefore skips recursive enumeration
+		// for trash while permanent deletion retains its detailed scan.
+		totalStats, scanErr := calculateDeleteStats(ctx, activeVfs, basePath, names, disposition, func(currentPath string, stats vfs.OpStats) {
 			reporter.UpdateScan(currentPath, stats.Files, stats.Dirs)
 		})
 
-		if scanErr != nil && scanErr != context.Canceled {
-			return fmt.Errorf("failed to scan files: %w", scanErr)
+		if scanErr != nil && !errors.Is(scanErr, context.Canceled) {
+			return fmt.Errorf(Msg("Delete.ScanFailed"), scanErr)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -494,14 +834,9 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 				filePct, totalPct, currName := tracker.GetProgress()
 				processed, total := tracker.GetStats()
 
-				var totalText string
-				if total.Bytes > 0 {
-					totalText = fmt.Sprintf("Total: %d / %d items", processed.Files+processed.Dirs, total.Files+total.Dirs)
-				} else {
-					totalText = fmt.Sprintf("Total: %d / %d items", processed.Files+processed.Dirs, total.Files+total.Dirs)
-				}
+				totalText := fmt.Sprintf(Msg("Delete.Total"), processed.Files+processed.Dirs, total.Files+total.Dirs)
 
-				reporter.UpdateTransfer("Deleting", currName, filePct, totalText, totalPct, "")
+				reporter.UpdateTransfer(Msg(progressVerbKey), currName, filePct, totalText, totalPct, "")
 			}
 		}
 
@@ -513,7 +848,7 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			fullPath := activeVfs.Join(activeVfs.GetPath(), name)
+			fullPath := activeVfs.Join(basePath, name)
 
 			displayString := name
 			if AppConfig.FileOpPathDisplay > 0 {
@@ -521,38 +856,54 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 			}
 			tracker.StartFile(displayString, 0)
 			updateUI(true)
-			handleArchiveIndexDelete(ctx, activeVfs, fullPath)
+			archiveIndexes := collectArchiveIndexes(ctx, activeVfs, fullPath)
+			deleted := false
 
 			for {
-				err := activeVfs.Remove(ctx, fullPath)
+				err := deletePathWithDisposition(ctx, activeVfs, fullPath, disposition)
 				if err == nil {
+					deleted = true
+					removeArchiveIndexes(archiveIndexes)
 					break
 				}
-				if err == context.Canceled {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return err
+				}
+				// The provider has already committed some work or cannot tell
+				// whether it did. Retrying would apply a destructive operation a
+				// second time, so surface the original state unchanged.
+				if errors.Is(err, vfs.ErrOperationPartial) || errors.Is(err, vfs.ErrOperationStateUnknown) {
+					return err
+				}
+				if errors.Is(err, vfs.ErrTrashUnsupported) {
+					err = fmt.Errorf("%s", Msg("Trash.Unsupported"))
 				}
 
 				if skipAll {
-					allErrors = append(allErrors, fmt.Sprintf("Skipped '%s':\n%v", name, err))
+					allErrors = append(allErrors, fmt.Sprintf(Msg("Delete.Skipped"), name, err))
 					break
 				}
 
-				choice := askDeleteError(ctx, fmt.Sprintf("Cannot delete '%s'", name), err, anchor)
+				choice := askDeleteError(ctx, fmt.Sprintf(Msg(failedKey), name), err, anchor)
 				if choice == 0 { // Retry
 					continue
 				} else if choice == 1 { // Skip
-					allErrors = append(allErrors, fmt.Sprintf("Skipped '%s':\n%v", name, err))
+					allErrors = append(allErrors, fmt.Sprintf(Msg("Delete.Skipped"), name, err))
 					break
 				} else if choice == 2 { // Skip All
 					skipAll = true
-					allErrors = append(allErrors, fmt.Sprintf("Skipped '%s':\n%v", name, err))
+					allErrors = append(allErrors, fmt.Sprintf(Msg("Delete.Skipped"), name, err))
 					break
 				} else { // Abort
 					return context.Canceled
 				}
 			}
 
-			tracker.FileDone()
+			if deleted {
+				tracker.FileDone()
+			} else {
+				tracker.FileSkipped()
+			}
 			updateUI(true)
 		}
 		if len(allErrors) > 0 {
@@ -566,7 +917,7 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 					dlgH = 8
 				}
 
-				dlg := vtui.NewCenteredDialog(dlgW, dlgH, " Deletion Errors ")
+				dlg := vtui.NewCenteredDialog(dlgW, dlgH, Msg("FileOp.DeletionErrors"))
 				dlg.ShowClose = true
 
 				var listItems []string
@@ -580,7 +931,7 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 				}
 
 				lb := vtui.NewListBox(0, 0, dlgW-4, dlgH-6, listItems)
-				btnOk := vtui.NewButton(0, 0, "&Ok")
+				btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 				btnOk.IsDefault = true
 				btnOk.OnClick = func() { dlg.Close() }
 
@@ -613,8 +964,12 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 		if rk != "" {
 			keys = append(keys, rk)
 		}
+		taskType := "Delete"
+		if toTrash {
+			taskType = "Trash"
+		}
 		task := &QueueTask{
-			Type:          "Delete",
+			Type:          taskType,
 			Desc:          desc,
 			Preconditions: preconds,
 			ResKeys:       keys,
@@ -623,7 +978,7 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 		}
 		GlobalQueueManager.Enqueue(task)
 	} else {
-		dlg := NewFileOpProgressDialog(" Deleting... ")
+		dlg := NewFileOpProgressDialog(" " + strings.TrimSpace(Msg(progressTitleKey)) + " ")
 		var taskCtx *vtui.TaskContext
 		dlg.btnCancel.OnClick = func() { dlg.SetExitCode(1) }
 		dlg.OnResult = func(code int) {
@@ -654,8 +1009,8 @@ func ExecuteDeleteOp(pf *PanelsFrame, activeVfs vfs.VFS, names []string, mode in
 				if onComplete != nil {
 					onComplete()
 				}
-				if err != nil && err != context.Canceled {
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Deletion failed:\n%v", err), []string{"&Ok"})
+				if shouldDisplayFileOpError(err) {
+					vtui.ShowMessage(" "+strings.TrimSpace(Msg("Error.Title"))+" ", fmt.Sprintf(Msg("Delete.OperationFailed"), err), []string{Msg("vtui.Ok")})
 				}
 			})
 		})
@@ -678,7 +1033,43 @@ func closeOnce(c io.Closer) func() error {
 		return c.Close()
 	}
 }
-func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) error {
+
+func operationMustNotRetry(err error) bool {
+	return errors.Is(err, vfs.ErrOperationPartial) ||
+		errors.Is(err, vfs.ErrOperationStateUnknown) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+func shouldDisplayFileOpError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, vfs.ErrOperationPartial) || errors.Is(err, vfs.ErrOperationStateUnknown) {
+		return true
+	}
+	return !errors.Is(err, context.Canceled)
+}
+
+// tryOptimizedRename only renames into a proven-empty destination. A remote
+// Stat failure is not evidence of absence, and an uncertain mutation must not
+// be retried as a streaming copy.
+func tryOptimizedRename(ctx context.Context, srcVFS, dstVFS vfs.VFS, srcPath, dstPath string) (bool, error) {
+	if _, err := dstVFS.Stat(ctx, dstPath); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if err := srcVFS.Rename(vfs.WithDestinationOverwrite(ctx, false), srcPath, dstPath); err != nil {
+		if operationMustNotRetry(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
 	}
@@ -697,26 +1088,38 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	realSrc := absSrc
 	realDst := absDst
 
-	if _, ok := srcVfs.(*vfs.OSVFS); ok {
+	_, srcIsOS := srcVfs.(*vfs.OSVFS)
+	_, dstIsOS := dstVfs.(*vfs.OSVFS)
+	if srcIsOS {
 		if resolved, err := filepath.EvalSymlinks(absSrc); err == nil {
 			realSrc = resolved
 		}
 	}
-	if _, ok := dstVfs.(*vfs.OSVFS); ok {
+	if dstIsOS {
 		if resolved, err := filepath.EvalSymlinks(absDst); err == nil {
 			realDst = resolved
 		}
 	}
 
-	cleanSrc := filepath.ToSlash(filepath.Clean(realSrc))
-	cleanDst := filepath.ToSlash(filepath.Clean(realDst))
-
-	if runtime.GOOS == "windows" {
+	cleanSrc, srcIsURI := normalizedURIIdentity(realSrc)
+	cleanDst, dstIsURI := normalizedURIIdentity(realDst)
+	if !srcIsURI && srcIsOS {
+		cleanSrc = filepath.ToSlash(filepath.Clean(realSrc))
+	} else if !srcIsURI {
+		cleanSrc = path.Clean("/" + strings.TrimLeft(strings.ReplaceAll(realSrc, "\\", "/"), "/"))
+	}
+	if !dstIsURI && dstIsOS {
+		cleanDst = filepath.ToSlash(filepath.Clean(realDst))
+	} else if !dstIsURI {
+		cleanDst = path.Clean("/" + strings.TrimLeft(strings.ReplaceAll(realDst, "\\", "/"), "/"))
+	}
+	if runtime.GOOS == "windows" && srcIsOS && dstIsOS {
 		cleanSrc = strings.ToLower(cleanSrc)
 		cleanDst = strings.ToLower(cleanDst)
 	}
+	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(srcVfs, dstVfs)
 
-	if cleanSrc == cleanDst {
+	if sameNamespace && cleanSrc == cleanDst {
 		if stat.IsDir {
 			return fmt.Errorf("cannot copy folder into itself (source equals destination)")
 		}
@@ -728,7 +1131,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		prefixSrc += "/"
 	}
 
-	if strings.HasPrefix(cleanDst, prefixSrc) {
+	if sameNamespace && strings.HasPrefix(cleanDst, prefixSrc) {
 		if stat.IsDir {
 			return fmt.Errorf("cannot copy folder into itself (destination is a subfolder)")
 		}
@@ -737,6 +1140,9 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 	dstStat, err := dstVfs.Stat(ctx, destPath)
 	exists := err == nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 
 	if stat.IsDir {
 		if !exists {
@@ -758,7 +1164,9 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 			if item.Name == ".." {
 				continue
 			}
-			if err := recursiveCopy(ctx, srcVfs, srcVfs.Join(srcPath, item.Name), dstVfs, dstVfs.Join(destPath, item.Name), state, depth+1); err != nil {
+			childSource := srcVfs.Join(srcPath, item.Name)
+			childName := transferItemName(srcVfs, childSource, dstVfs, item.Name)
+			if err := recursiveCopy(ctx, srcVfs, childSource, dstVfs, dstVfs.Join(destPath, childName), state, depth+1); err != nil {
 				return err
 			}
 		}
@@ -780,14 +1188,33 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	}
 
 	itemName := dstVfs.Base(destPath)
-	if state.Tracker != nil {
+	if state.Tracker != nil || state.StartFile != nil {
 		displayString := itemName
 		if AppConfig.FileOpPathDisplay == 1 {
 			displayString = srcPath
 		} else if AppConfig.FileOpPathDisplay == 2 {
 			displayString = srcPath + " -> " + destPath
 		}
-		state.Tracker.StartFile(displayString, stat.Size)
+		phases := 1
+		bytePhase := 0
+		if managed, ok := dstVfs.(vfs.ManagedTransferDestination); ok && managed.ManagedTransferWrites() {
+			phases = 2
+		} else {
+			sourceRemote, sourceIsRemote := srcVfs.(vfs.RemoteTransferVFS)
+			destinationRemote, destinationIsRemote := dstVfs.(vfs.RemoteTransferVFS)
+			if sourceIsRemote && destinationIsRemote && sourceRemote.RemoteTransfer() && destinationRemote.RemoteTransfer() {
+				phases = 2
+				// For a streaming destination, Write is the upload phase. For a
+				// staged destination it remains part of source materialization and
+				// Close reports upload separately.
+				bytePhase = 1
+			}
+		}
+		if state.StartFile != nil {
+			state.StartFile(displayString, stat.Size, stat.SizeKnown || stat.Size > 0, phases, bytePhase)
+		} else {
+			state.Tracker.StartFileKnown(displayString, stat.Size, stat.SizeKnown || stat.Size > 0)
+		}
 		if state.UpdateUI != nil {
 			state.UpdateUI(false)
 		}
@@ -804,10 +1231,15 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	}
 
 	destPathForFile := destPath
+	destinationExisted := false
 
 	for {
 		dstStat, err := dstVfs.Stat(ctx, destPathForFile)
 		exists := err == nil
+		destinationExisted = exists
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 
 		if !exists {
 			break
@@ -856,20 +1288,28 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 			return context.Canceled
 		}
 	}
+	destinationCtx := vfs.WithDestinationOverwrite(ctx, destinationExisted)
 
 	// Optimize using server-side copy if both VFS share the same session/connection
 	if ssc, ok := dstVfs.(vfs.ServerSideCopier); ok && vfs.SameSession(srcVfs, dstVfs) {
-		err := ssc.Copy(ctx, srcPath, destPathForFile)
+		err := ssc.Copy(destinationCtx, srcPath, destPathForFile)
 		if err == nil {
 			if state.Tracker != nil {
 				state.Tracker.UpdateBytes(int(stat.Size))
 				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
 				state.Tracker.FileDone()
 				if state.UpdateUI != nil {
-					state.UpdateUI(false)
+					state.UpdateUI(true)
 				}
 			}
 			return nil
+		}
+		// A provider may have committed only part of a non-atomic remote
+		// operation, or lost the response after submitting it. Streaming over
+		// that uncertain destination can duplicate data or destroy the only
+		// recoverable copy, so these errors must reach the user unchanged.
+		if operationMustNotRetry(err) || (!destinationExisted && errors.Is(err, os.ErrExist)) {
+			return err
 		}
 		vtui.DebugLog("FILEOP: Server-side copy failed, falling back to streaming: %v", err)
 	}
@@ -940,7 +1380,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
 				state.Tracker.FileDone()
 				if state.UpdateUI != nil {
-					state.UpdateUI(false)
+					state.UpdateUI(true)
 				}
 			}
 			return nil
@@ -967,10 +1407,19 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 	defer srcFile.Close()
+	if stat.Size <= 0 {
+		if state.SetFileSize != nil {
+			state.SetFileSize(srcFile.Size())
+		} else if state.Tracker != nil {
+			state.Tracker.SetCurrentSize(srcFile.Size())
+		}
+	}
 
+	writeCtx, cancelWrite := context.WithCancel(destinationCtx)
+	defer cancelWrite()
 	var dstFile io.WriteCloser
 	for {
-		dstFile, err = dstVfs.Create(ctx, destPathForFile)
+		dstFile, err = dstVfs.Create(writeCtx, destPathForFile)
 		if err == nil {
 			break
 		}
@@ -984,11 +1433,63 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
-	closeDst := closeOnce(dstFile)
+	destinationFinished := false
+	var destinationCloseErr error
+	closeDestination := func() error {
+		if destinationFinished {
+			return destinationCloseErr
+		}
+		destinationFinished = true
+		destinationCloseErr = dstFile.Close()
+		return destinationCloseErr
+	}
+	abortAttempted := false
+	abortDestination := func() error {
+		if destinationFinished {
+			return destinationCloseErr
+		}
+		// Cancel first so even a concurrently-running remote request cannot
+		// consume an EOF and turn a partial source into a successful commit.
+		cancelWrite()
+		destinationFinished = true
+		if aborter, ok := dstFile.(vfs.AbortableWriter); ok {
+			abortAttempted = true
+			destinationCloseErr = aborter.Abort()
+		} else {
+			// Legacy writers have no discard contract. Closing after cancellation
+			// is the best available behavior; cloud writers are required to expose
+			// AbortableWriter and never reach this fallback.
+			destinationCloseErr = dstFile.Close()
+		}
+		return destinationCloseErr
+	}
 	copySuccess := false
+	commitAttempted := false
 	defer func() {
-		closeDst()
-		if !copySuccess {
+		var finishErr error
+		if !destinationFinished {
+			if commitAttempted {
+				finishErr = closeDestination()
+			} else {
+				finishErr = abortDestination()
+			}
+		}
+		// A failed discard can leave a local spool or billable multipart upload
+		// behind. Preserve the source/read error while surfacing cleanup failure;
+		// silently dropping it makes the user believe the failed copy was fully
+		// rolled back when manual provider cleanup may still be required.
+		if finishErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("discard incomplete destination: %w", finishErr))
+		}
+		// Never delete a pre-existing destination, a concurrent creator's
+		// object, or a remote upload whose commit result is unknown. For a
+		// newly-created destination with a definitive local-style failure,
+		// removing a partial stream remains the safest rollback.
+		rollbackSafe := destinationCloseErr == nil ||
+			(!operationMustNotRetry(destinationCloseErr) &&
+				!errors.Is(destinationCloseErr, os.ErrExist) &&
+				!errors.Is(destinationCloseErr, os.ErrPermission))
+		if !copySuccess && !abortAttempted && !destinationExisted && rollbackSafe {
 			dstVfs.Remove(context.Background(), destPathForFile)
 		}
 	}()
@@ -1019,7 +1520,8 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 	}
 
-	if cerr := closeDst(); cerr != nil {
+	commitAttempted = true
+	if cerr := closeDestination(); cerr != nil {
 		return cerr
 	}
 	copySuccess = true
@@ -1040,7 +1542,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 		state.Tracker.FileDone()
 		if state.UpdateUI != nil {
-			state.UpdateUI(false)
+			state.UpdateUI(true)
 		}
 	}
 	return nil
@@ -1059,9 +1561,9 @@ func AskOverwrite(ctx context.Context, destPath string, srcStat, dstStat vfs.VFS
 
 		width := 76
 		height := 13
-		dlg = vtui.NewCenteredDialog(width, height, " Warning ")
+		dlg = vtui.NewCenteredDialog(width, height, Msg("Warning.Title"))
 
-		lbl1 := vtui.NewLabel(0, 0, "File already exists", nil)
+		lbl1 := vtui.NewLabel(0, 0, Msg("FileOp.FileAlreadyExists"), nil)
 		truncPath := vtui.TruncateMiddle(destPath, width-6)
 		lbl2 := vtui.NewLabel(0, 0, truncPath, nil)
 
@@ -1077,17 +1579,17 @@ func AskOverwrite(ctx context.Context, destPath string, srcStat, dstStat vfs.VFS
 
 		sep2 := vtui.NewSeparator(0, 0, width, true, true)
 
-		chkRem := vtui.NewCheckbox(0, 0, "Reme&mber choice", false)
+		chkRem := vtui.NewCheckbox(0, 0, Msg("FileOp.RememberChoice"), false)
 
 		sep3 := vtui.NewSeparator(0, 0, width, true, true)
 
-		btnOver := vtui.NewButton(0, 0, "&Overwrite")
+		btnOver := vtui.NewButton(0, 0, Msg("FileOp.Overwrite"))
 		btnOver.IsDefault = true
-		btnSkip := vtui.NewButton(0, 0, "&Skip")
-		btnRen := vtui.NewButton(0, 0, "&Rename")
-		btnApp := vtui.NewButton(0, 0, "&Append")
-		btnRes := vtui.NewButton(0, 0, "Res&ume")
-		btnCan := vtui.NewButton(0, 0, "&Cancel")
+		btnSkip := vtui.NewButton(0, 0, Msg("FileOp.Skip"))
+		btnRen := vtui.NewButton(0, 0, Msg("FileOp.Rename"))
+		btnApp := vtui.NewButton(0, 0, Msg("FileOp.Append"))
+		btnRes := vtui.NewButton(0, 0, Msg("FileOp.Resume"))
+		btnCan := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 		dlg.AddItem(lbl1)
 		dlg.AddItem(lbl2)
@@ -1173,13 +1675,13 @@ func askDeleteError(ctx context.Context, op string, err error, anchor vtui.Frame
 		if ctx.Err() != nil {
 			return
 		}
-		msg := fmt.Sprintf("%s:\n%s\n\n%s", op, err.Error(), "What to do?")
+		msg := fmt.Sprintf(Msg("Delete.ErrorPrompt"), op, err.Error())
+		buttons := []string{Msg("Btn.Retry"), Msg("Delete.BtnSkip"), Msg("Btn.SkipAll"), Msg("Delete.BtnAbort")}
+		title := " " + strings.TrimSpace(Msg("Error.Title")) + " "
 		if anchor != nil {
-			dlg = vtui.ShowMessageOn(anchor, " Error ", msg,
-				[]string{Msg("Btn.Retry"), "&Skip", Msg("Btn.SkipAll"), "&Abort"})
+			dlg = vtui.ShowMessageOn(anchor, title, msg, buttons)
 		} else {
-			dlg = vtui.ShowMessage(" Error ", msg,
-				[]string{Msg("Btn.Retry"), "&Skip", Msg("Btn.SkipAll"), "&Abort"})
+			dlg = vtui.ShowMessage(title, msg, buttons)
 		}
 		dlg.OnResult = func(code int) {
 			if code < 0 {

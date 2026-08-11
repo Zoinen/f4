@@ -1,0 +1,619 @@
+@Contents
+$Indeks pomocy f4 (Wersja: %Ver)
+f4 to eksperymentalny klon Far Managera / far2l napisany w Go.
+
+~Skróty klawiszowe podglądu / edytora~ViewerEditor@
+~Nawigacja na panelach~PanelNav@
+~Wizualna zmiana nazw (VisRen)~VisRen@
+~Zmień README.md~README@
+
+@VisRen
+$Wizualna zmiana nazw (VisRen)
+
+VisRen to wbudowane w f4 narzędzie do wizualnej hurtowej zmiany nazw plików.
+Skompiluje każdą nową nazwę przed dokonaniem jakichkolwiek zmian i wyświetli
+pogrupowane obok siebie nazwy źródłowe i docelowe. Działa z plikami i
+katalogami na panelu lokalnego systemu plików.
+
+Jeżeli elementy na panelu są zaznaczone, VisRen otworzy je w kolejności, w
+jakiej znajdują się na panelu. Jeżeli nie ma zaznaczonych elementów, użyty
+zostanie element pod kursorem panelu. Katalog nadrzędny ".." nigdy nie jest
+używany. VisRen otwiera się naciskając klawisz F11 i wybierając "Wizualna
+zmiana nazw"; może być również aktywowany przypisanym mu klawiszem skrótu.
+
+~Szybki start i pola dialogu~VisRenQuickStart@
+~Maski nazw, rozszerzenia, zakresy, liczniki i cudzysłowy~VisRenMasks@
+~Wielkość liter, transliteracja i kolejność przetwarzania~VisRenTransforms@
+~Daty, ID3, obrazy/EXIF i wersja pliku~VisRenMetadata@
+~Wyszukiwanie, prosta zamiana i wyrażenia regularne~VisRenSearch@
+~Nawigacja w podglądzie, klawiatura i mysz~VisRenPreview@
+~Edycja listy w edytorze UTF-8~VisRenEditor@
+~Wykonanie zmiany nazw, błędy, protokół i cofanie zmian~VisRenRename@
+~Bezpieczeństwo nazw i ograniczenia~VisRenSafety@
+~Praktyczne przepisy~VisRenExamples@
+
+Implementacja opiera się na FarPlugins VisRen 3.2.0, ale uzupełnia go o
+rygorystyczną walidację nazw i edytora, stabilne liczby losowe i przenośne
+metadane.
+
+@VisRenQuickStart
+$VisRen: Szybki start i pola dialogu
+
+#Typowa zmiana nazwy#
+
+  1. Zaznacz pożądane pliki/katalogi klawiszem Ins lub umieść kursor panelu na
+     jednym elemencie, jeśli potrzebujesz tylko jego.
+  2. Naciśnij F11 i wybierz VisRen.
+  3. Wprowadź maski dla nazwy i rozszerzenia. Domyślne wartości [N] i [E]
+     pozostawią obie części oryginalnej nazwy bez zmian.
+  4. Opcjonalnie wpisz tekst w polach "Szukaj" i "Zamień na". Fokus zaczyna
+     się w polu "Szukaj"; klawisz Tab przeniesie Cię bezpośrednio do pola "Zamień na".
+  5. Sprawdź każdą nazwę docelową. Klawisz F3 wyświetli pełną nazwę źródłową,
+     docelową lub diagnostykę dla bieżącego wiersza.
+  6. Wybierz "Zmień nazwy" lub naciśnij Enter na domyślnym przycisku.
+
+#Nazwa i rozszerzenie#
+
+Te dwa pola kompilują docelową nazwę podstawową i rozszerzenie oddzielnie. Pole
+rozszerzenia nie zawiera kropki. Puste rozszerzenie całkowicie je usuwa.
+Zwykły tekst jest kopiowany dosłownie; wyrażenia w nawiasach kwadratowych
+podstawiają tekst źródłowy, liczniki, metadane lub transformacje.
+
+Ostatnia kropka oddziela oryginalną nazwę i rozszerzenie. Na przykład plik
+archive.tar.gz ma nazwę archive.tar i rozszerzenie gz. README nie ma
+rozszerzenia. Ukryty plik, taki jak .gitignore, ma nazwę pustą i rozszerzenie
+gitignore.
+
+#Szablony i [+]#
+
+Listy "Szablony nazw" i "Szablony rozszerzeń" zawierają wyrażenia poprawne dla
+odpowiedniej maski. Wybranie pozycji tylko ją zaznacza. Przycisk [+] wstawia ten
+wybrany szablon w pozycji kursora i zwraca fokus na odpowiednią maskę – dokładnie
+tak, jak w oryginalnym VisRen. Jeśli lista szablonów ma fokus, Ins wstawia
+bieżącą pozycję, a fokus pozostaje na liście. Symbole zastępcze dla zakresu i
+licznika stają się przy wstawieniu poprawnymi wartościami.
+
+#Możliwości wyszukiwania#
+
+Wyszukiwanie i zastępowanie jest wykonywane po skompilowaniu całej nazwy obiema
+maskami, wliczając w to wygenerowaną kropkę i rozszerzenie. Pole "Uwzględniaj
+wielkość liter" jest początkowo aktywne. "Wyrażenie regularne" przełącza
+między prostym wyszukiwaniem a trybem regex.
+
+#Szybki podgląd i diagnostyka#
+
+Każda zmiana natychmiast aktualizuje podgląd. Jeżeli maska, zakres, licznik,
+regex lub wynikowa nazwa jest niepoprawna, wszystkie pola docelowe wyświetlą
+<Error!>. Przyciski dla zmiany nazw i edytora są zablokowane. F3 wyświetli
+rzeczywistą diagnostykę.
+
+Cztery pola tekstowe korzystają z historii F4. Wartości użyte do zmiany nazwy
+są dodawane do odpowiednich historii. Oddzielacze słów dla [T] są zapisywane
+osobno w konfiguracji użytkownika VisRen.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenMasks
+$VisRen: maski, zakresy, liczniki i cudzysłowy
+
+#Podstawowe wyrażenia#
+
+  [N]          Oryginalna nazwa bez ostatniego rozszerzenia.
+  [E]          Oryginalne rozszerzenie bez początkowej kropki.
+  [[]          Dosłowny nawias kwadratowy otwierający.
+  []]          Dosłowny nawias kwadratowy zamykający.
+
+Wszelki tekst poza wyrażeniami jest dosłowny. Samotny nawias zamykający,
+niezamknięty nawias otwierający lub nieznane wyrażenie są traktowane jako błąd.
+
+#Zakresy#
+
+Zakres następuje bezpośrednio po N lub E. Pozycje liczą znaki Unicode, a nie
+bajty, i zaczynają się od 1. Ujemna pozycja liczy pozycję od końca. Te same
+formy działają z E, na przykład [E1-3].
+
+Dla oryginalnej nazwy abcdefghij:
+
+  [N2]         b                 jeden znak
+  [N2-5]       bcde              pozycje 2 do 5 włącznie
+  [N2,5]       bcdef             pięć znaków zaczynając od pozycji 2
+  [N2-]        bcdefghij         pozycja 2 aż do końca
+  [N-2]        i                 drugi znak od końca
+  [N2--5]      bcdef             pozycja 2 do piątego znaku od końca
+  [N-8-5]      cde               ósmy od końca do piątego od końca
+  [N-8,5]      cdefg             pięć znaków zaczynając od ósmego od końca
+  [N-5-]       fghij             piąty od końca aż do końca
+
+Część poza zakresem zostanie w miarę możliwości obcięta lub da pusty wynik.
+Zerowa pozycja i odwrotny zakres to błędy. Szablon zakresu z menu użyje
+najdłuższej oryginalnej nazwy lub rozszerzenia.
+
+#Liczniki#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Początkowe cyfry określają pierwszą wartość i minimalną szerokość wyświetlania. Może
+zawierać co najwyżej dziewięć cyfr. Jeżeli pominięto +krok, krok wynosi 1. Licznik
+śledzi aktualną kolejność wierszy: Ctrl+Up/Down i przeciągnięcie myszą zmienia
+przypisane wartości. Szerokość jest minimalna – większe liczby nie są skracane.
+
+#Kombinowanie wyrażeń#
+
+Wyrażenia i dosłowny tekst można dowolnie łączyć. Na przykład [C001+1]_[N1-12]
+utworzy trzymiejscową liczbę, podkreślnik i pierwsze dwanaście znaków starej
+nazwy. Transformacje nie dodają żadnego tekstu; modyfikują gotową część nazwy
+zgodnie z opisem w odpowiednim temacie.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenTransforms
+$VisRen: transformacje i kolejność przetwarzania
+
+#Zmiany wielkości liter#
+
+  [L]          Przekształć cały wynik maski na małe litery.
+  [U]          Przekształć go na wielkie litery.
+  [F]          Pierwszy znak wielki, pozostałe małe.
+  [T]          Pierwszy znak każdego słowa wielki.
+  [M]          Formatowanie nazwy muzycznej "Wykonawca - Utwór".
+
+[T] standardowo używa oddzielaczy słów "-. _&". Wybierz [T] na dowolnej liście
+szablonów i naciśnij F4, aby edytować oddzielacze. W konfiguracji VisRen zapisze
+się maksymalnie 18 znaków, które zostaną użyte następnym razem.
+
+[M] rozpoznaje " - " lub "_-_" między wykonawcą a utworem. Słowa wykonawcy są
+konwertowane na styl "każde słowo z wielkiej litery" (Title Case); nazwa utworu
+zaczyna się jedną wielką literą, a pozostałe są małe. Rosyjski spójnik "a" w
+nazwie wykonawcy jest zamieniany na małe litery, co odpowiada oryginalnemu
+zachowaniu VisRen.
+
+Jeżeli w jednej masce występuje kilka wyrażeń do zmiany wielkości liter,
+priorytet jest stały: [L], [U], [F], [T], [M]. Wykonane zostanie tylko pierwsze
+z tej listy.
+
+#Transliteracja#
+
+  [TL]         Transliteruj cyrylicę na alfabet łaciński według tabeli VisRen.
+  [TR]         Przekształć tę łacinkę z powrotem na cyrylicę.
+
+Mapowanie odpowiada oryginalnej tabeli VisRen: na przykład ё -> jo, ж -> zh,
+х -> kh, щ -> shh, ю -> ju i я -> ja. Wielkość liter jest w miarę możliwości
+zachowywana. Konwersja wsteczna wybiera najdłuższy pasujący ciąg znaków
+łacińskich. Jeżeli obecne są i [TL], i [TR], priorytet ma [TL].
+
+#Dokładna kolejność przetwarzania#
+
+  1. Rozwijane są wyrażenia nazwy i rozszerzenia.
+  2. Obie części są łączone kropką, o ile rozszerzenie nie jest puste.
+  3. Na tak skompilowaną pełną nazwę wykonywane jest wyszukiwanie i zastępowanie.
+  4. Wynik jest ponownie dzielony według ostatniej kropki.
+  5. Dla danej części wykonywana jest transliteracja.
+  6. Jako ostatnia wykonywana jest wybrana zmiana wielkości liter.
+  7. Sprawdzana jest gotowa nazwa pliku.
+
+Ta procedura jest ważna. Zmiana wielkości liter działa również na tekst wstawiony
+zastąpieniem, podczas gdy wyszukiwanie może odpowiadać wygenerowanemu
+rozszerzeniu.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenMetadata
+$VisRen: dane i metadane plików
+
+Metadane są odczytywane leniwie (lazy) i są zapisywane raz dla każdej pozycji
+źródłowej. Brakujące lub nieobsługiwane pola są zastępowane pustym ciągiem
+znaków i nie powodują błędu podglądu.
+
+#Znaczniki czasu plików i wartości sesji#
+
+  [DM]         Data ostatniej modyfikacji w czasie lokalnym: YYYY.MM.DD
+  [TM]         Czas ostatniej modyfikacji w czasie lokalnym: hh-mm-ss
+  [R]          Losowa liczba od 0 do 32767
+
+[R] jest przypisywane raz przy otwarciu dialogu. Pozostaje stabilne przy edycji
+masek i przenosi się razem ze swoim wierszem. W nowej sesji VisRen przypisywane
+są nowe wartości.
+
+#MP3 i ID3#
+
+Wyrażenie numeru ścieżki składa się z nawiasu otwierającego, znaku kratki
+(U+0023) i nawiasu zamykającego. Pozostałe pola to:
+
+  [t]          Nazwa utworu
+  [a]          Wykonawca
+  [l]          Album
+  [y]          Rok lub data
+  [g]          Gatunek
+
+Przy istnieniu ID3v2 preferowane są ramki ID3v2.3 lub ID3v2.4. W przeciwnym razie
+używane jest ID3v1.1, wliczając w to numer ścieżki i tabelę gatunków. Obsługiwane
+kodowania tagów ID3 obejmują domyślny tekst systemowy, UTF-8 i UTF-16.
+
+#Obrazy i EXIF#
+
+  [c]          Producent aparatu z EXIF JPEG
+  [m]          Model aparatu z EXIF JPEG
+  [d]          Data wykonania zdjęcia: YYYY.MM.DD hh-mm-ss
+  [r]          Rozmiar obrazu: SZEROKOŚĆxWYSOKOŚĆ
+
+Wymiary są dostępne dla formatów JPEG, BMP, GIF i PNG. Producent, model i data
+EXIF są wczytywane z JPEG. Jeżeli nie jest dostępne odpowiednie datum EXIF, [d]
+używa daty i czasu ostatniej modyfikacji pliku. Małe [m]/[r] to metadane,
+podczas gdy wielkie [M]/[R] to odpowiednio zmiana wielkości liter i liczba losowa.
+
+#Wersja pliku wykonywalnego#
+
+  [V]          Stała wersja z zasobów Windows PE .exe/.dll
+
+Wersja PE jest analizowana natywnie na wszystkich obsługiwanych systemach
+operacyjnych. W przypadku pliku bez użytecznej stałej wersji [V] daje pusty
+ciąg znaków.
+
+Tekst metadat zawierający oddzielacze ścieżek lub inne zakazane znaki zostanie
+odrzucony lub przechwycony przez ostateczną walidację nazwy. Zawsze sprawdzaj
+podgląd, jeśli tagi pochodzą z plików, nad którymi nie masz kontroli.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenSearch
+$VisRen: wyszukiwanie, proste zastępowanie i wyrażenia regularne
+
+Wyszukiwanie i zastępowanie jest wykonywane na całej nazwie utworzonej obiema
+maskami, wliczając w to wynikową kropkę i rozszerzenie. Puste pole "Szukaj"
+dezaktywuje ten krok. Zastępowane są wszystkie nienakładające się dopasowania.
+
+#Obyczajny tryb#
+
+Jeżeli "Wyrażenie regularne" jest nieaktywne, wyszukiwany tekst jest dosłowny.
+Z zaznaczonym polem "Uwzględniaj wielkość liter" – "Plik" i "plik" różnią się.
+Bez zaznaczenia wielkość liter jest ignorowana, a zastąpienie jest wstawiane
+dokładnie tak, jak zostało wpisane.
+
+Przykład: maski [N] i [E], wyszukiwanie "draft_" i puste zastąpienie zmienią
+draft_report.txt na report.txt.
+
+#Tryb wyrażeń regularnych#
+
+Aktywuj "Wyrażenie regularne" dla silnika regex f4 (opartego na Go/coregex).
+Wzorzec można wpisać bezpośrednio lub jako /wzorzec/i. Zapisz ukośnik jako \/.
+Opcjonalny przyrostek "i" ignoruje wielkość liter. Nieaktywna opcja "Uwzględniaj
+wielkość liter" robi to samo. Żaden inny przyrostek oprócz i nie jest akceptowany.
+
+Odwołania do grup w zastąpieniu używają $0 dla całego dopasowania i $1 do $9 dla
+grup w nawiasach. Na przykład dla 001-report.txt:
+
+  Szukaj:          /(\d+)-([^.]+)/
+  Zamień na:       $2-$1
+  Wynik:           report-001.txt
+
+Błędny wzorzec, niezamknięta forma /wzorzec/ lub nieznany przyrostek wyświetli w
+podglądzie <Error!>, zablokuje zmianę nazw i edytor. Diagnostyka jest dostępna
+pod F3.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+Znalezione dopasowania w oryginalnej nazwie zostaną podświetlone kolorowo w
+lewej kolumnie podglądu. Podświetlenie respektuje opcje "Uwzględniaj wielkość
+liter" i "Wyrażenie regularne", oznacza wszystkie widoczne dopasowania i jest
+zachowywane przy przewijaniu. Tekst utworzony przez pole "Zamień na" zostanie
+podświetlony w prawej kolumnie. W przypadku wyrażenia regularnego podświetlone
+zostanie całe rozszerzone zastąpienie; przy pustym zastąpieniu brak widocznego
+tekstu do podświetlenia.
+
+@VisRenPreview
+$VisRen: podgląd, klawiatura i mysz
+
+Lewa kolumna podglądu to źródło; prawa to cel. Pierwszy wiersz jest aktywny przy
+otwarciu dialogu, podczas gdy fokus zaczyna się w polu "Szukaj". F12 przenosi
+fokus na podgląd; stamtąd wraca na maskę nazwy.
+
+Jeżeli cała lista nie mieści się w obszarze wyświetlania, po prawej stronie
+pojawi się pionowy pasek przewijania. Działają strzałki, kliknięcie na tor,
+przeciągnięcie suwaka i kółko myszy nad listą. Gdy wszystkie wiersze znów się
+mieszczą, pasek automatycznie znika.
+
+#Ogólne klawisze#
+
+  F1                   Otwórz tę pomoc.
+  F2                   Włącz/wyłącz rejestrację protokołu.
+  F3                   Pokaż pełne nazwy lub aktualną diagnostykę wiersza.
+  F4                   Otwórz listę w edytorze.
+  F4 na szablonie [T]  Edytuj oddzielacze słów.
+  F5                   Maksymalizuj/przywróć dialog.
+  F6                   Wczytaj dostępny krok wstecz.
+  F8                   Usuń protokół zmiany nazw po potwierdzeniu.
+  F12                  Przenieś fokus do listy lub z powrotem.
+  Alt+N                Fokus na maskę nazwy.
+  Alt+E                Fokus na maskę rozszerzenia.
+  Alt+S                Fokus na "Szukaj".
+  Alt+P                Fokus na "Zamień na".
+  Alt+C                Przełącz "Uwzględniaj wielkość liter".
+  Alt+G                Przełącz "Wyrażenie regularne".
+  Alt+T                Fokus na szablony nazw.
+  Alt+L                Fokus na szablony rozszerzeń.
+  Enter                Wykonaj główną akcję "Zmień nazwy".
+  Esc                  Zamknij dialog bez zmiany nazw.
+
+#Klawisze, gdy fokus jest na liście#
+
+  Up/Down              Przejdź na sąsiedni wiersz.
+  Home/End             Pierwszy/ostatni wiersz.
+  PgUp/PgDn            Przejdź o stronę.
+  Del                  Usuń wiersz tylko z tej operacji.
+  Ctrl+Up/Down         Zmień kolejność; zmienia liczniki.
+  Ctrl+Left/Right      Przesuń pionowy podział kolumn.
+  Ctrl+Num5            Wyśrodkuj i zresetuj przesunięcie.
+  Alt+Left/Right       Przesuń lewą kolumnę w poziomie.
+  Left/Right           Przesuń prawą kolumnę w poziomie.
+  Ctrl+PgUp            Zamknij VisRen i wróć do źródła na panelu.
+
+#Szablony i mysz#
+
+  Ins na liście szablonów wstawia wybrany szablon do maski.
+  Przeciągając lewym przyciskiem myszy zmieniasz kolejność wierszy.
+  Prawy przycisk myszy na wierszu wyświetli pełne nazwy/błąd.
+  Dwukrotne kliknięcie lewym przyciskiem myszy powraca do źródła na panelu.
+  Kliknięcie na ikonę w nagłówku maksymalizuje/przywraca okno.
+  Kliknięcie na opcję "Loguj zmianę nazw" przełącza rejestrację; kliknięcie
+  na resztę wiersza usuwa istniejący protokół po potwierdzeniu.
+
+Zmiana rozmiaru terminala i klawisz F5 przywrócą równomierne rozdzielenie
+podglądu. Ręczne ustawienie podziału i przesunięcia można potem wykonać
+ponownie.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenEditor
+$VisRen: edycja listy w edytorze UTF-8
+
+Klawisz F4 oferuje eksport w określonych formatach, a następnie otwiera
+tymczasowy UTF-8 dokument z nazwą "Rename list of files" we wbudowanym edytorze f4:
+
+  Źródło + cel         "prawna nazwa"     "nowa nazwa"
+  Tylko cele                              "nowa nazwa"
+
+Każda wartość jest zamknięta w cudzysłowie. Cudzysłowy, ukośniki wsteczne i
+znaki sterujące wewnątrz nazwy są zapisywane z ucieczką. Nie zmieniaj zewnętrznych
+cudzysłowów.
+
+#Rygorystyczna walidacja#
+
+Po zamknięciu edytora VisRen wymaga:
+
+  - dokładnie takiej samej liczby wierszy jak w podglądzie;
+  - dokładnie jednej lub dwóch kolumn w cudzysłowie w zależności od wybranego trybu;
+  - braku dodatkowego tekstu poza wartościami w cudzysłowie;
+  - niezmienionej lewej kolumny w trybie dwóch kolumn;
+  - poprawnej przenośnej nazwy dla każdego celu.
+
+W edytorze nie można dodawać, usuwać ani przesuwać wierszy. W trybie dwóch kolumn
+można zmieniać tylko kolumnę docelową. Dzięki tym kontrolom ewentualne uszkodzone
+cudzysłowy lub niezamierzone zmiany źródła zostaną bezpiecznie wykryte jeszcze
+przed rozpoczęciem operacji.
+
+Przy błędzie VisRen wyjaśni powód i zaoferuje "Edytuj ponownie".
+Edytor otworzy się ponownie na błędnym wierszu z zachowaniem Twojego tekstu.
+Poprawna zmieniona lista uruchomi sekwencyjne zmienianie nazw po zamknięciu edytora.
+Jeśli wygenerowana lista nie uległa zmianie bajtowej, ale zawiera zmiany masek,
+VisRen wymaga potwierdzenia przed rozpoczęciem.
+
+Edytor jest wyłączony, jeśli podgląd zawiera <Error!> lub w trybie podglądu
+kroku wstecz.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenRename
+$VisRen: wykonanie, błędy, protokół i krok wstecz
+
+#Sekwencyjna zmiana nazw#
+
+Wiersze są przetwarzane kolejno od góry do dołu w bieżącej kolejności.
+Niezmieniona nazwa jest pomijana. Źródło, które po otwarciu dialogu zniknęło,
+jest również pomijane. Dla plików i katalogów obowiązują te same reguły.
+
+Obcy istniejący obiekt nigdy nie jest nadpisywany. Obsługiwana jest zmiana
+wielkości liter dla tego samego obiektu; w razie potrzeby f4 użyje unikalnej
+nazwy tymczasowej. Inne cykle nie są dzielone na etapy: na przykład a -> b i b -> a
+zazwyczaj zakończą się błędem zajętego celu, jak w oryginalnym VisRen.
+
+#Błędy czasu wykonania#
+
+Błędy dostępu, zajęte lub powtórzone nazwy i inne błędy oferują opcje:
+
+  Ponów                Spróbuj ponownie ten sam wiersz.
+  Pomiń                Pozostaw źródło bez zmian i kontynuuj.
+  Pomiń wszystko       Nie pytaj przy kolejnych błędach i kontynuuj.
+  Anuluj               Zatrzymaj; nie przetwarzaj pozostałych wierszy.
+
+Operacja nie jest transakcją. Już wykonane zmiany nazw pozostają po pominięciu
+lub anulowaniu ważne. Nieudane i nieprzetworzone źródła pozostaną na panelu
+oznaczone. Komunikat wynikowy pokaże liczbę pomyślnie przetworzonych wierszy.
+
+#Protokół zmiany nazw#
+
+Przy każdym otwarciu dialogu protokół jest włączony. Zaznaczenie przy opcji
+"Loguj zmianę nazw" oznacza, że pomyślne pary zostaną zapisane w pamięci. F2 lub
+kliknięcie na etykietę przełącza rejestrację. Na dysku protokół nie jest zapisywany
+i przy wyjściu z f4 znika. Zapisywane są tylko pomyślne pary i katalog ostatniej
+operacji; gwiazdka za opisem oznacza, że krok wstecz jest dostępny.
+
+F8 lub kliknięcie na resztę wiersza usuwa protokół po potwierdzeniu. Zmiana nazw z
+wyłączonym zapisem również nie utworzy pakietu dla kroku wstecz.
+
+#Krok wstecz (F6)#
+
+F6 wczytuje ostatni pakiet w odwrotnej kolejności: nowe nazwy mają powrócić do
+oryginalnych. W nagłówku wyświetla się zapisany katalog. Wybierz "Zmień nazwy" i
+potwierdź krok wstecz. Odpowiedź "Nie" przywraca zwykły tryb zmiany nazw.
+
+Dla kroku wstecz obowiązują te same reguły o nienadpisywaniu i warianty błędów.
+Przed rozpoczęciem f4 przechodzi do zapisanego katalogu. Po próbie protokół jest
+usuwany, nawet jeśli krok wstecz wykonał się tylko częściowo, a nierozwiązane
+pozycje pozostają oznaczone.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenSafety
+$VisRen: bezpieczeństwo nazw i ograniczenia
+
+Każdy zmieniony cel musi być pojedynczą przenośną nazwą. VisRen zabrania:
+
+  - pustej nazwy, "." i "..";
+  - znaków sterujących poniżej U+0020 i NUL;
+  - <, >, :, ", *, ?, /, ukośnika wstecznego i pionowego;
+  - spacji lub kropki na końcu;
+  - nazw urządzeń DOS CON, PRN, AUX, NUL, COM1..COM9 i LPT1..LPT9 bez względu na
+    wielkość liter i rozszerzenie.
+
+Ukośnika nie można użyć do przeniesienia do innego katalogu. Niezmieniona
+oryginalna nazwa jest dozwolona i po prostu pomijana, nawet jeśli przy tworzeniu
+nowej nazwy nie przeszłaby przenośnej kontroli.
+
+Wstępna kontrola wykrywa błędy maski i przenośnej nazwy, ale nie rezerwuje nazw
+z góry. Istniejący cel, identyczny wynik dwóch wierszy, uprawnienia, systemowe
+ograniczenia długości i cykle mogą nadal powodować błąd przy wykonywaniu. Do
+nadpisania celu nie dojdzie.
+
+Brakujące lub uszkodzone metadane są zastępowane pustym tekstem. Ostrożnie dodawaj
+oddzielacze w maskach metadanych i zawsze sprawdzaj wynik. VisRen nie tworzy
+transakcji i nie dobiera nazw tymczasowych dla cykli z wielu elementów.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@VisRenExamples
+$VisRen: praktyczne przepisy
+
+#Numerowanie i małe litery przy rozszerzeniach#
+
+  Maska nazwy:         [C001+1]_[N]
+  Maska rozszerzenia:  [E][L]
+
+Wynikiem będzie 001_Stara nazwa.jpg, 002_Inna nazwa.jpg i tak dalej. Jeśli potrzebujesz
+liczb w innej kolejności, najpierw zmień kolejność wierszy.
+
+#Zachowanie części nazwy o stałej długości#
+
+  Oryginalna nazwa:    20260805_report_final.txt
+  Maska nazwy:         [N10-21]
+  Maska rozszerzenia:  [E]
+  Wynik:               report_final.txt
+
+#Usunięcie dosłownego prefiksu#
+
+  Maski:               [N] i [E]
+  Szukaj:              draft_
+  Zamień na:           (puste)
+
+#Zamiana grup regex#
+
+  Oryginalna nazwa:    001-report.txt
+  Szukaj:              /(\d+)-([^.]+)/
+  Zamień na:           $2-$1
+  Wynik:               report-001.txt
+
+#Pojmowanie MP3 według tagów#
+
+  Maska nazwy:         [a] - [t]
+  Maska rozszerzenia:  [E][L]
+
+Numer ścieżki można dodać licznikiem lub wyrażeniem ID3 opisanym w części metadanych.
+Puste tagi wykonawcy i nazwy utworu dają pusty tekst, dlatego sprawdź oddzielacze w
+podglądzie.
+
+#Pojmowanie fotografii według daty i rozmiaru#
+
+  Maska nazwy:         [d]_[r]_[C001]
+  Maska rozszerzenia:  [E][L]
+
+Dla JPEG używana jest data wykonania EXIF, o ile istnieje. Dla innych wspieranych
+obrazów [d] pobiera czas zmiany pliku.
+
+#Transliteracja i dosłowne nawiasy#
+
+  Maska nazwy:         [[]archive[]]_[N][TL]
+  Maska rozszerzenia:  [E][L]
+
+Oryginalny plik Пример.TXT zmieni się na [archive]_Primer.txt według oryginalnej
+tabeli transliteracji VisRen.
+
+Naciśnięcie klawisza Backspace spowoduje powrót do spisu treści VisRen.
+
+@Panels
+$Indeks pomocy f4 (Wersja: %Ver)
+f4 to eksperymentalny klon Far Managera / far2l napisany w Go.
+
+~Skróty klawiszowe podglądu / edytora~ViewerEditor@
+~Nawigacja na panelach~PanelNav@
+~Zmień README.md~README@
+
+@ViewerEditor
+$Skróty klawiszowe podglądu i edytora
+Ta sekcja jest generowana dynamicznie z rejestru akcji.
+
+@ViewerNav
+$Klawisze nawigacji
+Editor:
+  Ctrl+Left     - Do granicy poprzedniego słowa
+  Ctrl+Right    - Do granicy następnego słowa
+  Ctrl+Shift+Left/Right - Zaznaczanie po słowach
+  Home/End      - Początek / koniec wiersza
+  PgUp/PgDn     - Strona w górę / w dół
+
+Viewer:
+  Up/Down       - Przewiń o wiersz
+  PgUp/PgDn     - Przewiń o stronę
+  Home/End      - Początek / koniec pliku
+
+@PanelNav
+$Nawigacja na panelach
+Ta sekcja jest generowana dynamicznie z rejestru akcji.
+
+@ShellNav
+$Klawisze nawigacji na panelach
+  Tab           - Przełącz aktywny panel
+  Insert        - Zaznacz plik/folder
+  Ctrl+Tab      - Przełączanie obszarów roboczych
+  Ctrl+W        - Zamknij bieżący obszar roboczy
+  Ctrl+N        - Duplikuj aktywny panel na nowy obszar roboczy
+
+@History
+$Historia poleceń (Alt+F8)
+    Historia poleceń wyświetla listę uprzednio wykonanych poleceń.
+Oprócz klawiszy kursora dostępne są następujące skróty klawiszowe:
+
+  Wstaw wybrane polecenie do wiersza poleceń         Enter
+  (Kliknięcie myszą działa tak samo)
+  Zamknij dialog                                     Esc, F10
+
+  Przełącz tryb wyszukiwania (podciąg / od początku) F2
+  Wpisanie dowolnego znaku filtruje listę
+  Backspace usuwa ostatni znak filtra
+
+  Usuń bieżący wpis z historii                       Shift+Del
+  Wyczyść całą historię poleceń (z potwierdzeniem)   Del
+
+  Kopiuj wybrane polecenie do schowka                Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Historia folderów (Alt+F12)
+    Historia folderów wyświetla listę uprzednio odwiedzonych katalogów.
+Oprócz klawiszy kursora dostępne są następujące skróty klawiszowe:
+
+  Przejdź do wybranego folderu na aktywnym panelu    Enter
+  (Kliknięcie myszą działa tak samo)
+  Przejdź do wybranego folderu na pasywnym panelu    Shift+Enter
+  Wstaw ścieżkę do wiersza poleceń                   Ctrl+Enter
+  Zamknij dialog                                     Esc, F10
+
+  Przełącz tryb wyszukiwania (podciąg / od początku) F2
+  Wpisanie dowolnego znaku filtruje listę
+  Backspace usuwa ostatni znak filtra
+
+  Usuń bieżący wpis z historii                       Shift+Del
+  Wyczyść całą historię folderów (z potwierdzeniem)  Del
+  Usuń wpisy z nieistniejącymi ścieżkami (potwierdz.) Ctrl+R
+
+  Kopiuj wybraną ścieżkę do schowka                  Ctrl+C, Ctrl+Ins

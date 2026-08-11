@@ -127,6 +127,8 @@ func (s *assocEditorState) openList(selected int) {
 			dlg := vtui.ShowMessageOn(menu, " "+Msg("FileAssoc.DeleteTitle")+" ",
 				fmt.Sprintf(Msg("FileAssoc.DeleteConfirm"), assocDisplayLabel(it)),
 				[]string{"&Delete", "Cancel"})
+			// Destructive — render on the WarnDialog palette (see #379).
+			dlg.IsWarning = true
 			dlg.OnResult = func(code int) {
 				if code != 0 {
 					return
@@ -286,9 +288,9 @@ func (s *assocEditorState) editAt(idx int, isCreate bool) {
 		slotEdits[k] = ed
 	}
 
-	btnOk := vtui.NewButton(0, 0, "&Save")
+	btnOk := vtui.NewButton(0, 0, Msg("vtui.Save"))
 	btnOk.IsDefault = true
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	// Register widgets. Order matters for Tab traversal, so we register
 	// in the visual order (mask → desc → each slot pair → buttons).

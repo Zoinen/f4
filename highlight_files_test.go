@@ -372,6 +372,10 @@ func TestFileEntry_HighlightIntegration(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.ShowHighlightMarks = true
+
 	// Загружаем тестовые правила в глобальный объект подсветки
 	iniData := `[Highlight_0]
 Name = TestGo
@@ -508,5 +512,49 @@ NormalColor = foreground:#00FF00
 	// Since the rule has no CursorColor defined, it must remain the default cursorAttr!
 	if got != cursorAttr {
 		t.Errorf("Expected cursor color to be untouched, got %X, want %X", got, cursorAttr)
+	}
+}
+
+func TestFileHighlighter_SelectedCursorDoesNotFallBackToCursorColor(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	iniData := `[Highlight_0]
+Name = Pictures
+Mask = *.jpg
+NormalColor = foreground:#FF9238
+CursorColor = foreground:#FF9238
+`
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ParseIni(strings.NewReader(iniData)))
+
+	selectedCursorAttr := vtui.Palette[ColPanelSelectedCursor]
+	item := vfs.VFSItem{Name: "photo.jpg"}
+	if got := highlighter.GetColor(&item, selectedCursorAttr, true, true); got != selectedCursorAttr {
+		t.Fatalf("selected file under cursor used ordinary CursorColor: got %#x, want %#x", got, selectedCursorAttr)
+	}
+}
+
+func TestFileHighlighter_SelectedCursorFallsBackToSelectedColor(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	iniData := `[Highlight_0]
+Name = Pictures
+Mask = *.jpg
+SelectedColor = foreground:#123456
+CursorColor = foreground:#FF9238
+`
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ParseIni(strings.NewReader(iniData)))
+
+	base := vtui.Palette[ColPanelSelectedCursor]
+	item := vfs.VFSItem{Name: "photo.jpg"}
+	got := highlighter.GetColor(&item, base, true, true)
+	if fg := vtui.GetRGBFore(got); fg != 0x123456 {
+		t.Fatalf("selected file under cursor foreground = #%06x, want SelectedColor #123456", fg)
+	}
+	if bg, want := vtui.GetRGBBack(got), vtui.GetRGBBack(base); bg != want {
+		t.Fatalf("selected file under cursor lost cursor background #%06x, want #%06x", bg, want)
 	}
 }

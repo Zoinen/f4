@@ -47,7 +47,7 @@ func NewFileOpProgressDialog(title string) *FileOpProgressDialog {
 	dlg.lblSpeed = vtui.NewText(0, 0, strings.Repeat(" ", 54), textColor)
 	dlg.lblHint = vtui.NewText(0, 0, Msg("Op.SwitchHint"), vtui.Palette[vtui.ColDialogText])
 
-	dlg.btnCancel = vtui.NewButton(0, 0, "&Cancel")
+	dlg.btnCancel = vtui.NewButton(0, 0, Msg("FileOp.BtnCancel"))
 
 	dlg.AddItem(dlg.lblCurrent)
 	dlg.AddItem(dlg.pbCurrent)
@@ -89,7 +89,7 @@ func (d *FileOpProgressDialog) EnableBackground(onBackground func()) {
 		d.btnBackground.OnClick = onBackground
 		return
 	}
-	d.btnBackground = vtui.NewButton(0, 0, "&Background")
+	d.btnBackground = vtui.NewButton(0, 0, Msg("FileOp.BtnBackground"))
 	d.btnBackground.OnClick = onBackground
 	d.AddItem(d.btnBackground)
 	d.hbox.Add(d.btnBackground, vtui.Margins{Left: 2}, vtui.AlignTop)

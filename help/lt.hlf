@@ -1,0 +1,580 @@
+@Contents
+$f4 Pagalba (Versija: %Ver)
+f4 yra eksperimentinis Far Manager / far2l failų tvarkyklės klonas Go kalba.
+
+~Peržiūros / redaktoriaus klavišai~ViewerEditor@
+~Skydelių navigacija~PanelNav@
+~Vizualusis failų pervardijimas (VisRen)~VisRen@
+~Rodyti README.md~README@
+
+@VisRen
+$Vizualusis failų pervardijimas (VisRen)
+
+VisRen – tai integruotas įrankis vizualiam failų grupiniam pervardijimui f4 tvarkyklėje.
+Jis iš anksto sukuria kiekvieną naują pavadinimą prieš atlikdamas bet kokius pakeitimus ir
+rodo pradinius bei tikslinius pavadinimus šalia vienas kito. Veikia su failais ir
+katalogais vietiniame failų sistemos skydelyje.
+
+Jei skydelio elementai yra pažymėti, VisRen atidaro juos skydelio tvarka. Jei jokie
+elementai nepažymėti, naudojamas elementas po skydelio žymekliu. Tėvinis katalogas „..“
+niekada nenaudojamas. Atidarykite VisRen spausdami F11 ir pasirinkę „Vizualusis failų pervardijimas“;
+meniu priskirta raidė taip pat gali jį aktyvuoti.
+
+~Greitas startas ir dialogo laukai~VisRenQuickStart@
+~Pavadinimų kaukės, plėtiniai, rėžiai, skaitikliai ir kabutės~VisRenMasks@
+~Registras, transliteracija ir apdorojimo tvarka~VisRenTransforms@
+~Datos, ID3, vaizdo/EXIF ir versijos metaduomenys~VisRenMetadata@
+~Paieška, paprastas pakeitimas ir reguliarieji reiškiniai~VisRenSearch@
+~Peržiūros navigacija, klaviatūra ir pelė~VisRenPreview@
+~Pervardijimo sąrašo redagavimas UTF-8 redaktoriuje~VisRenEditor@
+~Pervardijimo vykdymas, klaidos, žurnalas ir atšaukimas~VisRenRename@
+~Perkeliamų failų vardų taisyklės ir svarbūs apribojimai~VisRenSafety@
+~Praktiniai receptai~VisRenExamples@
+
+Realizacija pagrįsta FarPlugins VisRen 3.2.0, bet papildyta griežtesniu failų vardų ir
+redaktoriaus tikrinimu, stabiliomis atsitiktinėmis reikšmėmis bei perkeliamais metaduomenimis.
+
+@VisRenQuickStart
+$VisRen: greitas startas ir dialogo laukai
+
+#Įprasta pervardijimo tvarka#
+
+  1. Pažymėkite reikiamus failus/katalogus klavišu Ins. Vienam elementui pakanka užvesti
+     ant jo skydelio žymeklį.
+  2. Paspauskite F11 ir pasirinkite VisRen.
+  3. Įveskite vardo ir plėtinio kaukes. Pradiniai [N] ir [E] išlaiko abi pradinio pavadinimo
+     dalis nekeistas.
+  4. Jei reikia, užpildykite „Ieškoti“ ir „Pakeisti kuo“ laukus. Atidarius fokusas yra
+     lauke „Ieškoti“, o Tab veda į „Pakeisti kuo“.
+  5. Patikrinkite kiekvieną tikslinį pavadinimą. F3 rodo pilną pradinį pavadinimą, naują
+     pavadinimą arba esamos eilutės diagnostiką.
+  6. Pasirinkite „Pervardyti“ arba paspauskite Enter ant numatytosios pogos.
+
+#Vardas ir plėtinys#
+
+Šie du laukai atskirai sudaro naują bazinį pavadinimą ir plėtinį. Plėtinio laukas
+neturi taško. Tuščias plėtinio rezultatas jį visiškai pašalina. Paprastas tekstas
+kopijuojamas pažodžiui; laužtiniuose skliaustuose esantys reiškiniai įterpia pradinį
+tekstą, skaitiklius, metaduomenis arba transformacijas.
+
+Paskutinis taškas skiria pradinį pavadinimą ir plėtinį. Pavyzdžiui, archive.tar.gz
+turi vardą archive.tar ir plėtinį gz. README neturi plėtinio. Paslėptas failas,
+toks kaip .gitignore, turi tuščią vardą ir plėtinį gitignore.
+
+#Šablonai ir [+]#
+
+Sąrašuose „Vardo šablonai“ ir „Plėtinio šablonai“ pateikiami atitinkamai kaukei tinkami
+reiškiniai. Pasirinkus elementą, jis tik pažymimas. [+] mygtukas įterpia šį pasirinktą
+šabloną žymeklio pozicijoje ir grąžina fokusą į atitinkamą kaukę – tiksliai taip, kaip
+originaliame VisRen. Jei šablonų sąrašas turi fokusą, Ins įterpia esamą elementą, o fokusas
+lieka sąraše. Rėžio ir skaitiklio paaiškinimai įterpiant tampa tinkamomis reikšmėmis.
+
+#Paieškos nustatymai#
+
+Paieška ir pakeitimas vykdomi visame pavadinime, sukurtame abiejų kaukių, įskaitant tašką ir
+plėtinį. Laukelis „Skirti registro dydį“ iš pradžių yra aktyvus. „Reguliarusis reiškinys“
+perjungia tarp paprastos paieškos ir regex režimo.
+
+#Gyvasis peržiūrėjimas ir diagnostika#
+
+Bet koks redagavimas iškart atnaujina dvi peržiūros skiltis. Esant klaidingai kaukei, rėžiui,
+skaitikliui, regexui ar galutiniam vardui, visose eilutėse pasirodo <Error!>. Pervardijimo ir
+redaktoriaus paleidimo mygtukai blokuojami. F3 rodo tikrąją priežastį.
+
+Keturi tekstiniai laukai naudoja F4 istoriją. Reikšmės, su kuriomis paleistas pervardijimas,
+įrašomos į atitinkamas istorijas. Žodžių skirtukai, skirti [T], saugomi atskirai VisRen
+naudotojo nustatymuose.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenMasks
+$VisRen: kaukės, rėžiai, skaitikliai ir kabutės
+
+#Pagrindiniai reiškiniai#
+
+  [N]          Pradinis pavadinimas be paskutinio plėtinio.
+  [E]          Pradinis plėtinys be pradinio taško.
+  [[]          Atidarantis laužtinis skliaustas kaip paprastas simbolis.
+  []]          Uždarantis laužtinis skliaustas kaip paprastas simbolis.
+
+Visas tekstas už reiškinių ribų yra pažodinis. Atsitiktinis uždarantis skliaustas, neuždarytas
+atidarantis skliaustas arba nežinomas reiškinys laikomi klaida.
+
+#Rėžiai#
+
+Rėžis rašomas iškart po N arba E. Pozicijos skaičiuojamos nuo 1 pagal Unicode simbolius,
+o ne pagal baitus. Neigiama pozicija skaičiuojama nuo galo. Tos pačios formos veikia su E,
+pavyzdžiui, [E1-3].
+
+Pradiniam vardui abcdefghij:
+
+  [N2]         b                 vienas simbolis
+  [N2-5]       bcde              pozicijos nuo 2 iki 5 imtinai
+  [N2,5]       bcdef             penki simboliai, pradedant nuo 2
+  [N2-]        bcdefghij         nuo 2 simbolio iki galo
+  [N-2]        i                 antras simbolis nuo galo
+  [N2--5]      bcdef             nuo 2 iki penkto simbolio nuo galo
+  [N-8-5]      cde               nuo 8 nuo galo iki 5 nuo galo
+  [N-8,5]      cdefg             penki simboliai nuo 8 nuo galo
+  [N-5-]       fghij             nuo 5 nuo galo iki galo
+
+Išėjimas už ribų pagal galimybes nukerpamas arba duoda tuščią eilutę. Nulinė pozicija ir
+atvirkštinis rėžis yra klaidos. Rėžio šablonas iš sąrašo įterpia ilgiausio pradinio
+pavadinimo arba plėtinio ilgį.
+
+#Skaitikliai#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Pradiniai skaitmenys nustato pirmąją reikšmę ir minimalų plotį. Jų gali būti ne daugiau
+kaip devyni. Jei +žingsnis praleistas, žingsnis lygus 1. Skaitiklis seka esamą eilučių
+tvarką: Ctrl+Up/Down ir vilkimas keičia išduotus numerius. Plotis yra minimalus – didesni
+skaičiai nenukerpami.
+
+#Reiškinių derinimas#
+
+Reiškinius ir paprastą tekstą leidžiama derinti. Pavyzdžiui, [C001+1]_[N1-12] duoda triženklį
+numerį, pabraukimą ir pirmuosius dvylika senojo vardo simbolių. Transformacijų reiškiniai patys
+teksto neprideda, o keičia paruoštą pavadinimo dalį.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenTransforms
+$VisRen: transformacijos ir apdorojimo tvarka
+
+#Registro keitimas#
+
+  [L]          Viskas mažosiomis raidėmis.
+  [U]          Viskas didžiosiomis raidėmis.
+  [F]          Pirmasis simbolis didysis, kiti mažieji.
+  [T]          Pirmieji visų žodžių simboliai didieji.
+  [M]          Muzikinio „Atlikėjas - kūrinys“ apiforminimas.
+
+[T] naudoja žodžių skirtukus „-. _&“. Pasirinkite [T] bet kuriame šablonų sąraše ir paspauskite
+F4, kad juos pakeistumėte. VisRen išsaugo iki 18 simbolių naudotojo nustatymuose ir naudoja
+juos toliau.
+
+[M] atpažįsta „ - “ arba „_-_“ tarp atlikėjo ir kūrinio. Kiekvienas atlikėjo žodis pradedamas
+didžiąja raide, o kūrinyje tik pirmasis žodis pradedamas didžiąja. Atskiras rusiškas jungtukas „и“
+atlikėjo varde paverčiamas mažąja raide, kas atitinka originalią VisRen elgseną.
+
+Jei vienoje kaukėje yra keletas registro transformacijų, prioritetas yra fiksuotas: [L], [U],
+[F], [T], [M]. Vykdoma tik pirmoji iš šio sąrašo.
+
+#Transliteracija#
+
+  [TL]         Rusų kirilica į VisRen Latin lentelę.
+  [TR]         Atvirkštinis konvertavimas iš Latin į rusų kirilicą.
+
+Naudojama originali VisRen lentelė: pavyzdžiui ё -> jo, ж -> zh, х -> kh, щ -> shh, ю -> ju,
+я -> ja. Registras pagal galimybes išlaikomas. Atliekant atvirkštinį konvertavimą pasirenkamas
+ilgiausias sutapimas. Jei yra ir [TL], ir [TR], prioritetas teikiamas [TL].
+
+#Tiksli apdorojimo tvarka#
+
+  1. Išplečiami vardo ir plėtinio reiškiniai.
+  2. Dalys sujungiamos tašku, jei plėtinys nėra tuščias.
+  3. Pagal pilną pavadinimą atliekama paieška ir pakeitimas.
+  4. Rezultatas vėl padalijamas pagal paskutinį tašką.
+  5. Reikiama dalis transliteruojama.
+  6. Paskutinis veiksmas yra pasirinkto registro pakeitimas.
+  7. Patikrinamas paruoštas failo vardo komponentas.
+
+Todėl registro keitimas veikia ir įrašytą pakeitimo tekstą, o paieška gali sutapti su
+sugeneruotu plėtiniu.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenMetadata
+$VisRen: datos ir failų metaduomenys
+
+Metaduomenys skaitomi tingiai (lazy load) ir kešuojami vieną kartą kiekvienam pradiniam elementui.
+Trūkstamas arba nepalaikomas laukas duoda tuščią eilutę ir pats savaime nesustabdo peržiūros.
+
+#Failo laikas ir sesijos reikšmės#
+
+  [DM]         Paskutinio pakeitimo data vietiniu laiku: YYYY.MM.DD
+  [TM]         Paskutinio pakeitimo laikas vietiniu laiku: hh-mm-ss
+  [R]          Atsitiktinis dešimtainis skaičius nuo 0 iki 32767
+
+[R] priskiriamas vieną kartą atidarant dialogą. Jis nesikeičia redaguojant kaukes ir juda
+kartu su savo eilute. Naujoje VisRen sesijoje priskiriamos naujos reikšmės.
+
+#MP3 ir ID3#
+
+Kūrinio numerio reiškinys susideda iš atidarančio skliausto, paprasto ASCII simbolio „grotelės“
+U+0023 ir uždarančio skliausto ( [#] ). Kiti laukai:
+
+  [t]          Kūrinio pavadinimas
+  [a]          Atlikėjas
+  [l]          Albumas
+  [y]          Metai arba data
+  [g]          Žanras
+
+Esant ID3v2, naudojami jo ID3v2.3 arba ID3v2.4 kadrai. Kitu atveju skaitomas ID3v1.1, įskaitant
+kūrinio numerį ir žanrų lentelę. Palaikomos sisteminė koduotė, UTF-8 ir UTF-16.
+
+#Vaizdai ir EXIF#
+
+  [c]          Kameros gamintojas iš EXIF JPEG
+  [m]          Kameros modelis iš EXIF JPEG
+  [d]          Fotografavimo data: YYYY.MM.DD hh-mm-ss
+  [r]          Vaizdo dydis: PLOTISxAUKŠTIS
+
+Dydis nuskaitomas iš JPEG, BMP, GIF ir PNG. Gamintojas, modelis ir EXIF data nuskaitomi iš JPEG.
+Jei tinkamos EXIF datos nėra, [d] naudoja vaizdo pakeitimo datą. Mažosios [m]/[r] – metaduomenys,
+o didžiosios [M]/[R] – registro režimas ir atsitiktinis skaičius.
+
+#Vykdomojo failo versija#
+
+  [V]          Fiksuota versija iš PE failo .exe/.dll resurso
+
+PE resursas analizuojamas integruotu kodu visose palaikomose OS. Jei tinkamos versijos nėra,
+[V] duoda tuščią eilutę.
+
+Metaduomenų tekstas su kelio skirtukais ar kitais draudžiamais simboliais atmetamas arba
+blokuojamas galutinio tikrinimo metu. Visada tikrinkite peržiūrą dirbdami su svetimais tagais.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenSearch
+$VisRen: paieška, pakeitimas ir reguliarieji reiškiniai
+
+Paieška ir pakeitimas vykdomi visame pavadinime, sukurtame abiejų kaukių, įskaitant tašką ir
+plėtinį. Tuščias laukas „Ieškoti“ išjungia šį etapą. Pakeičiami visi nepersidengiantys atitikmenys.
+
+#Paprastas režimas#
+
+If „Reguliarusis reiškinys“ išjungtas, ieškomas tekstas yra pažodinis. Su pažymėtu laukeliu
+„Skirti registro dydį“ File ir file skiriasi. Be šio nustatymo Unicode raidžių registras
+ignoruojamas, o pakeitimas įterpiamas toks, koks įvestas.
+
+Pavyzdys: kaukės [N] ir [E], paieška "draft_" ir tuščias pakeitimas pavers draft_report.txt į report.txt.
+
+#Reguliariųjų reiškinių režimas#
+
+Įjunkite „Reguliarusis reiškinys“, kad naudotumėte F4 regex variklį. Šabloną galima įvesti tiesiogiai
+arba kaip /išraiška/i. Formoje su slešais tikrasis slešas rašomas kaip \/, o neprivaloma i vėliavėlė
+įjungia paiešką neatsižvelgiant į registrą. Nuimtas registro laukelis daro tą patį. Kitos vėliavėlės
+po uždarančio slešo nepriimamos.
+
+Pakeitimo eilutėje $0 reiškia visą sutapimą, o $1 ... $9 – grupes skliaustuose. Pavyzdžiui, failui
+001-report.txt:
+
+  Ieškoti:         /(\d+)-([^.]+)/
+  Pakeisti:        $2-$1
+  Rezultatas:       report-001.txt
+
+Klaidinga išraiška, neuždaryta forma /išraiška/ arba nežinoma vėliavėlė rodo <Error!>, blokuoja
+pervardijimą ir redaktorių. Diagnostika pasiekiama spaudžiant F3.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+Sutapimai, rasti pradiniame varde, išryškinami spalva kairėje peržiūros skiltyje. Išryškinimas
+atsižvelgia į „Skirti registro dydį“ ir „Reguliarusis reiškinys“ nustatymus, pažymi visus matomus
+sutapimus ir išlaikomas ruliuojant. Tekstas, sukurtas lauko „Pakeisti kuo“, išryškinamas dešinėje
+skiltyje. Reguliariojo reiškinio atveju išryškinama visa išplėsta pakeitimo dalis; esant tuščiam
+pakeitimui matomo teksto išryškinimui nėra.
+
+@VisRenPreview
+$VisRen: peržiūra, klaviatūra ir pelė
+
+Kairėje rodomas pradinis pavadinimas, dešinėje – apskaičiuotas galutinis. Atidarant dialogą pirmoji
+eilutė yra aktyvi, o klaviatūros fokusas stovi lauke „Ieškoti“. F12 perkelia fokusą į sąrašą ir atgal.
+
+Jei visos eilutės netelpa peržiūros srityje, dešinėje atsiranda vertikali slankjuostė. Veikia
+rodyklės, spustelėjimai ant takelio, slankiklio vilkimas ir pelės ratukas virš sąrašo. Kai visos
+eilutės vėl telpa, juosta automatiškai išnyksta.
+
+#Bendrieji klavišai#
+
+  F1                   Atidaryti šią pagalbą.
+  F2                   Įjungti/išjungti žurnalo įrašymą.
+  F3                   Pilni pavadinimai arba eilutės diagnostika.
+  F4                   Atidaryti sąrašą redaktoriuje.
+  F4 ant [T] šablono   Pakeisti žodžių skirtukus.
+  F5                   Išplėsti/atkurti dialogą.
+  F6                   Įkelti prieinamą atšaukimą.
+  F8                   Išvalyti žurnalą po patvirtinimo.
+  F12                  Perkelti fokusą į sąrašą arba atgal.
+  Alt+N                Pereiti į vardo kaukę.
+  Alt+E                Pereiti į plėtinio kaukę.
+  Alt+S                Pereiti į lauką „Ieškoti“.
+  Alt+P                Pereiti į lauką „Pakeisti“.
+  Alt+C                Perjungti „Skirti registro dydį“.
+  Alt+G                Perjungti „Reguliarusis reiškinys“.
+  Alt+T                Pereiti prie vardo šablonų.
+  Alt+L                Pereiti prie plėtinio šablonų.
+  Enter                Atlikti pagrindinį „Pervardyti“.
+  Esc                  Uždaryti dialogą be pervardijimo.
+
+#Klavišai esant fokusui sąraše#
+
+  Up/Down              Pereiti į kaimyninę eilutę.
+  Home/End             Pirma/paskutinė eilutė.
+  PgUp/PgDn            Pereiti į puslapį.
+  Del                  Pašalinti eilutę tik iš šios operacijos.
+  Ctrl+Up/Down         Pakeisti tvarką; keičia skaitiklius.
+  Ctrl+Left/Right      Perkelti stulpelių skirtuką.
+  Ctrl+Num5            Centruoti ir anuliuoti prasukimą.
+  Alt+Left/Right       Prasukti pradinį stulpelį.
+  Left/Right           Prasukti galutinį stulpelį.
+  Ctrl+PgUp            Uždaryti VisRen ir grįžti prie šaltinio.
+
+#Šablonai ir pelė#
+
+  Ins šablonų sąraše įterpia pasirinktą šabloną į kaukę.
+  Vilkimas kairiuoju mygtuku keičia eilučių tvarką.
+  Dešinysis mygtukas ant eilutės rodo pilnus pavadinimus/klaidą.
+  Dvigubas spustelėjimas grąžina prie pradinio elemento skydelyje.
+  Spustelėjimas ant piktogramos antraštėje išplečia/atkuria langą.
+  Spustelėjimas ant žurnalo žymos perjungia įrašymą; ant likusios eilutės
+  dalies – išvalo turimą žurnalą po patvirtinimo.
+
+Terminalo keitimas ir F5 vėl padalija sąrašą į dvi lygias skiltis. Po to skirtuką ir
+prasukimą galima sureguliuoti rankiniu būdu.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenEditor
+$VisRen: sąrašo redagavimas UTF-8
+
+F4 siūlo aiškiai pavadintus variantus ir atidaro laikiną dokumentą UTF-8 „Failų pervardijimo
+sąrašas“ įmontuotame F4 redaktoriuje:
+
+  Pradiniai + nauji   "pradinis vardas"    "galutinis vardas"
+  Tik nauji                               "galutinis vardas"
+
+Kiekviena reikšmė pateikiama kabutėse. Kabutės, atvirkštinė koša ir valdymo simboliai vardo
+viduje įrašomi su ekranavimu. Nešalinkite išorinių kabučių.
+
+#Griežtas tikrinimas#
+
+Uždarius redaktorių VisRen reikalauja:
+
+  - tiksliai tiek pat eilučių, kiek buvo peržiūroje;
+  - vieną arba du stulpelius kabutėse pagal pasirinktą režimą;
+  - jokio pašalinio teksto už kabučių ribų;
+  - nepakeisto pradinio stulpelio dviejų stulpelių režime;
+  - leistino perkeliamo komponento kiekvienam galutiniam vardui.
+
+Redaktoriuje negalima pridėti, trinti ir keisti eilučių tvarkos. Dviejų stulpelių režime
+leidžiama keisti tik galutinį. Tikrinimų dėka iškreiptos kabutės ir atsitiktinis šaltinio
+pakeitimas saugiai aptinkami prieš prasidedant operacijai.
+
+Esant klaidai VisRen paaiškina priežastį ir siūlo „Ištaisyti“. Redaktorius vėl atsidarys
+probleminėje eilutėje, išlaikęs jūsų tekstą. Leistinas pakeistas sąrašas paleidžia nuoseklų
+pervardijimą uždarius redaktorių. Jei sukurtas kaukėmis sąrašas nesikeitė baitais, bet turi
+naujus pavadinimus, VisRen pirmiausia reikalauja patvirtinimo.
+
+Redaktorius neprieinamas esant <Error!> ir atšaukimo peržiūros režime.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenRename
+$VisRen: vykdymas, klaidos, žurnalai ir atšaukimas
+
+#Nuoseklus pervardijimas#
+
+Eilutės apdorojamos po vieną iš viršaus į apačią esama tvarka. Nepasikeitęs pavadinimas
+praleidžiamas. Išnykęs po dialogo atidarymo šaltinis taip pat praleidžiamas. Failams ir
+katalogams galioja tos pačios taisyklės.
+
+Svetimas egzistuojantis objektas niekada neperrašomas. Palaikomas tik to paties objekto vardo
+registro keitimas; prireikus F4 naudoja unikalų laikiną vardą. Kiti ciklai neskaidomi į stadijas:
+pavyzdžiui, kai a virsta b ir b virsta a, tai paprastai sukelia įprastą užimto tikslo klaidą.
+
+#Klaidos vykdymo metu#
+
+Prieigos klaidos, užimti ar pasikartojantys tikslai ir kitos klaidos siūlo variantus:
+
+  Pakartoti            Pakartoti tą pačią eilutę.
+  Praleisti            Nekeisti šaltinio ir tęsti.
+  Praleisti visus      Neklausti esant kitoms klaidoms.
+  Atšaukti             Sustabdyti, neapdorojant likučio.
+
+Operacija nėra transakcija. Jau sėkmingi pervardijimai išlieka po praleidimo arba atšaukimo.
+Nesėkmingi ir neapdoroti šaltiniai lieka pažymėti skydelyje. Galutinis pranešimas rodo sėkmingai
+apdorotų eilučių skaičių.
+
+#Pervardijimo žurnalas#
+
+Pri kiekvieno dialogo atidarymo žurnalas įjungtas. Varna eilutėje „Pervardijimo žurnalas“
+reiškia, kad sėkmingos poros bus įrašytas į atmintį. F2 arba spustelėjimas ant žymos perjungia
+įrašymą. Į diską žurnalas nerašomas ir išeinant iš F4 išnyksta. Saugomos tik sėkmingos poros ir
+paskutinės operacijos katalogas; žvaigždutė po užrašo reiškia, kad atšaukimas pasiekiamas.
+
+F8 arba spustelėjimas ant likusios eilutės dalies išvalo žurnalą po patvirtinimo. Pervardijimas
+su išjungtu įrašymu taip pat nepalieka paketo atšaukimui.
+
+#Atšaukimas (F6)#
+
+F6 užkrauna paskutinį žurnalą atvirkštine tvarka: nauji pavadinimai turi grįžti prie pradinių.
+Antraštėje rodomas išsaugotas katalogas. Pasirinkite „Pervardyti“ ir patvirtinkite atšaukimą.
+Atsakymas „Ne“ grąžina įprastą pervardijimo režimą.
+
+Atšaukimui galioja tas pats perrašymo draudimas ir klaidų variantai. Prieš pradedant F4 pereina į
+išsaugotą katalogą. Po bandymo žurnalas išvalomas, net jei atšaukimas atliktas tik iš dalies, o
+neišspręsti elementai lieka pažymėti.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenSafety
+$VisRen: failų vardų saugumas ir apribojimai
+
+Kiekvienas pakeistas tikslas turi būti vienas perkeliamas failo vardo komponentas. VisRen draudžia:
+
+  - tuščią vardą, „.“ ir „..“;
+  - valdymo simbolius žemiau U+0020 ir NUL;
+  - <, >, :, ", *, ?, /, atvirkštinį ir vertikalų brūkšnį;
+  - tarpą arba tašką gale;
+  - DOS įrenginių vardus CON, PRN, AUX, NUL, COM1..COM9 ir LPT1..LPT9 be registro ir plėtinio.
+
+Slešo negalima naudoti perkėlimui į kitą katalogą. Nepakeistas pradinis pavadinimas leidžiamas ir tiesiog
+praleidžiamas, net jei kuriant noują pavadinimą jis nepraeitų perkeliamo tikrinimo.
+
+Išankstinis tikrinimas randa kaukės ir perkeliamo vardo klaidas, bet nerezervuoja tikslų iš anksto.
+Egzistuojantis tikslas, vienodas dviejų eilučių rezultatas, teisės, sisteminiai ilgio apribojimai ir
+ciklai vis tiek gali duoti klaidą vykdymo metu. Tikslo perrašymo nebus.
+
+Trūkstami arba pažeisti metaduomenys virsta tuščiu tekstu. Atsargiai pridėkite skirtukus metaduomenų
+kaukėse ir visada tikrinkite rezultatą. VisRen nesukuria transakcijos ir parenka laikinus vardus ciklams
+iš kelių elementų.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@VisRenExamples
+$VisRen: praktiniai receptai
+
+#Failų numeravimas ir mažosios raidės plėtiniuose#
+
+  Vardo kaukė:         [C001+1]_[N]
+  Plėtinio kaukė:     [E][L]
+
+Gausis 001_Senas vardas.jpg, 002_Kitas vardas.jpg ir taip toliau. Jei numeriai reikalingi kita tvarka,
+pirmiausia perstatykite eilutes.
+
+#Palikti fiksuoto ilgio vardo dalį#
+
+  Pradinis vardas:     20260805_report_final.txt
+  Vardo kaukė:         [N10-21]
+  Plėtinio kaukė:     [E]
+  Rezultatas:          report_final.txt
+
+#Pašalinti pažodinį prefiksą#
+
+  Kaukės:              [N] ir [E]
+  Ieškoti:            draft_
+  Pakeisti:            tuščia eilutė
+
+#Sukeisti vietomis regex grupes#
+
+  Pradinis vardas:     001-report.txt
+  Ieškoti:            /(\d+)-([^.]+)/
+  Pakeisti:            $2-$1
+  Rezultatas:          report-001.txt
+
+#Pavadinti MP3 pagal tagus#
+
+  Vardo kaukė:         [a] - [t]
+  Plėtinio kaukė:     [E][L]
+
+Kūrinio numerį galima pridėti skaitikliu arba ID3 reiškiu, aprašytu metaduomenų skyriuje. Tušti atlikėjo
+ir pavadinimo tagai duoda tuščią tekstą, todėl patikrinkite skirtukus peržiūroje.
+
+#Pavadinti nuotraukas pagal datą ir dydį#
+
+  Vardo kaukė:         [d]_[r]_[C001]
+  Plėtinio kaukė:     [E][L]
+
+JPEG naudojama fotografavimo data EXIF, jei ji yra. Kitiems palaikomiems vaizdams [d] ima failo pakeitimo
+laiką.
+
+#Transliteracija ir pažodiniai skliaustai#
+
+  Vardo kaukė:         [[]archive[]]_[N][TL]
+  Plėtinio kaukė:     [E][L]
+
+Pradinis Пример.TXT virsta į [archive]_Primer.txt pagal originalią VisRen transliteracijos lentelę.
+
+Norėdami grįžti į VisRen oglavlį, paspauskite Backspace.
+
+@Panels
+$f4 Pagalba (Versija: %Ver)
+f4 yra eksperimentinis Far Manager / far2l failų tvarkyklės klonas Go kalba.
+
+~Peržiūros / redaktoriaus klavišai~ViewerEditor@
+~Skydelių navigacija~PanelNav@
+~README.md rodymas~README@
+
+@ViewerEditor
+$Peržiūros ir redaktoriaus klavišai
+Šis skyrius generuojamas dinamiškai iš veiksmų registro.
+
+@ViewerNav
+$Navigacijos klavišai
+Redaktorius:
+  Ctrl+Left     - Į ankstesnio žodžio ribą
+  Ctrl+Right    - Į kito žodžio ribą
+  Ctrl+Shift+Left/Right - Žymėjimas žodžiais
+  Home/End      - Eilutės pradžia / galas
+  PgUp/PgDn     - Puslapis aukštyn / žemyn
+
+Peržiūra:
+  Up/Down       - Prasukti eilutę
+  PgUp/PgDn     - Prasukti puslapį
+  Home/End      - Failo pradžia / galas
+
+@PanelNav
+$Skydelių navigacija
+Šis skyrius generuojamas dinamiškai iš veiksmų registro.
+
+@ShellNav
+$Navigacijos klavišai skydeliuose
+  Tab           - Pakeisti aktyvų skydelį
+  Insert        - Pažymėti failą/katalogą
+  Ctrl+Tab      - Perjungti darbo erdves
+  Ctrl+W        - Uždaryti esamą darbo erdvę
+  Ctrl+N        - Klonuoti esamą skydelį į naują erdvę
+
+@History
+$Komandų istorija (Alt+F8)
+    Komandų istorija rodo anksčiau įvykdytų komandų sąrašą.
+Be žymeklio klavišų, galimos šios nuorodos:
+
+  Įterpti pasirinktą komandą į komandų eilutę        Enter
+  (Pelės paspaudimas veikia taip pat)
+  Uždaryti dialogą                                     Esc, F10
+
+  Perjungti paieškos režimą (dalies / nuo pradžios)   F2
+  Įvedus bet kurį simbolį, sąrašas filtruojamas
+  Backspace pašalina paskutinį filtro simbolį
+
+  Ištrinti esamą įrašą iš istorijos                  Shift+Del
+  Išvalyti visą komandų istoriją (su patvirtinimu)   Del
+
+  Nukopijuoti pasirinktą komandą į iškarpinę         Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Katalogų istorija (Alt+F12)
+    Katalogų istorija rodo anksčiau aplankytų katalogų sąrašą.
+Be žymeklio klavišų, galimos šios nuorodos:
+
+  Eiti į pasirinktą katalogą aktyviame skydelyje      Enter
+  (Pelės paspaudimas veikia taip pat)
+  Eiti į pasirinktą katalogą pasyviame skydelyje      Shift+Enter
+  Įterpti kelią į komandų eilutę                       Ctrl+Enter
+  Uždaryti dialogą                                     Esc, F10
+
+  Perjungti paieškos režimą (dalies / nuo pradžios)   F2
+  Įvedus bet kurį simbolį, sąrašas filtruojamas
+  Backspace pašalina paskutinį filtro simbolį
+
+  Ištrinti esamą įrašą iš istorijos                  Shift+Del
+  Išvalyti visą katalogų istoriją (su patvirtinimu)  Del
+  Išvalyti neegzistuojančius kelius                  Ctrl+R
+
+  Nukopijuoti pasirinktą kelią į iškarpinę              Ctrl+C, Ctrl+Ins

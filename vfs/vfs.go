@@ -2,12 +2,14 @@ package vfs
 
 import (
 	"context"
-	"github.com/unxed/vtinput"
-	"github.com/unxed/vtui"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"time"
+
+	"github.com/unxed/vtinput"
+	"github.com/unxed/vtui"
 )
 
 var CustomConfigDir string
@@ -36,6 +38,7 @@ type HostAPI interface {
 
 	RegisterHighlighter(p vtui.HighlighterProvider)
 	RegisterVFSProvider(p VFSProvider)
+	RegisterURIProvider(p URIProvider) error
 	RegisterDrive(name string, factory func() VFS)
 	RegisterGlobalHotkey(vk uint16, mods vtinput.ControlKeyState, handler func(app App))
 	RegisterPluginMenuItem(label string, handler func(app App))
@@ -44,8 +47,12 @@ type HostAPI interface {
 
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
-	Name         string
-	Size         int64
+	Name string
+	Size int64
+	// SizeKnown distinguishes a real zero-byte file from a remote object whose
+	// length is unavailable until Open/materialization. Non-zero Size is always
+	// treated as known for backwards compatibility with existing VFS plugins.
+	SizeKnown    bool
 	IsDir        bool
 	MTime        time.Time
 	Mode         string
@@ -77,6 +84,12 @@ type VFSItem struct {
 	// Consumers that display "physical size" should hide the metric
 	// entirely when the accumulated total is 0.
 	PhysicalSize int64
+	// Revision is a provider-supplied, opaque strong identity for the current
+	// file contents. A non-empty value must change whenever bytes (or a native
+	// document's exported representation) can change. It is not a path, an
+	// ETag precondition, or user-visible metadata; consumers may use it only as
+	// a cache key together with the VFS session and canonical path.
+	Revision string
 	// Metadata for Attributes dialog
 	ATime    time.Time // Last Access
 	CTime    time.Time // Creation (Win) or Status Change (Unix)
@@ -87,11 +100,16 @@ type VFSItem struct {
 
 // VFSCapabilities defines what the current VFS implementation can do efficiently.
 type VFSCapabilities struct {
-	HasServerSideCopy  bool
-	HasServerSideMove  bool
-	HasRandomAccess    bool // Supports ReadAt
-	HasSearch          bool // Supports server-side search
-	HasUnixPermissions bool // Indicates if VFS natively supports Unix-style permissions
+	HasServerSideCopy          bool
+	HasServerSideMove          bool
+	HasRandomAccess            bool // Supports ReadAt
+	HasSearch                  bool // Supports server-side search
+	HasUnixPermissions         bool // Indicates if VFS natively supports Unix-style permissions
+	HasIdentityPreservingWrite bool // Create on an existing writable file updates content without replacing its canonical object identity.
+	// HasAtomicNoReplaceRename guarantees that Rename with an explicit
+	// DestinationOverwrite=false decision cannot replace an existing target,
+	// including one created concurrently after a caller's Stat.
+	HasAtomicNoReplaceRename bool
 }
 
 // VFS is the core interface for file operations in f4.
@@ -130,6 +148,38 @@ type VFS interface {
 
 	Clone() VFS
 	Close() error
+}
+
+// ManagedTransferWriter marks a destination whose Close performs the actual
+// remote transfer and reports that transfer through ReporterKey. File-copy
+// code must not count bytes merely staged into such a writer as remotely
+// completed; doing so makes the total bar reach 100% before the upload has
+// even started.
+type ManagedTransferWriter interface {
+	TransferProgressManaged() bool
+}
+
+// AbortableWriter is a staged writer whose Abort discards all bytes without
+// publishing them at the destination. Abort must be idempotent and Close
+// after a successful Abort must not commit. Remote VFS implementations use
+// this at the error boundary between reading a source and committing an
+// upload; context cancellation alone is not an explicit commit contract.
+type AbortableWriter interface {
+	Abort() error
+}
+
+// ManagedTransferDestination lets file-copy progress reserve a separate
+// commit/upload phase before Create is called. A writer-level assertion is
+// too late for sources which materialize during Open.
+type ManagedTransferDestination interface {
+	ManagedTransferWrites() bool
+}
+
+// RemoteTransferVFS marks a VFS whose sequential reads/writes can represent a
+// network phase. It lets cross-cloud progress account for source download and
+// destination upload separately while local-to-cloud remains one phase.
+type RemoteTransferVFS interface {
+	RemoteTransfer() bool
 }
 
 // TitleProvider allows a VFS to provide a custom display prefix (e.g. "user@host" for network drives).
@@ -283,6 +333,113 @@ type OptimisticPathSetter interface {
 	SetPathOptimistic(path string) error
 }
 
+// TransferNameProvider lets a source VFS separate the stable name shown in
+// its panel from the name that should be created in another file system. A
+// provider may need this for display-only disambiguators or synthetic export
+// extensions. Returning an empty string asks the host to use Base(srcPath).
+type TransferNameProvider interface {
+	TransferName(srcPath string, dst VFS) string
+}
+
+// ShareRole is the effective access granted by a share link. Providers expose
+// only the roles they can implement for a particular object; callers must not
+// assume that every remote file system supports every role.
+type ShareRole uint8
+
+const (
+	ShareRoleViewer ShareRole = iota + 1
+	ShareRoleCommenter
+	ShareRoleEditor
+	// ShareRoleUploader is a write-only link, such as an S3 presigned PUT.
+	ShareRoleUploader
+	// ShareRoleServerControlled describes a direct resource URL whose actual
+	// access is determined by server ACLs. It is useful for generic WebDAV,
+	// where authentication mode alone cannot prove whether GET is public.
+	ShareRoleServerControlled
+)
+
+// ShareLink is a provider-issued URL and its effective access. ExpiresAt is
+// zero for persistent links. Revocable is false for self-contained bearer
+// URLs such as an S3 presigned request, which can only be allowed to expire.
+type ShareLink struct {
+	URL       string
+	Role      ShareRole
+	ExpiresAt time.Time
+	// ExpiresAtIsMaximum means temporary signing credentials or a provider
+	// policy can invalidate the link before ExpiresAt. The timestamp is still
+	// the latest possible validity time and must not be presented as a promise.
+	ExpiresAtIsMaximum bool
+	Revocable          bool
+}
+
+// ShareLinkInfo describes link-sharing support for one concrete object.
+// ExpirationOptions contains exact durations accepted by CreateShareLink; a
+// zero duration means no expiration. Notice is safe, user-facing explanatory
+// text and must never contain credentials or a signed URL.
+type ShareLinkInfo struct {
+	Provider          string
+	ItemName          string
+	Roles             []ShareRole
+	ExpirationOptions []time.Duration
+	DefaultExpiration time.Duration
+	CanCreate         bool
+	CanRevoke         bool
+	// LinksUnenumerable means Link==nil is not evidence that no previously
+	// issued links remain active. S3 presigned URLs are the canonical example:
+	// they cannot be listed or individually revoked after creation.
+	LinksUnenumerable bool
+	// UnmanagedPublicAccess means the provider proved a separate kind of public
+	// exposure which this dialog cannot enumerate or revoke. Unlike
+	// LinksUnenumerable, it does not make the outcome of creating this dialog's
+	// own link class unknowable. Google Workspace published views are the
+	// canonical example.
+	UnmanagedPublicAccess bool
+	// LinkInherited means effective link access comes from a parent. The
+	// discoverability flags let the UI explain search exposure without parsing
+	// provider prose; LinkDiscoverabilityInherited identifies its source.
+	LinkInherited                bool
+	LinkDiscoverable             bool
+	LinkDiscoverabilityInherited bool
+	Link                         *ShareLink
+	Notice                       string
+}
+
+// ShareLinkRequest asks a provider to create or update a link. Role and
+// ExpiresIn must be selected from the corresponding ShareLinkInfo values.
+type ShareLinkRequest struct {
+	Role      ShareRole
+	ExpiresIn time.Duration
+}
+
+// ShareLinkProvider is the optional VFS capability used by the Files > Share
+// action. Implementations must honor cancellation. Link URLs are bearer
+// credentials on some providers and must not be logged by implementations.
+type ShareLinkProvider interface {
+	ShareLinkInfo(context.Context, string) (ShareLinkInfo, error)
+	CreateShareLink(context.Context, string, ShareLinkRequest) (ShareLink, error)
+	RevokeShareLink(context.Context, string) error
+}
+
+// PanelAction identifies a semantic file-panel operation. Unlike raw key
+// interception it follows action remapping, menu invocation and mouse
+// activation. Paths passed to PanelActionHandler are paths in the receiver's
+// VFS; Create receives the current directory.
+type PanelAction uint8
+
+const (
+	PanelActionActivate PanelAction = iota
+	PanelActionEdit
+	PanelActionCreate
+	PanelActionDelete
+)
+
+// PanelActionHandler lets virtual manager rows implement semantic panel
+// actions. It returns true only when the action was consumed; false preserves
+// the ordinary host behavior.
+type PanelActionHandler interface {
+	HandlePanelAction(app App, action PanelAction, paths []string) bool
+}
+
 // VFSProvider умеет определять, может ли он открыть путь, и создавать экземпляр VFS.
 type VFSProvider interface {
 	Name() string
@@ -295,6 +452,14 @@ type VFSProvider interface {
 	Open(ctx context.Context, parent VFS, path string) (VFS, error)
 }
 
+// StandalonePathProvider can restore a virtual filesystem from its own
+// user-facing absolute path even when the current panel belongs to another
+// VFS. Implementations must recognize only paths they own.
+type StandalonePathProvider interface {
+	VFSProvider
+	OpensStandalonePaths() bool
+}
+
 // VirtualDirectoryProvider marks a provider whose entry is deliberately
 // rendered as a directory even though opening it mounts another VFS instead
 // of calling SetPath on the current one.
@@ -303,17 +468,65 @@ type VirtualDirectoryProvider interface {
 	OpensVirtualDirectories() bool
 }
 
-var providers []VFSProvider
+var providerRegistry = struct {
+	sync.RWMutex
+	items []VFSProvider
+}{}
 
 func RegisterProvider(p VFSProvider) {
-	providers = append(providers, p)
+	providerRegistry.Lock()
+	providerRegistry.items = append(providerRegistry.items, p)
+	providerRegistry.Unlock()
 	// Сортируем по приоритету
 }
 
+// UnregisterProvider removes one exact provider instance. It is primarily
+// used by plugin unload/reload and tests; non-comparable value providers are
+// deliberately not matched because they have no stable instance identity.
+func UnregisterProvider(target VFSProvider) bool {
+	if target == nil {
+		return false
+	}
+	providerRegistry.Lock()
+	defer providerRegistry.Unlock()
+	targetType := reflect.TypeOf(target)
+	if targetType == nil || !targetType.Comparable() {
+		return false
+	}
+	for i, provider := range providerRegistry.items {
+		if reflect.TypeOf(provider) == targetType && provider == target {
+			providerRegistry.items = append(providerRegistry.items[:i], providerRegistry.items[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 func FindProvider(ctx context.Context, parent VFS, path string) VFSProvider {
+	providerRegistry.RLock()
+	providers := append([]VFSProvider(nil), providerRegistry.items...)
+	providerRegistry.RUnlock()
 	for _, p := range providers {
 		if p.CanOpen(ctx, parent, path) {
 			return p
+		}
+	}
+	return nil
+}
+
+// FindStandaloneProvider returns a registered provider which explicitly owns
+// path as a standalone user-facing location (for example Account:\\Folder).
+func FindStandaloneProvider(ctx context.Context, parent VFS, path string) VFSProvider {
+	providerRegistry.RLock()
+	providers := append([]VFSProvider(nil), providerRegistry.items...)
+	providerRegistry.RUnlock()
+	for _, provider := range providers {
+		standalone, ok := provider.(StandalonePathProvider)
+		if !ok || !standalone.OpensStandalonePaths() {
+			continue
+		}
+		if provider.CanOpen(ctx, parent, path) {
+			return provider
 		}
 	}
 	return nil
@@ -329,6 +542,43 @@ type CommandRunner interface {
 	// output to cb as it arrives, returning the exit status. A non-zero
 	// status is not an error: the command ran and said something.
 	RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error)
+}
+
+// CommandDialect describes the syntax understood by a CommandRunner.
+type CommandDialect uint8
+
+const (
+	CommandDialectUnknown CommandDialect = iota
+	CommandDialectPOSIX
+	CommandDialectCmd
+	CommandDialectPowerShell
+)
+
+// CommandLiteralPercentEnv is reserved by F4's cmd.exe argument compiler.
+// CommandDialectCmd runners define it as one literal percent character.
+const CommandLiteralPercentEnv = "F4_APPLY_LITERAL_PERCENT_8C1E"
+
+type CommandRunnerInfo struct {
+	Dialect     CommandDialect
+	MaxParallel int
+}
+
+type CommandRunnerInfoProvider interface {
+	CommandRunnerInfo() CommandRunnerInfo
+}
+
+type CommandRunnerAvailabilityProvider interface {
+	CommandRunnerAvailable() bool
+}
+
+type CommandListANSIEncoder interface {
+	EncodeCommandListANSI(text []byte) ([]byte, error)
+}
+
+// PrivateCommandFileCreator creates a command list file with private
+// permissions from the moment it becomes visible on the command host.
+type PrivateCommandFileCreator interface {
+	CreatePrivateCommandFile(ctx context.Context, path string) (io.WriteCloser, error)
 }
 
 // DuplicateProgress reports how far a duplicate search has got. Total is how
@@ -385,6 +635,26 @@ type FindQuery struct {
 	IgnoreCase bool
 	// Limit caps the number of hits; zero leaves it to the file system.
 	Limit int
+	// Progress, when non-nil, is called periodically while the search
+	// runs — file systems that support it (currently FISH+ against a
+	// Windows peer) report the last path the walk visited and running
+	// counters, so a dialog can show real-time state instead of a
+	// spinner. Called on the goroutine that drives FindFiles; the
+	// callback must not block. A file system that has no progress to
+	// report simply never calls it, which is what the interface's
+	// callers must be ready for.
+	Progress func(FindProgress)
+}
+
+// FindProgress is a checkpoint reported by an in-flight tree search.
+type FindProgress struct {
+	// Scanned is how many entries the walk has visited so far.
+	Scanned int64
+	// Found is how many entries have matched so far.
+	Found int64
+	// Path is the last path the walk looked at, in whatever shape the
+	// file system uses on the wire.
+	Path string
 }
 
 // FileFinder is implemented by a file system that can walk a tree on its own
@@ -393,6 +663,45 @@ type FindQuery struct {
 // caller that does not find it walks the tree itself as before.
 type FileFinder interface {
 	FindFiles(ctx context.Context, dir string, q FindQuery) ([]FoundEntry, error)
+}
+
+// PtyShellIntegration is an optional interface for a VFS that owns a
+// remote PTY. It lets the VFS compose the exact bytes to send for the
+// integration tasks the panel does through the PTY — syncing its cwd
+// to the panel's, running a command line from the cmdline, sending an
+// interrupt — so a peer whose PTY runs a non-POSIX shell (cmd.exe on
+// Windows) can be driven correctly without the caller learning about
+// its shell. Fallback for a VFS that does not implement this is the
+// caller's built-in POSIX-style templates.
+type PtyShellIntegration interface {
+	// PtyChangeDirCommand returns the bytes to send to the PTY to
+	// change to dir. Path is in whatever shape the VFS uses on its
+	// wire; translation to what the PTY shell expects is the VFS's
+	// job. An empty return means "do not sync this path" (the VFS
+	// declines gracefully rather than sending broken syntax).
+	PtyChangeDirCommand(dir string) []byte
+
+	// PtyRunCommand returns the bytes to send to the PTY to run
+	// command in dir. If dir is empty, run wherever the PTY is now.
+	// An empty return declines the run.
+	PtyRunCommand(dir, command string) []byte
+
+	// PtyInterrupt returns the bytes to send to interrupt whatever
+	// command the PTY is currently running. Typically {0x03} — a
+	// literal Ctrl+C byte — since both cmd.exe over ConPTY and every
+	// POSIX shell treat that as SIGINT.
+	PtyInterrupt() []byte
+
+	// PtyInitSequence returns bytes to send to the PTY exactly once,
+	// right after it opens and before the caller sends anything else.
+	// A Windows peer uses this to install a PROMPT that embeds an OSC
+	// 133 D marker, matching what the local Windows PTY does — every
+	// time cmd shows the prompt (which is when the last command
+	// finished) the caller's OSC 133 handler is fired and the panel
+	// frame's OnBusyChange returns to panels. Returning nil means the
+	// shell needs no init, which is the honest answer for a POSIX
+	// peer whose command templates emit their own OSC 133.
+	PtyInitSequence() []byte
 }
 
 // LineIndexResult is what a LineIndexer answers with.
@@ -457,37 +766,43 @@ type SessionIdentity interface {
 	SessionKey() any
 }
 
+// DirectoryCacheIdentity gives panel directory caches a stable, comparable
+// identity across short-lived VFS instances for the same configured remote.
+// It is used only as an in-memory cache key and must not contain credentials.
+// Implementations should change it whenever connection settings which affect
+// directory contents change.
+type DirectoryCacheIdentity interface {
+	DirectoryCacheKey() any
+}
+
 // ServerSideCopier is implemented by a file system that can copy an object
 // on the server side, avoiding pulling bytes back and forth through the client.
 type ServerSideCopier interface {
 	Copy(ctx context.Context, oldpath, newpath string) error
 }
 
-// SameSession reports whether two VFS instances share the same session/connection
-// or point to the same remote host/user (using TitleProvider).
+// SameSession reports whether two VFS instances share the same
+// session/connection. Display titles are deliberately not identities: two
+// accounts, endpoints, ports or buckets may have the same user-facing label.
 func SameSession(v1, v2 VFS) bool {
-	if v1 == v2 {
+	if v1 == nil || v2 == nil {
+		return v1 == nil && v2 == nil
+	}
+	v1Type, v2Type := reflect.TypeOf(v1), reflect.TypeOf(v2)
+	if v1Type == v2Type && v1Type.Comparable() && v1 == v2 {
 		return true
 	}
-	if id1, ok1 := v1.(SessionIdentity); ok1 {
-		if id2, ok2 := v2.(SessionIdentity); ok2 {
-			k1 := id1.SessionKey()
-			k2 := id2.SessionKey()
-			if k1 != nil && k1 == k2 {
-				return true
-			}
-		}
+	id1, ok1 := v1.(SessionIdentity)
+	id2, ok2 := v2.(SessionIdentity)
+	if !ok1 || !ok2 {
+		return false
 	}
-	t1, ok1 := v1.(TitleProvider)
-	t2, ok2 := v2.(TitleProvider)
-	if ok1 && ok2 {
-		title1 := t1.GetTitle()
-		title2 := t2.GetTitle()
-		if title1 != "" && title1 == title2 {
-			return true
-		}
+	k1, k2 := id1.SessionKey(), id2.SessionKey()
+	if k1 == nil || k2 == nil {
+		return false
 	}
-	return false
+	t1, t2 := reflect.TypeOf(k1), reflect.TypeOf(k2)
+	return t1.Comparable() && t2.Comparable() && k1 == k2
 }
 
 // ConnectionInfoProvider allows a VFS to expose its remote connection details
@@ -524,9 +839,28 @@ func (w *TempFileWrapper) Close() error {
 
 type progressKeyType struct{}
 type reporterKeyType struct{}
+type destinationOverwriteKeyType struct{}
 
 var ProgressKey = progressKeyType{}
 var ReporterKey = reporterKeyType{}
+
+// WithDestinationOverwrite records the caller's already-resolved conflict
+// decision for a destination mutation. Providers can turn this into an
+// atomic protocol precondition instead of repeating a racy Stat request.
+func WithDestinationOverwrite(ctx context.Context, overwrite bool) context.Context {
+	return context.WithValue(ctx, destinationOverwriteKeyType{}, overwrite)
+}
+
+// DestinationOverwrite returns the caller's explicit overwrite decision.
+// A false second result means that the caller did not resolve a conflict and
+// the VFS operation should retain its ordinary replacement semantics.
+func DestinationOverwrite(ctx context.Context) (overwrite, known bool) {
+	if ctx == nil {
+		return false, false
+	}
+	overwrite, known = ctx.Value(destinationOverwriteKeyType{}).(bool)
+	return overwrite, known
+}
 
 type ProgressCallback func(msg string, percent int)
 

@@ -28,7 +28,25 @@ func TestParseFarColor(t *testing.T) {
 		t.Errorf("Expected Back RGB 112233, got %06X", vtui.GetRGBBack(attr))
 	}
 
-	// 3. Test default fallback
+	// 3. Test palette references
+	vtui.Palette[ColPanelText] = vtui.SetRGBBoth(0, 0x111111, 0x222222)
+	attr = ParseFarColor("foreground:Panel.Text | background:Panel.Text", 0)
+	if vtui.GetRGBFore(attr) != 0x111111 {
+		t.Errorf("Expected Fore RGB 111111, got %06X", vtui.GetRGBFore(attr))
+	}
+	if vtui.GetRGBBack(attr) != 0x222222 {
+		t.Errorf("Expected Back RGB 222222, got %06X", vtui.GetRGBBack(attr))
+	}
+
+	attr = ParseFarColor("Panel.Text", 0)
+	if vtui.GetRGBFore(attr) != 0x111111 {
+		t.Errorf("Expected Fore RGB 111111, got %06X", vtui.GetRGBFore(attr))
+	}
+	if vtui.GetRGBBack(attr) != 0x222222 {
+		t.Errorf("Expected Back RGB 222222, got %06X", vtui.GetRGBBack(attr))
+	}
+
+	// 4. Test default fallback
 	def := uint64(0x12345678)
 	if ParseFarColor("", def) != def {
 		t.Error("Empty expression should return default attribute")

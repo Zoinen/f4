@@ -32,14 +32,30 @@ func ParseFarColor(expr string, defaultAttr uint64) uint64 {
 	parts := strings.Split(expr, "|")
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if strings.HasPrefix(p, "foreground:#") && len(p) >= 18 {
-			if val, err := strconv.ParseUint(p[12:18], 16, 32); err == nil {
-				fg = uint32(val)
+		if strings.HasPrefix(p, "foreground:") {
+			valStr := strings.TrimSpace(p[11:])
+			if strings.HasPrefix(valStr, "#") && len(valStr) >= 7 {
+				if val, err := strconv.ParseUint(valStr[1:7], 16, 32); err == nil {
+					fg = uint32(val)
+					hasFg = true
+				}
+			} else if slotIdx, ok := colorMap[valStr]; ok {
+				slotAttr := vtui.Palette[slotIdx]
+				sFg, _ := GetColorRGBBoth(slotAttr)
+				fg = sFg
 				hasFg = true
 			}
-		} else if strings.HasPrefix(p, "background:#") && len(p) >= 18 {
-			if val, err := strconv.ParseUint(p[12:18], 16, 32); err == nil {
-				bg = uint32(val)
+		} else if strings.HasPrefix(p, "background:") {
+			valStr := strings.TrimSpace(p[11:])
+			if strings.HasPrefix(valStr, "#") && len(valStr) >= 7 {
+				if val, err := strconv.ParseUint(valStr[1:7], 16, 32); err == nil {
+					bg = uint32(val)
+					hasBg = true
+				}
+			} else if slotIdx, ok := colorMap[valStr]; ok {
+				slotAttr := vtui.Palette[slotIdx]
+				_, sBg := GetColorRGBBoth(slotAttr)
+				bg = sBg
 				hasBg = true
 			}
 		} else if c, ok := namedColors[p]; ok {
@@ -50,6 +66,13 @@ func ParseFarColor(expr string, defaultAttr uint64) uint64 {
 				bg = far2lPalette[c>>4]
 				hasBg = true
 			}
+		} else if slotIdx, ok := colorMap[p]; ok {
+			slotAttr := vtui.Palette[slotIdx]
+			sFg, sBg := GetColorRGBBoth(slotAttr)
+			fg = sFg
+			bg = sBg
+			hasFg = true
+			hasBg = true
 		}
 	}
 

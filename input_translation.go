@@ -179,6 +179,42 @@ func TranslateLegacySpecialKey(e *vtinput.InputEvent, appCursorKeys bool) string
 	return ""
 }
 
+// ctrlCharFromVK maps a virtual key code to the C0 control byte produced
+// by Ctrl+key, following xterm conventions. Returns -1 for keys without a
+// standard Ctrl mapping. Used only when the input backend could not supply
+// the character itself (Char == 0), e.g. in the gogpu GUI host.
+func ctrlCharFromVK(vk uint16) int {
+	switch {
+	case vk >= vtinput.VK_A && vk <= vtinput.VK_Z:
+		return int(vk-vtinput.VK_A) + 1
+	case vk == vtinput.VK_2:
+		return 0 // Ctrl+2 = NUL
+	case vk == vtinput.VK_3:
+		return 27 // Ctrl+3 = ESC
+	case vk == vtinput.VK_4:
+		return 28 // Ctrl+4 = FS
+	case vk == vtinput.VK_5:
+		return 29 // Ctrl+5 = GS
+	case vk == vtinput.VK_6:
+		return 30 // Ctrl+6 = RS
+	case vk == vtinput.VK_7:
+		return 31 // Ctrl+7 = US
+	case vk == vtinput.VK_8:
+		return 127 // Ctrl+8 = DEL
+	case vk == vtinput.VK_PAUSE:
+		return 3 // Ctrl+Pause/Ctrl+Break (maps to VK_CANCEL) = same as Ctrl+C = ETX
+	case vk == vtinput.VK_OEM_4:
+		return 27 // Ctrl+[ = ESC
+	case vk == vtinput.VK_OEM_5:
+		return 28 // Ctrl+\ = FS
+	case vk == vtinput.VK_OEM_6:
+		return 29 // Ctrl+] = GS
+	case vk == vtinput.VK_OEM_MINUS:
+		return 31 // Ctrl+_ = US
+	}
+	return -1
+}
+
 // TranslateInput converts f4 input events into ANSI sequences that interactive shell apps expect.
 func TranslateInput(e *vtinput.InputEvent, win32Mode bool, kittyFlags int, appCursorKeys bool) string {
 	if win32Mode && e.Type == vtinput.KeyEventType {
@@ -220,6 +256,25 @@ func TranslateInput(e *vtinput.InputEvent, win32Mode bool, kittyFlags int, appCu
 
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+
+	// Some GUI hosts (gogpu window) deliver Ctrl+letter with Char == 0:
+	// their text-input path filters control characters (WM_CHAR < 0x20),
+	// so not even Ctrl+C arrives as a character, only as a modified key.
+	// In console mode Windows puts the C0 byte itself (0x03 = ETX for
+	// Ctrl+C) into the input record, so synthesizing from the virtual key
+	// code here is a no-op there. Real terminals (xterm, Windows Terminal)
+	// derive the control byte from the key too; without this a busy PTY
+	// child never receives Ctrl+C and e.g. `dir /s` cannot be interrupted.
+	if ctrl && e.Char == 0 {
+		if ch := ctrlCharFromVK(e.VirtualKeyCode); ch >= 0 {
+			out := ""
+			if alt {
+				out += "\x1b"
+			}
+			out += string(rune(ch))
+			return out
+		}
+	}
 
 	// Handle Character Input
 	if e.Char != 0 {

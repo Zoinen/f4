@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/Masterminds/semver v1.5.0
+	github.com/abadojack/whatlanggo v1.0.1
 	github.com/alecthomas/chroma/v2 v2.15.0
 	github.com/coregx/coregex v0.12.19
 	github.com/danielpaulus/go-ios v1.2.2-0.20260805152531-ebec9a0b076c
@@ -15,24 +16,31 @@ require (
 	github.com/pkg/sftp v1.13.6
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/unxed/archives v0.0.0-20260728171610-555945c76813
-	github.com/unxed/colorer4go v0.1.5
+	github.com/unxed/colorer4go v0.1.9
 	github.com/unxed/ffibridge v0.1.0
+	github.com/unxed/id3-go v0.1.1
 	github.com/unxed/localecp v0.1.5
 	github.com/unxed/sevenzip v0.0.0-20260704211908-25d317f8295f
 	github.com/unxed/tar v0.1.126
 	github.com/unxed/vtinput v0.1.2
-	github.com/unxed/vtui v0.1.129
+	github.com/unxed/vtui v0.1.150
 	github.com/unxed/zip v0.1.127
 	github.com/unxed/zipper v0.1.145
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/woozymasta/png v1.2.0
 	github.com/yuin/gopher-lua v1.1.1
+	github.com/zzl/go-win32api/v2 v2.1.0
 	golang.org/x/crypto v0.53.0
 	golang.org/x/image v0.44.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.44.0
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
+)
+
+require (
+	github.com/kr/text v0.2.0 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 )
 
 require (
@@ -50,12 +58,12 @@ require (
 	github.com/fogleman/gg v1.3.0 // indirect
 	github.com/go-webgpu/goffi v0.6.3 // indirect
 	github.com/go-webgpu/webgpu v0.5.5 // indirect
-	github.com/gogpu/gg v0.50.11 // indirect
+	github.com/gogpu/gg v0.50.14 // indirect
 	github.com/gogpu/gogpu v0.50.2 // indirect
-	github.com/gogpu/gpucontext v0.24.0 // indirect
+	github.com/gogpu/gpucontext v0.26.0 // indirect
 	github.com/gogpu/gputypes v0.5.1 // indirect
 	github.com/gogpu/naga v0.18.0 // indirect
-	github.com/gogpu/wgpu v0.30.36 // indirect
+	github.com/gogpu/wgpu v0.30.37 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
@@ -64,9 +72,8 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jezek/xgb v1.3.1 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
-	github.com/klauspost/pgzip v1.2.6 // indirect
+	github.com/klauspost/pgzip v1.2.6
 	github.com/kr/fs v0.1.0 // indirect
-	github.com/kr/text v0.2.0 // indirect
 	github.com/miekg/dns v1.1.57 // indirect
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.1.1 // indirect
@@ -97,7 +104,6 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yalue/native_endian v1.0.2 // indirect
-	github.com/zzl/go-win32api/v2 v2.1.0 // indirect
 	go.mozilla.org/pkcs7 v0.9.0 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.design/x/clipboard v0.7.0 // indirect
@@ -117,5 +123,6 @@ require (
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.13
 
-//replace github.com/unxed/colorer4go => ../../../dev/colorer4go
-//replace github.com/unxed/vtui => ../../../dev/vtui
+// replace github.com/unxed/colorer4go => ../../../dev/colorer4go
+
+// replace github.com/unxed/colorer4go => ../../../dev/vtui

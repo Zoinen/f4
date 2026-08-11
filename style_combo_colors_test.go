@@ -32,15 +32,16 @@ func TestDefaultDarkStyle_ComboStandsApartFromDialog(t *testing.T) {
 	}
 }
 
-// Modern spells the combo group out so it keeps the grey it always had.
-func TestModernStyle_ComboMatchesMenu(t *testing.T) {
+// Modern editable and dropdown-only combos use the same input surface as
+// regular edit controls instead of disappearing into the dialog background.
+func TestModernStyle_ComboMatchesEdit(t *testing.T) {
 	comboStyle(t, "Modern")
 
-	menuFg, menuBg := GetColorRGBBoth(vtui.Palette[vtui.ColMenuText])
+	editFg, editBg := GetColorRGBBoth(vtui.Palette[vtui.ColDialogEdit])
 	comboFg, comboBg := GetColorRGBBoth(vtui.Palette[vtui.ColDialogComboText])
-	if comboFg != menuFg || comboBg != menuBg {
-		t.Errorf("Modern combo = #%06x on #%06x, want the menu colours #%06x on #%06x",
-			comboFg, comboBg, menuFg, menuBg)
+	if comboFg != editFg || comboBg != editBg {
+		t.Errorf("Modern combo = #%06x on #%06x, want the edit colours #%06x on #%06x",
+			comboFg, comboBg, editFg, editBg)
 	}
 }
 

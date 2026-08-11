@@ -1,0 +1,599 @@
+@Contents
+$Nápověda f4 (Verze: %Ver)
+f4 je experimentální klon souborového manažeru Far Manager / far2l v jazyce Go.
+
+~Klávesové zkratky prohlížeče / editoru~ViewerEditor@
+~Navigace na panelech~PanelNav@
+~Vizuální přejmenování souborů (VisRen)~VisRen@
+~Zobrazit README.md~README@
+
+@VisRen
+$Vizuální přejmenování souborů (VisRen)
+
+VisRen je vestavěný nástroj pro vizuální hromadné přejmenování souborů v f4. Sestaví
+každý nový název před provedením jakýchkoli změn a zobrazí původní a
+cílové názvy vedle sebe. Funguje se soubory a adresáři na panelu lokálního
+souborového systému.
+
+Pokud jsou položky na panelu označené, VisRen je otevře v pořadí, v jakém jsou na
+panelu. Pokud nejsou žádné položky označené, použije se položka pod kurzorem
+panelu. Nadřazený adresář ".." se nikdy nepoužije. VisRen otevřete stisknutím
+F11 a výběrem položky "Vizuální přejmenování souborů"; lze jej aktivovat také
+přidělenou horkou klávesou v menu.
+
+~Rychlý start a pole dialogu~VisRenQuickStart@
+~Masky jmen, přípony, rozsahy, čítače a uvozovky~VisRenMasks@
+~Změny velikosti písmen, transliterace a pořadí zpracování~VisRenTransforms@
+~Data, ID3, obrázky/EXIF a verze souboru~VisRenMetadata@
+~Vyhledávání, prosté nahrazování a regulární výrazy~VisRenSearch@
+~Navigace v náhledu, klávesnice a myš~VisRenPreview@
+~Úprava seznamu v UTF-8 editoru~VisRenEditor@
+~Provedení přejmenování, chyby, protokol a vrácení zpět~VisRenRename@
+~Bezpečnost jmen a omezení~VisRenSafety@
+~Praktické recepty~VisRenExamples@
+
+Implementace vychází z FarPlugins VisRen 3.2.0, ale doplňuje ji o přísnější
+kontrolu jmen a editoru, stabilní náhodná čísla a přenosná metadata.
+
+@VisRenQuickStart
+$VisRen: Rychlý start a pole dialogu
+
+#Typické přejmenování#
+
+  1. Označte požadované soubory/adresáře klávesou Ins, nebo umístěte
+     kurzor panelu na položku, pokud potřebujete pouze ji.
+  2. Stiskněte F11 a vyberte položku VisRen.
+  3. Zadejte masky pro jméno a příponu. Výchozí hodnoty [N] a [E]
+     ponechají obě části původního jména beze změny.
+  4. Volitelně zadejte text do polí "Hledat" a "Nahradit za". Fokus začíná
+     v poli "Hledat"; klávesa Tab vás přesune přímo do pole "Nahradit za".
+  5. Zkontrolujte každé cílové jméno. Klávesa F3 zobrazí úplné původní jméno,
+     nové jméno nebo diagnostiku pro aktuální řádek.
+  6. Vyberte "Přejmenovat" nebo stiskněte Enter na výchozím tlačítku.
+
+#Název a přípona#
+
+Tato dvě pole sestavují cílový základní název a příponu odděleně. Pole přípony
+neobsahuje tečku. Prázdný výsledek přípony ji zcela odstraní. Obyčejný text se
+kopíruje doslova; výrazy v hranatých závorkách dosadí původní text, čítače,
+metadata nebo transformace.
+
+Poslední tečka odděluje původní název a příponu. Například archive.tar.gz má název
+archive.tar a příponu gz. README nemá příponu. Skrytý soubor jako .gitignore má
+název prázdný a příponu gitignore.
+
+#Šablony a [+]#
+
+Seznamy "Šablony jmen" a "Šablony přípon" obsahují výrazy platné pro odpovídající
+masku. Výběr položky ji pouze označí. Tlačítko [+] vloží tuto vybranou šablonu na
+pozici kurzoru a vrátí fokus na odpovídající masku – přesně jako v původním VisRen.
+Pokud má seznam šablon fokus, Ins vloží aktuální položku, přičemž fokus zůstane v
+seznamu. Zástupné znaky pro rozsah a čítač se při vložení stanou platnými hodnotami.
+
+#Možnosti vyhledávání#
+
+Vyhledávání a nahrazování se provádí po sestavení celého jména oběma maskami,
+včetně vygenerované tečky a přípony. Pole "Rozlišovat velikost" je zpočátku
+aktivní. "Regulární výraz" přepíná mezi prostým vyhledáváním a režimem regex.
+
+#Živý náhled a diagnostika#
+
+Každá úprava okamžitě aktualizuje náhled. Pokud je maska, rozsah, čítač, regex
+nebo výsledný název neplatný, všechna cílová pole zobrazí <Error!>. Tlačítka pro
+přejmenování a editor jsou zablokována. F3 zobrazí skutečnou diagnostiku.
+
+Čtyři textová pole využívají historii F4. Hodnoty použité pro přejmenování se
+přidávají do příslušných historií. Oddělovače slov pro [T] se ukládají samostatně v
+uživatelské konfiguraci VisRen.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenMasks
+$VisRen: masky, rozsahy, čítače a uvozovky
+
+#Základní výrazy#
+
+  [N]          Původní název bez poslední přípony.
+  [E]          Původní přípona bez počáteční tečky.
+  [[]          Doslovná otevírací hranatá závorka.
+  []]          Doslovná zavírací hranatá závorka.
+
+Veškerý text mimo výrazy je doslovný. Osamocená zavírací závorka, neuzavřená
+otevírací závorka nebo neznámý výraz se považují za chybu.
+
+#Rozsahy#
+
+Rozsah následuje bezprostředně po N nebo E. Pozice počítají znaky Unicode, nikoli
+bajty, a začínají od 1. Záporná pozice počítá pozici od konce. Stejné tvary
+fungují s E, například [E1-3].
+
+Pro původní název abcdefghij:
+
+  [N2]         b                 jeden znak
+  [N2-5]       bcde              pozice 2 až 5 včetně
+  [N2,5]       bcdef             pět znaků počínaje pozicí 2
+  [N2-]        bcdefghij         pozice 2 až do konce
+  [N-2]        i                 druhý znak od konce
+  [N2--5]      bcdef             pozice 2 až pátý znak od konce
+  [N-8-5]      cde               osmý od konce až pátý od konce
+  [N-8,5]      cdefg             pět znaků počínaje osmým od konce
+  [N-5-]       fghij             pátý od konce až do konce
+
+Část mimo rozsah se podle možnosti ořízne nebo dá prázdný výsledek. Nulová pozice
+a obrácený rozsah jsou chyby. Šablona rozsahu z nabídky použije nejdelší původní
+název nebo příponu.
+
+#Čítače#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+Počáteční číslice určují první hodnotu a minimální šířku zobrazení. Smí obsahovat
+nejvýše devět číslic. Pokud je vynechán +krok, krok je 1. Čítač sleduje aktuální
+pořadí řádků: Ctrl+Up/Down a přetažení mění přidělené hodnoty. Šířka je minimální –
+větší čísla se nezkracují.
+
+#Kombinování výrazů#
+
+Výrazy a doslovný text lze volně kombinovat. Například [C001+1]_[N1-12] vytvoří
+třímístné číslo, podtržítko a prvních dvanáct znaků starého jména. Transformace
+nepřidávají žádný text; mění hotovou část jména podle popisu v příslušném tématu.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenTransforms
+$VisRen: transformace a pořadí zpracování
+
+#Změny velikosti písmen#
+
+  [L]          Převést celý výsledek masky na malá písmena.
+  [U]          Převést jej na velká písmena.
+  [F]          První znak velký, ostatní malá.
+  [T]          První znak každého slova velký.
+  [M]          Formátování hudebního názvu "Interpret - Skladba".
+
+[T] standardně používá oddělovače slov "-. _&". Vyberte [T] v libovolném seznamu
+šablon a stiskněte F4 pro úpravu oddělovačů. V konfiguraci VisRen se uloží nejvýše
+18 znaků, které se použijí i příště.
+
+[M] rozpoznává " - " nebo "_-_" mezi interpretem a skladbou. Slova interpreta se
+převedou na styl "každé slovo velké" (Title Case); název skladby začíná jedním
+velkým písmenem a ostatní jsou malá. Ruská spojka "a" v názvu interpreta se
+převádí na malá písmena, což odpovídá původnímu chování VisRen.
+
+Pokud je v jedné masce více výrazů pro změnu velikosti, priorita je pevná: [L],
+[U], [F], [T], [M]. Provede se pouze první z tohoto seznamu.
+
+#Transliterace#
+
+  [TL]         Transliterovat ruskou cyrilici do latinky podle tabulky VisRen.
+  [TR]         Převést tuto latinku zpět na ruskou cyrilici.
+
+Mapování odpovídá původní tabulce VisRen: například ё -> jo, ж -> zh, х -> kh,
+щ -> shh, ю -> ju a я -> ja. Velikost písmen se v rámci možností zachovává.
+Zpětný převod volí nejdelší odpovídající sekvenci latinky. Pokud jsou přítomny
+[TL] i [TR], prioritu má [TL].
+
+#Přesný postup zpracování#
+
+  1. Rozbalí se výrazy názvu a přípony.
+  2. Obě části se spojí tečkou, pokud přípona není prázdná.
+  3. Na takto sestavené celé jméno se provede vyhledávání a nahrazování.
+  4. Výsledek se opět rozdělí podle poslední tečky.
+  5. Pro danou část se provede transliterace.
+  6. Jako poslední se provede vybrané změna velikosti písmen.
+  7. Zkontroluje se hotový komponent jména souboru.
+
+Tento postup je důležitý. Změna velikosti písmen působí i na text vložený
+nahrazením, zatímco vyhledávání může odpovídat vygenerované příponě.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenMetadata
+$VisRen: data a metadata souborů
+
+Metadata se čtou odloženě (lazy) a ukládají se jednou pro každou zdrojovou položku.
+Chybějící nebo nepodporovaná pole se nahradí prázdným řetězcem a nezpůsobí chybu
+náhledu.
+
+#Časová razítka souborů a hodnoty relace#
+
+  [DM]         Datum poslední změny v místním čase: YYYY.MM.DD
+  [TM]         Čas poslední změny v místním čase: hh-mm-ss
+  [R]          Náhodné číslo od 0 do 32767
+
+[R] se přiřazuje jednou při otevření dialogu. Zůstává stabilní při úpravách masek
+a přesouvá se společně se svým řádkem. V nové relaci VisRen se přiřazují nové
+hodnoty.
+
+#MP3 a ID3#
+
+Výraz čísla stopy se skládá z otevírací závorky, znaku mřížky (U+0023) a zavírací
+závorky. Ostatní pole jsou:
+
+  [t]          Název skladby
+  [a]          Interpret
+  [l]          Album
+  [y]          Rok nebo datum
+  [g]          Žánr
+
+Při existenci ID3v2 se preferují rámce ID3v2.3 nebo ID3v2.4. Jinak se použije
+ID3v1.1, včetně čísla stopy a tabulky žánrů. Podporovaná kódování ID3 tagů zahrnují
+výchozí systémový text, UTF-8 a UTF-16.
+
+#Obrázky a EXIF#
+
+  [c]          Výrobce fotoaparátu z EXIF JPEG
+  [m]          Model fotoaparátu z EXIF JPEG
+  [d]          Datum pořízení snímku: YYYY.MM.DD hh-mm-ss
+  [r]          Rozměry obrázku: ŠÍŘKAxVÝŠKA
+
+Rozměry jsou k dispozici pro formáty JPEG, BMP, GIF a PNG. Výrobce, model a datum
+EXIF se načítají z JPEG. Pokud není k dispozici použitelné datum EXIF, [d] použije
+datum a čas poslední změny souboru. Malá [m]/[r] jsou metadata, zatímco velká
+[M]/[R] jsou režim registru, resp. náhodné číslo.
+
+#Verze spustitelného souboru#
+
+  [V]          Pevná verze z prostředků Windows PE .exe/.dll
+
+PE verze se analyzuje nativně na všech podporovaných operačních systémech. U
+souboru bez použitelné pevné verze dá [V] prázdný řetězec.
+
+Text metadat obsahující oddělovače cest nebo jiné zakázané znaky se zahodí nebo jej
+zachytí závěrečná validace jména. Vždy zkontrolujte náhled, pokud tagy pocházejí ze
+souborů, které nemáte pod kontrolou.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenSearch
+$VisRen: vyhledávání, prosté nahrazování a regulární výrazy
+
+Vyhledávání a nahrazování se provádí na celém jméně vytvořeném oběma maskami,
+včetně výsledné tečky a přípony. Prázdné pole "Hledat" tento krok deaktivuje.
+Nahrazují se všechny nepřekrývající se shody.
+
+#Obyčejný režim#
+
+Pokud je "Regulární výraz" neaktivní, vyhledávaný text je doslovný. Se zaškrtnutým
+polem "Rozlišovat velikost" se "Soubor" a "soubor" liší. Bez zaškrtnutí se porovnává
+text bez ohledu na velikost písmen; nahrazení se vkládá přesně tak, jak je zadáno.
+
+Příklad: masky [N] and [E], hledání "draft_" a prázdná nahrazení změní
+draft_report.txt na report.txt.
+
+#Režim regulárních výrazů#
+
+Aktivujte "Regulární výraz" pro vyhledávač regex f4 (založený na Go/coregex).
+Vzor lze zadat přímo nebo ve tvaru /vzor/i. Ve tvaru se lomítky zapište doslovné
+lomítko jako \/. Nepovinný příznak i ignoruje velikost písmen. Neaktivní volba
+"Rozlišovat velikost" dělá totéž. Žádný jiný příznak kromě i se nepřijímá.
+
+Odkazy na skupiny v nahrazení používají $0 pro celou shodu a $1 až $9 pro skupiny v
+závorkách. Například pro 001-report.txt:
+
+  Hledat:          /(\d+)-([^.]+)/
+  Nahradit za:     $2-$1
+  Výsledek:        report-001.txt
+
+Chybný vzor, neuzavřená forma /vzor/ nebo neznámý příznak zobrazí v náhledu
+<Error!>, zablokují přejmenování a editor. Diagnostika je dostupná pod F3.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+Nalezené shody v původním jméně se zvýrazní barevně v levém sloupci náhledu.
+Zvýraznění respektuje volby "Rozlišovat velikost" a "Regulární výraz", označuje
+všechny viditelné shody a zachovává se při posouvání. Text vytvořený polem
+"Nahradit za" se zvýrazní v pravém sloupci. U regulárního výrazu se zvýrazní celá
+rozbalená podpora; při prázdném nahrazení není viditelný text pro zvýraznění k
+dispozici.
+
+@VisRenPreview
+$VisRen: náhled, klávesnice a myš
+
+Levý sloupec náhledu je zdrojový; pravý je cílový. První řádek je aktuální při
+otevření dialogu, zatímco fokus začíná v poli "Hledat". F12 přesune fokus na
+náhled; odtud se vrátí na masku jména.
+
+Pokud se celý seznam nevejde do oblasti zobrazení, vpravo se zobrazí svislý posuvník.
+Fungují šipky, kliknutí na stopu, přetažení posuvníku i kolečko myši nad seznamem.
+Když se všechny řádky opět vejdou, posuvník automaticky zmizí.
+
+#Obecné klávesy#
+
+  F1                   Otevřít tuto nápovědu.
+  F2                   Zapnout/vypnout záznam protokolu.
+  F3                   Zobrazit celá jména nebo aktuální diagnostiku řádku.
+  F4                   Otevřít seznam v editoru.
+  F4 na šabloně [T]    Upravit oddělovače slov.
+  F5                   Maximalizovat/obnovit dialog.
+  F6                   Načíst dostupný krok zpět.
+  F8                   Smazat protokol přejmenování po potvrzení.
+  F12                  Přesunout fokus do seznamu nebo zpět.
+  Alt+N                Fokus na masku jména.
+  Alt+E                Fokus na masku přípony.
+  Alt+S                Fokus na "Hledat".
+  Alt+P                Fokus na "Nahradit za".
+  Alt+C                Přepnout "Rozlišovat velikost".
+  Alt+G                Přepnout "Regulární výraz".
+  Alt+T                Fokus na šablony jmen.
+  Alt+L                Fokus na šablony přípon.
+  Enter                Provést hlavní akci "Přejmenovat".
+  Esc                  Zavřít dialog bez přejmenování.
+
+#Klávesy, když je fokus v seznamu#
+
+  Up/Down              Přejít na sousední řádek.
+  Home/End             První/poslední řádek.
+  PgUp/PgDn            Přejít o stránku.
+  Del                  Odebrat řádek pouze z této operace.
+  Ctrl+Up/Down         Změnit pořadí; mění čítače.
+  Ctrl+Left/Right      Přesunout rozdělovač sloupců.
+  Ctrl+Num5            Vycentrovat a resetovat posun.
+  Alt+Left/Right       Posunout zdrojový sloupec horizontálně.
+  Left/Right           Posunout cílový sloupec horizontálně.
+  Ctrl+PgUp            Zavřít VisRen a vrátit se ke zdroji na panelu.
+
+#Šablony a myš#
+
+  Ins v seznamu šablon vloží vybranou šablonu do masky.
+  Přetažením levým tlačítkem myši změníte pořadí řádků.
+  Pravé tlačítko myši na řádku zobrazí celá jména/chybu.
+  Dvojitý klik levým tlačítkem myši vrátí ke zdroji na panelu.
+  Kliknutí na ikonu v záhlaví maximalizuje/obnoví okno.
+  Kliknutí na volbu "Protokolovat přejmenování" přepne záznam; kliknutím
+  na zbytek řádku smažete stávající protokol po potvrzení.
+
+Změna velikosti terminálu a klávesa F5 obnoví rovnoměrné rozdělení náhledu. Ruční
+nastavení rozdělovače a posunu lze poté provést znovu.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenEditor
+$VisRen: úprava seznamu v UTF-8 editoru
+
+Klávesa F4 nabízí export v explicitních formátech a poté otevře dočasný UTF-8
+dokument s názvem "Rename list of files" ve vestavěném editoru f4:
+
+  Zdroj + cíl          "původní jméno"    "nové jméno"
+  Pouze cíle                              "nové jméno"
+
+Každá hodnota je uzavřena v uvozovkách. Uvozovky, zpětná lomítka a řídicí znaky
+uvnitř jména se zapisují s escapováním. Neměňte vnější uvozovky.
+
+#Přísná validace#
+
+Po zavření editoru VisRen vyžaduje:
+
+  - přesně stejný počet řádků jako v náhledu;
+  - přesně jeden nebo dva sloupce v uvozovkách podle vybraného režimu;
+  - žádný text navíc mimo hodnoty v uvozovkách;
+  - nezměněný zdrojový sloupec v režimu dvou sloupců;
+  - platný přenosný komponent pro každé cílové jméno.
+
+V editoru nelze přidávat, odebírat ani přesouvat řádky. V režimu dvou sloupců lze
+měnit pouze cílový sloupec. Díky těmto kontrolám se případné poškozené uvozovky
+nebo neúmyslné změny zdroje bezpečně odhalí ještě před zahájením operace.
+
+Při chybě VisRen vysvětlí důvod a nabídne "Upravit znovu". Editor se otevře znovu
+na chybovém řádku se zachováním vašeho textu. Platný upravený seznam spustí
+sekvenční přejmenování po zavření editoru. Pokud se vygenerovaný seznam nezměnil
+pobajtově, ale obsahuje změny masek, VisRen vyžaduje potvrzení před zahájením.
+
+Editor je deaktivován, pokud náhled obsahuje <Error!> nebo v režimu prohlížení
+kroku zpět.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenRename
+$VisRen: provedení, chyby, protokol a krok zpět
+
+#Sekvenční přejmenování#
+
+Řádky se zpracovávají postupně shora dolů v aktuálním pořadí. Nezměněné jméno se
+přeskočí. Zdroj, který po otevření dialogu zmizel, se rovněž přeskočí. Pro soubory i
+adresáře platí stejná pravidla.
+
+Cizí existující objekt se nikdy nepřepisuje. Podporuje se změna velikosti písmen
+u stejného objektu; v případě potřeby f4 použije unikátní dočasné jméno. Ostatní
+cykly se nerozdělují na fáze: například a -> b a b -> a obvykle skončí chybou
+obsazeného cíle, jako v původním VisRen.
+
+#Chyby při spuštění#
+
+Chyby přístupu, obsazená nebo duplicitní určení a další chyby nabízejí možnosti:
+
+  Opakovat             Opakovat stejný řádek.
+  Přeskočit            Ponechat zdroj beze změny a pokračovat.
+  Přeskočit vše        Nepotvrzovat další chyby a pokračovat.
+  Zrušit               Zastavit; nezpracovávat zbývající řádky.
+
+Operace není transakcí. Již provedená přejmenování zůstávají po přeskočení nebo
+zrušení platná. Neúspěšné a nezpracované zdroje zůstanou na panelu označené.
+Výsledná zpráva ukáže počet úspěšně zpracovaných řádků.
+
+#Protokol přejmenování#
+
+Při každém otevření dialogu je protokol zapnutý. Zaškrtnutí u volby "Protokolovat
+přejmenování" znamená, že úspěšné páry budou zapsány do paměti. F2 nebo kliknutí na
+zástupce přepíná záznam. Na disk se protokol nezapisuje a při ukončení f4 zmizí.
+Ukládají se pouze úspěšné páry a adresář poslední operace; hvězdička za popisem
+znamená, že je krok zpět k dispozici.
+
+F8 nebo kliknutí na zbytek řádku smaže protokol po potvrzení. Přejmenování s
+vypnutým záznamem rovněž nevytvoří balíček pro krok zpět.
+
+#Krok zpět (F6)#
+
+F6 načte poslední balíček v obráceném pořadí: nová jména se mají vrátit k původním.
+V záhlaví se zobrazí uložený adresář. Vyberte "Přejmenovat" a potvrďte krok zpět.
+Odpověď "Ne" vrátí běžný režim přejmenování.
+
+Pro krok zpět platí stejná pravidla o nepřepisování a varianty chyb. Před zahájením
+f4 přejde do uloženého adresáře. Po pokusu se protokol smaže, i když se krok zpět
+provedl pouze částečně, a nevyřešené položky zůstanou označené.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenSafety
+$VisRen: bezpečnost jmen a omezení
+
+Každé změněné určení musí být jedním přenosným komponentem jména. VisRen zakazuje:
+
+  - prázdné jméno, "." a "..";
+  - řídicí znaky pod U+0020 a NUL;
+  - <, >, :, ", *, ?, /, zpětné a vertikální lomítko;
+  - mezeru nebo tečku na konci;
+  - názvy zařízení DOS CON, PRN, AUX, NUL, COM1..COM9 a LPT1..LPT9 bez ohledu na
+    velikost písmen a příponu.
+
+Lomítko nelze použít pro přesun do jiného adresáře. Nezměněné původní jméno je
+povoleno a jednoduše se přeskočí, i když by při vytváření nového jména neprošlo
+přenosnou kontrolou.
+
+Předběžná kontrola odhalí chyby masky a přenosného jména, ale nerezervuje určení
+předem. Existující cíl, stejný výsledek dvou řádků, práva, systémová omezení délky
+a cykly mohou stále způsobit chybu při provádění. K přepsání cíle nedojde.
+
+Chybějící nebo poškozená metadata se nahradí prázdným textem. Opatrně přidávejte
+oddělovače v maskách metadat a vždy zkontrolujte výsledek. VisRen nevytváří
+transakci a nevybírá dočasná jména pro cykly z více prvků.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@VisRenExamples
+$VisRen: praktické recepty
+
+#Číslování a malá písmena u přípon#
+
+  Maska jména:       [C001+1]_[N]
+  Maska přípony:     [E][L]
+
+Výsledkem bude 001_Staré jméno.jpg, 002_Jiné jméno.jpg a tak dále. Pokud potřebujete
+čísla v jiném pořadí, nejprve přeuspořádejte řádky.
+
+#Ponechat část jména pevné délky#
+
+  Původní jméno:     20260805_report_final.txt
+  Maska jména:       [N10-21]
+  Maska přípony:     [E]
+  Výsledek:          report_final.txt
+
+#Odstranit doslovný prefix#
+
+  Masky:             [N] a [E]
+  Hledat:            draft_
+  Nahratit:          (prázdné)
+
+#Prohodit skupiny regex#
+
+  Původní jméno:     001-report.txt
+  Hledat:            /(\d+)-([^.]+)/
+  Nahradit za:       $2-$1
+  Výsledek:          report-001.txt
+
+#Pojmenovat MP3 podle tagů#
+
+  Maska jména:       [a] - [t]
+  Maska přípony:     [E][L]
+
+Číslo stopy lze přidat čítačem nebo výrazem ID3 popsaným v části metadat. Prázdné
+tagy interpreta a názvu skladby dají prázdný text, proto zkontrolujte oddělovače v
+náhledu.
+
+#Pojmenovat fotografie podle data a velikosti#
+
+  Maska jména:       [d]_[r]_[C001]
+  Maska přípony:     [E][L]
+
+Pro JPEG se použije datum pořízení EXIF, pokud existuje. Pro ostatní podporované
+obrázky [d] bere čas změny souboru.
+
+#Transliterace a doslovné závorky#
+
+  Maska jména:       [[]archive[]]_[N][TL]
+  Maska přípony:     [E][L]
+
+Původní Пример.TXT se změní na [archive]_Primer.txt podle původní tabulky
+transliterace VisRen.
+
+Stisknutím klávesy Backspace se vrátíte k obsahu VisRen.
+
+@Panels
+$Nápověda f4 (Verze: %Ver)
+f4 je experimentální klon souborového manažeru Far Manager / far2l v jazyce Go.
+
+~Klávesové zkratky prohlížeče / editoru~ViewerEditor@
+~Navigace na panelech~PanelNav@
+~Zobrazit README.md~README@
+
+@ViewerEditor
+$Klávesové zkratky prohlížeče a editoru
+Tato sekce se generuje dynamicky z registru akcí.
+
+@ViewerNav
+$Navigační klávesy
+Editor:
+  Ctrl+Left     - K hranici předchozího slova
+  Ctrl+Right    - K hranici dalšího slova
+  Ctrl+Shift+Left/Right - Výběr po slovech
+  Home/End      - Začátek / konec řádku
+  PgUp/PgDn     - Stránka nahoru / dolů
+
+Prohlížeč:
+  Up/Down       - Posun o řádek
+  PgUp/PgDn     - Posun o stránku
+  Home/End      - Začátek / konec souboru
+
+@PanelNav
+$Navigace na panelech
+Tato sekce se generuje dynamicky z registru akcí.
+
+@ShellNav
+$Navigační klávesy na panelech
+  Tab           - Změna aktivního panelu
+  Insert        - Označit soubor/složku
+  Ctrl+Tab      - Přepínání pracovních prostorů
+  Ctrl+W        - Zavřít aktuální pracovní prostor
+  Ctrl+N        - Duplikovat aktuální panel na nový pracovní prostor
+
+@History
+$Historie příkazů (Alt+F8)
+    Historie příkazů zobrazuje seznam dříve spuštěných příkazů.
+Kromě kurzorových kláves jsou k dispozici následující klávesové zkratky:
+
+  Vložit vybraný příkaz do příkazového řádku        Enter
+  (Kliknutí myší funguje stejně)
+  Zavřít dialog                                     Esc, F10
+
+  Přepnout režim vyhledávání (podřetězec / od začátku) F2
+  Zadání libovolného znaku filtruje seznam
+  Backspace smaže poslední znak filtru
+
+  Smazat aktuální záznam z historie                 Shift+Del
+  Vymazat celou historii příkazů (s potvrzením)     Del
+
+  Kopírovat vybraný příkaz do schránky              Ctrl+C, Ctrl+Ins
+
+@HistoryFolders
+$Historie složek (Alt+F12)
+    Historie složek zobrazuje seznam dříve navštívených adresářů.
+Kromě kurzorových kláves jsou k dispozici následující klávesové zkratky:
+
+  Přejít do vybrané složky na aktivním panelu       Enter
+  (Kliknutí myší funguje stejně)
+  Přejít do vybrané složky na pasivním panelu       Shift+Enter
+  Vložit cestu do příkazového řádku                 Ctrl+Enter
+  Zavřít dialog                                     Esc, F10
+
+  Přepnout režim vyhledávání (podřetězec / od začátku) F2
+  Zadání libovolného znaku filtruje seznam
+  Backspace smaže poslední znak filtru
+
+  Smazat aktuální záznam z historie                 Shift+Del
+  Vymazat celou historii složek (s potvrzením)      Del
+  Odstranit záznamy s neexistujícími cestami (s potvrzením) Ctrl+R
+
+  Kopírovat vybranou cestu do schránky              Ctrl+C, Ctrl+Ins

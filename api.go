@@ -27,6 +27,13 @@ func (c *coreAPI) RegisterVFSProvider(p vfs.VFSProvider) {
 	vtui.DebugLog("CORE: Registering VFS Provider: %s", p.Name())
 	vfs.RegisterProvider(p)
 }
+func (c *coreAPI) RegisterURIProvider(p vfs.URIProvider) error {
+	if err := vfs.RegisterURIProvider(p); err != nil {
+		return err
+	}
+	vtui.DebugLog("CORE: Registered URI Provider: %s", p.Scheme())
+	return nil
+}
 func (c *coreAPI) RegisterHighlighter(p vtui.HighlighterProvider) {
 	vtui.DebugLog("CORE: Registering Highlighter: %s", p.Name())
 	vtui.RegisterHighlighter(p)

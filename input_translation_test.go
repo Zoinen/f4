@@ -20,6 +20,13 @@ func TestTranslateInput(t *testing.T) {
 		{"F1", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_F1, KeyDown: true}, 0, "\x1bOP"},
 		{"F5", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_F5, KeyDown: true}, 0, "\x1b[15~"},
 		{"Alt+a", &vtinput.InputEvent{Char: 'a', ControlKeyState: vtinput.LeftAltPressed, KeyDown: true}, 0, "\x1ba"},
+		{"Ctrl+C no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_C, ControlKeyState: vtinput.LeftCtrlPressed, KeyDown: true}, 0, string(rune(3))},
+		{"Ctrl+Z no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_Z, ControlKeyState: vtinput.RightCtrlPressed, KeyDown: true}, 0, string(rune(26))},
+		{"Ctrl+[ no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_OEM_4, ControlKeyState: vtinput.LeftCtrlPressed, KeyDown: true}, 0, "\x1b"},
+		{"Ctrl+Alt+C no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_C, ControlKeyState: vtinput.LeftCtrlPressed | vtinput.LeftAltPressed, KeyDown: true}, 0, "\x1b\x03"},
+		{"Ctrl+2 no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_2, ControlKeyState: vtinput.LeftCtrlPressed, KeyDown: true}, 0, string(rune(0))},
+		{"Ctrl+Pause no char (gogpu)", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_PAUSE, ControlKeyState: vtinput.LeftCtrlPressed, KeyDown: true}, 0, string(rune(3))},
+		{"Pause no ctrl", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_PAUSE, KeyDown: true}, 0, ""},
 		{"Alt+Enter", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.LeftAltPressed, KeyDown: true}, 0, "\x1b\r"},
 		{"Standalone Modifier", &vtinput.InputEvent{VirtualKeyCode: vtinput.VK_SHIFT, KeyDown: true}, 0, ""},
 

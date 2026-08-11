@@ -336,7 +336,7 @@ func (ph *ftpProtocolHandler) BuildExtraUI(cfg *NetFoxConfig, x, y, w, h int) (v
 		passive = (val == "true")
 	}
 
-	chk := vtui.NewCheckbox(x, y, "Passive mode", false)
+	chk := vtui.NewCheckbox(x, y, vtui.Msg("NetFox.PassiveMode"), false)
 	if passive {
 		chk.State = 1
 	} else {

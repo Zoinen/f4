@@ -2,9 +2,7 @@ package main
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,10 +13,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	gzip "github.com/klauspost/pgzip"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtui"
+	"github.com/unxed/zip"
 )
 
 type githubAsset struct {
@@ -39,6 +41,13 @@ var (
 	osExecutable = os.Executable
 	currentOS    = runtime.GOOS
 	currentArch  = runtime.GOARCH
+
+	// sessionDismissedUpdateKey remembers which update the user
+	// declined during the current f4 session, so an interval-driven
+	// auto-check does not re-prompt for the same version this run.
+	// The dismissal deliberately does NOT persist across restarts —
+	// see #374 — and a manual "Check for updates" always ignores it.
+	sessionDismissedUpdateKey string
 )
 
 func getCurrentVersion() string {
@@ -115,20 +124,16 @@ func CheckForUpdates(pf *PanelsFrame, manual bool) {
 		return
 	}
 
-	assetSuffix := fmt.Sprintf("-%s-%s.tar.gz", currentOS, currentArch)
+	// Windows: priority order .7z, then .zip.
+	assetSuffixes := []string{fmt.Sprintf("-%s-%s.tar.gz", currentOS, currentArch)}
 	if currentOS == "windows" {
-		assetSuffix = fmt.Sprintf("-%s-%s.zip", currentOS, currentArch)
-	}
-
-	var downloadURL string
-	var assetUpdated string
-	for _, asset := range release.Assets {
-		if strings.HasSuffix(asset.Name, assetSuffix) {
-			downloadURL = asset.BrowserDownloadURL
-			assetUpdated = asset.UpdatedAt
-			break
+		assetSuffixes = []string{
+			fmt.Sprintf("-%s-%s.7z", currentOS, currentArch),
+			fmt.Sprintf("-%s-%s.zip", currentOS, currentArch),
 		}
 	}
+
+	downloadURL, assetUpdated, archiveKind := pickAsset(release.Assets, assetSuffixes)
 
 	if downloadURL == "" {
 		reportUpdateError(manual, "No suitable build found for your OS/Arch.")
@@ -167,16 +172,31 @@ func CheckForUpdates(pf *PanelsFrame, manual bool) {
 		return
 	}
 
+	// An update is available, but the user already said "no" to this
+	// exact release earlier in this session. Skip the auto-prompt so
+	// the next interval-driven check does not nag; a manual "Check
+	// for updates" from the settings dialog goes through regardless
+	// (see #374).
+	if !manual && sessionDismissedUpdateKey == updateKey {
+		vtui.DebugLog("UPDATER: skipping prompt — update %q dismissed this session", updateKey)
+		return
+	}
+
 	vtui.FrameManager.PostTask(func() {
 		msg := fmt.Sprintf("An update is available: %s\n\nDo you want to download and install it now?", displayVersion)
 		dlg := vtui.ShowMessage(" Auto Update ", msg, []string{"&Yes", "&No"})
 		dlg.OnResult = func(code int) {
 			if code == 0 {
-				performUpdate(pf, downloadURL, currentOS != "windows", release.TagName, updateKey)
-			} else {
-				AppConfig.LastUpdateVersion = updateKey
-				SaveConfig()
+				performUpdate(pf, downloadURL, archiveKind, release.TagName, updateKey)
+				return
 			}
+			// User declined. Remember only for this session — the
+			// next restart (or a manual check) will offer it again.
+			// AppConfig.LastUpdateVersion is deliberately NOT touched
+			// here: that field is the "we already installed this
+			// version" marker and must survive across restarts, while
+			// a declined prompt must not (see #374).
+			sessionDismissedUpdateKey = updateKey
 		}
 	})
 }
@@ -190,7 +210,7 @@ func reportUpdateError(manual bool, msg string) {
 	}
 }
 
-func performUpdate(pf *PanelsFrame, url string, isTarGz bool, newTag, publishedAt string) {
+func performUpdate(pf *PanelsFrame, url, archiveKind, newTag, publishedAt string) {
 	if pf == nil {
 		return
 	}
@@ -250,10 +270,14 @@ func performUpdate(pf *PanelsFrame, url string, isTarGz bool, newTag, publishedA
 		update("Extracting and installing...", -1)
 
 		exeDir := filepath.Dir(exePath)
-		if isTarGz {
+		switch archiveKind {
+		case "7z":
+			err = extract7zToDir(archiveData.Bytes(), exeDir)
+		case "targz":
 			err = extractTarGzToDir(archiveData.Bytes(), exeDir)
-		} else {
-			err = extractZipToDir(archiveData.Bytes(), exeDir)
+		default:
+			// 4 workers: benchmark-optimal.
+			err = extractZipToDirParallel(archiveData.Bytes(), exeDir, min(runtime.GOMAXPROCS(0), 4))
 		}
 
 		if err != nil {
@@ -279,6 +303,7 @@ func performUpdate(pf *PanelsFrame, url string, isTarGz bool, newTag, publishedA
 		dlg := vtui.ShowMessage(" Update Successful ", "f4 has been updated successfully.\nPlease restart the application to apply changes.", []string{"E&xit now", "&Later"})
 		dlg.OnResult = func(code int) {
 			if code == 0 {
+				cancelOperationsForShutdown()
 				vtui.FrameManager.Shutdown()
 			}
 		}
@@ -339,6 +364,42 @@ func sanitizeExtractPath(name, destDir string) (string, error) {
 	}
 	return filepath.Join(destDir, filepath.FromSlash(cleanName)), nil
 }
+
+type archiveEntry struct {
+	name  string
+	isDir bool
+	mode  os.FileMode
+	open  func() (io.ReadCloser, error)
+}
+
+func extractEntry(e archiveEntry, destDir string) error {
+	targetPath, err := sanitizeExtractPath(e.name, destDir)
+	if err != nil {
+		return nil // Skip malicious/invalid paths
+	}
+
+	if e.isDir {
+		errMkdir := os.MkdirAll(targetPath, 0755)
+		if errMkdir != nil && os.IsPermission(errMkdir) && vfs.GetSudoClient().IsAvailable() {
+			_ = vfs.GetSudoClient().MkDir(targetPath, 0755)
+		}
+		return nil
+	}
+
+	rc, err := e.open()
+	if err != nil {
+		return err
+	}
+
+	mode := e.mode
+	if mode == 0 {
+		mode = 0644
+	}
+	err = writeFileSafe(targetPath, rc, mode)
+	rc.Close()
+	return err
+}
+
 func extractTarGzToDir(data []byte, destDir string) error {
 	r := bytes.NewReader(data)
 	gzr, err := gzip.NewReader(r)
@@ -351,70 +412,139 @@ func extractTarGzToDir(data []byte, destDir string) error {
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			break
+			return nil
 		}
 		if err != nil {
 			return err
 		}
-
-		targetPath, err := sanitizeExtractPath(hdr.Name, destDir)
-		if err != nil {
-			continue // Skip malicious/invalid paths
+		if err := extractEntry(archiveEntry{
+			name:  hdr.Name,
+			isDir: hdr.Typeflag == tar.TypeDir,
+			mode:  os.FileMode(hdr.Mode),
+			open:  func() (io.ReadCloser, error) { return io.NopCloser(tr), nil },
+		}, destDir); err != nil {
+			return err
 		}
+	}
+}
 
-		if hdr.Typeflag == tar.TypeDir {
-			errMkdir := os.MkdirAll(targetPath, 0755)
-			if errMkdir != nil && os.IsPermission(errMkdir) && vfs.GetSudoClient().IsAvailable() {
-				_ = vfs.GetSudoClient().MkDir(targetPath, 0755)
-			}
-			continue
-		}
-
-		mode := os.FileMode(hdr.Mode)
-		if mode == 0 {
-			mode = 0644
-		}
-		if err := writeFileSafe(targetPath, tr, mode); err != nil {
+func extractZipToDir(data []byte, destDir string) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return err
+	}
+	for _, f := range zr.File {
+		if err := extractEntry(archiveEntry{
+			name:  f.Name,
+			isDir: f.FileInfo().IsDir(),
+			mode:  f.Mode(),
+			open:  f.Open,
+		}, destDir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func extractZipToDir(data []byte, destDir string) error {
-	r := bytes.NewReader(data)
-	zr, err := zip.NewReader(r, int64(len(data)))
+// extractZipToDirParallel: extractZipToDir with entries in parallel; falls back when <2 entries.
+func extractZipToDirParallel(data []byte, destDir string, workers int) error {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return err
 	}
+	if workers < 2 || len(zr.File) < 2 {
+		return extractZipToDir(data, destDir)
+	}
+	if workers > len(zr.File) {
+		workers = len(zr.File)
+	}
 
-	for _, f := range zr.File {
-		targetPath, err := sanitizeExtractPath(f.Name, destDir)
-		if err != nil {
-			continue // Skip malicious/invalid paths
+	entries := make([]archiveEntry, len(zr.File))
+	for i, f := range zr.File {
+		entries[i] = archiveEntry{
+			name:  f.Name,
+			isDir: f.FileInfo().IsDir(),
+			mode:  f.Mode(),
+			open:  f.Open,
 		}
+	}
 
-		if f.FileInfo().IsDir() {
-			errMkdir := os.MkdirAll(targetPath, 0755)
-			if errMkdir != nil && os.IsPermission(errMkdir) && vfs.GetSudoClient().IsAvailable() {
-				_ = vfs.GetSudoClient().MkDir(targetPath, 0755)
+	errCh := make(chan error, 1)
+	done := make(chan struct{})
+	jobs := make(chan archiveEntry)
+	go func() {
+		defer close(jobs)
+		for _, e := range entries {
+			select {
+			case jobs <- e:
+			case <-done:
+				return
 			}
-			continue
 		}
+	}()
 
-		rc, err := f.Open()
-		if err != nil {
-			return err
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for e := range jobs {
+				if err := extractEntry(e, destDir); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(done)
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+// pickAsset returns the first release asset whose name ends with one of the
+// suffixes, trying suffixes in order. Returns an empty url when nothing matches.
+func pickAsset(assets []githubAsset, suffixes []string) (url, updatedAt, kind string) {
+	for _, suffix := range suffixes {
+		for _, a := range assets {
+			if strings.HasSuffix(a.Name, suffix) {
+				return a.BrowserDownloadURL, a.UpdatedAt, archiveKindForSuffix(suffix)
+			}
 		}
+	}
+	return "", "", ""
+}
 
-		mode := f.Mode()
-		if mode == 0 {
-			mode = 0644
-		}
+func archiveKindForSuffix(suffix string) string {
+	switch {
+	case strings.HasSuffix(suffix, ".7z"):
+		return "7z"
+	case strings.HasSuffix(suffix, ".tar.gz"):
+		return "targz"
+	default:
+		return "zip"
+	}
+}
 
-		err = writeFileSafe(targetPath, rc, mode)
-		rc.Close()
-		if err != nil {
+func extract7zToDir(data []byte, destDir string) error {
+	szr, err := sevenzip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return err
+	}
+	for _, f := range szr.File {
+		if err := extractEntry(archiveEntry{
+			name:  f.Name,
+			isDir: f.FileInfo().IsDir(),
+			mode:  f.Mode(),
+			open:  f.Open,
+		}, destDir); err != nil {
 			return err
 		}
 	}

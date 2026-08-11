@@ -31,6 +31,7 @@ func TestF4HistoryProvider_Persistence(t *testing.T) {
 	hp2 := &F4HistoryProvider{
 		path: dbPath,
 		data: make(map[string][]string),
+		rich: make(map[string][]HistoryRecord),
 	}
 	hp2.load()
 
@@ -47,6 +48,7 @@ func TestAddFolderHistory(t *testing.T) {
 	hp := &F4HistoryProvider{
 		path: dbPath,
 		data: make(map[string][]string),
+		rich: make(map[string][]HistoryRecord),
 	}
 	vtui.GlobalHistoryProvider = hp
 	defer func() { vtui.GlobalHistoryProvider = nil }()

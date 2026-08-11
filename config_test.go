@@ -3,8 +3,11 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/unxed/vtui"
 )
 
 func TestConfig_SaveAndLoad(t *testing.T) {
@@ -36,6 +39,12 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.SeparateFileExtensions = true
 	AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
 	AppConfig.MacroRecordFormat = 1
+	AppConfig.UseTrash = true
+	AppConfig.TerminalCtrlNWorkspace = false
+	AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
+	AppConfig.CtrlTabShowsMenu = true
+	AppConfig.AltNumberSwitchesTabs = false
+	AppConfig.ApplyCommandParallelism = 0
 
 	// 2. Save
 	SaveConfig()
@@ -49,6 +58,12 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.SeparateFileExtensions = false
 	AppConfig.PanelScrollbarMode = PanelScrollbarOff
 	AppConfig.MacroRecordFormat = 0
+	AppConfig.UseTrash = false
+	AppConfig.TerminalCtrlNWorkspace = true
+	AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
+	AppConfig.CtrlTabShowsMenu = false
+	AppConfig.AltNumberSwitchesTabs = true
+	AppConfig.ApplyCommandParallelism = 1
 
 	// 4. Load
 	LoadConfig()
@@ -59,6 +74,15 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	// 5. Verify
 	if AppConfig.ShowHiddenFiles {
 		t.Error("LoadConfig failed to restore ShowHiddenFiles")
+	}
+	if AppConfig.WorkspaceTabMode != int(vtui.WorkspaceTabsOnCtrl) {
+		t.Errorf("LoadConfig failed to restore workspace tab mode: %d", AppConfig.WorkspaceTabMode)
+	}
+	if !AppConfig.CtrlTabShowsMenu {
+		t.Error("LoadConfig failed to restore Ctrl+Tab menu mode")
+	}
+	if AppConfig.AltNumberSwitchesTabs {
+		t.Error("LoadConfig failed to restore disabled Alt+number tab switching")
 	}
 	if !AppConfig.ShowDirPrefix {
 		t.Error("LoadConfig failed to restore ShowDirPrefix")
@@ -83,6 +107,133 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if AppConfig.MacroRecordFormat != 1 {
 		t.Error("LoadConfig failed to restore MacroRecordFormat")
+	}
+	if !AppConfig.UseTrash {
+		t.Error("LoadConfig failed to restore UseTrash")
+	}
+	if AppConfig.TerminalCtrlNWorkspace {
+		t.Error("LoadConfig failed to restore TerminalCtrlNWorkspace")
+	}
+	if AppConfig.ApplyCommandParallelism != 0 {
+		t.Errorf("ApplyCommandParallelism = %d, want Unlimited (0)", AppConfig.ApplyCommandParallelism)
+	}
+}
+
+func TestConfig_TrashDefaultsOffWhenKeyIsAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[System]\nConfirmDelete = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origUserPathFunc := getUserConfigIniPath
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = origUserPathFunc
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+	getUserConfigIniPath = func() string { return userIniPath }
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	AppConfig.UseTrash = true
+	LoadConfig()
+	if AppConfig.UseTrash {
+		t.Fatal("UseTrash must default to false when the setting is absent")
+	}
+}
+
+func TestConfig_TerminalCtrlNWorkspaceDefaultsOnWhenKeyIsAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Panel]\nShowHiddenFiles = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origUserPathFunc := getUserConfigIniPath
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = origUserPathFunc
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+	getUserConfigIniPath = func() string { return userIniPath }
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	AppConfig.TerminalCtrlNWorkspace = false
+	LoadConfig()
+	if !AppConfig.TerminalCtrlNWorkspace {
+		t.Fatal("TerminalCtrlNWorkspace must default to true when the setting is absent")
+	}
+}
+
+func TestConfig_AltNumberSwitchesTabsDefaultsOnWhenKeyIsAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Interface]\nWorkspaceTabMode = multiple\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origUserPathFunc := getUserConfigIniPath
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = origUserPathFunc
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+	getUserConfigIniPath = func() string { return userIniPath }
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	AppConfig.AltNumberSwitchesTabs = false
+	LoadConfig()
+	if !AppConfig.AltNumberSwitchesTabs {
+		t.Fatal("AltNumberSwitchesTabs must default to true when the setting is absent")
+	}
+}
+
+func TestConfig_WorkspaceTabModeDefaultsToOnCtrlWhenKeyIsAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Interface]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origUserPathFunc := getUserConfigIniPath
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = origUserPathFunc
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+	getUserConfigIniPath = func() string { return userIniPath }
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
+	LoadConfig()
+	if AppConfig.WorkspaceTabMode != int(vtui.WorkspaceTabsOnCtrl) {
+		t.Fatalf("WorkspaceTabMode without a saved key = %d, want Ctrl-only mode %d",
+			AppConfig.WorkspaceTabMode, vtui.WorkspaceTabsOnCtrl)
+	}
+}
+
+func TestConfig_ApplyCommandParallelismDefaultsToLogicalCPUs(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Panel]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() { getConfigIniPaths = origPathsFunc; AppConfig = oldCfg }()
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+	AppConfig.ApplyCommandParallelism = 0
+	LoadConfig()
+	if AppConfig.ApplyCommandParallelism != runtime.NumCPU() {
+		t.Fatalf("ApplyCommandParallelism = %d, want %d", AppConfig.ApplyCommandParallelism, runtime.NumCPU())
 	}
 }
 
@@ -264,15 +415,21 @@ func TestConfig_GuiFontPersistence(t *testing.T) {
 	getUserConfigIniPath = func() string {
 		return filepath.Join(tmpDir, "settings.ini")
 	}
-	defer func() { getUserConfigIniPath = oldPathFunc }()
+	oldCfg := AppConfig
+	defer func() {
+		getUserConfigIniPath = oldPathFunc
+		AppConfig = oldCfg
+	}()
 
 	// Задаем тестовые значения
 	AppConfig.GuiFont = "UbuntuMono-Regular"
+	AppConfig.GuiUseSystemMonospace = false
 	AppConfig.GuiFontSize = 22
 	SaveConfig()
 
 	// Сбрасываем текущую конфигурацию в памяти
 	AppConfig.GuiFont = ""
+	AppConfig.GuiUseSystemMonospace = true
 	AppConfig.GuiFontSize = 0
 
 	// Читаем заново из временного файла
@@ -283,6 +440,9 @@ func TestConfig_GuiFontPersistence(t *testing.T) {
 	}
 	if AppConfig.GuiFontSize != 22 {
 		t.Errorf("Expected GuiFontSize to be 22, got %d", AppConfig.GuiFontSize)
+	}
+	if AppConfig.GuiUseSystemMonospace {
+		t.Error("Expected GuiUseSystemMonospace to remain disabled")
 	}
 }
 

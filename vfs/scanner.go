@@ -15,11 +15,12 @@ import (
 // this too: FileSize += FindData.nFileSize for directory entries,
 // see far2l/src/dirinfo.cpp).
 type OpStats struct {
-	Bytes         int64
-	DirBytes      int64
-	PhysicalBytes int64 // sum of VFSItem.PhysicalSize (Unix stat.Blocks*512 / Windows GetCompressedFileSize); 0 on VFSes that don't report it
-	Files         int64
-	Dirs          int64
+	Bytes            int64
+	DirBytes         int64
+	PhysicalBytes    int64 // sum of VFSItem.PhysicalSize (Unix stat.Blocks*512 / Windows GetCompressedFileSize); 0 on VFSes that don't report it
+	Files            int64
+	Dirs             int64
+	UnknownSizeFiles int64
 }
 
 // Add merges another OpStats into the current one.
@@ -29,6 +30,7 @@ func (s *OpStats) Add(other OpStats) {
 	s.PhysicalBytes += other.PhysicalBytes
 	s.Files += other.Files
 	s.Dirs += other.Dirs
+	s.UnknownSizeFiles += other.UnknownSizeFiles
 }
 
 // ScanCallback is used to report progress during a long scanning operation.
@@ -236,6 +238,9 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 	// actual copy path recurses.
 	if item.IsSymlink && !opts.FollowSymlinkDirs {
 		stats.Files++
+		if item.Size == 0 && !item.SizeKnown {
+			stats.UnknownSizeFiles++
+		}
 		stats.Bytes += item.Size
 		stats.PhysicalBytes += item.PhysicalSize
 		return nil
@@ -243,6 +248,9 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 
 	if !item.IsDir {
 		stats.Files++
+		if item.Size == 0 && !item.SizeKnown {
+			stats.UnknownSizeFiles++
+		}
 		stats.Bytes += item.Size
 		stats.PhysicalBytes += item.PhysicalSize
 		return nil

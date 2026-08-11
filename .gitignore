@@ -3,7 +3,7 @@ debug*log
 plugins/dummy/f4-dummy-plugin
 f4
 f4.exe
-f4.exe~
+*.exe~
 f4-gui.exe
 f4.ini
 plugins/dummy_internal/f4-internal-dummy-plugin
@@ -20,3 +20,4 @@ Profile/
 afix.ap
 afailed.*
 .codex-build/
+/build/

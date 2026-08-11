@@ -1210,6 +1210,14 @@ f4_job_exec() {
   return 1
  fi
  ( eval "$2" ) 2>&1
+ f4_jrc=$?
+ # Job polling counts complete lines with wc -l. Normalize a final partial
+ # line once the command has stopped, otherwise it can never be observed by
+ # any poll. The callback API is line based, so this adds no visible output.
+ if [ -s "$F4JD/out" ] && [ "`tail -c 1 "$F4JD/out" 2>/dev/null | wc -l | tr -d ' '`" = 0 ]; then
+  printf '\n'
+ fi
+ return "$f4_jrc"
 }
 f4_job_body() {
  case $1 in

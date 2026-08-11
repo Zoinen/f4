@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ func (e *LuaMacroEngine) installAPI(L *lua.LState) {
 	L.SetGlobal("msgbox", L.NewFunction(e.luaMsgBox))
 
 	L.SetGlobal("Actions", e.newActionsTable(L))
+	L.SetGlobal("Plugin", e.newPluginTable(L))
 
 	// Declarations f4 does not implement yet. They are accepted and ignored so
 	// that a script mixing them with Macro{} still contributes its macros
@@ -46,6 +49,151 @@ func (e *LuaMacroEngine) installAPI(L *lua.LState) {
 	bits := newBitTable(L)
 	L.SetGlobal("bit", bits)
 	L.SetGlobal("bit64", bits)
+}
+
+func (e *LuaMacroEngine) newPluginTable(L *lua.LState) *lua.LTable {
+	table := L.NewTable()
+	L.SetFuncs(table, map[string]lua.LGFunction{
+		"Call": e.luaPluginCall,
+	})
+	return table
+}
+
+func (e *LuaMacroEngine) luaPluginCall(L *lua.LState) int {
+	id := L.CheckString(1)
+	args := make([]any, 0, max(0, L.GetTop()-1))
+	for index := 2; index <= L.GetTop(); index++ {
+		value, err := macroValueFromLua(L.Get(index), 0)
+		if err != nil {
+			L.RaiseError("Plugin.Call argument %d: %v", index-1, err)
+			return 0
+		}
+		args = append(args, value)
+	}
+
+	results, err := e.host.CallPlugin(L.Context(), id, args)
+	if err != nil {
+		e.host.Log("MACRO: Plugin.Call(%q): %v", id, err)
+		L.Push(lua.LNil)
+		return 1
+	}
+	converted := make([]lua.LValue, len(results))
+	for index, result := range results {
+		value, convertErr := macroValueToLua(L, result, 0)
+		if convertErr != nil {
+			e.host.Log("MACRO: Plugin.Call(%q) result %d: %v", id, index+1, convertErr)
+			L.Push(lua.LNil)
+			return 1
+		}
+		converted[index] = value
+	}
+	for _, value := range converted {
+		L.Push(value)
+	}
+	return len(results)
+}
+
+func macroValueFromLua(value lua.LValue, depth int) (any, error) {
+	if depth > 32 {
+		return nil, fmt.Errorf("value nesting exceeds 32 levels")
+	}
+	switch value := value.(type) {
+	case *lua.LNilType:
+		return nil, nil
+	case lua.LBool:
+		return bool(value), nil
+	case lua.LString:
+		return string(value), nil
+	case lua.LNumber:
+		number := float64(value)
+		if number == math.Trunc(number) && math.Abs(number) <= 1<<53 {
+			return int64(number), nil
+		}
+		return number, nil
+	case *lua.LTable:
+		length := value.Len()
+		count := 0
+		valid := true
+		value.ForEach(func(key, _ lua.LValue) {
+			count++
+			number, ok := key.(lua.LNumber)
+			if !ok || float64(number) != math.Trunc(float64(number)) || int(number) < 1 || int(number) > length {
+				valid = false
+			}
+		})
+		if !valid || count != length {
+			return nil, fmt.Errorf("tables must be dense arrays")
+		}
+		result := make([]any, length)
+		for index := 1; index <= length; index++ {
+			item, err := macroValueFromLua(value.RawGetInt(index), depth+1)
+			if err != nil {
+				return nil, err
+			}
+			result[index-1] = item
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported Lua value %s", value.Type())
+	}
+}
+
+func macroValueToLua(L *lua.LState, value any, depth int) (lua.LValue, error) {
+	if value == nil {
+		return lua.LNil, nil
+	}
+	if depth > 32 {
+		return nil, fmt.Errorf("value nesting exceeds 32 levels")
+	}
+	switch value := value.(type) {
+	case bool:
+		return lua.LBool(value), nil
+	case string:
+		return lua.LString(value), nil
+	case []byte:
+		return lua.LString(value), nil
+	case int:
+		return lua.LNumber(value), nil
+	case int8:
+		return lua.LNumber(value), nil
+	case int16:
+		return lua.LNumber(value), nil
+	case int32:
+		return lua.LNumber(value), nil
+	case int64:
+		return lua.LNumber(value), nil
+	case uint:
+		return lua.LNumber(value), nil
+	case uint8:
+		return lua.LNumber(value), nil
+	case uint16:
+		return lua.LNumber(value), nil
+	case uint32:
+		return lua.LNumber(value), nil
+	case uint64:
+		if value > 1<<53 {
+			return nil, fmt.Errorf("integer %d cannot be represented exactly in Lua", value)
+		}
+		return lua.LNumber(value), nil
+	case float32:
+		return lua.LNumber(value), nil
+	case float64:
+		return lua.LNumber(value), nil
+	}
+
+	reflected := reflect.ValueOf(value)
+	if reflected.Kind() != reflect.Slice && reflected.Kind() != reflect.Array {
+		return nil, fmt.Errorf("unsupported Go value %T", value)
+	}
+	table := L.NewTable()
+	for index := 0; index < reflected.Len(); index++ {
+		item, err := macroValueToLua(L, reflected.Index(index).Interface(), depth+1)
+		if err != nil {
+			return nil, err
+		}
+		table.Append(item)
+	}
+	return table, nil
 }
 
 // dynamicTable builds a table whose fields are computed on access, which is

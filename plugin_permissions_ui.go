@@ -23,15 +23,15 @@ import (
 // translation reads worse than none.
 func actionPluginPermissions(store *PermissionStore) {
 	width, height := 66, 16
-	dlg := vtui.NewCenteredDialog(width, height, " Plugin Permissions ")
+	dlg := vtui.NewCenteredDialog(width, height, Msg("Permissions.Title"))
 	dlg.ShowClose = true
 
 	grants := store.Grants()
 
 	lb := vtui.NewListBox(0, 0, width-4, height-6, permissionDialogLines(grants))
 
-	btnRevoke := vtui.NewButton(0, 0, "&Revoke")
-	btnClose := vtui.NewButton(0, 0, "&Close")
+	btnRevoke := vtui.NewButton(0, 0, Msg("Permissions.BtnRevoke"))
+	btnClose := vtui.NewButton(0, 0, Msg("Permissions.BtnClose"))
 
 	dlg.AddItem(lb)
 	dlg.AddItem(btnRevoke)

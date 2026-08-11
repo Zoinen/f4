@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -393,4 +394,47 @@ func TestFileAssociation_LangKeysResolve(t *testing.T) {
 	}
 	// Silence "runtime unused" if this is the only reference.
 	_ = runtime.GOOS
+}
+
+// TestFileAssociation_DeleteConfirmIsWarning is the regression guard
+// for the associations-editor half of #379: the delete-entry
+// confirmation is destructive and must render on the red WarnDialog
+// palette, matching the file-manager delete confirmation.
+func TestFileAssociation_DeleteConfirmIsWarning(t *testing.T) {
+	withTempAssociations(t, []FileAssoc{
+		{
+			Mask:        "*.md",
+			Description: "Markdown",
+			Commands:    [assocKindCount]string{AssocExecute: "cat !.!"},
+			Enabled:     [assocKindCount]bool{AssocExecute: true},
+		},
+	})
+	pf, _ := setupPanelWithFile(t, "readme.md")
+	ShowFileAssociations(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	umf, ok := top.(*userMenuFrame)
+	if !ok {
+		t.Fatalf("expected *userMenuFrame on top after ShowFileAssociations, got %T", top)
+	}
+	umf.VMenu.SetSelectPos(0)
+
+	// Simulate the Del keypress the editor listens for.
+	handled := umf.VMenu.ProcessKey(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_DELETE,
+	})
+	if !handled {
+		t.Fatal("Del was not consumed by the associations editor")
+	}
+
+	top = vtui.FrameManager.GetTopFrame()
+	dlg, ok := top.(*vtui.Window)
+	if !ok {
+		t.Fatalf("expected confirmation dialog (*Window) on top, got %T", top)
+	}
+	if !dlg.IsWarning {
+		t.Error("Delete-association confirmation must render on the WarnDialog palette (see #379)")
+	}
 }

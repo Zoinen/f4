@@ -80,3 +80,26 @@ func TestAction_PanelToggleHidden(t *testing.T) {
 		t.Errorf("Panel.ToggleHidden second call did not restore ShowHiddenFiles (want %v, got %v)", original, AppConfig.ShowHiddenFiles)
 	}
 }
+
+func TestActionPanelToggleTargetsActiveWorkspace(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+
+	first := &PanelsFrame{showPanels: true, showLeftPanel: true, showRightPanel: true}
+	active := &PanelsFrame{showPanels: true, showLeftPanel: true, showRightPanel: true}
+	vtui.FrameManager.Screens = []*vtui.AppScreen{
+		{Number: 1, Frames: []vtui.Frame{first}},
+		{Number: 2, Frames: []vtui.Frame{active}},
+	}
+	vtui.FrameManager.ActiveIdx = 1
+
+	if !RunAction("Panel.Toggle") {
+		t.Fatal("Panel.Toggle did not run")
+	}
+	if active.showPanels {
+		t.Fatal("Panel.Toggle did not hide panels in the active workspace")
+	}
+	if !first.showPanels {
+		t.Fatal("Panel.Toggle changed panels in the first, inactive workspace")
+	}
+}

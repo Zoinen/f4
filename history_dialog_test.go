@@ -14,7 +14,7 @@ func historyKey(char rune) *vtinput.InputEvent {
 func TestHistorySearchFiltersAndTogglesPrefixMode(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	menu := vtui.NewVMenu("History")
-	search := newHistorySearch(menu, []string{"xGIT status", "Git commit", "dir"}, "F2: switch search mode")
+	search := newHistorySearch(menu, []HistoryRecord{{Name: "xGIT status"}, {Name: "Git commit"}, {Name: "dir"}}, "F2: switch search mode")
 	defer search.cleanup()
 
 	for _, r := range "git" {
@@ -43,7 +43,7 @@ func TestHistorySearchFiltersAndTogglesPrefixMode(t *testing.T) {
 func TestHistorySearchUsesOriginalIndexWhenFiltered(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	menu := vtui.NewVMenu("History")
-	search := newHistorySearch(menu, []string{"first", "keep", "second match"}, "F2: switch search mode")
+	search := newHistorySearch(menu, []HistoryRecord{{Name: "first"}, {Name: "keep"}, {Name: "second match"}}, "F2: switch search mode")
 	defer search.cleanup()
 
 	for _, r := range "match" {
@@ -52,7 +52,7 @@ func TestHistorySearchUsesOriginalIndexWhenFiltered(t *testing.T) {
 	if len(menu.Items) != 1 || !search.deleteSelected() {
 		t.Fatal("failed to select and delete the filtered entry")
 	}
-	if len(search.all) != 2 || search.all[0] != "first" || search.all[1] != "keep" {
+	if len(search.all) != 2 || search.all[0].Name != "first" || search.all[1].Name != "keep" {
 		t.Fatalf("wrong original entry deleted: %#v", search.all)
 	}
 }
@@ -83,7 +83,7 @@ func TestHistorySearchDrawHighlightsMatchAndSearchTitle(t *testing.T) {
 	vtui.FrameManager.Init(scr)
 	menu := vtui.NewVMenu("History")
 	menu.SetPosition(2, 2, 30, 7)
-	search := newHistorySearch(menu, []string{"before MATCH after"}, "F2: switch search mode")
+	search := newHistorySearch(menu, []HistoryRecord{{Name: "before MATCH after"}}, "F2: switch search mode")
 	defer search.cleanup()
 	for _, r := range "match" {
 		search.processKey(historyKey(r))
@@ -91,8 +91,8 @@ func TestHistorySearchDrawHighlightsMatchAndSearchTitle(t *testing.T) {
 	menu.Show(scr)
 	search.draw(scr)
 
-	// Row begins with one padding cell. "MATCH" starts after "before ".
-	matchX := menu.X1 + 2 + len("before ")
+	// Row begins with three padding cells (space, lock, space). "MATCH" starts after "before ".
+	matchX := menu.X1 + 4 + len("before ")
 	if got := scr.GetCell(matchX, menu.Y1+1).Attributes; got != vtui.Palette[vtui.ColMenuSelectedHighlight] {
 		t.Fatalf("match color = %#x, want %#x", got, vtui.Palette[vtui.ColMenuSelectedHighlight])
 	}
@@ -145,7 +145,7 @@ func TestHistorySearchResizesWithFilteredItemCount(t *testing.T) {
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
 	menu := vtui.NewVMenu("History")
-	search := newHistorySearch(menu, []string{"alpha", "beta", "alphabet", "gamma"}, "F2: switch search mode")
+	search := newHistorySearch(menu, []HistoryRecord{{Name: "alpha"}, {Name: "beta"}, {Name: "alphabet"}, {Name: "gamma"}}, "F2: switch search mode")
 	defer search.cleanup()
 
 	_, initialY1, _, initialY2 := menu.GetPosition()
@@ -174,9 +174,9 @@ func TestHistorySearchShowsNewestAtBottomAndScrollsToIt(t *testing.T) {
 	scr.AllocBuf(80, 12)
 	vtui.FrameManager.Init(scr)
 	menu := vtui.NewVMenu("History")
-	stored := []string{
-		"newest", "item-09", "item-08", "item-07", "item-06", "item-05",
-		"item-04", "item-03", "item-02", "item-01", "oldest",
+	stored := []HistoryRecord{
+		{Name: "newest"}, {Name: "item-09"}, {Name: "item-08"}, {Name: "item-07"}, {Name: "item-06"}, {Name: "item-05"},
+		{Name: "item-04"}, {Name: "item-03"}, {Name: "item-02"}, {Name: "item-01"}, {Name: "oldest"},
 	}
 	search := newHistorySearch(menu, stored, "F2: switch search mode")
 	defer search.cleanup()

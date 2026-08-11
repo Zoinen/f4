@@ -101,7 +101,7 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 	}
 	activeProto := protos[currIdx]
 
-	dlg := vtui.NewCenteredDialog(60, 21, " Site Connection ")
+	dlg := vtui.NewCenteredDialog(60, 21, vtui.Msg("NetFox.ConnectionTitle"))
 	dlg.ShowClose = true
 
 	editName := vtui.NewEdit(0, 0, 40, name)
@@ -153,14 +153,14 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, 9)
 
-	vbox.Add(makeRow("&Name:", editName), vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(makeRow("P&rotocol:", comboProto), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("&Host:", editHost), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("P&ort:", editPort), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("&User:", editUser), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("Pass&word:", editPass), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("Time&out:", editTimeout), vtui.Margins{Top: 0}, vtui.AlignFill)
-	vbox.Add(makeRow("Cod&epage:", comboCp), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelName"), editName), vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelProtocol"), comboProto), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelHost"), editHost), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelPort"), editPort), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelUser"), editUser), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelPassword"), editPass), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelTimeout"), editTimeout), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelCodepage"), comboCp), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Apply()
 
 	// 2. Extra Protocol Area (Y: 14) - architectural proxy
@@ -211,8 +211,8 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 	}
 
 	// 3. Bottom Section (Y: 16-18)
-	btnOk := vtui.NewButton(0, 0, "&Save")
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnOk := vtui.NewButton(0, 0, vtui.Msg("vtui.Save"))
+	btnCancel := vtui.NewButton(0, 0, vtui.Msg("vtui.Cancel"))
 	btnOk.IsDefault = true
 
 	vboxBottom := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+16, 56, 3)
@@ -229,11 +229,11 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 	btnOk.OnClick = func() {
 		newName := editName.GetText()
 		if newName == "" {
-			vtui.ShowMessageOn(dlg, " Error ", "Name cannot be empty", []string{"&Ok"})
+			vtui.ShowMessageOn(dlg, vtui.Msg("Error.Title"), vtui.Msg("NetFox.ErrorEmptyName"), []string{vtui.Msg("vtui.Ok")})
 			return
 		}
 		if newName == "<Add connection>" || newName == ".." {
-			vtui.ShowMessageOn(dlg, " Error ", "Reserved connection name", []string{"&Ok"})
+			vtui.ShowMessageOn(dlg, vtui.Msg("Error.Title"), vtui.Msg("NetFox.ErrorReservedName"), []string{vtui.Msg("vtui.Ok")})
 			return
 		}
 

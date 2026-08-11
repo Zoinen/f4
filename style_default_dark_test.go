@@ -34,6 +34,7 @@ func TestDefaultDarkStyle_PanelColors(t *testing.T) {
 		// replaced with far2l's stock blue.
 		{"Panel.Text", ColPanelText, 0x34E2E2, 0x2E3436},
 		{"Panel.Title", ColPanelTitle, 0xD3D7CF, 0x2E3436},
+		{"Panel.Title.Selected", ColPanelSelectedTitle, 0xD3D7CF, 0x555753},
 		{"Panel.Title.Column", ColPanelColumnTitle, 0x8AE234, 0x2E3436},
 		{"Panel.Text.Selected", ColPanelSelectedText, 0xFCE94F, 0x2E3436},
 		{"Panel.Info.Total", ColPanelTotalInfo, 0xEEEEEC, 0x2E3436},

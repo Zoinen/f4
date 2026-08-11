@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -88,6 +87,12 @@ func RegisterAction(action Action) {
 // RunAction executes an action by name if it exists.
 func RunAction(name string) bool {
 	if a, ok := actionRegistry[strings.ToLower(name)]; ok && a.Handler != nil {
+		// Fast Find is a transient panel input mode. Any action means the user
+		// is leaving it, including actions that replace a file panel in place
+		// (Info/Quick View) and therefore do not push a focus-stealing frame.
+		if pf := findPanelsFrame(); pf != nil && pf.cancelFastFind() && vtui.FrameManager != nil {
+			vtui.FrameManager.Redraw()
+		}
 		return a.Handler()
 	}
 	return false
@@ -263,6 +268,24 @@ func init() {
 		Handler:      withPF(func(pf *PanelsFrame) { actionNewFile(pf) }),
 	})
 	RegisterAction(Action{
+		Name:        "File.ApplyCommand",
+		Area:        "Shell",
+		Label:       "Apply command",
+		LabelKey:    "Action.File.ApplyCommand",
+		Description: "Apply a command template to selected files or the current file",
+		DescKey:     "Action.File.ApplyCommand.Desc",
+		DefaultKeys: []string{"CtrlG"},
+		MenuPath:    "Files",
+		Visible:     panelCanApplyCommand,
+		Handler: func() bool {
+			if pf := findPanelsFrame(); pf != nil {
+				actionApplyCommand(pf)
+				return true
+			}
+			return false
+		},
+	})
+	RegisterAction(Action{
 		Name:        "File.Copy",
 		Area:        "Shell",
 		Label:       "Copy",
@@ -325,9 +348,20 @@ func init() {
 		LabelKey:    "Menu.Files.Delete",
 		Description: "Delete selected files",
 		DescKey:     "Action.File.Delete.Desc",
-		DefaultKeys: []string{"F8", "ShiftDel", "ShiftNumDel"},
+		DefaultKeys: []string{"F8"},
 		MenuPath:    "Files",
 		Handler:     withPF(func(pf *PanelsFrame) { actionDelete(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "File.DeletePermanent",
+		Area:        "Shell",
+		Label:       "Delete permanently",
+		LabelKey:    "Action.File.DeletePermanent",
+		Description: "Permanently delete selected files without using trash",
+		DescKey:     "Action.File.DeletePermanent.Desc",
+		DefaultKeys: []string{"ShiftDel", "ShiftNumDel"},
+		MenuPath:    "Files",
+		Handler:     withPF(func(pf *PanelsFrame) { actionDeletePermanent(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "File.Attributes",
@@ -339,6 +373,28 @@ func init() {
 		DefaultKeys: []string{"CtrlA"},
 		MenuPath:    "Files",
 		Handler:     withPF(func(pf *PanelsFrame) { actionFileAttributes(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "File.Share",
+		Area:        "Shell",
+		Label:       "Share...",
+		LabelKey:    "Action.File.Share",
+		Description: "Create, copy, or revoke a cloud share link",
+		DescKey:     "Action.File.Share.Desc",
+		MenuPath:    "Files",
+		Visible: func() bool {
+			pf := findPanelsFrame()
+			if pf == nil {
+				return false
+			}
+			panel := pf.getActivePanel()
+			if panel == nil || panel.vfs == nil {
+				return false
+			}
+			_, ok := panel.vfs.(vfs.ShareLinkProvider)
+			return ok
+		},
+		Handler: withPF(func(pf *PanelsFrame) { actionShareLink(pf) }),
 	})
 	RegisterAction(Action{
 		Name:        "Panel.SystemExplorer",
@@ -370,21 +426,9 @@ func init() {
 				// slice may be replaced by a refresh at any time.
 				isDir := fsp.entries[idx].IsDir || name == ".."
 				go func() {
-					var cmd *exec.Cmd
-					switch runtime.GOOS {
-					case "linux":
-						cmd = exec.Command("xdg-open", fullPath)
-					case "windows":
-						if isDir {
-							cmd = exec.Command("explorer.exe", fullPath)
-						} else {
-							cmd = exec.Command("explorer.exe", "/select,", fullPath)
-						}
-					case "darwin":
-						cmd = exec.Command("open", fullPath)
-					}
-					if cmd != nil {
-						_ = cmd.Run()
+					command, args, ok := systemFileManagerCommand(fullPath, isDir)
+					if ok {
+						_ = pf.runExternalUICommand(command, args, "")
 					}
 				}()
 			} else {
@@ -567,6 +611,25 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { actionFoldersHistory(pf) }),
 	})
 	RegisterAction(Action{
+		Name:        "Panel.ViewerEditorHistory",
+		Area:        "Shell",
+		Label:       "Viewer and Editor History",
+		LabelKey:    "Action.Panel.ViewerEditorHistory",
+		Description: "Show viewer and editor history",
+		DescKey:     "Action.Panel.ViewerEditorHistory.Desc",
+		DefaultKeys: []string{"AltF11"},
+		MenuPath:    "Commands",
+		Handler:     withPF(func(pf *PanelsFrame) { actionViewerEditorHistory(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "History.ImportFar2l",
+		Area:        "Shell",
+		Label:       "Import far2l History",
+		Description: "Import command history from far2l (.hst)",
+		MenuPath:    "Commands",
+		Handler:     withPF(func(pf *PanelsFrame) { actionImportFar2lHistory(pf) }),
+	})
+	RegisterAction(Action{
 		Name:        "Panel.GoParent",
 		Area:        "Shell",
 		Label:       "Parent Folder",
@@ -589,7 +652,8 @@ func init() {
 				}
 			} else {
 				oldPath := fsp.vfs.GetPath()
-				if err := fsp.vfs.SetPath(".."); err == nil {
+				parentPath := fsp.vfs.Dir(oldPath)
+				if err := fsp.setKnownDirectoryPath(parentPath); err == nil {
 					fsp.pendingSelection = fsp.vfs.Base(oldPath)
 					fsp.ReadDirectory()
 				} else {
@@ -896,6 +960,17 @@ func init() {
 		Handler:             withPF(func(pf *PanelsFrame) { vtui.FrameManager.EmitCommand(CmUpdateSettings, nil) }),
 	})
 	RegisterAction(Action{
+		Name:                "Settings.PluginConfiguration",
+		Area:                "Shell",
+		Label:               "Plugin Configuration",
+		LabelKey:            "Menu.PluginConfiguration",
+		Description:         "Configure loaded plugins",
+		DescKey:             "Action.Settings.PluginConfiguration.Desc",
+		MenuPath:            "Options",
+		MenuSeparatorBefore: true,
+		Handler:             withPF(func(pf *PanelsFrame) { actionPluginConfiguration(pf) }),
+	})
+	RegisterAction(Action{
 		Name:                "Settings.Plugins",
 		Area:                "Shell",
 		Label:               "Plugins Menu",
@@ -1004,6 +1079,10 @@ func init() {
 			if pf.showPanels && !pf.showLeftPanel && !pf.showRightPanel {
 				pf.showLeftPanel = true
 				pf.showRightPanel = true
+			}
+			if pf.menuBar != nil && pf.lastW > 0 && pf.lastH > 0 {
+				pf.ResizeConsole(pf.lastW, pf.lastH)
+				pf.lastShowPanels = pf.showPanels
 			}
 			vtui.FrameManager.HardRefresh()
 			if pf.showPanels {

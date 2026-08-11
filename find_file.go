@@ -18,6 +18,24 @@ type FoundFile struct {
 	Item vfs.VFSItem
 }
 
+// padLabelTo returns s padded with trailing spaces to at least w display
+// cells. Used to force a vtui label to open at its full future width —
+// the widget freezes its width at construction time (label.go: X2 = X1
+// + runewidth.StringWidth(cleanText) - 1), and SetText later cannot
+// grow it back. A label built from short initial text truncates every
+// longer SetText silently to the first-N chars, which was visible in
+// the find dialog as "Scanning: /li" — three characters of a wire path
+// that would otherwise say the full one. (An existing padLabel in
+// attributes_dialog is fixed at 12 columns; this takes an explicit
+// target so a caller can size a label to the dialog width it lives in.)
+func padLabelTo(s string, w int) string {
+	pad := w - runewidth.StringWidth(s)
+	if pad <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", pad)
+}
+
 // maxRemoteFindResults caps what a remote search brings back in one answer.
 // The local walk has no such limit because it costs nothing to keep going;
 // a remote one pays for every hit on the wire.
@@ -25,14 +43,20 @@ const maxRemoteFindResults = 10000
 
 // ExecuteFindFile initiates a background search and displays a progress dialog.
 func ExecuteFindFile(pf *PanelsFrame, v vfs.VFS, startDir, mask, text string) {
-	dlg := vtui.NewCenteredDialog(60, 9, " Searching... ")
+	dlg := vtui.NewCenteredDialog(60, 9, Msg("FindFile.SearchingTitle"))
 	dlg.AttentionSuppressed = true
 
-	lblMask := vtui.NewLabel(0, 0, "Mask: "+mask, nil)
-	lblDir := vtui.NewLabel(0, 0, "Scanning: ...", nil)
-	lblFound := vtui.NewLabel(0, 0, "Found: 0", nil)
+	// lblMask and lblDir sit inside a 56-column vbox; lblFound shares a
+	// row with the Cancel button. Pad each to its future width so a
+	// longer SetText later shows in full — see padLabelTo above for
+	// the underlying vtui gotcha. lblFound holds
+	// "Found: 999999 (scanned 999999999)" and then some, and AlignRight
+	// on the button anchors it at the far end.
+	lblMask := vtui.NewLabel(0, 0, padLabelTo(Msg("FindFile.MaskPrompt")+" "+mask, 56), nil)
+	lblDir := vtui.NewLabel(0, 0, padLabelTo(Msg("FindFile.Scanning")+" ...", 56), nil)
+	lblFound := vtui.NewLabel(0, 0, padLabelTo(fmt.Sprintf(Msg("FindFile.FoundCount"), 0), 40), nil)
 
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	dlg.AddItem(lblMask)
 	dlg.AddItem(lblDir)
@@ -77,16 +101,46 @@ func ExecuteFindFile(pf *PanelsFrame, v vfs.VFS, startDir, mask, text string) {
 		searchTextLower := strings.ToLower(text)
 		var found []FoundFile
 		var lastUpdate time.Time // Used for throttling UI redraws
+		// A remote finder that supports progress reports intermediate
+		// counters before we get the entries themselves: what has been
+		// scanned so far and how many have matched. During the walk
+		// found is still empty on our side, so the "Found:" line has to
+		// prefer the reported number until the final answer lands.
+		// remotePath is what a remote progress last reported as the
+		// head of the walk; the "final" updateUI at the end otherwise
+		// reverts the label to startDir and loses the last frame.
+		var remoteFound int64
+		var remoteScanned int64
+		var remotePath string
 
 		updateUI := func(dir string, force bool) {
 			now := time.Now()
 			if force || now.Sub(lastUpdate) > 50*time.Millisecond {
 				lastUpdate = now
-				currentCount := len(found) // Always use the actual length of the slice
-				displayDir := runewidth.Truncate(dir, 56, "...")
+				currentCount := int64(len(found))
+				if remoteFound > currentCount {
+					currentCount = remoteFound
+				}
+				showDir := dir
+				if remotePath != "" {
+					showDir = remotePath
+				}
+				displayDir := runewidth.Truncate(showDir, 56, "...")
+				// A remote job reports how many entries the walk has
+				// visited; showing it next to "Found" gives the user
+				// a sense of progress even when the pattern is rare
+				// enough that the "Found" counter barely moves. The
+				// local walk does not report scanned separately (its
+				// pace is dominated by the ReadDir round trips it
+				// makes), so the parenthetical is only shown when a
+				// remote finder actually supplied a number.
+				foundText := fmt.Sprintf(Msg("FindFile.FoundCount"), currentCount)
+				if remoteScanned > 0 {
+					foundText = fmt.Sprintf("%s (scanned %d)", foundText, remoteScanned)
+				}
 				ctx.RunOnUI(func() {
-					lblDir.SetText("Scanning: " + displayDir)
-					lblFound.SetText(fmt.Sprintf("Found: %d", currentCount))
+					lblDir.SetText(Msg("FindFile.Scanning") + " " + displayDir)
+					lblFound.SetText(foundText)
 					vtui.FrameManager.Redraw()
 				})
 			}
@@ -157,6 +211,20 @@ func ExecuteFindFile(pf *PanelsFrame, v vfs.VFS, startDir, mask, text string) {
 				Text:       text,
 				IgnoreCase: true,
 				Limit:      maxRemoteFindResults,
+				// A remote finder that supports progress reports the
+				// last path it visited and running counters. Force the
+				// redraw (helper's own P cadence is 300 ms, well above
+				// the client-side throttle, so nothing to save here)
+				// and remember the path so the final updateUI at the
+				// end does not revert the label back to startDir.
+				Progress: func(p vfs.FindProgress) {
+					remoteFound = p.Found
+					remoteScanned = p.Scanned
+					if p.Path != "" {
+						remotePath = p.Path
+					}
+					updateUI(p.Path, true)
+				},
 			})
 			if findErr == nil {
 				for _, hit := range hits {
@@ -304,7 +372,7 @@ func (srw *SearchResultsWindow) GetKeyLabels() *vtui.KeySet {
 
 func ShowSearchResults(pf *PanelsFrame, v vfs.VFS, found []FoundFile) {
 	dlgW, dlgH := 76, 20
-	baseDlg := vtui.NewCenteredDialog(dlgW, dlgH, " Search Results ")
+	baseDlg := vtui.NewCenteredDialog(dlgW, dlgH, Msg("FindFile.SearchResultsTitle"))
 
 	srw := &SearchResultsWindow{
 		Window: *baseDlg,
@@ -328,13 +396,13 @@ func ShowSearchResults(pf *PanelsFrame, v vfs.VFS, found []FoundFile) {
 	}
 	srw.table.SetRows(rows)
 
-	btnGo := vtui.NewButton(0, 0, "&Go to")
+	btnGo := vtui.NewButton(0, 0, Msg("FindFile.BtnGoTo"))
 	btnGo.SetOwner(srw)
-	btnView := vtui.NewButton(0, 0, "&View")
+	btnView := vtui.NewButton(0, 0, Msg("FindFile.BtnView"))
 	btnView.SetOwner(srw)
-	btnEdit := vtui.NewButton(0, 0, "&Edit")
+	btnEdit := vtui.NewButton(0, 0, Msg("FindFile.BtnEdit"))
 	btnEdit.SetOwner(srw)
-	btnClose := vtui.NewButton(0, 0, "&Close")
+	btnClose := vtui.NewButton(0, 0, Msg("FindFile.BtnClose"))
 	btnClose.SetOwner(srw)
 
 	btnGo.IsDefault = true

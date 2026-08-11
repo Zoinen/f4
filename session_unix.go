@@ -403,7 +403,7 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 	vtui.FrameManager.Init(scr)
 	SetDefaultF4Palette()
 
-	dlg := vtui.NewCenteredDialog(50, 15, " Select Session ")
+	dlg := vtui.NewCenteredDialog(50, 15, Msg("Session.Title"))
 
 	var items []string
 	for _, s := range sessions {
@@ -424,8 +424,8 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 		dlg.SetExitCode(1)
 	}
 
-	btnOk := vtui.NewButton(0, 0, "&Ok")
-	btnCancel := vtui.NewButton(0, 0, "Cancel")
+	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 

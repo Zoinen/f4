@@ -18,6 +18,7 @@ func (*hostAPIMock) Log(string)                                                 
 func (*hostAPIMock) Message(string)                                                      {}
 func (*hostAPIMock) RegisterHighlighter(vtui.HighlighterProvider)                        {}
 func (*hostAPIMock) RegisterVFSProvider(vfs.VFSProvider)                                 {}
+func (*hostAPIMock) RegisterURIProvider(vfs.URIProvider) error                           { return nil }
 func (*hostAPIMock) RegisterDrive(string, func() vfs.VFS)                                {}
 func (*hostAPIMock) RegisterGlobalHotkey(uint16, vtinput.ControlKeyState, func(vfs.App)) {}
 func (m *hostAPIMock) RegisterPluginMenuItem(label string, handler func(vfs.App)) {

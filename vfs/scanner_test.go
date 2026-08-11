@@ -10,12 +10,34 @@ import (
 )
 
 func TestOpStats_Add(t *testing.T) {
-	s1 := OpStats{Bytes: 100, Files: 2, Dirs: 1}
-	s2 := OpStats{Bytes: 50, Files: 1, Dirs: 0}
+	s1 := OpStats{Bytes: 100, Files: 2, Dirs: 1, UnknownSizeFiles: 1}
+	s2 := OpStats{Bytes: 50, Files: 1, Dirs: 0, UnknownSizeFiles: 2}
 	s1.Add(s2)
 
-	if s1.Bytes != 150 || s1.Files != 3 || s1.Dirs != 1 {
+	if s1.Bytes != 150 || s1.Files != 3 || s1.Dirs != 1 || s1.UnknownSizeFiles != 3 {
 		t.Errorf("OpStats.Add failed: %+v", s1)
+	}
+}
+
+func TestGenericScanDistinguishesZeroByteAndUnknownSize(t *testing.T) {
+	mv := &mockScannerVFS{}
+	mv.onStat = func(p string) VFSItem {
+		switch {
+		case strings.HasSuffix(p, "known-empty"):
+			return VFSItem{Name: "known-empty", SizeKnown: true}
+		case strings.HasSuffix(p, "unknown"):
+			return VFSItem{Name: "unknown"}
+		default:
+			return VFSItem{Name: filepath.Base(p)}
+		}
+	}
+
+	stats, err := GenericScan(context.Background(), mv, "/", []string{"known-empty", "unknown"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 2 || stats.Bytes != 0 || stats.UnknownSizeFiles != 1 {
+		t.Fatalf("stats = %+v, want two files and exactly one unknown size", stats)
 	}
 }
 

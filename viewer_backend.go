@@ -30,6 +30,7 @@ type ViewerBackend struct {
 	cacheOff   int64
 	cacheData  []byte
 	isFetching bool
+	readErr    error
 
 	ctx       context.Context
 	cancelCtx context.CancelFunc
@@ -85,6 +86,9 @@ func (b *ViewerBackend) ReadAt(offset int64, length int) ([]byte, error) {
 	if offset+int64(length) > b.size {
 		length = int(b.size - offset)
 	}
+	if b.readErr != nil {
+		return nil, b.readErr
+	}
 
 	// Check cache hit
 	if b.cacheData != nil && offset >= b.cacheOff && (offset+int64(length)) <= (b.cacheOff+int64(len(b.cacheData))) {
@@ -115,6 +119,8 @@ func (b *ViewerBackend) ReadAt(offset int64, length int) ([]byte, error) {
 					if err == nil || err == io.EOF {
 						b.cacheOff = fetchOff
 						b.cacheData = buf[:n]
+					} else {
+						b.readErr = err
 					}
 				}
 				b.isFetching = false

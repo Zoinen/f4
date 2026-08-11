@@ -27,6 +27,71 @@ type tailTrackingFile struct {
 	read []trackedReadRange
 }
 
+type largeBinaryFile struct {
+	size    int64
+	mu      sync.Mutex
+	maxRead int
+}
+
+func (f *largeBinaryFile) Size() int64 { return f.size }
+func (*largeBinaryFile) Close() error  { return nil }
+func (f *largeBinaryFile) Read(ctx context.Context, p []byte) (int, error) {
+	return f.ReadAt(ctx, p, 0)
+}
+func (f *largeBinaryFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	if len(p) > f.maxRead {
+		f.maxRead = len(p)
+	}
+	f.mu.Unlock()
+	if off >= f.size {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if remaining := f.size - off; int64(n) > remaining {
+		n = int(remaining)
+	}
+	clear(p[:n])
+	if n >= 6 && off == 0 {
+		copy(p, []byte{'7', 'z', 0xBC, 0xAF, 0x27, 0x1C})
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+type singleFileVFS struct {
+	vfs.VFS
+	file vfs.ReadAtCloser
+}
+
+func (v *singleFileVFS) Open(context.Context, string) (vfs.ReadAtCloser, error) {
+	return v.file, nil
+}
+
+func TestViewerLargeBinaryOpensLazilyInHexMode(t *testing.T) {
+	file := &largeBinaryFile{size: 300 * 1024 * 1024}
+	base := vfs.NewOSVFS(t.TempDir())
+	viewer, err := NewViewerView(context.Background(), &singleFileVFS{VFS: base, file: file}, "large.7z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	if !viewer.HexMode {
+		t.Fatal("large binary file did not open in hex mode")
+	}
+	file.mu.Lock()
+	maxRead := file.maxRead
+	file.mu.Unlock()
+	if maxRead > 16*1024 {
+		t.Fatalf("opening binary file read %d bytes at once, want at most the 16 KiB header", maxRead)
+	}
+}
+
 func (f *tailTrackingFile) Size() int64  { return f.size }
 func (f *tailTrackingFile) Close() error { return nil }
 func (f *tailTrackingFile) Read(ctx context.Context, p []byte) (int, error) {
@@ -432,6 +497,9 @@ func TestViewerView_GetTitle(t *testing.T) {
 	if vv.GetTitle() != "View: doc.txt" {
 		t.Errorf("GetTitle failed: %s", vv.GetTitle())
 	}
+	if vv.GetWorkspaceTabTitle() != "👁  doc.txt" {
+		t.Errorf("GetWorkspaceTabTitle failed: %s", vv.GetWorkspaceTabTitle())
+	}
 
 }
 func TestLayout_ViewerSearchDialog_Validity(t *testing.T) {
@@ -465,6 +533,7 @@ func TestLayout_ViewerSearchDialog_Validity(t *testing.T) {
 
 func TestViewerView_HexModeToggle(t *testing.T) {
 	vtui.SetDefaultPalette()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmpDir := t.TempDir()
 	tmp := filepath.Join(tmpDir, "hex.txt")
 	// 32 bytes of data
@@ -480,7 +549,11 @@ func TestViewerView_HexModeToggle(t *testing.T) {
 		t.Fatalf("Failed to create ViewerView: %v", err)
 	}
 	defer vv.Close()
+	vtui.FrameManager.Push(vv)
 
+	// Binary detection may open this fixture in hex mode already. Exercise the
+	// toggle itself from a deterministic text-mode starting state.
+	vv.HexMode = false
 	// Set an offset that is NOT aligned to 16
 	vv.TopOffset = 10
 

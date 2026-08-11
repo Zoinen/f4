@@ -14,6 +14,31 @@ import (
 	"github.com/unxed/vtui"
 )
 
+type remoteArchiveIndexVFS struct {
+	vfs.VFS
+	absCalls int
+}
+
+func (v *remoteArchiveIndexVFS) Abs(path string) (string, error) {
+	v.absCalls++
+	return path, nil
+}
+
+func TestArchiveIndex_RemoteURIIsNeverTreatedAsLocalSidecar(t *testing.T) {
+	remote := &remoteArchiveIndexVFS{}
+	local := vfs.NewOSVFS(t.TempDir())
+	handleArchiveIndexOp(
+		remote,
+		"cloud://yandex/11111111-1111-1111-1111-111111111111/archive.tar",
+		local,
+		"archive.tar",
+		false,
+	)
+	if remote.absCalls != 0 {
+		t.Fatalf("remote archive index path reached OS path handling %d times", remote.absCalls)
+	}
+}
+
 func TestArchiveIndex_AutoOp(t *testing.T) {
 	tmpSrc := t.TempDir()
 	tmpDst := t.TempDir()

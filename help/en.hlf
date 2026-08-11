@@ -542,6 +542,8 @@ f4 is an experimental Far Manager / far2l clone in Go.
 
 ~Viewer / Editor keys~ViewerEditor@
 ~Panel navigation~PanelNav@
+~MediaInfo plugin~MediaInfo@
+~Environment Manager plugin~EnvironmentManager@
 ~View README.md~README@
 
 @ViewerEditor
@@ -566,11 +568,63 @@ Viewer:
 $Panel Navigation
 This topic is generated dynamically from the action registry.
 
+F8 follows the "Use the trash" setting. When enabled, F4 refuses the
+operation if the active file system has no recoverable trash; it never falls
+back to permanent deletion. Shift+Del and Shift+NumDel always delete
+permanently. Permanent removal is also available as a separate Files-menu
+command and can be assigned its own hotkey.
+
+@ApplyCmd
+$Apply command (Ctrl+G)
+Apply command runs a command template for marked panel entries in panel order,
+or for the current entry when nothing is marked. Directories are included;
+the parent row (..) is never processed. Processed marks can be restored with
+Ctrl+M.
+
+Sequential runs one command at a time. Parallel uses the selected worker
+limit. Queue runs one sequential batch in the background. All modes execute
+on the host that owns the active panel and provide one cancellable transcript.
+Commands are noninteractive and receive closed standard input.
+
+The transcript window can be resized or expanded with F5 and may be closed
+while commands continue to run. Closing it does not cancel the batch; use
+Cancel for that. Send to editor opens the currently retained transcript in a
+new editable workspace.
+
+Scalar substitutions are inserted verbatim: quote them in the template when
+needed, for example tool "!.!". A leading @ suppresses the displayed expanded
+command but not its output. Environment variables are expanded by the target
+shell.
+
+Common substitutions:
+  !!       literal exclamation mark
+  !.!      current name with extension
+  !        current name without the final extension
+  !`       extension without the dot
+  !~       short name without extension (long-name fallback when unavailable)
+  !-!/!+! short name with extension (long-name fallback when unavailable)
+  !\ or !/ current panel directory
+  !=\ or !=/ resolved real directory
+  !:       drive or filesystem root
+  !?!      description (currently empty)
+  !&       selected names inline
+  !&~/Q/q  short names / force quoting / quote only when needed
+  !@...!   temporary file containing long selected names
+  !$...!   temporary file containing short selected names
+  !?title?initial! value requested once before the batch starts
+  !# / !^  switch to passive / active panel
+  ![ / !]  switch to left / right panel
+
+Active-panel !& and list-file tokens run once for the captured selection.
+List modifiers: F full paths, Q quoted entries, S forward slashes, A target
+encoding, U UTF-8 with BOM, W UTF-16LE.
+
 @ShellNav
 $Panel Navigation Keys
   Tab           - Switch active panel
   Insert        - Select file/folder
   Ctrl+Tab      - Cycle workspaces
+  Alt+1..9      - Switch to the workspace with that tab number (when enabled)
   Ctrl+W        - Close workspace
   Ctrl+N        - Fork active panel to new workspace
 
@@ -584,6 +638,9 @@ Besides the cursor keys, the following keyboard shortcuts are available:
   Cancel the dialog                                 Esc, F10
 
   Toggle substring / prefix incremental search      F2
+  Show or hide the command folder column            Ctrl+F2
+  Insert the command folder into the command line   Ctrl+Shift+Enter
+  Go to the command folder on the active panel      Ctrl+PgDn
   Type any character to filter the visible entries
   Backspace to remove the last filter character
 
@@ -591,6 +648,21 @@ Besides the cursor keys, the following keyboard shortcuts are available:
   Clear the entire commands history (confirmed)     Del
 
   Copy the selected command to the clipboard        Ctrl+C, Ctrl+Ins
+
+@HistoryViewEdit
+$Viewer and Editor History (Alt+F11)
+    This history lists files opened in the internal viewer or editor.
+Enter repeats the most recent action for that file; the mode is shown in the
+right-hand column.
+
+  Repeat the stored View/Edit action                 Enter
+  Open in the viewer                                 F3
+  Open in the editor                                 F4
+  Toggle substring / prefix incremental search      F2
+  Delete the current history item                   Shift+Del
+  Clear the entire history (confirmed)              Del
+  Copy the selected path to the clipboard           Ctrl+C, Ctrl+Ins
+  Cancel the dialog                                 Esc, F10
 
 @HistoryFolders
 $Folders History (Alt+F12)
@@ -612,3 +684,61 @@ Besides the cursor keys, the following keyboard shortcuts are available:
   Remove entries with non-existing paths (confirmed) Ctrl+R
 
   Copy the selected path to the clipboard           Ctrl+C, Ctrl+Ins
+
+@MediaInfo
+$MediaInfo plugin
+    The built-in MediaInfo plugin reads common media containers directly
+through the active file system, including remote VFS panels. It is written in
+pure Go and does not require CGO or the native MediaInfo library.
+
+  F11, Media information   Analyze the file under the cursor
+  Ctrl+Q                   Show a fast bounded media preview
+  MediaInfo:path           Analyze a path from the command line
+  F4 in the report         Open an unsaved .MediaInfo.txt report in the editor
+
+The command prefix, Quick View provider, report language, Inform-compatible
+template, and default editor mode are configured under Options | Plugin
+configuration | MediaInfo. Quick View deliberately leaves images and text
+subtitle files to their native preview providers.
+
+@EnvironmentManager
+$Environment Manager plugin
+    Environment Manager keeps ordered sets of process variables. Enabled
+profiles are applied from top to bottom; later values override earlier ones.
+An empty value removes a variable. The resulting environment is used by f4,
+future child processes, and idle local workspace shells. Remote shells are
+never changed.
+
+  F11, Environment Manager   Open the profile list
+  Ins / Del / F4 / F5        Add, delete, edit, or duplicate a profile
+  Space / + / -              Toggle, enable, or disable a profile
+  Ctrl+Up / Ctrl+Down        Reorder profiles
+  Ctrl+Ins / Shift+Del       Copy or cut a profile
+  Shift+Ins                  Paste a profile
+  Alt+F4                     Always edit the profile in f4's editor
+  Shift+F3 / Shift+F4        View or edit the complete process environment
+  F2                         Configure ignored variables and editor preference
+
+An ampersand before a character in a profile name assigns that manager hotkey;
+use && for a literal ampersand. Moving an edge profile again with Ctrl+Up or
+Ctrl+Down creates a group separator. The Always use editor setting makes plain
+F4 use f4's editor too.
+
+Use %NAME% to refer to a value produced by the baseline or an earlier profile.
+Unix-like systems also accept $NAME and ${NAME}. Use %% and $$ for literal
+markers. Profile data is stored as clear text and is not a secrets vault.
+
+Command-line operations:
+
+  envman:                    Open without the external-change prompt
+  envman:+Name/-Name/*Name  Enable, disable, or toggle the first exact match
+  envman:<file / >file      Import or export NAME=value text
+  envman:e                   Edit the complete managed environment
+
+Changes made only inside a child shell cannot propagate back into f4. On a
+normal F11 open, an unmanaged-change prompt can restore the profile target,
+import the delta as an enabled profile, ignore its names, or cancel.
+
+Macros can call f4.envman, envman, 4D766E45, or 0x4D766E45 with one profile or
+file operation string. Opening the manager or full editor is intentionally not
+supported from a macro call.

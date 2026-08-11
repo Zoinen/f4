@@ -17,9 +17,100 @@ import (
 	"time"
 )
 
+type recordedExternalUICall struct {
+	command string
+	args    []string
+	dir     string
+}
+
+type opaqueVisualPathVFS struct {
+	*mockTitleVFS
+	path string
+}
+
+func (v *opaqueVisualPathVFS) GetPath() string { return v.path }
+
+func externalUICallKey(call recordedExternalUICall) string {
+	return call.command + "\x00" + strings.Join(call.args, "\x00") + "\x00" + call.dir
+}
+
 type mouseCaptureTestPanel struct {
 	vtui.ScreenObject
 	events []vtinput.InputEvent
+}
+
+func TestPanelsFrame_WorkspaceTabTitleUsesFolderNames(t *testing.T) {
+	root := t.TempDir()
+	leftPath := filepath.Join(root, "left-leaf")
+	rightPath := filepath.Join(root, "right-leaf")
+	if err := os.MkdirAll(leftPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rightPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := &PanelsFrame{showPanels: true}
+	pf.panels[0] = &FileSystemPanel{vfs: vfs.NewOSVFS(leftPath)}
+	pf.panels[1] = &FileSystemPanel{vfs: vfs.NewOSVFS(rightPath)}
+	title := pf.GetWorkspaceTabTitle()
+	if !strings.Contains(title, "left-leaf ↔ right-leaf") {
+		t.Fatalf("workspace tab title = %q, want both leaf folder names", title)
+	}
+	if strings.Contains(title, root) {
+		t.Fatalf("workspace tab title contains parent path: %q", title)
+	}
+}
+
+func TestPanelsFrame_WorkspaceMenuInfoUsesFullPanelPaths(t *testing.T) {
+	root := t.TempDir()
+	leftPath := filepath.Join(root, "left", "nested")
+	rightPath := filepath.Join(root, "right", "nested")
+	if err := os.MkdirAll(leftPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rightPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := &PanelsFrame{showPanels: true}
+	pf.panels[0] = &FileSystemPanel{vfs: vfs.NewOSVFS(leftPath)}
+	pf.panels[1] = &FileSystemPanel{vfs: vfs.NewOSVFS(rightPath)}
+	info := pf.GetWorkspaceMenuInfo()
+	if info.Icon != "📁" || info.Primary != leftPath || info.Secondary != rightPath {
+		t.Fatalf("workspace menu info = %#v, want full left/right paths", info)
+	}
+
+	pf.showPanels = false
+	pf.executing = true
+	pf.workspaceCommandTitle = "Python"
+	info = pf.GetWorkspaceMenuInfo()
+	if info.Icon != "⌨" || info.Primary != "Python" || info.Secondary != "" {
+		t.Fatalf("terminal workspace menu info = %#v", info)
+	}
+}
+
+func TestPanelsFrame_WorkspaceTabTitleTracksTerminalTitle(t *testing.T) {
+	pf := &PanelsFrame{
+		showPanels:            false,
+		executing:             true,
+		workspaceCommandTitle: workspaceCommandName("python script.py"),
+		termView:              &TerminalView{Title: "Administrator: C:\\Windows\\System32\\cmd.exe - Python"},
+	}
+	if got := pf.GetWorkspaceTabTitle(); got != "⌨  Python" {
+		t.Fatalf("terminal workspace tab title = %q, want %q", got, "⌨  Python")
+	}
+	pf.executing = false
+	pf.workspaceCommandTitle = ""
+	if got := pf.GetWorkspaceTabTitle(); got != "⌨  Terminal" {
+		t.Fatalf("manually revealed terminal tab title = %q, want %q", got, "⌨  Terminal")
+	}
+	pf.showPanels = true
+	pf.panels[0] = &FileSystemPanel{vfs: vfs.NewOSVFS(t.TempDir())}
+	pf.panels[1] = &FileSystemPanel{vfs: vfs.NewOSVFS(t.TempDir())}
+	if got := pf.GetWorkspaceTabTitle(); strings.HasPrefix(got, "⌨") {
+		t.Fatalf("panel workspace kept terminal icon after returning to panels: %q", got)
+	}
 }
 
 func (p *mouseCaptureTestPanel) ProcessKey(*vtinput.InputEvent) bool { return false }
@@ -409,7 +500,7 @@ func findDriveMenu(t *testing.T) *vtui.VMenu {
 	t.Helper()
 	frames := openFrames()
 	for i := len(frames) - 1; i >= 0; i-- {
-		if m, ok := frames[i].(*vtui.VMenu); ok && m.GetTitle() == " Drive " {
+		if m, ok := frames[i].(*vtui.VMenu); ok && m.GetTitle() == Msg("Drive.Title") {
 			return m
 		}
 	}
@@ -2053,6 +2144,81 @@ func TestPanelsFrame_Prompt_WithProvider(t *testing.T) {
 	}
 }
 
+func TestPanelsFrameCloudPathSurfacesUseVisualAddressOnly(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(160, 30)
+
+	separator := string(os.PathSeparator)
+	visual := "zoin.shadow:" + separator + "[2025.12.13] Olympiad"
+	canonical := "cloud://yandex/1864271c-3800-4938-ad02-f577c273941c/disk:%2Fsecret-id"
+	filesystem := &opaqueVisualPathVFS{
+		mockTitleVFS: &mockTitleVFS{OSVFS: *vfs.NewOSVFS(t.TempDir()), title: "zoin.shadow", panelTitle: visual},
+		path:         visual,
+	}
+	pf.panels[0].(*FileSystemPanel).vfs = filesystem
+	pf.activeIdx = 0
+
+	prompt := pf.buildPrompt()
+	var promptText strings.Builder
+	for _, cell := range prompt {
+		if cell.Char != vtui.WideCharFiller {
+			promptText.WriteRune(rune(cell.Char))
+		}
+	}
+	for surface, text := range map[string]string{
+		"prompt":         promptText.String(),
+		"window title":   pf.GetTitle(),
+		"workspace menu": pf.GetWorkspaceMenuInfo().Primary,
+	} {
+		if !strings.Contains(text, visual) {
+			t.Errorf("%s = %q, want visual path %q", surface, text, visual)
+		}
+		if strings.Contains(text, canonical) || strings.Contains(text, "cloud://") || strings.Contains(text, "%2F") || strings.Contains(text, "1864271c") {
+			t.Errorf("%s exposed internal cloud identity: %q", surface, text)
+		}
+		if strings.Count(text, "zoin.shadow") != 1 {
+			t.Errorf("%s duplicated connection name: %q", surface, text)
+		}
+	}
+}
+
+func TestPanelsFramePendingCloudHistoryUsesVisualTargetImmediately(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(160, 30)
+
+	separator := string(os.PathSeparator)
+	target := "zoin.shadow:" + separator + "Photos" + separator + "2026"
+	fsp := pf.panels[0].(*FileSystemPanel)
+	fsp.vfs = vfs.NewOSVFS(t.TempDir())
+	fsp.providerOpenTarget = target
+	fsp.providerOpenTask = &vtui.TaskContext{}
+	defer func() { fsp.providerOpenTask = nil }()
+	fsp.isLoading = true
+	fsp.updateTitle(nil)
+	pf.activeIdx = 0
+
+	var prompt strings.Builder
+	for _, cell := range pf.buildPrompt() {
+		if cell.Char != vtui.WideCharFiller {
+			prompt.WriteRune(rune(cell.Char))
+		}
+	}
+	for surface, value := range map[string]string{
+		"panel title":    fsp.currentTitle,
+		"command prompt": prompt.String(),
+		"window title":   pf.GetTitle(),
+		"workspace menu": pf.GetWorkspaceMenuInfo().Primary,
+	} {
+		if !strings.Contains(value, target) {
+			t.Errorf("%s still shows the source VFS while history restore is pending: %q", surface, value)
+		}
+	}
+}
+
 func TestPanelsFrame_GetPaths(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -2506,8 +2672,16 @@ func TestPanelsFrame_DirectoryEnter(t *testing.T) {
 }
 
 func TestPanelsFrame_NonRunnableOpen(t *testing.T) {
+	if _, _, supported := associatedFileCommand("test"); !supported {
+		t.Skipf("associated-file launch is unsupported on %s", runtime.GOOS)
+	}
 	pf := NewPanelsFrame()
 	defer pf.Close()
+	launches := make(chan recordedExternalUICall, 1)
+	pf.externalUIRunner = func(command string, args []string, dir string) error {
+		launches <- recordedExternalUICall{command: command, args: append([]string(nil), args...), dir: dir}
+		return nil
+	}
 	pf.ResizeConsole(80, 25)
 	tmp := t.TempDir()
 	docPath := filepath.Join(tmp, "readme.txt")
@@ -2534,8 +2708,23 @@ func TestPanelsFrame_NonRunnableOpen(t *testing.T) {
 	if !pf.showPanels {
 		t.Error("Panels should stay visible when opening non-runnable files via OS associations")
 	}
+
+	var launch recordedExternalUICall
+	select {
+	case launch = <-launches:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for associated-file launch")
+	}
+	wantCommand, wantArgs, supported := associatedFileCommand(docPath)
+	if !supported {
+		t.Fatalf("associated-file launch is unsupported on %s", runtime.GOOS)
+	}
+	want := recordedExternalUICall{command: wantCommand, args: wantArgs, dir: tmp}
+	if gotKey, wantKey := externalUICallKey(launch), externalUICallKey(want); gotKey != wantKey {
+		t.Errorf("associated-file launch = %#v, want %#v", launch, want)
+	}
 }
-func TestPanelsFrame_SwitchVFS_CacheClear(t *testing.T) {
+func TestPanelsFrame_SwitchVFSPreservesQualifiedDirectoryCache(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -2549,8 +2738,8 @@ func TestPanelsFrame_SwitchVFS_CacheClear(t *testing.T) {
 
 	pf.switchToVFS(fsp, vfs.NewOSVFS(t.TempDir()))
 
-	if len(fsp.dirCache) != 0 {
-		t.Error("switchToVFS should clear the directory cache")
+	if len(fsp.dirCache) != 1 {
+		t.Error("switchToVFS discarded the qualified directory cache")
 	}
 }
 
@@ -2697,16 +2886,16 @@ func TestPanelsFrame_TerminalForwarding_Advanced(t *testing.T) {
 	pty := &mockPty{}
 	pf.pty = pty
 
-	// 1. Ctrl+Tab should be FORWARDED in Advanced mode
+	// 1. Ctrl+Tab remains a global workspace shortcut in Advanced mode.
 	handled := pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_TAB, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
-	if !handled {
-		t.Error("Ctrl+Tab should be handled by PanelsFrame in Advanced mode")
+	if handled {
+		t.Error("Ctrl+Tab was erroneously forwarded to PTY in Advanced mode")
 	}
-	if len(pty.written) == 0 {
-		t.Error("PTY did not receive Win32 sequence for Ctrl+Tab")
+	if len(pty.written) != 0 {
+		t.Error("PTY received bytes for Ctrl+Tab in Advanced mode")
 	}
 	pty.written = nil
 
@@ -2717,6 +2906,112 @@ func TestPanelsFrame_TerminalForwarding_Advanced(t *testing.T) {
 	})
 	if handled {
 		t.Error("Shift+Ctrl+Tab was erroneously forwarded to PTY")
+	}
+}
+
+type busyMockPty struct{ mockPty }
+
+func (p *busyMockPty) IsBusy() bool { return true }
+
+func TestPanelsFrame_TerminalForwarding_BusyNonAltScreenWorkspaceKeys(t *testing.T) {
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.showPanels = false
+	pf.termView.UseAltScreen = false // Python REPL and similar interactive tools.
+
+	pty := &busyMockPty{}
+	pf.pty = pty
+
+	for _, state := range []vtinput.ControlKeyState{
+		vtinput.LeftCtrlPressed,
+		vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	} {
+		pty.Reset()
+		handled := pressKey(pf, &vtinput.InputEvent{
+			Type:            vtinput.KeyEventType,
+			KeyDown:         true,
+			VirtualKeyCode:  vtinput.VK_TAB,
+			ControlKeyState: state,
+		})
+		if handled {
+			t.Errorf("workspace key with modifiers %#x was consumed by busy terminal", state)
+		}
+		if got := pty.String(); got != "" {
+			t.Errorf("workspace key with modifiers %#x reached PTY as %q", state, got)
+		}
+	}
+}
+
+func TestPanelsFrame_TerminalCtrlNWorkspacePreference(t *testing.T) {
+	old := AppConfig.TerminalCtrlNWorkspace
+	defer func() { AppConfig.TerminalCtrlNWorkspace = old }()
+
+	for _, altScreen := range []bool{false, true} {
+		pf := NewPanelsFrame()
+		pf.showPanels = false
+		pf.termView.UseAltScreen = altScreen
+		pty := &busyMockPty{}
+		pf.pty = pty
+
+		event := func() *vtinput.InputEvent {
+			return &vtinput.InputEvent{
+				Type:            vtinput.KeyEventType,
+				KeyDown:         true,
+				VirtualKeyCode:  vtinput.VK_N,
+				Char:            'n',
+				ControlKeyState: vtinput.LeftCtrlPressed,
+			}
+		}
+
+		AppConfig.TerminalCtrlNWorkspace = true
+		if pressKey(pf, event()) {
+			t.Errorf("Ctrl+N was not released to FrameManager (AltScreen=%v)", altScreen)
+		}
+		if got := pty.String(); got != "" {
+			t.Errorf("enabled Ctrl+N preference wrote %q to PTY (AltScreen=%v)", got, altScreen)
+		}
+
+		AppConfig.TerminalCtrlNWorkspace = false
+		pty.Reset()
+		if !pressKey(pf, event()) {
+			t.Errorf("disabled Ctrl+N preference did not return key to PTY (AltScreen=%v)", altScreen)
+		}
+		if got := pty.String(); got != "\x0e" {
+			t.Errorf("disabled Ctrl+N preference wrote %q, want Ctrl+N (AltScreen=%v)", got, altScreen)
+		}
+		pf.Close()
+	}
+}
+
+func TestPanelsFrame_ForkFromTerminalOpensPanelsInNewWorkspace(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.showPanels = false
+	fm.Push(pf)
+
+	if !pf.HandleCommand(vtui.CmResize, "fork") {
+		t.Fatal("fork command was not handled")
+	}
+	if len(fm.Screens) != 2 {
+		t.Fatalf("fork created %d workspaces, want 2", len(fm.Screens))
+	}
+	clone, ok := fm.GetTopFrame().(*PanelsFrame)
+	if !ok {
+		t.Fatalf("forked top frame = %T, want *PanelsFrame", fm.GetTopFrame())
+	}
+	defer clone.Close()
+	if !clone.showPanels {
+		t.Error("terminal-side fork left the cloned workspace in terminal view")
+	}
+	if pf.showPanels {
+		t.Error("terminal-side fork changed the original workspace")
+	}
+	if clone.GetTitle() == "cmd.exe" || clone.GetTitle() == "Terminal" {
+		t.Errorf("forked workspace title still looks like a terminal: %q", clone.GetTitle())
 	}
 }
 func TestPanelsFrame_FilesMenuLabels(t *testing.T) {
@@ -2733,9 +3028,17 @@ func TestPanelsFrame_FilesMenuLabels(t *testing.T) {
 		t.Errorf("Expected Files menu label '&Files', got %q", filesMenu.Label)
 	}
 
-	// SubItems[5] should be "Rename or move" (View, Edit, New, Copy, CopyInPlace, RenMov)
-	renMove := filesMenu.SubItems[5]
 	expected := "&" + Msg("Menu.Files.RenMov")
+	var renMove *vtui.MenuItem
+	for i := range filesMenu.SubItems {
+		if filesMenu.SubItems[i].Text == expected {
+			renMove = &filesMenu.SubItems[i]
+			break
+		}
+	}
+	if renMove == nil {
+		t.Fatalf("Files menu has no item %q", expected)
+	}
 	if renMove.Text != expected {
 		t.Errorf("Expected Files item %q, got %q", expected, renMove.Text)
 	}
@@ -3044,7 +3347,7 @@ func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 	}
 
 	// Ensure "Other panel" is at index 0 and selected
-	if menu.GetTitle() != " Drive " || menu.SelectPos != 0 {
+	if menu.GetTitle() != Msg("Drive.Title") || menu.SelectPos != 0 {
 		t.Errorf("Menu state invalid: title=%q, pos=%d", menu.GetTitle(), menu.SelectPos)
 	}
 
@@ -3386,16 +3689,23 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 	fsp.isCheckingRefresh = false
 
 	// First Show() should trigger auto-refresh
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
 	pf.lastAutoRefresh = time.Now().Add(-5 * time.Second)
-	pf.Show(vtui.NewSilentScreenBuf())
+	pf.Show(scr)
 
-	// Give RunAsync a moment to start
-	deadline = time.Now().Add(100 * time.Millisecond)
+	// Pump tasks so the auto-refresh goroutine can run
+	deadline = time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if fsp.isCheckingRefresh {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+		if fsp.isCheckingRefresh && mv.statCalls.Load() >= 1 {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
 	if !fsp.isCheckingRefresh {
 		t.Error("Expected isCheckingRefresh to be true while Stat is pending")
@@ -3403,8 +3713,6 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 	if mv.statCalls.Load() < 1 {
 		t.Error("Expected the auto refresh to have called Stat")
 	}
-
-	// Second Show() must NOT trigger another Stat while the first is pending.
 	before := mv.statCalls.Load()
 	pf.lastAutoRefresh = time.Now().Add(-5 * time.Second)
 	pf.Show(vtui.NewSilentScreenBuf())
@@ -4205,11 +4513,19 @@ func TestPanelsFrame_CaptureCommands(t *testing.T) {
 	}
 }
 func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
+	if _, _, supported := systemFileManagerCommand("test", true); !supported {
+		t.Skipf("system file manager is unsupported on %s", runtime.GOOS)
+	}
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()
 
 	pf := NewPanelsFrame()
 	defer pf.Close()
+	launches := make(chan recordedExternalUICall, 3)
+	pf.externalUIRunner = func(command string, args []string, dir string) error {
+		launches <- recordedExternalUICall{command: command, args: append([]string(nil), args...), dir: dir}
+		return nil
+	}
 	pf.ResizeConsole(80, 25)
 
 	lp := pf.panels[0].(*FileSystemPanel)
@@ -4264,6 +4580,43 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 		t.Error("Expected Shift+Enter on '..' to be handled by PanelsFrame")
 	}
 
+	expectedLaunches := make(map[string]int)
+	for _, target := range []struct {
+		path  string
+		isDir bool
+	}{
+		{path: filepath.Join(tmp, "doc.txt"), isDir: false},
+		{path: filepath.Join(tmp, "sub"), isDir: true},
+		{path: tmp, isDir: true},
+	} {
+		command, args, supported := systemFileManagerCommand(target.path, target.isDir)
+		if !supported {
+			t.Fatalf("system file manager is unsupported on %s", runtime.GOOS)
+		}
+		key := externalUICallKey(recordedExternalUICall{command: command, args: args})
+		expectedLaunches[key]++
+	}
+
+	deadline := time.After(2 * time.Second)
+	for received := 0; received < 3; received++ {
+		select {
+		case launch := <-launches:
+			key := externalUICallKey(launch)
+			if expectedLaunches[key] == 0 {
+				t.Errorf("unexpected system-file-manager launch: %#v", launch)
+			} else {
+				expectedLaunches[key]--
+			}
+		case <-deadline:
+			t.Fatalf("timed out after %d of 3 system-file-manager launches", received)
+		}
+	}
+	for key, remaining := range expectedLaunches {
+		if remaining != 0 {
+			t.Errorf("missing %d system-file-manager launch(es) for %q", remaining, key)
+		}
+	}
+
 	// 4. Test on non-local VFS (e.g. NullVFS) -> should show warning but remain handled
 	lp.vfs = vfs.NewNullVFS(0)
 	lp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "file.txt"}}}
@@ -4278,6 +4631,11 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 	})
 	if !handled {
 		t.Error("Expected Shift+Enter on non-local VFS to be handled (with warning dialog)")
+	}
+	select {
+	case launch := <-launches:
+		t.Errorf("non-local path unexpectedly launched the system file manager: %#v", launch)
+	default:
 	}
 
 	// Clean up any warning dialog pushed on top

@@ -60,7 +60,9 @@ type HighlightRule struct {
 }
 
 type FileHighlighter struct {
-	Rules []HighlightRule
+	UserRules  []HighlightRule
+	ThemeRules []HighlightRule
+	Rules      []HighlightRule
 }
 
 var GlobalFileHighlighter *FileHighlighter
@@ -70,7 +72,32 @@ func init() {
 }
 
 func (fh *FileHighlighter) LoadFromIni(ini *IniFile) {
+	fh.LoadUserRules(ini)
+}
+
+func (fh *FileHighlighter) LoadUserRules(ini *IniFile) {
+	fh.UserRules = parseHighlightRules(ini)
+	fh.CombineRules()
+}
+
+func (fh *FileHighlighter) LoadThemeRules(ini *IniFile) {
+	fh.ThemeRules = parseHighlightRules(ini)
+	fh.CombineRules()
+}
+
+func (fh *FileHighlighter) CombineRules() {
 	fh.Rules = nil
+	if AppConfig.HighlightPriority == 1 { // Theme wins
+		fh.Rules = append(fh.Rules, fh.ThemeRules...)
+		fh.Rules = append(fh.Rules, fh.UserRules...)
+	} else { // User wins
+		fh.Rules = append(fh.Rules, fh.UserRules...)
+		fh.Rules = append(fh.Rules, fh.ThemeRules...)
+	}
+}
+
+func parseHighlightRules(ini *IniFile) []HighlightRule {
+	var rules []HighlightRule
 	var sections []string
 	for secName := range ini.data {
 		if strings.HasPrefix(strings.ToLower(secName), "highlight_") {
@@ -181,9 +208,9 @@ func (fh *FileHighlighter) LoadFromIni(ini *IniFile) {
 		rule.SelectedStr = ini.GetString(secName, "SelectedColor", "")
 		rule.CursorStr = ini.GetString(secName, "CursorColor", "")
 		rule.SelectedCursorStr = ini.GetString(secName, "SelectedCursorColor", "")
-		fh.Rules = append(fh.Rules, rule)
+		rules = append(rules, rule)
 	}
-	vtui.DebugLog("HIGHLIGHT: Loaded %d file highlighting rules", len(fh.Rules))
+	return rules
 }
 
 func parseAttrFlags(s string) AttrFlags {
@@ -325,8 +352,8 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 				if isSelected {
 					if rule.SelectedCursorStr != "" {
 						colorExpr = rule.SelectedCursorStr
-					} else if rule.CursorStr != "" {
-						colorExpr = rule.CursorStr
+					} else if rule.SelectedStr != "" {
+						colorExpr = rule.SelectedStr
 					}
 				} else {
 					if rule.CursorStr != "" {
