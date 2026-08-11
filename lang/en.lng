@@ -150,6 +150,7 @@ Menu.Left.Brief=Brief
 Menu.Left.Medium=Medium
 Menu.Left.Detailed=Detailed
 Menu.Left.Wide=Wide
+Menu.Left.Gallery=Gallery
 Menu.Commands.FindFile=Find file
 Menu.Commands.FindDuplicates=Find Duplicates
 Menu.Commands.BackgroundJobs=Background Jobs
@@ -557,8 +558,11 @@ PanelSettings.TerminalCtrlNWorkspace=Use Ctrl+N in terminal to &clone panels
 
 AppearanceSettings.Title= Appearance settings
 AppearanceSettings.Style=Application &style:
-AppearanceSettings.UseSystemMonospace=Use &system monospace font
+AppearanceSettings.IconSet=QML &icon set:
+AppearanceSettings.IconSetLucide=Lucide
+AppearanceSettings.IconSetSystem=System
 AppearanceSettings.Font=GUI F&ont (Path/Name):
+AppearanceSettings.UseSystemMonospace=Use &system monospace font
 AppearanceSettings.FontSize=GUI Font Si&ze:
 AppearanceSettings.TitleTemplate=Window &Title Template:
 AppearanceSettings.WorkspaceTabs=Workspace &tabs:
@@ -571,6 +575,7 @@ AppearanceSettings.CtrlTabMenu=Show Screens menu
 AppearanceSettings.AltNumberTabs=Alt+&number switches workspace tab
 AppearanceSettings.ExportBtn=E&xport Scheme
 AppearanceSettings.ColorCorrection=Enforce color &contrast correction
+AppearanceSettings.RestartRequired=Font changes in GUI mode will take effect\nafter application restart.
 
 ConfirmationsSettings.Title= Confirmations
 ConfirmationsSettings.Copy=Confirm on &copy
@@ -864,6 +869,10 @@ KeyBar.F9=ConfMenu
 KeyBar.F10=Quit
 KeyBar.F11=Plugin
 KeyBar.F12=Screen
+KeyBar.ShiftF12=GUI/Text
+
+Presentation.GUI=GUI presentation
+Presentation.Text=Text presentation
 
 KeyBar.AltF1=Left
 KeyBar.AltF2=Right

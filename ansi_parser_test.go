@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func init() {
 type mockPty struct {
 	mu      sync.Mutex
 	written []byte
-	closed  bool
+	closed  atomic.Bool
 }
 
 func (m *mockPty) Write(b []byte) (int, error) {
@@ -44,13 +45,13 @@ func (m *mockPty) Reset() {
 	m.written = nil
 }
 func (m *mockPty) Read(b []byte) (int, error) {
-	for !m.closed {
+	for !m.closed.Load() {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return 0, io.EOF
 }
 func (m *mockPty) Close() error {
-	m.closed = true
+	m.closed.Store(true)
 	return nil
 }
 func (m *mockPty) SetSize(cols, rows int)                {}
@@ -727,6 +728,11 @@ func TestAnsiParser_ExcisionExtra(t *testing.T) {
 			expected: "",
 		},
 		{
+			name:     "macOS zsh background sync excision",
+			input:    "user@host:~$ cd '/new/path'; : f4_sync\r\n",
+			expected: "",
+		},
+		{
 			name:     "Unix technical command excision",
 			input:    "set +H; cd '/new/path' && { printf \"\\033]133;C\\007\"; ./'cmd' ; printf \"\\033]133;D\\007\"; }\r\n",
 			expected: "",
@@ -747,6 +753,185 @@ func TestAnsiParser_ExcisionExtra(t *testing.T) {
 				t.Errorf("Expected log to contain %q, but got %q", tt.expected, logStr)
 			}
 		})
+	}
+}
+
+func TestAnsiParser_ExcisesExpectedBackgroundSyncAcrossPTYReads(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	command := " cd '/Users/zoin/Documents/f4'; : f4_sync"
+	parser.expectBackgroundSyncEcho(command)
+
+	// This mirrors the fragmentation observed from an interactive zsh on a
+	// Darwin PTY, including ZLE's leading backspace and bracketed-paste reset.
+	for _, chunk := range [][]byte{
+		[]byte("zoin@host f4 % "),
+		[]byte(" \b cd '/U"),
+		[]byte("sers/zoin/Doc"),
+		[]byte("uments/f4'; : f4_sy"),
+		[]byte("nc"),
+		[]byte("\x1b[?2004l"),
+		[]byte("\r\r\n"),
+		[]byte("zoin@host f4 % \x1b[?2004h"),
+	} {
+		parser.Process(chunk)
+	}
+
+	logStr := string(tv.GetAllLogBytes())
+	if strings.Contains(logStr, "cd '/Users/zoin/Documents/f4'") || strings.Contains(logStr, "f4_sync") {
+		t.Fatalf("fragmented background sync echo reached scrollback: %q", logStr)
+	}
+	if !strings.Contains(logStr, "zoin@host f4 %") {
+		t.Fatalf("shell prompt was lost while excising fragmented echo: %q", logStr)
+	}
+}
+
+func TestAnsiParser_QueuesRapidBackgroundSyncEchoes(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	first := " cd '/tmp/left'; : f4_sync"
+	second := " cd '/tmp/right'; : f4_sync"
+	parser.expectBackgroundSyncEcho(first)
+	parser.expectBackgroundSyncEcho(second)
+
+	parser.Process([]byte("host% " + first[:12]))
+	parser.Process([]byte(first[12:] + "\r\r\nhost% " + second[:10]))
+	parser.Process([]byte(second[10:] + "\x1b[?2004l\r\r\nhost% "))
+
+	logStr := string(tv.GetAllLogBytes())
+	if strings.Contains(logStr, "f4_sync") || strings.Contains(logStr, "cd '/tmp/") {
+		t.Fatalf("queued background sync echo reached scrollback: %q", logStr)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncDoesNotWithholdOrdinaryOutput(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	parser.expectBackgroundSyncEcho(" cd '/tmp/expected'; : f4_sync")
+
+	// No newline is needed for fail-open streaming: only a suffix that could
+	// still become the expected command may be retained between PTY reads.
+	parser.Process([]byte("ordinary stdout"))
+	if got := string(tv.GetAllLogBytes()); !strings.Contains(got, "ordinary stdout") {
+		t.Fatalf("ordinary stdout was withheld behind a sync expectation: %q", got)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncFailsOpenOnMismatchedLine(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	parser.expectBackgroundSyncEcho(" cd '/tmp/expected'; : f4_sync")
+
+	parser.Process([]byte("rewritten sync echo\r\n"))
+	parser.Process([]byte("ls-result\r\n"))
+
+	got := string(tv.GetAllLogBytes())
+	if !strings.Contains(got, "rewritten sync echo") || !strings.Contains(got, "ls-result") {
+		t.Fatalf("mismatched sync echo swallowed terminal output: %q", got)
+	}
+	if len(parser.backgroundSyncExpected) != 0 || len(parser.backgroundSyncBuffer) != 0 {
+		t.Fatalf("mismatched line left a stale sync expectation: expected=%d buffered=%q",
+			len(parser.backgroundSyncExpected), parser.backgroundSyncBuffer)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncReleasesSplitPrefixAfterRewrite(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	command := " cd '/tmp/expected'; : f4_sync"
+	parser.expectBackgroundSyncEcho(command)
+
+	// First retain a genuine prefix, then model a shell redraw inserting an
+	// ANSI sequence into the echoed command. The now-impossible candidate and
+	// the stdout following it must both be released at the line boundary.
+	parser.Process([]byte(command[:12]))
+	parser.Process([]byte("\x1b[0m" + command[12:] + "\r\nls-result\r\n"))
+
+	got := string(tv.GetAllLogBytes())
+	if !strings.Contains(got, "ls-result") {
+		t.Fatalf("rewritten split echo swallowed subsequent stdout: %q", got)
+	}
+	if len(parser.backgroundSyncExpected) != 0 || len(parser.backgroundSyncBuffer) != 0 {
+		t.Fatalf("rewritten split echo left a stale sync expectation: expected=%d buffered=%q",
+			len(parser.backgroundSyncExpected), parser.backgroundSyncBuffer)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncFailsOpenForForegroundOSC(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	busy := false
+	tv.OnBusyChange = func(value bool) { busy = value }
+	parser := NewAnsiParser(tv, nil)
+	parser.expectBackgroundSyncEcho(" cd '/tmp/expected'; : f4_sync")
+
+	// This is the first output when echo is disabled and a managed foreground
+	// command starts. It must reach HandleOSC133 immediately.
+	parser.Process([]byte("\x1b]133;C\x07"))
+	if !busy {
+		t.Fatal("foreground OSC was withheld behind a stale sync expectation")
+	}
+	if len(parser.backgroundSyncExpected) != 0 || len(parser.backgroundSyncBuffer) != 0 {
+		t.Fatalf("foreground OSC left a stale sync expectation: expected=%d buffered=%q",
+			len(parser.backgroundSyncExpected), parser.backgroundSyncBuffer)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncExactEchoWithoutNewlineFailsOpenForOSC(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	busy := false
+	tv.OnBusyChange = func(value bool) { busy = value }
+	parser := NewAnsiParser(tv, nil)
+	command := " cd '/tmp/expected'; : f4_sync"
+	parser.expectBackgroundSyncEcho(command)
+
+	parser.Process([]byte(command + "\x1b]133;C\x07"))
+	if !busy {
+		t.Fatal("foreground OSC after unterminated exact echo was withheld")
+	}
+	if len(parser.backgroundSyncExpected) != 0 || len(parser.backgroundSyncBuffer) != 0 {
+		t.Fatalf("unterminated exact echo left a stale sync expectation: expected=%d buffered=%q",
+			len(parser.backgroundSyncExpected), parser.backgroundSyncBuffer)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncStreamsPastFalsePrefix(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	parser.expectBackgroundSyncEcho(" cd '/tmp/expected'; : f4_sync")
+
+	// The trailing space is a one-byte prefix of the registered command. It is
+	// legitimate to retain that byte, but the preceding stdout must be visible.
+	parser.Process([]byte("first chunk "))
+	if got := string(tv.GetAllLogBytes()); !strings.Contains(got, "first chunk") {
+		t.Fatalf("stdout preceding a possible echo prefix was withheld: %q", got)
+	}
+	parser.Process([]byte("X second chunk"))
+	if got := string(tv.GetAllLogBytes()); !strings.Contains(got, "X second chunk") {
+		t.Fatalf("false echo prefix did not fail open after mismatch: %q", got)
+	}
+}
+
+func TestAnsiParser_ExpectedBackgroundSyncKeepsPrefixAfterCompletedOutput(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	parser := NewAnsiParser(tv, nil)
+	command := " cd '/tmp/expected'; : f4_sync"
+	parser.expectBackgroundSyncEcho(command)
+
+	// A single PTY read can contain output that was already in flight followed
+	// by only the first fragment of the private echo. The old line must render
+	// immediately, while the candidate suffix remains available for matching.
+	parser.Process([]byte("old output\r\nhost% " + command[:13]))
+	if got := string(tv.GetAllLogBytes()); !strings.Contains(got, "old output") {
+		t.Fatalf("completed output was withheld behind a split echo: %q", got)
+	}
+	parser.Process([]byte(command[13:] + "\x1b[?2004l\r\r\nnext prompt% "))
+
+	got := string(tv.GetAllLogBytes())
+	if strings.Contains(got, "cd '/tmp/expected'") || strings.Contains(got, "f4_sync") {
+		t.Fatalf("split sync echo following completed output leaked: %q", got)
+	}
+	if !strings.Contains(got, "next prompt") {
+		t.Fatalf("output following split sync echo was lost: %q", got)
 	}
 }
 

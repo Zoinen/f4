@@ -41,6 +41,8 @@ func NewPTY() (*PTY, error) {
 	if errno != 0 {
 		return nil, errno
 	}
+	unix.CloseOnExec(int(pg.Cfd))
+	unix.CloseOnExec(int(pg.Sfd))
 
 	master := os.NewFile(uintptr(pg.Cfd), "/dev/ptmx")
 	slave := os.NewFile(uintptr(pg.Sfd), "slave")
@@ -94,6 +96,8 @@ func (p *PTY) Run(name string, args ...string) error {
 
 	err := p.Cmd.Start()
 	if err == nil {
+		_ = p.Slave.Close()
+		p.Slave = nil
 		p.shellPgrp, _ = syscall.Getpgid(p.Cmd.Process.Pid)
 	}
 	return err

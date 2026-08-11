@@ -264,6 +264,14 @@ type PanelInfoProvider interface {
 	RefreshPanelInfo(context.Context, PanelInfoRequest) (PanelInfoSnapshot, error)
 }
 
+// LocalPathProvider is implemented by VFS backends whose entries can be read
+// directly through a platform filesystem path. Native frontends use this
+// optional capability for previews without coupling the core VFS interface to
+// local storage.
+type LocalPathProvider interface {
+	LocalPath(path string) (string, error)
+}
+
 type BulkCopier interface {
 	CopyBulk(ctx context.Context, srcPaths []string, dstVfs VFS, dstDir string, reporter TaskReporter) error
 }

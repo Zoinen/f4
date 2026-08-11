@@ -2,7 +2,7 @@ package extui
 
 const (
 	Schema       = "app"
-	SceneVersion = 2
+	SceneVersion = 3
 )
 
 type M = map[string]any
@@ -13,6 +13,9 @@ type Scene struct {
 	Height         int
 	ActiveScreen   int
 	WorkspaceCount int
+	WorkspaceTabs  M
+	Presentation   string
+	QmlIconSet     string
 	Shell          *ShellModel
 	MenuBar        *MenuModel
 	KeyBar         *KeyBarModel
@@ -31,6 +34,8 @@ type ShellModel struct {
 	ShowPanels     bool
 	ShowLeftPanel  bool
 	ShowRightPanel bool
+	Wide           bool
+	WidePanel      int
 	ShowKeyBar     bool
 	TerminalBusy   bool
 	TerminalActive bool
@@ -38,55 +43,130 @@ type ShellModel struct {
 	Fallback       bool
 	FallbackReason string
 	Panels         []PanelModel
+	InfoPanels     []InfoPanelModel
 	CommandLine    *CommandLineModel
 	Terminal       *TerminalModel
 }
 
+type InfoPanelModel struct {
+	ID         string
+	Side       int
+	Active     bool
+	Title      string
+	BottomHint string
+	Rows       []InfoPanelRowModel
+}
+
+type InfoPanelRowModel struct {
+	Kind  string
+	Label string
+	Value string
+}
+
 type PanelModel struct {
-	ID            string
-	Side          int
-	Active        bool
-	Path          string
-	Title         string
-	ViewMode      string
-	SortMode      string
-	SortReverse   bool
-	Cursor        int
-	Top           int
-	Loading       bool
-	FastFind      bool
-	FastFindText  string
-	SelectedCount int
-	SelectedSize  int64
-	TotalCount    int
-	TotalSize     int64
-	Entries       []FileEntryModel
+	ID                     string
+	Side                   int
+	Active                 bool
+	Path                   string
+	Title                  string
+	ViewMode               string
+	Presentation           string
+	GalleryLayoutMode      string
+	GalleryColumnCount     int
+	GalleryDensity         int
+	GalleryLayoutRevision  int64
+	SourceKind             string
+	PreviewCapable         bool
+	CatalogRevision        int64
+	SelectionRevision      int64
+	HighlightRevision      int64
+	HighlightStyles        map[string]HighlightStyleModel
+	CursorEntryID          string
+	SortMode               string
+	SortReverse            bool
+	SeparateFileExtensions bool
+	Cursor                 int
+	Top                    int
+	Loading                bool
+	FastFind               bool
+	FastFindText           string
+	SelectedCount          int
+	SelectedSize           int64
+	TotalCount             int
+	TotalSize              int64
+	Columns                []PanelColumnModel
+	GalleryColumns         []PanelColumnModel
+	Entries                []FileEntryModel
+}
+
+type PanelColumnModel struct {
+	ID        string
+	Role      string
+	Index     int
+	Title     string
+	Width     int
+	Alignment string
+	SortMode  string
+	Sortable  bool
 }
 
 type FileEntryModel struct {
-	Index          int
-	Name           string
-	Size           int64
-	SizeText       string
-	IsDir          bool
-	IsUp           bool
-	IsHidden       bool
-	IsExecutable   bool
-	IsCached       bool
-	Selected       bool
-	SizeCalculated bool
-	MTime          string
-	Mode           string
+	Index            int
+	EntryID          string
+	Name             string
+	DisplayBaseName  string
+	DisplayExtension string
+	LocalPath        string
+	Size             int64
+	SizeText         string
+	IsDir            bool
+	IsUp             bool
+	IsHidden         bool
+	IsExecutable     bool
+	IsCached         bool
+	Selected         bool
+	SizeCalculated   bool
+	MTime            string
+	MTimeNanos       int64
+	Version          string
+	Mode             string
+	HighlightStyleID string
+}
+
+type HighlightGroupModel struct {
+	ID   string
+	Name string
+}
+
+type HighlightColorPatchModel struct {
+	Foreground string
+	Background string
+}
+
+type HighlightStyleModel struct {
+	Groups         []HighlightGroupModel
+	Marker         string
+	Icon           string
+	Normal         HighlightColorPatchModel
+	Selected       HighlightColorPatchModel
+	Cursor         HighlightColorPatchModel
+	SelectedCursor HighlightColorPatchModel
 }
 
 type CommandLineModel struct {
-	ID         string
-	Visible    bool
-	Focused    bool
-	Prompt     string
-	PromptRuns []RunModel
-	Text       string
-	Empty      bool
+	ID               string
+	Visible          bool
+	Focused          bool
+	Prompt           string
+	PromptRuns       []RunModel
+	Text             string
+	Empty            bool
+	Runs             []RunModel
+	InputX           int
+	CursorPrefixRuns []RunModel
+	CursorX          int
+	CursorVisible    bool
+	CursorShape      string
 }
 
 type TerminalModel struct {
@@ -102,28 +182,32 @@ type TerminalModel struct {
 }
 
 type SurfaceModel struct {
-	ID           string
-	Kind         string
-	Title        string
-	Path         string
-	BaseName     string
-	Mode         string
-	Busy         bool
-	Dirty        bool
-	Saving       bool
-	HexMode      bool
-	WrapMode     bool
-	WordWrap     bool
-	Overtype     bool
-	TopOffset    int64
-	Size         int64
-	CursorLine   int
-	CursorPos    int
-	ScrollTop    int
-	ScrollLeft   int
-	Selection    bool
-	Autocomplete M
-	Rows         []TextRowModel
+	ID                 string
+	Kind               string
+	Title              string
+	Path               string
+	BaseName           string
+	Mode               string
+	Busy               bool
+	Dirty              bool
+	Saving             bool
+	HexMode            bool
+	WrapMode           bool
+	WordWrap           bool
+	Overtype           bool
+	TopOffset          int64
+	Size               int64
+	CursorLine         int
+	CursorPos          int
+	CursorVisualRow    int
+	CursorVisualColumn int
+	CursorVisible      bool
+	CursorShape        string
+	ScrollTop          int
+	ScrollLeft         int
+	Selection          bool
+	Autocomplete       M
+	Rows               []TextRowModel
 }
 
 type TextRowModel struct {
@@ -136,8 +220,13 @@ type TextRowModel struct {
 }
 
 type RunModel struct {
-	Text string
-	Attr uint64
+	Text       string
+	Attr       uint64
+	Foreground string
+	Background string
+	Bold       bool
+	Underline  bool
+	Strikeout  bool
 }
 
 type MenuModel struct {
@@ -159,6 +248,7 @@ type MenuItemModel struct {
 	Command   int
 	Separator bool
 	Disabled  bool
+	Checked   bool
 	Items     []MenuItemModel
 	Legacy    M
 }
@@ -223,8 +313,17 @@ func (s Scene) ToMap() M {
 		"height":       s.Height,
 		"activeScreen": s.ActiveScreen,
 	}
+	if s.Presentation != "" {
+		out["presentation"] = s.Presentation
+	}
+	if s.QmlIconSet != "" {
+		out["qmlIconSet"] = s.QmlIconSet
+	}
 	if s.WorkspaceCount > 0 {
 		out["workspaceCount"] = s.WorkspaceCount
+	}
+	if s.WorkspaceTabs != nil {
+		out["workspaceTabs"] = s.WorkspaceTabs
 	}
 	if s.Shell != nil {
 		out["shell"] = s.Shell.ToMap()
@@ -269,15 +368,22 @@ func (s ShellModel) ToMap() M {
 		"showPanels":     s.ShowPanels,
 		"showLeftPanel":  s.ShowLeftPanel,
 		"showRightPanel": s.ShowRightPanel,
+		"wide":           s.Wide,
 		"showKeyBar":     s.ShowKeyBar,
 		"terminalBusy":   s.TerminalBusy,
 		"terminalActive": s.TerminalActive,
 		"macroRecording": s.MacroRecording,
 		"panels":         panelsToMaps(s.Panels),
 	}
+	if s.Wide {
+		out["widePanel"] = s.WidePanel
+	}
 	if s.Fallback {
 		out["fallback"] = true
 		out["reason"] = s.FallbackReason
+	}
+	if len(s.InfoPanels) > 0 {
+		out["infoPanels"] = infoPanelsToMaps(s.InfoPanels)
 	}
 	if s.CommandLine != nil {
 		out["commandLine"] = s.CommandLine.ToMap()
@@ -288,58 +394,160 @@ func (s ShellModel) ToMap() M {
 	return out
 }
 
-func (p PanelModel) ToMap() M {
+func (p InfoPanelModel) ToMap() M {
+	rows := make([]M, 0, len(p.Rows))
+	for _, row := range p.Rows {
+		rows = append(rows, M{
+			"kind":  row.Kind,
+			"label": row.Label,
+			"value": row.Value,
+		})
+	}
 	return M{
-		"id":            p.ID,
-		"kind":          "filePanel",
-		"side":          p.Side,
-		"active":        p.Active,
-		"path":          p.Path,
-		"title":         p.Title,
-		"viewModeName":  p.ViewMode,
-		"sortModeName":  p.SortMode,
-		"sortReverse":   p.SortReverse,
-		"cursor":        p.Cursor,
-		"top":           p.Top,
-		"loading":       p.Loading,
-		"fastFind":      p.FastFind,
-		"fastFindText":  p.FastFindText,
-		"selectedCount": p.SelectedCount,
-		"selectedSize":  p.SelectedSize,
-		"totalCount":    p.TotalCount,
-		"totalSize":     p.TotalSize,
-		"entries":       entriesToMaps(p.Entries),
+		"id":         p.ID,
+		"kind":       "infoPanel",
+		"side":       p.Side,
+		"active":     p.Active,
+		"title":      p.Title,
+		"bottomHint": p.BottomHint,
+		"rows":       rows,
 	}
 }
 
+func (p PanelModel) ToMap() M {
+	columnsToMaps := func(source []PanelColumnModel) []M {
+		columns := make([]M, 0, len(source))
+		for _, column := range source {
+			columns = append(columns, M{
+				"id":        column.ID,
+				"role":      column.Role,
+				"index":     column.Index,
+				"title":     column.Title,
+				"width":     column.Width,
+				"alignment": column.Alignment,
+				"sortMode":  column.SortMode,
+				"sortable":  column.Sortable,
+			})
+		}
+		return columns
+	}
+	columns := columnsToMaps(p.Columns)
+	out := M{
+		"id":                     p.ID,
+		"kind":                   "filePanel",
+		"side":                   p.Side,
+		"active":                 p.Active,
+		"path":                   p.Path,
+		"title":                  p.Title,
+		"viewModeName":           p.ViewMode,
+		"presentation":           p.Presentation,
+		"galleryLayoutMode":      p.GalleryLayoutMode,
+		"galleryColumnCount":     p.GalleryColumnCount,
+		"galleryDensity":         p.GalleryDensity,
+		"galleryLayoutRevision":  p.GalleryLayoutRevision,
+		"sourceKind":             p.SourceKind,
+		"previewCapable":         p.PreviewCapable,
+		"catalogRevision":        p.CatalogRevision,
+		"selectionRevision":      p.SelectionRevision,
+		"highlightRevision":      p.HighlightRevision,
+		"cursorEntryId":          p.CursorEntryID,
+		"sortModeName":           p.SortMode,
+		"sortReverse":            p.SortReverse,
+		"separateFileExtensions": p.SeparateFileExtensions,
+		"cursor":                 p.Cursor,
+		"top":                    p.Top,
+		"loading":                p.Loading,
+		"fastFind":               p.FastFind,
+		"fastFindText":           p.FastFindText,
+		"selectedCount":          p.SelectedCount,
+		"selectedSize":           p.SelectedSize,
+		"totalCount":             p.TotalCount,
+		"totalSize":              p.TotalSize,
+		"columns":                columns,
+		"galleryColumns":         columnsToMaps(p.GalleryColumns),
+		"entries":                entriesToMaps(p.Entries),
+	}
+	if len(p.HighlightStyles) > 0 {
+		styles := make(M, len(p.HighlightStyles))
+		for id, style := range p.HighlightStyles {
+			styles[id] = style.ToMap()
+		}
+		out["highlightStyles"] = styles
+	}
+	return out
+}
+
 func (e FileEntryModel) ToMap() M {
+	out := M{
+		"index":            e.Index,
+		"entryId":          e.EntryID,
+		"name":             e.Name,
+		"displayBaseName":  e.DisplayBaseName,
+		"displayExtension": e.DisplayExtension,
+		"localPath":        e.LocalPath,
+		"size":             e.Size,
+		"sizeText":         e.SizeText,
+		"isDir":            e.IsDir,
+		"isUp":             e.IsUp,
+		"isHidden":         e.IsHidden,
+		"isExecutable":     e.IsExecutable,
+		"isCached":         e.IsCached,
+		"selected":         e.Selected,
+		"sizeCalculated":   e.SizeCalculated,
+		"mtime":            e.MTime,
+		"mtimeNanos":       e.MTimeNanos,
+		"version":          e.Version,
+		"mode":             e.Mode,
+	}
+	if e.HighlightStyleID != "" {
+		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	return out
+}
+
+func (p HighlightColorPatchModel) ToMap() M {
+	out := M{}
+	if p.Foreground != "" {
+		out["foreground"] = p.Foreground
+	}
+	if p.Background != "" {
+		out["background"] = p.Background
+	}
+	return out
+}
+
+func (s HighlightStyleModel) ToMap() M {
+	groups := make([]M, 0, len(s.Groups))
+	for _, group := range s.Groups {
+		groups = append(groups, M{"id": group.ID, "name": group.Name})
+	}
 	return M{
-		"index":          e.Index,
-		"name":           e.Name,
-		"size":           e.Size,
-		"sizeText":       e.SizeText,
-		"isDir":          e.IsDir,
-		"isUp":           e.IsUp,
-		"isHidden":       e.IsHidden,
-		"isExecutable":   e.IsExecutable,
-		"isCached":       e.IsCached,
-		"selected":       e.Selected,
-		"sizeCalculated": e.SizeCalculated,
-		"mtime":          e.MTime,
-		"mode":           e.Mode,
+		"groups":         groups,
+		"marker":         s.Marker,
+		"icon":           s.Icon,
+		"normal":         s.Normal.ToMap(),
+		"selected":       s.Selected.ToMap(),
+		"cursor":         s.Cursor.ToMap(),
+		"selectedCursor": s.SelectedCursor.ToMap(),
 	}
 }
 
 func (c CommandLineModel) ToMap() M {
 	return M{
-		"id":         c.ID,
-		"kind":       "commandLine",
-		"visible":    c.Visible,
-		"focused":    c.Focused,
-		"prompt":     c.Prompt,
-		"promptRuns": runsToMaps(c.PromptRuns),
-		"text":       c.Text,
-		"empty":      c.Empty,
+		"id":               c.ID,
+		"kind":             "commandLine",
+		"visible":          c.Visible,
+		"focused":          c.Focused,
+		"prompt":           c.Prompt,
+		"promptRuns":       runsToMaps(c.PromptRuns),
+		"text":             c.Text,
+		"empty":            c.Empty,
+		"runs":             runsToMaps(c.Runs),
+		"inputX":           c.InputX,
+		"cursorPrefixRuns": runsToMaps(c.CursorPrefixRuns),
+		"cursorX":          c.CursorX,
+		"cursorVisible":    c.CursorVisible,
+		"cursorShape":      c.CursorShape,
 	}
 }
 
@@ -360,27 +568,31 @@ func (t TerminalModel) ToMap() M {
 
 func (d SurfaceModel) ToMap() M {
 	out := M{
-		"id":         d.ID,
-		"kind":       d.Kind,
-		"title":      d.Title,
-		"path":       d.Path,
-		"baseName":   d.BaseName,
-		"mode":       d.Mode,
-		"busy":       d.Busy,
-		"dirty":      d.Dirty,
-		"saving":     d.Saving,
-		"hexMode":    d.HexMode,
-		"wrapMode":   d.WrapMode,
-		"wordWrap":   d.WordWrap,
-		"overtype":   d.Overtype,
-		"topOffset":  d.TopOffset,
-		"size":       d.Size,
-		"cursorLine": d.CursorLine,
-		"cursorPos":  d.CursorPos,
-		"scrollTop":  d.ScrollTop,
-		"scrollLeft": d.ScrollLeft,
-		"selection":  d.Selection,
-		"rows":       rowsToMaps(d.Rows),
+		"id":                 d.ID,
+		"kind":               d.Kind,
+		"title":              d.Title,
+		"path":               d.Path,
+		"baseName":           d.BaseName,
+		"mode":               d.Mode,
+		"busy":               d.Busy,
+		"dirty":              d.Dirty,
+		"saving":             d.Saving,
+		"hexMode":            d.HexMode,
+		"wrapMode":           d.WrapMode,
+		"wordWrap":           d.WordWrap,
+		"overtype":           d.Overtype,
+		"topOffset":          d.TopOffset,
+		"size":               d.Size,
+		"cursorLine":         d.CursorLine,
+		"cursorPos":          d.CursorPos,
+		"cursorVisualRow":    d.CursorVisualRow,
+		"cursorVisualColumn": d.CursorVisualColumn,
+		"cursorVisible":      d.CursorVisible,
+		"cursorShape":        d.CursorShape,
+		"scrollTop":          d.ScrollTop,
+		"scrollLeft":         d.ScrollLeft,
+		"selection":          d.Selection,
+		"rows":               rowsToMaps(d.Rows),
 	}
 	if d.Autocomplete != nil {
 		out["autocomplete"] = d.Autocomplete
@@ -405,7 +617,15 @@ func (r TextRowModel) ToMap() M {
 }
 
 func (r RunModel) ToMap() M {
-	return M{"text": r.Text, "attr": r.Attr}
+	return M{
+		"text":       r.Text,
+		"attr":       r.Attr,
+		"foreground": r.Foreground,
+		"background": r.Background,
+		"bold":       r.Bold,
+		"underline":  r.Underline,
+		"strikeout":  r.Strikeout,
+	}
 }
 
 func (m MenuModel) ToMap() M {
@@ -436,6 +656,7 @@ func (i MenuItemModel) ToMap() M {
 		"command":   i.Command,
 		"separator": i.Separator,
 		"disabled":  i.Disabled,
+		"checked":   i.Checked,
 	}
 	if len(i.Items) > 0 {
 		out["items"] = menuItemsToMaps(i.Items)
@@ -519,6 +740,14 @@ func (c ControlModel) ToMap() M {
 }
 
 func panelsToMaps(items []PanelModel) []M {
+	out := make([]M, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.ToMap())
+	}
+	return out
+}
+
+func infoPanelsToMaps(items []InfoPanelModel) []M {
 	out := make([]M, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.ToMap())

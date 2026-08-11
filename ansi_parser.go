@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/unxed/vtui"
@@ -35,6 +36,10 @@ type AnsiParser struct {
 	pty          PtyBackend
 	runeBuf      []byte
 	lastRune     rune
+
+	backgroundSyncMu       sync.Mutex
+	backgroundSyncExpected [][]byte
+	backgroundSyncBuffer   []byte
 }
 
 func NewAnsiParser(t *TerminalView, p PtyBackend) *AnsiParser {
@@ -47,6 +52,11 @@ func NewAnsiParser(t *TerminalView, p PtyBackend) *AnsiParser {
 
 func (p *AnsiParser) Process(data []byte) {
 	if p == nil || len(data) == 0 {
+		return
+	}
+
+	data = p.filterExpectedBackgroundSyncEcho(data)
+	if len(data) == 0 {
 		return
 	}
 
@@ -80,8 +90,14 @@ func (p *AnsiParser) Process(data []byte) {
 			break
 		}
 		endIdx := bytes.Index(data[startIdx:], []byte("' # f4_sync"))
+		markerLen := len("' # f4_sync")
+		darwinEndIdx := bytes.Index(data[startIdx:], []byte("'; : f4_sync"))
+		if darwinEndIdx != -1 && (endIdx == -1 || darwinEndIdx < endIdx) {
+			endIdx = darwinEndIdx
+			markerLen = len("'; : f4_sync")
+		}
 		if endIdx != -1 {
-			actualEnd := startIdx + endIdx + len("' # f4_sync")
+			actualEnd := startIdx + endIdx + markerLen
 			if actualEnd < len(data) && data[actualEnd] == '\r' {
 				actualEnd++
 			}
@@ -241,6 +257,126 @@ func (p *AnsiParser) Process(data []byte) {
 	}
 	p.term.FlushLog()
 }
+
+// expectBackgroundSyncEcho registers a private command whose terminal echo
+// must not reach scrollback. Darwin's PTY commonly splits zsh's echo across
+// several reads, so Process cannot reliably recognize it one chunk at a time.
+func (p *AnsiParser) expectBackgroundSyncEcho(command string) {
+	if p == nil || command == "" {
+		return
+	}
+
+	p.backgroundSyncMu.Lock()
+	p.backgroundSyncExpected = append(p.backgroundSyncExpected, []byte(command))
+	p.backgroundSyncMu.Unlock()
+}
+
+func (p *AnsiParser) filterExpectedBackgroundSyncEcho(data []byte) []byte {
+	p.backgroundSyncMu.Lock()
+	defer p.backgroundSyncMu.Unlock()
+
+	if len(p.backgroundSyncExpected) == 0 {
+		// Defensive fail-open: a previous recovery must never leave bytes
+		// stranded after its expectation has already been discarded.
+		if len(p.backgroundSyncBuffer) != 0 {
+			buffered := append(p.backgroundSyncBuffer, data...)
+			p.backgroundSyncBuffer = nil
+			return buffered
+		}
+		return data
+	}
+
+	p.backgroundSyncBuffer = append(p.backgroundSyncBuffer, data...)
+	filtered := make([]byte, 0, len(data)+5)
+	for len(p.backgroundSyncExpected) > 0 {
+		expected := p.backgroundSyncExpected[0]
+		startIdx := bytes.Index(p.backgroundSyncBuffer, expected)
+		if startIdx >= 0 {
+			// Everything before the exact command is ordinary prompt/output and
+			// can be rendered immediately. Keep only the candidate echo while we
+			// wait for its terminating newline.
+			filtered = append(filtered, p.backgroundSyncBuffer[:startIdx]...)
+			p.backgroundSyncBuffer = p.backgroundSyncBuffer[startIdx:]
+
+			tail := p.backgroundSyncBuffer[len(expected):]
+			if lineEnd := bytes.IndexByte(tail, '\n'); lineEnd >= 0 {
+				actualEnd := len(expected) + lineEnd + 1
+				filtered = append(filtered, []byte("\r\x1b[2K")...)
+				p.backgroundSyncBuffer = p.backgroundSyncBuffer[actualEnd:]
+				p.backgroundSyncExpected = p.backgroundSyncExpected[1:]
+				vtui.DebugLog("ANSI_PARSER: Excising streamed background Unix CD sync")
+				continue
+			}
+
+			// Once a foreground-command OSC appears, the background echo either
+			// was not emitted or was transformed beyond recognition. Do not hold
+			// the command's control sequence (and all subsequent stdout) hostage.
+			// Likewise, cap only the bytes *after* an exact match rather than
+			// buffering an arbitrary 64 KiB of unrelated terminal traffic.
+			if backgroundSyncHasManagedCommandOSC(tail) || len(tail) > 4096 {
+				filtered = append(filtered, p.backgroundSyncBuffer...)
+				p.backgroundSyncBuffer = nil
+				p.backgroundSyncExpected = nil
+				return filtered
+			}
+			return filtered
+		}
+
+		// A managed-command OSC without the registered echo proves that the shell
+		// suppressed or rewrote it. It must reach TerminalView immediately or the
+		// busy state can never settle and restore the panels.
+		if backgroundSyncHasManagedCommandOSC(p.backgroundSyncBuffer) {
+			filtered = append(filtered, p.backgroundSyncBuffer...)
+			p.backgroundSyncBuffer = nil
+			p.backgroundSyncExpected = nil
+			return filtered
+		}
+
+		// No full match exists yet. Only a suffix that is also a prefix of the
+		// expected command can possibly complete on a later PTY read; render all
+		// other bytes now instead of accumulating arbitrary stdout.
+		keep := backgroundSyncPrefixSuffixLen(p.backgroundSyncBuffer, expected)
+		// A completed line with no viable trailing command prefix means the echo
+		// was suppressed or rewritten, so fail open and discard the expectation.
+		// If a viable prefix follows that completed line, however, flush the old
+		// output while retaining just that suffix. This covers a PTY read that
+		// contains an old prompt/line plus the first fragment of the real echo.
+		if bytes.IndexByte(p.backgroundSyncBuffer, '\n') >= 0 && keep == 0 {
+			filtered = append(filtered, p.backgroundSyncBuffer...)
+			p.backgroundSyncBuffer = nil
+			p.backgroundSyncExpected = nil
+			return filtered
+		}
+		flushLen := len(p.backgroundSyncBuffer) - keep
+		filtered = append(filtered, p.backgroundSyncBuffer[:flushLen]...)
+		p.backgroundSyncBuffer = p.backgroundSyncBuffer[flushLen:]
+		return filtered
+	}
+
+	filtered = append(filtered, p.backgroundSyncBuffer...)
+	p.backgroundSyncBuffer = nil
+	return filtered
+}
+
+func backgroundSyncHasManagedCommandOSC(data []byte) bool {
+	return bytes.Contains(data, []byte("\x1b]133;"))
+}
+
+// backgroundSyncPrefixSuffixLen returns the longest suffix of data that is a
+// prefix of expected. Only those bytes need to survive until the next PTY read.
+func backgroundSyncPrefixSuffixLen(data, expected []byte) int {
+	max := len(data)
+	if len(expected)-1 < max {
+		max = len(expected) - 1
+	}
+	for n := max; n > 0; n-- {
+		if bytes.Equal(data[len(data)-n:], expected[:n]) {
+			return n
+		}
+	}
+	return 0
+}
+
 func (p *AnsiParser) handleEsc(cmd byte) {
 	// vtui.DebugLog("ANSI_PARSER: ESC %c", cmd)
 	switch cmd {

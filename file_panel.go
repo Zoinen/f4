@@ -289,6 +289,89 @@ const (
 
 var panelLoadingPulse = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// PanelPresentation selects how a filesystem panel is rendered by native
+// frontends. It is intentionally independent from ViewMode: the latter remains
+// the textual layout to restore when a gallery is unavailable or switched off.
+type PanelPresentation string
+
+const (
+	PanelPresentationList    PanelPresentation = "list"
+	PanelPresentationGallery PanelPresentation = "gallery"
+)
+
+func parsePanelPresentation(value string) PanelPresentation {
+	switch PanelPresentation(strings.ToLower(strings.TrimSpace(value))) {
+	case PanelPresentationGallery:
+		return PanelPresentationGallery
+	default:
+		return PanelPresentationList
+	}
+}
+
+// GalleryLayoutMode selects the geometry/delegate strategy used by the
+// reusable ZoinGallery renderer.  It deliberately remains independent from
+// PanelPresentation and ViewMode: text frontends keep their legacy modes,
+// while native frontends can fall back from a saved gallery layout on a VFS
+// that cannot provide local preview paths.
+type GalleryLayoutMode string
+
+const (
+	GalleryLayoutMasonry GalleryLayoutMode = "masonry"
+	GalleryLayoutColumns GalleryLayoutMode = "columns"
+	GalleryLayoutDetails GalleryLayoutMode = "details"
+	GalleryLayoutGrid    GalleryLayoutMode = "grid"
+	GalleryLayoutIcons   GalleryLayoutMode = "icons"
+)
+
+const (
+	defaultGalleryColumnCount = 2
+	minGalleryColumnCount     = 2
+	maxGalleryColumnCount     = 3
+)
+
+var galleryLayoutModes = [...]GalleryLayoutMode{
+	GalleryLayoutMasonry,
+	GalleryLayoutColumns,
+	GalleryLayoutDetails,
+	GalleryLayoutGrid,
+	GalleryLayoutIcons,
+}
+
+func parseGalleryLayoutMode(value string) (GalleryLayoutMode, bool) {
+	mode := GalleryLayoutMode(strings.ToLower(strings.TrimSpace(value)))
+	for _, candidate := range galleryLayoutModes {
+		if mode == candidate {
+			return mode, true
+		}
+	}
+	return GalleryLayoutMasonry, false
+}
+
+func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximum int) {
+	switch mode {
+	case GalleryLayoutColumns, GalleryLayoutDetails:
+		// Zero asks the QML host to derive the untouched default from its font.
+		return 0, 22, 72
+	case GalleryLayoutGrid:
+		return 160, 96, 320
+	case GalleryLayoutIcons:
+		return 128, 72, 256
+	default:
+		return 150, 30, 500
+	}
+}
+
+func clampGalleryDensity(mode GalleryLayoutMode, density int) int {
+	_, minimum, maximum := galleryDensityLimits(mode)
+	if density < minimum {
+		return minimum
+	}
+	if density > maximum {
+		return maximum
+	}
+	return density
+}
+
 type SortMode int
 
 const (
@@ -377,10 +460,19 @@ type FileSystemPanel struct {
 	lastRightClickedIdx   int
 	rightDragActive       bool
 	rightDragSelect       bool
+	semanticRightIndex    int
+	semanticRightState    bool
+	semanticPriorIndex    int
+	semanticPriorState    bool
 	rowDragButton         uint32
 	dragScrollDirection   int
 	dragScrollTimer       *time.Timer
 	dragScrollGeneration  uint64
+	presentation          PanelPresentation
+	galleryLayoutMode     GalleryLayoutMode
+	galleryColumnCount    int
+	galleryDensities      map[GalleryLayoutMode]int
+	galleryLayoutRevision int64
 
 	loadCtx                   context.Context
 	cancelLoad                context.CancelFunc
@@ -426,6 +518,17 @@ type FileSystemPanel struct {
 	// the session — the next Shift+nav starts a new one.
 	shiftSessionActive bool
 	shiftSessionMode   bool // true = select, false = deselect
+
+	// Semantic revisions are derived from deterministic fingerprints when a
+	// scene is exported. This catches every mutation path, including async VFS
+	// chunks and tests/plugins which replace entries directly.
+	semanticCatalogFingerprint   uint64
+	semanticSelectionFingerprint uint64
+	semanticCatalogInitialized   bool
+	semanticSelectionInitialized bool
+	catalogRevision              int64
+	selectionRevision            int64
+	semanticStaticCache          *semanticPanelStaticCache
 }
 
 var DisableLoadingAnimationInTests = true
@@ -434,14 +537,21 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	path := vfs.GetPath()
 
 	fp := &FileSystemPanel{
-		vfs:                 vfs,
-		frame:               vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
-		table:               vtui.NewTable(x+1, y+1, w-2, h-2, nil),
-		viewMode:            ViewModeMedium,
-		lastRightClickedIdx: -1,
-		dirCache:            make(map[dirCacheKey]dirCacheEntry),
-		selectedItems:       make(map[string]bool),
-		selectionEpoch:      make(map[string]uint64),
+		vfs:                   vfs,
+		frame:                 vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
+		table:                 vtui.NewTable(x+1, y+1, w-2, h-2, nil),
+		viewMode:              ViewModeMedium,
+		presentation:          PanelPresentationList,
+		galleryLayoutMode:     GalleryLayoutMasonry,
+		galleryColumnCount:    defaultGalleryColumnCount,
+		galleryDensities:      make(map[GalleryLayoutMode]int),
+		galleryLayoutRevision: 1,
+		lastRightClickedIdx:   -1,
+		semanticRightIndex:    -1,
+		semanticPriorIndex:    -1,
+		dirCache:              make(map[dirCacheKey]dirCacheEntry),
+		selectedItems:         make(map[string]bool),
+		selectionEpoch:        make(map[string]uint64),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.frame.ColorBoxIdx = ColPanelBox
@@ -666,15 +776,18 @@ func (fp *FileSystemPanel) sortEntries() {
 		return
 	}
 
-	sort.Slice(fp.entries, func(i, j int) bool {
+	// Keep the comparison strict and deterministic. The old reverse branch
+	// returned !less, which also returned true for equal values. That violates
+	// sort.Interface's ordering contract and could reshuffle an otherwise
+	// unchanged catalog on refresh, invalidating Gallery revisions and cursor
+	// identities spuriously.
+	sort.SliceStable(fp.entries, func(i, j int) bool {
 		ei, ej := fp.entries[i], fp.entries[j]
 
-		// ".." всегда сверху
-		if ei.Name == ".." {
-			return true
-		}
-		if ej.Name == ".." {
-			return false
+		// ".." всегда сверху. Keep the comparison strict even
+		// for malformed/virtual catalogs containing more than one parent row.
+		if ei.Name == ".." || ej.Name == ".." {
+			return ei.Name == ".." && ej.Name != ".."
 		}
 
 		// Папки всегда сверху
@@ -682,30 +795,62 @@ func (fp *FileSystemPanel) sortEntries() {
 			return ei.IsDir
 		}
 
-		res := false
+		compareNames := func(left, right string) int {
+			leftFolded := strings.ToLower(left)
+			rightFolded := strings.ToLower(right)
+			if leftFolded < rightFolded {
+				return -1
+			}
+			if leftFolded > rightFolded {
+				return 1
+			}
+			if left < right {
+				return -1
+			}
+			if left > right {
+				return 1
+			}
+			return 0
+		}
+
+		cmp := 0
 		switch fp.sortMode {
 		case SortName:
-			res = strings.ToLower(ei.Name) < strings.ToLower(ej.Name)
+			cmp = compareNames(ei.Name, ej.Name)
 		case SortExt:
 			extI := strings.ToLower(filepath.Ext(ei.Name))
 			extJ := strings.ToLower(filepath.Ext(ej.Name))
-			if extI != extJ {
-				res = extI < extJ
+			if extI < extJ {
+				cmp = -1
+			} else if extI > extJ {
+				cmp = 1
 			} else {
-				res = strings.ToLower(ei.Name) < strings.ToLower(ej.Name)
+				cmp = compareNames(ei.Name, ej.Name)
 			}
 		case SortTime:
-			res = ei.MTime.After(ej.MTime)
+			if ei.MTime.Before(ej.MTime) {
+				cmp = -1
+			} else if ei.MTime.After(ej.MTime) {
+				cmp = 1
+			} else {
+				cmp = compareNames(ei.Name, ej.Name)
+			}
 		case SortSize:
-			res = ei.Size > ej.Size
+			if ei.Size < ej.Size {
+				cmp = -1
+			} else if ei.Size > ej.Size {
+				cmp = 1
+			} else {
+				cmp = compareNames(ei.Name, ej.Name)
+			}
 		default:
-			res = strings.ToLower(ei.Name) < strings.ToLower(ej.Name)
+			cmp = compareNames(ei.Name, ej.Name)
 		}
 
 		if fp.sortReverse {
-			return !res
+			cmp = -cmp
 		}
-		return res
+		return cmp < 0
 	})
 }
 
@@ -777,6 +922,67 @@ func (fp *FileSystemPanel) processRightDrag(idx int) {
 		}
 	}
 	fp.lastRightClickedIdx = idx
+}
+
+func (fp *FileSystemPanel) semanticPointerRelease() {
+	fp.lastRightClickedIdx = -1
+	fp.rightDragActive = false
+	fp.rowDragButton = 0
+	fp.stopDragAutoScroll()
+}
+
+func (fp *FileSystemPanel) semanticRightPointerDown(idx int) bool {
+	if idx < 0 || idx >= len(fp.entries) {
+		return false
+	}
+	fp.semanticPriorIndex = fp.semanticRightIndex
+	fp.semanticPriorState = fp.semanticRightState
+	fp.SetCursorIndex(idx)
+	if fp.entries[idx].Name == ".." {
+		fp.semanticRightIndex = idx
+		fp.semanticRightState = false
+		return true
+	}
+	fp.rowDragButton = vtinput.RightmostButtonPressed
+	fp.processRightDrag(idx)
+	fp.semanticRightIndex = idx
+	fp.semanticRightState = fp.entries[idx].Selected
+	fp.Refresh()
+	return true
+}
+
+func (fp *FileSystemPanel) semanticRightPointerMove(idx int) bool {
+	if !fp.rightDragActive || idx < 0 || idx >= len(fp.entries) {
+		return false
+	}
+	fp.SetCursorIndex(idx)
+	if fp.entries[idx].Name != ".." {
+		fp.processRightDrag(idx)
+		fp.Refresh()
+	}
+	return true
+}
+
+func (fp *FileSystemPanel) semanticRightPointerDoubleClick(idx int) bool {
+	if idx < 0 || idx >= len(fp.entries) {
+		return false
+	}
+	fp.SetCursorIndex(idx)
+	if fp.entries[idx].Name == ".." {
+		return true
+	}
+	state := fp.semanticRightState
+	if fp.semanticPriorIndex == idx {
+		state = fp.semanticPriorState
+	}
+	fp.setAllItemsSelected(state)
+	fp.rightDragActive = true
+	fp.rightDragSelect = state
+	fp.lastRightClickedIdx = idx
+	fp.semanticRightIndex = idx
+	fp.semanticRightState = state
+	fp.Refresh()
+	return true
 }
 
 func (fp *FileSystemPanel) stopDragAutoScroll() {
@@ -1273,6 +1479,149 @@ func (fp *FileSystemPanel) configureCellSelection() {
 	} else {
 		fp.table.CellSelection = false
 		fp.table.SelectCol = 0
+	}
+}
+
+func (fp *FileSystemPanel) SetPresentation(presentation PanelPresentation) bool {
+	switch presentation {
+	case PanelPresentationList, PanelPresentationGallery:
+		fp.presentation = presentation
+		return true
+	default:
+		return false
+	}
+}
+
+func (fp *FileSystemPanel) galleryDensity(mode GalleryLayoutMode) int {
+	if parsed, ok := parseGalleryLayoutMode(string(mode)); ok {
+		mode = parsed
+	} else {
+		mode = GalleryLayoutMasonry
+	}
+	if value, ok := fp.galleryDensities[mode]; ok {
+		return value
+	}
+	defaultValue, _, _ := galleryDensityLimits(mode)
+	return defaultValue
+}
+
+func (fp *FileSystemPanel) effectiveGalleryLayoutMode() GalleryLayoutMode {
+	if mode, ok := parseGalleryLayoutMode(string(fp.galleryLayoutMode)); ok {
+		return mode
+	}
+	return GalleryLayoutMasonry
+}
+
+func (fp *FileSystemPanel) effectiveGalleryColumnCount() int {
+	if fp.galleryColumnCount >= minGalleryColumnCount &&
+		fp.galleryColumnCount <= maxGalleryColumnCount {
+		return fp.galleryColumnCount
+	}
+	return defaultGalleryColumnCount
+}
+
+func (fp *FileSystemPanel) setGalleryLayoutState(mode GalleryLayoutMode, columnCount int) bool {
+	parsed, ok := parseGalleryLayoutMode(string(mode))
+	if !ok {
+		return false
+	}
+	if parsed == GalleryLayoutColumns {
+		if columnCount < minGalleryColumnCount || columnCount > maxGalleryColumnCount {
+			return false
+		}
+	} else if columnCount < minGalleryColumnCount || columnCount > maxGalleryColumnCount {
+		// Non-column layouts preserve the last useful Columns setting.  Accept an
+		// omitted/zero count from older native clients without overwriting it.
+		columnCount = fp.effectiveGalleryColumnCount()
+	}
+
+	changed := fp.galleryLayoutMode != parsed
+	if parsed == GalleryLayoutColumns && fp.effectiveGalleryColumnCount() != columnCount {
+		changed = true
+	}
+	fp.galleryLayoutMode = parsed
+	if parsed == GalleryLayoutColumns {
+		fp.galleryColumnCount = columnCount
+	}
+	if changed {
+		fp.galleryLayoutRevision++
+	}
+	return true
+}
+
+// SetGalleryLayout atomically selects a reusable gallery renderer and the
+// gallery presentation.  Callers never observe an intermediate scene where a
+// newly selected layout is still rendered by the legacy list Loader.
+func (fp *FileSystemPanel) SetGalleryLayout(mode GalleryLayoutMode, columnCount int) bool {
+	if !fp.setGalleryLayoutState(mode, columnCount) {
+		return false
+	}
+	fp.presentation = PanelPresentationGallery
+	return true
+}
+
+// SetGalleryDensity changes only the saved density for one gallery mode.  It
+// must not switch presentation, replace the catalog, or disturb another mode's
+// preferred size. Values are clamped at the semantic boundary so malformed or
+// stale native clients cannot produce unusable geometry.
+func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int) bool {
+	parsed, ok := parseGalleryLayoutMode(string(mode))
+	if !ok {
+		return false
+	}
+	density = clampGalleryDensity(parsed, density)
+	if fp.galleryDensities == nil {
+		fp.galleryDensities = make(map[GalleryLayoutMode]int)
+	}
+	if fp.galleryDensity(parsed) == density {
+		return true
+	}
+	fp.galleryDensities[parsed] = density
+	fp.galleryLayoutRevision++
+	return true
+}
+
+func cloneGalleryDensities(source map[GalleryLayoutMode]int) map[GalleryLayoutMode]int {
+	clone := make(map[GalleryLayoutMode]int, len(source))
+	for mode, density := range source {
+		clone[mode] = density
+	}
+	return clone
+}
+
+type panelGallerySessionState struct {
+	LayoutMode  GalleryLayoutMode
+	ColumnCount int
+	Densities   map[GalleryLayoutMode]int
+}
+
+func defaultPanelGallerySessionState() panelGallerySessionState {
+	return panelGallerySessionState{
+		LayoutMode:  GalleryLayoutMasonry,
+		ColumnCount: defaultGalleryColumnCount,
+		Densities:   make(map[GalleryLayoutMode]int),
+	}
+}
+
+func clonePanelGallerySessionState(state panelGallerySessionState) panelGallerySessionState {
+	mode, ok := parseGalleryLayoutMode(string(state.LayoutMode))
+	if !ok {
+		mode = GalleryLayoutMasonry
+	}
+	columns := state.ColumnCount
+	if columns < minGalleryColumnCount || columns > maxGalleryColumnCount {
+		columns = defaultGalleryColumnCount
+	}
+	densities := make(map[GalleryLayoutMode]int)
+	for _, candidate := range galleryLayoutModes {
+		if density, present := state.Densities[candidate]; present {
+			densities[candidate] = clampGalleryDensity(candidate, density)
+		}
+	}
+	return panelGallerySessionState{
+		LayoutMode:  mode,
+		ColumnCount: columns,
+		Densities:   densities,
 	}
 }
 
@@ -1802,7 +2151,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					isFirstChunk = false
 				}
 
-				// Apply persistent selection to incoming items
+				// Apply current and Ctrl+M snapshots to incoming items.
 				for _, e := range newEntries {
 					fp.applyPersistentSelection(e, loadVFS, path)
 				}
@@ -3034,6 +3383,8 @@ func (fp *FileSystemPanel) IsNameSelected(name string) bool {
 	return fp.selectedItems[name]
 }
 
+// panelSelectionToken identifies one explicit mark without giving an async
+// Apply batch permission to undo a later user action on the same filename.
 type panelSelectionToken struct {
 	panel          *FileSystemPanel
 	vfs            vfs.VFS
@@ -3137,8 +3488,9 @@ func (fp *FileSystemPanel) ReplaceMarkedNames(names []string) {
 	for _, name := range names {
 		selected[name] = struct{}{}
 	}
-	for _, entry := range fp.entries {
-		_, entry.Selected = selected[entry.Name]
+	for i, entry := range fp.entries {
+		_, state := selected[entry.Name]
+		fp.SetItemSelected(i, state)
 	}
 	fp.Refresh()
 }
@@ -3204,10 +3556,9 @@ func (fp *FileSystemPanel) doFastFind(dir int) {
 	}
 }
 
-// SaveSelection snapshots the current selection into fileEntry.PrevSelected.
-// Called by every mass-selection operation (mask select/deselect, invert,
-// select-all/deselect-all) so that RestoreSelection has a well-defined
-// state to bring back. Mirrors far2l's FileList::SaveSelection().
+// SaveSelection snapshots the current selection. The name map is the durable
+// source of truth: fileEntry rows are rebuilt by asynchronous refreshes, so a
+// row-only snapshot would make Ctrl+M forget Apply's original marks.
 func (fp *FileSystemPanel) SaveSelection() {
 	previous := make(map[string]bool)
 	for _, e := range fp.entries {

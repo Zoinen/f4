@@ -73,6 +73,8 @@ func (p *SolarisPTY) Run(name string, args ...string) error {
 
 	err := p.Cmd.Start()
 	if err == nil {
+		_ = p.Slave.Close()
+		p.Slave = nil
 		p.shellPgrp, _ = unix.Getpgid(p.Cmd.Process.Pid)
 	}
 	return err

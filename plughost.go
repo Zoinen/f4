@@ -226,8 +226,9 @@ func findPanelsFrame() *PanelsFrame {
 	if vtui.FrameManager == nil || len(vtui.FrameManager.Screens) == 0 {
 		return nil
 	}
-	for _, f := range vtui.FrameManager.Screens[vtui.FrameManager.ActiveIdx].Frames {
-		if pf, ok := f.(*PanelsFrame); ok {
+	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	for i := len(frames) - 1; i >= 0; i-- {
+		if pf, ok := frames[i].(*PanelsFrame); ok && !pf.closed {
 			return pf
 		}
 	}

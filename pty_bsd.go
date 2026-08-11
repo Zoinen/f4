@@ -22,7 +22,7 @@ type PTY struct {
 }
 
 func NewPTY() (*PTY, error) {
-	masterFd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY, 0)
+	masterFd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func NewPTY() (*PTY, error) {
 	}
 	slaveName := string(ptyName[:nameLen])
 
-	slaveFd, err := unix.Open(slaveName, unix.O_RDWR|unix.O_NOCTTY, 0)
+	slaveFd, err := unix.Open(slaveName, unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		master.Close()
 		return nil, err
@@ -100,6 +100,8 @@ func (p *PTY) Run(name string, args ...string) error {
 
 	err := p.Cmd.Start()
 	if err == nil {
+		_ = p.Slave.Close()
+		p.Slave = nil
 		p.shellPgrp, _ = syscall.Getpgid(p.Cmd.Process.Pid)
 	}
 	return err

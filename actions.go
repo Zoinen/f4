@@ -32,12 +32,16 @@ var (
 	LastActivePanel  = 1
 	LastWidePanel    = -1
 
-	LastLeftViewMode  = 0
-	LastRightViewMode = 0
-	LastLeftSortMode  = 0
-	LastRightSortMode = 0
-	LastLeftSortRev   = false
-	LastRightSortRev  = false
+	LastLeftViewMode      = 0
+	LastRightViewMode     = 0
+	LastLeftPresentation  = PanelPresentationList
+	LastRightPresentation = PanelPresentationList
+	LastLeftGalleryState  = defaultPanelGallerySessionState()
+	LastRightGalleryState = defaultPanelGallerySessionState()
+	LastLeftSortMode      = 0
+	LastRightSortMode     = 0
+	LastLeftSortRev       = false
+	LastRightSortRev      = false
 
 	LastShowPanels = true
 	LastShowLeft   = true
@@ -2219,7 +2223,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	// blank lines between them (see #298). Blank rows are kept only at
 	// transitions between widget kinds (checkbox↔combo↔radio↔button)
 	// so groups still read as groups.
-	const dialogHeight = 37
+	const dialogHeight = 38
 	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
@@ -2769,7 +2773,7 @@ func actionImportFar2lHistory(pf *PanelsFrame) {
 func actionAppearanceSettings(pf *PanelsFrame) {
 	// One row shaved by dropping the blank between the two trailing
 	// checkboxes (see #298).
-	const width, height = 64, 26
+	const width, height = 64, 27
 	dlg := vtui.NewCenteredDialog(width, height, Msg("AppearanceSettings.Title"))
 	dlg.ShowClose = true
 	// Snapshot the whole palette (not just the style name) so a
@@ -2806,6 +2810,22 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 			}
 		}
 	}
+
+	iconSetNames := []string{
+		Msg("AppearanceSettings.IconSetLucide"),
+		Msg("AppearanceSettings.IconSetSystem"),
+	}
+	comboIconSet := vtui.NewComboBox(0, 0, 24, iconSetNames)
+	comboIconSet.DropdownOnly = true
+	iconSetIndex := 0
+	if parseQmlIconSetMode(string(AppConfig.QmlIconSet)) == QmlIconSetSystem {
+		iconSetIndex = 1
+	}
+	comboIconSet.Menu.SetSelectPos(iconSetIndex)
+	comboIconSet.Edit.SetText(iconSetNames[iconSetIndex])
+	lblIconSet := vtui.NewText(0, 0, Msg("AppearanceSettings.IconSet"), 0)
+	lblIconSet.FocusLink = comboIconSet
+
 	editFont := vtui.NewEdit(0, 0, 30, AppConfig.GuiFont)
 	lblFont := vtui.NewLabel(0, 0, Msg("AppearanceSettings.Font"), editFont)
 	chkSystemMonospace := vtui.NewCheckbox(0, 0, Msg("AppearanceSettings.UseSystemMonospace"), false)
@@ -2880,6 +2900,8 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 
 	dlg.AddItem(lblStyle)
 	dlg.AddItem(comboStyle)
+	dlg.AddItem(lblIconSet)
+	dlg.AddItem(comboIconSet)
 	dlg.AddItem(chkSystemMonospace)
 	dlg.AddItem(lblFont)
 	dlg.AddItem(editFont)
@@ -2904,6 +2926,10 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	rowStyle.Add(comboStyle, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(rowStyle, vtui.Margins{}, vtui.AlignFill)
 
+	rowIconSet := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowIconSet.Add(lblIconSet, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowIconSet.Add(comboIconSet, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowIconSet, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Add(chkSystemMonospace, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(lblFont, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(editFont, vtui.Margins{}, vtui.AlignFill)
@@ -2957,6 +2983,11 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		}
 		useSystemMonospace := chkSystemMonospace.State == 1
 		fontChanged := AppConfig.GuiUseSystemMonospace != useSystemMonospace || AppConfig.GuiFont != editFont.GetText() || fmt.Sprintf("%d", AppConfig.GuiFontSize) != editSize.GetText()
+		newIconSet := QmlIconSetLucide
+		if comboIconSet.Menu.SelectPos == 1 {
+			newIconSet = QmlIconSetSystem
+		}
+		AppConfig.QmlIconSet = newIconSet
 
 		AppConfig.ConsoleTitleTemplate = editTitle.GetText()
 		AppConfig.GuiUseSystemMonospace = useSystemMonospace
@@ -2983,7 +3014,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 
 		if fontChanged {
 			vtui.FrameManager.PostTask(func() {
-				vtui.ShowMessage(" Appearance ", "Font changes in GUI mode will take effect\nafter application restart.", []string{"&Ok"})
+				vtui.ShowMessage(" Appearance ", Msg("AppearanceSettings.RestartRequired"), []string{"&Ok"})
 			})
 		}
 	}

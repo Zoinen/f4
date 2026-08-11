@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -148,11 +149,19 @@ type ExtUiRenderer struct {
 	pendingPalette []uint32
 	pendingFrame   map[string]any
 	pendingScene   map[string]any
+	lastScene      map[string]any
 	closed         bool
 }
 
 func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer {
 	return &ExtUiRenderer{conn: conn, send: sender, cursorDirty: true}
+}
+
+// WantsPeriodicRedraw reports that cursor blinking and other idle presentation
+// effects are owned by the native host. Actual model changes still reach the
+// renderer through vtui's event, task, resize, and explicit redraw paths.
+func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
+	return false
 }
 
 func (r *ExtUiRenderer) SetPalette(pal *[256]uint32) {
@@ -251,6 +260,15 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if reflect.DeepEqual(scene, r.pendingScene) {
+		return
+	}
+	if reflect.DeepEqual(scene, r.lastScene) {
+		// A transient state may have been queued and then reverted before the
+		// renderer flushed. The client already owns this exact scene.
+		r.pendingScene = nil
+		return
+	}
 	r.pendingScene = scene
 }
 
@@ -275,6 +293,11 @@ func (r *ExtUiRenderer) Flush() {
 	}
 	if r.pendingScene != nil {
 		messages = append(messages, r.pendingScene)
+		// ExportSemanticScene and f4's adapter create a fresh immutable map for
+		// every redraw. Remember the last snapshot here so cell-grid redraws and
+		// cursor blinking do not repeatedly serialize and deliver the same large
+		// semantic catalog to the Qt GUI thread.
+		r.lastScene = r.pendingScene
 		r.pendingScene = nil
 	}
 	if r.cursorDirty {
@@ -464,11 +487,16 @@ func (h *ExtUiHost) handleMessage(msg map[string]any) {
 			h.sendEvent(&vtinput.InputEvent{Type: vtinput.ResizeEventType, InputSource: "extui"})
 		}
 	case "key":
+		repeatCount := uint16(1)
+		if extUiBool(msg, "repeat") {
+			repeatCount = 2
+		}
 		h.sendEvent(&vtinput.InputEvent{
 			Type:            vtinput.KeyEventType,
 			KeyDown:         extUiBool(msg, "down"),
 			VirtualKeyCode:  uint16(extUiInt(msg, "vk")),
 			Char:            rune(extUiInt(msg, "char")),
+			RepeatCount:     repeatCount,
 			ControlKeyState: vtinput.ControlKeyState(uint32(extUiInt(msg, "mods"))),
 			InputSource:     "extui",
 		})
@@ -554,7 +582,18 @@ func RunExternalUIWithMapping(backend string) error {
 	if err != nil {
 		return err
 	}
-	return RunExternalUI(100, 30, path, nil)
+	return RunExternalUI(100, 30, path, externalUIBackendArgs(backend))
+}
+
+func externalUIBackendArgs(backend string) []string {
+	if backend != "qt" {
+		return nil
+	}
+	return []string{
+		"--f4-icon-set=" + string(parseQmlIconSetMode(string(AppConfig.QmlIconSet))),
+		"--f4-font-family=" + effectiveGuiFont(),
+		"--f4-font-size=" + strconv.Itoa(AppConfig.GuiFontSize),
+	}
 }
 
 func findExtUiPath(backend string) (string, error) {

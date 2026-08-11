@@ -150,6 +150,7 @@ Menu.Left.Brief=Краткий
 Menu.Left.Medium=Средний
 Menu.Left.Detailed=Подробный
 Menu.Left.Wide=Широкий
+Menu.Left.Gallery=Галерея
 Menu.Commands.FindFile=Поиск файла
 Menu.Commands.FindDuplicates=Поиск дубликатов
 Action.File.FindDuplicates.Desc=Найти файлы с одинаковым содержимым
@@ -557,8 +558,11 @@ PanelSettings.TerminalCtrlNWorkspace=Ctrl+N в терминале &клонир�
 
 AppearanceSettings.Title= Внешний вид
 AppearanceSettings.Style=Стиль &оформления:
-AppearanceSettings.UseSystemMonospace=Использовать системный &моноширинный шрифт
+AppearanceSettings.IconSet=Набор &значков QML:
+AppearanceSettings.IconSetLucide=Lucide
+AppearanceSettings.IconSetSystem=Системные
 AppearanceSettings.Font=Шрифт &GUI (Путь/Имя):
+AppearanceSettings.UseSystemMonospace=Использовать системный &моноширинный шрифт
 AppearanceSettings.FontSize=Размер шрифта &GUI:
 AppearanceSettings.TitleTemplate=Шаблон &заголовка окна:
 AppearanceSettings.WorkspaceTabs=&Вкладки пространств:
@@ -571,6 +575,7 @@ AppearanceSettings.CtrlTabMenu=Показывать меню Screens
 AppearanceSettings.AltNumberTabs=Alt+&цифра переключает вкладку пространства
 AppearanceSettings.ExportBtn=&Экспорт цветовой схемы
 AppearanceSettings.ColorCorrection=Корректировать &контрастность цветов
+AppearanceSettings.RestartRequired=Изменения шрифта GUI вступят в силу\nпосле перезапуска приложения.
 
 ConfirmationsSettings.Title= Подтверждения
 ConfirmationsSettings.Copy=Подтверждать &копирование
@@ -860,6 +865,10 @@ KeyBar.F9=КонфМеню
 KeyBar.F10=Выход
 KeyBar.F11=Плагин
 KeyBar.F12=Экран
+KeyBar.ShiftF12=GUI/Текст
+
+Presentation.GUI=Графический интерфейс
+Presentation.Text=Текстовый интерфейс
 
 KeyBar.AltF1=Левая
 KeyBar.AltF2=Правая

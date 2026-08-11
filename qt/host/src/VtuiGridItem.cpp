@@ -3,6 +3,7 @@
 #include "QtShellController.h"
 
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
@@ -84,6 +85,16 @@ bool isEnhancedQtKey(int key)
         return false;
     }
 }
+
+bool containsPrintableText(const QString &text)
+{
+    for (const QChar character : text) {
+        if (character.isPrint()) {
+            return true;
+        }
+    }
+    return false;
+}
 }
 
 VtuiGridItem::VtuiGridItem(QQuickItem *parent)
@@ -95,14 +106,45 @@ VtuiGridItem::VtuiGridItem(QQuickItem *parent)
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptHoverEvents(true);
     setFocus(true);
+    if (QCoreApplication *application = QCoreApplication::instance()) {
+        application->installEventFilter(this);
+    }
 
     m_font.setStyleHint(QFont::Monospace);
-    m_font.setFamilies({QStringLiteral("Menlo"),
+    m_font.setFamilies({QStringLiteral("Monaco"),
+                        QStringLiteral("Menlo"),
                         QStringLiteral("Consolas"),
                         QStringLiteral("DejaVu Sans Mono"),
                         QStringLiteral("monospace")});
-    m_font.setPixelSize(18);
+#if defined(Q_OS_MACOS)
+    m_font.setPixelSize(17);
+#else
+    m_font.setPixelSize(16);
+#endif
     recalculateMetrics();
+}
+
+void VtuiGridItem::setFontFamily(const QString &family)
+{
+    const QString normalized = family.trimmed();
+    if (normalized.isEmpty() || m_font.family() == normalized) {
+        return;
+    }
+    m_font.setFamily(normalized);
+    recalculateMetrics();
+    markDirty();
+    emit fontChanged();
+}
+
+void VtuiGridItem::setFontPixelSize(int size)
+{
+    if (size <= 0 || m_font.pixelSize() == size) {
+        return;
+    }
+    m_font.setPixelSize(size);
+    recalculateMetrics();
+    markDirty();
+    emit fontChanged();
 }
 
 void VtuiGridItem::setController(QObject *controller)
@@ -112,6 +154,7 @@ void VtuiGridItem::setController(QObject *controller)
     }
 
     if (m_controller) {
+        releaseForwardedKeys();
         disconnect(m_controller, nullptr, this, nullptr);
     }
 
@@ -122,6 +165,146 @@ void VtuiGridItem::setController(QObject *controller)
     }
 
     emit controllerChanged();
+}
+
+void VtuiGridItem::setPointerInputEnabled(bool enabled)
+{
+    if (m_pointerInputEnabled == enabled) {
+        return;
+    }
+    m_pointerInputEnabled = enabled;
+    setAcceptedMouseButtons(enabled ? Qt::AllButtons : Qt::NoButton);
+    setAcceptHoverEvents(enabled);
+    if (!enabled) {
+        m_pressedButtonState = 0;
+        m_wheelRemainder = 0;
+    }
+    emit pointerInputEnabledChanged();
+}
+
+void VtuiGridItem::setInputMethodForwardingEnabled(bool enabled)
+{
+    if (m_inputMethodForwardingEnabled == enabled) {
+        return;
+    }
+    m_inputMethodForwardingEnabled = enabled;
+    emit inputMethodForwardingEnabledChanged();
+}
+
+void VtuiGridItem::setTerminalInputEnabled(bool enabled)
+{
+    if (m_terminalInputEnabled == enabled) {
+        return;
+    }
+    if (!enabled) {
+        // Balance every key-down that reached Go before the modal surface
+        // appeared. A later physical release is ignored after the map clears,
+        // so neither a stuck commander modifier nor an orphan release can
+        // cross a GalleryViewer focus transition.
+        releaseForwardedKeys();
+    }
+    m_terminalInputEnabled = enabled;
+    emit terminalInputEnabledChanged();
+}
+
+bool VtuiGridItem::forwardKeyToController(int vk, int ch, bool down, int mods,
+                                         bool repeat)
+{
+    if (!m_controller) {
+        return false;
+    }
+    if (down) {
+        if (!m_terminalInputEnabled) {
+            return false;
+        }
+        m_controller->sendKeyEvent(vk, ch, true, mods, repeat);
+        m_forwardedKeyModifiers.insert(vk, mods);
+        return true;
+    }
+
+    // Some Qt platform backends expose autorepeat as synthetic release/press
+    // pairs. The synthetic release is not a physical key-up: forwarding it
+    // would end the held-key burst immediately before its repeat press.
+    if (repeat) {
+        return true;
+    }
+
+    const auto forwarded = m_forwardedKeyModifiers.constFind(vk);
+    if (forwarded == m_forwardedKeyModifiers.cend()) {
+        return false;
+    }
+    m_controller->sendKey(vk, 0, false, mods);
+    m_forwardedKeyModifiers.remove(vk);
+    return true;
+}
+
+void VtuiGridItem::releaseForwardedKeys()
+{
+    if (m_controller) {
+        for (auto it = m_forwardedKeyModifiers.cbegin();
+             it != m_forwardedKeyModifiers.cend(); ++it) {
+            m_controller->sendKey(it.key(), 0, false, it.value());
+        }
+    }
+    m_forwardedKeyModifiers.clear();
+}
+
+void VtuiGridItem::sendQtKey(int key, const QString &text, bool down, int modifiers)
+{
+    if (!m_controller) {
+        return;
+    }
+
+    const auto qtModifiers = Qt::KeyboardModifiers::fromInt(modifiers);
+    QKeyEvent event(down ? QEvent::KeyPress : QEvent::KeyRelease,
+                    key,
+                    qtModifiers,
+                    down ? text : QString());
+    int nativeModifiers = modifiersFromEvent(qtModifiers);
+    if (isEnhancedQtKey(key)) {
+        nativeModifiers |= EnhancedKey;
+    }
+    const bool forwarded = forwardKeyToController(
+        keyToVk(&event), down ? keyChar(&event) : 0, down, nativeModifiers);
+    if (forwarded && down && containsPrintableText(text)) {
+        emit commanderTextInputForwarded(text, modifiers);
+    }
+}
+
+void VtuiGridItem::sendClipboardPaste()
+{
+    if (!m_terminalInputEnabled || !m_controller) {
+        return;
+    }
+    if (QClipboard *clipboard = QGuiApplication::clipboard()) {
+        const QString text = clipboard->text();
+        if (!text.isEmpty()) {
+            m_controller->sendPaste(text);
+            emit commanderTextInputForwarded(text, 0);
+        }
+    }
+}
+
+void VtuiGridItem::sendQtText(const QString &text)
+{
+    if (m_terminalInputEnabled && m_controller && !text.isEmpty()) {
+        m_controller->sendText(text);
+        emit commanderTextInputForwarded(text, 0);
+    }
+}
+
+bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_terminalInputEnabled && m_inputMethodForwardingEnabled && m_controller
+        && event && event->type() == QEvent::InputMethod) {
+        auto *inputMethodEvent = static_cast<QInputMethodEvent *>(event);
+        if (!inputMethodEvent->commitString().isEmpty()) {
+            sendQtText(inputMethodEvent->commitString());
+            inputMethodEvent->accept();
+            return true;
+        }
+    }
+    return QQuickItem::eventFilter(watched, event);
 }
 
 QSGNode *VtuiGridItem::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
@@ -166,11 +349,7 @@ void VtuiGridItem::geometryChange(const QRectF &newGeometry, const QRectF &oldGe
 void VtuiGridItem::keyPressEvent(QKeyEvent *event)
 {
     if (event->matches(QKeySequence::Paste)) {
-        if (QClipboard *clipboard = QGuiApplication::clipboard()) {
-            if (m_controller) {
-                m_controller->sendPaste(clipboard->text());
-            }
-        }
+        sendClipboardPaste();
         event->accept();
         return;
     }
@@ -180,7 +359,13 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
         }
-        m_controller->sendKey(keyToVk(event), keyChar(event), true, mods);
+        const bool forwarded = forwardKeyToController(
+            keyToVk(event), keyChar(event), true, mods,
+            event->isAutoRepeat());
+        if (forwarded && containsPrintableText(event->text())) {
+            emit commanderTextInputForwarded(event->text(),
+                                             event->modifiers().toInt());
+        }
     }
     event->accept();
 }
@@ -192,16 +377,15 @@ void VtuiGridItem::keyReleaseEvent(QKeyEvent *event)
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
         }
-        m_controller->sendKey(keyToVk(event), 0, false, mods);
+        forwardKeyToController(keyToVk(event), 0, false, mods,
+                               event->isAutoRepeat());
     }
     event->accept();
 }
 
 void VtuiGridItem::inputMethodEvent(QInputMethodEvent *event)
 {
-    if (m_controller && !event->commitString().isEmpty()) {
-        m_controller->sendText(event->commitString());
-    }
+    sendQtText(event->commitString());
     event->accept();
 }
 
@@ -215,6 +399,10 @@ QVariant VtuiGridItem::inputMethodQuery(Qt::InputMethodQuery query) const
 
 void VtuiGridItem::mousePressEvent(QMouseEvent *event)
 {
+    if (!m_pointerInputEnabled) {
+        event->ignore();
+        return;
+    }
     m_pressedButtonState |= buttonState(event->button());
     sendMouseEvent(event, 0, true);
     forceActiveFocus();
@@ -223,6 +411,10 @@ void VtuiGridItem::mousePressEvent(QMouseEvent *event)
 
 void VtuiGridItem::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (!m_pointerInputEnabled) {
+        event->ignore();
+        return;
+    }
     sendMouseEvent(event, 0, false);
     m_pressedButtonState &= ~buttonState(event->button());
     event->accept();
@@ -230,12 +422,20 @@ void VtuiGridItem::mouseReleaseEvent(QMouseEvent *event)
 
 void VtuiGridItem::mouseMoveEvent(QMouseEvent *event)
 {
+    if (!m_pointerInputEnabled) {
+        event->ignore();
+        return;
+    }
     sendMouseEvent(event, MouseMoved, event->buttons() != Qt::NoButton);
     event->accept();
 }
 
 void VtuiGridItem::wheelEvent(QWheelEvent *event)
 {
+    if (!m_pointerInputEnabled) {
+        event->ignore();
+        return;
+    }
     if (isTouchpadScroll(event)) {
         m_wheelRemainder = 0;
         event->accept();

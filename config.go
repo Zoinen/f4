@@ -169,6 +169,8 @@ type F4Config struct {
 	GuiFontSize              int
 	GuiCols                  int
 	GuiRows                  int
+	GuiPresentation          GuiPresentationMode
+	QmlIconSet               QmlIconSetMode
 	ConsoleTitleTemplate     string
 	UpdateChannel            int // 0 = Stable, 1 = Nightly
 	UpdateInterval           int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
@@ -191,6 +193,43 @@ type F4Config struct {
 	// back verbatim on SaveConfig so f4 doesn't strip far2l-only options
 	// from a shared config file.
 	LayoutExtras map[string]string
+}
+
+type GuiPresentationMode string
+
+const (
+	GuiPresentationGUI  GuiPresentationMode = "gui"
+	GuiPresentationText GuiPresentationMode = "text"
+)
+
+func parseGuiPresentationMode(value string) GuiPresentationMode {
+	if strings.EqualFold(strings.TrimSpace(value), string(GuiPresentationText)) {
+		return GuiPresentationText
+	}
+	return GuiPresentationGUI
+}
+
+func nextGuiPresentationMode(current GuiPresentationMode) GuiPresentationMode {
+	if parseGuiPresentationMode(string(current)) == GuiPresentationText {
+		return GuiPresentationGUI
+	}
+	return GuiPresentationText
+}
+
+// QmlIconSetMode selects icons only for the Qt/QML sidecar. Other GUI and
+// terminal renderers deliberately ignore this setting.
+type QmlIconSetMode string
+
+const (
+	QmlIconSetLucide QmlIconSetMode = "lucide"
+	QmlIconSetSystem QmlIconSetMode = "system"
+)
+
+func parseQmlIconSetMode(value string) QmlIconSetMode {
+	if strings.EqualFold(strings.TrimSpace(value), string(QmlIconSetSystem)) {
+		return QmlIconSetSystem
+	}
+	return QmlIconSetLucide
 }
 
 var AppConfig = F4Config{
@@ -256,6 +295,8 @@ var AppConfig = F4Config{
 	GuiFontSize:              defaultGuiFontSize(runtime.GOOS),
 	GuiCols:                  100,
 	GuiRows:                  30,
+	GuiPresentation:          GuiPresentationGUI,
+	QmlIconSet:               QmlIconSetLucide,
 	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
 	UpdateChannel:            0,
 	UpdateInterval:           3, // Default to Weekly
@@ -397,6 +438,8 @@ func LoadConfig() {
 	}
 	AppConfig.EnforceColorCorrection = ini.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
 	fmt.Sscanf(ini.GetString("Appearance", "HighlightPriority", "0"), "%d", &AppConfig.HighlightPriority)
+	AppConfig.GuiPresentation = parseGuiPresentationMode(ini.GetString("Appearance", "GuiPresentation", string(GuiPresentationGUI)))
+	AppConfig.QmlIconSet = parseQmlIconSetMode(ini.GetString("Appearance", "QmlIconSet", string(QmlIconSetLucide)))
 	fmt.Sscanf(ini.GetString("Update", "Channel", "0"), "%d", &AppConfig.UpdateChannel)
 	fmt.Sscanf(ini.GetString("Update", "Interval", "3"), "%d", &AppConfig.UpdateInterval)
 	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
@@ -533,6 +576,8 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("GuiCols = %d\n", AppConfig.GuiCols))
 	sb.WriteString(fmt.Sprintf("GuiRows = %d\n", AppConfig.GuiRows))
 	sb.WriteString(fmt.Sprintf("HighlightPriority = %d\n", AppConfig.HighlightPriority))
+	sb.WriteString(fmt.Sprintf("GuiPresentation = %s\n", parseGuiPresentationMode(string(AppConfig.GuiPresentation))))
+	sb.WriteString(fmt.Sprintf("QmlIconSet = %s\n", parseQmlIconSetMode(string(AppConfig.QmlIconSet))))
 
 	sb.WriteString("\n[Update]\n")
 	sb.WriteString(fmt.Sprintf("Channel = %d\n", AppConfig.UpdateChannel))

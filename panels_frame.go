@@ -530,6 +530,7 @@ func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmLeftMedium},
 		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmLeftDetailed},
 		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmLeftWide},
+		{Text: "&" + Msg("Menu.Left.Gallery"), Command: CmLeftGallery},
 		{Separator: true},
 		{Text: "&" + Msg("Menu.SortName"), Command: CmLeftSortName},
 		{Text: "&" + Msg("Menu.SortExt"), Command: CmLeftSortExt},
@@ -549,6 +550,7 @@ func (pf *PanelsFrame) rightMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmRightMedium},
 		{Text: "&" + Msg("Menu.Left.Detailed"), Command: CmRightDetailed},
 		{Text: "&" + Msg("Menu.Left.Wide"), Command: CmRightWide},
+		{Text: "&" + Msg("Menu.Left.Gallery"), Command: CmRightGallery},
 		{Separator: true},
 		{Text: "&" + Msg("Menu.SortName"), Command: CmRightSortName},
 		{Text: "&" + Msg("Menu.SortExt"), Command: CmRightSortExt},
@@ -579,7 +581,14 @@ func (pf *PanelsFrame) GetMenuBar() *vtui.MenuBar {
 	return pf.menuBar
 }
 
-func getMenuText(current, target ViewMode, label string) string {
+func getMenuText(presentation PanelPresentation, current, target ViewMode, label string) string {
+	if presentation == PanelPresentationList && current == target {
+		return "√" + label
+	}
+	return " " + label
+}
+
+func getPresentationMenuText(current, target PanelPresentation, label string) string {
 	if current == target {
 		return "√" + label
 	}
@@ -598,10 +607,12 @@ var commandToActionName = map[int]string{
 	CmLeftMedium:            "Panel.ViewMedium",
 	CmLeftDetailed:          "Panel.ViewDetailed",
 	CmLeftWide:              "Panel.ViewWide",
+	CmLeftGallery:           "Panel.ViewGallery",
 	CmRightBrief:            "Panel.ViewBrief",
 	CmRightMedium:           "Panel.ViewMedium",
 	CmRightDetailed:         "Panel.ViewDetailed",
 	CmRightWide:             "Panel.ViewWide",
+	CmRightGallery:          "Panel.ViewGallery",
 	CmView:                  "File.View",
 	CmEdit:                  "File.Edit",
 	CmCopy:                  "File.Copy",
@@ -621,22 +632,26 @@ var commandToActionName = map[int]string{
 }
 
 func (pf *PanelsFrame) updateMenuCheckmarks() {
-	if pf.panels[0] == nil || pf.panels[1] == nil || pf.menuBar == nil || len(pf.menuBar.Items) < 5 {
+	if pf.panels[0] == nil || pf.panels[1] == nil || pf.menuBar == nil || len(pf.menuBar.Items) < 2 {
 		return
 	}
-	if len(pf.menuBar.Items[0].SubItems) < 10 || len(pf.menuBar.Items[4].SubItems) < 10 {
+	rightMenuIdx := len(pf.menuBar.Items) - 1
+	if len(pf.menuBar.Items[0].SubItems) < 11 || len(pf.menuBar.Items[rightMenuIdx].SubItems) < 11 {
 		return
 	}
 
 	lMode, rMode := ViewModeMedium, ViewModeMedium
 	lSort, rSort := SortName, SortName
+	lPresentation, rPresentation := PanelPresentationList, PanelPresentationList
 	if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
 		lMode = fsp.viewMode
 		lSort = fsp.sortMode
+		lPresentation = fsp.presentation
 	}
 	if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
 		rMode = fsp.viewMode
 		rSort = fsp.sortMode
+		rPresentation = fsp.presentation
 	}
 
 	if pf.wide && pf.widePanel == 0 {
@@ -650,15 +665,17 @@ func (pf *PanelsFrame) updateMenuCheckmarks() {
 		key  string
 	}{{ViewModeBrief, "Brief"}, {ViewModeMedium, "Medium"}, {ViewModeDetailed, "Detailed"}, {ViewModeWide, "Wide"}}
 	for i, item := range modeItems {
-		pf.menuBar.Items[0].SubItems[i].Text = getMenuText(lMode, item.mode, "&"+Msg("Menu.Left."+item.key))
-		pf.menuBar.Items[4].SubItems[i].Text = getMenuText(rMode, item.mode, "&"+Msg("Menu.Left."+item.key))
+		pf.menuBar.Items[0].SubItems[i].Text = getMenuText(lPresentation, lMode, item.mode, "&"+Msg("Menu.Left."+item.key))
+		pf.menuBar.Items[rightMenuIdx].SubItems[i].Text = getMenuText(rPresentation, rMode, item.mode, "&"+Msg("Menu.Left."+item.key))
 	}
+	pf.menuBar.Items[0].SubItems[4].Text = getPresentationMenuText(lPresentation, PanelPresentationGallery, "&"+Msg("Menu.Left.Gallery"))
+	pf.menuBar.Items[rightMenuIdx].SubItems[4].Text = getPresentationMenuText(rPresentation, PanelPresentationGallery, "&"+Msg("Menu.Left.Gallery"))
 	for i, item := range []struct {
 		mode SortMode
 		key  string
 	}{{SortName, "SortName"}, {SortExt, "SortExt"}, {SortTime, "SortTime"}, {SortSize, "SortSize"}, {SortUnsorted, "SortUnsorted"}} {
-		pf.menuBar.Items[0].SubItems[i+5].Text = getSortMenuText(lSort, item.mode, "&"+Msg("Menu."+item.key))
-		pf.menuBar.Items[4].SubItems[i+5].Text = getSortMenuText(rSort, item.mode, "&"+Msg("Menu."+item.key))
+		pf.menuBar.Items[0].SubItems[i+6].Text = getSortMenuText(lSort, item.mode, "&"+Msg("Menu."+item.key))
+		pf.menuBar.Items[rightMenuIdx].SubItems[i+6].Text = getSortMenuText(rSort, item.mode, "&"+Msg("Menu."+item.key))
 	}
 
 	// Update shortcuts dynamically from HotkeyManager
@@ -936,6 +953,17 @@ func (pf *PanelsFrame) setPanelViewMode(idx int, mode ViewMode) {
 	pf.exitWide()
 	if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok {
 		fsp.SetViewMode(mode)
+	}
+	pf.updateMenuCheckmarks()
+}
+
+func (pf *PanelsFrame) setPanelPresentation(idx int, presentation PanelPresentation) {
+	if idx < 0 || idx > 1 {
+		return
+	}
+	pf.exitWide()
+	if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok {
+		fsp.SetPresentation(presentation)
 	}
 	pf.updateMenuCheckmarks()
 }
@@ -1345,6 +1373,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if e.VirtualKeyCode == vtinput.VK_F12 && shift && !ctrl && !alt && e.KeyDown {
+		toggleGuiPresentation()
+		return true
+	}
 
 	// Workspace switching is global and must remain reachable while a child
 	// process owns the terminal. Returning false lets FrameManager handle both
@@ -2637,6 +2669,9 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 	case CmLeftWide:
 		pf.setWidePanel(0)
 		return true
+	case CmLeftGallery:
+		pf.setPanelPresentation(0, PanelPresentationGallery)
+		return true
 	case CmRightBrief:
 		pf.setPanelViewMode(1, ViewModeBrief)
 		return true
@@ -2648,6 +2683,9 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return true
 	case CmRightWide:
 		pf.setWidePanel(1)
+		return true
+	case CmRightGallery:
+		pf.setPanelPresentation(1, PanelPresentationGallery)
 		return true
 
 	case CmLeftSortName:
@@ -3511,6 +3549,11 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 
 			cloneFsp.vfs.SetPath(fsp.vfs.GetPath())
 			cloneFsp.SetViewMode(fsp.viewMode)
+			cloneFsp.SetPresentation(fsp.presentation)
+			cloneFsp.galleryLayoutMode = fsp.galleryLayoutMode
+			cloneFsp.galleryColumnCount = fsp.galleryColumnCount
+			cloneFsp.galleryDensities = cloneGalleryDensities(fsp.galleryDensities)
+			cloneFsp.galleryLayoutRevision = fsp.galleryLayoutRevision
 			cloneFsp.cursorIdx = fsp.cursorIdx
 			cloneFsp.sortMode = fsp.sortMode
 			cloneFsp.sortReverse = fsp.sortReverse

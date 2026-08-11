@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -9,6 +11,74 @@ import (
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
+
+func TestSemanticHighlightStyleAndIconURLs(t *testing.T) {
+	baseDir := t.TempDir()
+	iconPath := filepath.Join(baseDir, "custom.svg")
+	if err := os.WriteFile(iconPath, []byte("<svg/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ini := ParseIni(strings.NewReader(`
+[Highlight_0]
+Name = Source
+Mask = *.go
+Icon = file:custom.svg
+NormalColor = foreground:#112233
+SelectedColor = background:#445566
+ContinueProcessing = 1
+[Highlight_1]
+Name = Generic
+Mask = *
+NormalColor = background:#778899
+`))
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIniAt(ini, baseDir)
+	id, style := highlighter.SemanticStyle(&vfs.VFSItem{Name: "main.go"})
+	if id == "" || highlighter.Revision == 0 {
+		t.Fatal("semantic style and revision must be stable and non-empty")
+	}
+	if style.Icon != "file://"+iconPath {
+		t.Fatalf("resolved icon = %q, want file://%s", style.Icon, iconPath)
+	}
+	if style.Normal.Foreground != "#112233" || style.Normal.Background != "#778899" {
+		t.Fatalf("unexpected cascaded normal patch: %#v", style.Normal)
+	}
+	if style.Selected.Foreground != "" || style.Selected.Background != "#778899" {
+		t.Fatalf("unexpected selected fallback/cascade: %#v", style.Selected)
+	}
+	if len(style.Groups) != 2 || style.Groups[0].Name != "Source" {
+		t.Fatalf("unexpected groups: %#v", style.Groups)
+	}
+}
+
+func TestSemanticHighlightParentIconAndRejectedSchemes(t *testing.T) {
+	ini := ParseIni(strings.NewReader(`
+[Highlight_0]
+Name = Parent
+Mask = ..
+IncludeAttributes = Directory
+Icon = qrc:/F4QtHost/icons/lucide/folder-up.svg
+NormalColor = foreground:#ffffff
+Mark = X
+[Highlight_1]
+Name = Network
+Mask = *.net
+Icon = https://example.invalid/file.svg
+`))
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini)
+	_, parent := highlighter.SemanticStyle(&vfs.VFSItem{Name: "..", IsDir: true})
+	if parent.Icon != "qrc:/F4QtHost/icons/lucide/folder-up.svg" {
+		t.Fatalf("parent icon = %q", parent.Icon)
+	}
+	if parent.Marker != "" || parent.Normal.Foreground != "" {
+		t.Fatalf("parent must keep console color/marker special case: %#v", parent)
+	}
+	_, network := highlighter.SemanticStyle(&vfs.VFSItem{Name: "file.net"})
+	if network.Icon != "" {
+		t.Fatalf("network icon scheme was accepted: %q", network.Icon)
+	}
+}
 
 func TestHighlightRule_Match(t *testing.T) {
 	rule := HighlightRule{
@@ -556,5 +626,36 @@ CursorColor = foreground:#FF9238
 	}
 	if bg, want := vtui.GetRGBBack(got), vtui.GetRGBBack(base); bg != want {
 		t.Fatalf("selected file under cursor lost cursor background #%06x, want #%06x", bg, want)
+	}
+}
+
+func TestFileHighlighterCachesMatchesByEntryMetadata(t *testing.T) {
+	highlighter := &FileHighlighter{
+		Revision: 1,
+		Rules: []HighlightRule{{
+			Masks:      []string{"*.go"},
+			IgnoreCase: true,
+			NormalStr:  "foreground:#00FF00",
+		}},
+	}
+	item := vfs.VFSItem{Name: "main.go", Size: 10}
+	if _, style := highlighter.SemanticStyle(&item); highlightStyleEmpty(style) {
+		t.Fatal("matching item did not produce a style")
+	}
+	if got := len(highlighter.matchCache); got != 1 {
+		t.Fatalf("match cache entries = %d, want 1", got)
+	}
+	highlighter.GetColor(&item, 0, false, false)
+	highlighter.GetMarker(&item)
+	if got := len(highlighter.matchCache); got != 1 {
+		t.Fatalf("shared consumers recomputed the same entry: cache entries = %d", got)
+	}
+
+	item.Name = "README.txt"
+	if _, style := highlighter.SemanticStyle(&item); !highlightStyleEmpty(style) {
+		t.Fatal("changed item metadata reused a stale cached match")
+	}
+	if got := len(highlighter.matchCache); got != 2 {
+		t.Fatalf("changed metadata did not create a distinct cache entry: %d", got)
 	}
 }

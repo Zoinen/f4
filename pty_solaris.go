@@ -19,7 +19,7 @@ func NewNativeSolarisStreams() *NativeSolarisStreams {
 }
 
 func (n *NativeSolarisStreams) Open(path string, flag int, perm os.FileMode) (*os.File, error) {
-	fd, err := unix.Open(path, flag, uint32(perm))
+	fd, err := unix.Open(path, flag|unix.O_CLOEXEC, uint32(perm))
 	if err != nil {
 		return nil, err
 	}

@@ -1,14 +1,22 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -33,6 +41,8 @@ const (
 )
 
 type HighlightRule struct {
+	RuleID            string
+	Name              string
 	Masks             []string
 	AttrSet           AttrFlags
 	AttrClear         AttrFlags
@@ -42,6 +52,7 @@ type HighlightRule struct {
 	CursorStr         string
 	SelectedCursorStr string
 	Mark              string
+	IconURL           string
 
 	// Фильтрация по размеру (0 означает, что лимит не задан)
 	SizeAbove int64
@@ -63,6 +74,26 @@ type FileHighlighter struct {
 	UserRules  []HighlightRule
 	ThemeRules []HighlightRule
 	Rules      []HighlightRule
+	Revision   int64
+
+	matchCacheMu       sync.RWMutex
+	matchCacheRevision int64
+	matchCache         map[highlightMatchCacheKey][]int
+}
+
+const maxHighlightMatchCacheEntries = 8192
+
+type highlightMatchCacheKey struct {
+	Name         string
+	Size         int64
+	MTime        int64
+	ATime        int64
+	CTime        int64
+	UnixMode     uint32
+	WinAttrs     uint32
+	IsDir        bool
+	IsHidden     bool
+	IsExecutable bool
 }
 
 var GlobalFileHighlighter *FileHighlighter
@@ -76,7 +107,14 @@ func (fh *FileHighlighter) LoadFromIni(ini *IniFile) {
 }
 
 func (fh *FileHighlighter) LoadUserRules(ini *IniFile) {
-	fh.UserRules = parseHighlightRules(ini)
+	fh.LoadFromIniAt(ini, "")
+}
+
+// LoadFromIniAt loads user highlight rules and resolves relative file: icon
+// URLs against baseDir. Theme and user rules continue to share the upstream
+// priority/composition path.
+func (fh *FileHighlighter) LoadFromIniAt(ini *IniFile, baseDir string) {
+	fh.UserRules = parseHighlightRulesAt(ini, baseDir)
 	fh.CombineRules()
 }
 
@@ -94,9 +132,16 @@ func (fh *FileHighlighter) CombineRules() {
 		fh.Rules = append(fh.Rules, fh.UserRules...)
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
 	}
+	fh.Revision = highlightRulesRevision(fh.Rules)
+	fh.clearMatchCache()
+	vtui.DebugLog("HIGHLIGHT: Loaded %d file highlighting rules", len(fh.Rules))
 }
 
 func parseHighlightRules(ini *IniFile) []HighlightRule {
+	return parseHighlightRulesAt(ini, "")
+}
+
+func parseHighlightRulesAt(ini *IniFile, baseDir string) []HighlightRule {
 	var rules []HighlightRule
 	var sections []string
 	for secName := range ini.data {
@@ -112,6 +157,8 @@ func parseHighlightRules(ini *IniFile) []HighlightRule {
 
 	for _, secName := range sections {
 		rule := HighlightRule{
+			RuleID:     secName,
+			Name:       ini.GetString(secName, "Name", ""),
 			IgnoreCase: true,
 		}
 		maskStr := ini.GetString(secName, "Mask", "")
@@ -203,6 +250,8 @@ func parseHighlightRules(ini *IniFile) []HighlightRule {
 		if rule.Mark == "" {
 			rule.Mark = ini.GetString(secName, "MarkChar", "")
 		}
+		rule.IconURL = normalizeHighlightIconURL(
+			ini.GetString(secName, "Icon", ""), baseDir)
 
 		rule.NormalStr = ini.GetString(secName, "NormalColor", "")
 		rule.SelectedStr = ini.GetString(secName, "SelectedColor", "")
@@ -211,6 +260,141 @@ func parseHighlightRules(ini *IniFile) []HighlightRule {
 		rules = append(rules, rule)
 	}
 	return rules
+}
+
+func (fh *FileHighlighter) clearMatchCache() {
+	fh.matchCacheMu.Lock()
+	fh.matchCache = nil
+	fh.matchCacheRevision = fh.Revision
+	fh.matchCacheMu.Unlock()
+}
+
+func highlightMatchKey(item *vfs.VFSItem) highlightMatchCacheKey {
+	return highlightMatchCacheKey{
+		Name:         item.Name,
+		Size:         item.Size,
+		MTime:        semanticMTimeNanos(item.MTime),
+		ATime:        semanticMTimeNanos(item.ATime),
+		CTime:        semanticMTimeNanos(item.CTime),
+		UnixMode:     item.UnixMode,
+		WinAttrs:     item.WinAttrs,
+		IsDir:        item.IsDir,
+		IsHidden:     item.IsHidden,
+		IsExecutable: item.IsExecutable,
+	}
+}
+
+func (fh *FileHighlighter) hasRelativeDateRules() bool {
+	for i := range fh.Rules {
+		if fh.Rules[i].DateRelative {
+			return true
+		}
+	}
+	return false
+}
+
+// matchedRuleIndices performs the rule/mask work once per immutable directory
+// entry. Text rows, markers, and the semantic GUI representation all consume
+// the same result, so recomputing filepath.Match in each presentation path is
+// both redundant and especially expensive during key repeat.
+func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem) []int {
+	if fh == nil || item == nil {
+		return nil
+	}
+	if fh.hasRelativeDateRules() {
+		return fh.computeMatchedRuleIndices(item)
+	}
+
+	key := highlightMatchKey(item)
+	fh.matchCacheMu.RLock()
+	if fh.matchCacheRevision == fh.Revision {
+		if cached, ok := fh.matchCache[key]; ok {
+			fh.matchCacheMu.RUnlock()
+			return cached
+		}
+	}
+	fh.matchCacheMu.RUnlock()
+
+	matched := fh.computeMatchedRuleIndices(item)
+	fh.matchCacheMu.Lock()
+	if fh.matchCacheRevision != fh.Revision || len(fh.matchCache) >= maxHighlightMatchCacheEntries {
+		fh.matchCache = make(map[highlightMatchCacheKey][]int)
+		fh.matchCacheRevision = fh.Revision
+	} else if fh.matchCache == nil {
+		fh.matchCache = make(map[highlightMatchCacheKey][]int)
+	}
+	fh.matchCache[key] = matched
+	fh.matchCacheMu.Unlock()
+	return matched
+}
+
+func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem) []int {
+	var matched []int
+	for i := range fh.Rules {
+		if !fh.Rules[i].Match(item) {
+			continue
+		}
+		matched = append(matched, i)
+		if !fh.Rules[i].ContinueProcessing {
+			break
+		}
+	}
+	return matched
+}
+
+func normalizeHighlightIconURL(raw, baseDir string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "qrc":
+		if parsed.Host != "" || parsed.Path == "" || !strings.HasPrefix(raw, "qrc:/") {
+			return ""
+		}
+		return "qrc:" + filepath.ToSlash(filepath.Clean(parsed.Path))
+	case "file":
+		if parsed.Host != "" && parsed.Host != "localhost" {
+			return ""
+		}
+		path := parsed.Path
+		if parsed.Opaque != "" {
+			path = parsed.Opaque
+		}
+		if path == "" {
+			return ""
+		}
+		if !filepath.IsAbs(path) {
+			if baseDir == "" {
+				return ""
+			}
+			path = filepath.Join(baseDir, filepath.FromSlash(path))
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		if info, err := os.Stat(absolute); err != nil || info.IsDir() {
+			return ""
+		}
+		return (&url.URL{Scheme: "file", Path: absolute}).String()
+	default:
+		return ""
+	}
+}
+
+func highlightRulesRevision(rules []HighlightRule) int64 {
+	data, _ := json.Marshal(rules)
+	digest := sha256.Sum256(data)
+	revision := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
+	if revision == 0 && len(rules) > 0 {
+		return 1
+	}
+	return revision
 }
 
 func parseAttrFlags(s string) AttrFlags {
@@ -345,50 +529,49 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 	attr := defaultAttr
 	matchedAny := false
 
-	for _, rule := range fh.Rules {
-		if rule.Match(item) {
-			colorExpr := ""
-			if isCursor {
-				if isSelected {
-					if rule.SelectedCursorStr != "" {
-						colorExpr = rule.SelectedCursorStr
-					} else if rule.SelectedStr != "" {
-						colorExpr = rule.SelectedStr
-					}
-				} else {
-					if rule.CursorStr != "" {
-						colorExpr = rule.CursorStr
-					}
-				}
-			} else if isSelected {
-				if rule.SelectedStr != "" {
+	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+		rule := fh.Rules[ruleIndex]
+		colorExpr := ""
+		if isCursor {
+			if isSelected {
+				if rule.SelectedCursorStr != "" {
+					colorExpr = rule.SelectedCursorStr
+				} else if rule.SelectedStr != "" {
 					colorExpr = rule.SelectedStr
 				}
 			} else {
-				if rule.NormalStr != "" {
-					colorExpr = rule.NormalStr
+				if rule.CursorStr != "" {
+					colorExpr = rule.CursorStr
 				}
 			}
-
-			if colorExpr != "" {
-				attr = ParseFarColor(colorExpr, attr)
-				matchedAny = true
+		} else if isSelected {
+			if rule.SelectedStr != "" {
+				colorExpr = rule.SelectedStr
 			}
+		} else {
+			if rule.NormalStr != "" {
+				colorExpr = rule.NormalStr
+			}
+		}
 
-			// Если каскадная обработка выключена, сразу возвращаем результат
-			if !rule.ContinueProcessing {
-				if matchedAny {
-					if AppConfig.EnforceColorCorrection {
-						fg, bg := GetColorRGBBoth(attr)
-						nfg := CorrectContrast(fg, bg)
-						if nfg != fg {
-							attr = vtui.SetRGBFore(attr, nfg)
-						}
+		if colorExpr != "" {
+			attr = ParseFarColor(colorExpr, attr)
+			matchedAny = true
+		}
+
+		// Если каскадная обработка выключена, сразу возвращаем результат
+		if !rule.ContinueProcessing {
+			if matchedAny {
+				if AppConfig.EnforceColorCorrection {
+					fg, bg := GetColorRGBBoth(attr)
+					nfg := CorrectContrast(fg, bg)
+					if nfg != fg {
+						attr = vtui.SetRGBFore(attr, nfg)
 					}
-					return attr
 				}
-				return defaultAttr
+				return attr
 			}
+			return defaultAttr
 		}
 	}
 
@@ -410,15 +593,113 @@ func (fh *FileHighlighter) GetMarker(item *vfs.VFSItem) string {
 	if item.Name == ".." {
 		return ""
 	}
-	for _, rule := range fh.Rules {
-		if rule.Match(item) {
-			if rule.Mark != "" {
-				return rule.Mark
-			}
-			if !rule.ContinueProcessing {
-				break
-			}
+	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+		rule := fh.Rules[ruleIndex]
+		if rule.Mark != "" {
+			return rule.Mark
+		}
+		if !rule.ContinueProcessing {
+			break
 		}
 	}
 	return ""
+}
+
+func highlightRuleColor(rule HighlightRule, selected, cursor bool) string {
+	if cursor && selected && rule.SelectedCursorStr != "" {
+		return rule.SelectedCursorStr
+	}
+	if cursor && rule.CursorStr != "" {
+		return rule.CursorStr
+	}
+	if selected && rule.SelectedStr != "" {
+		return rule.SelectedStr
+	}
+	return rule.NormalStr
+}
+
+func semanticColorPatch(expr string) extui.HighlightColorPatchModel {
+	var patch extui.HighlightColorPatchModel
+	for _, rawPart := range strings.Split(expr, "|") {
+		part := strings.TrimSpace(rawPart)
+		if strings.HasPrefix(part, "foreground:#") && len(part) >= 18 {
+			if value, err := strconv.ParseUint(part[12:18], 16, 32); err == nil {
+				patch.Foreground = fmt.Sprintf("#%06X", value)
+			}
+			continue
+		}
+		if strings.HasPrefix(part, "background:#") && len(part) >= 18 {
+			if value, err := strconv.ParseUint(part[12:18], 16, 32); err == nil {
+				patch.Background = fmt.Sprintf("#%06X", value)
+			}
+			continue
+		}
+		if colorIndex, ok := namedColors[part]; ok {
+			if strings.HasPrefix(part, "F_") {
+				patch.Foreground = fmt.Sprintf("#%06X", far2lPalette[colorIndex])
+			} else if strings.HasPrefix(part, "B_") {
+				patch.Background = fmt.Sprintf("#%06X", far2lPalette[colorIndex>>4])
+			}
+		}
+	}
+	return patch
+}
+
+func mergeHighlightPatch(target *extui.HighlightColorPatchModel, patch extui.HighlightColorPatchModel) {
+	if patch.Foreground != "" {
+		target.Foreground = patch.Foreground
+	}
+	if patch.Background != "" {
+		target.Background = patch.Background
+	}
+}
+
+func highlightStyleEmpty(style extui.HighlightStyleModel) bool {
+	return len(style.Groups) == 0 && style.Marker == "" && style.Icon == "" &&
+		style.Normal.Foreground == "" && style.Normal.Background == "" &&
+		style.Selected.Foreground == "" && style.Selected.Background == "" &&
+		style.Cursor.Foreground == "" && style.Cursor.Background == "" &&
+		style.SelectedCursor.Foreground == "" && style.SelectedCursor.Background == ""
+}
+
+// SemanticStyle returns a presentation-neutral style for QML. It preserves
+// the existing Far cascade while keeping vtui attributes out of the scene.
+func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem) (string, extui.HighlightStyleModel) {
+	var style extui.HighlightStyleModel
+	if fh == nil || item == nil {
+		return "", style
+	}
+	parentEntry := item.Name == ".."
+	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+		rule := fh.Rules[ruleIndex]
+		style.Groups = append(style.Groups, extui.HighlightGroupModel{
+			ID:   rule.RuleID,
+			Name: rule.Name,
+		})
+		if style.Icon == "" && rule.IconURL != "" {
+			style.Icon = rule.IconURL
+		}
+		if !parentEntry {
+			if style.Marker == "" && rule.Mark != "" {
+				style.Marker = rule.Mark
+			}
+			mergeHighlightPatch(&style.Normal,
+				semanticColorPatch(highlightRuleColor(rule, false, false)))
+			mergeHighlightPatch(&style.Selected,
+				semanticColorPatch(highlightRuleColor(rule, true, false)))
+			mergeHighlightPatch(&style.Cursor,
+				semanticColorPatch(highlightRuleColor(rule, false, true)))
+			mergeHighlightPatch(&style.SelectedCursor,
+				semanticColorPatch(highlightRuleColor(rule, true, true)))
+		}
+		if !rule.ContinueProcessing {
+			break
+		}
+	}
+	if highlightStyleEmpty(style) {
+		return "", style
+	}
+	encoded, _ := json.Marshal(style)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), style
 }

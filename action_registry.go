@@ -160,7 +160,7 @@ func plainLabel(s string) string {
 func init() {
 	withPF := func(fn func(pf *PanelsFrame)) func() bool {
 		return func() bool {
-			if pf := findPanelsFrameAnyScreen(); pf != nil {
+			if pf := findPanelsFrame(); pf != nil {
 				fn(pf)
 				return true
 			}
@@ -173,9 +173,12 @@ func init() {
 			if vtui.FrameManager == nil {
 				return false
 			}
-			if ev, ok := vtui.FrameManager.GetTopFrame().(*EditorView); ok {
-				fn(ev)
-				return true
+			frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+			for i := len(frames) - 1; i >= 0; i-- {
+				if ev, ok := frames[i].(*EditorView); ok {
+					fn(ev)
+					return true
+				}
 			}
 			return false
 		}
@@ -186,9 +189,12 @@ func init() {
 			if vtui.FrameManager == nil {
 				return false
 			}
-			if vv, ok := vtui.FrameManager.GetTopFrame().(*ViewerView); ok {
-				fn(vv)
-				return true
+			frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+			for i := len(frames) - 1; i >= 0; i-- {
+				if vv, ok := frames[i].(*ViewerView); ok {
+					fn(vv)
+					return true
+				}
 			}
 			return false
 		}
@@ -1076,7 +1082,9 @@ func init() {
 		Handler: withPF(func(pf *PanelsFrame) {
 			pf.exitWide()
 			pf.showPanels = !pf.showPanels
-			if pf.showPanels && !pf.showLeftPanel && !pf.showRightPanel {
+			if pf.showPanels {
+				// A full hide/show cycle restores the canonical two-panel layout;
+				// individually hidden sides are only preserved until Ctrl+O.
 				pf.showLeftPanel = true
 				pf.showRightPanel = true
 			}
@@ -1085,9 +1093,6 @@ func init() {
 				pf.lastShowPanels = pf.showPanels
 			}
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1105,9 +1110,6 @@ func init() {
 				pf.activeIdx = 1
 			}
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1125,9 +1127,6 @@ func init() {
 				pf.activeIdx = 0
 			}
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1147,9 +1146,6 @@ func init() {
 			}
 			pf.showPanels = pf.showLeftPanel || pf.showRightPanel
 			vtui.FrameManager.HardRefresh()
-			if pf.showPanels {
-				pf.RefreshAll()
-			}
 		}),
 	})
 	RegisterAction(Action{
@@ -1387,6 +1383,16 @@ func init() {
 		DescKey:     "Action.Panel.ViewWide.Desc",
 		DefaultKeys: []string{"Ctrl4"},
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setWidePanel(pf.activeIdx) }),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.ViewGallery",
+		Area:        "Shell",
+		Label:       "Gallery Mode",
+		Description: "Set active panel to gallery presentation",
+		DefaultKeys: []string{"Ctrl5"},
+		Handler: withPF(func(pf *PanelsFrame) {
+			pf.setPanelPresentation(pf.activeIdx, PanelPresentationGallery)
+		}),
 	})
 	RegisterAction(Action{
 		Name:        "Panel.SortByName",

@@ -1081,6 +1081,23 @@ func TestSession_DiskPersistence(t *testing.T) {
 
 	LastLeftViewMode = 1
 	LastRightViewMode = 0
+	LastLeftPresentation = PanelPresentationGallery
+	LastRightPresentation = PanelPresentationList
+	LastLeftGalleryState = panelGallerySessionState{
+		LayoutMode:  GalleryLayoutColumns,
+		ColumnCount: 3,
+		Densities: map[GalleryLayoutMode]int{
+			GalleryLayoutMasonry: 211,
+			GalleryLayoutColumns: 34,
+		},
+	}
+	LastRightGalleryState = panelGallerySessionState{
+		LayoutMode:  GalleryLayoutIcons,
+		ColumnCount: 2,
+		Densities: map[GalleryLayoutMode]int{
+			GalleryLayoutIcons: 144,
+		},
+	}
 	LastLeftSortMode = 3
 	LastRightSortMode = 2
 	LastLeftSortRev = true
@@ -1102,6 +1119,10 @@ func TestSession_DiskPersistence(t *testing.T) {
 
 	LastLeftViewMode = 0
 	LastRightViewMode = 1
+	LastLeftPresentation = PanelPresentationList
+	LastRightPresentation = PanelPresentationGallery
+	LastLeftGalleryState = defaultPanelGallerySessionState()
+	LastRightGalleryState = defaultPanelGallerySessionState()
 	LastLeftSortMode = 0
 	LastRightSortMode = 0
 	LastLeftSortRev = false
@@ -1125,6 +1146,20 @@ func TestSession_DiskPersistence(t *testing.T) {
 		t.Errorf("View/Sort modes persistence failed. LeftVM:%d, RightVM:%d, LeftSM:%d, RightSM:%d",
 			LastLeftViewMode, LastRightViewMode, LastLeftSortMode, LastRightSortMode)
 	}
+	if LastLeftPresentation != PanelPresentationGallery || LastRightPresentation != PanelPresentationList {
+		t.Errorf("Panel presentations persistence failed. Left:%q Right:%q", LastLeftPresentation, LastRightPresentation)
+	}
+	if LastLeftGalleryState.LayoutMode != GalleryLayoutColumns ||
+		LastLeftGalleryState.ColumnCount != 3 ||
+		LastLeftGalleryState.Densities[GalleryLayoutMasonry] != 211 ||
+		LastLeftGalleryState.Densities[GalleryLayoutColumns] != 34 {
+		t.Fatalf("left gallery session state was not persisted: %#v", LastLeftGalleryState)
+	}
+	if LastRightGalleryState.LayoutMode != GalleryLayoutIcons ||
+		LastRightGalleryState.ColumnCount != 2 ||
+		LastRightGalleryState.Densities[GalleryLayoutIcons] != 144 {
+		t.Fatalf("right gallery session state was not persisted: %#v", LastRightGalleryState)
+	}
 
 	if !LastLeftSortRev || LastRightSortRev {
 		t.Errorf("Sort directions persistence failed. LeftRev:%v, RightRev:%v", LastLeftSortRev, LastRightSortRev)
@@ -1145,9 +1180,122 @@ func TestSession_OldFileDefaultsWideOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	LastWidePanel = 1
+	LastLeftGalleryState = panelGallerySessionState{
+		LayoutMode: GalleryLayoutIcons, ColumnCount: 3,
+		Densities: map[GalleryLayoutMode]int{GalleryLayoutIcons: 220},
+	}
 	LoadSession()
 	if LastWidePanel != -1 {
 		t.Fatalf("old session enabled Wide: got %d, want -1", LastWidePanel)
+	}
+	if LastLeftGalleryState.LayoutMode != GalleryLayoutMasonry ||
+		LastLeftGalleryState.ColumnCount != 2 ||
+		len(LastLeftGalleryState.Densities) != 0 {
+		t.Fatalf("old session did not receive Gallery defaults: %#v", LastLeftGalleryState)
+	}
+}
+
+func TestSession_PresentationPersistsWithoutPanelPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	origPathFunc := getSessionIniPath
+	getSessionIniPath = func() string { return filepath.Join(tmpDir, "session.ini") }
+
+	oldConfig := AppConfig
+	oldLeftPath := LastLeftPath
+	oldRightPath := LastRightPath
+	oldLeftPresentation := LastLeftPresentation
+	oldRightPresentation := LastRightPresentation
+	oldLeftGalleryState := LastLeftGalleryState
+	oldRightGalleryState := LastRightGalleryState
+	defer func() {
+		getSessionIniPath = origPathFunc
+		AppConfig = oldConfig
+		LastLeftPath = oldLeftPath
+		LastRightPath = oldRightPath
+		LastLeftPresentation = oldLeftPresentation
+		LastRightPresentation = oldRightPresentation
+		LastLeftGalleryState = oldLeftGalleryState
+		LastRightGalleryState = oldRightGalleryState
+	}()
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	panels := NewPanelsFrame()
+	defer panels.Close()
+	panels.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(panels)
+
+	left := panels.panels[0].(*FileSystemPanel)
+	right := panels.panels[1].(*FileSystemPanel)
+	left.presentation = PanelPresentationGallery
+	right.presentation = PanelPresentationList
+	if !left.SetGalleryLayout(GalleryLayoutGrid, 0) ||
+		!left.SetGalleryDensity(GalleryLayoutGrid, 207) ||
+		!right.SetGalleryLayout(GalleryLayoutColumns, 3) ||
+		!right.SetGalleryDensity(GalleryLayoutColumns, 31) {
+		t.Fatal("failed to configure per-panel Gallery state")
+	}
+	right.presentation = PanelPresentationList
+
+	AppConfig.SavePanelPaths = false
+	AppConfig.GuiCols = vtui.FrameManager.GetScreenSize()
+	AppConfig.GuiRows = vtui.FrameManager.GetScreenHeight()
+	LastLeftPath = "/keep/left"
+	LastRightPath = "/keep/right"
+	LastLeftPresentation = PanelPresentationList
+	LastRightPresentation = PanelPresentationGallery
+	LastLeftGalleryState = defaultPanelGallerySessionState()
+	LastRightGalleryState = defaultPanelGallerySessionState()
+
+	SaveSession()
+
+	if LastLeftPath != "/keep/left" || LastRightPath != "/keep/right" {
+		t.Fatalf("SavePanelPaths=false changed paths: left=%q right=%q",
+			LastLeftPath, LastRightPath)
+	}
+	if LastLeftPresentation != PanelPresentationGallery ||
+		LastRightPresentation != PanelPresentationList {
+		t.Fatalf("presentation was not captured independently: left=%q right=%q",
+			LastLeftPresentation, LastRightPresentation)
+	}
+	if LastLeftGalleryState.LayoutMode != GalleryLayoutGrid ||
+		LastLeftGalleryState.Densities[GalleryLayoutGrid] != 207 ||
+		LastRightGalleryState.LayoutMode != GalleryLayoutColumns ||
+		LastRightGalleryState.ColumnCount != 3 ||
+		LastRightGalleryState.Densities[GalleryLayoutColumns] != 31 {
+		t.Fatalf("Gallery state was not captured independently: left=%#v right=%#v",
+			LastLeftGalleryState, LastRightGalleryState)
+	}
+
+	LastLeftPresentation = PanelPresentationList
+	LastRightPresentation = PanelPresentationGallery
+	LastLeftGalleryState = defaultPanelGallerySessionState()
+	LastRightGalleryState = defaultPanelGallerySessionState()
+	LoadSession()
+	if LastLeftPresentation != PanelPresentationGallery ||
+		LastRightPresentation != PanelPresentationList {
+		t.Fatalf("presentation was not loaded independently: left=%q right=%q",
+			LastLeftPresentation, LastRightPresentation)
+	}
+
+	freshPanels := NewPanelsFrame()
+	defer freshPanels.Close()
+	freshPanels.ResizeConsole(80, 25)
+	restorePanelPresentations(freshPanels)
+	if freshPanels.panels[0].(*FileSystemPanel).presentation != PanelPresentationGallery ||
+		freshPanels.panels[1].(*FileSystemPanel).presentation != PanelPresentationList {
+		t.Fatalf("saved presentations were not restored onto fresh panels")
+	}
+	freshLeft := freshPanels.panels[0].(*FileSystemPanel)
+	freshRight := freshPanels.panels[1].(*FileSystemPanel)
+	if freshLeft.galleryLayoutMode != GalleryLayoutGrid ||
+		freshLeft.galleryDensity(GalleryLayoutGrid) != 207 ||
+		freshRight.galleryLayoutMode != GalleryLayoutColumns ||
+		freshRight.galleryColumnCount != 3 ||
+		freshRight.galleryDensity(GalleryLayoutColumns) != 31 {
+		t.Fatalf("saved Gallery state was not restored: left=%#v right=%#v",
+			capturePanelGallerySessionState(freshLeft),
+			capturePanelGallerySessionState(freshRight))
 	}
 }
 
@@ -1625,6 +1773,50 @@ func TestActionAppearanceSettings_SaveCursor(t *testing.T) {
 	}
 }
 
+func TestActionAppearanceSettingsSavesQmlIconSet(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	oldConfig := AppConfig
+	oldPath := getUserConfigIniPath
+	tmpDir := t.TempDir()
+	getUserConfigIniPath = func() string {
+		return filepath.Join(tmpDir, "settings.ini")
+	}
+	defer func() {
+		AppConfig = oldConfig
+		getUserConfigIniPath = oldPath
+	}()
+	AppConfig.QmlIconSet = QmlIconSetLucide
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	actionAppearanceSettings(pf)
+	top := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	var iconSetCombo *vtui.ComboBox
+	for _, child := range top.GetChildren() {
+		combo, ok := child.(*vtui.ComboBox)
+		if !ok || len(combo.Menu.Items) != 2 {
+			continue
+		}
+		if combo.Menu.Items[0].Text == Msg("AppearanceSettings.IconSetLucide") &&
+			combo.Menu.Items[1].Text == Msg("AppearanceSettings.IconSetSystem") {
+			iconSetCombo = combo
+			break
+		}
+	}
+	if iconSetCombo == nil {
+		t.Fatal("QML icon-set combobox not found in Appearance Settings")
+	}
+	iconSetCombo.Menu.SetSelectPos(1)
+	iconSetCombo.Menu.OnAction(1)
+	clickDialogButton(t, top, "Ok")
+	if AppConfig.QmlIconSet != QmlIconSetSystem {
+		t.Fatalf("QML icon set = %q, want system", AppConfig.QmlIconSet)
+	}
+}
 func TestActionAppearanceSettingsSavesSystemMonospace(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()

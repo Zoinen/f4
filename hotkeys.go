@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/unxed/vtui"
@@ -124,25 +125,57 @@ func (hm *HotkeyManager) GetActiveBindings() map[string]map[string]string {
 
 // GetKeyForAction searches for a key combination bound to the given action in an area.
 func (hm *HotkeyManager) GetKeyForAction(area, actionName string) string {
-	if binds, ok := hm.Bindings[area]; ok {
-		for key, binding := range binds {
-			parts := strings.SplitN(binding, ":", 2)
-			if strings.EqualFold(parts[0], actionName) {
-				return key
-			}
-		}
-	}
+	areas := []string{area}
 	if area != "Common" {
-		if binds, ok := hm.Bindings["Common"]; ok {
-			for key, binding := range binds {
-				parts := strings.SplitN(binding, ":", 2)
-				if strings.EqualFold(parts[0], actionName) {
+		areas = append(areas, "Common")
+	}
+
+	// Preserve the action author's declared preference. Several terminal
+	// actions deliberately list a conditional plain function key first and a
+	// modified always-available fallback second. Iterating the binding map made
+	// the menu shortcut alternate randomly on every semantic scene rebuild.
+	if action, ok := actionRegistry[strings.ToLower(actionName)]; ok {
+		for _, candidateArea := range areas {
+			binds := hm.Bindings[candidateArea]
+			for _, keySpec := range action.DefaultKeys {
+				key, _, _ := strings.Cut(keySpec, ":")
+				if key != "" && strings.EqualFold(activeBindingAction(binds[key]), actionName) {
 					return key
 				}
 			}
 		}
 	}
+
+	// User-defined bindings have no registry order. Sort them so their menu
+	// representation is stable across rebuilds and process runs.
+	for _, candidateArea := range areas {
+		binds := hm.Bindings[candidateArea]
+		keys := make([]string, 0, len(binds))
+		for key := range binds {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if strings.EqualFold(activeBindingAction(binds[key]), actionName) {
+				return key
+			}
+		}
+	}
 	return ""
+}
+
+func activeBindingAction(binding string) string {
+	if binding == "" {
+		return ""
+	}
+	parts := strings.SplitN(binding, ":", 2)
+	if len(parts) == 2 {
+		condName := strings.ToLower(strings.TrimSpace(parts[1]))
+		if condFn, ok := conditionRegistry[condName]; ok && !condFn() {
+			return ""
+		}
+	}
+	return parts[0]
 }
 
 // FormatKeyForUI converts a raw key string (like CtrlShiftF5) into a pretty UI string (Ctrl+Shift+F5).
@@ -276,26 +309,9 @@ func (hm *HotkeyManager) Save() {
 
 // GetAction returns the action name mapped to the key in the given area.
 func (hm *HotkeyManager) GetAction(area, key string) string {
-	evalBinding := func(binding string) string {
-		if binding == "" {
-			return ""
-		}
-		parts := strings.SplitN(binding, ":", 2)
-		action := parts[0]
-		if len(parts) == 2 {
-			condName := strings.ToLower(strings.TrimSpace(parts[1]))
-			if condFn, ok := conditionRegistry[condName]; ok {
-				if !condFn() {
-					return "" // Condition failed, act as if unbound
-				}
-			}
-		}
-		return action
-	}
-
 	if binds, ok := hm.Bindings[area]; ok {
 		if binding, ok := binds[key]; ok {
-			if action := evalBinding(binding); action != "" {
+			if action := activeBindingAction(binding); action != "" {
 				return action
 			}
 		}
@@ -303,7 +319,7 @@ func (hm *HotkeyManager) GetAction(area, key string) string {
 	if area != "Common" {
 		if binds, ok := hm.Bindings["Common"]; ok {
 			if binding, ok := binds[key]; ok {
-				if action := evalBinding(binding); action != "" {
+				if action := activeBindingAction(binding); action != "" {
 					return action
 				}
 			}

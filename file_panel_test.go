@@ -19,6 +19,64 @@ import (
 	"time"
 )
 
+func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
+	panel := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+
+	if panel.galleryLayoutMode != GalleryLayoutMasonry ||
+		panel.galleryColumnCount != defaultGalleryColumnCount ||
+		panel.galleryDensity(GalleryLayoutMasonry) != 150 {
+		t.Fatalf("unexpected gallery defaults: mode=%q columns=%d density=%d",
+			panel.galleryLayoutMode, panel.galleryColumnCount,
+			panel.galleryDensity(GalleryLayoutMasonry))
+	}
+
+	initialRevision := panel.galleryLayoutRevision
+	if !panel.SetGalleryLayout(GalleryLayoutColumns, 3) {
+		t.Fatal("valid Columns layout was rejected")
+	}
+	if panel.presentation != PanelPresentationGallery ||
+		panel.galleryLayoutMode != GalleryLayoutColumns ||
+		panel.galleryColumnCount != 3 ||
+		panel.galleryLayoutRevision != initialRevision+1 {
+		t.Fatalf("Columns layout was not applied atomically: presentation=%q mode=%q columns=%d revision=%d",
+			panel.presentation, panel.galleryLayoutMode, panel.galleryColumnCount,
+			panel.galleryLayoutRevision)
+	}
+
+	if panel.SetGalleryLayout(GalleryLayoutColumns, 4) {
+		t.Fatal("unsupported column count was accepted")
+	}
+	if panel.galleryColumnCount != 3 {
+		t.Fatalf("invalid layout changed saved column count to %d", panel.galleryColumnCount)
+	}
+
+	revision := panel.galleryLayoutRevision
+	panel.SetPresentation(PanelPresentationList)
+	if !panel.SetGalleryDensity(GalleryLayoutGrid, 500) {
+		t.Fatal("valid density action was rejected")
+	}
+	if panel.presentation != PanelPresentationList {
+		t.Fatal("density change unexpectedly selected Gallery presentation")
+	}
+	if got := panel.galleryDensity(GalleryLayoutGrid); got != 320 {
+		t.Fatalf("grid density was not clamped: got %d, want 320", got)
+	}
+	if panel.galleryDensity(GalleryLayoutMasonry) != 150 {
+		t.Fatal("per-mode density change affected Masonry")
+	}
+	if panel.galleryLayoutRevision != revision+1 {
+		t.Fatalf("density revision = %d, want %d", panel.galleryLayoutRevision, revision+1)
+	}
+
+	if !panel.SetGalleryDensity(GalleryLayoutDetails, 1) ||
+		panel.galleryDensity(GalleryLayoutDetails) != 22 {
+		t.Fatal("Details density did not use its 22-pixel lower bound")
+	}
+	if panel.SetGalleryDensity(GalleryLayoutMode("unknown"), 100) {
+		t.Fatal("unknown gallery density mode was accepted")
+	}
+}
+
 func TestFileEntry_GetCellText(t *testing.T) {
 	// Mock entries
 	file := &fileEntry{VFSItem: vfs.VFSItem{Name: "test.txt", Size: 1024, IsDir: false}}
@@ -3051,7 +3109,7 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 
 	// 2. Sort by Size
 	fp.sortMode = SortSize
-	fp.sortReverse = false // Descending (large first)
+	fp.sortReverse = true // Descending (large first)
 	fp.sortEntries()
 	// Expected: .., folder, beta.txt (100), alpha.exe (50)
 	if fp.entries[2].Name != "beta.txt" {
@@ -3060,7 +3118,7 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 
 	// 3. Sort by Time
 	fp.sortMode = SortTime
-	fp.sortReverse = false // Descending (newest first)
+	fp.sortReverse = true // Descending (newest first)
 	fp.sortEntries()
 	// Expected: .., folder, alpha.exe (2024), beta.txt (2023)
 	if fp.entries[2].Name != "alpha.exe" {
@@ -3224,6 +3282,113 @@ func TestFileSystemPanel_HeaderSortMappingAllViewModes(t *testing.T) {
 				x += fp.table.Columns[column].Width + 1
 			}
 		})
+	}
+}
+
+func TestFileSystemPanel_ReverseSortingIsStrictAndStable(t *testing.T) {
+	fp := &FileSystemPanel{
+		sortMode:    SortSize,
+		sortReverse: true,
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+			{VFSItem: vfs.VFSItem{Name: "folder-b", IsDir: true}},
+			{VFSItem: vfs.VFSItem{Name: "folder-a", IsDir: true}},
+			{VFSItem: vfs.VFSItem{Name: "alpha.jpg", Size: 100}},
+			{VFSItem: vfs.VFSItem{Name: "beta.jpg", Size: 100}},
+			{VFSItem: vfs.VFSItem{Name: "gamma.jpg", Size: 50}},
+		},
+	}
+
+	fp.sortEntries()
+	first := make([]string, len(fp.entries))
+	for index, entry := range fp.entries {
+		first[index] = entry.Name
+	}
+	for iteration := 0; iteration < 20; iteration++ {
+		fp.sortEntries()
+		for index, entry := range fp.entries {
+			if entry.Name != first[index] {
+				t.Fatalf("equal-key reverse sort changed order on pass %d: got %q want %q", iteration, entry.Name, first[index])
+			}
+		}
+	}
+
+	if fp.entries[0].Name != ".." || !fp.entries[1].IsDir || !fp.entries[2].IsDir {
+		t.Fatalf("reverse sorting moved parent/directories out of the leading group: %v", first)
+	}
+	want := []string{"..", "folder-b", "folder-a", "beta.jpg", "alpha.jpg", "gamma.jpg"}
+	for index, name := range want {
+		if fp.entries[index].Name != name {
+			t.Fatalf("reverse size order at %d = %q, want %q (all=%v)",
+				index, fp.entries[index].Name, name, first)
+		}
+	}
+}
+
+func TestFileSystemPanel_SortDirectionContracts(t *testing.T) {
+	older := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	newPanel := func(mode SortMode, reverse bool) *FileSystemPanel {
+		return &FileSystemPanel{
+			sortMode:    mode,
+			sortReverse: reverse,
+			entries: []*fileEntry{
+				{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+				{VFSItem: vfs.VFSItem{Name: "folder", IsDir: true}},
+				{VFSItem: vfs.VFSItem{Name: "alpha.jpg", Size: 10, MTime: older}},
+				{VFSItem: vfs.VFSItem{Name: "beta.jpg", Size: 20, MTime: newer}},
+			},
+		}
+	}
+	assertOrder := func(t *testing.T, panel *FileSystemPanel, want ...string) {
+		t.Helper()
+		panel.sortEntries()
+		for index, name := range want {
+			if panel.entries[index].Name != name {
+				t.Fatalf("row %d = %q, want %q", index, panel.entries[index].Name, name)
+			}
+		}
+	}
+
+	t.Run("name ascending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortName, false), "..", "folder", "alpha.jpg", "beta.jpg")
+	})
+	t.Run("name descending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortName, true), "..", "folder", "beta.jpg", "alpha.jpg")
+	})
+	t.Run("size ascending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortSize, false), "..", "folder", "alpha.jpg", "beta.jpg")
+	})
+	t.Run("size descending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortSize, true), "..", "folder", "beta.jpg", "alpha.jpg")
+	})
+	t.Run("time ascending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortTime, false), "..", "folder", "alpha.jpg", "beta.jpg")
+	})
+	t.Run("time descending", func(t *testing.T) {
+		assertOrder(t, newPanel(SortTime, true), "..", "folder", "beta.jpg", "alpha.jpg")
+	})
+}
+
+func TestFileSystemPanel_DuplicateParentRowsRemainStrictAndStable(t *testing.T) {
+	firstParent := &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}
+	secondParent := &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}
+	panel := &FileSystemPanel{
+		sortMode:    SortName,
+		sortReverse: true,
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "zeta.jpg"}},
+			firstParent,
+			secondParent,
+			{VFSItem: vfs.VFSItem{Name: "alpha.jpg"}},
+		},
+	}
+
+	for pass := 0; pass < 20; pass++ {
+		panel.sortEntries()
+		if panel.entries[0] != firstParent || panel.entries[1] != secondParent {
+			t.Fatalf("duplicate parent rows lost strict stable order on pass %d", pass)
+		}
 	}
 }
 
