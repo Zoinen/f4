@@ -536,6 +536,7 @@ PanelSettings.Title= Panel settings
 PanelSettings.ShowHidden=Show &hidden and system files
 PanelSettings.ShowDirPrefix=Show '/' prefix for &folders
 PanelSettings.SeparateExtensions=Align file &extensions to the right
+PanelSettings.ShowFileInfo=Show current file &information
 PanelSettings.Scrollbars=Panel scroll&bars:
 PanelSettings.ScrollbarsOff=Do not show
 PanelSettings.ScrollbarsMinimal=Minimal

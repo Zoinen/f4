@@ -2219,7 +2219,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	// blank lines between them (see #298). Blank rows are kept only at
 	// transitions between widget kinds (checkbox↔combo↔radio↔button)
 	// so groups still read as groups.
-	const dialogHeight = 36
+	const dialogHeight = 37
 	dlg := vtui.NewCenteredDialog(60, dialogHeight, Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
@@ -2244,6 +2244,10 @@ func actionPanelSettings(pf *PanelsFrame) {
 	chkSeparateExtensions := vtui.NewCheckbox(0, 0, Msg("PanelSettings.SeparateExtensions"), false)
 	if AppConfig.SeparateFileExtensions {
 		chkSeparateExtensions.State = 1
+	}
+	chkFileInfo := vtui.NewCheckbox(0, 0, Msg("PanelSettings.ShowFileInfo"), false)
+	if AppConfig.ShowPanelFileInfo {
+		chkFileInfo.State = 1
 	}
 
 	scrollbarModes := []string{
@@ -2350,6 +2354,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	dlg.AddItem(chkDirPrefix)
 	dlg.AddItem(chkHighlightMarks)
 	dlg.AddItem(chkSeparateExtensions)
+	dlg.AddItem(chkFileInfo)
 	dlg.AddItem(lblScrollbars)
 	dlg.AddItem(comboScrollbars)
 	dlg.AddItem(chkPaths)
@@ -2379,6 +2384,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 	vbox.Add(chkDirPrefix, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkHighlightMarks, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkSeparateExtensions, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(chkFileInfo, vtui.Margins{}, vtui.AlignLeft)
 	// Blank row before the scrollbar combo — transition to a different
 	// widget kind, worth the visual separator.
 	rowScrollbars := vtui.NewHBoxLayout(0, 0, 56, 1)
@@ -2438,6 +2444,7 @@ func actionPanelSettings(pf *PanelsFrame) {
 		AppConfig.ShowDirPrefix = chkDirPrefix.State == 1
 		AppConfig.ShowHighlightMarks = chkHighlightMarks.State == 1
 		AppConfig.SeparateFileExtensions = chkSeparateExtensions.State == 1
+		AppConfig.ShowPanelFileInfo = chkFileInfo.State == 1
 		AppConfig.PanelScrollbarMode = PanelScrollbarMode(comboScrollbars.Menu.SelectPos)
 		AppConfig.SavePanelPaths = chkPaths.State == 1
 		AppConfig.CommandLineAutoComplete = chkCmdAc.State == 1

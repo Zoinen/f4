@@ -38,6 +38,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.CommandLineAutoComplete = false
 	AppConfig.SeparateFileExtensions = true
 	AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
+	AppConfig.ShowPanelFileInfo = true
 	AppConfig.MacroRecordFormat = 1
 	AppConfig.UseTrash = true
 	AppConfig.TerminalCtrlNWorkspace = false
@@ -57,6 +58,7 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	AppConfig.EditorColorerBackground = true
 	AppConfig.SeparateFileExtensions = false
 	AppConfig.PanelScrollbarMode = PanelScrollbarOff
+	AppConfig.ShowPanelFileInfo = false
 	AppConfig.MacroRecordFormat = 0
 	AppConfig.UseTrash = false
 	AppConfig.TerminalCtrlNWorkspace = true
@@ -104,6 +106,9 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if AppConfig.PanelScrollbarMode != PanelScrollbarMinimal {
 		t.Errorf("LoadConfig restored PanelScrollbarMode %v, want minimal", AppConfig.PanelScrollbarMode)
+	}
+	if !AppConfig.ShowPanelFileInfo {
+		t.Error("LoadConfig failed to restore ShowPanelFileInfo")
 	}
 	if AppConfig.MacroRecordFormat != 1 {
 		t.Error("LoadConfig failed to restore MacroRecordFormat")
@@ -194,7 +199,7 @@ func TestConfig_AltNumberSwitchesTabsDefaultsOnWhenKeyIsAbsent(t *testing.T) {
 	}
 }
 
-func TestConfig_WorkspaceTabModeDefaultsToOnCtrlWhenKeyIsAbsent(t *testing.T) {
+func TestConfig_WorkspaceTabModeDefaultsToAlwaysWhenKeyIsAbsent(t *testing.T) {
 	tmpDir := t.TempDir()
 	userIniPath := filepath.Join(tmpDir, "settings.ini")
 	if err := os.WriteFile(userIniPath, []byte("[Interface]\n"), 0600); err != nil {
@@ -214,9 +219,31 @@ func TestConfig_WorkspaceTabModeDefaultsToOnCtrlWhenKeyIsAbsent(t *testing.T) {
 
 	AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
 	LoadConfig()
-	if AppConfig.WorkspaceTabMode != int(vtui.WorkspaceTabsOnCtrl) {
-		t.Fatalf("WorkspaceTabMode without a saved key = %d, want Ctrl-only mode %d",
-			AppConfig.WorkspaceTabMode, vtui.WorkspaceTabsOnCtrl)
+	if AppConfig.WorkspaceTabMode != int(vtui.WorkspaceTabsAlways) {
+		t.Fatalf("WorkspaceTabMode without a saved key = %d, want always-visible mode %d",
+			AppConfig.WorkspaceTabMode, vtui.WorkspaceTabsAlways)
+	}
+}
+
+func TestConfig_PanelFileInfoDefaultsHiddenWhenKeyIsAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+	if err := os.WriteFile(userIniPath, []byte("[Panel]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	origPathsFunc := getConfigIniPaths
+	oldCfg := AppConfig
+	defer func() {
+		getConfigIniPaths = origPathsFunc
+		AppConfig = oldCfg
+	}()
+	getConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	AppConfig.ShowPanelFileInfo = true
+	LoadConfig()
+	if AppConfig.ShowPanelFileInfo {
+		t.Fatal("ShowPanelFileInfo must default to false when the setting is absent")
 	}
 }
 

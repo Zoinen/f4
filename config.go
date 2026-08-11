@@ -118,6 +118,7 @@ type F4Config struct {
 	ShowHighlightMarks       bool
 	SeparateFileExtensions   bool
 	PanelScrollbarMode       PanelScrollbarMode
+	ShowPanelFileInfo        bool
 	SavePanelPaths           bool
 	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
 	InfoPanelCPUGPU          bool // Ctrl+L info panel: show CPU and GPU sections (off by default)
@@ -198,7 +199,7 @@ var AppConfig = F4Config{
 	FallbackLanguage:         "",
 	HelpLanguage:             "en",
 	AlwaysShowMenuBar:        false,
-	WorkspaceTabMode:         int(vtui.WorkspaceTabsOnCtrl),
+	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
 	CtrlTabShowsMenu:         false,
 	AltNumberSwitchesTabs:    true,
 	ShowHiddenFiles:          true,
@@ -206,6 +207,7 @@ var AppConfig = F4Config{
 	ShowHighlightMarks:       false,
 	SeparateFileExtensions:   false,
 	PanelScrollbarMode:       PanelScrollbarMinimal,
+	ShowPanelFileInfo:        false,
 	SavePanelPaths:           true,
 	InfoPanelBytes:           false,
 	InfoPanelCPUGPU:          false,
@@ -315,7 +317,7 @@ func LoadConfig() {
 	AppConfig.HelpLanguage = ini.GetString("Interface", "HelpLanguage", "en")
 	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
 	AppConfig.AlwaysShowMenuBar = ini.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
-	switch strings.ToLower(ini.GetString("Interface", "WorkspaceTabMode", "ctrl")) {
+	switch strings.ToLower(ini.GetString("Interface", "WorkspaceTabMode", "always")) {
 	case "always":
 		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
 	case "ctrl":
@@ -345,6 +347,7 @@ func LoadConfig() {
 			AppConfig.PanelScrollbarMode = PanelScrollbarMinimal
 		}
 	}
+	AppConfig.ShowPanelFileInfo = ini.GetString("Panel", "ShowPanelFileInfo", "0") == "1"
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
 	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	AppConfig.InfoPanelCPUGPU = ini.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
@@ -493,6 +496,7 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("ShowHighlightMarks = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHighlightMarks]))
 	sb.WriteString(fmt.Sprintf("SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SeparateFileExtensions]))
 	sb.WriteString(fmt.Sprintf("PanelScrollbarMode = %s\n", AppConfig.PanelScrollbarMode.String()))
+	sb.WriteString(fmt.Sprintf("ShowPanelFileInfo = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowPanelFileInfo]))
 	sb.WriteString(fmt.Sprintf("SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths]))
 	sb.WriteString(fmt.Sprintf("InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes]))
 	sb.WriteString(fmt.Sprintf("InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelCPUGPU]))

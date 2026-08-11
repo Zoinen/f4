@@ -2152,7 +2152,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	fp.drawCursorSeparators(scr)
 	fp.drawScrollBar(scr)
 
-	if fp.Y2-fp.Y1+1 > 6 {
+	if AppConfig.ShowPanelFileInfo && fp.Y2-fp.Y1+1 > 6 {
 		p := vtui.NewPainter(scr)
 		attrBox := vtui.Palette[ColPanelBox]
 		// far2l paints the per-file status line with COL_PANELTEXT;
@@ -2376,8 +2376,8 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 func (fp *FileSystemPanel) SetPosition(x1, y1, x2, y2 int) {
 	fp.ScreenObject.SetPosition(x1, y1, x2, y2)
 	fp.frame.SetPosition(x1, y1, x2, y2)
-	// Table stays inside the frame, reserving space for status info if tall enough
-	if y2-y1+1 > 6 {
+	// Table stays inside the frame, reserving space for status info only when enabled.
+	if AppConfig.ShowPanelFileInfo && y2-y1+1 > 6 {
 		fp.table.SetPosition(x1+1, y1+1, x2-1, y2-3)
 	} else {
 		fp.table.SetPosition(x1+1, y1+1, x2-1, y2-1)

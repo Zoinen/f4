@@ -3325,7 +3325,7 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 		return path
 	}
 
-	return "📁 " + panelPath(pf.panels[0]) + " ↔ " + panelPath(pf.panels[1])
+	return "📁 " + panelPath(pf.panels[0]) + " ─ " + panelPath(pf.panels[1])
 }
 
 // GetWorkspaceMenuInfo supplies the Screens popup with full panel paths. The

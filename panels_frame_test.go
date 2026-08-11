@@ -54,7 +54,7 @@ func TestPanelsFrame_WorkspaceTabTitleUsesFolderNames(t *testing.T) {
 	pf.panels[0] = &FileSystemPanel{vfs: vfs.NewOSVFS(leftPath)}
 	pf.panels[1] = &FileSystemPanel{vfs: vfs.NewOSVFS(rightPath)}
 	title := pf.GetWorkspaceTabTitle()
-	if !strings.Contains(title, "left-leaf ↔ right-leaf") {
+	if !strings.Contains(title, "left-leaf ─ right-leaf") {
 		t.Fatalf("workspace tab title = %q, want both leaf folder names", title)
 	}
 	if strings.Contains(title, root) {

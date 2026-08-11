@@ -657,6 +657,10 @@ done2:
 	}
 }
 func TestFileSystemPanel_SelectedInfo(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.ShowPanelFileInfo = true
+
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 	scr := vtui.NewSilentScreenBuf()
@@ -708,6 +712,18 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 		t.Errorf("Expected bottom bar to contain 'folders:1', got: %q", result)
 	}
 
+	// Hiding the separate file-information line must not hide the selection
+	// summary drawn directly on the panel's bottom border.
+	AppConfig.ShowPanelFileInfo = false
+	fp.SetPosition(0, 0, 79, 23)
+	fp.Show(scr)
+	if cell = scr.GetCell(40, 23); cell.Attributes != vtui.Palette[ColPanelSelectedInfo] {
+		t.Errorf("selected summary disappeared with file info hidden: got color %X", cell.Attributes)
+	}
+	if cell = scr.GetCell(0, 21); cell.Char == '├' {
+		t.Error("file-information separator remained visible when the option was disabled")
+	}
+
 	// Clear selection to check ColPanelTotalInfo
 	for _, e := range fp.entries {
 		e.Selected = false
@@ -723,6 +739,10 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 }
 
 func TestFileSystemPanel_Initialization(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.ShowPanelFileInfo = false
+
 	if ViewModeMedium != 0 || ViewModeDetailed != 1 {
 		t.Fatalf("legacy view mode values changed: Medium=%d Detailed=%d", ViewModeMedium, ViewModeDetailed)
 	}
@@ -737,11 +757,15 @@ func TestFileSystemPanel_Initialization(t *testing.T) {
 	// Internal table must match panel interior (excluding borders)
 	tx1, ty1, tx2, ty2 := fp.table.GetPosition()
 	expectedTy2 := y + h - 2
-	if h > 6 {
-		expectedTy2 = y + h - 4
-	}
 	if tx1 != x+1 || ty1 != y+1 || tx2 != x+w-2 || ty2 != expectedTy2 {
 		t.Errorf("Internal table coordinates mismatch: got (%d,%d)-(%d,%d)", tx1, ty1, tx2, ty2)
+	}
+
+	AppConfig.ShowPanelFileInfo = true
+	fp.SetPosition(x, y, x+w-1, y+h-1)
+	_, _, _, ty2 = fp.table.GetPosition()
+	if expected := y + h - 4; ty2 != expected {
+		t.Errorf("table bottom with status info = %d, want %d", ty2, expected)
 	}
 
 	if fp.viewMode != ViewModeMedium {
@@ -770,12 +794,13 @@ func TestMediumRow_GetCellText(t *testing.T) {
 		t.Errorf("Out of bounds should be empty")
 	}
 
-	fp.entries = make([]*fileEntry, 10)
-	for i := 0; i < 10; i++ {
+	columnHeight := fp.table.ViewHeight
+	fp.entries = make([]*fileEntry, columnHeight*2)
+	for i := range fp.entries {
 		fp.entries[i] = &fileEntry{VFSItem: vfs.VFSItem{Name: "f"}}
 	}
 	fp.entries[0].Name = "Left"
-	fp.entries[7].Name = "Right"
+	fp.entries[columnHeight].Name = "Right"
 	mRow = &mediumRow{fp: fp, r: 0}
 	if mRow.GetCellText(0) != "Left" {
 		t.Errorf("Expected 'Left', got %q", mRow.GetCellText(0))
@@ -920,9 +945,10 @@ func TestFileSystemPanel_CursorMapping(t *testing.T) {
 		t.Errorf("Medium mapping index 3: expected pos 3 col 0, got pos %d col %d", fp.table.SelectPos, fp.table.SelectCol)
 	}
 
-	fp.SetCursorIndex(10) // Index 10 with H=7 -> Col 1, Row 3
+	columnHeight := fp.table.ViewHeight
+	fp.SetCursorIndex(columnHeight + 3)
 	if fp.table.SelectPos != 3 || fp.table.SelectCol != 1 {
-		t.Errorf("Medium mapping index 10: expected pos 3 col 1, got pos %d col %d", fp.table.SelectPos, fp.table.SelectCol)
+		t.Errorf("Medium mapping index %d: expected pos 3 col 1, got pos %d col %d", columnHeight+3, fp.table.SelectPos, fp.table.SelectCol)
 	}
 
 	// 2. Detailed Mode

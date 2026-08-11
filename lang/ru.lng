@@ -536,6 +536,7 @@ PanelSettings.Title= Настройки панелей
 PanelSettings.ShowHidden=Показывать &скрытые и системные файлы
 PanelSettings.ShowDirPrefix=Показывать '/' перед &папками
 PanelSettings.SeparateExtensions=Выравнивать &расширения файлов по правому краю
+PanelSettings.ShowFileInfo=Показывать &информацию о текущем файле
 PanelSettings.Scrollbars=Полосы про&крутки панелей:
 PanelSettings.ScrollbarsOff=Не показывать
 PanelSettings.ScrollbarsMinimal=Минимальные
