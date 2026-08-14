@@ -114,13 +114,14 @@ type MenuReq struct {
 
 // RPCPlugin manages the lifecycle of an external process plugin.
 type RPCPlugin struct {
-	path     string
-	dir      string
-	cmd      *exec.Cmd
-	sess     *f4rpc.Session
-	api      vfs.HostAPI
-	closing  bool
-	identity PluginIdentity
+	path         string
+	dir          string
+	cmd          *exec.Cmd
+	sess         *f4rpc.Session
+	api          vfs.HostAPI
+	registration vfs.Registration
+	closing      bool
+	identity     PluginIdentity
 }
 
 // SetPermissionIdentity passes on who the manifest says this plugin is.
@@ -203,18 +204,28 @@ func (p *RPCPlugin) Init(api vfs.HostAPI) error {
 
 	p.sess = f4rpc.NewSession(stdout, stdin)
 
-	return startPluginSession(p.sess, api, p.path, nil, func(err error) {
+	registration, err := startPluginSession(p.sess, api, p.path, nil, func(err error) {
 		if !p.closing {
 			vtui.DebugLog("RPC Plugin %q terminated unexpectedly: %v", p.path, err)
 		}
 	})
+	if err != nil {
+		_ = p.Close()
+		return err
+	}
+	p.registration = registration
+	return nil
 }
 
 func (p *RPCPlugin) Close() error {
 	p.closing = true
+	if p.registration != nil {
+		p.registration.Unregister()
+		p.registration = nil
+	}
 	if p.cmd != nil && p.cmd.Process != nil {
-		p.cmd.Process.Kill()
-		p.cmd.Wait()
+		_ = p.cmd.Process.Kill()
+		_ = p.cmd.Wait()
 	}
 	return nil
 }

@@ -27,6 +27,7 @@ type viewerEditorHistoryEntry struct {
 	Local    bool                    `json:"local,omitempty"`
 	VFSType  string                  `json:"vfs_type,omitempty"`
 	VFSTitle string                  `json:"vfs_title,omitempty"`
+	Lock     bool                    `json:"lock,omitempty"`
 }
 
 func loadViewerEditorHistory() []viewerEditorHistoryEntry {
@@ -98,14 +99,40 @@ func rememberViewerEditorHistory(fs vfs.VFS, path string, mode viewerEditorHisto
 	filtered = append(filtered, entry)
 	for _, old := range entries {
 		if sameViewerEditorHistoryFile(old, entry) {
+			entry.Lock = old.Lock
+			filtered[0] = entry
 			continue
 		}
 		filtered = append(filtered, old)
 	}
-	if len(filtered) > 100 {
-		filtered = filtered[:100]
-	}
+	filtered = limitViewerEditorHistory(filtered, 100)
 	saveViewerEditorHistory(filtered)
+}
+
+func limitViewerEditorHistory(entries []viewerEditorHistoryEntry, limit int) []viewerEditorHistoryEntry {
+	if limit <= 0 || len(entries) <= limit {
+		return entries
+	}
+	locked := 0
+	for _, entry := range entries {
+		if entry.Lock {
+			locked++
+		}
+	}
+	unlockedBudget := limit - locked
+	if unlockedBudget < 0 {
+		unlockedBudget = 0
+	}
+	kept := make([]viewerEditorHistoryEntry, 0, limit)
+	for _, entry := range entries {
+		if entry.Lock {
+			kept = append(kept, entry)
+		} else if unlockedBudget > 0 {
+			kept = append(kept, entry)
+			unlockedBudget--
+		}
+	}
+	return kept
 }
 
 func sameViewerEditorHistoryFile(a, b viewerEditorHistoryEntry) bool {
@@ -161,7 +188,7 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 	paths := make([]HistoryRecord, len(entries))
 	modes := make([]string, len(entries))
 	for i, entry := range entries {
-		paths[i] = HistoryRecord{Name: entry.Display}
+		paths[i] = HistoryRecord{Name: entry.Display, Lock: entry.Lock}
 		if entry.Mode == historyModeEdit {
 			modes[i] = Msg("History.Mode.Edit")
 		} else {
@@ -172,6 +199,13 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 	menu := vtui.NewVMenu(Msg("History.ViewEditTitle"))
 	menu.SetHelp("HistoryViewEdit")
 	search := newHistorySearch(menu, paths, Msg("History.ViewEditHint"))
+	search.supportsLocks = true
+	search.onLockToggled = func() {
+		for i := range entries {
+			entries[i].Lock = search.all[i].Lock
+		}
+		saveViewerEditorHistory(entries)
+	}
 	search.setSecondaryWidth(modes, true, 10)
 
 	openCurrent := func(override viewerEditorHistoryMode) {
@@ -218,9 +252,10 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 		}
 
 		if (e.VirtualKeyCode == vtinput.VK_DELETE || e.VirtualKeyCode == vtinput.VK_BACK) && shift {
-			entries = append(entries[:idx], entries[idx+1:]...)
-			search.deleteSelected()
-			saveViewerEditorHistory(entries)
+			if search.deleteSelected() {
+				entries = append(entries[:idx], entries[idx+1:]...)
+				saveViewerEditorHistory(entries)
+			}
 			if len(entries) == 0 {
 				search.cleanup()
 				menu.Close()
@@ -228,10 +263,7 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_DELETE && !ctrl && !alt && !shift {
-			pathNames := extractNames(paths)
-			confirmAndClearHistory(Msg("History.ViewEditTitle"), viewerEditorHistoryID, &pathNames, func() {
-				entries = nil
-			}, search, menu)
+			confirmAndClearViewerEditorHistory(&entries, search, menu)
 			return true
 		}
 		if (e.VirtualKeyCode == vtinput.VK_C || e.VirtualKeyCode == vtinput.VK_INSERT) && ctrl && !alt && !shift {
@@ -242,4 +274,28 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 	}
 
 	vtui.FrameManager.Push(menu)
+}
+
+func confirmAndClearViewerEditorHistory(entries *[]viewerEditorHistoryEntry, search *historySearch, menu *vtui.VMenu) {
+	dlg := vtui.ShowMessage(Msg("History.ViewEditTitle"), Msg("History.ConfirmClearAll"), []string{Msg("vtui.Ok"), Msg("vtui.Cancel")})
+	dlg.OnResult = func(code int) {
+		if code != 0 {
+			return
+		}
+		keptEntries := make([]viewerEditorHistoryEntry, 0)
+		keptRecords := make([]HistoryRecord, 0)
+		for i, entry := range *entries {
+			if entry.Lock {
+				keptEntries = append(keptEntries, entry)
+				keptRecords = append(keptRecords, search.all[i])
+			}
+		}
+		*entries = keptEntries
+		saveViewerEditorHistory(keptEntries)
+		search.setItems(keptRecords)
+		if len(keptEntries) == 0 {
+			search.cleanup()
+			menu.Close()
+		}
+	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/unxed/vtui"
@@ -28,6 +29,67 @@ func TestLoadAllLanguagePacks(t *testing.T) {
 
 	if !seen["en"] || !seen["ru"] {
 		t.Errorf("expected the en and ru packs to be present, got %v", seen)
+	}
+}
+
+func TestEmbeddedCurrentLanguageContainsNewCommandStrings(t *testing.T) {
+	ru := loadEmbeddedLanguageMap("ru")
+	if got := ru["Action.Workspace.Close"]; !strings.Contains(got, "Закрыть") {
+		t.Fatalf("embedded Russian workspace label = %q", got)
+	}
+	if got := ru["Archive.Command.Extract"]; !strings.Contains(got, "Извлечь") {
+		t.Fatalf("embedded Russian plugin label = %q", got)
+	}
+	if got := loadEmbeddedLanguageMap("does-not-exist"); got != nil {
+		t.Fatalf("unknown embedded language = %#v, want nil", got)
+	}
+}
+
+func TestInitLangUsesEmbeddedCurrentLanguageAndResetsFallback(t *testing.T) {
+	previous := AppConfig
+	t.Cleanup(func() {
+		AppConfig = previous
+		InitLang()
+	})
+
+	AppConfig.Language = "ru"
+	AppConfig.FallbackLanguage = ""
+	InitLang()
+	if got := Msg("Action.Workspace.Close"); !strings.Contains(got, "Закрыть") {
+		t.Fatalf("Russian current-language label = %q", got)
+	}
+
+	AppConfig.Language = "de"
+	InitLang()
+	if got := Msg("Action.Workspace.Close"); plainLabel(got) != "Close workspace" {
+		t.Fatalf("missing German translation inherited a stale language: %q", got)
+	}
+}
+
+func TestInitLangPreservesRuntimePluginStrings(t *testing.T) {
+	previousConfig := AppConfig
+	previousStrings := vtui.SnapshotStrings()
+	languageState.Lock()
+	previousCore := make(map[string]string, len(languageState.core))
+	for key, value := range languageState.core {
+		previousCore[key] = value
+	}
+	languageState.Unlock()
+	t.Cleanup(func() {
+		AppConfig = previousConfig
+		languageState.Lock()
+		languageState.core = previousCore
+		vtui.ReplaceStrings(previousStrings)
+		languageState.Unlock()
+	})
+
+	const key = "Test.Plugin.RuntimeTranslation"
+	vtui.AddStrings(map[string]string{key: "runtime plugin text"})
+	AppConfig.Language = "ru"
+	AppConfig.FallbackLanguage = ""
+	InitLang()
+	if got := Msg(key); got != "runtime plugin text" {
+		t.Fatalf("runtime plugin string after language switch = %q", got)
 	}
 }
 

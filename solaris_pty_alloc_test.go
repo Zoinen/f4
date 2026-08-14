@@ -3,7 +3,10 @@
 package main
 
 import (
+	"errors"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestOpenSolarisPTY_AllocationSequence(t *testing.T) {
@@ -39,5 +42,47 @@ func TestOpenSolarisPTY_AllocationSequence(t *testing.T) {
 		if pushed[i] != expected {
 			t.Errorf("Module mismatch at position %d: expected %q, got %q", i, expected, pushed[i])
 		}
+	}
+
+	// 4. Проверяем, что владение и блокировка сняты до открытия слейва.
+	if !mock.granted {
+		t.Error("GrantPt was never called: /dev/pts/N stays root:sys 0620 and open() fails with EACCES")
+	}
+	if !mock.unlocked {
+		t.Error("UnlockPt was never called: PTLOCK stays set and ptsopen() fails with EAGAIN")
+	}
+}
+
+// TestOpenSolarisPTY_RequiresGrant проверяет, что без передачи владения
+// выделение падает, а не молча продолжается. Это регрессионный тест на
+// первую половину issue #444: реальный EACCES с OpenIndiana приходил именно
+// отсюда.
+func TestOpenSolarisPTY_RequiresGrant(t *testing.T) {
+	mock := NewMockSolarisStreams()
+	mock.refuseGrant = true
+
+	pty, err := OpenSolarisPTY(mock)
+	if err == nil {
+		pty.Close()
+		t.Fatal("OpenSolarisPTY succeeded without grantpt; the kernel would have refused with EACCES")
+	}
+	if !errors.Is(err, unix.EACCES) {
+		t.Errorf("Expected EACCES without grantpt, got %v", err)
+	}
+}
+
+// TestOpenSolarisPTY_RequiresUnlock — то же для второго барьера. Он
+// независим от первого: починка одних прав оставила бы EAGAIN.
+func TestOpenSolarisPTY_RequiresUnlock(t *testing.T) {
+	mock := NewMockSolarisStreams()
+	mock.refuseUnlock = true
+
+	pty, err := OpenSolarisPTY(mock)
+	if err == nil {
+		pty.Close()
+		t.Fatal("OpenSolarisPTY succeeded without unlockpt; ptsopen() would have refused with EAGAIN")
+	}
+	if !errors.Is(err, unix.EAGAIN) {
+		t.Errorf("Expected EAGAIN without unlockpt, got %v", err)
 	}
 }

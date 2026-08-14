@@ -570,49 +570,28 @@ func NewQueueFrame() *QueueFrame {
 	}
 
 	qf := &QueueFrame{
-		BaseWindow: *vtui.NewBaseWindow(0, 0, scrW-1, scrH-1, " Operations Queue "),
+		BaseWindow: *vtui.NewBaseWindow(0, 2, scrW-1, scrH-1, " Operations Queue "),
 	}
 	qf.ShowClose = true
 	qf.ShowZoom = true
 	qf.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
 
-	descW := scrW - 4 - 4 - 10 - 8 - 18 - 12 - 5 // Dynamic width calculation
-	if descW < 10 {
-		descW = 10
-	}
-
-	cols := []vtui.TableColumn{
-		{Title: "ID", Width: 4},
-		{Title: "State", Width: 10},
-		{Title: "Type", Width: 8},
-		{Title: "Description / Current File", Width: descW},
-		{Title: "Progress", Width: 18},
-		{Title: "Speed", Width: 12},
-	}
-	qf.table = vtui.NewTable(0, 0, scrW-4, scrH-6, cols)
-	useDialogTableColors(qf.table)
-	qf.table.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
-	qf.table.ShowScrollBar = true
-	qf.table.OnAction = func(idx int) { qf.openTaskDetails(idx) }
-
 	btnCancel := vtui.NewButton(0, 0, Msg("Queue.BtnCancel"))
 	btnClear := vtui.NewButton(0, 0, Msg("Queue.BtnClear"))
 
-	qf.AddItem(qf.table)
-	qf.AddItem(btnCancel)
-	qf.AddItem(btnClear)
-
-	vbox := vtui.NewVBoxLayout(qf.X1+2, qf.Y1+2, scrW-4, scrH-4)
-	vbox.Add(qf.table, vtui.Margins{Bottom: 1}, vtui.AlignFill)
-
-	hbox := vtui.NewHBoxLayout(0, 0, 74, 1)
-	hbox.HorizontalAlign = vtui.AlignCenter
-	hbox.Spacing = 2
-	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
-	hbox.Add(btnClear, vtui.Margins{}, vtui.AlignTop)
-
-	vbox.Add(hbox, vtui.Margins{}, vtui.AlignFill)
-	vbox.Apply()
+	qf.table = vtui.NewTableWithButtons(&qf.BaseWindow, []vtui.TableColumn{
+		{Title: "ID", Width: 4},
+		{Title: "State", Width: 10},
+		{Title: "Type", Width: 8},
+		{Title: "Description / Current File", MinWidth: 10},
+		{Title: "Progress", Width: 24},
+		{Title: "Speed", Width: 12},
+	}, btnCancel, btnClear)
+	useDialogTableColors(qf.table)
+	qf.table.Sortable = true
+	qf.table.QuickSearch = true
+	qf.table.ShowScrollBar = true
+	qf.table.OnAction = func(idx int) { qf.openTaskDetails(idx) }
 
 	btnCancel.OnClick = func() {
 		idx := qf.table.SelectPos
@@ -681,24 +660,40 @@ func (qf *QueueFrame) openTaskDetails(idx int) {
 	}
 }
 
+func queueHasActiveTasks() bool {
+	manager := GlobalQueueManager
+	if manager == nil {
+		return false
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	for _, task := range manager.tasks {
+		if task == nil {
+			continue
+		}
+		task.mu.Lock()
+		active := queueTaskActive(task.State)
+		task.mu.Unlock()
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
+func (qf *QueueFrame) vetoCloseWhileActive() bool {
+	if !queueHasActiveTasks() {
+		return false
+	}
+	vtui.ShowToast("Cannot close queue while operations are active. Use Ctrl+Tab to switch.", 3*time.Second)
+	return true
+}
+
 func (qf *QueueFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	ctrlW := e.KeyDown && e.VirtualKeyCode == vtinput.VK_W &&
 		(e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0
 	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_F10 || ctrlW) {
-		active := false
-		GlobalQueueManager.mu.Lock()
-		for _, t := range GlobalQueueManager.tasks {
-			t.mu.Lock()
-			isActive := queueTaskActive(t.State)
-			t.mu.Unlock()
-			if isActive {
-				active = true
-				break
-			}
-		}
-		GlobalQueueManager.mu.Unlock()
-		if active {
-			vtui.ShowToast("Cannot close queue while operations are active. Use Ctrl+Tab to switch.", 3*time.Second)
+		if qf.vetoCloseWhileActive() {
 			return true // Swallow ESC/F10
 		}
 	}

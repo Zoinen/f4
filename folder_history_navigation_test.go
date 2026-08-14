@@ -35,6 +35,37 @@ func TestFolderHistoryStepMovesPositionally(t *testing.T) {
 	}
 }
 
+func TestFolderHistorySuppressionIsBoundToItsAsyncNavigation(t *testing.T) {
+	panel := &FileSystemPanel{}
+	olderTarget := `cloud.example:\older`
+	newerTarget := `cloud.example:\newer`
+
+	panel.suppressNextFolderHistory(olderTarget)
+	olderToken, ok := panel.folderHistorySuppression(olderTarget)
+	if !ok {
+		t.Fatal("older history navigation did not acquire suppression")
+	}
+
+	// A cross-provider history jump can spend time opening the next provider
+	// while a refresh from the old provider is still completing. The old
+	// completion must not consume the newer jump's one-shot suppression.
+	panel.suppressNextFolderHistory(newerTarget)
+	if panel.consumeFolderHistorySuppression(olderTarget, olderToken) {
+		t.Fatal("stale directory completion consumed newer history suppression")
+	}
+
+	newerToken, ok := panel.folderHistorySuppression(newerTarget)
+	if !ok {
+		t.Fatal("newer history navigation lost its suppression")
+	}
+	if !panel.consumeFolderHistorySuppression(newerTarget, newerToken) {
+		t.Fatal("matching directory completion did not consume its suppression")
+	}
+	if _, ok := panel.folderHistorySuppression(newerTarget); ok {
+		t.Fatal("history suppression was not one-shot")
+	}
+}
+
 func TestFolderHistoryNavigationAndMenuDoNotReorderHistory(t *testing.T) {
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)

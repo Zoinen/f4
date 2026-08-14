@@ -131,7 +131,10 @@ func EventToFarString(e *vtinput.InputEvent) string {
 func ParseFarKey(s string) *vtinput.InputEvent {
 	e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true}
 	orig := s
-	if strings.HasPrefix(s, "Ctrl") {
+	if strings.HasPrefix(s, "RCtrl") {
+		e.ControlKeyState |= vtinput.RightCtrlPressed
+		s = strings.TrimPrefix(s, "RCtrl")
+	} else if strings.HasPrefix(s, "Ctrl") {
 		e.ControlKeyState |= vtinput.LeftCtrlPressed
 		s = strings.TrimPrefix(s, "Ctrl")
 	}
@@ -322,19 +325,33 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 		if !e.KeyDown {
 			return true // Consume KeyUp of the trigger
 		}
-		if m.Recording {
-			m.Recording = false
-			vtui.FrameManager.PostTask(func() {
-				m.showAssignDialog()
-			})
-		} else {
-			m.Recording = true
-			m.Buffer = make([]*vtinput.InputEvent, 0)
-			m.StartArea = m.GetCurrentArea()
-			vtui.DebugLog("MACRO: Started recording in area: %s", m.StartArea)
-		}
-		vtui.FrameManager.Redraw()
+		m.ToggleRecording()
 		return true // Trigger is ALWAYS consumed
+	}
+
+	// The command palette is the application-wide escape hatch for finding
+	// commands. Resolve it before recording/assignment so the opening chord is
+	// neither captured in the macro buffer nor shadowed by macro playback.
+	if e.KeyDown {
+		currentArea := m.GetCurrentArea()
+		keyStr := EventToFarString(e)
+		if hm := GlobalHotkeysMgr; hm != nil {
+			if actionName := hm.GetAction(currentArea, keyStr); strings.EqualFold(actionName, commandPaletteActionName) {
+				RunAction(actionName)
+				return true
+			}
+		}
+	}
+
+	// Once the palette is open, its remaining query and navigation keys belong
+	// to the dialog. In particular, do not record them into a macro that the
+	// user may be stopping from the palette itself. The palette chord itself was
+	// handled above, so pressing it again is still consumed without adding a
+	// second dialog.
+	if vtui.FrameManager != nil {
+		if _, open := vtui.FrameManager.GetTopFrame().(*commandPaletteDialog); open {
+			return false
+		}
 	}
 
 	if m.Recording || m.Assigning {
@@ -427,6 +444,26 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 	}
 
 	return false
+}
+
+// ToggleRecording is shared by the native Ctrl+. handler and the command
+// palette. Stopping remains deferred so the assignment dialog is pushed only
+// after the current input dispatch (or palette close) has completed.
+func (m *MacroManager) ToggleRecording() bool {
+	if m == nil || vtui.FrameManager == nil {
+		return false
+	}
+	if m.Recording {
+		m.Recording = false
+		vtui.FrameManager.PostTask(func() { m.showAssignDialog() })
+	} else {
+		m.Recording = true
+		m.Buffer = make([]*vtinput.InputEvent, 0)
+		m.StartArea = m.GetCurrentArea()
+		vtui.DebugLog("MACRO: Started recording in area: %s", m.StartArea)
+	}
+	vtui.FrameManager.Redraw()
+	return true
 }
 
 // LookupHotkey runs the configured action for e in the current area without

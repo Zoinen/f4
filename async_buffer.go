@@ -33,7 +33,7 @@ func NewAsyncBuffer(ctx context.Context, f vfs.ReadAtCloser) *AsyncBuffer {
 		cancelCtx: bCancel,
 		loaded:    make(map[int][]byte),
 		fetching:  make(map[int]bool),
-		chunkSize: 256 * 1024, // 256 KB chunks
+		chunkSize: 32 * 1024, // 32 KB chunks
 	}
 }
 
@@ -126,17 +126,18 @@ func (b *AsyncBuffer) fetchChunk(idx int) {
 	buf := make([]byte, sz)
 	n, err := b.file.ReadAt(b.ctx, buf, off)
 
-	vtui.FrameManager.PostTask(func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		delete(b.fetching, idx)
+	b.mu.Lock()
+	delete(b.fetching, idx)
 
-		if b.ctx.Err() == nil && (err == nil || err == io.EOF) {
-			b.loaded[idx] = buf[:n]
-			vtui.FrameManager.Redraw()
-		} else if err != nil && err != context.Canceled {
-			// Report error but allow retry on next UI scroll
-			vtui.DebugLog("AsyncBuffer: failed to fetch chunk %d: %v", idx, err)
-		}
+	if b.ctx.Err() == nil && (err == nil || err == io.EOF) {
+		b.loaded[idx] = buf[:n]
+	} else if err != nil && err != context.Canceled {
+		// Report error but allow retry on next UI scroll
+		vtui.DebugLog("AsyncBuffer: failed to fetch chunk %d: %v", idx, err)
+	}
+	b.mu.Unlock()
+
+	vtui.FrameManager.PostTask(func() {
+		vtui.FrameManager.Redraw()
 	})
 }

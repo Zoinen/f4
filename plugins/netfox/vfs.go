@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
 	"io"
 	"os"
@@ -23,6 +24,27 @@ type NetFoxConfig struct {
 	Timeout  string            `json:"Timeout,omitempty"`
 	Codepage string            `json:"Codepage,omitempty"`
 	Options  map[string]string `json:"Options,omitempty"`
+
+	// Proxy overrides f4's app-wide proxy for this site alone. ProxyMode 0
+	// is netproxy.ModeGlobal, so connections saved before this existed —
+	// and new ones the user never touched — simply follow the app setting.
+	ProxyMode int    `json:"ProxyMode,omitempty"`
+	ProxyHost string `json:"ProxyHost,omitempty"`
+	ProxyPort string `json:"ProxyPort,omitempty"`
+	ProxyUser string `json:"ProxyUser,omitempty"`
+	ProxyPass string `json:"ProxyPass,omitempty"`
+}
+
+// Proxy is the settings this connection dials through: its own when it
+// overrides, the app-wide ones otherwise.
+func (c NetFoxConfig) Proxy() netproxy.Settings {
+	return netproxy.Resolve(netproxy.Settings{
+		Mode: c.ProxyMode,
+		Host: c.ProxyHost,
+		Port: c.ProxyPort,
+		User: c.ProxyUser,
+		Pass: c.ProxyPass,
+	})
 }
 
 type NetFoxVFS struct {
@@ -55,8 +77,11 @@ func (v *NetFoxVFS) getConfigs() map[string]NetFoxConfig {
 	for k, cfg := range configs {
 		if cfg.Pass != "" {
 			cfg.Pass = deobfuscate(cfg.Pass)
-			configs[k] = cfg
 		}
+		if cfg.ProxyPass != "" {
+			cfg.ProxyPass = deobfuscate(cfg.ProxyPass)
+		}
+		configs[k] = cfg
 	}
 	for k, cfg := range configs {
 		if cfg.Codepage == "" {
@@ -77,6 +102,9 @@ func (v *NetFoxVFS) saveConfigs(configs map[string]NetFoxConfig) {
 	for k, cfg := range configs {
 		if cfg.Pass != "" {
 			cfg.Pass = obfuscate(cfg.Pass)
+		}
+		if cfg.ProxyPass != "" {
+			cfg.ProxyPass = obfuscate(cfg.ProxyPass)
 		}
 		encodedConfigs[k] = cfg
 	}

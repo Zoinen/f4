@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -395,6 +396,31 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	return errPlat
 }
 
+func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) error {
+	f, err := os.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var newOffset int64 = 0
+	for _, p := range pieces {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if p.Data != nil {
+			if _, err := f.WriteAt(p.Data, newOffset); err != nil {
+				return err
+			}
+		} else {
+			if p.Offset != newOffset {
+				return fmt.Errorf("in-place patching requires unchanged pieces to remain at their original offsets (no insertions/deletions allowed on raw disks)")
+			}
+		}
+		newOffset += p.Length
+	}
+	return nil
+}
 func (v *OSVFS) GetCapabilities() VFSCapabilities {
 	return VFSCapabilities{
 		HasServerSideCopy:        true,
@@ -403,6 +429,7 @@ func (v *OSVFS) GetCapabilities() VFSCapabilities {
 		HasSearch:                false,
 		HasUnixPermissions:       runtime.GOOS != "windows",
 		HasAtomicNoReplaceRename: true,
+		HasWrite:                 true,
 	}
 }
 
@@ -436,18 +463,28 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 		return nil, ctx.Err()
 	}
 	fi, err := os.Stat(prepareOSPath(path))
-	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
+	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.Open(prepareOSPath(path))
+	f, err := os.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
+	if err != nil {
+		f, err = os.Open(prepareOSPath(path))
+	}
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Open(%q), attempting sudo...", path)
 			sudoF, sudoErr := globalSudoClient.Open(prepareOSPath(path), os.O_RDONLY, 0)
 			if sudoErr == nil {
 				info, _ := sudoF.Stat()
-				vtui.DebugLog("VFS: Sudo Open(%q) SUCCESS, size: %d", path, info.Size())
-				return &osFileWrapper{File: sudoF, size: info.Size()}, nil
+				size := info.Size()
+				if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
+					if pos, err := sudoF.Seek(0, io.SeekEnd); err == nil && pos > 0 {
+						size = pos
+						sudoF.Seek(0, io.SeekStart)
+					}
+				}
+				vtui.DebugLog("VFS: Sudo Open(%q) SUCCESS, size: %d", path, size)
+				return &osFileWrapper{File: sudoF, size: size}, nil
 			}
 			vtui.DebugLog("VFS: Sudo Open(%q) FAILED: %v", path, sudoErr)
 		}
@@ -458,7 +495,14 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 		f.Close()
 		return nil, err
 	}
-	return &osFileWrapper{File: f, size: info.Size()}, nil
+	size := info.Size()
+	if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
+		if pos, err := f.Seek(0, io.SeekEnd); err == nil && pos > 0 {
+			size = pos
+			f.Seek(0, io.SeekStart)
+		}
+	}
+	return &osFileWrapper{File: f, size: size}, nil
 }
 
 func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
@@ -467,10 +511,13 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 	}
 	prepared := prepareOSPath(path)
 	fi, err := os.Stat(prepared)
-	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
+	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 		return nil, os.ErrInvalid
 	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if err == nil && (fi.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0) {
+		flags = os.O_WRONLY // Do not truncate devices
+	}
 	createMode := os.FileMode(0o666)
 	if overwrite, known := DestinationOverwrite(ctx); known && !overwrite {
 		// O_EXCL makes the editor's unique sibling creation collision-safe and
@@ -564,4 +611,42 @@ func stripExtendedPrefix(p string) string {
 		return p[4:]
 	}
 	return p
+}
+
+// Readlink and Symlink make OSVFS a SymlinkVFS. The local file system is the
+// one backend where a symbolic link is exactly what the word means.
+
+func (v *OSVFS) Readlink(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	abs, err := v.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return os.Readlink(prepareOSPath(abs))
+}
+
+func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	abs, err := v.Abs(linkPath)
+	if err != nil {
+		return err
+	}
+	return os.Symlink(target, prepareOSPath(abs))
+}
+
+// OpenWriteAt makes OSVFS a RandomWriteVFS. A local file is the case where
+// staging a second copy on the same disk buys nothing at all.
+func (v *OSVFS) OpenWriteAt(ctx context.Context, path string) (WriterAtCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	abs, err := v.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return os.OpenFile(prepareOSPath(abs), os.O_RDWR|os.O_CREATE, 0o644)
 }

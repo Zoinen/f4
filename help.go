@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/unxed/vtui"
@@ -185,15 +184,15 @@ func generateKeysHelpTopic(name, title string, areas []string, navTarget string)
 	}
 	active := hm.GetActiveBindings()
 
-	keysFor := func(area, actionName string) string {
+	keysFor := func(area string, action Action) string {
 		var keys []string
 		for key, binding := range active[area] {
 			parts := strings.SplitN(binding, ":", 2)
-			if strings.EqualFold(parts[0], actionName) {
+			if strings.EqualFold(parts[0], action.Name) {
 				keys = append(keys, FormatKeyForUI(key))
 			}
 		}
-		sort.Strings(keys)
+		keys = mergeCommandPaletteShortcuts(keys, NativeShortcutsForAction(area, action))
 		return strings.Join(keys, " / ")
 	}
 
@@ -207,7 +206,7 @@ func generateKeysHelpTopic(name, title string, areas []string, navTarget string)
 			if a.Area != area {
 				continue
 			}
-			keys := keysFor(area, a.Name)
+			keys := keysFor(area, a)
 			if keys == "" {
 				continue
 			}

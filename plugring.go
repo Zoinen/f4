@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/vtui"
 	"gopkg.in/yaml.v3"
 )
@@ -63,9 +64,7 @@ func FetchCatalog(ctx context.Context) ([]PlugRingItem, error) {
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("User-Agent", "f4-plugring")
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	client := netproxy.HTTPClient(10 * time.Second)
 
 	resp, err := client.Do(req)
 	if err != nil {

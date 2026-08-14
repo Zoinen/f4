@@ -47,5 +47,5 @@ func ManageSessions() {
 	vtui.FrameManager.Run(reader)
 }
 
-func runServer(sockPath string) {}
-func runClient(sockPath string) {}
+func runServer(sockPath string)                {}
+func runClient(sockPath string, serverPID int) {}

@@ -724,7 +724,13 @@ func (s *applyCommandSession) postItemFinished(result applyBatchItemResult) {
 		return
 	}
 	clear := func() {
-		if s.pf == nil || s.pf.closed || s.active.panel == nil {
+		if s.pf == nil || s.active.panel == nil {
+			return
+		}
+		s.pf.ptyMutex.Lock()
+		closed := s.pf.closed
+		s.pf.ptyMutex.Unlock()
+		if closed {
 			return
 		}
 		for _, name := range result.AffectedNames {
@@ -744,7 +750,13 @@ func (s *applyCommandSession) postItemFinished(result applyBatchItemResult) {
 }
 
 func (s *applyCommandSession) refreshCapturedPanels() {
-	if s.pf == nil || s.pf.closed {
+	if s == nil || s.pf == nil {
+		return
+	}
+	s.pf.ptyMutex.Lock()
+	closed := s.pf.closed
+	s.pf.ptyMutex.Unlock()
+	if closed {
 		return
 	}
 	seen := make(map[*FileSystemPanel]bool)

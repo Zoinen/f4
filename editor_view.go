@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/charlievieth/strcase"
 	"github.com/coregx/coregex"
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/piecetable"
@@ -24,6 +26,7 @@ import (
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+import "golang.org/x/arch/x86/x86asm"
 
 type visualCell struct {
 	info       vtui.CharInfo
@@ -39,10 +42,12 @@ type lineFragment struct {
 
 var (
 	LastEditorSearch          string
+	LastEditorReplace         string
 	LastEditorSearchCase      bool
 	LastEditorSearchReverse   bool
 	LastEditorSearchRegexp    bool
 	LastEditorSearchWholeWord bool
+	LastEditorSearchHex       bool
 )
 var GlobalLastClipboardWasRectangular bool
 
@@ -59,6 +64,11 @@ type EditorView struct {
 	ScrollLeft   int // Горизонтальный скролл (когда WordWrap=false)
 
 	WordWrap         bool
+	HexMode          bool
+	DecodeMode       bool
+	HexTopOffset     int
+	HexNibble        int // 0 = high nibble, 1 = low nibble
+	DisasmMode       int // 16, 32, or 64
 	overtype         bool
 	modified         bool
 	CursorLine       int // Текущая логическая строка (для плагинов)
@@ -79,6 +89,10 @@ type EditorView struct {
 	pasteBuffer []rune
 	asyncBuf    *AsyncBuffer
 	indexCancel context.CancelFunc
+	// indexing is true from StartIndexing until that run ends, by completion
+	// or by cancellation. indexCancel cannot answer the question: it is left
+	// set after a normal finish, so it reads as "indexing forever".
+	indexing    bool
 	renderBytes []byte          // Reusable buffer for text data
 	renderCells []vtui.CharInfo // Reusable buffer for row rendering
 
@@ -88,6 +102,10 @@ type EditorView struct {
 	scrollBar   *vtui.ScrollBar
 	highlighter vtui.Highlighter
 	lineStates  []any // Cache of highlighter states per logical line
+
+	// Highlighting arrives late and all at once; these ease it in.
+	syntaxFadeStart time.Time
+	fadeBuf         []uint64
 
 	// Undo/Redo
 	undoStack  []editorState
@@ -124,6 +142,9 @@ type EditorView struct {
 	CursorBeyondEOL     bool
 	CursorVirtualSpaces int
 	UseEditorConfig     bool
+
+	highlighting    bool
+	highlightCancel context.CancelFunc
 
 	// OnClose, if set, fires once after the editor has been torn down.
 	// Used by callers (e.g. the user menu's Ctrl+F4 handler) that want
@@ -214,6 +235,10 @@ func (ev *EditorView) Close() {
 	if GlobalFileState != nil && ev.filePath != "" {
 		GlobalFileState.SaveEditorStateAsync(FileStateKey(ev.vfs, ev.filePath), ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.WordWrap)
 	}
+	if ev.highlightCancel != nil {
+		ev.highlightCancel()
+		ev.highlightCancel = nil
+	}
 	if ev.indexCancel != nil {
 		ev.indexCancel()
 	}
@@ -300,10 +325,34 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 	default:
 		ev.highlighter = vtui.GetHighlighter(path, "")
 	}
+	vtui.DebugLog("EDITOR_INIT: Path=%q, Highlighter=%T", path, ev.highlighter)
 	ev.scrollBar = vtui.NewScrollBar(0, 0, 0)
 	ev.scrollBar.SetOwner(ev)
 	ev.scrollBar.OnScroll = func(v int) {
+		if ev.HexMode || ev.DecodeMode {
+			if ev.HexMode {
+				ev.HexTopOffset = v &^ 0xF
+			} else {
+				ev.HexTopOffset = v
+			}
+			vtui.FrameManager.Redraw()
+			return
+		}
 		ev.ScrollTopRow = v
+		height := ev.Y2 - ev.Y1
+		if height > 0 {
+			startLogLine, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
+			endLogLine, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow + height - 1)
+			if ev.CursorLine < startLogLine {
+				ev.CursorLine = startLogLine
+				ev.CursorPos = 0
+				ev.updateDesiredVisualCol()
+			} else if ev.CursorLine > endLogLine {
+				ev.CursorLine = endLogLine
+				ev.CursorPos = 0
+				ev.updateDesiredVisualCol()
+			}
+		}
 		vtui.FrameManager.Redraw()
 	}
 	ev.menuBar = vtui.NewMenuBar(nil)
@@ -322,6 +371,17 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 		},
 		func() string {
 			cpName := vfs.DisplayCodepageName(ev.Codepage)
+			if ev.DecodeMode {
+				absPos := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+				modeBits := ev.DisasmMode
+				if modeBits == 0 {
+					modeBits = 64
+				}
+				return fmt.Sprintf(" %s │ Dec:%d │ 0x%08X     ", cpName, modeBits, absPos)
+			} else if ev.HexMode {
+				absPos := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+				return fmt.Sprintf(" %s │ Hex │ 0x%08X     ", cpName, absPos)
+			}
 			return fmt.Sprintf(" %s │ %d,%d     ", cpName, ev.CursorLine+1, ev.CursorPos)
 		},
 	)
@@ -356,6 +416,11 @@ func (ev *EditorView) SetText(text string) {
 
 func (ev *EditorView) clearCaches() {
 	ev.engine.InvalidateCache()
+	// Undo, redo and a reload replace the text wholesale. Colorer caches
+	// colours by line number and has no way to notice that on its own.
+	if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
+		ch.DropFrom(0)
+	}
 }
 func (ev *EditorView) saveUndo(op undoOpType) {
 	if ev.inGroup {
@@ -469,9 +534,294 @@ func (ev *EditorView) Redo() {
 	vtui.DebugLog("EDITOR: Executed Redo, remaining: %d, modified: %v", len(ev.redoStack), ev.modified)
 }
 func (ev *EditorView) invalidateStates(fromLine int) {
+	if ev.highlightCancel != nil {
+		ev.highlightCancel()
+		ev.highlightCancel = nil
+	}
 	if fromLine < len(ev.lineStates) {
 		ev.lineStates = ev.lineStates[:fromLine]
 	}
+	if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
+		ch.DropFrom(fromLine)
+	}
+}
+
+// lineTextForHighlight returns one logical line as the highlighters see it:
+// the terminator included, and a long binary line cut short so no parser is
+// ever handed a megabyte. Not ok means the text is not available yet — the
+// piece table is still loading it — and the caller should leave the line plain
+// and come back on the next frame.
+func (ev *EditorView) lineTextForHighlight(idx int) (string, bool) {
+	if idx < 0 || idx >= ev.li.LineCount() {
+		return "", false
+	}
+	start := ev.li.GetLineOffset(idx)
+	end := ev.pt.Size()
+	if idx+1 < ev.li.LineCount() {
+		end = ev.li.GetLineOffset(idx + 1)
+	}
+	if end-start > 64*1024 {
+		end = start + 64*1024
+	}
+	if end <= start {
+		return "", true
+	}
+	data, err := ev.pt.GetRange(start, end-start)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// Background highlighting runs in slices on the UI thread: highlighters are
+// not thread safe and the Colorer session is a pooled external resource. What
+// a slice may cost is therefore a wall-clock budget, not a line count. The
+// same 2500 lines are a few milliseconds of Chroma and roughly a hundred of
+// Colorer, so a fixed count is either a wasted frame or a visible freeze,
+// depending on which highlighter happens to be selected.
+const (
+	// hlSliceBudget is the longest stall one slice may put on the UI thread.
+	hlSliceBudget = 4 * time.Millisecond
+	// hlClockStride is how many lines pass between two clock readings inside
+	// a slice. Reading the clock per line is measurable next to a fast
+	// highlighter; eight lines keep the overshoot small even for a slow one.
+	hlClockStride = 8
+	// Share of wall-clock time, in percent, the walker may occupy.
+	hlDutyIndexing = 10 // line index still building: it owns the machine
+	hlDutyVisible  = 50 // viewport is waiting for colours, the user sees it
+	hlDutyAhead    = 25 // walking past the viewport, nobody is looking yet
+	// Bounds for the gap between two slices.
+	hlIdleMin = 1 * time.Millisecond
+	hlIdleMax = 100 * time.Millisecond
+	// A slice that highlighted nothing is waiting for the piece table to
+	// load. Retry, but give up after a while and let the next render restart
+	// the walker instead of polling the task queue forever.
+	hlStallIdle      = 10 * time.Millisecond
+	hlMaxStallSlices = 100
+)
+
+// highlightSlicePlan is what one slice did and when the next one may start.
+// It crosses from the UI thread back to the walker goroutine, which is why
+// every view field the decision depends on is read inside the slice itself.
+type highlightSlicePlan struct {
+	done  bool
+	lines int
+	work  time.Duration
+	idle  time.Duration
+}
+
+// highlightDuty reports the share of wall-clock time the walker may spend on
+// the UI thread.
+//
+// While the line index is still being built the walker yields to it. The
+// scroll bar, Ctrl+End and any restore of a saved position all wait for the
+// index, and on a 38MB log that wait is what the user actually notices;
+// colours arriving a few seconds later are not.
+func highlightDuty(behindViewport, indexing bool) int {
+	switch {
+	case indexing:
+		return hlDutyIndexing
+	case behindViewport:
+		return hlDutyVisible
+	default:
+		return hlDutyAhead
+	}
+}
+
+// highlightIdleGap turns the time a slice spent into the pause that keeps the
+// walker at the requested duty cycle.
+func highlightIdleGap(work time.Duration, duty int) time.Duration {
+	if duty >= 100 {
+		return 0
+	}
+	if duty <= 0 {
+		return hlIdleMax
+	}
+	idle := work * time.Duration(100-duty) / time.Duration(duty)
+	if idle < hlIdleMin {
+		idle = hlIdleMin
+	}
+	if idle > hlIdleMax {
+		idle = hlIdleMax
+	}
+	return idle
+}
+
+// usesStateChain reports whether a highlighter's state can be carried in
+// ev.lineStates at all.
+//
+// Colorer's cannot. What it returns is the line number; the parser state lives
+// inside the wasm session as a cache that only moves forward. Walking the file
+// for it therefore builds nothing, and it is not free: every line handed to
+// the session is copied into its line source and grows the parse cache beside
+// it, and the walk leaves the session parked ahead of the viewport, so the
+// next frame has to rewind it to draw. The session belongs to whoever is
+// drawing. See HIGHLIGHT.md, phase 5.
+func usesStateChain(h vtui.Highlighter) bool {
+	if h == nil {
+		return false
+	}
+	_, isColorer := h.(*ColorerHighlighter)
+	return !isColorer
+}
+
+// highlightSlice extends the state chain for at most hlSliceBudget and
+// reports what it managed. It runs on the UI thread, so the budget is exactly
+// the stall the user can feel; how many lines fit into it is left to the
+// highlighter.
+func (ev *EditorView) highlightSlice(bgAttr uint64) highlightSlicePlan {
+	var plan highlightSlicePlan
+
+	// The highlighter can be replaced under a running walker: the Colorer
+	// session finishes loading in the background and takes the place of the
+	// fallback it started with.
+	if !usesStateChain(ev.highlighter) {
+		plan.done = true
+		return plan
+	}
+
+	lineCount := ev.li.LineCount()
+	cIdx := len(ev.lineStates)
+	if cIdx >= lineCount {
+		plan.done = !ev.indexing
+		return plan
+	}
+
+	// Sampled here, on the thread that owns these fields. The previous
+	// version read the viewport from the walker goroutine while the UI thread
+	// was writing it, and GetLogLineAtVisualRow updates the wrap engine's
+	// caches as a side effect.
+	startLogLine, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
+	behind := cIdx < startLogLine
+
+	start := time.Now()
+	for cIdx < lineCount {
+		lStart := ev.li.GetLineOffset(cIdx)
+		lineLen := ev.getLineLength(cIdx)
+		if lineLen > 64*1024 {
+			lineLen = 64 * 1024
+		}
+
+		var prevState any
+		if cIdx > 0 {
+			prevState = ev.lineStates[cIdx-1]
+		}
+
+		lineData, err := ev.pt.GetRange(lStart, lineLen)
+		if err == piecetable.ErrLoading {
+			break
+		}
+
+		_, nextState := ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
+		ev.lineStates = append(ev.lineStates, nextState)
+		cIdx++
+		plan.lines++
+
+		if plan.lines%hlClockStride == 0 && time.Since(start) >= hlSliceBudget {
+			break
+		}
+	}
+	plan.work = time.Since(start)
+	plan.done = cIdx >= ev.li.LineCount() && !ev.indexing
+
+	if plan.lines == 0 {
+		plan.idle = hlStallIdle
+	} else {
+		plan.idle = highlightIdleGap(plan.work, highlightDuty(behind, ev.indexing))
+	}
+
+	vStart, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
+	vEnd := vStart + (ev.Y2 - ev.Y1) + 1
+	if cIdx >= vStart && cIdx-plan.lines <= vEnd+400 {
+		vtui.FrameManager.Redraw()
+	}
+	return plan
+}
+
+func (ev *EditorView) startHighlighting() {
+	if ev.highlighter == nil || ev.highlighting {
+		return
+	}
+	if !usesStateChain(ev.highlighter) {
+		return
+	}
+	if len(ev.lineStates) >= ev.li.LineCount() {
+		return
+	}
+
+	ev.highlighting = true
+	sessionID := ev.editSession
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ev.highlightCancel = cancel
+
+	go func() {
+		defer func() {
+			vtui.FrameManager.PostTask(func() {
+				ev.highlighting = false
+				vtui.FrameManager.Redraw()
+			})
+		}()
+
+		bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
+
+		startedAt := time.Now()
+		walked := 0
+		stalls := 0
+		var uiTime time.Duration
+
+		defer func() {
+			vtui.DebugLog("EDITOR: Highlight walker stopped: %d lines, %v on the UI thread, %v wall clock",
+				walked, uiTime, time.Since(startedAt))
+		}()
+
+		plans := make(chan highlightSlicePlan, 1)
+
+		for {
+			if ctx.Err() != nil || ev.IsDone() {
+				return
+			}
+
+			vtui.FrameManager.PostTask(func() {
+				plan := highlightSlicePlan{done: true}
+				defer func() { plans <- plan }()
+
+				if ctx.Err() != nil {
+					return
+				}
+				if ev.editSession != sessionID || ev.highlighter == nil {
+					cancel() // Self-terminate stale worker loop
+					return
+				}
+				plan = ev.highlightSlice(bgAttr)
+			})
+
+			var plan highlightSlicePlan
+			select {
+			case <-ctx.Done():
+				return
+			case plan = <-plans:
+			}
+
+			walked += plan.lines
+			uiTime += plan.work
+
+			if plan.lines == 0 {
+				stalls++
+			} else {
+				stalls = 0
+			}
+
+			if plan.done || (stalls >= hlMaxStallSlices && !ev.indexing) {
+				return
+			}
+			if ctx.Err() != nil || ev.IsDone() {
+				return
+			}
+
+			time.Sleep(plan.idle)
+		}
+	}()
 }
 func (ev *EditorView) ensureEngineWidth() {
 	width := ev.X2 - ev.X1 + 1
@@ -489,6 +839,389 @@ func (ev *EditorView) updateDesiredVisualCol() {
 	curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	_, vCol := ev.engine.LogicalToVisual(curOffset)
 	ev.DesiredVisualCol = vCol + ev.CursorVirtualSpaces
+}
+func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
+	bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
+	offAttr := vtui.Palette[ColEditorStatus]
+	currOffset := ev.HexTopOffset
+	absPos := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+
+	for y := 0; y < contentHeight; y++ {
+		if currOffset > ev.pt.Size() {
+			break
+		}
+		if currOffset == ev.pt.Size() && currOffset != 0 {
+			if absPos != currOffset {
+				break
+			}
+		}
+
+		take := 16
+		if currOffset+take > ev.pt.Size() {
+			take = ev.pt.Size() - currOffset
+		}
+
+		var data []byte
+		if take > 0 {
+			var err error
+			data, err = ev.pt.GetRange(currOffset, take)
+			if err == piecetable.ErrLoading {
+				scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", bgAttr))
+				break
+			}
+		}
+
+		line := fmt.Sprintf("%010X: ", currOffset)
+		scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
+
+		// Hex part
+		for i := 0; i < 16; i++ {
+			cx := ev.X1 + 12 + i*3
+			if i >= 8 {
+				cx++
+			}
+			if i < len(data) {
+				hexStr := fmt.Sprintf("%02X", data[i])
+				scr.Write(cx, ev.Y1+1+y, vtui.StringToCharInfo(hexStr, bgAttr))
+			}
+
+			// Cursor
+			if ev.IsFocused() && currOffset+i == absPos {
+				scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
+				scr.SetCursorVisible(true)
+				scr.SetCursorShape(vtui.CursorShapeUnderline)
+			}
+		}
+
+		// EOF Cursor
+		if ev.IsFocused() && currOffset+len(data) == absPos && len(data) < 16 {
+			cx := ev.X1 + 12 + len(data)*3
+			if len(data) >= 8 {
+				cx++
+			}
+			scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
+			scr.SetCursorVisible(true)
+			scr.SetCursorShape(vtui.CursorShapeUnderline)
+		}
+
+		// ASCII part
+		asciiStartX := ev.X1 + 12 + 50
+		scr.Write(asciiStartX-2, ev.Y1+1+y, vtui.StringToCharInfo("│ ", offAttr))
+		for i := 0; i < len(data); i++ {
+			r := rune(data[i])
+			if r < 32 || r > 126 {
+				r = '.'
+			}
+			cellAttr := bgAttr
+			if ev.IsFocused() && currOffset+i == absPos {
+				cellAttr = vtui.Palette[vtui.ColDialogEditSelected]
+			}
+			scr.Write(asciiStartX+i, ev.Y1+1+y, []vtui.CharInfo{{Char: uint64(r), Attributes: cellAttr}})
+		}
+		currOffset += 16
+	}
+}
+func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
+	bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
+	offAttr := vtui.Palette[ColEditorStatus]
+	currOffset := ev.HexTopOffset
+	absPos := int(ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos)
+
+	for y := 0; y < contentHeight; y++ {
+		if currOffset >= ev.pt.Size() {
+			break
+		}
+		if currOffset == ev.pt.Size() && currOffset != 0 {
+			if absPos != currOffset {
+				break
+			}
+		}
+
+		take := 15
+		if currOffset+take > ev.pt.Size() {
+			take = ev.pt.Size() - currOffset
+		}
+
+		var data []byte
+		if take > 0 {
+			var err error
+			data, err = ev.pt.GetRange(currOffset, take)
+			if err == piecetable.ErrLoading {
+				scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", bgAttr))
+				break
+			}
+		}
+
+		if len(data) == 0 && currOffset < ev.pt.Size() {
+			break
+		}
+
+		if ev.DisasmMode == 0 {
+			header, _ := ev.pt.GetRange(0, 1024)
+			ev.DisasmMode = detectX86Mode(header)
+		}
+
+		instLen := 1
+		asmStr := ""
+		if len(data) > 0 {
+			inst, err := x86asm.Decode(data, ev.DisasmMode)
+			asmStr = fmt.Sprintf("db 0x%02X", data[0])
+			if err == nil {
+				instLen = inst.Len
+				asmStr = x86asm.IntelSyntax(inst, uint64(currOffset), nil)
+			}
+		}
+
+		line := fmt.Sprintf("%010X: ", currOffset)
+
+		cellAttr := bgAttr
+		if ev.IsFocused() && absPos >= currOffset && absPos < currOffset+instLen {
+			cellAttr = vtui.Palette[vtui.ColDialogEditSelected]
+		}
+
+		scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
+
+		hexStr := ""
+		for i := 0; i < instLen; i++ {
+			if i < len(data) {
+				hexStr += fmt.Sprintf("%02X", data[i])
+				if i < instLen-1 {
+					hexStr += " "
+				}
+			}
+		}
+		scr.Write(ev.X1+12, ev.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf("%-24s", hexStr), cellAttr))
+		scr.Write(ev.X1+38, ev.Y1+1+y, vtui.StringToCharInfo(asmStr, cellAttr))
+		scr.FillRect(ev.X1+38+len(asmStr), ev.Y1+1+y, ev.X2, ev.Y1+1+y, ' ', cellAttr)
+
+		if ev.IsFocused() && absPos >= currOffset && absPos < currOffset+instLen {
+			byteOffset := absPos - currOffset
+			cx := ev.X1 + 12 + byteOffset*3
+			scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
+			scr.SetCursorVisible(true)
+			scr.SetCursorShape(vtui.CursorShapeUnderline)
+		}
+
+		currOffset += instLen
+	}
+}
+
+func detectX86Mode(data []byte) int {
+	if len(data) >= 6 && bytes.HasPrefix(data, []byte("\x7fELF")) {
+		if data[4] == 1 {
+			return 32
+		}
+		return 64
+	}
+	if len(data) >= 0x40 && bytes.HasPrefix(data, []byte("MZ")) {
+		peOff := int(data[0x3C]) | (int(data[0x3D]) << 8) | (int(data[0x3E]) << 16) | (int(data[0x3F]) << 24)
+		if peOff > 0 && peOff+6 <= len(data) && bytes.Equal(data[peOff:peOff+4], []byte("PE\x00\x00")) {
+			machine := uint16(data[peOff+4]) | (uint16(data[peOff+5]) << 8)
+			if machine == 0x014C { // IMAGE_FILE_MACHINE_I386
+				return 32
+			}
+			if machine == 0x8664 { // IMAGE_FILE_MACHINE_AMD64
+				return 64
+			}
+		}
+	}
+	return 64 // Default
+}
+func hexCharToByte(c rune) byte {
+	if c >= '0' && c <= '9' {
+		return byte(c - '0')
+	}
+	if c >= 'a' && c <= 'f' {
+		return byte(c - 'a' + 10)
+	}
+	if c >= 'A' && c <= 'F' {
+		return byte(c - 'A' + 10)
+	}
+	return 0
+}
+
+func (ev *EditorView) processKeyHex(e *vtinput.InputEvent) bool {
+	if !e.KeyDown {
+		return false
+	}
+	absPos := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	size := ev.pt.Size()
+
+	syncCursor := func() {
+		if absPos < 0 {
+			absPos = 0
+		}
+		if absPos > size {
+			absPos = size
+		}
+		ev.CursorLine = ev.li.GetLineAtOffset(absPos)
+		ev.CursorPos = absPos - ev.li.GetLineOffset(ev.CursorLine)
+		ev.ensureCursorVisible()
+		vtui.FrameManager.Redraw()
+	}
+
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+
+	switch e.VirtualKeyCode {
+	case vtinput.VK_LEFT:
+		if ev.HexNibble == 1 {
+			ev.HexNibble = 0
+		} else if absPos > 0 {
+			absPos--
+			ev.HexNibble = 1
+		}
+		syncCursor()
+		return true
+	case vtinput.VK_RIGHT:
+		if absPos == size {
+			return true
+		}
+		if ev.HexNibble == 0 {
+			ev.HexNibble = 1
+		} else if absPos < size {
+			absPos++
+			ev.HexNibble = 0
+		}
+		syncCursor()
+		return true
+	case vtinput.VK_UP:
+		if ev.DecodeMode {
+			absPos -= 1
+		} else {
+			absPos -= 16
+		}
+		if absPos < 0 {
+			absPos = 0
+		}
+		syncCursor()
+		return true
+	case vtinput.VK_DOWN:
+		if ev.DecodeMode {
+			data, _ := ev.pt.GetRange(absPos, 15)
+			if len(data) > 0 {
+				if ev.DisasmMode == 0 {
+					header, _ := ev.pt.GetRange(0, 1024)
+					ev.DisasmMode = detectX86Mode(header)
+				}
+				inst, err := x86asm.Decode(data, ev.DisasmMode)
+				if err == nil {
+					absPos += int(inst.Len)
+				} else {
+					absPos += 1
+				}
+			}
+		} else {
+			absPos += 16
+		}
+		if absPos > size {
+			absPos = size
+		}
+		syncCursor()
+		return true
+	case vtinput.VK_HOME:
+		if ctrl {
+			absPos = 0
+		} else {
+			absPos = absPos &^ 0xF
+		}
+		ev.HexNibble = 0
+		syncCursor()
+		return true
+	case vtinput.VK_END:
+		if ctrl {
+			absPos = size
+		} else {
+			absPos = (absPos &^ 0xF) + 15
+			if absPos > size {
+				absPos = size
+			}
+		}
+		ev.HexNibble = 0
+		syncCursor()
+		return true
+	case vtinput.VK_PRIOR:
+		height := ev.Y2 - ev.Y1
+		absPos -= 16 * height
+		syncCursor()
+		return true
+	case vtinput.VK_NEXT:
+		height := ev.Y2 - ev.Y1
+		absPos += 16 * height
+		syncCursor()
+		return true
+	case vtinput.VK_DELETE:
+		if !shift && !ctrl && absPos < size {
+			ev.noteBufferEdit()
+			ev.saveUndo(opOther)
+			ev.modified = true
+			ev.pt.Delete(absPos, 1)
+			ev.li.UpdateAfterDelete(absPos, 1)
+			ev.clearCaches()
+			size--
+			syncCursor()
+		}
+		return true
+	case vtinput.VK_BACK:
+		if absPos > 0 {
+			ev.noteBufferEdit()
+			ev.saveUndo(opOther)
+			ev.modified = true
+			ev.pt.Delete(absPos-1, 1)
+			ev.li.UpdateAfterDelete(absPos-1, 1)
+			ev.clearCaches()
+			absPos--
+			size--
+			syncCursor()
+		}
+		return true
+	}
+
+	if (e.Char >= '0' && e.Char <= '9') || (e.Char >= 'a' && e.Char <= 'f') || (e.Char >= 'A' && e.Char <= 'F') {
+		val := hexCharToByte(e.Char)
+		ev.noteBufferEdit()
+		ev.saveUndo(opTyping)
+		ev.modified = true
+
+		if absPos == size {
+			b := byte(0)
+			if ev.HexNibble == 0 {
+				b = val << 4
+			} else {
+				b = val
+			}
+			ev.pt.Insert(absPos, []byte{b})
+			ev.li.UpdateAfterInsert(absPos, []byte{b})
+			size++
+		} else {
+			data, _ := ev.pt.GetRange(absPos, 1)
+			b := byte(0)
+			if len(data) > 0 {
+				b = data[0]
+			}
+			if ev.HexNibble == 0 {
+				b = (b & 0x0F) | (val << 4)
+			} else {
+				b = (b & 0xF0) | val
+			}
+			ev.pt.Delete(absPos, 1)
+			ev.li.UpdateAfterDelete(absPos, 1)
+			ev.pt.Insert(absPos, []byte{b})
+			ev.li.UpdateAfterInsert(absPos, []byte{b})
+		}
+		ev.clearCaches()
+
+		if ev.HexNibble == 0 {
+			ev.HexNibble = 1
+		} else {
+			ev.HexNibble = 0
+			absPos++
+		}
+		syncCursor()
+		return true
+	}
+
+	return false
 }
 
 func (ev *EditorView) Show(scr *vtui.ScreenBuf) {
@@ -517,6 +1250,22 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 	if ev.saving {
 		scr.FillRect(ev.X1, ev.Y1+1, ev.X2, ev.Y2, ' ', bgAttr)
 		scr.Write(ev.X1, ev.Y1+1, vtui.StringToCharInfo(" [ Saving... ] ", bgAttr))
+		return
+	}
+
+	// A saved position deep in the file is restored only once the background
+	// indexer has reached that line. Painting the top of the file until then
+	// means the whole screen jumps the moment it does, which reads as a
+	// flicker and undoes the point of easing the colours in. An empty area
+	// costs the same wait and stays quiet.
+	if ev.targetLine != -1 {
+		scr.FillRect(ev.X1, ev.Y1+1, ev.X2, ev.Y2, ' ', bgAttr)
+		msg := " [ Loading... ] "
+		cx := ev.X1 + (width-len(msg))/2
+		cy := ev.Y1 + 1 + height/2
+		if cx >= ev.X1 && cy <= ev.Y2 {
+			scr.Write(cx, cy, vtui.StringToCharInfo(msg, bgAttr))
+		}
 		return
 	}
 
@@ -556,6 +1305,67 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		}
 	}
 
+	if ev.HexMode {
+		ev.renderHex(scr, width, height-1)
+		if ev.scrollBar != nil && ev.pt.Size() > 0 {
+			maxOffset := int(ev.pt.Size())
+			contentHeight := ev.Y2 - ev.Y1
+			if contentHeight > 0 {
+				lastLineOffset := int((ev.pt.Size() - 1) &^ 0xF)
+				maxOffset = lastLineOffset - (contentHeight-1)*16
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+			}
+			ev.scrollBar.SetParams(ev.HexTopOffset, 0, maxOffset)
+			ev.scrollBar.Show(scr)
+		}
+		return
+	}
+
+	if ev.HexMode {
+		ev.renderHex(scr, width, height-1)
+		if ev.scrollBar != nil && ev.pt.Size() > 0 {
+			maxOffset := int(ev.pt.Size())
+			contentHeight := ev.Y2 - ev.Y1
+			if contentHeight > 0 {
+				lastLineOffset := int((ev.pt.Size() - 1) &^ 0xF)
+				maxOffset = lastLineOffset - (contentHeight-1)*16
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+			}
+			ev.scrollBar.SetParams(ev.HexTopOffset, 0, maxOffset)
+			ev.scrollBar.Show(scr)
+		}
+		return
+	}
+
+	if ev.DecodeMode {
+		ev.renderDecode(scr, width, height-1)
+		if ev.scrollBar != nil && ev.pt.Size() > 0 {
+			ev.scrollBar.SetParams(ev.HexTopOffset, 0, ev.pt.Size())
+			ev.scrollBar.Show(scr)
+		}
+		return
+	} else if ev.HexMode {
+		ev.renderHex(scr, width, height-1)
+		if ev.scrollBar != nil && ev.pt.Size() > 0 {
+			maxOffset := ev.pt.Size()
+			contentHeight := ev.Y2 - ev.Y1
+			if contentHeight > 0 {
+				lastLineOffset := (ev.pt.Size() - 1) &^ 0xF
+				maxOffset = lastLineOffset - (contentHeight-1)*16
+				if maxOffset < 0 {
+					maxOffset = 0
+				}
+			}
+			ev.scrollBar.SetParams(ev.HexTopOffset, 0, maxOffset)
+			ev.scrollBar.Show(scr)
+		}
+		return
+	}
+
 	scr.PushClipRect(ev.X1, ev.Y1+1, ev.X1+width-1, ev.Y2)
 
 	// 2. Отрисовка
@@ -573,50 +1383,74 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 
 		// Stateful Highlighting
 		var lineSyntax []uint64
-		if ev.highlighter != nil {
-			// Ensure we have computed states up to this line
-			for len(ev.lineStates) <= logIdx {
-				currIdx := len(ev.lineStates)
-				lStart := ev.li.GetLineOffset(currIdx)
-				lEnd := ev.pt.Size()
-				if currIdx+1 < ev.li.LineCount() {
-					lEnd = ev.li.GetLineOffset(currIdx + 1)
-				}
-				// Prevent highlighter from crashing on huge binary lines
-				if lEnd-lStart > 64*1024 {
-					lEnd = lStart + 64*1024
-				}
-
-				var prevState any
-				if currIdx > 0 {
-					prevState = ev.lineStates[currIdx-1]
-				}
-
-				lineData, err := ev.pt.GetRange(lStart, lEnd-lStart)
-				if err == piecetable.ErrLoading {
-					break // Wait for data
-				}
-
-				attrs, nextState := ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
-				ev.lineStates = append(ev.lineStates, nextState)
-				if currIdx == logIdx {
-					lineSyntax = attrs
-				}
+		if ch, isColorer := ev.highlighter.(*ColorerHighlighter); isColorer {
+			// Colorer is addressed by line number: its parser state cannot
+			// be carried in ev.lineStates, so it keeps its own anchor near
+			// the viewport instead. See HIGHLIGHT.md, phase 5.
+			if text, ok := ev.lineTextForHighlight(logIdx); ok {
+				lineSyntax = ch.HighlightLine(logIdx, text, bgAttr)
 			}
-			if logIdx < len(ev.lineStates) && lineSyntax == nil {
-				// State was already cached, but we need the actual attributes for the current visible line
-				lStart := ev.li.GetLineOffset(logIdx)
-				// Re-apply highlighter OOM protection for the rendering path
-				highlightLen := lineLen
-				if highlightLen > 64*1024 {
-					highlightLen = 64 * 1024
+		} else if ev.highlighter != nil {
+			// Catch up synchronously only if the uncomputed gap is small (<= 50 lines).
+			// For large jumps, render unhighlighted immediately and compute in background.
+			const syncHighlightGapLimit = 50
+			if logIdx >= len(ev.lineStates)+syncHighlightGapLimit {
+				ev.startHighlighting()
+
+				// Allow stateless highlighters (like Chroma) to provide instant colors
+				if _, isColorer := ev.highlighter.(*ColorerHighlighter); !isColorer {
+					lStart := ev.li.GetLineOffset(logIdx)
+					highlightLen := lineLen
+					if highlightLen > 64*1024 {
+						highlightLen = 64 * 1024
+					}
+					lineData, _ := ev.pt.GetRange(lStart, highlightLen)
+					lineSyntax, _ = ev.highlighter.Highlight(string(lineData), nil, bgAttr)
 				}
-				lineData, _ := ev.pt.GetRange(lStart, highlightLen)
-				var prevState any
-				if logIdx > 0 {
-					prevState = ev.lineStates[logIdx-1]
+			} else {
+				for len(ev.lineStates) <= logIdx {
+					currIdx := len(ev.lineStates)
+					lStart := ev.li.GetLineOffset(currIdx)
+					lEnd := ev.pt.Size()
+					if currIdx+1 < ev.li.LineCount() {
+						lEnd = ev.li.GetLineOffset(currIdx + 1)
+					}
+					// Prevent highlighter from crashing on huge binary lines
+					if lEnd-lStart > 64*1024 {
+						lEnd = lStart + 64*1024
+					}
+
+					var prevState any
+					if currIdx > 0 {
+						prevState = ev.lineStates[currIdx-1]
+					}
+
+					lineData, err := ev.pt.GetRange(lStart, lEnd-lStart)
+					if err == piecetable.ErrLoading {
+						break // Wait for data
+					}
+
+					attrs, nextState := ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
+					ev.lineStates = append(ev.lineStates, nextState)
+					if currIdx == logIdx {
+						lineSyntax = attrs
+					}
 				}
-				lineSyntax, _ = ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
+				if logIdx < len(ev.lineStates) && lineSyntax == nil {
+					// State was already cached, but we need the actual attributes for the current visible line
+					lStart := ev.li.GetLineOffset(logIdx)
+					// Re-apply highlighter OOM protection for the rendering path
+					highlightLen := lineLen
+					if highlightLen > 64*1024 {
+						highlightLen = 64 * 1024
+					}
+					lineData, _ := ev.pt.GetRange(lStart, highlightLen)
+					var prevState any
+					if logIdx > 0 {
+						prevState = ev.lineStates[logIdx-1]
+					}
+					lineSyntax, _ = ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
+				}
 			}
 		}
 
@@ -667,13 +1501,15 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 
 			_, startVCol := ev.engine.LogicalToVisual(frag.ByteOffsetStart)
 			isCrossRow := (absVRow == crossVRow)
-			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, fragSyntax, startVCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
+			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), startVCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
 
 			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
 
 			lineBg := bgAttr
-			if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
-				lineBg = ch.GetLineBackground(logIdx, bgAttr)
+			if logIdx < len(ev.lineStates) {
+				if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
+					lineBg = ch.GetLineBackground(logIdx, bgAttr)
+				}
 			}
 			fillBg := lineBg
 			if isCrossRow && horzCrossAttr != 0 {
@@ -810,11 +1646,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		} else {
 			ev.pasting = false
 			if len(ev.pasteBuffer) > 0 {
-				if ev.indexCancel != nil {
-					ev.indexCancel()
-					ev.indexCancel = nil
-				}
-				ev.edited = true
+				ev.noteBufferEdit()
 
 				ev.saveUndo(opOther)
 				if ev.selActive {
@@ -860,6 +1692,36 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 	}
 
+	if ev.HexMode || ev.DecodeMode {
+		if ev.processKeyHex(e) {
+			return true
+		}
+		// Prevent fallthrough to text editing keys
+		switch e.VirtualKeyCode {
+		case vtinput.VK_F1, vtinput.VK_F2, vtinput.VK_F3, vtinput.VK_F4, vtinput.VK_F5, vtinput.VK_F6, vtinput.VK_F7, vtinput.VK_F8, vtinput.VK_F9, vtinput.VK_F10, vtinput.VK_F11, vtinput.VK_F12:
+			return false // Let global hotkeys handle it
+		}
+		if MacroMgr.LookupHotkey(e) {
+			return true
+		}
+		return true // Consume all other keys in Hex mode so they don't insert text
+	}
+
+	if ev.HexMode {
+		if ev.processKeyHex(e) {
+			return true
+		}
+		// Prevent fallthrough to text editing keys
+		switch e.VirtualKeyCode {
+		case vtinput.VK_F1, vtinput.VK_F2, vtinput.VK_F3, vtinput.VK_F4, vtinput.VK_F5, vtinput.VK_F6, vtinput.VK_F7, vtinput.VK_F8, vtinput.VK_F9, vtinput.VK_F10, vtinput.VK_F11, vtinput.VK_F12:
+			return false // Let global hotkeys handle it
+		}
+		if MacroMgr.LookupHotkey(e) {
+			return true
+		}
+		return true // Consume all other keys in Hex mode so they don't insert text
+	}
+
 	// 3. Regular key processing
 	if !e.KeyDown {
 		return false
@@ -882,7 +1744,11 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 				match := ev.acMatches[ev.acCurrentIdx]
 				tail := match[len(ev.acPrefix):]
 				ev.acMatches = nil // Clear state
+				if tail == "" {
+					return true
+				}
 
+				ev.noteBufferEdit()
 				ev.saveUndo(opTyping)
 				ev.modified = true
 				offset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
@@ -938,27 +1804,17 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// Any key that can reach this point and is not a pure navigation key
-	// should stop the background indexer to prevent index corruption.
-	switch e.VirtualKeyCode {
-	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
-		vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END,
-		vtinput.VK_SHIFT, vtinput.VK_CONTROL, vtinput.VK_MENU:
-		// ignore navigation and modifiers
-	default:
-		if !ev.edited {
-			ev.edited = true
-			ev.editSession++
-			if ev.indexCancel != nil {
-				ev.indexCancel()
-			}
-		}
-	}
-
 	switch e.VirtualKeyCode {
 	case vtinput.VK_UP, vtinput.VK_E:
 		if e.VirtualKeyCode == vtinput.VK_E && !ctrl {
 			break
+		}
+		// Ctrl+Up scrolls the text under the cursor, which keeps its row
+		// on the screen (far2l editor.cpp, Editor::ScrollUp). The Ctrl+E
+		// alias stays a plain cursor movement.
+		if ctrl && !shift && !alt && e.VirtualKeyCode == vtinput.VK_UP {
+			ev.scrollViewBy(-1)
+			return true
 		}
 		handleNav()
 		curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
@@ -997,6 +1853,13 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 				RunAction("Editor.Cut")
 				return true
 			}
+		}
+		// Ctrl+Down scrolls the text under the cursor, which keeps its row
+		// on the screen (far2l editor.cpp, Editor::ScrollDown). The Ctrl+X
+		// alias stays a plain cursor movement.
+		if ctrl && !shift && !alt && e.VirtualKeyCode == vtinput.VK_DOWN {
+			ev.scrollViewBy(1)
+			return true
 		}
 		handleNav()
 		curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
@@ -1083,15 +1946,22 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 			break
 		}
 		handleNav()
+		// Jump by word only if it's the real Left arrow + Ctrl
+		wordJump := ctrl && !isAlias
 		if ev.CursorVirtualSpaces > 0 {
-			ev.CursorVirtualSpaces--
-			ev.updateDesiredVisualCol()
-			ev.ensureCursorVisible()
-			return true
+			if !wordJump {
+				ev.CursorVirtualSpaces--
+				ev.updateDesiredVisualCol()
+				ev.ensureCursorVisible()
+				return true
+			}
+			// Past EOL a word jump behaves as if the cursor stood at the
+			// real end of the line: the virtual spaces are dropped first
+			// and the jump then starts from the last character.
+			ev.CursorVirtualSpaces = 0
 		}
 
-		// Jump by word only if it's the real Left arrow + Ctrl
-		if ctrl && !isAlias {
+		if wordJump {
 			if ev.CursorPos > 0 {
 				runes := ev.getLogicalLineRunes(ev.CursorLine)
 				currRuneIdx := 0
@@ -1290,13 +2160,17 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_BACK:
-		if ev.selActive {
+		// A vertical block is a selection too. It lives in rectSelActive
+		// rather than selActive, and checking only the latter is what made
+		// Del eat the character under the cursor while a block was up.
+		if ev.selActive || ev.rectSelActive {
 			ev.DeleteSelection()
 		} else {
-			ev.saveUndo(opOther)
-			ev.modified = true
 			offset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 			if offset > 0 {
+				ev.noteBufferEdit()
+				ev.saveUndo(opOther)
+				ev.modified = true
 				if ev.CursorPos == 0 {
 					// Merge with the previous line (remove line break)
 					prevLen := ev.getLineLength(ev.CursorLine - 1)
@@ -1340,13 +2214,37 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_DELETE:
-		if ev.selActive {
+		// Shift+Del is Cut, and Cut it stays even if the hotkey dispatcher
+		// never resolved it: far2l copies the block to the clipboard and only
+		// then deletes it, and does nothing at all when no block is marked
+		// (editor.cpp, KEY_SHIFTDEL). Falling through to the plain delete below
+		// destroys a selection with no clipboard copy — unrecoverable — so the
+		// modified key is answered here rather than left to key naming, which
+		// differs between input backends. Ctrl+Del is likewise handled instead
+		// of eating the character under the cursor.
+		if shift && !ctrl && !alt {
+			if ev.selActive || ev.rectSelActive {
+				ev.CopySelection()
+				ev.DeleteSelection()
+			}
+			ev.updateDesiredVisualCol()
+			ev.ensureCursorVisible()
+			return true
+		}
+		if ctrl && !shift && !alt {
+			ev.deleteSpacersForward()
+			ev.updateDesiredVisualCol()
+			ev.ensureCursorVisible()
+			return true
+		}
+		if ev.selActive || ev.rectSelActive {
 			ev.DeleteSelection()
 		} else {
-			ev.saveUndo(opOther)
-			ev.modified = true
 			offset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 			if offset < ev.pt.Size() {
+				ev.noteBufferEdit()
+				ev.saveUndo(opOther)
+				ev.modified = true
 				// Remove the UTF-8 character under the cursor
 				peekLen := 4
 				if ev.pt.Size()-offset < 4 {
@@ -1371,6 +2269,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_RETURN:
+		ev.noteBufferEdit()
 		ev.saveUndo(opOther)
 		if ev.selActive || ev.rectSelActive {
 			ev.inGroup = true
@@ -1419,6 +2318,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 
 	case vtinput.VK_TAB:
 		if !shift && !ctrl && !alt {
+			ev.noteBufferEdit()
 			ev.saveUndo(opTyping)
 			if ev.selActive || ev.rectSelActive {
 				ev.inGroup = true
@@ -1464,6 +2364,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 	}
 
 	if e.Char != 0 && ctrl == false {
+		ev.noteBufferEdit()
 		ev.saveUndo(opTyping)
 		if ev.selActive || ev.rectSelActive {
 			ev.inGroup = true
@@ -1620,9 +2521,104 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 	return target
 }
 
+// syncVirtualSpaces re-derives CursorVirtualSpaces after a vertical move:
+// when the cursor lands on a shorter line and "cursor beyond EOL" is on, the
+// desired visual column is kept alive by virtual spaces past the line end.
+func (ev *EditorView) syncVirtualSpaces() {
+	lineLen := ev.getLineLength(ev.CursorLine)
+	if ev.CursorPos == lineLen && ev.CursorBeyondEOL {
+		_, endVCol := ev.engine.LogicalToVisual(ev.li.GetLineOffset(ev.CursorLine) + lineLen)
+		if ev.DesiredVisualCol > endVCol {
+			ev.CursorVirtualSpaces = ev.DesiredVisualCol - endVCol
+			return
+		}
+	}
+	ev.CursorVirtualSpaces = 0
+}
+
+// scrollViewBy scrolls the text by delta visual rows under a cursor that
+// keeps its row on the screen: far2l's Editor::ScrollUp/ScrollDown move
+// TopScreen and CurLine together, preserving the cell column. Only when the
+// view cannot scroll any further — the top of the file is already shown, or
+// the last screenful is — do they fall back to a bare Up()/Down() and let the
+// cursor walk on alone. Nothing happens once the cursor sits on the first or
+// last row. The selection is left untouched: scrolling is not a navigation.
+func (ev *EditorView) scrollViewBy(delta int) {
+	height := ev.Y2 - ev.Y1
+	if height <= 0 {
+		return
+	}
+	curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	vRow, _ := ev.engine.LogicalToVisual(curOffset)
+	totalRows := ev.engine.GetTotalVisualRows()
+
+	targetRow := vRow + delta
+	if targetRow < 0 || targetRow >= totalRows {
+		return
+	}
+
+	maxTop := max(totalRows-height, 0)
+	ev.ScrollTopRow = min(max(ev.ScrollTopRow+delta, 0), maxTop)
+
+	newOffset := ev.engine.VisualToLogical(targetRow, ev.DesiredVisualCol)
+	ev.CursorLine = ev.li.GetLineAtOffset(newOffset)
+	ev.CursorPos = newOffset - ev.li.GetLineOffset(ev.CursorLine)
+	ev.syncVirtualSpaces()
+	ev.ensureCursorVisible()
+	vtui.FrameManager.Redraw()
+}
+
 func (ev *EditorView) ensureCursorVisible() {
 	if ev.targetLine != -1 {
 		return // Skip clamping and scrolling while waiting for the target line to be indexed
+	}
+
+	if ev.HexMode || ev.DecodeMode {
+		height := ev.Y2 - ev.Y1
+		if height <= 0 {
+			return
+		}
+		absPos := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+
+		if ev.HexMode {
+			row := absPos / 16
+			topRow := ev.HexTopOffset / 16
+
+			if row < topRow {
+				ev.HexTopOffset = row * 16
+			} else if row >= topRow+height {
+				ev.HexTopOffset = (row - height + 1) * 16
+			}
+		} else {
+			curr := ev.HexTopOffset
+			visible := false
+			for y := 0; y < height; y++ {
+				if curr >= ev.pt.Size() {
+					break
+				}
+				data, _ := ev.pt.GetRange(curr, 15)
+				instLen := 1
+				if len(data) > 0 {
+					if ev.DisasmMode == 0 {
+						header, _ := ev.pt.GetRange(0, 1024)
+						ev.DisasmMode = detectX86Mode(header)
+					}
+					inst, err := x86asm.Decode(data, ev.DisasmMode)
+					if err == nil {
+						instLen = inst.Len
+					}
+				}
+				if absPos >= curr && absPos < curr+instLen {
+					visible = true
+					break
+				}
+				curr += instLen
+			}
+			if !visible {
+				ev.HexTopOffset = absPos
+			}
+		}
+		return
 	}
 
 	// Safety constraints for binary files or corrupted indices
@@ -1691,10 +2687,14 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 
 	if e.WheelDirection != 0 {
+		speed := AppConfig.WheelEditorDown
+		vk := uint16(vtinput.VK_DOWN)
 		if e.WheelDirection > 0 {
-			ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
-		} else {
-			ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+			speed = AppConfig.WheelEditorUp
+			vk = vtinput.VK_UP
+		}
+		for i := 0; i < wheelScrollLines(speed); i++ {
+			ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
 		}
 		return true
 	}
@@ -1803,6 +2803,27 @@ func (ev *EditorView) GetMenuBar() *vtui.MenuBar {
 	return ev.menuBar
 }
 
+// The async buffer hands data over as it loads. A single fixed sleep is a
+// hard cap on indexing throughput: when the loader delivers pieces smaller
+// than one chunk, the indexer spends the whole load asleep rather than
+// scanning. Backing off geometrically from a short first wait keeps that loss
+// bounded without turning a slow VFS into a busy loop.
+const (
+	indexPollMin = 200 * time.Microsecond
+	indexPollMax = 5 * time.Millisecond
+)
+
+func nextIndexPoll(cur time.Duration) time.Duration {
+	next := cur * 2
+	if next < indexPollMin {
+		next = indexPollMin
+	}
+	if next > indexPollMax {
+		next = indexPollMax
+	}
+	return next
+}
+
 func (ev *EditorView) StartIndexing() {
 	if ev.asyncBuf == nil {
 		return
@@ -1816,17 +2837,144 @@ func (ev *EditorView) StartIndexing() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ev.indexCancel = cancel
+	ev.indexing = true
 
 	go func() {
-		absPos := 0
-		chunkSize := 64 * 1024
+		startedAt := time.Now()
+		vtui.DebugLog("EDITOR_INDEX: Start indexing with targetLine=%d", ev.targetLine)
+		indexed, batches := 0, 0
+		var waited time.Duration
+
+		// Runs on completion and on cancellation alike, so the flag the
+		// highlight walker throttles on can never stay stuck at true.
+		defer func() {
+			vtui.FrameManager.PostTask(func() {
+				if ev.editSession == sessionID {
+					ev.indexing = false
+				}
+				vtui.DebugLog("EDITOR: Indexer stopped: %d lines in %v, %v of it waiting for data, %d UI batches",
+					indexed, time.Since(startedAt), waited, batches)
+			})
+		}()
+
+		poll := indexPollMin
 		buf := ev.asyncBuf
 		li := ev.li
 		maxSize := buf.Size()
 
-		// BATCHING OPTIMIZATION: Collect offsets and update UI in larger chunks
-		// to reduce main thread overhead and prevent "redraw storms".
-		pendingOffsets := make([]int, 0, 1000)
+		if indexer, ok := ev.vfs.(vfs.LineIndexer); ok && ev.Codepage == 65001 {
+			vtui.DebugLog("EDITOR_INDEX: Using remote LineIndexer")
+			var currentLine int64 = int64(li.LineCount() + 1)
+			const batchSize = 100000
+			remoteSuccess := true
+			for {
+				if ctx.Err() != nil || ev.IsDone() {
+					return
+				}
+				res, err := indexer.LineIndex(ctx, ev.filePath, currentLine, batchSize)
+				if err != nil {
+					vtui.DebugLog("EDITOR_INDEX: Remote LineIndex failed: %v, falling back to local", err)
+					remoteSuccess = false
+					break
+				}
+
+				if len(res.Offsets) > 0 {
+					batchOffsets := make([]int, 0, len(res.Offsets))
+					for _, off := range res.Offsets {
+						batchOffsets = append(batchOffsets, int(off))
+					}
+
+					vtui.FrameManager.PostTask(func() {
+						if ctx.Err() != nil || ev.edited || ev.editSession != sessionID {
+							return
+						}
+						lastLineBefore := li.LineCount() - 1
+						li.AppendOffsets(batchOffsets, maxSize)
+
+						if ev.targetLine != -1 && (li.LineCount() > ev.targetLine || len(res.Offsets) < batchSize) {
+							ev.CursorLine = ev.targetLine
+							if ev.CursorLine >= li.LineCount() {
+								ev.CursorLine = li.LineCount() - 1
+							}
+							if ev.CursorLine < 0 {
+								ev.CursorLine = 0
+							}
+
+							targetOff := li.GetLineOffset(ev.CursorLine) + ev.targetPos
+							if targetOff >= 0 && ev.asyncBuf != nil {
+								_, _ = ev.asyncBuf.Read(targetOff, 4096)
+							}
+
+							ev.CursorPos = ev.targetPos
+							ev.ScrollTopRow = ev.targetTopRow
+							ev.ScrollLeft = ev.targetLeft
+							if ev.ScrollLeft < 0 {
+								ev.ScrollLeft = 0
+							}
+							ev.targetLine = -1
+							ev.ensureCursorVisible()
+							ev.updateDesiredVisualCol()
+						}
+
+						ev.engine.InvalidateFrom(lastLineBefore)
+						if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
+							ev.startHighlighting()
+						}
+						vtui.FrameManager.Redraw()
+					})
+
+					indexed += len(batchOffsets)
+					batches++
+					currentLine += int64(len(res.Offsets))
+				}
+
+				if len(res.Offsets) < batchSize || (res.Total >= 0 && currentLine > res.Total) {
+					break
+				}
+			}
+
+			if remoteSuccess {
+				vtui.FrameManager.PostTask(func() {
+					if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
+						if ev.targetLine != -1 {
+							ev.CursorLine = ev.targetLine
+							if ev.CursorLine >= li.LineCount() {
+								ev.CursorLine = li.LineCount() - 1
+							}
+							if ev.CursorLine < 0 {
+								ev.CursorLine = 0
+							}
+							targetOff := li.GetLineOffset(ev.CursorLine) + ev.targetPos
+							if targetOff >= 0 && ev.asyncBuf != nil {
+								_, _ = ev.asyncBuf.Read(targetOff, 4096)
+							}
+							ev.CursorPos = ev.targetPos
+							ev.ScrollTopRow = ev.targetTopRow
+							ev.ScrollLeft = ev.targetLeft
+							if ev.ScrollLeft < 0 {
+								ev.ScrollLeft = 0
+							}
+							ev.targetLine = -1
+							ev.ensureCursorVisible()
+							ev.updateDesiredVisualCol()
+							vtui.FrameManager.Redraw()
+						}
+						if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
+							ev.startHighlighting()
+						}
+					}
+				})
+				return
+			}
+		}
+
+		absPos := 0
+		if li.LineCount() > 1 {
+			absPos = li.GetLineOffset(li.LineCount() - 1)
+		}
+		chunkSize := 256 * 1024 // 256KB chunks to match AsyncBuffer
+
+		pendingOffsets := make([]int, 0, 10000)
 
 		for absPos < maxSize {
 			select {
@@ -1838,35 +2986,48 @@ func (ev *EditorView) StartIndexing() {
 				return
 			}
 
+			// Pre-fetch ahead to keep AsyncBuffer busy and avoid sequential latency.
+			// 16 chunks of 256KB = 4MB read-ahead sliding window.
+			readAhead := 16
+			for i := 0; i < readAhead; i++ {
+				p := absPos + i*chunkSize
+				if p < maxSize {
+					_, _ = buf.Read(p, chunkSize)
+				}
+			}
+
 			data, err := buf.Read(absPos, chunkSize)
 			if err == piecetable.ErrLoading {
-				time.Sleep(50 * time.Millisecond)
+				time.Sleep(poll)
+				waited += poll
+				poll = nextIndexPoll(poll)
 				continue
 			}
+			poll = indexPollMin
 			if err != nil {
 				break
 			}
 
-			for i, b := range data {
-				if b == '\n' {
-					pendingOffsets = append(pendingOffsets, absPos+i+1)
+			// Fast SIMD-accelerated newline scanning using bytes.IndexByte
+			scanPos := 0
+			for scanPos < len(data) {
+				idx := bytes.IndexByte(data[scanPos:], '\n')
+				if idx == -1 {
+					break
 				}
+				pendingOffsets = append(pendingOffsets, absPos+scanPos+idx+1)
+				scanPos += idx + 1
 			}
 
 			absPos += len(data)
 
-			// Update UI if we have enough lines or reached EOF
-			if len(pendingOffsets) >= 500 || absPos >= maxSize {
+			// Update UI in 5000-line batches, or immediately when targetLine is reached, to avoid UI thread congestion
+			if len(pendingOffsets) >= 5000 || absPos >= maxSize || (ev.targetLine != -1 && li.LineCount()+len(pendingOffsets) > ev.targetLine) {
 				currentBatch := pendingOffsets
-				// The closure below runs on the UI thread, and by then the
-				// scanning goroutine has moved absPos on: over FISH+ a burst
-				// of chunks arrives at once and the whole scan can finish
-				// while several batches are still waiting in the queue.
-				// Snapshot how far this batch reached, so "the file is fully
-				// scanned" is a question about the batch and not about the
-				// future.
 				batchEnd := absPos
-				pendingOffsets = make([]int, 0, 1000)
+				indexed += len(currentBatch)
+				batches++
+				pendingOffsets = make([]int, 0, 10000)
 
 				vtui.FrameManager.PostTask(func() {
 					if ctx.Err() != nil || ev.edited || ev.editSession != sessionID {
@@ -1897,6 +3058,9 @@ func (ev *EditorView) StartIndexing() {
 					}
 
 					ev.engine.InvalidateFrom(lastLineBefore)
+					if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
+						ev.startHighlighting()
+					}
 					vtui.FrameManager.Redraw()
 				})
 			}
@@ -1923,9 +3087,11 @@ func (ev *EditorView) StartIndexing() {
 					ev.updateDesiredVisualCol()
 					vtui.FrameManager.Redraw()
 				}
+				if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
+					ev.startHighlighting()
+				}
 			}
 		})
-		vtui.DebugLog("INDEXER: Finished for %s", ev.filePath)
 	}()
 }
 
@@ -2014,8 +3180,14 @@ func (ev *EditorView) showSearchDialog() {
 		chkRegexp.State = 1
 	}
 
+	chkHex := vtui.NewCheckbox(0, 0, Msg("Search.HexPattern"), false)
+	if LastEditorSearchHex {
+		chkHex.State = 1
+	}
+
 	btnFind := vtui.NewButton(0, 0, Msg("Search.BtnFind"))
 	btnFind.IsDefault = true
+	btnAll := vtui.NewButton(0, 0, Msg("Search.BtnAll"))
 	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 
 	dlg.AddItem(lblPrompt)
@@ -2025,6 +3197,7 @@ func (ev *EditorView) showSearchDialog() {
 	dlg.AddItem(chkReverse)
 	dlg.AddItem(chkRegexp)
 	dlg.AddItem(btnFind)
+	dlg.AddItem(btnAll)
 	dlg.AddItem(btnCancel)
 
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, dlgW-4, dlgH-4)
@@ -2048,43 +3221,67 @@ func (ev *EditorView) showSearchDialog() {
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
 	hbox.Add(btnFind, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnAll, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Apply()
 
-	btnFind.OnClick = func() {
+	saveSearchParams := func() {
 		LastEditorSearch = editPattern.GetText()
 		LastEditorSearchCase = chkCase.State == 1
 		LastEditorSearchReverse = chkReverse.State == 1
 		LastEditorSearchRegexp = chkRegexp.State == 1
 		LastEditorSearchWholeWord = chkWholeWord.State == 1
 		SaveSession()
+	}
+	btnFind.OnClick = func() {
+		LastEditorSearchHex = chkHex.State == 1
+		saveSearchParams()
 		dlg.Close()
 		ev.Search(LastEditorSearch, LastEditorSearchCase, LastEditorSearchReverse, LastEditorSearchRegexp, LastEditorSearchWholeWord, false)
+	}
+	btnAll.OnClick = func() {
+		LastEditorSearchHex = chkHex.State == 1
+		saveSearchParams()
+		dlg.Close()
+		// FindAll doesn't support hex pattern search yet
+		ev.FindAll(LastEditorSearch, LastEditorSearchCase, LastEditorSearchRegexp, LastEditorSearchWholeWord)
 	}
 	btnCancel.OnClick = func() { dlg.Close() }
 
 	vtui.FrameManager.Push(dlg)
 }
+
+// replaceAllFold is a case-insensitive ReplaceAll under Unicode simple
+// case-folding (strings.EqualFold semantics). strcase locates matches in
+// the original string — no lowered copy, so no offset drift — and a folded
+// match can be a different byte length than old (K U+212A matches "k"),
+// which is why the consumed length comes from CutPrefix per match.
 func replaceAllFold(s, old, new string) string {
 	if old == "" {
 		return s
 	}
-	lowerS := strings.ToLower(s)
-	lowerOld := strings.ToLower(old)
 	var b strings.Builder
 	b.Grow(len(s))
 
 	start := 0
 	for {
-		idx := strings.Index(lowerS[start:], lowerOld)
+		idx := strcase.Index(s[start:], old)
 		if idx == -1 {
 			b.WriteString(s[start:])
 			break
 		}
-		b.WriteString(s[start : start+idx])
+		pos := start + idx
+		after, ok := strcase.CutPrefix(s[pos:], old)
+		if !ok {
+			// Cannot happen: Index just matched at pos. Bail rather than
+			// loop forever if the two ever disagree.
+			b.WriteString(s[start:])
+			break
+		}
+		b.WriteString(s[start:pos])
 		b.WriteString(new)
-		start += idx + len(old)
+		start = len(s) - len(after)
 	}
 	return b.String()
 }
@@ -2094,21 +3291,42 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 		return
 	}
 
+	searchPattern := pattern
+	if LastEditorSearchHex {
+		var err error
+		searchPattern, err = parseHexPatternToRegex(pattern)
+		if err != nil {
+			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
+			return
+		}
+		regexp = true
+		wholeWord = false
+		caseSensitive = true
+
+		repBytes, err := parseHexReplacement(replacement)
+		if err != nil {
+			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex replacement:\n%v", err), []string{"&Ok"})
+			return
+		}
+		var escapedRepl strings.Builder
+		for _, b := range repBytes {
+			if b == '$' {
+				escapedRepl.WriteString("$$")
+			} else if b == '\\' {
+				escapedRepl.WriteString("\\\\")
+			} else {
+				escapedRepl.WriteByte(b)
+			}
+		}
+		replacement = escapedRepl.String()
+	}
+
+	// Only whole-word matching needs the regex engine (for the \b wrapping);
+	// literal replace, case-sensitive or folded, is handled without it.
 	var re *coregex.Regex
 	if regexp || wholeWord {
-		finalPattern := pattern
-		if !regexp {
-			finalPattern = coregex.QuoteMeta(pattern)
-		}
-		if !caseSensitive {
-			finalPattern = "(?i)" + finalPattern
-		}
-		if wholeWord {
-			finalPattern = `\b(?:` + finalPattern + `)\b`
-		}
-
 		var err error
-		re, err = coregex.Compile(finalPattern)
+		re, err = buildSearchRegex(searchPattern, caseSensitive, regexp, wholeWord)
 		if err != nil {
 			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 			return
@@ -2120,14 +3338,13 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 			bytes, _ := ev.pt.Bytes()
 			text := string(bytes)
 			var newText string
-			if regexp || wholeWord {
-				newText = string(re.ReplaceAll(bytes, []byte(replacement)))
-			} else {
-				if caseSensitive {
-					newText = strings.ReplaceAll(text, pattern, replacement)
-				} else {
-					newText = replaceAllFold(text, pattern, replacement)
-				}
+			switch {
+			case re != nil:
+				newText = string(renderReplacement(re, regexp, bytes, []byte(replacement)))
+			case caseSensitive:
+				newText = strings.ReplaceAll(text, pattern, replacement)
+			default:
+				newText = replaceAllFold(text, pattern, replacement)
 			}
 			if newText != text {
 				ctx.RunOnUI(func() {
@@ -2139,59 +3356,98 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 				})
 			} else {
 				ctx.RunOnUI(func() {
-					vtui.ShowMessage(" Replace ", "Pattern not found.", []string{"&Ok"})
+					vtui.ShowMessage(Msg("Replace.ConfirmTitle"), Msg("Search.NotFound"), []string{Msg("vtui.Ok")})
 				})
 			}
 		})
 		return
 	}
 
+	// Interactive path, ported from Far Manager: every occurrence is
+	// confirmed with a Replace / All / Skip / Cancel dialog; replacing
+	// without confirmation is only reachable through [ Replace all ].
+	st := &replaceLoop{
+		ev:            ev,
+		pattern:       pattern,
+		replacement:   replacement,
+		caseSensitive: caseSensitive,
+		reverse:       reverse,
+		regexp:        regexp,
+		wholeWord:     wholeWord,
+		re:            re,
+		session:       ev.editSession,
+	}
+	// A selection that is exactly one occurrence (made deliberately by the
+	// user, or left by a previous Cancel) is prompted as-is: re-searching
+	// from its start could pick a wider match (regex "a+" around a
+	// one-character selection) and silently replace more than was selected.
 	if ev.selActive {
-		min, max := ev.getSelectionRange()
-		data, _ := ev.pt.GetRange(min, max-min)
-		match := false
-		if regexp || wholeWord {
-			match = re.Match(data) && len(re.Find(data)) == len(data)
-		} else {
-			if caseSensitive {
-				match = string(data) == pattern
-			} else {
-				match = strings.EqualFold(string(data), pattern)
-			}
-		}
-		if match {
-			ev.saveUndo(opOther)
-			ev.modified = true
-			ev.pt.Delete(min, max-min)
-			ev.li.UpdateAfterDelete(min, max-min)
-
-			var repBytes []byte
-			if regexp || wholeWord {
-				repBytes = re.ReplaceAll(data, []byte(replacement))
-			} else {
-				repBytes = []byte(replacement)
-			}
-			ev.pt.Insert(min, repBytes)
-			ev.li.UpdateAfterInsert(min, repBytes)
-
-			ev.invalidateStates(ev.CursorLine)
-			ev.engine.InvalidateFrom(ev.CursorLine)
-
-			newCursorOff := min + len(repBytes)
-			ev.CursorLine = ev.li.GetLineAtOffset(newCursorOff)
-			ev.CursorPos = newCursorOff - ev.li.GetLineOffset(ev.CursorLine)
-
-			ev.selActive = false
-			ev.updateDesiredVisualCol()
-			ev.ensureCursorVisible()
-			vtui.FrameManager.Redraw()
-
-			ev.Search(pattern, caseSensitive, reverse, regexp, wholeWord, true)
+		selMin, selMax := ev.getSelectionRange()
+		if data, err := ev.pt.Bytes(); err == nil && selMax > selMin &&
+			selectionIsMatch(data[selMin:selMax], pattern, caseSensitive, re) {
+			st.promptAt(data, selMin, selMax-selMin)
 			return
 		}
 	}
+	st.searchFrom = ev.searchSeedOffset(reverse, true)
+	st.findNext()
+}
 
-	ev.Search(pattern, caseSensitive, reverse, regexp, wholeWord, false)
+// noteBufferEdit records that the buffer is about to change: the background
+// line indexer is canceled and every editSession fence held by an in-flight
+// task goes stale.
+func (ev *EditorView) noteBufferEdit() {
+	if !ev.edited {
+		ev.edited = true
+		if ev.indexCancel != nil {
+			ev.indexCancel()
+		}
+	}
+	ev.editSession++
+}
+
+// replaceRange replaces bytes [min, max) with repBytes as a single
+// undoable edit and leaves the cursor at the end of the replacement.
+func (ev *EditorView) replaceRange(min, max int, repBytes []byte) {
+	ev.replaceSpans([]matchSpan{{min, max - min}}, [][]byte{repBytes})
+}
+
+// replaceSpans replaces each span (ascending, non-overlapping) with its
+// rendered replacement as one undoable edit; the cursor lands at the end of
+// the last replacement. Splicing per span keeps memory at the size of the
+// replacements instead of the whole covered region.
+func (ev *EditorView) replaceSpans(spans []matchSpan, renders [][]byte) {
+	if len(spans) == 0 {
+		return
+	}
+	ev.noteBufferEdit()
+	ev.saveUndo(opOther)
+	ev.modified = true
+
+	// Splice bottom-up so the still-pending spans keep their offsets.
+	for i := len(spans) - 1; i >= 0; i-- {
+		s := spans[i]
+		ev.pt.Delete(s.Off, s.Len)
+		ev.li.UpdateAfterDelete(s.Off, s.Len)
+		ev.pt.Insert(s.Off, renders[i])
+		ev.li.UpdateAfterInsert(s.Off, renders[i])
+	}
+
+	// Invalidate from the edit, not from the cursor: a reverse replace
+	// edits text above the current line.
+	startLine := ev.li.GetLineAtOffset(spans[0].Off)
+	ev.invalidateStates(startLine)
+	ev.engine.InvalidateFrom(startLine)
+
+	last := len(spans) - 1
+	newCursorOff := spans[last].Off + len(renders[last])
+	ev.CursorLine = ev.li.GetLineAtOffset(newCursorOff)
+	ev.CursorPos = newCursorOff - ev.li.GetLineOffset(ev.CursorLine)
+
+	ev.selActive = false
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+	vtui.FrameManager.Redraw()
 }
 
 func (ev *EditorView) showReplaceDialog() {
@@ -2206,7 +3462,8 @@ func (ev *EditorView) showReplaceDialog() {
 	dlg.SetFocusedItem(editPattern)
 
 	lblReplace := vtui.NewLabel(0, 0, Msg("Replace.Prompt"), nil)
-	editReplace := vtui.NewEdit(0, 0, 40, "")
+	editReplace := vtui.NewEdit(0, 0, 40, LastEditorReplace)
+	editReplace.SelectAll()
 
 	chkCase := vtui.NewCheckbox(0, 0, Msg("Search.CaseSensitive"), false)
 	if LastEditorSearchCase {
@@ -2226,6 +3483,11 @@ func (ev *EditorView) showReplaceDialog() {
 	chkRegexp := vtui.NewCheckbox(0, 0, Msg("Search.Regex"), false)
 	if LastEditorSearchRegexp {
 		chkRegexp.State = 1
+	}
+
+	chkHex := vtui.NewCheckbox(0, 0, Msg("Search.HexPattern"), false)
+	if LastEditorSearchHex {
+		chkHex.State = 1
 	}
 
 	btnReplace := vtui.NewButton(0, 0, Msg("Replace.BtnReplace"))
@@ -2259,6 +3521,10 @@ func (ev *EditorView) showReplaceDialog() {
 	col2 := vtui.NewVBoxLayout(0, 0, (dlgW-4)/2, 5)
 	col2.Add(chkRegexp, vtui.Margins{}, vtui.AlignLeft)
 
+	col2.Add(chkHex, vtui.Margins{Top: 1}, vtui.AlignLeft)
+
+	col2.Add(chkHex, vtui.Margins{Top: 1}, vtui.AlignLeft)
+
 	rowChecks := vtui.NewHBoxLayout(0, 0, dlgW-4, 5)
 	rowChecks.Add(col1, vtui.Margins{}, vtui.AlignFill)
 	rowChecks.Add(col2, vtui.Margins{}, vtui.AlignFill)
@@ -2273,26 +3539,20 @@ func (ev *EditorView) showReplaceDialog() {
 	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Apply()
 
-	btnReplace.OnClick = func() {
+	doReplace := func(all bool) {
 		LastEditorSearch = editPattern.GetText()
+		LastEditorReplace = editReplace.GetText()
 		LastEditorSearchCase = chkCase.State == 1
 		LastEditorSearchReverse = chkReverse.State == 1
 		LastEditorSearchRegexp = chkRegexp.State == 1
 		LastEditorSearchWholeWord = chkWholeWord.State == 1
 		SaveSession()
 		dlg.Close()
-		ev.Replace(LastEditorSearch, editReplace.GetText(), LastEditorSearchCase, LastEditorSearchReverse, LastEditorSearchRegexp, LastEditorSearchWholeWord, false)
+		LastEditorSearchHex = chkHex.State == 1
+		ev.Replace(LastEditorSearch, LastEditorReplace, LastEditorSearchCase, LastEditorSearchReverse, LastEditorSearchRegexp, LastEditorSearchWholeWord, all)
 	}
-	btnReplaceAll.OnClick = func() {
-		LastEditorSearch = editPattern.GetText()
-		LastEditorSearchCase = chkCase.State == 1
-		LastEditorSearchReverse = chkReverse.State == 1
-		LastEditorSearchRegexp = chkRegexp.State == 1
-		LastEditorSearchWholeWord = chkWholeWord.State == 1
-		SaveSession()
-		dlg.Close()
-		ev.Replace(LastEditorSearch, editReplace.GetText(), LastEditorSearchCase, LastEditorSearchReverse, LastEditorSearchRegexp, LastEditorSearchWholeWord, true)
-	}
+	btnReplace.OnClick = func() { doReplace(false) }
+	btnReplaceAll.OnClick = func() { doReplace(true) }
 	btnCancel.OnClick = func() { dlg.Close() }
 
 	vtui.FrameManager.Push(dlg)
@@ -2717,6 +3977,19 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		// disk, which is only true for a raw UTF-8 load.
 		saved := false
 		if err == nil {
+			if patcher, ok := ev.vfs.(vfs.InPlacePatcher); ok && ev.Codepage == 65001 && !createNewTarget {
+				if pieces, ok := patchPiecesFromTable(ev.pt); ok {
+					perr := patcher.PatchInPlace(ctx.Context, ev.filePath, pieces)
+					if perr == nil {
+						saved = true
+					} else {
+						vtui.DebugLog("EDITOR: in-place patch unavailable: %v", perr)
+					}
+				}
+			}
+		}
+
+		if !saved && err == nil {
 			if delta, isDelta := ev.vfs.(vfs.DeltaWriter); isDelta && useTemp && ev.Codepage == 65001 {
 				if pieces, ok := patchPiecesFromTable(ev.pt); ok {
 					perr := delta.PatchFile(vfs.WithDestinationOverwrite(ctx.Context, false), ev.filePath, tempPath, pieces)
@@ -3092,6 +4365,7 @@ func (ev *EditorView) insertTextAtCursor(data []byte) {
 	if len(data) == 0 {
 		return
 	}
+	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
 	if ev.selActive || ev.rectSelActive {
 		ev.inGroup = true
@@ -3142,6 +4416,7 @@ func (ev *EditorView) deleteSpacersForward() {
 	if count == 0 {
 		return
 	}
+	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
 	ev.modified = true
 	ev.pt.Delete(offset, count)
@@ -3227,15 +4502,31 @@ func (ev *EditorView) CopySelection() {
 }
 
 func (ev *EditorView) PasteRectangular(text string, targetCol int) {
+	if text == "" {
+		return
+	}
 	lines := strings.Split(text, "\n")
 	if len(lines) == 0 {
 		return
 	}
+	neededLines := ev.CursorLine + len(lines)
+	mutates := neededLines > ev.li.LineCount()
+	if !mutates {
+		for _, line := range lines {
+			if line != "" {
+				mutates = true
+				break
+			}
+		}
+	}
+	if !mutates {
+		return
+	}
 
+	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
 	ev.modified = true
 
-	neededLines := ev.CursorLine + len(lines)
 	for ev.li.LineCount() < neededLines {
 		offset := ev.pt.Size()
 		ev.pt.Insert(offset, []byte("\n"))
@@ -3297,20 +4588,16 @@ func (ev *EditorView) PasteRectangular(text string, targetCol int) {
 }
 
 func (ev *EditorView) PasteText(text string) {
-	if !ev.edited {
-		ev.edited = true
-		if ev.indexCancel != nil {
-			ev.indexCancel()
-		}
-	}
-	ev.editSession++
-
 	if GlobalLastClipboardWasRectangular {
 		targetCol := ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
 		ev.PasteRectangular(text, targetCol)
 		return
 	}
+	if text == "" && !ev.selActive {
+		return
+	}
 
+	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
 	ev.inGroup = true
 	if ev.selActive {
@@ -3344,8 +4631,7 @@ func (ev *EditorView) DeleteSelection() {
 			minX, maxX = maxX, minX
 		}
 
-		ev.saveUndo(opOther)
-		ev.modified = true
+		mutated := false
 
 		for y := maxY; y >= minY; y-- {
 			lineStart := ev.li.GetLineOffset(y)
@@ -3390,6 +4676,14 @@ func (ev *EditorView) DeleteSelection() {
 					endByte = byteAcc
 				}
 				if endByte > startByte {
+					if !mutated {
+						if !ev.inGroup {
+							ev.noteBufferEdit()
+						}
+						ev.saveUndo(opOther)
+						ev.modified = true
+						mutated = true
+					}
 					delOff := lineStart + startByte
 					delLen := endByte - startByte
 					ev.pt.Delete(delOff, delLen)
@@ -3398,8 +4692,10 @@ func (ev *EditorView) DeleteSelection() {
 			}
 		}
 
-		ev.invalidateStates(minY)
-		ev.engine.InvalidateFrom(minY)
+		if mutated {
+			ev.invalidateStates(minY)
+			ev.engine.InvalidateFrom(minY)
+		}
 		ev.rectSelActive = false
 		ev.ensureCursorVisible()
 		return
@@ -3413,13 +4709,9 @@ func (ev *EditorView) DeleteSelection() {
 		max = ev.pt.Size()
 	}
 	if max > min {
-		if !ev.edited {
-			ev.edited = true
-			if ev.indexCancel != nil {
-				ev.indexCancel()
-			}
+		if !ev.inGroup {
+			ev.noteBufferEdit()
 		}
-		ev.editSession++
 
 		ev.saveUndo(opOther)
 
@@ -3437,6 +4729,7 @@ func (ev *EditorView) DeleteCurrentLine() {
 	if ev.pt.Size() == 0 {
 		return
 	}
+	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
 	ev.modified = true
 
@@ -3511,17 +4804,222 @@ func (ev *EditorView) GetTitle() string {
 	return "Editor"
 }
 
-// GetWorkspaceTabTitle provides a compact, icon-led title for the workspace
+// GetWorkspaceTabTitle provides a compact title for the workspace
 // tab bar while leaving GetTitle available for contexts that need the fuller
 // textual description.
 func (ev *EditorView) GetWorkspaceTabTitle() string {
 	if ev.DisplayTitle != "" {
-		return "✎ " + ev.DisplayTitle
+		return ev.DisplayTitle
 	}
 	if ev.filePath != "" {
-		return "✎ " + filepath.Base(ev.filePath)
+		return filepath.Base(ev.filePath)
 	}
-	return "✎ Editor"
+	return "Editor"
+}
+
+func (ev *EditorView) GetWorkspaceTabMarker() string { return "E" }
+
+// buildSearchRegex compiles an editor search pattern with the rules shared
+// by Find, Find All and Replace: non-regex input is quoted literally, case
+// insensitivity becomes an (?i) prefix and whole-word wraps the pattern in
+// word boundaries.
+func buildSearchRegex(pattern string, caseSensitive, useRegex, wholeWord bool) (*coregex.Regex, error) {
+	finalPattern := pattern
+	if !useRegex {
+		finalPattern = coregex.QuoteMeta(pattern)
+	}
+	if !caseSensitive {
+		finalPattern = "(?i)" + finalPattern
+	}
+	if wholeWord {
+		finalPattern = `\b(?:` + finalPattern + `)\b`
+	}
+	return coregex.Compile(finalPattern)
+}
+
+// showSearchProgressDialog shows the cancelable " Searching... " popup used
+// by Find and Find All while the buffer scan runs in the background.
+func showSearchProgressDialog(pattern string) (dlg *vtui.Window, btnCancel *vtui.Button) {
+	dlg = vtui.NewCenteredDialog(50, 8, Msg("Search.Searching"))
+	lbl := vtui.NewLabel(0, 0, fmt.Sprintf("Looking for: %s", pattern), nil)
+	dlg.AddItem(lbl)
+	btnCancel = vtui.NewButton(0, 0, Msg("vtui.Cancel"))
+	dlg.AddItem(btnCancel)
+
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, 8-4)
+	vbox.Add(lbl, vtui.Margins{}, vtui.AlignCenter)
+	vbox.Add(btnCancel, vtui.Margins{Top: 1}, vtui.AlignCenter)
+	vbox.Apply()
+
+	vtui.FrameManager.AddScreenHeadless(dlg)
+	return dlg, btnCancel
+}
+
+// runSearchWithProgress shows the progress popup and runs worker in the
+// background. The cancel wiring lives here, on the UI thread: the Cancel
+// button and any other close of the dialog (Esc, F10, a border click) all
+// cancel the task, so a dismissed search can never resurface its result.
+// Wiring after RunAsync is race-free because queued UI tasks only run once
+// the current one returns. Must be called on the UI thread; workers close
+// dlg from their RunOnUI callback and must check ctx.Err() before acting.
+func runSearchWithProgress(pattern string, worker func(ctx *vtui.TaskContext, dlg *vtui.Window)) (*vtui.Window, *vtui.TaskContext) {
+	dlg, btnCancel := showSearchProgressDialog(pattern)
+	ctx := vtui.RunAsync(func(c *vtui.TaskContext) { worker(c, dlg) })
+	btnCancel.OnClick = func() { ctx.Cancel(); dlg.Close() }
+	dlg.OnResult = func(int) { ctx.Cancel() }
+	return dlg, ctx
+}
+
+// findMatch locates one occurrence of pattern in data: forward from
+// startOff, or backward from just before it when reverse is set; next
+// additionally skips a match starting exactly at startOff. The offset is
+// -1 when nothing matches. The returned length is the matched byte length,
+// which for regex or case-folded matches can differ from len(pattern).
+func findMatch(data []byte, pattern string, caseSensitive, reverse, regexp, wholeWord, next bool, startOff int) (int, int, error) {
+	foundOffset := -1
+	matchLen := len(pattern)
+	totalSize := len(data)
+
+	// Only whole-word matching needs the regex engine (for the \b
+	// wrapping); literal search, case-sensitive or folded, is handled
+	// below without it.
+	if regexp || wholeWord {
+		re, err := buildSearchRegex(pattern, caseSensitive, regexp, wholeWord)
+		if err != nil {
+			return -1, 0, err
+		}
+
+		if !reverse {
+			currOff := startOff
+			if next {
+				currOff++
+			}
+			if currOff < totalSize {
+				loc := re.FindIndex(data[currOff:])
+				if loc != nil {
+					foundOffset = currOff + loc[0]
+					matchLen = loc[1] - loc[0]
+				}
+			}
+		} else {
+			currOff := startOff
+			if next {
+				currOff--
+			}
+			if currOff > totalSize {
+				currOff = totalSize
+			}
+			if currOff > 0 {
+				// FindAllIndex scans left-to-right without overlap, so for
+				// self-overlapping patterns (e.g. "яя" in "яяя") this can
+				// land left of the true rightmost hit. Accepted: unlike the
+				// old ToLower+LastIndex path it cannot corrupt byte offsets.
+				locs := re.FindAllIndex(data[:currOff], -1)
+				if len(locs) > 0 {
+					last := locs[len(locs)-1]
+					foundOffset = last[0]
+					matchLen = last[1] - last[0]
+				}
+			}
+		}
+		return foundOffset, matchLen, nil
+	}
+
+	text := string(data)
+	index, lastIndex := strings.Index, strings.LastIndex
+	if !caseSensitive {
+		// strcase folds while scanning the original text, so the offsets
+		// it returns need no translation.
+		index, lastIndex = strcase.Index, strcase.LastIndex
+	}
+	if !reverse {
+		currOff := startOff
+		if next {
+			currOff++
+		}
+		if currOff < len(text) {
+			idx := index(text[currOff:], pattern)
+			if idx != -1 {
+				foundOffset = currOff + idx
+			}
+		}
+	} else {
+		currOff := startOff
+		if next {
+			currOff--
+		}
+		if currOff > len(text) {
+			currOff = len(text)
+		}
+		if currOff > 0 {
+			idx := lastIndex(text[:currOff], pattern)
+			if idx != -1 {
+				foundOffset = idx
+			}
+		}
+	}
+	// A folded match can differ in byte length from the pattern
+	// (K U+212A matches "k"), so measure what it consumed.
+	if foundOffset != -1 && !caseSensitive {
+		if after, ok := strcase.CutPrefix(text[foundOffset:], pattern); ok {
+			matchLen = len(text) - foundOffset - len(after)
+		}
+	}
+	return foundOffset, matchLen, nil
+}
+
+// searchSeedOffset returns the offset a buffer scan starts from. An active
+// selection — typically the previously found or confirmed match — takes
+// precedence over the raw cursor: a replace scan (includeSelection) starts
+// at the selection's near edge so the highlighted occurrence is prompted
+// again, while a plain search starts at its end and continues past it,
+// exactly as if the cursor sat there.
+func (ev *EditorView) searchSeedOffset(reverse, includeSelection bool) int {
+	if ev.selActive {
+		selMin, selMax := ev.getSelectionRange()
+		if includeSelection && !reverse {
+			return selMin
+		}
+		return selMax
+	}
+	return ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+}
+
+func parseHexPatternToRegex(pattern string) (string, error) {
+	var re strings.Builder
+	re.WriteString("(?s)") // dot matches newline
+	tokens := strings.Fields(pattern)
+	for _, t := range tokens {
+		if t == "?" || t == "??" {
+			re.WriteString(".")
+		} else {
+			if len(t) == 1 {
+				t = "0" + t
+			}
+			b, err := hex.DecodeString(t)
+			if err != nil {
+				return "", fmt.Errorf("invalid hex token: %s", t)
+			}
+			re.WriteString(fmt.Sprintf("\\x%02x", b[0]))
+		}
+	}
+	return re.String(), nil
+}
+
+func parseHexReplacement(repl string) ([]byte, error) {
+	var res []byte
+	tokens := strings.Fields(repl)
+	for _, t := range tokens {
+		if len(t) == 1 {
+			t = "0" + t
+		}
+		b, err := hex.DecodeString(t)
+		if err != nil {
+			return nil, fmt.Errorf("invalid hex token: %s", t)
+		}
+		res = append(res, b[0])
+	}
+	return res, nil
 }
 func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, wholeWord, next bool) {
 	if pattern == "" {
@@ -3536,33 +5034,27 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 		SaveSession()
 	}
 
+	searchPattern := pattern
+	if LastEditorSearchHex {
+		var err error
+		searchPattern, err = parseHexPatternToRegex(pattern)
+		if err != nil {
+			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
+			return
+		}
+		regexp = true
+		wholeWord = false
+		caseSensitive = true
+	}
+
 	vtui.DebugLog("EDITOR_SEARCH: Starting for %q (sensitive=%v, reverse=%v, regexp=%v, wholeWord=%v, next=%v)",
 		pattern, caseSensitive, reverse, regexp, wholeWord, next)
 
-	title := " Searching... "
-	msg := fmt.Sprintf("Looking for: %s", pattern)
-
 	vtui.FrameManager.PostTask(func() {
-		dlg := vtui.NewCenteredDialog(50, 8, title)
-		lbl := vtui.NewLabel(0, 0, msg, nil)
-		dlg.AddItem(lbl)
-		btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
-		dlg.AddItem(btnCancel)
+		// Read on the UI thread, before the background scan starts.
+		startOff := ev.searchSeedOffset(reverse, false)
 
-		vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, 8-4)
-		vbox.Add(lbl, vtui.Margins{}, vtui.AlignCenter)
-		vbox.Add(btnCancel, vtui.Margins{Top: 1}, vtui.AlignCenter)
-		vbox.Apply()
-
-		vtui.FrameManager.AddScreenHeadless(dlg)
-
-		_ = vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			btnCancel.OnClick = func() { ctx.Cancel(); dlg.Close() }
-
-			startOff := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
-			foundOffset := -1
-			matchLen := len(pattern)
-
+		runSearchWithProgress(searchPattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			bytes, errBytes := ev.pt.Bytes()
 			if errBytes != nil {
 				ctx.RunOnUI(func() {
@@ -3571,114 +5063,48 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 				})
 				return
 			}
-			totalSize := len(bytes)
 
-			if regexp || wholeWord {
-				finalPattern := pattern
-				if !regexp {
-					finalPattern = coregex.QuoteMeta(pattern)
-				}
-				if !caseSensitive {
-					finalPattern = "(?i)" + finalPattern
-				}
-				if wholeWord {
-					finalPattern = `\b(?:` + finalPattern + `)\b`
-				}
-
-				re, err := coregex.Compile(finalPattern)
-				if err != nil {
-					ctx.RunOnUI(func() {
-						dlg.Close()
-						vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
-					})
-					return
-				}
-
-				if !reverse {
-					currOff := startOff
-					if next {
-						currOff++
-					}
-					if currOff < totalSize {
-						loc := re.FindIndex(bytes[currOff:])
-						if loc != nil {
-							foundOffset = currOff + loc[0]
-							matchLen = loc[1] - loc[0]
-						}
-					}
-				} else {
-					currOff := startOff
-					if next {
-						currOff--
-					}
-					if currOff > totalSize {
-						currOff = totalSize
-					}
-					if currOff > 0 {
-						locs := re.FindAllIndex(bytes[:currOff], -1)
-						if len(locs) > 0 {
-							last := locs[len(locs)-1]
-							foundOffset = last[0]
-							matchLen = last[1] - last[0]
-						}
-					}
-				}
-			} else {
-				text := string(bytes)
-				searchData := text
-				searchPat := pattern
-				if !caseSensitive {
-					searchData = strings.ToLower(text)
-					searchPat = strings.ToLower(pattern)
-				}
-
-				if !reverse {
-					currOff := startOff
-					if next {
-						currOff++
-					}
-					if currOff < len(searchData) {
-						idx := strings.Index(searchData[currOff:], searchPat)
-						if idx != -1 {
-							foundOffset = currOff + idx
-						}
-					}
-				} else {
-					currOff := startOff
-					if next {
-						currOff--
-					}
-					if currOff > len(searchData) {
-						currOff = len(searchData)
-					}
-					if currOff > 0 {
-						idx := strings.LastIndex(searchData[:currOff], searchPat)
-						if idx != -1 {
-							foundOffset = idx
-						}
-					}
-				}
+			foundOffset, matchLen, err := findMatch(bytes, pattern, caseSensitive, reverse, regexp, wholeWord, next, startOff)
+			if err != nil {
+				ctx.RunOnUI(func() {
+					dlg.Close()
+					vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+				})
+				return
 			}
 
 			ctx.RunOnUI(func() {
+				// Closing the dialog cancels the task via OnResult, so the
+				// cancellation state must be read first: a search the user
+				// dismissed neither jumps nor complains.
+				canceled := ctx.Err() != nil
 				dlg.Close()
+				if canceled {
+					return
+				}
 				if foundOffset != -1 {
-					ev.selActive = true
-					ev.selAnchorOffset = foundOffset
-
-					endFound := foundOffset + matchLen
-					ev.CursorLine = ev.li.GetLineAtOffset(endFound)
-					ev.CursorPos = endFound - ev.li.GetLineOffset(ev.CursorLine)
-
-					ev.updateDesiredVisualCol()
-					ev.ensureCursorVisible()
-					vtui.FrameManager.Redraw()
-				} else if ctx.Err() == nil {
-					vtui.ShowMessage(" Search ", "Pattern not found.", []string{"&Ok"})
+					ev.selectFoundPattern(foundOffset, matchLen)
+				} else {
+					vtui.ShowMessage(Msg("Search.Title"), Msg("Search.NotFound"), []string{Msg("vtui.Ok")})
 				}
 			})
 		})
 	})
+}
+
+// selectFoundPattern selects a match found by Search or FindAll: the match
+// becomes the active selection and the cursor lands at its end.
+func (ev *EditorView) selectFoundPattern(off, length int) {
+	ev.selActive = true
+	ev.selAnchorOffset = off
+
+	end := off + length
+	ev.CursorLine = ev.li.GetLineAtOffset(end)
+	ev.CursorPos = end - ev.li.GetLineOffset(ev.CursorLine)
+
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+	vtui.FrameManager.Redraw()
 }
 
 // updateAutocomplete scans nearby lines for words matching the current prefix.

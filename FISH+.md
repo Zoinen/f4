@@ -108,6 +108,7 @@ Everything printed before that line (motd, shell warnings, login banners) is dis
 *   `mkdir` + path — creates a directory and its missing parents.
 *   `rm`, `rmdir`, `rmtree` + path — a file, an empty directory, a whole tree.
 *   `mv` + two paths — the first command that reads more than one path line.
+*   `mklink` + two paths — creates a symbolic link at the first path pointing at the second. Only the first is guarded: the target is not a path on the remote host but a string to store in the link, and a relative target, one that does not exist yet, or one containing `..` are all ordinary. A link path that already exists is refused rather than replaced, because `ln -s TARGET DIR` creates the link inside `DIR` instead of failing.
 *   `chmod <octal>` + path — the mode is checked for being octal before it reaches the remote `chmod`.
 *   `chown <uid> <gid>` + path — either half may be `-`, meaning "leave it alone".
 *   `utime <mtime> <atime>` + path — epoch seconds, either of them `-` for "leave it alone".
@@ -344,6 +345,8 @@ time, which is exactly what makes it useful.
 *   A host with a `touch` that takes neither `-d @epoch` nor `-t`, or with no `date` able to render an epoch, cannot have its timestamps set. The helper says so instead of writing the wrong time.
 *   Times are set with a resolution of one second, because that is what `touch -t` carries. The sub-second part a listing reports is therefore lost on a copy.
 *   `chown` follows symlinks, so setting the ownership of a symlink changes its target instead. Doing it the other way round needs `chown -h`, which not every host has.
+*   `mklink` needs `ln`, which the banner announces as a tool like any other. A host without it cannot have links created on it, and the client refuses instead of trying. Because `ln` entered the probe list together with the command, a banner listing it also means a helper new enough to know `mklink`, which is what lets one feature answer both questions.
+*   A symbolic link is created with the ownership of the account the helper runs as, and its own timestamps are not settable: `touch` follows a link and would stamp the target instead. A copy therefore reproduces where a link points, not when it was made.
 *   A search is capped at 10000 matches and the client cannot tell a file with exactly that many hits from a truncated answer. A count line would fix it and costs a second pass over the file, so it waits for a case that needs it.
 *   Case folding and regular expression dialect are the remote `grep`'s, not Go's, so a search over a FISH+ panel can match slightly differently than the same search over a local one. That is the price of not moving the file.
 *   `grep` cannot match across a line break, so a pattern containing a newline finds nothing. The viewer's search will have to split such a pattern itself.
@@ -406,10 +409,10 @@ time, which is exactly what makes it useful.
 *   **Step 15 — server-to-server copy/move (S2S).** Direct copy/move between different remote hosts (Host A and Host B) using bidirectional `scp` (push/pull) probing, completely bypassing the client and resolving firewall/authorization constraints.
 *   **Step 16 — the rest of the odd hosts.** Whatever the compatibility issue turns up beyond the `ls` backend; `tools/fishplus_probe.sh` collects the raw material. Nothing is outstanding from the reports so far.
 *   **Step 17 — Support for Windows hosts.** Extend FISH+ to support Windows machines as remote servers. This can be implemented by executing commands through PowerShell, or by running `f4` itself on the remote Windows machine as a dedicated FISH+ helper/server (which is highly beneficial for non-Windows platforms as well).
+*   **Step 18 — Connection pooling / Keep-alive.** Do not close the SSH/shell connection immediately when a FISH+ panel is closed. Keep the session alive so that opening it again connects instantly. (Requires looking at far2l's NetRocks implementation as a conceptual reference, but must be written from scratch under BSD-3).
 
 ### To do
 
-*   **Step 18 — Connection pooling / Keep-alive.** Do not close the SSH/shell connection immediately when a FISH+ panel is closed. Keep the session alive so that opening it again connects instantly. (Requires looking at far2l's NetRocks implementation as a conceptual reference, but must be written from scratch under BSD-3).
 *   **Step 19 — what a reconnect still cannot do.** The keepalive and the reconnect have landed; what is left under this number needs more than a new session. A transfer that resumes where it stopped needs the remote side to say how much of it arrived, which nothing on the wire reports today. A session that outlives the process — a job whose answer nobody looked at before f4 was closed, a panel that reopens where it was — needs state on disk rather than in memory. And the call sites: the viewer, the editor and the file operations all meet `ErrBroken` and none of them asks yet, so a lost session is only a question in the panel and still a plain error everywhere else. Each of the three is separate work and none of them blocks the others.
 *   **Step 20 — FISH+ features for SFTP and SCP.** Extend FISH+ specific advantages (like opening the editor from the middle of a file via random access `vfs.ReadAt`) to the SFTP backend, and to SCP when it is ready.
 

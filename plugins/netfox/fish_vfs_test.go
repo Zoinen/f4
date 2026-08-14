@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/unxed/f4/internal/netproxy"
 	"io"
 	"os"
 	"os/exec"
@@ -644,7 +645,7 @@ func TestSSHTimeoutDefaults(t *testing.T) {
 }
 
 func TestDialSSHFailsOnAClosedPort(t *testing.T) {
-	client, err := DialSSH("127.0.0.1", "1", "nobody", "", 2)
+	client, err := DialSSH("127.0.0.1", "1", "nobody", "", 2, netproxy.Settings{})
 	if err == nil {
 		client.Close()
 		t.Fatal("dialing a closed port succeeded")

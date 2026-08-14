@@ -23,5 +23,9 @@ func getPlatformDrives() []DriveEntry {
 			})
 		}
 	}
+	drives = append(drives, DriveEntry{
+		Name:    "Physical Disks",
+		Factory: func() vfs.VFS { return vfs.NewDisksVFS() },
+	})
 	return drives
 }

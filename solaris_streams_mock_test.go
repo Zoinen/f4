@@ -6,10 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 // MockSolarisStreams реализует SolarisStreamsAPI для тестирования на Linux.
 // Он имитирует поведение ядра Illumos при работе с /dev/ptmx и /dev/pts/N.
+//
+// Слейв, которым GetPtsName/Open отвечают тестам, — настоящий tty, а не
+// обычный файл (см. newMockTTYSlave). SolarisPTY.Run() выставляет
+// SysProcAttr.Setctty, а это ioctl(TIOCSCTTY) поверх stdin запущенного
+// процесса, и на обычном файле он падает с ENOTTY. Мастер и остальная
+// бухгалтерия STREAMS остаются полностью замоканы; реален только сам
+// файловый дескриптор слейва.
 type MockSolarisStreams struct {
 	nextMinor  int
 	openFiles  map[string]bool
@@ -17,6 +26,21 @@ type MockSolarisStreams struct {
 	lastCols   int
 	lastRows   int
 	busyState  bool
+
+	// granted и unlocked воспроизводят состояние, которое ядро держит для
+	// пары master/subsidiary. Пока владелец узла не переназначен на
+	// вызывающего пользователя, open() слейва отбивается проверкой прав в
+	// VFS (EACCES); пока стоит PTLOCK, отказывает уже ptsopen() (EAGAIN).
+	// Мок обязан отказывать так же, иначе он подтвердит любую, в том числе
+	// неверную, последовательность вызовов — ровно это и пропустило в
+	// релиз баг #444.
+	granted  bool
+	unlocked bool
+
+	// refuseGrant и refuseUnlock позволяют тесту сымитировать пропуск
+	// соответствующего шага, не переписывая боевой код.
+	refuseGrant  bool
+	refuseUnlock bool
 }
 
 func NewMockSolarisStreams() *MockSolarisStreams {
@@ -41,13 +65,19 @@ func (m *MockSolarisStreams) Open(path string, flag int, perm os.FileMode) (*os.
 
 	// Эмуляция открытия слейва /dev/pts/N
 	if len(path) > 9 && path[:9] == "/dev/pts/" {
+		if !m.granted {
+			return nil, unix.EACCES
+		}
+		if !m.unlocked {
+			return nil, unix.EAGAIN
+		}
 		m.openFiles[path] = true
 		m.pushedMods[path] = []string{}
-		f, err := os.CreateTemp("", "mock_pts_*")
-		if err == nil {
-			os.Remove(f.Name()) // Unlink immediately to prevent leaks
+		f, err := newMockTTYSlave()
+		if err != nil {
+			return nil, err
 		}
-		return f, err
+		return f, nil
 	}
 
 	return nil, os.ErrNotExist
@@ -58,6 +88,28 @@ func (m *MockSolarisStreams) IoctlPush(f *os.File, module string) error {
 	// мы опираемся на факт, что Ioctl применяется к слейву.
 	// Для упрощения мока сохраняем модуль в глобальный список "последних пушей".
 	m.pushedMods["last_slave"] = append(m.pushedMods["last_slave"], module)
+	return nil
+}
+
+func (m *MockSolarisStreams) GrantPt(master *os.File) error {
+	if master == nil {
+		return errors.New("invalid master fd")
+	}
+	if m.refuseGrant {
+		return nil // шаг "пропущен": состояние узла не меняется
+	}
+	m.granted = true
+	return nil
+}
+
+func (m *MockSolarisStreams) UnlockPt(master *os.File) error {
+	if master == nil {
+		return errors.New("invalid master fd")
+	}
+	if m.refuseUnlock {
+		return nil // шаг "пропущен": PTLOCK остается выставленным
+	}
+	m.unlocked = true
 	return nil
 }
 

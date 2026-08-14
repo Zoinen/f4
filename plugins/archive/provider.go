@@ -14,6 +14,9 @@ func (p *ArchiveProvider) Name() string  { return "zipper/archive" }
 func (p *ArchiveProvider) Priority() int { return 10 }
 
 func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path string) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
 	if osvfs, ok := parent.(*vfs.OSVFS); ok {
 		localPath, _ := osvfs.Abs(path)
 		if fi, err := os.Stat(localPath); err == nil {
@@ -22,10 +25,16 @@ func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path stri
 			}
 		}
 	}
-	format := archive.DetectFormat(path)
+	name := path
+	if parent != nil {
+		if base := parent.Base(path); base != "" {
+			name = base
+		}
+	}
+	format := archive.DetectFormat(name)
 	return format != ""
 }
 
 func (p *ArchiveProvider) Open(ctx context.Context, parent vfs.VFS, path string) (vfs.VFS, error) {
-	return NewArchiveVFS(parent, path)
+	return NewArchiveVFSContext(ctx, parent, path)
 }

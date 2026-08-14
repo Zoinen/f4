@@ -29,7 +29,15 @@ To expose a VFS, an external plugin registers handlers for these requests:
 *   `VFS.Create` / `VFS.Write` / `VFS.MkDir` / `VFS.Remove` / `VFS.Rename`: Standard filesystem mutations.
 *   `VFS.ProcessKey`: Allows the plugin to intercept specific keystrokes while the user is browsing its virtual drive.
 
-### B. Editor Syntax Highlighting (Highlighter API)
+### B. Searchable commands
+
+`Plugin.Init` may also return a `Commands` array. Each descriptor contains a stable `ID`, `Location` (`0` for the panel plugin menu, `1` for plugin configuration), an English `Label` and optional `Description`, `Shortcut`, localized label/description maps, literal `SearchTerms`, and optional `ActiveDrives`. f4 shows these commands in its normal plugin menus and in the `Ctrl+Shift+P` command palette, indexes every supplied language, and renders the current interface language.
+
+When the user selects a command, f4 calls `Plugin.RunCommand` with its ID. Contributions are tied to the RPC session and disappear when the plugin disconnects. `VFS.ProcessKey` and `Host.RegisterGlobalHotkey` remain supported for compatibility, but they carry no command name or search metadata; plugins should publish a matching command descriptor for every semantic operation reachable only through one of those raw-key callbacks.
+
+The Go SDK exposes this as the optional `f4plugin.CommandProvider` interface, so existing plugins do not need to change. See `plugins/dummy_rpc/main.go` for a drive-scoped, multilingual example.
+
+### C. Editor Syntax Highlighting (Highlighter API)
 
 Plugins can colorize files in the text editor dynamically.
 1.  During initialization, the plugin calls `Host.RegisterHighlighter`.
@@ -44,7 +52,7 @@ Plugins can colorize files in the text editor dynamically.
     *   `Attrs` ([]uint64): A parallel array of terminal attribute words (colors/styles), one per rune of the line.
     *   `Next` (any): Any state object the plugin wants to pass to the next line's `Prev` parameter.
 
-### C. Host Callbacks (Plugin -> Host)
+### D. Host Callbacks (Plugin -> Host)
 Because F4-RPC is a full-duplex protocol, plugins can call back into `f4` at any time:
 *   `Host.Log` / `Host.Message` / `Host.InputBox` / `Host.Menu`: Standard UI and debugging interactions.
 *   `Host.RunAction`: Triggers any internal f4 semantic action (e.g., `Editor.Save`, `Panel.Swap`).

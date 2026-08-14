@@ -58,10 +58,42 @@ func (p *DummyPlugin) Highlight(line string, prev any, base uint64) ([]uint64, a
 
 func (p *DummyPlugin) ProcessKey(drive string, event vtinput.InputEvent) (bool, error) {
 	if event.KeyDown && event.VirtualKeyCode == vtinput.VK_F1 && event.ControlKeyState == 0 {
-		p.host.Message("Hello! You pressed F1 on an RPC panel.")
-		return true, nil
+		return true, p.showHello()
 	}
 	return false, nil
+}
+
+func (p *DummyPlugin) PluginCommands() []f4plugin.PluginCommand {
+	return []f4plugin.PluginCommand{{
+		ID:          "dummy-rpc.hello",
+		Location:    f4plugin.PluginCommandPanel,
+		Label:       "Show RPC panel greeting",
+		Description: "Show the sample command contributed by the Dummy RPC VFS plugin",
+		Shortcut:    "F1",
+		LocalizedLabels: map[string]string{
+			"ru": "Показать приветствие RPC-панели",
+		},
+		LocalizedDescriptions: map[string]string{
+			"ru": "Показать пример команды, опубликованной плагином Dummy RPC VFS",
+		},
+		SearchTerms:  []string{"hello", "приветствие", "RPC"},
+		ActiveDrives: []string{"Dummy RPC VFS"},
+	}}
+}
+
+func (p *DummyPlugin) RunPluginCommand(id string) error {
+	if id != "dummy-rpc.hello" {
+		return fmt.Errorf("unknown plugin command %q", id)
+	}
+	return p.showHello()
+}
+
+func (p *DummyPlugin) showHello() error {
+	if p.host == nil {
+		return fmt.Errorf("plugin host is not initialized")
+	}
+	p.host.Message("Hello! You invoked the Dummy RPC panel command.")
+	return nil
 }
 
 func (p *DummyPlugin) OnHotkey(vk uint16, mods uint32) error {

@@ -55,6 +55,60 @@ func TestActionRegistry(t *testing.T) {
 		t.Error("RunAction should return false for missing action")
 	}
 }
+func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
+	a, ok := GetAction("Editor.HexMode")
+	if !ok {
+		t.Fatal("Editor.HexMode should be registered")
+	}
+	if a.MenuPath != "Options" {
+		t.Errorf("MenuPath = %q, want Options", a.MenuPath)
+	}
+
+	_, ok = GetAction("Workspace.New")
+	if !ok {
+		t.Fatal("Workspace.New should be registered")
+	}
+}
+
+func TestHotkeyManager_BookmarksDefault(t *testing.T) {
+	hm := NewHotkeyManager("")
+	hm.initDefaults()
+
+	if got := hm.GetAction("Shell", "CtrlShiftVK_DC"); got != "Panel.Bookmarks" {
+		t.Fatalf("Shell/CtrlShiftVK_DC = %q, want Panel.Bookmarks", got)
+	}
+}
+
+func TestHotkeyManager_PanelPathDefaults(t *testing.T) {
+	hm := NewHotkeyManager("")
+	hm.initDefaults()
+
+	if got := hm.GetAction("Shell", "CtrlD"); got != "Panel.CopyPath" {
+		t.Fatalf("Shell/CtrlD = %q, want Panel.CopyPath", got)
+	}
+	if got := hm.GetAction("Shell", "CtrlF"); got != "Panel.InsertPath" {
+		t.Fatalf("Shell/CtrlF = %q, want Panel.InsertPath", got)
+	}
+}
+
+func TestHotkeyManager_ViewerEditorSearchDirections(t *testing.T) {
+	hm := NewHotkeyManager("")
+	hm.initDefaults()
+
+	cases := []struct {
+		area, key, want string
+	}{
+		{"Editor", "CtrlEnter", "Editor.SearchForward"},
+		{"Editor", "CtrlShiftEnter", "Editor.SearchPrevious"},
+		{"Viewer", "CtrlEnter", "Viewer.SearchNext"},
+		{"Viewer", "CtrlShiftEnter", "Viewer.SearchPrevious"},
+	}
+	for _, tc := range cases {
+		if got := hm.GetAction(tc.area, tc.key); got != tc.want {
+			t.Errorf("%s/%s = %q, want %q", tc.area, tc.key, got, tc.want)
+		}
+	}
+}
 
 func TestAction_PanelToggleHidden(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())

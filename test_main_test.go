@@ -43,6 +43,11 @@ func pressKey(f vtui.Frame, e *vtinput.InputEvent) bool {
 func TestMain(m *testing.M) {
 	vfs.InitSudoClient("/usr/bin/f4", "")
 
+	// Unit tests must never hand control to the user's desktop. Individual
+	// tests that exercise these routes install per-dialog/per-frame recorders.
+	defaultExternalUICommandRunner = func(string, []string, string) error { return nil }
+	defaultNativePropertiesOpener = func(string) error { return nil }
+
 	tmpDir, err := os.MkdirTemp("", "f4-test-config-*")
 	if err == nil {
 		os.Setenv("XDG_CONFIG_HOME", tmpDir)

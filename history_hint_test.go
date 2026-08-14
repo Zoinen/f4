@@ -30,7 +30,7 @@ func waitForHistoryClipboard(t *testing.T, want string) string {
 // bundle keys — if the message isn't loaded, vtui.Msg returns "{key}" and
 // the bottom border of the Alt+F8/Alt+F12 dialogs would show a placeholder.
 func TestHistoryHint_MessagesResolved(t *testing.T) {
-	for _, key := range []string{"History.CommandsHint", "History.FoldersHint"} {
+	for _, key := range []string{"History.CommandsHint", "History.FoldersHint", "History.ViewEditHint"} {
 		s := Msg(key)
 		if s == "" || strings.HasPrefix(s, "{") {
 			t.Errorf("Msg(%q) not resolved: %q", key, s)
@@ -44,6 +44,9 @@ func TestHistoryHint_MessagesResolved(t *testing.T) {
 		}
 		if !strings.Contains(s, "Shift+Del") {
 			t.Errorf("Msg(%q) missing Shift+Del hint: %q", key, s)
+		}
+		if !strings.Contains(s, "Ins") {
+			t.Errorf("Msg(%q) missing Insert/pin hint: %q", key, s)
 		}
 	}
 }
@@ -76,6 +79,33 @@ func TestActionCommandHistory_WiresHint(t *testing.T) {
 	}
 }
 
+func TestActionCommandHistoryInsertPersistsLock(t *testing.T) {
+	initHistoryTestScreen(t)
+	hp := &F4HistoryProvider{
+		path: filepath.Join(t.TempDir(), "history.json"),
+		data: make(map[string][]string),
+		rich: map[string][]HistoryRecord{"cmdline": {{Name: "echo pinned"}}},
+	}
+	previous := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = hp
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(120, 40)
+	pf.cmdLine.Edit.History = []string{"echo pinned"}
+
+	actionCommandHistory(pf)
+	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if activeHistorySearch == nil || !activeHistorySearch.supportsLocks || !activeHistorySearch.showDetails {
+		t.Fatal("command history capabilities are not enabled")
+	}
+	menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_INSERT})
+	records := hp.LoadRichHistory("cmdline")
+	if len(records) != 1 || !records[0].Lock {
+		t.Fatalf("Insert did not persist command lock: %#v", records)
+	}
+}
+
 func TestActionFoldersHistory_WiresHint(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := setupMockPanelsFrame()
@@ -100,9 +130,46 @@ func TestActionFoldersHistory_WiresHint(t *testing.T) {
 	if activeHistorySearch == nil {
 		t.Fatal("actionFoldersHistory did not install a historySearch")
 	}
+	if activeHistorySearch.supportsLocks {
+		t.Fatal("non-persistent folder history exposed a fake lock column")
+	}
 	want := Msg("History.FoldersHint")
 	if got := activeHistorySearch.hint; got != want {
 		t.Errorf("folders hint = %q, want %q", got, want)
+	}
+}
+
+func TestActionFoldersHistoryInsertPersistsLock(t *testing.T) {
+	initHistoryTestScreen(t)
+	hp := &F4HistoryProvider{
+		path: filepath.Join(t.TempDir(), "history.json"),
+		data: map[string][]string{"folders": {"C:\\newest", "C:\\older"}},
+		rich: make(map[string][]HistoryRecord),
+	}
+	previous := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = hp
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+	pf := setupMockPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(120, 40)
+
+	actionFoldersHistory(pf)
+	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if activeHistorySearch == nil || !activeHistorySearch.supportsLocks {
+		t.Fatal("folder history did not enable persistent locking")
+	}
+	menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_INSERT})
+	records, _ := loadFolderHistoryRecords(hp)
+	if len(records) != 2 || !records[0].Lock {
+		t.Fatalf("Insert did not persist selected folder lock: %#v", records)
+	}
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DELETE,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	records, _ = loadFolderHistoryRecords(hp)
+	if len(records) != 2 || !records[0].Lock {
+		t.Fatalf("Shift+Del removed locked folder: %#v", records)
 	}
 }
 

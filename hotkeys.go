@@ -41,6 +41,9 @@ var conditionRegistry = map[string]func() bool{
 			if pf.showPanels {
 				return true
 			}
+			if pf.termView == nil {
+				return false
+			}
 			return !pf.termView.UseAltScreen && !pf.isPtyBusy()
 		}
 		return false
@@ -49,7 +52,19 @@ var conditionRegistry = map[string]func() bool{
 	// application (mc, htop) instead of triggering f4's own actions.
 	"noaltscreenapp": func() bool {
 		if pf := findPanelsFrameAnyScreen(); pf != nil {
-			return pf.showPanels || !pf.termView.UseAltScreen
+			return pf.showPanels || (pf.termView != nil && !pf.termView.UseAltScreen)
+		}
+		return false
+	},
+	// noterminalapp is the stricter sibling of noaltscreenapp: it also
+	// stands down for a plain child process that is merely busy (a shell
+	// command, a REPL). With the panels hidden such a process owns the
+	// keyboard and the command line is not even drawn, so actions that
+	// type into it must not fire. With the panels shown nothing is in the
+	// way, which keeps the Shell binding of such a key unconditional.
+	"noterminalapp": func() bool {
+		if pf := findPanelsFrameAnyScreen(); pf != nil {
+			return pf.showPanels || (pf.termView != nil && !pf.termView.UseAltScreen && !pf.isPtyBusy())
 		}
 		return false
 	},
@@ -58,7 +73,7 @@ var conditionRegistry = map[string]func() bool{
 	// being forwarded to the running application.
 	"terminalquiet": func() bool {
 		if pf := findPanelsFrameAnyScreen(); pf != nil {
-			return !pf.termView.UseAltScreen && !pf.isPtyBusy()
+			return pf.termView != nil && !pf.termView.UseAltScreen && !pf.isPtyBusy()
 		}
 		return false
 	},
@@ -78,7 +93,7 @@ var conditionRegistry = map[string]func() bool{
 
 // GetConditions returns the user-friendly names of all registered conditions.
 func GetConditions() []string {
-	return []string{"None", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp"}
+	return []string{"None", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp", "NoTerminalApp"}
 }
 
 // RegisterCondition adds a dynamic boolean check accessible by hotkey bindings.
@@ -202,6 +217,124 @@ func FormatKeyForUI(key string) string {
 	return strings.Join(parts, "+")
 }
 
+// NativeShortcutsForAction returns framework-owned shortcuts that still reach
+// action in area. Native keys are intentionally absent from Defaults, because
+// vtui must offer them to the focused frame before running its fallback. An
+// explicit user binding on the same key can nevertheless override or silence
+// that fallback, so do not advertise a native shortcut that is currently
+// claimed by another action (or by None).
+func NativeShortcutsForAction(area string, action Action) []string {
+	seen := make(map[string]bool)
+	var shortcuts []string
+	for _, spec := range action.NativeKeys {
+		key, condition, _ := strings.Cut(spec, ":")
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if !nativeShortcutConditionTrue(area, condition) {
+			continue
+		}
+		if nativeShortcutOwnedByCurrentContext(action.Name, key) {
+			continue
+		}
+		if GlobalHotkeysMgr != nil {
+			bound := GlobalHotkeysMgr.GetAction(area, key)
+			if bound != "" && !strings.EqualFold(bound, action.Name) {
+				continue
+			}
+		}
+		formatted := FormatKeyForUI(key)
+		if formatted == "" || seen[formatted] {
+			continue
+		}
+		seen[formatted] = true
+		shortcuts = append(shortcuts, formatted)
+	}
+	sort.Strings(shortcuts)
+	return shortcuts
+}
+
+// nativeShortcutOwnedByCurrentContext filters framework fallbacks that never
+// reach the advertised action in the active frame. This is separate from
+// HotkeyManager overrides: these keys are consumed directly by the frame
+// before vtui gets a chance to apply its workspace/help fallback.
+func nativeShortcutOwnedByCurrentContext(actionName, key string) bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil {
+		return false
+	}
+	// TypeUser modal frames (notably Help and Screen Grabber) own their input
+	// before vtui's framework fallbacks. Some deliberately release individual
+	// keys, but there is no ownership API that can prove that generically; omit
+	// native hints rather than advertise a chord the current modal may swallow.
+	if top.IsModal() {
+		return true
+	}
+
+	// Ctrl+N's native implementation is an active-stack CmResize broadcast.
+	// It is truthful only when the current screen actually contains a panels
+	// frame. The palette action itself can still fork the nearest panels frame
+	// from editor/viewer/image/queue screens via actionWorkspaceNew.
+	if strings.EqualFold(actionName, "Workspace.New") && strings.EqualFold(key, "CtrlN") {
+		frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+		hasPanels := false
+		for _, frame := range frames {
+			if panels, ok := frame.(*PanelsFrame); ok && !panels.closed {
+				hasPanels = true
+				break
+			}
+		}
+		if !hasPanels {
+			return true
+		}
+	}
+
+	switch frame := top.(type) {
+	case *ImageView:
+		// F12 belongs to the gallery while the image viewer is active, not to
+		// vtui's workspace list fallback.
+		return strings.EqualFold(key, "F12")
+	case *QueueFrame:
+		// An active queue swallows Ctrl+W to preserve running operations.
+		return strings.EqualFold(key, "CtrlW") && queueHasActiveTasks()
+	case *PanelsFrame:
+		terminalOwnsInput := !frame.showPanels &&
+			((frame.termView != nil && frame.termView.UseAltScreen) || frame.isPtyBusy())
+		if !terminalOwnsInput {
+			return false
+		}
+		// PanelsFrame explicitly releases workspace cycling and, when the
+		// preference is enabled, Ctrl+N before raw terminal forwarding.
+		if strings.EqualFold(key, "CtrlTab") || strings.EqualFold(key, "CtrlShiftTab") {
+			return false
+		}
+		if strings.EqualFold(key, "CtrlN") && AppConfig.TerminalCtrlNWorkspace {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+func nativeShortcutConditionTrue(area, condition string) bool {
+	condition = strings.TrimSpace(condition)
+	if condition == "" {
+		return true
+	}
+	switch strings.ToLower(condition) {
+	case "frameworknoterminalapp":
+		return !strings.EqualFold(area, "Terminal") || commandPaletteConditionTrue("NoTerminalApp")
+	case "terminalctrlnworkspace":
+		return !strings.EqualFold(area, "Terminal") || AppConfig.TerminalCtrlNWorkspace
+	default:
+		return commandPaletteConditionTrue(condition)
+	}
+}
+
 // initDefaults builds the default bindings from the action registry.
 // The registry is the single source of truth: every action carrying
 // DefaultKeys gets them bound in its Area (plus any DefaultAreas).
@@ -307,6 +440,27 @@ func (hm *HotkeyManager) Save() {
 	os.WriteFile(hm.iniPath, []byte(sb.String()), 0644)
 }
 
+// delKeyAlias returns the other spelling of a Del key string, or "" when the
+// key is not a Del key. "ShiftDel" <-> "ShiftNumDel", "Del" <-> "NumDel".
+//
+// EventToFarString derives the Num prefix from the EnhancedKey flag, but no
+// input backend f4 supports reports that flag consistently for Delete: the
+// GUI hosts (ebiten, gogpu, x11, wayland) build events with plain Shift/Ctrl/
+// Alt state and never set it, and CSI 3~ carries no such flag either, so the
+// navigation Del arrives named "NumDel" and every "…Del" binding silently
+// misses. far2l has the same two names and binds them to one handler
+// (editor.cpp: KEY_SHIFTDEL/KEY_SHIFTNUMDEL/KEY_SHIFTDECIMAL); resolving the
+// alias here keeps a binding working whichever name the backend produced.
+func delKeyAlias(key string) string {
+	if strings.HasSuffix(key, "NumDel") {
+		return strings.TrimSuffix(key, "NumDel") + "Del"
+	}
+	if strings.HasSuffix(key, "Del") {
+		return strings.TrimSuffix(key, "Del") + "NumDel"
+	}
+	return ""
+}
+
 // GetAction returns the action name mapped to the key in the given area.
 func (hm *HotkeyManager) GetAction(area, key string) string {
 	if binds, ok := hm.Bindings[area]; ok {
@@ -321,6 +475,28 @@ func (hm *HotkeyManager) GetAction(area, key string) string {
 			if binding, ok := binds[key]; ok {
 				if action := activeBindingAction(binding); action != "" {
 					return action
+				}
+			}
+		}
+	}
+
+	// Nothing is bound under this exact name. Before giving up, try the other
+	// spelling of a Del key (see delKeyAlias): an explicit binding always wins,
+	// this only fills in the name the backend did not produce.
+	if alias := delKeyAlias(key); alias != "" {
+		if binds, ok := hm.Bindings[area]; ok {
+			if binding, ok := binds[alias]; ok {
+				if action := activeBindingAction(binding); action != "" {
+					return action
+				}
+			}
+		}
+		if area != "Common" {
+			if binds, ok := hm.Bindings["Common"]; ok {
+				if binding, ok := binds[alias]; ok {
+					if action := activeBindingAction(binding); action != "" {
+						return action
+					}
 				}
 			}
 		}

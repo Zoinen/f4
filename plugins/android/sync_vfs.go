@@ -88,6 +88,7 @@ func newSyncVFS(parent vfs.VFS, serial, title string, client syncFS, run shellCo
 }
 
 func (s *SyncVFS) GetTitle() string { return s.title }
+func (s *SyncVFS) SessionKey() any  { return "android:" + s.serial }
 func (s *SyncVFS) PanelTitle(p string) string {
 	return androidPanelTitle(s.title, p)
 }

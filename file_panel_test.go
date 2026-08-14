@@ -117,6 +117,7 @@ func TestFileEntry_GetCellText(t *testing.T) {
 		t.Errorf("cached attribute %#x differs from fresh attribute %#x", cachedAttr, freshAttr)
 	}
 }
+
 func TestFileEntry_HighlightDir(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
@@ -793,6 +794,80 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 	cell = scr.GetCell(40, 23)
 	if cell.Attributes != vtui.Palette[ColPanelTotalInfo] {
 		t.Errorf("Expected Total Info color %X, got %X", vtui.Palette[ColPanelTotalInfo], cell.Attributes)
+	}
+}
+
+func TestFileSystemPanel_HiddenInfoShowsCursorFileSizeOnMulticolumnBorder(t *testing.T) {
+	oldCfg := AppConfig
+	oldColor := vtui.Palette[ColPanelText]
+	defer func() {
+		AppConfig = oldCfg
+		vtui.Palette[ColPanelText] = oldColor
+	}()
+	AppConfig.ShowPanelFileInfo = false
+
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 12)
+	vtui.FrameManager.Init(scr)
+
+	fp := NewFileSystemPanel(0, 0, 80, 12, vfs.NewOSVFS(t.TempDir()))
+	if fp.cancelLoad != nil {
+		fp.cancelLoad()
+	}
+	fp.isLoading = false
+	if fp.loadingTimer != nil {
+		fp.loadingTimer.Stop()
+	}
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "file.bin", Size: 1234567}},
+		{VFSItem: vfs.VFSItem{Name: "other.bin", Size: 10}},
+	}
+	fp.SetViewMode(ViewModeMedium)
+	fp.SetCursorIndex(0)
+	rowText := func(x, y, width int) string {
+		runes := make([]rune, width)
+		for i := range runes {
+			cell := scr.GetCell(x+i, y)
+			runes[i] = rune(cell.Char)
+			if runes[i] == 0 {
+				runes[i] = ' '
+			}
+		}
+		return string(runes)
+	}
+
+	const themedAttr uint64 = 0x123456789ABCDEF0
+	vtui.Palette[ColPanelText] = themedAttr
+	fp.Show(scr)
+
+	if got := rowText(1, fp.Y2, 13); got != " ▸ 1 234 567 " {
+		t.Fatalf("medium bottom-left cursor size = %q, want %q", got, " ▸ 1 234 567 ")
+	}
+	if got := scr.GetCell(2, fp.Y2).Attributes; got != themedAttr {
+		t.Fatalf("cursor size color = %#x, want current themed Panel.Text %#x", got, themedAttr)
+	}
+
+	// Brief is the other multicolumn mode and must expose the same compact
+	// status, while Detailed already has a visible Size column and must not.
+	fp.SetViewMode(ViewModeBrief)
+	fp.Show(scr)
+	if got := rowText(1, fp.Y2, 13); got != " ▸ 1 234 567 " {
+		t.Fatalf("brief bottom-left cursor size = %q, want %q", got, " ▸ 1 234 567 ")
+	}
+
+	fp.SetViewMode(ViewModeDetailed)
+	fp.Show(scr)
+	if got := rowText(1, fp.Y2, 13); strings.Contains(got, "1 234 567") {
+		t.Fatalf("detailed mode unexpectedly duplicated cursor size on bottom border: %q", got)
+	}
+
+	fp.SetViewMode(ViewModeMedium)
+	AppConfig.ShowPanelFileInfo = true
+	fp.Show(scr)
+	if got := rowText(1, fp.Y2, 13); strings.Contains(got, "1 234 567") {
+		t.Fatalf("visible file-info row unexpectedly duplicated cursor size on bottom border: %q", got)
 	}
 }
 
@@ -2882,7 +2957,7 @@ func TestDirectoryCacheIdentitySurvivesReconnection(t *testing.T) {
 func TestFileSystemPanelShowsStandaloneCacheBeforeProviderOpen(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	separator := string(os.PathSeparator)
-	target := "zoin.shadow:" + separator + "Photos"
+	target := "cloud.example:" + separator + "Photos"
 	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
 	if fp.cancelLoad != nil {
 		fp.cancelLoad()
@@ -2890,8 +2965,9 @@ func TestFileSystemPanelShowsStandaloneCacheBeforeProviderOpen(t *testing.T) {
 	}
 	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 	fp.dirCache[dirCacheKey{identity: "old-cloud-session", qualifiedPath: target}] = dirCacheEntry{
-		items: []vfs.VFSItem{{Name: "cached.jpg", Size: 42}},
-		time:  time.Now(),
+		items:       []vfs.VFSItem{{Name: "cached.jpg", Size: 42}},
+		time:        time.Now(),
+		showUpEntry: true,
 	}
 	if !fp.showCachedStandalonePath(target) {
 		t.Fatal("standalone visual path did not reuse its cached listing")
@@ -2905,6 +2981,22 @@ func TestFileSystemPanelShowsStandaloneCacheBeforeProviderOpen(t *testing.T) {
 	}
 	if strings.Contains(target, foreign) {
 		t.Fatalf("native visual target %q contains foreign separator %q", target, foreign)
+	}
+
+	// A mounted provider root is visually shallow but still has a real parent
+	// VFS (CloudFox:\). Cache-first rendering must preserve that relationship
+	// instead of guessing from the number of path components.
+	rootTarget := "drive.example:" + separator
+	fp.dirCache[dirCacheKey{identity: "old-google-session", qualifiedPath: rootTarget}] = dirCacheEntry{
+		items:       []vfs.VFSItem{{Name: "My Drive", IsDir: true}, {Name: "Shared drives", IsDir: true}},
+		time:        time.Now(),
+		showUpEntry: true,
+	}
+	if !fp.showCachedStandalonePath(rootTarget) {
+		t.Fatal("standalone Google root did not reuse its cached listing")
+	}
+	if len(fp.entries) != 3 || fp.entries[0].Name != ".." || fp.entries[1].Name != "My Drive" || fp.entries[2].Name != "Shared drives" {
+		t.Fatalf("cached Google root entries = %#v", fp.entries)
 	}
 }
 
@@ -4352,6 +4444,10 @@ func TestFileSystemPanelCachedNavigateUpSelectsFolderLeft(t *testing.T) {
 	AppConfig.SyncPanelLoad = false
 	AppConfig.ShowHiddenFiles = true
 	defer func() { AppConfig = oldConfig }()
+	history := &stubHistoryProvider{}
+	oldHistory := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = history
+	defer func() { vtui.GlobalHistoryProvider = oldHistory }()
 
 	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
 	waitForLoad(t, fp)
@@ -4382,6 +4478,75 @@ func TestFileSystemPanelCachedNavigateUpSelectsFolderLeft(t *testing.T) {
 	waitForLoad(t, fp)
 	if got := fp.getRawSelectedName(); got != "sdcard" {
 		t.Fatalf("fresh parent listing selected %q, want folder left sdcard", got)
+	}
+	if got := history.LoadHistory("folders"); len(got) == 0 || got[0] != "/" {
+		t.Fatalf("navigate-up folder history = %#v, want parent / recorded", got)
+	}
+}
+
+func TestFileSystemPanelPendingSelectionDoesNotSuppressFolderHistory(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	defer func() { AppConfig = oldConfig }()
+	history := &stubHistoryProvider{}
+	oldHistory := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = history
+	defer func() { vtui.GlobalHistoryProvider = oldHistory }()
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	remote := newQueuedNavigationVFS()
+	fp.vfs = remote
+	fp.lastLoadedPath = "/"
+	fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	fp.saveToCache("/sdcard", remote.items["/sdcard"])
+	fp.pendingSelection = ".."
+	if err := fp.setKnownDirectoryPath("/sdcard"); err != nil {
+		t.Fatal(err)
+	}
+	fp.ReadDirectory()
+	if got := fp.getRawSelectedName(); got != ".." {
+		t.Fatalf("cached child listing selected %q, want ..", got)
+	}
+	waitForPanelSignal(t, remote.firstReadStarted, "background child refresh")
+	remote.releaseFirstRead <- struct{}{}
+	waitForLoad(t, fp)
+	if got := history.LoadHistory("folders"); len(got) == 0 || got[0] != "/sdcard" {
+		t.Fatalf("navigate-down folder history = %#v, want /sdcard recorded", got)
+	}
+}
+
+func TestFileSystemPanelSlowOlderLoadDoesNotReorderNewerFolderHistory(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	defer func() { AppConfig = oldConfig }()
+	history := &stubHistoryProvider{}
+	oldHistory := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = history
+	defer func() { vtui.GlobalHistoryProvider = oldHistory }()
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	remote := newQueuedNavigationVFS()
+	fp.vfs = remote
+	fp.lastLoadedPath = "/"
+	if err := fp.setKnownDirectoryPath("/sdcard"); err != nil {
+		t.Fatal(err)
+	}
+	fp.ReadDirectory()
+	waitForPanelSignal(t, remote.firstReadStarted, "older directory refresh")
+
+	// This is a newer navigation order established while the older backend
+	// read is still in flight. Its eventual completion must not promote
+	// /sdcard and rewrite this MRU order.
+	want := []string{"/newest", "/sdcard", "/oldest"}
+	history.SaveHistory("folders", want)
+	remote.releaseFirstRead <- struct{}{}
+	waitForLoad(t, fp)
+	if got := history.LoadHistory("folders"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("slow older load reordered folder history: got %#v, want %#v", got, want)
 	}
 }
 
@@ -4578,5 +4743,56 @@ NormalColor = foreground:#00FF00
 	expectedText := "• main.go"
 	if text != expectedText {
 		t.Errorf("Marker integration in GetCellText failed: got %q, want %q", text, expectedText)
+	}
+}
+
+func TestFileSystemPanel_BottomFrameShowsCursorEntry(t *testing.T) {
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	was := AppConfig.ShowPanelFileInfo
+	AppConfig.ShowPanelFileInfo = false
+	t.Cleanup(func() { AppConfig.ShowPanelFileInfo = was })
+
+	fp := NewFileSystemPanel(0, 0, 60, 20, vfs.NewOSVFS(t.TempDir()))
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "sub", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "big.bin", Size: 1234567}},
+	}
+	fp.isLoading = false
+	if fp.loadingTimer != nil {
+		fp.loadingTimer.Stop()
+	}
+	fp.Refresh()
+
+	bottom := func() string { return ScreenRow(scr, fp.Y2, fp.X1, fp.X2) }
+
+	// The total keeps the centre, the entry under the cursor sits in the
+	// left corner; both are spelled out in exact bytes.
+	fp.SetCursorIndex(2)
+	fp.Show(scr)
+	if got := bottom(); !strings.Contains(got, "▸ 1 234 567") || !strings.Contains(got, "1 234 567 (2)") {
+		t.Errorf("bottom frame for a file: %q", got)
+	}
+
+	// Directories say what they are instead of a size.
+	fp.SetCursorIndex(1)
+	fp.Show(scr)
+	if got := bottom(); !strings.Contains(got, "▸ <DIR>") {
+		t.Errorf("bottom frame for a dir: %q", got)
+	}
+	fp.SetCursorIndex(0)
+	fp.Show(scr)
+	if got := bottom(); !strings.Contains(got, "▸ UP-DIR") {
+		t.Errorf("bottom frame for the up-dir: %q", got)
+	}
+
+	// With the far2l status line on, the marker steps aside.
+	AppConfig.ShowPanelFileInfo = true
+	fp.Show(scr)
+	if got := bottom(); strings.Contains(got, "▸") {
+		t.Errorf("marker should be dropped when the status line is on: %q", got)
 	}
 }

@@ -20,7 +20,27 @@ const (
 type PluginCommand struct {
 	ID       string
 	Location PluginCommandLocation
-	Label    string
+	Label    string // English fallback shown when LabelKey is empty or unavailable.
+	LabelKey string // optional host localization key resolved in the active UI language.
+	// LocalizedLabels optionally carries plugin-owned translations keyed by
+	// language code (for example, "en", "ru", or "pt-BR"). Host catalog
+	// LabelKey translations take precedence; Label remains the final fallback.
+	LocalizedLabels map[string]string
+	Description     string // optional English fallback for discoverability surfaces.
+	// DescriptionKey is an optional host localization key for Description.
+	DescriptionKey string
+	// LocalizedDescriptions is the plugin-owned equivalent of
+	// LocalizedLabels for Description.
+	LocalizedDescriptions map[string]string
+	// SearchKeys are additional host localization keys whose translations are
+	// indexed by discoverability surfaces but are not rendered as the label.
+	SearchKeys []string
+	// SearchTerms are literal aliases indexed as supplied. They complement
+	// SearchKeys for plugins whose vocabulary is not part of the host catalog.
+	SearchTerms []string
+	// Shortcut is display-only metadata, formatted for the host UI (for example,
+	// "Shift+F4"). The plugin remains responsible for registering the hotkey.
+	Shortcut string
 	Visible  func(App) bool
 	Run      func(App)
 }

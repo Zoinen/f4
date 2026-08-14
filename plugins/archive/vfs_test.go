@@ -32,8 +32,24 @@ func TestArchiveVFS_PathSlashes(t *testing.T) {
 	}
 }
 
+func TestArchiveVFS_PublicFallbackPathsUseNativeSeparators(t *testing.T) {
+	v := &ArchiveVFS{arcPath: filepath.Join("archive-root", "bundle.zip"), innerPath: "."}
+	joined := v.Join("outside", "folder", "file.txt")
+	wantJoined := filepath.Join("outside", "folder", "file.txt")
+	if joined != wantJoined {
+		t.Fatalf("Join fallback = %q, want native path %q", joined, wantJoined)
+	}
+	if dir := v.Dir(joined); dir != filepath.Dir(wantJoined) {
+		t.Fatalf("Dir fallback = %q, want native path %q", dir, filepath.Dir(wantJoined))
+	}
+	if os.PathSeparator == '\\' && strings.Contains(joined, "/") {
+		t.Fatalf("Windows fallback path leaked forward separators: %q", joined)
+	}
+}
+
 func TestArchiveVFS_Abs(t *testing.T) {
-	arcPath := filepath.FromSlash("/tmp/test.zip")
+	root := t.TempDir()
+	arcPath := filepath.Join(root, "test.zip")
 	v := &ArchiveVFS{
 		arcPath:   arcPath,
 		innerPath: "folder",
@@ -47,23 +63,23 @@ func TestArchiveVFS_Abs(t *testing.T) {
 		{
 			name:     "Relative path inside archive",
 			input:    "file.txt",
-			expected: "/tmp/test.zip/folder/file.txt",
+			expected: filepath.Join(arcPath, "folder", "file.txt"),
 		},
 		{
 			name:     "Absolute path (full path with archive)",
-			input:    "/tmp/test.zip/other",
-			expected: "/tmp/test.zip/other",
+			input:    filepath.Join(arcPath, "other"),
+			expected: filepath.Join(arcPath, "other"),
 		},
 		{
 			name:     "Root-style path inside archive",
-			input:    "/manual/root",
-			expected: "/manual/root",
+			input:    filepath.Join(root, "manual", "root"),
+			expected: filepath.Join(root, "manual", "root"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			exp := filepath.ToSlash(filepath.Clean(tt.expected))
+			exp := filepath.Clean(tt.expected)
 			got, _ := v.Abs(tt.input)
 			if got != exp {
 				t.Errorf("ArchiveVFS.Abs(%q): expected %q, got %q", tt.input, exp, got)
@@ -95,6 +111,9 @@ func TestArchiveVFS_AtomicWrite(t *testing.T) {
 	currentInfo, _ := os.Stat(arcPath)
 	if currentInfo.Size() != origInfo.Size() {
 		t.Error("Original archive size changed BEFORE Close() - not atomic!")
+	}
+	if err := wc.Close(); err != nil {
+		t.Fatalf("commit atomic archive write: %v", err)
 	}
 }
 

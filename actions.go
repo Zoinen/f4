@@ -59,8 +59,9 @@ func actionFoldersHistory(pf *PanelsFrame) {
 	if vtui.GlobalHistoryProvider == nil {
 		return
 	}
-	h := vtui.GlobalHistoryProvider.LoadHistory("folders")
-	if len(h) == 0 {
+	richFolders, folderHP := loadFolderHistoryRecords(vtui.GlobalHistoryProvider)
+	h := extractNames(richFolders)
+	if len(richFolders) == 0 {
 		vtui.ShowMessage(Msg("History.Title"), Msg("History.EmptyFolders"), []string{Msg("vtui.Ok")})
 		return
 	}
@@ -68,14 +69,18 @@ func actionFoldersHistory(pf *PanelsFrame) {
 	menu := vtui.NewVMenu(Msg("History.FoldersTitle"))
 	menu.SetHelp("HistoryFolders")
 
-	var richFolders []HistoryRecord
-	for _, path := range h {
-		richFolders = append(richFolders, HistoryRecord{Name: path})
-	}
 	search := newHistorySearch(menu, richFolders, Msg("History.FoldersHint"))
+	search.supportsLocks = folderHP != nil
+	search.onLockToggled = func() {
+		if folderHP != nil {
+			richFolders = append([]HistoryRecord(nil), search.all...)
+			h = extractNames(richFolders)
+			saveFolderHistoryRecords(folderHP, richFolders)
+		}
+	}
 
 	if activePanel := pf.getActivePanel(); activePanel != nil {
-		currentPath := activePanel.vfs.GetPath()
+		currentPath := activePanel.persistentPath()
 		for historyPos, path := range h {
 			if sameFolderHistoryPath(path, currentPath) {
 				search.selectOriginalIndex(historyPos)
@@ -116,7 +121,7 @@ func actionFoldersHistory(pf *PanelsFrame) {
 
 		// Ctrl+R: drop entries whose path no longer exists on disk (far2l).
 		if e.VirtualKeyCode == vtinput.VK_R && ctrl && !alt && !shift {
-			confirmAndPruneMissingFolderHistory(&h, search, menu)
+			confirmAndPruneMissingFolderHistory(&h, &richFolders, folderHP, search, menu)
 			return true
 		}
 
@@ -149,9 +154,15 @@ func actionFoldersHistory(pf *PanelsFrame) {
 
 		if (e.VirtualKeyCode == vtinput.VK_DELETE || e.VirtualKeyCode == vtinput.VK_BACK) && shift {
 			// Delete item
-			search.deleteSelected()
-			h = extractNames(search.all)
-			vtui.GlobalHistoryProvider.SaveHistory("folders", h)
+			if search.deleteSelected() {
+				richFolders = append([]HistoryRecord(nil), search.all...)
+				h = extractNames(richFolders)
+				if folderHP != nil {
+					saveFolderHistoryRecords(folderHP, richFolders)
+				} else {
+					vtui.GlobalHistoryProvider.SaveHistory("folders", h)
+				}
+			}
 			if len(search.all) == 0 {
 				search.cleanup()
 				menu.Close()
@@ -161,9 +172,17 @@ func actionFoldersHistory(pf *PanelsFrame) {
 
 		// Del (no modifiers): clear the whole history with a confirmation.
 		if e.VirtualKeyCode == vtinput.VK_DELETE && !ctrl && !alt && !shift {
-			confirmAndClearHistory(Msg("History.FoldersTitle"), "folders", &h, func() {
-				pf.cmdLine.Edit.HistoryPos = -1
-			}, search, menu)
+			if folderHP != nil {
+				confirmAndClearRichHistory(Msg("History.FoldersTitle"), "folders", &richFolders, func() {
+					h = extractNames(richFolders)
+					folderHP.SaveHistory("folders", h)
+					pf.cmdLine.Edit.HistoryPos = -1
+				}, search, menu)
+			} else {
+				confirmAndClearHistory(Msg("History.FoldersTitle"), "folders", &h, func() {
+					pf.cmdLine.Edit.HistoryPos = -1
+				}, search, menu)
+			}
 			return true
 		}
 
@@ -207,6 +226,8 @@ func actionCommandHistory(pf *PanelsFrame) {
 	menu := vtui.NewVMenu(Msg("History.CommandsTitle"))
 	menu.SetHelp("History")
 	search := newHistorySearch(menu, richCmds, Msg("History.CommandsHint"))
+	search.supportsLocks = isF4
+	search.showDetails = true
 	search.showSecond = search.hasSecondary()
 	search.secondWidth = 24
 
@@ -349,10 +370,8 @@ func confirmAndClearHistory(title, providerName string, h *[]string, localReset 
 	}
 }
 
-// confirmAndPruneMissingFolderHistory implements the far2l Ctrl+R
-// handler in folder history: prompt, then keep only paths that still
-// exist on disk. Locked-entry semantics don't apply here — f4 has no
-// per-entry lock flag yet.
+// confirmAndClearRichHistory clears every unpinned record while preserving
+// entries explicitly pinned with Insert.
 func confirmAndClearRichHistory(title, providerName string, h *[]HistoryRecord, localReset func(), search *historySearch, menu *vtui.VMenu) {
 	buttons := []string{Msg("vtui.Ok"), Msg("vtui.Cancel")}
 	dlg := vtui.ShowMessage(title, Msg("History.ConfirmClearAll"), buttons)
@@ -380,35 +399,39 @@ func confirmAndClearRichHistory(title, providerName string, h *[]HistoryRecord, 
 		}
 	}
 }
-func confirmAndPruneMissingFolderHistory(h *[]string, search *historySearch, menu *vtui.VMenu) {
+func confirmAndPruneMissingFolderHistory(h *[]string, rich *[]HistoryRecord, hp *F4HistoryProvider, search *historySearch, menu *vtui.VMenu) {
 	buttons := []string{Msg("vtui.Ok"), Msg("vtui.Cancel")}
 	dlg := vtui.ShowMessage(Msg("History.FoldersTitle"), Msg("History.ConfirmPruneMissing"), buttons)
 	dlg.OnResult = func(code int) {
 		if code != 0 {
 			return
 		}
-		kept := make([]string, 0, len(*h))
-		for _, p := range *h {
+		kept := make([]HistoryRecord, 0, len(*rich))
+		for _, record := range *rich {
+			p := record.Name
+			if record.Lock {
+				kept = append(kept, record)
+				continue
+			}
 			if isPersistentURIPath(p) || vfs.FindStandaloneProvider(context.Background(), nil, p) != nil {
-				kept = append(kept, p)
+				kept = append(kept, record)
 				continue
 			}
 			if _, err := os.Stat(p); err == nil {
-				kept = append(kept, p)
+				kept = append(kept, record)
 			}
 		}
-		if len(kept) == len(*h) {
+		if len(kept) == len(*rich) {
 			return
 		}
-		*h = kept
-		if vtui.GlobalHistoryProvider != nil {
-			vtui.GlobalHistoryProvider.SaveHistory("folders", kept)
+		*rich = kept
+		*h = extractNames(kept)
+		if hp != nil {
+			saveFolderHistoryRecords(hp, kept)
+		} else if vtui.GlobalHistoryProvider != nil {
+			vtui.GlobalHistoryProvider.SaveHistory("folders", *h)
 		}
-		var richFolders []HistoryRecord
-		for _, p := range kept {
-			richFolders = append(richFolders, HistoryRecord{Name: p})
-		}
-		search.setItems(richFolders)
+		search.setItems(kept)
 		if len(kept) == 0 {
 			search.cleanup()
 			menu.Close()
@@ -697,6 +720,9 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 
 	editor := NewEditorView(pt, v, path)
 	editor.Codepage = cpID
+	if _, isDisks := v.(*vfs.DisksVFS); isDisks {
+		editor.HexMode = true
+	}
 	if GlobalFileState != nil && path != "" {
 		if state := GlobalFileState.GetState(FileStateKey(v, path)); state != nil {
 			editor.WordWrap = state.EditorWrap
@@ -801,7 +827,7 @@ func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 		}()
 		return
 	}
-	if _, isLocal := v.(*vfs.OSVFS); isLocal {
+	if isLocalOSVFS(v) {
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			var f vfs.ReadAtCloser
 			if v != nil {
@@ -858,7 +884,7 @@ func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 		if err != nil {
 			if err != context.Canceled {
 				if err == os.ErrInvalid {
-					vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets, Devices).", []string{"&Ok"})
+					vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets).", []string{"&Ok"})
 				} else {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
 				}
@@ -1026,7 +1052,7 @@ func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 	if tryOpenImageViewer(pf, v, path) {
 		return
 	}
-	if _, isLocal := v.(*vfs.OSVFS); isLocal {
+	if isLocalOSVFS(v) {
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			if v != nil {
 				if stat, err := v.Stat(ctx.Context, path); err == nil && stat.IsDir {
@@ -1044,7 +1070,7 @@ func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 				} else {
 					vtui.DebugLog("PANELS: Failed to open viewer for %s: %v", path, err)
 					if err == os.ErrInvalid {
-						vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets, Devices).", []string{"&Ok"})
+						vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets).", []string{"&Ok"})
 					} else {
 						vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
 					}
@@ -1065,7 +1091,7 @@ func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 		if err != nil {
 			if err != context.Canceled {
 				if err == os.ErrInvalid {
-					vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets, Devices).", []string{"&Ok"})
+					vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets).", []string{"&Ok"})
 				} else {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
 				}
@@ -1077,81 +1103,152 @@ func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 }
 
 func actionViewerSearch(vv *ViewerView) {
-	vtui.InputBox(Msg("Viewer.SearchTitle"), "Search for:", "", func(pattern string) {
+	actionViewerSearchDirection(vv, false)
+}
+
+func actionViewerSearchDirection(vv *ViewerView, reverse bool) {
+	vtui.InputBox(Msg("Viewer.SearchTitle"), "Search for:", vv.lastSearch, func(pattern string) {
 		if pattern == "" {
 			return
 		}
-		title := " Searching... "
-		msg := fmt.Sprintf("Looking for: %s", pattern)
+		if pattern != vv.lastSearch {
+			vv.lastSearchFound = false
+		}
+		vv.lastSearch = pattern
+		runViewerSearch(vv, pattern, reverse)
+	})
+}
 
-		vtui.FrameManager.PostTask(func() {
-			dlg := vtui.NewCenteredDialog(50, 8, title)
-			lbl := vtui.NewLabel(0, 0, msg, nil)
-			dlg.AddItem(lbl)
-			btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
-			dlg.AddItem(btnCancel)
+func actionViewerSearchAgain(vv *ViewerView, reverse bool) {
+	if vv.lastSearch == "" {
+		actionViewerSearchDirection(vv, reverse)
+		return
+	}
+	runViewerSearch(vv, vv.lastSearch, reverse)
+}
 
-			vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, 8-4)
-			vbox.Add(lbl, vtui.Margins{}, vtui.AlignCenter)
-			vbox.Add(btnCancel, vtui.Margins{Top: 1}, vtui.AlignCenter)
-			vbox.Apply()
-
-			vtui.FrameManager.AddScreenHeadless(dlg)
-
-			_ = vtui.RunAsync(func(ctx *vtui.TaskContext) {
-				btnCancel.OnClick = func() { ctx.Cancel(); dlg.Close() }
-				foundOffset := int64(-1)
-				currOff := vv.TopOffset + 1
-				fileSize := vv.backend.Size()
-				patternLower := strings.ToLower(pattern)
-
-				// A file system that can search its own copy answers in one round
-				// trip. Scanning here would mean reading the whole file, which
-				// for a remote one means downloading it.
-				if at, searched := vv.backend.SearchFrom(ctx.Context, pattern, currOff); searched {
-					foundOffset = at
-					currOff = fileSize
+func runViewerSearch(vv *ViewerView, pattern string, reverse bool) {
+	vtui.FrameManager.PostTask(func() {
+		runSearchWithProgress(pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+			start := vv.TopOffset + 1
+			if reverse {
+				start = vv.TopOffset
+			}
+			if vv.lastSearchFound && vv.TopOffset == vv.lastSearchTopOffset {
+				start = vv.lastSearchOffset + 1
+				if reverse {
+					start = vv.lastSearchOffset
 				}
+			}
+			foundOffset := viewerSearchOffset(ctx.Context, vv.backend, pattern, start, reverse, func(percent int) {
+				ctx.RunOnUI(func() { dlg.SetProgress(percent) })
+			})
 
-				for currOff < fileSize {
-					if ctx.Err() != nil {
-						return
-					}
-					percent := int((currOff * 100) / fileSize)
-					ctx.RunOnUI(func() { dlg.SetProgress(percent) })
-
-					data, err := vv.backend.ReadAt(currOff, 256*1024)
-					if err == piecetable.ErrLoading {
-						time.Sleep(20 * time.Millisecond)
-						continue
-					}
-					if err != nil || len(data) == 0 {
-						break
-					}
-
-					idx := strings.Index(strings.ToLower(string(data)), patternLower)
-					if idx != -1 {
-						foundOffset = currOff + int64(idx)
-						break
-					}
-					currOff += int64(len(data)) - int64(len(patternLower))
-					if currOff < 0 {
-						currOff = 0
-					}
+			ctx.RunOnUI(func() {
+				canceled := ctx.Err() != nil
+				dlg.Close()
+				if canceled {
+					return
 				}
-
-				ctx.RunOnUI(func() {
-					dlg.Close()
-					if foundOffset != -1 {
-						vv.TopOffset = vv.backend.FindLineStart(foundOffset)
-						vtui.FrameManager.Redraw()
-					} else if ctx.Err() == nil {
-						vtui.ShowMessage(" Search ", "Pattern not found.", []string{"&Ok"})
-					}
-				})
+				if foundOffset != -1 {
+					vv.TopOffset = vv.backend.FindLineStart(foundOffset)
+					vv.lastSearchOffset = foundOffset
+					vv.lastSearchTopOffset = vv.TopOffset
+					vv.lastSearchFound = true
+					vtui.FrameManager.Redraw()
+				} else {
+					vtui.ShowMessage(" Search ", "Pattern not found.", []string{"&Ok"})
+				}
 			})
 		})
 	})
+}
+
+func viewerSearchOffset(ctx context.Context, backend *ViewerBackend, pattern string, start int64, reverse bool, progress func(int)) int64 {
+	if backend == nil || pattern == "" {
+		return -1
+	}
+	fileSize := backend.Size()
+	if fileSize <= 0 {
+		return -1
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > fileSize {
+		start = fileSize
+	}
+	patternLower := strings.ToLower(pattern)
+	chunkSize := int64(256 * 1024)
+	if int64(len(patternLower)) > chunkSize {
+		chunkSize = int64(len(patternLower))
+	}
+	overlap := int64(len(patternLower) - 1)
+
+	if reverse {
+		if at, searched := backend.SearchBefore(ctx, pattern, start); searched {
+			return at
+		}
+		end := start
+		for end > 0 {
+			if ctx.Err() != nil {
+				return -1
+			}
+			begin := end - chunkSize
+			if begin < 0 {
+				begin = 0
+			}
+			if progress != nil {
+				progress(int(((fileSize - end) * 100) / fileSize))
+			}
+			data, err := backend.ReadAt(begin, int(end-begin))
+			if err == piecetable.ErrLoading {
+				time.Sleep(20 * time.Millisecond)
+				continue
+			}
+			if err != nil || len(data) == 0 {
+				return -1
+			}
+			if idx := strings.LastIndex(strings.ToLower(string(data)), patternLower); idx >= 0 {
+				return begin + int64(idx)
+			}
+			if begin == 0 {
+				break
+			}
+			end = begin + overlap
+		}
+		return -1
+	}
+
+	if at, searched := backend.SearchFrom(ctx, pattern, start); searched {
+		return at
+	}
+	current := start
+	for current < fileSize {
+		if ctx.Err() != nil {
+			return -1
+		}
+		if progress != nil {
+			progress(int((current * 100) / fileSize))
+		}
+		data, err := backend.ReadAt(current, int(chunkSize))
+		if err == piecetable.ErrLoading {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		if err != nil || len(data) == 0 {
+			break
+		}
+		if idx := strings.Index(strings.ToLower(string(data)), patternLower); idx >= 0 {
+			return current + int64(idx)
+		}
+		advance := int64(len(data)) - overlap
+		if advance < 1 {
+			advance = 1
+		}
+		current += advance
+	}
+	return -1
 }
 
 func actionExecute(pf *PanelsFrame, v vfs.VFS, dir, name, path string) {
@@ -1161,12 +1258,16 @@ func actionExecute(pf *PanelsFrame, v vfs.VFS, dir, name, path string) {
 	if tryFileAssociation(pf, AssocExecute) {
 		return
 	}
+	if _, isDisks := v.(*vfs.DisksVFS); isDisks {
+		actionOpenEditor(pf, v, path)
+		return
+	}
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		if _, isLocal := v.(*vfs.OSVFS); isLocal {
 			if fi, err := os.Stat(path); err == nil {
-				if fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0 {
+				if fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0 {
 					ctx.RunOnUI(func() {
-						vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets, Devices).", []string{"&Ok"})
+						vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets).", []string{"&Ok"})
 					})
 					return
 				}
@@ -1473,6 +1574,7 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 	dlg.AddItem(promptLbl)
 
 	editDest := vtui.NewEdit(0, 0, 10, initialDest)
+	editDest.PathHintsEnabled = true
 	dlg.AddItem(editDest)
 
 	modes := []string{Msg("Op.Queue"), Msg("Op.Background"), Msg("Op.Foreground")}
@@ -2558,6 +2660,239 @@ func actionConfirmationsSettings(pf *PanelsFrame) {
 
 	vtui.FrameManager.Push(dlg)
 }
+func actionMouseWheelSettings(pf *PanelsFrame) {
+	const width, height = 56, 17
+	dlg := vtui.NewCenteredDialog(width, height, Msg("MouseWheel.Title"))
+	dlg.ShowClose = true
+
+	// 1. Initialize Widgets
+	lblHint := vtui.NewText(0, 0, Msg("MouseWheel.Hint"), 0)
+
+	lblPanels := vtui.NewText(0, 0, Msg("MouseWheel.Panels"), 0)
+	editPanelUp := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelPanelUp))
+	editPanelDown := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelPanelDown))
+	lblPanelUp := vtui.NewLabel(0, 0, Msg("MouseWheel.Up"), editPanelUp)
+	lblPanelDown := vtui.NewLabel(0, 0, Msg("MouseWheel.Down"), editPanelDown)
+
+	lblEditor := vtui.NewText(0, 0, Msg("MouseWheel.Editor"), 0)
+	editEditorUp := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelEditorUp))
+	editEditorDown := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelEditorDown))
+	lblEditorUp := vtui.NewLabel(0, 0, Msg("MouseWheel.Up"), editEditorUp)
+	lblEditorDown := vtui.NewLabel(0, 0, Msg("MouseWheel.Down"), editEditorDown)
+
+	lblViewer := vtui.NewText(0, 0, Msg("MouseWheel.Viewer"), 0)
+	editViewerUp := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelViewerUp))
+	editViewerDown := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelViewerDown))
+	lblViewerUp := vtui.NewLabel(0, 0, Msg("MouseWheel.Up"), editViewerUp)
+	lblViewerDown := vtui.NewLabel(0, 0, Msg("MouseWheel.Down"), editViewerDown)
+
+	lblMenus := vtui.NewText(0, 0, Msg("MouseWheel.Menus"), 0)
+	editMenuUp := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelMenuUp))
+	editMenuDown := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelMenuDown))
+	lblMenuUp := vtui.NewLabel(0, 0, Msg("MouseWheel.Up"), editMenuUp)
+	lblMenuDown := vtui.NewLabel(0, 0, Msg("MouseWheel.Down"), editMenuDown)
+
+	lblTables := vtui.NewText(0, 0, Msg("MouseWheel.Tables"), 0)
+	editTableUp := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelTableUp))
+	editTableDown := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.WheelTableDown))
+	lblTableUp := vtui.NewLabel(0, 0, Msg("MouseWheel.Up"), editTableUp)
+	lblTableDown := vtui.NewLabel(0, 0, Msg("MouseWheel.Down"), editTableDown)
+
+	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
+	btnOk.IsDefault = true
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
+
+	// 2. Add to Dialog
+	dlg.AddItem(lblHint)
+	dlg.AddItem(lblPanels)
+	dlg.AddItem(lblPanelUp)
+	dlg.AddItem(editPanelUp)
+	dlg.AddItem(lblPanelDown)
+	dlg.AddItem(editPanelDown)
+	dlg.AddItem(lblEditor)
+	dlg.AddItem(lblEditorUp)
+	dlg.AddItem(editEditorUp)
+	dlg.AddItem(lblEditorDown)
+	dlg.AddItem(editEditorDown)
+	dlg.AddItem(lblViewer)
+	dlg.AddItem(lblViewerUp)
+	dlg.AddItem(editViewerUp)
+	dlg.AddItem(lblViewerDown)
+	dlg.AddItem(editViewerDown)
+	dlg.AddItem(lblMenus)
+	dlg.AddItem(lblMenuUp)
+	dlg.AddItem(editMenuUp)
+	dlg.AddItem(lblMenuDown)
+	dlg.AddItem(editMenuDown)
+	dlg.AddItem(lblTables)
+	dlg.AddItem(lblTableUp)
+	dlg.AddItem(editTableUp)
+	dlg.AddItem(lblTableDown)
+	dlg.AddItem(editTableDown)
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+
+	// 3. Layout Configuration
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	vbox.Add(lblHint, vtui.Margins{}, vtui.AlignLeft)
+
+	addWheelRow := func(area *vtui.Text, lblUp, lblDown *vtui.Text, editUp, editDown *vtui.Edit) {
+		row := vtui.NewHBoxLayout(0, 0, width-4, 1)
+		row.Add(area, vtui.Margins{Right: 2}, vtui.AlignLeft)
+		row.Add(lblUp, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		row.Add(editUp, vtui.Margins{Right: 2}, vtui.AlignLeft)
+		row.Add(lblDown, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		row.Add(editDown, vtui.Margins{}, vtui.AlignLeft)
+		vbox.Add(row, vtui.Margins{Top: 1}, vtui.AlignFill)
+	}
+	addWheelRow(lblPanels, lblPanelUp, lblPanelDown, editPanelUp, editPanelDown)
+	addWheelRow(lblEditor, lblEditorUp, lblEditorDown, editEditorUp, editEditorDown)
+	addWheelRow(lblViewer, lblViewerUp, lblViewerDown, editViewerUp, editViewerDown)
+	addWheelRow(lblMenus, lblMenuUp, lblMenuDown, editMenuUp, editMenuDown)
+	addWheelRow(lblTables, lblTableUp, lblTableDown, editTableUp, editTableDown)
+
+	hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	hbox.HorizontalAlign = vtui.AlignCenter
+	hbox.Spacing = 2
+	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Apply()
+
+	// 4. Logic
+	parseWheel := func(e *vtui.Edit) int {
+		n := 0
+		fmt.Sscanf(e.GetText(), "%d", &n)
+		if n < 0 {
+			n = 0
+		}
+		return n
+	}
+	btnCancel.OnClick = func() { dlg.Close() }
+	btnOk.OnClick = func() {
+		AppConfig.WheelPanelUp = parseWheel(editPanelUp)
+		AppConfig.WheelPanelDown = parseWheel(editPanelDown)
+		AppConfig.WheelEditorUp = parseWheel(editEditorUp)
+		AppConfig.WheelEditorDown = parseWheel(editEditorDown)
+		AppConfig.WheelViewerUp = parseWheel(editViewerUp)
+		AppConfig.WheelViewerDown = parseWheel(editViewerDown)
+		AppConfig.WheelMenuUp = parseWheel(editMenuUp)
+		AppConfig.WheelMenuDown = parseWheel(editMenuDown)
+		AppConfig.WheelTableUp = parseWheel(editTableUp)
+		AppConfig.WheelTableDown = parseWheel(editTableDown)
+		applyWheelSettings()
+		SaveConfig()
+		dlg.Close()
+	}
+
+	vtui.FrameManager.Push(dlg)
+}
+func actionPathHintSettings(pf *PanelsFrame) {
+	const width, height = 56, 18
+	dlg := vtui.NewCenteredDialog(width, height, Msg("PathHints.Title"))
+	dlg.ShowClose = true
+
+	// 1. Initialize Widgets
+	chkFullPath := vtui.NewCheckbox(0, 0, Msg("PathHints.FullPath"), false)
+	if AppConfig.PathHintFullPath {
+		chkFullPath.State = 1
+	}
+
+	sources := []string{Msg("PathHints.SourceActive"), Msg("PathHints.SourcePassive"), Msg("PathHints.SourceBoth")}
+	comboSource := vtui.NewComboBox(0, 0, 24, sources)
+	comboSource.DropdownOnly = true
+	if AppConfig.PathHintSource >= 0 && AppConfig.PathHintSource < len(sources) {
+		comboSource.Menu.SetSelectPos(AppConfig.PathHintSource)
+		comboSource.Edit.SetText(sources[AppConfig.PathHintSource])
+	}
+	lblSource := vtui.NewLabel(0, 0, Msg("PathHints.Source"), comboSource)
+
+	editTimeout := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.PathHintTimeout))
+	lblTimeout := vtui.NewLabel(0, 0, Msg("PathHints.Timeout"), editTimeout)
+
+	editMaxVisible := vtui.NewEdit(0, 0, 5, strconv.Itoa(AppConfig.PathHintMaxVisible))
+	lblMaxVisible := vtui.NewLabel(0, 0, Msg("PathHints.MaxVisible"), editMaxVisible)
+
+	chkPerCategory := vtui.NewCheckbox(0, 0, Msg("PathHints.PerCategory"), false)
+	if AppConfig.PathHintPerCategory {
+		chkPerCategory.State = 1
+	}
+
+	lblNote := vtui.NewText(0, 0, Msg("PathHints.MarkersNote"), 0)
+
+	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
+	btnOk.IsDefault = true
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
+
+	// 2. Add to Dialog
+	dlg.AddItem(chkFullPath)
+	dlg.AddItem(lblSource)
+	dlg.AddItem(comboSource)
+	dlg.AddItem(lblTimeout)
+	dlg.AddItem(editTimeout)
+	dlg.AddItem(lblMaxVisible)
+	dlg.AddItem(editMaxVisible)
+	dlg.AddItem(chkPerCategory)
+	dlg.AddItem(lblNote)
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+
+	// 3. Layout Configuration
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	vbox.Add(chkFullPath, vtui.Margins{}, vtui.AlignLeft)
+
+	rowSource := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowSource.Add(lblSource, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowSource.Add(comboSource, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowSource, vtui.Margins{Top: 1}, vtui.AlignFill)
+
+	rowTimeout := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowTimeout.Add(lblTimeout, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowTimeout.Add(editTimeout, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowTimeout, vtui.Margins{}, vtui.AlignFill)
+
+	rowMaxVisible := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowMaxVisible.Add(lblMaxVisible, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowMaxVisible.Add(editMaxVisible, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowMaxVisible, vtui.Margins{}, vtui.AlignFill)
+
+	vbox.Add(chkPerCategory, vtui.Margins{}, vtui.AlignLeft)
+
+	vbox.Add(lblNote, vtui.Margins{Top: 1}, vtui.AlignLeft)
+
+	hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	hbox.HorizontalAlign = vtui.AlignCenter
+	hbox.Spacing = 2
+	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Apply()
+
+	// 4. Logic
+	btnCancel.OnClick = func() { dlg.Close() }
+	btnOk.OnClick = func() {
+		AppConfig.PathHintFullPath = chkFullPath.State == 1
+		AppConfig.PathHintSource = comboSource.Menu.SelectPos
+		timeout := 2
+		fmt.Sscanf(editTimeout.GetText(), "%d", &timeout)
+		if timeout < 1 {
+			timeout = 1
+		}
+		AppConfig.PathHintTimeout = timeout
+		maxVisible := 5
+		fmt.Sscanf(editMaxVisible.GetText(), "%d", &maxVisible)
+		if maxVisible < 1 {
+			maxVisible = 1
+		}
+		AppConfig.PathHintMaxVisible = maxVisible
+		AppConfig.PathHintPerCategory = chkPerCategory.State == 1
+		applyPathHintSettings()
+		SaveConfig()
+		dlg.Close()
+	}
+
+	vtui.FrameManager.Push(dlg)
+}
 func actionUpdateSettings(pf *PanelsFrame) {
 	width, height := 54, 11
 	dlg := vtui.NewCenteredDialog(width, height, Msg("UpdateSettings.Title"))
@@ -2851,6 +3186,7 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		Msg("AppearanceSettings.WorkspaceTabsAlways"),
 		Msg("AppearanceSettings.WorkspaceTabsMultiple"),
 		Msg("AppearanceSettings.WorkspaceTabsCtrl"),
+		Msg("AppearanceSettings.WorkspaceTabsNever"),
 	}
 	comboWorkspaceTabs := vtui.NewComboBox(0, 0, 30, workspaceTabModes)
 	comboWorkspaceTabs.DropdownOnly = true
@@ -2880,6 +3216,24 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	if AppConfig.AltNumberSwitchesTabs {
 		chkAltNumberTabs.State = 1
 	}
+	chkRestoreWorkspaceTabs := vtui.NewCheckbox(0, 0, Msg("AppearanceSettings.RestoreWorkspaceTabs"), AppConfig.RestoreWorkspaceTabs)
+	if AppConfig.RestoreWorkspaceTabs {
+		chkRestoreWorkspaceTabs.State = 1
+	}
+	workspaceNumberingModes := []string{
+		Msg("AppearanceSettings.WorkspaceNumbersAlways"),
+		Msg("AppearanceSettings.WorkspaceNumbersSession"),
+		Msg("AppearanceSettings.WorkspaceNumbersOrder"),
+	}
+	comboWorkspaceNumbering := vtui.NewComboBox(0, 0, 30, workspaceNumberingModes)
+	comboWorkspaceNumbering.DropdownOnly = true
+	workspaceNumberingSelection := int(AppConfig.WorkspaceTabNumbering)
+	if workspaceNumberingSelection < 0 || workspaceNumberingSelection >= len(workspaceNumberingModes) {
+		workspaceNumberingSelection = int(WorkspaceTabNumbersAlways)
+	}
+	comboWorkspaceNumbering.Menu.SetSelectPos(workspaceNumberingSelection)
+	comboWorkspaceNumbering.Edit.SetText(workspaceNumberingModes[workspaceNumberingSelection])
+	lblWorkspaceNumbering := vtui.NewLabel(0, 0, Msg("AppearanceSettings.WorkspaceNumbers"), comboWorkspaceNumbering)
 
 	chkCursor := vtui.NewCheckbox(0, 0, Msg("PanelSettings.KeepCursor"), false)
 	chkCursor.State = 0
@@ -2914,6 +3268,9 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	dlg.AddItem(lblCtrlTab)
 	dlg.AddItem(comboCtrlTab)
 	dlg.AddItem(chkAltNumberTabs)
+	dlg.AddItem(chkRestoreWorkspaceTabs)
+	dlg.AddItem(lblWorkspaceNumbering)
+	dlg.AddItem(comboWorkspaceNumbering)
 	dlg.AddItem(chkCursor)
 	dlg.AddItem(chkContrast)
 	dlg.AddItem(btnOk)
@@ -2952,6 +3309,11 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 	rowCtrlTab.Add(comboCtrlTab, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(rowCtrlTab, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Add(chkAltNumberTabs, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(chkRestoreWorkspaceTabs, vtui.Margins{}, vtui.AlignLeft)
+	rowWorkspaceNumbering := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowWorkspaceNumbering.Add(lblWorkspaceNumbering, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowWorkspaceNumbering.Add(comboWorkspaceNumbering, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowWorkspaceNumbering, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	vbox.Add(chkCursor, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkContrast, vtui.Margins{}, vtui.AlignLeft)
@@ -3002,6 +3364,11 @@ func actionAppearanceSettings(pf *PanelsFrame) {
 		AppConfig.WorkspaceTabMode = comboWorkspaceTabs.Menu.SelectPos
 		AppConfig.CtrlTabShowsMenu = comboCtrlTab.Menu.SelectPos == 1
 		AppConfig.AltNumberSwitchesTabs = chkAltNumberTabs.State == 1
+		AppConfig.RestoreWorkspaceTabs = chkRestoreWorkspaceTabs.State == 1
+		AppConfig.WorkspaceTabNumbering = WorkspaceTabNumberingMode(comboWorkspaceNumbering.Menu.SelectPos)
+		if AppConfig.WorkspaceTabNumbering == WorkspaceTabNumbersOrder {
+			renumberWorkspaceScreens()
+		}
 		SaveConfig()
 
 		dlg.SetExitCode(1)
@@ -3127,6 +3494,7 @@ func showPluginFileDialog(parent *vtui.Window, startPath string, onSelect func(s
 
 	lbl := vtui.NewLabel(0, 0, Msg("Plugins.SelectFilePrompt"), nil)
 	edit := vtui.NewEdit(0, 0, w-4, startPath)
+	edit.PathHintsEnabled = true
 	lb := vtui.NewListBox(0, 0, w-4, h-10, nil)
 
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))

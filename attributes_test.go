@@ -788,11 +788,19 @@ func TestAttributesDialog_SecurityButton(t *testing.T) {
 	fm.Init(vtui.NewSilentScreenBuf())
 
 	// 1. Test local VFS -> button should be enabled
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "winfile.exe"), nil, 0o600); err != nil {
+		t.Fatalf("create local properties target: %v", err)
+	}
 	mockVFS := &mockMetadataVFS{
-		VFS: vfs.NewOSVFS(t.TempDir()),
+		VFS: vfs.NewOSVFS(root),
 	}
 	item := vfs.VFSItem{Name: "winfile.exe", MTime: time.Now()}
-	showAttributesWindows(nil, mockVFS, "winfile.exe", item)
+	var openedPropertiesPath string
+	showAttributesWindowsWithProperties(nil, mockVFS, "winfile.exe", item, func(path string) error {
+		openedPropertiesPath = path
+		return nil
+	})
 	dlg := fm.GetTopFrame().(vtui.Container)
 
 	var btnSec *vtui.Button
@@ -814,9 +822,18 @@ func TestAttributesDialog_SecurityButton(t *testing.T) {
 		t.Error("Security button should be enabled for local OSVFS files")
 	}
 
-	// Click button to make sure it doesn't panic on any platform
+	// Exercise the callback through a stub. Calling the real Windows shell here
+	// used to race t.TempDir cleanup and leave a native "file not found" dialog
+	// on the developer's desktop after the test had passed.
 	if btnSec.OnClick != nil {
 		btnSec.OnClick()
+	}
+	expectedPropertiesPath, err := mockVFS.Abs("winfile.exe")
+	if err != nil {
+		t.Fatalf("resolve properties path: %v", err)
+	}
+	if openedPropertiesPath != expectedPropertiesPath {
+		t.Errorf("properties path = %q, want %q", openedPropertiesPath, expectedPropertiesPath)
 	}
 
 	fm.GetTopFrame().SetExitCode(-1)

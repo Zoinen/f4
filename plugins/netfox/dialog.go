@@ -212,16 +212,22 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 
 	// 3. Bottom Section (Y: 16-18)
 	btnOk := vtui.NewButton(0, 0, vtui.Msg("vtui.Save"))
+	// The proxy lives in a dialog of its own: it is a rare thing to touch,
+	// and the connection form has no room left for five more fields.
+	btnProxy := vtui.NewButton(0, 0, vtui.Msg("NetFox.BtnProxy"))
 	btnCancel := vtui.NewButton(0, 0, vtui.Msg("vtui.Cancel"))
 	btnOk.IsDefault = true
+	btnProxy.OnClick = func() { showProxyDialog(&cfg) }
 
 	vboxBottom := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+16, 56, 3)
 	btnHbox := vtui.NewHBoxLayout(0, 0, 56, 1)
 	btnHbox.HorizontalAlign = vtui.AlignCenter
 	btnHbox.Spacing = 2
 	dlg.AddItem(btnOk)
+	dlg.AddItem(btnProxy)
 	dlg.AddItem(btnCancel)
 	btnHbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	btnHbox.Add(btnProxy, vtui.Margins{}, vtui.AlignTop)
 	btnHbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 	vboxBottom.Add(btnHbox, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vboxBottom.Apply()

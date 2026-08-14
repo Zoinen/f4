@@ -71,6 +71,15 @@ type LuaMacro struct {
 	condition *lua.LFunction
 }
 
+// LuaMacroBinding is the discoverable, immutable part of a Lua macro. It is
+// used by command surfaces without exposing interpreter-owned functions.
+type LuaMacroBinding struct {
+	Area        string
+	Key         string
+	Description string
+	Source      string
+}
+
 // LuaMacroEngine runs Far-compatible macros written in Lua.
 type LuaMacroEngine struct {
 	rt   *luaplug.Runtime
@@ -213,6 +222,65 @@ func (e *LuaMacroEngine) Find(area, key string) *LuaMacro {
 	return nil
 }
 
+// findExact returns only a macro registered in area. Unlike Find it never
+// falls back to Common. Palette entries use this at execution time so a stale
+// area-specific entry cannot accidentally invoke a different Common macro
+// that happens to use the same key.
+func (e *LuaMacroEngine) findExact(area, key string) *LuaMacro {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	area = strings.ToLower(area)
+	if alias, ok := macroAreaAliases[area]; ok {
+		area = alias
+	}
+	key = strings.ToLower(key)
+	if list := e.byArea[area][key]; len(list) > 0 {
+		return list[len(list)-1]
+	}
+	return nil
+}
+
+// Bindings returns the effective Lua macro bindings for area. Area-specific
+// macros shadow Common bindings just as they do in Trigger.
+func (e *LuaMacroEngine) Bindings(area string) []LuaMacroBinding {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	area = strings.ToLower(area)
+	if alias, ok := macroAreaAliases[area]; ok {
+		area = alias
+	}
+	seen := make(map[string]bool)
+	var result []LuaMacroBinding
+	appendArea := func(bindingArea string) {
+		for key, list := range e.byArea[bindingArea] {
+			if len(list) == 0 || seen[key] {
+				continue
+			}
+			seen[key] = true
+			macro := list[len(list)-1]
+			result = append(result, LuaMacroBinding{
+				Area:        bindingArea,
+				Key:         key,
+				Description: macro.Description,
+				Source:      macro.Source,
+			})
+		}
+	}
+	appendArea(area)
+	if area != "common" {
+		appendArea("common")
+	}
+	return result
+}
+
 // Remove drops a macro from the engine.
 func (e *LuaMacroEngine) Remove(area, key string) bool {
 	e.mu.Lock()
@@ -267,6 +335,47 @@ func (e *LuaMacroEngine) Trigger(area string, event *vtinput.InputEvent) bool {
 	go func() {
 		defer e.running.Store(false)
 		e.execute(macro, key, &original)
+	}()
+	return true
+}
+
+// Run invokes a macro explicitly, without replaying its trigger when a
+// condition declines it. This is the command-palette counterpart of Trigger.
+func (e *LuaMacroEngine) Run(area, key string) bool {
+	if e == nil {
+		return false
+	}
+	macro := e.Find(area, key)
+	if macro == nil {
+		return false
+	}
+	if !e.running.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		defer e.running.Store(false)
+		e.execute(macro, key, nil)
+	}()
+	return true
+}
+
+// RunExact explicitly invokes the binding registered in area without Common
+// fallback. It is intended for discoverable command entries that already
+// captured a concrete binding identity.
+func (e *LuaMacroEngine) RunExact(area, key string) bool {
+	if e == nil {
+		return false
+	}
+	macro := e.findExact(area, key)
+	if macro == nil {
+		return false
+	}
+	if !e.running.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		defer e.running.Store(false)
+		e.execute(macro, key, nil)
 	}()
 	return true
 }

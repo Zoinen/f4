@@ -26,3 +26,4 @@ afailed.*
 .codex-build/
 /build/
 .qa-gallery-modes/
+AGENTS.md

@@ -2,4 +2,4 @@
 
 package main
 
-func showNativePropertiesOS(path string) {}
+func showNativePropertiesOS(path string) error { return nil }

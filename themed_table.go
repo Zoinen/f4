@@ -11,6 +11,9 @@ func useDialogTableColors(table *vtui.Table) {
 	table.ColorItemSelectCursorIdx = vtui.ColDialogHighlightSelectedButton
 	table.ColorTitleIdx = vtui.ColDialogHighlightText
 	table.ColorBoxIdx = vtui.ColDialogBox
+	if table.ScrollBar != nil {
+		table.ScrollBar.ColorIdx = vtui.ColDialogBox
+	}
 }
 
 // themedForeground applies only a theme color's foreground so row-specific

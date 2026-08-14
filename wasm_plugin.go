@@ -35,14 +35,15 @@ const wasmShutdownGrace = 2 * time.Second
 // It is also the first transport that is genuinely a sandbox: the guest is
 // given no filesystem at all, only stdio, a clock and a random source.
 type WasmPlugin struct {
-	path    string
-	sess    *f4rpc.Session
-	runtime wazero.Runtime
-	cancel  context.CancelFunc
-	toGuest *io.PipeWriter
-	done    chan struct{}
-	closing bool
-	bridge  *ffibridge.Bridge
+	path         string
+	sess         *f4rpc.Session
+	runtime      wazero.Runtime
+	cancel       context.CancelFunc
+	toGuest      *io.PipeWriter
+	done         chan struct{}
+	closing      bool
+	bridge       *ffibridge.Bridge
+	registration vfs.Registration
 	// identity is who this plugin is to the permission model, taken from
 	// the manifest when it came from the catalog.
 	identity PluginIdentity
@@ -138,19 +139,25 @@ func (p *WasmPlugin) Init(api vfs.HostAPI) error {
 	// The FFI it gets is the host's, projected over the same protocol.
 	p.bridge = newGatedFFIBridge(newPluginGate(p.permissionIdentity()))
 
-	if err := startPluginSession(p.sess, api, p.path, p.bridge, func(err error) {
+	registration, err := startPluginSession(p.sess, api, p.path, p.bridge, func(err error) {
 		if !p.closing {
 			vtui.DebugLog("WASM Plugin %q session ended: %v", p.path, err)
 		}
-	}); err != nil {
+	})
+	if err != nil {
 		p.Close()
 		return err
 	}
+	p.registration = registration
 	return nil
 }
 
 func (p *WasmPlugin) Close() error {
 	p.closing = true
+	if p.registration != nil {
+		p.registration.Unregister()
+		p.registration = nil
+	}
 
 	// Closing the guest's stdin lets a well behaved plugin see EOF and unwind
 	// on its own before the runtime is torn down under it.

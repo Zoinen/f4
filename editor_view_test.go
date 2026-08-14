@@ -124,6 +124,179 @@ func TestEditor_HighlightingInvalidation(t *testing.T) {
 	}
 }
 
+func TestEditor_StatefulHighlighting_InstantDistantJump(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 2500; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	pt := piecetable.New([]byte(sb.String()))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	mh := &mockStatefulHighlighter{}
+	ev.highlighter = mh
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+
+	// Jump to a distant line (> 50 lines ahead)
+	ev.CursorLine = 2400
+	ev.ensureCursorVisible()
+
+	// Show must return immediately without calculating all 2400 line states
+	ev.Show(scr)
+
+	if len(ev.lineStates) > 50 {
+		t.Errorf("Expected distant jump to render unhighlighted instantly without sync backfill, got %d states", len(ev.lineStates))
+	}
+}
+func TestEditorView_LineLengthStringConsistency(t *testing.T) {
+	pt := piecetable.New([]byte("line1\nline2\r\nline3"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+
+	l0 := ev.getLineLength(0)
+	d0, _ := ev.pt.GetRange(ev.li.GetLineOffset(0), l0)
+	if string(d0) != "line1" {
+		t.Errorf("Expected 'line1', got %q", string(d0))
+	}
+}
+func TestEditor_StatefulHighlighting_DynamicCatchUpSpeed(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	pt := piecetable.New([]byte(sb.String()))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	mh := &mockStatefulHighlighter{}
+	ev.highlighter = mh
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+
+	ev.CursorLine = 4500
+	ev.ensureCursorVisible()
+
+	ev.Show(scr)
+
+	timeout := time.After(1 * time.Second)
+	for len(ev.lineStates) < 4500 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatalf("Fast catch-up failed: expected lineStates >= 4500 within 1s, got %d", len(ev.lineStates))
+		}
+	}
+}
+func TestEditorView_ScrollBarOnScrollAdjustsCursor(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	pt := piecetable.New([]byte(sb.String()))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	ev.CursorLine = 0
+	ev.CursorPos = 0
+
+	if ev.scrollBar != nil && ev.scrollBar.OnScroll != nil {
+		ev.scrollBar.OnScroll(200)
+	}
+
+	if ev.CursorLine < 200 {
+		t.Errorf("Expected CursorLine to be adjusted into visible viewport (>= 200), got %d", ev.CursorLine)
+	}
+}
+func TestEditor_StatefulHighlighting_BackgroundCatchUpAfterEdit(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 1500; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	pt := piecetable.New([]byte(sb.String()))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	mh := &mockStatefulHighlighter{}
+	ev.highlighter = mh
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+
+	ev.edited = true
+
+	ev.CursorLine = 1400
+	ev.ensureCursorVisible()
+
+	ev.Show(scr)
+
+	timeout := time.After(2 * time.Second)
+	for len(ev.lineStates) < 1400 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for background highlighting to catch up when edited is true")
+		}
+	}
+
+	if len(ev.lineStates) < 1400 {
+		t.Errorf("Expected background highlighting to process lines past 1400 even if edited is true, got %d", len(ev.lineStates))
+	}
+}
+func TestEditor_BackgroundHighlighting_FullCoverage(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	pt := piecetable.New([]byte(sb.String()))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	mh := &mockStatefulHighlighter{}
+	ev.highlighter = mh
+
+	// Simulate indexing in progress
+	ev.indexing = true
+	ev.startHighlighting()
+
+	// Finish indexing after a short delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		vtui.FrameManager.PostTask(func() {
+			ev.indexing = false
+		})
+	}()
+
+	timeout := time.After(2 * time.Second)
+	for len(ev.lineStates) < 500 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatalf("Background highlighting did not reach end of file: expected 500 states, got %d", len(ev.lineStates))
+		}
+	}
+}
+
 // waitPtString waits for a PieceTable to settle and returns its content as string.
 // Used for tests involving AsyncBuffers.
 func waitPtString(t *testing.T, pt *piecetable.PieceTable) string {
@@ -563,6 +736,40 @@ func TestEditorView_HomeEnd(t *testing.T) {
 	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_HOME})
 	if ev.CursorPos != 0 {
 		t.Errorf("Home failed: expected pos 0, got %d", ev.CursorPos)
+	}
+}
+func TestEditorView_HexModeToggleAndTyping(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("abc"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	vtui.FrameManager.Push(ev)
+
+	// Toggle Hex Mode
+	RunAction("Editor.HexMode")
+	if !ev.HexMode {
+		t.Fatal("HexMode should be true")
+	}
+
+	// 'a' is 0x61. Let's type '4' '1' to change it to 'A' (0x41)
+	ev.CursorPos = 0
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: '4'})
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: '1'})
+
+	if pt.String() != "Abc" {
+		t.Errorf("Hex typing failed, got %q", pt.String())
+	}
+
+	if ev.CursorPos != 1 || ev.HexNibble != 0 {
+		t.Errorf("Cursor did not advance correctly after hex typing, got pos %d, nibble %d", ev.CursorPos, ev.HexNibble)
+	}
+
+	// Test navigation (left by nibble)
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT})
+	if ev.CursorPos != 0 || ev.HexNibble != 1 {
+		t.Errorf("Left arrow in hex mode failed, got pos %d, nibble %d", ev.CursorPos, ev.HexNibble)
 	}
 }
 
@@ -1030,8 +1237,11 @@ func TestEditorView_GetTitle(t *testing.T) {
 	if ev1.GetTitle() != "Edit: syslog" {
 		t.Errorf("GetTitle failed for valid path: %s", ev1.GetTitle())
 	}
-	if ev1.GetWorkspaceTabTitle() != "✎ syslog" {
+	if ev1.GetWorkspaceTabTitle() != "syslog" {
 		t.Errorf("GetWorkspaceTabTitle failed for valid path: %s", ev1.GetWorkspaceTabTitle())
+	}
+	if ev1.GetWorkspaceTabMarker() != "E" {
+		t.Errorf("GetWorkspaceTabMarker failed: %s", ev1.GetWorkspaceTabMarker())
 	}
 
 	// Without path
@@ -1040,7 +1250,7 @@ func TestEditorView_GetTitle(t *testing.T) {
 	if ev2.GetTitle() != "Editor" {
 		t.Errorf("GetTitle failed for empty path: %s", ev2.GetTitle())
 	}
-	if ev2.GetWorkspaceTabTitle() != "✎ Editor" {
+	if ev2.GetWorkspaceTabTitle() != "Editor" {
 		t.Errorf("GetWorkspaceTabTitle failed for empty path: %s", ev2.GetWorkspaceTabTitle())
 	}
 
@@ -1051,7 +1261,7 @@ func TestEditorView_GetTitle(t *testing.T) {
 	if ev3.GetTitle() != "Rename list of files" {
 		t.Errorf("GetTitle ignored DisplayTitle: %s", ev3.GetTitle())
 	}
-	if ev3.GetWorkspaceTabTitle() != "✎ Rename list of files" {
+	if ev3.GetWorkspaceTabTitle() != "Rename list of files" {
 		t.Errorf("GetWorkspaceTabTitle ignored DisplayTitle: %s", ev3.GetWorkspaceTabTitle())
 	}
 }
@@ -1116,6 +1326,56 @@ func TestEditorView_CodepageDialog_DynamicHeight(t *testing.T) {
 		t.Errorf("Selected position %d out of bounds", menu.SelectPos)
 	}
 }
+
+type mockRemoteIndexerVFS struct {
+	vfs.VFS
+	calls int
+}
+
+func (m *mockRemoteIndexerVFS) LineIndex(ctx context.Context, path string, first, count int64) (vfs.LineIndexResult, error) {
+	m.calls++
+	if first == 2 {
+		return vfs.LineIndexResult{First: 2, Offsets: []int64{7, 14}, Total: 3}, nil
+	}
+	return vfs.LineIndexResult{First: first, Total: 3}, nil
+}
+
+func TestEditorView_StartIndexing_UsesRemoteIndexer(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmp := filepath.Join(t.TempDir(), "remote_idx.txt")
+	os.WriteFile(tmp, []byte("Line 1\nLine 2\nLine 3"), 0644)
+
+	mv := &mockRemoteIndexerVFS{VFS: vfs.NewOSVFS(filepath.Dir(tmp))}
+	f, _ := mv.Open(context.Background(), tmp)
+	defer f.Close()
+
+	buf := NewAsyncBuffer(context.Background(), f)
+	pt := piecetable.NewWithBuffer(buf)
+	ev := NewEditorView(pt, mv, tmp)
+	defer ev.Close()
+	ev.asyncBuf = buf
+	ev.file = f
+	ev.Codepage = 65001 // required for remote indexing
+
+	ev.StartIndexing()
+
+	timeout := time.After(2 * time.Second)
+	for ev.indexing {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for remote indexer to finish")
+		}
+	}
+
+	if mv.calls == 0 {
+		t.Error("Remote LineIndexer was not called")
+	}
+	if ev.li.LineCount() != 3 {
+		t.Errorf("Expected 3 lines, got %d", ev.li.LineCount())
+	}
+}
 func TestEditorView_AsyncIndexing(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -1160,6 +1420,48 @@ func TestEditorView_AsyncIndexing(t *testing.T) {
 		t.Errorf("Indexer failed: expected 3 lines, got %d", ev.li.LineCount())
 	}
 }
+
+func TestEditorView_StartIndexing_TargetLineImmediateBatch(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 10000; i++ {
+		fmt.Fprintf(&sb, "Line %d\n", i)
+	}
+	tmp := filepath.Join(t.TempDir(), "target_fast.txt")
+	os.WriteFile(tmp, []byte(sb.String()), 0644)
+
+	v := vfs.NewOSVFS(t.TempDir())
+	f, err := v.Open(context.Background(), tmp)
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	defer f.Close()
+
+	buf := NewAsyncBuffer(context.Background(), f)
+	pt := piecetable.NewWithBuffer(buf)
+	ev := NewEditorView(pt, v, tmp)
+	defer ev.Close()
+	ev.asyncBuf = buf
+	ev.file = f
+	ev.targetLine = 500
+
+	ev.StartIndexing()
+
+	timeout := time.After(2 * time.Second)
+	for ev.targetLine != -1 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for targetLine to resolve")
+		}
+	}
+
+	if ev.CursorLine != 500 {
+		t.Errorf("Expected CursorLine 500, got %d", ev.CursorLine)
+	}
+}
 func TestEditorView_Indexer_EditInterference(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -1182,6 +1484,7 @@ func TestEditorView_Indexer_EditInterference(t *testing.T) {
 	defer ev.Close()
 	ev.asyncBuf = buf
 	ev.file = f
+	ev.CursorPos = 1
 
 	// 1. Start indexing
 	ev.StartIndexing()
@@ -1377,6 +1680,166 @@ func TestEditorView_Indexer_ModifierSafety(t *testing.T) {
 	}
 	if !cancelled {
 		t.Error("Real text input failed to cancel the indexer")
+	}
+}
+func TestEditorView_Indexer_NonEditingKeysDoNotCancel(t *testing.T) {
+	pt := piecetable.New([]byte("test content"))
+	ev := NewEditorView(pt, nil, "test.txt")
+	defer ev.Close()
+
+	cancelled := false
+	ev.indexCancel = func() { cancelled = true }
+	ev.edited = false
+
+	pressKey(ev, &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_F3,
+	})
+
+	if ev.edited {
+		t.Error("F3 key erroneously set the 'edited' flag")
+	}
+	if cancelled {
+		t.Error("F3 key erroneously cancelled the indexer")
+	}
+}
+
+func TestEditorView_IndexerNoOpDeletesDoNotCancel(t *testing.T) {
+	tests := []struct {
+		name string
+		key  uint16
+		pos  int
+	}{
+		{name: "backspace at beginning", key: vtinput.VK_BACK, pos: 0},
+		{name: "delete at end", key: vtinput.VK_DELETE, pos: len("test content")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := NewEditorView(piecetable.New([]byte("test content")), nil, "test.txt")
+			defer ev.Close()
+			ev.CursorPos = tt.pos
+			cancelled := false
+			ev.indexCancel = func() { cancelled = true }
+			initialSession := ev.editSession
+
+			ev.ProcessKey(&vtinput.InputEvent{
+				Type: vtinput.KeyEventType, KeyDown: true,
+				VirtualKeyCode: tt.key,
+			})
+
+			if ev.edited || cancelled || ev.editSession != initialSession {
+				t.Fatalf("no-op edit changed indexer state: edited=%t cancelled=%t session=%d, want %d", ev.edited, cancelled, ev.editSession, initialSession)
+			}
+		})
+	}
+
+	t.Run("zero-width rectangular selection", func(t *testing.T) {
+		ev := NewEditorView(piecetable.New([]byte("test content")), nil, "test.txt")
+		defer ev.Close()
+		ev.rectSelActive = true
+		ev.rectSelStartLine = 0
+		ev.rectSelStartCol = 0
+		ev.CursorLine = 0
+		ev.CursorPos = 0
+		cancelled := false
+		ev.indexCancel = func() { cancelled = true }
+		initialSession := ev.editSession
+
+		ev.DeleteSelection()
+
+		if ev.edited || cancelled || ev.editSession != initialSession {
+			t.Fatalf("empty rectangular selection changed indexer state: edited=%t cancelled=%t session=%d, want %d", ev.edited, cancelled, ev.editSession, initialSession)
+		}
+	})
+
+	t.Run("empty rectangular rows in existing lines", func(t *testing.T) {
+		ev := NewEditorView(piecetable.New([]byte("first\nsecond")), nil, "test.txt")
+		defer ev.Close()
+		cancelled := false
+		ev.indexCancel = func() { cancelled = true }
+		initialSession := ev.editSession
+
+		ev.PasteRectangular("\n", 0)
+
+		if ev.edited || cancelled || ev.editSession != initialSession {
+			t.Fatalf("empty rectangular paste changed indexer state: edited=%t cancelled=%t session=%d, want %d", ev.edited, cancelled, ev.editSession, initialSession)
+		}
+	})
+}
+
+func TestEditorView_BufferMutationsFenceIndexerOnce(t *testing.T) {
+	selectFirstByte := func(ev *EditorView) {
+		ev.selActive = true
+		ev.selAnchorOffset = 0
+		ev.CursorPos = 1
+	}
+
+	tests := []struct {
+		name    string
+		content string
+		prepare func(*EditorView)
+		mutate  func(*EditorView)
+	}{
+		{
+			name:    "bracketed paste",
+			content: "abc",
+			prepare: func(ev *EditorView) {
+				ev.pasting = true
+				ev.pasteBuffer = []rune("X")
+			},
+			mutate: func(ev *EditorView) {
+				ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.PasteEventType})
+			},
+		},
+		{
+			name:    "autocomplete",
+			content: "foo",
+			prepare: func(ev *EditorView) {
+				ev.CursorPos = 3
+				ev.acEnabled = true
+				ev.acPrefix = "foo"
+				ev.acMatches = []string{"foobar"}
+			},
+			mutate: func(ev *EditorView) {
+				ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+			},
+		},
+		{name: "insert helper", content: "abc", mutate: func(ev *EditorView) { ev.insertTextAtCursor([]byte("X")) }},
+		{name: "delete spacers", content: "  abc", mutate: func(ev *EditorView) { ev.deleteSpacersForward() }},
+		{name: "rectangular paste", content: "abc", mutate: func(ev *EditorView) { ev.PasteRectangular("X", 0) }},
+		{
+			name:    "paste over selection",
+			content: "abc",
+			prepare: selectFirstByte,
+			mutate:  func(ev *EditorView) { ev.PasteText("X") },
+		},
+		{
+			name:    "delete selection",
+			content: "abc",
+			prepare: selectFirstByte,
+			mutate:  func(ev *EditorView) { ev.DeleteSelection() },
+		},
+		{name: "delete current line", content: "abc", mutate: func(ev *EditorView) { ev.DeleteCurrentLine() }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := NewEditorView(piecetable.New([]byte(tt.content)), nil, "test.txt")
+			defer ev.Close()
+			if tt.prepare != nil {
+				tt.prepare(ev)
+			}
+
+			cancelCount := 0
+			ev.indexCancel = func() { cancelCount++ }
+			initialSession := ev.editSession
+			tt.mutate(ev)
+
+			if !ev.edited || cancelCount != 1 || ev.editSession != initialSession+1 {
+				t.Fatalf("mutation fence: edited=%t, cancels=%d, session=%d; want true, 1, %d", ev.edited, cancelCount, ev.editSession, initialSession+1)
+			}
+		})
 	}
 }
 
@@ -1875,6 +2338,31 @@ func TestEditorView_Search_Backward(t *testing.T) {
 	// Второе "match" начинается на 20-м байте (префикс "first match, second " - 20 байт)
 	if ev.selAnchorOffset != 20 {
 		t.Errorf("Backward search failed: expected offset 20, got %d", ev.selAnchorOffset)
+	}
+}
+
+func TestParseHexPatternToRegex(t *testing.T) {
+	re, err := parseHexPatternToRegex("EB ? 90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if re != "(?s)\\xeb.\\x90" {
+		t.Errorf("Unexpected regex: %s", re)
+	}
+
+	_, err = parseHexPatternToRegex("INVALID")
+	if err == nil {
+		t.Error("Expected error for invalid hex pattern")
+	}
+}
+func TestDetectX86Mode(t *testing.T) {
+	elf32 := []byte("\x7fELF\x01\x01\x01\x00")
+	if got := detectX86Mode(elf32); got != 32 {
+		t.Errorf("ELF32 got %d, want 32", got)
+	}
+	elf64 := []byte("\x7fELF\x02\x01\x01\x00")
+	if got := detectX86Mode(elf64); got != 64 {
+		t.Errorf("ELF64 got %d, want 64", got)
 	}
 }
 
@@ -4295,12 +4783,122 @@ func TestEditorView_WordJumps_DividerBetweenWords(t *testing.T) {
 	}
 }
 
+func TestEditorView_CtrlLeftPastEOL(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pt := piecetable.New([]byte("foo bar"))
+	ev := NewEditorView(pt, nil, "")
+	defer ev.Close()
+	ev.li.Rebuild(pt)
+	ev.SetPosition(0, 0, 40, 10)
+	ev.CursorBeyondEOL = true
+	ev.CursorLine = 0
+	ev.CursorPos = 7
+	ev.CursorVirtualSpaces = 5 // the cursor floats past the end of the line
+	ev.updateDesiredVisualCol()
+
+	ctrlLeft := func() {
+		ev.ProcessKey(keyEvent(vtinput.VK_LEFT, vtinput.LeftCtrlPressed))
+	}
+
+	// Past EOL a word jump behaves as if the cursor stood at the real end of
+	// the line: it lands on the last word, it does not eat virtual spaces
+	// one by one.
+	ctrlLeft()
+	if ev.CursorVirtualSpaces != 0 {
+		t.Errorf("Ctrl+Left should drop the virtual spaces, got %d", ev.CursorVirtualSpaces)
+	}
+	if ev.CursorPos != 4 {
+		t.Errorf("Ctrl+Left past EOL: expected pos 4, got %d", ev.CursorPos)
+	}
+
+	ctrlLeft()
+	if ev.CursorPos != 0 {
+		t.Errorf("second Ctrl+Left: expected pos 0, got %d", ev.CursorPos)
+	}
+
+	// A plain Left still walks back through the virtual spaces.
+	ev.CursorPos = 7
+	ev.CursorVirtualSpaces = 2
+	ev.updateDesiredVisualCol()
+	ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT})
+	if ev.CursorPos != 7 || ev.CursorVirtualSpaces != 1 {
+		t.Errorf("plain Left past EOL: expected pos 7 / virt 1, got %d / %d", ev.CursorPos, ev.CursorVirtualSpaces)
+	}
+}
+
+func TestEditorView_CtrlUpDownScrollsTextUnderCursor(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	var sb strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&sb, "line %02d\n", i)
+	}
+	pt := piecetable.New([]byte(strings.TrimSuffix(sb.String(), "\n")))
+	ev := NewEditorView(pt, nil, "scroll.txt")
+	defer ev.Close()
+	ev.li.Rebuild(pt)
+	ev.SetPosition(0, 0, 40, 10) // 10 visible text rows
+	ev.CursorLine = 5
+	ev.CursorPos = 0
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+
+	ctrlDown := func() { ev.ProcessKey(keyEvent(vtinput.VK_DOWN, vtinput.LeftCtrlPressed)) }
+	ctrlUp := func() { ev.ProcessKey(keyEvent(vtinput.VK_UP, vtinput.LeftCtrlPressed)) }
+	screenRow := func() int { return ev.CursorLine - ev.ScrollTopRow }
+
+	// 1. The text moves under the cursor: TopScreen and CurLine step
+	// together, so the cursor does not budge on the screen.
+	ctrlDown()
+	if ev.ScrollTopRow != 1 || ev.CursorLine != 6 {
+		t.Errorf("Ctrl+Down: expected top 1 / line 6, got %d / %d", ev.ScrollTopRow, ev.CursorLine)
+	}
+	if screenRow() != 5 {
+		t.Errorf("cursor left its screen row: %d", screenRow())
+	}
+
+	// 2. ...all the way down to the last screenful (30 rows, 10 visible).
+	for i := 0; i < 19; i++ {
+		ctrlDown()
+	}
+	if ev.ScrollTopRow != 20 || ev.CursorLine != 25 || screenRow() != 5 {
+		t.Fatalf("scrolled to the bottom: top %d, line %d, screen row %d", ev.ScrollTopRow, ev.CursorLine, screenRow())
+	}
+
+	// 3. There the view is stuck and the cursor walks on alone until it
+	// reaches the last line (far2l falls back to a bare Down()).
+	ctrlDown()
+	if ev.ScrollTopRow != 20 || ev.CursorLine != 26 {
+		t.Errorf("at EOF the cursor should move alone: top %d, line %d", ev.ScrollTopRow, ev.CursorLine)
+	}
+	for i := 0; i < 10; i++ {
+		ctrlDown()
+	}
+	if ev.ScrollTopRow != 20 || ev.CursorLine != 29 {
+		t.Errorf("expected to stop on the last line: top %d, line %d", ev.ScrollTopRow, ev.CursorLine)
+	}
+
+	// 4. Scrolling back up the cursor rides along again, keeping its row.
+	ctrlUp()
+	if ev.ScrollTopRow != 19 || ev.CursorLine != 28 || screenRow() != 9 {
+		t.Errorf("Ctrl+Up: expected top 19 / line 28, got %d / %d", ev.ScrollTopRow, ev.CursorLine)
+	}
+
+	// 5. At the top of the file it walks alone once more, down to line 0.
+	for i := 0; i < 40; i++ {
+		ctrlUp()
+	}
+	if ev.ScrollTopRow != 0 || ev.CursorLine != 0 {
+		t.Errorf("expected to stop at the top of the file: top %d, line %d", ev.ScrollTopRow, ev.CursorLine)
+	}
+}
+
 func TestEditorView_Indexer_SessionFencing(t *testing.T) {
 	// Это тест на предотвращение рассинхронизации данных при фоновой индексации.
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pt := piecetable.New([]byte("line1\nline2"))
 	ev := NewEditorView(pt, nil, "fencing.txt")
 	defer ev.Close()
+	ev.CursorPos = 1
 
 	// 1. Запоминаем текущую сессию
 	initialSession := ev.editSession
@@ -4398,6 +4996,219 @@ func TestEditorView_SearchPersistence(t *testing.T) {
 			LastEditorSearch, LastEditorSearchCase, LastEditorSearchReverse)
 	}
 }
+
+// countDialogButtons tells a Replace confirmation prompt (4 buttons) apart
+// from the summary box (1 button) that shares its title.
+func countDialogButtons(w *vtui.Window) int {
+	n := 0
+	for _, c := range w.GetChildren() {
+		if _, ok := c.(*vtui.Button); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// pumpReplacePrompt drains UI tasks until a Replace confirmation dialog
+// other than prev is on top, and returns it.
+func pumpReplacePrompt(t *testing.T, prev *vtui.Window) *vtui.Window {
+	t.Helper()
+	var dlg *vtui.Window
+	pumpFindAll(t, func() bool {
+		w, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+		if ok && w != prev && w.GetTitle() == Msg("Replace.ConfirmTitle") && countDialogButtons(w) == 4 {
+			dlg = w
+		}
+		return dlg != nil
+	})
+	return dlg
+}
+
+// pumpReplaceSummary drains UI tasks until the "N occurrence(s) replaced"
+// box shows up, proving the loop ended with a report instead of the bare
+// not-found message.
+func pumpReplaceSummary(t *testing.T) {
+	t.Helper()
+	pumpFindAll(t, func() bool {
+		w, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+		return ok && w.GetTitle() == Msg("Replace.ConfirmTitle") && countDialogButtons(w) == 1
+	})
+}
+
+func TestEditorView_Replace_InteractivePromptFlow(t *testing.T) {
+	content := "match one, match two, match three"
+	ev := newFindAllEditor(t, content)
+
+	// One click on [ Replace ] with no selection prompts at the first
+	// occurrence without touching the buffer.
+	ev.Replace("match", "X", false, false, false, false, false)
+	dlg := pumpReplacePrompt(t, nil)
+	if data, _ := ev.pt.Bytes(); string(data) != content {
+		t.Fatalf("the prompt must not replace by itself, buffer: %q", data)
+	}
+	if !ev.selActive || ev.selAnchorOffset != 0 {
+		t.Errorf("first occurrence should be selected at 0, got active=%v anchor=%d",
+			ev.selActive, ev.selAnchorOffset)
+	}
+
+	// Replace: exactly this occurrence, then a prompt at the next one.
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	want := "X one, match two, match three"
+	if data, _ := ev.pt.Bytes(); string(data) != want {
+		t.Fatalf("after Replace, buffer: %q, want %q", data, want)
+	}
+	if ev.selAnchorOffset != len("X one, ") {
+		t.Errorf("second occurrence should be selected at %d, got %d",
+			len("X one, "), ev.selAnchorOffset)
+	}
+
+	// Skip: buffer untouched, prompt advances.
+	dlg2.SetExitCode(replaceBtnSkip)
+	dlg3 := pumpReplacePrompt(t, dlg2)
+	if data, _ := ev.pt.Bytes(); string(data) != want {
+		t.Fatalf("Skip must not edit, buffer: %q", data)
+	}
+	wantThird := len("X one, match two, ")
+	if ev.selAnchorOffset != wantThird {
+		t.Errorf("third occurrence should be selected at %d, got %d", wantThird, ev.selAnchorOffset)
+	}
+
+	// Cancel: the loop stops, nothing else changes, the occurrence stays
+	// selected with the cursor on it.
+	dlg3.SetExitCode(replaceBtnCancel)
+	pumpFindAllFor(t, 300*time.Millisecond, func() (string, bool) {
+		w, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+		if ok && w != dlg3 && w.GetTitle() == Msg("Replace.ConfirmTitle") {
+			return "Cancel must end the loop, but another Replace dialog appeared", true
+		}
+		return "", false
+	})
+	if data, _ := ev.pt.Bytes(); string(data) != want {
+		t.Errorf("Cancel must not edit, buffer: %q", data)
+	}
+	if !ev.selActive || ev.selAnchorOffset != wantThird {
+		t.Errorf("canceled occurrence should stay selected at %d, got active=%v anchor=%d",
+			wantThird, ev.selActive, ev.selAnchorOffset)
+	}
+}
+
+func TestEditorView_Replace_InteractiveAllSingleUndo(t *testing.T) {
+	content := "match one, match two, match three"
+	ev := newFindAllEditor(t, content)
+	ev.Replace("match", "X", false, false, false, false, false)
+
+	// All at the first prompt finishes the rest without further prompts
+	// and reports the total.
+	dlg := pumpReplacePrompt(t, nil)
+	dlg.SetExitCode(replaceBtnAll)
+	want := "X one, X two, X three"
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == want })
+	pumpReplaceSummary(t)
+
+	// Far wraps the All tail in a single undo block: one Undo restores
+	// everything the button replaced.
+	ev.Undo()
+	if data, _ := ev.pt.Bytes(); string(data) != content {
+		t.Errorf("All should be one undo step, after Undo: %q", data)
+	}
+}
+
+func TestEditorView_Replace_AdjacentOccurrenceNotSkipped(t *testing.T) {
+	ev := newFindAllEditor(t, "aaaa")
+	ev.Replace("aa", "x", false, false, false, false, false)
+
+	// Replace-Replace on "aaaa" with aa->x must produce "xx": the second
+	// occurrence starts exactly at the end of the first replacement.
+	dlg := pumpReplacePrompt(t, nil)
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	dlg2.SetExitCode(replaceBtnReplace)
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == "xx" })
+	pumpReplaceSummary(t)
+}
+
+func TestEditorView_Replace_ReplacementContainsPattern(t *testing.T) {
+	ev := newFindAllEditor(t, "aa")
+	ev.Replace("a", "aa", false, false, false, false, false)
+
+	// The replacement's own output must never be re-matched: exactly two
+	// prompts, then the summary.
+	dlg := pumpReplacePrompt(t, nil)
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	dlg2.SetExitCode(replaceBtnReplace)
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == "aaaa" })
+	pumpReplaceSummary(t)
+}
+
+func TestEditorView_Replace_RegexExpandsPerOccurrence(t *testing.T) {
+	ev := newFindAllEditor(t, "a1 b2")
+	ev.Replace(`([a-z])(\d)`, "$2$1", true, false, true, false, false)
+
+	dlg := pumpReplacePrompt(t, nil)
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	dlg2.SetExitCode(replaceBtnReplace)
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == "1a 2b" })
+	pumpReplaceSummary(t)
+}
+
+func TestReplacePrompt_RegexShowsExpandedReplacement(t *testing.T) {
+	// The prompt shows what will really be inserted for this occurrence,
+	// not the raw "$2$1" the user typed.
+	re, err := buildSearchRegex(`([a-z])(\d)`, true, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &replaceLoop{replacement: "$2$1", regexp: true, re: re}
+	rendered := string(st.renderReplacement([]byte("a1")))
+	if rendered != "1a" {
+		t.Fatalf("rendered replacement = %q, want \"1a\"", rendered)
+	}
+	body := replacePromptBody("a1", rendered)
+	if !strings.Contains(body, "\"a1\"") || !strings.Contains(body, "\"1a\"") {
+		t.Errorf("prompt body should quote the match and the expanded replacement, got %q", body)
+	}
+}
+
+func TestEditorView_Replace_FoldedDifferentLength(t *testing.T) {
+	// K (U+212A, 3 bytes) case-folds to "k": the replacement must consume
+	// the folded character's real byte width, not len(pattern).
+	ev := newFindAllEditor(t, "K x k")
+	ev.Replace("k", "q", false, false, false, false, false)
+
+	dlg := pumpReplacePrompt(t, nil)
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	dlg2.SetExitCode(replaceBtnReplace)
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == "q x q" })
+	pumpReplaceSummary(t)
+}
+
+func TestEditorView_Replace_ReverseWalksRightToLeft(t *testing.T) {
+	content := "match one, match two"
+	ev := newFindAllEditor(t, content)
+	ev.CursorLine = 0
+	ev.CursorPos = len(content)
+	ev.Replace("match", "X", false, true, false, false, false)
+
+	dlg := pumpReplacePrompt(t, nil)
+	second := len("match one, ")
+	if ev.selAnchorOffset != second {
+		t.Fatalf("reverse should prompt the rightmost occurrence at %d, got %d",
+			second, ev.selAnchorOffset)
+	}
+	dlg.SetExitCode(replaceBtnReplace)
+	dlg2 := pumpReplacePrompt(t, dlg)
+	if ev.selAnchorOffset != 0 {
+		t.Errorf("second prompt should be at offset 0, got %d", ev.selAnchorOffset)
+	}
+	dlg2.SetExitCode(replaceBtnReplace)
+	pumpFindAll(t, func() bool { data, _ := ev.pt.Bytes(); return string(data) == "X one, X two" })
+	pumpReplaceSummary(t)
+}
+
 func TestEditorView_Autocomplete_Logic(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -5098,5 +5909,102 @@ func TestEditorView_DeleteSpacersForward(t *testing.T) {
 				t.Errorf("cursor = %d, want %d", ev.CursorPos, tc.wantCurs)
 			}
 		})
+	}
+}
+
+// A vertical block must be deleted by Del and by Backspace, the way a stream
+// selection is. It lives in rectSelActive rather than selActive, and the two
+// handlers used to look at selActive alone: with a block up, Del silently ate
+// the character under the cursor and left the block on screen.
+func TestEditorView_DeleteRemovesRectSelection(t *testing.T) {
+	press := func(vk uint16) *EditorView {
+		vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+		pt := piecetable.New([]byte("abcdef\nabcdef\nabcdef"))
+		ev := NewEditorView(pt, nil, "rect.txt")
+		t.Cleanup(func() { ev.Close() })
+		ev.li.Rebuild(pt)
+		ev.SetPosition(0, 0, 40, 10)
+
+		// A 2-column block over the first two lines, columns 2..4.
+		ev.rectSelActive = true
+		ev.rectSelStartLine = 0
+		ev.rectSelStartCol = 2
+		ev.CursorLine = 1
+		ev.CursorPos = 4
+		ev.updateDesiredVisualCol()
+
+		ev.ProcessKey(keyEvent(vk, 0))
+		return ev
+	}
+
+	for _, tc := range []struct {
+		name string
+		vk   uint16
+	}{{"Del", vtinput.VK_DELETE}, {"Backspace", vtinput.VK_BACK}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := press(tc.vk)
+			got, _ := ev.pt.GetRange(0, ev.pt.Size())
+			if string(got) != "abef\nabef\nabcdef" {
+				t.Errorf("%s should cut the block out, got %q", tc.name, string(got))
+			}
+			if ev.rectSelActive {
+				t.Errorf("%s left the block active", tc.name)
+			}
+		})
+	}
+}
+
+// Colorer is drawn by line number, not by walking a chain of states from the
+// top of the file. A viewport far down a large file has to come out coloured
+// without anything having touched the lines above it.
+func TestEditor_ColorerDrawsWithoutAStateChain(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	ev := NewEditorView(piecetable.New([]byte(sb.String())), nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 10)
+
+	ch := &ColorerHighlighter{}
+	ch.SetLineSource(ev.lineTextForHighlight)
+	ev.highlighter = ch
+
+	ev.CursorLine = 4000
+	ev.ensureCursorVisible()
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	ev.Show(scr)
+
+	if len(ev.lineStates) != 0 {
+		t.Errorf("Colorer grew a state chain of %d entries", len(ev.lineStates))
+	}
+	if ev.highlighting {
+		t.Error("Colorer started the walker")
+	}
+}
+
+func TestEditor_LineTextForHighlight(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	ev := NewEditorView(piecetable.New([]byte("alpha\nbeta\ngamma")), nil, "test.txt")
+	defer ev.Close()
+
+	// The terminator is part of what the parsers are fed, and the parse
+	// state of the next line depends on having seen it.
+	if got, ok := ev.lineTextForHighlight(0); !ok || got != "alpha\n" {
+		t.Errorf("line 0 came back as %q, ok=%v", got, ok)
+	}
+	if got, ok := ev.lineTextForHighlight(2); !ok || got != "gamma" {
+		t.Errorf("the last line came back as %q, ok=%v", got, ok)
+	}
+	if _, ok := ev.lineTextForHighlight(3); ok {
+		t.Error("a line past the end must not report success")
+	}
+	if _, ok := ev.lineTextForHighlight(-1); ok {
+		t.Error("a negative line must not report success")
 	}
 }

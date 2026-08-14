@@ -34,6 +34,9 @@ func isLocalOSVFS(v any) bool {
 		if _, ok := val.Interface().(*vfs.OSVFS); ok {
 			return true
 		}
+		if _, ok := val.Interface().(*vfs.DisksVFS); ok {
+			return true
+		}
 		val = val.Elem()
 	}
 	if val.Kind() == reflect.Struct {
@@ -284,6 +287,22 @@ func showAttributesUnix(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSIte
 }
 
 func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFSItem) {
+	showAttributesWindowsWithProperties(pf, v, path, item, defaultNativePropertiesOpener)
+}
+
+var defaultNativePropertiesOpener = showNativePropertiesOS
+
+// showAttributesWindowsWithProperties keeps the native shell boundary
+// injectable. In particular, UI tests must not invoke ShellExecute: it can
+// outlive a test's temporary directory and make Windows display an error
+// dialog after the test has already completed.
+func showAttributesWindowsWithProperties(
+	pf *PanelsFrame,
+	v vfs.VFS,
+	path string,
+	item vfs.VFSItem,
+	openProperties func(string) error,
+) {
 	width, height := 60, 22
 	dlg := vtui.NewCenteredDialog(width, height, Msg("Attributes.Title"))
 	dlg.ShowClose = true
@@ -337,8 +356,10 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 	}
 
 	btnSec.OnClick = func() {
-		if osPath != "" {
-			showNativePropertiesOS(osPath)
+		if osPath != "" && openProperties != nil {
+			if err := openProperties(osPath); err != nil {
+				vtui.ShowMessage(" Error ", "Cannot open Windows properties: "+err.Error(), []string{"&Ok"})
+			}
 		}
 	}
 

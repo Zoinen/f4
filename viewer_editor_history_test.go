@@ -80,3 +80,41 @@ func TestViewerEditorHistoryDialogDeletesEntry(t *testing.T) {
 		t.Fatal("empty viewer/editor history menu stayed open")
 	}
 }
+
+func TestViewerEditorHistoryInsertPersistsLockAndProtectsEntry(t *testing.T) {
+	initHistoryTestScreen(t)
+	previous := vtui.GlobalHistoryProvider
+	provider := stubHistoryProvider{}
+	vtui.GlobalHistoryProvider = &provider
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+
+	root := t.TempDir()
+	path := filepath.Join(root, "pinned.txt")
+	fs := vfs.NewOSVFS(root)
+	rememberViewerEditorHistory(fs, path, historyModeView)
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(120, 40)
+	actionViewerEditorHistory(pf)
+	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+
+	menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_INSERT})
+	entries := loadViewerEditorHistory()
+	if len(entries) != 1 || !entries[0].Lock {
+		t.Fatalf("Insert did not persist viewer/editor lock: %#v", entries)
+	}
+	if activeHistorySearch.processKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3}) {
+		t.Fatal("viewer/editor history F3 was intercepted by command details")
+	}
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DELETE,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+	if entries = loadViewerEditorHistory(); len(entries) != 1 || !entries[0].Lock {
+		t.Fatalf("Shift+Del removed locked viewer/editor entry: %#v", entries)
+	}
+	rememberViewerEditorHistory(fs, path, historyModeEdit)
+	if entries = loadViewerEditorHistory(); len(entries) != 1 || !entries[0].Lock || entries[0].Mode != historyModeEdit {
+		t.Fatalf("revisited viewer/editor entry lost its lock: %#v", entries)
+	}
+}

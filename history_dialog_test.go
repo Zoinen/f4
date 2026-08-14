@@ -91,13 +91,13 @@ func TestHistorySearchDrawHighlightsMatchAndSearchTitle(t *testing.T) {
 	menu.Show(scr)
 	search.draw(scr)
 
-	// Row begins with three padding cells (space, lock, space). "MATCH" starts after "before ".
-	matchX := menu.X1 + 4 + len("before ")
-	if got := scr.GetCell(matchX, menu.Y1+1).Attributes; got != vtui.Palette[vtui.ColMenuSelectedHighlight] {
-		t.Fatalf("match color = %#x, want %#x", got, vtui.Palette[vtui.ColMenuSelectedHighlight])
+	// Histories without locking start directly at the menu's inner edge.
+	matchX := menu.X1 + 1 + len("before ")
+	if got := scr.GetCell(matchX, menu.Y1+1).Attributes; got != vtui.Palette[vtui.ColDialogHighlightSelectedButton] {
+		t.Fatalf("match color = %#x, want %#x", got, vtui.Palette[vtui.ColDialogHighlightSelectedButton])
 	}
-	if got := scr.GetCell(matchX-1, menu.Y1+1).Attributes; got != vtui.Palette[vtui.ColMenuSelectedText] {
-		t.Fatalf("non-match color = %#x, want %#x", got, vtui.Palette[vtui.ColMenuSelectedText])
+	if got := scr.GetCell(matchX-1, menu.Y1+1).Attributes; got != vtui.Palette[vtui.ColDialogSelectedButton] {
+		t.Fatalf("non-match color = %#x, want %#x", got, vtui.Palette[vtui.ColDialogSelectedButton])
 	}
 
 	search.processKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2})
@@ -120,7 +120,7 @@ func TestHistorySearchDrawHighlightsMatchAndSearchTitle(t *testing.T) {
 	foundHighlightedQuery := false
 	for x := menu.X1 + 1; x < menu.X2; x++ {
 		cell := scr.GetCell(x, menu.Y1)
-		if rune(cell.Char) == 'm' && cell.Attributes == vtui.Palette[vtui.ColMenuHighlight] {
+		if rune(cell.Char) == 'm' && cell.Attributes == vtui.Palette[vtui.ColDialogHighlightText] {
 			foundHighlightedQuery = true
 			break
 		}
@@ -138,6 +138,105 @@ func TestHistorySearchDrawHighlightsMatchAndSearchTitle(t *testing.T) {
 	if !foundF2Hint {
 		t.Fatal("F2 search-mode hint was not drawn on the bottom border")
 	}
+}
+
+func TestHistorySearchLockColumnAndDetailsAreCapabilityGated(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 10)
+	vtui.FrameManager.Init(scr)
+	menu := vtui.NewVMenu("History")
+	menu.SetPosition(2, 2, 30, 7)
+	search := newHistorySearch(menu, []HistoryRecord{{Name: "entry"}}, "")
+	defer search.cleanup()
+
+	insert := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_INSERT}
+	if search.processKey(insert) || search.all[0].Lock {
+		t.Fatal("unsupported history accepted Insert locking")
+	}
+	f3 := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3}
+	if search.processKey(f3) {
+		t.Fatal("unsupported history intercepted F3 details")
+	}
+
+	search.supportsLocks = true
+	if !search.processKey(insert) || !search.all[0].Lock {
+		t.Fatal("lock-capable history did not toggle Insert locking")
+	}
+	menu.Show(scr)
+	search.draw(scr)
+	if got := rune(scr.GetCell(menu.X1+1, menu.Y1+1).Char); got != '*' {
+		t.Fatalf("lock marker = %q, want *", got)
+	}
+	if got := rune(scr.GetCell(menu.X1+2, menu.Y1+1).Char); got != 'e' {
+		t.Fatalf("text after lock marker = %q, want e with no spacer", got)
+	}
+	search.showDetails = true
+	if !search.processKey(f3) {
+		t.Fatal("details-capable history did not consume F3")
+	}
+}
+
+func TestHistorySearchResolvesDialogThemeAtRenderTime(t *testing.T) {
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(50, 12)
+	vtui.FrameManager.Init(scr)
+	indices := []int{
+		vtui.ColDialogText, vtui.ColDialogSelectedButton, vtui.ColDialogHighlightText,
+		vtui.ColDialogHighlightSelectedButton, vtui.ColDialogBox, vtui.ColDialogBoxTitle,
+		vtui.ColDialogHighlightBoxTitle,
+	}
+	old := make(map[int]uint64, len(indices))
+	for _, idx := range indices {
+		old[idx] = vtui.Palette[idx]
+	}
+	t.Cleanup(func() {
+		for idx, value := range old {
+			vtui.Palette[idx] = value
+		}
+	})
+
+	menu := vtui.NewVMenu("History")
+	search := newHistorySearch(menu, []HistoryRecord{
+		{Name: "newest", Lock: true}, {Name: "middle"}, {Name: "older"}, {Name: "oldest"},
+	}, "")
+	defer search.cleanup()
+	search.supportsLocks = true
+	menu.SetPosition(2, 2, 30, 5)
+	menu.SetSelectPos(len(menu.Items) - 1)
+
+	assertTheme := func(selected, box uint64) {
+		t.Helper()
+		menu.Show(scr)
+		search.draw(scr)
+		y := menu.Y1 + 1 + (menu.SelectPos - menu.TopPos)
+		if got := rune(scr.GetCell(menu.X1+1, y).Char); got != '*' {
+			t.Fatalf("selected lock marker = %q, want * at the first inner cell", got)
+		}
+		if got := scr.GetCell(menu.X1+2, y).Attributes; got != selected {
+			t.Fatalf("selected row attr = %#x, want %#x", got, selected)
+		}
+		if got := scr.GetCell(menu.X1+1, y).Attributes; got != selected {
+			t.Fatalf("lock attr = %#x, want selected-row attr %#x", got, selected)
+		}
+		if got := scr.GetCell(menu.X1, menu.Y1).Attributes; got != box {
+			t.Fatalf("border attr = %#x, want %#x", got, box)
+		}
+		if got := scr.GetCell(menu.X2, menu.Y1+1).Attributes; got != box {
+			t.Fatalf("scrollbar attr = %#x, want %#x", got, box)
+		}
+	}
+
+	vtui.Palette[vtui.ColDialogSelectedButton] = 0x101
+	vtui.Palette[vtui.ColDialogHighlightText] = 0x102
+	vtui.Palette[vtui.ColDialogBox] = 0x103
+	assertTheme(0x101, 0x103)
+
+	// Change the palette after constructing both controls. No color may have
+	// been cached in historySearch or VMenu state.
+	vtui.Palette[vtui.ColDialogSelectedButton] = 0x201
+	vtui.Palette[vtui.ColDialogHighlightText] = 0x202
+	vtui.Palette[vtui.ColDialogBox] = 0x203
+	assertTheme(0x201, 0x203)
 }
 
 func TestHistorySearchResizesWithFilteredItemCount(t *testing.T) {

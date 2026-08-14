@@ -26,19 +26,21 @@ var pluginInitTimeout = 15 * time.Second
 // Everything a transport does once it has a pair of byte streams lives here,
 // so adding a transport is a matter of producing those streams and nothing
 // else.
-func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridge *ffibridge.Bridge, onServeExit func(error)) error {
+func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridge *ffibridge.Bridge, onServeExit func(error)) (vfs.Registration, error) {
+	registrations := &pluginSessionRegistrations{}
 	for method, handler := range newHostMethods(api, sess, name, bridge) {
 		sess.Register(method, handler)
 	}
 
 	go func() {
 		err := sess.Serve()
+		registrations.Unregister()
 		if onServeExit != nil {
 			onServeExit(err)
 		}
 	}()
 
-	var res struct{ Drives []string }
+	var res PluginInitResponse
 	done := make(chan error, 1)
 	go func() {
 		done <- sess.Call("Plugin.Init", nil, &res)
@@ -47,19 +49,25 @@ func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridg
 	select {
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("Plugin.Init failed: %w", err)
+			registrations.Unregister()
+			return nil, fmt.Errorf("Plugin.Init failed: %w", err)
 		}
 	case <-time.After(pluginInitTimeout):
-		return fmt.Errorf("Plugin.Init timed out after %s", pluginInitTimeout)
+		registrations.Unregister()
+		return nil, fmt.Errorf("Plugin.Init timed out after %s", pluginInitTimeout)
 	}
 
+	if err := registerRPCPluginCommands(api, sess, name, res.Commands, registrations); err != nil {
+		registrations.Unregister()
+		return nil, err
+	}
 	for _, drive := range res.Drives {
 		driveName := drive // closure capture
 		api.RegisterDrive(driveName, func() vfs.VFS {
 			return NewRPCVFS(sess, driveName)
 		})
 	}
-	return nil
+	return registrations, nil
 }
 
 // PluginTransport is the one call shape every plugin transport implements.

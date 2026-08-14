@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/vtui"
 	"github.com/unxed/zip"
 )
@@ -33,7 +34,7 @@ func DownloadColorerSchemas(pf *PanelsFrame, onComplete func(success bool)) {
 		}
 		req.Header.Set("User-Agent", "f4-colorer-downloader")
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := netproxy.HTTPClient(0).Do(req)
 		if err != nil {
 			return err
 		}

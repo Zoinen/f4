@@ -13,6 +13,17 @@ type SolarisStreamsAPI interface {
 	// IoctlPush выполняет команду I_PUSH для добавления STREAMS модуля в стек дескриптора
 	IoctlPush(f *os.File, module string) error
 
+	// GrantPt передаёт узел подчинённого устройства во владение вызывающему
+	// пользователю (аналог grantpt(3C)). До этого вызова /dev/pts/N
+	// принадлежит root:sys с правами 0620, и открыть его непривилегированный
+	// процесс не может.
+	GrantPt(master *os.File) error
+
+	// UnlockPt снимает блокировку с пары master/subsidiary (аналог
+	// unlockpt(3C)). Открытие мастера выставляет PTLOCK, и до его снятия
+	// ptsopen() отказывает.
+	UnlockPt(master *os.File) error
+
 	// GetPtsName вычисляет имя подчиненного (slave) терминала по дескриптору мастера
 	GetPtsName(master *os.File) (string, error)
 

@@ -61,6 +61,33 @@ func OpenGrabber() {
 	vtui.FrameManager.Redraw()
 }
 
+// actionScreenGrab is the context-aware App.ScreenGrab handler. Invoking the
+// action again while the grabber owns the screen has the same toggle semantics
+// as its native Alt+Ins key instead of stacking a second snapshot frame.
+func actionScreenGrab() bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	if grabber, ok := vtui.FrameManager.GetTopFrame().(*GrabberFrame); ok {
+		return grabber.ProcessKey(ParseFarKey("AltIns"))
+	}
+	OpenGrabber()
+	return true
+}
+
+// VetoActionKey leaves physical Alt+Ins to GrabberFrame.ProcessKey. MacroManager
+// otherwise resolves the Common App.ScreenGrab action before a focused frame's
+// normal key handler gets a chance to close the grabber.
+func (g *GrabberFrame) VetoActionKey(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown || e.VirtualKeyCode != vtinput.VK_INSERT {
+		return false
+	}
+	ctrl := e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	alt := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
+	shift := e.ControlKeyState&vtinput.ShiftPressed != 0
+	return alt && !ctrl && !shift
+}
+
 // rect returns the normalized selection rectangle in snapshot
 // coordinates: left ≤ right, top ≤ bottom, inclusive on both sides.
 func (g *GrabberFrame) rect() (l, r, t, b int) {

@@ -13,11 +13,30 @@ import (
 )
 
 type ID3EditorPlugin struct {
-	api vfs.HostAPI
+	api          vfs.HostAPI
+	registration vfs.Registration
 }
 
 func (p *ID3EditorPlugin) Init(api vfs.HostAPI) error {
 	p.api = api
+	if contributions, ok := api.(vfs.ContributionHost); ok {
+		registration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             "id3editor.edit",
+			Location:       vfs.PluginCommandPanel,
+			Label:          "ID3 Tag &Editor",
+			LabelKey:       "ID3Editor.Menu",
+			Description:    "Edit ID3 metadata of the selected MP3 file",
+			DescriptionKey: "ID3Editor.Command.Edit.Desc",
+			SearchKeys:     []string{"ID3Editor.Title", "ID3Editor.FieldTitle", "ID3Editor.FieldArtist"},
+			Run:            p.handleEdit,
+		})
+		if err != nil {
+			p.api = nil
+			return fmt.Errorf("ID3 editor: register command: %w", err)
+		}
+		p.registration = registration
+		return nil
+	}
 	api.RegisterPluginMenuItem(vtui.Msg("ID3Editor.Menu"), func(app vfs.App) {
 		p.handleEdit(app)
 	})
@@ -25,6 +44,11 @@ func (p *ID3EditorPlugin) Init(api vfs.HostAPI) error {
 }
 
 func (p *ID3EditorPlugin) Close() error {
+	if p.registration != nil {
+		p.registration.Unregister()
+		p.registration = nil
+	}
+	p.api = nil
 	return nil
 }
 

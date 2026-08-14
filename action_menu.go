@@ -58,14 +58,14 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 
 	// The area's own actions first (stable registry order).
 	for _, a := range GetOrderedActions() {
-		if a.MenuPath != "" && a.Area == area {
+		if a.MenuPath != "" && !a.HideFromMenu && a.Area == area {
 			appendAction(a)
 		}
 	}
 	// Common actions join only menu groups that already exist in the
 	// area, so they cannot create stray top-level menus.
 	for _, a := range GetOrderedActions() {
-		if a.MenuPath != "" && a.Area == "Common" && menus[a.MenuPath] != nil {
+		if a.MenuPath != "" && !a.HideFromMenu && a.Area == "Common" && menus[a.MenuPath] != nil {
 			appendAction(a)
 		}
 	}

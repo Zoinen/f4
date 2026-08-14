@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -27,6 +28,25 @@ type commandPrefixRegistration struct {
 	handler func(vfs.App, string)
 	active  bool
 	once    sync.Once
+}
+
+type commandPrefixSnapshotEntry struct {
+	id     string
+	prefix string
+}
+
+func commandPrefixSnapshot() []commandPrefixSnapshotEntry {
+	commandPrefixRegistry.RLock()
+	defer commandPrefixRegistry.RUnlock()
+	result := make([]commandPrefixSnapshotEntry, 0, len(commandPrefixRegistry.byID))
+	for id, registration := range commandPrefixRegistry.byID {
+		if registration == nil || !registration.active || registration.prefix == "" {
+			continue
+		}
+		result = append(result, commandPrefixSnapshotEntry{id: id, prefix: registration.prefix})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].id < result[j].id })
+	return result
 }
 
 func normalizeCommandPrefix(prefix string) (string, error) {

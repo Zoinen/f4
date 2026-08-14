@@ -390,10 +390,18 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 // goroutine or queued task starts can otherwise target same-named files in a
 // different directory.
 func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
+	// A wildcard in the last component is a rename mask, as in far2l: the
+	// files land in the directory before it, under names the mask generates.
+	// Taken literally it would instead create a file called "*.1".
+	mask := destMask(destInput)
+	if mask != "" {
+		destInput = destWithoutMask(destInput)
+	}
+
 	names = append([]string(nil), names...)
 	dstVfs, destPath := resolveFileOpDestinationAt(srcVfs, dstVfs, srcBasePath, destInput)
 
-	isTargetDir := len(names) > 1
+	isTargetDir := len(names) > 1 || mask != ""
 	if !isTargetDir {
 		if strings.HasSuffix(destInput, "/") || strings.HasSuffix(destInput, "\\") {
 			isTargetDir = true
@@ -609,7 +617,8 @@ func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 		// BulkCopier's legacy API is relative to mutable VFS state. Restrict it
 		// to foreground work, where the source panel cannot navigate underneath
 		// the operation; queued/background work uses captured absolute paths.
-		if mode == 2 && !isMove && !sameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) {
+		// Bulk copy keeps the source names, so it cannot serve a mask.
+		if mode == 2 && !isMove && mask == "" && !sameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) {
 			if bulkCopier, ok := srcVfs.(vfs.BulkCopier); ok {
 				err := bulkCopier.CopyBulk(ctx, names, dstVfs, destPath, wrapRep)
 				if err == nil {
@@ -632,6 +641,9 @@ func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 			targetItemPath := destPath
 			if isTargetDir {
 				targetName := transferItemName(srcVfs, srcPath, dstVfs, name)
+				if mask != "" {
+					targetName = applyFileMask(targetName, mask)
+				}
 				targetItemPath = dstVfs.Join(destPath, targetName)
 			}
 

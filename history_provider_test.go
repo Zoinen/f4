@@ -78,3 +78,36 @@ func TestAddFolderHistory(t *testing.T) {
 		t.Errorf("Expected history size to be capped at 100, got %d", len(h))
 	}
 }
+
+func TestLockedFolderAndCommandHistorySurviveLimits(t *testing.T) {
+	hp := &F4HistoryProvider{
+		path: filepath.Join(t.TempDir(), "history.json"),
+		data: make(map[string][]string),
+		rich: make(map[string][]HistoryRecord),
+	}
+	previous := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = hp
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = previous })
+
+	lockedPath := filepath.Join("/path", "locked")
+	saveFolderHistoryRecords(hp, []HistoryRecord{{Name: lockedPath, Lock: true}})
+	for i := 0; i < 110; i++ {
+		AddFolderHistory(filepath.Join("/path", strconv.Itoa(i)))
+	}
+	folders, _ := loadFolderHistoryRecords(hp)
+	found := false
+	for _, record := range folders {
+		if record.Name == lockedPath && record.Lock {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("locked folder was evicted by the history limit")
+	}
+
+	commands := []HistoryRecord{{Name: "newest"}, {Name: "pinned", Lock: true}, {Name: "old-1"}, {Name: "old-2"}}
+	commands = limitRichHistory(commands, 2)
+	if len(commands) != 2 || commands[0].Name != "newest" || commands[1].Name != "pinned" || !commands[1].Lock {
+		t.Fatalf("limited command history = %#v", commands)
+	}
+}

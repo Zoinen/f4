@@ -1057,8 +1057,16 @@ func menuSize(pf *PanelsFrame, itemCount int, items []UserMenuItem, hasSubmenus 
 // from a single menu item and dispatches the result through the command
 // line as if the user had typed it and pressed Enter.
 func executeMenuCommands(pf *PanelsFrame, commands []string) {
+	executeMenuCommandsWithResult(pf, commands)
+}
+
+// executeMenuCommandsWithResult is the command-palette variant of
+// executeMenuCommands. It reports whether at least one expanded command was
+// actually handed to the command line, so MRU does not record cancelled or
+// comment-only menu entries.
+func executeMenuCommandsWithResult(pf *PanelsFrame, commands []string) bool {
 	if len(commands) == 0 || pf.cmdLine == nil {
-		return
+		return false
 	}
 
 	active := snapshotPanel(pf, pf.activeIdx)
@@ -1081,14 +1089,14 @@ func executeMenuCommands(pf *PanelsFrame, commands []string) {
 
 		res := SubstFileName(t, ctx)
 		if res.Cancelled {
-			return
+			return false
 		}
 		if res.Command != "" {
 			lines = append(lines, res.Command)
 		}
 	}
 	if len(lines) == 0 {
-		return
+		return false
 	}
 
 	// Join so multiple commands run sequentially in one shell.
@@ -1105,6 +1113,7 @@ func executeMenuCommands(pf *PanelsFrame, commands []string) {
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_RETURN,
 	})
+	return true
 }
 
 func isMenuComment(line string) bool {

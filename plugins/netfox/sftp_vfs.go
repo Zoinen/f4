@@ -19,6 +19,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/text/encoding"
 
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -90,9 +91,9 @@ func (v *SFTPVFS) encodePath(p string) string {
 	return p
 }
 
-func NewSFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, cp string) (*SFTPVFS, error) {
+func NewSFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, cp string, px netproxy.Settings) (*SFTPVFS, error) {
 	vtui.DebugLog("NET: Initiating SFTP connection to %s:%s (user: %s)", host, port, user)
-	sshClient, err := DialSSH(host, port, user, pass, timeout)
+	sshClient, err := DialSSH(host, port, user, pass, timeout, px)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +140,7 @@ func (v *SFTPVFS) EncodeCommandListANSI(text []byte) ([]byte, error) {
 }
 
 func (v *SFTPVFS) GetTitle() string { return v.title }
+func (v *SFTPVFS) SessionKey() any  { return v.client }
 
 func (v *SFTPVFS) IsAtRoot() bool {
 	p := v.GetPath()
@@ -339,7 +341,11 @@ func (v *SFTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSIt
 }
 
 func (v *SFTPVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true}
+	// HasWrite: the panels have been copying files onto SFTP hosts through
+	// Create for as long as this backend has existed, and a FUSE mount
+	// commits a file through exactly that call. Writable SFTP mounts are
+	// the reason the whole feature was worth building.
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true, HasWrite: true}
 }
 func (v *SFTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 
@@ -701,7 +707,7 @@ func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 			timeout = t
 		}
 	}
-	return NewSFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Codepage)
+	return NewSFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Codepage, cfg.Proxy())
 }
 
 type sftpProtocolHandler struct{}
@@ -728,4 +734,33 @@ func (w *sftpFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int,
 }
 func (w *sftpFileWrapper) Read(ctx context.Context, p []byte) (int, error) {
 	return w.File.Read(p)
+}
+
+// Readlink and Symlink make SFTPVFS a vfs.SymlinkVFS. The protocol has both
+// operations, so a mounted host behaves like the file system it is rather
+// than like a listing of one: tar -x can extract into it, and ls -l shows
+// what a link points at instead of a file that happens to be short.
+
+func (v *SFTPVFS) Readlink(ctx context.Context, p string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return v.client.ReadLink(v.encodePath(p))
+}
+
+func (v *SFTPVFS) Symlink(ctx context.Context, target, linkPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return v.client.Symlink(target, v.encodePath(linkPath))
+}
+
+// OpenWriteAt makes SFTPVFS a vfs.RandomWriteVFS. This is the backend the
+// interface was written for: a remote file is exactly where re-uploading
+// everything to change ten bytes hurts.
+func (v *SFTPVFS) OpenWriteAt(ctx context.Context, p string) (vfs.WriterAtCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return v.client.OpenFile(v.encodePath(p), os.O_RDWR|os.O_CREATE)
 }

@@ -36,7 +36,7 @@ func RunSudoAskpass() {
 	// Retry connection a few times in case of race during startup
 	var conn net.Conn
 	var err error
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 50; i++ {
 		conn, err = net.Dial("unix", sockPath)
 		if err == nil {
 			break
@@ -68,8 +68,10 @@ func RunSudoAskpass() {
 }
 
 func (c *SudoClient) runAskpassServer(path string) {
+	os.Remove(path)
 	l, err := net.Listen("unix", path)
 	if err != nil {
+		vtui.DebugLog("SUDO_CLIENT: runAskpassServer Listen failed for %q: %v", path, err)
 		return
 	}
 	defer l.Close()

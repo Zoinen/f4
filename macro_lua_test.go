@@ -560,3 +560,18 @@ func TestMacro_Remove(t *testing.T) {
 		t.Error("Expected second Remove to return false")
 	}
 }
+
+func TestMacroExplicitRunReportsBusy(t *testing.T) {
+	engine := newTestMacroEngine(t, newFakeMacroHost(), `
+		Macro { area = "Shell"; key = "CtrlX"; description = "Busy test";
+			action = function() end }
+	`)
+	engine.running.Store(true)
+	defer engine.running.Store(false)
+	if engine.Run("Shell", "CtrlX") {
+		t.Fatal("Run reported success while the macro engine was busy")
+	}
+	if engine.RunExact("Shell", "CtrlX") {
+		t.Fatal("RunExact reported success while the macro engine was busy")
+	}
+}

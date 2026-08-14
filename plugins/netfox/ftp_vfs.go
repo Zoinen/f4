@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jlaffaye/ftp"
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -56,7 +57,7 @@ func (v *FTPVFS) encodePath(p string) string {
 	return p
 }
 
-func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, options map[string]string, cp string) (*FTPVFS, error) {
+func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, options map[string]string, cp string, px netproxy.Settings) (*FTPVFS, error) {
 	addr := host + ":" + port
 
 	timeoutDur := time.Duration(timeout) * time.Second
@@ -67,7 +68,12 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 	dialOpts := []ftp.DialOption{
 		ftp.DialWithTimeout(timeoutDur),
 		ftp.DialWithDialFunc(func(network, address string) (net.Conn, error) {
-			conn, err := net.DialTimeout(network, address, timeoutDur)
+			// Both the control connection and every passive data
+			// connection come through here, so a proxied site stays
+			// proxied for its transfers too.
+			ctx, cancel := context.WithTimeout(context.Background(), timeoutDur)
+			defer cancel()
+			conn, err := px.DialContext(ctx, network, address)
 			if err != nil {
 				return nil, err
 			}
@@ -112,6 +118,7 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 }
 
 func (v *FTPVFS) GetTitle() string { return v.title }
+func (v *FTPVFS) SessionKey() any  { return v.conn }
 
 func (v *FTPVFS) IsAtRoot() bool      { return v.cwd == "/" || v.cwd == "" || v.cwd == "." }
 func (v *FTPVFS) GetPath() string     { return v.cwd }
@@ -323,7 +330,7 @@ func (p *ftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs
 			timeout = t
 		}
 	}
-	return NewFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Options, cfg.Codepage)
+	return NewFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Options, cfg.Codepage, cfg.Proxy())
 }
 
 type ftpProtocolHandler struct{}

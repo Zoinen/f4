@@ -10,6 +10,7 @@ import (
 	"runtime/pprof"
 	"strings"
 
+	"github.com/unxed/f4/fusefs"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -33,6 +34,20 @@ func main() {
 		return
 	}
 
+	// --mount, --umount and --list-mounts are answered here and nowhere
+	// else: they are a command, not a way to start the file manager. RunCLI
+	// reports handled=false for every argument vector that says nothing
+	// about mounting, so normal startup carries on untouched.
+	//
+	// The built-in plugins are loaded first, because they are what registers
+	// the VFS providers: without them the registry is empty, an archive
+	// resolves to a plain file and sftp:// resolves to a directory called
+	// "sftp:". Nothing else of the UI is started — a mount command must not
+	// build panels it will never draw.
+	if code, handled := runMountCLI(); handled {
+		os.Exit(code)
+	}
+
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		if arg == "--sudo-dispatcher" {
@@ -53,6 +68,7 @@ func main() {
 	// Setup crash/stderr location before any logging starts; in portable mode
 	// this keeps crash reports inside <configDir>\crashes (Profile\crashes).
 	vtui.CrashDirFull = filepath.Join(GetF4ConfigDir(), "crashes")
+	installHangDumpHandler()
 
 	vtui.SetupStderrLog()
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
@@ -90,6 +106,7 @@ func main() {
 	var guiBackend string
 	var ttyMode bool
 	var version bool
+	var print_help bool
 	var attachedMode bool
 
 	exeName := filepath.Base(absExecPath)
@@ -109,6 +126,8 @@ func main() {
 		}
 
 		switch flagName {
+		case "-h", "--help":
+			print_help = true
 		case "-v", "--version":
 			version = true
 		case "--debug":
@@ -188,6 +207,36 @@ func main() {
 		fmt.Println(getFormattedVersionInfo())
 		return
 	}
+	if print_help {
+		fmt.Printf(`f4 version: %s
+f4 is efficient and cozy two-panel file manager in go
+Usage: f4 [switches]
+The following switches may be used in the command line:
+ -h or --help               This help and exit
+ -v or --version            Displays the current version and exit
+ --debug                    Debug mode (equivalent --log=1)
+ --gui [Backend]            Force run in GUI-mode,
+                            (Backend may be: gogpu or ebiten or x11 or wayland,
+                            if Backend omited, f4 try to use the most suitable)
+ --log [logtype]
+ --server [serverPath]
+ --client [clientPath]
+ --input [InputMode]
+ --cpuprofile [cpuprofile]
+ --new-plugin [pluginName]
+ -test-plugins              Plugin test mode
+ --tty                      Force run in TTY-mode
+ --attached                 Force run in Attached-mode
+
+Details see in build-in help (F1 inside f4)
+and in project home: https://github.com/unxed/f4
+
+If you want to report a problem with the program, please create bugreport
+at https://github.com/unxed/f4/issues
+`,
+			getFormattedVersionInfo())
+		return
+	}
 
 	for _, arg := range os.Args {
 		if arg == "--askpass" {
@@ -201,7 +250,7 @@ func main() {
 		return
 	}
 	if clientPath != "" {
-		runClient(clientPath)
+		runClient(clientPath, 0)
 		return
 	}
 	if cpuprofile != "" {
@@ -338,6 +387,9 @@ func SetupUI() {
 
 	SetDefaultF4Palette()
 	LoadConfig()
+	applyWheelSettings()
+	vtui.PathHintProvider = pathHintProvider
+	applyPathHintSettings()
 	ctrlTabMode := vtui.WorkspaceCtrlTabDirect
 	if AppConfig.CtrlTabShowsMenu {
 		ctrlTabMode = vtui.WorkspaceCtrlTabMenu
@@ -408,7 +460,9 @@ func SetupUI() {
 
 	panels := NewPanelsFrame()
 	panels.ResizeConsole(width, height)
-	states := LastWorkspaceSessions
+	states, activeWorkspace := workspaceSessionsForRestore(
+		LastWorkspaceSessions, LastActiveWorkspace, AppConfig.RestoreWorkspaceTabs,
+	)
 	if len(states) == 0 && AppConfig.SavePanelPaths {
 		states = []workspaceSessionState{legacyWorkspaceSession()}
 	}
@@ -416,24 +470,28 @@ func SetupUI() {
 		applyWorkspaceSession(panels, states[0], width, height, AppConfig.SavePanelPaths)
 	}
 	vtui.FrameManager.Push(panels)
-	if len(LastWorkspaceSessions) > 1 {
+	if len(states) > 1 {
 		// AddScreenBackground inserts immediately after the active workspace;
 		// restore from right to left to preserve the saved tab order.
-		for i := len(LastWorkspaceSessions) - 1; i >= 1; i-- {
-			state := LastWorkspaceSessions[i]
+		for i := len(states) - 1; i >= 1; i-- {
+			state := states[i]
 			extra := NewPanelsFrame()
 			applyWorkspaceSession(extra, state, width, height, AppConfig.SavePanelPaths)
 			vtui.FrameManager.AddScreenBackground(extra)
 		}
 	}
-	if len(LastWorkspaceSessions) > 0 {
-		numbers := make([]int, len(LastWorkspaceSessions))
-		for i, state := range LastWorkspaceSessions {
-			numbers[i] = state.Number
+	if len(states) > 0 {
+		if AppConfig.WorkspaceTabNumbering == WorkspaceTabNumbersAlways {
+			numbers := make([]int, len(states))
+			for i, state := range states {
+				numbers[i] = state.Number
+			}
+			vtui.FrameManager.RestoreScreenNumbers(numbers)
+		} else {
+			renumberWorkspaceScreens()
 		}
-		vtui.FrameManager.RestoreScreenNumbers(numbers)
-		if LastActiveWorkspace > 0 && LastActiveWorkspace < len(vtui.FrameManager.Screens) {
-			vtui.FrameManager.SwitchScreen(LastActiveWorkspace)
+		if activeWorkspace > 0 && activeWorkspace < len(vtui.FrameManager.Screens) {
+			vtui.FrameManager.SwitchScreen(activeWorkspace)
 		}
 	}
 	previousEventFilter := vtui.FrameManager.EventFilter
@@ -450,6 +508,9 @@ func SetupUI() {
 	vtui.FrameManager.MenuBar = panels.menuBar
 	vtui.FrameManager.KeyBar = panels.keyBar
 	vtui.FrameManager.OnRender = func(scr *vtui.ScreenBuf) {
+		if AppConfig.WorkspaceTabNumbering == WorkspaceTabNumbersOrder {
+			renumberWorkspaceScreens()
+		}
 		UpdateWindowTitle(scr)
 		renderHelpSearch(scr)
 	}
@@ -480,6 +541,7 @@ func LoadSession() {
 	ini := LoadIni(path)
 
 	LastEditorSearch = ini.GetString("EditorSearch", "Pattern", "")
+	LastEditorReplace = ini.GetString("EditorSearch", "Replace", "")
 	LastEditorSearchCase = ini.GetString("EditorSearch", "CaseSensitive", "0") == "1"
 	LastEditorSearchReverse = ini.GetString("EditorSearch", "Reverse", "0") == "1"
 	LastEditorSearchRegexp = ini.GetString("EditorSearch", "Regexp", "0") == "1"
@@ -556,6 +618,7 @@ func SaveSession() {
 	var sb strings.Builder
 	sb.WriteString("[EditorSearch]\n")
 	sb.WriteString(fmt.Sprintf("Pattern = %s\n", LastEditorSearch))
+	sb.WriteString(fmt.Sprintf("Replace = %s\n", LastEditorReplace))
 	sb.WriteString(fmt.Sprintf("CaseSensitive = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchCase]))
 	sb.WriteString(fmt.Sprintf("Reverse = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchReverse]))
 	sb.WriteString(fmt.Sprintf("Regexp = %d\n", map[bool]int{true: 1, false: 0}[LastEditorSearchRegexp]))
@@ -705,4 +768,16 @@ func isHexSequence(s []rune) bool {
 
 func isHexChar(r rune) bool {
 	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')
+}
+
+// runMountCLI answers the mount command line, with the VFS providers loaded
+// and nothing else. It is separate from InitCore because a command needs the
+// providers and none of the terminal, the session or the panels.
+func runMountCLI() (int, bool) {
+	if cmd, _, _ := fusefs.ParseArgs(os.Args); cmd == fusefs.CmdNone {
+		return 0, false
+	}
+	GlobalPluginManager = NewPluginManager()
+	GlobalPluginManager.LoadInternal()
+	return fusefs.RunCLI(os.Args)
 }

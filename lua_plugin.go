@@ -21,10 +21,11 @@ import (
 // is distribution, since the user no longer needs a system Lua and a
 // MessagePack rock for a plugin to run at all.
 type LuaPlugin struct {
-	path    string
-	runtime *luaplug.Runtime
-	bridge  *ffibridge.Bridge
-	host    map[string]f4rpc.Handler
+	path          string
+	runtime       *luaplug.Runtime
+	bridge        *ffibridge.Bridge
+	host          map[string]f4rpc.Handler
+	registrations *pluginSessionRegistrations
 	// identity is who this plugin is to the permission model, taken from
 	// the manifest when it came from the catalog.
 	identity PluginIdentity
@@ -134,6 +135,7 @@ func (p *LuaPlugin) Init(api vfs.HostAPI) error {
 
 	// The host methods must exist before the script body runs: a plugin is
 	// free to log or ask for its version while it is still loading.
+	p.registrations = &pluginSessionRegistrations{}
 	p.host = newHostMethods(api, p, p.path, p.bridge)
 
 	if err := runtime.LoadFile(p.path); err != nil {
@@ -141,10 +143,14 @@ func (p *LuaPlugin) Init(api vfs.HostAPI) error {
 		return fmt.Errorf("loading %s: %w", p.path, err)
 	}
 
-	var res struct{ Drives []string }
+	var res PluginInitResponse
 	if err := p.Call("Plugin.Init", nil, &res); err != nil {
 		p.Close()
 		return fmt.Errorf("Plugin.Init failed: %w", err)
+	}
+	if err := registerRPCPluginCommands(api, p, p.path, res.Commands, p.registrations); err != nil {
+		p.Close()
+		return err
 	}
 
 	for _, drive := range res.Drives {
@@ -229,6 +235,10 @@ func decodePluginValue(value any, result any) error {
 }
 
 func (p *LuaPlugin) Close() error {
+	if p.registrations != nil {
+		p.registrations.Unregister()
+		p.registrations = nil
+	}
 	if p.runtime != nil {
 		_ = p.runtime.Close()
 	}

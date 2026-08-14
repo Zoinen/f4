@@ -2,6 +2,7 @@ package netfox
 
 import (
 	"bytes"
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
 	"net"
 	"os"
@@ -88,7 +89,7 @@ func TestNetFox_TimeoutAndDial(t *testing.T) {
 
 	// 2. Attempt to connect using FTPVFS with a very short 1-second timeout
 	start := time.Now()
-	_, err = NewFTPVFS(nil, host, port, "user", "pass", 1, nil, "")
+	_, err = NewFTPVFS(nil, host, port, "user", "pass", 1, nil, "", netproxy.Settings{})
 	duration := time.Since(start)
 
 	if err == nil {

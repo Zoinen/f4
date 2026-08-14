@@ -422,8 +422,9 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 const maxDirCache = 50
 
 type dirCacheEntry struct {
-	items []vfs.VFSItem
-	time  time.Time
+	items       []vfs.VFSItem
+	time        time.Time
+	showUpEntry bool
 }
 
 // dirCacheKey qualifies a path with the filesystem it belongs to. Remote
@@ -474,26 +475,29 @@ type FileSystemPanel struct {
 	galleryDensities      map[GalleryLayoutMode]int
 	galleryLayoutRevision int64
 
-	loadCtx                   context.Context
-	cancelLoad                context.CancelFunc
-	isLoading                 bool
-	loadingTimer              *time.Timer
-	loadingFrame              int
-	loadingGeneration         uint64
-	loadQueueMu               sync.Mutex
-	loadWorkerActive          bool
-	pendingDirectoryLoad      func()
-	providerOpenTask          *vtui.TaskContext
-	directoryErrorDialog      *vtui.Window
-	providerOpenTarget        string
-	providerOpenSourceSelect  string
-	providerOpenResult        func(bool) bool
-	pendingSelection          string
-	providerEntryName         string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	suppressFolderHistoryPath string // one-shot: history/menu navigation must not reorder MRU
-	fastFindMode              bool
-	fastFindStr               string
-	showInactiveCursor        bool
+	loadCtx                    context.Context
+	cancelLoad                 context.CancelFunc
+	isLoading                  bool
+	loadingTimer               *time.Timer
+	loadingFrame               int
+	loadingGeneration          uint64
+	loadQueueMu                sync.Mutex
+	loadWorkerActive           bool
+	pendingDirectoryLoad       func()
+	providerOpenTask           *vtui.TaskContext
+	directoryErrorDialog       *vtui.Window
+	providerOpenTarget         string
+	providerOpenSourceSelect   string
+	providerOpenResult         func(bool) bool
+	pendingSelection           string
+	providerEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
+	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
+	fastFindMode               bool
+	fastFindStr                string
+	fastFindMatcherKey         string
+	fastFindMatchers           []*vtui.FuzzyMatcher
+	showInactiveCursor         bool
 
 	sortMode    SortMode
 	sortReverse bool
@@ -617,14 +621,15 @@ func (fp *FileSystemPanel) cacheKey(path string) dirCacheKey {
 }
 
 func (fp *FileSystemPanel) saveToCache(path string, items []vfs.VFSItem) {
-	fp.saveToCacheKey(fp.cacheKey(path), items)
+	showUpEntry := fp.vfs != nil && (!fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil)
+	fp.saveToCacheKey(fp.cacheKey(path), items, showUpEntry)
 }
 
-func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem) {
+func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem, showUpEntry bool) {
 	if fp.dirCache == nil {
 		fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 	}
-	fp.dirCache[key] = dirCacheEntry{items: items, time: time.Now()}
+	fp.dirCache[key] = dirCacheEntry{items: items, time: time.Now(), showUpEntry: showUpEntry}
 
 	if len(fp.dirCache) > maxDirCache {
 		var oldestKey dirCacheKey
@@ -674,12 +679,7 @@ func (fp *FileSystemPanel) showCachedStandalonePath(target string) bool {
 	}
 
 	fp.entries = nil
-	colon := strings.IndexByte(want, ':')
-	rest := want
-	if colon >= 0 {
-		rest = want[colon+1:]
-	}
-	if strings.Trim(rest, "/\\") != "" {
+	if cached.showUpEntry {
 		fp.entries = append(fp.entries, &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
 	}
 	for _, item := range cached.items {
@@ -1874,7 +1874,8 @@ func (fp *FileSystemPanel) openVFSAsync(
 	fp.providerOpenSourceSelect = sourceSelection
 	fp.isLoading = true
 	fp.startLoadingAnimation()
-	if !fp.showCachedStandalonePath(persistentTarget) {
+	cachedPreview := fp.showCachedStandalonePath(persistentTarget)
+	if !cachedPreview {
 		// Keep the source rows as a stable placeholder when this destination has
 		// never been visited. Input is guarded until the provider switch, so they
 		// cannot dispatch operations against the wrong VFS.
@@ -1914,7 +1915,7 @@ func (fp *FileSystemPanel) openVFSAsync(
 				fp.isLoading = false
 				fp.updateTitle(err)
 				fp.pendingSelection = sourceSelection
-				fp.suppressFolderHistoryPath = sourcePath
+				fp.suppressNextFolderHistory(sourcePath)
 				// Restore the source listing before a history callback starts the
 				// next asynchronous mount.  The next mount will cancel this load;
 				// without it, an exhausted history walk would leave the panel in
@@ -1964,6 +1965,31 @@ func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
 	return fp.vfs.SetPath(target)
 }
 
+func (fp *FileSystemPanel) suppressNextFolderHistory(path string) {
+	fp.suppressFolderHistoryToken++
+	fp.suppressFolderHistoryPath = path
+}
+
+func (fp *FileSystemPanel) clearFolderHistorySuppression() {
+	fp.suppressFolderHistoryToken++
+	fp.suppressFolderHistoryPath = ""
+}
+
+func (fp *FileSystemPanel) folderHistorySuppression(path string) (uint64, bool) {
+	if !sameFolderHistoryPath(path, fp.suppressFolderHistoryPath) {
+		return 0, false
+	}
+	return fp.suppressFolderHistoryToken, true
+}
+
+func (fp *FileSystemPanel) consumeFolderHistorySuppression(path string, token uint64) bool {
+	if token == 0 || token != fp.suppressFolderHistoryToken || !sameFolderHistoryPath(path, fp.suppressFolderHistoryPath) {
+		return false
+	}
+	fp.suppressFolderHistoryPath = ""
+	return true
+}
+
 // showDirectoryError keeps asynchronous refresh failures from stacking modal
 // dialogs. A failed recovery may schedule another read before the user closes
 // the first message; only the first live dialog should remain actionable.
@@ -2008,6 +2034,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 	loadVFS := fp.vfs
 	path := loadVFS.GetPath()
+	suppressionToken, hasFolderHistorySuppression := fp.folderHistorySuppression(path)
 	cacheKey := directoryCacheKey(loadVFS, path)
 	loadAtRoot := loadVFS.IsAtRoot()
 	showUpEntry := !loadAtRoot || loadVFS.ParentVFS() != nil
@@ -2021,7 +2048,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	// name — e.g. .claude selected in ~/f4 would come back
 	// pre-selected in ~/scc or ~. Same rule far/far2l use:
 	// selection is per-directory.
-	if fp.lastLoadedPath != "" && fp.lastLoadedPath != path {
+	directoryChanged := fp.lastLoadedPath != "" && !sameFolderHistoryPath(fp.lastLoadedPath, path)
+	suppressFolderHistory := hasFolderHistorySuppression && fp.consumeFolderHistorySuppression(path, suppressionToken)
+	if directoryChanged {
 		for k := range fp.selectedItems {
 			delete(fp.selectedItems, k)
 		}
@@ -2029,6 +2058,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		fp.selectionEpoch = make(map[string]uint64)
 	}
 	fp.lastLoadedPath = path
+	if directoryChanged && !suppressFolderHistory {
+		// Record accepted navigation in UI order, not in backend completion
+		// order. Otherwise an older slow cloud ReadDir can finish after a newer
+		// visit and move its path to the front of the global MRU history.
+		AddFolderHistory(path)
+	}
 
 	if fp.pendingSelection == "" {
 		oldName := fp.getRawSelectedName()
@@ -2222,11 +2257,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 		vtui.FrameManager.PostTask(func() {
 			if ctx.Err() != nil || fp.loadCtx != ctx {
+				// This completion no longer owns the panel. Do not dereference the
+				// current VFS here: another navigation may already have closed it.
 				return
 			}
 
 			if err == nil {
-				fp.saveToCacheKey(cacheKey, accumulated)
+				fp.saveToCacheKey(cacheKey, accumulated, showUpEntry)
 			}
 
 			if hasCache && err == nil {
@@ -2367,8 +2404,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			fp.stopLoadingAnimation()
-			suppressFolderHistory := sameFolderHistoryPath(path, fp.suppressFolderHistoryPath)
-			fp.suppressFolderHistoryPath = ""
 
 			fp.lastDirMTime = dirStat.MTime
 			fp.isLoading = false
@@ -2429,11 +2464,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if fp.pendingSelection != "" {
 				fp.SelectName(fp.pendingSelection)
 				fp.pendingSelection = ""
-			} else if err == nil && !isFirstChunk && !suppressFolderHistory {
-				// Path changed successfully, record in history
-				AddFolderHistory(path)
 			}
-
 			fp.Refresh()
 			vtui.FrameManager.Redraw()
 		})
@@ -2462,6 +2493,21 @@ func (fp *FileSystemPanel) Refresh() {
 		fp.table.TopPos = maxTop
 		fp.SetCursorIndex(idx)
 	}
+}
+
+func (fp *FileSystemPanel) cursorSizeOnBottomBorder() string {
+	if AppConfig.ShowPanelFileInfo || (fp.viewMode != ViewModeBrief && fp.viewMode != ViewModeMedium) {
+		return ""
+	}
+	idx := fp.GetCursorIndex()
+	if idx < 0 || idx >= len(fp.entries) {
+		return ""
+	}
+	entry := fp.entries[idx]
+	if entry == nil || entry.IsDir || entry.Name == ".." {
+		return ""
+	}
+	return " " + formatIntWithSpaces(entry.Size) + " B "
 }
 
 func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
@@ -2582,16 +2628,43 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		totalStr = fmt.Sprintf(" "+Msg("Panel.SelectedInfo")+" ", formatIntWithSpaces(selSize), selFiles, selDirs)
 		attrTotal = vtui.Palette[ColPanelSelectedInfo]
 	} else if totCount > 0 {
-		totalStr = fmt.Sprintf(" %s (%d) ", formatSize(totSize), totCount)
+		totalStr = fmt.Sprintf(" %s (%d) ", formatIntWithSpaces(totSize), totCount)
 		attrTotal = vtui.Palette[ColPanelTotalInfo]
 	}
 
+	totalStart := fp.X2
 	if totalStr != "" {
 		totalW := runewidth.StringWidth(totalStr)
 		availBottom := fp.X2 - fp.X1 - 1
 		if totalW < availBottom {
+			totalStart = fp.X1 + 1 + (availBottom-totalW)/2
 			p := vtui.NewPainter(scr)
-			p.DrawString(fp.X1+1+(availBottom-totalW)/2, fp.Y2, totalStr, attrTotal)
+			p.DrawString(totalStart, fp.Y2, totalStr, attrTotal)
+		}
+	}
+
+	// The bottom frame now carries two numbers, so they must not read as one.
+	// The panel total keeps the centre and its own colour; the entry under
+	// the cursor is pinned to the left corner behind a ▸ marker. Both are in
+	// exact bytes, the way far2l and the Size column spell them, and so is
+	// the selected-files line. Directories say <DIR>/UP-DIR instead. When
+	// the far2l status line is switched on it already states all of this
+	// right above, so the marker steps aside.
+	if !AppConfig.ShowPanelFileInfo && fp.gridColumnCount() > 1 {
+		if idx := fp.GetCursorIndex(); idx >= 0 && idx < len(fp.entries) {
+			e := fp.entries[idx]
+			curStr := formatIntWithSpaces(e.Size)
+			if e.IsDir && !e.SizeCalculated {
+				curStr = "<DIR>"
+				if e.Name == ".." {
+					curStr = "UP-DIR"
+				}
+			}
+			curStr = " ▸ " + curStr + " "
+			if curW := runewidth.StringWidth(curStr); fp.X1+1+curW < totalStart {
+				p := vtui.NewPainter(scr)
+				p.DrawString(fp.X1+1, fp.Y2, curStr, vtui.Palette[ColPanelText])
+			}
 		}
 	}
 
@@ -2653,20 +2726,35 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 	if queryText == "" {
 		return 0, 0, anywhere
 	}
-	nameLower := strings.ToLower(name)
-	for _, query := range []string{
-		strings.ToLower(queryText),
-		strings.ToLower(vtui.GlobalXlator.TranscodeString(queryText)),
-	} {
-		if query == "" {
-			continue
-		}
-		byteOffset := strings.Index(nameLower, query)
-		if byteOffset >= 0 && (anywhere || byteOffset == 0) {
-			return len([]rune(nameLower[:byteOffset])), len([]rune(query)), true
+	// Matchers are cached per query text: the needle tables are built once
+	// per keystroke, not once per visible row per redraw.
+	if fp.fastFindMatcherKey != queryText {
+		fp.fastFindMatcherKey = queryText
+		fp.fastFindMatchers = fp.fastFindMatchers[:0]
+		for _, query := range []string{
+			queryText,
+			vtui.GlobalXlator.TranscodeString(queryText),
+		} {
+			if m := vtui.NewFuzzyMatcher(query, false); m != nil {
+				fp.fastFindMatchers = append(fp.fastFindMatchers, m)
+			}
 		}
 	}
-	return 0, 0, false
+	bestScore := -1
+	bestStart, bestEnd := 0, -1
+	for _, m := range fp.fastFindMatchers {
+		score, start, end, found := m.Match(name)
+		if !found || (!anywhere && start != 0) {
+			continue
+		}
+		if bestScore < 0 || score < bestScore || (score == bestScore && start < bestStart) {
+			bestScore, bestStart, bestEnd = score, start, end
+		}
+	}
+	if bestScore < 0 {
+		return 0, 0, false
+	}
+	return bestStart, bestEnd - bestStart + 1, true
 }
 
 func (fp *FileSystemPanel) fastFindHasMatches() bool {
@@ -2825,7 +2913,7 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			fp.stopLoadingAnimation()
 			fp.updateTitle(nil)
 			fp.pendingSelection = sourceSelection
-			fp.suppressFolderHistoryPath = sourcePath
+			fp.suppressNextFolderHistory(sourcePath)
 			fp.ReadDirectory()
 			vtui.FrameManager.Redraw()
 			return true
@@ -3216,9 +3304,12 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 	if e.WheelDirection != 0 {
 		// Determine direction: up is -1, down is 1
 		direction := 1
+		speed := AppConfig.WheelPanelDown
 		if e.WheelDirection > 0 {
 			direction = -1
+			speed = AppConfig.WheelPanelUp
 		}
+		step := direction * wheelScrollLines(speed)
 
 		H := fp.table.ViewHeight
 		if H <= 0 {
@@ -3228,7 +3319,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		if fp.gridColumnCount() == 1 {
 			// Detailed view (1-column)
 			idx := fp.GetCursorIndex()
-			newIdx := idx + direction
+			newIdx := idx + step
 			if newIdx < 0 {
 				newIdx = 0
 			}
@@ -3237,7 +3328,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			}
 
 			// Scroll the list if possible, keeping the cursor visually stable
-			newTop := fp.table.TopPos + direction
+			newTop := fp.table.TopPos + step
 			maxTop := len(fp.entries) - H
 			if maxTop < 0 {
 				maxTop = 0
@@ -3256,7 +3347,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		} else {
 			// Medium/Brief grid view.
 			idx := fp.GetCursorIndex()
-			newIdx := idx + direction
+			newIdx := idx + step
 			if newIdx < 0 {
 				newIdx = 0
 			}
@@ -3265,7 +3356,7 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			}
 
 			// Scroll the list if possible, keeping the cursor visually stable
-			newTop := fp.table.TopPos + direction
+			newTop := fp.table.TopPos + step
 			maxTop := len(fp.entries) - fp.gridColumnCount()*H
 			if maxTop < 0 {
 				maxTop = 0

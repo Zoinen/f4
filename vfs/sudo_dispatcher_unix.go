@@ -116,7 +116,7 @@ func handleSudoClient(conn *net.UnixConn) {
 
 		case CmdOpen:
 			fi, err := os.Stat(req.Path)
-			if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice) != 0) {
+			if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 				resp.Error = "cannot open special file"
 			} else {
 				f, err := os.OpenFile(req.Path, req.Flags, os.FileMode(req.Mode))

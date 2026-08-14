@@ -1,8 +1,9 @@
-//go:build !windows
+//go:build solaris || illumos
 
 package main
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -41,6 +42,7 @@ func TestSolarisPTY_PtyBackend_Lifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PTY.Close failed: %v", err)
 	}
+	runtime.KeepAlive(pty)
 }
 
 func TestSolarisPTY_IdleState_And_SetSize(t *testing.T) {

@@ -1,6 +1,9 @@
 package netfox
 
 import (
+	"context"
+
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/vtui"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -23,7 +26,7 @@ func sshTimeout(seconds int) time.Duration {
 // needs it: the agent first, then the usual private keys from ~/.ssh, then
 // the password. It is shared by the SFTP and the FISH+ backends so that a
 // site behaves identically whichever of them opens it.
-func DialSSH(host, port, user, pass string, timeout int) (*ssh.Client, error) {
+func DialSSH(host, port, user, pass string, timeout int, px netproxy.Settings) (*ssh.Client, error) {
 	auths := []ssh.AuthMethod{}
 	var agentClient agent.Agent
 	var agentConn net.Conn
@@ -60,7 +63,9 @@ func DialSSH(host, port, user, pass string, timeout int) (*ssh.Client, error) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         sshTimeout(timeout),
 	}
-	client, err := ssh.Dial("tcp", host+":"+port, config)
+	// ssh.Dial would open the socket itself; going through netproxy instead
+	// is what lets a site sit behind an HTTP CONNECT or SOCKS5 gateway.
+	client, err := dialSSHVia(px, host+":"+port, config)
 	if err != nil {
 		if agentConn != nil {
 			agentConn.Close()
@@ -76,4 +81,28 @@ func DialSSH(host, port, user, pass string, timeout int) (*ssh.Client, error) {
 		}
 	}
 	return client, nil
+}
+
+// dialSSHVia opens the transport through px and speaks SSH over it.
+func dialSSHVia(px netproxy.Settings, addr string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	ctx := context.Background()
+	if config.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, config.Timeout)
+		defer cancel()
+	}
+	conn, err := px.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if config.Timeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(config.Timeout))
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Time{})
+	return ssh.NewClient(c, chans, reqs), nil
 }

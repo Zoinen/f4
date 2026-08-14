@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/vtui"
 )
 
@@ -93,6 +94,36 @@ func (m PanelScrollbarMode) String() string {
 	}
 }
 
+type WorkspaceTabNumberingMode int
+
+const (
+	WorkspaceTabNumbersAlways WorkspaceTabNumberingMode = iota
+	WorkspaceTabNumbersSession
+	WorkspaceTabNumbersOrder
+)
+
+func (m WorkspaceTabNumberingMode) String() string {
+	switch m {
+	case WorkspaceTabNumbersSession:
+		return "session"
+	case WorkspaceTabNumbersOrder:
+		return "order"
+	default:
+		return "always"
+	}
+}
+
+func ParseWorkspaceTabNumberingMode(value string) WorkspaceTabNumberingMode {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "session":
+		return WorkspaceTabNumbersSession
+	case "order":
+		return WorkspaceTabNumbersOrder
+	default:
+		return WorkspaceTabNumbersAlways
+	}
+}
+
 func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "minimal":
@@ -113,6 +144,8 @@ type F4Config struct {
 	WorkspaceTabMode         int
 	CtrlTabShowsMenu         bool
 	AltNumberSwitchesTabs    bool
+	RestoreWorkspaceTabs     bool
+	WorkspaceTabNumbering    WorkspaceTabNumberingMode
 	ShowHiddenFiles          bool
 	ShowDirPrefix            bool
 	ShowHighlightMarks       bool
@@ -151,33 +184,60 @@ type F4Config struct {
 	EditorDefaultCodePage    int
 	ViewerAutodetectCodePage bool
 	ViewerDefaultCodePage    int
-	SlideShowDelay           int
-	ImageExternalTimeout     int
-	ImageDecoderPriority     string
-	RegisteredPlugins        []string
-	ConfirmCopy              bool
-	ConfirmMove              bool
-	ConfirmDelete            bool
-	UseTrash                 bool
-	ConfirmExit              bool
-	DeleteCancelFocused      bool
-	DefaultFileOpMode        int
-	FileOpPathDisplay        int
-	MacroRecordFormat        int
-	GuiFont                  string
-	GuiUseSystemMonospace    bool
-	GuiFontSize              int
-	GuiCols                  int
-	GuiRows                  int
-	GuiPresentation          GuiPresentationMode
-	QmlIconSet               QmlIconSetMode
-	ConsoleTitleTemplate     string
-	UpdateChannel            int // 0 = Stable, 1 = Nightly
-	UpdateInterval           int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
-	EnforceColorCorrection   bool
-	HighlightPriority        int    // 0 = User wins, 1 = Theme wins
-	LastUpdateCheck          int64  // Unix timestamp
-	LastUpdateVersion        string // Version string or PublishedAt timestamp
+	// Wheel scroll speed (lines per notch) per area and direction.
+	// 0 = follow the system setting.
+	WheelPanelUp    int
+	WheelPanelDown  int
+	WheelEditorUp   int
+	WheelEditorDown int
+	WheelViewerUp   int
+	WheelViewerDown int
+	WheelMenuUp     int
+	WheelMenuDown   int
+	WheelTableUp    int
+	WheelTableDown  int
+	// Path hints (autocomplete in path inputs and the command line).
+	PathHintTimeout        int  // seconds for a VFS ReadDir behind a hint
+	PathHintFullPath       bool // show full paths in the hint, false = final element only
+	PathHintSource         int  // 0 = active panel, 1 = passive panel, 2 = both
+	PathHintMaxVisible     int  // visible rows cap in the hint list
+	PathHintPerCategory    bool // the cap applies per category (active/passive/history)
+	SlideShowDelay         int
+	ImageExternalTimeout   int
+	ImageDecoderPriority   string
+	RegisteredPlugins      []string
+	ConfirmCopy            bool
+	ConfirmMove            bool
+	ConfirmDelete          bool
+	UseTrash               bool
+	ConfirmExit            bool
+	DeleteCancelFocused    bool
+	DefaultFileOpMode      int
+	FileOpPathDisplay      int
+	MacroRecordFormat      int
+	GuiFont                string
+	GuiUseSystemMonospace  bool
+	GuiFontSize            int
+	GuiCols                int
+	GuiRows                int
+	GuiPresentation        GuiPresentationMode
+	QmlIconSet             QmlIconSetMode
+	ConsoleTitleTemplate   string
+	UpdateChannel          int // 0 = Stable, 1 = Nightly
+	UpdateInterval         int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
+	EnforceColorCorrection bool
+	HighlightPriority      int    // 0 = User wins, 1 = Theme wins
+	LastUpdateCheck        int64  // Unix timestamp
+	LastUpdateVersion      string // Version string or PublishedAt timestamp
+
+	// [Proxy] applies to everything f4 sends out on its own: update checks
+	// and downloads, the plugin ring, colorer schemes and netfox site
+	// connections. A netfox connection may override it, see netproxy.
+	ProxyMode int // netproxy.Mode*: 1 = system env (default), 2 = direct, 3 = HTTP, 4 = SOCKS5
+	ProxyHost string
+	ProxyPort string
+	ProxyUser string
+	ProxyPass string
 
 	// [Layout] mirrors far2l's config.ini section of the same name so
 	// a config shared with far2l keeps working in both. Adjusted by
@@ -241,6 +301,8 @@ var AppConfig = F4Config{
 	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
 	CtrlTabShowsMenu:         false,
 	AltNumberSwitchesTabs:    true,
+	RestoreWorkspaceTabs:     true,
+	WorkspaceTabNumbering:    WorkspaceTabNumbersAlways,
 	ShowHiddenFiles:          true,
 	ShowDirPrefix:            false,
 	ShowHighlightMarks:       false,
@@ -279,6 +341,21 @@ var AppConfig = F4Config{
 	EditorDefaultCodePage:    65001,
 	ViewerAutodetectCodePage: true,
 	ViewerDefaultCodePage:    65001,
+	WheelPanelUp:             0,
+	WheelPanelDown:           0,
+	WheelEditorUp:            0,
+	WheelEditorDown:          0,
+	WheelViewerUp:            0,
+	WheelViewerDown:          0,
+	WheelMenuUp:              0,
+	WheelMenuDown:            0,
+	WheelTableUp:             0,
+	WheelTableDown:           0,
+	PathHintTimeout:          2,
+	PathHintFullPath:         false,
+	PathHintSource:           2,
+	PathHintMaxVisible:       5,
+	PathHintPerCategory:      true,
 	SlideShowDelay:           defaultSlideShowDelay,
 	ImageExternalTimeout:     defaultImageExternalTimeout,
 	ImageDecoderPriority:     "",
@@ -299,6 +376,7 @@ var AppConfig = F4Config{
 	QmlIconSet:               QmlIconSetLucide,
 	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
 	UpdateChannel:            0,
+	ProxyMode:                netproxy.ModeSystem,
 	UpdateInterval:           3, // Default to Weekly
 	EnforceColorCorrection:   true,
 	HighlightPriority:        0,
@@ -363,11 +441,15 @@ func LoadConfig() {
 		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
 	case "ctrl":
 		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
+	case "never":
+		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsNever)
 	default:
 		AppConfig.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
 	}
 	AppConfig.CtrlTabShowsMenu = strings.EqualFold(ini.GetString("Interface", "CtrlTabMode", "direct"), "menu")
 	AppConfig.AltNumberSwitchesTabs = ini.GetString("Interface", "AltNumberSwitchesTabs", "1") != "0"
+	AppConfig.RestoreWorkspaceTabs = ini.GetString("Interface", "RestoreWorkspaceTabs", "1") != "0"
+	AppConfig.WorkspaceTabNumbering = ParseWorkspaceTabNumberingMode(ini.GetString("Interface", "WorkspaceTabNumbering", "always"))
 	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
 		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
@@ -445,6 +527,15 @@ func LoadConfig() {
 	fmt.Sscanf(ini.GetString("Update", "LastCheck", "0"), "%d", &AppConfig.LastUpdateCheck)
 	AppConfig.LastUpdateVersion = ini.GetString("Update", "LastVersion", "")
 
+	// The proxy password is stored obfuscated, exactly like netfox stores
+	// site passwords; a hand-written plain one keeps working.
+	fmt.Sscanf(ini.GetString("Proxy", "Mode", "1"), "%d", &AppConfig.ProxyMode)
+	AppConfig.ProxyHost = ini.GetString("Proxy", "Host", "")
+	AppConfig.ProxyPort = ini.GetString("Proxy", "Port", "")
+	AppConfig.ProxyUser = ini.GetString("Proxy", "User", "")
+	AppConfig.ProxyPass = netproxy.DecodeSecret(ini.GetString("Proxy", "Password", ""))
+	ApplyProxySettings()
+
 	AppConfig.EditorAutoComplete = ini.GetString("Editor", "AutoComplete", "1") == "1"
 	AppConfig.EditorAutoCompleteMask = ini.GetString("Editor", "AutoCompleteMask", "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json")
 
@@ -468,6 +559,33 @@ func LoadConfig() {
 	fmt.Sscanf(ini.GetString("Editor", "DefaultCodePage", "65001"), "%d", &AppConfig.EditorDefaultCodePage)
 	AppConfig.ViewerAutodetectCodePage = ini.GetString("Viewer", "AutodetectCodePage", "1") == "1"
 	fmt.Sscanf(ini.GetString("Viewer", "DefaultCodePage", "65001"), "%d", &AppConfig.ViewerDefaultCodePage)
+
+	// [Mouse] — wheel scroll speed (lines per notch), 0 = system default.
+	AppConfig.WheelPanelUp = loadWheelLines(ini, "PanelUp")
+	AppConfig.WheelPanelDown = loadWheelLines(ini, "PanelDown")
+	AppConfig.WheelEditorUp = loadWheelLines(ini, "EditorUp")
+	AppConfig.WheelEditorDown = loadWheelLines(ini, "EditorDown")
+	AppConfig.WheelViewerUp = loadWheelLines(ini, "ViewerUp")
+	AppConfig.WheelViewerDown = loadWheelLines(ini, "ViewerDown")
+	AppConfig.WheelMenuUp = loadWheelLines(ini, "MenuUp")
+	AppConfig.WheelMenuDown = loadWheelLines(ini, "MenuDown")
+	AppConfig.WheelTableUp = loadWheelLines(ini, "TableUp")
+	AppConfig.WheelTableDown = loadWheelLines(ini, "TableDown")
+
+	// [PathHints]
+	AppConfig.PathHintTimeout = 2
+	fmt.Sscanf(ini.GetString("PathHints", "Timeout", "2"), "%d", &AppConfig.PathHintTimeout)
+	if AppConfig.PathHintTimeout < 1 {
+		AppConfig.PathHintTimeout = 1
+	}
+	AppConfig.PathHintFullPath = ini.GetString("PathHints", "FullPath", "0") == "1"
+	fmt.Sscanf(ini.GetString("PathHints", "Source", "2"), "%d", &AppConfig.PathHintSource)
+	AppConfig.PathHintMaxVisible = 5
+	fmt.Sscanf(ini.GetString("PathHints", "MaxVisible", "5"), "%d", &AppConfig.PathHintMaxVisible)
+	if AppConfig.PathHintMaxVisible < 1 {
+		AppConfig.PathHintMaxVisible = 1
+	}
+	AppConfig.PathHintPerCategory = ini.GetString("PathHints", "PerCategory", "1") == "1"
 	AppConfig.SlideShowDelay = defaultSlideShowDelay
 	fmt.Sscanf(ini.GetString("Images", "SlideShowDelay", "5"), "%d", &AppConfig.SlideShowDelay)
 	if AppConfig.SlideShowDelay <= 0 {
@@ -509,6 +627,10 @@ func LoadConfig() {
 }
 
 func SaveConfig() {
+	// Settings dialogs write into AppConfig and call SaveConfig; publishing
+	// here means a proxy change takes effect without a restart.
+	ApplyProxySettings()
+
 	path := getUserConfigIniPath()
 	os.MkdirAll(filepath.Dir(path), 0755)
 
@@ -525,6 +647,8 @@ func SaveConfig() {
 		workspaceTabMode = "always"
 	} else if AppConfig.WorkspaceTabMode == int(vtui.WorkspaceTabsOnCtrl) {
 		workspaceTabMode = "ctrl"
+	} else if AppConfig.WorkspaceTabMode == int(vtui.WorkspaceTabsNever) {
+		workspaceTabMode = "never"
 	}
 	ctrlTabMode := "direct"
 	if AppConfig.CtrlTabShowsMenu {
@@ -532,7 +656,9 @@ func SaveConfig() {
 	}
 	sb.WriteString(fmt.Sprintf("WorkspaceTabMode = %s\n", workspaceTabMode))
 	sb.WriteString(fmt.Sprintf("CtrlTabMode = %s\n", ctrlTabMode))
-	sb.WriteString(fmt.Sprintf("AltNumberSwitchesTabs = %d\n\n", map[bool]int{true: 1, false: 0}[AppConfig.AltNumberSwitchesTabs]))
+	sb.WriteString(fmt.Sprintf("AltNumberSwitchesTabs = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AltNumberSwitchesTabs]))
+	sb.WriteString(fmt.Sprintf("RestoreWorkspaceTabs = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.RestoreWorkspaceTabs]))
+	sb.WriteString(fmt.Sprintf("WorkspaceTabNumbering = %s\n\n", AppConfig.WorkspaceTabNumbering.String()))
 	sb.WriteString("[Panel]\n")
 	sb.WriteString(fmt.Sprintf("ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles]))
 	sb.WriteString(fmt.Sprintf("ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowDirPrefix]))
@@ -584,6 +710,13 @@ func SaveConfig() {
 	sb.WriteString(fmt.Sprintf("Interval = %d\n", AppConfig.UpdateInterval))
 	sb.WriteString(fmt.Sprintf("LastCheck = %d\n", AppConfig.LastUpdateCheck))
 	sb.WriteString(fmt.Sprintf("LastVersion = %s\n", AppConfig.LastUpdateVersion))
+
+	sb.WriteString("\n[Proxy]\n")
+	sb.WriteString(fmt.Sprintf("Mode = %d\n", AppConfig.ProxyMode))
+	sb.WriteString(fmt.Sprintf("Host = %s\n", AppConfig.ProxyHost))
+	sb.WriteString(fmt.Sprintf("Port = %s\n", AppConfig.ProxyPort))
+	sb.WriteString(fmt.Sprintf("User = %s\n", AppConfig.ProxyUser))
+	sb.WriteString(fmt.Sprintf("Password = %s\n", netproxy.EncodeSecret(AppConfig.ProxyPass)))
 	sb.WriteString("\n[Editor]\n")
 	sb.WriteString(fmt.Sprintf("AutoComplete = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorAutoComplete]))
 	sb.WriteString(fmt.Sprintf("AutoCompleteMask = %s\n", AppConfig.EditorAutoCompleteMask))
@@ -608,6 +741,23 @@ func SaveConfig() {
 	sb.WriteString("\n[Viewer]\n")
 	sb.WriteString(fmt.Sprintf("AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ViewerAutodetectCodePage]))
 	sb.WriteString(fmt.Sprintf("DefaultCodePage = %d\n", AppConfig.ViewerDefaultCodePage))
+	sb.WriteString("\n[Mouse]\n")
+	sb.WriteString(fmt.Sprintf("PanelUp = %d\n", AppConfig.WheelPanelUp))
+	sb.WriteString(fmt.Sprintf("PanelDown = %d\n", AppConfig.WheelPanelDown))
+	sb.WriteString(fmt.Sprintf("EditorUp = %d\n", AppConfig.WheelEditorUp))
+	sb.WriteString(fmt.Sprintf("EditorDown = %d\n", AppConfig.WheelEditorDown))
+	sb.WriteString(fmt.Sprintf("ViewerUp = %d\n", AppConfig.WheelViewerUp))
+	sb.WriteString(fmt.Sprintf("ViewerDown = %d\n", AppConfig.WheelViewerDown))
+	sb.WriteString(fmt.Sprintf("MenuUp = %d\n", AppConfig.WheelMenuUp))
+	sb.WriteString(fmt.Sprintf("MenuDown = %d\n", AppConfig.WheelMenuDown))
+	sb.WriteString(fmt.Sprintf("TableUp = %d\n", AppConfig.WheelTableUp))
+	sb.WriteString(fmt.Sprintf("TableDown = %d\n", AppConfig.WheelTableDown))
+	sb.WriteString("\n[PathHints]\n")
+	sb.WriteString(fmt.Sprintf("Timeout = %d\n", AppConfig.PathHintTimeout))
+	sb.WriteString(fmt.Sprintf("FullPath = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.PathHintFullPath]))
+	sb.WriteString(fmt.Sprintf("Source = %d\n", AppConfig.PathHintSource))
+	sb.WriteString(fmt.Sprintf("MaxVisible = %d\n", AppConfig.PathHintMaxVisible))
+	sb.WriteString(fmt.Sprintf("PerCategory = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.PathHintPerCategory]))
 	sb.WriteString("\n[Images]\n")
 	sb.WriteString(fmt.Sprintf("SlideShowDelay = %d\n", AppConfig.SlideShowDelay))
 	sb.WriteString(fmt.Sprintf("ExternalTimeout = %d\n", AppConfig.ImageExternalTimeout))
@@ -669,6 +819,33 @@ var (
 
 const saveConfigDebounce = 500 * time.Millisecond
 
+// loadWheelLines reads a [Mouse] wheel-speed key: lines per notch,
+// 0 = system default. Negative values are treated as 0.
+func loadWheelLines(ini *IniFile, key string) int {
+	n := 0
+	fmt.Sscanf(ini.GetString("Mouse", key, "0"), "%d", &n)
+	if n < 0 {
+		n = 0
+	}
+	return n
+}
+
+// wheelScrollLines resolves a configured wheel speed (0 = follow the system
+// setting) into the number of lines to scroll per wheel notch.
+func wheelScrollLines(cfg int) int {
+	if cfg <= 0 {
+		return vtui.WheelLinesPerNotch()
+	}
+	return cfg
+}
+
+// applyWheelSettings pushes the menu/table wheel speed overrides into vtui.
+// Panels, editor and viewer are handled by f4 itself via wheelScrollLines.
+func applyWheelSettings() {
+	vtui.SetWheelAreaLines(vtui.WheelAreaMenu, AppConfig.WheelMenuUp, AppConfig.WheelMenuDown)
+	vtui.SetWheelAreaLines(vtui.WheelAreaList, AppConfig.WheelTableUp, AppConfig.WheelTableDown)
+}
+
 func createDefaultHighlightIni(path string) {
 	content := `# User highlight rules.
 #
@@ -682,4 +859,17 @@ func createDefaultHighlightIni(path string) {
 
 `
 	_ = os.WriteFile(path, []byte(content), 0644)
+}
+
+// ApplyProxySettings publishes the configured proxy to netproxy, which is
+// where the updater, the plugin ring, the colorer downloader and netfox all
+// read it from.
+func ApplyProxySettings() {
+	netproxy.SetGlobal(netproxy.Settings{
+		Mode: AppConfig.ProxyMode,
+		Host: AppConfig.ProxyHost,
+		Port: AppConfig.ProxyPort,
+		User: AppConfig.ProxyUser,
+		Pass: AppConfig.ProxyPass,
+	})
 }

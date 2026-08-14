@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,43 @@ import (
 	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtui"
 )
+
+type memoryWriteSeeker struct {
+	data []byte
+	off  int64
+}
+
+func (w *memoryWriteSeeker) Write(p []byte) (int, error) {
+	end := w.off + int64(len(p))
+	if w.off < 0 || end < w.off {
+		return 0, errors.New("invalid memory write offset")
+	}
+	if end > int64(len(w.data)) {
+		w.data = append(w.data, make([]byte, end-int64(len(w.data)))...)
+	}
+	copy(w.data[w.off:end], p)
+	w.off = end
+	return len(p), nil
+}
+
+func (w *memoryWriteSeeker) Seek(offset int64, whence int) (int64, error) {
+	var base int64
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		base = w.off
+	case io.SeekEnd:
+		base = int64(len(w.data))
+	default:
+		return 0, errors.New("invalid seek origin")
+	}
+	next := base + offset
+	if next < 0 {
+		return 0, errors.New("negative seek offset")
+	}
+	w.off = next
+	return next, nil
+}
 
 func TestUpdater_ShouldCheck(t *testing.T) {
 	oldCfg := AppConfig
@@ -176,12 +215,8 @@ func TestUpdater_Extractors(t *testing.T) {
 		t.Errorf("TarGz extraction mismatch")
 	}
 
-	sevenPath := filepath.Join(t.TempDir(), "fixture.7z")
-	sevenFile, err := os.Create(sevenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sw, err := sevenzip.NewWriter(sevenFile)
+	var sevenBuf memoryWriteSeeker
+	sw, err := sevenzip.NewWriter(&sevenBuf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,9 +241,7 @@ func TestUpdater_Extractors(t *testing.T) {
 	if err := sw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	sevenFile.Close()
-
-	sevenData, _ := os.ReadFile(sevenPath)
+	sevenData := append([]byte(nil), sevenBuf.data...)
 	dest7z := t.TempDir()
 	err = extract7zToDir(sevenData, dest7z)
 	if err != nil {
@@ -222,6 +255,7 @@ func TestUpdater_Extractors(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dest7z, "etc", "passwd")); !os.IsNotExist(err) {
 		t.Error("7z Zip Slip vulnerability detected (absolute path extracted)!")
 	}
+	runtime.KeepAlive(sw)
 }
 
 func TestUpdater_GetCurrentVersion(t *testing.T) {

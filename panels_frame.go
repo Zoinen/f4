@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -125,9 +126,7 @@ func (pf *PanelsFrame) addCommandHistory(cmd string) {
 	if limit <= 0 {
 		limit = 100
 	}
-	if len(newRich) > limit {
-		newRich = newRich[:limit]
-	}
+	newRich = limitRichHistory(newRich, limit)
 	hp.SaveRichHistory("cmdline", newRich)
 
 	var strHist []string
@@ -520,11 +519,30 @@ func (pf *PanelsFrame) applyNavigationMode() {
 		}
 	}
 }
+func isAIPanel(panel Panel) bool {
+	if fsp, ok := panel.(*FileSystemPanel); ok && fsp != nil && fsp.vfs != nil {
+		if tp, ok := fsp.vfs.(vfs.TitleProvider); ok {
+			return tp.GetTitle() == "ai"
+		}
+	}
+	return false
+}
 
 // leftMenu builds the custom side menu for the left panel. View and
 // sort modes act on a fixed side through Cm commands, so they stay
 // command-routed rather than generated from the action registry.
 func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
+	if isAIPanel(pf.panels[0]) {
+		return vtui.MenuBarItem{Label: "&" + Msg("Menu.Left"), SubItems: []vtui.MenuItem{
+			{Text: "&1. " + Msg("Action.AI.ViewContext"), Command: CmLeftAIContext, Shortcut: "Ctrl+1"},
+			{Text: "&2. " + Msg("Action.AI.ViewChat"), Command: CmLeftAIChat, Shortcut: "Ctrl+2"},
+			{Text: "&3. " + Msg("Action.AI.ViewOut"), Command: CmLeftAIOut, Shortcut: "Ctrl+3"},
+			{Text: "&4. " + Msg("Action.AI.ViewMem"), Command: CmLeftAIMem, Shortcut: "Ctrl+4"},
+			{Separator: true},
+			{Text: Msg("FileOp.BtnBackground"), Command: CmBackground},
+			{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
+		}}
+	}
 	return vtui.MenuBarItem{Label: "&" + Msg("Menu.Left"), SubItems: []vtui.MenuItem{
 		{Text: "&" + Msg("Menu.Left.Brief"), Command: CmLeftBrief},
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmLeftMedium},
@@ -538,13 +556,21 @@ func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.SortSize"), Command: CmLeftSortSize},
 		{Text: "&" + Msg("Menu.SortUnsorted"), Command: CmLeftSortUnsorted},
 		{Separator: true},
-		{Text: "Bac&kground", Command: CmBackground},
+		{Text: Msg("FileOp.BtnBackground"), Command: CmBackground},
 		{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
 	}}
 }
 
 // rightMenu builds the custom side menu for the right panel.
 func (pf *PanelsFrame) rightMenu() vtui.MenuBarItem {
+	if isAIPanel(pf.panels[1]) {
+		return vtui.MenuBarItem{Label: "&" + Msg("Menu.Right"), SubItems: []vtui.MenuItem{
+			{Text: "&1. " + Msg("Action.AI.ViewContext"), Command: CmRightAIContext, Shortcut: "Ctrl+1"},
+			{Text: "&2. " + Msg("Action.AI.ViewChat"), Command: CmRightAIChat, Shortcut: "Ctrl+2"},
+			{Text: "&3. " + Msg("Action.AI.ViewOut"), Command: CmRightAIOut, Shortcut: "Ctrl+3"},
+			{Text: "&4. " + Msg("Action.AI.ViewMem"), Command: CmRightAIMem, Shortcut: "Ctrl+4"},
+		}}
+	}
 	return vtui.MenuBarItem{Label: "&" + Msg("Menu.Right"), SubItems: []vtui.MenuItem{
 		{Text: "&" + Msg("Menu.Left.Brief"), Command: CmRightBrief},
 		{Text: "&" + Msg("Menu.Left.Medium"), Command: CmRightMedium},
@@ -603,16 +629,36 @@ func getSortMenuText(current, target SortMode, label string) string {
 }
 
 var commandToActionName = map[int]string{
-	CmLeftBrief:             "Panel.ViewBrief",
-	CmLeftMedium:            "Panel.ViewMedium",
-	CmLeftDetailed:          "Panel.ViewDetailed",
-	CmLeftWide:              "Panel.ViewWide",
+	CmLeftBrief:             "Panel.Left.ViewBrief",
+	CmLeftMedium:            "Panel.Left.ViewMedium",
+	CmLeftDetailed:          "Panel.Left.ViewDetailed",
+	CmLeftWide:              "Panel.Left.ViewWide",
 	CmLeftGallery:           "Panel.ViewGallery",
-	CmRightBrief:            "Panel.ViewBrief",
-	CmRightMedium:           "Panel.ViewMedium",
-	CmRightDetailed:         "Panel.ViewDetailed",
-	CmRightWide:             "Panel.ViewWide",
+	CmRightBrief:            "Panel.Right.ViewBrief",
+	CmRightMedium:           "Panel.Right.ViewMedium",
+	CmRightDetailed:         "Panel.Right.ViewDetailed",
+	CmRightWide:             "Panel.Right.ViewWide",
 	CmRightGallery:          "Panel.ViewGallery",
+	CmLeftSortName:          "Panel.Left.SortByName",
+	CmLeftSortExt:           "Panel.Left.SortByExt",
+	CmLeftSortTime:          "Panel.Left.SortByTime",
+	CmLeftSortSize:          "Panel.Left.SortBySize",
+	CmLeftSortUnsorted:      "Panel.Left.SortUnsorted",
+	CmRightSortName:         "Panel.Right.SortByName",
+	CmRightSortExt:          "Panel.Right.SortByExt",
+	CmRightSortTime:         "Panel.Right.SortByTime",
+	CmRightSortSize:         "Panel.Right.SortBySize",
+	CmRightSortUnsorted:     "Panel.Right.SortUnsorted",
+	CmLeftAIContext:         "AI.Left.ViewContext",
+	CmLeftAIChat:            "AI.Left.ViewChat",
+	CmLeftAIOut:             "AI.Left.ViewOut",
+	CmLeftAIMem:             "AI.Left.ViewMem",
+	CmRightAIContext:        "AI.Right.ViewContext",
+	CmRightAIChat:           "AI.Right.ViewChat",
+	CmRightAIOut:            "AI.Right.ViewOut",
+	CmRightAIMem:            "AI.Right.ViewMem",
+	CmBackground:            "App.Background",
+	vtui.CmQuit:             "App.Quit",
 	CmView:                  "File.View",
 	CmEdit:                  "File.Edit",
 	CmCopy:                  "File.Copy",
@@ -629,6 +675,33 @@ var commandToActionName = map[int]string{
 	CmLanguage:              "Settings.Language",
 	CmHelpLanguage:          "Settings.HelpLanguage",
 	CmPlugins:               "Settings.Plugins",
+}
+
+// Fixed-side menu commands intentionally have exact action IDs above so every
+// user-invokable item is represented in the registry. Their shortcut column,
+// however, keeps showing the active-panel bindings used by Ctrl+1..4 and
+// Ctrl+F3..F7; the fixed-side actions themselves do not claim extra keys.
+var commandShortcutActionName = map[int]string{
+	CmLeftBrief:         "Panel.ViewBrief",
+	CmLeftMedium:        "Panel.ViewMedium",
+	CmLeftDetailed:      "Panel.ViewDetailed",
+	CmLeftWide:          "Panel.ViewWide",
+	CmLeftGallery:       "Panel.ViewGallery",
+	CmRightBrief:        "Panel.ViewBrief",
+	CmRightMedium:       "Panel.ViewMedium",
+	CmRightDetailed:     "Panel.ViewDetailed",
+	CmRightWide:         "Panel.ViewWide",
+	CmRightGallery:      "Panel.ViewGallery",
+	CmLeftSortName:      "Panel.SortByName",
+	CmLeftSortExt:       "Panel.SortByExt",
+	CmLeftSortTime:      "Panel.SortByTime",
+	CmLeftSortSize:      "Panel.SortBySize",
+	CmLeftSortUnsorted:  "Panel.SortUnsorted",
+	CmRightSortName:     "Panel.SortByName",
+	CmRightSortExt:      "Panel.SortByExt",
+	CmRightSortTime:     "Panel.SortByTime",
+	CmRightSortSize:     "Panel.SortBySize",
+	CmRightSortUnsorted: "Panel.SortUnsorted",
 }
 
 func (pf *PanelsFrame) updateMenuCheckmarks() {
@@ -685,6 +758,9 @@ func (pf *PanelsFrame) updateMenuCheckmarks() {
 			for j := range pf.menuBar.Items[i].SubItems {
 				sub := &pf.menuBar.Items[i].SubItems[j]
 				if actName, ok := commandToActionName[sub.Command]; ok {
+					if shortcutAction, exists := commandShortcutActionName[sub.Command]; exists {
+						actName = shortcutAction
+					}
 					if key := hm.GetKeyForAction(area, actName); key != "" {
 						sub.Shortcut = FormatKeyForUI(key)
 					} else {
@@ -834,6 +910,8 @@ func (pf *PanelsFrame) initPTY() {
 			p, err = NewPTY()
 			if err != nil {
 				vtui.DebugLog("PTY: Failed to allocate local PTY: %v", err)
+				logPTYDiagnostics()
+				pf.reportLocalPTYFailure()
 				return
 			}
 
@@ -891,7 +969,29 @@ func (pf *PanelsFrame) initPTY() {
 	}()
 }
 
+// reportLocalPTYFailure surfaces a NewPTY() failure to the person instead of
+// leaving it only in the debug log. Without this, a platform where PTY
+// allocation fails (see issue #444, FreeBSD and illumos before their
+// backends were fixed) looked identical to a healthy f4 whose terminal
+// silently ignores every keystroke: panels, menus and the viewer all work,
+// because none of them touch the PTY, so the only visible symptom was an
+// empty terminal and no error anywhere the person could see without
+// starting f4 with --debug.
+func (pf *PanelsFrame) reportLocalPTYFailure() {
+	if vtui.FrameManager == nil {
+		return
+	}
+	vtui.FrameManager.PostTask(func() {
+		vtui.ShowToast(Msg("Terminal.PTYAllocFailed"), 5*time.Second)
+	})
+}
+
 func (pf *PanelsFrame) Close() {
+	if pf.wide && pf.widePanel >= 0 && pf.widePanel < 2 {
+		if isAIPanel(pf.panels[pf.widePanel]) {
+			pf.exitWide()
+		}
+	}
 	pf.closeProcessEnvironmentShell()
 
 	pf.ptyMutex.Lock()
@@ -1254,8 +1354,12 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	if (!pf.showPanels && (pf.termView.UseAltScreen || isBusy)) || topType == vtui.TypeUser+2 {
 		pf.cmdLine.SetVisible(false)
 	} else {
+		isChatFocused := false
+		if pf.showPanels && pf.altPanels[pf.activeIdx] != nil && pf.altPanels[pf.activeIdx].Kind() == "ai_chat" && pf.altPanels[pf.activeIdx].IsFocused() {
+			isChatFocused = true
+		}
 		pf.cmdLine.SetVisible(true)
-		pf.cmdLine.Edit.HideCursor = isFastFind || (pf.searchFirstMode() && pf.showPanels && !pf.commandLineFocused)
+		pf.cmdLine.Edit.HideCursor = isFastFind || isChatFocused || (pf.searchFirstMode() && pf.showPanels && !pf.commandLineFocused)
 		cmdLineY := pf.lastH - 1
 		if pf.showKeyBar {
 			cmdLineY = pf.lastH - 2
@@ -1287,8 +1391,20 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 		return false
 	}
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+
+	// RCtrl+A: Toggle AI Panel
+	if e.VirtualKeyCode == 'A' && rctrl && !alt && !shift {
+		aiTogglePanel(pf)
+		return true
+	}
+
+	// Arkanoid easter egg: Ctrl+Alt+A
+	if e.VirtualKeyCode == 'A' && alt && ctrl {
+		return actionArkanoid()
+	}
 
 	// Check global hotkeys (ignoring Lock and Enhanced keys)
 	for _, hk := range globalHotkeysSnapshot() {
@@ -1312,6 +1428,13 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 			}
 		}
 	}
+
+	// A remote shell owns Ctrl+C after plugins and the active PanelController
+	// have had their documented first chance. This filter still runs before
+	// HotkeyManager, so Panel.SplitReset cannot shadow the interrupt fallback.
+	if e.VirtualKeyCode == vtinput.VK_C && ctrl && !alt && !shift && pf.interruptRemotePTY(nil) {
+		return true
+	}
 	return false
 }
 
@@ -1319,12 +1442,57 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 // the key before the global hotkey dispatcher. During fast find,
 // printable characters and the gray selection keys belong to the
 // panel's own search input.
+// commandLineOwnsSelection reports the keys that belong to the command
+// line's own text selection rather than to a panel action: Ctrl+Shift+
+// Left/Right walk the selection word by word there exactly as they do in
+// any other edit field, whether or not the panels are visible. They fall
+// back to the drive menus (far2l's Alt+F1 / Alt+F2 aliases) only while
+// the line is empty and there is nothing to select — the same trade the
+// EmptyCommandLine condition already makes for plain Ctrl+Left/Right.
+func (pf *PanelsFrame) commandLineOwnsSelection(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+	if e.VirtualKeyCode != vtinput.VK_LEFT && e.VirtualKeyCode != vtinput.VK_RIGHT {
+		return false
+	}
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if !ctrl || !shift || alt {
+		return false
+	}
+	return pf.cmdLine != nil && pf.cmdLine.IsVisible() && !pf.cmdLine.IsEmpty()
+}
+
+// VetoActionKey reports modal input states in which the panels must see
+// the key before the global hotkey dispatcher. During fast find,
+// printable characters and the gray selection keys belong to the
+// panel's own search input.
 func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
-	if e.Type != vtinput.KeyEventType || !e.KeyDown || !pf.showPanels {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+	// Checked ahead of the panels-visible guard: the command line keeps
+	// its selection keys in terminal mode too, where the drive menus are
+	// bound in the Terminal area.
+	if pf.commandLineOwnsSelection(e) {
+		return true
+	}
+	if !pf.showPanels {
 		return false
 	}
 	fsp := pf.getActivePanel()
 	if fsp != nil && fsp.providerOpenTask != nil {
+		ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+		alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+		shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+		if alt && !ctrl && !shift && (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
+			// History navigation is safe while a cache-first provider restore is
+			// pending: it cancels that restore and uses persistentPath, not the
+			// source VFS hidden beneath the cached rows.
+			return false
+		}
 		// Cached rows from the destination are visible immediately, but the old
 		// VFS remains installed until the asynchronous provider restore succeeds.
 		// Route keys through the panel so file actions cannot accidentally target
@@ -1339,17 +1507,24 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 				return true
 			}
 		}
+		if pf.activeIdx >= 0 && pf.activeIdx < len(pf.altPanels) {
+			if a := pf.altPanels[pf.activeIdx]; a != nil && a.IsFocused() && a.Kind() == "ai_chat" {
+				if e.Char != 0 || e.VirtualKeyCode == vtinput.VK_RETURN || e.VirtualKeyCode == vtinput.VK_BACK || e.VirtualKeyCode == vtinput.VK_DELETE {
+					return true
+				}
+			}
+		}
 		return false
 	}
-	if e.Char != 0 {
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if e.Char != 0 && !ctrl && !alt {
 		return true
 	}
 	// Fast Find owns plain Esc, plain Delete, plain F2 (search mode toggle) and
 	// Ctrl+Enter; the filter must not turn them into Panel.Toggle,
 	// Panel.UserMenu or Panel.InsertFileName.
-	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
-	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
-	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 	if e.VirtualKeyCode == vtinput.VK_ESCAPE && !ctrl && !alt && !shift {
 		return true
 	}
@@ -1447,21 +1622,6 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 		}
 	}
-
-	// Arkanoid easter egg: Ctrl+Alt+A
-	if e.VirtualKeyCode == 'A' && alt && ctrl && e.KeyDown {
-		for i, s := range vtui.FrameManager.Screens {
-			for _, f := range s.Frames {
-				if f.GetTitle() == "Arkanoid" {
-					vtui.FrameManager.SwitchScreen(i)
-					return true
-				}
-			}
-		}
-		// Запускаем без десктопа, чтобы воркспейс был прозрачным
-		vtui.FrameManager.AddScreenHeadless(NewArkanoidFrame())
-		return true
-	}
 	// Crash test hotkey: Ctrl+Alt+C
 	if e.VirtualKeyCode == vtinput.VK_C && alt && ctrl && e.KeyDown {
 		panic("Manual safe crash triggered by user (Ctrl+Alt+C) for testing!")
@@ -1474,17 +1634,8 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// stop it; making them switch to the terminal view first (Ctrl+O)
 	// just to be heard would be worse than losing the split-reset
 	// binding on remote panels.
-	if e.KeyDown && ctrl && !alt && !shift && e.VirtualKeyCode == vtinput.VK_C {
-		if fsp := pf.getActivePanel(); fsp != nil {
-			if integ, ok := fsp.vfs.(vfs.PtyShellIntegration); ok {
-				if pty := pf.getActivePTY(); pty != nil {
-					if seq := integ.PtyInterrupt(); len(seq) > 0 {
-						pty.Write(seq)
-						return true
-					}
-				}
-			}
-		}
+	if e.KeyDown && ctrl && !alt && !shift && e.VirtualKeyCode == vtinput.VK_C && pf.interruptRemotePTY(nil) {
+		return true
 	}
 	if e.Type == vtinput.FocusEventType {
 		if !e.SetFocus {
@@ -1644,8 +1795,13 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			isFastFind = fsp.fastFindMode
 		}
 
-		// If fast find is active, Vim hotkeys must be ignored to allow searching by 'j', 'k', etc.
-		if !isFastFind {
+		isChatFocused := false
+		if pf.altPanels[pf.activeIdx] != nil && pf.altPanels[pf.activeIdx].Kind() == "ai_chat" && pf.altPanels[pf.activeIdx].IsFocused() {
+			isChatFocused = true
+		}
+
+		// If fast find or chat is active, Vim hotkeys must be ignored to allow typing 'j', 'k', etc.
+		if !isFastFind && !isChatFocused {
 			now := time.Now()
 			key := e.Char
 			cmdLineText := pf.cmdLine.Edit.GetText()
@@ -1695,12 +1851,20 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 	// Enter handling
 	if e.VirtualKeyCode == vtinput.VK_RETURN {
-		// The hotkey filter normally handles Ctrl+Enter. Keep an in-frame
-		// fallback because platform input and injected events can bypass that
-		// filter; under no circumstances should Ctrl+Enter become plain Enter
-		// and enter the selected directory.
-		if ctrl && !alt && !shift && pf.showPanels {
+		// The hotkey filter normally handles Ctrl+Enter and Shift+Enter.
+		// Keep in-frame fallbacks because platform input and injected events
+		// can bypass that filter; under no circumstances should a modified
+		// Enter become plain Enter and enter the selected directory or run
+		// the command line. Hidden panels are included: an AltScreen app or
+		// a busy PTY has already been served by the raw-forwarding returns
+		// at the top of this function, so reaching this point means f4
+		// itself owns the keyboard and the panel cursor is still live.
+		if ctrl && !alt && !shift {
 			pf.insertSelectedFileName()
+			return true
+		}
+		if shift && !ctrl && !alt {
+			RunAction("Panel.SystemExplorer")
 			return true
 		}
 		commandInputActive := !pf.searchFirstMode() || pf.commandLineFocused || !pf.showPanels
@@ -1969,8 +2133,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 	// 2. Try global hotkeys handled by PanelsFrame
 	// Ctrl+Shift+Left / Ctrl+Shift+Right open the drive menu for the
-	// corresponding visual panel without changing the active panel.
-	if (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) && ctrl && !alt && shift && e.KeyDown && pf.showPanels {
+	// corresponding visual panel without changing the active panel — but
+	// only while there is no text to select, see commandLineOwnsSelection.
+	if (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) && ctrl && !alt && shift && e.KeyDown && pf.showPanels &&
+		!pf.commandLineOwnsSelection(e) {
 		panelIdx := 0
 		if e.VirtualKeyCode == vtinput.VK_RIGHT {
 			panelIdx = 1
@@ -2023,6 +2189,14 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			pf.cmdLine.ProcessKey(e)
 			return true
 		}
+	}
+
+	// Ctrl+Shift+Left/Right extend that selection word by word. This has
+	// to run before the injected-event hotkey lookup below, which would
+	// otherwise reach the drive menu the same way the filter does.
+	if pf.commandLineOwnsSelection(e) {
+		pf.cmdLine.ProcessKey(e)
+		return true
 	}
 
 	// 3. Try Active Panel
@@ -2622,6 +2796,9 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 	case CmUpdateSettings:
 		actionUpdateSettings(pf)
 		return true
+	case CmProxySettings:
+		actionProxySettings()
+		return true
 	case CmPlugins:
 		actionManagePlugins(pf)
 		return true
@@ -2630,12 +2807,7 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		actionPlugRing(pf)
 		return true
 	case CmBackground:
-		if !SupportsBackgrounding() {
-			vtui.ShowMessage(" Background ", "Backgrounding is not supported on this OS.", []string{"&Ok"})
-			return true
-		}
-		vtui.FrameManager.Stop() // Clean exit from the main loop
-		return true
+		return actionBackground()
 
 	case vtui.CmResize: // Used as a hack for 'fork' command from FrameManager
 		if s, ok := args.(string); ok && s == "fork" {
@@ -2686,6 +2858,46 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return true
 	case CmRightGallery:
 		pf.setPanelPresentation(1, PanelPresentationGallery)
+		return true
+	case CmLeftAIContext:
+		if aiCmd, ok := pf.panels[0].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://ctx", false)
+		}
+		return true
+	case CmLeftAIChat:
+		if aiCmd, ok := pf.panels[0].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://chat", true)
+		}
+		return true
+	case CmLeftAIOut:
+		if aiCmd, ok := pf.panels[0].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://out", false)
+		}
+		return true
+	case CmLeftAIMem:
+		if aiCmd, ok := pf.panels[0].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://mem", false)
+		}
+		return true
+	case CmRightAIContext:
+		if aiCmd, ok := pf.panels[1].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://ctx", false)
+		}
+		return true
+	case CmRightAIChat:
+		if aiCmd, ok := pf.panels[1].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://chat", true)
+		}
+		return true
+	case CmRightAIOut:
+		if aiCmd, ok := pf.panels[1].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://out", false)
+		}
+		return true
+	case CmRightAIMem:
+		if aiCmd, ok := pf.panels[1].(interface{ AiSetViewMode(string, bool) }); ok {
+			aiCmd.AiSetViewMode("ai://mem", false)
+		}
 		return true
 
 	case CmLeftSortName:
@@ -3297,6 +3509,68 @@ func (pf *PanelsFrame) getActivePTY() PtyBackend {
 	return pf.getActivePTYUnsafe()
 }
 
+// remotePTYInterruptTarget is a side-effect-free snapshot of the remote shell
+// that currently owns Ctrl+C. In particular, discovering palette commands must
+// not create a remote PTY merely to decide whether Interrupt is available.
+type remotePTYInterruptTarget struct {
+	panel    *FileSystemPanel
+	pty      PtyBackend
+	sequence string
+}
+
+func (target *remotePTYInterruptTarget) matches(other *remotePTYInterruptTarget) bool {
+	return target != nil && other != nil &&
+		target.panel == other.panel && sameRemotePTYBackend(target.pty, other.pty) &&
+		target.sequence == other.sequence
+}
+
+func sameRemotePTYBackend(left, right PtyBackend) bool {
+	typeOfLeft := reflect.TypeOf(left)
+	return typeOfLeft != nil && typeOfLeft == reflect.TypeOf(right) && typeOfLeft.Comparable() && left == right
+}
+
+func (pf *PanelsFrame) currentRemotePTYInterruptTarget() *remotePTYInterruptTarget {
+	if pf == nil || pf.closed || !pf.showPanels {
+		return nil
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil || fsp.vfs == nil || fsp.providerOpenTask != nil {
+		return nil
+	}
+	integration, ok := fsp.vfs.(vfs.PtyShellIntegration)
+	if !ok {
+		return nil
+	}
+	sequence := integration.PtyInterrupt()
+	if len(sequence) == 0 {
+		return nil
+	}
+
+	pf.ptyMutex.Lock()
+	pty := pf.remotePtys[fsp.vfs]
+	pf.ptyMutex.Unlock()
+	if pty == nil {
+		return nil
+	}
+	return &remotePTYInterruptTarget{
+		panel:    fsp,
+		pty:      pty,
+		sequence: string(sequence),
+	}
+}
+
+// interruptRemotePTY writes the integration-defined interrupt sequence only
+// when the same panel, VFS and live PTY still own the command. expected is nil
+// for the physical Ctrl+C path and a discovery snapshot for palette callbacks.
+func (pf *PanelsFrame) interruptRemotePTY(expected *remotePTYInterruptTarget) bool {
+	target := pf.currentRemotePTYInterruptTarget()
+	if target == nil || (expected != nil && !target.matches(expected)) {
+		return false
+	}
+	_, _ = pf.writePTY(target.pty, []byte(target.sequence))
+	return true
+}
+
 func (pf *PanelsFrame) GetTitle() string {
 	if !pf.showPanels {
 		if pf.executing {
@@ -3334,10 +3608,7 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 		if pf.executing && pf.workspaceCommandTitle != "" {
 			title = pf.workspaceCommandTitle
 		}
-		// U+2328 is measured as one cell by runewidth but is rendered as a
-		// two-cell glyph by the Windows GUI font. Keep an extra spacer so the
-		// visible gap before the title matches the folder icon tabs.
-		return "⌨  " + title
+		return title
 	}
 
 	panelPath := func(panel Panel) string {
@@ -3363,7 +3634,14 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 		return path
 	}
 
-	return "📁 " + panelPath(pf.panels[0]) + " ─ " + panelPath(pf.panels[1])
+	return panelPath(pf.panels[0]) + " ─ " + panelPath(pf.panels[1])
+}
+
+func (pf *PanelsFrame) GetWorkspaceTabMarker() string {
+	if pf.showPanels {
+		return "P"
+	}
+	return "T"
 }
 
 // GetWorkspaceMenuInfo supplies the Screens popup with full panel paths. The
@@ -3374,7 +3652,7 @@ func (pf *PanelsFrame) GetWorkspaceMenuInfo() vtui.WorkspaceMenuInfo {
 		if pf.executing && pf.workspaceCommandTitle != "" {
 			title = pf.workspaceCommandTitle
 		}
-		return vtui.WorkspaceMenuInfo{Icon: "⌨", Primary: title}
+		return vtui.WorkspaceMenuInfo{Icon: "T", Primary: title}
 	}
 
 	panelPath := func(panel Panel) string {
@@ -3403,7 +3681,7 @@ func (pf *PanelsFrame) GetWorkspaceMenuInfo() vtui.WorkspaceMenuInfo {
 	}
 
 	return vtui.WorkspaceMenuInfo{
-		Icon:      "📁",
+		Icon:      "P",
 		Primary:   panelPath(pf.panels[0]),
 		Secondary: panelPath(pf.panels[1]),
 	}
@@ -3634,7 +3912,7 @@ func (pf *PanelsFrame) showPluginMenu() {
 		labels = append(labels, itm.Label)
 	}
 	for _, command := range commands {
-		labels = append(labels, command.Label)
+		labels = append(labels, pluginCommandDisplayLabel(command))
 	}
 	pf.Menu(" Plugins ", labels, func(idx int) {
 		switch {
@@ -3644,9 +3922,9 @@ func (pf *PanelsFrame) showPluginMenu() {
 				handler(pf)
 			})
 		case idx >= len(items) && idx < len(items)+len(commands):
-			command := commands[idx-len(items)]
+			commandID := commands[idx-len(items)].ID
 			vtui.FrameManager.PostTask(func() {
-				command.Run(pf)
+				executeRegisteredPluginCommand(vfs.PluginCommandPanel, commandID, pf)
 			})
 		}
 	})
@@ -4180,9 +4458,9 @@ func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 		}
 		fsp.fastFindMode = false
 		fsp.fastFindStr = ""
-		fsp.suppressFolderHistoryPath = path
+		fsp.suppressNextFolderHistory(path)
 		if !pf.NavigateToPath(fsp, path) {
-			fsp.suppressFolderHistoryPath = ""
+			fsp.clearFolderHistorySuppression()
 			continue
 		}
 		idx := pf.folderHistoryPanelIndex(fsp)
@@ -4196,7 +4474,7 @@ func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 					}
 					return false
 				}
-				fsp.suppressFolderHistoryPath = ""
+				fsp.clearFolderHistorySuppression()
 				return pf.navigateAvailableFolderHistory(fsp, historySnapshot, pendingPos+step, step)
 			}
 			return true
@@ -4219,7 +4497,12 @@ func (pf *PanelsFrame) moveFolderHistory(fsp *FileSystemPanel, direction int) bo
 	if idx >= 0 && idx < len(pf.folderHistoryPos) {
 		pos = pf.folderHistoryPos[idx]
 	}
-	targetPos, _, ok := folderHistoryStep(history, fsp.vfs.GetPath(), pos, direction)
+	// During a cache-first cross-provider restore, the panel already presents
+	// providerOpenTarget while the source VFS remains installed until the
+	// asynchronous mount succeeds. History must follow the presented/persisted
+	// location; using the source VFS here skips that source entry on Alt+Left.
+	current := fsp.persistentPath()
+	targetPos, _, ok := folderHistoryStep(history, current, pos, direction)
 	if !ok {
 		return false
 	}

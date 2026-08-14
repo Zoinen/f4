@@ -47,6 +47,40 @@ func TestColorer_EnsureFonokaiSchema(t *testing.T) {
 		t.Error("Expected catalog-rgb.xml to contain Fonokai entry")
 	}
 }
+func TestColorer_FonokaiHRDContrastAndSync(t *testing.T) {
+	hrdDiskPath := filepath.Join("colorer", "configs", "base", "hrd", "rgb", "fonokai.hrd")
+	diskBytes, err := os.ReadFile(hrdDiskPath)
+	if err != nil {
+		t.Fatalf("Failed to read fonokai.hrd from disk: %v", err)
+	}
+
+	diskContent := string(diskBytes)
+	if strings.Contains(diskContent, "#a04020") || strings.Contains(diskContent, "fore=\"#cc5f30\"") {
+		t.Error("fonokai.hrd on disk contains low-contrast keyword/tag colors (#a04020 or #cc5f30)")
+	}
+
+	if !strings.Contains(diskContent, "name=\"def:Keyword\" fore=\"#ff5544\"") {
+		t.Error("fonokai.hrd on disk does not use high-contrast color #ff5544 for def:Keyword")
+	}
+
+	tmpDir := t.TempDir()
+	baseDir := filepath.Join(tmpDir, "base")
+	_ = os.MkdirAll(baseDir, 0755)
+	_ = os.WriteFile(filepath.Join(baseDir, "catalog.xml"), []byte("<catalog/>"), 0644)
+	_ = os.WriteFile(filepath.Join(baseDir, "hrd", "catalog-rgb.xml"), []byte("<hrd/>"), 0644)
+
+	ensureFonokaiSchema(tmpDir)
+
+	generatedFile := filepath.Join(tmpDir, "base", "hrd", "rgb", "fonokai.hrd")
+	genBytes, err := os.ReadFile(generatedFile)
+	if err != nil {
+		t.Fatalf("ensureFonokaiSchema failed to write fonokai.hrd: %v", err)
+	}
+
+	if string(genBytes) != diskContent {
+		t.Errorf("fonokaiHRDContent in colorer_plugin.go does not match fonokai.hrd on disk")
+	}
+}
 func TestColorer_SchemasExist(t *testing.T) {
 	_ = SchemasExist()
 }
@@ -117,14 +151,11 @@ func TestColorer_AttributesLandOnTheCellsAfterAnEmoji(t *testing.T) {
 
 func TestColorer_AttrCacheIsBounded(t *testing.T) {
 	ch := &ColorerHighlighter{}
-	for i := 0; i < maxCachedAttrLines+64; i++ {
+	for i := 0; i < 100; i++ {
 		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
 	}
-	if len(ch.attrCache) > maxCachedAttrLines {
-		t.Errorf("Attribute cache grew to %d entries", len(ch.attrCache))
-	}
-	if _, ok := ch.attrCache[maxCachedAttrLines+63]; !ok {
-		t.Error("Expected the most recent line to stay cached")
+	if len(ch.attrCache) != 100 {
+		t.Errorf("Attribute cache should have 100 entries, got %d", len(ch.attrCache))
 	}
 
 	ch.dropCacheFrom(0)
@@ -133,39 +164,34 @@ func TestColorer_AttrCacheIsBounded(t *testing.T) {
 	}
 }
 
-func TestColorer_LineIndexComesFromTheEditorState(t *testing.T) {
-	cases := []struct {
-		prevState any
-		known     int
-		want      int
-	}{
-		{nil, 0, 0},
-		{nil, 500, 0},
-		{7, 500, 8},
-		{"a state of the fallback engine", 500, 0},
-		{499, 500, 500},
-		{500, 500, 500},
-		{-9, 500, 0},
+// TestColorer_AttrCacheStaysBoundedOnALongForwardScroll pushes storeAttrs
+// well past maxCachedAttrLines — the way holding PgDn through a large file
+// does — and checks eviction actually keeps the map small instead of the
+// limit being effectively no limit at all (HIGHLIGHT.md item 3).
+func TestColorer_AttrCacheStaysBoundedOnALongForwardScroll(t *testing.T) {
+	ch := &ColorerHighlighter{}
+	const scrolled = maxCachedAttrLines * 3
+	for i := 0; i < scrolled; i++ {
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
 	}
-	for _, c := range cases {
-		if got := colorerLineIndex(c.prevState, c.known); got != c.want {
-			t.Errorf("colorerLineIndex(%v, %d) = %d, expected %d", c.prevState, c.known, got, c.want)
-		}
-	}
-}
 
-func TestColorer_RewindsOnlyWhenTheParserIsAhead(t *testing.T) {
-	if colorerNeedsRewind(3, 7) {
-		t.Error("Expected the parser to be fed forward while it is behind")
+	if len(ch.attrCache) >= maxCachedAttrLines {
+		t.Errorf("cache holds %d entries after scrolling %d lines, eviction did not bound it",
+			len(ch.attrCache), scrolled)
 	}
-	if colorerNeedsRewind(7, 7) {
-		t.Error("Expected no work when the parser is already in place")
+	if len(ch.bgCache) != len(ch.attrCache) {
+		t.Errorf("attrCache and bgCache drifted apart: %d vs %d entries", len(ch.attrCache), len(ch.bgCache))
 	}
-	if !colorerNeedsRewind(9, 7) {
-		t.Error("Expected a rewind when the parser is past the requested line")
+
+	// The line just drawn, and its near neighbours, must survive: otherwise
+	// every single line drawn during the scroll would cost a re-anchor.
+	last := scrolled - 1
+	if _, ok := ch.attrCache[last]; !ok {
+		t.Error("the most recently drawn line fell out of the cache")
 	}
-	if !colorerNeedsRewind(-1, 7) {
-		t.Error("Expected a rewind from an unknown parser position")
+	// Ctrl+Home must stay instant regardless of how far the scroll has gone.
+	if _, ok := ch.attrCache[0]; !ok {
+		t.Error("line 0 was evicted; Ctrl+Home would no longer be instant")
 	}
 }
 
@@ -224,6 +250,17 @@ func TestColorer_HighlighterNilSession(t *testing.T) {
 		t.Errorf("Expected nil, nil for nil session, got %v, %v", attrs, state)
 	}
 	_ = ch.Close()
+}
+func TestColorer_StoreAttrsPreservesTopLines(t *testing.T) {
+	ch := &ColorerHighlighter{
+		attrCache: make(map[int][]uint64),
+		bgCache:   make(map[int]uint64),
+	}
+
+	ch.storeAttrs(0, []uint64{100}, 0)
+	if _, ok := ch.attrCache[0]; !ok {
+		t.Error("Expected line 0 to be present")
+	}
 }
 
 func TestColorer_DownloadColorerSchemas(t *testing.T) {
@@ -292,5 +329,88 @@ Loop:
 
 	if !SchemasExist() {
 		t.Error("SchemasExist returned false after successful extraction")
+	}
+}
+
+func TestColorer_ContextPlan(t *testing.T) {
+	if start, reset := colorerContextPlan(120, 140); reset || start != 120 {
+		t.Errorf("a short step forward must feed the session, got start=%d reset=%v", start, reset)
+	}
+	if start, reset := colorerContextPlan(7, 7); reset || start != 7 {
+		t.Errorf("no move, no work, got start=%d reset=%v", start, reset)
+	}
+	if start, reset := colorerContextPlan(0, hlColorerForward); reset || start != 0 {
+		t.Error("the forward limit itself must still be reached by feeding")
+	}
+	// A jump of any size costs the same: the anchor, and nothing before it.
+	start, reset := colorerContextPlan(0, 500000)
+	if !reset {
+		t.Error("a jump past the forward limit must re-anchor")
+	}
+	if start != 500000-hlColorerContext {
+		t.Errorf("anchor placed at %d, expected %d lines of context", start, hlColorerContext)
+	}
+	// Backwards is a re-anchor whatever the distance: the session cannot be
+	// rewound, only thrown away.
+	if start, reset := colorerContextPlan(200, 199); !reset || start != 0 {
+		t.Errorf("a step back near the top must re-anchor from 0, got start=%d reset=%v", start, reset)
+	}
+	if _, reset := colorerContextPlan(500000, 499000); !reset {
+		t.Error("a step back must re-anchor")
+	}
+	if start, _ := colorerContextPlan(500, 10); start != 0 {
+		t.Errorf("the anchor must not go below the first line, got %d", start)
+	}
+}
+
+func TestColorer_ForgetPlan(t *testing.T) {
+	// Fresh session, nothing fed yet past the batch threshold: no call.
+	if _, do := colorerForgetPlan(500, 0); do {
+		t.Error("under hlColorerForgetEvery lines fed, forgetBehind should not call yet")
+	}
+	// Right at the threshold, with a keep window that leaves something to
+	// drop: it should call, and land exactly hlColorerKeepBehind behind the
+	// parse position.
+	keepFrom, do := colorerForgetPlan(hlColorerForgetEvery, 0)
+	if !do {
+		t.Fatal("at the threshold forgetBehind should call")
+	}
+	if want := hlColorerForgetEvery - hlColorerKeepBehind; keepFrom != want {
+		t.Errorf("keepFrom = %d, want %d", keepFrom, want)
+	}
+	// Called again immediately after: not enough new lines fed since the
+	// last cut, so no second wasm call for the same ground.
+	if _, do := colorerForgetPlan(hlColorerForgetEvery, keepFrom); do {
+		t.Error("forgetBehind should not repeat work it already did")
+	}
+	// A fresh anchor sets forgottenUpTo to the anchor itself (resetSessionAt
+	// does this): nothing to forget until hlColorerForgetEvery more lines
+	// are fed from there, even if parsedIdx is a large absolute number.
+	if _, do := colorerForgetPlan(500000, 500000); do {
+		t.Error("right after a re-anchor there is nothing new to forget")
+	}
+	if _, do := colorerForgetPlan(500000+hlColorerForgetEvery-1, 500000); do {
+		t.Error("one line short of the threshold should still not call")
+	}
+	if _, do := colorerForgetPlan(500000+hlColorerForgetEvery, 500000); !do {
+		t.Error("hlColorerForgetEvery lines after a re-anchor should call")
+	}
+}
+
+func TestColorer_DropFromForgetsColours(t *testing.T) {
+	ch := &ColorerHighlighter{}
+	for i := 0; i < 10; i++ {
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
+	}
+
+	ch.DropFrom(4)
+	if _, ok := ch.attrCache[4]; ok {
+		t.Error("the edited line kept its colours")
+	}
+	if _, ok := ch.attrCache[9]; ok {
+		t.Error("lines below the edit kept their colours")
+	}
+	if _, ok := ch.attrCache[3]; !ok {
+		t.Error("lines above the edit lost theirs for nothing")
 	}
 }

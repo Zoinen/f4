@@ -62,13 +62,15 @@ func (c *SudoClient) Connect() error {
 
 	// Start internal askpass server to handle dialog requests from the helper process
 	askPassSock := getAskpassSocketPath(os.Getpid())
+	os.Remove(askPassSock)
 	go c.runAskpassServer(askPassSock)
 	// We don't remove askPassSock here, it will be removed by the server goroutine or on exit
 
 	cmd := exec.Command("sudo", "-A", c.appPath, "--sudo-dispatcher", c.sockPath)
 
 	env := os.Environ()
-	env = append(env, "SUDO_ASKPASS="+c.appPath)
+	absApp, _ := filepath.Abs(c.appPath)
+	env = append(env, "SUDO_ASKPASS="+absApp)
 	env = append(env, fmt.Sprintf("F4_ASKPASS_PARENT=%d", os.Getpid()))
 	// Ensure the child has access to basic path
 	env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")

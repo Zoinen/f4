@@ -25,6 +25,8 @@ type historySearch struct {
 	prefixOnly    bool
 	showSecond    bool
 	secondWidth   int
+	supportsLocks bool
+	showDetails   bool
 	onLockToggled func()
 	onCtrlF10     func(HistoryRecord)
 }
@@ -39,6 +41,15 @@ type historySearchEntry struct {
 }
 
 func newHistorySearch(menu *vtui.VMenu, items []HistoryRecord, hint string) *historySearch {
+	menu.ColorTextIdx = vtui.ColDialogText
+	menu.ColorSelectedTextIdx = vtui.ColDialogSelectedButton
+	menu.ColorHighlightIdx = vtui.ColDialogHighlightText
+	menu.ColorSelectedHighlightIdx = vtui.ColDialogHighlightSelectedButton
+	menu.ColorBoxIdx = vtui.ColDialogBox
+	menu.ColorTitleIdx = vtui.ColDialogBoxTitle
+	if menu.ScrollBar != nil {
+		menu.ScrollBar.ColorIdx = vtui.ColDialogBox
+	}
 	s := &historySearch{
 		menu:  menu,
 		title: menu.GetTitle(),
@@ -197,7 +208,7 @@ func (s *historySearch) processKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 
-	if e.VirtualKeyCode == vtinput.VK_F3 && !shift && !ctrl && !alt {
+	if s.showDetails && e.VirtualKeyCode == vtinput.VK_F3 && !shift && !ctrl && !alt {
 		_, rec, ok := s.selected()
 		if ok {
 			tStr := "None"
@@ -209,7 +220,7 @@ func (s *historySearch) processKey(e *vtinput.InputEvent) bool {
 		}
 		return true
 	}
-	if e.VirtualKeyCode == vtinput.VK_INSERT && !shift && !ctrl && !alt {
+	if s.supportsLocks && e.VirtualKeyCode == vtinput.VK_INSERT && !shift && !ctrl && !alt {
 		idx, _, ok := s.selected()
 		if ok {
 			s.all[idx].Lock = !s.all[idx].Lock
@@ -304,7 +315,7 @@ func (s *historySearch) cleanup() {
 
 func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 	p := vtui.NewPainter(scr)
-	titleAttr := vtui.Palette[vtui.ColMenuTitle]
+	titleAttr := vtui.Palette[s.menu.ColorTitleIdx]
 	if s.menu.IsFocused() {
 		titleAttr = vtui.Palette[vtui.ColDialogHighlightBoxTitle]
 	}
@@ -324,11 +335,11 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 		text := item.Text
 		_, highlights := historySearchMatch(text, s.query, s.prefixOnly)
 
-		baseAttr := vtui.Palette[vtui.ColMenuText]
-		highlightAttr := vtui.Palette[vtui.ColMenuHighlight]
+		baseAttr := vtui.Palette[s.menu.ColorTextIdx]
+		highlightAttr := vtui.Palette[s.menu.ColorHighlightIdx]
 		if itemIdx == s.menu.SelectPos {
-			baseAttr = vtui.Palette[vtui.ColMenuSelectedText]
-			highlightAttr = vtui.Palette[vtui.ColMenuSelectedHighlight]
+			baseAttr = vtui.Palette[s.menu.ColorSelectedTextIdx]
+			highlightAttr = vtui.Palette[s.menu.ColorSelectedHighlightIdx]
 		}
 
 		y := s.menu.Y1 + 1 + row
@@ -345,10 +356,9 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 			lockChar = uint64('*')
 		}
 
-		cells := []vtui.CharInfo{
-			{Char: uint64(' '), Attributes: baseAttr},
-			{Char: lockChar, Attributes: vtui.Palette[vtui.ColMenuHighlight]},
-			{Char: uint64(' '), Attributes: baseAttr},
+		cells := make([]vtui.CharInfo, 0, len([]rune(text))+1)
+		if s.supportsLocks {
+			cells = append(cells, vtui.CharInfo{Char: lockChar, Attributes: baseAttr})
 		}
 		for i, r := range []rune(text) {
 			attr := baseAttr
@@ -426,7 +436,7 @@ func truncateHistoryPath(path string, maxWidth int) string {
 }
 
 func (s *historySearch) drawSearchTitle(scr *vtui.ScreenBuf, titleAttr uint64) {
-	highlightAttr := vtui.Palette[vtui.ColMenuHighlight]
+	highlightAttr := vtui.Palette[s.menu.ColorHighlightIdx]
 	query := string(s.query)
 	if s.prefixOnly {
 		query += "*"

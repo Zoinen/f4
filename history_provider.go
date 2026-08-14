@@ -132,6 +132,9 @@ func (hp *F4HistoryProvider) LoadHistory(id string) []string {
 
 func (hp *F4HistoryProvider) SaveHistory(id string, history []string) {
 	hp.mu.Lock()
+	if hp.data == nil {
+		hp.data = make(map[string][]string)
+	}
 	hp.data[id] = history
 	hp.mu.Unlock()
 	hp.save()
@@ -149,13 +152,92 @@ func (hp *F4HistoryProvider) LoadRichHistory(id string) []HistoryRecord {
 
 func (hp *F4HistoryProvider) SaveRichHistory(id string, history []HistoryRecord) {
 	hp.mu.Lock()
+	if hp.rich == nil {
+		hp.rich = make(map[string][]HistoryRecord)
+	}
 	hp.rich[id] = history
 	hp.mu.Unlock()
 	hp.save()
 }
 
+func limitRichHistory(history []HistoryRecord, limit int) []HistoryRecord {
+	if limit <= 0 || len(history) <= limit {
+		return history
+	}
+	locked := 0
+	for _, record := range history {
+		if record.Lock {
+			locked++
+		}
+	}
+	unlockedBudget := limit - locked
+	if unlockedBudget < 0 {
+		unlockedBudget = 0
+	}
+	kept := make([]HistoryRecord, 0, limit)
+	for _, record := range history {
+		if record.Lock {
+			kept = append(kept, record)
+			continue
+		}
+		if unlockedBudget > 0 {
+			kept = append(kept, record)
+			unlockedBudget--
+		}
+	}
+	return kept
+}
+
+func loadFolderHistoryRecords(provider vtui.HistoryProvider) ([]HistoryRecord, *F4HistoryProvider) {
+	hp, _ := provider.(*F4HistoryProvider)
+	plain := provider.LoadHistory("folders")
+	if hp == nil {
+		records := make([]HistoryRecord, 0, len(plain))
+		for _, path := range plain {
+			records = append(records, HistoryRecord{Name: path})
+		}
+		return records, nil
+	}
+	rich := hp.LoadRichHistory("folders")
+	records := make([]HistoryRecord, 0, len(plain))
+	for _, path := range plain {
+		var record HistoryRecord
+		for _, candidate := range rich {
+			if sameFolderHistoryPath(candidate.Name, path) {
+				record = candidate
+				break
+			}
+		}
+		record.Name = path
+		records = append(records, record)
+	}
+	return records, hp
+}
+
+func saveFolderHistoryRecords(hp *F4HistoryProvider, records []HistoryRecord) {
+	if hp == nil {
+		return
+	}
+	hp.SaveRichHistory("folders", records)
+	hp.SaveHistory("folders", extractNames(records))
+}
+
 func AddFolderHistory(path string) {
 	if path == "" || path == "." || vtui.GlobalHistoryProvider == nil {
+		return
+	}
+	if records, hp := loadFolderHistoryRecords(vtui.GlobalHistoryProvider); hp != nil {
+		current := HistoryRecord{Name: path}
+		newHistory := []HistoryRecord{current}
+		for _, record := range records {
+			if sameFolderHistoryPath(record.Name, path) {
+				newHistory[0].Lock = record.Lock
+				continue
+			}
+			newHistory = append(newHistory, record)
+		}
+		newHistory = limitRichHistory(newHistory, 100)
+		saveFolderHistoryRecords(hp, newHistory)
 		return
 	}
 	h := vtui.GlobalHistoryProvider.LoadHistory("folders")

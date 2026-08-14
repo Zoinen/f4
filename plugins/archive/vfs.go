@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -62,10 +63,12 @@ type nopWriteCloser struct {
 func (n *nopWriteCloser) Close() error { return nil }
 
 type ArchiveVFS struct {
-	mu        sync.Mutex
-	parent    vfs.VFS
-	arcPath   string
-	innerPath string
+	mu          sync.Mutex
+	parent      vfs.VFS
+	arcPath     string
+	backingPath string
+	format      string
+	innerPath   string
 
 	fsys   archive.FileSystem
 	closer io.Closer
@@ -80,8 +83,8 @@ func (v *ArchiveVFS) IsAtRoot() bool {
 }
 
 func (v *ArchiveVFS) activePath() string {
-	if f, ok := v.closer.(*os.File); ok {
-		return f.Name()
+	if v.backingPath != "" {
+		return v.backingPath
 	}
 	if osvfs, ok := v.parent.(*vfs.OSVFS); ok {
 		absPath, _ := osvfs.Abs(v.arcPath)
@@ -90,90 +93,336 @@ func (v *ArchiveVFS) activePath() string {
 	return v.arcPath
 }
 
+func (v *ArchiveVFS) ensureFSLocked() error {
+	if v.fsys != nil {
+		return nil
+	}
+	if v.cleanupTimer == nil || v.activePath() == "" {
+		return fmt.Errorf("archive VFS is closed")
+	}
+	reopened, err := archive.OpenFS(v.activePath(), archive.Options{})
+	if err != nil {
+		return err
+	}
+	v.fsys = reopened
+	return nil
+}
+
+func (v *ArchiveVFS) cancelCleanupLocked() {
+	if v.cleanupTimer != nil {
+		v.cleanupTimer.Stop()
+		v.cleanupTimer = nil
+	}
+}
+
+func (v *ArchiveVFS) finishNonHandleOperationLocked() {
+	if v.isClosed && v.activeCount == 0 && (v.fsys != nil || v.closer != nil) {
+		v.startCleanupTimer()
+	}
+}
+
 func NewArchiveVFS(parent vfs.VFS, path string) (*ArchiveVFS, error) {
-	var err error
-	var finalPath string
-	var closer io.Closer
+	return NewArchiveVFSContext(context.Background(), parent, path)
+}
 
-	if osvfs, ok := parent.(*vfs.OSVFS); ok {
-		finalPath, _ = osvfs.Abs(path)
-	} else {
-		rc, openErr := parent.Open(context.Background(), path)
-		if openErr != nil {
-			return nil, openErr
-		}
-
-		tmp, errTemp := os.CreateTemp("", "f4nested-*")
-		if errTemp != nil {
-			rc.Close()
-			return nil, errTemp
-		}
-		if _, errCopy := io.Copy(tmp, ctxReader{rc, context.Background()}); errCopy != nil {
-			rc.Close()
-			tmp.Close()
-			os.Remove(tmp.Name())
-			return nil, errCopy
-		}
-		rc.Close()
-		finalPath = tmp.Name()
-		closer = tmp
+func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath string) (*ArchiveVFS, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if parent == nil {
+		return nil, fmt.Errorf("archive parent VFS is nil")
 	}
 
-	fsys, err := archive.OpenFS(finalPath, archive.Options{})
+	canonicalPath := cleanArchiveRootPath(archivePath)
+	displayName := parent.Base(archivePath)
+	if displayName == "" {
+		displayName = path.Base(strings.ReplaceAll(archivePath, "\\", "/"))
+	}
+	format := archive.DetectFormat(displayName)
+	var finalPath string
+	var closer io.Closer
+	if osvfs, ok := parent.(*vfs.OSVFS); ok {
+		var err error
+		finalPath, err = osvfs.Abs(archivePath)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		lease, err := acquireArchiveMaterialization(ctx, parent, archivePath, displayName)
+		if err != nil {
+			return nil, err
+		}
+		finalPath = lease.Path()
+		closer = lease
+	}
+
+	fsys, cleanupTransferred, err := openArchiveFSWithContext(ctx, finalPath, displayName, closer)
 	if err != nil {
-		if closer != nil {
-			closer.Close()
-			os.Remove(finalPath)
+		if closer != nil && !cleanupTransferred {
+			_ = closer.Close()
 		}
 		return nil, err
 	}
 
 	return &ArchiveVFS{
-		parent:    parent,
-		arcPath:   path,
-		innerPath: ".",
-		fsys:      fsys,
-		closer:    closer,
+		parent: parent, arcPath: canonicalPath, backingPath: finalPath, format: format,
+		innerPath: ".", fsys: fsys, closer: closer,
 	}, nil
+}
+
+type archiveFSOpenResult struct {
+	fsys archive.FileSystem
+	err  error
+}
+
+func openArchiveFSWithContext(ctx context.Context, localPath, displayName string, backing io.Closer) (archive.FileSystem, bool, error) {
+	result := make(chan archiveFSOpenResult, 1)
+	go func() {
+		fsys, err := archive.OpenFS(localPath, archive.Options{})
+		result <- archiveFSOpenResult{fsys: fsys, err: err}
+	}()
+
+	update, reporter := archiveProgressTargets(ctx)
+	ticker := time.NewTicker(ProgressTickerInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case opened := <-result:
+			if err := archiveOperationCancelled(ctx, reporter); err != nil {
+				if opened.fsys != nil {
+					_ = opened.fsys.Close()
+				}
+				return nil, false, err
+			}
+			if opened.err == nil {
+				if update != nil {
+					update("Opening archive...", 100)
+				}
+				if reporter != nil {
+					reporter.UpdateTransfer("Opening", displayName, 100, "Archive ready", 100, "")
+				}
+			}
+			return opened.fsys, false, opened.err
+		case <-ctx.Done():
+			// OpenFS has no context-aware entry point. Return cancellation now,
+			// then close its late result so neither a decoder nor an fd leaks.
+			go func() {
+				opened := <-result
+				if opened.fsys != nil {
+					_ = opened.fsys.Close()
+				}
+				if backing != nil {
+					_ = backing.Close()
+				}
+			}()
+			return nil, backing != nil, ctx.Err()
+		case <-ticker.C:
+			if err := archiveOperationCancelled(ctx, reporter); err != nil {
+				go func() {
+					opened := <-result
+					if opened.fsys != nil {
+						_ = opened.fsys.Close()
+					}
+					if backing != nil {
+						_ = backing.Close()
+					}
+				}()
+				return nil, backing != nil, err
+			}
+			if update != nil {
+				update("Opening archive...", -1)
+			}
+			if reporter != nil {
+				reporter.UpdateTransfer("Opening", displayName, -1, "Reading archive index...", -1, "")
+			}
+		}
+	}
+}
+
+func cleanArchiveRootPath(value string) string {
+	if vfs.IsURIPath(value) {
+		return strings.TrimRight(value, "\\/")
+	}
+	return filepath.Clean(value)
+}
+
+func archivePathHasPrefix(candidate, root string) bool {
+	_, ok := archiveRelativePath(candidate, root)
+	return ok
+}
+
+func archiveRelativePath(candidate, root string) (string, bool) {
+	if vfs.IsURIPath(root) {
+		if candidate == root {
+			return ".", true
+		}
+		if !strings.HasPrefix(candidate, root) || len(candidate) <= len(root) {
+			return "", false
+		}
+		next := candidate[len(root)]
+		if next != '/' && next != '\\' {
+			return "", false
+		}
+		return strings.TrimLeft(candidate[len(root):], "\\/"), true
+	}
+	cleanRoot := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(root, "\\", "/")))
+	cleanCandidate := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(candidate, "\\", "/")))
+	relative, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return "", false
+	}
+	return filepath.ToSlash(relative), true
+}
+
+func archivePathJoin(root, inner string) string {
+	inner = strings.TrimLeft(strings.ReplaceAll(inner, "\\", "/"), "/")
+	inner = path.Clean(inner)
+	if inner == "." || inner == "" {
+		return root
+	}
+	if vfs.IsURIPath(root) {
+		return strings.TrimRight(root, "\\/") + "/" + inner
+	}
+	return filepath.Join(root, filepath.FromSlash(inner))
+}
+
+func (v *ArchiveVFS) resolveInnerPath(candidate string) (string, error) {
+	root := v.arcPath
+	if candidate == "" || candidate == "." {
+		if v.innerPath == "" {
+			return ".", nil
+		}
+		return v.innerPath, nil
+	}
+	if relative, owned := archiveRelativePath(candidate, root); owned {
+		if relative == "." {
+			return ".", nil
+		}
+		return cleanArchiveInnerPath(relative)
+	}
+	if vfs.IsURIPath(candidate) || filepath.IsAbs(candidate) || path.IsAbs(candidate) || filepath.VolumeName(candidate) != "" {
+		return "", fmt.Errorf("path escapes archive: %s", candidate)
+	}
+	inner := path.Join(v.innerPath, strings.ReplaceAll(candidate, "\\", "/"))
+	return cleanArchiveInnerPath(inner)
+}
+
+func cleanArchiveInnerPath(inner string) (string, error) {
+	inner = path.Clean(strings.TrimLeft(strings.ReplaceAll(inner, "\\", "/"), "/"))
+	if inner == "" || inner == "." {
+		return ".", nil
+	}
+	if inner == ".." || strings.HasPrefix(inner, "../") {
+		return "", fmt.Errorf("path escapes archive root")
+	}
+	return inner, nil
+}
+
+// cleanArchiveExtractionPath converts an archive member name to the only form
+// which may be matched or joined to an extraction destination. Archive member
+// names are untrusted: filepath.Join would otherwise let an entry such as
+// "folder/../../outside" escape the selected destination.
+func cleanArchiveExtractionPath(name string) (string, error) {
+	if strings.IndexByte(name, 0) >= 0 {
+		return "", fmt.Errorf("archive entry path contains NUL")
+	}
+
+	normalized := strings.ReplaceAll(name, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || hasWindowsArchiveVolume(normalized) {
+		return "", fmt.Errorf("archive entry path is absolute")
+	}
+
+	cleaned := path.Clean(normalized)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("archive entry path escapes archive root")
+	}
+	return cleaned, nil
+}
+
+func hasWindowsArchiveVolume(name string) bool {
+	return len(name) >= 2 && name[1] == ':' &&
+		((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))
+}
+
+func archiveExtractionPathSelected(name string, selected map[string]bool) bool {
+	for selectedPath := range selected {
+		if selectedPath == "." || name == selectedPath || strings.HasPrefix(name, selectedPath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func archiveExtractionRelativePath(name, innerPath string) (string, error) {
+	cleanInner, err := cleanArchiveExtractionPath(innerPath)
+	if err != nil {
+		return "", err
+	}
+	if cleanInner == "." {
+		return name, nil
+	}
+	if name == cleanInner {
+		return ".", nil
+	}
+	prefix := cleanInner + "/"
+	if !strings.HasPrefix(name, prefix) {
+		return "", fmt.Errorf("archive entry path is outside the current archive folder")
+	}
+	return strings.TrimPrefix(name, prefix), nil
+}
+
+func archiveExtractionTarget(dstVfs vfs.VFS, dstDir, name, innerPath string) (string, error) {
+	relative, err := archiveExtractionRelativePath(name, innerPath)
+	if err != nil {
+		return "", err
+	}
+	relative, err = cleanArchiveExtractionPath(relative)
+	if err != nil {
+		return "", err
+	}
+
+	target := dstVfs.Join(dstDir, filepath.FromSlash(relative))
+	baseAbs, err := dstVfs.Abs(dstDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve archive extraction destination: %w", err)
+	}
+	targetAbs, err := dstVfs.Abs(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve archive extraction target: %w", err)
+	}
+	resolvedRelative, inside := archiveRelativePath(targetAbs, baseAbs)
+	if !inside || (resolvedRelative == "." && relative != ".") {
+		return "", fmt.Errorf("archive entry path escapes extraction destination")
+	}
+	return target, nil
 }
 
 func (v *ArchiveVFS) GetPath() string {
 	if v.innerPath == "." || v.innerPath == "" {
-		return filepath.Clean(v.arcPath)
+		return archivePathJoin(v.arcPath, ".")
 	}
 	// Мы возвращаем нативный путь ОС, объединяя путь к архиву и внутренний путь
-	return filepath.Join(v.arcPath, filepath.FromSlash(v.innerPath))
+	return archivePathJoin(v.arcPath, v.innerPath)
 }
-func (v *ArchiveVFS) IsAbs(p string) bool { return path.IsAbs(p) || strings.HasPrefix(p, v.arcPath) }
+func (v *ArchiveVFS) IsAbs(candidate string) bool {
+	return archivePathHasPrefix(candidate, v.arcPath) || (!vfs.IsURIPath(candidate) && (filepath.IsAbs(candidate) || path.IsAbs(candidate)))
+}
 
 func (v *ArchiveVFS) SetPath(p string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-
-	cleanP := filepath.ToSlash(filepath.Clean(p))
-	prefix := filepath.ToSlash(filepath.Clean(v.arcPath))
-
-	var newInner string
-
-	if strings.HasPrefix(cleanP, prefix) {
-		newInner = strings.TrimPrefix(cleanP, prefix)
-	} else if filepath.IsAbs(p) || filepath.VolumeName(p) != "" {
-		return fmt.Errorf("path escapes archive: %s", p)
-	} else {
-		if v.innerPath == "" || v.innerPath == "." {
-			newInner = cleanP
-		} else {
-			newInner = path.Join(v.innerPath, cleanP)
-		}
+	defer v.finishNonHandleOperationLocked()
+	if err := v.ensureFSLocked(); err != nil {
+		return err
 	}
+	v.cancelCleanupLocked()
 
-	newInner = strings.TrimPrefix(newInner, "/")
-	newInner = path.Clean(newInner)
-
-	if newInner == "" || newInner == "." {
-		newInner = "."
-	} else if strings.HasPrefix(newInner, "..") {
-		return fmt.Errorf("path escapes archive root")
+	newInner, err := v.resolveInnerPath(p)
+	if err != nil {
+		return err
 	}
 
 	if v.fsys != nil && newInner != "." {
@@ -191,36 +440,26 @@ func (v *ArchiveVFS) SetPath(p string) error {
 }
 
 func (v *ArchiveVFS) ReadDir(ctx context.Context, path string, onChunk func([]vfs.VFSItem)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	v.mu.Lock()
-	if v.fsys == nil {
+	if err := v.ensureFSLocked(); err != nil {
 		v.mu.Unlock()
-		return fmt.Errorf("archive VFS is closed")
+		return err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
-	}
-	fsPath := v.innerPath
-	if path != "" && path != v.GetPath() {
-		if path == v.arcPath || path == v.arcPath+"/" || path == v.arcPath+"\\" {
-			fsPath = "."
-		} else {
-			fsPath = strings.TrimPrefix(path, v.arcPath)
-			fsPath = strings.TrimPrefix(fsPath, "/")
-			fsPath = strings.TrimPrefix(fsPath, "\\")
-		}
-	}
-
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath = "."
-	if normPath != normArcPath {
-		fsPath = strings.TrimPrefix(normPath, normArcPath)
-		fsPath = strings.TrimPrefix(fsPath, "/")
+	v.cancelCleanupLocked()
+	closedView := v.isClosed
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil {
+		v.finishNonHandleOperationLocked()
+		v.mu.Unlock()
+		return pathErr
 	}
 
 	entries, err := fs.ReadDir(v.fsys, fsPath)
 	if err != nil {
+		v.finishNonHandleOperationLocked()
 		v.mu.Unlock()
 		return err
 	}
@@ -238,28 +477,34 @@ func (v *ArchiveVFS) ReadDir(ctx context.Context, path string, onChunk func([]vf
 			IsHidden: strings.HasPrefix(name, "."),
 		})
 	}
+	if closedView {
+		v.finishNonHandleOperationLocked()
+	}
 	v.mu.Unlock()
-	onChunk(items)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if onChunk != nil {
+		onChunk(items)
+	}
 	return nil
 }
 
 func (v *ArchiveVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error) {
+	if err := ctx.Err(); err != nil {
+		return vfs.VFSItem{}, err
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.fsys == nil {
-		return vfs.VFSItem{}, fmt.Errorf("archive VFS is closed")
+	defer v.finishNonHandleOperationLocked()
+	if err := v.ensureFSLocked(); err != nil {
+		return vfs.VFSItem{}, err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
-	}
+	v.cancelCleanupLocked()
 
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath := "."
-	if normPath != normArcPath {
-		fsPath = strings.TrimPrefix(normPath, normArcPath)
-		fsPath = strings.TrimPrefix(fsPath, "/")
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil {
+		return vfs.VFSItem{}, pathErr
 	}
 
 	info, err := fs.Stat(v.fsys, fsPath)
@@ -321,7 +566,13 @@ func (w *archiveReadWrapper) TempPath() string {
 	return w.tmpPath
 }
 
-func (w *archiveReadWrapper) extractToTemp(ctx context.Context) {
+func (w *archiveReadWrapper) LocalPath() (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.tmpPath, w.extracted && w.tmpPath != ""
+}
+
+func (w *archiveReadWrapper) extractToTemp(ctx context.Context) error {
 	w.mu.Lock()
 	v := w.v
 	fsPath := w.fsPath
@@ -359,10 +610,11 @@ func (w *archiveReadWrapper) extractToTemp(ctx context.Context) {
 	}
 
 	if src == nil {
+		err := fmt.Errorf("no source file available for extraction")
 		w.mu.Lock()
-		w.err = fmt.Errorf("no source file available for extraction")
+		w.err = err
 		w.mu.Unlock()
-		return
+		return err
 	}
 
 	tmp, err := os.CreateTemp("", "f4arc-*")
@@ -373,7 +625,7 @@ func (w *archiveReadWrapper) extractToTemp(ctx context.Context) {
 		w.mu.Lock()
 		w.err = err
 		w.mu.Unlock()
-		return
+		return err
 	}
 
 	buf := make([]byte, 128*1024)
@@ -414,19 +666,26 @@ func (w *archiveReadWrapper) extractToTemp(ctx context.Context) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.f != nil {
-		w.f.Close()
-		w.f = nil
-	}
-
 	if loopErr != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
-		w.err = loopErr
+		if !errors.Is(loopErr, context.Canceled) && !errors.Is(loopErr, context.DeadlineExceeded) {
+			if w.f != nil {
+				w.f.Close()
+				w.f = nil
+			}
+			w.err = loopErr
+		}
+		return loopErr
 	} else {
+		if w.f != nil {
+			w.f.Close()
+			w.f = nil
+		}
 		w.tmpPath = tmp.Name()
 		w.tmpFile = tmp
 		w.extracted = true
+		return nil
 	}
 }
 
@@ -449,12 +708,16 @@ func (w *archiveReadWrapper) ReadAt(ctx context.Context, p []byte, off int64) (i
 		w.doneChan = make(chan struct{})
 		w.mu.Unlock()
 
-		w.extractToTemp(ctx)
+		attemptErr := w.extractToTemp(ctx)
 
 		w.mu.Lock()
 		w.extracting = false
 		close(w.doneChan)
 		w.doneChan = nil
+		if attemptErr != nil {
+			w.mu.Unlock()
+			return 0, attemptErr
+		}
 	}
 
 	if w.err != nil {
@@ -498,6 +761,9 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 }
 
 func formatSize(b int64) string {
+	if b < 0 {
+		return "?"
+	}
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%d B", b)
@@ -549,9 +815,21 @@ func extractWithProgress(ctx context.Context, src io.Reader, dst io.Writer, size
 		}
 	}()
 
+	report := func(current int64, percent int) {
+		if update != nil {
+			update(fmt.Sprintf("Extracting %s...", name), percent)
+		}
+		if reporter != nil {
+			elapsed := time.Since(startTime)
+			elapsedStr := fmt.Sprintf("Time: %02d:%02d:%02d", int(elapsed.Hours()), int(elapsed.Minutes())%60, int(elapsed.Seconds())%60)
+			reporter.UpdateTransfer("Extracting", name, percent, fmt.Sprintf("Extracting: %s / %s", formatSize(current), formatSize(size)), percent, elapsedStr)
+		}
+	}
+	report(0, 0)
+
 	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if err := archiveOperationCancelled(ctx, reporter); err != nil {
+			return err
 		}
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -571,14 +849,7 @@ func extractWithProgress(ctx context.Context, src io.Reader, dst io.Writer, size
 						pct = 100
 					}
 				}
-				if update != nil {
-					update(fmt.Sprintf("Extracting %s...", name), pct)
-				}
-				if reporter != nil {
-					elapsed := time.Since(startTime)
-					elapsedStr := fmt.Sprintf("Time: %02d:%02d:%02d", int(elapsed.Hours()), int(elapsed.Minutes())%60, int(elapsed.Seconds())%60)
-					reporter.UpdateTransfer("Extracting", name, pct, fmt.Sprintf("Extracting: %s / %s", formatSize(currentCopied), formatSize(size)), pct, elapsedStr)
-				}
+				report(currentCopied, pct)
 			}
 		}
 		if err != nil {
@@ -588,32 +859,30 @@ func extractWithProgress(ctx context.Context, src io.Reader, dst io.Writer, size
 			return err
 		}
 	}
+	report(atomic.LoadInt64(&copied), 100)
 	return nil
 }
 
 func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, error) {
-	v.mu.Lock()
-	if v.fsys == nil {
-		v.mu.Unlock()
-		return nil, fmt.Errorf("archive VFS is closed")
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
+	v.mu.Lock()
+	if err := v.ensureFSLocked(); err != nil {
+		v.mu.Unlock()
+		return nil, err
+	}
+	v.cancelCleanupLocked()
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil {
+		v.mu.Unlock()
+		return nil, pathErr
 	}
 
 	// Capture fsys and increment active count EARLY to protect it while unlocked.
 	v.activeCount++
 	fsys := v.fsys
 	v.mu.Unlock()
-
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath := "."
-	if normPath != normArcPath {
-		fsPath = strings.TrimPrefix(normPath, normArcPath)
-		fsPath = strings.TrimPrefix(fsPath, "/")
-	}
 
 	var update vfs.ProgressCallback
 	if val := ctx.Value(vfs.ProgressKey); val != nil {
@@ -656,19 +925,62 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 				if reporter != nil {
 					elapsed := time.Since(startTime)
 					elapsedStr := fmt.Sprintf("Time: %02d:%02d:%02d", int(elapsed.Hours()), int(elapsed.Minutes())%60, int(elapsed.Seconds())%60)
-					reporter.UpdateTransfer("Opening", filepath.Base(path), -1, msg, -1, elapsedStr)
+					reporter.UpdateTransfer("Opening", v.Base(path), -1, msg, -1, elapsedStr)
 				}
 			}
 		}
 	}()
+	cancelPoll := time.NewTicker(100 * time.Millisecond)
+	defer cancelPoll.Stop()
 
-	srcFile, err := fsys.Open(fsPath)
-	close(openDone)
-
-	if err != nil {
-		v.decrementActive()
-		return nil, err
+	type openResult struct {
+		file fs.File
+		err  error
 	}
+	result := make(chan openResult, 1)
+	go func() {
+		file, err := fsys.Open(fsPath)
+		result <- openResult{file: file, err: err}
+	}()
+	var srcFile fs.File
+	var err error
+	for srcFile == nil {
+		select {
+		case opened := <-result:
+			srcFile, err = opened.file, opened.err
+			if err == nil && srcFile == nil {
+				err = fmt.Errorf("archive returned an empty file handle")
+			}
+			if err != nil {
+				close(openDone)
+				v.decrementActive()
+				return nil, err
+			}
+		case <-ctx.Done():
+			close(openDone)
+			go func() {
+				opened := <-result
+				if opened.file != nil {
+					_ = opened.file.Close()
+				}
+				v.decrementActive()
+			}()
+			return nil, ctx.Err()
+		case <-cancelPoll.C:
+			if reporter != nil && reporter.IsCancelled() {
+				close(openDone)
+				go func() {
+					opened := <-result
+					if opened.file != nil {
+						_ = opened.file.Close()
+					}
+					v.decrementActive()
+				}()
+				return nil, context.Canceled
+			}
+		}
+	}
+	close(openDone)
 
 	info, err := srcFile.Stat()
 	var size int64
@@ -717,39 +1029,94 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 	}, nil
 }
 
-func (v *ArchiveVFS) ParentVFS() vfs.VFS      { return v.parent }
-func (v *ArchiveVFS) Join(e ...string) string { return filepath.ToSlash(filepath.Join(e...)) }
-func (v *ArchiveVFS) Abs(p string) (string, error) {
-	if v.IsAbs(p) {
-		return filepath.ToSlash(filepath.Clean(p)), nil
+func (v *ArchiveVFS) ParentVFS() vfs.VFS { return v.parent }
+func (v *ArchiveVFS) Join(elements ...string) string {
+	if len(elements) == 0 {
+		return ""
 	}
-	return v.Join(v.GetPath(), p), nil
+	if relative, owned := archiveRelativePath(elements[0], v.arcPath); owned {
+		inner := relative
+		for _, element := range elements[1:] {
+			inner = path.Join(inner, strings.ReplaceAll(element, "\\", "/"))
+		}
+		clean, err := cleanArchiveInnerPath(inner)
+		if err != nil {
+			return v.arcPath
+		}
+		return archivePathJoin(v.arcPath, clean)
+	}
+	if vfs.IsURIPath(elements[0]) {
+		joined := elements[0]
+		for _, element := range elements[1:] {
+			if element == "" || element == "." {
+				continue
+			}
+			joined = archivePathJoin(joined, element)
+		}
+		return joined
+	}
+	return filepath.Join(elements...)
 }
-func (v *ArchiveVFS) Base(p string) string { return filepath.Base(p) }
-func (v *ArchiveVFS) Dir(p string) string {
-	if p == v.arcPath {
+func (v *ArchiveVFS) Abs(candidate string) (string, error) {
+	if _, owned := archiveRelativePath(candidate, v.arcPath); owned {
+		return candidate, nil
+	}
+	if vfs.IsURIPath(candidate) {
+		return "", fmt.Errorf("path escapes archive: %s", candidate)
+	}
+	if filepath.IsAbs(candidate) || path.IsAbs(candidate) {
+		return filepath.Clean(candidate), nil
+	}
+	return filepath.Clean(v.Join(v.GetPath(), candidate)), nil
+}
+func (v *ArchiveVFS) Base(candidate string) string {
+	if candidate == v.arcPath {
+		return v.parent.Base(v.arcPath)
+	}
+	if relative, owned := archiveRelativePath(candidate, v.arcPath); owned {
+		return path.Base(relative)
+	}
+	return filepath.Base(candidate)
+}
+func (v *ArchiveVFS) Dir(candidate string) string {
+	if candidate == v.arcPath {
 		return v.parent.Dir(v.arcPath)
 	}
-	return filepath.ToSlash(filepath.Dir(p))
+	if relative, owned := archiveRelativePath(candidate, v.arcPath); owned {
+		parent := path.Dir(relative)
+		return archivePathJoin(v.arcPath, parent)
+	}
+	return filepath.Dir(candidate)
 }
 
 func (v *ArchiveVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, local := v.parent.(*vfs.OSVFS); !local {
+		return nil, fmt.Errorf("remote and nested archives are read-only")
+	}
 	v.mu.Lock()
-	if v.fsys == nil {
+	if err := v.ensureFSLocked(); err != nil {
 		v.mu.Unlock()
-		return nil, fmt.Errorf("archive VFS is closed")
+		return nil, err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
+	v.cancelCleanupLocked()
+
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil || fsPath == "." {
+		v.mu.Unlock()
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		return nil, fmt.Errorf("cannot replace archive root")
 	}
 
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath := strings.TrimPrefix(normPath, normArcPath)
-	fsPath = strings.TrimPrefix(fsPath, "/")
-
-	tmp, _ := os.CreateTemp("", "f4arc-write-*")
+	tmp, err := os.CreateTemp("", "f4arc-write-*")
+	if err != nil {
+		v.mu.Unlock()
+		return nil, err
+	}
 	v.activeCount++
 	v.mu.Unlock()
 
@@ -800,20 +1167,27 @@ func (w *archiveWriteWrapper) Close() error {
 }
 
 func (v *ArchiveVFS) MkDir(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, local := v.parent.(*vfs.OSVFS); !local {
+		return fmt.Errorf("remote and nested archives are read-only")
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.fsys == nil {
-		return fmt.Errorf("archive VFS is closed")
+	defer v.finishNonHandleOperationLocked()
+	if err := v.ensureFSLocked(); err != nil {
+		return err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
-	}
+	v.cancelCleanupLocked()
 
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath := strings.TrimPrefix(normPath, normArcPath)
-	fsPath = strings.TrimPrefix(fsPath, "/")
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil {
+		return pathErr
+	}
+	if fsPath == "." {
+		return fmt.Errorf("cannot create archive root")
+	}
 
 	if !strings.HasSuffix(fsPath, "/") {
 		fsPath += "/"
@@ -833,20 +1207,27 @@ func (v *ArchiveVFS) MkDir(ctx context.Context, path string) error {
 }
 
 func (v *ArchiveVFS) Remove(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, local := v.parent.(*vfs.OSVFS); !local {
+		return fmt.Errorf("remote and nested archives are read-only")
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.fsys == nil {
-		return fmt.Errorf("archive VFS is closed")
+	defer v.finishNonHandleOperationLocked()
+	if err := v.ensureFSLocked(); err != nil {
+		return err
 	}
-	if v.cleanupTimer != nil {
-		v.cleanupTimer.Stop()
-		v.cleanupTimer = nil
-	}
+	v.cancelCleanupLocked()
 
-	normPath := filepath.ToSlash(path)
-	normArcPath := filepath.ToSlash(v.arcPath)
-	fsPath := strings.TrimPrefix(normPath, normArcPath)
-	fsPath = strings.TrimPrefix(fsPath, "/")
+	fsPath, pathErr := v.resolveInnerPath(path)
+	if pathErr != nil {
+		return pathErr
+	}
+	if fsPath == "." {
+		return fmt.Errorf("cannot remove archive root")
+	}
 
 	upd, err := archive.NewUpdater(v.activePath(), archive.Options{})
 	if err != nil {
@@ -907,6 +1288,13 @@ func (v *ArchiveVFS) decrementActive() {
 func (v *ArchiveVFS) startCleanupTimer() {
 	if v.cleanupTimer != nil {
 		v.cleanupTimer.Stop()
+	}
+	// Release decoder file handles immediately (important on Windows), while
+	// retaining the backing lease for a short grace period. A late operation
+	// can reopen the decoder from the same backing without another download.
+	if v.fsys != nil {
+		_ = v.fsys.Close()
+		v.fsys = nil
 	}
 	// 2-second grace period of complete inactivity
 	v.cleanupTimer = time.AfterFunc(2*time.Second, func() {
@@ -974,25 +1362,35 @@ func runProgressTicker(ctx context.Context, done chan struct{}, reporter vfs.Tas
 	}
 }
 func (v *ArchiveVFS) CopyBulk(ctx context.Context, srcPaths []string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
-	v.mu.Lock()
-	if v.fsys == nil {
-		v.mu.Unlock()
-		return fmt.Errorf("archive VFS is closed")
+	if err := archiveOperationCancelled(ctx, reporter); err != nil {
+		return err
 	}
+	v.mu.Lock()
+	if err := v.ensureFSLocked(); err != nil {
+		v.mu.Unlock()
+		return err
+	}
+	v.cancelCleanupLocked()
+	v.activeCount++
+	innerPath := v.innerPath
+	absPath := v.activePath()
 	v.mu.Unlock()
+	defer v.decrementActive()
 
 	// Create a map of selected paths for fast O(1) lookup
 	selectedMap := make(map[string]bool)
 	for _, p := range srcPaths {
-		fullInner := p
-		if v.innerPath != "." && v.innerPath != "" {
-			fullInner = path.Join(v.innerPath, p)
+		fullInner := strings.ReplaceAll(p, "\\", "/")
+		if innerPath != "." && innerPath != "" {
+			fullInner = path.Join(innerPath, fullInner)
 		}
-		fullInner = strings.TrimPrefix(fullInner, "/")
-		selectedMap[fullInner] = true
+		cleanSelected, err := cleanArchiveExtractionPath(fullInner)
+		if err != nil {
+			return fmt.Errorf("unsafe selected archive path %q: %w", p, err)
+		}
+		selectedMap[cleanSelected] = true
 	}
 
-	absPath := v.activePath()
 	waitLock := true
 	if !vfs.GlobalArchiveLockManager.TryLock(absPath) {
 		// If "AutoQueue" is requested via Context (used by headless unit tests), bypass the UI prompt
@@ -1031,13 +1429,16 @@ func (v *ArchiveVFS) CopyBulk(ctx context.Context, srcPaths []string, dstVfs vfs
 	}
 	defer archiveFile.Close()
 
-	format := archive.DetectFormat(absPath)
-	if format == "zip" {
-		return v.copyBulkZip(ctx, archiveFile, selectedMap, dstVfs, dstDir, reporter)
-	} else if format == "tar" {
-		return v.copyBulkTar(ctx, archiveFile, selectedMap, dstVfs, dstDir, reporter)
+	format := v.format
+	if format == "" {
+		format = archive.DetectFormat(v.Base(v.arcPath))
 	}
-	return v.copyBulkFallback(ctx, archiveFile, selectedMap, dstVfs, dstDir, reporter)
+	if format == "zip" {
+		return v.copyBulkZip(ctx, archiveFile, selectedMap, innerPath, dstVfs, dstDir, reporter)
+	} else if format == "tar" {
+		return v.copyBulkTar(ctx, archiveFile, selectedMap, innerPath, dstVfs, dstDir, reporter)
+	}
+	return v.copyBulkFallback(ctx, archiveFile, selectedMap, innerPath, dstVfs, dstDir, reporter)
 }
 
 func (v *ArchiveVFS) openArchiveFile(ctx context.Context) (vfs.ReadAtCloser, error) {
@@ -1053,7 +1454,7 @@ func (v *ArchiveVFS) openArchiveFile(ctx context.Context) (vfs.ReadAtCloser, err
 	return v.parent.Open(ctx, v.arcPath)
 }
 
-func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
+func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, innerPath string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
 	zr, err := zip.NewReader(readerAtAdapter{r: f, ctx: ctx}, f.Size())
 	if err != nil {
 		return err
@@ -1079,18 +1480,19 @@ func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, select
 			return ctx.Err()
 		}
 
-		matched := false
-		for selPath := range selected {
-			if file.Name == selPath || strings.HasPrefix(file.Name, selPath+"/") {
-				matched = true
-				break
-			}
+		cleanName, err := cleanArchiveExtractionPath(file.Name)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", file.Name, err)
 		}
+		if cleanName == "." {
+			continue
+		}
+		matched := archiveExtractionPathSelected(cleanName, selected)
 
 		if !matched {
 			mu.Lock()
 			lastAction = "Locating"
-			lastFile = file.Name
+			lastFile = cleanName
 			lastPct = -1
 			mu.Unlock()
 			if TestSkipDelay > 0 {
@@ -1099,12 +1501,10 @@ func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, select
 			continue
 		}
 
-		relPath := file.Name
-		if v.innerPath != "." && v.innerPath != "" {
-			relPath = strings.TrimPrefix(relPath, v.innerPath)
-			relPath = strings.TrimPrefix(relPath, "/")
+		targetPath, err := archiveExtractionTarget(dstVfs, dstDir, cleanName, innerPath)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", file.Name, err)
 		}
-		targetPath := dstVfs.Join(dstDir, relPath)
 
 		if file.FileInfo().IsDir() {
 			dstVfs.MkDir(ctx, targetPath)
@@ -1200,7 +1600,7 @@ func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, select
 	return nil
 }
 
-func (v *ArchiveVFS) copyBulkTar(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
+func (v *ArchiveVFS) copyBulkTar(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, innerPath string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
 	tr := tar.NewReader(ctxReader{r: f, ctx: ctx})
 	var mu sync.Mutex
 	lastAction := "Locating"
@@ -1230,14 +1630,14 @@ func (v *ArchiveVFS) copyBulkTar(ctx context.Context, f vfs.ReadAtCloser, select
 			return err
 		}
 
-		cleanName := strings.TrimPrefix(hdr.Name, "/")
-		matched := false
-		for selPath := range selected {
-			if cleanName == selPath || strings.HasPrefix(cleanName, selPath+"/") {
-				matched = true
-				break
-			}
+		cleanName, err := cleanArchiveExtractionPath(hdr.Name)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", hdr.Name, err)
 		}
+		if cleanName == "." {
+			continue
+		}
+		matched := archiveExtractionPathSelected(cleanName, selected)
 
 		if !matched {
 			mu.Lock()
@@ -1251,12 +1651,10 @@ func (v *ArchiveVFS) copyBulkTar(ctx context.Context, f vfs.ReadAtCloser, select
 			continue
 		}
 
-		relPath := cleanName
-		if v.innerPath != "." && v.innerPath != "" {
-			relPath = strings.TrimPrefix(relPath, v.innerPath)
-			relPath = strings.TrimPrefix(relPath, "/")
+		targetPath, err := archiveExtractionTarget(dstVfs, dstDir, cleanName, innerPath)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", hdr.Name, err)
 		}
-		targetPath := dstVfs.Join(dstDir, relPath)
 
 		if hdr.Typeflag == tar.TypeDir {
 			dstVfs.MkDir(ctx, targetPath)
@@ -1342,7 +1740,7 @@ func (v *ArchiveVFS) copyBulkTar(ctx context.Context, f vfs.ReadAtCloser, select
 	return nil
 }
 
-func (v *ArchiveVFS) copyBulkFallback(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
+func (v *ArchiveVFS) copyBulkFallback(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, innerPath string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
 	var localPath string
 	if temp, ok := f.(*vfs.TempFileWrapper); ok && temp.TempPath != "" {
 		localPath = temp.TempPath
@@ -1389,20 +1787,15 @@ func (v *ArchiveVFS) copyBulkFallback(ctx context.Context, f vfs.ReadAtCloser, s
 			return ctx.Err()
 		}
 
-		cleanName := filepath.ToSlash(filepath.Clean(info.NameInArchive))
-		cleanName = strings.TrimPrefix(cleanName, "/")
-		cleanName = strings.TrimPrefix(cleanName, "./")
+		cleanName, err := cleanArchiveExtractionPath(info.NameInArchive)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", info.NameInArchive, err)
+		}
 		if cleanName == "." || cleanName == "" {
 			return nil
 		}
 
-		matched := false
-		for selPath := range selected {
-			if cleanName == selPath || strings.HasPrefix(cleanName, selPath+"/") {
-				matched = true
-				break
-			}
-		}
+		matched := archiveExtractionPathSelected(cleanName, selected)
 
 		size := info.Size()
 
@@ -1422,12 +1815,10 @@ func (v *ArchiveVFS) copyBulkFallback(ctx context.Context, f vfs.ReadAtCloser, s
 			return nil
 		}
 
-		relPath := cleanName
-		if v.innerPath != "." && v.innerPath != "" {
-			relPath = strings.TrimPrefix(relPath, v.innerPath)
-			relPath = strings.TrimPrefix(relPath, "/")
+		targetPath, err := archiveExtractionTarget(dstVfs, dstDir, cleanName, innerPath)
+		if err != nil {
+			return fmt.Errorf("unsafe archive entry %q: %w", info.NameInArchive, err)
 		}
-		targetPath := dstVfs.Join(dstDir, relPath)
 
 		if info.IsDir() {
 			dstVfs.MkDir(ctx, targetPath)

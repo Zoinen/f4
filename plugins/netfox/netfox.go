@@ -2,6 +2,7 @@ package netfox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,7 +23,14 @@ func (cr *ioCtxReader) Read(p []byte) (int, error) {
 	return cr.r.Read(p)
 }
 
-type NetFoxPlugin struct{}
+const (
+	netFoxEditConnectionCommandID = "netfox.edit-connection"
+	netFoxAddConnectionCommandID  = "netfox.add-connection"
+)
+
+type NetFoxPlugin struct {
+	registrations []vfs.Registration
+}
 
 type netFoxVFSWrapper struct {
 	*NetFoxVFS
@@ -54,23 +62,20 @@ func (w *netFoxVFSWrapper) ProcessPanelKey(app vfs.App, e *vtinput.InputEvent) b
 
 	// F4 -> Edit existing connection
 	if e.VirtualKeyCode == vtinput.VK_F4 && noMods {
-		name := app.GetSelectedName()
-		if name != "" && name != ".." && name != "<Add connection>" {
-			showConnectionDialog(app, w.NetFoxVFS, name)
-		}
+		editNetFoxConnection(app)
 		return true
 	}
 
 	// Shift+F4 -> Add new connection
 	if e.VirtualKeyCode == vtinput.VK_F4 && shift && !ctrl && !alt {
-		showConnectionDialog(app, w.NetFoxVFS, "")
+		addNetFoxConnection(app)
 		return true
 	}
 
 	// Enter on <Add connection>
 	if e.VirtualKeyCode == vtinput.VK_RETURN && noMods {
 		if app.GetSelectedName() == "<Add connection>" {
-			showConnectionDialog(app, w.NetFoxVFS, "")
+			addNetFoxConnection(app)
 			return true
 		}
 	}
@@ -86,7 +91,91 @@ func (w *netFoxVFSWrapper) ProcessPanelKey(app vfs.App, e *vtinput.InputEvent) b
 	return false
 }
 
+func activeNetFoxVFS(app vfs.App) (*NetFoxVFS, bool) {
+	if app == nil {
+		return nil, false
+	}
+	wrapper, ok := app.GetActivePanelVFS().(*netFoxVFSWrapper)
+	if !ok || wrapper == nil || wrapper.NetFoxVFS == nil {
+		return nil, false
+	}
+	return wrapper.NetFoxVFS, true
+}
+
+func netFoxCommandsVisible(app vfs.App) bool {
+	_, ok := activeNetFoxVFS(app)
+	return ok
+}
+
+func editNetFoxConnection(app vfs.App) {
+	netFoxVFS, ok := activeNetFoxVFS(app)
+	if !ok {
+		return
+	}
+	name := app.GetSelectedName()
+	if name == "" || name == ".." || name == "<Add connection>" {
+		return
+	}
+	showConnectionDialog(app, netFoxVFS, name)
+}
+
+func addNetFoxConnection(app vfs.App) {
+	netFoxVFS, ok := activeNetFoxVFS(app)
+	if !ok {
+		return
+	}
+	showConnectionDialog(app, netFoxVFS, "")
+}
+
 func (p *NetFoxPlugin) Init(api vfs.HostAPI) error {
+	registrations := make([]vfs.Registration, 0, 2)
+	rollback := func(err error) error {
+		for index := len(registrations) - 1; index >= 0; index-- {
+			registrations[index].Unregister()
+		}
+		return err
+	}
+	if contributions, ok := api.(vfs.ContributionHost); ok {
+		editRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             netFoxEditConnectionCommandID,
+			Location:       vfs.PluginCommandPanel,
+			Label:          "Edit connection",
+			LabelKey:       "NetFox.Command.EditConnection",
+			Description:    "Edit the selected NetFox connection",
+			DescriptionKey: "NetFox.Command.EditConnection.Desc",
+			SearchKeys:     []string{"NetFox.ConnectionTitle"},
+			Shortcut:       "F4",
+			Visible:        netFoxCommandsVisible,
+			Run:            editNetFoxConnection,
+		})
+		if err != nil {
+			return rollback(fmt.Errorf("NetFox: register edit-connection command: %w", err))
+		}
+		registrations = append(registrations, editRegistration)
+
+		addRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             netFoxAddConnectionCommandID,
+			Location:       vfs.PluginCommandPanel,
+			Label:          "Add connection",
+			LabelKey:       "NetFox.Command.AddConnection",
+			Description:    "Create a new NetFox connection",
+			DescriptionKey: "NetFox.Command.AddConnection.Desc",
+			SearchKeys:     []string{"NetFox.ConnectionTitle"},
+			Shortcut:       "Shift+F4",
+			Visible:        netFoxCommandsVisible,
+			Run:            addNetFoxConnection,
+		})
+		if err != nil {
+			return rollback(fmt.Errorf("NetFox: register add-connection command: %w", err))
+		}
+		registrations = append(registrations, addRegistration)
+	}
+
+	// sftp:// as a string, for every caller that has no stored connection
+	// to point at: the mount command line, an fstab line, a script.
+	if err := api.RegisterURIProvider(&sftpURIProvider{}); err != nil {
+		return rollback(fmt.Errorf("NetFox: register sftp URI provider: %w", err))
+	}
 	api.RegisterDrive("NetFox", func() vfs.VFS {
 		cfgDir := vfs.CustomConfigDir
 		if cfgDir == "" {
@@ -95,8 +184,16 @@ func (p *NetFoxPlugin) Init(api vfs.HostAPI) error {
 		}
 		return &netFoxVFSWrapper{NewNetFoxVFS(filepath.Join(cfgDir, "NetFox.json"))}
 	})
+	p.registrations = append(p.registrations, registrations...)
 	return nil
 }
 
-func (p *NetFoxPlugin) Close() error    { return nil }
+func (p *NetFoxPlugin) Close() error {
+	registrations := p.registrations
+	p.registrations = nil
+	for index := len(registrations) - 1; index >= 0; index-- {
+		registrations[index].Unregister()
+	}
+	return nil
+}
 func (p *NetFoxPlugin) GetName() string { return "NetFox" }

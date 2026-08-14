@@ -20,39 +20,6 @@ type PTY struct {
 	shellPgrp int
 }
 
-func NewPTY() (*PTY, error) {
-	ptmFd, err := unix.Open("/dev/ptm", unix.O_RDWR|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer unix.Close(ptmFd)
-
-	type ptmget struct {
-		Cfd int32
-		Sfd int32
-		Cn  [16]byte
-		Sn  [16]byte
-	}
-
-	var pg ptmget
-	const PTMGET = 0x40287401
-
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(ptmFd), PTMGET, uintptr(unsafe.Pointer(&pg)))
-	if errno != 0 {
-		return nil, errno
-	}
-	unix.CloseOnExec(int(pg.Cfd))
-	unix.CloseOnExec(int(pg.Sfd))
-
-	master := os.NewFile(uintptr(pg.Cfd), "/dev/ptmx")
-	slave := os.NewFile(uintptr(pg.Sfd), "slave")
-
-	return &PTY{
-		Master: master,
-		Slave:  slave,
-	}, nil
-}
-
 func (p *PTY) Write(b []byte) (int, error) {
 	return p.Master.Write(b)
 }

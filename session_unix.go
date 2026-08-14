@@ -118,7 +118,7 @@ func ManageSessions() {
 			if selected.PID == 0 {
 				startNewSession()
 			} else {
-				runClient(selected.SockPath)
+				runClient(selected.SockPath, selected.PID)
 			}
 			return
 		} else {
@@ -164,20 +164,27 @@ func startNewSession() {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	runClient(sockPath)
+	// The daemon's pid is known here. Letting runClient look it up instead
+	// would race: it resolves the pid through listSessions(), i.e. through
+	// the json that runServer writes *after* creating the socket, while the
+	// loop above waits only for the socket itself. Losing that race is
+	// silent — serverPID stays 0 and SIGWINCH is simply never forwarded, so
+	// a fresh session never learns that the terminal was resized.
+	runClient(sockPath, cmd.Process.Pid)
 }
 
-func runClient(sockPath string) {
+func runClient(sockPath string, serverPID int) {
 	vtui.DebugLog("CLIENT: Start runClient, target socket: %s", sockPath)
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		vtui.DebugLog("CLIENT: WARNING: os.Stdin (fd %d) is not a terminal!", os.Stdin.Fd())
 	}
 
-	var serverPID int
-	for _, s := range listSessions() {
-		if s.SockPath == sockPath {
-			serverPID = s.PID
-			break
+	if serverPID <= 0 {
+		for _, s := range listSessions() {
+			if s.SockPath == sockPath {
+				serverPID = s.PID
+				break
+			}
 		}
 	}
 	if serverPID > 0 {
@@ -216,6 +223,7 @@ func runClient(sockPath string) {
 	n, oobn, err := conn.WriteMsgUnix([]byte("ATTACH"), oob, raddr)
 	if err != nil {
 		vtui.DebugLog("CLIENT: ATTACH FAILURE: Failed to send FDs to daemon at %s: %v", sockPath, err)
+		syscall.Close(notifyPipe[1])
 		return
 	}
 	vtui.DebugLog("CLIENT: FDs transmitted (sent %d bytes, %d oob). Relinquishing terminal control.", n, oobn)
@@ -223,8 +231,46 @@ func runClient(sockPath string) {
 
 	vtui.DebugLog("CLIENT: Waiting for server signal on pipe %d...", notifyPipe[0])
 	dummy := make([]byte, 1)
-	nRead, err := syscall.Read(notifyPipe[0], dummy)
+	var nRead int
+	for {
+		nRead, err = syscall.Read(notifyPipe[0], dummy)
+		// Go installs its signal handlers with SA_RESTART, so this is rare
+		// rather than impossible. Returning on EINTR would hand the shell
+		// its prompt back while the daemon still owns the terminal and is
+		// drawing into it.
+		if err == syscall.EINTR {
+			continue
+		}
+		break
+	}
 	vtui.DebugLog("CLIENT: Server released pipe. nRead=%d, err=%v", nRead, err)
+}
+
+// setCloseOnExec marks each fd FD_CLOEXEC. Used on descriptors received over
+// SCM_RIGHTS, which the kernel never flags this way on their own — see the
+// call site in runServer for why that matters. Failures are logged, not
+// fatal: the attach can still proceed, just without the safety net.
+func setCloseOnExec(fds []int) {
+	for _, fd := range fds {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+			vtui.DebugLog("SERVER: WARNING: failed to set FD_CLOEXEC on fd %d: %v", fd, err)
+		}
+	}
+}
+
+// clearNonBlock clears O_NONBLOCK on f, going through the libc fcntl(2) stub
+// via unix.FcntlInt rather than a raw syscall — see the call site in
+// runServer for why that distinction matters on OpenBSD. Failures are
+// logged, not fatal.
+func clearNonBlock(f *os.File) {
+	flags, err := unix.FcntlInt(f.Fd(), unix.F_GETFL, 0)
+	if err != nil {
+		vtui.DebugLog("SERVER: WARNING: F_GETFL on fd %d failed: %v", f.Fd(), err)
+		return
+	}
+	if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFL, flags&^unix.O_NONBLOCK); err != nil {
+		vtui.DebugLog("SERVER: WARNING: F_SETFL (clear O_NONBLOCK) on fd %d failed: %v", f.Fd(), err)
+	}
 }
 
 func runServer(sockPath string) {
@@ -282,6 +328,15 @@ func runServer(sockPath string) {
 			continue
 		}
 
+		// Fds arriving via SCM_RIGHTS have no FD_CLOEXEC set. Without it, any
+		// child process the daemon spawns after attach (in particular the
+		// built-in terminal's shell, started by initPTY) inherits the notify
+		// pipe's write end along with stdin/stdout. If the daemon then dies,
+		// that inherited copy keeps the pipe open and the client's blocking
+		// read on it never returns, turning a daemon crash into what looks
+		// like an indefinite hang. See PORTABILITY_BSD.md, 4.1.
+		setCloseOnExec(fds)
+
 		vtui.DebugLog("SERVER: FDs received (In:%d Out:%d Pipe:%d). Goroutines: %d. Attaching terminal.", fds[0], fds[1], fds[2], runtime.NumGoroutine())
 		// We don't log individual FD flags in production to keep logs clean.
 
@@ -338,10 +393,15 @@ func runServer(sockPath string) {
 
 			// 2. CRITICAL: Clear O_NONBLOCK that Go automatically sets.
 			// Shared FD description means bash will also get EAGAIN if we don't.
-			clearNonBlock := func(f *os.File) {
-				flags, _, _ := syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_GETFL, 0)
-				syscall.Syscall(syscall.SYS_FCNTL, f.Fd(), syscall.F_SETFL, flags & ^uintptr(syscall.O_NONBLOCK))
-			}
+			//
+			// This used syscall.Syscall(SYS_FCNTL, ...) directly, which is an
+			// indirect syscall. OpenBSD 7.5+ removed the kernel entry point
+			// for those (golang/go#63900): the call returns ENOSYS and
+			// O_NONBLOCK is silently never cleared, leaving the parent shell
+			// with a non-blocking stdin/stdout after the session ends.
+			// clearNonBlock goes through the libc fcntl(2) stub instead,
+			// which keeps working under that restriction. See
+			// PORTABILITY_BSD.md, 4.4.
 			clearNonBlock(os.Stdin)
 			clearNonBlock(os.Stdout)
 

@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -211,6 +214,91 @@ func TestPendingURIMountIsPersistedAndPlainEscapeCancelsIt(t *testing.T) {
 	}
 	if got := fsp.getRawSelectedName(); got != "saved-cursor.txt" {
 		t.Fatalf("selection after cancel = %q", got)
+	}
+}
+
+func TestFolderHistoryBackUsesPendingVisualTargetInsteadOfSourceVFS(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldSync := AppConfig.SyncPanelLoad
+	AppConfig.SyncPanelLoad = false
+	t.Cleanup(func() { AppConfig.SyncPanelLoad = oldSync })
+
+	root := t.TempDir()
+	sourcePath := filepath.Join(root, "source")
+	olderPath := filepath.Join(root, "older")
+	for _, path := range []string{sourcePath, olderPath} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	target := "core-uri-pending-history-test://profile/folder-id"
+	provider := &blockingNavigationURIProvider{
+		scheme:  "core-uri-pending-history-test",
+		started: make(chan struct{}),
+	}
+	if err := vfs.RegisterURIProvider(provider); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { vfs.UnregisterURIProvider(provider.scheme) })
+
+	history := &F4HistoryProvider{
+		path: filepath.Join(root, "history.json"),
+		data: map[string][]string{"folders": {target, sourcePath, olderPath}},
+		rich: make(map[string][]HistoryRecord),
+	}
+	oldHistory := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = history
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = oldHistory })
+
+	fsp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(sourcePath))
+	waitForLoad(t, fsp)
+	pf := &PanelsFrame{
+		panels:           [2]Panel{fsp, nil},
+		activeIdx:        0,
+		showPanels:       true,
+		folderHistoryPos: [2]int{-1, -1},
+	}
+	t.Cleanup(func() {
+		fsp.cancelProviderOpen()
+		if fsp.cancelLoad != nil {
+			fsp.cancelLoad()
+		}
+	})
+
+	if !pf.NavigateToPath(fsp, target) {
+		t.Fatal("pending history target was rejected")
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for pending history mount")
+	}
+	if got := fsp.persistentPath(); got != target {
+		t.Fatalf("persistent pending path = %q, want %q", got, target)
+	}
+	altLeft := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftAltPressed,
+	}
+	if pf.VetoActionKey(altLeft) {
+		t.Fatal("pending provider mount vetoed Alt+Left history action")
+	}
+
+	if !pf.moveFolderHistory(fsp, -1) {
+		t.Fatal("Alt+Left history move was not performed")
+	}
+	waitForLoad(t, fsp)
+	if got := fsp.vfs.GetPath(); !sameFolderHistoryPath(got, sourcePath) {
+		t.Fatalf("Alt+Left skipped source folder: got %q, want %q", got, sourcePath)
+	}
+	if got := pf.folderHistoryPos[0]; got != 1 {
+		t.Fatalf("history position = %d, want source index 1", got)
+	}
+	if got := history.LoadHistory("folders"); !reflect.DeepEqual(got, []string{target, sourcePath, olderPath}) {
+		t.Fatalf("Alt+Left reordered history: %#v", got)
 	}
 }
 

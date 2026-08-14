@@ -40,6 +40,14 @@ const (
 	CmRightSortUnsorted
 	CmSwapPanels
 	CmAddArchive
+	CmLeftAIContext
+	CmLeftAIChat
+	CmLeftAIOut
+	CmLeftAIMem
+	CmRightAIContext
+	CmRightAIChat
+	CmRightAIOut
+	CmRightAIMem
 	CmExtractArchive
 	CmPanelSettings
 	CmEditorSettings
@@ -51,6 +59,7 @@ const (
 	CmPlugins
 	CmHotkeyConfig
 	CmUpdateSettings
+	CmProxySettings
 	CmBookmarks
 	CmSwitchToViewer
 	CmSwitchToEditor

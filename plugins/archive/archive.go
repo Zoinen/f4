@@ -6,9 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
-
 	"sync"
+	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -17,9 +16,48 @@ import (
 
 var activeOps sync.Map
 
-type ArchivePlugin struct{}
+const (
+	archiveAddCommandID     = "archive.add"
+	archiveExtractCommandID = "archive.extract"
+)
+
+type ArchivePlugin struct {
+	registrations []vfs.Registration
+}
 
 func (p *ArchivePlugin) Init(api vfs.HostAPI) error {
+	if contributions, ok := api.(vfs.ContributionHost); ok {
+		addRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             archiveAddCommandID,
+			Location:       vfs.PluginCommandPanel,
+			Label:          "Add to archive",
+			LabelKey:       "Archive.Command.Add",
+			Description:    "Create an archive from the selected files",
+			DescriptionKey: "Archive.Command.Add.Desc",
+			SearchKeys:     []string{"Attributes.Archive"},
+			Run:            actionAddArchive,
+		})
+		if err != nil {
+			return fmt.Errorf("archive: register add command: %w", err)
+		}
+
+		extractRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             archiveExtractCommandID,
+			Location:       vfs.PluginCommandPanel,
+			Label:          "Extract files",
+			LabelKey:       "Archive.Command.Extract",
+			Description:    "Extract the selected archive to the passive panel",
+			DescriptionKey: "Archive.Command.Extract.Desc",
+			SearchKeys:     []string{"Attributes.Archive"},
+			Run:            actionExtractArchive,
+		})
+		if err != nil {
+			addRegistration.Unregister()
+			return fmt.Errorf("archive: register extract command: %w", err)
+		}
+		p.registrations = append(p.registrations, addRegistration, extractRegistration)
+	}
+
 	api.RegisterVFSProvider(&ArchiveProvider{})
 
 	api.RegisterGlobalHotkey(vtinput.VK_F1, vtinput.ShiftPressed, func(app vfs.App) {
@@ -326,5 +364,13 @@ func actionAddArchive(app vfs.App) {
 	})
 }
 
-func (p *ArchivePlugin) Close() error    { return nil }
+func (p *ArchivePlugin) Close() error {
+	registrations := p.registrations
+	p.registrations = nil
+	for index := len(registrations) - 1; index >= 0; index-- {
+		registrations[index].Unregister()
+	}
+	closeSharedArchiveMaterializations()
+	return nil
+}
 func (p *ArchivePlugin) GetName() string { return "Archive Support" }

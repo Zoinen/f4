@@ -25,20 +25,45 @@ type PanelHost interface {
 }
 
 type Plugin struct {
-	mu      sync.Mutex
-	undoDir string
-	undoLog []RenamePair
+	mu           sync.Mutex
+	undoDir      string
+	undoLog      []RenamePair
+	registration vfs.Registration
 }
 
 func (p *Plugin) Init(api vfs.HostAPI) error {
+	if contributions, ok := api.(vfs.ContributionHost); ok {
+		registration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
+			ID:             "visren.open",
+			Location:       vfs.PluginCommandPanel,
+			Label:          "&Visual File Renamer",
+			LabelKey:       "VisRen.Menu",
+			Description:    "Visually rename the selected files and directories",
+			DescriptionKey: "VisRen.Command.Open.Desc",
+			SearchKeys:     []string{"VisRen.Title", "VisRen.Rename"},
+			Run:            p.open,
+		})
+		if err != nil {
+			return fmt.Errorf("VisRen: register command: %w", err)
+		}
+		p.mu.Lock()
+		p.registration = registration
+		p.mu.Unlock()
+		return nil
+	}
 	api.RegisterPluginMenuItem(tr("VisRen.Menu", "&Visual File Renamer"), p.open)
 	return nil
 }
 
 func (p *Plugin) Close() error {
 	p.mu.Lock()
+	registration := p.registration
+	p.registration = nil
 	p.undoDir, p.undoLog = "", nil
 	p.mu.Unlock()
+	if registration != nil {
+		registration.Unregister()
+	}
 	return nil
 }
 

@@ -22,21 +22,37 @@ import (
 // entry (Label/MenuPath), a help topic line (Description) and a default
 // hotkey (DefaultKeys) at the same time.
 type Action struct {
-	Name        string // stable ID and macro command, e.g. "Editor.Save"
-	Area        string // primary area: "Shell", "Editor", "Viewer", "Terminal", "Common"
-	Label       string // English fallback for menu/keybar
-	LabelKey    string // optional i18n key resolved via Msg()
+	Name     string // stable ID and macro command, e.g. "Editor.Save"
+	Area     string // primary area: "Shell", "Editor", "Viewer", "Terminal", "Common"
+	Label    string // English fallback for menu/keybar
+	LabelKey string // optional i18n key resolved via Msg()
+	// SearchKeys are additional localization keys whose values are indexed by
+	// discoverability surfaces but are not rendered as the action label.
+	SearchKeys  []string
 	Description string // English fallback for help
 	DescKey     string // optional i18n key resolved via Msg()
 	// DefaultKeys are Far-style key names ("F2", "CtrlIns") with an
 	// optional ":Condition" suffix per key (e.g. "Esc:EscToggle").
 	DefaultKeys []string
+	// NativeKeys documents shortcuts owned by vtui's frame dispatcher rather
+	// than HotkeyManager. Like DefaultKeys, they may carry a :Condition suffix.
+	// They are shown in discoverability surfaces, but are
+	// deliberately not installed as configurable defaults: claiming them in
+	// EventFilter would run the action before the focused frame gets its normal
+	// chance to consume the key (notably terminal Ctrl+W and Ctrl+N).
+	NativeKeys []string
 	// DefaultAreas lists extra areas (besides Area) that get the default
 	// bindings too (e.g. Panel.Toggle works in both Shell and Terminal).
 	DefaultAreas []string
 	// MenuPath is the top-level menu the action appears in ("File",
 	// "Edit", ...). Empty means the action is not listed in menus.
 	MenuPath string
+	// HideFromMenu keeps an action out of registry-generated menus while still
+	// retaining MenuPath as its localized command-palette category. This is for
+	// commands exposed by a custom menu, such as the fixed Left/Right panel
+	// actions, whose exact command IDs must remain discoverable without creating
+	// a second generated copy of the custom menu.
+	HideFromMenu bool
 	// MenuSeparatorBefore inserts a separator above this action's menu item.
 	MenuSeparatorBefore bool
 	// Checked, when set, reports the toggle state shown in menus ("√ ").
@@ -90,8 +106,10 @@ func RunAction(name string) bool {
 		// Fast Find is a transient panel input mode. Any action means the user
 		// is leaving it, including actions that replace a file panel in place
 		// (Info/Quick View) and therefore do not push a focus-stealing frame.
-		if pf := findPanelsFrame(); pf != nil && pf.cancelFastFind() && vtui.FrameManager != nil {
-			vtui.FrameManager.Redraw()
+		if !strings.EqualFold(name, commandPaletteActionName) {
+			if pf := findPanelsFrame(); pf != nil && pf.cancelFastFind() && vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
 		}
 		return a.Handler()
 	}
@@ -136,6 +154,24 @@ func cursorOnParent(fsp *FileSystemPanel) bool {
 	return idx >= 0 && idx < len(fsp.entries) && fsp.entries[idx].Name == ".."
 }
 
+// currentPanelEntryPath returns the full path represented by the panel cursor.
+// As in Far, the parent entry represents the current directory for path-copy
+// and path-insertion commands.
+func currentPanelEntryPath(fsp *FileSystemPanel) string {
+	if fsp == nil || fsp.vfs == nil {
+		return ""
+	}
+	idx := fsp.GetCursorIndex()
+	if idx < 0 || idx >= len(fsp.entries) {
+		return ""
+	}
+	base := fsp.vfs.GetPath()
+	if fsp.entries[idx].Name == ".." {
+		return base
+	}
+	return fsp.vfs.Join(base, fsp.entries[idx].Name)
+}
+
 // plainLabel strips hotkey markers ('&') from a menu label for contexts
 // that cannot render them (keybar, plain lists). '&&' unescapes to '&'.
 func plainLabel(s string) string {
@@ -155,6 +191,32 @@ func plainLabel(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// isAIPanelActive returns true if the currently active panel is an AI panel.
+// Used to dynamically show/hide specific menu items.
+func isAIPanelActive() bool {
+	pf := findPanelsFrameAnyScreen()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return false
+	}
+	if tp, ok := fsp.vfs.(vfs.TitleProvider); ok {
+		return tp.GetTitle() == "ai"
+	}
+	return false
+}
+
+func repeatEditorSearchDirection(ev *EditorView, reverse bool) {
+	if LastEditorSearch == "" {
+		return
+	}
+	rememberedDirection := LastEditorSearchReverse
+	ev.Search(LastEditorSearch, LastEditorSearchCase, reverse, LastEditorSearchRegexp, LastEditorSearchWholeWord, true)
+	LastEditorSearchReverse = rememberedDirection
 }
 
 func init() {
@@ -234,7 +296,107 @@ func init() {
 		DescKey:     "Action.App.ScreenGrab.Desc",
 		DefaultKeys: []string{"AltIns"},
 		MenuPath:    "File",
-		Handler:     func() bool { OpenGrabber(); return true },
+		Handler:     actionScreenGrab,
+	})
+	RegisterAction(Action{
+		Name:        commandPaletteActionName,
+		Area:        "Common",
+		Label:       "Command Palette",
+		LabelKey:    "Action.App.CommandPalette",
+		Description: "Search and run available commands",
+		DescKey:     "Action.App.CommandPalette.Desc",
+		DefaultKeys: []string{"CtrlShiftP"},
+		Handler:     ShowCommandPalette,
+	})
+	RegisterAction(Action{
+		Name:        "App.Help",
+		Area:        "Common",
+		Label:       "Context Help",
+		LabelKey:    "Action.App.Help",
+		SearchKeys:  []string{"KeyBar.F1"},
+		Description: "Open help for the current screen or focused control",
+		DescKey:     "Action.App.Help.Desc",
+		NativeKeys:  []string{"F1:FrameworkNoTerminalApp"},
+		Visible:     contextHelpActionAvailable,
+		Handler:     actionContextHelp,
+	})
+	RegisterAction(Action{
+		Name:        "App.MainMenu",
+		Area:        "Common",
+		Label:       "Main Menu",
+		LabelKey:    "Action.App.MainMenu",
+		SearchKeys:  []string{"UserMenu.MainMenuTitle"},
+		Description: "Open the main menu for the current screen",
+		DescKey:     "Action.App.MainMenu.Desc",
+		NativeKeys:  []string{"F9:FrameworkNoTerminalApp"},
+		Visible:     mainMenuActionAvailable,
+		Handler:     actionActivateMainMenu,
+	})
+	RegisterAction(Action{
+		Name:        "Workspace.New",
+		Area:        "Common",
+		Label:       "New Workspace",
+		LabelKey:    "Action.Workspace.New",
+		SearchKeys:  []string{"AppearanceSettings.WorkspaceTabs", "PanelSettings.TerminalCtrlNWorkspace"},
+		Description: "Clone the current panels into a new workspace",
+		DescKey:     "Action.Workspace.New.Desc",
+		NativeKeys:  []string{"CtrlN:TerminalCtrlNWorkspace"},
+		Handler:     actionWorkspaceNew,
+	})
+	RegisterAction(Action{
+		Name:        "Workspace.Close",
+		Area:        "Common",
+		Label:       "Close Workspace",
+		LabelKey:    "Action.Workspace.Close",
+		SearchKeys:  []string{"AppearanceSettings.WorkspaceTabs", "AppearanceSettings.RestoreWorkspaceTabs"},
+		Description: "Close the active workspace",
+		DescKey:     "Action.Workspace.Close.Desc",
+		NativeKeys:  []string{"CtrlW:FrameworkNoTerminalApp"},
+		Handler:     actionWorkspaceClose,
+	})
+	RegisterAction(Action{
+		Name:        "Workspace.Next",
+		Area:        "Common",
+		Label:       "Next Workspace",
+		LabelKey:    "Action.Workspace.Next",
+		SearchKeys:  []string{"AppearanceSettings.WorkspaceTabs"},
+		Description: "Switch to the next workspace",
+		DescKey:     "Action.Workspace.Next.Desc",
+		NativeKeys:  []string{"CtrlTab"},
+		Visible:     multipleWorkspacesAvailable,
+		Handler:     actionWorkspaceNext,
+	})
+	RegisterAction(Action{
+		Name:        "Workspace.Previous",
+		Area:        "Common",
+		Label:       "Previous Workspace",
+		LabelKey:    "Action.Workspace.Previous",
+		SearchKeys:  []string{"AppearanceSettings.WorkspaceTabs"},
+		Description: "Switch to the previous workspace",
+		DescKey:     "Action.Workspace.Previous.Desc",
+		NativeKeys:  []string{"CtrlShiftTab"},
+		Visible:     multipleWorkspacesAvailable,
+		Handler:     actionWorkspacePrevious,
+	})
+	RegisterAction(Action{
+		Name:        "Workspace.List",
+		Area:        "Common",
+		Label:       "Workspace List",
+		LabelKey:    "Action.Workspace.List",
+		SearchKeys:  []string{"AppearanceSettings.WorkspaceTabs"},
+		Description: "Show all workspaces",
+		DescKey:     "Action.Workspace.List.Desc",
+		NativeKeys:  []string{"F12:FrameworkNoTerminalApp"},
+		Handler:     actionWorkspaceList,
+	})
+	RegisterAction(Action{
+		Name:        "Debug.ScreenDump",
+		Area:        "Common",
+		Label:       "Dump Screen",
+		LabelKey:    "Action.Debug.ScreenDump",
+		Description: "Write the current screen buffer to vtui.screen.log",
+		DescKey:     "Action.Debug.ScreenDump.Desc",
+		Handler:     actionScreenDump,
 	})
 
 	// --- Shell (panels) actions ---
@@ -409,8 +571,13 @@ func init() {
 		LabelKey:    "Action.Panel.SystemExplorer",
 		Description: "Open current file in the system file manager",
 		DescKey:     "Action.Panel.SystemExplorer.Desc",
-		DefaultKeys: []string{"ShiftEnter"},
-		MenuPath:    "Files",
+		// Same reasoning as Panel.InsertFileName: the panel cursor
+		// survives Ctrl+O, so Shift+Enter keeps working with the panels
+		// hidden, but yields to a child process that is using the
+		// terminal (many REPLs read Shift+Enter themselves).
+		DefaultKeys:  []string{"ShiftEnter:NoTerminalApp"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Files",
 		Handler: withPF(func(pf *PanelsFrame) {
 			fsp := pf.getActivePanel()
 			if fsp == nil {
@@ -580,6 +747,7 @@ func init() {
 		LabelKey:    "Menu.Commands.Bookmarks",
 		Description: "Show folder bookmarks dialog",
 		DescKey:     "Action.Panel.Bookmarks.Desc",
+		DefaultKeys: []string{"CtrlShiftVK_DC"},
 		MenuPath:    "Commands",
 		Handler:     withPF(func(pf *PanelsFrame) { ShowBookmarksDialog(pf) }),
 	})
@@ -727,22 +895,28 @@ func init() {
 		LabelKey:    "Action.Panel.CopyPath",
 		Description: "Copy the full path of the current file to clipboard",
 		DescKey:     "Action.Panel.CopyPath.Desc",
-		DefaultKeys: []string{"CtrlF:EmptyCommandLine"},
+		DefaultKeys: []string{"CtrlD"},
 		MenuPath:    "Commands",
 		Handler: withPF(func(pf *PanelsFrame) {
 			if fsp := pf.getActivePanel(); fsp != nil {
-				idx := fsp.GetCursorIndex()
-				if idx < 0 || idx >= len(fsp.entries) {
-					return
+				if path := currentPanelEntryPath(fsp); path != "" {
+					vtui.SetClipboard(path)
 				}
-				base := fsp.vfs.GetPath()
-				if entry := fsp.entries[idx]; entry.Name == ".." {
-					// far2l: cursor on ".." acts as the current folder itself
-					// (matches CreateFullPathName(".", …) in far2l's KEY_CTRLF branch).
-					vtui.SetClipboard(base)
-				} else {
-					vtui.SetClipboard(fsp.vfs.Join(base, entry.Name))
-				}
+			}
+		}),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.InsertPath",
+		Area:        "Shell",
+		Label:       "Insert Path into Command Line",
+		LabelKey:    "Action.Panel.InsertPath",
+		Description: "Insert the full path of the current file into the command line",
+		DescKey:     "Action.Panel.InsertPath.Desc",
+		DefaultKeys: []string{"CtrlF"},
+		MenuPath:    "Commands",
+		Handler: withPF(func(pf *PanelsFrame) {
+			if fsp := pf.getActivePanel(); fsp != nil {
+				pf.insertPathToCmdLine(currentPanelEntryPath(fsp))
 			}
 		}),
 	})
@@ -753,9 +927,13 @@ func init() {
 		LabelKey:    "Action.Panel.CopyName",
 		Description: "Copy the current file name to clipboard",
 		DescKey:     "Action.Panel.CopyName.Desc",
-		DefaultKeys: []string{"CtrlIns:EmptyCommandLine"},
+		DefaultKeys: []string{"CtrlIns"},
 		MenuPath:    "Commands",
 		Handler: withPF(func(pf *PanelsFrame) {
+			if !pf.cmdLine.IsEmpty() {
+				vtui.SetClipboard(pf.cmdLine.Edit.GetText())
+				return
+			}
 			if fsp := pf.getActivePanel(); fsp != nil {
 				idx := fsp.GetCursorIndex()
 				if idx < 0 || idx >= len(fsp.entries) {
@@ -944,6 +1122,26 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { actionConfirmationsSettings(pf) }),
 	})
 	RegisterAction(Action{
+		Name:        "Settings.MouseWheel",
+		Area:        "Shell",
+		Label:       "Mouse Wheel Settings",
+		LabelKey:    "Menu.MouseWheelSettings",
+		Description: "Open mouse wheel scroll speed settings dialog",
+		DescKey:     "Action.Settings.MouseWheel.Desc",
+		MenuPath:    "Options",
+		Handler:     withPF(func(pf *PanelsFrame) { actionMouseWheelSettings(pf) }),
+	})
+	RegisterAction(Action{
+		Name:        "Settings.PathHints",
+		Area:        "Shell",
+		Label:       "Path Hints Settings",
+		LabelKey:    "Menu.PathHintSettings",
+		Description: "Open path hints settings dialog",
+		DescKey:     "Action.Settings.PathHints.Desc",
+		MenuPath:    "Options",
+		Handler:     withPF(func(pf *PanelsFrame) { actionPathHintSettings(pf) }),
+	})
+	RegisterAction(Action{
 		Name:                "Settings.Hotkeys",
 		Area:                "Shell",
 		Label:               "Hotkey Configuration",
@@ -966,12 +1164,23 @@ func init() {
 		Handler:             withPF(func(pf *PanelsFrame) { vtui.FrameManager.EmitCommand(CmUpdateSettings, nil) }),
 	})
 	RegisterAction(Action{
+		Name:        "Settings.Proxy",
+		Area:        "Shell",
+		Label:       "Proxy Settings",
+		LabelKey:    "Menu.ProxySettings",
+		Description: "Configure the proxy used for updates, plugins and network connections",
+		DescKey:     "Action.Settings.Proxy.Desc",
+		MenuPath:    "Options",
+		Handler:     withPF(func(pf *PanelsFrame) { vtui.FrameManager.EmitCommand(CmProxySettings, nil) }),
+	})
+	RegisterAction(Action{
 		Name:                "Settings.PluginConfiguration",
 		Area:                "Shell",
 		Label:               "Plugin Configuration",
 		LabelKey:            "Menu.PluginConfiguration",
 		Description:         "Configure loaded plugins",
 		DescKey:             "Action.Settings.PluginConfiguration.Desc",
+		DefaultKeys:         []string{"ShiftF11"},
 		MenuPath:            "Options",
 		MenuSeparatorBefore: true,
 		Handler:             withPF(func(pf *PanelsFrame) { actionPluginConfiguration(pf) }),
@@ -1080,7 +1289,6 @@ func init() {
 		DefaultKeys:  []string{"CtrlO:NoAltScreenApp", "Esc:EscToggle", "Del:EscToggle", "NumDel:EscToggle"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *PanelsFrame) {
-			pf.exitWide()
 			pf.showPanels = !pf.showPanels
 			if pf.showPanels {
 				// A full hide/show cycle restores the canonical two-panel layout;
@@ -1355,6 +1563,7 @@ func init() {
 		Description: "Set active panel to brief mode",
 		DescKey:     "Action.Panel.ViewBrief.Desc",
 		DefaultKeys: []string{"Ctrl1"},
+		Visible:     func() bool { return !isAIPanelActive() },
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeBrief) }),
 	})
 	RegisterAction(Action{
@@ -1364,6 +1573,7 @@ func init() {
 		Description: "Set active panel to medium mode",
 		DescKey:     "Action.Panel.ViewMedium.Desc",
 		DefaultKeys: []string{"Ctrl2"},
+		Visible:     func() bool { return !isAIPanelActive() },
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeMedium) }),
 	})
 	RegisterAction(Action{
@@ -1373,6 +1583,7 @@ func init() {
 		Description: "Set active panel to detailed mode",
 		DescKey:     "Action.Panel.ViewDetailed.Desc",
 		DefaultKeys: []string{"Ctrl3"},
+		Visible:     func() bool { return !isAIPanelActive() },
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeDetailed) }),
 	})
 	RegisterAction(Action{
@@ -1382,6 +1593,7 @@ func init() {
 		Description: "Set active panel to wide mode",
 		DescKey:     "Action.Panel.ViewWide.Desc",
 		DefaultKeys: []string{"Ctrl4"},
+		Visible:     func() bool { return !isAIPanelActive() },
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setWidePanel(pf.activeIdx) }),
 	})
 	RegisterAction(Action{
@@ -1493,7 +1705,13 @@ func init() {
 		Label:       "Insert File Name",
 		Description: "Insert the current file name into the command line",
 		DescKey:     "Action.Panel.InsertFileName.Desc",
-		DefaultKeys: []string{"CtrlEnter"},
+		// Hiding the panels does not drop the panel cursor: the command
+		// line is still on screen and Ctrl+Enter still pastes the current
+		// file name into it, as in far2l. NoTerminalApp keeps the key out
+		// of the way of a running child process, which owns Ctrl+Enter and
+		// leaves the command line hidden anyway.
+		DefaultKeys:  []string{"CtrlEnter:NoTerminalApp"},
+		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *PanelsFrame) {
 			pf.insertSelectedFileName()
 		}),
@@ -1598,7 +1816,7 @@ func init() {
 		LabelKey:    "Action.Editor.Quit",
 		Description: "Close editor",
 		DescKey:     "Action.Editor.Quit.Desc",
-		DefaultKeys: []string{"F10", "Esc", "F4"},
+		DefaultKeys: []string{"F10", "Esc"},
 		MenuPath:    "File",
 		Handler:     withEditor(func(ev *EditorView) { ev.tryClose() }),
 	})
@@ -1758,6 +1976,26 @@ func init() {
 			}
 		}),
 	})
+	RegisterAction(Action{
+		Name:        "Editor.SearchForward",
+		Area:        "Editor",
+		Label:       "Search Next",
+		LabelKey:    "Action.Editor.SearchNext",
+		Description: "Continue search forwards",
+		DescKey:     "Action.Editor.SearchNext.Desc",
+		DefaultKeys: []string{"CtrlEnter"},
+		Handler:     withEditor(func(ev *EditorView) { repeatEditorSearchDirection(ev, false) }),
+	})
+	RegisterAction(Action{
+		Name:        "Editor.SearchPrevious",
+		Area:        "Editor",
+		Label:       "Search Backwards",
+		LabelKey:    "Action.Editor.SearchPrevious",
+		Description: "Continue search backwards",
+		DescKey:     "Action.Editor.SearchPrevious.Desc",
+		DefaultKeys: []string{"CtrlShiftEnter"},
+		Handler:     withEditor(func(ev *EditorView) { repeatEditorSearchDirection(ev, true) }),
+	})
 
 	RegisterAction(Action{
 		Name:        "Editor.WordWrap",
@@ -1774,6 +2012,33 @@ func init() {
 			ev.ScrollLeft = 0
 			ev.clearCaches()
 			ev.ensureCursorVisible()
+		}),
+	})
+	RegisterAction(Action{
+		Name:        "Editor.HexMode",
+		Area:        "Editor",
+		Label:       "Hex Mode",
+		LabelKey:    "Action.Editor.HexMode",
+		Description: "Toggle hex view/edit",
+		DescKey:     "Action.Editor.HexMode.Desc",
+		DefaultKeys: []string{"F4"},
+		MenuPath:    "Options",
+		Checked:     editorState(func(ev *EditorView) bool { return ev.HexMode || ev.DecodeMode }),
+		Handler: withEditor(func(ev *EditorView) {
+			if !ev.HexMode && !ev.DecodeMode {
+				ev.HexMode = true
+				ev.HexTopOffset = (ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos) &^ 0xF
+				ev.HexNibble = 0
+			} else if ev.HexMode {
+				ev.HexMode = false
+				ev.DecodeMode = true
+				ev.HexTopOffset = ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+				ev.HexNibble = 0
+			} else {
+				ev.DecodeMode = false
+			}
+			ev.ensureCursorVisible()
+			vtui.FrameManager.Redraw()
 		}),
 	})
 	RegisterAction(Action{
@@ -1865,7 +2130,6 @@ func init() {
 		LabelKey:    "Action.Editor.InsertActivePanelFileName",
 		Description: "Insert the active panel's current file name at cursor",
 		DescKey:     "Action.Editor.InsertActivePanelFileName.Desc",
-		DefaultKeys: []string{"CtrlEnter"},
 		MenuPath:    "Insert",
 		Handler: withEditor(func(ev *EditorView) {
 			if s := activePanelNameForEditor(); s != "" {
@@ -1930,12 +2194,18 @@ func init() {
 		DescKey:     "Action.Viewer.HexMode.Desc",
 		DefaultKeys: []string{"F4"},
 		MenuPath:    "View",
-		Checked:     viewerState(func(vv *ViewerView) bool { return vv.HexMode }),
+		Checked:     viewerState(func(vv *ViewerView) bool { return vv.HexMode || vv.DecodeMode }),
 		Handler: withViewer(func(vv *ViewerView) {
-			vv.HexMode = !vv.HexMode
-			if vv.HexMode {
+			if !vv.HexMode && !vv.DecodeMode {
+				vv.HexMode = true
 				vv.TopOffset &= ^int64(0xF)
+			} else if vv.HexMode {
+				vv.HexMode = false
+				vv.DecodeMode = true
+			} else {
+				vv.DecodeMode = false
 			}
+			vtui.FrameManager.Redraw()
 		}),
 	})
 
@@ -1949,6 +2219,28 @@ func init() {
 		DefaultKeys: []string{"F7"},
 		MenuPath:    "Search",
 		Handler:     withViewer(func(vv *ViewerView) { vtui.FrameManager.EmitCommand(CmSearch, nil) }),
+	})
+	RegisterAction(Action{
+		Name:        "Viewer.SearchNext",
+		Area:        "Viewer",
+		Label:       "Search Next",
+		LabelKey:    "Action.Viewer.SearchNext",
+		Description: "Continue search forwards",
+		DescKey:     "Action.Viewer.SearchNext.Desc",
+		DefaultKeys: []string{"CtrlEnter"},
+		MenuPath:    "Search",
+		Handler:     withViewer(func(vv *ViewerView) { actionViewerSearchAgain(vv, false) }),
+	})
+	RegisterAction(Action{
+		Name:        "Viewer.SearchPrevious",
+		Area:        "Viewer",
+		Label:       "Search Backwards",
+		LabelKey:    "Action.Viewer.SearchPrevious",
+		Description: "Continue search backwards",
+		DescKey:     "Action.Viewer.SearchPrevious.Desc",
+		DefaultKeys: []string{"CtrlShiftEnter"},
+		MenuPath:    "Search",
+		Handler:     withViewer(func(vv *ViewerView) { actionViewerSearchAgain(vv, true) }),
 	})
 
 	RegisterAction(Action{

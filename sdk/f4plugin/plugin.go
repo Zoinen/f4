@@ -1,6 +1,7 @@
 package f4plugin
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -102,6 +103,40 @@ type MenuReq struct {
 	Items []string
 }
 
+const (
+	PluginCommandPanel uint8 = iota
+	PluginCommandConfig
+)
+
+// PluginCommand describes one searchable command exposed by an RPC, Lua or
+// WASM plugin. Localized maps use the same short language codes as f4's
+// language packs (for example "en" and "ru"). ActiveDrives restricts a panel
+// command to those RPC drives without requiring a synchronous remote Visible
+// callback on f4's UI goroutine.
+type PluginCommand struct {
+	ID                    string
+	Location              uint8
+	Label                 string
+	Description           string
+	Shortcut              string
+	LocalizedLabels       map[string]string
+	LocalizedDescriptions map[string]string
+	SearchTerms           []string
+	ActiveDrives          []string
+}
+
+type PluginRunCommandRequest struct {
+	ID string
+}
+
+// CommandProvider is an optional extension. Existing Plugin implementations
+// remain source-compatible; implementations that opt in get commands in f4's
+// plugin menus and command palette.
+type CommandProvider interface {
+	PluginCommands() []PluginCommand
+	RunPluginCommand(id string) error
+}
+
 // Plugin is the primary interface a plugin developer implements.
 type Plugin interface {
 	Init(host *Host) ([]string, error)
@@ -130,7 +165,27 @@ func Run(p Plugin) {
 
 	sess.Register("Plugin.Init", func(data msgpack.RawMessage) (any, error) {
 		drives, err := p.Init(host)
-		return map[string]any{"Drives": drives}, err
+		if commands, ok := p.(CommandProvider); ok {
+			return map[string]any{
+				"Drives":   drives,
+				"Commands": commands.PluginCommands(),
+			}, err
+		}
+		// Preserve the original wire shape unless the plugin opts into the
+		// command extension, so existing hosts can still load it.
+		return drives, err
+	})
+
+	sess.Register("Plugin.RunCommand", func(data msgpack.RawMessage) (any, error) {
+		commands, ok := p.(CommandProvider)
+		if !ok {
+			return nil, fmt.Errorf("plugin does not implement CommandProvider")
+		}
+		var request PluginRunCommandRequest
+		if err := msgpack.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		return nil, commands.RunPluginCommand(request.ID)
 	})
 
 	sess.Register("VFS.ReadDir", func(data msgpack.RawMessage) (any, error) {
