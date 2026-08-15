@@ -18,6 +18,10 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(Q_OS_MACOS)
+#include <Carbon/Carbon.h>
+#endif
+
 namespace
 {
 constexpr quint64 IsFgRGB = 0x0100;
@@ -95,6 +99,105 @@ bool containsPrintableText(const QString &text)
     }
     return false;
 }
+
+#if defined(Q_OS_MACOS)
+quint16 macVirtualKeyForQtKey(int key)
+{
+    if (key >= Qt::Key_A && key <= Qt::Key_Z) {
+        static constexpr quint16 ansiLetters[] = {
+            kVK_ANSI_A, kVK_ANSI_B, kVK_ANSI_C, kVK_ANSI_D, kVK_ANSI_E,
+            kVK_ANSI_F, kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_I, kVK_ANSI_J,
+            kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_M, kVK_ANSI_N, kVK_ANSI_O,
+            kVK_ANSI_P, kVK_ANSI_Q, kVK_ANSI_R, kVK_ANSI_S, kVK_ANSI_T,
+            kVK_ANSI_U, kVK_ANSI_V, kVK_ANSI_W, kVK_ANSI_X, kVK_ANSI_Y,
+            kVK_ANSI_Z,
+        };
+        return ansiLetters[key - Qt::Key_A];
+    }
+    if (key >= Qt::Key_0 && key <= Qt::Key_9) {
+        static constexpr quint16 ansiDigits[] = {
+            kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4,
+            kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9,
+        };
+        return ansiDigits[key - Qt::Key_0];
+    }
+    switch (key) {
+    case Qt::Key_Space: return kVK_Space;
+    case Qt::Key_QuoteLeft: return kVK_ANSI_Grave;
+    case Qt::Key_Minus: return kVK_ANSI_Minus;
+    case Qt::Key_Equal: return kVK_ANSI_Equal;
+    case Qt::Key_BracketLeft: return kVK_ANSI_LeftBracket;
+    case Qt::Key_Backslash: return kVK_ANSI_Backslash;
+    case Qt::Key_BracketRight: return kVK_ANSI_RightBracket;
+    case Qt::Key_Semicolon: return kVK_ANSI_Semicolon;
+    case Qt::Key_Apostrophe: return kVK_ANSI_Quote;
+    case Qt::Key_Comma: return kVK_ANSI_Comma;
+    case Qt::Key_Period: return kVK_ANSI_Period;
+    case Qt::Key_Slash: return kVK_ANSI_Slash;
+    default: return UINT16_MAX;
+    }
+}
+
+QString macTextWithoutOption(const QKeyEvent *event,
+                             quint32 forwardedScanCode = 0)
+{
+    if (!event || !event->modifiers().testFlag(Qt::AltModifier)) {
+        return {};
+    }
+
+    quint16 virtualKey = event->nativeVirtualKey() <= UINT16_MAX
+        ? static_cast<quint16>(event->nativeVirtualKey()) : UINT16_MAX;
+    if ((virtualKey == 0 || virtualKey == UINT16_MAX)
+        && forwardedScanCode > 0 && forwardedScanCode <= UINT16_MAX) {
+        virtualKey = static_cast<quint16>(forwardedScanCode);
+    }
+    if (virtualKey == 0 || virtualKey == UINT16_MAX) {
+        virtualKey = macVirtualKeyForQtKey(event->key());
+    }
+    if (virtualKey == UINT16_MAX) {
+        return {};
+    }
+
+    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+    if (!source) {
+        return {};
+    }
+    const auto *layoutData = static_cast<CFDataRef>(
+        TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+    if (!layoutData) {
+        CFRelease(source);
+        source = TISCopyCurrentKeyboardLayoutInputSource();
+        layoutData = source ? static_cast<CFDataRef>(
+            TISGetInputSourceProperty(source,
+                                      kTISPropertyUnicodeKeyLayoutData))
+                            : nullptr;
+    }
+    if (!layoutData) {
+        if (source) {
+            CFRelease(source);
+        }
+        return {};
+    }
+
+    const auto *layout = reinterpret_cast<const UCKeyboardLayout *>(
+        CFDataGetBytePtr(layoutData));
+    UInt32 deadKeyState = 0;
+    UniChar chars[8]{};
+    UniCharCount length = 0;
+    const UInt32 modifiers = event->modifiers().testFlag(Qt::ShiftModifier)
+        ? (shiftKey >> 8) : 0;
+    const OSStatus status = UCKeyTranslate(
+        layout, virtualKey, kUCKeyActionDown, modifiers,
+        LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &deadKeyState,
+        std::size(chars), &length, chars);
+    CFRelease(source);
+    if (status != noErr || length == 0) {
+        return {};
+    }
+    return QString::fromUtf16(reinterpret_cast<const char16_t *>(chars),
+                              static_cast<qsizetype>(length));
+}
+#endif
 }
 
 VtuiGridItem::VtuiGridItem(QQuickItem *parent)
@@ -249,16 +352,20 @@ void VtuiGridItem::releaseForwardedKeys()
     m_forwardedKeyModifiers.clear();
 }
 
-void VtuiGridItem::sendQtKey(int key, const QString &text, bool down, int modifiers)
+void VtuiGridItem::sendQtKey(int key, const QString &text, bool down,
+                             int modifiers, quint32 nativeScanCode)
 {
     if (!m_controller) {
         return;
     }
 
     const auto qtModifiers = Qt::KeyboardModifiers::fromInt(modifiers);
+    if (down && nativeScanCode == 0
+        && qtModifiers.testFlag(Qt::AltModifier)) {
+        nativeScanCode = m_lastNativeAltScanCode;
+    }
     QKeyEvent event(down ? QEvent::KeyPress : QEvent::KeyRelease,
-                    key,
-                    qtModifiers,
+                    key, qtModifiers, nativeScanCode, nativeScanCode, 0,
                     down ? text : QString());
     int nativeModifiers = modifiersFromEvent(qtModifiers);
     if (isEnhancedQtKey(key)) {
@@ -295,6 +402,19 @@ void VtuiGridItem::sendQtText(const QString &text)
 
 bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
 {
+#if defined(Q_OS_MACOS)
+    // Qt Quick exposes the layout-produced key/text to QML, but not a usable
+    // physical key code on every Qt/macOS combination. Capture it from the
+    // original application event before GalleryPanelHost forwards the key.
+    if (event && event->type() == QEvent::KeyPress) {
+        const auto *keyEvent = static_cast<QKeyEvent *>(event);
+        if (keyEvent->modifiers().testFlag(Qt::AltModifier)
+            && keyEvent->nativeVirtualKey() > 0
+            && keyEvent->nativeVirtualKey() <= UINT16_MAX) {
+            m_lastNativeAltScanCode = keyEvent->nativeVirtualKey();
+        }
+    }
+#endif
     if (m_terminalInputEnabled && m_inputMethodForwardingEnabled && m_controller
         && event && event->type() == QEvent::InputMethod) {
         auto *inputMethodEvent = static_cast<QInputMethodEvent *>(event);
@@ -751,10 +871,16 @@ int VtuiGridItem::keyToVk(const QKeyEvent *event) const
 
 int VtuiGridItem::keyChar(const QKeyEvent *event) const
 {
-    if (event->text().isEmpty()) {
+#if defined(Q_OS_MACOS)
+    const QString textWithoutOption = macTextWithoutOption(event);
+    const QString text = textWithoutOption.isEmpty()
+        ? event->text() : textWithoutOption;
+#else
+    const QString text = event->text();
+#endif
+    if (text.isEmpty()) {
         return 0;
     }
-    const QString text = event->text();
     const char32_t codepoint = text.toUcs4().isEmpty() ? 0 : text.toUcs4().front();
     if (codepoint < 0x20 && event->key() != Qt::Key_Tab && event->key() != Qt::Key_Return && event->key() != Qt::Key_Enter) {
         return 0;

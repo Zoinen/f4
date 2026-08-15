@@ -32,6 +32,16 @@ type ViewerBackend struct {
 	isFetching bool
 	readErr    error
 
+	// A line start can be farther away than the cache window (a minified
+	// document or a file containing one very long line is a common example).
+	// Keep the backward scan cursor between non-blocking retries. Without this
+	// state every retry starts at lineSeekTarget; once the cache has moved more
+	// than one window backwards, that jumps it forward again and the two cache
+	// positions oscillate forever.
+	lineSeekTarget int64
+	lineSeekCurr   int64
+	lineSeekActive bool
+
 	ctx       context.Context
 	cancelCtx context.CancelFunc
 }
@@ -276,11 +286,35 @@ func (b *ViewerBackend) LineStartFromEnd(ctx context.Context, n int64) (int64, b
 	return idx.Offsets[0], true
 }
 func (b *ViewerBackend) FindLineStart(offset int64) int64 {
-	if offset <= 0 {
-		return 0
+	resolved, ready := b.TryFindLineStart(offset)
+	if !ready {
+		return offset
 	}
+	return resolved
+}
+
+// TryFindLineStart is the non-blocking variant used by semantic GUI seeking.
+// A false ready result means the requested cache window is being fetched; the
+// caller must retain its last complete viewport and retry on the next redraw.
+func (b *ViewerBackend) TryFindLineStart(offset int64) (resolved int64, ready bool) {
+	if offset <= 0 {
+		b.mu.Lock()
+		b.lineSeekActive = false
+		b.lineSeekCurr = 0
+		b.mu.Unlock()
+		return 0, true
+	}
+
+	b.mu.Lock()
+	if !b.lineSeekActive || b.lineSeekTarget != offset {
+		b.lineSeekTarget = offset
+		b.lineSeekCurr = offset
+		b.lineSeekActive = true
+	}
+	curr := b.lineSeekCurr
+	b.mu.Unlock()
+
 	chunkSize := int64(4096)
-	curr := offset
 	for curr > 0 {
 		start := curr - chunkSize
 		if start < 0 {
@@ -289,18 +323,35 @@ func (b *ViewerBackend) FindLineStart(offset int64) int64 {
 
 		data, err := b.ReadAt(start, int(curr-start))
 		if err == piecetable.ErrLoading {
-			return offset // Stay at current offset while loading
+			b.mu.Lock()
+			if b.lineSeekActive && b.lineSeekTarget == offset {
+				b.lineSeekCurr = curr
+			}
+			b.mu.Unlock()
+			return offset, false
 		}
 		if err != nil {
-			return offset
+			b.finishLineStartSeek(offset)
+			return offset, true
 		}
 
 		for i := len(data) - 1; i >= 0; i-- {
 			if data[i] == '\n' {
-				return start + int64(i) + 1
+				b.finishLineStartSeek(offset)
+				return start + int64(i) + 1, true
 			}
 		}
 		curr = start
 	}
-	return 0
+	b.finishLineStartSeek(offset)
+	return 0, true
+}
+
+func (b *ViewerBackend) finishLineStartSeek(offset int64) {
+	b.mu.Lock()
+	if b.lineSeekActive && b.lineSeekTarget == offset {
+		b.lineSeekActive = false
+		b.lineSeekCurr = 0
+	}
+	b.mu.Unlock()
 }

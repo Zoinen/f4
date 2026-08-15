@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unxed/f4/vfs"
 )
@@ -27,10 +28,16 @@ const (
 )
 
 var (
-	ErrNoDeviceSource    = errors.New("android: device source is not configured")
-	ErrNoDeviceOpener    = errors.New("android: device opener is not configured")
-	ErrDeviceUnavailable = errors.New("android: device is not available")
-	ErrManagerReadOnly   = errors.New("android: device list is read-only")
+	ErrNoDeviceSource       = errors.New("android: device source is not configured")
+	ErrNoDeviceOpener       = errors.New("android: device opener is not configured")
+	ErrDeviceUnavailable    = errors.New("android: device is not available")
+	ErrAuthorizationPending = errors.New("android: device authorization is pending")
+	ErrManagerReadOnly      = errors.New("android: device list is read-only")
+)
+
+const (
+	authorizationWaitTimeout = 60 * time.Second
+	authorizationPollDelay   = 250 * time.Millisecond
 )
 
 // DeviceInfo is the transport-independent description shown in the Android
@@ -50,6 +57,12 @@ type DeviceInfo struct {
 // state without a background hot-plug watcher.
 type DeviceSource interface {
 	ListDevices(ctx context.Context) ([]DeviceInfo, error)
+}
+
+// DeviceAuthorizationRestarter is implemented by an ADB-backed source that
+// can restart the host daemon and recreate an unauthorized USB transport.
+type DeviceAuthorizationRestarter interface {
+	RestartForAuthorization(ctx context.Context) error
 }
 
 // DeviceSourceFunc adapts a function to DeviceSource.
@@ -196,7 +209,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 		items = append(items, vfs.VFSItem{
 			Name:         name,
 			IsDir:        true,
-			IsExecutable: device.State == DeviceStateOnline,
+			IsExecutable: device.State == DeviceStateOnline || device.State == DeviceStateUnauthorized,
 			NoExtension:  true,
 		})
 	}
@@ -282,7 +295,7 @@ func (m *ManagerVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
 	return vfs.VFSItem{
 		Name:         DeviceDisplayName(device),
 		IsDir:        true,
-		IsExecutable: device.State == DeviceStateOnline,
+		IsExecutable: device.State == DeviceStateOnline || device.State == DeviceStateUnauthorized,
 		NoExtension:  true,
 	}, nil
 }
@@ -368,7 +381,64 @@ func (*deviceProvider) CanOpen(_ context.Context, parent vfs.VFS, p string) bool
 		return false
 	}
 	device, ok := manager.deviceForPath(p)
-	return ok && device.State == DeviceStateOnline
+	return ok && (device.State == DeviceStateOnline || device.State == DeviceStateUnauthorized)
+}
+
+func (*deviceProvider) ProviderOpenStatus(parent vfs.VFS, p string) (vfs.ProviderOpenStatus, bool) {
+	manager, ok := parent.(*ManagerVFS)
+	if !ok {
+		return vfs.ProviderOpenStatus{}, false
+	}
+	device, ok := manager.deviceForPath(p)
+	if !ok || device.State != DeviceStateUnauthorized {
+		return vfs.ProviderOpenStatus{}, false
+	}
+	return vfs.ProviderOpenStatus{
+		Title: " Android authorization ",
+		Message: fmt.Sprintf(
+			"Requesting USB debugging authorization for %s.\n\nUnlock the Android device and accept the USB debugging prompt.\n\nf4 will open the device automatically after authorization.",
+			DeviceDisplayName(device),
+		),
+	}, true
+}
+
+func (m *ManagerVFS) authorizeDevice(ctx context.Context, device DeviceInfo) (DeviceInfo, error) {
+	restarter, ok := m.source.(DeviceAuthorizationRestarter)
+	if !ok {
+		return DeviceInfo{}, fmt.Errorf("android: cannot retry authorization for %q: ADB reconnect is unavailable", device.Serial)
+	}
+	if err := restarter.RestartForAuthorization(ctx); err != nil {
+		return DeviceInfo{}, fmt.Errorf("android: request authorization for %q: %w", device.Serial, err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, authorizationWaitTimeout)
+	defer cancel()
+	ticker := time.NewTicker(authorizationPollDelay)
+	defer ticker.Stop()
+
+	for {
+		devices, err := m.source.ListDevices(waitCtx)
+		if err == nil {
+			for _, current := range devices {
+				if current.Serial == device.Serial && current.State == DeviceStateOnline {
+					return current, nil
+				}
+			}
+		} else if waitCtx.Err() == nil {
+			return DeviceInfo{}, fmt.Errorf("android: refresh authorization state for %q: %w", device.Serial, err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return DeviceInfo{}, ctx.Err()
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return DeviceInfo{}, ctx.Err()
+			}
+			return DeviceInfo{}, fmt.Errorf("%w for %q; unlock the device, accept the USB debugging prompt, then try again", ErrAuthorizationPending, device.Serial)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (*deviceProvider) Open(ctx context.Context, parent vfs.VFS, p string) (vfs.VFS, error) {
@@ -379,6 +449,13 @@ func (*deviceProvider) Open(ctx context.Context, parent vfs.VFS, p string) (vfs.
 	device, ok := manager.deviceForPath(p)
 	if !ok {
 		return nil, fmt.Errorf("android: %q: %w", p, os.ErrNotExist)
+	}
+	if device.State == DeviceStateUnauthorized {
+		var err error
+		device, err = manager.authorizeDevice(ctx, device)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if device.State != DeviceStateOnline {
 		return nil, fmt.Errorf("android: device %q is %s: %w", device.Serial, device.State, ErrDeviceUnavailable)

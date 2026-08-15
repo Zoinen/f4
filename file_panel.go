@@ -289,30 +289,10 @@ const (
 
 var panelLoadingPulse = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// PanelPresentation selects how a filesystem panel is rendered by native
-// frontends. It is intentionally independent from ViewMode: the latter remains
-// the textual layout to restore when a gallery is unavailable or switched off.
-type PanelPresentation string
-
-const (
-	PanelPresentationList    PanelPresentation = "list"
-	PanelPresentationGallery PanelPresentation = "gallery"
-)
-
-func parsePanelPresentation(value string) PanelPresentation {
-	switch PanelPresentation(strings.ToLower(strings.TrimSpace(value))) {
-	case PanelPresentationGallery:
-		return PanelPresentationGallery
-	default:
-		return PanelPresentationList
-	}
-}
-
 // GalleryLayoutMode selects the geometry/delegate strategy used by the
-// reusable ZoinGallery renderer.  It deliberately remains independent from
-// PanelPresentation and ViewMode: text frontends keep their legacy modes,
-// while native frontends can fall back from a saved gallery layout on a VFS
-// that cannot provide local preview paths.
+// reusable ZoinGallery renderer. It remains independent from ViewMode: the
+// terminal frontend keeps its compact table layouts, while native frontends
+// always use this unified renderer.
 type GalleryLayoutMode string
 
 const (
@@ -355,7 +335,7 @@ func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
-		return 128, 72, 256
+		return 64, 18, 256
 	default:
 		return 150, 30, 500
 	}
@@ -469,7 +449,6 @@ type FileSystemPanel struct {
 	dragScrollDirection   int
 	dragScrollTimer       *time.Timer
 	dragScrollGeneration  uint64
-	presentation          PanelPresentation
 	galleryLayoutMode     GalleryLayoutMode
 	galleryColumnCount    int
 	galleryDensities      map[GalleryLayoutMode]int
@@ -485,6 +464,7 @@ type FileSystemPanel struct {
 	loadWorkerActive           bool
 	pendingDirectoryLoad       func()
 	providerOpenTask           *vtui.TaskContext
+	providerOpenDialog         *vtui.Window
 	directoryErrorDialog       *vtui.Window
 	providerOpenTarget         string
 	providerOpenSourceSelect   string
@@ -507,6 +487,11 @@ type FileSystemPanel struct {
 
 	isCheckingRefresh bool
 	currentTitle      string
+	// semanticTitle is the stable, presentation-neutral title exported to
+	// native frontends. currentTitle may additionally carry the one-cell TUI
+	// loading pulse; keeping that decoration out of the semantic model lets
+	// each frontend apply its own latency policy without timer-only scenes.
+	semanticTitle string
 
 	// lastLoadedPath is the path readDirectoryEx last saw; used to
 	// detect a directory switch so selectedItems can be dropped
@@ -545,7 +530,6 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		frame:                 vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
 		table:                 vtui.NewTable(x+1, y+1, w-2, h-2, nil),
 		viewMode:              ViewModeMedium,
-		presentation:          PanelPresentationList,
 		galleryLayoutMode:     GalleryLayoutMasonry,
 		galleryColumnCount:    defaultGalleryColumnCount,
 		galleryDensities:      make(map[GalleryLayoutMode]int),
@@ -1482,16 +1466,6 @@ func (fp *FileSystemPanel) configureCellSelection() {
 	}
 }
 
-func (fp *FileSystemPanel) SetPresentation(presentation PanelPresentation) bool {
-	switch presentation {
-	case PanelPresentationList, PanelPresentationGallery:
-		fp.presentation = presentation
-		return true
-	default:
-		return false
-	}
-}
-
 func (fp *FileSystemPanel) galleryDensity(mode GalleryLayoutMode) int {
 	if parsed, ok := parseGalleryLayoutMode(string(mode)); ok {
 		mode = parsed
@@ -1549,15 +1523,10 @@ func (fp *FileSystemPanel) setGalleryLayoutState(mode GalleryLayoutMode, columnC
 	return true
 }
 
-// SetGalleryLayout atomically selects a reusable gallery renderer and the
-// gallery presentation.  Callers never observe an intermediate scene where a
-// newly selected layout is still rendered by the legacy list Loader.
+// SetGalleryLayout atomically selects a strategy of the reusable native panel
+// renderer. The terminal frontend continues to use ViewMode independently.
 func (fp *FileSystemPanel) SetGalleryLayout(mode GalleryLayoutMode, columnCount int) bool {
-	if !fp.setGalleryLayoutState(mode, columnCount) {
-		return false
-	}
-	fp.presentation = PanelPresentationGallery
-	return true
+	return fp.setGalleryLayoutState(mode, columnCount)
 }
 
 // SetGalleryDensity changes only the saved density for one gallery mode.  It
@@ -1577,6 +1546,25 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 		return true
 	}
 	fp.galleryDensities[parsed] = density
+	fp.galleryLayoutRevision++
+	return true
+}
+
+// ResetGalleryDensity removes the per-mode override. Compact modes then use
+// the host's exact font-derived row height, so Columns and Details share the
+// same untouched density instead of persisting two nearly-equal integers.
+func (fp *FileSystemPanel) ResetGalleryDensity(mode GalleryLayoutMode) bool {
+	parsed, ok := parseGalleryLayoutMode(string(mode))
+	if !ok {
+		return false
+	}
+	if fp.galleryDensities == nil {
+		return true
+	}
+	if _, exists := fp.galleryDensities[parsed]; !exists {
+		return true
+	}
+	delete(fp.galleryDensities, parsed)
 	fp.galleryLayoutRevision++
 	return true
 }
@@ -1727,7 +1715,9 @@ func (fp *FileSystemPanel) updateTitle(err error) {
 
 	if err != nil && err != context.Canceled {
 		title += " [Error]"
-	} else if fp.isLoading {
+	}
+	fp.semanticTitle = title
+	if err == nil && fp.isLoading {
 		title += " " + panelLoadingPulse[fp.loadingFrame%len(panelLoadingPulse)]
 	}
 	fp.currentTitle = title
@@ -1827,6 +1817,7 @@ func (fp *FileSystemPanel) enqueueDirectoryLoad(load func()) {
 // it no longer owns the transition and close any VFS it produced instead of
 // replacing the panel's newer file system.
 func (fp *FileSystemPanel) cancelProviderOpen() {
+	fp.closeProviderOpenDialog()
 	if task := fp.providerOpenTask; task != nil {
 		fp.providerOpenTask = nil
 		fp.providerOpenTarget = ""
@@ -1834,6 +1825,68 @@ func (fp *FileSystemPanel) cancelProviderOpen() {
 		fp.providerOpenResult = nil
 		task.Cancel()
 	}
+}
+
+func (fp *FileSystemPanel) closeProviderOpenDialog() {
+	if fp == nil || fp.providerOpenDialog == nil {
+		return
+	}
+	dlg := fp.providerOpenDialog
+	fp.providerOpenDialog = nil
+	dlg.OnResult = nil
+	dlg.Close()
+}
+
+func (fp *FileSystemPanel) cancelProviderOpenAndRestore() {
+	if fp == nil || fp.providerOpenTask == nil {
+		return
+	}
+	sourceSelection := fp.providerOpenSourceSelect
+	sourcePath := fp.vfs.GetPath()
+	fp.cancelProviderOpen()
+	fp.isLoading = false
+	fp.stopLoadingAnimation()
+	fp.updateTitle(nil)
+	fp.pendingSelection = sourceSelection
+	fp.suppressNextFolderHistory(sourcePath)
+	fp.ReadDirectory()
+	vtui.FrameManager.Redraw()
+}
+
+func (fp *FileSystemPanel) showProviderOpenDialog(status vfs.ProviderOpenStatus) {
+	if fp == nil || fp.providerOpenTask == nil || status.Title == "" || status.Message == "" {
+		return
+	}
+
+	const width = 68
+	lines := strings.Split(status.Message, "\n")
+	height := len(lines) + 7
+	if height < 10 {
+		height = 10
+	}
+	dlg := vtui.NewCenteredDialog(width, height, status.Title)
+	dlg.AttentionSuppressed = true
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	for _, line := range lines {
+		label := vtui.NewLabel(0, 0, vtui.TruncateMiddle(line, width-4), nil)
+		dlg.AddItem(label)
+		vbox.Add(label, vtui.Margins{}, vtui.AlignCenter)
+	}
+	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
+	dlg.AddItem(btnCancel)
+	vbox.Add(btnCancel, vtui.Margins{Top: 1}, vtui.AlignCenter)
+	vbox.Apply()
+
+	fp.providerOpenDialog = dlg
+	btnCancel.OnClick = func() { dlg.Close() }
+	dlg.OnResult = func(int) {
+		if fp.providerOpenDialog != dlg {
+			return
+		}
+		fp.providerOpenDialog = nil
+		fp.cancelProviderOpenAndRestore()
+	}
+	vtui.FrameManager.AddScreenHeadless(dlg)
 }
 
 func (fp *FileSystemPanel) persistentPath() string {
@@ -1898,6 +1951,7 @@ func (fp *FileSystemPanel) openVFSAsync(
 				return
 			}
 			fp.providerOpenTask = nil
+			fp.closeProviderOpenDialog()
 			resultCallback := fp.providerOpenResult
 			fp.providerOpenResult = nil
 			fp.providerOpenTarget = ""
@@ -2894,6 +2948,13 @@ func shiftSelectDirection(vk uint16) int {
 	return 0
 }
 
+func fastFindRune(e *vtinput.InputEvent, _ bool) rune {
+	if e == nil {
+		return 0
+	}
+	return e.Char
+}
+
 func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 	if !e.KeyDown {
 		return false
@@ -2906,16 +2967,7 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_ESCAPE {
-			sourceSelection := fp.providerOpenSourceSelect
-			sourcePath := fp.vfs.GetPath()
-			fp.cancelProviderOpen()
-			fp.isLoading = false
-			fp.stopLoadingAnimation()
-			fp.updateTitle(nil)
-			fp.pendingSelection = sourceSelection
-			fp.suppressNextFolderHistory(sourcePath)
-			fp.ReadDirectory()
-			vtui.FrameManager.Redraw()
+			fp.cancelProviderOpenAndRestore()
 			return true
 		}
 	}
@@ -3023,17 +3075,17 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			fp.fastFindStr = ""
 			vtui.FrameManager.Redraw()
 			// Проваливаемся ниже, чтобы обработать Enter как вход в файл/директорию
-		} else if e.Char != 0 && !ctrl {
-			fp.fastFindStr += string(unicode.ToLower(e.Char))
+		} else if r := fastFindRune(e, alt); r != 0 && !ctrl && unicode.IsPrint(r) {
+			fp.fastFindStr += string(unicode.ToLower(r))
 			fp.doFastFind(0)
 			vtui.FrameManager.Redraw()
 			return true
 		}
 	} else {
 		searchFirstInput := AppConfig.NavigationMode == NavigationSearchFirst && fp.IsFocused() && !alt
-		if e.Char != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(e.Char) {
+		if r := fastFindRune(e, alt); r != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(r) {
 			fp.fastFindMode = true
-			fp.fastFindStr = string(unicode.ToLower(e.Char))
+			fp.fastFindStr = string(unicode.ToLower(r))
 			fp.doFastFind(0)
 			vtui.FrameManager.Redraw()
 			return true
@@ -3207,7 +3259,11 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 			if provider != nil {
 				sourceVFS := fp.vfs
 				selectedName := selected.Name
-				return fp.openVFSAsync(
+				status, showStatus := vfs.ProviderOpenStatus{}, false
+				if statusProvider, ok := provider.(vfs.ProviderOpenStatusProvider); ok {
+					status, showStatus = statusProvider.ProviderOpenStatus(sourceVFS, fullPath)
+				}
+				started := fp.openVFSAsync(
 					"",
 					func(ctx context.Context) (vfs.VFS, error) {
 						newVFS, err := provider.Open(ctx, sourceVFS, fullPath)
@@ -3228,6 +3284,10 @@ func (fp *FileSystemPanel) ProcessKey(e *vtinput.InputEvent) bool {
 						vtui.ShowMessage(" Connection Error ", fmt.Sprintf("Failed to connect to %s:\n%v", selectedName, err), []string{"&Ok"})
 					},
 				)
+				if started && showStatus {
+					fp.showProviderOpenDialog(status)
+				}
+				return started
 			}
 
 			if selected.IsDir {

@@ -495,7 +495,7 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
                         "panelBackground": "#141922",
                         "text": "#e8edf2",
                         "cursor": "#285d8f",
-                        "selection": "#4f5037"
+                        "selection": "#ffd43b"
                     })
                 }
             }
@@ -579,7 +579,7 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     auto *selectionIndicator = panel->findChild<QObject *>(
         QStringLiteral("gallerySelectionIndicator-1"));
     QVERIFY(selectionIndicator);
-    QVERIFY(selectionIndicator->property("visible").toBool());
+    QVERIFY(!selectionIndicator->property("visible").toBool());
     QVERIFY(panel->property("cursorColor") != panel->property("selectionColor"));
 
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
@@ -706,7 +706,7 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
                         "panelBackground": "#141922",
                         "text": "#e8edf2",
                         "cursor": "#285d8f",
-                        "selection": "#4f5037"
+                        "selection": "#ffd43b"
                     })
                 }
             }
@@ -851,7 +851,7 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesStaleLoaderRevisionAndFocus
                         "panelBackground": "#141922",
                         "text": "#e8edf2",
                         "cursor": "#285d8f",
-                        "selection": "#4f5037"
+                        "selection": "#ffd43b"
                     })
                 }
             }
@@ -874,7 +874,7 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesStaleLoaderRevisionAndFocus
     QVERIFY(loader);
     QVERIFY(focusTarget);
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
 
@@ -1039,7 +1039,7 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
     QVERIFY(bridge.available());
     bridge.synchronizeScene(galleryImageScene(imagePaths, 0));
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->currentIndex(), 0);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("image-entry-0"));
@@ -1066,7 +1066,7 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
                         "panelBackground": "#141922",
                         "text": "#e8edf2",
                         "cursor": "#285d8f",
-                        "selection": "#4f5037"
+                        "selection": "#ffd43b"
                     })
                 }
             }
@@ -1117,7 +1117,7 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
                        itemCenter(firstImage));
     QTRY_VERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
-    QCOMPARE(bridge.viewerSession(), bridge.leftSession());
+    QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
     QCOMPARE(session->cursorEntryId(), QStringLiteral("image-entry-0"));
     QCOMPARE(viewerChanges.size(), 1);
     QVERIFY(firstActionSince(actions, 0, QStringLiteral("panel.open")).isEmpty());
@@ -1147,7 +1147,7 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
     bridge.synchronizeScene(galleryImageScene(imagePaths, 1));
     QTRY_VERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
-    QCOMPARE(bridge.viewerSession(), bridge.leftSession());
+    QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
     QCOMPARE(session->currentIndex(), 1);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("image-entry-1"));
     QCOMPARE(viewerChanges.size(), 1);
@@ -1168,7 +1168,7 @@ void F4GalleryPointerTests::galleryModeSwitchPositionsCursorImmediately()
     // ordinary list Loader.
     bridge.synchronizeScene(galleryScene(60, 2));
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->currentIndex(), 2);
     QCOMPARE(session->panelScrollOffset(), qreal(0));
@@ -1382,7 +1382,7 @@ void F4GalleryPointerTests::panelVisibilityKeepsLiveGalleryViewport()
     // Any accidental completion/reveal pass will therefore reset this value
     // and make the regression deterministic rather than timing-dependent.
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     session->setProperty("panelScrollOffset", 47.0);
     originalLayout->setProperty("contentY", 47.0);
@@ -1509,7 +1509,7 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
         qRound(layoutForLoader()->property("contentY").toReal()), 37, 2000);
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(qRound(session->property("panelScrollOffset").toReal()), 37);
 
@@ -1612,7 +1612,7 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     bridge.synchronizeScene(initialScene);
     QVERIFY(bridge.viewerVisible());
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     view.engine()->rootContext()->setContextProperty(
         QStringLiteral("pointerViewerBridge"), &bridge);

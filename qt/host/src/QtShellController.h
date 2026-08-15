@@ -4,7 +4,10 @@
 #include <QByteArray>
 #include <QObject>
 #include <QTcpSocket>
+#include <QThread>
 #include <QVariant>
+
+class QtShellMessageDecoder;
 
 class QtShellController : public QObject
 {
@@ -13,6 +16,9 @@ class QtShellController : public QObject
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
     Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
+    Q_PROPERTY(QVariantMap presentationScene READ presentationScene NOTIFY sceneChanged)
+    Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
+    Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
 
 public:
     explicit QtShellController(const QString &connectAddress,
@@ -20,11 +26,15 @@ public:
                                int cols,
                                int rows,
                                QObject *parent = nullptr);
+    ~QtShellController() override;
 
     int initialCols() const { return m_initialCols; }
     int initialRows() const { return m_initialRows; }
     bool connected() const { return m_connected; }
     QVariantMap scene() const { return m_scene; }
+    QVariantMap presentationScene() const { return m_presentationScene; }
+    QVariantMap commandLine() const { return m_commandLine; }
+    QVariantList commandMenus() const { return m_commandMenus; }
 
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
@@ -41,22 +51,47 @@ public:
 signals:
     void connectedChanged();
     void sceneChanged();
+    void commandLineChanged();
+    void commandMenusChanged();
     void fatalError(const QString &message);
     void messageReceived(const QVariantMap &message);
+
+    // Emitted after a complete frame has been removed from the socket but
+    // before it is handed to the decoder thread. This is intentionally a
+    // lightweight diagnostic boundary; decoding never runs on this thread.
+    void frameDecodeQueued(quint64 sequence);
 
 private slots:
     void onConnected();
     void onReadyRead();
     void onDisconnected();
     void onSocketError(QAbstractSocket::SocketError error);
+    void onFrameDecoded(quint64 epoch, quint64 sequence,
+                        const QVariant &decoded);
+    void onFrameDecodeFailed(quint64 epoch, quint64 sequence,
+                             const QString &message);
 
 private:
     bool sendMessage(const QVariantMap &message);
     bool parseConnectAddress(const QString &address);
     void processBuffer();
+    void enqueueFrame(QByteArray payload);
+    void invalidateDecodeSession();
+    void failProtocol(const QString &message);
 
     QTcpSocket *m_socket = nullptr;
-    QByteArray m_readBuffer;
+    QByteArray m_frameHeader;
+    QByteArray m_framePayload;
+    quint32 m_expectedFrameSize = 0;
+    qsizetype m_frameBytesRead = 0;
+    QThread m_decodeThread;
+    QtShellMessageDecoder *m_decoder = nullptr;
+    quint64 m_decodeEpoch = 1;
+    quint64 m_nextDecodeSequence = 1;
+    quint64 m_nextApplySequence = 1;
+    bool m_decodeInFlight = false;
+    bool m_acceptDecodedFrames = true;
+    bool m_protocolFailed = false;
     QString m_host;
     quint16 m_port = 0;
     QString m_nonce;
@@ -64,4 +99,7 @@ private:
     int m_initialRows = 30;
     bool m_connected = false;
     QVariantMap m_scene;
+    QVariantMap m_presentationScene;
+    QVariantMap m_commandLine;
+    QVariantList m_commandMenus;
 };

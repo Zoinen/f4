@@ -74,16 +74,55 @@ FocusScope {
                 || requestedPresentationMode === "details")
             return Math.max(22, defaultListDensity)
         return requestedPresentationMode === "grid" ? 160
-             : requestedPresentationMode === "icons" ? 128 : 150
+             : requestedPresentationMode === "icons" ? 64 : 150
     }
+    readonly property real currentDensity:
+        galleryPanel && typeof galleryPanel.density !== "undefined"
+        ? Number(galleryPanel.density) : requestedDensity
+    readonly property real minimumDensity:
+        requestedPresentationMode === "columns"
+        || requestedPresentationMode === "details" ? 22
+        : requestedPresentationMode === "grid" ? 96
+        : requestedPresentationMode === "icons" ? 18 : 30
+    readonly property real maximumDensity:
+        requestedPresentationMode === "columns"
+        || requestedPresentationMode === "details" ? 72
+        : requestedPresentationMode === "grid" ? 320
+        : requestedPresentationMode === "icons" ? 256 : 500
+    readonly property real densityStep:
+        requestedPresentationMode === "columns"
+        || requestedPresentationMode === "details" ? 2
+        : requestedPresentationMode === "grid" ? 8
+        : requestedPresentationMode === "icons" ? 2 : 20
     property bool applyingRendererState: false
+
+    function previewDensity(value) {
+        if (!galleryPanel || typeof galleryPanel.density === "undefined")
+            return
+        galleryPanel.density = Math.max(minimumDensity,
+            Math.min(maximumDensity, Number(value)))
+    }
+
+    function commitDensity(value) {
+        const normalized = Math.round(Math.max(minimumDensity,
+            Math.min(maximumDensity, Number(value))))
+        previewDensity(normalized)
+        if (bridge && normalized !== requestedDensity)
+            bridge.requestGalleryDensity(side, requestedPresentationMode,
+                                         normalized)
+    }
 
     function applyRendererState() {
         if (!galleryPanel)
             return
         applyingRendererState = true
-        if (typeof galleryPanel.presentationMode !== "undefined")
+        if (typeof galleryPanel.presentationMode !== "undefined"
+                && galleryPanel.presentationMode
+                   !== requestedPresentationMode) {
+            if (typeof galleryPanel.beginPresentationSwitch === "function")
+                galleryPanel.beginPresentationSwitch()
             galleryPanel.presentationMode = requestedPresentationMode
+        }
         if (typeof galleryPanel.columnCount !== "undefined")
             galleryPanel.columnCount = requestedColumnCount
         if (typeof galleryPanel.density !== "undefined")
@@ -246,16 +285,17 @@ FocusScope {
         const mode = requestedPresentationMode
         const minimum = mode === "columns" || mode === "details" ? 22
                       : mode === "grid" ? 96
-                      : mode === "icons" ? 72 : 30
+                      : mode === "icons" ? 18 : 30
         const maximum = mode === "columns" || mode === "details" ? 72
                       : mode === "grid" ? 320
                       : mode === "icons" ? 256 : 500
         const defaultDensity = mode === "columns" || mode === "details"
                 ? Math.max(22, Math.round(defaultListDensity))
                 : mode === "grid" ? 160
-                : mode === "icons" ? 128 : 150
+                : mode === "icons" ? 64 : 150
         const step = mode === "columns" || mode === "details" ? 2
-                   : mode === "grid" || mode === "icons" ? 8 : 20
+                   : mode === "grid" ? 8
+                   : mode === "icons" ? 2 : 20
         const currentValue = typeof galleryPanel.density !== "undefined"
                 ? galleryPanel.density : galleryPanel.thumbnailHeight
         const current = Math.max(minimum, Math.min(maximum,
@@ -320,6 +360,11 @@ FocusScope {
     }
 
     function commanderOwnsKey(event) {
+        // Bare Shift owns the lifetime of Zoin Gallery's range-selection
+        // preview. Let the child observe its press/release instead of sending
+        // the modifier itself to the commander grid.
+        if (event.key === Qt.Key_Shift)
+            return false
         // Conventional gallery zoom remains local to the gallery.
         if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal
                 || event.key === Qt.Key_Minus || event.key === Qt.Key_0)
@@ -338,10 +383,11 @@ FocusScope {
                 || event.key === Qt.Key_Up || event.key === Qt.Key_Down
         var pageKey = event.key === Qt.Key_PageUp
                 || event.key === Qt.Key_PageDown
+        var edgeKey = event.key === Qt.Key_Home || event.key === Qt.Key_End
         // Shift+spatial navigation preserves normal f4 selection semantics,
         // but uses the masonry geometry. Ctrl/Alt combinations remain f4
         // commander shortcuts (panel resizing, history, etc.).
-        if ((spatialKey || pageKey)
+        if ((spatialKey || pageKey || edgeKey)
                 && (routingModifiers === Qt.NoModifier
                     || routingModifiers === Qt.ShiftModifier))
             return false
@@ -365,7 +411,8 @@ FocusScope {
         } else if (handleZoom(event)) {
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
-            if (keySink) keySink.sendQtKey(event.key, event.text, true, event.modifiers)
+            if (keySink) keySink.sendQtKey(event.key, event.text, true,
+                                           event.modifiers, event.nativeScanCode)
             rememberForwardedKey(event.key)
             // VtuiGridItem emits the same notification synchronously. Keep a
             // direct fallback for lightweight test/custom key sinks that only
@@ -381,13 +428,15 @@ FocusScope {
         if (isPasteShortcut(event)) {
             event.accepted = true
         } else if (takeForwardedKey(event.key)) {
-            if (keySink) keySink.sendQtKey(event.key, event.text, false, event.modifiers)
+            if (keySink) keySink.sendQtKey(event.key, event.text, false,
+                                           event.modifiers, event.nativeScanCode)
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
             // A key-down such as Tab/F3 can move focus to another persistent
             // surface before key-up. That new surface has no local press
             // record, but Go must still receive the commander key release.
-            if (keySink) keySink.sendQtKey(event.key, event.text, false, event.modifiers)
+            if (keySink) keySink.sendQtKey(event.key, event.text, false,
+                                           event.modifiers, event.nativeScanCode)
             event.accepted = true
         }
     }
@@ -399,9 +448,9 @@ FocusScope {
         session: host.session
         theme: host.theme
         metrics: host.metrics
-        // f4 keeps its original FilePanelView column header outside the
-        // reusable viewport so list and unified Details share one exact
-        // geometry and interaction surface.
+        // f4 keeps the Details column header outside the reusable viewport so
+        // every unified layout shares one exact geometry and interaction
+        // surface.
         showDetailsHeader: false
         hostCapabilities: host.effectiveHostCapabilities
         devicePixelRatio: host.devicePixelRatio

@@ -59,16 +59,20 @@ func (r *DummyReporter) UpdateTransfer(action, filename string, currentPct int, 
 func (r *DummyReporter) IsCancelled() bool { return false }
 
 type QueueTask struct {
-	mu          sync.Mutex
-	ID          int
-	Type        string
-	Desc        string
-	State       string // Queued, Starting, Scanning, Running, Cancelling, Done, Error, Cancelled
-	Progress    int
-	TotalText   string
-	Speed       string
-	CurrentFile string
-	ErrorMsg    error
+	mu              sync.Mutex
+	ID              int
+	Type            string
+	Desc            string
+	State           string // Queued, Starting, Scanning, Running, Cancelling, Done, Error, Cancelled
+	Action          string
+	CurrentProgress int
+	Progress        int
+	TotalText       string
+	Elapsed         string
+	ETA             string
+	Speed           string
+	CurrentFile     string
+	ErrorMsg        error
 
 	Preconditions []OpPrecondition
 	ResKeys       []string
@@ -108,6 +112,8 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 	}
 	vtui.DebugLog("QUEUE_DEBUG: Task %d Scanning -> %s", t.ID, currentPath)
 	t.State = "Scanning"
+	t.Action = "Scanning"
+	t.CurrentProgress = -1
 	t.CurrentFile = currentPath
 	t.TotalText = fmt.Sprintf("Files: %d, Dirs: %d", files, dirs)
 	t.mu.Unlock()
@@ -121,20 +127,27 @@ func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct in
 		return
 	}
 	t.State = "Running"
+	t.Action = action
 	t.CurrentFile = filename
+	t.CurrentProgress = currentPct
 	t.Progress = totalPct
 	t.TotalText = totalText
 
-	// Extract clean speed from composite timeSpeedText string if applicable
-	displaySpeed := speedText
-	if len(speedText) >= 37 {
-		displaySpeed = strings.TrimSpace(speedText[37:])
-	}
-	t.Speed = displaySpeed
+	// File operations encode elapsed time, ETA and speed in three fixed-width
+	// fields.  The terminal queue historically kept only the last field.  Keep
+	// that display behavior while retaining all three values for semantic UIs.
+	t.Elapsed, t.ETA, t.Speed = splitQueueTimeSpeedText(speedText)
 
 	t.mu.Unlock()
 
 	GlobalQueueManager.RequestRefresh()
+}
+
+func splitQueueTimeSpeedText(value string) (elapsed, eta, speed string) {
+	if len(value) < 37 {
+		return "", "", strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(value[:16]), strings.TrimSpace(value[16:37]), strings.TrimSpace(value[37:])
 }
 
 func (t *QueueTask) IsCancelled() bool {
@@ -354,6 +367,31 @@ func (qm *OpQueueManager) CancelAll() {
 	for _, id := range ids {
 		qm.Cancel(id)
 	}
+}
+
+// ClearCompleted removes the same terminal states as the TUI's Clear button.
+// Active work is never removed from the manager or its workspace.
+func (qm *OpQueueManager) ClearCompleted() int {
+	if qm == nil {
+		return 0
+	}
+	qm.mu.Lock()
+	active := make([]*QueueTask, 0, len(qm.tasks))
+	removed := 0
+	for _, t := range qm.tasks {
+		t.mu.Lock()
+		terminal := queueTaskTerminal(t.State)
+		t.mu.Unlock()
+		if terminal {
+			removed++
+			continue
+		}
+		active = append(active, t)
+	}
+	qm.tasks = active
+	qm.mu.Unlock()
+	qm.RefreshUI()
+	return removed
 }
 
 func (qm *OpQueueManager) RefreshUI() {
@@ -595,38 +633,34 @@ func NewQueueFrame() *QueueFrame {
 
 	btnCancel.OnClick = func() {
 		idx := qf.table.SelectPos
-		if idx >= 0 && idx < len(qf.tasks) {
-			t := qf.tasks[idx]
-			t.mu.Lock()
-			state := t.State
-			t.mu.Unlock()
-			if queueTaskCancellable(state) {
-				vtui.ShowMessageOn(qf, " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", t.ID)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
-					if c == 0 {
-						GlobalQueueManager.Cancel(t.ID)
-					}
-				}
-			}
-		}
+		qf.requestCancelTask(idx)
 	}
 
 	btnClear.OnClick = func() {
-		GlobalQueueManager.mu.Lock()
-		var active []*QueueTask
-		for _, t := range GlobalQueueManager.tasks {
-			t.mu.Lock()
-			isDone := queueTaskTerminal(t.State)
-			t.mu.Unlock()
-			if !isDone {
-				active = append(active, t)
-			}
-		}
-		GlobalQueueManager.tasks = active
-		GlobalQueueManager.mu.Unlock()
-		GlobalQueueManager.RefreshUI()
+		GlobalQueueManager.ClearCompleted()
 	}
 
 	return qf
+}
+
+func (qf *QueueFrame) requestCancelTask(idx int) bool {
+	if idx < 0 || idx >= len(qf.tasks) {
+		return false
+	}
+	t := qf.tasks[idx]
+	t.mu.Lock()
+	id := t.ID
+	cancellable := queueTaskCancellable(t.State)
+	t.mu.Unlock()
+	if !cancellable {
+		return false
+	}
+	vtui.ShowMessageOn(qf, " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", id)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
+		if c == 0 && GlobalQueueManager != nil {
+			GlobalQueueManager.Cancel(id)
+		}
+	}
+	return true
 }
 
 func (qf *QueueFrame) UpdateTasks(tasks []*QueueTask) {

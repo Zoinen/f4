@@ -14,14 +14,14 @@ func TestWorkspaceSessionSerializationPreservesOrderNumbersAndActiveTab(t *testi
 		{
 			Number: 2, ActivePanel: 0, WidePanel: -1,
 			ShowPanels: true, ShowLeft: true, ShowRight: true,
-			Left:  panelSessionState{Path: "C:/alpha", Cursor: "a.txt", ViewMode: int(ViewModeBrief), SortMode: int(SortName)},
-			Right: panelSessionState{Path: "D:/beta", Cursor: "b.txt", ViewMode: int(ViewModeDetailed), SortMode: int(SortTime), SortReverse: true},
+			Left:  panelSessionState{Path: "C:/alpha", Cursor: "a.txt", ViewMode: int(ViewModeBrief), Gallery: defaultPanelGallerySessionState(), SortMode: int(SortName)},
+			Right: panelSessionState{Path: "D:/beta", Cursor: "b.txt", ViewMode: int(ViewModeDetailed), Gallery: defaultPanelGallerySessionState(), SortMode: int(SortTime), SortReverse: true},
 		},
 		{
 			Number: 1, ActivePanel: 1, WidePanel: 1,
 			ShowPanels: true, ShowLeft: false, ShowRight: true,
-			Left:  panelSessionState{Path: "C:/short", ViewMode: int(ViewModeMedium), SortMode: int(SortExt)},
-			Right: panelSessionState{Path: "D:/long", ViewMode: int(ViewModeBrief), SortMode: int(SortSize)},
+			Left:  panelSessionState{Path: "C:/short", ViewMode: int(ViewModeMedium), Gallery: defaultPanelGallerySessionState(), SortMode: int(SortExt)},
+			Right: panelSessionState{Path: "D:/long", ViewMode: int(ViewModeBrief), Gallery: defaultPanelGallerySessionState(), SortMode: int(SortSize)},
 		},
 	}
 

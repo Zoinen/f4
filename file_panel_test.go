@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/mattn/go-runewidth"
@@ -19,6 +20,29 @@ import (
 	"time"
 )
 
+func TestLoadPanelGallerySessionStateMigratesLegacyIconsDefault(t *testing.T) {
+	ini := ParseIni(bytes.NewBufferString(
+		"[LeftPanel]\nGalleryLayout = icons\nGalleryDensityIcons = 128\n"))
+	state := loadPanelGallerySessionState(ini, "LeftPanel")
+	if got := state.Densities[GalleryLayoutIcons]; got != 64 {
+		t.Fatalf("legacy Icons density migrated to %d, want 64", got)
+	}
+
+	ini = ParseIni(bytes.NewBufferString(
+		"[LeftPanel]\nGalleryLayout = icons\nGalleryDensityIcons = 32\n"))
+	state = loadPanelGallerySessionState(ini, "LeftPanel")
+	if got := state.Densities[GalleryLayoutIcons]; got != 64 {
+		t.Fatalf("previous compact Icons default migrated to %d, want 64", got)
+	}
+
+	ini = ParseIni(bytes.NewBufferString(
+		"[LeftPanel]\nGalleryLayout = icons\nGalleryDensityIcons = 96\n"))
+	state = loadPanelGallerySessionState(ini, "LeftPanel")
+	if got := state.Densities[GalleryLayoutIcons]; got != 96 {
+		t.Fatalf("explicit Icons density changed to %d, want 96", got)
+	}
+}
+
 func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 	panel := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
 
@@ -34,12 +58,11 @@ func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 	if !panel.SetGalleryLayout(GalleryLayoutColumns, 3) {
 		t.Fatal("valid Columns layout was rejected")
 	}
-	if panel.presentation != PanelPresentationGallery ||
-		panel.galleryLayoutMode != GalleryLayoutColumns ||
+	if panel.galleryLayoutMode != GalleryLayoutColumns ||
 		panel.galleryColumnCount != 3 ||
 		panel.galleryLayoutRevision != initialRevision+1 {
-		t.Fatalf("Columns layout was not applied atomically: presentation=%q mode=%q columns=%d revision=%d",
-			panel.presentation, panel.galleryLayoutMode, panel.galleryColumnCount,
+		t.Fatalf("Columns layout was not applied atomically: mode=%q columns=%d revision=%d",
+			panel.galleryLayoutMode, panel.galleryColumnCount,
 			panel.galleryLayoutRevision)
 	}
 
@@ -51,18 +74,21 @@ func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 	}
 
 	revision := panel.galleryLayoutRevision
-	panel.SetPresentation(PanelPresentationList)
 	if !panel.SetGalleryDensity(GalleryLayoutGrid, 500) {
 		t.Fatal("valid density action was rejected")
 	}
-	if panel.presentation != PanelPresentationList {
-		t.Fatal("density change unexpectedly selected Gallery presentation")
+	if panel.galleryLayoutMode != GalleryLayoutColumns {
+		t.Fatal("density change unexpectedly selected another layout")
 	}
 	if got := panel.galleryDensity(GalleryLayoutGrid); got != 320 {
 		t.Fatalf("grid density was not clamped: got %d, want 320", got)
 	}
 	if panel.galleryDensity(GalleryLayoutMasonry) != 150 {
 		t.Fatal("per-mode density change affected Masonry")
+	}
+	if panel.galleryDensity(GalleryLayoutIcons) != 64 {
+		t.Fatalf("Icons default density = %d, want 64",
+			panel.galleryDensity(GalleryLayoutIcons))
 	}
 	if panel.galleryLayoutRevision != revision+1 {
 		t.Fatalf("density revision = %d, want %d", panel.galleryLayoutRevision, revision+1)
@@ -74,6 +100,36 @@ func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 	}
 	if panel.SetGalleryDensity(GalleryLayoutMode("unknown"), 100) {
 		t.Fatal("unknown gallery density mode was accepted")
+	}
+}
+
+func TestLoadUnifiedPanelGallerySessionStateMigratesLegacyModes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ini         string
+		mode        ViewMode
+		layout      GalleryLayoutMode
+		columns     int
+		wantDensity int
+	}{
+		{name: "retired list brief", ini: "Presentation = list\nGalleryLayout = grid\n", mode: ViewModeBrief, layout: GalleryLayoutColumns, columns: 3},
+		{name: "retired list medium", ini: "Presentation = list\n", mode: ViewModeMedium, layout: GalleryLayoutColumns, columns: 2},
+		{name: "retired list detailed", ini: "Presentation = list\n", mode: ViewModeDetailed, layout: GalleryLayoutDetails, columns: 2},
+		{name: "retired gallery trusts layout", ini: "Presentation = gallery\nGalleryLayout = icons\nGalleryDensityIcons = 91\n", mode: ViewModeBrief, layout: GalleryLayoutIcons, columns: 2, wantDensity: 91},
+		{name: "pre-gallery session", ini: "", mode: ViewModeBrief, layout: GalleryLayoutColumns, columns: 3},
+		{name: "new session without presentation", ini: "GalleryLayout = masonry\nGalleryColumns = 3\n", mode: ViewModeDetailed, layout: GalleryLayoutMasonry, columns: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ini := ParseIni(strings.NewReader("[Panel]\n" + tc.ini))
+			state := loadUnifiedPanelGallerySessionState(ini, "Panel", tc.mode)
+			if state.LayoutMode != tc.layout || state.ColumnCount != tc.columns {
+				t.Fatalf("legacy %s was not migrated: layout=%q columns=%d",
+					tc.name, state.LayoutMode, state.ColumnCount)
+			}
+			if tc.wantDensity != 0 && state.Densities[tc.layout] != tc.wantDensity {
+				t.Fatalf("legacy %s lost density: %#v", tc.name, state.Densities)
+			}
+		})
 	}
 }
 
@@ -357,6 +413,15 @@ type blockingMountProvider struct {
 	release     chan struct{}
 	startedOnce sync.Once
 	openCalls   atomic.Int64
+}
+
+type statusBlockingMountProvider struct {
+	*blockingMountProvider
+	status vfs.ProviderOpenStatus
+}
+
+func (p *statusBlockingMountProvider) ProviderOpenStatus(vfs.VFS, string) (vfs.ProviderOpenStatus, bool) {
+	return p.status, true
 }
 
 func newBlockingMountProvider(source *blockingProviderManagerVFS) *blockingMountProvider {
@@ -2616,6 +2681,51 @@ func TestFileSystemPanel_FastFind(t *testing.T) {
 		t.Error("Navigation key (Left) should deactivate FastFind mode")
 	}
 }
+
+func TestFileSystemPanel_FastFindAltPreservesTranslatedLayoutCharacters(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(t.TempDir()))
+	if fp.cancelLoad != nil {
+		defer fp.cancelLoad()
+	}
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "файл"}},
+	}
+	fp.Refresh()
+
+	// The native frontend removes Option while translating the physical key
+	// through the current layout. Go must retain that translated character.
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_A,
+		Char:            'ф',
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	if !fp.fastFindMode || fp.fastFindStr != "ф" || fp.GetSelectedName() != "файл" {
+		t.Fatalf("Alt+ф fast find = active:%v query:%q selected:%q",
+			fp.fastFindMode, fp.fastFindStr, fp.GetSelectedName())
+	}
+
+	// Once active, subsequent layout characters stay intact as well.
+	fp.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F,
+		Char:            'а',
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	if fp.fastFindStr != "фа" {
+		t.Fatalf("Alt+а appended %q, want фа", fp.fastFindStr)
+	}
+
+	// Search-first/plain input still preserves arbitrary Unicode from the
+	// active keyboard layout because Alt is not involved.
+	if got := fastFindRune(&vtinput.InputEvent{Char: 'ж'}, false); got != 'ж' {
+		t.Fatalf("plain Unicode fast-find rune = %q, want ж", got)
+	}
+}
 func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
@@ -4066,6 +4176,55 @@ func TestFileSystemPanel_HeldEnterDuringProviderOpenIsCoalesced(t *testing.T) {
 	}
 	if got := fp.getRawSelectedName(); got != manager.rowName {
 		t.Fatalf("manager cursor after return = %q, want %q", got, manager.rowName)
+	}
+}
+
+func TestFileSystemPanel_ProviderConnectionStatusDialogCancelsOpen(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	manager := newBlockingProviderManagerVFS("unauthorized-device")
+	blocking := newBlockingMountProvider(manager)
+	provider := &statusBlockingMountProvider{
+		blockingMountProvider: blocking,
+		status: vfs.ProviderOpenStatus{
+			Title:   " Android authorization ",
+			Message: "Unlock the device.\n\nAccept the USB debugging prompt.",
+		},
+	}
+	vfs.RegisterProvider(provider)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(blocking.release) }) }
+	t.Cleanup(release)
+
+	fp := NewFileSystemPanel(0, 0, 40, 20, manager)
+	t.Cleanup(func() {
+		fp.cancelProviderOpen()
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+
+	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
+	if !fp.ProcessKey(enter) {
+		t.Fatal("provider Enter was not handled")
+	}
+	waitForPanelSignal(t, blocking.started, "blocked provider open")
+	if fp.providerOpenDialog == nil {
+		t.Fatal("connection attempt did not show a status dialog")
+	}
+	if top := vtui.FrameManager.GetTopFrame(); top != fp.providerOpenDialog {
+		t.Fatalf("top frame = %T, want provider status dialog", top)
+	}
+
+	fp.providerOpenDialog.Close()
+	if fp.providerOpenDialog != nil {
+		t.Fatal("cancelled status dialog remained attached to panel")
+	}
+	if fp.providerOpenTask != nil {
+		t.Fatal("closing status dialog did not cancel provider open")
 	}
 }
 

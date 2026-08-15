@@ -1087,8 +1087,6 @@ func TestSession_DiskPersistence(t *testing.T) {
 
 	LastLeftViewMode = 1
 	LastRightViewMode = 0
-	LastLeftPresentation = PanelPresentationGallery
-	LastRightPresentation = PanelPresentationList
 	LastLeftGalleryState = panelGallerySessionState{
 		LayoutMode:  GalleryLayoutColumns,
 		ColumnCount: 3,
@@ -1125,8 +1123,6 @@ func TestSession_DiskPersistence(t *testing.T) {
 
 	LastLeftViewMode = 0
 	LastRightViewMode = 1
-	LastLeftPresentation = PanelPresentationList
-	LastRightPresentation = PanelPresentationGallery
 	LastLeftGalleryState = defaultPanelGallerySessionState()
 	LastRightGalleryState = defaultPanelGallerySessionState()
 	LastLeftSortMode = 0
@@ -1151,9 +1147,6 @@ func TestSession_DiskPersistence(t *testing.T) {
 	if LastLeftViewMode != 1 || LastRightViewMode != 0 || LastLeftSortMode != 3 || LastRightSortMode != 2 {
 		t.Errorf("View/Sort modes persistence failed. LeftVM:%d, RightVM:%d, LeftSM:%d, RightSM:%d",
 			LastLeftViewMode, LastRightViewMode, LastLeftSortMode, LastRightSortMode)
-	}
-	if LastLeftPresentation != PanelPresentationGallery || LastRightPresentation != PanelPresentationList {
-		t.Errorf("Panel presentations persistence failed. Left:%q Right:%q", LastLeftPresentation, LastRightPresentation)
 	}
 	if LastLeftGalleryState.LayoutMode != GalleryLayoutColumns ||
 		LastLeftGalleryState.ColumnCount != 3 ||
@@ -1194,14 +1187,14 @@ func TestSession_OldFileDefaultsWideOff(t *testing.T) {
 	if LastWidePanel != -1 {
 		t.Fatalf("old session enabled Wide: got %d, want -1", LastWidePanel)
 	}
-	if LastLeftGalleryState.LayoutMode != GalleryLayoutMasonry ||
+	if LastLeftGalleryState.LayoutMode != GalleryLayoutColumns ||
 		LastLeftGalleryState.ColumnCount != 2 ||
 		len(LastLeftGalleryState.Densities) != 0 {
-		t.Fatalf("old session did not receive Gallery defaults: %#v", LastLeftGalleryState)
+		t.Fatalf("old session did not migrate Medium to Columns 2: %#v", LastLeftGalleryState)
 	}
 }
 
-func TestSession_PresentationPersistsWithoutPanelPaths(t *testing.T) {
+func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	origPathFunc := getSessionIniPath
 	getSessionIniPath = func() string { return filepath.Join(tmpDir, "session.ini") }
@@ -1209,19 +1202,19 @@ func TestSession_PresentationPersistsWithoutPanelPaths(t *testing.T) {
 	oldConfig := AppConfig
 	oldLeftPath := LastLeftPath
 	oldRightPath := LastRightPath
-	oldLeftPresentation := LastLeftPresentation
-	oldRightPresentation := LastRightPresentation
 	oldLeftGalleryState := LastLeftGalleryState
 	oldRightGalleryState := LastRightGalleryState
+	oldWorkspaceSessions := LastWorkspaceSessions
+	oldActiveWorkspace := LastActiveWorkspace
 	defer func() {
 		getSessionIniPath = origPathFunc
 		AppConfig = oldConfig
 		LastLeftPath = oldLeftPath
 		LastRightPath = oldRightPath
-		LastLeftPresentation = oldLeftPresentation
-		LastRightPresentation = oldRightPresentation
 		LastLeftGalleryState = oldLeftGalleryState
 		LastRightGalleryState = oldRightGalleryState
+		LastWorkspaceSessions = oldWorkspaceSessions
+		LastActiveWorkspace = oldActiveWorkspace
 	}()
 
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -1233,25 +1226,20 @@ func TestSession_PresentationPersistsWithoutPanelPaths(t *testing.T) {
 
 	left := panels.panels[0].(*FileSystemPanel)
 	right := panels.panels[1].(*FileSystemPanel)
-	left.presentation = PanelPresentationGallery
-	right.presentation = PanelPresentationList
 	if !left.SetGalleryLayout(GalleryLayoutGrid, 0) ||
 		!left.SetGalleryDensity(GalleryLayoutGrid, 207) ||
 		!right.SetGalleryLayout(GalleryLayoutColumns, 3) ||
 		!right.SetGalleryDensity(GalleryLayoutColumns, 31) {
 		t.Fatal("failed to configure per-panel Gallery state")
 	}
-	right.presentation = PanelPresentationList
-
 	AppConfig.SavePanelPaths = false
 	AppConfig.GuiCols = vtui.FrameManager.GetScreenSize()
 	AppConfig.GuiRows = vtui.FrameManager.GetScreenHeight()
 	LastLeftPath = "/keep/left"
 	LastRightPath = "/keep/right"
-	LastLeftPresentation = PanelPresentationList
-	LastRightPresentation = PanelPresentationGallery
 	LastLeftGalleryState = defaultPanelGallerySessionState()
 	LastRightGalleryState = defaultPanelGallerySessionState()
+	LastWorkspaceSessions = nil
 
 	SaveSession()
 
@@ -1259,49 +1247,41 @@ func TestSession_PresentationPersistsWithoutPanelPaths(t *testing.T) {
 		t.Fatalf("SavePanelPaths=false changed paths: left=%q right=%q",
 			LastLeftPath, LastRightPath)
 	}
-	if LastLeftPresentation != PanelPresentationGallery ||
-		LastRightPresentation != PanelPresentationList {
-		t.Fatalf("presentation was not captured independently: left=%q right=%q",
-			LastLeftPresentation, LastRightPresentation)
+	if len(LastWorkspaceSessions) != 1 {
+		t.Fatalf("captured workspace count = %d, want 1", len(LastWorkspaceSessions))
 	}
-	if LastLeftGalleryState.LayoutMode != GalleryLayoutGrid ||
-		LastLeftGalleryState.Densities[GalleryLayoutGrid] != 207 ||
-		LastRightGalleryState.LayoutMode != GalleryLayoutColumns ||
-		LastRightGalleryState.ColumnCount != 3 ||
-		LastRightGalleryState.Densities[GalleryLayoutColumns] != 31 {
+	captured := LastWorkspaceSessions[0]
+	if captured.Left.Gallery.LayoutMode != GalleryLayoutGrid ||
+		captured.Left.Gallery.Densities[GalleryLayoutGrid] != 207 ||
+		captured.Right.Gallery.LayoutMode != GalleryLayoutColumns ||
+		captured.Right.Gallery.ColumnCount != 3 ||
+		captured.Right.Gallery.Densities[GalleryLayoutColumns] != 31 {
 		t.Fatalf("Gallery state was not captured independently: left=%#v right=%#v",
-			LastLeftGalleryState, LastRightGalleryState)
+			captured.Left.Gallery, captured.Right.Gallery)
+	}
+	encoded, err := os.ReadFile(getSessionIniPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "Presentation =") {
+		t.Fatalf("retired panel Presentation was persisted:\n%s", encoded)
 	}
 
-	LastLeftPresentation = PanelPresentationList
-	LastRightPresentation = PanelPresentationGallery
 	LastLeftGalleryState = defaultPanelGallerySessionState()
 	LastRightGalleryState = defaultPanelGallerySessionState()
+	LastWorkspaceSessions = nil
 	LoadSession()
-	if LastLeftPresentation != PanelPresentationGallery ||
-		LastRightPresentation != PanelPresentationList {
-		t.Fatalf("presentation was not loaded independently: left=%q right=%q",
-			LastLeftPresentation, LastRightPresentation)
+	if len(LastWorkspaceSessions) != 1 {
+		t.Fatalf("loaded workspace count = %d, want 1", len(LastWorkspaceSessions))
 	}
-
-	freshPanels := NewPanelsFrame()
-	defer freshPanels.Close()
-	freshPanels.ResizeConsole(80, 25)
-	restorePanelPresentations(freshPanels)
-	if freshPanels.panels[0].(*FileSystemPanel).presentation != PanelPresentationGallery ||
-		freshPanels.panels[1].(*FileSystemPanel).presentation != PanelPresentationList {
-		t.Fatalf("saved presentations were not restored onto fresh panels")
-	}
-	freshLeft := freshPanels.panels[0].(*FileSystemPanel)
-	freshRight := freshPanels.panels[1].(*FileSystemPanel)
-	if freshLeft.galleryLayoutMode != GalleryLayoutGrid ||
-		freshLeft.galleryDensity(GalleryLayoutGrid) != 207 ||
-		freshRight.galleryLayoutMode != GalleryLayoutColumns ||
-		freshRight.galleryColumnCount != 3 ||
-		freshRight.galleryDensity(GalleryLayoutColumns) != 31 {
+	loaded := LastWorkspaceSessions[0]
+	if loaded.Left.Gallery.LayoutMode != GalleryLayoutGrid ||
+		loaded.Left.Gallery.Densities[GalleryLayoutGrid] != 207 ||
+		loaded.Right.Gallery.LayoutMode != GalleryLayoutColumns ||
+		loaded.Right.Gallery.ColumnCount != 3 ||
+		loaded.Right.Gallery.Densities[GalleryLayoutColumns] != 31 {
 		t.Fatalf("saved Gallery state was not restored: left=%#v right=%#v",
-			capturePanelGallerySessionState(freshLeft),
-			capturePanelGallerySessionState(freshRight))
+			loaded.Left.Gallery, loaded.Right.Gallery)
 	}
 }
 

@@ -9,13 +9,12 @@ import (
 )
 
 type panelSessionState struct {
-	Path         string
-	Cursor       string
-	ViewMode     int
-	Presentation PanelPresentation
-	Gallery      panelGallerySessionState
-	SortMode     int
-	SortReverse  bool
+	Path        string
+	Cursor      string
+	ViewMode    int
+	Gallery     panelGallerySessionState
+	SortMode    int
+	SortReverse bool
 }
 
 type workspaceSessionState struct {
@@ -35,12 +34,12 @@ func legacyWorkspaceSession() workspaceSessionState {
 		Number: 1,
 		Left: panelSessionState{
 			Path: LastLeftPath, Cursor: LastLeftCursor, ViewMode: LastLeftViewMode,
-			Presentation: LastLeftPresentation, Gallery: clonePanelGallerySessionState(LastLeftGalleryState),
+			Gallery:  clonePanelGallerySessionState(LastLeftGalleryState),
 			SortMode: LastLeftSortMode, SortReverse: LastLeftSortRev,
 		},
 		Right: panelSessionState{
 			Path: LastRightPath, Cursor: LastRightCursor, ViewMode: LastRightViewMode,
-			Presentation: LastRightPresentation, Gallery: clonePanelGallerySessionState(LastRightGalleryState),
+			Gallery:  clonePanelGallerySessionState(LastRightGalleryState),
 			SortMode: LastRightSortMode, SortReverse: LastRightSortRev,
 		},
 		ActivePanel: LastActivePanel,
@@ -55,7 +54,6 @@ func setLegacyWorkspaceSession(state workspaceSessionState) {
 	LastLeftPath, LastRightPath = state.Left.Path, state.Right.Path
 	LastLeftCursor, LastRightCursor = state.Left.Cursor, state.Right.Cursor
 	LastLeftViewMode, LastRightViewMode = state.Left.ViewMode, state.Right.ViewMode
-	LastLeftPresentation, LastRightPresentation = state.Left.Presentation, state.Right.Presentation
 	LastLeftGalleryState, LastRightGalleryState = clonePanelGallerySessionState(state.Left.Gallery), clonePanelGallerySessionState(state.Right.Gallery)
 	LastLeftSortMode, LastRightSortMode = state.Left.SortMode, state.Right.SortMode
 	LastLeftSortRev, LastRightSortRev = state.Left.SortReverse, state.Right.SortReverse
@@ -108,7 +106,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 		}
 		state.Left = panelSessionState{
 			Path: path, Cursor: cursor, ViewMode: int(left.viewMode),
-			Presentation: left.presentation, Gallery: capturePanelGallerySessionState(left),
+			Gallery:  capturePanelGallerySessionState(left),
 			SortMode: int(left.sortMode), SortReverse: left.sortReverse,
 		}
 	}
@@ -124,7 +122,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 		}
 		state.Right = panelSessionState{
 			Path: path, Cursor: cursor, ViewMode: int(right.viewMode),
-			Presentation: right.presentation, Gallery: capturePanelGallerySessionState(right),
+			Gallery:  capturePanelGallerySessionState(right),
 			SortMode: int(right.sortMode), SortReverse: right.sortReverse,
 		}
 	}
@@ -184,6 +182,8 @@ func loadWorkspaceSessions(ini *IniFile) ([]workspaceSessionState, int) {
 		section := fmt.Sprintf("Workspace/%d", i)
 		leftSection := section + "/Left"
 		rightSection := section + "/Right"
+		leftViewMode := parseSessionInt(ini, leftSection, "ViewMode", int(ViewModeMedium))
+		rightViewMode := parseSessionInt(ini, rightSection, "ViewMode", int(ViewModeMedium))
 		state := workspaceSessionState{
 			Number:      parseSessionInt(ini, section, "Number", i+1),
 			ActivePanel: parseSessionInt(ini, section, "ActivePanel", 1),
@@ -193,19 +193,17 @@ func loadWorkspaceSessions(ini *IniFile) ([]workspaceSessionState, int) {
 			ShowRight:   ini.GetString(section, "ShowRight", "1") == "1",
 			Left: panelSessionState{
 				Path: ini.GetString(leftSection, "Folder", ""), Cursor: ini.GetString(leftSection, "CurFile", ""),
-				Presentation: parsePanelPresentation(ini.GetString(leftSection, "Presentation", string(PanelPresentationList))),
-				Gallery:      loadPanelGallerySessionState(ini, leftSection),
-				ViewMode:     parseSessionInt(ini, leftSection, "ViewMode", int(ViewModeMedium)),
-				SortMode:     parseSessionInt(ini, leftSection, "SortMode", int(SortName)),
-				SortReverse:  ini.GetString(leftSection, "SortReverse", "0") == "1",
+				Gallery:     loadUnifiedPanelGallerySessionState(ini, leftSection, validSessionViewMode(leftViewMode)),
+				ViewMode:    leftViewMode,
+				SortMode:    parseSessionInt(ini, leftSection, "SortMode", int(SortName)),
+				SortReverse: ini.GetString(leftSection, "SortReverse", "0") == "1",
 			},
 			Right: panelSessionState{
 				Path: ini.GetString(rightSection, "Folder", ""), Cursor: ini.GetString(rightSection, "CurFile", ""),
-				Presentation: parsePanelPresentation(ini.GetString(rightSection, "Presentation", string(PanelPresentationList))),
-				Gallery:      loadPanelGallerySessionState(ini, rightSection),
-				ViewMode:     parseSessionInt(ini, rightSection, "ViewMode", int(ViewModeMedium)),
-				SortMode:     parseSessionInt(ini, rightSection, "SortMode", int(SortName)),
-				SortReverse:  ini.GetString(rightSection, "SortReverse", "0") == "1",
+				Gallery:     loadUnifiedPanelGallerySessionState(ini, rightSection, validSessionViewMode(rightViewMode)),
+				ViewMode:    rightViewMode,
+				SortMode:    parseSessionInt(ini, rightSection, "SortMode", int(SortName)),
+				SortReverse: ini.GetString(rightSection, "SortReverse", "0") == "1",
 			},
 		}
 		if state.ActivePanel < 0 || state.ActivePanel > 1 {
@@ -252,7 +250,6 @@ func writePanelSession(sb *strings.Builder, section string, state panelSessionSt
 	fmt.Fprintf(sb, "Folder = %s\n", state.Path)
 	fmt.Fprintf(sb, "CurFile = %s\n", state.Cursor)
 	fmt.Fprintf(sb, "ViewMode = %d\n", state.ViewMode)
-	fmt.Fprintf(sb, "Presentation = %s\n", parsePanelPresentation(string(state.Presentation)))
 	writePanelGallerySessionState(sb, state.Gallery)
 	fmt.Fprintf(sb, "SortMode = %d\n", state.SortMode)
 	fmt.Fprintf(sb, "SortReverse = %d\n", map[bool]int{true: 1}[state.SortReverse])
@@ -302,7 +299,6 @@ func applyWorkspaceSession(pf *PanelsFrame, state workspaceSessionState, width, 
 	}
 	left.SetViewMode(validSessionViewMode(state.Left.ViewMode))
 	right.SetViewMode(validSessionViewMode(state.Right.ViewMode))
-	left.presentation, right.presentation = parsePanelPresentation(string(state.Left.Presentation)), parsePanelPresentation(string(state.Right.Presentation))
 	restorePanelGallerySessionState(left, state.Left.Gallery)
 	restorePanelGallerySessionState(right, state.Right.Gallery)
 	left.sortMode, right.sortMode = SortMode(state.Left.SortMode), SortMode(state.Right.SortMode)

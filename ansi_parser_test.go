@@ -786,6 +786,99 @@ func TestAnsiParser_ExcisesExpectedBackgroundSyncAcrossPTYReads(t *testing.T) {
 	}
 }
 
+func TestAnsiParser_PrivateSyncSuppressesZLERedrawUntilProtocolMarker(t *testing.T) {
+	tv := NewTerminalView(100, 24)
+	parser := NewAnsiParser(tv, nil)
+	parser.expectPrivateSyncCompletion()
+
+	// Real interactive zsh output is not a literal command echo: ZLE inserts a
+	// backspace, bracketed-paste toggles and arbitrary cursor redraws. Split the
+	// private completion OSC too, proving suppression is protocol-delimited and
+	// independent of PTY read boundaries.
+	for _, chunk := range [][]byte{
+		[]byte(" \b cd '/Users/zoin/Documents/f4'; printf '\\033]133;F4S"),
+		[]byte(" \r\x1b[KY\rYNC\\007'\x1b[?2004l\r\r\n"),
+		[]byte("\x1b]133;F4"),
+		[]byte("SYNC\x07zoin@host f4 % \x1b[?2004h"),
+	} {
+		parser.Process(chunk)
+	}
+
+	got := string(tv.GetAllLogBytes())
+	if strings.Contains(got, "cd '/Users") || strings.Contains(got, "F4SYNC") ||
+		strings.Contains(got, "printf") {
+		t.Fatalf("private cwd synchronization reached terminal history: %q", got)
+	}
+	if !strings.Contains(got, "zoin@host f4 %") {
+		t.Fatalf("prompt after private cwd synchronization was lost: %q", got)
+	}
+	if parser.privateSyncPending != 0 || len(parser.privateSyncSuffix) != 0 {
+		t.Fatalf("private sync did not settle: pending=%d suffix=%q",
+			parser.privateSyncPending, parser.privateSyncSuffix)
+	}
+}
+
+func TestAnsiParser_PrivateSyncFailsOpenForForegroundCommand(t *testing.T) {
+	tv := NewTerminalView(80, 24)
+	busy := false
+	tv.OnBusyChange = func(value bool) { busy = value }
+	parser := NewAnsiParser(tv, nil)
+	parser.expectPrivateSyncCompletion()
+
+	parser.Process([]byte("\x1b]133;C\x07user output\r\n"))
+	if !busy {
+		t.Fatal("stale private sync suppression swallowed foreground OSC C")
+	}
+	if got := string(tv.GetAllLogBytes()); !strings.Contains(got, "user output") {
+		t.Fatalf("stale private sync suppression swallowed foreground output: %q", got)
+	}
+	if parser.privateSyncPending != 0 {
+		t.Fatalf("foreground command left private sync pending=%d", parser.privateSyncPending)
+	}
+}
+
+func TestAnsiParser_PrivateSyncFailsOpenForEveryForegroundOSCSplit(t *testing.T) {
+	start := []byte(managedCommandStartOSC)
+	for split := 0; split <= len(start); split++ {
+		t.Run(fmt.Sprintf("split-%d", split), func(t *testing.T) {
+			tv := NewTerminalView(80, 24)
+			var busyChanges []bool
+			tv.OnBusyChange = func(value bool) {
+				busyChanges = append(busyChanges, value)
+			}
+			tv.PrepareCleanCommand("printf user-output")
+
+			parser := NewAnsiParser(tv, nil)
+			parser.expectPrivateSyncCompletion()
+
+			// The bytes before the foreground marker are a stale private ZLE
+			// redraw. They must stay suppressed, while every byte from OSC C
+			// onward must survive regardless of the PTY read boundary.
+			parser.Process(append([]byte("private redraw"), start[:split]...))
+			second := append([]byte{}, start[split:]...)
+			second = append(second, '\x07')
+			second = append(second, []byte("user-output\r\n\x1b]133;D\x07")...)
+			parser.Process(second)
+
+			if len(busyChanges) != 2 || !busyChanges[0] || busyChanges[1] {
+				t.Fatalf("OSC C/D lifecycle = %v, want [true false]", busyChanges)
+			}
+			got := string(tv.GetAllLogBytes())
+			if !strings.Contains(got, "printf user-output") ||
+				!strings.Contains(got, "user-output") {
+				t.Fatalf("foreground command bytes lost at split %d: %q", split, got)
+			}
+			if strings.Contains(got, "private redraw") {
+				t.Fatalf("private redraw leaked at split %d: %q", split, got)
+			}
+			if parser.privateSyncPending != 0 || len(parser.privateSyncSuffix) != 0 {
+				t.Fatalf("foreground command left private sync state at split %d: pending=%d suffix=%q",
+					split, parser.privateSyncPending, parser.privateSyncSuffix)
+			}
+		})
+	}
+}
+
 func TestAnsiParser_QueuesRapidBackgroundSyncEchoes(t *testing.T) {
 	tv := NewTerminalView(80, 24)
 	parser := NewAnsiParser(tv, nil)

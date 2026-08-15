@@ -7,10 +7,8 @@
 #include <QTimer>
 #include <QUrl>
 
-#if F4_WITH_ZOINGALLERY
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
-#endif
 
 namespace
 {
@@ -88,7 +86,6 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
                 [this, side]() { commitPendingCursor(side); });
         m_cursorCommitTimers[static_cast<size_t>(side)] = timer;
     }
-#if F4_WITH_ZOINGALLERY
     if (!engine) {
         return;
     }
@@ -111,14 +108,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
 
     m_sessions[0] = runtime->createExternalSession(QStringLiteral("f4-left"), this);
     m_sessions[1] = runtime->createExternalSession(QStringLiteral("f4-right"), this);
-#else
-    Q_UNUSED(engine);
-#endif
 }
 
 F4GalleryBridge::~F4GalleryBridge()
 {
-#if F4_WITH_ZOINGALLERY
     for (const QPointer<QObject> &sessionObject : m_sessions) {
         if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(sessionObject.data())) {
             session->shutdown();
@@ -130,26 +123,11 @@ F4GalleryBridge::~F4GalleryBridge()
         // remains an idempotent fallback for standalone/other embedders.
         runtime->shutdown();
     }
-#endif
 }
 
 bool F4GalleryBridge::available() const
 {
-#if F4_WITH_ZOINGALLERY
     return m_runtime && m_sessions[0] && m_sessions[1];
-#else
-    return false;
-#endif
-}
-
-QObject *F4GalleryBridge::leftSession() const
-{
-    return m_sessions[0].data();
-}
-
-QObject *F4GalleryBridge::rightSession() const
-{
-    return m_sessions[1].data();
 }
 
 QObject *F4GalleryBridge::viewerSession() const
@@ -167,27 +145,9 @@ QUrl F4GalleryBridge::viewerComponentUrl() const
     return available() ? QUrl(QStringLiteral("qrc:/F4QtHost/qml/GalleryViewerHost.qml")) : QUrl();
 }
 
-QUrl F4GalleryBridge::scrollBarComponentUrl() const
-{
-    // Load the reusable module's actual control rather than maintaining a
-    // visually similar host-side copy. Keeping the URL behind the optional
-    // bridge also preserves list-only builds without a ZoinGallery import.
-    return available()
-        ? QUrl(QStringLiteral("qrc:/ZoinGallery/qml/GalleryScrollBar.qml"))
-        : QUrl();
-}
-
 QObject *F4GalleryBridge::sessionForSide(int side) const
 {
     return validSide(side) ? m_sessions[static_cast<size_t>(side)].data() : nullptr;
-}
-
-bool F4GalleryBridge::shouldUseGallery(const QVariantMap &panel) const
-{
-    return available()
-        && panel.value(QStringLiteral("presentation")).toString() == QStringLiteral("gallery")
-        && panel.value(QStringLiteral("previewCapable")).toBool()
-        && panel.value(QStringLiteral("sourceKind")).toString() == QStringLiteral("local");
 }
 
 void F4GalleryBridge::requestActivate(int side)
@@ -251,9 +211,7 @@ void F4GalleryBridge::requestOpen(int side,
     }
 
     const SideState &sideState = m_states[static_cast<size_t>(side)];
-    if (isImage && available() && sideState.previewCapable
-        && sideState.presentation == QStringLiteral("gallery")
-        && sideState.sourceKind == QStringLiteral("local")) {
+    if (isImage && available() && sideState.previewCapable) {
         clearPendingPanelOpen();
         closeViewer();
         m_pendingViewer.active = true;
@@ -365,32 +323,6 @@ void F4GalleryBridge::requestSelection(int side,
     emitSelectionAction(side, normalizedMode, entryIds, revision);
 }
 
-void F4GalleryBridge::requestPresentation(int side, const QString &presentation)
-{
-    if (!validSide(side)) {
-        return;
-    }
-    if (m_pendingViewer.active && m_pendingViewer.side == side) {
-        clearPendingViewer();
-    }
-    if (m_pendingPanelOpen.active && m_pendingPanelOpen.side == side) {
-        clearPendingPanelOpen();
-    }
-    // Preserve the gallery's optimistic cursor before replacing its Loader.
-    // The cursor action is queued first, so Go applies it before changing the
-    // presentation even though the visual panel can disappear immediately.
-    commitPendingCursor(side);
-    clearPendingCursor(side);
-    clearPendingSelection(side);
-    const QString normalized = presentation == QStringLiteral("gallery")
-        ? QStringLiteral("gallery") : QStringLiteral("list");
-    emit uiActionRequested({
-        {QStringLiteral("action"), QStringLiteral("panel.setPresentation")},
-        {QStringLiteral("side"), side},
-        {QStringLiteral("presentation"), normalized},
-    });
-}
-
 void F4GalleryBridge::requestGalleryLayout(int side,
                                            const QString &layoutMode,
                                            int columnCount)
@@ -477,11 +409,9 @@ void F4GalleryBridge::closeViewer()
     if (!m_viewerVisible) {
         return;
     }
-#if F4_WITH_ZOINGALLERY
     if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(viewerSession())) {
         session->setViewerOpen(false);
     }
-#endif
     setViewer(-1, false);
 }
 
@@ -502,9 +432,7 @@ void F4GalleryBridge::synchronizeScene(const QVariantMap &scene)
     if (m_viewerVisible
         && (!validSide(m_viewerSide) || !found[static_cast<size_t>(m_viewerSide)]
             || !m_states[static_cast<size_t>(m_viewerSide)].previewCapable
-            || !m_states[static_cast<size_t>(m_viewerSide)].active
-            || m_states[static_cast<size_t>(m_viewerSide)].presentation
-                != QStringLiteral("gallery"))) {
+            || !m_states[static_cast<size_t>(m_viewerSide)].active)) {
         closeViewer();
     }
     if (m_pendingViewer.active
@@ -562,6 +490,8 @@ QVariantList F4GalleryBridge::normalizedEntries(const QVariantMap &panel)
         entry.insert(QStringLiteral("localPath"), source.value(QStringLiteral("localPath")));
         entry.insert(QStringLiteral("isDir"), source.value(QStringLiteral("isDir")));
         entry.insert(QStringLiteral("isUp"), source.value(QStringLiteral("isUp")));
+        entry.insert(QStringLiteral("isHidden"),
+                     source.value(QStringLiteral("isHidden")));
         if (source.contains(QStringLiteral("isImage"))) {
             entry.insert(QStringLiteral("isImage"), source.value(QStringLiteral("isImage")));
         }
@@ -694,40 +624,16 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const QString currentPath = panel.value(QStringLiteral("path")).toString();
     const QString cursorEntryId = panel.value(QStringLiteral("cursorEntryId")).toString();
     const int cursorIndex = panel.value(QStringLiteral("cursor"), -1).toInt();
-    const QString presentation = panel.value(QStringLiteral("presentation"), QStringLiteral("list")).toString();
-    const QString galleryLayoutMode = panel.value(
-        QStringLiteral("galleryLayoutMode"), QStringLiteral("masonry")).toString();
-    const int galleryColumnCount = panel.value(
-        QStringLiteral("galleryColumnCount"), 2).toInt();
-    const int galleryDensity = panel.value(QStringLiteral("galleryDensity")).toInt();
-    const qulonglong galleryLayoutRevision = revisionValue(
-        panel, QStringLiteral("galleryLayoutRevision"));
-    const QVariantList galleryColumns = panel.value(
-        QStringLiteral("galleryColumns")).toList();
     const QString sourceKind = panel.value(QStringLiteral("sourceKind"), QStringLiteral("vfs")).toString();
     const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool()
         && sourceKind == QStringLiteral("local");
     const bool active = panel.value(QStringLiteral("active")).toBool();
     const bool identityChanged = state.initialized && panelId != state.panelId;
-    const bool sourceBecameUnavailable = state.initialized
-        && state.previewCapable && !previewCapable;
-    const bool leavingGallery = state.initialized
-        && state.presentation == QStringLiteral("gallery")
-        && presentation != QStringLiteral("gallery");
 
-    if (leavingGallery && !identityChanged && !sourceBecameUnavailable) {
-        // Commander shortcuts can change presentation without going through
-        // requestPresentation(). Flush the stable pending cursor before the
-        // transient gallery surface is torn down.
-        commitPendingCursor(side);
-    }
-
-#if F4_WITH_ZOINGALLERY
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(m_sessions[static_cast<size_t>(side)].data());
-    if (session && (identityChanged || sourceBecameUnavailable)) {
+    if (session && identityChanged) {
         session->resetExternalSource();
     }
-#endif
     if (identityChanged) {
         if (m_viewerVisible && m_viewerSide == side) {
             closeViewer();
@@ -740,18 +646,10 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         m_selectionActionPending[static_cast<size_t>(side)] = false;
         state = SideState{};
     }
-    if (sourceBecameUnavailable || presentation != QStringLiteral("gallery")) {
-        clearPendingCursor(side);
-        clearPendingSelection(side);
-        if (m_pendingPanelOpen.active && m_pendingPanelOpen.side == side) {
-            clearPendingPanelOpen();
-        }
-    }
-
     const bool catalogChanged = !state.initialized
         || catalogRevision != state.catalogRevision
         || currentPath != state.currentPath
-        || (previewCapable && !state.previewCapable);
+        || previewCapable != state.previewCapable;
     const bool selectionChanged = !state.initialized
         || selectionRevision != state.selectionRevision;
     const bool highlightChanged = !state.initialized
@@ -769,22 +667,21 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
               : panel.value(QStringLiteral("entries")).toList())
         : state.selectedEntryIdList;
 
-#if F4_WITH_ZOINGALLERY
-    if (session && previewCapable && catalogChanged) {
+    if (session && catalogChanged) {
         session->applyExternalCatalog(entries, catalogRevision, {
             {QStringLiteral("currentPath"), currentPath},
             {QStringLiteral("sourceKind"), sourceKind},
-            {QStringLiteral("previewCapable"), true},
+            {QStringLiteral("previewCapable"), previewCapable},
         });
     }
 
-    if (session && previewCapable
+    if (session
         && (catalogChanged || highlightChanged || iconChanged)) {
         session->applyExternalAppearance(normalizedAppearance(panel),
                                          highlightRevision);
     }
 
-    if (session && previewCapable
+    if (session
         && (catalogChanged || selectionChanged
             || cursorEntryId != state.cursorEntryId || cursorIndex != state.cursorIndex
             || m_stateReconciliationPending[static_cast<size_t>(side)])) {
@@ -812,7 +709,6 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
                                     selectedIds,
                                     selectionRevision);
     }
-#endif
 
     state.initialized = true;
     state.panelId = panelId;
@@ -823,13 +719,6 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     state.currentPath = currentPath;
     state.cursorEntryId = cursorEntryId;
     state.cursorIndex = cursorIndex;
-    state.presentation = presentation;
-    state.galleryLayoutMode = galleryLayoutMode;
-    state.galleryColumnCount = galleryColumnCount;
-    state.galleryDensity = galleryDensity;
-    state.galleryLayoutRevision = galleryLayoutRevision;
-    state.galleryColumns = galleryColumns;
-    state.sourceKind = sourceKind;
     state.previewCapable = previewCapable;
     state.active = active;
     if (catalogChanged) {
@@ -953,8 +842,7 @@ void F4GalleryBridge::reconcilePendingCursor(int side)
     }
 
     const SideState &state = m_states[static_cast<size_t>(side)];
-    if (!state.previewCapable || state.presentation != QStringLiteral("gallery")
-        || state.panelId != pending.panelId) {
+    if (state.panelId != pending.panelId) {
         clearPendingCursor(side);
         if (m_pendingViewer.active && m_pendingViewer.side == side) {
             clearPendingViewer();
@@ -1013,8 +901,7 @@ void F4GalleryBridge::reconcilePendingPanelOpen(int side)
     }
 
     const SideState &state = m_states[static_cast<size_t>(side)];
-    if (!state.previewCapable || state.presentation != QStringLiteral("gallery")
-        || state.panelId != m_pendingPanelOpen.panelId) {
+    if (state.panelId != m_pendingPanelOpen.panelId) {
         clearPendingPanelOpen();
         return;
     }
@@ -1066,8 +953,7 @@ void F4GalleryBridge::reconcilePendingSelection(int side)
     }
 
     const SideState &state = m_states[static_cast<size_t>(side)];
-    if (!state.previewCapable || state.presentation != QStringLiteral("gallery")
-        || state.panelId != pending.panelId) {
+    if (state.panelId != pending.panelId) {
         clearPendingSelection(side);
         return;
     }
@@ -1158,8 +1044,7 @@ void F4GalleryBridge::reconcilePendingViewer(int side)
     }
 
     const SideState &state = m_states[static_cast<size_t>(side)];
-    if (!state.previewCapable || state.presentation != QStringLiteral("gallery")
-        || state.panelId != m_pendingViewer.panelId
+    if (!state.previewCapable || state.panelId != m_pendingViewer.panelId
         || (m_pendingViewer.catalogRevision != 0
             && state.catalogRevision != m_pendingViewer.catalogRevision)) {
         clearPendingViewer();
@@ -1185,19 +1070,15 @@ void F4GalleryBridge::reconcilePendingViewer(int side)
         return;
     }
 
-#if F4_WITH_ZOINGALLERY
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
         m_sessions[static_cast<size_t>(side)].data());
     if (!session || !session->isImageAt(session->currentIndex())) {
         clearPendingViewer();
         return;
     }
-#endif
     const int confirmedSide = m_pendingViewer.side;
     clearPendingViewer();
-#if F4_WITH_ZOINGALLERY
     session->setViewerOpen(true);
-#endif
     setViewer(confirmedSide, true);
 }
 

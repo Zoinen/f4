@@ -146,11 +146,13 @@ type ExtUiRenderer struct {
 	palette      [256]uint32
 	paletteValid bool
 
-	pendingPalette []uint32
-	pendingFrame   map[string]any
-	pendingScene   map[string]any
-	lastScene      map[string]any
-	closed         bool
+	pendingPalette          []uint32
+	pendingFrame            map[string]any
+	pendingScene            map[string]any
+	pendingCommandLine      map[string]any
+	pendingCommandLineScene map[string]any
+	lastScene               map[string]any
+	closed                  bool
 }
 
 func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer {
@@ -260,16 +262,119 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if reflect.DeepEqual(scene, r.lastScene) {
+		// A transient full scene or command-line patch returned to the state the
+		// native client already owns before Flush.
+		r.pendingScene = nil
+		r.pendingCommandLine = nil
+		r.pendingCommandLineScene = nil
+		return
+	}
 	if reflect.DeepEqual(scene, r.pendingScene) {
 		return
 	}
-	if reflect.DeepEqual(scene, r.lastScene) {
-		// A transient state may have been queued and then reverted before the
-		// renderer flushed. The client already owns this exact scene.
-		r.pendingScene = nil
+	if reflect.DeepEqual(scene, r.pendingCommandLineScene) {
 		return
 	}
+
+	// Typing used to serialize and decode the complete panel catalogs for
+	// every character. The command line is the only changing subtree in the
+	// common case, so retain the authoritative Go model while transporting a
+	// tiny patch to the native frontend. A pending full scene cannot be based
+	// on the client's last scene and therefore deliberately stays full.
+	if r.pendingScene == nil && semanticScenesEqualExceptCommandLine(r.lastScene, scene) {
+		if commandLine, ok := semanticSceneCommandLine(scene); ok {
+			r.pendingCommandLine = map[string]any{
+				"type":        "command_line",
+				"commandLine": commandLine,
+			}
+			if menus, present := scene["menus"]; present {
+				r.pendingCommandLine["menus"] = menus
+			}
+			r.pendingCommandLineScene = scene
+			return
+		}
+	}
+	r.pendingCommandLine = nil
+	r.pendingCommandLineScene = nil
 	r.pendingScene = scene
+}
+
+func semanticSceneCommandLine(scene map[string]any) (map[string]any, bool) {
+	if scene == nil {
+		return nil, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return nil, false
+	}
+	commandLine, ok := shell["commandLine"].(map[string]any)
+	return commandLine, ok && commandLine != nil
+}
+
+func semanticSceneWithoutCommandLine(scene map[string]any) (map[string]any, bool) {
+	if scene == nil {
+		return nil, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return nil, false
+	}
+	rootCopy := make(map[string]any, len(scene))
+	for key, value := range scene {
+		rootCopy[key] = value
+	}
+	shellCopy := make(map[string]any, len(shell))
+	for key, value := range shell {
+		if key != "commandLine" {
+			shellCopy[key] = value
+		}
+	}
+	rootCopy["shell"] = shellCopy
+	delete(rootCopy, "menus")
+	if menus, present := scene["menus"]; present {
+		if filtered := semanticNonAutocompleteMenus(menus); len(filtered) > 0 {
+			rootCopy["menus"] = filtered
+		}
+	}
+	return rootCopy, true
+}
+
+func semanticNonAutocompleteMenus(value any) []map[string]any {
+	var menus []map[string]any
+	switch typed := value.(type) {
+	case []map[string]any:
+		menus = typed
+	case []any:
+		menus = make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if menu, ok := item.(map[string]any); ok {
+				menus = append(menus, menu)
+			}
+		}
+	default:
+		return nil
+	}
+
+	filtered := make([]map[string]any, 0, len(menus))
+	for _, menu := range menus {
+		if semanticString(menu["role"]) != "autocomplete" {
+			filtered = append(filtered, menu)
+		}
+	}
+	return filtered
+}
+
+func semanticScenesEqualExceptCommandLine(a, b map[string]any) bool {
+	if _, ok := semanticSceneCommandLine(a); !ok {
+		return false
+	}
+	if _, ok := semanticSceneCommandLine(b); !ok {
+		return false
+	}
+	aWithout, aOK := semanticSceneWithoutCommandLine(a)
+	bWithout, bOK := semanticSceneWithoutCommandLine(b)
+	return aOK && bOK && reflect.DeepEqual(aWithout, bWithout)
 }
 
 func (r *ExtUiRenderer) Flush() {
@@ -299,6 +404,12 @@ func (r *ExtUiRenderer) Flush() {
 		// semantic catalog to the Qt GUI thread.
 		r.lastScene = r.pendingScene
 		r.pendingScene = nil
+	}
+	if r.pendingCommandLine != nil {
+		messages = append(messages, r.pendingCommandLine)
+		r.lastScene = r.pendingCommandLineScene
+		r.pendingCommandLine = nil
+		r.pendingCommandLineScene = nil
 	}
 	if r.cursorDirty {
 		messages = append(messages, map[string]any{
@@ -593,6 +704,8 @@ func externalUIBackendArgs(backend string) []string {
 		"--f4-icon-set=" + string(parseQmlIconSetMode(string(AppConfig.QmlIconSet))),
 		"--f4-font-family=" + effectiveGuiFont(),
 		"--f4-font-size=" + strconv.Itoa(AppConfig.GuiFontSize),
+		"--f4-window-geometry-file=" + filepath.Join(
+			GetF4ConfigDir(), "window-geometry.ini"),
 	}
 }
 
@@ -612,22 +725,25 @@ func findExtUiPath(backend string) (string, error) {
 	}
 
 	var candidates []string
+	appendFromDir := func(dir string) {
+		candidates = append(candidates,
+			extUiExecutablePaths(dir, binName, runtime.GOOS)...)
+	}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
-		candidates = append(candidates, filepath.Join(exeDir, binName))
+		appendFromDir(exeDir)
 		if runtime.GOOS == "darwin" && strings.HasSuffix(exeDir, ".app/Contents/MacOS") {
-			candidates = append(candidates, filepath.Join(filepath.Dir(filepath.Dir(exeDir)), "Resources", binName))
+			appendFromDir(filepath.Join(filepath.Dir(filepath.Dir(exeDir)),
+				"Resources"))
 		}
 	}
 
 	if cwd, err := os.Getwd(); err == nil {
 		for _, cfg := range []string{"RelWithDebInfo", "Release", "Debug"} {
-			candidates = append(candidates, filepath.Join(cwd, "qt", "host", "build", "bin", cfg, binName))
+			appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin", cfg))
 		}
-		candidates = append(candidates,
-			filepath.Join(cwd, "qt", "host", "build", "bin", binName),
-			filepath.Join(cwd, "qt", "host", "build", binName),
-		)
+		appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin"))
+		appendFromDir(filepath.Join(cwd, "qt", "host", "build"))
 	}
 
 	for _, path := range candidates {
@@ -636,6 +752,15 @@ func findExtUiPath(backend string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("external UI executable %q not found", binName)
+}
+
+func extUiExecutablePaths(dir, binName, goos string) []string {
+	paths := make([]string, 0, 2)
+	if goos == "darwin" && binName == "f4-qt-host" {
+		paths = append(paths, filepath.Join(dir, "f4-qt-host.app", "Contents",
+			"MacOS", "f4-qt-host"))
+	}
+	return append(paths, filepath.Join(dir, binName))
 }
 
 func extUiFileExists(path string) bool {

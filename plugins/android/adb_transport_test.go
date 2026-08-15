@@ -155,6 +155,24 @@ func TestDevicesFallsBackToShortListing(t *testing.T) {
 	dialer.assertDone()
 }
 
+func TestRestartForAuthorizationUsesInstalledADB(t *testing.T) {
+	var gotPath string
+	server := NewServer(
+		WithADBLookup(func() (string, error) { return "/sdk/platform-tools/adb", nil }),
+		WithADBRestarter(func(_ context.Context, path string) error {
+			gotPath = path
+			return nil
+		}),
+	)
+
+	if err := server.RestartForAuthorization(context.Background()); err != nil {
+		t.Fatalf("RestartForAuthorization: %v", err)
+	}
+	if gotPath != "/sdk/platform-tools/adb" {
+		t.Fatalf("restart path = %q", gotPath)
+	}
+}
+
 func TestFeaturesUsesTransportSpecificQuery(t *testing.T) {
 	server, dialer := testServer(t, func(conn net.Conn) {
 		expectTestRequest(t, conn, "host-serial:SERIAL:features")

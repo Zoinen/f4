@@ -19,14 +19,11 @@ class F4GalleryBridge final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
-    Q_PROPERTY(QObject *leftSession READ leftSession CONSTANT)
-    Q_PROPERTY(QObject *rightSession READ rightSession CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl CONSTANT)
-    Q_PROPERTY(QUrl scrollBarComponentUrl READ scrollBarComponentUrl CONSTANT)
 
 public:
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
@@ -34,17 +31,13 @@ public:
     ~F4GalleryBridge() override;
 
     bool available() const;
-    QObject *leftSession() const;
-    QObject *rightSession() const;
     QObject *viewerSession() const;
     bool viewerVisible() const { return m_viewerVisible; }
     int viewerSide() const { return m_viewerSide; }
     QUrl panelComponentUrl() const;
     QUrl viewerComponentUrl() const;
-    QUrl scrollBarComponentUrl() const;
 
     Q_INVOKABLE QObject *sessionForSide(int side) const;
-    Q_INVOKABLE bool shouldUseGallery(const QVariantMap &panel) const;
     Q_INVOKABLE void requestActivate(int side);
     Q_INVOKABLE void requestCursor(int side,
                                    const QString &entryId,
@@ -60,7 +53,6 @@ public:
                                       const QString &mode,
                                       const QVariantList &entryIds,
                                       qulonglong catalogRevision = 0);
-    Q_INVOKABLE void requestPresentation(int side, const QString &presentation);
     Q_INVOKABLE void requestGalleryLayout(int side, const QString &layoutMode,
                                           int columnCount = 0);
     Q_INVOKABLE void requestGalleryDensity(int side, const QString &layoutMode,
@@ -87,13 +79,6 @@ private:
         QString currentPath;
         QString cursorEntryId;
         int cursorIndex = -1;
-        QString presentation = QStringLiteral("list");
-        QString galleryLayoutMode = QStringLiteral("masonry");
-        int galleryColumnCount = 2;
-        int galleryDensity = 150;
-        qulonglong galleryLayoutRevision = 0;
-        QVariantList galleryColumns;
-        QString sourceKind = QStringLiteral("vfs");
         bool previewCapable = false;
         bool active = false;
         QVariantList entries;

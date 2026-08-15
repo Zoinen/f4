@@ -1557,30 +1557,30 @@ func init() {
 		}),
 	})
 	RegisterAction(Action{
-		Name:        "Panel.ViewBrief",
-		Area:        "Shell",
-		Label:       "Brief Mode",
-		Description: "Set active panel to brief mode",
-		DescKey:     "Action.Panel.ViewBrief.Desc",
-		DefaultKeys: []string{"Ctrl1"},
-		Visible:     func() bool { return !isAIPanelActive() },
-		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeBrief) }),
-	})
-	RegisterAction(Action{
 		Name:        "Panel.ViewMedium",
 		Area:        "Shell",
-		Label:       "Medium Mode",
-		Description: "Set active panel to medium mode",
+		Label:       "Columns · 2",
+		Description: "Show the active panel in two unified columns",
 		DescKey:     "Action.Panel.ViewMedium.Desc",
-		DefaultKeys: []string{"Ctrl2"},
+		DefaultKeys: []string{"Ctrl1"},
 		Visible:     func() bool { return !isAIPanelActive() },
 		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeMedium) }),
 	})
 	RegisterAction(Action{
+		Name:        "Panel.ViewBrief",
+		Area:        "Shell",
+		Label:       "Columns · 3",
+		Description: "Show the active panel in three unified columns",
+		DescKey:     "Action.Panel.ViewBrief.Desc",
+		DefaultKeys: []string{"Ctrl2"},
+		Visible:     func() bool { return !isAIPanelActive() },
+		Handler:     withPF(func(pf *PanelsFrame) { pf.setPanelViewMode(pf.activeIdx, ViewModeBrief) }),
+	})
+	RegisterAction(Action{
 		Name:        "Panel.ViewDetailed",
 		Area:        "Shell",
-		Label:       "Detailed Mode",
-		Description: "Set active panel to detailed mode",
+		Label:       "Details",
+		Description: "Show the active panel in unified details mode",
 		DescKey:     "Action.Panel.ViewDetailed.Desc",
 		DefaultKeys: []string{"Ctrl3"},
 		Visible:     func() bool { return !isAIPanelActive() },
@@ -1594,16 +1594,54 @@ func init() {
 		DescKey:     "Action.Panel.ViewWide.Desc",
 		DefaultKeys: []string{"Ctrl4"},
 		Visible:     func() bool { return !isAIPanelActive() },
-		Handler:     withPF(func(pf *PanelsFrame) { pf.setWidePanel(pf.activeIdx) }),
+		Handler: withPF(func(pf *PanelsFrame) {
+			if pf.wide && pf.widePanel == pf.activeIdx {
+				pf.exitWide()
+			} else {
+				pf.setWidePanel(pf.activeIdx)
+			}
+		}),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.ViewIcons",
+		Area:        "Shell",
+		Label:       "Icons",
+		Description: "Show the active panel in unified icons mode",
+		DefaultKeys: []string{"Ctrl5"},
+		Visible:     func() bool { return !isAIPanelActive() },
+		Handler: withPF(func(pf *PanelsFrame) {
+			if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
+				fsp.SetGalleryLayout(GalleryLayoutIcons, 0)
+			}
+			pf.updateMenuCheckmarks()
+		}),
+	})
+	RegisterAction(Action{
+		Name:        "Panel.ViewGrid",
+		Area:        "Shell",
+		Label:       "Grid",
+		Description: "Show the active panel in unified grid mode",
+		DefaultKeys: []string{"Ctrl6"},
+		Visible:     func() bool { return !isAIPanelActive() },
+		Handler: withPF(func(pf *PanelsFrame) {
+			if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
+				fsp.SetGalleryLayout(GalleryLayoutGrid, 0)
+			}
+			pf.updateMenuCheckmarks()
+		}),
 	})
 	RegisterAction(Action{
 		Name:        "Panel.ViewGallery",
 		Area:        "Shell",
-		Label:       "Gallery Mode",
-		Description: "Set active panel to gallery presentation",
-		DefaultKeys: []string{"Ctrl5"},
+		Label:       "Masonry",
+		Description: "Show the active panel in unified masonry mode",
+		DefaultKeys: []string{"Ctrl7"},
+		Visible:     func() bool { return !isAIPanelActive() },
 		Handler: withPF(func(pf *PanelsFrame) {
-			pf.setPanelPresentation(pf.activeIdx, PanelPresentationGallery)
+			if fsp, ok := pf.panels[pf.activeIdx].(*FileSystemPanel); ok {
+				fsp.SetGalleryLayout(GalleryLayoutMasonry, 0)
+			}
+			pf.updateMenuCheckmarks()
 		}),
 	})
 	RegisterAction(Action{

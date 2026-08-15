@@ -4,6 +4,7 @@ import QtQuick.Controls.Basic as T
 import QtQuick.Controls.impl
 import QtQuick.Layouts
 import F4QtHost 1.0
+import ZoinGallery 1.0 as ZG
 import QWindowKit 1.0
 
 ApplicationWindow {
@@ -21,6 +22,7 @@ ApplicationWindow {
            : "f4"
     property bool isQWKLegacy: false
     property bool windowAgentReady: false
+    property bool workspaceBarHitTestRegistered: false
     property int macWindowEffectApplyAttempts: 0
     readonly property string guiMonospaceFontFamily:
         String(f4GuiFontFamily || "").length > 0 ? String(f4GuiFontFamily) : "Monaco"
@@ -44,12 +46,26 @@ ApplicationWindow {
     readonly property real titleBarContentVerticalOffset: 1
     color: useTransparentWindowBackground ? "transparent" : "#101318"
 
-    property var scene: qtShell.scene || ({})
+    // Gallery receives full catalogs directly in C++. Keep those row payloads
+    // out of QML, where QVariant-to-JavaScript conversion would otherwise run
+    // synchronously on every directory transition.
+    property var scene: qtShell.presentationScene || ({})
     readonly property var workspaceTabs: scene.workspaceTabs || ({})
     readonly property var workspaces: workspaceTabs.tabs || []
+    // vtui exports only the active workspace.  Keep the last complete model
+    // for each heavyweight native surface so opening the Operations Queue tab
+    // is a visibility change, not destruction/recreation of the panel,
+    // Gallery, Viewer or Editor object tree underneath it.
+    property var retainedShellFrame: ({})
+    property var retainedDocumentFrame: ({})
+    property var retainedOperationsQueue: ({})
+    property bool retainedDocumentSurfaceCreated: false
+    property bool retainedOperationsQueueCreated: false
     property real cw: Math.max(8, grid.cellWidth)
     property real ch: Math.max(17, grid.cellHeight)
     readonly property real menuBarHeight: 42
+    readonly property real workspaceTabMinWidth: 92
+    readonly property real workspaceTabMaxWidth: 280
     readonly property real contentSpacing: 16
     readonly property real panelContentSpacing: 8
     readonly property real panelTextInset: 16
@@ -59,8 +75,10 @@ ApplicationWindow {
     readonly property real pathRowExtraHeight: 4
     readonly property real columnSeparatorVerticalMargin: 6
     readonly property real separatorWidth: 1
-    readonly property real commandLineLeftMargin: 8
+    // Align the prompt glyphs with the leading icons in both file panels.
+    readonly property real commandLineLeftMargin: panelTextInset
     readonly property real commandLineVerticalMargin: 8
+    readonly property real semanticTextFontPixelSize: 13
     readonly property real actionBarVerticalMargin: 3
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
@@ -68,7 +86,10 @@ ApplicationWindow {
     property color panelBg: "#99121822"
     property color panelPathBg: "#26314152"
     property color panelBgAlt: "#d910151d"
-    property color terminalBg: "#99000000"
+    // Preserve the panel RGB while giving the large terminal surface enough
+    // coverage to stay visibly blue through QWK's dark macOS blur. It remains
+    // translucent; the previous 60% alpha collapsed to apparent opaque black.
+    property color terminalBg: "#d9121822"
     property color commandLineBg: "#33000000"
     property color panelBorder: "#4e9bd4"
     property color activeBorder: "#f0c95a"
@@ -79,6 +100,7 @@ ApplicationWindow {
     property color panelSelectionBorder: "#1d5888"
     property color folderIconColor: "#5ab2f1"
     property color markedBg: "#4f5037"
+    property color markedText: "#ffd43b"
     property color panelHeaderBg: "#1c2531"
     property color chromeBg: "#202833"
     property color chromeText: "#d7e0ea"
@@ -106,12 +128,14 @@ ApplicationWindow {
         && !needsFallbackGrid()
         && !hasBlockingOverlay()
         && !hasDocumentSurface()
+        && !hasOperationsQueueSurface()
         && !qtGallery.viewerVisible
         && shellFrame().terminalActive !== true
     readonly property bool nativeTwoPanelSurfaceVisible:
         isAppScene()
         && !needsFallbackGrid()
         && !hasDocumentSurface()
+        && !hasOperationsQueueSurface()
         && !qtGallery.viewerVisible
         && shellFrame().terminalActive !== true
     readonly property real galleryViewerProgress: {
@@ -127,18 +151,13 @@ ApplicationWindow {
                     Number(viewerHost.surfaceProgress || 0)))
     }
     readonly property real normalSurfaceOpacity:
-        hasDocumentSurface() ? 1 : 1 - galleryViewerProgress
-    // FilePanelView instances live inside transient semantic Loaders, while a
-    // Gallery viewer needs the active panel host throughout its reverse
-    // animation. Retain non-owning QML object references by side and clear them when
-    // the corresponding panel Loader is destroyed/replaced.
+        hasDocumentSurface() || hasOperationsQueueSurface()
+        ? 1 : 1 - galleryViewerProgress
+    // The viewer needs the active persistent panel host throughout its reverse
+    // animation. Retain non-owning QML object references by side and clear them
+    // only when the corresponding panel tree is destroyed.
     property var leftGalleryPanelHost: null
     property var rightGalleryPanelHost: null
-    // Native file-panel views keep the hidden terminal grid as the general
-    // commander key sink, but plain cursor movement uses QML's actual viewport
-    // and is committed to Go only after autorepeat pauses.
-    property var leftLocalPanelHost: null
-    property var rightLocalPanelHost: null
     // While a menu-bar submenu is open, pointer traversal must feel local.
     // Go remains authoritative for activation, but waiting for a complete
     // semantic-scene round trip just to paint the adjacent submenu creates a
@@ -166,6 +185,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        captureRetainedSurfaces()
         if (!f4UsesQwk)
             return
 
@@ -179,6 +199,8 @@ ApplicationWindow {
         }
 
         windowAgent.setTitleBar(titleBar)
+        windowAgent.setHitTestVisible(workspaceBar)
+        workspaceBarHitTestRegistered = true
         if (useMacNativeTitleBar) {
             windowAgent.setSystemButtonArea(macSystemButtonArea)
         } else {
@@ -215,7 +237,9 @@ ApplicationWindow {
     }
 
     function activeAutocompleteFrame() {
-        var menus = scene.menus || []
+        var menus = qtShell.commandMenus !== undefined
+                && qtShell.commandMenus !== null
+                ? qtShell.commandMenus : (scene.menus || [])
         for (var i = menus.length - 1; i >= 0; --i) {
             if (menus[i].role === "autocomplete")
                 return menus[i]
@@ -278,7 +302,11 @@ ApplicationWindow {
         var frame = activeAutocompleteFrame()
         if (!frame)
             return
-        var actionMap = { "target": frame.id, "action": "command.submit" }
+        var shell = shellFrame()
+        var actionMap = {
+            "target": cleanText(shell.id) !== "" ? shell.id : frame.id,
+            "action": "command.submit"
+        }
         if (autocompleteSelectedIndex >= 0)
             actionMap.text = autocompleteSelectedText()
         action(actionMap, true)
@@ -288,7 +316,11 @@ ApplicationWindow {
         var frame = activeAutocompleteFrame()
         if (!frame)
             return
-        var actionMap = { "target": frame.id, "action": "command.complete" }
+        var shell = shellFrame()
+        var actionMap = {
+            "target": cleanText(shell.id) !== "" ? shell.id : frame.id,
+            "action": "command.complete"
+        }
         if (autocompleteSelectedIndex >= 0)
             actionMap.text = autocompleteSelectedText()
         action(actionMap, true)
@@ -353,64 +385,105 @@ ApplicationWindow {
         return null
     }
 
-    function setLocalPanelHost(side, panelHost) {
-        if (Number(side) === 0)
-            leftLocalPanelHost = panelHost
-        else if (Number(side) === 1)
-            rightLocalPanelHost = panelHost
-    }
-
-    function clearLocalPanelHost(side, panelHost) {
-        if (Number(side) === 0 && leftLocalPanelHost === panelHost)
-            leftLocalPanelHost = null
-        else if (Number(side) === 1 && rightLocalPanelHost === panelHost)
-            rightLocalPanelHost = null
-    }
-
-    function activeLocalPanelHost() {
-        if (needsFallbackGrid() || hasBlockingOverlay()
-                || hasDocumentSurface() || qtGallery.viewerVisible)
-            return null
+    function commandLineFrame() {
+        if (qtShell.commandLine !== undefined
+                && qtShell.commandLine !== null)
+            return qtShell.commandLine
         var shell = shellFrame()
-        var panels = shell && shell.panels ? shell.panels : []
-        for (var i = 0; i < panels.length; ++i) {
-            var panel = panels[i]
-            if (panel.active !== true || !panelSideVisible(panel.side)
-                    || qtGallery.shouldUseGallery(panel))
-                continue
-            var mode = cleanText(panel.viewModeName)
-            if (mode !== "brief" && mode !== "medium"
-                    && mode !== "detailed" && mode !== "wide")
-                return null
-            return Number(panel.side || 0) === 0
-                    ? leftLocalPanelHost : rightLocalPanelHost
-        }
-        return null
-    }
-
-    function activeLocalPanelCanNavigate(key) {
-        var host = activeLocalPanelHost()
-        if (!host)
-            return false
-        return typeof host.canNavigate !== "function"
-                || host.canNavigate(key)
-    }
-
-    function navigateActiveLocalPanel(key) {
-        var host = activeLocalPanelHost()
-        return host && activeLocalPanelCanNavigate(key)
-                ? host.navigate(key) : false
-    }
-
-    function commandLineHasText() {
-        var shell = shellFrame()
-        var commandLine = shell && shell.commandLine
-                          ? shell.commandLine : ({})
-        return cleanText(commandLine.text).length > 0
+        return shell && shell.commandLine ? shell.commandLine : ({})
     }
 
     function isAppScene() {
-        return scene.schema === "app" && scene.shell !== undefined
+        return scene.schema === "app"
+                && (scene.shell !== undefined
+                    || scene.surface !== undefined
+                    || scene.operationsQueue !== undefined)
+    }
+
+    function currentOperationsQueue() {
+        if (scene.operationsQueue !== undefined
+                && scene.operationsQueue !== null)
+            return scene.operationsQueue
+        var legacyTop = topFrame()
+        return legacyTop && legacyTop.kind === "operationsQueue"
+                ? legacyTop : null
+    }
+
+    function operationsQueueFrame() {
+        return currentOperationsQueue() || retainedOperationsQueue || ({})
+    }
+
+    function hasOperationsQueueSurface() {
+        var queue = currentOperationsQueue()
+        return queue !== null && queue.kind === "operationsQueue"
+    }
+
+    function currentShellFrame() {
+        if (scene.shell !== undefined && scene.shell !== null)
+            return scene.shell
+        return firstFrame("shell") || firstFrame("panels") || null
+    }
+
+    function currentDocumentFrame() {
+        if (isDocumentSurface(scene.surface))
+            return scene.surface
+        var legacyTop = topFrame()
+        return isDocumentSurface(legacyTop) ? legacyTop : null
+    }
+
+    function captureRetainedSurfaces() {
+        var shell = currentShellFrame()
+        if (shell !== null)
+            retainedShellFrame = shell
+
+        var document = currentDocumentFrame()
+        if (document !== null) {
+            retainedDocumentFrame = document
+            retainedDocumentSurfaceCreated = true
+        }
+
+        var queue = currentOperationsQueue()
+        if (queue !== null) {
+            retainedOperationsQueue = queue
+            retainedOperationsQueueCreated = true
+        }
+    }
+
+    function activeOperationsQueueView() {
+        if (!hasOperationsQueueSurface() || hasBlockingOverlay())
+            return null
+        return operationsQueueLayer.item
+    }
+
+    function navigateOperationsQueue(command) {
+        var view = activeOperationsQueueView()
+        return view ? view.navigate(command) : false
+    }
+
+    function activateOperationsQueueSelection() {
+        var view = activeOperationsQueueView()
+        return view ? view.activateSelection() : false
+    }
+
+    function operationsQueueShortcutCanActivate() {
+        var view = activeOperationsQueueView()
+        return view !== null && !view.controlOwnsActivation()
+    }
+
+    function workspaceTabCanClose(tab) {
+        if (!tab || tab.closable !== true)
+            return false
+        // A retained queue snapshot is deliberately not live while another
+        // workspace is active.  The fresh workspaceTabs model is authoritative
+        // there; only cross-check the queue model while its own tab is current.
+        var queue = currentOperationsQueue()
+        if (!queue)
+            return true
+        var queueTabId = cleanText(queue.tabId)
+        if (queue.hasActive === true && queueTabId !== ""
+                && cleanText(tab.id) === queueTabId)
+            return false
+        return true
     }
 
     function frames() {
@@ -428,7 +501,9 @@ ApplicationWindow {
                     out.push(legacyFrames[k])
             }
         }
-        var menus = scene.menus || []
+        var menus = qtShell.commandMenus !== undefined
+                && qtShell.commandMenus !== null
+                ? qtShell.commandMenus : (scene.menus || [])
         var dialogs = scene.dialogs || []
         for (var i = 0; i < menus.length; ++i)
             out.push(menus[i])
@@ -441,19 +516,24 @@ ApplicationWindow {
         return overlayFrames().length > 0
     }
 
-    function activePanelUsesGallery() {
+    function activePanelHasGalleryHost() {
+        if (!qtGallery.available)
+            return false
         var shell = shellFrame()
         var panels = shell && shell.panels ? shell.panels : []
         for (var i = 0; i < panels.length; ++i) {
-            if (panels[i].active === true)
-                return qtGallery.shouldUseGallery(panels[i])
+            if (panels[i].active === true
+                    && panelSideVisible(panels[i].side)
+                    && !panelSideCovered(panels[i].side)) {
+                return galleryPanelHost(panels[i].side) !== null
+            }
         }
         return false
     }
 
     function galleryInputRoutingActive() {
         if (hasBlockingOverlay() || needsFallbackGrid()
-                || hasDocumentSurface())
+                || hasDocumentSurface() || hasOperationsQueueSurface())
             return false
         // The full-area GalleryViewer is a modal keyboard/text surface.  Its
         // key handlers already swallow every press/release; disabling the
@@ -461,7 +541,7 @@ ApplicationWindow {
         // string path into Go as well.
         if (qtGallery.viewerVisible)
             return false
-        return activePanelUsesGallery()
+        return activePanelHasGalleryHost()
     }
 
     function galleryViewerOwnsKeyboard() {
@@ -469,13 +549,14 @@ ApplicationWindow {
                 && !hasBlockingOverlay()
                 && !needsFallbackGrid()
                 && !hasDocumentSurface()
+                && !hasOperationsQueueSurface()
     }
 
     function restoreSurfaceFocus() {
         // Commander overlays and non-panel surfaces always own keys, even
         // when the integrated viewer remains loaded underneath them.
         if (hasBlockingOverlay() || needsFallbackGrid()
-                || hasDocumentSurface()) {
+                || hasDocumentSurface() || hasOperationsQueueSurface()) {
             grid.forceActiveFocus()
             return
         }
@@ -493,10 +574,16 @@ ApplicationWindow {
         var shell = shellFrame()
         var panels = shell && shell.panels ? shell.panels : []
         for (var i = 0; i < panels.length; ++i) {
-            if (panels[i].active !== true
-                    || !panelSideVisible(panels[i].side)
-                    || !qtGallery.shouldUseGallery(panels[i]))
+            if (panels[i].active !== true)
                 continue
+            if (!panelSideVisible(panels[i].side)
+                    || panelSideCovered(panels[i].side)) {
+                // Alt panels deliberately keep keyboard ownership in Go. In
+                // particular, a Quick View that became active through Tab
+                // must not return focus to the covered Gallery/List host.
+                grid.forceActiveFocus()
+                return
+            }
             var panelHost = galleryPanelHost(panels[i].side)
             if (panelHost) {
                 panelHost.forceActiveFocus()
@@ -507,10 +594,38 @@ ApplicationWindow {
     }
 
     function shellFrame() {
-        return scene.shell || firstFrame("shell") || firstFrame("panels") || ({})
+        return currentShellFrame() || retainedShellFrame || ({})
+    }
+
+    function quickViewForSide(side) {
+        var shell = shellFrame()
+        var quickViews = shell && shell.quickViews ? shell.quickViews : []
+        for (var i = 0; i < quickViews.length; ++i) {
+            if (Number(quickViews[i].side) === Number(side))
+                return quickViews[i]
+        }
+        return null
+    }
+
+    function infoPanelForSide(side) {
+        var shell = shellFrame()
+        var infoPanels = shell && shell.infoPanels ? shell.infoPanels : []
+        for (var i = 0; i < infoPanels.length; ++i) {
+            if (Number(infoPanels[i].side) === Number(side))
+                return infoPanels[i]
+        }
+        return null
+    }
+
+    function panelSideCovered(side) {
+        return infoPanelForSide(side) !== null
+                || quickViewForSide(side) !== null
     }
 
     function activeSurface() {
+        var queue = currentOperationsQueue()
+        if (queue)
+            return queue
         if (scene.surface)
             return scene.surface
         return topFrame()
@@ -522,9 +637,13 @@ ApplicationWindow {
     }
 
     function hasDocumentSurface() {
-        var shell = shellFrame()
-        return isDocumentSurface(activeSurface())
+        var shell = currentShellFrame()
+        return hasStandaloneDocumentSurface()
                 || (shell && shell.terminalActive === true)
+    }
+
+    function hasStandaloneDocumentSurface() {
+        return currentDocumentFrame() !== null
     }
 
     function keyBarHeight() {
@@ -535,7 +654,7 @@ ApplicationWindow {
     }
 
     function commandLineHeight(shell) {
-        var cmd = shell && shell.commandLine ? shell.commandLine : null
+        var cmd = commandLineFrame()
         return cmd && cmd.visible !== false
                 ? root.ch + root.commandLineVerticalMargin * 2
                   + root.separatorWidth * 2
@@ -559,6 +678,8 @@ ApplicationWindow {
     function needsFallbackGrid() {
 		if (scene.presentation === "text")
 			return true
+        if (hasOperationsQueueSurface())
+            return false
         var shell = shellFrame()
         if (shell && shell.fallback === true)
             return true
@@ -630,11 +751,6 @@ ApplicationWindow {
         var shell = shellFrame()
         if (shell.wide === true)
             return Number(shell.widePanel || 0)
-        var panels = shell.panels || []
-        for (var i = 0; i < panels.length; ++i) {
-            if (cleanText(panels[i].viewModeName) === "wide")
-                return Number(panels[i].side || 0)
-        }
         return -1
     }
 
@@ -674,52 +790,53 @@ ApplicationWindow {
                                   root.iconDevicePixelRatio)
     }
 
-    function bundledLucideIconName(source) {
-        const value = cleanText(source)
-        const normalPrefix = "qrc:/F4QtHost/icons/lucide/"
-        const galleryPrefix = "qrc:/F4QtHost/icons/lucide-gallery/"
-        var name = ""
-        if (value.indexOf(normalPrefix) === 0)
-            name = value.substring(normalPrefix.length)
-        else if (value.indexOf(galleryPrefix) === 0)
-            name = value.substring(galleryPrefix.length)
-        if (!name.endsWith(".svg") || name.indexOf("/") >= 0)
-            return ""
-        return name.substring(0, name.length - 4)
+    function lucideIconSource(name) {
+        const value = cleanText(name)
+        return value === "" ? ""
+                            : "qrc:/F4QtHost/icons/lucide/" + value + ".svg"
     }
 
-    function resolvedFileIconSource(entry, configuredSource, marker,
-                                    logicalSize) {
-        const configured = cleanText(configuredSource)
-        if (configured === "" && cleanText(entry.name) === ""
-                && cleanText(entry.localPath) === "")
-            return ""
-        if (configured !== "") {
-            // An arbitrary file: icon is a user override, not part of the
-            // selectable bundled pack. Only bundled Lucide URLs are replaced
-            // when System is selected.
-            if (!qtIcons.system
-                    || bundledLucideIconName(configured) === "")
-                return configured
+    function workspaceTabIconName(tab) {
+        tab = tab || ({})
+        const configured = cleanText(tab.iconName)
+        if (configured !== "")
+            return configured
+        switch (cleanText(tab.surfaceKind)) {
+        case "operationsQueue": return "list-checks"
+        case "editor": return "file-pen-line"
+        case "viewer": return "file-text"
+        case "terminal": return "square-terminal"
+        case "panels": return "panels-top-left"
+        default: return "panels-top-left"
         }
-        if (cleanText(marker) !== "") {
-            // Highlight markers remain above the built-in pack in the same
-            // precedence order as the text frontend.
-            return ""
-        }
-
-        const generation = qtIcons.revision
-        return qtIcons.fileIconSource(cleanText(entry.localPath),
-                                      cleanText(entry.name),
-                                      entry.isDir === true,
-                                      logicalSize,
-                                      root.iconDevicePixelRatio,
-                                      Number(entry.mtimeNanos || 0))
     }
 
-    function isFullColorFileIcon(source) {
-        return qtIcons.fileIconsAreFullColor
-                && cleanText(source).indexOf("image://f4icons/file/") === 0
+    function workspaceTabLabel(tab) {
+        tab = tab || ({})
+        const number = Number(tab.number || 0)
+        const title = cleanText(tab.text).trim()
+        if (number <= 0)
+            return title
+        return title === "" ? String(number) : String(number) + " " + title
+    }
+
+    function workspaceTabTextColor(active) {
+        return active === true ? textColor : mutedText
+    }
+
+    function workspaceTabNumberColor() {
+        return dialogAccent
+    }
+
+    function workspaceTabFontWeight() {
+        return Font.Normal
+    }
+
+    function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
+        const chromeWidth = closeEnabled === true ? 64 : 46
+        return Math.min(workspaceTabMaxWidth,
+                        Math.max(workspaceTabMinWidth,
+                                 Number(titleWidth || 0) + chromeWidth))
     }
 
     function richTextEscape(value) {
@@ -805,9 +922,10 @@ ApplicationWindow {
             "cursorBorder": panelSelectionBorder,
             "text": textColor,
             "mutedText": mutedText,
-            "selection": markedBg,
+            "selection": markedText,
             "marked": markedBg,
             "markedBackground": markedBg,
+            "markedText": markedText,
             "directoryText": "#98d8ff",
             "folderIcon": folderIconColor,
             "separator": separatorColor,
@@ -847,11 +965,19 @@ ApplicationWindow {
     }
 
     onSceneChanged: {
+        captureRetainedSurfaces()
         syncAutocompleteSelection()
         if (qtGallery.viewerVisible
                 && (hasDocumentSurface() || needsFallbackGrid()))
             qtGallery.closeViewer()
         Qt.callLater(root.restoreSurfaceFocus)
+    }
+
+    Connections {
+        target: qtShell
+        function onCommandMenusChanged() {
+            root.syncAutocompleteSelection()
+        }
     }
 
     onClosing: qtShell.sendQuit()
@@ -862,17 +988,6 @@ ApplicationWindow {
 		enabled: !qtGallery.viewerVisible
 		onActivated: root.action({"target": "app", "action": "presentation.toggle"}, true)
 	}
-
-    // Application shortcuts run before the focused hidden terminal grid and
-    // repeat while the key is held. Modified arrows do not match these
-    // sequences, so commander shortcuts and Shift-selection still reach Go.
-    Shortcut {
-        sequence: "Left"
-        context: Qt.ApplicationShortcut
-        autoRepeat: true
-        enabled: root.activeLocalPanelCanNavigate(Qt.Key_Left)
-        onActivated: root.navigateActiveLocalPanel(Qt.Key_Left)
-    }
 
     Shortcut {
         sequence: "Up"
@@ -911,28 +1026,61 @@ ApplicationWindow {
         onActivated: root.completeAutocomplete()
     }
 
-    Shortcut {
-        sequence: "Right"
-        context: Qt.ApplicationShortcut
-        autoRepeat: true
-        enabled: root.activeLocalPanelCanNavigate(Qt.Key_Right)
-        onActivated: root.navigateActiveLocalPanel(Qt.Key_Right)
-    }
-
+    // The queue remains a vtui workspace, so modified keys, Escape, F10 and
+    // Ctrl+W continue through the hidden grid to the authoritative QueueFrame.
+    // Plain table navigation is mirrored locally for native, autorepeating
+    // selection and then synchronized by stable task identity.
     Shortcut {
         sequence: "Up"
         context: Qt.ApplicationShortcut
         autoRepeat: true
-        enabled: root.activeLocalPanelCanNavigate(Qt.Key_Up)
-        onActivated: root.navigateActiveLocalPanel(Qt.Key_Up)
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("up")
     }
-
     Shortcut {
         sequence: "Down"
         context: Qt.ApplicationShortcut
         autoRepeat: true
-        enabled: root.activeLocalPanelCanNavigate(Qt.Key_Down)
-        onActivated: root.navigateActiveLocalPanel(Qt.Key_Down)
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("down")
+    }
+    Shortcut {
+        sequence: "PgUp"
+        context: Qt.ApplicationShortcut
+        autoRepeat: true
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("pageUp")
+    }
+    Shortcut {
+        sequence: "PgDown"
+        context: Qt.ApplicationShortcut
+        autoRepeat: true
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("pageDown")
+    }
+    Shortcut {
+        sequence: "Home"
+        context: Qt.ApplicationShortcut
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("home")
+    }
+    Shortcut {
+        sequence: "End"
+        context: Qt.ApplicationShortcut
+        enabled: root.activeOperationsQueueView() !== null
+        onActivated: root.navigateOperationsQueue("end")
+    }
+    Shortcut {
+        sequence: "Return"
+        context: Qt.ApplicationShortcut
+        enabled: root.operationsQueueShortcutCanActivate()
+        onActivated: root.activateOperationsQueueSelection()
+    }
+    Shortcut {
+        sequence: "Enter"
+        context: Qt.ApplicationShortcut
+        enabled: root.operationsQueueShortcutCanActivate()
+        onActivated: root.activateOperationsQueueSelection()
     }
 
     VtuiGridItem {
@@ -1057,11 +1205,19 @@ ApplicationWindow {
                             delegate: Rectangle {
                                 id: workspaceTab
                                 readonly property bool current: modelData.active === true
+                                readonly property bool closeEnabled:
+                                    root.workspaceTabCanClose(modelData)
+                                readonly property string tabIconName:
+                                    root.workspaceTabIconName(modelData)
+                                readonly property string lucideName: tabIconName
+                                readonly property color labelColor:
+                                    root.workspaceTabTextColor(current)
+                                readonly property int labelWeight:
+                                    root.workspaceTabFontWeight()
                                 objectName: String(modelData.id || ("workspace-tab-" + index))
-                                width: Math.min(148,
-                                                Math.max(72,
-                                                         workspaceLabel.implicitWidth
-                                                         + (modelData.closable === true ? 42 : 24)))
+                                width: root.preferredWorkspaceTabWidth(
+                                           workspaceLabel.implicitWidth,
+                                           workspaceTab.closeEnabled)
                                 height: parent.height
                                 radius: 6
                                 color: current
@@ -1080,21 +1236,69 @@ ApplicationWindow {
                                     id: workspaceHover
                                 }
 
-                                Text {
-                                    id: workspaceLabel
+                                IconLabel {
+                                    id: workspaceIcon
+                                    readonly property string lucideName:
+                                        workspaceTab.tabIconName
+                                    objectName: "workspace-tab-icon-"
+                                                + root.cleanText(modelData.id)
                                     anchors.left: parent.left
                                     anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 16
+                                    height: 16
+                                    icon.source: root.lucideIconSource(
+                                                     workspaceTab.tabIconName)
+                                    icon.width: 16
+                                    icon.height: 16
+                                    icon.color: workspaceTab.current
+                                                ? root.textColor : root.chromeText
+                                }
+
+                                Item {
+                                    id: workspaceLabel
+                                    anchors.left: workspaceIcon.right
+                                    anchors.leftMargin: 7
                                     anchors.right: workspaceClose.visible
                                                    ? workspaceClose.left
                                                    : workspaceAttention.left
                                     anchors.rightMargin: 6
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: root.cleanText(modelData.text)
-                                    color: workspaceTab.current
-                                           ? root.textColor : root.chromeText
-                                    font.weight: workspaceTab.current
-                                                 ? Font.DemiBold : Font.Normal
-                                    elide: Text.ElideMiddle
+                                    height: Math.max(workspaceNumber.implicitHeight,
+                                                     workspaceTitle.implicitHeight)
+                                    implicitWidth: workspaceNumber.implicitWidth
+                                                   + (workspaceTitle.text === ""
+                                                      ? 0 : 5)
+                                                   + workspaceTitle.implicitWidth
+
+                                    Text {
+                                        id: workspaceNumber
+                                        objectName: "workspace-tab-number"
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: Number(modelData.number || 0) > 0
+                                              ? String(modelData.number) : ""
+                                        color: root.workspaceTabNumberColor()
+                                        font.weight: workspaceTab.labelWeight
+                                    }
+
+                                    Text {
+                                        id: workspaceTitle
+                                        anchors.left: workspaceNumber.right
+                                        anchors.leftMargin: text === "" ||
+                                                            workspaceNumber.text === ""
+                                                            ? 0 : 5
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.cleanText(modelData.text)
+                                        color: workspaceTab.labelColor
+                                        // Active state is conveyed only by text
+                                        // brightness; changing weight makes tabs
+                                        // shift visually and breaks typographic
+                                        // consistency across the title bar.
+                                        font.weight: workspaceTab.labelWeight
+                                        elide: Text.ElideMiddle
+                                    }
                                 }
 
                                 Rectangle {
@@ -1109,16 +1313,21 @@ ApplicationWindow {
                                     visible: modelData.attention === true
                                 }
 
-                                Text {
+                                IconLabel {
                                     id: workspaceClose
+									objectName: "workspace-close-"
+                                                + root.cleanText(modelData.id)
 									z: 2
                                     anchors.right: parent.right
                                     anchors.rightMargin: 8
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "×"
-                                    color: root.chromeText
-                                    font.pixelSize: 15
-                                    visible: modelData.closable === true
+                                    width: 15
+                                    height: 15
+                                    icon.source: root.lucideIconSource("x")
+                                    icon.width: 14
+                                    icon.height: 14
+                                    icon.color: root.chromeText
+                                    visible: workspaceTab.closeEnabled
 
                                     MouseArea {
                                         anchors.fill: parent
@@ -1163,6 +1372,9 @@ ApplicationWindow {
 
                         Rectangle {
                             id: workspaceNew
+                            readonly property bool qwkHitTestRegistered:
+                                !f4UsesQwk || workspaceNewHitTestRegistered
+                            property bool workspaceNewHitTestRegistered: false
                             objectName: root.cleanText(root.workspaceTabs.newTab
                                                        ? root.workspaceTabs.newTab.id : "workspace-new")
                             width: visible ? 30 : 0
@@ -1171,11 +1383,20 @@ ApplicationWindow {
                             color: newHover.hovered ? root.controlHoverBg : "transparent"
                             visible: root.workspaceTabs.newTab
                                      && root.workspaceTabs.newTab.visible === true
-                            Text {
+                            Component.onCompleted: {
+                                if (f4UsesQwk) {
+                                    windowAgent.setHitTestVisible(workspaceNew)
+                                    workspaceNewHitTestRegistered = true
+                                }
+                            }
+                            IconLabel {
                                 anchors.centerIn: parent
-                                text: root.cleanText(root.workspaceTabs.newTab.text || "+")
-                                color: root.chromeText
-                                font.pixelSize: 18
+                                width: 17
+                                height: 17
+                                icon.source: root.lucideIconSource("plus")
+                                icon.width: 17
+                                icon.height: 17
+                                icon.color: root.chromeText
                             }
                             HoverHandler { id: newHover }
                             MouseArea {
@@ -1188,32 +1409,6 @@ ApplicationWindow {
                             }
                         }
 
-                        Rectangle {
-                            id: workspaceCounter
-                            objectName: root.cleanText(root.workspaceTabs.counter
-                                                       ? root.workspaceTabs.counter.id : "workspace-counter")
-                            width: visible ? Math.max(42, counterText.implicitWidth + 16) : 0
-                            height: parent.height
-                            radius: 6
-                            color: counterHover.hovered ? root.controlHoverBg : "transparent"
-                            visible: root.workspaceTabs.counter
-                                     && root.workspaceTabs.counter.visible === true
-                            Text {
-                                id: counterText
-                                anchors.centerIn: parent
-                                text: root.cleanText(root.workspaceTabs.counter.text)
-                                color: root.chromeText
-                            }
-                            HoverHandler { id: counterHover }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.action({
-                                    "target": root.workspaceTabs.counter.id,
-                                    "action": root.workspaceTabs.counter.action
-                                }, true)
-                            }
-                        }
                     }
                 }
             }
@@ -1271,21 +1466,39 @@ ApplicationWindow {
             }
         }
 
-        Loader {
+        Item {
             id: mainSurface
             anchors.fill: parent
             opacity: root.normalSurfaceOpacity
-            sourceComponent: {
-                // A shell with hidden panels is still the same commander
-                // surface: its terminal buffer and command line must remain
-                // composed together by panelsSurface. Reserve
-                // documentSurface for standalone viewer/editor frames.
-                if (root.shellFrame().terminalActive === true)
-                    return panelsSurface
-                var top = root.activeSurface()
-                if (root.isDocumentSurface(top))
-                    return documentSurface
-                return panelsSurface
+
+            Loader {
+                id: persistentPanelsLayer
+                objectName: "persistentPanelsLayer"
+                anchors.fill: parent
+                active: true
+                visible: !root.hasStandaloneDocumentSurface()
+                         && !root.hasOperationsQueueSurface()
+                sourceComponent: panelsSurface
+            }
+
+            Loader {
+                id: persistentDocumentLayer
+                objectName: "persistentDocumentLayer"
+                anchors.fill: parent
+                active: root.retainedDocumentSurfaceCreated
+                visible: root.hasStandaloneDocumentSurface()
+                sourceComponent: documentSurface
+                z: 10
+            }
+
+            Loader {
+                id: operationsQueueLayer
+                objectName: "operationsQueueLayer"
+                anchors.fill: parent
+                active: root.retainedOperationsQueueCreated
+                visible: root.hasOperationsQueueSurface()
+                sourceComponent: operationsQueueSurface
+                z: 20
             }
         }
 
@@ -1294,7 +1507,7 @@ ApplicationWindow {
             anchors.fill: parent
             active: qtGallery.viewerVisible && !root.hasDocumentSurface()
                     && !root.needsFallbackGrid()
-            visible: active
+            visible: active && !root.hasOperationsQueueSurface()
             sourceComponent: active ? galleryViewerSurface : undefined
             // The integrated viewer owns the complete content area, including
             // the normal menu/key chrome. Commander overlays remain above it.
@@ -1326,12 +1539,16 @@ ApplicationWindow {
                 }
 
                 function infoPanelForSide(side) {
-                    var infoPanels = frame.infoPanels || []
-                    for (var i = 0; i < infoPanels.length; ++i) {
-                        if (Number(infoPanels[i].side) === side)
-                            return infoPanels[i]
-                    }
-                    return null
+                    return root.infoPanelForSide(side)
+                }
+
+                function quickViewForSide(side) {
+                    return root.quickViewForSide(side)
+                }
+
+                function altPanelForSide(side) {
+                    return infoPanelForSide(side)
+                            || quickViewForSide(side)
                 }
 
                 // The terminal is the single persistent surface underneath the
@@ -1345,9 +1562,15 @@ ApplicationWindow {
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: root.keyBarHeight()
                                           + root.commandLineHeight(panelsRoot.frame)
+                    // Wide is a layout choice, not a hidden-panel state.  In
+                    // that mode panelSideVisible() intentionally reports the
+                    // passive side as hidden, but the active panel occupies
+                    // the whole surface and must not reveal the terminal
+                    // through its translucent panel background.
                     visible: panelsRoot.frame.terminalActive === true
-                             || !root.panelSideVisible(0)
-                             || !root.panelSideVisible(1)
+                             || (root.widePanelSide() < 0
+                                 && (panelsRoot.frame.showLeftPanel === false
+                                     || panelsRoot.frame.showRightPanel === false))
                     terminal: panelsRoot.frame.terminal || ({})
                 }
 
@@ -1357,8 +1580,8 @@ ApplicationWindow {
                     anchors.fill: parent
                     // Ctrl+O is a presentation-only cover change.  Destroying
                     // this Loader used to recreate both FilePanelView trees on
-                    // return, which in turn rebuilt their ListView/Gallery
-                    // viewports and revealed the cursor from contentY == 0.
+                    // return, which in turn rebuilt their Gallery viewports
+                    // and revealed the cursor from the initial scroll position.
                     // Keep the pair (and both panels' local scroll state) alive
                     // underneath the terminal, exactly like the terminal is
                     // kept alive underneath the panels.
@@ -1368,7 +1591,7 @@ ApplicationWindow {
                 }
 
                 CommandLineView {
-                    commandLine: frame.commandLine || ({})
+                    commandLine: root.commandLineFrame()
                 }
 
                 Component {
@@ -1380,13 +1603,13 @@ ApplicationWindow {
                         FilePanelView {
                             panel: panelsRoot.panelForSide(0)
                             visible: root.panelSideVisible(0)
-                                      && !panelsRoot.infoPanelForSide(0)
+                                      && !panelsRoot.altPanelForSide(0)
                         }
 
                         FilePanelView {
                             panel: panelsRoot.panelForSide(1)
                             visible: root.panelSideVisible(1)
-                                      && !panelsRoot.infoPanelForSide(1)
+                                      && !panelsRoot.altPanelForSide(1)
                         }
 
                         InfoPanelView {
@@ -1399,6 +1622,25 @@ ApplicationWindow {
                             panel: panelsRoot.infoPanelForSide(1) || ({ "side": 1 })
                             visible: root.panelSideVisible(1)
                                      && panelsRoot.infoPanelForSide(1) !== null
+                        }
+
+                        // Keep two native Quick View hosts alive with the
+                        // persistent panel pair. Ctrl+Q therefore only covers
+                        // and uncovers the corresponding FilePanelView; its
+                        // Gallery host, scroll position and thumbnail delegates
+                        // retain object identity.
+                        QuickViewPanelView {
+                            quickView: panelsRoot.quickViewForSide(0)
+                                       || ({ "side": 0 })
+                            visible: root.panelSideVisible(0)
+                                     && panelsRoot.quickViewForSide(0) !== null
+                        }
+
+                        QuickViewPanelView {
+                            quickView: panelsRoot.quickViewForSide(1)
+                                       || ({ "side": 1 })
+                            visible: root.panelSideVisible(1)
+                                     && panelsRoot.quickViewForSide(1) !== null
                         }
 
                         PanelSplitter {
@@ -1447,7 +1689,17 @@ ApplicationWindow {
         Component {
             id: documentSurface
             DocumentSurface {
-                frame: root.activeSurface() || ({})
+                frame: root.currentDocumentFrame()
+                       || root.retainedDocumentFrame || ({})
+                interactionActive: root.hasStandaloneDocumentSurface()
+            }
+        }
+
+        Component {
+            id: operationsQueueSurface
+            OperationsQueueSurface {
+                queue: root.operationsQueueFrame()
+                interactionActive: root.hasOperationsQueueSurface()
             }
         }
 
@@ -1469,6 +1721,7 @@ ApplicationWindow {
                         () => qtGallery.viewerVisible
                               && !root.hasBlockingOverlay()
                               && !root.hasDocumentSurface()
+                              && !root.hasOperationsQueueSurface()
                               && !root.needsFallbackGrid())
                     item.devicePixelRatio = Qt.binding(
                         () => root.screen ? root.screen.devicePixelRatio : 1.0)
@@ -1717,74 +1970,66 @@ ApplicationWindow {
         id: panelRoot
         objectName: "filePanel-" + Number(panel.side || 0)
         property var panel: ({})
+        readonly property bool backendLoading: panel.loading === true
+        property bool loadingIndicatorVisible: false
+        property int loadingIndicatorFrame: 0
+        readonly property var loadingIndicatorFrames: [
+            "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
+        ]
         property bool nativeLayout: root.isAppScene()
         property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? semanticMenu.height : 0)
-        readonly property bool usesGallery: qtGallery.shouldUseGallery(panel)
         readonly property bool panelIsActive: panel.active === true
         property var registeredGalleryPanelHost: null
         readonly property var rendererChoices: [
-            { "heading": true, "label": "Existing" },
-            { "label": "Brief", "viewMode": "brief" },
-            { "label": "Medium", "viewMode": "medium" },
-            { "label": "Detailed", "viewMode": "detailed" },
-            { "label": "Wide", "viewMode": "wide" },
-            { "heading": true, "label": "Unified" },
-            { "label": "Masonry", "layoutMode": "masonry" },
-            { "label": "Columns · 2", "layoutMode": "columns", "columnCount": 2 },
-            { "label": "Columns · 3", "layoutMode": "columns", "columnCount": 3 },
-            { "label": "Details", "layoutMode": "details" },
-            { "label": "Grid", "layoutMode": "grid" },
-            { "label": "Icons", "layoutMode": "icons" }
+            { "label": "Columns · 2", "layoutMode": "columns", "columnCount": 2, "icon": "columns-2", "shortcut": "Ctrl+1" },
+            { "label": "Columns · 3", "layoutMode": "columns", "columnCount": 3, "icon": "columns-3", "shortcut": "Ctrl+2" },
+            { "label": "Details", "layoutMode": "details", "icon": "list", "shortcut": "Ctrl+3" },
+            { "label": "Icons", "layoutMode": "icons", "icon": "images", "shortcut": "Ctrl+5" },
+            { "label": "Grid", "layoutMode": "grid", "icon": "grid-3x3", "shortcut": "Ctrl+6" },
+            { "label": "Masonry", "layoutMode": "masonry", "icon": "layout-dashboard", "shortcut": "Ctrl+7" },
+            { "heading": true, "label": "Layout" },
+            { "label": "Wide panel", "wideToggle": true, "icon": "panel-left", "shortcut": "Ctrl+4" }
         ]
 
         function rendererChoiceEnabled(choice) {
             if (!choice || choice.heading === true)
                 return false
-            if (choice.viewMode !== undefined)
+            if (choice.wideToggle === true)
                 return true
-            return qtGallery.available && panel.previewCapable === true
-                    && panel.sourceKind === "local"
+            return qtGallery.available
         }
 
         function rendererChoiceActive(choice) {
             if (!choice || choice.heading === true)
                 return false
-            if (choice.viewMode !== undefined) {
-                return panel.presentation !== "gallery"
-                        && root.cleanText(panel.viewModeName) === choice.viewMode
-            }
-            if (panel.presentation !== "gallery"
-                    || root.cleanText(panel.galleryLayoutMode) !== choice.layoutMode)
+            if (choice.wideToggle === true)
+                return root.widePanelSide() === Number(panel.side || 0)
+            if (root.cleanText(panel.galleryLayoutMode) !== choice.layoutMode)
                 return false
             return choice.layoutMode !== "columns"
                     || Number(panel.galleryColumnCount || 2)
                        === Number(choice.columnCount || 2)
         }
 
-        function rendererButtonText() {
-            if (panel.presentation === "gallery") {
-                const mode = root.cleanText(panel.galleryLayoutMode)
-                if (mode === "columns")
-                    return "C" + Number(panel.galleryColumnCount || 2)
-                if (mode === "details") return "D"
-                if (mode === "grid") return "G"
-                if (mode === "icons") return "I"
-                return "M"
+        function rendererButtonIconName() {
+            for (var i = 0; i < rendererChoices.length; ++i) {
+                const choice = rendererChoices[i]
+                if (choice.wideToggle !== true
+                        && rendererChoiceActive(choice))
+                    return root.cleanText(choice.icon)
             }
-            const mode = root.cleanText(panel.viewModeName)
-            return mode === "brief" ? "B"
-                 : mode === "detailed" ? "D"
-                 : mode === "wide" ? "W" : "M"
+            return "layout-dashboard"
         }
 
         function chooseRenderer(choice) {
             if (!rendererChoiceEnabled(choice))
                 return
-            if (choice.viewMode !== undefined) {
+            if (choice.wideToggle === true) {
                 root.action({
-                    "action": "panel.setViewMode",
+                    "action": "panel.setWide",
                     "side": panel.side,
-                    "viewMode": choice.viewMode
+                    "enabled": root.widePanelSide()
+                               !== Number(panel.side || 0)
                 }, true)
             } else {
                 qtGallery.requestGalleryLayout(
@@ -1794,50 +2039,8 @@ ApplicationWindow {
             rendererMenu.close()
         }
 
-        function pointerButtonName(button) {
-            if ((button & Qt.RightButton) !== 0)
-                return "right"
-            if ((button & Qt.MiddleButton) !== 0)
-                return "middle"
-            return "left"
-        }
-
-        function sendPointerEvent(entry, phase, button) {
-            if (!entry || entry.index === undefined)
-                return
-            root.action({
-                "action": "panel.pointer",
-                "side": panel.side,
-                "phase": phase,
-                "button": typeof button === "string"
-                          ? button : pointerButtonName(button),
-                "index": entry.index,
-                "entryId": entry.entryId || "",
-                "catalogRevision": panel.catalogRevision || 0
-            })
-        }
-
-        function fileNameParts(entry) {
-            var name = root.cleanText(entry && entry.name !== undefined
-                                      ? entry.name : "")
-            var displayBaseName = root.cleanText(
-                        entry ? entry.displayBaseName : "")
-            if (displayBaseName !== "" || name === "") {
-                return {
-                    "base": displayBaseName,
-                    "extension": root.cleanText(entry.displayExtension)
-                }
-            }
-            if (panel.separateFileExtensions !== true || !entry
-                    || entry.isDir === true || entry.isUp === true)
-                return { "base": name, "extension": "" }
-            var dot = name.lastIndexOf(".")
-            if (dot <= 0 || dot >= name.length - 1)
-                return { "base": name, "extension": "" }
-            return {
-                "base": name.substring(0, dot),
-                "extension": name.substring(dot + 1)
-            }
+        function galleryHost() {
+            return galleryPanelContent.item
         }
 
         function updateRegisteredGalleryPanelHost() {
@@ -1860,6 +2063,48 @@ ApplicationWindow {
         }
 
         readonly property real nativeSplitPosition: root.nativePanelSplitPosition()
+
+        function synchronizeLoadingIndicator() {
+            if (backendLoading) {
+                loadingIndicatorDelay.restart()
+                return
+            }
+            loadingIndicatorDelay.stop()
+            loadingIndicatorPulse.stop()
+            loadingIndicatorVisible = false
+            loadingIndicatorFrame = 0
+        }
+
+        onBackendLoadingChanged: synchronizeLoadingIndicator()
+        Component.onCompleted: synchronizeLoadingIndicator()
+
+        Timer {
+            id: loadingIndicatorDelay
+            interval: 120
+            repeat: false
+            onTriggered: {
+                if (!panelRoot.backendLoading)
+                    return
+                panelRoot.loadingIndicatorFrame = 0
+                panelRoot.loadingIndicatorVisible = true
+                loadingIndicatorPulse.restart()
+            }
+        }
+
+        Timer {
+            id: loadingIndicatorPulse
+            interval: 100
+            repeat: true
+            onTriggered: {
+                if (!panelRoot.backendLoading) {
+                    panelRoot.synchronizeLoadingIndicator()
+                    return
+                }
+                panelRoot.loadingIndicatorFrame =
+                        (panelRoot.loadingIndicatorFrame + 1)
+                        % panelRoot.loadingIndicatorFrames.length
+            }
+        }
 
         x: nativeLayout
            ? root.nativePanelX(Number(panel.side || 0))
@@ -1900,43 +2145,109 @@ ApplicationWindow {
                 color: root.separatorColor
             }
 
-            Text {
+            Item {
+                id: panelPathArea
                 anchors.left: parent.left
                 anchors.right: presentationButton.left
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: root.panelTextInset
                 anchors.rightMargin: root.panelTextInset
-                text: root.cleanText(panel.title || panel.path)
-                color: root.textColor
-                elide: Text.ElideMiddle
-                font.pixelSize: 13
+                height: Math.min(parent.height - 4, 32)
+                clip: true
+
+                ZG.PathControl {
+                    id: panelPathControl
+                    objectName: "panelPathTitle-" + Number(panel.side || 0)
+                    anchors.fill: parent
+                    anchors.rightMargin: panelRoot.loadingIndicatorVisible ? 18 : 0
+                    backgroundOnHoverOnly: true
+                    // panelPathArea already begins on the shared 16 px
+                    // content line; do not add the standalone control's inset.
+                    leadingInset: 0
+					breadcrumbFontPixelSize: root.semanticTextFontPixelSize
+                    text: root.cleanText(panel.title || panel.path)
+                    navigationHandler: function(path) {
+                        root.action({
+                            "action": "panel.navigatePath",
+                            "side": Number(panel.side || 0),
+                            "path": String(path)
+                        })
+                    }
+                    onEditModeChanged: {
+                        if (!editMode)
+                            grid.forceActiveFocus()
+                    }
+                }
+
+                Text {
+                    id: panelLoadingIndicator
+                    objectName: "panelLoadingIndicator-"
+                                + Number(panel.side || 0)
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: panelRoot.loadingIndicatorVisible
+                    text: panelRoot.loadingIndicatorFrames[
+                              panelRoot.loadingIndicatorFrame]
+                    color: root.mutedText
+                    font.pixelSize: 13
+                }
             }
 
             ToolButton {
                 id: presentationButton
                 objectName: "panelRendererButton-" + Number(panel.side || 0)
-                anchors.right: loading.left
+                anchors.right: panelStatus.left
                 anchors.verticalCenter: parent.verticalCenter
-                width: 32
+                width: 42
                 height: Math.min(parent.height - 4, 28)
                 hoverEnabled: true
-                text: panelRoot.rendererButtonText()
                 focusPolicy: Qt.NoFocus
                 // Once the renderer popup is open its contents are the
                 // active explanation.  Keeping the delayed button tooltip
                 // alive above the popup creates a detached black label that
                 // overlaps the menu and obscures the first interaction.
-                ToolTip.visible: hovered && !rendererMenu.opened
-                ToolTip.text: "Panel renderer"
+                ZG.ToolTip {
+                    objectName: "panelRendererToolTip-"
+                                + Number(panel.side || 0)
+                    visible: presentationButton.hovered
+                             && !rendererMenu.opened
+                    delay: 500
+                    timeout: 5000
+                    text: "Panel renderer"
+                }
 
-                contentItem: Text {
-                    text: presentationButton.text + " ⌄"
-                    color: presentationButton.enabled
-                           ? root.chromeText : root.mutedText
-                    font.pixelSize: 11
-                    font.weight: Font.DemiBold
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                contentItem: Row {
+                    anchors.centerIn: parent
+                    spacing: 5
+
+                    IconLabel {
+                        objectName: "panelRendererButtonIcon-"
+                                    + Number(panel.side || 0)
+                        readonly property string lucideName:
+                            panelRoot.rendererButtonIconName()
+                        width: 16
+                        height: 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon.source: root.lucideIconSource(lucideName)
+                        icon.width: 16
+                        icon.height: 16
+                        icon.color: presentationButton.enabled
+                                    ? root.chromeText : root.mutedText
+                    }
+
+                    IconLabel {
+                        objectName: "panelRendererButtonChevron-"
+                                    + Number(panel.side || 0)
+                        readonly property string lucideName: "chevron-down"
+                        width: 11
+                        height: 11
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon.source: root.lucideIconSource(lucideName)
+                        icon.width: 11
+                        icon.height: 11
+                        icon.color: presentationButton.enabled
+                                    ? root.chromeText : root.mutedText
+                    }
                 }
 
                 background: Rectangle {
@@ -1964,6 +2275,8 @@ ApplicationWindow {
                 width: 224
                 padding: 6
                 modal: false
+                dim: false
+                z: 1001
                 focus: false
                 closePolicy: Popup.CloseOnEscape
                              | Popup.CloseOnPressOutside
@@ -1982,9 +2295,10 @@ ApplicationWindow {
                     if (!panelRoot.panelIsActive || qtGallery.viewerVisible
                             || root.hasBlockingOverlay()
                             || root.needsFallbackGrid()
-                            || root.hasDocumentSurface())
+                            || root.hasDocumentSurface()
+                            || root.hasOperationsQueueSurface())
                         return
-                    if (panelRoot.usesGallery && galleryPanelContent.item)
+                    if (galleryPanelContent.item)
                         galleryPanelContent.item.forceActiveFocus()
                     else
                         grid.forceActiveFocus()
@@ -2047,24 +2361,26 @@ ApplicationWindow {
 
                             IconLabel {
                                 visible: rendererChoice.modelData.heading !== true
-                                         && rendererChoice.choiceActive
                                 anchors.left: parent.left
-                                anchors.leftMargin: 7
+                                anchors.leftMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: 15
-                                height: 15
-                                icon.source: root.resolvedIconSource("check", 15)
-                                icon.width: 14
-                                icon.height: 14
-                                icon.color: root.panelSelectionBorder
+                                width: 16
+                                height: 16
+                                icon.source: root.lucideIconSource(
+                                                 root.cleanText(
+                                                     rendererChoice.modelData.icon))
+                                icon.width: 16
+                                icon.height: 16
+                                icon.color: rendererChoice.choiceEnabled
+                                            ? root.textColor : root.mutedText
                             }
 
                             Text {
                                 visible: rendererChoice.modelData.heading !== true
                                 anchors.left: parent.left
-                                anchors.leftMargin: 29
+                                anchors.leftMargin: 34
                                 anchors.right: parent.right
-                                anchors.rightMargin: 8
+                                anchors.rightMargin: 78
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: root.cleanText(rendererChoice.modelData.label)
                                 color: rendererChoice.choiceEnabled
@@ -2072,6 +2388,32 @@ ApplicationWindow {
                                 opacity: rendererChoice.choiceEnabled ? 1 : 0.5
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
+                            }
+
+                            IconLabel {
+                                visible: rendererChoice.modelData.heading !== true
+                                         && rendererChoice.choiceActive
+                                anchors.right: parent.right
+                                anchors.rightMargin: 54
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14
+                                height: 14
+                                icon.source: root.lucideIconSource("check")
+                                icon.width: 14
+                                icon.height: 14
+                                icon.color: root.panelSelectionBorder
+                            }
+
+                            Text {
+                                visible: rendererChoice.modelData.heading !== true
+                                anchors.right: parent.right
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.cleanText(
+                                          rendererChoice.modelData.shortcut)
+                                color: root.mutedText
+                                opacity: rendererChoice.choiceEnabled ? 1 : 0.5
+                                font.pixelSize: 10
                             }
 
                             MouseArea {
@@ -2086,21 +2428,174 @@ ApplicationWindow {
                             }
                         }
                     }
+
+                    Rectangle {
+                        width: rendererMenu.availableWidth
+                        height: 1
+                        color: root.separatorColor
+                        visible: qtGallery.available
+                    }
+
+                    Item {
+                        id: rendererZoomRow
+                        objectName: "panelRendererZoomRow-"
+                                    + Number(panel.side || 0)
+                        width: rendererMenu.availableWidth
+                        height: 48
+                        visible: qtGallery.available
+
+                        Text {
+                            id: rendererZoomLabel
+                            anchors.left: parent.left
+                            anchors.leftMargin: 8
+                            anchors.top: parent.top
+                            anchors.topMargin: 5
+                            text: "Zoom"
+                            color: root.mutedText
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                        }
+
+                        Text {
+                            id: rendererZoomReset
+                            objectName: "panelRendererZoomReset-"
+                                        + Number(panel.side || 0)
+                            anchors.right: rendererZoomValue.left
+                            anchors.rightMargin: 8
+                            anchors.baseline: rendererZoomLabel.baseline
+                            text: "Reset"
+                            color: rendererZoomResetPointer.containsMouse
+                                   ? root.panelSelectionBorder : root.mutedText
+                            font.pixelSize: 10
+                            font.underline: rendererZoomResetPointer.containsMouse
+
+                            MouseArea {
+                                id: rendererZoomResetPointer
+                                anchors.fill: parent
+                                anchors.margins: -3
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    root.action({
+                                        "action": "panel.resetGalleryDensity",
+                                        "side": panel.side,
+                                        "layoutMode": panel.galleryLayoutMode
+                                    }, true)
+                                }
+                            }
+                        }
+
+                        Text {
+                            id: rendererZoomValue
+                            anchors.right: parent.right
+                            anchors.rightMargin: 8
+                            anchors.baseline: rendererZoomLabel.baseline
+                            text: Math.round(rendererZoomSlider.value) + " px"
+                            color: root.mutedText
+                            font.pixelSize: 10
+                        }
+
+                        T.Slider {
+                            id: rendererZoomSlider
+                            objectName: "panelRendererZoomSlider-"
+                                        + Number(panel.side || 0)
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            height: 27
+                            focusPolicy: Qt.NoFocus
+                            hoverEnabled: true
+                            from: panelRoot.galleryHost()
+                                  ? panelRoot.galleryHost().minimumDensity : 0
+                            to: panelRoot.galleryHost()
+                                ? panelRoot.galleryHost().maximumDensity : 1
+                            stepSize: panelRoot.galleryHost()
+                                      ? panelRoot.galleryHost().densityStep : 1
+                            value: panelRoot.galleryHost()
+                                   ? panelRoot.galleryHost().currentDensity : 0
+                            snapMode: T.Slider.SnapAlways
+
+                            onMoved: {
+                                const host = panelRoot.galleryHost()
+                                if (host)
+                                    host.previewDensity(value)
+                            }
+                            onPressedChanged: {
+                                if (pressed)
+                                    return
+                                const host = panelRoot.galleryHost()
+                                if (host)
+                                    host.commitDensity(value)
+                            }
+
+                            background: Rectangle {
+                                x: rendererZoomSlider.leftPadding
+                                y: Math.round((rendererZoomSlider.height
+                                               - height) / 2)
+                                width: rendererZoomSlider.availableWidth
+                                height: 4
+                                radius: 2
+                                color: root.controlBorder
+
+                                Rectangle {
+                                    width: rendererZoomSlider.visualPosition
+                                           * parent.width
+                                    height: parent.height
+                                    radius: parent.radius
+                                    color: root.panelSelectionBorder
+                                }
+                            }
+
+                            handle: Rectangle {
+                                x: rendererZoomSlider.leftPadding
+                                   + rendererZoomSlider.visualPosition
+                                     * (rendererZoomSlider.availableWidth
+                                        - width)
+                                y: Math.round((rendererZoomSlider.height
+                                               - height) / 2)
+                                width: 14
+                                height: 14
+                                radius: 7
+                                color: rendererZoomSlider.pressed
+                                       ? root.panelSelectionBorder
+                                       : root.chromeText
+                                border.width: 2
+                                border.color: root.controlBg
+                            }
+                        }
+                    }
                 }
             }
 
+            MouseArea {
+                // Popup.CloseOnPressOutside is not delivered reliably when a
+                // non-windowed popup is parented to Overlay.overlay above the
+                // persistent panel/grid pointer layers. Put a transparent
+                // dismiss plane immediately below the popup instead: popup
+                // contents still receive their input, every outside press is
+                // consumed here and cannot also move the file-panel cursor.
+                parent: Overlay.overlay
+                anchors.fill: parent
+                visible: rendererMenu.opened
+                enabled: visible
+                z: 1000
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                 | Qt.MiddleButton
+                onPressed: rendererMenu.close()
+            }
+
             Text {
-                id: loading
+                id: panelStatus
+                objectName: "panelStatus-" + Number(panel.side || 0)
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.rightMargin: root.panelTextInset
-                text: panel.loading ? "Loading"
-                                    : (panelRoot.usesGallery
-                                       && String(panel.galleryLayoutMode
-                                                 || "masonry") !== "details"
-                                       ? "Gallery · "
-                                         + root.cleanText(panel.sortModeName)
-                                       : "")
+                text: String(panel.galleryLayoutMode
+                             || "masonry") !== "details"
+                      ? "Gallery · " + root.cleanText(panel.sortModeName)
+                      : ""
                 color: root.mutedText
                 font.pixelSize: 12
             }
@@ -2112,16 +2607,14 @@ ApplicationWindow {
             anchors.right: parent.right
             anchors.top: panelHeader.bottom
             readonly property bool showsGalleryDetails:
-                panelRoot.usesGallery
-                && String(panel.galleryLayoutMode || "masonry") === "details"
-            height: panelRoot.usesGallery && !showsGalleryDetails
-                    ? 0 : Math.max(22, root.ch) + root.verticalContentSpacing
-            visible: !panelRoot.usesGallery || showsGalleryDetails
+                String(panel.galleryLayoutMode || "masonry") === "details"
+            height: showsGalleryDetails
+                    ? Math.max(22, root.ch) + root.verticalContentSpacing : 0
+            visible: showsGalleryDetails
             color: "transparent"
             z: 2
 
-            readonly property var columns: showsGalleryDetails
-                ? (panel.galleryColumns || []) : (panel.columns || [])
+            readonly property var columns: panel.galleryColumns || []
             readonly property real totalColumnWidth: {
                 var total = 0
                 for (var i = 0; i < columns.length; ++i)
@@ -2224,27 +2717,6 @@ ApplicationWindow {
         }
 
         Loader {
-            id: listPanelContent
-            objectName: "listPanelContent-" + Number(panel.side || 0)
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: root.panelContentSpacing
-            anchors.rightMargin: root.panelContentSpacing
-            anchors.top: parent.top
-            anchors.topMargin: panelHeader.height + columnHeader.height
-            anchors.bottom: status.top
-            z: 1
-            // A hidden side or a temporary Info panel is only a cover change;
-            // retaining the active presentation avoids reconstructing its
-            // ListView and losing the exact fractional contentY/local cursor.
-            active: !panelRoot.usesGallery
-            visible: panelRoot.visible && active
-            sourceComponent: panel.viewModeName === "brief"
-                             || panel.viewModeName === "medium"
-                             ? compactPanelComponent : listPanelComponent
-        }
-
-        Loader {
             id: galleryPanelContent
             objectName: "galleryPanelContent-" + Number(panel.side || 0)
             anchors.left: parent.left
@@ -2255,13 +2727,16 @@ ApplicationWindow {
             anchors.topMargin: panelHeader.height + columnHeader.height
             anchors.bottom: status.top
             z: 1
-            // GallerySession survives Loader recreation, but renderer-local
-            // layout state and its live delegates do not.  Keep this host alive
-            // while the panel is hidden so showing it is a pure visibility
-            // flip with no restore/reveal pass and no thumbnail blink.
-            active: panelRoot.usesGallery
-            visible: panelRoot.visible && active
-            source: active ? qtGallery.panelComponentUrl : ""
+            // Each side owns one persistent instance of the unified renderer.
+            // Covering a panel, hiding it with Ctrl+O, or switching layout mode
+            // only changes visibility/state; it never reconstructs the host.
+            active: true
+            // `status` is also the id of the panel footer below. Qualify the
+            // Loader property explicitly so QML cannot resolve that sibling
+            // object here and hide an otherwise ready, populated renderer.
+            visible: panelRoot.visible
+                     && galleryPanelContent.status === Loader.Ready
+            source: qtGallery.available ? qtGallery.panelComponentUrl : ""
 
             onItemChanged: panelRoot.updateRegisteredGalleryPanelHost()
 
@@ -2284,11 +2759,10 @@ ApplicationWindow {
                           && !qtGallery.viewerVisible
                           && !root.needsFallbackGrid()
                           && !root.hasDocumentSurface()
+                          && !root.hasOperationsQueueSurface()
                           && !root.hasBlockingOverlay())
                 item.commandLineHasText = Qt.binding(() => {
-                    var shell = root.shellFrame()
-                    var commandLine = shell && shell.commandLine
-                                      ? shell.commandLine : ({})
+                    var commandLine = root.commandLineFrame()
                     return root.cleanText(commandLine.text).length > 0
                 })
                 item.fastFindActive = Qt.binding(
@@ -2299,23 +2773,57 @@ ApplicationWindow {
             }
         }
 
-        onUsesGalleryChanged: {
-            if (!visible || !panelIsActive || qtGallery.viewerVisible
-                    || root.hasBlockingOverlay() || root.needsFallbackGrid()
-                    || root.hasDocumentSurface())
-                return
-            if (usesGallery && galleryPanelContent.item)
-                galleryPanelContent.item.forceActiveFocus()
-            else if (!usesGallery)
-                grid.forceActiveFocus()
+        Rectangle {
+            id: rendererFailure
+            objectName: "panelRendererFailure-" + Number(panel.side || 0)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: root.panelContentSpacing
+            anchors.rightMargin: root.panelContentSpacing
+            anchors.top: parent.top
+            anchors.topMargin: panelHeader.height + columnHeader.height
+            anchors.bottom: status.top
+            z: 2
+            visible: panelRoot.visible
+                     && (!qtGallery.available
+                         || galleryPanelContent.status === Loader.Error)
+            color: "transparent"
+
+            Column {
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 32, 420)
+                spacing: 8
+
+                IconLabel {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: 24
+                    height: 24
+                    icon.source: root.lucideIconSource("triangle-alert")
+                    icon.width: 24
+                    icon.height: 24
+                    icon.color: root.activeBorder
+                }
+
+                Text {
+                    width: parent.width
+                    text: qtGallery.available
+                          ? "The unified panel renderer could not be loaded."
+                          : "The unified panel renderer is unavailable in this build."
+                    color: root.textColor
+                    font.pixelSize: 13
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                }
+            }
         }
 
         onPanelIsActiveChanged: {
             if (!visible || !panelIsActive || qtGallery.viewerVisible
                     || root.hasBlockingOverlay() || root.needsFallbackGrid()
-                    || root.hasDocumentSurface())
+                    || root.hasDocumentSurface()
+                    || root.hasOperationsQueueSurface())
                 return
-            if (usesGallery && galleryPanelContent.item)
+            if (galleryPanelContent.item)
                 galleryPanelContent.item.forceActiveFocus()
             else
                 grid.forceActiveFocus()
@@ -2326,864 +2834,17 @@ ApplicationWindow {
             function onViewerChanged() {
                 if (qtGallery.viewerVisible || root.hasBlockingOverlay()
                         || root.needsFallbackGrid()
-                        || root.hasDocumentSurface())
+                        || root.hasDocumentSurface()
+                        || root.hasOperationsQueueSurface())
                     return
-                if (panelRoot.visible && panelRoot.usesGallery
-                        && panelRoot.panelIsActive
+                if (panelRoot.visible && panelRoot.panelIsActive
                         && galleryPanelContent.item) {
                     galleryPanelContent.item.forceActiveFocus()
-                } else if (panelRoot.visible && panelRoot.panelIsActive
-                           && !panelRoot.usesGallery) {
+                } else if (panelRoot.visible && panelRoot.panelIsActive) {
                     grid.forceActiveFocus()
                 }
             }
         }
-
-        Component {
-            id: compactPanelComponent
-
-            Item {
-                id: compactPanel
-                clip: true
-                readonly property int columnCount:
-                    panel.viewModeName === "brief" ? 3 : 2
-                readonly property real rowHeight: Math.max(22, root.ch * 1.1)
-                readonly property int rowsPerColumn:
-                    Math.max(1, Math.floor(height / rowHeight))
-                readonly property real columnWidth: width / columnCount
-                readonly property int backendCursor: Number(panel.cursor || 0)
-                readonly property int backendCatalogRevision:
-                    Number(panel.catalogRevision || 0)
-                readonly property int backendSelectionRevision:
-                    Number(panel.selectionRevision || 0)
-                readonly property int backendHighlightRevision:
-                    Number(panel.highlightRevision || 0)
-                readonly property bool backendSeparateFileExtensions:
-                    panel.separateFileExtensions === true
-                readonly property bool backendActive: panel.active === true
-                property int localCursor: backendCursor
-                property int localTop: Math.max(0, Number(panel.top || 0))
-                property real scrollPosition: localTop
-                property real wheelTarget: localTop
-                property bool localCursorOverride: false
-                property var cachedEntries: []
-                property var cachedHighlightStyles: ({})
-
-                Timer {
-                    id: cursorCommitTimer
-                    interval: 70
-                    repeat: false
-                    onTriggered: compactPanel.commitLocalCursor()
-                }
-
-                NumberAnimation {
-                    id: compactWheelAnimation
-                    target: compactPanel
-                    property: "scrollPosition"
-                    duration: 130
-                    easing.type: Easing.OutCubic
-                }
-
-                Component.onCompleted: {
-                    refreshCachedEntries()
-                    root.setLocalPanelHost(panel.side, compactPanel)
-                    ensureCursorVisible()
-                }
-                Component.onDestruction: {
-                    if (cursorCommitTimer.running)
-                        commitLocalCursor()
-                    root.clearLocalPanelHost(panel.side, compactPanel)
-                }
-
-                onBackendCatalogRevisionChanged: {
-                    compactWheelAnimation.stop()
-                    cursorCommitTimer.stop()
-                    refreshCachedEntries()
-                    localCursor = backendCursor
-                    localTop = Math.max(0, Number(panel.top || 0))
-                    scrollPosition = localTop
-                    wheelTarget = localTop
-                    localCursorOverride = false
-                    ensureCursorVisible()
-                }
-                onBackendSelectionRevisionChanged: refreshCachedEntries()
-                onBackendHighlightRevisionChanged: refreshCachedEntries()
-                onBackendSeparateFileExtensionsChanged: refreshCachedEntries()
-                onBackendCursorChanged: {
-                    // Repeated-key acknowledgements can arrive behind the
-                    // locally rendered cursor. Ignore those intermediate
-                    // scenes and converge only on the latest request.
-                    if (!localCursorOverride) {
-                        localCursor = backendCursor
-                        ensureCursorVisible()
-                    } else if (!cursorCommitTimer.running
-                               && backendCursor === localCursor) {
-                        localCursorOverride = false
-                    }
-                }
-                onRowsPerColumnChanged: ensureCursorVisible()
-                onScrollPositionChanged: {
-                    var nextTop = clampTop(Math.round(scrollPosition))
-                    if (nextTop !== localTop)
-                        localTop = nextTop
-                    syncGalleryScrollBar()
-                }
-
-                function refreshCachedEntries() {
-                    cachedEntries = panel.entries || []
-                    cachedHighlightStyles = panel.highlightStyles || ({})
-                }
-
-                function maximumTop() {
-                    var count = cachedEntries.length
-                    return Math.max(0, count - rowsPerColumn * columnCount)
-                }
-
-                function clampTop(value) {
-                    return Math.max(0, Math.min(maximumTop(), value))
-                }
-
-                function setTop(value) {
-                    compactWheelAnimation.stop()
-                    localTop = Math.round(clampTop(value))
-                    scrollPosition = localTop
-                    wheelTarget = localTop
-                    syncGalleryScrollBar()
-                }
-
-                function scrollByWheel(wheel) {
-                    var pixelY = Number(wheel.pixelDelta.y || 0)
-                    var angleY = Number(wheel.angleDelta.y || 0)
-                    var rows = pixelY !== 0 ? pixelY / rowHeight
-                                           : (angleY / 120) * 3
-                    if (rows === 0)
-                        return false
-                    wheelTarget = clampTop(wheelTarget - rows)
-                    compactWheelAnimation.stop()
-                    compactWheelAnimation.from = scrollPosition
-                    compactWheelAnimation.to = wheelTarget
-                    compactWheelAnimation.start()
-                    return true
-                }
-
-                function syncGalleryScrollBar() {
-                    var scrollBar = compactScrollBar.item
-                    if (!scrollBar || scrollBar.pressed)
-                        return
-                    var count = cachedEntries.length
-                    var capacity = rowsPerColumn * columnCount
-                    scrollBar.size = count > 0
-                            ? Math.min(1, capacity / count) : 1
-                    scrollBar.position = count > 0
-                            ? scrollPosition / count : 0
-                }
-
-                function ensureCursorVisible() {
-                    var capacity = rowsPerColumn * columnCount
-                    if (localCursor < localTop)
-                        setTop(localCursor)
-                    else if (localCursor >= localTop + capacity)
-                        setTop(localCursor - capacity + 1)
-                    else if (localTop !== clampTop(localTop))
-                        setTop(localTop)
-                }
-
-                function commitLocalCursor() {
-                    cursorCommitTimer.stop()
-                    var entries = cachedEntries
-                    if (localCursor < 0 || localCursor >= entries.length)
-                        return
-                    var targetEntry = entries[localCursor]
-                    root.action({
-                        "action": "panel.cursor",
-                        "side": panel.side,
-                        "index": targetEntry.index !== undefined
-                                 ? targetEntry.index : localCursor,
-                        "entryId": targetEntry.entryId || "",
-                        "catalogRevision": panel.catalogRevision || 0,
-                        "activate": false
-                    }, true)
-                }
-
-                function selectLocally(target, nextTop) {
-                    if (target === localCursor)
-                        return false
-                    localCursor = target
-                    setTop(nextTop)
-                    ensureCursorVisible()
-                    localCursorOverride = true
-                    // Holding an arrow changes only QML state. Once input
-                    // pauses, one stable-ID cursor update synchronizes Go.
-                    cursorCommitTimer.restart()
-                    return true
-                }
-
-                function navigate(key) {
-                    var entries = cachedEntries
-                    var current = localCursor
-                    var top = localTop
-                    var relative = current - top
-                    var capacity = rowsPerColumn * columnCount
-                    if (current < 0 || current >= entries.length
-                            || relative < 0 || relative >= capacity)
-                        return false
-
-                    var column = Math.floor(relative / rowsPerColumn)
-                    var target = current
-                    var nextTop = top
-                    if (key === Qt.Key_Left) {
-                        if (column > 0) {
-                            target -= rowsPerColumn
-                        } else {
-                            nextTop = clampTop(top - capacity)
-                            target = nextTop === top
-                                     ? 0 : nextTop + relative
-                        }
-                    } else if (key === Qt.Key_Right) {
-                        if (column < columnCount - 1) {
-                            target += rowsPerColumn
-                        } else {
-                            nextTop = clampTop(top + capacity)
-                            target = nextTop === top
-                                     ? entries.length - 1
-                                     : Math.min(entries.length - 1,
-                                                nextTop + relative)
-                        }
-                    } else if (key === Qt.Key_Up) {
-                        target--
-                        if (target < top)
-                            nextTop = target
-                    } else if (key === Qt.Key_Down) {
-                        target++
-                        if (target >= top + capacity)
-                            nextTop = target - capacity + 1
-                    } else {
-                        return false
-                    }
-
-                    if (target < 0 || target >= entries.length
-                            || target === current)
-                        return false
-                    return selectLocally(target, nextTop)
-                }
-
-                Repeater {
-                    // Only visible cells exist as QML objects. Cursor-only
-                    // semantic scenes therefore update a few dozen bindings,
-                    // not every entry in a large directory.
-                    model: compactPanel.rowsPerColumn * compactPanel.columnCount
-
-                    delegate: Rectangle {
-                        id: compactFileCell
-                        readonly property int entryIndex:
-                            compactPanel.localTop + index
-                        readonly property var entry:
-                            compactPanel.cachedEntries[entryIndex] || ({})
-                        readonly property int relativeIndex: index
-                        readonly property bool cursorState:
-                            compactPanel.backendActive
-                            && entryIndex === compactPanel.localCursor
-                        readonly property var highlightStyle: {
-                            var styles = compactPanel.cachedHighlightStyles
-                            var styleId = entry.highlightStyleId || ""
-                            return styleId !== "" && styles[styleId]
-                                    ? styles[styleId] : ({})
-                        }
-                        readonly property var highlightPatch: {
-                            if (cursorState && entry.selected)
-                                return highlightStyle.selectedCursor || ({})
-                            if (cursorState)
-                                return highlightStyle.cursor || ({})
-                            if (entry.selected)
-                                return highlightStyle.selected || ({})
-                            return highlightStyle.normal || ({})
-                        }
-                        readonly property string highlightForeground:
-                            highlightPatch.foreground || ""
-                        readonly property string highlightBackground:
-                            highlightPatch.background || ""
-                        readonly property string highlightMarker:
-                            highlightStyle.marker || ""
-                        readonly property url highlightIcon:
-                            root.resolvedFileIconSource(
-                                entry, highlightStyle.icon || "",
-                                highlightMarker, 16)
-                        readonly property var fileNameParts:
-                            panelRoot.fileNameParts(entry)
-
-                        visible: entryIndex >= 0
-                                 && entryIndex < compactPanel.cachedEntries.length
-                        x: Math.floor(relativeIndex / compactPanel.rowsPerColumn)
-                           * compactPanel.columnWidth
-                        y: (relativeIndex % compactPanel.rowsPerColumn)
-                           * compactPanel.rowHeight
-                        width: compactPanel.columnWidth
-                        height: compactPanel.rowHeight
-                        color: highlightBackground !== ""
-                               ? highlightBackground
-                               : cursorState ? root.panelSelectionBg
-                               : entry.selected ? root.markedBg
-                               : "transparent"
-                        radius: 4
-                        border.width: cursorState ? 1 : 0
-                        border.color: root.panelSelectionBorder
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: root.panelRowInnerSpacing
-                            anchors.rightMargin: root.panelRowInnerSpacing
-                            spacing: 6
-
-                            Item {
-                                Layout.preferredWidth: 18
-                                Layout.preferredHeight: 18
-
-                                IconLabel {
-                                    anchors.centerIn: parent
-                                    visible:
-                                        compactFileCell.highlightIcon.toString() !== ""
-                                    icon.source: compactFileCell.highlightIcon
-                                    icon.width: 16
-                                    icon.height: 16
-                                    icon.color: root.isFullColorFileIcon(
-                                                    compactFileCell.highlightIcon)
-                                                ? "transparent"
-                                                : compactFileCell.entry.isDir
-                                                ? (compactFileCell.cursorState
-                                                   ? root.textColor
-                                                   : root.folderIconColor)
-                                                : compactFileCell.highlightForeground !== ""
-                                                  ? compactFileCell.highlightForeground
-                                                  : root.mutedText
-                                }
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    visible:
-                                        compactFileCell.highlightIcon.toString() === ""
-                                    text: compactFileCell.highlightMarker !== ""
-                                          ? compactFileCell.highlightMarker
-                                          : compactFileCell.entry.isDir
-                                            ? (compactFileCell.entry.isUp ? "↰" : "▸") : " "
-                                    color: compactFileCell.entry.isDir
-                                           ? (compactFileCell.cursorState
-                                              ? root.textColor
-                                              : root.folderIconColor)
-                                           : compactFileCell.highlightForeground !== ""
-                                             ? compactFileCell.highlightForeground
-                                             : root.mutedText
-                                    font.pixelSize: 13
-                                }
-                            }
-
-                            Text {
-                                text: compactFileCell.fileNameParts.base
-                                color: compactFileCell.highlightForeground !== ""
-                                       ? compactFileCell.highlightForeground
-                                       : (compactFileCell.entry.isDir ? "#98d8ff"
-                                                          : root.textColor)
-                                elide: Text.ElideMiddle
-                                font.pixelSize: 13
-                                Layout.fillWidth: true
-                            }
-
-                            Text {
-                                text: compactFileCell.fileNameParts.extension
-                                visible: text.length > 0
-                                color: compactFileCell.highlightForeground !== ""
-                                       ? compactFileCell.highlightForeground
-                                       : root.mutedText
-                                elide: Text.ElideRight
-                                horizontalAlignment: Text.AlignLeft
-                                font.pixelSize: 12
-                                Layout.preferredWidth: Math.min(64,
-                                    Math.max(32, implicitWidth))
-                            }
-                        }
-
-                        MouseArea {
-                            id: compactPointer
-                            anchors.fill: parent
-                            acceptedButtons: Qt.AllButtons
-                            property string pressedButton: ""
-                            property int lastDragIndex: -1
-                            onPressed: mouse => {
-                                cursorCommitTimer.stop()
-                                compactPanel.localCursor = compactFileCell.entryIndex
-                                compactPanel.localCursorOverride = true
-                                pressedButton = panelRoot.pointerButtonName(mouse.button)
-                                lastDragIndex = compactFileCell.entryIndex
-                                panelRoot.sendPointerEvent(compactFileCell.entry,
-                                                           "down", pressedButton)
-                                mouse.accepted = true
-                            }
-                            onPositionChanged: mouse => {
-                                if (pressedButton === "" || mouse.buttons === Qt.NoButton)
-                                    return
-                                var point = mapToItem(compactPanel, mouse.x, mouse.y)
-                                var column = Math.floor(point.x / compactPanel.columnWidth)
-                                var row = Math.floor(point.y / compactPanel.rowHeight)
-                                if (column < 0 || column >= compactPanel.columnCount
-                                        || row < 0 || row >= compactPanel.rowsPerColumn)
-                                    return
-                                var target = compactPanel.localTop + row
-                                             + column * compactPanel.rowsPerColumn
-                                if (target === lastDragIndex || target < 0
-                                        || target >= compactPanel.cachedEntries.length)
-                                    return
-                                lastDragIndex = target
-                                compactPanel.localCursor = target
-                                compactPanel.localCursorOverride = true
-                                panelRoot.sendPointerEvent(
-                                    compactPanel.cachedEntries[target], "move",
-                                    pressedButton)
-                            }
-                            onReleased: mouse => {
-                                panelRoot.sendPointerEvent(compactFileCell.entry,
-                                                           "up", pressedButton)
-                                pressedButton = ""
-                                lastDragIndex = -1
-                            }
-                            onCanceled: {
-                                panelRoot.sendPointerEvent(compactFileCell.entry,
-                                                           "cancel", pressedButton)
-                                pressedButton = ""
-                                lastDragIndex = -1
-                            }
-                            onClicked: mouse => panelRoot.sendPointerEvent(
-                                compactFileCell.entry, "click", mouse.button)
-                            onDoubleClicked: mouse => panelRoot.sendPointerEvent(
-                                compactFileCell.entry, "doubleClick", mouse.button)
-                            onWheel: wheel => {
-                                wheel.accepted = compactPanel.scrollByWheel(wheel)
-                            }
-                        }
-                    }
-                }
-
-                WheelHandler {
-                    id: compactWheelHandler
-                    target: null
-                    acceptedDevices: PointerDevice.Mouse
-                                     | PointerDevice.TouchPad
-                    onWheel: event => {
-                        event.accepted = compactPanel.scrollByWheel(event)
-                    }
-                }
-
-                Loader {
-                    id: compactScrollBar
-                    objectName: "filePanelScrollBar-" + Number(panel.side || 0)
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.right: parent.right
-                    width: active ? 16 : 0
-                    z: 10
-                    active: qtGallery.available && compactPanel.maximumTop() > 0
-                    visible: active
-                    source: active ? qtGallery.scrollBarComponentUrl : ""
-
-                    onLoaded: {
-                        if (!item)
-                            return
-                        item.theme = root.galleryTheme()
-                        item.orientation = Qt.Vertical
-                        compactPanel.syncGalleryScrollBar()
-                    }
-
-                    Connections {
-                        target: compactScrollBar.item
-                        function onPositionChanged() {
-                            var scrollBar = compactScrollBar.item
-                            if (!scrollBar || !scrollBar.pressed)
-                                return
-                            compactWheelAnimation.stop()
-                            var count = compactPanel.cachedEntries.length
-                            compactPanel.scrollPosition = compactPanel.clampTop(
-                                        scrollBar.position * count)
-                            compactPanel.wheelTarget = compactPanel.scrollPosition
-                        }
-                    }
-                }
-            }
-        }
-
-        Component {
-            id: listPanelComponent
-
-            ListView {
-                id: list
-                clip: true
-                readonly property real rowHeight: Math.max(22, root.ch * 1.1)
-                readonly property int rowsPerPage:
-                    Math.max(1, Math.floor(height / rowHeight))
-                readonly property int backendCursor: Number(panel.cursor || 0)
-                readonly property int backendCatalogRevision:
-                    Number(panel.catalogRevision || 0)
-                readonly property int backendSelectionRevision:
-                    Number(panel.selectionRevision || 0)
-                readonly property int backendHighlightRevision:
-                    Number(panel.highlightRevision || 0)
-                readonly property bool backendSeparateFileExtensions:
-                    panel.separateFileExtensions === true
-                property int localCursor: backendCursor
-                property bool localCursorOverride: false
-                property var cachedEntries: []
-                property var cachedHighlightStyles: ({})
-                // Keep delegates alive across cursor/selection-only semantic
-                // snapshots. Replacing a JS-array model after right mouse-down
-                // destroys the MouseArea before Qt can deliver the second
-                // press of a double-click.
-                model: cachedEntries.length
-                currentIndex: localCursor
-                boundsBehavior: Flickable.StopAtBounds
-
-                Timer {
-                    id: listCursorCommitTimer
-                    interval: 70
-                    repeat: false
-                    onTriggered: list.commitLocalCursor()
-                }
-
-                function refreshCachedEntries() {
-                    cachedEntries = panel.entries || []
-                    cachedHighlightStyles = panel.highlightStyles || ({})
-                }
-
-                function ensureCursorVisible() {
-                    if (localCursor >= 0 && localCursor < cachedEntries.length)
-                        positionViewAtIndex(localCursor, ListView.Contain)
-                }
-
-                function commitLocalCursor() {
-                    listCursorCommitTimer.stop()
-                    if (localCursor < 0 || localCursor >= cachedEntries.length)
-                        return
-                    var targetEntry = cachedEntries[localCursor]
-                    root.action({
-                        "action": "panel.cursor",
-                        "side": panel.side,
-                        "index": targetEntry.index !== undefined
-                                 ? targetEntry.index : localCursor,
-                        "entryId": targetEntry.entryId || "",
-                        "catalogRevision": panel.catalogRevision || 0,
-                        "activate": false
-                    }, true)
-                }
-
-                function selectLocally(target) {
-                    target = Math.max(0, Math.min(cachedEntries.length - 1,
-                                                  target))
-                    if (target === localCursor || cachedEntries.length === 0)
-                        return false
-                    localCursor = target
-                    localCursorOverride = true
-                    ensureCursorVisible()
-                    listCursorCommitTimer.restart()
-                    return true
-                }
-
-                function navigate(key) {
-                    var delta = 0
-                    if (key === Qt.Key_Up)
-                        delta = -1
-                    else if (key === Qt.Key_Down)
-                        delta = 1
-                    else if (key === Qt.Key_Left)
-                        delta = -rowsPerPage
-                    else if (key === Qt.Key_Right)
-                        delta = rowsPerPage
-                    else
-                        return false
-                    return selectLocally(localCursor + delta)
-                }
-
-                function canNavigate(key) {
-                    if (key === Qt.Key_Up || key === Qt.Key_Down)
-                        return true
-                    return panel.viewModeName === "detailed"
-                            && !root.commandLineHasText()
-                }
-
-                Component.onCompleted: {
-                    refreshCachedEntries()
-                    root.setLocalPanelHost(panel.side, list)
-                    ensureCursorVisible()
-                }
-                Component.onDestruction: {
-                    if (listCursorCommitTimer.running)
-                        commitLocalCursor()
-                    root.clearLocalPanelHost(panel.side, list)
-                }
-                onBackendCatalogRevisionChanged: {
-                    listCursorCommitTimer.stop()
-                    refreshCachedEntries()
-                    localCursor = backendCursor
-                    localCursorOverride = false
-                    ensureCursorVisible()
-                }
-                onBackendSelectionRevisionChanged: refreshCachedEntries()
-                onBackendHighlightRevisionChanged: refreshCachedEntries()
-                onBackendSeparateFileExtensionsChanged: refreshCachedEntries()
-                onBackendCursorChanged: {
-                    if (!localCursorOverride) {
-                        localCursor = backendCursor
-                        ensureCursorVisible()
-                    } else if (!listCursorCommitTimer.running
-                               && backendCursor === localCursor) {
-                        localCursorOverride = false
-                    }
-                }
-                onRowsPerPageChanged: ensureCursorVisible()
-
-                function syncGalleryScrollBar() {
-                    var scrollBar = listScrollBar.item
-                    if (!scrollBar || scrollBar.pressed)
-                        return
-                    scrollBar.size = contentHeight > 0
-                            ? Math.min(1, height / contentHeight) : 1
-                    scrollBar.position = contentHeight > 0
-                            ? contentY / contentHeight : 0
-                }
-
-                delegate: Rectangle {
-                    id: fileRow
-                    width: ListView.view.width
-                    height: list.rowHeight
-                    readonly property var entry:
-                        list.cachedEntries[index] || ({})
-                    readonly property bool cursorState:
-                        panel.active && index === list.localCursor
-                    readonly property var highlightStyle: {
-                        var styles = list.cachedHighlightStyles
-                        var styleId = entry.highlightStyleId || ""
-                        return styleId !== "" && styles[styleId]
-                                ? styles[styleId] : ({})
-                    }
-                    readonly property var highlightPatch: {
-                        if (cursorState && entry.selected)
-                            return highlightStyle.selectedCursor || ({})
-                        if (cursorState)
-                            return highlightStyle.cursor || ({})
-                        if (entry.selected)
-                            return highlightStyle.selected || ({})
-                        return highlightStyle.normal || ({})
-                    }
-                    readonly property string highlightForeground:
-                        highlightPatch.foreground || ""
-                    readonly property string highlightBackground:
-                        highlightPatch.background || ""
-                    readonly property string highlightMarker:
-                        highlightStyle.marker || ""
-                    readonly property url highlightIcon:
-                        root.resolvedFileIconSource(
-                            entry, highlightStyle.icon || "",
-                            highlightMarker, 16)
-                    readonly property var fileNameParts:
-                        panelRoot.fileNameParts(entry)
-                    color: {
-                        var base
-                        if (fileRow.cursorState)
-                            base = root.panelSelectionBg
-                        else if (entry.selected)
-                            base = root.markedBg
-                        else
-                            base = "transparent"
-                        return highlightBackground !== ""
-                                ? highlightBackground : base
-                    }
-                    radius: 4
-                    border.width: fileRow.cursorState ? 1 : 0
-                    border.color: root.panelSelectionBorder
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: root.panelRowInnerSpacing
-                        anchors.rightMargin: root.panelRowInnerSpacing
-                        spacing: 8
-
-                        Item {
-                            Layout.preferredWidth: 18
-                            Layout.preferredHeight: 18
-
-                            IconLabel {
-                                anchors.centerIn: parent
-                                visible: fileRow.highlightIcon.toString() !== ""
-                                icon.source: fileRow.highlightIcon
-                                icon.width: 16
-                                icon.height: 16
-                                icon.color: root.isFullColorFileIcon(
-                                                fileRow.highlightIcon)
-                                            ? "transparent"
-                                            : fileRow.entry.isDir
-                                            ? (fileRow.cursorState
-                                               ? root.textColor
-                                               : root.folderIconColor)
-                                            : fileRow.highlightForeground !== ""
-                                              ? fileRow.highlightForeground
-                                              : root.mutedText
-                            }
-
-                            Text {
-                                anchors.centerIn: parent
-                                visible: fileRow.highlightIcon.toString() === ""
-                                text: fileRow.highlightMarker !== ""
-                                      ? fileRow.highlightMarker
-                                      : fileRow.entry.isDir
-                                        ? (fileRow.entry.isUp ? "↰" : "▸") : " "
-                                color: fileRow.entry.isDir
-                                       ? (fileRow.cursorState
-                                          ? root.textColor
-                                          : root.folderIconColor)
-                                       : fileRow.highlightForeground !== ""
-                                         ? fileRow.highlightForeground
-                                         : root.mutedText
-                                font.pixelSize: 13
-                            }
-                        }
-
-                        Text {
-                            text: fileRow.fileNameParts.base
-                            color: fileRow.highlightForeground !== ""
-                                   ? fileRow.highlightForeground
-                                   : (fileRow.entry.isDir ? "#98d8ff"
-                                                      : root.textColor)
-                            elide: Text.ElideMiddle
-                            font.pixelSize: 13
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: fileRow.fileNameParts.extension
-                            visible: text.length > 0
-                            color: fileRow.highlightForeground !== ""
-                                   ? fileRow.highlightForeground
-                                   : root.mutedText
-                            elide: Text.ElideRight
-                            horizontalAlignment: Text.AlignLeft
-                            font.pixelSize: 12
-                            Layout.preferredWidth: Math.min(80,
-                                Math.max(40, implicitWidth))
-                        }
-
-                        Text {
-                            text: root.cleanText(fileRow.entry.sizeText)
-                            color: fileRow.highlightForeground !== ""
-                                   ? fileRow.highlightForeground
-                                   : root.mutedText
-                            horizontalAlignment: Text.AlignRight
-                            font.pixelSize: 12
-                            Layout.preferredWidth: 96
-                            visible: panel.viewModeName === "detailed"
-                                     || panel.viewModeName === "wide"
-                        }
-
-                        Text {
-                            text: root.cleanText(fileRow.entry.mtime)
-                            color: fileRow.highlightForeground !== ""
-                                   ? fileRow.highlightForeground
-                                   : root.mutedText
-                            font.pixelSize: 12
-                            visible: panel.viewModeName === "wide"
-                            Layout.preferredWidth: 120
-                        }
-                    }
-
-                    MouseArea {
-                        id: filePointer
-                        anchors.fill: parent
-                        acceptedButtons: Qt.AllButtons
-                        property string pressedButton: ""
-                        property int lastDragIndex: -1
-                        onPressed: mouse => {
-                            listCursorCommitTimer.stop()
-                            list.localCursor = index
-                            list.localCursorOverride = true
-                            list.ensureCursorVisible()
-                            pressedButton = panelRoot.pointerButtonName(mouse.button)
-                            lastDragIndex = index
-                            panelRoot.sendPointerEvent(fileRow.entry, "down",
-                                                       pressedButton)
-                            mouse.accepted = true
-                        }
-                        onPositionChanged: mouse => {
-                            if (pressedButton === "" || mouse.buttons === Qt.NoButton)
-                                return
-                            var point = mapToItem(list.contentItem,
-                                                  mouse.x, mouse.y)
-                            var target = list.indexAt(point.x, point.y)
-                            if (target === lastDragIndex || target < 0
-                                    || target >= list.cachedEntries.length)
-                                return
-                            lastDragIndex = target
-                            list.localCursor = target
-                            list.localCursorOverride = true
-                            list.ensureCursorVisible()
-                            panelRoot.sendPointerEvent(list.cachedEntries[target],
-                                                       "move", pressedButton)
-                        }
-                        onReleased: mouse => {
-                            panelRoot.sendPointerEvent(fileRow.entry, "up",
-                                                       pressedButton)
-                            pressedButton = ""
-                            lastDragIndex = -1
-                        }
-                        onCanceled: {
-                            panelRoot.sendPointerEvent(fileRow.entry, "cancel",
-                                                       pressedButton)
-                            pressedButton = ""
-                            lastDragIndex = -1
-                        }
-                        onClicked: mouse => panelRoot.sendPointerEvent(
-                            fileRow.entry, "click", mouse.button)
-                        onDoubleClicked: mouse => panelRoot.sendPointerEvent(
-                            fileRow.entry, "doubleClick", mouse.button)
-                    }
-                }
-
-                onCurrentIndexChanged: ensureCursorVisible()
-                onContentYChanged: syncGalleryScrollBar()
-                onContentHeightChanged: syncGalleryScrollBar()
-                onHeightChanged: syncGalleryScrollBar()
-
-                Loader {
-                    id: listScrollBar
-                    objectName: "filePanelScrollBar-" + Number(panel.side || 0)
-                    // Flickable normally reparents declarative children into
-                    // its scrolling contentItem. Keep this viewport chrome
-                    // attached to the ListView itself.
-                    parent: list
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.right: parent.right
-                    width: active ? 16 : 0
-                    z: 10
-                    active: qtGallery.available
-                            && list.contentHeight > list.height
-                    visible: active
-                    source: active ? qtGallery.scrollBarComponentUrl : ""
-
-                    onLoaded: {
-                        if (!item)
-                            return
-                        item.theme = root.galleryTheme()
-                        item.orientation = Qt.Vertical
-                        list.syncGalleryScrollBar()
-                    }
-
-                    Connections {
-                        target: listScrollBar.item
-                        function onPositionChanged() {
-                            var scrollBar = listScrollBar.item
-                            if (scrollBar && scrollBar.pressed)
-                                list.contentY = scrollBar.position
-                                                * list.contentHeight
-                        }
-                    }
-                }
-            }
-        }
-
         Rectangle {
             id: status
             objectName: "panelStatus-" + Number(panel.side || 0)
@@ -3222,6 +2883,225 @@ ApplicationWindow {
                 color: root.mutedText
                 font.pixelSize: 12
             }
+        }
+    }
+
+    component QuickViewPanelView: Rectangle {
+        id: quickRoot
+        property var quickView: ({})
+        readonly property int side: Number(quickView.side || 0)
+        readonly property var documentFrame:
+            quickView.surface || ({})
+        readonly property string previewKind:
+            root.cleanText(quickView.previewKind).toLowerCase()
+        readonly property bool showsDocument:
+            previewKind === "text" || previewKind === "binary"
+            || previewKind === "hex" || previewKind === "provider"
+            || previewKind === "document"
+            || (previewKind === "" && documentFrame.rows !== undefined)
+        // Go exports the exact fixed header used by the text frontend.
+        // Directory stats deliberately have no separate header because their
+        // first body row already contains the selected folder name.
+        readonly property var effectiveHeaderRows:
+            quickView.headerRows || []
+        readonly property var directoryRows: {
+            if (documentFrame.windowRows !== undefined)
+                return documentFrame.windowRows || []
+            return documentFrame.rows || []
+        }
+
+        objectName: "quickViewPanel-" + side
+        x: root.nativePanelX(side)
+        y: semanticMenu.height
+        width: root.nativePanelWidth(side)
+        height: Math.max(1, root.height - semanticMenu.height
+                         - root.commandLineHeight(root.shellFrame())
+                         - root.keyBarHeight())
+        color: "transparent"
+        border.width: 0
+        clip: true
+        z: 3
+
+        Rectangle {
+            id: quickTitle
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: Math.max(25, root.ch * 1.25)
+            color: "transparent"
+
+            Text {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                text: root.cleanText(quickRoot.quickView.title)
+                color: quickRoot.quickView.active === true
+                       ? root.activeBorder : root.textColor
+                font.pixelSize: 13
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideMiddle
+            }
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: root.separatorWidth
+                color: root.separatorColor
+            }
+        }
+
+        Item {
+            id: quickHeader
+            objectName: "quickViewHeader-" + quickRoot.side
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: quickTitle.bottom
+            height: Math.min(4, quickRoot.effectiveHeaderRows.length)
+                    * Math.max(20, root.ch)
+            clip: true
+
+            Repeater {
+                model: quickRoot.effectiveHeaderRows
+                delegate: ConsoleRunRow {
+                    x: 0
+                    y: index * Math.max(20, root.ch)
+                    width: quickHeader.width
+                    height: Math.max(20, root.ch)
+                    runs: modelData.runs || []
+                    fallbackText: root.rowText(modelData)
+                }
+            }
+        }
+
+        Item {
+            id: quickContent
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: quickHeader.bottom
+            anchors.bottom: quickFooter.top
+            clip: true
+
+            DocumentSurface {
+                id: quickDocument
+                frame: quickRoot.documentFrame
+                embedded: true
+                interactionActive: quickRoot.visible
+                                   && quickRoot.showsDocument
+                surfaceObjectName: "quickViewDocumentSurface-"
+                                   + quickRoot.side
+                anchors.fill: parent
+                visible: quickRoot.showsDocument
+            }
+
+            ListView {
+                id: quickDirectoryList
+                objectName: "quickViewDirectoryList-" + quickRoot.side
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                visible: quickRoot.previewKind === "directory"
+                model: quickRoot.directoryRows
+                clip: true
+                spacing: 1
+                interactive: visible
+                boundsBehavior: Flickable.StopAtBounds
+                reuseItems: true
+
+                delegate: ConsoleRunRow {
+                    width: ListView.view.width
+                    height: Math.max(20, root.ch)
+                    runs: modelData.runs || []
+                    fallbackText: root.rowText(modelData)
+                }
+            }
+
+            Image {
+                id: quickImage
+                objectName: "quickViewImage-" + quickRoot.side
+                anchors.fill: parent
+                anchors.margins: 10
+                visible: quickRoot.previewKind === "image"
+                source: root.cleanText(quickRoot.quickView.imageSource)
+                sourceSize.width: Number(quickRoot.quickView.imageWidth || 0)
+                sourceSize.height: Number(quickRoot.quickView.imageHeight || 0)
+                asynchronous: true
+                cache: true
+                fillMode: Image.PreserveAspectFit
+                smooth: true
+                mipmap: true
+            }
+
+            Text {
+                objectName: "quickViewLoading-" + quickRoot.side
+                anchors.centerIn: parent
+                width: Math.max(0, parent.width - 24)
+                visible: (quickRoot.previewKind === "loading"
+                          && quickRoot.effectiveHeaderRows.length < 4)
+                         || (quickRoot.previewKind === "image"
+                             && quickRoot.quickView.loading === true)
+                text: root.cleanText(quickRoot.quickView.label) !== ""
+                      ? root.cleanText(quickRoot.quickView.label)
+                      : "Loading…"
+                color: root.mutedText
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            }
+
+            Text {
+                objectName: "quickViewError-" + quickRoot.side
+                anchors.centerIn: parent
+                width: Math.max(0, parent.width - 24)
+                visible: quickRoot.previewKind === "error"
+                         && quickRoot.effectiveHeaderRows.length < 4
+                         && root.cleanText(quickRoot.quickView.error) !== ""
+                text: root.cleanText(quickRoot.quickView.error)
+                color: root.textColor
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+            }
+        }
+
+        Rectangle {
+            id: quickFooter
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: Math.max(24, root.ch * 1.15)
+            color: "transparent"
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: root.separatorWidth
+                color: root.separatorColor
+            }
+
+            Text {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                text: root.cleanText(quickRoot.quickView.bottomHint)
+                color: root.mutedText
+                font.pixelSize: 11
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideMiddle
+            }
+        }
+
+        TapHandler {
+            acceptedButtons: Qt.LeftButton
+            gesturePolicy: TapHandler.ReleaseWithinBounds
+            onTapped: root.action({
+                "action": "panel.activate",
+                "side": quickRoot.side
+            })
         }
     }
 
@@ -3362,6 +3242,8 @@ ApplicationWindow {
         property var runs: []
         property string fallbackText: ""
         property bool transparentBlackBackground: false
+        property real fallbackFontPixelSize: root.guiMonospaceFontPixelSize
+        property real horizontalInset: 8
 
         function runBackground(value) {
             var background = root.cleanText(value).toLowerCase()
@@ -3376,14 +3258,15 @@ ApplicationWindow {
         // Use the data model, rather than effective visibility, to select the
         // measured content. Measurement-only rows are deliberately hidden;
         // inherited visibility must not collapse their reported run width.
-        readonly property real contentWidth: 8 + (runs && runs.length > 0
-                                                   ? runRow.implicitWidth
-                                                   : fallbackRunLabel.implicitWidth)
+        readonly property real contentWidth: horizontalInset
+                                             + (runs && runs.length > 0
+                                                ? runRow.implicitWidth
+                                                : fallbackRunLabel.implicitWidth)
 
         Row {
             id: runRow
             anchors.left: parent.left
-            anchors.leftMargin: 8
+            anchors.leftMargin: horizontalInset
             height: parent.height
             visible: runs && runs.length > 0
 
@@ -3402,7 +3285,7 @@ ApplicationWindow {
                         color: root.cleanText(modelData.foreground) !== ""
                                ? modelData.foreground : root.textColor
                         font.family: root.guiMonospaceFontFamily
-                        font.pixelSize: 13
+                        font.pixelSize: root.semanticTextFontPixelSize
                         font.bold: modelData.bold === true
                         font.underline: modelData.underline === true
                         font.strikeout: modelData.strikeout === true
@@ -3416,14 +3299,14 @@ ApplicationWindow {
             id: fallbackRunLabel
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.leftMargin: 8
-            anchors.rightMargin: 8
+            anchors.leftMargin: horizontalInset
+            anchors.rightMargin: horizontalInset
             anchors.verticalCenter: parent.verticalCenter
             visible: !runs || runs.length === 0
             text: fallbackText
             color: root.textColor
             font.family: root.guiMonospaceFontFamily
-            font.pixelSize: root.guiMonospaceFontPixelSize
+            font.pixelSize: fallbackFontPixelSize
             renderType: Text.NativeRendering
             elide: Text.ElideRight
         }
@@ -3431,6 +3314,7 @@ ApplicationWindow {
 
     component TerminalBackdrop: Rectangle {
         property var terminal: ({})
+        objectName: "terminalBackdrop"
         color: root.terminalBg
         clip: true
 
@@ -3473,7 +3357,9 @@ ApplicationWindow {
         visible: commandLine.visible !== false
         color: root.commandLineBg
 
-        ConsoleRunRow {
+        Item {
+            id: commandPresentation
+            objectName: "commandLinePresentation"
             anchors.fill: parent
             anchors.leftMargin: root.commandLineLeftMargin
             anchors.rightMargin: root.contentSpacing
@@ -3481,11 +3367,42 @@ ApplicationWindow {
                                + root.separatorWidth
             anchors.bottomMargin: root.commandLineVerticalMargin
                                   + root.separatorWidth
-            transparentBlackBackground: true
-            runs: commandLine.runs || []
-            fallbackText: (root.runsText(commandLine.promptRuns)
-                           || root.cleanText(commandLine.prompt))
-                          + root.cleanText(commandLine.text)
+            clip: true
+
+            ConsoleRunRow {
+                id: commandPrompt
+                objectName: "commandLinePrompt"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(contentWidth, commandPresentation.width * 0.5)
+                height: parent.height
+                clip: true
+                horizontalInset: 0
+                transparentBlackBackground: true
+                runs: commandLine.promptRuns || []
+                fallbackText: root.cleanText(commandLine.prompt)
+            }
+
+            TextInput {
+                id: commandInput
+                objectName: "commandLineInput"
+                anchors.left: commandPrompt.right
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                height: parent.height
+                text: root.cleanText(commandLine.text)
+                color: root.textColor
+                selectionColor: root.selectedBg
+                selectedTextColor: root.textColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: root.semanticTextFontPixelSize
+                verticalAlignment: TextInput.AlignVCenter
+                readOnly: true
+                activeFocusOnPress: false
+                cursorPosition: Math.max(0, Math.min(text.length,
+                                                     Number(commandLine.cursorPosition || 0)))
+                cursorDelegate: Item { width: 0; height: 0 }
+            }
         }
 
         FontMetrics {
@@ -3494,31 +3411,18 @@ ApplicationWindow {
             font.pixelSize: root.guiMonospaceFontPixelSize
         }
 
-        // Measure the exact styled glyph sequence before the backend cursor.
-        // Prompt runs may differ in weight and therefore cannot be mapped
-        // reliably through a single average character width.
-        ConsoleRunRow {
-            id: commandCursorPrefix
-            x: root.commandLineLeftMargin
-            y: root.commandLineVerticalMargin + root.separatorWidth
-            width: parent.width - root.commandLineLeftMargin
-                    - root.contentSpacing
-            height: parent.height - root.commandLineVerticalMargin * 2
-                    - root.separatorWidth * 2
-            transparentBlackBackground: true
-            runs: commandLine.cursorPrefixRuns || []
-            visible: false
-        }
-
         Rectangle {
             id: commandCursor
+            objectName: "commandLineCursor"
             property bool blinkOn: true
             readonly property bool block: commandLine.cursorShape === "block"
-            x: commandCursorPrefix.x + commandCursorPrefix.contentWidth
-            y: block ? commandCursorPrefix.y
-                     : commandCursorPrefix.y + commandCursorPrefix.height - 2
+            readonly property rect caretRect:
+                commandInput.positionToRectangle(commandInput.cursorPosition)
+            x: commandPresentation.x + commandInput.x + caretRect.x
+            y: block ? commandPresentation.y
+                     : commandPresentation.y + commandPresentation.height - 2
             width: Math.max(1, commandLineFontMetrics.advanceWidth("M"))
-            height: block ? commandCursorPrefix.height : 2
+            height: block ? commandPresentation.height : 2
             color: root.textColor
             visible: commandLine.cursorVisible === true
             opacity: blinkOn ? 0.8 : 0.2
@@ -3554,11 +3458,928 @@ ApplicationWindow {
         }
     }
 
-    component DocumentSurface: Rectangle {
-        id: documentRoot
-        property var frame: ({})
+    component OperationsQueueSurface: Rectangle {
+        id: queueRoot
+        objectName: "operationsQueueSurface"
+        property var queue: ({})
+        property bool interactionActive: true
+        property int localSelectedTaskId: -1
+        property int pendingSelectedTaskId: -1
+        property int lastSemanticSelectedTaskId: -1
+        property bool syncingModel: false
         readonly property real topInset: semanticMenu.visible
                                           ? semanticMenu.height : 0
+        readonly property real bottomInset: root.scene.keyBar
+                                             ? root.keyBarHeight() : 0
+        readonly property real rowHeight: Math.max(60, root.ch * 2.8)
+        readonly property bool compactColumns: width < 900
+        readonly property real idColumnWidth: compactColumns ? 0 : 54
+        readonly property real stateColumnWidth: compactColumns ? 92 : 116
+        readonly property real typeColumnWidth: compactColumns ? 92 : 116
+        readonly property real progressColumnWidth: compactColumns ? 132 : 184
+        readonly property real speedColumnWidth: compactColumns ? 0 : 112
+        readonly property int selectedIndex:
+            indexForTaskId(localSelectedTaskId)
+
+        color: root.panelBgAlt
+        Accessible.role: Accessible.Table
+        Accessible.name: root.cleanText(queue.title || "Operations Queue")
+        Accessible.description: root.cleanText(queue.accessibleDescription)
+
+        function normalizedItem(item, fallbackIndex) {
+            item = item || ({})
+            return {
+                "stableId": root.cleanText(item.id || ("queue-task-" + item.taskId)),
+                "taskId": Number(item.taskId || 0),
+                "itemIndex": Number(item.index !== undefined
+                                      ? item.index : fallbackIndex),
+                "taskType": root.cleanText(item.type),
+                "description": root.cleanText(item.description),
+                "state": root.cleanText(item.state),
+                "stateClass": root.cleanText(item.stateClass),
+                "currentFile": root.cleanText(item.currentFile),
+                "displayText": root.cleanText(item.displayText),
+                "currentProgress": item.currentProgress === undefined
+                                   ? -1 : Math.max(-1, Math.min(100,
+                                                Number(item.currentProgress))),
+                "progress": item.progress === undefined
+                            ? -1 : Math.max(-1, Math.min(100,
+                                           Number(item.progress))),
+                "totalText": root.cleanText(item.totalText),
+                "speed": root.cleanText(item.speed),
+                "error": root.cleanText(item.error),
+                "cancellable": item.cancellable === true,
+                "hasDetails": item.hasDetails === true,
+                "terminal": item.terminal === true,
+                "active": item.active === true
+            }
+        }
+
+        function modelIndexForStableId(stableId, first) {
+            for (var i = Math.max(0, Number(first || 0));
+                    i < queueRowsModel.count; ++i) {
+                if (queueRowsModel.get(i).stableId === stableId)
+                    return i
+            }
+            return -1
+        }
+
+        function indexForTaskId(taskId) {
+            for (var i = 0; i < queueRowsModel.count; ++i) {
+                if (Number(queueRowsModel.get(i).taskId) === Number(taskId))
+                    return i
+            }
+            return -1
+        }
+
+        function updateRole(index, role, value) {
+            if (queueRowsModel.get(index)[role] !== value)
+                queueRowsModel.setProperty(index, role, value)
+        }
+
+        function updateRow(index, row) {
+            updateRole(index, "stableId", row.stableId)
+            updateRole(index, "taskId", row.taskId)
+            updateRole(index, "itemIndex", row.itemIndex)
+            updateRole(index, "taskType", row.taskType)
+            updateRole(index, "description", row.description)
+            updateRole(index, "state", row.state)
+            updateRole(index, "stateClass", row.stateClass)
+            updateRole(index, "currentFile", row.currentFile)
+            updateRole(index, "displayText", row.displayText)
+            updateRole(index, "currentProgress", row.currentProgress)
+            updateRole(index, "progress", row.progress)
+            updateRole(index, "totalText", row.totalText)
+            updateRole(index, "speed", row.speed)
+            updateRole(index, "error", row.error)
+            updateRole(index, "cancellable", row.cancellable)
+            updateRole(index, "hasDetails", row.hasDetails)
+            updateRole(index, "terminal", row.terminal)
+            updateRole(index, "active", row.active)
+        }
+
+        function syncItems() {
+            if (syncingModel)
+                return
+            syncingModel = true
+            var incoming = queue.items || []
+            var previousSelectedTaskId = localSelectedTaskId
+            var wasEmpty = queueRowsModel.count === 0
+            for (var index = 0; index < incoming.length; ++index) {
+                var row = normalizedItem(incoming[index], index)
+                var existing = modelIndexForStableId(row.stableId, index)
+                if (existing < 0)
+                    queueRowsModel.insert(index, row)
+                else {
+                    if (existing !== index)
+                        queueRowsModel.move(existing, index, 1)
+                    updateRow(index, row)
+                }
+            }
+            if (queueRowsModel.count > incoming.length) {
+                // Clamp the viewport before shrinking the model.  Qt can
+                // otherwise keep incubating a delegate at the old tail and
+                // emit DelegateModel::cancel out-of-range during the batch.
+                var nextMaximumY = Math.max(0, incoming.length * rowHeight
+                                            - operationsQueueList.height)
+                if (operationsQueueList.contentY > nextMaximumY) {
+                    operationsQueueList.cancelFlick()
+                    operationsQueueList.contentY = nextMaximumY
+                }
+                if (incoming.length === 0)
+                    queueRowsModel.clear()
+                else
+                    queueRowsModel.remove(incoming.length,
+                                          queueRowsModel.count - incoming.length)
+            }
+
+            var semanticTaskId = Number(queue.selectedTaskId || 0)
+            if (pendingSelectedTaskId >= 0
+                    && indexForTaskId(pendingSelectedTaskId) >= 0) {
+                if (semanticTaskId === pendingSelectedTaskId) {
+                    pendingSelectedTaskId = -1
+                    selectionAckTimer.stop()
+                }
+            } else {
+                pendingSelectedTaskId = -1
+                var semanticIndex = Math.max(0,
+                                    Math.min(incoming.length - 1,
+                                             Number(queue.selected || 0)))
+                localSelectedTaskId = semanticTaskId > 0
+                        ? semanticTaskId
+                        : incoming.length > 0
+                          ? Number(incoming[semanticIndex].taskId || 0) : -1
+            }
+            if (incoming.length === 0)
+                localSelectedTaskId = -1
+            else if (indexForTaskId(localSelectedTaskId) < 0)
+                localSelectedTaskId = Number(incoming[0].taskId || 0)
+            var semanticSelectionChanged = semanticTaskId > 0
+                    && semanticTaskId !== lastSemanticSelectedTaskId
+            lastSemanticSelectedTaskId = semanticTaskId
+            syncingModel = false
+            if (wasEmpty && incoming.length > 0)
+                Qt.callLater(queueRoot.applySemanticTop)
+            else if (semanticSelectionChanged
+                     && previousSelectedTaskId
+                        !== localSelectedTaskId)
+                Qt.callLater(queueRoot.revealSelection)
+        }
+
+        function selectedItem() {
+            return selectedIndex >= 0 && selectedIndex < queueRowsModel.count
+                    ? queueRowsModel.get(selectedIndex) : null
+        }
+
+        function controlOwnsActivation() {
+            return headerClearButton.activeFocus || cancelButton.activeFocus
+        }
+
+        function delegateForTaskId(taskId) {
+            var rowIndex = indexForTaskId(taskId)
+            return rowIndex >= 0
+                    ? operationsQueueList.itemAtIndex(rowIndex) : null
+        }
+
+        function selectIndex(index, notifyBackend) {
+            if (queueRowsModel.count < 1)
+                return false
+            index = Math.max(0, Math.min(queueRowsModel.count - 1, index))
+            var row = queueRowsModel.get(index)
+            localSelectedTaskId = Number(row.taskId)
+            revealSelection()
+            if (notifyBackend === true) {
+                pendingSelectedTaskId = localSelectedTaskId
+                selectionAckTimer.restart()
+                root.action({
+                    "target": root.cleanText(queue.id),
+                    "action": "queue.select",
+                    "taskId": Number(row.taskId)
+                }, true)
+            }
+            return true
+        }
+
+        function revealSelection() {
+            if (selectedIndex >= 0 && operationsQueueList.visible)
+                operationsQueueList.positionViewAtIndex(selectedIndex,
+                                                         ListView.Contain)
+        }
+
+        function applySemanticTop() {
+            if (queueRowsModel.count < 1 || !operationsQueueList.visible)
+                return
+            var top = Math.max(0, Math.min(queueRowsModel.count - 1,
+                                           Number(queue.top || 0)))
+            operationsQueueList.positionViewAtIndex(top, ListView.Beginning)
+        }
+
+        function navigate(command) {
+            if (queueRowsModel.count < 1)
+                return false
+            var index = selectedIndex >= 0 ? selectedIndex : 0
+            var page = Math.max(1, Math.floor(operationsQueueList.height
+                                              / rowHeight) - 1)
+            if (command === "up")
+                index -= 1
+            else if (command === "down")
+                index += 1
+            else if (command === "pageUp")
+                index -= page
+            else if (command === "pageDown")
+                index += page
+            else if (command === "home")
+                index = 0
+            else if (command === "end")
+                index = queueRowsModel.count - 1
+            return selectIndex(index, true)
+        }
+
+        function activateItem(row) {
+            if (!row)
+                return false
+            root.action({
+                "target": root.cleanText(queue.id),
+                "action": "queue.activate",
+                "taskId": Number(row.taskId)
+            }, true)
+            return true
+        }
+
+        function activateSelection() {
+            return activateItem(selectedItem())
+        }
+
+        function cancelSelection() {
+            var row = selectedItem()
+            if (!row || row.cancellable !== true)
+                return false
+            root.action({
+                "target": root.cleanText(queue.id),
+                "action": "queue.cancel",
+                "taskId": Number(row.taskId)
+            }, true)
+            return true
+        }
+
+        function clearCompleted() {
+            if (queue.canClear !== true)
+                return false
+            root.action({
+                "target": root.cleanText(queue.id),
+                "action": "queue.clearCompleted"
+            }, true)
+            return true
+        }
+
+        function stateColor(stateClass, state) {
+            var value = root.cleanText(stateClass || state).toLowerCase()
+            if (value === "error")
+                return "#ee6a6a"
+            if (value === "done" || value === "completed"
+                    || value === "success")
+                return "#75c991"
+            if (value === "running" || value === "scanning"
+                    || value === "active")
+                return root.dialogAccent
+            if (value === "queued" || value === "starting")
+                return "#d9b866"
+            return root.mutedText
+        }
+
+        function stateIconName(stateClass, state) {
+            var value = root.cleanText(stateClass || state).toLowerCase()
+            if (value === "error")
+                return "triangle-alert"
+            if (value === "done" || value === "completed"
+                    || value === "success")
+                return "circle-check"
+            if (value === "running" || value === "scanning"
+                    || value === "active")
+                return "loader-circle"
+            if (value === "queued" || value === "starting")
+                return "clock-3"
+            if (value === "cancelled" || value === "cancelling")
+                return "circle-x"
+            return "clock-3"
+        }
+
+        function columnTitle(id, fallback) {
+            var columns = queue.columns || []
+            for (var i = 0; i < columns.length; ++i) {
+                if (root.cleanText(columns[i].id) === id)
+                    return root.cleanText(columns[i].title || fallback)
+            }
+            return fallback
+        }
+
+        onQueueChanged: syncItems()
+        onInteractionActiveChanged: {
+            if (interactionActive)
+                return
+            operationsQueueList.cancelFlick()
+            selectionAckTimer.stop()
+            pendingSelectedTaskId = -1
+        }
+        Component.onCompleted: syncItems()
+
+        Timer {
+            id: selectionAckTimer
+            interval: 700
+            onTriggered: {
+                queueRoot.pendingSelectedTaskId = -1
+                queueRoot.syncItems()
+            }
+        }
+
+        ListModel {
+            id: queueRowsModel
+            objectName: "operationsQueueRowsModel"
+            dynamicRoles: true
+        }
+
+        Rectangle {
+            id: queueChrome
+            objectName: "operationsQueueHeader"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: queueRoot.topInset
+            height: 62
+            color: root.panelHeaderBg
+
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: root.contentSpacing
+                anchors.top: parent.top
+                anchors.topMargin: 9
+                text: root.cleanText(queue.title || "Operations Queue")
+                color: root.textColor
+                font.pixelSize: 18
+                font.weight: Font.DemiBold
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
+            }
+
+            Row {
+                anchors.left: parent.left
+                anchors.leftMargin: root.contentSpacing
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 8
+                spacing: 15
+
+                QueueSummaryItem {
+                    objectName: "operationsQueueSummary-running"
+                    statusName: "running"
+                    iconName: "circle-play"
+                    count: Number(queue.runningCount || 0)
+                    accent: root.dialogAccent
+                }
+
+                QueueSummaryItem {
+                    objectName: "operationsQueueSummary-queued"
+                    statusName: "queued"
+                    iconName: "clock-3"
+                    count: Number(queue.queuedCount || 0)
+                    accent: "#d9b866"
+                }
+
+                QueueSummaryItem {
+                    objectName: "operationsQueueSummary-completed"
+                    statusName: "completed"
+                    iconName: "circle-check"
+                    count: Number(queue.completedCount || 0)
+                    accent: "#75c991"
+                }
+
+                QueueSummaryItem {
+                    objectName: "operationsQueueSummary-errors"
+                    statusName: "errors"
+                    iconName: "triangle-alert"
+                    count: Number(queue.errorCount || 0)
+                    accent: "#ee6a6a"
+                    visible: count > 0
+                }
+            }
+
+            QueueActionButton {
+                id: headerClearButton
+                objectName: "operationsQueueClearButton"
+                iconName: "trash-2"
+                anchors.right: parent.right
+                anchors.rightMargin: root.contentSpacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.cleanText(queue.clearText || "Clear completed")
+                enabled: queue.canClear === true
+                Accessible.name: text
+                Accessible.description: root.cleanText(queue.clearDescription)
+                onClicked: queueRoot.clearCompleted()
+            }
+        }
+
+        Rectangle {
+            id: columnsHeader
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: queueChrome.bottom
+            height: 34
+            color: root.chromeBg
+
+            Text {
+                x: root.contentSpacing
+                width: queueRoot.idColumnWidth
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("id", "ID")
+                visible: width > 0
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            Text {
+                x: root.contentSpacing + queueRoot.idColumnWidth
+                width: queueRoot.stateColumnWidth
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("state", "State")
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            Text {
+                x: root.contentSpacing + queueRoot.idColumnWidth
+                   + queueRoot.stateColumnWidth
+                width: queueRoot.typeColumnWidth
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("type", "Type")
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: root.contentSpacing
+                                    + queueRoot.idColumnWidth
+                                    + queueRoot.stateColumnWidth
+                                    + queueRoot.typeColumnWidth
+                anchors.right: progressHeader.left
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("description",
+                                            "Description / Current File")
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
+            }
+            Text {
+                id: progressHeader
+                anchors.right: speedHeader.left
+                width: queueRoot.progressColumnWidth
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("progress", "Progress")
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+            Text {
+                id: speedHeader
+                anchors.right: parent.right
+                anchors.rightMargin: root.contentSpacing
+                width: queueRoot.speedColumnWidth
+                anchors.verticalCenter: parent.verticalCenter
+                text: queueRoot.columnTitle("speed", "Speed")
+                visible: width > 0
+                color: root.chromeText
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+        }
+
+        ListView {
+            id: operationsQueueList
+            objectName: "operationsQueueList"
+            anchors.left: parent.left
+            anchors.right: queueScrollBar.visible
+                           ? queueScrollBar.left : parent.right
+            anchors.top: columnsHeader.bottom
+            anchors.bottom: queueFooter.top
+            clip: true
+            model: queueRowsModel
+            reuseItems: true
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            interactive: queueRoot.interactionActive
+            keyNavigationEnabled: false
+            Accessible.role: Accessible.List
+            Accessible.name: root.cleanText(queue.title || "Operations Queue")
+
+            delegate: Rectangle {
+                id: queueRow
+                required property string stableId
+                required property int taskId
+                required property int itemIndex
+                required property string taskType
+                required property string description
+                required property string state
+                required property string stateClass
+                required property string currentFile
+                required property string displayText
+                required property real currentProgress
+                required property real progress
+                required property string totalText
+                required property string speed
+                required property string error
+                required property bool cancellable
+                required property bool hasDetails
+                required property bool terminal
+                required property bool active
+                required property int index
+                readonly property bool current:
+                    taskId === queueRoot.localSelectedTaskId
+                readonly property bool totalProgressKnown:
+                    progress >= 0 && stateClass !== "scanning"
+                objectName: "operationsQueueRow-" + taskId
+                width: operationsQueueList.width
+                height: queueRoot.rowHeight
+                color: current ? root.panelSelectionBg
+                               : rowHover.hovered
+                                 ? root.controlHoverBg
+                                 : index % 2 === 0
+                                   ? root.panelBg : root.panelBgAlt
+                border.width: current ? 1 : 0
+                border.color: root.panelSelectionBorder
+                Accessible.role: Accessible.ListItem
+                Accessible.name: state + ", " + taskType + ", "
+                                 + (displayText !== "" ? displayText
+                                                       : description)
+                Accessible.description: error !== "" ? error : totalText
+                Accessible.selected: current
+                Accessible.focusable: false
+                Accessible.onPressAction: {
+                    queueRoot.selectIndex(index, true)
+                    queueRoot.activateItem(queueRowsModel.get(index))
+                }
+
+                HoverHandler { id: rowHover }
+
+                Text {
+                    x: root.contentSpacing
+                    width: queueRoot.idColumnWidth - 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(queueRow.taskId)
+                    visible: queueRoot.idColumnWidth > 0
+                    color: root.mutedText
+                    font.family: root.guiMonospaceFontFamily
+                    font.pixelSize: 12
+                }
+
+                Item {
+                    x: root.contentSpacing + queueRoot.idColumnWidth
+                    width: queueRoot.stateColumnWidth - 8
+                    height: parent.height
+                    IconLabel {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        icon.source: root.lucideIconSource(
+                                         queueRoot.stateIconName(
+                                             queueRow.stateClass,
+                                             queueRow.state))
+                        icon.width: 14
+                        icon.height: 14
+                        icon.color: queueRoot.stateColor(queueRow.stateClass,
+                                                         queueRow.state)
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 15
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: queueRow.state
+                        color: queueRoot.stateColor(queueRow.stateClass,
+                                                    queueRow.state)
+                        elide: Text.ElideRight
+                        font.pixelSize: 12
+                        font.weight: queueRow.active
+                                     ? Font.DemiBold : Font.Normal
+                    }
+                }
+
+                Text {
+                    x: root.contentSpacing + queueRoot.idColumnWidth
+                       + queueRoot.stateColumnWidth
+                    width: queueRoot.typeColumnWidth - 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: queueRow.taskType
+                    color: root.textColor
+                    elide: Text.ElideRight
+                    font.pixelSize: 12
+                }
+
+                Item {
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.contentSpacing
+                                        + queueRoot.idColumnWidth
+                                        + queueRoot.stateColumnWidth
+                                        + queueRoot.typeColumnWidth
+                    anchors.right: progressCell.left
+                    anchors.rightMargin: 8
+                    height: parent.height
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset:
+                            (queueRow.error !== ""
+                             || (queueRow.currentFile !== ""
+                                 && queueRow.currentFile
+                                    !== queueRow.displayText)) ? -9 : 0
+                        text: queueRow.displayText !== ""
+                              ? queueRow.displayText : queueRow.description
+                        color: queueRow.error !== ""
+                               ? "#ee8b8b" : root.textColor
+                        elide: Text.ElideMiddle
+                        font.pixelSize: 13
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 7
+                        text: queueRow.error !== ""
+                              ? queueRow.error : queueRow.currentFile
+                        visible: text !== ""
+                                 && text !== queueRow.displayText
+                        color: queueRow.error !== ""
+                               ? "#ee8b8b" : root.mutedText
+                        elide: Text.ElideMiddle
+                        font.pixelSize: 11
+                    }
+                }
+
+                Item {
+                    id: progressCell
+                    anchors.right: speedCell.left
+                    width: queueRoot.progressColumnWidth
+                    height: parent.height
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.rightMargin: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.verticalCenterOffset: -6
+                        height: 6
+                        radius: 3
+                        color: root.controlBg
+                        visible: queueRow.totalProgressKnown
+                        Rectangle {
+                            width: parent.width * queueRow.progress / 100
+                            height: parent.height
+                            radius: parent.radius
+                            color: queueRoot.stateColor(queueRow.stateClass,
+                                                        queueRow.state)
+                        }
+                        Accessible.role: Accessible.ProgressBar
+                        Accessible.name: queueRow.taskType
+                    }
+                    Text {
+                        anchors.left: parent.left
+                        anchors.leftMargin: rowBusy.visible ? 28 : 0
+                        anchors.right: parent.right
+                        anchors.rightMargin: 18
+                        anchors.top: parent.verticalCenter
+                        anchors.topMargin: 3
+                        text: queueRow.totalProgressKnown
+                              ? Math.round(queueRow.progress) + "%"
+                                + (queueRow.totalText !== ""
+                                   ? "  " + queueRow.totalText : "")
+                              : queueRow.totalText
+                        color: root.mutedText
+                        elide: Text.ElideRight
+                        font.pixelSize: 11
+                    }
+                    T.BusyIndicator {
+                        id: rowBusy
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 22
+                        height: 22
+                        visible: queueRow.active
+                                 && !queueRow.totalProgressKnown
+                        running: visible
+                        Accessible.name: queueRow.state
+                    }
+                }
+
+                Item {
+                    id: speedCell
+                    anchors.right: parent.right
+                    anchors.rightMargin: root.contentSpacing
+                    width: queueRoot.speedColumnWidth
+                    height: parent.height
+                    visible: width > 0
+                    Text {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: queueRow.speed
+                        color: root.mutedText
+                        elide: Text.ElideRight
+                        font.pixelSize: 12
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    hoverEnabled: false
+                    preventStealing: false
+                    scrollGestureEnabled: false
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: queueRoot.selectIndex(index, true)
+                    onDoubleClicked: {
+                        queueRoot.selectIndex(index, true)
+                        queueRoot.activateItem(queueRowsModel.get(index))
+                    }
+                }
+            }
+
+            WheelHandler {
+                enabled: queueRoot.interactionActive
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                target: null
+                onWheel: (event) => {
+                    var delta = Number(event.pixelDelta.y)
+                    if (delta === 0)
+                        delta = Number(event.angleDelta.y) / 120
+                                * queueRoot.rowHeight * 2
+                    var maximum = Math.max(0,
+                                           operationsQueueList.contentHeight
+                                           - operationsQueueList.height)
+                    operationsQueueList.contentY = Math.max(0,
+                        Math.min(maximum,
+                                 operationsQueueList.contentY - delta))
+                    event.accepted = true
+                }
+            }
+        }
+
+        T.ScrollBar {
+            id: queueScrollBar
+            objectName: "operationsQueueScrollBar"
+            anchors.top: operationsQueueList.top
+            anchors.bottom: operationsQueueList.bottom
+            anchors.right: parent.right
+            enabled: queueRoot.interactionActive
+            policy: operationsQueueList.contentHeight
+                    > operationsQueueList.height
+                    ? T.ScrollBar.AlwaysOn : T.ScrollBar.AlwaysOff
+            orientation: Qt.Vertical
+            size: operationsQueueList.contentHeight > 0
+                  ? Math.min(1, operationsQueueList.height
+                             / operationsQueueList.contentHeight) : 1
+            position: operationsQueueList.contentHeight
+                      > operationsQueueList.height
+                      ? operationsQueueList.contentY
+                        / operationsQueueList.contentHeight : 0
+            onPositionChanged: {
+                if (!pressed || operationsQueueList.contentHeight
+                        <= operationsQueueList.height)
+                    return
+                operationsQueueList.contentY = position
+                        * operationsQueueList.contentHeight
+            }
+            Accessible.name: root.cleanText(queue.scrollBarText
+                                             || "Operations scroll bar")
+        }
+
+        Item {
+            id: queueEmptyState
+            objectName: "operationsQueueEmptyState"
+            anchors.fill: operationsQueueList
+            visible: queueRowsModel.count === 0
+            Accessible.role: Accessible.StaticText
+            Accessible.name: emptyLabel.text
+
+            Column {
+                anchors.centerIn: parent
+                spacing: 8
+                Text {
+                    id: emptyLabel
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: root.cleanText(queue.error) !== ""
+                          ? root.cleanText(queue.error)
+                          : root.cleanText(queue.emptyText || "No operations")
+                    color: root.cleanText(queue.error) !== ""
+                           ? "#ee8b8b" : root.mutedText
+                    font.pixelSize: 16
+                }
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: root.cleanText(queue.emptyDescription)
+                    visible: text !== ""
+                    color: root.mutedText
+                    font.pixelSize: 12
+                }
+            }
+        }
+
+        Rectangle {
+            id: queueFooter
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: queueRoot.bottomInset
+            height: 54
+            color: root.panelHeaderBg
+            border.width: 1
+            border.color: root.separatorColor
+
+            QueueActionButton {
+                id: cancelButton
+                objectName: "operationsQueueCancelButton"
+                iconName: "circle-x"
+                anchors.left: parent.left
+                anchors.leftMargin: root.contentSpacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.cleanText(queue.cancelText || "Cancel selected")
+                enabled: {
+                    var row = queueRoot.selectedItem()
+                    return row !== null && row.cancellable === true
+                }
+                Accessible.name: text
+                Accessible.description: root.cleanText(queue.cancelDescription)
+                onClicked: queueRoot.cancelSelection()
+            }
+
+            Text {
+                anchors.left: cancelButton.right
+                anchors.leftMargin: 14
+                anchors.right: parent.right
+                anchors.rightMargin: root.contentSpacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.cleanText(queue.detailsText)
+                visible: text !== ""
+                color: root.mutedText
+                elide: Text.ElideRight
+                font.pixelSize: 12
+            }
+        }
+    }
+
+    component DocumentSurface: Rectangle {
+        id: documentRoot
+        property string surfaceObjectName: "documentSurface"
+        objectName: surfaceObjectName
+        property var frame: ({})
+        // Standalone F3/F4 owns the full application surface. Embedded
+        // Quick View is already laid out between its own header and footer,
+        // so applying the global menu/keybar insets there would double-pad it.
+        property bool embedded: false
+        property bool interactionActive: true
+        property var displayedRows: []
+        property bool windowInitialized: false
+        property bool rebasingWindow: false
+        property bool windowRequestPending: false
+        property real requestedExtent: 0
+        property real requestedFraction: 0
+        property real requestedGeneration: 0
+        property real resumeVelocity: 0
+        property bool requestPreservesLiveAnchor: true
+        property bool wheelGestureActive: false
+        property real stableTopExtent: 0
+        property real stableTopFraction: 0
+        property real lastViewportStart: -1
+        property real wheelTarget: 0
+        property real queuedScrollBarPosition: -1
+        property string appliedWindowSignature: ""
+        property string appliedDocumentKey: ""
+        property bool initialPlacementPending: false
+        property real initialPlacementExtent: 0
+        property real initialPlacementFraction: 0
+        property int loadedSlotStart: 0
+        property int loadedSlotEnd: 0
+        property int liveRowDelegateCount: 0
+        property var latestWindowRows: []
+        readonly property bool kineticActive:
+            documentList.flicking || documentList.dragging
+            || documentWheelAnimation.running || wheelGestureActive
+        readonly property bool hasWindowProtocol:
+            root.cleanText(frame.scrollUnit) !== ""
+            && frame.windowRows !== undefined
+        readonly property string documentKey:
+            root.cleanText(frame.documentKey)
+        readonly property real contentExtent:
+            Math.max(0, Number(frame.contentExtent || 0))
+        readonly property bool contentExtentKnown:
+            frame.contentExtentKnown !== false
+        readonly property real topInset: embedded ? 0
+                                           : semanticMenu.visible
+                                             ? semanticMenu.height : 0
+        readonly property real bottomInset: embedded ? 0
+            : root.scene.keyBar ? Math.max(26, root.ch * 1.35) : 0
         readonly property real rowHeight: Math.max(20, root.ch)
 
         function rowBackground(row) {
@@ -3571,8 +4392,474 @@ ApplicationWindow {
             return root.terminalBg
         }
 
-        color: frame.rows && frame.rows.length > 0
-               ? rowBackground(frame.rows[0]) : root.terminalBg
+        function sourceRows() {
+            if (hasWindowProtocol)
+                return frame.windowRows || []
+            return frame.rows || []
+        }
+
+        function windowSignature(rows) {
+            // Scene updates that only move the editor cursor or change another
+            // part of the application must not replace the live ListView
+            // roles. Go supplies a complete content hash so this hot path is
+            // O(1), including for token-dense 4K scenes. JSON is retained only
+            // for legacy producers that predate windowContentKey.
+            var contentKey = root.cleanText(frame.windowContentKey)
+            if (contentKey !== "")
+                return root.cleanText(frame.windowStart) + ":"
+                        + root.cleanText(frame.windowEnd) + ":" + contentKey
+            return JSON.stringify(rows || [])
+        }
+
+        function clamp(value, minimum, maximum) {
+            return Math.max(minimum, Math.min(maximum, value))
+        }
+
+        function rowExtent(index, rows) {
+            var source = rows || displayedRows
+            if (!source || index < 0 || index >= source.length)
+                return 0
+            var row = source[index] || ({})
+            return frame.scrollUnit === "rows"
+                    ? Number(row.visualRow || 0)
+                    : Number(row.offset || 0)
+        }
+
+        function rowEndExtent(index, rows) {
+            var source = rows || displayedRows
+            if (!source || index < 0 || index >= source.length)
+                return rowExtent(index, source)
+            var row = source[index] || ({})
+            if (frame.scrollUnit === "rows")
+                return Number(row.visualRow || 0) + 1
+            var end = Number(row.endOffset || 0)
+            if (end > Number(row.offset || 0))
+                return end
+            if (index + 1 < source.length)
+                return Number((source[index + 1] || ({})).offset || 0)
+            return Number(frame.windowEnd || row.offset || 0)
+        }
+
+        function topState() {
+            if (!displayedRows || displayedRows.length === 0)
+                return { "index": 0, "fraction": 0, "extent": 0 }
+            var raw = Math.max(0, documentList.contentY) / rowHeight
+                    - loadedSlotStart
+            var index = clamp(Math.floor(raw), 0, displayedRows.length - 1)
+            var fraction = clamp(raw - index, 0, 0.999999)
+            var start = rowExtent(index)
+            var end = rowEndExtent(index)
+            return {
+                "index": index,
+                "fraction": fraction,
+                "extent": start + (end - start) * fraction
+            }
+        }
+
+        function extentAtContentY(contentY) {
+            if (!displayedRows || displayedRows.length === 0)
+                return 0
+            var raw = clamp(Number(contentY || 0) / rowHeight
+                            - loadedSlotStart,
+                            0, displayedRows.length)
+            if (raw >= displayedRows.length)
+                return rowEndExtent(displayedRows.length - 1)
+            var index = Math.floor(raw)
+            var fraction = raw - index
+            var start = rowExtent(index)
+            var end = rowEndExtent(index)
+            return start + (end - start) * fraction
+        }
+
+        function captureTopState() {
+            if (rebasingWindow || !windowInitialized)
+                return
+            var state = topState()
+            stableTopExtent = state.extent
+            stableTopFraction = state.fraction
+        }
+
+        function indexForExtent(extent, rows) {
+            var source = rows || displayedRows
+            if (!source || source.length === 0)
+                return -1
+            for (var i = 0; i < source.length; ++i) {
+                var start = rowExtent(i, source)
+                var end = rowEndExtent(i, source)
+                if (Math.abs(start - extent) < 0.000001
+                        || (extent >= start && extent < end))
+                    return i
+            }
+            return -1
+        }
+
+        function emptyPoolSlot() {
+            return { "loaded": false, "rowData": ({}) }
+        }
+
+        function setPoolSlot(slot, row) {
+            if (slot < 0 || slot >= documentRowsModel.count)
+                return
+            documentRowsModel.set(slot, {
+                "loaded": true,
+                "rowData": row || ({})
+            })
+        }
+
+        function poolCapacityFor(rows) {
+            var viewportRows = Math.max(
+                        1, Math.ceil(documentList.height / rowHeight))
+            // Twelve viewports leave 4.5 viewports of stable slots on each
+            // side of the normal three-viewport semantic window.  That is
+            // longer than Qt's maximum native ballistic travel at the
+            // configured velocity/deceleration, while ListView still creates
+            // delegates only around the visible viewport.
+            return Math.max(120, viewportRows * 12,
+                            (rows ? rows.length : 0) + viewportRows * 6)
+        }
+
+        function ensurePoolCapacity(capacity) {
+            while (documentRowsModel.count < capacity)
+                documentRowsModel.append(emptyPoolSlot())
+        }
+
+        function clearLoadedSlots() {
+            for (var slot = loadedSlotStart;
+                 slot < loadedSlotEnd && slot < documentRowsModel.count;
+                 ++slot)
+                documentRowsModel.set(slot, emptyPoolSlot())
+        }
+
+        function recenterRows(rows, extent, fraction, deferPlacement) {
+            var source = rows || []
+            ensurePoolCapacity(poolCapacityFor(source))
+            clearLoadedSlots()
+            var start = Math.max(0, Math.floor(
+                         (documentRowsModel.count - source.length) / 2))
+            for (var i = 0; i < source.length; ++i)
+                setPoolSlot(start + i, source[i])
+            displayedRows = source
+            loadedSlotStart = start
+            loadedSlotEnd = start + source.length
+
+            var index = indexForExtent(extent, displayedRows)
+            if (index < 0)
+                index = clamp(Number(frame.viewportRow || 0), 0,
+                              Math.max(0, displayedRows.length - 1))
+            if (deferPlacement) {
+                initialPlacementExtent = extent
+                initialPlacementFraction = fraction
+                initialPlacementPending = true
+                initialPlacementTimer.restart()
+            } else {
+                documentList.contentY = (loadedSlotStart + index + fraction)
+                        * rowHeight
+                wheelTarget = documentList.contentY
+            }
+        }
+
+        function mergeRowsWithoutRebase(nextRows) {
+            if (!displayedRows || displayedRows.length === 0) {
+                recenterRows(nextRows, Number(frame.viewportStart || 0), 0,
+                             false)
+                return true
+            }
+
+            var oldIndex = -1
+            var nextIndex = -1
+            for (var n = 0; n < nextRows.length && nextIndex < 0; ++n) {
+                var extent = rowExtent(n, nextRows)
+                var found = indexForExtent(extent, displayedRows)
+                if (found >= 0
+                        && Math.abs(rowExtent(found, displayedRows) - extent)
+                           < 0.000001) {
+                    oldIndex = found
+                    nextIndex = n
+                }
+            }
+            if (oldIndex < 0)
+                return false
+
+            var nextStart = loadedSlotStart + oldIndex - nextIndex
+            var nextEnd = nextStart + nextRows.length
+            if (nextStart < 0 || nextEnd > documentRowsModel.count)
+                return false
+
+            var unionStart = Math.min(loadedSlotStart, nextStart)
+            var unionEnd = Math.max(loadedSlotEnd, nextEnd)
+            var unionRows = []
+            for (var slot = unionStart; slot < unionEnd; ++slot) {
+                var incoming = slot - nextStart
+                var existing = slot - loadedSlotStart
+                var hasIncoming = incoming >= 0
+                        && incoming < nextRows.length
+                var hasExisting = existing >= 0
+                        && existing < displayedRows.length
+                // Do not replace overlap roles while they may own visible
+                // nested run delegates.  The latest content is applied by the
+                // idle compaction; during motion only entering edge slots are
+                // populated.
+                if (hasExisting)
+                    unionRows.push(displayedRows[existing])
+                else if (hasIncoming)
+                    unionRows.push(nextRows[incoming])
+                else
+                    return false
+            }
+
+            // Model count and every physical row index remain unchanged.
+            // Updating roles in preallocated, normally off-screen slots does
+            // not disturb ListView's kinetic timeline or local contentY.
+            for (var j = 0; j < nextRows.length; ++j) {
+                var targetSlot = nextStart + j
+                if (targetSlot < loadedSlotStart
+                        || targetSlot >= loadedSlotEnd)
+                    setPoolSlot(targetSlot, nextRows[j])
+            }
+            displayedRows = unionRows
+            loadedSlotStart = unionStart
+            loadedSlotEnd = unionEnd
+            return true
+        }
+
+        function compactWindowIfIdle() {
+            if (kineticActive || wheelGestureActive || rebasingWindow
+                    || !latestWindowRows || latestWindowRows.length === 0)
+                return
+            var state = topState()
+            rebasingWindow = true
+            recenterRows(latestWindowRows, state.extent, state.fraction, false)
+            rebasingWindow = false
+            captureTopState()
+            syncScrollBar()
+        }
+
+        function minimumLoadedY() {
+            return loadedSlotStart * rowHeight
+        }
+
+        function maximumLoadedY() {
+            return Math.max(minimumLoadedY(),
+                            loadedSlotEnd * rowHeight - documentList.height)
+        }
+
+        function visibleExtentSpan() {
+            if (!displayedRows || displayedRows.length === 0)
+                return 0
+            var top = Math.max(0, documentList.contentY)
+            return Math.max(0, extentAtContentY(top + documentList.height)
+                               - extentAtContentY(top))
+        }
+
+        function syncScrollBar() {
+            if (!documentScrollBar.visible || documentScrollBar.pressed)
+                return
+            var extent = Math.max(1, contentExtent)
+            var state = topState()
+            var span = Math.max(0, visibleExtentSpan())
+            documentScrollBar.size = clamp(span / extent, 0, 1)
+            documentScrollBar.position = clamp(state.extent / extent,
+                                                0, 1 - documentScrollBar.size)
+        }
+
+        function sendWindowRequest(extent, fraction, velocity,
+                                   preserveLiveAnchor) {
+            if (!interactionActive || !hasWindowProtocol
+                    || windowRequestPending)
+                return false
+            var total = Math.max(0, contentExtent)
+            var target = clamp(Number(extent || 0), 0, total)
+            var current = Number(frame.viewportStart || 0)
+            if (Math.abs(target - current) < 0.000001
+                    && Math.abs(fraction) < 0.000001)
+                return false
+
+            windowRequestPending = true
+            requestedExtent = target
+            requestedFraction = clamp(Number(fraction || 0), 0, 0.999999)
+            requestedGeneration = Number(frame.windowGeneration || 0) + 1
+            resumeVelocity = Number(velocity || 0)
+            requestPreservesLiveAnchor = preserveLiveAnchor !== false
+            var actionMap = {
+                "target": root.cleanText(frame.id),
+                "action": root.cleanText(frame.scrollAction) !== ""
+                          ? root.cleanText(frame.scrollAction)
+                          : frame.kind === "editor"
+                            ? "editor.scroll" : "viewer.scrollWindow"
+            }
+            if (documentKey !== "")
+                actionMap.contentKey = documentKey
+            actionMap.generation = requestedGeneration
+            if (frame.scrollUnit === "rows")
+                actionMap.visualRow = Math.floor(target)
+            else
+                actionMap.offset = Math.floor(target)
+            root.action(actionMap, true)
+            return true
+        }
+
+        function maybeRequestWindow() {
+            if (!interactionActive || rebasingWindow || windowRequestPending
+                    || !hasWindowProtocol
+                    || !displayedRows || displayedRows.length === 0)
+                return
+            var state = topState()
+            var visibleRows = Math.max(1, Math.ceil(documentList.height / rowHeight))
+            var extraRows = Math.max(0, displayedRows.length - visibleRows)
+            var threshold = Math.max(2, Math.floor(extraRows / 4))
+            var rowsBefore = state.index
+            var rowsAfter = displayedRows.length - state.index - visibleRows
+            var atStart = state.extent <= 0.000001
+            var atEnd = contentExtent > 0
+                    && state.extent + visibleExtentSpan() >= contentExtent - 0.000001
+            if ((rowsBefore <= threshold && !atStart)
+                    || (rowsAfter <= threshold && !atEnd))
+                sendWindowRequest(state.extent, state.fraction,
+                                  documentList.verticalVelocity)
+        }
+
+        function applyFrameWindow() {
+            var nextRows = sourceRows()
+            var nextSignature = windowSignature(nextRows)
+            var nextDocumentKey = documentKey
+            var documentChanged = windowInitialized
+                    && nextDocumentKey !== appliedDocumentKey
+            if (documentChanged) {
+                // A source-panel cursor move may replace a Quick View while a
+                // wheel gesture/request from the old file is still live. Drop
+                // every old-document transient atomically; overlapping row
+                // numbers are unrelated and must never preserve the anchor.
+                documentList.cancelFlick()
+                documentWheelAnimation.stop()
+                wheelCommitTimer.stop()
+                initialPlacementTimer.stop()
+                requestWindowTimer.stop()
+                scrollBarRequestTimer.stop()
+                windowRequestPending = false
+                requestedExtent = 0
+                requestedFraction = 0
+                requestedGeneration = 0
+                resumeVelocity = 0
+                requestPreservesLiveAnchor = true
+                wheelGestureActive = false
+                queuedScrollBarPosition = -1
+                appliedWindowSignature = ""
+                lastViewportStart = -1
+                windowInitialized = false
+            }
+            var wasInitialized = windowInitialized
+            var oldState = windowInitialized ? topState()
+                                             : { "extent": Number(frame.viewportStart || 0),
+                                                 "fraction": 0 }
+            var generation = Number(frame.windowGeneration || 0)
+            var acknowledged = windowRequestPending
+                    && generation >= requestedGeneration
+            var viewportChanged = windowInitialized
+                    && Number(frame.viewportStart || 0) !== lastViewportStart
+            if (windowInitialized && !acknowledged && !viewportChanged
+                    && nextSignature === appliedWindowSignature) {
+                syncScrollBar()
+                return
+            }
+            var targetExtent = oldState.extent
+            var targetFraction = oldState.fraction
+            if (!windowInitialized || viewportChanged) {
+                targetExtent = Number(frame.viewportStart || 0)
+                targetFraction = acknowledged ? requestedFraction : 0
+            }
+            if (acknowledged) {
+                targetExtent = Number(frame.viewportStart || requestedExtent)
+                targetFraction = requestedFraction
+                if (requestPreservesLiveAnchor
+                        && indexForExtent(oldState.extent, nextRows) >= 0) {
+                    targetExtent = oldState.extent
+                    targetFraction = oldState.fraction
+                }
+            }
+
+            latestWindowRows = nextRows
+            rebasingWindow = true
+            var keptKineticCoordinates = false
+            if (wasInitialized && kineticActive && acknowledged
+                    && requestPreservesLiveAnchor)
+                keptKineticCoordinates = mergeRowsWithoutRebase(nextRows)
+            if (!keptKineticCoordinates)
+                recenterRows(nextRows, targetExtent, targetFraction,
+                             !wasInitialized)
+            appliedWindowSignature = nextSignature
+            appliedDocumentKey = nextDocumentKey
+            stableTopExtent = targetExtent
+            stableTopFraction = targetFraction
+            lastViewportStart = Number(frame.viewportStart || 0)
+            rebasingWindow = false
+            if (wasInitialized)
+                windowInitialized = true
+            if (acknowledged) {
+                windowRequestPending = false
+                resumeVelocity = 0
+            }
+            syncScrollBar()
+            // ACKs received during native motion only fill preallocated model
+            // slots.  Neither model count, item indices nor contentY changes,
+            // so the original Qt kinetic timeline continues bit-for-bit.
+            if (!windowRequestPending && queuedScrollBarPosition >= 0) {
+                var queued = queuedScrollBarPosition
+                queuedScrollBarPosition = -1
+                sendWindowRequest(queued * contentExtent, 0, 0, false)
+            } else {
+                requestWindowTimer.restart()
+            }
+        }
+
+        function handleWheel(wheel) {
+            if (!interactionActive) {
+                wheel.accepted = false
+                return
+            }
+            wheelGestureActive = true
+            wheelCommitTimer.restart()
+            var pixelY = Number(wheel.pixelDelta.y || 0)
+            var minY = minimumLoadedY()
+            var maxY = maximumLoadedY()
+            if (pixelY !== 0) {
+                documentWheelAnimation.stop()
+                documentList.contentY = clamp(documentList.contentY - pixelY,
+                                              minY, maxY)
+                wheelTarget = documentList.contentY
+            } else {
+                var steps = Number(wheel.angleDelta.y || 0) / 120
+                var base = documentWheelAnimation.running
+                         ? documentWheelAnimation.to : documentList.contentY
+                wheelTarget = clamp(base - steps * rowHeight * 3, minY, maxY)
+                documentWheelAnimation.stop()
+                documentWheelAnimation.from = documentList.contentY
+                documentWheelAnimation.to = wheelTarget
+                documentWheelAnimation.restart()
+            }
+            wheel.accepted = true
+        }
+
+        onFrameChanged: frameSyncTimer.restart()
+        onInteractionActiveChanged: {
+            if (interactionActive)
+                return
+            documentList.cancelFlick()
+            documentWheelAnimation.stop()
+            wheelCommitTimer.stop()
+            requestWindowTimer.stop()
+            scrollBarRequestTimer.stop()
+            initialPlacementTimer.stop()
+            wheelGestureActive = false
+            windowRequestPending = false
+            requestedGeneration = 0
+            requestPreservesLiveAnchor = true
+            resumeVelocity = 0
+            queuedScrollBarPosition = -1
+        }
+        Component.onCompleted: frameSyncTimer.restart()
+
+        color: displayedRows && displayedRows.length > 0
+               ? rowBackground(displayedRows[0]) : root.terminalBg
 
         FontMetrics {
             id: documentFontMetrics
@@ -3580,35 +4867,68 @@ ApplicationWindow {
             font.pixelSize: 13
         }
 
+        ListModel {
+            id: documentRowsModel
+            objectName: "documentRowsModel"
+            dynamicRoles: true
+        }
+
         ListView {
             id: documentList
+            objectName: "documentList"
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
             anchors.topMargin: documentRoot.topInset
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: root.scene.keyBar ? Math.max(26, root.ch * 1.35) : 0
+            anchors.bottomMargin: documentRoot.bottomInset
             clip: true
-            model: frame.rows || []
-            interactive: true
+            model: documentRowsModel
+            interactive: documentRoot.interactionActive
+            boundsBehavior: Flickable.StopAtBounds
+            reuseItems: true
+            cacheBuffer: documentRoot.rowHeight * 2
 
             delegate: Rectangle {
                 id: documentRow
-                property var rowData: modelData
+                objectName: "documentRowDelegate"
+                required property bool loaded
+                required property var rowData
+                property bool countedAsLive: true
                 width: ListView.view.width
                 height: documentRoot.rowHeight
-                color: documentRoot.rowBackground(rowData)
+                color: loaded ? documentRoot.rowBackground(rowData)
+                              : root.terminalBg
+                Component.onCompleted: ++documentRoot.liveRowDelegateCount
+                Component.onDestruction: {
+                    if (countedAsLive)
+                        --documentRoot.liveRowDelegateCount
+                }
+                ListView.onPooled: {
+                    if (countedAsLive) {
+                        countedAsLive = false
+                        --documentRoot.liveRowDelegateCount
+                    }
+                }
+                ListView.onReused: {
+                    if (!countedAsLive) {
+                        countedAsLive = true
+                        ++documentRoot.liveRowDelegateCount
+                    }
+                }
 
                 Row {
                     id: runRow
                     anchors.left: parent.left
                     anchors.leftMargin: 10
                     height: parent.height
-                    visible: documentRow.rowData.runs
+                    visible: documentRow.loaded
+                             && documentRow.rowData.runs !== undefined
                              && documentRow.rowData.runs.length > 0
 
                     Repeater {
-                        model: documentRow.rowData.runs || []
+                        model: documentRow.loaded
+                               ? documentRow.rowData.runs || [] : []
 
                         delegate: Rectangle {
                             height: runRow.height
@@ -3639,8 +4959,9 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 10
                     anchors.rightMargin: 10
-                    visible: !documentRow.rowData.runs
-                             || documentRow.rowData.runs.length === 0
+                    visible: documentRow.loaded
+                             && (!documentRow.rowData.runs
+                                 || documentRow.rowData.runs.length === 0)
                     text: root.rowText(documentRow.rowData)
                     color: root.textColor
                     font.family: root.guiMonospaceFontFamily
@@ -3648,17 +4969,48 @@ ApplicationWindow {
                     elide: Text.ElideRight
                 }
             }
+
+            onContentYChanged: {
+                if (!documentRoot.rebasingWindow
+                        && documentRoot.windowInitialized) {
+                    var bounded = documentRoot.clamp(
+                                contentY, documentRoot.minimumLoadedY(),
+                                documentRoot.maximumLoadedY())
+                    if (Math.abs(bounded - contentY) > 0.001) {
+                        contentY = bounded
+                        return
+                    }
+                }
+                documentRoot.captureTopState()
+                documentRoot.syncScrollBar()
+                requestWindowTimer.restart()
+            }
+            onMovementEnded: {
+                if (documentRoot.rebasingWindow
+                        || documentRoot.wheelGestureActive)
+                    return
+                documentRoot.compactWindowIfIdle()
+                var state = documentRoot.topState()
+                if (!documentRoot.sendWindowRequest(state.extent,
+                                                     state.fraction, 0))
+                    requestWindowTimer.restart()
+            }
         }
 
         Rectangle {
             id: editorCursor
+            parent: documentList.contentItem
             property bool blinkOn: true
             readonly property bool block: frame.cursorShape === "block"
+            readonly property int windowRow:
+                frame.kind === "editor"
+                ? documentRoot.indexForExtent(Number(frame.cursorAbsoluteRow || 0),
+                                              documentRoot.displayedRows)
+                : -1
             x: 10 + Math.max(0, Number(frame.cursorVisualColumn || 0))
                     * documentFontMetrics.advanceWidth("M")
-            y: documentRoot.topInset
-               + Math.max(0, Number(frame.cursorVisualRow || 0))
-                 * documentRoot.rowHeight
+            y: (documentRoot.loadedSlotStart + Math.max(0, windowRow))
+               * documentRoot.rowHeight
                + (block ? 1 : documentRoot.rowHeight - 3)
             width: Math.max(1, documentFontMetrics.advanceWidth("M"))
             height: block ? documentRoot.rowHeight - 2 : 2
@@ -3666,7 +5018,7 @@ ApplicationWindow {
             opacity: blinkOn ? 0.72 : 0.18
             visible: frame.kind === "editor"
                      && frame.cursorVisible === true
-                     && Number(frame.cursorVisualRow) >= 0
+                     && windowRow >= 0
                      && Number(frame.cursorVisualColumn) >= 0
             z: 5
 
@@ -3680,6 +5032,148 @@ ApplicationWindow {
                 running: editorCursor.visible
                 repeat: true
                 onTriggered: editorCursor.blinkOn = !editorCursor.blinkOn
+            }
+        }
+
+        MouseArea {
+            anchors.left: documentList.left
+            anchors.right: documentScrollBar.visible
+                           ? documentScrollBar.left : documentList.right
+            anchors.top: documentList.top
+            anchors.bottom: documentList.bottom
+            acceptedButtons: Qt.NoButton
+            propagateComposedEvents: true
+            enabled: documentRoot.interactionActive
+            z: 8
+            onWheel: wheel => documentRoot.handleWheel(wheel)
+        }
+
+        T.ScrollBar {
+            id: documentScrollBar
+            objectName: "documentScrollBar"
+            parent: documentRoot
+            anchors.top: documentList.top
+            anchors.bottom: documentList.bottom
+            anchors.right: documentList.right
+            width: 15
+            orientation: Qt.Vertical
+            policy: T.ScrollBar.AlwaysOn
+            hoverEnabled: true
+            visible: documentRoot.hasWindowProtocol
+                     && documentRoot.interactionActive
+                     && documentRoot.contentExtentKnown
+                     && documentRoot.contentExtent
+                        > Math.max(0, Number(frame.viewportSpan || 0))
+            z: 10
+
+            contentItem: Rectangle {
+                implicitWidth: 15
+                implicitHeight: 15
+                anchors.margins: 4
+                radius: 4
+                color: documentScrollBar.pressed ? "#505050"
+                     : documentScrollBar.hovered ? "#676767" : "#4a4a4a"
+            }
+            background: Rectangle {
+                color: documentScrollBar.hovered || documentScrollBar.pressed
+                       ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+                radius: 15
+            }
+
+            onPositionChanged: {
+                if (!pressed)
+                    return
+                documentRoot.queuedScrollBarPosition = position
+                scrollBarRequestTimer.restart()
+            }
+            onPressedChanged: {
+                if (!pressed && documentRoot.queuedScrollBarPosition >= 0)
+                    scrollBarRequestTimer.restart()
+            }
+        }
+
+        NumberAnimation {
+            id: documentWheelAnimation
+            target: documentList
+            property: "contentY"
+            duration: 130
+            easing.type: Easing.OutCubic
+            onFinished: {
+                requestWindowTimer.restart()
+            }
+        }
+
+        Timer {
+            id: wheelCommitTimer
+            interval: 180
+            onTriggered: {
+                if (documentWheelAnimation.running) {
+                    restart()
+                    return
+                }
+                documentRoot.wheelGestureActive = false
+                documentRoot.compactWindowIfIdle()
+                var state = documentRoot.topState()
+                if (!documentRoot.sendWindowRequest(state.extent,
+                                                     state.fraction, 0))
+                    requestWindowTimer.restart()
+            }
+        }
+
+        Timer {
+            id: frameSyncTimer
+            interval: 0
+            onTriggered: documentRoot.applyFrameWindow()
+        }
+
+        Timer {
+            id: initialPlacementTimer
+            interval: 0
+            onTriggered: {
+                if (!documentRoot.initialPlacementPending)
+                    return
+                var index = documentRoot.indexForExtent(
+                            documentRoot.initialPlacementExtent,
+                            documentRoot.displayedRows)
+                if (index < 0)
+                    index = documentRoot.clamp(
+                                Number(frame.viewportRow || 0), 0,
+                                Math.max(0,
+                                         documentRoot.displayedRows.length - 1))
+                documentRoot.rebasingWindow = true
+                documentList.contentY = (documentRoot.loadedSlotStart + index
+                            + documentRoot.initialPlacementFraction)
+                            * documentRoot.rowHeight
+                documentRoot.wheelTarget = documentList.contentY
+                documentRoot.rebasingWindow = false
+                documentRoot.initialPlacementPending = false
+                documentRoot.windowInitialized = true
+                documentRoot.captureTopState()
+                documentRoot.syncScrollBar()
+            }
+        }
+
+        Timer {
+            id: requestWindowTimer
+            interval: 12
+            onTriggered: documentRoot.maybeRequestWindow()
+        }
+
+        Timer {
+            id: scrollBarRequestTimer
+            interval: 32
+            onTriggered: {
+                if (documentRoot.queuedScrollBarPosition < 0)
+                    return
+                if (documentRoot.windowRequestPending) {
+                    restart()
+                    return
+                }
+                var position = documentRoot.queuedScrollBarPosition
+                documentRoot.queuedScrollBarPosition = -1
+                documentRoot.sendWindowRequest(position
+                                               * documentRoot.contentExtent,
+                                               0, 0, false)
             }
         }
     }
@@ -3723,6 +5217,89 @@ ApplicationWindow {
 
             Behavior on color { ColorAnimation { duration: 90 } }
             Behavior on border.color { ColorAnimation { duration: 90 } }
+        }
+    }
+
+    component QueueActionButton: DialogButton {
+        id: queueActionButton
+        property string iconName: ""
+        readonly property bool f4Themed: true
+
+        focusPolicy: Qt.StrongFocus
+        semanticFocus: activeFocus
+        implicitWidth: Math.max(108, queueActionContent.implicitWidth + 24)
+
+        contentItem: Item {
+            id: queueActionContent
+            implicitWidth: queueActionRow.implicitWidth
+            implicitHeight: queueActionRow.implicitHeight
+
+            Row {
+                id: queueActionRow
+                anchors.centerIn: parent
+                spacing: 7
+
+                IconLabel {
+                    visible: queueActionButton.iconName !== ""
+                    width: visible ? 15 : 0
+                    height: 15
+                    anchors.verticalCenter: parent.verticalCenter
+                    icon.source: root.lucideIconSource(
+                                     queueActionButton.iconName)
+                    icon.width: 15
+                    icon.height: 15
+                    icon.color: queueActionButton.enabled
+                                ? (queueActionButton.semanticFocus
+                                   ? "#f4f8fc" : root.textColor)
+                                : root.mutedText
+                    opacity: queueActionButton.enabled ? 1 : 0.52
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.mnemonicText(queueActionButton.text,
+                                            queueActionButton.mnemonicHotkey)
+                    textFormat: Text.StyledText
+                    color: queueActionButton.enabled
+                           ? (queueActionButton.semanticFocus
+                              ? "#f4f8fc" : root.textColor)
+                           : root.mutedText
+                    opacity: queueActionButton.enabled ? 1 : 0.52
+                    font.pixelSize: 13
+                    font.weight: Font.Medium
+                    elide: Text.ElideRight
+                }
+            }
+        }
+    }
+
+    component QueueSummaryItem: Row {
+        id: queueSummaryItem
+        property string statusName: ""
+        property string iconName: ""
+        property int count: 0
+        property color accent: root.mutedText
+        readonly property string lucideName: iconName
+
+        spacing: 5
+        Accessible.role: Accessible.StaticText
+        Accessible.name: statusName + ": " + count
+
+        IconLabel {
+            width: 14
+            height: 14
+            anchors.verticalCenter: parent.verticalCenter
+            icon.source: root.lucideIconSource(queueSummaryItem.iconName)
+            icon.width: 14
+            icon.height: 14
+            icon.color: queueSummaryItem.accent
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: String(queueSummaryItem.count)
+            color: root.mutedText
+            font.pixelSize: 12
         }
     }
 
@@ -4596,7 +6173,7 @@ ApplicationWindow {
             id: autocompleteOverlay
             property var frame: ({})
             property var items: frame.items || []
-            readonly property var commandLine: (root.shellFrame().commandLine || ({}))
+            readonly property var commandLine: root.commandLineFrame()
             readonly property real commandLineX: root.isAppScene()
                                                      ? 0 : root.pxX(commandLine.x || 0)
             readonly property real commandLineY: root.isAppScene()
@@ -4606,7 +6183,8 @@ ApplicationWindow {
             // CommandLine exports the authoritative Edit start column.  Its
             // prompt is monospaced, so translating that column with the same
             // Configured monospace metrics used by ConsoleRunRow land on the exact input x.
-            readonly property real inputTextX: commandLineX + 8
+            readonly property real inputTextX: commandLineX
+                                               + root.commandLineLeftMargin
                                                + Number(commandLine.inputX || 0)
                                                  * commandLineFontMetrics.advanceWidth("M")
             // ListView has a 4 px inset and each row has another 8 px text

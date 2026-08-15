@@ -62,6 +62,11 @@ type EditorView struct {
 
 	ScrollTopRow int // Индекс первой видимой ВИЗУАЛЬНОЙ строки
 	ScrollLeft   int // Горизонтальный скролл (когда WordWrap=false)
+	// Acknowledges semantic GUI scroll/window requests, including clamped
+	// no-ops at the beginning/end of the document.
+	semanticWindowGeneration        uint64
+	semanticWindowRequestGeneration uint64
+	semanticExtentKnown             bool
 
 	WordWrap         bool
 	HexMode          bool
@@ -265,24 +270,25 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 	li := piecetable.NewLineIndex()
 	li.Rebuild(pt)
 	ev := &EditorView{
-		pt:              pt,
-		li:              li,
-		engine:          textlayout.NewWrapEngine(pt, li),
-		vfs:             v,
-		filePath:        path,
-		WordWrap:        false,
-		ShowWhitespaces: false,
-		cleanState:      pt.GetState(),
-		targetLine:      -1,
-		targetPos:       -1,
-		targetTopRow:    -1,
-		targetLeft:      -1,
-		TabSize:         AppConfig.EditorTabSize,
-		ExpandTabs:      AppConfig.EditorExpandTabs,
-		AutoIndent:      AppConfig.EditorAutoIndent,
-		CursorBeyondEOL: AppConfig.EditorCursorBeyondEOL,
-		UseEditorConfig: useEditorConfig && AppConfig.EditorUseEditorConfig,
-		Codepage:        65001,
+		pt:                  pt,
+		li:                  li,
+		engine:              textlayout.NewWrapEngine(pt, li),
+		vfs:                 v,
+		filePath:            path,
+		WordWrap:            false,
+		ShowWhitespaces:     false,
+		cleanState:          pt.GetState(),
+		targetLine:          -1,
+		targetPos:           -1,
+		targetTopRow:        -1,
+		targetLeft:          -1,
+		TabSize:             AppConfig.EditorTabSize,
+		ExpandTabs:          AppConfig.EditorExpandTabs,
+		AutoIndent:          AppConfig.EditorAutoIndent,
+		CursorBeyondEOL:     AppConfig.EditorCursorBeyondEOL,
+		UseEditorConfig:     useEditorConfig && AppConfig.EditorUseEditorConfig,
+		Codepage:            65001,
+		semanticExtentKnown: true,
 	}
 	if ev.TabSize <= 0 {
 		ev.TabSize = 8
@@ -411,6 +417,7 @@ func (ev *EditorView) SetText(text string) {
 	ev.CursorLine = 0
 	ev.CursorPos = 0
 	ev.engine.SetPointers(ev.pt, ev.li)
+	ev.semanticExtentKnown = true
 	ev.modified = true
 }
 
@@ -2826,6 +2833,7 @@ func nextIndexPoll(cur time.Duration) time.Duration {
 
 func (ev *EditorView) StartIndexing() {
 	if ev.asyncBuf == nil {
+		ev.semanticExtentKnown = true
 		return
 	}
 	if ev.indexCancel != nil {
@@ -2833,6 +2841,7 @@ func (ev *EditorView) StartIndexing() {
 	}
 
 	ev.editSession++
+	ev.semanticExtentKnown = false
 	sessionID := ev.editSession
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3068,6 +3077,7 @@ func (ev *EditorView) StartIndexing() {
 
 		vtui.FrameManager.PostTask(func() {
 			if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
+				ev.semanticExtentKnown = true
 				if ev.targetLine != -1 {
 					ev.CursorLine = ev.targetLine
 					if ev.CursorLine >= li.LineCount() {
@@ -3085,11 +3095,11 @@ func (ev *EditorView) StartIndexing() {
 					ev.targetLine = -1
 					ev.ensureCursorVisible()
 					ev.updateDesiredVisualCol()
-					vtui.FrameManager.Redraw()
 				}
 				if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 					ev.startHighlighting()
 				}
+				vtui.FrameManager.Redraw()
 			}
 		})
 	}()

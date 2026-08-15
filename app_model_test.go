@@ -99,12 +99,24 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	if shell["kind"] != "shell" || shell["activePanel"] != 1 {
 		t.Fatalf("unexpected shell: %#v", shell)
 	}
+	if shell["commandLine"].(map[string]any)["text"] != "ls" {
+		t.Fatalf("typed command line was not promoted: %#v", shell["commandLine"])
+	}
+	legacyFrames := scene["frames"].([]map[string]any)
+	if _, duplicated := legacyFrames[0]["commandLine"]; duplicated {
+		t.Fatal("promoted command line was duplicated in the legacy fallback")
+	}
 	panels := shell["panels"].([]map[string]any)
 	if panels[1]["path"] != "/right" || panels[1]["active"] != true {
 		t.Fatalf("unexpected panel model: %#v", panels[1])
 	}
-	if panels[0]["presentation"] != "list" || panels[0]["sourceKind"] != "vfs" {
+	if panels[0]["sourceKind"] != "vfs" {
 		t.Fatalf("legacy panel did not receive compatible v3 defaults: %#v", panels[0])
+	}
+	for _, retired := range []string{"presentation", "viewModeName", "columns", "top"} {
+		if _, present := panels[0][retired]; present {
+			t.Fatalf("retired panel field %q survived promotion: %#v", retired, panels[0])
+		}
 	}
 	if panels[0]["galleryLayoutMode"] != "masonry" ||
 		panels[0]["galleryColumnCount"] != 2 ||
@@ -116,6 +128,132 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	if entries[0]["displayBaseName"] != "archive.tar" ||
 		entries[0]["displayExtension"] != "gz" {
 		t.Fatalf("legacy entry lost its display name fields: %#v", entries[0])
+	}
+}
+
+func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
+	legacy := map[string]any{
+		"type":   "scene",
+		"width":  100,
+		"height": 40,
+		"frames": []map[string]any{
+			{
+				"id":             "panels",
+				"kind":           "panels",
+				"showPanels":     false,
+				"terminalActive": true,
+				"terminal": map[string]any{
+					"id":    "shell-terminal",
+					"kind":  "terminal",
+					"title": "ls",
+					"busy":  false,
+					"rows": []map[string]any{
+						{"index": 0, "text": "ls"},
+						{"index": 1, "text": "app_model.go"},
+					},
+				},
+			},
+		},
+	}
+
+	scene := BuildAppSceneFromLegacy(nil, legacy)
+	if _, duplicated := scene["surface"]; duplicated {
+		t.Fatalf("shell terminal was promoted to a standalone document surface: %#v", scene["surface"])
+	}
+	shell := scene["shell"].(map[string]any)
+	if shell["terminalActive"] != true || shell["mode"] != "terminal" {
+		t.Fatalf("shell terminal state was not preserved: %#v", shell)
+	}
+	terminal := shell["terminal"].(map[string]any)
+	if terminal["id"] != "shell-terminal" || terminal["title"] != "ls" {
+		t.Fatalf("unexpected shell terminal: %#v", terminal)
+	}
+	rows := terminal["rows"].([]map[string]any)
+	if len(rows) != 2 || rows[0]["text"] != "ls" || rows[1]["text"] != "app_model.go" {
+		t.Fatalf("shell terminal rows were not preserved: %#v", rows)
+	}
+}
+
+func TestBuildAppSceneFromLegacyKeepsTopLevelTerminalAsSurface(t *testing.T) {
+	legacy := map[string]any{
+		"type": "scene",
+		"frames": []map[string]any{
+			{
+				"id":    "standalone-terminal",
+				"kind":  "terminal",
+				"title": "Terminal log",
+				"rows": []map[string]any{
+					{"index": 0, "text": "output"},
+				},
+			},
+		},
+	}
+
+	scene := BuildAppSceneFromLegacy(nil, legacy)
+	surface := scene["surface"].(map[string]any)
+	if surface["id"] != "standalone-terminal" || surface["kind"] != "terminal" {
+		t.Fatalf("top-level terminal was not promoted as a standalone surface: %#v", surface)
+	}
+	rows := surface["rows"].([]map[string]any)
+	if len(rows) != 1 || rows[0]["text"] != "output" {
+		t.Fatalf("top-level terminal rows were not preserved: %#v", rows)
+	}
+}
+
+func TestAppWorkspaceTabsExposeTypedLucideIcons(t *testing.T) {
+	legacy := map[string]any{
+		"workspaceTabs": map[string]any{
+			"visible": true,
+			"tabs": []map[string]any{
+				{"index": 0, "number": 1, "text": "P left ─ right", "closable": true},
+				{"index": 1, "number": 2, "text": "P Terminal", "closable": true},
+				{"index": 2, "number": 3, "text": "V report.txt", "closable": true},
+				{"index": 3, "number": 4, "text": "E notes.md", "closable": true},
+				{"index": 4, "number": 5, "text": "Operations Queue", "closable": true},
+			},
+		},
+		"screens": []map[string]any{
+			{"number": 1, "frames": []map[string]any{{"kind": "panels", "showPanels": true}}},
+			{"number": 2, "frames": []map[string]any{{"kind": "panels", "showPanels": false}}},
+			{"number": 3, "frames": []map[string]any{{"kind": "viewer"}}},
+			{"number": 4, "frames": []map[string]any{{"kind": "editor"}}},
+			{"number": 5, "frames": []map[string]any{{"kind": "operationsQueue", "canClose": false}}},
+		},
+	}
+
+	tabs := appMapSlice(appQueueAwareWorkspaceTabs(legacy)["tabs"])
+	wantKinds := []string{"panels", "terminal", "viewer", "editor", "operationsQueue"}
+	wantIcons := []string{"panels-top-left", "square-terminal", "file-text", "file-pen-line", "list-checks"}
+	wantTitles := []string{"left ─ right", "Terminal", "report.txt", "notes.md", "Operations Queue"}
+	for index := range tabs {
+		if got := semanticString(tabs[index]["surfaceKind"]); got != wantKinds[index] {
+			t.Fatalf("tab %d surfaceKind = %q, want %q", index, got, wantKinds[index])
+		}
+		if got := semanticString(tabs[index]["iconName"]); got != wantIcons[index] {
+			t.Fatalf("tab %d iconName = %q, want %q", index, got, wantIcons[index])
+		}
+		if got := semanticString(tabs[index]["text"]); got != wantTitles[index] {
+			t.Fatalf("tab %d text = %q, want %q", index, got, wantTitles[index])
+		}
+		if got := semanticInt(tabs[index]["number"]); got != index+1 {
+			t.Fatalf("tab %d number = %d, want %d", index, got, index+1)
+		}
+	}
+	if appBool(tabs[4]["closable"]) {
+		t.Fatal("active operations queue tab remained closable")
+	}
+}
+
+func TestAppWorkspaceTabTextRemovesOnlyUpstreamKindMarker(t *testing.T) {
+	for input, want := range map[string]string{
+		"P":             "",
+		"V report.txt":  "report.txt",
+		"E notes.md":    "notes.md",
+		"Project files": "Project files",
+	} {
+		if got := appWorkspaceTabText(input); got != want {
+			t.Fatalf("appWorkspaceTabText(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -184,12 +322,28 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 				"cursorVisualColumn": 7,
 				"cursorVisible":      true,
 				"cursorShape":        "block",
+				"scrollUnit":         "rows",
+				"windowStart":        int64(18),
+				"windowEnd":          int64(48),
+				"viewportStart":      int64(20),
+				"viewportSpan":       int64(10),
+				"contentExtent":      int64(1000),
+				"contentExtentKnown": true,
+				"viewportRow":        2,
+				"viewportRows":       10,
+				"cursorAbsoluteRow":  int64(22),
+				"windowGeneration":   int64(7),
+				"windowContentKey":   "window-key-7",
 				"rows": []map[string]any{
 					{"index": 0, "runs": []map[string]any{{
 						"text": "hello", "attr": uint64(42),
 						"foreground": "#123456", "background": "#654321",
 						"bold": true, "underline": true, "strikeout": true,
 					}}},
+				},
+				"windowRows": []map[string]any{
+					{"index": 0, "visualRow": 18, "offset": int64(180),
+						"endOffset": int64(190), "text": "overscan"},
 				},
 			},
 		},
@@ -204,12 +358,26 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 		surface["cursorVisible"] != true || surface["cursorShape"] != "block" {
 		t.Fatalf("editor cursor was not promoted: %#v", surface)
 	}
+	if surface["scrollUnit"] != "rows" || surface["windowStart"] != int64(18) ||
+		surface["windowEnd"] != int64(48) || surface["viewportStart"] != int64(20) ||
+		surface["viewportSpan"] != int64(10) || surface["contentExtent"] != int64(1000) ||
+		surface["contentExtentKnown"] != true || surface["viewportRow"] != 2 ||
+		surface["viewportRows"] != 10 || surface["cursorAbsoluteRow"] != int64(22) ||
+		surface["windowGeneration"] != uint64(7) ||
+		surface["windowContentKey"] != "window-key-7" {
+		t.Fatalf("window metadata was not promoted: %#v", surface)
+	}
 	rows := surface["rows"].([]map[string]any)
 	runs := rows[0]["runs"].([]map[string]any)
 	if runs[0]["text"] != "hello" || runs[0]["foreground"] != "#123456" ||
 		runs[0]["background"] != "#654321" || runs[0]["bold"] != true ||
 		runs[0]["underline"] != true || runs[0]["strikeout"] != true {
 		t.Fatalf("unexpected rows: %#v", rows)
+	}
+	windowRows := surface["windowRows"].([]map[string]any)
+	if len(windowRows) != 1 || windowRows[0]["visualRow"] != 18 ||
+		windowRows[0]["offset"] != int64(180) || windowRows[0]["endOffset"] != int64(190) {
+		t.Fatalf("window rows were not promoted: %#v", windowRows)
 	}
 }
 

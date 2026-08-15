@@ -62,6 +62,7 @@ func (e *ServiceError) Error() string {
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 type ADBStarterFunc func(context.Context, string) error
 type ADBLookupFunc func() (string, error)
+type ADBRestarterFunc func(context.Context, string) error
 
 // ServerOption customizes an ADB smart-socket client.
 type ServerOption func(*Server)
@@ -102,25 +103,37 @@ func WithADBLookup(lookup ADBLookupFunc) ServerOption {
 	}
 }
 
+// WithADBRestarter supplies the command used to restart the local ADB daemon.
+// It is primarily useful for tests and custom ADB installations.
+func WithADBRestarter(restart ADBRestarterFunc) ServerOption {
+	return func(s *Server) {
+		if restart != nil {
+			s.restartServer = restart
+		}
+	}
+}
+
 // Server talks directly to the local ADB server. It starts an installed adb
 // executable on the first failed connection, but never downloads or bundles
 // platform-tools.
 type Server struct {
-	address     string
-	dialContext DialContextFunc
-	startServer ADBStarterFunc
-	lookupADB   ADBLookupFunc
-	startMu     sync.Mutex
+	address       string
+	dialContext   DialContextFunc
+	startServer   ADBStarterFunc
+	lookupADB     ADBLookupFunc
+	restartServer ADBRestarterFunc
+	startMu       sync.Mutex
 }
 
 // NewServer creates a client for the conventional local ADB smart socket.
 func NewServer(options ...ServerOption) *Server {
 	dialer := &net.Dialer{}
 	s := &Server{
-		address:     DefaultADBAddress,
-		dialContext: dialer.DialContext,
-		startServer: startInstalledADB,
-		lookupADB:   findADBExecutable,
+		address:       DefaultADBAddress,
+		dialContext:   dialer.DialContext,
+		startServer:   startInstalledADB,
+		lookupADB:     findADBExecutable,
+		restartServer: restartInstalledADB,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -149,6 +162,18 @@ func (s *Server) Devices(ctx context.Context) ([]Device, error) {
 		}
 	}
 	return parseDevices(payload)
+}
+
+// RestartForAuthorization restarts the local ADB daemon. A transport-level
+// reconnect can remove an unauthorized USB device from ADB until the daemon is
+// restarted; restarting the daemon reliably recreates the transport and makes
+// Android show the host-key confirmation prompt again.
+func (s *Server) RestartForAuthorization(ctx context.Context) error {
+	adbPath, err := s.lookupADB()
+	if err != nil {
+		return fmt.Errorf("adb: cannot restart for authorization: %w", err)
+	}
+	return s.restartServer(ctx, adbPath)
 }
 
 // Features returns the feature names advertised for serial. If the server
@@ -966,4 +991,23 @@ func startInstalledADB(ctx context.Context, adbPath string) error {
 		return err
 	}
 	return fmt.Errorf("%w: %s", err, message)
+}
+
+func restartInstalledADB(ctx context.Context, adbPath string) error {
+	for _, action := range []string{"kill-server", "start-server"} {
+		command := exec.CommandContext(ctx, adbPath, action)
+		output, err := command.CombinedOutput()
+		if err == nil {
+			continue
+		}
+		message := strings.TrimSpace(string(output))
+		if len(message) > 4096 {
+			message = message[:4096] + "..."
+		}
+		if message == "" {
+			return fmt.Errorf("adb %s: %w", action, err)
+		}
+		return fmt.Errorf("adb %s: %w: %s", action, err, message)
+	}
+	return nil
 }

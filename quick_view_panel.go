@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"runtime"
 	"strings"
@@ -12,9 +16,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
+	xdraw "golang.org/x/image/draw"
 )
 
 // QuickViewPanel is far2l's Ctrl+Q quick-view panel. It mirrors the
@@ -90,6 +96,25 @@ type QuickViewPanel struct {
 	displayToSource []int
 	displayWrap     bool
 	displayWidth    int
+
+	// Semantic Quick View uses the same bounded-window contract as the full
+	// Viewer/Editor surfaces.  contentKey changes only when the mirrored file
+	// changes, so a delayed native scroll request can never move a newer
+	// preview. windowGeneration acknowledges viewport requests, including
+	// clamped no-ops.
+	semanticContentSerial    uint64
+	semanticContentKey       string
+	semanticHasSelection     bool
+	semanticWindowGeneration uint64
+
+	// Native frontends cannot consume vtui.ImageSurface directly. Cache one
+	// bounded PNG representation per immutable decoded surface instead of
+	// serialising the full source pixels on every semantic scene.
+	semanticImageSurface    *vtui.ImageSurface
+	semanticImageGeneration uint64
+	semanticImageSource     string
+	semanticImageWidth      int
+	semanticImageHeight     int
 }
 
 // quickViewSelectionKey prevents identical-looking paths from different VFS
@@ -101,6 +126,77 @@ type quickViewSelectionKey struct {
 	size     int64
 	mtimeNS  int64
 	isDir    bool
+}
+
+type quickViewPreparedSelection struct {
+	item *fileEntry
+	path string
+	key  quickViewSelectionKey
+}
+
+func (q *QuickViewPanel) bumpSemanticContentKey() {
+	q.semanticContentSerial++
+	q.semanticContentKey = fmt.Sprintf("%s:%d", vtui.SemanticID(q), q.semanticContentSerial)
+	q.semanticWindowGeneration++
+}
+
+// prepareSelection is the authoritative selection/cache transition shared by
+// the raster TUI renderer and the semantic frontend. Native Quick View must
+// remain fully functional when Show is never called for its covered panel.
+func (q *QuickViewPanel) prepareSelection() (quickViewPreparedSelection, bool) {
+	if q.src == nil || q.src.vfs == nil || len(q.src.entries) == 0 {
+		if q.semanticHasSelection || q.semanticContentKey == "" {
+			q.cancelScan()
+			q.cancelFilePreview()
+			q.imageLoadGen++
+			q.cacheValid = false
+			q.semanticHasSelection = false
+			q.scrollY, q.scrollX = 0, 0
+			q.displayLines, q.displayToSource = nil, nil
+			q.clearSemanticImage()
+			q.bumpSemanticContentKey()
+		}
+		return quickViewPreparedSelection{}, false
+	}
+
+	idx := q.src.GetCursorIndex()
+	if idx < 0 || idx >= len(q.src.entries) || q.src.entries[idx] == nil {
+		if q.semanticHasSelection || q.semanticContentKey == "" {
+			q.cancelScan()
+			q.cancelFilePreview()
+			q.imageLoadGen++
+			q.cacheValid = false
+			q.semanticHasSelection = false
+			q.scrollY, q.scrollX = 0, 0
+			q.displayLines, q.displayToSource = nil, nil
+			q.clearSemanticImage()
+			q.bumpSemanticContentKey()
+		}
+		return quickViewPreparedSelection{}, false
+	}
+
+	item := q.src.entries[idx]
+	path := q.src.vfs.Join(q.src.vfs.GetPath(), item.Name)
+	if item.Name == ".." {
+		// far2/far2l describe the current directory for the parent marker.
+		path = q.src.vfs.GetPath()
+		synth := &fileEntry{VFSItem: vfs.VFSItem{Name: path, IsDir: true}}
+		item = synth
+	}
+	key := makeQuickViewSelectionKey(q.src.vfs, path, item.VFSItem)
+	if !q.cacheValid || key != q.cacheKey {
+		q.refreshCache(key, path, *item)
+		q.semanticHasSelection = true
+		q.scrollY, q.scrollX = 0, 0
+		q.displayLines, q.displayToSource = nil, nil
+		q.bumpSemanticContentKey()
+	} else {
+		q.semanticHasSelection = true
+		if q.semanticContentKey == "" {
+			q.bumpSemanticContentKey()
+		}
+	}
+	return quickViewPreparedSelection{item: item, path: path, key: key}, true
 }
 
 // NewQuickViewPanel creates a quick-view panel over src's slot.
@@ -197,6 +293,7 @@ func (q *QuickViewPanel) ProcessKey(e *vtinput.InputEvent) bool {
 	if q.scrollY < 0 {
 		q.scrollY = 0
 	}
+	q.semanticWindowGeneration++
 	vtui.FrameManager.HardRefresh()
 	return true
 }
@@ -219,6 +316,7 @@ func (q *QuickViewPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 	if q.scrollY < 0 {
 		q.scrollY = 0
 	}
+	q.semanticWindowGeneration++
 	vtui.FrameManager.HardRefresh()
 	return true
 }
@@ -284,38 +382,12 @@ func (q *QuickViewPanel) Show(scr *vtui.ScreenBuf) {
 		y++
 	}
 
-	idx := q.src.GetCursorIndex()
-	if idx < 0 || idx >= len(q.src.entries) {
-		q.cancelScan()
-		q.cancelFilePreview()
-		q.imageLoadGen++
-		q.cacheValid = false
+	selection, ok := q.prepareSelection()
+	if !ok {
 		writeLine(" " + Msg("QuickView.NoSelection"))
 		return
 	}
-	item := q.src.entries[idx]
-
-	// On "..", far2/far2l scan the CURRENT directory (parent of the
-	// listing) rather than showing a static "Parent directory" note.
-	// We synthesize a fileEntry that points at the current dir and
-	// funnel it through the same refreshCache path as regular items.
-	// The header shows the full path so it's unambiguous even when
-	// several panels sit in similarly-named leaf folders.
-	var path string
-	if item.Name == ".." {
-		path = q.src.vfs.GetPath()
-		synth := fileEntry{VFSItem: vfs.VFSItem{Name: path, IsDir: true}}
-		item = &synth
-	} else {
-		path = q.src.vfs.Join(q.src.vfs.GetPath(), item.Name)
-	}
-	key := makeQuickViewSelectionKey(q.src.vfs, path, item.VFSItem)
-	if !q.cacheValid || key != q.cacheKey {
-		q.refreshCache(key, path, *item)
-		q.scrollY = 0
-		q.scrollX = 0
-		q.displayLines = nil
-	}
+	item := selection.item
 
 	if q.cacheDir {
 		q.renderDir(item, writeLine)
@@ -507,6 +579,33 @@ func (q *QuickViewPanel) Close() {
 	q.cancelFilePreview()
 	q.imageLoadGen++
 	q.cacheValid = false
+	q.clearSemanticImage()
+}
+
+func (q *QuickViewPanel) fileViewportRows() int {
+	// Interior rows remaining below the four-line file header.
+	return max(0, q.Y2-q.Y1-5)
+}
+
+func (q *QuickViewPanel) ensureDisplayLayout(innerW int) {
+	if innerW <= 0 || q.cacheDir || q.cacheImage || q.cacheLoading || q.cacheReadErr != nil {
+		return
+	}
+	if q.displayLines == nil || q.displayWrap != q.wrap || q.displayWidth != innerW {
+		q.displayLines, q.displayToSource = q.buildDisplayLines(innerW)
+		q.displayWrap = q.wrap
+		q.displayWidth = innerW
+		if q.hasPin {
+			q.scrollY = firstDisplayForSource(q.displayToSource, q.pinSourceOnNextShow)
+			q.hasPin = false
+		}
+	}
+
+	maxScroll := len(q.displayLines) - q.fileViewportRows()
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	q.scrollY = max(0, min(q.scrollY, maxScroll))
 }
 
 func (q *QuickViewPanel) renderFile(item *fileEntry, innerW int, writeLine func(string), attr uint64, scr *vtui.ScreenBuf) {
@@ -539,29 +638,8 @@ func (q *QuickViewPanel) renderFile(item *fileEntry, innerW int, writeLine func(
 		return
 	}
 
-	// Re-flow if wrap flag / innerW changed.
-	if q.displayLines == nil || q.displayWrap != q.wrap || q.displayWidth != innerW {
-		q.displayLines, q.displayToSource = q.buildDisplayLines(innerW)
-		q.displayWrap = q.wrap
-		q.displayWidth = innerW
-		if q.hasPin {
-			q.scrollY = firstDisplayForSource(q.displayToSource, q.pinSourceOnNextShow)
-			q.hasPin = false
-		}
-	}
-
-	// Clamp scroll offsets against fresh display.
-	viewH := (q.Y2 - 1) - (q.Y1 + 1 + 4) + 1 // rows left after the 4-line header
-	if viewH < 0 {
-		viewH = 0
-	}
-	maxScroll := len(q.displayLines) - viewH
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if q.scrollY > maxScroll {
-		q.scrollY = maxScroll
-	}
+	q.ensureDisplayLayout(innerW)
+	viewH := q.fileViewportRows()
 
 	// Emit visible slice with optional horizontal shift.
 	end := q.scrollY + viewH
@@ -617,6 +695,268 @@ func (q *QuickViewPanel) renderImage(innerW int, writeLine func(string), attr ui
 	p.ZIndex = -1 // Keep picture below panel borders if they overlap
 
 	scr.Graphics().DrawImage(q.gfxKey, p)
+}
+
+const quickViewSemanticImageMaxDimension = 1024
+
+func (q *QuickViewPanel) clearSemanticImage() {
+	q.semanticImageSurface = nil
+	q.semanticImageGeneration = 0
+	q.semanticImageSource = ""
+	q.semanticImageWidth = 0
+	q.semanticImageHeight = 0
+}
+
+// semanticImageDataURL encodes at most a 1024x1024 representation once for a
+// decoded surface. The original may contain tens of millions of pixels; the
+// semantic protocol never repeats or transports that unbounded buffer.
+func (q *QuickViewPanel) semanticImageDataURL() (string, int, int) {
+	surface := q.imageSurf
+	if surface == nil || !surface.Valid() {
+		q.clearSemanticImage()
+		return "", 0, 0
+	}
+	if q.semanticImageSurface == surface && q.semanticImageGeneration == q.imageLoadGen &&
+		q.semanticImageSource != "" {
+		return q.semanticImageSource, q.semanticImageWidth, q.semanticImageHeight
+	}
+
+	// ImageSurface stores straight-alpha RGBA8 pixels, which is exactly
+	// image.NRGBA's memory contract. Wrap the source buffer without copying it:
+	// a very large decoded image must not cause a second full-size allocation
+	// merely to produce the bounded semantic thumbnail.
+	source := &image.NRGBA{
+		Pix:    surface.Pix,
+		Stride: surface.Stride,
+		Rect:   image.Rect(0, 0, surface.Width, surface.Height),
+	}
+	var encodedImage image.Image = source
+	width, height := surface.Width, surface.Height
+	maxDimension := max(width, height)
+	if maxDimension > quickViewSemanticImageMaxDimension {
+		width = max(1, width*quickViewSemanticImageMaxDimension/maxDimension)
+		height = max(1, height*quickViewSemanticImageMaxDimension/maxDimension)
+		destination := image.NewNRGBA(image.Rect(0, 0, width, height))
+		xdraw.ApproxBiLinear.Scale(destination, destination.Bounds(), source,
+			source.Bounds(), xdraw.Src, nil)
+		encodedImage = destination
+	}
+
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, encodedImage); err != nil {
+		q.clearSemanticImage()
+		return "", 0, 0
+	}
+	q.semanticImageSurface = surface
+	q.semanticImageGeneration = q.imageLoadGen
+	q.semanticImageWidth = width
+	q.semanticImageHeight = height
+	q.semanticImageSource = "data:image/png;base64," +
+		base64.StdEncoding.EncodeToString(encoded.Bytes())
+	return q.semanticImageSource, width, height
+}
+
+func quickViewRows(lines []string) []extui.TextRowModel {
+	rows := make([]extui.TextRowModel, 0, len(lines))
+	for index, text := range lines {
+		rows = append(rows, extui.TextRowModel{
+			Index:     index,
+			VisualRow: index,
+			Offset:    int64(index),
+			EndOffset: int64(index + 1),
+			Text:      text,
+		})
+	}
+	return rows
+}
+
+func (q *QuickViewPanel) semanticHeaderRows(item *fileEntry, innerW int) []extui.TextRowModel {
+	if item == nil || item.IsDir {
+		return nil
+	}
+	lines := []string{
+		" " + item.Name,
+		fmt.Sprintf(" %s: %s", Msg("QuickView.Size"), formatBytes(uint64(item.Size))),
+	}
+	if q.cacheReadErr != nil {
+		lines = append(lines, "", " "+Msg("QuickView.ReadError")+": "+q.cacheReadErr.Error())
+		return quickViewRows(lines)
+	}
+	status := ""
+	switch {
+	case q.cacheLoading:
+		status = Msg("QuickView.Loading")
+	case q.cacheLabel != "":
+		status = q.cacheLabel
+	case q.cacheImage:
+		status = Msg("QuickView.Image")
+	case q.cacheBinary:
+		status = Msg("QuickView.Binary")
+	}
+	lines = append(lines, " "+status,
+		" "+strings.Repeat("─", max(0, innerW-2)))
+	return quickViewRows(lines)
+}
+
+func (q *QuickViewPanel) semanticDirectoryLines(item *fileEntry) []string {
+	var lines []string
+	q.renderDir(item, func(text string) { lines = append(lines, text) })
+	return lines
+}
+
+func (q *QuickViewPanel) semanticWindowForLines(lines []string, viewportRows int) semanticSurfaceWindow {
+	var window semanticSurfaceWindow
+	viewportRows = max(1, viewportRows)
+	maxTop := max(0, len(lines)-viewportRows)
+	q.scrollY = max(0, min(q.scrollY, maxTop))
+	bufferRows := semanticWindowBufferRows(viewportRows)
+	windowStart := max(0, q.scrollY-bufferRows)
+	windowEnd := min(len(lines), q.scrollY+viewportRows+bufferRows)
+	window.start = int64(windowStart)
+	window.end = int64(windowEnd)
+	window.viewportRow = q.scrollY - windowStart
+	window.viewportRows = viewportRows
+	window.viewportSpan = int64(min(viewportRows, max(0, len(lines)-q.scrollY)))
+	for visualRow := windowStart; visualRow < windowEnd; visualRow++ {
+		text := lines[visualRow]
+		if !q.wrap && q.scrollX > 0 {
+			text = trimLeftCells(text, q.scrollX)
+		}
+		window.rows = append(window.rows, extui.TextRowModel{
+			Index:     len(window.rows),
+			VisualRow: visualRow,
+			Offset:    int64(visualRow),
+			EndOffset: int64(visualRow + 1),
+			Text:      text,
+		})
+	}
+	return window
+}
+
+// semanticModel exports Quick View as panel chrome plus a nested bounded
+// document surface. It intentionally calls prepareSelection and builds the
+// wrapped layout itself: native mode does not rasterise the covered panel.
+func (q *QuickViewPanel) semanticModel(side, sourceSide int, active bool) extui.QuickViewModel {
+	selection, selected := q.prepareSelection()
+	innerW := max(1, q.X2-q.X1-1)
+	id := vtui.SemanticID(q)
+	model := extui.QuickViewModel{
+		ID:          id,
+		Side:        side,
+		SourceSide:  sourceSide,
+		Active:      active,
+		Title:       Msg("QuickView.Title"),
+		BottomHint:  Msg("InfoPanel.UnitsHint"),
+		ContentKey:  q.semanticContentKey,
+		PreviewKind: "empty",
+		Wrap:        q.wrap,
+	}
+
+	var bodyLines []string
+	viewportRows := max(1, q.fileViewportRows())
+	if !selected {
+		model.HeaderRows = quickViewRows([]string{" " + Msg("QuickView.NoSelection")})
+	} else {
+		item := selection.item
+		model.Name = item.Name
+		model.Path = selection.path
+		model.SizeText = formatBytes(uint64(item.Size))
+		model.Label = q.cacheLabel
+		model.HeaderRows = q.semanticHeaderRows(item, innerW)
+
+		switch {
+		case q.cacheDir:
+			model.PreviewKind = "directory"
+			viewportRows = max(1, q.Y2-q.Y1-1)
+			bodyLines = q.semanticDirectoryLines(item)
+			q.scanMu.Lock()
+			model.Loading = !q.scanDone && q.scanErr == nil
+			if q.scanErr != nil {
+				model.Error = q.scanErr.Error()
+			}
+			q.scanMu.Unlock()
+		case q.cacheReadErr != nil:
+			model.PreviewKind = "error"
+			model.Error = q.cacheReadErr.Error()
+		case q.cacheLoading:
+			model.PreviewKind = "loading"
+			model.Loading = true
+		case q.cacheImage:
+			model.PreviewKind = "image"
+			model.ImageSource, model.ImageWidth, model.ImageHeight = q.semanticImageDataURL()
+			model.Loading = model.ImageSource == ""
+		case q.cacheBinary:
+			model.PreviewKind = "hex"
+			q.ensureDisplayLayout(innerW)
+			bodyLines = q.displayLines
+		default:
+			model.PreviewKind = "text"
+			q.ensureDisplayLayout(innerW)
+			bodyLines = q.displayLines
+		}
+	}
+
+	window := q.semanticWindowForLines(bodyLines, viewportRows)
+	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
+	visibleRows := window.rows
+	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
+		visibleRows = window.rows[window.viewportRow:visibleEnd]
+	}
+	model.Surface = extui.SurfaceModel{
+		ID:                 id,
+		Kind:               "quick_view",
+		Title:              model.Title,
+		Path:               model.Path,
+		BaseName:           model.Name,
+		Mode:               model.PreviewKind,
+		Busy:               model.Loading,
+		WrapMode:           q.wrap,
+		ScrollLeft:         q.scrollX,
+		DocumentKey:        q.semanticContentKey,
+		ScrollAction:       "quickView.scroll",
+		ScrollUnit:         "rows",
+		WindowStart:        window.start,
+		WindowEnd:          window.end,
+		ViewportStart:      int64(q.scrollY),
+		ViewportSpan:       window.viewportSpan,
+		ContentExtent:      int64(len(bodyLines)),
+		ContentExtentKnown: true,
+		ViewportRow:        window.viewportRow,
+		ViewportRows:       window.viewportRows,
+		WindowGeneration:   q.semanticWindowGeneration,
+		Rows:               visibleRows,
+		WindowRows:         window.rows,
+	}
+	return model
+}
+
+// HandleSemanticAction accepts only a request for the currently mirrored
+// content. The contentKey guard is what makes an in-flight touchpad request
+// harmless when the source panel cursor switches to another file.
+func (q *QuickViewPanel) HandleSemanticAction(action map[string]any) bool {
+	if q == nil || semanticString(action["target"]) != vtui.SemanticID(q) ||
+		semanticString(action["action"]) != "quickView.scroll" {
+		return false
+	}
+	q.prepareSelection()
+	if key := semanticString(action["contentKey"]); key == "" || key != q.semanticContentKey {
+		return false
+	}
+	innerW := max(1, q.X2-q.X1-1)
+	q.ensureDisplayLayout(innerW)
+	viewportRows := max(1, q.fileViewportRows())
+	contentRows := len(q.displayLines)
+	if q.cacheDir {
+		selection, ok := q.prepareSelection()
+		if ok {
+			contentRows = len(q.semanticDirectoryLines(selection.item))
+			viewportRows = max(1, q.Y2-q.Y1-1)
+		}
+	}
+	requested := semanticInt(action["visualRow"])
+	q.scrollY = max(0, min(requested, max(0, contentRows-viewportRows)))
+	q.semanticWindowGeneration++
+	return true
 }
 
 // buildDisplayLines converts cacheLines into what should actually be
@@ -718,6 +1058,7 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 	q.cacheLoading = false
 	q.cacheLabel = ""
 	q.imageSurf = nil
+	q.clearSemanticImage()
 	q.cacheLines = nil
 	q.cacheReadErr = nil
 

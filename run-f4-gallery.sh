@@ -4,12 +4,14 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 build_type="${F4_QT_BUILD_TYPE:-RelWithDebInfo}"
-gallery_dir="${ZOINGALLERY_DIR:-$(cd -- "$repo_dir/../.." && pwd)/ZoinGallery}"
-gallery_build_dir="${ZOINGALLERY_BUILD_DIR:-$gallery_dir/build}"
 host_build_dir="${F4_GALLERY_BUILD_DIR:-$repo_dir/qt/host/build-gallery-editable-final}"
 qwindowkit_prefix="${QWINDOWKIT_PREFIX:-$repo_dir/build/qwindowkit-install}"
 f4_bin="$repo_dir/f4"
-qt_host="$host_build_dir/bin/$build_type/f4-qt-host"
+qt_host_base="$host_build_dir/bin/$build_type/f4-qt-host"
+qt_host="$qt_host_base"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    qt_host="$qt_host_base.app/Contents/MacOS/f4-qt-host"
+fi
 
 require_file() {
     local path="$1"
@@ -29,12 +31,12 @@ command -v go >/dev/null || {
     exit 1
 }
 
-require_file "$gallery_build_dir/CMakeCache.txt" \
-    "configured ZoinGallery reusable build"
+require_file "$repo_dir/third_party/ZoinGallery/CMakeLists.txt" \
+    "initialized ZoinGallery Git submodule"
 require_file "$host_build_dir/CMakeCache.txt" \
-    "configured Gallery-enabled f4 Qt host build"
+    "configured f4 Qt host build"
 require_file "$host_build_dir/conan_toolchain.cmake" \
-    "Gallery-enabled f4 Qt host Conan toolchain"
+    "f4 Qt host Conan toolchain"
 
 qwindowkit_config="$qwindowkit_prefix/lib/cmake/QWindowKit/QWindowKitConfig.cmake"
 if [[ ! -f "$qwindowkit_config" && -z "${QWINDOWKIT_PREFIX:-}" ]]; then
@@ -43,38 +45,35 @@ if [[ ! -f "$qwindowkit_config" && -z "${QWINDOWKIT_PREFIX:-}" ]]; then
 fi
 require_file "$qwindowkit_config" "QWindowKit package configuration"
 
-echo "Building reusable ZoinGallery..."
-cmake --build "$gallery_build_dir" --config "$build_type" --parallel
-
-echo "Configuring Gallery-enabled f4 Qt host with QWindowKit..."
+echo "Configuring f4 Qt host with QWindowKit..."
 cmake -S "$repo_dir/qt/host" -B "$host_build_dir" \
     -DCMAKE_TOOLCHAIN_FILE="$host_build_dir/conan_toolchain.cmake" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_PREFIX_PATH="$qwindowkit_prefix" \
     -DQWindowKit_DIR="$qwindowkit_prefix/lib/cmake/QWindowKit" \
-    -DF4_WITH_ZOINGALLERY=ON \
-    -DUSE_QWK=ON
+    -DUSE_QWK=ON \
+    -U ZoinGallery_DIR
 
 if ! grep -q '^USE_QWK:BOOL=ON$' "$host_build_dir/CMakeCache.txt"; then
     echo "error: Qt host configuration did not enable QWindowKit" >&2
     exit 1
 fi
 
-echo "Building Gallery-enabled f4 Qt host..."
+echo "Building f4 Qt host..."
 cmake --build "$host_build_dir" --config "$build_type" --parallel
 
 echo "Building f4 Go core..."
 (cd "$repo_dir" && go build -o "$f4_bin" .)
 
-require_file "$qt_host" "Gallery-enabled f4 Qt host executable"
+require_file "$qt_host" "f4 Qt host executable"
 if [[ ! -x "$qt_host" ]]; then
     echo "error: Qt host is not executable: $qt_host" >&2
     exit 1
 fi
 
 if [[ -f "$host_build_dir/conanrun.sh" ]]; then
-    # Conan supplies the Qt library, plugin and QML import paths used by the
-    # editable Gallery-enabled host.
+    # Conan supplies the shared Qt/codec runtime used by the host and bundled
+    # ZoinGallery submodule.
     source "$host_build_dir/conanrun.sh"
 fi
 

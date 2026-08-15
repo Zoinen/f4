@@ -1,5 +1,11 @@
 package extui
 
+import (
+	"encoding/binary"
+	"hash/fnv"
+	"strconv"
+)
+
 const (
 	Schema       = "app"
 	SceneVersion = 3
@@ -9,21 +15,22 @@ type M = map[string]any
 
 // Scene является корневым объектом для экспорта состояния f4
 type Scene struct {
-	Width          int
-	Height         int
-	ActiveScreen   int
-	WorkspaceCount int
-	WorkspaceTabs  M
-	Presentation   string
-	QmlIconSet     string
-	Shell          *ShellModel
-	MenuBar        *MenuModel
-	KeyBar         *KeyBarModel
-	Toast          *ToastModel
-	Dialogs        []DialogModel
-	Menus          []MenuModel
-	Surface        *SurfaceModel
-	Legacy         M
+	Width           int
+	Height          int
+	ActiveScreen    int
+	WorkspaceCount  int
+	WorkspaceTabs   M
+	Presentation    string
+	QmlIconSet      string
+	Shell           *ShellModel
+	MenuBar         *MenuModel
+	KeyBar          *KeyBarModel
+	Toast           *ToastModel
+	Dialogs         []DialogModel
+	Menus           []MenuModel
+	Surface         *SurfaceModel
+	OperationsQueue *OperationsQueueModel
+	Legacy          M
 }
 
 type ShellModel struct {
@@ -44,6 +51,7 @@ type ShellModel struct {
 	FallbackReason string
 	Panels         []PanelModel
 	InfoPanels     []InfoPanelModel
+	QuickViews     []QuickViewModel
 	CommandLine    *CommandLineModel
 	Terminal       *TerminalModel
 }
@@ -63,14 +71,39 @@ type InfoPanelRowModel struct {
 	Value string
 }
 
+// QuickViewModel is the embedded Ctrl+Q panel.  Its chrome and source
+// identity live beside a regular bounded SurfaceModel so native frontends can
+// reuse the same smooth-scrolling viewport as Viewer and Editor without
+// mistaking the preview for a standalone document frame.
+type QuickViewModel struct {
+	ID          string
+	Side        int
+	SourceSide  int
+	Active      bool
+	Title       string
+	BottomHint  string
+	ContentKey  string
+	Name        string
+	Path        string
+	SizeText    string
+	PreviewKind string
+	Label       string
+	Error       string
+	Loading     bool
+	Wrap        bool
+	HeaderRows  []TextRowModel
+	ImageSource string
+	ImageWidth  int
+	ImageHeight int
+	Surface     SurfaceModel
+}
+
 type PanelModel struct {
 	ID                     string
 	Side                   int
 	Active                 bool
 	Path                   string
 	Title                  string
-	ViewMode               string
-	Presentation           string
 	GalleryLayoutMode      string
 	GalleryColumnCount     int
 	GalleryDensity         int
@@ -86,7 +119,6 @@ type PanelModel struct {
 	SortReverse            bool
 	SeparateFileExtensions bool
 	Cursor                 int
-	Top                    int
 	Loading                bool
 	FastFind               bool
 	FastFindText           string
@@ -94,7 +126,6 @@ type PanelModel struct {
 	SelectedSize           int64
 	TotalCount             int
 	TotalSize              int64
-	Columns                []PanelColumnModel
 	GalleryColumns         []PanelColumnModel
 	Entries                []FileEntryModel
 }
@@ -165,6 +196,9 @@ type CommandLineModel struct {
 	InputX           int
 	CursorPrefixRuns []RunModel
 	CursorX          int
+	CursorPosition   int
+	SelectionStart   int
+	SelectionEnd     int
 	CursorVisible    bool
 	CursorShape      string
 }
@@ -205,9 +239,94 @@ type SurfaceModel struct {
 	CursorShape        string
 	ScrollTop          int
 	ScrollLeft         int
-	Selection          bool
-	Autocomplete       M
-	Rows               []TextRowModel
+	// DocumentKey changes when the content represented by a persistent native
+	// viewport changes. ScrollAction names the semantic action used to request
+	// another bounded window.
+	DocumentKey  string
+	ScrollAction string
+	// ScrollUnit describes the absolute coordinate space used by the bounded
+	// semantic text window: "bytes" for Viewer and "rows" for Editor.
+	ScrollUnit         string
+	WindowStart        int64
+	WindowEnd          int64
+	ViewportStart      int64
+	ViewportSpan       int64
+	ContentExtent      int64
+	ContentExtentKnown bool
+	ViewportRow        int
+	ViewportRows       int
+	CursorAbsoluteRow  int64
+	WindowGeneration   uint64
+	// WindowContentKey fingerprints every row and styled run in WindowRows.
+	// Native renderers use it to avoid re-serializing a multi-megabyte model
+	// merely to discover that an unrelated scene update left the window intact.
+	WindowContentKey string
+	Selection        bool
+	Autocomplete     M
+	Rows             []TextRowModel
+	WindowRows       []TextRowModel
+}
+
+// OperationsQueueModel is the native representation of the background
+// operations workspace.  It deliberately exposes only the operations that
+// exist in the terminal UI: selecting a row, opening its details, cancelling
+// a cancellable task and clearing terminal tasks.
+type OperationsQueueModel struct {
+	ID              string
+	Title           string
+	Selected        int
+	SelectedTaskID  int
+	Top             int
+	WorkspaceIndex  int
+	WorkspaceNumber int
+	TabID           string
+	ActiveCount     int
+	QueuedCount     int
+	RunningCount    int
+	CompletedCount  int
+	ErrorCount      int
+	CancelledCount  int
+	HasActive       bool
+	CanClear        bool
+	CanClose        bool
+	CancelText      string
+	ClearText       string
+	EmptyText       string
+	DetailsText     string
+	Columns         []OperationsQueueColumnModel
+	Items           []OperationsQueueItemModel
+}
+
+type OperationsQueueColumnModel struct {
+	ID        string
+	Title     string
+	Width     int
+	Alignment string
+}
+
+type OperationsQueueItemModel struct {
+	ID              string
+	TaskID          int
+	Index           int
+	Type            string
+	Description     string
+	State           string
+	StateClass      string
+	Action          string
+	CurrentFile     string
+	DisplayText     string
+	CurrentProgress int
+	Progress        int
+	TotalText       string
+	Elapsed         string
+	ETA             string
+	Speed           string
+	Error           string
+	Cancellable     bool
+	HasDetails      bool
+	Terminal        bool
+	Active          bool
+	CancelPrompt    string
 }
 
 type TextRowModel struct {
@@ -215,6 +334,7 @@ type TextRowModel struct {
 	VisualRow   int
 	LogicalLine int
 	Offset      int64
+	EndOffset   int64
 	Text        string
 	Runs        []RunModel
 }
@@ -346,6 +466,9 @@ func (s Scene) ToMap() M {
 	if s.Surface != nil {
 		out["surface"] = s.Surface.ToMap()
 	}
+	if s.OperationsQueue != nil {
+		out["operationsQueue"] = s.OperationsQueue.ToMap()
+	}
 	if s.Legacy != nil {
 		out["legacy"] = s.Legacy
 		if frames, ok := s.Legacy["frames"]; ok {
@@ -385,6 +508,9 @@ func (s ShellModel) ToMap() M {
 	if len(s.InfoPanels) > 0 {
 		out["infoPanels"] = infoPanelsToMaps(s.InfoPanels)
 	}
+	if len(s.QuickViews) > 0 {
+		out["quickViews"] = quickViewsToMaps(s.QuickViews)
+	}
 	if s.CommandLine != nil {
 		out["commandLine"] = s.CommandLine.ToMap()
 	}
@@ -414,6 +540,32 @@ func (p InfoPanelModel) ToMap() M {
 	}
 }
 
+func (q QuickViewModel) ToMap() M {
+	return M{
+		"id":          q.ID,
+		"kind":        "quickViewPanel",
+		"side":        q.Side,
+		"sourceSide":  q.SourceSide,
+		"active":      q.Active,
+		"title":       q.Title,
+		"bottomHint":  q.BottomHint,
+		"contentKey":  q.ContentKey,
+		"name":        q.Name,
+		"path":        q.Path,
+		"sizeText":    q.SizeText,
+		"previewKind": q.PreviewKind,
+		"label":       q.Label,
+		"error":       q.Error,
+		"loading":     q.Loading,
+		"wrap":        q.Wrap,
+		"headerRows":  rowsToMaps(q.HeaderRows),
+		"imageSource": q.ImageSource,
+		"imageWidth":  q.ImageWidth,
+		"imageHeight": q.ImageHeight,
+		"surface":     q.Surface.ToMap(),
+	}
+}
+
 func (p PanelModel) ToMap() M {
 	columnsToMaps := func(source []PanelColumnModel) []M {
 		columns := make([]M, 0, len(source))
@@ -431,7 +583,6 @@ func (p PanelModel) ToMap() M {
 		}
 		return columns
 	}
-	columns := columnsToMaps(p.Columns)
 	out := M{
 		"id":                     p.ID,
 		"kind":                   "filePanel",
@@ -439,8 +590,6 @@ func (p PanelModel) ToMap() M {
 		"active":                 p.Active,
 		"path":                   p.Path,
 		"title":                  p.Title,
-		"viewModeName":           p.ViewMode,
-		"presentation":           p.Presentation,
 		"galleryLayoutMode":      p.GalleryLayoutMode,
 		"galleryColumnCount":     p.GalleryColumnCount,
 		"galleryDensity":         p.GalleryDensity,
@@ -455,7 +604,6 @@ func (p PanelModel) ToMap() M {
 		"sortReverse":            p.SortReverse,
 		"separateFileExtensions": p.SeparateFileExtensions,
 		"cursor":                 p.Cursor,
-		"top":                    p.Top,
 		"loading":                p.Loading,
 		"fastFind":               p.FastFind,
 		"fastFindText":           p.FastFindText,
@@ -463,7 +611,6 @@ func (p PanelModel) ToMap() M {
 		"selectedSize":           p.SelectedSize,
 		"totalCount":             p.TotalCount,
 		"totalSize":              p.TotalSize,
-		"columns":                columns,
 		"galleryColumns":         columnsToMaps(p.GalleryColumns),
 		"entries":                entriesToMaps(p.Entries),
 	}
@@ -546,6 +693,9 @@ func (c CommandLineModel) ToMap() M {
 		"inputX":           c.InputX,
 		"cursorPrefixRuns": runsToMaps(c.CursorPrefixRuns),
 		"cursorX":          c.CursorX,
+		"cursorPosition":   c.CursorPosition,
+		"selectionStart":   c.SelectionStart,
+		"selectionEnd":     c.SelectionEnd,
 		"cursorVisible":    c.CursorVisible,
 		"cursorShape":      c.CursorShape,
 	}
@@ -591,13 +741,150 @@ func (d SurfaceModel) ToMap() M {
 		"cursorShape":        d.CursorShape,
 		"scrollTop":          d.ScrollTop,
 		"scrollLeft":         d.ScrollLeft,
+		"documentKey":        d.DocumentKey,
+		"scrollAction":       d.ScrollAction,
+		"scrollUnit":         d.ScrollUnit,
+		"windowStart":        d.WindowStart,
+		"windowEnd":          d.WindowEnd,
+		"viewportStart":      d.ViewportStart,
+		"viewportSpan":       d.ViewportSpan,
+		"contentExtent":      d.ContentExtent,
+		"contentExtentKnown": d.ContentExtentKnown,
+		"viewportRow":        d.ViewportRow,
+		"viewportRows":       d.ViewportRows,
+		"cursorAbsoluteRow":  d.CursorAbsoluteRow,
+		"windowGeneration":   d.WindowGeneration,
+		"windowContentKey":   d.windowContentKey(),
 		"selection":          d.Selection,
 		"rows":               rowsToMaps(d.Rows),
+		"windowRows":         rowsToMaps(d.WindowRows),
 	}
 	if d.Autocomplete != nil {
 		out["autocomplete"] = d.Autocomplete
 	}
 	return out
+}
+
+func (q OperationsQueueModel) ToMap() M {
+	columns := make([]M, 0, len(q.Columns))
+	for _, column := range q.Columns {
+		columns = append(columns, M{
+			"id":        column.ID,
+			"title":     column.Title,
+			"width":     column.Width,
+			"alignment": column.Alignment,
+		})
+	}
+	items := make([]M, 0, len(q.Items))
+	for _, item := range q.Items {
+		items = append(items, item.ToMap())
+	}
+	return M{
+		"id":              q.ID,
+		"kind":            "operationsQueue",
+		"title":           q.Title,
+		"selected":        q.Selected,
+		"selectedTaskId":  q.SelectedTaskID,
+		"top":             q.Top,
+		"workspaceIndex":  q.WorkspaceIndex,
+		"workspaceNumber": q.WorkspaceNumber,
+		"tabId":           q.TabID,
+		"activeCount":     q.ActiveCount,
+		"queuedCount":     q.QueuedCount,
+		"runningCount":    q.RunningCount,
+		"completedCount":  q.CompletedCount,
+		"errorCount":      q.ErrorCount,
+		"cancelledCount":  q.CancelledCount,
+		"hasActive":       q.HasActive,
+		"canClear":        q.CanClear,
+		"canClose":        q.CanClose,
+		"cancelText":      q.CancelText,
+		"clearText":       q.ClearText,
+		"emptyText":       q.EmptyText,
+		"detailsText":     q.DetailsText,
+		"columns":         columns,
+		"items":           items,
+	}
+}
+
+func (i OperationsQueueItemModel) ToMap() M {
+	return M{
+		"id":              i.ID,
+		"taskId":          i.TaskID,
+		"index":           i.Index,
+		"type":            i.Type,
+		"description":     i.Description,
+		"state":           i.State,
+		"stateClass":      i.StateClass,
+		"action":          i.Action,
+		"currentFile":     i.CurrentFile,
+		"displayText":     i.DisplayText,
+		"currentProgress": i.CurrentProgress,
+		"progress":        i.Progress,
+		"totalText":       i.TotalText,
+		"elapsed":         i.Elapsed,
+		"eta":             i.ETA,
+		"speed":           i.Speed,
+		"error":           i.Error,
+		"cancellable":     i.Cancellable,
+		"hasDetails":      i.HasDetails,
+		"terminal":        i.Terminal,
+		"active":          i.Active,
+		"cancelPrompt":    i.CancelPrompt,
+	}
+}
+
+func (d SurfaceModel) windowContentKey() string {
+	if d.WindowContentKey != "" {
+		return d.WindowContentKey
+	}
+	return WindowRowsContentKey(d.WindowRows)
+}
+
+// WindowRowsContentKey returns a deterministic, allocation-light fingerprint
+// of the complete semantic window, including every rendering attribute. Row
+// extents alone are insufficient: an edit, selection or syntax-state update
+// can repaint an existing coordinate range without moving it.
+func WindowRowsContentKey(rows []TextRowModel) string {
+	h := fnv.New64a()
+	var number [8]byte
+	writeUint64 := func(value uint64) {
+		binary.LittleEndian.PutUint64(number[:], value)
+		_, _ = h.Write(number[:])
+	}
+	writeString := func(value string) {
+		writeUint64(uint64(len(value)))
+		_, _ = h.Write([]byte(value))
+	}
+	writeBool := func(value bool) {
+		if value {
+			_, _ = h.Write([]byte{1})
+		} else {
+			_, _ = h.Write([]byte{0})
+		}
+	}
+
+	writeString("f4-window-content-v1")
+	writeUint64(uint64(len(rows)))
+	for _, row := range rows {
+		writeUint64(uint64(int64(row.Index)))
+		writeUint64(uint64(int64(row.VisualRow)))
+		writeUint64(uint64(int64(row.LogicalLine)))
+		writeUint64(uint64(row.Offset))
+		writeUint64(uint64(row.EndOffset))
+		writeString(row.Text)
+		writeUint64(uint64(len(row.Runs)))
+		for _, run := range row.Runs {
+			writeString(run.Text)
+			writeUint64(run.Attr)
+			writeString(run.Foreground)
+			writeString(run.Background)
+			writeBool(run.Bold)
+			writeBool(run.Underline)
+			writeBool(run.Strikeout)
+		}
+	}
+	return "w1-" + strconv.FormatUint(h.Sum64(), 16)
 }
 
 func (r TextRowModel) ToMap() M {
@@ -606,6 +893,7 @@ func (r TextRowModel) ToMap() M {
 		"visualRow":   r.VisualRow,
 		"logicalLine": r.LogicalLine,
 		"offset":      r.Offset,
+		"endOffset":   r.EndOffset,
 	}
 	if r.Text != "" {
 		out["text"] = r.Text
@@ -748,6 +1036,14 @@ func panelsToMaps(items []PanelModel) []M {
 }
 
 func infoPanelsToMaps(items []InfoPanelModel) []M {
+	out := make([]M, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.ToMap())
+	}
+	return out
+}
+
+func quickViewsToMaps(items []QuickViewModel) []M {
 	out := make([]M, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.ToMap())

@@ -80,6 +80,38 @@ Icon = https://example.invalid/file.svg
 	}
 }
 
+func TestSemanticHighlightLeavesHiddenPresentationToGUI(t *testing.T) {
+	highlighter := &FileHighlighter{Rules: []HighlightRule{
+		{
+			Name:      "Hidden",
+			AttrSet:   AttrHidden,
+			NormalStr: "foreground:#666666",
+			IconURL:   "qrc:/hidden.svg",
+		},
+		{
+			Name:               "Directories",
+			AttrSet:            AttrDirectory,
+			NormalStr:          "foreground:#eeeeec",
+			IconURL:            "qrc:/folder.svg",
+			ContinueProcessing: true,
+		},
+	}}
+	item := vfs.VFSItem{Name: ".config", IsDir: true, IsHidden: true}
+	_, style := highlighter.SemanticStyle(&item)
+	if style.Normal.Foreground != "#EEEEEC" || style.Icon != "qrc:/folder.svg" {
+		t.Fatalf("hidden directory did not retain ordinary directory style: %#v", style)
+	}
+	for _, group := range style.Groups {
+		if group.Name == "Hidden" {
+			t.Fatalf("semantic style retained hidden-only presentation group: %#v", style)
+		}
+	}
+	// Console highlighting remains deliberately unchanged.
+	if got := highlighter.GetColor(&item, 0, false, false); vtui.GetRGBFore(got) == 0 {
+		t.Fatalf("TUI hidden rule stopped applying: color=%#x", got)
+	}
+}
+
 func TestHighlightRule_Match(t *testing.T) {
 	rule := HighlightRule{
 		Masks:      []string{"*.go", "*.sh"},

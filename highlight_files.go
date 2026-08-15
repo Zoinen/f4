@@ -342,6 +342,31 @@ func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem) []int {
 	return matched
 }
 
+func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem) []int {
+	if fh == nil || item == nil {
+		return nil
+	}
+	if !item.IsHidden {
+		return fh.matchedRuleIndices(item)
+	}
+	var matched []int
+	for i := range fh.Rules {
+		// Hidden-only presentation rules do not participate in semantic GUI
+		// cascading and therefore must not terminate it either.
+		if item.IsHidden && fh.Rules[i].AttrSet&AttrHidden != 0 {
+			continue
+		}
+		if !fh.Rules[i].Match(item) {
+			continue
+		}
+		matched = append(matched, i)
+		if !fh.Rules[i].ContinueProcessing {
+			break
+		}
+	}
+	return matched
+}
+
 func normalizeHighlightIconURL(raw, baseDir string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -670,7 +695,7 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem) (string, extui.Highl
 		return "", style
 	}
 	parentEntry := item.Name == ".."
-	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+	for _, ruleIndex := range fh.semanticMatchedRuleIndices(item) {
 		rule := fh.Rules[ruleIndex]
 		style.Groups = append(style.Groups, extui.HighlightGroupModel{
 			ID:   rule.RuleID,

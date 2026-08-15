@@ -39,6 +39,10 @@ func (s serverDeviceSource) ListDevices(ctx context.Context) ([]DeviceInfo, erro
 	return result, nil
 }
 
+func (s serverDeviceSource) RestartForAuthorization(ctx context.Context) error {
+	return s.server.RestartForAuthorization(ctx)
+}
+
 type hybridDeviceOpener struct {
 	features func(context.Context, string) (map[string]bool, error)
 	openFish func(context.Context, vfs.VFS, DeviceInfo) (vfs.VFS, error)
@@ -232,5 +236,6 @@ func NewPlugin() *Plugin {
 }
 
 var _ DeviceSource = serverDeviceSource{}
+var _ DeviceAuthorizationRestarter = serverDeviceSource{}
 var _ DeviceOpener = (*hybridDeviceOpener)(nil)
 var _ io.ReadWriteCloser = (*ShellStream)(nil)

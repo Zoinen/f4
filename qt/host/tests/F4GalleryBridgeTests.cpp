@@ -20,10 +20,8 @@
 
 #include <algorithm>
 
-#if F4_WITH_ZOINGALLERY
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
-#endif
 
 class GalleryKeyRecorder final : public QObject
 {
@@ -91,9 +89,7 @@ private slots:
     void selectionIsAtomicAndRevisioned();
     void rapidSelectionActionsDoNotReuseStaleRevision();
     void staleSelectionIntentRetriesIdempotentlyAgainstNewCatalog();
-    void presentationIsValidated();
     void galleryLayoutDensityAndSortActionsAreValidated();
-#if F4_WITH_ZOINGALLERY
     void galleryIconsFollowSharedIconSet();
     void hostRuntimeUsesHistoricalDecodeParallelism();
     void inactiveGalleryDoesNotStealFocus();
@@ -103,12 +99,11 @@ private slots:
     void bridgeShutdownStopsRuntimeDuringDecode();
     void panelIdentityReplacementResetsSession();
     void rejectedCursorRestoresAuthoritativeState();
-    void vfsFallbackClearsExternalSession();
+    void vfsUsesUnifiedSessionWithoutPreviews();
     void viewerWaitsForAuthoritativeCursor();
     void inactivePanelImageOpenWaitsForActiveAndCursor();
-    void viewerClosesWhenOwningPanelIsNoLongerActiveGallery();
+    void viewerIgnoresSemanticPresentation();
     void loadsTwoSessionsAndWindowlessQml();
-#endif
 };
 
 namespace
@@ -139,7 +134,6 @@ QVariantMap testScene()
                       {QStringLiteral("side"), 0},
                       {QStringLiteral("active"), true},
                       {QStringLiteral("path"), QStringLiteral("/tmp")},
-                      {QStringLiteral("presentation"), QStringLiteral("gallery")},
                       {QStringLiteral("sourceKind"), QStringLiteral("local")},
                       {QStringLiteral("previewCapable"), true},
                       {QStringLiteral("catalogRevision"), qulonglong(42)},
@@ -179,7 +173,6 @@ QVariantMap longCatalogScene(int count, int cursor)
                       {QStringLiteral("side"), 0},
                       {QStringLiteral("active"), true},
                       {QStringLiteral("path"), QStringLiteral("/tmp")},
-                      {QStringLiteral("presentation"), QStringLiteral("gallery")},
                       {QStringLiteral("sourceKind"), QStringLiteral("local")},
                       {QStringLiteral("previewCapable"), true},
                       {QStringLiteral("catalogRevision"), qulonglong(77)},
@@ -199,7 +192,6 @@ void F4GalleryBridgeTests::initTestCase()
     QStandardPaths::setTestModeEnabled(true);
 }
 
-#if F4_WITH_ZOINGALLERY
 void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
 {
     QVariantMap scene = testScene();
@@ -243,6 +235,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
             {QStringLiteral("index"), 1},
             {QStringLiteral("name"), QStringLiteral("custom.bin")},
             {QStringLiteral("localPath"), QStringLiteral("/tmp/custom.bin")},
+            {QStringLiteral("isHidden"), true},
             {QStringLiteral("highlightStyleId"), QStringLiteral("custom")},
         },
         QVariantMap{
@@ -285,7 +278,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     bridge.synchronizeScene(scene);
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     const int imageFileRole = session->model()->roleNames().key(
         QByteArrayLiteral("imageFileRole"), -1);
@@ -319,6 +312,10 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     QCOMPARE(lucideRouteName(plain), QStringLiteral("file-text"));
     QCOMPARE(custom->property("iconPath").toString(),
              QStringLiteral("file:///tmp/user-highlight.svg"));
+    QVERIFY(custom->property("displayFields").toMap().value(
+                QStringLiteral("isHidden")).toBool());
+    QVERIFY(!plain->property("displayFields").toMap().value(
+                QStringLiteral("isHidden")).toBool());
     const QVariantMap markerStyle = marker->property("highlightStyle").toMap();
     QCOMPARE(markerStyle.value(QStringLiteral("marker")).toString(),
              QStringLiteral("*"));
@@ -534,7 +531,7 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
                  <= galleryLayout->property("height").toReal(),
              "four-entry terminal paging fixture must not scroll");
 
-    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.leftSession());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
     QVERIFY(session);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
 
@@ -674,33 +671,54 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
              QStringLiteral("panel.cursor"));
     actions.clear();
 
-    // Shift+spatial navigation stays inside the masonry view, toggles the
-    // item being left (normal f4 selection contract), and then requests the
-    // spatial cursor. Only the modifier key itself may be forwarded.
+    // Shift+spatial navigation stays inside Gallery and commits the original
+    // Zoin Gallery range preview when Shift itself is released.
     keyRecorder.clear();
     QTest::keyClick(&view, Qt::Key_Right, Qt::ShiftModifier);
     QCOMPARE(session->currentIndex(), 3);
     QCOMPARE(panel->property("selectionAnchorIndex").toInt(), 2);
     QCOMPARE(keyRecorder.count(Qt::Key_Right, true), 0);
-    QCOMPARE(actions.size(), 2);
+    QTRY_COMPARE_WITH_TIMEOUT(actions.size(), 2, 1000);
     action = actions.at(0).at(0).toMap();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.setSelection"));
+    QCOMPARE(action.value(QStringLiteral("mode")).toString(),
+             QStringLiteral("add"));
     QCOMPARE(action.value(QStringLiteral("entryIds")).toList(),
              QVariantList{QStringLiteral("entry:2")});
     actions.clear();
 
-    // f4 toggles the item being left even when cursor movement clamps at a
-    // boundary. Masonry navigation must do the same at the bottom edge.
+    // A clamped move produces an empty range delta, exactly like the original
+    // preview model, and therefore sends no redundant semantic action.
     QTest::keyClick(&view, Qt::Key_Down, Qt::ShiftModifier);
     QCOMPARE(session->currentIndex(), 3);
     QCOMPARE(panel->property("selectionAnchorIndex").toInt(), 2);
-    QCOMPARE(actions.size(), 1);
+    QCOMPARE(actions.size(), 0);
+    actions.clear();
+
+    // Home/End use the same native range-preview contract. They previously
+    // fell through the host router even though arrows and Page keys did not.
+    session->activateIndex(2);
+    keyRecorder.clear();
+    QTest::keyClick(&view, Qt::Key_Home, Qt::ShiftModifier);
+    QCOMPARE(session->currentIndex(), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_Home, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_Home, false), 0);
+    QVERIFY(!actions.isEmpty());
     action = actions.constFirst().at(0).toMap();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.setSelection"));
-    QCOMPARE(action.value(QStringLiteral("entryIds")).toList(),
-             QVariantList{QStringLiteral("entry:3")});
+    QCOMPARE(action.value(QStringLiteral("mode")).toString(),
+             QStringLiteral("add"));
+    actions.clear();
+
+    session->activateIndex(1);
+    keyRecorder.clear();
+    QTest::keyClick(&view, Qt::Key_End, Qt::ShiftModifier);
+    QCOMPARE(session->currentIndex(), 3);
+    QCOMPARE(keyRecorder.count(Qt::Key_End, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_End, false), 0);
+    QVERIFY(!actions.isEmpty());
     actions.clear();
 
     // A plain keyboard move becomes the anchor for a later Shift-click,
@@ -1072,7 +1090,7 @@ void F4GalleryBridgeTests::galleryKeepsAuthoritativeCursorVisible()
     };
     QTRY_VERIFY(visible(47));
 
-    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.leftSession());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
     QVERIFY(session);
     session->activateIndex(0);
     QTRY_COMPARE(layout->property("contentY").toDouble(), 0.0);
@@ -1618,7 +1636,7 @@ void F4GalleryBridgeTests::bridgeShutdownStopsRuntimeDuringDecode()
         scene.insert(QStringLiteral("shell"), shell);
         bridge.synchronizeScene(scene);
 
-        session = qobject_cast<ZoinGallery::GallerySession *>(bridge.leftSession());
+        session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
         QVERIFY(session);
         session->activateIndex(0);
         session->setViewerOpen(true);
@@ -1658,8 +1676,8 @@ void F4GalleryBridgeTests::panelIdentityReplacementResetsSession()
     firstScene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(firstScene);
 
-    auto *leftSession = qobject_cast<ZoinGallery::GallerySession *>(bridge.leftSession());
-    auto *rightSession = qobject_cast<ZoinGallery::GallerySession *>(bridge.rightSession());
+    auto *leftSession = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    auto *rightSession = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(1));
     QVERIFY(leftSession);
     QVERIFY(rightSession);
     QCOMPARE(leftSession->entryIdAt(0), QStringLiteral("left:one"));
@@ -1735,7 +1753,7 @@ void F4GalleryBridgeTests::viewerWaitsForAuthoritativeCursor()
     bridge.synchronizeScene(rejectedScene);
     QVERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
-    QCOMPARE(bridge.viewerSession(), bridge.leftSession());
+    QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
     // This panel was already active; opening the viewer must not emit a
     // redundant activation after cursor confirmation.
     QCOMPARE(actions.size(), 2);
@@ -1789,11 +1807,11 @@ void F4GalleryBridgeTests::inactivePanelImageOpenWaitsForActiveAndCursor()
     bridge.synchronizeScene(scene);
     QVERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
-    QCOMPARE(bridge.viewerSession(), bridge.leftSession());
+    QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
     QCOMPARE(actions.size(), 2);
 }
 
-void F4GalleryBridgeTests::viewerClosesWhenOwningPanelIsNoLongerActiveGallery()
+void F4GalleryBridgeTests::viewerIgnoresSemanticPresentation()
 {
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
@@ -1825,7 +1843,7 @@ void F4GalleryBridgeTests::viewerClosesWhenOwningPanelIsNoLongerActiveGallery()
     shell.insert(QStringLiteral("panels"), QVariantList{panel});
     scene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(scene);
-    QVERIFY(!bridge.viewerVisible());
+    QVERIFY(bridge.viewerVisible());
 }
 
 void F4GalleryBridgeTests::rejectedCursorRestoresAuthoritativeState()
@@ -1836,7 +1854,7 @@ void F4GalleryBridgeTests::rejectedCursorRestoresAuthoritativeState()
     bridge.synchronizeScene(testScene());
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:one"));
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
@@ -1866,7 +1884,7 @@ void F4GalleryBridgeTests::rejectedCursorRestoresAuthoritativeState()
              qulonglong(43));
 }
 
-void F4GalleryBridgeTests::vfsFallbackClearsExternalSession()
+void F4GalleryBridgeTests::vfsUsesUnifiedSessionWithoutPreviews()
 {
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
@@ -1874,7 +1892,7 @@ void F4GalleryBridgeTests::vfsFallbackClearsExternalSession()
     bridge.synchronizeScene(testScene());
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->model()->rowCount(), 2);
 
@@ -1888,20 +1906,17 @@ void F4GalleryBridgeTests::vfsFallbackClearsExternalSession()
     vfsScene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(vfsScene);
 
-    QCOMPARE(session->model()->rowCount(), 0);
-    QCOMPARE(session->catalogRevision(), qulonglong(0));
-    QVERIFY(!bridge.shouldUseGallery(panel));
-    QCOMPARE(panel.value(QStringLiteral("presentation")).toString(),
-             QStringLiteral("gallery"));
+    QCOMPARE(session->model()->rowCount(), 2);
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, true, 42);
+    QVERIFY(!bridge.viewerVisible());
 
-    // The preference was never mutated, so returning to a previewable local
-    // source repopulates the persistent session even at the same revision.
+    // Returning to a previewable local source at the same revision refreshes
+    // the source capabilities without reconstructing the renderer.
     bridge.synchronizeScene(testScene());
     QCOMPARE(session->model()->rowCount(), 2);
     QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
 }
-#endif
-
 void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
 {
     QQmlEngine engine;
@@ -1931,12 +1946,10 @@ void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
     QCOMPARE(retry.value(QStringLiteral("catalogRevision")).toULongLong(),
              qulonglong(43));
 
-#if F4_WITH_ZOINGALLERY
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:one"));
-#endif
 
     panel.insert(QStringLiteral("cursor"), 9);
     panel.insert(QStringLiteral("cursorEntryId"), QStringLiteral("left:two"));
@@ -1944,22 +1957,19 @@ void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
     advancedScene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(advancedScene);
 
-#if F4_WITH_ZOINGALLERY
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:two"));
     QCOMPARE(session->currentIndex(), 1);
-#endif
     QCOMPARE(actions.size(), 2);
 }
 
 void F4GalleryBridgeTests::activationSceneDoesNotSnapPendingCursorBackward()
 {
-#if F4_WITH_ZOINGALLERY
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
     const QVariantMap initial = testScene();
     bridge.synchronizeScene(initial);
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
-        bridge.leftSession());
+        bridge.sessionForSide(0));
     QVERIFY(session);
 
     session->activateIndex(1);
@@ -1987,9 +1997,6 @@ void F4GalleryBridgeTests::activationSceneDoesNotSnapPendingCursorBackward()
     // the bridge is no longer masking it as a pending local intent.
     bridge.synchronizeScene(initial);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:one"));
-#else
-    QSKIP("ZoinGallery integration disabled");
-#endif
 }
 
 void F4GalleryBridgeTests::nonImageOpenWaitsForAuthoritativeCursorAndRevision()
@@ -2102,19 +2109,6 @@ void F4GalleryBridgeTests::deferredCursorCommitsOnlyLatest()
     QCOMPARE(action.value(QStringLiteral("catalogRevision")).toULongLong(),
              qulonglong(42));
 
-    actions.clear();
-    bridge.requestCursor(0, QStringLiteral("left:one"), 7, 42, true);
-    bridge.requestPresentation(0, QStringLiteral("list"));
-    QCOMPARE(actions.size(), 2);
-    QCOMPARE(actions.at(0).constFirst().toMap()
-                 .value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.cursor"));
-    QCOMPARE(actions.at(0).constFirst().toMap()
-                 .value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("left:one"));
-    QCOMPARE(actions.at(1).constFirst().toMap()
-                 .value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.setPresentation"));
 }
 
 void F4GalleryBridgeTests::selectionIsAtomicAndRevisioned()
@@ -2239,20 +2233,6 @@ void F4GalleryBridgeTests::staleSelectionIntentRetriesIdempotentlyAgainstNewCata
     QVERIFY(clear.value(QStringLiteral("entryIds")).toList().isEmpty());
 }
 
-void F4GalleryBridgeTests::presentationIsValidated()
-{
-    F4GalleryBridge bridge(nullptr);
-    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
-
-    bridge.requestPresentation(1, QStringLiteral("unsupported"));
-
-    QCOMPARE(actions.size(), 1);
-    const QVariantMap action = actions.takeFirst().at(0).toMap();
-    QCOMPARE(action.value(QStringLiteral("action")).toString(), QStringLiteral("panel.setPresentation"));
-    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 1);
-    QCOMPARE(action.value(QStringLiteral("presentation")).toString(), QStringLiteral("list"));
-}
-
 void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
 {
     F4GalleryBridge bridge(nullptr);
@@ -2297,7 +2277,6 @@ void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
              QStringLiteral("panel.sortMenu"));
 }
 
-#if F4_WITH_ZOINGALLERY
 void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
 {
     QQmlEngine engine;
@@ -2306,12 +2285,12 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
     F4GalleryBridge bridge(&engine);
 
     QVERIFY(bridge.available());
-    QVERIFY(bridge.leftSession());
-    QVERIFY(bridge.rightSession());
-    QVERIFY(bridge.leftSession() != bridge.rightSession());
+    QVERIFY(bridge.sessionForSide(0));
+    QVERIFY(bridge.sessionForSide(1));
+    QVERIFY(bridge.sessionForSide(0) != bridge.sessionForSide(1));
 
     bridge.synchronizeScene(testScene());
-    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.leftSession());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
     QVERIFY(session);
     QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
     QCOMPARE(session->entryIdAt(1), QStringLiteral("left:two"));
@@ -2322,14 +2301,6 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
     const QVariantMap localGallery = testScene().value(QStringLiteral("shell"))
                                          .toMap().value(QStringLiteral("panels"))
                                          .toList().constFirst().toMap();
-    QVERIFY(bridge.shouldUseGallery(localGallery));
-    QVariantMap vfsFallback = localGallery;
-    vfsFallback.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
-    vfsFallback.insert(QStringLiteral("previewCapable"), false);
-    QVERIFY(!bridge.shouldUseGallery(vfsFallback));
-    QCOMPARE(vfsFallback.value(QStringLiteral("presentation")).toString(),
-             QStringLiteral("gallery"));
-
     engine.rootContext()->setContextProperty(QStringLiteral("testGallerySession"), session);
 
     QQmlComponent panel(&engine);
@@ -2350,15 +2321,6 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
     panelObject.reset(panel.create());
     QVERIFY2(panelObject, qPrintable(panel.errorString()));
     QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
-
-    // The ordinary file list dynamically loads this exact reusable control;
-    // ensure its resource URL remains deployable without importing the module
-    // from main.qml (which must also support list-only builds).
-    QQmlComponent scrollBar(&engine, bridge.scrollBarComponentUrl());
-    QTRY_VERIFY_WITH_TIMEOUT(scrollBar.status() != QQmlComponent::Loading, 5000);
-    QVERIFY2(scrollBar.isReady(), qPrintable(scrollBar.errorString()));
-    QScopedPointer<QObject> scrollBarObject(scrollBar.create());
-    QVERIFY2(scrollBarObject, qPrintable(scrollBar.errorString()));
 
     // The persistent f4 panel host is the viewer's transition source. Its
     // public state must reach the reusable GalleryPanel so the current tile is
@@ -2420,6 +2382,33 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
     // Explicit persisted zoom values keep the existing integer contract.
     configuredGallery.insert(QStringLiteral("galleryDensity"), 30);
     panelHostObject->setProperty("panel", configuredGallery);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(embeddedPanel->property("density").toDouble() - 30.0)
+            < 0.0001,
+        3000);
+
+    // Icons starts at half of the former 128px cell scale. An untouched
+    // semantic density must select that 64px default, while persisted
+    // explicit zoom values continue to win above.
+    configuredGallery.insert(QStringLiteral("galleryLayoutMode"),
+                             QStringLiteral("icons"));
+    configuredGallery.insert(QStringLiteral("galleryDensity"), 0);
+    panelHostObject->setProperty("panel", configuredGallery);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        embeddedPanel->property("presentationMode").toString(),
+        QStringLiteral("icons"), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(embeddedPanel->property("density").toDouble() - 64.0)
+            < 0.0001,
+        3000);
+
+    configuredGallery.insert(QStringLiteral("galleryLayoutMode"),
+                             QStringLiteral("details"));
+    configuredGallery.insert(QStringLiteral("galleryDensity"), 30);
+    panelHostObject->setProperty("panel", configuredGallery);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        embeddedPanel->property("presentationMode").toString(),
+        QStringLiteral("details"), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(embeddedPanel->property("density").toDouble() - 30.0)
             < 0.0001,
@@ -2494,8 +2483,6 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
         embeddedViewer->property("hostCapabilities").toMap();
     QVERIFY(viewerCapabilities.value(QStringLiteral("viewer")).toBool());
 }
-#endif
-
 QTEST_MAIN(F4GalleryBridgeTests)
 
 #include "F4GalleryBridgeTests.moc"

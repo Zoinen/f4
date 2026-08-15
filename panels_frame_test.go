@@ -1077,6 +1077,17 @@ func TestPanelsFrame_SortCommandsUseDefaultDirection(t *testing.T) {
 	}
 }
 
+func TestUnixPTYChangeDirCommandIsValidInInteractiveZsh(t *testing.T) {
+	got := string(unixPTYChangeDirCommand("/tmp/it's here"))
+	want := " cd '/tmp/it'\\''s here'; printf '\\033]133;F4SYNC\\007'\r"
+	if got != want {
+		t.Fatalf("unix PTY directory sync = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "f4_sync") {
+		t.Fatalf("unix PTY directory sync exposes the old textual marker: %q", got)
+	}
+}
+
 func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
@@ -4459,8 +4470,12 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 		t.Error("Wide changed the right panel's normal view mode")
 	}
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: '2', ControlKeyState: vtinput.LeftCtrlPressed})
-	if pf.widePanel != -1 || pf.panels[0].(*FileSystemPanel).viewMode != ViewModeMedium {
-		t.Error("Ctrl+2 did not leave Wide and set Medium on the active panel")
+	if pf.widePanel != pf.activeIdx || pf.panels[0].(*FileSystemPanel).viewMode != ViewModeMedium {
+		t.Error("Ctrl+2 did not change renderer while retaining independent Wide")
+	}
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: '4', ControlKeyState: vtinput.LeftCtrlPressed})
+	if pf.widePanel != -1 || pf.wide {
+		t.Fatal("second Ctrl+4 did not toggle Wide off")
 	}
 	_, _, leftX2, _ := pf.panels[0].GetPosition()
 	rightX1, _, _, _ := pf.panels[1].GetPosition()

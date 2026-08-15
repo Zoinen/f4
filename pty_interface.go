@@ -12,6 +12,13 @@ type PtyBackend interface {
 	IsBusy() bool
 }
 
+// newLocalPTY is injectable so unit tests that construct hundreds of panel
+// frames do not spawn hundreds of real interactive shells. Direct PTY tests
+// continue to call NewPTY and therefore still cover the platform backend.
+var newLocalPTY = func() (PtyBackend, error) {
+	return NewPTY()
+}
+
 // PtyPixelSizer is implemented by backends that can report the size of the
 // window in pixels next to its size in cells. A program that draws images
 // reads it from the window size of the terminal; a zero there leaves it

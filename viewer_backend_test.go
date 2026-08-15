@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +54,53 @@ func TestViewerBackendPreservesBackgroundReadError(t *testing.T) {
 }
 
 var _ vfs.ReadAtCloser = (*failingViewerFile)(nil)
+
+type newlineFreeViewerFile struct {
+	size int64
+	mu   sync.Mutex
+	read []newlineFreeViewerRead
+}
+
+type newlineFreeViewerRead struct {
+	offset int64
+	length int
+}
+
+func (f *newlineFreeViewerFile) Size() int64 { return f.size }
+func (*newlineFreeViewerFile) Close() error  { return nil }
+func (f *newlineFreeViewerFile) Read(ctx context.Context, p []byte) (int, error) {
+	return f.ReadAt(ctx, p, 0)
+}
+func (f *newlineFreeViewerFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if off >= f.size {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if remaining := f.size - off; int64(n) > remaining {
+		n = int(remaining)
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	f.mu.Lock()
+	f.read = append(f.read, newlineFreeViewerRead{offset: off, length: n})
+	f.mu.Unlock()
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *newlineFreeViewerFile) ranges() []newlineFreeViewerRead {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]newlineFreeViewerRead(nil), f.read...)
+}
+
+var _ vfs.ReadAtCloser = (*newlineFreeViewerFile)(nil)
 
 func TestViewerBackend_ReadAndFindLineStart(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "test.txt")
@@ -100,6 +149,73 @@ func TestViewerBackend_ReadAndFindLineStart(t *testing.T) {
 	startZero := vb.FindLineStart(3)
 	if startZero != 0 {
 		t.Errorf("FindLineStart at file beginning should return 0, got %d", startZero)
+	}
+}
+
+func TestViewerBackendTryFindLineStartMakesProgressBeyondCacheWindow(t *testing.T) {
+	const (
+		fileSize = int64(1024 * 1024)
+		target   = int64(900*1024 + 17)
+		maxTries = 64
+	)
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	file := &newlineFreeViewerFile{size: fileSize} // Synthetic file: one long line.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &ViewerBackend{
+		file:      file,
+		size:      fileSize,
+		ctx:       ctx,
+		cancelCtx: cancel,
+	}
+
+	resolved := int64(-1)
+	ready := false
+	for try := 0; try < maxTries; try++ {
+		resolved, ready = backend.TryFindLineStart(target)
+		if ready {
+			break
+		}
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for the next non-blocking cache fill")
+		}
+	}
+	if !ready {
+		t.Fatalf("line start did not resolve after %d cache fills", maxTries)
+	}
+	if resolved != 0 {
+		t.Fatalf("line start = %d, want 0 for a newline-free file", resolved)
+	}
+
+	ranges := file.ranges()
+	if len(ranges) < 4 {
+		t.Fatalf("test did not cross enough cache windows: reads = %v", ranges)
+	}
+	if len(ranges) >= maxTries {
+		t.Fatalf("seek used %d cache fills, indicating no bounded progress", len(ranges))
+	}
+	for i, read := range ranges {
+		if read.length > 256*1024 {
+			t.Fatalf("cache fill %d read %d bytes, want at most 256 KiB", i, read.length)
+		}
+		if i > 0 && read.offset >= ranges[i-1].offset {
+			t.Fatalf("cache seek thrashed forward: read %d starts at %d after %d", i, read.offset, ranges[i-1].offset)
+		}
+	}
+
+	backend.mu.Lock()
+	cached := len(backend.cacheData)
+	active := backend.lineSeekActive
+	backend.mu.Unlock()
+	if cached > 256*1024 {
+		t.Fatalf("backend retained %d bytes, want at most 256 KiB", cached)
+	}
+	if active {
+		t.Fatal("completed line seek retained active progress state")
 	}
 }
 

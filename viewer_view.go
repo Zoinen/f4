@@ -41,11 +41,35 @@ type ViewerView struct {
 	lastSearchOffset    int64
 	lastSearchTopOffset int64
 	lastSearchFound     bool
+	// semanticWindowGeneration acknowledges GUI window/scroll requests even
+	// when clamping leaves TopOffset unchanged at BOF/EOF.
+	semanticWindowGeneration        uint64
+	semanticWindowRequestGeneration uint64
+	semanticPendingScroll           bool
+	semanticPendingOffset           int64
+	semanticPendingGeneration       uint64
+	semanticWrapSeek                semanticWrapSeekState
 
 	scrollBar *vtui.ScrollBar
 
 	OnClose  func()
 	Codepage int
+}
+
+// semanticWrapSeekState keeps only the scalar cursor needed to resume a
+// non-blocking wrapped-row seek plus a tiny ring of preceding fragment starts.
+// The ring is sized from the semantic top overscan, never from file size.
+type semanticWrapSeekState struct {
+	active         bool
+	ready          bool
+	target         int64
+	width          int
+	curr           int64
+	resolved       int64
+	lineStartReady bool
+	history        []int64
+	historyHead    int
+	historyCount   int
 }
 
 func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, error) {

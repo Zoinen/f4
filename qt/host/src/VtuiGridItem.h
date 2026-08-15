@@ -55,7 +55,8 @@ public:
     Q_INVOKABLE void sendQtKey(int key,
                                const QString &text,
                                bool down,
-                               int modifiers);
+                               int modifiers,
+                               quint32 nativeScanCode = 0);
     // Semantic QML surfaces do not give this item keyboard focus, so their
     // standard paste shortcuts must explicitly use the same clipboard path
     // as keyPressEvent instead of sending a literal Ctrl/Cmd+V to Go.
@@ -139,5 +140,6 @@ private:
     bool m_pointerInputEnabled = true;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    quint32 m_lastNativeAltScanCode = 0;
     QHash<int, int> m_forwardedKeyModifiers;
 };

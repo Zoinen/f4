@@ -23,10 +23,10 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		Height:         semanticInt(legacy["height"]),
 		ActiveScreen:   semanticInt(legacy["activeScreen"]),
 		WorkspaceCount: semanticInt(legacy["workspaceCount"]),
-		WorkspaceTabs:  appMap(legacy["workspaceTabs"]),
+		WorkspaceTabs:  appQueueAwareWorkspaceTabs(legacy),
 		Presentation:   string(parseGuiPresentationMode(string(AppConfig.GuiPresentation))),
 		QmlIconSet:     string(parseQmlIconSetMode(string(AppConfig.QmlIconSet))),
-		Legacy:         appLegacyWithoutVMenus(legacy, vmenus),
+		Legacy:         appLegacyForNativeScene(legacy, vmenus, autocompletes),
 	}
 	if scene.Width == 0 && ctx != nil {
 		scene.Width = ctx.Width
@@ -66,22 +66,139 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		case "viewer", "editor", "terminal":
 			surface := appSurfaceFromLegacy(frame)
 			scene.Surface = &surface
+		case "operationsQueue":
+			queue := appOperationsQueueFromLegacy(frame)
+			queue.WorkspaceIndex = scene.ActiveScreen
+			appBindOperationsQueueWorkspace(&queue, scene.WorkspaceTabs)
+			scene.OperationsQueue = &queue
 		}
 	}
 	for _, menu := range vmenus {
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
-	if scene.Shell != nil && scene.Surface == nil && scene.Shell.TerminalActive && scene.Shell.Terminal != nil {
-		scene.Surface = &extui.SurfaceModel{
-			ID:    scene.Shell.Terminal.ID,
-			Kind:  "terminal",
-			Title: scene.Shell.Terminal.Title,
-			Rows:  scene.Shell.Terminal.Rows,
-			Busy:  scene.Shell.Terminal.Busy,
+	return scene.ToMap()
+}
+
+// appQueueAwareWorkspaceTabs keeps vtui's stable workspace identity while
+// making the queue's close guard explicit to every native tab renderer.  The
+// semantic action handler repeats the guard authoritatively, so a stale scene
+// cannot close a queue whose task became active in the meantime.
+func appQueueAwareWorkspaceTabs(legacy map[string]any) map[string]any {
+	source := appMap(legacy["workspaceTabs"])
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	tabs := appMapSlice(source["tabs"])
+	clonedTabs := make([]map[string]any, 0, len(tabs))
+	for _, tab := range tabs {
+		clone := make(map[string]any, len(tab))
+		for key, value := range tab {
+			clone[key] = value
+		}
+		clonedTabs = append(clonedTabs, clone)
+	}
+
+	for screenIndex, screen := range appMapSlice(legacy["screens"]) {
+		queueCanClose := true
+		surfaceKind, iconName := appWorkspaceTabPresentation(screen)
+		if surfaceKind == "operationsQueue" {
+			for _, frame := range appMapSlice(screen["frames"]) {
+				if semanticString(frame["kind"]) == "operationsQueue" {
+					queueCanClose = appBool(frame["canClose"])
+					break
+				}
+			}
+		}
+		screenNumber := semanticInt(screen["number"])
+		for _, tab := range clonedTabs {
+			if semanticInt(tab["index"]) == screenIndex ||
+				(screenNumber > 0 && semanticInt(tab["number"]) == screenNumber) {
+				if surfaceKind != "" {
+					tab["surfaceKind"] = surfaceKind
+					tab["iconName"] = iconName
+					tab["text"] = appWorkspaceTabText(semanticString(tab["text"]))
+				}
+				if surfaceKind == "operationsQueue" {
+					tab["closable"] = queueCanClose
+				}
+				break
+			}
 		}
 	}
-	return scene.ToMap()
+	out["tabs"] = clonedTabs
+	return out
+}
+
+// appWorkspaceTabPresentation turns the terminal renderer's decorative title
+// prefix into typed GUI metadata. The QML tab bar can then render a real
+// Lucide icon without guessing from a localized title or retaining Unicode
+// pseudo-icons that were designed for a cell grid.
+func appWorkspaceTabPresentation(screen map[string]any) (kind, iconName string) {
+	frames := appMapSlice(screen["frames"])
+	for index := len(frames) - 1; index >= 0; index-- {
+		frame := frames[index]
+		switch semanticString(frame["kind"]) {
+		case "operationsQueue":
+			return "operationsQueue", "list-checks"
+		case "editor":
+			return "editor", "file-pen-line"
+		case "viewer":
+			return "viewer", "file-text"
+		case "terminal":
+			return "terminal", "square-terminal"
+		case "panels", "shell":
+			terminalActive := appBool(frame["terminalActive"])
+			if showPanels, present := frame["showPanels"]; present && !appBool(showPanels) {
+				terminalActive = true
+			}
+			if terminalActive {
+				return "terminal", "square-terminal"
+			}
+			return "panels", "panels-top-left"
+		}
+	}
+	return "", ""
+}
+
+func appWorkspaceTabText(title string) string {
+	title = strings.TrimSpace(title)
+	for _, prefix := range []string{"📁", "⌨", "👁", "✎"} {
+		if strings.HasPrefix(title, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(title, prefix))
+		}
+	}
+	// vtui's compact terminal tab bar encodes the frame kind next to the tab
+	// number (for example "2V report.txt"). The semantic model keeps the
+	// number separate and exports the marker at the start of text. Native tabs
+	// already have typed icons, so retain only the content title here.
+	for _, marker := range []string{"P", "V", "E"} {
+		if title == marker {
+			return ""
+		}
+		if strings.HasPrefix(title, marker+" ") {
+			return strings.TrimSpace(strings.TrimPrefix(title, marker))
+		}
+	}
+	return title
+}
+
+func appBindOperationsQueueWorkspace(queue *extui.OperationsQueueModel, workspaceTabs map[string]any) {
+	if queue == nil {
+		return
+	}
+	for _, tab := range appMapSlice(workspaceTabs["tabs"]) {
+		if semanticInt(tab["index"]) != queue.WorkspaceIndex && !appBool(tab["active"]) {
+			continue
+		}
+		queue.TabID = semanticString(tab["id"])
+		queue.WorkspaceNumber = semanticInt(tab["number"])
+		return
+	}
 }
 
 // vtui.Text and a few other passive labels do not yet implement
@@ -290,6 +407,42 @@ func appLegacyWithoutVMenus(legacy map[string]any, menus appVMenus) map[string]a
 	return out
 }
 
+// The native app scene promotes shell command state and popup menus into
+// dedicated typed fields. Keeping the same mutable objects in the legacy
+// fallback duplicates them in every MessagePack scene and makes a single
+// Backspace look like an unrelated full-scene mutation. Retain every genuine
+// fallback frame while removing only those promoted duplicates.
+func appLegacyForNativeScene(legacy map[string]any, menus appVMenus,
+	autocompletes appAutocompleteMenus) map[string]any {
+	if legacy == nil {
+		return nil
+	}
+	out := make(map[string]any, len(legacy))
+	for key, value := range legacy {
+		out[key] = value
+	}
+	frames := appMapSlice(legacy["frames"])
+	filtered := make([]map[string]any, 0, len(frames))
+	for _, frame := range frames {
+		if menus.isLegacyFrame(frame) || autocompletes.isLegacyFrame(frame) {
+			continue
+		}
+		kind := semanticString(frame["kind"])
+		if kind == "panels" || kind == "shell" {
+			copyFrame := make(map[string]any, len(frame))
+			for key, value := range frame {
+				if key != "commandLine" {
+					copyFrame[key] = value
+				}
+			}
+			frame = copyFrame
+		}
+		filtered = append(filtered, frame)
+	}
+	out["frames"] = filtered
+	return out
+}
+
 type appAutocompleteMenu struct {
 	menu     *vtui.AutoCompleteMenu
 	id       string
@@ -413,6 +566,9 @@ func appShellFromLegacy(node map[string]any) extui.ShellModel {
 	for _, panel := range appMapSlice(node["infoPanels"]) {
 		shell.InfoPanels = append(shell.InfoPanels, appInfoPanelFromLegacy(panel))
 	}
+	for _, panel := range appMapSlice(node["quickViews"]) {
+		shell.QuickViews = append(shell.QuickViews, appQuickViewFromLegacy(panel))
+	}
 	if cmd := appMap(node["commandLine"]); cmd != nil {
 		c := appCommandLineFromLegacy(cmd)
 		shell.CommandLine = &c
@@ -442,11 +598,37 @@ func appInfoPanelFromLegacy(node map[string]any) extui.InfoPanelModel {
 	return panel
 }
 
-func appPanelFromLegacy(node map[string]any) extui.PanelModel {
-	presentation := semanticString(node["presentation"])
-	if presentation == "" {
-		presentation = string(PanelPresentationList)
+func appQuickViewFromLegacy(node map[string]any) extui.QuickViewModel {
+	view := extui.QuickViewModel{
+		ID:          semanticString(node["id"]),
+		Side:        semanticInt(node["side"]),
+		SourceSide:  semanticInt(node["sourceSide"]),
+		Active:      appBool(node["active"]),
+		Title:       semanticString(node["title"]),
+		BottomHint:  semanticString(node["bottomHint"]),
+		ContentKey:  semanticString(node["contentKey"]),
+		Name:        semanticString(node["name"]),
+		Path:        semanticString(node["path"]),
+		SizeText:    semanticString(node["sizeText"]),
+		PreviewKind: semanticString(node["previewKind"]),
+		Label:       semanticString(node["label"]),
+		Error:       semanticString(node["error"]),
+		Loading:     appBool(node["loading"]),
+		Wrap:        appBool(node["wrap"]),
+		ImageSource: semanticString(node["imageSource"]),
+		ImageWidth:  semanticInt(node["imageWidth"]),
+		ImageHeight: semanticInt(node["imageHeight"]),
 	}
+	for _, row := range appMapSlice(node["headerRows"]) {
+		view.HeaderRows = append(view.HeaderRows, appTextRowFromLegacy(row))
+	}
+	if surface := appMap(node["surface"]); surface != nil {
+		view.Surface = appSurfaceFromLegacy(surface)
+	}
+	return view
+}
+
+func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 	sourceKind := semanticString(node["sourceKind"])
 	if sourceKind == "" {
 		sourceKind = "vfs"
@@ -476,8 +658,6 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		Active:                 appBool(node["active"]),
 		Path:                   semanticString(node["path"]),
 		Title:                  semanticString(node["title"]),
-		ViewMode:               semanticString(node["viewModeName"]),
-		Presentation:           presentation,
 		GalleryLayoutMode:      galleryLayoutMode,
 		GalleryColumnCount:     galleryColumnCount,
 		GalleryDensity:         galleryDensity,
@@ -492,7 +672,6 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		SortReverse:            appBool(node["sortReverse"]),
 		SeparateFileExtensions: appBool(node["separateFileExtensions"]),
 		Cursor:                 semanticInt(node["cursor"]),
-		Top:                    semanticInt(node["top"]),
 		Loading:                appBool(node["loading"]),
 		FastFind:               appBool(node["fastFind"]),
 		FastFindText:           semanticString(node["fastFindText"]),
@@ -518,7 +697,6 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		}
 		return result
 	}
-	panel.Columns = parseColumns(node["columns"])
 	panel.GalleryColumns = parseColumns(node["galleryColumns"])
 	if rawStyles, ok := node["highlightStyles"].(map[string]any); ok {
 		panel.HighlightStyles = make(map[string]extui.HighlightStyleModel, len(rawStyles))
@@ -595,6 +773,9 @@ func appCommandLineFromLegacy(node map[string]any) extui.CommandLineModel {
 		InputX:           semanticInt(node["inputX"]),
 		CursorPrefixRuns: appRunsFromLegacy(node["cursorPrefixRuns"]),
 		CursorX:          semanticInt(node["cursorX"]),
+		CursorPosition:   semanticInt(node["cursorPosition"]),
+		SelectionStart:   semanticInt(node["selectionStart"]),
+		SelectionEnd:     semanticInt(node["selectionEnd"]),
 		CursorVisible:    appBool(node["cursorVisible"]),
 		CursorShape:      semanticString(node["cursorShape"]),
 	}
@@ -642,13 +823,91 @@ func appSurfaceFromLegacy(node map[string]any) extui.SurfaceModel {
 		CursorShape:        semanticString(node["cursorShape"]),
 		ScrollTop:          semanticInt(node["scrollTop"]),
 		ScrollLeft:         semanticInt(node["scrollLeft"]),
+		DocumentKey:        semanticString(node["documentKey"]),
+		ScrollAction:       semanticString(node["scrollAction"]),
+		ScrollUnit:         semanticString(node["scrollUnit"]),
+		WindowStart:        appInt64(node["windowStart"]),
+		WindowEnd:          appInt64(node["windowEnd"]),
+		ViewportStart:      appInt64(node["viewportStart"]),
+		ViewportSpan:       appInt64(node["viewportSpan"]),
+		ContentExtent:      appInt64(node["contentExtent"]),
+		ContentExtentKnown: appBool(node["contentExtentKnown"]),
+		ViewportRow:        semanticInt(node["viewportRow"]),
+		ViewportRows:       semanticInt(node["viewportRows"]),
+		CursorAbsoluteRow:  appInt64(node["cursorAbsoluteRow"]),
+		WindowGeneration:   uint64(appInt64(node["windowGeneration"])),
+		WindowContentKey:   semanticString(node["windowContentKey"]),
 		Selection:          appBool(node["selection"]),
 		Autocomplete:       appMap(node["autocomplete"]),
 	}
 	for _, row := range appMapSlice(node["rows"]) {
 		surface.Rows = append(surface.Rows, appTextRowFromLegacy(row))
 	}
+	for _, row := range appMapSlice(node["windowRows"]) {
+		surface.WindowRows = append(surface.WindowRows, appTextRowFromLegacy(row))
+	}
 	return surface
+}
+
+func appOperationsQueueFromLegacy(node map[string]any) extui.OperationsQueueModel {
+	queue := extui.OperationsQueueModel{
+		ID:              semanticString(node["id"]),
+		Title:           semanticString(node["title"]),
+		Selected:        semanticInt(node["selected"]),
+		SelectedTaskID:  semanticInt(node["selectedTaskId"]),
+		Top:             semanticInt(node["top"]),
+		WorkspaceIndex:  semanticInt(node["workspaceIndex"]),
+		WorkspaceNumber: semanticInt(node["workspaceNumber"]),
+		TabID:           semanticString(node["tabId"]),
+		ActiveCount:     semanticInt(node["activeCount"]),
+		QueuedCount:     semanticInt(node["queuedCount"]),
+		RunningCount:    semanticInt(node["runningCount"]),
+		CompletedCount:  semanticInt(node["completedCount"]),
+		ErrorCount:      semanticInt(node["errorCount"]),
+		CancelledCount:  semanticInt(node["cancelledCount"]),
+		HasActive:       appBool(node["hasActive"]),
+		CanClear:        appBool(node["canClear"]),
+		CanClose:        appBool(node["canClose"]),
+		CancelText:      semanticString(node["cancelText"]),
+		ClearText:       semanticString(node["clearText"]),
+		EmptyText:       semanticString(node["emptyText"]),
+		DetailsText:     semanticString(node["detailsText"]),
+	}
+	for _, source := range appMapSlice(node["columns"]) {
+		queue.Columns = append(queue.Columns, extui.OperationsQueueColumnModel{
+			ID:        semanticString(source["id"]),
+			Title:     semanticString(source["title"]),
+			Width:     semanticInt(source["width"]),
+			Alignment: semanticString(source["alignment"]),
+		})
+	}
+	for _, source := range appMapSlice(node["items"]) {
+		queue.Items = append(queue.Items, extui.OperationsQueueItemModel{
+			ID:              semanticString(source["id"]),
+			TaskID:          semanticInt(source["taskId"]),
+			Index:           semanticInt(source["index"]),
+			Type:            semanticString(source["type"]),
+			Description:     semanticString(source["description"]),
+			State:           semanticString(source["state"]),
+			StateClass:      semanticString(source["stateClass"]),
+			Action:          semanticString(source["action"]),
+			CurrentFile:     semanticString(source["currentFile"]),
+			DisplayText:     semanticString(source["displayText"]),
+			CurrentProgress: semanticInt(source["currentProgress"]),
+			Progress:        semanticInt(source["progress"]),
+			TotalText:       semanticString(source["totalText"]),
+			Elapsed:         semanticString(source["elapsed"]),
+			ETA:             semanticString(source["eta"]),
+			Speed:           semanticString(source["speed"]),
+			Error:           semanticString(source["error"]),
+			Cancellable:     appBool(source["cancellable"]),
+			HasDetails:      appBool(source["hasDetails"]),
+			Terminal:        appBool(source["terminal"]),
+			Active:          appBool(source["active"]),
+			CancelPrompt:    semanticString(source["cancelPrompt"]),
+		})
+	}
+	return queue
 }
 
 func appTextRowFromLegacy(node map[string]any) extui.TextRowModel {
@@ -657,6 +916,7 @@ func appTextRowFromLegacy(node map[string]any) extui.TextRowModel {
 		VisualRow:   semanticInt(node["visualRow"]),
 		LogicalLine: semanticInt(node["logicalLine"]),
 		Offset:      appInt64(node["offset"]),
+		EndOffset:   appInt64(node["endOffset"]),
 		Text:        semanticString(node["text"]),
 		Runs:        appRunsFromLegacy(node["runs"]),
 	}

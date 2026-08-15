@@ -157,3 +157,24 @@ func TestActionPanelToggleTargetsActiveWorkspace(t *testing.T) {
 		t.Fatal("Panel.Toggle changed panels in the first, inactive workspace")
 	}
 }
+
+func TestPanelViewShortcutsReserveCtrl4ForWide(t *testing.T) {
+	want := map[string]string{
+		"Panel.ViewMedium":   "Ctrl1",
+		"Panel.ViewBrief":    "Ctrl2",
+		"Panel.ViewDetailed": "Ctrl3",
+		"Panel.ViewWide":     "Ctrl4",
+		"Panel.ViewIcons":    "Ctrl5",
+		"Panel.ViewGrid":     "Ctrl6",
+		"Panel.ViewGallery":  "Ctrl7",
+	}
+	for name, key := range want {
+		action, ok := GetAction(name)
+		if !ok {
+			t.Fatalf("missing action %s", name)
+		}
+		if len(action.DefaultKeys) != 1 || action.DefaultKeys[0] != key {
+			t.Errorf("%s keys = %v, want [%s]", name, action.DefaultKeys, key)
+		}
+	}
+}

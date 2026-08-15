@@ -7,15 +7,6 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      zoingallery_repository:
-        description: "GitHub owner/repository containing the zoingallery/0.1.0 Conan recipe"
-        required: false
-        type: string
-      zoingallery_sha:
-        description: "Immutable 40-character ZoinGallery commit SHA (overrides the repository variable)"
-        required: false
-        type: string
 
 jobs:
   build:
@@ -191,45 +182,12 @@ jobs:
             platform: windows
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
-      ZOINGALLERY_SOURCE_REPOSITORY: ${{ inputs.zoingallery_repository || vars.ZOINGALLERY_SOURCE_REPOSITORY }}
-      ZOINGALLERY_SOURCE_SHA: ${{ inputs.zoingallery_sha || vars.ZOINGALLERY_SOURCE_SHA }}
 
     steps:
     - name: Checkout f4
       uses: actions/checkout@v4
       with:
         submodules: recursive
-
-    - name: Validate the pinned ZoinGallery source contract
-      shell: bash
-      run: |
-        if [[ ! "$ZOINGALLERY_SOURCE_REPOSITORY" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
-          echo "::error::Set repository variable ZOINGALLERY_SOURCE_REPOSITORY to the GitHub owner/repository that exports zoingallery/0.1.0. A workflow_dispatch input may override it."
-          exit 1
-        fi
-        if [[ ! "$ZOINGALLERY_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
-          echo "::error::Set repository variable ZOINGALLERY_SOURCE_SHA to an immutable 40-character commit SHA. A workflow_dispatch input may override it."
-          exit 1
-        fi
-
-    - name: Checkout pinned ZoinGallery source
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ inputs.zoingallery_repository || vars.ZOINGALLERY_SOURCE_REPOSITORY }}
-        ref: ${{ inputs.zoingallery_sha || vars.ZOINGALLERY_SOURCE_SHA }}
-        path: .ci/ZoinGallery
-        persist-credentials: false
-        token: ${{ secrets.ZOINGALLERY_SOURCE_TOKEN || github.token }}
-
-    - name: Verify ZoinGallery checkout identity
-      shell: bash
-      run: |
-        actual_sha="$(git -C .ci/ZoinGallery rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-        expected_sha="$(printf '%s' "$ZOINGALLERY_SOURCE_SHA" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$actual_sha" != "$expected_sha" ]]; then
-          echo "::error::ZoinGallery checkout resolved to $actual_sha, expected $expected_sha."
-          exit 1
-        fi
 
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -248,7 +206,7 @@ jobs:
         python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
         conan profile detect --force
 
-    - name: Build and test the list-only Qt host
+    - name: Build and test the Qt host
       shell: bash
       run: |
         conan_platform_settings=()
@@ -257,28 +215,27 @@ jobs:
         fi
         conan install qt/host --build=missing \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
-          -o '&:with_zoingallery=False' \
           -c tools.system.package_manager:mode=install \
           -c tools.system.package_manager:sudo=True \
           "${conan_platform_settings[@]}" \
-          --output-folder=qt/host/build-ci-off
+          --output-folder=qt/host/build-ci
         if [[ "$RUNNER_OS" == "Windows" ]]; then
-          qt_cmake_prefix="$(cygpath -w "$PWD/qt/host/build-ci-off")"
+          qt_cmake_prefix="$(cygpath -w "$PWD/qt/host/build-ci")"
           pwsh -File ci/build-qwindowkit.ps1 -QtRoot "$qt_cmake_prefix" -BuildType Release
         else
-          bash ci/build-qwindowkit.sh "$PWD/qt/host/build-ci-off" Release
+          bash ci/build-qwindowkit.sh "$PWD/qt/host/build-ci" Release
         fi
-        cmake -S qt/host -B qt/host/build-ci-off -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-ci-off/conan_toolchain.cmake" \
+        cmake -S qt/host -B qt/host/build-ci -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-ci/conan_toolchain.cmake" \
           -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DUSE_QWK=ON \
           -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install"
-        cmake --build qt/host/build-ci-off --config Release --parallel 4
+        cmake --build qt/host/build-ci --config Release --parallel 4
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           python - <<'PY'
         import pathlib
         import subprocess
 
-        build_dir = pathlib.Path("qt/host/build-ci-off").resolve()
+        build_dir = pathlib.Path("qt/host/build-ci").resolve()
         run_environment = build_dir / "conanrun.bat"
         if not run_environment.is_file():
             raise SystemExit(f"Conan run environment is missing: {run_environment}")
@@ -289,71 +246,15 @@ jobs:
         subprocess.run(["cmd.exe", "/d", "/c", command], check=True)
         PY
         else
-          test -f qt/host/build-ci-off/conanrun.sh
-          source qt/host/build-ci-off/conanrun.sh
-          ctest --test-dir qt/host/build-ci-off -C Release --output-on-failure
-        fi
-
-    - name: Create pinned zoingallery/0.1.0 package
-      shell: bash
-      run: |
-        conan_platform_settings=()
-        if [[ "$RUNNER_OS" == "macOS" ]]; then
-          conan_platform_settings+=("-s:h" "os.version=13.0")
-        fi
-        conan create .ci/ZoinGallery --build=missing \
-          --name=zoingallery --version=0.1.0 \
-          -s:h build_type=Release -s:h compiler.cppstd=20 \
-          -o '&:build_standalone=False' \
-          -c tools.system.package_manager:mode=install \
-          -c tools.system.package_manager:sudo=True \
-          "${conan_platform_settings[@]}"
-        conan list 'zoingallery/0.1.0:*'
-
-    - name: Build and test the Gallery-enabled Qt host
-      shell: bash
-      run: |
-        conan_platform_settings=()
-        if [[ "$RUNNER_OS" == "macOS" ]]; then
-          conan_platform_settings+=("-s:h" "os.version=13.0")
-        fi
-        conan install qt/host --build=missing \
-          -s:h build_type=Release -s:h compiler.cppstd=20 \
-          -o '&:with_zoingallery=True' \
-          -c tools.system.package_manager:mode=install \
-          -c tools.system.package_manager:sudo=True \
-          "${conan_platform_settings[@]}" \
-          --output-folder=qt/host/build-ci-gallery
-        cmake -S qt/host -B qt/host/build-ci-gallery -G Ninja \
-          -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-ci-gallery/conan_toolchain.cmake" \
-          -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DUSE_QWK=ON \
-          -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install"
-        cmake --build qt/host/build-ci-gallery --config Release --parallel 4
-        if [[ "$RUNNER_OS" == "Windows" ]]; then
-          python - <<'PY'
-        import pathlib
-        import subprocess
-
-        build_dir = pathlib.Path("qt/host/build-ci-gallery").resolve()
-        run_environment = build_dir / "conanrun.bat"
-        if not run_environment.is_file():
-            raise SystemExit(f"Conan run environment is missing: {run_environment}")
-        command = (
-            f'call "{run_environment}" && '
-            f'ctest --test-dir "{build_dir}" -C Release --output-on-failure'
-        )
-        subprocess.run(["cmd.exe", "/d", "/c", command], check=True)
-        PY
-        else
-          test -f qt/host/build-ci-gallery/conanrun.sh
-          source qt/host/build-ci-gallery/conanrun.sh
-          ctest --test-dir qt/host/build-ci-gallery -C Release --output-on-failure
+          test -f qt/host/build-ci/conanrun.sh
+          source qt/host/build-ci/conanrun.sh
+          ctest --test-dir qt/host/build-ci -C Release --output-on-failure
         fi
 
     - name: Install the integrated sidecar tree
       shell: bash
       run: |
-        cmake --install qt/host/build-ci-gallery --config Release --prefix qt/host/stage-ci
+        cmake --install qt/host/build-ci --config Release --prefix qt/host/stage-ci
         executable_suffix=""
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           executable_suffix=".exe"

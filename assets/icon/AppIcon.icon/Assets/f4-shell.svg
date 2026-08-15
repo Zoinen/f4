@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 24 24">
+  <defs>
+    <radialGradient id="background" cx="12" cy="24.8" r="23" gradientTransform="translate(0 25.3) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#36312d"/>
+      <stop offset=".5" stop-color="#21201f"/>
+      <stop offset="1" stop-color="#16181a"/>
+    </radialGradient>
+    <linearGradient id="frame" x1="1.1" y1="24.2" x2="22.9" y2="2.4" gradientTransform="translate(0 25.3) scale(1 -1)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b18f6d"/>
+      <stop offset="1" stop-color="#57443b"/>
+    </linearGradient>
+  </defs>
+  <!-- The full-canvas frame is clipped by macOS's own continuous-corner mask. -->
+  <rect fill="url(#frame)" width="24" height="24"/>
+  <!-- Match the inner edge to the macOS mask's mapped curvature. -->
+  <rect fill="url(#background)" x=".65" y=".65" width="22.7" height="22.7" rx="5.36"/>
+  <rect fill="url(#frame)" x="11.55" y=".65" width=".9" height="17.3" rx=".45"/>
+  <rect fill="url(#frame)" x=".65" y="17.05" width="22.7" height=".9" rx=".45"/>
+</svg>

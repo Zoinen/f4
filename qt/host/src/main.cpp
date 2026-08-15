@@ -1,6 +1,7 @@
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
 #include "QtShellController.h"
+#include "WindowGeometryPersistence.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -15,6 +16,8 @@
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
+
+#include <memory>
 
 #if defined(__USE_QWK)
 #include <QWKQuick/qwkquickglobal.h>
@@ -43,6 +46,10 @@ int main(int argc, char *argv[])
     const QString defaultFontSize = QStringLiteral("16");
 #endif
     const QCommandLineOption fontSizeOption(QStringLiteral("f4-font-size"), QStringLiteral("GUI monospace font pixel size."), QStringLiteral("size"), defaultFontSize);
+    const QCommandLineOption windowGeometryFileOption(
+        QStringLiteral("f4-window-geometry-file"),
+        QStringLiteral("INI file used to persist the main-window geometry."),
+        QStringLiteral("path"));
     const QCommandLineOption legacyConnectOption(QStringLiteral("f4-qt-connect"), QStringLiteral("Legacy host:port option."), QStringLiteral("address"));
     const QCommandLineOption legacyNonceOption(QStringLiteral("f4-qt-nonce"), QStringLiteral("Legacy nonce option."), QStringLiteral("nonce"));
     const QCommandLineOption legacyColsOption(QStringLiteral("f4-qt-cols"), QStringLiteral("Legacy initial grid columns."), QStringLiteral("cols"));
@@ -54,6 +61,7 @@ int main(int argc, char *argv[])
                        iconSetOption,
                        fontFamilyOption,
                        fontSizeOption,
+                       windowGeometryFileOption,
                        legacyConnectOption,
                        legacyNonceOption,
                        legacyColsOption,
@@ -163,25 +171,41 @@ int main(int argc, char *argv[])
 
     engine.load(url);
 
+    QQuickWindow *rootWindow = nullptr;
+    std::unique_ptr<WindowGeometryPersistence> windowGeometry;
+    if (!engine.rootObjects().isEmpty()) {
+        rootWindow = qobject_cast<QQuickWindow *>(
+            engine.rootObjects().constFirst());
+        if (rootWindow) {
+            windowGeometry =
+                std::make_unique<WindowGeometryPersistence>(
+                    rootWindow, parser.value(windowGeometryFileOption));
+            windowGeometry->restore();
+        }
+    }
+
 #if defined(__USE_QWK) && defined(Q_OS_MACOS)
     // Match ZoinGallery's initial-show workaround for transparent QWK windows.
     // The native NSWindow/title-bar controls can otherwise keep their stale
     // startup layout until the first resize.  Re-applying the geometry over
     // queued event-loop turns makes macOS refresh the title bar immediately.
-    if (!engine.rootObjects().isEmpty()) {
-        if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst())) {
-            const QRect initialGeometry = window->geometry();
-            window->setGeometry(QRect(0, 0, 0, 0));
-            QTimer::singleShot(0, window, [window, initialGeometry]() {
-                window->setGeometry(initialGeometry.adjusted(1, 0, 0, 0));
-                window->setGeometry(initialGeometry);
-                window->requestUpdate();
-            });
-        }
+    if (rootWindow && rootWindow->visibility() == QWindow::Windowed) {
+        const QRect initialGeometry = rootWindow->geometry();
+        rootWindow->setGeometry(QRect(0, 0, 0, 0));
+        QTimer::singleShot(0, rootWindow, [rootWindow, initialGeometry]() {
+            rootWindow->setGeometry(initialGeometry.adjusted(1, 0, 0, 0));
+            rootWindow->setGeometry(initialGeometry);
+            rootWindow->requestUpdate();
+        });
     }
 #endif
 
     const int exitCode = app.exec();
+
+    if (windowGeometry) {
+        windowGeometry->save();
+        windowGeometry.reset();
+    }
 
     // Tear down QML while the context objects are still alive. Otherwise the
     // engine reevaluates bindings against null qtShell/qtGallery objects while

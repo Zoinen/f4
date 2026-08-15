@@ -34,8 +34,6 @@ var (
 
 	LastLeftViewMode      = 0
 	LastRightViewMode     = 0
-	LastLeftPresentation  = PanelPresentationList
-	LastRightPresentation = PanelPresentationList
 	LastLeftGalleryState  = defaultPanelGallerySessionState()
 	LastRightGalleryState = defaultPanelGallerySessionState()
 	LastLeftSortMode      = 0

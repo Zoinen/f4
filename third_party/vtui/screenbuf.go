@@ -1,0 +1,855 @@
+package vtui
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+)
+
+type ColorProfile int
+
+const (
+	ColorProfileTrueColor ColorProfile = iota
+	ColorProfile256
+	ColorProfile16
+)
+
+func DetectColorProfile() ColorProfile {
+	return detectColorProfile(runtime.GOOS)
+}
+
+func detectColorProfile(goos string) ColorProfile {
+	if goos == "windows" {
+		return ColorProfileTrueColor
+	}
+
+	// Detect bare FreeBSD console (no X11, no SSH, no TMUX, no Wayland)
+	if goos == "freebsd" && os.Getenv("DISPLAY") == "" && os.Getenv("SSH_CLIENT") == "" && os.Getenv("TMUX") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		return ColorProfile16
+	}
+
+	// Special case for FreeBSD: many users have TERM=xterm in console,
+	// but the vt(4) driver only supports 16 colors and has a tiny SGR buffer.
+	if goos == "freebsd" && os.Getenv("DISPLAY") == "" && os.Getenv("SSH_CLIENT") == "" && os.Getenv("TMUX") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		return ColorProfile16
+	}
+
+	colorTerm := os.Getenv("COLORTERM")
+	if colorTerm == "truecolor" || colorTerm == "24bit" {
+		return ColorProfileTrueColor
+	}
+	term := os.Getenv("TERM")
+	if strings.Contains(term, "256color") {
+		return ColorProfile256
+	}
+	if term == "linux" || term == "xterm-clear" || strings.HasPrefix(term, "cons") {
+		return ColorProfile16
+	}
+	// Fallback for general 'xterm' and others. Most modern terminals support 256 colors.
+	return ColorProfile256
+}
+
+var IsFreeBSDConsole bool
+
+func init() {
+	IsFreeBSDConsole = (runtime.GOOS == "freebsd" &&
+		os.Getenv("DISPLAY") == "" &&
+		os.Getenv("SSH_CLIENT") == "" &&
+		os.Getenv("TMUX") == "" &&
+		os.Getenv("WAYLAND_DISPLAY") == "")
+}
+
+// ScreenBuf implements double buffering to minimize terminal write operations.
+type ScreenBuf struct {
+	mu sync.Mutex
+	// writeMu serialises delivery of finished frames to the output. It is
+	// deliberately separate from mu: a terminal that has stopped draining
+	// blocks the write for as long as it likes, and mu must not be held
+	// across that. See Flush.
+	writeMu       sync.Mutex
+	buf           []CharInfo // 'buf' is the target screen state formed by UI logic.
+	shadow        []CharInfo // 'shadow' is the state last rendered in the terminal.
+	width, height int
+
+	cursorX, cursorY int
+	cursorVisible    bool
+	cursorShape      CursorShape
+	cursorSize       uint32
+	cursorDirty      bool
+
+	lockCount int
+	dirty     bool // Flag indicating that a full rewrite is required during the next Flush.
+	clipStack []Rect
+
+	OverlayMode   bool
+	ThemePalette  *[256]uint32
+	ActivePalette *[256]uint32
+	ColorProfile  ColorProfile
+
+	HostPalette      [256]uint32
+	HostPaletteValid [256]bool
+	quantCache       map[uint32]uint8
+
+	Renderer SurfaceRenderer
+	Writer   io.Writer // Output destination, defaults to os.Stdout
+
+	graphics GraphicsLayer
+}
+
+// NewScreenBuf creates a new ScreenBuf instance.
+func NewScreenBuf() *ScreenBuf {
+	s := &ScreenBuf{
+		dirty:        true,
+		ColorProfile: DetectColorProfile(),
+		quantCache:   make(map[uint32]uint8),
+	}
+	s.Renderer = &AnsiRenderer{parent: s}
+	return s
+}
+
+// NewSilentScreenBuf creates a ScreenBuf that discards all output.
+// Ideal for unit tests to prevent ANSI sequences from polluting the console.
+func NewSilentScreenBuf() *ScreenBuf {
+	return &ScreenBuf{
+		dirty:        true,
+		Writer:       io.Discard,
+		ColorProfile: DetectColorProfile(),
+	}
+}
+
+// HardReset clears the shadow buffer and forces a complete redraw of the screen.
+// Essential when re-attaching to a new physical terminal.
+func (s *ScreenBuf) HardReset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.shadow {
+		s.shadow[i] = CharInfo{}
+	}
+	s.dirty = true
+	s.graphics.Invalidate()
+}
+
+// InvalidateHostPalette forgets which colors the terminal was last told to
+// use, so that the next Flush re-sends all 256 OSC 4 sequences.
+//
+// HostPalette/HostPaletteValid describe the state of the *terminal*, not of
+// this process. Anything that resets that state behind our back — Suspend
+// sending OSC 104, or the daemon re-attaching to a different terminal
+// altogether — must say so here, otherwise SetPalette sees a palette it
+// believes is already loaded, sends nothing, and the session runs with
+// whatever colors the terminal happened to have.
+func (s *ScreenBuf) InvalidateHostPalette() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invalidateHostPaletteLocked()
+}
+
+func (s *ScreenBuf) invalidateHostPaletteLocked() {
+	for i := range s.HostPaletteValid {
+		s.HostPaletteValid[i] = false
+	}
+	s.quantCache = make(map[uint32]uint8)
+}
+
+// ClearBuf resets every cell of the pending buffer to a zero CharInfo.
+// Used by the FrameManager when the bottom of the painted frame stack is
+// transparent: nothing below will paint the background, so cells vacated
+// by moved frames must not retain stale content.
+func (s *ScreenBuf) ClearBuf() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.buf {
+		s.buf[i] = CharInfo{}
+	}
+}
+
+// AllocBuf allocates or reallocates memory for the screen buffers.
+func (s *ScreenBuf) AllocBuf(width, height int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if width == s.width && height == s.height {
+		return
+	}
+
+	if width <= 0 || height <= 0 {
+		s.buf = nil
+		s.shadow = nil
+		s.width = 0
+		s.height = 0
+		return
+	}
+
+	size := width * height
+	newBuf := make([]CharInfo, size)
+	newShadow := make([]CharInfo, size)
+
+	if newBuf == nil || newShadow == nil {
+		// In Go it is customary to return an error, but for a critical error such as
+		// running out of memory for the screen, a panic is justified and matches
+		// the behavior of far2l (abort).
+		panic(fmt.Sprintf("FATAL: Failed to allocate screen buffer (%d x %d)", width, height))
+	}
+
+	s.buf = newBuf
+	s.shadow = newShadow
+	s.width = width
+	s.height = height
+	s.dirty = true // After resizing, a full redraw is needed
+	s.clipStack = []Rect{{0, 0, width - 1, height - 1}}
+}
+
+// PushClipRect adds a new clipping rectangle by intersecting it with the current one.
+func (s *ScreenBuf) PushClipRect(x1, y1, x2, y2 int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.clipStack) == 0 {
+		if s.width <= 0 || s.height <= 0 {
+			return
+		}
+		s.clipStack = []Rect{{0, 0, s.width - 1, s.height - 1}}
+	}
+	curr := s.clipStack[len(s.clipStack)-1]
+	nx1, ny1 := max(curr.X1, x1), max(curr.Y1, y1)
+	nx2, ny2 := min(curr.X2, x2), min(curr.Y2, y2)
+	s.clipStack = append(s.clipStack, Rect{nx1, ny1, nx2, ny2})
+}
+
+// SetOverlayMode enables or disables Early Binding of indexed colors to RGB.
+func (s *ScreenBuf) SetOverlayMode(overlay bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.OverlayMode = overlay
+}
+
+// PopClipRect removes the top clipping rectangle.
+func (s *ScreenBuf) PopClipRect() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.clipStack) > 1 {
+		s.clipStack = s.clipStack[:len(s.clipStack)-1]
+	}
+}
+
+// ApplyShadow applies a semi-transparent shadow effect to the specified area.
+func (s *ScreenBuf) ApplyShadow(x1, y1, x2, y2 int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buf == nil || len(s.clipStack) == 0 {
+		return
+	}
+	clip := s.clipStack[len(s.clipStack)-1]
+	if x1 < clip.X1 {
+		x1 = clip.X1
+	}
+	if y1 < clip.Y1 {
+		y1 = clip.Y1
+	}
+	if x2 > clip.X2 {
+		x2 = clip.X2
+	}
+	if y2 > clip.Y2 {
+		y2 = clip.Y2
+	}
+	if x1 > x2 || y1 > y2 {
+		return
+	}
+
+	for y := y1; y <= y2; y++ {
+		offset := y*s.width + x1
+		for x := 0; x <= x2-x1; x++ {
+			attr := s.buf[offset+x].Attributes
+
+			var bg uint32
+			if attr&IsBgRGB != 0 {
+				bg = GetRGBBack(attr)
+			} else {
+				idx := GetIndexBack(attr)
+				if s.ThemePalette != nil {
+					bg = s.ThemePalette[idx]
+				} else {
+					bg = XTerm256Palette[idx]
+				}
+			}
+
+			var fg uint32
+			if attr&IsFgRGB != 0 {
+				fg = GetRGBFore(attr)
+			} else {
+				idx := GetIndexFore(attr)
+				if s.ThemePalette != nil {
+					fg = s.ThemePalette[idx]
+				} else {
+					fg = XTerm256Palette[idx]
+				}
+			}
+
+			bg = ((bg>>16&0xFF)/2)<<16 | ((bg>>8&0xFF)/2)<<8 | ((bg & 0xFF) / 2)
+			fg = ((fg>>16&0xFF)/2)<<16 | ((fg>>8&0xFF)/2)<<8 | ((fg & 0xFF) / 2)
+
+			s.buf[offset+x].Attributes = SetRGBBoth(attr, fg, bg)
+		}
+	}
+}
+
+// Write writes a slice of CharInfo into the virtual buffer at specified coordinates.
+func (s *ScreenBuf) Write(x, y int, text []CharInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.buf == nil || len(s.clipStack) == 0 {
+		return
+	}
+
+	clip := s.clipStack[len(s.clipStack)-1]
+	if y < clip.Y1 || y > clip.Y2 || x > clip.X2 {
+		return
+	}
+
+	if x < clip.X1 {
+		skip := clip.X1 - x
+		if skip >= len(text) {
+			return
+		}
+		text = text[skip:]
+		x = clip.X1
+	}
+
+	if x+len(text)-1 > clip.X2 {
+		text = text[:clip.X2-x+1]
+	}
+
+	if len(text) == 0 {
+		return
+	}
+
+	offset := y*s.width + x
+	if s.OverlayMode && s.ThemePalette != nil {
+		for i, ci := range text {
+			s.buf[offset+i] = CharInfo{Char: ci.Char, Attributes: s.resolveAttr(ci.Attributes)}
+		}
+	} else {
+		copy(s.buf[offset:], text)
+	}
+	// Note: not comparing with shadow yet, just copying.
+	// Comparison optimization will happen in Flush().
+}
+
+// resolveAttr applies OverlayMode palette resolution to the given attribute.
+func (s *ScreenBuf) resolveAttr(attr uint64) uint64 {
+	if s.OverlayMode && s.ThemePalette != nil {
+		if attr&IsFgRGB == 0 {
+			idx := GetIndexFore(attr)
+			attr = SetRGBFore(attr, s.ThemePalette[idx])
+		}
+		if attr&IsBgRGB == 0 {
+			idx := GetIndexBack(attr)
+			attr = SetRGBBack(attr, s.ThemePalette[idx])
+		}
+	}
+	return attr
+}
+
+// ApplyColor applies specified attributes to a rectangular area.
+func (s *ScreenBuf) ApplyColor(x1, y1, x2, y2 int, attributes uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.buf == nil {
+		return
+	}
+
+	if len(s.clipStack) == 0 {
+		return
+	}
+	clip := s.clipStack[len(s.clipStack)-1]
+	if x1 < clip.X1 {
+		x1 = clip.X1
+	}
+	if y1 < clip.Y1 {
+		y1 = clip.Y1
+	}
+	if x2 > clip.X2 {
+		x2 = clip.X2
+	}
+	if y2 > clip.Y2 {
+		y2 = clip.Y2
+	}
+	if x1 > x2 || y1 > y2 {
+		return
+	}
+
+	attributes = s.resolveAttr(attributes)
+	for y := y1; y <= y2; y++ {
+		offset := y*s.width + x1
+		for x := 0; x <= x2-x1; x++ {
+			s.buf[offset+x].Attributes = attributes
+		}
+	}
+}
+
+// FillRect fills a rectangular area with specified character and attributes.
+func (s *ScreenBuf) FillRect(x1, y1, x2, y2 int, char rune, attributes uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.buf == nil || len(s.clipStack) == 0 {
+		return
+	}
+	if x1 > x2 || y1 > y2 {
+		return
+	}
+
+	clip := s.clipStack[len(s.clipStack)-1]
+	if x1 < clip.X1 {
+		x1 = clip.X1
+	}
+	if y1 < clip.Y1 {
+		y1 = clip.Y1
+	}
+	if x2 > clip.X2 {
+		x2 = clip.X2
+	}
+	if y2 > clip.Y2 {
+		y2 = clip.Y2
+	}
+	if x1 > x2 || y1 > y2 {
+		return
+	}
+
+	attributes = s.resolveAttr(attributes)
+	cell := CharInfo{Char: uint64(char), Attributes: attributes}
+	for y := y1; y <= y2; y++ {
+		offset := y*s.width + x1
+		for x := 0; x <= x2-x1; x++ {
+			s.buf[offset+x] = cell
+		}
+	}
+}
+
+func (s *ScreenBuf) SetCursorPos(x, y int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.width <= 0 || s.height <= 0 || x < 0 || x >= s.width || y < 0 || y >= s.height {
+		s.cursorVisible = false
+		return
+	}
+	if s.cursorX != x || s.cursorY != y {
+		s.cursorX, s.cursorY = x, y
+		s.cursorDirty = true
+	}
+}
+
+func (s *ScreenBuf) SetCursorVisible(visible bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursorVisible != visible {
+		s.cursorVisible = visible
+		s.cursorDirty = true
+	}
+}
+func (s *ScreenBuf) SetCursorShape(shape CursorShape) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursorShape != shape {
+		s.cursorShape = shape
+		s.cursorDirty = true
+	}
+}
+
+// GetCursorStateForTesting returns the internal cursor states for verification in unit tests.
+func (s *ScreenBuf) GetCursorStateForTesting() (x, y int, visible bool, shape CursorShape) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cursorX, s.cursorY, s.cursorVisible, s.cursorShape
+}
+
+func (s *ScreenBuf) Width() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.width
+}
+
+func (s *ScreenBuf) Height() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.height
+}
+
+// GetCell returns the character and attributes at the specified coordinates.
+// Used primarily for unit tests.
+func (s *ScreenBuf) GetCell(x, y int) CharInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if x < 0 || x >= s.width || y < 0 || y >= s.height {
+		return CharInfo{}
+	}
+	return s.buf[y*s.width+x]
+}
+
+// CellSpanAt reports which character occupies the cell at (x, y) and how many
+// columns it claims. startX is the column that character begins at, which is x
+// itself unless x landed on the filler half of a double width character, and
+// span is never less than one. Out of range coordinates answer as a plain one
+// column cell so that callers need no second bounds check.
+//
+// Renderers use this instead of measuring the character they are about to
+// draw: the layout engine has already decided how many cells the cluster gets,
+// and a renderer that measures again can disagree with it.
+func CellSpanAt(buf []CharInfo, width, x, y int) (startX, span int) {
+	if width <= 0 || x < 0 || y < 0 || x >= width {
+		return x, 1
+	}
+	rowOff := y * width
+	if rowOff < 0 || rowOff+width > len(buf) {
+		return x, 1
+	}
+
+	startX = x
+	for startX > 0 && buf[rowOff+startX].Char == WideCharFiller {
+		startX--
+	}
+	span = 1
+	for startX+span < width && buf[rowOff+startX+span].Char == WideCharFiller {
+		span++
+	}
+	return startX, span
+}
+
+// Dump записывает содержимое буфера в поток в формате, оптимизированном для нейросетей.
+// Сначала идет текстовое превью, затем детальные данные атрибутов с RLE-сжатием.
+func (s *ScreenBuf) Dump(w io.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fmt.Fprintf(w, "VTUI_SCREEN_DUMP_V1 %dx%d\n", s.width, s.height)
+	fmt.Fprintln(w, "--- TEXT PREVIEW ---")
+	for y := 0; y < s.height; y++ {
+		var line strings.Builder
+		for x := 0; x < s.width; x++ {
+			line.WriteString(CellString(s.buf[y*s.width+x].Char))
+		}
+		fmt.Fprintln(w, line.String())
+	}
+
+	fmt.Fprintln(w, "--- CELL METADATA (RLE) ---")
+	fmt.Fprintln(w, "Format: [AttrHex]xRepeatCount ...")
+	for y := 0; y < s.height; y++ {
+		fmt.Fprintf(w, "R%d: ", y)
+		count := 0
+		var lastAttr uint64 = 0
+		first := true
+
+		for x := 0; x < s.width; x++ {
+			attr := s.buf[y*s.width+x].Attributes
+			if first {
+				lastAttr = attr
+				count = 1
+				first = false
+				continue
+			}
+			if attr == lastAttr {
+				count++
+			} else {
+				fmt.Fprintf(w, "[%016X]x%d ", lastAttr, count)
+				lastAttr = attr
+				count = 1
+			}
+		}
+		fmt.Fprintf(w, "[%016X]x%d\n", lastAttr, count)
+	}
+}
+
+// rgb extracts R, G, B components from 24-bit color (format 0xRRGGBB).
+func rgb(c uint32) (r, g, b byte) {
+	return byte((c >> 16) & 0xFF), byte((c >> 8) & 0xFF), byte(c & 0xFF)
+}
+
+// Flush синхронизирует состояние виртуального буфера с физическим экраном через Renderer.
+//
+// The frame is composed while holding mu and delivered after releasing it.
+// Writing to a terminal is not a bounded operation: if whatever sits on the
+// other end of the tty stops reading, the write blocks until it resumes, and
+// a full-screen frame on a large terminal (~31 KB on 246x70) is far bigger
+// than a pty buffer. Holding mu across that would freeze every goroutine
+// that touches the screen, not just the render loop.
+//
+// writeMu is taken first and covers both phases, so concurrent Flushes still
+// reach the terminal whole and in order. Lock order is always writeMu -> mu.
+func (s *ScreenBuf) Flush() {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if deliver := s.composeFrame(); deliver != nil {
+		deliver()
+	}
+}
+
+// composeFrame renders the pending state and returns a closure that delivers
+// the result, or nil when there is nothing to deliver (or when the renderer
+// writes on its own, as the GUI backends do). Everything it touches is
+// protected by mu; the returned closure touches none of it.
+func (s *ScreenBuf) composeFrame() func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lockCount > 0 || s.buf == nil || s.Renderer == nil {
+		return nil
+	}
+	if s.graphics.TakeRepaintRequest() {
+		s.dirty = true
+	}
+
+	var activePal *[256]uint32
+	if s.ActivePalette != nil {
+		activePal = s.ActivePalette
+	} else if s.ThemePalette != nil {
+		activePal = s.ThemePalette
+	}
+
+	s.Renderer.SetPalette(activePal)
+	s.Renderer.SetCursor(s.cursorX, s.cursorY, s.cursorVisible, s.cursorShape)
+	s.Renderer.Render(s.buf, s.shadow, s.width, s.height, s.dirty)
+	if gr, ok := s.Renderer.(GraphicsRenderer); ok {
+		gr.RenderGraphics(&s.graphics, s.buf, s.shadow, s.width, s.height, s.dirty)
+	}
+	var deliver func()
+	if fp, ok := s.Renderer.(framePreparer); ok {
+		deliver = fp.PrepareFlush()
+	} else {
+		s.Renderer.Flush()
+	}
+
+	s.dirty = false
+	s.cursorDirty = false
+	copy(s.shadow, s.buf)
+
+	return deliver
+}
+
+// framePreparer is implemented by renderers that can separate composing a
+// frame (which reads the screen buffer and so must happen under ScreenBuf.mu)
+// from delivering it (which must not). Renderers that don't implement it —
+// the GUI backends, which hand pixels to a windowing library rather than
+// bytes to a tty — keep being flushed inline.
+type framePreparer interface {
+	// PrepareFlush finishes the frame and returns a closure that writes it
+	// out, or nil if there is nothing to write.
+	PrepareFlush() func()
+}
+
+// AnsiRenderer реализует SurfaceRenderer через ESC-последовательности.
+type AnsiRenderer struct {
+	parent   *ScreenBuf
+	lastAttr uint64
+	frameOut strings.Builder
+
+	cursorX, cursorY int
+	cursorVis        bool
+	cursorShape      CursorShape
+
+	lastSentCursorX, lastSentCursorY int
+	lastSentCursorVis                bool
+	lastSentCursorShape              CursorShape
+	termCursorInvalid                bool
+	firstInit                        bool
+
+	gfxProto GraphicsProtocol
+	gfxGen   uint64
+	gfxKitty *kittyEncoder
+	gfxList  []ImagePlacement
+}
+
+func (r *AnsiRenderer) SetPalette(pal *[256]uint32) {
+	if r.parent.quantCache == nil {
+		r.parent.quantCache = make(map[uint32]uint8)
+	}
+	if pal == nil {
+		return
+	}
+	changed := false
+	for i := 0; i < 256; i++ {
+		if !r.parent.HostPaletteValid[i] || r.parent.HostPalette[i] != pal[i] {
+			changed = true
+			pr, pg, pb := rgb(pal[i])
+			r.frameOut.WriteString(fmt.Sprintf("\x1b]4;%d;rgb:%02x/%02x/%02x\x07", i, pr, pg, pb))
+			r.parent.HostPalette[i] = pal[i]
+			r.parent.HostPaletteValid[i] = true
+		}
+	}
+	// One rebuild for the whole palette change, not one per changed entry:
+	// a full (re)load used to allocate 256 maps in a row.
+	if changed {
+		r.parent.quantCache = make(map[uint32]uint8)
+	}
+}
+
+func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
+	needsDraw := force
+	if !needsDraw {
+		for i := 0; i < w*h; i++ {
+			if buf[i] != shadow[i] {
+				needsDraw = true
+				break
+			}
+		}
+	}
+
+	if !needsDraw {
+		return
+	}
+
+	r.frameOut.WriteString("\x1b[?25l") // Hide cursor during draw
+
+	r.termCursorInvalid = true
+	lastX, lastY := -1, -1
+	r.lastAttr = ^uint64(0)
+
+	var activePal *[256]uint32
+	if r.parent.ActivePalette != nil {
+		activePal = r.parent.ActivePalette
+	} else {
+		activePal = r.parent.ThemePalette
+	}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			idx := y*w + x
+			if !force && buf[idx] == shadow[idx] {
+				continue
+			}
+
+			if x != lastX+1 || y != lastY {
+				r.frameOut.WriteString(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))
+			}
+
+			attr := buf[idx].Attributes
+			r.frameOut.WriteString(attributesToANSI(attr, r.lastAttr, activePal, r.parent.ColorProfile, r.parent.quantCache))
+			r.lastAttr = attr
+
+			char := buf[idx].Char
+			if char == WideCharFiller {
+				lastX, lastY = x, y
+				continue
+			}
+			r.frameOut.WriteString(CellString(char))
+			lastX, lastY = x, y
+		}
+	}
+}
+
+func (r *AnsiRenderer) SetCursor(x, y int, vis bool, shape CursorShape) {
+	r.cursorX = x
+	r.cursorY = y
+	r.cursorVis = vis
+	r.cursorShape = shape
+}
+
+func (r *AnsiRenderer) SetWindowTitle(title string) {
+	r.frameOut.WriteString(fmt.Sprintf("\x1b]0;%s\x07", title))
+}
+
+// Flush composes the frame and writes it out immediately. ScreenBuf.Flush
+// uses PrepareFlush instead, so that the write happens outside ScreenBuf.mu;
+// this entry point remains for direct callers.
+func (r *AnsiRenderer) Flush() {
+	deliver := r.PrepareFlush()
+	if deliver == nil {
+		return
+	}
+	// Direct callers (SetWindowTitle, for one) bypass ScreenBuf.Flush, so
+	// take writeMu here to keep their output from landing in the middle of
+	// a frame. Safe against self-deadlock: ScreenBuf.Flush reaches this
+	// renderer through PrepareFlush, never through this method.
+	r.parent.writeMu.Lock()
+	defer r.parent.writeMu.Unlock()
+	deliver()
+}
+
+// PrepareFlush appends the cursor state to the pending frame and returns a
+// closure that writes the whole payload to the terminal, or nil if the frame
+// turned out empty. Splitting the two lets the caller release its locks
+// before a write that may block for an unbounded time.
+func (r *AnsiRenderer) PrepareFlush() func() {
+	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape {
+		r.frameOut.WriteString(fmt.Sprintf("\x1b[%d;%dH", r.cursorY+1, r.cursorX+1))
+		if r.cursorVis {
+			r.frameOut.WriteString("\x1b[?25h")
+			if ManageCursorStyle {
+				if os.Getenv("TERM") == "linux" {
+					if r.cursorShape == CursorShapeBlock {
+						r.frameOut.WriteString("\x1b[?6c")
+					} else {
+						r.frameOut.WriteString("\x1b[?3c")
+					}
+				} else {
+					if r.cursorShape == CursorShapeBlock {
+						r.frameOut.WriteString("\x1b[1 q\x1b]1337;CursorShape=0\x07")
+					} else {
+						r.frameOut.WriteString("\x1b[3 q\x1b]1337;CursorShape=2\x07")
+					}
+				}
+			}
+			SetCursorStyleOS(r.cursorVis, r.cursorShape)
+		} else {
+			r.frameOut.WriteString("\x1b[?25l")
+			SetCursorStyleOS(false, r.cursorShape)
+		}
+		r.lastSentCursorX = r.cursorX
+		r.lastSentCursorY = r.cursorY
+		r.lastSentCursorVis = r.cursorVis
+		r.lastSentCursorShape = r.cursorShape
+		r.termCursorInvalid = false
+		r.firstInit = true
+	}
+
+	payload := r.frameOut.String()
+	r.frameOut.Reset()
+	if payload == "" {
+		return nil
+	}
+
+	return func() {
+		writeStart := time.Now()
+		r.write(payload)
+		writeDur := time.Since(writeStart)
+
+		if writeDur > 10*time.Millisecond {
+			DebugLog("PROFILE: Atomic Write Slow! Time:%v Bytes:%d", writeDur, len(payload))
+		}
+	}
+}
+
+func (r *AnsiRenderer) write(s string) {
+	if s == "" {
+		return
+	}
+	if r.parent.Writer != nil {
+		io.WriteString(r.parent.Writer, s)
+	} else {
+		os.Stdout.WriteString(s)
+	}
+}
+
+// GetCursorPos returns the current virtual cursor position.
+func (s *ScreenBuf) GetCursorPos() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cursorX, s.cursorY
+}
+
+// ScreenRow reads a stretch of one row back out of the screen.
+func ScreenRow(scr *ScreenBuf, y, x1, x2 int) string {
+	runes := make([]rune, x2-x1+1)
+	for i := range runes {
+		cell := scr.GetCell(x1+i, y)
+		runes[i] = rune(cell.Char)
+		if runes[i] == 0 {
+			runes[i] = ' '
+		}
+	}
+	return string(runes)
+}

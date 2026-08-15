@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -41,6 +42,9 @@ func pressKey(f vtui.Frame, e *vtinput.InputEvent) bool {
 }
 
 func TestMain(m *testing.M) {
+	newLocalPTY = func() (PtyBackend, error) {
+		return nil, errors.New("local PTY disabled for unit-test panel frames")
+	}
 	vfs.InitSudoClient("/usr/bin/f4", "")
 
 	// Unit tests must never hand control to the user's desktop. Individual

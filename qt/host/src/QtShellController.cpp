@@ -2,12 +2,15 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QMetaObject>
+#include <QPointer>
 
 #include <msgpack.hpp>
 
 #include <array>
 #include <cstdint>
 #include <exception>
+#include <utility>
 
 namespace
 {
@@ -136,7 +139,86 @@ void writeBigEndianSize(QByteArray &buffer, quint32 size)
     buffer[2] = static_cast<char>((size >> 8) & 0xff);
     buffer[3] = static_cast<char>(size & 0xff);
 }
+
+QVariantMap withoutNativePanelPayloads(QVariantMap container)
+{
+    const QVariant panelsValue = container.value(QStringLiteral("panels"));
+    if (panelsValue.metaType().id() != QMetaType::QVariantList) {
+        return container;
+    }
+
+    const QVariantList panels = panelsValue.toList();
+    QVariantList presentationPanels;
+    presentationPanels.reserve(panels.size());
+    for (const QVariant &panelValue : panels) {
+        QVariantMap panel = panelValue.toMap();
+        // Gallery consumes these directly from the full C++ scene. QML only
+        // needs the panel's chrome/layout fields; exposing the catalog here
+        // recursively converts every row and style into QV4 objects on the GUI
+        // thread for no benefit.
+        panel.remove(QStringLiteral("entries"));
+        panel.remove(QStringLiteral("highlightStyles"));
+        presentationPanels.push_back(panel);
+    }
+    container.insert(QStringLiteral("panels"), presentationPanels);
+    return container;
 }
+
+QVariantMap makePresentationScene(QVariantMap scene)
+{
+    scene = withoutNativePanelPayloads(std::move(scene));
+
+    const QVariant shellValue = scene.value(QStringLiteral("shell"));
+    if (shellValue.metaType().id() == QMetaType::QVariantMap) {
+        scene.insert(QStringLiteral("shell"),
+                     withoutNativePanelPayloads(shellValue.toMap()));
+    }
+
+    const QVariant framesValue = scene.value(QStringLiteral("frames"));
+    if (framesValue.metaType().id() == QMetaType::QVariantList) {
+        const QVariantList frames = framesValue.toList();
+        QVariantList presentationFrames;
+        presentationFrames.reserve(frames.size());
+        for (const QVariant &frameValue : frames) {
+            presentationFrames.push_back(
+                frameValue.metaType().id() == QMetaType::QVariantMap
+                    ? QVariant(withoutNativePanelPayloads(frameValue.toMap()))
+                    : frameValue);
+        }
+        scene.insert(QStringLiteral("frames"), presentationFrames);
+    }
+    return scene;
+}
+}
+
+class QtShellMessageDecoder final : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit QtShellMessageDecoder(QObject *parent = nullptr)
+        : QObject(parent)
+    {
+    }
+
+    void decode(QByteArray payload, quint64 epoch, quint64 sequence)
+    {
+        try {
+            msgpack::object_handle handle = msgpack::unpack(
+                payload.constData(), static_cast<size_t>(payload.size()));
+            emit decoded(epoch, sequence, unpackObject(handle.get()));
+        } catch (const std::exception &e) {
+            emit failed(epoch, sequence, QString::fromUtf8(e.what()));
+        } catch (...) {
+            emit failed(epoch, sequence,
+                        QStringLiteral("unknown MessagePack error"));
+        }
+    }
+
+signals:
+    void decoded(quint64 epoch, quint64 sequence, const QVariant &value);
+    void failed(quint64 epoch, quint64 sequence, const QString &message);
+};
 
 QtShellController::QtShellController(const QString &connectAddress,
                                      const QString &nonce,
@@ -154,12 +236,43 @@ QtShellController::QtShellController(const QString &connectAddress,
         return;
     }
 
+    m_decodeThread.setObjectName(QStringLiteral("f4-msgpack-decoder"));
+    m_decoder = new QtShellMessageDecoder;
+    m_decoder->moveToThread(&m_decodeThread);
+    connect(&m_decodeThread, &QThread::finished,
+            m_decoder, &QObject::deleteLater);
+    connect(m_decoder, &QtShellMessageDecoder::decoded,
+            this, &QtShellController::onFrameDecoded,
+            Qt::QueuedConnection);
+    connect(m_decoder, &QtShellMessageDecoder::failed,
+            this, &QtShellController::onFrameDecodeFailed,
+            Qt::QueuedConnection);
+    m_decodeThread.start();
+
     connect(m_socket, &QTcpSocket::connected, this, &QtShellController::onConnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &QtShellController::onReadyRead);
     connect(m_socket, &QTcpSocket::disconnected, this, &QtShellController::onDisconnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, &QtShellController::onSocketError);
 
+    // Keep at most one additional maximum-sized frame in Qt's socket buffer.
+    // Combined with the single in-flight decode below, TCP backpressure bounds
+    // memory and prevents stale scroll scenes from building a long work queue.
+    m_socket->setReadBufferSize(static_cast<qint64>(MaxMessageSize) + 4);
     m_socket->connectToHost(m_host, m_port);
+}
+
+QtShellController::~QtShellController()
+{
+    invalidateDecodeSession();
+    if (m_decodeThread.isRunning()) {
+        // A decode already executing cannot be interrupted safely because
+        // msgpack owns its temporary zone. Let that one finish, discard its
+        // epoch-tagged result, and prevent the worker event loop from taking
+        // any more work.
+        m_decodeThread.quit();
+        m_decodeThread.wait();
+    }
+    m_decoder = nullptr;
 }
 
 void QtShellController::sendResize(int cols, int rows)
@@ -284,12 +397,12 @@ void QtShellController::onConnected()
 
 void QtShellController::onReadyRead()
 {
-    m_readBuffer.append(m_socket->readAll());
     processBuffer();
 }
 
 void QtShellController::onDisconnected()
 {
+    invalidateDecodeSession();
     if (m_connected) {
         m_connected = false;
         emit connectedChanged();
@@ -299,6 +412,7 @@ void QtShellController::onDisconnected()
 
 void QtShellController::onSocketError(QAbstractSocket::SocketError)
 {
+    invalidateDecodeSession();
     emit fatalError(m_socket->errorString());
 }
 
@@ -350,35 +464,190 @@ bool QtShellController::parseConnectAddress(const QString &address)
 
 void QtShellController::processBuffer()
 {
-    while (m_readBuffer.size() >= 4) {
-        const quint32 size = readBigEndianSize(m_readBuffer);
-        if (size == 0 || size > MaxMessageSize) {
-            emit fatalError(QStringLiteral("Invalid IPC frame size from f4"));
-            m_socket->disconnectFromHost();
-            return;
-        }
-        if (m_readBuffer.size() < static_cast<int>(size + 4)) {
-            return;
-        }
-
-        const QByteArray payload = m_readBuffer.mid(4, static_cast<qsizetype>(size));
-        m_readBuffer.remove(0, static_cast<qsizetype>(size + 4));
-
-        try {
-            msgpack::object_handle handle = msgpack::unpack(payload.constData(), static_cast<size_t>(payload.size()));
-            QVariant decoded = unpackObject(handle.get());
-            if (decoded.metaType().id() == QMetaType::QVariantMap) {
-                const QVariantMap message = decoded.toMap();
-                if (message.value(QStringLiteral("type")).toString() == QStringLiteral("scene")) {
-                    m_scene = message;
-                    emit sceneChanged();
-                }
-                emit messageReceived(message);
+    // Read directly into the final frame allocation. In particular, avoid a
+    // growing aggregate QByteArray followed by a large mid()/remove() pair on
+    // the GUI thread: semantic scenes can be tens of megabytes.
+    while (!m_decodeInFlight && m_socket && m_socket->bytesAvailable() > 0) {
+        if (m_expectedFrameSize == 0) {
+            const qsizetype headerRemaining = 4 - m_frameHeader.size();
+            const QByteArray headerPart = m_socket->read(headerRemaining);
+            if (headerPart.isEmpty()) {
+                return;
             }
-        } catch (const std::exception &e) {
-            emit fatalError(QStringLiteral("Failed to decode IPC frame: %1").arg(QString::fromUtf8(e.what())));
-            m_socket->disconnectFromHost();
+            m_frameHeader.append(headerPart);
+            if (m_frameHeader.size() < 4) {
+                return;
+            }
+
+            const quint32 size = readBigEndianSize(m_frameHeader);
+            m_frameHeader.clear();
+            if (size == 0 || size > MaxMessageSize) {
+                failProtocol(QStringLiteral("Invalid IPC frame size from f4"));
+                return;
+            }
+
+            m_expectedFrameSize = size;
+            m_frameBytesRead = 0;
+            m_framePayload.resize(static_cast<qsizetype>(size));
+        }
+
+        const qsizetype remaining = static_cast<qsizetype>(m_expectedFrameSize)
+            - m_frameBytesRead;
+        const qint64 count = m_socket->read(
+            m_framePayload.data() + m_frameBytesRead, remaining);
+        if (count <= 0) {
             return;
+        }
+        m_frameBytesRead += static_cast<qsizetype>(count);
+        if (m_frameBytesRead == static_cast<qsizetype>(m_expectedFrameSize)) {
+            QByteArray payload = std::move(m_framePayload);
+            m_framePayload = QByteArray();
+            m_expectedFrameSize = 0;
+            m_frameBytesRead = 0;
+            enqueueFrame(std::move(payload));
         }
     }
 }
+
+void QtShellController::enqueueFrame(QByteArray payload)
+{
+    if (m_decodeInFlight || !m_acceptDecodedFrames || !m_decoder
+        || !m_decodeThread.isRunning()) {
+        return;
+    }
+
+    const quint64 epoch = m_decodeEpoch;
+    const quint64 sequence = m_nextDecodeSequence++;
+    m_decodeInFlight = true;
+    emit frameDecodeQueued(sequence);
+
+    QPointer<QtShellMessageDecoder> decoder(m_decoder);
+    const bool queued = QMetaObject::invokeMethod(
+        m_decoder,
+        [decoder, payload = std::move(payload), epoch, sequence]() mutable {
+            if (decoder) {
+                decoder->decode(std::move(payload), epoch, sequence);
+            }
+        },
+        Qt::QueuedConnection);
+    if (!queued) {
+        failProtocol(QStringLiteral("Failed to queue IPC frame for decoding"));
+    }
+}
+
+void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
+                                       const QVariant &decoded)
+{
+    // Results from a closed socket (or a preceding decode failure) may still
+    // arrive while its worker invocation unwinds. Epochs make those harmless.
+    if (!m_acceptDecodedFrames || epoch != m_decodeEpoch) {
+        return;
+    }
+    if (sequence != m_nextApplySequence) {
+        failProtocol(QStringLiteral("Out-of-order IPC decode result"));
+        return;
+    }
+    ++m_nextApplySequence;
+
+    if (decoded.metaType().id() != QMetaType::QVariantMap) {
+        m_decodeInFlight = false;
+        processBuffer();
+        return;
+    }
+
+    const QVariantMap message = decoded.toMap();
+    const QString messageType = message.value(QStringLiteral("type")).toString();
+    if (messageType == QStringLiteral("scene")) {
+        m_scene = message;
+        m_presentationScene = makePresentationScene(message);
+        const QVariantMap nextCommandLine = m_scene.value(QStringLiteral("shell"))
+                                                .toMap()
+                                                .value(QStringLiteral("commandLine"))
+                                                .toMap();
+        if (nextCommandLine != m_commandLine) {
+            m_commandLine = nextCommandLine;
+            emit commandLineChanged();
+        }
+        const QVariantList nextCommandMenus = m_scene.value(QStringLiteral("menus"))
+                                                  .toList();
+        if (nextCommandMenus != m_commandMenus) {
+            m_commandMenus = nextCommandMenus;
+            emit commandMenusChanged();
+        }
+        emit sceneChanged();
+    } else if (messageType == QStringLiteral("command_line")) {
+        const QVariant commandLine = message.value(QStringLiteral("commandLine"));
+        QVariantMap shell = m_scene.value(QStringLiteral("shell")).toMap();
+        if (!shell.isEmpty() && commandLine.metaType().id() == QMetaType::QVariantMap) {
+            const QVariantMap nextCommandLine = commandLine.toMap();
+            shell.insert(QStringLiteral("commandLine"), nextCommandLine);
+            m_scene.insert(QStringLiteral("shell"), shell);
+            QVariantMap presentationShell = m_presentationScene
+                                                .value(QStringLiteral("shell"))
+                                                .toMap();
+            if (!presentationShell.isEmpty()) {
+                presentationShell.insert(QStringLiteral("commandLine"),
+                                         nextCommandLine);
+                m_presentationScene.insert(QStringLiteral("shell"),
+                                           presentationShell);
+            }
+            if (nextCommandLine != m_commandLine) {
+                m_commandLine = nextCommandLine;
+                emit commandLineChanged();
+            }
+        }
+        const QVariant menus = message.value(QStringLiteral("menus"));
+        if (menus.metaType().id() == QMetaType::QVariantList) {
+            const QVariantList nextCommandMenus = menus.toList();
+            m_scene.insert(QStringLiteral("menus"), nextCommandMenus);
+            m_presentationScene.insert(QStringLiteral("menus"),
+                                       nextCommandMenus);
+            if (nextCommandMenus != m_commandMenus) {
+                m_commandMenus = nextCommandMenus;
+                emit commandMenusChanged();
+            }
+        }
+    }
+    emit messageReceived(message);
+    m_decodeInFlight = false;
+    processBuffer();
+}
+
+void QtShellController::onFrameDecodeFailed(quint64 epoch, quint64 sequence,
+                                            const QString &message)
+{
+    if (!m_acceptDecodedFrames || epoch != m_decodeEpoch) {
+        return;
+    }
+    if (sequence != m_nextApplySequence) {
+        failProtocol(QStringLiteral("Out-of-order IPC decode failure"));
+        return;
+    }
+    failProtocol(QStringLiteral("Failed to decode IPC frame: %1").arg(message));
+}
+
+void QtShellController::invalidateDecodeSession()
+{
+    m_acceptDecodedFrames = false;
+    ++m_decodeEpoch;
+    m_frameHeader.clear();
+    m_framePayload.clear();
+    m_expectedFrameSize = 0;
+    m_frameBytesRead = 0;
+    m_decodeInFlight = false;
+}
+
+void QtShellController::failProtocol(const QString &message)
+{
+    if (m_protocolFailed) {
+        return;
+    }
+    m_protocolFailed = true;
+    invalidateDecodeSession();
+    emit fatalError(message);
+    if (m_socket) {
+        m_socket->disconnectFromHost();
+    }
+}
+
+#include "QtShellController.moc"

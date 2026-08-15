@@ -554,8 +554,8 @@ func LoadSession() {
 	LastLeftPath = ini.GetString("Panel/Left", "Folder", "")
 	LastLeftCursor = ini.GetString("Panel/Left", "CurFile", "")
 	fmt.Sscanf(ini.GetString("Panel/Left", "ViewMode", "0"), "%d", &LastLeftViewMode)
-	LastLeftPresentation = parsePanelPresentation(ini.GetString("Panel/Left", "Presentation", string(PanelPresentationList)))
-	LastLeftGalleryState = loadPanelGallerySessionState(ini, "Panel/Left")
+	LastLeftGalleryState = loadUnifiedPanelGallerySessionState(
+		ini, "Panel/Left", validSessionViewMode(LastLeftViewMode))
 	fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &LastLeftSortMode)
 	LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
 
@@ -563,8 +563,8 @@ func LoadSession() {
 	LastRightPath = ini.GetString("Panel/Right", "Folder", "")
 	LastRightCursor = ini.GetString("Panel/Right", "CurFile", "")
 	fmt.Sscanf(ini.GetString("Panel/Right", "ViewMode", "0"), "%d", &LastRightViewMode)
-	LastRightPresentation = parsePanelPresentation(ini.GetString("Panel/Right", "Presentation", string(PanelPresentationList)))
-	LastRightGalleryState = loadPanelGallerySessionState(ini, "Panel/Right")
+	LastRightGalleryState = loadUnifiedPanelGallerySessionState(
+		ini, "Panel/Right", validSessionViewMode(LastRightViewMode))
 	fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &LastRightSortMode)
 	LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
 
@@ -639,7 +639,6 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastLeftPath))
 	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastLeftCursor))
 	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastLeftViewMode))
-	sb.WriteString(fmt.Sprintf("Presentation = %s\n", parsePanelPresentation(string(LastLeftPresentation))))
 	writePanelGallerySessionState(&sb, LastLeftGalleryState)
 	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastLeftSortMode))
 	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortRev]))
@@ -648,7 +647,6 @@ func SaveSession() {
 	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastRightPath))
 	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastRightCursor))
 	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastRightViewMode))
-	sb.WriteString(fmt.Sprintf("Presentation = %s\n", parsePanelPresentation(string(LastRightPresentation))))
 	writePanelGallerySessionState(&sb, LastRightGalleryState)
 	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastRightSortMode))
 	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev]))
@@ -678,8 +676,49 @@ func loadPanelGallerySessionState(ini *IniFile, section string) panelGallerySess
 		key := "GalleryDensity" + strings.ToUpper(string(mode[:1])) + string(mode[1:])
 		var density int
 		if _, err := fmt.Sscanf(ini.GetString(section, key, ""), "%d", &density); err == nil {
+			// 128 and then 32 were the untouched Icons defaults. Migrate both
+			// exact defaults so existing sessions receive the current 64px
+			// cells; preserve every other explicit user zoom value.
+			if mode == GalleryLayoutIcons && (density == 128 || density == 32) {
+				density = 64
+			}
 			state.Densities[mode] = clampGalleryDensity(mode, density)
 		}
+	}
+	return state
+}
+
+// loadUnifiedPanelGallerySessionState accepts the retired panel Presentation
+// key only as an input migration hint. New sessions persist GalleryLayout
+// directly and never write Presentation again.
+//
+// Sessions from before GalleryLayout existed have neither key, so their TUI
+// ViewMode is the only available description of the intended GUI layout.
+// During the transition both keys were written: `list` means that the saved
+// Brief/Medium/Detailed ViewMode still owns the layout, while `gallery` means
+// the saved GalleryLayout already owns it.
+func loadUnifiedPanelGallerySessionState(ini *IniFile, section string,
+	viewMode ViewMode,
+) panelGallerySessionState {
+	state := loadPanelGallerySessionState(ini, section)
+	const missing = "\x00"
+	presentation := strings.ToLower(strings.TrimSpace(
+		ini.GetString(section, "Presentation", missing)))
+	galleryLayout := ini.GetString(section, "GalleryLayout", missing)
+	if presentation == "gallery" ||
+		(presentation == missing && galleryLayout != missing) {
+		return state
+	}
+
+	switch viewMode {
+	case ViewModeBrief:
+		state.LayoutMode = GalleryLayoutColumns
+		state.ColumnCount = 3
+	case ViewModeDetailed:
+		state.LayoutMode = GalleryLayoutDetails
+	default:
+		state.LayoutMode = GalleryLayoutColumns
+		state.ColumnCount = 2
 	}
 	return state
 }
@@ -711,21 +750,6 @@ func capturePanelGallerySessionState(panel *FileSystemPanel) panelGallerySession
 		return defaultPanelGallerySessionState()
 	}
 	return clonePanelGallerySessionState(panelGallerySessionState{LayoutMode: panel.galleryLayoutMode, ColumnCount: panel.galleryColumnCount, Densities: panel.galleryDensities})
-}
-
-func restorePanelPresentations(panels *PanelsFrame) {
-	if panels == nil {
-		return
-	}
-	if left, ok := panels.panels[0].(*FileSystemPanel); ok {
-		left.presentation = parsePanelPresentation(string(LastLeftPresentation))
-		restorePanelGallerySessionState(left, LastLeftGalleryState)
-	}
-	if right, ok := panels.panels[1].(*FileSystemPanel); ok {
-		right.presentation = parsePanelPresentation(string(LastRightPresentation))
-		restorePanelGallerySessionState(right, LastRightGalleryState)
-	}
-	panels.updateMenuCheckmarks()
 }
 
 func getFormattedVersionInfo() string {

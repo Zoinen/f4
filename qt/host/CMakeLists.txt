@@ -8,7 +8,6 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment ta
 
 project(F4QtHost LANGUAGES CXX)
 
-option(F4_WITH_ZOINGALLERY "Build the reusable ZoinGallery panel integration" OFF)
 option(USE_QWK "Use QWindowKit" ON)
 include(CTest)
 
@@ -27,13 +26,30 @@ if(USE_QWK)
   find_package(QWindowKit REQUIRED)
 endif()
 
-if(F4_WITH_ZOINGALLERY)
-  find_package(ZoinGallery CONFIG REQUIRED)
-  if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
-    message(FATAL_ERROR
-      "F4_WITH_ZOINGALLERY requires the ZoinGallery::Core and ZoinGallery::Qml targets")
-  endif()
+set(F4_ZOINGALLERY_SOURCE_DIR
+  "${CMAKE_CURRENT_LIST_DIR}/../../third_party/ZoinGallery")
+if(NOT EXISTS "${F4_ZOINGALLERY_SOURCE_DIR}/CMakeLists.txt")
+  message(FATAL_ERROR
+    "ZoinGallery submodule is missing. Run: git submodule update --init --recursive")
 endif()
+
+# ZoinGallery is pinned by the f4 Git tree and participates in the same CMake
+# graph. Conan supplies its third-party dependencies, not a separately built
+# zoingallery package.
+set(ZOIN_BUILD_STANDALONE OFF CACHE BOOL
+  "Build the standalone ZoinGallery application" FORCE)
+set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
+  "Build ZoinGallery performance audit tools" FORCE)
+set(F4_ZOINGALLERY_BINARY_DIR
+  "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
+add_subdirectory(
+  "${F4_ZOINGALLERY_SOURCE_DIR}"
+  "${F4_ZOINGALLERY_BINARY_DIR}")
+if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
+  message(FATAL_ERROR
+    "The bundled ZoinGallery submodule must provide Core and Qml targets")
+endif()
+set(ZoinGallery_QML_IMPORT_PATH "${F4_ZOINGALLERY_BINARY_DIR}")
 
 if(COMMAND qt_policy)
   qt_policy(SET QTP0004 NEW)
@@ -48,6 +64,8 @@ set(F4_QT_HOST_SOURCES
   src/F4GalleryBridge.cpp
   src/F4IconProvider.h
   src/F4IconProvider.cpp
+  src/WindowGeometryPersistence.h
+  src/WindowGeometryPersistence.cpp
 )
 
 add_executable(f4-qt-host ${F4_QT_HOST_SOURCES})
@@ -55,7 +73,6 @@ add_executable(f4-qt-host ${F4_QT_HOST_SOURCES})
 target_include_directories(f4-qt-host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_compile_definitions(f4-qt-host PRIVATE
-  F4_WITH_ZOINGALLERY=$<BOOL:${F4_WITH_ZOINGALLERY}>
   $<$<BOOL:${USE_QWK}>:__USE_QWK>
 )
 
@@ -64,10 +81,59 @@ set_target_properties(f4-qt-host PROPERTIES
 )
 
 if(APPLE)
-  # The Go launcher expects a non-bundle executable. Keep all dylibs in the
-  # sibling lib directory so the installed tree is relocatable.
+  target_link_libraries(f4-qt-host PRIVATE "-framework Carbon")
+  # The host binary is also copied into a small application bundle below so
+  # LaunchServices can own the adaptive Icon Composer icon. Keep the bare
+  # binary working as a compatibility fallback.
   set_target_properties(f4-qt-host PROPERTIES
-    INSTALL_RPATH "@loader_path/../lib"
+    INSTALL_RPATH "@loader_path/../lib;@loader_path/../../../../lib"
+  )
+
+  set(F4_MACOS_ICON_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/AppIcon.icon")
+  set(F4_MACOS_ICON_FILES
+    "${F4_MACOS_ICON_DIR}/icon.json"
+    "${F4_MACOS_ICON_DIR}/Assets/f4-shell.svg"
+    "${F4_MACOS_ICON_DIR}/Assets/f4-content.svg"
+  )
+  set(F4_MACOS_INFO_PLIST
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/f4-qt-host-Info.plist")
+  configure_file(packaging/f4-qt-host-Info.plist.in
+    "${F4_MACOS_INFO_PLIST}" @ONLY)
+
+  # A source icon change must relink the host so this post-build packaging
+  # step runs again even though actool's inputs are not C++ sources.
+  set_property(SOURCE src/main.cpp APPEND PROPERTY
+    OBJECT_DEPENDS "${F4_MACOS_ICON_FILES}")
+
+  set(F4_MACOS_APP_DIR
+    "$<TARGET_FILE_DIR:f4-qt-host>/f4-qt-host.app")
+  add_custom_command(TARGET f4-qt-host POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+      "${F4_MACOS_APP_DIR}/Contents/MacOS"
+      "${F4_MACOS_APP_DIR}/Contents/Resources"
+    COMMAND xcrun actool "${F4_MACOS_ICON_DIR}"
+      --compile "${F4_MACOS_APP_DIR}/Contents/Resources"
+      --output-format human-readable-text
+      --notices
+      --warnings
+      --output-partial-info-plist
+        "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
+      --app-icon AppIcon
+      --include-all-app-icons
+      --enable-on-demand-resources NO
+      --development-region en
+      --target-device mac
+      --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
+      --platform macosx
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${F4_MACOS_INFO_PLIST}"
+      "${F4_MACOS_APP_DIR}/Contents/Info.plist"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "$<TARGET_FILE:f4-qt-host>"
+      "${F4_MACOS_APP_DIR}/Contents/MacOS/f4-qt-host"
+    COMMENT "Building adaptive macOS f4-qt-host.app icon bundle"
+    VERBATIM
   )
 elseif(UNIX)
   set_target_properties(f4-qt-host PROPERTIES
@@ -78,13 +144,9 @@ endif()
 set(F4_QT_HOST_QML_FILES
   qml/main.qml
   qml/PanelSplitter.qml
+  qml/GalleryPanelHost.qml
+  qml/GalleryViewerHost.qml
 )
-if(F4_WITH_ZOINGALLERY)
-  list(APPEND F4_QT_HOST_QML_FILES
-    qml/GalleryPanelHost.qml
-    qml/GalleryViewerHost.qml
-  )
-endif()
 
 qt6_add_qml_module(f4-qt-host
   URI F4QtHost
@@ -100,12 +162,20 @@ set(F4_LUCIDE_ICON_NAMES
   archive.svg
   book-open.svg
   check.svg
+  circle-check.svg
+  circle-play.svg
+  circle-x.svg
+  chevron-down.svg
+  clock-3.svg
+  columns-2.svg
+  columns-3.svg
   database.svg
   file.svg
   file-clock.svg
   file-code.svg
   file-cog.svg
   file-lock.svg
+  file-pen-line.svg
   file-text.svg
   folder.svg
   folder-kanban.svg
@@ -113,10 +183,25 @@ set(F4_LUCIDE_ICON_NAMES
   folder-up.svg
   globe.svg
   image.svg
+  images.svg
+  grid-3x3.svg
+  layout-dashboard.svg
   library.svg
+  list.svg
+  list-checks.svg
+  list-tree.svg
+  loader-circle.svg
   music.svg
+  panels-top-left.svg
+  panel-left.svg
+  plus.svg
+  rows-3.svg
+  rows-4.svg
   square-terminal.svg
+  trash-2.svg
+  triangle-alert.svg
   video.svg
+  x.svg
 )
 set(F4_LUCIDE_ICONS ${F4_LUCIDE_ICON_NAMES})
 list(TRANSFORM F4_LUCIDE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide/")
@@ -174,17 +259,15 @@ if(USE_QWK)
   target_link_libraries(f4-qt-host PRIVATE QWindowKit::Quick)
 endif()
 
-if(F4_WITH_ZOINGALLERY)
-  target_link_libraries(f4-qt-host PRIVATE
-    ZoinGallery::Core
-    ZoinGallery::Qml
-  )
-  # qmlimportscanner only reads import paths from the application target; it
-  # does not traverse this property through linked imported targets.
-  set_property(TARGET f4-qt-host APPEND PROPERTY
-    QT_QML_IMPORT_PATH "${ZoinGallery_QML_IMPORT_PATH}"
-  )
-endif()
+target_link_libraries(f4-qt-host PRIVATE
+  ZoinGallery::Core
+  ZoinGallery::Qml
+)
+# qmlimportscanner only reads import paths from the application target; it
+# does not traverse this property through linked imported targets.
+set_property(TARGET f4-qt-host APPEND PROPERTY
+  QT_QML_IMPORT_PATH "${ZoinGallery_QML_IMPORT_PATH}"
+)
 
 if(TARGET msgpack-cxx)
   target_link_libraries(f4-qt-host PRIVATE msgpack-cxx)
@@ -197,6 +280,13 @@ endif()
 qt6_finalize_target(f4-qt-host)
 
 install(TARGETS f4-qt-host RUNTIME DESTINATION bin)
+if(APPLE)
+  install(DIRECTORY
+    "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/f4-qt-host.app"
+    DESTINATION bin
+    USE_SOURCE_PERMISSIONS
+  )
+endif()
 install(FILES icons/lucide/LICENSE
   DESTINATION licenses
   RENAME Lucide-LICENSE.txt
@@ -305,6 +395,127 @@ if(BUILD_TESTING)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
 
+  add_executable(F4DocumentSurfaceTests
+    tests/F4DocumentSurfaceTests.cpp
+    src/DummyQWK.h
+  )
+  target_include_directories(F4DocumentSurfaceTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  qt6_add_resources(F4DocumentSurfaceTests f4_document_surface_test_qml
+    PREFIX "/F4QtHost"
+    FILES
+      qml/main.qml
+      qml/PanelSplitter.qml
+  )
+  f4_add_icon_test_resources(F4DocumentSurfaceTests)
+  target_link_libraries(F4DocumentSurfaceTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+  )
+  add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
+  set_tests_properties(F4DocumentSurfaceTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+
+  add_executable(F4OperationsQueueTests
+    tests/F4OperationsQueueTests.cpp
+    src/DummyQWK.h
+  )
+  target_include_directories(F4OperationsQueueTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  qt6_add_resources(F4OperationsQueueTests f4_operations_queue_test_qml
+    PREFIX "/F4QtHost"
+    FILES
+      qml/main.qml
+      qml/PanelSplitter.qml
+  )
+  f4_add_icon_test_resources(F4OperationsQueueTests)
+  target_link_libraries(F4OperationsQueueTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+  )
+  add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
+  set_tests_properties(F4OperationsQueueTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+
+  add_executable(F4QuickViewSurfaceTests
+    tests/F4QuickViewSurfaceTests.cpp
+    src/DummyQWK.h
+  )
+  target_include_directories(F4QuickViewSurfaceTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  qt6_add_resources(F4QuickViewSurfaceTests f4_quick_view_surface_test_qml
+    PREFIX "/F4QtHost"
+    FILES
+      qml/main.qml
+      qml/PanelSplitter.qml
+      tests/TestGalleryPanel.qml
+  )
+  f4_add_icon_test_resources(F4QuickViewSurfaceTests)
+  target_link_libraries(F4QuickViewSurfaceTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Test
+  )
+  add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
+  set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+
+  add_executable(QtShellControllerTests
+    tests/QtShellControllerTests.cpp
+    src/QtShellController.h
+    src/QtShellController.cpp
+  )
+  target_include_directories(QtShellControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(QtShellControllerTests PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(QtShellControllerTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(QtShellControllerTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
+  add_test(NAME QtShellControllerTest COMMAND QtShellControllerTests)
+
+  add_executable(WindowGeometryPersistenceTests
+    tests/WindowGeometryPersistenceTests.cpp
+    src/WindowGeometryPersistence.h
+    src/WindowGeometryPersistence.cpp
+  )
+  target_include_directories(WindowGeometryPersistenceTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(WindowGeometryPersistenceTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Test
+  )
+  add_test(NAME WindowGeometryPersistenceTest
+    COMMAND WindowGeometryPersistenceTests)
+  set_tests_properties(WindowGeometryPersistenceTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+
   add_executable(F4GalleryBridgeTests
     tests/F4GalleryBridgeTests.cpp
     src/F4GalleryBridge.h
@@ -314,9 +525,6 @@ if(BUILD_TESTING)
   )
   target_include_directories(F4GalleryBridgeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   f4_add_icon_test_resources(F4GalleryBridgeTests)
-  target_compile_definitions(F4GalleryBridgeTests PRIVATE
-    F4_WITH_ZOINGALLERY=$<BOOL:${F4_WITH_ZOINGALLERY}>
-  )
   target_link_libraries(F4GalleryBridgeTests PRIVATE
     Qt6::Core
     Qt6::Gui
@@ -326,64 +534,59 @@ if(BUILD_TESTING)
     Qt6::Svg
     Qt6::Test
   )
-  if(F4_WITH_ZOINGALLERY)
-    qt6_add_resources(F4GalleryBridgeTests f4_gallery_bridge_test_qml
-      PREFIX "/F4QtHost"
-      FILES
-        qml/GalleryPanelHost.qml
-        qml/GalleryViewerHost.qml
-    )
-    target_link_libraries(F4GalleryBridgeTests PRIVATE
-      ZoinGallery::Core
-      ZoinGallery::Qml
-    )
-  endif()
+  qt6_add_resources(F4GalleryBridgeTests f4_gallery_bridge_test_qml
+    PREFIX "/F4QtHost"
+    FILES
+      qml/GalleryPanelHost.qml
+      qml/GalleryViewerHost.qml
+  )
+  target_link_libraries(F4GalleryBridgeTests PRIVATE
+    ZoinGallery::Core
+    ZoinGallery::Qml
+  )
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
 
-  if(F4_WITH_ZOINGALLERY)
-    add_executable(F4GalleryPointerTests
-      tests/F4GalleryPointerTests.cpp
-      src/F4GalleryBridge.h
-      src/F4GalleryBridge.cpp
-      src/F4IconProvider.h
-      src/F4IconProvider.cpp
-      src/VtuiGridItem.h
-      src/VtuiGridItem.cpp
-      src/QtShellController.h
-      src/QtShellController.cpp
-    )
-    target_include_directories(F4GalleryPointerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    f4_add_icon_test_resources(F4GalleryPointerTests)
-    target_compile_definitions(F4GalleryPointerTests PRIVATE F4_WITH_ZOINGALLERY=1)
-    qt6_add_resources(F4GalleryPointerTests f4_gallery_pointer_test_qml
-      PREFIX "/F4QtHost"
-      FILES
-        qml/GalleryPanelHost.qml
-        qml/GalleryViewerHost.qml
-    )
-    target_link_libraries(F4GalleryPointerTests PRIVATE
-      Qt6::Core
-      Qt6::Gui
-      Qt6::Qml
-      Qt6::Quick
-      Qt6::QuickControls2
-      Qt6::Network
-      Qt6::Svg
-      Qt6::Test
-      ZoinGallery::Core
-      ZoinGallery::Qml
-    )
-    if(TARGET msgpack-cxx)
-      target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx)
-    elseif(TARGET msgpack-cxx::msgpack-cxx)
-      target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx::msgpack-cxx)
-    endif()
-    add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
-    set_tests_properties(F4GalleryPointerTest PROPERTIES
-      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
-    )
+  add_executable(F4GalleryPointerTests
+    tests/F4GalleryPointerTests.cpp
+    src/F4GalleryBridge.h
+    src/F4GalleryBridge.cpp
+    src/F4IconProvider.h
+    src/F4IconProvider.cpp
+    src/VtuiGridItem.h
+    src/VtuiGridItem.cpp
+    src/QtShellController.h
+    src/QtShellController.cpp
+  )
+  target_include_directories(F4GalleryPointerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  f4_add_icon_test_resources(F4GalleryPointerTests)
+  qt6_add_resources(F4GalleryPointerTests f4_gallery_pointer_test_qml
+    PREFIX "/F4QtHost"
+    FILES
+      qml/GalleryPanelHost.qml
+      qml/GalleryViewerHost.qml
+  )
+  target_link_libraries(F4GalleryPointerTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Network
+    Qt6::Svg
+    Qt6::Test
+    ZoinGallery::Core
+    ZoinGallery::Qml
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx::msgpack-cxx)
   endif()
+  add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
+  set_tests_properties(F4GalleryPointerTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
 endif()

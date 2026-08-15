@@ -121,7 +121,8 @@ Item {
             // Once pointer focus opts into resize mode, every non-resize key
             // remains a commander key. Accepting Tab here prevents Qt Quick
             // from entering its control focus chain.
-            keySink.sendQtKey(event.key, event.text, true, event.modifiers)
+            keySink.sendQtKey(event.key, event.text, true,
+                              event.modifiers, event.nativeScanCode)
             rememberForwardedKey(event.key)
             event.accepted = true
         }
@@ -130,7 +131,7 @@ Item {
         if (takeForwardedKey(event.key)) {
             if (keySink)
                 keySink.sendQtKey(event.key, event.text, false,
-                                  event.modifiers)
+                                  event.modifiers, event.nativeScanCode)
             event.accepted = true
             return
         }

@@ -1,0 +1,6 @@
+AGENTS.md
+debug*log
+run*.sh
+cmd/test-app/test-app
+cmd/test-app/test-app.exe
+.codex-build/

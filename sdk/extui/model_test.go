@@ -1,6 +1,8 @@
 package extui
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestSceneToMapUsesAppSchema(t *testing.T) {
 	scene := Scene{
@@ -24,7 +26,6 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				Side:                   1,
 				Active:                 true,
 				Path:                   "/tmp",
-				Presentation:           "gallery",
 				GalleryLayoutMode:      "grid",
 				GalleryColumnCount:     3,
 				GalleryDensity:         184,
@@ -89,8 +90,13 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	if panels[0]["path"] != "/tmp" {
 		t.Fatalf("panel path = %v", panels[0]["path"])
 	}
-	if panels[0]["presentation"] != "gallery" || panels[0]["catalogRevision"] != int64(7) || panels[0]["cursorEntryId"] != "entry-alpha" {
+	if panels[0]["catalogRevision"] != int64(7) || panels[0]["cursorEntryId"] != "entry-alpha" {
 		t.Fatalf("panel v3 fields were not serialized: %#v", panels[0])
+	}
+	for _, retired := range []string{"presentation", "viewModeName", "columns", "top"} {
+		if _, present := panels[0][retired]; present {
+			t.Fatalf("retired panel field %q was serialized: %#v", retired, panels[0])
+		}
 	}
 	if panels[0]["galleryLayoutMode"] != "grid" ||
 		panels[0]["galleryColumnCount"] != 3 ||
@@ -122,5 +128,53 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	infoRows := infoPanels[0]["rows"].([]map[string]any)
 	if infoRows[0]["label"] != "Computer" || infoRows[0]["value"] != "host" {
 		t.Fatalf("unexpected info rows: %#v", infoRows)
+	}
+}
+
+func TestWindowRowsContentKeyTracksTextAndCompleteRunStyle(t *testing.T) {
+	rows := []TextRowModel{{
+		Index: 3, VisualRow: 41, LogicalLine: 40, Offset: 100, EndOffset: 110,
+		Runs: []RunModel{{
+			Text: "hello", Attr: 42, Foreground: "#123456", Background: "#654321",
+			Bold: true, Underline: true, Strikeout: true,
+		}},
+	}, {
+		Index: 4, VisualRow: 42, LogicalLine: 41, Offset: 110, EndOffset: 116,
+		Text: "world",
+	}}
+	original := WindowRowsContentKey(rows)
+	if original == "" || original != WindowRowsContentKey(append([]TextRowModel(nil), rows...)) {
+		t.Fatalf("unchanged rows produced unstable key %q", original)
+	}
+
+	mutations := map[string]func([]TextRowModel){
+		"row text":       func(copy []TextRowModel) { copy[1].Text = "World" },
+		"row extent":     func(copy []TextRowModel) { copy[1].EndOffset++ },
+		"run text":       func(copy []TextRowModel) { copy[0].Runs[0].Text = "Hello" },
+		"run attr":       func(copy []TextRowModel) { copy[0].Runs[0].Attr++ },
+		"run foreground": func(copy []TextRowModel) { copy[0].Runs[0].Foreground = "#abcdef" },
+		"run background": func(copy []TextRowModel) { copy[0].Runs[0].Background = "#fedcba" },
+		"run bold":       func(copy []TextRowModel) { copy[0].Runs[0].Bold = false },
+		"run underline":  func(copy []TextRowModel) { copy[0].Runs[0].Underline = false },
+		"run strikeout":  func(copy []TextRowModel) { copy[0].Runs[0].Strikeout = false },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			copyRows := append([]TextRowModel(nil), rows...)
+			copyRows[0].Runs = append([]RunModel(nil), rows[0].Runs...)
+			mutate(copyRows)
+			if changed := WindowRowsContentKey(copyRows); changed == original {
+				t.Fatalf("%s mutation retained key %q", name, changed)
+			}
+		})
+	}
+
+	computed := SurfaceModel{WindowRows: rows}.ToMap()["windowContentKey"]
+	if computed != original {
+		t.Fatalf("surface serialized key=%v, want computed %q", computed, original)
+	}
+	const supplied = "renderer-revision-7"
+	if got := (SurfaceModel{WindowRows: rows, WindowContentKey: supplied}).ToMap()["windowContentKey"]; got != supplied {
+		t.Fatalf("surface discarded supplied content key: %v", got)
 	}
 }

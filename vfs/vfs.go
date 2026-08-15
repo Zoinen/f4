@@ -466,6 +466,19 @@ type VFSProvider interface {
 	Open(ctx context.Context, parent VFS, path string) (VFS, error)
 }
 
+// ProviderOpenStatus lets a provider describe a connection attempt that may
+// take long enough to need explicit, cancellable UI feedback.
+type ProviderOpenStatus struct {
+	Title   string
+	Message string
+}
+
+// ProviderOpenStatusProvider optionally supplies user-facing status for one
+// specific provider path. Returning false keeps the ordinary loading UI.
+type ProviderOpenStatusProvider interface {
+	ProviderOpenStatus(parent VFS, path string) (ProviderOpenStatus, bool)
+}
+
 // StandalonePathProvider can restore a virtual filesystem from its own
 // user-facing absolute path even when the current panel belongs to another
 // VFS. Implementations must recognize only paths they own.

@@ -5,20 +5,32 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/vfs"
 )
 
 type fakeDeviceSource struct {
-	devices []DeviceInfo
-	err     error
-	calls   int
+	devices        []DeviceInfo
+	err            error
+	calls          int
+	reconnectErr   error
+	reconnectCalls int
+	onReconnect    func(*fakeDeviceSource)
 }
 
 func (s *fakeDeviceSource) ListDevices(context.Context) ([]DeviceInfo, error) {
 	s.calls++
 	return append([]DeviceInfo(nil), s.devices...), s.err
+}
+
+func (s *fakeDeviceSource) RestartForAuthorization(context.Context) error {
+	s.reconnectCalls++
+	if s.onReconnect != nil {
+		s.onReconnect(s)
+	}
+	return s.reconnectErr
 }
 
 type fakeDeviceOpener struct {
@@ -82,7 +94,7 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("names = %#v, want %#v", gotNames, wantNames)
 	}
-	if !reflect.DeepEqual(gotExecutable, []bool{true, false, false}) {
+	if !reflect.DeepEqual(gotExecutable, []bool{true, true, false}) {
 		t.Fatalf("executable flags = %#v", gotExecutable)
 	}
 	statItem, err := manager.Stat(context.Background(), "Pixel 9 (serial-z)")
@@ -107,6 +119,31 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	}
 	if _, err := manager.Stat(context.Background(), "Pixel 9 (serial-z)"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale device Stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestDeviceProviderDescribesUnauthorizedConnectionAttempt(t *testing.T) {
+	device := DeviceInfo{Serial: "serial-a", State: DeviceStateUnauthorized, Model: "Tablet"}
+	manager := NewManagerVFS(&fakeDeviceSource{devices: []DeviceInfo{device}}, &fakeDeviceOpener{})
+	if _, err := readManagerItems(t, manager); err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	status, ok := (&deviceProvider{}).ProviderOpenStatus(manager, DeviceDisplayName(device))
+	if !ok {
+		t.Fatal("unauthorized device did not provide connection status")
+	}
+	if status.Title != " Android authorization " {
+		t.Fatalf("status title = %q", status.Title)
+	}
+	for _, fragment := range []string{"Tablet (serial-a)", "accept the USB debugging prompt", "open the device automatically"} {
+		if !strings.Contains(status.Message, fragment) {
+			t.Fatalf("status message %q does not contain %q", status.Message, fragment)
+		}
+	}
+
+	if _, ok := (&deviceProvider{}).ProviderOpenStatus(manager, "missing"); ok {
+		t.Fatal("unknown device unexpectedly provided connection status")
 	}
 }
 
@@ -200,6 +237,50 @@ func TestDeviceProviderIsNarrowAndDelegatesOnlineDevice(t *testing.T) {
 	}
 	if _, err := provider.Open(ctx, vfs.NewNullVFS(0), "anything"); err == nil {
 		t.Fatal("Open accepted non-manager parent")
+	}
+}
+
+func TestDeviceProviderReconnectsUnauthorizedDeviceAndOpensWhenAuthorized(t *testing.T) {
+	unauthorized := DeviceInfo{Serial: "serial", State: DeviceStateUnauthorized, Model: "Phone"}
+	online := unauthorized
+	online.State = DeviceStateOnline
+	source := &fakeDeviceSource{devices: []DeviceInfo{unauthorized}}
+	source.onReconnect = func(source *fakeDeviceSource) {
+		source.devices = []DeviceInfo{online}
+	}
+	target := vfs.NewNullVFS(0)
+	opener := &fakeDeviceOpener{result: target}
+	manager := NewManagerVFS(source, opener)
+	if _, err := readManagerItems(t, manager); err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	provider := &deviceProvider{}
+	name := DeviceDisplayName(unauthorized)
+	if !provider.CanOpen(context.Background(), manager, name) {
+		t.Fatal("provider rejected actionable unauthorized device")
+	}
+	opened, err := provider.Open(context.Background(), manager, name)
+	if err != nil {
+		t.Fatalf("Open unauthorized device: %v", err)
+	}
+	if opened != target || source.reconnectCalls != 1 || opener.calls != 1 || opener.device != online {
+		t.Fatalf("authorization flow mismatch: opened=%T reconnects=%d opens=%d device=%#v", opened, source.reconnectCalls, opener.calls, opener.device)
+	}
+}
+
+func TestDeviceProviderReportsReconnectFailureForUnauthorizedDevice(t *testing.T) {
+	want := errors.New("reconnect failed")
+	device := DeviceInfo{Serial: "serial", State: DeviceStateUnauthorized}
+	source := &fakeDeviceSource{devices: []DeviceInfo{device}, reconnectErr: want}
+	manager := NewManagerVFS(source, &fakeDeviceOpener{})
+	if _, err := readManagerItems(t, manager); err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+
+	_, err := (&deviceProvider{}).Open(context.Background(), manager, DeviceDisplayName(device))
+	if !errors.Is(err, want) || source.reconnectCalls != 1 {
+		t.Fatalf("Open error = %v, reconnects=%d; want %v", err, source.reconnectCalls, want)
 	}
 }
 

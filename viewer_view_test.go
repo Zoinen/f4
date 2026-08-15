@@ -31,6 +31,7 @@ type largeBinaryFile struct {
 	size    int64
 	mu      sync.Mutex
 	maxRead int
+	reads   []trackedReadRange
 }
 
 func (f *largeBinaryFile) Size() int64 { return f.size }
@@ -46,6 +47,7 @@ func (f *largeBinaryFile) ReadAt(ctx context.Context, p []byte, off int64) (int,
 	if len(p) > f.maxRead {
 		f.maxRead = len(p)
 	}
+	f.reads = append(f.reads, trackedReadRange{offset: off, length: len(p)})
 	f.mu.Unlock()
 	if off >= f.size {
 		return 0, io.EOF
@@ -62,6 +64,12 @@ func (f *largeBinaryFile) ReadAt(ctx context.Context, p []byte, off int64) (int,
 		return n, io.EOF
 	}
 	return n, nil
+}
+
+func (f *largeBinaryFile) readRanges() []trackedReadRange {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]trackedReadRange(nil), f.reads...)
 }
 
 type singleFileVFS struct {

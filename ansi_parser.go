@@ -40,7 +40,12 @@ type AnsiParser struct {
 	backgroundSyncMu       sync.Mutex
 	backgroundSyncExpected [][]byte
 	backgroundSyncBuffer   []byte
+	privateSyncPending     int
+	privateSyncSuffix      []byte
 }
+
+const privateSyncCompletionOSC = "\x1b]133;F4SYNC\x07"
+const managedCommandStartOSC = "\x1b]133;C"
 
 func NewAnsiParser(t *TerminalView, p PtyBackend) *AnsiParser {
 	return &AnsiParser{
@@ -52,6 +57,11 @@ func NewAnsiParser(t *TerminalView, p PtyBackend) *AnsiParser {
 
 func (p *AnsiParser) Process(data []byte) {
 	if p == nil || len(data) == 0 {
+		return
+	}
+
+	data = p.filterPrivateSync(data)
+	if len(data) == 0 {
 		return
 	}
 
@@ -256,6 +266,84 @@ func (p *AnsiParser) Process(data []byte) {
 		}
 	}
 	p.term.FlushLog()
+}
+
+// expectPrivateSyncCompletion starts a protocol-delimited suppression window
+// for a shell cwd update. Interactive zsh redraws its input through ZLE, so an
+// exact byte match of the echoed command is inherently timing-dependent. The
+// private command prints privateSyncCompletionOSC after it has run; everything
+// before that marker is technical echo/redraw traffic, while bytes following
+// it are the real prompt and must be rendered normally.
+func (p *AnsiParser) expectPrivateSyncCompletion() {
+	if p == nil {
+		return
+	}
+	p.backgroundSyncMu.Lock()
+	p.privateSyncPending++
+	p.backgroundSyncMu.Unlock()
+}
+
+func (p *AnsiParser) cancelPrivateSyncCompletion() {
+	if p == nil {
+		return
+	}
+	p.backgroundSyncMu.Lock()
+	if p.privateSyncPending > 0 {
+		p.privateSyncPending--
+	}
+	if p.privateSyncPending == 0 {
+		p.privateSyncSuffix = nil
+	}
+	p.backgroundSyncMu.Unlock()
+}
+
+func (p *AnsiParser) filterPrivateSync(data []byte) []byte {
+	p.backgroundSyncMu.Lock()
+	defer p.backgroundSyncMu.Unlock()
+
+	if p.privateSyncPending == 0 {
+		if len(p.privateSyncSuffix) == 0 {
+			return data
+		}
+		result := append(p.privateSyncSuffix, data...)
+		p.privateSyncSuffix = nil
+		return result
+	}
+
+	buffer := append(p.privateSyncSuffix, data...)
+	p.privateSyncSuffix = nil
+	marker := []byte(privateSyncCompletionOSC)
+	for p.privateSyncPending > 0 {
+		if index := bytes.Index(buffer, marker); index >= 0 {
+			buffer = buffer[index+len(marker):]
+			p.privateSyncPending--
+			continue
+		}
+
+		// A foreground command marker means the private update did not reach its
+		// completion marker. Fail open instead of ever hiding user output.
+		if bytes.Contains(buffer, []byte(managedCommandStartOSC)) {
+			p.privateSyncPending = 0
+			return buffer
+		}
+
+		// Retain a possible split prefix of either protocol marker. OSC 133 C is
+		// the fail-open boundary for a foreground command, and it may be divided
+		// at any byte by the PTY read loop. It currently shares a prefix with the
+		// private marker, but tracking both explicitly keeps this safety property
+		// independent of either marker's spelling.
+		keep := backgroundSyncPrefixSuffixLen(buffer, marker)
+		if foregroundKeep := backgroundSyncPrefixSuffixLen(buffer,
+			[]byte(managedCommandStartOSC)); foregroundKeep > keep {
+			keep = foregroundKeep
+		}
+		if keep > 0 {
+			p.privateSyncSuffix = append(p.privateSyncSuffix, buffer[len(buffer)-keep:]...)
+		}
+		return nil
+	}
+
+	return buffer
 }
 
 // expectBackgroundSyncEcho registers a private command whose terminal echo
