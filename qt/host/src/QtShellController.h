@@ -2,7 +2,9 @@
 
 #include <QAbstractSocket>
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
+#include <QQueue>
 #include <QTcpSocket>
 #include <QThread>
 #include <QVariant>
@@ -57,7 +59,8 @@ signals:
     void messageReceived(const QVariantMap &message);
 
     // Emitted after a complete frame has been removed from the socket but
-    // before it is handed to the decoder thread. This is intentionally a
+    // before it is handed to the decoder thread. Several bounded frames may
+    // be queued before an earlier result is applied. This is intentionally a
     // lightweight diagnostic boundary; decoding never runs on this thread.
     void frameDecodeQueued(quint64 sequence);
 
@@ -72,24 +75,53 @@ private slots:
                              const QString &message);
 
 private:
+    struct QueuedFrameMetadata {
+        quint64 sequence = 0;
+        qsizetype payloadBytes = 0;
+        qint64 receivedNs = 0;
+        qint64 receiveDurationNs = 0;
+    };
+
+    struct DeferredDecodeResult {
+        quint64 epoch = 0;
+        quint64 sequence = 0;
+        QVariant decoded;
+        QString error;
+        bool failed = false;
+    };
+
     bool sendMessage(const QVariantMap &message);
     bool parseConnectAddress(const QString &address);
+    bool canQueueFrame(quint32 payloadSize) const;
     void processBuffer();
-    void enqueueFrame(QByteArray payload);
+    void enqueueFrame(QByteArray payload, qint64 receiveDurationNs);
+    void applyFrameDecoded(quint64 epoch, quint64 sequence,
+                           const QVariant &decoded);
+    void applyFrameDecodeFailed(quint64 epoch, quint64 sequence,
+                                const QString &message);
+    void applyDecodeResult(DeferredDecodeResult result);
+    void scheduleDeferredDecodeResult();
     void invalidateDecodeSession();
     void failProtocol(const QString &message);
 
     QTcpSocket *m_socket = nullptr;
     QByteArray m_frameHeader;
     QByteArray m_framePayload;
+    QElapsedTimer m_frameReceiveTimer;
     quint32 m_expectedFrameSize = 0;
     qsizetype m_frameBytesRead = 0;
+    QQueue<QueuedFrameMetadata> m_queuedFrames;
+    qsizetype m_queuedPayloadBytes = 0;
+    qsizetype m_applyingPayloadBytes = 0;
+    QQueue<DeferredDecodeResult> m_deferredDecodeResults;
     QThread m_decodeThread;
     QtShellMessageDecoder *m_decoder = nullptr;
     quint64 m_decodeEpoch = 1;
     quint64 m_nextDecodeSequence = 1;
     quint64 m_nextApplySequence = 1;
-    bool m_decodeInFlight = false;
+    quint64 m_nextSendSequence = 1;
+    bool m_applyInProgress = false;
+    bool m_deferredDecodeScheduled = false;
     bool m_acceptDecodedFrames = true;
     bool m_protocolFailed = false;
     QString m_host;

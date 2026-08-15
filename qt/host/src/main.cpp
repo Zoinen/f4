@@ -181,6 +181,9 @@ int main(int argc, char *argv[])
                 std::make_unique<WindowGeometryPersistence>(
                     rootWindow, parser.value(windowGeometryFileOption));
             windowGeometry->restore();
+            QObject::connect(rootWindow, &QQuickWindow::frameSwapped,
+                             &galleryBridge,
+                             &F4GalleryBridge::notifyFrameSwapped);
         }
     }
 

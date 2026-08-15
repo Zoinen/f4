@@ -1,7 +1,10 @@
 #include "QtShellController.h"
 
+#include "NavigationBenchmarkTrace.h"
+
 #include <QCoreApplication>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QMetaObject>
 #include <QPointer>
 
@@ -15,6 +18,12 @@
 namespace
 {
 constexpr quint32 MaxMessageSize = 64 * 1024 * 1024;
+// Keep decode-ahead bounded by both bytes and frame count. The byte budget is
+// no larger than the socket buffer that the old single-frame pipeline left
+// queued in QTcpSocket, while the count cap prevents an unlimited burst of
+// tiny protocol updates from filling the decoder and GUI event queues.
+constexpr qsizetype MaxQueuedDecodeBytes = MaxMessageSize;
+constexpr qsizetype MaxQueuedDecodeFrames = 8;
 
 void packString(msgpack::packer<msgpack::sbuffer> &packer, const QString &value)
 {
@@ -151,6 +160,10 @@ QVariantMap withoutNativePanelPayloads(QVariantMap container)
     QVariantList presentationPanels;
     presentationPanels.reserve(panels.size());
     for (const QVariant &panelValue : panels) {
+        if (panelValue.metaType().id() != QMetaType::QVariantMap) {
+            presentationPanels.push_back(panelValue);
+            continue;
+        }
         QVariantMap panel = panelValue.toMap();
         // Gallery consumes these directly from the full C++ scene. QML only
         // needs the panel's chrome/layout fields; exposing the catalog here
@@ -164,7 +177,51 @@ QVariantMap withoutNativePanelPayloads(QVariantMap container)
     return container;
 }
 
-QVariantMap makePresentationScene(QVariantMap scene)
+QVariant withoutNativePanelPayloadsFromFrames(const QVariant &framesValue)
+{
+    if (framesValue.metaType().id() != QMetaType::QVariantList) {
+        return framesValue;
+    }
+
+    const QVariantList frames = framesValue.toList();
+    QVariantList presentationFrames;
+    presentationFrames.reserve(frames.size());
+    for (const QVariant &frameValue : frames) {
+        presentationFrames.push_back(
+            frameValue.metaType().id() == QMetaType::QVariantMap
+                ? QVariant(withoutNativePanelPayloads(frameValue.toMap()))
+                : frameValue);
+    }
+    return presentationFrames;
+}
+
+QVariant withoutNativePanelPayloadsFromScreens(const QVariant &screensValue)
+{
+    if (screensValue.metaType().id() != QMetaType::QVariantList) {
+        return screensValue;
+    }
+
+    const QVariantList screens = screensValue.toList();
+    QVariantList presentationScreens;
+    presentationScreens.reserve(screens.size());
+    for (const QVariant &screenValue : screens) {
+        if (screenValue.metaType().id() != QMetaType::QVariantMap) {
+            presentationScreens.push_back(screenValue);
+            continue;
+        }
+
+        QVariantMap screen = screenValue.toMap();
+        const auto frames = screen.constFind(QStringLiteral("frames"));
+        if (frames != screen.cend()) {
+            screen.insert(QStringLiteral("frames"),
+                          withoutNativePanelPayloadsFromFrames(*frames));
+        }
+        presentationScreens.push_back(screen);
+    }
+    return presentationScreens;
+}
+
+QVariantMap withoutNativePanelPayloadAliases(QVariantMap scene)
 {
     scene = withoutNativePanelPayloads(std::move(scene));
 
@@ -174,18 +231,27 @@ QVariantMap makePresentationScene(QVariantMap scene)
                      withoutNativePanelPayloads(shellValue.toMap()));
     }
 
-    const QVariant framesValue = scene.value(QStringLiteral("frames"));
-    if (framesValue.metaType().id() == QMetaType::QVariantList) {
-        const QVariantList frames = framesValue.toList();
-        QVariantList presentationFrames;
-        presentationFrames.reserve(frames.size());
-        for (const QVariant &frameValue : frames) {
-            presentationFrames.push_back(
-                frameValue.metaType().id() == QMetaType::QVariantMap
-                    ? QVariant(withoutNativePanelPayloads(frameValue.toMap()))
-                    : frameValue);
-        }
-        scene.insert(QStringLiteral("frames"), presentationFrames);
+    const auto frames = scene.constFind(QStringLiteral("frames"));
+    if (frames != scene.cend()) {
+        scene.insert(QStringLiteral("frames"),
+                     withoutNativePanelPayloadsFromFrames(*frames));
+    }
+    const auto screens = scene.constFind(QStringLiteral("screens"));
+    if (screens != scene.cend()) {
+        scene.insert(QStringLiteral("screens"),
+                     withoutNativePanelPayloadsFromScreens(*screens));
+    }
+    return scene;
+}
+
+QVariantMap makePresentationScene(QVariantMap scene)
+{
+    scene = withoutNativePanelPayloadAliases(std::move(scene));
+
+    const QVariant legacyValue = scene.value(QStringLiteral("legacy"));
+    if (legacyValue.metaType().id() == QMetaType::QVariantMap) {
+        scene.insert(QStringLiteral("legacy"),
+                     withoutNativePanelPayloadAliases(legacyValue.toMap()));
     }
     return scene;
 }
@@ -203,15 +269,92 @@ public:
 
     void decode(QByteArray payload, quint64 epoch, quint64 sequence)
     {
+        const bool traceEnabled = F4NavigationBenchmarkTrace::enabled();
+        QElapsedTimer decodeTimer;
+        qint64 decodeStartedNs = 0;
+        if (traceEnabled) {
+            decodeStartedNs =
+                F4NavigationBenchmarkTrace::monotonicNanoseconds();
+            decodeTimer.start();
+        }
         try {
             msgpack::object_handle handle = msgpack::unpack(
                 payload.constData(), static_cast<size_t>(payload.size()));
-            emit decoded(epoch, sequence, unpackObject(handle.get()));
+            QVariant decodedValue = unpackObject(handle.get());
+            qint64 decodeDurationNs = 0;
+            qint64 decodeCompletedNs = 0;
+            QVariant traceId;
+            if (traceEnabled) {
+                decodeDurationNs = decodeTimer.nsecsElapsed();
+                decodeCompletedNs =
+                    F4NavigationBenchmarkTrace::monotonicNanoseconds();
+                const QVariantMap message = decodedValue.toMap();
+                traceId = F4NavigationBenchmarkTrace::benchmarkTraceId(message);
+            }
+            emit decoded(epoch, sequence, decodedValue);
+            if (traceEnabled) {
+                const QVariantMap message = decodedValue.toMap();
+                const QVariantMap fields = {
+                    {QStringLiteral("sequence"), sequence},
+                    {QStringLiteral("payloadBytes"), payload.size()},
+                    {QStringLiteral("messageType"),
+                     message.value(QStringLiteral("type")).toString()},
+                };
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.start"), decodeStartedNs,
+                    traceId, fields);
+                QVariantMap completedFields = fields;
+                completedFields.insert(QStringLiteral("durationNs"),
+                                       decodeDurationNs);
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.end"), decodeCompletedNs,
+                    traceId, completedFields);
+            }
         } catch (const std::exception &e) {
+            const qint64 decodeDurationNs = traceEnabled
+                ? decodeTimer.nsecsElapsed() : 0;
+            const qint64 decodeCompletedNs = traceEnabled
+                ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
             emit failed(epoch, sequence, QString::fromUtf8(e.what()));
+            if (traceEnabled) {
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.start"), decodeStartedNs, {}, {
+                        {QStringLiteral("sequence"), sequence},
+                        {QStringLiteral("payloadBytes"), payload.size()},
+                    });
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.failed"), decodeCompletedNs, {}, {
+                        {QStringLiteral("sequence"), sequence},
+                        {QStringLiteral("payloadBytes"), payload.size()},
+                        {QStringLiteral("durationNs"),
+                         decodeDurationNs},
+                        {QStringLiteral("error"),
+                         QString::fromUtf8(e.what())},
+                    });
+            }
         } catch (...) {
+            const qint64 decodeDurationNs = traceEnabled
+                ? decodeTimer.nsecsElapsed() : 0;
+            const qint64 decodeCompletedNs = traceEnabled
+                ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
             emit failed(epoch, sequence,
                         QStringLiteral("unknown MessagePack error"));
+            if (traceEnabled) {
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.start"), decodeStartedNs, {}, {
+                        {QStringLiteral("sequence"), sequence},
+                        {QStringLiteral("payloadBytes"), payload.size()},
+                    });
+                F4NavigationBenchmarkTrace::eventAt(
+                    QStringLiteral("qt.decode.failed"), decodeCompletedNs, {}, {
+                        {QStringLiteral("sequence"), sequence},
+                        {QStringLiteral("payloadBytes"), payload.size()},
+                        {QStringLiteral("durationNs"),
+                         decodeDurationNs},
+                        {QStringLiteral("error"),
+                         QStringLiteral("unknown MessagePack error")},
+                    });
+            }
         }
     }
 
@@ -254,9 +397,9 @@ QtShellController::QtShellController(const QString &connectAddress,
     connect(m_socket, &QTcpSocket::disconnected, this, &QtShellController::onDisconnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, &QtShellController::onSocketError);
 
-    // Keep at most one additional maximum-sized frame in Qt's socket buffer.
-    // Combined with the single in-flight decode below, TCP backpressure bounds
-    // memory and prevents stale scroll scenes from building a long work queue.
+    // Keep one further maximum-sized frame in Qt's socket buffer. The decoded
+    // work submitted below has its own one-frame byte budget, so TCP
+    // backpressure still bounds memory and stale-scene accumulation.
     m_socket->setReadBufferSize(static_cast<qint64>(MaxMessageSize) + 4);
     m_socket->connectToHost(m_host, m_port);
 }
@@ -418,15 +561,54 @@ void QtShellController::onSocketError(QAbstractSocket::SocketError)
 
 bool QtShellController::sendMessage(const QVariantMap &message)
 {
+    const bool traceAction = F4NavigationBenchmarkTrace::enabled()
+        && message.value(QStringLiteral("type")).toString()
+            == QStringLiteral("ui_action");
+    const QVariant traceId = traceAction
+        ? F4NavigationBenchmarkTrace::benchmarkTraceId(message) : QVariant();
+    const quint64 outboundSequence = traceAction ? m_nextSendSequence++ : 0;
     if (!m_socket || m_socket->state() != QAbstractSocket::ConnectedState) {
         return false;
     }
 
+    QElapsedTimer packTimer;
+    qint64 packStartedNs = 0;
+    if (traceAction) {
+        packStartedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        packTimer.start();
+    }
     msgpack::sbuffer payload;
     msgpack::packer<msgpack::sbuffer> packer(payload);
     packVariant(packer, message);
+    const qint64 packDurationNs = traceAction
+        ? packTimer.nsecsElapsed() : 0;
+    const qint64 packCompletedNs = traceAction
+        ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
+    const QString actionName = traceAction
+        ? message.value(QStringLiteral("action")).toString() : QString();
+    const auto logPack = [&]() {
+        const QVariantMap fields = {
+            {QStringLiteral("outboundSequence"), outboundSequence},
+            {QStringLiteral("action"), actionName},
+            {QStringLiteral("payloadBytes"),
+             static_cast<qulonglong>(payload.size())},
+        };
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.action.pack.begin"), packStartedNs,
+            traceId, fields);
+        QVariantMap completedFields = fields;
+        completedFields.insert(QStringLiteral("durationNs"),
+                               packDurationNs);
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.action.pack.end"), packCompletedNs,
+            traceId, completedFields);
+    };
 
     if (payload.size() > MaxMessageSize) {
+        if (traceAction) {
+            logPack();
+        }
         emit fatalError(QStringLiteral("Message too large for f4 Qt protocol"));
         return false;
     }
@@ -435,12 +617,56 @@ bool QtShellController::sendMessage(const QVariantMap &message)
     writeBigEndianSize(frame, static_cast<quint32>(payload.size()));
     frame.append(payload.data(), static_cast<qsizetype>(payload.size()));
 
+    QElapsedTimer writeTimer;
+    qint64 writeStartedNs = 0;
+    if (traceAction) {
+        writeStartedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        writeTimer.start();
+    }
     const qint64 written = m_socket->write(frame);
+    const bool complete = written == frame.size();
+    const qint64 socketWriteDurationNs = traceAction
+        ? writeTimer.nsecsElapsed() : 0;
+    QElapsedTimer flushTimer;
+    if (traceAction) {
+        flushTimer.start();
+    }
+    const bool flushed = complete && m_socket->flush();
+    const qint64 flushDurationNs = traceAction
+        ? flushTimer.nsecsElapsed() : 0;
+    const qint64 writeDurationNs = traceAction
+        ? writeTimer.nsecsElapsed() : 0;
+    const qint64 writeCompletedNs = traceAction
+        ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
+    if (traceAction) {
+        logPack();
+        const QVariantMap fields = {
+            {QStringLiteral("outboundSequence"), outboundSequence},
+            {QStringLiteral("action"), actionName},
+            {QStringLiteral("wireBytes"), frame.size()},
+        };
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.action.write.begin"), writeStartedNs,
+            traceId, fields);
+        QVariantMap completedFields = fields;
+        completedFields.insert(QStringLiteral("writtenBytes"), written);
+        completedFields.insert(QStringLiteral("success"), complete);
+        completedFields.insert(QStringLiteral("flushSuccess"), flushed);
+        completedFields.insert(QStringLiteral("socketWriteDurationNs"),
+                               socketWriteDurationNs);
+        completedFields.insert(QStringLiteral("flushDurationNs"),
+                               flushDurationNs);
+        completedFields.insert(QStringLiteral("durationNs"),
+                               writeDurationNs);
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.action.write.end"), writeCompletedNs,
+            traceId, completedFields);
+    }
     if (written != frame.size()) {
         emit fatalError(QStringLiteral("Failed to write complete IPC frame"));
         return false;
     }
-    m_socket->flush();
     return true;
 }
 
@@ -462,13 +688,39 @@ bool QtShellController::parseConnectAddress(const QString &address)
     return true;
 }
 
+bool QtShellController::canQueueFrame(quint32 payloadSize) const
+{
+    const qsizetype retainedFrames = m_queuedFrames.size()
+        + (m_applyInProgress ? 1 : 0);
+    if (!m_acceptDecodedFrames || !m_decoder
+        || !m_decodeThread.isRunning()
+        || retainedFrames >= MaxQueuedDecodeFrames) {
+        return false;
+    }
+
+    const qsizetype size = static_cast<qsizetype>(payloadSize);
+    const qsizetype retainedBytes = m_queuedPayloadBytes
+        + m_applyingPayloadBytes;
+    return size <= MaxQueuedDecodeBytes
+        && retainedBytes <= MaxQueuedDecodeBytes - size;
+}
+
 void QtShellController::processBuffer()
 {
     // Read directly into the final frame allocation. In particular, avoid a
     // growing aggregate QByteArray followed by a large mid()/remove() pair on
     // the GUI thread: semantic scenes can be tens of megabytes.
-    while (!m_decodeInFlight && m_socket && m_socket->bytesAvailable() > 0) {
+    while (m_socket && m_socket->bytesAvailable() > 0) {
+        const qsizetype retainedFrames = m_queuedFrames.size()
+            + (m_applyInProgress ? 1 : 0);
+        if (retainedFrames >= MaxQueuedDecodeFrames) {
+            return;
+        }
         if (m_expectedFrameSize == 0) {
+            if (m_frameHeader.isEmpty()
+                && F4NavigationBenchmarkTrace::enabled()) {
+                m_frameReceiveTimer.start();
+            }
             const qsizetype headerRemaining = 4 - m_frameHeader.size();
             const QByteArray headerPart = m_socket->read(headerRemaining);
             if (headerPart.isEmpty()) {
@@ -488,7 +740,17 @@ void QtShellController::processBuffer()
 
             m_expectedFrameSize = size;
             m_frameBytesRead = 0;
-            m_framePayload.resize(static_cast<qsizetype>(size));
+        }
+
+        // Do not consume a frame that would exceed the decode/apply backlog
+        // budget. Its header may already have been read, but the payload stays
+        // in QTcpSocket so normal TCP backpressure remains effective.
+        if (m_framePayload.isEmpty()) {
+            if (!canQueueFrame(m_expectedFrameSize)) {
+                return;
+            }
+            m_framePayload.resize(
+                static_cast<qsizetype>(m_expectedFrameSize));
         }
 
         const qsizetype remaining = static_cast<qsizetype>(m_expectedFrameSize)
@@ -501,25 +763,36 @@ void QtShellController::processBuffer()
         m_frameBytesRead += static_cast<qsizetype>(count);
         if (m_frameBytesRead == static_cast<qsizetype>(m_expectedFrameSize)) {
             QByteArray payload = std::move(m_framePayload);
+            const qint64 receiveDurationNs = m_frameReceiveTimer.isValid()
+                ? m_frameReceiveTimer.nsecsElapsed() : 0;
+            m_frameReceiveTimer.invalidate();
             m_framePayload = QByteArray();
             m_expectedFrameSize = 0;
             m_frameBytesRead = 0;
-            enqueueFrame(std::move(payload));
+            enqueueFrame(std::move(payload), receiveDurationNs);
         }
     }
 }
 
-void QtShellController::enqueueFrame(QByteArray payload)
+void QtShellController::enqueueFrame(QByteArray payload,
+                                     qint64 receiveDurationNs)
 {
-    if (m_decodeInFlight || !m_acceptDecodedFrames || !m_decoder
-        || !m_decodeThread.isRunning()) {
+    if (!canQueueFrame(static_cast<quint32>(payload.size()))) {
+        failProtocol(QStringLiteral("IPC decode queue capacity changed unexpectedly"));
         return;
     }
 
     const quint64 epoch = m_decodeEpoch;
     const quint64 sequence = m_nextDecodeSequence++;
-    m_decodeInFlight = true;
-    emit frameDecodeQueued(sequence);
+    const qsizetype payloadBytes = payload.size();
+    m_queuedPayloadBytes += payloadBytes;
+    m_queuedFrames.enqueue({
+        sequence,
+        payloadBytes,
+        F4NavigationBenchmarkTrace::enabled()
+            ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0,
+        receiveDurationNs,
+    });
 
     QPointer<QtShellMessageDecoder> decoder(m_decoder);
     const bool queued = QMetaObject::invokeMethod(
@@ -532,11 +805,34 @@ void QtShellController::enqueueFrame(QByteArray payload)
         Qt::QueuedConnection);
     if (!queued) {
         failProtocol(QStringLiteral("Failed to queue IPC frame for decoding"));
+        return;
     }
+    // Publish the diagnostic boundary only after the serial worker owns this
+    // frame. A connected observer may enter a nested event loop; posting first
+    // prevents a recursively drained later frame from overtaking this one.
+    emit frameDecodeQueued(sequence);
 }
 
 void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
                                        const QVariant &decoded)
+{
+    if (!m_acceptDecodedFrames || epoch != m_decodeEpoch) {
+        return;
+    }
+    DeferredDecodeResult result{
+        epoch, sequence, decoded, QString(), false,
+    };
+    if (m_applyInProgress || m_deferredDecodeScheduled
+        || !m_deferredDecodeResults.isEmpty()) {
+        m_deferredDecodeResults.enqueue(std::move(result));
+        scheduleDeferredDecodeResult();
+        return;
+    }
+    applyDecodeResult(std::move(result));
+}
+
+void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
+                                          const QVariant &decoded)
 {
     // Results from a closed socket (or a preceding decode failure) may still
     // arrive while its worker invocation unwinds. Epochs make those harmless.
@@ -547,19 +843,60 @@ void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
         failProtocol(QStringLiteral("Out-of-order IPC decode result"));
         return;
     }
+    if (m_queuedFrames.isEmpty()
+        || m_queuedFrames.head().sequence != sequence) {
+        failProtocol(QStringLiteral("Missing IPC decode queue metadata"));
+        return;
+    }
     ++m_nextApplySequence;
+    const QueuedFrameMetadata frame = m_queuedFrames.dequeue();
+    m_queuedPayloadBytes -= frame.payloadBytes;
+    m_applyingPayloadBytes = frame.payloadBytes;
+
+    // Refill the bounded worker queue before any synchronous scene observers
+    // occupy the GUI thread. This lets already-buffered cursor/title/frame
+    // updates and the following scene decode while the current scene applies.
+    processBuffer();
+    if (!m_acceptDecodedFrames) {
+        return;
+    }
 
     if (decoded.metaType().id() != QMetaType::QVariantMap) {
-        m_decodeInFlight = false;
-        processBuffer();
         return;
     }
 
     const QVariantMap message = decoded.toMap();
     const QString messageType = message.value(QStringLiteral("type")).toString();
+    const bool traceEnabled = F4NavigationBenchmarkTrace::enabled();
+    const QVariant traceId = traceEnabled
+        ? F4NavigationBenchmarkTrace::benchmarkTraceId(message) : QVariant();
+    QElapsedTimer applyTimer;
+    qint64 applyStartedNs = 0;
+    if (traceEnabled) {
+        applyStartedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        applyTimer.start();
+    }
+    qint64 presentationDurationNs = 0;
+    qint64 sceneSignalDurationNs = 0;
+    qint64 presentationStartedNs = 0;
+    qint64 sceneSignalStartedNs = 0;
+    qint64 presentationCompletedNs = 0;
+    qint64 sceneSignalCompletedNs = 0;
     if (messageType == QStringLiteral("scene")) {
         m_scene = message;
+        QElapsedTimer presentationTimer;
+        if (traceEnabled) {
+            presentationStartedNs =
+                F4NavigationBenchmarkTrace::monotonicNanoseconds();
+            presentationTimer.start();
+        }
         m_presentationScene = makePresentationScene(message);
+        if (traceEnabled) {
+            presentationDurationNs = presentationTimer.nsecsElapsed();
+            presentationCompletedNs =
+                F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        }
         const QVariantMap nextCommandLine = m_scene.value(QStringLiteral("shell"))
                                                 .toMap()
                                                 .value(QStringLiteral("commandLine"))
@@ -574,7 +911,18 @@ void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
             m_commandMenus = nextCommandMenus;
             emit commandMenusChanged();
         }
+        QElapsedTimer sceneSignalTimer;
+        if (traceEnabled) {
+            sceneSignalStartedNs =
+                F4NavigationBenchmarkTrace::monotonicNanoseconds();
+            sceneSignalTimer.start();
+        }
         emit sceneChanged();
+        if (traceEnabled) {
+            sceneSignalDurationNs = sceneSignalTimer.nsecsElapsed();
+            sceneSignalCompletedNs =
+                F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        }
     } else if (messageType == QStringLiteral("command_line")) {
         const QVariant commandLine = message.value(QStringLiteral("commandLine"));
         QVariantMap shell = m_scene.value(QStringLiteral("shell")).toMap();
@@ -608,13 +956,115 @@ void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
             }
         }
     }
+    QElapsedTimer messageSignalTimer;
+    qint64 messageSignalStartedNs = 0;
+    if (traceEnabled) {
+        messageSignalStartedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        messageSignalTimer.start();
+    }
     emit messageReceived(message);
-    m_decodeInFlight = false;
-    processBuffer();
+    const qint64 messageSignalDurationNs = traceEnabled
+        ? messageSignalTimer.nsecsElapsed() : 0;
+    if (traceEnabled) {
+        const qint64 messageSignalCompletedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        const qint64 applyDurationNs = applyTimer.nsecsElapsed();
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.socket.frame.received"),
+            frame.receivedNs, traceId, {
+                {QStringLiteral("sequence"), sequence},
+                {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                {QStringLiteral("receiveDurationNs"),
+                 frame.receiveDurationNs},
+            });
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.message.apply.begin"), applyStartedNs,
+            traceId, {
+                {QStringLiteral("sequence"), sequence},
+                {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                {QStringLiteral("messageType"), messageType},
+            });
+        if (messageType == QStringLiteral("scene")) {
+            F4NavigationBenchmarkTrace::eventAt(
+                QStringLiteral("qt.scene.presentation.begin"),
+                presentationStartedNs, traceId, {
+                    {QStringLiteral("sequence"), sequence},
+                    {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                });
+            F4NavigationBenchmarkTrace::eventAt(
+                QStringLiteral("qt.scene.presentation.created"),
+                presentationCompletedNs, traceId, {
+                    {QStringLiteral("sequence"), sequence},
+                    {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                    {QStringLiteral("durationNs"), presentationDurationNs},
+                });
+            F4NavigationBenchmarkTrace::eventAt(
+                QStringLiteral("qt.scene.sceneChanged.begin"),
+                sceneSignalStartedNs, traceId, {
+                    {QStringLiteral("sequence"), sequence},
+                    {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                });
+            F4NavigationBenchmarkTrace::eventAt(
+                QStringLiteral("qt.scene.sceneChanged.emitted"),
+                sceneSignalCompletedNs, traceId, {
+                    {QStringLiteral("sequence"), sequence},
+                    {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                    {QStringLiteral("durationNs"), sceneSignalDurationNs},
+                });
+        }
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.message.messageReceived.begin"),
+            messageSignalStartedNs, traceId, {
+                {QStringLiteral("sequence"), sequence},
+                {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                {QStringLiteral("messageType"), messageType},
+            });
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.message.messageReceived.emitted"),
+            messageSignalCompletedNs, traceId, {
+                {QStringLiteral("sequence"), sequence},
+                {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                {QStringLiteral("messageType"), messageType},
+                {QStringLiteral("durationNs"), messageSignalDurationNs},
+            });
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.message.apply.end"),
+            messageSignalCompletedNs, traceId, {
+                {QStringLiteral("sequence"), sequence},
+                {QStringLiteral("payloadBytes"), frame.payloadBytes},
+                {QStringLiteral("messageType"), messageType},
+                {QStringLiteral("presentationDurationNs"),
+                 presentationDurationNs},
+                {QStringLiteral("sceneChangedDurationNs"),
+                 sceneSignalDurationNs},
+                {QStringLiteral("messageReceivedDurationNs"),
+                 messageSignalDurationNs},
+                {QStringLiteral("durationNs"), applyDurationNs},
+            });
+    }
 }
 
 void QtShellController::onFrameDecodeFailed(quint64 epoch, quint64 sequence,
                                             const QString &message)
+{
+    if (!m_acceptDecodedFrames || epoch != m_decodeEpoch) {
+        return;
+    }
+    DeferredDecodeResult result{
+        epoch, sequence, QVariant(), message, true,
+    };
+    if (m_applyInProgress || m_deferredDecodeScheduled
+        || !m_deferredDecodeResults.isEmpty()) {
+        m_deferredDecodeResults.enqueue(std::move(result));
+        scheduleDeferredDecodeResult();
+        return;
+    }
+    applyDecodeResult(std::move(result));
+}
+
+void QtShellController::applyFrameDecodeFailed(
+    quint64 epoch, quint64 sequence, const QString &message)
 {
     if (!m_acceptDecodedFrames || epoch != m_decodeEpoch) {
         return;
@@ -626,15 +1076,61 @@ void QtShellController::onFrameDecodeFailed(quint64 epoch, quint64 sequence,
     failProtocol(QStringLiteral("Failed to decode IPC frame: %1").arg(message));
 }
 
+void QtShellController::applyDecodeResult(DeferredDecodeResult result)
+{
+    if (!m_acceptDecodedFrames || result.epoch != m_decodeEpoch) {
+        return;
+    }
+
+    m_applyInProgress = true;
+    if (result.failed) {
+        applyFrameDecodeFailed(result.epoch, result.sequence,
+                               result.error);
+    } else {
+        applyFrameDecoded(result.epoch, result.sequence,
+                          result.decoded);
+    }
+    m_applyingPayloadBytes = 0;
+    m_applyInProgress = false;
+    processBuffer();
+    scheduleDeferredDecodeResult();
+}
+
+void QtShellController::scheduleDeferredDecodeResult()
+{
+    if (!m_acceptDecodedFrames || m_applyInProgress
+        || m_deferredDecodeScheduled
+        || m_deferredDecodeResults.isEmpty()) {
+        return;
+    }
+
+    m_deferredDecodeScheduled = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        m_deferredDecodeScheduled = false;
+        if (!m_acceptDecodedFrames
+            || m_deferredDecodeResults.isEmpty()) {
+            return;
+        }
+        DeferredDecodeResult result =
+            m_deferredDecodeResults.dequeue();
+        applyDecodeResult(std::move(result));
+    }, Qt::QueuedConnection);
+}
+
 void QtShellController::invalidateDecodeSession()
 {
     m_acceptDecodedFrames = false;
     ++m_decodeEpoch;
     m_frameHeader.clear();
     m_framePayload.clear();
+    m_frameReceiveTimer.invalidate();
     m_expectedFrameSize = 0;
     m_frameBytesRead = 0;
-    m_decodeInFlight = false;
+    m_queuedFrames.clear();
+    m_queuedPayloadBytes = 0;
+    m_applyingPayloadBytes = 0;
+    m_deferredDecodeResults.clear();
+    m_deferredDecodeScheduled = false;
 }
 
 void QtShellController::failProtocol(const QString &message)

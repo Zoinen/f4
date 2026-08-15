@@ -36,9 +36,28 @@ func extUiNewNonce() (string, error) {
 }
 
 func extUiSendMessage(w io.Writer, msg map[string]any) error {
+	return extUiSendMessageWithBenchmark(w, msg, nil)
+}
+
+func extUiSendMessageWithBenchmark(w io.Writer, msg map[string]any, benchmark *navigationBenchmarkMessage) error {
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.begin", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence)
+	}
 	payload, err := msgpack.Marshal(msg)
 	if err != nil {
+		if benchmark != nil {
+			navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.end", "go.transport",
+				"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+				"sceneSequence", benchmark.sceneSequence, "ok", false, "error", err.Error())
+		}
 		return err
+	}
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.end", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "ok", true, "payloadBytes", len(payload))
 	}
 	if len(payload) > extUiMaxMessageSize {
 		return fmt.Errorf("extui message too large: %d bytes", len(payload))
@@ -46,10 +65,41 @@ func extUiSendMessage(w io.Writer, msg map[string]any) error {
 
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(payload)))
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.begin", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "bytes", len(hdr))
+	}
 	if _, err := w.Write(hdr[:]); err != nil {
+		if benchmark != nil {
+			navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.end", "go.transport",
+				"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+				"sceneSequence", benchmark.sceneSequence, "ok", false, "error", err.Error())
+		}
 		return err
 	}
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.end", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "ok", true, "bytes", len(hdr))
+		navigationBenchmarkEmit(benchmark.traceID, "transport.payload_write.begin", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "payloadBytes", len(payload))
+	}
 	_, err = w.Write(payload)
+	if benchmark != nil {
+		fields := []any{
+			"phase", benchmark.phase,
+			"phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence,
+			"payloadBytes", len(payload),
+			"ok", err == nil,
+		}
+		if err != nil {
+			fields = append(fields, "error", err.Error())
+		}
+		navigationBenchmarkEmit(benchmark.traceID, "transport.payload_write.end", "go.transport", fields...)
+	}
 	return err
 }
 
@@ -59,15 +109,38 @@ type extUiMessageSender struct {
 }
 
 func (s *extUiMessageSender) Send(msg map[string]any) error {
+	benchmark := navigationBenchmarkMessageFromMap(msg)
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.wait", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence)
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return extUiSendMessage(s.w, msg)
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.acquired", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence)
+	}
+	err := extUiSendMessageWithBenchmark(s.w, msg, benchmark)
+	s.mu.Unlock()
+	navigationBenchmarkMessageSent(benchmark, err)
+	return err
 }
 
 func extUiReadMessage(r io.Reader) (map[string]any, error) {
+	return extUiReadMessageWithBenchmark(r, nil)
+}
+
+func extUiReadMessageWithBenchmark(r io.Reader, timing *navigationBenchmarkReadTiming) (map[string]any, error) {
+	if timing != nil {
+		timing.readStartNs = navigationBenchmarkMonotonicNs()
+	}
 	var hdr [4]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
+	}
+	if timing != nil {
+		timing.headerDoneNs = navigationBenchmarkMonotonicNs()
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
 	if n == 0 {
@@ -81,10 +154,18 @@ func extUiReadMessage(r io.Reader) (map[string]any, error) {
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return nil, err
 	}
+	if timing != nil {
+		timing.payloadDoneNs = navigationBenchmarkMonotonicNs()
+		timing.payloadBytes = len(payload)
+		timing.decodeStartNs = navigationBenchmarkMonotonicNs()
+	}
 
 	var msg map[string]any
 	if err := msgpack.Unmarshal(payload, &msg); err != nil {
 		return nil, err
+	}
+	if timing != nil {
+		timing.decodeDoneNs = navigationBenchmarkMonotonicNs()
 	}
 	return msg, nil
 }
@@ -260,9 +341,17 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 }
 
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
+	benchmark := navigationBenchmarkSceneCompareBegin(scene)
+	compareResult := "full_scene"
+	if benchmark != nil {
+		defer func() {
+			navigationBenchmarkSceneCompareEnd(benchmark, compareResult)
+		}()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if reflect.DeepEqual(scene, r.lastScene) {
+		compareResult = "equal_last"
 		// A transient full scene or command-line patch returned to the state the
 		// native client already owns before Flush.
 		r.pendingScene = nil
@@ -271,9 +360,11 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 		return
 	}
 	if reflect.DeepEqual(scene, r.pendingScene) {
+		compareResult = "equal_pending_scene"
 		return
 	}
 	if reflect.DeepEqual(scene, r.pendingCommandLineScene) {
+		compareResult = "equal_pending_command_line_scene"
 		return
 	}
 
@@ -284,6 +375,7 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	// on the client's last scene and therefore deliberately stays full.
 	if r.pendingScene == nil && semanticScenesEqualExceptCommandLine(r.lastScene, scene) {
 		if commandLine, ok := semanticSceneCommandLine(scene); ok {
+			compareResult = "command_line_patch"
 			r.pendingCommandLine = map[string]any{
 				"type":        "command_line",
 				"commandLine": commandLine,
@@ -423,6 +515,14 @@ func (r *ExtUiRenderer) Flush() {
 	}
 	r.mu.Unlock()
 
+	// Assign semantic scene sequence numbers before sending any leading palette
+	// or cell-frame messages. The gap to transport.send_lock.wait then exposes
+	// time spent behind those messages instead of hiding it from the trace.
+	if navigationBenchmarkIsEnabled() {
+		for _, msg := range messages {
+			navigationBenchmarkPrepareSceneMessage(msg)
+		}
+	}
 	for _, msg := range messages {
 		if err := r.send.Send(msg); err != nil {
 			vtui.DebugLog("EXTUI_RENDERER: send failed: %v", err)
@@ -571,7 +671,11 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 
 func (h *ExtUiHost) readLoop() {
 	for {
-		msg, err := extUiReadMessage(h.conn)
+		var timing *navigationBenchmarkReadTiming
+		if navigationBenchmarkIsEnabled() {
+			timing = &navigationBenchmarkReadTiming{}
+		}
+		msg, err := extUiReadMessageWithBenchmark(h.conn, timing)
 		if err != nil {
 			vtui.DebugLog("EXTUI_HOST: read loop stopped: %v", err)
 			if h.reader != nil {
@@ -579,11 +683,15 @@ func (h *ExtUiHost) readLoop() {
 			}
 			return
 		}
-		h.handleMessage(msg)
+		h.handleMessageWithBenchmark(msg, timing)
 	}
 }
 
 func (h *ExtUiHost) handleMessage(msg map[string]any) {
+	h.handleMessageWithBenchmark(msg, nil)
+}
+
+func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navigationBenchmarkReadTiming) {
 	switch extUiString(msg, "type") {
 	case "resize":
 		cols, rows := extUiInt(msg, "cols"), extUiInt(msg, "rows")
@@ -660,9 +768,27 @@ func (h *ExtUiHost) handleMessage(msg map[string]any) {
 		if nested, ok := msg["action"].(map[string]any); ok {
 			action = nested
 		}
+		benchmark := navigationBenchmarkTraceForAction(msg, action, timing)
+		queuedNs := int64(0)
+		if benchmark != nil {
+			queuedNs = navigationBenchmarkMonotonicNs()
+			benchmark.eventAt("ui_task.queued", "go.ipc", queuedNs, "action", benchmark.action)
+		}
 		if vtui.FrameManager != nil {
 			vtui.FrameManager.PostTask(func() {
-				if HandleSemanticAction(action) {
+				if benchmark != nil {
+					startedNs := navigationBenchmarkMonotonicNs()
+					benchmark.eventAt("ui_task.started", "go.ui", startedNs,
+						"action", benchmark.action, "queueNs", startedNs-queuedNs)
+					benchmark.event("semantic_action.begin", "go.ui", "action", benchmark.action)
+				}
+				previousBenchmark := navigationBenchmarkSetCurrentUI(benchmark)
+				handled := HandleSemanticAction(action)
+				navigationBenchmarkSetCurrentUI(previousBenchmark)
+				if benchmark != nil {
+					benchmark.event("semantic_action.end", "go.ui", "action", benchmark.action, "handled", handled)
+				}
+				if handled {
 					vtui.FrameManager.Redraw()
 				}
 			})

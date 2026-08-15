@@ -405,6 +405,11 @@ type dirCacheEntry struct {
 	items       []vfs.VFSItem
 	time        time.Time
 	showUpEntry bool
+	// upItem preserves the parent-directory metadata used by the synthetic
+	// ".." row. Without it, a cache hit publishes a zero-time row and the
+	// completed refresh immediately replaces it with the parent's real MTime,
+	// making an otherwise identical semantic catalog look changed.
+	upItem vfs.VFSItem
 }
 
 // dirCacheKey qualifies a path with the filesystem it belongs to. Remote
@@ -416,6 +421,12 @@ type dirCacheEntry struct {
 type dirCacheKey struct {
 	identity      any
 	qualifiedPath string
+}
+
+type directoryLoadRequest struct {
+	load       func()
+	benchmark  *navigationBenchmarkTrace
+	enqueuedNs int64
 }
 
 type FileSystemPanel struct {
@@ -462,7 +473,8 @@ type FileSystemPanel struct {
 	loadingGeneration          uint64
 	loadQueueMu                sync.Mutex
 	loadWorkerActive           bool
-	pendingDirectoryLoad       func()
+	pendingDirectoryLoad       *directoryLoadRequest
+	benchmarkLoadTrace         *navigationBenchmarkTrace
 	providerOpenTask           *vtui.TaskContext
 	providerOpenDialog         *vtui.Window
 	directoryErrorDialog       *vtui.Window
@@ -610,10 +622,24 @@ func (fp *FileSystemPanel) saveToCache(path string, items []vfs.VFSItem) {
 }
 
 func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem, showUpEntry bool) {
+	fp.saveToCacheKeyWithUpItem(key, items, showUpEntry, vfs.VFSItem{})
+}
+
+func (fp *FileSystemPanel) saveToCacheKeyWithUpItem(key dirCacheKey, items []vfs.VFSItem, showUpEntry bool, upItem vfs.VFSItem) {
 	if fp.dirCache == nil {
 		fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
 	}
-	fp.dirCache[key] = dirCacheEntry{items: items, time: time.Now(), showUpEntry: showUpEntry}
+	if showUpEntry {
+		upItem = panelUpEntryItem(upItem, true)
+	} else {
+		upItem = vfs.VFSItem{}
+	}
+	fp.dirCache[key] = dirCacheEntry{
+		items:       items,
+		time:        time.Now(),
+		showUpEntry: showUpEntry,
+		upItem:      upItem,
+	}
 
 	if len(fp.dirCache) > maxDirCache {
 		var oldestKey dirCacheKey
@@ -628,6 +654,20 @@ func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem, 
 		}
 		delete(fp.dirCache, oldestKey)
 	}
+}
+
+func panelUpEntryItem(stat vfs.VFSItem, hasStat bool) vfs.VFSItem {
+	item := vfs.VFSItem{Name: "..", IsDir: true}
+	if !hasStat {
+		return item
+	}
+	item.MTime = stat.MTime
+	item.ATime = stat.ATime
+	item.CTime = stat.CTime
+	item.UnixMode = stat.UnixMode
+	item.Uid = stat.Uid
+	item.Gid = stat.Gid
+	return item
 }
 
 func nativeVisualCachePath(value string) string {
@@ -664,7 +704,10 @@ func (fp *FileSystemPanel) showCachedStandalonePath(target string) bool {
 
 	fp.entries = nil
 	if cached.showUpEntry {
-		fp.entries = append(fp.entries, &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
+		fp.entries = append(fp.entries, &fileEntry{
+			VFSItem:  panelUpEntryItem(cached.upItem, true),
+			IsCached: true,
+		})
 	}
 	for _, item := range cached.items {
 		if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
@@ -1787,9 +1830,22 @@ func (fp *FileSystemPanel) ReadDirectory() {
 // cancelled by readDirectoryEx; it may still need to drain one FISH+ response,
 // after which only the most recent path is allowed to start.
 func (fp *FileSystemPanel) enqueueDirectoryLoad(load func()) {
+	fp.enqueueDirectoryLoadWithBenchmark(nil, load)
+}
+
+func (fp *FileSystemPanel) enqueueDirectoryLoadWithBenchmark(benchmark *navigationBenchmarkTrace, load func()) {
+	request := &directoryLoadRequest{load: load, benchmark: benchmark}
+	if benchmark != nil {
+		request.enqueuedNs = navigationBenchmarkMonotonicNs()
+		benchmark.eventAt("load.queued", "go.ui", request.enqueuedNs)
+	}
 	fp.loadQueueMu.Lock()
 	if fp.loadWorkerActive {
-		fp.pendingDirectoryLoad = load
+		if replaced := fp.pendingDirectoryLoad; replaced != nil && replaced.benchmark != nil {
+			replaced.benchmark.event("load.queue.superseded", "go.worker",
+				"supersededBy", navigationBenchmarkTraceName(benchmark))
+		}
+		fp.pendingDirectoryLoad = request
 		fp.loadQueueMu.Unlock()
 		return
 	}
@@ -1797,9 +1853,14 @@ func (fp *FileSystemPanel) enqueueDirectoryLoad(load func()) {
 	fp.loadQueueMu.Unlock()
 
 	go func() {
-		next := load
+		next := request
 		for next != nil {
-			next()
+			if next.benchmark != nil {
+				startedNs := navigationBenchmarkMonotonicNs()
+				next.benchmark.eventAt("load.worker.started", "go.worker", startedNs,
+					"queueNs", startedNs-next.enqueuedNs)
+			}
+			next.load()
 
 			fp.loadQueueMu.Lock()
 			next = fp.pendingDirectoryLoad
@@ -2009,14 +2070,44 @@ func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
 // the target came from a panel row. Cancel first so the old background refresh
 // starts leaving the shared session before the new cache is rendered.
 func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
+	benchmark := navigationBenchmarkCurrentUI()
+	fromPath := ""
+	direction := ""
+	if benchmark != nil && fp.vfs != nil {
+		fromPath = fp.vfs.GetPath()
+		switch {
+		case sameFolderHistoryPath(target, fromPath):
+			direction = "same"
+		case sameFolderHistoryPath(target, fp.vfs.Dir(fromPath)):
+			direction = "parent"
+		default:
+			direction = "child"
+		}
+		benchmark.setPaths(fromPath, target, direction)
+		benchmark.event("path.set.begin", "go.ui", "fromPath", fromPath,
+			"toPath", target, "direction", direction)
+	}
+	strategy := "verified"
+	var err error
 	if setter, ok := fp.vfs.(vfs.OptimisticPathSetter); ok {
+		strategy = "optimistic"
 		if fp.cancelLoad != nil {
 			fp.cancelLoad()
 			fp.cancelLoad = nil
 		}
-		return setter.SetPathOptimistic(target)
+		err = setter.SetPathOptimistic(target)
+	} else {
+		err = fp.vfs.SetPath(target)
 	}
-	return fp.vfs.SetPath(target)
+	if benchmark != nil {
+		fields := []any{"fromPath", fromPath, "toPath", target, "direction", direction,
+			"strategy", strategy, "ok", err == nil}
+		if err != nil {
+			fields = append(fields, "error", err.Error())
+		}
+		benchmark.event("path.set.end", "go.ui", fields...)
+	}
+	return err
 }
 
 func (fp *FileSystemPanel) suppressNextFolderHistory(path string) {
@@ -2076,6 +2167,12 @@ func (fp *FileSystemPanel) moveToParentAfterLoadFailure(loadVFS vfs.VFS, failedP
 }
 
 func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
+	benchmark := navigationBenchmarkCurrentUI()
+	if previous := fp.benchmarkLoadTrace; previous != nil && previous != benchmark {
+		previous.event("navigation.cancelled", "go.ui",
+			"supersededBy", navigationBenchmarkTraceName(benchmark))
+	}
+	fp.benchmarkLoadTrace = benchmark
 	if fp.cancelLoad != nil {
 		fp.cancelLoad()
 		fp.cancelLoad = nil
@@ -2088,6 +2185,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 	loadVFS := fp.vfs
 	path := loadVFS.GetPath()
+	if benchmark != nil {
+		_, fromPath, _, direction := benchmark.pathFields()
+		if fromPath == "" {
+			fromPath = path
+			if direction == "" {
+				direction = "refresh"
+			}
+		}
+		benchmark.setPaths(fromPath, path, direction)
+		benchmark.event("directory_read.begin", "go.ui", "path", path, "keepEntries", keepEntries)
+	}
 	suppressionToken, hasFolderHistorySuppression := fp.folderHistorySuppression(path)
 	cacheKey := directoryCacheKey(loadVFS, path)
 	loadAtRoot := loadVFS.IsAtRoot()
@@ -2116,7 +2224,19 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		// Record accepted navigation in UI order, not in backend completion
 		// order. Otherwise an older slow cloud ReadDir can finish after a newer
 		// visit and move its path to the front of the global MRU history.
+		if benchmark != nil {
+			benchmark.event("history.persist.begin", "go.ui", "path", path)
+		}
 		AddFolderHistory(path)
+		if benchmark != nil {
+			benchmark.event("history.persist.end", "go.ui", "path", path)
+		}
+	} else if benchmark != nil {
+		reason := "unchanged"
+		if suppressFolderHistory {
+			reason = "suppressed"
+		}
+		benchmark.event("history.persist.skipped", "go.ui", "path", path, "reason", reason)
 	}
 
 	if fp.pendingSelection == "" {
@@ -2139,7 +2259,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			fp.entries = nil
 
 			if showUpEntry {
-				fp.entries = append(fp.entries, &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
+				fp.entries = append(fp.entries, &fileEntry{
+					VFSItem:  panelUpEntryItem(cached.upItem, true),
+					IsCached: true,
+				})
 			}
 
 			for _, item := range cached.items {
@@ -2166,6 +2289,11 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			fp.Refresh()
 			cacheInitialCursorName = fp.getRawSelectedName()
 			cacheInitialCursorIndex = fp.GetCursorIndex()
+			if benchmark != nil {
+				benchmark.event("model.provisional.ready", "go.ui", "phase", "cached",
+					"cacheHit", true, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+				navigationBenchmarkPublishScene(benchmark, "cached")
+			}
 			vtui.FrameManager.Redraw()
 		}
 	}
@@ -2178,16 +2306,40 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 		fp.SetCursorIndex(0)
 		fp.Refresh()
+		if benchmark != nil {
+			benchmark.event("model.provisional.ready", "go.ui", "phase", "placeholder",
+				"cacheHit", false, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+			navigationBenchmarkPublishScene(benchmark, "placeholder")
+		}
 		vtui.FrameManager.Redraw()
 	}
+	if keepEntries && benchmark != nil {
+		benchmark.event("model.provisional.ready", "go.ui", "phase", "retained",
+			"cacheHit", false, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+		navigationBenchmarkPublishScene(benchmark, "retained")
+	}
 
-	fp.enqueueDirectoryLoad(func() {
+	fp.enqueueDirectoryLoadWithBenchmark(benchmark, func() {
 		if ctx.Err() != nil {
+			if benchmark != nil {
+				benchmark.event("load.worker.cancelled_before_read", "go.worker", "path", path)
+			}
 			return
 		}
 		var accumulated []vfs.VFSItem
+		chunkCount := 0
+		if benchmark != nil {
+			benchmark.event("filesystem.readdir.begin", "go.worker", "path", path)
+		}
 
 		err := loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
+			chunkCount++
+			chunkIndex := chunkCount
+			if benchmark != nil {
+				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
+					"chunk", chunkIndex, "chunkEntries", len(chunk),
+					"entriesBefore", len(accumulated))
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -2219,7 +2371,18 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 
+			chunkQueuedNs := int64(0)
+			if benchmark != nil {
+				chunkQueuedNs = navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.chunk.queued", "go.worker", chunkQueuedNs,
+					"chunk", chunkIndex, "chunkEntries", len(newEntries))
+			}
 			vtui.FrameManager.PostTask(func() {
+				if benchmark != nil {
+					startedNs := navigationBenchmarkMonotonicNs()
+					benchmark.eventAt("model.chunk.started", "go.ui", startedNs,
+						"chunk", chunkIndex, "queueNs", startedNs-chunkQueuedNs)
+				}
 				if ctx.Err() != nil || fp.loadCtx != ctx {
 					return
 				}
@@ -2273,12 +2436,27 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				fp.Refresh()
+				if benchmark != nil {
+					benchmark.event("model.chunk.ready", "go.ui", "chunk", chunkIndex,
+						"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+					navigationBenchmarkPublishScene(benchmark, "chunk")
+				}
 
 				vtui.FrameManager.Redraw() // Рисуем каждый чанк!
 			})
 		})
+		if benchmark != nil {
+			fields := []any{"path", path, "chunks", chunkCount, "entries", len(accumulated), "ok", err == nil}
+			if err != nil {
+				fields = append(fields, "error", err.Error())
+			}
+			benchmark.event("filesystem.readdir.end", "go.worker", fields...)
+		}
 
 		if ctx.Err() != nil {
+			if benchmark != nil {
+				benchmark.event("load.worker.cancelled_after_read", "go.worker", "path", path)
+			}
 			return
 		}
 
@@ -2291,33 +2469,81 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		hasUpItemStat := false
 		if err == nil {
 			var dirStatErr error
+			if benchmark != nil {
+				benchmark.event("filesystem.stat_current.begin", "go.worker", "path", path)
+			}
 			dirStat, dirStatErr = loadVFS.Stat(ctx, path)
+			if benchmark != nil {
+				fields := []any{"path", path, "ok", dirStatErr == nil}
+				if dirStatErr != nil {
+					fields = append(fields, "error", dirStatErr.Error())
+				}
+				benchmark.event("filesystem.stat_current.end", "go.worker", fields...)
+			}
 			if ctx.Err() != nil {
 				return
 			}
 			if showUpEntry {
 				parentPath := loadVFS.Dir(path)
 				if parentPath == path && dirStatErr == nil {
+					if benchmark != nil {
+						benchmark.event("filesystem.stat_parent.reused", "go.worker",
+							"path", parentPath, "source", "current")
+					}
 					upItemStat = dirStat
 					hasUpItemStat = true
-				} else if pStat, statErr := loadVFS.Stat(ctx, parentPath); statErr == nil {
-					upItemStat = pStat
-					hasUpItemStat = true
+				} else {
+					if benchmark != nil {
+						benchmark.event("filesystem.stat_parent.begin", "go.worker", "path", parentPath)
+					}
+					pStat, statErr := loadVFS.Stat(ctx, parentPath)
+					if benchmark != nil {
+						fields := []any{"path", parentPath, "ok", statErr == nil}
+						if statErr != nil {
+							fields = append(fields, "error", statErr.Error())
+						}
+						benchmark.event("filesystem.stat_parent.end", "go.worker", fields...)
+					}
+					if statErr == nil {
+						upItemStat = pStat
+						hasUpItemStat = true
+					}
 				}
 			}
+		} else if benchmark != nil {
+			benchmark.event("filesystem.stats.skipped", "go.worker", "reason", "readdir_error")
 		}
 		if ctx.Err() != nil {
+			if benchmark != nil {
+				benchmark.event("load.worker.cancelled_after_stats", "go.worker", "path", path)
+			}
 			return
 		}
+		upItem := panelUpEntryItem(upItemStat, hasUpItemStat)
+		completionQueuedNs := int64(0)
+		if benchmark != nil {
+			completionQueuedNs = navigationBenchmarkMonotonicNs()
+			benchmark.eventAt("model.final.queued", "go.worker", completionQueuedNs,
+				"path", path, "entries", len(accumulated), "chunks", chunkCount)
+		}
 		vtui.FrameManager.PostTask(func() {
+			if benchmark != nil {
+				startedNs := navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.final.started", "go.ui", startedNs,
+					"path", path, "queueNs", startedNs-completionQueuedNs)
+			}
 			if ctx.Err() != nil || fp.loadCtx != ctx {
 				// This completion no longer owns the panel. Do not dereference the
 				// current VFS here: another navigation may already have closed it.
+				if benchmark != nil {
+					benchmark.event("model.final.discarded", "go.ui", "path", path,
+						"reason", "superseded")
+				}
 				return
 			}
 
 			if err == nil {
-				fp.saveToCacheKey(cacheKey, accumulated, showUpEntry)
+				fp.saveToCacheKeyWithUpItem(cacheKey, accumulated, showUpEntry, upItem)
 			}
 
 			if hasCache && err == nil {
@@ -2345,15 +2571,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 				fp.entries = nil
 				if showUpEntry {
-					upItem := vfs.VFSItem{Name: "..", IsDir: true}
-					if hasUpItemStat {
-						upItem.MTime = upItemStat.MTime
-						upItem.ATime = upItemStat.ATime
-						upItem.CTime = upItemStat.CTime
-						upItem.UnixMode = upItemStat.UnixMode
-						upItem.Uid = upItemStat.Uid
-						upItem.Gid = upItemStat.Gid
-					}
 					fp.entries = []*fileEntry{{VFSItem: upItem}}
 				}
 
@@ -2402,15 +2619,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			} else if AppConfig.SyncPanelLoad && err == nil {
 				fp.entries = nil
 				if showUpEntry {
-					upItem := vfs.VFSItem{Name: "..", IsDir: true}
-					if hasUpItemStat {
-						upItem.MTime = upItemStat.MTime
-						upItem.ATime = upItemStat.ATime
-						upItem.CTime = upItemStat.CTime
-						upItem.UnixMode = upItemStat.UnixMode
-						upItem.Uid = upItemStat.Uid
-						upItem.Gid = upItemStat.Gid
-					}
 					fp.entries = []*fileEntry{{VFSItem: upItem}}
 				}
 
@@ -2455,6 +2663,18 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						}
 					}
 				}
+				// The non-cached chunk path creates ".." before the deferred parent
+				// Stat is available. Bring that already-visible row up to the same
+				// metadata as the atomic cached/SyncPanelLoad replacement paths and
+				// as the entry retained in the directory cache.
+				if showUpEntry {
+					for _, entry := range fp.entries {
+						if entry.Name == ".." {
+							entry.VFSItem = upItem
+							break
+						}
+					}
+				}
 			}
 
 			fp.stopLoadingAnimation()
@@ -2462,6 +2682,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			fp.lastDirMTime = dirStat.MTime
 			fp.isLoading = false
 			if err != nil && err != context.Canceled {
+				if benchmark != nil {
+					benchmark.event("model.final.error", "go.ui", "path", path,
+						"entries", len(accumulated), "chunks", chunkCount, "error", err.Error())
+				}
+				if fp.benchmarkLoadTrace == benchmark {
+					fp.benchmarkLoadTrace = nil
+				}
 				// A session that died is a question rather than a message: the
 				// panel can often be had back, and going up a level or showing
 				// an error would throw away the answer before it was asked.
@@ -2501,15 +2728,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if isFirstChunk {
 				fp.entries = nil
 				if showUpEntry {
-					upItem := vfs.VFSItem{Name: "..", IsDir: true}
-					if hasUpItemStat {
-						upItem.MTime = upItemStat.MTime
-						upItem.ATime = upItemStat.ATime
-						upItem.CTime = upItemStat.CTime
-						upItem.UnixMode = upItemStat.UnixMode
-						upItem.Uid = upItemStat.Uid
-						upItem.Gid = upItemStat.Gid
-					}
 					fp.entries = []*fileEntry{{VFSItem: upItem}}
 				}
 				fp.SetCursorIndex(0)
@@ -2520,6 +2738,15 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.pendingSelection = ""
 			}
 			fp.Refresh()
+			if benchmark != nil {
+				benchmark.event("model.final.ready", "go.ui", "phase", "fresh", "path", path,
+					"entries", len(fp.entries), "chunks", chunkCount,
+					"cursorIndex", fp.GetCursorIndex(), "cacheHit", hasCache)
+				navigationBenchmarkPublishScene(benchmark, "fresh")
+			}
+			if fp.benchmarkLoadTrace == benchmark {
+				fp.benchmarkLoadTrace = nil
+			}
 			vtui.FrameManager.Redraw()
 		})
 	})

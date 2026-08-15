@@ -1,6 +1,10 @@
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
+#include "NavigationBenchmarkTrace.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QQmlEngine>
 #include <QSet>
@@ -10,9 +14,39 @@
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
 
+#include <utility>
+
 namespace
 {
 constexpr int GalleryIconLogicalSize = 128;
+constexpr int NavigationBenchmarkWatchdogMs = 15000;
+
+int benchmarkEnvironmentInteger(const char *name, int fallback, int minimum,
+                                int maximum)
+{
+    bool ok = false;
+    const int value = qEnvironmentVariableIntValue(name, &ok);
+    return ok ? qBound(minimum, value, maximum) : fallback;
+}
+
+bool benchmarkEnvironmentFlag(const char *name)
+{
+    if (!qEnvironmentVariableIsSet(name)) {
+        return false;
+    }
+    const QString value = qEnvironmentVariable(name).trimmed().toLower();
+    return value.isEmpty() || value == QStringLiteral("1")
+        || value == QStringLiteral("true") || value == QStringLiteral("yes")
+        || value == QStringLiteral("on");
+}
+
+QString normalizedBenchmarkPath(const QString &path)
+{
+    if (path.trimmed().isEmpty()) {
+        return {};
+    }
+    return QDir::cleanPath(QFileInfo(path.trimmed()).absoluteFilePath());
+}
 
 QVariantMap shellFromScene(const QVariantMap &scene)
 {
@@ -108,6 +142,7 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
 
     m_sessions[0] = runtime->createExternalSession(QStringLiteral("f4-left"), this);
     m_sessions[1] = runtime->createExternalSession(QStringLiteral("f4-right"), this);
+    configureNavigationBenchmark();
 }
 
 F4GalleryBridge::~F4GalleryBridge()
@@ -145,9 +180,249 @@ QUrl F4GalleryBridge::viewerComponentUrl() const
     return available() ? QUrl(QStringLiteral("qrc:/F4QtHost/qml/GalleryViewerHost.qml")) : QUrl();
 }
 
+bool F4GalleryBridge::navigationBenchmarkEnabled() const
+{
+    return m_navigationBenchmark.enabled;
+}
+
 QObject *F4GalleryBridge::sessionForSide(int side) const
 {
     return validSide(side) ? m_sessions[static_cast<size_t>(side)].data() : nullptr;
+}
+
+void F4GalleryBridge::configureNavigationBenchmark()
+{
+    const QString requestedTarget =
+        qEnvironmentVariable("F4_NAV_BENCHMARK_TARGET").trimmed();
+    if (requestedTarget.isEmpty()) {
+        return;
+    }
+
+    const QFileInfo requestedInfo(requestedTarget);
+    const QString targetPath = normalizedBenchmarkPath(requestedTarget);
+    const QFileInfo targetInfo(targetPath);
+    const QString parentPath = normalizedBenchmarkPath(targetInfo.absolutePath());
+    if (!requestedInfo.isAbsolute() || targetPath.isEmpty()
+        || parentPath.isEmpty() || targetInfo.fileName().isEmpty()
+        || parentPath == targetPath) {
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.gallery.runner.invalid-config"), {}, {
+                {QStringLiteral("requestedTarget"), requestedTarget},
+                {QStringLiteral("normalizedTarget"), targetPath},
+                {QStringLiteral("normalizedParent"), parentPath},
+            });
+        return;
+    }
+
+    m_navigationBenchmark.enabled = true;
+    m_navigationBenchmark.exitWhenFinished =
+        benchmarkEnvironmentFlag("F4_NAV_BENCHMARK_EXIT");
+    m_navigationBenchmark.phase = NavigationBenchmarkPhase::WaitingForPanel;
+    m_navigationBenchmark.targetPath = targetPath;
+    m_navigationBenchmark.parentPath = parentPath;
+    m_navigationBenchmark.targetName = targetInfo.fileName();
+    m_navigationBenchmark.cycles = benchmarkEnvironmentInteger(
+        "F4_NAV_BENCHMARK_CYCLES", 50, 1, 10000);
+    m_navigationBenchmark.warmup = benchmarkEnvironmentInteger(
+        "F4_NAV_BENCHMARK_WARMUP", 10, 0, 10000);
+    m_navigationBenchmark.runId = QStringLiteral("qt-%1-nav")
+        .arg(QCoreApplication::applicationPid());
+
+    auto *watchdog = new QTimer(this);
+    watchdog->setSingleShot(true);
+    watchdog->setInterval(NavigationBenchmarkWatchdogMs);
+    connect(watchdog, &QTimer::timeout, this, [this]() {
+        failNavigationBenchmark(QStringLiteral("stage-timeout"));
+    });
+    m_navigationBenchmarkWatchdog = watchdog;
+    restartNavigationBenchmarkWatchdog();
+
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("traceEnabled"),
+                  F4NavigationBenchmarkTrace::enabled());
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.gallery.runner.configured"),
+        m_navigationBenchmark.runId, fields);
+}
+
+QVariantMap F4GalleryBridge::navigationBenchmarkFields() const
+{
+    const NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    QString phase;
+    switch (benchmark.phase) {
+    case NavigationBenchmarkPhase::Disabled:
+        phase = QStringLiteral("disabled");
+        break;
+    case NavigationBenchmarkPhase::WaitingForPanel:
+        phase = QStringLiteral("waiting-for-panel");
+        break;
+    case NavigationBenchmarkPhase::SettingDetails:
+        phase = QStringLiteral("setting-details");
+        break;
+    case NavigationBenchmarkPhase::NavigatingToTargetForSetup:
+        phase = QStringLiteral("setup-target");
+        break;
+    case NavigationBenchmarkPhase::ReturningToParentForSetup:
+        phase = QStringLiteral("setup-parent");
+        break;
+    case NavigationBenchmarkPhase::WaitingForSetupReadiness:
+        phase = QStringLiteral("setup-readiness");
+        break;
+    case NavigationBenchmarkPhase::WaitingForSetupFrame:
+        phase = QStringLiteral("setup-frame");
+        break;
+    case NavigationBenchmarkPhase::ReadyToDispatch:
+        phase = QStringLiteral("ready-to-dispatch");
+        break;
+    case NavigationBenchmarkPhase::WaitingForTransitionReadiness:
+        phase = QStringLiteral("transition-readiness");
+        break;
+    case NavigationBenchmarkPhase::WaitingForTransitionFrame:
+        phase = QStringLiteral("transition-frame");
+        break;
+    case NavigationBenchmarkPhase::Finished:
+        phase = QStringLiteral("finished");
+        break;
+    case NavigationBenchmarkPhase::Failed:
+        phase = QStringLiteral("failed");
+        break;
+    }
+
+    return {
+        {QStringLiteral("runId"), benchmark.runId},
+        {QStringLiteral("runnerPhase"), phase},
+        {QStringLiteral("actionPhase"), benchmark.actionPhase},
+        {QStringLiteral("side"), benchmark.side},
+        {QStringLiteral("targetPath"), benchmark.targetPath},
+        {QStringLiteral("parentPath"), benchmark.parentPath},
+        {QStringLiteral("fromPath"), benchmark.fromPath},
+        {QStringLiteral("toPath"), benchmark.expectedPath},
+        {QStringLiteral("direction"), benchmark.direction},
+        {QStringLiteral("cycle"), benchmark.completedCycles},
+        {QStringLiteral("measuredCycle"),
+         qMax(0, benchmark.completedCycles - benchmark.warmup)},
+        {QStringLiteral("transition"), benchmark.completedTransitions},
+        {QStringLiteral("warmup"),
+         benchmark.completedCycles < benchmark.warmup},
+        {QStringLiteral("warmupCycles"), benchmark.warmup},
+        {QStringLiteral("measuredCycles"), benchmark.cycles},
+        {QStringLiteral("phaseSequence"),
+         QVariant::fromValue<qulonglong>(benchmark.phaseSequence)},
+        {QStringLiteral("actionSequence"),
+         QVariant::fromValue<qulonglong>(benchmark.actionSequence)},
+        {QStringLiteral("frameSerial"),
+         QVariant::fromValue<qulonglong>(benchmark.frameSerial)},
+        {QStringLiteral("requiredFrameSerial"),
+         QVariant::fromValue<qulonglong>(benchmark.requiredFrameSerial)},
+        {QStringLiteral("sceneMatched"), benchmark.sceneMatched},
+        {QStringLiteral("placementReady"), benchmark.placementReady},
+        {QStringLiteral("placementPath"), benchmark.placementPath},
+        {QStringLiteral("placementCatalogRevision"),
+         QVariant::fromValue<qulonglong>(
+             benchmark.placementCatalogRevision)},
+    };
+}
+
+void F4GalleryBridge::sendNavigationBenchmarkAction(
+    QVariantMap action, const QString &phase, const QString &direction,
+    const QString &fromPath, const QString &toPath)
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    ++benchmark.actionSequence;
+    ++benchmark.phaseSequence;
+    benchmark.benchmarkTraceId = QStringLiteral("%1-%2")
+        .arg(benchmark.runId)
+        .arg(benchmark.actionSequence);
+    benchmark.actionPhase = phase;
+    benchmark.direction = direction;
+    benchmark.fromPath = fromPath;
+    benchmark.expectedPath = toPath;
+    benchmark.actionSent = true;
+    benchmark.sceneMatched = false;
+    benchmark.placementReady = false;
+    benchmark.placementPath.clear();
+    benchmark.placementCatalogRevision = 0;
+    benchmark.lastPlacement.clear();
+    benchmark.requiredFrameSerial = 0;
+
+    QVariantMap metadata = {
+        {QStringLiteral("schema"), 1},
+        {QStringLiteral("benchmarkTraceId"),
+         benchmark.benchmarkTraceId},
+        {QStringLiteral("phase"), phase},
+        {QStringLiteral("phaseSequence"),
+         QVariant::fromValue<qulonglong>(benchmark.phaseSequence)},
+        {QStringLiteral("side"), benchmark.side},
+        {QStringLiteral("fromPath"), fromPath},
+        {QStringLiteral("toPath"), toPath},
+        {QStringLiteral("direction"), direction},
+        {QStringLiteral("cycle"), benchmark.completedCycles},
+        {QStringLiteral("transition"), benchmark.completedTransitions},
+        {QStringLiteral("warmup"),
+         benchmark.completedCycles < benchmark.warmup},
+    };
+    action.insert(QStringLiteral("benchmarkTraceId"),
+                  benchmark.benchmarkTraceId);
+    action.insert(QStringLiteral("benchmark"), metadata);
+
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("action"),
+                  action.value(QStringLiteral("action")));
+    fields.insert(QStringLiteral("entryId"),
+                  action.value(QStringLiteral("entryId")));
+    fields.insert(QStringLiteral("index"),
+                  action.value(QStringLiteral("index")));
+    const qint64 actionBoundary =
+        F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    restartNavigationBenchmarkWatchdog();
+    emit uiActionRequested(action);
+    m_pendingNavigationBenchmarkTrace.push_back({
+        QStringLiteral("qt.gallery.runner.action"), actionBoundary,
+        benchmark.benchmarkTraceId, fields});
+}
+
+QVariantMap F4GalleryBridge::navigationBenchmarkEntryForPath(
+    int side, const QString &path) const
+{
+    if (!validSide(side)) {
+        return {};
+    }
+    const QString normalizedPath = normalizedBenchmarkPath(path);
+    const SideState &state = m_states[static_cast<size_t>(side)];
+    QVariantMap nameFallback;
+    for (const QVariant &value : state.entries) {
+        const QVariantMap entry = value.toMap();
+        if (entry.value(QStringLiteral("isUp")).toBool()) {
+            continue;
+        }
+        const QString localPath = normalizedBenchmarkPath(
+            entry.value(QStringLiteral("localPath")).toString());
+        if (!localPath.isEmpty() && localPath == normalizedPath) {
+            return entry;
+        }
+        if (entry.value(QStringLiteral("name")).toString()
+            == QFileInfo(normalizedPath).fileName()) {
+            nameFallback = entry;
+        }
+    }
+    return nameFallback;
+}
+
+QVariantMap F4GalleryBridge::navigationBenchmarkUpEntry(int side) const
+{
+    if (!validSide(side)) {
+        return {};
+    }
+    const SideState &state = m_states[static_cast<size_t>(side)];
+    for (const QVariant &value : state.entries) {
+        const QVariantMap entry = value.toMap();
+        if (entry.value(QStringLiteral("isUp")).toBool()
+            || entry.value(QStringLiteral("name")).toString()
+                == QStringLiteral("..")) {
+            return entry;
+        }
+    }
+    return {};
 }
 
 void F4GalleryBridge::requestActivate(int side)
@@ -403,6 +678,475 @@ void F4GalleryBridge::requestSort(int side, const QString &sortMode,
     });
 }
 
+void F4GalleryBridge::queueNavigationBenchmarkTrace(
+    const QString &name, const QVariant &benchmarkTraceId,
+    const QVariantMap &fields)
+{
+    if (!F4NavigationBenchmarkTrace::enabled()) {
+        return;
+    }
+    m_pendingNavigationBenchmarkTrace.push_back({
+        name, F4NavigationBenchmarkTrace::monotonicNanoseconds(),
+        benchmarkTraceId, fields});
+}
+
+void F4GalleryBridge::flushNavigationBenchmarkTrace()
+{
+    const QList<PendingNavigationBenchmarkTrace> pending =
+        std::exchange(m_pendingNavigationBenchmarkTrace,
+                      QList<PendingNavigationBenchmarkTrace>{});
+    for (const PendingNavigationBenchmarkTrace &event : pending) {
+        F4NavigationBenchmarkTrace::eventAt(
+            event.name, event.monotonicNs, event.benchmarkTraceId,
+            event.fields);
+    }
+}
+
+void F4GalleryBridge::recordBenchmarkStage(
+    int side, const QString &stage, const QVariantMap &metadata)
+{
+    if (!m_navigationBenchmark.enabled || !validSide(side)
+        || m_navigationBenchmark.phase
+            == NavigationBenchmarkPhase::Finished
+        || m_navigationBenchmark.phase
+            == NavigationBenchmarkPhase::Failed) {
+        return;
+    }
+
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    const QVariant traceId = benchmark.lastSceneTraceId.isValid()
+        ? benchmark.lastSceneTraceId
+        : QVariant(benchmark.benchmarkTraceId);
+    QVariantMap fields = navigationBenchmarkFields();
+    for (auto it = metadata.cbegin(); it != metadata.cend(); ++it) {
+        fields.insert(it.key(), it.value());
+    }
+    fields.insert(QStringLiteral("stage"), stage);
+    fields.insert(QStringLiteral("bridgePanelLoading"),
+                  m_states[static_cast<size_t>(side)].loading);
+    fields.insert(QStringLiteral("bridgePanelPath"),
+                  m_states[static_cast<size_t>(side)].currentPath);
+    fields.insert(QStringLiteral("sceneBenchmark"),
+                  benchmark.lastSceneBenchmark);
+    queueNavigationBenchmarkTrace(
+        QStringLiteral("qt.gallery.qml.%1").arg(stage), traceId, fields);
+
+    const bool waitingForPlacement =
+        benchmark.phase == NavigationBenchmarkPhase::WaitingForSetupReadiness
+        || benchmark.phase
+            == NavigationBenchmarkPhase::WaitingForTransitionReadiness;
+    const bool traceMatches = !benchmark.benchmarkTraceId.isEmpty()
+        && traceId.toString() == benchmark.benchmarkTraceId;
+    if (!waitingForPlacement || side != benchmark.side || !traceMatches) {
+        return;
+    }
+
+    QString path = metadata.value(QStringLiteral("currentPath")).toString();
+    if (path.isEmpty()) {
+        path = metadata.value(QStringLiteral("hostPanelPath")).toString();
+    }
+    path = normalizedBenchmarkPath(path);
+    const qulonglong catalogRevision = metadata.value(
+        QStringLiteral("catalogRevision")).toULongLong();
+    const QString presentationMode = metadata.value(
+        QStringLiteral("presentationMode"),
+        metadata.value(QStringLiteral("hostPresentationMode"))).toString();
+    const bool placementPending = metadata.value(
+        QStringLiteral("pathViewportPlacementPending"), true).toBool();
+    const int count = metadata.value(QStringLiteral("count"), -1).toInt();
+    const bool geometryValid = metadata.value(
+        QStringLiteral("geometryValid")).toBool();
+    const bool placementMatchesTarget = metadata.value(
+        QStringLiteral("placementMatchesTarget")).toBool();
+
+    if (path == benchmark.expectedPath
+        && catalogRevision != benchmark.placementCatalogRevision
+        && (stage == QStringLiteral("session.catalog.changed")
+            || stage == QStringLiteral("layout.reset")
+            || stage == QStringLiteral("host.panel.changed"))) {
+        benchmark.placementReady = false;
+    }
+
+    if (path == benchmark.expectedPath
+        && presentationMode == QStringLiteral("details")
+        && !placementPending && placementMatchesTarget
+        && (count == 0 || geometryValid)) {
+        benchmark.placementReady = true;
+        benchmark.placementPath = path;
+        benchmark.placementCatalogRevision = catalogRevision;
+        benchmark.lastPlacement = metadata;
+        restartNavigationBenchmarkWatchdog();
+        scheduleNavigationBenchmarkAdvance();
+    }
+}
+
+void F4GalleryBridge::notifyFrameSwapped()
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    if (!benchmark.enabled) {
+        return;
+    }
+    ++benchmark.frameSerial;
+    emit benchmarkFrameSwapped(benchmark.frameSerial);
+    if (benchmark.phase == NavigationBenchmarkPhase::Finished
+        || benchmark.phase == NavigationBenchmarkPhase::Failed) {
+        return;
+    }
+
+    const qint64 frameBoundary =
+        F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("lastPlacement"),
+                  benchmark.lastPlacement);
+    m_pendingNavigationBenchmarkTrace.push_back({
+        QStringLiteral("qt.gallery.frame-swapped"), frameBoundary,
+        benchmark.benchmarkTraceId, fields});
+
+    const bool awaitingFrame =
+        benchmark.phase == NavigationBenchmarkPhase::WaitingForSetupFrame
+        || benchmark.phase
+            == NavigationBenchmarkPhase::WaitingForTransitionFrame;
+    if (awaitingFrame && benchmark.requiredFrameSerial != 0
+        && benchmark.frameSerial >= benchmark.requiredFrameSerial) {
+        completeNavigationBenchmarkFrame();
+    }
+}
+
+void F4GalleryBridge::scheduleNavigationBenchmarkAdvance()
+{
+    if (!m_navigationBenchmark.enabled) {
+        return;
+    }
+    QTimer::singleShot(0, this,
+                       [this]() { advanceNavigationBenchmark(); });
+}
+
+void F4GalleryBridge::restartNavigationBenchmarkWatchdog()
+{
+    if (m_navigationBenchmarkWatchdog
+        && m_navigationBenchmark.enabled
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Finished
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Failed) {
+        m_navigationBenchmarkWatchdog->start();
+    }
+}
+
+void F4GalleryBridge::armNavigationBenchmarkFrame(bool setup)
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    benchmark.requiredFrameSerial = benchmark.frameSerial + 1;
+    benchmark.phase = setup
+        ? NavigationBenchmarkPhase::WaitingForSetupFrame
+        : NavigationBenchmarkPhase::WaitingForTransitionFrame;
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("lastPlacement"),
+                  benchmark.lastPlacement);
+    queueNavigationBenchmarkTrace(
+        QStringLiteral("qt.gallery.runner.frame-armed"),
+        benchmark.benchmarkTraceId, fields);
+    restartNavigationBenchmarkWatchdog();
+}
+
+void F4GalleryBridge::completeNavigationBenchmarkFrame()
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    const bool setup = benchmark.phase
+        == NavigationBenchmarkPhase::WaitingForSetupFrame;
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("lastPlacement"),
+                  benchmark.lastPlacement);
+    queueNavigationBenchmarkTrace(
+        setup ? QStringLiteral("qt.gallery.runner.setup-ready")
+              : QStringLiteral("qt.gallery.runner.transition-complete"),
+        benchmark.benchmarkTraceId, fields);
+
+    benchmark.requiredFrameSerial = 0;
+    benchmark.actionSent = false;
+    if (setup) {
+        benchmark.phase = NavigationBenchmarkPhase::ReadyToDispatch;
+    } else {
+        ++benchmark.completedTransitions;
+        if (benchmark.nextTransitionEnters) {
+            benchmark.nextTransitionEnters = false;
+        } else {
+            benchmark.nextTransitionEnters = true;
+            ++benchmark.completedCycles;
+        }
+        benchmark.phase = NavigationBenchmarkPhase::ReadyToDispatch;
+    }
+    if (m_navigationBenchmarkWatchdog) {
+        m_navigationBenchmarkWatchdog->stop();
+    }
+    // Trace output is intentionally outside action-to-frame measurement. The
+    // next transition is dispatched on a later event-loop turn.
+    flushNavigationBenchmarkTrace();
+    scheduleNavigationBenchmarkAdvance();
+}
+
+void F4GalleryBridge::finishNavigationBenchmark()
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    benchmark.phase = NavigationBenchmarkPhase::Finished;
+    if (m_navigationBenchmarkWatchdog) {
+        m_navigationBenchmarkWatchdog->stop();
+    }
+    queueNavigationBenchmarkTrace(
+        QStringLiteral("qt.gallery.runner.finished"),
+        benchmark.benchmarkTraceId, navigationBenchmarkFields());
+    flushNavigationBenchmarkTrace();
+    if (benchmark.exitWhenFinished) {
+        QTimer::singleShot(0, QCoreApplication::instance(), []() {
+            QCoreApplication::exit(0);
+        });
+    }
+}
+
+void F4GalleryBridge::failNavigationBenchmark(
+    const QString &reason, const QVariantMap &extraFields)
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    if (!benchmark.enabled
+        || benchmark.phase == NavigationBenchmarkPhase::Finished
+        || benchmark.phase == NavigationBenchmarkPhase::Failed) {
+        return;
+    }
+    benchmark.phase = NavigationBenchmarkPhase::Failed;
+    if (m_navigationBenchmarkWatchdog) {
+        m_navigationBenchmarkWatchdog->stop();
+    }
+    QVariantMap fields = navigationBenchmarkFields();
+    fields.insert(QStringLiteral("reason"), reason);
+    for (auto it = extraFields.cbegin(); it != extraFields.cend(); ++it) {
+        fields.insert(it.key(), it.value());
+    }
+    queueNavigationBenchmarkTrace(
+        QStringLiteral("qt.gallery.runner.failed"),
+        benchmark.benchmarkTraceId, fields);
+    flushNavigationBenchmarkTrace();
+    if (benchmark.exitWhenFinished) {
+        QTimer::singleShot(0, QCoreApplication::instance(), []() {
+            QCoreApplication::exit(4);
+        });
+    }
+}
+
+void F4GalleryBridge::advanceNavigationBenchmark()
+{
+    NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    if (!benchmark.enabled
+        || benchmark.phase == NavigationBenchmarkPhase::Disabled
+        || benchmark.phase == NavigationBenchmarkPhase::Finished
+        || benchmark.phase == NavigationBenchmarkPhase::Failed) {
+        return;
+    }
+
+    if (!validSide(benchmark.side)) {
+        for (int side = 0; side < 2; ++side) {
+            const SideState &candidate =
+                m_states[static_cast<size_t>(side)];
+            if (candidate.initialized && candidate.active) {
+                benchmark.side = side;
+                break;
+            }
+        }
+        if (!validSide(benchmark.side)) {
+            return;
+        }
+        queueNavigationBenchmarkTrace(
+            QStringLiteral("qt.gallery.runner.side-selected"),
+            benchmark.runId, navigationBenchmarkFields());
+    }
+
+    const SideState &state =
+        m_states[static_cast<size_t>(benchmark.side)];
+    switch (benchmark.phase) {
+    case NavigationBenchmarkPhase::WaitingForPanel:
+        if (state.galleryLayoutMode != QStringLiteral("details")) {
+            benchmark.phase = NavigationBenchmarkPhase::SettingDetails;
+            sendNavigationBenchmarkAction({
+                {QStringLiteral("action"),
+                 QStringLiteral("panel.setGalleryLayout")},
+                {QStringLiteral("side"), benchmark.side},
+                {QStringLiteral("layoutMode"), QStringLiteral("details")},
+            }, QStringLiteral("setup"), QStringLiteral("details"),
+               state.currentPath, state.currentPath);
+            return;
+        }
+        benchmark.phase =
+            NavigationBenchmarkPhase::NavigatingToTargetForSetup;
+        benchmark.actionSent = false;
+        scheduleNavigationBenchmarkAdvance();
+        return;
+
+    case NavigationBenchmarkPhase::SettingDetails:
+        if (state.galleryLayoutMode != QStringLiteral("details")) {
+            return;
+        }
+        benchmark.phase =
+            NavigationBenchmarkPhase::NavigatingToTargetForSetup;
+        benchmark.actionSent = false;
+        scheduleNavigationBenchmarkAdvance();
+        return;
+
+    case NavigationBenchmarkPhase::NavigatingToTargetForSetup:
+        if (!benchmark.actionSent) {
+            if (normalizedBenchmarkPath(state.currentPath)
+                    == benchmark.targetPath
+                && !state.loading) {
+                benchmark.phase =
+                    NavigationBenchmarkPhase::ReturningToParentForSetup;
+                scheduleNavigationBenchmarkAdvance();
+                return;
+            }
+            sendNavigationBenchmarkAction({
+                {QStringLiteral("action"),
+                 QStringLiteral("panel.navigatePath")},
+                {QStringLiteral("side"), benchmark.side},
+                {QStringLiteral("path"), benchmark.targetPath},
+            }, QStringLiteral("setup"), QStringLiteral("setup-target"),
+               state.currentPath, benchmark.targetPath);
+            return;
+        }
+        if (normalizedBenchmarkPath(state.currentPath)
+                == benchmark.targetPath
+            && !state.loading) {
+            queueNavigationBenchmarkTrace(
+                QStringLiteral("qt.gallery.runner.setup-target-ready"),
+                benchmark.benchmarkTraceId, navigationBenchmarkFields());
+            benchmark.phase =
+                NavigationBenchmarkPhase::ReturningToParentForSetup;
+            benchmark.actionSent = false;
+            scheduleNavigationBenchmarkAdvance();
+        }
+        return;
+
+    case NavigationBenchmarkPhase::ReturningToParentForSetup:
+        benchmark.phase =
+            NavigationBenchmarkPhase::WaitingForSetupReadiness;
+        sendNavigationBenchmarkAction({
+            {QStringLiteral("action"),
+             QStringLiteral("panel.navigatePath")},
+            {QStringLiteral("side"), benchmark.side},
+            {QStringLiteral("path"), benchmark.parentPath},
+        }, QStringLiteral("setup"), QStringLiteral("setup-parent"),
+           state.currentPath, benchmark.parentPath);
+        return;
+
+    case NavigationBenchmarkPhase::WaitingForSetupReadiness: {
+        const QVariantMap targetEntry = navigationBenchmarkEntryForPath(
+            benchmark.side, benchmark.targetPath);
+        const bool targetCursor = !targetEntry.isEmpty()
+            && state.cursorEntryId == targetEntry.value(
+                QStringLiteral("entryId")).toString();
+        const bool sceneReady = benchmark.sceneMatched
+            && normalizedBenchmarkPath(state.currentPath)
+                == benchmark.parentPath
+            && !state.loading
+            && state.galleryLayoutMode == QStringLiteral("details")
+            && targetCursor;
+        const bool placementReady = benchmark.placementReady
+            && benchmark.placementPath == benchmark.parentPath
+            && benchmark.placementCatalogRevision == state.catalogRevision;
+        if (sceneReady && placementReady) {
+            armNavigationBenchmarkFrame(true);
+        }
+        return;
+    }
+
+    case NavigationBenchmarkPhase::WaitingForSetupFrame:
+        return;
+
+    case NavigationBenchmarkPhase::ReadyToDispatch: {
+        if (benchmark.completedCycles
+            >= benchmark.warmup + benchmark.cycles) {
+            finishNavigationBenchmark();
+            return;
+        }
+
+        const bool entering = benchmark.nextTransitionEnters;
+        const QString expectedSource = entering
+            ? benchmark.parentPath : benchmark.targetPath;
+        const QString expectedDestination = entering
+            ? benchmark.targetPath : benchmark.parentPath;
+        if (normalizedBenchmarkPath(state.currentPath) != expectedSource
+            || state.loading) {
+            failNavigationBenchmark(QStringLiteral("unexpected-source-state"), {
+                {QStringLiteral("actualPath"), state.currentPath},
+                {QStringLiteral("actualLoading"), state.loading},
+                {QStringLiteral("expectedSource"), expectedSource},
+            });
+            return;
+        }
+
+        const QVariantMap entry = entering
+            ? navigationBenchmarkEntryForPath(benchmark.side,
+                                              benchmark.targetPath)
+            : navigationBenchmarkUpEntry(benchmark.side);
+        if (entry.isEmpty()) {
+            failNavigationBenchmark(QStringLiteral("navigation-entry-missing"), {
+                {QStringLiteral("actualPath"), state.currentPath},
+                {QStringLiteral("direction"),
+                 entering ? QStringLiteral("enter")
+                          : QStringLiteral("leave")},
+            });
+            return;
+        }
+
+        benchmark.phase =
+            NavigationBenchmarkPhase::WaitingForTransitionReadiness;
+        sendNavigationBenchmarkAction({
+            {QStringLiteral("action"), QStringLiteral("panel.open")},
+            {QStringLiteral("side"), benchmark.side},
+            {QStringLiteral("entryId"),
+             entry.value(QStringLiteral("entryId"))},
+            {QStringLiteral("index"),
+             entry.value(QStringLiteral("index"))},
+            {QStringLiteral("catalogRevision"),
+             QVariant::fromValue<qulonglong>(state.catalogRevision)},
+        }, benchmark.completedCycles < benchmark.warmup
+               ? QStringLiteral("warmup") : QStringLiteral("measure"),
+           entering ? QStringLiteral("enter") : QStringLiteral("leave"),
+           expectedSource, expectedDestination);
+        return;
+    }
+
+    case NavigationBenchmarkPhase::WaitingForTransitionReadiness: {
+        const bool sceneReady = benchmark.sceneMatched
+            && normalizedBenchmarkPath(state.currentPath)
+                == benchmark.expectedPath
+            && !state.loading
+            && state.galleryLayoutMode == QStringLiteral("details");
+        const bool placementReady = benchmark.placementReady
+            && benchmark.placementPath == benchmark.expectedPath
+            && benchmark.placementCatalogRevision == state.catalogRevision;
+        if (!sceneReady || !placementReady) {
+            return;
+        }
+
+        const QVariantMap expectedCursorEntry =
+            benchmark.direction == QStringLiteral("enter")
+            ? navigationBenchmarkUpEntry(benchmark.side)
+            : navigationBenchmarkEntryForPath(benchmark.side,
+                                               benchmark.targetPath);
+        if (expectedCursorEntry.isEmpty()
+            || state.cursorEntryId != expectedCursorEntry.value(
+                QStringLiteral("entryId")).toString()) {
+            return;
+        }
+        armNavigationBenchmarkFrame(false);
+        return;
+    }
+
+    case NavigationBenchmarkPhase::WaitingForTransitionFrame:
+    case NavigationBenchmarkPhase::Finished:
+    case NavigationBenchmarkPhase::Failed:
+    case NavigationBenchmarkPhase::Disabled:
+        return;
+    }
+}
+
 void F4GalleryBridge::closeViewer()
 {
     clearPendingViewer();
@@ -417,6 +1161,41 @@ void F4GalleryBridge::closeViewer()
 
 void F4GalleryBridge::synchronizeScene(const QVariantMap &scene)
 {
+    QVariant sceneTraceId;
+    const bool benchmarkRunning = m_navigationBenchmark.enabled
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Finished
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Failed;
+    if (benchmarkRunning) {
+        sceneTraceId = F4NavigationBenchmarkTrace::benchmarkTraceId(scene);
+        if (sceneTraceId.isValid()) {
+            m_navigationBenchmark.lastSceneTraceId = sceneTraceId;
+        }
+        const QVariant benchmarkValue = scene.value(
+            QStringLiteral("benchmark"));
+        if (benchmarkValue.metaType().id() == QMetaType::QVariantMap) {
+            m_navigationBenchmark.lastSceneBenchmark =
+                benchmarkValue.toMap();
+        } else {
+            m_navigationBenchmark.lastSceneBenchmark.clear();
+        }
+        if (!m_navigationBenchmark.benchmarkTraceId.isEmpty()
+            && sceneTraceId.toString()
+                == m_navigationBenchmark.benchmarkTraceId) {
+            m_navigationBenchmark.sceneMatched = true;
+            restartNavigationBenchmarkWatchdog();
+        }
+        QVariantMap fields = navigationBenchmarkFields();
+        fields.insert(QStringLiteral("sceneBenchmark"),
+                      m_navigationBenchmark.lastSceneBenchmark);
+        fields.insert(QStringLiteral("sceneType"),
+                      scene.value(QStringLiteral("type")));
+        queueNavigationBenchmarkTrace(
+            QStringLiteral("qt.gallery.bridge.scene.begin"),
+            sceneTraceId, fields);
+    }
+
     const QVariantList panels = panelsFromScene(scene);
     std::array<bool, 2> found = {false, false};
     for (const QVariant &panelValue : panels) {
@@ -426,6 +1205,26 @@ void F4GalleryBridge::synchronizeScene(const QVariantMap &scene)
             continue;
         }
         found[static_cast<size_t>(side)] = true;
+        if (canSkipUnchangedInactivePanel(side, panel)) {
+            // Keep the newest implicitly-shared source snapshot for a later
+            // icon-set refresh without walking an unchanged inactive catalog.
+            m_panelSnapshots[static_cast<size_t>(side)] = panel;
+            if (benchmarkRunning) {
+                QVariantMap fields = navigationBenchmarkFields();
+                fields.insert(QStringLiteral("syncSide"), side);
+                fields.insert(QStringLiteral("syncPath"),
+                              panel.value(QStringLiteral("path")));
+                fields.insert(QStringLiteral("syncLoading"),
+                              panel.value(QStringLiteral("loading")));
+                fields.insert(QStringLiteral("syncCatalogRevision"),
+                              panel.value(QStringLiteral(
+                                  "catalogRevision")));
+                queueNavigationBenchmarkTrace(
+                    QStringLiteral("qt.gallery.bridge.panel.skipped"),
+                    sceneTraceId, fields);
+            }
+            continue;
+        }
         synchronizePanel(side, panel);
     }
 
@@ -451,6 +1250,34 @@ void F4GalleryBridge::synchronizeScene(const QVariantMap &scene)
             clearPendingCursor(side);
             clearPendingSelection(side);
         }
+    }
+
+    if (benchmarkRunning) {
+        QVariantMap fields = navigationBenchmarkFields();
+        fields.insert(QStringLiteral("sceneBenchmark"),
+                      m_navigationBenchmark.lastSceneBenchmark);
+        fields.insert(QStringLiteral("panelCount"), panels.size());
+        if (validSide(m_navigationBenchmark.side)) {
+            const SideState &state = m_states[static_cast<size_t>(
+                m_navigationBenchmark.side)];
+            fields.insert(QStringLiteral("panelPath"), state.currentPath);
+            fields.insert(QStringLiteral("panelLoading"), state.loading);
+            fields.insert(QStringLiteral("panelCatalogRevision"),
+                          QVariant::fromValue<qulonglong>(
+                              state.catalogRevision));
+            fields.insert(QStringLiteral("panelCursorEntryId"),
+                          state.cursorEntryId);
+            fields.insert(QStringLiteral("panelCursorIndex"),
+                          state.cursorIndex);
+            fields.insert(QStringLiteral("panelLayoutMode"),
+                          state.galleryLayoutMode);
+            fields.insert(QStringLiteral("panelEntryCount"),
+                          state.entries.size());
+        }
+        queueNavigationBenchmarkTrace(
+            QStringLiteral("qt.gallery.bridge.scene.end"),
+            sceneTraceId, fields);
+        scheduleNavigationBenchmarkAdvance();
     }
 }
 
@@ -612,6 +1439,54 @@ qulonglong F4GalleryBridge::revisionValue(const QVariantMap &map, const QString 
     return ok ? value : 0;
 }
 
+bool F4GalleryBridge::canSkipUnchangedInactivePanel(
+    int side, const QVariantMap &panel) const
+{
+    if (!validSide(side)) {
+        return false;
+    }
+
+    const size_t sideIndex = static_cast<size_t>(side);
+    const SideState &state = m_states[sideIndex];
+    if (!state.initialized || state.active
+        || panel.value(QStringLiteral("active")).toBool()
+        || m_stateReconciliationPending[sideIndex]
+        || m_selectionActionPending[sideIndex]
+        || m_pendingCursors[sideIndex].active
+        || m_pendingSelections[sideIndex].active
+        || (m_pendingPanelOpen.active && m_pendingPanelOpen.side == side)
+        || (m_pendingViewer.active && m_pendingViewer.side == side)) {
+        return false;
+    }
+
+    const QString sourceKind = panel.value(
+        QStringLiteral("sourceKind"), QStringLiteral("vfs")).toString();
+    const bool previewCapable = panel.value(
+        QStringLiteral("previewCapable")).toBool()
+        && sourceKind == QStringLiteral("local");
+    const qulonglong iconRevision = m_iconSet ? m_iconSet->revision() : 0;
+    return panel.value(QStringLiteral("id")).toString() == state.panelId
+        && revisionValue(panel, QStringLiteral("catalogRevision"))
+            == state.catalogRevision
+        && revisionValue(panel, QStringLiteral("selectionRevision"))
+            == state.selectionRevision
+        && revisionValue(panel, QStringLiteral("highlightRevision"))
+            == state.highlightRevision
+        && iconRevision == state.iconRevision
+        && panel.value(QStringLiteral("path")).toString()
+            == state.currentPath
+        && sourceKind == state.sourceKind
+        && previewCapable == state.previewCapable
+        && panel.value(QStringLiteral("cursorEntryId")).toString()
+            == state.cursorEntryId
+        && panel.value(QStringLiteral("cursor"), -1).toInt()
+            == state.cursorIndex
+        && panel.value(QStringLiteral("loading")).toBool()
+            == state.loading
+        && panel.value(QStringLiteral("galleryLayoutMode")).toString()
+            == state.galleryLayoutMode;
+}
+
 void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
 {
     m_panelSnapshots[static_cast<size_t>(side)] = panel;
@@ -628,7 +1503,29 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool()
         && sourceKind == QStringLiteral("local");
     const bool active = panel.value(QStringLiteral("active")).toBool();
+    const bool loading = panel.value(QStringLiteral("loading")).toBool();
+    const QString galleryLayoutMode = panel.value(
+        QStringLiteral("galleryLayoutMode")).toString();
     const bool identityChanged = state.initialized && panelId != state.panelId;
+
+    if (m_navigationBenchmark.enabled
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Finished
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Failed) {
+        QVariantMap fields = navigationBenchmarkFields();
+        fields.insert(QStringLiteral("syncSide"), side);
+        fields.insert(QStringLiteral("syncPath"), currentPath);
+        fields.insert(QStringLiteral("syncLoading"), loading);
+        fields.insert(QStringLiteral("syncLayoutMode"), galleryLayoutMode);
+        fields.insert(QStringLiteral("syncCatalogRevision"),
+                      QVariant::fromValue<qulonglong>(catalogRevision));
+        fields.insert(QStringLiteral("syncEntryCount"),
+                      panel.value(QStringLiteral("entries")).toList().size());
+        queueNavigationBenchmarkTrace(
+            QStringLiteral("qt.gallery.bridge.panel.begin"),
+            m_navigationBenchmark.lastSceneTraceId, fields);
+    }
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(m_sessions[static_cast<size_t>(side)].data());
     if (session && identityChanged) {
@@ -649,6 +1546,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const bool catalogChanged = !state.initialized
         || catalogRevision != state.catalogRevision
         || currentPath != state.currentPath
+        || sourceKind != state.sourceKind
         || previewCapable != state.previewCapable;
     const bool selectionChanged = !state.initialized
         || selectionRevision != state.selectionRevision;
@@ -717,10 +1615,13 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     state.highlightRevision = highlightRevision;
     state.iconRevision = iconRevision;
     state.currentPath = currentPath;
+    state.sourceKind = sourceKind;
     state.cursorEntryId = cursorEntryId;
     state.cursorIndex = cursorIndex;
     state.previewCapable = previewCapable;
     state.active = active;
+    state.loading = loading;
+    state.galleryLayoutMode = galleryLayoutMode;
     if (catalogChanged) {
         state.entries = entries;
         state.entryIds.clear();
@@ -748,6 +1649,27 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     reconcilePendingPanelOpen(side);
     reconcilePendingSelection(side);
     reconcilePendingViewer(side);
+
+    if (m_navigationBenchmark.enabled
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Finished
+        && m_navigationBenchmark.phase
+            != NavigationBenchmarkPhase::Failed) {
+        QVariantMap fields = navigationBenchmarkFields();
+        fields.insert(QStringLiteral("syncSide"), side);
+        fields.insert(QStringLiteral("syncPath"), state.currentPath);
+        fields.insert(QStringLiteral("syncLoading"), state.loading);
+        fields.insert(QStringLiteral("syncLayoutMode"),
+                      state.galleryLayoutMode);
+        fields.insert(QStringLiteral("syncCatalogRevision"),
+                      QVariant::fromValue<qulonglong>(
+                          state.catalogRevision));
+        fields.insert(QStringLiteral("syncEntryCount"),
+                      state.entries.size());
+        queueNavigationBenchmarkTrace(
+            QStringLiteral("qt.gallery.bridge.panel.end"),
+            m_navigationBenchmark.lastSceneTraceId, fields);
+    }
 }
 
 void F4GalleryBridge::refreshIconAppearance()

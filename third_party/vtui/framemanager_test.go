@@ -38,6 +38,24 @@ func (*defaultRedrawTestRenderer) SetPalette(*[256]uint32)                      
 func (*defaultRedrawTestRenderer) SetWindowTitle(string)                         {}
 func (*defaultRedrawTestRenderer) Flush()                                        {}
 
+type redrawCoalescingTestRenderer struct {
+	scenes      int
+	onSceneSent func()
+}
+
+func (*redrawCoalescingTestRenderer) Render([]CharInfo, []CharInfo, int, int, bool) {}
+func (*redrawCoalescingTestRenderer) SetCursor(int, int, bool, CursorShape)         {}
+func (*redrawCoalescingTestRenderer) SetPalette(*[256]uint32)                       {}
+func (*redrawCoalescingTestRenderer) SetWindowTitle(string)                         {}
+func (*redrawCoalescingTestRenderer) Flush()                                        {}
+func (*redrawCoalescingTestRenderer) WantsPeriodicRedraw() bool                     { return false }
+func (r *redrawCoalescingTestRenderer) SetSemanticScene(map[string]any) {
+	r.scenes++
+	if r.onSceneSent != nil {
+		r.onSceneSent()
+	}
+}
+
 func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	if rendererWantsPeriodicRedraw(&periodicRedrawTestRenderer{wants: false}) {
 		t.Fatal("native renderer did not disable the idle heartbeat")
@@ -546,6 +564,129 @@ func TestFrameManager_PostTask(t *testing.T) {
 		t.Error("Posted task was not executed")
 	}
 }
+
+func TestFrameManager_RenderConsumesTaskRedrawWithoutDroppingLaterRequest(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &redrawCoalescingTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+
+	// Fulfil Push's initial redraw and establish the scene-count baseline.
+	fm.renderPhase()
+	baseline := renderer.scenes
+
+	// Reproduce Run's task branch: the task requests redraw and the dispatcher
+	// requests it again. Both calls coalesce into one token, and the imminent
+	// render must consume it rather than leaving an equal second render queued.
+	fm.PostTask(func() { fm.Redraw() })
+	select {
+	case task := <-fm.TaskChan:
+		task()
+		fm.Redraw()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Task was not posted to TaskChan")
+	}
+	fm.renderPhase()
+	if got := renderer.scenes - baseline; got != 1 {
+		t.Fatalf("task caused %d semantic exports, want 1", got)
+	}
+	select {
+	case <-fm.RedrawChan:
+		t.Fatal("task redraw token survived the render and would cause an equal second export")
+	default:
+	}
+
+	// A request made after the render boundary (here, from semantic export)
+	// must not be swallowed by the coalescing receive at the start of the pass.
+	renderer.onSceneSent = func() {
+		renderer.onSceneSent = nil
+		fm.Redraw()
+	}
+	fm.renderPhase()
+	select {
+	case <-fm.RedrawChan:
+		// Preserved: Run will consume this token and perform another pass.
+	default:
+		t.Fatal("redraw requested during render was dropped")
+	}
+}
+
+func TestFrameManager_ReadyTaskPreemptsPendingRedraw(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &redrawCoalescingTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+
+	// Establish a clean render boundary, then reproduce the post-render state
+	// where an old redraw and a newly queued authoritative model task are both
+	// ready. A plain select chooses randomly between them.
+	fm.renderPhase()
+	baseline := renderer.scenes
+	fm.TaskChan = make(chan func(), 1)
+	taskExecuted := false
+	fm.TaskChan <- func() { taskExecuted = true }
+	fm.Redraw()
+
+	if !fm.coalescePendingRedrawWithReadyTask() || !taskExecuted {
+		t.Fatal("already-ready UI task did not run before pending redraw")
+	}
+	// The stale redraw and the task's redraw share one token. The imminent pass
+	// therefore renders the task's state once, without an old-model pass first.
+	fm.renderPhase()
+	if got := renderer.scenes - baseline; got != 1 {
+		t.Fatalf("ready task plus pending redraw caused %d renders, want 1", got)
+	}
+	select {
+	case <-fm.RedrawChan:
+		t.Fatal("redraw token survived the coalesced task render")
+	default:
+	}
+}
+
+func TestFrameManager_ReadyTaskWithoutPendingRedrawKeepsSelectFair(t *testing.T) {
+	fm := &frameManager{
+		TaskChan:   make(chan func(), 1),
+		RedrawChan: make(chan struct{}, 1),
+		EventChan:  make(chan *vtinput.InputEvent, 1),
+	}
+	taskExecuted := false
+	fm.TaskChan <- func() { taskExecuted = true }
+	event := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true}
+	fm.EventChan <- event
+
+	if fm.coalescePendingRedrawWithReadyTask() {
+		t.Fatal("ready task bypassed the main select without a pending redraw")
+	}
+	if taskExecuted {
+		t.Fatal("ready task executed outside the fair main selection")
+	}
+	select {
+	case got := <-fm.EventChan:
+		if got != event {
+			t.Fatalf("selected input event = %p, want %p", got, event)
+		}
+	default:
+		t.Fatal("ready task consumed or blocked another ready event class")
+	}
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	default:
+		t.Fatal("ready task was removed despite no pending redraw")
+	}
+	if !taskExecuted {
+		t.Fatal("ready task could not be selected normally afterward")
+	}
+}
+
 func TestFrameManager_FocusOnRemove(t *testing.T) {
 	fm := &frameManager{}
 	fm.Init(NewSilentScreenBuf())

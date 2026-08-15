@@ -848,6 +848,26 @@ func (fm *frameManager) Redraw() {
 	}
 }
 
+// coalescePendingRedrawWithReadyTask gives already-queued authoritative UI
+// work priority specifically over a stale redraw token. It deliberately checks
+// RedrawChan first: without a pending redraw, the main select below retains its
+// normal fairness between tasks, input, and resize signals.
+func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
+	select {
+	case <-fm.RedrawChan:
+		select {
+		case task := <-fm.TaskChan:
+			task()
+			fm.cleanupDoneFrames()
+			fm.Redraw()
+		default:
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 // PostTask schedules a function to be executed safely on the main UI thread.
 func (fm *frameManager) PostTask(task func()) {
 	if fm.taskChanIn != nil {
@@ -1767,11 +1787,16 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 		}
 		fm.injectedMu.Unlock()
 
-		if !injected {
+		if !injected && fm.coalescePendingRedrawWithReadyTask() {
+			loopAgain = true
+		}
+
+		if !injected && !loopAgain {
 			select {
 			case <-fm.RedrawChan:
 				loopAgain = true
 			case task := <-fm.TaskChan:
+				// The task became ready after the priority check above.
 				task()
 				fm.cleanupDoneFrames()
 				fm.Redraw()
@@ -1867,6 +1892,26 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 func (fm *frameManager) renderPhase() {
 	if len(fm.frames) == 0 {
 		return
+	}
+	// The render about to start satisfies every redraw request that was already
+	// queued. In particular, UI tasks commonly request a redraw themselves and
+	// the task dispatcher requests one again before immediately looping here.
+	// Leaving that coalesced token in RedrawChan makes the next select consume it
+	// and render the same semantic scene a second time.
+	//
+	// Consume only at the render boundary: once this receive completes the
+	// channel is empty, so a redraw requested while or after this render remains
+	// queued and still schedules a subsequent pass.
+	select {
+	case <-fm.RedrawChan:
+	default:
+	}
+	benchmarkHooks := SemanticSceneBenchmarkHooks
+	if benchmarkHooks != nil && benchmarkHooks.RenderBegin != nil {
+		benchmarkHooks.RenderBegin()
+	}
+	if benchmarkHooks != nil && benchmarkHooks.RenderEnd != nil {
+		defer benchmarkHooks.RenderEnd()
 	}
 	renderPhaseStart := time.Now()
 	if fm.scr != nil && fm.scr.Renderer != nil {
@@ -1998,7 +2043,14 @@ func (fm *frameManager) renderPhase() {
 
 		fm.scr.Graphics().EndFrame()
 		if semanticRenderer, ok := fm.scr.Renderer.(SemanticSceneRenderer); ok {
-			semanticRenderer.SetSemanticScene(fm.ExportSemanticScene())
+			if benchmarkHooks != nil && benchmarkHooks.ExportBegin != nil {
+				benchmarkHooks.ExportBegin()
+			}
+			scene := fm.ExportSemanticScene()
+			if benchmarkHooks != nil && benchmarkHooks.ExportEnd != nil {
+				benchmarkHooks.ExportEnd(scene)
+			}
+			semanticRenderer.SetSemanticScene(scene)
 		}
 
 		fm.scr.Flush()

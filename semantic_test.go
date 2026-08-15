@@ -274,6 +274,102 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	}
 }
 
+func TestSemanticCatalogRevisionIgnoresCacheProvenance(t *testing.T) {
+	tmp := t.TempDir()
+	fp := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(tmp),
+		frame:         vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, tmp),
+		table:         vtui.NewTable(1, 1, 38, 6, nil),
+		selectedItems: make(map[string]bool),
+		entries: []*fileEntry{{
+			VFSItem:  vfs.VFSItem{Name: "cached.txt", Size: 42},
+			IsCached: true,
+		}},
+	}
+
+	cached := fp.semanticPanelModel(nil, 0, true)
+	if cached.CatalogRevision != 1 || !cached.Entries[0].IsCached {
+		t.Fatalf("unexpected cached snapshot: revision=%d entry=%+v",
+			cached.CatalogRevision, cached.Entries[0])
+	}
+
+	fp.entries[0].IsCached = false
+	fresh := fp.semanticPanelModel(nil, 0, true)
+	if fresh.CatalogRevision != cached.CatalogRevision {
+		t.Fatalf("cache provenance advanced catalog revision: cached=%d fresh=%d",
+			cached.CatalogRevision, fresh.CatalogRevision)
+	}
+	if fresh.Entries[0].IsCached {
+		t.Fatalf("fresh snapshot retained stale cache provenance: %+v",
+			fresh.Entries[0])
+	}
+
+	fp.entries[0].Size++
+	changed := fp.semanticPanelModel(nil, 0, true)
+	if changed.CatalogRevision != fresh.CatalogRevision+1 {
+		t.Fatalf("meaningful catalog change did not advance revision: fresh=%d changed=%d",
+			fresh.CatalogRevision, changed.CatalogRevision)
+	}
+}
+
+func TestSemanticCatalogRevisionStableAcrossCachedFreshUpEntry(t *testing.T) {
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := NewFileSystemPanel(0, 0, 40, 10, vfs.NewOSVFS(child))
+	t.Cleanup(func() {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		fp.stopLoadingAnimation()
+	})
+	waitForLoad(t, fp)
+
+	fresh := fp.semanticPanelModel(nil, 0, true)
+	if len(fresh.Entries) == 0 || !fresh.Entries[0].IsUp || fresh.Entries[0].MTimeNanos == 0 {
+		t.Fatalf("fresh parent row lacks stat metadata: %+v", fresh.Entries)
+	}
+
+	// A same-path refresh publishes the complete cache synchronously, then
+	// replaces it after ReadDir and parent Stat finish. The parent row must be
+	// identical across both models; cache provenance alone is transient.
+	fp.readDirectoryEx(false)
+	cached := fp.semanticPanelModel(nil, 0, true)
+	if !cached.Entries[0].IsCached {
+		t.Fatalf("cache refresh did not publish cached parent row: %+v", cached.Entries[0])
+	}
+	if cached.Entries[0].MTimeNanos != fresh.Entries[0].MTimeNanos {
+		t.Fatalf("cached parent mtime = %d, want fresh mtime %d",
+			cached.Entries[0].MTimeNanos, fresh.Entries[0].MTimeNanos)
+	}
+	if cached.CatalogRevision != fresh.CatalogRevision {
+		t.Fatalf("cached parent metadata advanced catalog revision: fresh=%d cached=%d",
+			fresh.CatalogRevision, cached.CatalogRevision)
+	}
+
+	waitForLoad(t, fp)
+	refreshed := fp.semanticPanelModel(nil, 0, true)
+	if refreshed.Entries[0].IsCached {
+		t.Fatalf("completed refresh retained cache provenance: %+v", refreshed.Entries[0])
+	}
+	if refreshed.CatalogRevision != cached.CatalogRevision {
+		t.Fatalf("unchanged fresh replacement advanced catalog revision: cached=%d refreshed=%d",
+			cached.CatalogRevision, refreshed.CatalogRevision)
+	}
+}
+
 func TestSemanticPanelKeepsVirtualDottedNamesExtensionless(t *testing.T) {
 	previous := AppConfig.SeparateFileExtensions
 	AppConfig.SeparateFileExtensions = true

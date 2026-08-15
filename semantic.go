@@ -557,6 +557,9 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if fsp == nil || fsp.vfs == nil {
 			return false
 		}
+		if benchmark := navigationBenchmarkCurrentUI(); benchmark != nil {
+			benchmark.setSide(pf.panelIndexForSemanticAction(action))
+		}
 		target := strings.TrimSpace(semanticString(action["path"]))
 		if target == "" {
 			return false
@@ -643,6 +646,9 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		}
 	case "panel_open", "panel.open":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			if benchmark := navigationBenchmarkCurrentUI(); benchmark != nil {
+				benchmark.setSide(pf.panelIndexForSemanticAction(action))
+			}
 			idx, ok := fsp.semanticEntryIndex(action)
 			if !ok {
 				return false
@@ -850,7 +856,17 @@ func (fp *FileSystemPanel) clearFastFindForSemanticPointerIntent() {
 	fp.fastFindStr = ""
 }
 
-func (fp *FileSystemPanel) semanticEntryIndex(action map[string]any) (int, bool) {
+func (fp *FileSystemPanel) semanticEntryIndex(action map[string]any) (idx int, ok bool) {
+	benchmark := navigationBenchmarkCurrentUI()
+	if benchmark != nil {
+		benchmark.event("semantic_entry_lookup.begin", "go.ui",
+			"entryId", semanticString(action["entryId"]), "entries", len(fp.entries))
+		defer func() {
+			benchmark.event("semantic_entry_lookup.end", "go.ui",
+				"entryId", semanticString(action["entryId"]), "entries", len(fp.entries),
+				"index", idx, "found", ok, "catalogRevision", fp.catalogRevision)
+		}()
+	}
 	fp.updateSemanticRevisions()
 	if rawRevision, ok := action["catalogRevision"]; ok && semanticInt64(rawRevision) != fp.catalogRevision {
 		return 0, false
@@ -1019,11 +1035,13 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
 		if entry.IsExecutable {
 			flags |= 1 << 2
 		}
-		if entry.IsCached {
-			flags |= 1 << 3
-		}
+		// IsCached describes how this snapshot was obtained, not the identity
+		// or presentation of the catalog. A warm navigation first publishes
+		// cached entries and then replaces them with the same fresh entries;
+		// including this bit needlessly advances CatalogRevision and makes
+		// native clients rebuild an unchanged catalog twice.
 		if entry.SizeCalculated {
-			flags |= 1 << 4
+			flags |= 1 << 3
 		}
 		_, _ = catalog.Write([]byte{flags})
 		if entry.Selected {
@@ -1137,6 +1155,9 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	var selectedSize int64
 	for i, entry := range fp.entries {
 		entries[i].Selected = entry.Selected
+		// Cache provenance is deliberately outside CatalogRevision, but keep
+		// the exported transient field truthful for clients that display it.
+		entries[i].IsCached = entry.IsCached
 		if entry.Selected {
 			selectedCount++
 			selectedSize += entry.Size

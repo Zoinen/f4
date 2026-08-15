@@ -1,5 +1,7 @@
 #include "QtShellController.h"
 
+#include "NavigationBenchmarkTrace.h"
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -13,8 +15,12 @@
 
 #include <msgpack.hpp>
 
+#include <map>
+
 namespace
 {
+constexpr quint64 BenchmarkTraceId = 9007199254740993ULL;
+
 void packString(msgpack::packer<msgpack::sbuffer> &packer,
                 const QByteArray &value)
 {
@@ -72,7 +78,7 @@ QByteArray sceneFrame(quint64 sequence, int rowCount,
 
 void packCatalogPanel(msgpack::packer<msgpack::sbuffer> &packer)
 {
-    packer.pack_map(4);
+    packer.pack_map(5);
     packString(packer, QByteArrayLiteral("id"));
     packString(packer, QByteArrayLiteral("left-panel"));
     packString(packer, QByteArrayLiteral("catalogRevision"));
@@ -90,13 +96,39 @@ void packCatalogPanel(msgpack::packer<msgpack::sbuffer> &packer)
     packer.pack_map(1);
     packString(packer, QByteArrayLiteral("foreground"));
     packString(packer, QByteArrayLiteral("#ffffff"));
+    packString(packer, QByteArrayLiteral("benchmarkTraceId"));
+    packer.pack_uint64(BenchmarkTraceId);
+}
+
+void packCatalogFrames(msgpack::packer<msgpack::sbuffer> &packer)
+{
+    packer.pack_array(2);
+    packer.pack_map(2);
+    packString(packer, QByteArrayLiteral("kind"));
+    packString(packer, QByteArrayLiteral("panels"));
+    packString(packer, QByteArrayLiteral("panels"));
+    packer.pack_array(2);
+    packCatalogPanel(packer);
+    packString(packer, QByteArrayLiteral("non-map-panel"));
+    packString(packer, QByteArrayLiteral("non-map-frame"));
+}
+
+void packCatalogScreens(msgpack::packer<msgpack::sbuffer> &packer)
+{
+    packer.pack_array(2);
+    packer.pack_map(2);
+    packString(packer, QByteArrayLiteral("index"));
+    packer.pack_int(0);
+    packString(packer, QByteArrayLiteral("frames"));
+    packCatalogFrames(packer);
+    packString(packer, QByteArrayLiteral("non-map-screen"));
 }
 
 QByteArray commandLineSceneFrame(const QByteArray &text, int cursorX)
 {
     msgpack::sbuffer payload;
     msgpack::packer<msgpack::sbuffer> packer(payload);
-    packer.pack_map(4);
+    packer.pack_map(7);
     packString(packer, QByteArrayLiteral("type"));
     packString(packer, QByteArrayLiteral("scene"));
     packString(packer, QByteArrayLiteral("schema"));
@@ -113,14 +145,18 @@ QByteArray commandLineSceneFrame(const QByteArray &text, int cursorX)
     packString(packer, QByteArrayLiteral("cursorX"));
     packer.pack_int(cursorX);
     packString(packer, QByteArrayLiteral("frames"));
-    packer.pack_array(2);
-    packer.pack_map(2);
-    packString(packer, QByteArrayLiteral("kind"));
-    packString(packer, QByteArrayLiteral("panels"));
+    packCatalogFrames(packer);
     packString(packer, QByteArrayLiteral("panels"));
     packer.pack_array(1);
     packCatalogPanel(packer);
-    packString(packer, QByteArrayLiteral("non-map-frame"));
+    packString(packer, QByteArrayLiteral("screens"));
+    packCatalogScreens(packer);
+    packString(packer, QByteArrayLiteral("legacy"));
+    packer.pack_map(2);
+    packString(packer, QByteArrayLiteral("frames"));
+    packCatalogFrames(packer);
+    packString(packer, QByteArrayLiteral("screens"));
+    packCatalogScreens(packer);
     return framed(payload);
 }
 
@@ -170,6 +206,32 @@ bool takeFrame(QTcpSocket *socket, QByteArray &wire, int timeoutMs = 3000)
     }
     return false;
 }
+
+bool takePayload(QTcpSocket *socket, QByteArray &payload,
+                 int timeoutMs = 3000)
+{
+    QByteArray wire;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < timeoutMs) {
+        wire.append(socket->readAll());
+        if (wire.size() >= 4) {
+            const auto byte = [&wire](int index) {
+                return static_cast<quint32>(
+                    static_cast<unsigned char>(wire.at(index)));
+            };
+            const quint32 size = (byte(0) << 24) | (byte(1) << 16)
+                | (byte(2) << 8) | byte(3);
+            if (size > 0 && wire.size() >= static_cast<qsizetype>(size) + 4) {
+                payload = wire.mid(4, static_cast<qsizetype>(size));
+                return true;
+            }
+        }
+        socket->waitForReadyRead(10);
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    }
+    return false;
+}
 }
 
 class QtShellControllerTests final : public QObject
@@ -177,10 +239,71 @@ class QtShellControllerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void benchmarkTraceMetadataFollowsTopLevelThenActivePanel();
+    void uiActionPacksLosslessTraceMetadata();
     void largeScenesDecodeOffGuiThreadInOrder();
     void commandLinePatchPreservesExistingScene();
     void destructionWithQueuedDecodeIsSafe();
 };
+
+void QtShellControllerTests::benchmarkTraceMetadataFollowsTopLevelThenActivePanel()
+{
+    QVariantMap scene = {
+        {QStringLiteral("benchmarkTraceId"), QStringLiteral("top-level")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{
+                  QVariantMap{
+                      {QStringLiteral("active"), false},
+                      {QStringLiteral("benchmarkTraceId"), qulonglong(41)},
+                  },
+                  QVariantMap{
+                      {QStringLiteral("active"), true},
+                      {QStringLiteral("benchmarkTraceId"), qulonglong(42)},
+                  },
+              }},
+         }},
+    };
+
+    QCOMPARE(F4NavigationBenchmarkTrace::benchmarkTraceId(scene).toString(),
+             QStringLiteral("top-level"));
+    scene.remove(QStringLiteral("benchmarkTraceId"));
+    QCOMPARE(F4NavigationBenchmarkTrace::benchmarkTraceId(scene).toULongLong(),
+             qulonglong(42));
+}
+
+void QtShellControllerTests::uiActionPacksLosslessTraceMetadata()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("trace-action-pack-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+    controller.sendUiAction({
+        {QStringLiteral("action"), QStringLiteral("panel.open")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("benchmarkTraceId"), BenchmarkTraceId},
+    });
+
+    QByteArray payload;
+    QVERIFY(takePayload(peer, payload));
+    msgpack::object_handle handle = msgpack::unpack(
+        payload.constData(), static_cast<size_t>(payload.size()));
+    std::map<std::string, msgpack::object> message;
+    handle.get().convert(message);
+    QCOMPARE(QString::fromStdString(message.at("type").as<std::string>()),
+             QStringLiteral("ui_action"));
+    QCOMPARE(QString::fromStdString(message.at("action").as<std::string>()),
+             QStringLiteral("panel.open"));
+    QCOMPARE(message.at("benchmarkTraceId").as<quint64>(),
+             BenchmarkTraceId);
+}
 
 void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
 {
@@ -219,6 +342,8 @@ void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
     QStringList deliveryEvents;
     int heartbeatsBeforeFirstDelivery = -1;
     bool deliveryThreadWasCorrect = true;
+    int sceneSignalDepth = 0;
+    int maximumSceneSignalDepth = 0;
     connect(&controller, &QtShellController::frameDecodeQueued,
             this, [&](quint64 sequence) {
         queued.append(sequence);
@@ -226,7 +351,37 @@ void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
         if (sequence == 1) {
             heartbeatCount = 0;
             heartbeat.start();
+        } else if (sequence == 2) {
+            // Queue-observer callbacks are public synchronous slots and can
+            // run nested event loops. Frame 2 must already belong to the
+            // serial decoder before such a loop lets frame 1 complete and
+            // recursively drains frame 3 from the socket.
+            QElapsedTimer nestedEvents;
+            nestedEvents.start();
+            while (received.isEmpty() && nestedEvents.elapsed() < 15000) {
+                QCoreApplication::processEvents(
+                    QEventLoop::AllEvents, 2);
+            }
         }
+    });
+    connect(&controller, &QtShellController::sceneChanged,
+            this, [&]() {
+        ++sceneSignalDepth;
+        maximumSceneSignalDepth = qMax(maximumSceneSignalDepth,
+                                       sceneSignalDepth);
+        if (controller.scene().value(
+                QStringLiteral("sequence")).toULongLong() == 1) {
+            // Exercise a nested event loop like a synchronous QML observer or
+            // modal UI can. Decode-ahead results must wait until this scene
+            // finishes applying instead of reentering the controller.
+            QElapsedTimer nestedEvents;
+            nestedEvents.start();
+            while (nestedEvents.elapsed() < 20) {
+                QCoreApplication::processEvents(
+                    QEventLoop::AllEvents, 2);
+            }
+        }
+        --sceneSignalDepth;
     });
     connect(&controller, &QtShellController::messageReceived,
             this, [&](const QVariantMap &message) {
@@ -249,11 +404,15 @@ void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
 
     QCOMPARE(queued, QList<quint64>({1, 2, 3}));
     QCOMPARE(received, QList<quint64>({1, 2, 3}));
+    // All complete frames are drained and submitted to the serial worker
+    // before the first decoded scene reaches synchronous GUI observers.
+    // Results still apply strictly in wire order.
     QCOMPARE(deliveryEvents,
-             QStringList({QStringLiteral("q1"), QStringLiteral("r1"),
-                          QStringLiteral("q2"), QStringLiteral("r2"),
-                          QStringLiteral("q3"), QStringLiteral("r3")}));
+             QStringList({QStringLiteral("q1"), QStringLiteral("q2"),
+                          QStringLiteral("q3"), QStringLiteral("r1"),
+                          QStringLiteral("r2"), QStringLiteral("r3")}));
     QVERIFY(deliveryThreadWasCorrect);
+    QCOMPARE(maximumSceneSignalDepth, 1);
     QVERIFY2(heartbeatsBeforeFirstDelivery > 0,
              "the 1 ms GUI heartbeat was starved by MessagePack decoding");
     QCOMPARE(controller.scene().value(QStringLiteral("sequence")).toULongLong(),
@@ -354,6 +513,10 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
              qint64(77));
     QCOMPARE(panel.value(QStringLiteral("entries")).toList().size(), 1);
     QCOMPARE(panel.value(QStringLiteral("highlightStyles")).toMap().size(), 1);
+    QCOMPARE(panel.value(QStringLiteral("benchmarkTraceId")).toULongLong(),
+             BenchmarkTraceId);
+    QCOMPARE(F4NavigationBenchmarkTrace::benchmarkTraceId(
+                 controller.scene()).toULongLong(), BenchmarkTraceId);
     const QVariantList fullFrames = controller.scene()
                                         .value(QStringLiteral("frames"))
                                         .toList();
@@ -361,7 +524,35 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
                                             .value(QStringLiteral("panels"))
                                             .toList().constFirst().toMap();
     QCOMPARE(fullLegacyPanel.value(QStringLiteral("entries")).toList().size(), 1);
+    QCOMPARE(fullLegacyPanel.value(QStringLiteral("highlightStyles")).toMap().size(), 1);
+    QCOMPARE(fullFrames.constFirst().toMap()
+                 .value(QStringLiteral("panels")).toList().at(1).toString(),
+             QStringLiteral("non-map-panel"));
     QCOMPARE(fullFrames.at(1).toString(), QStringLiteral("non-map-frame"));
+    const auto panelFromScreens = [](const QVariant &screensValue) {
+        return screensValue.toList().constFirst().toMap()
+            .value(QStringLiteral("frames")).toList().constFirst().toMap()
+            .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    };
+    const auto panelFromFrames = [](const QVariant &framesValue) {
+        return framesValue.toList().constFirst().toMap()
+            .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    };
+    const auto verifyFullCatalog = [](const QVariantMap &catalogPanel) {
+        QCOMPARE(catalogPanel.value(QStringLiteral("entries")).toList().size(), 1);
+        QCOMPARE(catalogPanel.value(QStringLiteral("highlightStyles")).toMap().size(), 1);
+    };
+    verifyFullCatalog(controller.scene().value(QStringLiteral("panels"))
+                          .toList().constFirst().toMap());
+    verifyFullCatalog(panelFromScreens(
+        controller.scene().value(QStringLiteral("screens"))));
+    const QVariantMap fullLegacy = controller.scene()
+                                       .value(QStringLiteral("legacy"))
+                                       .toMap();
+    verifyFullCatalog(panelFromFrames(
+        fullLegacy.value(QStringLiteral("frames"))));
+    verifyFullCatalog(panelFromScreens(
+        fullLegacy.value(QStringLiteral("screens"))));
 
     const QVariantMap presentationShell = controller.presentationScene()
                                               .value(QStringLiteral("shell"))
@@ -376,6 +567,9 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
              QStringLiteral("left-panel"));
     QCOMPARE(presentationPanel.value(QStringLiteral("catalogRevision")).toLongLong(),
              qint64(77));
+    QCOMPARE(presentationPanel.value(
+                 QStringLiteral("benchmarkTraceId")).toULongLong(),
+             BenchmarkTraceId);
     QVERIFY(!presentationPanel.contains(QStringLiteral("entries")));
     QVERIFY(!presentationPanel.contains(QStringLiteral("highlightStyles")));
     const QVariantList presentationFrames = controller.presentationScene()
@@ -387,8 +581,40 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
                                                     .toList().constFirst().toMap();
     QVERIFY(!presentationLegacyPanel.contains(QStringLiteral("entries")));
     QVERIFY(!presentationLegacyPanel.contains(QStringLiteral("highlightStyles")));
+    QCOMPARE(presentationFrames.constFirst().toMap()
+                 .value(QStringLiteral("panels")).toList().at(1).toString(),
+             QStringLiteral("non-map-panel"));
     QCOMPARE(presentationFrames.at(1).toString(),
              QStringLiteral("non-map-frame"));
+    const auto verifyPresentationCatalog = [](const QVariantMap &catalogPanel) {
+        QVERIFY(!catalogPanel.contains(QStringLiteral("entries")));
+        QVERIFY(!catalogPanel.contains(QStringLiteral("highlightStyles")));
+        QCOMPARE(catalogPanel.value(QStringLiteral("id")).toString(),
+                 QStringLiteral("left-panel"));
+    };
+    verifyPresentationCatalog(controller.presentationScene()
+                                  .value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap());
+    const QVariantList presentationScreens = controller.presentationScene()
+                                                 .value(QStringLiteral("screens"))
+                                                 .toList();
+    verifyPresentationCatalog(panelFromScreens(presentationScreens));
+    QCOMPARE(presentationScreens.constFirst().toMap()
+                 .value(QStringLiteral("frames")).toList().constFirst().toMap()
+                 .value(QStringLiteral("panels")).toList().at(1).toString(),
+             QStringLiteral("non-map-panel"));
+    QCOMPARE(presentationScreens.constFirst().toMap()
+                 .value(QStringLiteral("frames")).toList().at(1).toString(),
+             QStringLiteral("non-map-frame"));
+    QCOMPARE(presentationScreens.at(1).toString(),
+             QStringLiteral("non-map-screen"));
+    const QVariantMap presentationLegacy = controller.presentationScene()
+                                               .value(QStringLiteral("legacy"))
+                                               .toMap();
+    verifyPresentationCatalog(panelFromFrames(
+        presentationLegacy.value(QStringLiteral("frames"))));
+    verifyPresentationCatalog(panelFromScreens(
+        presentationLegacy.value(QStringLiteral("screens"))));
     QCOMPARE(messages.constLast().constFirst()
                  .toMap().value(QStringLiteral("type")).toString(),
              QStringLiteral("command_line"));

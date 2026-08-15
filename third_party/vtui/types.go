@@ -185,3 +185,18 @@ type SemanticSceneRenderer interface {
 	SurfaceRenderer
 	SetSemanticScene(scene map[string]any)
 }
+
+// SemanticBenchmarkHooks optionally observes the semantic render/export
+// boundaries. Applications leave this nil in normal operation; benchmark
+// builds can install callbacks without making vtui depend on an application
+// tracing package.
+type SemanticBenchmarkHooks struct {
+	RenderBegin func()
+	ExportBegin func()
+	ExportEnd   func(scene map[string]any)
+	RenderEnd   func()
+}
+
+// SemanticSceneBenchmarkHooks is intentionally nil unless an application
+// explicitly enables semantic-scene benchmarking.
+var SemanticSceneBenchmarkHooks *SemanticBenchmarkHooks

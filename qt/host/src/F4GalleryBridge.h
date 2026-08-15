@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QHash>
+#include <QList>
 #include <QSet>
 #include <QStringList>
 #include <QUrl>
@@ -24,6 +25,7 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl CONSTANT)
+    Q_PROPERTY(bool navigationBenchmarkEnabled READ navigationBenchmarkEnabled CONSTANT)
 
 public:
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
@@ -36,6 +38,7 @@ public:
     int viewerSide() const { return m_viewerSide; }
     QUrl panelComponentUrl() const;
     QUrl viewerComponentUrl() const;
+    bool navigationBenchmarkEnabled() const;
 
     Q_INVOKABLE QObject *sessionForSide(int side) const;
     Q_INVOKABLE void requestActivate(int side);
@@ -59,14 +62,21 @@ public:
                                            int density);
     Q_INVOKABLE void requestSort(int side, const QString &sortMode,
                                  bool contextMenu = false);
+    Q_INVOKABLE void recordBenchmarkStage(int side, const QString &stage,
+                                          const QVariantMap &metadata = {});
     Q_INVOKABLE void closeViewer();
 
 public slots:
     void synchronizeScene(const QVariantMap &scene);
+    // main.cpp connects QQuickWindow::frameSwapped to this slot. Keeping the
+    // window dependency out of the bridge makes the runner testable with a
+    // synthetic frame boundary.
+    void notifyFrameSwapped();
 
 signals:
     void uiActionRequested(const QVariantMap &action);
     void viewerChanged();
+    void benchmarkFrameSwapped(qulonglong serial);
 
 private:
     struct SideState {
@@ -77,10 +87,13 @@ private:
         qulonglong highlightRevision = 0;
         qulonglong iconRevision = 0;
         QString currentPath;
+        QString sourceKind;
         QString cursorEntryId;
         int cursorIndex = -1;
         bool previewCapable = false;
         bool active = false;
+        bool loading = false;
+        QString galleryLayoutMode;
         QVariantList entries;
         QStringList selectedEntryIdList;
         QHash<QString, int> sourceIndexByEntryId;
@@ -118,6 +131,61 @@ private:
         QHash<QString, bool> desiredByEntryId;
     };
 
+    enum class NavigationBenchmarkPhase {
+        Disabled,
+        WaitingForPanel,
+        SettingDetails,
+        NavigatingToTargetForSetup,
+        ReturningToParentForSetup,
+        WaitingForSetupReadiness,
+        WaitingForSetupFrame,
+        ReadyToDispatch,
+        WaitingForTransitionReadiness,
+        WaitingForTransitionFrame,
+        Finished,
+        Failed,
+    };
+
+    struct NavigationBenchmarkState {
+        bool enabled = false;
+        bool exitWhenFinished = false;
+        NavigationBenchmarkPhase phase = NavigationBenchmarkPhase::Disabled;
+        QString runId;
+        QString targetPath;
+        QString parentPath;
+        QString targetName;
+        int side = -1;
+        int cycles = 50;
+        int warmup = 10;
+        int completedCycles = 0;
+        int completedTransitions = 0;
+        bool nextTransitionEnters = true;
+        quint64 phaseSequence = 0;
+        quint64 actionSequence = 0;
+        quint64 frameSerial = 0;
+        quint64 requiredFrameSerial = 0;
+        QString benchmarkTraceId;
+        QString actionPhase;
+        QString direction;
+        QString fromPath;
+        QString expectedPath;
+        bool actionSent = false;
+        bool sceneMatched = false;
+        bool placementReady = false;
+        QString placementPath;
+        qulonglong placementCatalogRevision = 0;
+        QVariantMap lastPlacement;
+        QVariant lastSceneTraceId;
+        QVariantMap lastSceneBenchmark;
+    };
+
+    struct PendingNavigationBenchmarkTrace {
+        QString name;
+        qint64 monotonicNs = 0;
+        QVariant benchmarkTraceId;
+        QVariantMap fields;
+    };
+
     static bool validSide(int side);
     static QVariantList panelsFromScene(const QVariantMap &scene);
     static QVariantList normalizedEntries(const QVariantMap &panel);
@@ -127,6 +195,8 @@ private:
                                      const QString &entryId);
     static qulonglong revisionValue(const QVariantMap &map, const QString &key);
 
+    bool canSkipUnchangedInactivePanel(int side,
+                                       const QVariantMap &panel) const;
     void synchronizePanel(int side, const QVariantMap &panel);
     void sendPanelAction(int side,
                          const QString &action,
@@ -149,6 +219,28 @@ private:
     void clearPendingViewer();
     void setViewer(int side, bool visible);
     void refreshIconAppearance();
+    void configureNavigationBenchmark();
+    void scheduleNavigationBenchmarkAdvance();
+    void advanceNavigationBenchmark();
+    void sendNavigationBenchmarkAction(QVariantMap action,
+                                       const QString &phase,
+                                       const QString &direction,
+                                       const QString &fromPath,
+                                       const QString &toPath);
+    void armNavigationBenchmarkFrame(bool setup);
+    void completeNavigationBenchmarkFrame();
+    void finishNavigationBenchmark();
+    void failNavigationBenchmark(const QString &reason,
+                                 const QVariantMap &fields = {});
+    void restartNavigationBenchmarkWatchdog();
+    void queueNavigationBenchmarkTrace(const QString &name,
+                                       const QVariant &benchmarkTraceId,
+                                       const QVariantMap &fields = {});
+    void flushNavigationBenchmarkTrace();
+    QVariantMap navigationBenchmarkFields() const;
+    QVariantMap navigationBenchmarkEntryForPath(int side,
+                                                const QString &path) const;
+    QVariantMap navigationBenchmarkUpEntry(int side) const;
 
     QPointer<F4IconSet> m_iconSet;
     QPointer<QObject> m_runtime;
@@ -164,4 +256,7 @@ private:
     PendingViewer m_pendingViewer;
     bool m_viewerVisible = false;
     int m_viewerSide = -1;
+    NavigationBenchmarkState m_navigationBenchmark;
+    QTimer *m_navigationBenchmarkWatchdog = nullptr;
+    QList<PendingNavigationBenchmarkTrace> m_pendingNavigationBenchmarkTrace;
 };

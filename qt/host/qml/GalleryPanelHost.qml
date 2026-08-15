@@ -61,6 +61,10 @@ FocusScope {
                                                  || pendingCommanderInput
 
     readonly property var session: bridge ? bridge.sessionForSide(side) : null
+    readonly property bool benchmarkTracingEnabled:
+        bridge
+        && typeof bridge.navigationBenchmarkEnabled !== "undefined"
+        && bridge.navigationBenchmarkEnabled === true
     readonly property double catalogRevision: Number(panel.catalogRevision || 0)
     readonly property string requestedPresentationMode:
         String(panel.galleryLayoutMode || "masonry")
@@ -96,6 +100,47 @@ FocusScope {
         : requestedPresentationMode === "icons" ? 2 : 20
     property bool applyingRendererState: false
 
+    // Qt converts each semantic panel snapshot into fresh JavaScript array and
+    // object wrappers. Compare the small Details schema by value so a cached
+    // and fresh snapshot with identical columns keeps the renderer's existing
+    // schema identity and does not trigger a redundant layout reset.
+    function rendererValuesEqual(left, right) {
+        if (left === right)
+            return true
+        if (left === null || left === undefined
+                || right === null || right === undefined)
+            return false
+        if (typeof left !== typeof right)
+            return false
+        if (typeof left !== "object")
+            return Number.isNaN(left) && Number.isNaN(right)
+
+        const leftIsArray = Array.isArray(left)
+        if (leftIsArray !== Array.isArray(right))
+            return false
+        if (leftIsArray) {
+            if (left.length !== right.length)
+                return false
+            for (let index = 0; index < left.length; ++index) {
+                if (!rendererValuesEqual(left[index], right[index]))
+                    return false
+            }
+            return true
+        }
+
+        const leftKeys = Object.keys(left)
+        const rightKeys = Object.keys(right)
+        if (leftKeys.length !== rightKeys.length)
+            return false
+        for (let keyIndex = 0; keyIndex < leftKeys.length; ++keyIndex) {
+            const key = leftKeys[keyIndex]
+            if (!Object.prototype.hasOwnProperty.call(right, key)
+                    || !rendererValuesEqual(left[key], right[key]))
+                return false
+        }
+        return true
+    }
+
     function previewDensity(value) {
         if (!galleryPanel || typeof galleryPanel.density === "undefined")
             return
@@ -130,15 +175,53 @@ FocusScope {
         // The unified details renderer may consume the host's semantic column
         // schema directly. Keep this dynamic so f4 remains compatible with an
         // older editable ZoinGallery module which has not added the property.
-        if (typeof galleryPanel.columnSchema !== "undefined")
-            galleryPanel.columnSchema = panel.galleryColumns || []
+        if (typeof galleryPanel.columnSchema !== "undefined") {
+            const nextColumnSchema = panel.galleryColumns || []
+            if (!rendererValuesEqual(galleryPanel.columnSchema,
+                                     nextColumnSchema)) {
+                galleryPanel.columnSchema = nextColumnSchema
+            }
+        }
         if (typeof galleryPanel.separateFileExtensions !== "undefined")
             galleryPanel.separateFileExtensions =
                     panel.separateFileExtensions === true
         applyingRendererState = false
     }
 
-    onPanelChanged: Qt.callLater(applyRendererState)
+    function forwardBenchmarkStage(stage, metadata) {
+        if (!benchmarkTracingEnabled || !bridge
+                || typeof bridge.recordBenchmarkStage !== "function")
+            return
+        var fields = ({})
+        if (metadata) {
+            const keys = Object.keys(metadata)
+            for (let keyIndex = 0; keyIndex < keys.length; ++keyIndex)
+                fields[keys[keyIndex]] = metadata[keys[keyIndex]]
+        }
+        fields.hostSide = side
+        fields.hostPanelPath = String(panel.path || "")
+        fields.hostPanelLoading = panel.loading === true
+        fields.hostCatalogRevision = Number(panel.catalogRevision || 0)
+        fields.hostCursorEntryId = String(panel.cursorEntryId || "")
+        fields.hostCursorIndex = Number(panel.cursor === undefined
+                                        ? -1 : panel.cursor)
+        fields.hostPresentationMode = requestedPresentationMode
+        bridge.recordBenchmarkStage(side, String(stage || "unknown"), fields)
+    }
+
+    function forwardHostBenchmarkState() {
+        if (!benchmarkTracingEnabled || !galleryPanel)
+            return
+        const state = typeof galleryPanel.benchmarkState === "function"
+                ? galleryPanel.benchmarkState({}) : ({})
+        forwardBenchmarkStage("host.panel.changed", state)
+    }
+
+    onPanelChanged: {
+        Qt.callLater(applyRendererState)
+        if (benchmarkTracingEnabled)
+            Qt.callLater(forwardHostBenchmarkState)
+    }
     onRequestedPresentationModeChanged: Qt.callLater(applyRendererState)
     onRequestedColumnCountChanged: Qt.callLater(applyRendererState)
     onRequestedDensityChanged: Qt.callLater(applyRendererState)
@@ -459,6 +542,7 @@ FocusScope {
         showCursor: host.panelActive
         focus: host.panelActive
         autoFocus: host.panelActive
+        benchmarkTracingEnabled: host.benchmarkTracingEnabled
 
         onActivateRequested: {
             if (!host.panelActive)
@@ -473,6 +557,9 @@ FocusScope {
         }
         onSelectionRequested: (mode, entryIds) => {
             host.bridge.requestSelection(host.side, mode, entryIds, host.catalogRevision)
+        }
+        onBenchmarkStage: (stage, metadata) => {
+            host.forwardBenchmarkStage(stage, metadata)
         }
     }
 
