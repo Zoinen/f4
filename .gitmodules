@@ -1,4 +1,4 @@
 [submodule "third_party/ZoinGallery"]
 	path = third_party/ZoinGallery
-	url = https://github.com/Zoinen/ZoinGallery.git
+	url = git@github.com:Zoinen/ZoinGallery.git
 	branch = zoin/f4-integration
