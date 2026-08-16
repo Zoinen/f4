@@ -39,7 +39,7 @@ cmake -S $QwkSource -B $QwkBuild -G Ninja `
     -DQWINDOWKIT_BUILD_WIDGETS=FALSE `
     -DQWINDOWKIT_BUILD_EXAMPLES=FALSE `
     -DQWINDOWKIT_BUILD_DOCUMENTATIONS=FALSE `
-    "-DBUILD_SHARED_LIBS=$(@{shared='ON'; static='OFF'}[$Linkage])"
+    "-DQWINDOWKIT_BUILD_STATIC=$(@{shared='OFF'; static='ON'}[$Linkage])"
 
 cmake --build $QwkBuild --parallel
 cmake --install $QwkBuild

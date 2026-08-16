@@ -15,10 +15,10 @@ qwk_platform_args=()
 
 case "${linkage}" in
     shared)
-        qwk_platform_args+=("-DBUILD_SHARED_LIBS=ON")
+        qwk_platform_args+=("-DQWINDOWKIT_BUILD_STATIC=OFF")
         ;;
     static)
-        qwk_platform_args+=("-DBUILD_SHARED_LIBS=OFF")
+        qwk_platform_args+=("-DQWINDOWKIT_BUILD_STATIC=ON")
         ;;
     *)
         echo "error: QWindowKit linkage must be 'shared' or 'static'" >&2
