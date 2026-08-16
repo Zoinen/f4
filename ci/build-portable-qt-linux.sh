@@ -22,7 +22,7 @@ export UV_INSTALL_DIR=/usr/local/bin
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 /opt/f4-build-venv
 uv pip install --python /opt/f4-build-venv/bin/python \
-    'conan==2.29.1' 'cmake==3.31.6' 'ninja==1.12.1'
+    'conan==2.29.1' 'cmake==3.31.6' 'ninja==1.13.0'
 export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11

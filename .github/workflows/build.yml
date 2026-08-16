@@ -201,7 +201,7 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
 
     - name: Build and test the Qt host
@@ -414,7 +414,7 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
 
     - name: Build the portable Windows executable
