@@ -260,6 +260,14 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
     QCOMPARE(gallerySource.scheme(), QStringLiteral("image"));
     QCOMPARE(gallerySource.host(), F4IconSet::defaultProviderId());
     QVERIFY(gallerySource.path().startsWith(QStringLiteral("/lucide/")));
+    // A Lucide category icon depends only on its route, size, DPR and palette
+    // revision. Per-file mtimes used to make every identical folder icon a
+    // unique texture and defeated the Qt Quick image cache.
+    const QUrl versionedGallerySource = icons.fileIconSource(
+        QStringLiteral("/tmp/folder"), QStringLiteral("folder"), true,
+        128, 2.0, 123456);
+    const QUrlQuery galleryQuery(versionedGallerySource);
+    QVERIFY(!galleryQuery.hasQueryItem(QStringLiteral("version")));
 }
 
 void F4IconProviderTests::largeLucideRouteRendersAVisibleDprAwareFallback()

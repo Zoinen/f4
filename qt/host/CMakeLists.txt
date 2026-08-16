@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 COMPONENTS Core Gui Qml Quick QuickControls2 Network Svg REQUIRED)
+find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg REQUIRED)
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
@@ -50,6 +50,13 @@ if(F4_PORTABLE_STATIC)
   endif()
 endif()
 
+get_target_property(F4_QT_CORE_TARGET_TYPE Qt6::Core TYPE)
+set(F4_QT_STATIC OFF)
+if(F4_PORTABLE_STATIC OR
+   F4_QT_CORE_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+  set(F4_QT_STATIC ON)
+endif()
+
 set(F4_ZOINGALLERY_SOURCE_DIR
   "${CMAKE_CURRENT_LIST_DIR}/../../third_party/ZoinGallery")
 if(NOT EXISTS "${F4_ZOINGALLERY_SOURCE_DIR}/CMakeLists.txt")
@@ -64,6 +71,10 @@ set(ZOIN_BUILD_STANDALONE OFF CACHE BOOL
   "Build the standalone ZoinGallery application" FORCE)
 set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
   "Build ZoinGallery performance audit tools" FORCE)
+if(F4_QT_STATIC)
+  set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
+    "Generate ZoinGallery package installation rules" FORCE)
+endif()
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 add_subdirectory(
@@ -80,123 +91,16 @@ if(COMMAND qt_policy)
 endif()
 
 set(F4_QT_HOST_SOURCES
-  src/main.cpp
-  src/DummyQWK.h
-  src/QtShellController.h
-  src/QtShellController.cpp
-  src/F4GalleryBridge.h
-  src/F4GalleryBridge.cpp
-  src/F4IconProvider.h
-  src/F4IconProvider.cpp
-  src/WindowGeometryPersistence.h
-  src/WindowGeometryPersistence.cpp
-)
-
-add_executable(f4-qt-host ${F4_QT_HOST_SOURCES})
-
-target_include_directories(f4-qt-host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-target_compile_definitions(f4-qt-host PRIVATE
-  $<$<BOOL:${USE_QWK}>:__USE_QWK>
-)
-
-if(F4_PORTABLE_STATIC)
-  if(MSVC)
-    set_property(TARGET f4-qt-host PROPERTY
-      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  elseif(UNIX AND NOT APPLE)
-    target_compile_options(f4-qt-host PRIVATE
-      -ffunction-sections -fdata-sections -fstack-protector-strong)
-    target_link_options(f4-qt-host PRIVATE
-      -static-libstdc++
-      -static-libgcc
-      -Wl,--gc-sections
-      -Wl,--exclude-libs,ALL
-      -Wl,--as-needed
-      -Wl,-z,relro,-z,now,-z,noexecstack)
-  endif()
-endif()
-
-set_target_properties(f4-qt-host PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-)
-
-if(APPLE)
-  target_link_libraries(f4-qt-host PRIVATE "-framework Carbon")
-  # The host binary is also copied into a small application bundle below so
-  # LaunchServices can own the adaptive Icon Composer icon. Keep the bare
-  # binary working as a compatibility fallback.
-  set_target_properties(f4-qt-host PROPERTIES
-    INSTALL_RPATH "@loader_path/../lib;@loader_path/../../../../lib"
-  )
-
-  set(F4_MACOS_ICON_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/AppIcon.icon")
-  set(F4_MACOS_ICON_FILES
-    "${F4_MACOS_ICON_DIR}/icon.json"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-shell.svg"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-content.svg"
-  )
-  set(F4_MACOS_INFO_PLIST
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/f4-qt-host-Info.plist")
-  configure_file(packaging/f4-qt-host-Info.plist.in
-    "${F4_MACOS_INFO_PLIST}" @ONLY)
-
-  # A source icon change must relink the host so this post-build packaging
-  # step runs again even though actool's inputs are not C++ sources.
-  set_property(SOURCE src/main.cpp APPEND PROPERTY
-    OBJECT_DEPENDS "${F4_MACOS_ICON_FILES}")
-
-  set(F4_MACOS_APP_DIR
-    "$<TARGET_FILE_DIR:f4-qt-host>/f4-qt-host.app")
-  add_custom_command(TARGET f4-qt-host POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-      "${F4_MACOS_APP_DIR}/Contents/MacOS"
-      "${F4_MACOS_APP_DIR}/Contents/Resources"
-    COMMAND xcrun actool "${F4_MACOS_ICON_DIR}"
-      --compile "${F4_MACOS_APP_DIR}/Contents/Resources"
-      --output-format human-readable-text
-      --notices
-      --warnings
-      --output-partial-info-plist
-        "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
-      --app-icon AppIcon
-      --include-all-app-icons
-      --enable-on-demand-resources NO
-      --development-region en
-      --target-device mac
-      --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
-      --platform macosx
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "${F4_MACOS_INFO_PLIST}"
-      "${F4_MACOS_APP_DIR}/Contents/Info.plist"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "$<TARGET_FILE:f4-qt-host>"
-      "${F4_MACOS_APP_DIR}/Contents/MacOS/f4-qt-host"
-    COMMENT "Building adaptive macOS f4-qt-host.app icon bundle"
-    VERBATIM
-  )
-elseif(UNIX)
-  set_target_properties(f4-qt-host PROPERTIES
-    INSTALL_RPATH "$ORIGIN/../lib"
-  )
-endif()
-
-set(F4_QT_HOST_QML_FILES
-  qml/main.qml
-  qml/PanelSplitter.qml
-  qml/GalleryPanelHost.qml
-  qml/GalleryViewerHost.qml
-)
-
-qt6_add_qml_module(f4-qt-host
-  URI F4QtHost
-  VERSION 1.0
-  RESOURCE_PREFIX /
-  SOURCES
-    src/VtuiGridItem.h
-    src/VtuiGridItem.cpp
-  QML_FILES ${F4_QT_HOST_QML_FILES}
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/WindowGeometryPersistence.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/WindowGeometryPersistence.cpp"
 )
 
 set(F4_LUCIDE_ICON_NAMES
@@ -250,11 +154,6 @@ set(F4_LUCIDE_ICON_NAMES
 )
 set(F4_LUCIDE_ICONS ${F4_LUCIDE_ICON_NAMES})
 list(TRANSFORM F4_LUCIDE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide/")
-qt6_add_resources(f4-qt-host f4_lucide_icons
-  PREFIX "/F4QtHost/icons/lucide"
-  BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide"
-  FILES ${F4_LUCIDE_ICONS}
-)
 
 # Gallery renders the same icons at a much larger size. Generate a second,
 # thinner set from the vendored Lucide SVGs at configure time so the two sets
@@ -278,51 +177,32 @@ foreach(icon_name IN LISTS F4_LUCIDE_ICON_NAMES)
   file(WRITE "${icon_output}" "${gallery_icon_svg}")
   list(APPEND F4_GALLERY_LUCIDE_ICONS "${icon_output}")
 endforeach()
-qt6_add_resources(f4-qt-host f4_gallery_lucide_icons
-  PREFIX "/F4QtHost/icons/lucide-gallery"
-  BASE "${F4_GALLERY_LUCIDE_DIR}"
-  FILES ${F4_GALLERY_LUCIDE_ICONS}
-)
 
-# The Conan generator stages Qt's QML import tree here. Qt's Conan metadata
-# does not publish its original QML prefix, so make the staged path explicit
-# after qt_add_qml_module has initialized (and replaced) this target property.
-set_property(TARGET f4-qt-host APPEND PROPERTY
-  QT_QML_IMPORT_PATH "${CMAKE_BINARY_DIR}/qml"
-)
-
-target_link_libraries(f4-qt-host PRIVATE
-  Qt6::Core
-  Qt6::Gui
-  Qt6::Qml
-  Qt6::Quick
-  Qt6::QuickControls2
-  Qt6::Network
-  Qt6::Svg
-)
-if(USE_QWK)
-  target_link_libraries(f4-qt-host PRIVATE QWindowKit::Quick)
-endif()
-
-target_link_libraries(f4-qt-host PRIVATE
-  ZoinGallery::Core
-  ZoinGallery::Qml
-)
-# qmlimportscanner only reads import paths from the application target; it
-# does not traverse this property through linked imported targets.
-set_property(TARGET f4-qt-host APPEND PROPERTY
-  QT_QML_IMPORT_PATH "${ZoinGallery_QML_IMPORT_PATH}"
-)
-
-if(TARGET msgpack-cxx)
-  target_link_libraries(f4-qt-host PRIVATE msgpack-cxx)
-elseif(TARGET msgpack-cxx::msgpack-cxx)
-  target_link_libraries(f4-qt-host PRIVATE msgpack-cxx::msgpack-cxx)
+# Static imports are explicit, so evaluate the target here to keep MSVC/Ninja
+# object paths rooted at the top-level build directory. Shared builds retain a
+# clean scanner root so unrelated build/test QML cannot pollute deployment.
+if(F4_QT_STATIC)
+  include(cmake/f4-qt-host-target/CMakeLists.txt)
 else()
-  message(FATAL_ERROR "msgpack-cxx CMake target was not generated by Conan")
+  add_subdirectory(cmake/f4-qt-host-target)
 endif()
 
-qt6_finalize_target(f4-qt-host)
+if(F4_PORTABLE_STATIC)
+  if(MSVC)
+    set_property(TARGET f4-qt-host PROPERTY
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  elseif(UNIX AND NOT APPLE)
+    target_compile_options(f4-qt-host PRIVATE
+      -ffunction-sections -fdata-sections -fstack-protector-strong)
+    target_link_options(f4-qt-host PRIVATE
+      -static-libstdc++
+      -static-libgcc
+      -Wl,--gc-sections
+      -Wl,--exclude-libs,ALL
+      -Wl,--as-needed
+      -Wl,-z,relro,-z,now,-z,noexecstack)
+  endif()
+endif()
 
 install(TARGETS f4-qt-host RUNTIME DESTINATION bin)
 if(APPLE)
@@ -336,7 +216,7 @@ install(FILES icons/lucide/LICENSE
   DESTINATION licenses
   RENAME Lucide-LICENSE.txt
 )
-if(USE_QWK AND NOT F4_PORTABLE_STATIC)
+if(USE_QWK AND NOT F4_QT_STATIC)
   install(IMPORTED_RUNTIME_ARTIFACTS
     QWindowKit::Core
     QWindowKit::Quick
@@ -360,7 +240,7 @@ if(APPLE)
     DESTINATION plugins
     USE_SOURCE_PERMISSIONS
   )
-elseif(NOT F4_PORTABLE_STATIC)
+elseif(NOT F4_QT_STATIC)
   qt_generate_deploy_qml_app_script(
     TARGET f4-qt-host
     OUTPUT_SCRIPT F4_QT_HOST_DEPLOY_SCRIPT

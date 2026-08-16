@@ -69,3 +69,35 @@ func TestSemantic_ActionHandling(t *testing.T) {
 		t.Error("checkbox state was not toggled to 1")
 	}
 }
+
+func TestSemantic_DialogGeometryActionMovesAndResizesWindow(t *testing.T) {
+	dlg := NewDialog(5, 4, 44, 13, "Resizable")
+	action := map[string]any{
+		"target": SemanticID(dlg),
+		"action": "dialog.geometry",
+		"x":      float64(12),
+		"y":      float64(7),
+		"w":      float64(52),
+		"h":      float64(18),
+	}
+
+	if !dlg.HandleSemanticAction(action) {
+		t.Fatal("dialog geometry action was not handled")
+	}
+	x1, y1, x2, y2 := dlg.GetPosition()
+	if x1 != 12 || y1 != 7 || x2-x1+1 != 52 || y2-y1+1 != 18 {
+		t.Fatalf("unexpected dialog geometry: (%d,%d)-(%d,%d)",
+			x1, y1, x2, y2)
+	}
+
+	if dlg.HandleSemanticAction(map[string]any{
+		"target": SemanticID(dlg),
+		"action": "dialog.geometry",
+		"x":      1,
+		"y":      1,
+		"w":      0,
+		"h":      10,
+	}) {
+		t.Fatal("invalid zero-width geometry action was accepted")
+	}
+}

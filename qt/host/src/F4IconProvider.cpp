@@ -12,6 +12,7 @@
 #include <QPalette>
 #include <QPixmap>
 #include <QSet>
+#include <QSvgRenderer>
 #include <QUrlQuery>
 
 #include <algorithm>
@@ -240,6 +241,63 @@ QImage imageAtPhysicalSize(const QPixmap &pixmap, const QSize &targetSize)
     return result;
 }
 
+QColor fallbackTintColor()
+{
+    QColor color(154, 167, 181);
+    if (qGuiApp) {
+        const QColor paletteText = qGuiApp->palette().color(QPalette::Text);
+        if (paletteText.isValid() && paletteText.alpha() != 0
+            && qGray(paletteText.rgb()) >= 96) {
+            color = paletteText;
+        }
+    }
+    return color;
+}
+
+void tintMask(QImage &image)
+{
+    if (image.isNull()) {
+        return;
+    }
+    image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(1.0);
+    const QColor color = fallbackTintColor();
+    for (int y = 0; y < image.height(); ++y) {
+        auto *scanline = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int alpha = qAlpha(scanline[x]);
+            scanline[x] = qRgba(color.red() * alpha / 255,
+                                color.green() * alpha / 255,
+                                color.blue() * alpha / 255,
+                                alpha);
+        }
+    }
+}
+
+QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
+                         int logicalSize)
+{
+    if (!targetSize.isValid()) {
+        return {};
+    }
+    const QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
+    QSvgRenderer renderer(resourceFileName(source));
+    if (!renderer.isValid()) {
+        return {};
+    }
+
+    QImage image(targetSize, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    if (!painter.isActive()) {
+        return {};
+    }
+    renderer.render(&painter, QRectF(QPointF(0, 0), QSizeF(targetSize)));
+    painter.end();
+    tintMask(image);
+    return image;
+}
+
 QPixmap paletteTintedMask(QPixmap pixmap)
 {
     if (pixmap.isNull()) {
@@ -256,29 +314,10 @@ QPixmap paletteTintedMask(QPixmap pixmap)
     // missing native icon never becomes an invisible black Lucide fallback
     // under a light OS palette. A sufficiently bright application text color
     // still follows live palette/theme changes.
-    QColor color(154, 167, 181);
-    if (qGuiApp) {
-        const QColor paletteText = qGuiApp->palette().color(QPalette::Text);
-        if (paletteText.isValid() && paletteText.alpha() != 0
-            && qGray(paletteText.rgb()) >= 96) {
-            color = paletteText;
-        }
-    }
-
     const qreal devicePixelRatio = pixmap.devicePixelRatio();
     QImage tinted = pixmap.toImage().convertToFormat(
         QImage::Format_ARGB32_Premultiplied);
-    tinted.setDevicePixelRatio(1.0);
-    for (int y = 0; y < tinted.height(); ++y) {
-        auto *scanline = reinterpret_cast<QRgb *>(tinted.scanLine(y));
-        for (int x = 0; x < tinted.width(); ++x) {
-            const int alpha = qAlpha(scanline[x]);
-            scanline[x] = qRgba(color.red() * alpha / 255,
-                                color.green() * alpha / 255,
-                                color.blue() * alpha / 255,
-                                alpha);
-        }
-    }
+    tintMask(tinted);
     QPixmap result = QPixmap::fromImage(tinted);
     result.setDevicePixelRatio(devicePixelRatio);
     return result;
@@ -358,6 +397,22 @@ QImage F4IconProvider::requestImage(const QString &id,
             / qreal(effectiveLogicalSize));
     }
 
+    // The default Lucide Gallery route is served from asynchronous Qt Quick
+    // image-loader threads. QIcon's SVG engine renders through QPixmap, which
+    // is GUI-thread-bound on Windows and produced null paint devices during
+    // startup. Render the immutable resource directly into a QImage instead;
+    // this is thread-safe and also avoids serializing generic file icons on
+    // the native icon-provider mutex.
+    if (route == QStringLiteral("lucide")) {
+        const QString iconName = normalizedIconName(primary);
+        QImage image = renderLucideImage(iconName, targetSize,
+                                        effectiveLogicalSize);
+        if (size && !image.isNull()) {
+            *size = image.size();
+        }
+        return image;
+    }
+
     QString fallbackName;
     QIcon icon;
     {
@@ -383,11 +438,6 @@ QImage F4IconProvider::requestImage(const QString &id,
                 fallbackName = lucideFileIconName(fileName, directory);
             }
             icon = m_backend->iconForFile(primary, fileName, directory);
-        } else if (route == QStringLiteral("lucide")) {
-            // Large Gallery icons use the image provider even in Lucide mode.
-            // This resolves SVG currentColor into a visible mask and renders
-            // at the requested physical texture size for exact DPR sharpness.
-            fallbackName = normalizedIconName(primary);
         } else {
             return {};
         }
@@ -696,7 +746,7 @@ QUrl F4IconSet::fileIconSource(const QString &localPath,
                 F4IconProvider::encodeRouteValue(fallback),
                 logicalSize,
                 devicePixelRatio,
-                version);
+                0);
         }
         return F4IconProvider::lucideSource(fallback, logicalSize);
     }

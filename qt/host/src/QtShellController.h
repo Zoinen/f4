@@ -37,6 +37,13 @@ public:
     QVariantMap presentationScene() const { return m_presentationScene; }
     QVariantMap commandLine() const { return m_commandLine; }
     QVariantList commandMenus() const { return m_commandMenus; }
+    QString startupError() const { return m_startupError; }
+    static bool initialSceneReadyForDisplay(const QVariantMap &scene);
+
+    // Opportunistically completes the initial loopback connection without
+    // running a nested event loop. A timeout leaves the asynchronous socket
+    // connection active so normal event-loop startup remains the fallback.
+    bool waitForInitialHandshake(int timeoutMs);
 
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
@@ -130,6 +137,8 @@ private:
     int m_initialCols = 100;
     int m_initialRows = 30;
     bool m_connected = false;
+    bool m_helloSent = false;
+    QString m_startupError;
     QVariantMap m_scene;
     QVariantMap m_presentationScene;
     QVariantMap m_commandLine;

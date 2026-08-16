@@ -16,7 +16,10 @@ ApplicationWindow {
     leftPadding: 0
     rightPadding: 0
     bottomPadding: 0
-    visible: true
+    // main.cpp restores the saved geometry while this window is hidden and
+    // exposes it only after the first semantic scene has populated the native
+    // surface.  Avoid presenting the empty QML shell during startup.
+    visible: false
     title: fallbackExplanation !== ""
            ? "f4 [Using text presentation: " + fallbackExplanation + "]"
            : "f4"
@@ -60,6 +63,7 @@ ApplicationWindow {
     property var retainedShellFrame: ({})
     property var retainedDocumentFrame: ({})
     property var retainedOperationsQueue: ({})
+    property bool retainedShellSurfaceCreated: false
     property bool retainedDocumentSurfaceCreated: false
     property bool retainedOperationsQueueCreated: false
     property real cw: Math.max(8, grid.cellWidth)
@@ -200,14 +204,13 @@ ApplicationWindow {
         }
 
         windowAgent.setTitleBar(titleBar)
+        if (Qt.platform.os !== "osx") {
+            windowAgent.setHitTestVisible(appIcon)
+        }
         windowAgent.setHitTestVisible(workspaceBar)
         workspaceBarHitTestRegistered = true
         if (useMacNativeTitleBar) {
             windowAgent.setSystemButtonArea(macSystemButtonArea)
-        } else {
-            windowAgent.setSystemButton(WindowAgent.Minimize, minimizeButton)
-            windowAgent.setSystemButton(WindowAgent.Maximize, maximizeButton)
-            windowAgent.setSystemButton(WindowAgent.Close, closeButton)
         }
     }
 
@@ -434,8 +437,10 @@ ApplicationWindow {
 
     function captureRetainedSurfaces() {
         var shell = currentShellFrame()
-        if (shell !== null)
+        if (shell !== null) {
             retainedShellFrame = shell
+            retainedShellSurfaceCreated = true
+        }
 
         var document = currentDocumentFrame()
         if (document !== null) {
@@ -511,6 +516,11 @@ ApplicationWindow {
         for (var j = 0; j < dialogs.length; ++j)
             out.push(dialogs[j])
         return out
+    }
+
+    function createDialogOverlay(frame) {
+        return dialogOverlayComponent.createObject(mainSurface,
+                                                   { "frame": frame })
     }
 
     function hasBlockingOverlay() {
@@ -1205,10 +1215,29 @@ ApplicationWindow {
                 height: parent.height
             }
 
+            ZG.Button {
+                id: appIcon
+                objectName: "appIconButton"
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                implicitWidth: 46
+                implicitHeight: parent.height
+                width: visible ? implicitWidth : 0
+                height: parent.height
+                visible: f4UsesQwk && Qt.platform.os !== "osx"
+
+                icon.width: 18
+                icon.height: 18
+                colorfulIcon: true
+                icon.source: "qrc:/F4QtHost/icons/app/f4.svg"
+                onClicked: windowAgent.showSystemMenu(
+                               mapToGlobal(0, height))
+            }
+
             SemanticMenuBar {
                 id: semanticMenu
                 menu: root.scene.menuBar || ({})
-                anchors.left: parent.left
+                anchors.left: appIcon.right
                 anchors.leftMargin: root.macTitleBarLeftPadding
                 anchors.right: workspaceBar.visible
                                ? workspaceBar.left : windowButtons.left
@@ -1491,55 +1520,94 @@ ApplicationWindow {
                 }
             }
 
-            Row {
+            RowLayout {
                 id: windowButtons
                 anchors.top: parent.top
                 anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                spacing: 0
                 height: parent.height
                 visible: f4UsesQwk && !root.useMacNativeTitleBar
 
-                component WindowButton: Rectangle {
-                    required property string label
-                    property bool closeControl: false
-                    width: 46
-                    height: windowButtons.height
-                    color: "transparent"
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: parent.label
-                        color: root.chromeText
-                        font.pixelSize: 14
-                    }
-
-                    MouseArea {
-                        id: buttonMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        onClicked: parent.clicked()
-                    }
-
-                    signal clicked()
-                }
-
-                WindowButton {
+                ZG.TitleButton {
                     id: minimizeButton
-                    label: "−"
+
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: titleBar.height
+                    opacity: root.active || minimizeButton.hoveredOverride ? 1 : 0.4
+
+                    source: "qrc:/ZoinGallery/resources/WindowMinimize.svg"
                     onClicked: root.showMinimized()
+
+                    Component.onCompleted: {
+                        if (!root.useMacNativeTitleBar) {
+                            windowAgent.setSystemButton(WindowAgent.Minimize,
+                                                        minimizeButton)
+                        }
+                    }
                 }
 
-                WindowButton {
+                ZG.TitleButton {
                     id: maximizeButton
-                    label: root.visibility === Window.Maximized ? "❐" : "□"
-                    onClicked: root.visibility === Window.Maximized
-                               ? root.showNormal() : root.showMaximized()
+
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: titleBar.height
+                    opacity: root.active || maximizeButton.hoveredOverride ? 1 : 0.4
+
+                    source: root.visibility === Window.Maximized
+                            ? "qrc:/ZoinGallery/resources/WindowRestore.svg"
+                            : root.visibility === Window.FullScreen
+                              ? "qrc:/ZoinGallery/resources/WindowFullscreen.svg"
+                              : "qrc:/ZoinGallery/resources/WindowMaximize.svg"
+                    onClicked: {
+                        if (root.visibility === Window.FullScreen) {
+                            root.toggleFullscreen()
+                        } else if (root.visibility === Window.Maximized) {
+                            root.showNormal()
+                        } else {
+                            root.showMaximized()
+                        }
+                    }
+
+                    Component.onCompleted: {
+                        if (!root.useMacNativeTitleBar) {
+                            windowAgent.setSystemButton(WindowAgent.Maximize,
+                                                        maximizeButton)
+                        }
+                    }
                 }
 
-                WindowButton {
+                ZG.TitleButton {
                     id: closeButton
-                    label: "×"
-                    closeControl: true
+
+                    Layout.alignment: Qt.AlignTop
+                    implicitHeight: titleBar.height
+                    opacity: root.active || closeButton.hoveredOverride ? 1 : 0.4
+
+                    source: "qrc:/ZoinGallery/resources/WindowClose.svg"
+                    icon.color: closeButton.hovered
+                                ? ZG.Style.closeButtonHoveredIcon
+                                : ZG.Style.text
+                    backgroundColor: {
+                        if (!closeButton.enabled) {
+                            return "gray"
+                        }
+                        if (closeButton.pressed) {
+                            return ZG.Style.closeButtonPressed
+                        }
+                        if (closeButton.hovered) {
+                            return ZG.Style.closeButtonHovered
+                        }
+                        return "transparent"
+                    }
                     onClicked: root.close()
+
+                    Component.onCompleted: {
+                        if (!root.useMacNativeTitleBar) {
+                            windowAgent.setSystemButton(WindowAgent.Close,
+                                                        closeButton)
+                        }
+                    }
                 }
             }
         }
@@ -1553,7 +1621,12 @@ ApplicationWindow {
                 id: persistentPanelsLayer
                 objectName: "persistentPanelsLayer"
                 anchors.fill: parent
-                active: true
+                // The initial Qt object graph is built before the core can
+                // publish a semantic scene.  Creating two complete Gallery
+                // panels for that empty placeholder dominated engine.load().
+                // Instantiate the persistent pair only when a real shell has
+                // arrived; once created it remains alive across every cover.
+                active: root.retainedShellSurfaceCreated
                 visible: !root.hasStandaloneDocumentSurface()
                          && !root.hasOperationsQueueSurface()
                 sourceComponent: panelsSurface
@@ -1678,6 +1751,34 @@ ApplicationWindow {
                         id: panelPairRoot
                         anchors.fill: parent
 
+                        // Optional panel surfaces are expensive but normally
+                        // absent.  Create each one on first use, then retain it
+                        // so Ctrl+Q/Info toggles still preserve native state.
+                        property bool leftInfoCreated: false
+                        property bool rightInfoCreated: false
+                        property bool leftQuickViewCreated: false
+                        property bool rightQuickViewCreated: false
+
+                        function retainOptionalPanels() {
+                            if (panelsRoot.infoPanelForSide(0) !== null)
+                                leftInfoCreated = true
+                            if (panelsRoot.infoPanelForSide(1) !== null)
+                                rightInfoCreated = true
+                            if (panelsRoot.quickViewForSide(0) !== null)
+                                leftQuickViewCreated = true
+                            if (panelsRoot.quickViewForSide(1) !== null)
+                                rightQuickViewCreated = true
+                        }
+
+                        Component.onCompleted: retainOptionalPanels()
+
+                        Connections {
+                            target: panelsRoot
+                            function onFrameChanged() {
+                                panelPairRoot.retainOptionalPanels()
+                            }
+                        }
+
                         FilePanelView {
                             panel: panelsRoot.panelForSide(0)
                             visible: root.panelSideVisible(0)
@@ -1690,16 +1791,28 @@ ApplicationWindow {
                                       && !panelsRoot.altPanelForSide(1)
                         }
 
-                        InfoPanelView {
-                            panel: panelsRoot.infoPanelForSide(0) || ({ "side": 0 })
-                            visible: root.panelSideVisible(0)
-                                     && panelsRoot.infoPanelForSide(0) !== null
+                        Loader {
+                            active: panelPairRoot.leftInfoCreated
+                            sourceComponent: Component {
+                                InfoPanelView {
+                                    panel: panelsRoot.infoPanelForSide(0)
+                                           || ({ "side": 0 })
+                                    visible: root.panelSideVisible(0)
+                                             && panelsRoot.infoPanelForSide(0) !== null
+                                }
+                            }
                         }
 
-                        InfoPanelView {
-                            panel: panelsRoot.infoPanelForSide(1) || ({ "side": 1 })
-                            visible: root.panelSideVisible(1)
-                                     && panelsRoot.infoPanelForSide(1) !== null
+                        Loader {
+                            active: panelPairRoot.rightInfoCreated
+                            sourceComponent: Component {
+                                InfoPanelView {
+                                    panel: panelsRoot.infoPanelForSide(1)
+                                           || ({ "side": 1 })
+                                    visible: root.panelSideVisible(1)
+                                             && panelsRoot.infoPanelForSide(1) !== null
+                                }
+                            }
                         }
 
                         // Keep two native Quick View hosts alive with the
@@ -1707,18 +1820,28 @@ ApplicationWindow {
                         // and uncovers the corresponding FilePanelView; its
                         // Gallery host, scroll position and thumbnail delegates
                         // retain object identity.
-                        QuickViewPanelView {
-                            quickView: panelsRoot.quickViewForSide(0)
-                                       || ({ "side": 0 })
-                            visible: root.panelSideVisible(0)
-                                     && panelsRoot.quickViewForSide(0) !== null
+                        Loader {
+                            active: panelPairRoot.leftQuickViewCreated
+                            sourceComponent: Component {
+                                QuickViewPanelView {
+                                    quickView: panelsRoot.quickViewForSide(0)
+                                               || ({ "side": 0 })
+                                    visible: root.panelSideVisible(0)
+                                             && panelsRoot.quickViewForSide(0) !== null
+                                }
+                            }
                         }
 
-                        QuickViewPanelView {
-                            quickView: panelsRoot.quickViewForSide(1)
-                                       || ({ "side": 1 })
-                            visible: root.panelSideVisible(1)
-                                     && panelsRoot.quickViewForSide(1) !== null
+                        Loader {
+                            active: panelPairRoot.rightQuickViewCreated
+                            sourceComponent: Component {
+                                QuickViewPanelView {
+                                    quickView: panelsRoot.quickViewForSide(1)
+                                               || ({ "side": 1 })
+                                    visible: root.panelSideVisible(1)
+                                             && panelsRoot.quickViewForSide(1) !== null
+                                }
+                            }
                         }
 
                         PanelSplitter {
@@ -6097,11 +6220,152 @@ ApplicationWindow {
         })
     }
 
+    component DialogResizeHandle: MouseArea {
+        id: resizeHandle
+        required property Item targetDialog
+        property int edges: 0
+        property point pressPoint: Qt.point(0, 0)
+        property rect startGeometry: Qt.rect(0, 0, 0, 0)
+
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        preventStealing: true
+        cursorShape: {
+            if (edges === 1 || edges === 2)
+                return Qt.SizeHorCursor
+            if (edges === 4 || edges === 8)
+                return Qt.SizeVerCursor
+            if (edges === 5 || edges === 10)
+                return Qt.SizeFDiagCursor
+            return Qt.SizeBDiagCursor
+        }
+
+        onPressed: function(mouse) {
+            pressPoint = mapToItem(targetDialog.parent, mouse.x, mouse.y)
+            startGeometry = Qt.rect(targetDialog.x, targetDialog.y,
+                                    targetDialog.width, targetDialog.height)
+            mouse.accepted = true
+        }
+        onPositionChanged: function(mouse) {
+            if (!pressed)
+                return
+            const point = mapToItem(targetDialog.parent, mouse.x, mouse.y)
+            targetDialog.resizeFrom(edges,
+                                    point.x - pressPoint.x,
+                                    point.y - pressPoint.y,
+                                    startGeometry)
+            mouse.accepted = true
+        }
+        onReleased: function(mouse) {
+            targetDialog.commitGeometry()
+            mouse.accepted = true
+        }
+    }
+
     component GenericDialog: Rectangle {
         id: dialogRoot
+        objectName: "semanticDialog-" + root.cleanText(frame.id)
         property var frame: ({})
         property bool nativeLayout: root.isAppScene()
+        property bool userGeometrySet: false
+        property bool maximized: false
+        property real userX: 0
+        property real userY: 0
+        property real userWidth: 0
+        property real userHeight: 0
+        property rect restoredGeometry: Qt.rect(0, 0, 0, 0)
         readonly property real bodyContentHeight: calculateBodyContentHeight()
+        readonly property real geometryLeft: 12
+        readonly property real geometryTop: semanticMenu.height + 8
+        readonly property real geometryRight: root.width - 12
+        readonly property real geometryBottom: root.height - 12
+        readonly property real availableWidth: Math.max(
+                                                   1, geometryRight - geometryLeft)
+        readonly property real availableHeight: Math.max(
+                                                    1, geometryBottom - geometryTop)
+        readonly property real minimumDialogWidth: Math.min(320, availableWidth)
+        readonly property real minimumDialogHeight: Math.min(160, availableHeight)
+        readonly property real preferredWidth: nativeLayout
+            ? Math.min(availableWidth, Math.max(420, root.pxW(frame.w || 60)))
+            : Math.min(availableWidth, root.pxW(frame.w))
+        readonly property real preferredHeight: nativeLayout
+            ? Math.min(availableHeight, Math.max(180, root.pxH(frame.h)))
+            : Math.min(availableHeight, root.pxH(frame.h))
+
+        function clamped(value, minimum, maximum) {
+            return Math.max(minimum, Math.min(maximum, value))
+        }
+
+        function setUserGeometry(nextX, nextY, nextWidth, nextHeight) {
+            maximized = false
+            userGeometrySet = true
+            userWidth = clamped(nextWidth, minimumDialogWidth, availableWidth)
+            userHeight = clamped(nextHeight, minimumDialogHeight,
+                                 availableHeight)
+            userX = clamped(nextX, geometryLeft,
+                            Math.max(geometryLeft, geometryRight - userWidth))
+            userY = clamped(nextY, geometryTop,
+                            Math.max(geometryTop, geometryBottom - userHeight))
+        }
+
+        function moveTo(nextX, nextY) {
+            if (maximized) {
+                const restore = restoredGeometry
+                setUserGeometry(nextX, nextY,
+                                restore.width > 0 ? restore.width : preferredWidth,
+                                restore.height > 0 ? restore.height : preferredHeight)
+                return
+            }
+            setUserGeometry(nextX, nextY, width, height)
+        }
+
+        function resizeFrom(edges, deltaX, deltaY, start) {
+            if (maximized)
+                return
+
+            let left = start.x
+            let top = start.y
+            let right = start.x + start.width
+            let bottom = start.y + start.height
+            if ((edges & 1) !== 0)
+                left = clamped(start.x + deltaX, geometryLeft,
+                               right - minimumDialogWidth)
+            if ((edges & 2) !== 0)
+                right = clamped(start.x + start.width + deltaX,
+                                left + minimumDialogWidth, geometryRight)
+            if ((edges & 4) !== 0)
+                top = clamped(start.y + deltaY, geometryTop,
+                              bottom - minimumDialogHeight)
+            if ((edges & 8) !== 0)
+                bottom = clamped(start.y + start.height + deltaY,
+                                 top + minimumDialogHeight, geometryBottom)
+            setUserGeometry(left, top, right - left, bottom - top)
+        }
+
+        function commitGeometry() {
+            if (!frame || root.cleanText(frame.id) === "")
+                return
+            root.action({
+                "target": frame.id,
+                "action": "dialog.geometry",
+                "x": Math.round(x / root.cw),
+                "y": Math.round(y / root.ch),
+                "w": Math.max(1, Math.round(width / root.cw)),
+                "h": Math.max(1, Math.round(height / root.ch))
+            }, true)
+        }
+
+        function toggleMaximized() {
+            if (maximized) {
+                const restore = restoredGeometry
+                setUserGeometry(restore.x, restore.y,
+                                restore.width, restore.height)
+            } else {
+                restoredGeometry = Qt.rect(x, y, width, height)
+                maximized = true
+            }
+            Qt.callLater(commitGeometry)
+        }
 
         function widgetBottom(widget) {
             if (!widget || widget.visible === false)
@@ -6155,13 +6419,34 @@ ApplicationWindow {
 
         onFrameChanged: Qt.callLater(ensureFocusedWidgetVisible)
 
-        width: nativeLayout
-               ? Math.min(root.width - 48,
-                          Math.max(420, root.pxW(frame.w || 60)))
-               : Math.min(root.width - 24, root.pxW(frame.w))
-        height: nativeLayout ? Math.min(root.height - 96, Math.max(180, root.pxH(frame.h))) : Math.min(root.height - 36, root.pxH(frame.h))
-        x: nativeLayout ? Math.round((root.width - width) / 2) : Math.max(12, root.pxX(frame.x))
-        y: nativeLayout ? Math.round((root.height - height) / 2) : Math.max(semanticMenu.height + 8, root.pxY(frame.y))
+        width: maximized ? availableWidth
+                         : userGeometrySet
+                           ? clamped(userWidth, minimumDialogWidth,
+                                     availableWidth)
+                           : preferredWidth
+        height: maximized ? availableHeight
+                          : userGeometrySet
+                            ? clamped(userHeight, minimumDialogHeight,
+                                      availableHeight)
+                            : preferredHeight
+        x: maximized ? geometryLeft
+                     : userGeometrySet
+                       ? clamped(userX, geometryLeft,
+                                 Math.max(geometryLeft, geometryRight - width))
+                       : clamped(nativeLayout
+                                 ? Math.round((root.width - width) / 2)
+                                 : root.pxX(frame.x),
+                                 geometryLeft,
+                                 Math.max(geometryLeft, geometryRight - width))
+        y: maximized ? geometryTop
+                     : userGeometrySet
+                       ? clamped(userY, geometryTop,
+                                 Math.max(geometryTop, geometryBottom - height))
+                       : clamped(nativeLayout
+                                 ? Math.round((root.height - height) / 2)
+                                 : root.pxY(frame.y),
+                                 geometryTop,
+                                 Math.max(geometryTop, geometryBottom - height))
         color: root.dialogBg
         border.width: 1
         border.color: "#46586b"
@@ -6181,6 +6466,7 @@ ApplicationWindow {
 
         Rectangle {
             id: dialogHeader
+            objectName: "dialogMoveHandle"
             x: 1
             y: 1
             width: parent.width - 2
@@ -6204,11 +6490,45 @@ ApplicationWindow {
                 color: root.separatorColor
                 opacity: 0.55
             }
+
+            MouseArea {
+                id: dialogMoveArea
+                anchors.fill: parent
+                anchors.rightMargin: dialogWindowButtons.width
+                acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
+                preventStealing: true
+                cursorShape: Qt.SizeAllCursor
+                property point pressPoint: Qt.point(0, 0)
+                property point startPosition: Qt.point(0, 0)
+
+                onPressed: function(mouse) {
+                    pressPoint = mapToItem(dialogRoot.parent, mouse.x, mouse.y)
+                    startPosition = Qt.point(dialogRoot.x, dialogRoot.y)
+                    mouse.accepted = true
+                }
+                onPositionChanged: function(mouse) {
+                    if (!pressed)
+                        return
+                    const point = mapToItem(dialogRoot.parent, mouse.x, mouse.y)
+                    dialogRoot.moveTo(startPosition.x + point.x - pressPoint.x,
+                                      startPosition.y + point.y - pressPoint.y)
+                    mouse.accepted = true
+                }
+                onReleased: function(mouse) {
+                    dialogRoot.commitGeometry()
+                    mouse.accepted = true
+                }
+                onDoubleClicked: function(mouse) {
+                    dialogRoot.toggleMaximized()
+                    mouse.accepted = true
+                }
+            }
         }
 
         Text {
             anchors.left: parent.left
-            anchors.right: closeButton.left
+            anchors.right: dialogWindowButtons.left
             anchors.top: parent.top
             height: dialogHeader.height
             anchors.leftMargin: 18
@@ -6220,24 +6540,50 @@ ApplicationWindow {
             elide: Text.ElideMiddle
         }
 
-        DialogButton {
-            id: closeButton
-            anchors.verticalCenter: dialogHeader.verticalCenter
+        Row {
+            id: dialogWindowButtons
+            anchors.top: dialogHeader.top
             anchors.right: parent.right
-            anchors.rightMargin: 10
-            width: 30
-            height: 28
-            text: "×"
-            visible: frame.showClose === true
-            background: Rectangle {
-                radius: 4
-                color: closeButton.down ? root.controlPressedBg
-                       : closeButton.hovered ? root.controlHoverBg
-                       : "transparent"
-                border.width: 0
-                Behavior on color { ColorAnimation { duration: 90 } }
+            height: dialogHeader.height
+            spacing: 0
+
+            ZG.TitleButton {
+                id: dialogMaximizeButton
+                objectName: "dialogMaximizeButton"
+                implicitWidth: 42
+                implicitHeight: dialogHeader.height
+                opacity: 1
+                source: dialogRoot.maximized
+                        ? "qrc:/ZoinGallery/resources/WindowRestore.svg"
+                        : "qrc:/ZoinGallery/resources/WindowMaximize.svg"
+                icon.color: ZG.Style.text
+                onClicked: dialogRoot.toggleMaximized()
             }
-            onClicked: root.action({ "target": frame.id, "action": "dialog.close" })
+
+            ZG.TitleButton {
+                id: dialogCloseButton
+                objectName: "dialogCloseButton"
+                implicitWidth: 42
+                implicitHeight: dialogHeader.height
+                opacity: 1
+                visible: frame.showClose === true
+                source: "qrc:/ZoinGallery/resources/WindowClose.svg"
+                icon.color: hovered
+                            ? ZG.Style.closeButtonHoveredIcon : ZG.Style.text
+                backgroundColor: {
+                    if (!enabled)
+                        return "gray"
+                    if (pressed)
+                        return ZG.Style.closeButtonPressed
+                    if (hovered)
+                        return ZG.Style.closeButtonHovered
+                    return "transparent"
+                }
+                onClicked: root.action({
+                    "target": frame.id,
+                    "action": "dialog.close"
+                })
+            }
         }
 
         Flickable {
@@ -6290,6 +6636,91 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+
+        DialogResizeHandle {
+            targetDialog: dialogRoot
+            edges: 1
+            x: 0
+            y: 9
+            width: 6
+            height: Math.max(1, dialogRoot.height - 18)
+            z: 500
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            targetDialog: dialogRoot
+            edges: 2
+            x: dialogRoot.width - width
+            y: 9
+            width: 6
+            height: Math.max(1, dialogRoot.height - 18)
+            z: 500
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            targetDialog: dialogRoot
+            edges: 4
+            x: 9
+            y: 0
+            width: Math.max(1, dialogRoot.width - 18)
+            height: 6
+            z: 500
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            targetDialog: dialogRoot
+            edges: 8
+            x: 9
+            y: dialogRoot.height - height
+            width: Math.max(1, dialogRoot.width - 18)
+            height: 6
+            z: 500
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            objectName: "dialogResizeTopLeft"
+            targetDialog: dialogRoot
+            edges: 5
+            x: 0
+            y: 0
+            width: 10
+            height: 10
+            z: 501
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            objectName: "dialogResizeTopRight"
+            targetDialog: dialogRoot
+            edges: 6
+            x: dialogRoot.width - width
+            y: 0
+            width: 10
+            height: 10
+            z: 501
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            objectName: "dialogResizeBottomLeft"
+            targetDialog: dialogRoot
+            edges: 9
+            x: 0
+            y: dialogRoot.height - height
+            width: 10
+            height: 10
+            z: 501
+            visible: !dialogRoot.maximized
+        }
+        DialogResizeHandle {
+            objectName: "dialogResizeBottomRight"
+            targetDialog: dialogRoot
+            edges: 10
+            x: dialogRoot.width - width
+            y: dialogRoot.height - height
+            width: 10
+            height: 10
+            z: 501
+            visible: !dialogRoot.maximized
         }
     }
 
@@ -7278,21 +7709,75 @@ ApplicationWindow {
     }
 
     component ToastView: Rectangle {
+        id: toastRoot
         property var toast: ({})
-        width: Math.min(root.width - 32, toastText.implicitWidth + 28)
-        height: toastText.implicitHeight + 14
+        readonly property string message: root.cleanText(toast.message)
+        width: Math.min(root.width - 32,
+                        toastText.implicitWidth + toastCloseButton.implicitWidth + 44)
+        height: Math.max(32, toastText.implicitHeight + 14)
         radius: 6
-        color: "#2e343d"
+        color: root.dialogBg
         border.width: 1
-        border.color: "#55616e"
-        visible: toast.message !== undefined && root.cleanText(toast.message) !== ""
+        border.color: root.controlBorder
+        visible: toast.message !== undefined && message !== ""
 
-        Text {
-            id: toastText
-            anchors.centerIn: parent
-            text: root.cleanText(toast.message)
-            color: root.textColor
-            font.pixelSize: 13
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 6
+            spacing: 8
+
+            Text {
+                id: toastText
+                Layout.fillWidth: true
+                Layout.maximumWidth: Math.max(0, root.width - 92)
+                text: toastRoot.message
+                color: root.textColor
+                font.pixelSize: 13
+                elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            T.Button {
+                id: toastCloseButton
+                objectName: "toastCloseButton"
+                implicitWidth: 24
+                implicitHeight: 24
+                padding: 0
+                hoverEnabled: true
+                Accessible.name: "Close notification"
+                Accessible.role: Accessible.Button
+
+                background: Rectangle {
+                    radius: 4
+                    color: toastCloseButton.down
+                           ? root.controlPressedBg
+                           : (toastCloseButton.hovered
+                              ? root.controlHoverBg : "transparent")
+                    border.width: toastCloseButton.activeFocus ? 1 : 0
+                    border.color: root.dialogAccent
+                }
+
+                contentItem: Text {
+                    text: "\u00d7"
+                    color: root.textColor
+                    font.pixelSize: 17
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+
+                onClicked: root.action({
+                    "action": "toast.dismiss",
+                    "target": "toast"
+                })
+            }
         }
+    }
+
+    function toggleFullscreen() {
+        if (visibility === Window.FullScreen)
+            showNormal()
+        else
+            showFullScreen()
     }
 }

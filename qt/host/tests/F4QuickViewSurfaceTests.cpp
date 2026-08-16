@@ -550,12 +550,17 @@ void F4QuickViewSurfaceTests::coverUncoverPreservesFilePanelAndRendererObjects()
     QVERIFY(failure->isVisible());
 
     auto *const persistentPair = fixture.item(QStringLiteral("persistentPanelPair"));
-    auto *const persistentQuick = fixture.item(QStringLiteral("quickViewPanel-0"));
     QVERIFY(persistentPair);
-    QVERIFY(persistentQuick);
+    // Optional native surfaces are created lazily.  The normal two-panel
+    // startup must not pay for two hidden Quick View object trees.
+    QVERIFY(!fixture.item(QStringLiteral("quickViewPanel-0")));
 
     fixture.shell.setScene(shellScene(
         QVariantList{quickView(0, false, QStringLiteral("file-A"), 0, 20, 1)}));
+    QQuickItem *persistentQuick = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (persistentQuick = fixture.item(QStringLiteral("quickViewPanel-0"))),
+        3000);
     QTRY_VERIFY_WITH_TIMEOUT(persistentQuick->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!panel->isVisible(), 3000);
     QCOMPARE(fixture.item(QStringLiteral("galleryPanelContent-0")), loader);
@@ -569,6 +574,7 @@ void F4QuickViewSurfaceTests::coverUncoverPreservesFilePanelAndRendererObjects()
 
     fixture.shell.setScene(shellScene());
     QTRY_VERIFY_WITH_TIMEOUT(!persistentQuick->isVisible(), 3000);
+    QCOMPARE(fixture.item(QStringLiteral("quickViewPanel-0")), persistentQuick);
     QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
     QCOMPARE(fixture.item(QStringLiteral("galleryPanelContent-0")), loader);
     QCOMPARE(fixture.item(QStringLiteral("panelRendererFailure-0")), failure);

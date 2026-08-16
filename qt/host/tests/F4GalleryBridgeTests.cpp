@@ -91,7 +91,8 @@ private slots:
     void staleSelectionIntentRetriesIdempotentlyAgainstNewCatalog();
     void galleryLayoutDensityAndSortActionsAreValidated();
     void galleryIconsFollowSharedIconSet();
-    void hostRuntimeUsesHistoricalDecodeParallelism();
+    void hostRuntimeDefersBoundedDecodeWorkers();
+    void initialCatalogAppliesAppearanceInsideReset();
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
     void galleryKeepsAuthoritativeCursorVisible();
@@ -366,7 +367,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
              QStringLiteral("3"));
 }
 
-void F4GalleryBridgeTests::hostRuntimeUsesHistoricalDecodeParallelism()
+void F4GalleryBridgeTests::hostRuntimeDefersBoundedDecodeWorkers()
 {
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
@@ -375,7 +376,59 @@ void F4GalleryBridgeTests::hostRuntimeUsesHistoricalDecodeParallelism()
     auto *runtime = engine.findChild<ZoinGallery::GalleryRuntime *>();
     QVERIFY(runtime);
     QCOMPARE(runtime->decodeWorkerCount(),
-             qMax(3, QThread::idealThreadCount()));
+             qMax(3, qMin(4, QThread::idealThreadCount())));
+    const QList<QThread *> workers = runtime->findChildren<QThread *>();
+    QCOMPARE(workers.size(), runtime->decodeWorkerCount());
+    QVERIFY(std::none_of(
+        workers.cbegin(), workers.cend(),
+        [](const QThread *worker) { return worker->isRunning(); }));
+}
+
+void F4GalleryBridgeTests::initialCatalogAppliesAppearanceInsideReset()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy resetSpy(session->model(),
+                        &QAbstractItemModel::modelReset);
+    QSignalSpy changedSpy(session->model(),
+                          &QAbstractItemModel::dataChanged);
+
+    QVariantMap scene = longCatalogScene(64, 1);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantMap panel = shell.value(QStringLiteral("panels"))
+                            .toList().constFirst().toMap();
+    panel.insert(QStringLiteral("highlightRevision"), qulonglong(8));
+    panel.insert(QStringLiteral("highlightStyles"), QVariantMap{
+        {QStringLiteral("accent"), QVariantMap{
+             {QStringLiteral("icon"),
+              QStringLiteral("qrc:/custom/accent.svg")},
+             {QStringLiteral("marker"), QStringLiteral("*")},
+         }},
+    });
+    QVariantList entries = panel.value(QStringLiteral("entries")).toList();
+    for (QVariant &value : entries) {
+        QVariantMap entry = value.toMap();
+        entry.insert(QStringLiteral("highlightStyleId"),
+                     QStringLiteral("accent"));
+        value = entry;
+    }
+    panel.insert(QStringLiteral("entries"), entries);
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    scene.insert(QStringLiteral("shell"), shell);
+
+    bridge.synchronizeScene(scene);
+
+    QCOMPARE(resetSpy.size(), 1);
+    QCOMPARE(changedSpy.size(), 0);
+    QCOMPARE(session->model()->rowCount(), entries.size());
+    QCOMPARE(session->highlightStyleAt(37).value(
+                 QStringLiteral("icon")).toString(),
+             QStringLiteral("qrc:/custom/accent.svg"));
 }
 
 void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()

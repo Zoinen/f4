@@ -354,6 +354,23 @@ func TestFrameManager_Toast(t *testing.T) {
 	if fm.currentToast == nil || fm.currentToast.Message != msg {
 		t.Errorf("Toast not set correctly in FrameManager. Got: %v", fm.currentToast)
 	}
+	if !fm.DismissToast() {
+		t.Fatal("visible toast was not dismissed")
+	}
+	if fm.currentToast != nil {
+		t.Fatal("dismissed toast remained active")
+	}
+	if fm.DismissToast() {
+		t.Fatal("dismissing an absent toast unexpectedly succeeded")
+	}
+
+	ShowToast(msg, 100*time.Millisecond)
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("replacement toast task not posted")
+	}
 
 	// Ждем истечения срока
 	time.Sleep(150 * time.Millisecond)

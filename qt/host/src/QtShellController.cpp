@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QMetaObject>
 #include <QPointer>
+#include <QTimer>
 
 #include <msgpack.hpp>
 
@@ -24,6 +25,7 @@ constexpr quint32 MaxMessageSize = 64 * 1024 * 1024;
 // tiny protocol updates from filling the decoder and GUI event queues.
 constexpr qsizetype MaxQueuedDecodeBytes = MaxMessageSize;
 constexpr qsizetype MaxQueuedDecodeFrames = 8;
+constexpr int InitialConnectDeadlineMs = 2000;
 
 void packString(msgpack::packer<msgpack::sbuffer> &packer, const QString &value)
 {
@@ -255,6 +257,29 @@ QVariantMap makePresentationScene(QVariantMap scene)
     }
     return scene;
 }
+
+bool hasNonEmptyMap(const QVariantMap &container, const QString &key)
+{
+    const QVariant value = container.value(key);
+    return value.metaType().id() == QMetaType::QVariantMap
+        && !value.toMap().isEmpty();
+}
+
+bool shellSideIsCovered(const QVariantMap &shell, int side)
+{
+    for (const QString &key : {QStringLiteral("infoPanels"),
+                               QStringLiteral("quickViews")}) {
+        const QVariantList covers = shell.value(key).toList();
+        for (const QVariant &coverValue : covers) {
+            const QVariantMap cover = coverValue.toMap();
+            if (!cover.isEmpty()
+                && cover.value(QStringLiteral("side")).toInt() == side) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 }
 
 class QtShellMessageDecoder final : public QObject
@@ -375,7 +400,14 @@ QtShellController::QtShellController(const QString &connectAddress,
     , m_initialRows(rows)
 {
     if (!parseConnectAddress(connectAddress)) {
-        emit fatalError(QStringLiteral("Invalid ExtUI connect address: %1").arg(connectAddress));
+        m_startupError = QStringLiteral(
+            "Invalid ExtUI connect address: %1").arg(connectAddress);
+        // main.cpp connects fatalError immediately after construction. Queue
+        // malformed-address reporting so that startup failures cannot be lost
+        // before that observer (and the application event loop) exist.
+        QTimer::singleShot(0, this, [this]() {
+            emit fatalError(m_startupError);
+        });
         return;
     }
 
@@ -401,7 +433,24 @@ QtShellController::QtShellController(const QString &connectAddress,
     // work submitted below has its own one-frame byte budget, so TCP
     // backpressure still bounds memory and stale-scene accumulation.
     m_socket->setReadBufferSize(static_cast<qint64>(MaxMessageSize) + 4);
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.startup.connect.begin"), {}, {
+                {QStringLiteral("host"), m_host},
+                {QStringLiteral("port"), m_port},
+            });
+    }
     m_socket->connectToHost(m_host, m_port);
+    QTimer::singleShot(InitialConnectDeadlineMs, this, [this]() {
+        if (m_connected || m_helloSent || !m_startupError.isEmpty()) {
+            return;
+        }
+        m_startupError = QStringLiteral(
+            "Timed out connecting to the f4 core at %1:%2")
+            .arg(m_host).arg(m_port);
+        m_socket->abort();
+        emit fatalError(m_startupError);
+    });
 }
 
 QtShellController::~QtShellController()
@@ -416,6 +465,109 @@ QtShellController::~QtShellController()
         m_decodeThread.wait();
     }
     m_decoder = nullptr;
+}
+
+bool QtShellController::initialSceneReadyForDisplay(const QVariantMap &scene)
+{
+    if (scene.isEmpty()) {
+        return false;
+    }
+    if (hasNonEmptyMap(scene, QStringLiteral("surface"))
+        || hasNonEmptyMap(scene, QStringLiteral("operationsQueue"))) {
+        return true;
+    }
+
+    const QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    if (!shell.isEmpty()) {
+        // Text presentation and the terminal surface do not depend on a
+        // native catalog becoming ready.
+        if (scene.value(QStringLiteral("presentation")).toString()
+                == QStringLiteral("text")
+            || shell.value(QStringLiteral("terminalActive")).toBool()) {
+            return true;
+        }
+
+        const QVariantList panels = shell.value(
+            QStringLiteral("panels")).toList();
+        if (panels.isEmpty()) {
+            return false;
+        }
+
+        const bool wide = shell.value(QStringLiteral("wide")).toBool();
+        const int wideSide = shell.value(QStringLiteral("widePanel")).toInt();
+        for (int side = 0; side < 2; ++side) {
+            const QString visibilityKey = side == 0
+                ? QStringLiteral("showLeftPanel")
+                : QStringLiteral("showRightPanel");
+            const bool sideVisible = wide
+                ? side == wideSide
+                : (!shell.contains(visibilityKey)
+                   || shell.value(visibilityKey).toBool());
+            if (!sideVisible || shellSideIsCovered(shell, side)) {
+                continue;
+            }
+
+            bool found = false;
+            for (const QVariant &panelValue : panels) {
+                const QVariantMap panel = panelValue.toMap();
+                if (panel.isEmpty()
+                    || panel.value(QStringLiteral("side")).toInt() != side) {
+                    continue;
+                }
+                found = true;
+                if (panel.value(QStringLiteral("loading")).toBool()) {
+                    return false;
+                }
+                break;
+            }
+            if (!found) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Compatibility scenes have no app shell but can still fully populate
+    // the fallback grid before the native window is exposed.
+    return !scene.value(QStringLiteral("frames")).toList().isEmpty()
+        || !scene.value(QStringLiteral("screens")).toList().isEmpty();
+}
+
+bool QtShellController::waitForInitialHandshake(int timeoutMs)
+{
+    if (!m_socket || m_host.isEmpty() || m_port == 0) {
+        return false;
+    }
+
+    QElapsedTimer timer;
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        timer.start();
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.startup.handshake.wait.begin"));
+    }
+
+    bool connected = m_socket->state() == QAbstractSocket::ConnectedState;
+    if (!connected && timeoutMs > 0
+        && (m_socket->state() == QAbstractSocket::HostLookupState
+            || m_socket->state() == QAbstractSocket::ConnectingState)) {
+        connected = m_socket->waitForConnected(timeoutMs);
+    }
+    if (connected && !m_helloSent) {
+        // QAbstractSocket normally emits connected() from waitForConnected(),
+        // invoking onConnected() directly on this thread. Keep this explicit
+        // call as an idempotent guarantee across socket-engine backends.
+        onConnected();
+    }
+
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.startup.handshake.wait.end"), {}, {
+                {QStringLiteral("connected"), connected},
+                {QStringLiteral("helloSent"), m_helloSent},
+                {QStringLiteral("durationNs"), timer.nsecsElapsed()},
+            });
+    }
+    return connected && m_helloSent;
 }
 
 void QtShellController::sendResize(int cols, int rows)
@@ -521,12 +673,21 @@ void QtShellController::sendQuit()
 
 void QtShellController::onConnected()
 {
-    m_connected = true;
-    emit connectedChanged();
+    if (!m_connected) {
+        m_connected = true;
+        emit connectedChanged();
+    }
+    if (m_helloSent) {
+        return;
+    }
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.startup.connected"));
+    }
 
     const int cellWidth = 10;
     const int cellHeight = 20;
-    sendMessage({
+    const bool helloWritten = sendMessage({
         {QStringLiteral("type"), QStringLiteral("hello")},
         {QStringLiteral("nonce"), m_nonce},
         {QStringLiteral("cols"), m_initialCols},
@@ -536,6 +697,13 @@ void QtShellController::onConnected()
         {QStringLiteral("cellWidth"), cellWidth},
         {QStringLiteral("cellHeight"), cellHeight},
     });
+    m_helloSent = helloWritten;
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        F4NavigationBenchmarkTrace::event(
+            QStringLiteral("qt.startup.hello.sent"), {}, {
+                {QStringLiteral("success"), helloWritten},
+            });
+    }
 }
 
 void QtShellController::onReadyRead()
@@ -546,17 +714,39 @@ void QtShellController::onReadyRead()
 void QtShellController::onDisconnected()
 {
     invalidateDecodeSession();
-    if (m_connected) {
-        m_connected = false;
-        emit connectedChanged();
+    if (!m_connected) {
+        // A failed initial connection is followed by errorOccurred; let its
+        // fatalError handler choose the non-zero exit status instead of racing
+        // it with a successful quit.
+        return;
     }
-    QCoreApplication::quit();
+    m_connected = false;
+    emit connectedChanged();
+    // A loopback peer can disconnect while waitForConnected() is running,
+    // before app.exec(). A queued quit works both before and during the loop.
+    if (QCoreApplication *application = QCoreApplication::instance()) {
+        QMetaObject::invokeMethod(application, []() {
+            QCoreApplication::quit();
+        }, Qt::QueuedConnection);
+    }
 }
 
 void QtShellController::onSocketError(QAbstractSocket::SocketError)
 {
     invalidateDecodeSession();
-    emit fatalError(m_socket->errorString());
+    const QString message = m_socket->errorString();
+    if (!m_helloSent) {
+        if (!m_startupError.isEmpty()) {
+            return;
+        }
+        m_startupError = message;
+    }
+    // connectToHost() can fail synchronously in the constructor, before
+    // main.cpp attaches its observer. Re-emit on the first event-loop turn so
+    // both startup and later socket failures follow the same reliable path.
+    QTimer::singleShot(0, this, [this, message]() {
+        emit fatalError(message);
+    });
 }
 
 bool QtShellController::sendMessage(const QVariantMap &message)

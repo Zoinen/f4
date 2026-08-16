@@ -245,6 +245,9 @@ func HandleSemanticAction(action map[string]any) bool {
 	}
 	actionName := semanticString(action["action"])
 	target := semanticString(action["target"])
+	if actionName == "toast.dismiss" {
+		return vtui.FrameManager.HandleSemanticAction(action)
+	}
 	if target == "app" && (actionName == "presentation.toggle" || actionName == "toggle_presentation") {
 		toggleGuiPresentation()
 		return true

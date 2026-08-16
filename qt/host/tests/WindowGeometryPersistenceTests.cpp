@@ -19,6 +19,8 @@ private slots:
     void missingScreenFallsBackAndRemainsVisible();
     void oversizedGeometryFitsAvailableArea();
     void realWindowSaveAndRestoreRoundTrip();
+    void deferredRestoreRemainsHiddenUntilExplicitShow_data();
+    void deferredRestoreRemainsHiddenUntilExplicitShow();
     void hiddenOnCloseRetainsMaximizedStateAndNormalFrame();
 };
 
@@ -150,6 +152,65 @@ void WindowGeometryPersistenceTests::realWindowSaveAndRestoreRoundTrip()
     WindowGeometryPersistence persistence(&second, settingsPath);
     QVERIFY(persistence.restore());
     QCOMPARE(second.geometry(), wanted);
+}
+
+void WindowGeometryPersistenceTests::deferredRestoreRemainsHiddenUntilExplicitShow_data()
+{
+    QTest::addColumn<int>("state");
+    QTest::newRow("windowed")
+        << int(PersistedWindowState::Windowed);
+    QTest::newRow("maximized")
+        << int(PersistedWindowState::Maximized);
+    QTest::newRow("fullscreen")
+        << int(PersistedWindowState::FullScreen);
+}
+
+void WindowGeometryPersistenceTests::deferredRestoreRemainsHiddenUntilExplicitShow()
+{
+    QFETCH(int, state);
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsPath =
+        directory.filePath(QStringLiteral("geometry.ini"));
+    QScreen *screen = QGuiApplication::primaryScreen();
+    QVERIFY(screen);
+    const QRect available = screen->availableGeometry();
+    const QRect normal(available.topLeft() + QPoint(15, 15),
+                       QSize(qMin(600, available.width()),
+                             qMin(420, available.height())));
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    PersistedWindowGeometry stored;
+    stored.valid = true;
+    stored.normalGeometry = normal;
+    stored.screenName = screen->name();
+    stored.screenAvailableGeometry = available;
+    stored.state = PersistedWindowState(state);
+    WindowGeometryPersistence::write(settings, stored);
+
+    QWindow window;
+    window.setGeometry(QRect(0, 0, 100, 100));
+    WindowGeometryPersistence persistence(&window, settingsPath);
+    QVERIFY(persistence.restoreDeferred());
+    QCOMPARE(window.visibility(), QWindow::Hidden);
+    QVERIFY(!window.isVisible());
+    QCOMPARE(window.geometry(), normal);
+
+    persistence.showRestored();
+    QVERIFY(window.isVisible());
+    if (stored.state == PersistedWindowState::Maximized)
+        QTRY_COMPARE(window.visibility(), QWindow::Maximized);
+    else if (stored.state == PersistedWindowState::FullScreen)
+        QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
+    else
+        QTRY_COMPARE(window.visibility(), QWindow::Windowed);
+
+    window.hide();
+    persistence.save();
+    const PersistedWindowGeometry saved =
+        WindowGeometryPersistence::read(settings);
+    QCOMPARE(int(saved.state), state);
+    QCOMPARE(saved.normalGeometry, normal);
 }
 
 void WindowGeometryPersistenceTests::hiddenOnCloseRetainsMaximizedStateAndNormalFrame()

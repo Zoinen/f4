@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"os/user"
 	"runtime"
 	"runtime/debug"
@@ -13,6 +12,17 @@ import (
 	"github.com/unxed/vtui"
 )
 
+// These values are populated by packaged builds with -ldflags -X. Development
+// builds fall back to the VCS settings embedded by the Go toolchain and then to
+// "(devel)". Version discovery must remain process-local: running Git here used
+// to add several hundred milliseconds to every application startup.
+var (
+	buildVersion  string
+	buildRevision string
+	buildModified string
+	buildTime     string
+)
+
 var (
 	titleOnce     sync.Once
 	cachedHost    string
@@ -21,6 +31,33 @@ var (
 	cachedVersion string
 	cachedPlat    string
 )
+
+type rawVersionInfo struct {
+	version  string
+	revision string
+	modified string
+	time     string
+}
+
+type resolvedVersionInfo struct {
+	version  string
+	revision string
+	dirty    string
+	time     string
+}
+
+var processVersionInfo = sync.OnceValue(func() resolvedVersionInfo {
+	var info *debug.BuildInfo
+	if current, ok := debug.ReadBuildInfo(); ok {
+		info = current
+	}
+	return resolveVersionInfo(rawVersionInfo{
+		version:  buildVersion,
+		revision: buildRevision,
+		modified: buildModified,
+		time:     buildTime,
+	}, info)
+})
 
 func initTitleCache() {
 	h, _ := os.Hostname()
@@ -46,6 +83,9 @@ func isReleaseVersion(v string) bool {
 		return false
 	}
 	s := v[1:]
+	if s == "" {
+		return false
+	}
 	for _, r := range s {
 		if !unicode.IsDigit(r) && r != '.' {
 			return false
@@ -54,111 +94,92 @@ func isReleaseVersion(v string) bool {
 	return true
 }
 
-func getGitTag() string {
-	out, err := exec.Command("git", "describe", "--tags", "--abbrev=0").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
+func resolveVersionInfo(build rawVersionInfo, info *debug.BuildInfo) resolvedVersionInfo {
+	version := strings.TrimSpace(build.version)
+	revision := strings.TrimSpace(build.revision)
+	modified := strings.TrimSpace(build.modified)
+	timeStr := strings.TrimSpace(build.time)
 
-func getGitFallback() (rev string, dirty string, timeStr string) {
-	out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output()
-	if err != nil {
-		return "", "", ""
-	}
-	rev = strings.TrimSpace(string(out))
-	if rev == "" {
-		return "", "", ""
-	}
-	statusOut, err := exec.Command("git", "status", "--porcelain").Output()
-	if err == nil && len(strings.TrimSpace(string(statusOut))) > 0 {
-		dirty = "-dirty"
-	}
-	timeOut, err := exec.Command("git", "log", "-1", "--format=%cI").Output()
-	if err == nil {
-		tStr := strings.TrimSpace(string(timeOut))
-		if len(tStr) >= 16 {
-			timeStr = strings.Replace(tStr[:16], "T", " ", 1)
+	if info != nil {
+		if version == "" {
+			candidate := strings.TrimSpace(info.Main.Version)
+			if candidate != "(devel)" {
+				version = candidate
+			}
 		}
-	}
-	return rev, dirty, timeStr
-}
-
-func getVCSInfo() (rev string, dirty string, timeStr string) {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range info.Settings {
-			switch s.Key {
+		for _, setting := range info.Settings {
+			switch setting.Key {
 			case "vcs.revision":
-				rev = s.Value
-				if len(rev) > 7 {
-					rev = rev[:7]
+				if revision == "" {
+					revision = strings.TrimSpace(setting.Value)
 				}
 			case "vcs.modified":
-				if s.Value == "true" {
-					dirty = "-dirty"
+				if modified == "" {
+					modified = strings.TrimSpace(setting.Value)
 				}
 			case "vcs.time":
-				timeStr = s.Value
-				if len(timeStr) >= 16 {
-					timeStr = strings.Replace(timeStr[:16], "T", " ", 1)
+				if timeStr == "" {
+					timeStr = strings.TrimSpace(setting.Value)
 				}
 			}
 		}
 	}
-	if rev == "" {
-		rev, dirty, timeStr = getGitFallback()
+
+	if version == "" {
+		version = "(devel)"
 	}
-	return rev, dirty, timeStr
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
+	dirty := ""
+	if strings.EqualFold(modified, "true") {
+		dirty = "-dirty"
+	}
+	if len(timeStr) >= 16 {
+		timeStr = strings.Replace(timeStr[:16], "T", " ", 1)
+	} else {
+		timeStr = ""
+	}
+
+	return resolvedVersionInfo{
+		version:  version,
+		revision: revision,
+		dirty:    dirty,
+		time:     timeStr,
+	}
+}
+
+func (info resolvedVersionInfo) short() string {
+	if isReleaseVersion(info.version) {
+		return info.version + info.dirty
+	}
+	if info.revision != "" {
+		return info.revision + info.dirty
+	}
+	return info.version
+}
+
+func (info resolvedVersionInfo) long() string {
+	var sb strings.Builder
+	if isReleaseVersion(info.version) {
+		sb.WriteString(info.version + info.dirty)
+	} else if info.revision != "" {
+		sb.WriteString(info.revision + info.dirty)
+	} else {
+		sb.WriteString(info.version)
+	}
+	if info.time != "" {
+		sb.WriteString(" [" + info.time + "]")
+	}
+	return sb.String()
 }
 
 func getShortVersionInfo() string {
-	baseVer := ""
-	if info, ok := debug.ReadBuildInfo(); ok {
-		baseVer = info.Main.Version
-	}
-	if baseVer == "" || baseVer == "(devel)" {
-		baseVer = getGitTag()
-	}
-	if baseVer == "" {
-		baseVer = "(devel)"
-	}
-
-	rev, dirty, _ := getVCSInfo()
-	if isReleaseVersion(baseVer) {
-		return baseVer + dirty
-	}
-	if rev != "" {
-		return rev + dirty
-	}
-	return baseVer
+	return processVersionInfo().short()
 }
 
 func getLongVersionInfo() string {
-	baseVer := ""
-	if info, ok := debug.ReadBuildInfo(); ok {
-		baseVer = info.Main.Version
-	}
-	if baseVer == "" || baseVer == "(devel)" {
-		baseVer = getGitTag()
-	}
-	if baseVer == "" {
-		baseVer = "(devel)"
-	}
-
-	rev, dirty, timeStr := getVCSInfo()
-	var sb strings.Builder
-	if isReleaseVersion(baseVer) {
-		sb.WriteString(baseVer + dirty)
-	} else if rev != "" {
-		sb.WriteString(rev + dirty)
-	} else {
-		sb.WriteString(baseVer)
-	}
-	if timeStr != "" {
-		sb.WriteString(" [" + timeStr + "]")
-	}
-	return sb.String()
+	return processVersionInfo().long()
 }
 
 func UpdateWindowTitle(scr *vtui.ScreenBuf) {

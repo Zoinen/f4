@@ -291,6 +291,16 @@ func (fm *frameManager) GetActiveToast() string {
 	return ""
 }
 
+// DismissToast removes the currently visible notification. It is intended for
+// semantic frontends which provide a pointer-accessible close control.
+func (fm *frameManager) DismissToast() bool {
+	if fm == nil || fm.currentToast == nil {
+		return false
+	}
+	fm.currentToast = nil
+	return true
+}
+
 // FrameManager is the global instance of the frame manager.
 var FrameManager = &frameManager{}
 

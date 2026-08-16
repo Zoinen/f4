@@ -127,12 +127,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     ZoinGallery::RuntimeOptions options;
     options.providerPrefix = QStringLiteral("f4-zoingallery");
     options.storageNamespace = QStringLiteral("f4-qt-host");
-    // f4 owns one shared runtime for both panels. Preserve ZoinGallery's
-    // historical platform-sized decode pool here: the runtime still bounds
-    // compressed payloads and viewer frames independently, while a fixed
-    // four-worker host pool cannot keep up with held navigation on machines
-    // with substantially more decode capacity.
-    options.maxDecodeThreads = 0;
+    // Four workers leave one source-read lane and three decode/cache lanes.
+    // DecodeManager starts each lane only on its first task, so constructing
+    // the bridge no longer creates one OS thread per logical CPU.
+    options.maxDecodeThreads = 4;
     options.persistentCache = true;
     auto *runtime = ZoinGallery::GalleryRuntime::install(engine, options);
     m_runtime = runtime;
@@ -1291,9 +1289,12 @@ QVariantList F4GalleryBridge::panelsFromScene(const QVariantMap &scene)
     return shellFromScene(scene).value(QStringLiteral("panels")).toList();
 }
 
-QVariantList F4GalleryBridge::normalizedEntries(const QVariantMap &panel)
+QVariantList F4GalleryBridge::normalizedEntries(
+    const QVariantMap &panel) const
 {
     const QVariantList sourceEntries = panel.value(QStringLiteral("entries")).toList();
+    const QVariantMap styles = panel.value(QStringLiteral("highlightStyles")).toMap();
+    const qreal devicePixelRatio = availableDevicePixelRatio();
     QVariantList entries;
     entries.reserve(sourceEntries.size());
     for (qsizetype row = 0; row < sourceEntries.size(); ++row) {
@@ -1332,24 +1333,7 @@ QVariantList F4GalleryBridge::normalizedEntries(const QVariantMap &panel)
         entry.insert(QStringLiteral("modeText"), source.value(QStringLiteral("mode")));
         entry.insert(QStringLiteral("highlightStyleId"),
                      source.value(QStringLiteral("highlightStyleId")));
-        entries.push_back(entry);
-    }
-    return entries;
-}
-
-QVariantList F4GalleryBridge::normalizedAppearance(
-    const QVariantMap &panel) const
-{
-    const QVariantList sourceEntries = panel.value(QStringLiteral("entries")).toList();
-    const QVariantMap styles = panel.value(QStringLiteral("highlightStyles")).toMap();
-    const qreal devicePixelRatio = availableDevicePixelRatio();
-    QVariantList appearance;
-    appearance.reserve(sourceEntries.size());
-    for (const QVariant &value : sourceEntries) {
-        const QVariantMap source = value.toMap();
         const QString styleId = source.value(QStringLiteral("highlightStyleId")).toString();
-        QVariantMap entry;
-        entry.insert(QStringLiteral("entryId"), source.value(QStringLiteral("entryId")));
         QVariantMap style;
         if (!styleId.isEmpty()) {
             style = styles.value(styleId).toMap();
@@ -1400,9 +1384,9 @@ QVariantList F4GalleryBridge::normalizedAppearance(
             }
         }
         entry.insert(QStringLiteral("highlightStyle"), style);
-        appearance.push_back(entry);
+        entries.push_back(entry);
     }
-    return appearance;
+    return entries;
 }
 
 QStringList F4GalleryBridge::selectedEntryIds(const QVariantList &entries)
@@ -1597,7 +1581,12 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // Semantic scenes retain the complete catalog for compatibility, but a
     // cursor acknowledgement does not need to normalize/copy it again. Keep
     // the revision-owned snapshot in the persistent bridge session.
-    const QVariantList entries = catalogPayloadChanged
+    const bool appearanceChanged = highlightChanged || iconChanged;
+    // Normalize structural and appearance fields in one traversal. On a
+    // catalog reset ExternalCatalogModel consumes highlightStyle before
+    // endResetModel(), avoiding a second full pass and a post-reset update
+    // storm.
+    const QVariantList entries = catalogPayloadChanged || appearanceChanged
         ? normalizedEntries(panel) : state.entries;
     const QStringList selectedIds = catalogPayloadChanged || selectionChanged
         ? selectedEntryIds(catalogPayloadChanged
@@ -1618,10 +1607,8 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         });
     }
 
-    if (session
-        && (catalogPayloadChanged || highlightChanged || iconChanged)) {
-        session->applyExternalAppearance(normalizedAppearance(panel),
-                                         highlightRevision);
+    if (session && !catalogChanged && appearanceChanged) {
+        session->applyExternalAppearance(entries, highlightRevision);
     }
 
     if (session
@@ -1687,6 +1674,9 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
                 entryId,
                 entry.value(QStringLiteral("index"), row).toInt());
         }
+    }
+    else if (appearanceChanged) {
+        state.entries = entries;
     }
     if (catalogChanged || selectionChanged) {
         state.selectedEntryIdList = selectedIds;

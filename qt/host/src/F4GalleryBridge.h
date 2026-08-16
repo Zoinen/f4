@@ -189,8 +189,7 @@ private:
 
     static bool validSide(int side);
     static QVariantList panelsFromScene(const QVariantMap &scene);
-    static QVariantList normalizedEntries(const QVariantMap &panel);
-    QVariantList normalizedAppearance(const QVariantMap &panel) const;
+    QVariantList normalizedEntries(const QVariantMap &panel) const;
     static QStringList selectedEntryIds(const QVariantList &entries);
     static int sourceIndexForEntryId(const QVariantList &entries,
                                      const QString &entryId);

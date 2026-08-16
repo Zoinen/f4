@@ -209,6 +209,16 @@ QRect WindowGeometryPersistence::resolvedNormalGeometry(
 
 bool WindowGeometryPersistence::restore()
 {
+    return restoreImpl(false);
+}
+
+bool WindowGeometryPersistence::restoreDeferred()
+{
+    return restoreImpl(true);
+}
+
+bool WindowGeometryPersistence::restoreImpl(bool deferShow)
+{
     if (!m_window || !m_settings)
         return false;
     const PersistedWindowGeometry stored = read(*m_settings);
@@ -235,14 +245,31 @@ bool WindowGeometryPersistence::restore()
     m_window->setGeometry(geometry);
     m_normalGeometry = geometry;
     m_lastNonMinimizedState = stored.state;
-    if (stored.state == PersistedWindowState::Maximized)
+    if (!deferShow)
+        applyRestoredWindowState();
+    m_restoring = false;
+    return true;
+}
+
+void WindowGeometryPersistence::showRestored()
+{
+    if (!m_window || m_window->isVisible())
+        return;
+    m_restoring = true;
+    applyRestoredWindowState();
+    m_restoring = false;
+}
+
+void WindowGeometryPersistence::applyRestoredWindowState()
+{
+    if (!m_window)
+        return;
+    if (m_lastNonMinimizedState == PersistedWindowState::Maximized)
         m_window->showMaximized();
-    else if (stored.state == PersistedWindowState::FullScreen)
+    else if (m_lastNonMinimizedState == PersistedWindowState::FullScreen)
         m_window->showFullScreen();
     else
         m_window->showNormal();
-    m_restoring = false;
-    return true;
 }
 
 void WindowGeometryPersistence::save()

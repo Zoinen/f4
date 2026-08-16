@@ -212,6 +212,9 @@ func (fm *frameManager) HandleSemanticAction(action map[string]any) bool {
 	}
 	actionName := semanticString(action["action"])
 	target := semanticString(action["target"])
+	if actionName == "toast.dismiss" && (target == "" || target == "toast") {
+		return fm.DismissToast()
+	}
 	if actionName == "workspace.new" || ((actionName == "activate" || actionName == "control.activate") && target == "workspace-new") {
 		return fm.EmitCommand(CmResize, "fork")
 	}
@@ -402,6 +405,17 @@ func (w *Window) HandleSemanticAction(action map[string]any) bool {
 		switch semanticString(action["action"]) {
 		case "close", "dialog.close", "window.close":
 			w.Close()
+			return true
+		case "dialog.geometry", "window.geometry":
+			newWidth := semanticInt(action["w"])
+			newHeight := semanticInt(action["h"])
+			if newWidth < 1 || newHeight < 1 {
+				return false
+			}
+			x1, y1, _, _ := w.GetPosition()
+			w.ChangeSize(newWidth, newHeight)
+			w.MoveRelative(semanticInt(action["x"])-x1,
+				semanticInt(action["y"])-y1)
 			return true
 		}
 	}

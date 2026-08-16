@@ -239,12 +239,145 @@ class QtShellControllerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void malformedAddressReportsFatalErrorAfterConstruction();
+    void refusedConnectionReportsFatalErrorAfterConstruction();
+    void initialHandshakeCompletesWithoutGuiEventLoop();
+    void startupWindowWaitsForVisibleCatalogs();
     void benchmarkTraceMetadataFollowsTopLevelThenActivePanel();
     void uiActionPacksLosslessTraceMetadata();
     void largeScenesDecodeOffGuiThreadInOrder();
     void commandLinePatchPreservesExistingScene();
     void destructionWithQueuedDecodeIsSafe();
 };
+
+void QtShellControllerTests::malformedAddressReportsFatalErrorAfterConstruction()
+{
+    QtShellController controller(QStringLiteral("not-an-address"),
+                                 QStringLiteral("invalid-address-test"),
+                                 80, 24);
+    QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
+
+    // The observer is intentionally installed after construction, matching
+    // main.cpp. The queued diagnostic must still arrive exactly once.
+    QTRY_COMPARE(fatalErrors.size(), 1);
+    QVERIFY(fatalErrors.constFirst().constFirst().toString().contains(
+        QStringLiteral("Invalid ExtUI connect address")));
+    QVERIFY(!controller.startupError().isEmpty());
+    QVERIFY(!controller.waitForInitialHandshake(0));
+}
+
+void QtShellControllerTests::refusedConnectionReportsFatalErrorAfterConstruction()
+{
+    QTcpServer portReservation;
+    QVERIFY(portReservation.listen(QHostAddress::LocalHost, 0));
+    const quint16 closedPort = portReservation.serverPort();
+    portReservation.close();
+
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(closedPort),
+        QStringLiteral("refused-connection-test"), 80, 24);
+    QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
+
+    // A Windows socket engine may report ECONNREFUSED directly from the
+    // constructor's connectToHost(). The post-construction observer must not
+    // miss that diagnostic.
+    QTRY_COMPARE_WITH_TIMEOUT(fatalErrors.size(), 1, 5000);
+    QVERIFY(!fatalErrors.constFirst().constFirst().toString().isEmpty());
+    QVERIFY(!controller.startupError().isEmpty());
+}
+
+void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("synchronous-handshake-test"), 80, 24);
+
+    // Do not process Qt events here: this is the path used immediately before
+    // QQmlApplicationEngine::load(). The blocking socket primitive must make
+    // the core-visible hello independent of the GUI event loop.
+    QVERIFY(controller.waitForInitialHandshake(500));
+    QVERIFY(controller.connected());
+    QVERIFY(server.waitForNewConnection(500));
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray payload;
+    QVERIFY(takePayload(peer, payload));
+    msgpack::object_handle handle = msgpack::unpack(
+        payload.constData(), static_cast<size_t>(payload.size()));
+    std::map<std::string, msgpack::object> message;
+    handle.get().convert(message);
+    QCOMPARE(QString::fromStdString(message.at("type").as<std::string>()),
+             QStringLiteral("hello"));
+    QCOMPARE(QString::fromStdString(message.at("nonce").as<std::string>()),
+             QStringLiteral("synchronous-handshake-test"));
+
+    // Calling the startup helper again must not put a second hello on the
+    // wire if a socket backend delivered connected() during the first wait.
+    QVERIFY(controller.waitForInitialHandshake(0));
+    QVERIFY(!peer->waitForReadyRead(25));
+    QVERIFY(peer->readAll().isEmpty());
+}
+
+void QtShellControllerTests::startupWindowWaitsForVisibleCatalogs()
+{
+    const auto panel = [](int side, bool loading) {
+        return QVariantMap{
+            {QStringLiteral("side"), side},
+            {QStringLiteral("loading"), loading},
+            {QStringLiteral("catalogRevision"), qlonglong(loading ? 0 : 7)},
+        };
+    };
+    const auto scene = [&](const QVariantList &panels) {
+        return QVariantMap{
+            {QStringLiteral("type"), QStringLiteral("scene")},
+            {QStringLiteral("schema"), QStringLiteral("app")},
+            {QStringLiteral("shell"), QVariantMap{
+                {QStringLiteral("showLeftPanel"), true},
+                {QStringLiteral("showRightPanel"), true},
+                {QStringLiteral("panels"), panels},
+            }},
+        };
+    };
+
+    QVERIFY(!QtShellController::initialSceneReadyForDisplay({}));
+    QVERIFY(!QtShellController::initialSceneReadyForDisplay(
+        scene({panel(0, true), panel(1, true)})));
+    QVERIFY(!QtShellController::initialSceneReadyForDisplay(
+        scene({panel(0, false), panel(1, true)})));
+    QVERIFY(QtShellController::initialSceneReadyForDisplay(
+        scene({panel(0, false), panel(1, false)})));
+
+    QVariantMap hiddenLoading = scene({panel(0, false), panel(1, true)});
+    QVariantMap hiddenShell = hiddenLoading.value(
+        QStringLiteral("shell")).toMap();
+    hiddenShell.insert(QStringLiteral("showRightPanel"), false);
+    hiddenLoading.insert(QStringLiteral("shell"), hiddenShell);
+    QVERIFY(QtShellController::initialSceneReadyForDisplay(hiddenLoading));
+
+    QVariantMap coveredLoading = scene({panel(0, false), panel(1, true)});
+    QVariantMap coveredShell = coveredLoading.value(
+        QStringLiteral("shell")).toMap();
+    coveredShell.insert(QStringLiteral("infoPanels"), QVariantList{
+        QVariantMap{{QStringLiteral("side"), 1}},
+    });
+    coveredLoading.insert(QStringLiteral("shell"), coveredShell);
+    QVERIFY(QtShellController::initialSceneReadyForDisplay(coveredLoading));
+
+    QVERIFY(QtShellController::initialSceneReadyForDisplay({
+        {QStringLiteral("surface"), QVariantMap{
+            {QStringLiteral("kind"), QStringLiteral("viewer")},
+        }},
+    }));
+    QVERIFY(QtShellController::initialSceneReadyForDisplay({
+        {QStringLiteral("frames"), QVariantList{
+            QVariantMap{{QStringLiteral("kind"),
+                         QStringLiteral("fallback")}},
+        }},
+    }));
+}
 
 void QtShellControllerTests::benchmarkTraceMetadataFollowsTopLevelThenActivePanel()
 {

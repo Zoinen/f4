@@ -56,6 +56,18 @@ jobs:
         go-version: '1.26.x'
         cache-dependency-path: go.sum
 
+    - name: Collect core version metadata
+      shell: bash
+      run: |
+        echo "F4_BUILD_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        echo "F4_BUILD_TIME=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+        echo "F4_BUILD_MODIFIED=false" >> "$GITHUB_ENV"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          echo "F4_BUILD_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+        else
+          echo "F4_BUILD_VERSION=" >> "$GITHUB_ENV"
+        fi
+
     - name: Check formatting
       if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
       run: |
@@ -95,7 +107,11 @@ jobs:
         if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
 
         # Prepare flags for truly static binary on Linux
-        LDFLAGS="-s -w"
+        VERSION_LDFLAGS="-X main.buildRevision=$F4_BUILD_REVISION -X main.buildTime=$F4_BUILD_TIME -X main.buildModified=$F4_BUILD_MODIFIED"
+        if [ -n "$F4_BUILD_VERSION" ]; then
+          VERSION_LDFLAGS="$VERSION_LDFLAGS -X main.buildVersion=$F4_BUILD_VERSION"
+        fi
+        LDFLAGS="-s -w $VERSION_LDFLAGS"
         if [ "$GOOS" = "linux" ]; then LDFLAGS="$LDFLAGS -extldflags '-static'"; fi
 
         GCFLAGS=""
@@ -194,6 +210,18 @@ jobs:
         go-version: '1.26.x'
         cache-dependency-path: go.sum
 
+    - name: Collect core version metadata
+      shell: bash
+      run: |
+        echo "F4_BUILD_REVISION=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        echo "F4_BUILD_TIME=$(git show -s --format=%cI HEAD)" >> "$GITHUB_ENV"
+        echo "F4_BUILD_MODIFIED=false" >> "$GITHUB_ENV"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          echo "F4_BUILD_VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+        else
+          echo "F4_BUILD_VERSION=" >> "$GITHUB_ENV"
+        fi
+
     - name: Enable the MSVC build environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
@@ -264,7 +292,11 @@ jobs:
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           executable_suffix=".exe"
         fi
-        CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+        version_ldflags="-X main.buildRevision=$F4_BUILD_REVISION -X main.buildTime=$F4_BUILD_TIME -X main.buildModified=$F4_BUILD_MODIFIED"
+        if [ -n "$F4_BUILD_VERSION" ]; then
+          version_ldflags="$version_ldflags -X main.buildVersion=$F4_BUILD_VERSION"
+        fi
+        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $version_ldflags" \
           -o "qt/host/stage-ci/bin/f4${executable_suffix}" .
         mkdir -p qt/host/stage-ci/bin/plugins/dummy_internal
         (

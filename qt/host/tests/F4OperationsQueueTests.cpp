@@ -372,6 +372,25 @@ QVariantMap documentScene()
     };
 }
 
+QVariantMap dialogScene()
+{
+    QVariantMap scene = panelScene();
+    scene.insert(QStringLiteral("dialogs"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("appearance-dialog")},
+            {QStringLiteral("kind"), QStringLiteral("dialog")},
+            {QStringLiteral("title"), QStringLiteral("Appearance")},
+            {QStringLiteral("x"), 18},
+            {QStringLiteral("y"), 3},
+            {QStringLiteral("w"), 64},
+            {QStringLiteral("h"), 27},
+            {QStringLiteral("showClose"), true},
+            {QStringLiteral("children"), QVariantList{}},
+        },
+    });
+    return scene;
+}
+
 QPoint itemCenter(QQuickItem *item)
 {
     const QPointF scenePoint = item->mapToScene(
@@ -498,6 +517,7 @@ private slots:
     void terminalModeKeepsPersistentPanelsSurfaceVisible();
     void panelLoadingPulseIsDelayedLocalAndDoesNotMoveRendererButton();
     void rendererPopupClosesOnOutsidePress();
+    void semanticDialogsMoveResizeAndUseZoinWindowButtons();
 };
 
 void F4OperationsQueueTests::initTestCase()
@@ -1158,6 +1178,125 @@ void F4OperationsQueueTests::rendererPopupClosesOnOutsidePress()
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       QPoint(10, fixture.window->height() - 10));
     QTRY_VERIFY_WITH_TIMEOUT(!popup->property("opened").toBool(), 1000);
+}
+
+void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
+{
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+    // Overlay repeaters are driven by scene changes after QML construction in
+    // production, so enter the dialog scene through the same transition.
+    fixture.shell.setScene(dialogScene());
+    QCOMPARE(fixture.window->property("scene").toMap()
+                 .value(QStringLiteral("dialogs")).toList().size(), 1);
+    QVariant overlayFrames;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "overlayFrames", Q_RETURN_ARG(QVariant, overlayFrames)));
+    QCOMPARE(overlayFrames.toList().size(), 1);
+    QVariant createdOverlay;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "createDialogOverlay",
+        Q_RETURN_ARG(QVariant, createdOverlay),
+        Q_ARG(QVariant, overlayFrames.toList().constFirst())));
+    QObject *createdOverlayObject = createdOverlay.value<QObject *>();
+    QVERIFY(createdOverlayObject);
+    auto *createdOverlayItem = qobject_cast<QQuickItem *>(createdOverlayObject);
+    QVERIFY(createdOverlayItem);
+    createdOverlayItem->setZ(1000);
+
+    QQuickItem *dialog = nullptr;
+    QQuickItem *header = nullptr;
+    QQuickItem *resizeCorner = nullptr;
+    QQuickItem *maximizeButton = nullptr;
+    QQuickItem *closeButton = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (header = createdOverlayObject->findChild<QQuickItem *>(
+             QStringLiteral("dialogMoveHandle"))), 3000);
+    dialog = header->parentItem();
+    QVERIFY(dialog);
+    QCOMPARE(dialog->objectName(),
+             QStringLiteral("semanticDialog-appearance-dialog"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (resizeCorner = createdOverlayObject->findChild<QQuickItem *>(QStringLiteral(
+             "dialogResizeBottomRight"))), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (maximizeButton = createdOverlayObject->findChild<QQuickItem *>(QStringLiteral(
+             "dialogMaximizeButton"))), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (closeButton = createdOverlayObject->findChild<QQuickItem *>(
+             QStringLiteral("dialogCloseButton"))),
+        1000);
+
+    QVERIFY(header->isVisible());
+    QVERIFY(resizeCorner->isVisible());
+    QCOMPARE(maximizeButton->property("source").toUrl().toString(),
+             QStringLiteral(
+                 "qrc:/ZoinGallery/resources/WindowMaximize.svg"));
+    QCOMPARE(closeButton->property("source").toUrl().toString(),
+             QStringLiteral("qrc:/ZoinGallery/resources/WindowClose.svg"));
+
+    // Geometry is kept locally for a fluid drag, then committed to the core
+    // in character cells so the authoritative vtui layout follows it.
+    QVERIFY(QMetaObject::invokeMethod(
+        dialog, "setUserGeometry",
+        Q_ARG(QVariant, QVariant(180.0)),
+        Q_ARG(QVariant, QVariant(120.0)),
+        Q_ARG(QVariant, QVariant(560.0)),
+        Q_ARG(QVariant, QVariant(420.0))));
+    QCOMPARE(dialog->x(), 180.0);
+    QCOMPARE(dialog->y(), 120.0);
+    QCOMPARE(dialog->width(), 560.0);
+    QCOMPARE(dialog->height(), 420.0);
+
+    const QRectF start(dialog->x(), dialog->y(), dialog->width(),
+                       dialog->height());
+    QVERIFY(QMetaObject::invokeMethod(
+        dialog, "resizeFrom",
+        Q_ARG(QVariant, QVariant(10)),
+        Q_ARG(QVariant, QVariant(48.0)),
+        Q_ARG(QVariant, QVariant(36.0)),
+        Q_ARG(QVariant, QVariant::fromValue(start))));
+    QCOMPARE(dialog->width(), 608.0);
+    QCOMPARE(dialog->height(), 456.0);
+
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(dialog, "commitGeometry"));
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    const QVariantMap geometryAction = fixture.shell.actions.constLast();
+    QCOMPARE(geometryAction.value(QStringLiteral("target")).toString(),
+             QStringLiteral("appearance-dialog"));
+    QCOMPARE(geometryAction.value(QStringLiteral("action")).toString(),
+             QStringLiteral("dialog.geometry"));
+    QCOMPARE(geometryAction.value(QStringLiteral("x")).toInt(), 23);
+    QCOMPARE(geometryAction.value(QStringLiteral("y")).toInt(), 6);
+    QCOMPARE(geometryAction.value(QStringLiteral("w")).toInt(), 76);
+    QCOMPARE(geometryAction.value(QStringLiteral("h")).toInt(), 23);
+
+    QVERIFY(QMetaObject::invokeMethod(dialog, "toggleMaximized"));
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->property("maximized").toBool(), 1000);
+    QCOMPARE(dialog->x(), 12.0);
+    QCOMPARE(dialog->width(), qreal(fixture.window->width() - 24));
+    QCOMPARE(maximizeButton->property("source").toUrl().toString(),
+             QStringLiteral("qrc:/ZoinGallery/resources/WindowRestore.svg"));
+    QVERIFY(!resizeCorner->isVisible());
+
+    QVERIFY(QMetaObject::invokeMethod(dialog, "toggleMaximized"));
+    QTRY_VERIFY_WITH_TIMEOUT(!dialog->property("maximized").toBool(), 1000);
+    QCOMPARE(dialog->x(), start.x());
+    QCOMPARE(dialog->y(), start.y());
+    QCOMPARE(dialog->width(), 608.0);
+    QCOMPARE(dialog->height(), 456.0);
+    QVERIFY(resizeCorner->isVisible());
+
+    // The header keeps resolving semantic theme properties after creation.
+    const QColor firstHeader(31, 73, 109);
+    const QColor secondHeader(102, 43, 87);
+    fixture.window->setProperty("dialogHeaderBg", firstHeader);
+    QTRY_COMPARE(header->property("color").value<QColor>(), firstHeader);
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    fixture.window->setProperty("dialogHeaderBg", secondHeader);
+    QTRY_COMPARE(header->property("color").value<QColor>(), secondHeader);
+    QVERIFY(!fixture.window->grabWindow().isNull());
 }
 
 QTEST_MAIN(F4OperationsQueueTests)

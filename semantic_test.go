@@ -122,6 +122,30 @@ func TestWorkspaceSemanticSwitchUsesExistingScreenModel(t *testing.T) {
 	}
 }
 
+func TestToastDismissSemanticAction(t *testing.T) {
+	oldFM := *vtui.FrameManager
+	defer func() { *vtui.FrameManager = oldFM }()
+
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	vtui.ShowToast("PlugRing: 1 plugin update available!", time.Minute)
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(time.Second):
+		t.Fatal("toast task was not posted")
+	}
+
+	if !HandleSemanticAction(map[string]any{
+		"action": "toast.dismiss",
+		"target": "toast",
+	}) {
+		t.Fatal("toast dismiss action was not handled")
+	}
+	if got := vtui.FrameManager.GetActiveToast(); got != "" {
+		t.Fatalf("toast remained visible after dismiss: %q", got)
+	}
+}
+
 func TestMenuBarPointerSelectionRejectsStalePopup(t *testing.T) {
 	oldFM := *vtui.FrameManager
 	defer func() { *vtui.FrameManager = oldFM }()

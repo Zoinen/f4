@@ -40,6 +40,8 @@ public:
     ~WindowGeometryPersistence() override;
 
     bool restore();
+    bool restoreDeferred();
+    void showRestored();
     void save();
 
     static PersistedWindowGeometry read(QSettings &settings);
@@ -55,6 +57,8 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    bool restoreImpl(bool deferShow);
+    void applyRestoredWindowState();
     void rememberWindowedGeometry();
     PersistedWindowState currentPersistentState() const;
 
