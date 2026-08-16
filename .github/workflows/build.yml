@@ -397,6 +397,10 @@ jobs:
         go-version: '1.26.x'
         cache-dependency-path: go.sum
 
+    - name: Enable the MSVC build environment
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+
     - name: Cache the portable native dependency graph
       uses: actions/cache@v4
       with:
@@ -430,15 +434,55 @@ jobs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        conan install qt/host --build=missing `
-          -s:h build_type=Release -s:h compiler.cppstd=20 `
-          -s:h compiler.runtime=static `
-          -s:b build_type=Release -s:b compiler.cppstd=20 `
-          -s:b compiler.runtime=static `
-          -o:h "qt/*:shared=False" `
-          -o:h "libraw/*:shared=False" `
-          -c tools.system.package_manager:mode=install `
-          --output-folder=qt/host/build-portable-windows
+        $ErrorActionPreference = "Stop"
+
+        # tukaani.org intermittently times out from GitHub's Windows runners.
+        # Export the unchanged Conan Center recipe with the byte-identical
+        # archive served by the upstream project's GitHub release instead.
+        conan download xz_utils/5.8.3 --only-recipe --remote=conancenter
+        if ($LASTEXITCODE -ne 0) { throw "Unable to download the xz recipe" }
+        $xzRecipe = (conan cache path xz_utils/5.8.3 | Select-Object -Last 1).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "Unable to locate the xz recipe" }
+        $xzRecipeCopy = Join-Path $env:RUNNER_TEMP "f4-xz-recipe"
+        Remove-Item -Recurse -Force $xzRecipeCopy -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $xzRecipeCopy | Out-Null
+        Copy-Item "$xzRecipe/conanfile.py", "$xzRecipe/conandata.yml" $xzRecipeCopy
+        $xzData = Join-Path $xzRecipeCopy "conandata.yml"
+        (Get-Content $xzData -Raw).Replace(
+          "https://tukaani.org/xz/",
+          "https://github.com/tukaani-project/xz/releases/download/v5.8.3/"
+        ) | Set-Content $xzData -NoNewline
+        if (!(Select-String -Quiet -Path $xzData -SimpleMatch `
+          "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz")) {
+          throw "The xz mirror URL was not installed into the recipe"
+        }
+        conan export $xzRecipeCopy --name=xz_utils --version=5.8.3
+        if ($LASTEXITCODE -ne 0) { throw "Unable to export the mirrored xz recipe" }
+
+        $conanInstalled = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          conan install qt/host --build=missing `
+            -s:h build_type=Release -s:h compiler.cppstd=20 `
+            -s:h compiler.runtime=static `
+            -s:b build_type=Release -s:b compiler.cppstd=20 `
+            -s:b compiler.runtime=static `
+            -o:h "qt/*:shared=False" `
+            -o:h "libraw/*:shared=False" `
+            -c tools.system.package_manager:mode=install `
+            --output-folder=qt/host/build-portable-windows
+          if ($LASTEXITCODE -eq 0) {
+            $conanInstalled = $true
+            break
+          }
+          if ($attempt -lt 3) {
+            $delay = $attempt * 15
+            Write-Warning "Conan install attempt $attempt failed; retrying in ${delay}s"
+            Start-Sleep -Seconds $delay
+          }
+        }
+        if (!$conanInstalled) { throw "Conan install failed after 3 attempts" }
+        $PSNativeCommandUseErrorActionPreference = $true
+
         pwsh -File ci/build-qwindowkit.ps1 `
           -QtRoot "$PWD/qt/host/build-portable-windows" `
           -BuildType Release -Linkage static
@@ -454,17 +498,17 @@ jobs:
         ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure `
           -R "^(F4|QtShellController|WindowGeometryPersistence)"
 
-        $host = "$PWD/qt/host/build-portable-windows/bin/Release/f4-qt-host.exe"
-        pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $host
+        $qtHost = "$PWD/qt/host/build-portable-windows/bin/Release/f4-qt-host.exe"
+        pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $qtHost
         $env:QT_QPA_PLATFORM = "offscreen"
         $env:QSG_RHI_BACKEND = "software"
-        & $host --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
+        & $qtHost --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
           --f4-ext-cols=100 --f4-ext-rows=30
         if ($LASTEXITCODE -ne 2) {
           throw "Disconnected static Qt host returned $LASTEXITCODE, expected 2"
         }
 
-        python ci/package-embedded-qt-host.py $host
+        python ci/package-embedded-qt-host.py $qtHost
         go test -tags f4_embedded_qt_host `
           -run "TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload" .
         New-Item -ItemType Directory -Force dist/f4-windows-amd64 | Out-Null
