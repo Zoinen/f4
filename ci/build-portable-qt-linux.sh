@@ -32,6 +32,23 @@ export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
 
+# www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
+# release URL. MacPorts mirrors the byte-identical upstream archive (the
+# Conan Center SHA-256 remains authoritative), so export the unchanged recipe
+# with only its transport URL replaced.
+conan download fontconfig/2.15.0 --only-recipe --remote=conancenter
+fontconfig_recipe="$(conan cache path fontconfig/2.15.0)"
+fontconfig_recipe_copy="$(mktemp -d /tmp/f4-fontconfig-recipe.XXXXXX)"
+cp "${fontconfig_recipe}/conanfile.py" \
+    "${fontconfig_recipe}/conandata.yml" \
+    "${fontconfig_recipe_copy}/"
+sed -i \
+    's#https://www.freedesktop.org/software/fontconfig/release/#https://distfiles.macports.org/fontconfig/#' \
+    "${fontconfig_recipe_copy}/conandata.yml"
+grep -q 'https://distfiles.macports.org/fontconfig/fontconfig-2.15.0.tar.xz' \
+    "${fontconfig_recipe_copy}/conandata.yml"
+conan export "${fontconfig_recipe_copy}" --name=fontconfig --version=2.15.0
+
 # Conan package IDs do not encode the glibc build baseline. Rebuild every
 # target-side native package even if Conan Center offers a GCC 11 binary;
 # build-only tools are allowed from the remote when they run on 2.27. m4 is
