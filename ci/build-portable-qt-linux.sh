@@ -31,11 +31,28 @@ export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
-conan install qt/host --build=missing --build='m4/*' \
+
+# Conan package IDs do not encode the glibc build baseline. Rebuild every
+# target-side native package even if Conan Center offers a GCC 11 binary;
+# build-only tools are allowed from the remote when they run on 2.27. m4 is
+# the exception: its remote binary requires newer glibc, so rebuild it too.
+target_packages=(
+    brotli bzip2 double-conversion elfutils expat fontconfig freetype glib
+    harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
+    libmount libpng libraw libselinux libtiff libwebp libxml2 md4c msgpack-cxx
+    openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
+)
+conan_build_args=(--build=missing --build='m4/*')
+for package in "${target_packages[@]}"; do
+    conan_build_args+=("--build=${package}/*")
+done
+
+conan install qt/host "${conan_build_args[@]}" \
     -s:h build_type=Release -s:h compiler.cppstd=20 \
     -s:b build_type=Release -s:b compiler.cppstd=20 \
     -o:h 'qt/*:shared=False' \
     -o:h 'libraw/*:shared=False' \
+    -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
     -c tools.system.package_manager:mode=install \
     -c tools.system.package_manager:sudo=False \
     --output-folder=qt/host/build-portable-linux
