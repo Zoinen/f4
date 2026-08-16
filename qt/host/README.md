@@ -1,5 +1,10 @@
 # f4 Qt Host
 
+Before changing or running build, packaging, deployment, release, or CI logic,
+read [`docs/PORTABLE_BUILD_POLICY.md`](../../docs/PORTABLE_BUILD_POLICY.md).
+It defines the required single-file Linux/Windows and signed-bundle macOS
+contracts and their verification gates.
+
 This directory contains the optional Qt/QML sidecar renderer for `f4 --gui=qt`.
 The Go core does not link Qt; it starts `f4-qt-host` only when the Qt backend is requested.
 

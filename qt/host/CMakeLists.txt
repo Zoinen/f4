@@ -9,6 +9,8 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment ta
 project(F4QtHost LANGUAGES CXX)
 
 option(USE_QWK "Use QWindowKit" ON)
+option(F4_PORTABLE_STATIC
+  "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
 include(CTest)
 
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
@@ -24,6 +26,21 @@ find_package(Qt6 COMPONENTS Core Gui Qml Quick QuickControls2 Network Svg REQUIR
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
+endif()
+
+if(F4_PORTABLE_STATIC)
+  get_target_property(F4_QT_CORE_TYPE Qt6::Core TYPE)
+  if(NOT F4_QT_CORE_TYPE STREQUAL "STATIC_LIBRARY")
+    message(FATAL_ERROR
+      "F4_PORTABLE_STATIC requires a static Qt package; Qt6::Core is ${F4_QT_CORE_TYPE}")
+  endif()
+  if(USE_QWK)
+    get_target_property(F4_QWK_QUICK_TYPE QWindowKit::Quick TYPE)
+    if(NOT F4_QWK_QUICK_TYPE STREQUAL "STATIC_LIBRARY")
+      message(FATAL_ERROR
+        "F4_PORTABLE_STATIC requires static QWindowKit; QWindowKit::Quick is ${F4_QWK_QUICK_TYPE}")
+    endif()
+  endif()
 endif()
 
 set(F4_ZOINGALLERY_SOURCE_DIR
@@ -75,6 +92,23 @@ target_include_directories(f4-qt-host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_definitions(f4-qt-host PRIVATE
   $<$<BOOL:${USE_QWK}>:__USE_QWK>
 )
+
+if(F4_PORTABLE_STATIC)
+  if(MSVC)
+    set_property(TARGET f4-qt-host PROPERTY
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  elseif(UNIX AND NOT APPLE)
+    target_compile_options(f4-qt-host PRIVATE
+      -ffunction-sections -fdata-sections -fstack-protector-strong)
+    target_link_options(f4-qt-host PRIVATE
+      -static-libstdc++
+      -static-libgcc
+      -Wl,--gc-sections
+      -Wl,--exclude-libs,ALL
+      -Wl,--as-needed
+      -Wl,-z,relro,-z,now,-z,noexecstack)
+  endif()
+endif()
 
 set_target_properties(f4-qt-host PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
@@ -291,7 +325,7 @@ install(FILES icons/lucide/LICENSE
   DESTINATION licenses
   RENAME Lucide-LICENSE.txt
 )
-if(USE_QWK)
+if(USE_QWK AND NOT F4_PORTABLE_STATIC)
   install(IMPORTED_RUNTIME_ARTIFACTS
     QWindowKit::Core
     QWindowKit::Quick
@@ -315,7 +349,7 @@ if(APPLE)
     DESTINATION plugins
     USE_SOURCE_PERMISSIONS
   )
-else()
+elseif(NOT F4_PORTABLE_STATIC)
   qt_generate_deploy_qml_app_script(
     TARGET f4-qt-host
     OUTPUT_SCRIPT F4_QT_HOST_DEPLOY_SCRIPT

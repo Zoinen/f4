@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +15,9 @@ import (
 
 //go:embed help/en.hlf
 var defaultHelpData string
+
+//go:embed help/*.hlf
+var helpPackFS embed.FS
 
 //go:embed README.md
 var readmeData string
@@ -105,6 +108,9 @@ func loadHelpLangStrings(code string) map[string]string {
 			return loadLangMapFromINI(LoadIni(cand))
 		}
 	}
+	if data, err := langPackFS.ReadFile("lang/" + code + ".lng"); err == nil {
+		return loadLangMapFromINI(ParseIni(strings.NewReader(string(data))))
+	}
 	return nil
 }
 
@@ -136,6 +142,12 @@ func InitHelpSystem() {
 				helpContent = string(data)
 				vtui.DebugLog("HELP: Loaded language help file from disk: %s", cand)
 				break
+			}
+		}
+		if helpContent == "" {
+			if data, err := helpPackFS.ReadFile("help/" + lang + ".hlf"); err == nil {
+				helpContent = string(data)
+				vtui.DebugLog("HELP: Loaded embedded language help file: %s", lang)
 			}
 		}
 

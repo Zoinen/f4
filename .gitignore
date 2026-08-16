@@ -25,5 +25,6 @@ afix.ap
 afailed.*
 .codex-build/
 /build/
+/embedded/f4-qt-host.gz
+/dist/
 .qa-gallery-modes/
-AGENTS.md

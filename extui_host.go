@@ -877,6 +877,15 @@ func findExtUiPath(backend string) (string, error) {
 			return path, nil
 		}
 	}
+	if backend == "qt" {
+		embeddedPath, err := ensureEmbeddedQtHost()
+		if err != nil {
+			return "", err
+		}
+		if embeddedPath != "" {
+			return embeddedPath, nil
+		}
+	}
 	return "", fmt.Errorf("external UI executable %q not found", binName)
 }
 

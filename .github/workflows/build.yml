@@ -2,7 +2,7 @@ name: Build & Release
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "zoin" ]
     tags: [ "v*.*.*" ]
   pull_request:
     branches: [ "main" ]
@@ -174,12 +174,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            platform: linux
           - runner: macos-14
             platform: darwin
-          - runner: windows-2022
-            platform: windows
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
 
@@ -364,19 +360,130 @@ jobs:
         if-no-files-found: error
         retention-days: 7
 
+  portable-qt:
+    name: Portable single-file Qt (${{ matrix.platform }}/amd64)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+          - runner: windows-2022
+            platform: windows
+    env:
+      CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}
+
+    steps:
+    - name: Checkout f4
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.26.x'
+        cache-dependency-path: go.sum
+
+    - name: Cache the portable native dependency graph
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CONAN_HOME }}/p
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-${{ hashFiles('qt/host/conanfile.py', 'ci/build-portable-qt-linux.sh') }}
+
+    - name: Build the glibc 2.27 portable executable
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        go_root="$(go env GOROOT)"
+        docker run --rm \
+          -e CONAN_HOME=/workspace/.conan2-portable-linux \
+          -v "$PWD:/workspace" \
+          -v "$go_root:/opt/go:ro" \
+          -w /workspace \
+          ubuntu:18.04 \
+          bash ci/build-portable-qt-linux.sh
+
+    - name: Install native build tools
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
+        conan profile detect --force
+
+    - name: Build the portable Windows executable
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        conan install qt/host --build=missing `
+          -s:h build_type=Release -s:h compiler.cppstd=20 `
+          -s:h compiler.runtime=static `
+          -s:b build_type=Release -s:b compiler.cppstd=20 `
+          -s:b compiler.runtime=static `
+          -o:h "qt/*:shared=False" `
+          -o:h "libraw/*:shared=False" `
+          -c tools.system.package_manager:mode=install `
+          --output-folder=qt/host/build-portable-windows
+        pwsh -File ci/build-qwindowkit.ps1 `
+          -QtRoot "$PWD/qt/host/build-portable-windows" `
+          -BuildType Release -Linkage static
+        cmake -S qt/host -B qt/host/build-portable-windows -G Ninja `
+          "-DCMAKE_TOOLCHAIN_FILE=$PWD/qt/host/build-portable-windows/conan_toolchain.cmake" `
+          -DCMAKE_BUILD_TYPE=Release `
+          "-DCMAKE_PREFIX_PATH=$PWD/build/qwindowkit-install" `
+          "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
+          -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
+        cmake --build qt/host/build-portable-windows --config Release --parallel 4
+        ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure
+
+        $host = "$PWD/qt/host/build-portable-windows/bin/Release/f4-qt-host.exe"
+        pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $host
+        $env:QT_QPA_PLATFORM = "offscreen"
+        $env:QSG_RHI_BACKEND = "software"
+        & $host --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
+          --f4-ext-cols=100 --f4-ext-rows=30
+        if ($LASTEXITCODE -ne 2) {
+          throw "Disconnected static Qt host returned $LASTEXITCODE, expected 2"
+        }
+
+        python ci/package-embedded-qt-host.py $host
+        go test -tags f4_embedded_qt_host `
+          -run "TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload" .
+        New-Item -ItemType Directory -Force dist/f4-windows-amd64 | Out-Null
+        $env:CGO_ENABLED = "0"
+        $env:GOOS = "windows"
+        $env:GOARCH = "amd64"
+        go build -trimpath -tags f4_embedded_qt_host -ldflags="-s -w" `
+          -o dist/f4-windows-amd64/f4.exe .
+        $files = @(Get-ChildItem dist/f4-windows-amd64 -File)
+        if ($files.Count -ne 1 -or $files[0].Name -ne "f4.exe") {
+          throw "Portable Windows artifact must contain only f4.exe"
+        }
+
+    - name: Upload portable single-file artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: f4-portable-${{ matrix.platform }}-amd64
+        path: dist/f4-${{ matrix.platform }}-amd64/f4${{ matrix.platform == 'windows' && '.exe' || '' }}
+        if-no-files-found: error
+        retention-days: 7
+
   # Эта джоба создает постоянные релизы при пуше тэгов v*.*.*
   release:
     name: Create Official Release
-    needs: [build, qt-host]
+    needs: [build, qt-host, portable-qt]
     runs-on: ubuntu-latest
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: write
     steps:
     - name: Verify release build prerequisites
-      if: needs.build.result != 'success' || needs.qt-host.result != 'success'
+      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success'
       run: |
-        echo "::error::Official release requires both CGO-free builds and the integrated Qt-host matrix. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}"
+        echo "::error::Official release requires CGO-free, macOS bundle, and portable Qt builds. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}"
         exit 1
     - name: Download all artifacts
       uses: actions/download-artifact@v4
@@ -475,16 +582,16 @@ jobs:
   # Эта джоба обновляет "плавающий" nightly релиз при каждом пуше в main
   nightly:
     name: Update Nightly Release
-    needs: [build, qt-host]
+    needs: [build, qt-host, portable-qt]
     runs-on: ubuntu-latest
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: write
     steps:
     - name: Verify nightly build prerequisites
-      if: needs.build.result != 'success' || needs.qt-host.result != 'success'
+      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success'
       run: |
-        echo "::error::Nightly release requires both CGO-free builds and the integrated Qt-host matrix. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}"
+        echo "::error::Nightly release requires CGO-free, macOS bundle, and portable Qt builds. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}"
         exit 1
     - name: Checkout code (to get git info)
       uses: actions/checkout@v4

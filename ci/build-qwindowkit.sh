@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-qt_root="${1:?usage: build-qwindowkit.sh <qt-root>}"
+qt_root="${1:?usage: build-qwindowkit.sh <qt-root> [build-type] [shared|static]}"
 build_type="${2:-RelWithDebInfo}"
+linkage="${3:-shared}"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qwk_source="${repo_root}/build/qwindowkit-src"
@@ -11,6 +12,19 @@ qwk_install="${repo_root}/build/qwindowkit-install"
 qt_version="$(basename "$(dirname "${qt_root}")")"
 qwk_cxx_flags=""
 qwk_platform_args=()
+
+case "${linkage}" in
+    shared)
+        qwk_platform_args+=("-DBUILD_SHARED_LIBS=ON")
+        ;;
+    static)
+        qwk_platform_args+=("-DBUILD_SHARED_LIBS=OFF")
+        ;;
+    *)
+        echo "error: QWindowKit linkage must be 'shared' or 'static'" >&2
+        exit 2
+        ;;
+esac
 
 if [ "$(uname -s)" = "Darwin" ]; then
     qwk_platform_args+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0")
