@@ -11,6 +11,7 @@ on:
 jobs:
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    if: github.ref != 'refs/heads/zoin'
     runs-on: ubuntu-latest
     strategy:
       matrix:
