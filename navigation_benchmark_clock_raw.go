@@ -9,5 +9,5 @@ func navigationBenchmarkMonotonicNs() int64 {
 	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC_RAW, &ts); err != nil {
 		return 0
 	}
-	return ts.Sec*1_000_000_000 + ts.Nsec
+	return int64(ts.Sec)*1_000_000_000 + int64(ts.Nsec)
 }
