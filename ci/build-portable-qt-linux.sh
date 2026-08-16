@@ -97,8 +97,8 @@ cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
     -DQWindowKit_DIR="$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" \
     -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
 cmake --build qt/host/build-portable-linux --config Release --parallel "$(nproc)"
-export QML_IMPORT_PATH="$PWD/qt/host/build-portable-linux/qml"
-export QML2_IMPORT_PATH="$PWD/qt/host/build-portable-linux/qml"
+export QML_IMPORT_PATH="$PWD/qt/host/build-portable-linux/qml:$PWD/qt/host/build-portable-linux/ZoinGallery"
+export QML2_IMPORT_PATH="$PWD/qt/host/build-portable-linux/qml:$PWD/qt/host/build-portable-linux/ZoinGallery"
 ctest --test-dir qt/host/build-portable-linux -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
 
