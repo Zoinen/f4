@@ -13,7 +13,8 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    ca-certificates curl git gnupg software-properties-common xz-utils
+    build-essential ca-certificates curl git gnupg pkg-config \
+    software-properties-common xz-utils
 add-apt-repository -y ppa:ubuntu-toolchain-r/test
 apt-get update
 apt-get install -y --no-install-recommends gcc-11 g++-11
