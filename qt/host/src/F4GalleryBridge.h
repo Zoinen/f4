@@ -93,6 +93,7 @@ private:
         bool previewCapable = false;
         bool active = false;
         bool loading = false;
+        bool catalogProvisional = false;
         QString galleryLayoutMode;
         QVariantList entries;
         QStringList selectedEntryIdList;

@@ -1483,6 +1483,8 @@ bool F4GalleryBridge::canSkipUnchangedInactivePanel(
             == state.cursorIndex
         && panel.value(QStringLiteral("loading")).toBool()
             == state.loading
+        && panel.value(QStringLiteral("catalogProvisional")).toBool()
+            == state.catalogProvisional
         && panel.value(QStringLiteral("galleryLayoutMode")).toString()
             == state.galleryLayoutMode;
 }
@@ -1504,6 +1506,8 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         && sourceKind == QStringLiteral("local");
     const bool active = panel.value(QStringLiteral("active")).toBool();
     const bool loading = panel.value(QStringLiteral("loading")).toBool();
+    const bool catalogProvisional = panel.value(
+        QStringLiteral("catalogProvisional")).toBool();
     const QString galleryLayoutMode = panel.value(
         QStringLiteral("galleryLayoutMode")).toString();
     const bool identityChanged = state.initialized && panelId != state.panelId;
@@ -1543,11 +1547,47 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         m_selectionActionPending[static_cast<size_t>(side)] = false;
         state = SideState{};
     }
-    const bool catalogChanged = !state.initialized
+
+    // A cold VFS read exposes a temporary '..'-only catalog. Replacing a
+    // populated persistent session with it produces a visible empty flash.
+    // Keep the previous directory rendered until the authoritative scene can
+    // replace catalog and cursor in one synchronous bridge transaction.
+    if (catalogProvisional && state.initialized
+        && currentPath != state.currentPath) {
+        state.active = active;
+        state.loading = loading;
+        state.galleryLayoutMode = galleryLayoutMode;
+        if (m_navigationBenchmark.enabled
+            && m_navigationBenchmark.phase
+                != NavigationBenchmarkPhase::Finished
+            && m_navigationBenchmark.phase
+                != NavigationBenchmarkPhase::Failed) {
+            QVariantMap fields = navigationBenchmarkFields();
+            fields.insert(QStringLiteral("syncSide"), side);
+            fields.insert(QStringLiteral("syncPath"), state.currentPath);
+            fields.insert(QStringLiteral("syncLoading"), state.loading);
+            fields.insert(QStringLiteral("syncLayoutMode"),
+                          state.galleryLayoutMode);
+            fields.insert(QStringLiteral("syncCatalogRevision"),
+                          QVariant::fromValue<qulonglong>(
+                              state.catalogRevision));
+            fields.insert(QStringLiteral("syncEntryCount"),
+                          state.entries.size());
+            fields.insert(QStringLiteral("provisionalReplacementDeferred"),
+                          true);
+            queueNavigationBenchmarkTrace(
+                QStringLiteral("qt.gallery.bridge.panel.end"),
+                m_navigationBenchmark.lastSceneTraceId, fields);
+        }
+        return;
+    }
+    const bool catalogPayloadChanged = !state.initialized
         || catalogRevision != state.catalogRevision
         || currentPath != state.currentPath
         || sourceKind != state.sourceKind
         || previewCapable != state.previewCapable;
+    const bool catalogChanged = catalogPayloadChanged
+        || catalogProvisional != state.catalogProvisional;
     const bool selectionChanged = !state.initialized
         || selectionRevision != state.selectionRevision;
     const bool highlightChanged = !state.initialized
@@ -1557,24 +1597,29 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // Semantic scenes retain the complete catalog for compatibility, but a
     // cursor acknowledgement does not need to normalize/copy it again. Keep
     // the revision-owned snapshot in the persistent bridge session.
-    const QVariantList entries = catalogChanged
+    const QVariantList entries = catalogPayloadChanged
         ? normalizedEntries(panel) : state.entries;
-    const QStringList selectedIds = catalogChanged || selectionChanged
-        ? selectedEntryIds(catalogChanged
+    const QStringList selectedIds = catalogPayloadChanged || selectionChanged
+        ? selectedEntryIds(catalogPayloadChanged
               ? entries
               : panel.value(QStringLiteral("entries")).toList())
         : state.selectedEntryIdList;
 
+    bool catalogApplied = true;
     if (session && catalogChanged) {
-        session->applyExternalCatalog(entries, catalogRevision, {
+        catalogApplied = session->applyExternalCatalog(entries, catalogRevision, {
             {QStringLiteral("currentPath"), currentPath},
             {QStringLiteral("sourceKind"), sourceKind},
             {QStringLiteral("previewCapable"), previewCapable},
+            {QStringLiteral("catalogProvisional"), catalogProvisional},
+            // The authoritative cursor is the second half of this update.
+            // Keep Details hidden until both halves have been applied.
+            {QStringLiteral("deferCatalogReady"), !catalogProvisional},
         });
     }
 
     if (session
-        && (catalogChanged || highlightChanged || iconChanged)) {
+        && (catalogPayloadChanged || highlightChanged || iconChanged)) {
         session->applyExternalAppearance(normalizedAppearance(panel),
                                          highlightRevision);
     }
@@ -1607,6 +1652,9 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
                                     selectedIds,
                                     selectionRevision);
     }
+    if (session && catalogChanged && catalogApplied) {
+        session->setExternalCatalogReady(!catalogProvisional);
+    }
 
     state.initialized = true;
     state.panelId = panelId;
@@ -1621,8 +1669,9 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     state.previewCapable = previewCapable;
     state.active = active;
     state.loading = loading;
+    state.catalogProvisional = catalogProvisional;
     state.galleryLayoutMode = galleryLayoutMode;
-    if (catalogChanged) {
+    if (catalogPayloadChanged) {
         state.entries = entries;
         state.entryIds.clear();
         state.sourceIndexByEntryId.clear();

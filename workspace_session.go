@@ -29,6 +29,21 @@ var (
 	LastActiveWorkspace   int
 )
 
+// persistNativePanelLayoutSession is deliberately a hook: semantic unit tests
+// construct detached PanelsFrames which must never overwrite the user's real
+// session.ini. Production saves only frames that belong to the live manager.
+var persistNativePanelLayoutSession = func(pf *PanelsFrame) {
+	if pf == nil || vtui.FrameManager == nil {
+		return
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		if panelsFrameOnScreen(screen) == pf {
+			SaveSession()
+			return
+		}
+	}
+}
+
 func legacyWorkspaceSession() workspaceSessionState {
 	return workspaceSessionState{
 		Number: 1,

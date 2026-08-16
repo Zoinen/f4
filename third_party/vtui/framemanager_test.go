@@ -2222,6 +2222,7 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	scr.AllocBuf(60, 10)
 	fm := &frameManager{}
 	fm.Init(scr)
+	fm.ConfigureWorkspaceAltNumberSwitch(true)
 	forked := false
 	makeFrame := func(title string) *mockFrame {
 		frame := newMockFrame(0, 0, 20, 5, false)
@@ -2232,8 +2233,12 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 		}
 		return frame
 	}
-	fm.Push(makeFrame("Left ↔ Right"))
-	fm.AddScreen(makeFrame("Python"))
+	first := makeFrame("Left ↔ Right")
+	first.tabMarker = "P"
+	fm.Push(first)
+	second := makeFrame("Python")
+	second.tabMarker = "T"
+	fm.AddScreen(second)
 	fm.drawWorkspaceTabs()
 	fm.drawWorkspaceCounter()
 
@@ -2255,6 +2260,15 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	if tabs[1]["text"] != "Python" || tabs[1]["selected"] != true {
 		t.Fatalf("active workspace semantic tab = %#v", tabs[1])
 	}
+	if tabs[0]["marker"] != "P" || tabs[1]["marker"] != "T" {
+		t.Fatalf("workspace markers were not separated from titles: %#v", tabs)
+	}
+	if tabs[0]["tooltipPrimary"] != "MockFrame" || tabs[0]["tooltipSecondary"] != "" {
+		t.Fatalf("workspace tooltip metadata missing from first tab: %#v", tabs[0])
+	}
+	if tabs[0]["shortcutAvailable"] != true || tabs[1]["shortcutAvailable"] != true {
+		t.Fatalf("workspace shortcut availability missing: %#v", tabs)
+	}
 	if tabs[1]["closable"] != true || tabs[1]["closeAction"] != "workspace.close" {
 		t.Fatalf("workspace close semantics missing: %#v", tabs[1])
 	}
@@ -2275,6 +2289,39 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	}
 	if !fm.HandleSemanticAction(map[string]any{"action": "workspace.close", "target": tabs[1]["id"]}) || len(fm.Screens) != 1 {
 		t.Fatalf("semantic workspace.close left %d workspaces, want 1", len(fm.Screens))
+	}
+}
+
+func TestFrameManager_WorkspaceTabSemanticTooltipUsesStructuredInfo(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(60, 10)
+	fm := &frameManager{}
+	fm.Init(scr)
+	defer fm.Shutdown()
+
+	frame := &workspaceInfoFrame{
+		titleFrame: titleFrame{title: "Panels"},
+		info: WorkspaceMenuInfo{
+			Icon:      "P",
+			Primary:   ` /left/full/path `,
+			Secondary: ` /right/full/path `,
+		},
+	}
+	fm.Push(frame)
+
+	scene := fm.ExportSemanticScene()
+	bar := scene["workspaceTabs"].(map[string]any)
+	tabs := bar["tabs"].([]map[string]any)
+	if len(tabs) != 1 {
+		t.Fatalf("workspace semantic tabs = %#v, want one tab", tabs)
+	}
+	if tabs[0]["tooltipPrimary"] != "/left/full/path" ||
+		tabs[0]["tooltipSecondary"] != "/right/full/path" {
+		t.Fatalf("structured workspace tooltip was not exported: %#v", tabs[0])
+	}
+	if tabs[0]["shortcutAvailable"] != false {
+		t.Fatalf("disabled Alt-number shortcut was advertised: %#v", tabs[0])
 	}
 }
 

@@ -98,6 +98,7 @@ private slots:
     void viewerOwnsEscapeAndZoom();
     void bridgeShutdownStopsRuntimeDuringDecode();
     void stableCatalogSkipsRebuildAndKeepsDynamicState();
+    void coldProvisionalCatalogKeepsPreviousPanelVisible();
     void panelIdentityReplacementResetsSession();
     void rejectedCursorRestoresAuthoritativeState();
     void vfsUsesUnifiedSessionWithoutPreviews();
@@ -1713,6 +1714,7 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
     left.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
     left.insert(QStringLiteral("previewCapable"), false);
     left.insert(QStringLiteral("loading"), true);
+    left.insert(QStringLiteral("catalogProvisional"), true);
     left.insert(QStringLiteral("galleryLayoutMode"),
                 QStringLiteral("masonry"));
     left.insert(QStringLiteral("highlightRevision"), qulonglong(5));
@@ -1731,6 +1733,7 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
         bridge.sessionForSide(1));
     QVERIFY(leftSession);
     QVERIFY(rightSession);
+    QVERIFY(!leftSession->catalogReady());
     QSignalSpy leftCatalogChanged(
         leftSession, &ZoinGallery::GallerySession::catalogRevisionChanged);
     QSignalSpy leftModelReset(leftSession->model(),
@@ -1739,6 +1742,8 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
                                     &QAbstractItemModel::dataChanged);
     QSignalSpy leftCursorChanged(
         leftSession, &ZoinGallery::GallerySession::currentIndexChanged);
+    QSignalSpy leftCatalogReadyChanged(
+        leftSession, &ZoinGallery::GallerySession::catalogReadyChanged);
     QSignalSpy rightCatalogChanged(
         rightSession, &ZoinGallery::GallerySession::catalogRevisionChanged);
     QSignalSpy rightModelReset(rightSession->model(),
@@ -1753,6 +1758,7 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
     // can be skipped altogether.
     QVariantMap freshLeft = left;
     freshLeft.insert(QStringLiteral("loading"), false);
+    freshLeft.insert(QStringLiteral("catalogProvisional"), false);
     freshLeft.insert(QStringLiteral("galleryLayoutMode"),
                      QStringLiteral("details"));
     freshLeft.insert(QStringLiteral("cursor"), 9);
@@ -1771,6 +1777,8 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
     QCOMPARE(leftModelReset.size(), 0);
     QCOMPARE(leftModelDataChanged.size(), 0);
     QCOMPARE(leftCursorChanged.size(), 1);
+    QVERIFY(leftSession->catalogReady());
+    QCOMPARE(leftCatalogReadyChanged.size(), 1);
     QCOMPARE(rightCatalogChanged.size(), 0);
     QCOMPARE(rightModelReset.size(), 0);
     QCOMPARE(rightModelDataChanged.size(), 0);
@@ -1788,6 +1796,72 @@ void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()
     QCOMPARE(rightSession->currentIndex(), 1);
     QCOMPARE(rightCatalogChanged.size(), 0);
     QCOMPARE(rightModelReset.size(), 0);
+}
+
+void F4GalleryBridgeTests::coldProvisionalCatalogKeepsPreviousPanelVisible()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(testScene());
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    const QString previousPath = session->currentPath();
+    const qulonglong previousRevision = session->catalogRevision();
+    const int previousCount = session->model()->rowCount();
+    QVERIFY(previousCount > 1);
+
+    QVariantMap provisionalScene = testScene();
+    QVariantMap shell = provisionalScene.value(QStringLiteral("shell")).toMap();
+    QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+    QVariantMap left = panels.constFirst().toMap();
+    left.insert(QStringLiteral("path"), QStringLiteral("/tmp/cold-child"));
+    left.insert(QStringLiteral("catalogRevision"), previousRevision + 1);
+    left.insert(QStringLiteral("catalogProvisional"), true);
+    left.insert(QStringLiteral("loading"), true);
+    left.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("cold:up")},
+                    {QStringLiteral("index"), 0},
+                    {QStringLiteral("name"), QStringLiteral("..")},
+                    {QStringLiteral("isDir"), true}},
+    });
+    panels[0] = left;
+    shell.insert(QStringLiteral("panels"), panels);
+    provisionalScene.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(provisionalScene);
+
+    // The first uncached read must not replace a populated panel with its
+    // temporary '..'-only model.
+    QCOMPARE(session->currentPath(), previousPath);
+    QCOMPARE(session->catalogRevision(), previousRevision);
+    QCOMPARE(session->model()->rowCount(), previousCount);
+    QVERIFY(session->catalogReady());
+
+    left.insert(QStringLiteral("catalogProvisional"), false);
+    left.insert(QStringLiteral("loading"), false);
+    left.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("cold:up")},
+                    {QStringLiteral("index"), 0},
+                    {QStringLiteral("name"), QStringLiteral("..")},
+                    {QStringLiteral("isDir"), true}},
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("cold:file")},
+                    {QStringLiteral("index"), 1},
+                    {QStringLiteral("name"), QStringLiteral("file.txt")}},
+    });
+    left.insert(QStringLiteral("cursor"), 1);
+    left.insert(QStringLiteral("cursorEntryId"), QStringLiteral("cold:file"));
+    panels[0] = left;
+    shell.insert(QStringLiteral("panels"), panels);
+    provisionalScene.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(provisionalScene);
+
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp/cold-child"));
+    QCOMPARE(session->catalogRevision(), previousRevision + 1);
+    QCOMPARE(session->model()->rowCount(), 2);
+    QCOMPARE(session->cursorEntryId(), QStringLiteral("cold:file"));
+    QVERIFY(session->catalogReady());
 }
 
 void F4GalleryBridgeTests::viewerWaitsForAuthoritativeCursor()

@@ -206,7 +206,7 @@ func TestAppWorkspaceTabsExposeTypedLucideIcons(t *testing.T) {
 			"visible": true,
 			"tabs": []map[string]any{
 				{"index": 0, "number": 1, "text": "P left ─ right", "closable": true},
-				{"index": 1, "number": 2, "text": "P Terminal", "closable": true},
+				{"index": 1, "number": 2, "text": "T Terminal", "closable": true},
 				{"index": 2, "number": 3, "text": "V report.txt", "closable": true},
 				{"index": 3, "number": 4, "text": "E notes.md", "closable": true},
 				{"index": 4, "number": 5, "text": "Operations Queue", "closable": true},
@@ -244,11 +244,39 @@ func TestAppWorkspaceTabsExposeTypedLucideIcons(t *testing.T) {
 	}
 }
 
+func TestAppWorkspaceTabsPreserveStructuredTitlePrefixes(t *testing.T) {
+	legacy := map[string]any{
+		"workspaceTabs": map[string]any{
+			"visible": true,
+			"tabs": []map[string]any{
+				{
+					"index":  0,
+					"number": 1,
+					"marker": "P",
+					"text":   "P projects ─ Documents",
+				},
+			},
+		},
+		"screens": []map[string]any{
+			{"number": 1, "frames": []map[string]any{{"kind": "panels", "showPanels": true}}},
+		},
+	}
+
+	tabs := appMapSlice(appQueueAwareWorkspaceTabs(legacy)["tabs"])
+	if len(tabs) != 1 {
+		t.Fatalf("workspace tabs = %#v, want one tab", tabs)
+	}
+	if got := semanticString(tabs[0]["text"]); got != "P projects ─ Documents" {
+		t.Fatalf("structured workspace title = %q, want legitimate P prefix preserved", got)
+	}
+}
+
 func TestAppWorkspaceTabTextRemovesOnlyUpstreamKindMarker(t *testing.T) {
 	for input, want := range map[string]string{
 		"P":             "",
 		"V report.txt":  "report.txt",
 		"E notes.md":    "notes.md",
+		"T Terminal":    "Terminal",
 		"Project files": "Project files",
 	} {
 		if got := appWorkspaceTabText(input); got != want {
@@ -314,6 +342,7 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 			{
 				"id":                 "editor",
 				"kind":               "editor",
+				"defaultBackground":  "#242424",
 				"title":              " Editor ",
 				"path":               "/tmp/a.txt",
 				"baseName":           "a.txt",
@@ -351,7 +380,8 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 
 	scene := BuildAppSceneFromLegacy(nil, legacy)
 	surface := scene["surface"].(map[string]any)
-	if surface["kind"] != "editor" || surface["baseName"] != "a.txt" {
+	if surface["kind"] != "editor" || surface["baseName"] != "a.txt" ||
+		surface["defaultBackground"] != "#242424" {
 		t.Fatalf("unexpected surface: %#v", surface)
 	}
 	if surface["cursorVisualRow"] != 2 || surface["cursorVisualColumn"] != 7 ||

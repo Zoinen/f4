@@ -465,9 +465,13 @@ type FileSystemPanel struct {
 	galleryDensities      map[GalleryLayoutMode]int
 	galleryLayoutRevision int64
 
-	loadCtx                    context.Context
-	cancelLoad                 context.CancelFunc
-	isLoading                  bool
+	loadCtx    context.Context
+	cancelLoad context.CancelFunc
+	isLoading  bool
+	// catalogProvisional marks the synthetic cold-load placeholder (normally
+	// just ".."). Native frontends keep the destination hidden until the first
+	// authoritative catalog arrives instead of briefly painting an empty list.
+	catalogProvisional         bool
 	loadingTimer               *time.Timer
 	loadingFrame               int
 	loadingGeneration          uint64
@@ -2255,6 +2259,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 		if cached, ok := fp.dirCache[cacheKey]; ok && !AppConfig.SyncPanelLoad {
 			hasCache = true
+			fp.catalogProvisional = false
 			vtui.DebugLog("PANEL: Using cached entries for %s", path)
 			fp.entries = nil
 
@@ -2300,6 +2305,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 	isFirstChunk := true
 	if !keepEntries && !hasCache {
+		fp.catalogProvisional = true
 		fp.entries = nil
 		if showUpEntry {
 			fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
@@ -2312,6 +2318,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			navigationBenchmarkPublishScene(benchmark, "placeholder")
 		}
 		vtui.FrameManager.Redraw()
+	}
+	if keepEntries {
+		fp.catalogProvisional = false
 	}
 	if keepEntries && benchmark != nil {
 		benchmark.event("model.provisional.ready", "go.ui", "phase", "retained",
@@ -2677,6 +2686,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 			}
 
+			fp.catalogProvisional = false
 			fp.stopLoadingAnimation()
 
 			fp.lastDirMTime = dirStat.MTime

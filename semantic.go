@@ -713,10 +713,14 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if columns == 0 {
 			columns = fsp.effectiveGalleryColumnCount()
 		}
+		previousRevision := fsp.galleryLayoutRevision
 		if !fsp.SetGalleryLayout(mode, columns) {
 			return false
 		}
 		pf.updateMenuCheckmarks()
+		if fsp.galleryLayoutRevision != previousRevision {
+			persistNativePanelLayoutSession(pf)
+		}
 		return true
 	case "panel_set_gallery_density", "panel.setGalleryDensity":
 		fsp := pf.panelForSemanticAction(action)
@@ -734,7 +738,14 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if !ok {
 			return false
 		}
-		return fsp.SetGalleryDensity(mode, semanticInt(action["density"]))
+		previousRevision := fsp.galleryLayoutRevision
+		if !fsp.SetGalleryDensity(mode, semanticInt(action["density"])) {
+			return false
+		}
+		if fsp.galleryLayoutRevision != previousRevision {
+			persistNativePanelLayoutSession(pf)
+		}
+		return true
 	case "panel_reset_gallery_density", "panel.resetGalleryDensity":
 		fsp := pf.panelForSemanticAction(action)
 		if fsp == nil {
@@ -751,7 +762,14 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if !ok {
 			return false
 		}
-		return fsp.ResetGalleryDensity(mode)
+		previousRevision := fsp.galleryLayoutRevision
+		if !fsp.ResetGalleryDensity(mode) {
+			return false
+		}
+		if fsp.galleryLayoutRevision != previousRevision {
+			persistNativePanelLayoutSession(pf)
+		}
+		return true
 	case "panel_sort", "panel.sort":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			mode, ok := parseSortModeName(semanticString(action["mode"]))
@@ -1195,6 +1213,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
 		Cursor:                 fp.GetCursorIndex(),
 		Loading:                fp.isLoading,
+		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.fastFindMode,
 		FastFindText:           fp.fastFindStr,
 		SelectedCount:          selectedCount,
@@ -1449,6 +1468,7 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(vv),
 		Kind:               "viewer",
+		DefaultBackground:  semanticAttrColor(vtui.Palette[ColViewerText], false),
 		Title:              vv.GetTitle(),
 		Path:               vv.path,
 		BaseName:           semanticBaseName(vv.vfs, vv.path),
@@ -1909,6 +1929,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(ev),
 		Kind:               "editor",
+		DefaultBackground:  semanticAttrColor(ColorerEditorBaseAttr(vtui.Palette[ColEditorText]), false),
 		Title:              ev.GetTitle(),
 		Path:               ev.filePath,
 		BaseName:           semanticBaseName(ev.vfs, ev.filePath),
@@ -1988,6 +2009,48 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		reverse := semanticBool(action["reverse"])
 		next := semanticBool(action["next"])
 		ev.Search(pattern, caseSensitive, reverse, false, false, next)
+		return true
+	case "editor.mouse":
+		buttonState := uint32(0)
+		switch semanticString(action["button"]) {
+		case "left":
+			buttonState = vtinput.FromLeft1stButtonPressed
+		case "right":
+			buttonState = vtinput.RightmostButtonPressed
+		case "middle":
+			buttonState = vtinput.FromLeft2ndButtonPressed
+		}
+		flags := uint32(0)
+		if semanticBool(action["moved"]) {
+			flags |= vtinput.MouseMoved
+		}
+		if semanticBool(action["doubleClick"]) {
+			flags |= vtinput.DoubleClick
+		}
+		controlState := vtinput.ControlKeyState(0)
+		if semanticBool(action["shift"]) {
+			controlState |= vtinput.ShiftPressed
+		}
+		if semanticBool(action["ctrl"]) {
+			controlState |= vtinput.LeftCtrlPressed
+		}
+		if semanticBool(action["alt"]) {
+			controlState |= vtinput.LeftAltPressed
+		}
+		column := max(0, semanticInt(action["column"]))
+		row := max(0, semanticInt(action["row"]))
+		event := &vtinput.InputEvent{
+			Type:            vtinput.MouseEventType,
+			MouseX:          int16(min(ev.X2, ev.X1+column)),
+			MouseY:          int16(min(ev.Y2, ev.Y1+1+row)),
+			ButtonState:     buttonState,
+			MouseEventFlags: flags,
+			WheelDirection:  semanticInt(action["wheelDirection"]),
+			KeyDown:         semanticString(action["phase"]) != "release",
+			ControlKeyState: controlState,
+			InputSource:     "semantic",
+		}
+		ev.ProcessMouse(event)
 		return true
 	case "editor.scroll":
 		generation, accepted := semanticAcceptWindowGeneration(action,

@@ -111,20 +111,25 @@ func (fm *frameManager) semanticWorkspaceTabs() map[string]any {
 	}
 	tabs := make([]map[string]any, 0, len(fm.Screens))
 	for i, screen := range fm.Screens {
+		tooltip := screen.GetMenuInfo()
 		tab := map[string]any{
-			"id":          fmt.Sprintf("workspace-tab-%d", screen.Number),
-			"kind":        "tab",
-			"index":       i,
-			"number":      screen.Number,
-			"text":        screen.GetTabTitle(),
-			"active":      i == fm.ActiveIdx,
-			"selected":    i == fm.ActiveIdx,
-			"attention":   screen.NeedsAttention(),
-			"progress":    screen.GetProgress(),
-			"visible":     fm.workspaceTabsVisible(),
-			"action":      "workspace.activate",
-			"closable":    true,
-			"closeAction": "workspace.close",
+			"id":                fmt.Sprintf("workspace-tab-%d", screen.Number),
+			"kind":              "tab",
+			"index":             i,
+			"number":            screen.Number,
+			"text":              screen.getTabContentTitle(),
+			"marker":            screen.GetTabMarker(),
+			"tooltipPrimary":    strings.TrimSpace(tooltip.Primary),
+			"tooltipSecondary":  strings.TrimSpace(tooltip.Secondary),
+			"shortcutAvailable": fm.WorkspaceAltNumberSwitch && screen.Number >= 1 && screen.Number <= 9,
+			"active":            i == fm.ActiveIdx,
+			"selected":          i == fm.ActiveIdx,
+			"attention":         screen.NeedsAttention(),
+			"progress":          screen.GetProgress(),
+			"visible":           fm.workspaceTabsVisible(),
+			"action":            "workspace.activate",
+			"closable":          true,
+			"closeAction":       "workspace.close",
 		}
 		if hit, ok := hits[i]; ok {
 			tab["x"] = hit.x1

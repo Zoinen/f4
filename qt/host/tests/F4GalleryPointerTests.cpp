@@ -270,6 +270,7 @@ void F4GalleryPointerTests::semanticImeCommitUsesTextProtocol()
     QObject semanticFocusTarget;
     QSignalSpy forwardedText(&grid,
                              &VtuiGridItem::commanderTextInputForwarded);
+    QSignalSpy keyboardActivity(&grid, &VtuiGridItem::keyboardActivity);
 
     // Preedit is composition UI owned by Qt and must not be sent as terminal
     // text until the input method commits it.
@@ -293,6 +294,7 @@ void F4GalleryPointerTests::semanticImeCommitUsesTextProtocol()
     QCOMPARE(forwardedText.constFirst().at(0).toString(),
              QStringLiteral("галерея🙂"));
     QCOMPARE(forwardedText.constFirst().at(1).toInt(), 0);
+    QCOMPARE(keyboardActivity.size(), 1);
 
     // Dialogs, document surfaces, and fallback views disable semantic IME
     // forwarding so their own focused control remains authoritative.
@@ -303,6 +305,7 @@ void F4GalleryPointerTests::semanticImeCommitUsesTextProtocol()
     QTest::qWait(30);
     wireBuffer.append(peer->readAll());
     QVERIFY(wireBuffer.isEmpty());
+    QCOMPARE(keyboardActivity.size(), 1);
 }
 
 void F4GalleryPointerTests::viewerCaptureSurvivesHiddenGridFocusSlip()

@@ -104,6 +104,53 @@ func TestSemanticWindowProtocol_EditorKeepsThreeScreensAndStableOverlap(t *testi
 	}
 }
 
+func TestSemanticEditorMouseUsesCanonicalEditorPointerHandling(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	editor := NewEditorView(piecetable.New([]byte("zero\nalpha beta\ngamma\n")), nil, "mouse.txt")
+	defer editor.Close()
+	editor.SetPosition(3, 4, 42, 12)
+	target := vtui.SemanticID(editor)
+
+	if !editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "editor.mouse", "phase": "press",
+		"button": "left", "column": 2, "row": 1,
+	}) {
+		t.Fatal("semantic editor mouse press was not handled")
+	}
+	if editor.CursorLine != 1 || editor.CursorPos != 2 || !editor.selActive {
+		t.Fatalf("click cursor=(%d,%d) selection=%v, want (1,2) with anchor",
+			editor.CursorLine, editor.CursorPos, editor.selActive)
+	}
+
+	editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "editor.mouse", "phase": "move",
+		"button": "left", "column": 3, "row": 2, "moved": true,
+	})
+	start, end := editor.getSelectionRange()
+	if editor.CursorLine != 2 || editor.CursorPos != 3 || start != 7 || end != 19 {
+		t.Fatalf("drag cursor=(%d,%d) range=[%d:%d], want (2,3) [7:19]",
+			editor.CursorLine, editor.CursorPos, start, end)
+	}
+
+	editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "editor.mouse", "phase": "press",
+		"button": "left", "column": 8, "row": 1, "doubleClick": true,
+	})
+	start, end = editor.getSelectionRange()
+	if start != 11 || end != 15 {
+		t.Fatalf("double-click range=[%d:%d], want beta [11:15]", start, end)
+	}
+
+	editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "editor.mouse", "phase": "press",
+		"button": "right", "column": 1, "row": 0,
+	})
+	if !editor.rectSelActive || editor.selActive {
+		t.Fatalf("right click rectangular=%v stream=%v, want rectangular only",
+			editor.rectSelActive, editor.selActive)
+	}
+}
+
 func TestSemanticWindowProtocol_ViewerKeepsThreeScreensAndStableOverlap(t *testing.T) {
 	vtui.SetDefaultPalette()
 	tmp := t.TempDir()

@@ -121,7 +121,15 @@ func appQueueAwareWorkspaceTabs(legacy map[string]any) map[string]any {
 				if surfaceKind != "" {
 					tab["surfaceKind"] = surfaceKind
 					tab["iconName"] = iconName
-					tab["text"] = appWorkspaceTabText(semanticString(tab["text"]))
+					if _, structuredMarker := tab["marker"]; structuredMarker {
+						// Current semantic scenes already split the frame kind
+						// into marker. Preserve legitimate titles such as
+						// "P projects" instead of treating their first letter
+						// as an old cell-renderer prefix.
+						tab["text"] = strings.TrimSpace(semanticString(tab["text"]))
+					} else {
+						tab["text"] = appWorkspaceTabText(semanticString(tab["text"]))
+					}
 				}
 				if surfaceKind == "operationsQueue" {
 					tab["closable"] = queueCanClose
@@ -176,7 +184,7 @@ func appWorkspaceTabText(title string) string {
 	// number (for example "2V report.txt"). The semantic model keeps the
 	// number separate and exports the marker at the start of text. Native tabs
 	// already have typed icons, so retain only the content title here.
-	for _, marker := range []string{"P", "V", "E"} {
+	for _, marker := range []string{"P", "V", "E", "T"} {
 		if title == marker {
 			return ""
 		}
@@ -673,6 +681,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		SeparateFileExtensions: appBool(node["separateFileExtensions"]),
 		Cursor:                 semanticInt(node["cursor"]),
 		Loading:                appBool(node["loading"]),
+		CatalogProvisional:     appBool(node["catalogProvisional"]),
 		FastFind:               appBool(node["fastFind"]),
 		FastFindText:           semanticString(node["fastFindText"]),
 		SelectedCount:          semanticInt(node["selectedCount"]),
@@ -802,6 +811,7 @@ func appSurfaceFromLegacy(node map[string]any) extui.SurfaceModel {
 	surface := extui.SurfaceModel{
 		ID:                 semanticString(node["id"]),
 		Kind:               semanticString(node["kind"]),
+		DefaultBackground:  semanticString(node["defaultBackground"]),
 		Title:              semanticString(node["title"]),
 		Path:               semanticString(node["path"]),
 		BaseName:           semanticString(node["baseName"]),

@@ -379,6 +379,21 @@ QPoint itemCenter(QQuickItem *item)
     return scenePoint.toPoint();
 }
 
+QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
+{
+    if (!root)
+        return nullptr;
+    if (root->property("text").isValid()
+        && root->property("text").toString() == text) {
+        return root;
+    }
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItemWithText(child, text))
+            return match;
+    }
+    return nullptr;
+}
+
 void sendPixelWheel(QQuickWindow *window, const QPoint &position, int deltaY)
 {
     QWheelEvent event(position,
@@ -535,7 +550,7 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
         fixture.window, "workspaceTabLabel",
         Q_RETURN_ARG(QVariant, numberedTabLabel),
         Q_ARG(QVariant, numberedTabPresentation)));
-    QCOMPARE(numberedTabLabel.toString(), QStringLiteral("7 report.txt"));
+    QCOMPARE(numberedTabLabel.toString(), QStringLiteral("report.txt 7"));
     const QVariantMap numberOnlyTabPresentation{
         {QStringLiteral("number"), 7},
         {QStringLiteral("text"), QString()},
@@ -551,7 +566,59 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
 		fixture.window, "workspaceTabNumberColor",
 		Q_RETURN_ARG(QVariant, tabNumberColor)));
 	QCOMPARE(tabNumberColor.value<QColor>(),
-			 fixture.window->property("dialogAccent").value<QColor>());
+			 fixture.window->property("mutedText").value<QColor>());
+
+    const QVariantMap tooltipTabPresentation{
+        {QStringLiteral("number"), 7},
+        {QStringLiteral("text"), QStringLiteral("report.txt")},
+        {QStringLiteral("tooltipPrimary"), QStringLiteral("/left/full/path")},
+        {QStringLiteral("tooltipSecondary"), QStringLiteral("/right/full/path")},
+        {QStringLiteral("shortcutAvailable"), true},
+    };
+    QVariant macShortcut;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "workspaceTabShortcut",
+        Q_RETURN_ARG(QVariant, macShortcut),
+        Q_ARG(QVariant, tooltipTabPresentation),
+        Q_ARG(QVariant, QStringLiteral("osx"))));
+    QCOMPARE(macShortcut.toString(), QStringLiteral("⌥7"));
+    QVariant linuxShortcut;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "workspaceTabShortcut",
+        Q_RETURN_ARG(QVariant, linuxShortcut),
+        Q_ARG(QVariant, tooltipTabPresentation),
+        Q_ARG(QVariant, QStringLiteral("linux"))));
+    QCOMPARE(linuxShortcut.toString(), QStringLiteral("Alt+7"));
+    QVariant macTooltip;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "workspaceTabToolTip",
+        Q_RETURN_ARG(QVariant, macTooltip),
+        Q_ARG(QVariant, tooltipTabPresentation),
+        Q_ARG(QVariant, QStringLiteral("osx"))));
+    QCOMPARE(macTooltip.toString(),
+             QStringLiteral("/left/full/path\n/right/full/path\t⌥7"));
+
+    QVariant unavailableShortcut;
+    QVariantMap unavailableTab = tooltipTabPresentation;
+    unavailableTab.insert(QStringLiteral("shortcutAvailable"), false);
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "workspaceTabShortcut",
+        Q_RETURN_ARG(QVariant, unavailableShortcut),
+        Q_ARG(QVariant, unavailableTab),
+        Q_ARG(QVariant, QStringLiteral("linux"))));
+    QVERIFY(unavailableShortcut.toString().isEmpty());
+
+    QQuickItem *workspaceBar = fixture.item(QStringLiteral("workspaceBar"));
+    QVERIFY(workspaceBar);
+    QQuickItem *queueTitle = visualItemWithText(workspaceBar,
+                                                QStringLiteral("Queue"));
+    QQuickItem *queueNumber = visualItemWithText(workspaceBar,
+                                                 QStringLiteral("2"));
+    QVERIFY(queueTitle);
+    QVERIFY(queueNumber);
+    QCOMPARE(queueNumber->property("text").toString(), QStringLiteral("2"));
+    QVERIFY(queueTitle->mapToScene(QPointF{}).x()
+            < queueNumber->mapToScene(QPointF{}).x());
     QVariant naturalTabWidth;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "preferredWorkspaceTabWidth",

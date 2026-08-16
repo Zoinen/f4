@@ -62,6 +62,9 @@ public:
     Q_INVOKABLE void sendClipboardPaste() {}
     Q_INVOKABLE void sendQtText(const QString &) {}
 
+signals:
+    void keyboardActivity();
+
 private:
     QObject *m_controller = nullptr;
     QString m_fontFamily;
@@ -205,6 +208,7 @@ QVariantMap viewerFrame(int firstOffset, int count, int viewportStart,
     return {
         {QStringLiteral("id"), QStringLiteral("document-under-test")},
         {QStringLiteral("kind"), QStringLiteral("viewer")},
+        {QStringLiteral("defaultBackground"), QStringLiteral("#242424")},
         {QStringLiteral("scrollUnit"), QStringLiteral("bytes")},
         {QStringLiteral("rows"), rows.mid(0, qMin(30, rows.size()))},
         {QStringLiteral("windowRows"), rows},
@@ -356,6 +360,8 @@ class F4DocumentSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void documentSurfaceDoesNotPaintItsOwnBackdrop();
+    void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
     void activeFlickRebasesAtomicallyAcrossWindowAck();
     void activeUpwardEditorFlickKeepsStableSlotsAcrossAck();
@@ -365,6 +371,118 @@ private slots:
     void editorCursorTracksAbsoluteWindowRowAndVisibility();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
 };
+
+void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
+{
+    DocumentFixture fixture(documentScene(viewerFrame(0, 20, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QCOMPARE(fixture.surface->property("color").value<QColor>().alphaF(), 0.0);
+    QQuickItem *row = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        QList<QQuickItem *> pending{fixture.list};
+        while (!pending.isEmpty()) {
+            QQuickItem *item = pending.takeFirst();
+            if (item->objectName() == QStringLiteral("documentRowDelegate")) {
+                row = item;
+                return true;
+            }
+            pending.append(item->childItems());
+        }
+        return false;
+    }(), 3000);
+    QCOMPARE(row->property("color").value<QColor>().alphaF(), 0.0);
+
+    QVariant returned;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "runBackground", Q_RETURN_ARG(QVariant, returned),
+        Q_ARG(QVariant, QStringLiteral("#242424"))));
+    QCOMPARE(QColor(returned.toString()).alphaF(), 0.0);
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "runBackground", Q_RETURN_ARG(QVariant, returned),
+        Q_ARG(QVariant, QStringLiteral("#884422"))));
+    QCOMPARE(QColor(returned.toString()), QColor(QStringLiteral("#884422")));
+}
+
+void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 40, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    fixture.shell.clearActions();
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const QPointF scenePoint = fixture.list->mapToScene(
+        QPointF(34, rowHeight * 1.5));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::ShiftModifier,
+                      scenePoint.toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 2, 1500);
+    const QVariantMap press = fixture.shell.actions.constFirst();
+    QCOMPARE(press.value(QStringLiteral("action")), QStringLiteral("editor.mouse"));
+    QCOMPARE(press.value(QStringLiteral("phase")), QStringLiteral("press"));
+    QCOMPARE(press.value(QStringLiteral("button")), QStringLiteral("left"));
+    QVERIFY(press.value(QStringLiteral("column")).toInt() >= 0);
+    QCOMPARE(press.value(QStringLiteral("row")).toInt(), 1);
+    QVERIFY(press.value(QStringLiteral("shift")).toBool());
+    QCOMPARE(fixture.shell.actions.constLast().value(QStringLiteral("phase")),
+             QStringLiteral("release"));
+
+    // A ListView may have a partially clipped first delegate while native
+    // scrolling or a window rebase settles.  The pointer row must follow the
+    // delegate under it, not a viewport-local row grid anchored at y=0.
+    fixture.list->setProperty(
+        "contentY", fixture.list->property("contentY").toReal()
+                        + rowHeight * 0.6);
+    QCoreApplication::processEvents();
+    fixture.shell.clearActions();
+    const QPointF fractionalPoint = fixture.list->mapToScene(
+        QPointF(34, rowHeight * 0.6));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      fractionalPoint.toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 2, 1500);
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("row")).toInt(), 1);
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::RightButton, Qt::NoModifier,
+                      scenePoint.toPoint());
+    QTest::mouseMove(fixture.window, (scenePoint + QPointF(30, 24)).toPoint());
+    QTest::mouseRelease(fixture.window, Qt::RightButton, Qt::NoModifier,
+                        (scenePoint + QPointF(30, 24)).toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.shell.actions.size() >= 3, 1500);
+    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("button")),
+             QStringLiteral("right"));
+    bool sawMove = false;
+    for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+        sawMove = sawMove || action.value(QStringLiteral("moved")).toBool();
+    }
+    QVERIFY(sawMove);
+
+    fixture.shell.clearActions();
+    QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                       scenePoint.toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1500);
+    bool sawDoubleClick = false;
+    for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+        sawDoubleClick = sawDoubleClick
+            || action.value(QStringLiteral("doubleClick")).toBool();
+    }
+    QVERIFY(sawDoubleClick);
+
+    fixture.shell.clearActions();
+    const qreal beforeWheelY = fixture.list->property("contentY").toReal();
+    sendPixelWheel(fixture.window, scenePoint.toPoint(), -120);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.list->property("contentY").toReal() > beforeWheelY, 1000);
+    QTest::qWait(260);
+    for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+        QVERIFY2(action.value(QStringLiteral("action")).toString()
+                     != QStringLiteral("editor.mouse"),
+                 "editor wheel input must stay in the QML scroll pipeline");
+    }
+}
 
 void F4DocumentSurfaceTests::initTestCase()
 {
@@ -830,6 +948,8 @@ void F4DocumentSurfaceTests::editorCursorTracksAbsoluteWindowRowAndVisibility()
                              3000);
     QTRY_VERIFY_WITH_TIMEOUT(cursor->isVisible(), 3000);
     QCOMPARE(cursor->property("windowRow").toInt(), 12);
+    QVERIFY(cursor->width() > 2.0);
+    QVERIFY(cursor->height() > cursor->width());
     const qreal cursorInViewport = cursor->mapToItem(fixture.list, 0, 0).y();
     QVERIFY(cursorInViewport >= 0);
     QVERIFY(cursorInViewport < fixture.list->height());
@@ -840,8 +960,20 @@ void F4DocumentSurfaceTests::editorCursorTracksAbsoluteWindowRowAndVisibility()
     QTRY_VERIFY_WITH_TIMEOUT(!cursor->isVisible(), 3000);
 
     frame.insert(QStringLiteral("cursorVisible"), true);
-    frame.insert(QStringLiteral("cursorAbsoluteRow"), 150);
+    frame.insert(QStringLiteral("cursorShape"), QStringLiteral("underline"));
     frame.insert(QStringLiteral("windowGeneration"), 3);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_COMPARE_WITH_TIMEOUT(cursor->width(), 2.0, 3000);
+    QVERIFY(cursor->height() > cursor->width());
+    QCOMPARE(cursor->property("color").value<QColor>(), QColor(Qt::white));
+    cursor->setProperty("blinkOn", false);
+    auto *grid = fixture.window->findChild<TestGrid *>();
+    QVERIFY(grid);
+    emit grid->keyboardActivity();
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->property("blinkOn").toBool(), 1000);
+
+    frame.insert(QStringLiteral("cursorAbsoluteRow"), 150);
+    frame.insert(QStringLiteral("windowGeneration"), 4);
     fixture.shell.setScene(documentScene(frame));
     QTRY_COMPARE_WITH_TIMEOUT(cursor->property("windowRow").toInt(), -1, 3000);
     QVERIFY(!cursor->isVisible());

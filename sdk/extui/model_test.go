@@ -32,6 +32,7 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				GalleryLayoutRevision:  9,
 				SourceKind:             "local",
 				PreviewCapable:         true,
+				CatalogProvisional:     true,
 				CatalogRevision:        7,
 				SelectionRevision:      3,
 				SeparateFileExtensions: true,
@@ -92,6 +93,9 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	}
 	if panels[0]["catalogRevision"] != int64(7) || panels[0]["cursorEntryId"] != "entry-alpha" {
 		t.Fatalf("panel v3 fields were not serialized: %#v", panels[0])
+	}
+	if panels[0]["catalogProvisional"] != true {
+		t.Fatalf("catalog provisional state was not serialized: %#v", panels[0])
 	}
 	for _, retired := range []string{"presentation", "viewModeName", "columns", "top"} {
 		if _, present := panels[0][retired]; present {
@@ -176,5 +180,8 @@ func TestWindowRowsContentKeyTracksTextAndCompleteRunStyle(t *testing.T) {
 	const supplied = "renderer-revision-7"
 	if got := (SurfaceModel{WindowRows: rows, WindowContentKey: supplied}).ToMap()["windowContentKey"]; got != supplied {
 		t.Fatalf("surface discarded supplied content key: %v", got)
+	}
+	if got := (SurfaceModel{DefaultBackground: "#242424"}).ToMap()["defaultBackground"]; got != "#242424" {
+		t.Fatalf("surface discarded default background: %v", got)
 	}
 }

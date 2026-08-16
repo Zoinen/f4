@@ -24,6 +24,7 @@ ApplicationWindow {
     property bool windowAgentReady: false
     property bool workspaceBarHitTestRegistered: false
     property int macWindowEffectApplyAttempts: 0
+    property int keyboardActivityRevision: 0
     readonly property string guiMonospaceFontFamily:
         String(f4GuiFontFamily || "").length > 0 ? String(f4GuiFontFamily) : "Monaco"
     readonly property int guiMonospaceFontPixelSize:
@@ -817,7 +818,7 @@ ApplicationWindow {
         const title = cleanText(tab.text).trim()
         if (number <= 0)
             return title
-        return title === "" ? String(number) : String(number) + " " + title
+        return title === "" ? String(number) : title + " " + String(number)
     }
 
     function workspaceTabTextColor(active) {
@@ -825,11 +826,63 @@ ApplicationWindow {
     }
 
     function workspaceTabNumberColor() {
-        return dialogAccent
+        return mutedText
+    }
+
+    function workspaceTabShortcut(tab, platformName) {
+        tab = tab || ({})
+        const number = Number(tab.number || 0)
+        if (number < 1 || number > 9 || tab.shortcutAvailable === false)
+            return ""
+        return cleanText(platformName) === "osx"
+                ? "\u2325" + String(number)
+                : "Alt+" + String(number)
+    }
+
+    function workspaceTabToolTip(tab, platformName) {
+        tab = tab || ({})
+        var primary = cleanText(tab.tooltipPrimary).trim()
+        const secondary = cleanText(tab.tooltipSecondary).trim()
+        if (primary === "")
+            primary = cleanText(tab.text).trim()
+        if (secondary !== "")
+            primary = primary === "" ? secondary
+                                      : primary + "\n" + secondary
+        const shortcut = workspaceTabShortcut(tab, platformName)
+        if (primary === "")
+            return shortcut
+        return shortcut === "" ? primary : primary + "\t" + shortcut
     }
 
     function workspaceTabFontWeight() {
         return Font.Normal
+    }
+
+    function vtuiKeyModifiers(modifiers) {
+        var result = 0
+        if ((modifiers & Qt.ShiftModifier) !== 0)
+            result |= 0x0010
+        if ((modifiers & Qt.ControlModifier) !== 0
+                || (Qt.platform.os === "osx"
+                    && (modifiers & Qt.MetaModifier) !== 0))
+            result |= 0x0008
+        if ((modifiers & Qt.AltModifier) !== 0)
+            result |= 0x0002
+        return result
+    }
+
+    function keyBarFunctionIndex(item, fallbackIndex) {
+        item = item || ({})
+        const match = /^F([0-9]+)$/i.exec(cleanText(item.key).trim())
+        if (match !== null) {
+            const keyNumber = Number(match[1])
+            if (keyNumber >= 1 && keyNumber <= 24)
+                return keyNumber - 1
+        }
+        const semanticIndex = Number(item["index"])
+        if (!isNaN(semanticIndex) && semanticIndex >= 0)
+            return semanticIndex
+        return Math.max(0, Number(fallbackIndex || 0))
     }
 
     function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
@@ -914,7 +967,7 @@ ApplicationWindow {
             "background": "transparent",
             "panelBackground": "transparent",
             "backgroundAlternate": panelBgAlt,
-            "viewerBackground": panelBgAlt,
+            "viewerBackground": "transparent",
             "border": panelBorder,
             "activeBorder": activeBorder,
             "cursor": panelSelectionBorder,
@@ -1085,6 +1138,7 @@ ApplicationWindow {
 
     VtuiGridItem {
         id: grid
+        objectName: "vtuiGrid"
         anchors.fill: parent
         // The pure text renderer has no semantic menu/title row of its own.
         // Reserve the native macOS title area so the first terminal row never
@@ -1114,6 +1168,14 @@ ApplicationWindow {
         opacity: root.needsFallbackGrid() ? 1.0 : 0.0
         visible: true
         Component.onCompleted: forceActiveFocus()
+    }
+
+    Connections {
+        target: grid
+        ignoreUnknownSignals: true
+        function onKeyboardActivity() {
+            ++root.keyboardActivityRevision
+        }
     }
 
     Item {
@@ -1236,6 +1298,16 @@ ApplicationWindow {
                                     id: workspaceHover
                                 }
 
+                                ZG.ToolTip {
+                                    objectName: "workspace-tab-tooltip-"
+                                                + workspaceTab.objectName
+                                    visible: workspaceHover.hovered
+                                    delay: 500
+                                    timeout: 5000
+                                    text: root.workspaceTabToolTip(
+                                              modelData, Qt.platform.os)
+                                }
+
                                 IconLabel {
                                     id: workspaceIcon
                                     readonly property string lucideName:
@@ -1259,9 +1331,11 @@ ApplicationWindow {
                                     id: workspaceLabel
                                     anchors.left: workspaceIcon.right
                                     anchors.leftMargin: 7
-                                    anchors.right: workspaceClose.visible
-                                                   ? workspaceClose.left
-                                                   : workspaceAttention.left
+                                    anchors.right: workspaceAttention.visible
+                                                   ? workspaceAttention.left
+                                                   : workspaceClose.visible
+                                                     ? workspaceClose.left
+                                                     : parent.right
                                     anchors.rightMargin: 6
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: Math.max(workspaceNumber.implicitHeight,
@@ -1272,23 +1346,14 @@ ApplicationWindow {
                                                    + workspaceTitle.implicitWidth
 
                                     Text {
-                                        id: workspaceNumber
-                                        objectName: "workspace-tab-number"
-                                        anchors.left: parent.left
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: Number(modelData.number || 0) > 0
-                                              ? String(modelData.number) : ""
-                                        color: root.workspaceTabNumberColor()
-                                        font.weight: workspaceTab.labelWeight
-                                    }
-
-                                    Text {
                                         id: workspaceTitle
-                                        anchors.left: workspaceNumber.right
-                                        anchors.leftMargin: text === "" ||
-                                                            workspaceNumber.text === ""
-                                                            ? 0 : 5
-                                        anchors.right: parent.right
+                                        objectName: "workspace-tab-title-"
+                                                    + workspaceTab.objectName
+                                        anchors.left: parent.left
+                                        anchors.right: workspaceNumber.left
+                                        anchors.rightMargin: text === "" ||
+                                                             workspaceNumber.text === ""
+                                                             ? 0 : 5
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: root.cleanText(modelData.text)
                                         color: workspaceTab.labelColor
@@ -1298,6 +1363,19 @@ ApplicationWindow {
                                         // consistency across the title bar.
                                         font.weight: workspaceTab.labelWeight
                                         elide: Text.ElideMiddle
+                                    }
+
+                                    Text {
+                                        id: workspaceNumber
+                                        objectName: "workspace-tab-number-"
+                                                    + workspaceTab.objectName
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: Number(modelData.number || 0) > 0
+                                              ? String(modelData.number) : ""
+                                        color: root.workspaceTabNumberColor()
+                                        opacity: workspaceTab.current ? 0.9 : 0.76
+                                        font.weight: workspaceTab.labelWeight
                                     }
                                 }
 
@@ -3583,7 +3661,7 @@ ApplicationWindow {
     component TerminalBackdrop: Rectangle {
         property var terminal: ({})
         objectName: "terminalBackdrop"
-        color: root.terminalBg
+        color: "transparent"
         clip: true
 
         // Keep the terminal's newest row attached to the bottom of its own
@@ -3616,6 +3694,14 @@ ApplicationWindow {
         property var commandLine: ({})
         property var shell: root.shellFrame()
         property bool nativeLayout: root.isAppScene()
+        objectName: "commandLineView"
+
+        // A command-line patch changes text and caret position together.  A
+        // TextInput may apply its own cursor reset while accepting the new
+        // text after a declarative cursor binding has already run.  Reapply
+        // the semantic caret on the next event-loop turn, once both values
+        // have settled.
+        onCommandLineChanged: commandInput.scheduleSemanticCursorSync()
 
         x: nativeLayout ? 0 : root.pxX(commandLine.x)
         y: nativeLayout ? root.height - root.keyBarHeight() - root.commandLineHeight(shell) : root.pxY(commandLine.y)
@@ -3623,7 +3709,7 @@ ApplicationWindow {
         height: nativeLayout ? root.commandLineHeight(shell)
                              : Math.max(root.ch, root.pxH(commandLine.h))
         visible: commandLine.visible !== false
-        color: root.commandLineBg
+        color: "transparent"
 
         Item {
             id: commandPresentation
@@ -3668,9 +3754,32 @@ ApplicationWindow {
                 verticalAlignment: TextInput.AlignVCenter
                 readOnly: true
                 activeFocusOnPress: false
-                cursorPosition: Math.max(0, Math.min(text.length,
-                                                     Number(commandLine.cursorPosition || 0)))
                 cursorDelegate: Item { width: 0; height: 0 }
+
+                function semanticCursorPosition() {
+                    return Math.max(0, Math.min(text.length,
+                                    Number(commandLine.cursorPosition || 0)))
+                }
+
+                function syncSemanticCursor() {
+                    var position = semanticCursorPosition()
+                    if (cursorPosition !== position)
+                        cursorPosition = position
+                }
+
+                function scheduleSemanticCursorSync() {
+                    commandCursorSyncTimer.restart()
+                }
+
+                onTextChanged: scheduleSemanticCursorSync()
+                Component.onCompleted: scheduleSemanticCursorSync()
+
+                Timer {
+                    id: commandCursorSyncTimer
+                    interval: 0
+                    repeat: false
+                    onTriggered: commandInput.syncSemanticCursor()
+                }
             }
         }
 
@@ -3685,24 +3794,38 @@ ApplicationWindow {
             objectName: "commandLineCursor"
             property bool blinkOn: true
             readonly property bool block: commandLine.cursorShape === "block"
-            readonly property rect caretRect:
-                commandInput.positionToRectangle(commandInput.cursorPosition)
+            readonly property int textPosition: commandInput.cursorPosition
+            readonly property rect caretRect: commandInput.cursorRectangle
             x: commandPresentation.x + commandInput.x + caretRect.x
             y: block ? commandPresentation.y
                      : commandPresentation.y + commandPresentation.height - 2
             width: Math.max(1, commandLineFontMetrics.advanceWidth("M"))
             height: block ? commandPresentation.height : 2
-            color: root.textColor
+            color: "#ffffff"
             visible: commandLine.cursorVisible === true
-            opacity: blinkOn ? 0.8 : 0.2
+            opacity: blinkOn ? 1 : 0
             z: 2
+
+            function restartBlink() {
+                blinkOn = true
+                if (visible)
+                    commandCursorBlinkTimer.restart()
+            }
 
             onVisibleChanged: {
                 if (visible)
-                    blinkOn = true
+                    restartBlink()
+            }
+
+            Connections {
+                target: root
+                function onKeyboardActivityRevisionChanged() {
+                    commandCursor.restartBlink()
+                }
             }
 
             Timer {
+                id: commandCursorBlinkTimer
                 interval: 520
                 running: commandCursor.visible
                 repeat: true
@@ -4631,6 +4754,8 @@ ApplicationWindow {
         property int loadedSlotStart: 0
         property int loadedSlotEnd: 0
         property int liveRowDelegateCount: 0
+        property int lastEditorMouseColumn: 0
+        property int lastEditorMouseRow: 0
         property var latestWindowRows: []
         readonly property bool kineticActive:
             documentList.flicking || documentList.dragging
@@ -4651,14 +4776,78 @@ ApplicationWindow {
             : root.scene.keyBar ? Math.max(26, root.ch * 1.35) : 0
         readonly property real rowHeight: Math.max(20, root.ch)
 
-        function rowBackground(row) {
-            var runs = row && row.runs ? row.runs : []
-            for (var i = runs.length - 1; i >= 0; --i) {
-                var background = root.cleanText(runs[i].background)
-                if (background !== "")
-                    return background
-            }
-            return root.terminalBg
+        function runBackground(value) {
+            var background = root.cleanText(value).toLowerCase()
+            var defaultBackground = root.cleanText(
+                        frame.defaultBackground).toLowerCase()
+            if ((defaultBackground !== ""
+                    && background === defaultBackground)
+                    || background === "#000000"
+                    || background === "#ff000000"
+                    || background === "black")
+                return "transparent"
+            return background !== "" ? value : "transparent"
+        }
+
+        function editorMouseButton(buttons) {
+            if ((buttons & Qt.LeftButton) !== 0)
+                return "left"
+            if ((buttons & Qt.RightButton) !== 0)
+                return "right"
+            if ((buttons & Qt.MiddleButton) !== 0)
+                return "middle"
+            return "none"
+        }
+
+        function sendEditorMouse(mouse, phase, moved, doubleClick) {
+            if (frame.kind !== "editor")
+                return
+            var cellWidth = Math.max(1,
+                                     documentFontMetrics.advanceWidth("M"))
+            var column = Math.max(0, Math.floor((mouse.x - 10) / cellWidth))
+            // Resolve the row in ListView content coordinates.  contentY can
+            // sit between delegate boundaries while a native scroll/rebase is
+            // settling; treating mouse.y as if the first row always started
+            // at viewport Y=0 then targets the preceding line.
+            var modelIndex = Math.floor(
+                        (documentList.contentY + mouse.y) / rowHeight)
+            var windowIndex = modelIndex - loadedSlotStart
+            var absoluteRow = windowIndex >= 0
+                    && windowIndex < displayedRows.length
+                    ? rowExtent(windowIndex) : Number(frame.viewportStart || 0)
+                      + Math.floor(mouse.y / rowHeight)
+            var row = Math.max(0, Math.floor(
+                        absoluteRow - Number(frame.viewportStart || 0)))
+            lastEditorMouseColumn = column
+            lastEditorMouseRow = row
+            var buttons = phase === "release" ? Qt.NoButton
+                                               : (mouse.buttons || mouse.button)
+            root.action({
+                "target": root.cleanText(frame.id),
+                "action": "editor.mouse",
+                "phase": phase,
+                "button": editorMouseButton(buttons),
+                "column": column,
+                "row": row,
+                "moved": moved === true,
+                "doubleClick": doubleClick === true,
+                "shift": (mouse.modifiers & Qt.ShiftModifier) !== 0,
+                "ctrl": (mouse.modifiers & Qt.ControlModifier) !== 0,
+                "alt": (mouse.modifiers & Qt.AltModifier) !== 0
+            }, true)
+        }
+
+        function releaseEditorMouse() {
+            if (frame.kind !== "editor")
+                return
+            root.action({
+                "target": root.cleanText(frame.id),
+                "action": "editor.mouse",
+                "phase": "release",
+                "button": "none",
+                "column": lastEditorMouseColumn,
+                "row": lastEditorMouseRow
+            }, true)
         }
 
         function sourceRows() {
@@ -5127,8 +5316,7 @@ ApplicationWindow {
         }
         Component.onCompleted: frameSyncTimer.restart()
 
-        color: displayedRows && displayedRows.length > 0
-               ? rowBackground(displayedRows[0]) : root.terminalBg
+        color: "transparent"
 
         FontMetrics {
             id: documentFontMetrics
@@ -5166,8 +5354,7 @@ ApplicationWindow {
                 property bool countedAsLive: true
                 width: ListView.view.width
                 height: documentRoot.rowHeight
-                color: loaded ? documentRoot.rowBackground(rowData)
-                              : root.terminalBg
+                color: "transparent"
                 Component.onCompleted: ++documentRoot.liveRowDelegateCount
                 Component.onDestruction: {
                     if (countedAsLive)
@@ -5202,8 +5389,8 @@ ApplicationWindow {
                         delegate: Rectangle {
                             height: runRow.height
                             width: runLabel.implicitWidth
-                            color: root.cleanText(modelData.background) !== ""
-                                   ? modelData.background : "transparent"
+                            color: documentRoot.runBackground(
+                                       modelData.background)
 
                             Text {
                                 id: runLabel
@@ -5268,6 +5455,7 @@ ApplicationWindow {
 
         Rectangle {
             id: editorCursor
+            objectName: "editorCursor"
             parent: documentList.contentItem
             property bool blinkOn: true
             readonly property bool block: frame.cursorShape === "block"
@@ -5280,11 +5468,12 @@ ApplicationWindow {
                     * documentFontMetrics.advanceWidth("M")
             y: (documentRoot.loadedSlotStart + Math.max(0, windowRow))
                * documentRoot.rowHeight
-               + (block ? 1 : documentRoot.rowHeight - 3)
-            width: Math.max(1, documentFontMetrics.advanceWidth("M"))
-            height: block ? documentRoot.rowHeight - 2 : 2
-            color: root.dialogAccent
-            opacity: blinkOn ? 0.72 : 0.18
+               + (block ? 1 : 2)
+            width: block ? Math.max(1, documentFontMetrics.advanceWidth("M"))
+                         : 2
+            height: documentRoot.rowHeight - (block ? 2 : 4)
+            color: "#ffffff"
+            opacity: blinkOn ? 1 : 0
             visible: frame.kind === "editor"
                      && frame.cursorVisible === true
                      && windowRow >= 0
@@ -5293,10 +5482,24 @@ ApplicationWindow {
 
             onVisibleChanged: {
                 if (visible)
-                    blinkOn = true
+                    restartBlink()
+            }
+
+            function restartBlink() {
+                blinkOn = true
+                if (visible)
+                    editorCursorBlinkTimer.restart()
+            }
+
+            Connections {
+                target: root
+                function onKeyboardActivityRevisionChanged() {
+                    editorCursor.restartBlink()
+                }
             }
 
             Timer {
+                id: editorCursorBlinkTimer
                 interval: 520
                 running: editorCursor.visible
                 repeat: true
@@ -5310,10 +5513,35 @@ ApplicationWindow {
                            ? documentScrollBar.left : documentList.right
             anchors.top: documentList.top
             anchors.bottom: documentList.bottom
-            acceptedButtons: Qt.NoButton
+            acceptedButtons: frame.kind === "editor"
+                             ? Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                             : Qt.NoButton
+            preventStealing: frame.kind === "editor"
             propagateComposedEvents: true
             enabled: documentRoot.interactionActive
+            cursorShape: frame.kind === "editor" ? Qt.IBeamCursor
+                                                  : Qt.ArrowCursor
             z: 8
+            onPressed: mouse => {
+                documentRoot.sendEditorMouse(mouse, "press", false, false)
+                mouse.accepted = true
+            }
+            onPositionChanged: mouse => {
+                if (frame.kind === "editor" && mouse.buttons !== Qt.NoButton)
+                    documentRoot.sendEditorMouse(mouse, "move", true, false)
+            }
+            onReleased: mouse => {
+                documentRoot.sendEditorMouse(mouse, "release", false, false)
+                mouse.accepted = true
+            }
+            onCanceled: documentRoot.releaseEditorMouse()
+            onDoubleClicked: mouse => {
+                documentRoot.sendEditorMouse(mouse, "press", false, true)
+                mouse.accepted = true
+            }
+            // Wheel gestures stay in the native QML scrolling pipeline for
+            // both viewers and editors.  Only button/drag selection events
+            // need the canonical Go editor mouse handler.
             onWheel: wheel => documentRoot.handleWheel(wheel)
         }
 
@@ -6952,6 +7180,7 @@ ApplicationWindow {
 
     component KeyBarView: Rectangle {
         property var keyBar: ({})
+        objectName: "keyBar"
         color: "transparent"
         visible: keyBar.visible !== false && keyBar.items !== undefined
 
@@ -6965,6 +7194,14 @@ ApplicationWindow {
                 model: keyBar.items || []
                 delegate: Rectangle {
                     id: actionButton
+                    readonly property string functionKey:
+                        root.cleanText(modelData.key) !== ""
+                        ? root.cleanText(modelData.key)
+                        : "F" + String(index + 1)
+                    readonly property int functionIndex:
+                        root.keyBarFunctionIndex(
+                            { "key": actionButton.functionKey }, index)
+                    objectName: "key-bar-action-" + (functionIndex + 1)
                     width: parent.width / 12
                     height: parent.height
                     color: actionButtonMouse.pressed
@@ -6973,19 +7210,23 @@ ApplicationWindow {
                              ? root.panelSelectionBg : "transparent"
 
                     Text {
+                        id: functionKeyLabel
+                        objectName: "key-bar-shortcut-"
+                                    + (actionButton.functionIndex + 1)
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.leftMargin: root.actionButtonHorizontalMargin
-                        text: root.cleanText(index + 1)
+                        text: actionButton.functionKey
                         color: actionButtonMouse.containsMouse
                                ? root.textColor : root.dialogAccent
                         font.pixelSize: 11
                     }
 
                     Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: root.actionButtonHorizontalMargin
-                                            + 20
+                        objectName: "key-bar-label-"
+                                    + (actionButton.functionIndex + 1)
+                        anchors.left: functionKeyLabel.right
+                        anchors.leftMargin: 7
                         anchors.right: parent.right
                         anchors.rightMargin: root.actionButtonHorizontalMargin
                         anchors.verticalCenter: parent.verticalCenter
@@ -7013,10 +7254,21 @@ ApplicationWindow {
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            var vk = 0x70 + index
-                            qtShell.sendKey(vk, 0, true, 0)
-                            qtShell.sendKey(vk, 0, false, 0)
+                        onClicked: function(mouse) {
+                            // Dispatch the same semantic F-key that is
+                            // visibly labelled. Repeater's injected `index`
+                            // can transiently shadow a map field while a
+                            // delegate is being created.
+                            var keyNumber = Number(
+                                        parent.functionKey
+                                            .replace(/^F/i, ""))
+                            var clickedIndex = !isNaN(keyNumber)
+                                    && keyNumber >= 1 && keyNumber <= 24
+                                    ? keyNumber - 1 : parent.functionIndex
+                            var vk = 0x70 + clickedIndex
+                            var mods = root.vtuiKeyModifiers(mouse.modifiers)
+                            qtShell.sendKey(vk, 0, true, mods)
+                            qtShell.sendKey(vk, 0, false, mods)
                             grid.forceActiveFocus()
                         }
                     }

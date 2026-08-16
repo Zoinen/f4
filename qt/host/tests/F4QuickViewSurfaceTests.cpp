@@ -63,6 +63,9 @@ public:
     Q_INVOKABLE void sendClipboardPaste() {}
     Q_INVOKABLE void sendQtText(const QString &) {}
 
+signals:
+    void keyboardActivity();
+
 private:
     QObject *m_controller = nullptr;
     QString m_fontFamily;
@@ -79,18 +82,29 @@ class TestShell final : public QObject
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
     Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
     Q_PROPERTY(QVariantMap presentationScene READ scene NOTIFY sceneChanged)
+    Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
 
 public:
     int initialCols() const { return 110; }
     int initialRows() const { return 34; }
     QVariantMap scene() const { return m_scene; }
+    QVariantMap commandLine() const { return m_commandLine; }
 
     void setScene(const QVariantMap &scene)
     {
         m_scene = scene;
+        m_commandLine = scene.value(QStringLiteral("shell")).toMap()
+                            .value(QStringLiteral("commandLine")).toMap();
+        emit commandLineChanged();
         emit sceneChanged();
     }
+    void setCommandLine(const QVariantMap &commandLine)
+    {
+        m_commandLine = commandLine;
+        emit commandLineChanged();
+    }
     void clearActions() { actions.clear(); }
+    void clearKeyEvents() { keyEvents.clear(); }
 
     Q_INVOKABLE void sendUiAction(const QVariantMap &action)
     {
@@ -98,16 +112,27 @@ public:
         emit uiActionSent(action);
     }
     Q_INVOKABLE void sendQuit() {}
-    Q_INVOKABLE void sendKey(int, int, bool, int) {}
+    Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods)
+    {
+        keyEvents.append({
+            {QStringLiteral("vk"), vk},
+            {QStringLiteral("char"), ch},
+            {QStringLiteral("down"), down},
+            {QStringLiteral("mods"), mods},
+        });
+    }
 
     QVector<QVariantMap> actions;
+    QVector<QVariantMap> keyEvents;
 
 signals:
     void sceneChanged();
+    void commandLineChanged();
     void uiActionSent(const QVariantMap &action);
 
 private:
     QVariantMap m_scene;
+    QVariantMap m_commandLine;
 };
 
 class TestGallery final : public QObject
@@ -313,6 +338,21 @@ qreal topVisualRow(QQuickItem *surface, QQuickItem *list)
         + raw - std::floor(raw);
 }
 
+QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
+{
+    if (!root)
+        return nullptr;
+    if (root->property("text").isValid()
+        && root->property("text").toString() == text) {
+        return root;
+    }
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItemWithText(child, text))
+            return match;
+    }
+    return nullptr;
+}
+
 struct QuickViewFixture
 {
     TestShell shell;
@@ -366,6 +406,7 @@ class F4QuickViewSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void readyUnifiedRendererLoaderIsVisible();
     void rendererChoicesUseProductOrderAndShortcuts();
     void coverUncoverPreservesFilePanelAndRendererObjects();
@@ -374,6 +415,7 @@ private slots:
     void clickActivatesCoveredSideAndFocusStaysOutOfHiddenPanel();
     void previewKindsSelectExactlyOneNativeBody();
     void commandLineUsesOriginalSemanticRendererAndCursor();
+    void commandLineCursorTracksFirstTextPatch();
     void autocompleteReturnTargetsShellCommandHandler();
     void widePanelDoesNotRevealTerminalBackdrop();
 };
@@ -382,6 +424,64 @@ void F4QuickViewSurfaceTests::initTestCase()
 {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers()
+{
+    QVariantList items;
+    for (int index = 0; index < 12; ++index) {
+        items.append(QVariantMap{
+            {QStringLiteral("index"), index},
+            {QStringLiteral("key"), QStringLiteral("F%1").arg(index + 1)},
+            {QStringLiteral("text"), QStringLiteral("Action %1").arg(index + 1)},
+        });
+    }
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("keyBar"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("modifier"), QStringLiteral("normal")},
+        {QStringLiteral("items"), items},
+    });
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *keyBar = fixture.item(QStringLiteral("keyBar"));
+    QVERIFY(keyBar);
+    QQuickItem *f1 = visualItemWithText(keyBar, QStringLiteral("F1"));
+    QQuickItem *f12 = visualItemWithText(keyBar, QStringLiteral("F12"));
+    QQuickItem *f12Label = visualItemWithText(keyBar,
+                                              QStringLiteral("Action 12"));
+    QVERIFY(f1);
+    QVERIFY(f12);
+    QVERIFY(f12Label);
+    QCOMPARE(f1->property("text").toString(), QStringLiteral("F1"));
+    QCOMPARE(f12->property("text").toString(), QStringLiteral("F12"));
+    QVERIFY(f12Label->mapToScene(QPointF{}).x()
+            >= f12->mapToScene(QPointF(f12->width(), 0)).x() + 6.0);
+    QQuickItem *f12Button = f12->parentItem();
+    QVERIFY(f12Button);
+    QCOMPARE(f12Button->property("functionKey").toString(),
+             QStringLiteral("F12"));
+    QCOMPARE(f12Button->property("functionIndex").toInt(), 11);
+
+    fixture.shell.clearKeyEvents();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::ShiftModifier,
+                      f12Button->mapToScene(
+                          QPointF(f12Button->width() / 2.0,
+                                  f12Button->height() / 2.0)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.keyEvents.size(), 2, 1000);
+    QCOMPARE(fixture.shell.keyEvents[0].value(QStringLiteral("vk")).toInt(),
+             0x7b);
+    QCOMPARE(fixture.shell.keyEvents[0].value(QStringLiteral("down")).toBool(),
+             true);
+    QCOMPARE(fixture.shell.keyEvents[0].value(QStringLiteral("mods")).toInt(),
+             0x0010);
+    QCOMPARE(fixture.shell.keyEvents[1].value(QStringLiteral("vk")).toInt(),
+             0x7b);
+    QCOMPARE(fixture.shell.keyEvents[1].value(QStringLiteral("down")).toBool(),
+             false);
+    QCOMPARE(fixture.shell.keyEvents[1].value(QStringLiteral("mods")).toInt(),
+             0x0010);
 }
 
 void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
@@ -507,6 +607,7 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
         {QStringLiteral("prompt"), prompt},
         {QStringLiteral("promptRuns"), promptRuns},
         {QStringLiteral("text"), text},
+        {QStringLiteral("cursorPosition"), text.size()},
         {QStringLiteral("runs"), renderedRuns},
         {QStringLiteral("cursorPrefixRuns"), renderedRuns},
         {QStringLiteral("cursorShape"), QStringLiteral("underline")},
@@ -532,8 +633,41 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QCOMPARE(cursor->height(), 2.0);
     QVERIFY(cursor->width() > 2.0);
     QVERIFY(cursor->isVisible());
-    QVERIFY2(cursor->x() > presentation->x(),
-             "the restored cursor must be positioned from cursorPrefixRuns");
+    QCOMPARE(cursor->property("color").value<QColor>(), QColor(Qt::white));
+    cursor->setProperty("blinkOn", false);
+    auto *grid = fixture.window->findChild<TestGrid *>();
+    QVERIFY(grid);
+    emit grid->keyboardActivity();
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->property("blinkOn").toBool(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->x() > presentation->x(), 1000);
+
+    QVariantMap updatedScene = scene;
+    QVariantMap updatedShell = updatedScene.value(QStringLiteral("shell")).toMap();
+    QVariantMap updatedCommandLine = updatedShell
+        .value(QStringLiteral("commandLine")).toMap();
+    updatedCommandLine.insert(QStringLiteral("text"), text + QStringLiteral("x"));
+    updatedCommandLine.insert(QStringLiteral("cursorPosition"), text.size() + 1);
+    updatedShell.insert(QStringLiteral("commandLine"), updatedCommandLine);
+    updatedScene.insert(QStringLiteral("shell"), updatedShell);
+    fixture.shell.setScene(updatedScene);
+    QTRY_COMPARE_WITH_TIMEOUT(cursor->property("textPosition").toInt(),
+                              text.size() + 1, 1000);
+
+    updatedCommandLine.insert(QStringLiteral("text"), QStringLiteral("a"));
+    updatedCommandLine.insert(QStringLiteral("cursorPosition"), 1);
+    updatedShell.insert(QStringLiteral("commandLine"), updatedCommandLine);
+    updatedScene.insert(QStringLiteral("shell"), updatedShell);
+    fixture.shell.setScene(updatedScene);
+    QTRY_COMPARE_WITH_TIMEOUT(cursor->property("textPosition").toInt(), 1, 1000);
+    const qreal cursorBeforeTyping = cursor->x();
+
+    updatedCommandLine.insert(QStringLiteral("text"), QStringLiteral("ab"));
+    updatedCommandLine.insert(QStringLiteral("cursorPosition"), 2);
+    updatedShell.insert(QStringLiteral("commandLine"), updatedCommandLine);
+    updatedScene.insert(QStringLiteral("shell"), updatedShell);
+    fixture.shell.setScene(updatedScene);
+    QTRY_COMPARE_WITH_TIMEOUT(cursor->property("textPosition").toInt(), 2, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->x() > cursorBeforeTyping, 1000);
 
     QVERIFY2(promptItem->width() <= presentation->width() * 0.5 + 0.5,
              "the prompt may consume at most half of the command row");
@@ -561,19 +695,74 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
              "the user/host prompt run must preserve its semantic foreground");
     QVERIFY2(foundLocationRun,
              "the path/suffix prompt run must preserve its semantic foreground");
-    QCOMPARE(inputItem->property("text").toString(), text);
+    QCOMPARE(inputItem->property("text").toString(), QStringLiteral("ab"));
     QVERIFY2(inputItem->width() >= presentation->width() * 0.5 - 0.5,
              "the command input must retain at least half of the row");
 
     auto *backdrop = fixture.item(QStringLiteral("terminalBackdrop"));
+    auto *commandLine = fixture.item(QStringLiteral("commandLineView"));
     QVERIFY(backdrop);
+    QVERIFY(commandLine);
     const QColor terminalColor = backdrop->property("color").value<QColor>();
-    const QColor panelColor = fixture.window->property("panelBg").value<QColor>();
-    QCOMPARE(terminalColor.red(), panelColor.red());
-    QCOMPARE(terminalColor.green(), panelColor.green());
-    QCOMPARE(terminalColor.blue(), panelColor.blue());
-    QVERIFY(terminalColor.alphaF() < 1.0);
-    QVERIFY(terminalColor.alphaF() > panelColor.alphaF());
+    const QColor commandLineColor =
+        commandLine->property("color").value<QColor>();
+    QCOMPARE(terminalColor.alphaF(), 0.0);
+    QCOMPARE(commandLineColor.alphaF(), 0.0);
+}
+
+void F4QuickViewSurfaceTests::commandLineCursorTracksFirstTextPatch()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantMap commandLine{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("prompt"), QStringLiteral("> ")},
+        {QStringLiteral("text"), QString()},
+        {QStringLiteral("cursorPosition"), 0},
+        {QStringLiteral("cursorShape"), QStringLiteral("underline")},
+        {QStringLiteral("cursorVisible"), true},
+    };
+    shell.insert(QStringLiteral("commandLine"), commandLine);
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item(QStringLiteral("commandLineInput"));
+    auto *cursor = fixture.item(QStringLiteral("commandLineCursor"));
+    QVERIFY(input);
+    QVERIFY(cursor);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 0,
+                              1000);
+    const qreal initialCursorX = cursor->x();
+
+    // Production delivers typing as a dedicated command_line patch: the
+    // scene does not change, while text and cursorPosition change together.
+    commandLine.insert(QStringLiteral("text"), QStringLiteral("a"));
+    commandLine.insert(QStringLiteral("cursorPosition"), 1);
+    fixture.shell.setCommandLine(commandLine);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("text").toString(),
+                              QStringLiteral("a"), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 1,
+                              1000);
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->x() > initialCursorX, 1000);
+
+    commandLine.insert(QStringLiteral("text"), QStringLiteral("ab"));
+    commandLine.insert(QStringLiteral("cursorPosition"), 2);
+    fixture.shell.setCommandLine(commandLine);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 2,
+                              1000);
+
+    // Cursor-only patches model Left/Right, and subsequent typing must remain
+    // synchronized rather than depending on that first navigation gesture.
+    commandLine.insert(QStringLiteral("cursorPosition"), 1);
+    fixture.shell.setCommandLine(commandLine);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 1,
+                              1000);
+    commandLine.insert(QStringLiteral("text"), QStringLiteral("acb"));
+    commandLine.insert(QStringLiteral("cursorPosition"), 2);
+    fixture.shell.setCommandLine(commandLine);
+    QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 2,
+                              1000);
 }
 
 void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()

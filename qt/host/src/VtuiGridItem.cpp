@@ -373,6 +373,9 @@ void VtuiGridItem::sendQtKey(int key, const QString &text, bool down,
     }
     const bool forwarded = forwardKeyToController(
         keyToVk(&event), down ? keyChar(&event) : 0, down, nativeModifiers);
+    if (forwarded && down) {
+        emit keyboardActivity();
+    }
     if (forwarded && down && containsPrintableText(text)) {
         emit commanderTextInputForwarded(text, modifiers);
     }
@@ -387,6 +390,7 @@ void VtuiGridItem::sendClipboardPaste()
         const QString text = clipboard->text();
         if (!text.isEmpty()) {
             m_controller->sendPaste(text);
+            emit keyboardActivity();
             emit commanderTextInputForwarded(text, 0);
         }
     }
@@ -396,6 +400,7 @@ void VtuiGridItem::sendQtText(const QString &text)
 {
     if (m_terminalInputEnabled && m_controller && !text.isEmpty()) {
         m_controller->sendText(text);
+        emit keyboardActivity();
         emit commanderTextInputForwarded(text, 0);
     }
 }
@@ -482,6 +487,9 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
         const bool forwarded = forwardKeyToController(
             keyToVk(event), keyChar(event), true, mods,
             event->isAutoRepeat());
+        if (forwarded) {
+            emit keyboardActivity();
+        }
         if (forwarded && containsPrintableText(event->text())) {
             emit commanderTextInputForwarded(event->text(),
                                              event->modifiers().toInt());

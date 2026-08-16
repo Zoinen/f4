@@ -312,6 +312,28 @@ func TestSemanticCatalogRevisionIgnoresCacheProvenance(t *testing.T) {
 	}
 }
 
+func TestSemanticPanelExportsCatalogProvisionalState(t *testing.T) {
+	fp := &FileSystemPanel{
+		vfs:                vfs.NewOSVFS("/"),
+		table:              vtui.NewTable(0, 0, 80, 24, nil),
+		selectedItems:      make(map[string]bool),
+		catalogProvisional: true,
+		isLoading:          true,
+		entries: []*fileEntry{{
+			VFSItem: vfs.VFSItem{Name: "..", IsDir: true},
+		}},
+	}
+	model := fp.semanticPanelModel(nil, 0, true)
+	if !model.CatalogProvisional || !model.Loading {
+		t.Fatalf("placeholder state not exported: %#v", model)
+	}
+	fp.catalogProvisional = false
+	model = fp.semanticPanelModel(nil, 0, true)
+	if model.CatalogProvisional {
+		t.Fatalf("authoritative catalog remained provisional: %#v", model)
+	}
+}
+
 func TestSemanticCatalogRevisionStableAcrossCachedFreshUpEntry(t *testing.T) {
 	oldConfig := AppConfig
 	AppConfig.SyncPanelLoad = false
@@ -846,6 +868,64 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 	pf.setWidePanel(1)
 	if !pf.wide || pf.widePanel != 1 {
 		t.Fatal("Wide command did not select the requested panel")
+	}
+}
+
+func TestSemanticGalleryLayoutPersistsEachPanelIndependently(t *testing.T) {
+	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	pf := &PanelsFrame{panels: [2]Panel{left, right}, activeIdx: 0}
+
+	originalPersist := persistNativePanelLayoutSession
+	defer func() { persistNativePanelLayoutSession = originalPersist }()
+	var snapshots []workspaceSessionState
+	persistNativePanelLayoutSession = func(got *PanelsFrame) {
+		if got != pf {
+			t.Fatalf("persisted unexpected PanelsFrame %p, want %p", got, pf)
+		}
+		snapshots = append(snapshots, captureWorkspaceSession(got))
+	}
+
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGalleryLayout", "side": 0,
+		"layoutMode": "icons",
+	}) {
+		t.Fatal("left native layout was rejected")
+	}
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGalleryLayout", "side": 1,
+		"layoutMode": "details",
+	}) {
+		t.Fatal("right native layout was rejected")
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("persistence calls = %d, want 2", len(snapshots))
+	}
+	latest := snapshots[1]
+	if latest.Left.Gallery.LayoutMode != GalleryLayoutIcons ||
+		latest.Right.Gallery.LayoutMode != GalleryLayoutDetails {
+		t.Fatalf("per-panel native layouts were conflated: left=%#v right=%#v",
+			latest.Left.Gallery, latest.Right.Gallery)
+	}
+
+	// An acknowledgement of the already-saved mode must not rewrite the
+	// session file, while a per-mode zoom preference must be persisted.
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGalleryLayout", "side": 1,
+		"layoutMode": "details",
+	}) || len(snapshots) != 2 {
+		t.Fatalf("unchanged layout triggered persistence: calls=%d", len(snapshots))
+	}
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGalleryDensity", "side": 0,
+		"layoutMode": "icons", "density": 96,
+	}) {
+		t.Fatal("left native density was rejected")
+	}
+	if len(snapshots) != 3 ||
+		snapshots[2].Left.Gallery.Densities[GalleryLayoutIcons] != 96 ||
+		snapshots[2].Right.Gallery.LayoutMode != GalleryLayoutDetails {
+		t.Fatalf("native density persistence lost panel identity: %#v", snapshots)
 	}
 }
 

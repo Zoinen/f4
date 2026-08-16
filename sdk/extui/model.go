@@ -120,6 +120,7 @@ type PanelModel struct {
 	SeparateFileExtensions bool
 	Cursor                 int
 	Loading                bool
+	CatalogProvisional     bool
 	FastFind               bool
 	FastFindText           string
 	SelectedCount          int
@@ -218,6 +219,7 @@ type TerminalModel struct {
 type SurfaceModel struct {
 	ID                 string
 	Kind               string
+	DefaultBackground  string
 	Title              string
 	Path               string
 	BaseName           string
@@ -605,6 +607,7 @@ func (p PanelModel) ToMap() M {
 		"separateFileExtensions": p.SeparateFileExtensions,
 		"cursor":                 p.Cursor,
 		"loading":                p.Loading,
+		"catalogProvisional":     p.CatalogProvisional,
 		"fastFind":               p.FastFind,
 		"fastFindText":           p.FastFindText,
 		"selectedCount":          p.SelectedCount,
@@ -720,6 +723,7 @@ func (d SurfaceModel) ToMap() M {
 	out := M{
 		"id":                 d.ID,
 		"kind":               d.Kind,
+		"defaultBackground":  d.DefaultBackground,
 		"title":              d.Title,
 		"path":               d.Path,
 		"baseName":           d.BaseName,

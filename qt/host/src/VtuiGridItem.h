@@ -74,6 +74,9 @@ signals:
     // terminal protocol. Semantic surfaces use this to bridge the short gap
     // before the next authoritative scene reflects command/fast-find input.
     void commanderTextInputForwarded(const QString &text, int modifiers);
+    // Drives native caret blink timing independently of scene round trips.
+    // Auto-repeat emits this for every accepted key press.
+    void keyboardActivity();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
