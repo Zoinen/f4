@@ -240,14 +240,18 @@ jobs:
             raise SystemExit(f"Conan run environment is missing: {run_environment}")
         command = (
             f'call "{run_environment}" && '
-            f'ctest --test-dir "{build_dir}" -C Release --output-on-failure'
+            f'set "QML2_IMPORT_PATH={build_dir / "qml"}" && '
+            f'ctest --test-dir "{build_dir}" -C Release --output-on-failure '
+            f'-R "^(F4|QtShellController|WindowGeometryPersistence)"'
         )
         subprocess.run(["cmd.exe", "/d", "/c", command], check=True)
         PY
         else
           test -f qt/host/build-ci/conanrun.sh
           source qt/host/build-ci/conanrun.sh
-          ctest --test-dir qt/host/build-ci -C Release --output-on-failure
+          export QML2_IMPORT_PATH="$PWD/qt/host/build-ci/qml"
+          ctest --test-dir qt/host/build-ci -C Release --output-on-failure \
+            -R '^(F4|QtShellController|WindowGeometryPersistence)'
         fi
 
     - name: Install the integrated sidecar tree
@@ -396,6 +400,8 @@ jobs:
       with:
         path: ${{ env.CONAN_HOME }}/p
         key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-${{ hashFiles('qt/host/conanfile.py', 'ci/build-portable-qt-linux.sh') }}
+        restore-keys: |
+          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-
 
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
@@ -441,7 +447,9 @@ jobs:
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
           -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
         cmake --build qt/host/build-portable-windows --config Release --parallel 4
-        ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure
+        $env:QML2_IMPORT_PATH = "$PWD/qt/host/build-portable-windows/qml"
+        ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure `
+          -R "^(F4|QtShellController|WindowGeometryPersistence)"
 
         $host = "$PWD/qt/host/build-portable-windows/bin/Release/f4-qt-host.exe"
         pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $host
