@@ -90,7 +90,7 @@ ApplicationWindow {
     // coverage to stay visibly blue through QWK's dark macOS blur. It remains
     // translucent; the previous 60% alpha collapsed to apparent opaque black.
     property color terminalBg: "#d9121822"
-    property color commandLineBg: "#33000000"
+    property color commandLineBg: "transparent"
     property color panelBorder: "#4e9bd4"
     property color activeBorder: "#f0c95a"
     property color textColor: "#e8edf2"
@@ -1990,6 +1990,13 @@ ApplicationWindow {
             { "heading": true, "label": "Layout" },
             { "label": "Wide panel", "wideToggle": true, "icon": "panel-left", "shortcut": "Ctrl+4" }
         ]
+        readonly property var sortChoices: [
+            { "label": "Name", "mode": "name", "shortcut": "Ctrl+F3" },
+            { "label": "Extension", "mode": "extension", "shortcut": "Ctrl+F4" },
+            { "label": "Time", "mode": "time", "shortcut": "Ctrl+F5" },
+            { "label": "Size", "mode": "size", "shortcut": "Ctrl+F6" },
+            { "label": "Unsorted", "mode": "unsorted", "shortcut": "Ctrl+F7" }
+        ]
 
         function rendererChoiceEnabled(choice) {
             if (!choice || choice.heading === true)
@@ -2019,6 +2026,41 @@ ApplicationWindow {
                     return root.cleanText(choice.icon)
             }
             return "layout-dashboard"
+        }
+
+        function sortModeName() {
+            const mode = root.cleanText(panel.sortModeName).toLowerCase()
+            return mode !== "" ? mode : "name"
+        }
+
+        function sortModeLabel() {
+            switch (sortModeName()) {
+            case "extension": return "Extension"
+            case "time": return "Time"
+            case "size": return "Size"
+            case "unsorted": return "Unsorted"
+            default: return "Name"
+            }
+        }
+
+        function sortIsAscending() {
+            const mode = sortModeName()
+            const reversed = panel.sortReverse === true
+            return mode === "time" || mode === "size"
+                    ? reversed : !reversed
+        }
+
+        function sortDirectionIconName() {
+            return sortIsAscending() ? "arrow-up" : "arrow-down"
+        }
+
+        function chooseSort(choice) {
+            root.action({
+                "action": "panel.sort",
+                "side": panel.side,
+                "mode": choice.mode
+            })
+            sortMenu.close()
         }
 
         function chooseRenderer(choice) {
@@ -2148,7 +2190,7 @@ ApplicationWindow {
             Item {
                 id: panelPathArea
                 anchors.left: parent.left
-                anchors.right: presentationButton.left
+                anchors.right: sortButton.left
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: root.panelTextInset
                 anchors.rightMargin: root.panelTextInset
@@ -2164,7 +2206,13 @@ ApplicationWindow {
                     // panelPathArea already begins on the shared 16 px
                     // content line; do not add the standalone control's inset.
                     leadingInset: 0
-					breadcrumbFontPixelSize: root.semanticTextFontPixelSize
+                    breadcrumbFontPixelSize: root.semanticTextFontPixelSize
+                    pathTextColor: root.textColor
+                    pathHoveredColor: root.controlBg
+                    pathItemHoveredColor: root.controlHoverBg
+                    pathItemPressedColor: root.controlPressedBg
+                    localDriveIconSource: root.lucideIconSource("hard-drive")
+                    networkDriveIconSource: root.lucideIconSource("network")
                     text: root.cleanText(panel.title || panel.path)
                     navigationHandler: function(path) {
                         root.action({
@@ -2194,11 +2242,225 @@ ApplicationWindow {
             }
 
             ToolButton {
+                id: sortButton
+                objectName: "panelSortButton-" + Number(panel.side || 0)
+                anchors.right: presentationButton.left
+                anchors.rightMargin: 4
+                anchors.verticalCenter: parent.verticalCenter
+                width: sortButtonContent.implicitWidth
+                       + root.actionButtonHorizontalMargin * 2
+                height: Math.min(parent.height - 4, 28)
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+
+                ZG.ToolTip {
+                    visible: sortButton.hovered && !sortMenu.opened
+                    delay: 500
+                    timeout: 5000
+                    text: panelRoot.sortModeName() === "unsorted"
+                          ? "Sorting: Unsorted"
+                          : "Sort by " + panelRoot.sortModeLabel()
+                            + (panelRoot.sortIsAscending()
+                               ? " · Ascending" : " · Descending")
+                }
+
+                contentItem: Row {
+                    id: sortButtonContent
+                    objectName: "panelSortButtonContent-"
+                                + Number(panel.side || 0)
+                    anchors.centerIn: parent
+                    spacing: 5
+
+                    IconLabel {
+                        objectName: "panelSortDirectionIcon-"
+                                    + Number(panel.side || 0)
+                        readonly property string lucideName:
+                            panelRoot.sortDirectionIconName()
+                        visible: panelRoot.sortModeName() !== "unsorted"
+                        width: visible ? 14 : 0
+                        height: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon.source: root.lucideIconSource(lucideName)
+                        icon.width: 14
+                        icon.height: 14
+                        icon.color: sortButton.enabled
+                                    ? root.chromeText : root.mutedText
+                    }
+
+                    Text {
+                        objectName: "panelSortLabel-"
+                                    + Number(panel.side || 0)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: panelRoot.sortModeLabel()
+                        color: sortButton.enabled
+                               ? root.chromeText : root.mutedText
+                        font.pixelSize: 12
+                    }
+
+                    IconLabel {
+                        objectName: "panelSortChevron-"
+                                    + Number(panel.side || 0)
+                        width: 11
+                        height: 11
+                        anchors.verticalCenter: parent.verticalCenter
+                        icon.source: root.lucideIconSource("chevron-down")
+                        icon.width: 11
+                        icon.height: 11
+                        icon.color: sortButton.enabled
+                                    ? root.chromeText : root.mutedText
+                    }
+                }
+
+                background: Rectangle {
+                    radius: 5
+                    color: sortButton.down
+                           ? root.controlPressedBg
+                           : sortButton.hovered || sortMenu.opened
+                             ? root.controlHoverBg : "transparent"
+                    border.width: sortMenu.opened ? 1 : 0
+                    border.color: root.panelSelectionBorder
+                }
+
+                onClicked: {
+                    if (sortMenu.opened) {
+                        sortMenu.close()
+                        return
+                    }
+                    rendererMenu.close()
+                    sortMenu.open()
+                }
+            }
+
+            Popup {
+                id: sortMenu
+                objectName: "panelSortMenu-" + Number(panel.side || 0)
+                parent: Overlay.overlay
+                width: 204
+                padding: 6
+                modal: false
+                dim: false
+                z: 1001
+                focus: false
+                closePolicy: Popup.CloseOnEscape
+                             | Popup.CloseOnPressOutside
+                             | Popup.CloseOnPressOutsideParent
+
+                onAboutToShow: {
+                    const point = sortButton.mapToItem(
+                                    root.contentItem, sortButton.width,
+                                    sortButton.height + 3)
+                    x = Math.max(6, Math.min(root.width - width - 6,
+                                            point.x - width))
+                    y = Math.max(6, Math.min(root.height - height - 6,
+                                            point.y))
+                }
+                onClosed: Qt.callLater(function() {
+                    if (!panelRoot.panelIsActive || qtGallery.viewerVisible
+                            || root.hasBlockingOverlay()
+                            || root.needsFallbackGrid()
+                            || root.hasDocumentSurface()
+                            || root.hasOperationsQueueSurface())
+                        return
+                    if (galleryPanelContent.item)
+                        galleryPanelContent.item.forceActiveFocus()
+                    else
+                        grid.forceActiveFocus()
+                })
+
+                background: Rectangle {
+                    color: root.controlBg
+                    radius: 8
+                    border.width: 1
+                    border.color: root.controlBorder
+                }
+
+                contentItem: Column {
+                    spacing: 2
+
+                    Repeater {
+                        model: panelRoot.sortChoices
+
+                        delegate: Rectangle {
+                            id: sortChoice
+                            required property var modelData
+                            objectName: "panelSortChoice-"
+                                        + root.cleanText(modelData.mode)
+                                        + "-" + Number(panel.side || 0)
+                            width: sortMenu.availableWidth
+                            height: 31
+                            radius: 5
+                            readonly property bool choiceActive:
+                                panelRoot.sortModeName()
+                                === root.cleanText(modelData.mode)
+                            color: sortChoicePointer.containsMouse
+                                   ? root.controlHoverBg : "transparent"
+
+                            Text {
+                                objectName: "panelSortChoiceLabel-"
+                                            + root.cleanText(
+                                                  sortChoice.modelData.mode)
+                                            + "-" + Number(panel.side || 0)
+                                anchors.left: parent.left
+                                anchors.leftMargin: 34
+                                anchors.right: parent.right
+                                anchors.rightMargin: 72
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.cleanText(sortChoice.modelData.label)
+                                color: root.textColor
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+
+                            IconLabel {
+                                objectName: "panelSortChoiceCheck-"
+                                            + root.cleanText(
+                                                  sortChoice.modelData.mode)
+                                            + "-" + Number(panel.side || 0)
+                                readonly property color activeColor:
+                                    root.dialogAccent
+                                visible: sortChoice.choiceActive
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 14
+                                height: 14
+                                icon.source: root.lucideIconSource("check")
+                                icon.width: 14
+                                icon.height: 14
+                                icon.color: activeColor
+                            }
+
+                            Text {
+                                anchors.right: parent.right
+                                anchors.rightMargin: 8
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: root.cleanText(
+                                          sortChoice.modelData.shortcut)
+                                color: root.mutedText
+                                font.pixelSize: 10
+                            }
+
+                            MouseArea {
+                                id: sortChoicePointer
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: panelRoot.chooseSort(
+                                               sortChoice.modelData)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ToolButton {
                 id: presentationButton
                 objectName: "panelRendererButton-" + Number(panel.side || 0)
-                anchors.right: panelStatus.left
+                anchors.right: parent.right
+                anchors.rightMargin: root.panelTextInset
                 anchors.verticalCenter: parent.verticalCenter
-                width: 42
+                width: presentationButtonContent.implicitWidth
+                       + root.actionButtonHorizontalMargin * 2
                 height: Math.min(parent.height - 4, 28)
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
@@ -2217,6 +2479,9 @@ ApplicationWindow {
                 }
 
                 contentItem: Row {
+                    id: presentationButtonContent
+                    objectName: "panelRendererButtonContent-"
+                                + Number(panel.side || 0)
                     anchors.centerIn: parent
                     spacing: 5
 
@@ -2261,10 +2526,12 @@ ApplicationWindow {
                 }
 
                 onClicked: {
-                    if (rendererMenu.opened)
+                    if (rendererMenu.opened) {
                         rendererMenu.close()
-                    else
-                        rendererMenu.open()
+                        return
+                    }
+                    sortMenu.close()
+                    rendererMenu.open()
                 }
             }
 
@@ -2586,19 +2853,17 @@ ApplicationWindow {
                 onPressed: rendererMenu.close()
             }
 
-            Text {
-                id: panelStatus
-                objectName: "panelStatus-" + Number(panel.side || 0)
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.rightMargin: root.panelTextInset
-                text: String(panel.galleryLayoutMode
-                             || "masonry") !== "details"
-                      ? "Gallery · " + root.cleanText(panel.sortModeName)
-                      : ""
-                color: root.mutedText
-                font.pixelSize: 12
+            MouseArea {
+                parent: Overlay.overlay
+                anchors.fill: parent
+                visible: sortMenu.opened
+                enabled: visible
+                z: 1000
+                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                 | Qt.MiddleButton
+                onPressed: sortMenu.close()
             }
+
         }
 
         Rectangle {
@@ -3242,10 +3507,13 @@ ApplicationWindow {
         property var runs: []
         property string fallbackText: ""
         property bool transparentBlackBackground: false
+        property bool ignoreRunBackground: false
         property real fallbackFontPixelSize: root.guiMonospaceFontPixelSize
         property real horizontalInset: 8
 
         function runBackground(value) {
+            if (ignoreRunBackground)
+                return "transparent"
             var background = root.cleanText(value).toLowerCase()
             if (transparentBlackBackground
                     && (background === "#000000"
@@ -3379,6 +3647,7 @@ ApplicationWindow {
                 clip: true
                 horizontalInset: 0
                 transparentBlackBackground: true
+                ignoreRunBackground: true
                 runs: commandLine.promptRuns || []
                 fallbackText: root.cleanText(commandLine.prompt)
             }

@@ -206,7 +206,9 @@ QVariantMap panelScene()
     };
 }
 
-QVariantMap filePanel(int side, bool loading)
+QVariantMap filePanel(int side, bool loading,
+                      const QString &sortMode = QStringLiteral("name"),
+                      bool sortReverse = false)
 {
     return {
         {QStringLiteral("id"), QStringLiteral("panel-%1").arg(side)},
@@ -218,6 +220,9 @@ QVariantMap filePanel(int side, bool loading)
         {QStringLiteral("viewMode"), QStringLiteral("detailed")},
         {QStringLiteral("viewModeName"), QStringLiteral("detailed")},
         {QStringLiteral("presentation"), QStringLiteral("list")},
+        {QStringLiteral("galleryLayoutMode"), QStringLiteral("masonry")},
+        {QStringLiteral("sortModeName"), sortMode},
+        {QStringLiteral("sortReverse"), sortReverse},
         {QStringLiteral("sourceKind"), QStringLiteral("local")},
         {QStringLiteral("loading"), loading},
         {QStringLiteral("entries"), QVariantList{}},
@@ -225,7 +230,9 @@ QVariantMap filePanel(int side, bool loading)
     };
 }
 
-QVariantMap loadingPanelScene(bool loading)
+QVariantMap loadingPanelScene(
+    bool loading, const QString &sortMode = QStringLiteral("name"),
+    bool sortReverse = false)
 {
     return {
         {QStringLiteral("schema"), QStringLiteral("app")},
@@ -236,7 +243,8 @@ QVariantMap loadingPanelScene(bool loading)
              {QStringLiteral("showLeftPanel"), true},
              {QStringLiteral("showRightPanel"), true},
              {QStringLiteral("panels"), QVariantList{
-                  filePanel(0, loading), filePanel(1, false)}},
+                  filePanel(0, loading, sortMode, sortReverse),
+                  filePanel(1, false)}},
          }},
     };
 }
@@ -393,6 +401,22 @@ QQuickItem *queueDelegate(QQuickItem *surface, int taskId)
         Q_ARG(QVariant, QVariant(taskId)));
     return invoked ? qobject_cast<QQuickItem *>(result.value<QObject *>())
                    : nullptr;
+}
+
+QQuickItem *visualItem(QQuickItem *root, const QString &objectName)
+{
+    if (!root) {
+        return nullptr;
+    }
+    if (root->objectName() == objectName) {
+        return root;
+    }
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItem(child, objectName)) {
+            return match;
+        }
+    }
+    return nullptr;
 }
 
 struct QueueFixture
@@ -899,27 +923,111 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
 
     QQuickItem *path = nullptr;
     QQuickItem *pulse = nullptr;
-    QQuickItem *status = nullptr;
+    QQuickItem *sortButton = nullptr;
+    QQuickItem *sortButtonContent = nullptr;
+    QQuickItem *sortLabel = nullptr;
+    QQuickItem *sortDirection = nullptr;
+    QQuickItem *sortChevron = nullptr;
+    QObject *sortMenu = nullptr;
     QQuickItem *renderer = nullptr;
+    QQuickItem *rendererContent = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
         (path = fixture.item(QStringLiteral("panelPathTitle-0"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (pulse = fixture.item(QStringLiteral("panelLoadingIndicator-0"))),
         3000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        (status = fixture.item(QStringLiteral("panelStatus-0"))), 3000);
+        (sortButton = fixture.item(QStringLiteral("panelSortButton-0"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortButtonContent = fixture.item(
+             QStringLiteral("panelSortButtonContent-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortLabel = fixture.item(QStringLiteral("panelSortLabel-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortDirection = fixture.item(
+             QStringLiteral("panelSortDirectionIcon-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortChevron = fixture.item(QStringLiteral("panelSortChevron-0"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortMenu = fixture.object(QStringLiteral("panelSortMenu-0"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (renderer = fixture.item(QStringLiteral("panelRendererButton-0"))),
         3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rendererContent = fixture.item(
+             QStringLiteral("panelRendererButtonContent-0"))), 3000);
 
     QCOMPARE(path->property("text").toString(),
              QStringLiteral("/Users/zoin/Documents"));
     QVERIFY(path->property("backgroundOnHoverOnly").toBool());
     QCOMPARE(path->property("leadingInset").toReal(), 0.0);
-	QCOMPARE(path->property("breadcrumbFontPixelSize").toReal(), 13.0);
+    QCOMPARE(path->property("breadcrumbFontPixelSize").toReal(), 13.0);
+    QCOMPARE(path->property("pathTextColor").value<QColor>(),
+             QColor(QStringLiteral("#e8edf2")));
+    QCOMPARE(path->property("pathHoveredColor").value<QColor>(),
+             QColor(QStringLiteral("#222c38")));
+    QCOMPARE(path->property("pathItemHoveredColor").value<QColor>(),
+             QColor(QStringLiteral("#2a3745")));
+    QCOMPARE(path->property("pathItemPressedColor").value<QColor>(),
+             QColor(QStringLiteral("#10161e")));
+    QCOMPARE(path->property("localDriveIconSource").toUrl(),
+             QUrl(QStringLiteral(
+                 "qrc:/F4QtHost/icons/lucide/hard-drive.svg")));
+    QCOMPARE(path->property("networkDriveIconSource").toUrl(),
+             QUrl(QStringLiteral(
+                 "qrc:/F4QtHost/icons/lucide/network.svg")));
     QVERIFY(!pulse->isVisible());
-    QVERIFY(!status->property("text").toString().contains(
-        QStringLiteral("Loading")));
+    QCOMPARE(sortLabel->property("text").toString(), QStringLiteral("Name"));
+    QCOMPARE(sortDirection->property("lucideName").toString(),
+             QStringLiteral("arrow-up"));
+    QVERIFY(sortDirection->x() < sortLabel->x());
+    QVERIFY(sortLabel->x() < sortChevron->x());
+    const qreal sortHorizontalPadding = sortButton->width()
+            - sortButtonContent->implicitWidth();
+    const qreal rendererHorizontalPadding = renderer->width()
+            - rendererContent->implicitWidth();
+    QCOMPARE(sortHorizontalPadding, 16.0);
+    QCOMPARE(rendererHorizontalPadding, sortHorizontalPadding);
+    QVERIFY(sortButton->x() < renderer->x());
+
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(sortButton));
+    QTRY_VERIFY_WITH_TIMEOUT(sortMenu->property("opened").toBool(), 1000);
+    QVERIFY(fixture.shell.actions.isEmpty());
+    QQuickItem *sortNameLabel = nullptr;
+    QQuickItem *sortNameCheck = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortNameLabel = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("panelSortChoiceLabel-name-0"))), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortNameCheck = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("panelSortChoiceCheck-name-0"))), 1000);
+    QVERIFY(sortNameCheck->isVisible());
+    QVERIFY(sortNameCheck->x() < sortNameLabel->x());
+    QCOMPARE(sortNameCheck->property("activeColor").value<QColor>(),
+             QColor(QStringLiteral("#4e9bd4")));
+    const QPoint firstSortChoice(
+        qRound(sortMenu->property("x").toReal()
+               + sortMenu->property("width").toReal() / 2.0),
+        qRound(sortMenu->property("y").toReal() + 6.0 + 31.0 / 2.0));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      firstSortChoice);
+    QTRY_VERIFY_WITH_TIMEOUT(!sortMenu->property("opened").toBool(), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1000);
+    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("action"))
+                 .toString(),
+             QStringLiteral("panel.sort"));
+    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("side"))
+                 .toInt(),
+             0);
+    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("mode"))
+                 .toString(),
+             QStringLiteral("name"));
     const qreal rendererX = renderer->x();
 
     // A normal local read which completes inside the grace period must never
@@ -947,8 +1055,18 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     fixture.shell.setScene(loadingPanelScene(false));
     QTRY_VERIFY_WITH_TIMEOUT(!pulse->isVisible(), 200);
     QCOMPARE(renderer->x(), rendererX);
-    QVERIFY(!status->property("text").toString().contains(
-        QStringLiteral("Loading")));
+
+    fixture.shell.setScene(
+        loadingPanelScene(false, QStringLiteral("size"), false));
+    QTRY_COMPARE_WITH_TIMEOUT(sortLabel->property("text").toString(),
+                              QStringLiteral("Size"), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(sortDirection->property("lucideName").toString(),
+                              QStringLiteral("arrow-down"), 1000);
+
+    fixture.shell.setScene(
+        loadingPanelScene(false, QStringLiteral("size"), true));
+    QTRY_COMPARE_WITH_TIMEOUT(sortDirection->property("lucideName").toString(),
+                              QStringLiteral("arrow-up"), 1000);
 }
 
 void F4OperationsQueueTests::rendererPopupClosesOnOutsidePress()

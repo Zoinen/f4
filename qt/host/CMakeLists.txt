@@ -201,6 +201,8 @@ qt6_add_qml_module(f4-qt-host
 
 set(F4_LUCIDE_ICON_NAMES
   archive.svg
+  arrow-down.svg
+  arrow-up.svg
   book-open.svg
   check.svg
   circle-check.svg
@@ -226,6 +228,7 @@ set(F4_LUCIDE_ICON_NAMES
   image.svg
   images.svg
   grid-3x3.svg
+  hard-drive.svg
   layout-dashboard.svg
   library.svg
   list.svg
@@ -233,6 +236,7 @@ set(F4_LUCIDE_ICON_NAMES
   list-tree.svg
   loader-circle.svg
   music.svg
+  network.svg
   panels-top-left.svg
   panel-left.svg
   plus.svg

@@ -489,12 +489,12 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
         QVariantMap{
             {QStringLiteral("text"), promptIdentity},
             {QStringLiteral("foreground"), identityColor.name()},
-            {QStringLiteral("background"), QStringLiteral("#000000")},
+            {QStringLiteral("background"), QStringLiteral("#555753")},
         },
         QVariantMap{
             {QStringLiteral("text"), promptLocation},
             {QStringLiteral("foreground"), locationColor.name()},
-            {QStringLiteral("background"), QStringLiteral("#000000")},
+            {QStringLiteral("background"), QStringLiteral("#555753")},
         },
     };
     const QVariantList renderedRuns{QVariantMap{
@@ -524,6 +524,8 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QVERIFY(promptItem);
     QVERIFY(inputItem);
     QVERIFY(cursor);
+    QCOMPARE(fixture.window->property("commandLineBg").value<QColor>().alpha(),
+             0);
     QVERIFY2(presentation->width() > fixture.window->width() * 0.90,
              "the restored semantic command renderer must use the full row");
     QCOMPARE(presentation->x(), 16.0);
@@ -535,6 +537,7 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
 
     QVERIFY2(promptItem->width() <= presentation->width() * 0.5 + 0.5,
              "the prompt may consume at most half of the command row");
+    QVERIFY(promptItem->property("ignoreRunBackground").toBool());
     bool foundIdentityRun = false;
     bool foundLocationRun = false;
     QList<QQuickItem *> promptChildren = promptItem->childItems();
@@ -543,10 +546,16 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
         promptChildren.append(child->childItems());
         const QString childText = child->property("text").toString();
         const QColor childColor = child->property("color").value<QColor>();
-        if (childText == promptIdentity && childColor == identityColor)
+        if (childText == promptIdentity && childColor == identityColor) {
             foundIdentityRun = true;
-        if (childText == promptLocation && childColor == locationColor)
+            QCOMPARE(child->parentItem()->property("color").value<QColor>().alpha(),
+                     0);
+        }
+        if (childText == promptLocation && childColor == locationColor) {
             foundLocationRun = true;
+            QCOMPARE(child->parentItem()->property("color").value<QColor>().alpha(),
+                     0);
+        }
     }
     QVERIFY2(foundIdentityRun,
              "the user/host prompt run must preserve its semantic foreground");
