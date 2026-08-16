@@ -48,8 +48,8 @@ for package in "${target_packages[@]}"; do
 done
 
 conan install qt/host "${conan_build_args[@]}" \
-    -s:h build_type=Release -s:h compiler.cppstd=20 \
-    -s:b build_type=Release -s:b compiler.cppstd=20 \
+    -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
+    -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
     -o:h 'qt/*:shared=False' \
     -o:h 'libraw/*:shared=False' \
     -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
