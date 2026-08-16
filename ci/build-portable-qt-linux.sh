@@ -13,8 +13,8 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    build-essential ca-certificates curl git gnupg pkg-config \
-    software-properties-common xz-utils
+    autoconf automake bison build-essential ca-certificates curl flex git \
+    gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 add-apt-repository -y ppa:ubuntu-toolchain-r/test
 apt-get update
 apt-get install -y --no-install-recommends gcc-11 g++-11
@@ -31,7 +31,7 @@ export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
-conan install qt/host --build=missing \
+conan install qt/host --build='*' \
     -s:h build_type=Release -s:h compiler.cppstd=20 \
     -s:b build_type=Release -s:b compiler.cppstd=20 \
     -o:h 'qt/*:shared=False' \
