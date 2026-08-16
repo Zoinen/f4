@@ -29,14 +29,21 @@ if(USE_QWK)
 endif()
 
 if(F4_PORTABLE_STATIC)
+  # A native Qt installation exposes Qt6::Core as STATIC_LIBRARY, while the
+  # Conan package exposes the same static archives through an INTERFACE_LIBRARY
+  # facade. Reject a directly shared target here; the portable CI audits the
+  # final executable's imports to prove that no Qt or compiler runtime library
+  # escaped into the result.
   get_target_property(F4_QT_CORE_TYPE Qt6::Core TYPE)
-  if(NOT F4_QT_CORE_TYPE STREQUAL "STATIC_LIBRARY")
+  if(NOT F4_QT_CORE_TYPE STREQUAL "STATIC_LIBRARY" AND
+     NOT F4_QT_CORE_TYPE STREQUAL "INTERFACE_LIBRARY")
     message(FATAL_ERROR
       "F4_PORTABLE_STATIC requires a static Qt package; Qt6::Core is ${F4_QT_CORE_TYPE}")
   endif()
   if(USE_QWK)
     get_target_property(F4_QWK_QUICK_TYPE QWindowKit::Quick TYPE)
-    if(NOT F4_QWK_QUICK_TYPE STREQUAL "STATIC_LIBRARY")
+    if(NOT F4_QWK_QUICK_TYPE STREQUAL "STATIC_LIBRARY" AND
+       NOT F4_QWK_QUICK_TYPE STREQUAL "INTERFACE_LIBRARY")
       message(FATAL_ERROR
         "F4_PORTABLE_STATIC requires static QWindowKit; QWindowKit::Quick is ${F4_QWK_QUICK_TYPE}")
     endif()
