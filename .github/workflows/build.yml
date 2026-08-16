@@ -240,6 +240,7 @@ jobs:
             raise SystemExit(f"Conan run environment is missing: {run_environment}")
         command = (
             f'call "{run_environment}" && '
+            f'set "QML_IMPORT_PATH={build_dir / "qml"}" && '
             f'set "QML2_IMPORT_PATH={build_dir / "qml"}" && '
             f'ctest --test-dir "{build_dir}" -C Release --output-on-failure '
             f'-R "^(F4|QtShellController|WindowGeometryPersistence)"'
@@ -249,6 +250,7 @@ jobs:
         else
           test -f qt/host/build-ci/conanrun.sh
           source qt/host/build-ci/conanrun.sh
+          export QML_IMPORT_PATH="$PWD/qt/host/build-ci/qml"
           export QML2_IMPORT_PATH="$PWD/qt/host/build-ci/qml"
           ctest --test-dir qt/host/build-ci -C Release --output-on-failure \
             -R '^(F4|QtShellController|WindowGeometryPersistence)'
@@ -447,6 +449,7 @@ jobs:
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
           -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
         cmake --build qt/host/build-portable-windows --config Release --parallel 4
+        $env:QML_IMPORT_PATH = "$PWD/qt/host/build-portable-windows/qml"
         $env:QML2_IMPORT_PATH = "$PWD/qt/host/build-portable-windows/qml"
         ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure `
           -R "^(F4|QtShellController|WindowGeometryPersistence)"
