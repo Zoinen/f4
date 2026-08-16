@@ -151,11 +151,12 @@ elseif(UNIX)
   )
 endif()
 
-# The Conan generator stages Qt's QML import tree here. Qt's Conan metadata
-# does not publish its original QML prefix, so make the staged path explicit
-# after qt_add_qml_module has initialized (and replaced) this target property.
-set_property(TARGET f4-qt-host APPEND PROPERTY
-  QT_QML_IMPORT_PATH "${CMAKE_BINARY_DIR}/qml"
+# Prefer the in-tree ZoinGallery module over any older copy staged by Conan,
+# then fall back to Conan's Qt QML import tree. The order also controls what
+# qmlimportscanner embeds into static portable hosts.
+set_property(TARGET f4-qt-host APPEND PROPERTY QT_QML_IMPORT_PATH
+  "${ZoinGallery_QML_IMPORT_PATH}"
+  "${CMAKE_BINARY_DIR}/qml"
 )
 
 target_link_libraries(f4-qt-host PRIVATE
@@ -178,12 +179,6 @@ target_link_libraries(f4-qt-host PRIVATE
   ZoinGallery::Core
   ZoinGallery::Qml
 )
-# qmlimportscanner only reads import paths from the application target; it
-# does not traverse this property through linked imported targets.
-set_property(TARGET f4-qt-host APPEND PROPERTY
-  QT_QML_IMPORT_PATH "${ZoinGallery_QML_IMPORT_PATH}"
-)
-
 if(TARGET msgpack-cxx)
   target_link_libraries(f4-qt-host PRIVATE msgpack-cxx)
 elseif(TARGET msgpack-cxx::msgpack-cxx)

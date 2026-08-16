@@ -958,6 +958,10 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
         (document = fixture.item(QStringLiteral("documentSurface"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (documentList = fixture.item(QStringLiteral("documentList"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(document->property("interactionActive").toBool(),
+                             1000);
+    QTRY_VERIFY_WITH_TIMEOUT(documentList->property("contentHeight").toReal()
+                             > documentList->height(), 3000);
     documentList->setProperty("contentY", 0.0);
     document->setProperty("windowRequestPending", true);
     QVERIFY(QMetaObject::invokeMethod(documentList, "flick",

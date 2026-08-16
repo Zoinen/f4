@@ -29,6 +29,14 @@ if(USE_QWK)
 endif()
 
 if(F4_PORTABLE_STATIC)
+  # Qt's Conan facade omits Qt6::OpenGL from Qt6::Quick's static link
+  # interface even though libQt6Quick.a contains the painter/FBO backend.
+  # Append it transitively so every host and test target that consumes Quick
+  # receives libQt6OpenGL in the correct archive order.
+  find_package(Qt6 COMPONENTS OpenGL REQUIRED)
+  set_property(TARGET Qt6::Quick APPEND PROPERTY
+    INTERFACE_LINK_LIBRARIES Qt6::OpenGL)
+
   # A native Qt installation exposes Qt6::Core as STATIC_LIBRARY, while the
   # Conan package exposes the same static archives through an INTERFACE_LIBRARY
   # facade. Reject a directly shared target here; the portable CI audits the
@@ -71,10 +79,8 @@ set(ZOIN_BUILD_STANDALONE OFF CACHE BOOL
   "Build the standalone ZoinGallery application" FORCE)
 set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
   "Build ZoinGallery performance audit tools" FORCE)
-if(F4_QT_STATIC)
-  set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
-    "Generate ZoinGallery package installation rules" FORCE)
-endif()
+set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
+  "Generate ZoinGallery package installation rules" FORCE)
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 add_subdirectory(
@@ -85,6 +91,37 @@ if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
     "The bundled ZoinGallery submodule must provide Core and Qml targets")
 endif()
 set(ZoinGallery_QML_IMPORT_PATH "${F4_ZOINGALLERY_BINARY_DIR}")
+
+function(f4_link_static_zoingallery_plugin target)
+  if(NOT TARGET ZoinGalleryQmlplugin)
+    return()
+  endif()
+  get_target_property(F4_ZOIN_QML_PLUGIN_TYPE ZoinGalleryQmlplugin TYPE)
+  if(F4_ZOIN_QML_PLUGIN_TYPE STREQUAL "STATIC_LIBRARY")
+    target_link_libraries(${target} PRIVATE ZoinGalleryQmlplugin)
+    if(TARGET ZoinGalleryQmlplugin_init)
+      target_link_libraries(${target} PRIVATE ZoinGalleryQmlplugin_init)
+    endif()
+  endif()
+endfunction()
+
+# ZoinGallery's own QML-facing tests are created by add_subdirectory() before
+# this point.  A static QML module has no loadable plugin file beside qmldir,
+# so each executable must carry both the plugin and its generated Q_IMPORT
+# initializer.  Otherwise QQmlEngine rejects the in-tree module and may fall
+# through to an unrelated ZoinGallery installation on the import path.
+foreach(F4_ZOIN_QML_TEST_TARGET IN ITEMS
+    ZoinGallerySessionTests
+    ZoinGalleryQmlInteractionTests
+    ZoinGalleryReusableViewerPrimitivesTests
+    ZoinGalleryPanelGestureTests
+    ZoinGalleryMasonryLayoutModesTests
+    ZoinGalleryStandaloneShellSmokeTests
+    ZoinGalleryLayoutInteractionBenchmark)
+  if(TARGET ${F4_ZOIN_QML_TEST_TARGET})
+    f4_link_static_zoingallery_plugin(${F4_ZOIN_QML_TEST_TARGET})
+  endif()
+endforeach()
 
 if(COMMAND qt_policy)
   qt_policy(SET QTP0004 NEW)
@@ -341,7 +378,9 @@ if(BUILD_TESTING)
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test
+    ZoinGallery::Qml
   )
+  f4_link_static_zoingallery_plugin(F4DocumentSurfaceTests)
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -368,7 +407,9 @@ if(BUILD_TESTING)
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test
+    ZoinGallery::Qml
   )
+  f4_link_static_zoingallery_plugin(F4OperationsQueueTests)
   add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -396,7 +437,9 @@ if(BUILD_TESTING)
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test
+    ZoinGallery::Qml
   )
+  f4_link_static_zoingallery_plugin(F4QuickViewSurfaceTests)
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -469,6 +512,7 @@ if(BUILD_TESTING)
     ZoinGallery::Core
     ZoinGallery::Qml
   )
+  f4_link_static_zoingallery_plugin(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -505,6 +549,7 @@ if(BUILD_TESTING)
     ZoinGallery::Core
     ZoinGallery::Qml
   )
+  f4_link_static_zoingallery_plugin(F4GalleryPointerTests)
   if(TARGET msgpack-cxx)
     target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx)
   elseif(TARGET msgpack-cxx::msgpack-cxx)

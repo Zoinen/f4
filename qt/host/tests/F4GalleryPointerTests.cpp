@@ -539,10 +539,15 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     QObject *panel = host->findChild<QObject *>(
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
-    QVERIFY(panel->property("clip").toBool());
     QObject *layout = panel->findChild<QObject *>(
         QStringLiteral("galleryMasonryLayout"));
     QVERIFY(layout);
+    // The reusable panel root deliberately permits its overlay scrollbar to
+    // occupy the embedding host's trailing inset.  The actual viewport owns
+    // clipping, so recycled masonry delegates still cannot leak pointer or
+    // paint events outside the catalog surface.
+    QVERIFY(!panel->property("clip").toBool());
+    QVERIFY(layout->property("clip").toBool());
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 18, 5000);
 
     auto pointerForRow = [panel](int row) {
