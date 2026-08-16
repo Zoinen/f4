@@ -47,18 +47,30 @@ for package in "${target_packages[@]}"; do
     conan_build_args+=("--build=${package}/*")
 done
 
-conan install qt/host "${conan_build_args[@]}" \
-    -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
-    -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
-    -o:h 'qt/*:shared=False' \
-    -o:h 'qt/*:qtwayland=True' \
-    -o:h 'qt/*:with_egl=True' \
-    -o:h 'xkbcommon/*:with_wayland=True' \
-    -o:h 'libraw/*:shared=False' \
-    -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
-    -c tools.system.package_manager:mode=install \
-    -c tools.system.package_manager:sudo=False \
-    --output-folder=qt/host/build-portable-linux
+for attempt in 1 2 3; do
+    if conan install qt/host "${conan_build_args[@]}" \
+        -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
+        -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
+        -o:h 'qt/*:shared=False' \
+        -o:h 'qt/*:qtwayland=True' \
+        -o:h 'qt/*:with_egl=True' \
+        -o:h 'xkbcommon/*:with_wayland=True' \
+        -o:h 'libraw/*:shared=False' \
+        -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
+        -c tools.system.package_manager:mode=install \
+        -c tools.system.package_manager:sudo=False \
+        --output-folder=qt/host/build-portable-linux
+    then
+        break
+    fi
+    if [[ "${attempt}" == 3 ]]; then
+        echo "error: Conan install failed after ${attempt} attempts" >&2
+        exit 1
+    fi
+    retry_delay=$((attempt * 15))
+    echo "warning: Conan install attempt ${attempt} failed; retrying in ${retry_delay}s" >&2
+    sleep "${retry_delay}"
+done
 
 bash ci/build-qwindowkit.sh "$PWD/qt/host/build-portable-linux" Release static
 cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
