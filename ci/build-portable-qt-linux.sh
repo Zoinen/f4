@@ -51,6 +51,9 @@ conan install qt/host "${conan_build_args[@]}" \
     -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
     -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
     -o:h 'qt/*:shared=False' \
+    -o:h 'qt/*:qtwayland=True' \
+    -o:h 'qt/*:with_egl=True' \
+    -o:h 'xkbcommon/*:with_wayland=True' \
     -o:h 'libraw/*:shared=False' \
     -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
     -c tools.system.package_manager:mode=install \
