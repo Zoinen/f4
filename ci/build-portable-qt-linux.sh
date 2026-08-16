@@ -31,7 +31,7 @@ export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
-conan install qt/host --build='*' \
+conan install qt/host --build=missing --build='m4/*' \
     -s:h build_type=Release -s:h compiler.cppstd=20 \
     -s:b build_type=Release -s:b compiler.cppstd=20 \
     -o:h 'qt/*:shared=False' \
