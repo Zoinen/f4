@@ -496,6 +496,7 @@ jobs:
             -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:h "qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows" `
             -o:h "libraw/*:shared=False" `
+            -c tools.cmake.cmaketoolchain:generator=Ninja `
             -c tools.system.package_manager:mode=install `
             --output-folder=qt/host/build-portable-windows
           if ($LASTEXITCODE -eq 0) {
