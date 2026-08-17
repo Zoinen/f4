@@ -510,6 +510,8 @@ jobs:
           }
         }
         if (!$conanInstalled) { throw "Conan install failed after 3 attempts" }
+        New-Item -ItemType File -Force `
+          qt/host/build-portable-windows/.f4-conan-ready | Out-Null
         $PSNativeCommandUseErrorActionPreference = $true
 
         pwsh -File ci/build-qwindowkit.ps1 `
@@ -553,6 +555,13 @@ jobs:
         if ($files.Count -ne 1 -or $files[0].Name -ne "f4.exe") {
           throw "Portable Windows artifact must contain only f4.exe"
         }
+
+    - name: Preserve the completed static Qt dependency graph
+      if: always() && hashFiles(format('qt/host/build-portable-{0}/.f4-conan-ready', matrix.platform)) != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.CONAN_HOME }}/p
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-${{ hashFiles('qt/host/conanfile.py', 'ci/build-portable-qt-linux.sh') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4

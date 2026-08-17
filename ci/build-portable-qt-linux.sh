@@ -91,6 +91,11 @@ for attempt in 1 2 3; do
     sleep "${retry_delay}"
 done
 
+# The workflow may still fail later while linking or testing f4.  Record that
+# Conan completed so Actions can preserve this expensive static Qt graph even
+# when the cache post-step would otherwise be skipped after a job failure.
+touch qt/host/build-portable-linux/.f4-conan-ready
+
 bash ci/build-qwindowkit.sh "$PWD/qt/host/build-portable-linux" Release static
 cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-portable-linux/conan_toolchain.cmake" \
