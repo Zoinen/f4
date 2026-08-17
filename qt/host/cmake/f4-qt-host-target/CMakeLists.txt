@@ -363,8 +363,20 @@ if(F4_QT_STATIC)
   # ordinary archive only once, so rescan this small platform group until all
   # of its private Qt symbols are resolved. Windows' linker does not need it.
   if(UNIX AND NOT APPLE)
+    find_library(_f4_qxcb_archive NAMES qxcb
+      PATHS "${_f4_conan_qt_package_folder}/plugins/platforms"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_xcb_qpa_archive NAMES Qt6XcbQpa
+      PATHS "${_f4_conan_qt_package_folder}/lib"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_gui_archive NAMES Qt6Gui
+      PATHS "${_f4_conan_qt_package_folder}/lib"
+      NO_DEFAULT_PATH REQUIRED)
     target_link_libraries(f4-qt-host PRIVATE
-      "$<LINK_GROUP:RESCAN,Qt6::QXcbIntegrationPlugin,Qt6::XcbQpaPrivate,Qt6::Gui,Qt6::Core>")
+      "$<LINK_GROUP:RESCAN,${_f4_qxcb_archive},${_f4_xcb_qpa_archive},${_f4_gui_archive}>")
+    unset(_f4_qxcb_archive CACHE)
+    unset(_f4_xcb_qpa_archive CACHE)
+    unset(_f4_gui_archive CACHE)
   endif()
 
   # The production host never enables QML debugging, so exclude the ordinary
