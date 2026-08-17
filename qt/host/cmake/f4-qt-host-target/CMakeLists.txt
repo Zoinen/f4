@@ -264,6 +264,8 @@ if(F4_QT_STATIC)
       unset(${_f4_archive_var} CACHE)
     endfunction()
 
+    _f4_import_conan_qt_qml_backing_module(QmlMeta
+      Qt6::Core Qt6::Qml Qt6::QmlModels Qt6::QmlWorkerScript)
     _f4_import_conan_qt_qml_backing_module(QuickControls2Impl
       Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::QuickTemplates2)
     _f4_import_conan_qt_qml_backing_module(QuickControls2BasicStyleImpl
@@ -289,18 +291,32 @@ if(F4_QT_STATIC)
       unset(_f4_qoffscreen_archive CACHE)
     endif()
 
+    # Static Qt intentionally gives qmlplugin a dependency on modelsplugin and
+    # workerscriptplugin, while those plugins in turn depend on the QtQml
+    # module represented by qmlplugin. CMake's generated export files support
+    # such cross-export cycles when loaded by find_package(): they report a
+    # package as not found instead of failing immediately, allowing the other
+    # exports to be loaded. Reproduce that include context locally, then rely
+    # on the explicit target validation below after every export exists.
+    function(_f4_include_conan_qt_qml_plugin_export
+        targets_file additional_info_file)
+      set(CMAKE_FIND_PACKAGE_NAME F4ConanStaticQmlPluginExport)
+      include("${targets_file}")
+      if(EXISTS "${additional_info_file}")
+        include("${additional_info_file}")
+      endif()
+    endfunction()
+
     foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
       if(NOT TARGET ${plugin_target} AND plugin_target MATCHES "^Qt6::(.+)$")
         set(_f4_plugin_name "${CMAKE_MATCH_1}")
         set(_f4_plugin_targets_file
           "${_f4_qml_plugin_cmake_dir}/Qt6${_f4_plugin_name}Targets.cmake")
         if(EXISTS "${_f4_plugin_targets_file}")
-          include("${_f4_plugin_targets_file}")
           set(_f4_plugin_info_file
             "${_f4_qml_plugin_cmake_dir}/Qt6${_f4_plugin_name}AdditionalTargetInfo.cmake")
-          if(EXISTS "${_f4_plugin_info_file}")
-            include("${_f4_plugin_info_file}")
-          endif()
+          _f4_include_conan_qt_qml_plugin_export(
+            "${_f4_plugin_targets_file}" "${_f4_plugin_info_file}")
         endif()
       endif()
     endforeach()
