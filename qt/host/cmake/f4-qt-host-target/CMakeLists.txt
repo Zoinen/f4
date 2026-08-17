@@ -210,6 +210,40 @@ if(F4_QT_STATIC)
     Qt6::qquicklayoutsplugin
     ZoinGallery::ZoinGalleryQmlplugin
   )
+
+  # Conan Center removes the native Qt *Config.cmake files after packaging
+  # and recreates only the components declared by its recipe. Qt's QML plugin
+  # libraries are packaged, along with their official Targets.cmake metadata,
+  # but are not Conan components. Import those preserved targets explicitly so
+  # a static Conan Qt behaves like an ordinary static Qt installation.
+  set(_f4_conan_qt_package_folder "")
+  foreach(_f4_config RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
+    if(DEFINED qt_PACKAGE_FOLDER_${_f4_config}
+       AND EXISTS "${qt_PACKAGE_FOLDER_${_f4_config}}/lib/cmake/Qt6Qml/QmlPlugins")
+      set(_f4_conan_qt_package_folder
+        "${qt_PACKAGE_FOLDER_${_f4_config}}")
+      break()
+    endif()
+  endforeach()
+  if(_f4_conan_qt_package_folder)
+    set(_f4_qml_plugin_cmake_dir
+      "${_f4_conan_qt_package_folder}/lib/cmake/Qt6Qml/QmlPlugins")
+    foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
+      if(NOT TARGET ${plugin_target} AND plugin_target MATCHES "^Qt6::(.+)$")
+        set(_f4_plugin_name "${CMAKE_MATCH_1}")
+        set(_f4_plugin_targets_file
+          "${_f4_qml_plugin_cmake_dir}/Qt6${_f4_plugin_name}Targets.cmake")
+        if(EXISTS "${_f4_plugin_targets_file}")
+          include("${_f4_plugin_targets_file}")
+          set(_f4_plugin_info_file
+            "${_f4_qml_plugin_cmake_dir}/Qt6${_f4_plugin_name}AdditionalTargetInfo.cmake")
+          if(EXISTS "${_f4_plugin_info_file}")
+            include("${_f4_plugin_info_file}")
+          endif()
+        endif()
+      endif()
+    endforeach()
+  endif()
   foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
     if(NOT TARGET ${plugin_target})
       message(FATAL_ERROR
