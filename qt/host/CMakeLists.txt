@@ -334,11 +334,10 @@ if(BUILD_TESTING)
   function(f4_link_static_test_qml_plugins target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        src/StaticQmlPluginImports.cpp
-        ${F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS})
+        src/StaticQmlPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        Qt6::QuickControls2Basic)
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
     endif()
   endfunction()
 
@@ -361,7 +360,11 @@ if(BUILD_TESTING)
   set_tests_properties(F4IconProviderTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
-  if(APPLE OR WIN32)
+  # Windows CI runs in headless Session 0, where the Shell file-icon provider
+  # can block indefinitely. The PE audit plus the offscreen production-host
+  # smoke cover the static Windows QPA path; exercise real desktop icons on
+  # macOS, where the runner has a native window-server session.
+  if(APPLE)
     add_test(NAME F4IconProviderNativeSmoke
       COMMAND F4IconProviderTests nativePlatformFileIconSmoke)
     set_tests_properties(F4IconProviderNativeSmoke PROPERTIES
