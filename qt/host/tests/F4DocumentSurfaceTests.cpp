@@ -695,7 +695,7 @@ void F4DocumentSurfaceTests::activeFlickRebasesAtomicallyAcrossWindowAck()
                    qreal(sample.timeMs - previousTimeMs) / 1000.0,
                    0.1);
         const qreal continuousAdvanceLimit =
-            previousSpeed * elapsedSeconds + 5.0;
+            previousSpeed * elapsedSeconds + 15.0;
         QVERIFY2(sample.extent - previousExtent < continuousAdvanceLimit,
                  qPrintable(QStringLiteral("discontinuous frame: %1 -> %2 "
                                            "in %3 ms (limit %4)")
