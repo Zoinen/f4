@@ -440,6 +440,7 @@ jobs:
       shell: bash
       run: |
         go_root="$(go env GOROOT)"
+        set +e
         docker run --rm \
           -e CONAN_HOME=/workspace/.conan2-portable-linux \
           -v "$PWD:/workspace" \
@@ -447,6 +448,13 @@ jobs:
           -w /workspace \
           ubuntu:18.04 \
           bash ci/build-portable-qt-linux.sh
+        build_status=$?
+        set -e
+        docker run --rm \
+          -v "$PWD:/workspace" \
+          ubuntu:18.04 \
+          chmod -R a+rX /workspace/.conan2-portable-linux/p
+        exit "$build_status"
 
     - name: Install native build tools
       if: runner.os == 'Windows'

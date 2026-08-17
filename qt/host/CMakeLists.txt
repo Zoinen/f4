@@ -334,9 +334,11 @@ if(BUILD_TESTING)
   function(f4_link_static_test_qml_plugins target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        src/StaticQmlPluginImports.cpp)
+        src/StaticQmlPluginImports.cpp
+        ${F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS})
       target_link_libraries(${target} PRIVATE
-        ${F4_REQUIRED_STATIC_QML_PLUGINS})
+        ${F4_REQUIRED_STATIC_QML_PLUGINS}
+        Qt6::QuickControls2Basic)
     endif()
   endfunction()
 

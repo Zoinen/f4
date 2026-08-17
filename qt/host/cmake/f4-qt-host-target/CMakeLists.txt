@@ -279,6 +279,24 @@ if(F4_QT_STATIC)
     _f4_import_conan_qt_qml_backing_module(QuickLayouts
       Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
 
+    # QuickControls2Basic's compiled QML lives in its backing archive, while
+    # Qt emits the resource constructor as a separate object. Native Qt config
+    # files attach that object automatically; Conan removes those module
+    # configs, so preserve the generated link contract explicitly.
+    file(GLOB_RECURSE F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS
+      CONFIGURE_DEPENDS
+      "${_f4_conan_qt_package_folder}/lib/objects-*/QuickControls2Basic_resources_*/*/rcc/qrc_qtquickcontrols2basicstyle_init.cpp.o"
+      "${_f4_conan_qt_package_folder}/lib/objects-*/QuickControls2Basic_resources_*/*/rcc/qrc_qtquickcontrols2basicstyle_init.cpp.obj")
+    list(LENGTH F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS
+      _f4_basic_resource_object_count)
+    if(NOT _f4_basic_resource_object_count EQUAL 1)
+      message(FATAL_ERROR
+        "Expected one static Qt Quick Controls Basic resource initializer, found ${_f4_basic_resource_object_count}")
+    endif()
+    set_source_files_properties(
+      ${F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS}
+      PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+
     if(NOT TARGET Qt6::QOffscreenIntegrationPlugin)
       find_library(_f4_qoffscreen_archive
         NAMES qoffscreen
@@ -349,7 +367,8 @@ if(F4_QT_STATIC)
   endforeach()
   target_sources(f4-qt-host PRIVATE
     "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp"
-    "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
+    "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp"
+    ${F4_REQUIRED_STATIC_QML_RESOURCE_OBJECTS})
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
