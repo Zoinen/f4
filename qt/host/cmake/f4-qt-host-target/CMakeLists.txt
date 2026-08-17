@@ -258,6 +258,18 @@ if(F4_QT_STATIC)
     _f4_import_conan_qt_qml_backing_module(QuickLayouts
       Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
 
+    if(NOT TARGET Qt6::QOffscreenIntegrationPlugin)
+      find_library(_f4_qoffscreen_archive
+        NAMES qoffscreen
+        PATHS "${_f4_conan_qt_package_folder}/plugins/platforms"
+        NO_DEFAULT_PATH REQUIRED)
+      add_library(Qt6::QOffscreenIntegrationPlugin STATIC IMPORTED GLOBAL)
+      set_target_properties(Qt6::QOffscreenIntegrationPlugin PROPERTIES
+        IMPORTED_LOCATION "${_f4_qoffscreen_archive}"
+        INTERFACE_LINK_LIBRARIES "Qt6::Core;Qt6::Gui")
+      unset(_f4_qoffscreen_archive CACHE)
+    endif()
+
     foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
       if(NOT TARGET ${plugin_target} AND plugin_target MATCHES "^Qt6::(.+)$")
         set(_f4_plugin_name "${CMAKE_MATCH_1}")
@@ -280,8 +292,31 @@ if(F4_QT_STATIC)
         "Required static QML plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
+  set(F4_REQUIRED_STATIC_QT_PLUGINS
+    Qt6::QOffscreenIntegrationPlugin
+    Qt6::QGifPlugin
+    Qt6::QIcoPlugin
+    Qt6::QJpegPlugin
+    Qt6::QSvgPlugin
+  )
+  if(WIN32)
+    list(APPEND F4_REQUIRED_STATIC_QT_PLUGINS
+      Qt6::QWindowsIntegrationPlugin)
+  elseif(UNIX AND NOT APPLE)
+    list(APPEND F4_REQUIRED_STATIC_QT_PLUGINS
+      Qt6::QXcbIntegrationPlugin)
+  endif()
+  foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QT_PLUGINS)
+    if(NOT TARGET ${plugin_target})
+      message(FATAL_ERROR
+        "Required static Qt plugin target is missing: ${plugin_target}")
+    endif()
+  endforeach()
+  target_sources(f4-qt-host PRIVATE
+    "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp")
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
+    ${F4_REQUIRED_STATIC_QT_PLUGINS}
     Qt6::QuickControls2Basic
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl
