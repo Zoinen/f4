@@ -348,7 +348,8 @@ if(F4_QT_STATIC)
     endif()
   endforeach()
   target_sources(f4-qt-host PRIVATE
-    "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp")
+    "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp"
+    "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
