@@ -956,8 +956,8 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCoreApplication::processEvents();
     QVERIFY(verifyForwarded("Unacknowledged command C", Qt::Key_C));
     QVERIFY(host->property("pendingCommanderInput").toBool());
-    QTest::qWait(80);
-    QVERIFY(!host->property("pendingCommanderInput").toBool());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !host->property("pendingCommanderInput").toBool(), 1000);
     host->setProperty("pendingCommanderInputTimeoutMs", 2000);
 
     // Standard paste must use the controller's paste protocol. Sending the

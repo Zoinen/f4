@@ -195,10 +195,10 @@ if(F4_QT_STATIC)
   # keeps the MSVC response file below its practical per-line limit.
   set_property(TARGET f4-qt-host PROPERTY QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
   set(F4_REQUIRED_STATIC_QML_PLUGINS
-    Qt6::qtquick2plugin
     Qt6::qmlplugin
     Qt6::modelsplugin
     Qt6::workerscriptplugin
+    Qt6::qtquick2plugin
     Qt6::qtquickcontrols2plugin
     Qt6::qtquickcontrols2basicstyleplugin
     Qt6::qtquicktemplates2plugin
@@ -228,6 +228,25 @@ if(F4_QT_STATIC)
   if(_f4_conan_qt_package_folder)
     set(_f4_qml_plugin_cmake_dir
       "${_f4_conan_qt_package_folder}/lib/cmake/Qt6Qml/QmlPlugins")
+
+    # Qt's native Qt6Targets.cmake normally provides these interface-only
+    # implementation-detail targets. Conan's generated Qt6 targets omit them,
+    # while the preserved static QML plugin exports still reference them.
+    # Recreate the small dependency chain from QtBaseGlobalTargets.cmake before
+    # loading any plugin export so its generated dependency checks can pass.
+    if(NOT TARGET Qt6::PlatformCommonInternal)
+      add_library(Qt6::PlatformCommonInternal INTERFACE IMPORTED GLOBAL)
+      set_target_properties(Qt6::PlatformCommonInternal PROPERTIES
+        INTERFACE_LINK_LIBRARIES "Qt6::Platform")
+    endif()
+    foreach(_f4_platform_target IN ITEMS
+        PlatformModuleInternal PlatformPluginInternal)
+      if(NOT TARGET Qt6::${_f4_platform_target})
+        add_library(Qt6::${_f4_platform_target} INTERFACE IMPORTED GLOBAL)
+        set_target_properties(Qt6::${_f4_platform_target} PROPERTIES
+          INTERFACE_LINK_LIBRARIES "Qt6::PlatformCommonInternal")
+      endif()
+    endforeach()
 
     function(_f4_import_conan_qt_qml_backing_module module_name)
       if(TARGET Qt6::${module_name})
