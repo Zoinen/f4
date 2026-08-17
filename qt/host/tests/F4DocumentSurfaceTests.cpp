@@ -845,11 +845,13 @@ void F4DocumentSurfaceTests::frameOnlyEditorUpdateDoesNotResetLiveFlick()
 
     // Once the event loop advances, inertia must continue from that exact
     // state rather than having been silently cancelled by the frame update.
-    QTest::qWait(30);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(fixture.list->property("contentY").toReal() - contentYBefore)
+            > 0.001,
+        1000);
     QVERIFY(fixture.list->property("moving").toBool());
     QVERIFY(fixture.list->property("flicking").toBool());
     QVERIFY(qAbs(fixture.list->property("verticalVelocity").toReal()) > 1.0);
-    QVERIFY(fixture.list->property("contentY").toReal() != contentYBefore);
     QVERIFY(fixture.shell.actions.isEmpty());
 }
 
