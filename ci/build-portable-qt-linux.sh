@@ -71,6 +71,7 @@ for attempt in 1 2 3; do
         -o:h 'qt/*:shared=False' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
+        -o:h 'qt/*:disabled_features=quickcontrols2-fusion quickcontrols2-imagine quickcontrols2-material quickcontrols2-universal quickcontrols2-fluentwinui3 quickcontrols2-stylekit quickcontrols2-windows' \
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
