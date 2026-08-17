@@ -228,6 +228,36 @@ if(F4_QT_STATIC)
   if(_f4_conan_qt_package_folder)
     set(_f4_qml_plugin_cmake_dir
       "${_f4_conan_qt_package_folder}/lib/cmake/Qt6Qml/QmlPlugins")
+
+    function(_f4_import_conan_qt_qml_backing_module module_name)
+      if(TARGET Qt6::${module_name})
+        return()
+      endif()
+      set(_f4_archive_var "_f4_${module_name}_archive")
+      find_library(${_f4_archive_var}
+        NAMES Qt6${module_name}
+        PATHS "${_f4_conan_qt_package_folder}/lib"
+        NO_DEFAULT_PATH REQUIRED)
+      add_library(Qt6::${module_name} STATIC IMPORTED GLOBAL)
+      set_target_properties(Qt6::${module_name} PROPERTIES
+        IMPORTED_LOCATION "${${_f4_archive_var}}"
+        INTERFACE_LINK_LIBRARIES "${ARGN}")
+      unset(${_f4_archive_var} CACHE)
+    endfunction()
+
+    _f4_import_conan_qt_qml_backing_module(QuickControls2Impl
+      Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::QuickTemplates2)
+    _f4_import_conan_qt_qml_backing_module(QuickControls2BasicStyleImpl
+      Qt6::Core Qt6::Gui Qt6::Qml Qt6::QuickControls2Impl Qt6::Quick
+      Qt6::QuickTemplates2)
+    _f4_import_conan_qt_qml_backing_module(QuickControls2Basic
+      Qt6::Core Qt6::Gui Qt6::Qml Qt6::QuickControls2BasicStyleImpl
+      Qt6::QuickControls2 Qt6::Quick Qt6::QuickTemplates2)
+    _f4_import_conan_qt_qml_backing_module(QuickEffects
+      Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+    _f4_import_conan_qt_qml_backing_module(QuickLayouts
+      Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
+
     foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
       if(NOT TARGET ${plugin_target} AND plugin_target MATCHES "^Qt6::(.+)$")
         set(_f4_plugin_name "${CMAKE_MATCH_1}")
@@ -251,7 +281,12 @@ if(F4_QT_STATIC)
     endif()
   endforeach()
   target_link_libraries(f4-qt-host PRIVATE
-    ${F4_REQUIRED_STATIC_QML_PLUGINS})
+    ${F4_REQUIRED_STATIC_QML_PLUGINS}
+    Qt6::QuickControls2Basic
+    Qt6::QuickControls2BasicStyleImpl
+    Qt6::QuickControls2Impl
+    Qt6::QuickEffects
+    Qt6::QuickLayouts)
 
   # The production host never enables QML debugging, so exclude the ordinary
   # debugger/profiler transport plugins supplied by Qt::Qml as well.
