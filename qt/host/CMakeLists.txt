@@ -322,6 +322,15 @@ if(BUILD_TESTING)
     )
   endfunction()
 
+  function(f4_link_static_test_platform target)
+    if(F4_QT_STATIC)
+      target_sources(${target} PRIVATE
+        tests/StaticQtTestPluginImports.cpp)
+      target_link_libraries(${target} PRIVATE
+        Qt6::QOffscreenIntegrationPlugin)
+    endif()
+  endfunction()
+
   add_executable(F4IconProviderTests
     tests/F4IconProviderTests.cpp
     src/F4IconProvider.h
@@ -336,6 +345,7 @@ if(BUILD_TESTING)
     Qt6::Svg
     Qt6::Test
   )
+  f4_link_static_test_platform(F4IconProviderTests)
   add_test(NAME F4IconProviderTest COMMAND F4IconProviderTests)
   set_tests_properties(F4IconProviderTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -362,6 +372,7 @@ if(BUILD_TESTING)
     Qt6::Quick
     Qt6::Test
   )
+  f4_link_static_test_platform(F4PanelSplitterTests)
   add_test(NAME F4PanelSplitterTest COMMAND F4PanelSplitterTests)
   set_tests_properties(F4PanelSplitterTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -391,6 +402,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4DocumentSurfaceTests)
+  f4_link_static_test_platform(F4DocumentSurfaceTests)
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -420,6 +432,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4OperationsQueueTests)
+  f4_link_static_test_platform(F4OperationsQueueTests)
   add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -450,6 +463,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4QuickViewSurfaceTests)
+  f4_link_static_test_platform(F4QuickViewSurfaceTests)
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -488,6 +502,7 @@ if(BUILD_TESTING)
     Qt6::Gui
     Qt6::Test
   )
+  f4_link_static_test_platform(WindowGeometryPersistenceTests)
   add_test(NAME WindowGeometryPersistenceTest
     COMMAND WindowGeometryPersistenceTests)
   set_tests_properties(WindowGeometryPersistenceTest PROPERTIES
@@ -523,6 +538,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4GalleryBridgeTests)
+  f4_link_static_test_platform(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
@@ -560,6 +576,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4GalleryPointerTests)
+  f4_link_static_test_platform(F4GalleryPointerTests)
   if(TARGET msgpack-cxx)
     target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx)
   elseif(TARGET msgpack-cxx::msgpack-cxx)
