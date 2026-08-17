@@ -531,10 +531,13 @@ jobs:
         pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $qtHost
         $env:QT_QPA_PLATFORM = "offscreen"
         $env:QSG_RHI_BACKEND = "software"
+        $PSNativeCommandUseErrorActionPreference = $false
         & $qtHost --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
           --f4-ext-cols=100 --f4-ext-rows=30
-        if ($LASTEXITCODE -ne 2) {
-          throw "Disconnected static Qt host returned $LASTEXITCODE, expected 2"
+        $smokeStatus = $LASTEXITCODE
+        $PSNativeCommandUseErrorActionPreference = $true
+        if ($smokeStatus -ne 2) {
+          throw "Disconnected static Qt host returned $smokeStatus, expected 2"
         }
 
         python ci/package-embedded-qt-host.py $qtHost
