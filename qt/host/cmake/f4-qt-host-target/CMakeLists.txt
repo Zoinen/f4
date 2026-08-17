@@ -358,6 +358,15 @@ if(F4_QT_STATIC)
     Qt6::QuickEffects
     Qt6::QuickLayouts)
 
+  # Conan exposes Qt's Linux platform implementation as separate static
+  # archives with a real cycle: qxcb -> Qt6XcbQpa -> Qt6Gui. GNU ld scans an
+  # ordinary archive only once, so rescan this small platform group until all
+  # of its private Qt symbols are resolved. Windows' linker does not need it.
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(f4-qt-host PRIVATE
+      "$<LINK_GROUP:RESCAN,Qt6::QXcbIntegrationPlugin,Qt6::XcbQpaPrivate,Qt6::Gui,Qt6::Core>")
+  endif()
+
   # The production host never enables QML debugging, so exclude the ordinary
   # debugger/profiler transport plugins supplied by Qt::Qml as well.
   qt6_import_plugins(f4-qt-host EXCLUDE_BY_TYPE qmltooling)
