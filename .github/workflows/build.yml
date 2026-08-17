@@ -493,6 +493,7 @@ jobs:
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
             -o:h "qt/*:shared=False" `
+            -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:h "qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows" `
             -o:h "libraw/*:shared=False" `
             -c tools.system.package_manager:mode=install `

@@ -71,6 +71,7 @@ for attempt in 1 2 3; do
         -o:h 'qt/*:shared=False' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
+        -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
         -o:h 'qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows' \
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
