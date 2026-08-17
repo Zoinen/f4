@@ -22,6 +22,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
+if(F4_PORTABLE_STATIC)
+  # Qt discovers its JPEG dependency from inside a helper function. Conan's
+  # generated FindJPEG module creates directory-scoped imported targets and
+  # then guards itself against a second include, so ZoinGallery cannot see
+  # JPEG::JPEG later in this sibling directory. Load both facades at the root
+  # first so their static targets are visible to the complete build graph.
+  find_package(JPEG REQUIRED)
+  find_package(libjpeg-turbo REQUIRED)
+endif()
+
 find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg REQUIRED)
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
