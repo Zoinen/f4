@@ -199,15 +199,15 @@ if(F4_QT_STATIC)
     Qt6::modelsplugin
     Qt6::workerscriptplugin
     Qt6::qtquick2plugin
-    Qt6::qtquickcontrols2plugin
-    Qt6::qtquickcontrols2basicstyleplugin
-    Qt6::qtquicktemplates2plugin
-    Qt6::qtquickcontrols2implplugin
     Qt6::quickwindow
     Qt6::effectsplugin
     Qt6::qmlshapesplugin
-    Qt6::qtquickcontrols2basicstyleimplplugin
     Qt6::qquicklayoutsplugin
+    Qt6::qtquicktemplates2plugin
+    Qt6::qtquickcontrols2implplugin
+    Qt6::qtquickcontrols2basicstyleimplplugin
+    Qt6::qtquickcontrols2basicstyleplugin
+    Qt6::qtquickcontrols2plugin
     ZoinGallery::ZoinGalleryQmlplugin
   )
 
