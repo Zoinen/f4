@@ -324,21 +324,15 @@ jobs:
         if missing:
             raise SystemExit("missing installed executable(s): " + ", ".join(missing))
 
-        gallery_qmldirs = [
-            path for path in root.rglob("qmldir")
-            if path.parent.name == "ZoinGallery"
-        ]
-        if not gallery_qmldirs:
-            raise SystemExit("installed tree does not contain the ZoinGallery QML module")
-        if not any(
-            path.is_file() and "zoingalleryqml" in path.name.lower()
-            for path in root.rglob("*")
-        ):
-            raise SystemExit("installed tree does not contain the ZoinGallery QML plugin")
-
         env = os.environ.copy()
         env["QT_QPA_PLATFORM"] = "offscreen"
         env["QSG_RHI_BACKEND"] = "software"
+        # Restrict Qt discovery to the installed tree. ZoinGallery is linked
+        # statically, so successful startup proves that its QML types were
+        # registered without relying on build-tree module/plugin files.
+        env["QML_IMPORT_PATH"] = str(root / "qml")
+        env["QML2_IMPORT_PATH"] = str(root / "qml")
+        env["QT_PLUGIN_PATH"] = str(root / "plugins")
         if os.environ["RUNNER_OS"] == "Windows":
             # Do not inherit Conan cache paths: the smoke test must prove that
             # all runtime DLLs are present in the staged artifact.
