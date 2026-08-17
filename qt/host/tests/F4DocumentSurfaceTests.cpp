@@ -684,20 +684,31 @@ void F4DocumentSurfaceTests::activeFlickRebasesAtomicallyAcrossWindowAck()
     qreal previousExtent = extentAfter;
     qreal previousContentY = contentYAfter;
     qreal previousSpeed = qAbs(velocityAfter);
+    qint64 previousTimeMs = 0;
     for (const FrameSample &sample : std::as_const(samples)) {
         QVERIFY(sample.flicking);
         QVERIFY2(sample.extent + 0.05 >= previousExtent,
                  qPrintable(QStringLiteral("non-monotonic frame: %1 -> %2")
                                 .arg(previousExtent).arg(sample.extent)));
-        QVERIFY2(sample.extent - previousExtent < 30.0,
-                 qPrintable(QStringLiteral("discontinuous frame: %1 -> %2")
-                                .arg(previousExtent).arg(sample.extent)));
+        const qreal elapsedSeconds =
+            qBound(0.001,
+                   qreal(sample.timeMs - previousTimeMs) / 1000.0,
+                   0.1);
+        const qreal continuousAdvanceLimit =
+            previousSpeed * elapsedSeconds + 5.0;
+        QVERIFY2(sample.extent - previousExtent < continuousAdvanceLimit,
+                 qPrintable(QStringLiteral("discontinuous frame: %1 -> %2 "
+                                           "in %3 ms (limit %4)")
+                                .arg(previousExtent).arg(sample.extent)
+                                .arg(sample.timeMs - previousTimeMs)
+                                .arg(continuousAdvanceLimit)));
         QVERIFY(sample.contentY + 0.05 >= previousContentY);
         QVERIFY(sample.velocity * velocityAfter > 0);
         QVERIFY(qAbs(sample.velocity) <= previousSpeed + 10.0);
         previousExtent = sample.extent;
         previousContentY = sample.contentY;
         previousSpeed = qAbs(sample.velocity);
+        previousTimeMs = sample.timeMs;
     }
     QCOMPARE(flickStarted.size(), 0);
     QCOMPARE(flickEnded.size(), 0);
