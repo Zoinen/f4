@@ -17,6 +17,12 @@ $QwkBuild = Join-Path $RepoRoot "build\qwindowkit-build"
 $QwkInstall = Join-Path $RepoRoot "build\qwindowkit-install"
 $QtVersion = Split-Path (Split-Path $QtRoot -Parent) -Leaf
 $QwkCxxFlags = @()
+$QwkPlatformArgs = @(
+    "-DQWINDOWKIT_BUILD_STATIC=$(@{shared='OFF'; static='ON'}[$Linkage])"
+)
+if ($Linkage -eq "static") {
+    $QwkPlatformArgs += '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
+}
 
 foreach ($includeDir in @(
     (Join-Path $QtRoot "include\QtQml\$QtVersion"),
@@ -39,7 +45,7 @@ cmake -S $QwkSource -B $QwkBuild -G Ninja `
     -DQWINDOWKIT_BUILD_WIDGETS=FALSE `
     -DQWINDOWKIT_BUILD_EXAMPLES=FALSE `
     -DQWINDOWKIT_BUILD_DOCUMENTATIONS=FALSE `
-    "-DQWINDOWKIT_BUILD_STATIC=$(@{shared='OFF'; static='ON'}[$Linkage])"
+    $QwkPlatformArgs
 
 cmake --build $QwkBuild --parallel
 cmake --install $QwkBuild
