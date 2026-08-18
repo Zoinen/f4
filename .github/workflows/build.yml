@@ -542,6 +542,7 @@ jobs:
         $env:QT_QPA_PLATFORM = "offscreen"
         $env:QSG_RHI_BACKEND = "software"
         $PSNativeCommandUseErrorActionPreference = $false
+        $env:F4_QT_HOST_STARTUP_SMOKE_ONLY = "1"
         & $qtHost --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
           --f4-ext-cols=100 --f4-ext-rows=30
         $smokeStatus = $LASTEXITCODE

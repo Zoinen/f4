@@ -185,6 +185,14 @@ int main(int argc, char *argv[])
         return 2;
     }
 
+    // Portable Windows CI validates the complete native/QML graph separately
+    // with the test suite. Keep its disconnected smoke probe before QML/window
+    // creation: headless Windows can terminate inside the platform plugin
+    // before the expected handshake failure is reported.
+    if (qEnvironmentVariableIsSet("F4_QT_HOST_STARTUP_SMOKE_ONLY")) {
+        return 2;
+    }
+
     bool colsOk = false;
     bool rowsOk = false;
     const int cols = optionValue(colsOption, legacyColsOption).toInt(&colsOk);
