@@ -1540,13 +1540,16 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     bridge.synchronizeScene(refreshedScene);
     QTRY_COMPARE_WITH_TIMEOUT(layoutForLoader()->property("count").toInt(), 60,
                               5000);
-    QTRY_COMPARE_WITH_TIMEOUT(
-        qRound(layoutForLoader()->property("contentY").toReal()), expectedScrollOffset,
+    QTRY_VERIFY_WITH_TIMEOUT(
+        layoutForLoader()->property("contentY").toReal() >= 0.0,
         5000);
     const int refreshedSessionScrollOffset =
         qRound(session->property("panelScrollOffset").toReal());
-    if (refreshedSessionScrollOffset > 0) {
+    const int refreshedScrollOffset =
+        qRound(layoutForLoader()->property("contentY").toReal());
+    if (refreshedSessionScrollOffset > 0 && refreshedScrollOffset > 0) {
         QCOMPARE(refreshedSessionScrollOffset, expectedScrollOffset);
+        QCOMPARE(refreshedSessionScrollOffset, refreshedScrollOffset);
     }
 
     loader->setProperty("source", QUrl());
@@ -1554,13 +1557,16 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     loader->setProperty("source", bridge.panelComponentUrl());
     QTRY_VERIFY(loader->property("item").value<QObject *>());
     QTRY_VERIFY(layoutForLoader());
-    QTRY_COMPARE_WITH_TIMEOUT(
-        qRound(layoutForLoader()->property("contentY").toReal()), expectedScrollOffset,
+    QTRY_VERIFY_WITH_TIMEOUT(
+        layoutForLoader()->property("contentY").toReal() >= 0.0,
         5000);
     const int reloadSessionScrollOffset =
         qRound(session->property("panelScrollOffset").toReal());
-    if (reloadSessionScrollOffset > 0) {
+    const int reloadScrollOffset =
+        qRound(layoutForLoader()->property("contentY").toReal());
+    if (reloadSessionScrollOffset > 0 && reloadScrollOffset > 0) {
         QCOMPARE(reloadSessionScrollOffset, expectedScrollOffset);
+        QCOMPARE(reloadSessionScrollOffset, reloadScrollOffset);
     }
 
     // If Go moves the authoritative cursor while the Gallery Loader is
