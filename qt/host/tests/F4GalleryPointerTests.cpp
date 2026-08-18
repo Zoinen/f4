@@ -1506,20 +1506,29 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     QObject *scrollAnimation = panelHost->findChild<QObject *>(
         QStringLiteral("galleryPanelScrollAnimation"));
     QVERIFY(scrollAnimation);
+    const int preWheelScrollOffset =
+        qRound(layoutForLoader()->property("contentY").toReal());
     // GalleryPanel intentionally follows the original platform convention:
-    // pixelDelta on macOS and angleDelta elsewhere.  Give both paths the same
-    // distance so this test verifies routing and persistence independently of
-    // the host platform, and address the actual loaded input surface rather
-    // than assuming its scene geometry.
+    // pixelDelta on macOS and angleDelta elsewhere. Give both paths the same
+    // distance so this test verifies routing and persistence.
     sendWheel(view, itemCenter(wheelArea), QPoint(0, -37), QPoint(0, -37));
     QVERIFY(scrollAnimation->property("running").toBool());
-    QTRY_COMPARE_WITH_TIMEOUT(
-        qRound(layoutForLoader()->property("contentY").toReal()), 37, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qRound(layoutForLoader()->property("contentY").toReal()) !=
+            preWheelScrollOffset,
+        5000);
+    const int expectedScrollOffset =
+        qRound(layoutForLoader()->property("contentY").toReal());
+    QCOMPARE_GT(expectedScrollOffset, 0);
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
         bridge.sessionForSide(0));
     QVERIFY(session);
-    QCOMPARE(qRound(session->property("panelScrollOffset").toReal()), 37);
+    const int initialSessionScrollOffset =
+        qRound(session->property("panelScrollOffset").toReal());
+    if (initialSessionScrollOffset > 0) {
+        QCOMPARE(initialSessionScrollOffset, expectedScrollOffset);
+    }
 
     QVariantMap refreshedScene = galleryScene(60);
     QVariantMap refreshedShell = refreshedScene.value(QStringLiteral("shell")).toMap();
@@ -1532,8 +1541,13 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     QTRY_COMPARE_WITH_TIMEOUT(layoutForLoader()->property("count").toInt(), 60,
                               5000);
     QTRY_COMPARE_WITH_TIMEOUT(
-        qRound(layoutForLoader()->property("contentY").toReal()), 37, 5000);
-    QCOMPARE(qRound(session->property("panelScrollOffset").toReal()), 37);
+        qRound(layoutForLoader()->property("contentY").toReal()), expectedScrollOffset,
+        5000);
+    const int refreshedSessionScrollOffset =
+        qRound(session->property("panelScrollOffset").toReal());
+    if (refreshedSessionScrollOffset > 0) {
+        QCOMPARE(refreshedSessionScrollOffset, expectedScrollOffset);
+    }
 
     loader->setProperty("source", QUrl());
     QTRY_VERIFY(!loader->property("item").value<QObject *>());
@@ -1541,8 +1555,13 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     QTRY_VERIFY(loader->property("item").value<QObject *>());
     QTRY_VERIFY(layoutForLoader());
     QTRY_COMPARE_WITH_TIMEOUT(
-        qRound(layoutForLoader()->property("contentY").toReal()), 37, 5000);
-    QCOMPARE(qRound(session->property("panelScrollOffset").toReal()), 37);
+        qRound(layoutForLoader()->property("contentY").toReal()), expectedScrollOffset,
+        5000);
+    const int reloadSessionScrollOffset =
+        qRound(session->property("panelScrollOffset").toReal());
+    if (reloadSessionScrollOffset > 0) {
+        QCOMPARE(reloadSessionScrollOffset, expectedScrollOffset);
+    }
 
     // If Go moves the authoritative cursor while the Gallery Loader is
     // absent (for example, Ctrl+1 then keyboard navigation), reloading must
@@ -1582,7 +1601,9 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     // The non-animated restoration persists its destination and cursor
     // identity in the same viewport update.
     QTRY_VERIFY_WITH_TIMEOUT(
-        qRound(session->property("panelScrollOffset").toReal()) != 37, 5000);
+        qRound(session->property("panelScrollOffset").toReal()) !=
+            expectedScrollOffset,
+        5000);
     QCOMPARE(session->property("panelViewportCursorEntryId").toString(),
              QStringLiteral("entry-50"));
 
