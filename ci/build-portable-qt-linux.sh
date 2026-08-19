@@ -49,20 +49,29 @@ grep -q 'https://distfiles.macports.org/fontconfig/fontconfig-2.15.0.tar.xz' \
     "${fontconfig_recipe_copy}/conandata.yml"
 conan export "${fontconfig_recipe_copy}" --name=fontconfig --version=2.15.0
 
-# Conan package IDs do not encode the glibc build baseline. Rebuild every
-# target-side native package even if Conan Center offers a GCC 11 binary;
-# build-only tools are allowed from the remote when they run on 2.27. m4 is
-# the exception: its remote binary requires newer glibc, so rebuild it too.
+# Conan package IDs do not encode the glibc build baseline. On a cold cache,
+# rebuild every target-side native package even if Conan Center offers a GCC
+# 11 binary; build-only tools are allowed from the remote when they run on
+# 2.27. m4 is the exception: its remote binary requires newer glibc, so rebuild
+# it too. Once this container has completed successfully, persist a marker in
+# the cached package graph and let Conan reuse those baseline-built packages.
 target_packages=(
     brotli bzip2 double-conversion elfutils expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
     libmount libpng libraw libselinux libtiff libwebp libxml2 md4c msgpack-cxx
     openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
 )
-conan_build_args=(--build=missing --build='m4/*')
-for package in "${target_packages[@]}"; do
-    conan_build_args+=("--build=${package}/*")
-done
+baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-ready"
+conan_build_args=(--build=missing)
+if [[ ! -f "$baseline_marker" ]]; then
+    conan_build_args+=(--build='m4/*')
+    for package in "${target_packages[@]}"; do
+        conan_build_args+=("--build=${package}/*")
+    done
+    echo "No glibc 2.27 package marker found; forcing baseline rebuild"
+else
+    echo "Reusing cached glibc 2.27 Conan package graph"
+fi
 
 for attempt in 1 2 3; do
     if conan install qt/host "${conan_build_args[@]}" \
@@ -95,6 +104,7 @@ done
 # Conan completed so Actions can preserve this expensive static Qt graph even
 # when the cache post-step would otherwise be skipped after a job failure.
 touch qt/host/build-portable-linux/.f4-conan-ready
+touch "$baseline_marker"
 
 bash ci/build-qwindowkit.sh "$PWD/qt/host/build-portable-linux" Release static
 cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \

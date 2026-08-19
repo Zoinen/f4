@@ -431,9 +431,9 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-${{ hashFiles('qt/host/conanfile.py', 'ci/build-portable-qt-linux.sh') }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
         restore-keys: |
-          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-
+          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
 
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
@@ -570,7 +570,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-${{ hashFiles('qt/host/conanfile.py', 'ci/build-portable-qt-linux.sh') }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4
