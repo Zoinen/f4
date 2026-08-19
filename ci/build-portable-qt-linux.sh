@@ -132,6 +132,13 @@ if printf '%s\n' "$needed_runtime" | grep -Fxq 'libstdc++.so.6'; then
         exit 1
     fi
 fi
+if readelf -d "$host" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+    patchelf --remove-rpath "$host"
+    if readelf -d "$host" | grep -Eq '\((RPATH|RUNPATH)\)'; then
+        echo "error: patchelf failed to remove Qt host RPATH/RUNPATH" >&2
+        exit 1
+    fi
+fi
 bash ci/audit-portable-qt-linux.sh "$host" 2.27
 set +e
 QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
