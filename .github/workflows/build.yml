@@ -233,6 +233,16 @@ jobs:
         python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
 
+    - name: Cache the macOS native dependency graph
+      uses: actions/cache@v4
+      with:
+        path: |
+          .conan2
+          build/qwindowkit-install
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+        restore-keys: |
+          qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+
     - name: Build and test the Qt host
       shell: bash
       run: |
@@ -305,6 +315,23 @@ jobs:
             -o "../../qt/host/stage-ci/bin/plugins/dummy_internal/f4-internal-dummy-plugin${executable_suffix}" .
         )
         cp -R lang help qt/host/stage-ci/bin/
+
+    - name: Prune macOS Conan build trees before cache save
+      if: success()
+      shell: bash
+      run: |
+        if [[ -d "$CONAN_HOME/p" ]]; then
+          find "$CONAN_HOME/p" -type d \( -name b -o -name s \) -prune -exec rm -rf {} +
+        fi
+
+    - name: Preserve the completed macOS native dependency graph
+      if: success()
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          .conan2
+          build/qwindowkit-install
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v1
 
     - name: Validate and smoke-test the installed tree
       shell: bash
