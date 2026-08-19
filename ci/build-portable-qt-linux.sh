@@ -103,7 +103,12 @@ cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
     -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install" \
     -DQWindowKit_DIR="$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" \
     -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
-cmake --build qt/host/build-portable-linux --config Release --parallel "$(nproc)"
+# Keep the glibc-baseline runner deterministic.  Some hosted Linux images
+# expose a very large virtual CPU count; letting Ninja use all of it can
+# starve Qt's long-running AUTOMOC/moc --collect-json jobs and leave the job
+# alive without progress.  Four workers still parallelize the native build
+# without oversubscribing the runner.
+cmake --build qt/host/build-portable-linux --config Release --parallel 4
 export QML_IMPORT_PATH="$PWD/qt/host/build-portable-linux/ZoinGallery:$PWD/qt/host/build-portable-linux/qml"
 export QML2_IMPORT_PATH="$PWD/qt/host/build-portable-linux/ZoinGallery:$PWD/qt/host/build-portable-linux/qml"
 ctest --test-dir qt/host/build-portable-linux -C Release --output-on-failure \
