@@ -565,6 +565,25 @@ jobs:
           throw "Portable Windows artifact must contain only f4.exe"
         }
 
+    - name: Prune Linux Conan build trees before cache save
+      if: always() && runner.os == 'Linux' && hashFiles('qt/host/build-portable-linux/.f4-conan-ready') != ''
+      shell: bash
+      run: |
+        # Keep Conan package folders and metadata, but do not spend the
+        # repository's 10-GB cache quota on disposable source/build trees.
+        find "$CONAN_HOME/p" -type d \( -name b -o -name s \) -prune -exec rm -rf {} +
+
+    - name: Prune Windows Conan build trees before cache save
+      if: always() && runner.os == 'Windows' && hashFiles('qt/host/build-portable-windows/.f4-conan-ready') != ''
+      shell: pwsh
+      run: |
+        $roots = Get-ChildItem -LiteralPath (Join-Path $env:CONAN_HOME 'p') -Directory -Recurse |
+          Where-Object { $_.Name -in @('b', 's') } |
+          Sort-Object FullName -Descending
+        foreach ($root in $roots) {
+          Remove-Item -LiteralPath $root.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
     - name: Preserve the completed static Qt dependency graph
       if: always() && hashFiles(format('qt/host/build-portable-{0}/.f4-conan-ready', matrix.platform)) != ''
       uses: actions/cache/save@v4
