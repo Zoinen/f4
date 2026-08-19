@@ -254,6 +254,11 @@ if(F4_PORTABLE_STATIC)
     # host cannot retain a direct libstdc++.so/libgcc_s dependency.
     target_link_libraries(f4-qt-host PRIVATE
       "-Wl,-Bstatic" "-lstdc++" "-lgcc" "-Wl,-Bdynamic")
+    # LINK_FLAGS is emitted by CMake at the end of the executable link line;
+    # this is intentional because Conan's Qt targets may append their own
+    # runtime item after target_link_options()/target_link_libraries().
+    set_property(TARGET f4-qt-host APPEND_STRING PROPERTY LINK_FLAGS
+      " -static-libstdc++ -static-libgcc")
   endif()
 endif()
 
