@@ -15,7 +15,20 @@ apt-get update
 apt-get install -y --no-install-recommends \
     autoconf automake bison build-essential ca-certificates curl flex git patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
-add-apt-repository -y ppa:ubuntu-toolchain-r/test
+ppa_added=0
+for attempt in 1 2 3; do
+  if add-apt-repository -y ppa:ubuntu-toolchain-r/test; then
+    ppa_added=1
+    break
+  fi
+  if [[ "$attempt" -lt 3 ]]; then
+    sleep $((attempt * 15))
+  fi
+done
+if [[ "$ppa_added" -ne 1 ]]; then
+  echo "Unable to add the Ubuntu toolchain PPA after 3 attempts" >&2
+  exit 1
+fi
 apt-get update
 apt-get install -y --no-install-recommends gcc-11 g++-11
 
