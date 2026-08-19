@@ -20,11 +20,15 @@ apt_args=(
     -o Acquire::Retries=3
     -o Acquire::http::Timeout=30
     -o Acquire::https::Timeout=30
+    -o Acquire::Languages=none
     -o DPkg::Lock::Timeout=60
     -o Dpkg::Use-Pty=0
 )
 apt_with_timeout() {
-    timeout --foreground 15m apt-get "${apt_args[@]}" "$@"
+    # apt may leave an unresponsive helper behind after SIGTERM (notably while
+    # parsing old bionic package indexes).  --kill-after makes the timeout a
+    # hard upper bound instead of letting the Actions job consume its budget.
+    timeout --foreground --kill-after=30s 10m apt-get "${apt_args[@]}" "$@"
 }
 
 echo "Installing Ubuntu 18.04 bootstrap packages"
