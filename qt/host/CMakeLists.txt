@@ -239,6 +239,23 @@ if(F4_PORTABLE_STATIC)
     set_property(TARGET f4-qt-host PROPERTY
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   elseif(UNIX AND NOT APPLE)
+    # Resolve the compiler runtime to an archive explicitly.  Conan's Qt
+    # imported targets may carry a transitive `-lstdc++`; relying only on the
+    # driver's -static-libstdc++ flag then leaves a DT_NEEDED entry in the ELF.
+    # Linking the archive as a direct target item makes the symbols available
+    # before those transitive interfaces are processed, while --as-needed
+    # drops any later dynamic runtime item.
+    execute_process(
+      COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.a
+      OUTPUT_VARIABLE F4_STATIC_LIBSTDCXX
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE F4_STATIC_LIBSTDCXX_RESULT)
+    if(NOT F4_STATIC_LIBSTDCXX_RESULT EQUAL 0 OR
+       F4_STATIC_LIBSTDCXX STREQUAL "" OR
+       F4_STATIC_LIBSTDCXX STREQUAL "libstdc++.a" OR
+       NOT EXISTS "${F4_STATIC_LIBSTDCXX}")
+      message(FATAL_ERROR "F4_PORTABLE_STATIC could not locate GCC libstdc++.a")
+    endif()
     target_compile_options(f4-qt-host PRIVATE
       -ffunction-sections -fdata-sections -fstack-protector-strong)
     target_link_options(f4-qt-host PRIVATE
@@ -248,17 +265,9 @@ if(F4_PORTABLE_STATIC)
       -Wl,--exclude-libs,ALL
       -Wl,--as-needed
       -Wl,-z,relro,-z,now,-z,noexecstack)
-    # Some Qt/Conan link interfaces append an explicit dynamic C++ runtime
-    # after the compiler driver's -static-libstdc++ handling.  Repeat the
-    # runtime selection at the end of the target's link interface so the ELF
-    # host cannot retain a direct libstdc++.so/libgcc_s dependency.
+    # Keep the archive as a direct item before transitive Qt/Conan libraries.
     target_link_libraries(f4-qt-host PRIVATE
-      "-Wl,-Bstatic" "-lstdc++" "-lgcc" "-Wl,-Bdynamic")
-    # LINK_FLAGS is emitted by CMake at the end of the executable link line;
-    # this is intentional because Conan's Qt targets may append their own
-    # runtime item after target_link_options()/target_link_libraries().
-    set_property(TARGET f4-qt-host APPEND_STRING PROPERTY LINK_FLAGS
-      " -static-libstdc++ -static-libgcc")
+      "${F4_STATIC_LIBSTDCXX}" "-Wl,-Bstatic" "-lgcc" "-Wl,-Bdynamic")
   endif()
 endif()
 
