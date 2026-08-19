@@ -16,6 +16,12 @@ if printf '%s\n' "${needed}" | grep -Eiq "${forbidden}"; then
     exit 1
 fi
 
+if nm -D "${host}" 2>/dev/null | grep -Eq ' U (_Z|__cxa|GLIBCXX|CXXABI)'; then
+    echo "error: portable Qt host contains unresolved C++ runtime symbols" >&2
+    nm -D "${host}" 2>/dev/null | grep -E ' U (_Z|__cxa|GLIBCXX|CXXABI)' >&2
+    exit 1
+fi
+
 highest_glibc="$(
     readelf --version-info --wide "${host}" 2>/dev/null |
         grep -o 'GLIBC_[0-9][0-9.]*' |

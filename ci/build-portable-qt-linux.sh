@@ -13,7 +13,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-    autoconf automake bison build-essential ca-certificates curl flex git \
+    autoconf automake bison build-essential ca-certificates curl flex git patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 add-apt-repository -y ppa:ubuntu-toolchain-r/test
 apt-get update
@@ -115,6 +115,18 @@ ctest --test-dir qt/host/build-portable-linux -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
 
 host="$PWD/qt/host/build-portable-linux/bin/Release/f4-qt-host"
+# Conan's imported Qt interfaces can append a redundant dynamic libstdc++
+# item after the compiler driver's static-runtime selection.  Remove only that
+# metadata entry after proving the executable has no unresolved C++ symbols;
+# the static archive remains part of the executable and the audit still checks
+# the complete ELF dependency graph.
+if readelf -d "$host" | grep -q 'Shared library: \[libstdc++.so.6\]'; then
+    if nm -D "$host" | grep -Eq ' U (_Z|__cxa|GLIBCXX|CXXABI)'; then
+        echo "error: Qt host has unresolved C++ symbols; refusing to strip libstdc++.so.6" >&2
+        exit 1
+    fi
+    patchelf --remove-needed libstdc++.so.6 "$host"
+fi
 bash ci/audit-portable-qt-linux.sh "$host" 2.27
 set +e
 QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
