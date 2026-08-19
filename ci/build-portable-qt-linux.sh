@@ -11,8 +11,25 @@ if ! grep -q 'Ubuntu 18.04' /etc/os-release; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends \
+# GitHub-hosted runners occasionally leave the bionic mirror connection
+# half-open.  Without explicit network/lock limits apt can sit silently until
+# the Actions step is killed after a long idle period.  Keep bootstrap
+# bounded and retryable so a transient mirror issue cannot consume the whole
+# CI run.
+apt_args=(
+    -o Acquire::Retries=3
+    -o Acquire::http::Timeout=30
+    -o Acquire::https::Timeout=30
+    -o DPkg::Lock::Timeout=60
+    -o Dpkg::Use-Pty=0
+)
+apt_with_timeout() {
+    timeout --foreground 15m apt-get "${apt_args[@]}" "$@"
+}
+
+echo "Installing Ubuntu 18.04 bootstrap packages"
+apt_with_timeout update
+apt_with_timeout install -y --no-install-recommends \
     autoconf automake bison build-essential ca-certificates curl flex git patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 ppa_added=0
@@ -29,8 +46,8 @@ if [[ "$ppa_added" -ne 1 ]]; then
   echo "Unable to add the Ubuntu toolchain PPA after 3 attempts" >&2
   exit 1
 fi
-apt-get update
-apt-get install -y --no-install-recommends gcc-11 g++-11
+apt_with_timeout update
+apt_with_timeout install -y --no-install-recommends gcc-11 g++-11
 
 export UV_INSTALL_DIR=/usr/local/bin
 curl -LsSf https://astral.sh/uv/install.sh | sh
