@@ -209,7 +209,7 @@ go test -tags f4_embedded_qt_host \
 mkdir -p dist/f4-linux-amd64
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -buildmode=exe \
-    -tags f4_embedded_qt_host -ldflags='-s -w' \
+    -tags f4_embedded_qt_host -ldflags='-linkmode=internal -s -w' \
     -o dist/f4-linux-amd64/f4 .
 bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
 
