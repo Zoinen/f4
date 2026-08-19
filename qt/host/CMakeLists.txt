@@ -248,6 +248,12 @@ if(F4_PORTABLE_STATIC)
       -Wl,--exclude-libs,ALL
       -Wl,--as-needed
       -Wl,-z,relro,-z,now,-z,noexecstack)
+    # Some Qt/Conan link interfaces append an explicit dynamic C++ runtime
+    # after the compiler driver's -static-libstdc++ handling.  Repeat the
+    # runtime selection at the end of the target's link interface so the ELF
+    # host cannot retain a direct libstdc++.so/libgcc_s dependency.
+    target_link_libraries(f4-qt-host PRIVATE
+      "-Wl,-Bstatic" "-lstdc++" "-lgcc" "-Wl,-Bdynamic")
   endif()
 endif()
 
