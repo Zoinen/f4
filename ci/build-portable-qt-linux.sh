@@ -115,11 +115,29 @@ ctest --test-dir qt/host/build-portable-linux -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
 
 host="$PWD/qt/host/build-portable-linux/bin/Release/f4-qt-host"
+# Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
+# patchelf 0.9, which removes DT_NEEDED but leaves version-needed metadata.
+set +e
+QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
+    --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke \
+    --f4-ext-cols=100 --f4-ext-rows=30 >/tmp/f4-qt-host-smoke.log 2>&1
+smoke_status=$?
+set -e
+if [[ "${smoke_status}" != 2 ]]; then
+    cat /tmp/f4-qt-host-smoke.log >&2
+    echo "error: disconnected Qt host returned ${smoke_status}, expected 2" >&2
+    exit 1
+fi
+if grep -Eq 'QQmlApplicationEngine failed to load component|Could not find the Qt platform plugin' /tmp/f4-qt-host-smoke.log; then
+    cat /tmp/f4-qt-host-smoke.log >&2
+    echo "error: static Qt host could not load an embedded QML or platform plugin" >&2
+    exit 1
+fi
+
 # Conan's imported Qt interfaces can append a redundant dynamic libstdc++
-# item after the compiler driver's static-runtime selection.  Remove only that
-# metadata entry after proving the executable has no unresolved C++ symbols;
-# the static archive remains part of the executable and the audit still checks
-# the complete ELF dependency graph.
+# item after the compiler driver's static-runtime selection. Remove only that
+# metadata entry after the working-host smoke test; the static archive remains
+# part of the executable and the audit checks the final ELF dependency graph.
 needed_runtime="$(readelf -d "$host" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
 if printf '%s\n' "$needed_runtime" | grep -Fxq 'libstdc++.so.6'; then
     if nm -D "$host" | grep -Eq ' U (_Z|GLIBCXX|CXXABI)'; then
@@ -140,22 +158,6 @@ if readelf -d "$host" | grep -Eq '\((RPATH|RUNPATH)\)'; then
     fi
 fi
 bash ci/audit-portable-qt-linux.sh "$host" 2.27
-set +e
-QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
-    --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke \
-    --f4-ext-cols=100 --f4-ext-rows=30 >/tmp/f4-qt-host-smoke.log 2>&1
-smoke_status=$?
-set -e
-if [[ "${smoke_status}" != 2 ]]; then
-    cat /tmp/f4-qt-host-smoke.log >&2
-    echo "error: disconnected Qt host returned ${smoke_status}, expected 2" >&2
-    exit 1
-fi
-if grep -Eq 'QQmlApplicationEngine failed to load component|Could not find the Qt platform plugin' /tmp/f4-qt-host-smoke.log; then
-    cat /tmp/f4-qt-host-smoke.log >&2
-    echo "error: static Qt host could not load an embedded QML or platform plugin" >&2
-    exit 1
-fi
 
 python ci/package-embedded-qt-host.py "$host"
 go test -tags f4_embedded_qt_host \
