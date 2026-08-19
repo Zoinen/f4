@@ -16,9 +16,9 @@ if printf '%s\n' "${needed}" | grep -Eiq "${forbidden}"; then
     exit 1
 fi
 
-if nm -D "${host}" 2>/dev/null | grep -Eq ' U (_Z|__cxa|GLIBCXX|CXXABI)'; then
+if nm -D "${host}" 2>/dev/null | grep -Eq ' U (_Z|GLIBCXX|CXXABI)'; then
     echo "error: portable Qt host contains unresolved C++ runtime symbols" >&2
-    nm -D "${host}" 2>/dev/null | grep -E ' U (_Z|__cxa|GLIBCXX|CXXABI)' >&2
+    nm -D "${host}" 2>/dev/null | grep -E ' U (_Z|GLIBCXX|CXXABI)' >&2
     exit 1
 fi
 

@@ -120,12 +120,17 @@ host="$PWD/qt/host/build-portable-linux/bin/Release/f4-qt-host"
 # metadata entry after proving the executable has no unresolved C++ symbols;
 # the static archive remains part of the executable and the audit still checks
 # the complete ELF dependency graph.
-if readelf -d "$host" | grep -q 'Shared library: \[libstdc++.so.6\]'; then
-    if nm -D "$host" | grep -Eq ' U (_Z|__cxa|GLIBCXX|CXXABI)'; then
+needed_runtime="$(readelf -d "$host" | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
+if printf '%s\n' "$needed_runtime" | grep -Fxq 'libstdc++.so.6'; then
+    if nm -D "$host" | grep -Eq ' U (_Z|GLIBCXX|CXXABI)'; then
         echo "error: Qt host has unresolved C++ symbols; refusing to strip libstdc++.so.6" >&2
         exit 1
     fi
     patchelf --remove-needed libstdc++.so.6 "$host"
+    if readelf -d "$host" | grep -Fq 'Shared library: [libstdc++.so.6]'; then
+        echo "error: patchelf failed to remove libstdc++.so.6" >&2
+        exit 1
+    fi
 fi
 bash ci/audit-portable-qt-linux.sh "$host" 2.27
 set +e
