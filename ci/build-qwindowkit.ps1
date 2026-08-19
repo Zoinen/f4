@@ -15,6 +15,7 @@ $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $QwkSource = Join-Path $RepoRoot "build\qwindowkit-src"
 $QwkBuild = Join-Path $RepoRoot "build\qwindowkit-build"
 $QwkInstall = Join-Path $RepoRoot "build\qwindowkit-install"
+$QwkMarker = Join-Path $QwkInstall ".f4-qwindowkit-ready-$Linkage-$BuildType"
 $QtVersion = Split-Path (Split-Path $QtRoot -Parent) -Leaf
 $QwkCxxFlags = @()
 $QwkPlatformArgs = @(
@@ -22,6 +23,15 @@ $QwkPlatformArgs = @(
 )
 if ($Linkage -eq "static") {
     $QwkPlatformArgs += '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
+}
+
+$cachedConfig = @(
+    (Join-Path $QwkInstall "lib\cmake\QWindowKit\QWindowKitConfig.cmake"),
+    (Join-Path $QwkInstall "lib64\cmake\QWindowKit\QWindowKitConfig.cmake")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ((Test-Path $QwkMarker) -and $cachedConfig) {
+    Write-Host "Reusing cached QWindowKit $Linkage $BuildType install"
+    exit 0
 }
 
 foreach ($includeDir in @(
@@ -60,3 +70,4 @@ if (!$QwkCmakeDir) {
 }
 
 Select-String -Path "$QwkCmakeDir\*.cmake" -Pattern "QWindowKit::Quick" | Out-Host
+New-Item -ItemType File -Force $QwkMarker | Out-Null

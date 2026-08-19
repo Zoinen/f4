@@ -9,6 +9,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qwk_source="${repo_root}/build/qwindowkit-src"
 qwk_build="${repo_root}/build/qwindowkit-build"
 qwk_install="${repo_root}/build/qwindowkit-install"
+qwk_marker="${qwk_install}/.f4-qwindowkit-ready-${linkage}-${build_type}"
 qt_version="$(basename "$(dirname "${qt_root}")")"
 qwk_cxx_flags=""
 qwk_platform_args=()
@@ -25,6 +26,11 @@ case "${linkage}" in
         exit 2
         ;;
 esac
+
+if [ -f "${qwk_marker}" ] && grep -R "QWindowKit::Quick" "${qwk_install}/lib/cmake/QWindowKit" "${qwk_install}/lib64/cmake/QWindowKit" 2>/dev/null; then
+    echo "Reusing cached QWindowKit ${linkage} ${build_type} install"
+    exit 0
+fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
     qwk_platform_args+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0")
@@ -69,3 +75,4 @@ done
 
 test -n "${qwk_cmake_dir}"
 grep -R "QWindowKit::Quick" "${qwk_cmake_dir}"
+touch "${qwk_marker}"

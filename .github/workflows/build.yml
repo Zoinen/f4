@@ -457,10 +457,15 @@ jobs:
     - name: Cache the portable native dependency graph
       uses: actions/cache@v4
       with:
-        path: ${{ env.CONAN_HOME }}/p
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
+        path: |
+          ${{ env.CONAN_HOME }}/p
+          build/qwindowkit-src
+          build/qwindowkit-build
+          build/qwindowkit-install
+          qt/host/build-portable-${{ matrix.platform }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
         restore-keys: |
-          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
+          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-
 
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
@@ -480,7 +485,14 @@ jobs:
         docker run --rm \
           -v "$PWD:/workspace" \
           ubuntu:18.04 \
-          chmod -R a+rX /workspace/.conan2-portable-linux/p
+          sh -c 'for path in \
+            /workspace/.conan2-portable-linux/p \
+            /workspace/build/qwindowkit-src \
+            /workspace/build/qwindowkit-build \
+            /workspace/build/qwindowkit-install \
+            /workspace/qt/host/build-portable-linux; do \
+              if [ -e "$path" ]; then chmod -R a+rX "$path"; fi; \
+            done'
         exit "$build_status"
 
     - name: Install native build tools
@@ -593,7 +605,7 @@ jobs:
         }
 
     - name: Prune Linux Conan build trees before cache save
-      if: success() && runner.os == 'Linux' && hashFiles('qt/host/build-portable-linux/.f4-conan-ready') != ''
+      if: always() && runner.os == 'Linux' && hashFiles('qt/host/build-portable-linux/.f4-conan-ready') != ''
       shell: bash
       run: |
         # Keep package and build state intact for Conan warm installs; source
@@ -601,7 +613,7 @@ jobs:
         find "$CONAN_HOME/p" -type d -name s -prune -exec rm -rf {} +
 
     - name: Prune Windows Conan build trees before cache save
-      if: success() && runner.os == 'Windows' && hashFiles('qt/host/build-portable-windows/.f4-conan-ready') != ''
+      if: always() && runner.os == 'Windows' && hashFiles('qt/host/build-portable-windows/.f4-conan-ready') != ''
       shell: pwsh
       run: |
         $roots = Get-ChildItem -LiteralPath (Join-Path $env:CONAN_HOME 'p') -Directory -Recurse |
@@ -612,11 +624,16 @@ jobs:
         }
 
     - name: Preserve the completed static Qt dependency graph
-      if: success() && hashFiles(format('qt/host/build-portable-{0}/.f4-conan-ready', matrix.platform)) != ''
+      if: always() && hashFiles(format('qt/host/build-portable-{0}/.f4-conan-ready', matrix.platform)) != ''
       uses: actions/cache/save@v4
       with:
-        path: ${{ env.CONAN_HOME }}/p
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v2
+        path: |
+          ${{ env.CONAN_HOME }}/p
+          build/qwindowkit-src
+          build/qwindowkit-build
+          build/qwindowkit-install
+          qt/host/build-portable-${{ matrix.platform }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4
