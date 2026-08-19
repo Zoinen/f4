@@ -211,6 +211,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -buildmode=exe \
     -tags f4_embedded_qt_host -ldflags='-linkmode=internal -s -w' \
     -o dist/f4-linux-amd64/f4 .
+# Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
+# link.  The launcher has no DT_NEEDED entries; remove that inert header so the
+# portable artifact meets the explicit no-interpreter contract.
+if readelf -l dist/f4-linux-amd64/f4 | grep -q 'INTERP'; then
+    patchelf --remove-interpreter dist/f4-linux-amd64/f4
+fi
 bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
 
 artifact_files="$(find dist/f4-linux-amd64 -maxdepth 1 -type f -printf '%f\n')"
