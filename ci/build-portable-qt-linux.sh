@@ -204,9 +204,12 @@ fi
 bash ci/audit-portable-qt-linux.sh "$host" 2.27
 
 python ci/package-embedded-qt-host.py "$host"
+echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' .
+echo "Embedded Qt payload tests passed"
 mkdir -p dist/f4-linux-amd64
+echo "Building static Go launcher"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -buildmode=exe \
     -tags f4_embedded_qt_host -ldflags='-linkmode=internal -s -w' \
@@ -215,8 +218,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 # link.  The launcher has no DT_NEEDED entries; remove that inert header so the
 # portable artifact meets the explicit no-interpreter contract.
 if readelf -l dist/f4-linux-amd64/f4 | grep -q 'INTERP'; then
+    echo "Removing Go launcher PT_INTERP"
     patchelf --remove-interpreter dist/f4-linux-amd64/f4
 fi
+echo "Auditing static Go launcher"
 bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
 
 artifact_files="$(find dist/f4-linux-amd64 -maxdepth 1 -type f -printf '%f\n')"
