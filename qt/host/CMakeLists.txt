@@ -245,16 +245,7 @@ if(F4_PORTABLE_STATIC)
       -static-libstdc++
       -static-libgcc
       -Wl,--gc-sections
-      -Wl,--exclude-libs,ALL
-      -Wl,--as-needed
       -Wl,-z,relro,-z,now,-z,noexecstack)
-    # Keep explicit runtime selection at the end of the target link interface;
-    # the Linux packaging step removes only a redundant DT_NEEDED entry after
-    # validating that all C++ symbols are resolved by the static archive.
-    target_link_libraries(f4-qt-host PRIVATE
-      "-Wl,-Bstatic" "-lstdc++" "-lgcc" "-Wl,-Bdynamic")
-    set_property(TARGET f4-qt-host APPEND_STRING PROPERTY LINK_FLAGS
-      " -static-libstdc++ -static-libgcc")
   endif()
 endif()
 
