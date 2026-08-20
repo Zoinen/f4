@@ -62,6 +62,9 @@ export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
 export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
+TARGET_ARCH="${TARGET_ARCH:-amd64}"
+build_dir="qt/host/build-portable-linux-${TARGET_ARCH}"
+dist_dir="dist/f4-linux-${TARGET_ARCH}"
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
@@ -121,7 +124,7 @@ for attempt in 1 2 3; do
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
         -c tools.system.package_manager:mode=install \
         -c tools.system.package_manager:sudo=False \
-        --output-folder=qt/host/build-portable-linux
+        --output-folder="${build_dir}"
     then
         break
     fi
@@ -137,12 +140,12 @@ done
 # The workflow may still fail later while linking or testing f4.  Record that
 # Conan completed so Actions can preserve this expensive static Qt graph even
 # when the cache post-step would otherwise be skipped after a job failure.
-touch qt/host/build-portable-linux/.f4-conan-ready
+touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
 
-bash ci/build-qwindowkit.sh "$PWD/qt/host/build-portable-linux" Release static
-cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
-    -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-portable-linux/conan_toolchain.cmake" \
+bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
+cmake -S qt/host -B "${build_dir}" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$PWD/${build_dir}/conan_toolchain.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install" \
     -DQWindowKit_DIR="$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" \
@@ -152,13 +155,13 @@ cmake -S qt/host -B qt/host/build-portable-linux -G Ninja \
 # starve Qt's long-running AUTOMOC/moc --collect-json jobs and leave the job
 # alive without progress.  Four workers still parallelize the native build
 # without oversubscribing the runner.
-cmake --build qt/host/build-portable-linux --config Release --parallel 4
-export QML_IMPORT_PATH="$PWD/qt/host/build-portable-linux/ZoinGallery:$PWD/qt/host/build-portable-linux/qml"
-export QML2_IMPORT_PATH="$PWD/qt/host/build-portable-linux/ZoinGallery:$PWD/qt/host/build-portable-linux/qml"
-ctest --test-dir qt/host/build-portable-linux -C Release --output-on-failure \
+cmake --build "${build_dir}" --config Release --parallel 4
+export QML_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
+export QML2_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
+ctest --test-dir "${build_dir}" -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
 
-host="$PWD/qt/host/build-portable-linux/bin/Release/f4-qt-host"
+host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
 # patchelf 0.9, which removes DT_NEEDED but leaves version-needed metadata.
 set +e
@@ -208,21 +211,21 @@ echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' .
 echo "Embedded Qt payload tests passed"
-mkdir -p dist/f4-linux-amd64
+mkdir -p "${dist_dir}"
 echo "Building static Go launcher"
 # Keep the launcher independent of the host libc; the resulting artifact is
 # audited for zero dynamic dependencies below.
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+CGO_ENABLED=0 GOOS=linux GOARCH="${TARGET_ARCH}" go build -trimpath \
     -buildmode=exe \
     -tags f4_embedded_qt_host \
     -ldflags='-s -w' \
-    -o dist/f4-linux-amd64/f4 .
+    -o "${dist_dir}/f4" .
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
 # link.  The launcher has no DT_NEEDED entries; remove that inert header so the
 # portable artifact meets the explicit no-interpreter contract.
-if readelf -l dist/f4-linux-amd64/f4 | grep -q 'INTERP'; then
+if readelf -l "${dist_dir}/f4" | grep -q 'INTERP'; then
     echo "Removing Go launcher PT_INTERP"
-    python ci/remove-elf-interpreter.py dist/f4-linux-amd64/f4
+    python ci/remove-elf-interpreter.py "${dist_dir}/f4"
 fi
 # The cgo-free FFI implementation uses Go's cgo_import_dynamic metadata for
 # optional plugin calls.  The embedded Qt launcher never exercises that path;
@@ -230,15 +233,15 @@ fi
 # remains a genuinely self-contained ELF.  Keep the final audit below as the
 # guard against any new dynamic dependency.
 for runtime_lib in libc.so.6 libdl.so.2 libpthread.so.0; do
-    if readelf -d dist/f4-linux-amd64/f4 | grep -Fq "Shared library: [$runtime_lib]"; then
+    if readelf -d "${dist_dir}/f4" | grep -Fq "Shared library: [$runtime_lib]"; then
         echo "Removing optional Go launcher DT_NEEDED $runtime_lib"
-        patchelf --remove-needed "$runtime_lib" dist/f4-linux-amd64/f4
+        patchelf --remove-needed "$runtime_lib" "${dist_dir}/f4"
     fi
 done
 echo "Auditing static Go launcher"
-bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
+bash ci/audit-static-go-linux.sh "${dist_dir}/f4"
 
-artifact_files="$(find dist/f4-linux-amd64 -maxdepth 1 -type f -printf '%f\n')"
+artifact_files="$(find "${dist_dir}" -maxdepth 1 -type f -printf '%f\n')"
 if [[ "${artifact_files}" != "f4" ]]; then
     echo "error: portable Linux artifact must contain only the Go launcher" >&2
     printf '%s\n' "${artifact_files}" >&2

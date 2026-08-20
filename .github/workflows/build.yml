@@ -423,7 +423,7 @@ jobs:
         retention-days: 7
 
   portable-qt:
-    name: Portable single-file Qt (${{ matrix.platform }}/amd64)
+    name: Portable single-file Qt (${{ matrix.platform }}/${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
@@ -432,10 +432,28 @@ jobs:
         include:
           - runner: ubuntu-24.04
             platform: linux
+            arch: amd64
+            goarch: amd64
+            conan_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            goarch: arm64
+            conan_arch: armv8
           - runner: windows-2022
             platform: windows
+            arch: amd64
+            goarch: amd64
+            conan_arch: x86_64
+            msvc_arch: amd64
+          - runner: windows-2022
+            platform: windows
+            arch: arm64
+            goarch: arm64
+            conan_arch: armv8
+            msvc_arch: amd64_arm64
     env:
-      CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}
+      CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
 
     steps:
     - name: Checkout f4
@@ -453,6 +471,8 @@ jobs:
     - name: Enable the MSVC build environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.msvc_arch }}
 
     - name: Cache the portable native dependency graph
       uses: actions/cache@v4
@@ -462,10 +482,10 @@ jobs:
           build/qwindowkit-src
           build/qwindowkit-build
           build/qwindowkit-install
-          qt/host/build-portable-${{ matrix.platform }}
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+          qt/host/build-portable-${{ matrix.platform }}-${{ matrix.arch }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
         restore-keys: |
-          portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-
+          portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-
 
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
@@ -474,7 +494,8 @@ jobs:
         go_root="$(go env GOROOT)"
         set +e
         docker run --rm \
-          -e CONAN_HOME=/workspace/.conan2-portable-linux \
+          -e CONAN_HOME=/workspace/.conan2-portable-linux-${{ matrix.arch }} \
+          -e TARGET_ARCH=${{ matrix.goarch }} \
           -v "$PWD:/workspace" \
           -v "$go_root:/opt/go:ro" \
           -w /workspace \
@@ -486,11 +507,11 @@ jobs:
           -v "$PWD:/workspace" \
           ubuntu:18.04 \
           sh -c 'for path in \
-            /workspace/.conan2-portable-linux/p \
+            /workspace/.conan2-portable-linux-${{ matrix.arch }}/p \
             /workspace/build/qwindowkit-src \
             /workspace/build/qwindowkit-build \
             /workspace/build/qwindowkit-install \
-            /workspace/qt/host/build-portable-linux; do \
+            /workspace/qt/host/build-portable-linux-${{ matrix.arch }}; do \
               if [ -e "$path" ]; then chmod -R a+rwX "$path"; fi; \
             done'
         exit "$build_status"
@@ -533,9 +554,11 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Unable to export the mirrored xz recipe" }
 
         $conanInstalled = $false
+        $buildDir = "qt/host/build-portable-windows-${{ matrix.arch }}"
+        $distDir = "dist/f4-windows-${{ matrix.arch }}"
         for ($attempt = 1; $attempt -le 3; $attempt++) {
           conan install qt/host --build=missing `
-            -s:h build_type=Release -s:h compiler.cppstd=20 `
+            -s:h arch=${{ matrix.conan_arch }} -s:h build_type=Release -s:h compiler.cppstd=20 `
             -s:h compiler.runtime=static `
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
@@ -545,7 +568,7 @@ jobs:
             -o:h "libraw/*:shared=False" `
             -c tools.cmake.cmaketoolchain:generator=Ninja `
             -c tools.system.package_manager:mode=install `
-            --output-folder=qt/host/build-portable-windows
+            --output-folder=$buildDir
           if ($LASTEXITCODE -eq 0) {
             $conanInstalled = $true
             break
@@ -557,26 +580,25 @@ jobs:
           }
         }
         if (!$conanInstalled) { throw "Conan install failed after 3 attempts" }
-        New-Item -ItemType File -Force `
-          qt/host/build-portable-windows/.f4-conan-ready | Out-Null
+        New-Item -ItemType File -Force (Join-Path $buildDir '.f4-conan-ready') | Out-Null
         $PSNativeCommandUseErrorActionPreference = $true
 
         pwsh -File ci/build-qwindowkit.ps1 `
-          -QtRoot "$PWD/qt/host/build-portable-windows" `
+          -QtRoot "$PWD/$buildDir" `
           -BuildType Release -Linkage static
-        cmake -S qt/host -B qt/host/build-portable-windows -G Ninja `
-          "-DCMAKE_TOOLCHAIN_FILE=$PWD/qt/host/build-portable-windows/conan_toolchain.cmake" `
+        cmake -S qt/host -B $buildDir -G Ninja `
+          "-DCMAKE_TOOLCHAIN_FILE=$PWD/$buildDir/conan_toolchain.cmake" `
           -DCMAKE_BUILD_TYPE=Release `
           "-DCMAKE_PREFIX_PATH=$PWD/build/qwindowkit-install" `
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
           -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
-        cmake --build qt/host/build-portable-windows --config Release --parallel 4
-        $env:QML_IMPORT_PATH = "$PWD/qt/host/build-portable-windows/ZoinGallery;$PWD/qt/host/build-portable-windows/qml"
-        $env:QML2_IMPORT_PATH = "$PWD/qt/host/build-portable-windows/ZoinGallery;$PWD/qt/host/build-portable-windows/qml"
-        ctest --test-dir qt/host/build-portable-windows -C Release --output-on-failure `
+        cmake --build $buildDir --config Release --parallel 4
+        $env:QML_IMPORT_PATH = "$PWD/$buildDir/ZoinGallery;$PWD/$buildDir/qml"
+        $env:QML2_IMPORT_PATH = "$PWD/$buildDir/ZoinGallery;$PWD/$buildDir/qml"
+        ctest --test-dir $buildDir -C Release --output-on-failure `
           -R "^(F4|QtShellController|WindowGeometryPersistence)"
 
-        $qtHost = "$PWD/qt/host/build-portable-windows/bin/Release/f4-qt-host.exe"
+        $qtHost = "$PWD/$buildDir/bin/Release/f4-qt-host.exe"
         pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $qtHost
         $env:QT_QPA_PLATFORM = "offscreen"
         $env:QSG_RHI_BACKEND = "software"
@@ -593,19 +615,19 @@ jobs:
         python ci/package-embedded-qt-host.py $qtHost
         go test -tags f4_embedded_qt_host `
           -run "TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload" .
-        New-Item -ItemType Directory -Force dist/f4-windows-amd64 | Out-Null
+        New-Item -ItemType Directory -Force $distDir | Out-Null
         $env:CGO_ENABLED = "0"
         $env:GOOS = "windows"
-        $env:GOARCH = "amd64"
+        $env:GOARCH = "${{ matrix.goarch }}"
         go build -trimpath -tags f4_embedded_qt_host -ldflags="-s -w" `
-          -o dist/f4-windows-amd64/f4.exe .
-        $files = @(Get-ChildItem dist/f4-windows-amd64 -File)
+          -o $distDir/f4.exe .
+        $files = @(Get-ChildItem $distDir -File)
         if ($files.Count -ne 1 -or $files[0].Name -ne "f4.exe") {
           throw "Portable Windows artifact must contain only f4.exe"
         }
 
     - name: Prune Linux Conan build trees before cache save
-      if: always() && runner.os == 'Linux' && hashFiles('qt/host/build-portable-linux/.f4-conan-ready') != ''
+      if: always() && runner.os == 'Linux' && hashFiles(format('qt/host/build-portable-linux-{0}/.f4-conan-ready', matrix.arch)) != ''
       shell: bash
       run: |
         # Keep package and build state intact for Conan warm installs; source
@@ -613,7 +635,7 @@ jobs:
         find "$CONAN_HOME/p" -type d -name s -prune -exec rm -rf {} +
 
     - name: Prune Windows Conan build trees before cache save
-      if: always() && runner.os == 'Windows' && hashFiles('qt/host/build-portable-windows/.f4-conan-ready') != ''
+      if: always() && runner.os == 'Windows' && hashFiles(format('qt/host/build-portable-windows-{0}/.f4-conan-ready', matrix.arch)) != ''
       shell: pwsh
       run: |
         $roots = Get-ChildItem -LiteralPath (Join-Path $env:CONAN_HOME 'p') -Directory -Recurse |
@@ -624,7 +646,7 @@ jobs:
         }
 
     - name: Preserve the completed static Qt dependency graph
-      if: always() && hashFiles(format('qt/host/build-portable-{0}/.f4-conan-ready', matrix.platform)) != ''
+      if: always() && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: |
@@ -632,14 +654,14 @@ jobs:
           build/qwindowkit-src
           build/qwindowkit-build
           build/qwindowkit-install
-          qt/host/build-portable-${{ matrix.platform }}
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ runner.arch }}-v3-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+          qt/host/build-portable-${{ matrix.platform }}-${{ matrix.arch }}
+        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4
       with:
-        name: f4-portable-${{ matrix.platform }}-amd64
-        path: dist/f4-${{ matrix.platform }}-amd64/f4${{ matrix.platform == 'windows' && '.exe' || '' }}
+        name: f4-portable-${{ matrix.platform }}-${{ matrix.arch }}
+        path: dist/f4-${{ matrix.platform }}-${{ matrix.arch }}/f4${{ matrix.platform == 'windows' && '.exe' || '' }}
         if-no-files-found: error
         retention-days: 7
 
