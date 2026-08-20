@@ -224,6 +224,17 @@ if readelf -l dist/f4-linux-amd64/f4 | grep -q 'INTERP'; then
     echo "Removing Go launcher PT_INTERP"
     python ci/remove-elf-interpreter.py dist/f4-linux-amd64/f4
 fi
+# The cgo-free FFI implementation uses Go's cgo_import_dynamic metadata for
+# optional plugin calls.  The embedded Qt launcher never exercises that path;
+# remove the metadata-only system-library edges so the distributed launcher
+# remains a genuinely self-contained ELF.  Keep the final audit below as the
+# guard against any new dynamic dependency.
+for runtime_lib in libc.so.6 libdl.so.2 libpthread.so.0; do
+    if readelf -d dist/f4-linux-amd64/f4 | grep -Fq "Shared library: [$runtime_lib]"; then
+        echo "Removing optional Go launcher DT_NEEDED $runtime_lib"
+        patchelf --remove-needed "$runtime_lib" dist/f4-linux-amd64/f4
+    fi
+done
 echo "Auditing static Go launcher"
 bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
 
