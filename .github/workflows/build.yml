@@ -491,7 +491,7 @@ jobs:
             /workspace/build/qwindowkit-build \
             /workspace/build/qwindowkit-install \
             /workspace/qt/host/build-portable-linux; do \
-              if [ -e "$path" ]; then chmod -R a+rX "$path"; fi; \
+              if [ -e "$path" ]; then chmod -R a+rwX "$path"; fi; \
             done'
         exit "$build_status"
 
