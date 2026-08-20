@@ -210,14 +210,12 @@ go test -tags f4_embedded_qt_host \
 echo "Embedded Qt payload tests passed"
 mkdir -p dist/f4-linux-amd64
 echo "Building static Go launcher"
-# The launcher sources include packages with cgo-import metadata.  Let Go use
-# the external linker so the glibc-2.27 toolchain can resolve those references
-# into a fully static ELF; the resulting artifact is audited for zero dynamic
-# dependencies below.
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -trimpath \
+# Keep the launcher independent of the host libc; the resulting artifact is
+# audited for zero dynamic dependencies below.
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -buildmode=exe \
     -tags f4_embedded_qt_host \
-    -ldflags='-linkmode=external -extldflags=-static -s -w' \
+    -ldflags='-s -w' \
     -o dist/f4-linux-amd64/f4 .
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
 # link.  The launcher has no DT_NEEDED entries; remove that inert header so the
