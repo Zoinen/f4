@@ -176,3 +176,5 @@ replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 // replace github.com/unxed/colorer4go => ../../../dev/colorer4go
 
 // replace github.com/unxed/vtui => ../../../dev/vtui
+
+replace github.com/neurlang/wayland => github.com/Zoinen/wayland v0.4.4-0.20260820215653-8345e06ea97d
