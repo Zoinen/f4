@@ -212,7 +212,8 @@ mkdir -p dist/f4-linux-amd64
 echo "Building static Go launcher"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -buildmode=exe \
-    -tags f4_embedded_qt_host -ldflags='-linkmode=internal -s -w' \
+    -tags f4_embedded_qt_host \
+    -ldflags='-linkmode=external -extldflags=-static -s -w' \
     -o dist/f4-linux-amd64/f4 .
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
 # link.  The launcher has no DT_NEEDED entries; remove that inert header so the
