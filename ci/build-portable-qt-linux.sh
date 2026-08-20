@@ -56,8 +56,16 @@ apt_with_timeout install -y --no-install-recommends gcc-11 g++-11
 export UV_INSTALL_DIR=/usr/local/bin
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 /opt/f4-build-venv
+# The current x86_64 CMake wheel still supports the Ubuntu 18.04 baseline,
+# while the aarch64 wheel for newer CMake releases is manylinux_2_28 and
+# fails before Conan can build anything.  CMake 3.27 is new enough for this
+# project (the host requires 3.23) and ships a manylinux2014 aarch64 wheel.
+cmake_version=3.31.6
+if [[ "${TARGET_ARCH:-amd64}" == "arm64" ]]; then
+    cmake_version=3.27.9
+fi
 uv pip install --python /opt/f4-build-venv/bin/python \
-    'conan==2.29.1' 'cmake==3.31.6' 'ninja==1.13.0'
+    'conan==2.29.1' "cmake==${cmake_version}" 'ninja==1.13.0'
 export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
