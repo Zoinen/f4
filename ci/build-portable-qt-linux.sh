@@ -219,7 +219,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 # portable artifact meets the explicit no-interpreter contract.
 if readelf -l dist/f4-linux-amd64/f4 | grep -q 'INTERP'; then
     echo "Removing Go launcher PT_INTERP"
-    patchelf --remove-interpreter dist/f4-linux-amd64/f4
+    python ci/remove-elf-interpreter.py dist/f4-linux-amd64/f4
 fi
 echo "Auditing static Go launcher"
 bash ci/audit-static-go-linux.sh dist/f4-linux-amd64/f4
