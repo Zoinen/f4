@@ -130,7 +130,7 @@ for attempt in 1 2 3; do
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
-        -c tools.cmake.cmake_program=/opt/f4-build-venv/bin/cmake \
+        -c tools.cmake:cmake_program=/opt/f4-build-venv/bin/cmake \
         -c tools.system.package_manager:mode=install \
         -c tools.system.package_manager:sudo=False \
         --output-folder="${build_dir}"
