@@ -141,7 +141,25 @@ func (snapshot *repositoryStatus) orderedEntries() []statusEntry {
 	return entries
 }
 
+// readRepositoryStatus reads the complete status needed by the explicit Git:
+// Status panel. It intentionally includes ignored paths and recursive
+// submodule state, which may require traversing large generated trees.
 func readRepositoryStatus(ctx context.Context, repository Repository) (*repositoryStatus, error) {
+	return readRepositoryStatusWithOptions(ctx, repository, gogit.StatusOptions{
+		IncludeIgnored:      true,
+		RecursiveSubmodules: true,
+	})
+}
+
+// readRepositoryStatusLightweight is used only for ordinary-panel
+// decorations. It leaves ignored paths and recursive submodules to the
+// explicit Git: Status view: walking node_modules, build output and nested
+// repositories while somebody is navigating is not an acceptable UI cost.
+func readRepositoryStatusLightweight(ctx context.Context, repository Repository) (*repositoryStatus, error) {
+	return readRepositoryStatusWithOptions(ctx, repository, gogit.StatusOptions{})
+}
+
+func readRepositoryStatusWithOptions(ctx context.Context, repository Repository, options gogit.StatusOptions) (*repositoryStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -154,10 +172,7 @@ func readRepositoryStatus(ctx context.Context, repository Repository) (*reposito
 	if err != nil {
 		return nil, err
 	}
-	status, err := worktree.StatusContext(ctx, gogit.StatusOptions{
-		IncludeIgnored:      true,
-		RecursiveSubmodules: true,
-	})
+	status, err := worktree.StatusContext(ctx, options)
 	if err != nil {
 		return nil, err
 	}

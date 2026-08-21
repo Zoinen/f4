@@ -19,8 +19,17 @@ type Plugin struct {
 
 	registrations []vfs.Registration
 	statuses      map[string]*repositoryStatus
-	statusTasks   map[string]context.CancelFunc
+	statusTasks   map[string]*statusRefreshTask
 	statusViews   map[*StatusVFS]struct{}
+}
+
+// statusRefreshTask represents the one low-priority decoration scan allowed
+// for a repository. Callbacks are keyed by observing panel, so navigating
+// through many directories cannot queue an equally large number of UI
+// refreshes when the scan eventually finishes.
+type statusRefreshTask struct {
+	cancel    context.CancelFunc
+	callbacks map[string]func()
 }
 
 func NewPlugin() *Plugin {
@@ -43,7 +52,7 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	}
 	plugin.api = api
 	plugin.statuses = make(map[string]*repositoryStatus)
-	plugin.statusTasks = make(map[string]context.CancelFunc)
+	plugin.statusTasks = make(map[string]*statusRefreshTask)
 	plugin.statusViews = make(map[*StatusVFS]struct{})
 	plugin.initialized = true
 	plugin.mu.Unlock()
@@ -70,8 +79,10 @@ func (plugin *Plugin) Close() error {
 	discovery := plugin.discovery
 	registrations := append([]vfs.Registration(nil), plugin.registrations...)
 	cancelers := make([]context.CancelFunc, 0, len(plugin.statusTasks))
-	for _, cancel := range plugin.statusTasks {
-		cancelers = append(cancelers, cancel)
+	for _, task := range plugin.statusTasks {
+		if task != nil && task.cancel != nil {
+			cancelers = append(cancelers, task.cancel)
+		}
 	}
 	views := make([]*StatusVFS, 0, len(plugin.statusViews))
 	for view := range plugin.statusViews {

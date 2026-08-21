@@ -83,6 +83,57 @@ func TestReadRepositoryStatusUsesContextAwareForkStatus(t *testing.T) {
 	}
 }
 
+func TestReadRepositoryStatusLightweightSkipsIgnoredArtifacts(t *testing.T) {
+	root := t.TempDir()
+	repository, err := gogit.PlainInit(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	worktree, err := repository.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.generated\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := worktree.StageContext(context.Background(), ".gitignore"); err != nil {
+		t.Fatalf("stage ignore rule: %v", err)
+	}
+	if _, err := worktree.CommitContext(context.Background(), "add ignore rule", &gogit.CommitOptions{Author: &object.Signature{
+		Name:  "f4 test",
+		Email: "f4@example.invalid",
+		When:  time.Now(),
+	}}); err != nil {
+		t.Fatalf("commit ignore rule: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "artifact.generated"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("visible\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lightweight, err := readRepositoryStatusLightweight(context.Background(), Repository{Root: root})
+	if err != nil {
+		t.Fatalf("read lightweight status: %v", err)
+	}
+	if _, ok := lightweight.entries["artifact.generated"]; ok {
+		t.Fatalf("lightweight status unexpectedly traversed ignored artifact: %#v", lightweight.entries["artifact.generated"])
+	}
+	if got, want := lightweight.entries["visible.txt"].Class, statusUntracked; got != want {
+		t.Errorf("lightweight visible class = %v, want %v", got, want)
+	}
+
+	full, err := readRepositoryStatus(context.Background(), Repository{Root: root})
+	if err != nil {
+		t.Fatalf("read full status: %v", err)
+	}
+	if got, want := full.entries["artifact.generated"].Class, statusIgnored; got != want {
+		t.Errorf("full ignored class = %v, want %v", got, want)
+	}
+}
+
 func TestMergeStatusClassPrioritizesConflictAndCombinedLayers(t *testing.T) {
 	cases := []struct {
 		name        string

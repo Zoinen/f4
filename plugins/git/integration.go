@@ -6,13 +6,23 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
-const gitStatusCommandID = "git.status"
+const (
+	gitStatusCommandID = "git.status"
+
+	// Delay a whole-worktree status walk until navigation has been idle for a
+	// moment. Repository discovery itself has its own 300 ms delay; keeping
+	// this separate means a quickly-entered-and-left repository never starts a
+	// decoration scan at all.
+	automaticStatusDelay    = 300 * time.Millisecond
+	automaticStatusFreshFor = 10 * time.Second
+)
 
 func (plugin *Plugin) registerIntegration(api vfs.HostAPI) error {
 	registrations := make([]vfs.Registration, 0, 4)
@@ -105,8 +115,17 @@ func observationID(host vfs.PanelHost, side vfs.PanelSide) string {
 // local directory. The immediate branch/decorations path remains cache-only:
 // Observe itself returns before doing any filesystem work.
 func (plugin *Plugin) PanelNavigated(host vfs.PanelHost, snapshot vfs.PanelSnapshot) {
+	if host == nil {
+		return
+	}
+	observer := observationID(host, snapshot.Side)
+	// A cursor may enter several directories before the debounce expires. Drop
+	// the old request (and cancel its worker when nobody still needs it) before
+	// looking at the next location.
+	plugin.cancelAutomaticStatusObserver(observer)
+
 	directory, ok := localPanelDirectory(snapshot)
-	if !ok || host == nil {
+	if !ok {
 		return
 	}
 
@@ -123,10 +142,7 @@ func (plugin *Plugin) PanelNavigated(host vfs.PanelHost, snapshot vfs.PanelSnaps
 	// visit to this same folder.
 	if cached := discovery.Lookup(directory); cached.Found() {
 		plugin.followRepository(host, snapshot, cached)
-		plugin.scheduleStatusRefresh(cached.Repository, func() {
-			host.RefreshVFS(snapshot.VFS)
-			plugin.refreshStatusViews()
-		})
+		plugin.scheduleAutomaticStatusRefresh(cached.Repository, observer, plugin.refreshStatusAtDirectory(host, snapshot.Side, directory))
 	}
 
 	_, _ = discovery.Observe(context.Background(), observationID(host, snapshot.Side), directory, func(update DiscoveryUpdate) {
@@ -143,16 +159,11 @@ func (plugin *Plugin) PanelNavigated(host vfs.PanelHost, snapshot vfs.PanelSnaps
 			}
 			if update.Result.Found() {
 				plugin.followRepository(host, current, update.Result)
-				if plugin.cachedStatus(update.Result.Repository.Root) == nil {
-					plugin.scheduleStatusRefresh(update.Result.Repository, func() {
-						host.RefreshVFS(current.VFS)
-						plugin.refreshStatusViews()
-					})
-				} else {
-					// A delayed branch-only discovery update needs a redraw for the
-					// prompt, but must not rescan an index we just completed.
-					host.RefreshVFS(current.VFS)
-				}
+				plugin.scheduleAutomaticStatusRefresh(update.Result.Repository, observer, plugin.refreshStatusAtDirectory(host, snapshot.Side, update.Directory))
+				// Discovery may have changed only the branch prompt. A redraw is
+				// enough for cache-backed prompt segments; re-reading a filesystem
+				// panel here resets cursor state and performs unnecessary I/O.
+				vtui.FrameManager.Redraw()
 			} else {
 				plugin.clearFollowedRepository(host, current)
 			}
@@ -275,6 +286,9 @@ func (plugin *Plugin) cachedStatus(root string) *repositoryStatus {
 }
 
 func (plugin *Plugin) refreshStatus(ctx context.Context, repository Repository) error {
+	// An explicit status/action is authoritative and should not compete with a
+	// delayed decoration scan for the same worktree.
+	plugin.cancelAutomaticStatusRoot(repository.Root)
 	status, err := readRepositoryStatus(ctx, repository)
 	if err != nil {
 		return err
@@ -287,36 +301,138 @@ func (plugin *Plugin) refreshStatus(ctx context.Context, repository Repository) 
 	return nil
 }
 
-// scheduleStatusRefresh deduplicates scans per repository. A status result is
-// consumed by every panel inside the same worktree, so duplicating an index
-// scan for each panel would defeat the navigation debounce.
-func (plugin *Plugin) scheduleStatusRefresh(repository Repository, complete func()) {
+func (plugin *Plugin) refreshStatusLightweight(ctx context.Context, repository Repository) error {
+	status, err := readRepositoryStatusLightweight(ctx, repository)
+	if err != nil {
+		return err
+	}
+	plugin.mu.Lock()
+	if plugin.initialized && plugin.statuses != nil {
+		plugin.statuses[repository.Root] = status
+	}
+	plugin.mu.Unlock()
+	return nil
+}
+
+func (plugin *Plugin) automaticStatusFreshLocked(root string, now time.Time) bool {
+	status := plugin.statuses[root]
+	return status != nil && now.Sub(status.updatedAt) >= 0 && now.Sub(status.updatedAt) < automaticStatusFreshFor
+}
+
+func (plugin *Plugin) refreshStatusAtDirectory(host vfs.PanelHost, side vfs.PanelSide, directory string) func() {
+	return func() {
+		current := host.PanelSnapshot(side)
+		if !snapshotStillAtDirectory(current, directory) {
+			return
+		}
+		host.RefreshVFS(current.VFS)
+		plugin.refreshStatusViews()
+	}
+}
+
+// cancelAutomaticStatusObserver removes a panel's interest in every pending
+// low-priority scan. If it was the last observer, StatusContext is cancelled
+// promptly instead of consuming CPU after the user has navigated away.
+func (plugin *Plugin) cancelAutomaticStatusObserver(observer string) {
+	if observer == "" {
+		return
+	}
+	plugin.mu.Lock()
+	cancelers := make([]context.CancelFunc, 0)
+	for root, task := range plugin.statusTasks {
+		if task == nil || task.callbacks == nil {
+			continue
+		}
+		delete(task.callbacks, observer)
+		if len(task.callbacks) == 0 {
+			delete(plugin.statusTasks, root)
+			if task.cancel != nil {
+				cancelers = append(cancelers, task.cancel)
+			}
+		}
+	}
+	plugin.mu.Unlock()
+	for _, cancel := range cancelers {
+		cancel()
+	}
+}
+
+func (plugin *Plugin) cancelAutomaticStatusRoot(root string) {
+	plugin.mu.Lock()
+	task := plugin.statusTasks[root]
+	if task != nil {
+		delete(plugin.statusTasks, root)
+	}
+	plugin.mu.Unlock()
+	if task != nil && task.cancel != nil {
+		task.cancel()
+	}
+}
+
+// scheduleAutomaticStatusRefresh deduplicates and debounces cheap status
+// scans per repository. It deliberately uses only tracked/untracked state;
+// ignored trees and recursive submodules are available through Git: Status.
+// Each live panel replaces its own completion callback while it navigates.
+func (plugin *Plugin) scheduleAutomaticStatusRefresh(repository Repository, observer string, complete func()) {
+	if repository.Root == "" || observer == "" {
+		return
+	}
 	plugin.mu.Lock()
 	if !plugin.initialized || plugin.statusTasks == nil {
 		plugin.mu.Unlock()
 		return
 	}
-	if _, busy := plugin.statusTasks[repository.Root]; busy {
+	if plugin.automaticStatusFreshLocked(repository.Root, time.Now()) {
+		plugin.mu.Unlock()
+		return
+	}
+	if task := plugin.statusTasks[repository.Root]; task != nil {
+		if complete != nil {
+			task.callbacks[observer] = complete
+		}
 		plugin.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	plugin.statusTasks[repository.Root] = cancel
+	task := &statusRefreshTask{
+		cancel:    cancel,
+		callbacks: make(map[string]func()),
+	}
+	if complete != nil {
+		task.callbacks[observer] = complete
+	}
+	plugin.statusTasks[repository.Root] = task
 	plugin.mu.Unlock()
 
 	go func() {
-		_ = plugin.refreshStatus(ctx, repository)
+		timer := time.NewTimer(automaticStatusDelay)
+		defer timer.Stop()
+		completed := false
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+			completed = plugin.refreshStatusLightweight(ctx, repository) == nil
+		}
+
 		plugin.mu.Lock()
-		if current, ok := plugin.statusTasks[repository.Root]; ok {
-			// There is at most one scan per root. Removing the entry lets a
-			// later filesystem event schedule the next refresh.
-			_ = current
+		current, stillCurrent := plugin.statusTasks[repository.Root]
+		if stillCurrent && current == task {
 			delete(plugin.statusTasks, repository.Root)
 		}
 		alive := plugin.initialized
+		callbacks := make([]func(), 0, len(task.callbacks))
+		if completed && stillCurrent && current == task && ctx.Err() == nil {
+			for _, callback := range task.callbacks {
+				callbacks = append(callbacks, callback)
+			}
+		}
 		plugin.mu.Unlock()
-		if alive && ctx.Err() == nil && complete != nil {
-			vtui.FrameManager.PostTask(complete)
+		if alive && completed && ctx.Err() == nil {
+			for _, callback := range callbacks {
+				if callback != nil {
+					vtui.FrameManager.PostTask(callback)
+				}
+			}
 		}
 	}()
 }
