@@ -487,6 +487,13 @@ jobs:
         restore-keys: |
           portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-
 
+    - name: Cache the ARM64 baseline CMake tool
+      if: runner.os == 'Linux' && matrix.arch == 'arm64'
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CONAN_HOME }}/.f4-build-tools
+        key: portable-cmake-3.31.6-linux-arm64-v1
+
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
       shell: bash
@@ -508,6 +515,7 @@ jobs:
           ubuntu:18.04 \
           sh -c 'for path in \
             /workspace/.conan2-portable-linux-${{ matrix.arch }}/p \
+            /workspace/.conan2-portable-linux-${{ matrix.arch }}/.f4-build-tools \
             /workspace/build/qwindowkit-src \
             /workspace/build/qwindowkit-build \
             /workspace/build/qwindowkit-install \

@@ -58,14 +58,17 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.12 /opt/f4-build-venv
 # The current x86_64 CMake wheel still supports the Ubuntu 18.04 baseline,
 # while the aarch64 wheel for newer CMake releases is manylinux_2_28 and
-# fails before Conan can build anything.  CMake 3.27 is new enough for this
-# project (the host requires 3.23) and ships a manylinux2014 aarch64 wheel.
+# fails before Conan can build anything.  The manylinux2014 CMake 3.27 wheel
+# is our ARM bootstrap compiler; build the matching 3.31 release from source
+# with it before configuring the Qt host.  Qt 6.11's WHOLE_ARCHIVE graph
+# requires that newer CMake's link-feature handling.
 cmake_version=3.31.6
+bootstrap_cmake_version="${cmake_version}"
 if [[ "${TARGET_ARCH:-amd64}" == "arm64" ]]; then
-    cmake_version=3.27.9
+    bootstrap_cmake_version=3.27.9
 fi
 uv pip install --python /opt/f4-build-venv/bin/python \
-    'conan==2.29.1' "cmake==${cmake_version}" 'ninja==1.13.0'
+    'conan==2.29.1' "cmake==${bootstrap_cmake_version}" 'ninja==1.13.0'
 export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
@@ -73,6 +76,40 @@ export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
 TARGET_ARCH="${TARGET_ARCH:-amd64}"
 build_dir="qt/host/build-portable-linux-${TARGET_ARCH}"
 dist_dir="dist/f4-linux-${TARGET_ARCH}"
+
+cmake_executable="/opt/f4-build-venv/bin/cmake"
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    cmake_tools_dir="${CONAN_HOME}/.f4-build-tools"
+    cmake_install_dir="${cmake_tools_dir}/cmake-${cmake_version}"
+    cmake_executable="${cmake_install_dir}/bin/cmake"
+    if [[ ! -x "${cmake_executable}" ]]; then
+        cmake_archive="${cmake_tools_dir}/cmake-${cmake_version}.tar.gz"
+        cmake_source_dir="${cmake_tools_dir}/cmake-${cmake_version}-src"
+        cmake_build_dir="${cmake_tools_dir}/cmake-${cmake_version}-build"
+        mkdir -p "${cmake_tools_dir}" "${cmake_source_dir}"
+        if ! printf '%s  %s\n' \
+            '653427f0f5014750aafff22727fb2aa60c6c732ca91808cfb78ce22ddd9e55f0' \
+            "${cmake_archive}" | sha256sum --check --status 2>/dev/null
+        then
+            curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 \
+                --output "${cmake_archive}.new" \
+                "https://github.com/Kitware/CMake/releases/download/v${cmake_version}/cmake-${cmake_version}.tar.gz"
+            printf '%s  %s\n' \
+                '653427f0f5014750aafff22727fb2aa60c6c732ca91808cfb78ce22ddd9e55f0' \
+                "${cmake_archive}.new" | sha256sum --check --status
+            mv "${cmake_archive}.new" "${cmake_archive}"
+        fi
+        if [[ ! -f "${cmake_source_dir}/.f4-source-ready" ]]; then
+            tar -xzf "${cmake_archive}" --strip-components=1 -C "${cmake_source_dir}"
+            touch "${cmake_source_dir}/.f4-source-ready"
+        fi
+        /opt/f4-build-venv/bin/cmake -S "${cmake_source_dir}" -B "${cmake_build_dir}" \
+            -G 'Unix Makefiles' -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${cmake_install_dir}"
+        /opt/f4-build-venv/bin/cmake --build "${cmake_build_dir}" --parallel 4
+        /opt/f4-build-venv/bin/cmake --install "${cmake_build_dir}"
+    fi
+fi
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
@@ -130,7 +167,7 @@ for attempt in 1 2 3; do
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
-        -c tools.cmake:cmake_program=/opt/f4-build-venv/bin/cmake \
+        -c "tools.cmake:cmake_program=${cmake_executable}" \
         -c tools.system.package_manager:mode=install \
         -c tools.system.package_manager:sudo=False \
         --output-folder="${build_dir}"
@@ -153,7 +190,7 @@ touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
 
 bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
-cmake -S qt/host -B "${build_dir}" -G Ninja \
+"${cmake_executable}" -S qt/host -B "${build_dir}" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$PWD/${build_dir}/conan_toolchain.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install" \
@@ -164,7 +201,7 @@ cmake -S qt/host -B "${build_dir}" -G Ninja \
 # starve Qt's long-running AUTOMOC/moc --collect-json jobs and leave the job
 # alive without progress.  Four workers still parallelize the native build
 # without oversubscribing the runner.
-cmake --build "${build_dir}" --config Release --parallel 4
+"${cmake_executable}" --build "${build_dir}" --config Release --parallel 4
 export QML_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
 export QML2_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
