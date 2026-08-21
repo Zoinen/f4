@@ -564,6 +564,9 @@ jobs:
         $conanInstalled = $false
         $buildDir = "qt/host/build-portable-windows-${{ matrix.arch }}"
         $distDir = "dist/f4-windows-${{ matrix.arch }}"
+        # Qt's cross-build recipe needs native qsb and QML tools. Configure
+        # its build-context Qt tool requirement with the same modules so
+        # Qt6ShaderToolsTools and qmlcachegen exist for the ARM64 target.
         for ($attempt = 1; $attempt -le 3; $attempt++) {
           conan install qt/host --build=missing `
             -s:h arch=${{ matrix.conan_arch }} -s:h build_type=Release -s:h compiler.cppstd=20 `
@@ -571,6 +574,8 @@ jobs:
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
             -o:h "qt/*:shared=False" `
+            -o:b "qt/*:qtdeclarative=True" `
+            -o:b "qt/*:qtshadertools=True" `
             -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:h "qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows" `
             -o:h "libraw/*:shared=False" `
