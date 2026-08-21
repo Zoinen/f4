@@ -14,6 +14,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 )
 
 func TestStatusVFSOrdersStagedSeparatorAndUnstagedRows(t *testing.T) {
@@ -113,6 +114,49 @@ func TestStatusVFSFollowsOnlyItsLinkedSourcePanel(t *testing.T) {
 	if changed := view.follow(nil, vfs.PanelSnapshot{VFS: source}, LookupResult{State: LookupRepository, Repository: Repository{Root: "next", Branch: Branch{Name: "trunk"}}}); !changed {
 		t.Fatal("delayed branch update did not refresh the linked status view")
 	}
+}
+
+func TestStatusVFSArrowKeysDoNotReadSelection(t *testing.T) {
+	root := t.TempDir()
+	view := newStatusVFS(testStatusPlugin(root, nil), Repository{Root: root}, vfs.NewOSVFS(root))
+	t.Cleanup(func() { _ = view.Close() })
+	app := &statusSelectionSpyApp{
+		logControllerTestApp: logControllerTestApp{selected: []string{statusSeparatorName}},
+	}
+
+	for _, key := range []uint16{vtinput.VK_DOWN, vtinput.VK_UP} {
+		if handled := view.ProcessPanelKey(app, &vtinput.InputEvent{
+			Type:           vtinput.KeyEventType,
+			KeyDown:        true,
+			VirtualKeyCode: key,
+		}); handled {
+			t.Errorf("arrow key %d was unexpectedly handled", key)
+		}
+	}
+	if app.selectionReads != 0 {
+		t.Fatalf("arrow keys read the O(N) panel selection %d times, want 0", app.selectionReads)
+	}
+
+	if handled := view.ProcessPanelKey(app, &vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_F3,
+	}); !handled {
+		t.Fatal("F3 was not handled")
+	}
+	if app.selectionReads != 1 {
+		t.Fatalf("F3 selection reads = %d, want 1", app.selectionReads)
+	}
+}
+
+type statusSelectionSpyApp struct {
+	logControllerTestApp
+	selectionReads int
+}
+
+func (app *statusSelectionSpyApp) GetSelectedNames() []string {
+	app.selectionReads++
+	return app.logControllerTestApp.GetSelectedNames()
 }
 
 func TestStatusVFSEditDiffRestoresBaseAndRollsBackInvalidRewrite(t *testing.T) {

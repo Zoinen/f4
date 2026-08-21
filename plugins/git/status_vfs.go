@@ -261,22 +261,21 @@ func (view *StatusVFS) ProcessPanelKey(app vfs.App, event *vtinput.InputEvent) b
 	if event == nil || event.Type != vtinput.KeyEventType || !event.KeyDown || event.ControlKeyState != 0 {
 		return false
 	}
-	names := app.GetSelectedNames()
 	switch event.VirtualKeyCode {
 	case vtinput.VK_F2:
 		view.beginCommit(app)
 		return true
 	case vtinput.VK_F3:
-		view.showDiff(app, names)
+		view.showDiff(app, app.GetSelectedNames())
 		return true
 	case vtinput.VK_F4:
-		view.editDiff(app, names)
+		view.editDiff(app, app.GetSelectedNames())
 		return true
 	case vtinput.VK_F7:
 		view.openLog(app)
 		return true
 	case vtinput.VK_SPACE:
-		view.toggleStage(app, names)
+		view.toggleStage(app, app.GetSelectedNames())
 		return true
 	default:
 		return false
