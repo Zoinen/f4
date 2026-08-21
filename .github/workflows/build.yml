@@ -561,6 +561,40 @@ jobs:
         conan export $xzRecipeCopy --name=xz_utils --version=5.8.3
         if ($LASTEXITCODE -ne 0) { throw "Unable to export the mirrored xz recipe" }
 
+        # Qt 6.11's ARM64 cross-build invokes the native qmldom tool. Conan
+        # Center's package cleanup currently removes its Qt6QmlTools CMake
+        # package, although the executable itself is built and installed.
+        # Keep that package in the build-context Qt package only; it lets the
+        # ARM64 configure phase resolve Qt6::qmldom through QT_HOST_PATH.
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          conan download qt/6.11.1 --only-recipe --remote=conancenter
+          if ($LASTEXITCODE -ne 0) { throw "Unable to download the Qt recipe" }
+          $qtRecipe = (conan cache path qt/6.11.1 | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to locate the Qt recipe" }
+          $qtRecipeCopy = Join-Path $env:RUNNER_TEMP "f4-qt-recipe"
+          Remove-Item -Recurse -Force $qtRecipeCopy -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $qtRecipeCopy | Out-Null
+          Copy-Item "$qtRecipe/conanfile.py", "$qtRecipe/conandata.yml", `
+            "$qtRecipe/qtmodules6.11.1.conf" $qtRecipeCopy
+          $qtRecipeFile = Join-Path $qtRecipeCopy "conanfile.py"
+          $qtRecipeText = Get-Content $qtRecipeFile -Raw
+          $qtRecipePatched = $qtRecipeText.Replace(
+            'excludes="Qt6HostInfoConfig.cmake"',
+            'excludes=["Qt6HostInfoConfig.cmake", "Qt6QmlToolsConfig.cmake"]'
+          ).Replace(
+            'if m != "Qt6HostInfo":',
+            'if m not in ["Qt6HostInfo", "Qt6QmlTools"]:'
+          )
+          $qtRecipePatched | Set-Content $qtRecipeFile -NoNewline
+          if (!(Select-String -Quiet -Path $qtRecipeFile -SimpleMatch `
+            '"Qt6QmlToolsConfig.cmake"') -or !(Select-String -Quiet `
+            -Path $qtRecipeFile -SimpleMatch '["Qt6HostInfo", "Qt6QmlTools"]')) {
+            throw "The Qt QmlTools recipe patch was not installed"
+          }
+          conan export $qtRecipeCopy --name=qt --version=6.11.1
+          if ($LASTEXITCODE -ne 0) { throw "Unable to export the patched Qt recipe" }
+        }
+
         $conanInstalled = $false
         $buildDir = "qt/host/build-portable-windows-${{ matrix.arch }}"
         $distDir = "dist/f4-windows-${{ matrix.arch }}"
