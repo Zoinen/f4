@@ -73,6 +73,26 @@ export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
 export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
+
+# Always reduce Conan's cache to finished packages before returning to the
+# GitHub runner. This trap runs after a failed conan install as well, so the
+# workflow can persist expensive completed Qt dependencies instead of losing
+# them with the failed build's source and object trees.
+checkpoint_conan_packages() {
+    build_status=$?
+    trap - EXIT
+    set +e
+    if [[ -d "${CONAN_HOME}/p" ]] && conan cache clean '*' \
+        --source --build --temp --backup-sources
+    then
+        touch "${CONAN_HOME}/p/.f4-package-cache-ready"
+    else
+        echo "warning: unable to prepare Conan package checkpoint" >&2
+    fi
+    exit "${build_status}"
+}
+trap checkpoint_conan_packages EXIT
+
 TARGET_ARCH="${TARGET_ARCH:-amd64}"
 build_dir="qt/host/build-portable-linux-${TARGET_ARCH}"
 dist_dir="dist/f4-linux-${TARGET_ARCH}"

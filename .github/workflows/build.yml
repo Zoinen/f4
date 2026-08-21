@@ -474,18 +474,18 @@ jobs:
       with:
         arch: ${{ matrix.msvc_arch }}
 
-    - name: Cache the portable native dependency graph
-      uses: actions/cache@v4
+    - name: Restore packaged portable native dependencies
+      id: portable-conan-cache
+      uses: actions/cache/restore@v4
       with:
-        path: |
-          ${{ env.CONAN_HOME }}/p
-          build/qwindowkit-src
-          build/qwindowkit-build
-          build/qwindowkit-install
-          qt/host/build-portable-${{ matrix.platform }}-${{ matrix.arch }}
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        # Conan package folders are reusable after an interrupted build; its
+        # source and object trees are not. Keep this deliberately narrow so
+        # an ARM Qt build can checkpoint within GitHub's cache quota.
+        path: ${{ env.CONAN_HOME }}/p
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
         restore-keys: |
-          portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-checkpoint-
 
     - name: Cache the ARM64 baseline CMake tool
       if: runner.os == 'Linux' && matrix.arch == 'arm64'
@@ -678,36 +678,30 @@ jobs:
           throw "Portable Windows artifact must contain only f4.exe"
         }
 
-    - name: Prune Linux Conan build trees before cache save
-      if: always() && runner.os == 'Linux' && hashFiles(format('qt/host/build-portable-linux-{0}/.f4-conan-ready', matrix.arch)) != ''
-      shell: bash
-      run: |
-        # Keep package and build state intact for Conan warm installs; source
-        # trees are disposable and can be regenerated from the recipe.
-        find "$CONAN_HOME/p" -type d -name s -prune -exec rm -rf {} +
-
-    - name: Prune Windows Conan build trees before cache save
-      if: always() && runner.os == 'Windows' && hashFiles(format('qt/host/build-portable-windows-{0}/.f4-conan-ready', matrix.arch)) != ''
+    - name: Prune Windows Conan cache to reusable packages
+      if: always() && !cancelled() && runner.os == 'Windows'
       shell: pwsh
       run: |
-        $roots = Get-ChildItem -LiteralPath (Join-Path $env:CONAN_HOME 'p') -Directory -Recurse |
-          Where-Object { $_.Name -eq 's' } |
-          Sort-Object FullName -Descending
-        foreach ($root in $roots) {
-          Remove-Item -LiteralPath $root.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        $packageRoot = Join-Path $env:CONAN_HOME 'p'
+        if (Test-Path -LiteralPath $packageRoot) {
+          conan cache clean "*" --source --build --temp --backup-sources
+          if ($LASTEXITCODE -ne 0) { throw "Unable to prune the Conan cache" }
+          New-Item -ItemType File -Force (Join-Path $packageRoot '.f4-package-cache-ready') | Out-Null
         }
 
-    - name: Preserve the completed static Qt dependency graph
-      if: always() && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
+    - name: Save interrupted Conan package checkpoint
+      if: always() && !cancelled() && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) == ''
       uses: actions/cache/save@v4
       with:
-        path: |
-          ${{ env.CONAN_HOME }}/p
-          build/qwindowkit-src
-          build/qwindowkit-build
-          build/qwindowkit-install
-          qt/host/build-portable-${{ matrix.platform }}-${{ matrix.arch }}
-        key: portable-qt-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v4-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        path: ${{ env.CONAN_HOME }}/p
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+
+    - name: Save complete Conan package graph
+      if: always() && !cancelled() && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ env.CONAN_HOME }}/p
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4
