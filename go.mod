@@ -59,10 +59,10 @@ require (
 // coordinated development and is intentionally outside this repository.
 replace github.com/go-git/go-git/v6 => github.com/Zoinen/go-git/v6 v6.0.0-alpha.5.0.20260821073535-9bf6a3c3f031
 
-// Keep the upstream module path while the Win32 console viewport fix is
-// reviewed upstream. The immutable fork version prevents every frame flush
-// from generating another WINDOW_BUFFER_SIZE_EVENT.
-replace github.com/unxed/vtui v0.1.237 => github.com/Zoinen/vtui v0.1.238-0.20260821114500-eaef51bfaa55
+// Keep the upstream module path while the Win32 console fixes are reviewed
+// upstream. The immutable fork version avoids redundant viewport events and
+// publishes only the cells changed by an ordinary frame.
+replace github.com/unxed/vtui v0.1.237 => github.com/Zoinen/vtui v0.1.238-0.20260821142934-839e656a8622
 
 require (
 	cloud.google.com/go/auth v0.18.0 // indirect
