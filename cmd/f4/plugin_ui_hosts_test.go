@@ -5,10 +5,63 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
+
+func TestPluginNotificationFromUITaskDoesNotSelfDeadlock(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := &PanelsFrame{}
+
+	// FrameManager is process-global and some earlier tests leave harmless
+	// redraw/completion work behind.  None of that belongs to this assertion;
+	// discard it instead of accidentally executing an unrelated closure.
+	for {
+		select {
+		case <-vtui.FrameManager.TaskChan:
+			continue
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	callbackReturned := make(chan struct{})
+	go func() {
+		// This is the body that a plugin UI task executes.  Running it in a
+		// goroutine lets the test time out cleanly if Notify ever regresses to
+		// the synchronous Message implementation.
+		pf.Notify(" Git ", "background discovery")
+		close(callbackReturned)
+	}()
+
+	select {
+	case <-callbackReturned:
+		// The result-free notification must return before its dialog task runs.
+	case <-time.After(time.Second):
+		t.Fatal("plugin UI task blocked waiting for its own notification dialog")
+	}
+
+	// Do not execute process-global tasks here: another test's asynchronous
+	// completion may race into the same queue. Discard everything already
+	// accepted by the dispatcher until it has been quiet briefly, which also
+	// removes the notification closure posted above.
+	idle := time.NewTimer(20 * time.Millisecond)
+	defer idle.Stop()
+	for {
+		select {
+		case <-vtui.FrameManager.TaskChan:
+			if !idle.Stop() {
+				<-idle.C
+			}
+			idle.Reset(20 * time.Millisecond)
+		case <-idle.C:
+			return
+		}
+	}
+}
 
 type promptSegmentProviderFunc func(vfs.VFS, string) (vfs.PromptSegment, bool)
 

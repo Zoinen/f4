@@ -53,7 +53,7 @@ func (view *LogVFS) HandlePanelAction(app vfs.App, action vfs.PanelAction, paths
 		view.editOverlay(app, paths[0])
 		return true
 	case vfs.PanelActionCreate, vfs.PanelActionDelete:
-		app.Message(" Git log ", "Git history is read-only; F4 creates a session-only overlay for a historical file.", []string{"&Ok"})
+		notify(app, " Git log ", "Git history is read-only; F4 creates a session-only overlay for a historical file.")
 		return true
 	default:
 		return false
@@ -63,7 +63,7 @@ func (view *LogVFS) HandlePanelAction(app vfs.App, action vfs.PanelAction, paths
 func (view *LogVFS) editSelectedOverlay(app vfs.App) {
 	names := app.GetSelectedNames()
 	if len(names) == 0 {
-		app.Message(" Git log ", "Select a historical text file first.", []string{"&Ok"})
+		notify(app, " Git log ", "Select a historical text file first.")
 		return
 	}
 	view.editOverlay(app, view.Join(view.GetPath(), names[0]))
@@ -72,7 +72,7 @@ func (view *LogVFS) editSelectedOverlay(app vfs.App) {
 func (view *LogVFS) editOverlay(app vfs.App, virtualPath string) {
 	editor, supported := app.(vfs.TextEditorHost)
 	if !supported {
-		app.Message(" Git log ", "This host cannot open a historical overlay editor.", []string{"&Ok"})
+		notify(app, " Git log ", "This host cannot open a historical overlay editor.")
 		return
 	}
 	var result struct {
@@ -99,7 +99,7 @@ func (view *LogVFS) editOverlay(app vfs.App, virtualPath string) {
 	}, func(err error) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				app.Message(" Git history ", fmt.Sprintf("Cannot open historical file:\n%v", err), []string{"&Ok"})
+				notify(app, " Git history ", fmt.Sprintf("Cannot open historical file:\n%v", err))
 			}
 			return
 		}
@@ -118,7 +118,7 @@ func (view *LogVFS) editOverlay(app vfs.App, virtualPath string) {
 				return nil
 			},
 		}); openErr != nil {
-			app.Message(" Git history ", fmt.Sprintf("Cannot open overlay editor:\n%v", openErr), []string{"&Ok"})
+			notify(app, " Git history ", fmt.Sprintf("Cannot open overlay editor:\n%v", openErr))
 		}
 	})
 }

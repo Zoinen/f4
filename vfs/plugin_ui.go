@@ -53,6 +53,18 @@ type PanelNavigationHost interface {
 	RegisterPanelNavigationProvider(PanelNavigationProvider) (Registration, error)
 }
 
+// NotificationHost is an optional, result-free message capability. Notify
+// must enqueue the dialog for the host UI goroutine and return without waiting
+// for the user to dismiss it. Plugins which need a button result must continue
+// to use App.Message instead.
+//
+// Keeping notifications separate from App.Message prevents a plugin callback
+// that already runs on the UI goroutine from posting a dialog and then waiting
+// for that same goroutine to process it.
+type NotificationHost interface {
+	Notify(title, message string)
+}
+
 // PromptSegment is a cache-only addition to the interactive command prompt.
 // Text must be small and already available when Segment is called.  The host
 // resolves Color dynamically at render time, so theme changes do not leave

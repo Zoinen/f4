@@ -3505,6 +3505,15 @@ func (pf *PanelsFrame) Message(title, msg string, buttons []string) int {
 	return <-resChan
 }
 
+// Notify implements vfs.NotificationHost for result-free plugin messages.
+// Unlike Message, it never waits for the dialog result, so it is safe when a
+// plugin command or completion callback is already running on the UI goroutine.
+func (pf *PanelsFrame) Notify(title, msg string) {
+	vtui.FrameManager.PostTask(func() {
+		vtui.ShowMessage(title, msg, []string{"&Ok"})
+	})
+}
+
 func (pf *PanelsFrame) InputBox(title, prompt, history string, callback func(string)) {
 	vtui.FrameManager.PostTask(func() {
 		vtui.InputBox(title, prompt, history, callback)

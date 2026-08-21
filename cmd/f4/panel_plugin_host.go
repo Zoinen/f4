@@ -204,3 +204,4 @@ func (pf *PanelsFrame) RefreshVFS(filesystem vfs.VFS) {
 }
 
 var _ vfs.PanelHost = (*PanelsFrame)(nil)
+var _ vfs.NotificationHost = (*PanelsFrame)(nil)

@@ -440,13 +440,13 @@ func (plugin *Plugin) scheduleAutomaticStatusRefresh(repository Repository, obse
 func (plugin *Plugin) openStatus(app vfs.App) {
 	host, ok := app.(vfs.PanelHost)
 	if !ok || host == nil {
-		app.Message(" Git ", "This host cannot open a Git virtual panel.", []string{"&Ok"})
+		notify(app, " Git ", "This host cannot open a Git virtual panel.")
 		return
 	}
 	snapshot := host.PanelSnapshot(vfs.PanelActive)
 	directory, local := localPanelDirectory(snapshot)
 	if !local {
-		app.Message(" Git ", "Git status is available only for a local filesystem panel.", []string{"&Ok"})
+		notify(app, " Git ", "Git status is available only for a local filesystem panel.")
 		return
 	}
 	plugin.mu.RLock()
@@ -458,7 +458,7 @@ func (plugin *Plugin) openStatus(app vfs.App) {
 	result := discovery.Lookup(directory)
 	if !result.Found() {
 		plugin.PanelNavigated(host, snapshot)
-		app.Message(" Git ", "Git repository detection is running in the background. Try Git: Status again once the prompt updates.", []string{"&Ok"})
+		notify(app, " Git ", "Git repository detection is running in the background. Try Git: Status again once the prompt updates.")
 		return
 	}
 
@@ -472,7 +472,7 @@ func (plugin *Plugin) openStatus(app vfs.App) {
 	}, func(err error) {
 		if err != nil {
 			if err != context.Canceled {
-				app.Message(" Git status ", fmt.Sprintf("Cannot read Git status:\n%v", err), []string{"&Ok"})
+				notify(app, " Git status ", fmt.Sprintf("Cannot read Git status:\n%v", err))
 			}
 			return
 		}
@@ -482,7 +482,7 @@ func (plugin *Plugin) openStatus(app vfs.App) {
 		current := host.PanelSnapshot(vfs.PanelActive)
 		if !sameVFS(current.VFS, snapshot.VFS) || current.Path != snapshot.Path {
 			plugin.PanelNavigated(host, current)
-			app.Message(" Git status ", "The source panel changed while Git status was loading. Run Git: Status for the current directory.", []string{"&Ok"})
+			notify(app, " Git status ", "The source panel changed while Git status was loading. Run Git: Status for the current directory.")
 			return
 		}
 		view := newStatusVFS(plugin, result.Repository, snapshot.VFS, host)
@@ -490,7 +490,7 @@ func (plugin *Plugin) openStatus(app vfs.App) {
 		if err := host.OpenPassiveVFS(view); err != nil {
 			plugin.unregisterStatusView(view)
 			_ = view.Close()
-			app.Message(" Git status ", fmt.Sprintf("Cannot open Git panel:\n%v", err), []string{"&Ok"})
+			notify(app, " Git status ", fmt.Sprintf("Cannot open Git panel:\n%v", err))
 			return
 		}
 	})

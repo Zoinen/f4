@@ -247,7 +247,7 @@ func (view *StatusVFS) HandlePanelAction(app vfs.App, action vfs.PanelAction, pa
 		view.editDiff(app, pathsToNames(paths))
 		return true
 	case vfs.PanelActionCreate, vfs.PanelActionDelete:
-		app.Message(" Git ", "Use Git commands in the status panel; this virtual view is read-only.", []string{"&Ok"})
+		notify(app, " Git ", "Use Git commands in the status panel; this virtual view is read-only.")
 		return true
 	default:
 		return false
@@ -399,7 +399,7 @@ func (view *StatusVFS) rowsForNames(names []string) []statusRow {
 func (view *StatusVFS) toggleStage(app vfs.App, names []string) {
 	rows := view.rowsForNames(names)
 	if len(rows) == 0 {
-		app.Message(" Git ", "Select a staged or unstaged file first.", []string{"&Ok"})
+		notify(app, " Git ", "Select a staged or unstaged file first.")
 		return
 	}
 	layer := rows[0].layer
@@ -410,11 +410,11 @@ func (view *StatusVFS) toggleStage(app vfs.App, names []string) {
 			continue
 		}
 		if row.layer != layer {
-			app.Message(" Git ", "Select one homogeneous staged or unstaged group.", []string{"&Ok"})
+			notify(app, " Git ", "Select one homogeneous staged or unstaged group.")
 			return
 		}
 		if !row.editable {
-			app.Message(" Git ", "Conflicts and ignored paths are read-only in this Git status view.", []string{"&Ok"})
+			notify(app, " Git ", "Conflicts and ignored paths are read-only in this Git status view.")
 			return
 		}
 		if _, duplicate := seen[row.entry.Path]; !duplicate {
@@ -427,7 +427,7 @@ func (view *StatusVFS) toggleStage(app vfs.App, names []string) {
 	}
 	repository, ok := view.repositorySnapshot()
 	if !ok {
-		app.Message(" Git ", "The linked repository is no longer available.", []string{"&Ok"})
+		notify(app, " Git ", "The linked repository is no longer available.")
 		return
 	}
 	verb, title := "Stage", " Git stage "
@@ -461,7 +461,7 @@ func (view *StatusVFS) toggleStage(app vfs.App, names []string) {
 	}, func(err error) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				app.Message(" Git ", fmt.Sprintf("%s failed:\n%v", verb, err), []string{"&Ok"})
+				notify(app, " Git ", fmt.Sprintf("%s failed:\n%v", verb, err))
 			}
 			return
 		}
@@ -480,7 +480,7 @@ func (view *StatusVFS) beginCommit(app vfs.App) {
 			},
 		})
 		if err != nil {
-			app.Message(" Git commit ", fmt.Sprintf("Cannot open commit dialog:\n%v", err), []string{"&Ok"})
+			notify(app, " Git commit ", fmt.Sprintf("Cannot open commit dialog:\n%v", err))
 		}
 		return
 	}
@@ -496,7 +496,7 @@ func (view *StatusVFS) beginCommit(app vfs.App) {
 			return view.commit(ctx, message, false, app)
 		}, func(err error) {
 			if err != nil && !errors.Is(err, context.Canceled) {
-				app.Message(" Git commit ", fmt.Sprintf("Cannot commit:\n%v", err), []string{"&Ok"})
+				notify(app, " Git commit ", fmt.Sprintf("Cannot commit:\n%v", err))
 			}
 		})
 	})
@@ -543,12 +543,12 @@ func (view *StatusVFS) commit(ctx context.Context, message string, sign bool, ap
 func (view *StatusVFS) showDiff(app vfs.App, names []string) {
 	layer, paths, err := view.diffSelection(names)
 	if err != nil {
-		app.Message(" Git diff ", err.Error(), []string{"&Ok"})
+		notify(app, " Git diff ", err.Error())
 		return
 	}
 	repository, ok := view.repositorySnapshot()
 	if !ok {
-		app.Message(" Git diff ", "The linked repository is no longer available.", []string{"&Ok"})
+		notify(app, " Git diff ", "The linked repository is no longer available.")
 		return
 	}
 	var result struct {
@@ -569,7 +569,7 @@ func (view *StatusVFS) showDiff(app vfs.App, names []string) {
 	}, func(err error) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				app.Message(" Git diff ", fmt.Sprintf("Cannot build diff:\n%v", err), []string{"&Ok"})
+				notify(app, " Git diff ", fmt.Sprintf("Cannot build diff:\n%v", err))
 			}
 			return
 		}
@@ -577,7 +577,7 @@ func (view *StatusVFS) showDiff(app vfs.App, names []string) {
 		patch := result.patch
 		result.Unlock()
 		if patch == "" {
-			app.Message(" Git diff ", "No textual changes for this layer.", []string{"&Ok"})
+			notify(app, " Git diff ", "No textual changes for this layer.")
 			return
 		}
 		if editor, supported := app.(vfs.TextEditorHost); supported {
@@ -586,27 +586,27 @@ func (view *StatusVFS) showDiff(app vfs.App, names []string) {
 				DisplayTitle: "Git diff — " + diffLayerLabel(layer),
 				Content:      []byte(patch),
 			}); openErr != nil {
-				app.Message(" Git diff ", fmt.Sprintf("Cannot open diff viewer:\n%v", openErr), []string{"&Ok"})
+				notify(app, " Git diff ", fmt.Sprintf("Cannot open diff viewer:\n%v", openErr))
 			}
 			return
 		}
-		app.Message(" Git diff ", patch, []string{"&Ok"})
+		notify(app, " Git diff ", patch)
 	})
 }
 
 func (view *StatusVFS) editDiff(app vfs.App, names []string) {
 	layer, paths, err := view.diffSelection(names)
 	if err != nil {
-		app.Message(" Git edit diff ", err.Error(), []string{"&Ok"})
+		notify(app, " Git edit diff ", err.Error())
 		return
 	}
 	repository, ok := view.repositorySnapshot()
 	if !ok {
-		app.Message(" Git edit diff ", "The linked repository is no longer available.", []string{"&Ok"})
+		notify(app, " Git edit diff ", "The linked repository is no longer available.")
 		return
 	}
 	if _, supported := app.(vfs.TextEditorHost); !supported {
-		app.Message(" Git edit diff ", "This host cannot open a patch editor.", []string{"&Ok"})
+		notify(app, " Git edit diff ", "This host cannot open a patch editor.")
 		return
 	}
 	var result struct {
@@ -630,7 +630,7 @@ func (view *StatusVFS) editDiff(app vfs.App, names []string) {
 	}, func(err error) {
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				app.Message(" Git edit diff ", fmt.Sprintf("Cannot prepare editable patch:\n%v", err), []string{"&Ok"})
+				notify(app, " Git edit diff ", fmt.Sprintf("Cannot prepare editable patch:\n%v", err))
 			}
 			return
 		}
@@ -638,7 +638,7 @@ func (view *StatusVFS) editDiff(app vfs.App, names []string) {
 		patch := result.patch
 		result.Unlock()
 		if patch == "" {
-			app.Message(" Git edit diff ", "No textual changes for this layer.", []string{"&Ok"})
+			notify(app, " Git edit diff ", "No textual changes for this layer.")
 			return
 		}
 		editor := app.(vfs.TextEditorHost)
@@ -693,7 +693,7 @@ func (view *StatusVFS) editDiff(app vfs.App, names []string) {
 				return nil
 			},
 		}); openErr != nil {
-			app.Message(" Git edit diff ", fmt.Sprintf("Cannot open patch editor:\n%v", openErr), []string{"&Ok"})
+			notify(app, " Git edit diff ", fmt.Sprintf("Cannot open patch editor:\n%v", openErr))
 		}
 	})
 }
@@ -773,16 +773,16 @@ func editableUnifiedPatch(patch string) bool {
 func (view *StatusVFS) openLog(app vfs.App) {
 	host, supported := app.(vfs.PanelHost)
 	if !supported || host == nil {
-		app.Message(" Git log ", "This host cannot open a Git history virtual panel.", []string{"&Ok"})
+		notify(app, " Git log ", "This host cannot open a Git history virtual panel.")
 		return
 	}
 	repository, ok := view.repositorySnapshot()
 	if !ok {
-		app.Message(" Git log ", "The linked repository is no longer available.", []string{"&Ok"})
+		notify(app, " Git log ", "The linked repository is no longer available.")
 		return
 	}
 	if err := host.OpenPassiveVFS(NewLogVFS(repository)); err != nil {
-		app.Message(" Git log ", fmt.Sprintf("Cannot open Git history:\n%v", err), []string{"&Ok"})
+		notify(app, " Git log ", fmt.Sprintf("Cannot open Git history:\n%v", err))
 	}
 }
 
