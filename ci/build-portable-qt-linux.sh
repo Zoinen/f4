@@ -91,7 +91,7 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
             '653427f0f5014750aafff22727fb2aa60c6c732ca91808cfb78ce22ddd9e55f0' \
             "${cmake_archive}" | sha256sum --check --status 2>/dev/null
         then
-            curl --fail --location --retry 5 --retry-all-errors --connect-timeout 30 \
+            curl --fail --location --retry 5 --connect-timeout 30 \
                 --output "${cmake_archive}.new" \
                 "https://github.com/Kitware/CMake/releases/download/v${cmake_version}/cmake-${cmake_version}.tar.gz"
             printf '%s  %s\n' \
