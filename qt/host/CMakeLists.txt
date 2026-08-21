@@ -240,11 +240,13 @@ if(F4_PORTABLE_STATIC)
       MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   elseif(UNIX AND NOT APPLE)
     target_compile_options(f4-qt-host PRIVATE
-      -ffunction-sections -fdata-sections -fstack-protector-strong)
+      -fPIE -ffunction-sections -fdata-sections -fstack-protector-strong)
     target_link_options(f4-qt-host PRIVATE
+      -pie
       -static-libstdc++
       -static-libgcc
       -Wl,--gc-sections
+      -Wl,--exclude-libs,ALL
       -Wl,-z,relro,-z,now,-z,noexecstack)
   endif()
 endif()

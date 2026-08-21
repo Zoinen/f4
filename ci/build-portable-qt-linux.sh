@@ -158,23 +158,26 @@ conan export "${fontconfig_recipe_copy}" --name=fontconfig --version=2.15.0
 # it too. Once this container has completed successfully, persist a marker in
 # the cached package graph and let Conan reuse those baseline-built packages.
 target_packages=(
-    brotli bzip2 double-conversion elfutils expat fontconfig freetype glib
+    brotli bzip2 double-conversion expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
     libmount libpng libraw libselinux libtiff libwebp libxml2 md4c msgpack-cxx
     openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
 )
-baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-ready"
+baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
 if [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
     for package in "${target_packages[@]}"; do
         conan_build_args+=("--build=${package}/*")
     done
-    echo "No glibc 2.27 package marker found; forcing baseline rebuild"
+    echo "No glibc 2.27 / GCC 11 package marker found; forcing baseline rebuild"
 else
-    echo "Reusing cached glibc 2.27 Conan package graph"
+    echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
 
+# GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
+# host neither builds nor uses that tool, so omit the entire expensive elfutils
+# subtree from the portable graph.
 for attempt in 1 2 3; do
     if conan install qt/host "${conan_build_args[@]}" \
         -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
@@ -184,6 +187,7 @@ for attempt in 1 2 3; do
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
         -o:h 'qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows' \
+        -o:h 'glib/*:with_elf=False' \
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
@@ -231,7 +235,8 @@ host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
 # patchelf 0.9, which removes DT_NEEDED but leaves version-needed metadata.
 set +e
-QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
+timeout --foreground --kill-after=30s 120s env \
+    QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software "$host" \
     --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke \
     --f4-ext-cols=100 --f4-ext-rows=30 >/tmp/f4-qt-host-smoke.log 2>&1
 smoke_status=$?

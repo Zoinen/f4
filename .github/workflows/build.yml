@@ -435,23 +435,30 @@ jobs:
             arch: amd64
             goarch: amd64
             conan_arch: x86_64
+            # Conan package IDs do not record the libc they were compiled
+            # against. Keep this compatibility contract in the cache namespace
+            # rather than allowing a newer runner's packages to leak in.
+            cache_contract: glibc-2.27-gcc11
           - runner: ubuntu-24.04-arm
             platform: linux
             arch: arm64
             goarch: arm64
             conan_arch: armv8
+            cache_contract: glibc-2.27-gcc11
           - runner: windows-2022
             platform: windows
             arch: amd64
             goarch: amd64
             conan_arch: x86_64
             msvc_arch: amd64
+            cache_contract: msvc-v143-static
           - runner: windows-2022
             platform: windows
             arch: arm64
             goarch: arm64
             conan_arch: armv8
             msvc_arch: amd64_arm64
+            cache_contract: msvc-v143-static
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
 
@@ -482,10 +489,10 @@ jobs:
         # source and object trees are not. Keep this deliberately narrow so
         # an ARM Qt build can checkpoint within GitHub's cache quota.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
         restore-keys: |
-          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-
-          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-checkpoint-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
 
     - name: Cache the ARM64 baseline CMake tool
       if: runner.os == 'Linux' && matrix.arch == 'arm64'
@@ -654,12 +661,15 @@ jobs:
         pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $qtHost
         $env:QT_QPA_PLATFORM = "offscreen"
         $env:QSG_RHI_BACKEND = "software"
-        $PSNativeCommandUseErrorActionPreference = $false
         $env:F4_QT_HOST_STARTUP_SMOKE_ONLY = "1"
-        & $qtHost --f4-ext-connect=127.0.0.1:1 --f4-ext-nonce=ci-smoke `
-          --f4-ext-cols=100 --f4-ext-rows=30
-        $smokeStatus = $LASTEXITCODE
-        $PSNativeCommandUseErrorActionPreference = $true
+        $smokeProcess = Start-Process -FilePath $qtHost -NoNewWindow -PassThru `
+          -ArgumentList @("--f4-ext-connect=127.0.0.1:1", "--f4-ext-nonce=ci-smoke", `
+            "--f4-ext-cols=100", "--f4-ext-rows=30")
+        if (!$smokeProcess.WaitForExit(120000)) {
+          Stop-Process -Id $smokeProcess.Id -Force
+          throw "Static Qt host did not finish its disconnected smoke test within 120 seconds"
+        }
+        $smokeStatus = $smokeProcess.ExitCode
         if ($smokeStatus -ne 2) {
           throw "Disconnected static Qt host returned $smokeStatus, expected 2"
         }
@@ -690,18 +700,21 @@ jobs:
         }
 
     - name: Save interrupted Conan package checkpoint
-      if: always() && !cancelled() && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) == ''
+      # Actions caches are immutable. A checkpoint must receive a new key on
+      # each failed run, otherwise restoring one partial graph would prevent
+      # the next run from saving the packages it finishes afterwards.
+      if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) == ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
-      if: always() && !cancelled() && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
+      if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-v5-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4

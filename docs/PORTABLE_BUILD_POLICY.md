@@ -48,6 +48,21 @@ single-file runtime contract.
   X11, Wayland, and representative Intel/AMD/NVIDIA systems before broadening a
   release claim.
 
+## Native dependency cache contract
+
+- A binary-package cache is not evidence of the libc baseline: Conan package
+  IDs do not encode the glibc version used while compiling. Linux cache keys
+  must therefore include the complete baseline and compiler contract
+  (`glibc-2.27-gcc11`); Windows keys must include its static MSVC contract.
+- Persist only completed Conan package folders. Remove recipe sources, build
+  trees, temporary files, and backup sources before saving a checkpoint. This
+  keeps the cache small and prevents stale source trees from masking recipe or
+  source-mirror changes.
+- On every non-cancelled exit, including a failed `conan install`, save an
+  explicit package-only checkpoint. Cache objects are immutable, so each
+  interrupted checkpoint needs a fresh key; future jobs restore the newest
+  compatible checkpoint before continuing the graph.
+
 ## Windows contract
 
 - Build the Go launcher with `CGO_ENABLED=0`.
@@ -92,7 +107,8 @@ A portable artifact is complete only when CI proves all of the following:
 1. the native dependency graph was built in the selected baseline environment;
 2. the Qt host passes its C++/QML tests and an installed-tree-independent smoke
    test;
-3. static-dependency and ABI audits pass;
+3. static-dependency, ABI, and Linux hardening audits (PIE, RELRO, BIND_NOW,
+   non-executable stack) pass;
 4. the generated compressed payload is embedded into a `CGO_ENABLED=0` Go
    launcher;
 5. extraction tests prove first-run materialization, reuse, concurrency safety,
