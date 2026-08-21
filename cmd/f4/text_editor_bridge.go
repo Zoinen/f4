@@ -90,6 +90,7 @@ func (pf *PanelsFrame) OpenTextEditor(request vfs.TextEditorRequest) error {
 	// create-new buffer must remain dirty until it is actually saved.
 	editor := newEditorView(piecetable.New(content), filesystem, path, false)
 	editor.DisplayTitle = request.DisplayTitle
+	editor.onSave = request.OnSave
 	editor.modified = request.Modified
 	editor.unsavedBaseline = request.Modified
 	editor.createNewTarget = !request.Temporary

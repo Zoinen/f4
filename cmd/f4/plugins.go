@@ -10,6 +10,7 @@ import (
 	"github.com/unxed/f4/plugins/cloudfox"
 	"github.com/unxed/f4/plugins/dummy_internal"
 	"github.com/unxed/f4/plugins/envman"
+	gitplugin "github.com/unxed/f4/plugins/git"
 	"github.com/unxed/f4/plugins/id3editor"
 	iosfs "github.com/unxed/f4/plugins/ios"
 	"github.com/unxed/f4/plugins/mediainfo"
@@ -185,6 +186,7 @@ func (pm *PluginManager) loadInternal() {
 		&visren.Plugin{},
 		&id3editor.ID3EditorPlugin{},
 		envman.NewPlugin(GetF4ConfigDir()),
+		gitplugin.NewPlugin(),
 		mediainfo.NewPlugin(GetF4ConfigDir()),
 	}
 

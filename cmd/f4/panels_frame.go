@@ -787,8 +787,10 @@ var osHostname = os.Hostname
 func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 	var path string
 	var vfsTitle string
+	var activeVFS vfs.VFS
 	if fsp, ok := pf.Active().(*FileSystemPanel); ok {
 		path = fsp.persistentPath()
+		activeVFS = fsp.vfs
 		if fsp.providerOpenTask != nil {
 			if colon := strings.IndexByte(path, ':'); colon > 0 {
 				vfsTitle = path[:colon]
@@ -843,6 +845,15 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 		sepStr = ""
 	}
 
+	// Prompt providers are explicitly cache-only.  In particular, Git's
+	// provider starts its delayed background lookup during directory loading;
+	// painting the prompt only consumes its last completed value.
+	segments := promptSegmentsSnapshot(activeVFS, path)
+	segmentsWidth := 0
+	for _, segment := range segments {
+		segmentsWidth += 1 + runewidth.StringWidth(segment.Text)
+	}
+
 	maxPromptLen := pf.lastW / 2
 	if maxPromptLen < 30 {
 		maxPromptLen = pf.lastW - 15
@@ -858,7 +869,7 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 		userHostStr = vtui.TruncateMiddle(userHostStr, maxUserHost)
 	}
 
-	maxPathLen := maxPromptLen - runewidth.StringWidth(userHostStr) - runewidth.StringWidth(sepStr) - runewidth.StringWidth(suffixStr)
+	maxPathLen := maxPromptLen - runewidth.StringWidth(userHostStr) - runewidth.StringWidth(sepStr) - runewidth.StringWidth(suffixStr) - segmentsWidth
 	if maxPathLen < 10 {
 		maxPathLen = 10
 	}
@@ -868,7 +879,11 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 	}
 
 	if pf.searchFirstMode() && pf.showPanels && !pf.commandLineFocused {
-		plainPrompt := userHostStr + sepStr + displayPath + suffixStr
+		plainPrompt := userHostStr + sepStr + displayPath
+		for _, segment := range segments {
+			plainPrompt += " " + segment.Text
+		}
+		plainPrompt += suffixStr
 		return vtui.StringToCharInfo(plainPrompt, vtui.Palette[ColCommandLineInactivePrompt])
 	}
 
@@ -882,6 +897,9 @@ func (pf *PanelsFrame) buildPrompt() []vtui.CharInfo {
 	prompt = append(prompt, vtui.StringToCharInfo(userHostStr, greenAttr)...)
 	prompt = append(prompt, vtui.StringToCharInfo(sepStr, baseAttr)...)
 	prompt = append(prompt, vtui.StringToCharInfo(displayPath, baseAttr)...)
+	for _, segment := range segments {
+		prompt = append(prompt, vtui.StringToCharInfo(" "+segment.Text, promptSegmentAttr(segment.Color))...)
+	}
 	prompt = append(prompt, vtui.StringToCharInfo(suffixStr, baseAttr)...)
 
 	return prompt
@@ -1293,6 +1311,10 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	if pf.shellMode == ShellModeHost && pf.isHostConsoleActive() {
 		return
 	}
+	// Optional plugin panel observers see only already-cached panel state here.
+	// Publishing from the render path coalesces navigation and focus changes
+	// without ever making a filesystem or Git probe part of panel input.
+	pf.publishPanelSnapshots()
 	isBusy := pf.isPtyBusy()
 
 	// 1. Dynamic Layout Adjustment
@@ -3171,6 +3193,17 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 	res := KeyBarLabelsForArea(area, fallbacks)
 	if overrideF2 {
 		res.Normal[1] = f2
+	}
+	if pf.showPanels {
+		if fsp := pf.getActivePanel(); fsp != nil {
+			if labels, ok := fsp.vfs.(vfs.PanelKeybarLabels); ok {
+				for index, label := range labels.PanelKeybarLabels() {
+					if label != "" {
+						res.Normal[index] = label
+					}
+				}
+			}
+		}
 	}
 	return res
 }

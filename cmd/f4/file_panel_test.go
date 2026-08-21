@@ -60,6 +60,41 @@ func TestFileEntry_GetCellText(t *testing.T) {
 	}
 }
 
+func TestFileEntryDisplayNamePreservesVFSIdentity(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.ShowHighlightMarks = false
+	AppConfig.ShowDirPrefix = false
+	AppConfig.SeparateFileExtensions = true
+
+	entry := &fileEntry{VFSItem: vfs.VFSItem{
+		Name:               "canonical.go",
+		DisplayName:        "~ canonical.go (unstaged)",
+		Kind:               vfs.VFSItemAction,
+		ExtendedAttributes: map[string]string{"git.worktreeStatus": "modified"},
+	}}
+	if got := entry.GetCellText(0); got != "~ canonical.go (unstaged)" {
+		t.Fatalf("rendered label = %q", got)
+	}
+	if got := formatPanelFileName(entry, 40); got != "~ canonical.go (unstaged)" {
+		t.Fatalf("display label was treated as a filename: %q", got)
+	}
+	if entry.Name != "canonical.go" {
+		t.Fatalf("canonical action name = %q", entry.Name)
+	}
+	if entry.Kind != vfs.VFSItemAction || entry.ExtendedAttributes["git.worktreeStatus"] != "modified" {
+		t.Fatalf("virtual metadata was not retained: %#v", entry.VFSItem)
+	}
+
+	fp := NewFileSystemPanel(0, 0, 80, 12, vfs.NewOSVFS(t.TempDir()))
+	fp.entries = []*fileEntry{entry}
+	fp.fastFindMode = true
+	fp.fastFindStr = "*unstaged"
+	if !fp.fastFindHasMatches() {
+		t.Fatal("fast find did not search the displayed label")
+	}
+}
+
 func TestFileEntry_HighlightDir(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()

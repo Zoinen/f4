@@ -182,6 +182,10 @@ type EditorView struct {
 	// Used by callers (e.g. the user menu's Ctrl+F4 handler) that want
 	// to react to the file content once the user is done editing.
 	OnClose func()
+	// onSave, if set, owns explicit saves for editor-bridge callers. It runs
+	// outside the UI goroutine and can reject the save without closing or
+	// clearing the editor buffer.
+	onSave func(context.Context, []byte) error
 }
 
 func (ev *EditorView) ApplyEditorConfig() {
@@ -4079,7 +4083,14 @@ func editorTempSibling(filesystem vfs.VFS, filePath string) (string, error) {
 }
 
 func (ev *EditorView) SaveToFile(afterSave func()) {
-	if ev.filePath == "" || ev.vfs == nil || ev.saving {
+	if ev.saving {
+		return
+	}
+	if ev.onSave != nil {
+		ev.saveWithCallback(afterSave)
+		return
+	}
+	if ev.filePath == "" || ev.vfs == nil {
 		return
 	}
 
@@ -4450,6 +4461,71 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 			}
 		})
 	})
+}
+
+// saveWithCallback performs a bridge-owned save. Keeping this separate from
+// SaveToFile's VFS transaction means a virtual editor target can validate and
+// publish data atomically without first writing a scratch file. An error is a
+// veto, not a close: the user remains in the modified editor and can correct
+// the buffer or choose not to save.
+func (ev *EditorView) saveWithCallback(afterSave func()) {
+	handler := ev.onSave
+	if handler == nil {
+		return
+	}
+
+	ev.saving = true
+	ev.edited = true
+	vtui.DebugLog("EDITOR: Saving through callback %s...", ev.filePath)
+
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		data, err := editorCallbackSnapshot(ctx.Context, ev.pt)
+		if err == nil {
+			// Bytes currently allocates, but make the ownership rule explicit in
+			// case the piece-table implementation later gains a zero-copy path.
+			data = append([]byte(nil), data...)
+			err = handler(ctx.Context, data)
+		}
+
+		ctx.RunOnUI(func() {
+			ev.saving = false
+			if err != nil {
+				vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to save data:\n%v", err), []string{"&Ok"})
+				return
+			}
+
+			ev.modified = false
+			ev.unsavedBaseline = false
+			ev.createNewTarget = false
+			ev.cleanState = ev.pt.GetState()
+			ev.edited = false
+			vtui.FrameManager.Broadcast(CmFileChanged, nil)
+			if afterSave != nil {
+				afterSave()
+			}
+		})
+	})
+}
+
+// editorCallbackSnapshot waits for lazy editor data in the same bounded,
+// cancellable way as the normal save path. A callback owns the full document,
+// so it intentionally receives one detached byte slice rather than a live
+// piece-table view.
+func editorCallbackSnapshot(ctx context.Context, table *piecetable.PieceTable) ([]byte, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		data, err := table.Bytes()
+		if !errors.Is(err, piecetable.ErrLoading) {
+			return data, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func (ev *EditorView) getSelectionRange() (int, int) {

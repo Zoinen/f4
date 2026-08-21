@@ -146,6 +146,13 @@ func (f *fileEntry) displayName(name string) string {
 	return prefix + name
 }
 
+// presentationName is deliberately separate from Name: the latter is the
+// VFS-native identity used by file operations, while virtual VFSes can supply
+// a label for display without making it into a path component.
+func (f *fileEntry) presentationName() string {
+	return f.VFSItem.PresentationName()
+}
+
 func splitFileExtension(name string) (string, string) {
 	lastDot := strings.LastIndex(name, ".")
 	if lastDot <= 0 || lastDot == len(name)-1 {
@@ -155,16 +162,20 @@ func splitFileExtension(name string) (string, string) {
 }
 
 func shouldSeparatePanelExtension(entry *fileEntry) bool {
-	return AppConfig.SeparateFileExtensions && !entry.IsDir && !entry.NoExtension && entry.Name != ".."
+	// A provider-supplied display label can contain status text or other
+	// virtual syntax that is not a filename. Keep it intact rather than
+	// attempting extension alignment based on the canonical VFS name.
+	return AppConfig.SeparateFileExtensions && entry.DisplayName == "" && !entry.IsDir && !entry.NoExtension && entry.Name != ".."
 }
 
 func formatPanelFileName(entry *fileEntry, width int) string {
+	name := entry.presentationName()
 	if !shouldSeparatePanelExtension(entry) || width <= 0 {
-		return entry.displayName(entry.Name)
+		return entry.displayName(name)
 	}
-	base, extension := splitFileExtension(entry.Name)
+	base, extension := splitFileExtension(name)
 	if extension == "" {
-		return entry.displayName(entry.Name)
+		return entry.displayName(name)
 	}
 
 	extensionWidth := runewidth.StringWidth(extension)
@@ -220,7 +231,8 @@ func panelFileNameMatchSpans(entry *fileEntry, width, matchStartRunes, matchedRu
 	if matchStartRunes < 0 || matchedRunes <= 0 || width <= 0 {
 		return nil
 	}
-	nameRunes := []rune(entry.Name)
+	presentationName := entry.presentationName()
+	nameRunes := []rune(presentationName)
 	if matchStartRunes >= len(nameRunes) {
 		return nil
 	}
@@ -243,7 +255,7 @@ func panelFileNameMatchSpans(entry *fileEntry, width, matchStartRunes, matchedRu
 		return nil
 	}
 
-	base, extension := splitFileExtension(entry.Name)
+	base, extension := splitFileExtension(presentationName)
 	if extension == "" {
 		if span, ok := clippedPanelMatchSpan(
 			prefixWidth+runewidth.StringWidth(string(nameRunes[:matchStartRunes])),
@@ -331,6 +343,7 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor] || defaultAttr == vtui.Palette[ColPanelInactiveCursor] || defaultAttr == vtui.Palette[ColPanelInactiveSelectedCursor])
 
 	attr = GlobalFileHighlighter.GetColor(&e.VFSItem, attr, e.Selected, isCursor)
+	attr = fileDecorationAttr(&e.VFSItem, attr)
 
 	return attr
 }
@@ -370,7 +383,7 @@ func (f *fileEntry) IsSelected() bool {
 func (f *fileEntry) GetCellText(col int) string {
 	switch col {
 	case 0:
-		return f.displayName(f.Name)
+		return f.displayName(f.presentationName())
 	case 1:
 		if f.IsDir {
 			if f.SizeCalculated {
@@ -395,6 +408,7 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor] || defaultAttr == vtui.Palette[ColPanelInactiveCursor] || defaultAttr == vtui.Palette[ColPanelInactiveSelectedCursor])
 
 	attr = GlobalFileHighlighter.GetColor(&f.VFSItem, attr, f.Selected, isCursor)
+	attr = fileDecorationAttr(&f.VFSItem, attr)
 
 	return attr
 }
@@ -1853,6 +1867,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if ctx.Err() != nil {
 				return
 			}
+			// Decorations are cache-backed presentation data.  Apply them in
+			// the directory worker so a provider can never turn table painting
+			// or keyboard navigation into a filesystem/Git probe.
+			chunk = decorateVFSItems(loadVFS, path, chunk)
 			accumulated = append(accumulated, chunk...)
 			if ctx.Err() != nil {
 				return
@@ -2479,7 +2497,7 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 
 func (fp *FileSystemPanel) fastFindHasMatches() bool {
 	for _, entry := range fp.entries {
-		if _, _, ok := fp.fastFindMatch(entry.Name); ok {
+		if _, _, ok := fp.fastFindMatch(entry.presentationName()); ok {
 			return true
 		}
 	}
@@ -2516,7 +2534,7 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 			cellWidth := fp.table.Columns[column].Width
 			if entryIndex >= 0 && entryIndex < len(fp.entries) {
 				entry := fp.entries[entryIndex]
-				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.Name)
+				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.presentationName())
 				for _, span := range panelFileNameMatchSpans(entry, cellWidth, matchStart, matchedRunes) {
 					for cellOffset := 0; cellOffset < span.width; cellOffset++ {
 						cell := scr.GetCell(x+span.start+cellOffset, y)
@@ -3312,7 +3330,7 @@ func (fp *FileSystemPanel) doFastFind(dir int) {
 	startIdx := fp.GetCursorIndex()
 
 	checkMatch := func(i int) bool {
-		_, _, ok := fp.fastFindMatch(fp.entries[i].Name)
+		_, _, ok := fp.fastFindMatch(fp.entries[i].presentationName())
 		return ok
 	}
 

@@ -40,6 +40,19 @@ const (
 	ColCommandLineText
 	ColCommandLineSelectedText
 
+	// Git colours are semantic roles.  File decorations and prompt segments
+	// resolve these indices while rendering rather than retaining a theme value
+	// from plugin initialization.
+	ColGitStaged
+	ColGitUnstaged
+	ColGitBoth
+	ColGitUntracked
+	ColGitConflict
+	ColGitIgnored
+	ColGitPromptBranch
+	ColGitPromptDetached
+	ColGitPromptUnborn
+
 	ColViewerText
 	ColViewerStatus
 	ColViewerArrows
@@ -105,6 +118,18 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColCommandLineText] = vtui.SetIndexBoth(0, 15, 0)          // White on Black
 	vtui.Palette[ColCommandLineSelectedText] = vtui.SetIndexBoth(0, 0, 11)  // Black on Light Cyan
 
+	// Git status/prompt semantic roles.  Consumers never retain these raw
+	// values: a palette reload changes the next rendered prefix or prompt.
+	vtui.Palette[ColGitStaged] = vtui.SetRGBBoth(0, 0x73D216, blue)
+	vtui.Palette[ColGitUnstaged] = vtui.SetRGBBoth(0, yellow, blue)
+	vtui.Palette[ColGitBoth] = vtui.SetRGBBoth(0, 0xAD7FA8, blue)
+	vtui.Palette[ColGitUntracked] = vtui.SetRGBBoth(0, 0x729FCF, blue)
+	vtui.Palette[ColGitConflict] = vtui.SetRGBBoth(0, 0xEF2929, blue)
+	vtui.Palette[ColGitIgnored] = vtui.SetRGBBoth(0, 0x888A85, blue)
+	vtui.Palette[ColGitPromptBranch] = vtui.SetRGBBoth(0, 0x73D216, black)
+	vtui.Palette[ColGitPromptDetached] = vtui.SetRGBBoth(0, yellow, black)
+	vtui.Palette[ColGitPromptUnborn] = vtui.SetRGBBoth(0, 0x729FCF, black)
+
 	// Editor selection: inverse of UserScreen
 	vtui.Palette[vtui.ColDialogEditSelected] = vtui.SetIndexBoth(0, 0, 7)
 	// KeyBar (Match far2l: LightGray on DarkGray for numbers, DarkGray on Teal for labels)
@@ -139,6 +164,7 @@ var ColorGroups = []string{
 	"Horizontal menu",
 	"Key bar",
 	"Command line",
+	"Git",
 	"Viewer",
 	"Editor",
 	"Help",
@@ -230,6 +256,17 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "CommandLine.Selected", Index: ColCommandLineSelectedText, Group: "Command line", ConstantName: "ColCommandLineSelectedText", Aliases: []string{"CommandLine.SelectedText", "CommandLine.Text.Selected"}},
 	{Canonical: "CommandLine.Prompt.Inactive", Index: ColCommandLineInactivePrompt, Group: "Command line", ConstantName: "ColCommandLineInactivePrompt"},
 	{Canonical: "CommandLine.UserScreen", Index: ColCommandLineUserScreen, Group: "Command line", ConstantName: "ColCommandLineUserScreen"},
+
+	// Git Group
+	{Canonical: "Git.Staged", Index: ColGitStaged, Group: "Git", ConstantName: "ColGitStaged"},
+	{Canonical: "Git.Unstaged", Index: ColGitUnstaged, Group: "Git", ConstantName: "ColGitUnstaged"},
+	{Canonical: "Git.Both", Index: ColGitBoth, Group: "Git", ConstantName: "ColGitBoth"},
+	{Canonical: "Git.Untracked", Index: ColGitUntracked, Group: "Git", ConstantName: "ColGitUntracked"},
+	{Canonical: "Git.Conflict", Index: ColGitConflict, Group: "Git", ConstantName: "ColGitConflict"},
+	{Canonical: "Git.Ignored", Index: ColGitIgnored, Group: "Git", ConstantName: "ColGitIgnored"},
+	{Canonical: "Git.Prompt.Branch", Index: ColGitPromptBranch, Group: "Git", ConstantName: "ColGitPromptBranch"},
+	{Canonical: "Git.Prompt.Detached", Index: ColGitPromptDetached, Group: "Git", ConstantName: "ColGitPromptDetached"},
+	{Canonical: "Git.Prompt.Unborn", Index: ColGitPromptUnborn, Group: "Git", ConstantName: "ColGitPromptUnborn"},
 
 	// Viewer Group
 	{Canonical: "Viewer.Text", Index: ColViewerText, Group: "Viewer", ConstantName: "ColViewerText"},

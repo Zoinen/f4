@@ -141,7 +141,14 @@ type TextEditorRequest struct {
 	// slow VFS probe off the UI goroutine skip the host's redundant check.
 	// The editor still enforces no-replace semantics on its first save.
 	TargetKnownAbsent bool
-	OnClose           func([]byte, error)
+	// OnSave, when non-nil, replaces the editor's normal VFS write. It runs in
+	// the editor's background save task with an immutable snapshot of the
+	// current UTF-8 buffer. Returning an error rejects that explicit save: the
+	// editor stays open and modified, and any close requested after the save is
+	// not performed. Implementations must honor ctx cancellation and must not
+	// retain or mutate content.
+	OnSave  func(ctx context.Context, content []byte) error
+	OnClose func([]byte, error)
 }
 
 // TextEditorHost is an optional UI capability exposed by PanelsFrame.

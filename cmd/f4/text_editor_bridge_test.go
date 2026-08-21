@@ -155,3 +155,95 @@ func TestOpenTextEditorSkipsRedundantCheckedTargetStat(t *testing.T) {
 	vtui.FrameManager.GetTopFrame().(*EditorView).Close()
 	close(release)
 }
+
+func TestOpenTextEditorSaveCallbackOwnsSuccessfulSave(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldFileState := GlobalFileState
+	GlobalFileState = nil
+	t.Cleanup(func() { GlobalFileState = oldFileState })
+
+	got := make(chan []byte, 1)
+	pf := &PanelsFrame{lastW: 80, lastH: 25}
+	if err := pf.OpenTextEditor(vfs.TextEditorRequest{
+		Temporary: true,
+		Content:   []byte("before"),
+		Modified:  true,
+		OnSave: func(ctx context.Context, content []byte) error {
+			if ctx == nil {
+				return errors.New("save callback received a nil context")
+			}
+			got <- append([]byte(nil), content...)
+			content[0] = 'X' // The editor must retain ownership of its buffer.
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	editor := vtui.FrameManager.GetTopFrame().(*EditorView)
+	editor.pt.Insert(editor.pt.Size(), []byte(" after"))
+	editor.modified = true
+	afterSave := false
+	editor.SaveToFile(func() { afterSave = true })
+	waitEditorSave(t, editor)
+
+	select {
+	case content := <-got:
+		if string(content) != "before after" {
+			t.Fatalf("callback content = %q", content)
+		}
+	default:
+		t.Fatal("successful save callback did not publish content")
+	}
+	current, err := editor.pt.Bytes()
+	if err != nil || string(current) != "before after" {
+		t.Fatalf("editor content after callback = %q, %v", current, err)
+	}
+	if editor.modified {
+		t.Fatal("successful callback save left the editor modified")
+	}
+	if !afterSave {
+		t.Fatal("successful callback save did not run afterSave")
+	}
+	editor.Close()
+}
+
+func TestOpenTextEditorSaveCallbackCanRejectSave(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldFileState := GlobalFileState
+	GlobalFileState = nil
+	t.Cleanup(func() { GlobalFileState = oldFileState })
+
+	rejected := errors.New("patch no longer applies")
+	called := make(chan struct{}, 1)
+	pf := &PanelsFrame{lastW: 80, lastH: 25}
+	if err := pf.OpenTextEditor(vfs.TextEditorRequest{
+		Temporary: true,
+		Content:   []byte("patch"),
+		Modified:  true,
+		OnSave: func(context.Context, []byte) error {
+			called <- struct{}{}
+			return rejected
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	editor := vtui.FrameManager.GetTopFrame().(*EditorView)
+	afterSave := false
+	editor.SaveToFile(func() { afterSave = true })
+	waitEditorSave(t, editor)
+
+	select {
+	case <-called:
+	default:
+		t.Fatal("save callback was not invoked")
+	}
+	if !editor.modified {
+		t.Fatal("rejected callback save cleared the modified state")
+	}
+	if afterSave {
+		t.Fatal("rejected callback save closed or completed the editor")
+	}
+	editor.Close()
+}

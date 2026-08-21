@@ -46,10 +46,40 @@ type HostAPI interface {
 	RunAction(name string) bool
 }
 
+// VFSItemKind identifies how an entry is presented in a virtual listing.
+//
+// The zero value remains a regular file-system row so existing VFS
+// implementations stay source and behaviour compatible. Non-regular rows are
+// presentation metadata only: Name must still be a stable VFS-native identity
+// whenever the host or a PanelActionHandler receives the entry.
+type VFSItemKind uint8
+
+const (
+	// VFSItemRegular is an ordinary file or directory entry.
+	VFSItemRegular VFSItemKind = iota
+	// VFSItemSeparator is a non-file visual separator in a virtual listing.
+	VFSItemSeparator
+	// VFSItemAction is a virtual row whose owner may handle its activation.
+	VFSItemAction
+)
+
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
 	Name string
-	Size int64
+	// DisplayName, when non-empty, is the display-only label rendered by a
+	// panel. Name remains the canonical VFS component for paths, sorting,
+	// selection and file operations; callers must never derive a path from
+	// DisplayName.
+	DisplayName string
+	// Kind controls the presentation role of a virtual row. The core preserves
+	// it but does not infer file-system semantics from it; VFS owners can use a
+	// PanelActionHandler for action rows. The zero value is VFSItemRegular.
+	Kind VFSItemKind
+	// ExtendedAttributes carries provider-owned display metadata, such as a
+	// Git status. Values are strings so the data remains stable across VFS and
+	// RPC boundaries. Consumers must treat the map as read-only.
+	ExtendedAttributes map[string]string
+	Size               int64
 	// SizeKnown distinguishes a real zero-byte file from a remote object whose
 	// length is unavailable until Open/materialization. Non-zero Size is always
 	// treated as known for backwards compatibility with existing VFS plugins.
@@ -97,6 +127,16 @@ type VFSItem struct {
 	UnixMode uint32    // Raw numeric mode for chmod
 	Uid, Gid int       // Ownership
 	WinAttrs uint32    // Windows file attributes
+}
+
+// PresentationName returns the label intended for display without changing
+// the entry's canonical Name. Empty DisplayName deliberately falls back to
+// Name, preserving the behaviour of every pre-existing VFS implementation.
+func (item VFSItem) PresentationName() string {
+	if item.DisplayName != "" {
+		return item.DisplayName
+	}
+	return item.Name
 }
 
 // VFSCapabilities defines what the current VFS implementation can do efficiently.
