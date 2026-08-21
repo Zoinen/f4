@@ -28,7 +28,113 @@ type fileEntry struct {
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
 	IsCached       bool
+	highlightCache fileEntryHighlightCache
 }
+
+type fileHighlightFingerprint struct {
+	name                          string
+	size                          int64
+	mtime, atime, ctime           time.Time
+	unixMode, winAttrs            uint32
+	isDir, isHidden, isExecutable bool
+	isSymlink                     bool
+}
+
+type fileHighlightColorCache struct {
+	defaultAttr uint64
+	attr        uint64
+	valid       bool
+	contrast    bool
+}
+
+type fileEntryHighlightCache struct {
+	highlighter *FileHighlighter
+	revision    uint64
+	fingerprint fileHighlightFingerprint
+	colors      [4]fileHighlightColorCache
+	marker      string
+	markerValid bool
+}
+
+func highlightFingerprint(item *vfs.VFSItem) fileHighlightFingerprint {
+	return fileHighlightFingerprint{
+		name:         item.Name,
+		size:         item.Size,
+		mtime:        item.MTime,
+		atime:        item.ATime,
+		ctime:        item.CTime,
+		unixMode:     item.UnixMode,
+		winAttrs:     item.WinAttrs,
+		isDir:        item.IsDir,
+		isHidden:     item.IsHidden,
+		isExecutable: item.IsExecutable,
+		isSymlink:    item.IsSymlink,
+	}
+}
+
+func (f *fileEntry) prepareHighlightCache(highlighter *FileHighlighter) bool {
+	revision, cacheable := highlighter.cacheState()
+	if !cacheable {
+		return false
+	}
+	fingerprint := highlightFingerprint(&f.VFSItem)
+	if f.highlightCache.highlighter != highlighter ||
+		f.highlightCache.revision != revision ||
+		f.highlightCache.fingerprint != fingerprint {
+		f.highlightCache = fileEntryHighlightCache{
+			highlighter: highlighter,
+			revision:    revision,
+			fingerprint: fingerprint,
+		}
+	}
+	return true
+}
+
+func (f *fileEntry) highlightColor(defaultAttr uint64, isSelected, isCursor bool) uint64 {
+	highlighter := GlobalFileHighlighter
+	cacheable := f.prepareHighlightCache(highlighter)
+	if !cacheable {
+		if highlighter == nil {
+			return defaultAttr
+		}
+		return highlighter.GetColor(&f.VFSItem, defaultAttr, isSelected, isCursor)
+	}
+
+	state := 0
+	if isSelected {
+		state++
+	}
+	if isCursor {
+		state += 2
+	}
+	cached := &f.highlightCache.colors[state]
+	if cached.valid && cached.defaultAttr == defaultAttr && cached.contrast == AppConfig.EnforceColorCorrection {
+		return cached.attr
+	}
+
+	cached.defaultAttr = defaultAttr
+	cached.attr = highlighter.GetColor(&f.VFSItem, defaultAttr, isSelected, isCursor)
+	cached.valid = true
+	cached.contrast = AppConfig.EnforceColorCorrection
+	return cached.attr
+}
+
+func (f *fileEntry) highlightMarker() string {
+	highlighter := GlobalFileHighlighter
+	cacheable := f.prepareHighlightCache(highlighter)
+	if !cacheable {
+		if highlighter == nil {
+			return ""
+		}
+		return highlighter.GetMarker(&f.VFSItem)
+	}
+	if !f.highlightCache.markerValid {
+		f.highlightCache.marker = highlighter.GetMarker(&f.VFSItem)
+		f.highlightCache.markerValid = true
+	}
+	return f.highlightCache.marker
+}
+
 type mediumRow struct {
 	fp *FileSystemPanel
 	r  int
@@ -122,7 +228,7 @@ func (f *fileEntry) displayName(name string) string {
 	}
 	marker := ""
 	if AppConfig.ShowHighlightMarks {
-		marker = GlobalFileHighlighter.GetMarker(&f.VFSItem)
+		marker = f.highlightMarker()
 	}
 	if marker == "" && f.IsSymlink {
 		marker = "→"
@@ -342,7 +448,7 @@ func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	attr := defaultAttr
 	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor] || defaultAttr == vtui.Palette[ColPanelInactiveCursor] || defaultAttr == vtui.Palette[ColPanelInactiveSelectedCursor])
 
-	attr = GlobalFileHighlighter.GetColor(&e.VFSItem, attr, e.Selected, isCursor)
+	attr = e.highlightColor(attr, e.Selected, isCursor)
 	attr = fileDecorationAttr(&e.VFSItem, attr)
 
 	return attr
@@ -361,7 +467,7 @@ const (
 	panelSizeColumnWidth      = 11
 	panelModifiedColumnWidth  = 14
 	panelDragScrollInterval   = 75 * time.Millisecond
-	panelLoadingPulseInterval = 100 * time.Millisecond
+	panelLoadingPulseInterval = 250 * time.Millisecond
 )
 
 var panelLoadingPulse = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -407,7 +513,7 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 	attr := defaultAttr
 	isCursor := (defaultAttr == vtui.Palette[ColPanelCursor] || defaultAttr == vtui.Palette[ColPanelSelectedCursor] || defaultAttr == vtui.Palette[ColPanelInactiveCursor] || defaultAttr == vtui.Palette[ColPanelInactiveSelectedCursor])
 
-	attr = GlobalFileHighlighter.GetColor(&f.VFSItem, attr, f.Selected, isCursor)
+	attr = f.highlightColor(attr, f.Selected, isCursor)
 	attr = fileDecorationAttr(&f.VFSItem, attr)
 
 	return attr
@@ -1493,7 +1599,6 @@ func (fp *FileSystemPanel) startLoadingAnimation() {
 				}
 				fp.loadingFrame = (fp.loadingFrame + 1) % len(panelLoadingPulse)
 				fp.updateTitle(nil)
-				vtui.FrameManager.Redraw()
 				scheduleNext()
 			})
 		})

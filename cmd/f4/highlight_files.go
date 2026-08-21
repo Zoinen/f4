@@ -64,6 +64,12 @@ type FileHighlighter struct {
 	UserRules  []HighlightRule
 	ThemeRules []HighlightRule
 	Rules      []HighlightRule
+
+	// revision invalidates panel-entry caches whenever the effective rule set
+	// is rebuilt. Keep it monotonic and independent of the Rules backing array:
+	// CombineRules is allowed to reuse or replace that array.
+	revision             uint64
+	hasRelativeDateRules bool
 }
 
 var GlobalFileHighlighter *FileHighlighter
@@ -95,6 +101,24 @@ func (fh *FileHighlighter) CombineRules() {
 		fh.Rules = append(fh.Rules, fh.UserRules...)
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
 	}
+	fh.hasRelativeDateRules = false
+	for i := range fh.Rules {
+		if fh.Rules[i].DateRelative && (fh.Rules[i].DateAfterDur > 0 || fh.Rules[i].DateBeforeDur > 0) {
+			fh.hasRelativeDateRules = true
+			break
+		}
+	}
+	fh.revision++
+}
+
+// cacheState describes whether a caller may retain a highlight result for an
+// item. Relative-date rules deliberately opt out: their result can change as
+// wall time passes even when neither the item nor the configuration changes.
+func (fh *FileHighlighter) cacheState() (revision uint64, cacheable bool) {
+	if fh == nil {
+		return 0, false
+	}
+	return fh.revision, !fh.hasRelativeDateRules
 }
 
 func parseHighlightRules(ini *IniFile) []HighlightRule {

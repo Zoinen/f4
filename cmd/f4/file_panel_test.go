@@ -583,6 +583,70 @@ func TestPanelLoadingSpinnerFramesOccupyOneCell(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanelLoadingPulseTaskDoesNotQueueRedundantRedraw(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldDisable := DisableLoadingAnimationInTests
+	DisableLoadingAnimationInTests = false
+	t.Cleanup(func() { DisableLoadingAnimationInTests = oldDisable })
+
+	// A minimal panel avoids starting a directory worker: this test exercises
+	// only the timer -> UI task path of the loading animation.
+	fp := &FileSystemPanel{
+		vfs:       vfs.NewOSVFS(t.TempDir()),
+		frame:     vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, ""),
+		isLoading: true,
+	}
+	fp.startLoadingAnimation()
+	t.Cleanup(fp.stopLoadingAnimation)
+
+	// startLoadingAnimation requests the initial frame explicitly. Remove that
+	// request so only the recurring pulse task is observed below.
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+			continue
+		default:
+			goto initialRedrawDrained
+		}
+	}
+
+initialRedrawDrained:
+	deadline := time.After(2 * time.Second)
+	for fp.loadingFrame == 0 {
+		select {
+		case pulseTask := <-vtui.FrameManager.TaskChan:
+			// Other panel tests can leave a canceled task in the package-global
+			// queue. Execute and discard those until this panel's pulse advances.
+			pulseTask()
+			if fp.loadingFrame == 0 {
+			drainUnrelatedRedraws:
+				for {
+					select {
+					case <-vtui.FrameManager.RedrawChan:
+						continue
+					default:
+						break drainUnrelatedRedraws
+					}
+				}
+			}
+		case <-deadline:
+			t.Fatal("loading pulse task was not posted")
+		}
+	}
+
+	if got := fp.loadingFrame; got != 1 {
+		t.Fatalf("loading frame after pulse task = %d, want 1", got)
+	}
+	if !strings.HasSuffix(fp.currentTitle, panelLoadingPulse[1]) {
+		t.Fatalf("loading title did not advance with frame: %q", fp.currentTitle)
+	}
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+		t.Fatal("pulse UI task queued a redundant redraw; FrameManager redraws after every task")
+	default:
+	}
+}
+
 func TestFileSystemPanel_ShowHiddenFiles(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -4177,7 +4241,7 @@ func TestFileSystemPanel_CachedEnterStaysResponsiveAndCoalescesRefresh(t *testin
 	// FISH response that must drain after cancellation.
 	fp.readDirectoryEx(false)
 	waitForPanelSignal(t, remote.firstReadStarted, "blocked root refresh")
-	time.Sleep(220 * time.Millisecond) // let the old loading timer enter TaskChan
+	time.Sleep(panelLoadingPulseInterval + 50*time.Millisecond) // let the old loading timer enter TaskChan
 
 	start := time.Now()
 	if !fp.ProcessKey(&vtinput.InputEvent{
