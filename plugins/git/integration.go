@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v6"
@@ -79,6 +80,23 @@ func localPanelDirectory(snapshot vfs.PanelSnapshot) (string, bool) {
 	return filepath.Clean(directory), true
 }
 
+// snapshotStillAtDirectory rejects a worker completion that belongs to a
+// panel location the user has already left. In particular, active/passive
+// focus swaps reuse a logical side, so checking only the VFS pointer is not
+// enough to prevent an old discovery result from refreshing a new directory.
+func snapshotStillAtDirectory(snapshot vfs.PanelSnapshot, directory string) bool {
+	current, ok := localPanelDirectory(snapshot)
+	if !ok {
+		return false
+	}
+	current = filepath.Clean(current)
+	directory = filepath.Clean(directory)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(current, directory)
+	}
+	return current == directory
+}
+
 func observationID(host vfs.PanelHost, side vfs.PanelSide) string {
 	return fmt.Sprintf("git-panel:%p:%d", host, side)
 }
@@ -120,7 +138,7 @@ func (plugin *Plugin) PanelNavigated(host vfs.PanelHost, snapshot vfs.PanelSnaps
 			// newer Observe for this side supersedes this callback, but a panel
 			// swap can still change its active/passive orientation meanwhile.
 			current := host.PanelSnapshot(snapshot.Side)
-			if current.VFS == nil {
+			if !snapshotStillAtDirectory(current, update.Directory) {
 				return
 			}
 			if update.Result.Found() {

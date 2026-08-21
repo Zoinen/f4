@@ -22,6 +22,12 @@ func (f fileDecorationProviderFunc) DecorateFile(filesystem vfs.VFS, directory s
 	return f(filesystem, directory, item)
 }
 
+type panelNavigationProviderFunc func(vfs.PanelHost, vfs.PanelSnapshot)
+
+func (f panelNavigationProviderFunc) PanelNavigated(host vfs.PanelHost, snapshot vfs.PanelSnapshot) {
+	f(host, snapshot)
+}
+
 func promptTextAndAttribute(cells []vtui.CharInfo, text string) (uint64, bool) {
 	want := []rune(text)
 	if len(want) == 0 {
@@ -118,6 +124,61 @@ func TestPluginPanelHostSnapshotsObserverAndPassiveOpen(t *testing.T) {
 	pf.publishPanelSnapshots()
 	if len(changes) != 4 {
 		t.Fatalf("unregistered observer received %d notifications", len(changes))
+	}
+}
+
+func TestPanelNavigationProviderIgnoresSelectionOnlyChanges(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer func() {
+		pf.Close()
+		panelObserverStates.Delete(pf)
+	}()
+	pf.ResizeConsole(100, 30)
+
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := vfs.NewOSVFS(root)
+	active := pf.Active().(*FileSystemPanel)
+	active.vfs = source
+	active.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "first.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "second.txt"}},
+	}
+	active.SetCursorIndex(0)
+
+	var navigations []vfs.PanelSnapshot
+	registration, err := (&coreAPI{}).RegisterPanelNavigationProvider(panelNavigationProviderFunc(func(_ vfs.PanelHost, snapshot vfs.PanelSnapshot) {
+		navigations = append(navigations, snapshot)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Unregister()
+
+	pf.publishPanelSnapshots()
+	if got := len(navigations); got != 2 {
+		t.Fatalf("initial navigation notifications = %d, want active and passive", got)
+	}
+
+	active.SetCursorIndex(1)
+	pf.publishPanelSnapshots()
+	if got := len(navigations); got != 2 {
+		t.Fatalf("selection-only update notified navigation provider %d times, want 2", got)
+	}
+
+	if err := source.SetPath(child); err != nil {
+		t.Fatal(err)
+	}
+	pf.publishPanelSnapshots()
+	if got := len(navigations); got != 3 {
+		t.Fatalf("directory navigation notifications = %d, want 3", got)
+	}
+	if got := navigations[2]; got.Side != vfs.PanelActive || got.Path != child {
+		t.Fatalf("directory navigation = %#v, want active %q", got, child)
 	}
 }
 

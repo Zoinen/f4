@@ -77,6 +77,19 @@ func samePanelSnapshot(a, b vfs.PanelSnapshot) bool {
 	return a.Side == b.Side && a.Path == b.Path && a.SelectedName == b.SelectedName && sameVFSInstance(a.VFS, b.VFS)
 }
 
+// samePanelNavigationTarget intentionally excludes SelectedName. A directory
+// reload can briefly select the synthetic ".." row while restoring the prior
+// cursor, and treating that display-only transition as navigation creates a
+// feedback loop for cache warmers which refresh the current panel on completion.
+func samePanelNavigationTarget(a, b vfs.PanelSnapshot) bool {
+	return a.Side == b.Side && a.Path == b.Path && sameVFSInstance(a.VFS, b.VFS)
+}
+
+type panelSnapshotChange struct {
+	snapshot   vfs.PanelSnapshot
+	navigation bool
+}
+
 // publishPanelSnapshots is called from PanelsFrame.Show, where panel paths and
 // active/passive orientation are already stable.  A slow plugin callback is a
 // plugin bug, but dispatching outside the lock prevents a callback from
@@ -96,12 +109,17 @@ func (pf *PanelsFrame) publishPanelSnapshots() {
 	}
 
 	state.mu.Lock()
-	changed := make([]vfs.PanelSnapshot, 0, 2)
+	changed := make([]panelSnapshotChange, 0, 2)
 	for index, snapshot := range snapshots {
-		if !state.haveLast[index] || !samePanelSnapshot(state.last[index], snapshot) {
+		previous := state.last[index]
+		hadPrevious := state.haveLast[index]
+		if !hadPrevious || !samePanelSnapshot(previous, snapshot) {
 			state.last[index] = snapshot
 			state.haveLast[index] = true
-			changed = append(changed, snapshot)
+			changed = append(changed, panelSnapshotChange{
+				snapshot:   snapshot,
+				navigation: !hadPrevious || !samePanelNavigationTarget(previous, snapshot),
+			})
 		}
 	}
 	observers := make([]vfs.PanelObserver, 0, len(state.observers))
@@ -110,11 +128,13 @@ func (pf *PanelsFrame) publishPanelSnapshots() {
 	}
 	state.mu.Unlock()
 
-	for _, snapshot := range changed {
+	for _, change := range changed {
 		for _, observer := range observers {
-			observer(snapshot)
+			observer(change.snapshot)
 		}
-		notifyPanelNavigationProviders(pf, snapshot)
+		if change.navigation {
+			notifyPanelNavigationProviders(pf, change.snapshot)
+		}
 	}
 }
 
@@ -157,7 +177,10 @@ func (pf *PanelsFrame) RefreshVFS(filesystem vfs.VFS) {
 			fsp.ReadDirectory()
 		}
 		pf.publishPanelSnapshots()
-		pf.RefreshAll()
+		// ReadDirectory already schedules its own repaint. A global RefreshAll
+		// here would reload unrelated panels and turn a cache-only decoration
+		// update into a repeated selection/navigation feedback loop.
+		vtui.FrameManager.Redraw()
 	})
 }
 
