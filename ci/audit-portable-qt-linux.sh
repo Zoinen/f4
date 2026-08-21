@@ -45,20 +45,20 @@ if readelf -d "${host}" | grep -Eq '\((RPATH|RUNPATH)\)'; then
     exit 1
 fi
 
-elf_type="$(readelf -h --wide "${host}" | awk '/^[[:space:]]*Type:/{print $2; exit}')"
-if [[ "${elf_type}" != "DYN" ]]; then
-    echo "error: portable Qt host is not a position-independent executable (ELF type: ${elf_type:-unknown})" >&2
+if ! readelf -W -h "${host}" | grep -Eq '^[[:space:]]*Type:[[:space:]]+DYN([[:space:]]|$)'; then
+    echo "error: portable Qt host is not a position-independent executable" >&2
+    readelf -W -h "${host}" | grep -E '^[[:space:]]*Type:' >&2 || true
     exit 1
 fi
-if ! readelf -l --wide "${host}" | grep -q 'GNU_RELRO'; then
+if ! readelf -W -l "${host}" | grep -q 'GNU_RELRO'; then
     echo "error: portable Qt host is missing GNU_RELRO" >&2
     exit 1
 fi
-if ! readelf -d --wide "${host}" | grep -Eq '\(FLAGS(_1)?\).*([[:space:]]BIND_NOW|[[:space:]]NOW([[:space:]]|$))'; then
+if ! readelf -W -d "${host}" | grep -Eq '\(FLAGS(_1)?\).*([[:space:]]BIND_NOW|[[:space:]]NOW([[:space:]]|$))'; then
     echo "error: portable Qt host is missing BIND_NOW" >&2
     exit 1
 fi
-stack_segment="$(readelf -l --wide "${host}" | awk '$1 == "GNU_STACK" {print; exit}')"
+stack_segment="$(readelf -W -l "${host}" | awk '$1 == "GNU_STACK" {print; exit}')"
 if [[ -z "${stack_segment}" || "${stack_segment}" == *RWE* ]]; then
     echo "error: portable Qt host does not have a non-executable GNU_STACK" >&2
     printf '%s\n' "${stack_segment:-  (missing GNU_STACK)}" >&2
