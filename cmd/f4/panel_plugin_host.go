@@ -30,9 +30,11 @@ func panelObserverStateFor(pf *PanelsFrame) *panelObserverState {
 	return actual.(*panelObserverState)
 }
 
-// PanelSnapshot implements vfs.PanelHost.  It has no I/O side effects and is
-// intentionally safe to call from a plugin command before it starts a worker.
-func (pf *PanelsFrame) PanelSnapshot(side vfs.PanelSide) vfs.PanelSnapshot {
+// panelSnapshot takes a cheap UI-state snapshot. Selection is intentionally
+// optional: global navigation providers care only about VFS/path, and reading
+// the selected row every render used to make the Git navigation hook part of
+// the cursor hot path even though selection changes are not navigation.
+func (pf *PanelsFrame) panelSnapshot(side vfs.PanelSide, includeSelection bool) vfs.PanelSnapshot {
 	snapshot := vfs.PanelSnapshot{Side: side}
 	if pf == nil {
 		return snapshot
@@ -49,8 +51,16 @@ func (pf *PanelsFrame) PanelSnapshot(side vfs.PanelSide) vfs.PanelSnapshot {
 	}
 	snapshot.VFS = fsp.vfs
 	snapshot.Path = fsp.persistentPath()
-	snapshot.SelectedName = fsp.GetSelectedName()
+	if includeSelection {
+		snapshot.SelectedName = fsp.GetSelectedName()
+	}
 	return snapshot
+}
+
+// PanelSnapshot implements vfs.PanelHost. It has no I/O side effects and is
+// intentionally safe to call from a plugin command before it starts a worker.
+func (pf *PanelsFrame) PanelSnapshot(side vfs.PanelSide) vfs.PanelSnapshot {
+	return pf.panelSnapshot(side, true)
 }
 
 // ObservePanelChanges implements vfs.PanelHost.  Notifications occur on the
@@ -103,9 +113,12 @@ func (pf *PanelsFrame) publishPanelSnapshots() {
 	if hasState {
 		state = stateValue.(*panelObserverState)
 	}
+	state.mu.Lock()
+	hasObservers := len(state.observers) != 0
+	state.mu.Unlock()
 	snapshots := [2]vfs.PanelSnapshot{
-		pf.PanelSnapshot(vfs.PanelActive),
-		pf.PanelSnapshot(vfs.PanelPassive),
+		pf.panelSnapshot(vfs.PanelActive, hasObservers),
+		pf.panelSnapshot(vfs.PanelPassive, hasObservers),
 	}
 
 	state.mu.Lock()
@@ -129,6 +142,12 @@ func (pf *PanelsFrame) publishPanelSnapshots() {
 	state.mu.Unlock()
 
 	for _, change := range changed {
+		// Navigation providers receive the full public snapshot, but do not make
+		// every cursor move pay to read it. Their callback is only invoked for a
+		// real VFS/path transition, so fill SelectedName just before delivery.
+		if change.navigation && !hasObservers {
+			change.snapshot.SelectedName = pf.PanelSnapshot(change.snapshot.Side).SelectedName
+		}
 		for _, observer := range observers {
 			observer(change.snapshot)
 		}

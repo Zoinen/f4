@@ -163,11 +163,24 @@ func TestPanelNavigationProviderIgnoresSelectionOnlyChanges(t *testing.T) {
 	if got := len(navigations); got != 2 {
 		t.Fatalf("initial navigation notifications = %d, want active and passive", got)
 	}
+	state := panelObserverStateFor(pf)
+	state.mu.Lock()
+	initialSelected := state.last[vfs.PanelActive].SelectedName
+	state.mu.Unlock()
+	if initialSelected != "" {
+		t.Fatalf("navigation-only publishing retained cursor state %q", initialSelected)
+	}
 
 	active.SetCursorIndex(1)
 	pf.publishPanelSnapshots()
 	if got := len(navigations); got != 2 {
 		t.Fatalf("selection-only update notified navigation provider %d times, want 2", got)
+	}
+	state.mu.Lock()
+	selectedAfterMove := state.last[vfs.PanelActive].SelectedName
+	state.mu.Unlock()
+	if selectedAfterMove != "" {
+		t.Fatalf("cursor movement entered navigation snapshot state: %q", selectedAfterMove)
 	}
 
 	if err := source.SetPath(child); err != nil {

@@ -385,12 +385,25 @@ type normalizedDirectory struct {
 }
 
 func normalizeDirectory(directory string) (normalizedDirectory, error) {
+	return normalizeDirectoryWithAbs(directory, filepath.Abs)
+}
+
+// normalizeDirectoryWithAbs keeps the cache lookup path free of Win32 path
+// resolution. A panel's OSVFS already supplies an absolute path, and calling
+// filepath.Abs for it on every redraw invokes GetFullPathNameW on Windows.
+// The injectable resolver makes that no-syscall guarantee regression-testable
+// without a mutable global test hook.
+func normalizeDirectoryWithAbs(directory string, absolutePath func(string) (string, error)) (normalizedDirectory, error) {
 	if strings.TrimSpace(directory) == "" {
 		return normalizedDirectory{}, errors.New("git discovery: directory is required")
 	}
-	absolute, err := filepath.Abs(directory)
-	if err != nil {
-		return normalizedDirectory{}, fmt.Errorf("git discovery: resolve %q: %w", directory, err)
+	absolute := directory
+	if !filepath.IsAbs(absolute) {
+		var err error
+		absolute, err = absolutePath(directory)
+		if err != nil {
+			return normalizedDirectory{}, fmt.Errorf("git discovery: resolve %q: %w", directory, err)
+		}
 	}
 	absolute = filepath.Clean(absolute)
 	key := absolute

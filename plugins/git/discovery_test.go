@@ -325,3 +325,34 @@ func absolutePath(t *testing.T, path string) string {
 	}
 	return filepath.Clean(absolute)
 }
+
+func TestNormalizeDirectoryAvoidsResolutionForAbsolutePath(t *testing.T) {
+	absolute := filepath.Clean(t.TempDir())
+	result, err := normalizeDirectoryWithAbs(absolute, func(string) (string, error) {
+		t.Fatal("absolute cache lookup unexpectedly resolved its path")
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("normalize absolute path: %v", err)
+	}
+	if result.path != absolute {
+		t.Fatalf("normalized absolute path = %q, want %q", result.path, absolute)
+	}
+
+	called := false
+	resolved := filepath.Join(absolute, "child")
+	relative := filepath.Join("relative", "child")
+	result, err = normalizeDirectoryWithAbs(relative, func(path string) (string, error) {
+		called = true
+		if path != relative {
+			t.Errorf("relative resolver path = %q, want %q", path, relative)
+		}
+		return resolved, nil
+	})
+	if err != nil {
+		t.Fatalf("normalize relative path: %v", err)
+	}
+	if !called || result.path != filepath.Clean(resolved) {
+		t.Fatalf("relative normalization called=%t path=%q, want %q", called, result.path, filepath.Clean(resolved))
+	}
+}
