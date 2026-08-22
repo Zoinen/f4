@@ -7,6 +7,8 @@
 #include <QThread>
 #include <QVariant>
 
+#include <functional>
+
 class QtShellMessageDecoder;
 
 class QtShellController : public QObject
@@ -15,7 +17,6 @@ class QtShellController : public QObject
     Q_PROPERTY(int initialCols READ initialCols CONSTANT)
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
-    Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
     Q_PROPERTY(QVariantMap presentationScene READ presentationScene NOTIFY sceneChanged)
     Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
     Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
@@ -36,6 +37,12 @@ public:
     QVariantMap commandLine() const { return m_commandLine; }
     QVariantList commandMenus() const { return m_commandMenus; }
 
+    // Deliberately not a Qt signal, slot, property or invokable: the media
+    // endpoint and nonce are bearer capabilities for native transport code
+    // and must not enter the QML meta-object surface exposed as qtShell.
+    void setMediaAdvertisementHandler(
+        std::function<void(const QVariantMap &)> handler);
+
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
     void sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat);
@@ -54,6 +61,9 @@ signals:
     void commandLineChanged();
     void commandMenusChanged();
     void fatalError(const QString &message);
+    // Presentation-only messages. Sensitive media advertisement fields,
+    // resource capabilities and native panel catalogs are removed before this
+    // signal reaches the meta-object/QML surface.
     void messageReceived(const QVariantMap &message);
 
     // Emitted after a complete frame has been removed from the socket but
@@ -98,8 +108,11 @@ private:
     int m_initialCols = 100;
     int m_initialRows = 30;
     bool m_connected = false;
+    bool m_serverHandshakeComplete = false;
     QVariantMap m_scene;
     QVariantMap m_presentationScene;
     QVariantMap m_commandLine;
     QVariantList m_commandMenus;
+    QVariantMap m_mediaAdvertisement;
+    std::function<void(const QVariantMap &)> m_mediaAdvertisementHandler;
 };

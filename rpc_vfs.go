@@ -146,7 +146,10 @@ func (v *RPCVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSIte
 }
 
 func (v *RPCVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{}
+	// The proxy can service ReadAt, but the plugin may itself wrap anything
+	// from memory to a high-latency materializing backend. Keep the cost
+	// conservative while identifying it as a virtual source.
+	return vfs.VFSCapabilities{ReadAccess: vfs.ReadAccessUnknownExpensive, StorageClass: vfs.StorageClassVirtual}
 }
 
 func (v *RPCVFS) Search(ctx context.Context, p, pat string) (chan int64, error) {

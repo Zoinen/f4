@@ -1534,6 +1534,9 @@ type s3RangeReader struct {
 }
 
 func (r *s3RangeReader) Size() int64 { return r.size }
+func (r *s3RangeReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessNativeRange
+}
 
 func (r *s3RangeReader) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if err := ctx.Err(); err != nil {
@@ -1823,7 +1826,7 @@ func (b *s3Backend) SetAttributes(context.Context, string, vfs.VFSItem) error {
 }
 
 func (b *s3Backend) Capabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: false, HasRandomAccess: true, HasAtomicNoReplaceRename: true}
+	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: false, HasRandomAccess: true, HasAtomicNoReplaceRename: true, ReadAccess: vfs.ReadAccessNativeRange, StorageClass: vfs.StorageClassNetwork}
 }
 
 func (b *s3Backend) TransferName(location string) string { return b.Base(location) }

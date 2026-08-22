@@ -164,6 +164,40 @@ QVariantMap withoutNativePanelPayloads(QVariantMap container)
     return container;
 }
 
+QVariant sanitizePresentationValue(const QVariant &value)
+{
+    if (value.metaType().id() == QMetaType::QVariantMap) {
+        const QVariantMap source = value.toMap();
+        QVariantMap sanitized;
+        for (auto it = source.cbegin(); it != source.cend(); ++it) {
+            if (it.key() == QStringLiteral("resourceId")
+                || it.key() == QStringLiteral("leaseId")
+                || it.key() == QStringLiteral("mediaEndpoint")
+                || it.key() == QStringLiteral("mediaNonce")
+                || it.key() == QStringLiteral("mediaProtocol")
+                || it.key() == QStringLiteral("mediaMaxChunkSize")) {
+                continue;
+            }
+            if (it.key() == QStringLiteral("source")
+                && it.value().toMap().contains(QStringLiteral("resourceId"))) {
+                continue;
+            }
+            sanitized.insert(it.key(), sanitizePresentationValue(it.value()));
+        }
+        return sanitized;
+    }
+    if (value.metaType().id() == QMetaType::QVariantList) {
+        QVariantList sanitized;
+        const QVariantList source = value.toList();
+        sanitized.reserve(source.size());
+        for (const QVariant &item : source) {
+            sanitized.push_back(sanitizePresentationValue(item));
+        }
+        return sanitized;
+    }
+    return value;
+}
+
 QVariantMap makePresentationScene(QVariantMap scene)
 {
     scene = withoutNativePanelPayloads(std::move(scene));
@@ -187,7 +221,59 @@ QVariantMap makePresentationScene(QVariantMap scene)
         }
         scene.insert(QStringLiteral("frames"), presentationFrames);
     }
-    return scene;
+    return sanitizePresentationValue(scene).toMap();
+}
+
+QVariantMap makePresentationMessage(const QVariantMap &message,
+                                    const QVariantMap &presentationScene)
+{
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type == QStringLiteral("scene")) {
+        return presentationScene;
+    }
+    if (type == QStringLiteral("hello")) {
+        QVariantMap presentation = sanitizePresentationValue(message).toMap();
+        presentation.remove(QStringLiteral("nonce"));
+        return presentation;
+    }
+    // Project fixed presentation/control schemas onto explicit allowlists.
+    // QVariant containers are implicitly shared, so even a full cell-grid
+    // frame remains a shallow copy while unknown transport fields cannot
+    // hitch a ride through the public signal.
+    if (type == QStringLiteral("palette")) {
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("colors"), message.value(QStringLiteral("colors"))},
+        };
+    }
+    if (type == QStringLiteral("frame")) {
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("width"), message.value(QStringLiteral("width"))},
+            {QStringLiteral("height"), message.value(QStringLiteral("height"))},
+            {QStringLiteral("full"), message.value(QStringLiteral("full"))},
+            {QStringLiteral("cells"), message.value(QStringLiteral("cells"))},
+        };
+    }
+    if (type == QStringLiteral("cursor")) {
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("x"), message.value(QStringLiteral("x"))},
+            {QStringLiteral("y"), message.value(QStringLiteral("y"))},
+            {QStringLiteral("visible"), message.value(QStringLiteral("visible"))},
+            {QStringLiteral("shape"), message.value(QStringLiteral("shape"))},
+        };
+    }
+    if (type == QStringLiteral("clipboard_set")) {
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("text"), message.value(QStringLiteral("text"))},
+        };
+    }
+    if (type == QStringLiteral("quit")) {
+        return {{QStringLiteral("type"), type}};
+    }
+    return sanitizePresentationValue(message).toMap();
 }
 }
 
@@ -273,6 +359,15 @@ QtShellController::~QtShellController()
         m_decodeThread.wait();
     }
     m_decoder = nullptr;
+}
+
+void QtShellController::setMediaAdvertisementHandler(
+    std::function<void(const QVariantMap &)> handler)
+{
+    m_mediaAdvertisementHandler = std::move(handler);
+    if (m_mediaAdvertisementHandler && !m_mediaAdvertisement.isEmpty()) {
+        m_mediaAdvertisementHandler(m_mediaAdvertisement);
+    }
 }
 
 void QtShellController::sendResize(int cols, int rows)
@@ -385,6 +480,7 @@ void QtShellController::onConnected()
     const int cellHeight = 20;
     sendMessage({
         {QStringLiteral("type"), QStringLiteral("hello")},
+        {QStringLiteral("protocol"), 2},
         {QStringLiteral("nonce"), m_nonce},
         {QStringLiteral("cols"), m_initialCols},
         {QStringLiteral("rows"), m_initialRows},
@@ -557,7 +653,35 @@ void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
 
     const QVariantMap message = decoded.toMap();
     const QString messageType = message.value(QStringLiteral("type")).toString();
-    if (messageType == QStringLiteral("scene")) {
+    if (messageType == QStringLiteral("hello")) {
+        if (message.value(QStringLiteral("protocol")).toInt() != 2
+            || message.value(QStringLiteral("nonce")).toString() != m_nonce) {
+            failProtocol(QStringLiteral("Invalid ExtUI server hello"));
+            return;
+        }
+        m_serverHandshakeComplete = true;
+        QVariantMap advertisement;
+        const int mediaProtocol = message.value(
+            QStringLiteral("mediaProtocol")).toInt();
+        const QString mediaEndpoint = message.value(
+            QStringLiteral("mediaEndpoint")).toString();
+        const QString mediaNonce = message.value(
+            QStringLiteral("mediaNonce")).toString();
+        if (mediaProtocol > 0 && !mediaEndpoint.isEmpty()
+            && !mediaNonce.isEmpty()) {
+            advertisement.insert(QStringLiteral("protocol"), mediaProtocol);
+            advertisement.insert(QStringLiteral("endpoint"), mediaEndpoint);
+            advertisement.insert(QStringLiteral("nonce"), mediaNonce);
+            advertisement.insert(QStringLiteral("maxChunkSize"),
+                message.value(QStringLiteral("mediaMaxChunkSize")));
+        }
+        if (advertisement != m_mediaAdvertisement) {
+            m_mediaAdvertisement = advertisement;
+            if (m_mediaAdvertisementHandler) {
+                m_mediaAdvertisementHandler(m_mediaAdvertisement);
+            }
+        }
+    } else if (messageType == QStringLiteral("scene")) {
         m_scene = message;
         m_presentationScene = makePresentationScene(message);
         const QVariantMap nextCommandLine = m_scene.value(QStringLiteral("shell"))
@@ -608,7 +732,8 @@ void QtShellController::onFrameDecoded(quint64 epoch, quint64 sequence,
             }
         }
     }
-    emit messageReceived(message);
+    emit messageReceived(makePresentationMessage(message,
+                                                 m_presentationScene));
     m_decodeInFlight = false;
     processBuffer();
 }

@@ -402,6 +402,9 @@ type googleCachedReader struct {
 }
 
 func (r *googleCachedReader) Size() int64 { return r.size }
+func (r *googleCachedReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 func (r *googleCachedReader) LocalPath() (string, bool) {
 	if r == nil || r.File == nil || r.File.Name() == "" {
 		return "", false
@@ -1537,12 +1540,18 @@ type googleRangeReader struct {
 }
 
 func (r *googleRangeReader) Size() int64 { return r.size }
+func (r *googleRangeReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	if _, ok := r.LocalPath(); ok {
+		return vfs.ReadAccessMaterializeOnce
+	}
+	return vfs.ReadAccessHybridRange
+}
 func (r *googleRangeReader) LocalPath() (string, bool) {
 	local := r.localFallback()
 	if local == nil {
 		return "", false
 	}
-	backing, ok := local.(interface{ LocalPath() (string, bool) })
+	backing, ok := local.(vfs.LocalBackingReader)
 	if !ok {
 		return "", false
 	}
@@ -1953,6 +1962,8 @@ func (b *googleDriveBackend) Capabilities() vfs.VFSCapabilities {
 		HasRandomAccess:            true,
 		HasIdentityPreservingWrite: true,
 		HasAtomicNoReplaceRename:   true,
+		ReadAccess:                 vfs.ReadAccessHybridRange,
+		StorageClass:               vfs.StorageClassNetwork,
 	}
 }
 

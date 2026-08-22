@@ -20,17 +20,10 @@ const (
 	archiveMaterializationIdleTTL    = 10 * time.Minute
 )
 
-// archiveLocalBacking is deliberately structural. A remote reader can expose
-// a private local backing without making it part of the general VFS contract.
-// The path must remain valid until the reader is closed. Keeping that reader
-// as the cache cleanup lease avoids copying an already-materialized download
-// into a second temporary file.
-type archiveLocalBacking interface {
-	LocalPath() (string, bool)
-}
-
 func archiveReaderLocalPath(reader vfs.ReadAtCloser) (string, bool) {
-	if local, ok := reader.(archiveLocalBacking); ok {
+	// Keep the reader as the cache cleanup lease: LocalBackingReader promises
+	// that its provider-owned path remains valid until Close.
+	if local, ok := reader.(vfs.LocalBackingReader); ok {
 		if localPath, valid := local.LocalPath(); valid && localPath != "" {
 			return localPath, true
 		}

@@ -353,7 +353,11 @@ func (f *coreTempFile) Read(ctx context.Context, p []byte) (int, error) {
 	}
 	return f.file.Read(p)
 }
-func (f *coreTempFile) Size() int64 { return f.size }
+func (f *coreTempFile) Size() int64               { return f.size }
+func (f *coreTempFile) LocalPath() (string, bool) { return f.path, f.path != "" }
+func (f *coreTempFile) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 func (f *coreTempFile) Close() error {
 	f.closeOnce.Do(func() {
 		f.closeErr = errors.Join(f.file.Close(), os.Remove(f.path))
@@ -374,7 +378,7 @@ func (*CoreVFS) Search(context.Context, string, string) (chan int64, error) {
 	return nil, ErrReadOnlyDomain
 }
 func (*CoreVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true}
+	return vfs.VFSCapabilities{HasRandomAccess: true, ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassVirtual}
 }
 func (v *CoreVFS) ParentVFS() vfs.VFS { return v.parent }
 func (v *CoreVFS) Clone() vfs.VFS {

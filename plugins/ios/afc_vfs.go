@@ -789,7 +789,7 @@ func (v *AFCVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem) 
 }
 
 func (v *AFCVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasServerSideMove: !v.readOnly, HasRandomAccess: true}
+	return vfs.VFSCapabilities{HasServerSideMove: !v.readOnly, HasRandomAccess: true, ReadAccess: vfs.ReadAccessNativeRange, StorageClass: vfs.StorageClassVirtual}
 }
 func (*AFCVFS) Search(context.Context, string, string) (chan int64, error) {
 	return nil, ErrSearchUnsupported

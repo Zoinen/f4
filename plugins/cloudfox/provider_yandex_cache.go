@@ -65,6 +65,9 @@ type yandexCachedReader struct {
 }
 
 func (r *yandexCachedReader) Size() int64 { return r.size }
+func (r *yandexCachedReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 func (r *yandexCachedReader) LocalPath() (string, bool) {
 	if r.File == nil || r.File.Name() == "" {
 		return "", false

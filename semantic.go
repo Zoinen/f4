@@ -939,13 +939,12 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 
 func (fp *FileSystemPanel) semanticSourceInfo() (sourceKind string, previewCapable bool) {
 	provider, ok := fp.vfs.(vfs.LocalPathProvider)
-	if !ok {
-		return "vfs", false
+	if ok {
+		if _, err := provider.LocalPath(fp.vfs.GetPath()); err == nil {
+			return "local", true
+		}
 	}
-	if _, err := provider.LocalPath(fp.vfs.GetPath()); err != nil {
-		return "local", false
-	}
-	return "local", true
+	return "vfs", fp.vfs != nil
 }
 
 func (fp *FileSystemPanel) semanticEntryMetadata(entry *fileEntry, sourceKind string) (entryID, localPath string) {
@@ -955,10 +954,8 @@ func (fp *FileSystemPanel) semanticEntryMetadata(entry *fileEntry, sourceKind st
 			localPath = resolved
 		}
 	}
-	identity := sourceKind + "\x00" + localPath
-	if localPath == "" {
-		identity = sourceKind + "\x00" + fmt.Sprintf("%T", fp.vfs) + "\x00" + fp.vfs.GetPath() + "\x00" + entry.Name
-	}
+	path := fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
+	identity := sourceKind + "\x00" + mediaSourceKey(fp.vfs, path)
 	sum := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("entry-%x", sum[:16]), localPath
 }
@@ -1004,6 +1001,7 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
 		writeSemanticFingerprintString(catalog, localPath)
 		writeSemanticFingerprintString(catalog, entry.Name)
 		writeSemanticFingerprintString(catalog, entry.Mode)
+		writeSemanticFingerprintString(catalog, entry.Revision)
 		var value [8]byte
 		binary.LittleEndian.PutUint64(value[:], uint64(entry.Size))
 		_, _ = catalog.Write(value[:])
@@ -1024,6 +1022,9 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
 		}
 		if entry.SizeCalculated {
 			flags |= 1 << 4
+		}
+		if entry.SizeKnown {
+			flags |= 1 << 5
 		}
 		_, _ = catalog.Write([]byte{flags})
 		if entry.Selected {
@@ -1062,14 +1063,19 @@ type semanticPanelStaticCache struct {
 	entries               []extui.FileEntryModel
 	highlightStyles       map[string]extui.HighlightStyleModel
 	totalSize             int64
+	mediaBroker           *extUiMediaBroker
+	mediaSourceEpoch      int64
 }
 
 func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticPanelStaticCache {
+	mediaBroker := currentExtUiMediaBroker()
 	cache := fp.semanticStaticCache
 	if cache != nil &&
 		cache.catalogRevision == fp.catalogRevision &&
 		cache.highlightRevision == GlobalFileHighlighter.Revision &&
-		cache.separateFileExtension == AppConfig.SeparateFileExtensions {
+		cache.separateFileExtension == AppConfig.SeparateFileExtensions &&
+		cache.mediaBroker == mediaBroker &&
+		cache.mediaSourceEpoch == fp.mediaSourceEpoch {
 		return cache
 	}
 
@@ -1079,7 +1085,12 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		separateFileExtension: AppConfig.SeparateFileExtensions,
 		entries:               make([]extui.FileEntryModel, 0, len(fp.entries)),
 		highlightStyles:       make(map[string]extui.HighlightStyleModel),
+		mediaBroker:           mediaBroker,
+		mediaSourceEpoch:      fp.mediaSourceEpoch,
 	}
+	panelID := vtui.SemanticID(fp)
+	resourceIDs := make([]string, 0, len(fp.entries))
+	caps := fp.vfs.GetCapabilities()
 	for i, entry := range fp.entries {
 		entryID, localPath := fp.semanticEntryMetadata(entry, sourceKind)
 		displayBaseName := entry.Name
@@ -1096,6 +1107,35 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		}
 		if !entry.IsDir {
 			cache.totalSize += entry.Size
+		}
+		entryPath := fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
+		storage := mediaStorageClass(caps, localPath)
+		version, versionStrength := mediaSourceVersion(fp.vfs, entry.VFSItem, storage == vfs.StorageClassLocal, fp.catalogRevision, fp.mediaSourceEpoch)
+		source := extui.ImageSourceModel{
+			SourceKey:       mediaSourceKey(fp.vfs, entryPath),
+			Version:         version,
+			VersionStrength: versionStrength,
+			Size:            entry.Size,
+			SizeKnown:       entry.SizeKnown || entry.Size != 0,
+			AccessProfile:   caps.ReadAccess.String(),
+			StorageClass:    storage.String(),
+		}
+		if mediaBroker != nil && !entry.IsDir && entry.Name != ".." {
+			descriptor := mediaBroker.Register(mediaSourceRegistration{
+				PanelID: panelID, CatalogVersion: fp.catalogRevision, SourceEpoch: fp.mediaSourceEpoch, FS: fp.vfs,
+				Path: entryPath, Item: entry.VFSItem, LocalPath: localPath,
+			})
+			source = extui.ImageSourceModel{
+				ResourceID: descriptor.ResourceID, SourceKey: descriptor.SourceKey,
+				Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
+				Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
+				AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
+			}
+			resourceIDs = append(resourceIDs, descriptor.ResourceID)
+		}
+		var sourceModel *extui.ImageSourceModel
+		if !entry.IsDir && entry.Name != ".." {
+			sourceModel = &source
 		}
 		cache.entries = append(cache.entries, extui.FileEntryModel{
 			Index:            i,
@@ -1114,10 +1154,14 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 			SizeCalculated:   entry.SizeCalculated,
 			MTime:            entry.MTime.Format("2006-01-02 15:04"),
 			MTimeNanos:       semanticMTimeNanos(entry.MTime),
-			Version:          fmt.Sprintf("%d:%d", semanticMTimeNanos(entry.MTime), entry.Size),
+			Version:          version,
+			Source:           sourceModel,
 			Mode:             entry.Mode,
 			HighlightStyleID: highlightStyleID,
 		})
+	}
+	if mediaBroker != nil {
+		mediaBroker.CommitPanel(panelID, fp.catalogRevision, resourceIDs)
 	}
 	fp.semanticStaticCache = cache
 	return cache

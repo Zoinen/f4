@@ -658,6 +658,9 @@ type webDAVCachedReader struct {
 }
 
 func (r *webDAVCachedReader) Size() int64 { return r.size }
+func (r *webDAVCachedReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 func (r *webDAVCachedReader) LocalPath() (string, bool) {
 	if r.File == nil || r.File.Name() == "" {
 		return "", false
@@ -1689,6 +1692,23 @@ type webDAVRangeReader struct {
 }
 
 func (r *webDAVRangeReader) Size() int64 { return r.size }
+func (r *webDAVRangeReader) LocalPath() (string, bool) {
+	local := r.localReader()
+	if local == nil {
+		return "", false
+	}
+	backing, ok := local.(vfs.LocalBackingReader)
+	if !ok {
+		return "", false
+	}
+	return backing.LocalPath()
+}
+func (r *webDAVRangeReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	if _, ok := r.LocalPath(); ok {
+		return vfs.ReadAccessMaterializeOnce
+	}
+	return vfs.ReadAccessHybridRange
+}
 func (r *webDAVRangeReader) Close() error {
 	r.once.Do(func() {
 		r.cancel()
@@ -2136,7 +2156,7 @@ func (b *webDAVBackend) SetAttributes(context.Context, string, vfs.VFSItem) erro
 }
 
 func (b *webDAVBackend) Capabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: true, HasRandomAccess: true, HasAtomicNoReplaceRename: true}
+	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: true, HasRandomAccess: true, HasAtomicNoReplaceRename: true, ReadAccess: vfs.ReadAccessHybridRange, StorageClass: vfs.StorageClassNetwork}
 }
 
 func (b *webDAVBackend) TransferName(location string) string { return b.Base(location) }

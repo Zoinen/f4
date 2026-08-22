@@ -186,7 +186,7 @@ func (v *NetFoxVFS) SetAttributes(ctx context.Context, path string, item vfs.VFS
 }
 
 func (v *NetFoxVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false}
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false, ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassNetwork}
 }
 func (v *NetFoxVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 

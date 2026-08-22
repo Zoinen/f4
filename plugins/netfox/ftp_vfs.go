@@ -257,7 +257,7 @@ func (v *FTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSIte
 }
 
 func (v *FTPVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasUnixPermissions: true}
+	return vfs.VFSCapabilities{HasUnixPermissions: true, ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassNetwork}
 }
 func (v *FTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) {
 	return nil, nil
@@ -374,7 +374,11 @@ type ftpFileWrapper struct {
 	path string
 }
 
-func (w *ftpFileWrapper) Size() int64 { return w.size }
+func (w *ftpFileWrapper) Size() int64               { return w.size }
+func (w *ftpFileWrapper) LocalPath() (string, bool) { return w.path, w.path != "" }
+func (w *ftpFileWrapper) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 func (w *ftpFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	return w.File.ReadAt(p, off)
 }

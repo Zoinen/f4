@@ -517,6 +517,7 @@ type FileSystemPanel struct {
 	semanticSelectionInitialized bool
 	catalogRevision              int64
 	selectionRevision            int64
+	mediaSourceEpoch             int64
 	semanticStaticCache          *semanticPanelStaticCache
 }
 
@@ -2076,6 +2077,10 @@ func (fp *FileSystemPanel) moveToParentAfterLoadFailure(loadVFS vfs.VFS, failedP
 }
 
 func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
+	// Even when a backend cannot expose revision, size or mtime, a new listing
+	// is a new observation boundary for opaque media bytes. Strong/weak source
+	// versions remain stable; only the session-strength fallback consumes this.
+	fp.mediaSourceEpoch++
 	if fp.cancelLoad != nil {
 		fp.cancelLoad()
 		fp.cancelLoad = nil

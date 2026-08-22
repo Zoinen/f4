@@ -846,6 +846,8 @@ func (v *FishVFS) GetCapabilities() vfs.VFSCapabilities {
 		HasServerSideCopy:  true,
 		HasServerSideMove:  true,
 		HasRandomAccess:    true,
+		ReadAccess:         vfs.ReadAccessNativeRange,
+		StorageClass:       vfs.StorageClassNetwork,
 		HasUnixPermissions: true,
 		HasSearch:          v.client().CanGrep(),
 	}

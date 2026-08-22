@@ -49,6 +49,11 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 					LocalPath:        "/tmp/alpha.txt",
 					MTimeNanos:       123,
 					Version:          "123:4",
+					Source: &ImageSourceModel{
+						ResourceID: "resource-1", SourceKey: "source-1", Version: "123:4",
+						VersionStrength: "localStat", Size: 4, SizeKnown: true,
+						AccessProfile: "directLocal", StorageClass: "local",
+					},
 				}},
 			}},
 			InfoPanels: []InfoPanelModel{{
@@ -120,6 +125,12 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	}
 	if entries[0]["displayBaseName"] != "alpha" || entries[0]["displayExtension"] != "txt" {
 		t.Fatalf("entry display name parts were not serialized: %#v", entries[0])
+	}
+	source := entries[0]["source"].(map[string]any)
+	if source["resourceId"] != "resource-1" || source["sourceKey"] != "source-1" ||
+		source["versionStrength"] != "localStat" || source["accessProfile"] != "directLocal" ||
+		source["storageClass"] != "local" || source["sizeKnown"] != true {
+		t.Fatalf("entry source descriptor was not serialized: %#v", source)
 	}
 	infoPanels := shell["infoPanels"].([]map[string]any)
 	if infoPanels[0]["kind"] != "infoPanel" || infoPanels[0]["side"] != 0 {

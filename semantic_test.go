@@ -398,7 +398,7 @@ func TestFileSystemPanelSemanticRevisionsAndStableIdentity(t *testing.T) {
 	}
 }
 
-func TestFileSystemPanelSemanticVFSFallbackKeepsGalleryPreference(t *testing.T) {
+func TestFileSystemPanelSemanticVFSEnablesBrokerPreview(t *testing.T) {
 	remote := vfs.NewNullVFS(0)
 	fp := &FileSystemPanel{
 		vfs:           remote,
@@ -408,10 +408,10 @@ func TestFileSystemPanelSemanticVFSFallbackKeepsGalleryPreference(t *testing.T) 
 		entries:       []*fileEntry{{VFSItem: vfs.VFSItem{Name: "remote.jpg", Size: 1}}},
 	}
 	model := fp.semanticPanelModel(nil, 0, true)
-	if model.SourceKind != "vfs" || model.PreviewCapable {
+	if model.SourceKind != "vfs" || !model.PreviewCapable {
 		t.Fatalf("unexpected remote capability model: %+v", model)
 	}
-	if model.Entries[0].LocalPath != "" || model.Entries[0].EntryID == "" {
+	if model.Entries[0].LocalPath != "" || model.Entries[0].EntryID == "" || model.Entries[0].Source == nil || model.Entries[0].Source.SourceKey == "" {
 		t.Fatalf("unexpected remote entry metadata: %+v", model.Entries[0])
 	}
 }
