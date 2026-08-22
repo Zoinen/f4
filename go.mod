@@ -176,3 +176,6 @@ replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 // replace github.com/unxed/colorer4go => ../../../dev/colorer4go
 
 // replace github.com/unxed/vtui => ../../../dev/vtui
+
+// Use the reviewed vtui cleanup while unxed/vtui#63 is being checked.
+replace github.com/unxed/vtui => github.com/Zoinen/vtui v0.1.238-0.20260822042836-dd9b1ec1ca20
