@@ -329,7 +329,16 @@ func belongsToStagedLayer(entry statusEntry) bool {
 }
 
 func belongsToUnstagedLayer(entry statusEntry) bool {
-	if entry.Class == statusConflict || entry.Class == statusIgnored || entry.Class == statusUntracked {
+	// Ignored paths are useful as ordinary-panel decorations, but they do not
+	// belong in the status VFS: the view is explicitly ordered as staged then
+	// unstaged, and an ignored path has neither a Git diff nor a staging
+	// operation. Showing it here used to make F3 report a misleading generic
+	// "binary changes" read-only error for perfectly ordinary source files
+	// beneath an ignored build directory.
+	if entry.Class == statusIgnored {
+		return false
+	}
+	if entry.Class == statusConflict || entry.Class == statusUntracked {
 		return true
 	}
 	return entry.Worktree != gogit.Unmodified
@@ -595,7 +604,7 @@ func (view *StatusVFS) showDiff(app vfs.App, names []string) {
 }
 
 func (view *StatusVFS) editDiff(app vfs.App, names []string) {
-	layer, paths, err := view.diffSelection(names)
+	layer, paths, err := view.editableDiffSelection(names)
 	if err != nil {
 		notify(app, " Git edit diff ", err.Error())
 		return
@@ -699,6 +708,18 @@ func (view *StatusVFS) editDiff(app vfs.App, names []string) {
 }
 
 func (view *StatusVFS) diffSelection(names []string) (statusLayer, []string, error) {
+	return view.diffSelectionWithPolicy(names, false)
+}
+
+// editableDiffSelection is deliberately stricter than diffSelection: F3 can
+// display a binary-diff marker, while F4 must only operate on a patch that can
+// safely be edited and re-applied. Conflicts are retained in the status view
+// for visibility but cannot be edited.
+func (view *StatusVFS) editableDiffSelection(names []string) (statusLayer, []string, error) {
+	return view.diffSelectionWithPolicy(names, true)
+}
+
+func (view *StatusVFS) diffSelectionWithPolicy(names []string, requireEditable bool) (statusLayer, []string, error) {
 	rows := view.rowsForNames(names)
 	if len(rows) == 0 {
 		return statusLayerUnstaged, nil, errors.New("Select a staged or unstaged file first.")
@@ -713,8 +734,8 @@ func (view *StatusVFS) diffSelection(names []string) (statusLayer, []string, err
 		if row.layer != layer {
 			return statusLayerUnstaged, nil, errors.New("Select one homogeneous staged or unstaged group.")
 		}
-		if !row.editable {
-			return statusLayerUnstaged, nil, errors.New("Binary changes, gitlinks, ignored paths, and unresolved conflicts are read-only.")
+		if requireEditable && !row.editable {
+			return statusLayerUnstaged, nil, errors.New("Unresolved conflicts are read-only in the Git patch editor.")
 		}
 		if _, duplicate := seen[row.entry.Path]; !duplicate {
 			seen[row.entry.Path] = struct{}{}

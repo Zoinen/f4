@@ -32,6 +32,9 @@ func TestStatusVFSOrdersStagedSeparatorAndUnstagedRows(t *testing.T) {
 		"new.txt": {
 			Path: "new.txt", Index: gogit.Untracked, Worktree: gogit.Untracked, Class: statusUntracked,
 		},
+		"build/generated.py": {
+			Path: "build/generated.py", Index: gogit.Ignored, Worktree: gogit.Ignored, Class: statusIgnored,
+		},
 	})
 	view := newStatusVFS(plugin, Repository{Root: root}, vfs.NewOSVFS(root))
 	t.Cleanup(func() { _ = view.Close() })
@@ -58,6 +61,29 @@ func TestStatusVFSOrdersStagedSeparatorAndUnstagedRows(t *testing.T) {
 	}
 	if got, want := items[4].ExtendedAttributes["git.indexStatus"], string(gogit.Untracked); got != want {
 		t.Errorf("untracked index status = %q, want %q", got, want)
+	}
+	for _, item := range items {
+		if item.PresentationName() == "build/generated.py" {
+			t.Fatal("ignored path appeared in staged/unstaged status VFS")
+		}
+	}
+}
+
+func TestStatusVFSDiffSelectionViewsConflictButEditorRejectsIt(t *testing.T) {
+	root := t.TempDir()
+	plugin := testStatusPlugin(root, map[string]statusEntry{
+		"conflict.txt": {
+			Path: "conflict.txt", Index: gogit.UpdatedButUnmerged, Worktree: gogit.UpdatedButUnmerged, Class: statusConflict,
+		},
+	})
+	view := newStatusVFS(plugin, Repository{Root: root}, vfs.NewOSVFS(root))
+	t.Cleanup(func() { _ = view.Close() })
+
+	if layer, paths, err := view.diffSelection([]string{"2:conflict.txt"}); err != nil || layer != statusLayerUnstaged || !sameStrings(paths, []string{"conflict.txt"}) {
+		t.Fatalf("F3 diff selection = (%v, %q, %v), want unstaged conflict path", layer, paths, err)
+	}
+	if _, _, err := view.editableDiffSelection([]string{"2:conflict.txt"}); err == nil || !strings.Contains(err.Error(), "Unresolved conflicts") {
+		t.Fatalf("F4 editable selection error = %v, want unresolved-conflict rejection", err)
 	}
 }
 
