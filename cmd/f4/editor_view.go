@@ -3069,7 +3069,12 @@ func (ev *EditorView) StartIndexing() {
 		ev.restoreTargetPos()
 		ctx, cancel := context.WithCancel(context.Background())
 		ev.indexCancel = cancel
-		go ev.scanFullyReadForUnsafeWordWrap(ctx, sessionID)
+		go func() {
+			// zoin-bot keeps mapped-file faults recoverable in the fully-read
+			// indexing path just like in the lazy-buffer indexing goroutine.
+			defer ev.guardMapping("indexing fully-read buffer")()
+			ev.scanFullyReadForUnsafeWordWrap(ctx, sessionID)
+		}()
 		return
 	}
 
