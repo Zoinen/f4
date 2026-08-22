@@ -35,13 +35,25 @@ func (ev *EditorView) lineUsesVisualBidi() bool {
 	if vtui.DefaultBidiMode != vtui.BidiFull {
 		return false
 	}
+	if ev.bidiCacheValid && ev.bidiCacheSession == ev.editSession && ev.bidiCacheLine == ev.CursorLine {
+		return ev.bidiCacheValue
+	}
 	lineLen := ev.getLineLength(ev.CursorLine)
 	if lineLen <= 0 {
+		ev.bidiCacheSession = ev.editSession
+		ev.bidiCacheLine = ev.CursorLine
+		ev.bidiCacheValue = false
+		ev.bidiCacheValid = true
 		return false
 	}
 	lineStart := ev.li.GetLineOffset(ev.CursorLine)
 	data, err := ev.pt.GetRange(lineStart, lineLen)
-	return err == nil && vtui.HasRTL(string(data))
+	value := err == nil && vtui.HasRTL(string(data))
+	ev.bidiCacheSession = ev.editSession
+	ev.bidiCacheLine = ev.CursorLine
+	ev.bidiCacheValue = value
+	ev.bidiCacheValid = true
+	return value
 }
 
 func nextEditorGraphemeBoundary(data []byte, pos int) int {

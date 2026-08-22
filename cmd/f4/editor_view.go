@@ -178,6 +178,14 @@ type EditorView struct {
 	CursorVirtualSpaces int
 	UseEditorConfig     bool
 
+	// bidiCache avoids rescanning an unchanged long line on every cursor key.
+	// zoin-bot keys it by editSession and logical line, so edits and undo/redo
+	// invalidate the result without making the common LTR path line-sized.
+	bidiCacheSession int
+	bidiCacheLine    int
+	bidiCacheValue   bool
+	bidiCacheValid   bool
+
 	highlighting    bool
 	highlightCancel context.CancelFunc
 
