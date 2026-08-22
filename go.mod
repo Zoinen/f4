@@ -176,3 +176,11 @@ replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 // replace github.com/unxed/colorer4go => ../../../dev/colorer4go
 
 // replace github.com/unxed/vtui => ../../../dev/vtui
+
+// Use the reviewed vtui cleanup while its post-v0.1.257 fix is being
+// released, and keep the keytrans revision under review pinned immutably.
+replace github.com/unxed/vtui => github.com/Zoinen/vtui v0.1.238-0.20260822042836-dd9b1ec1ca20
+
+// Use the reviewed keytrans revision that preserves EnhancedKey for the
+// physical X11/Wayland navigation cluster while unxed/keytrans#4 is reviewed.
+replace github.com/unxed/keytrans => github.com/Zoinen/keytrans v0.0.0-20260822041013-227b3d517c1a
