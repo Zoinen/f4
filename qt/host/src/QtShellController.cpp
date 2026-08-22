@@ -316,7 +316,10 @@ QVariantMap makePresentationMessage(const QVariantMap &message,
     }
     if (type == QStringLiteral("cursor")) {
         return {{QStringLiteral("type"), type},
-                {QStringLiteral("cursor"), message.value(QStringLiteral("cursor"))}};
+                {QStringLiteral("x"), message.value(QStringLiteral("x"))},
+                {QStringLiteral("y"), message.value(QStringLiteral("y"))},
+                {QStringLiteral("visible"), message.value(QStringLiteral("visible"))},
+                {QStringLiteral("shape"), message.value(QStringLiteral("shape"))}};
     }
     if (type == QStringLiteral("clipboard_set")) {
         return {{QStringLiteral("type"), type},
