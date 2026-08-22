@@ -2164,7 +2164,8 @@ void F4GalleryBridgeTests::vfsResourceDescriptorsRemainOpaqueAndPreviewable()
         }}},
     };
 
-    const QVariantMap normalized = F4GalleryBridge::normalizedEntries(panel)
+    F4GalleryBridge normalizationBridge(nullptr);
+    const QVariantMap normalized = normalizationBridge.normalizedEntries(panel)
                                        .constFirst().toMap();
     QCOMPARE(normalized.value(QStringLiteral("resourceId")),
              sourceDescriptor.value(QStringLiteral("resourceId")));
