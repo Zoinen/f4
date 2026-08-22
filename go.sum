@@ -8,8 +8,6 @@ github.com/Masterminds/semver v1.5.0 h1:H65muMkzWKEuNDnfl9d70GUjFniHKHRbFPGBuZ3Q
 github.com/Masterminds/semver v1.5.0/go.mod h1:MB6lktGJrhw8PrUyiEoblNEGEQ+RzHPF078ddwwvV3Y=
 github.com/STARRY-S/zip v0.2.3 h1:luE4dMvRPDOWQdeDdUxUoZkzUIpTccdKdhHHsQJ1fm4=
 github.com/STARRY-S/zip v0.2.3/go.mod h1:lqJ9JdeRipyOQJrYSOtpNAiaesFO6zVDsE8GIGFaoSk=
-github.com/Zoinen/vtui v0.1.238-0.20260822042247-3e65ee53bfbc h1:8ad7x8CvsdkeRwogv7mikBhO5L5zJ3rM6nAd44cIMcY=
-github.com/Zoinen/vtui v0.1.238-0.20260822042247-3e65ee53bfbc/go.mod h1:wlKhDK+7X8w8HjSoumJAshi4YFdBUE2z6vUp7NBNTcU=
 github.com/abadojack/whatlanggo v1.0.1 h1:19N6YogDnf71CTHm3Mp2qhYfkRdyvbgwWdd2EPxJRG4=
 github.com/abadojack/whatlanggo v1.0.1/go.mod h1:66WiQbSbJBIlOZMsvbKe5m6pzQovxCH9B/K8tQB2uoc=
 github.com/akalin/gopar v0.0.0-20210524065929-a776223763d3 h1:riZbpH66GmEJzxox72D09gKw8YQ0DE5+GAYEtnGP1PM=
@@ -270,6 +268,8 @@ github.com/unxed/tar v0.1.126 h1:RleuQKR5lCz+5ESFmED4RS6IizeEVjZ/pn3UER9jTBI=
 github.com/unxed/tar v0.1.126/go.mod h1:PVC2kDNoHYKzggPKeyE+xAr5fn8cBHuU0Y+hHCsleSI=
 github.com/unxed/vtinput v0.1.4 h1:yiYD83SwunjdoKTi6IllVAvKSE+av46DKSHyVhuezHQ=
 github.com/unxed/vtinput v0.1.4/go.mod h1:ZOqbBmEzYb33FrwsJf0y1QSJLo378ciXEgZWD4cTqGU=
+github.com/unxed/vtui v0.1.257-0.20260822042553-4b1676e58789 h1:9u4yFZBUIU3SNrJFLfJY7C0RtcqeJ9rokLoabXcFv/w=
+github.com/unxed/vtui v0.1.257-0.20260822042553-4b1676e58789/go.mod h1:wlKhDK+7X8w8HjSoumJAshi4YFdBUE2z6vUp7NBNTcU=
 github.com/unxed/winkeys v0.1.1 h1:CeRhzQLrZtO2aVq8C8gPX1ySdbbvPombbUZ15cRjFTI=
 github.com/unxed/winkeys v0.1.1/go.mod h1:eCDbEJFdYcii0Fd4O9u+CAqjJ4SkkhWDkhikNFwBCd4=
 github.com/unxed/xkb-go v0.1.8 h1:hqPI2wJw2LQ7YOqghNYat/TJF3pFamCCPjhxI5I3lhU=
