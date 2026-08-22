@@ -1264,6 +1264,55 @@ func TestAskOverwriteUsesWarningPalette(t *testing.T) {
 	}
 }
 
+func TestAskOverwriteLayout_AllLanguages(t *testing.T) {
+	vtui.SetDefaultPalette()
+	packs := LoadAllLanguagePacks()
+	if len(packs) == 0 {
+		t.Fatal("no language packs bundled")
+	}
+
+	baseStrings := vtui.SnapshotStrings()
+	t.Cleanup(func() { vtui.ReplaceStrings(baseStrings) })
+	for _, pack := range packs {
+		pack := pack
+		t.Run(pack.Name, func(t *testing.T) {
+			vtui.ReplaceStrings(baseStrings)
+			vtui.AddStrings(pack.Strings)
+			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan int, 1)
+			go func() {
+				choice, _ := AskOverwrite(ctx, "/destination/existing.txt", vfs.VFSItem{}, vfs.VFSItem{}, nil)
+				result <- choice
+			}()
+
+			container := waitForDialog(t, Msg("Warning.Title"))
+			dlg, ok := container.(*vtui.Window)
+			if !ok {
+				t.Fatalf("localized overwrite dialog is %T, want *vtui.Window", container)
+			}
+			vtui.AssertLayout(t, dlg)
+			if !pressKey(dlg, &vtinput.InputEvent{
+				Type:           vtinput.KeyEventType,
+				KeyDown:        true,
+				VirtualKeyCode: vtinput.VK_ESCAPE,
+			}) {
+				t.Fatal("Escape was not handled by the localized overwrite dialog")
+			}
+			select {
+			case choice := <-result:
+				if choice != 6 {
+					t.Fatalf("localized Escape returned choice %d, want cancel (6)", choice)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("localized AskOverwrite did not return after Escape")
+			}
+		})
+	}
+}
+
 // Helper to pump UI tasks until a dialog with the given title appears
 func waitForDialog(t *testing.T, title string) vtui.Container {
 	t.Helper()

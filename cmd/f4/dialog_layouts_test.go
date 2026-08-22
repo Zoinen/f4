@@ -15,6 +15,8 @@ func TestAllDialogs_LayoutValidation(t *testing.T) {
 	skipIfNoRelevantChanges(t, "layouts",
 		"lang/*.lng",
 		"lang/*.txt",
+		"file_ops.go",
+		"dialog_button_layout.go",
 		"*_dialog*.go",
 		"*_ui*.go",
 		"*_settings*.go",
