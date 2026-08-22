@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -55,6 +56,67 @@ func (r *redrawCoalescingTestRenderer) SetSemanticScene(map[string]any) {
 		r.onSceneSent()
 	}
 }
+
+type semanticSuppressionTestRenderer struct {
+	renders     int
+	scenes      int
+	flushes     int
+	suppress    bool
+	deferRender bool
+	deferBound  bool
+	deferGen    uint64
+	onConsume   func()
+	begin       int
+	end         int
+}
+
+type unchangedTaskRunTestRenderer struct {
+	begin         atomic.Int32
+	end           atomic.Int32
+	unchangedEnds atomic.Int32
+}
+
+func (*unchangedTaskRunTestRenderer) Render([]CharInfo, []CharInfo, int, int, bool) {}
+func (*unchangedTaskRunTestRenderer) SetCursor(int, int, bool, CursorShape)         {}
+func (*unchangedTaskRunTestRenderer) SetPalette(*[256]uint32)                       {}
+func (*unchangedTaskRunTestRenderer) SetWindowTitle(string)                         {}
+func (*unchangedTaskRunTestRenderer) Flush()                                        {}
+func (*unchangedTaskRunTestRenderer) WantsPeriodicRedraw() bool                     { return false }
+func (r *unchangedTaskRunTestRenderer) BeginSemanticSceneUpdate()                   { r.begin.Add(1) }
+func (r *unchangedTaskRunTestRenderer) EndSemanticSceneUpdate()                     { r.end.Add(1) }
+func (r *unchangedTaskRunTestRenderer) EndSemanticSceneUpdateUnchanged() bool {
+	r.unchangedEnds.Add(1)
+	return true
+}
+
+func (r *semanticSuppressionTestRenderer) Render([]CharInfo, []CharInfo, int, int, bool) {
+	r.renders++
+}
+func (*semanticSuppressionTestRenderer) SetCursor(int, int, bool, CursorShape) {}
+func (*semanticSuppressionTestRenderer) SetPalette(*[256]uint32)               {}
+func (*semanticSuppressionTestRenderer) SetWindowTitle(string)                 {}
+func (r *semanticSuppressionTestRenderer) Flush()                              { r.flushes++ }
+func (r *semanticSuppressionTestRenderer) SetSemanticScene(map[string]any)     { r.scenes++ }
+func (r *semanticSuppressionTestRenderer) ConsumeSemanticSceneExportSuppression() bool {
+	suppress := r.suppress
+	r.suppress = false
+	return suppress
+}
+func (r *semanticSuppressionTestRenderer) BindSemanticRenderPhaseDeferral(generation uint64) {
+	r.deferBound = r.deferRender
+	r.deferGen = generation
+}
+func (r *semanticSuppressionTestRenderer) ConsumeSemanticRenderPhaseDeferral(generation uint64) bool {
+	deferRender := r.deferRender && r.deferBound && r.deferGen == generation
+	r.deferRender = false
+	r.deferBound = false
+	if r.onConsume != nil {
+		r.onConsume()
+	}
+	return deferRender
+}
+func (r *semanticSuppressionTestRenderer) BeginSemanticSceneUpdate() { r.begin++ }
+func (r *semanticSuppressionTestRenderer) EndSemanticSceneUpdate()   { r.end++ }
 
 func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	if rendererWantsPeriodicRedraw(&periodicRedrawTestRenderer{wants: false}) {
@@ -296,6 +358,37 @@ func TestFrameManager_NoDoubleDispatch(t *testing.T) {
 
 	// Simply ensure that ProcessKey is called exactly once for 1 event.
 	// (This test is more for documenting the problem; the real fm.Run is too monolithic to test without changes)
+}
+
+func TestFrameManager_InputBenchmarkHooksBracketDispatch(t *testing.T) {
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	frame := newMockFrame(0, 0, 10, 10, false)
+	order := make([]string, 0, 3)
+	frame.onProcessKey = func(*vtinput.InputEvent) bool {
+		order = append(order, "process")
+		return true
+	}
+	fm.Push(frame)
+	// Push delivers the initial focus event; only the explicit event below is
+	// part of the dispatch boundary under test.
+	order = order[:0]
+
+	oldHooks := InputEventBenchmarkHooks
+	InputEventBenchmarkHooks = &InputBenchmarkHooks{
+		DispatchBegin: func(*vtinput.InputEvent) { order = append(order, "begin") },
+		DispatchEnd:   func(*vtinput.InputEvent) { order = append(order, "end") },
+	}
+	t.Cleanup(func() { InputEventBenchmarkHooks = oldHooks })
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_TAB,
+	}, false)
+	if got, want := strings.Join(order, ","), "begin,process,end"; got != want {
+		t.Fatalf("dispatch hook order = %q, want %q", got, want)
+	}
 }
 
 func TestFrameManager_CleanupFocusRestore(t *testing.T) {
@@ -582,6 +675,233 @@ func TestFrameManager_PostTask(t *testing.T) {
 	}
 }
 
+func frameManagerBenchmarkPostFromTest(fm *frameManager) {
+	fm.PostTask(func() {})
+}
+
+func frameManagerBenchmarkRedrawFromTest(fm *frameManager) {
+	fm.Redraw()
+}
+
+func TestFrameManager_LifecycleBenchmarkReportsExactCallers(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(10, 5)
+	fm.Init(scr)
+	defer fm.Shutdown()
+
+	type observed struct {
+		event  string
+		fields map[string]any
+	}
+	var events []observed
+	previous := FrameManagerLifecycleBenchmarkHooks
+	FrameManagerLifecycleBenchmarkHooks = &FrameManagerBenchmarkHooks{
+		Event: func(event string, fields ...any) {
+			values := make(map[string]any, len(fields)/2)
+			for i := 0; i+1 < len(fields); i += 2 {
+				key, _ := fields[i].(string)
+				values[key] = fields[i+1]
+			}
+			events = append(events, observed{event: event, fields: values})
+		},
+	}
+	t.Cleanup(func() { FrameManagerLifecycleBenchmarkHooks = previous })
+
+	frameManagerBenchmarkPostFromTest(fm)
+	frameManagerBenchmarkRedrawFromTest(fm)
+
+	wantSources := map[string]string{
+		"task.queued":      "frameManagerBenchmarkPostFromTest",
+		"redraw.requested": "frameManagerBenchmarkRedrawFromTest",
+	}
+	for event, wantFunction := range wantSources {
+		found := false
+		for _, got := range events {
+			if got.event != event {
+				continue
+			}
+			found = true
+			source, _ := got.fields["source"].(string)
+			if !strings.Contains(source, "framemanager_test.go:") ||
+				!strings.Contains(source, wantFunction) {
+				t.Fatalf("%s source = %q, want framemanager_test.go and %s",
+					event, source, wantFunction)
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s lifecycle event", event)
+		}
+	}
+}
+
+func TestFrameManager_UnchangedTaskKeepsLegacyRendererConservative(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+	fm.renderPhase()
+
+	fm.PostTaskWithRedrawDecision(func() bool { return false })
+	select {
+	case task := <-fm.TaskChan:
+		if result := fm.runPostedTask(task); result.renderOmitted {
+			t.Fatal("renderer without unchanged-boundary capability omitted task redraw")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("unchanged task was not posted")
+	}
+	if renderer.begin != 1 || renderer.end != 1 {
+		t.Fatalf("legacy task semantic boundary = %d/%d, want 1/1",
+			renderer.begin, renderer.end)
+	}
+}
+
+func TestFrameManager_RunOmitsOnlyProvenUnchangedTaskRedraw(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &unchangedTaskRunTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	defer fm.Shutdown()
+
+	var renders atomic.Int32
+	fm.OnRender = func(*ScreenBuf) { renders.Add(1) }
+	fm.Push(NewDesktop())
+
+	pipeReader, pipeWriter := io.Pipe()
+	reader := vtinput.NewReader(pipeReader, false)
+	runDone := make(chan struct{})
+	go func() {
+		fm.Run(reader)
+		close(runDone)
+	}()
+	defer func() {
+		fm.Stop()
+		_ = pipeWriter.Close()
+		select {
+		case <-runDone:
+		case <-time.After(time.Second):
+			t.Error("FrameManager Run did not stop")
+		}
+	}()
+
+	waitFor := func(description string, condition func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for !condition() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timeout waiting for %s", description)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitFor("initial render", func() bool { return renders.Load() > 0 })
+
+	baseline := renders.Load()
+	unchangedRan := make(chan struct{})
+	fm.PostTaskWithRedrawDecision(func() bool {
+		close(unchangedRan)
+		return false
+	})
+	select {
+	case <-unchangedRan:
+	case <-time.After(time.Second):
+		t.Fatal("unchanged task did not run")
+	}
+	waitFor("unchanged semantic boundary", func() bool {
+		return renderer.unchangedEnds.Load() == 1
+	})
+	// A renderer without a blocking wait here would repeatedly enter OnRender.
+	// Give Run enough time to prove it returned to its select with no redraw.
+	time.Sleep(30 * time.Millisecond)
+	if got := renders.Load(); got != baseline {
+		t.Fatalf("proven unchanged task rendered %d times, want 0", got-baseline)
+	}
+
+	// A redraw which arrives after the task boundary starts must survive both
+	// the unchanged proof and the capacity-one wakeup coalescing.
+	baseline = renders.Load()
+	taskEntered := make(chan struct{})
+	releaseTask := make(chan struct{})
+	fm.PostTaskWithRedrawDecision(func() bool {
+		close(taskEntered)
+		<-releaseTask
+		return false
+	})
+	select {
+	case <-taskEntered:
+	case <-time.After(time.Second):
+		t.Fatal("racing unchanged task did not start")
+	}
+	fm.Redraw()
+	close(releaseTask)
+	waitFor("redraw racing unchanged task", func() bool { return renders.Load() > baseline })
+	time.Sleep(20 * time.Millisecond)
+	if got := renders.Load(); got != baseline+1 {
+		t.Fatalf("racing redraw produced %d renders, want 1", got-baseline)
+	}
+
+	// Plain PostTask remains redraw-after-task and uses the normal semantic end.
+	baseline = renders.Load()
+	normalRan := make(chan struct{})
+	fm.PostTask(func() { close(normalRan) })
+	select {
+	case <-normalRan:
+	case <-time.After(time.Second):
+		t.Fatal("normal task did not run")
+	}
+	waitFor("normal task render", func() bool { return renders.Load() > baseline })
+	if renderer.end.Load() == 0 {
+		t.Fatal("normal task bypassed conservative semantic boundary")
+	}
+}
+
+func TestFrameManager_UnchangedTaskDoesNotDuplicateOlderRedrawGeneration(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &unchangedTaskRunTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+	fm.renderPhase()
+
+	// Model an input/direct update which already owns the pending render. The
+	// bookkeeping task is unchanged, so it must preserve that render without
+	// manufacturing a newer generation that would invalidate a direct permit.
+	fm.Redraw()
+	generation := fm.redrawGeneration.Load()
+	fm.PostTaskWithRedrawDecision(func() bool { return false })
+	select {
+	case task := <-fm.TaskChan:
+		result := fm.runPostedTask(task)
+		if !result.taskRedrawOmitted {
+			t.Fatal("unchanged task did not omit its own redraw")
+		}
+		if result.renderOmitted {
+			t.Fatal("unchanged task hid the older pending render")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("unchanged task was not posted")
+	}
+	if got := fm.redrawGeneration.Load(); got != generation {
+		t.Fatalf("unchanged task advanced generation from %d to %d", generation, got)
+	}
+	select {
+	case <-fm.RedrawChan:
+		fm.notifyRedraw()
+	default:
+		t.Fatal("older redraw notification was lost")
+	}
+}
+
 func TestFrameManager_RenderConsumesTaskRedrawWithoutDroppingLaterRequest(t *testing.T) {
 	fm := &frameManager{}
 	scr := NewScreenBuf()
@@ -629,6 +949,127 @@ func TestFrameManager_RenderConsumesTaskRedrawWithoutDroppingLaterRequest(t *tes
 		// Preserved: Run will consume this token and perform another pass.
 	default:
 		t.Fatal("redraw requested during render was dropped")
+	}
+}
+
+func TestFrameManager_SemanticExportSuppressionIsOneShotAndStillFlushes(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+
+	fm.renderPhase()
+	baselineScenes := renderer.scenes
+	baselineFlushes := renderer.flushes
+
+	renderer.suppress = true
+	fm.renderPhase()
+	if renderer.scenes != baselineScenes {
+		t.Fatalf("suppressed render exported %d semantic scenes, want 0",
+			renderer.scenes-baselineScenes)
+	}
+	if renderer.flushes <= baselineFlushes {
+		t.Fatal("suppressed semantic export also suppressed the surface flush")
+	}
+
+	fm.renderPhase()
+	if got := renderer.scenes - baselineScenes; got != 1 {
+		t.Fatalf("one-shot suppression affected the next render: exports=%d, want 1", got)
+	}
+}
+
+func TestFrameManager_SemanticRenderPhaseDeferralIsOneShot(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+
+	fm.renderPhase()
+	baselineRenders := renderer.renders
+	baselineScenes := renderer.scenes
+	baselineFlushes := renderer.flushes
+
+	// A direct native update with no newer redraw can return Run to blocking
+	// input wait without rebuilding the hidden surface.
+	renderer.deferRender = true
+	renderer.BindSemanticRenderPhaseDeferral(fm.redrawGeneration.Load())
+	fm.renderPhase()
+	if renderer.renders != baselineRenders || renderer.scenes != baselineScenes ||
+		renderer.flushes != baselineFlushes {
+		t.Fatalf("deferred phase rendered/flushed: renders=%d scenes=%d flushes=%d",
+			renderer.renders-baselineRenders, renderer.scenes-baselineScenes,
+			renderer.flushes-baselineFlushes)
+	}
+	// A redraw requested after the activation was bound changes the generation,
+	// invalidates deferral, and receives an ordinary render.
+	renderer.deferRender = true
+	renderer.BindSemanticRenderPhaseDeferral(fm.redrawGeneration.Load())
+	fm.Redraw()
+	fm.renderPhase()
+	if got := renderer.scenes - baselineScenes; got != 1 {
+		t.Fatalf("newer redraw exported %d semantic scenes, want 1", got)
+	}
+	if renderer.renders <= baselineRenders || renderer.flushes <= baselineFlushes {
+		t.Fatal("newer redraw was lost behind the activation deferral")
+	}
+
+	// If Redraw races after renderPhase captures its generation, the direct
+	// update may still skip safely, but its capacity-1 notification must remain
+	// queued for the following ordinary pass.
+	postRedrawRenders := renderer.renders
+	postRedrawScenes := renderer.scenes
+	postRedrawFlushes := renderer.flushes
+	renderer.deferRender = true
+	renderer.BindSemanticRenderPhaseDeferral(fm.redrawGeneration.Load())
+	renderer.onConsume = func() { fm.Redraw() }
+	fm.renderPhase()
+	renderer.onConsume = nil
+	if renderer.renders != postRedrawRenders || renderer.scenes != postRedrawScenes ||
+		renderer.flushes != postRedrawFlushes {
+		t.Fatal("racing redraw changed the already-delivered deferred phase")
+	}
+	select {
+	case <-fm.RedrawChan:
+		// Reinsert it because renderPhase, rather than the test, must satisfy it.
+		fm.notifyRedraw()
+	default:
+		t.Fatal("redraw racing a deferred phase lost its notification")
+	}
+	fm.renderPhase()
+	if renderer.scenes != postRedrawScenes+1 || renderer.renders <= postRedrawRenders ||
+		renderer.flushes <= postRedrawFlushes {
+		t.Fatal("racing redraw did not receive the following ordinary render")
+	}
+}
+
+func TestFrameManager_TracksInputAndTaskSemanticMutationBoundaries(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	frame := newMockFrame(0, 0, 10, 5, false)
+	fm.Push(frame)
+	defer fm.Shutdown()
+
+	fm.dispatchEvent(&vtinput.InputEvent{Type: vtinput.FocusEventType}, false)
+	if renderer.begin != 1 || renderer.end != 1 {
+		t.Fatalf("input boundary begin/end = %d/%d, want 1/1",
+			renderer.begin, renderer.end)
+	}
+	fm.runSemanticSceneUpdate(func() {})
+	if renderer.begin != 2 || renderer.end != 2 {
+		t.Fatalf("task boundary begin/end = %d/%d, want 2/2",
+			renderer.begin, renderer.end)
 	}
 }
 

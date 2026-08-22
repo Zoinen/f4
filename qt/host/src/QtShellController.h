@@ -18,7 +18,7 @@ class QtShellController : public QObject
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
     Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
-    Q_PROPERTY(QVariantMap presentationScene READ presentationScene NOTIFY sceneChanged)
+    Q_PROPERTY(QVariantMap presentationScene READ presentationScene NOTIFY presentationSceneChanged)
     Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
     Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
 
@@ -45,6 +45,11 @@ public:
     // connection active so normal event-loop startup remains the fallback.
     bool waitForInitialHandshake(int timeoutMs);
 
+    // Completes the same connection/client-hello phase using the controller's
+    // full startup deadline. Failure is latched synchronously so callers can
+    // return before constructing heavyweight UI/runtime objects.
+    bool completeInitialHandshake();
+
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
     void sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat);
@@ -55,11 +60,23 @@ public:
     Q_INVOKABLE void sendClipboardGet();
     Q_INVOKABLE void sendClipboardSet(const QString &text);
     Q_INVOKABLE void sendUiAction(const QVariantMap &action);
+    Q_INVOKABLE void sendPanelCatalogMetadataRequest(
+        const QVariantMap &request);
     Q_INVOKABLE void sendQuit();
 
 signals:
     void connectedChanged();
     void sceneChanged();
+    void presentationSceneChanged();
+    void panelCatalogChanged(const QVariantMap &panel);
+    // Row-free projection for QML-only panel/chrome bindings. Full catalog
+    // rows stay on the direct C++ bridge signal above.
+    void compactPresentationChanged(const QVariantMap &patch);
+    void panelActivationChanged(int activePanel, qulonglong revision);
+    // Emitted after the controller cache is patched but before bridge/QML
+    // observers run, so compact messages retain the same benchmark identity
+    // as a full scene throughout their synchronous apply path.
+    void compactMessageApplying(const QVariantMap &message);
     void commandLineChanged();
     void commandMenusChanged();
     void fatalError(const QString &message);
@@ -127,6 +144,8 @@ private:
     quint64 m_nextDecodeSequence = 1;
     quint64 m_nextApplySequence = 1;
     quint64 m_nextSendSequence = 1;
+    quint64 m_nextKeySequence = 1;
+    quint64 m_nextActionSequence = 1;
     bool m_applyInProgress = false;
     bool m_deferredDecodeScheduled = false;
     bool m_acceptDecodedFrames = true;
@@ -138,9 +157,11 @@ private:
     int m_initialRows = 30;
     bool m_connected = false;
     bool m_helloSent = false;
+    bool m_initialHandshakeComplete = false;
     QString m_startupError;
     QVariantMap m_scene;
     QVariantMap m_presentationScene;
+    qulonglong m_panelActivationRevision = 0;
     QVariantMap m_commandLine;
     QVariantList m_commandMenus;
 };

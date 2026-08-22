@@ -42,6 +42,7 @@ func pressKey(f vtui.Frame, e *vtinput.InputEvent) bool {
 }
 
 func TestMain(m *testing.M) {
+	setExtUiPanelCatalogMetadataEnabled(true)
 	newLocalPTY = func() (PtyBackend, error) {
 		return nil, errors.New("local PTY disabled for unit-test panel frames")
 	}

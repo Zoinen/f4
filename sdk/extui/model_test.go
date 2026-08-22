@@ -37,6 +37,12 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				SelectionRevision:      3,
 				SeparateFileExtensions: true,
 				CursorEntryID:          "entry-alpha",
+				FastFind:               true,
+				FastFindText:           "*pha",
+				FastFindMatchColor:     "#c678dd",
+				FastFindMatches: map[string]FastFindMatchModel{
+					"entry-alpha": {Start: 2, Length: 3},
+				},
 				GalleryColumns: []PanelColumnModel{{
 					ID: "name", Role: "name", Index: 0, Title: "Name",
 					Width: 30, Alignment: "left", SortMode: "name", Sortable: true,
@@ -118,6 +124,15 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	if panels[0]["separateFileExtensions"] != true {
 		t.Fatalf("panel extension alignment setting was not serialized: %#v", panels[0])
 	}
+	if panels[0]["fastFind"] != true || panels[0]["fastFindText"] != "*pha" ||
+		panels[0]["fastFindMatchColor"] != "#c678dd" {
+		t.Fatalf("panel quick-search state was not serialized: %#v", panels[0])
+	}
+	matches := panels[0]["fastFindMatches"].(M)
+	match := matches["entry-alpha"].(M)
+	if match["start"] != 2 || match["length"] != 3 {
+		t.Fatalf("panel quick-search span was not serialized: %#v", matches)
+	}
 	entries := panels[0]["entries"].([]map[string]any)
 	if entries[0]["entryId"] != "entry-alpha" || entries[0]["localPath"] != "/tmp/alpha.txt" || entries[0]["version"] != "123:4" {
 		t.Fatalf("entry v3 fields were not serialized: %#v", entries[0])
@@ -132,6 +147,69 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	infoRows := infoPanels[0]["rows"].([]map[string]any)
 	if infoRows[0]["label"] != "Computer" || infoRows[0]["value"] != "host" {
 		t.Fatalf("unexpected info rows: %#v", infoRows)
+	}
+}
+
+func TestDeferredPanelToMapKeepsBaseCatalogMinimal(t *testing.T) {
+	panel := PanelModel{
+		ID: "panel:left", Path: `D:\work`, CatalogRevision: 4,
+		SelectionRevision: 2, MetadataDeferred: true, MetadataRevision: 9,
+		HighlightRevision: 8, TotalSize: 99, SelectedSize: 22,
+		Entries: []FileEntryModel{{
+			Index: 0, EntryID: "entry-a", Name: "a.jpg", DisplayBaseName: "a",
+			DisplayExtension: "jpg", Path: `D:\work\a.jpg`, LocalPath: `D:\work\a.jpg`,
+			Size: 99, IsHidden: true, IsImage: true, Selected: true,
+			HighlightStyleID: "style-a",
+		}},
+		HighlightStyles: map[string]HighlightStyleModel{"style-a": {Marker: "!"}},
+	}
+	out := panel.ToMap()
+	if out["metadataDeferred"] != true || out["metadataRevision"] != int64(9) {
+		t.Fatalf("missing deferred metadata envelope: %#v", out)
+	}
+	for _, key := range []string{"highlightRevision", "highlightStyles", "totalSize", "selectedSize"} {
+		if _, ok := out[key]; ok {
+			t.Fatalf("deferred panel leaked %q: %#v", key, out)
+		}
+	}
+	entry := out["entries"].([]M)[0]
+	if entry["isImage"] != true || entry["selected"] != true {
+		t.Fatalf("minimal entry lacks interactive fields: %#v", entry)
+	}
+	for _, key := range []string{"path", "localPath", "size", "isHidden", "highlightStyleId", "mtimeNanos"} {
+		if _, ok := entry[key]; ok {
+			t.Fatalf("minimal entry leaked %q: %#v", key, entry)
+		}
+	}
+}
+
+func TestPanelCatalogMetadataChunkToMap(t *testing.T) {
+	chunk := PanelCatalogMetadataModel{
+		PanelID: "panel:left", Path: "/tmp", CatalogRevision: 3, MetadataRevision: 7,
+		HighlightRevision: 11, Offset: 64, Limit: 64, Total: 70, TotalSize: 123,
+		Final: true,
+		Entries: []FileEntryMetadataModel{{
+			Index: 64, EntryID: "entry-64", LocalPath: "/tmp/64", Size: 123,
+			SizeText: "123", IsHidden: true, MTime: "2026-08-17 12:34",
+			MTimeNanos: 123456, Mode: "-rw-r--r--", HighlightStyleID: "style-a",
+		}},
+		HighlightStyles: map[string]HighlightStyleModel{"style-a": {Marker: "!"}},
+	}.ToMap()
+	if chunk["type"] != "panel_catalog_metadata" || chunk["offset"] != 64 ||
+		chunk["limit"] != 64 || chunk["total"] != 70 || chunk["final"] != true ||
+		chunk["totalSize"] != int64(123) {
+		t.Fatalf("unexpected metadata chunk envelope: %#v", chunk)
+	}
+	entry := chunk["entries"].([]M)[0]
+	if entry["entryId"] != "entry-64" || entry["localPath"] != "/tmp/64" ||
+		entry["size"] != int64(123) || entry["sizeText"] != "123" ||
+		entry["isHidden"] != true || entry["mtime"] != "2026-08-17 12:34" ||
+		entry["mtimeNanos"] != int64(123456) || entry["mode"] != "-rw-r--r--" ||
+		entry["highlightStyleId"] != "style-a" {
+		t.Fatalf("unexpected metadata row: %#v", entry)
+	}
+	if len(entry) != 10 {
+		t.Fatalf("metadata row schema grew unexpectedly: %#v", entry)
 	}
 }
 

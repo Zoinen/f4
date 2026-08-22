@@ -20,8 +20,59 @@
 #include <limits>
 #include <utility>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <objbase.h>
+// wingdi.h (pulled in transitively) #defines DocumentProperties to the ANSI/
+// wide entry point; QIcon::ThemeIcon::DocumentProperties below is an
+// unrelated enumerator that must not be macro-substituted.
+#undef DocumentProperties
+#endif
+
 namespace
 {
+
+#ifdef Q_OS_WIN
+// QAbstractFileIconProvider's Windows backend queries the shell
+// (SHGetFileInfo/IExtractIcon), which needs COM initialized on the calling
+// thread. Qt Quick's asynchronous image-loader threads are not COM
+// initialized by default: the very first shell query on a fresh worker
+// thread silently auto-initializes COM apartment-style and can hand back the
+// generic "unknown file" icon instead of the real one, while a later query
+// on that now-initialized thread returns the correct icon. That is why a
+// folder can flash a file glyph for a single frame right after the fast
+// generic pass already showed the correct folder icon. Keep one apartment
+// alive for the lifetime of each worker thread that reaches here.
+struct ComApartmentGuard
+{
+    ComApartmentGuard()
+    {
+        const HRESULT result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        // S_FALSE means COM was already initialized on this thread (for
+        // instance by Qt itself); only balance the calls this guard made.
+        initialized = (result == S_OK || result == S_FALSE);
+    }
+    ~ComApartmentGuard()
+    {
+        if (initialized) {
+            CoUninitialize();
+        }
+    }
+    bool initialized = false;
+};
+
+void ensureComInitializedForCurrentThread()
+{
+    thread_local const ComApartmentGuard guard;
+    Q_UNUSED(guard);
+}
+#endif
+
 constexpr int MinLogicalIconSize = 1;
 constexpr int MaxLogicalIconSize = 1024;
 constexpr qreal MinDevicePixelRatio = 0.5;
@@ -330,7 +381,9 @@ QString queryValue(const QUrlQuery &query, const QString &name)
 }
 
 F4IconProvider::F4IconProvider(std::unique_ptr<F4IconProviderBackend> backend)
-    : QQuickImageProvider(QQuickImageProvider::Image)
+    : QQuickImageProvider(
+          QQuickImageProvider::Image,
+          QQmlImageProviderBase::ForceAsynchronousImageLoading)
     , m_backend(backend ? std::move(backend)
                         : std::make_unique<QtIconProviderBackend>())
 {
@@ -420,6 +473,9 @@ QImage F4IconProvider::requestImage(const QString &id,
         // as thread-safe. QQuickImageProvider may call us from loader threads,
         // so serialize both lookup and QPixmap generation.
         std::lock_guard lock(m_mutex);
+#ifdef Q_OS_WIN
+        ensureComInitializedForCurrentThread();
+#endif
         if (route == QStringLiteral("theme")) {
             fallbackName = normalizedIconName(primary);
             icon = m_backend->iconForName(primary);

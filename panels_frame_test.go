@@ -1005,6 +1005,47 @@ func TestPanelsFrame_KeyHandling(t *testing.T) {
 		t.Error("Ctrl+O should hide panels even when PTY is busy")
 	}
 }
+
+func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
+	oldMode := AppConfig.NavigationMode
+	defer func() { AppConfig.NavigationMode = oldMode }()
+	AppConfig.NavigationMode = NavigationClassic
+
+	pf := &PanelsFrame{
+		showPanels: true, showLeftPanel: true, showRightPanel: true,
+		panels: [2]Panel{&FileSystemPanel{}, &FileSystemPanel{}},
+	}
+	if !pf.panelActivationFastPathEligible() {
+		t.Fatal("ordinary visible split panels were not eligible")
+	}
+
+	pf.wide = true
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("wide panels used the split-panel activation fast path")
+	}
+	pf.wide = false
+
+	pf.showLeftPanel = false
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("hidden left panel used the activation fast path")
+	}
+	pf.showLeftPanel = true
+	pf.showRightPanel = false
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("hidden right panel used the activation fast path")
+	}
+	pf.showRightPanel = true
+	pf.panels[0].(*FileSystemPanel).fastFindMode = true
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("fast-find state used the panel activation fast path")
+	}
+	pf.panels[0].(*FileSystemPanel).fastFindMode = false
+
+	AppConfig.NavigationMode = NavigationSearchFirst
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("search-first mode used the panel activation fast path")
+	}
+}
 func TestPanelsFrame_MenuCommands(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -3930,7 +3971,32 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	waitForLoad(t, lp)
 	waitForLoad(t, rp)
 
-	// Test 1: Navigate to absolute path inside the archive
+	// Arbitrary path-control input must still be validated synchronously. An
+	// OSVFS optimistic setter is reserved for authoritative panel rows/caches.
+	originalPath := lp.vfs.GetPath()
+	missingPath := filepath.Join(tmpDir, "missing")
+	lp.saveToCache(missingPath, nil)
+	if !lp.hasCachedDirectoryPath(missingPath) {
+		t.Fatal("test setup did not create an exact cached missing path")
+	}
+	if pf.NavigateToPath(lp, missingPath) {
+		t.Fatalf("NavigateToPath trusted cache for missing typed path: %s", missingPath)
+	}
+	if got := lp.vfs.GetPath(); !sameFolderHistoryPath(got, originalPath) {
+		t.Fatalf("missing typed path changed panel from %q to %q", originalPath, got)
+	}
+	plainFile := filepath.Join(tmpDir, "plain.txt")
+	if err := os.WriteFile(plainFile, []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pf.NavigateToPath(lp, plainFile) {
+		t.Fatalf("NavigateToPath accepted regular file as directory: %s", plainFile)
+	}
+	if got := lp.vfs.GetPath(); !sameFolderHistoryPath(got, originalPath) {
+		t.Fatalf("typed file changed panel from %q to %q", originalPath, got)
+	}
+
+	// Test 1: Navigate to absolute path inside the archive.
 	targetPath := filepath.Join(zipPath, "inner_dir")
 	ok := pf.NavigateToPath(lp, targetPath)
 	if !ok {

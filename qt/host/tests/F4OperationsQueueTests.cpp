@@ -30,6 +30,8 @@ class TestGrid : public QQuickItem
                WRITE setInputMethodForwardingEnabled)
     Q_PROPERTY(bool terminalInputEnabled READ terminalInputEnabled
                WRITE setTerminalInputEnabled)
+    Q_PROPERTY(bool renderingEnabled READ renderingEnabled
+               WRITE setRenderingEnabled)
 
 public:
     using QQuickItem::QQuickItem;
@@ -54,6 +56,8 @@ public:
     }
     bool terminalInputEnabled() const { return m_terminalInputEnabled; }
     void setTerminalInputEnabled(bool value) { m_terminalInputEnabled = value; }
+    bool renderingEnabled() const { return m_renderingEnabled; }
+    void setRenderingEnabled(bool value) { m_renderingEnabled = value; }
 
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
     Q_INVOKABLE void sendClipboardPaste() {}
@@ -66,6 +70,7 @@ private:
     bool m_pointerInputEnabled = false;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    bool m_renderingEnabled = true;
 };
 
 class TestShell final : public QObject

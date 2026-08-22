@@ -467,33 +467,48 @@ type FileSystemPanel struct {
 
 	loadCtx    context.Context
 	cancelLoad context.CancelFunc
-	isLoading  bool
+	// loadGeneration binds every asynchronous base/metadata callback to the
+	// exact ReadDirectory request that created it. Context cancellation usually
+	// rejects stale work first; the generation also covers providers which
+	// finish a callback concurrently with cancellation.
+	loadGeneration uint64
+	isLoading      bool
 	// catalogProvisional marks the synthetic cold-load placeholder (normally
 	// just ".."). Native frontends keep the destination hidden until the first
 	// authoritative catalog arrives instead of briefly painting an empty list.
-	catalogProvisional         bool
-	loadingTimer               *time.Timer
-	loadingFrame               int
-	loadingGeneration          uint64
-	loadQueueMu                sync.Mutex
-	loadWorkerActive           bool
-	pendingDirectoryLoad       *directoryLoadRequest
-	benchmarkLoadTrace         *navigationBenchmarkTrace
-	providerOpenTask           *vtui.TaskContext
-	providerOpenDialog         *vtui.Window
-	directoryErrorDialog       *vtui.Window
-	providerOpenTarget         string
-	providerOpenSourceSelect   string
-	providerOpenResult         func(bool) bool
-	pendingSelection           string
-	providerEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
-	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
-	fastFindMode               bool
-	fastFindStr                string
-	fastFindMatcherKey         string
-	fastFindMatchers           []*vtui.FuzzyMatcher
-	showInactiveCursor         bool
+	catalogProvisional bool
+	// semanticCachedCatalogReady distinguishes a complete cache replacement
+	// from a cold/phased base while ReadDir is still running. The cached rows are
+	// already interactive and have a coherent metadata snapshot, so a capable
+	// native frontend need not remain in its loading gate during revalidation.
+	semanticCachedCatalogReady bool
+	// semanticCachedCatalogExported proves that the complete cached model was
+	// constructed for the negotiated frontend. Completion may omit its own
+	// redraw only after this transition; otherwise the cache redraw might still
+	// be pending behind an exceptionally fast ReadDir.
+	semanticCachedCatalogExported bool
+	loadingTimer                  *time.Timer
+	loadingFrame                  int
+	loadingGeneration             uint64
+	loadQueueMu                   sync.Mutex
+	loadWorkerActive              bool
+	pendingDirectoryLoad          *directoryLoadRequest
+	benchmarkLoadTrace            *navigationBenchmarkTrace
+	providerOpenTask              *vtui.TaskContext
+	providerOpenDialog            *vtui.Window
+	directoryErrorDialog          *vtui.Window
+	providerOpenTarget            string
+	providerOpenSourceSelect      string
+	providerOpenResult            func(bool) bool
+	pendingSelection              string
+	providerEntryName             string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath     string // one-shot: history/menu navigation must not reorder MRU
+	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
+	fastFindMode                  bool
+	fastFindStr                   string
+	fastFindMatcherKey            string
+	fastFindMatchers              []*vtui.FuzzyMatcher
+	showInactiveCursor            bool
 
 	sortMode    SortMode
 	sortReverse bool
@@ -528,12 +543,16 @@ type FileSystemPanel struct {
 	// scene is exported. This catches every mutation path, including async VFS
 	// chunks and tests/plugins which replace entries directly.
 	semanticCatalogFingerprint   uint64
+	semanticMetadataFingerprint  uint64
 	semanticSelectionFingerprint uint64
 	semanticCatalogInitialized   bool
+	semanticMetadataInitialized  bool
 	semanticSelectionInitialized bool
 	catalogRevision              int64
+	metadataRevision             int64
 	selectionRevision            int64
 	semanticStaticCache          *semanticPanelStaticCache
+	semanticMetadataSnapshot     *semanticPanelMetadataSnapshot
 }
 
 var DisableLoadingAnimationInTests = true
@@ -616,6 +635,26 @@ func sameVFSInstance(a, b vfs.VFS) bool {
 	return a == b
 }
 
+func phasedDirectoryReaderFor(filesystem vfs.VFS) vfs.PhasedDirectoryReader {
+	provider, ok := filesystem.(vfs.PhasedDirectoryReadProvider)
+	if !ok {
+		return nil
+	}
+	reader := provider.PhasedDirectoryReader()
+	readerVFS, ok := reader.(vfs.VFS)
+	if !ok || !sameVFSInstance(readerVFS, filesystem) {
+		// A promoted OSVFS capability belongs to the embedded OSVFS, not to a
+		// wrapper which may override ReadDir. Only an explicit self capability
+		// is safe to use.
+		return nil
+	}
+	return reader
+}
+
+func panelSortSupportsPhasedDirectoryRead(mode SortMode) bool {
+	return mode != SortSize && mode != SortTime
+}
+
 func (fp *FileSystemPanel) cacheKey(path string) dirCacheKey {
 	return directoryCacheKey(fp.vfs, path)
 }
@@ -672,6 +711,57 @@ func panelUpEntryItem(stat vfs.VFSItem, hasStat bool) vfs.VFSItem {
 	item.Uid = stat.Uid
 	item.Gid = stat.Gid
 	return item
+}
+
+func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntry bool,
+	upItem vfs.VFSItem, filesystem vfs.VFS, path string,
+) []*fileEntry {
+	entries := make([]*fileEntry, 0, len(items)+1)
+	if showUpEntry {
+		entries = append(entries, &fileEntry{VFSItem: upItem})
+	}
+	for _, item := range items {
+		if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+			continue
+		}
+		entry := &fileEntry{VFSItem: item}
+		fp.applyPersistentSelection(entry, filesystem, path)
+		entries = append(entries, entry)
+	}
+	fp.sortEntrySlice(entries)
+	return entries
+}
+
+// refreshEquivalentCachedEntries updates the authoritative data behind live
+// cached rows without replacing either fileEntry or vtui.TableRow objects.
+// Selection, Ctrl+M snapshots, cursor and viewport therefore remain exactly as
+// the user left them while ReadDir was running.
+func (fp *FileSystemPanel) refreshEquivalentCachedEntries(fresh []*fileEntry) bool {
+	if !fp.semanticDeferredEntriesEquivalent(fresh) {
+		return false
+	}
+	for index, source := range fresh {
+		live := fp.entries[index]
+		live.VFSItem = source.VFSItem
+		live.SizeCalculated = source.SizeCalculated
+		live.IsCached = false
+	}
+
+	// The helper proved these values equal before the in-place refresh. Keep
+	// initialized revision caches explicitly aligned with the live entries; no
+	// revision or semantic snapshot invalidation is necessary because none of
+	// the negotiated client's observable fields changed.
+	catalog, metadata, selection := fp.semanticFingerprintsForEntries(fp.entries)
+	if fp.semanticCatalogInitialized {
+		fp.semanticCatalogFingerprint = catalog
+	}
+	if fp.semanticMetadataInitialized {
+		fp.semanticMetadataFingerprint = metadata
+	}
+	if fp.semanticSelectionInitialized {
+		fp.semanticSelectionFingerprint = selection
+	}
+	return true
 }
 
 func nativeVisualCachePath(value string) string {
@@ -803,7 +893,14 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 }
 
 func (fp *FileSystemPanel) sortEntries() {
-	if fp.sortMode == SortUnsorted || len(fp.entries) <= 1 {
+	fp.sortEntrySlice(fp.entries)
+}
+
+// sortEntrySlice applies the panel's current ordering to a detached candidate
+// catalog. Warm-cache completion uses it to prove the fresh result has exactly
+// the same semantic order before touching the live table rows.
+func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
+	if fp.sortMode == SortUnsorted || len(entries) <= 1 {
 		return
 	}
 
@@ -812,8 +909,8 @@ func (fp *FileSystemPanel) sortEntries() {
 	// sort.Interface's ordering contract and could reshuffle an otherwise
 	// unchanged catalog on refresh, invalidating Gallery revisions and cursor
 	// identities spuriously.
-	sort.SliceStable(fp.entries, func(i, j int) bool {
-		ei, ej := fp.entries[i], fp.entries[j]
+	sort.SliceStable(entries, func(i, j int) bool {
+		ei, ej := entries[i], entries[j]
 
 		// ".." всегда сверху. Keep the comparison strict even
 		// for malformed/virtual catalogs containing more than one parent row.
@@ -1794,14 +1891,15 @@ func (fp *FileSystemPanel) startLoadingAnimation() {
 	var scheduleNext func()
 	scheduleNext = func() {
 		fp.loadingTimer = time.AfterFunc(panelLoadingPulseInterval, func() {
-			vtui.FrameManager.PostTask(func() {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 				if !fp.isLoading || fp.loadingGeneration != generation {
-					return
+					return false
 				}
 				fp.loadingFrame = (fp.loadingFrame + 1) % len(panelLoadingPulse)
 				fp.updateTitle(nil)
 				vtui.FrameManager.Redraw()
 				scheduleNext()
+				return true
 			})
 		})
 	}
@@ -2070,10 +2168,11 @@ func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
 	vtui.FrameManager.Redraw()
 }
 
-// setKnownDirectoryPath takes the no-I/O route offered by remote VFSes when
-// the target came from a panel row. Cancel first so the old background refresh
-// starts leaving the shared session before the new cache is rendered.
-func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
+// setDirectoryPath changes the panel VFS path while preserving the trust
+// boundary between an authoritative directory row and arbitrary user input.
+// Only knownDirectory may use a provider's no-I/O optimistic setter; typed,
+// bookmark, and other external paths must pass through SetPath validation.
+func (fp *FileSystemPanel) setDirectoryPath(target string, knownDirectory bool) error {
 	benchmark := navigationBenchmarkCurrentUI()
 	fromPath := ""
 	direction := ""
@@ -2093,7 +2192,7 @@ func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
 	}
 	strategy := "verified"
 	var err error
-	if setter, ok := fp.vfs.(vfs.OptimisticPathSetter); ok {
+	if setter, ok := fp.vfs.(vfs.OptimisticPathSetter); knownDirectory && ok {
 		strategy = "optimistic"
 		if fp.cancelLoad != nil {
 			fp.cancelLoad()
@@ -2112,6 +2211,29 @@ func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
 		benchmark.event("path.set.end", "go.ui", fields...)
 	}
 	return err
+}
+
+// setKnownDirectoryPath is reserved for a directory identity already supplied
+// by the active VFS (for example Enter on a panel row) or an exact panel-cache
+// hit. The following ReadDir remains authoritative if that identity went stale.
+func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
+	return fp.setDirectoryPath(target, true)
+}
+
+func (fp *FileSystemPanel) setVerifiedDirectoryPath(target string) error {
+	return fp.setDirectoryPath(target, false)
+}
+
+func (fp *FileSystemPanel) hasCachedDirectoryPath(target string) bool {
+	if fp == nil || fp.vfs == nil || fp.dirCache == nil || AppConfig.SyncPanelLoad {
+		return false
+	}
+	resolved, err := fp.vfs.Abs(target)
+	if err != nil {
+		return false
+	}
+	_, ok := fp.dirCache[directoryCacheKey(fp.vfs, resolved)]
+	return ok
 }
 
 func (fp *FileSystemPanel) suppressNextFolderHistory(path string) {
@@ -2184,7 +2306,11 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	fp.loadCtx = ctx
 	fp.cancelLoad = cancel
+	fp.loadGeneration++
+	loadGeneration := fp.loadGeneration
 	fp.isLoading = true
+	fp.semanticCachedCatalogReady = false
+	fp.semanticCachedCatalogExported = false
 	fp.startLoadingAnimation()
 
 	loadVFS := fp.vfs
@@ -2260,6 +2386,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		if cached, ok := fp.dirCache[cacheKey]; ok && !AppConfig.SyncPanelLoad {
 			hasCache = true
 			fp.catalogProvisional = false
+			fp.semanticCachedCatalogReady = true
 			vtui.DebugLog("PANEL: Using cached entries for %s", path)
 			fp.entries = nil
 
@@ -2299,6 +2426,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					"cacheHit", true, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
 				navigationBenchmarkPublishScene(benchmark, "cached")
 			}
+			publishPanelCatalogImmediate(fp, benchmark)
 			vtui.FrameManager.Redraw()
 		}
 	}
@@ -2328,6 +2456,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		navigationBenchmarkPublishScene(benchmark, "retained")
 	}
 
+	phasedReader := phasedDirectoryReaderFor(loadVFS)
+	usePhasedRead := phasedReader != nil && !keepEntries && !hasCache &&
+		!AppConfig.SyncPanelLoad && panelSortSupportsPhasedDirectoryRead(fp.sortMode)
+	loadIsCurrent := func() bool {
+		if ctx.Err() != nil || fp.loadCtx != ctx || fp.loadGeneration != loadGeneration ||
+			!sameVFSInstance(fp.vfs, loadVFS) {
+			return false
+		}
+		return sameFolderHistoryPath(loadVFS.GetPath(), path)
+	}
+
 	fp.enqueueDirectoryLoadWithBenchmark(benchmark, func() {
 		if ctx.Err() != nil {
 			if benchmark != nil {
@@ -2336,23 +2475,35 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			return
 		}
 		var accumulated []vfs.VFSItem
+		var accumulatedByName map[string]int
+		var pendingMetadata []vfs.VFSItem
 		chunkCount := 0
+		metadataChunkCount := 0
 		if benchmark != nil {
-			benchmark.event("filesystem.readdir.begin", "go.worker", "path", path)
+			benchmark.event("filesystem.readdir.begin", "go.worker", "path", path,
+				"phased", usePhasedRead)
 		}
 
-		err := loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
+		publishCatalogChunk := func(chunk []vfs.VFSItem, authoritativeBase bool) {
 			chunkCount++
 			chunkIndex := chunkCount
 			if benchmark != nil {
 				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
 					"chunk", chunkIndex, "chunkEntries", len(chunk),
-					"entriesBefore", len(accumulated))
+					"entriesBefore", len(accumulated), "phase", "base")
 			}
 			if ctx.Err() != nil {
 				return
 			}
 			accumulated = append(accumulated, chunk...)
+			if authoritativeBase {
+				if accumulatedByName == nil {
+					accumulatedByName = make(map[string]int, len(accumulated))
+				}
+				for index, item := range accumulated {
+					accumulatedByName[item.Name] = index
+				}
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -2392,7 +2543,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					benchmark.eventAt("model.chunk.started", "go.ui", startedNs,
 						"chunk", chunkIndex, "queueNs", startedNs-chunkQueuedNs)
 				}
-				if ctx.Err() != nil || fp.loadCtx != ctx {
+				if !loadIsCurrent() {
 					return
 				}
 
@@ -2419,6 +2570,11 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 				fp.entries = append(fp.entries, newEntries...)
 				fp.sortEntries()
+				if authoritativeBase {
+					// This catalog is complete and authoritative for row identity and
+					// order. Metadata is deliberately still loading in the background.
+					fp.catalogProvisional = false
+				}
 
 				// Фокусировка на нужном файле
 				snapped := false
@@ -2450,12 +2606,122 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
 					navigationBenchmarkPublishScene(benchmark, "chunk")
 				}
+				if authoritativeBase {
+					publishPanelCatalogImmediate(fp, benchmark)
+				}
 
 				vtui.FrameManager.Redraw() // Рисуем каждый чанк!
 			})
-		})
+		}
+
+		mergeMetadataChunk := func(chunk []vfs.VFSItem) {
+			metadataChunkCount++
+			if ctx.Err() != nil {
+				return
+			}
+			// Keep the authoritative cache snapshot in sync without disturbing
+			// the names/types order established by the base phase.
+			for _, item := range chunk {
+				index, ok := accumulatedByName[item.Name]
+				if !ok || index < 0 || index >= len(accumulated) ||
+					accumulated[index].IsDir != item.IsDir || accumulated[index].NoExtension != item.NoExtension {
+					continue
+				}
+				accumulated[index] = item
+			}
+			pendingMetadata = append(pendingMetadata, chunk...)
+			if benchmark != nil {
+				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
+					"chunk", metadataChunkCount, "chunkEntries", len(chunk),
+					"phase", "metadata")
+			}
+		}
+
+		publishMetadata := func(metadata []vfs.VFSItem) {
+			if len(metadata) == 0 || ctx.Err() != nil {
+				return
+			}
+			// The worker has finished producing metadata before this task is queued,
+			// so ownership of the immutable accumulated slice can move to the UI
+			// task without another full-catalog copy.
+			metadataCopy := metadata
+			metadataQueuedNs := int64(0)
+			if benchmark != nil {
+				metadataQueuedNs = navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.metadata.queued", "go.worker", metadataQueuedNs,
+					"chunks", metadataChunkCount, "entries", len(metadataCopy))
+			}
+			vtui.FrameManager.PostTask(func() {
+				if !loadIsCurrent() {
+					return
+				}
+				byName := make(map[string]*fileEntry, len(fp.entries))
+				for _, entry := range fp.entries {
+					if entry != nil && entry.Name != ".." {
+						byName[entry.Name] = entry
+					}
+				}
+
+				// Validate the entire visible subset before mutating any row. A
+				// provider that changes identity/type between phases has violated
+				// the capability contract; retaining the usable base is safer than
+				// partially applying a mismatched metadata chunk.
+				for _, item := range metadataCopy {
+					if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+						continue
+					}
+					entry, ok := byName[item.Name]
+					if !ok || entry.IsDir != item.IsDir || entry.NoExtension != item.NoExtension {
+						return
+					}
+				}
+				for _, item := range metadataCopy {
+					if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+						continue
+					}
+					entry := byName[item.Name]
+					entry.VFSItem = item
+				}
+				fp.Refresh()
+				if benchmark != nil {
+					startedNs := navigationBenchmarkMonotonicNs()
+					benchmark.eventAt("model.metadata.ready", "go.ui", startedNs,
+						"chunks", metadataChunkCount, "queueNs", startedNs-metadataQueuedNs,
+						"entries", len(fp.entries))
+					navigationBenchmarkPublishScene(benchmark, "metadata")
+				}
+				vtui.FrameManager.Redraw()
+			})
+		}
+
+		var err error
+		if usePhasedRead {
+			err = phasedReader.ReadDirPhased(ctx, path, func(phase vfs.DirectoryReadPhase, chunk []vfs.VFSItem) {
+				switch phase {
+				case vfs.DirectoryReadBase:
+					publishCatalogChunk(chunk, true)
+				case vfs.DirectoryReadMetadata:
+					mergeMetadataChunk(chunk)
+				}
+			})
+			// Publish enrichment once, after the provider has completed all of its
+			// bounded worker-side chunks. The complete base task was queued first,
+			// so it still gets its own fast frame; one atomic metadata commit avoids
+			// reserializing the full minimal catalog and restarting the frontend pull
+			// protocol for every 256 rows.
+			if err == nil {
+				publishMetadata(pendingMetadata)
+			}
+		} else {
+			err = loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
+				publishCatalogChunk(chunk, false)
+			})
+		}
 		if benchmark != nil {
 			fields := []any{"path", path, "chunks", chunkCount, "entries", len(accumulated), "ok", err == nil}
+			if usePhasedRead {
+				fields = append(fields, "metadataChunks", metadataChunkCount, "phased", true)
+			}
 			if err != nil {
 				fields = append(fields, "error", err.Error())
 			}
@@ -2535,13 +2801,16 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			benchmark.eventAt("model.final.queued", "go.worker", completionQueuedNs,
 				"path", path, "entries", len(accumulated), "chunks", chunkCount)
 		}
-		vtui.FrameManager.PostTask(func() {
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() (needsRedraw bool) {
+			// Completion tasks retain PostTask's conservative redraw by default.
+			// Only the exact warm-cache equivalence proof below opts out.
+			needsRedraw = true
 			if benchmark != nil {
 				startedNs := navigationBenchmarkMonotonicNs()
 				benchmark.eventAt("model.final.started", "go.ui", startedNs,
 					"path", path, "queueNs", startedNs-completionQueuedNs)
 			}
-			if ctx.Err() != nil || fp.loadCtx != ctx {
+			if !loadIsCurrent() {
 				// This completion no longer owns the panel. Do not dereference the
 				// current VFS here: another navigation may already have closed it.
 				if benchmark != nil {
@@ -2555,6 +2824,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.saveToCacheKeyWithUpItem(cacheKey, accumulated, showUpEntry, upItem)
 			}
 
+			freshCacheEquivalent := false
 			if hasCache && err == nil {
 				// The cached rows stayed interactive during ReadDir. Snapshot their
 				// live state immediately before replacing them; this is deliberately
@@ -2578,53 +2848,51 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 				}
 
-				fp.entries = nil
-				if showUpEntry {
-					fp.entries = []*fileEntry{{VFSItem: upItem}}
-				}
+				freshEntries := fp.freshDirectoryEntries(
+					accumulated, showUpEntry, upItem, loadVFS, path)
+				freshCacheEquivalent = fp.refreshEquivalentCachedEntries(freshEntries)
+				if freshCacheEquivalent {
+					// The visible catalog and every negotiated metadata field are
+					// unchanged. Keep the live cursor, viewport and table identities;
+					// only the row backing data/cache provenance was refreshed.
+					fp.pendingSelection = ""
+					isFirstChunk = false
+				} else {
+					fp.entries = freshEntries
 
-				for _, item := range accumulated {
-					if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
-						continue
+					// An unresolved navigation target still wins if the user did not
+					// move on the cache. Once the cursor moved, the live cached row is
+					// the user's latest and therefore authoritative choice.
+					target := liveCursorName
+					if fp.pendingSelection != "" && !cursorMoved {
+						target = fp.pendingSelection
 					}
-					entry := &fileEntry{VFSItem: item}
-					fp.applyPersistentSelection(entry, loadVFS, path)
-					fp.entries = append(fp.entries, entry)
-				}
-				fp.sortEntries()
-
-				// An unresolved navigation target still wins if the user did not
-				// move on the cache. Once the cursor moved, the live cached row is
-				// the user's latest and therefore authoritative choice.
-				target := liveCursorName
-				if fp.pendingSelection != "" && !cursorMoved {
-					target = fp.pendingSelection
-				}
-				newCursorIndex := -1
-				for i, entry := range fp.entries {
-					if entry.Name == target {
-						newCursorIndex = i
-						break
+					newCursorIndex := -1
+					for i, entry := range fp.entries {
+						if entry.Name == target {
+							newCursorIndex = i
+							break
+						}
 					}
-				}
-				if newCursorIndex < 0 {
-					newCursorIndex = liveCursorIndex
-				}
-				if newCursorIndex >= len(fp.entries) {
-					newCursorIndex = len(fp.entries) - 1
-				}
-				if newCursorIndex < 0 {
-					newCursorIndex = 0
-				}
+					if newCursorIndex < 0 {
+						newCursorIndex = liveCursorIndex
+					}
+					if newCursorIndex >= len(fp.entries) {
+						newCursorIndex = len(fp.entries) - 1
+					}
+					if newCursorIndex < 0 {
+						newCursorIndex = 0
+					}
 
-				newTop := newCursorIndex - liveCursorOffset
-				if newTop < 0 {
-					newTop = 0
+					newTop := newCursorIndex - liveCursorOffset
+					if newTop < 0 {
+						newTop = 0
+					}
+					fp.table.TopPos = newTop
+					fp.SetCursorIndex(newCursorIndex)
+					fp.pendingSelection = ""
+					isFirstChunk = false
 				}
-				fp.table.TopPos = newTop
-				fp.SetCursorIndex(newCursorIndex)
-				fp.pendingSelection = ""
-				isFirstChunk = false
 			} else if AppConfig.SyncPanelLoad && err == nil {
 				fp.entries = nil
 				if showUpEntry {
@@ -2687,6 +2955,8 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			fp.catalogProvisional = false
+			fp.semanticCachedCatalogReady = false
+			fp.semanticCachedCatalogExported = false
 			fp.stopLoadingAnimation()
 
 			fp.lastDirMTime = dirStat.MTime
@@ -2747,17 +3017,30 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.SelectName(fp.pendingSelection)
 				fp.pendingSelection = ""
 			}
-			fp.Refresh()
-			if benchmark != nil {
-				benchmark.event("model.final.ready", "go.ui", "phase", "fresh", "path", path,
-					"entries", len(fp.entries), "chunks", chunkCount,
-					"cursorIndex", fp.GetCursorIndex(), "cacheHit", hasCache)
-				navigationBenchmarkPublishScene(benchmark, "fresh")
+			if freshCacheEquivalent {
+				if benchmark != nil {
+					benchmark.event("model.final.fresh_equivalent.skipped", "go.ui",
+						"path", path, "entries", len(fp.entries), "chunks", chunkCount,
+						"cursorIndex", fp.GetCursorIndex(), "cacheHit", true,
+						"redraw", false, "semanticExport", false)
+				}
+			} else {
+				fp.Refresh()
+				if benchmark != nil {
+					benchmark.event("model.final.ready", "go.ui", "phase", "fresh", "path", path,
+						"entries", len(fp.entries), "chunks", chunkCount,
+						"cursorIndex", fp.GetCursorIndex(), "cacheHit", hasCache)
+					navigationBenchmarkPublishScene(benchmark, "fresh")
+				}
 			}
 			if fp.benchmarkLoadTrace == benchmark {
 				fp.benchmarkLoadTrace = nil
 			}
-			vtui.FrameManager.Redraw()
+			if !freshCacheEquivalent {
+				vtui.FrameManager.Redraw()
+			}
+			needsRedraw = !freshCacheEquivalent
+			return
 		})
 	})
 }

@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/vtinput"
@@ -23,9 +25,29 @@ import (
 )
 
 const (
-	extUiProtocolVersion = 2
-	extUiMaxMessageSize  = 64 * 1024 * 1024
+	extUiProtocolVersion                = 2
+	extUiMaxMessageSize                 = 64 * 1024 * 1024
+	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
 )
+
+// Deferred panel metadata is an optional extension of protocol v2. Keep the
+// process default conservative; RunExternalUI enables it only after the client
+// advertises the exact capability in its hello. Tests which exercise the native
+// model directly opt in from TestMain.
+var extUiPanelCatalogMetadataEnabled atomic.Bool
+
+func setExtUiPanelCatalogMetadataEnabled(enabled bool) bool {
+	return extUiPanelCatalogMetadataEnabled.Swap(enabled)
+}
+
+func extUiPanelCatalogMetadataIsEnabled() bool {
+	return extUiPanelCatalogMetadataEnabled.Load()
+}
+
+func extUiHelloCapability(hello map[string]any, name string) bool {
+	capabilities, ok := hello["capabilities"].(map[string]any)
+	return ok && extUiAnyBool(capabilities[name])
+}
 
 func extUiNewNonce() (string, error) {
 	var buf [16]byte
@@ -43,21 +65,23 @@ func extUiSendMessageWithBenchmark(w io.Writer, msg map[string]any, benchmark *n
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.begin", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence)
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
 	}
 	payload, err := msgpack.Marshal(msg)
 	if err != nil {
 		if benchmark != nil {
 			navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.end", "go.transport",
 				"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-				"sceneSequence", benchmark.sceneSequence, "ok", false, "error", err.Error())
+				"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+				"ok", false, "error", err.Error())
 		}
 		return err
 	}
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.marshal.end", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence, "ok", true, "payloadBytes", len(payload))
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+			"ok", true, "payloadBytes", len(payload))
 	}
 	if len(payload) > extUiMaxMessageSize {
 		return fmt.Errorf("extui message too large: %d bytes", len(payload))
@@ -68,23 +92,27 @@ func extUiSendMessageWithBenchmark(w io.Writer, msg map[string]any, benchmark *n
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.begin", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence, "bytes", len(hdr))
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+			"bytes", len(hdr))
 	}
 	if _, err := w.Write(hdr[:]); err != nil {
 		if benchmark != nil {
 			navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.end", "go.transport",
 				"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-				"sceneSequence", benchmark.sceneSequence, "ok", false, "error", err.Error())
+				"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+				"ok", false, "error", err.Error())
 		}
 		return err
 	}
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.header_write.end", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence, "ok", true, "bytes", len(hdr))
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+			"ok", true, "bytes", len(hdr))
 		navigationBenchmarkEmit(benchmark.traceID, "transport.payload_write.begin", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence, "payloadBytes", len(payload))
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType,
+			"payloadBytes", len(payload))
 	}
 	_, err = w.Write(payload)
 	if benchmark != nil {
@@ -92,6 +120,7 @@ func extUiSendMessageWithBenchmark(w io.Writer, msg map[string]any, benchmark *n
 			"phase", benchmark.phase,
 			"phaseSequence", benchmark.phaseSequence,
 			"sceneSequence", benchmark.sceneSequence,
+			"messageType", benchmark.messageType,
 			"payloadBytes", len(payload),
 			"ok", err == nil,
 		}
@@ -109,17 +138,20 @@ type extUiMessageSender struct {
 }
 
 func (s *extUiMessageSender) Send(msg map[string]any) error {
-	benchmark := navigationBenchmarkMessageFromMap(msg)
+	return s.SendWithBenchmark(msg, navigationBenchmarkMessageFromMap(msg))
+}
+
+func (s *extUiMessageSender) SendWithBenchmark(msg map[string]any, benchmark *navigationBenchmarkMessage) error {
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.wait", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence)
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
 	}
 	s.mu.Lock()
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.acquired", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
-			"sceneSequence", benchmark.sceneSequence)
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
 	}
 	err := extUiSendMessageWithBenchmark(s.w, msg, benchmark)
 	s.mu.Unlock()
@@ -178,14 +210,44 @@ func extUiString(msg map[string]any, key string) string {
 }
 
 func extUiBool(msg map[string]any, key string) bool {
-	if v, ok := msg[key].(bool); ok {
-		return v
-	}
-	return false
+	return extUiAnyBool(msg[key])
+}
+
+func extUiAnyBool(value any) bool {
+	result, _ := value.(bool)
+	return result
 }
 
 func extUiInt(msg map[string]any, key string) int {
 	return extUiAnyInt(msg[key])
+}
+
+func extUiInt64(msg map[string]any, key string) int64 {
+	switch n := msg[key].(type) {
+	case int:
+		return int64(n)
+	case int8:
+		return int64(n)
+	case int16:
+		return int64(n)
+	case int32:
+		return int64(n)
+	case int64:
+		return n
+	case uint:
+		return int64(n)
+	case uint8:
+		return int64(n)
+	case uint16:
+		return int64(n)
+	case uint32:
+		return int64(n)
+	case uint64:
+		if n <= uint64(^uint64(0)>>1) {
+			return int64(n)
+		}
+	}
+	return 0
 }
 
 func extUiAnyInt(v any) int {
@@ -227,17 +289,378 @@ type ExtUiRenderer struct {
 	palette      [256]uint32
 	paletteValid bool
 
-	pendingPalette          []uint32
-	pendingFrame            map[string]any
-	pendingScene            map[string]any
-	pendingCommandLine      map[string]any
-	pendingCommandLineScene map[string]any
-	lastScene               map[string]any
-	closed                  bool
+	pendingPalette              []uint32
+	pendingFrame                map[string]any
+	pendingScene                map[string]any
+	pendingCommandLine          map[string]any
+	pendingCommandLineScene     map[string]any
+	pendingPanelCatalog         map[string]any
+	pendingPanelCatalogScene    map[string]any
+	pendingPanelActivation      map[string]any
+	pendingPanelActivationScene map[string]any
+	lastScene                   map[string]any
+	queuedPanelActivationSide   int
+	panelActivationQueued       bool
+	nextPanelActivationRevision uint64
+	suppressSemanticExport      bool
+	deferSemanticRender         bool
+	deferSemanticRenderBound    bool
+	deferSemanticRenderGen      uint64
+	semanticUpdateOpen          bool
+	semanticUpdateHandled       bool
+	semanticUpdateTouched       bool
+	semanticUpdateCheckpoint    bool
+	semanticUpdatePreviousBound bool
+	semanticFastPathUnsafe      bool
+	panelActivationProjected    bool
+	directPanelCatalog          map[string]any
+	// The semantic Qt presentation fully owns native app surfaces. Its cell
+	// grid remains instantiated only as a fallback/input sink, so serializing
+	// the hidden TUI buffer on every panel mutation wastes the latency budget.
+	nativeSemanticSurfaceEnabled bool
+	nativeCellFrameSuppressed    bool
+	forceNextCellFrame           bool
+	fallbackRevealPending        bool
+	lastWindowTitle              string
+	windowTitleValid             bool
+	closed                       bool
 }
 
 func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer {
 	return &ExtUiRenderer{conn: conn, send: sender, cursorDirty: true}
+}
+
+// BeginSemanticSceneUpdate starts an input/task mutation boundary. Unless a
+// handler queues a proven compact update, the boundary makes the next render
+// perform a normal semantic export.
+func (r *ExtUiRenderer) BeginSemanticSceneUpdate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticUpdateOpen {
+		r.semanticFastPathUnsafe = true
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+		r.semanticUpdateCheckpoint = false
+		r.semanticUpdateTouched = true
+	} else {
+		r.semanticUpdateCheckpoint = true
+		r.semanticUpdatePreviousBound = r.deferSemanticRenderBound
+		r.semanticUpdateTouched = false
+	}
+	r.semanticUpdateOpen = true
+	r.semanticUpdateHandled = false
+	r.deferSemanticRenderBound = false
+}
+
+// EndSemanticSceneUpdate conservatively invalidates a queued direct update
+// when some other input or UI task was processed in the same render batch.
+func (r *ExtUiRenderer) EndSemanticSceneUpdate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticUpdateOpen && !r.semanticUpdateHandled {
+		r.semanticFastPathUnsafe = true
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+	}
+	r.semanticUpdateOpen = false
+	r.semanticUpdateHandled = false
+	r.semanticUpdateTouched = false
+	r.semanticUpdateCheckpoint = false
+}
+
+// EndSemanticSceneUpdateUnchanged closes a task boundary whose caller proved
+// that it only refreshed non-presentational backing data. The renderer accepts
+// that proof only when none of its semantic/direct-update entry points were
+// touched inside the boundary. In particular, an activation or direct catalog
+// permit armed before the task remains exactly as it was; a task which tried to
+// queue either permit falls back to EndSemanticSceneUpdate and a real render.
+func (r *ExtUiRenderer) EndSemanticSceneUpdateUnchanged() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.semanticUpdateOpen || !r.semanticUpdateCheckpoint ||
+		r.semanticUpdateTouched || r.semanticUpdateHandled ||
+		!r.nativeCellFrameSuppressed {
+		return false
+	}
+	r.semanticUpdateOpen = false
+	r.semanticUpdateHandled = false
+	r.semanticUpdateTouched = false
+	r.semanticUpdateCheckpoint = false
+	r.deferSemanticRenderBound = r.semanticUpdatePreviousBound
+	return true
+}
+
+// ConsumeSemanticSceneExportSuppression consumes the one-render permit armed
+// by QueuePanelActivation. Cell rendering and Flush still run normally.
+func (r *ExtUiRenderer) ConsumeSemanticSceneExportSuppression() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.suppressSemanticExport || r.semanticFastPathUnsafe {
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+		return false
+	}
+	r.suppressSemanticExport = false
+	r.deferSemanticRender = false
+	r.deferSemanticRenderBound = false
+	r.panelActivationQueued = false
+	return true
+}
+
+// BindSemanticRenderPhaseDeferral ties a direct update to the redraw state at
+// the end of its complete FrameManager mutation boundary. A redraw requested
+// afterwards changes the generation and forces an ordinary render.
+func (r *ExtUiRenderer) BindSemanticRenderPhaseDeferral(generation uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deferSemanticRenderBound = r.deferSemanticRender &&
+		!r.semanticUpdateOpen && !r.semanticFastPathUnsafe
+	if r.deferSemanticRenderBound {
+		r.deferSemanticRenderGen = generation
+	}
+}
+
+// ConsumeSemanticRenderPhaseDeferral consumes the one-render permit armed by
+// a compact update that has already crossed the wire. The whole render can be
+// omitted only while Qt owns the visible semantic surface and no unverified
+// mutation or pending transport state needs Show/Flush. Cursor changes do not
+// block this path: the hidden cell grid retains them until fallback is shown.
+func (r *ExtUiRenderer) ConsumeSemanticRenderPhaseDeferral(generation uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.deferSemanticRender {
+		return false
+	}
+	r.deferSemanticRender = false
+	bound := r.deferSemanticRenderBound
+	r.deferSemanticRenderBound = false
+	if !bound || r.deferSemanticRenderGen != generation ||
+		r.closed || r.semanticUpdateOpen || r.semanticFastPathUnsafe ||
+		!r.nativeCellFrameSuppressed || r.directPanelCatalog != nil ||
+		r.forceNextCellFrame || r.pendingPalette != nil || r.pendingFrame != nil ||
+		r.pendingScene != nil || r.pendingCommandLine != nil ||
+		r.pendingPanelCatalog != nil || r.pendingPanelActivation != nil {
+		if bound {
+			// A newer redraw may represent semantic state outside the direct
+			// activation. Do not let the narrower export permit hide it.
+			r.suppressSemanticExport = false
+			r.panelActivationQueued = false
+		}
+		return false
+	}
+	// No export will run in this phase, so consume the narrower permit too and
+	// discard activation bookkeeping that it would otherwise have cleared.
+	r.suppressSemanticExport = false
+	r.panelActivationQueued = false
+	return true
+}
+
+// QueuePanelActivation immediately validates the delivered semantic snapshot
+// and, when safe, prepares its small copy-on-write successor. That lets the
+// next render omit the complete catalog traversal. shellTitle is optional for
+// compatibility with callers that do not expose an active-panel title.
+func (r *ExtUiRenderer) QueuePanelActivation(side int, shellTitle ...string) {
+	title := ""
+	if len(shellTitle) > 0 {
+		title = shellTitle[0]
+	}
+	r.queuePanelActivation(side, title, nil)
+}
+
+// QueuePanelActivationState is the application-aware activation path. The
+// command-line prompt depends on the active panel path, so it travels beside
+// the activation while the large catalogs remain shared and untouched.
+func (r *ExtUiRenderer) QueuePanelActivationState(side int, shellTitle string,
+	commandLine map[string]any,
+) {
+	r.queuePanelActivation(side, shellTitle, commandLine)
+}
+
+func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
+	commandLine map[string]any,
+) {
+	if side < 0 || side > 1 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticUpdateOpen {
+		r.semanticUpdateTouched = true
+	}
+	r.queuedPanelActivationSide = side
+	r.panelActivationQueued = true
+	if r.closed || r.semanticFastPathUnsafe || r.pendingScene != nil ||
+		r.pendingCommandLine != nil || r.pendingPanelCatalog != nil ||
+		r.directPanelCatalog != nil {
+		return
+	}
+
+	basis := r.lastScene
+	if r.pendingPanelActivationScene != nil {
+		basis = r.pendingPanelActivationScene
+	}
+	patched, ok := semanticSceneWithPanelActivation(
+		basis, side, title, commandLine)
+	if !ok {
+		return
+	}
+
+	// An even number of coalesced Tab events returns to the last delivered
+	// side. Detect that from the scalar fields plus the bounded command-line
+	// model instead of comparing the scene, which would walk every shared
+	// catalog row and defeat the purpose of this fast path.
+	deliveredSide, deliveredSideOK := semanticSceneActivePanel(r.lastScene)
+	deliveredShell, _ := r.lastScene["shell"].(map[string]any)
+	deliveredTitle := semanticString(deliveredShell["title"])
+	deliveredCommandLineMatches := commandLine == nil ||
+		reflect.DeepEqual(commandLine, deliveredShell["commandLine"])
+	if deliveredSideOK && side == deliveredSide &&
+		(title == "" || title == deliveredTitle) && deliveredCommandLineMatches {
+		r.pendingPanelActivation = nil
+		r.pendingPanelActivationScene = nil
+		r.suppressSemanticExport = true
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		if r.semanticUpdateOpen {
+			r.semanticUpdateHandled = true
+		}
+		return
+	}
+	if deliveredSideOK && side == deliveredSide {
+		// A title mutation while returning to the delivered side cannot have
+		// come from panel activation alone. Preserve the regular full-export
+		// fallback for that unexpected state.
+		r.semanticFastPathUnsafe = true
+		r.suppressSemanticExport = false
+		return
+	}
+
+	revision := uint64(0)
+	if r.pendingPanelActivation != nil {
+		revision = uint64(extUiAnyInt(r.pendingPanelActivation["revision"]))
+	}
+	if revision == 0 {
+		r.nextPanelActivationRevision++
+		revision = r.nextPanelActivationRevision
+	}
+	patch := map[string]any{
+		"type":        "panel_activation",
+		"activePanel": side,
+		"revision":    revision,
+	}
+	if title != "" {
+		patch["shellTitle"] = title
+	}
+	if commandLine != nil {
+		patch["commandLine"] = commandLine
+	}
+	if trace := navigationBenchmarkCurrentUI(); trace != nil {
+		patch["benchmarkTraceId"] = trace.id
+	}
+	r.suppressSemanticExport = true
+
+	// Tab is an input-latency path, not a render path.  Waiting for Flush here
+	// used to add the complete TUI Show() cost (20-30 ms on a large panel) before
+	// this catalog-free patch even entered the socket.  The sender is serialized
+	// independently, so publish the already validated authoritative transition
+	// now and advance the logical scene only after the write succeeds.
+	if r.send != nil {
+		benchmark := navigationBenchmarkPrepareImmediateMessage(patch)
+		if err := r.send.SendWithBenchmark(patch, benchmark); err != nil {
+			vtui.DebugLog("EXTUI_RENDERER: direct activation send failed: %v", err)
+			r.closed = true
+			r.suppressSemanticExport = false
+			r.deferSemanticRender = false
+			return
+		}
+		r.lastScene = patched
+		r.panelActivationProjected = true
+		r.pendingPanelActivation = nil
+		r.pendingPanelActivationScene = nil
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		if r.semanticUpdateOpen {
+			r.semanticUpdateHandled = true
+		}
+		return
+	}
+
+	// A nil sender is useful to embedders and unit tests that drive Flush
+	// manually. Preserve the queued form as a conservative fallback.
+	r.pendingPanelActivation = patch
+	r.pendingPanelActivationScene = patched
+	if r.semanticUpdateOpen {
+		r.semanticUpdateHandled = true
+	}
+}
+
+// QueuePanelCatalogState publishes an already complete minimal catalog from
+// the Go UI mutation itself. Directory navigation otherwise waits for the
+// following cell renderer and semantic export before the native list can even
+// begin updating. The ordinary export is retained as an authoritative proof;
+// SetSemanticScene adopts it silently (or sends only its small chrome delta).
+func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
+	shellTitle, traceID string,
+) {
+	if side < 0 || side > 1 || panel == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticUpdateOpen {
+		r.semanticUpdateTouched = true
+	}
+	if r.closed || r.send == nil || r.directPanelCatalog != nil ||
+		r.pendingScene != nil ||
+		r.pendingCommandLine != nil || r.pendingPanelCatalog != nil ||
+		r.pendingPanelActivation != nil {
+		return
+	}
+	activeSide, activeOK := semanticSceneActivePanel(r.lastScene)
+	panels, panelsOK := semanticScenePanelMaps(r.lastScene)
+	if !activeOK || activeSide != side || !panelsOK || side >= len(panels) ||
+		!semanticPanelCatalogTransitionSafe(panels[side], panel, side) ||
+		reflect.DeepEqual(panels[side], panel) {
+		return
+	}
+
+	patch := map[string]any{
+		"type":        "panel_catalog",
+		"activePanel": activeSide,
+		"side":        side,
+		"panel":       panel,
+	}
+	if shell, ok := r.lastScene["shell"].(map[string]any); ok &&
+		shellTitle != "" && shellTitle != semanticString(shell["title"]) {
+		patch["shellTitle"] = shellTitle
+	}
+	if traceID == "" {
+		if trace := navigationBenchmarkCurrentUI(); trace != nil {
+			traceID = trace.id
+		}
+	}
+	if traceID != "" {
+		patch["benchmarkTraceId"] = traceID
+	}
+	benchmark := navigationBenchmarkPrepareImmediateMessage(patch)
+	if err := r.send.SendWithBenchmark(patch, benchmark); err != nil {
+		vtui.DebugLog("EXTUI_RENDERER: direct panel catalog send failed: %v", err)
+		r.closed = true
+		r.deferSemanticRender = false
+		return
+	}
+	// lastScene intentionally remains the client's pre-transition snapshot.
+	// The next full Go export must prove that this direct projection was exact.
+	r.directPanelCatalog = patch
+	// A catalog projection, unlike activation, intentionally does not advance
+	// lastScene. It must therefore cancel any activation permit and retain the
+	// immediately following render as its validation/correction barrier.
+	r.deferSemanticRender = false
+	r.deferSemanticRenderBound = false
+	r.suppressSemanticExport = false
+	if r.semanticUpdateOpen {
+		r.semanticUpdateHandled = true
+	}
 }
 
 // WantsPeriodicRedraw reports that cursor blinking and other idle presentation
@@ -245,6 +668,26 @@ func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer 
 // renderer through vtui's event, task, resize, and explicit redraw paths.
 func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
 	return false
+}
+
+// CanDeferCoveredTerminalRedraw proves that raw shell bytes changed only a
+// terminal which the last delivered native scene completely covers with both
+// file panels. The terminal parser keeps the new rows in memory; an input/task
+// that exposes the terminal still performs an ordinary render and publishes
+// the latest state. The native-surface guard deliberately leaves legacy, text,
+// and fallback presentation on their conservative redraw path.
+func (r *ExtUiRenderer) CanDeferCoveredTerminalRedraw() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.nativeCellFrameSuppressed || r.lastScene == nil {
+		return false
+	}
+	shell, ok := r.lastScene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return false
+	}
+	_, covered := semanticCoveredTerminalID(shell, shell)
+	return covered
 }
 
 func (r *ExtUiRenderer) SetPalette(pal *[256]uint32) {
@@ -286,16 +729,38 @@ func (r *ExtUiRenderer) SetCursor(x, y int, visible bool, shape vtui.CursorShape
 	r.cursorDirty = true
 }
 func (r *ExtUiRenderer) SetWindowTitle(title string) {
-	_ = r.send.Send(map[string]any{
+	r.mu.Lock()
+	if r.windowTitleValid && r.lastWindowTitle == title {
+		r.mu.Unlock()
+		return
+	}
+	r.lastWindowTitle = title
+	r.windowTitleValid = true
+	r.mu.Unlock()
+	if err := r.send.Send(map[string]any{
 		"type":  "title",
 		"title": title,
-	})
+	}); err != nil {
+		r.mu.Lock()
+		if r.lastWindowTitle == title {
+			r.windowTitleValid = false
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, forceRedraw bool) {
 	if width <= 0 || height <= 0 || len(buf) == 0 {
 		return
 	}
+	r.mu.Lock()
+	if r.nativeCellFrameSuppressed {
+		r.pendingFrame = nil
+		r.mu.Unlock()
+		return
+	}
+	forceRedraw = forceRedraw || r.forceNextCellFrame
+	r.mu.Unlock()
 
 	needsRedraw := forceRedraw
 	if !needsRedraw {
@@ -330,6 +795,11 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 	}
 
 	r.mu.Lock()
+	if r.nativeCellFrameSuppressed {
+		r.pendingFrame = nil
+		r.mu.Unlock()
+		return
+	}
 	r.pendingFrame = map[string]any{
 		"type":   "frame",
 		"width":  width,
@@ -337,7 +807,83 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 		"full":   forceRedraw || len(shadow) < limit,
 		"cells":  cells,
 	}
+	r.forceNextCellFrame = false
 	r.mu.Unlock()
+}
+
+// setNativeCellFrameSuppression mirrors the external host's presentation
+// contract at the transport boundary. App-schema scenes are rendered from the
+// semantic model unless the user explicitly selected text presentation or the
+// active model declares a fallback node. Non-app producers and fallback
+// surfaces continue to receive the complete cell protocol unchanged.
+//
+// The caller holds r.mu.
+func (r *ExtUiRenderer) setNativeCellFrameSuppression(scene map[string]any) {
+	suppress := r.nativeSemanticSurfaceEnabled && semanticSceneOwnsNativeSurface(scene)
+	if r.nativeCellFrameSuppressed && !suppress {
+		// The hidden grid may never have received a frame. Force a complete
+		// snapshot (and the latest cursor) before revealing it again. Flush
+		// keeps the fallback scene behind both messages so QML cannot expose a
+		// stale retained texture between independently decoded protocol frames.
+		r.forceNextCellFrame = true
+		r.cursorDirty = true
+		r.fallbackRevealPending = true
+	}
+	r.nativeCellFrameSuppressed = suppress
+	if suppress {
+		r.pendingFrame = nil
+		r.fallbackRevealPending = false
+	} else {
+		r.deferSemanticRender = false
+		r.deferSemanticRenderBound = false
+	}
+}
+
+func semanticSceneOwnsNativeSurface(scene map[string]any) bool {
+	if scene == nil || semanticString(scene["schema"]) != "app" ||
+		semanticString(scene["presentation"]) == "text" {
+		return false
+	}
+	if queue, ok := scene["operationsQueue"].(map[string]any); ok && queue != nil {
+		return !semanticContainsFallback(queue)
+	}
+	shell, hasShell := scene["shell"].(map[string]any)
+	if hasShell && shell != nil && extUiAnyBool(shell["fallback"]) {
+		return false
+	}
+	if surface, ok := scene["surface"].(map[string]any); ok && surface != nil {
+		return !semanticContainsFallback(surface)
+	}
+	if hasShell && shell != nil {
+		return !semanticContainsFallback(shell)
+	}
+	return false
+}
+
+func semanticContainsFallback(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		kind := semanticString(typed["kind"])
+		if extUiAnyBool(typed["fallback"]) || kind == "fallback" || kind == "fallbackWidget" {
+			return true
+		}
+		// Native fallback is explicitly structural. Do not recursively walk
+		// catalog entries or text rows on this latency-sensitive decision.
+		return semanticContainsFallback(typed["children"])
+	case []map[string]any:
+		for _, child := range typed {
+			if semanticContainsFallback(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if semanticContainsFallback(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
@@ -350,22 +896,201 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if reflect.DeepEqual(scene, r.lastScene) {
+	if r.semanticUpdateOpen {
+		r.semanticUpdateTouched = true
+	}
+	r.setNativeCellFrameSuppression(scene)
+	r.suppressSemanticExport = false
+	r.deferSemanticRender = false
+	r.deferSemanticRenderBound = false
+	r.semanticFastPathUnsafe = false
+	queuedActivationSide := r.queuedPanelActivationSide
+	activationQueued := r.panelActivationQueued
+	r.panelActivationQueued = false
+
+	// A plain Tab changes only shell.activePanel and the two panel.active
+	// flags. PanelsFrame explicitly marks that transition; validate the fresh
+	// authoritative export against the last delivered scene before replacing
+	// a megabyte-scale catalog with this revisioned acknowledgement.
+	if activationQueued && r.pendingScene == nil &&
+		r.pendingCommandLine == nil &&
+		semanticSceneHasPanelActivation(scene, queuedActivationSide) &&
+		semanticScenesEqualExceptPanelActivation(r.lastScene, scene) {
+		previousSide, previousOK := semanticSceneActivePanel(r.lastScene)
+		if previousOK && previousSide != queuedActivationSide {
+			compareResult = "panel_activation_patch"
+			revision := uint64(0)
+			if r.pendingPanelActivation != nil {
+				revision = uint64(extUiAnyInt(r.pendingPanelActivation["revision"]))
+			}
+			if revision == 0 {
+				r.nextPanelActivationRevision++
+				revision = r.nextPanelActivationRevision
+			}
+			patch := map[string]any{
+				"type":        "panel_activation",
+				"activePanel": queuedActivationSide,
+				"revision":    revision,
+			}
+			// Preserve benchmark correlation without making the production patch
+			// carry any catalog or presentation data.
+			if traceID, present := scene["benchmarkTraceId"]; present {
+				patch["benchmarkTraceId"] = traceID
+			}
+			if benchmarkMeta, present := scene["benchmark"]; present {
+				patch["benchmark"] = benchmarkMeta
+			}
+			r.pendingPanelCatalog = nil
+			r.pendingPanelCatalogScene = nil
+			r.pendingPanelActivation = patch
+			r.pendingPanelActivationScene = scene
+			return
+		}
+	}
+	// A direct catalog is already visible in the client while lastScene still
+	// describes the pre-navigation state. Skip the generic whole-scene walk in
+	// that case: the strict catalog/remainder proof below both adopts an exact
+	// projection and forces a full correction if the UI mutation rolled back.
+	if r.directPanelCatalog == nil && semanticScenesEqual(scene, r.lastScene) {
 		compareResult = "equal_last"
+		// Benchmark correlation belongs to the transport observation, not to the
+		// client's logical scene. Keep the newest authoritative snapshot so a
+		// trace-id or scene-sequence annotation can never accumulate stale state.
+		r.lastScene = scene
+		r.panelActivationProjected = false
 		// A transient full scene or command-line patch returned to the state the
 		// native client already owns before Flush.
 		r.pendingScene = nil
 		r.pendingCommandLine = nil
 		r.pendingCommandLineScene = nil
+		r.pendingPanelCatalog = nil
+		r.pendingPanelCatalogScene = nil
+		r.pendingPanelActivation = nil
+		r.pendingPanelActivationScene = nil
 		return
 	}
-	if reflect.DeepEqual(scene, r.pendingScene) {
+	// QueuePanelActivationState is intentionally captured before Show(), so its
+	// prompt and edit model are authoritative while the cell-derived runs still
+	// describe the preceding render. The immediate native patch already carries
+	// every interactive value. Once the next export proves that the rest of the
+	// scene is unchanged, adopt its rendered command-line snapshot without a
+	// redundant full scene or follow-up patch.
+	if r.panelActivationProjected {
+		if semanticScenesEqualExceptCommandLineRendering(r.lastScene, scene) {
+			compareResult = "equal_projected_panel_activation"
+			r.lastScene = scene
+			r.panelActivationProjected = false
+			r.pendingScene = nil
+			r.pendingCommandLine = nil
+			r.pendingCommandLineScene = nil
+			r.pendingPanelCatalog = nil
+			r.pendingPanelCatalogScene = nil
+			r.pendingPanelActivation = nil
+			r.pendingPanelActivationScene = nil
+			return
+		}
+		semanticPanelActivationTraceRejection(r.lastScene, scene)
+		r.panelActivationProjected = false
+	}
+	if semanticScenesEqual(scene, r.pendingScene) {
 		compareResult = "equal_pending_scene"
 		return
 	}
-	if reflect.DeepEqual(scene, r.pendingCommandLineScene) {
+	if semanticScenesEqual(scene, r.pendingCommandLineScene) {
 		compareResult = "equal_pending_command_line_scene"
 		return
+	}
+	if semanticScenesEqual(scene, r.pendingPanelCatalogScene) {
+		compareResult = "equal_pending_panel_catalog_scene"
+		return
+	}
+	if semanticScenesEqual(scene, r.pendingPanelActivationScene) {
+		compareResult = "equal_pending_panel_activation_scene"
+		return
+	}
+
+	// A directory transition changes one authoritative minimal panel catalog,
+	// while the other panel and the rest of the application stay untouched.
+	// Transport that one panel (plus the few small values derived from its
+	// path) instead of serializing the complete scene and its legacy aliases.
+	// The diff routine is intentionally strict: an unknown or simultaneous
+	// state change makes this fall through to the complete-scene protocol.
+	if r.pendingScene == nil {
+		directProjectionPending := r.directPanelCatalog != nil
+		if patch, ok := semanticPanelCatalogPatch(r.lastScene, scene); ok {
+			if traceID, present := scene["benchmarkTraceId"]; present {
+				patch["benchmarkTraceId"] = traceID
+			}
+			if benchmarkMeta, present := scene["benchmark"]; present {
+				patch["benchmark"] = benchmarkMeta
+			}
+			if r.directPanelCatalog != nil {
+				chrome, matches := semanticDirectPanelCatalogRemainder(
+					r.directPanelCatalog, patch)
+				if !matches && navigationBenchmarkIsEnabled() {
+					navigationBenchmarkRenderEvent("scene.panel_catalog.direct_mismatch",
+						"firstDifference", semanticFirstDifferencePath(
+							r.directPanelCatalog, patch, "$"))
+				}
+				r.directPanelCatalog = nil
+				if matches {
+					r.pendingScene = nil
+					r.pendingPanelCatalog = nil
+					r.pendingPanelCatalogScene = nil
+					r.pendingPanelActivation = nil
+					r.pendingPanelActivationScene = nil
+					if chrome == nil {
+						compareResult = "equal_direct_panel_catalog"
+						r.pendingCommandLine = nil
+						r.pendingCommandLineScene = nil
+						r.lastScene = scene
+						return
+					}
+					compareResult = "direct_panel_catalog_chrome"
+					r.pendingCommandLine = chrome
+					r.pendingCommandLineScene = scene
+					return
+				}
+				// The immediate catalog was visible, but the authoritative scene
+				// contains another simultaneous mutation. Correct it immediately
+				// instead of allowing a smaller unrelated fast path to adopt a
+				// scene which no longer describes what the client displays.
+				compareResult = "direct_panel_catalog_correction"
+				r.pendingCommandLine = nil
+				r.pendingCommandLineScene = nil
+				r.pendingPanelCatalog = nil
+				r.pendingPanelCatalogScene = nil
+				r.pendingPanelActivation = nil
+				r.pendingPanelActivationScene = nil
+				r.pendingScene = scene
+				return
+			} else {
+				compareResult = "panel_catalog_patch"
+				r.pendingCommandLine = nil
+				r.pendingCommandLineScene = nil
+				r.pendingPanelActivation = nil
+				r.pendingPanelActivationScene = nil
+				r.pendingPanelCatalog = patch
+				r.pendingPanelCatalogScene = scene
+				return
+			}
+		}
+		r.directPanelCatalog = nil
+		semanticPanelCatalogTraceRejection(r.lastScene, scene)
+		if directProjectionPending {
+			// The input-direct projection rolled back or no longer satisfies the
+			// catalog-only contract. The client has already painted it, so only a
+			// full authoritative scene can safely restore the actual state.
+			compareResult = "direct_panel_catalog_correction"
+			r.pendingCommandLine = nil
+			r.pendingCommandLineScene = nil
+			r.pendingPanelCatalog = nil
+			r.pendingPanelCatalogScene = nil
+			r.pendingPanelActivation = nil
+			r.pendingPanelActivationScene = nil
+			r.pendingScene = scene
+			return
+		}
 	}
 
 	// Typing used to serialize and decode the complete panel catalogs for
@@ -376,6 +1101,10 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	if r.pendingScene == nil && semanticScenesEqualExceptCommandLine(r.lastScene, scene) {
 		if commandLine, ok := semanticSceneCommandLine(scene); ok {
 			compareResult = "command_line_patch"
+			r.pendingPanelCatalog = nil
+			r.pendingPanelCatalogScene = nil
+			r.pendingPanelActivation = nil
+			r.pendingPanelActivationScene = nil
 			r.pendingCommandLine = map[string]any{
 				"type":        "command_line",
 				"commandLine": commandLine,
@@ -389,7 +1118,1297 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	}
 	r.pendingCommandLine = nil
 	r.pendingCommandLineScene = nil
+	r.pendingPanelCatalog = nil
+	r.pendingPanelCatalogScene = nil
+	r.pendingPanelActivation = nil
+	r.pendingPanelActivationScene = nil
+	r.directPanelCatalog = nil
 	r.pendingScene = scene
+}
+
+var semanticPanelCatalogMutableKeys = map[string]struct{}{
+	"path": {}, "title": {}, "catalogRevision": {}, "selectionRevision": {},
+	"cursorEntryId": {}, "cursor": {}, "loading": {}, "catalogProvisional": {},
+	"fastFind": {}, "fastFindText": {}, "fastFindMatchColor": {},
+	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
+	"metadataRevision": {}, "entries": {},
+}
+
+var semanticCommandLineNavigationKeys = map[string]struct{}{
+	"prompt": {}, "promptRuns": {}, "runs": {}, "inputX": {},
+	"cursorPrefixRuns": {}, "cursorX": {},
+}
+
+type semanticPanelCatalogDiff struct {
+	activePanel       int
+	activeScreen      int
+	side              int
+	panelID           string
+	shellID           string
+	commandLineID     string
+	hiddenTerminalID  string
+	panel             map[string]any
+	commandLine       any
+	commandLineDiff   bool
+	shellTitle        any
+	shellTitleDiff    bool
+	workspaceTabs     any
+	workspaceTabsDiff bool
+	menus             any
+	menusDiff         bool
+}
+
+var semanticHiddenTerminalPresentationKeys = map[string]struct{}{
+	"cursorX": {}, "cursorY": {}, "rows": {},
+}
+
+// semanticHiddenTerminalPresentationTransition recognizes the narrow PTY
+// mutation produced by synchronizing the background shell after panel
+// navigation. The terminal is completely covered in this state, but the
+// private cd command advances its cursor and appends prompt rows. Every
+// logical/non-presentation field must remain byte-equivalent; mode, busy,
+// alt-screen, title, visibility, and focus changes therefore still force an
+// authoritative full scene. Revealing either side also fails the guards below
+// and publishes the latest rows before the terminal can become visible.
+func semanticCoveredTerminalID(previousShell, currentShell map[string]any) (string, bool) {
+	for _, shell := range []map[string]any{previousShell, currentShell} {
+		if shell == nil || semanticString(shell["mode"]) != "panels" ||
+			!extUiAnyBool(shell["showPanels"]) ||
+			!extUiAnyBool(shell["showLeftPanel"]) ||
+			!extUiAnyBool(shell["showRightPanel"]) ||
+			extUiAnyBool(shell["wide"]) || extUiAnyBool(shell["fallback"]) {
+			return "", false
+		}
+		terminalActive, present := shell["terminalActive"].(bool)
+		if !present || terminalActive {
+			return "", false
+		}
+	}
+	previousTerminal, previousOK := previousShell["terminal"].(map[string]any)
+	currentTerminal, currentOK := currentShell["terminal"].(map[string]any)
+	if !previousOK || !currentOK || previousTerminal == nil || currentTerminal == nil {
+		return "", false
+	}
+	terminalID := semanticString(previousTerminal["id"])
+	if terminalID == "" || terminalID != semanticString(currentTerminal["id"]) {
+		return "", false
+	}
+	return terminalID, true
+}
+
+func semanticHiddenTerminalPresentationTransition(previousShell, currentShell map[string]any) (string, bool) {
+	terminalID, ok := semanticCoveredTerminalID(previousShell, currentShell)
+	if !ok {
+		return "", false
+	}
+	previousTerminal := previousShell["terminal"].(map[string]any)
+	currentTerminal := currentShell["terminal"].(map[string]any)
+	if !semanticMapEqualExceptKeys(previousTerminal, currentTerminal, semanticHiddenTerminalPresentationKeys) {
+		return "", false
+	}
+	return terminalID, true
+}
+
+// semanticPanelCatalogPatch returns a lossless native-scene patch only for a
+// single deferred file-panel transition. Legacy aliases are checked below as
+// well, but are not copied onto the wire because they mirror the typed model.
+func semanticPanelCatalogPatch(previous, current map[string]any) (map[string]any, bool) {
+	if previous == nil || current == nil {
+		return nil, false
+	}
+	previousShell, previousOK := previous["shell"].(map[string]any)
+	currentShell, currentOK := current["shell"].(map[string]any)
+	if !previousOK || !currentOK || previousShell == nil || currentShell == nil {
+		return nil, false
+	}
+	previousActive, previousActiveOK := semanticSceneActivePanel(previous)
+	currentActive, currentActiveOK := semanticSceneActivePanel(current)
+	if !previousActiveOK || !currentActiveOK || previousActive != currentActive {
+		return nil, false
+	}
+	previousPanels, previousOK := semanticScenePanelMaps(previous)
+	currentPanels, currentOK := semanticScenePanelMaps(current)
+	if !previousOK || !currentOK || len(previousPanels) != len(currentPanels) {
+		return nil, false
+	}
+
+	changedIndex := -1
+	for index := range previousPanels {
+		if reflect.DeepEqual(previousPanels[index], currentPanels[index]) {
+			continue
+		}
+		if changedIndex >= 0 || !semanticPanelCatalogTransitionSafe(previousPanels[index], currentPanels[index], index) {
+			return nil, false
+		}
+		changedIndex = index
+	}
+	if changedIndex < 0 {
+		return nil, false
+	}
+	changedPanel := currentPanels[changedIndex]
+	changedSide := changedIndex
+	if _, present := changedPanel["side"]; present {
+		changedSide = extUiAnyInt(changedPanel["side"])
+	}
+
+	previousCommandLine, previousCommandLinePresent := previousShell["commandLine"]
+	currentCommandLine, currentCommandLinePresent := currentShell["commandLine"]
+	commandLineDiff := previousCommandLinePresent != currentCommandLinePresent ||
+		!reflect.DeepEqual(previousCommandLine, currentCommandLine)
+	if commandLineDiff {
+		previousMap, previousMapOK := previousCommandLine.(map[string]any)
+		currentMap, currentMapOK := currentCommandLine.(map[string]any)
+		if !previousMapOK || !currentMapOK ||
+			!semanticMapEqualExceptKeys(previousMap, currentMap, semanticCommandLineNavigationKeys) {
+			return nil, false
+		}
+	}
+
+	previousTitle, previousTitlePresent := previousShell["title"]
+	currentTitle, currentTitlePresent := currentShell["title"]
+	shellTitleDiff := previousTitlePresent != currentTitlePresent || !reflect.DeepEqual(previousTitle, currentTitle)
+	workspaceTabsDiff := !reflect.DeepEqual(previous["workspaceTabs"], current["workspaceTabs"])
+	if workspaceTabsDiff && !semanticWorkspaceTabsNavigationEquivalent(
+		previous["workspaceTabs"], current["workspaceTabs"], extUiAnyInt(current["activeScreen"]), changedSide) {
+		return nil, false
+	}
+	// Only the active panel contributes the shell title, prompt and workspace
+	// title. Seeing any of those derived changes for an inactive panel signals
+	// that this was not a plain catalog transition.
+	if changedSide != currentActive && (commandLineDiff || shellTitleDiff || workspaceTabsDiff) {
+		return nil, false
+	}
+
+	menusDiff := !reflect.DeepEqual(previous["menus"], current["menus"])
+	if menusDiff {
+		if !commandLineDiff || !reflect.DeepEqual(
+			semanticNonAutocompleteMenus(previous["menus"]),
+			semanticNonAutocompleteMenus(current["menus"])) {
+			return nil, false
+		}
+	}
+
+	shellIgnored := map[string]struct{}{
+		"panels": {}, "commandLine": {}, "title": {},
+	}
+	hiddenTerminalID, hiddenTerminalPresentationOnly := semanticHiddenTerminalPresentationTransition(
+		previousShell, currentShell)
+	if hiddenTerminalPresentationOnly {
+		// The helper above already proved every visible/logical terminal field equal.
+		shellIgnored["terminal"] = struct{}{}
+	}
+	if !semanticMapEqualExceptKeys(previousShell, currentShell, shellIgnored) {
+		return nil, false
+	}
+	if !semanticMapEqualExceptKeys(previous, current, map[string]struct{}{
+		"shell": {}, "workspaceTabs": {}, "menus": {}, "legacy": {},
+		"frames": {}, "screens": {}, "benchmarkTraceId": {}, "benchmark": {},
+	}) {
+		return nil, false
+	}
+
+	diff := semanticPanelCatalogDiff{
+		activePanel:       currentActive,
+		activeScreen:      extUiAnyInt(current["activeScreen"]),
+		side:              changedSide,
+		panelID:           semanticString(changedPanel["id"]),
+		shellID:           semanticString(currentShell["id"]),
+		hiddenTerminalID:  hiddenTerminalID,
+		panel:             changedPanel,
+		commandLine:       currentCommandLine,
+		commandLineDiff:   commandLineDiff,
+		shellTitle:        currentTitle,
+		shellTitleDiff:    shellTitleDiff,
+		workspaceTabs:     current["workspaceTabs"],
+		workspaceTabsDiff: workspaceTabsDiff,
+		menus:             current["menus"],
+		menusDiff:         menusDiff,
+	}
+	if commandLine, ok := currentCommandLine.(map[string]any); ok {
+		diff.commandLineID = semanticString(commandLine["id"])
+	}
+	if !semanticPanelCatalogLegacyEquivalent(previous, current, diff) {
+		return nil, false
+	}
+
+	patch := map[string]any{
+		"type":        "panel_catalog",
+		"activePanel": diff.activePanel,
+		"side":        diff.side,
+		"panel":       diff.panel,
+	}
+	if diff.commandLineDiff {
+		patch["commandLine"] = diff.commandLine
+	}
+	if diff.shellTitleDiff {
+		patch["shellTitle"] = diff.shellTitle
+	}
+	if diff.workspaceTabsDiff {
+		patch["workspaceTabs"] = diff.workspaceTabs
+	}
+	if diff.menusDiff {
+		if diff.menus == nil {
+			patch["menus"] = []map[string]any{}
+		} else {
+			patch["menus"] = diff.menus
+		}
+	}
+	return patch, true
+}
+
+var semanticPanelChromeKeys = map[string]struct{}{
+	"commandLine": {}, "shellTitle": {}, "workspaceTabs": {}, "menus": {},
+}
+
+// semanticDirectPanelCatalogRemainder validates the later strict scene diff
+// against the catalog that was already sent directly from the Go mutation.
+// Only bounded chrome fields may remain; catalogs are never retransmitted.
+func semanticDirectPanelCatalogRemainder(delivered, authoritative map[string]any) (map[string]any, bool) {
+	if delivered == nil || authoritative == nil ||
+		semanticString(delivered["type"]) != "panel_catalog" ||
+		semanticString(authoritative["type"]) != "panel_catalog" ||
+		extUiAnyInt(delivered["activePanel"]) != extUiAnyInt(authoritative["activePanel"]) ||
+		extUiAnyInt(delivered["side"]) != extUiAnyInt(authoritative["side"]) ||
+		!reflect.DeepEqual(delivered["panel"], authoritative["panel"]) {
+		return nil, false
+	}
+	for key := range semanticPanelChromeKeys {
+		if value, present := delivered[key]; present &&
+			(!reflect.DeepEqual(value, authoritative[key]) || authoritative[key] == nil) {
+			return nil, false
+		}
+	}
+	chrome := map[string]any{
+		"type":        "panel_chrome",
+		"activePanel": authoritative["activePanel"],
+	}
+	hasChrome := false
+	for key := range semanticPanelChromeKeys {
+		value, present := authoritative[key]
+		if !present || reflect.DeepEqual(value, delivered[key]) {
+			continue
+		}
+		chrome[key] = value
+		hasChrome = true
+	}
+	if !hasChrome {
+		return nil, true
+	}
+	for key, value := range authoritative {
+		if strings.HasPrefix(key, "benchmark") {
+			chrome[key] = value
+		}
+	}
+	return chrome, true
+}
+
+// semanticPanelCatalogTraceRejection explains a conservative fast-path
+// fallback only while the opt-in navigation trace is active. It deliberately
+// stays off the production hot path: recursive first-difference discovery can
+// walk large legacy aliases, but is invaluable when a real scene contains a
+// derived field that a synthetic transport test did not model.
+func semanticPanelCatalogTraceRejection(previous, current map[string]any) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	reason, path, relevant := semanticPanelCatalogRejection(previous, current)
+	if !relevant {
+		return
+	}
+	fields := []any{"reason", reason}
+	if path != "" {
+		fields = append(fields, "firstDifference", path)
+	}
+	navigationBenchmarkRenderEvent("scene.panel_catalog.rejected", fields...)
+}
+
+func semanticPanelCatalogRejection(previous, current map[string]any) (string, string, bool) {
+	if previous == nil || current == nil {
+		return "missing_scene", "$", false
+	}
+	previousShell, previousOK := previous["shell"].(map[string]any)
+	currentShell, currentOK := current["shell"].(map[string]any)
+	if !previousOK || !currentOK || previousShell == nil || currentShell == nil {
+		return "missing_shell", "$.shell", false
+	}
+	previousPanels, previousOK := semanticScenePanelMaps(previous)
+	currentPanels, currentOK := semanticScenePanelMaps(current)
+	if !previousOK || !currentOK || len(previousPanels) != len(currentPanels) {
+		return "panel_shape", "$.shell.panels", true
+	}
+	changed := make([]int, 0, len(previousPanels))
+	for index := range previousPanels {
+		if !reflect.DeepEqual(previousPanels[index], currentPanels[index]) {
+			changed = append(changed, index)
+		}
+	}
+	if len(changed) == 0 {
+		return "no_panel_change", "", false
+	}
+	if len(changed) != 1 {
+		return "multiple_panels_changed", "$.shell.panels", true
+	}
+	index := changed[0]
+	previousPanel, currentPanel := previousPanels[index], currentPanels[index]
+	panelPath := fmt.Sprintf("$.shell.panels[%d]", index)
+	if semanticString(previousPanel["kind"]) != "filePanel" ||
+		semanticString(currentPanel["kind"]) != "filePanel" ||
+		semanticString(previousPanel["id"]) == "" ||
+		semanticString(previousPanel["id"]) != semanticString(currentPanel["id"]) {
+		return "panel_identity", panelPath, true
+	}
+	if previousPanel["metadataDeferred"] != true || currentPanel["metadataDeferred"] != true {
+		return "panel_not_deferred", panelPath + ".metadataDeferred", true
+	}
+	previousSide, currentSide := index, index
+	if _, present := previousPanel["side"]; present {
+		previousSide = extUiAnyInt(previousPanel["side"])
+	}
+	if _, present := currentPanel["side"]; present {
+		currentSide = extUiAnyInt(currentPanel["side"])
+	}
+	if previousSide != currentSide || previousSide < 0 || previousSide > 1 {
+		return "panel_side", panelPath + ".side", true
+	}
+	previousStable := semanticMapWithoutKeys(previousPanel, semanticPanelCatalogMutableKeys)
+	currentStable := semanticMapWithoutKeys(currentPanel, semanticPanelCatalogMutableKeys)
+	if !reflect.DeepEqual(previousStable, currentStable) {
+		return "panel_non_catalog_field", semanticFirstDifferencePath(previousStable, currentStable, panelPath), true
+	}
+	if !reflect.DeepEqual(previousPanel["entries"], currentPanel["entries"]) &&
+		extUiAnyInt(previousPanel["catalogRevision"]) == extUiAnyInt(currentPanel["catalogRevision"]) &&
+		!semanticPanelEntriesEqualExceptSelection(previousPanel["entries"], currentPanel["entries"]) {
+		return "entries_without_catalog_revision", panelPath + ".entries", true
+	}
+
+	previousActive, previousActiveOK := semanticSceneActivePanel(previous)
+	currentActive, currentActiveOK := semanticSceneActivePanel(current)
+	if !previousActiveOK || !currentActiveOK || previousActive != currentActive {
+		return "active_panel_changed", "$.shell.activePanel", true
+	}
+	previousCommandLine, previousCommandLinePresent := previousShell["commandLine"]
+	currentCommandLine, currentCommandLinePresent := currentShell["commandLine"]
+	commandLineDiff := previousCommandLinePresent != currentCommandLinePresent ||
+		!reflect.DeepEqual(previousCommandLine, currentCommandLine)
+	if commandLineDiff {
+		previousMap, previousMapOK := previousCommandLine.(map[string]any)
+		currentMap, currentMapOK := currentCommandLine.(map[string]any)
+		if !previousMapOK || !currentMapOK {
+			return "command_line_shape", "$.shell.commandLine", true
+		}
+		previousStable = semanticMapWithoutKeys(previousMap, semanticCommandLineNavigationKeys)
+		currentStable = semanticMapWithoutKeys(currentMap, semanticCommandLineNavigationKeys)
+		if !reflect.DeepEqual(previousStable, currentStable) {
+			return "command_line_non_navigation_field",
+				semanticFirstDifferencePath(previousStable, currentStable, "$.shell.commandLine"), true
+		}
+	}
+	previousTitle, previousTitlePresent := previousShell["title"]
+	currentTitle, currentTitlePresent := currentShell["title"]
+	shellTitleDiff := previousTitlePresent != currentTitlePresent || !reflect.DeepEqual(previousTitle, currentTitle)
+	workspaceTabsDiff := !reflect.DeepEqual(previous["workspaceTabs"], current["workspaceTabs"])
+	if workspaceTabsDiff && !semanticWorkspaceTabsNavigationEquivalent(
+		previous["workspaceTabs"], current["workspaceTabs"], extUiAnyInt(current["activeScreen"]), currentSide) {
+		return "workspace_tabs_non_navigation_field",
+			semanticFirstDifferencePath(previous["workspaceTabs"], current["workspaceTabs"], "$.workspaceTabs"), true
+	}
+	if currentSide != currentActive && (commandLineDiff || shellTitleDiff || workspaceTabsDiff) {
+		return "inactive_panel_changed_active_derivation", panelPath, true
+	}
+	menusDiff := !reflect.DeepEqual(previous["menus"], current["menus"])
+	if menusDiff && (!commandLineDiff || !reflect.DeepEqual(
+		semanticNonAutocompleteMenus(previous["menus"]),
+		semanticNonAutocompleteMenus(current["menus"]))) {
+		return "menus_non_autocomplete_field",
+			semanticFirstDifferencePath(previous["menus"], current["menus"], "$.menus"), true
+	}
+	previousStable = semanticMapWithoutKeys(previousShell, map[string]struct{}{
+		"panels": {}, "commandLine": {}, "title": {},
+	})
+	currentStable = semanticMapWithoutKeys(currentShell, map[string]struct{}{
+		"panels": {}, "commandLine": {}, "title": {},
+	})
+	if !reflect.DeepEqual(previousStable, currentStable) {
+		return "shell_non_catalog_field",
+			semanticFirstDifferencePath(previousStable, currentStable, "$.shell"), true
+	}
+	previousStable = semanticMapWithoutKeys(previous, map[string]struct{}{
+		"shell": {}, "workspaceTabs": {}, "menus": {}, "legacy": {},
+		"frames": {}, "screens": {}, "benchmarkTraceId": {}, "benchmark": {},
+	})
+	currentStable = semanticMapWithoutKeys(current, map[string]struct{}{
+		"shell": {}, "workspaceTabs": {}, "menus": {}, "legacy": {},
+		"frames": {}, "screens": {}, "benchmarkTraceId": {}, "benchmark": {},
+	})
+	if !reflect.DeepEqual(previousStable, currentStable) {
+		return "root_non_catalog_field",
+			semanticFirstDifferencePath(previousStable, currentStable, "$"), true
+	}
+
+	diff := semanticPanelCatalogDiff{
+		activePanel:       currentActive,
+		activeScreen:      extUiAnyInt(current["activeScreen"]),
+		side:              currentSide,
+		panelID:           semanticString(currentPanel["id"]),
+		shellID:           semanticString(currentShell["id"]),
+		commandLine:       currentCommandLine,
+		commandLineDiff:   commandLineDiff,
+		shellTitle:        currentTitle,
+		shellTitleDiff:    shellTitleDiff,
+		workspaceTabs:     current["workspaceTabs"],
+		workspaceTabsDiff: workspaceTabsDiff,
+		menus:             current["menus"],
+		menusDiff:         menusDiff,
+	}
+	if commandLine, ok := currentCommandLine.(map[string]any); ok {
+		diff.commandLineID = semanticString(commandLine["id"])
+	}
+	for _, key := range []string{"legacy", "frames", "screens"} {
+		previousAlias := semanticScrubPanelCatalogAlias(previous[key], diff)
+		currentAlias := semanticScrubPanelCatalogAlias(current[key], diff)
+		if !reflect.DeepEqual(previousAlias, currentAlias) {
+			return "legacy_alias_" + key,
+				semanticFirstDifferencePath(previousAlias, currentAlias, "$."+key), true
+		}
+	}
+	return "unknown", "", true
+}
+
+func semanticFirstDifferencePath(previous, current any, path string) string {
+	if reflect.DeepEqual(previous, current) {
+		return ""
+	}
+	previousMap, previousMapOK := previous.(map[string]any)
+	currentMap, currentMapOK := current.(map[string]any)
+	if previousMapOK && currentMapOK {
+		keys := make(map[string]struct{}, len(previousMap)+len(currentMap))
+		for key := range previousMap {
+			keys[key] = struct{}{}
+		}
+		for key := range currentMap {
+			keys[key] = struct{}{}
+		}
+		ordered := make([]string, 0, len(keys))
+		for key := range keys {
+			ordered = append(ordered, key)
+		}
+		sort.Strings(ordered)
+		for _, key := range ordered {
+			previousValue, previousPresent := previousMap[key]
+			currentValue, currentPresent := currentMap[key]
+			childPath := path + "." + key
+			if !previousPresent || !currentPresent {
+				return childPath
+			}
+			if difference := semanticFirstDifferencePath(previousValue, currentValue, childPath); difference != "" {
+				return difference
+			}
+		}
+		return path
+	}
+	previousSlice, previousSliceOK := semanticAnySlice(previous)
+	currentSlice, currentSliceOK := semanticAnySlice(current)
+	if previousSliceOK && currentSliceOK {
+		limit := len(previousSlice)
+		if len(currentSlice) < limit {
+			limit = len(currentSlice)
+		}
+		for index := 0; index < limit; index++ {
+			childPath := fmt.Sprintf("%s[%d]", path, index)
+			if difference := semanticFirstDifferencePath(previousSlice[index], currentSlice[index], childPath); difference != "" {
+				return difference
+			}
+		}
+		if len(previousSlice) != len(currentSlice) {
+			return path + ".length"
+		}
+	}
+	return path
+}
+
+func semanticAnySlice(value any) ([]any, bool) {
+	switch typed := value.(type) {
+	case []any:
+		return typed, true
+	case []map[string]any:
+		out := make([]any, len(typed))
+		for index := range typed {
+			out[index] = typed[index]
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func semanticPanelCatalogTransitionSafe(previous, current map[string]any, index int) bool {
+	if semanticString(previous["kind"]) != "filePanel" || semanticString(current["kind"]) != "filePanel" ||
+		semanticString(previous["id"]) == "" || semanticString(previous["id"]) != semanticString(current["id"]) ||
+		previous["metadataDeferred"] != true || current["metadataDeferred"] != true {
+		return false
+	}
+	previousSide, currentSide := index, index
+	if _, present := previous["side"]; present {
+		previousSide = extUiAnyInt(previous["side"])
+	}
+	if _, present := current["side"]; present {
+		currentSide = extUiAnyInt(current["side"])
+	}
+	if previousSide != currentSide || previousSide < 0 || previousSide > 1 {
+		return false
+	}
+	if !semanticMapEqualExceptKeys(previous, current, semanticPanelCatalogMutableKeys) {
+		return false
+	}
+	// A base-entry rewrite without a catalog revision would make an in-flight
+	// metadata request ambiguous. Selection-only changes are the sole exception.
+	if !reflect.DeepEqual(previous["entries"], current["entries"]) &&
+		extUiAnyInt(previous["catalogRevision"]) == extUiAnyInt(current["catalogRevision"]) &&
+		!semanticPanelEntriesEqualExceptSelection(previous["entries"], current["entries"]) {
+		return false
+	}
+	return true
+}
+
+func semanticPanelEntriesEqualExceptSelection(previous, current any) bool {
+	previousEntries, previousOK := semanticMapSlice(previous)
+	currentEntries, currentOK := semanticMapSlice(current)
+	if !previousOK || !currentOK || len(previousEntries) != len(currentEntries) {
+		return false
+	}
+	for index := range previousEntries {
+		if !semanticMapEqualExceptKeys(previousEntries[index], currentEntries[index], map[string]struct{}{"selected": {}}) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticMapSlice(value any) ([]map[string]any, bool) {
+	switch typed := value.(type) {
+	case []map[string]any:
+		return typed, true
+	case []any:
+		result := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			result = append(result, entry)
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func semanticMapEqualExceptKeys(previous, current map[string]any, ignored map[string]struct{}) bool {
+	if previous == nil || current == nil {
+		return previous == nil && current == nil
+	}
+	return reflect.DeepEqual(
+		semanticMapWithoutKeys(previous, ignored),
+		semanticMapWithoutKeys(current, ignored))
+}
+
+func semanticMapWithoutKeys(source map[string]any, ignored map[string]struct{}) map[string]any {
+	if source == nil {
+		return nil
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		if _, skip := ignored[key]; !skip {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func semanticWorkspaceTabsNavigationEquivalent(previous, current any, activeScreen, changedSide int) bool {
+	previousMap, previousOK := previous.(map[string]any)
+	currentMap, currentOK := current.(map[string]any)
+	if !previousOK || !currentOK || !semanticMapEqualExceptKeys(previousMap, currentMap, map[string]struct{}{
+		"tabs": {}, "newTab": {},
+	}) {
+		return false
+	}
+	if !semanticMapValuesEqualExceptKeys(previousMap["newTab"], currentMap["newTab"], map[string]struct{}{
+		"x": {}, "y": {}, "w": {}, "h": {},
+	}) {
+		return false
+	}
+	previousTabs, previousOK := semanticMapSlice(previousMap["tabs"])
+	currentTabs, currentOK := semanticMapSlice(currentMap["tabs"])
+	if !previousOK || !currentOK || len(previousTabs) != len(currentTabs) {
+		return false
+	}
+	for index := range previousTabs {
+		active := index == activeScreen || extUiAnyInt(currentTabs[index]["index"]) == activeScreen
+		if explicit, present := currentTabs[index]["active"].(bool); present {
+			active = explicit
+		}
+		allowed := map[string]struct{}{"x": {}, "y": {}, "w": {}, "h": {}}
+		if active {
+			allowed["text"] = struct{}{}
+			allowed["title"] = struct{}{}
+			if changedSide == 0 {
+				allowed["tooltipPrimary"] = struct{}{}
+			} else {
+				allowed["tooltipSecondary"] = struct{}{}
+			}
+		}
+		if !semanticMapEqualExceptKeys(previousTabs[index], currentTabs[index], allowed) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticMapValuesEqualExceptKeys(previous, current any, ignored map[string]struct{}) bool {
+	if reflect.DeepEqual(previous, current) {
+		return true
+	}
+	previousMap, previousOK := previous.(map[string]any)
+	currentMap, currentOK := current.(map[string]any)
+	return previousOK && currentOK && semanticMapEqualExceptKeys(previousMap, currentMap, ignored)
+}
+
+func semanticPanelCatalogLegacyEquivalent(previous, current map[string]any, diff semanticPanelCatalogDiff) bool {
+	for _, key := range []string{"legacy", "frames", "screens"} {
+		previousValue := semanticScrubPanelCatalogAlias(previous[key], diff)
+		currentValue := semanticScrubPanelCatalogAlias(current[key], diff)
+		if !reflect.DeepEqual(previousValue, currentValue) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticScrubPanelCatalogAlias(value any, diff semanticPanelCatalogDiff) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		kind := semanticString(typed["kind"])
+		id := semanticString(typed["id"])
+		ignored := map[string]struct{}{}
+		if kind == "filePanel" && id == diff.panelID {
+			ignored = semanticPanelCatalogMutableKeys
+		}
+		if (kind == "panels" || kind == "shell") && id == diff.shellID && diff.shellTitleDiff {
+			ignored = map[string]struct{}{"title": {}}
+		}
+		if kind == "commandLine" && id == diff.commandLineID && diff.commandLineDiff {
+			ignored = semanticCommandLineNavigationKeys
+		}
+		if kind == "terminal" && id == diff.hiddenTerminalID && diff.hiddenTerminalID != "" {
+			ignored = semanticHiddenTerminalPresentationKeys
+		}
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if _, skip := ignored[key]; skip {
+				continue
+			}
+			if key == "workspaceTabs" && diff.workspaceTabsDiff {
+				out[key] = "<panel-catalog-workspace-tabs>"
+				continue
+			}
+			if key == "menus" && diff.menusDiff {
+				out[key] = "<panel-catalog-menus>"
+				continue
+			}
+			if key == "title" && (diff.workspaceTabsDiff || diff.shellTitleDiff) {
+				if _, isScreen := typed["frames"]; isScreen &&
+					(extUiAnyInt(typed["index"]) == diff.activeScreen || typed["active"] == true) {
+					continue
+				}
+			}
+			out[key] = semanticScrubPanelCatalogAlias(item, diff)
+		}
+		return out
+	case []map[string]any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, semanticScrubPanelCatalogAlias(item, diff))
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, semanticScrubPanelCatalogAlias(item, diff))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func semanticSceneActivePanel(scene map[string]any) (int, bool) {
+	if scene == nil {
+		return 0, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return 0, false
+	}
+	value, present := shell["activePanel"]
+	if !present {
+		return 0, false
+	}
+	side := extUiAnyInt(value)
+	return side, side >= 0 && side <= 1
+}
+
+func semanticScenePanelMaps(scene map[string]any) ([]map[string]any, bool) {
+	if scene == nil {
+		return nil, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return nil, false
+	}
+	switch panels := shell["panels"].(type) {
+	case []map[string]any:
+		return panels, len(panels) > 0
+	case []any:
+		result := make([]map[string]any, 0, len(panels))
+		for _, value := range panels {
+			panel, ok := value.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			result = append(result, panel)
+		}
+		return result, len(result) > 0
+	default:
+		return nil, false
+	}
+}
+
+// semanticSceneWithPanelActivation builds the exact logical successor for a
+// plain split-panel Tab without traversing or copying catalog entries. It
+// updates the typed shell and the active-workspace legacy aliases emitted by
+// Scene.ToMap, while sharing every unchanged (and potentially large) value.
+func semanticSceneWithPanelActivation(scene map[string]any, activeSide int,
+	shellTitle string, commandLine map[string]any,
+) (map[string]any, bool) {
+	if scene == nil || activeSide < 0 || activeSide > 1 {
+		return nil, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || !semanticPanelActivationShellSupported(shell) {
+		return nil, false
+	}
+	if commandLine != nil {
+		previousCommandLine, ok := shell["commandLine"].(map[string]any)
+		if !ok || semanticString(previousCommandLine["id"]) == "" ||
+			semanticString(previousCommandLine["id"]) != semanticString(commandLine["id"]) {
+			return nil, false
+		}
+	}
+	previousSide, ok := semanticSceneActivePanel(scene)
+	if !ok || previousSide == activeSide {
+		return nil, false
+	}
+
+	patchedShell, ok := semanticPanelActivationShellCopy(
+		shell, previousSide, activeSide, shellTitle, commandLine)
+	if !ok {
+		return nil, false
+	}
+	out := semanticShallowMapCopy(scene)
+	out["shell"] = patchedShell
+	shellID := semanticString(shell["id"])
+	activeScreen := extUiAnyInt(scene["activeScreen"])
+
+	if frames, present := scene["frames"]; present {
+		patched, ok := semanticPanelActivationFramesCopy(
+			frames, shellID, previousSide, activeSide, shellTitle)
+		if !ok {
+			return nil, false
+		}
+		out["frames"] = patched
+	}
+	if screens, present := scene["screens"]; present {
+		patched, ok := semanticPanelActivationScreensCopy(
+			screens, activeScreen, shellID, previousSide, activeSide, shellTitle)
+		if !ok {
+			return nil, false
+		}
+		out["screens"] = patched
+	}
+
+	if legacyValue, present := scene["legacy"]; present {
+		legacy, ok := legacyValue.(map[string]any)
+		if !ok || legacy == nil {
+			return nil, false
+		}
+		legacyCopy := semanticShallowMapCopy(legacy)
+		if frames, present := legacy["frames"]; present {
+			patched, ok := semanticPanelActivationFramesCopy(
+				frames, shellID, previousSide, activeSide, shellTitle)
+			if !ok {
+				return nil, false
+			}
+			legacyCopy["frames"] = patched
+		}
+		if screens, present := legacy["screens"]; present {
+			patched, ok := semanticPanelActivationScreensCopy(
+				screens, activeScreen, shellID, previousSide, activeSide, shellTitle)
+			if !ok {
+				return nil, false
+			}
+			legacyCopy["screens"] = patched
+		}
+		out["legacy"] = legacyCopy
+	}
+	return out, true
+}
+
+func semanticPanelActivationShellSupported(shell map[string]any) bool {
+	if semanticString(shell["mode"]) != "panels" ||
+		!extUiAnyBool(shell["showPanels"]) ||
+		!extUiAnyBool(shell["showLeftPanel"]) ||
+		!extUiAnyBool(shell["showRightPanel"]) ||
+		extUiAnyBool(shell["wide"]) || extUiAnyBool(shell["fallback"]) {
+		return false
+	}
+	for _, key := range []string{"infoPanels", "quickViews"} {
+		if values, present := shell[key]; present && semanticCollectionLen(values) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticCollectionLen(value any) int {
+	switch values := value.(type) {
+	case []map[string]any:
+		return len(values)
+	case []any:
+		return len(values)
+	case nil:
+		return 0
+	default:
+		return -1
+	}
+}
+
+func semanticShallowMapCopy(source map[string]any) map[string]any {
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
+}
+
+func semanticPanelActivationShellCopy(shell map[string]any, previousSide,
+	activeSide int, shellTitle string, commandLine map[string]any,
+) (map[string]any, bool) {
+	if extUiAnyInt(shell["activePanel"]) != previousSide {
+		return nil, false
+	}
+	panels, ok := semanticPanelActivationPanelsCopy(
+		shell["panels"], previousSide, activeSide)
+	if !ok {
+		return nil, false
+	}
+	out := semanticShallowMapCopy(shell)
+	out["activePanel"] = activeSide
+	out["panels"] = panels
+	if shellTitle != "" {
+		out["title"] = shellTitle
+	}
+	if commandLine != nil {
+		out["commandLine"] = commandLine
+	}
+	return out, true
+}
+
+func semanticPanelActivationPanelsCopy(value any, previousSide,
+	activeSide int,
+) (any, bool) {
+	patchPanel := func(panel map[string]any, index int) (map[string]any, int, bool) {
+		if panel == nil || semanticString(panel["kind"]) != "filePanel" {
+			return nil, 0, false
+		}
+		side := index
+		if _, present := panel["side"]; present {
+			side = extUiAnyInt(panel["side"])
+		}
+		if side < 0 || side > 1 {
+			return nil, 0, false
+		}
+		active, present := panel["active"].(bool)
+		if !present || active != (side == previousSide) {
+			return nil, 0, false
+		}
+		out := semanticShallowMapCopy(panel)
+		out["active"] = side == activeSide
+		return out, side, true
+	}
+
+	seen := [2]bool{}
+	switch panels := value.(type) {
+	case []map[string]any:
+		if len(panels) != 2 {
+			return nil, false
+		}
+		out := make([]map[string]any, len(panels))
+		for index, panel := range panels {
+			patched, side, ok := patchPanel(panel, index)
+			if !ok || seen[side] {
+				return nil, false
+			}
+			seen[side] = true
+			out[index] = patched
+		}
+		return out, seen[0] && seen[1]
+	case []any:
+		if len(panels) != 2 {
+			return nil, false
+		}
+		out := make([]any, len(panels))
+		for index, value := range panels {
+			panel, ok := value.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			patched, side, ok := patchPanel(panel, index)
+			if !ok || seen[side] {
+				return nil, false
+			}
+			seen[side] = true
+			out[index] = patched
+		}
+		return out, seen[0] && seen[1]
+	default:
+		return nil, false
+	}
+}
+
+func semanticPanelActivationFramesCopy(value any, shellID string,
+	previousSide, activeSide int, shellTitle string,
+) (any, bool) {
+	patchFrame := func(frame map[string]any) (map[string]any, bool, bool) {
+		kind := semanticString(frame["kind"])
+		id := semanticString(frame["id"])
+		if kind != "shell" && kind != "panels" && (shellID == "" || id != shellID) {
+			return frame, false, true
+		}
+		patched, ok := semanticPanelActivationShellCopy(
+			frame, previousSide, activeSide, shellTitle, nil)
+		return patched, true, ok
+	}
+
+	matched := 0
+	switch frames := value.(type) {
+	case []map[string]any:
+		out := make([]map[string]any, len(frames))
+		for index, frame := range frames {
+			patched, changed, ok := patchFrame(frame)
+			if !ok {
+				return nil, false
+			}
+			if changed {
+				matched++
+			}
+			out[index] = patched
+		}
+		return out, matched == 1
+	case []any:
+		out := make([]any, len(frames))
+		for index, value := range frames {
+			frame, ok := value.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			patched, changed, ok := patchFrame(frame)
+			if !ok {
+				return nil, false
+			}
+			if changed {
+				matched++
+			}
+			out[index] = patched
+		}
+		return out, matched == 1
+	default:
+		return nil, false
+	}
+}
+
+func semanticPanelActivationScreensCopy(value any, activeScreen int,
+	shellID string, previousSide, activeSide int, shellTitle string,
+) (any, bool) {
+	patchScreen := func(screen map[string]any, index int) (map[string]any, bool) {
+		if index != activeScreen {
+			return screen, true
+		}
+		frames, present := screen["frames"]
+		if !present {
+			return nil, false
+		}
+		patchedFrames, ok := semanticPanelActivationFramesCopy(
+			frames, shellID, previousSide, activeSide, shellTitle)
+		if !ok {
+			return nil, false
+		}
+		out := semanticShallowMapCopy(screen)
+		out["frames"] = patchedFrames
+		if shellTitle != "" {
+			out["title"] = shellTitle
+		}
+		return out, true
+	}
+
+	switch screens := value.(type) {
+	case []map[string]any:
+		if activeScreen < 0 || activeScreen >= len(screens) {
+			return nil, false
+		}
+		out := make([]map[string]any, len(screens))
+		for index, screen := range screens {
+			patched, ok := patchScreen(screen, index)
+			if !ok {
+				return nil, false
+			}
+			out[index] = patched
+		}
+		return out, true
+	case []any:
+		if activeScreen < 0 || activeScreen >= len(screens) {
+			return nil, false
+		}
+		out := make([]any, len(screens))
+		for index, value := range screens {
+			screen, ok := value.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			patched, ok := patchScreen(screen, index)
+			if !ok {
+				return nil, false
+			}
+			out[index] = patched
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func semanticSceneHasPanelActivation(scene map[string]any, activeSide int) bool {
+	actualSide, ok := semanticSceneActivePanel(scene)
+	if !ok || actualSide != activeSide {
+		return false
+	}
+	panels, ok := semanticScenePanelMaps(scene)
+	if !ok {
+		return false
+	}
+	foundActive := false
+	for index, panel := range panels {
+		side := index
+		if _, present := panel["side"]; present {
+			side = extUiAnyInt(panel["side"])
+		}
+		active, present := panel["active"].(bool)
+		if !present || active != (side == activeSide) {
+			return false
+		}
+		foundActive = foundActive || active
+	}
+	return foundActive
+}
+
+var semanticSceneBenchmarkKeys = map[string]struct{}{
+	"benchmarkTraceId": {}, "benchmark": {},
+}
+
+// semanticScenesEqual compares the native state a client owns. Navigation
+// benchmark fields are transport annotations added after scene adaptation;
+// they must never turn an otherwise identical redraw into a full-scene send.
+func semanticScenesEqual(a, b map[string]any) bool {
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	aWithoutBenchmark := semanticMapWithoutKeys(a, semanticSceneBenchmarkKeys)
+	bWithoutBenchmark := semanticMapWithoutKeys(b, semanticSceneBenchmarkKeys)
+	if reflect.DeepEqual(aWithoutBenchmark, bWithoutBenchmark) {
+		return true
+	}
+	aShell, _ := a["shell"].(map[string]any)
+	bShell, _ := b["shell"].(map[string]any)
+	if terminalID, ok := semanticHiddenTerminalPresentationTransition(aShell, bShell); ok {
+		aWithoutBenchmark = semanticSceneWithoutHiddenTerminalPresentation(
+			aWithoutBenchmark, terminalID)
+		bWithoutBenchmark = semanticSceneWithoutHiddenTerminalPresentation(
+			bWithoutBenchmark, terminalID)
+		return reflect.DeepEqual(aWithoutBenchmark, bWithoutBenchmark)
+	}
+	return false
+}
+
+var semanticCommandLineRenderedKeys = map[string]struct{}{
+	"runs": {}, "cursorPrefixRuns": {}, "cursorX": {},
+	"cursorVisible": {}, "cursorShape": {},
+}
+
+func semanticSceneWithoutCommandLineRendering(scene map[string]any) (map[string]any, bool) {
+	if scene == nil {
+		return nil, false
+	}
+	shell, ok := scene["shell"].(map[string]any)
+	if !ok || shell == nil {
+		return nil, false
+	}
+	commandLine, ok := shell["commandLine"].(map[string]any)
+	if !ok || commandLine == nil || semanticString(commandLine["id"]) == "" {
+		return nil, false
+	}
+	rootCopy := semanticMapWithoutKeys(scene, semanticSceneBenchmarkKeys)
+	shellCopy := semanticShallowMapCopy(shell)
+	shellCopy["commandLine"] = semanticMapWithoutKeys(commandLine, semanticCommandLineRenderedKeys)
+	rootCopy["shell"] = shellCopy
+	return rootCopy, true
+}
+
+// semanticScrubHiddenTerminalPresentationAlias updates only the structural
+// paths which can contain the active shell's terminal aliases. It deliberately
+// does not recurse into catalogs or unrelated semantic surfaces.
+func semanticScrubHiddenTerminalPresentationAlias(value any, terminalID string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		if semanticString(typed["kind"]) == "terminal" &&
+			semanticString(typed["id"]) == terminalID {
+			return semanticMapWithoutKeys(typed, semanticHiddenTerminalPresentationKeys)
+		}
+		out := typed
+		copied := false
+		for _, key := range []string{"shell", "terminal", "frames", "screens"} {
+			item, present := typed[key]
+			if !present {
+				continue
+			}
+			if !copied {
+				// Maps are reference values; allocate lazily before the first write.
+				out = semanticShallowMapCopy(typed)
+				copied = true
+			}
+			out[key] = semanticScrubHiddenTerminalPresentationAlias(item, terminalID)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			scrubbed, _ := semanticScrubHiddenTerminalPresentationAlias(item, terminalID).(map[string]any)
+			out = append(out, scrubbed)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, semanticScrubHiddenTerminalPresentationAlias(item, terminalID))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func semanticSceneWithoutHiddenTerminalPresentation(scene map[string]any, terminalID string) map[string]any {
+	if scene == nil || terminalID == "" {
+		return scene
+	}
+	out := semanticShallowMapCopy(scene)
+	if shell, ok := scene["shell"].(map[string]any); ok {
+		out["shell"] = semanticScrubHiddenTerminalPresentationAlias(shell, terminalID)
+	}
+	for _, key := range []string{"legacy", "frames", "screens"} {
+		if value, present := scene[key]; present {
+			out[key] = semanticScrubHiddenTerminalPresentationAlias(value, terminalID)
+		}
+	}
+	return out
+}
+
+func semanticScenesEqualExceptCommandLineRendering(a, b map[string]any) bool {
+	aWithout, aOK := semanticSceneWithoutCommandLineRendering(a)
+	bWithout, bOK := semanticSceneWithoutCommandLineRendering(b)
+	if !aOK || !bOK {
+		return false
+	}
+	aShell, _ := a["shell"].(map[string]any)
+	bShell, _ := b["shell"].(map[string]any)
+	if terminalID, ok := semanticHiddenTerminalPresentationTransition(aShell, bShell); ok {
+		aWithout = semanticSceneWithoutHiddenTerminalPresentation(aWithout, terminalID)
+		bWithout = semanticSceneWithoutHiddenTerminalPresentation(bWithout, terminalID)
+	}
+	return reflect.DeepEqual(aWithout, bWithout)
+}
+
+func semanticPanelActivationTraceRejection(previous, current map[string]any) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	previousWithout, previousOK := semanticSceneWithoutCommandLineRendering(previous)
+	currentWithout, currentOK := semanticSceneWithoutCommandLineRendering(current)
+	if !previousOK || !currentOK {
+		navigationBenchmarkRenderEvent("scene.panel_activation.rejected",
+			"reason", "command_line_shape")
+		return
+	}
+	previousShell, _ := previous["shell"].(map[string]any)
+	currentShell, _ := current["shell"].(map[string]any)
+	if terminalID, ok := semanticCoveredTerminalID(previousShell, currentShell); ok {
+		previousWithout = semanticSceneWithoutHiddenTerminalPresentation(previousWithout, terminalID)
+		currentWithout = semanticSceneWithoutHiddenTerminalPresentation(currentWithout, terminalID)
+	}
+	path := semanticFirstDifferencePath(previousWithout, currentWithout, "$")
+	fields := []any{"reason", "logical_scene_changed"}
+	if path != "" {
+		fields = append(fields, "firstDifference", path)
+	}
+	navigationBenchmarkRenderEvent("scene.panel_activation.rejected", fields...)
+}
+
+func semanticSceneWithoutPanelActivation(scene map[string]any) (map[string]any, bool) {
+	panels, ok := semanticScenePanelMaps(scene)
+	if !ok {
+		return nil, false
+	}
+	shell := scene["shell"].(map[string]any)
+	rootCopy := make(map[string]any, len(scene))
+	for key, value := range scene {
+		if _, traceOnly := semanticSceneBenchmarkKeys[key]; !traceOnly {
+			rootCopy[key] = value
+		}
+	}
+	shellCopy := make(map[string]any, len(shell))
+	for key, value := range shell {
+		if key != "activePanel" && key != "panels" {
+			shellCopy[key] = value
+		}
+	}
+	panelCopies := make([]map[string]any, 0, len(panels))
+	for _, panel := range panels {
+		panelCopy := make(map[string]any, len(panel))
+		for key, value := range panel {
+			if key != "active" {
+				panelCopy[key] = value
+			}
+		}
+		panelCopies = append(panelCopies, panelCopy)
+	}
+	shellCopy["panels"] = panelCopies
+	rootCopy["shell"] = shellCopy
+	return rootCopy, true
+}
+
+func semanticScenesEqualExceptPanelActivation(a, b map[string]any) bool {
+	aWithout, aOK := semanticSceneWithoutPanelActivation(a)
+	bWithout, bOK := semanticSceneWithoutPanelActivation(b)
+	return aOK && bOK && reflect.DeepEqual(aWithout, bWithout)
 }
 
 func semanticSceneCommandLine(scene map[string]any) (map[string]any, bool) {
@@ -414,7 +2433,9 @@ func semanticSceneWithoutCommandLine(scene map[string]any) (map[string]any, bool
 	}
 	rootCopy := make(map[string]any, len(scene))
 	for key, value := range scene {
-		rootCopy[key] = value
+		if _, traceOnly := semanticSceneBenchmarkKeys[key]; !traceOnly {
+			rootCopy[key] = value
+		}
 	}
 	shellCopy := make(map[string]any, len(shell))
 	for key, value := range shell {
@@ -484,26 +2505,72 @@ func (r *ExtUiRenderer) Flush() {
 		})
 		r.pendingPalette = nil
 	}
-	if r.pendingFrame != nil {
+	// Ordinary native updates stay semantic-first for latency. Revealing the
+	// compatibility grid is the one exception: frame and cursor messages are
+	// decoded independently by Qt, and exposing the fallback scene first could
+	// paint an old texture for one render tick. Hold the scene until Render has
+	// produced its forced full snapshot, then make the scene the final reveal.
+	fallbackRevealReady := r.fallbackRevealPending &&
+		!r.nativeCellFrameSuppressed && r.pendingScene != nil &&
+		r.pendingFrame != nil && extUiBool(r.pendingFrame, "full")
+	if fallbackRevealReady {
 		messages = append(messages, r.pendingFrame)
+		messages = append(messages, map[string]any{
+			"type":    "cursor",
+			"x":       r.cursorX,
+			"y":       r.cursorY,
+			"visible": r.cursorVis,
+			"shape":   int(r.cursorShape),
+		})
+		messages = append(messages, r.pendingScene)
+		r.lastScene = r.pendingScene
+		r.panelActivationProjected = false
 		r.pendingFrame = nil
+		r.cursorDirty = false
+		r.pendingScene = nil
+		r.fallbackRevealPending = false
 	}
-	if r.pendingScene != nil {
+	if !r.fallbackRevealPending && r.pendingScene != nil {
 		messages = append(messages, r.pendingScene)
 		// ExportSemanticScene and f4's adapter create a fresh immutable map for
 		// every redraw. Remember the last snapshot here so cell-grid redraws and
 		// cursor blinking do not repeatedly serialize and deliver the same large
 		// semantic catalog to the Qt GUI thread.
 		r.lastScene = r.pendingScene
+		r.panelActivationProjected = false
 		r.pendingScene = nil
 	}
-	if r.pendingCommandLine != nil {
+	if !r.fallbackRevealPending && r.pendingPanelActivation != nil {
+		messages = append(messages, r.pendingPanelActivation)
+		r.lastScene = r.pendingPanelActivationScene
+		r.panelActivationProjected = true
+		r.pendingPanelActivation = nil
+		r.pendingPanelActivationScene = nil
+	}
+	if !r.fallbackRevealPending && r.pendingPanelCatalog != nil {
+		messages = append(messages, r.pendingPanelCatalog)
+		r.lastScene = r.pendingPanelCatalogScene
+		r.panelActivationProjected = false
+		r.pendingPanelCatalog = nil
+		r.pendingPanelCatalogScene = nil
+	}
+	if !r.fallbackRevealPending && r.pendingCommandLine != nil {
 		messages = append(messages, r.pendingCommandLine)
 		r.lastScene = r.pendingCommandLineScene
+		r.panelActivationProjected = false
 		r.pendingCommandLine = nil
 		r.pendingCommandLineScene = nil
 	}
-	if r.cursorDirty {
+	// Semantic state drives the native controls and is latency-sensitive. Apart
+	// from the atomic fallback reveal above, queue a large cell-grid frame only
+	// after the full scene or compact semantic patch for this render.
+	if !r.fallbackRevealPending && r.pendingFrame != nil && !r.nativeCellFrameSuppressed {
+		messages = append(messages, r.pendingFrame)
+	}
+	if !r.fallbackRevealPending {
+		r.pendingFrame = nil
+	}
+	if !r.fallbackRevealPending && r.cursorDirty && !r.nativeCellFrameSuppressed {
 		messages = append(messages, map[string]any{
 			"type":    "cursor",
 			"x":       r.cursorX,
@@ -518,13 +2585,29 @@ func (r *ExtUiRenderer) Flush() {
 	// Assign semantic scene sequence numbers before sending any leading palette
 	// or cell-frame messages. The gap to transport.send_lock.wait then exposes
 	// time spent behind those messages instead of hiding it from the trace.
+	var benchmarks []*navigationBenchmarkMessage
 	if navigationBenchmarkIsEnabled() {
-		for _, msg := range messages {
-			navigationBenchmarkPrepareSceneMessage(msg)
+		benchmarks = make([]*navigationBenchmarkMessage, len(messages))
+		// Assign the semantic-scene sequence before annotating any leading
+		// palette/cell-frame messages so every message in this render carries
+		// the same non-zero sequence.
+		for i, msg := range messages {
+			if navigationBenchmarkString(msg["type"]) == "scene" {
+				benchmarks[i] = navigationBenchmarkPrepareRenderMessage(msg)
+			}
+		}
+		for i, msg := range messages {
+			if navigationBenchmarkString(msg["type"]) != "scene" {
+				benchmarks[i] = navigationBenchmarkPrepareRenderMessage(msg)
+			}
 		}
 	}
-	for _, msg := range messages {
-		if err := r.send.Send(msg); err != nil {
+	for i, msg := range messages {
+		var benchmark *navigationBenchmarkMessage
+		if i < len(benchmarks) {
+			benchmark = benchmarks[i]
+		}
+		if err := r.send.SendWithBenchmark(msg, benchmark); err != nil {
 			vtui.DebugLog("EXTUI_RENDERER: send failed: %v", err)
 			r.mu.Lock()
 			r.closed = true
@@ -535,12 +2618,13 @@ func (r *ExtUiRenderer) Flush() {
 }
 
 type ExtUiHost struct {
-	mu     sync.Mutex
-	conn   net.Conn
-	send   *extUiMessageSender
-	reader *vtinput.Reader
-	cols   int
-	rows   int
+	mu                     sync.Mutex
+	conn                   net.Conn
+	send                   *extUiMessageSender
+	reader                 *vtinput.Reader
+	cols                   int
+	rows                   int
+	panelCatalogMetadataV1 bool
 }
 
 func RunExternalUI(cols, rows int, execPath string, args []string) error {
@@ -608,6 +2692,11 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	if extUiString(hello, "type") != "hello" || extUiString(hello, "nonce") != nonce {
 		return fmt.Errorf("invalid extui hello")
 	}
+	panelCatalogMetadataV1 := extUiHelloCapability(
+		hello, extUiPanelCatalogMetadataCapability)
+	previousPanelCatalogMetadata := setExtUiPanelCatalogMetadataEnabled(
+		panelCatalogMetadataV1)
+	defer setExtUiPanelCatalogMetadataEnabled(previousPanelCatalogMetadata)
 
 	clientCols := extUiInt(hello, "cols")
 	clientRows := extUiInt(hello, "rows")
@@ -646,10 +2735,18 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		return err
 	}
 
-	host := &ExtUiHost{conn: conn, send: sender, cols: cols, rows: rows}
+	host := &ExtUiHost{
+		conn: conn, send: sender, cols: cols, rows: rows,
+		panelCatalogMetadataV1: panelCatalogMetadataV1,
+	}
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(cols, rows)
-	scr.Renderer = NewExtUiRenderer(conn, sender)
+	renderer := NewExtUiRenderer(conn, sender)
+	// The deferred-catalog capability is an exact opt-in from a client which
+	// owns native panel semantics. Older protocol-v2 clients keep receiving the
+	// complete cell stream even if they tolerate app-schema scene messages.
+	renderer.nativeSemanticSurfaceEnabled = panelCatalogMetadataV1
+	scr.Renderer = renderer
 	vtui.FrameManager.Init(scr)
 
 	pr, _ := io.Pipe()
@@ -710,7 +2807,7 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		if extUiBool(msg, "repeat") {
 			repeatCount = 2
 		}
-		h.sendEvent(&vtinput.InputEvent{
+		event := &vtinput.InputEvent{
 			Type:            vtinput.KeyEventType,
 			KeyDown:         extUiBool(msg, "down"),
 			VirtualKeyCode:  uint16(extUiInt(msg, "vk")),
@@ -718,7 +2815,13 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 			RepeatCount:     repeatCount,
 			ControlKeyState: vtinput.ControlKeyState(uint32(extUiInt(msg, "mods"))),
 			InputSource:     "extui",
-		})
+		}
+		benchmark := navigationBenchmarkTraceForKey(msg, timing)
+		keySequence := 0
+		if _, present := msg["keySequence"]; present {
+			keySequence = extUiInt(msg, "keySequence")
+		}
+		h.sendEventWithBenchmark(event, benchmark, keySequence)
 	case "text":
 		for _, r := range extUiString(msg, "text") {
 			h.sendEvent(&vtinput.InputEvent{
@@ -763,6 +2866,8 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		})
 	case "clipboard_set":
 		vtui.SetClipboard(extUiString(msg, "text"))
+	case "panel_catalog_metadata_request":
+		h.queuePanelCatalogMetadata(msg)
 	case "ui_action":
 		action := msg
 		if nested, ok := msg["action"].(map[string]any); ok {
@@ -803,13 +2908,62 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 	}
 }
 
+func (h *ExtUiHost) queuePanelCatalogMetadata(msg map[string]any) bool {
+	if h == nil || !h.panelCatalogMetadataV1 {
+		return false
+	}
+	// Metadata snapshots are immutable Go-owned values published together
+	// with the minimal catalog. Resolve them off the IPC reader so local-path
+	// materialization and highlighting never delay the next keyboard event;
+	// exact revisions make a response that raced with navigation harmless.
+	request := make(map[string]any, len(msg))
+	for key, value := range msg {
+		request[key] = value
+	}
+	go h.servePanelCatalogMetadata(request)
+	return true
+}
+
+func (h *ExtUiHost) servePanelCatalogMetadata(request map[string]any) {
+	catalogRevision := extUiInt64(request, "catalogRevision")
+	metadataRevision := extUiInt64(request, "metadataRevision")
+	response, ok := BuildPanelCatalogMetadataChunk(
+		extUiString(request, "panelId"), extUiString(request, "path"),
+		catalogRevision, metadataRevision,
+		extUiInt(request, "offset"), extUiInt(request, "limit"))
+	if !ok {
+		response = map[string]any{
+			"type":             "panel_catalog_metadata_rejected",
+			"panelId":          extUiString(request, "panelId"),
+			"path":             extUiString(request, "path"),
+			"catalogRevision":  catalogRevision,
+			"metadataRevision": metadataRevision,
+			"offset":           extUiInt(request, "offset"),
+		}
+	}
+	if traceID := extUiString(request, "benchmarkTraceId"); traceID != "" {
+		response["benchmarkTraceId"] = traceID
+	}
+	if err := h.send.Send(response); err != nil {
+		vtui.DebugLog("EXTUI_HOST: metadata response failed: %v", err)
+	}
+}
+
 func (h *ExtUiHost) sendEvent(ev *vtinput.InputEvent) {
+	h.sendEventWithBenchmark(ev, nil, 0)
+}
+
+func (h *ExtUiHost) sendEventWithBenchmark(ev *vtinput.InputEvent, benchmark *navigationBenchmarkTrace, keySequence int) {
 	if h.reader == nil {
 		return
 	}
+	queue := h.reader.EventChan
+	navigationBenchmarkInputQueueBegin(ev, benchmark, keySequence, len(queue), cap(queue))
 	select {
-	case h.reader.EventChan <- ev:
+	case queue <- ev:
+		navigationBenchmarkInputQueueEnd(ev, true, len(queue))
 	case <-time.After(500 * time.Millisecond):
+		navigationBenchmarkInputQueueEnd(ev, false, len(queue))
 		vtui.DebugLog("EXTUI_HOST: dropped event after blocked queue: %s", ev.String())
 	}
 }

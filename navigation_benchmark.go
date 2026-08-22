@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 
+	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
 const (
 	navigationBenchmarkEnv       = "F4_NAV_BENCHMARK_TRACE"
+	navigationBenchmarkOutputEnv = "F4_NAV_BENCHMARK_GO_OUTPUT"
 	navigationBenchmarkLogPrefix = "F4_NAV_BENCHMARK_TRACE "
 	navigationBenchmarkSchema    = "f4.navigation.v1"
 )
@@ -25,7 +29,7 @@ var (
 	navigationBenchmarkOutput = struct {
 		sync.Mutex
 		writer io.Writer
-	}{writer: os.Stderr}
+	}{}
 
 	navigationBenchmarkState struct {
 		sync.Mutex
@@ -34,6 +38,8 @@ var (
 		renderScene  *navigationBenchmarkSceneMarker
 		nextSceneSeq uint64
 	}
+
+	navigationBenchmarkInputEvents sync.Map
 )
 
 type navigationBenchmarkReadTiming struct {
@@ -73,6 +79,15 @@ type navigationBenchmarkMessage struct {
 	messageType   string
 }
 
+type navigationBenchmarkInputEvent struct {
+	trace            *navigationBenchmarkTrace
+	queuedNs         int64
+	previousTrace    *navigationBenchmarkTrace
+	keySequence      int
+	queueDepthBefore int
+	queueCapacity    int
+}
+
 func init() {
 	_, enabled := os.LookupEnv(navigationBenchmarkEnv)
 	navigationBenchmarkEnabled.Store(enabled)
@@ -88,10 +103,67 @@ func navigationBenchmarkInstallHooks() {
 		ExportEnd:   navigationBenchmarkExportEnd,
 		RenderEnd:   navigationBenchmarkRenderEnd,
 	}
+	vtui.InputEventBenchmarkHooks = &vtui.InputBenchmarkHooks{
+		DispatchBegin: navigationBenchmarkInputDispatchBegin,
+		DispatchEnd:   navigationBenchmarkInputDispatchEnd,
+	}
+	vtui.FrameManagerLifecycleBenchmarkHooks = &vtui.FrameManagerBenchmarkHooks{
+		Event: navigationBenchmarkFrameManagerEvent,
+	}
+	vfs.OSVFSSetPathBenchmarkHook = func(event string, fields ...any) {
+		if trace := navigationBenchmarkCurrentUI(); trace != nil {
+			trace.event(event, "go.ui", fields...)
+		}
+	}
+}
+
+func navigationBenchmarkFrameManagerEvent(event string, fields ...any) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	traceID := ""
+	if marker := navigationBenchmarkRenderMarker(); marker != nil && marker.trace != nil {
+		traceID = marker.trace.id
+		fields = append(fields, navigationBenchmarkMarkerFields(marker)...)
+	} else if trace := navigationBenchmarkCurrentUI(); trace != nil {
+		traceID = trace.id
+	}
+	navigationBenchmarkEmit(traceID, "frame_manager."+event, "go.ui", fields...)
 }
 
 func navigationBenchmarkIsEnabled() bool {
 	return navigationBenchmarkEnabled.Load()
+}
+
+// navigationBenchmarkConfigureOutput gives the Go process its own JSONL sink
+// when requested. On Windows the Qt child inherits stderr as a separate
+// process handle; concurrent append positions are not reliable enough for a
+// lossless combined trace. Both streams use the same monotonic clock and can
+// be merged by timestamp afterwards.
+func navigationBenchmarkConfigureOutput() func() {
+	path := strings.TrimSpace(os.Getenv(navigationBenchmarkOutputEnv))
+	if !navigationBenchmarkIsEnabled() || path == "" {
+		return func() {}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return func() {}
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return func() {}
+	}
+	navigationBenchmarkOutput.Lock()
+	previous := navigationBenchmarkOutput.writer
+	navigationBenchmarkOutput.writer = file
+	navigationBenchmarkOutput.Unlock()
+	return func() {
+		navigationBenchmarkOutput.Lock()
+		if navigationBenchmarkOutput.writer == file {
+			navigationBenchmarkOutput.writer = previous
+		}
+		navigationBenchmarkOutput.Unlock()
+		_ = file.Close()
+	}
 }
 
 func navigationBenchmarkEmit(traceID, event, thread string, fields ...any) {
@@ -132,7 +204,14 @@ func navigationBenchmarkEmitAt(traceID, event, thread string, monotonicNs int64,
 	line = append(line, '\n')
 
 	navigationBenchmarkOutput.Lock()
-	_, _ = navigationBenchmarkOutput.writer.Write(line)
+	writer := navigationBenchmarkOutput.writer
+	if writer == nil {
+		// SetupStderrLog replaces os.Stderr after package initialization on
+		// Windows. Resolve it at emission time so Go and the child Qt host write
+		// into the same redirected diagnostic stream.
+		writer = os.Stderr
+	}
+	_, _ = writer.Write(line)
 	navigationBenchmarkOutput.Unlock()
 }
 
@@ -189,18 +268,120 @@ func navigationBenchmarkTraceForAction(outer, action map[string]any, timing *nav
 		trace.side = semanticInt(action["side"])
 	}
 
-	if timing != nil {
-		navigationBenchmarkEmitAt(id, "ipc.read.begin", "go.ipc", timing.readStartNs)
-		navigationBenchmarkEmitAt(id, "ipc.header.done", "go.ipc", timing.headerDoneNs)
-		navigationBenchmarkEmitAt(id, "ipc.payload.done", "go.ipc", timing.payloadDoneNs,
-			"payloadBytes", timing.payloadBytes)
-		navigationBenchmarkEmitAt(id, "ipc.decode.begin", "go.ipc", timing.decodeStartNs,
-			"payloadBytes", timing.payloadBytes)
-		navigationBenchmarkEmitAt(id, "ipc.decode.done", "go.ipc", timing.decodeDoneNs,
-			"payloadBytes", timing.payloadBytes)
-	}
+	navigationBenchmarkEmitIPCTiming(id, timing)
 	trace.event("ui_action.received", "go.ipc", "action", actionName, "side", trace.side)
 	return trace
+}
+
+func navigationBenchmarkEmitIPCTiming(traceID string, timing *navigationBenchmarkReadTiming) {
+	if timing == nil {
+		return
+	}
+	navigationBenchmarkEmitAt(traceID, "ipc.read.begin", "go.ipc", timing.readStartNs)
+	navigationBenchmarkEmitAt(traceID, "ipc.header.done", "go.ipc", timing.headerDoneNs)
+	navigationBenchmarkEmitAt(traceID, "ipc.payload.done", "go.ipc", timing.payloadDoneNs,
+		"payloadBytes", timing.payloadBytes)
+	navigationBenchmarkEmitAt(traceID, "ipc.decode.begin", "go.ipc", timing.decodeStartNs,
+		"payloadBytes", timing.payloadBytes)
+	navigationBenchmarkEmitAt(traceID, "ipc.decode.done", "go.ipc", timing.decodeDoneNs,
+		"payloadBytes", timing.payloadBytes)
+}
+
+func navigationBenchmarkTraceForKey(message map[string]any, timing *navigationBenchmarkReadTiming) *navigationBenchmarkTrace {
+	if !navigationBenchmarkIsEnabled() || !extUiBool(message, "down") {
+		return nil
+	}
+	vk := uint16(extUiInt(message, "vk"))
+	action := ""
+	switch vk {
+	case vtinput.VK_RETURN:
+		action = "key.enter"
+	case vtinput.VK_TAB:
+		action = "key.tab"
+	default:
+		return nil
+	}
+	id := navigationBenchmarkTraceID(message, nil)
+	if id == "" {
+		id = fmt.Sprintf("go:%d:%d", os.Getpid(), navigationBenchmarkNextID.Add(1))
+	}
+	message["benchmarkTraceId"] = id
+	trace := &navigationBenchmarkTrace{id: id, action: action, side: -1}
+	sequence := 0
+	if _, present := message["keySequence"]; present {
+		sequence = extUiInt(message, "keySequence")
+	}
+	navigationBenchmarkEmitIPCTiming(id, timing)
+	trace.event("key.received", "go.ipc",
+		"action", action,
+		"vk", vk,
+		"char", extUiInt(message, "char"),
+		"mods", extUiInt(message, "mods"),
+		"repeat", extUiBool(message, "repeat"),
+		"keySequence", sequence)
+	return trace
+}
+
+func navigationBenchmarkInputQueueBegin(ev *vtinput.InputEvent, trace *navigationBenchmarkTrace, keySequence, depth, capacity int) {
+	if trace == nil || ev == nil {
+		return
+	}
+	queuedNs := navigationBenchmarkMonotonicNs()
+	navigationBenchmarkInputEvents.Store(ev, &navigationBenchmarkInputEvent{
+		trace:            trace,
+		queuedNs:         queuedNs,
+		keySequence:      keySequence,
+		queueDepthBefore: depth,
+		queueCapacity:    capacity,
+	})
+	trace.eventAt("input_queue.send.begin", "go.ipc", queuedNs,
+		"action", trace.action, "keySequence", keySequence,
+		"queueDepth", depth, "queueCapacity", capacity)
+}
+
+func navigationBenchmarkInputQueueEnd(ev *vtinput.InputEvent, sent bool, depth int) {
+	value, ok := navigationBenchmarkInputEvents.Load(ev)
+	if !ok {
+		return
+	}
+	input := value.(*navigationBenchmarkInputEvent)
+	endedNs := navigationBenchmarkMonotonicNs()
+	input.trace.eventAt("input_queue.send.end", "go.ipc", endedNs,
+		"action", input.trace.action, "keySequence", input.keySequence,
+		"queueNs", endedNs-input.queuedNs, "queueDepth", depth,
+		"queueCapacity", input.queueCapacity, "sent", sent)
+	if !sent {
+		navigationBenchmarkInputEvents.Delete(ev)
+	}
+}
+
+func navigationBenchmarkInputDispatchBegin(ev *vtinput.InputEvent) {
+	value, ok := navigationBenchmarkInputEvents.Load(ev)
+	if !ok {
+		return
+	}
+	input := value.(*navigationBenchmarkInputEvent)
+	startedNs := navigationBenchmarkMonotonicNs()
+	input.previousTrace = navigationBenchmarkSetCurrentUI(input.trace)
+	input.trace.eventAt("input.dispatch.begin", "go.ui", startedNs,
+		"action", input.trace.action, "keySequence", input.keySequence,
+		"queueWaitNs", startedNs-input.queuedNs,
+		"queueDepthAtSend", input.queueDepthBefore,
+		"queueCapacity", input.queueCapacity)
+}
+
+func navigationBenchmarkInputDispatchEnd(ev *vtinput.InputEvent) {
+	value, ok := navigationBenchmarkInputEvents.LoadAndDelete(ev)
+	if !ok {
+		return
+	}
+	input := value.(*navigationBenchmarkInputEvent)
+	input.trace.event("input.dispatch.end", "go.ui",
+		"action", input.trace.action, "keySequence", input.keySequence)
+	if input.trace.action == "key.tab" {
+		navigationBenchmarkPublishScene(input.trace, "tab-dispatch")
+	}
+	navigationBenchmarkSetCurrentUI(input.previousTrace)
 }
 
 func (t *navigationBenchmarkTrace) event(event, thread string, fields ...any) {
@@ -315,6 +496,18 @@ func navigationBenchmarkMarkerFields(marker *navigationBenchmarkSceneMarker) []a
 		"phaseSequence", marker.phaseSequence,
 		"sceneSequence", marker.sceneSequence,
 	}
+}
+
+// navigationBenchmarkRenderEvent attributes fine-grained semantic export work
+// to the scene marker currently being rendered. It is a no-op outside a
+// traced render, keeping normal semantic exports free of tracing work.
+func navigationBenchmarkRenderEvent(event string, fields ...any) {
+	marker := navigationBenchmarkRenderMarker()
+	if marker == nil || marker.trace == nil {
+		return
+	}
+	fields = append(fields, navigationBenchmarkMarkerFields(marker)...)
+	marker.trace.event(event, "go.render", fields...)
 }
 
 func navigationBenchmarkRenderBegin() {
@@ -442,6 +635,58 @@ func navigationBenchmarkPrepareSceneMessage(scene map[string]any) *navigationBen
 	return message
 }
 
+func navigationBenchmarkPrepareRenderMessage(messageMap map[string]any) *navigationBenchmarkMessage {
+	if navigationBenchmarkString(messageMap["type"]) == "scene" {
+		return navigationBenchmarkPrepareSceneMessage(messageMap)
+	}
+	marker := navigationBenchmarkRenderMarker()
+	if marker == nil || marker.trace == nil {
+		return nil
+	}
+	message := &navigationBenchmarkMessage{
+		traceID:       marker.trace.id,
+		phase:         marker.phase,
+		phaseSequence: marker.phaseSequence,
+		sceneSequence: marker.sceneSequence,
+		messageType:   navigationBenchmarkString(messageMap["type"]),
+	}
+	navigationBenchmarkEmit(message.traceID, "message.send.queued", "go.render",
+		"phase", message.phase, "phaseSequence", message.phaseSequence,
+		"sceneSequence", message.sceneSequence, "messageType", message.messageType)
+	return message
+}
+
+// navigationBenchmarkPrepareImmediateMessage gives compact state messages
+// emitted directly from input dispatch the same transport timing coverage as
+// messages emitted by the later render/Flush pass.  There is deliberately no
+// render marker here: the whole point of the direct path is to reach the host
+// before cell rendering and semantic export begin.
+func navigationBenchmarkPrepareImmediateMessage(messageMap map[string]any) *navigationBenchmarkMessage {
+	if !navigationBenchmarkIsEnabled() || messageMap == nil {
+		return nil
+	}
+	traceID := navigationBenchmarkString(messageMap["benchmarkTraceId"])
+	messageType := navigationBenchmarkString(messageMap["type"])
+	if traceID == "" || messageType == "" {
+		return nil
+	}
+	navigationBenchmarkState.Lock()
+	navigationBenchmarkState.nextSceneSeq++
+	sequence := navigationBenchmarkState.nextSceneSeq
+	navigationBenchmarkState.Unlock()
+	message := &navigationBenchmarkMessage{
+		traceID:       traceID,
+		phase:         "input-direct",
+		phaseSequence: 1,
+		sceneSequence: sequence,
+		messageType:   messageType,
+	}
+	navigationBenchmarkEmit(message.traceID, "message.send.queued", "go.ui",
+		"phase", message.phase, "phaseSequence", message.phaseSequence,
+		"sceneSequence", message.sceneSequence, "messageType", message.messageType)
+	return message
+}
+
 func navigationBenchmarkMessageFromMap(msg map[string]any) *navigationBenchmarkMessage {
 	if navigationBenchmarkString(msg["type"]) != "scene" {
 		return nil
@@ -453,7 +698,7 @@ func navigationBenchmarkMessageSent(message *navigationBenchmarkMessage, err err
 	if message == nil {
 		return
 	}
-	if err == nil {
+	if err == nil && message.messageType == "scene" {
 		navigationBenchmarkState.Lock()
 		marker := navigationBenchmarkState.currentScene
 		if marker != nil && marker.trace != nil && marker.trace.id == message.traceID &&
@@ -466,10 +711,15 @@ func navigationBenchmarkMessageSent(message *navigationBenchmarkMessage, err err
 		"phase", message.phase,
 		"phaseSequence", message.phaseSequence,
 		"sceneSequence", message.sceneSequence,
+		"messageType", message.messageType,
 		"ok", err == nil,
 	}
 	if err != nil {
 		fields = append(fields, "error", err.Error())
 	}
-	navigationBenchmarkEmit(message.traceID, "scene.send.done", "go.transport", fields...)
+	event := "message.send.done"
+	if message.messageType == "scene" {
+		event = "scene.send.done"
+	}
+	navigationBenchmarkEmit(message.traceID, event, "go.transport", fields...)
 }

@@ -400,29 +400,11 @@ func NewPanelsFrame() *PanelsFrame {
 		if localShell {
 			pf.noteLocalShellBusy(busy)
 		}
-		// Use PostTask to ensure state changes happen on the UI thread
-		vtui.FrameManager.PostTask(func() {
-			if busy {
-				pf.executing = true
-			} else {
-				if pf.executing {
-					pf.executing = false
-					pf.workspaceCommandTitle = ""
-					if pf.returnToPanels {
-						pf.showPanels = true
-						if !pf.showLeftPanel && !pf.showRightPanel {
-							pf.showLeftPanel = true
-							pf.showRightPanel = true
-						}
-						pf.returnToPanels = false
-						pf.RefreshAll()
-						vtui.FrameManager.Redraw()
-					}
-				}
-			}
-			if localShell && !busy {
-				pf.catchUpProcessEnvironment(true)
-			}
+		// Busy callbacks originate in the PTY parser. Keep state on the UI
+		// thread, but let an idle marker which changes no presentation prove
+		// that it owns no redraw.
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+			return pf.applyTerminalBusyChange(busy, localShell)
 		})
 	}
 	// Parser will be fully initialized in initPTY once pty is ready
@@ -433,8 +415,102 @@ func NewPanelsFrame() *PanelsFrame {
 	return pf
 }
 
+// applyTerminalBusyChange returns whether the callback changed visible state.
+// Environment catch-up is normally a bookkeeping-only no-op after the private
+// directory-sync command; if it actually starts a muted shell update, retain a
+// conservative redraw for terminal-visible layouts.
+func (pf *PanelsFrame) applyTerminalBusyChange(busy, localShell bool) bool {
+	changed := false
+	if busy {
+		if !pf.executing {
+			pf.executing = true
+			changed = true
+		}
+	} else if pf.executing {
+		pf.executing = false
+		pf.workspaceCommandTitle = ""
+		changed = true
+		if pf.returnToPanels {
+			pf.showPanels = true
+			if !pf.showLeftPanel && !pf.showRightPanel {
+				pf.showLeftPanel = true
+				pf.showRightPanel = true
+			}
+			pf.returnToPanels = false
+			pf.RefreshAll()
+		}
+	}
+	if localShell && !busy && pf.catchUpProcessEnvironment(true) {
+		changed = true
+	}
+	return changed
+}
+
 func (pf *PanelsFrame) searchFirstMode() bool {
 	return AppConfig.NavigationMode == NavigationSearchFirst
+}
+
+func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
+	if !pf.showPanels || pf.wide || pf.searchFirstMode() ||
+		!pf.showLeftPanel || !pf.showRightPanel ||
+		pf.altPanels[0] != nil || pf.altPanels[1] != nil {
+		return false
+	}
+	for _, panel := range pf.panels {
+		fsp, ok := panel.(*FileSystemPanel)
+		if !ok || fsp.fastFindMode {
+			return false
+		}
+	}
+	return true
+}
+
+// publishPanelCatalogImmediate lets a completed Go-side names/types list reach
+// the native panel before the comparatively expensive terminal Show pass. The
+// renderer validates the later full semantic export, so this helper only needs
+// to identify the owning visible side and provide the authoritative minimal
+// panel model.
+func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenchmarkTrace) {
+	if fp == nil || vtui.FrameManager == nil {
+		return
+	}
+	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	if len(frames) == 0 {
+		return
+	}
+	var owner *PanelsFrame
+	for _, frame := range frames {
+		if candidate, ok := frame.(*PanelsFrame); ok {
+			owner = candidate
+		}
+	}
+	if owner == nil || frames[len(frames)-1] != owner ||
+		!owner.panelActivationFastPathEligible() {
+		return
+	}
+	side := -1
+	for index, panel := range owner.panels {
+		if panel == fp {
+			side = index
+			break
+		}
+	}
+	if side < 0 || side != owner.activeIdx {
+		return
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil {
+		return
+	}
+	renderer, ok := screen.Renderer.(interface {
+		QueuePanelCatalogState(int, map[string]any, string, string)
+	})
+	if !ok {
+		return
+	}
+	panel := map[string]any(fp.semanticPanelModel(nil, side, true).ToMap())
+	renderer.QueuePanelCatalogState(side, panel,
+		strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
 }
 
 func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
@@ -960,11 +1036,68 @@ func (pf *PanelsFrame) initPTY() {
 			pf.ptyMutex.Unlock()
 
 			if shouldProcess {
+				before := captureTerminalOutputSemanticState(pf.termView)
 				pf.parser.Process(buf[:n])
-				vtui.FrameManager.Redraw()
+				after := captureTerminalOutputSemanticState(pf.termView)
+				pf.redrawAfterTerminalOutput(n, before != after)
 			}
 		}
 	}()
+}
+
+type terminalOutputSemanticState struct {
+	title     string
+	visible   bool
+	focused   bool
+	altScreen bool
+	busy      bool
+}
+
+func captureTerminalOutputSemanticState(term *TerminalView) terminalOutputSemanticState {
+	if term == nil {
+		return terminalOutputSemanticState{}
+	}
+	return terminalOutputSemanticState{
+		title:     term.Title,
+		visible:   term.IsVisible(),
+		focused:   term.IsFocused(),
+		altScreen: term.UseAltScreen,
+		busy:      term.Muted,
+	}
+}
+
+// redrawAfterTerminalOutput requests the redraw owned by a PTY read.
+// Native panel presentation can prove that the terminal is completely covered;
+// in that narrow case parsing remains eager but repainting waits until another
+// real mutation or until the terminal is revealed. syncPTYDirectory commonly
+// produces several prompt chunks while validating a direct panel catalog, so
+// avoiding those hidden-output wakes prevents a train of equal semantic exports.
+func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateChanged bool) {
+	deferred := false
+	if !semanticStateChanged && vtui.FrameManager != nil {
+		if screen := vtui.FrameManager.Screen(); screen != nil && screen.Renderer != nil {
+			if deferrer, ok := screen.Renderer.(vtui.CoveredTerminalRedrawDeferrer); ok {
+				deferred = deferrer.CanDeferCoveredTerminalRedraw()
+			}
+		}
+	}
+	result := "requested"
+	if deferred {
+		result = "deferred_covered_native"
+	} else if vtui.FrameManager != nil {
+		vtui.FrameManager.Redraw()
+	}
+	if navigationBenchmarkIsEnabled() {
+		marker := navigationBenchmarkRenderMarker()
+		traceID := ""
+		fields := []any{"bytes", byteCount, "result", result,
+			"semanticStateChanged", semanticStateChanged}
+		if marker != nil && marker.trace != nil {
+			traceID = marker.trace.id
+			fields = append(fields, navigationBenchmarkMarkerFields(marker)...)
+		}
+		navigationBenchmarkEmit(traceID, "terminal.output.redraw", "go.pty", fields...)
+	}
 }
 
 // reportLocalPTYFailure surfaces a NewPTY() failure to the person instead of
@@ -998,6 +1131,7 @@ func (pf *PanelsFrame) Close() {
 
 	for _, p := range pf.panels {
 		if fsp, ok := p.(*FileSystemPanel); ok && fsp != nil {
+			fsp.unpublishSemanticMetadataSnapshot()
 			fsp.cancelProviderOpen()
 			if fsp.cancelLoad != nil {
 				fsp.cancelLoad()
@@ -1262,18 +1396,20 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 				lastKnown := fsp.lastDirMTime
 				vtui.RunAsync(func(ctx *vtui.TaskContext) {
 					stat, err := vfsInst.Stat(ctx.Context, vfsPath)
-					ctx.RunOnUI(func() {
+					ctx.RunOnUIWithRedrawDecision(func() bool {
 						fsp.isCheckingRefresh = false
 						if err == nil && !stat.MTime.IsZero() {
 							if !fsp.isLoading && fsp.vfs.GetPath() == vfsPath {
 								if !lastKnown.IsZero() && stat.MTime != lastKnown {
 									vtui.DebugLog("PANELS: Auto-refreshing %q due to MTime change", vfsPath)
 									fsp.ReadDirectory()
+									return true
 								} else if lastKnown.IsZero() {
 									fsp.lastDirMTime = stat.MTime
 								}
 							}
 						}
+						return false
 					})
 				})
 			}
@@ -1547,6 +1683,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	benchmark := navigationBenchmarkCurrentUI()
+	if benchmark != nil && e.Type == vtinput.KeyEventType && e.KeyDown {
+		benchmark.setSide(pf.activeIdx)
+	}
 	if e.VirtualKeyCode == vtinput.VK_F12 && shift && !ctrl && !alt && e.KeyDown {
 		toggleGuiPresentation()
 		return true
@@ -2172,11 +2312,24 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// Tab switches panels
 	if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
 		if pf.showPanels && (!pf.searchFirstMode() || !pf.commandLineFocused) {
+			oldActiveIdx := pf.activeIdx
+			activationPatchEligible := pf.panelActivationFastPathEligible()
+			if benchmark != nil {
+				benchmark.event("panel.activate.begin", "go.ui",
+					"fromSide", oldActiveIdx, "toSide", 1-oldActiveIdx)
+			}
 			pf.activeIdx = 1 - pf.activeIdx
+			activationDone := func() {
+				if benchmark != nil {
+					benchmark.event("panel.activate.end", "go.ui",
+						"fromSide", oldActiveIdx, "toSide", pf.activeIdx)
+				}
+			}
 			if pf.wide {
 				pf.widePanel = pf.activeIdx
 				pf.ResizeConsole(pf.lastW, pf.lastH)
 				pf.lastKey = 0
+				activationDone()
 				return true
 			}
 			pf.lastKey = 0
@@ -2193,6 +2346,25 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			// info / quick view / tree panel becomes visually
 			// focused but stays put; commands still target the
 			// source file panel underneath.
+			if activationPatchEligible && vtui.FrameManager != nil {
+				if screen := vtui.FrameManager.Screen(); screen != nil {
+					if renderer, ok := screen.Renderer.(interface {
+						QueuePanelActivationState(int, string, map[string]any)
+					}); ok {
+						shellTitle := strings.TrimSpace(pf.GetTitle())
+						pf.cmdLine.SetRichPrompt(pf.buildPrompt())
+						commandLine := pf.cmdLine.semanticModel(nil).ToMap()
+						renderer.QueuePanelActivationState(
+							pf.activeIdx, shellTitle, commandLine)
+					} else if renderer, ok := screen.Renderer.(interface {
+						QueuePanelActivation(int, ...string)
+					}); ok {
+						renderer.QueuePanelActivation(
+							pf.activeIdx, strings.TrimSpace(pf.GetTitle()))
+					}
+				}
+			}
+			activationDone()
 			return true
 		} else {
 			if AppConfig.CommandLineAutoComplete && !pf.cmdLine.IsEmpty() {
@@ -3531,12 +3703,14 @@ func (pf *PanelsFrame) getActivePTYUnsafe() PtyBackend {
 
 					if shouldProcess {
 						start := time.Now()
+						before := captureTerminalOutputSemanticState(pf.termView)
 						pf.parser.Process(buf[:n])
+						after := captureTerminalOutputSemanticState(pf.termView)
 						elapsed := time.Since(start)
 						if elapsed > 10*time.Millisecond {
 							vtui.DebugLog("PTY_PROFILE(Remote): Parsed %d bytes in %v", n, elapsed)
 						}
-						vtui.FrameManager.Redraw()
+						pf.redrawAfterTerminalOutput(n, before != after)
 					}
 				}
 				pty.Close()
@@ -4236,8 +4410,26 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 	}
 }
 func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) bool {
+	return pf.navigateToPath(fsp, targetPath, false)
+}
+
+// navigateToCachedPath is the explicit trusted transition used by folder
+// history. It may take the no-I/O route only when this exact VFS/path already
+// has an authoritative panel cache; a stale uncached history entry is still
+// validated synchronously so navigation can skip it.
+func (pf *PanelsFrame) navigateToCachedPath(fsp *FileSystemPanel, targetPath string) bool {
+	return pf.navigateToPath(fsp, targetPath, true)
+}
+
+func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, allowCachedOptimistic bool) bool {
 	if targetPath == "" {
 		return false
+	}
+	setPath := func(path string) error {
+		if allowCachedOptimistic && fsp.hasCachedDirectoryPath(path) {
+			return fsp.setKnownDirectoryPath(path)
+		}
+		return fsp.setVerifiedDirectoryPath(path)
 	}
 	// An explicit command/history navigation supersedes a provider mount that
 	// has not installed its child VFS yet.
@@ -4274,7 +4466,7 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 	// entirely user-facing while allowing the provider to translate the path to
 	// its internal object identity in the asynchronous Open call.
 	if fsp.vfs.IsAbs(targetPath) {
-		if err := fsp.setKnownDirectoryPath(targetPath); err == nil {
+		if err := setPath(targetPath); err == nil {
 			fsp.pendingSelection = ".."
 			fsp.ReadDirectory()
 			return true
@@ -4399,10 +4591,10 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 		return false
 	}
 
-	// 4. Change path on the current VFS. Remote VFSes may take the optimistic,
-	// no-I/O route here; ReadDirectory validates the target in the background
-	// while a cached view can become interactive immediately.
-	if err := fsp.setKnownDirectoryPath(targetPath); err == nil {
+	// 4. Change path on the current VFS. Arbitrary callers use normal SetPath
+	// validation; an explicitly trusted cache/history transition may take the
+	// optimistic no-I/O route and let ReadDirectory revalidate in the background.
+	if err := setPath(targetPath); err == nil {
 		fsp.pendingSelection = ".."
 		fsp.ReadDirectory()
 		return true
@@ -4505,7 +4697,7 @@ func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 		fsp.fastFindMode = false
 		fsp.fastFindStr = ""
 		fsp.suppressNextFolderHistory(path)
-		if !pf.NavigateToPath(fsp, path) {
+		if !pf.navigateToCachedPath(fsp, path) {
 			fsp.clearFolderHistorySuppression()
 			continue
 		}

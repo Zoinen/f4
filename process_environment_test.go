@@ -580,8 +580,58 @@ func TestPanelsFrameEnvironmentBusyDefersCoalescesAndAcknowledges(t *testing.T) 
 func runProcessEnvironmentUIInline(t *testing.T) {
 	t.Helper()
 	previous := processEnvironmentRunOnUI
+	previousWithDecision := processEnvironmentRunOnUIWithRedrawDecision
 	processEnvironmentRunOnUI = func(task func()) { task() }
-	t.Cleanup(func() { processEnvironmentRunOnUI = previous })
+	processEnvironmentRunOnUIWithRedrawDecision = func(task func() bool) { task() }
+	t.Cleanup(func() {
+		processEnvironmentRunOnUI = previous
+		processEnvironmentRunOnUIWithRedrawDecision = previousWithDecision
+	})
+}
+
+func TestPanelsFrameEnvironmentIdleMarkerOwnsNoRedrawWhenCaughtUp(t *testing.T) {
+	previous := processEnvironmentRunOnUIWithRedrawDecision
+	var queued func() bool
+	processEnvironmentRunOnUIWithRedrawDecision = func(task func() bool) {
+		if queued != nil {
+			t.Fatal("idle marker queued more than one environment catch-up task")
+		}
+		queued = task
+	}
+	t.Cleanup(func() { processEnvironmentRunOnUIWithRedrawDecision = previous })
+
+	pf := &PanelsFrame{
+		pty:                          &processEnvironmentPTY{},
+		termView:                     NewTerminalView(80, 24),
+		processEnvironmentGeneration: globalProcessEnvironment.currentGeneration(),
+	}
+	defer pf.closeProcessEnvironmentShell()
+	pf.processEnvironmentShellOutput([]byte("\x1b]133;D\x1b\\"))
+	if queued == nil {
+		t.Fatal("idle marker did not queue environment catch-up")
+	}
+	if queued() {
+		t.Fatal("already-caught-up idle marker claimed a redraw")
+	}
+}
+
+func TestPanelsFrameTerminalBusyTaskReportsOnlyVisibleChanges(t *testing.T) {
+	pf := &PanelsFrame{}
+	if pf.applyTerminalBusyChange(false, false) {
+		t.Fatal("repeated idle marker reported a visible change")
+	}
+	if !pf.applyTerminalBusyChange(true, false) || !pf.executing {
+		t.Fatal("busy marker did not report and apply executing state")
+	}
+	if pf.applyTerminalBusyChange(true, false) {
+		t.Fatal("repeated busy marker reported a visible change")
+	}
+	if !pf.applyTerminalBusyChange(false, false) || pf.executing {
+		t.Fatal("idle transition did not report and clear executing state")
+	}
+	if pf.applyTerminalBusyChange(false, false) {
+		t.Fatal("second idle marker reported a visible change")
+	}
 }
 
 func TestPanelsFrameEnvironmentGatesLocalInputAndLeavesRemoteUntouched(t *testing.T) {

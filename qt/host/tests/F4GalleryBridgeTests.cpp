@@ -1,9 +1,13 @@
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
+#include "NavigationBenchmarkTrace.h"
 
 #include <QAbstractItemModel>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -13,6 +17,7 @@
 #include <QScopedPointer>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QUrlQuery>
@@ -33,11 +38,24 @@ public:
         QString text;
         bool down = false;
         int modifiers = 0;
+        bool autoRepeat = false;
     };
 
     Q_INVOKABLE void sendQtKey(int key, const QString &text, bool down, int modifiers)
     {
-        events.push_back({key, text, down, modifiers});
+        recordKey(key, text, down, modifiers, false);
+    }
+
+    Q_INVOKABLE void sendQtKeyEvent(int key, const QString &text, bool down,
+                                    int modifiers, quint32, bool autoRepeat)
+    {
+        recordKey(key, text, down, modifiers, autoRepeat);
+    }
+
+    void recordKey(int key, const QString &text, bool down, int modifiers,
+                   bool autoRepeat)
+    {
+        events.push_back({key, text, down, modifiers, autoRepeat});
         if (down) {
             for (const QChar character : text) {
                 if (character.isPrint()) {
@@ -62,6 +80,15 @@ public:
         });
     }
 
+    int count(int key, bool down, bool autoRepeat) const
+    {
+        return std::count_if(events.cbegin(), events.cend(),
+                             [key, down, autoRepeat](const Event &event) {
+            return event.key == key && event.down == down
+                && event.autoRepeat == autoRepeat;
+        });
+    }
+
     void clear()
     {
         events.clear();
@@ -81,18 +108,29 @@ class F4GalleryBridgeTests final : public QObject
 
 private slots:
     void initTestCase();
+    void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void stableActionsCarryRevisions();
     void deferredCursorCommitsOnlyLatest();
     void staleCursorIntentRetriesAgainstNewCatalog();
     void activationSceneDoesNotSnapPendingCursorBackward();
-    void nonImageOpenWaitsForAuthoritativeCursorAndRevision();
+    void nonImageOpenUsesCurrentStableCatalogImmediately();
+    void repeatedOpenIsSuppressedUntilPanelPathChanges();
     void selectionIsAtomicAndRevisioned();
     void rapidSelectionActionsDoNotReuseStaleRevision();
     void staleSelectionIntentRetriesIdempotentlyAgainstNewCatalog();
     void galleryLayoutDensityAndSortActionsAreValidated();
     void galleryIconsFollowSharedIconSet();
+    void deferredSystemCatalogSharesGenericFileAndFolderIcons();
     void hostRuntimeDefersBoundedDecodeWorkers();
     void initialCatalogAppliesAppearanceInsideReset();
+    void deferredMetadataIsFrameGatedRevisionedAndChunked();
+    void staleMetadataFrameFallbackCannotReleaseNewerChunk();
+    void deferredMetadataPrioritizesCursorAndVisibleRange();
+    void malformedMetadataRetriesThenReleasesGlobalSlot();
+    void metadataBackgroundWaitsForInputIdle();
+    void deferredMetadataWaitsForLoadingFalseFullScene();
+    void panelCatalogPatchLeavesOtherSessionUntouched();
+    void deferredCatalogApplyStaysWithinKeyboardFrame();
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
     void galleryKeepsAuthoritativeCursorVisible();
@@ -112,6 +150,52 @@ private slots:
 
 namespace
 {
+QStringList *capturedBenchmarkMessages = nullptr;
+
+void captureBenchmarkMessage(QtMsgType, const QMessageLogContext &,
+                             const QString &message)
+{
+    if (capturedBenchmarkMessages
+        && message.startsWith(
+            QStringLiteral("F4_NAV_BENCHMARK_TRACE "))) {
+        capturedBenchmarkMessages->append(message);
+    }
+}
+
+class BenchmarkMessageCapture final
+{
+public:
+    BenchmarkMessageCapture()
+        : m_previousHandler(qInstallMessageHandler(captureBenchmarkMessage))
+    {
+        capturedBenchmarkMessages = &m_messages;
+    }
+
+    ~BenchmarkMessageCapture()
+    {
+        capturedBenchmarkMessages = nullptr;
+        qInstallMessageHandler(m_previousHandler);
+    }
+
+    QList<QJsonObject> events() const
+    {
+        QList<QJsonObject> result;
+        const QString prefix = QStringLiteral("F4_NAV_BENCHMARK_TRACE ");
+        for (const QString &message : m_messages) {
+            const QJsonDocument document = QJsonDocument::fromJson(
+                message.mid(prefix.size()).toUtf8());
+            if (document.isObject()) {
+                result.append(document.object());
+            }
+        }
+        return result;
+    }
+
+private:
+    QStringList m_messages;
+    QtMessageHandler m_previousHandler = nullptr;
+};
+
 QVariantMap testScene()
 {
     const QVariantList entries = {
@@ -189,11 +273,221 @@ QVariantMap longCatalogScene(int count, int cursor)
          }},
     };
 }
+
+QVariantMap deferredPanel(const QString &panelId, int side, bool active,
+                          int count, qulonglong catalogRevision,
+                          qulonglong metadataRevision)
+{
+    QVariantList entries;
+    entries.reserve(count);
+    for (int row = 0; row < count; ++row) {
+        entries.push_back(QVariantMap{
+            {QStringLiteral("entryId"),
+             QStringLiteral("%1:entry:%2").arg(panelId).arg(row)},
+            {QStringLiteral("index"), row},
+            {QStringLiteral("name"),
+             QStringLiteral("item-%1.txt").arg(row)},
+            {QStringLiteral("displayBaseName"),
+             QStringLiteral("item-%1").arg(row)},
+            {QStringLiteral("displayExtension"), QStringLiteral("txt")},
+            {QStringLiteral("isDir"), false},
+            {QStringLiteral("isUp"), false},
+            {QStringLiteral("isImage"), false},
+            {QStringLiteral("selected"), false},
+        });
+    }
+    return {
+        {QStringLiteral("id"), panelId},
+        {QStringLiteral("side"), side},
+        {QStringLiteral("active"), active},
+        {QStringLiteral("path"),
+         QStringLiteral("D:/metadata/%1").arg(panelId)},
+        {QStringLiteral("sourceKind"), QStringLiteral("local")},
+        {QStringLiteral("previewCapable"), true},
+        {QStringLiteral("catalogRevision"), catalogRevision},
+        {QStringLiteral("selectionRevision"), qulonglong(1)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), metadataRevision},
+        {QStringLiteral("cursor"), count > 0 ? 0 : -1},
+        {QStringLiteral("cursorEntryId"), count > 0
+             ? QStringLiteral("%1:entry:0").arg(panelId) : QString()},
+        {QStringLiteral("entries"), entries},
+    };
+}
+
+QVariantMap deferredMetadataResponse(const QVariantMap &request, int total,
+                                     qulonglong highlightRevision)
+{
+    const int offset = request.value(QStringLiteral("offset")).toInt();
+    const int limit = request.value(QStringLiteral("limit")).toInt();
+    const int end = qMin(total, offset + limit);
+    const QString panelId = request.value(
+        QStringLiteral("panelId")).toString();
+    QVariantList entries;
+    entries.reserve(end - offset);
+    for (int row = offset; row < end; ++row) {
+        entries.push_back(QVariantMap{
+            {QStringLiteral("entryId"),
+             QStringLiteral("%1:entry:%2").arg(panelId).arg(row)},
+            {QStringLiteral("index"), row},
+            {QStringLiteral("localPath"),
+             QStringLiteral("D:/resolved/%1/item-%2.txt")
+                 .arg(panelId).arg(row)},
+            {QStringLiteral("size"), qint64(4096 + row)},
+            {QStringLiteral("sizeText"),
+             QStringLiteral("%1 B").arg(4096 + row)},
+            {QStringLiteral("isHidden"), row == 2},
+            {QStringLiteral("sizeCalculated"), true},
+            {QStringLiteral("mtime"),
+             QStringLiteral("2026-08-17 12:00")},
+            {QStringLiteral("mtimeNanos"), qint64(123000000 + row)},
+            {QStringLiteral("mode"), QStringLiteral("-rw-r--r--")},
+            {QStringLiteral("highlightStyleId"),
+             QStringLiteral("accent")},
+        });
+    }
+    const QVariantMap highlightStyles = {
+        {QStringLiteral("accent"), QVariantMap{
+             {QStringLiteral("marker"), QStringLiteral("*")},
+             {QStringLiteral("normal"), QVariantMap{
+                  {QStringLiteral("foreground"),
+                   QStringLiteral("#123456")},
+              }},
+         }},
+    };
+    return {
+        {QStringLiteral("type"),
+         QStringLiteral("panel_catalog_metadata")},
+        {QStringLiteral("panelId"), panelId},
+        {QStringLiteral("path"), request.value(QStringLiteral("path"))},
+        {QStringLiteral("catalogRevision"),
+         request.value(QStringLiteral("catalogRevision"))},
+        {QStringLiteral("metadataRevision"),
+         request.value(QStringLiteral("metadataRevision"))},
+        {QStringLiteral("highlightRevision"), highlightRevision},
+        {QStringLiteral("offset"), offset},
+        {QStringLiteral("limit"), limit},
+        {QStringLiteral("total"), total},
+        {QStringLiteral("totalSize"), qint64(total) * 8192},
+        {QStringLiteral("final"), end == total},
+        {QStringLiteral("entries"), entries},
+        {QStringLiteral("highlightStyles"), highlightStyles},
+    };
+}
 }
 
 void F4GalleryBridgeTests::initTestCase()
 {
     QStandardPaths::setTestModeEnabled(true);
+    // NavigationBenchmarkTrace caches this process-launch gate on first use.
+    // Enable it before constructing a bridge so frame-boundary tracing can be
+    // verified deterministically.
+    QVERIFY(qputenv("F4_NAV_BENCHMARK_TRACE", QByteArrayLiteral("1")));
+}
+
+void F4GalleryBridgeTests::frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery()
+{
+    F4GalleryBridge bridge(nullptr);
+    BenchmarkMessageCapture traceMessages;
+    const QString traceId = QStringLiteral("frame-boundary-test");
+    bridge.handleProtocolMessage({
+        {QStringLiteral("type"), QStringLiteral("panel_activation")},
+        {QStringLiteral("benchmarkTraceId"), traceId},
+    });
+    bridge.notifyRenderSynchronized();
+
+    const qint64 beforeCaptureNs =
+        F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    bridge.captureFrameSwapped();
+    const qint64 afterCaptureNs =
+        F4NavigationBenchmarkTrace::monotonicNanoseconds();
+
+    // Keep the queued GUI delivery pending long enough that sampling the clock
+    // in notifyFrameSwappedAt() would be observably wrong.
+    QThread::msleep(25);
+    const qint64 beforeDeliveryNs =
+        F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    QCoreApplication::processEvents();
+
+    QJsonObject frameEvent;
+    for (const QJsonObject &event : traceMessages.events()) {
+        if (event.value(QStringLiteral("event")).toString()
+                == QStringLiteral("qt.input.frame.swapped")
+            && event.value(QStringLiteral("benchmarkTraceId")).toString()
+                == traceId) {
+            frameEvent = event;
+            break;
+        }
+    }
+    QVERIFY2(!frameEvent.isEmpty(), "missing qt.input.frame.swapped event");
+    const qint64 reportedBoundaryNs = frameEvent.value(
+        QStringLiteral("monotonicNs")).toInteger();
+    QVERIFY(reportedBoundaryNs >= beforeCaptureNs);
+    QVERIFY(reportedBoundaryNs <= afterCaptureNs);
+    QVERIFY(beforeDeliveryNs - reportedBoundaryNs >= 20'000'000);
+}
+
+void F4GalleryBridgeTests::deferredCatalogApplyStaysWithinKeyboardFrame()
+{
+    constexpr int EntryCount = 447;
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    engine.addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4IconSet icons(QStringLiteral("bridge-performance-icons"));
+    icons.setIconSet(F4IconSet::System);
+    engine.addImageProvider(icons.providerId(), new F4IconProvider);
+    F4GalleryBridge bridge(&engine, nullptr, &icons);
+    QVERIFY(bridge.available());
+
+    QQmlComponent panelHost(&engine, bridge.panelComponentUrl());
+    QTRY_VERIFY_WITH_TIMEOUT(panelHost.status() != QQmlComponent::Loading,
+                             5000);
+    QVERIFY2(panelHost.isReady(), qPrintable(panelHost.errorString()));
+    QScopedPointer<QObject> host(panelHost.create());
+    QVERIFY2(host, qPrintable(panelHost.errorString()));
+    host->setProperty("width", 640);
+    host->setProperty("height", 480);
+    host->setProperty("side", 0);
+    host->setProperty(
+        "bridge", QVariant::fromValue(static_cast<QObject *>(&bridge)));
+
+    const QVariantMap panel = deferredPanel(
+        QStringLiteral("left-performance"), 0, true, EntryCount, 1, 1);
+    QVariantMap presentationPanel = panel;
+    presentationPanel.remove(QStringLiteral("entries"));
+    presentationPanel.remove(QStringLiteral("highlightStyles"));
+    presentationPanel.insert(QStringLiteral("galleryLayoutMode"),
+                             QStringLiteral("details"));
+    host->setProperty("panel", presentationPanel);
+    QCoreApplication::processEvents();
+
+    // Measure the steady-state directory transition exercised by held Enter,
+    // not one-time QML delegate construction during the very first catalog.
+    // A normal panel already owns a viewport-sized delegate pool before the
+    // user can navigate.
+    bridge.synchronizePanelCatalog(deferredPanel(
+        QStringLiteral("left-warm"), 0, true, 32, 1, 1));
+    QCoreApplication::processEvents();
+
+    QElapsedTimer timer;
+    timer.start();
+    bridge.synchronizePanelCatalog(panel);
+    host->setProperty("panel", presentationPanel);
+    const qint64 elapsedNs = timer.nsecsElapsed();
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), EntryCount);
+    qInfo().nospace() << "deferred catalog GUI apply: "
+                      << (elapsedNs / 1000000.0) << " ms";
+    // Path replacement commits the authoritative model/geometry now and
+    // stages visible QML row binding for the pre-render polish pass. Keep the
+    // protocol apply itself comfortably inside the 30 Hz keyboard budget.
+    QVERIFY2(elapsedNs < 20'000'000,
+             qPrintable(QStringLiteral(
+                 "447-row deferred catalog took %1 ms")
+                 .arg(elapsedNs / 1000000.0, 0, 'f', 3)));
 }
 
 void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
@@ -846,6 +1140,28 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(verifyForwarded("Ctrl+Left", Qt::Key_Left, Qt::ControlModifier));
     QVERIFY(verifyForwarded("Alt+Up", Qt::Key_Up, Qt::AltModifier));
     QVERIFY(verifyForwarded("Tab", Qt::Key_Tab));
+
+    // GalleryPanelHost must retain Qt's native repeat bit. In particular, a
+    // Windows-style synthetic release remains marked as repeat so the real
+    // VtuiGridItem can suppress it without losing the final physical key-up.
+    keyRecorder.clear();
+    QKeyEvent tabPress(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier,
+                       QStringLiteral("\t"), false, 1);
+    QKeyEvent tabSyntheticRelease(QEvent::KeyRelease, Qt::Key_Tab,
+                                  Qt::NoModifier, QString(), true, 1);
+    QKeyEvent tabRepeatPress(QEvent::KeyPress, Qt::Key_Tab, Qt::NoModifier,
+                             QStringLiteral("\t"), true, 1);
+    QKeyEvent tabPhysicalRelease(QEvent::KeyRelease, Qt::Key_Tab,
+                                 Qt::NoModifier, QString(), false, 1);
+    QVERIFY(QCoreApplication::sendEvent(&view, &tabPress));
+    QVERIFY(QCoreApplication::sendEvent(&view, &tabSyntheticRelease));
+    QVERIFY(QCoreApplication::sendEvent(&view, &tabRepeatPress));
+    QVERIFY(QCoreApplication::sendEvent(&view, &tabPhysicalRelease));
+    QCOMPARE(keyRecorder.count(Qt::Key_Tab, true, false), 1);
+    QCOMPARE(keyRecorder.count(Qt::Key_Tab, false, true), 1);
+    QCOMPARE(keyRecorder.count(Qt::Key_Tab, true, true), 1);
+    QCOMPARE(keyRecorder.count(Qt::Key_Tab, false, false), 1);
+
     QVERIFY(verifyForwarded("F3", Qt::Key_F3));
     QVERIFY(verifyForwarded("F5", Qt::Key_F5));
     QVERIFY(verifyForwarded("F8", Qt::Key_F8));
@@ -2018,16 +2334,524 @@ void F4GalleryBridgeTests::inactivePanelImageOpenWaitsForActiveAndCursor()
     QVERIFY(!bridge.viewerVisible());
     QCOMPARE(actions.size(), 2);
 
-    // The same stable cursor becomes viewable only after Go confirms that the
-    // clicked panel is authoritative and active.
-    panel.insert(QStringLiteral("active"), true);
-    shell.insert(QStringLiteral("panels"), QVariantList{panel});
-    scene.insert(QStringLiteral("shell"), shell);
-    bridge.synchronizeScene(scene);
+    // The same stable cursor becomes viewable when Go's tiny revisioned
+    // activation acknowledgement arrives; neither catalog is synchronized.
+    bridge.synchronizePanelActivation(0, 1);
     QVERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
     QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
     QCOMPARE(actions.size(), 2);
+
+    // Duplicate/stale activation delivery cannot roll the bridge state back.
+    bridge.synchronizePanelActivation(1, 1);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSide(), 0);
+}
+
+void F4GalleryBridgeTests::deferredSystemCatalogSharesGenericFileAndFolderIcons()
+{
+    QVariantMap scene = testScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantMap panel = shell.value(QStringLiteral("panels"))
+                            .toList().constFirst().toMap();
+    QVariantList entries = panel.value(QStringLiteral("entries")).toList();
+    for (QVariant &entryValue : entries) {
+        QVariantMap entry = entryValue.toMap();
+        entry.remove(QStringLiteral("localPath"));
+        entryValue = entry;
+    }
+    entries.push_back(QVariantMap{
+        {QStringLiteral("entryId"), QStringLiteral("left:folder")},
+        {QStringLiteral("index"), 10},
+        {QStringLiteral("name"), QStringLiteral("folder")},
+        {QStringLiteral("isDir"), true},
+    });
+    panel.insert(QStringLiteral("entries"), entries);
+    panel.insert(QStringLiteral("metadataDeferred"), true);
+    panel.insert(QStringLiteral("metadataRevision"), qulonglong(1));
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QQmlEngine engine;
+    F4IconSet icons(QStringLiteral("bridge-generic-icons"));
+    icons.setIconSet(F4IconSet::System);
+    F4GalleryBridge bridge(&engine, nullptr, &icons);
+    bridge.synchronizeScene(scene);
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    const int imageFileRole = session->model()->roleNames().key(
+        QByteArrayLiteral("imageFileRole"), -1);
+    QVERIFY(imageFileRole >= 0);
+    const auto iconUrlAt = [session, imageFileRole](int row) -> QUrl {
+        QObject *item = session->model()->data(
+            session->model()->index(row, 0), imageFileRole).value<QObject *>();
+        return item ? QUrl(item->property("iconPath").toString()) : QUrl();
+    };
+
+    const QUrl firstFile = iconUrlAt(0);
+    const QUrl secondFile = iconUrlAt(1);
+    const QUrl folder = iconUrlAt(2);
+    QVERIFY(firstFile.isValid());
+    QVERIFY(secondFile.isValid());
+    QVERIFY(folder.isValid());
+    QCOMPARE(firstFile, secondFile);
+    QCOMPARE(firstFile.scheme(), QStringLiteral("image"));
+    QCOMPARE(firstFile.host(), QStringLiteral("bridge-generic-icons"));
+    QVERIFY(firstFile.path().startsWith(QStringLiteral("/file/")));
+    const QUrlQuery fileQuery(firstFile);
+    QCOMPARE(fileQuery.queryItemValue(QStringLiteral("name")),
+             QStringLiteral("-"));
+    QCOMPARE(fileQuery.queryItemValue(QStringLiteral("dir")),
+             QStringLiteral("0"));
+    QVERIFY(!fileQuery.hasQueryItem(QStringLiteral("version")));
+
+    const QUrlQuery folderQuery(folder);
+    QCOMPARE(folder.scheme(), QStringLiteral("image"));
+    QCOMPARE(folder.path(), firstFile.path());
+    QCOMPARE(folderQuery.queryItemValue(QStringLiteral("name")),
+             QStringLiteral("-"));
+    QCOMPARE(folderQuery.queryItemValue(QStringLiteral("dir")),
+             QStringLiteral("1"));
+}
+
+void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
+{
+    constexpr int ActiveCount = 120;
+    const QVariantMap inactivePanel = deferredPanel(
+        QStringLiteral("panel-left-metadata"), 0, false, 1, 51, 71);
+    const QVariantMap activePanel = deferredPanel(
+        QStringLiteral("panel-right-metadata"), 1, true,
+        ActiveCount, 52, 72);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"),
+              QVariantList{inactivePanel, activePanel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4IconSet icons(QStringLiteral("metadata-test-icons"));
+    F4GalleryBridge bridge(&engine, nullptr, &icons);
+    QVERIFY(bridge.available());
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(1));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), ActiveCount);
+    // The instant catalog does no filesystem-path work; the authoritative
+    // local path arrives only in the auxiliary metadata stream.
+    QVERIFY(session->localPathAt(0).isEmpty());
+    QSignalSpy resetSpy(session->model(), &QAbstractItemModel::modelReset);
+    QCOMPARE(requests.size(), 0);
+
+    // Repeated identical semantic scenes cannot bypass the first-frame gate.
+    bridge.synchronizeScene(scene);
+    QCOMPARE(requests.size(), 0);
+    // A stale frame that was already synchronized before the base catalog
+    // arrived must not start auxiliary metadata.
+    bridge.notifyFrameSwapped(0);
+    QCOMPARE(requests.size(), 0);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QCOMPARE(requests.size(), 1);
+    QVariantMap request = requests.constFirst().constFirst().toMap();
+    QCOMPARE(request.size(), 6);
+    QCOMPARE(request.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-right-metadata"));
+    QCOMPARE(request.value(QStringLiteral("offset")).toInt(), 0);
+    QCOMPARE(request.value(QStringLiteral("limit")).toInt(), 8);
+
+    // A stale reply is an atomic no-op and does not release the in-flight
+    // request slot; the exact response can still complete that transaction.
+    QVariantMap stale = deferredMetadataResponse(
+        request, ActiveCount, 91);
+    stale.insert(QStringLiteral("metadataRevision"), qulonglong(999));
+    bridge.handleProtocolMessage(stale);
+    QVERIFY(session->localPathAt(0).isEmpty());
+    QCOMPARE(requests.size(), 1);
+
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        request, ActiveCount, 91));
+    QCOMPARE(resetSpy.size(), 0);
+    QCOMPARE(session->localPathAt(0),
+             QStringLiteral("D:/resolved/panel-right-metadata/item-0.txt"));
+    QCOMPARE(session->highlightStyleAt(0).value(
+                 QStringLiteral("marker")).toString(),
+             QStringLiteral("*"));
+    // A response cannot immediately chain another chunk ahead of input.
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), 1);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QTRY_COMPARE(requests.size(), 2);
+    request = requests.constLast().constFirst().toMap();
+    QCOMPARE(request.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-right-metadata"));
+    QCOMPARE(request.value(QStringLiteral("offset")).toInt(), 8);
+
+    qulonglong frameSerial = 2;
+    while (request.value(QStringLiteral("offset")).toInt()
+           + request.value(QStringLiteral("limit")).toInt()
+           < ActiveCount) {
+        const int requestCountBeforeResponse = requests.size();
+        bridge.handleProtocolMessage(deferredMetadataResponse(
+            request, ActiveCount, 91));
+        QCoreApplication::processEvents();
+        QCOMPARE(requests.size(), requestCountBeforeResponse);
+        bridge.notifyRenderSynchronized();
+        bridge.notifyFrameSwapped(++frameSerial);
+        QTRY_COMPARE(requests.size(), requestCountBeforeResponse + 1);
+        request = requests.constLast().constFirst().toMap();
+    }
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        request, ActiveCount, 91));
+    QCOMPARE(resetSpy.size(), 0);
+    QCOMPARE(session->localPathAt(119), QStringLiteral(
+        "D:/resolved/panel-right-metadata/item-119.txt"));
+
+    // Only after the active stream is fully drained may the inactive panel
+    // consume the single global request slot.
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(++frameSerial);
+    QTRY_COMPARE(requests.size(), ActiveCount / 8 + 1);
+    const QVariantMap inactiveRequest = requests.constLast()
+                                            .constFirst().toMap();
+    QCOMPARE(inactiveRequest.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-left-metadata"));
+    QVariantMap rejected = inactiveRequest;
+    rejected.insert(QStringLiteral("type"),
+                    QStringLiteral("panel_catalog_metadata_rejected"));
+    rejected.remove(QStringLiteral("limit"));
+    bridge.handleProtocolMessage(rejected);
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), ActiveCount / 8 + 1);
+
+    // Go continues to advertise metadataDeferred in identical full scenes.
+    // A completed/rejected exact stream remains terminal and the base catalog
+    // is neither re-applied nor reset.
+    bridge.synchronizeScene(scene);
+    bridge.notifyFrameSwapped(1);
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), ActiveCount / 8 + 1);
+    QCOMPARE(resetSpy.size(), 0);
+}
+
+void F4GalleryBridgeTests::staleMetadataFrameFallbackCannotReleaseNewerChunk()
+{
+    constexpr int EntryCount = 24;
+    const QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-paced-metadata"), 0, true,
+        EntryCount, 58, 78);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        requests.constLast().constFirst().toMap(), EntryCount, 95));
+
+    // Arm the second chunk while the first chunk's 17 ms fallback is still
+    // live. Its older timer must not release the newer chunk's frame gate.
+    QThread::msleep(12);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), 2);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        requests.constLast().constFirst().toMap(), EntryCount, 95));
+    QTest::qWait(8);
+    QCOMPARE(requests.size(), 2);
+
+    // The second chunk's own fallback remains live for an offscreen panel.
+    QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 3, 200);
+}
+
+void F4GalleryBridgeTests::deferredMetadataPrioritizesCursorAndVisibleRange()
+{
+    constexpr int EntryCount = 120;
+    QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-priority-metadata"), 0, true,
+        EntryCount, 54, 74);
+    panel.insert(QStringLiteral("cursor"), EntryCount - 1);
+    panel.insert(QStringLiteral("cursorEntryId"),
+                 QStringLiteral("panel-priority-metadata:entry:119"));
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.reportMetadataVisibleRange(0, 96, 119, 54);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+
+    const QVariantMap cursorRequest = requests.constFirst()
+                                          .constFirst().toMap();
+    QCOMPARE(cursorRequest.value(QStringLiteral("offset")).toInt(), 115);
+    QCOMPARE(cursorRequest.value(QStringLiteral("limit")).toInt(), 5);
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+
+    // An exact stream tuple with an unexpected offset is an old/out-of-order
+    // response. It cannot release or replace the current cursor transaction.
+    QVariantMap outOfOrderRequest = cursorRequest;
+    outOfOrderRequest.insert(QStringLiteral("offset"), 96);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        outOfOrderRequest, EntryCount, 92));
+    QCOMPARE(requests.size(), 1);
+    QVERIFY(session->localPathAt(119).isEmpty());
+
+    // This page reaches the server's end and therefore carries final=true,
+    // but earlier gaps remain. Client-plan completion, not page position,
+    // decides when GallerySession's metadata stream becomes terminal.
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        cursorRequest, EntryCount, 92));
+    QCOMPARE(session->localPathAt(119), QStringLiteral(
+        "D:/resolved/panel-priority-metadata/item-119.txt"));
+    QVERIFY(session->localPathAt(96).isEmpty());
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), 1);
+
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QTRY_COMPARE(requests.size(), 2);
+    const QVariantMap visibleRequest = requests.constLast()
+                                           .constFirst().toMap();
+    QCOMPARE(visibleRequest.value(QStringLiteral("offset")).toInt(), 96);
+    QCOMPARE(visibleRequest.value(QStringLiteral("limit")).toInt(), 8);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        visibleRequest, EntryCount, 92));
+    QCOMPARE(session->localPathAt(96), QStringLiteral(
+        "D:/resolved/panel-priority-metadata/item-96.txt"));
+}
+
+void F4GalleryBridgeTests::malformedMetadataRetriesThenReleasesGlobalSlot()
+{
+    const QVariantMap activePanel = deferredPanel(
+        QStringLiteral("panel-malformed-active"), 0, true, 16, 55, 75);
+    const QVariantMap inactivePanel = deferredPanel(
+        QStringLiteral("panel-malformed-inactive"), 1, false, 1, 56, 76);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"),
+              QVariantList{activePanel, inactivePanel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+    const QVariantMap firstRequest = requests.constFirst()
+                                         .constFirst().toMap();
+    QCOMPARE(firstRequest.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-malformed-active"));
+
+    QVariantMap invalidLimit = deferredMetadataResponse(
+        firstRequest, 16, 93);
+    invalidLimit.insert(QStringLiteral("limit"), 7);
+    bridge.handleProtocolMessage(invalidLimit);
+    QTRY_COMPARE(requests.size(), 2);
+    const QVariantMap retryRequest = requests.constLast()
+                                         .constFirst().toMap();
+    QCOMPARE(retryRequest.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-malformed-active"));
+    QCOMPARE(retryRequest.value(QStringLiteral("offset")).toInt(),
+             firstRequest.value(QStringLiteral("offset")).toInt());
+
+    QVariantMap invalidIdentity = deferredMetadataResponse(
+        retryRequest, 16, 93);
+    QVariantList invalidEntries = invalidIdentity.value(
+        QStringLiteral("entries")).toList();
+    QVariantMap invalidEntry = invalidEntries.constFirst().toMap();
+    invalidEntry.insert(QStringLiteral("entryId"),
+                        QStringLiteral("wrong-entry"));
+    invalidEntries[0] = invalidEntry;
+    invalidIdentity.insert(QStringLiteral("entries"), invalidEntries);
+    bridge.handleProtocolMessage(invalidIdentity);
+
+    // The bounded retry is now exhausted. The active stream terminates and
+    // the inactive side can consume the one global transaction slot.
+    QTRY_COMPARE(requests.size(), 3);
+    const QVariantMap inactiveRequest = requests.constLast()
+                                            .constFirst().toMap();
+    QCOMPARE(inactiveRequest.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-malformed-inactive"));
+    auto *activeSession = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(activeSession);
+    QVERIFY(activeSession->localPathAt(0).isEmpty());
+}
+
+void F4GalleryBridgeTests::metadataBackgroundWaitsForInputIdle()
+{
+    constexpr int EntryCount = 24;
+    const QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-idle-metadata"), 0, true,
+        EntryCount, 57, 77);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+    const QVariantMap cursorRequest = requests.constFirst()
+                                          .constFirst().toMap();
+    QCOMPARE(cursorRequest.value(QStringLiteral("offset")).toInt(), 0);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        cursorRequest, EntryCount, 94));
+
+    // Once the cursor chunk is present, repeated activation/open activity
+    // must restart the idle window instead of draining background chunks on
+    // every rendered frame.
+    bridge.requestActivate(0);
+    bridge.requestOpen(0, QStringLiteral("panel-idle-metadata:entry:0"),
+                       0, false, 57, true);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QTest::qWait(60);
+    QCOMPARE(requests.size(), 1);
+
+    bridge.requestActivate(0);
+    bridge.requestOpen(0, QStringLiteral("panel-idle-metadata:entry:0"),
+                       0, false, 57, true);
+    QTest::qWait(60);
+    QCOMPARE(requests.size(), 1);
+
+    // The restartable 100 ms gate is liveness-preserving: once activity
+    // settles, the next visible/background gap resumes without another frame.
+    QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 2, 500);
+    const QVariantMap backgroundRequest = requests.constLast()
+                                              .constFirst().toMap();
+    QCOMPARE(backgroundRequest.value(QStringLiteral("offset")).toInt(), 8);
+}
+
+void F4GalleryBridgeTests::deferredMetadataWaitsForLoadingFalseFullScene()
+{
+    QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-loading-metadata"), 0, true, 1, 53, 73);
+    panel.insert(QStringLiteral("loading"), true);
+    QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), 0);
+
+    // An unrelated concurrent scene change can make Go fall back to a full
+    // scene for loading=false. The exact catalog stream must become live
+    // without requiring another catalog revision or frame.
+    panel.insert(QStringLiteral("loading"), false);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    scene.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(scene);
+    QTRY_COMPARE(requests.size(), 1);
+    QCOMPARE(requests.constFirst().constFirst().toMap()
+                 .value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-loading-metadata"));
+}
+
+void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()
+{
+    QVariantMap left = deferredPanel(
+        QStringLiteral("panel-left-patch"), 0, true, 1, 61, 81);
+    QVariantMap right = deferredPanel(
+        QStringLiteral("panel-right-patch"), 1, false, 1, 62, 82);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("activePanel"), 0},
+             {QStringLiteral("panels"), QVariantList{left, right}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(scene);
+    auto *leftSession = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    auto *rightSession = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(1));
+    QVERIFY(leftSession);
+    QVERIFY(rightSession);
+    QAbstractItemModel *const rightModel = rightSession->model();
+    const QString rightEntryId = rightSession->entryIdAt(0);
+    const QString rightLocalPath = rightSession->localPathAt(0);
+    const qulonglong rightRevision = rightSession->catalogRevision();
+    QSignalSpy leftReset(leftSession->model(),
+                         &QAbstractItemModel::modelReset);
+    QSignalSpy rightReset(rightSession->model(),
+                          &QAbstractItemModel::modelReset);
+    QSignalSpy rightChanged(rightSession->model(),
+                            &QAbstractItemModel::dataChanged);
+
+    left = deferredPanel(QStringLiteral("panel-left-patch"), 0, true,
+                         2, 63, 83);
+    bridge.synchronizePanelCatalog(left);
+
+    QCOMPARE(leftSession->catalogRevision(), qulonglong(63));
+    QCOMPARE(leftSession->model()->rowCount(), 2);
+    QCOMPARE(leftSession->entryIdAt(1),
+             QStringLiteral("panel-left-patch:entry:1"));
+    QCOMPARE(leftReset.size(), 1);
+    QCOMPARE(rightSession->model(), rightModel);
+    QCOMPARE(rightSession->catalogRevision(), rightRevision);
+    QCOMPARE(rightSession->model()->rowCount(), 1);
+    QCOMPARE(rightSession->entryIdAt(0), rightEntryId);
+    QCOMPARE(rightSession->localPathAt(0), rightLocalPath);
+    QCOMPARE(rightReset.size(), 0);
+    QCOMPARE(rightChanged.size(), 0);
 }
 
 void F4GalleryBridgeTests::viewerIgnoresSemanticPresentation()
@@ -2218,25 +3042,25 @@ void F4GalleryBridgeTests::activationSceneDoesNotSnapPendingCursorBackward()
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:one"));
 }
 
-void F4GalleryBridgeTests::nonImageOpenWaitsForAuthoritativeCursorAndRevision()
+void F4GalleryBridgeTests::nonImageOpenUsesCurrentStableCatalogImmediately()
 {
     F4GalleryBridge bridge(nullptr);
     bridge.synchronizeScene(testScene());
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
 
-    // The persistent bridge has already consumed revision 42, but a QML
-    // Loader can finish its double-click with the preceding bound revision.
-    // The bridge must validate the stable ID against its own snapshot rather
-    // than forward 41 and wait forever for a rejected no-op scene.
+    // The persistent bridge has already consumed revision 42, while a QML
+    // Loader can finish an interaction with the preceding bound revision.
+    // A non-image open is an unrevisioned stable-ID intent and must leave
+    // immediately instead of waiting for a cursor scene which may never exist.
     bridge.requestOpen(0, QStringLiteral("left:two"), 9, false, 41);
-    QCOMPARE(actions.size(), 2);
-    QCOMPARE(actions.at(0).at(0).toMap().value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.activate"));
-    QCOMPARE(actions.at(1).at(0).toMap().value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.cursor"));
-    QCOMPARE(actions.at(1).at(0).toMap()
-                 .value(QStringLiteral("catalogRevision")).toULongLong(),
-             qulonglong(42));
+    QCOMPARE(actions.size(), 1);
+    const QVariantMap open = actions.constFirst().constFirst().toMap();
+    QCOMPARE(open.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.open"));
+    QCOMPARE(open.value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("left:two"));
+    QCOMPARE(open.value(QStringLiteral("index")).toInt(), 9);
+    QVERIFY(!open.contains(QStringLiteral("catalogRevision")));
 
     QVariantMap advanced = testScene();
     QVariantMap shell = advanced.value(QStringLiteral("shell")).toMap();
@@ -2247,13 +3071,7 @@ void F4GalleryBridgeTests::nonImageOpenWaitsForAuthoritativeCursorAndRevision()
     advanced.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(advanced);
 
-    QCOMPARE(actions.size(), 3);
-    QCOMPARE(actions.constLast().constFirst().toMap()
-                 .value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.cursor"));
-    QCOMPARE(actions.constLast().constFirst().toMap()
-                 .value(QStringLiteral("catalogRevision")).toULongLong(),
-             qulonglong(43));
+    QCOMPARE(actions.size(), 1);
 
     panel.insert(QStringLiteral("cursor"), 9);
     panel.insert(QStringLiteral("cursorEntryId"), QStringLiteral("left:two"));
@@ -2261,18 +3079,11 @@ void F4GalleryBridgeTests::nonImageOpenWaitsForAuthoritativeCursorAndRevision()
     advanced.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(advanced);
 
-    QCOMPARE(actions.size(), 4);
-    const QVariantMap open = actions.constLast().constFirst().toMap();
-    QCOMPARE(open.value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.open"));
-    QCOMPARE(open.value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("left:two"));
-    QCOMPARE(open.value(QStringLiteral("index")).toInt(), 9);
-    QVERIFY(!open.contains(QStringLiteral("catalogRevision")));
+    QCOMPARE(actions.size(), 1);
 
     // Repeated identical scenes do not duplicate a dispatched open.
     bridge.synchronizeScene(advanced);
-    QCOMPARE(actions.size(), 4);
+    QCOMPARE(actions.size(), 1);
 
     // Once dispatched, later unrelated catalog revisions cannot relaunch an
     // external application. The open is an unrevisioned stable-ID operation
@@ -2281,9 +3092,125 @@ void F4GalleryBridgeTests::nonImageOpenWaitsForAuthoritativeCursorAndRevision()
     shell.insert(QStringLiteral("panels"), QVariantList{panel});
     advanced.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(advanced);
-    QCOMPARE(actions.size(), 4);
+    QCOMPARE(actions.size(), 1);
     bridge.synchronizeScene(advanced);
-    QCOMPARE(actions.size(), 4);
+    QCOMPARE(actions.size(), 1);
+}
+
+void F4GalleryBridgeTests::repeatedOpenIsSuppressedUntilPanelPathChanges()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(testScene());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+
+    // The authoritative cursor lets the first open leave immediately.
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42);
+    QCOMPARE(actions.size(), 1);
+    QCOMPARE(actions.constFirst().constFirst().toMap()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.open"));
+
+    // A held Enter key keeps targeting the old delegate until the new base
+    // catalog arrives. Collapse all those repeats into the delivered intent.
+    bridge.synchronizeScene(testScene());
+    for (int repeat = 0; repeat < 20; ++repeat) {
+        bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42, true);
+    }
+    QCOMPARE(actions.size(), 1);
+
+    QVariantMap destination = testScene();
+    QVariantMap shell = destination.value(QStringLiteral("shell")).toMap();
+    QVariantMap panel = shell.value(QStringLiteral("panels"))
+                            .toList().constFirst().toMap();
+    const QVariantList authoritativeEntries = panel.value(
+        QStringLiteral("entries")).toList();
+    panel.insert(QStringLiteral("path"), QStringLiteral("/tmp/child"));
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(43));
+    panel.insert(QStringLiteral("catalogProvisional"), true);
+    panel.insert(QStringLiteral("loading"), true);
+    panel.insert(QStringLiteral("cursor"), 0);
+    panel.insert(QStringLiteral("cursorEntryId"),
+                 QStringLiteral("child:up"));
+    panel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{{QStringLiteral("entryId"),
+                     QStringLiteral("child:up")},
+                    {QStringLiteral("index"), 0},
+                    {QStringLiteral("name"), QStringLiteral("..")},
+                    {QStringLiteral("isDir"), true}},
+    });
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    destination.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(destination);
+
+    // A provisional cold read leaves the populated source catalog visible.
+    // Held-key repeats still remain suppressed until the authoritative
+    // destination base arrives.
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    QCOMPARE(session->model()->rowCount(), 2);
+    QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
+    for (int repeat = 0; repeat < 20; ++repeat) {
+        bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 43, true);
+    }
+    QCOMPARE(actions.size(), 1);
+
+    panel.insert(QStringLiteral("catalogProvisional"), false);
+    panel.insert(QStringLiteral("loading"), false);
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(44));
+    panel.insert(QStringLiteral("cursor"), 7);
+    panel.insert(QStringLiteral("cursorEntryId"),
+                 QStringLiteral("left:one"));
+    panel.insert(QStringLiteral("entries"), authoritativeEntries);
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    destination.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(destination);
+
+    // The accepted authoritative path begins a new input epoch. One repeat
+    // which arrived while the old path was in flight is replayed against the
+    // NEW authoritative cursor; none of the stale left:one requests above is
+    // ever sent twice.
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp/child"));
+    QCOMPARE(session->catalogRevision(), qulonglong(44));
+    QTRY_COMPARE(actions.size(), 2);
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.open"));
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("left:one"));
+
+    // While that replay is in flight, retain at most one further repeat.
+    // Same-path/unrelated scenes cannot release it.
+    for (int repeat = 0; repeat < 20; ++repeat) {
+        bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 44, true);
+    }
+    bridge.synchronizeScene(destination);
+    QCoreApplication::processEvents();
+    QCOMPARE(actions.size(), 2);
+
+    // A second authoritative transition resolves the new current cursor,
+    // proving that the one-slot latch can be reused without accumulating the
+    // twenty suppressed requests from either epoch.
+    panel.insert(QStringLiteral("path"), QStringLiteral("/tmp"));
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(45));
+    panel.insert(QStringLiteral("cursor"), 9);
+    panel.insert(QStringLiteral("cursorEntryId"),
+                 QStringLiteral("left:two"));
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    destination.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(destination);
+    QTRY_COMPARE(actions.size(), 3);
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.open"));
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("left:two"));
 }
 
 void F4GalleryBridgeTests::stableActionsCarryRevisions()

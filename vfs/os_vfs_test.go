@@ -164,6 +164,151 @@ func TestOSVFS_ReadDir_Cancellation(t *testing.T) {
 		t.Errorf("Callback should not have been called after cancellation, but got %d items", count)
 	}
 }
+
+func TestOSVFS_ReadDirPhasedPublishesStableBaseBeforeMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "alpha.txt"), []byte("payload"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmpDir, "folder"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".dot-entry"), []byte("dot"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewOSVFS(tmpDir)
+	var phases []DirectoryReadPhase
+	base := make(map[string]VFSItem)
+	metadata := make(map[string]VFSItem)
+	err := v.ReadDirPhased(context.Background(), tmpDir, func(phase DirectoryReadPhase, chunk []VFSItem) {
+		phases = append(phases, phase)
+		for _, item := range chunk {
+			switch phase {
+			case DirectoryReadBase:
+				base[item.Name] = item
+			case DirectoryReadMetadata:
+				metadata[item.Name] = item
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("ReadDirPhased failed: %v", err)
+	}
+	if len(phases) < 2 || phases[0] != DirectoryReadBase {
+		t.Fatalf("phase order = %v, want base before metadata", phases)
+	}
+	seenMetadata := false
+	for _, phase := range phases {
+		if phase == DirectoryReadMetadata {
+			seenMetadata = true
+		}
+		if seenMetadata && phase == DirectoryReadBase {
+			t.Fatalf("base phase appeared after metadata: %v", phases)
+		}
+	}
+	if len(base) != 3 || len(metadata) != len(base) {
+		t.Fatalf("base/metadata sizes = %d/%d, want 3/3", len(base), len(metadata))
+	}
+	for name, baseItem := range base {
+		metadataItem, ok := metadata[name]
+		if !ok {
+			t.Fatalf("metadata missing base row %q", name)
+		}
+		if baseItem.Name != metadataItem.Name || baseItem.IsDir != metadataItem.IsDir ||
+			baseItem.IsHidden != metadataItem.IsHidden || baseItem.IsSymlink != metadataItem.IsSymlink {
+			t.Fatalf("row identity/type changed between phases: base=%+v metadata=%+v", baseItem, metadataItem)
+		}
+		if baseItem.SizeKnown || !baseItem.MTime.IsZero() {
+			t.Fatalf("base row %q leaked deferred metadata: %+v", name, baseItem)
+		}
+	}
+	if got := metadata["alpha.txt"]; !got.SizeKnown || got.Size != int64(len("payload")) || got.MTime.IsZero() {
+		t.Fatalf("file metadata was not enriched: %+v", got)
+	}
+	if got := metadata["folder"]; !got.IsDir || !got.SizeKnown {
+		t.Fatalf("directory metadata was not enriched: %+v", got)
+	}
+}
+
+func TestOSVFS_ReadDirPhasedPublishesAuthoritativeEmptyBase(t *testing.T) {
+	tmpDir := t.TempDir()
+	v := NewOSVFS(tmpDir)
+	var phases []DirectoryReadPhase
+	var base []VFSItem
+	err := v.ReadDirPhased(context.Background(), tmpDir, func(phase DirectoryReadPhase, chunk []VFSItem) {
+		phases = append(phases, phase)
+		if phase == DirectoryReadBase {
+			base = append(base, chunk...)
+		}
+	})
+	if err != nil {
+		t.Fatalf("ReadDirPhased failed: %v", err)
+	}
+	if len(phases) != 1 || phases[0] != DirectoryReadBase {
+		t.Fatalf("phases = %v, want one authoritative base callback", phases)
+	}
+	if len(base) != 0 {
+		t.Fatalf("empty directory base contained %d rows: %+v", len(base), base)
+	}
+}
+
+func TestOSVFS_ReadDirPhasedCancellationAfterBaseSkipsMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	v := NewOSVFS(tmpDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	metadataCallbacks := 0
+	err := v.ReadDirPhased(ctx, tmpDir, func(phase DirectoryReadPhase, _ []VFSItem) {
+		if phase == DirectoryReadBase {
+			cancel()
+		} else {
+			metadataCallbacks++
+		}
+	})
+	if err != context.Canceled {
+		t.Fatalf("ReadDirPhased error = %v, want context.Canceled", err)
+	}
+	if metadataCallbacks != 0 {
+		t.Fatalf("received %d metadata callbacks after base cancellation", metadataCallbacks)
+	}
+}
+
+func TestOSVFS_ReadDirPhasedPreservesSymlinkDirectoryClassification(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Symlinks on Windows require special privileges")
+	}
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target")
+	if err := os.Mkdir(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(tmpDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	v := NewOSVFS(tmpDir)
+	var base, metadata VFSItem
+	err := v.ReadDirPhased(context.Background(), tmpDir, func(phase DirectoryReadPhase, chunk []VFSItem) {
+		for _, item := range chunk {
+			if item.Name != "link" {
+				continue
+			}
+			if phase == DirectoryReadBase {
+				base = item
+			} else {
+				metadata = item
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !base.IsDir || !base.IsSymlink || !metadata.IsDir || !metadata.IsSymlink {
+		t.Fatalf("symlink directory classification changed: base=%+v metadata=%+v", base, metadata)
+	}
+}
 func TestOSVFS_SetPath_Validation(t *testing.T) {
 	tmpDir := t.TempDir()
 	v := NewOSVFS(tmpDir)
@@ -185,6 +330,50 @@ func TestOSVFS_SetPath_Validation(t *testing.T) {
 	os.WriteFile(file, []byte("data"), 0644)
 	if err := v.SetPath(file); err == nil {
 		t.Error("SetPath should fail if path is a file")
+	}
+}
+
+func TestOSVFS_SetPathOptimisticDefersValidationToReadDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	v := NewOSVFS(tmpDir)
+	missing := filepath.Join(tmpDir, "stale-row")
+
+	previousHook := OSVFSSetPathBenchmarkHook
+	statEvents := 0
+	OSVFSSetPathBenchmarkHook = func(event string, fields ...any) {
+		statEvents++
+	}
+	t.Cleanup(func() { OSVFSSetPathBenchmarkHook = previousHook })
+
+	if err := v.SetPathOptimistic(missing); err != nil {
+		t.Fatalf("SetPathOptimistic rejected an accepted panel path: %v", err)
+	}
+	if got := v.GetPath(); got != filepath.Clean(missing) {
+		t.Fatalf("optimistic path = %q, want %q", got, filepath.Clean(missing))
+	}
+	if statEvents != 0 {
+		t.Fatalf("SetPathOptimistic performed %d synchronous validation stages", statEvents)
+	}
+
+	err := v.ReadDir(context.Background(), v.GetPath(), func([]VFSItem) {})
+	if !os.IsNotExist(err) {
+		t.Fatalf("background ReadDir error = %v, want not-exist validation failure", err)
+	}
+}
+
+func TestOSVFS_SetPathOptimisticNormalizesRelativeRowWithoutStat(t *testing.T) {
+	tmpDir := t.TempDir()
+	v := NewOSVFS(tmpDir)
+	child := filepath.Join(tmpDir, "child")
+	if err := os.Mkdir(child, 0755); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	if err := v.SetPathOptimistic("child"); err != nil {
+		t.Fatalf("SetPathOptimistic relative row: %v", err)
+	}
+	if got := v.GetPath(); got != filepath.Clean(child) {
+		t.Fatalf("optimistic relative path = %q, want %q", got, filepath.Clean(child))
 	}
 }
 func TestOSVFS_Abs_Consistency(t *testing.T) {

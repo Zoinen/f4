@@ -54,7 +54,16 @@ ApplicationWindow {
     // out of QML, where QVariant-to-JavaScript conversion would otherwise run
     // synchronously on every directory transition.
     property var scene: qtShell.presentationScene || ({})
-    readonly property var workspaceTabs: scene.workspaceTabs || ({})
+    // Compact panel/chrome updates keep the controller's scene caches
+    // authoritative without invalidating the heavyweight presentation
+    // binding. Project only their row-free state until a real scene replaces
+    // it; catalog rows continue to live exclusively in the C++ Gallery model.
+    property var workspaceTabsOverride: null
+    property var leftPanelPresentationOverride: null
+    property var rightPanelPresentationOverride: null
+    readonly property var workspaceTabs:
+        workspaceTabsOverride !== null
+        ? workspaceTabsOverride : (scene.workspaceTabs || ({}))
     readonly property var workspaces: workspaceTabs.tabs || []
     // vtui exports only the active workspace.  Keep the last complete model
     // for each heavyweight native surface so opening the Operations Queue tab
@@ -163,6 +172,12 @@ ApplicationWindow {
     // only when the corresponding panel tree is destroyed.
     property var leftGalleryPanelHost: null
     property var rightGalleryPanelHost: null
+    // A Tab activation patch updates the controller's authoritative scene,
+    // but deliberately does not invalidate the whole QML scene graph. Keep
+    // the tiny active-side projection here until the next real scene update.
+    // This preserves both persistent panel/Gallery instances and avoids
+    // running every panel binding at keyboard-repeat frequency.
+    property int panelActivationOverride: -1
     // While a menu-bar submenu is open, pointer traversal must feel local.
     // Go remains authoritative for activation, but waiting for a complete
     // semantic-scene round trip just to paint the adjacent submenu creates a
@@ -532,14 +547,37 @@ ApplicationWindow {
             return false
         var shell = shellFrame()
         var panels = shell && shell.panels ? shell.panels : []
+        var activeSide = effectiveActivePanelSide()
         for (var i = 0; i < panels.length; ++i) {
-            if (panels[i].active === true
+            if (Number(panels[i].side) === activeSide
                     && panelSideVisible(panels[i].side)
                     && !panelSideCovered(panels[i].side)) {
                 return galleryPanelHost(panels[i].side) !== null
             }
         }
         return false
+    }
+
+    function effectiveActivePanelSide() {
+        if (panelActivationOverride === 0 || panelActivationOverride === 1)
+            return panelActivationOverride
+        var shell = shellFrame()
+        var shellSide = Number(shell && shell.activePanel)
+        if (shellSide === 0 || shellSide === 1)
+            return shellSide
+        var panels = shell && shell.panels ? shell.panels : []
+        for (var i = 0; i < panels.length; ++i) {
+            if (panels[i].active === true)
+                return Number(panels[i].side)
+        }
+        return -1
+    }
+
+    function panelIsEffectivelyActive(panel) {
+        var activeSide = effectiveActivePanelSide()
+        return activeSide >= 0
+               ? Number(panel && panel.side) === activeSide
+               : Boolean(panel && panel.active === true)
     }
 
     function galleryInputRoutingActive() {
@@ -584,8 +622,9 @@ ApplicationWindow {
 
         var shell = shellFrame()
         var panels = shell && shell.panels ? shell.panels : []
+        var activeSide = effectiveActivePanelSide()
         for (var i = 0; i < panels.length; ++i) {
-            if (panels[i].active !== true)
+            if (Number(panels[i].side) !== activeSide)
                 continue
             if (!panelSideVisible(panels[i].side)
                     || panelSideCovered(panels[i].side)) {
@@ -790,6 +829,20 @@ ApplicationWindow {
 
     function cleanText(value) {
         return value === undefined || value === null ? "" : String(value)
+    }
+
+    // A menu that must size itself to its content cannot bind each row's
+    // width to the menu's own width (that is circular). Rows instead expose
+    // their natural implicitWidth, and the menu's own width binds to the
+    // widest one via this helper, which is a one-way dependency.
+    function repeaterMaxImplicitWidth(repeater) {
+        let maxWidth = 0
+        for (let i = 0; i < repeater.count; ++i) {
+            const item = repeater.itemAt(i)
+            if (item)
+                maxWidth = Math.max(maxWidth, item.implicitWidth)
+        }
+        return maxWidth
     }
 
     function resolvedIconSource(name, logicalSize) {
@@ -1028,6 +1081,10 @@ ApplicationWindow {
     }
 
     onSceneChanged: {
+        workspaceTabsOverride = null
+        leftPanelPresentationOverride = null
+        rightPanelPresentationOverride = null
+        panelActivationOverride = -1
         captureRetainedSurfaces()
         syncAutocompleteSelection()
         if (qtGallery.viewerVisible
@@ -1038,6 +1095,32 @@ ApplicationWindow {
 
     Connections {
         target: qtShell
+        // Several lightweight embedding/test shells intentionally implement
+        // only the scene API. The production controller exposes compact
+        // presentation/activation signals; missing optional signals must not
+        // break loading.
+        ignoreUnknownSignals: true
+        function onPanelActivationChanged(activePanel, revision) {
+            root.panelActivationOverride = Number(activePanel)
+            Qt.callLater(root.restoreSurfaceFocus)
+        }
+        function onCompactPresentationChanged(patch) {
+            if (!patch)
+                return
+            const activePanel = Number(patch.activePanel)
+            if (activePanel === 0 || activePanel === 1)
+                root.panelActivationOverride = activePanel
+            if (patch.panel !== undefined && patch.panel !== null) {
+                const side = Number(patch.side)
+                if (side === 0)
+                    root.leftPanelPresentationOverride = patch.panel
+                else if (side === 1)
+                    root.rightPanelPresentationOverride = patch.panel
+            }
+            if (patch.workspaceTabs !== undefined
+                    && patch.workspaceTabs !== null)
+                root.workspaceTabsOverride = patch.workspaceTabs
+        }
         function onCommandMenusChanged() {
             root.syncAutocompleteSelection()
         }
@@ -1174,6 +1257,10 @@ ApplicationWindow {
         // terminal key/text/paste path while GalleryViewer is the top surface;
         // semantic cursor/selection still travel through F4GalleryBridge.
         terminalInputEnabled: !root.galleryViewerOwnsKeyboard()
+        // Continue ingesting terminal frames while semantic surfaces own the
+        // window, but do not repaint/upload the fully covered compatibility
+        // texture on every backend update.
+        renderingEnabled: root.needsFallbackGrid()
         z: 0
         opacity: root.needsFallbackGrid() ? 1.0 : 0.0
         visible: true
@@ -1488,7 +1575,7 @@ ApplicationWindow {
                             height: parent.height
                             radius: 6
                             color: newHover.hovered ? root.controlHoverBg : "transparent"
-                            visible: root.workspaceTabs.newTab
+                            visible: !!root.workspaceTabs.newTab
                                      && root.workspaceTabs.newTab.visible === true
                             Component.onCompleted: {
                                 if (f4UsesQwk) {
@@ -1674,6 +1761,11 @@ ApplicationWindow {
                 property var panelList: frame.panels || []
 
                 function panelForSide(side) {
+                    const compactPanel = side === 0
+                            ? root.leftPanelPresentationOverride
+                            : root.rightPanelPresentationOverride
+                    if (compactPanel !== null)
+                        return compactPanel
                     for (var i = 0; i < panelList.length; ++i) {
                         if (Number(panelList[i].side) === side)
                             return panelList[i]
@@ -1873,6 +1965,13 @@ ApplicationWindow {
                             separatorColor: root.separatorColor
                             separatorWidth: root.separatorWidth
                             gutterWidth: root.panelContentSpacing * 2
+                            // The left panel's Gallery scrollbar overlaps
+                            // this gutter by panelContentSpacing (it anchors
+                            // to its own panel's right edge with a matching
+                            // negative margin so it sits flush with the
+                            // divider). Leave that lane to the scrollbar so
+                            // dragging it does not instead start a resize.
+                            leadingHitInset: root.panelContentSpacing
                             z: 10
                             onRatioRequested: (nextRatio) => {
                                 root.panelSplitRatio = nextRatio
@@ -2179,7 +2278,8 @@ ApplicationWindow {
         ]
         property bool nativeLayout: root.isAppScene()
         property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? semanticMenu.height : 0)
-        readonly property bool panelIsActive: panel.active === true
+        readonly property bool panelIsActive:
+            root.panelIsEffectivelyActive(panel)
         property var registeredGalleryPanelHost: null
         readonly property var rendererChoices: [
             { "label": "Columns · 2", "layoutMode": "columns", "columnCount": 2, "icon": "columns-2", "shortcut": "Ctrl+1" },
@@ -2192,11 +2292,11 @@ ApplicationWindow {
             { "label": "Wide panel", "wideToggle": true, "icon": "panel-left", "shortcut": "Ctrl+4" }
         ]
         readonly property var sortChoices: [
-            { "label": "Name", "mode": "name", "shortcut": "Ctrl+F3" },
-            { "label": "Extension", "mode": "extension", "shortcut": "Ctrl+F4" },
-            { "label": "Time", "mode": "time", "shortcut": "Ctrl+F5" },
-            { "label": "Size", "mode": "size", "shortcut": "Ctrl+F6" },
-            { "label": "Unsorted", "mode": "unsorted", "shortcut": "Ctrl+F7" }
+            { "label": "Name", "mode": "name", "icon": "arrow-down-a-z", "shortcut": "Ctrl+F3" },
+            { "label": "Extension", "mode": "extension", "icon": "file-type", "shortcut": "Ctrl+F4" },
+            { "label": "Time", "mode": "time", "icon": "clock-3", "shortcut": "Ctrl+F5" },
+            { "label": "Size", "mode": "size", "icon": "arrow-down-wide-narrow", "shortcut": "Ctrl+F6" },
+            { "label": "Unsorted", "mode": "unsorted", "icon": "list", "shortcut": "Ctrl+F7" }
         ]
 
         function rendererChoiceEnabled(choice) {
@@ -2536,7 +2636,9 @@ ApplicationWindow {
                 id: sortMenu
                 objectName: "panelSortMenu-" + Number(panel.side || 0)
                 parent: Overlay.overlay
-                width: 204
+                width: Math.max(160, root.repeaterMaxImplicitWidth(
+                                          sortChoiceRepeater))
+                       + leftPadding + rightPadding
                 padding: 6
                 modal: false
                 dim: false
@@ -2576,9 +2678,11 @@ ApplicationWindow {
                 }
 
                 contentItem: Column {
+                    id: sortMenuColumn
                     spacing: 2
 
                     Repeater {
+                        id: sortChoiceRepeater
                         model: panelRoot.sortChoices
 
                         delegate: Rectangle {
@@ -2588,6 +2692,12 @@ ApplicationWindow {
                                         + root.cleanText(modelData.mode)
                                         + "-" + Number(panel.side || 0)
                             width: sortMenu.availableWidth
+                            // Content determines the menu's width (see
+                            // sortMenu.contentWidth below); this row must
+                            // never be narrower than what it needs.
+                            implicitWidth: 10 + sortChoiceLeading.implicitWidth
+                                           + 24 + sortChoiceShortcut.implicitWidth
+                                           + 10
                             height: 31
                             radius: 5
                             readonly property bool choiceActive:
@@ -2596,44 +2706,68 @@ ApplicationWindow {
                             color: sortChoicePointer.containsMouse
                                    ? root.controlHoverBg : "transparent"
 
-                            Text {
-                                objectName: "panelSortChoiceLabel-"
-                                            + root.cleanText(
-                                                  sortChoice.modelData.mode)
-                                            + "-" + Number(panel.side || 0)
-                                anchors.left: parent.left
-                                anchors.leftMargin: 34
-                                anchors.right: parent.right
-                                anchors.rightMargin: 72
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.cleanText(sortChoice.modelData.label)
-                                color: root.textColor
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                            }
-
-                            IconLabel {
-                                objectName: "panelSortChoiceCheck-"
-                                            + root.cleanText(
-                                                  sortChoice.modelData.mode)
-                                            + "-" + Number(panel.side || 0)
-                                readonly property color activeColor:
-                                    root.dialogAccent
-                                visible: sortChoice.choiceActive
+                            Row {
+                                id: sortChoiceLeading
                                 anchors.left: parent.left
                                 anchors.leftMargin: 10
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: 14
-                                height: 14
-                                icon.source: root.lucideIconSource("check")
-                                icon.width: 14
-                                icon.height: 14
-                                icon.color: activeColor
+                                spacing: 8
+
+                                // Always reserves its slot so the icon/label
+                                // stay aligned across rows regardless of
+                                // whether this particular row is the active
+                                // choice.
+                                Item {
+                                    width: 14
+                                    height: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    IconLabel {
+                                        objectName: "panelSortChoiceCheck-"
+                                                    + root.cleanText(
+                                                          sortChoice.modelData.mode)
+                                                    + "-" + Number(panel.side || 0)
+                                        anchors.fill: parent
+                                        visible: sortChoice.choiceActive
+                                        icon.source: root.lucideIconSource("check")
+                                        icon.width: 14
+                                        icon.height: 14
+                                        icon.color: root.dialogAccent
+                                    }
+                                }
+
+                                IconLabel {
+                                    objectName: "panelSortChoiceIcon-"
+                                                + root.cleanText(
+                                                      sortChoice.modelData.mode)
+                                                + "-" + Number(panel.side || 0)
+                                    width: 16
+                                    height: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    icon.source: root.lucideIconSource(
+                                                     root.cleanText(
+                                                         sortChoice.modelData.icon))
+                                    icon.width: 16
+                                    icon.height: 16
+                                    icon.color: root.textColor
+                                }
+
+                                Text {
+                                    objectName: "panelSortChoiceLabel-"
+                                                + root.cleanText(
+                                                      sortChoice.modelData.mode)
+                                                + "-" + Number(panel.side || 0)
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root.cleanText(sortChoice.modelData.label)
+                                    color: root.textColor
+                                    font.pixelSize: 12
+                                }
                             }
 
                             Text {
+                                id: sortChoiceShortcut
                                 anchors.right: parent.right
-                                anchors.rightMargin: 8
+                                anchors.rightMargin: 10
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: root.cleanText(
                                           sortChoice.modelData.shortcut)
@@ -2676,7 +2810,7 @@ ApplicationWindow {
                              && !rendererMenu.opened
                     delay: 500
                     timeout: 5000
-                    text: "Panel renderer"
+                    text: "Panel view mode"
                 }
 
                 contentItem: Row {
@@ -2740,7 +2874,9 @@ ApplicationWindow {
                 id: rendererMenu
                 objectName: "panelRendererMenu-" + Number(panel.side || 0)
                 parent: Overlay.overlay
-                width: 224
+                width: Math.max(160, root.repeaterMaxImplicitWidth(
+                                          rendererChoiceRepeater))
+                       + leftPadding + rightPadding
                 padding: 6
                 modal: false
                 dim: false
@@ -2784,27 +2920,34 @@ ApplicationWindow {
                     spacing: 2
 
                     Repeater {
+                        id: rendererChoiceRepeater
                         model: panelRoot.rendererChoices
 
                         delegate: Rectangle {
                             id: rendererChoice
                             required property int index
                             required property var modelData
+                            readonly property bool isHeading:
+                                modelData.heading === true
                             width: rendererMenu.availableWidth
-                            height: modelData.heading === true ? 25 : 31
+                            implicitWidth: isHeading
+                                ? 16 + rendererHeadingLabel.implicitWidth
+                                : 8 + rendererChoiceLeading.implicitWidth
+                                  + 24 + rendererChoiceShortcut.implicitWidth
+                                  + 8
+                            height: isHeading ? 25 : 31
                             radius: 5
                             readonly property bool choiceEnabled:
                                 panelRoot.rendererChoiceEnabled(modelData)
                             readonly property bool choiceActive:
                                 panelRoot.rendererChoiceActive(modelData)
-                            color: modelData.heading === true ? "transparent"
+                            color: isHeading ? "transparent"
                                    : rendererChoicePointer.containsMouse
                                      && choiceEnabled
                                      ? root.controlHoverBg : "transparent"
 
                             Rectangle {
-                                visible: rendererChoice.modelData.heading === true
-                                         && index > 0
+                                visible: rendererChoice.isHeading && index > 0
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.top: parent.top
@@ -2813,7 +2956,8 @@ ApplicationWindow {
                             }
 
                             Text {
-                                visible: rendererChoice.modelData.heading === true
+                                id: rendererHeadingLabel
+                                visible: rendererChoice.isHeading
                                 anchors.left: parent.left
                                 anchors.right: parent.right
                                 anchors.bottom: parent.bottom
@@ -2827,53 +2971,57 @@ ApplicationWindow {
                                 verticalAlignment: Text.AlignVCenter
                             }
 
-                            IconLabel {
-                                visible: rendererChoice.modelData.heading !== true
+                            Row {
+                                id: rendererChoiceLeading
+                                visible: !rendererChoice.isHeading
                                 anchors.left: parent.left
                                 anchors.leftMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
-                                width: 16
-                                height: 16
-                                icon.source: root.lucideIconSource(
-                                                 root.cleanText(
-                                                     rendererChoice.modelData.icon))
-                                icon.width: 16
-                                icon.height: 16
-                                icon.color: rendererChoice.choiceEnabled
-                                            ? root.textColor : root.mutedText
+                                spacing: 8
+
+                                // Always reserves its slot so the icon/label
+                                // stay aligned across rows regardless of
+                                // whether this particular row is active.
+                                Item {
+                                    width: 14
+                                    height: 14
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    IconLabel {
+                                        anchors.fill: parent
+                                        visible: rendererChoice.choiceActive
+                                        icon.source: root.lucideIconSource("check")
+                                        icon.width: 14
+                                        icon.height: 14
+                                        icon.color: root.panelSelectionBorder
+                                    }
+                                }
+
+                                IconLabel {
+                                    width: 16
+                                    height: 16
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    icon.source: root.lucideIconSource(
+                                                     root.cleanText(
+                                                         rendererChoice.modelData.icon))
+                                    icon.width: 16
+                                    icon.height: 16
+                                    icon.color: rendererChoice.choiceEnabled
+                                                ? root.textColor : root.mutedText
+                                }
+
+                                Text {
+                                    text: root.cleanText(rendererChoice.modelData.label)
+                                    color: rendererChoice.choiceEnabled
+                                           ? root.textColor : root.mutedText
+                                    opacity: rendererChoice.choiceEnabled ? 1 : 0.5
+                                    font.pixelSize: 12
+                                }
                             }
 
                             Text {
-                                visible: rendererChoice.modelData.heading !== true
-                                anchors.left: parent.left
-                                anchors.leftMargin: 34
-                                anchors.right: parent.right
-                                anchors.rightMargin: 78
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root.cleanText(rendererChoice.modelData.label)
-                                color: rendererChoice.choiceEnabled
-                                       ? root.textColor : root.mutedText
-                                opacity: rendererChoice.choiceEnabled ? 1 : 0.5
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                            }
-
-                            IconLabel {
-                                visible: rendererChoice.modelData.heading !== true
-                                         && rendererChoice.choiceActive
-                                anchors.right: parent.right
-                                anchors.rightMargin: 54
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 14
-                                height: 14
-                                icon.source: root.lucideIconSource("check")
-                                icon.width: 14
-                                icon.height: 14
-                                icon.color: root.panelSelectionBorder
-                            }
-
-                            Text {
-                                visible: rendererChoice.modelData.heading !== true
+                                id: rendererChoiceShortcut
+                                visible: !rendererChoice.isHeading
                                 anchors.right: parent.right
                                 anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter

@@ -33,7 +33,7 @@ NormalColor = background:#778899
 `))
 	highlighter := &FileHighlighter{}
 	highlighter.LoadFromIniAt(ini, baseDir)
-	id, style := highlighter.SemanticStyle(&vfs.VFSItem{Name: "main.go"})
+	id, style := highlighter.SemanticStyle(&vfs.VFSItem{Name: "main.go"}, true)
 	if id == "" || highlighter.Revision == 0 {
 		t.Fatal("semantic style and revision must be stable and non-empty")
 	}
@@ -67,14 +67,14 @@ Icon = https://example.invalid/file.svg
 `))
 	highlighter := &FileHighlighter{}
 	highlighter.LoadFromIni(ini)
-	_, parent := highlighter.SemanticStyle(&vfs.VFSItem{Name: "..", IsDir: true})
+	_, parent := highlighter.SemanticStyle(&vfs.VFSItem{Name: "..", IsDir: true}, true)
 	if parent.Icon != "qrc:/F4QtHost/icons/lucide/folder-up.svg" {
 		t.Fatalf("parent icon = %q", parent.Icon)
 	}
 	if parent.Marker != "" || parent.Normal.Foreground != "" {
 		t.Fatalf("parent must keep console color/marker special case: %#v", parent)
 	}
-	_, network := highlighter.SemanticStyle(&vfs.VFSItem{Name: "file.net"})
+	_, network := highlighter.SemanticStyle(&vfs.VFSItem{Name: "file.net"}, true)
 	if network.Icon != "" {
 		t.Fatalf("network icon scheme was accepted: %q", network.Icon)
 	}
@@ -97,7 +97,7 @@ func TestSemanticHighlightLeavesHiddenPresentationToGUI(t *testing.T) {
 		},
 	}}
 	item := vfs.VFSItem{Name: ".config", IsDir: true, IsHidden: true}
-	_, style := highlighter.SemanticStyle(&item)
+	_, style := highlighter.SemanticStyle(&item, true)
 	if style.Normal.Foreground != "#EEEEEC" || style.Icon != "qrc:/folder.svg" {
 		t.Fatalf("hidden directory did not retain ordinary directory style: %#v", style)
 	}
@@ -128,7 +128,7 @@ func TestHighlightRule_Match(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := rule.Match(&tt.item); got != tt.want {
+		if got := rule.Match(&tt.item, true); got != tt.want {
 			t.Errorf("Match(%q) = %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -153,7 +153,7 @@ func TestHighlightRule_MatchAttributes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := tt.rule.Match(&tt.item); got != tt.want {
+		if got := tt.rule.Match(&tt.item, true); got != tt.want {
 			t.Errorf("Rule Match on attributes failed for %q: got %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -276,7 +276,7 @@ func TestFileHighlighter_AttributeExclusion(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := rule.Match(&tt.item); got != tt.want {
+		if got := rule.Match(&tt.item, true); got != tt.want {
 			t.Errorf("Match(%q) with exclusion failed: got %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -332,7 +332,7 @@ func TestFileHighlighter_SizeFiltering(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := tt.rule.Match(&tt.item); got != tt.want {
+		if got := tt.rule.Match(&tt.item, true); got != tt.want {
 			t.Errorf("Size filter failed for %s: got %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -353,7 +353,7 @@ func TestFileHighlighter_DateFiltering(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := ruleNew.Match(&tt.item); got != tt.want {
+		if got := ruleNew.Match(&tt.item, true); got != tt.want {
 			t.Errorf("Date filter failed for %s: got %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -380,7 +380,7 @@ DateAfter = 2d
 	}
 
 	for _, tt := range tests {
-		if got := highlighter.Rules[0].Match(&tt.item); got != tt.want {
+		if got := highlighter.Rules[0].Match(&tt.item, true); got != tt.want {
 			t.Errorf("Relative Date check failed for %s: got %v, want %v", tt.item.Name, got, tt.want)
 		}
 	}
@@ -465,7 +465,7 @@ func TestHighlightRule_PlatformAttributes(t *testing.T) {
 		item = vfs.VFSItem{Name: "readonly.txt", UnixMode: 0444} // Нет прав на запись (mask 0222)
 	}
 
-	if !rule.Match(&item) {
+	if !rule.Match(&item, true) {
 		t.Errorf("Platform-specific ReadOnly attribute matching failed on %s", runtime.GOOS)
 	}
 }
@@ -555,10 +555,10 @@ func TestHighlightRule_DateTypes(t *testing.T) {
 		DateAfter: now.Add(-6 * time.Hour),
 	}
 
-	if ruleAccess.Match(&item) {
+	if ruleAccess.Match(&item, true) {
 		t.Error("DateAccessed matching failed (should have failed)")
 	}
-	if !ruleCreate.Match(&item) {
+	if !ruleCreate.Match(&item, true) {
 		t.Error("DateCreated matching failed (should have passed)")
 	}
 }
@@ -671,7 +671,7 @@ func TestFileHighlighterCachesMatchesByEntryMetadata(t *testing.T) {
 		}},
 	}
 	item := vfs.VFSItem{Name: "main.go", Size: 10}
-	if _, style := highlighter.SemanticStyle(&item); highlightStyleEmpty(style) {
+	if _, style := highlighter.SemanticStyle(&item, true); highlightStyleEmpty(style) {
 		t.Fatal("matching item did not produce a style")
 	}
 	if got := len(highlighter.matchCache); got != 1 {
@@ -684,7 +684,7 @@ func TestFileHighlighterCachesMatchesByEntryMetadata(t *testing.T) {
 	}
 
 	item.Name = "README.txt"
-	if _, style := highlighter.SemanticStyle(&item); !highlightStyleEmpty(style) {
+	if _, style := highlighter.SemanticStyle(&item, true); !highlightStyleEmpty(style) {
 		t.Fatal("changed item metadata reused a stale cached match")
 	}
 	if got := len(highlighter.matchCache); got != 2 {

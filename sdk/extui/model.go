@@ -99,19 +99,24 @@ type QuickViewModel struct {
 }
 
 type PanelModel struct {
-	ID                     string
-	Side                   int
-	Active                 bool
-	Path                   string
-	Title                  string
-	GalleryLayoutMode      string
-	GalleryColumnCount     int
-	GalleryDensity         int
-	GalleryLayoutRevision  int64
-	SourceKind             string
-	PreviewCapable         bool
-	CatalogRevision        int64
-	SelectionRevision      int64
+	ID                    string
+	Side                  int
+	Active                bool
+	Path                  string
+	Title                 string
+	GalleryLayoutMode     string
+	GalleryColumnCount    int
+	GalleryDensity        int
+	GalleryLayoutRevision int64
+	SourceKind            string
+	PreviewCapable        bool
+	CatalogRevision       int64
+	SelectionRevision     int64
+	// MetadataDeferred means Entries contains only the interactive catalog
+	// identity.  Expensive filesystem/display metadata is fetched separately
+	// with the exact CatalogRevision and MetadataRevision advertised here.
+	MetadataDeferred       bool
+	MetadataRevision       int64
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
@@ -123,12 +128,21 @@ type PanelModel struct {
 	CatalogProvisional     bool
 	FastFind               bool
 	FastFindText           string
+	FastFindMatchColor     string
+	FastFindMatches        map[string]FastFindMatchModel
 	SelectedCount          int
 	SelectedSize           int64
 	TotalCount             int
 	TotalSize              int64
 	GalleryColumns         []PanelColumnModel
 	Entries                []FileEntryModel
+}
+
+// FastFindMatchModel identifies the contiguous rune span painted by f4's
+// quick-search matcher for one stable catalog entry.
+type FastFindMatchModel struct {
+	Start  int
+	Length int
 }
 
 type PanelColumnModel struct {
@@ -148,6 +162,7 @@ type FileEntryModel struct {
 	Name             string
 	DisplayBaseName  string
 	DisplayExtension string
+	Path             string
 	LocalPath        string
 	Size             int64
 	SizeText         string
@@ -156,6 +171,7 @@ type FileEntryModel struct {
 	IsHidden         bool
 	IsExecutable     bool
 	IsCached         bool
+	IsImage          bool
 	Selected         bool
 	SizeCalculated   bool
 	MTime            string
@@ -163,6 +179,40 @@ type FileEntryModel struct {
 	Version          string
 	Mode             string
 	HighlightStyleID string
+}
+
+// FileEntryMetadataModel is the deferred, revision-bound portion of a file
+// catalog row consumed by the native gallery. EntryID and Index join it back
+// to the minimal row in PanelModel; identity/type fields already carried by
+// that base row are deliberately not repeated here.
+type FileEntryMetadataModel struct {
+	Index            int
+	EntryID          string
+	LocalPath        string
+	Size             int64
+	SizeText         string
+	IsHidden         bool
+	MTime            string
+	MTimeNanos       int64
+	Mode             string
+	HighlightStyleID string
+}
+
+// PanelCatalogMetadataModel is one bounded response to a frontend pull.  All
+// chunks for a catalog share the same revisions; Final marks the last chunk.
+type PanelCatalogMetadataModel struct {
+	PanelID           string
+	Path              string
+	CatalogRevision   int64
+	MetadataRevision  int64
+	HighlightRevision int64
+	Offset            int
+	Limit             int
+	Total             int
+	TotalSize         int64
+	Final             bool
+	Entries           []FileEntryMetadataModel
+	HighlightStyles   map[string]HighlightStyleModel
 }
 
 type HighlightGroupModel struct {
@@ -600,7 +650,6 @@ func (p PanelModel) ToMap() M {
 		"previewCapable":         p.PreviewCapable,
 		"catalogRevision":        p.CatalogRevision,
 		"selectionRevision":      p.SelectionRevision,
-		"highlightRevision":      p.HighlightRevision,
 		"cursorEntryId":          p.CursorEntryID,
 		"sortModeName":           p.SortMode,
 		"sortReverse":            p.SortReverse,
@@ -611,11 +660,31 @@ func (p PanelModel) ToMap() M {
 		"fastFind":               p.FastFind,
 		"fastFindText":           p.FastFindText,
 		"selectedCount":          p.SelectedCount,
-		"selectedSize":           p.SelectedSize,
 		"totalCount":             p.TotalCount,
-		"totalSize":              p.TotalSize,
 		"galleryColumns":         columnsToMaps(p.GalleryColumns),
-		"entries":                entriesToMaps(p.Entries),
+	}
+	if p.FastFindMatchColor != "" {
+		out["fastFindMatchColor"] = p.FastFindMatchColor
+	}
+	if len(p.FastFindMatches) > 0 {
+		matches := make(M, len(p.FastFindMatches))
+		for entryID, match := range p.FastFindMatches {
+			matches[entryID] = M{
+				"start":  match.Start,
+				"length": match.Length,
+			}
+		}
+		out["fastFindMatches"] = matches
+	}
+	if p.MetadataDeferred {
+		out["metadataDeferred"] = true
+		out["metadataRevision"] = p.MetadataRevision
+		out["entries"] = minimalEntriesToMaps(p.Entries)
+	} else {
+		out["highlightRevision"] = p.HighlightRevision
+		out["selectedSize"] = p.SelectedSize
+		out["totalSize"] = p.TotalSize
+		out["entries"] = entriesToMaps(p.Entries)
 	}
 	if len(p.HighlightStyles) > 0 {
 		styles := make(M, len(p.HighlightStyles))
@@ -634,6 +703,7 @@ func (e FileEntryModel) ToMap() M {
 		"name":             e.Name,
 		"displayBaseName":  e.DisplayBaseName,
 		"displayExtension": e.DisplayExtension,
+		"path":             e.Path,
 		"localPath":        e.LocalPath,
 		"size":             e.Size,
 		"sizeText":         e.SizeText,
@@ -642,6 +712,7 @@ func (e FileEntryModel) ToMap() M {
 		"isHidden":         e.IsHidden,
 		"isExecutable":     e.IsExecutable,
 		"isCached":         e.IsCached,
+		"isImage":          e.IsImage,
 		"selected":         e.Selected,
 		"sizeCalculated":   e.SizeCalculated,
 		"mtime":            e.MTime,
@@ -651,6 +722,82 @@ func (e FileEntryModel) ToMap() M {
 	}
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	return out
+}
+
+// MinimalToMap serializes only fields needed to paint and interact with a
+// catalog immediately. Stable entry identity plus the catalog-scoped row is
+// sufficient for cursor, selection and open intents; the potentially long
+// logical/local paths arrive in the revision-bound metadata stream. In
+// particular this never exposes zero-valued aliases for deferred metadata,
+// because consumers could mistake those for final values while the matching
+// metadata chunk is still pending.
+func (e FileEntryModel) MinimalToMap() M {
+	out := M{
+		"index":            e.Index,
+		"entryId":          e.EntryID,
+		"name":             e.Name,
+		"displayBaseName":  e.DisplayBaseName,
+		"displayExtension": e.DisplayExtension,
+		"isDir":            e.IsDir,
+		"isUp":             e.IsUp,
+		"isImage":          e.IsImage,
+		"selected":         e.Selected,
+	}
+	// The fast base pass already resolves name/dir/hidden-based highlight
+	// rules (see FileHighlighter.SemanticStyle's metadataKnown parameter);
+	// omitting this field here would silently discard that color/icon until
+	// the deferred metadata pass recomputes it.
+	if e.HighlightStyleID != "" {
+		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	return out
+}
+
+func (e FileEntryMetadataModel) ToMap() M {
+	out := M{
+		"index":      e.Index,
+		"entryId":    e.EntryID,
+		"localPath":  e.LocalPath,
+		"size":       e.Size,
+		"sizeText":   e.SizeText,
+		"isHidden":   e.IsHidden,
+		"mtime":      e.MTime,
+		"mtimeNanos": e.MTimeNanos,
+		"mode":       e.Mode,
+	}
+	if e.HighlightStyleID != "" {
+		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	return out
+}
+
+func (p PanelCatalogMetadataModel) ToMap() M {
+	entries := make([]M, 0, len(p.Entries))
+	for _, entry := range p.Entries {
+		entries = append(entries, entry.ToMap())
+	}
+	out := M{
+		"type":              "panel_catalog_metadata",
+		"panelId":           p.PanelID,
+		"path":              p.Path,
+		"catalogRevision":   p.CatalogRevision,
+		"metadataRevision":  p.MetadataRevision,
+		"highlightRevision": p.HighlightRevision,
+		"offset":            p.Offset,
+		"limit":             p.Limit,
+		"total":             p.Total,
+		"totalSize":         p.TotalSize,
+		"final":             p.Final,
+		"entries":           entries,
+	}
+	if len(p.HighlightStyles) > 0 {
+		styles := make(M, len(p.HighlightStyles))
+		for id, style := range p.HighlightStyles {
+			styles[id] = style.ToMap()
+		}
+		out["highlightStyles"] = styles
 	}
 	return out
 }
@@ -1059,6 +1206,14 @@ func entriesToMaps(items []FileEntryModel) []M {
 	out := make([]M, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.ToMap())
+	}
+	return out
+}
+
+func minimalEntriesToMaps(items []FileEntryModel) []M {
+	out := make([]M, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.MinimalToMap())
 	}
 	return out
 }

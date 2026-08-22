@@ -227,6 +227,40 @@ int main(int argc, char *argv[])
     QQuickWindow::setDefaultAlphaBuffer(false);
 #endif
 
+    QtShellController controller(connectAddress, nonce, cols, rows, &app);
+    int fatalExitCode = 0;
+    QObject::connect(&controller, &QtShellController::fatalError, &app,
+                     [&app, &fatalExitCode](const QString &message) {
+        qCritical().noquote() << message;
+        // QCoreApplication::exit() has no effect before app.exec(). Preserve
+        // the requested status separately so a failure delivered while QML
+        // is loading cannot be consumed before the event loop starts.
+        fatalExitCode = 2;
+        QCoreApplication::exit(fatalExitCode);
+    });
+
+    const auto startupFailureExitCode = [&controller, &fatalExitCode]() {
+        if (fatalExitCode != 0) {
+            return fatalExitCode;
+        }
+        if (controller.startupError().isEmpty()) {
+            return 0;
+        }
+        qCritical().noquote() << controller.startupError();
+        fatalExitCode = 2;
+        return fatalExitCode;
+    };
+
+    // The core cannot initialize until it receives our hello. Use the same
+    // two-second deadline as the asynchronous controller guard, but finish it
+    // before GalleryRuntime or QML creates worker/render infrastructure. A
+    // healthy loopback connection still returns immediately, so Go SetupUI
+    // remains concurrent with the subsequent QML construction.
+    controller.completeInitialHandshake();
+    if (const int exitCode = startupFailureExitCode(); exitCode != 0) {
+        return exitCode;
+    }
+
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral(":/"));
 
@@ -242,16 +276,7 @@ int main(int argc, char *argv[])
     DummyQWK::registerTypes(&engine);
 #endif
 
-    QtShellController controller(connectAddress, nonce, cols, rows, &engine);
     F4GalleryBridge galleryBridge(&engine, &engine, &iconSet);
-    QObject::connect(&controller, &QtShellController::fatalError, &app, [&app](const QString &message) {
-        qCritical().noquote() << message;
-        // fatalError may be emitted synchronously by waitForConnected(), before
-        // app.exec(). Queue the exit so it is never discarded by Qt.
-        QMetaObject::invokeMethod(&app, []() {
-            QCoreApplication::exit(2);
-        }, Qt::QueuedConnection);
-    });
     QObject::connect(&controller, &QtShellController::sceneChanged,
                      &galleryBridge, [&controller, &galleryBridge, &iconSet]() {
         const QVariantMap scene = controller.scene();
@@ -262,19 +287,23 @@ int main(int argc, char *argv[])
         }
         galleryBridge.synchronizeScene(scene);
     });
+    QObject::connect(&controller, &QtShellController::panelActivationChanged,
+                     &galleryBridge,
+                     &F4GalleryBridge::synchronizePanelActivation);
+    QObject::connect(&controller, &QtShellController::compactMessageApplying,
+                     &galleryBridge,
+                     &F4GalleryBridge::beginCompactProtocolMessage);
+    QObject::connect(&controller, &QtShellController::panelCatalogChanged,
+                     &galleryBridge,
+                     &F4GalleryBridge::synchronizePanelCatalog);
     QObject::connect(&galleryBridge, &F4GalleryBridge::uiActionRequested,
                      &controller, &QtShellController::sendUiAction);
-
-    // The f4 core waits for hello before it starts SetupUI. Complete the
-    // loopback connection before the synchronous QML load so core setup and
-    // QML object construction run concurrently. If an unexpectedly slow
-    // connection exceeds this small budget, its existing asynchronous socket
-    // signals remain armed and preserve the old startup behaviour.
-    controller.waitForInitialHandshake(250);
-    if (!controller.startupError().isEmpty()) {
-        qCritical().noquote() << controller.startupError();
-        return 2;
-    }
+    QObject::connect(
+        &galleryBridge, &F4GalleryBridge::panelCatalogMetadataRequested,
+        &controller, &QtShellController::sendPanelCatalogMetadataRequest);
+    QObject::connect(&controller, &QtShellController::messageReceived,
+                     &galleryBridge,
+                     &F4GalleryBridge::handleProtocolMessage);
 
     engine.rootContext()->setContextProperty(QStringLiteral("qtShell"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"), &galleryBridge);
@@ -302,9 +331,8 @@ int main(int argc, char *argv[])
     // QQmlApplicationEngine may process platform/socket events while building
     // the object graph. Do not enter app.exec() if that exposed a startup
     // connection error during the synchronous load.
-    if (!controller.startupError().isEmpty()) {
-        qCritical().noquote() << controller.startupError();
-        return 2;
+    if (const int exitCode = startupFailureExitCode(); exitCode != 0) {
+        return exitCode;
     }
 
     QQuickWindow *rootWindow = nullptr;
@@ -320,9 +348,14 @@ int main(int argc, char *argv[])
             // main.qml starts hidden. Restore its screen, normal geometry and
             // intended window state without presenting the empty shell.
             windowGeometry->restoreDeferred();
+            QObject::connect(rootWindow, &QQuickWindow::afterSynchronizing,
+                             &galleryBridge,
+                             &F4GalleryBridge::notifyRenderSynchronized,
+                             Qt::DirectConnection);
             QObject::connect(rootWindow, &QQuickWindow::frameSwapped,
                              &galleryBridge,
-                             &F4GalleryBridge::notifyFrameSwapped);
+                             &F4GalleryBridge::captureFrameSwapped,
+                             Qt::DirectConnection);
 
             auto shown = std::make_shared<bool>(false);
             const QPointer<QQuickWindow> guardedWindow(rootWindow);
@@ -331,9 +364,13 @@ int main(int argc, char *argv[])
             const QPointer<QTimer> guardedFallback(&startupShowFallback);
             const auto revealWindow =
                 [shown, guardedWindow, guardedGeometry,
-                 guardedFallback](const QString &reason) {
-                if (*shown || !guardedWindow || !guardedGeometry)
+                 guardedFallback, &controller,
+                 &fatalExitCode](const QString &reason) {
+                if (*shown || fatalExitCode != 0
+                    || !controller.startupError().isEmpty()
+                    || !guardedWindow || !guardedGeometry) {
                     return;
+                }
                 *shown = true;
                 if (guardedFallback)
                     guardedFallback->stop();
@@ -365,6 +402,14 @@ int main(int argc, char *argv[])
             };
             QObject::connect(&controller, &QtShellController::sceneChanged,
                              rootWindow, revealAfterSemanticScene);
+            // The phased Go catalog normally replaces the startup placeholder
+            // through the compact panel_catalog transport. That path updates
+            // the presentation scene without emitting sceneChanged, so listen
+            // to it as well instead of waiting for the visual fallback after
+            // names/types are already ready to paint.
+            QObject::connect(&controller,
+                             &QtShellController::presentationSceneChanged,
+                             rootWindow, revealAfterSemanticScene);
 
             startupShowFallback.setSingleShot(true);
             // A failed loopback connection has its own 2 s fatal deadline.
@@ -386,6 +431,9 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (const int exitCode = startupFailureExitCode(); exitCode != 0) {
+        return exitCode;
+    }
     const int exitCode = app.exec();
 
     if (windowGeometry) {

@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QMetaObject>
 #include <QPointer>
+#include <QSet>
 #include <QTimer>
 
 #include <msgpack.hpp>
@@ -26,6 +27,7 @@ constexpr quint32 MaxMessageSize = 64 * 1024 * 1024;
 constexpr qsizetype MaxQueuedDecodeBytes = MaxMessageSize;
 constexpr qsizetype MaxQueuedDecodeFrames = 8;
 constexpr int InitialConnectDeadlineMs = 2000;
+constexpr int ExtUiProtocolVersion = 2;
 
 void packString(msgpack::packer<msgpack::sbuffer> &packer, const QString &value)
 {
@@ -258,11 +260,531 @@ QVariantMap makePresentationScene(QVariantMap scene)
     return scene;
 }
 
+QVariantMap withPanelActivation(QVariantMap container, int activeSide)
+{
+    if (container.contains(QStringLiteral("activePanel"))) {
+        container.insert(QStringLiteral("activePanel"), activeSide);
+    }
+    const QVariant panelsValue = container.value(QStringLiteral("panels"));
+    if (panelsValue.metaType().id() != QMetaType::QVariantList) {
+        return container;
+    }
+
+    const QVariantList panels = panelsValue.toList();
+    QVariantList updatedPanels;
+    updatedPanels.reserve(panels.size());
+    for (qsizetype index = 0; index < panels.size(); ++index) {
+        const QVariant &panelValue = panels.at(index);
+        if (panelValue.metaType().id() != QMetaType::QVariantMap) {
+            updatedPanels.push_back(panelValue);
+            continue;
+        }
+        QVariantMap panel = panelValue.toMap();
+        bool sideOK = false;
+        const int declaredSide = panel.value(QStringLiteral("side"))
+                                     .toInt(&sideOK);
+        const int side = sideOK ? declaredSide : static_cast<int>(index);
+        panel.insert(QStringLiteral("active"), side == activeSide);
+        updatedPanels.push_back(panel);
+    }
+    container.insert(QStringLiteral("panels"), updatedPanels);
+    return container;
+}
+
+QVariant withPanelActivationInFrames(const QVariant &framesValue,
+                                     int activeSide)
+{
+    if (framesValue.metaType().id() != QMetaType::QVariantList) {
+        return framesValue;
+    }
+    const QVariantList frames = framesValue.toList();
+    QVariantList updatedFrames;
+    updatedFrames.reserve(frames.size());
+    for (const QVariant &frameValue : frames) {
+        updatedFrames.push_back(
+            frameValue.metaType().id() == QMetaType::QVariantMap
+                ? QVariant(withPanelActivation(frameValue.toMap(),
+                                               activeSide))
+                : frameValue);
+    }
+    return updatedFrames;
+}
+
+QVariant withPanelActivationInScreens(const QVariant &screensValue,
+                                      int activeSide)
+{
+    if (screensValue.metaType().id() != QMetaType::QVariantList) {
+        return screensValue;
+    }
+    const QVariantList screens = screensValue.toList();
+    QVariantList updatedScreens;
+    updatedScreens.reserve(screens.size());
+    for (const QVariant &screenValue : screens) {
+        if (screenValue.metaType().id() != QMetaType::QVariantMap) {
+            updatedScreens.push_back(screenValue);
+            continue;
+        }
+        QVariantMap screen = withPanelActivation(screenValue.toMap(),
+                                                 activeSide);
+        const auto frames = screen.constFind(QStringLiteral("frames"));
+        if (frames != screen.cend()) {
+            screen.insert(QStringLiteral("frames"),
+                          withPanelActivationInFrames(*frames, activeSide));
+        }
+        updatedScreens.push_back(screen);
+    }
+    return updatedScreens;
+}
+
+QVariantMap withPanelActivationAliases(QVariantMap scene, int activeSide)
+{
+    scene = withPanelActivation(std::move(scene), activeSide);
+    const QVariant shellValue = scene.value(QStringLiteral("shell"));
+    if (shellValue.metaType().id() == QMetaType::QVariantMap) {
+        scene.insert(QStringLiteral("shell"),
+                     withPanelActivation(shellValue.toMap(), activeSide));
+    }
+    const auto frames = scene.constFind(QStringLiteral("frames"));
+    if (frames != scene.cend()) {
+        scene.insert(QStringLiteral("frames"),
+                     withPanelActivationInFrames(*frames, activeSide));
+    }
+    const auto screens = scene.constFind(QStringLiteral("screens"));
+    if (screens != scene.cend()) {
+        scene.insert(QStringLiteral("screens"),
+                     withPanelActivationInScreens(*screens, activeSide));
+    }
+    return scene;
+}
+
+QVariantMap applyPanelActivationPatch(QVariantMap scene, int activeSide)
+{
+    scene = withPanelActivationAliases(std::move(scene), activeSide);
+    const QVariant legacyValue = scene.value(QStringLiteral("legacy"));
+    if (legacyValue.metaType().id() == QMetaType::QVariantMap) {
+        scene.insert(QStringLiteral("legacy"),
+                     withPanelActivationAliases(legacyValue.toMap(),
+                                                activeSide));
+    }
+    return scene;
+}
+
+QVariantMap withoutNativePanelPayload(QVariantMap panel)
+{
+    panel.remove(QStringLiteral("entries"));
+    panel.remove(QStringLiteral("highlightStyles"));
+    return panel;
+}
+
+QVariantMap compactPresentationPatch(
+    const QVariantMap &message,
+    const QVariantMap &presentationPanel = QVariantMap())
+{
+    QVariantMap patch;
+    for (const QString &key : {
+             QStringLiteral("type"), QStringLiteral("activePanel"),
+             QStringLiteral("side"), QStringLiteral("workspaceTabs")}) {
+        if (message.contains(key)) {
+            patch.insert(key, message.value(key));
+        }
+    }
+    if (!presentationPanel.isEmpty()) {
+        patch.insert(QStringLiteral("panel"), presentationPanel);
+    }
+    return patch;
+}
+
+bool replaceShellPanel(QVariantMap &scene, int side,
+                       const QVariantMap &replacement)
+{
+    const QVariant shellValue = scene.value(QStringLiteral("shell"));
+    if (shellValue.metaType().id() != QMetaType::QVariantMap) {
+        return false;
+    }
+    QVariantMap shell = shellValue.toMap();
+    const QVariant panelsValue = shell.value(QStringLiteral("panels"));
+    if (panelsValue.metaType().id() != QMetaType::QVariantList) {
+        return false;
+    }
+    QVariantList panels = panelsValue.toList();
+    int match = -1;
+    for (qsizetype index = 0; index < panels.size(); ++index) {
+        if (panels.at(index).metaType().id() != QMetaType::QVariantMap) {
+            continue;
+        }
+        const QVariantMap candidate = panels.at(index).toMap();
+        bool declaredSideOK = false;
+        const int declaredSide = candidate.value(QStringLiteral("side"))
+                                     .toInt(&declaredSideOK);
+        if ((declaredSideOK ? declaredSide : static_cast<int>(index))
+            != side) {
+            continue;
+        }
+        if (match != -1) {
+            return false;
+        }
+        match = static_cast<int>(index);
+    }
+    if (match < 0) {
+        return false;
+    }
+    panels[match] = replacement;
+    shell.insert(QStringLiteral("panels"), panels);
+    scene.insert(QStringLiteral("shell"), shell);
+    return true;
+}
+
+bool validPanelCatalogEnvelope(const QVariantMap &message,
+                               const QVariantMap &currentScene,
+                               int *sideOut, QVariantMap *panelOut)
+{
+    static const QSet<QString> envelopeKeys = {
+        QStringLiteral("type"), QStringLiteral("activePanel"),
+        QStringLiteral("side"), QStringLiteral("panel"),
+        QStringLiteral("commandLine"), QStringLiteral("shellTitle"),
+        QStringLiteral("workspaceTabs"), QStringLiteral("menus"),
+    };
+    for (auto it = message.cbegin(); it != message.cend(); ++it) {
+        if (!envelopeKeys.contains(it.key())
+            && !it.key().startsWith(QStringLiteral("benchmark"))) {
+            return false;
+        }
+    }
+
+    bool sideOK = false;
+    bool activePanelOK = false;
+    const int side = message.value(QStringLiteral("side")).toInt(&sideOK);
+    const int activePanel = message.value(QStringLiteral("activePanel"))
+                                .toInt(&activePanelOK);
+    const QVariant panelValue = message.value(QStringLiteral("panel"));
+    if (!sideOK || side < 0 || side > 1 || !activePanelOK
+        || activePanel < 0 || activePanel > 1
+        || panelValue.metaType().id() != QMetaType::QVariantMap) {
+        return false;
+    }
+    const QVariantMap panel = panelValue.toMap();
+    bool panelSideOK = false;
+    bool catalogRevisionOK = false;
+    bool selectionRevisionOK = false;
+    bool metadataRevisionOK = false;
+    const int panelSide = panel.value(QStringLiteral("side"))
+                              .toInt(&panelSideOK);
+    panel.value(QStringLiteral("catalogRevision"))
+        .toULongLong(&catalogRevisionOK);
+    panel.value(QStringLiteral("selectionRevision"))
+        .toULongLong(&selectionRevisionOK);
+    panel.value(QStringLiteral("metadataRevision"))
+        .toULongLong(&metadataRevisionOK);
+    const QVariant entriesValue = panel.value(QStringLiteral("entries"));
+    if (!panelSideOK || panelSide != side
+        || panel.value(QStringLiteral("id")).toString().isEmpty()
+        || panel.value(QStringLiteral("kind")).toString()
+            != QStringLiteral("filePanel")
+        || panel.value(QStringLiteral("active")).metaType().id()
+            != QMetaType::Bool
+        || panel.value(QStringLiteral("active")).toBool()
+            != (side == activePanel)
+        || panel.value(QStringLiteral("path")).metaType().id()
+            != QMetaType::QString
+        || !catalogRevisionOK || !selectionRevisionOK || !metadataRevisionOK
+        || panel.value(QStringLiteral("metadataDeferred")).metaType().id()
+            != QMetaType::Bool
+        || !panel.value(QStringLiteral("metadataDeferred")).toBool()
+        || entriesValue.metaType().id() != QMetaType::QVariantList) {
+        return false;
+    }
+    for (const QString &heavyKey : {
+             QStringLiteral("highlightRevision"),
+             QStringLiteral("selectedSize"),
+             QStringLiteral("totalSize")}) {
+        if (panel.contains(heavyKey)) {
+            return false;
+        }
+    }
+    const QVariant highlightStylesValue = panel.value(
+        QStringLiteral("highlightStyles"));
+    if (panel.contains(QStringLiteral("highlightStyles"))) {
+        if (highlightStylesValue.metaType().id() != QMetaType::QVariantMap) {
+            return false;
+        }
+        const QVariantMap highlightStyles = highlightStylesValue.toMap();
+        for (auto it = highlightStyles.cbegin();
+             it != highlightStyles.cend(); ++it) {
+            if (it.key().isEmpty()
+                || it.value().metaType().id() != QMetaType::QVariantMap) {
+                return false;
+            }
+        }
+    }
+
+    QSet<QString> entryIds;
+    const QVariantList entries = entriesValue.toList();
+    for (qsizetype row = 0; row < entries.size(); ++row) {
+        if (entries.at(row).metaType().id() != QMetaType::QVariantMap) {
+            return false;
+        }
+        const QVariantMap entry = entries.at(row).toMap();
+        bool indexOK = false;
+        const int index = entry.value(QStringLiteral("index"))
+                              .toInt(&indexOK);
+        const QString entryId = entry.value(
+            QStringLiteral("entryId")).toString();
+        if (!indexOK || index != row || entryId.isEmpty()
+            || entryIds.contains(entryId)
+            || entry.value(QStringLiteral("name")).metaType().id()
+                != QMetaType::QString
+            || (entry.contains(QStringLiteral("path"))
+                && entry.value(QStringLiteral("path")).metaType().id()
+                    != QMetaType::QString)
+            || entry.value(QStringLiteral("isDir")).metaType().id()
+                != QMetaType::Bool
+            || entry.value(QStringLiteral("isUp")).metaType().id()
+                != QMetaType::Bool
+            || entry.value(QStringLiteral("isImage")).metaType().id()
+                != QMetaType::Bool
+            || entry.value(QStringLiteral("selected")).metaType().id()
+                != QMetaType::Bool
+            || (entry.contains(QStringLiteral("highlightStyleId"))
+                && (entry.value(QStringLiteral("highlightStyleId"))
+                        .metaType().id() != QMetaType::QString
+                    || entry.value(QStringLiteral("highlightStyleId"))
+                           .toString().isEmpty()))) {
+            return false;
+        }
+        entryIds.insert(entryId);
+        for (const QString &heavyKey : {
+                 QStringLiteral("localPath"), QStringLiteral("size"),
+                 QStringLiteral("sizeText"), QStringLiteral("isHidden"),
+                 QStringLiteral("isExecutable"), QStringLiteral("isCached"),
+                 QStringLiteral("sizeCalculated"), QStringLiteral("mtime"),
+                 QStringLiteral("mtimeNanos"), QStringLiteral("version"),
+                 QStringLiteral("mode")}) {
+            if (entry.contains(heavyKey)) {
+                return false;
+            }
+        }
+    }
+
+    if ((panel.contains(QStringLiteral("fastFind"))
+         && panel.value(QStringLiteral("fastFind")).metaType().id()
+             != QMetaType::Bool)
+        || (panel.contains(QStringLiteral("fastFindText"))
+            && panel.value(QStringLiteral("fastFindText")).metaType().id()
+                != QMetaType::QString)
+        || (panel.contains(QStringLiteral("fastFindMatchColor"))
+            && panel.value(QStringLiteral("fastFindMatchColor")).metaType().id()
+                != QMetaType::QString)
+        || (panel.contains(QStringLiteral("fastFindMatches"))
+            && panel.value(QStringLiteral("fastFindMatches")).metaType().id()
+                != QMetaType::QVariantMap)) {
+        return false;
+    }
+    const QVariantMap fastFindMatches = panel.value(
+        QStringLiteral("fastFindMatches")).toMap();
+    for (auto it = fastFindMatches.cbegin();
+         it != fastFindMatches.cend(); ++it) {
+        if (!entryIds.contains(it.key())
+            || it.value().metaType().id() != QMetaType::QVariantMap) {
+            return false;
+        }
+        const QVariantMap match = it.value().toMap();
+        bool startOK = false;
+        bool lengthOK = false;
+        const int start = match.value(QStringLiteral("start"))
+                              .toInt(&startOK);
+        const int length = match.value(QStringLiteral("length"))
+                               .toInt(&lengthOK);
+        if (match.size() != 2 || !startOK || start < 0
+            || !lengthOK || length <= 0) {
+            return false;
+        }
+    }
+
+    const QVariantMap shell = currentScene.value(
+        QStringLiteral("shell")).toMap();
+    bool currentActiveOK = false;
+    const int currentActive = shell.value(QStringLiteral("activePanel"))
+                                  .toInt(&currentActiveOK);
+    if (!currentActiveOK || currentActive != activePanel) {
+        return false;
+    }
+    const QVariantList currentPanels = shell.value(
+        QStringLiteral("panels")).toList();
+    int currentMatches = 0;
+    for (qsizetype index = 0; index < currentPanels.size(); ++index) {
+        const QVariantMap current = currentPanels.at(index).toMap();
+        bool declaredSideOK = false;
+        const int declaredSide = current.value(QStringLiteral("side"))
+                                     .toInt(&declaredSideOK);
+        if ((declaredSideOK ? declaredSide : static_cast<int>(index))
+            == side) {
+            ++currentMatches;
+            if (current.value(QStringLiteral("id"))
+                    != panel.value(QStringLiteral("id"))) {
+                return false;
+            }
+        }
+    }
+    if (currentMatches != 1
+        || (message.contains(QStringLiteral("commandLine"))
+            && message.value(QStringLiteral("commandLine")).metaType().id()
+                != QMetaType::QVariantMap)
+        || (message.contains(QStringLiteral("shellTitle"))
+            && message.value(QStringLiteral("shellTitle")).metaType().id()
+                != QMetaType::QString)
+        || (message.contains(QStringLiteral("workspaceTabs"))
+            && message.value(QStringLiteral("workspaceTabs")).metaType().id()
+                != QMetaType::QVariantMap)
+        || (message.contains(QStringLiteral("menus"))
+            && message.value(QStringLiteral("menus")).metaType().id()
+                != QMetaType::QVariantList)) {
+        return false;
+    }
+
+    *sideOut = side;
+    *panelOut = panel;
+    return true;
+}
+
+bool validPanelChromeEnvelope(const QVariantMap &message,
+                              int *activePanelOut)
+{
+    static const QSet<QString> envelopeKeys = {
+        QStringLiteral("type"), QStringLiteral("activePanel"),
+        QStringLiteral("commandLine"), QStringLiteral("shellTitle"),
+        QStringLiteral("workspaceTabs"), QStringLiteral("menus"),
+    };
+    for (auto it = message.cbegin(); it != message.cend(); ++it) {
+        if (!envelopeKeys.contains(it.key())
+            && !it.key().startsWith(QStringLiteral("benchmark"))) {
+            return false;
+        }
+    }
+
+    const QVariant typeValue = message.value(QStringLiteral("type"));
+    const QVariant activePanelValue = message.value(
+        QStringLiteral("activePanel"));
+    const int activePanelType = activePanelValue.metaType().id();
+    const bool activePanelIsInteger =
+        activePanelType == QMetaType::Char
+        || activePanelType == QMetaType::SChar
+        || activePanelType == QMetaType::UChar
+        || activePanelType == QMetaType::Short
+        || activePanelType == QMetaType::UShort
+        || activePanelType == QMetaType::Int
+        || activePanelType == QMetaType::UInt
+        || activePanelType == QMetaType::LongLong
+        || activePanelType == QMetaType::ULongLong;
+    bool activePanelOK = false;
+    const int activePanel = activePanelValue.toInt(&activePanelOK);
+    if (typeValue.metaType().id() != QMetaType::QString
+        || typeValue.toString() != QStringLiteral("panel_chrome")
+        || !activePanelIsInteger || !activePanelOK
+        || activePanel < 0 || activePanel > 1
+        || (message.contains(QStringLiteral("commandLine"))
+            && message.value(QStringLiteral("commandLine")).metaType().id()
+                != QMetaType::QVariantMap)
+        || (message.contains(QStringLiteral("shellTitle"))
+            && message.value(QStringLiteral("shellTitle")).metaType().id()
+                != QMetaType::QString)
+        || (message.contains(QStringLiteral("workspaceTabs"))
+            && message.value(QStringLiteral("workspaceTabs")).metaType().id()
+                != QMetaType::QVariantMap)
+        || (message.contains(QStringLiteral("menus"))
+            && message.value(QStringLiteral("menus")).metaType().id()
+                != QMetaType::QVariantList)) {
+        return false;
+    }
+
+    *activePanelOut = activePanel;
+    return true;
+}
+
+void applyPanelCatalogCompactFields(QVariantMap &scene,
+                                    const QVariantMap &message,
+                                    int activePanel)
+{
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("activePanel"), activePanel);
+    if (message.contains(QStringLiteral("commandLine"))) {
+        shell.insert(QStringLiteral("commandLine"),
+                     message.value(QStringLiteral("commandLine")));
+    }
+    if (message.contains(QStringLiteral("shellTitle"))) {
+        shell.insert(QStringLiteral("title"),
+                     message.value(QStringLiteral("shellTitle")));
+    }
+    scene.insert(QStringLiteral("shell"), shell);
+    for (const QString &key : {QStringLiteral("workspaceTabs"),
+                               QStringLiteral("menus")}) {
+        if (message.contains(key)) {
+            scene.insert(key, message.value(key));
+        }
+    }
+    for (auto it = message.cbegin(); it != message.cend(); ++it) {
+        if (it.key().startsWith(QStringLiteral("benchmark"))) {
+            scene.insert(it.key(), it.value());
+        }
+    }
+}
+
 bool hasNonEmptyMap(const QVariantMap &container, const QString &key)
 {
     const QVariant value = container.value(key);
     return value.metaType().id() == QMetaType::QVariantMap
         && !value.toMap().isEmpty();
+}
+
+bool nonNegativeInteger(const QVariant &value, qulonglong *result = nullptr)
+{
+    const int type = value.metaType().id();
+    const bool signedInteger = type == QMetaType::Char
+        || type == QMetaType::SChar || type == QMetaType::Short
+        || type == QMetaType::Int || type == QMetaType::LongLong;
+    const bool unsignedInteger = type == QMetaType::UChar
+        || type == QMetaType::UShort || type == QMetaType::UInt
+        || type == QMetaType::ULongLong;
+    if (!signedInteger && !unsignedInteger) {
+        return false;
+    }
+
+    bool ok = false;
+    qulonglong converted = 0;
+    if (signedInteger) {
+        const qlonglong signedValue = value.toLongLong(&ok);
+        if (!ok || signedValue < 0) {
+            return false;
+        }
+        converted = static_cast<qulonglong>(signedValue);
+    } else {
+        converted = value.toULongLong(&ok);
+        if (!ok) {
+            return false;
+        }
+    }
+    if (result) {
+        *result = converted;
+    }
+    return true;
+}
+
+bool isAuthoritativePhasedCatalog(const QVariantMap &panel)
+{
+    const QVariant metadataDeferred = panel.value(
+        QStringLiteral("metadataDeferred"));
+    const QVariant catalogProvisional = panel.value(
+        QStringLiteral("catalogProvisional"));
+    qulonglong catalogRevision = 0;
+    qulonglong totalCount = 0;
+    return metadataDeferred.metaType().id() == QMetaType::Bool
+        && metadataDeferred.toBool()
+        && catalogProvisional.metaType().id() == QMetaType::Bool
+        && !catalogProvisional.toBool()
+        && nonNegativeInteger(panel.value(QStringLiteral("catalogRevision")),
+                              &catalogRevision)
+        && catalogRevision > 0
+        && nonNegativeInteger(panel.value(QStringLiteral("totalCount")),
+                              &totalCount);
 }
 
 bool shellSideIsCovered(const QVariantMap &shell, int side)
@@ -515,7 +1037,8 @@ bool QtShellController::initialSceneReadyForDisplay(const QVariantMap &scene)
                     continue;
                 }
                 found = true;
-                if (panel.value(QStringLiteral("loading")).toBool()) {
+                if (panel.value(QStringLiteral("loading")).toBool()
+                    && !isAuthoritativePhasedCatalog(panel)) {
                     return false;
                 }
                 break;
@@ -570,6 +1093,33 @@ bool QtShellController::waitForInitialHandshake(int timeoutMs)
     return connected && m_helloSent;
 }
 
+bool QtShellController::completeInitialHandshake()
+{
+    if (waitForInitialHandshake(InitialConnectDeadlineMs)) {
+        return true;
+    }
+    if (!m_startupError.isEmpty()) {
+        return false;
+    }
+
+    QString message;
+    if (m_socket
+        && m_socket->error() != QAbstractSocket::UnknownSocketError) {
+        message = m_socket->errorString();
+    }
+    if (message.isEmpty()) {
+        message = QStringLiteral(
+            "Timed out connecting to the f4 core at %1:%2")
+                      .arg(m_host).arg(m_port);
+    }
+    m_startupError = message;
+    if (m_socket) {
+        m_socket->abort();
+    }
+    emit fatalError(message);
+    return false;
+}
+
 void QtShellController::sendResize(int cols, int rows)
 {
     if (cols <= 0 || rows <= 0) {
@@ -589,14 +1139,24 @@ void QtShellController::sendKey(int vk, int ch, bool down, int mods)
 
 void QtShellController::sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat)
 {
-    sendMessage({
+    QVariantMap message{
         {QStringLiteral("type"), QStringLiteral("key")},
         {QStringLiteral("vk"), vk},
         {QStringLiteral("char"), ch},
         {QStringLiteral("down"), down},
         {QStringLiteral("mods"), mods},
         {QStringLiteral("repeat"), repeat},
-    });
+    };
+    if (F4NavigationBenchmarkTrace::enabled()) {
+        const quint64 keySequence = m_nextKeySequence++;
+        message.insert(QStringLiteral("keySequence"), keySequence);
+        message.insert(
+            QStringLiteral("benchmarkTraceId"),
+            QStringLiteral("qt:key:%1:%2")
+                .arg(QCoreApplication::applicationPid())
+                .arg(keySequence));
+    }
+    sendMessage(message);
 }
 
 void QtShellController::sendText(const QString &text, int mods)
@@ -663,6 +1223,23 @@ void QtShellController::sendUiAction(const QVariantMap &action)
 {
     QVariantMap message = action;
     message.insert(QStringLiteral("type"), QStringLiteral("ui_action"));
+    if (F4NavigationBenchmarkTrace::enabled()
+        && !F4NavigationBenchmarkTrace::benchmarkTraceId(message).isValid()) {
+        const quint64 actionSequence = m_nextActionSequence++;
+        message.insert(QStringLiteral("benchmarkTraceId"),
+                       QStringLiteral("qt:action:%1:%2")
+                           .arg(QCoreApplication::applicationPid())
+                           .arg(actionSequence));
+    }
+    sendMessage(message);
+}
+
+void QtShellController::sendPanelCatalogMetadataRequest(
+    const QVariantMap &request)
+{
+    QVariantMap message = request;
+    message.insert(QStringLiteral("type"),
+                   QStringLiteral("panel_catalog_metadata_request"));
     sendMessage(message);
 }
 
@@ -696,8 +1273,17 @@ void QtShellController::onConnected()
         {QStringLiteral("pixelHeight"), m_initialRows * cellHeight},
         {QStringLiteral("cellWidth"), cellWidth},
         {QStringLiteral("cellHeight"), cellHeight},
+        {QStringLiteral("capabilities"), QVariantMap{
+             {QStringLiteral("panelCatalogMetadataV1"), true},
+         }},
     });
     m_helloSent = helloWritten;
+    if (!helloWritten && m_startupError.isEmpty()) {
+        // sendMessage already emitted the fatal diagnostic. Persist the same
+        // startup result so completeInitialHandshake() cannot emit a second
+        // timeout while unwinding that failed hello write.
+        m_startupError = QStringLiteral("Failed to write complete IPC frame");
+    }
     if (F4NavigationBenchmarkTrace::enabled()) {
         F4NavigationBenchmarkTrace::event(
             QStringLiteral("qt.startup.hello.sent"), {}, {
@@ -714,14 +1300,29 @@ void QtShellController::onReadyRead()
 void QtShellController::onDisconnected()
 {
     invalidateDecodeSession();
-    if (!m_connected) {
-        // A failed initial connection is followed by errorOccurred; let its
-        // fatalError handler choose the non-zero exit status instead of racing
-        // it with a successful quit.
+    const bool wasConnected = m_connected;
+    if (m_connected) {
+        m_connected = false;
+        emit connectedChanged();
+    }
+    if (!m_initialHandshakeComplete) {
+        // A peer can accept the TCP connection and close it after receiving
+        // our hello but before its protocol hello is decoded. Treat that as a
+        // startup failure. A queued quit before app.exec() would otherwise be
+        // discarded, leaving an invisible host in its event loop forever.
+        if (m_startupError.isEmpty()) {
+            m_startupError = QStringLiteral(
+                "The f4 core disconnected before completing the protocol handshake");
+            const QString message = m_startupError;
+            QTimer::singleShot(0, this, [this, message]() {
+                emit fatalError(message);
+            });
+        }
         return;
     }
-    m_connected = false;
-    emit connectedChanged();
+    if (!wasConnected) {
+        return;
+    }
     // A loopback peer can disconnect while waitForConnected() is running,
     // before app.exec(). A queued quit works both before and during the loop.
     if (QCoreApplication *application = QCoreApplication::instance()) {
@@ -735,7 +1336,7 @@ void QtShellController::onSocketError(QAbstractSocket::SocketError)
 {
     invalidateDecodeSession();
     const QString message = m_socket->errorString();
-    if (!m_helloSent) {
+    if (!m_initialHandshakeComplete) {
         if (!m_startupError.isEmpty()) {
             return;
         }
@@ -751,19 +1352,22 @@ void QtShellController::onSocketError(QAbstractSocket::SocketError)
 
 bool QtShellController::sendMessage(const QVariantMap &message)
 {
-    const bool traceAction = F4NavigationBenchmarkTrace::enabled()
-        && message.value(QStringLiteral("type")).toString()
-            == QStringLiteral("ui_action");
-    const QVariant traceId = traceAction
+    const QString messageType = message.value(
+        QStringLiteral("type")).toString();
+    const bool traceAction = messageType == QStringLiteral("ui_action");
+    const bool traceKey = messageType == QStringLiteral("key");
+    const bool traceMessage = F4NavigationBenchmarkTrace::enabled()
+        && (traceAction || traceKey);
+    const QVariant traceId = traceMessage
         ? F4NavigationBenchmarkTrace::benchmarkTraceId(message) : QVariant();
-    const quint64 outboundSequence = traceAction ? m_nextSendSequence++ : 0;
+    const quint64 outboundSequence = traceMessage ? m_nextSendSequence++ : 0;
     if (!m_socket || m_socket->state() != QAbstractSocket::ConnectedState) {
         return false;
     }
 
     QElapsedTimer packTimer;
     qint64 packStartedNs = 0;
-    if (traceAction) {
+    if (traceMessage) {
         packStartedNs =
             F4NavigationBenchmarkTrace::monotonicNanoseconds();
         packTimer.start();
@@ -771,32 +1375,52 @@ bool QtShellController::sendMessage(const QVariantMap &message)
     msgpack::sbuffer payload;
     msgpack::packer<msgpack::sbuffer> packer(payload);
     packVariant(packer, message);
-    const qint64 packDurationNs = traceAction
+    const qint64 packDurationNs = traceMessage
         ? packTimer.nsecsElapsed() : 0;
-    const qint64 packCompletedNs = traceAction
+    const qint64 packCompletedNs = traceMessage
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
     const QString actionName = traceAction
         ? message.value(QStringLiteral("action")).toString() : QString();
-    const auto logPack = [&]() {
-        const QVariantMap fields = {
+    const QString traceEventPrefix = traceAction
+        ? QStringLiteral("qt.action") : QStringLiteral("qt.key");
+    const auto traceFields = [&]() {
+        QVariantMap fields = {
             {QStringLiteral("outboundSequence"), outboundSequence},
-            {QStringLiteral("action"), actionName},
-            {QStringLiteral("payloadBytes"),
-             static_cast<qulonglong>(payload.size())},
+            {QStringLiteral("messageType"), messageType},
         };
+        if (traceAction) {
+            fields.insert(QStringLiteral("action"), actionName);
+        } else if (traceKey) {
+            fields.insert(QStringLiteral("keySequence"),
+                          message.value(QStringLiteral("keySequence")));
+            fields.insert(QStringLiteral("vk"),
+                          message.value(QStringLiteral("vk")));
+            fields.insert(QStringLiteral("down"),
+                          message.value(QStringLiteral("down")));
+            fields.insert(QStringLiteral("repeat"),
+                          message.value(QStringLiteral("repeat")));
+            fields.insert(QStringLiteral("mods"),
+                          message.value(QStringLiteral("mods")));
+        }
+        return fields;
+    };
+    const auto logPack = [&]() {
+        QVariantMap fields = traceFields();
+        fields.insert(QStringLiteral("payloadBytes"),
+                      static_cast<qulonglong>(payload.size()));
         F4NavigationBenchmarkTrace::eventAt(
-            QStringLiteral("qt.action.pack.begin"), packStartedNs,
+            traceEventPrefix + QStringLiteral(".pack.begin"), packStartedNs,
             traceId, fields);
         QVariantMap completedFields = fields;
         completedFields.insert(QStringLiteral("durationNs"),
                                packDurationNs);
         F4NavigationBenchmarkTrace::eventAt(
-            QStringLiteral("qt.action.pack.end"), packCompletedNs,
+            traceEventPrefix + QStringLiteral(".pack.end"), packCompletedNs,
             traceId, completedFields);
     };
 
     if (payload.size() > MaxMessageSize) {
-        if (traceAction) {
+        if (traceMessage) {
             logPack();
         }
         emit fatalError(QStringLiteral("Message too large for f4 Qt protocol"));
@@ -809,35 +1433,37 @@ bool QtShellController::sendMessage(const QVariantMap &message)
 
     QElapsedTimer writeTimer;
     qint64 writeStartedNs = 0;
-    if (traceAction) {
+    if (traceMessage) {
         writeStartedNs =
             F4NavigationBenchmarkTrace::monotonicNanoseconds();
         writeTimer.start();
     }
     const qint64 written = m_socket->write(frame);
     const bool complete = written == frame.size();
-    const qint64 socketWriteDurationNs = traceAction
+    const qint64 socketWriteDurationNs = traceMessage
         ? writeTimer.nsecsElapsed() : 0;
     QElapsedTimer flushTimer;
-    if (traceAction) {
+    qint64 flushStartedNs = 0;
+    if (traceMessage) {
+        flushStartedNs =
+            F4NavigationBenchmarkTrace::monotonicNanoseconds();
         flushTimer.start();
     }
     const bool flushed = complete && m_socket->flush();
-    const qint64 flushDurationNs = traceAction
+    const qint64 flushDurationNs = traceMessage
         ? flushTimer.nsecsElapsed() : 0;
-    const qint64 writeDurationNs = traceAction
-        ? writeTimer.nsecsElapsed() : 0;
-    const qint64 writeCompletedNs = traceAction
+    const qint64 flushCompletedNs = traceMessage
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
-    if (traceAction) {
+    const qint64 writeDurationNs = traceMessage
+        ? writeTimer.nsecsElapsed() : 0;
+    const qint64 writeCompletedNs = traceMessage
+        ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
+    if (traceMessage) {
         logPack();
-        const QVariantMap fields = {
-            {QStringLiteral("outboundSequence"), outboundSequence},
-            {QStringLiteral("action"), actionName},
-            {QStringLiteral("wireBytes"), frame.size()},
-        };
+        QVariantMap fields = traceFields();
+        fields.insert(QStringLiteral("wireBytes"), frame.size());
         F4NavigationBenchmarkTrace::eventAt(
-            QStringLiteral("qt.action.write.begin"), writeStartedNs,
+            traceEventPrefix + QStringLiteral(".write.begin"), writeStartedNs,
             traceId, fields);
         QVariantMap completedFields = fields;
         completedFields.insert(QStringLiteral("writtenBytes"), written);
@@ -850,8 +1476,20 @@ bool QtShellController::sendMessage(const QVariantMap &message)
         completedFields.insert(QStringLiteral("durationNs"),
                                writeDurationNs);
         F4NavigationBenchmarkTrace::eventAt(
-            QStringLiteral("qt.action.write.end"), writeCompletedNs,
+            traceEventPrefix + QStringLiteral(".write.end"), writeCompletedNs,
             traceId, completedFields);
+
+        QVariantMap flushFields = fields;
+        flushFields.insert(QStringLiteral("writtenBytes"), written);
+        flushFields.insert(QStringLiteral("attempted"), complete);
+        F4NavigationBenchmarkTrace::eventAt(
+            traceEventPrefix + QStringLiteral(".flush.begin"),
+            flushStartedNs, traceId, flushFields);
+        flushFields.insert(QStringLiteral("success"), flushed);
+        flushFields.insert(QStringLiteral("durationNs"), flushDurationNs);
+        F4NavigationBenchmarkTrace::eventAt(
+            traceEventPrefix + QStringLiteral(".flush.end"),
+            flushCompletedNs, traceId, flushFields);
     }
     if (written != frame.size()) {
         emit fatalError(QStringLiteral("Failed to write complete IPC frame"));
@@ -1057,6 +1695,19 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
 
     const QVariantMap message = decoded.toMap();
     const QString messageType = message.value(QStringLiteral("type")).toString();
+    if (messageType == QStringLiteral("hello")) {
+        bool protocolOK = false;
+        const int protocol = message.value(QStringLiteral("protocol"))
+                                 .toInt(&protocolOK);
+        if (!protocolOK || protocol != ExtUiProtocolVersion
+            || message.value(QStringLiteral("nonce")).toString()
+                != m_nonce) {
+            failProtocol(QStringLiteral(
+                "Incompatible f4 Qt protocol handshake"));
+            return;
+        }
+        m_initialHandshakeComplete = true;
+    }
     const bool traceEnabled = F4NavigationBenchmarkTrace::enabled();
     const QVariant traceId = traceEnabled
         ? F4NavigationBenchmarkTrace::benchmarkTraceId(message) : QVariant();
@@ -1073,6 +1724,11 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
     qint64 sceneSignalStartedNs = 0;
     qint64 presentationCompletedNs = 0;
     qint64 sceneSignalCompletedNs = 0;
+    qint64 catalogValidationDurationNs = 0;
+    qint64 catalogScenePatchDurationNs = 0;
+    qint64 compactApplyingDurationNs = 0;
+    qint64 panelCatalogSignalDurationNs = 0;
+    qint64 catalogPresentationSignalDurationNs = 0;
     if (messageType == QStringLiteral("scene")) {
         m_scene = message;
         QElapsedTimer presentationTimer;
@@ -1108,10 +1764,175 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
             sceneSignalTimer.start();
         }
         emit sceneChanged();
+        emit presentationSceneChanged();
         if (traceEnabled) {
             sceneSignalDurationNs = sceneSignalTimer.nsecsElapsed();
             sceneSignalCompletedNs =
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        }
+    } else if (messageType == QStringLiteral("panel_catalog")) {
+        int side = -1;
+        QVariantMap panel;
+        QElapsedTimer catalogStageTimer;
+        if (traceEnabled) {
+            catalogStageTimer.start();
+        }
+        const bool validCatalog = validPanelCatalogEnvelope(
+            message, m_scene, &side, &panel);
+        if (traceEnabled) {
+            catalogValidationDurationNs = catalogStageTimer.nsecsElapsed();
+        }
+        if (validCatalog) {
+            if (traceEnabled) {
+                catalogStageTimer.restart();
+            }
+            QVariantMap nextScene = m_scene;
+            QVariantMap nextPresentationScene = m_presentationScene;
+            const QVariantMap presentationPanel =
+                withoutNativePanelPayload(panel);
+            const QVariantMap presentationPatch =
+                compactPresentationPatch(message, presentationPanel);
+            bool activePanelOK = false;
+            const int activePanel = message.value(
+                QStringLiteral("activePanel")).toInt(&activePanelOK);
+            if (activePanelOK
+                && replaceShellPanel(nextScene, side, panel)
+                && replaceShellPanel(nextPresentationScene, side,
+                                     presentationPanel)) {
+                applyPanelCatalogCompactFields(nextScene, message,
+                                               activePanel);
+                applyPanelCatalogCompactFields(nextPresentationScene,
+                                               message, activePanel);
+                m_scene = std::move(nextScene);
+                m_presentationScene = std::move(nextPresentationScene);
+                if (traceEnabled) {
+                    catalogScenePatchDurationNs =
+                        catalogStageTimer.nsecsElapsed();
+                }
+
+                if (message.contains(QStringLiteral("commandLine"))) {
+                    const QVariantMap nextCommandLine = message.value(
+                        QStringLiteral("commandLine")).toMap();
+                    if (nextCommandLine != m_commandLine) {
+                        m_commandLine = nextCommandLine;
+                        emit commandLineChanged();
+                    }
+                }
+                if (message.contains(QStringLiteral("menus"))) {
+                    const QVariantList nextCommandMenus = message.value(
+                        QStringLiteral("menus")).toList();
+                    if (nextCommandMenus != m_commandMenus) {
+                        m_commandMenus = nextCommandMenus;
+                        emit commandMenusChanged();
+                    }
+                }
+
+                // The bridge installs the authoritative base catalog before
+                // QML observes its compact chrome/presentation counterpart.
+                if (traceEnabled) {
+                    catalogStageTimer.restart();
+                }
+                emit compactMessageApplying(message);
+                if (traceEnabled) {
+                    compactApplyingDurationNs =
+                        catalogStageTimer.nsecsElapsed();
+                    catalogStageTimer.restart();
+                }
+                emit panelCatalogChanged(panel);
+                if (traceEnabled) {
+                    panelCatalogSignalDurationNs =
+                        catalogStageTimer.nsecsElapsed();
+                    catalogStageTimer.restart();
+                }
+                emit compactPresentationChanged(presentationPatch);
+                if (traceEnabled) {
+                    catalogPresentationSignalDurationNs =
+                        catalogStageTimer.nsecsElapsed();
+                }
+            }
+        }
+    } else if (messageType == QStringLiteral("panel_chrome")) {
+        int activePanel = -1;
+        if (validPanelChromeEnvelope(message, &activePanel)) {
+            applyPanelCatalogCompactFields(m_scene, message, activePanel);
+            applyPanelCatalogCompactFields(m_presentationScene, message,
+                                           activePanel);
+            if (message.contains(QStringLiteral("commandLine"))) {
+                const QVariantMap nextCommandLine = message.value(
+                    QStringLiteral("commandLine")).toMap();
+                if (nextCommandLine != m_commandLine) {
+                    m_commandLine = nextCommandLine;
+                    emit commandLineChanged();
+                }
+            }
+            if (message.contains(QStringLiteral("menus"))) {
+                const QVariantList nextCommandMenus = message.value(
+                    QStringLiteral("menus")).toList();
+                if (nextCommandMenus != m_commandMenus) {
+                    m_commandMenus = nextCommandMenus;
+                    emit commandMenusChanged();
+                }
+            }
+            // Keep both authoritative caches current without invalidating
+            // the complete QML presentation. Only the validated row-free
+            // projection crosses into QML; command line and menus retain
+            // their dedicated properties.
+            emit compactPresentationChanged(
+                compactPresentationPatch(message));
+        }
+    } else if (messageType == QStringLiteral("panel_activation")) {
+        bool sideOK = false;
+        bool revisionOK = false;
+        const int activePanel = message.value(QStringLiteral("activePanel"))
+                                    .toInt(&sideOK);
+        const qulonglong revision = message.value(QStringLiteral("revision"))
+                                        .toULongLong(&revisionOK);
+        const bool shellTitleOK = !message.contains(
+            QStringLiteral("shellTitle"))
+            || message.value(QStringLiteral("shellTitle")).metaType().id()
+                == QMetaType::QString;
+        const bool commandLineOK = !message.contains(
+            QStringLiteral("commandLine"))
+            || message.value(QStringLiteral("commandLine")).metaType().id()
+                == QMetaType::QVariantMap;
+        if (sideOK && activePanel >= 0 && activePanel <= 1
+            && revisionOK && shellTitleOK && commandLineOK
+            && revision > m_panelActivationRevision) {
+            m_panelActivationRevision = revision;
+            m_scene = applyPanelActivationPatch(std::move(m_scene),
+                                                activePanel);
+            m_presentationScene = applyPanelActivationPatch(
+                std::move(m_presentationScene), activePanel);
+            QVariantMap compactFields;
+            if (message.contains(QStringLiteral("shellTitle"))) {
+                compactFields.insert(QStringLiteral("shellTitle"),
+                                     message.value(QStringLiteral("shellTitle")));
+            }
+            if (message.contains(QStringLiteral("commandLine"))) {
+                compactFields.insert(QStringLiteral("commandLine"),
+                                     message.value(QStringLiteral("commandLine")));
+            }
+            for (auto it = message.cbegin(); it != message.cend(); ++it) {
+                if (it.key().startsWith(QStringLiteral("benchmark"))) {
+                    compactFields.insert(it.key(), it.value());
+                }
+            }
+            applyPanelCatalogCompactFields(m_scene, compactFields,
+                                           activePanel);
+            applyPanelCatalogCompactFields(m_presentationScene,
+                                           compactFields, activePanel);
+            if (message.contains(QStringLiteral("commandLine"))) {
+                const QVariantMap nextCommandLine = message.value(
+                    QStringLiteral("commandLine")).toMap();
+                if (nextCommandLine != m_commandLine) {
+                    m_commandLine = nextCommandLine;
+                    emit commandLineChanged();
+                }
+            }
+            // The bridge acknowledgement precedes QML's visual update so
+            // pending Gallery intents observe the authoritative active side.
+            emit compactMessageApplying(message);
+            emit panelActivationChanged(activePanel, revision);
         }
     } else if (messageType == QStringLiteral("command_line")) {
         const QVariant commandLine = message.value(QStringLiteral("commandLine"));
@@ -1230,6 +2051,16 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                  sceneSignalDurationNs},
                 {QStringLiteral("messageReceivedDurationNs"),
                  messageSignalDurationNs},
+                {QStringLiteral("catalogValidationDurationNs"),
+                 catalogValidationDurationNs},
+                {QStringLiteral("catalogScenePatchDurationNs"),
+                 catalogScenePatchDurationNs},
+                {QStringLiteral("compactApplyingDurationNs"),
+                 compactApplyingDurationNs},
+                {QStringLiteral("panelCatalogSignalDurationNs"),
+                 panelCatalogSignalDurationNs},
+                {QStringLiteral("catalogPresentationSignalDurationNs"),
+                 catalogPresentationSignalDurationNs},
                 {QStringLiteral("durationNs"), applyDurationNs},
             });
     }
@@ -1329,6 +2160,9 @@ void QtShellController::failProtocol(const QString &message)
         return;
     }
     m_protocolFailed = true;
+    if (!m_initialHandshakeComplete && m_startupError.isEmpty()) {
+        m_startupError = message;
+    }
     invalidateDecodeSession();
     emit fatalError(message);
     if (m_socket) {

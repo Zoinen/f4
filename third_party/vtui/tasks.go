@@ -19,6 +19,13 @@ func (ctx *TaskContext) RunOnUI(fn func()) {
 	FrameManager.PostTask(fn)
 }
 
+// RunOnUIWithRedrawDecision is the explicit unchanged-task variant of RunOnUI.
+// Returning false proves that the callback updated bookkeeping only; an older
+// or concurrent redraw is still preserved by FrameManager.
+func (ctx *TaskContext) RunOnUIWithRedrawDecision(fn func() bool) {
+	FrameManager.PostTaskWithRedrawDecision(fn)
+}
+
 // RunAsync starts a background goroutine and provides it with a TaskContext.
 // This is the foundation for background plugins, VFS operations, and heavy logic.
 func RunAsync(worker func(ctx *TaskContext)) *TaskContext {

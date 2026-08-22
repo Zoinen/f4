@@ -289,7 +289,10 @@ func (pf *PanelsFrame) queueProcessEnvironment(generation uint64, changes []vfs.
 	}
 }
 
-func (pf *PanelsFrame) catchUpProcessEnvironment(flushIfIdle bool) {
+// catchUpProcessEnvironment reports whether it started a private shell update.
+// Queuing generation bookkeeping alone is not presentational; starting an
+// update may mute a visible terminal and therefore conservatively owns redraw.
+func (pf *PanelsFrame) catchUpProcessEnvironment(flushIfIdle bool) bool {
 	pf.processEnvironmentMu.Lock()
 	after := pf.processEnvironmentGeneration
 	if pf.pendingProcessEnvironmentGeneration > after {
@@ -305,8 +308,9 @@ func (pf *PanelsFrame) catchUpProcessEnvironment(flushIfIdle bool) {
 	// example after an earlier write failure), even when there is no newer
 	// process generation to queue.
 	if flushIfIdle {
-		pf.flushProcessEnvironment()
+		return pf.flushProcessEnvironment()
 	}
+	return false
 }
 
 func (pf *PanelsFrame) localShellStarted(inheritedGeneration uint64) {
@@ -327,10 +331,10 @@ func (pf *PanelsFrame) isLocalPTY(pty PtyBackend) bool {
 	return pf.pty == pty
 }
 
-func (pf *PanelsFrame) flushProcessEnvironment() {
+func (pf *PanelsFrame) flushProcessEnvironment() bool {
 	pf.processEnvironmentWriteMu.Lock()
 	defer pf.processEnvironmentWriteMu.Unlock()
-	pf.flushProcessEnvironmentLocked(pf.localPTY())
+	return pf.flushProcessEnvironmentLocked(pf.localPTY())
 }
 
 func (pf *PanelsFrame) flushProcessEnvironmentLocked(pty PtyBackend) bool {
@@ -496,6 +500,14 @@ var processEnvironmentRunOnUI = func(task func()) {
 	task()
 }
 
+var processEnvironmentRunOnUIWithRedrawDecision = func(task func() bool) {
+	if frameManager := vtui.FrameManager; frameManager != nil {
+		frameManager.PostTaskWithRedrawDecision(task)
+		return
+	}
+	task()
+}
+
 func (pf *PanelsFrame) processEnvironmentShellOutput(data []byte) {
 	pf.processEnvironmentMu.Lock()
 	combined := append(append([]byte(nil), pf.processEnvironmentOutputTail...), data...)
@@ -543,7 +555,9 @@ func (pf *PanelsFrame) processEnvironmentShellOutput(data []byte) {
 			pf.noteLocalShellBusy(true)
 		case marker == "D" || strings.HasPrefix(marker, "D;"):
 			pf.noteLocalShellBusy(false)
-			processEnvironmentRunOnUI(func() { pf.catchUpProcessEnvironment(true) })
+			processEnvironmentRunOnUIWithRedrawDecision(func() bool {
+				return pf.catchUpProcessEnvironment(true)
+			})
 		case strings.HasPrefix(marker, "E;"):
 			parts := strings.Split(strings.TrimPrefix(marker, "E;"), ";")
 			if len(parts) == 2 && (parts[1] == "0" || parts[1] == "1") {

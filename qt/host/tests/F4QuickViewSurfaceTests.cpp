@@ -34,6 +34,8 @@ class TestGrid : public QQuickItem
                WRITE setInputMethodForwardingEnabled)
     Q_PROPERTY(bool terminalInputEnabled READ terminalInputEnabled
                WRITE setTerminalInputEnabled)
+    Q_PROPERTY(bool renderingEnabled READ renderingEnabled
+               WRITE setRenderingEnabled)
 
 public:
     using QQuickItem::QQuickItem;
@@ -58,6 +60,8 @@ public:
     }
     bool terminalInputEnabled() const { return m_terminalInputEnabled; }
     void setTerminalInputEnabled(bool enabled) { m_terminalInputEnabled = enabled; }
+    bool renderingEnabled() const { return m_renderingEnabled; }
+    void setRenderingEnabled(bool enabled) { m_renderingEnabled = enabled; }
 
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
     Q_INVOKABLE void sendClipboardPaste() {}
@@ -73,6 +77,7 @@ private:
     bool m_pointerInputEnabled = false;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    bool m_renderingEnabled = true;
 };
 
 class TestShell final : public QObject
@@ -105,6 +110,18 @@ public:
     }
     void clearActions() { actions.clear(); }
     void clearKeyEvents() { keyEvents.clear(); }
+    void activatePanel(int side, qulonglong revision)
+    {
+        emit panelActivationChanged(side, revision);
+    }
+    void deliverMessage(const QVariantMap &message)
+    {
+        emit messageReceived(message);
+    }
+    void deliverCompactPresentation(const QVariantMap &patch)
+    {
+        emit compactPresentationChanged(patch);
+    }
 
     Q_INVOKABLE void sendUiAction(const QVariantMap &action)
     {
@@ -128,6 +145,9 @@ public:
 signals:
     void sceneChanged();
     void commandLineChanged();
+    void panelActivationChanged(int activePanel, qulonglong revision);
+    void compactPresentationChanged(const QVariantMap &patch);
+    void messageReceived(const QVariantMap &message);
     void uiActionSent(const QVariantMap &action);
 
 private:
@@ -406,10 +426,14 @@ class F4QuickViewSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void semanticSceneGatesOnlyGridRendering();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void readyUnifiedRendererLoaderIsVisible();
     void rendererChoicesUseProductOrderAndShortcuts();
     void coverUncoverPreservesFilePanelAndRendererObjects();
+    void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
+    void compactCatalogUpdatesOnlyChangedPanelPresentation();
+    void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
     void clickActivatesCoveredSideAndFocusStaysOutOfHiddenPanel();
@@ -424,6 +448,27 @@ void F4QuickViewSurfaceTests::initTestCase()
 {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4QuickViewSurfaceTests::semanticSceneGatesOnlyGridRendering()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    auto *grid = fixture.item<TestGrid>(QStringLiteral("vtuiGrid"));
+    QVERIFY(grid);
+
+    // The compatibility grid remains present and callable as the global
+    // keyboard/IME sink underneath native semantic surfaces; only its costly
+    // texture rendering is disabled.
+    QVERIFY(grid->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(!grid->renderingEnabled(), 3000);
+
+    QVariantMap fallbackScene = shellScene();
+    fallbackScene.insert(QStringLiteral("presentation"),
+                         QStringLiteral("text"));
+    fixture.shell.setScene(fallbackScene);
+    QTRY_VERIFY_WITH_TIMEOUT(grid->renderingEnabled(), 3000);
+    QVERIFY(grid->isVisible());
 }
 
 void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers()
@@ -579,6 +624,284 @@ void F4QuickViewSurfaceTests::coverUncoverPreservesFilePanelAndRendererObjects()
     QCOMPARE(fixture.item(QStringLiteral("galleryPanelContent-0")), loader);
     QCOMPARE(fixture.item(QStringLiteral("panelRendererFailure-0")), failure);
     QVERIFY(failure->isVisible());
+}
+
+void F4QuickViewSurfaceTests::compactActivationPreservesPanelObjectsAndRebindsOnlyFocus()
+{
+    QuickViewFixture fixture(shellScene({}, 1), true);
+    QVERIFY(fixture.window);
+
+    QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
+    QQuickItem *const rightPanel = fixture.item(QStringLiteral("filePanel-1"));
+    QQuickItem *const leftLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QQuickItem *const rightLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-1"));
+    QVERIFY(leftPanel);
+    QVERIFY(rightPanel);
+    QVERIFY(leftLoader);
+    QVERIFY(rightLoader);
+    QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightLoader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const leftHost = leftLoader->property("item").value<QObject *>();
+    QObject *const rightHost = rightLoader->property("item").value<QObject *>();
+    QVERIFY(!leftHost->property("panelActive").toBool());
+    QVERIFY(rightHost->property("panelActive").toBool());
+
+    QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
+    fixture.shell.activatePanel(0, 1);
+
+    QTRY_VERIFY_WITH_TIMEOUT(leftHost->property("panelActive").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!rightHost->property("panelActive").toBool(),
+                             3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
+    QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
+    QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+}
+
+void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+
+    QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
+    QQuickItem *const rightPanel = fixture.item(QStringLiteral("filePanel-1"));
+    QQuickItem *const pathTitle = fixture.item(
+        QStringLiteral("panelPathTitle-0"));
+    QQuickItem *const leftLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QQuickItem *const rightLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-1"));
+    QVERIFY(leftPanel);
+    QVERIFY(rightPanel);
+    QVERIFY(pathTitle);
+    QVERIFY(leftLoader);
+    QVERIFY(rightLoader);
+    QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightLoader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const leftHost = leftLoader->property("item").value<QObject *>();
+    QObject *const rightHost = rightLoader->property("item").value<QObject *>();
+    const QVariantMap initialRightPanel =
+        rightPanel->property("panel").toMap();
+    QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
+    QSignalSpy leftPanelChanged(leftPanel, SIGNAL(panelChanged()));
+    QSignalSpy rightPanelChanged(rightPanel, SIGNAL(panelChanged()));
+
+    QVariantMap projectedPanel = panel(0, true);
+    projectedPanel.remove(QStringLiteral("entries"));
+    projectedPanel.remove(QStringLiteral("highlightStyles"));
+    projectedPanel.insert(QStringLiteral("path"), QStringLiteral("D:/next"));
+    projectedPanel.insert(QStringLiteral("title"), QStringLiteral("D:/next"));
+    projectedPanel.insert(QStringLiteral("loading"), true);
+    projectedPanel.insert(QStringLiteral("catalogRevision"), qulonglong(9));
+    projectedPanel.insert(QStringLiteral("cursor"), 3);
+    projectedPanel.insert(QStringLiteral("cursorEntryId"),
+                          QStringLiteral("entry-next"));
+    projectedPanel.insert(QStringLiteral("galleryLayoutMode"),
+                          QStringLiteral("details"));
+    projectedPanel.insert(QStringLiteral("galleryColumnCount"), 3);
+    projectedPanel.insert(QStringLiteral("galleryDensity"), 28);
+    projectedPanel.insert(QStringLiteral("sortModeName"),
+                          QStringLiteral("size"));
+    projectedPanel.insert(QStringLiteral("sortReverse"), true);
+    projectedPanel.insert(QStringLiteral("fastFind"), true);
+    projectedPanel.insert(QStringLiteral("fastFindText"),
+                          QStringLiteral("next"));
+    projectedPanel.insert(QStringLiteral("selectedCount"), 2);
+    projectedPanel.insert(QStringLiteral("totalCount"), 9);
+    const QVariantMap compactTabs = {
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("tabs"), QVariantList{}},
+        {QStringLiteral("activeText"), QStringLiteral("D:/next")},
+    };
+
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("panel_catalog")},
+        {QStringLiteral("activePanel"), 0},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+        {QStringLiteral("workspaceTabs"), compactTabs},
+    });
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        leftPanel->property("panel").toMap().value(
+            QStringLiteral("path")).toString(),
+        QStringLiteral("D:/next"), 3000);
+    QCOMPARE(pathTitle->property("text").toString(),
+             QStringLiteral("D:/next"));
+    QCOMPARE(leftPanel->property("backendLoading").toBool(), true);
+    QCOMPARE(leftHost->property("panel").toMap(), projectedPanel);
+    QCOMPARE(leftHost->property("fastFindActive").toBool(), true);
+    QCOMPARE(fixture.window->property("workspaceTabs").toMap(), compactTabs);
+    QCOMPARE(fixture.window->property(
+                 "leftPanelPresentationOverride").toMap(), projectedPanel);
+    QVERIFY(!fixture.window->property(
+                 "leftPanelPresentationOverride").toMap().contains(
+                     QStringLiteral("entries")));
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(leftPanelChanged.size(), 1);
+    QCOMPARE(rightPanelChanged.size(), 0);
+    QCOMPARE(rightPanel->property("panel").toMap(), initialRightPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
+    QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
+    QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+
+    // The full protocol signal remains available to native C++ consumers,
+    // but QML must never inspect its catalog payload or use it as chrome.
+    QVariantMap ignoredPanel = projectedPanel;
+    ignoredPanel.insert(QStringLiteral("path"),
+                        QStringLiteral("D:/raw-message-ignored"));
+    fixture.shell.deliverMessage({
+        {QStringLiteral("type"), QStringLiteral("panel_catalog")},
+        {QStringLiteral("activePanel"), 0},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), ignoredPanel},
+        {QStringLiteral("workspaceTabs"), QVariantMap{
+             {QStringLiteral("activeText"),
+              QStringLiteral("raw-message-ignored")},
+         }},
+    });
+    QCoreApplication::processEvents();
+    QCOMPARE(pathTitle->property("text").toString(),
+             QStringLiteral("D:/next"));
+    QCOMPARE(fixture.window->property("workspaceTabs").toMap(), compactTabs);
+    QCOMPARE(leftPanelChanged.size(), 1);
+    QCOMPARE(rightPanelChanged.size(), 0);
+
+    // A complete authoritative scene clears both current-only projections.
+    QVariantMap authoritativeScene = shellScene({}, 0);
+    QVariantMap authoritativeShell = authoritativeScene.value(
+        QStringLiteral("shell")).toMap();
+    QVariantList authoritativePanels = authoritativeShell.value(
+        QStringLiteral("panels")).toList();
+    QVariantMap authoritativeLeft = authoritativePanels.at(0).toMap();
+    authoritativeLeft.insert(QStringLiteral("path"),
+                             QStringLiteral("D:/authoritative"));
+    authoritativeLeft.insert(QStringLiteral("title"),
+                             QStringLiteral("D:/authoritative"));
+    authoritativePanels[0] = authoritativeLeft;
+    authoritativeShell.insert(QStringLiteral("panels"),
+                              authoritativePanels);
+    authoritativeScene.insert(QStringLiteral("shell"), authoritativeShell);
+    fixture.shell.setScene(authoritativeScene);
+    QTRY_COMPARE_WITH_TIMEOUT(pathTitle->property("text").toString(),
+                              QStringLiteral("D:/authoritative"), 3000);
+    QVERIFY(fixture.window->property(
+                "leftPanelPresentationOverride").isNull());
+    QVERIFY(fixture.window->property(
+                "rightPanelPresentationOverride").isNull());
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
+    QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
+    QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+}
+
+void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels()
+{
+    const auto workspaceTabs = [](const QString &id, const QString &text) {
+        return QVariantMap{
+            {QStringLiteral("visible"), true},
+            {QStringLiteral("tabs"), QVariantList{
+                 QVariantMap{
+                     {QStringLiteral("id"), id},
+                     {QStringLiteral("text"), text},
+                     {QStringLiteral("active"), true},
+                     {QStringLiteral("closable"), false},
+                 },
+             }},
+            {QStringLiteral("newTab"), QVariantMap{}},
+            {QStringLiteral("counter"), QVariantMap{}},
+        };
+    };
+
+    QVariantMap initialScene = shellScene({}, 0);
+    initialScene.insert(QStringLiteral("workspaceTabs"),
+                        workspaceTabs(QStringLiteral("workspace-old"),
+                                      QStringLiteral("Old")));
+    QuickViewFixture fixture(initialScene, true);
+    QVERIFY(fixture.window);
+
+    QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
+    QQuickItem *const rightPanel = fixture.item(QStringLiteral("filePanel-1"));
+    QQuickItem *const leftLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QQuickItem *const rightLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-1"));
+    QVERIFY(leftPanel);
+    QVERIFY(rightPanel);
+    QVERIFY(leftLoader);
+    QVERIFY(rightLoader);
+    QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightLoader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const leftHost = leftLoader->property("item").value<QObject *>();
+    QObject *const rightHost = rightLoader->property("item").value<QObject *>();
+    const QVariantMap initialTabs = workspaceTabs(
+        QStringLiteral("workspace-old"), QStringLiteral("Old"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.window->property("workspaceTabs").toMap() == initialTabs,
+        3000);
+
+    QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
+    const QVariantMap compactTabs = workspaceTabs(
+        QStringLiteral("workspace-compact"), QStringLiteral("Compact"));
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("panel_chrome")},
+        {QStringLiteral("activePanel"), 0},
+        {QStringLiteral("workspaceTabs"), compactTabs},
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.window->property("workspaceTabs").toMap() == compactTabs,
+        3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(fixture.window->property("workspaceTabsOverride").toMap(),
+             compactTabs);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
+    QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
+    QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+
+    // Raw protocol messages remain observable to native consumers, but QML
+    // accepts chrome only from the controller's validated compact signal.
+    fixture.shell.deliverMessage({
+        {QStringLiteral("type"), QStringLiteral("panel_chrome")},
+        {QStringLiteral("activePanel"), 0},
+        {QStringLiteral("workspaceTabs"),
+         workspaceTabs(QStringLiteral("workspace-rejected"),
+                       QStringLiteral("Rejected"))},
+        {QStringLiteral("side"), 0},
+    });
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.window->property("workspaceTabs").toMap(), compactTabs);
+    QCOMPARE(fixture.window->property("workspaceTabsOverride").toMap(),
+             compactTabs);
+
+    // A complete authoritative scene clears the scalar override and resumes
+    // the normal presentation binding without replacing either panel host.
+    QVariantMap nextScene = shellScene({}, 0);
+    nextScene.insert(QStringLiteral("workspaceTabs"),
+                     workspaceTabs(QStringLiteral("workspace-scene"),
+                                   QStringLiteral("Scene")));
+    fixture.shell.setScene(nextScene);
+    const QVariantMap sceneTabs = workspaceTabs(
+        QStringLiteral("workspace-scene"), QStringLiteral("Scene"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.window->property("workspaceTabs").toMap() == sceneTabs,
+        3000);
+    QVERIFY(fixture.window->property("workspaceTabsOverride").isNull());
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
+    QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
+    QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
 }
 
 void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()

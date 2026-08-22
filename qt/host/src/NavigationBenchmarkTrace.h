@@ -11,6 +11,10 @@
 #include <ctime>
 #include <utility>
 
+#if defined(Q_OS_WIN)
+#include <qt_windows.h>
+#endif
+
 // Lightweight, opt-in events for measuring one native navigation across the
 // Qt transport, controller, Gallery bridge and rendered-frame boundaries.
 // Keep this header-only so each layer can use the same schema without adding
@@ -29,6 +33,23 @@ inline bool enabled()
 
 inline qint64 monotonicNanoseconds()
 {
+#if defined(Q_OS_WIN)
+    LARGE_INTEGER counter{};
+    static const qint64 frequency = []() {
+        LARGE_INTEGER value{};
+        return QueryPerformanceFrequency(&value) && value.QuadPart > 0
+            ? static_cast<qint64>(value.QuadPart) : qint64(0);
+    }();
+    if (QueryPerformanceCounter(&counter)
+        && frequency > 0) {
+        // Converting the quotient and remainder separately avoids overflowing
+        // a 64-bit counter when scaling long system uptimes to nanoseconds.
+        const qint64 wholeSeconds = counter.QuadPart / frequency;
+        const qint64 remainder = counter.QuadPart % frequency;
+        return wholeSeconds * 1000000000LL
+            + remainder * 1000000000LL / frequency;
+    }
+#endif
 #if defined(Q_OS_DARWIN) || defined(Q_OS_LINUX)
     // The Go side uses clock_gettime(CLOCK_MONOTONIC_RAW), so using that same
     // kernel clock here makes timestamps directly comparable across the two

@@ -7,9 +7,11 @@ import (
 	"golang.org/x/term"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -200,22 +202,32 @@ func (s *AppScreen) NeedsAttention() bool {
 	return top.IsModal() && !suppressed && top.GetType() != TypeMenu
 }
 
+type postedTaskExecution struct {
+	redrawDecisionSet bool
+	needsRedraw       bool
+	benchmarkTaskID   uint64
+	benchmarkSource   string
+}
+
 // frameManager manages multiple screens and the main application loop.
 type frameManager struct {
 	Screens           []*AppScreen
 	ActiveIdx         int
 	activationHistory []*AppScreen
 
-	frames         []Frame // Points to the active screen's frame stack
-	scr            *ScreenBuf
-	RedrawChan     chan struct{}
-	TaskChan       chan func()
-	taskChanIn     chan func()
-	EventChan      chan *vtinput.InputEvent
-	EventFilter    func(*vtinput.InputEvent) bool
-	injectedEvents []*vtinput.InputEvent
-	injectedMu     sync.Mutex
-	OnRender       func(scr *ScreenBuf)
+	frames            []Frame // Points to the active screen's frame stack
+	scr               *ScreenBuf
+	RedrawChan        chan struct{}
+	redrawGeneration  atomic.Uint64
+	TaskChan          chan func()
+	taskChanIn        chan func()
+	currentPostedTask *postedTaskExecution
+	benchmarkTaskSeq  atomic.Uint64
+	EventChan         chan *vtinput.InputEvent
+	EventFilter       func(*vtinput.InputEvent) bool
+	injectedEvents    []*vtinput.InputEvent
+	injectedMu        sync.Mutex
+	OnRender          func(scr *ScreenBuf)
 
 	pendingFar2l map[uint8]chan *vtinput.Far2lStack
 	far2lMu      sync.Mutex
@@ -851,11 +863,53 @@ func (fm *frameManager) HardRefresh() {
 
 // Redraw triggers an asynchronous redraw request.
 func (fm *frameManager) Redraw() {
+	generation := fm.redrawGeneration.Add(1)
+	queued := fm.notifyRedraw()
+	if frameManagerBenchmarkEnabled() {
+		source := frameManagerBenchmarkCaller(2)
+		frameManagerBenchmarkEvent("redraw.requested",
+			"generation", generation,
+			"notificationQueued", queued,
+			"queueDepth", len(fm.RedrawChan),
+			"source", source)
+	}
+}
+
+// notifyRedraw wakes the render loop without claiming a new redraw generation.
+// It is used when a request races a deferred render after incrementing the
+// generation while RedrawChan was still occupied by an older notification.
+func (fm *frameManager) notifyRedraw() bool {
 	select {
 	case fm.RedrawChan <- struct{}{}:
 		DebugLog("FM: Redraw requested")
+		return true
 	default:
+		return false
 	}
+}
+
+func frameManagerBenchmarkEnabled() bool {
+	hooks := FrameManagerLifecycleBenchmarkHooks
+	return hooks != nil && hooks.Event != nil
+}
+
+func frameManagerBenchmarkEvent(event string, fields ...any) {
+	hooks := FrameManagerLifecycleBenchmarkHooks
+	if hooks != nil && hooks.Event != nil {
+		hooks.Event(event, fields...)
+	}
+}
+
+func frameManagerBenchmarkCaller(skip int) string {
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown"
+	}
+	name := "unknown"
+	if fn := runtime.FuncForPC(pc); fn != nil {
+		name = fn.Name()
+	}
+	return fmt.Sprintf("%s:%d %s", filepath.Base(file), line, name)
 }
 
 // coalescePendingRedrawWithReadyTask gives already-queued authoritative UI
@@ -867,9 +921,10 @@ func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 	case <-fm.RedrawChan:
 		select {
 		case task := <-fm.TaskChan:
-			task()
-			fm.cleanupDoneFrames()
-			fm.Redraw()
+			result := fm.runPostedTask(task)
+			if !result.taskRedrawOmitted {
+				fm.Redraw()
+			}
 		default:
 		}
 		return true
@@ -879,10 +934,59 @@ func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 }
 
 // PostTask schedules a function to be executed safely on the main UI thread.
-func (fm *frameManager) PostTask(task func()) {
+func (fm *frameManager) postTask(task func(), callerSkip int) {
+	if task == nil {
+		return
+	}
+	if frameManagerBenchmarkEnabled() {
+		taskID := fm.benchmarkTaskSeq.Add(1)
+		source := frameManagerBenchmarkCaller(callerSkip)
+		frameManagerBenchmarkEvent("task.queued",
+			"taskId", taskID,
+			"generation", fm.redrawGeneration.Load(),
+			"redrawQueueDepth", len(fm.RedrawChan),
+			"source", source)
+		original := task
+		task = func() {
+			if execution := fm.currentPostedTask; execution != nil {
+				execution.benchmarkTaskID = taskID
+				execution.benchmarkSource = source
+			}
+			frameManagerBenchmarkEvent("task.started",
+				"taskId", taskID,
+				"generation", fm.redrawGeneration.Load(),
+				"redrawQueueDepth", len(fm.RedrawChan),
+				"source", source)
+			original()
+		}
+	}
 	if fm.taskChanIn != nil {
 		fm.taskChanIn <- task
 	}
+}
+
+func (fm *frameManager) PostTask(task func()) {
+	fm.postTask(task, 3)
+}
+
+// PostTaskWithRedrawDecision schedules a UI task whose return value states
+// whether the task changed visible or semantic state. Returning false is an
+// explicit proof that the task is unchanged; FrameManager may then omit only
+// the redraw owned by that task. A pending or concurrent Redraw, frame cleanup,
+// or a renderer which cannot validate unchanged mutation boundaries still
+// takes the ordinary conservative render path. Plain PostTask behavior is
+// unaffected.
+func (fm *frameManager) PostTaskWithRedrawDecision(task func() bool) {
+	if task == nil {
+		return
+	}
+	fm.postTask(func() {
+		needsRedraw := task()
+		if execution := fm.currentPostedTask; execution != nil {
+			execution.redrawDecisionSet = true
+			execution.needsRedraw = needsRedraw
+		}
+	}, 3)
 }
 
 // EmitCommand broadcasts a command starting from the top-most frame
@@ -967,9 +1071,9 @@ func (fm *frameManager) WaitFar2lResponse(id uint8, timeout time.Duration) *vtin
 		case res := <-ch:
 			return res
 		case task := <-fm.TaskChan:
-			task()
-			fm.cleanupDoneFrames()
-			fm.Redraw()
+			if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+				fm.Redraw()
+			}
 		case e, ok := <-fm.EventChan:
 			if !ok {
 				return nil
@@ -1487,7 +1591,8 @@ func truncateMiddleCells(value string, width int) string {
 	return left + "…" + string(runes[start:])
 }
 
-func (fm *frameManager) cleanupDoneFrames() {
+func (fm *frameManager) cleanupDoneFrames() bool {
+	changed := false
 	oldInset := fm.WorkspaceTopInset()
 	fm.SyncCurrentScreen()
 	oldActiveIdx := fm.ActiveIdx
@@ -1511,6 +1616,7 @@ func (fm *frameManager) cleanupDoneFrames() {
 				}
 				s.Frames = append(s.Frames[:i], s.Frames[i+1:]...)
 				wasModified = true
+				changed = true
 				DebugLog("FM: Frame removed from Screen %d. Remaining: %d", sIdx, len(s.Frames))
 			}
 		}
@@ -1527,6 +1633,7 @@ func (fm *frameManager) cleanupDoneFrames() {
 		if isDead {
 			DebugLog("FM: Removing dead Screen %d (Total screens: %d)", sIdx, len(fm.Screens))
 			fm.Screens = append(fm.Screens[:sIdx], fm.Screens[sIdx+1:]...)
+			changed = true
 		}
 	}
 
@@ -1550,8 +1657,10 @@ func (fm *frameManager) cleanupDoneFrames() {
 			fm.ResizeAllScreens()
 		}
 	} else {
+		changed = true
 		fm.Shutdown()
 	}
+	return changed
 }
 func (fm *frameManager) cleanupOrphanedMenus() {
 	activeMenu := fm.GetActiveMenuBar()
@@ -1656,6 +1765,117 @@ func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 	return true
 }
 
+func (fm *frameManager) beginSemanticSceneUpdate() func() {
+	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
+		return func() {}
+	}
+	renderer := fm.scr.Renderer
+	tracker, ok := renderer.(SemanticSceneUpdateTracker)
+	if !ok {
+		return func() {}
+	}
+	tracker.BeginSemanticSceneUpdate()
+	return func() {
+		tracker.EndSemanticSceneUpdate()
+		if deferrer, ok := renderer.(SemanticRenderPhaseDeferrer); ok {
+			deferrer.BindSemanticRenderPhaseDeferral(
+				fm.redrawGeneration.Load())
+		}
+	}
+}
+
+func (fm *frameManager) runSemanticSceneUpdate(update func()) {
+	end := fm.beginSemanticSceneUpdate()
+	defer end()
+	update()
+}
+
+// redrawPending observes the capacity-one wakeup without consuming it. Redraw
+// generation protects requests which were coalesced while the channel was
+// already full; restoring the token here preserves the request for Run.
+func (fm *frameManager) redrawPending() bool {
+	select {
+	case <-fm.RedrawChan:
+		fm.notifyRedraw()
+		return true
+	default:
+		return false
+	}
+}
+
+type postedTaskResult struct {
+	// taskRedrawOmitted proves only that this task owns no redraw. A redraw that
+	// was already pending still has to render, but must not be duplicated merely
+	// because it made the stronger renderOmitted result false.
+	taskRedrawOmitted bool
+	renderOmitted     bool
+}
+
+// runPostedTask executes one TaskChan item under the same semantic mutation
+// boundary as production Run. The two result levels deliberately distinguish
+// a proven unchanged task from an entirely idle render boundary: an older
+// redraw must still render, but it is not a reason to manufacture another
+// generation on behalf of the unchanged task.
+func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
+	redrawGeneration := fm.redrawGeneration.Load()
+	execution := &postedTaskExecution{}
+	previousExecution := fm.currentPostedTask
+	fm.currentPostedTask = execution
+	defer func() { fm.currentPostedTask = previousExecution }()
+
+	var renderer SurfaceRenderer
+	var tracker SemanticSceneUpdateTracker
+	if fm.scr != nil && fm.scr.Renderer != nil {
+		renderer = fm.scr.Renderer
+		tracker, _ = renderer.(SemanticSceneUpdateTracker)
+	}
+	if tracker != nil {
+		tracker.BeginSemanticSceneUpdate()
+	}
+
+	task()
+	cleanupChanged := fm.cleanupDoneFrames()
+	unchangedRequested := execution.redrawDecisionSet && !execution.needsRedraw && !cleanupChanged
+	unchangedAccepted := false
+	if tracker != nil {
+		if unchangedRequested {
+			if unchangedTracker, ok := renderer.(SemanticSceneUnchangedUpdateTracker); ok {
+				unchangedAccepted = unchangedTracker.EndSemanticSceneUpdateUnchanged()
+			}
+		}
+		if !unchangedAccepted {
+			tracker.EndSemanticSceneUpdate()
+			if deferrer, ok := renderer.(SemanticRenderPhaseDeferrer); ok {
+				deferrer.BindSemanticRenderPhaseDeferral(fm.redrawGeneration.Load())
+			}
+		}
+	}
+	generationAfter := fm.redrawGeneration.Load()
+	pendingRedraw := false
+	if unchangedAccepted && generationAfter == redrawGeneration {
+		pendingRedraw = fm.redrawPending()
+	}
+	taskRedrawOmitted := unchangedAccepted && generationAfter == redrawGeneration
+	omitRender := taskRedrawOmitted && !pendingRedraw
+	frameManagerBenchmarkEvent("task.finished",
+		"taskId", execution.benchmarkTaskID,
+		"source", execution.benchmarkSource,
+		"generationBefore", redrawGeneration,
+		"generationAfter", generationAfter,
+		"redrawDecisionSet", execution.redrawDecisionSet,
+		"needsRedraw", execution.needsRedraw,
+		"cleanupChanged", cleanupChanged,
+		"unchangedRequested", unchangedRequested,
+		"unchangedAccepted", unchangedAccepted,
+		"redrawPending", pendingRedraw,
+		"taskRedrawOmitted", taskRedrawOmitted,
+		"omitRender", omitRender)
+	return postedTaskResult{
+		taskRedrawOmitted: taskRedrawOmitted,
+		renderOmitted:     omitRender,
+	}
+}
+
 // Stop signals the main loop to exit.
 func (fm *frameManager) Stop() {
 	DebugLog("FM: Stop() requested. Deactivating menus and exiting loop.")
@@ -1665,10 +1885,7 @@ func (fm *frameManager) Stop() {
 	}
 	fm.running = false
 	// Wake up the select loop immediately
-	select {
-	case fm.RedrawChan <- struct{}{}:
-	default:
-	}
+	fm.Redraw()
 }
 
 // Run starts the main application event loop.
@@ -1732,6 +1949,8 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 	}()
 
 	handleResize := func() {
+		endSemanticUpdate := fm.beginSemanticSceneUpdate()
+		defer endSemanticUpdate()
 		width, height, err := GetTerminalSize()
 		DebugLog("FM_RESIZE: handleResize triggered. GetTerminalSize returned: %dx%d (err: %v). Current scr: %dx%d", width, height, err, fm.scr.width, fm.scr.height)
 		if err != nil {
@@ -1776,13 +1995,21 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 		}
 	}
 	DebugLog("FM: Entering Run loop. MenuBar set: %v, KeyBar set: %v", fm.MenuBar != nil, fm.KeyBar != nil)
+	skipNextRender := false
 	for fm.running {
 		if len(fm.frames) == 0 {
 			DebugLog("FM: No frames left, exiting Run loop.")
 			return
 		}
 
-		fm.renderPhase()
+		if skipNextRender {
+			// The preceding standalone task proved that it did not change the
+			// visible/semantic state and owned no redraw. Return directly to the
+			// blocking wait instead of spinning through a redundant render.
+			skipNextRender = false
+		} else {
+			fm.renderPhase()
+		}
 
 		// 3. Event waiting (Blocking)
 		var e *vtinput.InputEvent
@@ -1807,9 +2034,11 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 				loopAgain = true
 			case task := <-fm.TaskChan:
 				// The task became ready after the priority check above.
-				task()
-				fm.cleanupDoneFrames()
-				fm.Redraw()
+				result := fm.runPostedTask(task)
+				if !result.taskRedrawOmitted {
+					fm.Redraw()
+				}
+				skipNextRender = result.renderOmitted
 				loopAgain = true
 			case <-sigChan:
 				handleResize()
@@ -1887,9 +2116,9 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 					default:
 					}
 				}
-				task()
-				fm.cleanupDoneFrames()
-				fm.Redraw()
+				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+					fm.Redraw()
+				}
 				drainCount++
 				continue
 			case <-idleTimer.C:
@@ -1912,9 +2141,41 @@ func (fm *frameManager) renderPhase() {
 	// Consume only at the render boundary: once this receive completes the
 	// channel is empty, so a redraw requested while or after this render remains
 	// queued and still schedules a subsequent pass.
+	renderGeneration := fm.redrawGeneration.Load()
+	redrawTokenConsumed := false
 	select {
 	case <-fm.RedrawChan:
+		redrawTokenConsumed = true
 	default:
+	}
+	frameManagerBenchmarkEvent("render.boundary.begin",
+		"generation", renderGeneration,
+		"redrawTokenConsumed", redrawTokenConsumed,
+		"redrawQueueDepth", len(fm.RedrawChan))
+	// A native semantic renderer may have already published the entire visible
+	// result of the preceding mutation directly from its input/task boundary.
+	// Consume that one-shot proof before Frame.Show: rebuilding a hidden cell
+	// grid would only keep the event loop unavailable for the next key repeat.
+	// The renderer binds its proof to the redraw generation at the end of that
+	// mutation. Any earlier unrelated request makes the generations differ; a
+	// request racing this boundary is restored below if channel coalescing hid
+	// its notification.
+	if fm.scr != nil && fm.scr.Renderer != nil {
+		if deferrer, ok := fm.scr.Renderer.(SemanticRenderPhaseDeferrer); ok &&
+			deferrer.ConsumeSemanticRenderPhaseDeferral(renderGeneration) {
+			// Redraw increments even when its capacity-1 notification coalesces.
+			// If one raced our snapshot/drain, restore a notification before
+			// returning so the unrelated state gets an ordinary render.
+			if fm.redrawGeneration.Load() != renderGeneration {
+				fm.notifyRedraw()
+			}
+			frameManagerBenchmarkEvent("render.boundary.end",
+				"generation", renderGeneration,
+				"generationAfter", fm.redrawGeneration.Load(),
+				"redrawQueueDepth", len(fm.RedrawChan),
+				"result", "deferred_direct")
+			return
+		}
 	}
 	benchmarkHooks := SemanticSceneBenchmarkHooks
 	if benchmarkHooks != nil && benchmarkHooks.RenderBegin != nil {
@@ -2053,14 +2314,20 @@ func (fm *frameManager) renderPhase() {
 
 		fm.scr.Graphics().EndFrame()
 		if semanticRenderer, ok := fm.scr.Renderer.(SemanticSceneRenderer); ok {
-			if benchmarkHooks != nil && benchmarkHooks.ExportBegin != nil {
-				benchmarkHooks.ExportBegin()
+			suppressExport := false
+			if suppressor, ok := fm.scr.Renderer.(SemanticSceneExportSuppressor); ok {
+				suppressExport = suppressor.ConsumeSemanticSceneExportSuppression()
 			}
-			scene := fm.ExportSemanticScene()
-			if benchmarkHooks != nil && benchmarkHooks.ExportEnd != nil {
-				benchmarkHooks.ExportEnd(scene)
+			if !suppressExport {
+				if benchmarkHooks != nil && benchmarkHooks.ExportBegin != nil {
+					benchmarkHooks.ExportBegin()
+				}
+				scene := fm.ExportSemanticScene()
+				if benchmarkHooks != nil && benchmarkHooks.ExportEnd != nil {
+					benchmarkHooks.ExportEnd(scene)
+				}
+				semanticRenderer.SetSemanticScene(scene)
 			}
-			semanticRenderer.SetSemanticScene(scene)
 		}
 
 		fm.scr.Flush()
@@ -2069,6 +2336,11 @@ func (fm *frameManager) renderPhase() {
 	if renderPhaseDur > 10*time.Millisecond {
 		DebugLog("FM_PERF: renderPhase took %v", renderPhaseDur)
 	}
+	frameManagerBenchmarkEvent("render.boundary.end",
+		"generation", renderGeneration,
+		"generationAfter", fm.redrawGeneration.Load(),
+		"redrawQueueDepth", len(fm.RedrawChan),
+		"result", "rendered")
 }
 
 // isDuplicateMouseMove filters backend motion notifications that do not change
@@ -2090,6 +2362,15 @@ func (fm *frameManager) isDuplicateMouseMove(ev *vtinput.InputEvent) bool {
 }
 
 func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) {
+	endSemanticUpdate := fm.beginSemanticSceneUpdate()
+	defer endSemanticUpdate()
+	benchmarkHooks := InputEventBenchmarkHooks
+	if benchmarkHooks != nil && benchmarkHooks.DispatchBegin != nil {
+		benchmarkHooks.DispatchBegin(ev)
+	}
+	if benchmarkHooks != nil && benchmarkHooks.DispatchEnd != nil {
+		defer benchmarkHooks.DispatchEnd(ev)
+	}
 	if fm.isDuplicateMouseMove(ev) {
 		return
 	}

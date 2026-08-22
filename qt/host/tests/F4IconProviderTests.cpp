@@ -147,6 +147,7 @@ class F4IconProviderTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void requestsAlwaysRunOffTheGuiThread();
     void routeValuesRoundTripWithoutUrlAmbiguity();
     void routeValuesRejectNonCanonicalInput();
     void normalizationIsDeterministic();
@@ -160,6 +161,13 @@ private slots:
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
     void renderingUsesLogicalSizeAndDevicePixelRatio();
 };
+
+void F4IconProviderTests::requestsAlwaysRunOffTheGuiThread()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    QVERIFY(provider.flags().testFlag(
+        QQmlImageProviderBase::ForceAsynchronousImageLoading));
+}
 
 void F4IconProviderTests::routeValuesRoundTripWithoutUrlAmbiguity()
 {

@@ -153,6 +153,8 @@ set(F4_QT_HOST_SOURCES
 set(F4_LUCIDE_ICON_NAMES
   archive.svg
   arrow-down.svg
+  arrow-down-a-z.svg
+  arrow-down-wide-narrow.svg
   arrow-up.svg
   book-open.svg
   check.svg
@@ -171,6 +173,7 @@ set(F4_LUCIDE_ICON_NAMES
   file-lock.svg
   file-pen-line.svg
   file-text.svg
+  file-type.svg
   folder.svg
   folder-kanban.svg
   folder-lock.svg
@@ -500,6 +503,21 @@ if(BUILD_TESTING)
     Qt6::Network
     Qt6::Test
   )
+  target_compile_definitions(QtShellControllerTests PRIVATE
+    F4_QT_HOST_TEST_EXECUTABLE="$<TARGET_FILE:f4-qt-host>"
+    F4_QT_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:Qt6::Core>"
+  )
+  if(USE_QWK)
+    target_compile_definitions(QtShellControllerTests PRIVATE
+      F4_QWK_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:QWindowKit::Quick>"
+    )
+  endif()
+  if(TARGET libraw::libraw_)
+    target_compile_definitions(QtShellControllerTests PRIVATE
+      F4_LIBRAW_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:libraw::libraw_>"
+    )
+  endif()
+  add_dependencies(QtShellControllerTests f4-qt-host)
   if(TARGET msgpack-cxx)
     target_link_libraries(QtShellControllerTests PRIVATE msgpack-cxx)
   elseif(TARGET msgpack-cxx::msgpack-cxx)

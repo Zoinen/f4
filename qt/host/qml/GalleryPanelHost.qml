@@ -442,6 +442,23 @@ FocusScope {
         return true
     }
 
+    function forwardQtKey(event, down) {
+        if (!keySink)
+            return
+        // Preserve the platform's repeat bit through the semantic Gallery
+        // surface. VtuiGridItem suppresses Qt's synthetic repeat release but
+        // forwards each repeat press with repeat=true to Go.
+        if (typeof keySink.sendQtKeyEvent === "function") {
+            keySink.sendQtKeyEvent(event.key, event.text, down,
+                                   event.modifiers, event.nativeScanCode,
+                                   event.isAutoRepeat)
+        } else {
+            // Compatibility for lightweight embedders and QML test sinks.
+            keySink.sendQtKey(event.key, event.text, down,
+                              event.modifiers, event.nativeScanCode)
+        }
+    }
+
     function commanderOwnsKey(event) {
         // Bare Shift owns the lifetime of Zoin Gallery's range-selection
         // preview. Let the child observe its press/release instead of sending
@@ -494,8 +511,7 @@ FocusScope {
         } else if (handleZoom(event)) {
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
-            if (keySink) keySink.sendQtKey(event.key, event.text, true,
-                                           event.modifiers, event.nativeScanCode)
+            forwardQtKey(event, true)
             rememberForwardedKey(event.key)
             // VtuiGridItem emits the same notification synchronously. Keep a
             // direct fallback for lightweight test/custom key sinks that only
@@ -510,16 +526,16 @@ FocusScope {
     Keys.onReleased: (event) => {
         if (isPasteShortcut(event)) {
             event.accepted = true
-        } else if (takeForwardedKey(event.key)) {
-            if (keySink) keySink.sendQtKey(event.key, event.text, false,
-                                           event.modifiers, event.nativeScanCode)
+        } else if (forwardedKeysDown[String(event.key)]) {
+            forwardQtKey(event, false)
+            if (!event.isAutoRepeat)
+                takeForwardedKey(event.key)
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
             // A key-down such as Tab/F3 can move focus to another persistent
             // surface before key-up. That new surface has no local press
             // record, but Go must still receive the commander key release.
-            if (keySink) keySink.sendQtKey(event.key, event.text, false,
-                                           event.modifiers, event.nativeScanCode)
+            forwardQtKey(event, false)
             event.accepted = true
         }
     }
@@ -531,6 +547,14 @@ FocusScope {
         session: host.session
         theme: host.theme
         metrics: host.metrics
+        quickSearchMatches: host.panel.fastFindMatches || ({})
+        quickSearchMatchColor: {
+            const supplied = String(host.panel.fastFindMatchColor || "")
+            if (supplied !== "")
+                return supplied
+            return host.theme && host.theme.quickSearchMatch !== undefined
+                    ? host.theme.quickSearchMatch : foregroundColor
+        }
         // f4 keeps the Details column header outside the reusable viewport so
         // every unified layout shares one exact geometry and interaction
         // surface.
@@ -552,11 +576,19 @@ FocusScope {
             host.bridge.requestCursor(host.side, entryId, index,
                                       host.catalogRevision, deferCommit)
         }
-        onOpenRequested: (entryId, index, isImage) => {
-            host.bridge.requestOpen(host.side, entryId, index, isImage, host.catalogRevision)
+        onOpenRequested: (entryId, index, isImage, autoRepeat) => {
+            host.bridge.requestOpen(host.side, entryId, index, isImage,
+                                    host.catalogRevision, autoRepeat)
         }
         onSelectionRequested: (mode, entryIds) => {
             host.bridge.requestSelection(host.side, mode, entryIds, host.catalogRevision)
+        }
+        onMetadataVisibleRangeChanged: (firstRow, lastRow) => {
+            if (host.bridge) {
+                host.bridge.reportMetadataVisibleRange(
+                            host.side, firstRow, lastRow,
+                            host.catalogRevision)
+            }
         }
         onBenchmarkStage: (stage, metadata) => {
             host.forwardBenchmarkStage(stage, metadata)

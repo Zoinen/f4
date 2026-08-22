@@ -131,6 +131,70 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	}
 }
 
+func TestBuildAppSceneFromLegacyPreservesDeferredBaseAndStripsHeavyLegacyAlias(t *testing.T) {
+	deferredFrame := map[string]any{
+		"id": "shell", "kind": "panels", "showPanels": true,
+		"panels": []map[string]any{{
+			"id": "left", "kind": "filePanel", "path": `D:\work`,
+			"catalogRevision": int64(4), "selectionRevision": int64(2),
+			"metadataDeferred": true, "metadataRevision": int64(9),
+			"highlightRevision": int64(8), "totalSize": int64(100),
+			"highlightStyles": map[string]any{"style-a": map[string]any{"marker": "!"}},
+			"entries": []map[string]any{{
+				"index": 0, "entryId": "entry-a", "name": "a.jpg",
+				"displayBaseName": "a", "displayExtension": "jpg",
+				"path": `D:\work\a.jpg`, "isDir": false, "isUp": false,
+				"isImage": true, "selected": true,
+				"localPath": `D:\work\a.jpg`, "size": int64(100),
+				"highlightStyleId": "style-a",
+			}},
+		}},
+	}
+	legacy := map[string]any{
+		"type":   "scene",
+		"frames": []map[string]any{deferredFrame},
+		"screens": []map[string]any{{
+			"index":  0,
+			"frames": []map[string]any{deferredFrame},
+		}},
+	}
+
+	scene := BuildAppSceneFromLegacy(nil, legacy)
+	panel := scene["shell"].(map[string]any)["panels"].([]map[string]any)[0]
+	if panel["metadataDeferred"] != true || panel["metadataRevision"] != int64(9) {
+		t.Fatalf("deferred revision was not promoted: %#v", panel)
+	}
+	entry := panel["entries"].([]map[string]any)[0]
+	if entry["isImage"] != true {
+		t.Fatalf("minimal base entry was not promoted: %#v", entry)
+	}
+	if _, present := entry["path"]; present {
+		t.Fatalf("promoted deferred entry retained logical path: %#v", entry)
+	}
+	if _, present := entry["localPath"]; present {
+		t.Fatalf("promoted deferred entry retained heavy metadata: %#v", entry)
+	}
+	if _, present := panel["highlightStyles"]; present {
+		t.Fatalf("promoted deferred panel retained highlights: %#v", panel)
+	}
+
+	aliasPanel := scene["frames"].([]map[string]any)[0]["panels"].([]map[string]any)[0]
+	if _, present := aliasPanel["entries"]; present {
+		t.Fatalf("legacy alias duplicated deferred entries: %#v", aliasPanel)
+	}
+	if _, present := aliasPanel["highlightStyles"]; present {
+		t.Fatalf("legacy alias duplicated deferred highlights: %#v", aliasPanel)
+	}
+	screenPanel := scene["screens"].([]map[string]any)[0]["frames"].([]map[string]any)[0]["panels"].([]map[string]any)[0]
+	if _, present := screenPanel["entries"]; present {
+		t.Fatalf("screen alias duplicated deferred entries: %#v", screenPanel)
+	}
+	legacyPanel := scene["legacy"].(map[string]any)["screens"].([]map[string]any)[0]["frames"].([]map[string]any)[0]["panels"].([]map[string]any)[0]
+	if _, present := legacyPanel["entries"]; present {
+		t.Fatalf("nested legacy screen duplicated deferred entries: %#v", legacyPanel)
+	}
+}
+
 func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
 	legacy := map[string]any{
 		"type":   "scene",

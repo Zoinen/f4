@@ -186,6 +186,66 @@ type SemanticSceneRenderer interface {
 	SetSemanticScene(scene map[string]any)
 }
 
+// SemanticSceneExportSuppressor lets a semantic renderer replace exactly one
+// full semantic export with an authoritative compact update it has already
+// queued. FrameManager still paints and flushes the cell surface; only the
+// expensive semantic tree traversal is omitted.
+//
+// ConsumeSemanticSceneExportSuppression must be one-shot. Returning true for
+// one render must not suppress a later render unless the renderer explicitly
+// arms another compact update.
+type SemanticSceneExportSuppressor interface {
+	ConsumeSemanticSceneExportSuppression() bool
+}
+
+// SemanticRenderPhaseDeferrer lets a native semantic renderer omit exactly
+// one render phase after it has already delivered the complete visible state.
+// Unlike SemanticSceneExportSuppressor, this also skips Frame.Show, cell
+// composition, and Flush. It is intended only for native surfaces whose cell
+// grid is hidden; terminal and fallback renderers must not implement it unless
+// they can make the same guarantee.
+//
+// BindSemanticRenderPhaseDeferral associates an armed direct update with the
+// redraw generation observed after its complete input/task mutation boundary.
+// ConsumeSemanticRenderPhaseDeferral must be one-shot and return true only for
+// that exact generation. A later redraw, input, or task must render normally
+// unless the renderer proves and arms another complete direct update.
+type SemanticRenderPhaseDeferrer interface {
+	BindSemanticRenderPhaseDeferral(redrawGeneration uint64)
+	ConsumeSemanticRenderPhaseDeferral(redrawGeneration uint64) bool
+}
+
+// SemanticSceneUpdateTracker brackets input dispatches and queued UI tasks.
+// A renderer may use the boundary to invalidate a compact update when another
+// unverified model mutation is processed before the next semantic export.
+type SemanticSceneUpdateTracker interface {
+	BeginSemanticSceneUpdate()
+	EndSemanticSceneUpdate()
+}
+
+// SemanticSceneUnchangedUpdateTracker lets a renderer close a task mutation
+// boundary without invalidating already-proven compact updates when the task
+// has established that its visible and semantic state did not change. The
+// bool result is false when the renderer observed any mutation inside the
+// boundary and therefore requires the ordinary conservative render path.
+//
+// FrameManager only omits a task-owned redraw when this optional capability is
+// present and accepts the unchanged boundary. Renderers which do not implement
+// it retain the historical redraw-after-every-task behavior.
+type SemanticSceneUnchangedUpdateTracker interface {
+	EndSemanticSceneUpdateUnchanged() bool
+}
+
+// CoveredTerminalRedrawDeferrer lets a native semantic renderer prove that a
+// terminal-output update is currently hidden behind the application's native
+// surface. Callers may omit only the redraw requested for the terminal bytes
+// themselves; any concurrent redraw, semantic mutation, task, or later reveal
+// retains its normal render path. Cell, text, and fallback renderers should not
+// implement this capability unless they provide the same visibility guarantee.
+type CoveredTerminalRedrawDeferrer interface {
+	CanDeferCoveredTerminalRedraw() bool
+}
+
 // SemanticBenchmarkHooks optionally observes the semantic render/export
 // boundaries. Applications leave this nil in normal operation; benchmark
 // builds can install callbacks without making vtui depend on an application
@@ -200,3 +260,27 @@ type SemanticBenchmarkHooks struct {
 // SemanticSceneBenchmarkHooks is intentionally nil unless an application
 // explicitly enables semantic-scene benchmarking.
 var SemanticSceneBenchmarkHooks *SemanticBenchmarkHooks
+
+// FrameManagerBenchmarkHooks optionally observes redraw scheduling and task /
+// render boundaries. The variadic field shape keeps vtui independent of a
+// particular trace schema; hooks are nil in ordinary sessions, so caller
+// discovery and event construction stay completely off the production path.
+type FrameManagerBenchmarkHooks struct {
+	Event func(event string, fields ...any)
+}
+
+// FrameManagerLifecycleBenchmarkHooks is intentionally nil unless an
+// application explicitly enables scheduling diagnostics.
+var FrameManagerLifecycleBenchmarkHooks *FrameManagerBenchmarkHooks
+
+// InputBenchmarkHooks optionally observes the complete FrameManager dispatch
+// boundary for an input event. Applications can associate metadata with the
+// event pointer without adding application-specific fields to vtinput.
+type InputBenchmarkHooks struct {
+	DispatchBegin func(event *vtinput.InputEvent)
+	DispatchEnd   func(event *vtinput.InputEvent)
+}
+
+// InputEventBenchmarkHooks is intentionally nil unless an application enables
+// input pipeline benchmarking.
+var InputEventBenchmarkHooks *InputBenchmarkHooks
