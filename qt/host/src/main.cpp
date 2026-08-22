@@ -1,6 +1,7 @@
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
+#include "QtMediaClient.h"
 #include "QtShellController.h"
 #include "WindowGeometryPersistence.h"
 
@@ -243,7 +244,19 @@ int main(int argc, char *argv[])
 #endif
 
     QtShellController controller(connectAddress, nonce, cols, rows, &engine);
-    F4GalleryBridge galleryBridge(&engine, &engine, &iconSet);
+    QtMediaClient mediaClient(&engine);
+    F4GalleryBridge galleryBridge(&engine, &engine, &iconSet, &mediaClient);
+    const QPointer<QtMediaClient> mediaClientGuard(&mediaClient);
+    controller.setMediaAdvertisementHandler(
+        [mediaClientGuard](const QVariantMap &advertisement) {
+            if (mediaClientGuard) {
+                mediaClientGuard->configure(advertisement);
+            }
+        });
+    QObject::connect(&mediaClient, &QtMediaClient::transportError,
+                     &app, [](const QString &message) {
+        qWarning().noquote() << "f4 media channel:" << message;
+    });
     QObject::connect(&controller, &QtShellController::fatalError, &app, [&app](const QString &message) {
         qCritical().noquote() << message;
         // fatalError may be emitted synchronously by waitForConnected(), before

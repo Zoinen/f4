@@ -147,6 +147,9 @@ func (r *providerTempReader) ReadAt(ctx context.Context, p []byte, off int64) (i
 }
 
 func (r *providerTempReader) Size() int64 { return r.size }
+func (r *providerTempReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
 
 // LocalPath exposes a read-only backing file lease to consumers such as the
 // archive plugin. The path remains valid only until this reader is closed.

@@ -198,6 +198,8 @@ func (v *NullVFS) GetCapabilities() VFSCapabilities {
 		HasServerSideCopy:  false,
 		HasServerSideMove:  false,
 		HasRandomAccess:    true,
+		ReadAccess:         ReadAccessNativeRange,
+		StorageClass:       StorageClassVirtual,
 		HasSearch:          false,
 		HasUnixPermissions: false,
 	}

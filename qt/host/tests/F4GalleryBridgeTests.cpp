@@ -103,6 +103,7 @@ private slots:
     void panelIdentityReplacementResetsSession();
     void rejectedCursorRestoresAuthoritativeState();
     void vfsUsesUnifiedSessionWithoutPreviews();
+    void vfsResourceDescriptorsRemainOpaqueAndPreviewable();
     void viewerWaitsForAuthoritativeCursor();
     void inactivePanelImageOpenWaitsForActiveAndCursor();
     void viewerIgnoresSemanticPresentation();
@@ -1181,6 +1182,7 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     for (int index = 0; index < entries.size(); ++index) {
         QVariantMap entry = entries.at(index).toMap();
         const QFileInfo imageInfo(imagePaths.at(index));
+        entry.insert(QStringLiteral("name"), imageInfo.fileName());
         entry.insert(QStringLiteral("localPath"), imageInfo.absoluteFilePath());
         entry.insert(QStringLiteral("isDir"), false);
         entry.insert(QStringLiteral("isImage"), true);
@@ -2136,6 +2138,84 @@ void F4GalleryBridgeTests::vfsUsesUnifiedSessionWithoutPreviews()
     QCOMPARE(session->model()->rowCount(), 2);
     QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
 }
+
+void F4GalleryBridgeTests::vfsResourceDescriptorsRemainOpaqueAndPreviewable()
+{
+    const QString version = QStringLiteral("strong:rev/α?etag=\"")
+        + QChar(u'\0') + QStringLiteral("tail");
+    QVariantMap sourceDescriptor{
+        {QStringLiteral("resourceId"), QStringLiteral("opaque:panel/7/image")},
+        {QStringLiteral("sourceKey"), QStringLiteral("s3:bucket/key.jpg")},
+        {QStringLiteral("version"), version},
+        {QStringLiteral("versionStrength"), QStringLiteral("strong")},
+        {QStringLiteral("storageClass"), QStringLiteral("remote")},
+        {QStringLiteral("accessProfile"), QStringLiteral("nativeRange")},
+        {QStringLiteral("mimeType"), QStringLiteral("image/jpeg")},
+        {QStringLiteral("size"), qlonglong(123456789)},
+        {QStringLiteral("sizeKnown"), true},
+    };
+    QVariantMap panel{
+        {QStringLiteral("entries"), QVariantList{QVariantMap{
+             {QStringLiteral("entryId"), QStringLiteral("vfs:image")},
+             {QStringLiteral("index"), 4},
+             {QStringLiteral("name"), QStringLiteral("remote.jpg")},
+             {QStringLiteral("isImage"), true},
+             {QStringLiteral("source"), sourceDescriptor},
+        }}},
+    };
+
+    const QVariantMap normalized = F4GalleryBridge::normalizedEntries(panel)
+                                       .constFirst().toMap();
+    QCOMPARE(normalized.value(QStringLiteral("resourceId")),
+             sourceDescriptor.value(QStringLiteral("resourceId")));
+    QCOMPARE(normalized.value(QStringLiteral("sourceKey")),
+             sourceDescriptor.value(QStringLiteral("sourceKey")));
+    QCOMPARE(normalized.value(QStringLiteral("contentVersion")).toString(),
+             version);
+    QCOMPARE(normalized.value(QStringLiteral("version")).toString(), version);
+    QCOMPARE(normalized.value(QStringLiteral("versionStrength")),
+             sourceDescriptor.value(QStringLiteral("versionStrength")));
+    QCOMPARE(normalized.value(QStringLiteral("storageClass")),
+             sourceDescriptor.value(QStringLiteral("storageClass")));
+    QCOMPARE(normalized.value(QStringLiteral("accessProfile")),
+             sourceDescriptor.value(QStringLiteral("accessProfile")));
+    QCOMPARE(normalized.value(QStringLiteral("mimeType")),
+             sourceDescriptor.value(QStringLiteral("mimeType")));
+    QCOMPARE(normalized.value(QStringLiteral("size")).toLongLong(),
+             qlonglong(123456789));
+
+    QVariantMap scene = testScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    panel.insert(QStringLiteral("id"), QStringLiteral("vfs-panel"));
+    panel.insert(QStringLiteral("side"), 0);
+    panel.insert(QStringLiteral("active"), true);
+    panel.insert(QStringLiteral("path"), QStringLiteral("s3:/bucket"));
+    panel.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
+    panel.insert(QStringLiteral("previewCapable"), true);
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(99));
+    panel.insert(QStringLiteral("selectionRevision"), qulonglong(1));
+    panel.insert(QStringLiteral("cursor"), 4);
+    panel.insert(QStringLiteral("cursorEntryId"), QStringLiteral("vfs:image"));
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 1);
+    const int versionRole = session->model()->roleNames().key(
+        QByteArrayLiteral("versionToken"), -1);
+    QVERIFY(versionRole >= 0);
+    QCOMPARE(session->model()->data(session->model()->index(0, 0),
+                                    versionRole).toString(),
+             version);
+    bridge.requestOpen(0, QStringLiteral("vfs:image"), 4, true, 99);
+    QVERIFY(bridge.viewerVisible());
+}
+
 void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
 {
     QQmlEngine engine;

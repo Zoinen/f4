@@ -554,6 +554,13 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		return fmt.Errorf("failed to create extui listener: %w", err)
 	}
 	defer listener.Close()
+	mediaServer, err := newExtUiMediaServer()
+	if err != nil {
+		return fmt.Errorf("failed to create extui media listener: %w", err)
+	}
+	defer mediaServer.Close()
+	restoreMediaBroker := setActiveExtUiMediaBroker(mediaServer.broker)
+	defer restoreMediaBroker()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -633,12 +640,16 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 
 	sender := &extUiMessageSender{w: conn}
 	if err := sender.Send(map[string]any{
-		"type":     "hello",
-		"nonce":    nonce,
-		"protocol": extUiProtocolVersion,
-		"cols":     cols,
-		"rows":     rows,
-		"app":      vtui.AppName,
+		"type":              "hello",
+		"nonce":             nonce,
+		"protocol":          extUiProtocolVersion,
+		"cols":              cols,
+		"rows":              rows,
+		"app":               vtui.AppName,
+		"mediaProtocol":     extUiMediaProtocolVersion,
+		"mediaEndpoint":     mediaServer.Endpoint(),
+		"mediaNonce":        mediaServer.nonce,
+		"mediaMaxChunkSize": extUiMediaMaxRangeSize,
 	}); err != nil {
 		return fmt.Errorf("failed to send extui hello: %w", err)
 	}

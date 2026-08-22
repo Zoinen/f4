@@ -246,6 +246,8 @@ QVariantMap withoutNativePanelPayloadAliases(QVariantMap scene)
     return scene;
 }
 
+QVariant sanitizePresentationValue(const QVariant &value);
+
 QVariantMap makePresentationScene(QVariantMap scene)
 {
     scene = withoutNativePanelPayloadAliases(std::move(scene));
@@ -255,7 +257,75 @@ QVariantMap makePresentationScene(QVariantMap scene)
         scene.insert(QStringLiteral("legacy"),
                      withoutNativePanelPayloadAliases(legacyValue.toMap()));
     }
-    return scene;
+    return sanitizePresentationValue(scene).toMap();
+}
+
+QVariant sanitizePresentationValue(const QVariant &value)
+{
+    if (value.metaType().id() == QMetaType::QVariantMap) {
+        const QVariantMap source = value.toMap();
+        QVariantMap sanitized;
+        for (auto it = source.cbegin(); it != source.cend(); ++it) {
+            if (it.key() == QStringLiteral("resourceId")
+                || it.key() == QStringLiteral("leaseId")
+                || it.key() == QStringLiteral("mediaEndpoint")
+                || it.key() == QStringLiteral("mediaNonce")
+                || it.key() == QStringLiteral("mediaProtocol")
+                || it.key() == QStringLiteral("mediaMaxChunkSize")) {
+                continue;
+            }
+            if (it.key() == QStringLiteral("source")
+                && it.value().toMap().contains(QStringLiteral("resourceId"))) {
+                continue;
+            }
+            sanitized.insert(it.key(), sanitizePresentationValue(it.value()));
+        }
+        return sanitized;
+    }
+    if (value.metaType().id() == QMetaType::QVariantList) {
+        QVariantList sanitized;
+        const QVariantList source = value.toList();
+        sanitized.reserve(source.size());
+        for (const QVariant &item : source) {
+            sanitized.push_back(sanitizePresentationValue(item));
+        }
+        return sanitized;
+    }
+    return value;
+}
+
+QVariantMap makePresentationMessage(const QVariantMap &message,
+                                    const QVariantMap &presentationScene)
+{
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type == QStringLiteral("scene")) {
+        return presentationScene;
+    }
+    if (type == QStringLiteral("hello")) {
+        QVariantMap presentation = sanitizePresentationValue(message).toMap();
+        presentation.remove(QStringLiteral("nonce"));
+        return presentation;
+    }
+    if (type == QStringLiteral("palette")) {
+        return {{QStringLiteral("type"), type},
+                {QStringLiteral("palette"), message.value(QStringLiteral("palette"))}};
+    }
+    if (type == QStringLiteral("frame")) {
+        return {{QStringLiteral("type"), type},
+                {QStringLiteral("frame"), message.value(QStringLiteral("frame"))}};
+    }
+    if (type == QStringLiteral("cursor")) {
+        return {{QStringLiteral("type"), type},
+                {QStringLiteral("cursor"), message.value(QStringLiteral("cursor"))}};
+    }
+    if (type == QStringLiteral("clipboard_set")) {
+        return {{QStringLiteral("type"), type},
+                {QStringLiteral("text"), message.value(QStringLiteral("text"))}};
+    }
+    if (type == QStringLiteral("quit")) {
+        return {{QStringLiteral("type"), type}};
+    }
+    return sanitizePresentationValue(message).toMap();
 }
 
 bool hasNonEmptyMap(const QVariantMap &container, const QString &key)
@@ -465,6 +535,15 @@ QtShellController::~QtShellController()
         m_decodeThread.wait();
     }
     m_decoder = nullptr;
+}
+
+void QtShellController::setMediaAdvertisementHandler(
+    std::function<void(const QVariantMap &)> handler)
+{
+    m_mediaAdvertisementHandler = std::move(handler);
+    if (m_mediaAdvertisementHandler && !m_mediaAdvertisement.isEmpty()) {
+        m_mediaAdvertisementHandler(m_mediaAdvertisement);
+    }
 }
 
 bool QtShellController::initialSceneReadyForDisplay(const QVariantMap &scene)
@@ -1073,7 +1152,35 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
     qint64 sceneSignalStartedNs = 0;
     qint64 presentationCompletedNs = 0;
     qint64 sceneSignalCompletedNs = 0;
-    if (messageType == QStringLiteral("scene")) {
+    if (messageType == QStringLiteral("hello")) {
+        if (message.value(QStringLiteral("protocol")).toInt() != 2
+            || message.value(QStringLiteral("nonce")).toString() != m_nonce) {
+            failProtocol(QStringLiteral("Invalid ExtUI server hello"));
+            return;
+        }
+        m_serverHandshakeComplete = true;
+        QVariantMap advertisement;
+        const int mediaProtocol = message.value(
+            QStringLiteral("mediaProtocol")).toInt();
+        const QString mediaEndpoint = message.value(
+            QStringLiteral("mediaEndpoint")).toString();
+        const QString mediaNonce = message.value(
+            QStringLiteral("mediaNonce")).toString();
+        if (mediaProtocol > 0 && !mediaEndpoint.isEmpty()
+            && !mediaNonce.isEmpty()) {
+            advertisement.insert(QStringLiteral("protocol"), mediaProtocol);
+            advertisement.insert(QStringLiteral("endpoint"), mediaEndpoint);
+            advertisement.insert(QStringLiteral("nonce"), mediaNonce);
+            advertisement.insert(QStringLiteral("maxChunkSize"),
+                                 message.value(QStringLiteral("mediaMaxChunkSize")));
+        }
+        if (advertisement != m_mediaAdvertisement) {
+            m_mediaAdvertisement = advertisement;
+            if (m_mediaAdvertisementHandler) {
+                m_mediaAdvertisementHandler(m_mediaAdvertisement);
+            }
+        }
+    } else if (messageType == QStringLiteral("scene")) {
         m_scene = message;
         QElapsedTimer presentationTimer;
         if (traceEnabled) {
@@ -1153,7 +1260,8 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
             F4NavigationBenchmarkTrace::monotonicNanoseconds();
         messageSignalTimer.start();
     }
-    emit messageReceived(message);
+    emit messageReceived(makePresentationMessage(message,
+                                                 m_presentationScene));
     const qint64 messageSignalDurationNs = traceEnabled
         ? messageSignalTimer.nsecsElapsed() : 0;
     if (traceEnabled) {

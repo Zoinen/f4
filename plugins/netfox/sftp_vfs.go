@@ -345,7 +345,7 @@ func (v *SFTPVFS) GetCapabilities() vfs.VFSCapabilities {
 	// Create for as long as this backend has existed, and a FUSE mount
 	// commits a file through exactly that call. Writable SFTP mounts are
 	// the reason the whole feature was worth building.
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true, HasWrite: true}
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true, HasWrite: true, ReadAccess: vfs.ReadAccessNativeRange, StorageClass: vfs.StorageClassNetwork}
 }
 func (v *SFTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 
@@ -729,11 +729,34 @@ type sftpFileWrapper struct {
 }
 
 func (w *sftpFileWrapper) Size() int64 { return w.size }
+func (w *sftpFileWrapper) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessNativeRange
+}
 func (w *sftpFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
-	return w.File.ReadAt(p, off)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = w.File.Close() })
+	n, err := w.File.ReadAt(p, off)
+	if !stop() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return n, ctxErr
+		}
+	}
+	return n, err
 }
 func (w *sftpFileWrapper) Read(ctx context.Context, p []byte) (int, error) {
-	return w.File.Read(p)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = w.File.Close() })
+	n, err := w.File.Read(p)
+	if !stop() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return n, ctxErr
+		}
+	}
+	return n, err
 }
 
 // Readlink and Symlink make SFTPVFS a vfs.SymlinkVFS. The protocol has both

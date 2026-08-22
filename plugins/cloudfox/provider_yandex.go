@@ -769,7 +769,7 @@ func (b *yandexDiskBackend) SetAttributes(context.Context, string, vfs.VFSItem) 
 }
 
 func (b *yandexDiskBackend) Capabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: true, HasRandomAccess: false, HasAtomicNoReplaceRename: true}
+	return vfs.VFSCapabilities{HasServerSideCopy: true, HasServerSideMove: true, HasRandomAccess: false, HasAtomicNoReplaceRename: true, ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassNetwork}
 }
 
 func (b *yandexDiskBackend) Close() error {

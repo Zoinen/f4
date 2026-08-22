@@ -15,6 +15,7 @@
 class QQmlEngine;
 class QTimer;
 class F4IconSet;
+class QtMediaClient;
 
 class F4GalleryBridge final : public QObject
 {
@@ -29,7 +30,8 @@ class F4GalleryBridge final : public QObject
 
 public:
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
-                             F4IconSet *iconSet = nullptr);
+                             F4IconSet *iconSet = nullptr,
+                             QtMediaClient *mediaClient = nullptr);
     ~F4GalleryBridge() override;
 
     bool available() const;
@@ -79,6 +81,8 @@ signals:
     void benchmarkFrameSwapped(qulonglong serial);
 
 private:
+    friend class F4GalleryBridgeTests;
+
     struct SideState {
         bool initialized = false;
         QString panelId;

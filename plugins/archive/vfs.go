@@ -572,6 +572,10 @@ func (w *archiveReadWrapper) LocalPath() (string, bool) {
 	return w.tmpPath, w.extracted && w.tmpPath != ""
 }
 
+func (w *archiveReadWrapper) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
+}
+
 func (w *archiveReadWrapper) extractToTemp(ctx context.Context) error {
 	w.mu.Lock()
 	v := w.v
@@ -1259,7 +1263,7 @@ func (v *ArchiveVFS) SetAttributes(ctx context.Context, path string, item vfs.VF
 }
 
 func (v *ArchiveVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: runtime.GOOS != "windows"}
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: runtime.GOOS != "windows", ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassVirtual}
 }
 func (v *ArchiveVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 func (v *ArchiveVFS) Close() error {

@@ -1,4 +1,5 @@
 #include "F4GalleryBridge.h"
+#include "F4ImageSourceProvider.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
 
@@ -101,7 +102,8 @@ qreal availableDevicePixelRatio()
 }
 
 F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
-                                 F4IconSet *iconSet)
+                                 F4IconSet *iconSet,
+                                 QtMediaClient *mediaClient)
     : QObject(parent)
     , m_iconSet(iconSet)
 {
@@ -132,6 +134,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     // the bridge no longer creates one OS thread per logical CPU.
     options.maxDecodeThreads = 4;
     options.persistentCache = true;
+    if (mediaClient) {
+        options.imageSourceProvider =
+            QSharedPointer<F4ImageSourceProvider>::create(mediaClient);
+    }
     auto *runtime = ZoinGallery::GalleryRuntime::install(engine, options);
     m_runtime = runtime;
     if (!runtime) {
@@ -1299,6 +1305,17 @@ QVariantList F4GalleryBridge::normalizedEntries(
     entries.reserve(sourceEntries.size());
     for (qsizetype row = 0; row < sourceEntries.size(); ++row) {
         const QVariantMap source = sourceEntries[row].toMap();
+        const QVariantMap descriptor = source.value(
+            QStringLiteral("source")).toMap();
+        const auto descriptorValue = [&source, &descriptor](
+                                         const QString &key,
+                                         const QString &legacyKey = QString()) {
+            if (descriptor.contains(key)) {
+                return descriptor.value(key);
+            }
+            const QString fallback = legacyKey.isEmpty() ? key : legacyKey;
+            return source.value(fallback);
+        };
         QVariantMap entry;
         entry.insert(QStringLiteral("entryId"), source.value(QStringLiteral("entryId")));
         entry.insert(QStringLiteral("index"), source.value(QStringLiteral("index"), row));
@@ -1316,6 +1333,36 @@ QVariantList F4GalleryBridge::normalizedEntries(
                          source.value(QStringLiteral("displayExtension")));
         }
         entry.insert(QStringLiteral("localPath"), source.value(QStringLiteral("localPath")));
+        // Preserve broker identities as opaque values. They must never be
+        // reconstructed from a temporary local path, narrowed to an integer,
+        // or canonicalized by the host.
+        const QVariant resourceId = descriptorValue(QStringLiteral("resourceId"));
+        if (resourceId.isValid()) {
+            entry.insert(QStringLiteral("resourceId"), resourceId);
+        }
+        const QVariant sourceKey = descriptorValue(QStringLiteral("sourceKey"));
+        if (sourceKey.isValid()) {
+            entry.insert(QStringLiteral("sourceKey"), sourceKey);
+        }
+        QVariant contentVersion = descriptorValue(QStringLiteral("version"));
+        if (!contentVersion.isValid()) {
+            contentVersion = descriptorValue(QStringLiteral("contentVersion"));
+        }
+        if (contentVersion.isValid()) {
+            entry.insert(QStringLiteral("contentVersion"), contentVersion);
+            entry.insert(QStringLiteral("version"), contentVersion);
+        }
+        for (const QString &key : {
+                 QStringLiteral("versionStrength"),
+                 QStringLiteral("storageClass"),
+                 QStringLiteral("accessProfile"),
+                 QStringLiteral("mimeType"),
+                 QStringLiteral("sizeKnown")}) {
+            const QVariant value = descriptorValue(key);
+            if (value.isValid()) {
+                entry.insert(key, value);
+            }
+        }
         entry.insert(QStringLiteral("isDir"), source.value(QStringLiteral("isDir")));
         entry.insert(QStringLiteral("isUp"), source.value(QStringLiteral("isUp")));
         entry.insert(QStringLiteral("isHidden"),
@@ -1325,7 +1372,7 @@ QVariantList F4GalleryBridge::normalizedEntries(
         }
         entry.insert(QStringLiteral("selected"), source.value(QStringLiteral("selected")));
         entry.insert(QStringLiteral("mtimeNs"), source.value(QStringLiteral("mtimeNanos")));
-        entry.insert(QStringLiteral("size"), source.value(QStringLiteral("size")));
+        entry.insert(QStringLiteral("size"), descriptorValue(QStringLiteral("size")));
         entry.insert(QStringLiteral("sizeText"), source.value(QStringLiteral("sizeText")));
         entry.insert(QStringLiteral("sizeCalculated"),
                      source.value(QStringLiteral("sizeCalculated")));
@@ -1486,8 +1533,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const QString cursorEntryId = panel.value(QStringLiteral("cursorEntryId")).toString();
     const int cursorIndex = panel.value(QStringLiteral("cursor"), -1).toInt();
     const QString sourceKind = panel.value(QStringLiteral("sourceKind"), QStringLiteral("vfs")).toString();
-    const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool()
-        && sourceKind == QStringLiteral("local");
+    const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool();
     const bool active = panel.value(QStringLiteral("active")).toBool();
     const bool loading = panel.value(QStringLiteral("loading")).toBool();
     const bool catalogProvisional = panel.value(

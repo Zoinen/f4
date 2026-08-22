@@ -457,7 +457,7 @@ func (s *SyncVFS) Rename(ctx context.Context, oldPath, newPath string) error {
 }
 
 func (s *SyncVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true}
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true, ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassVirtual}
 }
 
 func (s *SyncVFS) Search(context.Context, string, string) (chan int64, error) {
@@ -580,6 +580,16 @@ func (f *syncReadFile) Size() int64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.size
+}
+
+func (f *syncReadFile) LocalPath() (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tmp, f.temp != nil && f.tmp != ""
+}
+
+func (f *syncReadFile) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessMaterializeOnce
 }
 
 func (f *syncReadFile) Read(ctx context.Context, p []byte) (int, error) {

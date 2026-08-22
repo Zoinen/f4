@@ -77,7 +77,50 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	commitMediaPanelsForSemanticScene(legacy)
 	return scene.ToMap()
+}
+
+func semanticMediaPanelIDs(legacy map[string]any) []string {
+	seen := make(map[string]struct{})
+	panelIDs := make([]string, 0, 4)
+	collectFrames := func(frames []map[string]any) {
+		for _, frame := range frames {
+			kind := semanticString(frame["kind"])
+			if kind != "panels" && kind != "shell" {
+				continue
+			}
+			for _, panel := range appMapSlice(frame["panels"]) {
+				panelID := semanticString(panel["id"])
+				if panelID == "" {
+					continue
+				}
+				if _, duplicate := seen[panelID]; duplicate {
+					continue
+				}
+				seen[panelID] = struct{}{}
+				panelIDs = append(panelIDs, panelID)
+			}
+		}
+	}
+
+	// screens is the authoritative complete workspace set. frames is retained
+	// only as a compatibility fallback for callers constructing a legacy scene
+	// by hand without a screens field.
+	if screens, present := legacy["screens"]; present {
+		for _, screen := range appMapSlice(screens) {
+			collectFrames(appMapSlice(screen["frames"]))
+		}
+	} else {
+		collectFrames(appMapSlice(legacy["frames"]))
+	}
+	return panelIDs
+}
+
+func commitMediaPanelsForSemanticScene(legacy map[string]any) {
+	if broker := currentExtUiMediaBroker(); broker != nil {
+		broker.CommitScenePanels(semanticMediaPanelIDs(legacy))
+	}
 }
 
 // appQueueAwareWorkspaceTabs keeps vtui's stable workspace identity while

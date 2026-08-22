@@ -142,6 +142,10 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.h"
@@ -507,6 +511,31 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME QtShellControllerTest COMMAND QtShellControllerTests)
 
+  add_executable(QtMediaClientTests
+    tests/QtMediaClientTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/QtShellController.h
+    src/QtShellController.cpp
+  )
+  target_include_directories(QtMediaClientTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(QtMediaClientTests PRIVATE
+    F4_MEDIA_CLIENT_TESTING=1
+  )
+  target_link_libraries(QtMediaClientTests PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(QtMediaClientTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(QtMediaClientTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
+  add_test(NAME QtMediaClientTest COMMAND QtMediaClientTests)
+
   add_executable(WindowGeometryPersistenceTests
     tests/WindowGeometryPersistenceTests.cpp
     src/WindowGeometryPersistence.h
@@ -529,6 +558,10 @@ if(BUILD_TESTING)
 
   add_executable(F4GalleryBridgeTests
     tests/F4GalleryBridgeTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/F4ImageSourceProvider.h
+    src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
     src/F4IconProvider.h
@@ -542,6 +575,7 @@ if(BUILD_TESTING)
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Network
     Qt6::Svg
     Qt6::Test
   )
@@ -555,16 +589,25 @@ if(BUILD_TESTING)
     ZoinGallery::Core
     ZoinGallery::Qml
   )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(F4GalleryBridgeTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(F4GalleryBridgeTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
   f4_link_static_zoingallery_plugin(F4GalleryBridgeTests)
   f4_link_static_test_platform(F4GalleryBridgeTests)
   f4_link_static_test_qml_plugins(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 
   add_executable(F4GalleryPointerTests
     tests/F4GalleryPointerTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/F4ImageSourceProvider.h
+    src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
     src/F4IconProvider.h
@@ -604,6 +647,6 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
   set_tests_properties(F4GalleryPointerTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 endif()
