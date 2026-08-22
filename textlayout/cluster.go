@@ -13,6 +13,8 @@ type VisualCluster struct {
 	Text       string
 	Width      int
 	Start, End int
+	RuneStart  int
+	RuneEnd    int
 }
 
 // VisualClusters segments a string once and returns its visual clusters. It
@@ -21,10 +23,10 @@ type VisualCluster struct {
 // character and turn long-line layout into quadratic work.
 func VisualClusters(s string) []VisualCluster {
 	clusters := make([]VisualCluster, 0, len(s))
-	previousStart, previousWidth := 0, 0
+	previousStart, previousWidth, previousRuneStart := 0, 0, 0
 	havePrevious := false
 
-	emit := func(start, end, width int) {
+	emit := func(start, end, width, runeStart, runeEnd int) {
 		if start >= end {
 			return
 		}
@@ -34,20 +36,21 @@ func VisualClusters(s string) []VisualCluster {
 			last.Text = s[last.Start:end]
 			last.End = end
 			last.Width = vtui.ClusterWidth(last.Text)
+			last.RuneEnd = runeEnd
 			return
 		}
-		clusters = append(clusters, VisualCluster{Text: raw, Width: width, Start: start, End: end})
+		clusters = append(clusters, VisualCluster{Text: raw, Width: width, Start: start, End: end, RuneStart: runeStart, RuneEnd: runeEnd})
 	}
 
-	vtui.ForEachClusterAt(s, func(_ string, width, offset, _ int) {
+	vtui.ForEachClusterAt(s, func(_ string, width, offset, runeIndex int) {
 		if havePrevious {
-			emit(previousStart, offset, previousWidth)
+			emit(previousStart, offset, previousWidth, previousRuneStart, runeIndex)
 		}
-		previousStart, previousWidth = offset, width
+		previousStart, previousWidth, previousRuneStart = offset, width, runeIndex
 		havePrevious = true
 	})
 	if havePrevious {
-		emit(previousStart, len(s), previousWidth)
+		emit(previousStart, len(s), previousWidth, previousRuneStart, utf8.RuneCountInString(s))
 	}
 	return clusters
 }
@@ -74,6 +77,19 @@ func startsWithLetter(s string) bool {
 
 func endsInIndicVirama(s string) bool {
 	r, _ := utf8.DecodeLastRuneInString(s)
+	return isIndicVirama(r)
+}
+
+func containsIndicVirama(s string) bool {
+	for _, r := range s {
+		if isIndicVirama(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIndicVirama(r rune) bool {
 	switch r {
 	case
 		'\u094D',                     // Devanagari
@@ -101,4 +117,34 @@ func endsInIndicVirama(s string) bool {
 	default:
 		return false
 	}
+}
+
+// TrailingModifierStart returns the byte offset of a terminal script modifier
+// that the editor keeps as a separate backspace step. zoin-bot preserves the
+// established terminal behaviour for final Indic viramas and Thaana marks,
+// while ordinary Latin combining graphemes remain atomic.
+func TrailingModifierStart(s string) int {
+	r, size := utf8.DecodeLastRuneInString(s)
+	if size == 0 {
+		return -1
+	}
+	if containsIndicVirama(s) || isIndicScriptMark(r) || (r >= 0x0780 && r <= 0x07BF && unicode.Is(unicode.Mn, r)) {
+		return len(s) - size
+	}
+	return -1
+}
+
+func isIndicScriptMark(r rune) bool {
+	return (unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Mc, r)) && unicode.In(r,
+		unicode.Devanagari,
+		unicode.Bengali,
+		unicode.Gurmukhi,
+		unicode.Gujarati,
+		unicode.Oriya,
+		unicode.Tamil,
+		unicode.Telugu,
+		unicode.Kannada,
+		unicode.Malayalam,
+		unicode.Sinhala,
+	)
 }

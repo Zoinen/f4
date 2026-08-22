@@ -2,10 +2,12 @@ package textlayout
 
 import (
 	"bytes"
-	"github.com/unxed/f4/piecetable"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/unxed/f4/piecetable"
+	"github.com/unxed/vtui"
 )
 
 func TestWrapEngine_SimpleWrap(t *testing.T) {
@@ -30,6 +32,29 @@ func TestWrapEngine_SimpleWrap(t *testing.T) {
 		if text != expectedTexts[i] {
 			t.Errorf("Frag %d: expected %q, got %q", i, expectedTexts[i], text)
 		}
+	}
+}
+
+func TestWrapEngine_BidiCaretUsesVisualClusterOrder(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	text := "שלום"
+	pt := piecetable.New([]byte(text))
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.ToggleWrap(false)
+
+	if _, col := we.LogicalToVisual(0); col != 4 {
+		t.Fatalf("logical start visual column = %d, want 4", col)
+	}
+	if _, col := we.LogicalToVisual(len(text)); col != 0 {
+		t.Fatalf("logical end visual column = %d, want 0", col)
+	}
+	if got := we.VisualToLogical(0, 1); got != len(text)-2 {
+		t.Fatalf("visual column 1 logical offset = %d, want %d", got, len(text)-2)
 	}
 }
 

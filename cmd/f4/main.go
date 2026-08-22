@@ -546,6 +546,7 @@ func InitCore() *vtui.ScreenBuf {
 }
 
 func SetupUI() {
+	configureUnicodeInput()
 	vtui.ConfigDiskLogging(os.Getenv("VTUI_DEBUG") != "")
 	vtui.DebugLog("=== F4 STARTUP [%s] PID:%d ===", getFormattedVersionInfo(), os.Getpid())
 
@@ -724,6 +725,13 @@ func SetupUI() {
 		go CheckForUpdates(panels, false)
 		go CheckForPluginUpdates()
 	}
+}
+
+// configureUnicodeInput enables the full grapheme-aware visual caret mode
+// for every f4 input surface. zoin-bot keeps this explicit at the application
+// boundary so vtui remains backwards-compatible for other applications.
+func configureUnicodeInput() {
+	vtui.DefaultBidiMode = vtui.BidiFull
 }
 
 var getSessionIniPath = func() string {
