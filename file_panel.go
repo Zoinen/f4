@@ -533,6 +533,7 @@ type FileSystemPanel struct {
 	semanticSelectionInitialized bool
 	catalogRevision              int64
 	selectionRevision            int64
+	mediaSourceEpoch             int64
 	semanticStaticCache          *semanticPanelStaticCache
 }
 
