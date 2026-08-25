@@ -581,6 +581,17 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		fsp.pendingSelection = fsp.vfs.Base(oldPath)
 		fsp.ReadDirectory()
 		return true
+	case "panel_drive_menu", "panel.driveMenu":
+		side := pf.panelIndexForSemanticAction(action)
+		fsp := pf.panelForSemanticAction(action)
+		if side < 0 || fsp == nil {
+			return false
+		}
+		pf.setActivePanelForAction(action)
+		pf.lastKey = 0
+		fsp.clearFastFindForSemanticPointerIntent()
+		pf.showDriveMenu(side)
+		return true
 	case "panel_cursor", "panel.cursor":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			idx, ok := fsp.semanticEntryIndex(action)

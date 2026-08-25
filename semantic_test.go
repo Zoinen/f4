@@ -1496,6 +1496,32 @@ func TestPanelsFrameSemanticPanelNavigatePath(t *testing.T) {
 	}
 }
 
+func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	pf := &PanelsFrame{panels: [2]Panel{left, right}, activeIdx: 1}
+
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.driveMenu",
+		"side":   0,
+	}) {
+		t.Fatal("drive menu action was rejected")
+	}
+	if pf.activeIdx != 0 {
+		t.Fatalf("drive menu did not activate requested panel: %d", pf.activeIdx)
+	}
+	if menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu); !ok {
+		t.Fatalf("drive menu action opened %T instead of VMenu",
+			vtui.FrameManager.GetTopFrame())
+	} else if menu.GetTitle() != Msg("Drive.Title") {
+		t.Fatalf("drive menu title = %q, want %q", menu.GetTitle(), Msg("Drive.Title"))
+	}
+	vtui.FrameManager.Pop()
+}
+
 func TestPanelViewModeCommandsAlsoSelectUnifiedLayouts(t *testing.T) {
 	panel := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
 	if panel.cancelLoad != nil {

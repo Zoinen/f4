@@ -1,6 +1,7 @@
 #include "DummyQWK.h"
 
 #include <QAccessible>
+#include <QColor>
 #include <QCoreApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -8,6 +9,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QWheelEvent>
@@ -146,6 +148,23 @@ public:
     bool fileIconsAreFullColor() const { return false; }
 
     Q_INVOKABLE QUrl iconSource(const QString &, int, qreal) const { return {}; }
+    Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
+                                            int logicalSize,
+                                            qreal devicePixelRatio,
+                                            const QColor &tint) const
+    {
+        QUrl source(QStringLiteral("qrc:/F4QtHost/icons/lucide/%1.svg")
+                        .arg(name));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("size"),
+                           QString::number(logicalSize));
+        query.addQueryItem(QStringLiteral("dpr"),
+                           QString::number(devicePixelRatio, 'g', 12));
+        query.addQueryItem(QStringLiteral("color"),
+                           tint.name(QColor::HexArgb));
+        source.setQuery(query);
+        return source;
+    }
     Q_INVOKABLE QUrl fileIconSource(const QString &, const QString &, bool,
                                     int, qreal, qlonglong) const
     {
@@ -1068,12 +1087,24 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
              QColor(QStringLiteral("#2a3745")));
     QCOMPARE(path->property("pathItemPressedColor").value<QColor>(),
              QColor(QStringLiteral("#10161e")));
-    QCOMPARE(path->property("localDriveIconSource").toUrl(),
-             QUrl(QStringLiteral(
-                 "qrc:/F4QtHost/icons/lucide/hard-drive.svg")));
-    QCOMPARE(path->property("networkDriveIconSource").toUrl(),
-             QUrl(QStringLiteral(
-                 "qrc:/F4QtHost/icons/lucide/network.svg")));
+    const QUrl localDriveSource = path->property(
+        "localDriveIconSource").toUrl();
+    const QUrl networkDriveSource = path->property(
+        "networkDriveIconSource").toUrl();
+    QCOMPARE(localDriveSource.path(),
+             QStringLiteral("/F4QtHost/icons/lucide/hard-drive.svg"));
+    QCOMPARE(networkDriveSource.path(),
+             QStringLiteral("/F4QtHost/icons/lucide/network.svg"));
+    QCOMPARE(QUrlQuery(localDriveSource).queryItemValue(
+                 QStringLiteral("size")), QStringLiteral("18"));
+    QCOMPARE(QUrlQuery(networkDriveSource).queryItemValue(
+                 QStringLiteral("size")), QStringLiteral("18"));
+    QCOMPARE(QColor(QUrlQuery(localDriveSource).queryItemValue(
+                 QStringLiteral("color"))),
+             QColor(QStringLiteral("#e8edf2")));
+    QCOMPARE(QColor(QUrlQuery(networkDriveSource).queryItemValue(
+                 QStringLiteral("color"))),
+             QColor(QStringLiteral("#e8edf2")));
     QVERIFY(!pulse->isVisible());
     QCOMPARE(sortLabel->property("text").toString(), QStringLiteral("Name"));
     QCOMPARE(sortDirection->property("lucideName").toString(),
@@ -1105,7 +1136,8 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
              QStringLiteral("panelSortChoiceCheck-name-0"))), 1000);
     QVERIFY(sortNameCheck->isVisible());
     QVERIFY(sortNameCheck->x() < sortNameLabel->x());
-    QCOMPARE(sortNameCheck->property("activeColor").value<QColor>(),
+    QCOMPARE(QColor(QUrlQuery(sortNameCheck->property("source").toUrl())
+                 .queryItemValue(QStringLiteral("color"))),
              QColor(QStringLiteral("#4e9bd4")));
     const QPoint firstSortChoice(
         qRound(sortMenu->property("x").toReal()

@@ -148,6 +148,10 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/WindowGeometryPersistence.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/WindowGeometryPersistence.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ThemePersistence.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ThemePersistence.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.cpp"
 )
 
 set(F4_LUCIDE_ICON_NAMES
@@ -162,6 +166,7 @@ set(F4_LUCIDE_ICON_NAMES
   circle-play.svg
   circle-x.svg
   chevron-down.svg
+  chevron-right.svg
   clock-3.svg
   columns-2.svg
   columns-3.svg
@@ -193,9 +198,14 @@ set(F4_LUCIDE_ICON_NAMES
   network.svg
   panels-top-left.svg
   panel-left.svg
+  palette.svg
   plus.svg
+  refresh-cw.svg
+  rotate-ccw.svg
   rows-3.svg
   rows-4.svg
+  save.svg
+  search.svg
   square-terminal.svg
   trash-2.svg
   triangle-alert.svg
@@ -235,6 +245,32 @@ if(F4_QT_STATIC)
   include(cmake/f4-qt-host-target/CMakeLists.txt)
 else()
   add_subdirectory(cmake/f4-qt-host-target)
+endif()
+
+# ZoinGallery's QML tests are created before the host target is included, so
+# they cannot use the static-test helpers declared in the BUILD_TESTING block
+# below.  Give their executables the same self-contained Qt platform and QML
+# plugin set as the production host; otherwise a static test falls back to
+# runtime plugin discovery and can block on Qt's platform-plugin error dialog.
+if(F4_QT_STATIC)
+  foreach(F4_ZOIN_STATIC_QML_TEST_TARGET IN ITEMS
+      ZoinGallerySessionTests
+      ZoinGalleryQmlInteractionTests
+      ZoinGalleryReusableViewerPrimitivesTests
+      ZoinGalleryPanelGestureTests
+      ZoinGalleryMasonryLayoutModesTests
+      ZoinGalleryStandaloneShellSmokeTests)
+        if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
+          target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+          target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+            ${F4_REQUIRED_STATIC_QT_PLUGINS}
+            ${F4_REQUIRED_STATIC_QML_PLUGINS}
+            "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+        endif()
+  endforeach()
 endif()
 
 if(F4_PORTABLE_STATIC)
@@ -323,6 +359,11 @@ if(BUILD_TESTING)
       BASE "${F4_GALLERY_LUCIDE_DIR}"
       FILES ${F4_GALLERY_LUCIDE_ICONS}
     )
+    qt6_add_resources(${target} ${target}_f4_app_icon
+      PREFIX "/F4QtHost/icons/app"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon"
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/f4.svg"
+    )
   endfunction()
 
   function(f4_link_static_test_platform target)
@@ -331,6 +372,10 @@ if(BUILD_TESTING)
         tests/StaticQtTestPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
+      if(WIN32)
+        target_link_libraries(${target} PRIVATE
+          Qt6::QWindowsIntegrationPlugin)
+      endif()
     endif()
   endfunction()
 
@@ -344,6 +389,18 @@ if(BUILD_TESTING)
     endif()
   endfunction()
 
+  function(f4_link_static_test_image_plugins target)
+    if(F4_QT_STATIC)
+      target_sources(${target} PRIVATE
+        tests/StaticQtImagePluginImports.cpp)
+      target_link_libraries(${target} PRIVATE
+        Qt6::QGifPlugin
+        Qt6::QIcoPlugin
+        Qt6::QJpegPlugin
+        Qt6::QSvgPlugin)
+    endif()
+  endfunction()
+
   add_executable(F4IconProviderTests
     tests/F4IconProviderTests.cpp
     src/F4IconProvider.h
@@ -354,14 +411,21 @@ if(BUILD_TESTING)
   target_link_libraries(F4IconProviderTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Qml
     Qt6::Quick
     Qt6::Svg
     Qt6::Test
   )
   f4_link_static_test_platform(F4IconProviderTests)
+  f4_link_static_test_qml_plugins(F4IconProviderTests)
   add_test(NAME F4IconProviderTest COMMAND F4IconProviderTests)
   set_tests_properties(F4IconProviderTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4IconProviderFractionalDprFramebufferTest
+    COMMAND F4IconProviderTests lucideFramebufferMatchesDirectSvgRender)
+  set_tests_properties(F4IconProviderFractionalDprFramebufferTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
   # Windows CI runs in headless Session 0, where the Shell file-icon provider
   # can block indefinitely. The PE audit plus the offscreen production-host
@@ -370,10 +434,32 @@ if(BUILD_TESTING)
   if(APPLE)
     add_test(NAME F4IconProviderNativeSmoke
       COMMAND F4IconProviderTests nativePlatformFileIconSmoke)
-    set_tests_properties(F4IconProviderNativeSmoke PROPERTIES
+  set_tests_properties(F4IconProviderNativeSmoke PROPERTIES
       ENVIRONMENT "QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
     )
   endif()
+
+  add_executable(F4TextRenderingPolicyTests
+    tests/F4TextRenderingPolicyTests.cpp
+    src/F4TextRenderingPolicy.h
+    src/F4TextRenderingPolicy.cpp
+  )
+  target_include_directories(F4TextRenderingPolicyTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(F4TextRenderingPolicyTests PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::Test
+  )
+  f4_link_static_test_platform(F4TextRenderingPolicyTests)
+  f4_link_static_test_qml_plugins(F4TextRenderingPolicyTests)
+  add_test(NAME F4TextRenderingPolicyTest COMMAND F4TextRenderingPolicyTests)
+  set_tests_properties(F4TextRenderingPolicyTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
 
   add_executable(F4PanelSplitterTests
     tests/F4PanelSplitterTests.cpp
@@ -461,6 +547,8 @@ if(BUILD_TESTING)
   add_executable(F4QuickViewSurfaceTests
     tests/F4QuickViewSurfaceTests.cpp
     src/DummyQWK.h
+    src/F4TextRenderingPolicy.h
+    src/F4TextRenderingPolicy.cpp
   )
   target_include_directories(F4QuickViewSurfaceTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -479,15 +567,46 @@ if(BUILD_TESTING)
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Svg
     Qt6::Test
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4QuickViewSurfaceTests)
   f4_link_static_test_platform(F4QuickViewSurfaceTests)
   f4_link_static_test_qml_plugins(F4QuickViewSurfaceTests)
+  f4_link_static_test_image_plugins(F4QuickViewSurfaceTests)
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewIconPixelGridTest
+    COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
+  set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewPanelDriveButtonTest
+    COMMAND F4QuickViewSurfaceTests
+      panelDriveButtonUsesPathIconAndRequestsDriveMenu)
+  set_tests_properties(F4QuickViewPanelDriveButtonTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewTextPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      workspaceTabTextParentsStayOnPhysicalPixelGrid)
+  set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewPathBreadcrumbPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      pathBreadcrumbTextStaysFixedWhenNavigatingDeeper)
+  set_tests_properties(F4QuickViewPathBreadcrumbPixelGridTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewThemeDialogPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      themeDialogControlsStayOnPhysicalPixelGridAt175Percent)
+  set_tests_properties(F4QuickViewThemeDialogPixelGridTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
 
   add_executable(QtShellControllerTests
@@ -505,8 +624,16 @@ if(BUILD_TESTING)
   )
   target_compile_definitions(QtShellControllerTests PRIVATE
     F4_QT_HOST_TEST_EXECUTABLE="$<TARGET_FILE:f4-qt-host>"
-    F4_QT_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:Qt6::Core>"
   )
+  if(F4_QT_STATIC)
+    target_compile_definitions(QtShellControllerTests PRIVATE
+      F4_QT_RUNTIME_DIRECTORY=""
+    )
+  else()
+    target_compile_definitions(QtShellControllerTests PRIVATE
+      F4_QT_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:Qt6::Core>"
+    )
+  endif()
   if(USE_QWK)
     target_compile_definitions(QtShellControllerTests PRIVATE
       F4_QWK_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:QWindowKit::Quick>"

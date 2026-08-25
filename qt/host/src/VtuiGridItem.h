@@ -72,6 +72,14 @@ public:
     // as keyPressEvent instead of sending a literal Ctrl/Cmd+V to Go.
     Q_INVOKABLE void sendClipboardPaste();
     Q_INVOKABLE void sendQtText(const QString &text);
+    // Semantic panels use these entry points when the user explicitly opts
+    // into the classic F4 console wheel contract.  Coordinates are in this
+    // item's local logical coordinate system, so conversion to terminal
+    // cells stays identical to native mouse/wheel events (including HiDPI).
+    Q_INVOKABLE void sendQtMouseAt(qreal x, qreal y, int button, bool down,
+                                   int modifiers);
+    Q_INVOKABLE void sendQtWheelAt(qreal x, qreal y, int angleDeltaY,
+                                   int modifiers);
 
 signals:
     void controllerChanged();

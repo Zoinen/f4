@@ -9,6 +9,7 @@ FocusScope {
     property var panel: ({})
     property var bridge: null
     property var keySink: null
+    property string mouseWheelMode: "gui"
     property var theme: ({})
     property var metrics: ({})
     property var hostCapabilities: ({
@@ -459,6 +460,22 @@ FocusScope {
         }
     }
 
+    function forwardConsoleWheel(x, y, angleDeltaY, modifiers) {
+        if (!host.keySink
+                || typeof host.keySink.sendQtWheelAt !== "function")
+            return
+        const point = galleryPanel.mapToItem(host.keySink, x, y)
+        host.keySink.sendQtWheelAt(point.x, point.y, angleDeltaY, modifiers)
+    }
+
+    function forwardConsoleMouseButton(x, y, button, down, modifiers) {
+        if (!host.keySink
+                || typeof host.keySink.sendQtMouseAt !== "function")
+            return
+        const point = galleryPanel.mapToItem(host.keySink, x, y)
+        host.keySink.sendQtMouseAt(point.x, point.y, button, down, modifiers)
+    }
+
     function commanderOwnsKey(event) {
         // Bare Shift owns the lifetime of Zoin Gallery's range-selection
         // preview. Let the child observe its press/release instead of sending
@@ -566,6 +583,7 @@ FocusScope {
         showCursor: host.panelActive
         focus: host.panelActive
         autoFocus: host.panelActive
+        mouseWheelMode: host.mouseWheelMode
         benchmarkTracingEnabled: host.benchmarkTracingEnabled
 
         onActivateRequested: {
@@ -592,6 +610,12 @@ FocusScope {
         }
         onBenchmarkStage: (stage, metadata) => {
             host.forwardBenchmarkStage(stage, metadata)
+        }
+        onConsoleWheelRequested: (x, y, angleDeltaY, modifiers) => {
+            host.forwardConsoleWheel(x, y, angleDeltaY, modifiers)
+        }
+        onConsoleMouseButtonRequested: (x, y, button, down, modifiers) => {
+            host.forwardConsoleMouseButton(x, y, button, down, modifiers)
         }
     }
 

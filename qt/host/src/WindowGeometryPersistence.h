@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QObject>
+#include <QMargins>
 #include <QRect>
+#include <QSize>
 #include <QString>
 #include <QTimer>
 
@@ -51,7 +53,8 @@ public:
         const PersistedWindowGeometry &stored,
         const QList<WindowScreenGeometry> &screens,
         const QString &primaryScreenName,
-        const QSize &minimumSize = QSize(320, 240));
+        const QSize &minimumSize = QSize(320, 240),
+        const QMargins &frameMargins = {});
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -59,7 +62,10 @@ protected:
 private:
     bool restoreImpl(bool deferShow);
     void applyRestoredWindowState();
+    void applyNormalGeometryWithCurrentFrame();
+    void scheduleRestoreStabilization();
     void rememberWindowedGeometry();
+    QSize minimumRestoreSize() const;
     PersistedWindowState currentPersistentState() const;
 
     QWindow *m_window = nullptr;

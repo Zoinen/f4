@@ -260,6 +260,7 @@ private slots:
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
     void semanticImeCommitUsesTextProtocol();
     void semanticKeyRepeatSuppressesSyntheticRelease();
+    void semanticGridForwardsConsolePointerEvents();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
     void quickSearchMatchMarkupTracksPanelStateAndPalette();
     void panelCapturesPointerAndAppliesSelectionModifiers();
@@ -478,6 +479,88 @@ void F4GalleryPointerTests::semanticKeyRepeatSuppressesSyntheticRelease()
                         Qt::NoModifier, 0, false);
     QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
     verifyKey(payload, false, false);
+}
+
+void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("console-pointer-test-nonce"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray wireBuffer;
+    QByteArray payload;
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    QCOMPARE(protocolStringFields(payload).value(QStringLiteral("type")),
+             QStringLiteral("hello"));
+
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    QVERIFY(QMetaObject::invokeMethod(
+        &grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('A'))));
+    const qreal pointerX = grid.cellWidth() * 2 + 0.25;
+    const qreal pointerY = grid.cellHeight() + 0.25;
+
+    // Match native wheelEvent's 120-unit remainder conversion: an incomplete
+    // step is retained, and the second half-step emits one wheel message.
+    grid.sendQtWheelAt(pointerX, pointerY, 60, Qt::ShiftModifier);
+    QTest::qWait(30);
+    wireBuffer.append(peer->readAll());
+    QVERIFY2(wireBuffer.isEmpty(),
+             "a partial console wheel step reached the Go protocol");
+    grid.sendQtWheelAt(pointerX, pointerY, 60, Qt::ShiftModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("wheel"));
+        QCOMPARE(message.at("x").as<qint64>(), qint64(2));
+        QCOMPARE(message.at("y").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("dir").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("mods").as<qint64>(), qint64(0x0010));
+    }
+
+    // Middle down/up use the same cell and button-state mapping as native
+    // VtuiGridItem mouse events. Go turns the down event into Enter without a
+    // panel-coordinate selection operation.
+    grid.sendQtMouseAt(pointerX, pointerY, int(Qt::MiddleButton), true,
+                       Qt::ControlModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("x").as<qint64>(), qint64(2));
+        QCOMPARE(message.at("y").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0x0004));
+        QCOMPARE(message.at("flags").as<qint64>(), qint64(0));
+        QCOMPARE(message.at("down").as<bool>(), true);
+        QCOMPARE(message.at("mods").as<qint64>(), qint64(0x0008));
+    }
+    grid.sendQtMouseAt(pointerX, pointerY, int(Qt::MiddleButton), false,
+                       Qt::ControlModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("down").as<bool>(), false);
+    }
 }
 
 void F4GalleryPointerTests::viewerCaptureSurvivesHiddenGridFocusSlip()
@@ -924,14 +1007,27 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
                            QStringLiteral("entry-4")}));
 
     first = actions.size();
-    QVERIFY(rowFour->property("acceptedButtons").toInt()
+    QVERIFY(!(rowFour->property("acceptedButtons").toInt()
+              & int(Qt::MiddleButton)));
+    QQuickItem *const middleButtonArea = panel->findChild<QQuickItem *>(
+        QStringLiteral("galleryMiddleButtonArea"));
+    QVERIFY(middleButtonArea);
+    QVERIFY(middleButtonArea->property("acceptedButtons").toInt()
             & int(Qt::MiddleButton));
+    // Middle-click is panel chrome, not a tile activation. In the default GUI
+    // mode the first click arms the shared auto-scroll gesture and a second
+    // click toggles it off; neither click changes the Go-side selection.
     QTest::mouseClick(&view, Qt::MiddleButton, Qt::NoModifier,
                       itemCenter(rowFour));
-    bridge.synchronizeScene(galleryScene(18, 4));
-    QCOMPARE(firstActionSince(actions, first, QStringLiteral("panel.open"))
-                 .value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("entry-4"));
+    QVERIFY(firstActionSince(actions, first, QStringLiteral("panel.open"))
+                .isEmpty());
+    QVERIFY(firstActionSince(actions, first,
+                             QStringLiteral("panel.setSelection")).isEmpty());
+    QVERIFY(panel->property("scrollingMode").toBool());
+    QTest::mouseClick(&view, Qt::MiddleButton, Qt::NoModifier,
+                      itemCenter(rowFour));
+    QTRY_VERIFY_WITH_TIMEOUT(!panel->property("scrollingMode").toBool(),
+                             1000);
 
     first = actions.size();
     QTest::mouseDClick(&view, Qt::LeftButton, Qt::NoModifier,

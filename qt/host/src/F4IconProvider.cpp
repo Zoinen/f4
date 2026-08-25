@@ -83,25 +83,61 @@ const QSet<QString> &lucideIconNames()
 {
     static const QSet<QString> names{
         QStringLiteral("archive"),
+        QStringLiteral("arrow-down"),
+        QStringLiteral("arrow-down-a-z"),
+        QStringLiteral("arrow-down-wide-narrow"),
+        QStringLiteral("arrow-up"),
         QStringLiteral("book-open"),
         QStringLiteral("check"),
+        QStringLiteral("circle-check"),
+        QStringLiteral("circle-play"),
+        QStringLiteral("circle-x"),
+        QStringLiteral("chevron-down"),
+        QStringLiteral("chevron-right"),
+        QStringLiteral("clock-3"),
+        QStringLiteral("columns-2"),
+        QStringLiteral("columns-3"),
         QStringLiteral("database"),
         QStringLiteral("file"),
         QStringLiteral("file-clock"),
         QStringLiteral("file-code"),
         QStringLiteral("file-cog"),
         QStringLiteral("file-lock"),
+        QStringLiteral("file-pen-line"),
         QStringLiteral("file-text"),
+        QStringLiteral("file-type"),
         QStringLiteral("folder"),
         QStringLiteral("folder-kanban"),
         QStringLiteral("folder-lock"),
         QStringLiteral("folder-up"),
         QStringLiteral("globe"),
+        QStringLiteral("grid-3x3"),
+        QStringLiteral("hard-drive"),
         QStringLiteral("image"),
+        QStringLiteral("images"),
+        QStringLiteral("layout-dashboard"),
         QStringLiteral("library"),
+        QStringLiteral("list"),
+        QStringLiteral("list-checks"),
+        QStringLiteral("list-tree"),
+        QStringLiteral("loader-circle"),
         QStringLiteral("music"),
+        QStringLiteral("network"),
+        QStringLiteral("panel-left"),
+        QStringLiteral("panels-top-left"),
+        QStringLiteral("palette"),
+        QStringLiteral("plus"),
+        QStringLiteral("refresh-cw"),
+        QStringLiteral("rotate-ccw"),
+        QStringLiteral("rows-3"),
+        QStringLiteral("rows-4"),
+        QStringLiteral("save"),
+        QStringLiteral("search"),
         QStringLiteral("square-terminal"),
+        QStringLiteral("trash-2"),
+        QStringLiteral("triangle-alert"),
         QStringLiteral("video"),
+        QStringLiteral("x"),
     };
     return names;
 }
@@ -305,18 +341,20 @@ QColor fallbackTintColor()
     return color;
 }
 
-void tintMask(QImage &image)
+void tintMask(QImage &image, const QColor &requestedColor)
 {
     if (image.isNull()) {
         return;
     }
     image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     image.setDevicePixelRatio(1.0);
-    const QColor color = fallbackTintColor();
+    const QColor color = requestedColor.isValid()
+        ? requestedColor
+        : fallbackTintColor();
     for (int y = 0; y < image.height(); ++y) {
         auto *scanline = reinterpret_cast<QRgb *>(image.scanLine(y));
         for (int x = 0; x < image.width(); ++x) {
-            const int alpha = qAlpha(scanline[x]);
+            const int alpha = qAlpha(scanline[x]) * color.alpha() / 255;
             scanline[x] = qRgba(color.red() * alpha / 255,
                                 color.green() * alpha / 255,
                                 color.blue() * alpha / 255,
@@ -326,7 +364,7 @@ void tintMask(QImage &image)
 }
 
 QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
-                         int logicalSize)
+                         int logicalSize, const QColor &tint)
 {
     if (!targetSize.isValid()) {
         return {};
@@ -345,7 +383,7 @@ QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
     }
     renderer.render(&painter, QRectF(QPointF(0, 0), QSizeF(targetSize)));
     painter.end();
-    tintMask(image);
+    tintMask(image, tint);
     return image;
 }
 
@@ -368,7 +406,7 @@ QPixmap paletteTintedMask(QPixmap pixmap)
     const qreal devicePixelRatio = pixmap.devicePixelRatio();
     QImage tinted = pixmap.toImage().convertToFormat(
         QImage::Format_ARGB32_Premultiplied);
-    tintMask(tinted);
+    tintMask(tinted, fallbackTintColor());
     QPixmap result = QPixmap::fromImage(tinted);
     result.setDevicePixelRatio(devicePixelRatio);
     return result;
@@ -380,12 +418,14 @@ QString queryValue(const QUrlQuery &query, const QString &name)
 }
 }
 
-F4IconProvider::F4IconProvider(std::unique_ptr<F4IconProviderBackend> backend)
+F4IconProvider::F4IconProvider(std::unique_ptr<F4IconProviderBackend> backend,
+                               bool testPatternEnabled)
     : QQuickImageProvider(
           QQuickImageProvider::Image,
           QQmlImageProviderBase::ForceAsynchronousImageLoading)
     , m_backend(backend ? std::move(backend)
                         : std::make_unique<QtIconProviderBackend>())
+    , m_testPatternEnabled(testPatternEnabled)
 {
 }
 
@@ -438,6 +478,30 @@ QImage F4IconProvider::requestImage(const QString &id,
     if (!targetSize.isValid()) {
         targetSize = physicalSize(effectiveLogicalSize, devicePixelRatio);
     }
+
+    if (m_testPatternEnabled) {
+        targetSize.setWidth(std::max(1, targetSize.width()));
+        targetSize.setHeight(std::max(1, targetSize.height()));
+
+        // Diagnostic image for checking icon geometry and DPR handling: a
+        // solid white box with an exact one-physical-pixel black border.
+        QImage testImage(targetSize, QImage::Format_ARGB32_Premultiplied);
+        testImage.fill(Qt::white);
+        for (int x = 0; x < targetSize.width(); ++x) {
+            testImage.setPixelColor(x, 0, Qt::black);
+            testImage.setPixelColor(x, targetSize.height() - 1, Qt::black);
+        }
+        for (int y = 0; y < targetSize.height(); ++y) {
+            testImage.setPixelColor(0, y, Qt::black);
+            testImage.setPixelColor(targetSize.width() - 1, y, Qt::black);
+        }
+        testImage.setDevicePixelRatio(devicePixelRatio);
+        if (size) {
+            *size = QSize(effectiveLogicalSize, effectiveLogicalSize);
+        }
+        return testImage;
+    }
+
     // requestedSize is the physical texture size Qt Quick needs on the
     // current screen. Derive the render scale from it so moving a window
     // between screens with different DPRs cannot leave a Gallery/model URL
@@ -458,8 +522,13 @@ QImage F4IconProvider::requestImage(const QString &id,
     // the native icon-provider mutex.
     if (route == QStringLiteral("lucide")) {
         const QString iconName = normalizedIconName(primary);
+        const QColor requestedTint(
+            queryValue(query, QStringLiteral("color")));
         QImage image = renderLucideImage(iconName, targetSize,
-                                        effectiveLogicalSize);
+                                        effectiveLogicalSize,
+                                        requestedTint.isValid()
+                                            ? requestedTint
+                                            : fallbackTintColor());
         if (size && !image.isNull()) {
             *size = image.size();
         }
@@ -783,6 +852,38 @@ QUrl F4IconSet::iconSource(const QString &rawName,
                             logicalSize,
                             devicePixelRatio,
                             0);
+}
+
+QUrl F4IconSet::rasterizedLucideSource(const QString &rawName,
+                                       int logicalSize,
+                                       qreal devicePixelRatio) const
+{
+    const QString iconName = F4IconProvider::normalizedIconName(rawName);
+    return systemIconSource(QStringLiteral("lucide"),
+                            F4IconProvider::encodeRouteValue(iconName),
+                            logicalSize,
+                            devicePixelRatio,
+                            0);
+}
+
+QUrl F4IconSet::rasterizedLucideSource(const QString &rawName,
+                                       int logicalSize,
+                                       qreal devicePixelRatio,
+                                       const QColor &tint) const
+{
+    if (!tint.isValid()) {
+        return rasterizedLucideSource(rawName, logicalSize,
+                                     devicePixelRatio);
+    }
+
+    const QString iconName = F4IconProvider::normalizedIconName(rawName);
+    return systemIconSource(
+        QStringLiteral("lucide"),
+        F4IconProvider::encodeRouteValue(iconName),
+        logicalSize,
+        devicePixelRatio,
+        0,
+        {{QStringLiteral("color"), tint.name(QColor::HexArgb)}});
 }
 
 QUrl F4IconSet::fileIconSource(const QString &localPath,

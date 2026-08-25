@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Basic as T
 import QtQuick.Controls.impl
 import QtQuick.Layouts
+import QtQuick.Shapes
 import F4QtHost 1.0
 import ZoinGallery 1.0 as ZG
 import QWindowKit 1.0
@@ -12,6 +13,8 @@ ApplicationWindow {
 
     width: Math.max(720, Math.ceil(qtShell.initialCols * grid.cellWidth))
     height: Math.max(460, Math.ceil(qtShell.initialRows * grid.cellHeight))
+    minimumWidth: 320
+    minimumHeight: 240
     topPadding: 0
     leftPadding: 0
     rightPadding: 0
@@ -33,8 +36,13 @@ ApplicationWindow {
     readonly property int guiMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)
+    // Keep the QWK window surface opaque temporarily while the native
+    // Windows/macOS transparency paths are unstable. QML content may still
+    // use translucent colors inside the opaque window.
+    readonly property bool useSystemTransparentWindowBackground: false
     readonly property bool supportsTransparentWindowBackground:
-        f4UsesQwk && (Qt.platform.os === "windows" || Qt.platform.os === "osx")
+        useSystemTransparentWindowBackground && f4UsesQwk
+        && (Qt.platform.os === "windows" || Qt.platform.os === "osx")
     readonly property bool useTransparentWindowBackground:
         supportsTransparentWindowBackground && !isQWKLegacy
     readonly property bool useMacNativeTitleBar:
@@ -48,7 +56,8 @@ ApplicationWindow {
         ? macSystemButtonAreaLeftMargin + 74 : 0
     readonly property int macSystemButtonAreaLeftMargin: panelTextInset
     readonly property real titleBarContentVerticalOffset: 1
-    color: useTransparentWindowBackground ? "transparent" : "#101318"
+    property color windowBackgroundColor: "#1f242c"
+    color: useTransparentWindowBackground ? "transparent" : root.windowBackgroundColor
 
     // Gallery receives full catalogs directly in C++. Keep those row payloads
     // out of QML, where QVariant-to-JavaScript conversion would otherwise run
@@ -75,9 +84,144 @@ ApplicationWindow {
     property bool retainedShellSurfaceCreated: false
     property bool retainedDocumentSurfaceCreated: false
     property bool retainedOperationsQueueCreated: false
+    readonly property real dpr: root.screen ? root.screen.devicePixelRatio : 1.0
+    // Qt exposes the render-type policy globally through QQuickWindow. Keep
+    // the QML surface bound to the same policy so the setting can be edited
+    // live and persisted with the rest of the theme.
+    readonly property int fontRenderType:
+        typeof qtTextRendering !== "undefined" && qtTextRendering
+        ? qtTextRendering.renderType : Text.NativeRendering
+    readonly property var fontRenderTypeOptions:
+        typeof qtTextRendering !== "undefined" && qtTextRendering
+        ? qtTextRendering.options
+        : [
+            { value: Text.QtRendering,
+              name: "QtRendering",
+              description: "Qt distance-field rendering" },
+            { value: Text.NativeRendering,
+              name: "NativeRendering",
+              description: "Native platform text rasterization" }
+        ]
+    function fontRenderTypeOption(value) {
+        const options = root.fontRenderTypeOptions || []
+        for (let i = 0; i < options.length; ++i) {
+            if (Number(options[i].value) === Number(value))
+                return options[i]
+        }
+        return options.length > 0 ? options[0] : ({})
+    }
+    readonly property string fontRenderTypeName:
+        typeof qtTextRendering !== "undefined" && qtTextRendering
+        ? qtTextRendering.renderTypeName
+        : String(root.fontRenderTypeOption(root.fontRenderType).name || "NativeRendering")
+    readonly property string fontRenderTypeDescription:
+        String(root.fontRenderTypeOption(root.fontRenderType).description || "")
+    // Panel wheel input has two deliberately different contracts.  GUI mode
+    // is the product default: wheel steps scroll the current presentation and
+    // middle-click enters the reusable auto-scroll gesture.  Console mode is
+    // opt-in and forwards native wheel/middle-button messages to Go.
+    property string mouseWheelMode: "gui"
+    readonly property var mouseWheelModeOptions: [
+        { value: "console", name: "F4 console",
+          description: "Send wheel and middle-button events to the F4 panel" },
+        { value: "gui", name: "GUI scrolling",
+          description: "Smoothly scroll the panel and use middle-button auto-scroll" }
+    ]
+    function mouseWheelModeOption(value) {
+        const options = root.mouseWheelModeOptions || []
+        for (let i = 0; i < options.length; ++i) {
+            if (String(options[i].value) === String(value))
+                return options[i]
+        }
+        return options.length > 0 ? options[options.length - 1] : ({})
+    }
+    readonly property string mouseWheelModeName:
+        String(root.mouseWheelModeOption(root.mouseWheelMode).name
+               || "GUI scrolling")
+    readonly property string mouseWheelModeDescription:
+        String(root.mouseWheelModeOption(root.mouseWheelMode).description || "")
+
+    function setMouseWheelMode(value) {
+        const normalized = String(value || "").toLowerCase()
+        for (let i = 0; i < root.mouseWheelModeOptions.length; ++i) {
+            if (String(root.mouseWheelModeOptions[i].value) === normalized) {
+                root.mouseWheelMode = normalized
+                return true
+            }
+        }
+        return false
+    }
+
+    function snapPx(val) {
+        return Math.round(Number(val || 0) * root.dpr) / root.dpr
+    }
+    function dialogPixelOffsetX(item, target) {
+        if (!item || !item.parent || !target)
+            return 0
+        let layoutRevision = target.width + target.height
+        let ancestor = item
+        for (let depth = 0; ancestor && depth < 12; ++depth) {
+            layoutRevision += ancestor.x + ancestor.y
+                    + ancestor.width + ancestor.height
+            ancestor = ancestor.parent
+        }
+        const windowRoot = item.window ? item.window.contentItem : target
+        const localPoint = item.parent.mapToItem(windowRoot, item.x, item.y)
+        return root.snapPx(localPoint.x) - localPoint.x
+                + layoutRevision * 0
+    }
+    function dialogPixelOffsetY(item, target) {
+        if (!item || !item.parent || !target)
+            return 0
+        let layoutRevision = target.width + target.height
+        let ancestor = item
+        for (let depth = 0; ancestor && depth < 12; ++depth) {
+            layoutRevision += ancestor.x + ancestor.y
+                    + ancestor.width + ancestor.height
+            ancestor = ancestor.parent
+        }
+        const windowRoot = item.window ? item.window.contentItem : target
+        const localPoint = item.parent.mapToItem(windowRoot, item.x, item.y)
+        return root.snapPx(localPoint.y) - localPoint.y
+                + layoutRevision * 0
+    }
+    function iconPixelOffsetX(item) {
+        if (!item || !item.parent || !root.contentItem)
+            return 0
+        // These reads keep the binding live when an ancestor is repositioned
+        // by the window layout without changing the image's local x/y.
+        const layoutRevision = root.width + root.height
+                + root.panelSplitRatio + item.alignmentRevision
+        const scenePoint = item.parent.mapToItem(root.contentItem,
+                                                 item.x, item.y)
+        return root.snapPx(scenePoint.x) - scenePoint.x
+                + layoutRevision * 0
+    }
+    function iconPixelOffsetY(item) {
+        if (!item || !item.parent || !root.contentItem)
+            return 0
+        const layoutRevision = root.width + root.height
+                + root.panelSplitRatio + item.alignmentRevision
+        const scenePoint = item.parent.mapToItem(root.contentItem,
+                                                 item.x, item.y)
+        return root.snapPx(scenePoint.y) - scenePoint.y
+                + layoutRevision * 0
+    }
+
+    component PixelAlignedImage: Image {
+        id: pixelAlignedImage
+        property real alignmentRevision: 0
+        transform: Translate {
+            x: root.iconPixelOffsetX(pixelAlignedImage)
+            y: root.iconPixelOffsetY(pixelAlignedImage)
+        }
+    }
+    // Crisp pixel-grid separator width (e.g. 1px @ 100%, 2px @ 150%/175%/200%)
+    readonly property real physicalSeparatorPixels: Math.max(1, Math.round(1 * root.dpr))
+    readonly property real separatorWidth: physicalSeparatorPixels / root.dpr
     property real cw: Math.max(8, grid.cellWidth)
     property real ch: Math.max(17, grid.cellHeight)
-    readonly property real menuBarHeight: 42
+    readonly property real menuBarHeight: snapPx(42)
     readonly property real workspaceTabMinWidth: 92
     readonly property real workspaceTabMaxWidth: 280
     readonly property real contentSpacing: 16
@@ -88,7 +232,6 @@ ApplicationWindow {
     readonly property real verticalContentSpacing: 8
     readonly property real pathRowExtraHeight: 4
     readonly property real columnSeparatorVerticalMargin: 6
-    readonly property real separatorWidth: 1
     // Align the prompt glyphs with the leading icons in both file panels.
     readonly property real commandLineLeftMargin: panelTextInset
     readonly property real commandLineVerticalMargin: 8
@@ -128,6 +271,43 @@ ApplicationWindow {
     property color separatorHoverColor: "#464d55"
     property color separatorActiveColor: "#59616a"
     property color dialogAccent: "#4e9bd4"
+
+    // ZoinGallery is a reusable QML module with its own visual states. Keep
+    // those colors as first-class root properties so the configurator can
+    // preview, persist, and reset them through the same path as f4's native
+    // QML colors instead of handing the gallery a one-time palette snapshot.
+    property color galleryPanelBackgroundColor: "transparent"
+    property color galleryViewerBackgroundColor: "transparent"
+    property color galleryTextColor: "#e8edf2"
+    property color galleryMutedTextColor: "#9aa7b5"
+    property color galleryQuickSearchMatchColor: "#e8edf2"
+    property color galleryDirectoryTextColor: "#98d8ff"
+    property color galleryFolderIconColor: "#5ab2f1"
+    property color galleryCursorColor: "#1d5888"
+    property color galleryCursorBackgroundColor: "#18456e"
+    property color galleryCursorBorderColor: "#1d5888"
+    property color galleryCardCursorBorderColor: "#2777b8"
+    property color gallerySelectionColor: "#ffd43b"
+    property color galleryMarkedBackgroundColor: "#4f5037"
+    property color galleryMarkedTextColor: "#ffd43b"
+    property color galleryItemBackgroundColor: "transparent"
+    property color galleryDirectoryBackgroundColor: "transparent"
+    property color galleryItemHoverColor: "transparent"
+    property color galleryLabelBackgroundColor: "#aa101216"
+    property color galleryPreviewBackdropColor: "#4d000000"
+    property color gallerySeparatorColor: "#30363d"
+    property color galleryHeaderTextColor: "#d7e0ea"
+    property color galleryControlHoverColor: "#2a3745"
+    property color galleryScrollBarHandleColor: "#4a4a4a"
+    property color galleryScrollBarBackgroundHoverColor: "#676767"
+    property color galleryScrollBarHoverColor: "#878787"
+    property color galleryScrollBarPressedColor: "#505050"
+    property color galleryScrollBarTrackHoverColor: "#0fffffff"
+    property color galleryPathBackgroundColor: "transparent"
+    property color galleryPathTextColor: "#e8edf2"
+    property color galleryPathHoverColor: "#222c38"
+    property color galleryPathItemHoverColor: "#2a3745"
+    property color galleryPathItemPressedColor: "#10161e"
     readonly property real iconDevicePixelRatio:
         root.screen ? root.screen.devicePixelRatio : 1.0
     readonly property string fallbackExplanation: semanticFallbackReason()
@@ -205,6 +385,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        loadThemeFromPersistence()
         captureRetainedSurfaces()
         if (!f4UsesQwk)
             return
@@ -213,9 +394,17 @@ ApplicationWindow {
         windowAgentReady = true
 
         if (Qt.platform.os === "windows") {
-            isQWKLegacy = windowAgent.setWindowAttribute("mica-alt", true) !== true
+            if (supportsTransparentWindowBackground) {
+                isQWKLegacy = windowAgent.setWindowAttribute("mica-alt", true) !== true
+            } else {
+                isQWKLegacy = true
+            }
         } else if (useMacNativeTitleBar) {
-            applyPlatformWindowEffects()
+            if (supportsTransparentWindowBackground) {
+                applyPlatformWindowEffects()
+            } else {
+                isQWKLegacy = true
+            }
         }
 
         windowAgent.setTitleBar(titleBar)
@@ -237,7 +426,8 @@ ApplicationWindow {
     }
 
     function applyPlatformWindowEffects() {
-        if (!windowAgentReady || !useMacNativeTitleBar)
+        if (!windowAgentReady || !useMacNativeTitleBar
+                || !supportsTransparentWindowBackground)
             return
 
         windowAgent.setWindowAttribute("blur-effect", "none")
@@ -854,10 +1044,15 @@ ApplicationWindow {
                                   root.iconDevicePixelRatio)
     }
 
-    function lucideIconSource(name) {
-        const value = cleanText(name)
-        return value === "" ? ""
-                            : "qrc:/F4QtHost/icons/lucide/" + value + ".svg"
+    function lucideIconSource(name, size, tint) {
+        const value = root.cleanText(name)
+        if (value === "")
+            return ""
+        const s = Number(size) > 0 ? Number(size) : 16
+        const color = tint === undefined || tint === null
+                    ? root.chromeText : tint
+        return qtIcons.rasterizedLucideSource(
+                    value, s, root.iconDevicePixelRatio, color)
     }
 
     function workspaceTabIconName(tab) {
@@ -950,9 +1145,9 @@ ApplicationWindow {
 
     function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
         const chromeWidth = closeEnabled === true ? 64 : 46
-        return Math.min(workspaceTabMaxWidth,
-                        Math.max(workspaceTabMinWidth,
-                                 Number(titleWidth || 0) + chromeWidth))
+        return snapPx(Math.min(workspaceTabMaxWidth,
+                               Math.max(workspaceTabMinWidth,
+                                        Number(titleWidth || 0) + chromeWidth)))
     }
 
     function richTextEscape(value) {
@@ -1027,26 +1222,38 @@ ApplicationWindow {
 
     function galleryTheme() {
         return {
-            "background": "transparent",
-            "panelBackground": "transparent",
-            "backgroundAlternate": panelBgAlt,
-            "viewerBackground": "transparent",
+            "background": galleryPanelBackgroundColor,
+            "panelBackground": galleryPanelBackgroundColor,
+            "backgroundAlternate": galleryItemBackgroundColor,
+            "viewerBackground": galleryViewerBackgroundColor,
             "border": panelBorder,
             "activeBorder": activeBorder,
-            "cursor": panelSelectionBorder,
-            "cursorBackground": panelSelectionBg,
-            "cursorBorder": panelSelectionBorder,
-            "text": textColor,
-            "mutedText": mutedText,
-            "selection": markedText,
-            "marked": markedBg,
-            "markedBackground": markedBg,
-            "markedText": markedText,
-            "directoryText": "#98d8ff",
-            "folderIcon": folderIconColor,
-            "separator": separatorColor,
-            "headerText": chromeText,
-            "controlHover": controlHoverBg,
+            "cursor": galleryCursorColor,
+            "cursorBackground": galleryCursorBackgroundColor,
+            "cursorBorder": galleryCursorBorderColor,
+            "cardCursorBorder": galleryCardCursorBorderColor,
+            "text": galleryTextColor,
+            "mutedText": galleryMutedTextColor,
+            "quickSearchMatch": galleryQuickSearchMatchColor,
+            "selection": gallerySelectionColor,
+            "marked": galleryMarkedBackgroundColor,
+            "markedBackground": galleryMarkedBackgroundColor,
+            "markedText": galleryMarkedTextColor,
+            "directoryText": galleryDirectoryTextColor,
+            "folderIcon": galleryFolderIconColor,
+            "itemBackground": galleryItemBackgroundColor,
+            "directoryBackground": galleryDirectoryBackgroundColor,
+            "itemHover": galleryItemHoverColor,
+            "labelBackground": galleryLabelBackgroundColor,
+            "previewBackdrop": galleryPreviewBackdropColor,
+            "separator": gallerySeparatorColor,
+            "headerText": galleryHeaderTextColor,
+            "controlHover": galleryControlHoverColor,
+            "scrollBarHandle": galleryScrollBarHandleColor,
+            "scrollBarHandleBackgroundHovered": galleryScrollBarBackgroundHoverColor,
+            "scrollBarHandleHovered": galleryScrollBarHoverColor,
+            "scrollBarHandlePressed": galleryScrollBarPressedColor,
+            "scrollBarTrackHovered": galleryScrollBarTrackHoverColor,
             "chrome": chromeBg,
             "chromeText": chromeText
         }
@@ -1054,23 +1261,23 @@ ApplicationWindow {
 
     function galleryMetrics() {
         return {
-            "detailsRowInset": panelRowInnerSpacing,
-            "detailsRowSpacing": 8,
-            "detailsIconSlotSize": 18,
-            "detailsIconSize": 16,
+            "detailsRowInset": root.snapPx(panelRowInnerSpacing),
+            "detailsRowSpacing": root.snapPx(8),
+            "detailsIconSlotSize": root.snapPx(16),
+            "detailsIconSize": root.snapPx(16),
             "detailsNameFontPixelSize": 13,
             "detailsSecondaryFontPixelSize": 12,
-            "detailsExtensionMinimumWidth": 40,
-            "detailsExtensionMaximumWidth": 80,
-            "detailsSizeColumnWidth": 96,
-            "detailsHeaderHeight": Math.max(22, ch)
-                                   + verticalContentSpacing,
-            "detailsHeaderCellInset": panelRowInnerSpacing,
+            "detailsExtensionMinimumWidth": root.snapPx(40),
+            "detailsExtensionMaximumWidth": root.snapPx(80),
+            "detailsSizeColumnWidth": root.snapPx(96),
+            "detailsHeaderHeight": root.snapPx(Math.max(22, ch)
+                                   + verticalContentSpacing),
+            "detailsHeaderCellInset": root.snapPx(panelRowInnerSpacing),
             "detailsHeaderFontPixelSize": 12,
             "detailsSeparatorVerticalMargin":
-                columnSeparatorVerticalMargin,
+                root.snapPx(columnSeparatorVerticalMargin),
             "detailsSeparatorWidth": separatorWidth,
-            "detailsScrollBarWidth": 16
+            "detailsScrollBarWidth": root.snapPx(16)
         }
     }
 
@@ -1275,6 +1482,1989 @@ ApplicationWindow {
         }
     }
 
+    readonly property var themeColorDefinitions: [
+        // Window
+        { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#1f242c" },
+        { id: "chromeBg", name: "Chrome / Tabs Background", group: "Window", defaultColor: "#202833" },
+        { id: "chromeText", name: "Chrome Text", group: "Window", defaultColor: "#d7e0ea" },
+
+        // Panels
+        { id: "panelBg", name: "Panel Background", group: "Panels", defaultColor: "#99121822" },
+        { id: "panelBgAlt", name: "Panel Alternate Background", group: "Panels", defaultColor: "#d910151d" },
+        { id: "panelPathBg", name: "Panel Path Background", group: "Panels", defaultColor: "#26314152" },
+        { id: "panelHeaderBg", name: "Panel Header Cell Background", group: "Panels", defaultColor: "#1c2531" },
+        { id: "panelBorder", name: "Inactive Panel Border", group: "Panels", defaultColor: "#4e9bd4" },
+        { id: "activeBorder", name: "Active Panel Border", group: "Panels", defaultColor: "#f0c95a" },
+
+        // Terminal
+        { id: "terminalBg", name: "Terminal Background", group: "Terminal", defaultColor: "#d9121822" },
+        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "transparent" },
+
+        // Text
+        { id: "textColor", name: "Primary Text Color", group: "Text", defaultColor: "#e8edf2" },
+        { id: "mutedText", name: "Secondary / Muted Text Color", group: "Text", defaultColor: "#9aa7b5" },
+
+        // Selection
+        { id: "selectedBg", name: "General Selection Background", group: "Selection", defaultColor: "#285d8f" },
+        { id: "panelSelectionBg", name: "Panel Cursor Background", group: "Selection", defaultColor: "#18456e" },
+        { id: "panelSelectionBorder", name: "Panel Cursor Border", group: "Selection", defaultColor: "#1d5888" },
+        { id: "markedBg", name: "Marked Item Background", group: "Selection", defaultColor: "#4f5037" },
+        { id: "markedText", name: "Marked Item Text", group: "Selection", defaultColor: "#ffd43b" },
+
+        // Icons & Accents
+        { id: "folderIconColor", name: "Folder Icon Color", group: "Icons & Accents", defaultColor: "#5ab2f1" },
+        { id: "dialogAccent", name: "Highlight / Accent Color", group: "Icons & Accents", defaultColor: "#4e9bd4" },
+
+        // Dialogs
+        { id: "dialogBg", name: "Dialog Background", group: "Dialogs", defaultColor: "#171e27" },
+        { id: "dialogHeaderBg", name: "Dialog Header Background", group: "Dialogs", defaultColor: "#1b242f" },
+
+        // Controls
+        { id: "controlBg", name: "Control Background", group: "Controls", defaultColor: "#222c38" },
+        { id: "controlHoverBg", name: "Control Hover Background", group: "Controls", defaultColor: "#2a3745" },
+        { id: "controlPressedBg", name: "Control Pressed Background", group: "Controls", defaultColor: "#10161e" },
+        { id: "controlBorder", name: "Control Border", group: "Controls", defaultColor: "#3a495b" },
+
+        // Separators
+        { id: "separatorColor", name: "Separator Color", group: "Separators", defaultColor: "#30363d" },
+        { id: "separatorHoverColor", name: "Separator Hover Color", group: "Separators", defaultColor: "#464d55" },
+        { id: "separatorActiveColor", name: "Separator Active Color", group: "Separators", defaultColor: "#59616a" },
+
+        // ZoinGallery panel and viewer
+        { id: "galleryPanelBackgroundColor", name: "Gallery Panel Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryViewerBackgroundColor", name: "Gallery Viewer Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryTextColor", name: "File Text", group: "Panel Colors", defaultColor: "#e8edf2" },
+        { id: "galleryMutedTextColor", name: "Secondary File Text", group: "Panel Colors", defaultColor: "#9aa7b5" },
+        { id: "galleryQuickSearchMatchColor", name: "Quick Search Match", group: "Panel Colors", defaultColor: "#e8edf2" },
+        { id: "galleryDirectoryTextColor", name: "Directory Text", group: "Panel Colors", defaultColor: "#98d8ff" },
+        { id: "galleryFolderIconColor", name: "Folder Icon", group: "Panel Colors", defaultColor: "#5ab2f1" },
+        { id: "galleryCursorColor", name: "Card Cursor Fill", group: "Panel Colors", defaultColor: "#1d5888" },
+        { id: "galleryCursorBackgroundColor", name: "Details Cursor Fill", group: "Panel Colors", defaultColor: "#18456e" },
+        { id: "galleryCursorBorderColor", name: "Details Cursor Border", group: "Panel Colors", defaultColor: "#1d5888" },
+        { id: "galleryCardCursorBorderColor", name: "Card Cursor Border", group: "Panel Colors", defaultColor: "#2777b8" },
+        { id: "gallerySelectionColor", name: "Selection Border", group: "Panel Colors", defaultColor: "#ffd43b" },
+        { id: "galleryMarkedBackgroundColor", name: "Marked Row Background", group: "Panel Colors", defaultColor: "#4f5037" },
+        { id: "galleryMarkedTextColor", name: "Marked Item Text", group: "Panel Colors", defaultColor: "#ffd43b" },
+        { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryItemHoverColor", name: "Card Hover", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryLabelBackgroundColor", name: "Thumbnail Label Background", group: "Panel Colors", defaultColor: "#aa101216" },
+        { id: "galleryPreviewBackdropColor", name: "Preview Placeholder", group: "Panel Colors", defaultColor: "#4d000000" },
+        { id: "gallerySeparatorColor", name: "Gallery Separator", group: "Panel Colors", defaultColor: "#30363d" },
+        { id: "galleryHeaderTextColor", name: "Gallery Header Text", group: "Panel Colors", defaultColor: "#d7e0ea" },
+        { id: "galleryControlHoverColor", name: "Gallery Control Hover", group: "Panel Colors", defaultColor: "#2a3745" },
+        { id: "galleryScrollBarHandleColor", name: "Scrollbar Handle", group: "Panel Colors", defaultColor: "#4a4a4a" },
+        { id: "galleryScrollBarBackgroundHoverColor", name: "Scrollbar Hover Background", group: "Panel Colors", defaultColor: "#676767" },
+        { id: "galleryScrollBarHoverColor", name: "Scrollbar Handle Hover", group: "Panel Colors", defaultColor: "#878787" },
+        { id: "galleryScrollBarPressedColor", name: "Scrollbar Handle Pressed", group: "Panel Colors", defaultColor: "#505050" },
+        { id: "galleryScrollBarTrackHoverColor", name: "Scrollbar Track Hover", group: "Panel Colors", defaultColor: "#0fffffff" },
+        { id: "galleryPathBackgroundColor", name: "Path Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryPathTextColor", name: "Path Text", group: "Panel Colors", defaultColor: "#e8edf2" },
+        { id: "galleryPathHoverColor", name: "Path Hover", group: "Panel Colors", defaultColor: "#222c38" },
+        { id: "galleryPathItemHoverColor", name: "Breadcrumb Hover", group: "Panel Colors", defaultColor: "#2a3745" },
+        { id: "galleryPathItemPressedColor", name: "Breadcrumb Pressed", group: "Panel Colors", defaultColor: "#10161e" }
+    ]
+
+    function setFontRenderType(value) {
+        if (typeof qtTextRendering === "undefined" || !qtTextRendering)
+            return false
+        qtTextRendering.renderType = Number(value)
+        return qtTextRendering.renderType === Number(value)
+    }
+
+    function loadThemeFromPersistence() {
+        if (typeof qtTheme !== "undefined" && qtTheme) {
+            try {
+                const saved = qtTheme.loadTheme()
+                for (let i = 0; i < themeColorDefinitions.length; ++i) {
+                    const def = themeColorDefinitions[i]
+                    if (Object.prototype.hasOwnProperty.call(saved, def.id)
+                            && saved[def.id]) {
+                        const c = Qt.color(saved[def.id])
+                        if (c) {
+                            root[def.id] = c
+                        }
+                    }
+                }
+                if (saved.fontRenderType !== undefined
+                        && saved.fontRenderType !== "") {
+                    if (typeof qtTextRendering !== "undefined"
+                            && qtTextRendering) {
+                        qtTextRendering.setRenderTypeByName(
+                            String(saved.fontRenderType))
+                    }
+                }
+                if (saved.mouseWheelMode !== undefined
+                        && saved.mouseWheelMode !== "") {
+                    root.setMouseWheelMode(String(saved.mouseWheelMode))
+                }
+            } catch (error) {
+                console.warn("Unable to load the saved theme:", error)
+            }
+        }
+    }
+
+    function saveThemeToPersistence() {
+        if (typeof qtTheme !== "undefined" && qtTheme) {
+            const map = {}
+            for (let i = 0; i < themeColorDefinitions.length; ++i) {
+                const def = themeColorDefinitions[i]
+                map[def.id] = formatColorHex(root[def.id])
+            }
+            map.fontRenderType = root.fontRenderTypeName
+            map.mouseWheelMode = root.mouseWheelMode
+            return qtTheme.saveTheme(map)
+        }
+        return false
+    }
+
+    function resetThemeToDefaults() {
+        for (let i = 0; i < themeColorDefinitions.length; ++i) {
+            const def = themeColorDefinitions[i]
+            root[def.id] = Qt.color(def.defaultColor)
+        }
+        if (typeof qtTextRendering !== "undefined" && qtTextRendering)
+            qtTextRendering.setRenderTypeByName("NativeRendering")
+        root.mouseWheelMode = "gui"
+        if (typeof qtTheme !== "undefined" && qtTheme) {
+            qtTheme.resetTheme()
+        }
+    }
+
+    function formatColorHex(clr) {
+        if (!clr)
+            return "#000000"
+        const r = Math.round(clr.r * 255)
+        const g = Math.round(clr.g * 255)
+        const b = Math.round(clr.b * 255)
+        const a = Math.round((clr.a !== undefined ? clr.a : 1) * 255)
+        const hex2 = (n) => (n < 16 ? "0" : "") + n.toString(16)
+        if (a < 255) {
+            return "#" + hex2(a) + hex2(r) + hex2(g) + hex2(b)
+        }
+        return "#" + hex2(r) + hex2(g) + hex2(b)
+    }
+
+    component ConfigDialogButton: Rectangle {
+        id: cBtn
+        property string text: ""
+        property string iconSource: ""
+        property bool highlighted: false
+        signal clicked()
+
+        implicitHeight: root.snapPx(30)
+        implicitWidth: root.snapPx(cBtnRow.implicitWidth + 24)
+        Layout.preferredHeight: implicitHeight
+        Layout.preferredWidth: implicitWidth
+        Layout.minimumHeight: implicitHeight
+        Layout.maximumHeight: implicitHeight
+        radius: root.snapPx(4)
+
+        color: cBtnMouse.pressed
+               ? (highlighted ? Qt.darker(root.dialogAccent, 1.2) : "#38ffffff")
+               : cBtnMouse.containsMouse
+                 ? (highlighted ? Qt.lighter(root.dialogAccent, 1.1) : "#24ffffff")
+                 : (highlighted ? root.dialogAccent : "#14ffffff")
+
+        border.width: root.separatorWidth
+        border.color: highlighted
+                      ? root.dialogAccent
+                      : (cBtnMouse.containsMouse ? root.controlHoverBg : root.controlBorder)
+
+        RowLayout {
+            id: cBtnRow
+            x: root.snapPx((parent.width - width) / 2)
+            y: root.snapPx((parent.height - height) / 2)
+            spacing: root.snapPx(6)
+
+            IconLabel {
+                icon.source: cBtn.iconSource
+                icon.width: root.snapPx(14)
+                icon.height: root.snapPx(14)
+                icon.color: cBtn.highlighted ? "#ffffff" : root.textColor
+                visible: cBtn.iconSource !== ""
+            }
+
+            Text {
+                text: cBtn.text
+                color: cBtn.highlighted ? "#ffffff" : root.textColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: 11
+                font.weight: cBtn.highlighted ? Font.Bold : Font.Normal
+                verticalAlignment: Text.AlignVCenter
+            }
+        }
+
+        MouseArea {
+            id: cBtnMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: cBtn.clicked()
+        }
+    }
+
+    component ThemeRenderTypeComboBox: T.ComboBox {
+        id: themeRenderCombo
+        property var options: []
+        property int selectedRenderType: Text.NativeRendering
+        // The component is also used by non-rendering theme preferences. Keep
+        // selectedRenderType/renderTypeActivated for the existing font
+        // control, while allowing arbitrary string-valued options here.
+        property var selectedValue: undefined
+        signal renderTypeActivated(int value)
+        signal optionActivated(var value)
+        readonly property string popupObjectNamePrefix:
+            themeRenderCombo.objectName === "themeFontRenderTypeCombo"
+            ? "themeFontRenderType" : themeRenderCombo.objectName
+
+        focusPolicy: Qt.NoFocus
+        hoverEnabled: true
+        padding: 0
+        implicitHeight: root.snapPx(30)
+        Layout.preferredHeight: root.snapPx(30)
+        Layout.minimumHeight: root.snapPx(30)
+        Layout.maximumHeight: root.snapPx(30)
+        model: options
+        textRole: "name"
+        valueRole: "value"
+
+        function syncCurrentIndex() {
+            const values = themeRenderCombo.options || []
+            const selected = themeRenderCombo.selectedValue !== undefined
+                    ? themeRenderCombo.selectedValue
+                    : themeRenderCombo.selectedRenderType
+            let nextIndex = 0
+            for (let i = 0; i < values.length; ++i) {
+                const optionValue = values[i].value
+                const equal = typeof selected === "number"
+                        || typeof optionValue === "number"
+                        ? Number(optionValue) === Number(selected)
+                        : String(optionValue) === String(selected)
+                if (equal) {
+                    nextIndex = i
+                    break
+                }
+            }
+            if (themeRenderCombo.currentIndex !== nextIndex)
+                themeRenderCombo.currentIndex = nextIndex
+        }
+
+        Component.onCompleted: syncCurrentIndex()
+        onOptionsChanged: syncCurrentIndex()
+        onSelectedRenderTypeChanged: syncCurrentIndex()
+        onSelectedValueChanged: syncCurrentIndex()
+        onActivated: function(index) {
+            const values = themeRenderCombo.options || []
+            if (index < 0 || index >= values.length)
+                return
+            const value = values[index].value
+            themeRenderCombo.optionActivated(value)
+            if (typeof value === "number")
+                themeRenderCombo.renderTypeActivated(Number(value))
+        }
+
+        contentItem: Text {
+            leftPadding: root.snapPx(10)
+            rightPadding: root.snapPx(30)
+            text: themeRenderCombo.currentText
+            color: root.textColor
+            font.family: root.guiMonospaceFontFamily
+            font.pixelSize: 11
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+
+        indicator: IconLabel {
+            objectName: themeRenderCombo.objectName + "Indicator"
+            readonly property url rasterizedIconSource:
+                root.lucideIconSource(
+                    "chevron-down", 14,
+                    themeRenderCombo.enabled ? root.textColor : root.mutedText)
+            x: root.snapPx(themeRenderCombo.width - width - 10)
+            y: root.snapPx((themeRenderCombo.height - height) / 2)
+            width: root.snapPx(14)
+            height: root.snapPx(14)
+            icon.source: rasterizedIconSource
+            icon.width: root.snapPx(14)
+            icon.height: root.snapPx(14)
+            icon.color: themeRenderCombo.hovered ? root.textColor : root.mutedText
+        }
+
+        background: Rectangle {
+            objectName: themeRenderCombo.objectName + "Background"
+            readonly property color testBorderColor: border.color
+            radius: root.snapPx(4)
+            color: themeRenderCombo.down ? root.controlPressedBg
+                   : themeRenderCombo.hovered ? root.controlHoverBg
+                   : root.controlBg
+            border.width: root.separatorWidth
+            border.color: themeRenderCombo.activeFocus
+                          ? root.dialogAccent : root.controlBorder
+        }
+
+        popup: T.Popup {
+            y: root.snapPx(themeRenderCombo.height + 4)
+            width: root.snapPx(themeRenderCombo.width)
+            implicitHeight: root.snapPx(Math.min(contentItem.implicitHeight + 8, 240))
+            padding: root.snapPx(4)
+
+            background: Rectangle {
+                objectName: themeRenderCombo.popupObjectNamePrefix
+                           + "PopupBackground"
+                radius: root.snapPx(5)
+                color: root.dialogHeaderBg
+                border.width: root.separatorWidth
+                border.color: root.controlBorder
+            }
+
+            contentItem: ListView {
+                objectName: themeRenderCombo.popupObjectNamePrefix
+                           + "PopupList"
+                clip: true
+                implicitHeight: root.snapPx(contentHeight)
+                model: themeRenderCombo.popup.visible
+                       ? themeRenderCombo.delegateModel : null
+                currentIndex: themeRenderCombo.highlightedIndex
+                boundsBehavior: Flickable.StopAtBounds
+            }
+        }
+
+        delegate: T.ItemDelegate {
+            id: themeRenderComboItem
+            objectName: themeRenderCombo.objectName + "Item"
+            required property int index
+            required property var model
+            width: root.snapPx(themeRenderCombo.width - 8)
+            height: root.snapPx(30)
+            highlighted: themeRenderCombo.highlightedIndex === index
+
+            contentItem: Text {
+                leftPadding: root.snapPx(8)
+                text: themeRenderComboItem.model.name
+                color: root.textColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: 11
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+
+            background: Rectangle {
+                radius: root.snapPx(3)
+                color: themeRenderComboItem.highlighted
+                       ? root.selectedBg
+                       : themeRenderComboItem.hovered
+                         ? root.controlHoverBg : "transparent"
+            }
+        }
+    }
+
+    Window {
+        id: themeColorConfigurator
+        objectName: "themeColorConfigurator"
+        title: "Theme Color Configurator"
+        width: root.snapPx(720)
+        height: root.snapPx(560)
+        minimumWidth: root.snapPx(580)
+        minimumHeight: root.snapPx(440)
+        visible: false
+        color: root.dialogBg
+        flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
+
+        property int selectedIndex: 0
+        readonly property var currentItem: (selectedIndex >= 0 && selectedIndex < root.themeColorDefinitions.length)
+                                           ? root.themeColorDefinitions[selectedIndex] : null
+
+        property real selectedHue: 0
+        property real selectedSaturation: 0
+        property real selectedLightness: 0.5
+        property real selectedAlpha: 1.0
+        property string filterQuery: ""
+        property string statusToast: ""
+        property bool pressFlashActive: false
+        property string pressFlashProperty: ""
+        property bool preserveReleaseColorOnStop: false
+        readonly property color activeFlashColor: "#00ff00"
+
+        // A hover preview deliberately stops at green. The list row decides
+        // when it is allowed to leave that state (pointer exit or mouse
+        // release); there is no timer-driven return anymore.
+        PropertyAnimation {
+            id: flashElementAnimation
+            target: root
+            duration: 150
+            easing.type: Easing.OutQuad
+            property string targetProperty: ""
+            property color originalColor: "transparent"
+        }
+
+        PropertyAnimation {
+            id: flashPressToActive
+            target: root
+            duration: 150
+            to: themeColorConfigurator.activeFlashColor
+            easing.type: Easing.OutQuad
+        }
+
+        PropertyAnimation {
+            id: flashReleaseBack
+            target: root
+            duration: 150
+            easing.type: Easing.InQuad
+            onFinished: {
+                themeColorConfigurator.finishReleaseFlash()
+            }
+            onStopped: {
+                if (themeColorConfigurator.preserveReleaseColorOnStop) {
+                    themeColorConfigurator.preserveReleaseColorOnStop = false
+                } else {
+                    themeColorConfigurator.finishReleaseFlash()
+                }
+            }
+        }
+
+        function finishReleaseFlash() {
+            if (flashElementAnimation.targetProperty !== "") {
+                root[flashElementAnimation.targetProperty] =
+                        flashElementAnimation.originalColor
+                flashElementAnimation.targetProperty = ""
+            }
+            pressFlashActive = false
+            pressFlashProperty = ""
+        }
+
+        function restoreFlashTarget() {
+            if (flashElementAnimation.targetProperty !== "") {
+                root[flashElementAnimation.targetProperty] =
+                        flashElementAnimation.originalColor
+                flashElementAnimation.targetProperty = ""
+            }
+        }
+
+        function colorBeforeFlash(propId) {
+            if (flashElementAnimation.targetProperty === propId)
+                return flashElementAnimation.originalColor
+            return root[propId]
+        }
+
+        function flash(propId) {
+            if (!propId || root[propId] === undefined)
+                return
+            // Once a row is active, hover is quiet. Only a real press may
+            // temporarily mark the active row green.
+            if (currentItem && currentItem.id === propId
+                    && !pressFlashActive)
+                return
+            if (pressFlashActive)
+                return
+            // Re-entering the same row must not restart a preview that is
+            // already green (whether its animation has finished or not).
+            if (flashElementAnimation.targetProperty === propId)
+                return
+
+            stopAllFlashing()
+            flashElementAnimation.targetProperty = propId
+            flashElementAnimation.originalColor = root[propId]
+            flashElementAnimation.property = propId
+            flashElementAnimation.from = root[propId]
+            flashElementAnimation.to = activeFlashColor
+            flashElementAnimation.restart()
+        }
+
+        function endHoverFlash(propId) {
+            if (!propId || pressFlashActive
+                    || flashElementAnimation.targetProperty !== propId
+                    || flashReleaseBack.running)
+                return
+            if (flashElementAnimation.running)
+                flashElementAnimation.stop()
+
+            flashReleaseBack.property = propId
+            flashReleaseBack.from = root[propId]
+            flashReleaseBack.to = flashElementAnimation.originalColor
+            flashReleaseBack.restart()
+        }
+
+        function startPressFlash(propId) {
+            if (!propId || root[propId] === undefined)
+                return
+
+            if (pressFlashActive && pressFlashProperty === propId)
+                return
+
+            // If the row was already green from hover, preserve the current
+            // green frame while switching ownership from hover to press. This
+            // avoids a visible green -> real -> green flicker on mouse-down.
+            const continuingPreview =
+                    flashElementAnimation.targetProperty === propId
+                    && !pressFlashActive
+            const originalColor = continuingPreview
+                    ? flashElementAnimation.originalColor : root[propId]
+            if (continuingPreview) {
+                if (flashReleaseBack.running) {
+                    preserveReleaseColorOnStop = true
+                    flashReleaseBack.stop()
+                }
+                if (flashElementAnimation.running)
+                    flashElementAnimation.stop()
+            } else {
+                stopAllFlashing()
+            }
+
+            pressFlashActive = true
+            pressFlashProperty = propId
+            flashElementAnimation.targetProperty = propId
+            flashElementAnimation.originalColor = originalColor
+
+            flashPressToActive.property = propId
+            flashPressToActive.from = root[propId]
+            flashPressToActive.to = activeFlashColor
+            flashPressToActive.restart()
+        }
+
+        function endPressFlash(propId) {
+            if (!pressFlashActive || pressFlashProperty !== propId
+                    || !flashElementAnimation.targetProperty
+                    || flashReleaseBack.running)
+                return
+            if (flashPressToActive.running)
+                flashPressToActive.stop()
+            if (flashReleaseBack.running)
+                flashReleaseBack.stop()
+
+            const targetProp = flashElementAnimation.targetProperty
+            const origClr = flashElementAnimation.originalColor
+
+            flashReleaseBack.property = targetProp
+            flashReleaseBack.from = root[targetProp]
+            flashReleaseBack.to = origClr
+            flashReleaseBack.restart()
+        }
+
+        function stopAllFlashing() {
+            preserveReleaseColorOnStop = false
+            if (flashReleaseBack.running)
+                flashReleaseBack.stop()
+            if (flashPressToActive.running)
+                flashPressToActive.stop()
+            if (flashElementAnimation.running)
+                flashElementAnimation.stop()
+            restoreFlashTarget()
+            pressFlashActive = false
+            pressFlashProperty = ""
+        }
+
+        function parseHex(text) {
+            let s = String(text || "").trim()
+            if (!s.startsWith("#"))
+                s = "#" + s
+            if (/^#[0-9A-Fa-f]{8}$/.test(s) || /^#[0-9A-Fa-f]{6}$/.test(s)
+                    || /^#[0-9A-Fa-f]{4}$/.test(s) || /^#[0-9A-Fa-f]{3}$/.test(s)) {
+                return Qt.color(s)
+            }
+            return null
+        }
+
+        function setFromColor(colorValue) {
+            if (colorValue.hslHue >= 0)
+                selectedHue = colorValue.hslHue
+            selectedSaturation = Math.max(0, Math.min(1, colorValue.hslSaturation))
+            selectedLightness = Math.max(0, Math.min(1, colorValue.hslLightness))
+            selectedAlpha = colorValue.a !== undefined ? Math.max(0, Math.min(1, colorValue.a)) : 1.0
+            colorWheel.requestPaint()
+        }
+
+        function setFromRgb(r, g, b, a) {
+            const alpha = a !== undefined ? Math.max(0, Math.min(255, a)) / 255 : selectedAlpha
+            const clr = Qt.rgba(Math.max(0, Math.min(255, r)) / 255,
+                                Math.max(0, Math.min(255, g)) / 255,
+                                Math.max(0, Math.min(255, b)) / 255, alpha)
+            setFromColor(clr)
+            applyCurrentColor()
+        }
+
+        function applyCurrentColor() {
+            if (!visible || !currentItem)
+                return
+            if (flashElementAnimation.targetProperty === currentItem.id) {
+                themeColorConfigurator.stopAllFlashing()
+            }
+            const c = Qt.hsla(selectedHue, selectedSaturation, selectedLightness, selectedAlpha)
+            root[currentItem.id] = c
+            colorWheel.requestPaint()
+        }
+
+        function selectItem(index, shouldFlash) {
+            const item = (index >= 0
+                          && index < root.themeColorDefinitions.length)
+                    ? root.themeColorDefinitions[index] : null
+            const itemColor = item ? colorBeforeFlash(item.id) : null
+            selectedIndex = index
+            if (currentItem) {
+                setFromColor(itemColor)
+                if (shouldFlash)
+                    flash(currentItem.id)
+            }
+        }
+
+        onClosing: themeColorConfigurator.stopAllFlashing()
+
+        onVisibleChanged: {
+            if (visible) {
+                selectItem(selectedIndex, false)
+                statusToast = ""
+            } else {
+                themeColorConfigurator.stopAllFlashing()
+            }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: root.dialogBg
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: root.snapPx(14)
+                spacing: root.snapPx(10)
+
+                // Header
+                RowLayout {
+                    id: themeDialogHeader
+                    objectName: "themeDialogHeader"
+                    Layout.fillWidth: false
+                    Layout.preferredHeight: root.snapPx(18)
+                    Layout.minimumHeight: root.snapPx(18)
+                    Layout.maximumHeight: root.snapPx(18)
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    spacing: root.snapPx(8)
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeDialogHeader,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeDialogHeader,
+                            themeColorConfigurator.contentItem)
+                    }
+
+                    IconLabel {
+                        icon.source: root.lucideIconSource(
+                                         "palette", 18, root.dialogAccent)
+                        icon.width: root.snapPx(18)
+                        icon.height: root.snapPx(18)
+                        icon.color: root.dialogAccent
+                    }
+
+                    Text {
+                        text: "Theme Color Configurator"
+                        color: root.textColor
+                        font.family: root.guiMonospaceFontFamily
+                        font.pixelSize: 14
+                        font.weight: Font.Bold
+                        Layout.fillWidth: true
+                    }
+
+                    Text {
+                        text: typeof qtTheme !== "undefined" && qtTheme ? qtTheme.themeFilePath : "gui_theme.ini"
+                        color: root.mutedText
+                        font.family: root.guiMonospaceFontFamily
+                        font.pixelSize: 10
+                        elide: Text.ElideMiddle
+                        Layout.maximumWidth: 320
+                    }
+                }
+
+                Rectangle {
+                    id: themeHeaderDivider
+                    objectName: "themeHeaderDivider"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.separatorWidth
+                    Layout.minimumHeight: root.separatorWidth
+                    Layout.maximumHeight: root.separatorWidth
+                    implicitHeight: root.separatorWidth
+                    color: root.separatorColor
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeHeaderDivider,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeHeaderDivider,
+                            themeColorConfigurator.contentItem)
+                    }
+                }
+
+                Rectangle {
+                    id: themeFontRenderTypePanel
+                    objectName: "themeFontRenderTypePanel"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.snapPx(42)
+                    implicitHeight: root.snapPx(42)
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeFontRenderTypePanel,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeFontRenderTypePanel,
+                            themeColorConfigurator.contentItem)
+                    }
+                    radius: root.snapPx(4)
+                    color: root.dialogHeaderBg
+                    border.width: root.separatorWidth
+                    border.color: root.controlBorder
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: root.snapPx(8)
+                        anchors.rightMargin: root.snapPx(8)
+                        spacing: root.snapPx(8)
+
+                        ColumnLayout {
+                            id: themeFontRenderTypeLabels
+                            objectName: "themeFontRenderTypeLabels"
+                            Layout.fillWidth: true
+                            spacing: root.snapPx(1)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeFontRenderTypeLabels,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeFontRenderTypeLabels,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text {
+                                id: themeFontRenderTypeTitle
+                                objectName: "themeFontRenderTypeTitle"
+                                text: "Font rendering"
+                                color: root.textColor
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 11
+                                font.weight: Font.Bold
+                            }
+
+                            Text {
+                                id: themeFontRenderTypeDescription
+                                objectName: "themeFontRenderTypeDescription"
+                                text: root.fontRenderTypeDescription
+                                color: root.mutedText
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 9
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        ThemeRenderTypeComboBox {
+                            id: themeFontRenderTypeCombo
+                            objectName: "themeFontRenderTypeCombo"
+                            options: root.fontRenderTypeOptions
+                            selectedRenderType: root.fontRenderType
+                            Layout.preferredWidth: root.snapPx(174)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeFontRenderTypeCombo,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeFontRenderTypeCombo,
+                                    themeColorConfigurator.contentItem)
+                            }
+                            onRenderTypeActivated: function(value) {
+                                if (root.setFontRenderType(value))
+                                    themeColorConfigurator.statusToast =
+                                        "Font rendering: " + root.fontRenderTypeName
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: themeMouseWheelPanel
+                    objectName: "themeMouseWheelPanel"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.snapPx(42)
+                    implicitHeight: root.snapPx(42)
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeMouseWheelPanel,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeMouseWheelPanel,
+                            themeColorConfigurator.contentItem)
+                    }
+                    radius: root.snapPx(4)
+                    color: root.dialogHeaderBg
+                    border.width: root.separatorWidth
+                    border.color: root.controlBorder
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: root.snapPx(8)
+                        anchors.rightMargin: root.snapPx(8)
+                        spacing: root.snapPx(8)
+
+                        ColumnLayout {
+                            id: themeMouseWheelLabels
+                            objectName: "themeMouseWheelLabels"
+                            Layout.fillWidth: true
+                            spacing: root.snapPx(1)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeMouseWheelLabels,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeMouseWheelLabels,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text {
+                                id: themeMouseWheelTitle
+                                objectName: "themeMouseWheelTitle"
+                                text: "Mouse wheel control"
+                                color: root.textColor
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 11
+                                font.weight: Font.Bold
+                            }
+
+                            Text {
+                                id: themeMouseWheelDescription
+                                objectName: "themeMouseWheelDescription"
+                                text: root.mouseWheelModeDescription
+                                color: root.mutedText
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 9
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        ThemeRenderTypeComboBox {
+                            id: themeMouseWheelCombo
+                            objectName: "themeMouseWheelCombo"
+                            options: root.mouseWheelModeOptions
+                            selectedValue: root.mouseWheelMode
+                            Layout.preferredWidth: root.snapPx(174)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeMouseWheelCombo,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeMouseWheelCombo,
+                                    themeColorConfigurator.contentItem)
+                            }
+                            onOptionActivated: function(value) {
+                                if (root.setMouseWheelMode(value))
+                                    themeColorConfigurator.statusToast =
+                                        "Mouse wheel: " + root.mouseWheelModeName
+                            }
+                        }
+                    }
+                }
+
+                // Main Body: Left (List of items) + Right (Editor)
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: root.snapPx(12)
+
+                    // Left Column: Items List (Takes remaining width)
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 200
+                        Layout.fillHeight: true
+                        spacing: root.snapPx(6)
+
+                        // Filter box with search icon
+                        Rectangle {
+                            id: themeColorFilter
+                            objectName: "themeColorFilter"
+                            Layout.fillWidth: false
+                            Layout.preferredWidth: root.snapPx(parent.width)
+                            Layout.preferredHeight: root.snapPx(28)
+                            Layout.minimumHeight: root.snapPx(28)
+                            Layout.maximumHeight: root.snapPx(28)
+                            implicitHeight: root.snapPx(28)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeColorFilter,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeColorFilter,
+                                    themeColorConfigurator.contentItem)
+                            }
+                            radius: root.snapPx(4)
+                            color: root.controlPressedBg
+                            border.width: root.separatorWidth
+                            border.color: filterInput.activeFocus ? root.dialogAccent : root.controlBorder
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: root.snapPx(8)
+                                anchors.rightMargin: root.snapPx(8)
+                                spacing: root.snapPx(6)
+
+                                IconLabel {
+                                    icon.source: root.lucideIconSource(
+                                                     "search", 14,
+                                                     root.mutedText)
+                                    icon.width: root.snapPx(14)
+                                    icon.height: root.snapPx(14)
+                                    icon.color: root.mutedText
+                                }
+
+                                TextInput {
+                                    id: filterInput
+                                    Layout.fillWidth: true
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    font.family: root.guiMonospaceFontFamily
+                                    font.pixelSize: 11
+                                    color: root.textColor
+                                    selectByMouse: true
+                                    selectionColor: root.selectedBg
+                                    selectedTextColor: root.textColor
+
+                                    Text {
+                                        text: "Filter elements..."
+                                        color: root.mutedText
+                                        font.family: root.guiMonospaceFontFamily
+                                        font.pixelSize: 11
+                                        anchors.fill: parent
+                                        verticalAlignment: Text.AlignVCenter
+                                        visible: !filterInput.text && !filterInput.activeFocus
+                                    }
+
+                                    onTextChanged: themeColorConfigurator.filterQuery = text.toLowerCase().trim()
+                                }
+                            }
+                        }
+
+                        // List View with ScrollBar
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: root.snapPx(36)
+
+                            ListView {
+                                id: themeItemsList
+                                objectName: "themeItemsList"
+                                width: root.snapPx(parent.width)
+                                height: root.snapPx(parent.height)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeItemsList,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeItemsList,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                clip: true
+                                boundsBehavior: Flickable.StopAtBounds
+                                model: root.themeColorDefinitions.length
+
+                            ScrollBar.vertical: ScrollBar {
+                                id: themeListScrollBar
+                                objectName: "themeListScrollBar"
+                                policy: ScrollBar.AsNeeded
+                                width: root.snapPx(8)
+                                contentItem: Rectangle {
+                                    implicitWidth: root.snapPx(6)
+                                    radius: root.snapPx(3)
+                                    color: themeListScrollBar.pressed ? root.dialogAccent
+                                           : themeListScrollBar.hovered ? root.controlHoverBg
+                                           : root.controlBorder
+                                }
+                                background: Rectangle {
+                                    implicitWidth: root.snapPx(8)
+                                    color: "transparent"
+                            }
+                        }
+
+                            delegate: Item {
+                                id: itemDelegate
+                                readonly property var def: root.themeColorDefinitions[index]
+                                readonly property bool isSelected: themeColorConfigurator.selectedIndex === index
+                                readonly property bool matchesFilter: {
+                                    if (!themeColorConfigurator.filterQuery)
+                                        return true
+                                    return def.name.toLowerCase().includes(themeColorConfigurator.filterQuery)
+                                        || def.group.toLowerCase().includes(themeColorConfigurator.filterQuery)
+                                }
+
+                                width: root.snapPx(themeItemsList.width - (themeListScrollBar.visible ? (themeListScrollBar.width + 6) : 0))
+                                height: matchesFilter ? root.snapPx(36) : 0
+                                visible: matchesFilter
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: root.snapPx(4)
+                                    color: itemDelegate.isSelected ? root.panelSelectionBg
+                                           : itemMouse.containsMouse ? root.controlHoverBg : "transparent"
+                                    border.width: itemDelegate.isSelected ? root.separatorWidth : 0
+                                    border.color: root.panelSelectionBorder
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: root.snapPx(6)
+                                        anchors.rightMargin: root.snapPx(6)
+                                        spacing: root.snapPx(8)
+
+                                        // Color swatch
+                                        Rectangle {
+                                            implicitWidth: root.snapPx(20)
+                                            implicitHeight: root.snapPx(20)
+                                            radius: root.snapPx(3)
+                                            color: root.controlBg
+                                            border.width: root.separatorWidth
+                                            border.color: root.controlBorder
+                                            clip: true
+
+                                            Canvas {
+                                                anchors.fill: parent
+                                                onPaint: {
+                                                    const ctx = getContext("2d")
+                                                    const sz = 3
+                                                    for (let x = 0; x < width; x += sz) {
+                                                        for (let y = 0; y < height; y += sz) {
+                                                            ctx.fillStyle = ((Math.floor(x / sz) + Math.floor(y / sz)) % 2 === 0) ? "#404b5a" : "#222c38"
+                                                            ctx.fillRect(x, y, sz, sz)
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            Rectangle {
+                                                anchors.fill: parent
+                                                color: root[itemDelegate.def.id]
+                                            }
+                                        }
+
+                                        // Name & group
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: root.snapPx(1)
+
+                                            Text {
+                                                text: itemDelegate.def.name
+                                                color: root.textColor
+                                                font.pixelSize: 11
+                                                font.weight: itemDelegate.isSelected ? Font.Bold : Font.Normal
+                                                elide: Text.ElideRight
+                                                Layout.fillWidth: true
+                                            }
+
+                                            Text {
+                                                text: itemDelegate.def.group
+                                                color: root.mutedText
+                                                font.pixelSize: 9
+                                                elide: Text.ElideRight
+                                                Layout.fillWidth: true
+                                            }
+                                        }
+
+                                        // Hex preview
+                                        Text {
+                                            text: root.formatColorHex(root[itemDelegate.def.id])
+                                            color: root.mutedText
+                                            font.family: root.guiMonospaceFontFamily
+                                            font.pixelSize: 10
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: itemMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onEntered: {
+                                            if (!pressed)
+                                                themeColorConfigurator.flash(itemDelegate.def.id)
+                                        }
+                                        onExited: {
+                                            themeColorConfigurator.endHoverFlash(
+                                                itemDelegate.def.id)
+                                        }
+                                        onPressed: function(mouse) {
+                                            themeColorConfigurator.selectItem(index, false)
+                                            themeColorConfigurator.startPressFlash(itemDelegate.def.id)
+                                        }
+                                        onReleased: function(mouse) {
+                                            themeColorConfigurator.endPressFlash(itemDelegate.def.id)
+                                        }
+                                        onCanceled: {
+                                            themeColorConfigurator.endPressFlash(itemDelegate.def.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    }
+
+                    // Vertical Divider
+                    Rectangle {
+                        id: themeColorDivider
+                        objectName: "themeColorDivider"
+                        Layout.fillHeight: false
+                        Layout.preferredWidth: root.separatorWidth
+                        Layout.minimumWidth: root.separatorWidth
+                        Layout.maximumWidth: root.separatorWidth
+                        Layout.preferredHeight: root.snapPx(parent.height)
+                        implicitWidth: root.separatorWidth
+                        color: root.separatorColor
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeColorDivider,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeColorDivider,
+                                themeColorConfigurator.contentItem)
+                        }
+                    }
+
+                    // Right Column: Color Editor - STRICTLY FIXED WIDTH
+                    ColumnLayout {
+                        id: themeColorEditor
+                        objectName: "themeColorEditor"
+                        Layout.preferredWidth: root.snapPx(320)
+                        Layout.minimumWidth: root.snapPx(320)
+                        Layout.maximumWidth: root.snapPx(320)
+                        Layout.fillHeight: true
+                        spacing: root.snapPx(8)
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeColorEditor,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeColorEditor,
+                                themeColorConfigurator.contentItem)
+                        }
+
+                        // Active item title & badge
+                        RowLayout {
+                            id: themeActiveColorRow
+                            objectName: "themeActiveColorRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(26)
+                            Layout.minimumHeight: root.snapPx(26)
+                            Layout.maximumHeight: root.snapPx(26)
+                            spacing: root.snapPx(8)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeActiveColorRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeActiveColorRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text {
+                                text: themeColorConfigurator.currentItem ? themeColorConfigurator.currentItem.name : ""
+                                color: root.textColor
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 12
+                                font.weight: Font.Bold
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+
+                            Rectangle {
+                                id: themeColorGroupBadge
+                                objectName: "themeColorGroupBadge"
+                                radius: root.snapPx(3)
+                                color: root.controlBg
+                                border.width: root.separatorWidth
+                                border.color: root.controlBorder
+                                implicitHeight: root.snapPx(18)
+                                implicitWidth: root.snapPx(groupText.implicitWidth + 8)
+                                Layout.preferredHeight: root.snapPx(18)
+                                Layout.preferredWidth: root.snapPx(
+                                    groupText.implicitWidth + 8)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeColorGroupBadge,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeColorGroupBadge,
+                                        themeColorConfigurator.contentItem)
+                                }
+
+                                Text {
+                                    id: groupText
+                                    text: themeColorConfigurator.currentItem ? themeColorConfigurator.currentItem.group : ""
+                                    color: root.mutedText
+                                    font.pixelSize: 9
+                                    x: root.snapPx((parent.width - width) / 2)
+                                    y: root.snapPx((parent.height - height) / 2)
+                                }
+                            }
+
+                            // Large preview swatch
+                            Rectangle {
+                                id: themeColorPreviewSwatch
+                                objectName: "themeColorPreviewSwatch"
+                                implicitWidth: root.snapPx(26)
+                                implicitHeight: root.snapPx(26)
+                                Layout.preferredWidth: root.snapPx(26)
+                                Layout.preferredHeight: root.snapPx(26)
+                                radius: root.snapPx(4)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeColorPreviewSwatch,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeColorPreviewSwatch,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                color: root.controlBg
+                                border.width: root.separatorWidth
+                                border.color: root.controlBorder
+                                clip: true
+
+                                Canvas {
+                                    anchors.fill: parent
+                                    onPaint: {
+                                        const ctx = getContext("2d")
+                                        const sz = 4
+                                        for (let x = 0; x < width; x += sz) {
+                                            for (let y = 0; y < height; y += sz) {
+                                                ctx.fillStyle = ((Math.floor(x / sz) + Math.floor(y / sz)) % 2 === 0) ? "#404b5a" : "#222c38"
+                                                ctx.fillRect(x, y, sz, sz)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    color: themeColorConfigurator.currentItem ? root[themeColorConfigurator.currentItem.id] : "transparent"
+                                }
+                            }
+                        }
+
+                        // 2D Color Wheel
+                        Canvas {
+                            id: colorWheel
+                            objectName: "themeColorWheel"
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.preferredWidth: root.snapPx(170)
+                            Layout.preferredHeight: root.snapPx(170)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    colorWheel,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    colorWheel,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            function hueRgb(hue) {
+                                const hueSector = hue * 6
+                                const sector = Math.floor(hueSector) % 6
+                                const fraction = hueSector - Math.floor(hueSector)
+                                const falling = 1 - fraction
+                                const rising = fraction
+                                if (sector === 0)
+                                    return [255, Math.round(rising * 255), 0]
+                                if (sector === 1)
+                                    return [Math.round(falling * 255), 255, 0]
+                                if (sector === 2)
+                                    return [0, 255, Math.round(rising * 255)]
+                                if (sector === 3)
+                                    return [0, Math.round(falling * 255), 255]
+                                if (sector === 4)
+                                    return [Math.round(rising * 255), 0, 255]
+                                return [255, 0, Math.round(falling * 255)]
+                            }
+
+                            function selectPoint(pointX, pointY) {
+                                const centerX = width / 2
+                                const centerY = height / 2
+                                const deltaX = pointX - centerX
+                                const deltaY = pointY - centerY
+                                const radius = Math.max(1, Math.min(width, height) / 2 - 2)
+                                const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY)
+                                let hue = Math.atan2(deltaY, deltaX) / (2 * Math.PI)
+                                if (hue < 0)
+                                    hue += 1
+                                themeColorConfigurator.selectedHue = hue
+                                themeColorConfigurator.selectedSaturation = Math.min(1, distance / radius)
+                                themeColorConfigurator.applyCurrentColor()
+                            }
+
+                            onPaint: {
+                                const context = getContext("2d")
+                                const canvasWidth = Math.max(1, width)
+                                const canvasHeight = Math.max(1, height)
+                                const centerX = canvasWidth / 2
+                                const centerY = canvasHeight / 2
+                                const radius = Math.max(1, Math.min(canvasWidth, canvasHeight) / 2 - 2)
+
+                                context.clearRect(0, 0, canvasWidth, canvasHeight)
+                                for (let sectorIndex = 0; sectorIndex < 360; ++sectorIndex) {
+                                    const startAngle = sectorIndex * 2 * Math.PI / 360
+                                    const endAngle = (sectorIndex + 1) * 2 * Math.PI / 360
+                                    const rgb = colorWheel.hueRgb(sectorIndex / 360)
+                                    context.fillStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")"
+                                    context.beginPath()
+                                    context.moveTo(centerX, centerY)
+                                    context.arc(centerX, centerY, radius, startAngle, endAngle, false)
+                                    context.closePath()
+                                    context.fill()
+                                }
+
+                                context.save()
+                                context.beginPath()
+                                context.arc(centerX, centerY, radius, 0, 2 * Math.PI, false)
+                                context.clip()
+                                const saturationGradient = context.createRadialGradient(
+                                            centerX, centerY, 0,
+                                            centerX, centerY, radius)
+                                saturationGradient.addColorStop(0, "rgba(255,255,255,1)")
+                                saturationGradient.addColorStop(1, "rgba(255,255,255,0)")
+                                context.fillStyle = saturationGradient
+                                context.fillRect(0, 0, canvasWidth, canvasHeight)
+                                context.restore()
+
+                                const markerDistance = themeColorConfigurator.selectedSaturation * radius
+                                const markerAngle = themeColorConfigurator.selectedHue * 2 * Math.PI
+                                const markerX = centerX + Math.cos(markerAngle) * markerDistance
+                                const markerY = centerY + Math.sin(markerAngle) * markerDistance
+                                context.beginPath()
+                                context.arc(markerX, markerY, 6, 0, 2 * Math.PI)
+                                context.lineWidth = 3
+                                context.strokeStyle = "#80000000"
+                                context.stroke()
+                                context.beginPath()
+                                context.arc(markerX, markerY, 6, 0, 2 * Math.PI)
+                                context.lineWidth = 2
+                                context.strokeStyle = "#ffffff"
+                                context.stroke()
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.CrossCursor
+                                onPressed: function(mouse) { colorWheel.selectPoint(mouse.x, mouse.y) }
+                                onPositionChanged: function(mouse) { if (pressed) colorWheel.selectPoint(mouse.x, mouse.y) }
+                            }
+                        }
+
+                        // HUE Slider & Input
+                        RowLayout {
+                            id: themeHueRow
+                            objectName: "themeHueRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(20)
+                            spacing: root.snapPx(6)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeHueRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeHueRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text { text: "H"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
+                            Slider {
+                                id: hueSlider
+                                objectName: "themeHueSlider"
+                                from: 0; to: 1; value: themeColorConfigurator.selectedHue
+                                Layout.fillWidth: false
+                                Layout.preferredWidth: root.snapPx(257)
+                                Layout.preferredHeight: root.snapPx(18)
+                                implicitHeight: root.snapPx(18)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        hueSlider,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        hueSlider,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                onMoved: { themeColorConfigurator.selectedHue = value; themeColorConfigurator.applyCurrentColor(); }
+                                background: Rectangle {
+                                    x: root.snapPx(hueSlider.leftPadding + hueSlider.handle.width / 2); y: root.snapPx(hueSlider.topPadding)
+                                    width: root.snapPx(hueSlider.availableWidth - hueSlider.handle.width); height: root.snapPx(hueSlider.availableHeight)
+                                    radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.000; color: Qt.hsla(0.000, 1.0, 0.5, 1) }
+                                        GradientStop { position: 0.167; color: Qt.hsla(0.167, 1.0, 0.5, 1) }
+                                        GradientStop { position: 0.333; color: Qt.hsla(0.333, 1.0, 0.5, 1) }
+                                        GradientStop { position: 0.500; color: Qt.hsla(0.500, 1.0, 0.5, 1) }
+                                        GradientStop { position: 0.667; color: Qt.hsla(0.667, 1.0, 0.5, 1) }
+                                        GradientStop { position: 0.833; color: Qt.hsla(0.833, 1.0, 0.5, 1) }
+                                        GradientStop { position: 1.000; color: Qt.hsla(1.000, 1.0, 0.5, 1) }
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: root.snapPx(hueSlider.leftPadding + hueSlider.visualPosition * (hueSlider.availableWidth - width))
+                                    y: root.snapPx(hueSlider.topPadding + (hueSlider.availableHeight - height) / 2)
+                                    width: root.snapPx(14); height: root.snapPx(14); radius: root.snapPx(7); color: root.controlBg; border.width: root.snapPx(2); border.color: root.textColor
+                                }
+                            }
+                            Rectangle {
+                                id: themeHueInputBox
+                                objectName: "themeHueInputBox"
+                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: hInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredWidth: root.snapPx(38)
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeHueInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeHueInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: hInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 360 }
+                                    text: !activeFocus ? Math.round(themeColorConfigurator.selectedHue * 360).toString() : text
+                                    onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { themeColorConfigurator.selectedHue = Math.max(0, Math.min(360, val)) / 360; themeColorConfigurator.applyCurrentColor(); } }
+                                    onEditingFinished: { text = Math.round(themeColorConfigurator.selectedHue * 360).toString() }
+                                }
+                            }
+                        }
+
+                        // SATURATION Slider & Input
+                        RowLayout {
+                            id: themeSaturationRow
+                            objectName: "themeSaturationRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(20)
+                            spacing: root.snapPx(6)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeSaturationRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeSaturationRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text { text: "S"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
+                            Slider {
+                                id: saturationSlider
+                                objectName: "themeSaturationSlider"
+                                from: 0; to: 1; value: themeColorConfigurator.selectedSaturation
+                                Layout.fillWidth: false
+                                Layout.preferredWidth: root.snapPx(257)
+                                Layout.preferredHeight: root.snapPx(18)
+                                implicitHeight: root.snapPx(18)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        saturationSlider,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        saturationSlider,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                onMoved: { themeColorConfigurator.selectedSaturation = value; themeColorConfigurator.applyCurrentColor(); }
+                                background: Rectangle {
+                                    x: root.snapPx(saturationSlider.leftPadding + saturationSlider.handle.width / 2); y: root.snapPx(saturationSlider.topPadding)
+                                    width: root.snapPx(saturationSlider.availableWidth - saturationSlider.handle.width); height: root.snapPx(saturationSlider.availableHeight)
+                                    radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0; color: Qt.hsla(themeColorConfigurator.selectedHue, 0, themeColorConfigurator.selectedLightness, 1) }
+                                        GradientStop { position: 1; color: Qt.hsla(themeColorConfigurator.selectedHue, 1, themeColorConfigurator.selectedLightness, 1) }
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: root.snapPx(saturationSlider.leftPadding + saturationSlider.visualPosition * (saturationSlider.availableWidth - width))
+                                    y: root.snapPx(saturationSlider.topPadding + (saturationSlider.availableHeight - height) / 2)
+                                    width: root.snapPx(14); height: root.snapPx(14); radius: root.snapPx(7); color: root.controlBg; border.width: root.snapPx(2); border.color: root.textColor
+                                }
+                            }
+                            Rectangle {
+                                id: themeSaturationInputBox
+                                objectName: "themeSaturationInputBox"
+                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: sInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredWidth: root.snapPx(38)
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeSaturationInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeSaturationInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: sInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 100 }
+                                    text: !activeFocus ? Math.round(themeColorConfigurator.selectedSaturation * 100).toString() : text
+                                    onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { themeColorConfigurator.selectedSaturation = Math.max(0, Math.min(100, val)) / 100; themeColorConfigurator.applyCurrentColor(); } }
+                                    onEditingFinished: { text = Math.round(themeColorConfigurator.selectedSaturation * 100).toString() }
+                                }
+                            }
+                        }
+
+                        // LIGHTNESS Slider & Input
+                        RowLayout {
+                            id: themeLightnessRow
+                            objectName: "themeLightnessRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(20)
+                            spacing: root.snapPx(6)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeLightnessRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeLightnessRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text { text: "L"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
+                            Slider {
+                                id: lightnessSlider
+                                objectName: "themeLightnessSlider"
+                                from: 0; to: 1; value: themeColorConfigurator.selectedLightness
+                                Layout.fillWidth: false
+                                Layout.preferredWidth: root.snapPx(257)
+                                Layout.preferredHeight: root.snapPx(18)
+                                implicitHeight: root.snapPx(18)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        lightnessSlider,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        lightnessSlider,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                onMoved: { themeColorConfigurator.selectedLightness = value; themeColorConfigurator.applyCurrentColor(); }
+                                background: Rectangle {
+                                    x: root.snapPx(lightnessSlider.leftPadding + lightnessSlider.handle.width / 2); y: root.snapPx(lightnessSlider.topPadding)
+                                    width: root.snapPx(lightnessSlider.availableWidth - lightnessSlider.handle.width); height: root.snapPx(lightnessSlider.availableHeight)
+                                    radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0; color: "#000000" }
+                                        GradientStop { position: 0.5; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, 0.5, 1) }
+                                        GradientStop { position: 1; color: "#ffffff" }
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: root.snapPx(lightnessSlider.leftPadding + lightnessSlider.visualPosition * (lightnessSlider.availableWidth - width))
+                                    y: root.snapPx(lightnessSlider.topPadding + (lightnessSlider.availableHeight - height) / 2)
+                                    width: root.snapPx(14); height: root.snapPx(14); radius: root.snapPx(7); color: root.controlBg; border.width: root.snapPx(2); border.color: root.textColor
+                                }
+                            }
+                            Rectangle {
+                                id: themeLightnessInputBox
+                                objectName: "themeLightnessInputBox"
+                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: lInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredWidth: root.snapPx(38)
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeLightnessInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeLightnessInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: lInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 100 }
+                                    text: !activeFocus ? Math.round(themeColorConfigurator.selectedLightness * 100).toString() : text
+                                    onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { themeColorConfigurator.selectedLightness = Math.max(0, Math.min(100, val)) / 100; themeColorConfigurator.applyCurrentColor(); } }
+                                    onEditingFinished: { text = Math.round(themeColorConfigurator.selectedLightness * 100).toString() }
+                                }
+                            }
+                        }
+
+                        // ALPHA Slider & Input
+                        RowLayout {
+                            id: themeAlphaRow
+                            objectName: "themeAlphaRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(20)
+                            spacing: root.snapPx(6)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeAlphaRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeAlphaRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text { text: "A"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
+                            Slider {
+                                id: alphaSlider
+                                objectName: "themeAlphaSlider"
+                                from: 0; to: 1; value: themeColorConfigurator.selectedAlpha
+                                Layout.fillWidth: false
+                                Layout.preferredWidth: root.snapPx(257)
+                                Layout.preferredHeight: root.snapPx(18)
+                                implicitHeight: root.snapPx(18)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        alphaSlider,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        alphaSlider,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                onMoved: { themeColorConfigurator.selectedAlpha = value; themeColorConfigurator.applyCurrentColor(); }
+                                background: Rectangle {
+                                    x: root.snapPx(alphaSlider.leftPadding + alphaSlider.handle.width / 2); y: root.snapPx(alphaSlider.topPadding)
+                                    width: root.snapPx(alphaSlider.availableWidth - alphaSlider.handle.width); height: root.snapPx(alphaSlider.availableHeight)
+                                    radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
+                                    clip: true
+
+                                    Canvas {
+                                        anchors.fill: parent
+                                        onPaint: {
+                                            const ctx = getContext("2d")
+                                            const sz = 3
+                                            for (let x = 0; x < width; x += sz) {
+                                                for (let y = 0; y < height; y += sz) {
+                                                    ctx.fillStyle = ((Math.floor(x / sz) + Math.floor(y / sz)) % 2 === 0) ? "#404b5a" : "#222c38"
+                                                    ctx.fillRect(x, y, sz, sz)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: root.snapPx(height / 2)
+                                        gradient: Gradient {
+                                            orientation: Gradient.Horizontal
+                                            GradientStop { position: 0; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, themeColorConfigurator.selectedLightness, 0) }
+                                            GradientStop { position: 1; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, themeColorConfigurator.selectedLightness, 1) }
+                                        }
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: root.snapPx(alphaSlider.leftPadding + alphaSlider.visualPosition * (alphaSlider.availableWidth - width))
+                                    y: root.snapPx(alphaSlider.topPadding + (alphaSlider.availableHeight - height) / 2)
+                                    width: root.snapPx(14); height: root.snapPx(14); radius: root.snapPx(7); color: root.controlBg; border.width: root.snapPx(2); border.color: root.textColor
+                                }
+                            }
+                            Rectangle {
+                                id: themeAlphaInputBox
+                                objectName: "themeAlphaInputBox"
+                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: aInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredWidth: root.snapPx(38)
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeAlphaInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeAlphaInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: aInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 100 }
+                                    text: !activeFocus ? Math.round(themeColorConfigurator.selectedAlpha * 100).toString() : text
+                                    onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { themeColorConfigurator.selectedAlpha = Math.max(0, Math.min(100, val)) / 100; themeColorConfigurator.applyCurrentColor(); } }
+                                    onEditingFinished: { text = Math.round(themeColorConfigurator.selectedAlpha * 100).toString() }
+                                }
+                            }
+                        }
+
+                        // RGB & HEX Row
+                        RowLayout {
+                            id: themeRgbHexRow
+                            objectName: "themeRgbHexRow"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.snapPx(20)
+                            spacing: root.snapPx(6)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeRgbHexRow,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeRgbHexRow,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            // R
+                            Text { id: themeRedLabel; text: "R:"; color: root.mutedText; font.pixelSize: 10 }
+                            Rectangle {
+                                id: themeRedInputBox
+                                objectName: "themeRedInputBox"
+                                Layout.fillWidth: false; Layout.preferredWidth: root.snapPx(34); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: rInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeRedInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeRedInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: rInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 255 }
+                                    text: !activeFocus && themeColorConfigurator.currentItem ? Math.round(root[themeColorConfigurator.currentItem.id].r * 255).toString() : text
+                                    onTextEdited: {
+                                        const val = parseInt(text)
+                                        if (!isNaN(val) && themeColorConfigurator.currentItem) {
+                                            themeColorConfigurator.setFromRgb(val, Math.round(root[themeColorConfigurator.currentItem.id].g * 255), Math.round(root[themeColorConfigurator.currentItem.id].b * 255))
+                                        }
+                                    }
+                                    onEditingFinished: { if (themeColorConfigurator.currentItem) text = Math.round(root[themeColorConfigurator.currentItem.id].r * 255).toString() }
+                                }
+                            }
+
+                            // G
+                            Text { id: themeGreenLabel; text: "G:"; color: root.mutedText; font.pixelSize: 10 }
+                            Rectangle {
+                                id: themeGreenInputBox
+                                objectName: "themeGreenInputBox"
+                                Layout.fillWidth: false; Layout.preferredWidth: root.snapPx(34); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: gInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeGreenInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeGreenInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: gInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 255 }
+                                    text: !activeFocus && themeColorConfigurator.currentItem ? Math.round(root[themeColorConfigurator.currentItem.id].g * 255).toString() : text
+                                    onTextEdited: {
+                                        const val = parseInt(text)
+                                        if (!isNaN(val) && themeColorConfigurator.currentItem) {
+                                            themeColorConfigurator.setFromRgb(Math.round(root[themeColorConfigurator.currentItem.id].r * 255), val, Math.round(root[themeColorConfigurator.currentItem.id].b * 255))
+                                        }
+                                    }
+                                    onEditingFinished: { if (themeColorConfigurator.currentItem) text = Math.round(root[themeColorConfigurator.currentItem.id].g * 255).toString() }
+                                }
+                            }
+
+                            // B
+                            Text { id: themeBlueLabel; text: "B:"; color: root.mutedText; font.pixelSize: 10 }
+                            Rectangle {
+                                id: themeBlueInputBox
+                                objectName: "themeBlueInputBox"
+                                Layout.fillWidth: false; Layout.preferredWidth: root.snapPx(34); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: bInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeBlueInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeBlueInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: bInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    validator: IntValidator { bottom: 0; top: 255 }
+                                    text: !activeFocus && themeColorConfigurator.currentItem ? Math.round(root[themeColorConfigurator.currentItem.id].b * 255).toString() : text
+                                    onTextEdited: {
+                                        const val = parseInt(text)
+                                        if (!isNaN(val) && themeColorConfigurator.currentItem) {
+                                            themeColorConfigurator.setFromRgb(Math.round(root[themeColorConfigurator.currentItem.id].r * 255), Math.round(root[themeColorConfigurator.currentItem.id].g * 255), val)
+                                        }
+                                    }
+                                    onEditingFinished: { if (themeColorConfigurator.currentItem) text = Math.round(root[themeColorConfigurator.currentItem.id].b * 255).toString() }
+                                }
+                            }
+
+                            // HEX
+                            Text { id: themeHexLabel; text: "HEX:"; color: root.mutedText; font.pixelSize: 10 }
+                            Rectangle {
+                                id: themeHexInputBox
+                                objectName: "themeHexInputBox"
+                                Layout.preferredWidth: root.snapPx(74); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: hexInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                Layout.preferredHeight: root.snapPx(20)
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeHexInputBox,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeHexInputBox,
+                                        themeColorConfigurator.contentItem)
+                                }
+                                TextInput {
+                                    id: hexInput
+                                    anchors.fill: parent; anchors.leftMargin: root.snapPx(4); anchors.rightMargin: root.snapPx(4); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
+                                    font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
+                                    maximumLength: 9
+                                    text: !activeFocus && themeColorConfigurator.currentItem ? root.formatColorHex(root[themeColorConfigurator.currentItem.id]) : text
+                                    onTextEdited: {
+                                        const c = themeColorConfigurator.parseHex(text)
+                                        if (c && themeColorConfigurator.currentItem) {
+                                            themeColorConfigurator.setFromColor(c)
+                                            themeColorConfigurator.applyCurrentColor()
+                                        }
+                                    }
+                                    onEditingFinished: { if (themeColorConfigurator.currentItem) text = root.formatColorHex(root[themeColorConfigurator.currentItem.id]) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: themeFooterDivider
+                    objectName: "themeFooterDivider"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.separatorWidth
+                    Layout.minimumHeight: root.separatorWidth
+                    Layout.maximumHeight: root.separatorWidth
+                    implicitHeight: root.separatorWidth
+                    color: root.separatorColor
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeFooterDivider,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeFooterDivider,
+                            themeColorConfigurator.contentItem)
+                    }
+                }
+
+                // Footer Actions
+                RowLayout {
+                    id: themeColorFooter
+                    objectName: "themeColorFooter"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.snapPx(30)
+                    Layout.minimumHeight: root.snapPx(30)
+                    Layout.maximumHeight: root.snapPx(30)
+                    spacing: root.snapPx(8)
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeColorFooter,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeColorFooter,
+                            themeColorConfigurator.contentItem)
+                    }
+
+                    ConfigDialogButton {
+                        id: themeResetElementButton
+                        objectName: "themeResetElementButton"
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeResetElementButton,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeResetElementButton,
+                                themeColorConfigurator.contentItem)
+                        }
+                        text: "Reset Element"
+                        iconSource: root.lucideIconSource(
+                                        "rotate-ccw", 14, root.textColor)
+                        onClicked: {
+                            if (themeColorConfigurator.currentItem) {
+                                root[themeColorConfigurator.currentItem.id] = Qt.color(themeColorConfigurator.currentItem.defaultColor)
+                                themeColorConfigurator.setFromColor(root[themeColorConfigurator.currentItem.id])
+                                themeColorConfigurator.flash(themeColorConfigurator.currentItem.id)
+                            }
+                        }
+                    }
+
+                    ConfigDialogButton {
+                        id: themeResetAllButton
+                        objectName: "themeResetAllButton"
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeResetAllButton,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeResetAllButton,
+                                themeColorConfigurator.contentItem)
+                        }
+                        text: "Reset All"
+                        iconSource: root.lucideIconSource(
+                                        "refresh-cw", 14, root.textColor)
+                        onClicked: {
+                            root.resetThemeToDefaults()
+                            if (themeColorConfigurator.currentItem)
+                                themeColorConfigurator.setFromColor(root[themeColorConfigurator.currentItem.id])
+                            themeColorConfigurator.statusToast = "Reset all colors to default"
+                        }
+                    }
+
+                    Text {
+                        text: themeColorConfigurator.statusToast
+                        color: root.activeBorder
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        visible: themeColorConfigurator.statusToast !== ""
+                    }
+
+                    Item { Layout.fillWidth: true; visible: themeColorConfigurator.statusToast === "" }
+
+                    ConfigDialogButton {
+                        id: themeSaveButton
+                        objectName: "themeSaveButton"
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeSaveButton,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeSaveButton,
+                                themeColorConfigurator.contentItem)
+                        }
+                        text: "Save Theme"
+                        highlighted: true
+                        iconSource: root.lucideIconSource(
+                                        "save", 14, "#ffffff")
+                        onClicked: {
+                            if (root.saveThemeToPersistence()) {
+                                themeColorConfigurator.statusToast = "Theme saved to gui_theme.ini!"
+                            } else {
+                                themeColorConfigurator.statusToast = "Failed to save theme"
+                            }
+                        }
+                    }
+
+                    ConfigDialogButton {
+                        id: themeCloseButton
+                        objectName: "themeCloseButton"
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeCloseButton,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeCloseButton,
+                                themeColorConfigurator.contentItem)
+                        }
+                        text: "Close"
+                        iconSource: root.lucideIconSource(
+                                        "x", 14, root.textColor)
+                        onClicked: themeColorConfigurator.close()
+                    }
+                }
+            }
+        }
+    }
+
     Item {
         id: semanticLayer
         anchors.fill: parent
@@ -1283,11 +3473,13 @@ ApplicationWindow {
 
         Rectangle {
             anchors.fill: parent
-            color: root.panelBg
+            color: root.useTransparentWindowBackground
+                   ? root.panelBg : "transparent"
         }
 
         Item {
             id: titleBar
+            objectName: "titleBar"
             anchors.left: parent.left
             anchors.right: parent.right
             height: root.menuBarHeight
@@ -1307,18 +3499,40 @@ ApplicationWindow {
                 objectName: "appIconButton"
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
-                implicitWidth: 46
+                implicitWidth: root.snapPx(46)
                 implicitHeight: parent.height
                 width: visible ? implicitWidth : 0
                 height: parent.height
                 visible: f4UsesQwk && Qt.platform.os !== "osx"
 
-                icon.width: 18
-                icon.height: 18
+                leftPadding: 0
+                topPadding: 0
+                rightPadding: 0
+                bottomPadding: 0
                 colorfulIcon: true
-                icon.source: "qrc:/F4QtHost/icons/app/f4.svg"
-                onClicked: windowAgent.showSystemMenu(
-                               mapToGlobal(0, height))
+
+                contentItem: Item {
+                    PixelAlignedImage {
+                        objectName: "appIconImage"
+                        anchors.centerIn: parent
+                        width: root.snapPx(18)
+                        height: root.snapPx(18)
+                        sourceSize: Qt.size(18, 18)
+                        smooth: false
+                        mipmap: false
+                        source: "qrc:/F4QtHost/icons/app/f4.svg"
+                    }
+                }
+
+                onClicked: {
+                    if (themeColorConfigurator.visible) {
+                        themeColorConfigurator.hide()
+                    } else {
+                        themeColorConfigurator.show()
+                        themeColorConfigurator.requestActivate()
+                        themeColorConfigurator.raise()
+                    }
+                }
             }
 
             SemanticMenuBar {
@@ -1339,21 +3553,75 @@ ApplicationWindow {
             Item {
                 id: workspaceBar
                 objectName: "workspaceBar"
-                anchors.right: windowButtons.left
-                anchors.rightMargin: root.useMacNativeTitleBar
-                                     ? -windowButtons.width
-                                       + root.contentSpacing
-                                     : root.contentSpacing
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.verticalCenterOffset:
-                    root.titleBarContentVerticalOffset
+                x: root.snapPx(windowButtons.x - width - (root.useMacNativeTitleBar
+                               ? -windowButtons.width + root.contentSpacing
+                               : root.contentSpacing))
+                anchors.bottom: parent.bottom
                 width: visible
-                       ? Math.min(titleBar.width * 0.46,
-                                  workspaceItemsRow.width)
+                       ? root.snapPx(Math.min(titleBar.width * 0.46,
+                                              workspaceItemsRow.width))
                        : 0
-                height: 30
+                height: root.snapPx(36)
                 visible: root.workspaceTabs.visible === true
                 opacity: root.normalSurfaceOpacity
+                z: 2
+                property Item activeWorkspaceTab: null
+                property int activeWorkspaceTabSeparatorRevision: 0
+                property bool activeWorkspaceTabUpdatePending: false
+
+                function refreshActiveWorkspaceTabGeometry() {
+                    ++activeWorkspaceTabSeparatorRevision
+                }
+
+                function updateActiveWorkspaceTabNow() {
+                    var nextTab = null
+                    var activeIndex = Number(root.workspaceTabs.activeIndex)
+                    if (Math.floor(activeIndex) === activeIndex
+                            && activeIndex >= 0
+                            && activeIndex < workspaceTabsRepeater.count) {
+                        nextTab = workspaceTabsRepeater.itemAt(activeIndex)
+                    }
+                    if (!nextTab) {
+                        for (var i = 0; i < workspaceTabsRepeater.count; ++i) {
+                            var candidate = workspaceTabsRepeater.itemAt(i)
+                            if (candidate && candidate.current) {
+                                nextTab = candidate
+                                break
+                            }
+                        }
+                    }
+                    activeWorkspaceTab = nextTab
+                    refreshActiveWorkspaceTabGeometry()
+                }
+
+                function updateActiveWorkspaceTab() {
+                    if (activeWorkspaceTabUpdatePending)
+                        return
+                    activeWorkspaceTabUpdatePending = true
+                    Qt.callLater(function() {
+                        activeWorkspaceTabUpdatePending = false
+                        workspaceBar.updateActiveWorkspaceTabNow()
+                    })
+                }
+
+                readonly property real activeWorkspaceTabLeft:
+                    activeWorkspaceTabSeparatorRevision >= 0
+                    && activeWorkspaceTab
+                    ? Math.max(0, Math.min(workspaceBar.width,
+                          activeWorkspaceTab.x + workspaceItemsRow.x
+                          - workspaceFlick.contentX))
+                    : 0
+                readonly property real activeWorkspaceTabRight:
+                    activeWorkspaceTabSeparatorRevision >= 0
+                    && activeWorkspaceTab
+                    ? Math.max(0, Math.min(workspaceBar.width,
+                          activeWorkspaceTab.x + workspaceItemsRow.x
+                          - workspaceFlick.contentX
+                          + activeWorkspaceTab.width))
+                    : 0
+
+                onXChanged: refreshActiveWorkspaceTabGeometry()
+                onWidthChanged: refreshActiveWorkspaceTabGeometry()
 
                 Flickable {
                     id: workspaceFlick
@@ -1362,23 +3630,35 @@ ApplicationWindow {
                     contentHeight: height
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.HorizontalFlick
+                    pixelAligned: true
                     clip: true
 
                     function revealCurrentWorkspace() {
                         contentX = Math.max(0, contentWidth - width)
                     }
 
-                    onContentWidthChanged: revealCurrentWorkspace()
-                    onWidthChanged: revealCurrentWorkspace()
+                    onContentWidthChanged: {
+                        revealCurrentWorkspace()
+                        workspaceBar.refreshActiveWorkspaceTabGeometry()
+                    }
+                    onContentXChanged:
+                        workspaceBar.refreshActiveWorkspaceTabGeometry()
+                    onWidthChanged: {
+                        revealCurrentWorkspace()
+                        workspaceBar.refreshActiveWorkspaceTabGeometry()
+                    }
 
                     Row {
                         id: workspaceItemsRow
                         width: childrenRect.width
                         height: parent.height
-                        spacing: 4
+                        spacing: root.snapPx(4)
 
                         Repeater {
+                            id: workspaceTabsRepeater
                             model: root.workspaces
+                            onItemAdded: workspaceBar.updateActiveWorkspaceTab()
+                            onItemRemoved: workspaceBar.updateActiveWorkspaceTab()
 
                             delegate: Rectangle {
                                 id: workspaceTab
@@ -1392,20 +3672,135 @@ ApplicationWindow {
                                     root.workspaceTabTextColor(current)
                                 readonly property int labelWeight:
                                     root.workspaceTabFontWeight()
+                                readonly property bool hoverActive:
+                                    workspaceHover.hovered
                                 objectName: String(modelData.id || ("workspace-tab-" + index))
                                 width: root.preferredWorkspaceTabWidth(
-                                           workspaceLabel.implicitWidth,
-                                           workspaceTab.closeEnabled)
+                                            workspaceLabel.implicitWidth,
+                                            workspaceTab.closeEnabled)
                                 height: parent.height
+                                z: current ? 2 : 0
                                 radius: 6
+                                topLeftRadius: 6
+                                topRightRadius: 6
+                                bottomLeftRadius: 0
+                                bottomRightRadius: 0
+                                antialiasing: true
+                                smooth: true
                                 color: current
-                                       ? root.panelSelectionBg
+                                       ? root.panelPathBg
                                        : workspaceHover.hovered
                                          ? root.controlHoverBg : "transparent"
-                                border.width: current ? 1 : 0
-                                border.color: root.panelSelectionBorder
+                                border.width: 0
+
+                                // The active tab joins the panel below: its
+                                // native background keeps the upper corners,
+                                // while its outline is deliberately open at
+                                // the bottom.
+                                Shape {
+                                    id: workspaceTabBorder
+                                    anchors.fill: parent
+                                    visible: workspaceTab.current
+                                    z: 1
+                                    antialiasing: true
+                                    smooth: true
+                                    preferredRendererType: Shape.CurveRenderer
+                                    readonly property real borderHalf:
+                                        root.separatorWidth / 2
+                                    readonly property real borderRadius:
+                                        6 - borderHalf
+                                    readonly property real borderCurveFactor:
+                                        borderRadius * 0.5522848
+
+                                    ShapePath {
+                                        strokeColor: root.separatorColor
+                                        strokeWidth: root.separatorWidth
+                                        fillColor: "transparent"
+                                        capStyle: ShapePath.FlatCap
+                                        joinStyle: ShapePath.RoundJoin
+                                        startX: workspaceTabBorder.borderHalf
+                                        startY: workspaceTab.height
+
+                                        PathLine {
+                                            x: workspaceTabBorder.borderHalf
+                                            y: 6
+                                        }
+                                        PathCubic {
+                                            control1X: workspaceTabBorder.borderHalf
+                                            control1Y: 6
+                                                         - workspaceTabBorder.borderCurveFactor
+                                            control2X: 6
+                                                         - workspaceTabBorder.borderCurveFactor
+                                            control2Y: workspaceTabBorder.borderHalf
+                                            x: 6
+                                            y: workspaceTabBorder.borderHalf
+                                        }
+                                        PathLine {
+                                            x: workspaceTab.width - 6
+                                            y: workspaceTabBorder.borderHalf
+                                        }
+                                        PathCubic {
+                                            control1X: workspaceTab.width - 6
+                                                         + workspaceTabBorder.borderCurveFactor
+                                            control1Y: workspaceTabBorder.borderHalf
+                                            control2X: workspaceTab.width
+                                                         - workspaceTabBorder.borderHalf
+                                            control2Y: 6
+                                                         - workspaceTabBorder.borderCurveFactor
+                                            x: workspaceTab.width
+                                               - workspaceTabBorder.borderHalf
+                                            y: 6
+                                        }
+                                        PathLine {
+                                            x: workspaceTab.width
+                                               - workspaceTabBorder.borderHalf
+                                            y: workspaceTab.height
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: root.separatorWidth
+                                    color: root.separatorColor
+                                    visible: !workspaceTab.current
+                                    z: 1
+                                    antialiasing: false
+                                }
+
+                                // Keep the divider in the existing spacing:
+                                // this child is painted outside the tab but
+                                // never participates in the Row geometry.
+                                Rectangle {
+                                    objectName: workspaceTab.objectName + "-divider"
+                                    width: root.separatorWidth
+                                    height: Math.max(0, parent.height - 12)
+                                    anchors.left: parent.right
+                                    anchors.leftMargin:
+                                        (workspaceItemsRow.spacing - width) / 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: root.separatorColor
+                                    visible: !workspaceTab.current
+                                             && !workspaceTab.hoverActive
+                                             && index + 1
+                                                < workspaceTabsRepeater.count
+                                             && workspaceTabsRepeater.itemAt(index + 1)
+                                             && !workspaceTabsRepeater.itemAt(
+                                                    index + 1).hoverActive
+                                             && !workspaceTabsRepeater.itemAt(
+                                                    index + 1).current
+                                    z: 2
+                                }
+
+                                onCurrentChanged:
+                                    workspaceBar.updateActiveWorkspaceTab()
+                                onWidthChanged:
+                                    workspaceBar.refreshActiveWorkspaceTabGeometry()
 
                                 Component.onCompleted: {
+                                    workspaceBar.updateActiveWorkspaceTab()
                                     if (f4UsesQwk)
                                         windowAgent.setHitTestVisible(workspaceTab)
                                 }
@@ -1424,38 +3819,42 @@ ApplicationWindow {
                                               modelData, Qt.platform.os)
                                 }
 
-                                IconLabel {
+                                PixelAlignedImage {
                                     id: workspaceIcon
-                                    readonly property string lucideName:
-                                        workspaceTab.tabIconName
                                     objectName: "workspace-tab-icon-"
                                                 + root.cleanText(modelData.id)
                                     anchors.left: parent.left
-                                    anchors.leftMargin: 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 16
-                                    height: 16
-                                    icon.source: root.lucideIconSource(
-                                                     workspaceTab.tabIconName)
-                                    icon.width: 16
-                                    icon.height: 16
-                                    icon.color: workspaceTab.current
-                                                ? root.textColor : root.chromeText
+                                    anchors.leftMargin: root.snapPx(10)
+                                    y: root.snapPx((parent.height - height) / 2)
+                                    width: root.snapPx(16)
+                                    height: root.snapPx(16)
+                                    alignmentRevision: workspaceTab.x
+                                                       + workspaceTab.y
+                                                       + workspaceTab.width
+                                                       + workspaceTab.height
+                                    smooth: false
+                                    source: root.lucideIconSource(
+                                                workspaceTab.tabIconName, 16,
+                                                workspaceTab.labelColor)
                                 }
 
                                 Item {
                                     id: workspaceLabel
+                                    objectName: "workspace-tab-label-"
+                                                + workspaceTab.objectName
                                     anchors.left: workspaceIcon.right
-                                    anchors.leftMargin: 7
+                                    anchors.leftMargin: root.snapPx(7)
                                     anchors.right: workspaceAttention.visible
                                                    ? workspaceAttention.left
                                                    : workspaceClose.visible
                                                      ? workspaceClose.left
                                                      : parent.right
-                                    anchors.rightMargin: 6
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    height: Math.max(workspaceNumber.implicitHeight,
-                                                     workspaceTitle.implicitHeight)
+                                    anchors.rightMargin: root.snapPx(6)
+                                    y: root.snapPx((parent.height - height) / 2)
+                                    height: root.snapPx(
+                                                Math.max(
+                                                    workspaceNumber.implicitHeight,
+                                                    workspaceTitle.implicitHeight))
                                     implicitWidth: workspaceNumber.implicitWidth
                                                    + (workspaceTitle.text === ""
                                                       ? 0 : 5)
@@ -1470,7 +3869,7 @@ ApplicationWindow {
                                         anchors.rightMargin: text === "" ||
                                                              workspaceNumber.text === ""
                                                              ? 0 : 5
-                                        anchors.verticalCenter: parent.verticalCenter
+                                        y: root.snapPx((parent.height - height) / 2)
                                         text: root.cleanText(modelData.text)
                                         color: workspaceTab.labelColor
                                         // Active state is conveyed only by text
@@ -1486,7 +3885,7 @@ ApplicationWindow {
                                         objectName: "workspace-tab-number-"
                                                     + workspaceTab.objectName
                                         anchors.right: parent.right
-                                        anchors.verticalCenter: parent.verticalCenter
+                                        y: root.snapPx((parent.height - height) / 2)
                                         text: Number(modelData.number || 0) > 0
                                               ? String(modelData.number) : ""
                                         color: root.workspaceTabNumberColor()
@@ -1498,29 +3897,32 @@ ApplicationWindow {
                                 Rectangle {
                                     id: workspaceAttention
                                     anchors.right: parent.right
-                                    anchors.rightMargin: workspaceClose.visible ? 29 : 10
+                                    anchors.rightMargin: workspaceClose.visible ? root.snapPx(29) : root.snapPx(10)
                                     anchors.verticalCenter: parent.verticalCenter
-                                    width: 6
-                                    height: 6
+                                    width: root.snapPx(6)
+                                    height: root.snapPx(6)
                                     radius: 3
                                     color: root.dialogAccent
                                     visible: modelData.attention === true
                                 }
 
-                                IconLabel {
+                                PixelAlignedImage {
                                     id: workspaceClose
-									objectName: "workspace-close-"
+                                    objectName: "workspace-close-"
                                                 + root.cleanText(modelData.id)
-									z: 2
-                                    anchors.right: parent.right
-                                    anchors.rightMargin: 8
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 15
-                                    height: 15
-                                    icon.source: root.lucideIconSource("x")
-                                    icon.width: 14
-                                    icon.height: 14
-                                    icon.color: root.chromeText
+                                    z: 2
+                                    x: root.snapPx(parent.width - width - 8)
+                                    y: root.snapPx((parent.height - height) / 2)
+                                    width: root.snapPx(14)
+                                    height: root.snapPx(14)
+                                    alignmentRevision: workspaceTab.x
+                                                       + workspaceTab.y
+                                                       + workspaceTab.width
+                                                       + workspaceTab.height
+                                    smooth: false
+                                    source: root.lucideIconSource(
+                                                "x", 14,
+                                                workspaceTab.labelColor)
                                     visible: workspaceTab.closeEnabled
 
                                     MouseArea {
@@ -1571,9 +3973,15 @@ ApplicationWindow {
                             property bool workspaceNewHitTestRegistered: false
                             objectName: root.cleanText(root.workspaceTabs.newTab
                                                        ? root.workspaceTabs.newTab.id : "workspace-new")
-                            width: visible ? 30 : 0
+                            width: visible ? root.snapPx(30) : 0
                             height: parent.height
-                            radius: 6
+                            radius: 0
+                            topLeftRadius: 6
+                            topRightRadius: 6
+                            bottomLeftRadius: 0
+                            bottomRightRadius: 0
+                            antialiasing: true
+                            smooth: true
                             color: newHover.hovered ? root.controlHoverBg : "transparent"
                             visible: !!root.workspaceTabs.newTab
                                      && root.workspaceTabs.newTab.visible === true
@@ -1583,14 +3991,29 @@ ApplicationWindow {
                                     workspaceNewHitTestRegistered = true
                                 }
                             }
-                            IconLabel {
-                                anchors.centerIn: parent
-                                width: 17
-                                height: 17
-                                icon.source: root.lucideIconSource("plus")
-                                icon.width: 17
-                                icon.height: 17
-                                icon.color: root.chromeText
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: root.separatorWidth
+                                color: root.separatorColor
+                                z: 1
+                                antialiasing: false
+                            }
+
+                            PixelAlignedImage {
+                                x: root.snapPx((parent.width - width) / 2)
+                                y: root.snapPx((parent.height - height) / 2)
+                                width: root.snapPx(16)
+                                height: root.snapPx(16)
+                                alignmentRevision: workspaceNew.x
+                                                   + workspaceNew.y
+                                                   + workspaceNew.width
+                                                   + workspaceNew.height
+                                smooth: false
+                                source: root.lucideIconSource(
+                                            "plus", 16, root.chromeText)
                             }
                             HoverHandler { id: newHover }
                             MouseArea {
@@ -1605,10 +4028,66 @@ ApplicationWindow {
 
                     }
                 }
+
+                Rectangle {
+                    id: workspaceTabSeparatorLeft
+                    objectName: "workspaceTabSeparatorLeft"
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    width: workspaceBar.activeWorkspaceTabLeft
+                    height: root.separatorWidth
+                    color: root.separatorColor
+                    visible: workspaceBar.visible
+                             && workspaceBar.activeWorkspaceTab !== null
+                    z: -1
+                    antialiasing: false
+                }
+
+                Rectangle {
+                    id: workspaceTabSeparatorRight
+                    objectName: "workspaceTabSeparatorRight"
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    width: Math.max(0, parent.width
+                                       - workspaceBar.activeWorkspaceTabRight)
+                    height: root.separatorWidth
+                    color: root.separatorColor
+                    visible: workspaceBar.visible
+                             && workspaceBar.activeWorkspaceTab !== null
+                    z: -1
+                    antialiasing: false
+                }
             }
 
-            RowLayout {
+            Rectangle {
+                id: workspaceSeparatorLeft
+                objectName: "workspaceSeparatorLeft"
+                anchors.left: parent.left
+                anchors.right: workspaceBar.left
+                anchors.bottom: parent.bottom
+                height: root.separatorWidth
+                color: root.separatorColor
+                visible: workspaceBar.visible
+                z: 1
+                antialiasing: false
+            }
+
+            Rectangle {
+                id: workspaceSeparatorRight
+                objectName: "workspaceSeparatorRight"
+                anchors.left: workspaceBar.right
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: root.separatorWidth
+                color: root.separatorColor
+                visible: workspaceBar.visible
+                z: 1
+                antialiasing: false
+            }
+
+            Row {
                 id: windowButtons
+                objectName: "windowButtons"
                 anchors.top: parent.top
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
@@ -1618,9 +4097,9 @@ ApplicationWindow {
 
                 ZG.TitleButton {
                     id: minimizeButton
+                    objectName: "minimizeButton"
 
-                    Layout.alignment: Qt.AlignTop
-                    implicitHeight: titleBar.height
+                    height: parent.height
                     opacity: root.active || minimizeButton.hoveredOverride ? 1 : 0.4
 
                     source: "qrc:/ZoinGallery/resources/WindowMinimize.svg"
@@ -1636,9 +4115,9 @@ ApplicationWindow {
 
                 ZG.TitleButton {
                     id: maximizeButton
+                    objectName: "maximizeButton"
 
-                    Layout.alignment: Qt.AlignTop
-                    implicitHeight: titleBar.height
+                    height: parent.height
                     opacity: root.active || maximizeButton.hoveredOverride ? 1 : 0.4
 
                     source: root.visibility === Window.Maximized
@@ -1666,9 +4145,9 @@ ApplicationWindow {
 
                 ZG.TitleButton {
                     id: closeButton
+                    objectName: "closeButton"
 
-                    Layout.alignment: Qt.AlignTop
-                    implicitHeight: titleBar.height
+                    height: parent.height
                     opacity: root.active || closeButton.hoveredOverride ? 1 : 0.4
 
                     source: "qrc:/ZoinGallery/resources/WindowClose.svg"
@@ -2016,7 +4495,9 @@ ApplicationWindow {
                         () => root.galleryPanelHost(qtGallery.viewerSide))
                     item.bridge = qtGallery
                     item.keySink = grid
-                    item.theme = root.galleryTheme()
+                    item.theme = Qt.binding(function() {
+                        return root.galleryTheme()
+                    })
                     item.surfaceActive = Qt.binding(
                         () => qtGallery.viewerVisible
                               && !root.hasBlockingOverlay()
@@ -2475,14 +4956,6 @@ ApplicationWindow {
             Rectangle {
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: parent.top
-                height: root.separatorWidth
-                color: root.separatorColor
-            }
-
-            Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 height: root.separatorWidth
                 color: root.separatorColor
@@ -2498,22 +4971,87 @@ ApplicationWindow {
                 height: Math.min(parent.height - 4, 32)
                 clip: true
 
+                ZG.Button {
+                    id: panelDriveButton
+                    objectName: "panelDriveButton-" + Number(panel.side || 0)
+                    anchors.left: parent.left
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: root.snapPx(24)
+                    leftPadding: 0
+                    topPadding: 0
+                    rightPadding: 0
+                    bottomPadding: 0
+                    focusPolicy: Qt.NoFocus
+                    hoverEnabled: true
+
+                    contentItem: Item {
+                        PixelAlignedImage {
+                            id: panelDriveButtonIcon
+                            objectName: "panelDriveButtonIcon-"
+                                        + Number(panel.side || 0)
+                            anchors.centerIn: parent
+                            width: panelPathControl.driveIconSize
+                            height: panelPathControl.driveIconSize
+                            smooth: false
+                            mipmap: false
+                            alignmentRevision: panelDriveButton.x
+                                               + panelDriveButton.y
+                                               + panelDriveButton.width
+                                               + panelDriveButton.height
+                                               + panelPathArea.width
+                                               + panelPathArea.height
+                            source: panelPathControl.currentDriveIconSource
+                        }
+                    }
+
+                    background: Rectangle {
+                        radius: 4
+                        color: panelDriveButton.down
+                               ? root.galleryPathItemPressedColor
+                               : panelDriveButton.hovered
+                                 ? root.galleryPathHoverColor : "transparent"
+                    }
+
+                    onClicked: root.action({
+                        "action": "panel.driveMenu",
+                        "side": Number(panel.side || 0)
+                    })
+                }
+
                 ZG.PathControl {
                     id: panelPathControl
                     objectName: "panelPathTitle-" + Number(panel.side || 0)
-                    anchors.fill: parent
+                    anchors.left: panelDriveButton.right
+                    anchors.leftMargin: root.snapPx(4)
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    anchors.right: parent.right
                     anchors.rightMargin: panelRoot.loadingIndicatorVisible ? 18 : 0
                     backgroundOnHoverOnly: true
                     // panelPathArea already begins on the shared 16 px
                     // content line; do not add the standalone control's inset.
                     leadingInset: 0
+                    showDriveIcon: false
                     breadcrumbFontPixelSize: root.semanticTextFontPixelSize
-                    pathTextColor: root.textColor
-                    pathHoveredColor: root.controlBg
-                    pathItemHoveredColor: root.controlHoverBg
-                    pathItemPressedColor: root.controlPressedBg
-                    localDriveIconSource: root.lucideIconSource("hard-drive")
-                    networkDriveIconSource: root.lucideIconSource("network")
+                    pathBackgroundColor: root.galleryPathBackgroundColor
+                    pathTextColor: root.galleryPathTextColor
+                    pathHoveredColor: root.galleryPathHoverColor
+                    pathItemHoveredColor: root.galleryPathItemHoverColor
+                    pathItemPressedColor: root.galleryPathItemPressedColor
+                    devicePixelRatio: root.iconDevicePixelRatio
+                    alignmentRevision: panelRoot.x + panelRoot.y
+                                       + panelRoot.width + panelRoot.height
+                                       + root.panelSplitRatio
+                    breadcrumbSeparatorIconSource:
+                        root.lucideIconSource(
+                            "chevron-right", 12, root.galleryPathTextColor)
+                    localDriveIconSource:
+                        root.lucideIconSource(
+                            "hard-drive", 18, root.galleryPathTextColor)
+                    networkDriveIconSource:
+                        root.lucideIconSource(
+                            "network", 18, root.galleryPathTextColor)
                     text: root.cleanText(panel.title || panel.path)
                     navigationHandler: function(path) {
                         root.action({
@@ -2546,11 +5084,11 @@ ApplicationWindow {
                 id: sortButton
                 objectName: "panelSortButton-" + Number(panel.side || 0)
                 anchors.right: presentationButton.left
-                anchors.rightMargin: 4
-                anchors.verticalCenter: parent.verticalCenter
-                width: sortButtonContent.implicitWidth
-                       + root.actionButtonHorizontalMargin * 2
-                height: Math.min(parent.height - 4, 28)
+                anchors.rightMargin: root.snapPx(4)
+                y: root.snapPx((parent.height - height) / 2)
+                width: root.snapPx(sortButtonContent.implicitWidth
+                                   + root.actionButtonHorizontalMargin * 2)
+                height: root.snapPx(Math.min(parent.height - 4, 28))
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
 
@@ -2569,46 +5107,70 @@ ApplicationWindow {
                     id: sortButtonContent
                     objectName: "panelSortButtonContent-"
                                 + Number(panel.side || 0)
-                    anchors.centerIn: parent
-                    spacing: 5
+                    x: root.snapPx((parent.width - width) / 2)
+                    y: root.snapPx((parent.height - height) / 2)
+                    width: root.snapPx(implicitWidth)
+                    height: root.snapPx(implicitHeight)
+                    spacing: root.snapPx(5)
+                    property real alignmentRevision:
+                        sortButton.x + sortButton.y
+                        + sortButton.width + sortButton.height
+                    transform: Translate {
+                        id: sortButtonContentPixelTranslation
+                        x: root.iconPixelOffsetX(sortButtonContent)
+                        y: root.iconPixelOffsetY(sortButtonContent)
+                    }
 
-                    IconLabel {
+                    PixelAlignedImage {
                         objectName: "panelSortDirectionIcon-"
                                     + Number(panel.side || 0)
                         readonly property string lucideName:
                             panelRoot.sortDirectionIconName()
                         visible: panelRoot.sortModeName() !== "unsorted"
-                        width: visible ? 14 : 0
-                        height: 14
-                        anchors.verticalCenter: parent.verticalCenter
-                        icon.source: root.lucideIconSource(lucideName)
-                        icon.width: 14
-                        icon.height: 14
-                        icon.color: sortButton.enabled
-                                    ? root.chromeText : root.mutedText
+                        width: visible ? root.snapPx(14) : 0
+                        height: root.snapPx(14)
+                        alignmentRevision: sortButton.x + sortButton.y
+                                           + sortButton.width + sortButton.height
+                                           + sortButtonContent.x
+                                           + sortButtonContent.y
+                                           + sortButtonContentPixelTranslation.x
+                                           + sortButtonContentPixelTranslation.y
+                        y: root.snapPx((parent.height - height) / 2)
+                        smooth: false
+                        source: root.lucideIconSource(
+                                    lucideName, 14,
+                                    sortButton.enabled
+                                    ? root.chromeText : root.mutedText)
                     }
 
                     Text {
+                        id: sortButtonLabel
                         objectName: "panelSortLabel-"
                                     + Number(panel.side || 0)
-                        anchors.verticalCenter: parent.verticalCenter
+                        y: root.snapPx((parent.height - height) / 2)
                         text: panelRoot.sortModeLabel()
                         color: sortButton.enabled
                                ? root.chromeText : root.mutedText
                         font.pixelSize: 12
                     }
 
-                    IconLabel {
+                    PixelAlignedImage {
                         objectName: "panelSortChevron-"
                                     + Number(panel.side || 0)
-                        width: 11
-                        height: 11
-                        anchors.verticalCenter: parent.verticalCenter
-                        icon.source: root.lucideIconSource("chevron-down")
-                        icon.width: 11
-                        icon.height: 11
-                        icon.color: sortButton.enabled
-                                    ? root.chromeText : root.mutedText
+                        width: root.snapPx(11)
+                        height: root.snapPx(11)
+                        alignmentRevision: sortButton.x + sortButton.y
+                                           + sortButton.width + sortButton.height
+                                           + sortButtonContent.x
+                                           + sortButtonContent.y
+                                           + sortButtonContentPixelTranslation.x
+                                           + sortButtonContentPixelTranslation.y
+                        y: root.snapPx((parent.height - height) / 2)
+                        smooth: false
+                        source: root.lucideIconSource(
+                                    "chevron-down", 11,
+                                    sortButton.enabled
+                                    ? root.chromeText : root.mutedText)
                     }
                 }
 
@@ -2718,38 +5280,43 @@ ApplicationWindow {
                                 // whether this particular row is the active
                                 // choice.
                                 Item {
-                                    width: 14
-                                    height: 14
+                                    width: root.snapPx(14)
+                                    height: root.snapPx(14)
                                     anchors.verticalCenter: parent.verticalCenter
 
-                                    IconLabel {
+                                    PixelAlignedImage {
                                         objectName: "panelSortChoiceCheck-"
                                                     + root.cleanText(
                                                           sortChoice.modelData.mode)
                                                     + "-" + Number(panel.side || 0)
                                         anchors.fill: parent
+                                        alignmentRevision: sortMenu.x + sortMenu.y
+                                                           + sortMenu.width
+                                                           + sortMenu.height
                                         visible: sortChoice.choiceActive
-                                        icon.source: root.lucideIconSource("check")
-                                        icon.width: 14
-                                        icon.height: 14
-                                        icon.color: root.dialogAccent
+                                        smooth: false
+                                        source: root.lucideIconSource(
+                                                    "check", 14,
+                                                    root.dialogAccent)
                                     }
                                 }
 
-                                IconLabel {
+                                PixelAlignedImage {
                                     objectName: "panelSortChoiceIcon-"
                                                 + root.cleanText(
                                                       sortChoice.modelData.mode)
                                                 + "-" + Number(panel.side || 0)
-                                    width: 16
-                                    height: 16
+                                    width: root.snapPx(16)
+                                    height: root.snapPx(16)
+                                    alignmentRevision: sortMenu.x + sortMenu.y
+                                                       + sortMenu.width
+                                                       + sortMenu.height
                                     anchors.verticalCenter: parent.verticalCenter
-                                    icon.source: root.lucideIconSource(
+                                    smooth: false
+                                    source: root.lucideIconSource(
                                                      root.cleanText(
-                                                         sortChoice.modelData.icon))
-                                    icon.width: 16
-                                    icon.height: 16
-                                    icon.color: root.textColor
+                                                         sortChoice.modelData.icon),
+                                                     16, root.textColor)
                                 }
 
                                 Text {
@@ -2820,33 +5387,41 @@ ApplicationWindow {
                     anchors.centerIn: parent
                     spacing: 5
 
-                    IconLabel {
+                    PixelAlignedImage {
                         objectName: "panelRendererButtonIcon-"
                                     + Number(panel.side || 0)
                         readonly property string lucideName:
                             panelRoot.rendererButtonIconName()
-                        width: 16
-                        height: 16
-                        anchors.verticalCenter: parent.verticalCenter
-                        icon.source: root.lucideIconSource(lucideName)
-                        icon.width: 16
-                        icon.height: 16
-                        icon.color: presentationButton.enabled
-                                    ? root.chromeText : root.mutedText
+                        width: root.snapPx(16)
+                        height: root.snapPx(16)
+                        alignmentRevision: presentationButton.x
+                                           + presentationButton.y
+                                           + presentationButton.width
+                                           + presentationButton.height
+                                           + presentationButtonContent.x
+                                           + presentationButtonContent.y
+                        y: root.snapPx((parent.height - height) / 2)
+                        smooth: false
+                        source: root.lucideIconSource(
+                                    lucideName, 16, root.chromeText)
                     }
 
-                    IconLabel {
+                    PixelAlignedImage {
                         objectName: "panelRendererButtonChevron-"
                                     + Number(panel.side || 0)
                         readonly property string lucideName: "chevron-down"
-                        width: 11
-                        height: 11
-                        anchors.verticalCenter: parent.verticalCenter
-                        icon.source: root.lucideIconSource(lucideName)
-                        icon.width: 11
-                        icon.height: 11
-                        icon.color: presentationButton.enabled
-                                    ? root.chromeText : root.mutedText
+                        width: root.snapPx(11)
+                        height: root.snapPx(11)
+                        alignmentRevision: presentationButton.x
+                                           + presentationButton.y
+                                           + presentationButton.width
+                                           + presentationButton.height
+                                           + presentationButtonContent.x
+                                           + presentationButtonContent.y
+                        y: root.snapPx((parent.height - height) / 2)
+                        smooth: false
+                        source: root.lucideIconSource(
+                                    lucideName, 11, root.chromeText)
                     }
                 }
 
@@ -2983,31 +5558,48 @@ ApplicationWindow {
                                 // stay aligned across rows regardless of
                                 // whether this particular row is active.
                                 Item {
-                                    width: 14
-                                    height: 14
+                                    width: root.snapPx(14)
+                                    height: root.snapPx(14)
                                     anchors.verticalCenter: parent.verticalCenter
 
-                                    IconLabel {
+                                    PixelAlignedImage {
+                                        objectName: "panelRendererChoiceCheck-"
+                                                    + root.cleanText(
+                                                          rendererChoice.modelData.mode)
+                                                    + "-" + Number(panel.side || 0)
                                         anchors.fill: parent
+                                        alignmentRevision: rendererMenu.x
+                                                           + rendererMenu.y
+                                                           + rendererMenu.width
+                                                           + rendererMenu.height
                                         visible: rendererChoice.choiceActive
-                                        icon.source: root.lucideIconSource("check")
-                                        icon.width: 14
-                                        icon.height: 14
-                                        icon.color: root.panelSelectionBorder
+                                        smooth: false
+                                        source: root.lucideIconSource(
+                                                    "check", 14,
+                                                    root.dialogAccent)
                                     }
                                 }
 
-                                IconLabel {
-                                    width: 16
-                                    height: 16
+                                PixelAlignedImage {
+                                    objectName: "panelRendererChoiceIcon-"
+                                                + root.cleanText(
+                                                      rendererChoice.modelData.mode)
+                                                + "-" + Number(panel.side || 0)
+                                    width: root.snapPx(16)
+                                    height: root.snapPx(16)
+                                    alignmentRevision: rendererMenu.x
+                                                       + rendererMenu.y
+                                                       + rendererMenu.width
+                                                       + rendererMenu.height
                                     anchors.verticalCenter: parent.verticalCenter
-                                    icon.source: root.lucideIconSource(
+                                    smooth: false
+                                    source: root.lucideIconSource(
                                                      root.cleanText(
-                                                         rendererChoice.modelData.icon))
-                                    icon.width: 16
-                                    icon.height: 16
-                                    icon.color: rendererChoice.choiceEnabled
-                                                ? root.textColor : root.mutedText
+                                                         rendererChoice.modelData.icon),
+                                                     16,
+                                                     rendererChoice.choiceEnabled
+                                                     ? root.textColor
+                                                     : root.mutedText)
                                 }
 
                                 Text {
@@ -3361,12 +5953,19 @@ ApplicationWindow {
                 item.panel = Qt.binding(() => panelRoot.panel)
                 item.bridge = qtGallery
                 item.keySink = grid
-                item.theme = root.galleryTheme()
+                item.theme = Qt.binding(function() {
+                    return root.galleryTheme()
+                })
                 item.metrics = Qt.binding(() => root.galleryMetrics())
                 item.devicePixelRatio = Qt.binding(
                     () => root.screen ? root.screen.devicePixelRatio : 1.0)
                 item.defaultListDensity = Qt.binding(
-                    () => Math.max(22, root.ch * 1.1))
+                    () => root.snapPx(Math.max(22, root.ch * 1.1)))
+                // Lightweight QML test embedders may supply an older panel
+                // host without this optional input property.
+                if (typeof item.mouseWheelMode !== "undefined")
+                    item.mouseWheelMode = Qt.binding(
+                        () => root.mouseWheelMode)
                 item.panelActive = Qt.binding(
                     () => panelRoot.visible
                           && panelRoot.panelIsActive
@@ -3412,7 +6011,8 @@ ApplicationWindow {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: 24
                     height: 24
-                    icon.source: root.lucideIconSource("triangle-alert")
+                    icon.source: root.lucideIconSource(
+                                     "triangle-alert", 24, root.activeBorder)
                     icon.width: 24
                     icon.height: 24
                     icon.color: root.activeBorder
@@ -3906,7 +6506,6 @@ ApplicationWindow {
                         font.bold: modelData.bold === true
                         font.underline: modelData.underline === true
                         font.strikeout: modelData.strikeout === true
-                        renderType: Text.NativeRendering
                     }
                 }
             }
@@ -3924,7 +6523,6 @@ ApplicationWindow {
             color: root.textColor
             font.family: root.guiMonospaceFontFamily
             font.pixelSize: fallbackFontPixelSize
-            renderType: Text.NativeRendering
             elide: Text.ElideRight
         }
     }
@@ -4706,6 +7304,10 @@ ApplicationWindow {
                         height: 14
                         icon.source: root.lucideIconSource(
                                          queueRoot.stateIconName(
+                                             queueRow.stateClass,
+                                             queueRow.state),
+                                         14,
+                                         queueRoot.stateColor(
                                              queueRow.stateClass,
                                              queueRow.state))
                         icon.width: 14
@@ -5674,7 +8276,6 @@ ApplicationWindow {
                                 font.bold: modelData.bold === true
                                 font.underline: modelData.underline === true
                                 font.strikeout: modelData.strikeout === true
-                                renderType: Text.NativeRendering
                             }
                         }
                     }
@@ -6013,7 +8614,11 @@ ApplicationWindow {
                     height: 15
                     anchors.verticalCenter: parent.verticalCenter
                     icon.source: root.lucideIconSource(
-                                     queueActionButton.iconName)
+                                     queueActionButton.iconName, 15,
+                                     queueActionButton.enabled
+                                     ? (queueActionButton.semanticFocus
+                                        ? "#f4f8fc" : root.textColor)
+                                     : root.mutedText)
                     icon.width: 15
                     icon.height: 15
                     icon.color: queueActionButton.enabled
@@ -6057,7 +8662,9 @@ ApplicationWindow {
             width: 14
             height: 14
             anchors.verticalCenter: parent.verticalCenter
-            icon.source: root.lucideIconSource(queueSummaryItem.iconName)
+            icon.source: root.lucideIconSource(
+                             queueSummaryItem.iconName, 14,
+                             queueSummaryItem.accent)
             icon.width: 14
             icon.height: 14
             icon.color: queueSummaryItem.accent
@@ -7361,7 +9968,6 @@ ApplicationWindow {
                                 color: root.dialogAccent
                                 font.family: root.guiMonospaceFontFamily
                                 font.pixelSize: 13
-                                renderType: Text.NativeRendering
                             }
 
                             Text {
@@ -7372,7 +9978,6 @@ ApplicationWindow {
                                 color: root.textColor
                                 font.family: root.guiMonospaceFontFamily
                                 font.pixelSize: 13
-                                renderType: Text.NativeRendering
                                 elide: Text.ElideRight
                             }
                         }

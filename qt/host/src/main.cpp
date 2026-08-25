@@ -2,6 +2,8 @@
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
 #include "QtShellController.h"
+#include "F4ThemePersistence.h"
+#include "F4TextRenderingPolicy.h"
 #include "WindowGeometryPersistence.h"
 
 #include <QCommandLineOption>
@@ -221,11 +223,9 @@ int main(int argc, char *argv[])
     }
 
     QQuickStyle::setStyle(QStringLiteral("Basic"));
-#if defined(__USE_QWK) && (defined(Q_OS_WIN) || defined(Q_OS_MACOS))
-    QQuickWindow::setDefaultAlphaBuffer(true);
-#else
+    // QWK currently uses an opaque native surface on Windows and macOS while
+    // the system transparency paths are disabled in the QML host.
     QQuickWindow::setDefaultAlphaBuffer(false);
-#endif
 
     QtShellController controller(connectAddress, nonce, cols, rows, &app);
     int fatalExitCode = 0;
@@ -266,7 +266,11 @@ int main(int argc, char *argv[])
 
     F4IconSet iconSet;
     iconSet.setName(parser.value(iconSetOption));
-    engine.addImageProvider(iconSet.providerId(), new F4IconProvider);
+    const bool iconTestPatternEnabled =
+        qEnvironmentVariableIntValue("F4_QT_ICON_TEST_PATTERN") != 0;
+    engine.addImageProvider(
+        iconSet.providerId(),
+        new F4IconProvider({}, iconTestPatternEnabled));
 
 #if defined(__USE_QWK)
     qDebug() << "Using QWK";
@@ -305,6 +309,17 @@ int main(int argc, char *argv[])
                      &galleryBridge,
                      &F4GalleryBridge::handleProtocolMessage);
 
+    F4ThemePersistence themePersistence;
+    F4TextRenderingPolicy textRenderingPolicy;
+    const QVariantMap savedTheme = themePersistence.loadTheme();
+    const QString savedRenderType = savedTheme.value(
+        QStringLiteral("fontRenderType")).toString();
+    if (!savedRenderType.isEmpty())
+        textRenderingPolicy.setRenderTypeByName(savedRenderType);
+
+    engine.rootContext()->setContextProperty(QStringLiteral("qtTheme"), &themePersistence);
+    engine.rootContext()->setContextProperty(QStringLiteral("qtTextRendering"),
+                                              &textRenderingPolicy);
     engine.rootContext()->setContextProperty(QStringLiteral("qtShell"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"), &galleryBridge);
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);

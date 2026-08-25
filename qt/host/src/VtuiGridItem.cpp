@@ -428,6 +428,45 @@ void VtuiGridItem::sendQtText(const QString &text)
     }
 }
 
+void VtuiGridItem::sendQtMouseAt(qreal x, qreal y, int button, bool down,
+                                 int modifiers)
+{
+    if (!m_controller) {
+        return;
+    }
+
+    const auto qtButton = static_cast<Qt::MouseButton>(button);
+    if (qtButton != Qt::LeftButton && qtButton != Qt::MiddleButton
+        && qtButton != Qt::RightButton) {
+        return;
+    }
+
+    const QPoint cell = cellForPosition(QPointF(x, y));
+    m_controller->sendMouse(cell.x(), cell.y(), buttonState(qtButton), 0,
+                             down,
+                             modifiersFromEvent(
+                                 Qt::KeyboardModifiers::fromInt(modifiers)));
+}
+
+void VtuiGridItem::sendQtWheelAt(qreal x, qreal y, int angleDeltaY,
+                                 int modifiers)
+{
+    if (!m_controller || angleDeltaY == 0) {
+        return;
+    }
+
+    const QPoint cell = cellForPosition(QPointF(x, y));
+    const int nativeModifiers = modifiersFromEvent(
+        Qt::KeyboardModifiers::fromInt(modifiers));
+    m_wheelRemainder += angleDeltaY;
+    while (std::abs(m_wheelRemainder) >= 120) {
+        const int direction = m_wheelRemainder > 0 ? 1 : -1;
+        m_controller->sendWheel(cell.x(), cell.y(), direction,
+                                nativeModifiers);
+        m_wheelRemainder -= direction * 120;
+    }
+}
+
 bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
 {
 #if defined(Q_OS_MACOS)

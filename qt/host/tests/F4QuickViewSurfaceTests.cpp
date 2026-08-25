@@ -1,15 +1,21 @@
 #include "DummyQWK.h"
+#include "F4TextRenderingPolicy.h"
 
 #include <QCoreApplication>
 #include <QColor>
 #include <QFont>
+#include <QImage>
+#include <QPainter>
 #include <QPointF>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QScopeGuard>
+#include <QSvgRenderer>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QWheelEvent>
@@ -203,6 +209,23 @@ public:
     bool fileIconsAreFullColor() const { return false; }
 
     Q_INVOKABLE QUrl iconSource(const QString &, int, qreal) const { return {}; }
+    Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
+                                            int logicalSize,
+                                            qreal devicePixelRatio,
+                                            const QColor &tint) const
+    {
+        QUrl source(QStringLiteral("qrc:/F4QtHost/icons/lucide/%1.svg")
+                        .arg(name));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("size"),
+                           QString::number(logicalSize));
+        query.addQueryItem(QStringLiteral("dpr"),
+                           QString::number(devicePixelRatio, 'g', 12));
+        query.addQueryItem(QStringLiteral("color"),
+                           tint.name(QColor::HexArgb));
+        source.setQuery(query);
+        return source;
+    }
     Q_INVOKABLE QUrl fileIconSource(const QString &, const QString &, bool,
                                     int, qreal, qlonglong) const
     {
@@ -373,16 +396,123 @@ QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
     return nullptr;
 }
 
+QQuickItem *visualItemWithObjectNamePrefix(QQuickItem *root,
+                                           const QString &prefix)
+{
+    if (!root)
+        return nullptr;
+    if (root->objectName().startsWith(prefix))
+        return root;
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItemWithObjectNamePrefix(child, prefix))
+            return match;
+    }
+    return nullptr;
+}
+
+QQuickItem *visualItemWithSource(QQuickItem *root, const QUrl &source)
+{
+    if (!root)
+        return nullptr;
+    if (root->property("source").isValid()
+        && root->property("source").toUrl() == source) {
+        return root;
+    }
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItemWithSource(child, source))
+            return match;
+    }
+    return nullptr;
+}
+
+QImage renderSvgReference(const QUrl &source, const QSize &physicalSize,
+                          const QColor &tint, const QColor &background)
+{
+    QSvgRenderer renderer(QStringLiteral(":") + source.path());
+    if (!renderer.isValid() || !physicalSize.isValid())
+        return {};
+
+    QImage icon(physicalSize, QImage::Format_ARGB32_Premultiplied);
+    icon.fill(Qt::transparent);
+    QPainter iconPainter(&icon);
+    renderer.render(&iconPainter,
+                    QRectF(QPointF{}, QSizeF(physicalSize)));
+    iconPainter.end();
+
+    if (tint.isValid() && tint.alpha() > 0) {
+        QPainter tintPainter(&icon);
+        tintPainter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        tintPainter.fillRect(icon.rect(), tint);
+    }
+
+    QImage result(physicalSize, QImage::Format_ARGB32_Premultiplied);
+    result.fill(background);
+    QPainter resultPainter(&result);
+    resultPainter.drawImage(QPoint{}, icon);
+    return result;
+}
+
+QString exactImageDifference(const QImage &actualImage,
+                             const QImage &expectedImage)
+{
+    if (actualImage.size() != expectedImage.size()) {
+        return QStringLiteral("size %1x%2 != %3x%4")
+            .arg(actualImage.width()).arg(actualImage.height())
+            .arg(expectedImage.width()).arg(expectedImage.height());
+    }
+    const QImage actual = actualImage.convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const QImage expected = expectedImage.convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    qsizetype differences = 0;
+    QPoint firstDifference(-1, -1);
+    for (int y = 0; y < actual.height(); ++y) {
+        const auto *actualLine = reinterpret_cast<const QRgb *>(
+            actual.constScanLine(y));
+        const auto *expectedLine = reinterpret_cast<const QRgb *>(
+            expected.constScanLine(y));
+        for (int x = 0; x < actual.width(); ++x) {
+            if (actualLine[x] == expectedLine[x])
+                continue;
+            if (firstDifference.x() < 0)
+                firstDifference = QPoint(x, y);
+            ++differences;
+        }
+    }
+    if (differences == 0)
+        return {};
+    return QStringLiteral("%1 differing pixels; first at (%2,%3)")
+        .arg(differences).arg(firstDifference.x()).arg(firstDifference.y());
+}
+
+bool imageContainsColor(const QImage &image, const QColor &color)
+{
+    const QImage actual = image.convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const QRgb expected = color.rgba();
+    for (int y = 0; y < actual.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(
+            actual.constScanLine(y));
+        for (int x = 0; x < actual.width(); ++x) {
+            if (line[x] == expected)
+                return true;
+        }
+    }
+    return false;
+}
+
 struct QuickViewFixture
 {
     TestShell shell;
     TestGallery gallery;
     TestIcons icons;
+    F4TextRenderingPolicy textRenderingPolicy;
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
     explicit QuickViewFixture(const QVariantMap &scene,
-                              bool galleryAvailable = false)
+                              bool galleryAvailable = false,
+                              bool usesQwk = false)
         : gallery(galleryAvailable)
     {
         shell.setScene(scene);
@@ -394,11 +524,13 @@ struct QuickViewFixture
         engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"),
                                                   &icons);
         engine.rootContext()->setContextProperty(
+            QStringLiteral("qtTextRendering"), &textRenderingPolicy);
+        engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontPixelSize"), 13);
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
-                                                  false);
+                                                  usesQwk);
         DummyQWK::registerTypes(&engine);
         engine.load(QUrl(QStringLiteral("qrc:/F4QtHost/qml/main.qml")));
         if (engine.rootObjects().isEmpty())
@@ -429,11 +561,20 @@ private slots:
     void semanticSceneGatesOnlyGridRendering();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void readyUnifiedRendererLoaderIsVisible();
+    void galleryPanelColorsAreGroupedAndRemainLive();
+    void themeDialogFontRenderingControlIsLiveAndThemeAware();
+    void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
+    void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
     void rendererChoicesUseProductOrderAndShortcuts();
     void coverUncoverPreservesFilePanelAndRendererObjects();
     void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
+    void workspaceSeparatorBreaksUnderActiveTab();
+    void workspaceTabTextParentsStayOnPhysicalPixelGrid();
+    void chromeIconsUseMatchingPhysicalTargetSizes();
+    void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
+    void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
     void clickActivatesCoveredSideAndFocusStaysOutOfHiddenPanel();
@@ -548,6 +689,559 @@ void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
     QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(loader->isVisible(), 3000);
     QVERIFY(!failure->isVisible());
+}
+
+void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+
+    auto *loader = fixture.item(QStringLiteral("galleryPanelContent-0"));
+    auto *path = fixture.item(QStringLiteral("panelPathTitle-0"));
+    QVERIFY(loader);
+    QVERIFY(path);
+    QTRY_COMPARE_WITH_TIMEOUT(loader->property("status").toInt(), 1, 3000);
+    QObject *const gallery = loader->property("item").value<QObject *>();
+    QVERIFY(gallery);
+
+    const QVariantList definitions =
+        fixture.window->property("themeColorDefinitions").toList();
+    QStringList panelColorIds;
+    for (const QVariant &definitionValue : definitions) {
+        const QVariantMap definition = definitionValue.toMap();
+        if (definition.value(QStringLiteral("group")).toString()
+            == QStringLiteral("Panel Colors")) {
+            panelColorIds.append(
+                definition.value(QStringLiteral("id")).toString());
+        }
+    }
+    for (const QString &required : {
+             QStringLiteral("galleryPanelBackgroundColor"),
+             QStringLiteral("galleryTextColor"),
+             QStringLiteral("galleryCardCursorBorderColor"),
+             QStringLiteral("galleryItemHoverColor"),
+             QStringLiteral("galleryPreviewBackdropColor"),
+             QStringLiteral("galleryScrollBarHandleColor"),
+             QStringLiteral("galleryScrollBarTrackHoverColor"),
+             QStringLiteral("galleryPathTextColor"),
+         }) {
+        QVERIFY2(panelColorIds.contains(required), qPrintable(required));
+    }
+
+    const QColor textColor(QStringLiteral("#123456"));
+    const QColor cursorBorder(QStringLiteral("#234567"));
+    const QColor cardHover(QStringLiteral("#345678"));
+    const QColor scrollHandle(QStringLiteral("#456789"));
+    const QColor scrollTrack(QStringLiteral("#556677"));
+    const QColor pathText(QStringLiteral("#6789ab"));
+    const QColor pathBackground(QStringLiteral("#223344"));
+
+    QVERIFY(fixture.window->setProperty("galleryTextColor", textColor));
+    QVERIFY(fixture.window->setProperty("galleryCardCursorBorderColor",
+                                        cursorBorder));
+    QVERIFY(fixture.window->setProperty("galleryItemHoverColor", cardHover));
+    QVERIFY(fixture.window->setProperty("galleryScrollBarHandleColor",
+                                        scrollHandle));
+    QVERIFY(fixture.window->setProperty("galleryScrollBarTrackHoverColor",
+                                        scrollTrack));
+    QVERIFY(fixture.window->setProperty("galleryPathTextColor", pathText));
+    QVERIFY(fixture.window->setProperty("galleryPathBackgroundColor",
+                                        pathBackground));
+
+    const auto liveTheme = [gallery] {
+        return gallery->property("theme").toMap();
+    };
+    QTRY_COMPARE_WITH_TIMEOUT(
+        liveTheme().value(QStringLiteral("text")).value<QColor>(), textColor,
+        3000);
+    QCOMPARE(liveTheme().value(QStringLiteral("cardCursorBorder"))
+                 .value<QColor>(),
+             cursorBorder);
+    QCOMPARE(liveTheme().value(QStringLiteral("itemHover")).value<QColor>(),
+             cardHover);
+    QCOMPARE(liveTheme().value(QStringLiteral("scrollBarHandle"))
+                 .value<QColor>(),
+             scrollHandle);
+    QCOMPARE(liveTheme().value(QStringLiteral("scrollBarTrackHovered"))
+                 .value<QColor>(),
+             scrollTrack);
+    QTRY_COMPARE_WITH_TIMEOUT(path->property("pathTextColor").value<QColor>(),
+                              pathText, 3000);
+    QCOMPARE(path->property("pathBackgroundColor").value<QColor>(),
+             pathBackground);
+    QCOMPARE(loader->property("item").value<QObject *>(), gallery);
+}
+
+void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    auto *combo = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeFontRenderTypeCombo"));
+    QVERIFY(combo);
+    auto *wheelCombo = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeMouseWheelCombo"));
+    QVERIFY(wheelCombo);
+    QObject *const comboBackground = combo->findChild<QObject *>(
+        QStringLiteral("themeFontRenderTypeComboBackground"));
+    QVERIFY(comboBackground);
+
+    QCOMPARE(fixture.textRenderingPolicy.options().size(), 3);
+    QCOMPARE(fixture.window->property("fontRenderType").toInt(),
+             int(QQuickWindow::NativeTextRendering));
+    QCOMPARE(combo->property("currentText").toString(),
+             QStringLiteral("NativeRendering"));
+    QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
+             QStringLiteral("gui"));
+    QCOMPARE(wheelCombo->property("currentText").toString(),
+             QStringLiteral("GUI scrolling"));
+    QCOMPARE(fixture.window->property("mouseWheelModeOptions")
+                 .toList().size(), 2);
+
+    const QColor dialogBackground(QStringLiteral("#102030"));
+    const QColor controlBackground(QStringLiteral("#304050"));
+    const QColor controlBorder(QStringLiteral("#405060"));
+    const QColor accent(QStringLiteral("#607080"));
+    const QColor selected(QStringLiteral("#708090"));
+    for (const auto &entry : {
+             qMakePair("dialogBg", dialogBackground),
+             qMakePair("controlBg", controlBackground),
+             qMakePair("controlBorder", controlBorder),
+             qMakePair("dialogAccent", accent),
+             qMakePair("selectedBg", selected),
+         }) {
+        QVERIFY(fixture.window->setProperty(entry.first, entry.second));
+    }
+    dialog->resize(720, 560);
+    dialog->show();
+    dialog->requestActivate();
+    QCoreApplication::processEvents();
+
+    QImage normalFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(normalFrame = dialog->grabWindow()).isNull(), 3000);
+    QVERIFY(imageContainsColor(normalFrame, dialogBackground));
+    QCOMPARE(comboBackground->property("color").value<QColor>(),
+             controlBackground);
+    QCOMPARE(comboBackground->property("testBorderColor").value<QColor>(),
+             controlBorder);
+
+    QVERIFY(QMetaObject::invokeMethod(combo, "forceActiveFocus"));
+    QCoreApplication::processEvents();
+    QCOMPARE(comboBackground->property("testBorderColor").value<QColor>(),
+             accent);
+
+    QObject *const popup = combo->property("popup").value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY_WITH_TIMEOUT(popup->property("visible").toBool(), 1000);
+    QImage selectedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(selectedFrame = dialog->grabWindow()).isNull(), 3000);
+    QVERIFY(imageContainsColor(selectedFrame, selected));
+    QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+    QTRY_VERIFY_WITH_TIMEOUT(!popup->property("visible").toBool(), 1000);
+
+    const QColor changedDialogBackground(QStringLiteral("#a0b0c0"));
+    const QColor changedControlBackground(QStringLiteral("#b0c0d0"));
+    QVERIFY(fixture.window->setProperty("dialogBg", changedDialogBackground));
+    QVERIFY(fixture.window->setProperty("controlBg", changedControlBackground));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        comboBackground->property("color").value<QColor>(),
+        changedControlBackground, 3000);
+    QImage changedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(changedFrame = dialog->grabWindow()).isNull()
+            && imageContainsColor(changedFrame, changedDialogBackground),
+        3000);
+
+    fixture.textRenderingPolicy.setRenderType(
+        int(QQuickWindow::QtTextRendering));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("fontRenderType").toInt(),
+        int(QQuickWindow::QtTextRendering), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(combo->property("currentText").toString(),
+                              QStringLiteral("QtRendering"), 1000);
+    QVERIFY(fixture.window->setProperty("mouseWheelMode",
+                                        QStringLiteral("console")));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        wheelCombo->property("currentText").toString(),
+        QStringLiteral("F4 console"), 1000);
+    QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
+             QStringLiteral("console"));
+    QVERIFY(fixture.window->setProperty("mouseWheelMode",
+                                        QStringLiteral("gui")));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    fixture.textRenderingPolicy.setRenderType(
+        int(QQuickWindow::CurveTextRendering));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        combo->property("currentText").toString(),
+        QStringLiteral("CurveRendering"), 1000);
+#endif
+
+    QMetaObject::invokeMethod(popup, "close");
+    dialog->hide();
+}
+
+void F4QuickViewSurfaceTests::themeColorListHoverAndPressFlashHaveExplicitLifetimes()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+
+    const QVariantList definitions = fixture.window->property(
+        "themeColorDefinitions").toList();
+    int colorIndex = -1;
+    QString colorId;
+    for (int index = 0; index < definitions.size(); ++index) {
+        const QVariantMap definition = definitions.at(index).toMap();
+        const QString candidate = definition.value(QStringLiteral("id"))
+                                      .toString();
+        if (!candidate.isEmpty() && fixture.window->property(
+                candidate.toUtf8().constData()).isValid()) {
+            colorIndex = index;
+            colorId = candidate;
+            break;
+        }
+    }
+    QVERIFY(colorIndex >= 0);
+    QVERIFY(!colorId.isEmpty());
+
+    const QColor original(QStringLiteral("#123456"));
+    const QColor activeHighlight(QStringLiteral("#00ff00"));
+    QCOMPARE(dialog->property("activeFlashColor").value<QColor>(),
+             activeHighlight);
+    QVERIFY(fixture.window->setProperty(
+        colorId.toUtf8().constData(), original));
+    dialog->setProperty("selectedIndex", colorIndex == 0 ? 1 : 0);
+
+    const auto invokeColorMethod = [&](const char *method) {
+        return QMetaObject::invokeMethod(
+            dialog, method, Qt::DirectConnection,
+            Q_ARG(QVariant, QVariant(colorId)));
+    };
+
+    // Hover preview reaches green and remains there until the pointer leaves.
+    QVERIFY(invokeColorMethod("flash"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property(colorId.toUtf8().constData()).value<QColor>(),
+        activeHighlight, 1000);
+    QTest::qWait(220);
+    QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
+                 .value<QColor>(), activeHighlight);
+    QVERIFY(invokeColorMethod("endHoverFlash"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property(colorId.toUtf8().constData()).value<QColor>(),
+        original, 1000);
+
+    // Once active, hover is quiet, but an actual press still marks the row
+    // green while held and returns to the source color on release.
+    dialog->setProperty("selectedIndex", colorIndex);
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
+                 .value<QColor>(), original);
+    QVERIFY(invokeColorMethod("flash"));
+    QTest::qWait(220);
+    QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
+                 .value<QColor>(), original);
+
+    QVERIFY(invokeColorMethod("startPressFlash"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property(colorId.toUtf8().constData()).value<QColor>(),
+        activeHighlight, 1000);
+    QTest::qWait(220);
+    QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
+                 .value<QColor>(), activeHighlight);
+    QVERIFY(invokeColorMethod("endPressFlash"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property(colorId.toUtf8().constData()).value<QColor>(),
+        original, 1000);
+    QTest::qWait(220);
+    QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
+                 .value<QColor>(), original);
+}
+
+void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Percent()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    const qreal dpr = dialog->devicePixelRatio();
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required");
+
+    dialog->resize(720, 560);
+    dialog->show();
+    dialog->requestActivate();
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
+    QCoreApplication::processEvents();
+
+    QQuickItem *const dialogRoot = dialog->contentItem();
+    QVERIFY(dialogRoot);
+
+    QQuickItem *const themeItemsList = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeItemsList"));
+    QVERIFY(themeItemsList);
+    QTRY_VERIFY_WITH_TIMEOUT(themeItemsList->isVisible(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(themeItemsList->height() >= 35.0, 1000);
+    QVERIFY(themeItemsList->property("count").toInt() > 0);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        themeItemsList->property("contentHeight").toReal()
+            > themeItemsList->height(),
+        1000);
+
+    const auto verifyWholePhysicalCoordinate = [dpr](
+            qreal logicalCoordinate, const QString &description) {
+        const qreal physicalCoordinate = logicalCoordinate * dpr;
+        const QByteArray details = QStringLiteral(
+            "%1 is %2 physical pixels at DPR %3")
+                                       .arg(description)
+                                       .arg(physicalCoordinate, 0, 'f', 6)
+                                       .arg(dpr, 0, 'f', 2)
+                                       .toUtf8();
+        QVERIFY2(qAbs(physicalCoordinate - qRound(physicalCoordinate))
+                     < 0.001,
+                 details.constData());
+    };
+    const auto verifyItem = [&](QQuickItem *item, const QString &name) {
+        QVERIFY2(item, qPrintable(name));
+        if (!item)
+            return;
+        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
+        verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
+        verifyWholePhysicalCoordinate(item->width(),
+                                      name + QStringLiteral(" width"));
+        verifyWholePhysicalCoordinate(item->height(),
+                                      name + QStringLiteral(" height"));
+    };
+
+    const QStringList controlNames{
+        QStringLiteral("themeFontRenderTypePanel"),
+        QStringLiteral("themeFontRenderTypeCombo"),
+        QStringLiteral("themeFontRenderTypeComboIndicator"),
+        QStringLiteral("themeFontRenderTypeComboBackground"),
+        QStringLiteral("themeMouseWheelPanel"),
+        QStringLiteral("themeMouseWheelCombo"),
+        QStringLiteral("themeMouseWheelComboIndicator"),
+        QStringLiteral("themeMouseWheelComboBackground"),
+        QStringLiteral("themeHeaderDivider"),
+        QStringLiteral("themeDialogHeader"),
+        QStringLiteral("themeColorFilter"),
+        QStringLiteral("themeItemsList"),
+        QStringLiteral("themeListScrollBar"),
+        QStringLiteral("themeColorDivider"),
+        QStringLiteral("themeActiveColorRow"),
+        QStringLiteral("themeColorGroupBadge"),
+        QStringLiteral("themeColorPreviewSwatch"),
+        QStringLiteral("themeColorWheel"),
+        QStringLiteral("themeHueSlider"),
+        QStringLiteral("themeHueInputBox"),
+        QStringLiteral("themeSaturationSlider"),
+        QStringLiteral("themeSaturationInputBox"),
+        QStringLiteral("themeLightnessSlider"),
+        QStringLiteral("themeLightnessInputBox"),
+        QStringLiteral("themeAlphaSlider"),
+        QStringLiteral("themeAlphaInputBox"),
+        QStringLiteral("themeRgbHexRow"),
+        QStringLiteral("themeRedInputBox"),
+        QStringLiteral("themeGreenInputBox"),
+        QStringLiteral("themeBlueInputBox"),
+        QStringLiteral("themeHexInputBox"),
+        QStringLiteral("themeFooterDivider"),
+        QStringLiteral("themeColorFooter"),
+        QStringLiteral("themeResetElementButton"),
+        QStringLiteral("themeResetAllButton"),
+        QStringLiteral("themeSaveButton"),
+        QStringLiteral("themeCloseButton"),
+    };
+    for (const QString &name : controlNames)
+        verifyItem(dialog->findChild<QQuickItem *>(name), name);
+
+    const QStringList optionVisualNames{
+        QStringLiteral("themeFontRenderTypeLabels"),
+        QStringLiteral("themeFontRenderTypeTitle"),
+        QStringLiteral("themeFontRenderTypeDescription"),
+        QStringLiteral("themeMouseWheelLabels"),
+        QStringLiteral("themeMouseWheelTitle"),
+        QStringLiteral("themeMouseWheelDescription"),
+    };
+    for (const QString &name : optionVisualNames) {
+        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QVERIFY2(item, qPrintable(name));
+        if (!item)
+            continue;
+        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
+        verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
+    }
+
+    const QStringList optionTextLeafNames{
+        QStringLiteral("themeFontRenderTypeTitle"),
+        QStringLiteral("themeFontRenderTypeDescription"),
+        QStringLiteral("themeMouseWheelTitle"),
+        QStringLiteral("themeMouseWheelDescription"),
+    };
+    for (const QString &name : optionTextLeafNames) {
+        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QVERIFY2(item, qPrintable(name));
+        if (!item)
+            continue;
+
+        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        const QPointF xAxis = item->mapToItem(dialogRoot, QPointF(1.0, 0.0))
+            - origin;
+        const QPointF yAxis = item->mapToItem(dialogRoot, QPointF(0.0, 1.0))
+            - origin;
+        const QByteArray transformDetails = QStringLiteral(
+            "%1 has a non-unit scene transform: x=(%2,%3), y=(%4,%5)")
+                                                  .arg(name)
+                                                  .arg(xAxis.x(), 0, 'f', 6)
+                                                  .arg(xAxis.y(), 0, 'f', 6)
+                                                  .arg(yAxis.x(), 0, 'f', 6)
+                                                  .arg(yAxis.y(), 0, 'f', 6)
+                                                  .toUtf8();
+        QVERIFY2(qAbs(xAxis.x() - 1.0) < 0.001
+                     && qAbs(xAxis.y()) < 0.001
+                     && qAbs(yAxis.x()) < 0.001
+                     && qAbs(yAxis.y() - 1.0) < 0.001,
+                 transformDetails.constData());
+        QCOMPARE(item->property("renderType").toInt(),
+                 fixture.window->property("fontRenderType").toInt());
+        QVERIFY(!item->property("text").toString().isEmpty());
+    }
+
+    QImage renderedDialog;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(renderedDialog = dialog->grabWindow()).isNull(), 3000);
+    const qreal renderedScaleX = qreal(renderedDialog.width())
+        / dialogRoot->width();
+    const qreal renderedScaleY = qreal(renderedDialog.height())
+        / dialogRoot->height();
+    const QColor captionColor = fixture.window->property("mutedText")
+                                    .value<QColor>();
+    const QColor captionBackground = fixture.window->property("dialogHeaderBg")
+                                         .value<QColor>();
+    const auto colorDistanceSquared = [](const QColor &left,
+                                         const QColor &right) {
+        const int red = left.red() - right.red();
+        const int green = left.green() - right.green();
+        const int blue = left.blue() - right.blue();
+        return red * red + green * green + blue * blue;
+    };
+    for (const QString &name : {
+             QStringLiteral("themeFontRenderTypeDescription"),
+             QStringLiteral("themeMouseWheelDescription"),
+         }) {
+        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QVERIFY2(item, qPrintable(name));
+        if (!item)
+            continue;
+        const QRectF sceneRect = item->mapRectToItem(dialogRoot,
+                                                     item->boundingRect());
+        const int left = qFloor(sceneRect.left() * renderedScaleX);
+        const int top = qFloor(sceneRect.top() * renderedScaleY);
+        const int right = qCeil(sceneRect.right() * renderedScaleX);
+        const int bottom = qCeil(sceneRect.bottom() * renderedScaleY);
+        const QRect pixelRect = QRect(QPoint(left, top),
+                                      QPoint(right - 1, bottom - 1))
+                                    .intersected(renderedDialog.rect());
+        QVERIFY2(pixelRect.isValid(), qPrintable(name));
+
+        int captionLikePixels = 0;
+        for (int y = pixelRect.top(); y <= pixelRect.bottom(); ++y) {
+            for (int x = pixelRect.left(); x <= pixelRect.right(); ++x) {
+                const QColor pixel = renderedDialog.pixelColor(x, y);
+                if (colorDistanceSquared(pixel, captionColor)
+                    < colorDistanceSquared(pixel, captionBackground)) {
+                    ++captionLikePixels;
+                }
+            }
+        }
+        const QByteArray renderDetails = QStringLiteral(
+            "%1 produced only %2 caption-like pixels in the rendered frame")
+                                              .arg(name)
+                                              .arg(captionLikePixels)
+                                              .toUtf8();
+        QVERIFY2(captionLikePixels >= 12, renderDetails.constData());
+    }
+
+    const auto verifyLayoutRow = [&](QQuickItem *item, const QString &name) {
+        QVERIFY2(item, qPrintable(name));
+        if (!item)
+            return;
+        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
+        verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
+        verifyWholePhysicalCoordinate(item->height(),
+                                      name + QStringLiteral(" height"));
+    };
+    const QStringList layoutRowNames{
+        QStringLiteral("themeHueRow"),
+        QStringLiteral("themeSaturationRow"),
+        QStringLiteral("themeLightnessRow"),
+        QStringLiteral("themeAlphaRow"),
+    };
+    for (const QString &name : layoutRowNames)
+        verifyLayoutRow(dialog->findChild<QQuickItem *>(name), name);
+
+    QQuickItem *const indicator = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeFontRenderTypeComboIndicator"));
+    QVERIFY(indicator);
+    const QUrl iconSource = indicator->property("rasterizedIconSource")
+                                .toUrl();
+    QVERIFY(iconSource.isValid());
+    QCOMPARE(iconSource.fileName(), QStringLiteral("chevron-down.svg"));
+    QCOMPARE(QUrlQuery(iconSource).queryItemValue(QStringLiteral("size")),
+             QStringLiteral("14"));
+    QCOMPARE(QUrlQuery(iconSource).queryItemValue(QStringLiteral("dpr")),
+             QStringLiteral("1.75"));
+
+    QQuickItem *const wheelIndicator = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeMouseWheelComboIndicator"));
+    QVERIFY(wheelIndicator);
+    const QUrl wheelIconSource = wheelIndicator->property(
+        "rasterizedIconSource").toUrl();
+    QVERIFY(wheelIconSource.isValid());
+    QCOMPARE(wheelIconSource.fileName(), QStringLiteral("chevron-down.svg"));
+    QCOMPARE(QUrlQuery(wheelIconSource).queryItemValue(
+                 QStringLiteral("size")), QStringLiteral("14"));
+    QCOMPARE(QUrlQuery(wheelIconSource).queryItemValue(
+                 QStringLiteral("dpr")), QStringLiteral("1.75"));
+
+    QObject *const popup = fixture.window->findChild<QObject *>(
+        QStringLiteral("themeFontRenderTypeCombo"))
+                               ->property("popup")
+                               .value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY_WITH_TIMEOUT(popup->property("visible").toBool(), 1000);
+
+    QQuickItem *const popupBackground = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeFontRenderTypePopupBackground"));
+    QQuickItem *const popupList = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeFontRenderTypePopupList"));
+    QVERIFY(popupBackground);
+    QVERIFY(popupList);
+    verifyItem(popupBackground, QStringLiteral("themeFontRenderTypePopupBackground"));
+    verifyItem(popupList, QStringLiteral("themeFontRenderTypePopupList"));
+    verifyWholePhysicalCoordinate(
+        popupList->property("contentHeight").toReal(),
+        QStringLiteral("themeFontRenderTypePopupList content height"));
+
+    QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+    QTRY_VERIFY_WITH_TIMEOUT(!popup->property("visible").toBool(), 1000);
+    dialog->hide();
 }
 
 void F4QuickViewSurfaceTests::rendererChoicesUseProductOrderAndShortcuts()
@@ -902,6 +1596,815 @@ void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuilding
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
     QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+}
+
+void F4QuickViewSurfaceTests::workspaceSeparatorBreaksUnderActiveTab()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("workspaceTabs"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("activeIndex"), 3},
+        {QStringLiteral("tabs"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-1")},
+                 {QStringLiteral("text"), QStringLiteral("First")},
+                 {QStringLiteral("active"), false},
+                 {QStringLiteral("closable"), true},
+             },
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-2")},
+                 {QStringLiteral("text"), QStringLiteral("Second")},
+                 {QStringLiteral("active"), false},
+                 {QStringLiteral("closable"), true},
+             },
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-3")},
+                 {QStringLiteral("text"), QStringLiteral("Third")},
+                 {QStringLiteral("active"), false},
+                 {QStringLiteral("closable"), true},
+             },
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-4")},
+                 {QStringLiteral("text"), QStringLiteral("Fourth")},
+                 {QStringLiteral("active"), true},
+                 {QStringLiteral("closable"), true},
+             },
+         }},
+        {QStringLiteral("newTab"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("workspace-new")},
+             {QStringLiteral("visible"), true},
+             {QStringLiteral("action"), QStringLiteral("workspace.new")},
+         }},
+        {QStringLiteral("counter"), QVariantMap{}},
+    });
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *const workspaceBar = fixture.item(
+        QStringLiteral("workspaceBar"));
+    QQuickItem *const leftSeparator = fixture.item(
+        QStringLiteral("workspaceSeparatorLeft"));
+    QQuickItem *const rightSeparator = fixture.item(
+        QStringLiteral("workspaceSeparatorRight"));
+    QQuickItem *inactiveDivider = nullptr;
+    QQuickItem *rightInactiveDivider = nullptr;
+    QVERIFY(workspaceBar);
+    QVERIFY(leftSeparator);
+    QVERIFY(rightSeparator);
+
+    QTRY_VERIFY_WITH_TIMEOUT(workspaceBar->isVisible(), 3000);
+    const auto tabForTitle = [&](const QString &title) {
+        QQuickItem *label = visualItemWithText(
+            fixture.window->contentItem(), title);
+        return label && label->parentItem() && label->parentItem()->parentItem()
+            ? label->parentItem()->parentItem() : nullptr;
+    };
+    const auto tabChildWithObjectName = [](QQuickItem *tab,
+                                           const QString &objectName) {
+        if (!tab)
+            return static_cast<QQuickItem *>(nullptr);
+        for (QQuickItem *child : tab->childItems()) {
+            if (child->objectName() == objectName)
+                return child;
+        }
+        return static_cast<QQuickItem *>(nullptr);
+    };
+    QQuickItem *activeTab = nullptr;
+    QQuickItem *inactiveTab = nullptr;
+    QQuickItem *secondInactiveTab = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (activeTab = tabForTitle(QStringLiteral("Fourth"))) != nullptr, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (inactiveTab = tabForTitle(QStringLiteral("First"))) != nullptr,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (secondInactiveTab = tabForTitle(QStringLiteral("Second"))) != nullptr,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (inactiveDivider = tabChildWithObjectName(
+             inactiveTab, QStringLiteral("workspace-tab-1-divider"))) != nullptr,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rightInactiveDivider = tabChildWithObjectName(
+             secondInactiveTab, QStringLiteral("workspace-tab-2-divider")))
+            != nullptr,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(activeTab->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(inactiveTab->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(secondInactiveTab->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(leftSeparator->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightSeparator->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(inactiveDivider->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightInactiveDivider->isVisible(), 3000);
+
+    const QPointF barOrigin = workspaceBar->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF leftOrigin = leftSeparator->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF rightOrigin = rightSeparator->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    QVERIFY(qAbs(leftOrigin.x() + leftSeparator->width() - barOrigin.x())
+            < 0.51);
+    QVERIFY(qAbs(rightOrigin.x() - barOrigin.x() - workspaceBar->width())
+            < 0.51);
+
+    QImage rendered;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(rendered = fixture.window->grabWindow()).isNull(), 3000);
+    const qreal scale = rendered.devicePixelRatio();
+    const QPointF activeOrigin = activeTab->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const auto renderedColor = [&](qreal x, qreal y) {
+        return rendered.pixelColor(
+            qBound(0, qFloor(x * scale), rendered.width() - 1),
+            qBound(0, qFloor(y * scale), rendered.height() - 1));
+    };
+    const QColor separator = fixture.window->property(
+        "separatorColor").value<QColor>();
+    const QPointF inactiveOrigin = inactiveTab->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF secondInactiveOrigin = secondInactiveTab->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF dividerOrigin = inactiveDivider->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const qreal inactiveTabGap = secondInactiveOrigin.x()
+        - inactiveOrigin.x() - inactiveTab->width();
+    const qreal dividerCenter = dividerOrigin.x()
+        + inactiveDivider->width() / 2;
+    const qreal gapCenter = inactiveOrigin.x() + inactiveTab->width()
+        + inactiveTabGap / 2;
+    QVERIFY2(qAbs(inactiveTabGap - 4) < 0.51,
+             "The inactive divider must not change Row spacing");
+    QVERIFY2(qAbs(dividerCenter - gapCenter) < 0.51,
+             "The inactive divider must be centered in the existing gap");
+    const qreal separatorY = activeOrigin.y() + activeTab->height() - 0.5;
+    const QColor outsideTab = renderedColor(barOrigin.x() - 2, separatorY);
+    const QColor underInactive = renderedColor(
+        inactiveOrigin.x() + inactiveTab->width() / 2, separatorY);
+    const QColor underActive = renderedColor(
+        activeOrigin.x() + activeTab->width() / 2, separatorY);
+    const qreal betweenTabsX = inactiveOrigin.x() + inactiveTab->width()
+        + inactiveTabGap / 2;
+    const QColor betweenTabs = renderedColor(betweenTabsX, separatorY);
+    const QColor activeTopCenter = renderedColor(
+        activeOrigin.x() + activeTab->width() / 2,
+        activeOrigin.y() + 0.5);
+    const QColor activeTopLeftCorner = renderedColor(
+        activeOrigin.x() + 0.5, activeOrigin.y() + 0.5);
+    const QColor activeTopRightCorner = renderedColor(
+        activeOrigin.x() + activeTab->width() - 0.5,
+        activeOrigin.y() + 0.5);
+    QCOMPARE(outsideTab, separator);
+    QCOMPARE(underInactive, separator);
+    QCOMPARE(betweenTabs, separator);
+    QCOMPARE(activeTopCenter, separator);
+    QVERIFY2(activeTopLeftCorner != separator,
+             "The active tab's upper-left border must be rounded");
+    QVERIFY2(activeTopRightCorner != separator,
+             "The active tab's upper-right border must be rounded");
+    QVERIFY2(underActive != separator,
+             "The active tab must not draw a lower separator");
+
+    const QPointF secondCenter = secondInactiveOrigin
+        + QPointF(secondInactiveTab->width() / 2,
+                  secondInactiveTab->height() / 2);
+    QTest::mouseMove(fixture.window, secondCenter.toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        secondInactiveTab->property("hoverActive").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!inactiveDivider->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!rightInactiveDivider->isVisible(), 3000);
+}
+
+void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("workspaceTabs"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("activeIndex"), 0},
+        {QStringLiteral("tabs"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-1")},
+                 {QStringLiteral("text"), QStringLiteral("system32 — system32")},
+                 {QStringLiteral("number"), 1},
+                 {QStringLiteral("surfaceKind"), QStringLiteral("panels")},
+                 {QStringLiteral("active"), true},
+                 {QStringLiteral("closable"), true},
+             },
+         }},
+        {QStringLiteral("newTab"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("workspace-new")},
+             {QStringLiteral("visible"), true},
+             {QStringLiteral("action"), QStringLiteral("workspace.new")},
+         }},
+        {QStringLiteral("counter"), QVariantMap{}},
+    });
+
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required");
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QQuickItem *label = nullptr;
+    QQuickItem *title = nullptr;
+    QQuickItem *number = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (title = visualItemWithText(
+             rootItem, QStringLiteral("system32 — system32"))), 3000);
+    label = title->parentItem();
+    QVERIFY(label);
+    QCOMPARE(label->objectName(),
+             QStringLiteral("workspace-tab-label-workspace-tab-1"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (number = visualItemWithText(label, QStringLiteral("1"))), 3000);
+    QCOMPARE(title->parentItem(), label);
+    QCOMPARE(number->parentItem(), label);
+
+    const auto verifyWholePhysicalCoordinate = [dpr](
+            qreal logicalCoordinate, const QString &description) {
+        const qreal physicalCoordinate = logicalCoordinate * dpr;
+        const QByteArray details = QStringLiteral(
+            "%1 is %2 physical pixels at DPR %3")
+                                       .arg(description)
+                                       .arg(physicalCoordinate, 0, 'f', 6)
+                                       .arg(dpr, 0, 'f', 2)
+                                       .toUtf8();
+        QVERIFY2(qAbs(physicalCoordinate - qRound(physicalCoordinate))
+                     < 0.001,
+                 details.constData());
+    };
+    const QPointF labelOrigin = label->mapToItem(rootItem, QPointF{});
+    const QPointF titleOrigin = title->mapToItem(rootItem, QPointF{});
+    const QPointF numberOrigin = number->mapToItem(rootItem, QPointF{});
+
+    verifyWholePhysicalCoordinate(labelOrigin.x(),
+                                  QStringLiteral("workspace label scene x"));
+    verifyWholePhysicalCoordinate(labelOrigin.y(),
+                                  QStringLiteral("workspace label scene y"));
+    verifyWholePhysicalCoordinate(label->height(),
+                                  QStringLiteral("workspace label height"));
+    verifyWholePhysicalCoordinate(title->y(),
+                                  QStringLiteral("workspace title local y"));
+    verifyWholePhysicalCoordinate(number->y(),
+                                  QStringLiteral("workspace number local y"));
+    verifyWholePhysicalCoordinate(titleOrigin.y(),
+                                  QStringLiteral("workspace title scene y"));
+    verifyWholePhysicalCoordinate(numberOrigin.y(),
+                                  QStringLiteral("workspace number scene y"));
+}
+
+void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("workspaceTabs"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("activeIndex"), 0},
+        {QStringLiteral("tabs"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("workspace-tab-1")},
+                 {QStringLiteral("text"), QStringLiteral("First")},
+                 {QStringLiteral("surfaceKind"), QStringLiteral("panels")},
+                 {QStringLiteral("active"), true},
+                 {QStringLiteral("closable"), true},
+             },
+         }},
+        {QStringLiteral("newTab"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("workspace-new")},
+             {QStringLiteral("visible"), true},
+             {QStringLiteral("action"), QStringLiteral("workspace.new")},
+         }},
+        {QStringLiteral("counter"), QVariantMap{}},
+    });
+
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (dpr <= 1.0 || qFuzzyCompare(dpr, qRound(dpr)))
+        QSKIP("fractional-DPR invocation required");
+
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QQuickItem *const pathControl = fixture.item(
+        QStringLiteral("panelPathTitle-0"));
+    QQuickItem *const rightPathControl = fixture.item(
+        QStringLiteral("panelPathTitle-1"));
+    QQuickItem *const driveButton = fixture.item(
+        QStringLiteral("panelDriveButton-0"));
+    QQuickItem *const rightDriveButton = fixture.item(
+        QStringLiteral("panelDriveButton-1"));
+    QVERIFY(pathControl);
+    QVERIFY(rightPathControl);
+    QVERIFY(driveButton);
+    QVERIFY(rightDriveButton);
+
+    QQuickItem *const driveIcon = visualItemWithObjectNamePrefix(
+        pathControl, QStringLiteral("pathDriveIcon"));
+    QQuickItem *const rightDriveIcon = visualItemWithObjectNamePrefix(
+        rightPathControl, QStringLiteral("pathDriveIcon"));
+    QQuickItem *const driveButtonIcon = visualItemWithObjectNamePrefix(
+        driveButton, QStringLiteral("panelDriveButtonIcon-0"));
+    QQuickItem *const rightDriveButtonIcon = visualItemWithObjectNamePrefix(
+        rightDriveButton, QStringLiteral("panelDriveButtonIcon-1"));
+    QVERIFY(driveIcon);
+    QVERIFY(rightDriveIcon);
+    QVERIFY(driveButtonIcon);
+    QVERIFY(rightDriveButtonIcon);
+    QVERIFY(!driveIcon->isVisible());
+    QVERIFY(!rightDriveIcon->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        pathControl->property("currentDriveIconSource").toUrl().isValid(),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rightPathControl->property("currentDriveIconSource").toUrl().isValid(),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        driveButtonIcon->property("source").toUrl().isValid(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        rightDriveButtonIcon->property("source").toUrl().isValid(), 3000);
+    QCOMPARE(driveButtonIcon->property("source").toUrl(),
+             pathControl->property("currentDriveIconSource").toUrl());
+    QCOMPARE(rightDriveButtonIcon->property("source").toUrl(),
+             rightPathControl->property("currentDriveIconSource").toUrl());
+    const auto verifyPhysicalRect = [dpr, rootItem](
+                                        QQuickItem *icon,
+                                        const QString &description) {
+        QVERIFY2(icon, qPrintable(description));
+        const QPointF origin = icon->mapToItem(rootItem, QPointF{});
+        const QPointF parentOrigin = icon->parentItem()
+            ? icon->parentItem()->mapToItem(rootItem, QPointF{})
+            : QPointF{};
+        const QList<QPair<QString, qreal>> edges{
+            {QStringLiteral("left"), origin.x()},
+            {QStringLiteral("top"), origin.y()},
+            {QStringLiteral("right"), origin.x() + icon->width()},
+            {QStringLiteral("bottom"), origin.y() + icon->height()},
+        };
+        for (const auto &[edgeName, edge] : edges) {
+            const qreal physicalEdge = edge * dpr;
+            const QByteArray details = QStringLiteral(
+                "%1 %2 edge is %3 physical pixels; item=(%4,%5 %6x%7), "
+                "parent=(%8,%9 %10x%11) in logical pixels")
+                                           .arg(description, edgeName)
+                                           .arg(physicalEdge, 0, 'f', 6)
+                                           .arg(origin.x(), 0, 'f', 6)
+                                           .arg(origin.y(), 0, 'f', 6)
+                                           .arg(icon->width(), 0, 'f', 6)
+                                           .arg(icon->height(), 0, 'f', 6)
+                                           .arg(parentOrigin.x(), 0, 'f', 6)
+                                           .arg(parentOrigin.y(), 0, 'f', 6)
+                                           .arg(icon->parentItem()
+                                                    ? icon->parentItem()->width()
+                                                    : 0.0,
+                                                0, 'f', 6)
+                                           .arg(icon->parentItem()
+                                                    ? icon->parentItem()->height()
+                                                    : 0.0,
+                                                0, 'f', 6)
+                                           .toUtf8();
+            QVERIFY2(qAbs(physicalEdge - qRound(physicalEdge)) < 0.001,
+                     details.constData());
+        }
+    };
+    const auto verifyIcon = [dpr, &verifyPhysicalRect](
+                                QQuickItem *icon,
+                                const QString &description) {
+        QVERIFY2(icon, qPrintable(description));
+        verifyPhysicalRect(icon, description);
+        const QUrl source = icon->property("source").toUrl();
+        QVERIFY2(source.isValid(), qPrintable(description));
+        const QUrlQuery query(source);
+        bool logicalOk = false;
+        bool sourceDprOk = false;
+        const int logicalSize = query.queryItemValue(
+            QStringLiteral("size")).toInt(&logicalOk);
+        const qreal sourceDpr = query.queryItemValue(
+            QStringLiteral("dpr")).toDouble(&sourceDprOk);
+        QVERIFY2(logicalOk && logicalSize > 0,
+                 qPrintable(source.toString()));
+        QVERIFY2(sourceDprOk && sourceDpr > 0,
+                 qPrintable(source.toString()));
+        QVERIFY(qAbs(sourceDpr - dpr) < 0.001);
+        const QColor requestedTint(query.queryItemValue(
+            QStringLiteral("color")));
+        QVERIFY2(requestedTint.isValid(), qPrintable(source.toString()));
+
+        const qreal physicalWidth = icon->width() * dpr;
+        const qreal physicalHeight = icon->height() * dpr;
+        QVERIFY2(qAbs(physicalWidth - qRound(physicalWidth)) < 0.001,
+                 qPrintable(description));
+        QVERIFY2(qAbs(physicalHeight - qRound(physicalHeight)) < 0.001,
+                 qPrintable(description));
+        QCOMPARE(qRound(physicalWidth), qRound(logicalSize * sourceDpr));
+        QCOMPARE(qRound(physicalHeight), qRound(logicalSize * sourceDpr));
+    };
+
+    const auto verifyDirectSvgIcon = [dpr, &verifyPhysicalRect](
+                                         QQuickItem *icon,
+                                         const QString &description) {
+        QVERIFY2(icon, qPrintable(description));
+        verifyPhysicalRect(icon, description);
+        const QUrl source = icon->property("source").toUrl();
+        QVERIFY2(source.isValid() && source.path().endsWith(
+                     QStringLiteral(".svg")),
+                 qPrintable(description));
+        QTRY_COMPARE_WITH_TIMEOUT(icon->property("status").toInt(), 1, 3000);
+
+        const qreal physicalWidth = icon->width() * dpr;
+        const qreal physicalHeight = icon->height() * dpr;
+        const QSize sourceSize = icon->property("sourceSize").toSize();
+        QVERIFY2(sourceSize.isValid(), qPrintable(description));
+        QCOMPARE(qRound(sourceSize.width() * dpr), qRound(physicalWidth));
+        QCOMPARE(qRound(sourceSize.height() * dpr), qRound(physicalHeight));
+        QCOMPARE(qRound(icon->implicitWidth() * dpr), qRound(physicalWidth));
+        QCOMPARE(qRound(icon->implicitHeight() * dpr), qRound(physicalHeight));
+    };
+
+    QQuickItem *workspaceIcon = nullptr;
+    QQuickItem *workspaceClose = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (workspaceIcon = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("workspace-tab-icon-"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (workspaceClose = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("workspace-close-"))), 3000);
+
+    QQuickItem *const appButton = fixture.item(
+        QStringLiteral("appIconButton"));
+    QQuickItem *const minimizeButton = fixture.item(
+        QStringLiteral("minimizeButton"));
+    QQuickItem *const maximizeButton = fixture.item(
+        QStringLiteral("maximizeButton"));
+    QQuickItem *const closeButton = fixture.item(
+        QStringLiteral("closeButton"));
+    QQuickItem *const titleBar = fixture.item(
+        QStringLiteral("titleBar"));
+    QVERIFY(appButton);
+    QVERIFY(minimizeButton);
+    QVERIFY(maximizeButton);
+    QVERIFY(closeButton);
+    QVERIFY(titleBar);
+    QQuickItem *appIcon = nullptr;
+    QQuickItem *minimizeIcon = nullptr;
+    QQuickItem *maximizeIcon = nullptr;
+    QQuickItem *closeIcon = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (appIcon = visualItemWithSource(
+             appButton,
+             QUrl(QStringLiteral("qrc:/F4QtHost/icons/app/f4.svg")))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (minimizeIcon = visualItemWithObjectNamePrefix(
+             minimizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (maximizeIcon = visualItemWithObjectNamePrefix(
+             maximizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (closeIcon = visualItemWithObjectNamePrefix(
+             closeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+    verifyDirectSvgIcon(appIcon, QStringLiteral("application icon"));
+    verifyDirectSvgIcon(minimizeIcon, QStringLiteral("minimize icon"));
+    verifyDirectSvgIcon(maximizeIcon, QStringLiteral("maximize icon"));
+    verifyDirectSvgIcon(closeIcon, QStringLiteral("close icon"));
+
+    const QPointF titleBarOrigin = titleBar->mapToItem(rootItem, QPointF{});
+    const qreal titleBarCenterY = titleBarOrigin.y() + titleBar->height() / 2;
+    const auto verifyWindowControlCenter = [
+            dpr, rootItem, titleBarCenterY](QQuickItem *icon,
+                                            const QString &description) {
+        QVERIFY2(icon, qPrintable(description));
+        const QPointF origin = icon->mapToItem(rootItem, QPointF{});
+        const qreal iconCenterY = origin.y() + icon->height() / 2;
+        const qreal delta = qAbs(iconCenterY - titleBarCenterY) * dpr;
+        QVERIFY2(delta <= 0.51,
+                 qPrintable(QStringLiteral("%1 center is %2 physical px "
+                                           "from title bar center")
+                                .arg(description)
+                                .arg(delta, 0, 'f', 6)));
+    };
+    verifyWindowControlCenter(minimizeIcon,
+                              QStringLiteral("minimize icon"));
+    verifyWindowControlCenter(maximizeIcon,
+                              QStringLiteral("maximize icon"));
+    verifyWindowControlCenter(closeIcon, QStringLiteral("close icon"));
+
+    QTest::mouseMove(fixture.window, QPoint(450, 300));
+    minimizeButton->setOpacity(1.0);
+    maximizeButton->setOpacity(1.0);
+    closeButton->setOpacity(1.0);
+    fixture.window->requestUpdate();
+    QImage chromeFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(chromeFrame = fixture.window->grabWindow()).isNull(), 3000);
+    QCOMPARE(chromeFrame.size(),
+             QSize(qRound(fixture.window->width() * dpr),
+                   qRound(fixture.window->height() * dpr)));
+    const QColor chromeBackground = fixture.window->property(
+        "windowBackgroundColor").value<QColor>();
+    const auto verifyDirectSvgPixels = [dpr, rootItem, &chromeFrame,
+                                        chromeBackground](
+                                           QQuickItem *icon,
+                                           const QString &description) {
+        const QPointF origin = icon->mapToItem(rootItem, QPointF{});
+        const QSize physicalSize(qRound(icon->width() * dpr),
+                                 qRound(icon->height() * dpr));
+        const QRect physicalRect(
+            QPoint(qRound(origin.x() * dpr), qRound(origin.y() * dpr)),
+            physicalSize);
+        QVERIFY2(chromeFrame.rect().contains(physicalRect),
+                 qPrintable(description));
+        const QVariant tintValue = icon->property("color");
+        const QColor tint = tintValue.isValid()
+            ? tintValue.value<QColor>() : QColor{};
+        const QImage expected = renderSvgReference(
+            icon->property("source").toUrl(), physicalSize, tint,
+            chromeBackground);
+        QVERIFY2(!expected.isNull(), qPrintable(description));
+        const QString difference = exactImageDifference(
+            chromeFrame.copy(physicalRect), expected);
+        QVERIFY2(difference.isEmpty(),
+                 qPrintable(description + QStringLiteral(": ")
+                            + difference));
+    };
+    verifyDirectSvgPixels(appIcon, QStringLiteral("application icon"));
+    verifyDirectSvgPixels(minimizeIcon, QStringLiteral("minimize icon"));
+    verifyDirectSvgPixels(maximizeIcon, QStringLiteral("maximize icon"));
+    verifyDirectSvgPixels(closeIcon, QStringLiteral("close icon"));
+
+    QQuickItem *const pathSeparator = visualItemWithObjectNamePrefix(
+        pathControl, QStringLiteral("pathBreadcrumbRoot-separator"));
+    QQuickItem *const rightPathSeparator = visualItemWithObjectNamePrefix(
+        rightPathControl, QStringLiteral("pathBreadcrumbRoot-separator"));
+    const QList<QPair<QString, QQuickItem *>> alwaysPresentIcons{
+        {QStringLiteral("workspace tab icon"), workspaceIcon},
+        {QStringLiteral("workspace close icon"), workspaceClose},
+        {QStringLiteral("path drive button icon"), driveButtonIcon},
+        {QStringLiteral("path separator icon"), pathSeparator},
+        {QStringLiteral("right path drive button icon"), rightDriveButtonIcon},
+        {QStringLiteral("right path separator icon"), rightPathSeparator},
+        {QStringLiteral("sort chevron"),
+         fixture.item(QStringLiteral("panelSortChevron-0"))},
+        {QStringLiteral("right sort chevron"),
+         fixture.item(QStringLiteral("panelSortChevron-1"))},
+        {QStringLiteral("renderer mode icon"),
+         fixture.item(QStringLiteral("panelRendererButtonIcon-0"))},
+        {QStringLiteral("right renderer mode icon"),
+         fixture.item(QStringLiteral("panelRendererButtonIcon-1"))},
+        {QStringLiteral("renderer chevron"),
+         fixture.item(QStringLiteral("panelRendererButtonChevron-0"))},
+        {QStringLiteral("right renderer chevron"),
+         fixture.item(QStringLiteral("panelRendererButtonChevron-1"))},
+    };
+    for (const auto &[description, icon] : alwaysPresentIcons)
+        verifyIcon(icon, description);
+
+    QCOMPARE(QUrlQuery(pathSeparator->property("source").toUrl())
+                 .queryItemValue(QStringLiteral("size")),
+             QStringLiteral("12"));
+    QCOMPARE(qRound(pathSeparator->width() * dpr), qRound(12.0 * dpr));
+    QCOMPARE(qRound(rightPathSeparator->width() * dpr),
+             qRound(12.0 * dpr));
+
+    QQuickItem *const sortButton = fixture.item(
+        QStringLiteral("panelSortButton-0"));
+    QQuickItem *const sortContent = fixture.item(
+        QStringLiteral("panelSortButtonContent-0"));
+    QQuickItem *const sortLabel = fixture.item(
+        QStringLiteral("panelSortLabel-0"));
+    QVERIFY(sortButton);
+    QVERIFY(sortContent);
+    QVERIFY(sortLabel);
+    const QPointF sortButtonOrigin = sortButton->mapToItem(rootItem, QPointF{});
+    const QPointF sortContentOrigin = sortContent->mapToItem(rootItem, QPointF{});
+    const QPointF sortLabelOrigin = sortLabel->mapToItem(rootItem, QPointF{});
+    const auto verifyPhysicalY = [dpr](qreal logicalY,
+                                       const QString &description) {
+        const qreal physicalY = logicalY * dpr;
+        QVERIFY2(qAbs(physicalY - qRound(physicalY)) < 0.001,
+                 qPrintable(QStringLiteral("%1: %2 physical px")
+                                .arg(description).arg(physicalY, 0, 'f', 6)));
+    };
+    verifyPhysicalY(sortButtonOrigin.y(), QStringLiteral("sort button y"));
+    verifyPhysicalY(sortContentOrigin.y(), QStringLiteral("sort content y"));
+    verifyPhysicalY(sortLabelOrigin.y(), QStringLiteral("sort label y"));
+    const qreal contentCenterDelta = qAbs(
+        sortContentOrigin.y() + sortContent->height() / 2.0
+        - sortButtonOrigin.y() - sortButton->height() / 2.0) * dpr;
+    const qreal labelCenterDelta = qAbs(
+        sortLabelOrigin.y() + sortLabel->height() / 2.0
+        - sortContentOrigin.y() - sortContent->height() / 2.0) * dpr;
+    QVERIFY2(contentCenterDelta <= 0.51,
+             qPrintable(QStringLiteral("sort content center delta: %1 px")
+                            .arg(contentCenterDelta, 0, 'f', 6)));
+    QVERIFY2(labelCenterDelta <= 0.51,
+             qPrintable(QStringLiteral("sort label center delta: %1 px")
+                            .arg(labelCenterDelta, 0, 'f', 6)));
+
+    QObject *const sortMenu = fixture.window->findChild<QObject *>(
+        QStringLiteral("panelSortMenu-0"));
+    QVERIFY(sortMenu);
+    QVERIFY(QMetaObject::invokeMethod(sortMenu, "open"));
+    QQuickItem *sortCheck = nullptr;
+    QQuickItem *sortChoiceIcon = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortCheck = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("panelSortChoiceCheck-"))), 3000);
+    verifyIcon(sortCheck, QStringLiteral("sort dropdown check"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (sortChoiceIcon = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("panelSortChoiceIcon-"))), 3000);
+    verifyIcon(sortChoiceIcon, QStringLiteral("sort dropdown icon"));
+    QVERIFY(QMetaObject::invokeMethod(sortMenu, "close"));
+
+    QObject *const rendererMenu = fixture.window->findChild<QObject *>(
+        QStringLiteral("panelRendererMenu-0"));
+    QVERIFY(rendererMenu);
+    QVERIFY(QMetaObject::invokeMethod(rendererMenu, "open"));
+    QQuickItem *rendererCheck = nullptr;
+    QQuickItem *rendererChoiceIcon = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rendererCheck = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("panelRendererChoiceCheck-"))), 3000);
+    verifyIcon(rendererCheck, QStringLiteral("renderer dropdown check"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rendererChoiceIcon = visualItemWithObjectNamePrefix(
+             rootItem, QStringLiteral("panelRendererChoiceIcon-"))), 3000);
+    verifyIcon(rendererChoiceIcon, QStringLiteral("renderer dropdown icon"));
+    QVERIFY(QMetaObject::invokeMethod(rendererMenu, "close"));
+}
+
+void F4QuickViewSurfaceTests::panelDriveButtonUsesPathIconAndRequestsDriveMenu()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    QVERIFY(fixture.window);
+
+    auto *const pathControl = fixture.item(
+        QStringLiteral("panelPathTitle-0"));
+    auto *const driveButton = fixture.item(
+        QStringLiteral("panelDriveButton-0"));
+    QVERIFY(pathControl);
+    QVERIFY(driveButton);
+
+    auto *const embeddedIcon = visualItemWithObjectNamePrefix(
+        pathControl, QStringLiteral("pathDriveIcon"));
+    auto *const buttonIcon = visualItemWithObjectNamePrefix(
+        driveButton, QStringLiteral("panelDriveButtonIcon-0"));
+    QVERIFY(embeddedIcon);
+    QVERIFY(buttonIcon);
+    QVERIFY(!embeddedIcon->isVisible());
+
+    QTRY_VERIFY_WITH_TIMEOUT(
+        pathControl->property("currentDriveIconSource").toUrl().isValid(),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        buttonIcon->property("source").toUrl().isValid(), 3000);
+    QCOMPARE(buttonIcon->property("source").toUrl(),
+             pathControl->property("currentDriveIconSource").toUrl());
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF buttonOrigin = buttonIcon->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const qreal physicalWidth = buttonIcon->width() * dpr;
+    const qreal physicalHeight = buttonIcon->height() * dpr;
+    QVERIFY(qAbs(buttonOrigin.x() * dpr
+                 - qRound(buttonOrigin.x() * dpr)) < 0.001);
+    QVERIFY(qAbs(buttonOrigin.y() * dpr
+                 - qRound(buttonOrigin.y() * dpr)) < 0.001);
+    QVERIFY(qAbs(physicalWidth - qRound(physicalWidth)) < 0.001);
+    QVERIFY(qAbs(physicalHeight - qRound(physicalHeight)) < 0.001);
+
+    fixture.shell.clearActions();
+    QTest::mouseClick(
+        fixture.window, Qt::LeftButton, Qt::NoModifier,
+        driveButton->mapToScene(QPointF(driveButton->width() / 2,
+                                         driveButton->height() / 2)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
+    const QVariantMap action = fixture.shell.actions.constFirst();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.driveMenu"));
+    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 0);
+}
+
+void F4QuickViewSurfaceTests::pathBreadcrumbTextStaysFixedWhenNavigatingDeeper()
+{
+    const QFont previousFont = QGuiApplication::font();
+    const auto restoreFont = qScopeGuard([previousFont]() {
+        QGuiApplication::setFont(previousFont);
+    });
+    QFont appFont(QStringLiteral("Consolas"));
+    appFont.setPixelSize(18);
+    QGuiApplication::setFont(appFont);
+
+    const auto sceneWithPath = [](const QString &path) {
+        QVariantMap scene = shellScene({}, 0);
+        QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+        QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+        QVariantMap leftPanel = panels.at(0).toMap();
+        leftPanel.insert(QStringLiteral("path"), path);
+        leftPanel.insert(QStringLiteral("title"), path);
+        panels[0] = leftPanel;
+        shell.insert(QStringLiteral("panels"), panels);
+        scene.insert(QStringLiteral("shell"), shell);
+        return scene;
+    };
+
+    QuickViewFixture fixture(sceneWithPath(
+                                 QStringLiteral("C:\\WINDOWS\\system32")),
+                             true, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) >= 0.001 && qAbs(dpr - 2.0) >= 0.001)
+        QSKIP("175% or 200% scale invocation required");
+    fixture.window->resize(1800, 640);
+    QCoreApplication::processEvents();
+    QTest::qWait(50);
+
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QQuickItem *const pathControl = fixture.item(
+        QStringLiteral("panelPathTitle-0"));
+    QVERIFY(rootItem);
+    QVERIFY(pathControl);
+
+    QQuickItem *system32Before = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (system32Before = visualItemWithObjectNamePrefix(
+             pathControl,
+             QStringLiteral("pathBreadcrumb-1-text"))) != nullptr,
+        3000);
+    QTest::qWait(50);
+    const QPointF beforeOrigin = system32Before->mapToItem(
+        rootItem, QPointF{});
+    const auto verifyPhysicalOrigin = [dpr](const QPointF &origin,
+                                             const QString &state) {
+        const qreal physicalX = origin.x() * dpr;
+        const qreal physicalY = origin.y() * dpr;
+        const QString details = QStringLiteral(
+            "%1 system32 text origin is (%2, %3) physical px")
+                                    .arg(state)
+                                    .arg(physicalX, 0, 'f', 6)
+                                    .arg(physicalY, 0, 'f', 6);
+        QVERIFY2(qAbs(physicalX - qRound(physicalX)) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalY - qRound(physicalY)) < 0.001,
+                 qPrintable(details));
+    };
+    verifyPhysicalOrigin(beforeOrigin, QStringLiteral("before navigation"));
+    QImage frameBefore;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(frameBefore = fixture.window->grabWindow()).isNull(), 3000);
+    const auto physicalRect = [rootItem, dpr](QQuickItem *item) {
+        const QPointF topLeft = item->mapToItem(rootItem, QPointF{});
+        const int left = qFloor(topLeft.x() * dpr);
+        const int top = qFloor(topLeft.y() * dpr);
+        const int right = qCeil((topLeft.x() + item->width()) * dpr);
+        const int bottom = qCeil((topLeft.y() + item->height()) * dpr);
+        return QRect(left, top, right - left, bottom - top);
+    };
+    const QRect beforeRect = physicalRect(system32Before);
+    const QImage beforeText = frameBefore.copy(beforeRect);
+
+    fixture.shell.setScene(sceneWithPath(
+        QStringLiteral("C:\\WINDOWS\\system32\\az")));
+    QTRY_COMPARE_WITH_TIMEOUT(pathControl->property("text").toString(),
+                              QStringLiteral("C:\\WINDOWS\\system32\\az"),
+                              3000);
+    QTest::qWait(100);
+    QCoreApplication::processEvents();
+
+    QQuickItem *system32After = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (system32After = visualItemWithObjectNamePrefix(
+             pathControl,
+             QStringLiteral("pathBreadcrumb-1-text"))) != nullptr,
+        3000);
+    const QPointF afterOrigin = system32After->mapToItem(
+        rootItem, QPointF{});
+    verifyPhysicalOrigin(afterOrigin, QStringLiteral("after navigation"));
+    const qreal shiftPhysical = (afterOrigin.x() - beforeOrigin.x()) * dpr;
+    QVERIFY2(qAbs(shiftPhysical) < 0.001,
+             qPrintable(QStringLiteral(
+                 "system32 breadcrumb moved by %1 physical px")
+                            .arg(shiftPhysical, 0, 'f', 6)));
+
+    QImage frameAfter;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(frameAfter = fixture.window->grabWindow()).isNull(), 3000);
+    const QRect afterRect = physicalRect(system32After);
+    QCOMPARE(afterRect, beforeRect);
+    const QString difference = exactImageDifference(
+        frameAfter.copy(afterRect), beforeText);
+    QVERIFY2(difference.isEmpty(), qPrintable(difference));
+
+    pathControl->setProperty("editMode", true);
+    QCoreApplication::processEvents();
+    QTest::qWait(20);
+    QQuickItem *const pathField = fixture.item(QStringLiteral("pathField"));
+    QQuickItem *const dynamicPart = visualItemWithObjectNamePrefix(
+        pathControl, QStringLiteral("pathDynamicPart"));
+    QVERIFY(pathField);
+    QVERIFY(dynamicPart);
+    QCOMPARE(pathField->property("font").value<QFont>(),
+             system32After->property("font").value<QFont>());
+    QVERIFY(pathField->property("visible").toBool());
+    QVERIFY(!dynamicPart->property("visible").toBool());
+    QVERIFY(!system32After->isVisible());
 }
 
 void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
