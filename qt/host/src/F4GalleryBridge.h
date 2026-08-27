@@ -74,6 +74,7 @@ public:
 public slots:
     void synchronizeScene(const QVariantMap &scene);
     void synchronizePanelCatalog(const QVariantMap &panel);
+    void synchronizePanelState(const QVariantMap &patch);
     void synchronizePanelActivation(int activePanel, qulonglong revision);
     void beginCompactProtocolMessage(const QVariantMap &message);
     void handleProtocolMessage(const QVariantMap &message);

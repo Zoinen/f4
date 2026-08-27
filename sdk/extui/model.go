@@ -8,13 +8,14 @@ import (
 
 const (
 	Schema       = "app"
-	SceneVersion = 3
+	SceneVersion = 4
 )
 
 type M = map[string]any
 
 // Scene является корневым объектом для экспорта состояния f4
 type Scene struct {
+	Revision        uint64
 	Width           int
 	Height          int
 	ActiveScreen    int
@@ -43,6 +44,7 @@ type ShellModel struct {
 	ShowRightPanel bool
 	Wide           bool
 	WidePanel      int
+	PanelLayout    PanelLayoutModel
 	ShowKeyBar     bool
 	TerminalBusy   bool
 	TerminalActive bool
@@ -54,6 +56,18 @@ type ShellModel struct {
 	QuickViews     []QuickViewModel
 	CommandLine    *CommandLineModel
 	Terminal       *TerminalModel
+}
+
+// PanelLayoutModel is the small, presentation-independent part of commander
+// geometry. SplitColumn is the first column owned by the right panel. The
+// bottom insets describe rows exposed beneath each panel for the terminal.
+// Keeping this in the shell header lets native frontends reproduce a saved
+// layout without receiving either panel's file catalog.
+type PanelLayoutModel struct {
+	Columns              int
+	SplitColumn          int
+	LeftBottomInsetRows  int
+	RightBottomInsetRows int
 }
 
 type InfoPanelModel struct {
@@ -416,6 +430,7 @@ type MenuItemModel struct {
 	Text      string
 	RawText   string
 	Hotkey    string
+	Icon      string
 	Shortcut  string
 	Command   int
 	Separator bool
@@ -485,6 +500,9 @@ func (s Scene) ToMap() M {
 		"height":       s.Height,
 		"activeScreen": s.ActiveScreen,
 	}
+	if s.Revision > 0 {
+		out["revision"] = s.Revision
+	}
 	if s.Presentation != "" {
 		out["presentation"] = s.Presentation
 	}
@@ -544,6 +562,7 @@ func (s ShellModel) ToMap() M {
 		"showLeftPanel":  s.ShowLeftPanel,
 		"showRightPanel": s.ShowRightPanel,
 		"wide":           s.Wide,
+		"panelLayout":    s.PanelLayout.ToMap(),
 		"showKeyBar":     s.ShowKeyBar,
 		"terminalBusy":   s.TerminalBusy,
 		"terminalActive": s.TerminalActive,
@@ -570,6 +589,15 @@ func (s ShellModel) ToMap() M {
 		out["terminal"] = s.Terminal.ToMap()
 	}
 	return out
+}
+
+func (p PanelLayoutModel) ToMap() M {
+	return M{
+		"columns":              p.Columns,
+		"splitColumn":          p.SplitColumn,
+		"leftBottomInsetRows":  p.LeftBottomInsetRows,
+		"rightBottomInsetRows": p.RightBottomInsetRows,
+	}
 }
 
 func (p InfoPanelModel) ToMap() M {
@@ -1096,6 +1124,9 @@ func (i MenuItemModel) ToMap() M {
 		"separator": i.Separator,
 		"disabled":  i.Disabled,
 		"checked":   i.Checked,
+	}
+	if i.Icon != "" {
+		out["icon"] = i.Icon
 	}
 	if len(i.Items) > 0 {
 		out["items"] = menuItemsToMaps(i.Items)

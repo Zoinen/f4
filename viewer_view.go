@@ -1042,7 +1042,7 @@ func (vv *ViewerView) showCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(currIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func (vv *ViewerView) ProcessMouse(e *vtinput.InputEvent) bool {

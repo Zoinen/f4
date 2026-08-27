@@ -37,6 +37,7 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		ShowRightPanel: pf.showRightPanel,
 		Wide:           pf.wide,
 		WidePanel:      pf.widePanel,
+		PanelLayout:    pf.semanticPanelLayoutModel(ctx),
 		ShowKeyBar:     pf.showKeyBar,
 		TerminalBusy:   pf.isPtyBusy(),
 		TerminalActive: !pf.showPanels,
@@ -82,14 +83,64 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	return shell.ToMap()
 }
 
+func (pf *PanelsFrame) semanticPanelLayoutModel(ctx *vtui.SemanticContext) extui.PanelLayoutModel {
+	columns := pf.lastW
+	if ctx != nil && ctx.Width > 0 {
+		columns = ctx.Width
+	}
+	if columns < 0 {
+		columns = 0
+	}
+
+	widthDecrement := pf.widthDecrement
+	if maxWD := (columns / 2) - 10; maxWD > 0 {
+		if widthDecrement > maxWD {
+			widthDecrement = maxWD
+		}
+		if widthDecrement < -maxWD {
+			widthDecrement = -maxWD
+		}
+	} else {
+		widthDecrement = 0
+	}
+	splitColumn := 0
+	if columns > 0 {
+		splitColumn = columns/2 - widthDecrement
+	}
+
+	clampBottomInset := func(value int) int {
+		if value < 0 {
+			return 0
+		}
+		height := pf.lastH
+		if ctx != nil && ctx.Height > 0 {
+			height = ctx.Height
+		}
+		if maxHD := height - 7; maxHD > 0 && value > maxHD {
+			return maxHD
+		}
+		return value
+	}
+	return extui.PanelLayoutModel{
+		Columns:              columns,
+		SplitColumn:          splitColumn,
+		LeftBottomInsetRows:  clampBottomInset(pf.leftHeightDecrement),
+		RightBottomInsetRows: clampBottomInset(pf.rightHeightDecrement),
+	}
+}
+
 func (pf *PanelsFrame) semanticGridFallbackReason() string {
 	for _, panel := range pf.altPanels {
 		if panel != nil && panel.Kind() != "info" && panel.Kind() != "quick_view" {
 			return "the QML presentation does not yet support the " + panel.Kind() + " panel"
 		}
 	}
-	if pf.showPanels && (pf.widthDecrement != 0 || pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
-		return "the QML presentation does not yet support resized-panel layouts"
+	// Horizontal split geometry is part of the bounded shell contract and is
+	// rendered natively. Shortened panels expose live terminal rows, which need
+	// their own incremental terminal patch before that layout can leave the
+	// compatibility grid without regressing correctness.
+	if pf.showPanels && (pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
+		return "the QML presentation does not yet support shortened-panel layouts"
 	}
 	return ""
 }
@@ -281,6 +332,7 @@ func HandleSemanticAction(action map[string]any) bool {
 						return false
 					}
 					menu.SetSelectPos(itemIndex)
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 
@@ -360,12 +412,11 @@ func HandleSemanticAction(action map[string]any) bool {
 						}
 					}
 					mb.Active = false
-					vtui.FrameManager.Redraw()
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 				mb.Active = true
 				mb.ActivateSubMenu(idx)
-				vtui.FrameManager.Redraw()
 				return true
 			}
 		}
@@ -402,11 +453,24 @@ func HandleSemanticAction(action map[string]any) bool {
 	}
 	for i := len(frames) - 1; i >= 0; i-- {
 		if handleSemanticFrameAction(frames[i], target, action) {
-			vtui.FrameManager.Redraw()
+			if !semanticMenuPresentationAction(actionName) {
+				vtui.FrameManager.Redraw()
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func semanticMenuPresentationAction(actionName string) bool {
+	switch actionName {
+	case "menu_select", "menu.select", "menu_scroll", "menu.scroll",
+		"menuBar.itemSelect", "menu_bar_activate", "menuBar.activate",
+		"menuBar.toggle":
+		return true
+	default:
+		return false
+	}
 }
 
 func activeMenuBarSubmenu(mb *vtui.MenuBar, target string) *vtui.VMenu {
@@ -460,12 +524,14 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 				idx := semanticInt(action["index"])
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
 					menu.SetSelectPos(idx)
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 			}
 		case "menu_scroll", "menu.scroll":
 			if menu, _ := appFrameVMenu(frame); menu != nil {
 				menu.ScrollBy(semanticInt(action["delta"]))
+				vtui.FrameManager.DeclareSemanticMenuState()
 				return true
 			}
 		}
@@ -549,7 +615,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 	case "activate_panel", "panel.activate":
 		side := semanticInt(action["side"])
 		if side >= 0 && side < len(pf.panels) {
-			pf.activeIdx = side
+			pf.setActivePanelForAction(action)
 			pf.lastKey = 0
 			if fsp, ok := pf.panels[side].(*FileSystemPanel); ok {
 				fsp.clearFastFindForSemanticPointerIntent()
@@ -852,7 +918,16 @@ func closeActiveAutocompleteMenus() {
 func (pf *PanelsFrame) setActivePanelForAction(action map[string]any) {
 	side := pf.panelIndexForSemanticAction(action)
 	if side >= 0 && side < len(pf.panels) {
+		activeChanged := pf.activeIdx != side
 		pf.activeIdx = side
+		// A native panel interaction has the same input-focus semantics as a
+		// terminal mouse press. In search-first mode it must return keyboard
+		// input to the selected panel so the following Tab switches panels. An
+		// already panel-focused active side is a true no-op and must not enqueue
+		// another redraw/semantic export.
+		if activeChanged || pf.commandLineFocused {
+			pf.setCommandLineFocus(false)
+		}
 	}
 }
 
@@ -1250,11 +1325,106 @@ func (fp *FileSystemPanel) updateSemanticRevisions() {
 		fp.semanticMetadataInitialized = true
 		fp.metadataRevision++
 	}
-	if !fp.semanticSelectionInitialized || selection != fp.semanticSelectionFingerprint {
+	if fp.semanticSelectionNeedsSync {
+		// SetItemSelected already advanced SelectionRevision and recorded the
+		// exact changed rows. Synchronize the validation fingerprint without
+		// advancing the revision a second time during a later full fallback.
+		fp.semanticSelectionFingerprint = selection
+		fp.semanticSelectionInitialized = true
+		fp.semanticSelectionNeedsSync = false
+	} else if !fp.semanticSelectionInitialized || selection != fp.semanticSelectionFingerprint {
+		if fp.semanticSelectionInitialized {
+			// A caller changed selection without SetItemSelected. We know the new
+			// aggregate state but not the exact rows, so force the rare bounded-ID
+			// replacement instead of emitting an empty or incomplete sparse delta.
+			fp.semanticSelectionBaseRevision = fp.selectionRevision
+			fp.semanticSelectionChanges = nil
+			fp.semanticSelectionOverflow = true
+		}
 		fp.semanticSelectionFingerprint = selection
 		fp.semanticSelectionInitialized = true
 		fp.selectionRevision++
 	}
+}
+
+const maxSemanticSelectionChanges = 4096
+
+type semanticSelectionChange struct {
+	Index    int
+	EntryID  string
+	Selected bool
+}
+
+func (fp *FileSystemPanel) semanticSelectionPatch(baseRevision int64) (extui.PanelPatch, bool) {
+	if fp == nil || baseRevision == fp.selectionRevision {
+		return extui.PanelPatch{}, false
+	}
+	patch := extui.PanelPatch{
+		Side:              -1,
+		PanelID:           vtui.SemanticID(fp),
+		CatalogRevision:   fp.catalogRevision,
+		BaseSelection:     baseRevision,
+		SelectionRevision: fp.selectionRevision,
+	}
+	if fp.semanticSelectionOverflow || baseRevision != fp.semanticSelectionBaseRevision {
+		patch.Op = "selection_replace"
+		patch.SelectedEntryIDs = fp.semanticSelectedEntryIDs()
+		return patch, true
+	}
+	patch.Op = "selection_delta"
+	changes := make([]semanticSelectionChange, 0, len(fp.semanticSelectionChanges))
+	for _, change := range fp.semanticSelectionChanges {
+		changes = append(changes, change)
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Index == changes[j].Index {
+			return changes[i].EntryID < changes[j].EntryID
+		}
+		return changes[i].Index < changes[j].Index
+	})
+	patch.SelectionChanges = make([]extui.M, 0, len(changes))
+	for _, change := range changes {
+		patch.SelectionChanges = append(patch.SelectionChanges, extui.M{
+			"index": change.Index, "entryId": change.EntryID,
+			"selected": change.Selected,
+		})
+	}
+	return patch, true
+}
+
+func (fp *FileSystemPanel) semanticSelectedEntryIDs() []string {
+	if fp == nil {
+		return nil
+	}
+	cache := fp.semanticStaticCache
+	selected := make([]string, 0, len(fp.selectedItems))
+	if cache != nil && cache.catalogRevision == fp.catalogRevision && len(cache.entries) == len(fp.entries) {
+		for index, entry := range fp.entries {
+			if entry.Selected {
+				selected = append(selected, cache.entries[index].EntryID)
+			}
+		}
+	} else {
+		sourceKind, _ := fp.semanticSourceInfo()
+		for _, entry := range fp.entries {
+			if !entry.Selected {
+				continue
+			}
+			entryID, _ := fp.semanticEntryMetadata(entry, sourceKind)
+			selected = append(selected, entryID)
+		}
+	}
+	sort.Strings(selected)
+	return selected
+}
+
+func (fp *FileSystemPanel) acknowledgeSemanticSelection(revision int64) {
+	if fp == nil || revision != fp.selectionRevision {
+		return
+	}
+	fp.semanticSelectionBaseRevision = revision
+	fp.semanticSelectionChanges = nil
+	fp.semanticSelectionOverflow = false
 }
 
 type semanticPanelStaticCache struct {
@@ -1617,6 +1787,84 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		GalleryColumns:         fp.semanticGalleryColumns(),
 		Entries:                entries,
 	}
+}
+
+// semanticPanelHeaderModel exports only the mutable, bounded panel state. The
+// immutable catalog stays in the renderer/Qt cache until CatalogRevision
+// changes. Returning false requests a complete fallback because no validated
+// catalog has been published for this panel yet.
+func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, side int, active bool) (extui.PanelModel, bool) {
+	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
+		return extui.PanelModel{}, false
+	}
+	static := fp.semanticStaticCache
+	if static == nil || static.catalogRevision != fp.catalogRevision || len(static.entries) != len(fp.entries) {
+		return extui.PanelModel{}, false
+	}
+	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
+	galleryLayoutRevision := fp.galleryLayoutRevision
+	if galleryLayoutRevision < 1 {
+		galleryLayoutRevision = 1
+	}
+	sourceKind, previewCapable := fp.semanticSourceInfo()
+	cursor := fp.GetCursorIndex()
+	cursorEntryID := ""
+	if cursor >= 0 && cursor < len(static.entries) {
+		cursorEntryID = static.entries[cursor].EntryID
+	}
+	var fastFindMatches map[string]extui.FastFindMatchModel
+	fastFindMatchColor := ""
+	if fp.fastFindMode && fp.fastFindStr != "" {
+		fastFindMatches = make(map[string]extui.FastFindMatchModel)
+		fastFindMatchColor = semanticAttrColor(vtui.Palette[ColPanelHighlightText], true)
+		for index, entry := range fp.entries {
+			if start, length, ok := fp.fastFindMatch(entry.Name); ok && length > 0 {
+				fastFindMatches[static.entries[index].EntryID] = extui.FastFindMatchModel{
+					Start: start, Length: length,
+				}
+			}
+		}
+	}
+	semanticTitle := fp.semanticTitle
+	if semanticTitle == "" {
+		semanticTitle = fp.currentTitle
+	}
+	loading := fp.isLoading
+	if fp.semanticCachedCatalogReady {
+		loading = false
+	}
+	return extui.PanelModel{
+		ID:                     vtui.SemanticID(fp),
+		Side:                   side,
+		Active:                 active,
+		Path:                   fp.vfs.GetPath(),
+		Title:                  semanticTitle,
+		GalleryLayoutMode:      string(galleryLayoutMode),
+		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
+		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryLayoutRevision:  galleryLayoutRevision,
+		SourceKind:             sourceKind,
+		PreviewCapable:         previewCapable,
+		CatalogRevision:        fp.catalogRevision,
+		SelectionRevision:      fp.selectionRevision,
+		MetadataDeferred:       true,
+		MetadataRevision:       fp.metadataRevision,
+		HighlightRevision:      static.highlighterRevision,
+		CursorEntryID:          cursorEntryID,
+		SortMode:               sortModeName(fp.sortMode),
+		SortReverse:            fp.sortReverse,
+		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
+		Cursor:                 cursor,
+		Loading:                loading,
+		CatalogProvisional:     fp.catalogProvisional,
+		FastFind:               fp.fastFindMode,
+		FastFindText:           fp.fastFindStr,
+		FastFindMatchColor:     fastFindMatchColor,
+		FastFindMatches:        fastFindMatches,
+		SelectedCount:          len(fp.selectedItems),
+		TotalCount:             len(fp.entries),
+		GalleryColumns:         fp.semanticGalleryColumns(),
+	}, true
 }
 
 // semanticGalleryColumns gives the reusable Details renderer a stable Name +

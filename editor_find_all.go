@@ -484,7 +484,7 @@ func (ev *EditorView) showFindAllMenu(pattern string, data []byte, spans []match
 		return false
 	}
 
-	vtui.FrameManager.Push(frame)
+	vtui.FrameManager.PushMenu(frame)
 }
 
 // openFoundLinesEditor dumps the unique matching lines, each prefixed with

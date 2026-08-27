@@ -19,18 +19,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 const (
-	extUiProtocolVersion                = 2
+	extUiProtocolVersion                = 3
 	extUiMaxMessageSize                 = 64 * 1024 * 1024
 	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
 )
 
-// Deferred panel metadata is an optional extension of protocol v2. Keep the
+// Deferred panel metadata is a required extension of the lockstep protocol. Keep the
 // process default conservative; RunExternalUI enables it only after the client
 // advertises the exact capability in its hello. Tests which exercise the native
 // model directly opt in from TestMain.
@@ -298,7 +299,10 @@ type ExtUiRenderer struct {
 	pendingPanelCatalogScene    map[string]any
 	pendingPanelActivation      map[string]any
 	pendingPanelActivationScene map[string]any
+	pendingScenePatch           map[string]any
 	lastScene                   map[string]any
+	lastCompactScene            map[string]any
+	sceneRevision               uint64
 	queuedPanelActivationSide   int
 	panelActivationQueued       bool
 	nextPanelActivationRevision uint64
@@ -368,18 +372,17 @@ func (r *ExtUiRenderer) EndSemanticSceneUpdate() {
 	r.semanticUpdateCheckpoint = false
 }
 
-// EndSemanticSceneUpdateUnchanged closes a task boundary whose caller proved
-// that it only refreshed non-presentational backing data. The renderer accepts
-// that proof only when none of its semantic/direct-update entry points were
-// touched inside the boundary. In particular, an activation or direct catalog
-// permit armed before the task remains exactly as it was; a task which tried to
-// queue either permit falls back to EndSemanticSceneUpdate and a real render.
+// EndSemanticSceneUpdateUnchanged closes a task/input boundary whose caller
+// proved that it did not change semantic state. The renderer accepts that proof
+// when none of its semantic/direct-update entry points were touched inside the
+// boundary. This proof is presentation-independent: a redraw which was already
+// pending still renders, while a standalone proven no-op does not manufacture
+// a redraw merely because the client currently uses the compatibility grid.
 func (r *ExtUiRenderer) EndSemanticSceneUpdateUnchanged() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.semanticUpdateOpen || !r.semanticUpdateCheckpoint ||
-		r.semanticUpdateTouched || r.semanticUpdateHandled ||
-		!r.nativeCellFrameSuppressed {
+		r.semanticUpdateTouched || r.semanticUpdateHandled {
 		return false
 	}
 	r.semanticUpdateOpen = false
@@ -396,10 +399,17 @@ func (r *ExtUiRenderer) ConsumeSemanticSceneExportSuppression() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.suppressSemanticExport || r.semanticFastPathUnsafe {
+		reason := "no_permit"
+		if r.semanticFastPathUnsafe {
+			reason = "unsafe_boundary"
+		}
+		navigationBenchmarkRenderEvent("scene.suppression.rejected",
+			"reason", reason, "hadPermit", r.suppressSemanticExport)
 		r.suppressSemanticExport = false
 		r.deferSemanticRender = false
 		return false
 	}
+	navigationBenchmarkRenderEvent("scene.suppression.accepted")
 	r.suppressSemanticExport = false
 	r.deferSemanticRender = false
 	r.deferSemanticRenderBound = false
@@ -480,6 +490,8 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	commandLine map[string]any,
 ) {
 	if side < 0 || side > 1 {
+		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
+			"reason", "invalid_side", "side", side)
 		return
 	}
 	r.mu.Lock()
@@ -489,9 +501,25 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	}
 	r.queuedPanelActivationSide = side
 	r.panelActivationQueued = true
-	if r.closed || r.semanticFastPathUnsafe || r.pendingScene != nil ||
-		r.pendingCommandLine != nil || r.pendingPanelCatalog != nil ||
-		r.directPanelCatalog != nil {
+	rejection := ""
+	switch {
+	case r.closed:
+		rejection = "closed"
+	case r.semanticFastPathUnsafe:
+		rejection = "unsafe_boundary"
+	case r.pendingScene != nil:
+		rejection = "pending_scene"
+	case r.pendingCommandLine != nil:
+		rejection = "pending_command_line"
+	case r.pendingPanelCatalog != nil:
+		rejection = "pending_panel_catalog"
+	case r.directPanelCatalog != nil:
+		rejection = "direct_panel_catalog"
+	}
+	if rejection != "" {
+		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
+			"reason", rejection, "side", side,
+			"sceneRevision", r.sceneRevision)
 		return
 	}
 
@@ -499,9 +527,12 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	if r.pendingPanelActivationScene != nil {
 		basis = r.pendingPanelActivationScene
 	}
-	patched, ok := semanticSceneWithPanelActivation(
+	patched, rejection := semanticSceneWithPanelActivation(
 		basis, side, title, commandLine)
-	if !ok {
+	if rejection != "" {
+		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
+			"reason", rejection, "side", side,
+			"sceneRevision", r.sceneRevision)
 		return
 	}
 
@@ -524,6 +555,9 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		if r.semanticUpdateOpen {
 			r.semanticUpdateHandled = true
 		}
+		navigationBenchmarkUIEvent("panel.activate.direct_accepted",
+			"result", "unchanged", "side", side,
+			"sceneRevision", r.sceneRevision)
 		return
 	}
 	if deliveredSideOK && side == deliveredSide {
@@ -532,6 +566,9 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		// fallback for that unexpected state.
 		r.semanticFastPathUnsafe = true
 		r.suppressSemanticExport = false
+		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
+			"reason", "same_side_title_changed", "side", side,
+			"sceneRevision", r.sceneRevision)
 		return
 	}
 
@@ -574,6 +611,11 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 			return
 		}
 		r.lastScene = patched
+		// panel_activation and scene_patch advance two independent wire
+		// sequences, but both are projections of the same logical app scene.
+		// Keep the row-free snapshot in lockstep so the next menu/header patch
+		// is based on the state Qt already displays.
+		r.lastCompactScene = compactAppSemanticScene(patched)
 		r.panelActivationProjected = true
 		r.pendingPanelActivation = nil
 		r.pendingPanelActivationScene = nil
@@ -582,6 +624,9 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		if r.semanticUpdateOpen {
 			r.semanticUpdateHandled = true
 		}
+		navigationBenchmarkUIEvent("panel.activate.direct_accepted",
+			"result", "sent", "side", side, "revision", revision,
+			"sceneRevision", r.sceneRevision)
 		return
 	}
 
@@ -592,75 +637,203 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	if r.semanticUpdateOpen {
 		r.semanticUpdateHandled = true
 	}
+	navigationBenchmarkUIEvent("panel.activate.direct_accepted",
+		"result", "queued", "side", side, "revision", revision,
+		"sceneRevision", r.sceneRevision)
+}
+
+// SetSemanticMenuState publishes a root-only scene patch from an input
+// transaction which FrameManager has proved changed only popup/global-menu
+// presentation. The projection is intentionally independent of panel header
+// caches, so opening or moving in a menu can never fall back merely because a
+// directory with thousands of entries is between semantic revisions.
+func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
+	current, supported := BuildAppMenuState(ctx)
+	if !supported {
+		navigationBenchmarkUIEvent("menu_state.direct_rejected",
+			"reason", "projection_unsupported")
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.semanticUpdateOpen {
+		navigationBenchmarkUIEvent("menu_state.direct_rejected",
+			"reason", "outside_boundary")
+		return false
+	}
+	r.semanticUpdateTouched = true
+	rejection := ""
+	switch {
+	case r.semanticUpdateHandled:
+		rejection = "boundary_already_handled"
+	case r.closed:
+		rejection = "closed"
+	case r.send == nil:
+		rejection = "no_sender"
+	case r.semanticFastPathUnsafe:
+		rejection = "unsafe_boundary"
+	case r.sceneRevision == 0:
+		rejection = "no_scene_revision"
+	case r.lastScene == nil:
+		rejection = "no_scene_snapshot"
+	case r.lastCompactScene == nil:
+		rejection = "no_compact_snapshot"
+	case r.pendingScene != nil:
+		rejection = "pending_scene"
+	case r.pendingScenePatch != nil:
+		rejection = "pending_scene_patch"
+	case r.pendingCommandLine != nil:
+		rejection = "pending_command_line"
+	case r.pendingPanelCatalog != nil:
+		rejection = "pending_panel_catalog"
+	case r.pendingPanelActivation != nil:
+		rejection = "pending_panel_activation"
+	case r.directPanelCatalog != nil:
+		rejection = "direct_panel_catalog"
+	}
+	if rejection != "" {
+		navigationBenchmarkUIEvent("menu_state.direct_rejected",
+			"reason", rejection, "sceneRevision", r.sceneRevision)
+		return false
+	}
+
+	rootSet, rootClear := semanticPatchChangedKeys(
+		r.lastCompactScene, current, semanticMenuStateRootPatchKeys)
+	armDirectResult := func() {
+		r.suppressSemanticExport = true
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		r.semanticUpdateHandled = true
+		r.panelActivationQueued = false
+	}
+	if len(rootSet) == 0 && len(rootClear) == 0 {
+		// Key-up and modifier events still need an explicit no-change proof;
+		// otherwise they would invalidate a menu patch queued earlier in the
+		// same drained input batch and resurrect the full exporter.
+		armDirectResult()
+		navigationBenchmarkUIEvent("menu_state.direct_accepted",
+			"result", "unchanged", "sceneRevision", r.sceneRevision)
+		return true
+	}
+
+	patch := extui.ScenePatch{
+		BaseRevision: r.sceneRevision,
+		Revision:     r.sceneRevision + 1,
+		Root: &extui.MapPatch{
+			Set: rootSet, Clear: rootClear,
+		},
+	}
+	wire := patch.ToMap()
+	if trace := navigationBenchmarkCurrentUI(); trace != nil {
+		wire["benchmarkTraceId"] = trace.id
+	}
+	benchmark := navigationBenchmarkPrepareImmediateMessage(wire)
+	if err := r.send.SendWithBenchmark(wire, benchmark); err != nil {
+		vtui.DebugLog("EXTUI_RENDERER: direct menu state send failed: %v", err)
+		r.closed = true
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+		return false
+	}
+
+	r.sceneRevision = patch.Revision
+	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
+	applyAppScenePatchToSnapshot(r.lastScene, patch)
+	if r.lastScene != nil {
+		r.lastScene["version"] = extui.SceneVersion
+	}
+	r.lastCompactScene = compactAppSemanticScene(r.lastScene)
+	armDirectResult()
+	navigationBenchmarkUIEvent("menu_state.direct_accepted",
+		"result", "sent", "baseRevision", patch.BaseRevision,
+		"revision", patch.Revision, "setKeys", len(rootSet),
+		"clearKeys", len(rootClear))
+	return true
 }
 
 // QueuePanelCatalogState publishes an already complete minimal catalog from
-// the Go UI mutation itself. Directory navigation otherwise waits for the
-// following cell renderer and semantic export before the native list can even
-// begin updating. The ordinary export is retained as an authoritative proof;
-// SetSemanticScene adopts it silently (or sends only its small chrome delta).
+// the Go UI mutation itself. Catalog rows are the one intentionally unbounded
+// scene-patch payload; every unchanged panel and shell subtree stays shared.
 func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	shellTitle, traceID string,
-) {
+) bool {
 	if side < 0 || side > 1 || panel == nil {
-		return
+		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.semanticUpdateOpen {
 		r.semanticUpdateTouched = true
 	}
-	if r.closed || r.send == nil || r.directPanelCatalog != nil ||
+	if r.closed || r.send == nil || r.sceneRevision == 0 ||
+		r.pendingScenePatch != nil || r.directPanelCatalog != nil ||
 		r.pendingScene != nil ||
 		r.pendingCommandLine != nil || r.pendingPanelCatalog != nil ||
 		r.pendingPanelActivation != nil {
-		return
+		return false
 	}
 	activeSide, activeOK := semanticSceneActivePanel(r.lastScene)
 	panels, panelsOK := semanticScenePanelMaps(r.lastScene)
 	if !activeOK || activeSide != side || !panelsOK || side >= len(panels) ||
-		!semanticPanelCatalogTransitionSafe(panels[side], panel, side) ||
-		reflect.DeepEqual(panels[side], panel) {
-		return
+		!semanticPanelCatalogTransitionSafe(panels[side], panel, side) {
+		return false
 	}
-
-	patch := map[string]any{
-		"type":        "panel_catalog",
-		"activePanel": activeSide,
-		"side":        side,
-		"panel":       panel,
+	baseCatalogRevision := semanticInt64(panels[side]["catalogRevision"])
+	catalogRevision := semanticInt64(panel["catalogRevision"])
+	if catalogRevision <= baseCatalogRevision {
+		return false
 	}
+	shellPatch := &extui.ShellPatch{Panels: []extui.PanelPatch{{
+		Op: "catalog_replace", Side: side,
+		PanelID:             semanticString(panel["id"]),
+		BaseCatalogRevision: baseCatalogRevision,
+		CatalogRevision:     catalogRevision,
+		Panel:               panel,
+	}}}
 	if shell, ok := r.lastScene["shell"].(map[string]any); ok &&
 		shellTitle != "" && shellTitle != semanticString(shell["title"]) {
-		patch["shellTitle"] = shellTitle
+		shellPatch.Set = extui.M{"title": shellTitle}
 	}
+	patch := extui.ScenePatch{
+		BaseRevision: r.sceneRevision,
+		Revision:     r.sceneRevision + 1,
+		Shell:        shellPatch,
+	}
+	wire := patch.ToMap()
 	if traceID == "" {
 		if trace := navigationBenchmarkCurrentUI(); trace != nil {
 			traceID = trace.id
 		}
 	}
 	if traceID != "" {
-		patch["benchmarkTraceId"] = traceID
+		wire["benchmarkTraceId"] = traceID
 	}
-	benchmark := navigationBenchmarkPrepareImmediateMessage(patch)
-	if err := r.send.SendWithBenchmark(patch, benchmark); err != nil {
+	benchmark := navigationBenchmarkPrepareImmediateMessage(wire)
+	if err := r.send.SendWithBenchmark(wire, benchmark); err != nil {
 		vtui.DebugLog("EXTUI_RENDERER: direct panel catalog send failed: %v", err)
 		r.closed = true
 		r.deferSemanticRender = false
-		return
+		return false
 	}
-	// lastScene intentionally remains the client's pre-transition snapshot.
-	// The next full Go export must prove that this direct projection was exact.
-	r.directPanelCatalog = patch
-	// A catalog projection, unlike activation, intentionally does not advance
-	// lastScene. It must therefore cancel any activation permit and retain the
-	// immediately following render as its validation/correction barrier.
+	r.sceneRevision = patch.Revision
+	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
+	applyAppScenePatchToSnapshot(r.lastScene, patch)
+	if r.lastScene != nil {
+		r.lastScene["version"] = extui.SceneVersion
+	}
+	r.lastCompactScene = compactAppSemanticScene(r.lastScene)
+	r.directPanelCatalog = nil
+	// Command-line prompt, workspace title and menu state may be derived from
+	// the new path. Keep the next render, but let its row-free exporter send
+	// only those bounded follow-up fields.
 	r.deferSemanticRender = false
 	r.deferSemanticRenderBound = false
 	r.suppressSemanticExport = false
 	if r.semanticUpdateOpen {
 		r.semanticUpdateHandled = true
 	}
+	return true
 }
 
 // WantsPeriodicRedraw reports that cursor blinking and other idle presentation
@@ -671,19 +844,26 @@ func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
 }
 
 // CanDeferCoveredTerminalRedraw proves that raw shell bytes changed only a
-// terminal which the last delivered native scene completely covers with both
-// file panels. The terminal parser keeps the new rows in memory; an input/task
-// that exposes the terminal still performs an ordinary render and publishes
-// the latest state. The native-surface guard deliberately leaves legacy, text,
-// and fallback presentation on their conservative redraw path.
+// terminal which the last delivered app scene completely covers with both file
+// panels. The terminal parser keeps the new rows in memory; an input/task that
+// exposes the terminal still performs an ordinary render and publishes the
+// latest state. A negotiated cell fallback is covered too: it paints those
+// same panels from the grid and therefore does not expose background PTY rows.
 func (r *ExtUiRenderer) CanDeferCoveredTerminalRedraw() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || !r.nativeCellFrameSuppressed || r.lastScene == nil {
+	if r.closed || r.lastScene == nil {
 		return false
 	}
 	shell, ok := r.lastScene["shell"].(map[string]any)
 	if !ok || shell == nil {
+		return false
+	}
+	negotiatedAppSurface := r.nativeCellFrameSuppressed ||
+		(r.nativeSemanticSurfaceEnabled &&
+			semanticString(r.lastScene["schema"]) == extui.Schema &&
+			semanticString(r.lastScene["presentation"]) != "text")
+	if !negotiatedAppSurface {
 		return false
 	}
 	_, covered := semanticCoveredTerminalID(shell, shell)
@@ -886,6 +1066,120 @@ func semanticContainsFallback(value any) bool {
 	return false
 }
 
+func (r *ExtUiRenderer) queueFullSemanticSceneLocked(scene map[string]any) {
+	if scene == nil {
+		return
+	}
+	wire := semanticShallowMapCopy(scene)
+	if semanticString(wire["schema"]) == extui.Schema {
+		// Coalescing replaces an unsent full scene/patch at the same wire
+		// revision. Advancing again would create a gap the strict frontend must
+		// reject because it never received the superseded message.
+		if r.pendingScene == nil && r.pendingScenePatch == nil {
+			r.sceneRevision++
+		}
+		wire["version"] = extui.SceneVersion
+		wire["revision"] = r.sceneRevision
+		r.lastCompactScene = compactAppSemanticScene(wire)
+	}
+	r.pendingScenePatch = nil
+	r.pendingScene = wire
+}
+
+// SetSemanticSceneIncremental is called before FrameManager considers the
+// complete semantic exporter. Its success path never visits file entries.
+func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) bool {
+	r.mu.Lock()
+	rejection := ""
+	switch {
+	case r.closed:
+		rejection = "closed"
+	case r.sceneRevision == 0:
+		rejection = "no_scene_revision"
+	case r.lastCompactScene == nil:
+		rejection = "no_compact_scene"
+	case r.pendingScene != nil:
+		rejection = "pending_scene"
+	case r.pendingScenePatch != nil:
+		rejection = "pending_scene_patch"
+	case r.pendingPanelCatalog != nil:
+		rejection = "pending_panel_catalog"
+	case r.pendingPanelActivation != nil:
+		rejection = "pending_panel_activation"
+	case r.pendingCommandLine != nil:
+		rejection = "pending_command_line"
+	case r.directPanelCatalog != nil:
+		rejection = "direct_panel_catalog"
+	}
+	if rejection != "" {
+		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
+			"reason", rejection, "sceneRevision", r.sceneRevision)
+		r.mu.Unlock()
+		return false
+	}
+	baseRevision := r.sceneRevision
+	previous := r.lastCompactScene
+	r.mu.Unlock()
+
+	current, supported := BuildAppIncrementalScene(ctx)
+	if !supported {
+		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
+			"reason", "unsupported_projection", "sceneRevision", baseRevision)
+		return false
+	}
+	patch, acknowledgements, valid := buildAppScenePatch(previous, current)
+	if !valid {
+		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
+			"reason", "invalid_patch", "sceneRevision", baseRevision)
+		return false
+	}
+	empty := scenePatchEmpty(patch)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.sceneRevision != baseRevision || r.pendingScene != nil ||
+		r.pendingScenePatch != nil || r.pendingPanelCatalog != nil ||
+		r.pendingPanelActivation != nil || r.pendingCommandLine != nil ||
+		r.directPanelCatalog != nil {
+		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
+			"reason", "state_changed_during_projection",
+			"baseRevision", baseRevision, "sceneRevision", r.sceneRevision)
+		return false
+	}
+	// The bounded projection is a complete authoritative reconciliation of
+	// every native app field (catalog rows are guarded by their revisions).
+	// Therefore it closes the same one-render uncertainty as SetSemanticScene:
+	// an unrelated input/task in the preceding boundary must not leave direct
+	// menu or activation paths permanently disabled after this proof succeeds.
+	r.semanticFastPathUnsafe = false
+	r.suppressSemanticExport = false
+	r.deferSemanticRender = false
+	r.deferSemanticRenderBound = false
+	r.panelActivationQueued = false
+	r.panelActivationProjected = false
+	if empty {
+		return true
+	}
+	patch.BaseRevision = baseRevision
+	patch.Revision = baseRevision + 1
+	wire := patch.ToMap()
+	r.sceneRevision = patch.Revision
+	r.pendingScenePatch = wire
+	r.lastCompactScene = current.Scene
+	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
+	applyAppScenePatchToSnapshot(r.lastScene, patch)
+	if r.lastScene != nil {
+		r.lastScene["version"] = extui.SceneVersion
+	}
+	for _, acknowledgement := range acknowledgements {
+		acknowledgement.panel.acknowledgeSemanticSelection(acknowledgement.revision)
+	}
+	if r.lastScene != nil {
+		r.setNativeCellFrameSuppression(r.lastScene)
+	}
+	return true
+}
+
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	benchmark := navigationBenchmarkSceneCompareBegin(scene)
 	compareResult := "full_scene"
@@ -1062,7 +1356,7 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 				r.pendingPanelCatalogScene = nil
 				r.pendingPanelActivation = nil
 				r.pendingPanelActivationScene = nil
-				r.pendingScene = scene
+				r.queueFullSemanticSceneLocked(scene)
 				return
 			} else {
 				compareResult = "panel_catalog_patch"
@@ -1088,7 +1382,7 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 			r.pendingPanelCatalogScene = nil
 			r.pendingPanelActivation = nil
 			r.pendingPanelActivationScene = nil
-			r.pendingScene = scene
+			r.queueFullSemanticSceneLocked(scene)
 			return
 		}
 	}
@@ -1123,7 +1417,7 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 	r.pendingPanelActivation = nil
 	r.pendingPanelActivationScene = nil
 	r.directPanelCatalog = nil
-	r.pendingScene = scene
+	r.queueFullSemanticSceneLocked(scene)
 }
 
 var semanticPanelCatalogMutableKeys = map[string]struct{}{
@@ -1176,12 +1470,20 @@ func semanticCoveredTerminalID(previousShell, currentShell map[string]any) (stri
 			!extUiAnyBool(shell["showPanels"]) ||
 			!extUiAnyBool(shell["showLeftPanel"]) ||
 			!extUiAnyBool(shell["showRightPanel"]) ||
-			extUiAnyBool(shell["wide"]) || extUiAnyBool(shell["fallback"]) {
+			extUiAnyBool(shell["wide"]) {
 			return "", false
 		}
 		terminalActive, present := shell["terminalActive"].(bool)
 		if !present || terminalActive {
 			return "", false
+		}
+		// A shortened panel reveals the terminal beneath it, so terminal rows are
+		// no longer a hidden presentation detail and must not be deferred.
+		if layout, ok := shell["panelLayout"].(map[string]any); ok {
+			if semanticInt(layout["leftBottomInsetRows"]) != 0 ||
+				semanticInt(layout["rightBottomInsetRows"]) != 0 {
+				return "", false
+			}
 		}
 	}
 	previousTerminal, previousOK := previousShell["terminal"].(map[string]any)
@@ -1657,13 +1959,19 @@ func semanticPanelCatalogTransitionSafe(previous, current map[string]any, index 
 	if previousSide != currentSide || previousSide < 0 || previousSide > 1 {
 		return false
 	}
+	previousCatalogRevision := semanticInt64(previous["catalogRevision"])
+	currentCatalogRevision := semanticInt64(current["catalogRevision"])
+	if currentCatalogRevision != previousCatalogRevision &&
+		currentCatalogRevision <= previousCatalogRevision {
+		return false
+	}
 	if !semanticMapEqualExceptKeys(previous, current, semanticPanelCatalogMutableKeys) {
 		return false
 	}
 	// A base-entry rewrite without a catalog revision would make an in-flight
 	// metadata request ambiguous. Selection-only changes are the sole exception.
 	if !reflect.DeepEqual(previous["entries"], current["entries"]) &&
-		extUiAnyInt(previous["catalogRevision"]) == extUiAnyInt(current["catalogRevision"]) &&
+		previousCatalogRevision == currentCatalogRevision &&
 		!semanticPanelEntriesEqualExceptSelection(previous["entries"], current["entries"]) {
 		return false
 	}
@@ -1890,33 +2198,43 @@ func semanticScenePanelMaps(scene map[string]any) ([]map[string]any, bool) {
 // Scene.ToMap, while sharing every unchanged (and potentially large) value.
 func semanticSceneWithPanelActivation(scene map[string]any, activeSide int,
 	shellTitle string, commandLine map[string]any,
-) (map[string]any, bool) {
+) (map[string]any, string) {
 	if scene == nil || activeSide < 0 || activeSide > 1 {
-		return nil, false
+		return nil, "invalid_scene"
 	}
 	shell, ok := scene["shell"].(map[string]any)
 	if !ok || !semanticPanelActivationShellSupported(shell) {
-		return nil, false
+		return nil, "unsupported_shell"
 	}
 	if commandLine != nil {
 		previousCommandLine, ok := shell["commandLine"].(map[string]any)
-		if !ok || semanticString(previousCommandLine["id"]) == "" ||
-			semanticString(previousCommandLine["id"]) != semanticString(commandLine["id"]) {
-			return nil, false
+		if !ok || semanticString(previousCommandLine["id"]) == "" {
+			return nil, "command_line_shape"
+		}
+		if semanticString(previousCommandLine["id"]) != semanticString(commandLine["id"]) {
+			return nil, "command_line_identity"
 		}
 	}
 	previousSide, ok := semanticSceneActivePanel(scene)
-	if !ok || previousSide == activeSide {
-		return nil, false
+	if !ok {
+		return nil, "active_panel_shape"
+	}
+	if previousSide == activeSide {
+		return nil, "active_panel_already_projected"
 	}
 
 	patchedShell, ok := semanticPanelActivationShellCopy(
 		shell, previousSide, activeSide, shellTitle, commandLine)
 	if !ok {
-		return nil, false
+		return nil, "panel_shape"
 	}
 	out := semanticShallowMapCopy(scene)
 	out["shell"] = patchedShell
+	// In app schema v4 the typed root/shell is authoritative. frames, screens
+	// and legacy are compatibility aliases: update recognized shapes for an
+	// exact retained snapshot, but never reject the transition for an unknown
+	// alias which Qt also updates locally. Legacy scenes retain strict aliases.
+	strictAliases := semanticString(scene["schema"]) != extui.Schema
 	shellID := semanticString(shell["id"])
 	activeScreen := extUiAnyInt(scene["activeScreen"])
 
@@ -1924,44 +2242,57 @@ func semanticSceneWithPanelActivation(scene map[string]any, activeSide int,
 		patched, ok := semanticPanelActivationFramesCopy(
 			frames, shellID, previousSide, activeSide, shellTitle)
 		if !ok {
-			return nil, false
+			if strictAliases {
+				return nil, "frames_alias"
+			}
+		} else {
+			out["frames"] = patched
 		}
-		out["frames"] = patched
 	}
 	if screens, present := scene["screens"]; present {
 		patched, ok := semanticPanelActivationScreensCopy(
 			screens, activeScreen, shellID, previousSide, activeSide, shellTitle)
 		if !ok {
-			return nil, false
+			if strictAliases {
+				return nil, "screens_alias"
+			}
+		} else {
+			out["screens"] = patched
 		}
-		out["screens"] = patched
 	}
 
 	if legacyValue, present := scene["legacy"]; present {
 		legacy, ok := legacyValue.(map[string]any)
 		if !ok || legacy == nil {
-			return nil, false
-		}
-		legacyCopy := semanticShallowMapCopy(legacy)
-		if frames, present := legacy["frames"]; present {
-			patched, ok := semanticPanelActivationFramesCopy(
-				frames, shellID, previousSide, activeSide, shellTitle)
-			if !ok {
-				return nil, false
+			if strictAliases {
+				return nil, "legacy_alias_shape"
 			}
-			legacyCopy["frames"] = patched
-		}
-		if screens, present := legacy["screens"]; present {
-			patched, ok := semanticPanelActivationScreensCopy(
-				screens, activeScreen, shellID, previousSide, activeSide, shellTitle)
-			if !ok {
-				return nil, false
+		} else {
+			legacyCopy := semanticShallowMapCopy(legacy)
+			if frames, present := legacy["frames"]; present {
+				patched, valid := semanticPanelActivationFramesCopy(
+					frames, shellID, previousSide, activeSide, shellTitle)
+				if !valid && strictAliases {
+					return nil, "legacy_frames_alias"
+				}
+				if valid {
+					legacyCopy["frames"] = patched
+				}
 			}
-			legacyCopy["screens"] = patched
+			if screens, present := legacy["screens"]; present {
+				patched, valid := semanticPanelActivationScreensCopy(
+					screens, activeScreen, shellID, previousSide, activeSide, shellTitle)
+				if !valid && strictAliases {
+					return nil, "legacy_screens_alias"
+				}
+				if valid {
+					legacyCopy["screens"] = patched
+				}
+			}
+			out["legacy"] = legacyCopy
 		}
-		out["legacy"] = legacyCopy
 	}
-	return out, true
+	return out, ""
 }
 
 func semanticPanelActivationShellSupported(shell map[string]any) bool {
@@ -1969,7 +2300,7 @@ func semanticPanelActivationShellSupported(shell map[string]any) bool {
 		!extUiAnyBool(shell["showPanels"]) ||
 		!extUiAnyBool(shell["showLeftPanel"]) ||
 		!extUiAnyBool(shell["showRightPanel"]) ||
-		extUiAnyBool(shell["wide"]) || extUiAnyBool(shell["fallback"]) {
+		extUiAnyBool(shell["wide"]) {
 		return false
 	}
 	for _, key := range []string{"infoPanels", "quickViews"} {
@@ -2222,7 +2553,22 @@ func semanticSceneHasPanelActivation(scene map[string]any, activeSide int) bool 
 }
 
 var semanticSceneBenchmarkKeys = map[string]struct{}{
-	"benchmarkTraceId": {}, "benchmark": {},
+	"benchmarkTraceId": {}, "benchmark": {}, "revision": {},
+}
+
+var semanticAppSceneComparisonKeys = map[string]struct{}{
+	"benchmarkTraceId": {}, "benchmark": {}, "revision": {},
+	// App schema v4 makes the typed root and shell authoritative. These are
+	// compatibility aliases of the same data and can lag a sparse patch without
+	// meaning that Qt needs another complete scene.
+	"legacy": {}, "frames": {}, "screens": {},
+}
+
+func semanticSceneComparisonProjection(scene map[string]any) map[string]any {
+	if semanticString(scene["schema"]) == extui.Schema {
+		return semanticMapWithoutKeys(scene, semanticAppSceneComparisonKeys)
+	}
+	return semanticMapWithoutKeys(scene, semanticSceneBenchmarkKeys)
 }
 
 // semanticScenesEqual compares the native state a client owns. Navigation
@@ -2232,8 +2578,8 @@ func semanticScenesEqual(a, b map[string]any) bool {
 	if reflect.DeepEqual(a, b) {
 		return true
 	}
-	aWithoutBenchmark := semanticMapWithoutKeys(a, semanticSceneBenchmarkKeys)
-	bWithoutBenchmark := semanticMapWithoutKeys(b, semanticSceneBenchmarkKeys)
+	aWithoutBenchmark := semanticSceneComparisonProjection(a)
+	bWithoutBenchmark := semanticSceneComparisonProjection(b)
 	if reflect.DeepEqual(aWithoutBenchmark, bWithoutBenchmark) {
 		return true
 	}
@@ -2266,7 +2612,7 @@ func semanticSceneWithoutCommandLineRendering(scene map[string]any) (map[string]
 	if !ok || commandLine == nil || semanticString(commandLine["id"]) == "" {
 		return nil, false
 	}
-	rootCopy := semanticMapWithoutKeys(scene, semanticSceneBenchmarkKeys)
+	rootCopy := semanticSceneComparisonProjection(scene)
 	shellCopy := semanticShallowMapCopy(shell)
 	shellCopy["commandLine"] = semanticMapWithoutKeys(commandLine, semanticCommandLineRenderedKeys)
 	rootCopy["shell"] = shellCopy
@@ -2378,12 +2724,7 @@ func semanticSceneWithoutPanelActivation(scene map[string]any) (map[string]any, 
 		return nil, false
 	}
 	shell := scene["shell"].(map[string]any)
-	rootCopy := make(map[string]any, len(scene))
-	for key, value := range scene {
-		if _, traceOnly := semanticSceneBenchmarkKeys[key]; !traceOnly {
-			rootCopy[key] = value
-		}
-	}
+	rootCopy := semanticSceneComparisonProjection(scene)
 	shellCopy := make(map[string]any, len(shell))
 	for key, value := range shell {
 		if key != "activePanel" && key != "panels" {
@@ -2523,7 +2864,8 @@ func (r *ExtUiRenderer) Flush() {
 			"shape":   int(r.cursorShape),
 		})
 		messages = append(messages, r.pendingScene)
-		r.lastScene = r.pendingScene
+		r.lastScene = semanticShallowMapCopy(r.pendingScene)
+		delete(r.lastScene, "revision")
 		r.panelActivationProjected = false
 		r.pendingFrame = nil
 		r.cursorDirty = false
@@ -2536,13 +2878,19 @@ func (r *ExtUiRenderer) Flush() {
 		// every redraw. Remember the last snapshot here so cell-grid redraws and
 		// cursor blinking do not repeatedly serialize and deliver the same large
 		// semantic catalog to the Qt GUI thread.
-		r.lastScene = r.pendingScene
+		r.lastScene = semanticShallowMapCopy(r.pendingScene)
+		delete(r.lastScene, "revision")
 		r.panelActivationProjected = false
 		r.pendingScene = nil
+	}
+	if !r.fallbackRevealPending && r.pendingScenePatch != nil {
+		messages = append(messages, r.pendingScenePatch)
+		r.pendingScenePatch = nil
 	}
 	if !r.fallbackRevealPending && r.pendingPanelActivation != nil {
 		messages = append(messages, r.pendingPanelActivation)
 		r.lastScene = r.pendingPanelActivationScene
+		r.lastCompactScene = compactAppSemanticScene(r.pendingPanelActivationScene)
 		r.panelActivationProjected = true
 		r.pendingPanelActivation = nil
 		r.pendingPanelActivationScene = nil
@@ -2550,6 +2898,7 @@ func (r *ExtUiRenderer) Flush() {
 	if !r.fallbackRevealPending && r.pendingPanelCatalog != nil {
 		messages = append(messages, r.pendingPanelCatalog)
 		r.lastScene = r.pendingPanelCatalogScene
+		r.lastCompactScene = compactAppSemanticScene(r.pendingPanelCatalogScene)
 		r.panelActivationProjected = false
 		r.pendingPanelCatalog = nil
 		r.pendingPanelCatalogScene = nil
@@ -2557,6 +2906,7 @@ func (r *ExtUiRenderer) Flush() {
 	if !r.fallbackRevealPending && r.pendingCommandLine != nil {
 		messages = append(messages, r.pendingCommandLine)
 		r.lastScene = r.pendingCommandLineScene
+		r.lastCompactScene = compactAppSemanticScene(r.pendingCommandLineScene)
 		r.panelActivationProjected = false
 		r.pendingCommandLine = nil
 		r.pendingCommandLineScene = nil
@@ -2892,9 +3242,6 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 				navigationBenchmarkSetCurrentUI(previousBenchmark)
 				if benchmark != nil {
 					benchmark.event("semantic_action.end", "go.ui", "action", benchmark.action, "handled", handled)
-				}
-				if handled {
-					vtui.FrameManager.Redraw()
 				}
 			})
 		}

@@ -220,7 +220,7 @@ func (cb *ComboBox) Open() {
 	cb.Menu.SetPosition(cb.X1, y, cb.X1+maxWidth-1, y+h-1)
 	cb.Menu.ClearDone()
 	cb.Menu.HideShadow = true
-	FrameManager.Push(cb.Menu)
+	FrameManager.PushMenu(cb.Menu)
 }
 
 func (cb *ComboBox) SetFocus(f bool) {

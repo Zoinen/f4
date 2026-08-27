@@ -510,6 +510,36 @@ func navigationBenchmarkRenderEvent(event string, fields ...any) {
 	marker.trace.event(event, "go.render", fields...)
 }
 
+// navigationBenchmarkIncrementalEvent records rejection diagnostics even for
+// uncorrelated mouse/task renders. Those are exactly the cases where a silent
+// fallback to a full semantic scene is otherwise hardest to explain. It stays
+// completely disabled outside an explicitly requested navigation trace.
+func navigationBenchmarkIncrementalEvent(event string, fields ...any) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	traceID := ""
+	if marker := navigationBenchmarkRenderMarker(); marker != nil && marker.trace != nil {
+		traceID = marker.trace.id
+		fields = append(fields, navigationBenchmarkMarkerFields(marker)...)
+	}
+	navigationBenchmarkEmit(traceID, event, "go.render", fields...)
+}
+
+// navigationBenchmarkUIEvent records direct semantic decisions made before a
+// render marker exists. It remains a no-op unless live navigation tracing was
+// explicitly enabled.
+func navigationBenchmarkUIEvent(event string, fields ...any) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	if trace := navigationBenchmarkCurrentUI(); trace != nil {
+		trace.event(event, "go.ui", fields...)
+		return
+	}
+	navigationBenchmarkEmit("", event, "go.ui", fields...)
+}
+
 func navigationBenchmarkRenderBegin() {
 	if !navigationBenchmarkIsEnabled() {
 		return

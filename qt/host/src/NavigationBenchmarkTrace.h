@@ -2,8 +2,11 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QThread>
 #include <QVariant>
 
@@ -193,6 +196,22 @@ inline void eventAt(const QString &name,
     const QByteArray json = QJsonDocument(object).toJson(
         QJsonDocument::Compact);
     qInfo().noquote() << "F4_NAV_BENCHMARK_TRACE" << json;
+
+    // GUI-subsystem builds do not necessarily have a console sink for qInfo.
+    // Keep file output opt-in and local to benchmark mode so live cross-
+    // process traces can still include the Qt decode/apply/render boundaries.
+    static const QString outputPath = qEnvironmentVariable(
+        "F4_NAV_BENCHMARK_QT_OUTPUT");
+    if (!outputPath.isEmpty()) {
+        static QMutex outputMutex;
+        const QMutexLocker locker(&outputMutex);
+        QFile output(outputPath);
+        if (output.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            output.write("F4_NAV_BENCHMARK_TRACE ");
+            output.write(json);
+            output.write("\n");
+        }
+    }
 }
 
 inline void event(const QString &name,

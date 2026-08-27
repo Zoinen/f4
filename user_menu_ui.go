@@ -567,7 +567,7 @@ func (s *userMenuState) pushLevel(items []UserMenuItem, title string, initialSel
 		})
 	}
 
-	vtui.FrameManager.Push(&userMenuFrame{VMenu: menu, bottomHint: userMenuBottomHint})
+	vtui.FrameManager.PushMenu(&userMenuFrame{VMenu: menu, bottomHint: userMenuBottomHint})
 }
 
 // enterSubmenu records the current cursor, descends into items[subIdx],

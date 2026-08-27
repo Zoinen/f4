@@ -174,8 +174,11 @@ func TestBuildAppSceneFromLegacyPreservesDeferredBaseAndStripsHeavyLegacyAlias(t
 	if _, present := entry["localPath"]; present {
 		t.Fatalf("promoted deferred entry retained heavy metadata: %#v", entry)
 	}
-	if _, present := panel["highlightStyles"]; present {
-		t.Fatalf("promoted deferred panel retained highlights: %#v", panel)
+	if entry["highlightStyleId"] != "style-a" {
+		t.Fatalf("promoted base entry lost its style identity: %#v", entry)
+	}
+	if styles := panel["highlightStyles"].(map[string]any); styles["style-a"].(map[string]any)["marker"] != "!" {
+		t.Fatalf("promoted deferred panel lost base-pass highlights: %#v", panel)
 	}
 
 	aliasPanel := scene["frames"].([]map[string]any)[0]["panels"].([]map[string]any)[0]
@@ -478,7 +481,7 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 func TestAppVMenuModelPreservesNativeMenuState(t *testing.T) {
 	menu := vtui.NewVMenu(" &History ")
 	menu.SetPosition(12, 4, 51, 12)
-	menu.AddItem(vtui.MenuItem{Text: "✓ &First", Shortcut: "F3", Command: 101})
+	menu.AddItem(vtui.MenuItem{Text: "✓ &First", Icon: "clock-3", Shortcut: "F3", Command: 101})
 	menu.AddSeparator()
 	menu.AddItem(vtui.MenuItem{Text: "&Second", Command: 102})
 	menu.SetSelectPos(2)
@@ -495,7 +498,8 @@ func TestAppVMenuModelPreservesNativeMenuState(t *testing.T) {
 		t.Fatalf("unexpected VMenu viewport state: %#v", model)
 	}
 	items := model["items"].([]map[string]any)
-	if items[0]["text"] != "First" || items[0]["hotkey"] != "f" || items[0]["shortcut"] != "F3" {
+	if items[0]["text"] != "First" || items[0]["hotkey"] != "f" ||
+		items[0]["icon"] != "clock-3" || items[0]["shortcut"] != "F3" {
 		t.Fatalf("unexpected first VMenu item: %#v", items[0])
 	}
 	if items[0]["checked"] != true {
@@ -503,6 +507,9 @@ func TestAppVMenuModelPreservesNativeMenuState(t *testing.T) {
 	}
 	if items[1]["separator"] != true || items[2]["text"] != "Second" {
 		t.Fatalf("unexpected remaining VMenu items: %#v", items)
+	}
+	if _, exists := items[2]["icon"]; exists {
+		t.Fatalf("icon-less VMenu item serialized an empty icon: %#v", items[2])
 	}
 }
 

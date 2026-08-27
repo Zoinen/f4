@@ -3677,7 +3677,7 @@ func (ev *EditorView) showCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(currIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 func (ev *EditorView) showConvertCodepageDialog() {
 	items, _ := vfs.BuildCodepageMenuItems(ev.Codepage, false)
@@ -3734,7 +3734,7 @@ func (ev *EditorView) showConvertCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(selIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func (ev *EditorView) selectWordUnderCursor() {

@@ -10,9 +10,10 @@ func terminalOutputRedrawTestScene() map[string]any {
 	return panelActivationFastPathScene(0, `Panels: D:\Code\f4`)
 }
 
-func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresOwnedCoveredScene(t *testing.T) {
+func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresNegotiatedCoveredScene(t *testing.T) {
 	tests := []struct {
 		name       string
+		negotiated bool
 		suppressed bool
 		mutate     func(map[string]any)
 		want       bool
@@ -20,12 +21,19 @@ func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresOwnedCoveredScene(t 
 		{name: "owned native panels", suppressed: true, want: true},
 		{name: "legacy cell surface", suppressed: false, want: false},
 		{
-			name: "text presentation", suppressed: false,
+			name: "text presentation", negotiated: true, suppressed: false,
 			mutate: func(scene map[string]any) { scene["presentation"] = "text" },
 			want:   false,
 		},
 		{
-			name: "fallback scene", suppressed: false,
+			name: "negotiated fallback scene", negotiated: true, suppressed: false,
+			mutate: func(scene map[string]any) {
+				scene["shell"].(map[string]any)["fallback"] = true
+			},
+			want: true,
+		},
+		{
+			name: "legacy fallback scene", suppressed: false,
 			mutate: func(scene map[string]any) {
 				scene["shell"].(map[string]any)["fallback"] = true
 			},
@@ -35,6 +43,16 @@ func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresOwnedCoveredScene(t 
 			name: "terminal revealed beside one panel", suppressed: true,
 			mutate: func(scene map[string]any) {
 				scene["shell"].(map[string]any)["showRightPanel"] = false
+			},
+			want: false,
+		},
+		{
+			name: "terminal revealed below shortened panel", suppressed: true,
+			mutate: func(scene map[string]any) {
+				scene["shell"].(map[string]any)["panelLayout"] = map[string]any{
+					"columns": 100, "splitColumn": 50,
+					"leftBottomInsetRows": 1, "rightBottomInsetRows": 0,
+				}
 			},
 			want: false,
 		},
@@ -60,8 +78,9 @@ func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresOwnedCoveredScene(t 
 				tc.mutate(scene)
 			}
 			renderer := &ExtUiRenderer{
-				lastScene:                 scene,
-				nativeCellFrameSuppressed: tc.suppressed,
+				lastScene:                    scene,
+				nativeSemanticSurfaceEnabled: tc.negotiated,
+				nativeCellFrameSuppressed:    tc.suppressed,
 			}
 			if got := renderer.CanDeferCoveredTerminalRedraw(); got != tc.want {
 				t.Fatalf("CanDeferCoveredTerminalRedraw() = %v, want %v", got, tc.want)
@@ -70,7 +89,7 @@ func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresOwnedCoveredScene(t 
 	}
 }
 
-func TestPanelsFrame_TerminalOutputRedrawDefersOnlyCoveredNative(t *testing.T) {
+func TestPanelsFrame_TerminalOutputRedrawDefersOnlyCoveredSurface(t *testing.T) {
 	output := captureNavigationBenchmark(t)
 	renderer := &ExtUiRenderer{
 		lastScene:                 terminalOutputRedrawTestScene(),
@@ -118,7 +137,7 @@ func TestPanelsFrame_TerminalOutputRedrawDefersOnlyCoveredNative(t *testing.T) {
 			results = append(results, navigationBenchmarkString(record["result"]))
 		}
 	}
-	if len(results) != 2 || results[0] != "deferred_covered_native" || results[1] != "requested" {
+	if len(results) != 2 || results[0] != "deferred_covered" || results[1] != "requested" {
 		t.Fatalf("terminal redraw trace results = %#v, want deferred then requested", results)
 	}
 }

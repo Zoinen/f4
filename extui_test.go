@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"github.com/vmihailenco/msgpack/v5"
@@ -16,6 +17,16 @@ import (
 
 type extUiSignalWriter struct {
 	writes chan struct{}
+}
+
+func extUiScenePatchPanelOperation(message map[string]any, index int) map[string]any {
+	shell, _ := message["shell"].(map[string]any)
+	panels, _ := shell["panels"].([]any)
+	if index < 0 || index >= len(panels) {
+		return nil
+	}
+	operation, _ := panels[index].(map[string]any)
+	return operation
 }
 
 func (w *extUiSignalWriter) Write(payload []byte) (int, error) {
@@ -577,9 +588,10 @@ func panelActivationFastPathScene(activeSide int, shellTitle string) map[string]
 		"screens":      screens,
 	}
 	return map[string]any{
-		"type": "scene", "schema": "app", "activeScreen": 0,
-		"shell":  shell("shell-0", activeSide, shellTitle),
-		"frames": frames, "screens": screens, "legacy": legacy,
+		"type": "scene", "schema": "app", "version": extui.SceneVersion,
+		"activeScreen": 0,
+		"shell":        shell("shell-0", activeSide, shellTitle),
+		"frames":       frames, "screens": screens, "legacy": legacy,
 	}
 }
 
@@ -718,6 +730,44 @@ func TestExtUiRenderer_NativeDirectActivationDefersOneWholeRender(t *testing.T) 
 	}
 }
 
+func TestExtUiRenderer_DirectActivationSuppressesSceneInCellFallback(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		nativeSemanticSurfaceEnabled: true,
+	}
+	initial := panelActivationFastPathScene(0, `Panels: C:\left`)
+	initial["shell"].(map[string]any)["fallback"] = true
+	initial["shell"].(map[string]any)["reason"] = "resized panels"
+	renderer.SetSemanticScene(initial)
+	renderer.Flush()
+	if _, err := extUiReadMessage(&wire); err != nil {
+		t.Fatalf("initial fallback scene was not sent: %v", err)
+	}
+	if renderer.nativeCellFrameSuppressed {
+		t.Fatal("cell fallback incorrectly hid its grid")
+	}
+
+	renderer.BeginSemanticSceneUpdate()
+	renderer.QueuePanelActivation(1, `Panels: D:\right`)
+	renderer.EndSemanticSceneUpdate()
+	activation, err := extUiReadMessage(&wire)
+	if err != nil || activation["type"] != "panel_activation" {
+		t.Fatalf("fallback activation was not compact: %#v, %v", activation, err)
+	}
+	renderer.BeginSemanticSceneUpdate()
+	if !renderer.EndSemanticSceneUpdateUnchanged() {
+		t.Fatal("no-op key release discarded the fallback activation proof")
+	}
+	if !renderer.ConsumeSemanticSceneExportSuppression() {
+		t.Fatal("fallback activation did not suppress the complete semantic scene")
+	}
+	renderer.BindSemanticRenderPhaseDeferral(42)
+	if renderer.ConsumeSemanticRenderPhaseDeferral(42) {
+		t.Fatal("cell fallback skipped the grid render it still needs")
+	}
+}
+
 func TestExtUiRenderer_UnchangedTaskBoundaryPreservesExistingDirectProofs(t *testing.T) {
 	t.Run("activation", func(t *testing.T) {
 		var wire bytes.Buffer
@@ -763,21 +813,27 @@ func TestExtUiRenderer_UnchangedTaskBoundaryPreservesExistingDirectProofs(t *tes
 		panel["catalogRevision"] = int64(12)
 		panel["metadataRevision"] = int64(12)
 		panel["entries"] = []map[string]any{{"entryId": "child", "name": "child"}}
-		renderer.QueuePanelCatalogState(0, panel, `Panels: C:\left\child`, "")
-		_, _ = extUiReadMessage(&wire)
-		if renderer.directPanelCatalog == nil {
-			t.Fatal("direct catalog proof was not armed")
+		beforeRevision := renderer.sceneRevision
+		if !renderer.QueuePanelCatalogState(0, panel, `Panels: C:\left\child`, "") {
+			t.Fatal("exact catalog replacement was rejected")
+		}
+		message, _ := extUiReadMessage(&wire)
+		operation := extUiScenePatchPanelOperation(message, 0)
+		if message["type"] != "scene_patch" ||
+			operation["op"] != "catalog_replace" ||
+			renderer.sceneRevision != beforeRevision+1 {
+			t.Fatalf("catalog replacement did not advance exact scene state: %#v", message)
 		}
 
 		renderer.BeginSemanticSceneUpdate()
 		if !renderer.EndSemanticSceneUpdateUnchanged() {
 			t.Fatal("no-op task boundary was not accepted")
 		}
-		if renderer.directPanelCatalog == nil {
-			t.Fatal("no-op task boundary discarded pending catalog validation")
+		if renderer.sceneRevision != beforeRevision+1 {
+			t.Fatal("no-op task boundary changed the installed catalog revision")
 		}
 		if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
-			t.Fatal("pending catalog validation incorrectly gained render deferral")
+			t.Fatal("catalog-only patch hid a later derived-state render")
 		}
 	})
 }
@@ -798,16 +854,17 @@ func TestExtUiRenderer_UnchangedTaskBoundaryRejectsTouchedSemanticState(t *testi
 		t.Fatal("task which queued a direct activation was accepted as unchanged")
 	}
 	renderer.EndSemanticSceneUpdate()
+}
 
+func TestExtUiRenderer_UnchangedTaskBoundaryIsPresentationIndependent(t *testing.T) {
 	textRenderer := &ExtUiRenderer{nativeSemanticSurfaceEnabled: true}
 	textScene := panelActivationFastPathScene(0, `Panels: C:\left`)
 	textScene["presentation"] = "text"
 	textRenderer.SetSemanticScene(textScene)
 	textRenderer.BeginSemanticSceneUpdate()
-	if textRenderer.EndSemanticSceneUpdateUnchanged() {
-		t.Fatal("text fallback accepted a no-redraw task while its cell grid is visible")
+	if !textRenderer.EndSemanticSceneUpdateUnchanged() {
+		t.Fatal("proven no-op depended on the active presentation")
 	}
-	textRenderer.EndSemanticSceneUpdate()
 }
 
 func TestExtUiRenderer_RenderDeferralRequiresNegotiatedNativeSurface(t *testing.T) {
@@ -890,7 +947,9 @@ func TestExtUiRenderer_DirectPanelCatalogCanFollowProjectedActivation(t *testing
 	}}
 	renderer.QueuePanelCatalogState(1, directPanel, `Panels: D:\right\child`, "")
 	catalog, err := extUiReadMessage(&wire)
-	if err != nil || catalog["type"] != "panel_catalog" {
+	operation := extUiScenePatchPanelOperation(catalog, 0)
+	if err != nil || catalog["type"] != "scene_patch" ||
+		operation["op"] != "catalog_replace" || extUiInt(operation, "side") != 1 {
 		t.Fatalf("catalog after projected activation was not immediate: %#v, %v", catalog, err)
 	}
 	if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
@@ -922,10 +981,12 @@ func TestExtUiRenderer_DirectPanelCatalogCanFollowProjectedActivation(t *testing
 		}
 	}
 	installPanel(authoritative)
+	firstDifference := semanticFirstDifferencePath(renderer.lastScene, authoritative, "$")
 	renderer.SetSemanticScene(authoritative)
 	renderer.Flush()
 	if wire.Len() != 0 {
-		t.Fatalf("authoritative scene retransmitted delivered activation/catalog (%d bytes)", wire.Len())
+		t.Fatalf("authoritative scene retransmitted delivered activation/catalog (%d bytes; first difference %s)",
+			wire.Len(), firstDifference)
 	}
 	if !semanticScenesEqual(renderer.lastScene, authoritative) || renderer.directPanelCatalog != nil {
 		t.Fatal("renderer did not reconcile activation followed by direct catalog")
@@ -1280,7 +1341,8 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 		}
 	}
 	base := map[string]any{
-		"type": "scene", "activeScreen": 0,
+		"type": "scene", "schema": "app", "version": extui.SceneVersion,
+		"activeScreen": 0,
 		"shell": map[string]any{
 			"id": "shell", "kind": "shell", "title": `Panels: D:\Code`,
 			"activePanel": 0, "showPanels": true,
@@ -1325,8 +1387,10 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 	if err != nil {
 		t.Fatalf("direct catalog was not sent before render/Flush: %v", err)
 	}
-	if immediate["type"] != "panel_catalog" ||
-		immediate["panel"].(map[string]any)["path"] != `D:\Code\f4` {
+	immediateOperation := extUiScenePatchPanelOperation(immediate, 0)
+	if immediate["type"] != "scene_patch" ||
+		immediateOperation["op"] != "catalog_replace" ||
+		immediateOperation["panel"].(map[string]any)["path"] != `D:\Code\f4` {
 		t.Fatalf("unexpected direct catalog: %#v", immediate)
 	}
 
@@ -1336,7 +1400,7 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 	if err != nil {
 		t.Fatalf("post-render chrome reconciliation was not sent: %v", err)
 	}
-	if chrome["type"] != "panel_chrome" ||
+	if chrome["type"] != "command_line" ||
 		chrome["commandLine"].(map[string]any)["prompt"] != `D:\Code\f4>` {
 		t.Fatalf("unexpected chrome reconciliation: %#v", chrome)
 	}
@@ -1361,7 +1425,8 @@ func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *tes
 		"entries": []map[string]any{},
 	}
 	base := map[string]any{
-		"type": "scene", "schema": "app", "shell": map[string]any{
+		"type": "scene", "schema": "app", "version": extui.SceneVersion,
+		"shell": map[string]any{
 			"id": "shell", "kind": "shell", "title": "Panels", "activePanel": 0,
 			"panels": []map[string]any{basePanel, {
 				"id": "right", "kind": "filePanel", "side": 1, "active": false,
@@ -1385,20 +1450,21 @@ func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *tes
 	if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
 		t.Fatal("direct catalog skipped its immediate authoritative proof")
 	}
-	// A second catalog cannot chain from the unverified projection. It must
-	// leave the wire untouched and force the next export to correct directly to
-	// the newest authoritative state.
+	// Exact scene/catalog bases allow consecutive completed directory results
+	// to chain without waiting for a redundant full-scene proof.
 	second := semanticShallowMapCopy(direct)
 	second["path"] = `D:\newer`
 	second["catalogRevision"] = int64(3)
 	renderer.BeginSemanticSceneUpdate()
 	renderer.QueuePanelCatalogState(0, second, "Panels: newer", "")
 	renderer.EndSemanticSceneUpdate()
-	if buf.Len() != 0 {
-		t.Fatalf("unverified chained catalog emitted %d bytes", buf.Len())
+	chained, err := extUiReadMessage(&buf)
+	if err != nil || chained["type"] != "scene_patch" ||
+		extUiScenePatchPanelOperation(chained, 0)["op"] != "catalog_replace" {
+		t.Fatalf("exact chained catalog was not emitted: %#v, %v", chained, err)
 	}
 	if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
-		t.Fatal("unverified chained catalog deferred its correction render")
+		t.Fatal("chained catalog hid a later derived-state render")
 	}
 
 	changed := map[string]any{}
@@ -1435,7 +1501,9 @@ func TestExtUiRenderer_DirectPanelCatalogRollbackForcesAuthoritativeScene(t *tes
 	}
 	renderer.QueuePanelCatalogState(0, projectedPanels[0],
 		`Panels: D:\Code\f4\plugins`, "")
-	if direct, err := extUiReadMessage(&wire); err != nil || direct["type"] != "panel_catalog" {
+	if direct, err := extUiReadMessage(&wire); err != nil ||
+		direct["type"] != "scene_patch" ||
+		extUiScenePatchPanelOperation(direct, 0)["op"] != "catalog_replace" {
 		t.Fatalf("direct projection was not sent: %#v, %v", direct, err)
 	}
 

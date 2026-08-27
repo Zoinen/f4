@@ -7,6 +7,7 @@ import (
 	"golang.org/x/term"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -262,15 +263,18 @@ type frameManager struct {
 	workspaceTabDragHits     []workspaceTabHit
 	running                  bool
 
-	lastMouseClickTime     time.Time
-	lastMouseX, lastMouseY int
-	lastMouseButton        uint32
-	lastMouseClickCount    int
-	lastMouseEventX        int
-	lastMouseEventY        int
-	mousePositionKnown     bool
-	Reader                 *vtinput.Reader
-	currentToast           *Toast
+	lastMouseClickTime        time.Time
+	lastMouseX, lastMouseY    int
+	lastMouseButton           uint32
+	lastMouseClickCount       int
+	lastMouseEventX           int
+	lastMouseEventY           int
+	mousePositionKnown        bool
+	Reader                    *vtinput.Reader
+	currentToast              *Toast
+	semanticMenuTailKey       uint16
+	semanticMenuTailModifiers vtinput.ControlKeyState
+	semanticMenuDeclared      bool
 }
 
 type Toast struct {
@@ -624,6 +628,9 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.workspaceNewTabX = -1
 	fm.workspaceTabDrag = nil
 	fm.workspaceTabDragHits = nil
+	fm.semanticMenuTailKey = 0
+	fm.semanticMenuTailModifiers = 0
+	fm.semanticMenuDeclared = false
 
 	if fm.RedrawChan == nil {
 		fm.RedrawChan = make(chan struct{}, 1)
@@ -700,6 +707,35 @@ func (fm *frameManager) Push(f Frame) {
 	fm.frames = append(fm.frames, f)
 	fm.SyncCurrentScreen() // Ensure the Screen object is aware of the new frame immediately
 	f.ProcessKey(&vtinput.InputEvent{Type: vtinput.FocusEventType, SetFocus: true})
+}
+
+// PushMenu opens a popup whose creation is the complete presentation mutation
+// of the current input/task transaction. That explicit contract lets semantic
+// renderers publish only menu/global chrome without inspecting the underlying
+// frame tree. Callers which also edit a document, command line, shell, or panel
+// in the same transaction must use Push instead.
+func (fm *frameManager) PushMenu(f Frame) {
+	fm.Push(f)
+	fm.declareSemanticMenuState()
+}
+
+// declareSemanticMenuState marks the current input/task transaction as a
+// bounded popup/global-chrome mutation. Menu controls call it only after they
+// have handled a built-in presentation operation; item callbacks and custom
+// handlers deliberately do not inherit that proof.
+func (fm *frameManager) declareSemanticMenuState() {
+	if fm != nil {
+		fm.semanticMenuDeclared = true
+	}
+}
+
+// DeclareSemanticMenuState marks the current input or posted-task transaction
+// as changing only popup/global-menu presentation. Native frontends use this
+// for semantic pointer actions which do not pass through VMenu.ProcessMouse.
+// The declaration remains conservative: FrameManager verifies that the
+// non-menu frame stack stayed identical before publishing a compact update.
+func (fm *frameManager) DeclareSemanticMenuState() {
+	fm.declareSemanticMenuState()
 }
 
 // PushToFrameScreen adds a frame to the screen that contains the anchor frame.
@@ -1561,7 +1597,7 @@ func (fm *frameManager) showScreensMenu() {
 	x := (scrW - menuW) / 2
 	y := (scrH - menuH) / 2
 	menu.SetPosition(x, y, x+menuW-1, y+menuH-1)
-	fm.Push(menu)
+	fm.PushMenu(menu)
 }
 
 func truncateMiddleCells(value string, width int) string {
@@ -1765,17 +1801,198 @@ func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 	return true
 }
 
-func (fm *frameManager) beginSemanticSceneUpdate() func() {
+type semanticMenuInputState struct {
+	activeScreen int
+	active       bool
+	nonMenus     []Frame
+}
+
+func (fm *frameManager) semanticMenuInputState() semanticMenuInputState {
+	if fm == nil {
+		return semanticMenuInputState{}
+	}
+	state := semanticMenuInputState{activeScreen: fm.ActiveIdx}
+	if menuBar := fm.GetActiveMenuBar(); menuBar != nil && menuBar.Active {
+		state.active = true
+	}
+	for _, frame := range fm.frames {
+		if frame != nil && frame.GetType() == TypeMenu {
+			state.active = true
+			continue
+		}
+		state.nonMenus = append(state.nonMenus, frame)
+	}
+	return state
+}
+
+func semanticMenuSameFrame(a, b Frame) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+	if av.Type() != bv.Type() || av.Kind() != reflect.Pointer || bv.Kind() != reflect.Pointer {
+		return false
+	}
+	return av.Pointer() == bv.Pointer()
+}
+
+func semanticMenuNonMenuStackEqual(a, b semanticMenuInputState) bool {
+	if a.activeScreen != b.activeScreen || len(a.nonMenus) != len(b.nonMenus) {
+		return false
+	}
+	for index := range a.nonMenus {
+		if !semanticMenuSameFrame(a.nonMenus[index], b.nonMenus[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticMenuModifierForKey(vk uint16) vtinput.ControlKeyState {
+	switch vk {
+	case vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT:
+		return vtinput.ShiftPressed
+	case vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL:
+		return vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed
+	case vtinput.VK_MENU, vtinput.VK_LMENU, vtinput.VK_RMENU:
+		return vtinput.LeftAltPressed | vtinput.RightAltPressed
+	default:
+		return 0
+	}
+}
+
+func (fm *frameManager) semanticMenuTailAllowsKeyUp(vk uint16) bool {
+	if fm == nil {
+		return false
+	}
+	if fm.semanticMenuTailKey != 0 && fm.semanticMenuTailKey == vk {
+		return true
+	}
+	modifier := semanticMenuModifierForKey(vk)
+	return modifier != 0 && fm.semanticMenuTailModifiers&modifier != 0
+}
+
+func (fm *frameManager) clearSemanticMenuTail() {
+	fm.semanticMenuTailKey = 0
+	fm.semanticMenuTailModifiers = 0
+}
+
+// semanticMenuInputCanPublish recognizes only popup presentation gestures.
+// Enter, printable hotkeys, and pointer presses on an existing popup are
+// excluded because they may invoke an item callback which mutates the shell or
+// a catalog while leaving the same non-menu frame object in place.
+func (fm *frameManager) semanticMenuInputCanPublish(before, after semanticMenuInputState,
+	ev *vtinput.InputEvent,
+) bool {
+	if fm == nil || ev == nil || !semanticMenuNonMenuStackEqual(before, after) {
+		return false
+	}
+	if ev.Type == vtinput.KeyEventType {
+		if !ev.KeyDown {
+			// The exact releases belonging to a previously accepted menu gesture
+			// are no-change/global-chrome tails. Arbitrary key-up handlers receive
+			// no such proof.
+			return fm.semanticMenuTailAllowsKeyUp(ev.VirtualKeyCode)
+		}
+		if !fm.semanticMenuDeclared {
+			return false
+		}
+		if !before.active {
+			// A newly materialized popup is the complete result of an open-menu
+			// gesture only when its caller used PushMenu's explicit contract.
+			// Standalone modifier events are also bounded: they can only alter
+			// global chrome such as the key bar or transient workspace tabs.
+			return after.active || semanticMenuModifierForKey(ev.VirtualKeyCode) != 0
+		}
+		return before.active || after.active
+	}
+	if ev.Type == vtinput.MouseEventType {
+		return fm.semanticMenuDeclared && (before.active || after.active)
+	}
+	return false
+}
+
+func (fm *frameManager) publishSemanticMenuState() bool {
 	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
-		return func() {}
+		return false
+	}
+	renderer, ok := fm.scr.Renderer.(SemanticMenuStateRenderer)
+	if !ok {
+		return false
+	}
+	return renderer.SetSemanticMenuState(&SemanticContext{
+		Width: fm.scr.width, Height: fm.scr.height, ActiveScreen: fm.ActiveIdx,
+	})
+}
+
+func (fm *frameManager) finishDeclaredSemanticMenuUpdate(before semanticMenuInputState) bool {
+	declared := fm.semanticMenuDeclared
+	fm.semanticMenuDeclared = false
+	if !declared {
+		return false
+	}
+	after := fm.semanticMenuInputState()
+	if (!before.active && !after.active) || !semanticMenuNonMenuStackEqual(before, after) {
+		return false
+	}
+	return fm.publishSemanticMenuState()
+}
+
+func (fm *frameManager) finishSemanticMenuInput(before semanticMenuInputState,
+	ev *vtinput.InputEvent,
+) {
+	after := fm.semanticMenuInputState()
+	eligible := fm.semanticMenuInputCanPublish(before, after, ev)
+	accepted := false
+	if eligible {
+		accepted = fm.publishSemanticMenuState()
+	}
+	fm.semanticMenuDeclared = false
+	if ev == nil || ev.Type != vtinput.KeyEventType {
+		if !eligible || !accepted {
+			fm.clearSemanticMenuTail()
+		}
+		return
+	}
+	if ev.KeyDown {
+		fm.clearSemanticMenuTail()
+		if accepted {
+			fm.semanticMenuTailKey = ev.VirtualKeyCode
+			fm.semanticMenuTailModifiers = ev.ControlKeyState &
+				(vtinput.ShiftPressed | vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |
+					vtinput.LeftAltPressed | vtinput.RightAltPressed)
+		}
+		return
+	}
+	if !accepted {
+		fm.clearSemanticMenuTail()
+		return
+	}
+	if fm.semanticMenuTailKey == ev.VirtualKeyCode {
+		fm.semanticMenuTailKey = 0
+	}
+	if modifier := semanticMenuModifierForKey(ev.VirtualKeyCode); modifier != 0 {
+		fm.semanticMenuTailModifiers &^= modifier
+	}
+}
+
+func (fm *frameManager) beginSemanticSceneUpdate() func(bool) {
+	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
+		return func(bool) {}
 	}
 	renderer := fm.scr.Renderer
 	tracker, ok := renderer.(SemanticSceneUpdateTracker)
 	if !ok {
-		return func() {}
+		return func(bool) {}
 	}
 	tracker.BeginSemanticSceneUpdate()
-	return func() {
+	return func(provenUnchanged bool) {
+		if provenUnchanged {
+			if unchanged, ok := renderer.(SemanticSceneUnchangedUpdateTracker); ok &&
+				unchanged.EndSemanticSceneUpdateUnchanged() {
+				return
+			}
+		}
 		tracker.EndSemanticSceneUpdate()
 		if deferrer, ok := renderer.(SemanticRenderPhaseDeferrer); ok {
 			deferrer.BindSemanticRenderPhaseDeferral(
@@ -1786,7 +2003,7 @@ func (fm *frameManager) beginSemanticSceneUpdate() func() {
 
 func (fm *frameManager) runSemanticSceneUpdate(update func()) {
 	end := fm.beginSemanticSceneUpdate()
-	defer end()
+	defer end(false)
 	update()
 }
 
@@ -1818,6 +2035,8 @@ type postedTaskResult struct {
 // generation on behalf of the unchanged task.
 func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	redrawGeneration := fm.redrawGeneration.Load()
+	menuStateBefore := fm.semanticMenuInputState()
+	fm.semanticMenuDeclared = false
 	execution := &postedTaskExecution{}
 	previousExecution := fm.currentPostedTask
 	fm.currentPostedTask = execution
@@ -1835,6 +2054,7 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 
 	task()
 	cleanupChanged := fm.cleanupDoneFrames()
+	directMenuPublished := fm.finishDeclaredSemanticMenuUpdate(menuStateBefore)
 	unchangedRequested := execution.redrawDecisionSet && !execution.needsRedraw && !cleanupChanged
 	unchangedAccepted := false
 	if tracker != nil {
@@ -1851,11 +2071,21 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 		}
 	}
 	generationAfter := fm.redrawGeneration.Load()
+	directMenuOwnsTaskRedraw := directMenuPublished && !cleanupChanged &&
+		generationAfter == redrawGeneration
 	pendingRedraw := false
-	if unchangedAccepted && generationAfter == redrawGeneration {
+	if (unchangedAccepted && generationAfter == redrawGeneration) ||
+		directMenuOwnsTaskRedraw {
 		pendingRedraw = fm.redrawPending()
 	}
+	// A direct menu publication already delivered this task's complete visible
+	// result. Omit the task-owned redraw only when no older render is pending;
+	// otherwise the caller advances the generation and forces that older work
+	// through the conservative render path instead of consuming the menu permit.
 	taskRedrawOmitted := unchangedAccepted && generationAfter == redrawGeneration
+	if directMenuOwnsTaskRedraw && !pendingRedraw {
+		taskRedrawOmitted = true
+	}
 	omitRender := taskRedrawOmitted && !pendingRedraw
 	frameManagerBenchmarkEvent("task.finished",
 		"taskId", execution.benchmarkTaskID,
@@ -1867,6 +2097,7 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 		"cleanupChanged", cleanupChanged,
 		"unchangedRequested", unchangedRequested,
 		"unchangedAccepted", unchangedAccepted,
+		"directMenuPublished", directMenuPublished,
 		"redrawPending", pendingRedraw,
 		"taskRedrawOmitted", taskRedrawOmitted,
 		"omitRender", omitRender)
@@ -1950,7 +2181,7 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 
 	handleResize := func() {
 		endSemanticUpdate := fm.beginSemanticSceneUpdate()
-		defer endSemanticUpdate()
+		defer endSemanticUpdate(false)
 		width, height, err := GetTerminalSize()
 		DebugLog("FM_RESIZE: handleResize triggered. GetTerminalSize returned: %dx%d (err: %v). Current scr: %dx%d", width, height, err, fm.scr.width, fm.scr.height)
 		if err != nil {
@@ -2318,7 +2549,15 @@ func (fm *frameManager) renderPhase() {
 			if suppressor, ok := fm.scr.Renderer.(SemanticSceneExportSuppressor); ok {
 				suppressExport = suppressor.ConsumeSemanticSceneExportSuppression()
 			}
+			incrementalHandled := false
 			if !suppressExport {
+				if incremental, ok := fm.scr.Renderer.(SemanticSceneIncrementalRenderer); ok {
+					incrementalHandled = incremental.SetSemanticSceneIncremental(&SemanticContext{
+						Width: fm.scr.width, Height: fm.scr.height, ActiveScreen: fm.ActiveIdx,
+					})
+				}
+			}
+			if !suppressExport && !incrementalHandled {
 				if benchmarkHooks != nil && benchmarkHooks.ExportBegin != nil {
 					benchmarkHooks.ExportBegin()
 				}
@@ -2362,8 +2601,14 @@ func (fm *frameManager) isDuplicateMouseMove(ev *vtinput.InputEvent) bool {
 }
 
 func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) {
+	menuStateBefore := fm.semanticMenuInputState()
+	fm.semanticMenuDeclared = false
+	semanticInputUnchanged := false
 	endSemanticUpdate := fm.beginSemanticSceneUpdate()
-	defer endSemanticUpdate()
+	defer func() {
+		fm.finishSemanticMenuInput(menuStateBefore, ev)
+		endSemanticUpdate(semanticInputUnchanged)
+	}()
 	benchmarkHooks := InputEventBenchmarkHooks
 	if benchmarkHooks != nil && benchmarkHooks.DispatchBegin != nil {
 		benchmarkHooks.DispatchBegin(ev)
@@ -2485,6 +2730,12 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 
 	topFrame := fm.frames[len(fm.frames)-1]
 	activeMenu := fm.GetActiveMenuBar()
+	if ev.Type == vtinput.KeyEventType && ev.VirtualKeyCode == vtinput.VK_TAB {
+		frameManagerBenchmarkEvent("input.route",
+			"keyDown", ev.KeyDown, "topType", int(topFrame.GetType()),
+			"topTitle", topFrame.GetTitle(), "stackDepth", len(fm.frames),
+			"menuBarActive", activeMenu != nil && activeMenu.Active)
+	}
 	// Track input for XLat transliteration
 	if ev.Type == vtinput.KeyEventType && ev.KeyDown && ev.Char != 0 {
 		GlobalXlator.Track(ev.Char)
@@ -2522,6 +2773,13 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 	// User-defined filter has first say
 	if !is_injected && fm.EventFilter != nil && fm.EventFilter(ev) {
 		DebugLog("FM_DISPATCH: Event CONSUMED by EventFilter (Macro?).")
+		// A macro/filter may mutate arbitrary application state, so it never
+		// inherits the release-tail proof from an earlier menu gesture. Preserve,
+		// however, an explicit PushMenu declaration made by the action in this
+		// transaction: PushMenu is the caller's contract that the popup/global
+		// chrome is the complete presentation mutation. Plain Push remains
+		// conservative because semanticMenuDeclared was reset at dispatch start.
+		fm.clearSemanticMenuTail()
 		// Filters may execute actions that close a frame. Preserve the normal
 		// end-of-dispatch cleanup even though the event itself is consumed.
 		fm.cleanupDoneFrames()
@@ -2577,6 +2835,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 			// Otherwise, MenuBar processes keys (Arrows, Esc, Hotkeys)
 			if ev.VirtualKeyCode == vtinput.VK_ESCAPE || ev.VirtualKeyCode == vtinput.VK_F10 {
 				activeMenu.Active = false
+				fm.declareSemanticMenuState()
 				return
 			}
 			if activeMenu.ProcessKey(ev) {
@@ -2614,6 +2873,18 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 
 	if ev.Type == vtinput.KeyEventType || ev.Type == vtinput.PasteEventType || ev.Type == vtinput.FocusEventType {
 		handled = topFrame.ProcessKey(ev)
+		if handled && ev.Type == vtinput.KeyEventType && !ev.KeyDown {
+			// Custom key-up handlers are outside VMenu's bounded presentation
+			// contract even when this release followed a direct menu gesture.
+			fm.clearSemanticMenuTail()
+		}
+		if !handled && ev.Type == vtinput.KeyEventType &&
+			semanticMenuModifierForKey(ev.VirtualKeyCode) != 0 {
+			// Physical chords arrive as separate modifier events. An unhandled
+			// modifier changes only bounded global chrome; publishing it directly
+			// keeps the later PushMenu gesture in the same safe scene revision.
+			fm.declareSemanticMenuState()
+		}
 		DebugLog("FM_DISPATCH: TopFrame.ProcessKey handled=%v", handled)
 	} else if ev.Type == vtinput.MouseEventType {
 		mx, my := int(ev.MouseX), int(ev.MouseY)
@@ -2869,6 +3140,16 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 				DebugLog("FM: Hotkey Alt+%c matched MenuBar item.", ev.Char)
 			}
 		}
+	}
+
+	// A non-modifier release which no frame handled has no application-level
+	// effect. Mark that exact case as unchanged so it cannot invalidate a
+	// compact update sent by the matching key-down earlier in the drained batch.
+	// Modifier releases are excluded because Ctrl release can commit a workspace
+	// switch; handled key-up callbacks retain the conservative full fallback.
+	if ev.Type == vtinput.KeyEventType && !ev.KeyDown && !handled &&
+		semanticMenuModifierForKey(ev.VirtualKeyCode) == 0 {
+		semanticInputUnchanged = true
 	}
 
 	// 4. Cleanup: Remove all frames that are marked as done.

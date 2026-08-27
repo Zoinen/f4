@@ -21,6 +21,7 @@ class QtShellController : public QObject
     Q_PROPERTY(QVariantMap presentationScene READ presentationScene NOTIFY presentationSceneChanged)
     Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
     Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
+    Q_PROPERTY(QVariantList commandMenuStates READ commandMenuStates NOTIFY commandMenuStatesChanged)
 
 public:
     explicit QtShellController(const QString &connectAddress,
@@ -37,6 +38,7 @@ public:
     QVariantMap presentationScene() const { return m_presentationScene; }
     QVariantMap commandLine() const { return m_commandLine; }
     QVariantList commandMenus() const { return m_commandMenus; }
+    QVariantList commandMenuStates() const { return m_commandMenuStates; }
     QString startupError() const { return m_startupError; }
     static bool initialSceneReadyForDisplay(const QVariantMap &scene);
 
@@ -69,6 +71,9 @@ signals:
     void sceneChanged();
     void presentationSceneChanged();
     void panelCatalogChanged(const QVariantMap &panel);
+    // Row-free panel state and sparse selection updates. Catalog rows remain
+    // immutable between panelCatalogChanged notifications.
+    void panelStateChanged(const QVariantMap &patch);
     // Row-free projection for QML-only panel/chrome bindings. Full catalog
     // rows stay on the direct C++ bridge signal above.
     void compactPresentationChanged(const QVariantMap &patch);
@@ -79,6 +84,10 @@ signals:
     void compactMessageApplying(const QVariantMap &message);
     void commandLineChanged();
     void commandMenusChanged();
+    // Selection/viewport-only menu updates stay off commandMenusChanged so a
+    // QML Repeater does not destroy and recreate every popup row on Up/Down.
+    void commandMenuStatesChanged(const QVariantList &states);
+    void qmlIconSetChanged(const QString &name);
     void fatalError(const QString &message);
     void messageReceived(const QVariantMap &message);
 
@@ -127,6 +136,8 @@ private:
     void scheduleDeferredDecodeResult();
     void invalidateDecodeSession();
     void failProtocol(const QString &message);
+    void updateCommandMenus(const QVariantList &menus,
+                            bool allowStateOnlyUpdate);
 
     QTcpSocket *m_socket = nullptr;
     QByteArray m_frameHeader;
@@ -161,7 +172,9 @@ private:
     QString m_startupError;
     QVariantMap m_scene;
     QVariantMap m_presentationScene;
+    qulonglong m_sceneRevision = 0;
     qulonglong m_panelActivationRevision = 0;
     QVariantMap m_commandLine;
     QVariantList m_commandMenus;
+    QVariantList m_commandMenuStates;
 };

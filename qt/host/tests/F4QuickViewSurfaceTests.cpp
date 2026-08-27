@@ -94,18 +94,25 @@ class TestShell final : public QObject
     Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
     Q_PROPERTY(QVariantMap presentationScene READ scene NOTIFY sceneChanged)
     Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
+    Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
 
 public:
     int initialCols() const { return 110; }
     int initialRows() const { return 34; }
     QVariantMap scene() const { return m_scene; }
     QVariantMap commandLine() const { return m_commandLine; }
+    QVariantList commandMenus() const { return m_commandMenus; }
 
     void setScene(const QVariantMap &scene)
     {
         m_scene = scene;
         m_commandLine = scene.value(QStringLiteral("shell")).toMap()
                             .value(QStringLiteral("commandLine")).toMap();
+        const QVariantList menus = scene.value(QStringLiteral("menus")).toList();
+        if (menus != m_commandMenus) {
+            m_commandMenus = menus;
+            emit commandMenusChanged();
+        }
         emit commandLineChanged();
         emit sceneChanged();
     }
@@ -127,6 +134,17 @@ public:
     void deliverCompactPresentation(const QVariantMap &patch)
     {
         emit compactPresentationChanged(patch);
+    }
+    void deliverCommandMenuStates(const QVariantList &states)
+    {
+        emit commandMenuStatesChanged(states);
+    }
+    void setCommandMenus(const QVariantList &menus)
+    {
+        if (menus == m_commandMenus)
+            return;
+        m_commandMenus = menus;
+        emit commandMenusChanged();
     }
 
     Q_INVOKABLE void sendUiAction(const QVariantMap &action)
@@ -151,6 +169,8 @@ public:
 signals:
     void sceneChanged();
     void commandLineChanged();
+    void commandMenusChanged();
+    void commandMenuStatesChanged(const QVariantList &states);
     void panelActivationChanged(int activePanel, qulonglong revision);
     void compactPresentationChanged(const QVariantMap &patch);
     void messageReceived(const QVariantMap &message);
@@ -159,6 +179,7 @@ signals:
 private:
     QVariantMap m_scene;
     QVariantMap m_commandLine;
+    QVariantList m_commandMenus;
 };
 
 class TestGallery final : public QObject
@@ -208,7 +229,11 @@ public:
     bool system() const { return false; }
     bool fileIconsAreFullColor() const { return false; }
 
-    Q_INVOKABLE QUrl iconSource(const QString &, int, qreal) const { return {}; }
+    Q_INVOKABLE QUrl iconSource(const QString &name, int, qreal) const
+    {
+        return QUrl(QStringLiteral("qrc:/F4QtHost/icons/lucide/%1.svg")
+                        .arg(name));
+    }
     Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
                                             int logicalSize,
                                             qreal devicePixelRatio,
@@ -559,6 +584,7 @@ class F4QuickViewSurfaceTests final : public QObject
 private slots:
     void initTestCase();
     void semanticSceneGatesOnlyGridRendering();
+    void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void readyUnifiedRendererLoaderIsVisible();
     void galleryPanelColorsAreGroupedAndRemainLive();
@@ -574,6 +600,9 @@ private slots:
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
+    void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void compactMenuStructureTransfersFocusWithoutSceneRebind();
+    void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
@@ -689,6 +718,43 @@ void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
     QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(loader->isVisible(), 3000);
     QVERIFY(!failure->isVisible());
+}
+
+void F4QuickViewSurfaceTests::semanticHorizontalSplitStaysOnNativeSurface()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("width"), 100);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("panelLayout"), QVariantMap{
+        {QStringLiteral("columns"), 100},
+        {QStringLiteral("splitColumn"), 44},
+        {QStringLiteral("leftBottomInsetRows"), 0},
+        {QStringLiteral("rightBottomInsetRows"), 0},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *grid = fixture.item<TestGrid>(QStringLiteral("vtuiGrid"));
+    auto *left = fixture.item(QStringLiteral("filePanel-0"));
+    auto *right = fixture.item(QStringLiteral("filePanel-1"));
+    QVERIFY(grid);
+    QVERIFY(left);
+    QVERIFY(right);
+
+    QTRY_VERIFY_WITH_TIMEOUT(!grid->renderingEnabled(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(fixture.window->property("panelSplitRatio").toReal() - 0.44)
+            < 0.0001,
+        3000);
+    const qreal expectedSplit = fixture.window->width() * 0.44;
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(left->width() - expectedSplit) < 1.0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(right->x() - expectedSplit) < 1.0, 3000);
+
+    QVariant fallback;
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "needsFallbackGrid",
+                                      Q_RETURN_ARG(QVariant, fallback)));
+    QVERIFY(!fallback.toBool());
 }
 
 void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
@@ -1350,6 +1416,9 @@ void F4QuickViewSurfaceTests::compactActivationPreservesPanelObjectsAndRebindsOn
     QTRY_VERIFY_WITH_TIMEOUT(leftHost->property("panelActive").toBool(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!rightHost->property("panelActive").toBool(),
                              3000);
+    QTRY_VERIFY_WITH_TIMEOUT(leftHost->property("activeFocus").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!rightHost->property("activeFocus").toBool(),
+                             3000);
     QCOMPARE(sceneChanged.size(), 0);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
@@ -1519,6 +1588,17 @@ void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuilding
     initialScene.insert(QStringLiteral("workspaceTabs"),
                         workspaceTabs(QStringLiteral("workspace-old"),
                                       QStringLiteral("Old")));
+    initialScene.insert(QStringLiteral("menuBar"), QVariantMap{
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("active"), false},
+    });
+    initialScene.insert(QStringLiteral("keyBar"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("modifier"), QStringLiteral("normal")},
+    });
+    initialScene.insert(QStringLiteral("toast"), QVariantMap{
+        {QStringLiteral("visible"), false},
+    });
     QuickViewFixture fixture(initialScene, true);
     QVERIFY(fixture.window);
 
@@ -1547,10 +1627,25 @@ void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuilding
     QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
     const QVariantMap compactTabs = workspaceTabs(
         QStringLiteral("workspace-compact"), QStringLiteral("Compact"));
+    const QVariantMap compactMenuBar = {
+        {QStringLiteral("selected"), 2},
+        {QStringLiteral("active"), true},
+    };
+    const QVariantMap compactKeyBar = {
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("modifier"), QStringLiteral("ctrl-shift")},
+    };
+    const QVariantMap compactToast = {
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("text"), QStringLiteral("Compact toast")},
+    };
     fixture.shell.deliverCompactPresentation({
         {QStringLiteral("type"), QStringLiteral("panel_chrome")},
         {QStringLiteral("activePanel"), 0},
         {QStringLiteral("workspaceTabs"), compactTabs},
+        {QStringLiteral("menuBar"), compactMenuBar},
+        {QStringLiteral("keyBar"), compactKeyBar},
+        {QStringLiteral("toast"), compactToast},
     });
 
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1559,6 +1654,11 @@ void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuilding
     QCOMPARE(sceneChanged.size(), 0);
     QCOMPARE(fixture.window->property("workspaceTabsOverride").toMap(),
              compactTabs);
+    QCOMPARE(fixture.window->property("menuBarModel").toMap(),
+             compactMenuBar);
+    QCOMPARE(fixture.window->property("keyBarModel").toMap(),
+             compactKeyBar);
+    QCOMPARE(fixture.window->property("toastModel").toMap(), compactToast);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
@@ -1592,6 +1692,9 @@ void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuilding
         fixture.window->property("workspaceTabs").toMap() == sceneTabs,
         3000);
     QVERIFY(fixture.window->property("workspaceTabsOverride").isNull());
+    QVERIFY(fixture.window->property("menuBarOverride").isNull());
+    QVERIFY(fixture.window->property("keyBarOverride").isNull());
+    QVERIFY(fixture.window->property("toastOverride").isNull());
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
@@ -2280,6 +2383,255 @@ void F4QuickViewSurfaceTests::panelDriveButtonUsesPathIconAndRequestsDriveMenu()
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.driveMenu"));
     QCOMPARE(action.value(QStringLiteral("side")).toInt(), 0);
+}
+
+void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
+{
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), QVariantList{QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("drive-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("x"), 5},
+        {QStringLiteral("y"), 4},
+        {QStringLiteral("w"), 30},
+        {QStringLiteral("h"), 6},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("viewHeight"), 3},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("index"), 0},
+                 {QStringLiteral("text"), QStringLiteral("Other panel")},
+                 {QStringLiteral("icon"), QStringLiteral("panels-top-left")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("disabled"), false},
+                 {QStringLiteral("checked"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 1},
+                 {QStringLiteral("text"), QStringLiteral("C: Local")},
+                 {QStringLiteral("icon"), QStringLiteral("hard-drive")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("disabled"), true},
+                 {QStringLiteral("checked"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 2},
+                 {QStringLiteral("text"), QStringLiteral("Plain row")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("disabled"), false},
+                 {QStringLiteral("checked"), false},
+             },
+         }},
+    }});
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *popup = nullptr;
+    QQuickItem *selectedRow = nullptr;
+    QQuickItem *normalIcon = nullptr;
+    QQuickItem *disabledIcon = nullptr;
+    QQuickItem *iconRowText = nullptr;
+    QQuickItem *plainRowText = nullptr;
+    QQuickItem *const visualRoot = fixture.window->contentItem();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (popup = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuPopup-drive-menu"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (selectedRow = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItem-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (normalIcon = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemIcon-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (disabledIcon = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemIcon-drive-menu-1"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (iconRowText = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemText-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (plainRowText = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemText-drive-menu-2"))), 3000);
+
+    QTRY_VERIFY_WITH_TIMEOUT(normalIcon->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(disabledIcon->isVisible(), 3000);
+    QCOMPARE(normalIcon->property("semanticIconName").toString(),
+             QStringLiteral("panels-top-left"));
+    QCOMPARE(disabledIcon->property("semanticIconName").toString(),
+             QStringLiteral("hard-drive"));
+    QVERIFY(normalIcon->property("semanticIconSource").toUrl().isValid());
+    QCOMPARE(iconRowText->x(), plainRowText->x());
+
+    const QColor themedText(QStringLiteral("#ff31c48d"));
+    const QColor themedMuted(QStringLiteral("#ff8a5cf5"));
+    const QColor themedSelected(QStringLiteral("#ff9c3d26"));
+    fixture.window->setProperty("textColor", themedText);
+    fixture.window->setProperty("mutedText", themedMuted);
+    fixture.window->setProperty("selectedBg", themedSelected);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        normalIcon->property("semanticIconColor").value<QColor>(),
+        themedText, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        disabledIcon->property("semanticIconColor").value<QColor>(),
+        themedMuted, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(selectedRow->property("color").value<QColor>(),
+                              themedSelected, 3000);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF iconOrigin = normalIcon->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    QVERIFY(qAbs(iconOrigin.x() * dpr - qRound(iconOrigin.x() * dpr)) < 0.001);
+    QVERIFY(qAbs(iconOrigin.y() * dpr - qRound(iconOrigin.y() * dpr)) < 0.001);
+    QVERIFY(qAbs(normalIcon->width() * dpr
+                 - qRound(normalIcon->width() * dpr)) < 0.001);
+    QVERIFY(qAbs(normalIcon->height() * dpr
+                 - qRound(normalIcon->height() * dpr)) < 0.001);
+
+    fixture.window->requestUpdate();
+    QImage rendered;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(rendered = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(imageContainsColor(rendered, themedSelected));
+}
+
+void F4QuickViewSurfaceTests::compactMenuStructureTransfersFocusWithoutSceneRebind()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+
+    auto *const grid = fixture.item<TestGrid>(QStringLiteral("vtuiGrid"));
+    auto *const leftLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(grid);
+    QVERIFY(leftLoader);
+    QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const leftHost = leftLoader->property("item").value<QObject *>();
+    QTRY_VERIFY_WITH_TIMEOUT(leftHost->property("activeFocus").toBool(), 3000);
+
+    const QVariantMap menu = {
+        {QStringLiteral("id"), QStringLiteral("drive-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("x"), 5},
+        {QStringLiteral("y"), 4},
+        {QStringLiteral("w"), 30},
+        {QStringLiteral("h"), 6},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("viewHeight"), 3},
+        {QStringLiteral("items"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 0},
+             {QStringLiteral("text"), QStringLiteral("C: Local")},
+             {QStringLiteral("icon"), QStringLiteral("hard-drive")},
+             {QStringLiteral("separator"), false},
+             {QStringLiteral("disabled"), false},
+         }}},
+    };
+    QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
+
+    // This mirrors a validated compact scene_patch that changes only menus.
+    // Keyboard ownership must move before the signal delivery returns, so the
+    // first Down cannot reach the still-loaded Gallery underneath the popup.
+    fixture.shell.setCommandMenus(QVariantList{menu});
+    QVERIFY(grid->hasActiveFocus());
+    QVERIFY(!leftHost->property("activeFocus").toBool());
+    QCOMPARE(sceneChanged.size(), 0);
+
+    QQuickItem *popup = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (popup = visualItemWithObjectNamePrefix(
+             fixture.window->contentItem(),
+             QStringLiteral("semanticMenuPopup-drive-menu"))), 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+
+    // Up/Down uses the state-only signal and must neither rebind the scene nor
+    // churn focus after the popup has taken keyboard ownership.
+    fixture.shell.deliverCommandMenuStates(QVariantList{QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("drive-menu")},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("top"), 0},
+    }});
+    QVERIFY(grid->hasActiveFocus());
+    QCOMPARE(sceneChanged.size(), 0);
+
+    fixture.shell.setCommandMenus({});
+    QVERIFY(leftHost->property("activeFocus").toBool());
+    QVERIFY(!grid->hasActiveFocus());
+    QCOMPARE(sceneChanged.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::menuKeyboardSelectionSurvivesStationaryPointerPatch()
+{
+    QVariantMap scene = shellScene({}, 0);
+    const auto menuWithSelection = [](int selected) {
+        QVariantList items;
+        for (int index = 0; index < 30; ++index) {
+            items.push_back(QVariantMap{
+                {QStringLiteral("index"), index},
+                {QStringLiteral("text"),
+                 QStringLiteral("Drive row %1").arg(index)},
+                {QStringLiteral("separator"), false},
+                {QStringLiteral("disabled"), false},
+            });
+        }
+        return QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("drive-menu")},
+            {QStringLiteral("kind"), QStringLiteral("menu")},
+            {QStringLiteral("role"), QStringLiteral("vmenu")},
+            {QStringLiteral("x"), 5},
+            {QStringLiteral("y"), 4},
+            {QStringLiteral("w"), 30},
+            {QStringLiteral("h"), 6},
+            {QStringLiteral("selected"), selected},
+            {QStringLiteral("viewHeight"), 3},
+            {QStringLiteral("items"), items},
+        };
+    };
+    scene.insert(QStringLiteral("menus"),
+                 QVariantList{menuWithSelection(0)});
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *rowZero = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rowZero = visualItemWithObjectNamePrefix(
+             fixture.window->contentItem(),
+             QStringLiteral("semanticMenuItem-drive-menu-0"))), 3000);
+
+    const QPoint pointer = rowZero->mapToScene(
+        QPointF(rowZero->width() / 2, rowZero->height() / 2)).toPoint();
+    // The first local event establishes a stable window-coordinate baseline.
+    // A real second move owns the menu selection.
+    QTest::mouseMove(fixture.window, pointer - QPoint(2, 0));
+    QTest::mouseMove(fixture.window, pointer);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.select"));
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("index")).toInt(), 0);
+
+    fixture.shell.clearActions();
+    fixture.shell.deliverCommandMenuStates(QVariantList{QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("drive-menu")},
+        {QStringLiteral("selected"), 20},
+        {QStringLiteral("top"), 17},
+    }});
+
+    QQuickItem *rowTwenty = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (rowTwenty = visualItemWithObjectNamePrefix(
+             fixture.window->contentItem(),
+             QStringLiteral("semanticMenuItem-drive-menu-20"))), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        rowTwenty->property("color").value<QColor>(),
+        fixture.window->property("selectedBg").value<QColor>(), 3000);
+    QCOMPARE(visualItemWithObjectNamePrefix(
+                 fixture.window->contentItem(),
+                 QStringLiteral("semanticMenuItem-drive-menu-0")),
+             rowZero);
+    QTest::qWait(100);
+    QCOMPARE(fixture.shell.actions.size(), 0);
 }
 
 void F4QuickViewSurfaceTests::pathBreadcrumbTextStaysFixedWhenNavigatingDeeper()

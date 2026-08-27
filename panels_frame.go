@@ -24,8 +24,18 @@ import (
 
 type DriveEntry struct {
 	Name    string
+	Icon    string
 	Factory func() vfs.VFS
 }
+
+const (
+	driveMenuIconOtherPanel = "panels-top-left"
+	driveMenuIconLocal      = "hard-drive"
+	driveMenuIconNetwork    = "network"
+	driveMenuIconPhysical   = "database"
+	driveMenuIconBookmark   = "folder"
+	driveMenuIconVirtual    = "globe"
+)
 
 var DriveRegistry []DriveEntry
 var pluginRegistryMu sync.RWMutex
@@ -36,10 +46,27 @@ func RegisterDrive(name string, factory func() vfs.VFS) {
 	for i, d := range DriveRegistry {
 		if d.Name == name {
 			DriveRegistry[i].Factory = factory
+			if DriveRegistry[i].Icon == "" {
+				DriveRegistry[i].Icon = registeredDriveIcon(name)
+			}
 			return
 		}
 	}
-	DriveRegistry = append(DriveRegistry, DriveEntry{Name: name, Factory: factory})
+	DriveRegistry = append(DriveRegistry, DriveEntry{
+		Name: name, Icon: registeredDriveIcon(name), Factory: factory,
+	})
+}
+
+func registeredDriveIcon(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(lower, "net"):
+		return driveMenuIconNetwork
+	case strings.Contains(lower, "cloud"):
+		return driveMenuIconVirtual
+	default:
+		return driveMenuIconPhysical
+	}
 }
 
 func driveRegistrySnapshot() []DriveEntry {
@@ -451,7 +478,7 @@ func (pf *PanelsFrame) searchFirstMode() bool {
 }
 
 func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
-	if !pf.showPanels || pf.wide || pf.searchFirstMode() ||
+	if !pf.showPanels || pf.wide ||
 		!pf.showLeftPanel || !pf.showRightPanel ||
 		pf.altPanels[0] != nil || pf.altPanels[1] != nil {
 		return false
@@ -467,9 +494,8 @@ func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
 
 // publishPanelCatalogImmediate lets a completed Go-side names/types list reach
 // the native panel before the comparatively expensive terminal Show pass. The
-// renderer validates the later full semantic export, so this helper only needs
-// to identify the owning visible side and provide the authoritative minimal
-// panel model.
+// renderer advances the exact app-scene revision immediately, so the
+// following redraw can use the row-free incremental exporter.
 func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenchmarkTrace) {
 	if fp == nil || vtui.FrameManager == nil {
 		return
@@ -503,14 +529,16 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 		return
 	}
 	renderer, ok := screen.Renderer.(interface {
-		QueuePanelCatalogState(int, map[string]any, string, string)
+		QueuePanelCatalogState(int, map[string]any, string, string) bool
 	})
 	if !ok {
 		return
 	}
 	panel := map[string]any(fp.semanticPanelModel(nil, side, true).ToMap())
-	renderer.QueuePanelCatalogState(side, panel,
-		strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
+	if renderer.QueuePanelCatalogState(side, panel,
+		strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark)) {
+		fp.acknowledgeSemanticSelection(fp.selectionRevision)
+	}
 }
 
 func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
@@ -1083,7 +1111,7 @@ func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateCha
 	}
 	result := "requested"
 	if deferred {
-		result = "deferred_covered_native"
+		result = "deferred_covered"
 	} else if vtui.FrameManager != nil {
 		vtui.FrameManager.Redraw()
 	}
@@ -1687,6 +1715,14 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	if benchmark != nil && e.Type == vtinput.KeyEventType && e.KeyDown {
 		benchmark.setSide(pf.activeIdx)
 	}
+	if benchmark != nil && e.Type == vtinput.KeyEventType &&
+		e.VirtualKeyCode == vtinput.VK_TAB {
+		benchmark.event("panel.tab.received", "go.ui",
+			"keyDown", e.KeyDown, "ctrl", ctrl, "alt", alt, "shift", shift,
+			"showPanels", pf.showPanels, "searchFirst", pf.searchFirstMode(),
+			"commandLineFocused", pf.commandLineFocused,
+			"activeSide", pf.activeIdx)
+	}
 	if e.VirtualKeyCode == vtinput.VK_F12 && shift && !ctrl && !alt && e.KeyDown {
 		toggleGuiPresentation()
 		return true
@@ -1697,6 +1733,13 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// directions instead of forwarding the key to an AltScreen application or
 	// to a busy ordinary PTY such as the Python REPL.
 	if e.Type == vtinput.KeyEventType && e.VirtualKeyCode == vtinput.VK_TAB && ctrl && !alt {
+		return false
+	}
+	// Qt forwards the matching release after every Tab press. PanelsFrame and
+	// its child panels have no Tab key-up contract; stop it here so it is proved
+	// unchanged instead of falling through to a child control and invalidating
+	// the compact activation sent by the key-down in the same drained batch.
+	if e.Type == vtinput.KeyEventType && e.VirtualKeyCode == vtinput.VK_TAB && !e.KeyDown {
 		return false
 	}
 	// Ctrl+N normally forks the active panels into a new workspace. Terminal
@@ -2310,11 +2353,23 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	// Tab switches panels
-	if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
+	if e.Type == vtinput.KeyEventType && e.KeyDown &&
+		e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
 		if pf.showPanels && (!pf.searchFirstMode() || !pf.commandLineFocused) {
 			oldActiveIdx := pf.activeIdx
 			activationPatchEligible := pf.panelActivationFastPathEligible()
 			if benchmark != nil {
+				left, leftOK := pf.panels[0].(*FileSystemPanel)
+				right, rightOK := pf.panels[1].(*FileSystemPanel)
+				leftFastFind := leftOK && left.fastFindMode
+				rightFastFind := rightOK && right.fastFindMode
+				benchmark.event("panel.activate.fast_path", "go.ui",
+					"eligible", activationPatchEligible,
+					"showPanels", pf.showPanels, "wide", pf.wide,
+					"showLeft", pf.showLeftPanel, "showRight", pf.showRightPanel,
+					"leftFilePanel", leftOK, "rightFilePanel", rightOK,
+					"leftFastFind", leftFastFind, "rightFastFind", rightFastFind,
+					"leftAlt", pf.altPanels[0] != nil, "rightAlt", pf.altPanels[1] != nil)
 				benchmark.event("panel.activate.begin", "go.ui",
 					"fromSide", oldActiveIdx, "toSide", 1-oldActiveIdx)
 			}
@@ -2776,12 +2831,17 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 					}
 				}
 			}
-			if pf.activeIdx != i && e.ButtonState != 0 {
+			activeChanged := pf.activeIdx != i && e.ButtonState != 0
+			if activeChanged {
 				pf.activeIdx = i
 				pf.lastKey = 0
 				vtui.FrameManager.Redraw()
 			}
-			if pf.searchFirstMode() && e.ButtonState != 0 {
+			// An already active panel with panel focus needs no second focus
+			// transition. Besides being redundant, setCommandLineFocus redraws the
+			// whole frame and used to turn setup clicks into semantic scene sends.
+			if pf.searchFirstMode() && e.ButtonState != 0 &&
+				(activeChanged || pf.commandLineFocused) {
 				pf.setCommandLineFocus(false)
 			}
 			if isInitialPress {
@@ -3585,7 +3645,7 @@ func (pf *PanelsFrame) Menu(title string, items []string, callback func(int)) {
 				callback(idx)
 			}
 		}
-		vtui.FrameManager.Push(menu)
+		vtui.FrameManager.PushMenu(menu)
 	})
 }
 
@@ -4164,7 +4224,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	usedHotkeys['o'] = true // "Other panel"
 
 	// 1. Other panel (focused by default)
-	menu.AddItem(vtui.MenuItem{Text: Msg("Panel.Other"), UserData: func(fsp *FileSystemPanel) {
+	menu.AddItem(vtui.MenuItem{Text: Msg("Panel.Other"), Icon: driveMenuIconOtherPanel, UserData: func(fsp *FileSystemPanel) {
 		otherFsp := pf.panels[1-panelIdx].(*FileSystemPanel)
 		fsp.cancelProviderOpen()
 		if fsp.vfs != nil {
@@ -4195,7 +4255,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			}
 		}
 
-		menu.AddItem(vtui.MenuItem{Text: name, UserData: func(fsp *FileSystemPanel) {
+		menu.AddItem(vtui.MenuItem{Text: name, Icon: drv.Icon, UserData: func(fsp *FileSystemPanel) {
 			pf.switchToVFS(fsp, factory())
 		}})
 	}
@@ -4220,6 +4280,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			bookmarkRows[menu.GetItemCount()] = i
 			menu.AddItem(vtui.MenuItem{
 				Text: fmt.Sprintf("&%d  %s", i, escapeAmpersand(truncPathLeft(path, 64))),
+				Icon: driveMenuIconBookmark,
 				UserData: func(fsp *FileSystemPanel) {
 					pf.NavigateToPath(fsp, path)
 				},
@@ -4233,6 +4294,10 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		menu.AddSeparator()
 		for _, drv := range drives {
 			factory := drv.Factory
+			icon := drv.Icon
+			if icon == "" {
+				icon = registeredDriveIcon(drv.Name)
+			}
 
 			// Clean name: strip existing hotkeys/numbering if any
 			cleanName := drv.Name
@@ -4256,7 +4321,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				}
 			}
 
-			menu.AddItem(vtui.MenuItem{Text: sb.String(), UserData: func(fsp *FileSystemPanel) {
+			menu.AddItem(vtui.MenuItem{Text: sb.String(), Icon: icon, UserData: func(fsp *FileSystemPanel) {
 				pf.switchToVFS(fsp, factory())
 			}})
 		}
@@ -4329,7 +4394,11 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	w, h := 26, menu.GetItemCount()+2
 	for _, it := range menu.Items {
 		clean, _, _ := vtui.ParseAmpersandString(it.Text)
-		if iw := runewidth.StringWidth(clean) + 6; iw > w {
+		padding := 6
+		if it.Icon != "" {
+			padding += 2
+		}
+		if iw := runewidth.StringWidth(clean) + padding; iw > w {
 			w = iw
 		}
 	}
@@ -4367,7 +4436,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			action(fsp)
 		}
 	}
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // clearBookmarkSlot empties one slot straight from the drive menu, which

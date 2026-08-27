@@ -1561,12 +1561,203 @@ void F4GalleryBridge::synchronizePanelCatalog(const QVariantMap &panel)
     schedulePanelCatalogMetadataRequest();
 }
 
+void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
+{
+    bool sideOK = false;
+    const int side = patch.value(QStringLiteral("side")).toInt(&sideOK);
+    if (!sideOK || !validSide(side)) {
+        return;
+    }
+    const size_t sideIndex = static_cast<size_t>(side);
+    SideState &state = m_states[sideIndex];
+    if (!state.initialized
+        || patch.value(QStringLiteral("panelId")).toString()
+            != state.panelId
+        || revisionValue(patch, QStringLiteral("catalogRevision"))
+            != state.catalogRevision) {
+        return;
+    }
+    const QVariant panelValue = patch.value(QStringLiteral("panel"));
+    if (panelValue.metaType().id() != QMetaType::QVariantMap) {
+        return;
+    }
+    const QVariantMap panel = panelValue.toMap();
+    if (panel.contains(QStringLiteral("entries"))
+        || panel.contains(QStringLiteral("highlightStyles"))) {
+        return;
+    }
+
+    const QString cursorEntryId = panel.value(
+        QStringLiteral("cursorEntryId"), state.cursorEntryId).toString();
+    const int cursorIndex = panel.value(
+        QStringLiteral("cursor"), state.cursorIndex).toInt();
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        m_sessions[sideIndex].data());
+
+    const QString nextCurrentPath = panel.value(
+        QStringLiteral("path"), state.currentPath).toString();
+    const QString nextSourceKind = panel.value(
+        QStringLiteral("sourceKind"), state.sourceKind).toString();
+    const bool nextPreviewCapable = panel.value(
+        QStringLiteral("previewCapable"), state.previewCapable).toBool();
+    const bool nextMetadataDeferred = panel.value(
+        QStringLiteral("metadataDeferred"), state.metadataDeferred).toBool();
+    const qulonglong nextMetadataRevision = revisionValue(
+        panel, QStringLiteral("metadataRevision"));
+    const bool nextCatalogProvisional = panel.value(
+        QStringLiteral("catalogProvisional"), state.catalogProvisional)
+                                            .toBool();
+    const bool metadataStreamChanged =
+        nextMetadataDeferred != state.metadataDeferred
+        || (nextMetadataDeferred
+            && nextMetadataRevision != state.metadataRevision)
+        || nextCurrentPath != state.currentPath;
+    const bool metadataRestartNeeded = nextMetadataDeferred
+        && metadataStreamChanged;
+    const QString op = patch.value(QStringLiteral("op")).toString();
+    qulonglong nextSelectionRevision = state.selectionRevision;
+    QStringList nextSelectedIds = state.selectedEntryIdList;
+    QSet<QString> nextSelectedSet = state.selectedEntryIds;
+    bool applied = false;
+
+    if (op == QStringLiteral("state_update")) {
+        applied = !session || session->applyExternalStateDelta(
+            cursorEntryId, cursorIndex, {}, state.selectionRevision,
+            state.selectionRevision);
+    } else if (op == QStringLiteral("selection_delta")) {
+        const qulonglong baseRevision = revisionValue(
+            patch, QStringLiteral("baseSelectionRevision"));
+        nextSelectionRevision = revisionValue(
+            patch, QStringLiteral("selectionRevision"));
+        const QVariant changesValue = patch.value(QStringLiteral("changes"));
+        if (baseRevision != state.selectionRevision
+            || nextSelectionRevision <= baseRevision
+            || changesValue.metaType().id() != QMetaType::QVariantList) {
+            return;
+        }
+        const QVariantList changes = changesValue.toList();
+        applied = !session || session->applyExternalStateDelta(
+            cursorEntryId, cursorIndex, changes, baseRevision,
+            nextSelectionRevision);
+        if (applied) {
+            for (const QVariant &changeValue : changes) {
+                const QVariantMap change = changeValue.toMap();
+                const QString entryId = change.value(
+                    QStringLiteral("entryId")).toString();
+                if (change.value(QStringLiteral("selected")).toBool()) {
+                    if (!nextSelectedSet.contains(entryId)) {
+                        nextSelectedSet.insert(entryId);
+                        nextSelectedIds.push_back(entryId);
+                    }
+                } else if (nextSelectedSet.remove(entryId)) {
+                    nextSelectedIds.removeAll(entryId);
+                }
+            }
+        }
+    } else if (op == QStringLiteral("selection_replace")) {
+        const qulonglong baseRevision = revisionValue(
+            patch, QStringLiteral("baseSelectionRevision"));
+        nextSelectionRevision = revisionValue(
+            patch, QStringLiteral("selectionRevision"));
+        const QVariant idsValue = patch.value(
+            QStringLiteral("selectedEntryIds"));
+        if (baseRevision != state.selectionRevision
+            || nextSelectionRevision <= baseRevision
+            || idsValue.metaType().id() != QMetaType::QVariantList) {
+            return;
+        }
+        nextSelectedIds.clear();
+        for (const QVariant &idValue : idsValue.toList()) {
+            nextSelectedIds.push_back(idValue.toString());
+        }
+        applied = !session || session->applyExternalState(
+            cursorEntryId, cursorIndex, nextSelectedIds,
+            nextSelectionRevision);
+        if (applied) {
+            nextSelectedSet = QSet<QString>(nextSelectedIds.cbegin(),
+                                            nextSelectedIds.cend());
+        }
+    } else {
+        return;
+    }
+    if (!applied) {
+        return;
+    }
+
+    if (session && (metadataStreamChanged
+                    || nextCatalogProvisional
+                        != state.catalogProvisional)) {
+        if (!session->applyExternalCatalog(
+                state.entries, state.catalogRevision, {
+                    {QStringLiteral("currentPath"), nextCurrentPath},
+                    {QStringLiteral("sourceKind"), nextSourceKind},
+                    {QStringLiteral("previewCapable"), nextPreviewCapable},
+                    {QStringLiteral("catalogProvisional"),
+                     nextCatalogProvisional},
+                    {QStringLiteral("metadataDeferred"),
+                     nextMetadataDeferred},
+                    {QStringLiteral("metadataRevision"),
+                     QVariant::fromValue<qulonglong>(
+                         nextMetadataRevision)},
+                })) {
+            return;
+        }
+    }
+
+    QVariantMap &snapshot = m_panelSnapshots[sideIndex];
+    for (auto it = panel.cbegin(); it != panel.cend(); ++it) {
+        snapshot.insert(it.key(), it.value());
+    }
+    state.selectionRevision = nextSelectionRevision;
+    state.selectedEntryIdList = std::move(nextSelectedIds);
+    state.selectedEntryIds = std::move(nextSelectedSet);
+    state.cursorEntryId = cursorEntryId;
+    state.cursorIndex = cursorIndex;
+    state.currentPath = nextCurrentPath;
+    state.sourceKind = nextSourceKind;
+    state.previewCapable = nextPreviewCapable;
+    state.active = panel.value(QStringLiteral("active"), state.active)
+                       .toBool();
+    state.loading = panel.value(QStringLiteral("loading"), state.loading)
+                        .toBool();
+    state.catalogProvisional = nextCatalogProvisional;
+    state.metadataDeferred = nextMetadataDeferred;
+    state.metadataRevision = nextMetadataDeferred
+        ? nextMetadataRevision : 0;
+    state.galleryLayoutMode = panel.value(
+        QStringLiteral("galleryLayoutMode"), state.galleryLayoutMode)
+                                  .toString();
+    if (metadataRestartNeeded) {
+        resetPanelCatalogMetadataPlan(side, false);
+    } else if (!nextMetadataDeferred) {
+        ++state.metadataPacingGeneration;
+        state.metadataRequestInFlight = false;
+        state.metadataAwaitingFrame = false;
+        state.metadataRequiredRenderSyncSerial = 0;
+        state.metadataComplete = true;
+        state.metadataRequestOffset = -1;
+        state.metadataRequestLimit = 0;
+        state.metadataFailureCount = 0;
+        state.metadataPendingRanges.clear();
+        state.metadataVisibleFirst = -1;
+        state.metadataVisibleLast = -1;
+    }
+    m_stateReconciliationPending[sideIndex] = false;
+    reconcilePendingCursor(side);
+    reconcilePendingPanelOpen(side);
+    reconcilePendingSelection(side);
+    reconcilePendingViewer(side);
+    prioritizePanelCatalogMetadataRow(side, cursorIndex);
+    schedulePanelCatalogMetadataRequest();
+}
+
 void F4GalleryBridge::beginCompactProtocolMessage(
     const QVariantMap &message)
 {
     const QString type = message.value(QStringLiteral("type")).toString();
     if (type != QStringLiteral("panel_catalog")
-        && type != QStringLiteral("panel_activation")) {
+        && type != QStringLiteral("panel_activation")
+        && type != QStringLiteral("scene_patch")) {
         return;
     }
     const QVariant traceId = F4NavigationBenchmarkTrace::enabled()
@@ -1609,7 +1800,8 @@ void F4GalleryBridge::handleProtocolMessage(const QVariantMap &message)
 {
     const QString type = message.value(QStringLiteral("type")).toString();
     if (type == QStringLiteral("panel_catalog")
-        || type == QStringLiteral("panel_activation")) {
+        || type == QStringLiteral("panel_activation")
+        || type == QStringLiteral("scene_patch")) {
         // Compact patches bypass synchronizeScene(), but they still produce
         // visible QML work. Arm the same first-frame trace after the
         // controller and bridge have synchronously applied the patch so live

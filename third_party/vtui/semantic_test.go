@@ -4,6 +4,27 @@ import (
 	"testing"
 )
 
+func TestSemanticMenuBarExportsOptionalItemIcons(t *testing.T) {
+	menuBar := NewMenuBar(nil)
+	menuBar.Items = []MenuBarItem{{
+		Label: "&Files",
+		SubItems: []MenuItem{
+			{Text: "&Open", Icon: "folder"},
+			{Text: "Close"},
+		},
+	}}
+
+	node := semanticMenuBar(menuBar)
+	items := node["items"].([]map[string]any)
+	subItems := items[0]["items"].([]map[string]any)
+	if subItems[0]["icon"] != "folder" {
+		t.Fatalf("menu icon was not exported: %#v", subItems[0])
+	}
+	if _, exists := subItems[1]["icon"]; exists {
+		t.Fatalf("icon-less menu item exported an empty icon: %#v", subItems[1])
+	}
+}
+
 func TestSemantic_DialogHierarchyExport(t *testing.T) {
 	SetDefaultPalette()
 	dlg := NewCenteredDialog(40, 10, "Test Dlg")

@@ -65,6 +65,11 @@ type semanticSuppressionTestRenderer struct {
 	deferRender bool
 	deferBound  bool
 	deferGen    uint64
+	incremental bool
+	increments  int
+	menuStates  int
+	unchanged   int
+	acceptNoop  bool
 	onConsume   func()
 	begin       int
 	end         int
@@ -97,6 +102,16 @@ func (*semanticSuppressionTestRenderer) SetPalette(*[256]uint32)               {
 func (*semanticSuppressionTestRenderer) SetWindowTitle(string)                 {}
 func (r *semanticSuppressionTestRenderer) Flush()                              { r.flushes++ }
 func (r *semanticSuppressionTestRenderer) SetSemanticScene(map[string]any)     { r.scenes++ }
+func (r *semanticSuppressionTestRenderer) SetSemanticSceneIncremental(*SemanticContext) bool {
+	r.increments++
+	return r.incremental
+}
+func (r *semanticSuppressionTestRenderer) SetSemanticMenuState(*SemanticContext) bool {
+	r.menuStates++
+	r.suppress = true
+	r.deferRender = true
+	return true
+}
 func (r *semanticSuppressionTestRenderer) ConsumeSemanticSceneExportSuppression() bool {
 	suppress := r.suppress
 	r.suppress = false
@@ -117,6 +132,10 @@ func (r *semanticSuppressionTestRenderer) ConsumeSemanticRenderPhaseDeferral(gen
 }
 func (r *semanticSuppressionTestRenderer) BeginSemanticSceneUpdate() { r.begin++ }
 func (r *semanticSuppressionTestRenderer) EndSemanticSceneUpdate()   { r.end++ }
+func (r *semanticSuppressionTestRenderer) EndSemanticSceneUpdateUnchanged() bool {
+	r.unchanged++
+	return r.acceptNoop
+}
 
 func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	if rendererWantsPeriodicRedraw(&periodicRedrawTestRenderer{wants: false}) {
@@ -233,6 +252,216 @@ func TestFrameManager_DuplicateMouseMoveDoesNotHoverNewMenu(t *testing.T) {
 	}
 }
 
+func TestFrameManager_DirectMenuStateCoversOpenNavigationCloseButNotActivation(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	var menu *VMenu
+	modelMutated := false
+	background := newMockFrame(0, 0, 80, 25, false)
+	background.onProcessKey = func(e *vtinput.InputEvent) bool {
+		if e.Type != vtinput.KeyEventType || !e.KeyDown ||
+			(e.VirtualKeyCode != vtinput.VK_LEFT && e.VirtualKeyCode != vtinput.VK_RIGHT) {
+			return false
+		}
+		menu = NewVMenu(" Drives ")
+		menu.AddItem(MenuItem{Text: "Other panel"})
+		menu.AddItem(MenuItem{Text: "C: Local"})
+		menu.SetPosition(10, 5, 35, 9)
+		if e.VirtualKeyCode == vtinput.VK_RIGHT {
+			// Models autocomplete-like handlers which edit backing state and
+			// materialize an offer in one transaction. Plain Push must retain
+			// the conservative semantic exporter for this case.
+			modelMutated = true
+			fm.Push(menu)
+		} else {
+			fm.PushMenu(menu)
+		}
+		return true
+	}
+	fm.Push(background)
+
+	open := &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	}
+	fm.dispatchEvent(open, false)
+	if renderer.menuStates != 1 || menu == nil || fm.GetTopFrame() != menu {
+		t.Fatalf("menu open direct states/top = %d/%T, want 1/*VMenu",
+			renderer.menuStates, fm.GetTopFrame())
+	}
+	// The key and modifier releases belong to the accepted Ctrl+Shift+Left
+	// gesture. They update at most global chrome and must not invalidate the
+	// already delivered menu patch before the drained batch renders.
+	for _, vk := range []uint16{vtinput.VK_LEFT, vtinput.VK_SHIFT, vtinput.VK_CONTROL} {
+		fm.dispatchEvent(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vk,
+		}, false)
+	}
+	if renderer.menuStates != 4 {
+		t.Fatalf("menu chord release direct states = %d, want 4", renderer.menuStates)
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	}, false)
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP,
+	}, false)
+	if renderer.menuStates != 6 || menu.SelectPos != 0 {
+		t.Fatalf("menu navigation direct states/selection = %d/%d, want 6/0",
+			renderer.menuStates, menu.SelectPos)
+	}
+	customMutated := false
+	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
+		if e.KeyDown && e.VirtualKeyCode == vtinput.VK_DOWN &&
+			e.ControlKeyState&vtinput.LeftCtrlPressed != 0 {
+			customMutated = true
+			return true
+		}
+		return false
+	}
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}, false)
+	if !customMutated || renderer.menuStates != 6 {
+		t.Fatalf("custom menu mutation/direct states = %v/%d, want true/6",
+			customMutated, renderer.menuStates)
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE,
+	}, false)
+	if renderer.menuStates != 7 || fm.GetTopFrame() != background {
+		t.Fatalf("menu close direct states/top = %d/%T, want 7/background",
+			renderer.menuStates, fm.GetTopFrame())
+	}
+	// The matching key-up is a proven no-change tail of the same close gesture;
+	// it must not invalidate the direct close and resurrect a full export.
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vtinput.VK_ESCAPE,
+	}, false)
+	if renderer.menuStates != 8 {
+		t.Fatalf("menu close key-up direct states = %d, want 8", renderer.menuStates)
+	}
+
+	fm.dispatchEvent(open, false)
+	if renderer.menuStates != 9 || menu == nil {
+		t.Fatalf("second menu open direct states = %d, want 9", renderer.menuStates)
+	}
+	activated := false
+	menu.Items[0].OnClick = func() { activated = true }
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+	}, false)
+	if !activated {
+		t.Fatal("menu item activation callback did not run")
+	}
+	if renderer.menuStates != 9 {
+		t.Fatalf("item activation incorrectly claimed a menu-only update: %d", renderer.menuStates)
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT,
+	}, false)
+	if !modelMutated {
+		t.Fatal("plain-push model mutation did not run")
+	}
+	if renderer.menuStates != 9 {
+		t.Fatalf("plain Push incorrectly claimed a menu-only update: %d", renderer.menuStates)
+	}
+}
+
+func TestFrameManager_DirectMenuStateCoversModifierPrelude(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	background := newMockFrame(0, 0, 80, 25, false)
+	background.onProcessKey = func(e *vtinput.InputEvent) bool {
+		if e.Type != vtinput.KeyEventType || !e.KeyDown || e.VirtualKeyCode != vtinput.VK_LEFT {
+			return false
+		}
+		menu := NewVMenu(" Drives ")
+		menu.AddItem(MenuItem{Text: "C: Local"})
+		menu.SetPosition(10, 5, 35, 8)
+		fm.PushMenu(menu)
+		return true
+	}
+	fm.Push(background)
+
+	ctrlShift := vtinput.LeftCtrlPressed | vtinput.ShiftPressed
+	for _, event := range []*vtinput.InputEvent{
+		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_CONTROL, ControlKeyState: vtinput.LeftCtrlPressed},
+		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SHIFT, ControlKeyState: ctrlShift},
+		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT, ControlKeyState: ctrlShift},
+		{Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vtinput.VK_LEFT, ControlKeyState: ctrlShift},
+		{Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vtinput.VK_SHIFT, ControlKeyState: vtinput.LeftCtrlPressed},
+		{Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vtinput.VK_CONTROL},
+	} {
+		fm.dispatchEvent(event, false)
+	}
+
+	if renderer.menuStates != 6 || fm.GetTopFrameType() != TypeMenu {
+		t.Fatalf("modifier chord direct states/top = %d/%v, want 6/menu",
+			renderer.menuStates, fm.GetTopFrameType())
+	}
+}
+
+func TestFrameManager_PostedPushMenuPublishesDirectState(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+	fm.Push(newMockFrame(0, 0, 80, 25, false))
+
+	menu := NewVMenu(" Posted ")
+	menu.AddItem(MenuItem{Text: "One"})
+	menu.AddItem(MenuItem{Text: "Two"})
+	menu.SetPosition(10, 5, 30, 8)
+	result := fm.runPostedTask(func() { fm.PushMenu(menu) })
+
+	if renderer.menuStates != 1 || fm.GetTopFrame() != menu {
+		t.Fatalf("posted menu direct states/top = %d/%T, want 1/*VMenu",
+			renderer.menuStates, fm.GetTopFrame())
+	}
+	if !result.taskRedrawOmitted || !result.renderOmitted {
+		t.Fatalf("posted direct menu open result = %#v, want task and render omitted", result)
+	}
+
+	result = fm.runPostedTask(func() {
+		menu.SetSelectPos(1)
+		fm.DeclareSemanticMenuState()
+	})
+	if renderer.menuStates != 2 || menu.SelectPos != 1 {
+		t.Fatalf("posted menu selection direct states/selection = %d/%d, want 2/1",
+			renderer.menuStates, menu.SelectPos)
+	}
+	if !result.taskRedrawOmitted || !result.renderOmitted {
+		t.Fatalf("posted direct menu selection result = %#v, want task and render omitted", result)
+	}
+}
+
 func TestFrameManager_GlobalUIPriority(t *testing.T) {
 	oldFm := FrameManager
 	fm := &frameManager{}
@@ -299,6 +528,75 @@ func TestFrameManager_FilteredEventCleansUpClosedFrame(t *testing.T) {
 	}
 	if len(fm.frames) != 0 {
 		t.Fatalf("closed frame survived a consumed event: %d frame(s) remain", len(fm.frames))
+	}
+}
+
+func TestFrameManager_FilterPreservesExplicitDirectMenuDeclaration(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	background := newMockFrame(0, 0, 80, 25, false)
+	fm.Push(background)
+	var menu *VMenu
+	fm.EventFilter = func(e *vtinput.InputEvent) bool {
+		if e.Type != vtinput.KeyEventType || !e.KeyDown ||
+			e.VirtualKeyCode != vtinput.VK_LEFT {
+			return false
+		}
+		menu = NewVMenu(" Drives ")
+		menu.AddItem(MenuItem{Text: "Other panel"})
+		menu.SetPosition(10, 5, 35, 8)
+		fm.PushMenu(menu)
+		return true
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	}, false)
+	if renderer.menuStates != 1 || menu == nil || fm.GetTopFrame() != menu {
+		t.Fatalf("filtered PushMenu direct states/top = %d/%T, want 1/*VMenu",
+			renderer.menuStates, fm.GetTopFrame())
+	}
+}
+
+func TestFrameManager_UnhandledKeyUpUsesUnchangedSemanticBoundary(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{acceptNoop: true}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	frame := newMockFrame(0, 0, 80, 25, false)
+	fm.Push(frame)
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: false,
+		VirtualKeyCode: vtinput.VK_TAB,
+	}, false)
+	if renderer.begin != 1 || renderer.unchanged != 1 || renderer.end != 0 {
+		t.Fatalf("unhandled key-up boundary = begin %d, unchanged %d, end %d; want 1/1/0",
+			renderer.begin, renderer.unchanged, renderer.end)
+	}
+
+	frame.onProcessKey = func(e *vtinput.InputEvent) bool {
+		return e.Type == vtinput.KeyEventType && !e.KeyDown
+	}
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: false,
+		VirtualKeyCode: vtinput.VK_DOWN,
+	}, false)
+	if renderer.unchanged != 1 || renderer.end != 1 {
+		t.Fatalf("handled key-up boundary = unchanged %d, end %d; want 1/1",
+			renderer.unchanged, renderer.end)
 	}
 }
 
@@ -979,6 +1277,36 @@ func TestFrameManager_SemanticExportSuppressionIsOneShotAndStillFlushes(t *testi
 	fm.renderPhase()
 	if got := renderer.scenes - baselineScenes; got != 1 {
 		t.Fatalf("one-shot suppression affected the next render: exports=%d, want 1", got)
+	}
+}
+
+func TestFrameManager_IncrementalSemanticExportSkipsFullSceneAndStillFlushes(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewScreenBuf()
+	scr.AllocBuf(10, 5)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+
+	fm.renderPhase()
+	baselineScenes := renderer.scenes
+	baselineFlushes := renderer.flushes
+	baselineIncrements := renderer.increments
+	renderer.incremental = true
+	fm.renderPhase()
+
+	if renderer.increments != baselineIncrements+1 {
+		t.Fatalf("incremental semantic callback count = %d, want %d",
+			renderer.increments, baselineIncrements+1)
+	}
+	if renderer.scenes != baselineScenes {
+		t.Fatalf("successful incremental export also built %d full scenes",
+			renderer.scenes-baselineScenes)
+	}
+	if renderer.flushes != baselineFlushes+1 {
+		t.Fatal("successful incremental export did not flush its patch")
 	}
 }
 

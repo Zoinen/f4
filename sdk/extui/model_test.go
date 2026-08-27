@@ -4,6 +4,17 @@ import (
 	"testing"
 )
 
+func TestMenuItemToMapKeepsIconOptional(t *testing.T) {
+	withIcon := (MenuItemModel{Index: 1, Text: "Drive", Icon: "hard-drive"}).ToMap()
+	if withIcon["icon"] != "hard-drive" {
+		t.Fatalf("menu item icon was not serialized: %#v", withIcon)
+	}
+	withoutIcon := (MenuItemModel{Index: 2, Text: "Plain"}).ToMap()
+	if _, exists := withoutIcon["icon"]; exists {
+		t.Fatalf("empty menu item icon was serialized: %#v", withoutIcon)
+	}
+}
+
 func TestSceneToMapUsesAppSchema(t *testing.T) {
 	scene := Scene{
 		Width:         100,
@@ -13,12 +24,16 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 		QmlIconSet:    "system",
 		WorkspaceTabs: M{"visible": true, "mode": "always"},
 		Shell: &ShellModel{
-			ID:             "shell",
-			Mode:           "panels",
-			ActivePanel:    1,
-			ShowPanels:     true,
-			Wide:           true,
-			WidePanel:      1,
+			ID:          "shell",
+			Mode:        "panels",
+			ActivePanel: 1,
+			ShowPanels:  true,
+			Wide:        true,
+			WidePanel:   1,
+			PanelLayout: PanelLayoutModel{
+				Columns: 100, SplitColumn: 44,
+				LeftBottomInsetRows: 2, RightBottomInsetRows: 3,
+			},
 			Fallback:       true,
 			FallbackReason: "unsupported panel layout",
 			Panels: []PanelModel{{
@@ -89,6 +104,11 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	}
 	if shell["wide"] != true || shell["widePanel"] != 1 {
 		t.Fatalf("wide panel metadata was not serialized: %#v", shell)
+	}
+	layout := shell["panelLayout"].(M)
+	if layout["columns"] != 100 || layout["splitColumn"] != 44 ||
+		layout["leftBottomInsetRows"] != 2 || layout["rightBottomInsetRows"] != 3 {
+		t.Fatalf("panel layout metadata was not serialized: %#v", layout)
 	}
 	if shell["fallback"] != true || shell["reason"] != "unsupported panel layout" {
 		t.Fatalf("unexpected fallback metadata: %#v", shell)
@@ -167,16 +187,23 @@ func TestDeferredPanelToMapKeepsBaseCatalogMinimal(t *testing.T) {
 	if out["metadataDeferred"] != true || out["metadataRevision"] != int64(9) {
 		t.Fatalf("missing deferred metadata envelope: %#v", out)
 	}
-	for _, key := range []string{"highlightRevision", "highlightStyles", "totalSize", "selectedSize"} {
+	for _, key := range []string{"highlightRevision", "totalSize", "selectedSize"} {
 		if _, ok := out[key]; ok {
 			t.Fatalf("deferred panel leaked %q: %#v", key, out)
 		}
+	}
+	styles := out["highlightStyles"].(M)
+	if styles["style-a"].(M)["marker"] != "!" {
+		t.Fatalf("minimal catalog lost its immediately resolvable style: %#v", styles)
 	}
 	entry := out["entries"].([]M)[0]
 	if entry["isImage"] != true || entry["selected"] != true {
 		t.Fatalf("minimal entry lacks interactive fields: %#v", entry)
 	}
-	for _, key := range []string{"path", "localPath", "size", "isHidden", "highlightStyleId", "mtimeNanos"} {
+	if entry["highlightStyleId"] != "style-a" {
+		t.Fatalf("minimal entry lost its style identity: %#v", entry)
+	}
+	for _, key := range []string{"path", "localPath", "size", "isHidden", "mtimeNanos"} {
 		if _, ok := entry[key]; ok {
 			t.Fatalf("minimal entry leaked %q: %#v", key, entry)
 		}

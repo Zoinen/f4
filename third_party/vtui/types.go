@@ -186,6 +186,30 @@ type SemanticSceneRenderer interface {
 	SetSemanticScene(scene map[string]any)
 }
 
+// SemanticSceneIncrementalRenderer gives a native renderer the first chance to
+// publish an authoritative semantic delta without walking every screen/frame.
+// Returning true means the current semantic state is fully accounted for,
+// including the no-change case. Returning false requests the ordinary complete
+// ExportSemanticScene fallback.
+type SemanticSceneIncrementalRenderer interface {
+	SemanticSceneRenderer
+	SetSemanticSceneIncremental(ctx *SemanticContext) bool
+}
+
+// SemanticMenuStateRenderer accepts the complete bounded menu/global-chrome
+// state after FrameManager has proved that an input transaction did not invoke
+// a menu item or mutate a non-menu frame stack. Returning true means the
+// renderer has already delivered (or proved unchanged) that visible result and
+// may suppress the following complete semantic export.
+//
+// Implementations must not inspect frame SemanticProvider trees from this
+// method: the capability exists specifically so popup interaction is
+// independent of large panel catalogs and documents.
+type SemanticMenuStateRenderer interface {
+	SemanticSceneRenderer
+	SetSemanticMenuState(ctx *SemanticContext) bool
+}
+
 // SemanticSceneExportSuppressor lets a semantic renderer replace exactly one
 // full semantic export with an authoritative compact update it has already
 // queued. FrameManager still paints and flushes the cell surface; only the

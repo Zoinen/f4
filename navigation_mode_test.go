@@ -11,6 +11,22 @@ import (
 	"github.com/unxed/vtui"
 )
 
+type searchFirstActivationRenderer struct {
+	calls int
+	side  int
+}
+
+func (*searchFirstActivationRenderer) Render([]vtui.CharInfo, []vtui.CharInfo, int, int, bool) {
+}
+func (*searchFirstActivationRenderer) SetCursor(int, int, bool, vtui.CursorShape) {}
+func (*searchFirstActivationRenderer) SetPalette(*[256]uint32)                    {}
+func (*searchFirstActivationRenderer) SetWindowTitle(string)                      {}
+func (*searchFirstActivationRenderer) Flush()                                     {}
+func (r *searchFirstActivationRenderer) QueuePanelActivationState(side int, _ string, _ map[string]any) {
+	r.calls++
+	r.side = side
+}
+
 func TestPanelNavigationModeConfigRoundTripAndMigration(t *testing.T) {
 	tmpDir := t.TempDir()
 	iniPath := filepath.Join(tmpDir, "settings.ini")
@@ -349,6 +365,87 @@ func TestSearchFirstCommandEnterPolicyAndTab(t *testing.T) {
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	if pf.activeIdx == active {
 		t.Fatal("Tab in panel focus did not switch panels")
+	}
+}
+
+func TestSearchFirstPanelTabQueuesDirectActivation(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+	AppConfig.CommandLineAutoComplete = false
+
+	pf, _, _ := newSearchFirstTestFrame(t)
+	pf.setCommandLineFocus(false)
+	renderer := &searchFirstActivationRenderer{side: -1}
+	vtui.FrameManager.Push(pf)
+	vtui.FrameManager.Screen().Renderer = renderer
+	if !pf.panelActivationFastPathEligible() {
+		t.Fatal("panel-focused search layout was not eligible for direct activation")
+	}
+
+	if !pf.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB,
+	}) {
+		t.Fatal("panel-focused search Tab was not handled")
+	}
+	if renderer.calls != 1 || renderer.side != 1 {
+		t.Fatalf("search-mode Tab direct activation = calls %d, side %d; want 1/1",
+			renderer.calls, renderer.side)
+	}
+	if pf.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: false, VirtualKeyCode: vtinput.VK_TAB,
+	}) {
+		t.Fatal("Tab key-up was handled as another panel activation")
+	}
+	if pf.activeIdx != 1 || renderer.calls != 1 {
+		t.Fatalf("Tab key-up changed activation = side %d, calls %d; want 1/1",
+			pf.activeIdx, renderer.calls)
+	}
+}
+
+func TestSearchFirstSemanticPanelActivationRestoresPanelFocus(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+
+	pf, left, right := newSearchFirstTestFrame(t)
+	pf.setCommandLineFocus(true)
+	pf.setActivePanelForAction(map[string]any{"side": 1})
+
+	if pf.activeIdx != 1 || pf.commandLineFocused || pf.cmdLine.IsFocused() {
+		t.Fatalf("semantic activation focus = side %d, command %v/%v; want 1/false/false",
+			pf.activeIdx, pf.commandLineFocused, pf.cmdLine.IsFocused())
+	}
+	if left.IsFocused() || !right.IsFocused() {
+		t.Fatalf("semantic activation panel focus = left %v, right %v; want false/true",
+			left.IsFocused(), right.IsFocused())
+	}
+}
+
+func TestSearchFirstSemanticPanelActivationNoopDoesNotRedraw(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+
+	pf, left, right := newSearchFirstTestFrame(t)
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	pf.setActivePanelForAction(map[string]any{"side": 0})
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+		t.Fatal("same-side semantic activation manufactured a redraw")
+	default:
+	}
+	if pf.activeIdx != 0 || pf.commandLineFocused || !left.IsFocused() || right.IsFocused() {
+		t.Fatalf("same-side activation changed focus: side=%d command=%v left=%v right=%v",
+			pf.activeIdx, pf.commandLineFocused, left.IsFocused(), right.IsFocused())
 	}
 }
 

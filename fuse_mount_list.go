@@ -183,7 +183,7 @@ func showMountList(pf *PanelsFrame) {
 		}
 		askMountAction(pf, rows[i])
 	}
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // askMountAction offers what can be done to the selected mount. Unmount does

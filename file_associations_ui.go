@@ -150,7 +150,7 @@ func showAssociationPicker(pf *PanelsFrame, matches []FileAssoc, kind AssocKind)
 		}
 		return false
 	}
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // assocDisplayLabel picks the best label for a picker / list row:

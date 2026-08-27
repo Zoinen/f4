@@ -3,7 +3,6 @@ import ZoinGallery 1.0 as ZG
 
 FocusScope {
     id: host
-    focus: panelActive
 
     property int side: 0
     property var panel: ({})
@@ -244,9 +243,7 @@ FocusScope {
     }
 
     onPanelActiveChanged: {
-        if (panelActive)
-            forceActiveFocus()
-        else
+        if (!panelActive)
             finishPendingCommanderInput()
     }
 
@@ -581,8 +578,11 @@ FocusScope {
         viewerTransitionActive: host.viewerTransitionActive
         viewerTransitionEntryId: host.viewerTransitionEntryId
         showCursor: host.panelActive
-        focus: host.panelActive
-        autoFocus: host.panelActive
+        // The host owns the only imperative focus transfer. Keeping this
+        // child focused inside its FocusScope avoids three competing focus
+        // transactions whenever Tab changes the active panel.
+        focus: true
+        autoFocus: false
         mouseWheelMode: host.mouseWheelMode
         benchmarkTracingEnabled: host.benchmarkTracingEnabled
 

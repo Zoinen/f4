@@ -192,7 +192,7 @@ func actionFoldersHistory(pf *PanelsFrame) {
 		return false
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionCommandHistory(pf *PanelsFrame) {
@@ -341,7 +341,7 @@ func actionCommandHistory(pf *PanelsFrame) {
 		return false
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // confirmAndClearHistory shows a Yes/No dialog, and on Yes wipes the
@@ -498,7 +498,7 @@ func actionSortMenuForPanel(pf *PanelsFrame, fsp *FileSystemPanel) {
 	x := panelX1 + (panelW-w)/2
 	y := panelY1 + (panelH-h)/2
 	menu.SetPosition(x, y, x+w-1, y+h-1)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64) {
@@ -1546,10 +1546,7 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 	onCompleteWithClear := func() {
 		if pf != nil {
 			if fsp := pf.getActivePanel(); fsp != nil {
-				fsp.selectedItems = make(map[string]bool)
-				for _, e := range fsp.entries {
-					e.Selected = false
-				}
+				fsp.ClearSelection()
 			}
 			pf.RefreshAll()
 		}
@@ -1683,10 +1680,7 @@ func actionCopyInPlace(pf *PanelsFrame) {
 		onCompleteWithClear := func() {
 			if pf != nil {
 				if fsp := pf.getActivePanel(); fsp != nil {
-					fsp.selectedItems = make(map[string]bool)
-					for _, e := range fsp.entries {
-						e.Selected = false
-					}
+					fsp.ClearSelection()
 				}
 				pf.RefreshAll()
 			}
@@ -3692,7 +3686,7 @@ func actionLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionFallbackLanguage(pf *PanelsFrame) {
@@ -3757,7 +3751,7 @@ func actionFallbackLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 func actionHelpLanguage(pf *PanelsFrame) {
 	type langInfo struct {
@@ -3819,7 +3813,7 @@ func actionHelpLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func getLanguageName(code string) string {

@@ -590,6 +590,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewPanelDriveButtonTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
+  add_test(NAME F4QuickViewDriveMenuIconsTest
+    COMMAND F4QuickViewSurfaceTests
+      driveMenuIconsUseSemanticModelAndLiveTheme)
+  set_tests_properties(F4QuickViewDriveMenuIconsTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
   add_test(NAME F4QuickViewTextPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       workspaceTabTextParentsStayOnPhysicalPixelGrid)

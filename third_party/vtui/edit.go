@@ -1017,7 +1017,7 @@ func (e *Edit) OpenHistory() {
 		return false
 	}
 
-	FrameManager.Push(menu)
+	FrameManager.PushMenu(menu)
 }
 
 // AddHistory adds a string to the beginning of the history, removing duplicates.

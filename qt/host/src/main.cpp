@@ -291,6 +291,8 @@ int main(int argc, char *argv[])
         }
         galleryBridge.synchronizeScene(scene);
     });
+    QObject::connect(&controller, &QtShellController::qmlIconSetChanged,
+                     &iconSet, &F4IconSet::setName);
     QObject::connect(&controller, &QtShellController::panelActivationChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelActivation);
@@ -300,6 +302,9 @@ int main(int argc, char *argv[])
     QObject::connect(&controller, &QtShellController::panelCatalogChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelCatalog);
+    QObject::connect(&controller, &QtShellController::panelStateChanged,
+                     &galleryBridge,
+                     &F4GalleryBridge::synchronizePanelState);
     QObject::connect(&galleryBridge, &F4GalleryBridge::uiActionRequested,
                      &controller, &QtShellController::sendUiAction);
     QObject::connect(
@@ -418,13 +423,18 @@ int main(int argc, char *argv[])
             QObject::connect(&controller, &QtShellController::sceneChanged,
                              rootWindow, revealAfterSemanticScene);
             // The phased Go catalog normally replaces the startup placeholder
-            // through the compact panel_catalog transport. That path updates
-            // the presentation scene without emitting sceneChanged, so listen
-            // to it as well instead of waiting for the visual fallback after
-            // names/types are already ready to paint.
+            // through a compact scene patch. That path deliberately avoids
+            // sceneChanged, so listen to both presentation-level and targeted
+            // compact updates instead of waiting for the visual fallback.
             QObject::connect(&controller,
                              &QtShellController::presentationSceneChanged,
                              rootWindow, revealAfterSemanticScene);
+            QObject::connect(&controller,
+                             &QtShellController::compactPresentationChanged,
+                             rootWindow,
+                             [revealAfterSemanticScene](const QVariantMap &) {
+                                 revealAfterSemanticScene();
+                             });
 
             startupShowFallback.setSingleShot(true);
             // A failed loopback connection has its own 2 s fatal deadline.

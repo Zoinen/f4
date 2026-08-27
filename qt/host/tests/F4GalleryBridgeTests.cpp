@@ -130,6 +130,7 @@ private slots:
     void metadataBackgroundWaitsForInputIdle();
     void deferredMetadataWaitsForLoadingFalseFullScene();
     void panelCatalogPatchLeavesOtherSessionUntouched();
+    void sparsePanelSelectionPatchKeepsCatalogImmutable();
     void deferredCatalogApplyStaysWithinKeyboardFrame();
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
@@ -617,7 +618,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     const QVariantMap markerStyle = marker->property("highlightStyle").toMap();
     QCOMPARE(markerStyle.value(QStringLiteral("marker")).toString(),
              QStringLiteral("*"));
-    QVERIFY(!markerStyle.contains(QStringLiteral("icon")));
+    QCOMPARE(lucideRouteName(marker), QStringLiteral("file-code"));
     QCOMPARE(lucideRouteName(defaulted), QStringLiteral("archive"));
     QCOMPARE(lucideRouteName(up), QStringLiteral("folder-up"));
     QCOMPARE(bundled->property("iconPath").toString(), QStringLiteral(
@@ -728,6 +729,8 @@ void F4GalleryBridgeTests::initialCatalogAppliesAppearanceInsideReset()
 void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
 {
     QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
     F4GalleryBridge bridge(view.engine());
     GalleryKeyRecorder keyRecorder;
     QVERIFY(bridge.available());
@@ -790,6 +793,7 @@ void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
     QObject *leftHost = leftLoader->property("item").value<QObject *>();
     QObject *rightHost = rightLoader->property("item").value<QObject *>();
 
+    QVERIFY(QMetaObject::invokeMethod(leftHost, "forceActiveFocus"));
     QTRY_VERIFY(leftHost->property("activeFocus").toBool());
     QVERIFY(!rightHost->property("activeFocus").toBool());
 
@@ -802,6 +806,11 @@ void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
 
     leftHost->setProperty("panelActive", false);
     rightHost->setProperty("panelActive", true);
+    // panelActive is presentation state, not a second focus manager. The
+    // owning shell performs exactly one imperative transfer after activation.
+    QVERIFY(leftHost->property("activeFocus").toBool());
+    QVERIFY(!rightHost->property("activeFocus").toBool());
+    QVERIFY(QMetaObject::invokeMethod(rightHost, "forceActiveFocus"));
     QTRY_VERIFY(rightHost->property("activeFocus").toBool());
     QVERIFY(!leftHost->property("activeFocus").toBool());
     QVERIFY(!leftHost->property("pendingCommanderInput").toBool());
@@ -829,6 +838,8 @@ void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
 void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
 {
     QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
     F4GalleryBridge bridge(view.engine());
     GalleryKeyRecorder keyRecorder;
     QVERIFY(bridge.available());
@@ -870,6 +881,10 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(loader);
     QTRY_VERIFY(loader->property("item").value<QObject *>());
     QObject *host = loader->property("item").value<QObject *>();
+    // Production main.qml owns the single imperative transfer into a Gallery
+    // host; mirror that contract instead of relying on panelActive bindings to
+    // compete for focus inside this isolated test window.
+    QVERIFY(QMetaObject::invokeMethod(host, "forceActiveFocus"));
     QObject *panel = host->findChild<QObject *>(QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
     QTRY_VERIFY(panel->property("activeFocus").toBool());
@@ -1407,6 +1422,8 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
 void F4GalleryBridgeTests::galleryKeepsAuthoritativeCursorVisible()
 {
     QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
     F4GalleryBridge bridge(view.engine());
     QVERIFY(bridge.available());
     bridge.synchronizeScene(longCatalogScene(48, 47));
@@ -1511,6 +1528,8 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     scene.insert(QStringLiteral("shell"), shell);
 
     QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
     F4GalleryBridge bridge(view.engine());
     GalleryKeyRecorder keyRecorder;
     QVERIFY(bridge.available());
@@ -2852,6 +2871,92 @@ void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()
     QCOMPARE(rightSession->localPathAt(0), rightLocalPath);
     QCOMPARE(rightReset.size(), 0);
     QCOMPARE(rightChanged.size(), 0);
+}
+
+void F4GalleryBridgeTests::sparsePanelSelectionPatchKeepsCatalogImmutable()
+{
+    QVariantMap left = deferredPanel(
+        QStringLiteral("panel-left-sparse"), 0, true, 10'000, 71, 91);
+    const QVariantMap right = deferredPanel(
+        QStringLiteral("panel-right-sparse"), 1, false, 1, 72, 92);
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("activePanel"), 0},
+             {QStringLiteral("panels"), QVariantList{left, right}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 10'000);
+    QSignalSpy modelReset(session->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy dataChanged(session->model(),
+                           &QAbstractItemModel::dataChanged);
+
+    left.remove(QStringLiteral("entries"));
+    left.insert(QStringLiteral("cursor"), 9998);
+    left.insert(QStringLiteral("cursorEntryId"), QStringLiteral(
+        "panel-left-sparse:entry:9998"));
+    bridge.synchronizePanelState({
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("panel-left-sparse")},
+        {QStringLiteral("catalogRevision"), qulonglong(71)},
+        {QStringLiteral("panel"), left},
+    });
+    QCOMPARE(session->currentIndex(), 9998);
+    QCOMPARE(modelReset.size(), 0);
+    QCOMPARE(dataChanged.size(), 0);
+
+    left.insert(QStringLiteral("selectionRevision"), qulonglong(2));
+    left.insert(QStringLiteral("selectedCount"), 1);
+    const QString selectedId = QStringLiteral(
+        "panel-left-sparse:entry:9999");
+    bridge.synchronizePanelState({
+        {QStringLiteral("op"), QStringLiteral("selection_delta")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("panel-left-sparse")},
+        {QStringLiteral("catalogRevision"), qulonglong(71)},
+        {QStringLiteral("baseSelectionRevision"), qulonglong(1)},
+        {QStringLiteral("selectionRevision"), qulonglong(2)},
+        {QStringLiteral("changes"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 9999},
+             {QStringLiteral("entryId"), selectedId},
+             {QStringLiteral("selected"), true},
+         }}},
+        {QStringLiteral("panel"), left},
+    });
+
+    QCOMPARE(session->selectionRevision(), qulonglong(2));
+    QVERIFY(session->isSelectedAt(9999));
+    QCOMPARE(modelReset.size(), 0);
+    QCOMPARE(dataChanged.size(), 1);
+    QCOMPARE(dataChanged.constFirst().at(0).toModelIndex().row(), 9999);
+    QCOMPARE(dataChanged.constFirst().at(1).toModelIndex().row(), 9999);
+
+    bridge.synchronizePanelState({
+        {QStringLiteral("op"), QStringLiteral("selection_delta")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("panel-left-sparse")},
+        {QStringLiteral("catalogRevision"), qulonglong(71)},
+        {QStringLiteral("baseSelectionRevision"), qulonglong(1)},
+        {QStringLiteral("selectionRevision"), qulonglong(3)},
+        {QStringLiteral("changes"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 9999},
+             {QStringLiteral("entryId"), selectedId},
+             {QStringLiteral("selected"), false},
+         }}},
+        {QStringLiteral("panel"), left},
+    });
+    QCOMPARE(session->selectionRevision(), qulonglong(2));
+    QVERIFY(session->isSelectedAt(9999));
+    QCOMPARE(dataChanged.size(), 1);
 }
 
 void F4GalleryBridgeTests::viewerIgnoresSemanticPresentation()

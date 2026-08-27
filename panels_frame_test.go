@@ -175,6 +175,57 @@ func TestPanelsFrame_MouseGestureStaysWithOriginPanel(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_ActivePanelClickDoesNotRedrawUnchangedSearchFocus(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+	AppConfig.AlwaysShowMenuBar = false
+
+	screen := vtui.NewSilentScreenBuf()
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	left := &mouseCaptureTestPanel{}
+	right := &mouseCaptureTestPanel{}
+	left.SetPosition(0, 0, 39, 20)
+	right.SetPosition(40, 0, 79, 20)
+	left.SetFocus(true)
+	pf := &PanelsFrame{
+		panels:             [2]Panel{left, right},
+		activeIdx:          0,
+		showPanels:         true,
+		showLeftPanel:      true,
+		showRightPanel:     true,
+		commandLineFocused: false,
+		cmdLine:            NewCommandLine(""),
+	}
+	pf.cmdLine.SetFocus(false)
+
+	if !pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 5, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("active-panel click was not handled")
+	}
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+		t.Fatal("unchanged active-panel focus manufactured a redraw")
+	default:
+	}
+	if pf.activeIdx != 0 || pf.commandLineFocused || !left.IsFocused() {
+		t.Fatalf("active focus changed: side=%d command=%v panel=%v",
+			pf.activeIdx, pf.commandLineFocused, left.IsFocused())
+	}
+}
+
 func TestPanelsFrame_MiddleMouseGestureTriggersOnce(t *testing.T) {
 	pf := &PanelsFrame{}
 
@@ -1042,8 +1093,8 @@ func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
 	pf.panels[0].(*FileSystemPanel).fastFindMode = false
 
 	AppConfig.NavigationMode = NavigationSearchFirst
-	if pf.panelActivationFastPathEligible() {
-		t.Fatal("search-first mode used the panel activation fast path")
+	if !pf.panelActivationFastPathEligible() {
+		t.Fatal("panel-focused search mode was excluded from the activation fast path")
 	}
 }
 func TestPanelsFrame_MenuCommands(t *testing.T) {

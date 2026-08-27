@@ -1518,6 +1518,15 @@ func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
 			vtui.FrameManager.GetTopFrame())
 	} else if menu.GetTitle() != Msg("Drive.Title") {
 		t.Fatalf("drive menu title = %q, want %q", menu.GetTitle(), Msg("Drive.Title"))
+	} else {
+		if len(menu.Items) == 0 || menu.Items[0].Icon != driveMenuIconOtherPanel {
+			t.Fatalf("other-panel drive item lacks its semantic icon: %#v", menu.Items)
+		}
+		for _, item := range menu.Items {
+			if !item.Separator && item.Icon == "" {
+				t.Fatalf("drive item %q lacks a semantic icon", item.Text)
+			}
+		}
 	}
 	vtui.FrameManager.Pop()
 }
@@ -1740,17 +1749,30 @@ func TestPanelsFrameSemanticRapidSelectionActionsRemainOrdered(t *testing.T) {
 	}
 }
 
-func TestPanelsFrameSemanticGridFallbackForUpstreamPanelLayouts(t *testing.T) {
-	pf := &PanelsFrame{showPanels: true, showLeftPanel: true, showRightPanel: true}
+func TestPanelsFrameSemanticGridFallbackForUnsupportedPanelLayouts(t *testing.T) {
+	pf := &PanelsFrame{
+		showPanels: true, showLeftPanel: true, showRightPanel: true,
+		lastW: 100, lastH: 30,
+	}
 	if reason := pf.semanticGridFallbackReason(); reason != "" {
 		t.Fatalf("default panel layout unexpectedly requires fallback: %q", reason)
 	}
 
-	pf.widthDecrement = 1
-	if reason := pf.semanticGridFallbackReason(); !strings.Contains(reason, "resized-panel") {
-		t.Fatalf("resized panel fallback reason = %q", reason)
+	pf.widthDecrement = 6
+	if reason := pf.semanticGridFallbackReason(); reason != "" {
+		t.Fatalf("native horizontal split unexpectedly requires fallback: %q", reason)
+	}
+	layout := pf.semanticPanelLayoutModel(&vtui.SemanticContext{Width: 100, Height: 30})
+	if layout.Columns != 100 || layout.SplitColumn != 44 ||
+		layout.LeftBottomInsetRows != 0 || layout.RightBottomInsetRows != 0 {
+		t.Fatalf("horizontal split layout = %#v, want 100 columns at split 44", layout)
 	}
 	pf.widthDecrement = 0
+	pf.leftHeightDecrement = 1
+	if reason := pf.semanticGridFallbackReason(); !strings.Contains(reason, "shortened-panel") {
+		t.Fatalf("shortened panel fallback reason = %q", reason)
+	}
+	pf.leftHeightDecrement = 0
 	pf.showRightPanel = false
 	if reason := pf.semanticGridFallbackReason(); reason != "" {
 		t.Fatalf("hidden panel layout unexpectedly requires fallback: %q", reason)

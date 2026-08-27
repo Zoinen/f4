@@ -68,11 +68,20 @@ ApplicationWindow {
     // binding. Project only their row-free state until a real scene replaces
     // it; catalog rows continue to live exclusively in the C++ Gallery model.
     property var workspaceTabsOverride: null
+    property var menuBarOverride: null
+    property var keyBarOverride: null
+    property var toastOverride: null
     property var leftPanelPresentationOverride: null
     property var rightPanelPresentationOverride: null
     readonly property var workspaceTabs:
         workspaceTabsOverride !== null
         ? workspaceTabsOverride : (scene.workspaceTabs || ({}))
+    readonly property var menuBarModel:
+        menuBarOverride !== null ? menuBarOverride : (scene.menuBar || ({}))
+    readonly property var keyBarModel:
+        keyBarOverride !== null ? keyBarOverride : (scene.keyBar || ({}))
+    readonly property var toastModel:
+        toastOverride !== null ? toastOverride : (scene.toast || ({}))
     readonly property var workspaces: workspaceTabs.tabs || []
     // vtui exports only the active workspace.  Keep the last complete model
     // for each heavyweight native surface so opening the Operations Queue tab
@@ -311,10 +320,11 @@ ApplicationWindow {
     readonly property real iconDevicePixelRatio:
         root.screen ? root.screen.devicePixelRatio : 1.0
     readonly property string fallbackExplanation: semanticFallbackReason()
-    // Panel sizing belongs exclusively to this Qt presentation. The Go scene
-    // continues to supply two complete panels and is never notified when the
-    // divider moves.
-    property real panelSplitRatio: 0.5
+    // Go supplies the saved keyboard/configuration split as four scalar shell
+    // fields. Pointer dragging remains a presentation-local override: the
+    // first assignment intentionally replaces this binding for the lifetime
+    // of the window and never touches either heavyweight panel catalog.
+    property real panelSplitRatio: semanticPanelSplitRatio()
     readonly property real panelMinimumWidth:
         Math.max(180, Math.min(280, cw * 22))
     readonly property bool nativeTwoPanelSurfaceActive:
@@ -563,8 +573,7 @@ ApplicationWindow {
     }
 
     function menuBarItem(index) {
-        var items = (scene.menuBar && scene.menuBar.items)
-                    ? scene.menuBar.items : []
+        var items = menuBarModel.items || []
         for (var i = 0; i < items.length; ++i) {
             if (Number(items[i].index) === Number(index))
                 return items[i]
@@ -887,7 +896,8 @@ ApplicationWindow {
     }
 
     function keyBarHeight() {
-        return root.scene.keyBar
+        return root.keyBarModel.visible !== false
+                && Object.keys(root.keyBarModel).length > 0
                 ? root.ch + root.commandLineVerticalMargin * 2
                   + root.separatorWidth * 2
                 : 0
@@ -1053,6 +1063,16 @@ ApplicationWindow {
                     ? root.chromeText : tint
         return qtIcons.rasterizedLucideSource(
                     value, s, root.iconDevicePixelRatio, color)
+    }
+
+    function semanticPanelSplitRatio() {
+        var shell = shellFrame()
+        var layout = shell && shell.panelLayout ? shell.panelLayout : ({})
+        var columns = Number(layout.columns || 0)
+        var splitColumn = Number(layout.splitColumn || 0)
+        if (columns > 0 && splitColumn > 0 && splitColumn < columns)
+            return splitColumn / columns
+        return 0.5
     }
 
     function workspaceTabIconName(tab) {
@@ -1289,6 +1309,9 @@ ApplicationWindow {
 
     onSceneChanged: {
         workspaceTabsOverride = null
+        menuBarOverride = null
+        keyBarOverride = null
+        toastOverride = null
         leftPanelPresentationOverride = null
         rightPanelPresentationOverride = null
         panelActivationOverride = -1
@@ -1309,7 +1332,11 @@ ApplicationWindow {
         ignoreUnknownSignals: true
         function onPanelActivationChanged(activePanel, revision) {
             root.panelActivationOverride = Number(activePanel)
-            Qt.callLater(root.restoreSurfaceFocus)
+            // FilePanelView transfers focus synchronously when its compact
+            // panelIsActive binding flips. Only alternate/covered surfaces
+            // need the generic deferred focus router.
+            if (!root.activePanelHasGalleryHost())
+                Qt.callLater(root.restoreSurfaceFocus)
         }
         function onCompactPresentationChanged(patch) {
             if (!patch)
@@ -1327,9 +1354,21 @@ ApplicationWindow {
             if (patch.workspaceTabs !== undefined
                     && patch.workspaceTabs !== null)
                 root.workspaceTabsOverride = patch.workspaceTabs
+            if (patch.menuBar !== undefined && patch.menuBar !== null)
+                root.menuBarOverride = patch.menuBar
+            if (patch.keyBar !== undefined && patch.keyBar !== null)
+                root.keyBarOverride = patch.keyBar
+            if (patch.toast !== undefined && patch.toast !== null)
+                root.toastOverride = patch.toast
         }
         function onCommandMenusChanged() {
             root.syncAutocompleteSelection()
+            // Structural menu changes alter the authoritative top surface.
+            // Transfer keyboard ownership synchronously: a persistent Gallery
+            // may otherwise consume the first bare arrow before the popup's
+            // deferred Loader has completed. Selection-only menu state updates
+            // deliberately use commandMenuStatesChanged and skip this path.
+            root.restoreSurfaceFocus()
         }
     }
 
@@ -3537,7 +3576,7 @@ ApplicationWindow {
 
             SemanticMenuBar {
                 id: semanticMenu
-                menu: root.scene.menuBar || ({})
+                menu: root.menuBarModel
                 anchors.left: appIcon.right
                 anchors.leftMargin: root.macTitleBarLeftPadding
                 anchors.right: workspaceBar.visible
@@ -4425,6 +4464,7 @@ ApplicationWindow {
                             availableWidth: parent.width
                             minimumPanelWidth: root.panelMinimumWidth
                             ratio: root.panelSplitRatio
+                            defaultRatio: root.semanticPanelSplitRatio()
                             keySink: grid
                             surfaceActive: root.nativeTwoPanelSurfaceActive
                                            && root.widePanelSide() < 0
@@ -4538,7 +4578,7 @@ ApplicationWindow {
         }
 
         KeyBarView {
-            keyBar: root.scene.keyBar || ({})
+            keyBar: root.keyBarModel
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -4548,7 +4588,7 @@ ApplicationWindow {
         }
 
         ToastView {
-            toast: root.scene.toast || ({})
+            toast: root.toastModel
             anchors.horizontalCenter: parent.horizontalCenter
             y: semanticMenu.height + 8
             opacity: root.normalSurfaceOpacity
@@ -6730,7 +6770,8 @@ ApplicationWindow {
         property bool syncingModel: false
         readonly property real topInset: semanticMenu.visible
                                           ? semanticMenu.height : 0
-        readonly property real bottomInset: root.scene.keyBar
+        readonly property real bottomInset:
+                                             Object.keys(root.keyBarModel).length > 0
                                              ? root.keyBarHeight() : 0
         readonly property real rowHeight: Math.max(60, root.ch * 2.8)
         readonly property bool compactColumns: width < 900
@@ -7646,7 +7687,8 @@ ApplicationWindow {
                                            : semanticMenu.visible
                                              ? semanticMenu.height : 0
         readonly property real bottomInset: embedded ? 0
-            : root.scene.keyBar ? Math.max(26, root.ch * 1.35) : 0
+            : Object.keys(root.keyBarModel).length > 0
+              ? Math.max(26, root.ch * 1.35) : 0
         readonly property real rowHeight: Math.max(20, root.ch)
 
         function runBackground(value) {
@@ -10013,7 +10055,7 @@ ApplicationWindow {
             readonly property int effectiveMenuIndex:
                 fromMenuBar && root.menuBarPreviewIndex >= 0
                 ? root.menuBarPreviewIndex
-                : Number((root.scene.menuBar || {}).selected || 0)
+                : Number(root.menuBarModel.selected || 0)
             readonly property var previewMenuItem:
                 fromMenuBar ? root.menuBarItem(effectiveMenuIndex) : null
             readonly property var effectiveItems:
@@ -10022,10 +10064,11 @@ ApplicationWindow {
             readonly property bool previewIsAhead:
                 fromMenuBar && previewMenuItem
                 && effectiveMenuIndex
-                   !== Number((root.scene.menuBar || {}).selected || 0)
-            readonly property bool hasCheckIndicator: {
+                   !== Number(root.menuBarModel.selected || 0)
+            readonly property bool hasLeadingIndicator: {
                 for (var i = 0; i < effectiveItems.length; ++i) {
-                    if (effectiveItems[i].checked === true)
+                    if (effectiveItems[i].checked === true
+                            || root.cleanText(effectiveItems[i].icon) !== "")
                         return true
                 }
                 return false
@@ -10033,6 +10076,11 @@ ApplicationWindow {
             readonly property real menuRowHeight: Math.max(27, root.ch * 1.02)
             readonly property real menuSeparatorHeight: 11
             property int pointerSelectedIndex: -1
+            property int semanticSelectedIndex: 0
+            property int semanticTopIndex: 0
+            property bool pointerWindowPositionKnown: false
+            property real pointerWindowX: 0
+            property real pointerWindowY: 0
             readonly property int activePointerSelectedIndex:
                 fromMenuBar
                 && root.menuPointerMenuIndex === effectiveMenuIndex
@@ -10043,7 +10091,49 @@ ApplicationWindow {
                 : fromMenuBar && root.menuBarOpenedByPointer
                   && !root.menuBarPointerHasSelectedItem ? -1
                 : previewIsAhead ? 0
-                : Math.max(0, Number(frame.selected || 0))
+                : semanticSelectedIndex
+
+            function syncFrameState() {
+                semanticSelectedIndex = Math.max(0,
+                    Number(frame.selected || 0))
+                semanticTopIndex = Math.max(0, Number(frame.top || 0))
+            }
+
+            function applyCommandMenuStates(states) {
+                const frameId = String(frame.id || "")
+                for (var i = 0; i < states.length; ++i) {
+                    if (String(states[i].id || "") !== frameId)
+                        continue
+                    semanticSelectedIndex = Math.max(0,
+                        Number(states[i].selected || 0))
+                    semanticTopIndex = Math.max(0,
+                        Number(states[i].top || 0))
+                    if (!fromMenuBar)
+                        pointerSelectedIndex = -1
+                    else
+                        Qt.callLater(reconcilePointerState)
+                    Qt.callLater(popupMenuList.syncTopPosition)
+                    return
+                }
+            }
+
+            function pointerActuallyMoved(area, mouse) {
+                // MouseArea.positionChanged is expressed in delegate-local
+                // coordinates. Qt also emits it when ListView moves that
+                // delegate underneath a completely stationary cursor (for
+                // example after keyboard selection scrolls the menu). Compare
+                // in the stable window coordinate space so only a real mouse
+                // move may take selection ownership away from the keyboard.
+                const point = area.mapToItem(root.contentItem,
+                                             mouse.x, mouse.y)
+                const moved = pointerWindowPositionKnown
+                        && (Math.abs(point.x - pointerWindowX) >= 0.5
+                            || Math.abs(point.y - pointerWindowY) >= 0.5)
+                pointerWindowX = point.x
+                pointerWindowY = point.y
+                pointerWindowPositionKnown = true
+                return moved
+            }
 
             function reconcilePointerSelection() {
                 if (!fromMenuBar || previewIsAhead
@@ -10051,7 +10141,7 @@ ApplicationWindow {
                         || root.menuPointerItemIndex < 0
                         || root.menuPointerSentItemIndex
                            !== root.menuPointerItemIndex
-                        || Number(frame.selected || 0)
+                        || semanticSelectedIndex
                            !== root.menuPointerItemIndex)
                     return
                 // Go now owns exactly the row already painted by QML. Dropping
@@ -10086,12 +10176,24 @@ ApplicationWindow {
             }
 
             onFrameChanged: {
+                syncFrameState()
                 if (!fromMenuBar)
                     pointerSelectedIndex = -1
                 else
                     Qt.callLater(reconcilePointerState)
             }
-            Component.onCompleted: Qt.callLater(reconcilePointerState)
+            Component.onCompleted: {
+                syncFrameState()
+                Qt.callLater(reconcilePointerState)
+            }
+
+            Connections {
+                target: qtShell
+                ignoreUnknownSignals: true
+                function onCommandMenuStatesChanged(states) {
+                    menuOverlay.applyCommandMenuStates(states)
+                }
+            }
 
             FontMetrics {
                 id: popupMenuMetrics
@@ -10157,9 +10259,10 @@ ApplicationWindow {
                 height: Math.min(root.height - y - root.keyBarHeight() - 4,
                                  Math.max(root.ch + 10,
                                           menuOverlay.preferredMenuHeight()))
+                objectName: "semanticMenuPopup-" + root.cleanText(menuOverlay.frame.id)
                 color: root.dialogHeaderBg
                 border.width: 1
-                border.color: "#46586b"
+                border.color: root.controlBorder
                 radius: 7
                 clip: true
                 z: 160
@@ -10183,7 +10286,7 @@ ApplicationWindow {
 
                     function syncTopPosition() {
                         if (count > 0)
-                            positionViewAtIndex(Math.max(0, Number(menuOverlay.frame.top || 0)),
+                            positionViewAtIndex(menuOverlay.semanticTopIndex,
                                                 ListView.Beginning)
                     }
 
@@ -10191,6 +10294,9 @@ ApplicationWindow {
                     onModelChanged: Qt.callLater(syncTopPosition)
 
                     delegate: Rectangle {
+                        objectName: "semanticMenuItem-"
+                                    + root.cleanText(menuOverlay.frame.id)
+                                    + "-" + Number(modelData.index)
                         width: ListView.view.width
                         height: modelData.separator
                                 ? menuOverlay.menuSeparatorHeight
@@ -10198,7 +10304,7 @@ ApplicationWindow {
                         radius: 4
                         color: modelData.index === menuOverlay.visualSelectedIndex
                                && !modelData.separator
-                               ? "#2a5777" : "transparent"
+                               ? root.selectedBg : "transparent"
 
                         Rectangle {
                             anchors.left: parent.left
@@ -10213,14 +10319,17 @@ ApplicationWindow {
                         }
 
                         Text {
+                            objectName: "semanticMenuItemText-"
+                                        + root.cleanText(menuOverlay.frame.id)
+                                        + "-" + Number(modelData.index)
                             anchors.left: parent.left
                             anchors.right: shortcut.left
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: menuOverlay.hasCheckIndicator
+                            anchors.leftMargin: menuOverlay.hasLeadingIndicator
                                                 ? 32 : 10
                             text: {
                                 var label = root.cleanText(modelData.text)
-                                if (menuOverlay.hasCheckIndicator)
+                                if (menuOverlay.hasLeadingIndicator)
                                     label = label.replace(/^\s+/, "")
                                 return root.mnemonicText(label,
                                                          modelData.hotkey)
@@ -10233,16 +10342,35 @@ ApplicationWindow {
                         }
 
                         IconLabel {
-                            anchors.left: parent.left
-                            anchors.leftMargin: 10
-                            anchors.verticalCenter: parent.verticalCenter
+                            id: leadingMenuIcon
+                            objectName: "semanticMenuItemIcon-"
+                                        + root.cleanText(menuOverlay.frame.id)
+                                        + "-" + Number(modelData.index)
+                            readonly property string semanticIconName:
+                                modelData.checked === true ? "check"
+                                : root.cleanText(modelData.icon)
+                            readonly property url semanticIconSource:
+                                semanticIconName === "" ? ""
+                                : root.resolvedIconSource(semanticIconName, 15)
+                            readonly property color semanticIconColor:
+                                modelData.disabled ? root.mutedText : root.textColor
+                            x: root.snapPx(10)
+                            y: root.snapPx((parent.height - height) / 2)
+                            width: root.snapPx(15)
+                            height: root.snapPx(15)
+                            property real alignmentRevision:
+                                popupSurface.x + popupSurface.y
+                                + popupMenuList.contentY + parent.y
+                            transform: Translate {
+                                x: root.iconPixelOffsetX(leadingMenuIcon)
+                                y: root.iconPixelOffsetY(leadingMenuIcon)
+                            }
                             visible: !modelData.separator
-                                     && modelData.checked === true
-                            icon.source: root.resolvedIconSource("check", 15)
+                                     && semanticIconName !== ""
+                            icon.source: semanticIconSource
                             icon.width: 15
                             icon.height: 15
-                            icon.color: modelData.disabled
-                                        ? root.mutedText : root.textColor
+                            icon.color: semanticIconColor
                         }
 
                         Text {
@@ -10261,12 +10389,12 @@ ApplicationWindow {
                             anchors.fill: parent
                             hoverEnabled: true
                             enabled: !modelData.separator && !modelData.disabled
-                            onEntered: {
+                            function selectFromPointer() {
                                 if (menuOverlay.fromMenuBar) {
                                     root.menuBarPointerHasSelectedItem = true
                                     if (root.menuPointerItemIndex < 0
                                             && !menuOverlay.previewIsAhead
-                                            && Number(menuOverlay.frame.selected || 0)
+                                            && menuOverlay.semanticSelectedIndex
                                                === modelData.index)
                                         return
                                     if (root.menuPointerMenuIndex
@@ -10291,6 +10419,16 @@ ApplicationWindow {
                                         "index": modelData.index
                                     }, true)
                                 }
+                            }
+                            // Delegate creation and ListView scrolling both
+                            // produce local position changes under a stationary
+                            // cursor. Only movement in window coordinates is
+                            // allowed to take selection ownership.
+                            onPositionChanged: (mouse) => {
+                                if (containsMouse
+                                        && menuOverlay.pointerActuallyMoved(
+                                            itemMouse, mouse))
+                                    selectFromPointer()
                             }
                             onClicked: {
                                 if (menuOverlay.fromMenuBar) {

@@ -551,8 +551,15 @@ type FileSystemPanel struct {
 	catalogRevision              int64
 	metadataRevision             int64
 	selectionRevision            int64
-	semanticStaticCache          *semanticPanelStaticCache
-	semanticMetadataSnapshot     *semanticPanelMetadataSnapshot
+	// Selection changes are journaled independently from the immutable file
+	// catalog. Native semantic renderers can therefore acknowledge one changed
+	// row without exporting or serializing every directory entry.
+	semanticSelectionBaseRevision int64
+	semanticSelectionChanges      map[string]semanticSelectionChange
+	semanticSelectionOverflow     bool
+	semanticSelectionNeedsSync    bool
+	semanticStaticCache           *semanticPanelStaticCache
+	semanticMetadataSnapshot      *semanticPanelMetadataSnapshot
 }
 
 var DisableLoadingAnimationInTests = true
@@ -834,8 +841,50 @@ func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
 			} else {
 				delete(fp.selectedItems, e.Name)
 			}
+			if fp.semanticSelectionChanges == nil && !fp.semanticSelectionOverflow {
+				fp.semanticSelectionBaseRevision = fp.selectionRevision
+				fp.semanticSelectionChanges = make(map[string]semanticSelectionChange)
+			}
+			fp.selectionRevision++
+			fp.semanticSelectionNeedsSync = true
+			entryID := ""
+			if cache := fp.semanticStaticCache; cache != nil &&
+				cache.catalogRevision == fp.catalogRevision && idx < len(cache.entries) {
+				entryID = cache.entries[idx].EntryID
+			}
+			if entryID == "" {
+				if fp.vfs != nil {
+					sourceKind, _ := fp.semanticSourceInfo()
+					entryID, _ = fp.semanticEntryMetadata(e, sourceKind)
+				} else {
+					// Lightweight panel tests and embedders may construct rows
+					// before attaching a VFS. The ID is only journal-local until a
+					// real catalog cache exists, but must still avoid a nil deref.
+					entryID = fmt.Sprintf("entry:unbound:%d:%s", idx, e.Name)
+				}
+			}
+			if len(fp.semanticSelectionChanges) >= maxSemanticSelectionChanges {
+				fp.semanticSelectionOverflow = true
+				fp.semanticSelectionChanges = nil
+			} else if !fp.semanticSelectionOverflow && entryID != "" {
+				fp.semanticSelectionChanges[entryID] = semanticSelectionChange{
+					Index: idx, EntryID: entryID, Selected: state,
+				}
+			}
 		}
 	}
+}
+
+func (fp *FileSystemPanel) ClearSelection() {
+	if fp == nil {
+		return
+	}
+	for index := range fp.entries {
+		fp.SetItemSelected(index, false)
+	}
+	// Preserve the old operation's cleanup guarantee even if selectedItems
+	// contained a stale filename which no longer has a backing row.
+	fp.selectedItems = make(map[string]bool)
 }
 
 func (fp *FileSystemPanel) previousSelectionMatches(filesystem vfs.VFS, path string) bool {
