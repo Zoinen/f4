@@ -433,7 +433,10 @@ private slots:
     void largeScenesDecodeOffGuiThreadInOrder();
     void commandLinePatchPreservesExistingScene();
     void scenePatchUpdatesMenusWithoutSceneProjectionSignal();
+    void scenePatchAppliesBoundedEditorCursorAndStructuralTransition();
+    void scenePatchRejectsUnboundedEditorSurfaceState();
     void scenePatchAppliesSparseSelectionWithoutCatalogRewrite();
+    void scenePatchClearsTransientFastFindMatchesWithoutCatalogRewrite();
     void scenePatchReplacesOnlyChangedCatalog();
     void panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSignal();
     void panelChromePatchUpdatesOnlyChromeWithoutCatalogSignals();
@@ -1436,6 +1439,244 @@ void QtShellControllerTests::scenePatchUpdatesMenusWithoutSceneProjectionSignal(
                  .toULongLong(), qulonglong(3));
 }
 
+void QtShellControllerTests::scenePatchAppliesBoundedEditorCursorAndStructuralTransition()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("editor-cursor-patch-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+
+    const QVariantList rows = {QVariantMap{
+        {QStringLiteral("index"), 0},
+        {QStringLiteral("text"), QStringLiteral("<svg/>")},
+    }};
+    const QVariantMap editor = {
+        {QStringLiteral("id"), QStringLiteral("editor:music.svg")},
+        {QStringLiteral("kind"), QStringLiteral("editor")},
+        {QStringLiteral("cursorLine"), 0},
+        {QStringLiteral("cursorPos"), 0},
+        {QStringLiteral("cursorVisualRow"), 0},
+        {QStringLiteral("cursorVisualColumn"), 0},
+        {QStringLiteral("cursorVisible"), true},
+        {QStringLiteral("cursorShape"), QStringLiteral("underline")},
+        {QStringLiteral("cursorAbsoluteRow"), qlonglong(0)},
+        {QStringLiteral("rows"), rows},
+        {QStringLiteral("windowRows"), rows},
+    };
+    const QByteArray initial = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("revision"), qulonglong(1)},
+        {QStringLiteral("width"), 80},
+        {QStringLiteral("height"), 24},
+        {QStringLiteral("activeScreen"), 0},
+        {QStringLiteral("surface"), editor},
+    });
+    QSignalSpy sceneChanged(&controller, &QtShellController::sceneChanged);
+    QSignalSpy presentationChanged(
+        &controller, &QtShellController::presentationSceneChanged);
+    QSignalSpy compactChanged(
+        &controller, &QtShellController::compactPresentationChanged);
+    QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
+    QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
+    sceneChanged.clear();
+    presentationChanged.clear();
+
+    const QByteArray cursorPatch = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(1)},
+        {QStringLiteral("revision"), qulonglong(2)},
+        {QStringLiteral("surface"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("editor:music.svg")},
+             {QStringLiteral("set"), QVariantMap{
+                  {QStringLiteral("cursorPos"), 1},
+                  {QStringLiteral("cursorVisualColumn"), 1},
+              }},
+         }},
+    });
+    QCOMPARE(peer->write(cursorPatch),
+             static_cast<qint64>(cursorPatch.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(compactChanged.size(), 1, 3000);
+    QCOMPARE(presentationChanged.size(), 0);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(fatalErrors.size(), 0);
+    const QVariantMap updatedSurface = controller.scene().value(
+        QStringLiteral("surface")).toMap();
+    QCOMPARE(updatedSurface.value(QStringLiteral("cursorPos")).toInt(), 1);
+    QCOMPARE(updatedSurface.value(
+                 QStringLiteral("cursorVisualColumn")).toInt(), 1);
+    QCOMPARE(updatedSurface.value(QStringLiteral("rows")).toList(), rows);
+    QCOMPARE(updatedSurface.value(QStringLiteral("windowRows")).toList(), rows);
+    const QVariantMap cursorProjection = compactChanged.constLast()
+                                             .constFirst().toMap().value(
+                                                 QStringLiteral("surfaceState"))
+                                             .toMap();
+    QCOMPARE(cursorProjection.value(QStringLiteral("id")).toString(),
+             QStringLiteral("editor:music.svg"));
+    QCOMPARE(cursorProjection.value(QStringLiteral("cursorPos")).toInt(), 1);
+    QCOMPARE(cursorProjection.value(
+                 QStringLiteral("cursorVisualColumn")).toInt(), 1);
+
+    const QVariantMap shell = {
+        {QStringLiteral("id"), QStringLiteral("panels")},
+        {QStringLiteral("kind"), QStringLiteral("shell")},
+        {QStringLiteral("mode"), QStringLiteral("panels")},
+        {QStringLiteral("activePanel"), 1},
+        {QStringLiteral("panels"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("left")},
+                 {QStringLiteral("kind"), QStringLiteral("filePanel")},
+                 {QStringLiteral("side"), 0},
+                 {QStringLiteral("catalogRevision"), qulonglong(9)},
+             },
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("right")},
+                 {QStringLiteral("kind"), QStringLiteral("filePanel")},
+                 {QStringLiteral("side"), 1},
+                 {QStringLiteral("catalogRevision"), qulonglong(11)},
+             },
+         }},
+    };
+    const QByteArray returnToPanels = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(2)},
+        {QStringLiteral("revision"), qulonglong(3)},
+        {QStringLiteral("root"), QVariantMap{
+             {QStringLiteral("set"), QVariantMap{
+                  {QStringLiteral("shell"), shell},
+              }},
+             {QStringLiteral("clear"), QVariantList{
+                  QStringLiteral("surface"),
+              }},
+         }},
+    });
+    QCOMPARE(peer->write(returnToPanels),
+             static_cast<qint64>(returnToPanels.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(compactChanged.size(), 2, 3000);
+    QCOMPARE(presentationChanged.size(), 0);
+    const QVariantMap panelsProjection = compactChanged.constLast()
+                                             .constFirst().toMap();
+    QCOMPARE(panelsProjection.value(QStringLiteral("shellPresent")).toBool(),
+             true);
+    QCOMPARE(panelsProjection.value(QStringLiteral("replaceShell")).toBool(),
+             true);
+    QCOMPARE(panelsProjection.value(QStringLiteral("activePanel")).toInt(),
+             1);
+    QCOMPARE(panelsProjection.value(QStringLiteral("surfacePresent")).toBool(),
+             false);
+    QCOMPARE(panelsProjection.value(QStringLiteral("shell")).toMap(), shell);
+    QCOMPARE(sceneChanged.size(), 0);
+    QVERIFY(!controller.scene().contains(QStringLiteral("surface")));
+    QCOMPARE(controller.scene().value(QStringLiteral("shell")).toMap(), shell);
+
+    const QByteArray reopenEditor = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(3)},
+        {QStringLiteral("revision"), qulonglong(4)},
+        {QStringLiteral("root"), QVariantMap{
+             {QStringLiteral("set"), QVariantMap{
+                  {QStringLiteral("activeScreen"), 1},
+                  {QStringLiteral("workspaceCount"), 2},
+                  {QStringLiteral("surface"), editor},
+              }},
+             {QStringLiteral("clear"), QVariantList{
+                  QStringLiteral("shell"),
+              }},
+         }},
+    });
+    QCOMPARE(peer->write(reopenEditor),
+             static_cast<qint64>(reopenEditor.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(compactChanged.size(), 3, 3000);
+    QCOMPARE(presentationChanged.size(), 0);
+    const QVariantMap editorProjection = compactChanged.constLast()
+                                             .constFirst().toMap();
+    QCOMPARE(editorProjection.value(QStringLiteral("shellPresent")).toBool(),
+             false);
+    QCOMPARE(editorProjection.value(QStringLiteral("surfacePresent")).toBool(),
+             true);
+    QCOMPARE(editorProjection.value(QStringLiteral("surface")).toMap(), editor);
+    QCOMPARE(sceneChanged.size(), 0);
+    QVERIFY(!controller.scene().contains(QStringLiteral("shell")));
+    QCOMPARE(controller.scene().value(QStringLiteral("surface")).toMap(),
+             editor);
+    QCOMPARE(fatalErrors.size(), 0);
+}
+
+void QtShellControllerTests::scenePatchRejectsUnboundedEditorSurfaceState()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("editor-cursor-patch-reject-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+
+    const QByteArray initial = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("revision"), qulonglong(1)},
+        {QStringLiteral("surface"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("editor:music.svg")},
+             {QStringLiteral("kind"), QStringLiteral("editor")},
+             {QStringLiteral("rows"), QVariantList{}},
+         }},
+    });
+    QSignalSpy sceneChanged(&controller, &QtShellController::sceneChanged);
+    QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
+    QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
+    sceneChanged.clear();
+
+    const QByteArray invalid = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(1)},
+        {QStringLiteral("revision"), qulonglong(2)},
+        {QStringLiteral("surface"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("editor:music.svg")},
+             {QStringLiteral("set"), QVariantMap{
+                  {QStringLiteral("rows"), QVariantList{
+                       QVariantMap{{QStringLiteral("text"),
+                                    QStringLiteral("must not travel")}},
+                   }},
+              }},
+         }},
+    });
+    QCOMPARE(peer->write(invalid), static_cast<qint64>(invalid.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(fatalErrors.size(), 1, 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(controller.scene().value(QStringLiteral("revision"))
+                 .toULongLong(), qulonglong(1));
+}
+
 void QtShellControllerTests::scenePatchAppliesSparseSelectionWithoutCatalogRewrite()
 {
     QTcpServer server;
@@ -1455,6 +1696,7 @@ void QtShellControllerTests::scenePatchAppliesSparseSelectionWithoutCatalogRewri
         {QStringLiteral("kind"), QStringLiteral("filePanel")},
         {QStringLiteral("side"), 0},
         {QStringLiteral("active"), true},
+        {QStringLiteral("showFileInfo"), true},
         {QStringLiteral("catalogRevision"), qulonglong(10)},
         {QStringLiteral("selectionRevision"), qulonglong(4)},
         {QStringLiteral("entries"), QVariantList{QVariantMap{
@@ -1533,6 +1775,192 @@ void QtShellControllerTests::scenePatchAppliesSparseSelectionWithoutCatalogRewri
                      QStringLiteral("selected")).toBool(), false);
     QCOMPARE(panelStateChanged.constFirst().constFirst().toMap().value(
                  QStringLiteral("changes")).toList().size(), 1);
+
+    const QVariantList entriesBeforeFileInfoToggle = updatedPanel.value(
+        QStringLiteral("entries")).toList();
+    const QVariantMap fileInfoState = {
+        {QStringLiteral("id"), QStringLiteral("left")},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(1)},
+        {QStringLiteral("showFileInfo"), false},
+    };
+    const QVariantMap fileInfoOperation = {
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("left")},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("state"), fileInfoState},
+    };
+    const QByteArray fileInfoPatch = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(2)},
+        {QStringLiteral("revision"), qulonglong(3)},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{fileInfoOperation}},
+         }},
+    });
+    QCOMPARE(peer->write(fileInfoPatch),
+             static_cast<qint64>(fileInfoPatch.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(panelStateChanged.size(), 2, 3000);
+    QCOMPARE(compactChanged.size(), 2);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(presentationChanged.size(), 0);
+
+    const QVariantMap fileInfoPanel = controller.scene().value(
+        QStringLiteral("shell")).toMap().value(
+            QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(fileInfoPanel.value(QStringLiteral("showFileInfo")).toBool(),
+             false);
+    QCOMPARE(fileInfoPanel.value(QStringLiteral("entries")).toList(),
+             entriesBeforeFileInfoToggle);
+    const QVariantMap presentationPanel = controller.presentationScene().value(
+        QStringLiteral("shell")).toMap().value(
+            QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(presentationPanel.value(QStringLiteral("showFileInfo")).toBool(),
+             false);
+    QVERIFY(!presentationPanel.contains(QStringLiteral("entries")));
+    const QVariantMap compactPanel = compactChanged.at(1).constFirst().toMap()
+        .value(QStringLiteral("panel")).toMap();
+    QCOMPARE(compactPanel.value(QStringLiteral("showFileInfo")).toBool(), false);
+    QVERIFY(!compactPanel.contains(QStringLiteral("entries")));
+}
+
+void QtShellControllerTests::scenePatchClearsTransientFastFindMatchesWithoutCatalogRewrite()
+{
+    const QVariantMap panel = {
+        {QStringLiteral("id"), QStringLiteral("left")},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("active"), true},
+        {QStringLiteral("path"), QStringLiteral("D:/search")},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("selectionRevision"), qulonglong(4)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(2)},
+        {QStringLiteral("cursor"), 0},
+        {QStringLiteral("cursorEntryId"), QStringLiteral("left:entry")},
+        {QStringLiteral("fastFind"), true},
+        {QStringLiteral("fastFindText"), QStringLiteral("entry")},
+        {QStringLiteral("fastFindMatchColor"), QStringLiteral("#c678dd")},
+        {QStringLiteral("fastFindMatches"), QVariantMap{
+             {QStringLiteral("left:entry"), QVariantMap{
+                  {QStringLiteral("start"), 0},
+                  {QStringLiteral("length"), 5},
+              }},
+         }},
+        {QStringLiteral("entries"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 0},
+             {QStringLiteral("entryId"), QStringLiteral("left:entry")},
+             {QStringLiteral("name"), QStringLiteral("entry.txt")},
+             {QStringLiteral("selected"), false},
+         }}},
+    };
+    const QVariantMap initialScene = {
+        {QStringLiteral("type"), QStringLiteral("scene")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("revision"), qulonglong(1)},
+        {QStringLiteral("width"), 80},
+        {QStringLiteral("height"), 24},
+        {QStringLiteral("activeScreen"), 0},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("id"), QStringLiteral("shell")},
+             {QStringLiteral("kind"), QStringLiteral("shell")},
+             {QStringLiteral("activePanel"), 0},
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("fast-find-clear-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+
+    QSignalSpy sceneChanged(&controller, &QtShellController::sceneChanged);
+    QSignalSpy presentationChanged(
+        &controller, &QtShellController::presentationSceneChanged);
+    QSignalSpy panelStateChanged(
+        &controller, &QtShellController::panelStateChanged);
+    QSignalSpy compactChanged(
+        &controller, &QtShellController::compactPresentationChanged);
+    QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
+
+    const QByteArray initial = variantFrame(initialScene);
+    QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
+    sceneChanged.clear();
+    presentationChanged.clear();
+
+    // Deliberately omit the transient map and color. This is the compact
+    // state shape that used to leave the previous search highlights cached.
+    const QVariantMap closeState = {
+        {QStringLiteral("id"), QStringLiteral("left")},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(2)},
+        {QStringLiteral("fastFind"), false},
+        {QStringLiteral("fastFindText"), QString{}},
+    };
+    const QVariantMap closeOperation = {
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("left")},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("state"), closeState},
+    };
+    const QByteArray closePatch = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(1)},
+        {QStringLiteral("revision"), qulonglong(2)},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{closeOperation}},
+         }},
+    });
+    QCOMPARE(peer->write(closePatch), static_cast<qint64>(closePatch.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(panelStateChanged.size(), 1, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(compactChanged.size(), 1, 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(presentationChanged.size(), 0);
+    QCOMPARE(fatalErrors.size(), 0);
+
+    const QVariantMap updatedPanel = controller.scene()
+        .value(QStringLiteral("shell")).toMap()
+        .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(updatedPanel.value(QStringLiteral("fastFind")).toBool(), false);
+    QCOMPARE(updatedPanel.value(QStringLiteral("fastFindMatches")).toMap(),
+             QVariantMap{});
+    QCOMPARE(updatedPanel.value(QStringLiteral("fastFindMatchColor"))
+                 .toString(), QString{});
+
+    const QVariantMap compactPanel = compactChanged.constFirst().constFirst()
+        .toMap().value(QStringLiteral("panel")).toMap();
+    QCOMPARE(compactPanel.value(QStringLiteral("fastFindMatches")).toMap(),
+             QVariantMap{});
+    QCOMPARE(compactPanel.value(QStringLiteral("fastFindMatchColor"))
+                 .toString(), QString{});
+    const QVariantMap signaledPanel = panelStateChanged.constFirst()
+        .constFirst().toMap().value(QStringLiteral("panel")).toMap();
+    QCOMPARE(signaledPanel.value(QStringLiteral("fastFindMatches")).toMap(),
+             QVariantMap{});
 }
 
 void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()

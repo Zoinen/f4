@@ -41,6 +41,7 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 						"kind":          "filePanel",
 						"side":          0,
 						"path":          "/left",
+						"showFileInfo":  true,
 						"viewModeName":  "medium",
 						"sortModeName":  "name",
 						"selectedCount": 0,
@@ -112,6 +113,9 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	}
 	if panels[0]["sourceKind"] != "vfs" {
 		t.Fatalf("legacy panel did not receive compatible v3 defaults: %#v", panels[0])
+	}
+	if panels[0]["showFileInfo"] != true {
+		t.Fatalf("legacy panel lost its file-information setting: %#v", panels[0])
 	}
 	for _, retired := range []string{"presentation", "viewModeName", "columns", "top"} {
 		if _, present := panels[0][retired]; present {

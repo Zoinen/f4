@@ -42,6 +42,11 @@ public:
     bool navigationBenchmarkEnabled() const;
 
     Q_INVOKABLE QObject *sessionForSide(int side) const;
+    Q_INVOKABLE QObject *sessionForPanel(const QString &panelId,
+                                         int side) const;
+    // Row-free snapshots for QML viewport warmup. Catalog entries remain in
+    // the identity-keyed C++ GallerySession and never cross this API.
+    Q_INVOKABLE QVariantList cachedPanelPresentations(int side) const;
     Q_INVOKABLE void requestActivate(int side);
     Q_INVOKABLE void requestCursor(int side,
                                    const QString &entryId,
@@ -88,6 +93,7 @@ public slots:
 signals:
     void uiActionRequested(const QVariantMap &action);
     void panelCatalogMetadataRequested(const QVariantMap &request);
+    void panelCachePrepared(int side, const QVariantMap &panel);
     void viewerChanged();
     void benchmarkFrameSwapped(qulonglong serial);
 
@@ -132,6 +138,12 @@ private:
         QHash<QString, int> sourceIndexByEntryId;
         QSet<QString> entryIds;
         QSet<QString> selectedEntryIds;
+    };
+
+    struct CachedPanel {
+        QPointer<QObject> session;
+        SideState state;
+        QVariantMap snapshot;
     };
 
     struct PendingViewer {
@@ -244,7 +256,7 @@ private:
     static QVariantList panelsFromScene(const QVariantMap &scene);
     QVariantList normalizedEntries(const QVariantMap &panel) const;
     QVariantList normalizedMetadataEntries(
-        int side, const QVariantList &entries,
+        int side, int offset, const QVariantList &entries,
         const QVariantMap &highlightStyles) const;
     static QStringList selectedEntryIds(const QVariantList &entries);
     static int sourceIndexForEntryId(const QVariantList &entries,
@@ -254,6 +266,13 @@ private:
     bool canSkipUnchangedInactivePanel(int side,
                                        const QVariantMap &panel) const;
     void synchronizePanel(int side, const QVariantMap &panel);
+    QObject *createPanelSession();
+    void cacheCurrentPanel(int side);
+    bool activatePanelSession(int side, const QString &panelId);
+    void synchronizePanelCache(const QVariantMap &panel,
+                               const QVariantMap &metadata = {});
+    bool applyCachedPanelMetadata(int side, const QVariantMap &metadata);
+    bool synchronizeWorkspaceShell(const QVariantMap &shell);
     void requestPanelCatalogMetadata(int side);
     void requestNextPanelCatalogMetadata();
     void schedulePanelCatalogMetadataRequest();
@@ -322,6 +341,10 @@ private:
     std::array<QPointer<QObject>, 2> m_sessions;
     std::array<SideState, 2> m_states;
     std::array<QVariantMap, 2> m_panelSnapshots;
+    QHash<QString, CachedPanel> m_panelCache;
+    QSet<QObject *> m_allSessions;
+    qulonglong m_nextPanelSessionId = 0;
+    bool m_cacheWarmup = false;
     std::array<bool, 2> m_stateReconciliationPending = {false, false};
     std::array<bool, 2> m_selectionActionPending = {false, false};
     std::array<PendingCursor, 2> m_pendingCursors;

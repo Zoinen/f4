@@ -223,6 +223,8 @@ type frameManager struct {
 	TaskChan          chan func()
 	taskChanIn        chan func()
 	currentPostedTask *postedTaskExecution
+	inputUpdateActive bool
+	inputUnchanged    bool
 	benchmarkTaskSeq  atomic.Uint64
 	EventChan         chan *vtinput.InputEvent
 	EventFilter       func(*vtinput.InputEvent) bool
@@ -957,6 +959,11 @@ func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 	case <-fm.RedrawChan:
 		select {
 		case task := <-fm.TaskChan:
+			// Keep the older request observable to runPostedTask. A direct
+			// transition may own redraws created by this task, but must not claim
+			// unrelated work merely because this priority check consumed its
+			// capacity-one notification first.
+			fm.notifyRedraw()
 			result := fm.runPostedTask(task)
 			if !result.taskRedrawOmitted {
 				fm.Redraw()
@@ -1023,6 +1030,18 @@ func (fm *frameManager) PostTaskWithRedrawDecision(task func() bool) {
 			execution.needsRedraw = needsRedraw
 		}
 	}, 3)
+}
+
+// DeclareCurrentInputUnchanged records an application-level proof that the
+// active input handler only scheduled asynchronous work and has not changed
+// the current presentation. It is intentionally scoped to dispatchEvent;
+// calls from background goroutines or posted tasks are ignored.
+func (fm *frameManager) DeclareCurrentInputUnchanged() bool {
+	if fm == nil || !fm.inputUpdateActive {
+		return false
+	}
+	fm.inputUnchanged = true
+	return true
 }
 
 // EmitCommand broadcasts a command starting from the top-most frame
@@ -1925,6 +1944,41 @@ func (fm *frameManager) publishSemanticMenuState() bool {
 	})
 }
 
+func (fm *frameManager) publishSemanticSceneTransition(
+	before semanticMenuInputState,
+) bool {
+	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
+		return false
+	}
+	after := fm.semanticMenuInputState()
+	if semanticMenuNonMenuStackEqual(before, after) {
+		return false
+	}
+	renderer, ok := fm.scr.Renderer.(SemanticSceneTransitionRenderer)
+	if !ok {
+		return false
+	}
+	return renderer.SetSemanticSceneTransition(&SemanticContext{
+		Width: fm.scr.width, Height: fm.scr.height, ActiveScreen: fm.ActiveIdx,
+	})
+}
+
+func (fm *frameManager) publishDeclaredSemanticInputUnchanged(
+	before semanticMenuInputState,
+) bool {
+	if fm == nil || !fm.inputUnchanged || fm.scr == nil ||
+		fm.scr.Renderer == nil {
+		return false
+	}
+	after := fm.semanticMenuInputState()
+	if before.active != after.active ||
+		!semanticMenuNonMenuStackEqual(before, after) {
+		return false
+	}
+	renderer, ok := fm.scr.Renderer.(SemanticInputUnchangedRenderer)
+	return ok && renderer.SetSemanticInputUnchanged()
+}
+
 func (fm *frameManager) finishDeclaredSemanticMenuUpdate(before semanticMenuInputState) bool {
 	declared := fm.semanticMenuDeclared
 	fm.semanticMenuDeclared = false
@@ -2035,6 +2089,7 @@ type postedTaskResult struct {
 // generation on behalf of the unchanged task.
 func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	redrawGeneration := fm.redrawGeneration.Load()
+	redrawPendingBefore := len(fm.RedrawChan) != 0
 	menuStateBefore := fm.semanticMenuInputState()
 	fm.semanticMenuDeclared = false
 	execution := &postedTaskExecution{}
@@ -2055,6 +2110,7 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	task()
 	cleanupChanged := fm.cleanupDoneFrames()
 	directMenuPublished := fm.finishDeclaredSemanticMenuUpdate(menuStateBefore)
+	directTransitionPublished := fm.publishSemanticSceneTransition(menuStateBefore)
 	unchangedRequested := execution.redrawDecisionSet && !execution.needsRedraw && !cleanupChanged
 	unchangedAccepted := false
 	if tracker != nil {
@@ -2073,6 +2129,13 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	generationAfter := fm.redrawGeneration.Load()
 	directMenuOwnsTaskRedraw := directMenuPublished && !cleanupChanged &&
 		generationAfter == redrawGeneration
+	// A stack transition commonly calls Redraw itself (Push/RemoveFrame). The
+	// direct scene patch already owns that task mutation, so do not add another
+	// generation here. The normal render boundary still runs once: it consumes
+	// the bound direct-render permit, or falls back conservatively if another
+	// redraw raced it.
+	directTransitionOwnsTaskRedraw := directTransitionPublished &&
+		!redrawPendingBefore
 	pendingRedraw := false
 	if (unchangedAccepted && generationAfter == redrawGeneration) ||
 		directMenuOwnsTaskRedraw {
@@ -2086,7 +2149,11 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	if directMenuOwnsTaskRedraw && !pendingRedraw {
 		taskRedrawOmitted = true
 	}
-	omitRender := taskRedrawOmitted && !pendingRedraw
+	if directTransitionOwnsTaskRedraw {
+		taskRedrawOmitted = true
+	}
+	omitRender := taskRedrawOmitted && !pendingRedraw &&
+		!directTransitionOwnsTaskRedraw
 	frameManagerBenchmarkEvent("task.finished",
 		"taskId", execution.benchmarkTaskID,
 		"source", execution.benchmarkSource,
@@ -2098,6 +2165,7 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 		"unchangedRequested", unchangedRequested,
 		"unchangedAccepted", unchangedAccepted,
 		"directMenuPublished", directMenuPublished,
+		"directTransitionPublished", directTransitionPublished,
 		"redrawPending", pendingRedraw,
 		"taskRedrawOmitted", taskRedrawOmitted,
 		"omitRender", omitRender)
@@ -2603,10 +2671,18 @@ func (fm *frameManager) isDuplicateMouseMove(ev *vtinput.InputEvent) bool {
 func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) {
 	menuStateBefore := fm.semanticMenuInputState()
 	fm.semanticMenuDeclared = false
+	previousInputUpdateActive := fm.inputUpdateActive
+	previousInputUnchanged := fm.inputUnchanged
+	fm.inputUpdateActive = true
+	fm.inputUnchanged = false
 	semanticInputUnchanged := false
 	endSemanticUpdate := fm.beginSemanticSceneUpdate()
 	defer func() {
 		fm.finishSemanticMenuInput(menuStateBefore, ev)
+		fm.publishSemanticSceneTransition(menuStateBefore)
+		fm.publishDeclaredSemanticInputUnchanged(menuStateBefore)
+		fm.inputUpdateActive = previousInputUpdateActive
+		fm.inputUnchanged = previousInputUnchanged
 		endSemanticUpdate(semanticInputUnchanged)
 	}()
 	benchmarkHooks := InputEventBenchmarkHooks

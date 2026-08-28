@@ -1245,6 +1245,12 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) 
 		if entry.SizeCalculated {
 			metadataFlags |= 1 << 3
 		}
+		// A known empty file and a not-yet-enriched base row both carry Size=0.
+		// Keep that distinction in MetadataRevision so the later zero-byte
+		// enrichment invalidates an in-flight provisional metadata snapshot.
+		if entry.SizeKnown || entry.Size != 0 {
+			metadataFlags |= 1 << 4
+		}
 		_, _ = metadata.Write([]byte{metadataFlags})
 		if entry.Selected {
 			selectedEntryIDs = append(selectedEntryIDs, entryID)
@@ -1639,7 +1645,7 @@ func BuildPanelCatalogMetadataChunk(panelID, path string, catalogRevision, metad
 			Index:            source.index,
 			EntryID:          source.entryID,
 			LocalPath:        localPath,
-			Size:             source.item.Size,
+			Size:             semanticFileSizeValue(&entry),
 			SizeText:         semanticFileSize(&entry),
 			IsHidden:         source.item.IsHidden,
 			MTime:            source.item.MTime.Format("2006-01-02 15:04"),
@@ -1714,7 +1720,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 				entries[i].LocalPath = resolved
 			}
 		}
-		entries[i].Size = entry.Size
+		entries[i].Size = semanticFileSizeValue(entry)
 		entries[i].SizeText = semanticFileSize(entry)
 		entries[i].IsHidden = entry.IsHidden
 		entries[i].IsExecutable = entry.IsExecutable
@@ -1757,6 +1763,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		Active:                 active,
 		Path:                   fp.vfs.GetPath(),
 		Title:                  semanticTitle,
+		ShowFileInfo:           AppConfig.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
@@ -1839,6 +1846,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		Active:                 active,
 		Path:                   fp.vfs.GetPath(),
 		Title:                  semanticTitle,
+		ShowFileInfo:           AppConfig.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
@@ -1908,7 +1916,23 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 	}
 }
 
+func semanticFileSizeValue(entry *fileEntry) int64 {
+	if entry == nil {
+		return -1
+	}
+	// VFSItem.SizeKnown distinguishes a real empty file from the names/types
+	// phase of a phased directory read. Preserve compatibility with providers
+	// predating SizeKnown: every non-zero size was necessarily authoritative.
+	if entry.SizeKnown || entry.Size != 0 || entry.SizeCalculated {
+		return entry.Size
+	}
+	return -1
+}
+
 func semanticFileSize(entry *fileEntry) string {
+	if entry == nil {
+		return ""
+	}
 	if entry.IsDir {
 		if entry.SizeCalculated {
 			return formatIntWithSpaces(entry.Size)
@@ -1918,7 +1942,11 @@ func semanticFileSize(entry *fileEntry) string {
 		}
 		return ""
 	}
-	return formatIntWithSpaces(entry.Size)
+	size := semanticFileSizeValue(entry)
+	if size < 0 {
+		return ""
+	}
+	return formatIntWithSpaces(size)
 }
 
 func sortModeName(mode SortMode) string {
@@ -2546,18 +2574,37 @@ func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, text
 	return lineLen, textLen, false
 }
 
-func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	window := ev.semanticWindow()
+type semanticEditorCursorState struct {
+	line         int
+	pos          int
+	visualRow    int
+	visualColumn int
+	visible      bool
+	shape        string
+	absoluteRow  int64
+}
+
+func (state semanticEditorCursorState) ToMap() map[string]any {
+	return map[string]any{
+		"cursorLine":         state.line,
+		"cursorPos":          state.pos,
+		"cursorVisualRow":    state.visualRow,
+		"cursorVisualColumn": state.visualColumn,
+		"cursorVisible":      state.visible,
+		"cursorShape":        state.shape,
+		"cursorAbsoluteRow":  state.absoluteRow,
+	}
+}
+
+func (ev *EditorView) semanticSurfaceWidth() int {
 	width := ev.X2 - ev.X1 + 1
 	if ev.scrollBar != nil {
 		width--
 	}
-	window.rows = semanticStyledEditorWindowRows(ev, window, width)
-	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
-	visibleRows := window.rows
-	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
-		visibleRows = window.rows[window.viewportRow:visibleEnd]
-	}
+	return max(0, width)
+}
+
+func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	cursorOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	cursorAbsoluteRow, cursorAbsoluteColumn := ev.engine.LogicalToVisual(cursorOffset)
 	cursorVisualColumn := cursorAbsoluteColumn + ev.CursorVirtualSpaces - ev.ScrollLeft
@@ -2567,6 +2614,45 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if ev.overtype {
 		cursorShape = "block"
 	}
+	return semanticEditorCursorState{
+		line:         ev.CursorLine,
+		pos:          ev.CursorPos,
+		visualRow:    cursorAbsoluteRow - ev.ScrollTopRow,
+		visualColumn: cursorVisualColumn,
+		visible:      cursorVisible,
+		shape:        cursorShape,
+		absoluteRow:  int64(cursorAbsoluteRow),
+	}
+}
+
+func (ev *EditorView) queueSemanticCursorState() bool {
+	if ev == nil || ev.li == nil || ev.engine == nil || vtui.FrameManager == nil {
+		return false
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil || screen.Renderer == nil {
+		return false
+	}
+	renderer, ok := screen.Renderer.(interface {
+		QueueSurfaceState(string, map[string]any) bool
+	})
+	if !ok {
+		return false
+	}
+	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
+	return renderer.QueueSurfaceState(vtui.SemanticID(ev), state.ToMap())
+}
+
+func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
+	window := ev.semanticWindow()
+	width := ev.semanticSurfaceWidth()
+	window.rows = semanticStyledEditorWindowRows(ev, window, width)
+	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
+	visibleRows := window.rows
+	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
+		visibleRows = window.rows[window.viewportRow:visibleEnd]
+	}
+	cursor := ev.semanticCursorState(width)
 
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(ev),
@@ -2580,12 +2666,12 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		Saving:             ev.saving,
 		WordWrap:           ev.WordWrap,
 		Overtype:           ev.overtype,
-		CursorLine:         ev.CursorLine,
-		CursorPos:          ev.CursorPos,
-		CursorVisualRow:    cursorAbsoluteRow - ev.ScrollTopRow,
-		CursorVisualColumn: cursorVisualColumn,
-		CursorVisible:      cursorVisible,
-		CursorShape:        cursorShape,
+		CursorLine:         cursor.line,
+		CursorPos:          cursor.pos,
+		CursorVisualRow:    cursor.visualRow,
+		CursorVisualColumn: cursor.visualColumn,
+		CursorVisible:      cursor.visible,
+		CursorShape:        cursor.shape,
 		ScrollTop:          ev.ScrollTopRow,
 		ScrollLeft:         ev.ScrollLeft,
 		DocumentKey:        vtui.SemanticID(ev),
@@ -2599,7 +2685,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		ContentExtentKnown: ev.semanticExtentKnown,
 		ViewportRow:        window.viewportRow,
 		ViewportRows:       window.viewportRows,
-		CursorAbsoluteRow:  int64(cursorAbsoluteRow),
+		CursorAbsoluteRow:  cursor.absoluteRow,
 		WindowGeneration:   ev.semanticWindowGeneration,
 		Selection:          ev.selActive,
 		Rows:               visibleRows,

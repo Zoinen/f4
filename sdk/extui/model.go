@@ -118,6 +118,7 @@ type PanelModel struct {
 	Active                bool
 	Path                  string
 	Title                 string
+	ShowFileInfo          bool
 	GalleryLayoutMode     string
 	GalleryColumnCount    int
 	GalleryDensity        int
@@ -670,6 +671,7 @@ func (p PanelModel) ToMap() M {
 		"active":                 p.Active,
 		"path":                   p.Path,
 		"title":                  p.Title,
+		"showFileInfo":           p.ShowFileInfo,
 		"galleryLayoutMode":      p.GalleryLayoutMode,
 		"galleryColumnCount":     p.GalleryColumnCount,
 		"galleryDensity":         p.GalleryDensity,

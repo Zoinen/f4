@@ -14,6 +14,34 @@ import (
 	"time"
 )
 
+func TestNewUTF8EditorPieceTableUsesCompleteProbeDirectly(t *testing.T) {
+	content := []byte("<svg>\n  <path/>\n</svg>\n")
+	file := &vfs.MemoryReadAtCloser{Data: content}
+
+	pt, asyncBuf := newUTF8EditorPieceTable(file, int64(len(content)), content)
+	if asyncBuf != nil {
+		t.Fatal("complete encoding probe unexpectedly created an async buffer")
+	}
+	got, err := pt.Bytes()
+	if err != nil {
+		t.Fatalf("piece table bytes: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("piece table = %q, want %q", got, content)
+	}
+}
+
+func TestNewUTF8EditorPieceTableKeepsLargeFilesStreaming(t *testing.T) {
+	content := make([]byte, editorEncodingProbeSize+1)
+	file := &vfs.MemoryReadAtCloser{Data: content}
+
+	_, asyncBuf := newUTF8EditorPieceTable(file, int64(len(content)), content[:editorEncodingProbeSize])
+	if asyncBuf == nil {
+		t.Fatal("partial encoding probe should retain the async buffer path")
+	}
+	asyncBuf.Close()
+}
+
 func TestActionExecute_RemoteRejection(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -1333,6 +1361,70 @@ func TestActionPanelSettings_Flow(t *testing.T) {
 	top.SetExitCode(-1)
 	vtui.FrameManager.Pop()
 }
+
+func TestActionPanelSettings_FileInfoToggleDoesNotReloadCatalogs(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+
+	oldConfig := AppConfig
+	oldUserConfigPath := getUserConfigIniPath
+	AppConfig.ShowHiddenFiles = false
+	AppConfig.ShowPanelFileInfo = false
+	getUserConfigIniPath = func() string {
+		return filepath.Join(t.TempDir(), "settings.ini")
+	}
+	t.Cleanup(func() {
+		AppConfig = oldConfig
+		getUserConfigIniPath = oldUserConfigPath
+	})
+
+	pf := NewPanelsFrame()
+	t.Cleanup(pf.Close)
+	pf.ResizeConsole(80, 25)
+	left := pf.panels[0].(*FileSystemPanel)
+	right := pf.panels[1].(*FileSystemPanel)
+	waitForLoad(t, left)
+	waitForLoad(t, right)
+	leftGeneration := left.loadGeneration
+	rightGeneration := right.loadGeneration
+
+	actionPanelSettings(pf)
+	dlg, ok := vtui.FrameManager.GetTopFrame().(vtui.Container)
+	if !ok {
+		t.Fatal("panel settings dialog was not opened")
+	}
+	var fileInfo *vtui.Checkbox
+	var okButton *vtui.Button
+	for _, child := range dlg.GetChildren() {
+		switch control := child.(type) {
+		case *vtui.Checkbox:
+			if control.GetText() == Msg("PanelSettings.ShowFileInfo") {
+				fileInfo = control
+			}
+		case *vtui.Button:
+			if strings.Contains(control.GetText(), Msg("vtui.Ok")) {
+				okButton = control
+			}
+		}
+	}
+	if fileInfo == nil || okButton == nil {
+		t.Fatalf("panel settings controls missing: fileInfo=%p ok=%p",
+			fileInfo, okButton)
+	}
+	fileInfo.State = 1
+	okButton.OnClick()
+
+	if !AppConfig.ShowPanelFileInfo {
+		t.Fatal("file-information setting was not applied")
+	}
+	if left.loadGeneration != leftGeneration ||
+		right.loadGeneration != rightGeneration {
+		t.Fatalf("presentation-only setting reloaded catalogs: left %d→%d, right %d→%d",
+			leftGeneration, left.loadGeneration,
+			rightGeneration, right.loadGeneration)
+	}
+}
+
 func TestActionLanguage_Flow(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()

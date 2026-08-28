@@ -923,6 +923,12 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QQuickItem *panelPair = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
         (panelPair = fixture.item(QStringLiteral("persistentPanelPair"))), 3000);
+    QQuickItem *prewarmedDocument = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (prewarmedDocument = fixture.item(
+             QStringLiteral("documentSurface"))), 3000);
+    QVERIFY(!prewarmedDocument->isVisible());
+    QVERIFY(!prewarmedDocument->property("interactionActive").toBool());
 
     QVariantList items;
     for (int id = 1; id <= 30; ++id)
@@ -976,10 +982,10 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QCOMPARE(queueList->property("contentY").toReal(), frozenQueueY);
 
     fixture.shell.setScene(documentScene());
-    QQuickItem *document = nullptr;
+    QQuickItem *document = prewarmedDocument;
     QQuickItem *documentList = nullptr;
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (document = fixture.item(QStringLiteral("documentSurface"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(document->isVisible(), 3000);
+    QCOMPARE(fixture.item(QStringLiteral("documentSurface")), document);
     QTRY_VERIFY_WITH_TIMEOUT(
         (documentList = fixture.item(QStringLiteral("documentList"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(document->property("interactionActive").toBool(),

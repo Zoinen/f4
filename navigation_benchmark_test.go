@@ -310,6 +310,42 @@ func TestNavigationBenchmarkCorrelatesRawTabThroughDispatch(t *testing.T) {
 	}
 }
 
+func TestNavigationBenchmarkTracesEditorRouteKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		vk     uint16
+		action string
+		phase  string
+	}{
+		{name: "f4", vk: vtinput.VK_F4, action: "key.f4", phase: "f4-dispatch"},
+		{name: "escape", vk: vtinput.VK_ESCAPE, action: "key.escape", phase: "escape-dispatch"},
+		{name: "right", vk: vtinput.VK_RIGHT, action: "key.right", phase: "right-dispatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureNavigationBenchmark(t)
+			message := map[string]any{
+				"type": "key", "down": true, "vk": uint64(tc.vk),
+				"keySequence": uint64(7), "benchmarkTraceId": "qt:editor:7",
+			}
+			trace := navigationBenchmarkTraceForKey(message, nil)
+			if trace == nil || trace.action != tc.action {
+				t.Fatalf("trace = %#v, want action %q", trace, tc.action)
+			}
+			event := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+				VirtualKeyCode: tc.vk}
+			navigationBenchmarkInputQueueBegin(event, trace, 7, 0, 4)
+			navigationBenchmarkInputQueueEnd(event, true, 1)
+			navigationBenchmarkInputDispatchBegin(event)
+			navigationBenchmarkInputDispatchEnd(event)
+
+			events := navigationBenchmarkEvents(decodeNavigationBenchmarkRecords(t, output))
+			if got := events["go.scene.phase.published"]["phase"]; got != tc.phase {
+				t.Fatalf("phase = %#v, want %q", got, tc.phase)
+			}
+		})
+	}
+}
+
 func TestNavigationBenchmarkSceneMetadataAndTransportStages(t *testing.T) {
 	output := captureNavigationBenchmark(t)
 	trace := &navigationBenchmarkTrace{id: "qt:navigation:42", action: "panel.open", side: 0}

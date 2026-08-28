@@ -730,6 +730,142 @@ func TestExtUiRenderer_NativeDirectActivationDefersOneWholeRender(t *testing.T) 
 	}
 }
 
+func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		nativeSemanticSurfaceEnabled: true,
+	}
+	rows := make([]map[string]any, 500)
+	for index := range rows {
+		rows[index] = map[string]any{
+			"index": index, "text": strings.Repeat("document-row-", 20),
+		}
+	}
+	initial := map[string]any{
+		"type": "scene", "schema": "app", "version": extui.SceneVersion,
+		"width": 120, "height": 40, "activeScreen": 0,
+		"surface": map[string]any{
+			"id": "editor:music.svg", "kind": "editor",
+			"cursorLine": 0, "cursorPos": 0,
+			"cursorVisualRow": 0, "cursorVisualColumn": 0,
+			"cursorVisible": true, "cursorShape": "underline",
+			"cursorAbsoluteRow": int64(0), "rows": rows,
+		},
+	}
+	renderer.SetSemanticScene(initial)
+	renderer.Flush()
+	if _, err := extUiReadMessage(&wire); err != nil {
+		t.Fatalf("initial editor scene was not sent: %v", err)
+	}
+	if !renderer.nativeCellFrameSuppressed {
+		t.Fatal("native editor scene did not own the cell surface")
+	}
+
+	renderer.BeginSemanticSceneUpdate()
+	accepted := renderer.QueueSurfaceState("editor:music.svg", map[string]any{
+		"cursorLine": 0, "cursorPos": 1,
+		"cursorVisualRow": 0, "cursorVisualColumn": 1,
+		"cursorVisible": true, "cursorShape": "underline",
+		"cursorAbsoluteRow": int64(0),
+	})
+	if !accepted {
+		t.Fatal("bounded cursor state was rejected")
+	}
+	message, err := extUiReadMessage(&wire)
+	if err != nil {
+		t.Fatalf("cursor state was not sent immediately: %v", err)
+	}
+	if message["type"] != "scene_patch" ||
+		semanticInt64(message["baseRevision"]) != 1 ||
+		semanticInt64(message["revision"]) != 2 {
+		t.Fatalf("unexpected cursor patch envelope: %#v", message)
+	}
+	surfacePatch, ok := message["surface"].(map[string]any)
+	if !ok || surfacePatch["id"] != "editor:music.svg" {
+		t.Fatalf("cursor patch lost surface identity: %#v", message["surface"])
+	}
+	if semanticValueContainsKey(message, "rows") ||
+		semanticValueContainsKey(message, "windowRows") {
+		t.Fatalf("cursor patch leaked document content: %#v", message)
+	}
+	payload, err := msgpack.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) > 512 {
+		t.Fatalf("cursor patch is %d bytes; expected a tiny scalar packet", len(payload))
+	}
+	renderer.EndSemanticSceneUpdate()
+	renderer.BindSemanticRenderPhaseDeferral(19)
+	if !renderer.ConsumeSemanticRenderPhaseDeferral(19) {
+		t.Fatal("direct cursor state did not defer the redundant editor render")
+	}
+	installed := renderer.lastScene["surface"].(map[string]any)
+	if semanticInt(installed["cursorPos"]) != 1 || len(appMapSlice(installed["rows"])) != 500 {
+		t.Fatalf("cursor state did not preserve the installed document: %#v", installed)
+	}
+}
+
+func TestExtUiRenderer_DirectEditorCursorStateRejectsWrongSurface(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		nativeSemanticSurfaceEnabled: true,
+	}
+	renderer.SetSemanticScene(map[string]any{
+		"type": "scene", "schema": "app", "version": extui.SceneVersion,
+		"surface": map[string]any{
+			"id": "editor:one", "kind": "editor",
+			"cursorLine": 0, "cursorPos": 0,
+			"cursorVisualRow": 0, "cursorVisualColumn": 0,
+			"cursorVisible": true, "cursorShape": "underline",
+			"cursorAbsoluteRow": int64(0),
+		},
+	})
+	renderer.Flush()
+	_, _ = extUiReadMessage(&wire)
+	renderer.BeginSemanticSceneUpdate()
+	if renderer.QueueSurfaceState("editor:replacement", map[string]any{
+		"cursorLine": 0, "cursorPos": 1,
+		"cursorVisualRow": 0, "cursorVisualColumn": 1,
+		"cursorVisible": true, "cursorShape": "underline",
+		"cursorAbsoluteRow": int64(0),
+	}) {
+		t.Fatal("cursor state for a replacement surface was accepted")
+	}
+	if wire.Len() != 0 || renderer.sceneRevision != 1 {
+		t.Fatalf("rejected cursor state changed wire/revision: bytes=%d revision=%d",
+			wire.Len(), renderer.sceneRevision)
+	}
+	renderer.EndSemanticSceneUpdate()
+}
+
+func TestExtUiRenderer_ExplicitUnchangedInputDefersNativeRender(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		nativeSemanticSurfaceEnabled: true,
+	}
+	renderer.SetSemanticScene(panelActivationFastPathScene(0, `C:\large`))
+	renderer.Flush()
+	_, _ = extUiReadMessage(&wire)
+
+	renderer.BeginSemanticSceneUpdate()
+	if !renderer.SetSemanticInputUnchanged() {
+		t.Fatal("explicit unchanged input proof was rejected")
+	}
+	renderer.EndSemanticSceneUpdate()
+	renderer.BindSemanticRenderPhaseDeferral(31)
+	if !renderer.ConsumeSemanticRenderPhaseDeferral(31) {
+		t.Fatal("unchanged native input did not defer its intermediate render")
+	}
+	if wire.Len() != 0 || renderer.sceneRevision != 1 {
+		t.Fatalf("unchanged input wrote protocol state: bytes=%d revision=%d",
+			wire.Len(), renderer.sceneRevision)
+	}
+}
+
 func TestExtUiRenderer_DirectActivationSuppressesSceneInCellFallback(t *testing.T) {
 	var wire bytes.Buffer
 	renderer := &ExtUiRenderer{
@@ -1648,6 +1784,81 @@ func TestExtUiRenderer_SuppressesHiddenNativeCellFrameAndRestoresFallback(t *tes
 	if renderer.fallbackRevealPending || renderer.pendingScene != nil {
 		t.Fatalf("fallback reveal remained pending: pending=%v scene=%#v",
 			renderer.fallbackRevealPending, renderer.pendingScene)
+	}
+}
+
+func TestExtUiRenderer_IncrementalTextPresentationRevealIsAtomic(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := NewExtUiRenderer(nil, &extUiMessageSender{w: &wire})
+	renderer.nativeSemanticSurfaceEnabled = true
+	nativeScene := map[string]any{
+		"type": "scene", "schema": extui.Schema,
+		"version": extui.SceneVersion, "presentation": "gui",
+		"width": 1, "height": 1, "activeScreen": 0,
+		"shell": map[string]any{
+			"id": "shell", "kind": "shell", "mode": "panels",
+			"activePanel": 0, "showPanels": true,
+		},
+	}
+	cells := []vtui.CharInfo{{Char: 'x', Attributes: 7}}
+
+	renderer.SetSemanticScene(nativeScene)
+	renderer.Render(cells, nil, 1, 1, true)
+	renderer.Flush()
+	initial, err := extUiReadMessage(&wire)
+	if err != nil || initial["type"] != "scene" {
+		t.Fatalf("initial native scene = %#v, %v", initial, err)
+	}
+
+	patch := extui.ScenePatch{
+		BaseRevision: renderer.sceneRevision,
+		Revision:     renderer.sceneRevision + 1,
+		Root: &extui.MapPatch{Set: map[string]any{
+			"presentation": "text",
+		}},
+	}
+	// Reproduce the state established by SetSemanticSceneIncremental after it
+	// applies the logical patch and arms the compatibility-grid reveal.
+	renderer.mu.Lock()
+	renderer.sceneRevision = patch.Revision
+	renderer.pendingScenePatch = patch.ToMap()
+	renderer.lastScene = semanticSceneStructuralMapCopy(renderer.lastScene)
+	applyAppScenePatchToSnapshot(renderer.lastScene, patch)
+	renderer.lastCompactScene = compactAppSemanticScene(renderer.lastScene)
+	renderer.setNativeCellFrameSuppression(renderer.lastScene)
+	renderer.mu.Unlock()
+
+	if !renderer.fallbackRevealPending || renderer.pendingScenePatch == nil {
+		t.Fatalf("incremental fallback was not armed: pending=%v patch=%#v",
+			renderer.fallbackRevealPending, renderer.pendingScenePatch)
+	}
+	// The retained native grid may be unchanged, but its first visible frame
+	// must still be complete and precede the presentation patch atomically.
+	renderer.Render(cells, cells, 1, 1, false)
+	renderer.Flush()
+	for index, want := range []string{"frame", "cursor", "scene_patch"} {
+		message, readErr := extUiReadMessage(&wire)
+		if readErr != nil || message["type"] != want {
+			t.Fatalf("incremental fallback message %d = %#v, %v; want %q",
+				index, message, readErr, want)
+		}
+		if want == "frame" && message["full"] != true {
+			t.Fatalf("incremental fallback frame is not full: %#v", message)
+		}
+		if want == "scene_patch" {
+			root, _ := message["root"].(map[string]any)
+			set, _ := root["set"].(map[string]any)
+			if set["presentation"] != "text" {
+				t.Fatalf("incremental fallback patch = %#v", message)
+			}
+		}
+	}
+	if wire.Len() != 0 {
+		t.Fatalf("unexpected incremental fallback messages: %d bytes", wire.Len())
+	}
+	if renderer.fallbackRevealPending || renderer.pendingScenePatch != nil {
+		t.Fatalf("incremental fallback remained pending: pending=%v patch=%#v",
+			renderer.fallbackRevealPending, renderer.pendingScenePatch)
 	}
 }
 

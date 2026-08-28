@@ -59,7 +59,10 @@ func colorerCrossAttr(region string, base uint64) uint64 {
 	if !colorerIsActive() {
 		return base
 	}
-	rd := colorerGetRegionDefine(region)
+	// Crosshair colours are part of the render path. Use the cache populated by
+	// the asynchronously initialized Colorer session; until then the semantic
+	// palette is the correct non-blocking fallback.
+	rd := cachedColorerRegionDefine(region)
 	if rd == nil {
 		return base
 	}

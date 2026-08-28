@@ -284,6 +284,7 @@ QVariantMap panel(int side, bool active)
         {QStringLiteral("active"), active},
         {QStringLiteral("path"), QStringLiteral("/tmp/side-%1").arg(side)},
         {QStringLiteral("title"), QStringLiteral("side-%1").arg(side)},
+        {QStringLiteral("showFileInfo"), true},
         {QStringLiteral("viewModeName"), QStringLiteral("detailed")},
         {QStringLiteral("presentation"), QStringLiteral("list")},
         {QStringLiteral("sourceKind"), QStringLiteral("local")},
@@ -587,6 +588,8 @@ private slots:
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void readyUnifiedRendererLoaderIsVisible();
+    void panelFileInfoSettingTogglesFooterWithoutRebuildingPanel();
+    void fastFindOverlayIsIndependentFromPanelFooter();
     void galleryPanelColorsAreGroupedAndRemainLive();
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
@@ -718,6 +721,174 @@ void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
     QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(loader->isVisible(), 3000);
     QVERIFY(!failure->isVisible());
+}
+
+void F4QuickViewSurfaceTests::panelFileInfoSettingTogglesFooterWithoutRebuildingPanel()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
+    QQuickItem *const footer = fixture.item(QStringLiteral("panelStatus-0"));
+    QQuickItem *const loader = fixture.item(QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(leftPanel);
+    QVERIFY(footer);
+    QVERIFY(loader);
+    QTRY_VERIFY_WITH_TIMEOUT(loader->property("item").value<QObject *>(), 3000);
+    QObject *const galleryHost = loader->property("item").value<QObject *>();
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(footer->height() > 0.0, 3000);
+    const qreal footerHeight = footer->height();
+    const qreal contentHeightWithFooter = loader->height();
+
+    QVariantMap projectedPanel = panel(0, true);
+    projectedPanel.remove(QStringLiteral("entries"));
+    projectedPanel.remove(QStringLiteral("highlightStyles"));
+    projectedPanel.insert(QStringLiteral("showFileInfo"), false);
+    QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(footer->height()) < 0.01, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(loader->height() >= contentHeightWithFooter + footerHeight - 1.0, 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(fixture.item(QStringLiteral("galleryPanelContent-0")), loader);
+    QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
+
+    projectedPanel.insert(QStringLiteral("showFileInfo"), true);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(footer->height() - footerHeight) < 0.01, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(loader->height() - contentHeightWithFooter) < 1.0, 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
+}
+
+void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
+    QQuickItem *const footer = fixture.item(QStringLiteral("panelStatus-0"));
+    QQuickItem *const footerSelection = fixture.item(
+        QStringLiteral("panelStatusSelection-0"));
+    QQuickItem *const overlay = fixture.item(
+        QStringLiteral("panelFastFindOverlay-0"));
+    QQuickItem *const overlayText = fixture.item(
+        QStringLiteral("panelFastFindText-0"));
+    QQuickItem *const overlayCursor = fixture.item(
+        QStringLiteral("panelFastFindCursor-0"));
+    QQuickItem *const loader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(leftPanel);
+    QVERIFY(footer);
+    QVERIFY(footerSelection);
+    QVERIFY(overlay);
+    QVERIFY(!fixture.item(QStringLiteral("panelFastFindHeader-0")));
+    QVERIFY(overlayText);
+    QVERIFY(overlayCursor);
+    QVERIFY(loader);
+    QTRY_VERIFY_WITH_TIMEOUT(loader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const galleryHost = loader->property("item").value<QObject *>();
+    QVERIFY(!overlay->isVisible());
+
+    QVariantMap projectedPanel = panel(0, true);
+    projectedPanel.remove(QStringLiteral("entries"));
+    projectedPanel.remove(QStringLiteral("highlightStyles"));
+    projectedPanel.insert(QStringLiteral("showFileInfo"), false);
+    projectedPanel.insert(QStringLiteral("fastFind"), false);
+    projectedPanel.insert(QStringLiteral("fastFindText"), QString{});
+    projectedPanel.insert(QStringLiteral("selectedCount"), 7);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!overlay->isVisible(), 3000);
+    const qreal contentHeightWithoutFooter = loader->height();
+
+    projectedPanel.insert(QStringLiteral("fastFind"), true);
+    projectedPanel.insert(QStringLiteral("fastFindText"),
+                          QStringLiteral("needle"));
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+
+    QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(overlayCursor->isVisible(), 1000);
+    QCOMPARE(overlayText->property("text").toString(),
+             QStringLiteral("needle"));
+    QVERIFY(overlayCursor->x() > overlayText->x());
+    QVERIFY(overlayCursor->x() < overlayText->x() + overlayText->width());
+    const qreal dpr = fixture.window->property("dpr").toReal();
+    const qreal expectedCursorWidth = std::round(2.0 * dpr) / dpr;
+    QCOMPARE(overlayCursor->width(), expectedCursorWidth);
+    QVERIFY(overlayCursor->height() > 0.0);
+    QCOMPARE(footerSelection->property("text").toString(),
+             QStringLiteral("7 selected"));
+    QVERIFY(!footer->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(overlay->x() + overlay->width() / 2.0
+             - leftPanel->width() / 2.0) < 0.01,
+        1000);
+    QVERIFY(overlay->property("radius").toReal() > 0.0);
+    QVERIFY(qAbs(loader->height() - contentHeightWithoutFooter) < 0.01);
+    QVERIFY(overlay->z() > loader->z());
+    QVERIFY(overlay->y() >= loader->y());
+    QVERIFY(overlay->y() + overlay->height()
+            <= loader->y() + loader->height() + 0.01);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
+
+    const QColor dialogBackground(QStringLiteral("#26384a"));
+    const QColor queryTextColor(QStringLiteral("#f4d35e"));
+    fixture.window->setProperty("dialogBg", dialogBackground);
+    fixture.window->setProperty("textColor", queryTextColor);
+    QTRY_COMPARE_WITH_TIMEOUT(overlay->property("color").value<QColor>(),
+                               dialogBackground, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(overlayText->property("color").value<QColor>(),
+                              queryTextColor, 1000);
+
+    projectedPanel.insert(QStringLiteral("showFileInfo"), true);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 3000);
+    QVERIFY(overlay->y() + overlay->height() <= footer->y() + 0.01);
+    QVERIFY(loader->height() < contentHeightWithoutFooter);
+
+    projectedPanel.insert(QStringLiteral("showFileInfo"), false);
+    projectedPanel.insert(QStringLiteral("fastFind"), false);
+    projectedPanel.insert(QStringLiteral("fastFindText"), QString{});
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!overlay->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!overlayCursor->isVisible(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(loader->height() - contentHeightWithoutFooter) < 0.01, 3000);
+    QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
+    QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
 }
 
 void F4QuickViewSurfaceTests::semanticHorizontalSplitStaysOnNativeSurface()
@@ -2802,15 +2973,30 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QuickViewFixture fixture(scene);
     QVERIFY(fixture.window);
     auto *presentation = fixture.item(QStringLiteral("commandLinePresentation"));
+    auto *commandLineView = fixture.item(QStringLiteral("commandLineView"));
     auto *promptItem = fixture.item(QStringLiteral("commandLinePrompt"));
     auto *inputItem = fixture.item(QStringLiteral("commandLineInput"));
     auto *cursor = fixture.item(QStringLiteral("commandLineCursor"));
     QVERIFY(presentation);
+    QVERIFY(commandLineView);
     QVERIFY(promptItem);
     QVERIFY(inputItem);
     QVERIFY(cursor);
     QCOMPARE(fixture.window->property("commandLineBg").value<QColor>().alpha(),
              0);
+    QCOMPARE(commandLineView->property("color").value<QColor>(),
+             QColor(Qt::transparent));
+    const QColor themedCommandLineBackground(QStringLiteral("#264653"));
+    QVERIFY(fixture.window->setProperty("commandLineBg",
+                                        themedCommandLineBackground));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        commandLineView->property("color").value<QColor>(),
+        themedCommandLineBackground, 1000);
+    QVERIFY(fixture.window->setProperty("commandLineBg",
+                                        QColor(Qt::transparent)));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        commandLineView->property("color").value<QColor>(),
+        QColor(Qt::transparent), 1000);
     QVERIFY2(presentation->width() > fixture.window->width() * 0.90,
              "the restored semantic command renderer must use the full row");
     QCOMPARE(presentation->x(), 16.0);

@@ -18,6 +18,22 @@ type appIncrementalScene struct {
 	Panels map[int]*FileSystemPanel
 }
 
+func semanticIncrementalStageStart() int64 {
+	if !navigationBenchmarkIsEnabled() {
+		return 0
+	}
+	return navigationBenchmarkMonotonicNs()
+}
+
+func semanticIncrementalStageDone(stage string, started int64, fields ...any) {
+	if started == 0 {
+		return
+	}
+	fields = append(fields, "stage", stage,
+		"durationNs", navigationBenchmarkMonotonicNs()-started)
+	navigationBenchmarkUIEvent("scene.incremental.stage", fields...)
+}
+
 func appSemanticRootFromHeader(header map[string]any) extui.Scene {
 	scene := extui.Scene{
 		Width:          semanticInt(header["width"]),
@@ -43,9 +59,19 @@ func appSemanticRootFromHeader(header map[string]any) extui.Scene {
 }
 
 func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extui.ShellModel, map[int]*FileSystemPanel, bool) {
+	totalStarted := semanticIncrementalStageStart()
+	started := semanticIncrementalStageStart()
+	title := strings.TrimSpace(pf.GetTitle())
+	semanticIncrementalStageDone("shell.title", started)
+	started = semanticIncrementalStageStart()
+	terminalBusy := pf.isPtyBusy()
+	semanticIncrementalStageDone("shell.pty_busy", started)
+	started = semanticIncrementalStageStart()
+	panelLayout := pf.semanticPanelLayoutModel(ctx)
+	semanticIncrementalStageDone("shell.panel_layout", started)
 	shell := extui.ShellModel{
 		ID:             vtui.SemanticID(pf),
-		Title:          strings.TrimSpace(pf.GetTitle()),
+		Title:          title,
 		Mode:           "panels",
 		ActivePanel:    pf.activeIdx,
 		ShowPanels:     pf.showPanels,
@@ -53,9 +79,9 @@ func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 		ShowRightPanel: pf.showRightPanel,
 		Wide:           pf.wide,
 		WidePanel:      pf.widePanel,
-		PanelLayout:    pf.semanticPanelLayoutModel(ctx),
+		PanelLayout:    panelLayout,
 		ShowKeyBar:     pf.showKeyBar,
-		TerminalBusy:   pf.isPtyBusy(),
+		TerminalBusy:   terminalBusy,
 		TerminalActive: !pf.showPanels,
 	}
 	if !pf.showPanels {
@@ -64,8 +90,11 @@ func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 	panels := make(map[int]*FileSystemPanel)
 	for side, panel := range pf.panels {
 		if fsp, ok := panel.(*FileSystemPanel); ok {
+			started = semanticIncrementalStageStart()
 			header, valid := fsp.semanticPanelHeaderModel(ctx, side, side == pf.activeIdx)
+			semanticIncrementalStageDone("shell.panel_header", started, "side", side)
 			if !valid {
+				semanticIncrementalStageDone("shell.total", totalStarted, "valid", false)
 				return extui.ShellModel{}, nil, false
 			}
 			shell.Panels = append(shell.Panels, header)
@@ -87,10 +116,14 @@ func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 		}
 	}
 	if pf.cmdLine != nil {
+		started = semanticIncrementalStageStart()
 		shell.CommandLine = pf.cmdLine.semanticModel(ctx)
+		semanticIncrementalStageDone("shell.command_line", started)
 	}
 	if pf.termView != nil {
+		started = semanticIncrementalStageStart()
 		shell.Terminal = pf.termView.semanticModel(ctx)
+		semanticIncrementalStageDone("shell.terminal", started)
 	}
 	if MacroMgr != nil && MacroMgr.Recording {
 		shell.MacroRecording = true
@@ -99,6 +132,7 @@ func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 		shell.Fallback = true
 		shell.FallbackReason = reason
 	}
+	semanticIncrementalStageDone("shell.total", totalStarted, "valid", true)
 	return shell, panels, true
 }
 
@@ -106,12 +140,15 @@ func (pf *PanelsFrame) semanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 // file catalog. Document/terminal rows are viewport-bounded; popup and dialog
 // models are bounded by their own controls.
 func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, bool) {
+	totalStarted := semanticIncrementalStageStart()
 	if vtui.FrameManager == nil {
 		navigationBenchmarkIncrementalEvent("scene.incremental.projection_rejected",
 			"reason", "no_frame_manager")
 		return nil, false
 	}
+	started := semanticIncrementalStageStart()
 	header := vtui.FrameManager.ExportSemanticSceneHeader()
+	semanticIncrementalStageDone("projection.scene_header", started)
 	if header == nil {
 		navigationBenchmarkIncrementalEvent("scene.incremental.projection_rejected",
 			"reason", "no_scene_header")
@@ -123,13 +160,19 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 			ActiveScreen: semanticInt(header["activeScreen"]),
 		}
 	}
+	started = semanticIncrementalStageStart()
 	autocompletes := appActiveAutocompleteMenus()
 	vmenus := appActiveVMenus()
+	semanticIncrementalStageDone("projection.active_menus", started)
 	var elements map[string]vtui.UIElement
+	started = semanticIncrementalStageStart()
 	scene := appSemanticRootFromHeader(header)
+	semanticIncrementalStageDone("projection.root_header", started)
 
 	result := &appIncrementalScene{Panels: make(map[int]*FileSystemPanel)}
+	started = semanticIncrementalStageStart()
 	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	semanticIncrementalStageDone("projection.active_frames", started, "frameCount", len(frames))
 	for _, frame := range frames {
 		// Every vtui screen owns a structural Desktop at the bottom of its
 		// stack. It is not an application surface when another frame covers it,
@@ -147,7 +190,9 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 			continue
 		}
 		if panels, ok := frame.(*PanelsFrame); ok {
+			started = semanticIncrementalStageStart()
 			shell, livePanels, valid := panels.semanticIncrementalShell(ctx)
+			semanticIncrementalStageDone("projection.panels_shell", started)
 			if !valid {
 				navigationBenchmarkIncrementalEvent("scene.incremental.projection_rejected",
 					"reason", "invalid_panel_header",
@@ -167,7 +212,10 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 				"frameType", fmt.Sprintf("%T", frame))
 			return nil, false
 		}
+		started = semanticIncrementalStageStart()
 		node := provider.SemanticNode(ctx)
+		semanticIncrementalStageDone("projection.surface_node", started,
+			"frameType", fmt.Sprintf("%T", frame))
 		switch semanticString(node["kind"]) {
 		case "dialog", "window":
 			if elements == nil {
@@ -190,11 +238,16 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 			return nil, false
 		}
 	}
+	started = semanticIncrementalStageStart()
 	for _, menu := range vmenus {
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	semanticIncrementalStageDone("projection.menu_models", started)
+	started = semanticIncrementalStageStart()
 	result.Scene = compactAppSemanticScene(scene.ToMap())
+	semanticIncrementalStageDone("projection.compact", started)
+	semanticIncrementalStageDone("projection.total", totalStarted)
 	return result, true
 }
 
@@ -344,6 +397,19 @@ func semanticPanelStateForPatch(panel map[string]any) map[string]any {
 		}
 		state[key] = value
 	}
+	// state_update is merged into the frontend's cached row-free panel. The
+	// quick-search fields are transient, so an omitted empty map/color would
+	// leave the previous query's highlights in that cache. Keep both fields
+	// explicit whenever this is a semantic panel state, including the
+	// no-match and closed-search states.
+	if _, hasFastFind := panel["fastFind"]; hasFastFind {
+		if _, present := state["fastFindMatches"]; !present {
+			state["fastFindMatches"] = map[string]any{}
+		}
+		if _, present := state["fastFindMatchColor"]; !present {
+			state["fastFindMatchColor"] = ""
+		}
+	}
 	return state
 }
 
@@ -366,11 +432,31 @@ func buildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 	previousShell, previousHasShell := previous["shell"].(map[string]any)
 	currentShell, currentHasShell := current.Scene["shell"].(map[string]any)
 	if previousHasShell != currentHasShell {
-		navigationBenchmarkIncrementalEvent("scene.incremental.patch_rejected",
-			"reason", "shell_presence_changed",
-			"previousHasShell", previousHasShell,
-			"currentHasShell", currentHasShell)
-		return extui.ScenePatch{}, nil, false
+		// Switching between commander panels and a standalone document changes
+		// the root shape, but not any catalog. Carry the row-free shell as one
+		// bounded root value (or clear it on entry) instead of falling back to
+		// ExportSemanticScene, which would walk every hidden file entry.
+		if patch.Root == nil {
+			patch.Root = &extui.MapPatch{}
+		}
+		if currentHasShell {
+			if patch.Root.Set == nil {
+				patch.Root.Set = make(map[string]any)
+			}
+			patch.Root.Set["shell"] = currentShell
+		} else {
+			patch.Root.Clear = append(patch.Root.Clear, "shell")
+			sort.Strings(patch.Root.Clear)
+		}
+		rootSetKeys := make([]string, 0, len(patch.Root.Set))
+		for key := range patch.Root.Set {
+			rootSetKeys = append(rootSetKeys, key)
+		}
+		sort.Strings(rootSetKeys)
+		navigationBenchmarkIncrementalEvent("scene.incremental.structural_patch",
+			"rootSetKeys", strings.Join(rootSetKeys, ","),
+			"rootClearKeys", strings.Join(patch.Root.Clear, ","))
+		return patch, nil, true
 	}
 	var acknowledgements []semanticSelectionAcknowledgement
 	if currentHasShell {
@@ -447,8 +533,60 @@ func buildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 	return patch, acknowledgements, true
 }
 
+// buildAppWorkspaceActivationPatch is the panels-to-panels counterpart of the
+// structural document transition above. Every catalog is already resident in
+// a panel-identity keyed native Gallery session, so replacing the row-free
+// shell is complete and authoritative. A cache miss remains conservative and
+// falls back to the ordinary full scene exactly once; that full scene (or the
+// idle panel_cache warmup) establishes the tuple for future activations.
+func buildAppWorkspaceActivationPatch(previous map[string]any,
+	current *appIncrementalScene,
+	delivered map[string]semanticDeliveredPanelCatalog,
+) (extui.ScenePatch, bool) {
+	if previous == nil || current == nil || current.Scene == nil ||
+		semanticInt(previous["activeScreen"]) == semanticInt(current.Scene["activeScreen"]) {
+		return extui.ScenePatch{}, false
+	}
+	previousShell, previousHasShell := previous["shell"].(map[string]any)
+	currentShell, currentHasShell := current.Scene["shell"].(map[string]any)
+	if !previousHasShell || previousShell == nil ||
+		!currentHasShell || currentShell == nil {
+		return extui.ScenePatch{}, false
+	}
+	currentPanels := semanticPanelsBySide(current.Scene)
+	if len(currentPanels) == 0 {
+		return extui.ScenePatch{}, false
+	}
+	for side, panel := range currentPanels {
+		if !semanticPanelCatalogWasDelivered(panel, delivered) {
+			navigationBenchmarkIncrementalEvent(
+				"scene.incremental.workspace_cache_miss",
+				"side", side,
+				"panelId", semanticString(panel["id"]),
+				"catalogRevision", semanticInt64(panel["catalogRevision"]),
+				"selectionRevision", semanticInt64(panel["selectionRevision"]))
+			return extui.ScenePatch{}, false
+		}
+	}
+
+	rootSet, rootClear := semanticPatchChangedKeys(
+		previous, current.Scene, incrementalRootPatchKeys)
+	if rootSet == nil {
+		rootSet = make(map[string]any)
+	}
+	rootSet["shell"] = currentShell
+	navigationBenchmarkIncrementalEvent(
+		"scene.incremental.workspace_activation",
+		"fromScreen", semanticInt(previous["activeScreen"]),
+		"toScreen", semanticInt(current.Scene["activeScreen"]),
+		"panelCount", len(currentPanels))
+	return extui.ScenePatch{Root: &extui.MapPatch{
+		Set: rootSet, Clear: rootClear,
+	}}, true
+}
+
 func scenePatchEmpty(patch extui.ScenePatch) bool {
-	return patch.Root == nil && patch.Shell == nil
+	return patch.Root == nil && patch.Shell == nil && patch.Surface == nil
 }
 
 func applyMapPatch(target map[string]any, patch *extui.MapPatch) {
@@ -473,7 +611,7 @@ func semanticSceneStructuralCopy(value any) any {
 		copyMap := make(map[string]any, len(typed))
 		for key, nested := range typed {
 			switch key {
-			case "shell", "panels", "frames", "screens", "legacy":
+			case "shell", "surface", "panels", "frames", "screens", "legacy":
 				copyMap[key] = semanticSceneStructuralCopy(nested)
 			default:
 				copyMap[key] = nested
@@ -543,6 +681,13 @@ func applyAppScenePatchToSnapshot(scene map[string]any, patch extui.ScenePatch) 
 		return
 	}
 	applyMapPatch(scene, patch.Root)
+	if patch.Surface != nil {
+		surface, _ := scene["surface"].(map[string]any)
+		if surface != nil && semanticString(surface["id"]) == patch.Surface.SurfaceID {
+			applyMapPatch(surface, &patch.Surface.MapPatch)
+			scene["surface"] = surface
+		}
+	}
 	if patch.Shell == nil {
 		return
 	}

@@ -24,8 +24,9 @@ type PTY struct {
 	inWriter  *os.File
 	outReader *os.File
 
-	lastBusyCheck time.Time
-	lastBusyState bool
+	lastBusyCheck    time.Time
+	lastBusyState    bool
+	busyCheckPending bool
 
 	Cmd *exec.Cmd //for interface compatability with Pty_unix, DO NOT USE
 }
@@ -118,6 +119,9 @@ func (p *PTY) Run(name string, args ...string) error {
 	}
 
 	p.process = pi
+	p.lastBusyCheck = time.Time{}
+	p.lastBusyState = false
+	p.busyCheckPending = false
 	return nil
 }
 
@@ -146,30 +150,43 @@ func (p *PTY) Wait() error {
 
 func (p *PTY) IsBusy() bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.process == nil {
+		p.mu.Unlock()
 		return false
 	}
 
-	// Increase cache timeout to 1 second to prevent high CPU usage
-	// from CreateToolhelp32Snapshot during idle UI redraws.
-	if time.Since(p.lastBusyCheck) < 1000*time.Millisecond {
-		return p.lastBusyState
+	state := p.lastBusyState
+	// Enumerating every Windows process costs several milliseconds on a busy
+	// machine. IsBusy runs on the UI thread during layout, hotkey checks and
+	// semantic projection, so a synchronous refresh used to stall otherwise
+	// tiny cursor/menu/surface updates. Keep the existing one-second cache but
+	// refresh it off-thread; callers receive the last known state immediately.
+	if time.Since(p.lastBusyCheck) < time.Second || p.busyCheckPending {
+		p.mu.Unlock()
+		return state
 	}
+	processHandle := p.process.Process
+	processID := p.process.ProcessId
+	p.busyCheckPending = true
+	probe := windowsPTYBusyProbe
+	p.mu.Unlock()
 
+	go p.refreshBusyState(processHandle, processID, probe)
+	return state
+}
+
+type windowsPTYBusyProbeFunc func(windows.Handle, uint32) bool
+
+var windowsPTYBusyProbe windowsPTYBusyProbeFunc = probeWindowsPTYBusy
+
+func probeWindowsPTYBusy(processHandle windows.Handle, processID uint32) bool {
 	var exitCode uint32
-	err := windows.GetExitCodeProcess(p.process.Process, &exitCode)
-	if err != nil || exitCode != 259 { // 259 = STILL_ACTIVE
-		p.lastBusyState = false
-		p.lastBusyCheck = time.Now()
+	if err := windows.GetExitCodeProcess(processHandle, &exitCode); err != nil || exitCode != 259 { // 259 = STILL_ACTIVE
 		return false
 	}
 
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		p.lastBusyState = false
-		p.lastBusyCheck = time.Now()
 		return false
 	}
 	defer windows.CloseHandle(snapshot)
@@ -178,15 +195,11 @@ func (p *PTY) IsBusy() bool {
 	pe32.Size = uint32(unsafe.Sizeof(pe32))
 
 	if err := windows.Process32First(snapshot, &pe32); err != nil {
-		p.lastBusyState = false
-		p.lastBusyCheck = time.Now()
 		return false
 	}
 
 	for {
-		if pe32.ParentProcessID == p.process.ProcessId {
-			p.lastBusyState = true
-			p.lastBusyCheck = time.Now()
+		if pe32.ParentProcessID == processID {
 			return true
 		}
 		if err := windows.Process32Next(snapshot, &pe32); err != nil {
@@ -194,9 +207,26 @@ func (p *PTY) IsBusy() bool {
 		}
 	}
 
-	p.lastBusyState = false
-	p.lastBusyCheck = time.Now()
 	return false
+}
+
+func (p *PTY) refreshBusyState(processHandle windows.Handle, processID uint32, probe windowsPTYBusyProbeFunc) {
+	state := probe(processHandle, processID)
+
+	p.mu.Lock()
+	p.busyCheckPending = false
+	if p.process == nil || p.process.Process != processHandle || p.process.ProcessId != processID {
+		p.mu.Unlock()
+		return
+	}
+	changed := p.lastBusyState != state
+	p.lastBusyState = state
+	p.lastBusyCheck = time.Now()
+	p.mu.Unlock()
+
+	if changed && vtui.FrameManager != nil {
+		vtui.FrameManager.Redraw()
+	}
 }
 
 func GetSystemShell() string {

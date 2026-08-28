@@ -366,6 +366,7 @@ class F4DocumentSurfaceTests final : public QObject
 private slots:
     void initTestCase();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
+    void standaloneDocumentsEndAtSharedKeyBarSeparator();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
     void activeFlickRebasesAtomicallyAcrossWindowAck();
@@ -408,6 +409,46 @@ void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
         fixture.surface, "runBackground", Q_RETURN_ARG(QVariant, returned),
         Q_ARG(QVariant, QStringLiteral("#884422"))));
     QCOMPARE(QColor(returned.toString()), QColor(QStringLiteral("#884422")));
+}
+
+void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()
+{
+    const auto sceneWithKeyBar = [](const QVariantMap &frame) {
+        QVariantMap scene = documentScene(frame);
+        scene.insert(QStringLiteral("keyBar"), QVariantMap{
+            {QStringLiteral("visible"), true},
+            {QStringLiteral("items"), QVariantList{
+                 QVariantMap{{QStringLiteral("key"), QStringLiteral("F1")},
+                             {QStringLiteral("text"), QStringLiteral("Help")}},
+             }},
+        });
+        return scene;
+    };
+    const auto verify = [&](const QVariantMap &frame) {
+        DocumentFixture fixture(sceneWithKeyBar(frame));
+        QVERIFY(fixture.ready());
+        auto *keyBar = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("keyBar"));
+        auto *separator = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("keyBarTopSeparator"));
+        QVERIFY(keyBar);
+        QVERIFY(separator);
+        QTRY_VERIFY_WITH_TIMEOUT(keyBar->isVisible(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.list->height() > 0, 3000);
+
+        const qreal listBottom = fixture.list->mapToScene(
+            QPointF(0, fixture.list->height())).y();
+        const qreal keyBarTop = keyBar->mapToScene(QPointF(0, 0)).y();
+        const qreal separatorTop = separator->mapToScene(QPointF(0, 0)).y();
+        QVERIFY(qAbs(listBottom - keyBarTop) < 0.001);
+        QVERIFY(qAbs(separatorTop - keyBarTop) < 0.001);
+        QVERIFY(separator->height() > 0);
+        QVERIFY(qAbs(fixture.surface->property("bottomInset").toReal()
+                     - keyBar->height()) < 0.001);
+    };
+
+    verify(viewerFrame(0, 20, 0, 1));
+    verify(editorFrame(0, 40, 0, 1));
 }
 
 void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions()

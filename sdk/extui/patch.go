@@ -82,6 +82,20 @@ func (p ShellPatch) ToMap() M {
 	return out
 }
 
+// SurfacePatch updates only bounded scalar state of the currently displayed
+// document surface. The surface identity is part of the operation so a late
+// cursor update can never be applied to a replacement editor/viewer.
+type SurfacePatch struct {
+	SurfaceID string
+	MapPatch
+}
+
+func (p SurfacePatch) ToMap() M {
+	out := p.MapPatch.ToMap()
+	out["id"] = p.SurfaceID
+	return out
+}
+
 // ScenePatch advances one exact app-scene revision. Revision gaps are protocol
 // errors; the Qt host never guesses or silently requests a full replacement.
 type ScenePatch struct {
@@ -89,6 +103,7 @@ type ScenePatch struct {
 	Revision     uint64
 	Root         *MapPatch
 	Shell        *ShellPatch
+	Surface      *SurfacePatch
 }
 
 func (p ScenePatch) ToMap() M {
@@ -104,6 +119,9 @@ func (p ScenePatch) ToMap() M {
 	}
 	if p.Shell != nil {
 		out["shell"] = p.Shell.ToMap()
+	}
+	if p.Surface != nil {
+		out["surface"] = p.Surface.ToMap()
 	}
 	return out
 }

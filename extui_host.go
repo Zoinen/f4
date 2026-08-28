@@ -277,6 +277,16 @@ func extUiAnyInt(v any) int {
 	return 0
 }
 
+// semanticDeliveredPanelCatalog is the exact immutable base which the native
+// Gallery cache has acknowledged through the ordered local socket. Workspace
+// activation may be row-free only while both the catalog and its selection
+// overlay still match this tuple.
+type semanticDeliveredPanelCatalog struct {
+	catalogRevision   int64
+	selectionRevision int64
+	path              string
+}
+
 type ExtUiRenderer struct {
 	mu   sync.Mutex
 	conn net.Conn
@@ -302,6 +312,7 @@ type ExtUiRenderer struct {
 	pendingScenePatch           map[string]any
 	lastScene                   map[string]any
 	lastCompactScene            map[string]any
+	deliveredPanelCatalogs      map[string]semanticDeliveredPanelCatalog
 	sceneRevision               uint64
 	queuedPanelActivationSide   int
 	panelActivationQueued       bool
@@ -327,11 +338,101 @@ type ExtUiRenderer struct {
 	fallbackRevealPending        bool
 	lastWindowTitle              string
 	windowTitleValid             bool
+	panelCacheWarmupScheduled    bool
+	panelCacheWarmupRetries      int
 	closed                       bool
 }
 
 func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer {
-	return &ExtUiRenderer{conn: conn, send: sender, cursorDirty: true}
+	return &ExtUiRenderer{
+		conn: conn, send: sender, cursorDirty: true,
+		deliveredPanelCatalogs: make(map[string]semanticDeliveredPanelCatalog),
+	}
+}
+
+func semanticDeliveredPanelFromMap(panel map[string]any) (string, semanticDeliveredPanelCatalog, bool) {
+	if panel == nil {
+		return "", semanticDeliveredPanelCatalog{}, false
+	}
+	panelID := semanticString(panel["id"])
+	catalogRevision := semanticInt64(panel["catalogRevision"])
+	if panelID == "" || catalogRevision <= 0 {
+		return "", semanticDeliveredPanelCatalog{}, false
+	}
+	return panelID, semanticDeliveredPanelCatalog{
+		catalogRevision:   catalogRevision,
+		selectionRevision: semanticInt64(panel["selectionRevision"]),
+		path:              semanticString(panel["path"]),
+	}, true
+}
+
+func (r *ExtUiRenderer) rememberDeliveredPanelLocked(panel map[string]any) {
+	panelID, delivered, ok := semanticDeliveredPanelFromMap(panel)
+	if !ok {
+		return
+	}
+	if r.deliveredPanelCatalogs == nil {
+		r.deliveredPanelCatalogs = make(map[string]semanticDeliveredPanelCatalog)
+	}
+	r.deliveredPanelCatalogs[panelID] = delivered
+}
+
+func (r *ExtUiRenderer) rememberDeliveredMessageLocked(message map[string]any) {
+	if message == nil {
+		return
+	}
+	switch semanticString(message["type"]) {
+	case "scene":
+		panels, ok := semanticScenePanelMaps(message)
+		if !ok {
+			return
+		}
+		for _, panel := range panels {
+			r.rememberDeliveredPanelLocked(panel)
+		}
+	case "panel_catalog", "panel_cache":
+		panel, _ := message["panel"].(map[string]any)
+		r.rememberDeliveredPanelLocked(panel)
+	case "scene_patch":
+		shellPatch, _ := message["shell"].(map[string]any)
+		operations := appMapSlice(shellPatch["panels"])
+		for _, operation := range operations {
+			panelID := semanticString(operation["panelId"])
+			delivered, present := r.deliveredPanelCatalogs[panelID]
+			switch semanticString(operation["op"]) {
+			case "catalog_replace":
+				panel, _ := operation["panel"].(map[string]any)
+				r.rememberDeliveredPanelLocked(panel)
+			case "selection_delta", "selection_replace":
+				if present {
+					delivered.selectionRevision = semanticInt64(operation["selectionRevision"])
+					r.deliveredPanelCatalogs[panelID] = delivered
+				}
+			}
+		}
+	}
+}
+
+func (r *ExtUiRenderer) deliveredPanelCatalogSnapshotLocked() map[string]semanticDeliveredPanelCatalog {
+	if len(r.deliveredPanelCatalogs) == 0 {
+		return nil
+	}
+	result := make(map[string]semanticDeliveredPanelCatalog, len(r.deliveredPanelCatalogs))
+	for panelID, delivered := range r.deliveredPanelCatalogs {
+		result[panelID] = delivered
+	}
+	return result
+}
+
+func semanticPanelCatalogWasDelivered(panel map[string]any,
+	delivered map[string]semanticDeliveredPanelCatalog,
+) bool {
+	panelID, expected, ok := semanticDeliveredPanelFromMap(panel)
+	if !ok {
+		return false
+	}
+	actual, present := delivered[panelID]
+	return present && actual == expected
 }
 
 // BeginSemanticSceneUpdate starts an input/task mutation boundary. Unless a
@@ -752,6 +853,180 @@ func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 	return true
 }
 
+var semanticEditorSurfaceStateKeys = []string{
+	"cursorLine",
+	"cursorPos",
+	"cursorVisualRow",
+	"cursorVisualColumn",
+	"cursorVisible",
+	"cursorShape",
+	"cursorAbsoluteRow",
+}
+
+func semanticEditorSurfaceStateValid(state map[string]any) bool {
+	if len(state) != len(semanticEditorSurfaceStateKeys) {
+		return false
+	}
+	integer := func(value any, nonNegative bool) bool {
+		if value == nil {
+			return false
+		}
+		reflected := reflect.ValueOf(value)
+		switch reflected.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return !nonNegative || reflected.Int() >= 0
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return reflected.Uint() <= uint64(^uint64(0)>>1)
+		default:
+			return false
+		}
+	}
+	for _, key := range semanticEditorSurfaceStateKeys {
+		value, present := state[key]
+		if !present {
+			return false
+		}
+		switch key {
+		case "cursorVisible":
+			if _, ok := value.(bool); !ok {
+				return false
+			}
+		case "cursorShape":
+			shape, ok := value.(string)
+			if !ok || (shape != "underline" && shape != "block") {
+				return false
+			}
+		case "cursorLine", "cursorPos", "cursorAbsoluteRow":
+			if !integer(value, true) {
+				return false
+			}
+		default:
+			if !integer(value, false) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// QueueSurfaceState publishes only the scalar cursor state of the currently
+// displayed editor. The caller has already proved that the key changed no
+// document, selection, viewport, mode, or autocomplete state. Surface identity
+// and the exact scene revision keep late key repeats from touching a replacement
+// document.
+func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
+	state map[string]any,
+) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticUpdateOpen {
+		r.semanticUpdateTouched = true
+	}
+	rejection := ""
+	switch {
+	case !r.semanticUpdateOpen:
+		rejection = "outside_boundary"
+	case r.semanticUpdateHandled:
+		rejection = "boundary_already_handled"
+	case r.closed:
+		rejection = "closed"
+	case r.send == nil:
+		rejection = "no_sender"
+	case r.semanticFastPathUnsafe:
+		rejection = "unsafe_boundary"
+	case r.sceneRevision == 0:
+		rejection = "no_scene_revision"
+	case r.lastScene == nil || r.lastCompactScene == nil:
+		rejection = "no_scene_snapshot"
+	case r.pendingScene != nil:
+		rejection = "pending_scene"
+	case r.pendingScenePatch != nil:
+		rejection = "pending_scene_patch"
+	case r.pendingCommandLine != nil:
+		rejection = "pending_command_line"
+	case r.pendingPanelCatalog != nil:
+		rejection = "pending_panel_catalog"
+	case r.pendingPanelActivation != nil:
+		rejection = "pending_panel_activation"
+	case r.directPanelCatalog != nil:
+		rejection = "direct_panel_catalog"
+	case surfaceID == "" || !semanticEditorSurfaceStateValid(state):
+		rejection = "invalid_state"
+	}
+	surface, surfaceOK := r.lastScene["surface"].(map[string]any)
+	compactSurface, compactSurfaceOK := r.lastCompactScene["surface"].(map[string]any)
+	if rejection == "" && (!surfaceOK || !compactSurfaceOK ||
+		semanticString(surface["id"]) != surfaceID ||
+		semanticString(compactSurface["id"]) != surfaceID ||
+		semanticString(surface["kind"]) != "editor" ||
+		semanticString(compactSurface["kind"]) != "editor") {
+		rejection = "surface_identity_mismatch"
+	}
+	if rejection != "" {
+		navigationBenchmarkUIEvent("surface_state.direct_rejected",
+			"reason", rejection, "surfaceId", surfaceID,
+			"sceneRevision", r.sceneRevision)
+		return false
+	}
+
+	set, clear := semanticPatchChangedKeys(surface, state,
+		semanticEditorSurfaceStateKeys)
+	armDirectResult := func() {
+		r.suppressSemanticExport = true
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		r.semanticUpdateHandled = true
+		r.panelActivationQueued = false
+		r.panelActivationProjected = false
+	}
+	if len(set) == 0 && len(clear) == 0 {
+		armDirectResult()
+		navigationBenchmarkUIEvent("surface_state.direct_accepted",
+			"result", "unchanged", "surfaceId", surfaceID,
+			"sceneRevision", r.sceneRevision)
+		return true
+	}
+
+	patch := extui.ScenePatch{
+		BaseRevision: r.sceneRevision,
+		Revision:     r.sceneRevision + 1,
+		Surface: &extui.SurfacePatch{
+			SurfaceID: surfaceID,
+			MapPatch:  extui.MapPatch{Set: set},
+		},
+	}
+	wire := patch.ToMap()
+	if trace := navigationBenchmarkCurrentOrPublishedTrace(); trace != nil {
+		wire["benchmarkTraceId"] = trace.id
+	}
+	benchmark := navigationBenchmarkPrepareImmediateMessage(wire)
+	if err := r.send.SendWithBenchmark(wire, benchmark); err != nil {
+		vtui.DebugLog("EXTUI_RENDERER: direct surface state send failed: %v", err)
+		r.closed = true
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+		return false
+	}
+
+	r.sceneRevision = patch.Revision
+	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
+	applyAppScenePatchToSnapshot(r.lastScene, patch)
+	r.lastCompactScene = semanticSceneStructuralMapCopy(r.lastCompactScene)
+	applyAppScenePatchToSnapshot(r.lastCompactScene, patch)
+	if r.lastScene != nil {
+		r.lastScene["version"] = extui.SceneVersion
+	}
+	if r.lastCompactScene != nil {
+		r.lastCompactScene["version"] = extui.SceneVersion
+	}
+	armDirectResult()
+	navigationBenchmarkUIEvent("surface_state.direct_accepted",
+		"result", "sent", "surfaceId", surfaceID,
+		"baseRevision", patch.BaseRevision, "revision", patch.Revision,
+		"setKeys", len(set))
+	return true
+}
+
 // QueuePanelCatalogState publishes an already complete minimal catalog from
 // the Go UI mutation itself. Catalog rows are the one intentionally unbounded
 // scene-patch payload; every unchanged panel and shell subtree stays shared.
@@ -816,6 +1091,7 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 		r.deferSemanticRender = false
 		return false
 	}
+	r.rememberDeliveredMessageLocked(wire)
 	r.sceneRevision = patch.Revision
 	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
 	applyAppScenePatchToSnapshot(r.lastScene, patch)
@@ -836,11 +1112,214 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	return true
 }
 
+// QueuePanelCatalogCache transfers one inactive workspace catalog without
+// changing the authoritative visible scene revision. The Qt bridge builds it
+// in an off-screen, panel-identity keyed GallerySession; a later workspace
+// activation therefore needs only the bounded row-free scene patch.
+const panelCacheMetadataWarmupLimit = maxPanelCatalogMetadataChunkLimit
+
+func panelCacheMetadataWarmup(panel map[string]any) (map[string]any, bool) {
+	if panel == nil || !appBool(panel["metadataDeferred"]) {
+		return nil, true
+	}
+	entries := appMapSlice(panel["entries"])
+	if len(entries) == 0 {
+		return nil, true
+	}
+
+	// A retained viewport restores around the authoritative cursor. Materialize
+	// one bounded window around that row while the workspace is still hidden,
+	// so its first painted frame already has exact sizes, highlighting and
+	// path-aware icons. The remaining catalog stays deferred and continues to
+	// use the ordinary viewport-prioritized metadata protocol.
+	limit := min(panelCacheMetadataWarmupLimit, len(entries))
+	cursor := semanticInt(panel["cursor"])
+	if cursor < 0 || cursor >= len(entries) {
+		cursor = 0
+	}
+	offset := cursor - limit/2
+	if offset < 0 {
+		offset = 0
+	}
+	if maximum := len(entries) - limit; offset > maximum {
+		offset = maximum
+	}
+	return BuildPanelCatalogMetadataChunk(
+		semanticString(panel["id"]), semanticString(panel["path"]),
+		semanticInt64(panel["catalogRevision"]),
+		semanticInt64(panel["metadataRevision"]), offset, limit)
+}
+
+func (r *ExtUiRenderer) QueuePanelCatalogCache(panel map[string]any) bool {
+	if panel == nil || semanticString(panel["id"]) == "" ||
+		semanticInt64(panel["catalogRevision"]) <= 0 {
+		return false
+	}
+
+	// Metadata materialization can resolve local paths and highlighting. Keep
+	// that bounded work outside the renderer lock; the ordered sender and the
+	// exact revision recheck below still make delivery atomic.
+	r.mu.Lock()
+	if r.closed || r.send == nil {
+		r.mu.Unlock()
+		return false
+	}
+	if semanticPanelCatalogWasDelivered(panel, r.deliveredPanelCatalogs) {
+		r.mu.Unlock()
+		return true
+	}
+	r.mu.Unlock()
+
+	metadata, metadataOK := panelCacheMetadataWarmup(panel)
+	if !metadataOK {
+		return false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.send == nil {
+		return false
+	}
+	if semanticPanelCatalogWasDelivered(panel, r.deliveredPanelCatalogs) {
+		return true
+	}
+	wire := map[string]any{
+		"type":    "panel_cache",
+		"schema":  extui.Schema,
+		"version": extui.SceneVersion,
+		"panel":   panel,
+	}
+	if metadata != nil {
+		wire["metadata"] = metadata
+	}
+	if err := r.send.Send(wire); err != nil {
+		vtui.DebugLog("EXTUI_RENDERER: panel cache warmup send failed: %v", err)
+		r.closed = true
+		return false
+	}
+	r.rememberDeliveredMessageLocked(wire)
+	return true
+}
+
+func (r *ExtUiRenderer) nextPanelCatalogWarmup() (warmed, pending bool) {
+	if vtui.FrameManager == nil {
+		return false, false
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		if screen == nil {
+			continue
+		}
+		for _, frame := range screen.Frames {
+			panels, ok := frame.(*PanelsFrame)
+			if !ok || panels == nil {
+				continue
+			}
+			for side, panel := range panels.panels {
+				fsp, ok := panel.(*FileSystemPanel)
+				if !ok || fsp == nil {
+					continue
+				}
+				header, valid := fsp.semanticPanelHeaderModel(
+					nil, side, side == panels.activeIdx)
+				if !valid {
+					// Restored inactive workspaces have not necessarily been
+					// exported before, so their immutable semantic static cache
+					// does not exist yet. Build it here on the idle UI task instead
+					// of polling forever for an active-scene export to do it.
+					full := map[string]any(fsp.semanticPanelModel(
+						nil, side, side == panels.activeIdx).ToMap())
+					if r.QueuePanelCatalogCache(full) {
+						return true, true
+					}
+					pending = true
+					continue
+				}
+				headerMap := map[string]any(header.ToMap())
+				r.mu.Lock()
+				delivered := semanticPanelCatalogWasDelivered(
+					headerMap, r.deliveredPanelCatalogs)
+				closed := r.closed
+				r.mu.Unlock()
+				if closed {
+					return false, false
+				}
+				if delivered {
+					continue
+				}
+				full := map[string]any(fsp.semanticPanelModel(
+					nil, side, side == panels.activeIdx).ToMap())
+				if r.QueuePanelCatalogCache(full) {
+					return true, true
+				}
+				return false, true
+			}
+		}
+	}
+	return false, pending
+}
+
+func (r *ExtUiRenderer) scheduleNextPanelCatalogWarmup(delay time.Duration) {
+	time.AfterFunc(delay, func() {
+		if vtui.FrameManager == nil {
+			return
+		}
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+			warmed, pending := r.nextPanelCatalogWarmup()
+			r.mu.Lock()
+			closed := r.closed
+			if !warmed && pending {
+				r.panelCacheWarmupRetries++
+			}
+			retries := r.panelCacheWarmupRetries
+			r.mu.Unlock()
+			if !closed {
+				switch {
+				case warmed:
+					r.mu.Lock()
+					r.panelCacheWarmupRetries = 0
+					r.mu.Unlock()
+					r.scheduleNextPanelCatalogWarmup(20 * time.Millisecond)
+				case pending && retries < 600:
+					// Restored network/VFS folders and large Windows directories
+					// can remain provisional for several seconds. Keep their
+					// off-screen warmup alive long enough to make the first tab
+					// activation a cache hit, backing off after the quick path.
+					delay := 150 * time.Millisecond
+					if retries > 20 {
+						delay = 500 * time.Millisecond
+					}
+					r.scheduleNextPanelCatalogWarmup(delay)
+				}
+			}
+			// Catalog warmup changes no visible Go state and needs no redraw.
+			return false
+		})
+	})
+}
+
+func (r *ExtUiRenderer) startPanelCatalogWarmupLocked() bool {
+	if r.panelCacheWarmupScheduled || r.closed ||
+		!r.nativeSemanticSurfaceEnabled {
+		return false
+	}
+	r.panelCacheWarmupScheduled = true
+	return true
+}
+
 // WantsPeriodicRedraw reports that cursor blinking and other idle presentation
 // effects are owned by the native host. Actual model changes still reach the
 // renderer through vtui's event, task, resize, and explicit redraw paths.
 func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
 	return false
+}
+
+// WantsEditorSyntaxFade reports whether the hidden cell-grid editor should
+// start its 25 ms fade ticker. Native Qt document surfaces render the final
+// syntax colours themselves, so those redraws only compete with input.
+func (r *ExtUiRenderer) WantsEditorSyntaxFade() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.nativeSemanticSurfaceEnabled
 }
 
 // CanDeferCoveredTerminalRedraw proves that raw shell bytes changed only a
@@ -1089,11 +1568,88 @@ func (r *ExtUiRenderer) queueFullSemanticSceneLocked(scene map[string]any) {
 // SetSemanticSceneIncremental is called before FrameManager considers the
 // complete semantic exporter. Its success path never visits file entries.
 func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) bool {
+	return r.setSemanticSceneIncremental(ctx, false)
+}
+
+// SetSemanticSceneTransition is called inside the input transaction after
+// FrameManager has proved that the non-menu frame stack changed. Publishing
+// the bounded projection here avoids both Frame.Show and the complete semantic
+// exporter for document open/close transitions.
+func (r *ExtUiRenderer) SetSemanticSceneTransition(ctx *vtui.SemanticContext) bool {
+	return r.setSemanticSceneIncremental(ctx, true)
+}
+
+// SetSemanticInputUnchanged handles an explicit proof from an input action
+// which only started asynchronous work. No protocol message is necessary: Qt
+// already displays this exact revision. Arming the one-render permit prevents
+// the hidden panels from being rebuilt while the future completion task is
+// opening the requested document.
+func (r *ExtUiRenderer) SetSemanticInputUnchanged() bool {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	rejection := ""
 	switch {
+	case !r.semanticUpdateOpen:
+		rejection = "outside_boundary"
+	case r.semanticUpdateHandled:
+		rejection = "boundary_already_handled"
+	case r.semanticUpdateTouched:
+		rejection = "boundary_already_touched"
 	case r.closed:
 		rejection = "closed"
+	case r.semanticFastPathUnsafe:
+		rejection = "unsafe_boundary"
+	case r.sceneRevision == 0 || r.lastScene == nil || r.lastCompactScene == nil:
+		rejection = "no_scene_snapshot"
+	case r.pendingScene != nil:
+		rejection = "pending_scene"
+	case r.pendingScenePatch != nil:
+		rejection = "pending_scene_patch"
+	case r.pendingCommandLine != nil:
+		rejection = "pending_command_line"
+	case r.pendingPanelCatalog != nil:
+		rejection = "pending_panel_catalog"
+	case r.pendingPanelActivation != nil:
+		rejection = "pending_panel_activation"
+	case r.directPanelCatalog != nil:
+		rejection = "direct_panel_catalog"
+	}
+	if rejection != "" {
+		navigationBenchmarkUIEvent("input_unchanged.direct_rejected",
+			"reason", rejection, "sceneRevision", r.sceneRevision)
+		return false
+	}
+	r.semanticUpdateTouched = true
+	r.semanticUpdateHandled = true
+	r.suppressSemanticExport = true
+	r.deferSemanticRender = r.nativeCellFrameSuppressed
+	r.deferSemanticRenderBound = false
+	r.panelActivationQueued = false
+	r.panelActivationProjected = false
+	navigationBenchmarkUIEvent("input_unchanged.direct_accepted",
+		"sceneRevision", r.sceneRevision)
+	return true
+}
+
+func (r *ExtUiRenderer) setSemanticSceneIncremental(ctx *vtui.SemanticContext,
+	direct bool,
+) bool {
+	r.mu.Lock()
+	if direct && r.semanticUpdateOpen {
+		r.semanticUpdateTouched = true
+	}
+	rejection := ""
+	switch {
+	case direct && !r.semanticUpdateOpen:
+		rejection = "outside_boundary"
+	case direct && r.semanticUpdateHandled:
+		rejection = "boundary_already_handled"
+	case r.closed:
+		rejection = "closed"
+	case direct && r.send == nil:
+		rejection = "no_sender"
+	case direct && r.semanticFastPathUnsafe:
+		rejection = "unsafe_boundary"
 	case r.sceneRevision == 0:
 		rejection = "no_scene_revision"
 	case r.lastCompactScene == nil:
@@ -1119,6 +1675,7 @@ func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) b
 	}
 	baseRevision := r.sceneRevision
 	previous := r.lastCompactScene
+	deliveredCatalogs := r.deliveredPanelCatalogSnapshotLocked()
 	r.mu.Unlock()
 
 	current, supported := BuildAppIncrementalScene(ctx)
@@ -1128,6 +1685,11 @@ func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) b
 		return false
 	}
 	patch, acknowledgements, valid := buildAppScenePatch(previous, current)
+	if !valid {
+		patch, valid = buildAppWorkspaceActivationPatch(
+			previous, current, deliveredCatalogs)
+		acknowledgements = nil
+	}
 	if !valid {
 		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
 			"reason", "invalid_patch", "sceneRevision", baseRevision)
@@ -1140,31 +1702,64 @@ func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) b
 	if r.closed || r.sceneRevision != baseRevision || r.pendingScene != nil ||
 		r.pendingScenePatch != nil || r.pendingPanelCatalog != nil ||
 		r.pendingPanelActivation != nil || r.pendingCommandLine != nil ||
-		r.directPanelCatalog != nil {
+		r.directPanelCatalog != nil ||
+		(direct && (!r.semanticUpdateOpen || r.semanticUpdateHandled ||
+			r.send == nil || r.semanticFastPathUnsafe)) {
 		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
 			"reason", "state_changed_during_projection",
 			"baseRevision", baseRevision, "sceneRevision", r.sceneRevision)
 		return false
 	}
-	// The bounded projection is a complete authoritative reconciliation of
-	// every native app field (catalog rows are guarded by their revisions).
-	// Therefore it closes the same one-render uncertainty as SetSemanticScene:
-	// an unrelated input/task in the preceding boundary must not leave direct
-	// menu or activation paths permanently disabled after this proof succeeds.
-	r.semanticFastPathUnsafe = false
-	r.suppressSemanticExport = false
-	r.deferSemanticRender = false
-	r.deferSemanticRenderBound = false
-	r.panelActivationQueued = false
-	r.panelActivationProjected = false
+	armDirectResult := func() {
+		r.semanticFastPathUnsafe = false
+		r.suppressSemanticExport = true
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		r.semanticUpdateHandled = true
+		r.panelActivationQueued = false
+		r.panelActivationProjected = false
+	}
+	if !direct {
+		// The bounded projection is a complete authoritative reconciliation of
+		// every native app field (catalog rows are guarded by their revisions).
+		// Therefore it closes the same one-render uncertainty as SetSemanticScene:
+		// an unrelated input/task in the preceding boundary must not leave direct
+		// menu or activation paths permanently disabled after this proof succeeds.
+		r.semanticFastPathUnsafe = false
+		r.suppressSemanticExport = false
+		r.deferSemanticRender = false
+		r.deferSemanticRenderBound = false
+		r.panelActivationQueued = false
+		r.panelActivationProjected = false
+	}
 	if empty {
+		if direct {
+			armDirectResult()
+			navigationBenchmarkIncrementalEvent("scene.transition.direct_accepted",
+				"result", "unchanged", "sceneRevision", r.sceneRevision)
+		}
 		return true
 	}
 	patch.BaseRevision = baseRevision
 	patch.Revision = baseRevision + 1
 	wire := patch.ToMap()
+	if direct {
+		if trace := navigationBenchmarkCurrentOrPublishedTrace(); trace != nil {
+			wire["benchmarkTraceId"] = trace.id
+		}
+		benchmark := navigationBenchmarkPrepareImmediateMessage(wire)
+		if err := r.send.SendWithBenchmark(wire, benchmark); err != nil {
+			vtui.DebugLog("EXTUI_RENDERER: direct scene transition send failed: %v", err)
+			r.closed = true
+			r.suppressSemanticExport = false
+			r.deferSemanticRender = false
+			return false
+		}
+	}
 	r.sceneRevision = patch.Revision
-	r.pendingScenePatch = wire
+	if !direct {
+		r.pendingScenePatch = wire
+	}
 	r.lastCompactScene = current.Scene
 	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
 	applyAppScenePatchToSnapshot(r.lastScene, patch)
@@ -1176,6 +1771,12 @@ func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) b
 	}
 	if r.lastScene != nil {
 		r.setNativeCellFrameSuppression(r.lastScene)
+	}
+	if direct {
+		armDirectResult()
+		navigationBenchmarkIncrementalEvent("scene.transition.direct_accepted",
+			"result", "sent", "baseRevision", patch.BaseRevision,
+			"revision", patch.Revision)
 	}
 	return true
 }
@@ -2849,10 +3450,12 @@ func (r *ExtUiRenderer) Flush() {
 	// Ordinary native updates stay semantic-first for latency. Revealing the
 	// compatibility grid is the one exception: frame and cursor messages are
 	// decoded independently by Qt, and exposing the fallback scene first could
-	// paint an old texture for one render tick. Hold the scene until Render has
-	// produced its forced full snapshot, then make the scene the final reveal.
+	// paint an old texture for one render tick. Hold either semantic replacement
+	// form until Render has produced its forced full snapshot, then make the full
+	// scene or bounded scene patch the final reveal.
+	fallbackSemanticPending := r.pendingScene != nil || r.pendingScenePatch != nil
 	fallbackRevealReady := r.fallbackRevealPending &&
-		!r.nativeCellFrameSuppressed && r.pendingScene != nil &&
+		!r.nativeCellFrameSuppressed && fallbackSemanticPending &&
 		r.pendingFrame != nil && extUiBool(r.pendingFrame, "full")
 	if fallbackRevealReady {
 		messages = append(messages, r.pendingFrame)
@@ -2863,13 +3466,20 @@ func (r *ExtUiRenderer) Flush() {
 			"visible": r.cursorVis,
 			"shape":   int(r.cursorShape),
 		})
-		messages = append(messages, r.pendingScene)
-		r.lastScene = semanticShallowMapCopy(r.pendingScene)
-		delete(r.lastScene, "revision")
+		if r.pendingScene != nil {
+			messages = append(messages, r.pendingScene)
+			r.lastScene = semanticShallowMapCopy(r.pendingScene)
+			delete(r.lastScene, "revision")
+			r.pendingScene = nil
+		} else {
+			// Incremental application already advanced lastScene before Flush;
+			// only the exact revisioned wire patch remains to be delivered.
+			messages = append(messages, r.pendingScenePatch)
+			r.pendingScenePatch = nil
+		}
 		r.panelActivationProjected = false
 		r.pendingFrame = nil
 		r.cursorDirty = false
-		r.pendingScene = nil
 		r.fallbackRevealPending = false
 	}
 	if !r.fallbackRevealPending && r.pendingScene != nil {
@@ -2963,6 +3573,17 @@ func (r *ExtUiRenderer) Flush() {
 			r.closed = true
 			r.mu.Unlock()
 			return
+		}
+		r.mu.Lock()
+		r.rememberDeliveredMessageLocked(msg)
+		startWarmup := semanticString(msg["type"]) == "scene" &&
+			semanticString(msg["schema"]) == extui.Schema &&
+			r.startPanelCatalogWarmupLocked()
+		r.mu.Unlock()
+		if startWarmup {
+			// Let the first authoritative frame reach the screen before doing
+			// bounded off-screen cache work for restored/inactive workspaces.
+			r.scheduleNextPanelCatalogWarmup(50 * time.Millisecond)
 		}
 	}
 }

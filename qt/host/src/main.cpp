@@ -314,6 +314,23 @@ int main(int argc, char *argv[])
                      &galleryBridge,
                      &F4GalleryBridge::handleProtocolMessage);
 
+    // completeInitialHandshake() deliberately runs before Gallery/QML setup so
+    // Go can initialize concurrently with the native object graph.  On a fast
+    // local connection the controller may therefore already own the first
+    // semantic scene before the bridge's sceneChanged connection exists.  Seed
+    // the identity cache from that authoritative snapshot before QML creates a
+    // retained viewport; otherwise the first workspace can permanently capture
+    // an empty side fallback while later workspaces bind exact cached sessions.
+    const QVariantMap initialGalleryScene = controller.scene();
+    if (!initialGalleryScene.isEmpty()) {
+        const QString initialIconSet = initialGalleryScene.value(
+            QStringLiteral("qmlIconSet")).toString();
+        if (!initialIconSet.isEmpty()) {
+            iconSet.setName(initialIconSet);
+        }
+        galleryBridge.synchronizeScene(initialGalleryScene);
+    }
+
     F4ThemePersistence themePersistence;
     F4TextRenderingPolicy textRenderingPolicy;
     const QVariantMap savedTheme = themePersistence.loadTheme();

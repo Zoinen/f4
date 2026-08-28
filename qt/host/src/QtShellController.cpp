@@ -840,6 +840,32 @@ bool validShellPatchValue(const QString &key, const QVariant &value)
     return valueHasType(value, QMetaType::Bool);
 }
 
+bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
+{
+    if (key == QStringLiteral("cursorVisible")) {
+        return valueHasType(value, QMetaType::Bool);
+    }
+    if (key == QStringLiteral("cursorShape")) {
+        if (!valueHasType(value, QMetaType::QString)) {
+            return false;
+        }
+        const QString shape = value.toString();
+        return shape == QStringLiteral("underline")
+            || shape == QStringLiteral("block");
+    }
+    qlonglong number = 0;
+    if (!integerValue(value, &number)) {
+        return false;
+    }
+    if (key == QStringLiteral("cursorLine")
+        || key == QStringLiteral("cursorPos")
+        || key == QStringLiteral("cursorAbsoluteRow")) {
+        return number >= 0;
+    }
+    return key == QStringLiteral("cursorVisualRow")
+        || key == QStringLiteral("cursorVisualColumn");
+}
+
 bool applyValidatedMapPatch(QVariantMap &target, const QVariant &patchValue,
                             const QSet<QString> &allowedKeys,
                             bool (*validValue)(const QString &,
@@ -994,6 +1020,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("loading"),
         QStringLiteral("catalogProvisional"),
         QStringLiteral("fastFind"),
+        QStringLiteral("showFileInfo"),
     };
     static const QSet<QString> nonNegativeIntegerKeys = {
         QStringLiteral("side"),
@@ -1067,6 +1094,7 @@ struct AppliedScenePatch
     QList<QVariantMap> compactPatches;
     QSet<QString> rootKeys;
     QSet<QString> shellKeys;
+    QSet<QString> surfaceKeys;
     qulonglong revision = 0;
 };
 
@@ -1080,7 +1108,7 @@ bool applyScenePatch(const QVariantMap &message,
         QStringLiteral("type"), QStringLiteral("schema"),
         QStringLiteral("version"), QStringLiteral("baseRevision"),
         QStringLiteral("revision"), QStringLiteral("root"),
-        QStringLiteral("shell"),
+        QStringLiteral("shell"), QStringLiteral("surface"),
     };
     static const QSet<QString> rootKeys = {
         QStringLiteral("width"), QStringLiteral("height"),
@@ -1089,7 +1117,8 @@ bool applyScenePatch(const QVariantMap &message,
         QStringLiteral("qmlIconSet"), QStringLiteral("menuBar"),
         QStringLiteral("keyBar"), QStringLiteral("toast"),
         QStringLiteral("dialogs"), QStringLiteral("menus"),
-        QStringLiteral("surface"), QStringLiteral("operationsQueue"),
+        QStringLiteral("surface"), QStringLiteral("shell"),
+        QStringLiteral("operationsQueue"),
     };
     static const QSet<QString> shellKeys = {
         QStringLiteral("id"), QStringLiteral("kind"),
@@ -1132,7 +1161,8 @@ bool applyScenePatch(const QVariantMap &message,
     }
     const bool hasRoot = message.contains(QStringLiteral("root"));
     const bool hasShell = message.contains(QStringLiteral("shell"));
-    if (!hasRoot && !hasShell) {
+    const bool hasSurface = message.contains(QStringLiteral("surface"));
+    if (!hasRoot && !hasShell && !hasSurface) {
         *error = QStringLiteral("Empty scene patch");
         return false;
     }
@@ -1230,6 +1260,7 @@ bool applyScenePatch(const QVariantMap &message,
                 }
                 const QString op = operation.value(QStringLiteral("op"))
                                        .toString();
+                QVariantMap signalOperation = operation;
                 QVariantMap nextPanel = panel;
                 QVariantMap nextPresentationPanel = presentationPanel;
                 if (op == QStringLiteral("catalog_replace")) {
@@ -1352,10 +1383,33 @@ bool applyScenePatch(const QVariantMap &message,
                     if (!validPanelState(state, panel, side, error)) {
                         return false;
                     }
-                    for (auto it = state.cbegin(); it != state.cend(); ++it) {
+                    QVariantMap stateForCommit = state;
+                    // Panel state is merged into a cached row-free map. The
+                    // search match map is transient and has no delete
+                    // operation of its own, so closing Fast Find must clear
+                    // it explicitly at this boundary even for older Go
+                    // producers that only send fastFind=false.
+                    if (state.value(QStringLiteral("fastFind")).metaType().id()
+                            == QMetaType::Bool
+                        && !state.value(QStringLiteral("fastFind"))
+                               .toBool()) {
+                        stateForCommit.insert(QStringLiteral("fastFindMatches"),
+                                              QVariantMap{});
+                        stateForCommit.insert(QStringLiteral("fastFindMatchColor"),
+                                              QString{});
+                    }
+                    for (auto it = stateForCommit.cbegin();
+                         it != stateForCommit.cend(); ++it) {
                         nextPanel.insert(it.key(), it.value());
                         nextPresentationPanel.insert(it.key(), it.value());
                     }
+
+                    // Keep the bridge's internal state-update signal in sync
+                    // with the normalized panel that was committed above.
+                    // QML receives the same normalized values via the compact
+                    // presentation patch below.
+                    signalOperation.insert(QStringLiteral("state"),
+                                           stateForCommit);
                 } else if (op == QStringLiteral("selection_delta")
                            || op == QStringLiteral("selection_replace")) {
                     static const QSet<QString> deltaKeys = {
@@ -1516,7 +1570,7 @@ bool applyScenePatch(const QVariantMap &message,
                     *error = QStringLiteral("Could not commit panel patch");
                     return false;
                 }
-                QVariantMap signalPatch = operation;
+                QVariantMap signalPatch = signalOperation;
                 signalPatch.insert(QStringLiteral("panel"),
                                    withoutNativePanelPayload(nextPanel));
                 next.panelPatches.push_back(signalPatch);
@@ -1529,6 +1583,63 @@ bool applyScenePatch(const QVariantMap &message,
                 });
             }
         }
+    }
+    if (hasSurface) {
+        const QVariant surfacePatchValue = message.value(
+            QStringLiteral("surface"));
+        if (surfacePatchValue.metaType().id() != QMetaType::QVariantMap) {
+            *error = QStringLiteral("Scene surface patch must be a map");
+            return false;
+        }
+        const QVariantMap surfacePatch = surfacePatchValue.toMap();
+        for (auto it = surfacePatch.cbegin();
+             it != surfacePatch.cend(); ++it) {
+            if (it.key() != QStringLiteral("id")
+                && it.key() != QStringLiteral("set")) {
+                *error = QStringLiteral("Unknown scene surface-patch field");
+                return false;
+            }
+        }
+        const QVariant surfaceId = surfacePatch.value(QStringLiteral("id"));
+        QVariantMap surface = next.scene.value(
+            QStringLiteral("surface")).toMap();
+        QVariantMap presentationSurface = next.presentationScene.value(
+            QStringLiteral("surface")).toMap();
+        if (surfaceId.metaType().id() != QMetaType::QString
+            || surfaceId.toString().isEmpty()
+            || surface.value(QStringLiteral("id")) != surfaceId
+            || presentationSurface.value(QStringLiteral("id")) != surfaceId
+            || surface.value(QStringLiteral("kind")).toString()
+                != QStringLiteral("editor")
+            || presentationSurface.value(QStringLiteral("kind")).toString()
+                != QStringLiteral("editor")) {
+            *error = QStringLiteral("Scene surface patch identity mismatch");
+            return false;
+        }
+        static const QSet<QString> surfaceStateKeys = {
+            QStringLiteral("cursorLine"),
+            QStringLiteral("cursorPos"),
+            QStringLiteral("cursorVisualRow"),
+            QStringLiteral("cursorVisualColumn"),
+            QStringLiteral("cursorVisible"),
+            QStringLiteral("cursorShape"),
+            QStringLiteral("cursorAbsoluteRow"),
+        };
+        const QVariantMap mapPatch = {
+            {QStringLiteral("set"),
+             surfacePatch.value(QStringLiteral("set"))},
+        };
+        if (!applyValidatedMapPatch(
+                surface, mapPatch, surfaceStateKeys,
+                validSurfaceStatePatchValue, &next.surfaceKeys, error)
+            || !applyValidatedMapPatch(
+                presentationSurface, mapPatch, surfaceStateKeys,
+                validSurfaceStatePatchValue, nullptr, error)) {
+            return false;
+        }
+        next.scene.insert(QStringLiteral("surface"), surface);
+        next.presentationScene.insert(QStringLiteral("surface"),
+                                      presentationSurface);
     }
     next.scene.insert(QStringLiteral("revision"),
                       QVariant::fromValue(revision));
@@ -2565,6 +2676,10 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
     qint64 compactApplyingDurationNs = 0;
     qint64 panelCatalogSignalDurationNs = 0;
     qint64 catalogPresentationSignalDurationNs = 0;
+    qint64 scenePatchCoreDurationNs = 0;
+    qint64 scenePatchCompactApplyingDurationNs = 0;
+    qint64 scenePatchCompactRootDurationNs = 0;
+    qint64 scenePatchPresentationSignalDurationNs = 0;
     if (messageType == QStringLiteral("scene")) {
         if (message.value(QStringLiteral("schema")).toString()
             == QStringLiteral("app")) {
@@ -2625,6 +2740,10 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
         }
     } else if (messageType == QStringLiteral("scene_patch")) {
+        QElapsedTimer scenePatchStageTimer;
+        if (traceEnabled) {
+            scenePatchStageTimer.start();
+        }
         AppliedScenePatch applied;
         QString patchError;
         if (!applyScenePatch(message, m_scene, m_presentationScene,
@@ -2655,7 +2774,16 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
             emit qmlIconSetChanged(nextIconSet);
         }
 
+        if (traceEnabled) {
+            scenePatchCoreDurationNs = scenePatchStageTimer.nsecsElapsed();
+            scenePatchStageTimer.restart();
+        }
+
         emit compactMessageApplying(message);
+        if (traceEnabled) {
+            scenePatchCompactApplyingDurationNs =
+                scenePatchStageTimer.nsecsElapsed();
+        }
         for (const QVariantMap &panel : applied.catalogPanels) {
             emit panelCatalogChanged(panel);
         }
@@ -2686,8 +2814,60 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                 m_scene.value(QStringLiteral("shell")).toMap().value(
                     QStringLiteral("activePanel")));
         }
+        for (const QString &key : {QStringLiteral("shell"),
+                                   QStringLiteral("surface")}) {
+            if (!applied.rootKeys.contains(key)) {
+                continue;
+            }
+            const bool present = m_presentationScene.contains(key)
+                && m_presentationScene.value(key).metaType().id()
+                    == QMetaType::QVariantMap;
+            compactRootPatch.insert(key + QStringLiteral("Present"),
+                                    present);
+            compactRootPatch.insert(
+                key, present ? m_presentationScene.value(key)
+                             : QVariant(QVariantMap{}));
+        }
+        if (applied.rootKeys.contains(QStringLiteral("shell"))) {
+            // A panels-to-panels workspace activation replaces the complete
+            // row-free shell while both native catalogs stay in Gallery's
+            // identity cache. Tell QML to swap that retained panel pair as a
+            // single structural transaction instead of ignoring shellPresent
+            // merely because another Commander shell is already visible.
+            compactRootPatch.insert(QStringLiteral("replaceShell"), true);
+            const QVariantMap replacementShell = m_presentationScene.value(
+                QStringLiteral("shell")).toMap();
+            compactRootPatch.insert(QStringLiteral("activePanel"),
+                replacementShell.value(QStringLiteral("activePanel")));
+        }
+        if (!applied.surfaceKeys.isEmpty()) {
+            const QVariantMap surface = m_presentationScene.value(
+                QStringLiteral("surface")).toMap();
+            QVariantMap state{
+                {QStringLiteral("id"),
+                 surface.value(QStringLiteral("id"))},
+            };
+            for (const QString &key : {
+                     QStringLiteral("cursorLine"),
+                     QStringLiteral("cursorPos"),
+                     QStringLiteral("cursorVisualRow"),
+                     QStringLiteral("cursorVisualColumn"),
+                     QStringLiteral("cursorVisible"),
+                     QStringLiteral("cursorShape"),
+                     QStringLiteral("cursorAbsoluteRow")}) {
+                state.insert(key, surface.value(key));
+            }
+            compactRootPatch.insert(QStringLiteral("surfaceState"), state);
+        }
         if (compactRootPatch.size() > 1) {
+            if (traceEnabled) {
+                scenePatchStageTimer.restart();
+            }
             emit compactPresentationChanged(compactRootPatch);
+            if (traceEnabled) {
+                scenePatchCompactRootDurationNs =
+                    scenePatchStageTimer.nsecsElapsed();
+            }
         }
 
         QSet<QString> presentationRootKeys = applied.rootKeys;
@@ -2696,12 +2876,30 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
         presentationRootKeys.remove(QStringLiteral("menuBar"));
         presentationRootKeys.remove(QStringLiteral("keyBar"));
         presentationRootKeys.remove(QStringLiteral("toast"));
+        presentationRootKeys.remove(QStringLiteral("width"));
+        presentationRootKeys.remove(QStringLiteral("height"));
+        presentationRootKeys.remove(QStringLiteral("activeScreen"));
+        presentationRootKeys.remove(QStringLiteral("workspaceCount"));
+        presentationRootKeys.remove(QStringLiteral("qmlIconSet"));
+        // Shell/surface presence and bounded cursor state have dedicated
+        // compact QML projections above. Invalidating the complete
+        // presentation scene here would synchronously reevaluate the entire
+        // persistent Commander object tree for a document-only change.
+        presentationRootKeys.remove(QStringLiteral("shell"));
+        presentationRootKeys.remove(QStringLiteral("surface"));
         QSet<QString> presentationShellKeys = applied.shellKeys;
         presentationShellKeys.remove(QStringLiteral("commandLine"));
         presentationShellKeys.remove(QStringLiteral("activePanel"));
         if (!presentationRootKeys.isEmpty()
             || !presentationShellKeys.isEmpty()) {
+            if (traceEnabled) {
+                scenePatchStageTimer.restart();
+            }
             emit presentationSceneChanged();
+            if (traceEnabled) {
+                scenePatchPresentationSignalDurationNs =
+                    scenePatchStageTimer.nsecsElapsed();
+            }
         }
     } else if (messageType == QStringLiteral("panel_catalog")) {
         int side = -1;
@@ -2983,6 +3181,14 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                  panelCatalogSignalDurationNs},
                 {QStringLiteral("catalogPresentationSignalDurationNs"),
                  catalogPresentationSignalDurationNs},
+                {QStringLiteral("scenePatchCoreDurationNs"),
+                 scenePatchCoreDurationNs},
+                {QStringLiteral("scenePatchCompactApplyingDurationNs"),
+                 scenePatchCompactApplyingDurationNs},
+                {QStringLiteral("scenePatchCompactRootDurationNs"),
+                 scenePatchCompactRootDurationNs},
+                {QStringLiteral("scenePatchPresentationSignalDurationNs"),
+                 scenePatchPresentationSignalDurationNs},
                 {QStringLiteral("durationNs"), applyDurationNs},
             });
     }

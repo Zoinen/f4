@@ -298,6 +298,12 @@ func navigationBenchmarkTraceForKey(message map[string]any, timing *navigationBe
 		action = "key.enter"
 	case vtinput.VK_TAB:
 		action = "key.tab"
+	case vtinput.VK_F4:
+		action = "key.f4"
+	case vtinput.VK_ESCAPE:
+		action = "key.escape"
+	case vtinput.VK_RIGHT:
+		action = "key.right"
 	default:
 		return nil
 	}
@@ -378,9 +384,8 @@ func navigationBenchmarkInputDispatchEnd(ev *vtinput.InputEvent) {
 	input := value.(*navigationBenchmarkInputEvent)
 	input.trace.event("input.dispatch.end", "go.ui",
 		"action", input.trace.action, "keySequence", input.keySequence)
-	if input.trace.action == "key.tab" {
-		navigationBenchmarkPublishScene(input.trace, "tab-dispatch")
-	}
+	phase := strings.TrimPrefix(input.trace.action, "key.") + "-dispatch"
+	navigationBenchmarkPublishScene(input.trace, phase)
 	navigationBenchmarkSetCurrentUI(input.previousTrace)
 }
 
@@ -459,6 +464,19 @@ func navigationBenchmarkCurrentUI() *navigationBenchmarkTrace {
 	trace := navigationBenchmarkState.currentUI
 	navigationBenchmarkState.Unlock()
 	return trace
+}
+
+func navigationBenchmarkCurrentOrPublishedTrace() *navigationBenchmarkTrace {
+	if trace := navigationBenchmarkCurrentUI(); trace != nil {
+		return trace
+	}
+	navigationBenchmarkState.Lock()
+	marker := navigationBenchmarkState.currentScene
+	navigationBenchmarkState.Unlock()
+	if marker != nil {
+		return marker.trace
+	}
+	return nil
 }
 
 func navigationBenchmarkPublishScene(trace *navigationBenchmarkTrace, phase string) {
@@ -680,6 +698,10 @@ func navigationBenchmarkPrepareRenderMessage(messageMap map[string]any) *navigat
 		sceneSequence: marker.sceneSequence,
 		messageType:   navigationBenchmarkString(messageMap["type"]),
 	}
+	// Compact render messages do not pass through SemanticBenchmarkHooks, so
+	// add the correlation field here in trace mode. The strict Qt envelope
+	// explicitly permits benchmark-prefixed diagnostics.
+	messageMap["benchmarkTraceId"] = marker.trace.id
 	navigationBenchmarkEmit(message.traceID, "message.send.queued", "go.render",
 		"phase", message.phase, "phaseSequence", message.phaseSequence,
 		"sceneSequence", message.sceneSequence, "messageType", message.messageType)

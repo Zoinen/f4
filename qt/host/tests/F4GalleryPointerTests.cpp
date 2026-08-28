@@ -736,10 +736,14 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
                 "fastFind": searchVisible,
                 "fastFindText": searchVisible ? "*lder" : "",
                 "fastFindMatchColor": searchColor,
-                "fastFindMatches": searchVisible ? ({
+                // Keep the old match map while closing to mirror a compact
+                // state merge that has not yet received its transient-field
+                // clear. The host must still stop painting matches as soon
+                // as fastFind becomes false.
+                "fastFindMatches": ({
                     "entry-1": { "start": 2, "length": 4 },
                     "entry-2": { "start": 1, "length": 1 }
-                }) : ({})
+                })
             })
             Loader {
                 id: panelLoader

@@ -15,6 +15,36 @@ func TestMenuItemToMapKeepsIconOptional(t *testing.T) {
 	}
 }
 
+func TestScenePatchSerializesBoundedSurfaceState(t *testing.T) {
+	patch := ScenePatch{
+		BaseRevision: 7,
+		Revision:     8,
+		Surface: &SurfacePatch{
+			SurfaceID: "editor:music.svg",
+			MapPatch: MapPatch{Set: M{
+				"cursorLine": 4,
+				"cursorPos":  12,
+			}},
+		},
+	}
+	out := patch.ToMap()
+	if out["type"] != "scene_patch" || out["baseRevision"] != uint64(7) ||
+		out["revision"] != uint64(8) {
+		t.Fatalf("unexpected surface patch envelope: %#v", out)
+	}
+	surface, ok := out["surface"].(M)
+	if !ok || surface["id"] != "editor:music.svg" {
+		t.Fatalf("surface identity was not serialized: %#v", out["surface"])
+	}
+	set, ok := surface["set"].(M)
+	if !ok || set["cursorLine"] != 4 || set["cursorPos"] != 12 {
+		t.Fatalf("surface scalar state was not serialized: %#v", surface)
+	}
+	if _, leaked := surface["rows"]; leaked {
+		t.Fatalf("surface patch unexpectedly carried document rows: %#v", surface)
+	}
+}
+
 func TestSceneToMapUsesAppSchema(t *testing.T) {
 	scene := Scene{
 		Width:         100,
@@ -41,6 +71,7 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				Side:                   1,
 				Active:                 true,
 				Path:                   "/tmp",
+				ShowFileInfo:           true,
 				GalleryLayoutMode:      "grid",
 				GalleryColumnCount:     3,
 				GalleryDensity:         184,
@@ -143,6 +174,9 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	}
 	if panels[0]["separateFileExtensions"] != true {
 		t.Fatalf("panel extension alignment setting was not serialized: %#v", panels[0])
+	}
+	if panels[0]["showFileInfo"] != true {
+		t.Fatalf("panel file-information setting was not serialized: %#v", panels[0])
 	}
 	if panels[0]["fastFind"] != true || panels[0]["fastFindText"] != "*pha" ||
 		panels[0]["fastFindMatchColor"] != "#c678dd" {

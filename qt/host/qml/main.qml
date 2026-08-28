@@ -90,8 +90,14 @@ ApplicationWindow {
     property var retainedShellFrame: ({})
     property var retainedDocumentFrame: ({})
     property var retainedOperationsQueue: ({})
+    property bool shellPresentationOverrideSet: false
+    property var shellPresentationOverride: null
+    property bool documentPresentationOverrideSet: false
+    property var documentPresentationOverride: null
+    property var documentSurfaceStateOverride: null
     property bool retainedShellSurfaceCreated: false
     property bool retainedDocumentSurfaceCreated: false
+    property bool documentSurfacePrewarmed: false
     property bool retainedOperationsQueueCreated: false
     readonly property real dpr: root.screen ? root.screen.devicePixelRatio : 1.0
     // Qt exposes the render-type policy globally through QQuickWindow. Keep
@@ -637,12 +643,17 @@ ApplicationWindow {
     }
 
     function currentShellFrame() {
+        if (shellPresentationOverrideSet)
+            return shellPresentationOverride
         if (scene.shell !== undefined && scene.shell !== null)
             return scene.shell
         return firstFrame("shell") || firstFrame("panels") || null
     }
 
     function currentDocumentFrame() {
+        if (documentPresentationOverrideSet)
+            return isDocumentSurface(documentPresentationOverride)
+                    ? documentPresentationOverride : null
         if (isDocumentSurface(scene.surface))
             return scene.surface
         var legacyTop = topFrame()
@@ -875,8 +886,9 @@ ApplicationWindow {
         var queue = currentOperationsQueue()
         if (queue)
             return queue
-        if (scene.surface)
-            return scene.surface
+        var document = currentDocumentFrame()
+        if (document)
+            return document
         return topFrame()
     }
 
@@ -1308,6 +1320,11 @@ ApplicationWindow {
     }
 
     onSceneChanged: {
+        shellPresentationOverrideSet = false
+        shellPresentationOverride = null
+        documentPresentationOverrideSet = false
+        documentPresentationOverride = null
+        documentSurfaceStateOverride = null
         workspaceTabsOverride = null
         menuBarOverride = null
         keyBarOverride = null
@@ -1341,6 +1358,38 @@ ApplicationWindow {
         function onCompactPresentationChanged(patch) {
             if (!patch)
                 return
+            var structuralSurfaceChanged = false
+            const replaceShell = patch.replaceShell === true
+            if (patch.shellPresent === true
+                    && (replaceShell
+                        || root.currentShellFrame() === null)) {
+                // A standalone document normally covers an already-retained
+                // Commander shell. Keep that exact panel object graph current
+                // underneath it, so returning with Escape is only a surface
+                // reveal. The override is needed only when this QML scene was
+                // born on a document and has never received a shell.
+                root.shellPresentationOverrideSet = true
+                root.shellPresentationOverride = patch.shell
+                if (replaceShell) {
+                    // Panel-scoped overrides belong to the previous shell.
+                    // Clear both before exposing the replacement so one side
+                    // can never paint a new session under stale old chrome.
+                    root.leftPanelPresentationOverride = null
+                    root.rightPanelPresentationOverride = null
+                    root.panelActivationOverride = -1
+                }
+                structuralSurfaceChanged = true
+            }
+            if (patch.surfacePresent !== undefined) {
+                root.documentPresentationOverrideSet = true
+                root.documentPresentationOverride = patch.surfacePresent === true
+                        ? patch.surface : null
+                root.documentSurfaceStateOverride = null
+                structuralSurfaceChanged = true
+            }
+            if (patch.surfaceState !== undefined
+                    && patch.surfaceState !== null)
+                root.documentSurfaceStateOverride = patch.surfaceState
             const activePanel = Number(patch.activePanel)
             if (activePanel === 0 || activePanel === 1)
                 root.panelActivationOverride = activePanel
@@ -1360,6 +1409,14 @@ ApplicationWindow {
                 root.keyBarOverride = patch.keyBar
             if (patch.toast !== undefined && patch.toast !== null)
                 root.toastOverride = patch.toast
+            if (structuralSurfaceChanged) {
+                root.captureRetainedSurfaces()
+                if (qtGallery.viewerVisible
+                        && (root.hasDocumentSurface()
+                            || root.needsFallbackGrid()))
+                    qtGallery.closeViewer()
+                Qt.callLater(root.restoreSurfaceFocus)
+            }
         }
         function onCommandMenusChanged() {
             root.syncAutocompleteSelection()
@@ -4232,8 +4289,13 @@ ApplicationWindow {
                 // Instantiate the persistent pair only when a real shell has
                 // arrived; once created it remains alive across every cover.
                 active: root.retainedShellSurfaceCreated
-                visible: !root.hasStandaloneDocumentSurface()
-                         && !root.hasOperationsQueueSurface()
+                // Keep the native panel tree logically visible underneath a
+                // standalone document. Flipping visibility on a Gallery with
+                // thousands of rows synchronously walks its complete object
+                // tree. Opacity zero lets the scene graph prune it while the
+                // document owns input, without charging that walk to F3/F4.
+                visible: !root.hasOperationsQueueSurface()
+                opacity: root.hasStandaloneDocumentSurface() ? 0 : 1
                 sourceComponent: panelsSurface
             }
 
@@ -4241,10 +4303,23 @@ ApplicationWindow {
                 id: persistentDocumentLayer
                 objectName: "persistentDocumentLayer"
                 anchors.fill: parent
+                // DocumentSurface is a sizeable reusable object tree. Build
+                // it once, just after the first Commander shell has settled,
+                // instead of charging that construction to the first F3/F4
+                // key press. It remains hidden and inert until a document is
+                // actually current.
                 active: root.retainedDocumentSurfaceCreated
+                        || root.documentSurfacePrewarmed
                 visible: root.hasStandaloneDocumentSurface()
                 sourceComponent: documentSurface
                 z: 10
+            }
+
+            Timer {
+                interval: 0
+                running: root.retainedShellSurfaceCreated
+                         && !root.documentSurfacePrewarmed
+                onTriggered: root.documentSurfacePrewarmed = true
             }
 
             Loader {
@@ -6099,14 +6174,124 @@ ApplicationWindow {
                 }
             }
         }
+
+        Rectangle {
+            id: fastFindOverlay
+            objectName: "panelFastFindOverlay-"
+                        + Number(panel.side || 0)
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: status.top
+            anchors.bottomMargin: root.panelContentSpacing
+            readonly property real desiredWidth:
+                Math.max(root.snapPx(220),
+                         fastFindQuery.implicitWidth + root.snapPx(64))
+            width: Math.max(1,
+                            Math.min(parent.width
+                                     - root.panelContentSpacing * 2,
+                                     desiredWidth))
+            height: root.snapPx(36)
+            visible: panel.fastFind === true
+            z: 4
+            clip: true
+            radius: root.snapPx(8)
+            color: root.dialogBg
+            border.width: root.separatorWidth
+            border.color: root.controlBorder
+
+            FontMetrics {
+                id: fastFindFontMetrics
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: 13
+            }
+
+            PixelAlignedImage {
+                id: fastFindIcon
+                objectName: "panelFastFindIcon-"
+                            + Number(panel.side || 0)
+                anchors.left: parent.left
+                anchors.leftMargin: root.snapPx(10)
+                anchors.verticalCenter: parent.verticalCenter
+                width: root.snapPx(15)
+                height: root.snapPx(15)
+                smooth: false
+                source: root.lucideIconSource("search", 15,
+                                             root.dialogAccent)
+            }
+
+            Text {
+                id: fastFindQuery
+                objectName: "panelFastFindText-"
+                            + Number(panel.side || 0)
+                anchors.left: fastFindIcon.right
+                anchors.leftMargin: root.snapPx(8)
+                anchors.right: parent.right
+                anchors.rightMargin: root.snapPx(10)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.cleanText(panel.fastFindText)
+                color: root.textColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: 13
+                elide: Text.ElideLeft
+                verticalAlignment: Text.AlignVCenter
+            }
+
+            Rectangle {
+                id: fastFindCursor
+                objectName: "panelFastFindCursor-"
+                            + Number(panel.side || 0)
+                property bool blinkOn: true
+                readonly property real textAdvance:
+                    fastFindFontMetrics.advanceWidth(fastFindQuery.text)
+                x: fastFindQuery.x
+                   + Math.min(fastFindQuery.width, textAdvance)
+                y: fastFindQuery.y + root.snapPx(2)
+                width: root.snapPx(2)
+                height: Math.max(root.snapPx(1),
+                                 fastFindQuery.height - root.snapPx(4))
+                color: root.textColor
+                visible: panel.fastFind === true
+                opacity: blinkOn ? 1 : 0
+                z: 2
+
+                function restartBlink() {
+                    blinkOn = true
+                    if (visible)
+                        fastFindCursorBlinkTimer.restart()
+                }
+
+                onVisibleChanged: {
+                    if (visible)
+                        restartBlink()
+                }
+
+                Connections {
+                    target: root
+                    function onKeyboardActivityRevisionChanged() {
+                        fastFindCursor.restartBlink()
+                    }
+                }
+
+                Timer {
+                    id: fastFindCursorBlinkTimer
+                    interval: 520
+                    running: fastFindCursor.visible
+                    repeat: true
+                    onTriggered: fastFindCursor.blinkOn = !fastFindCursor.blinkOn
+                }
+            }
+        }
+
         Rectangle {
             id: status
             objectName: "panelStatus-" + Number(panel.side || 0)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: Math.max(24, root.ch * 1.15)
-                    + root.verticalContentSpacing
+            visible: panel.showFileInfo === true
+            height: visible
+                    ? Math.max(24, root.ch * 1.15)
+                      + root.verticalContentSpacing
+                    : 0
             color: "transparent"
             // Keep the footer above dynamically loaded semantic content even
             // while Loader/anchor geometry is settling after scene changes.
@@ -6121,11 +6306,13 @@ ApplicationWindow {
             }
 
             Text {
+                objectName: "panelStatusSelection-"
+                            + Number(panel.side || 0)
                 anchors.left: parent.left
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.leftMargin: root.panelTextInset
-                text: panel.fastFind ? "/" + root.cleanText(panel.fastFindText) : root.cleanText(panel.selectedCount) + " selected"
-                color: panel.fastFind ? root.activeBorder : root.mutedText
+                text: root.cleanText(panel.selectedCount) + " selected"
+                color: root.mutedText
                 font.pixelSize: 12
             }
 
@@ -6618,7 +6805,7 @@ ApplicationWindow {
         height: nativeLayout ? root.commandLineHeight(shell)
                              : Math.max(root.ch, root.pxH(commandLine.h))
         visible: commandLine.visible !== false
-        color: "transparent"
+        color: root.commandLineBg
 
         Item {
             id: commandPresentation
@@ -6743,17 +6930,10 @@ ApplicationWindow {
         }
 
         Rectangle {
+            objectName: "commandLineTopSeparator"
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            height: root.separatorWidth
-            color: root.separatorColor
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
             height: root.separatorWidth
             color: root.separatorColor
         }
@@ -7671,6 +7851,11 @@ ApplicationWindow {
         property int lastEditorMouseColumn: 0
         property int lastEditorMouseRow: 0
         property var latestWindowRows: []
+        readonly property var cursorFrame:
+            root.documentSurfaceStateOverride !== null
+            && root.cleanText(root.documentSurfaceStateOverride.id)
+               === root.cleanText(frame.id)
+            ? root.documentSurfaceStateOverride : frame
         readonly property bool kineticActive:
             documentList.flicking || documentList.dragging
             || documentWheelAnimation.running || wheelGestureActive
@@ -7687,8 +7872,7 @@ ApplicationWindow {
                                            : semanticMenu.visible
                                              ? semanticMenu.height : 0
         readonly property real bottomInset: embedded ? 0
-            : Object.keys(root.keyBarModel).length > 0
-              ? Math.max(26, root.ch * 1.35) : 0
+            : root.keyBarHeight()
         readonly property real rowHeight: Math.max(20, root.ch)
 
         function runBackground(value) {
@@ -8212,7 +8396,16 @@ ApplicationWindow {
             wheel.accepted = true
         }
 
-        onFrameChanged: frameSyncTimer.restart()
+        function scheduleFrameWindowSync() {
+            // The standalone document tree is prewarmed with an empty frame.
+            // Leave its ListModel untouched until an actual viewer/editor is
+            // attached; initializing a hidden, empty ListView can leave Qt's
+            // content geometry stale when the surface is revealed later.
+            if (root.cleanText(frame.kind) !== "")
+                frameSyncTimer.restart()
+        }
+
+        onFrameChanged: scheduleFrameWindowSync()
         onInteractionActiveChanged: {
             if (interactionActive)
                 return
@@ -8229,7 +8422,7 @@ ApplicationWindow {
             resumeVelocity = 0
             queuedScrollBarPosition = -1
         }
-        Component.onCompleted: frameSyncTimer.restart()
+        Component.onCompleted: scheduleFrameWindowSync()
 
         color: "transparent"
 
@@ -8372,13 +8565,16 @@ ApplicationWindow {
             objectName: "editorCursor"
             parent: documentList.contentItem
             property bool blinkOn: true
-            readonly property bool block: frame.cursorShape === "block"
+            readonly property bool block:
+                documentRoot.cursorFrame.cursorShape === "block"
             readonly property int windowRow:
                 frame.kind === "editor"
-                ? documentRoot.indexForExtent(Number(frame.cursorAbsoluteRow || 0),
+                ? documentRoot.indexForExtent(
+                      Number(documentRoot.cursorFrame.cursorAbsoluteRow || 0),
                                               documentRoot.displayedRows)
                 : -1
-            x: 10 + Math.max(0, Number(frame.cursorVisualColumn || 0))
+            x: 10 + Math.max(0, Number(
+                                 documentRoot.cursorFrame.cursorVisualColumn || 0))
                     * documentFontMetrics.advanceWidth("M")
             y: (documentRoot.loadedSlotStart + Math.max(0, windowRow))
                * documentRoot.rowHeight
@@ -8389,9 +8585,9 @@ ApplicationWindow {
             color: "#ffffff"
             opacity: blinkOn ? 1 : 0
             visible: frame.kind === "editor"
-                     && frame.cursorVisible === true
+                     && documentRoot.cursorFrame.cursorVisible === true
                      && windowRow >= 0
-                     && Number(frame.cursorVisualColumn) >= 0
+                     && Number(documentRoot.cursorFrame.cursorVisualColumn) >= 0
             z: 5
 
             onVisibleChanged: {
@@ -10505,6 +10701,20 @@ ApplicationWindow {
         objectName: "keyBar"
         color: "transparent"
         visible: keyBar.visible !== false && keyBar.items !== undefined
+
+        // This is application chrome, not panel/document content. Keeping the
+        // separator in the shared F-bar makes panels, viewer and editor end at
+        // one identical boundary.
+        Rectangle {
+            objectName: "keyBarTopSeparator"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: root.separatorWidth
+            color: root.separatorColor
+            antialiasing: false
+            z: 2
+        }
 
         Row {
             anchors.fill: parent

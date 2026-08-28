@@ -196,6 +196,30 @@ type SemanticSceneIncrementalRenderer interface {
 	SetSemanticSceneIncremental(ctx *SemanticContext) bool
 }
 
+// SemanticSceneTransitionRenderer accepts the complete bounded semantic state
+// after FrameManager has proved that an input transaction changed the non-menu
+// frame stack. This is the latency-sensitive path for opening or closing a
+// document: implementations may publish the exact scene transition before the
+// regular render starts, without walking hidden frame trees or panel catalogs.
+//
+// Returning true means the renderer has already delivered (or proved
+// unchanged) the visible result and may suppress the following render/export.
+// Returning false keeps the ordinary conservative render path.
+type SemanticSceneTransitionRenderer interface {
+	SemanticSceneRenderer
+	SetSemanticSceneTransition(ctx *SemanticContext) bool
+}
+
+// SemanticInputUnchangedRenderer accepts an explicit application proof that
+// the current input transaction scheduled future work but made no immediate
+// visible or semantic change. Native renderers may use it to omit the otherwise
+// automatic render between an asynchronous request and its authoritative UI
+// completion task.
+type SemanticInputUnchangedRenderer interface {
+	SemanticSceneRenderer
+	SetSemanticInputUnchanged() bool
+}
+
 // SemanticMenuStateRenderer accepts the complete bounded menu/global-chrome
 // state after FrameManager has proved that an input transaction did not invoke
 // a menu item or mutate a non-menu frame stack. Returning true means the

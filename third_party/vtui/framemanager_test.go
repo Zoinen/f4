@@ -75,6 +75,26 @@ type semanticSuppressionTestRenderer struct {
 	end         int
 }
 
+type semanticTransitionTestRenderer struct {
+	semanticSuppressionTestRenderer
+	transitions    int
+	inputUnchanged int
+}
+
+func (r *semanticTransitionTestRenderer) SetSemanticSceneTransition(*SemanticContext) bool {
+	r.transitions++
+	r.suppress = true
+	r.deferRender = true
+	return true
+}
+
+func (r *semanticTransitionTestRenderer) SetSemanticInputUnchanged() bool {
+	r.inputUnchanged++
+	r.suppress = true
+	r.deferRender = true
+	return true
+}
+
 type unchangedTaskRunTestRenderer struct {
 	begin         atomic.Int32
 	end           atomic.Int32
@@ -378,6 +398,128 @@ func TestFrameManager_DirectMenuStateCoversOpenNavigationCloseButNotActivation(t
 	}
 	if renderer.menuStates != 9 {
 		t.Fatalf("plain Push incorrectly claimed a menu-only update: %d", renderer.menuStates)
+	}
+}
+
+func TestFrameManager_PublishesBoundedSceneTransitionWhenFrameStackChanges(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticTransitionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	background := newMockFrame(0, 0, 80, 25, false)
+	background.onProcessKey = func(e *vtinput.InputEvent) bool {
+		if e.Type != vtinput.KeyEventType || !e.KeyDown ||
+			e.VirtualKeyCode != vtinput.VK_F4 {
+			return false
+		}
+		fm.Push(newMockFrame(0, 0, 80, 25, false))
+		return true
+	}
+	fm.Push(background)
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_F4,
+	}, false)
+
+	if renderer.transitions != 1 {
+		t.Fatalf("frame-stack mutation published %d transitions, want 1",
+			renderer.transitions)
+	}
+	if renderer.begin != 1 || renderer.end != 1 {
+		t.Fatalf("transition escaped semantic boundary: begin=%d end=%d",
+			renderer.begin, renderer.end)
+	}
+	if !renderer.deferBound {
+		t.Fatal("accepted scene transition was not bound to its redraw generation")
+	}
+
+	// A handled key which keeps the same non-menu stack must not claim the
+	// structural-transition capability.
+	top := fm.GetTopFrame().(*mockFrame)
+	top.onProcessKey = func(*vtinput.InputEvent) bool { return true }
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RIGHT,
+	}, false)
+	if renderer.transitions != 1 {
+		t.Fatalf("stable frame stack published an extra transition: %d",
+			renderer.transitions)
+	}
+}
+
+func TestFrameManager_DeclaredUnchangedInputDefersIntermediateRender(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticTransitionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	background := newMockFrame(0, 0, 80, 25, false)
+	background.onProcessKey = func(e *vtinput.InputEvent) bool {
+		if e.Type != vtinput.KeyEventType || !e.KeyDown ||
+			e.VirtualKeyCode != vtinput.VK_F4 {
+			return false
+		}
+		if !fm.DeclareCurrentInputUnchanged() {
+			t.Fatal("active input transaction rejected its unchanged proof")
+		}
+		return true
+	}
+	fm.Push(background)
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_F4,
+	}, false)
+
+	if renderer.inputUnchanged != 1 || renderer.transitions != 0 {
+		t.Fatalf("unchanged input callbacks: unchanged=%d transitions=%d",
+			renderer.inputUnchanged, renderer.transitions)
+	}
+	if !renderer.deferBound {
+		t.Fatal("unchanged input did not bind its direct render permit")
+	}
+}
+
+func TestFrameManager_PostedFrameTransitionDoesNotAddRedundantRedraw(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticTransitionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+
+	fm.Push(newMockFrame(0, 0, 80, 25, false))
+	result := fm.runPostedTask(func() {
+		fm.Push(newMockFrame(0, 0, 80, 25, false))
+	})
+	if renderer.transitions != 1 {
+		t.Fatalf("posted frame push published %d transitions, want 1",
+			renderer.transitions)
+	}
+	if !result.taskRedrawOmitted || result.renderOmitted {
+		t.Fatalf("posted transition result = %#v; want no added redraw and one consume boundary",
+			result)
+	}
+	if !renderer.deferBound {
+		t.Fatal("posted transition did not bind direct render deferral")
+	}
+	baselineRenders := renderer.renders
+	fm.renderPhase()
+	if renderer.renders != baselineRenders {
+		t.Fatal("posted direct transition rebuilt the covered frame")
 	}
 }
 

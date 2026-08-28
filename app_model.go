@@ -712,6 +712,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		Active:                 appBool(node["active"]),
 		Path:                   semanticString(node["path"]),
 		Title:                  semanticString(node["title"]),
+		ShowFileInfo:           appBool(node["showFileInfo"]),
 		GalleryLayoutMode:      galleryLayoutMode,
 		GalleryColumnCount:     galleryColumnCount,
 		GalleryDensity:         galleryDensity,

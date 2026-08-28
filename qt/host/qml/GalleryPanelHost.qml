@@ -42,6 +42,15 @@ FocusScope {
     // command-line state before key-up (Return clears it immediately), so
     // remember every key sent to Go and always send its matching release.
     property var forwardedKeysDown: ({})
+    // A GalleryPanel owns its viewport delegates and scroll/layout caches.
+    // Retain one complete QML view per semantic panel identity so switching a
+    // workspace never rebinds a 5k-row session into an already-painted view.
+    // Inactive views stay laid out at opacity zero and become visible through
+    // one atomic property change.
+    property var galleryPanel: null
+    property var galleryPanelsById: ({})
+    property string activeGalleryPanelId: ""
+    property bool galleryPanelContainerReady: false
 
     readonly property var effectiveHostCapabilities: ({
         cursor: hostCapabilities.cursor,
@@ -60,7 +69,15 @@ FocusScope {
                                                  || fastFindActive
                                                  || pendingCommanderInput
 
-    readonly property var session: bridge ? bridge.sessionForSide(side) : null
+    // Sessions are retained by semantic panel identity, not by visual side.
+    // While an inactive workspace is prepared, the currently painted host
+    // therefore keeps its old model. Changing both panel objects later swaps
+    // to two already-complete sessions in one QML transaction.
+    readonly property var session: bridge
+        ? (typeof bridge.sessionForPanel === "function"
+           ? bridge.sessionForPanel(String(panel.id || ""), side)
+           : bridge.sessionForSide(side))
+        : null
     readonly property bool benchmarkTracingEnabled:
         bridge
         && typeof bridge.navigationBenchmarkEnabled !== "undefined"
@@ -141,6 +158,132 @@ FocusScope {
         return true
     }
 
+    function panelId(panelState) {
+        const semanticPanelId = String(panelState && panelState.id || "")
+        if (semanticPanelId !== "")
+            return semanticPanelId
+        // Protocol scenes always carry a semantic ID. Keep the reusable QML
+        // component compatible with lightweight embedders/tests that provide
+        // only a non-empty presentation map: those historically consumed the
+        // bridge's side session directly. Do not instantiate this fallback for
+        // the empty object that exists before a Loader supplies its panel.
+        if (!panelState || Object.keys(panelState).length === 0)
+            return ""
+        return "@legacy-side:" + side
+    }
+
+    function legacyPanelId() {
+        return "@legacy-side:" + side
+    }
+
+    function presentationModeFor(panelState) {
+        return String(panelState && panelState.galleryLayoutMode || "masonry")
+    }
+
+    function columnCountFor(panelState) {
+        return Math.max(2, Math.min(3,
+                    Number(panelState && panelState.galleryColumnCount || 2)))
+    }
+
+    function densityFor(panelState) {
+        const mode = presentationModeFor(panelState)
+        const supplied = Number(panelState && panelState.galleryDensity || 0)
+        if (supplied > 0)
+            return Math.round(supplied)
+        if (mode === "columns" || mode === "details")
+            return Math.max(22, defaultListDensity)
+        return mode === "grid" ? 160 : mode === "icons" ? 64 : 150
+    }
+
+    function applyRendererStateTo(target, panelState) {
+        if (!target)
+            return
+        const state = panelState || ({})
+        const mode = presentationModeFor(state)
+        applyingRendererState = true
+        if (typeof target.presentationMode !== "undefined"
+                && target.presentationMode !== mode) {
+            if (target.activeForHost === true
+                    && typeof target.beginPresentationSwitch === "function")
+                target.beginPresentationSwitch()
+            target.presentationMode = mode
+        }
+        if (typeof target.columnCount !== "undefined")
+            target.columnCount = columnCountFor(state)
+        if (typeof target.density !== "undefined")
+            target.density = densityFor(state)
+        if (typeof target.columnSchema !== "undefined") {
+            const nextColumnSchema = state.galleryColumns || []
+            if (!rendererValuesEqual(target.columnSchema,
+                                     nextColumnSchema)) {
+                target.columnSchema = nextColumnSchema
+            }
+        }
+        if (typeof target.separateFileExtensions !== "undefined") {
+            target.separateFileExtensions =
+                    state.separateFileExtensions === true
+        }
+        applyingRendererState = false
+    }
+
+    function sessionForPanelId(semanticPanelId) {
+        if (!bridge)
+            return null
+        if (semanticPanelId === legacyPanelId())
+            return bridge.sessionForSide(side)
+        return typeof bridge.sessionForPanel === "function"
+                ? bridge.sessionForPanel(semanticPanelId, side)
+                : bridge.sessionForSide(side)
+    }
+
+    function ensureGalleryPanel(panelState, activate) {
+        if (!galleryPanelContainerReady)
+            return null
+        const semanticPanelId = panelId(panelState)
+        if (semanticPanelId === "")
+            return null
+        const exactSession = sessionForPanelId(semanticPanelId)
+        // A retained viewport keeps its model pointer for its whole lifetime.
+        // Do not manufacture one around a mutable side fallback while the
+        // identity cache is still being prepared.
+        if (!exactSession)
+            return null
+
+        var view = galleryPanelsById[semanticPanelId]
+        if (!view) {
+            view = galleryPanelComponent.createObject(galleryPanelContainer, {
+                "semanticPanelId": semanticPanelId,
+                "cachedPanel": panelState,
+                "fixedSession": exactSession
+            })
+            if (!view)
+                return null
+            const next = Object.assign({}, galleryPanelsById)
+            next[semanticPanelId] = view
+            galleryPanelsById = next
+        } else {
+            view.cachedPanel = panelState
+            // Recovery for a viewport constructed by an older/late startup
+            // path.  Normal cache hits keep the same QObject and never rebind.
+            if (view.fixedSession !== exactSession)
+                view.fixedSession = exactSession
+        }
+        if (activate === true) {
+            activeGalleryPanelId = semanticPanelId
+            galleryPanel = view
+        }
+        return view
+    }
+
+    function warmCachedGalleryPanels() {
+        if (!bridge
+                || typeof bridge.cachedPanelPresentations !== "function")
+            return
+        const cached = bridge.cachedPanelPresentations(side) || []
+        for (let index = 0; index < cached.length; ++index)
+            ensureGalleryPanel(cached[index], false)
+    }
+
     function previewDensity(value) {
         if (!galleryPanel || typeof galleryPanel.density === "undefined")
             return
@@ -158,34 +301,7 @@ FocusScope {
     }
 
     function applyRendererState() {
-        if (!galleryPanel)
-            return
-        applyingRendererState = true
-        if (typeof galleryPanel.presentationMode !== "undefined"
-                && galleryPanel.presentationMode
-                   !== requestedPresentationMode) {
-            if (typeof galleryPanel.beginPresentationSwitch === "function")
-                galleryPanel.beginPresentationSwitch()
-            galleryPanel.presentationMode = requestedPresentationMode
-        }
-        if (typeof galleryPanel.columnCount !== "undefined")
-            galleryPanel.columnCount = requestedColumnCount
-        if (typeof galleryPanel.density !== "undefined")
-            galleryPanel.density = requestedDensity
-        // The unified details renderer may consume the host's semantic column
-        // schema directly. Keep this dynamic so f4 remains compatible with an
-        // older editable ZoinGallery module which has not added the property.
-        if (typeof galleryPanel.columnSchema !== "undefined") {
-            const nextColumnSchema = panel.galleryColumns || []
-            if (!rendererValuesEqual(galleryPanel.columnSchema,
-                                     nextColumnSchema)) {
-                galleryPanel.columnSchema = nextColumnSchema
-            }
-        }
-        if (typeof galleryPanel.separateFileExtensions !== "undefined")
-            galleryPanel.separateFileExtensions =
-                    panel.separateFileExtensions === true
-        applyingRendererState = false
+        applyRendererStateTo(galleryPanel, panel)
     }
 
     function forwardBenchmarkStage(stage, metadata) {
@@ -218,6 +334,11 @@ FocusScope {
     }
 
     onPanelChanged: {
+        const view = ensureGalleryPanel(panel, true)
+        if (!view) {
+            activeGalleryPanelId = ""
+            galleryPanel = null
+        }
         Qt.callLater(applyRendererState)
         if (benchmarkTracingEnabled)
             Qt.callLater(forwardHostBenchmarkState)
@@ -226,7 +347,25 @@ FocusScope {
     onRequestedColumnCountChanged: Qt.callLater(applyRendererState)
     onRequestedDensityChanged: Qt.callLater(applyRendererState)
     onDefaultListDensityChanged: Qt.callLater(applyRendererState)
-    Component.onCompleted: Qt.callLater(applyRendererState)
+    Component.onCompleted: {
+        galleryPanelContainerReady = true
+        warmCachedGalleryPanels()
+        ensureGalleryPanel(panel, true)
+        Qt.callLater(applyRendererState)
+    }
+
+    Connections {
+        target: host.bridge
+        ignoreUnknownSignals: true
+        function onPanelCachePrepared(panelSide, panelState) {
+            if (Number(panelSide) !== host.side)
+                return
+            const preparedId = host.panelId(panelState)
+            const activate = preparedId !== ""
+                    && preparedId === host.panelId(host.panel)
+            host.ensureGalleryPanel(panelState, activate)
+        }
+    }
 
     function currentItemImageGeometry(targetItem) {
         if (!targetItem || !galleryPanel
@@ -361,7 +500,7 @@ FocusScope {
     }
 
     function handleZoom(event) {
-        if (!ownsZoomShortcut(event))
+        if (!galleryPanel || !ownsZoomShortcut(event))
             return false
         const mode = requestedPresentationMode
         const minimum = mode === "columns" || mode === "details" ? 22
@@ -458,7 +597,7 @@ FocusScope {
     }
 
     function forwardConsoleWheel(x, y, angleDeltaY, modifiers) {
-        if (!host.keySink
+        if (!galleryPanel || !host.keySink
                 || typeof host.keySink.sendQtWheelAt !== "function")
             return
         const point = galleryPanel.mapToItem(host.keySink, x, y)
@@ -466,7 +605,7 @@ FocusScope {
     }
 
     function forwardConsoleMouseButton(x, y, button, down, modifiers) {
-        if (!host.keySink
+        if (!galleryPanel || !host.keySink
                 || typeof host.keySink.sendQtMouseAt !== "function")
             return
         const point = galleryPanel.mapToItem(host.keySink, x, y)
@@ -554,83 +693,167 @@ FocusScope {
         }
     }
 
-    ZG.GalleryPanel {
-        id: galleryPanel
-        objectName: "embeddedGalleryPanel"
+    Item {
+        id: galleryPanelContainer
         anchors.fill: parent
-        session: host.session
-        theme: host.theme
-        metrics: host.metrics
-        quickSearchMatches: host.panel.fastFindMatches || ({})
-        quickSearchMatchColor: {
-            const supplied = String(host.panel.fastFindMatchColor || "")
-            if (supplied !== "")
-                return supplied
-            return host.theme && host.theme.quickSearchMatch !== undefined
-                    ? host.theme.quickSearchMatch : foregroundColor
-        }
-        // f4 keeps the Details column header outside the reusable viewport so
-        // every unified layout shares one exact geometry and interaction
-        // surface.
-        showDetailsHeader: false
-        hostCapabilities: host.effectiveHostCapabilities
-        devicePixelRatio: host.devicePixelRatio
-        viewerTransitionActive: host.viewerTransitionActive
-        viewerTransitionEntryId: host.viewerTransitionEntryId
-        showCursor: host.panelActive
-        // The host owns the only imperative focus transfer. Keeping this
-        // child focused inside its FocusScope avoids three competing focus
-        // transactions whenever Tab changes the active panel.
-        focus: true
-        autoFocus: false
-        mouseWheelMode: host.mouseWheelMode
-        benchmarkTracingEnabled: host.benchmarkTracingEnabled
+    }
 
-        onActivateRequested: {
-            if (!host.panelActive)
-                host.bridge.requestActivate(host.side)
-        }
-        onCursorRequested: (entryId, index, deferCommit) => {
-            host.bridge.requestCursor(host.side, entryId, index,
-                                      host.catalogRevision, deferCommit)
-        }
-        onOpenRequested: (entryId, index, isImage, autoRepeat) => {
-            host.bridge.requestOpen(host.side, entryId, index, isImage,
-                                    host.catalogRevision, autoRepeat)
-        }
-        onSelectionRequested: (mode, entryIds) => {
-            host.bridge.requestSelection(host.side, mode, entryIds, host.catalogRevision)
-        }
-        onMetadataVisibleRangeChanged: (firstRow, lastRow) => {
-            if (host.bridge) {
-                host.bridge.reportMetadataVisibleRange(
-                            host.side, firstRow, lastRow,
-                            host.catalogRevision)
+    Component {
+        id: galleryPanelComponent
+
+        ZG.GalleryPanel {
+            id: cachedGalleryPanel
+            property string semanticPanelId: ""
+            property var cachedPanel: ({})
+            property var fixedSession: null
+            readonly property bool activeForHost:
+                host.activeGalleryPanelId === semanticPanelId
+
+            objectName: activeForHost
+                        ? "embeddedGalleryPanel"
+                        : "cachedGalleryPanel-" + semanticPanelId
+            anchors.fill: parent
+            z: activeForHost ? 1 : 0
+            visible: true
+            opacity: activeForHost ? 1 : 0
+            enabled: activeForHost
+            session: fixedSession
+            theme: host.theme
+            metrics: host.metrics
+            // f4 receives exact metadata incrementally and swaps retained
+            // workspaces atomically. A 500 ms brick interpolation after an
+            // auxiliary metadata batch only makes a ready panel look as if it
+            // is rebuilding, so embedded panels keep deterministic geometry.
+            animateLayoutChanges: false
+            // Standalone ZoinGallery talks about previewable images.  f4 owns
+            // a general file catalog, so expose an empty state only after the
+            // authoritative folder load has completed.
+            emptyStateEnabled: activeForHost
+                               && fixedSession !== null
+                               && cachedPanel.loading !== true
+                               && cachedPanel.catalogProvisional !== true
+            emptyStateText: qsTr("Folder is empty")
+            // Match spans are transient. A compact state merge may briefly
+            // retain an older map while fast-find is being closed; never
+            // paint it on a hidden/cached workspace.
+            quickSearchMatches: activeForHost
+                                && host.panel
+                                && host.panel.fastFind === true
+                                ? (host.panel.fastFindMatches || ({})) : ({})
+            quickSearchMatchColor: {
+                const supplied = activeForHost
+                        ? String(host.panel.fastFindMatchColor || "") : ""
+                if (supplied !== "")
+                    return supplied
+                return host.theme
+                        && host.theme.quickSearchMatch !== undefined
+                        ? host.theme.quickSearchMatch : foregroundColor
             }
-        }
-        onBenchmarkStage: (stage, metadata) => {
-            host.forwardBenchmarkStage(stage, metadata)
-        }
-        onConsoleWheelRequested: (x, y, angleDeltaY, modifiers) => {
-            host.forwardConsoleWheel(x, y, angleDeltaY, modifiers)
-        }
-        onConsoleMouseButtonRequested: (x, y, button, down, modifiers) => {
-            host.forwardConsoleMouseButton(x, y, button, down, modifiers)
+            // f4 keeps the Details column header outside the reusable
+            // viewport so every unified layout shares one exact geometry and
+            // interaction surface.
+            showDetailsHeader: false
+            hostCapabilities: host.effectiveHostCapabilities
+            devicePixelRatio: host.devicePixelRatio
+            viewerTransitionActive: activeForHost
+                                    && host.viewerTransitionActive
+            viewerTransitionEntryId: activeForHost
+                                     ? host.viewerTransitionEntryId : ""
+            // Keep an off-screen workspace in the exact cursor appearance it
+            // will have when revealed. Lucide image-provider URLs include the
+            // semantic tint; hiding the cursor here used to change that URL on
+            // activation and made the selected icon arrive one frame late.
+            showCursor: activeForHost ? host.panelActive
+                                      : cachedPanel.active === true
+            // Only the currently exposed cached viewport participates in the
+            // host FocusScope. The others remain polished but inert.
+            focus: activeForHost
+            autoFocus: false
+            mouseWheelMode: host.mouseWheelMode
+            benchmarkTracingEnabled: activeForHost
+                                     && host.benchmarkTracingEnabled
+
+            Component.onCompleted: {
+                Qt.callLater(function() {
+                    host.applyRendererStateTo(cachedGalleryPanel,
+                                              cachedGalleryPanel.cachedPanel)
+                })
+            }
+            onCachedPanelChanged: {
+                if (!activeForHost) {
+                    Qt.callLater(function() {
+                        host.applyRendererStateTo(
+                                    cachedGalleryPanel,
+                                    cachedGalleryPanel.cachedPanel)
+                    })
+                }
+            }
+            onActiveForHostChanged: {
+                if (!activeForHost)
+                    return
+                host.galleryPanel = cachedGalleryPanel
+                Qt.callLater(host.applyRendererState)
+            }
+
+            onActivateRequested: {
+                if (activeForHost && !host.panelActive)
+                    host.bridge.requestActivate(host.side)
+            }
+            onCursorRequested: (entryId, index, deferCommit) => {
+                if (activeForHost) {
+                    host.bridge.requestCursor(host.side, entryId, index,
+                                              host.catalogRevision,
+                                              deferCommit)
+                }
+            }
+            onOpenRequested: (entryId, index, isImage, autoRepeat) => {
+                if (activeForHost) {
+                    host.bridge.requestOpen(host.side, entryId, index, isImage,
+                                            host.catalogRevision, autoRepeat)
+                }
+            }
+            onSelectionRequested: (mode, entryIds) => {
+                if (activeForHost) {
+                    host.bridge.requestSelection(host.side, mode, entryIds,
+                                                 host.catalogRevision)
+                }
+            }
+            onMetadataVisibleRangeChanged: (firstRow, lastRow) => {
+                if (activeForHost && host.bridge) {
+                    host.bridge.reportMetadataVisibleRange(
+                                host.side, firstRow, lastRow,
+                                host.catalogRevision)
+                }
+            }
+            onBenchmarkStage: (stage, metadata) => {
+                if (activeForHost)
+                    host.forwardBenchmarkStage(stage, metadata)
+            }
+            onConsoleWheelRequested: (x, y, angleDeltaY, modifiers) => {
+                if (activeForHost)
+                    host.forwardConsoleWheel(x, y, angleDeltaY, modifiers)
+            }
+            onConsoleMouseButtonRequested: (x, y, button, down, modifiers) => {
+                if (activeForHost) {
+                    host.forwardConsoleMouseButton(x, y, button, down,
+                                                   modifiers)
+                }
+            }
         }
     }
 
     Connections {
-        target: galleryPanel
+        target: host.galleryPanel
         ignoreUnknownSignals: true
 
         function onPresentationModeChanged() {
             if (host.applyingRendererState || !host.bridge
-                    || typeof galleryPanel.presentationMode === "undefined")
+                    || typeof host.galleryPanel.presentationMode === "undefined")
                 return
-            const mode = String(galleryPanel.presentationMode)
+            const mode = String(host.galleryPanel.presentationMode)
             if (mode !== host.requestedPresentationMode) {
                 host.bridge.requestGalleryLayout(host.side, mode,
-                                                 Number(galleryPanel.columnCount || 0))
+                                                 Number(host.galleryPanel.columnCount || 0))
             }
         }
 
@@ -638,7 +861,7 @@ FocusScope {
             if (host.applyingRendererState || !host.bridge
                     || host.requestedPresentationMode !== "columns")
                 return
-            const columns = Number(galleryPanel.columnCount || 0)
+            const columns = Number(host.galleryPanel.columnCount || 0)
             if (columns !== host.requestedColumnCount) {
                 host.bridge.requestGalleryLayout(host.side, "columns", columns)
             }

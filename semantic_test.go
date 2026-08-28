@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -77,6 +78,42 @@ func TestSemanticPanelReusesStaticCatalogForFocusOnlyChanges(t *testing.T) {
 	}
 	if third.Entries[0].Name != "changed.go" {
 		t.Fatalf("rebuilt catalog contains stale entry: %#v", third.Entries[0])
+	}
+}
+
+func TestSemanticPanelFileInfoSettingIsBoundedDynamicState(t *testing.T) {
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+	previousSetting := AppConfig.ShowPanelFileInfo
+	t.Cleanup(func() { AppConfig.ShowPanelFileInfo = previousSetting })
+
+	panel := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(t.TempDir()),
+		table:         vtui.NewTable(0, 0, 40, 10, nil),
+		selectedItems: make(map[string]bool),
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "one.txt", Size: 1}},
+			{VFSItem: vfs.VFSItem{Name: "two.txt", Size: 2}},
+		},
+	}
+	t.Cleanup(panel.unpublishSemanticMetadataSnapshot)
+
+	AppConfig.ShowPanelFileInfo = false
+	full := panel.semanticPanelModel(nil, 0, true)
+	if full.ShowFileInfo {
+		t.Fatal("disabled file-information setting was exported as enabled")
+	}
+
+	AppConfig.ShowPanelFileInfo = true
+	header, ok := panel.semanticPanelHeaderModel(nil, 0, true)
+	if !ok {
+		t.Fatal("warm panel did not provide a row-free incremental header")
+	}
+	if !header.ShowFileInfo {
+		t.Fatal("enabled file-information setting was missing from incremental state")
+	}
+	if len(header.Entries) != 0 || header.CatalogRevision != full.CatalogRevision {
+		t.Fatalf("file-information toggle rebuilt or leaked the catalog: %#v", header)
 	}
 }
 
@@ -956,6 +993,8 @@ NormalColor = foreground:#ABCDEF
 }
 
 func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *testing.T) {
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
 	tmp := t.TempDir()
 	entries := make([]*fileEntry, 0, 205)
 	for i := 0; i < 205; i++ {
@@ -969,6 +1008,7 @@ func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *te
 		selectedItems: make(map[string]bool),
 		entries:       entries,
 	}
+	t.Cleanup(fp.unpublishSemanticMetadataSnapshot)
 	first := fp.semanticPanelModel(nil, 0, true)
 	defaultChunk, ok := BuildPanelCatalogMetadataChunk(first.ID, first.Path,
 		first.CatalogRevision, first.MetadataRevision, 0, 0)
@@ -986,6 +1026,31 @@ func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *te
 		semanticString(firstRows[63]["entryId"]) != first.Entries[63].EntryID {
 		t.Fatalf("first chunk order mismatch: %#v", firstRows)
 	}
+
+	cachePanel := map[string]any(first.ToMap())
+	cachePanel["cursor"] = 100
+	cachePanel["cursorEntryId"] = first.Entries[100].EntryID
+	warmup, ok := panelCacheMetadataWarmup(cachePanel)
+	if !ok || semanticInt(warmup["offset"]) != 36 ||
+		semanticInt(warmup["limit"]) != panelCacheMetadataWarmupLimit ||
+		len(appMapSlice(warmup["entries"])) != panelCacheMetadataWarmupLimit {
+		t.Fatalf("unexpected cursor-centered cache warmup: %#v", warmup)
+	}
+	var wire bytes.Buffer
+	renderer := NewExtUiRenderer(nil, &extUiMessageSender{w: &wire})
+	if !renderer.QueuePanelCatalogCache(cachePanel) {
+		t.Fatal("panel cache with bounded metadata warmup was rejected")
+	}
+	cacheMessage, err := extUiReadMessage(&wire)
+	if err != nil {
+		t.Fatalf("panel cache wire message was not readable: %v", err)
+	}
+	wireMetadata, ok := cacheMessage["metadata"].(map[string]any)
+	if cacheMessage["type"] != "panel_cache" || !ok ||
+		semanticInt(wireMetadata["offset"]) != 36 ||
+		semanticInt(wireMetadata["limit"]) != panelCacheMetadataWarmupLimit {
+		t.Fatalf("panel cache omitted its metadata warmup: %#v", cacheMessage)
+	}
 	lastChunk, ok := BuildPanelCatalogMetadataChunk(first.ID, first.Path,
 		first.CatalogRevision, first.MetadataRevision, 192, 999)
 	if !ok || lastChunk["limit"] != 128 || lastChunk["final"] != true ||
@@ -998,7 +1063,7 @@ func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *te
 	fp.entries[0].Size = 9999
 	repeat, ok := BuildPanelCatalogMetadataChunk(first.ID, first.Path,
 		first.CatalogRevision, first.MetadataRevision, 0, 1)
-	if !ok || appInt64(appMapSlice(repeat["entries"])[0]["size"]) != 0 {
+	if !ok || appInt64(appMapSlice(repeat["entries"])[0]["size"]) != -1 {
 		t.Fatalf("published metadata snapshot was not immutable: %#v", repeat)
 	}
 
@@ -1024,6 +1089,50 @@ func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *te
 	if _, ok := BuildPanelCatalogMetadataChunk(third.ID, third.Path,
 		third.CatalogRevision, third.MetadataRevision, -1, 1); ok {
 		t.Fatal("negative metadata offset was accepted")
+	}
+}
+
+func TestDeferredMetadataDistinguishesUnknownAndKnownEmptyFileSizes(t *testing.T) {
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+
+	fp := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(t.TempDir()),
+		table:         vtui.NewTable(0, 0, 40, 10, nil),
+		selectedItems: make(map[string]bool),
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "pending.txt"}},
+			{VFSItem: vfs.VFSItem{Name: "empty.txt", SizeKnown: true}},
+			{VFSItem: vfs.VFSItem{Name: "payload.txt", Size: 42}},
+		},
+	}
+
+	provisional := fp.semanticPanelModel(nil, 0, true)
+	rows := appMapSlice(semanticMetadataChunkForModel(t, provisional)["entries"])
+	if got := appInt64(rows[0]["size"]); got != -1 || semanticString(rows[0]["sizeText"]) != "" {
+		t.Fatalf("unknown size was serialized as a real value: %#v", rows[0])
+	}
+	if got := appInt64(rows[1]["size"]); got != 0 || semanticString(rows[1]["sizeText"]) != "0" {
+		t.Fatalf("known empty file lost its zero size: %#v", rows[1])
+	}
+	if got := appInt64(rows[2]["size"]); got != 42 || semanticString(rows[2]["sizeText"]) != "42" {
+		t.Fatalf("legacy non-zero size was not treated as known: %#v", rows[2])
+	}
+
+	// The metadata phase can resolve an unknown row to an actual zero-byte
+	// file. That transition must advance only MetadataRevision, otherwise the
+	// frontend would retain the provisional blank/zero snapshot forever.
+	fp.entries[0].SizeKnown = true
+	resolved := fp.semanticPanelModel(nil, 0, true)
+	if resolved.CatalogRevision != provisional.CatalogRevision ||
+		resolved.MetadataRevision != provisional.MetadataRevision+1 {
+		t.Fatalf("known-zero enrichment changed wrong revisions: before=(%d,%d) after=(%d,%d)",
+			provisional.CatalogRevision, provisional.MetadataRevision,
+			resolved.CatalogRevision, resolved.MetadataRevision)
+	}
+	resolvedRows := appMapSlice(semanticMetadataChunkForModel(t, resolved)["entries"])
+	if got := appInt64(resolvedRows[0]["size"]); got != 0 || semanticString(resolvedRows[0]["sizeText"]) != "0" {
+		t.Fatalf("resolved empty file was not published: %#v", resolvedRows[0])
 	}
 }
 
