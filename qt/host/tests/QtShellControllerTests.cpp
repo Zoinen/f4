@@ -1982,6 +1982,7 @@ void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()
                  {QStringLiteral("name"), QStringLiteral("item.txt")},
                  {QStringLiteral("isDir"), false},
                  {QStringLiteral("isUp"), false},
+                 {QStringLiteral("isHidden"), true},
                  {QStringLiteral("isImage"), false},
                  {QStringLiteral("selected"), false},
              }}},
@@ -2067,6 +2068,10 @@ void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()
                  .constFirst().toMap().value(
                      QStringLiteral("entryId")).toString(),
              QStringLiteral("left:new"));
+    QCOMPARE(installed.value(QStringLiteral("entries")).toList()
+                 .constFirst().toMap().value(
+                     QStringLiteral("isHidden")).toBool(),
+             true);
     QVERIFY(!compactChanged.constFirst().constFirst().toMap().value(
                  QStringLiteral("panel")).toMap().contains(
                      QStringLiteral("entries")));

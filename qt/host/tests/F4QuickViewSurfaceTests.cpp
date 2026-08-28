@@ -392,6 +392,14 @@ void sendPixelWheel(QQuickWindow *window, const QPoint &position, int deltaY)
     QCoreApplication::sendEvent(window, &event);
 }
 
+void sendAngleWheel(QQuickWindow *window, const QPoint &position, int deltaY)
+{
+    QWheelEvent event(position, window->mapToGlobal(position),
+                      {}, QPoint(0, deltaY), Qt::NoButton, Qt::NoModifier,
+                      Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(window, &event);
+}
+
 qreal topVisualRow(QQuickItem *surface, QQuickItem *list)
 {
     const QVariantList rows = surface->property("displayedRows").toList();
@@ -600,6 +608,7 @@ private slots:
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
     void workspaceSeparatorBreaksUnderActiveTab();
+    void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
@@ -926,6 +935,27 @@ void F4QuickViewSurfaceTests::semanticHorizontalSplitStaysOnNativeSurface()
     QVERIFY(QMetaObject::invokeMethod(fixture.window, "needsFallbackGrid",
                                       Q_RETURN_ARG(QVariant, fallback)));
     QVERIFY(!fallback.toBool());
+
+    auto *splitter = fixture.item(QStringLiteral("mainPanelSplitter"));
+    QVERIFY(splitter);
+    const QPointF splitterOrigin = splitter->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPoint splitterCenter = (splitterOrigin
+                                   + QPointF(splitter->width() / 2,
+                                             splitter->height() / 2))
+                                      .toPoint();
+    QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                       splitterCenter);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(fixture.window->property("panelSplitRatio").toReal() - 0.5)
+            < 0.0001,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(left->width() - fixture.window->width() * 0.5)
+                                 < 1.0,
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(right->x() - fixture.window->width() * 0.5)
+                                 < 1.0,
+                             3000);
 }
 
 void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
@@ -2072,6 +2102,93 @@ void F4QuickViewSurfaceTests::workspaceSeparatorBreaksUnderActiveTab()
         secondInactiveTab->property("hoverActive").toBool(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!inactiveDivider->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!rightInactiveDivider->isVisible(), 3000);
+}
+
+void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
+{
+    const auto workspaceTabs = [](int activeIndex) {
+        QVariantList tabs;
+        for (int index = 0; index < 3; ++index) {
+            tabs.append(QVariantMap{
+                {QStringLiteral("id"),
+                 QStringLiteral("workspace-tab-%1").arg(index + 1)},
+                {QStringLiteral("text"),
+                 QStringLiteral("Tab %1").arg(index + 1)},
+                {QStringLiteral("index"), index},
+                {QStringLiteral("active"), index == activeIndex},
+                {QStringLiteral("action"),
+                 QStringLiteral("workspace.activate")},
+                {QStringLiteral("closable"), true},
+            });
+        }
+        return QVariantMap{
+            {QStringLiteral("visible"), true},
+            {QStringLiteral("activeIndex"), activeIndex},
+            {QStringLiteral("tabs"), tabs},
+            {QStringLiteral("newTab"), QVariantMap{}},
+            {QStringLiteral("counter"), QVariantMap{}},
+        };
+    };
+
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("workspaceTabs"), workspaceTabs(1));
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *const workspaceBar = fixture.item(
+        QStringLiteral("workspaceBar"));
+    QVERIFY(workspaceBar);
+    QTRY_VERIFY_WITH_TIMEOUT(workspaceBar->isVisible(), 3000);
+
+    const QPointF origin = workspaceBar->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPoint position = (origin + QPointF(workspaceBar->width() / 2,
+                                               workspaceBar->height() / 2))
+                                .toPoint();
+
+    QTest::mouseMove(fixture.window, position);
+    sendAngleWheel(fixture.window, position, 120);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 3000);
+    QCOMPARE(fixture.shell.actions.at(0).value(QStringLiteral("action")),
+             QVariant(QStringLiteral("workspace.activate")));
+    QCOMPARE(fixture.shell.actions.at(0).value(QStringLiteral("target")),
+             QVariant(QStringLiteral("workspace-tab-1")));
+    QCOMPARE(fixture.shell.actions.at(0).value(QStringLiteral("index")),
+             QVariant(0));
+
+    // Simulate the authoritative response before checking the boundaries and
+    // the opposite direction. Wheel navigation must not wrap around.
+    fixture.shell.clearActions();
+    QVariantMap nextScene = scene;
+    nextScene.insert(QStringLiteral("workspaceTabs"), workspaceTabs(0));
+    fixture.shell.setScene(nextScene);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("workspaceTabs").toMap().value(
+            QStringLiteral("activeIndex")), QVariant(0), 3000);
+
+    QTest::mouseMove(fixture.window, QPoint(0, 0));
+    QTest::mouseMove(fixture.window, position);
+    sendAngleWheel(fixture.window, position, 120);
+    QTest::qWait(50);
+    QCOMPARE(fixture.shell.actions.size(), 0);
+
+    sendAngleWheel(fixture.window, position, -120);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 3000);
+    QCOMPARE(fixture.shell.actions.at(0).value(QStringLiteral("target")),
+             QVariant(QStringLiteral("workspace-tab-2")));
+    QCOMPARE(fixture.shell.actions.at(0).value(QStringLiteral("index")),
+             QVariant(1));
+
+    fixture.shell.clearActions();
+    nextScene.insert(QStringLiteral("workspaceTabs"), workspaceTabs(2));
+    fixture.shell.setScene(nextScene);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("workspaceTabs").toMap().value(
+            QStringLiteral("activeIndex")), QVariant(2), 3000);
+    QTest::mouseMove(fixture.window, QPoint(0, 0));
+    QTest::mouseMove(fixture.window, position);
+    sendAngleWheel(fixture.window, position, -120);
+    QTest::qWait(50);
+    QCOMPARE(fixture.shell.actions.size(), 0);
 }
 
 void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()

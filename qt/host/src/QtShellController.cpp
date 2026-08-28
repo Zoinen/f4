@@ -540,6 +540,9 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
                 != QMetaType::Bool
             || entry.value(QStringLiteral("isUp")).metaType().id()
                 != QMetaType::Bool
+            || (entry.contains(QStringLiteral("isHidden"))
+                && entry.value(QStringLiteral("isHidden")).metaType().id()
+                    != QMetaType::Bool)
             || entry.value(QStringLiteral("isImage")).metaType().id()
                 != QMetaType::Bool
             || entry.value(QStringLiteral("selected")).metaType().id()
@@ -554,8 +557,8 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
         entryIds.insert(entryId);
         for (const QString &heavyKey : {
                  QStringLiteral("localPath"), QStringLiteral("size"),
-                 QStringLiteral("sizeText"), QStringLiteral("isHidden"),
-                 QStringLiteral("isExecutable"), QStringLiteral("isCached"),
+                 QStringLiteral("sizeText"), QStringLiteral("isExecutable"),
+                 QStringLiteral("isCached"),
                  QStringLiteral("sizeCalculated"), QStringLiteral("mtime"),
                  QStringLiteral("mtimeNanos"), QStringLiteral("version"),
                  QStringLiteral("mode")}) {

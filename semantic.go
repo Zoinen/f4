@@ -249,9 +249,11 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		if vv.HexMode {
 			offset &= ^int64(0xF)
 		} else {
+			offset = vv.clampTextScrollOffset(offset)
 			offset = vv.backend.FindLineStart(offset)
 		}
 		vv.TopOffset = offset
+		vv.eofVisible = false
 		vv.semanticPendingScroll = false
 		vv.semanticPendingGeneration = 0
 		vv.semanticWindowGeneration = generation
@@ -271,6 +273,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 			vv.semanticWindowGeneration = generation
 			return true
 		}
+		offset = vv.clampTextScrollOffset(offset)
 		resolved, ready := vv.semanticResolveTextWindowOffset(offset)
 		if !ready {
 			vv.semanticPendingScroll = true
@@ -279,6 +282,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 			return true
 		}
 		vv.TopOffset = resolved
+		vv.eofVisible = false
 		vv.semanticPendingScroll = false
 		vv.semanticPendingGeneration = 0
 		vv.semanticWindowGeneration = generation
@@ -1212,6 +1216,9 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) 
 		if semanticEntryIsImage(entry, imageExtensions) {
 			baseFlags |= 1 << 3
 		}
+		if entry.IsHidden {
+			baseFlags |= 1 << 4
+		}
 		_, _ = catalog.Write([]byte{baseFlags})
 
 		writeSemanticFingerprintString(metadata, entryID)
@@ -1229,27 +1236,24 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) 
 		semanticWriteUint64(metadata, uint64(entry.UnixMode))
 		semanticWriteUint64(metadata, uint64(entry.WinAttrs))
 		metadataFlags := byte(0)
-		if entry.IsHidden {
-			metadataFlags |= 1 << 0
-		}
 		if entry.IsExecutable {
-			metadataFlags |= 1 << 1
+			metadataFlags |= 1 << 0
 		}
 		// Cache provenance is deliberately absent from the deferred metadata
 		// protocol. Replacing an otherwise identical cached row with its fresh
 		// counterpart must therefore not invalidate a metadata pull or force a
 		// second full catalog apply in the native frontend.
 		if !metadataDeferred && entry.IsCached {
-			metadataFlags |= 1 << 2
+			metadataFlags |= 1 << 1
 		}
 		if entry.SizeCalculated {
-			metadataFlags |= 1 << 3
+			metadataFlags |= 1 << 2
 		}
 		// A known empty file and a not-yet-enriched base row both carry Size=0.
 		// Keep that distinction in MetadataRevision so the later zero-byte
 		// enrichment invalidates an in-flight provisional metadata snapshot.
 		if entry.SizeKnown || entry.Size != 0 {
-			metadataFlags |= 1 << 4
+			metadataFlags |= 1 << 3
 		}
 		_, _ = metadata.Write([]byte{metadataFlags})
 		if entry.Selected {
@@ -1488,6 +1492,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 			Path:             logicalPath,
 			IsDir:            entry.IsDir,
 			IsUp:             entry.Name == "..",
+			IsHidden:         entry.IsHidden,
 			IsImage:          semanticEntryIsImage(entry, imageExtensions),
 			HighlightStyleID: highlightStyleID,
 		})
@@ -1669,7 +1674,6 @@ func BuildPanelCatalogMetadataChunk(panelID, path string, catalogRevision, metad
 			LocalPath:        localPath,
 			Size:             semanticFileSizeValue(&entry),
 			SizeText:         semanticFileSize(&entry),
-			IsHidden:         source.item.IsHidden,
 			MTime:            source.item.MTime.Format("2006-01-02 15:04"),
 			MTimeNanos:       mtimeNanos,
 			Mode:             source.item.Mode,
@@ -2219,6 +2223,7 @@ func (vv *ViewerView) semanticContentWidth() int {
 // the middle of that line, so snapping only to the previous newline loses the
 // actual viewport whenever a logical line occupies more than one screen row.
 func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool) {
+	offset = vv.clampTextScrollOffset(offset)
 	if vv.backend == nil || offset <= 0 {
 		return 0, true
 	}
@@ -2230,6 +2235,23 @@ func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool
 		return vv.backend.TryFindLineStart(offset)
 	}
 	return vv.semanticWrappedRowStart(offset, width)
+}
+
+// clampTextScrollOffset keeps text-mode viewports inside the file.  EOF is a
+// boundary, not a drawable byte, and resolving it as a line start can produce
+// a blank page (especially for files ending in a newline).
+func (vv *ViewerView) clampTextScrollOffset(offset int64) int64 {
+	if vv.backend == nil || offset <= 0 {
+		return 0
+	}
+	size := vv.backend.Size()
+	if size <= 0 {
+		return 0
+	}
+	if offset >= size {
+		return size - 1
+	}
+	return offset
 }
 
 // semanticWrappedRowStart returns the visual fragment containing offset. All

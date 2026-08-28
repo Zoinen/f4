@@ -367,6 +367,7 @@ private slots:
     void initTestCase();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
     void standaloneDocumentsEndAtSharedKeyBarSeparator();
+    void finalViewportAlignsLastRowBelowFractionalBottom();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
     void activeFlickRebasesAtomicallyAcrossWindowAck();
@@ -449,6 +450,39 @@ void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()
 
     verify(viewerFrame(0, 20, 0, 1));
     verify(editorFrame(0, 40, 0, 1));
+}
+
+void F4DocumentSurfaceTests::finalViewportAlignsLastRowBelowFractionalBottom()
+{
+    // A 599 px surface leaves a one-pixel remainder below a 30-row,
+    // 20 px/row semantic window. The last row must be aligned to the bottom
+    // of the ListView rather than left one pixel below its visible area.
+    const QVariantMap frame = viewerFrame(700, 30, 700, 1, 10, 1000);
+    DocumentFixture fixture(documentScene(frame), 599);
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.surface->property("displayedRows").toList().size(), 30,
+        3000);
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const qreal minimumY = fixture.surface->property("loadedSlotStart").toInt()
+                           * rowHeight;
+    const qreal maximumY = qMax(
+        minimumY,
+        fixture.surface->property("loadedSlotEnd").toInt() * rowHeight
+            - fixture.list->height());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(fixture.list->property("contentY").toReal() - maximumY) < 0.01,
+        3000);
+    QVERIFY(maximumY > minimumY);
+
+    const qreal loadedBottom =
+        fixture.surface->property("loadedSlotEnd").toInt() * rowHeight;
+    QVERIFY(loadedBottom
+            <= fixture.list->property("contentY").toReal()
+                   + fixture.list->height() + 0.01);
 }
 
 void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions()

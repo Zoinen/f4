@@ -206,7 +206,6 @@ type FileEntryMetadataModel struct {
 	LocalPath        string
 	Size             int64
 	SizeText         string
-	IsHidden         bool
 	MTime            string
 	MTimeNanos       int64
 	Mode             string
@@ -775,6 +774,12 @@ func (e FileEntryModel) MinimalToMap() M {
 		"isImage":          e.IsImage,
 		"selected":         e.Selected,
 	}
+	// Hidden entries are normally sparse. Absence is the canonical false value,
+	// so ordinary large directories pay no per-row payload cost for this
+	// first-frame presentation bit.
+	if e.IsHidden {
+		out["isHidden"] = true
+	}
 	// The fast base pass already resolves name/dir/hidden-based highlight
 	// rules (see FileHighlighter.SemanticStyle's metadataKnown parameter);
 	// omitting this field here would silently discard that color/icon until
@@ -792,7 +797,6 @@ func (e FileEntryMetadataModel) ToMap() M {
 		"localPath":  e.LocalPath,
 		"size":       e.Size,
 		"sizeText":   e.SizeText,
-		"isHidden":   e.IsHidden,
 		"mtime":      e.MTime,
 		"mtimeNanos": e.MTimeNanos,
 		"mode":       e.Mode,

@@ -326,7 +326,7 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 		selectedItems: make(map[string]bool),
 		entries: []*fileEntry{
 			{VFSItem: vfs.VFSItem{Name: "..", IsDir: true, Mode: "drwxr-xr-x"}},
-			{VFSItem: vfs.VFSItem{Name: "alpha.txt", Size: 1234, MTime: time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC), Mode: "-rw-r--r--"}, Selected: true},
+			{VFSItem: vfs.VFSItem{Name: "alpha.txt", Size: 1234, MTime: time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC), Mode: "-rw-r--r--", IsHidden: true}, Selected: true},
 		},
 	}
 	fp.SetCanFocus(true)
@@ -402,10 +402,10 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	if columns[1]["role"] != "size" || columns[1]["sortMode"] != "size" || columns[1]["alignment"] != "right" {
 		t.Fatalf("unexpected unified size column metadata: %#v", columns[1])
 	}
-	if entries[1]["isImage"] != false {
+	if entries[1]["isImage"] != false || entries[1]["isHidden"] != true {
 		t.Fatalf("minimal identity/type metadata is incomplete: %#v", entries[1])
 	}
-	for _, deferred := range []string{"path", "localPath", "size", "sizeText", "mtimeNanos", "version", "mode", "isHidden", "highlightStyleId"} {
+	for _, deferred := range []string{"path", "localPath", "size", "sizeText", "mtimeNanos", "version", "mode", "highlightStyleId"} {
 		if _, present := entries[1][deferred]; present {
 			t.Fatalf("deferred entry field %q leaked into base scene: %#v", deferred, entries[1])
 		}
@@ -970,7 +970,6 @@ NormalColor = foreground:#ABCDEF
 	fp.entries[0].Uid = 42
 	fp.entries[0].Gid = 43
 	fp.entries[0].WinAttrs = 7
-	fp.entries[0].IsHidden = true
 	fp.entries[0].IsExecutable = true
 	fp.entries[0].SizeCalculated = true
 
@@ -990,14 +989,34 @@ NormalColor = foreground:#ABCDEF
 	chunk := semanticMetadataChunkForModel(t, second)
 	entry := appMapSlice(chunk["entries"])[0]
 	if appInt64(entry["size"]) != 999 || semanticString(entry["mode"]) != "-rwx------" ||
-		entry["isHidden"] != true ||
 		semanticString(entry["highlightStyleId"]) == "" {
 		t.Fatalf("deferred mutation missing from metadata chunk: %#v", entry)
+	}
+	if _, duplicated := entry["isHidden"]; duplicated {
+		t.Fatalf("base hidden state was duplicated in metadata: %#v", entry)
 	}
 	for _, redundant := range []string{"physicalSize", "isExecutable", "sizeCalculated", "atimeNanos", "ctimeNanos", "version", "revision", "unixMode", "uid", "gid", "winAttrs"} {
 		if _, present := entry[redundant]; present {
 			t.Fatalf("redundant metadata field %q was serialized: %#v", redundant, entry)
 		}
+	}
+
+	fp.entries[0].IsHidden = true
+	third := fp.semanticPanelModel(nil, 0, true)
+	if third.CatalogRevision != second.CatalogRevision+1 {
+		t.Fatalf("hidden state did not advance catalog revision: second=%d third=%d",
+			second.CatalogRevision, third.CatalogRevision)
+	}
+	if third.MetadataRevision != second.MetadataRevision {
+		t.Fatalf("hidden state incorrectly advanced metadata revision: second=%d third=%d",
+			second.MetadataRevision, third.MetadataRevision)
+	}
+	thirdEntry := appMapSlice(third.ToMap()["entries"])[0]
+	if thirdEntry["isHidden"] != true {
+		t.Fatalf("authoritative hidden state missing from base catalog: %#v", thirdEntry)
+	}
+	if metadataEntry := appMapSlice(semanticMetadataChunkForModel(t, third)["entries"])[0]; metadataEntry["isHidden"] != nil {
+		t.Fatalf("hidden state was redundantly deferred: %#v", metadataEntry)
 	}
 }
 
@@ -1961,6 +1980,7 @@ func TestSemantic_ViewerViewActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create viewer: %v", err)
 	}
+	defer viewer.Close()
 
 	// Test scroll action
 	actionScroll := map[string]any{

@@ -231,16 +231,19 @@ func TestDeferredPanelToMapKeepsBaseCatalogMinimal(t *testing.T) {
 		t.Fatalf("minimal catalog lost its immediately resolvable style: %#v", styles)
 	}
 	entry := out["entries"].([]M)[0]
-	if entry["isImage"] != true || entry["selected"] != true {
+	if entry["isImage"] != true || entry["isHidden"] != true || entry["selected"] != true {
 		t.Fatalf("minimal entry lacks interactive fields: %#v", entry)
 	}
 	if entry["highlightStyleId"] != "style-a" {
 		t.Fatalf("minimal entry lost its style identity: %#v", entry)
 	}
-	for _, key := range []string{"path", "localPath", "size", "isHidden", "mtimeNanos"} {
+	for _, key := range []string{"path", "localPath", "size", "mtimeNanos"} {
 		if _, ok := entry[key]; ok {
 			t.Fatalf("minimal entry leaked %q: %#v", key, entry)
 		}
+	}
+	if _, present := (FileEntryModel{Name: "visible"}).MinimalToMap()["isHidden"]; present {
+		t.Fatalf("ordinary rows must not pay for a false hidden flag")
 	}
 }
 
@@ -251,7 +254,7 @@ func TestPanelCatalogMetadataChunkToMap(t *testing.T) {
 		Final: true,
 		Entries: []FileEntryMetadataModel{{
 			Index: 64, EntryID: "entry-64", LocalPath: "/tmp/64", Size: 123,
-			SizeText: "123", IsHidden: true, MTime: "2026-08-17 12:34",
+			SizeText: "123", MTime: "2026-08-17 12:34",
 			MTimeNanos: 123456, Mode: "-rw-r--r--", HighlightStyleID: "style-a",
 		}},
 		HighlightStyles: map[string]HighlightStyleModel{"style-a": {Marker: "!"}},
@@ -264,12 +267,15 @@ func TestPanelCatalogMetadataChunkToMap(t *testing.T) {
 	entry := chunk["entries"].([]M)[0]
 	if entry["entryId"] != "entry-64" || entry["localPath"] != "/tmp/64" ||
 		entry["size"] != int64(123) || entry["sizeText"] != "123" ||
-		entry["isHidden"] != true || entry["mtime"] != "2026-08-17 12:34" ||
+		entry["mtime"] != "2026-08-17 12:34" ||
 		entry["mtimeNanos"] != int64(123456) || entry["mode"] != "-rw-r--r--" ||
 		entry["highlightStyleId"] != "style-a" {
 		t.Fatalf("unexpected metadata row: %#v", entry)
 	}
-	if len(entry) != 10 {
+	if _, duplicated := entry["isHidden"]; duplicated {
+		t.Fatalf("base hidden state was duplicated in metadata: %#v", entry)
+	}
+	if len(entry) != 9 {
 		t.Fatalf("metadata row schema grew unexpectedly: %#v", entry)
 	}
 }

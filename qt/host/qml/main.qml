@@ -3664,6 +3664,63 @@ ApplicationWindow {
                 property Item activeWorkspaceTab: null
                 property int activeWorkspaceTabSeparatorRevision: 0
                 property bool activeWorkspaceTabUpdatePending: false
+                property string wheelNavigationModelSignature: ""
+                property int wheelNavigationIndex: -1
+                property int wheelNavigationAuthoritativeIndex: -1
+
+                function workspaceTabModelSignature(tabs) {
+                    var parts = []
+                    for (var i = 0; i < tabs.length; ++i) {
+                        var tab = tabs[i] || ({})
+                        parts.push(root.cleanText(tab.id))
+                    }
+                    return parts.join("\u001f")
+                }
+
+                function authoritativeWorkspaceIndex(tabs) {
+                    var activeIndex = Number(root.workspaceTabs.activeIndex)
+                    if (Math.floor(activeIndex) === activeIndex
+                            && activeIndex >= 0
+                            && activeIndex < tabs.length)
+                        return activeIndex
+                    for (var i = 0; i < tabs.length; ++i) {
+                        if (tabs[i] && tabs[i].active === true)
+                            return i
+                    }
+                    return 0
+                }
+
+                function activateAdjacentWorkspaceTab(direction) {
+                    var tabs = root.workspaces || []
+                    if (tabs.length < 2)
+                        return false
+
+                    var authoritativeIndex = authoritativeWorkspaceIndex(tabs)
+                    var signature = workspaceTabModelSignature(tabs)
+                    if (signature !== wheelNavigationModelSignature
+                            || wheelNavigationIndex < 0
+                            || wheelNavigationIndex >= tabs.length
+                            || authoritativeIndex
+                               !== wheelNavigationAuthoritativeIndex) {
+                        wheelNavigationModelSignature = signature
+                        wheelNavigationIndex = authoritativeIndex
+                        wheelNavigationAuthoritativeIndex = authoritativeIndex
+                    }
+
+                    var nextIndex = wheelNavigationIndex + direction
+                    if (nextIndex < 0 || nextIndex >= tabs.length)
+                        return true
+                    wheelNavigationIndex = nextIndex
+
+                    var tab = tabs[nextIndex] || ({})
+                    root.action({
+                        "target": root.cleanText(tab.id),
+                        "action": root.cleanText(tab.action)
+                                  || "workspace.activate",
+                        "index": nextIndex
+                    }, true)
+                    return true
+                }
 
                 function refreshActiveWorkspaceTabGeometry() {
                     ++activeWorkspaceTabSeparatorRevision
@@ -3718,6 +3775,27 @@ ApplicationWindow {
 
                 onXChanged: refreshActiveWorkspaceTabGeometry()
                 onWidthChanged: refreshActiveWorkspaceTabGeometry()
+
+                MouseArea {
+                    id: workspaceTabWheelArea
+                    objectName: "workspaceTabWheelArea"
+                    anchors.fill: parent
+                    acceptedButtons: Qt.NoButton
+                    hoverEnabled: false
+                    preventStealing: false
+                    enabled: workspaceBar.visible
+                    onWheel: (wheel) => {
+                        var delta = Number(wheel.angleDelta.y)
+                        if (delta === 0)
+                            delta = Number(wheel.pixelDelta.y)
+                        if (!(delta > 0 || delta < 0))
+                            return
+                        // Wheel up selects the previous tab; wheel down selects
+                        // the next one, with the same wraparound as Ctrl+Tab.
+                        wheel.accepted = workspaceBar.activateAdjacentWorkspaceTab(
+                            delta > 0 ? -1 : 1)
+                    }
+                }
 
                 Flickable {
                     id: workspaceFlick
@@ -4539,7 +4617,11 @@ ApplicationWindow {
                             availableWidth: parent.width
                             minimumPanelWidth: root.panelMinimumWidth
                             ratio: root.panelSplitRatio
-                            defaultRatio: root.semanticPanelSplitRatio()
+                            // Double-clicking the divider is an explicit local
+                            // reset to equal panels. The semantic ratio may be
+                            // non-default because of a prior Ctrl+Left/Right
+                            // adjustment and must not become the reset target.
+                            defaultRatio: 0.5
                             keySink: grid
                             surfaceActive: root.nativeTwoPanelSurfaceActive
                                            && root.widePanelSide() < 0
@@ -8108,19 +8190,13 @@ ApplicationWindow {
             loadedSlotStart = start
             loadedSlotEnd = start + source.length
 
-            var index = indexForExtent(extent, displayedRows)
-            if (index < 0)
-                index = clamp(Number(frame.viewportRow || 0), 0,
-                              Math.max(0, displayedRows.length - 1))
             if (deferPlacement) {
                 initialPlacementExtent = extent
                 initialPlacementFraction = fraction
                 initialPlacementPending = true
                 initialPlacementTimer.restart()
             } else {
-                documentList.contentY = (loadedSlotStart + index + fraction)
-                        * rowHeight
-                wheelTarget = documentList.contentY
+                placeAtExtent(extent, fraction)
             }
         }
 
@@ -8207,6 +8283,33 @@ ApplicationWindow {
         function maximumLoadedY() {
             return Math.max(minimumLoadedY(),
                             loadedSlotEnd * rowHeight - documentList.height)
+        }
+
+        function frameReachesContentEnd() {
+            if (!contentExtentKnown || contentExtent <= 0)
+                return false
+            var viewportEnd = Number(frame.viewportStart || 0)
+                    + Number(frame.viewportSpan || 0)
+            return viewportEnd >= contentExtent - 0.000001
+        }
+
+        function placeAtExtent(extent, fraction) {
+            // The final semantic page may end between two physical row
+            // boundaries. Placing its first row at y=0 would crop the last
+            // row; at EOF anchor the loaded content's bottom instead.
+            if (frameReachesContentEnd()) {
+                documentList.contentY = maximumLoadedY()
+                wheelTarget = documentList.contentY
+                return
+            }
+
+            var index = indexForExtent(extent, displayedRows)
+            if (index < 0)
+                index = clamp(Number(frame.viewportRow || 0), 0,
+                              Math.max(0, displayedRows.length - 1))
+            documentList.contentY = (loadedSlotStart + index + fraction)
+                    * rowHeight
+            wheelTarget = documentList.contentY
         }
 
         function visibleExtentSpan() {
@@ -8748,19 +8851,10 @@ ApplicationWindow {
             onTriggered: {
                 if (!documentRoot.initialPlacementPending)
                     return
-                var index = documentRoot.indexForExtent(
-                            documentRoot.initialPlacementExtent,
-                            documentRoot.displayedRows)
-                if (index < 0)
-                    index = documentRoot.clamp(
-                                Number(frame.viewportRow || 0), 0,
-                                Math.max(0,
-                                         documentRoot.displayedRows.length - 1))
                 documentRoot.rebasingWindow = true
-                documentList.contentY = (documentRoot.loadedSlotStart + index
-                            + documentRoot.initialPlacementFraction)
-                            * documentRoot.rowHeight
-                documentRoot.wheelTarget = documentList.contentY
+                documentRoot.placeAtExtent(
+                            documentRoot.initialPlacementExtent,
+                            documentRoot.initialPlacementFraction)
                 documentRoot.rebasingWindow = false
                 documentRoot.initialPlacementPending = false
                 documentRoot.windowInitialized = true

@@ -286,7 +286,7 @@ QVariantMap deferredPanel(const QString &panelId, int side, bool active,
     QVariantList entries;
     entries.reserve(count);
     for (int row = 0; row < count; ++row) {
-        entries.push_back(QVariantMap{
+        QVariantMap entry{
             {QStringLiteral("entryId"),
              QStringLiteral("%1:entry:%2").arg(panelId).arg(row)},
             {QStringLiteral("index"), row},
@@ -299,7 +299,11 @@ QVariantMap deferredPanel(const QString &panelId, int side, bool active,
             {QStringLiteral("isUp"), false},
             {QStringLiteral("isImage"), false},
             {QStringLiteral("selected"), false},
-        });
+        };
+        if (row == 2) {
+            entry.insert(QStringLiteral("isHidden"), true);
+        }
+        entries.push_back(entry);
     }
     return {
         {QStringLiteral("id"), panelId},
@@ -341,7 +345,6 @@ QVariantMap deferredMetadataResponse(const QVariantMap &request, int total,
             {QStringLiteral("size"), qint64(4096 + row)},
             {QStringLiteral("sizeText"),
              QStringLiteral("%1 B").arg(4096 + row)},
-            {QStringLiteral("isHidden"), row == 2},
             {QStringLiteral("sizeCalculated"), true},
             {QStringLiteral("mtime"),
              QStringLiteral("2026-08-17 12:00")},
@@ -2196,11 +2199,14 @@ void F4GalleryBridgeTests::workspaceCachePreparesOffscreenAndActivatesBothSessio
     futureRight.insert(QStringLiteral("path"), QStringLiteral("/workspace-b-right"));
     futureRight.insert(QStringLiteral("catalogRevision"), qulonglong(92));
     futureRight.insert(QStringLiteral("selectionRevision"), qulonglong(12));
+    futureRight.insert(QStringLiteral("metadataDeferred"), true);
+    futureRight.insert(QStringLiteral("metadataRevision"), qulonglong(112));
     futureRight.insert(QStringLiteral("cursorEntryId"), QStringLiteral("b-right:one"));
     futureRight.insert(QStringLiteral("entries"), QVariantList{QVariantMap{
         {QStringLiteral("entryId"), QStringLiteral("b-right:one")},
         {QStringLiteral("index"), 0},
         {QStringLiteral("name"), QStringLiteral("b-right.txt")},
+        {QStringLiteral("isHidden"), true},
     }});
 
     const QVariantMap warmupRequest = {
@@ -2254,6 +2260,25 @@ void F4GalleryBridgeTests::workspaceCachePreparesOffscreenAndActivatesBothSessio
     QVERIFY(futureRightSession != initialRight);
     QCOMPARE(bridge.sessionForSide(0), initialLeft);
     QCOMPARE(bridge.sessionForSide(1), initialRight);
+    auto hiddenAt = [](QObject *sessionObject, int row) {
+        auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+            sessionObject);
+        if (!session || !session->model()) {
+            return false;
+        }
+        const int visualRole = session->model()->roleNames().key(
+            QByteArrayLiteral("visualSnapshot"), -1);
+        if (visualRole < 0) {
+            return false;
+        }
+        return session->model()->data(session->model()->index(row, 0),
+                                      visualRole).toMap().value(
+            QStringLiteral("displayFields")).toMap().value(
+                QStringLiteral("isHidden")).toBool();
+    };
+    // The inactive workspace has no metadata warmup. Hidden opacity must still
+    // be complete in its base catalog before the tab is ever activated.
+    QVERIFY(hiddenAt(futureRightSession, 0));
     QCOMPARE(qobject_cast<ZoinGallery::GallerySession *>(futureLeftSession)
                  ->localPathAt(0),
              QStringLiteral(
@@ -2281,6 +2306,7 @@ void F4GalleryBridgeTests::workspaceCachePreparesOffscreenAndActivatesBothSessio
     QCOMPARE(qobject_cast<ZoinGallery::GallerySession *>(futureRightSession)
                  ->entryIdAt(0),
              QStringLiteral("b-right:one"));
+    QVERIFY(hiddenAt(futureRightSession, 0));
     QCOMPARE(qobject_cast<ZoinGallery::GallerySession *>(initialLeft)
                  ->entryIdAt(0),
              QStringLiteral("left:one"));
