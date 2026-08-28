@@ -1508,6 +1508,7 @@ func actionCalcDirSize(pf *PanelsFrame, fsp *FileSystemPanel, idx int) {
 						}
 					}
 				}
+				fsp.commitSemanticMetadataMutation()
 				fsp.Refresh()
 			}
 		})

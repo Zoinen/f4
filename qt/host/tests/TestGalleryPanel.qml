@@ -12,6 +12,9 @@ FocusScope {
     property bool panelActive: false
     property bool commandLineHasText: false
     property bool fastFindActive: false
+    readonly property string appliedPresentationMode:
+        String(panel.galleryLayoutMode || "masonry")
+    readonly property var appliedColumnSchema: panel.galleryColumns || []
 
     readonly property real minimumDensity: 22
     readonly property real maximumDensity: 500

@@ -115,6 +115,11 @@ FocusScope {
         || requestedPresentationMode === "details" ? 2
         : requestedPresentationMode === "grid" ? 8
         : requestedPresentationMode === "icons" ? 2 : 20
+    // This is the presentation state already committed to the active native
+    // renderer. f4's external Details header consumes the same values, so it
+    // can never get one frame ahead of the retained GalleryPanel body.
+    property string appliedPresentationMode: "masonry"
+    property var appliedColumnSchema: []
     property bool applyingRendererState: false
 
     // Qt converts each semantic panel snapshot into fresh JavaScript array and
@@ -195,35 +200,65 @@ FocusScope {
         return mode === "grid" ? 160 : mode === "icons" ? 64 : 150
     }
 
-    function applyRendererStateTo(target, panelState) {
+    function applyRendererStateTo(target, panelState, publishState) {
         if (!target)
             return
         const state = panelState || ({})
         const mode = presentationModeFor(state)
+        const columnCount = columnCountFor(state)
+        const density = densityFor(state)
+        const nextColumnSchema = state.galleryColumns || []
+        const modeChanged = typeof target.presentationMode !== "undefined"
+                && target.presentationMode !== mode
+        const columnCountChanged = typeof target.columnCount !== "undefined"
+                && Number(target.columnCount) !== columnCount
+        const densityChanged = typeof target.density !== "undefined"
+                && Math.abs(Number(target.density) - density) > 0.0001
+        const hostModeChanged = publishState === true
+                && appliedPresentationMode !== mode
+        const needsLayoutTransaction = modeChanged || columnCountChanged
+                || densityChanged || hostModeChanged
+        let transactionStarted = false
         applyingRendererState = true
-        if (typeof target.presentationMode !== "undefined"
-                && target.presentationMode !== mode) {
-            if (target.activeForHost === true
-                    && typeof target.beginPresentationSwitch === "function")
-                target.beginPresentationSwitch()
-            target.presentationMode = mode
-        }
-        if (typeof target.columnCount !== "undefined")
-            target.columnCount = columnCountFor(state)
-        if (typeof target.density !== "undefined")
-            target.density = densityFor(state)
-        if (typeof target.columnSchema !== "undefined") {
-            const nextColumnSchema = state.galleryColumns || []
-            if (!rendererValuesEqual(target.columnSchema,
-                                     nextColumnSchema)) {
+        try {
+            if (needsLayoutTransaction
+                    && typeof target.beginPresentationStateUpdate
+                            === "function") {
+                target.beginPresentationStateUpdate(
+                            modeChanged || hostModeChanged)
+                transactionStarted = true
+            }
+            if (publishState === true) {
+                appliedPresentationMode = mode
+                if (!rendererValuesEqual(appliedColumnSchema,
+                                         nextColumnSchema)) {
+                    appliedColumnSchema = nextColumnSchema
+                }
+            }
+            // Details delegates must see their final schema and filename
+            // policy during the one native rewrap which creates them.
+            if (typeof target.columnSchema !== "undefined"
+                    && !rendererValuesEqual(target.columnSchema,
+                                             nextColumnSchema)) {
                 target.columnSchema = nextColumnSchema
             }
+            if (typeof target.separateFileExtensions !== "undefined") {
+                target.separateFileExtensions =
+                        state.separateFileExtensions === true
+            }
+            if (modeChanged)
+                target.presentationMode = mode
+            if (columnCountChanged)
+                target.columnCount = columnCount
+            if (densityChanged)
+                target.density = density
+        } finally {
+            if (transactionStarted) {
+                target.endPresentationStateUpdate(
+                            modeChanged || hostModeChanged)
+            }
+            applyingRendererState = false
         }
-        if (typeof target.separateFileExtensions !== "undefined") {
-            target.separateFileExtensions =
-                    state.separateFileExtensions === true
-        }
-        applyingRendererState = false
     }
 
     function sessionForPanelId(semanticPanelId) {
@@ -268,6 +303,7 @@ FocusScope {
             if (view.fixedSession !== exactSession)
                 view.fixedSession = exactSession
         }
+        applyRendererStateTo(view, panelState, activate === true)
         if (activate === true) {
             activeGalleryPanelId = semanticPanelId
             galleryPanel = view
@@ -301,7 +337,7 @@ FocusScope {
     }
 
     function applyRendererState() {
-        applyRendererStateTo(galleryPanel, panel)
+        applyRendererStateTo(galleryPanel, panel, true)
     }
 
     function forwardBenchmarkStage(stage, metadata) {
@@ -338,20 +374,17 @@ FocusScope {
         if (!view) {
             activeGalleryPanelId = ""
             galleryPanel = null
+            appliedPresentationMode = "masonry"
+            appliedColumnSchema = []
         }
-        Qt.callLater(applyRendererState)
         if (benchmarkTracingEnabled)
             Qt.callLater(forwardHostBenchmarkState)
     }
-    onRequestedPresentationModeChanged: Qt.callLater(applyRendererState)
-    onRequestedColumnCountChanged: Qt.callLater(applyRendererState)
-    onRequestedDensityChanged: Qt.callLater(applyRendererState)
-    onDefaultListDensityChanged: Qt.callLater(applyRendererState)
+    onDefaultListDensityChanged: applyRendererState()
     Component.onCompleted: {
         galleryPanelContainerReady = true
         warmCachedGalleryPanels()
         ensureGalleryPanel(panel, true)
-        Qt.callLater(applyRendererState)
     }
 
     Connections {
@@ -774,25 +807,22 @@ FocusScope {
                                      && host.benchmarkTracingEnabled
 
             Component.onCompleted: {
-                Qt.callLater(function() {
-                    host.applyRendererStateTo(cachedGalleryPanel,
-                                              cachedGalleryPanel.cachedPanel)
-                })
+                host.applyRendererStateTo(cachedGalleryPanel,
+                                          cachedGalleryPanel.cachedPanel,
+                                          false)
             }
             onCachedPanelChanged: {
                 if (!activeForHost) {
-                    Qt.callLater(function() {
-                        host.applyRendererStateTo(
-                                    cachedGalleryPanel,
-                                    cachedGalleryPanel.cachedPanel)
-                    })
+                    host.applyRendererStateTo(
+                                cachedGalleryPanel,
+                                cachedGalleryPanel.cachedPanel,
+                                false)
                 }
             }
             onActiveForHostChanged: {
                 if (!activeForHost)
                     return
                 host.galleryPanel = cachedGalleryPanel
-                Qt.callLater(host.applyRendererState)
             }
 
             onActivateRequested: {

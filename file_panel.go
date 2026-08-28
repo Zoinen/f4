@@ -2731,6 +2731,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					entry := byName[item.Name]
 					entry.VFSItem = item
 				}
+				fp.commitSemanticMetadataMutation()
 				fp.Refresh()
 				if benchmark != nil {
 					startedNs := navigationBenchmarkMonotonicNs()

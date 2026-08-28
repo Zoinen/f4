@@ -806,6 +806,38 @@ func TestFileSystemPanel_PhasedDirectoryPublishesStableCatalogThenMergesMetadata
 
 	close(load.release)
 	waitForLoad(t, panel)
+	finalHeader, ok := panel.semanticPanelHeaderModel(nil, 0, true)
+	if !ok {
+		t.Fatal("metadata enrichment invalidated the row-free panel header")
+	}
+	if len(finalHeader.Entries) != 0 {
+		t.Fatalf("metadata enrichment leaked %d catalog rows into the header", len(finalHeader.Entries))
+	}
+	if finalHeader.CatalogRevision != baseModel.CatalogRevision {
+		t.Fatalf("row-free metadata header advanced catalog revision: base=%d final=%d",
+			baseModel.CatalogRevision, finalHeader.CatalogRevision)
+	}
+	if finalHeader.MetadataRevision != baseModel.MetadataRevision+1 {
+		t.Fatalf("row-free metadata revision = %d, want %d",
+			finalHeader.MetadataRevision, baseModel.MetadataRevision+1)
+	}
+	chunk, chunkOK := BuildPanelCatalogMetadataChunk(
+		finalHeader.ID, finalHeader.Path, finalHeader.CatalogRevision,
+		finalHeader.MetadataRevision, 0, len(panel.entries))
+	if !chunkOK {
+		t.Fatal("enriched row-free metadata snapshot was not published")
+	}
+	var alphaMetadata map[string]any
+	for _, row := range appMapSlice(chunk["entries"]) {
+		if semanticString(row["entryId"]) == semanticString(baseModel.Entries[2].EntryID) {
+			alphaMetadata = row
+			break
+		}
+	}
+	if alphaMetadata == nil || appInt64(alphaMetadata["size"]) != 20 ||
+		semanticString(alphaMetadata["sizeText"]) != "20" {
+		t.Fatalf("enriched alpha.txt metadata was not pullable: %#v", alphaMetadata)
+	}
 	finalModel := panel.semanticPanelModel(nil, 0, true)
 	if finalModel.CatalogRevision != baseModel.CatalogRevision {
 		t.Fatalf("metadata advanced catalog revision: base=%d final=%d",

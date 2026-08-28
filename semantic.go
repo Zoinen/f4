@@ -1581,6 +1581,28 @@ func (fp *FileSystemPanel) publishSemanticMetadataSnapshot(panelID string, baseE
 	semanticPanelMetadataSnapshots.Store(panelID, snapshot)
 }
 
+// commitSemanticMetadataMutation advances the deferred metadata revision and
+// replaces the pull snapshot at the exact point where panel rows were
+// enriched. Keep this out of semanticPanelHeaderModel: that exporter runs on
+// ordinary cursor/layout redraws and must remain row-free. Actual metadata
+// commits are rare and already touch every changed row, so one fingerprint
+// pass here preserves the compact state_update path without adding per-frame
+// catalog work.
+func (fp *FileSystemPanel) commitSemanticMetadataMutation() {
+	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
+		return
+	}
+	fp.updateSemanticRevisions()
+	static := fp.semanticStaticCache
+	if static == nil || static.catalogRevision != fp.catalogRevision ||
+		len(static.entries) != len(fp.entries) {
+		// A concurrent identity/order change requires the normal full-catalog
+		// fallback. semanticPanelHeaderModel will reject this stale cache.
+		return
+	}
+	fp.publishSemanticMetadataSnapshot(vtui.SemanticID(fp), static.entries)
+}
+
 const (
 	defaultPanelCatalogMetadataChunkLimit = 8
 	maxPanelCatalogMetadataChunkLimit     = 128

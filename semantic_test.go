@@ -816,24 +816,33 @@ NormalColor = foreground:#123456
 		},
 	}
 	model := fp.semanticPanelModel(nil, 0, true)
-	if model.HighlightRevision != 0 || len(model.HighlightStyles) != 0 {
-		t.Fatalf("highlight metadata leaked into base model: revision=%d styles=%#v",
+	if model.HighlightRevision == 0 || len(model.HighlightStyles) != 1 {
+		t.Fatalf("provisional highlight metadata missing from base model: revision=%d styles=%#v",
 			model.HighlightRevision, model.HighlightStyles)
 	}
+	firstStyleID := model.Entries[0].HighlightStyleID
+	if firstStyleID == "" || firstStyleID != model.Entries[1].HighlightStyleID {
+		t.Fatalf("base styles were not deduplicated: %#v", model.Entries)
+	}
+	style := model.HighlightStyles[firstStyleID]
+	if style.Icon != "qrc:/F4QtHost/icons/lucide/file-text.svg" ||
+		style.Normal.Foreground != "#123456" {
+		t.Fatalf("unexpected provisional style: %#v", style)
+	}
 	chunk := semanticMetadataChunkForModel(t, model)
-	if appInt64(chunk["highlightRevision"]) == 0 {
-		t.Fatalf("deferred highlight revision missing: %#v", chunk)
+	if appInt64(chunk["highlightRevision"]) != model.HighlightRevision {
+		t.Fatalf("deferred highlight revision differs from base: %#v", chunk)
 	}
 	entries := appMapSlice(chunk["entries"])
-	firstStyleID := semanticString(entries[0]["highlightStyleId"])
-	if firstStyleID == "" || firstStyleID != semanticString(entries[1]["highlightStyleId"]) {
+	resolvedStyleID := semanticString(entries[0]["highlightStyleId"])
+	if resolvedStyleID == "" || resolvedStyleID != semanticString(entries[1]["highlightStyleId"]) {
 		t.Fatalf("styles were not deduplicated: %#v", entries)
 	}
 	styles := appMap(chunk["highlightStyles"])
-	style := appMap(styles[firstStyleID])
-	if semanticString(style["icon"]) != "qrc:/F4QtHost/icons/lucide/file-text.svg" ||
-		semanticString(appMap(style["normal"])["foreground"]) != "#123456" {
-		t.Fatalf("unexpected normalized style: %#v", style)
+	resolvedStyle := appMap(styles[resolvedStyleID])
+	if semanticString(resolvedStyle["icon"]) != "qrc:/F4QtHost/icons/lucide/file-text.svg" ||
+		semanticString(appMap(resolvedStyle["normal"])["foreground"]) != "#123456" {
+		t.Fatalf("unexpected normalized style: %#v", resolvedStyle)
 	}
 }
 
@@ -1765,6 +1774,14 @@ func TestPanelsFrameSemanticOpenResolvesStableIDAfterStaleCursorRejection(t *tes
 	stale := panel.semanticPanelModel(nil, 0, false)
 	targetID := stale.Entries[2].EntryID
 	panel.entries[1].Size++
+	metadataOnly := panel.semanticPanelModel(nil, 0, false)
+	if metadataOnly.CatalogRevision != stale.CatalogRevision ||
+		metadataOnly.MetadataRevision != stale.MetadataRevision+1 {
+		t.Fatalf("metadata-only mutation changed wrong revision domain: stale=(%d,%d) current=(%d,%d)",
+			stale.CatalogRevision, stale.MetadataRevision,
+			metadataOnly.CatalogRevision, metadataOnly.MetadataRevision)
+	}
+	panel.entries[1].Name = "renamed-decoy"
 	current := panel.semanticPanelModel(nil, 0, false)
 	if current.CatalogRevision != stale.CatalogRevision+1 {
 		t.Fatalf("catalog revision did not advance: stale=%d current=%d",

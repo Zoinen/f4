@@ -5924,18 +5924,27 @@ ApplicationWindow {
 
         Rectangle {
             id: columnHeader
+            objectName: "panelColumnHeader-" + Number(panel.side || 0)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: panelHeader.bottom
             readonly property bool showsGalleryDetails:
-                String(panel.galleryLayoutMode || "masonry") === "details"
+                galleryPanelContent.item
+                && typeof galleryPanelContent.item.appliedPresentationMode
+                        !== "undefined"
+                && String(galleryPanelContent.item.appliedPresentationMode)
+                        === "details"
             height: showsGalleryDetails
                     ? Math.max(22, root.ch) + root.verticalContentSpacing : 0
             visible: showsGalleryDetails
             color: "transparent"
             z: 2
 
-            readonly property var columns: panel.galleryColumns || []
+            readonly property var columns:
+                galleryPanelContent.item
+                && typeof galleryPanelContent.item.appliedColumnSchema
+                        !== "undefined"
+                ? (galleryPanelContent.item.appliedColumnSchema || []) : []
             readonly property real totalColumnWidth: {
                 var total = 0
                 for (var i = 0; i < columns.length; ++i)

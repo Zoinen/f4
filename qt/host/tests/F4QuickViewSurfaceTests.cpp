@@ -1606,6 +1606,8 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QQuickItem *const rightPanel = fixture.item(QStringLiteral("filePanel-1"));
     QQuickItem *const pathTitle = fixture.item(
         QStringLiteral("panelPathTitle-0"));
+    QQuickItem *const columnHeader = fixture.item(
+        QStringLiteral("panelColumnHeader-0"));
     QQuickItem *const leftLoader = fixture.item(
         QStringLiteral("galleryPanelContent-0"));
     QQuickItem *const rightLoader = fixture.item(
@@ -1613,6 +1615,7 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QVERIFY(leftPanel);
     QVERIFY(rightPanel);
     QVERIFY(pathTitle);
+    QVERIFY(columnHeader);
     QVERIFY(leftLoader);
     QVERIFY(rightLoader);
     QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
@@ -1626,6 +1629,7 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QSignalSpy sceneChanged(&fixture.shell, &TestShell::sceneChanged);
     QSignalSpy leftPanelChanged(leftPanel, SIGNAL(panelChanged()));
     QSignalSpy rightPanelChanged(rightPanel, SIGNAL(panelChanged()));
+    QVERIFY(!columnHeader->isVisible());
 
     QVariantMap projectedPanel = panel(0, true);
     projectedPanel.remove(QStringLiteral("entries"));
@@ -1641,6 +1645,20 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
                           QStringLiteral("details"));
     projectedPanel.insert(QStringLiteral("galleryColumnCount"), 3);
     projectedPanel.insert(QStringLiteral("galleryDensity"), 28);
+    projectedPanel.insert(QStringLiteral("galleryColumns"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("name")},
+            {QStringLiteral("role"), QStringLiteral("name")},
+            {QStringLiteral("title"), QStringLiteral("Name")},
+            {QStringLiteral("width"), 50},
+        },
+        QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("size")},
+            {QStringLiteral("role"), QStringLiteral("size")},
+            {QStringLiteral("title"), QStringLiteral("Size")},
+            {QStringLiteral("width"), 14},
+        },
+    });
     projectedPanel.insert(QStringLiteral("sortModeName"),
                           QStringLiteral("size"));
     projectedPanel.insert(QStringLiteral("sortReverse"), true);
@@ -1662,6 +1680,13 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
         {QStringLiteral("panel"), projectedPanel},
         {QStringLiteral("workspaceTabs"), compactTabs},
     });
+
+    // Renderer state and its external header must commit in the same event-loop
+    // turn. A deferred renderer update leaves a visible mixed old/new frame.
+    QCOMPARE(leftHost->property("appliedPresentationMode").toString(),
+             QStringLiteral("details"));
+    QVERIFY(columnHeader->isVisible());
+    QVERIFY(columnHeader->height() > 0.0);
 
     QTRY_COMPARE_WITH_TIMEOUT(
         leftPanel->property("panel").toMap().value(

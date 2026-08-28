@@ -1658,6 +1658,12 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     const bool nextCatalogProvisional = panel.value(
         QStringLiteral("catalogProvisional"), state.catalogProvisional)
                                             .toBool();
+    const QString nextGalleryLayoutMode = panel.value(
+        QStringLiteral("galleryLayoutMode"), state.galleryLayoutMode)
+                                              .toString();
+    const bool enteringDetails = state.galleryLayoutMode
+            != QStringLiteral("details")
+        && nextGalleryLayoutMode == QStringLiteral("details");
     const bool metadataStreamChanged =
         nextMetadataDeferred != state.metadataDeferred
         || (nextMetadataDeferred
@@ -1775,9 +1781,7 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     state.metadataDeferred = nextMetadataDeferred;
     state.metadataRevision = nextMetadataDeferred
         ? nextMetadataRevision : 0;
-    state.galleryLayoutMode = panel.value(
-        QStringLiteral("galleryLayoutMode"), state.galleryLayoutMode)
-                                  .toString();
+    state.galleryLayoutMode = nextGalleryLayoutMode;
     if (metadataRestartNeeded) {
         resetPanelCatalogMetadataPlan(side, false);
     } else if (!nextMetadataDeferred) {
@@ -1798,6 +1802,15 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     reconcilePendingPanelOpen(side);
     reconcilePendingSelection(side);
     reconcilePendingViewer(side);
+    // Compact layouts can cover the same numeric row range while requiring
+    // very different metadata. In particular, entering Details makes Size
+    // paint-critical even when the Gallery viewport reports an unchanged
+    // range, so re-arm one visible-first request instead of waiting for the
+    // background stream to become idle.
+    if (enteringDetails && state.metadataDeferred
+        && !state.metadataComplete) {
+        state.metadataUrgentBudget = 1;
+    }
     prioritizePanelCatalogMetadataRow(side, cursorIndex);
     schedulePanelCatalogMetadataRequest();
 }

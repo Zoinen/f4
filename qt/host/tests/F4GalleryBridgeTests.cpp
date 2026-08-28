@@ -126,6 +126,7 @@ private slots:
     void deferredMetadataIsFrameGatedRevisionedAndChunked();
     void staleMetadataFrameFallbackCannotReleaseNewerChunk();
     void deferredMetadataPrioritizesCursorAndVisibleRange();
+    void enteringDetailsReprioritizesDeferredVisibleMetadata();
     void malformedMetadataRetriesThenReleasesGlobalSlot();
     void metadataBackgroundWaitsForInputIdle();
     void deferredMetadataWaitsForLoadingFalseFullScene();
@@ -147,6 +148,7 @@ private slots:
     void viewerWaitsForAuthoritativeCursor();
     void inactivePanelImageOpenWaitsForActiveAndCursor();
     void viewerIgnoresSemanticPresentation();
+    void galleryPresentationStateCommitsSynchronouslyInOneLayoutPass();
     void equalGalleryColumnSchemaDoesNotResetLayout();
     void loadsTwoSessionsAndWindowlessQml();
 };
@@ -2941,6 +2943,71 @@ void F4GalleryBridgeTests::deferredMetadataPrioritizesCursorAndVisibleRange()
         "D:/resolved/panel-priority-metadata/item-96.txt"));
 }
 
+void F4GalleryBridgeTests::enteringDetailsReprioritizesDeferredVisibleMetadata()
+{
+    constexpr int EntryCount = 64;
+    constexpr qulonglong CatalogRevision = 84;
+    QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-details-metadata"), 0, true,
+        EntryCount, CatalogRevision, 104);
+    panel.insert(QStringLiteral("galleryLayoutMode"),
+                 QStringLiteral("icons"));
+    const QVariantMap scene = {
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{panel}},
+         }},
+    };
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(scene);
+    bridge.reportMetadataVisibleRange(
+        0, 32, 39, CatalogRevision);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+
+    const QVariantMap cursorRequest = requests.constFirst()
+                                          .constFirst().toMap();
+    QCOMPARE(cursorRequest.value(QStringLiteral("offset")).toInt(), 0);
+    bridge.handleProtocolMessage(deferredMetadataResponse(
+        cursorRequest, EntryCount, 111));
+    QCoreApplication::processEvents();
+    QCOMPARE(requests.size(), 1);
+
+    // While input is active, a normal bulk chunk is intentionally paused.
+    // Details must nevertheless make the already-reported visible rows
+    // urgent, even though their numeric range did not change with the mode.
+    bridge.requestActivate(0);
+    bridge.synchronizePanelState({
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"),
+         QStringLiteral("panel-details-metadata")},
+        {QStringLiteral("catalogRevision"), CatalogRevision},
+        {QStringLiteral("panel"), QVariantMap{
+             {QStringLiteral("galleryLayoutMode"),
+              QStringLiteral("details")},
+             {QStringLiteral("metadataDeferred"), true},
+             {QStringLiteral("metadataRevision"), qulonglong(104)},
+         }},
+    });
+    bridge.reportMetadataVisibleRange(
+        0, 32, 39, CatalogRevision);
+    QCOMPARE(requests.size(), 1);
+
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QTRY_COMPARE(requests.size(), 2);
+    const QVariantMap detailsRequest = requests.constLast()
+                                           .constFirst().toMap();
+    QCOMPARE(detailsRequest.value(QStringLiteral("offset")).toInt(), 32);
+    QCOMPARE(detailsRequest.value(QStringLiteral("limit")).toInt(), 8);
+}
+
 void F4GalleryBridgeTests::malformedMetadataRetriesThenReleasesGlobalSlot()
 {
     const QVariantMap activePanel = deferredPanel(
@@ -3798,6 +3865,108 @@ void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
     action = actions.takeFirst().at(0).toMap();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.sortMenu"));
+}
+
+void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayoutPass()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    engine.addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+
+    const QVariantMap scene = longCatalogScene(140, 37);
+    bridge.synchronizeScene(scene);
+    QVariantMap panel = scene.value(QStringLiteral("shell")).toMap()
+                            .value(QStringLiteral("panels")).toList()
+                            .constFirst().toMap();
+    const QVariantList columns = {
+        QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("name")},
+            {QStringLiteral("role"), QStringLiteral("name")},
+            {QStringLiteral("title"), QStringLiteral("Name")},
+            {QStringLiteral("width"), 50},
+            {QStringLiteral("sortMode"), QStringLiteral("name")},
+            {QStringLiteral("sortable"), true},
+        },
+        QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("size")},
+            {QStringLiteral("role"), QStringLiteral("size")},
+            {QStringLiteral("title"), QStringLiteral("Size")},
+            {QStringLiteral("width"), 14},
+            {QStringLiteral("sortMode"), QStringLiteral("size")},
+            {QStringLiteral("sortable"), true},
+        },
+    };
+    panel.insert(QStringLiteral("galleryLayoutMode"),
+                 QStringLiteral("icons"));
+    panel.insert(QStringLiteral("galleryColumnCount"), 2);
+    panel.insert(QStringLiteral("galleryDensity"), 64);
+    panel.insert(QStringLiteral("galleryColumns"), columns);
+    panel.insert(QStringLiteral("separateFileExtensions"), true);
+
+    QQmlComponent panelHost(&engine, bridge.panelComponentUrl());
+    QTRY_VERIFY_WITH_TIMEOUT(panelHost.status() != QQmlComponent::Loading,
+                             5000);
+    QVERIFY2(panelHost.isReady(), qPrintable(panelHost.errorString()));
+    QScopedPointer<QObject> host(panelHost.create());
+    QVERIFY2(host, qPrintable(panelHost.errorString()));
+    host->setProperty("width", 640);
+    host->setProperty("height", 480);
+    host->setProperty("side", 0);
+    host->setProperty(
+        "bridge", QVariant::fromValue(static_cast<QObject *>(&bridge)));
+    host->setProperty("panel", panel);
+
+    QObject *embeddedPanel = host->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryPanel"));
+    QObject *layout = host->findChild<QObject *>(
+        QStringLiteral("galleryMasonryLayout"));
+    QVERIFY(embeddedPanel);
+    QVERIFY(layout);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        embeddedPanel->property("presentationMode").toString(),
+        QStringLiteral("icons"), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 140, 3000);
+
+    const auto switchPresentation = [&](const QString &mode,
+                                        int columnCount,
+                                        int density) {
+        const qulonglong revisionBefore =
+            layout->property("layoutRevision").toULongLong();
+        panel.insert(QStringLiteral("galleryLayoutMode"), mode);
+        panel.insert(QStringLiteral("galleryColumnCount"), columnCount);
+        panel.insert(QStringLiteral("galleryDensity"), density);
+        QVERIFY(host->setProperty("panel", panel));
+
+        // No queued turn is permitted between the semantic state and the
+        // renderer/header-facing committed state.
+        QCOMPARE(host->property("appliedPresentationMode").toString(), mode);
+        QCOMPARE(embeddedPanel->property("presentationMode").toString(),
+                 mode);
+        QCOMPARE(embeddedPanel->property("columnCount").toInt(),
+                 columnCount);
+        QVERIFY(qAbs(embeddedPanel->property("density").toDouble()
+                     - density) < 0.0001);
+        QCOMPARE(embeddedPanel->property("columnSchema").toList(), columns);
+        QCOMPARE(layout->property("layoutRevision").toULongLong(),
+                 revisionBefore + 1);
+    };
+
+    switchPresentation(QStringLiteral("details"), 2, 30);
+    const QVariantList visibleRows =
+        layout->property("visibleIndexes").toList();
+    QVERIFY(!visibleRows.isEmpty());
+    const int firstVisible = visibleRows.constFirst().toInt();
+    QObject *sizeLabel = embeddedPanel->findChild<QObject *>(
+        QStringLiteral("gallerySize-%1").arg(firstVisible));
+    QVERIFY(sizeLabel);
+    QVERIFY2(!sizeLabel->property("text").toString().isEmpty(),
+             "Details must hydrate its size cell on the first committed layout");
+
+    switchPresentation(QStringLiteral("columns"), 3, 30);
+    switchPresentation(QStringLiteral("details"), 3, 30);
+    switchPresentation(QStringLiteral("icons"), 3, 64);
 }
 
 void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
