@@ -22,6 +22,8 @@ import (
 
 const openingProgressDelay = 250 * time.Millisecond
 
+const editorEncodingProbeSize = 16 * 1024
+
 var (
 	LastFindFileMask = "*"
 	LastFindFileText = ""
@@ -192,7 +194,7 @@ func actionFoldersHistory(pf *PanelsFrame) {
 		return false
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionCommandHistory(pf *PanelsFrame) {
@@ -341,7 +343,7 @@ func actionCommandHistory(pf *PanelsFrame) {
 		return false
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // confirmAndClearHistory shows a Yes/No dialog, and on Yes wipes the
@@ -498,7 +500,7 @@ func actionSortMenuForPanel(pf *PanelsFrame, fsp *FileSystemPanel) {
 	x := panelX1 + (panelW-w)/2
 	y := panelY1 + (panelH-h)/2
 	menu.SetPosition(x, y, x+w-1, y+h-1)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64) {
@@ -682,26 +684,43 @@ func runExternalEditor(pf *PanelsFrame, cmdStr, path string) {
 	})
 }
 
+func newUTF8EditorPieceTable(f vfs.ReadAtCloser, size int64, prefix []byte) (*piecetable.PieceTable, *AsyncBuffer) {
+	// For small files the encoding probe already contains every byte. Feeding
+	// those bytes directly to the piece table avoids reading the file again and
+	// starting an indexer whose first and final UI updates would repaint the
+	// editor immediately after it was shown.
+	if int64(len(prefix)) == size {
+		return piecetable.New(prefix), nil
+	}
+
+	buf := NewAsyncBuffer(context.Background(), f)
+	buf.prewarm()
+	return piecetable.NewWithBuffer(buf), buf
+}
+
 func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 	var pt *piecetable.PieceTable
 	var buf *AsyncBuffer
 	cpID := AppConfig.EditorDefaultCodePage
+	fileSize := int64(0)
+	probeBytes := 0
 
 	if f != nil {
 		size := f.Size()
-		detectLen := 16 * 1024
+		fileSize = size
+		detectLen := editorEncodingProbeSize
 		if int64(detectLen) > size {
 			detectLen = int(size)
 		}
 		header := make([]byte, detectLen)
-		_, _ = f.ReadAt(context.Background(), header, 0)
+		n, _ := f.ReadAt(context.Background(), header, 0)
+		probeBytes = n
+		header = header[:n]
 
 		cpID = vfs.DetectEncoding(header, AppConfig.EditorAutodetectCodePage, AppConfig.EditorDefaultCodePage)
 
 		if cpID == 65001 {
-			buf = NewAsyncBuffer(context.Background(), f)
-			buf.prewarm()
-			pt = piecetable.NewWithBuffer(buf)
+			pt, buf = newUTF8EditorPieceTable(f, size, header)
 		} else {
 			fullData := make([]byte, size)
 			_, _ = f.ReadAt(context.Background(), fullData, 0)
@@ -715,6 +734,13 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 	} else {
 		pt = piecetable.New(nil)
 	}
+	navigationBenchmarkUIEvent("editor.open.buffer",
+		"file", filepath.Base(path),
+		"fileSize", fileSize,
+		"probeBytes", probeBytes,
+		"codepage", cpID,
+		"asyncBuffer", buf != nil,
+		"pieceTableSize", pt.Size())
 
 	editor := NewEditorView(pt, v, path)
 	editor.Codepage = cpID
@@ -856,6 +882,12 @@ func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 				showEditor(pf, v, path, f)
 			})
 		})
+		// Opening a local file completes in a posted UI task. Until that task
+		// pushes the editor, this input changed no visible state; avoid painting
+		// the large source panel in the gap between the request and completion.
+		if vtui.FrameManager != nil {
+			vtui.FrameManager.DeclareCurrentInputUnchanged()
+		}
 		return
 	}
 
@@ -1476,6 +1508,7 @@ func actionCalcDirSize(pf *PanelsFrame, fsp *FileSystemPanel, idx int) {
 						}
 					}
 				}
+				fsp.commitSemanticMetadataMutation()
 				fsp.Refresh()
 			}
 		})
@@ -1546,10 +1579,7 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 	onCompleteWithClear := func() {
 		if pf != nil {
 			if fsp := pf.getActivePanel(); fsp != nil {
-				fsp.selectedItems = make(map[string]bool)
-				for _, e := range fsp.entries {
-					e.Selected = false
-				}
+				fsp.ClearSelection()
 			}
 			pf.RefreshAll()
 		}
@@ -1683,10 +1713,7 @@ func actionCopyInPlace(pf *PanelsFrame) {
 		onCompleteWithClear := func() {
 			if pf != nil {
 				if fsp := pf.getActivePanel(); fsp != nil {
-					fsp.selectedItems = make(map[string]bool)
-					for _, e := range fsp.entries {
-						e.Selected = false
-					}
+					fsp.ClearSelection()
 				}
 				pf.RefreshAll()
 			}
@@ -2544,6 +2571,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 			vtui.ShowMessageOn(dlg, Msg("ApplyCommand.InvalidWorkersTitle"), Msg("ApplyCommand.InvalidWorkers"), []string{Msg("vtui.Ok")})
 			return
 		}
+		// Only the hidden-file filter changes the panel catalog. Presentation
+		// settings, including the current-file information bar, are applied by
+		// ResizeConsole and the row-free semantic panel update below; re-reading
+		// both directories here would needlessly republish large catalogs.
+		reloadPanelCatalogs := AppConfig.ShowHiddenFiles != (chkHidden.State == 1)
 		AppConfig.ShowHiddenFiles = chkHidden.State == 1
 		AppConfig.ShowDirPrefix = chkDirPrefix.State == 1
 		AppConfig.ShowHighlightMarks = chkHighlightMarks.State == 1
@@ -2567,7 +2599,11 @@ func actionPanelSettings(pf *PanelsFrame) {
 		SaveConfig()
 		dlg.Close()
 		pf.ResizeConsole(pf.lastW, pf.lastH)
-		pf.RefreshAll()
+		if reloadPanelCatalogs {
+			pf.RefreshAll()
+		} else {
+			vtui.FrameManager.Redraw()
+		}
 	}
 
 	vtui.FrameManager.Push(dlg)
@@ -3692,7 +3728,7 @@ func actionLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func actionFallbackLanguage(pf *PanelsFrame) {
@@ -3757,7 +3793,7 @@ func actionFallbackLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 func actionHelpLanguage(pf *PanelsFrame) {
 	type langInfo struct {
@@ -3819,7 +3855,7 @@ func actionHelpLanguage(pf *PanelsFrame) {
 		})
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func getLanguageName(code string) string {

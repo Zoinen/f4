@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -18,6 +19,8 @@ func captureNavigationBenchmark(t *testing.T) *bytes.Buffer {
 	var output bytes.Buffer
 	oldEnabled := navigationBenchmarkEnabled.Load()
 	oldHooks := vtui.SemanticSceneBenchmarkHooks
+	oldInputHooks := vtui.InputEventBenchmarkHooks
+	oldOSVFSHook := vfs.OSVFSSetPathBenchmarkHook
 	navigationBenchmarkOutput.Lock()
 	oldWriter := navigationBenchmarkOutput.writer
 	navigationBenchmarkOutput.writer = &output
@@ -39,6 +42,8 @@ func captureNavigationBenchmark(t *testing.T) *bytes.Buffer {
 	t.Cleanup(func() {
 		navigationBenchmarkEnabled.Store(oldEnabled)
 		vtui.SemanticSceneBenchmarkHooks = oldHooks
+		vtui.InputEventBenchmarkHooks = oldInputHooks
+		vfs.OSVFSSetPathBenchmarkHook = oldOSVFSHook
 		navigationBenchmarkOutput.Lock()
 		navigationBenchmarkOutput.writer = oldWriter
 		navigationBenchmarkOutput.Unlock()
@@ -48,8 +53,76 @@ func captureNavigationBenchmark(t *testing.T) *bytes.Buffer {
 		navigationBenchmarkState.renderScene = oldRenderScene
 		navigationBenchmarkState.nextSceneSeq = oldNextSceneSeq
 		navigationBenchmarkState.Unlock()
+		navigationBenchmarkInputEvents.Range(func(key, _ any) bool {
+			navigationBenchmarkInputEvents.Delete(key)
+			return true
+		})
 	})
 	return &output
+}
+
+func TestNavigationBenchmarkUsesCurrentStderr(t *testing.T) {
+	stderrFile, err := os.CreateTemp(t.TempDir(), "navigation-stderr-*.log")
+	if err != nil {
+		t.Fatalf("create stderr capture: %v", err)
+	}
+	oldStderr := os.Stderr
+	oldEnabled := navigationBenchmarkEnabled.Load()
+	navigationBenchmarkOutput.Lock()
+	oldWriter := navigationBenchmarkOutput.writer
+	navigationBenchmarkOutput.writer = nil
+	navigationBenchmarkOutput.Unlock()
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		os.Stderr = oldStderr
+		navigationBenchmarkEnabled.Store(oldEnabled)
+		navigationBenchmarkOutput.Lock()
+		navigationBenchmarkOutput.writer = oldWriter
+		navigationBenchmarkOutput.Unlock()
+	}
+	t.Cleanup(restore)
+
+	os.Stderr = stderrFile
+	navigationBenchmarkEnabled.Store(true)
+	navigationBenchmarkEmit("stderr-current", "writer.current", "go.test")
+	if err := stderrFile.Close(); err != nil {
+		t.Fatalf("close stderr capture: %v", err)
+	}
+	restore()
+
+	payload, err := os.ReadFile(stderrFile.Name())
+	if err != nil {
+		t.Fatalf("read stderr capture: %v", err)
+	}
+	if !strings.Contains(string(payload), `"benchmarkTraceId":"stderr-current"`) ||
+		!strings.Contains(string(payload), `"event":"go.writer.current"`) {
+		t.Fatalf("dynamic stderr did not receive benchmark record: %q", payload)
+	}
+}
+
+func TestNavigationBenchmarkUsesDedicatedGoOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "go-navigation.jsonl")
+	t.Setenv(navigationBenchmarkOutputEnv, path)
+	oldEnabled := navigationBenchmarkEnabled.Load()
+	navigationBenchmarkEnabled.Store(true)
+	t.Cleanup(func() { navigationBenchmarkEnabled.Store(oldEnabled) })
+
+	closeOutput := navigationBenchmarkConfigureOutput()
+	navigationBenchmarkEmit("dedicated-output", "writer.dedicated", "go.test")
+	closeOutput()
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dedicated output: %v", err)
+	}
+	if !strings.Contains(string(payload), `"benchmarkTraceId":"dedicated-output"`) ||
+		!strings.Contains(string(payload), `"event":"go.writer.dedicated"`) {
+		t.Fatalf("dedicated output did not receive benchmark record: %q", payload)
+	}
 }
 
 func decodeNavigationBenchmarkRecords(t *testing.T, output *bytes.Buffer) []map[string]any {
@@ -173,6 +246,106 @@ func TestNavigationBenchmarkCapturesUIActionQueue(t *testing.T) {
 	}
 }
 
+func TestNavigationBenchmarkCorrelatesRawTabThroughDispatch(t *testing.T) {
+	output := captureNavigationBenchmark(t)
+	reader := &vtinput.Reader{EventChan: make(chan *vtinput.InputEvent, 4)}
+	host := &ExtUiHost{reader: reader}
+
+	var wire bytes.Buffer
+	if err := extUiSendMessage(&wire, map[string]any{
+		"type":             "key",
+		"benchmarkTraceId": "qt:key:77:41",
+		"keySequence":      uint64(41),
+		"down":             true,
+		"repeat":           true,
+		"vk":               uint64(vtinput.VK_TAB),
+	}); err != nil {
+		t.Fatalf("encode key: %v", err)
+	}
+	timing := &navigationBenchmarkReadTiming{}
+	message, err := extUiReadMessageWithBenchmark(&wire, timing)
+	if err != nil {
+		t.Fatalf("decode key: %v", err)
+	}
+	host.handleMessageWithBenchmark(message, timing)
+
+	var event *vtinput.InputEvent
+	select {
+	case event = <-reader.EventChan:
+	case <-time.After(time.Second):
+		t.Fatal("raw key did not reach input queue")
+	}
+	if event.RepeatCount != 2 {
+		t.Fatalf("repeat count = %d, want 2", event.RepeatCount)
+	}
+	vtui.InputEventBenchmarkHooks.DispatchBegin(event)
+	if current := navigationBenchmarkCurrentUI(); current == nil || current.id != "qt:key:77:41" {
+		t.Fatalf("dispatch trace = %#v", current)
+	}
+	vtui.InputEventBenchmarkHooks.DispatchEnd(event)
+	if current := navigationBenchmarkCurrentUI(); current != nil {
+		t.Fatalf("dispatch left current trace installed: %#v", current)
+	}
+
+	events := navigationBenchmarkEvents(decodeNavigationBenchmarkRecords(t, output))
+	for _, name := range []string{
+		"go.ipc.read.begin", "go.ipc.decode.done", "go.key.received",
+		"go.input_queue.send.begin", "go.input_queue.send.end",
+		"go.input.dispatch.begin", "go.input.dispatch.end",
+		"go.scene.phase.published",
+	} {
+		record, ok := events[name]
+		if !ok {
+			t.Fatalf("missing %s event; got %v", name, events)
+		}
+		if got := record["benchmarkTraceId"]; got != "qt:key:77:41" {
+			t.Fatalf("%s trace ID = %#v", name, got)
+		}
+	}
+	if got := events["go.key.received"]["keySequence"]; got != float64(41) {
+		t.Fatalf("key sequence = %#v, want 41", got)
+	}
+	if got := events["go.scene.phase.published"]["phase"]; got != "tab-dispatch" {
+		t.Fatalf("published phase = %#v", got)
+	}
+}
+
+func TestNavigationBenchmarkTracesEditorRouteKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		vk     uint16
+		action string
+		phase  string
+	}{
+		{name: "f4", vk: vtinput.VK_F4, action: "key.f4", phase: "f4-dispatch"},
+		{name: "escape", vk: vtinput.VK_ESCAPE, action: "key.escape", phase: "escape-dispatch"},
+		{name: "right", vk: vtinput.VK_RIGHT, action: "key.right", phase: "right-dispatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output := captureNavigationBenchmark(t)
+			message := map[string]any{
+				"type": "key", "down": true, "vk": uint64(tc.vk),
+				"keySequence": uint64(7), "benchmarkTraceId": "qt:editor:7",
+			}
+			trace := navigationBenchmarkTraceForKey(message, nil)
+			if trace == nil || trace.action != tc.action {
+				t.Fatalf("trace = %#v, want action %q", trace, tc.action)
+			}
+			event := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+				VirtualKeyCode: tc.vk}
+			navigationBenchmarkInputQueueBegin(event, trace, 7, 0, 4)
+			navigationBenchmarkInputQueueEnd(event, true, 1)
+			navigationBenchmarkInputDispatchBegin(event)
+			navigationBenchmarkInputDispatchEnd(event)
+
+			events := navigationBenchmarkEvents(decodeNavigationBenchmarkRecords(t, output))
+			if got := events["go.scene.phase.published"]["phase"]; got != tc.phase {
+				t.Fatalf("phase = %#v, want %q", got, tc.phase)
+			}
+		})
+	}
+}
+
 func TestNavigationBenchmarkSceneMetadataAndTransportStages(t *testing.T) {
 	output := captureNavigationBenchmark(t)
 	trace := &navigationBenchmarkTrace{id: "qt:navigation:42", action: "panel.open", side: 0}
@@ -278,6 +451,46 @@ func TestNavigationBenchmarkCapturesDirectoryPipeline(t *testing.T) {
 		"go.filesystem.stat_current.begin", "go.filesystem.stat_current.end",
 		"go.model.final.queued", "go.model.final.started", "go.model.final.ready",
 		"go.scene.phase.published",
+	} {
+		record, ok := events[event]
+		if !ok {
+			t.Fatalf("missing %s event; got %v", event, events)
+		}
+		if got := record["benchmarkTraceId"]; got != trace.id {
+			t.Fatalf("%s trace ID = %#v, want %q", event, got, trace.id)
+		}
+	}
+}
+
+func TestNavigationBenchmarkCapturesFolderHistoryPersistenceStages(t *testing.T) {
+	output := captureNavigationBenchmark(t)
+	history := &F4HistoryProvider{
+		path: filepath.Join(t.TempDir(), "history.json"),
+		data: make(map[string][]string),
+		rich: make(map[string][]HistoryRecord),
+	}
+	oldProvider := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = history
+	t.Cleanup(func() { vtui.GlobalHistoryProvider = oldProvider })
+
+	trace := &navigationBenchmarkTrace{id: "qt:key:history:1", action: "key.enter", side: 0}
+	previous := navigationBenchmarkSetCurrentUI(trace)
+	AddFolderHistory(filepath.Join(t.TempDir(), "child"))
+	navigationBenchmarkSetCurrentUI(previous)
+	if err := history.Flush(); err != nil {
+		t.Fatalf("flush history trace: %v", err)
+	}
+	t.Cleanup(func() { _ = history.Close() })
+
+	events := navigationBenchmarkEvents(decodeNavigationBenchmarkRecords(t, output))
+	for _, event := range []string{
+		"go.history.load_plain.begin", "go.history.load_plain.end",
+		"go.history.load_rich.begin", "go.history.load_rich.end",
+		"go.history.update.begin", "go.history.update.end",
+		"go.history.save_rich.begin", "go.history.save_rich.end",
+		"go.history.save_plain.begin", "go.history.save_plain.end",
+		"go.history.marshal.begin", "go.history.marshal.end",
+		"go.history.write.begin", "go.history.write.end",
 	} {
 		record, ok := events[event]
 		if !ok {

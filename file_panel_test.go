@@ -284,6 +284,102 @@ type queuedNavigationVFS struct {
 	items              map[string][]vfs.VFSItem
 }
 
+type phasedPanelLoad struct {
+	base           []vfs.VFSItem
+	metadata       []vfs.VFSItem
+	metadataChunks [][]vfs.VFSItem
+	baseSent       chan struct{}
+	metadataSent   chan struct{}
+	release        chan struct{}
+	baseOnce       sync.Once
+	metadataOnce   sync.Once
+}
+
+type phasedPanelVFS struct {
+	*vfs.NullVFS
+	pathMu        sync.RWMutex
+	currentPath   string
+	loads         map[string]*phasedPanelLoad
+	phasedCalls   atomic.Int64
+	ordinaryCalls atomic.Int64
+}
+
+func newPhasedPanelLoad(base, metadata []vfs.VFSItem, blocked bool) *phasedPanelLoad {
+	load := &phasedPanelLoad{
+		base:         base,
+		metadata:     metadata,
+		baseSent:     make(chan struct{}),
+		metadataSent: make(chan struct{}),
+	}
+	if blocked {
+		load.release = make(chan struct{})
+	}
+	return load
+}
+
+func newPhasedPanelVFS(currentPath string, loads map[string]*phasedPanelLoad) *phasedPanelVFS {
+	return &phasedPanelVFS{NullVFS: vfs.NewNullVFS(0), currentPath: currentPath, loads: loads}
+}
+
+func (p *phasedPanelVFS) GetPath() string {
+	p.pathMu.RLock()
+	defer p.pathMu.RUnlock()
+	return p.currentPath
+}
+
+func (p *phasedPanelVFS) SetPath(next string) error {
+	p.pathMu.Lock()
+	p.currentPath = path.Clean(next)
+	p.pathMu.Unlock()
+	return nil
+}
+
+func (p *phasedPanelVFS) IsAtRoot() bool                                   { return p.GetPath() == "/" }
+func (p *phasedPanelVFS) Join(parts ...string) string                      { return path.Join(parts...) }
+func (p *phasedPanelVFS) Dir(value string) string                          { return path.Dir(value) }
+func (p *phasedPanelVFS) Base(value string) string                         { return path.Base(value) }
+func (p *phasedPanelVFS) PhasedDirectoryReader() vfs.PhasedDirectoryReader { return p }
+func (p *phasedPanelVFS) Stat(context.Context, string) (vfs.VFSItem, error) {
+	return vfs.VFSItem{Name: p.GetPath(), IsDir: true}, nil
+}
+
+func (p *phasedPanelVFS) ReadDir(ctx context.Context, value string, onChunk func([]vfs.VFSItem)) error {
+	p.ordinaryCalls.Add(1)
+	load := p.loads[path.Clean(value)]
+	if load != nil && onChunk != nil {
+		onChunk(append([]vfs.VFSItem(nil), load.metadata...))
+	}
+	return ctx.Err()
+}
+
+func (p *phasedPanelVFS) ReadDirPhased(ctx context.Context, value string, onChunk func(vfs.DirectoryReadPhase, []vfs.VFSItem)) error {
+	p.phasedCalls.Add(1)
+	load := p.loads[path.Clean(value)]
+	if load == nil {
+		return os.ErrNotExist
+	}
+	if onChunk != nil {
+		onChunk(vfs.DirectoryReadBase, append([]vfs.VFSItem(nil), load.base...))
+	}
+	load.baseOnce.Do(func() { close(load.baseSent) })
+	if load.release != nil {
+		<-load.release
+	}
+	// Deliberately report metadata even after cancellation. The panel owns the
+	// generation check and must reject this stale provider callback.
+	metadataChunks := load.metadataChunks
+	if len(metadataChunks) == 0 {
+		metadataChunks = [][]vfs.VFSItem{load.metadata}
+	}
+	if onChunk != nil {
+		for _, chunk := range metadataChunks {
+			onChunk(vfs.DirectoryReadMetadata, append([]vfs.VFSItem(nil), chunk...))
+		}
+	}
+	load.metadataOnce.Do(func() { close(load.metadataSent) })
+	return ctx.Err()
+}
+
 // absoluteRecoveryVFS models AFC's path contract: panel navigation may set an
 // absolute path optimistically, but a bare ".." is rejected. SystemData is
 // visible in the container root while iOS denies listing its contents.
@@ -639,6 +735,289 @@ func TestFileSystemPanel_ReadDirectoryStatsDistinctParent(t *testing.T) {
 	}
 	if !fp.lastDirMTime.Equal(dirMTime) {
 		t.Fatalf("lastDirMTime = %v, want current directory time %v", fp.lastDirMTime, dirMTime)
+	}
+}
+
+func TestFileSystemPanel_PhasedDirectoryPublishesStableCatalogThenMergesMetadata(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	mtime := time.Unix(1_700_000_000, 0)
+	load := newPhasedPanelLoad(
+		[]vfs.VFSItem{
+			{Name: "zeta.txt"},
+			{Name: "alpha.txt"},
+			{Name: "folder", IsDir: true},
+		},
+		[]vfs.VFSItem{
+			{Name: "zeta.txt", Size: 40, SizeKnown: true, MTime: mtime},
+			{Name: "alpha.txt", Size: 20, SizeKnown: true, MTime: mtime.Add(time.Second)},
+			{Name: "folder", IsDir: true, SizeKnown: true, MTime: mtime.Add(2 * time.Second)},
+		}, true,
+	)
+	filesystem := newPhasedPanelVFS("/catalog", map[string]*phasedPanelLoad{"/catalog": load})
+	panel := NewFileSystemPanel(0, 0, 50, 15, filesystem)
+	t.Cleanup(func() {
+		select {
+		case <-load.release:
+		default:
+			close(load.release)
+		}
+		if panel.cancelLoad != nil {
+			panel.cancelLoad()
+		}
+		panel.stopLoadingAnimation()
+	})
+
+	waitForPanelSignal(t, load.baseSent, "phased base catalog")
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for phased base UI task")
+	}
+	if panel.catalogProvisional {
+		t.Fatal("complete base catalog remained provisional")
+	}
+	if !panel.isLoading {
+		t.Fatal("metadata phase unexpectedly completed before it was released")
+	}
+	wantOrder := []string{"..", "folder", "alpha.txt", "zeta.txt"}
+	if len(panel.entries) != len(wantOrder) {
+		t.Fatalf("base entries = %d, want %d", len(panel.entries), len(wantOrder))
+	}
+	basePointers := make(map[string]*fileEntry, len(panel.entries))
+	for index, want := range wantOrder {
+		entry := panel.entries[index]
+		if entry.Name != want {
+			t.Fatalf("base order[%d] = %q, want %q", index, entry.Name, want)
+		}
+		if entry.Name != ".." && (entry.SizeKnown || !entry.MTime.IsZero()) {
+			t.Fatalf("base row leaked metadata: %+v", entry.VFSItem)
+		}
+		basePointers[entry.Name] = entry
+	}
+	panel.SetCursorIndex(2)
+	panel.SetItemSelected(2, true)
+	baseModel := panel.semanticPanelModel(nil, 0, true)
+
+	close(load.release)
+	waitForLoad(t, panel)
+	finalHeader, ok := panel.semanticPanelHeaderModel(nil, 0, true)
+	if !ok {
+		t.Fatal("metadata enrichment invalidated the row-free panel header")
+	}
+	if len(finalHeader.Entries) != 0 {
+		t.Fatalf("metadata enrichment leaked %d catalog rows into the header", len(finalHeader.Entries))
+	}
+	if finalHeader.CatalogRevision != baseModel.CatalogRevision {
+		t.Fatalf("row-free metadata header advanced catalog revision: base=%d final=%d",
+			baseModel.CatalogRevision, finalHeader.CatalogRevision)
+	}
+	if finalHeader.MetadataRevision != baseModel.MetadataRevision+1 {
+		t.Fatalf("row-free metadata revision = %d, want %d",
+			finalHeader.MetadataRevision, baseModel.MetadataRevision+1)
+	}
+	chunk, chunkOK := BuildPanelCatalogMetadataChunk(
+		finalHeader.ID, finalHeader.Path, finalHeader.CatalogRevision,
+		finalHeader.MetadataRevision, 0, len(panel.entries))
+	if !chunkOK {
+		t.Fatal("enriched row-free metadata snapshot was not published")
+	}
+	var alphaMetadata map[string]any
+	for _, row := range appMapSlice(chunk["entries"]) {
+		if semanticString(row["entryId"]) == semanticString(baseModel.Entries[2].EntryID) {
+			alphaMetadata = row
+			break
+		}
+	}
+	if alphaMetadata == nil || appInt64(alphaMetadata["size"]) != 20 ||
+		semanticString(alphaMetadata["sizeText"]) != "20" {
+		t.Fatalf("enriched alpha.txt metadata was not pullable: %#v", alphaMetadata)
+	}
+	finalModel := panel.semanticPanelModel(nil, 0, true)
+	if finalModel.CatalogRevision != baseModel.CatalogRevision {
+		t.Fatalf("metadata advanced catalog revision: base=%d final=%d",
+			baseModel.CatalogRevision, finalModel.CatalogRevision)
+	}
+	if finalModel.MetadataRevision != baseModel.MetadataRevision+1 {
+		t.Fatalf("metadata revision = %d, want %d", finalModel.MetadataRevision, baseModel.MetadataRevision+1)
+	}
+	for index, want := range wantOrder {
+		entry := panel.entries[index]
+		if entry.Name != want || entry != basePointers[want] {
+			t.Fatalf("metadata changed identity/order at %d: got %q ptr=%p want %q ptr=%p",
+				index, entry.Name, entry, want, basePointers[want])
+		}
+	}
+	if got := panel.entries[2]; got.Size != 20 || !got.SizeKnown || !got.MTime.Equal(mtime.Add(time.Second)) || !got.Selected {
+		t.Fatalf("metadata/selection merge for alpha.txt = %+v selected=%v", got.VFSItem, got.Selected)
+	}
+	if got := filesystem.phasedCalls.Load(); got != 1 {
+		t.Fatalf("phased read calls = %d, want 1", got)
+	}
+	if got := filesystem.ordinaryCalls.Load(); got != 0 {
+		t.Fatalf("ordinary ReadDir calls = %d, want 0", got)
+	}
+}
+
+func TestFileSystemPanel_PhasedDirectoryCoalescesMetadataChunksIntoOneUICommit(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	base := []vfs.VFSItem{
+		{Name: "one.txt"},
+		{Name: "two.txt"},
+		{Name: "three.txt"},
+	}
+	load := newPhasedPanelLoad(base, nil, true)
+	load.metadataChunks = [][]vfs.VFSItem{
+		{{Name: "one.txt", Size: 1, SizeKnown: true}},
+		{{Name: "two.txt", Size: 2, SizeKnown: true}},
+		{{Name: "three.txt", Size: 3, SizeKnown: true}},
+	}
+	filesystem := newPhasedPanelVFS("/catalog", map[string]*phasedPanelLoad{"/catalog": load})
+	panel := NewFileSystemPanel(0, 0, 50, 15, filesystem)
+	t.Cleanup(func() {
+		select {
+		case <-load.release:
+		default:
+			close(load.release)
+		}
+		if panel.cancelLoad != nil {
+			panel.cancelLoad()
+		}
+		panel.stopLoadingAnimation()
+	})
+
+	waitForPanelSignal(t, load.baseSent, "phased base catalog")
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for phased base UI task")
+	}
+	baseModel := panel.semanticPanelModel(nil, 0, true)
+
+	close(load.release)
+	waitForPanelSignal(t, load.metadataSent, "phased metadata chunks")
+	readyCount := func() int {
+		ready := 0
+		for _, entry := range panel.entries {
+			if entry.Name != ".." && entry.SizeKnown {
+				ready++
+			}
+		}
+		return ready
+	}
+	metadataCommits := 0
+	deadline := time.After(2 * time.Second)
+	for panel.isLoading {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			before := readyCount()
+			task()
+			if readyCount() > before {
+				metadataCommits++
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for coalesced metadata and completion tasks")
+		}
+	}
+
+	if got := readyCount(); got != len(base) {
+		t.Fatalf("metadata-enriched rows = %d, want %d", got, len(base))
+	}
+	if metadataCommits != 1 {
+		t.Fatalf("metadata UI commits = %d, want one atomic publication", metadataCommits)
+	}
+	finalModel := panel.semanticPanelModel(nil, 0, true)
+	if finalModel.CatalogRevision != baseModel.CatalogRevision {
+		t.Fatalf("coalesced metadata advanced catalog revision: base=%d final=%d",
+			baseModel.CatalogRevision, finalModel.CatalogRevision)
+	}
+	if finalModel.MetadataRevision != baseModel.MetadataRevision+1 {
+		t.Fatalf("coalesced metadata revision = %d, want %d",
+			finalModel.MetadataRevision, baseModel.MetadataRevision+1)
+	}
+}
+
+func TestFileSystemPanel_PhasedMetadataFromSupersededGenerationIsDiscarded(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	oldLoad := newPhasedPanelLoad(
+		[]vfs.VFSItem{{Name: "old.txt"}},
+		[]vfs.VFSItem{{Name: "old.txt", Size: 999, SizeKnown: true}}, true,
+	)
+	newLoad := newPhasedPanelLoad(
+		[]vfs.VFSItem{{Name: "new.txt"}},
+		[]vfs.VFSItem{{Name: "new.txt", Size: 7, SizeKnown: true}}, false,
+	)
+	filesystem := newPhasedPanelVFS("/old", map[string]*phasedPanelLoad{
+		"/old": oldLoad,
+		"/new": newLoad,
+	})
+	panel := NewFileSystemPanel(0, 0, 50, 15, filesystem)
+	t.Cleanup(func() {
+		select {
+		case <-oldLoad.release:
+		default:
+			close(oldLoad.release)
+		}
+		if panel.cancelLoad != nil {
+			panel.cancelLoad()
+		}
+		panel.stopLoadingAnimation()
+	})
+
+	waitForPanelSignal(t, oldLoad.baseSent, "old phased base catalog")
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for old base UI task")
+	}
+	close(oldLoad.release)
+	waitForPanelSignal(t, oldLoad.metadataSent, "old metadata callback to be queued")
+
+	if err := filesystem.SetPath("/new"); err != nil {
+		t.Fatal(err)
+	}
+	panel.readDirectoryEx(false)
+	waitForLoad(t, panel)
+
+	if len(panel.entries) != 2 || panel.entries[0].Name != ".." || panel.entries[1].Name != "new.txt" {
+		t.Fatalf("superseded generation changed new catalog: %+v", panel.entries)
+	}
+	if got := panel.entries[1]; got.Size != 7 || !got.SizeKnown {
+		t.Fatalf("new metadata was replaced by stale result: %+v", got.VFSItem)
+	}
+	if got := filesystem.phasedCalls.Load(); got != 2 {
+		t.Fatalf("phased read calls = %d, want old+new", got)
+	}
+}
+
+func TestPhasedDirectoryCapabilityRejectsPromotedEmbeddedReader(t *testing.T) {
+	local := vfs.NewOSVFS(t.TempDir())
+	if phasedDirectoryReaderFor(local) == nil {
+		t.Fatal("direct OSVFS phased capability was rejected")
+	}
+	wrapper := &mockTitleVFS{OSVFS: *local, title: "wrapper"}
+	if phasedDirectoryReaderFor(wrapper) != nil {
+		t.Fatal("promoted embedded OSVFS capability bypassed wrapper ReadDir semantics")
+	}
+	if panelSortSupportsPhasedDirectoryRead(SortSize) || panelSortSupportsPhasedDirectoryRead(SortTime) {
+		t.Fatal("metadata-dependent sort mode accepted a phased base catalog")
 	}
 }
 
@@ -3632,6 +4011,55 @@ func waitForLoad(t *testing.T, fp *FileSystemPanel) {
 	}
 }
 
+func drainPanelRedrawRequests() int {
+	drained := 0
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+			drained++
+		default:
+			return drained
+		}
+	}
+}
+
+func startWarmCacheCompletion(t *testing.T, cached, fresh []vfs.VFSItem,
+	sortMode SortMode,
+) (*FileSystemPanel, *stagedPanelVFS) {
+	t.Helper()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	remote := newStagedPanelVFS(fresh)
+	fp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	t.Cleanup(func() {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		fp.stopLoadingAnimation()
+		fp.unpublishSemanticMetadataSnapshot()
+	})
+	waitForLoad(t, fp)
+	fp.SetViewMode(ViewModeDetailed)
+	fp.sortMode = sortMode
+	fp.sortReverse = false
+	fp.vfs = remote
+	fp.lastLoadedPath = remote.GetPath()
+	fp.pendingSelection = ".."
+	fp.saveToCache(remote.GetPath(), cached)
+
+	fp.readDirectoryEx(false)
+	waitForPanelSignal(t, remote.started, "warm-cache ReadDir to start")
+	return fp, remote
+}
+
+func panelEntryIndexByName(fp *FileSystemPanel, name string) int {
+	for index, entry := range fp.entries {
+		if entry.Name == name {
+			return index
+		}
+	}
+	return -1
+}
+
 func TestFileSystemPanel_PermissionFailureRestoresAbsoluteParentWithoutDialogLoop(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldConfig := AppConfig
@@ -3994,6 +4422,313 @@ func TestFileSystemPanel_CacheSwapPreservesLiveCursorAndMarks(t *testing.T) {
 	}
 	if !fp.entries[gamma].Selected || !fp.selectedItems["gamma.txt"] {
 		t.Fatal("gamma.txt mark was lost during cache swap")
+	}
+}
+
+func TestFileSystemPanel_EquivalentWarmCacheCompletionRefreshesInPlaceWithoutRedraw(t *testing.T) {
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	t.Cleanup(func() { AppConfig = oldConfig })
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+	previousHighlighter := GlobalFileHighlighter
+	GlobalFileHighlighter = &FileHighlighter{}
+	t.Cleanup(func() { GlobalFileHighlighter = previousHighlighter })
+
+	stamp := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	cached := []vfs.VFSItem{
+		{Name: "alpha.txt", Size: 10, MTime: stamp, ATime: stamp, CTime: stamp,
+			Mode: "-rw-r--r--", UnixMode: 0o644, PhysicalSize: 16, Uid: 1, Gid: 2},
+		{Name: "beta.txt", Size: 20, MTime: stamp.Add(time.Minute), ATime: stamp, CTime: stamp,
+			Mode: "-rw-r--r--", UnixMode: 0o644, PhysicalSize: 24, Uid: 1, Gid: 2},
+	}
+	fresh := []vfs.VFSItem{
+		{Name: "alpha.txt", Size: 10, MTime: stamp, ATime: stamp.Add(time.Hour), CTime: stamp.Add(2 * time.Hour),
+			Mode: "-rw-r--r--", UnixMode: 0o644, PhysicalSize: 32, Uid: 11, Gid: 12},
+		{Name: "beta.txt", Size: 20, MTime: stamp.Add(time.Minute), ATime: stamp.Add(3 * time.Hour), CTime: stamp.Add(4 * time.Hour),
+			Mode: "-rw-r--r--", UnixMode: 0o644, PhysicalSize: 48, Uid: 13, Gid: 14},
+	}
+	fp, remote := startWarmCacheCompletion(t, cached, fresh, SortName)
+	alpha := panelEntryIndexByName(fp, "alpha.txt")
+	beta := panelEntryIndexByName(fp, "beta.txt")
+	if alpha < 0 || beta < 0 {
+		t.Fatalf("cached entries missing: %+v", fp.entries)
+	}
+
+	// Model interaction that happens after the warm cache is visible. Calling
+	// semanticPanelModel mirrors the redraw which delivered those live changes
+	// to the negotiated native client before fresh completion arrives.
+	fp.SetCursorIndex(beta)
+	fp.SetItemSelected(alpha, true)
+	fp.entries[alpha].PrevSelected = true
+	cachedModel := fp.semanticPanelModel(nil, 0, true)
+	if !fp.semanticCachedCatalogExported {
+		t.Fatal("cached semantic model was not recorded as exported")
+	}
+	cachedSnapshot := fp.semanticMetadataSnapshot
+	cachedMetadata, ok := BuildPanelCatalogMetadataChunk(cachedModel.ID, cachedModel.Path,
+		cachedModel.CatalogRevision, cachedModel.MetadataRevision, 0, 128)
+	if !ok {
+		t.Fatal("cached deferred metadata snapshot was not published")
+	}
+	beforeEntries := append([]*fileEntry(nil), fp.entries...)
+	beforeRows := append([]vtui.TableRow(nil), fp.table.Rows...)
+	beforeCursor := fp.GetCursorIndex()
+	beforeTop := fp.table.TopPos
+	beforeCatalogRevision := fp.catalogRevision
+	beforeMetadataRevision := fp.metadataRevision
+	beforeSelectionRevision := fp.selectionRevision
+	drainPanelRedrawRequests()
+
+	remote.release[0] <- struct{}{}
+	waitForLoad(t, fp)
+	if redraws := drainPanelRedrawRequests(); redraws != 0 {
+		t.Fatalf("semantically equivalent fresh completion requested %d redraws", redraws)
+	}
+	if fp.GetCursorIndex() != beforeCursor || fp.table.TopPos != beforeTop ||
+		fp.getRawSelectedName() != "beta.txt" {
+		t.Fatalf("live cursor/viewport changed: cursor=%d/%q top=%d, want %d/%q top=%d",
+			fp.GetCursorIndex(), fp.getRawSelectedName(), fp.table.TopPos,
+			beforeCursor, "beta.txt", beforeTop)
+	}
+	if len(fp.entries) != len(beforeEntries) || len(fp.table.Rows) != len(beforeRows) {
+		t.Fatalf("in-place refresh changed table dimensions: entries=%d/%d rows=%d/%d",
+			len(fp.entries), len(beforeEntries), len(fp.table.Rows), len(beforeRows))
+	}
+	for index := range beforeEntries {
+		if fp.entries[index] != beforeEntries[index] {
+			t.Fatalf("entry %d identity changed on equivalent completion", index)
+		}
+	}
+	for index := range beforeRows {
+		if fp.table.Rows[index] != beforeRows[index] {
+			t.Fatalf("table row %d identity changed on equivalent completion", index)
+		}
+	}
+	alpha = panelEntryIndexByName(fp, "alpha.txt")
+	if !fp.entries[alpha].Selected || !fp.selectedItems["alpha.txt"] ||
+		!fp.entries[alpha].PrevSelected {
+		t.Fatalf("live selection state was overwritten: entry=%+v selectedItems=%v",
+			fp.entries[alpha], fp.selectedItems)
+	}
+	if fp.entries[alpha].IsCached || !fp.entries[alpha].ATime.Equal(fresh[0].ATime) ||
+		!fp.entries[alpha].CTime.Equal(fresh[0].CTime) ||
+		fp.entries[alpha].PhysicalSize != fresh[0].PhysicalSize ||
+		fp.entries[alpha].Uid != fresh[0].Uid || fp.entries[alpha].Gid != fresh[0].Gid {
+		t.Fatalf("fresh backing data was not installed in place: %+v", fp.entries[alpha])
+	}
+	if fp.isLoading || fp.semanticCachedCatalogReady || fp.semanticCachedCatalogExported || fp.catalogProvisional {
+		t.Fatalf("completion left loading state behind: loading=%v cachedReady=%v cachedExported=%v provisional=%v",
+			fp.isLoading, fp.semanticCachedCatalogReady, fp.semanticCachedCatalogExported, fp.catalogProvisional)
+	}
+
+	refreshedModel := fp.semanticPanelModel(nil, 0, true)
+	refreshedMetadata, ok := BuildPanelCatalogMetadataChunk(refreshedModel.ID, refreshedModel.Path,
+		refreshedModel.CatalogRevision, refreshedModel.MetadataRevision, 0, 128)
+	if !ok || fp.semanticMetadataSnapshot != cachedSnapshot ||
+		!reflect.DeepEqual(cachedMetadata, refreshedMetadata) {
+		t.Fatalf("equivalent completion invalidated immutable metadata snapshot: ok=%v sameSnapshot=%v\nbefore=%#v\nafter=%#v",
+			ok, fp.semanticMetadataSnapshot == cachedSnapshot, cachedMetadata, refreshedMetadata)
+	}
+	if fp.catalogRevision != beforeCatalogRevision || fp.metadataRevision != beforeMetadataRevision ||
+		fp.selectionRevision != beforeSelectionRevision {
+		t.Fatalf("equivalent completion changed semantic revisions: before=(%d,%d,%d) after=(%d,%d,%d)",
+			beforeCatalogRevision, beforeMetadataRevision, beforeSelectionRevision,
+			fp.catalogRevision, fp.metadataRevision, fp.selectionRevision)
+	}
+	if !reflect.DeepEqual(cachedModel.ToMap(), refreshedModel.ToMap()) {
+		t.Fatalf("equivalent completion changed the negotiated model:\nbefore=%#v\nafter=%#v",
+			cachedModel.ToMap(), refreshedModel.ToMap())
+	}
+}
+
+func TestFileSystemPanel_StaleLoadingPulseDoesNotRequestRedraw(t *testing.T) {
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	t.Cleanup(func() { AppConfig = oldConfig })
+	oldDisable := DisableLoadingAnimationInTests
+	DisableLoadingAnimationInTests = false
+	t.Cleanup(func() { DisableLoadingAnimationInTests = oldDisable })
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(false)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+
+	items := []vfs.VFSItem{{Name: "alpha.txt", Size: 10, MTime: time.Unix(10, 0)}}
+	fp, remote := startWarmCacheCompletion(t, items, items, SortName)
+	if fp.loadingTimer == nil {
+		t.Fatal("legacy warm-cache path did not schedule its loading pulse")
+	}
+	drainPanelRedrawRequests()
+
+	var pulseTask func()
+	select {
+	case pulseTask = <-vtui.FrameManager.TaskChan:
+	case <-time.After(3 * panelLoadingPulseInterval):
+		t.Fatal("loading pulse task was not queued")
+	}
+	fp.stopLoadingAnimation()
+	pulseTask()
+	if redraws := drainPanelRedrawRequests(); redraws != 0 {
+		t.Fatalf("stale loading pulse requested %d redraws", redraws)
+	}
+
+	remote.release[0] <- struct{}{}
+	waitForLoad(t, fp)
+}
+
+func TestFileSystemPanel_WarmCacheSemanticChangesRetainFreshRedraw(t *testing.T) {
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	t.Cleanup(func() { AppConfig = oldConfig })
+
+	stamp := time.Date(2026, time.August, 17, 12, 0, 0, 0, time.UTC)
+	base := []vfs.VFSItem{
+		{Name: "alpha.txt", Size: 10, MTime: stamp, ATime: stamp.Add(time.Hour), Mode: "-rw-r--r--", UnixMode: 0o644},
+		{Name: "beta.txt", Size: 20, MTime: stamp.Add(time.Minute), ATime: stamp.Add(time.Hour), Mode: "-rw-r--r--", UnixMode: 0o644},
+	}
+	clone := func(items []vfs.VFSItem) []vfs.VFSItem {
+		return append([]vfs.VFSItem(nil), items...)
+	}
+	type testCase struct {
+		name              string
+		metadataDeferred  bool
+		sortMode          SortMode
+		cached            []vfs.VFSItem
+		fresh             []vfs.VFSItem
+		highlighter       *FileHighlighter
+		afterDisplayed    func()
+		skipDisplayExport bool
+		validate          func(*testing.T, *FileSystemPanel)
+	}
+
+	sizeFresh := clone(base)
+	sizeFresh[0].Size++
+	nameFresh := clone(base)
+	nameFresh[0].Name = "gamma.txt"
+	mtimeFresh := clone(base)
+	mtimeFresh[0].MTime = mtimeFresh[0].MTime.Add(time.Second)
+	accessFresh := clone(base)
+	accessFresh[0].ATime = stamp.Add(-time.Hour)
+	sortedFresh := clone(base)
+	sortedFresh[0].Size = 30
+	sortedFresh[1].Size = 5
+
+	tests := []testCase{
+		{name: "size", metadataDeferred: true, sortMode: SortName, cached: clone(base), fresh: sizeFresh,
+			validate: func(t *testing.T, fp *FileSystemPanel) {
+				if got := fp.entries[panelEntryIndexByName(fp, "alpha.txt")].Size; got != 11 {
+					t.Fatalf("fresh size = %d, want 11", got)
+				}
+			}},
+		{name: "name", metadataDeferred: true, sortMode: SortName, cached: clone(base), fresh: nameFresh,
+			validate: func(t *testing.T, fp *FileSystemPanel) {
+				if panelEntryIndexByName(fp, "alpha.txt") >= 0 || panelEntryIndexByName(fp, "gamma.txt") < 0 {
+					t.Fatalf("fresh rename not installed: %+v", fp.entries)
+				}
+			}},
+		{name: "mtime", metadataDeferred: true, sortMode: SortName, cached: clone(base), fresh: mtimeFresh,
+			validate: func(t *testing.T, fp *FileSystemPanel) {
+				if got := fp.entries[panelEntryIndexByName(fp, "alpha.txt")].MTime; !got.Equal(mtimeFresh[0].MTime) {
+					t.Fatalf("fresh mtime = %v, want %v", got, mtimeFresh[0].MTime)
+				}
+			}},
+		{name: "highlight-relevant-atime", metadataDeferred: true, sortMode: SortName,
+			cached: clone(base), fresh: accessFresh,
+			highlighter: &FileHighlighter{Revision: 1, Rules: []HighlightRule{{
+				RuleID: "recent-access", DateType: DateAccessed, DateAfter: stamp, NormalStr: "yellow",
+			}}}},
+		{name: "highlight-configuration", metadataDeferred: true, sortMode: SortName,
+			cached: clone(base), fresh: clone(base), highlighter: &FileHighlighter{},
+			afterDisplayed: func() {
+				GlobalFileHighlighter = &FileHighlighter{Revision: 2, Rules: []HighlightRule{{
+					RuleID: "text", Masks: []string{"*.txt"}, NormalStr: "yellow",
+				}}}
+			}},
+		{name: "cache-scene-not-exported", metadataDeferred: true, sortMode: SortName,
+			cached: clone(base), fresh: clone(base), skipDisplayExport: true},
+		{name: "legacy-cache-provenance", metadataDeferred: false, sortMode: SortName,
+			cached: clone(base), fresh: clone(base)},
+		{name: "sorted-order", metadataDeferred: true, sortMode: SortSize,
+			cached: clone(base), fresh: sortedFresh,
+			validate: func(t *testing.T, fp *FileSystemPanel) {
+				var names []string
+				for _, entry := range fp.entries {
+					if entry.Name != ".." {
+						names = append(names, entry.Name)
+					}
+				}
+				if !reflect.DeepEqual(names, []string{"beta.txt", "alpha.txt"}) {
+					t.Fatalf("fresh size order = %v, want [beta.txt alpha.txt]", names)
+				}
+			}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			previousCapability := setExtUiPanelCatalogMetadataEnabled(tc.metadataDeferred)
+			t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+			previousHighlighter := GlobalFileHighlighter
+			if tc.highlighter != nil {
+				GlobalFileHighlighter = tc.highlighter
+			} else {
+				GlobalFileHighlighter = &FileHighlighter{}
+			}
+			t.Cleanup(func() { GlobalFileHighlighter = previousHighlighter })
+
+			fp, remote := startWarmCacheCompletion(t, tc.cached, tc.fresh, tc.sortMode)
+			// Record the cache as the authoritative displayed semantic state. The
+			// completion fast path must not paper over a pending cache export or a
+			// later unexported mutation.
+			if !tc.skipDisplayExport {
+				fp.semanticPanelModel(nil, 0, true)
+			}
+			beforeEntries := append([]*fileEntry(nil), fp.entries...)
+			beforeRows := append([]vtui.TableRow(nil), fp.table.Rows...)
+			if tc.afterDisplayed != nil {
+				tc.afterDisplayed()
+			}
+			drainPanelRedrawRequests()
+
+			remote.release[0] <- struct{}{}
+			waitForLoad(t, fp)
+			if redraws := drainPanelRedrawRequests(); redraws == 0 {
+				t.Fatal("fresh semantic change did not request a redraw")
+			}
+			if len(fp.entries) == len(beforeEntries) {
+				unchanged := true
+				for index := range beforeEntries {
+					if fp.entries[index] != beforeEntries[index] {
+						unchanged = false
+						break
+					}
+				}
+				if unchanged {
+					t.Fatal("fresh semantic change retained cached entry identities")
+				}
+			}
+			if len(fp.table.Rows) == len(beforeRows) {
+				unchanged := true
+				for index := range beforeRows {
+					if fp.table.Rows[index] != beforeRows[index] {
+						unchanged = false
+						break
+					}
+				}
+				if unchanged {
+					t.Fatal("fresh semantic change retained cached table-row identities")
+				}
+			}
+			for _, entry := range fp.entries {
+				if entry.IsCached {
+					t.Fatalf("ordinary fresh replacement retained cache provenance on %q", entry.Name)
+				}
+			}
+			if tc.validate != nil {
+				tc.validate(t, fp)
+			}
+		})
 	}
 }
 
@@ -4551,6 +5286,67 @@ oldTimerDrained:
 	}
 }
 
+func TestFileSystemPanelAuthoritativeOSDirectoryRowUsesOptimisticPath(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	defer func() { AppConfig = oldConfig }()
+
+	oldHistory := vtui.GlobalHistoryProvider
+	vtui.GlobalHistoryProvider = nil
+	defer func() { vtui.GlobalHistoryProvider = oldHistory }()
+
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filesystem := vfs.NewOSVFS(root)
+	fp := NewFileSystemPanel(0, 0, 40, 20, filesystem)
+	t.Cleanup(func() {
+		if fp.cancelLoad != nil {
+			fp.cancelLoad()
+		}
+		if fp.loadingTimer != nil {
+			fp.loadingTimer.Stop()
+		}
+	})
+	waitForLoad(t, fp)
+
+	childIndex := -1
+	for index, entry := range fp.entries {
+		if entry.Name == "child" {
+			childIndex = index
+			break
+		}
+	}
+	if childIndex < 0 {
+		t.Fatalf("authoritative child row missing from %#v", fp.entries)
+	}
+	fp.SetCursorIndex(childIndex)
+
+	previousHook := vfs.OSVFSSetPathBenchmarkHook
+	var verifiedStatEvents atomic.Int32
+	vfs.OSVFSSetPathBenchmarkHook = func(string, ...any) {
+		verifiedStatEvents.Add(1)
+	}
+	t.Cleanup(func() { vfs.OSVFSSetPathBenchmarkHook = previousHook })
+
+	if !fp.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+	}) {
+		t.Fatal("Enter on authoritative local directory row was not handled")
+	}
+	if got := verifiedStatEvents.Load(); got != 0 {
+		t.Fatalf("authoritative local row performed %d synchronous SetPath stat stages", got)
+	}
+	if got := filesystem.GetPath(); !sameFolderHistoryPath(got, child) {
+		t.Fatalf("authoritative local row path = %q, want %q", got, child)
+	}
+	waitForLoad(t, fp)
+}
+
 func TestPanelsFrame_NavigateToCachedRemotePathIsOptimistic(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldConfig := AppConfig
@@ -4573,7 +5369,7 @@ func TestPanelsFrame_NavigateToCachedRemotePathIsOptimistic(t *testing.T) {
 
 	pf := &PanelsFrame{}
 	start := time.Now()
-	if !pf.NavigateToPath(fp, "sdcard") {
+	if !pf.navigateToCachedPath(fp, "sdcard") {
 		t.Fatal("NavigateToPath rejected cached remote directory")
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {

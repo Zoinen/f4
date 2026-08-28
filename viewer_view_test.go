@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -235,6 +236,81 @@ func TestViewerView_NavigationAndEOF(t *testing.T) {
 	vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
 	if vv.TopOffset != oldOffset {
 		t.Errorf("VK_DOWN should be blocked when eofVisible is true. Offset changed from %d to %d", oldOffset, vv.TopOffset)
+	}
+}
+
+func TestViewerView_PageDownKeepsFinalTextPageStable(t *testing.T) {
+	vtui.SetDefaultPalette()
+
+	for _, tc := range []struct {
+		name  string
+		wrap  bool
+		lines int
+		want  int64
+	}{
+		{name: "wrapped-short-final-page", wrap: true, lines: 5, want: 4},
+		{name: "unwrapped-short-final-page", wrap: false, lines: 5, want: 4},
+		{name: "wrapped-full-final-page", wrap: true, lines: 10, want: 24},
+		{name: "unwrapped-full-final-page", wrap: false, lines: 10, want: 24},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var content strings.Builder
+			for line := 1; line <= tc.lines; line++ {
+				fmt.Fprintf(&content, "L%02d\n", line)
+			}
+			data := []byte(content.String())
+			ctx, cancel := context.WithCancel(context.Background())
+			backend := &ViewerBackend{
+				file:      &vfs.MemoryReadAtCloser{Data: data},
+				size:      int64(len(data)),
+				cacheData: data,
+				ctx:       ctx,
+				cancelCtx: cancel,
+			}
+			vv := &ViewerView{backend: backend, WrapMode: tc.wrap}
+			defer vv.Close()
+
+			vv.SetPosition(0, 0, 39, 4) // Four content rows plus the status row.
+			scr := vtui.NewSilentScreenBuf()
+			scr.AllocBuf(40, 5)
+
+			render := func() {
+				vv.renderText(scr, 40, 4)
+			}
+			pageDown := func() {
+				vv.ProcessKey(&vtinput.InputEvent{
+					Type:           vtinput.KeyEventType,
+					KeyDown:        true,
+					VirtualKeyCode: vtinput.VK_NEXT,
+				})
+				render()
+			}
+
+			render()
+			for press := 0; press < 4; press++ {
+				pageDown()
+			}
+
+			if vv.TopOffset != tc.want {
+				t.Fatalf("final top offset=%d, want %d", vv.TopOffset, tc.want)
+			}
+			if !vv.eofVisible {
+				t.Fatal("final page should be marked as EOF-visible")
+			}
+			if len(vv.lineOffsets) != 4 {
+				t.Fatalf("final page line offsets=%v, want four real rows", vv.lineOffsets)
+			}
+			if vv.lineOffsets[0] != tc.want || vv.lineOffsets[3] != int64((tc.lines-1)*4) {
+				t.Fatalf("final page line offsets=%v, want first=%d last=%d",
+					vv.lineOffsets, tc.want, (tc.lines-1)*4)
+			}
+
+			oldTop := vv.TopOffset
+			pageDown()
+			if vv.TopOffset != oldTop {
+				t.Fatalf("extra PgDn moved final page from %d to %d", oldTop, vv.TopOffset)
+			}
+		})
 	}
 }
 
@@ -612,7 +688,7 @@ func TestViewerView_TabRendering(t *testing.T) {
 
 	// Wait for background loader
 	deadline := time.Now().Add(2 * time.Second)
-	for len(vv.lineOffsets) < 2 {
+	for !vv.eofVisible {
 		if time.Now().After(deadline) {
 			t.Fatal("Timeout waiting for tab view fetch")
 		}

@@ -129,6 +129,9 @@ func (mb *MenuBar) ActivateSubMenu(index int) {
 
 	items := mb.Items[index].SubItems
 	if len(items) == 0 {
+		if mb.Items[index].Command == 0 {
+			FrameManager.declareSemanticMenuState()
+		}
 		return
 	}
 
@@ -165,7 +168,13 @@ func (mb *MenuBar) ActivateSubMenu(index int) {
 
 	m.OnAction = func(idx int) { mb.Active = false }
 
-	FrameManager.Push(m)
+	if mb.Items[index].Command == 0 {
+		FrameManager.PushMenu(m)
+	} else {
+		// The command is allowed to mutate its owner while rebuilding dynamic
+		// submenu items, so it cannot claim a menu-only transaction.
+		FrameManager.Push(m)
+	}
 }
 
 func (mb *MenuBar) ProcessKey(e *vtinput.InputEvent) bool {
@@ -193,6 +202,7 @@ func (mb *MenuBar) ProcessKey(e *vtinput.InputEvent) bool {
 			} else {
 				mb.SelectPos = len(mb.Items) - 1
 			}
+			FrameManager.declareSemanticMenuState()
 			return true
 		case vtinput.VK_RIGHT:
 			closeSub()
@@ -201,6 +211,7 @@ func (mb *MenuBar) ProcessKey(e *vtinput.InputEvent) bool {
 			} else {
 				mb.SelectPos = 0
 			}
+			FrameManager.declareSemanticMenuState()
 			return true
 		case vtinput.VK_DOWN, vtinput.VK_RETURN:
 			mb.ActivateSubMenu(mb.SelectPos)
@@ -270,6 +281,7 @@ func (mb *MenuBar) ProcessMouse(e *vtinput.InputEvent) bool {
 			return false
 		}
 		if itemAt == mb.SelectPos && mb.activeSubMenu != nil {
+			FrameManager.declareSemanticMenuState()
 			return true
 		}
 
@@ -278,6 +290,7 @@ func (mb *MenuBar) ProcessMouse(e *vtinput.InputEvent) bool {
 		if len(mb.Items[itemAt].SubItems) == 0 {
 			mb.closeSub()
 			mb.SelectPos = itemAt
+			FrameManager.declareSemanticMenuState()
 			return true
 		}
 		mb.ActivateSubMenu(itemAt)

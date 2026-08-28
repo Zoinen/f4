@@ -24,8 +24,18 @@ import (
 
 type DriveEntry struct {
 	Name    string
+	Icon    string
 	Factory func() vfs.VFS
 }
+
+const (
+	driveMenuIconOtherPanel = "panels-top-left"
+	driveMenuIconLocal      = "hard-drive"
+	driveMenuIconNetwork    = "network"
+	driveMenuIconPhysical   = "database"
+	driveMenuIconBookmark   = "folder"
+	driveMenuIconVirtual    = "globe"
+)
 
 var DriveRegistry []DriveEntry
 var pluginRegistryMu sync.RWMutex
@@ -36,10 +46,27 @@ func RegisterDrive(name string, factory func() vfs.VFS) {
 	for i, d := range DriveRegistry {
 		if d.Name == name {
 			DriveRegistry[i].Factory = factory
+			if DriveRegistry[i].Icon == "" {
+				DriveRegistry[i].Icon = registeredDriveIcon(name)
+			}
 			return
 		}
 	}
-	DriveRegistry = append(DriveRegistry, DriveEntry{Name: name, Factory: factory})
+	DriveRegistry = append(DriveRegistry, DriveEntry{
+		Name: name, Icon: registeredDriveIcon(name), Factory: factory,
+	})
+}
+
+func registeredDriveIcon(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(lower, "net"):
+		return driveMenuIconNetwork
+	case strings.Contains(lower, "cloud"):
+		return driveMenuIconVirtual
+	default:
+		return driveMenuIconPhysical
+	}
 }
 
 func driveRegistrySnapshot() []DriveEntry {
@@ -400,29 +427,11 @@ func NewPanelsFrame() *PanelsFrame {
 		if localShell {
 			pf.noteLocalShellBusy(busy)
 		}
-		// Use PostTask to ensure state changes happen on the UI thread
-		vtui.FrameManager.PostTask(func() {
-			if busy {
-				pf.executing = true
-			} else {
-				if pf.executing {
-					pf.executing = false
-					pf.workspaceCommandTitle = ""
-					if pf.returnToPanels {
-						pf.showPanels = true
-						if !pf.showLeftPanel && !pf.showRightPanel {
-							pf.showLeftPanel = true
-							pf.showRightPanel = true
-						}
-						pf.returnToPanels = false
-						pf.RefreshAll()
-						vtui.FrameManager.Redraw()
-					}
-				}
-			}
-			if localShell && !busy {
-				pf.catchUpProcessEnvironment(true)
-			}
+		// Busy callbacks originate in the PTY parser. Keep state on the UI
+		// thread, but let an idle marker which changes no presentation prove
+		// that it owns no redraw.
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+			return pf.applyTerminalBusyChange(busy, localShell)
 		})
 	}
 	// Parser will be fully initialized in initPTY once pty is ready
@@ -433,8 +442,103 @@ func NewPanelsFrame() *PanelsFrame {
 	return pf
 }
 
+// applyTerminalBusyChange returns whether the callback changed visible state.
+// Environment catch-up is normally a bookkeeping-only no-op after the private
+// directory-sync command; if it actually starts a muted shell update, retain a
+// conservative redraw for terminal-visible layouts.
+func (pf *PanelsFrame) applyTerminalBusyChange(busy, localShell bool) bool {
+	changed := false
+	if busy {
+		if !pf.executing {
+			pf.executing = true
+			changed = true
+		}
+	} else if pf.executing {
+		pf.executing = false
+		pf.workspaceCommandTitle = ""
+		changed = true
+		if pf.returnToPanels {
+			pf.showPanels = true
+			if !pf.showLeftPanel && !pf.showRightPanel {
+				pf.showLeftPanel = true
+				pf.showRightPanel = true
+			}
+			pf.returnToPanels = false
+			pf.RefreshAll()
+		}
+	}
+	if localShell && !busy && pf.catchUpProcessEnvironment(true) {
+		changed = true
+	}
+	return changed
+}
+
 func (pf *PanelsFrame) searchFirstMode() bool {
 	return AppConfig.NavigationMode == NavigationSearchFirst
+}
+
+func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
+	if !pf.showPanels || pf.wide ||
+		!pf.showLeftPanel || !pf.showRightPanel ||
+		pf.altPanels[0] != nil || pf.altPanels[1] != nil {
+		return false
+	}
+	for _, panel := range pf.panels {
+		fsp, ok := panel.(*FileSystemPanel)
+		if !ok || fsp.fastFindMode {
+			return false
+		}
+	}
+	return true
+}
+
+// publishPanelCatalogImmediate lets a completed Go-side names/types list reach
+// the native panel before the comparatively expensive terminal Show pass. The
+// renderer advances the exact app-scene revision immediately, so the
+// following redraw can use the row-free incremental exporter.
+func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenchmarkTrace) {
+	if fp == nil || vtui.FrameManager == nil {
+		return
+	}
+	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	if len(frames) == 0 {
+		return
+	}
+	var owner *PanelsFrame
+	for _, frame := range frames {
+		if candidate, ok := frame.(*PanelsFrame); ok {
+			owner = candidate
+		}
+	}
+	if owner == nil || frames[len(frames)-1] != owner ||
+		!owner.panelActivationFastPathEligible() {
+		return
+	}
+	side := -1
+	for index, panel := range owner.panels {
+		if panel == fp {
+			side = index
+			break
+		}
+	}
+	if side < 0 || side != owner.activeIdx {
+		return
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil {
+		return
+	}
+	renderer, ok := screen.Renderer.(interface {
+		QueuePanelCatalogState(int, map[string]any, string, string) bool
+	})
+	if !ok {
+		return
+	}
+	panel := map[string]any(fp.semanticPanelModel(nil, side, true).ToMap())
+	if renderer.QueuePanelCatalogState(side, panel,
+		strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark)) {
+		fp.acknowledgeSemanticSelection(fp.selectionRevision)
+	}
 }
 
 func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
@@ -960,11 +1064,68 @@ func (pf *PanelsFrame) initPTY() {
 			pf.ptyMutex.Unlock()
 
 			if shouldProcess {
+				before := captureTerminalOutputSemanticState(pf.termView)
 				pf.parser.Process(buf[:n])
-				vtui.FrameManager.Redraw()
+				after := captureTerminalOutputSemanticState(pf.termView)
+				pf.redrawAfterTerminalOutput(n, before != after)
 			}
 		}
 	}()
+}
+
+type terminalOutputSemanticState struct {
+	title     string
+	visible   bool
+	focused   bool
+	altScreen bool
+	busy      bool
+}
+
+func captureTerminalOutputSemanticState(term *TerminalView) terminalOutputSemanticState {
+	if term == nil {
+		return terminalOutputSemanticState{}
+	}
+	return terminalOutputSemanticState{
+		title:     term.Title,
+		visible:   term.IsVisible(),
+		focused:   term.IsFocused(),
+		altScreen: term.UseAltScreen,
+		busy:      term.Muted,
+	}
+}
+
+// redrawAfterTerminalOutput requests the redraw owned by a PTY read.
+// Native panel presentation can prove that the terminal is completely covered;
+// in that narrow case parsing remains eager but repainting waits until another
+// real mutation or until the terminal is revealed. syncPTYDirectory commonly
+// produces several prompt chunks while validating a direct panel catalog, so
+// avoiding those hidden-output wakes prevents a train of equal semantic exports.
+func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateChanged bool) {
+	deferred := false
+	if !semanticStateChanged && vtui.FrameManager != nil {
+		if screen := vtui.FrameManager.Screen(); screen != nil && screen.Renderer != nil {
+			if deferrer, ok := screen.Renderer.(vtui.CoveredTerminalRedrawDeferrer); ok {
+				deferred = deferrer.CanDeferCoveredTerminalRedraw()
+			}
+		}
+	}
+	result := "requested"
+	if deferred {
+		result = "deferred_covered"
+	} else if vtui.FrameManager != nil {
+		vtui.FrameManager.Redraw()
+	}
+	if navigationBenchmarkIsEnabled() {
+		marker := navigationBenchmarkRenderMarker()
+		traceID := ""
+		fields := []any{"bytes", byteCount, "result", result,
+			"semanticStateChanged", semanticStateChanged}
+		if marker != nil && marker.trace != nil {
+			traceID = marker.trace.id
+			fields = append(fields, navigationBenchmarkMarkerFields(marker)...)
+		}
+		navigationBenchmarkEmit(traceID, "terminal.output.redraw", "go.pty", fields...)
+	}
 }
 
 // reportLocalPTYFailure surfaces a NewPTY() failure to the person instead of
@@ -998,6 +1159,7 @@ func (pf *PanelsFrame) Close() {
 
 	for _, p := range pf.panels {
 		if fsp, ok := p.(*FileSystemPanel); ok && fsp != nil {
+			fsp.unpublishSemanticMetadataSnapshot()
 			fsp.cancelProviderOpen()
 			if fsp.cancelLoad != nil {
 				fsp.cancelLoad()
@@ -1262,18 +1424,20 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 				lastKnown := fsp.lastDirMTime
 				vtui.RunAsync(func(ctx *vtui.TaskContext) {
 					stat, err := vfsInst.Stat(ctx.Context, vfsPath)
-					ctx.RunOnUI(func() {
+					ctx.RunOnUIWithRedrawDecision(func() bool {
 						fsp.isCheckingRefresh = false
 						if err == nil && !stat.MTime.IsZero() {
 							if !fsp.isLoading && fsp.vfs.GetPath() == vfsPath {
 								if !lastKnown.IsZero() && stat.MTime != lastKnown {
 									vtui.DebugLog("PANELS: Auto-refreshing %q due to MTime change", vfsPath)
 									fsp.ReadDirectory()
+									return true
 								} else if lastKnown.IsZero() {
 									fsp.lastDirMTime = stat.MTime
 								}
 							}
 						}
+						return false
 					})
 				})
 			}
@@ -1547,6 +1711,18 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	benchmark := navigationBenchmarkCurrentUI()
+	if benchmark != nil && e.Type == vtinput.KeyEventType && e.KeyDown {
+		benchmark.setSide(pf.activeIdx)
+	}
+	if benchmark != nil && e.Type == vtinput.KeyEventType &&
+		e.VirtualKeyCode == vtinput.VK_TAB {
+		benchmark.event("panel.tab.received", "go.ui",
+			"keyDown", e.KeyDown, "ctrl", ctrl, "alt", alt, "shift", shift,
+			"showPanels", pf.showPanels, "searchFirst", pf.searchFirstMode(),
+			"commandLineFocused", pf.commandLineFocused,
+			"activeSide", pf.activeIdx)
+	}
 	if e.VirtualKeyCode == vtinput.VK_F12 && shift && !ctrl && !alt && e.KeyDown {
 		toggleGuiPresentation()
 		return true
@@ -1557,6 +1733,13 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// directions instead of forwarding the key to an AltScreen application or
 	// to a busy ordinary PTY such as the Python REPL.
 	if e.Type == vtinput.KeyEventType && e.VirtualKeyCode == vtinput.VK_TAB && ctrl && !alt {
+		return false
+	}
+	// Qt forwards the matching release after every Tab press. PanelsFrame and
+	// its child panels have no Tab key-up contract; stop it here so it is proved
+	// unchanged instead of falling through to a child control and invalidating
+	// the compact activation sent by the key-down in the same drained batch.
+	if e.Type == vtinput.KeyEventType && e.VirtualKeyCode == vtinput.VK_TAB && !e.KeyDown {
 		return false
 	}
 	// Ctrl+N normally forks the active panels into a new workspace. Terminal
@@ -2170,13 +2353,38 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	// Tab switches panels
-	if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
+	if e.Type == vtinput.KeyEventType && e.KeyDown &&
+		e.VirtualKeyCode == vtinput.VK_TAB && !ctrl {
 		if pf.showPanels && (!pf.searchFirstMode() || !pf.commandLineFocused) {
+			oldActiveIdx := pf.activeIdx
+			activationPatchEligible := pf.panelActivationFastPathEligible()
+			if benchmark != nil {
+				left, leftOK := pf.panels[0].(*FileSystemPanel)
+				right, rightOK := pf.panels[1].(*FileSystemPanel)
+				leftFastFind := leftOK && left.fastFindMode
+				rightFastFind := rightOK && right.fastFindMode
+				benchmark.event("panel.activate.fast_path", "go.ui",
+					"eligible", activationPatchEligible,
+					"showPanels", pf.showPanels, "wide", pf.wide,
+					"showLeft", pf.showLeftPanel, "showRight", pf.showRightPanel,
+					"leftFilePanel", leftOK, "rightFilePanel", rightOK,
+					"leftFastFind", leftFastFind, "rightFastFind", rightFastFind,
+					"leftAlt", pf.altPanels[0] != nil, "rightAlt", pf.altPanels[1] != nil)
+				benchmark.event("panel.activate.begin", "go.ui",
+					"fromSide", oldActiveIdx, "toSide", 1-oldActiveIdx)
+			}
 			pf.activeIdx = 1 - pf.activeIdx
+			activationDone := func() {
+				if benchmark != nil {
+					benchmark.event("panel.activate.end", "go.ui",
+						"fromSide", oldActiveIdx, "toSide", pf.activeIdx)
+				}
+			}
 			if pf.wide {
 				pf.widePanel = pf.activeIdx
 				pf.ResizeConsole(pf.lastW, pf.lastH)
 				pf.lastKey = 0
+				activationDone()
 				return true
 			}
 			pf.lastKey = 0
@@ -2193,6 +2401,25 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			// info / quick view / tree panel becomes visually
 			// focused but stays put; commands still target the
 			// source file panel underneath.
+			if activationPatchEligible && vtui.FrameManager != nil {
+				if screen := vtui.FrameManager.Screen(); screen != nil {
+					if renderer, ok := screen.Renderer.(interface {
+						QueuePanelActivationState(int, string, map[string]any)
+					}); ok {
+						shellTitle := strings.TrimSpace(pf.GetTitle())
+						pf.cmdLine.SetRichPrompt(pf.buildPrompt())
+						commandLine := pf.cmdLine.semanticModel(nil).ToMap()
+						renderer.QueuePanelActivationState(
+							pf.activeIdx, shellTitle, commandLine)
+					} else if renderer, ok := screen.Renderer.(interface {
+						QueuePanelActivation(int, ...string)
+					}); ok {
+						renderer.QueuePanelActivation(
+							pf.activeIdx, strings.TrimSpace(pf.GetTitle()))
+					}
+				}
+			}
+			activationDone()
 			return true
 		} else {
 			if AppConfig.CommandLineAutoComplete && !pf.cmdLine.IsEmpty() {
@@ -2604,12 +2831,17 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 					}
 				}
 			}
-			if pf.activeIdx != i && e.ButtonState != 0 {
+			activeChanged := pf.activeIdx != i && e.ButtonState != 0
+			if activeChanged {
 				pf.activeIdx = i
 				pf.lastKey = 0
 				vtui.FrameManager.Redraw()
 			}
-			if pf.searchFirstMode() && e.ButtonState != 0 {
+			// An already active panel with panel focus needs no second focus
+			// transition. Besides being redundant, setCommandLineFocus redraws the
+			// whole frame and used to turn setup clicks into semantic scene sends.
+			if pf.searchFirstMode() && e.ButtonState != 0 &&
+				(activeChanged || pf.commandLineFocused) {
 				pf.setCommandLineFocus(false)
 			}
 			if isInitialPress {
@@ -3413,7 +3645,7 @@ func (pf *PanelsFrame) Menu(title string, items []string, callback func(int)) {
 				callback(idx)
 			}
 		}
-		vtui.FrameManager.Push(menu)
+		vtui.FrameManager.PushMenu(menu)
 	})
 }
 
@@ -3531,12 +3763,14 @@ func (pf *PanelsFrame) getActivePTYUnsafe() PtyBackend {
 
 					if shouldProcess {
 						start := time.Now()
+						before := captureTerminalOutputSemanticState(pf.termView)
 						pf.parser.Process(buf[:n])
+						after := captureTerminalOutputSemanticState(pf.termView)
 						elapsed := time.Since(start)
 						if elapsed > 10*time.Millisecond {
 							vtui.DebugLog("PTY_PROFILE(Remote): Parsed %d bytes in %v", n, elapsed)
 						}
-						vtui.FrameManager.Redraw()
+						pf.redrawAfterTerminalOutput(n, before != after)
 					}
 				}
 				pty.Close()
@@ -3990,7 +4224,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	usedHotkeys['o'] = true // "Other panel"
 
 	// 1. Other panel (focused by default)
-	menu.AddItem(vtui.MenuItem{Text: Msg("Panel.Other"), UserData: func(fsp *FileSystemPanel) {
+	menu.AddItem(vtui.MenuItem{Text: Msg("Panel.Other"), Icon: driveMenuIconOtherPanel, UserData: func(fsp *FileSystemPanel) {
 		otherFsp := pf.panels[1-panelIdx].(*FileSystemPanel)
 		fsp.cancelProviderOpen()
 		if fsp.vfs != nil {
@@ -4021,7 +4255,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			}
 		}
 
-		menu.AddItem(vtui.MenuItem{Text: name, UserData: func(fsp *FileSystemPanel) {
+		menu.AddItem(vtui.MenuItem{Text: name, Icon: drv.Icon, UserData: func(fsp *FileSystemPanel) {
 			pf.switchToVFS(fsp, factory())
 		}})
 	}
@@ -4046,6 +4280,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			bookmarkRows[menu.GetItemCount()] = i
 			menu.AddItem(vtui.MenuItem{
 				Text: fmt.Sprintf("&%d  %s", i, escapeAmpersand(truncPathLeft(path, 64))),
+				Icon: driveMenuIconBookmark,
 				UserData: func(fsp *FileSystemPanel) {
 					pf.NavigateToPath(fsp, path)
 				},
@@ -4059,6 +4294,10 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		menu.AddSeparator()
 		for _, drv := range drives {
 			factory := drv.Factory
+			icon := drv.Icon
+			if icon == "" {
+				icon = registeredDriveIcon(drv.Name)
+			}
 
 			// Clean name: strip existing hotkeys/numbering if any
 			cleanName := drv.Name
@@ -4082,7 +4321,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				}
 			}
 
-			menu.AddItem(vtui.MenuItem{Text: sb.String(), UserData: func(fsp *FileSystemPanel) {
+			menu.AddItem(vtui.MenuItem{Text: sb.String(), Icon: icon, UserData: func(fsp *FileSystemPanel) {
 				pf.switchToVFS(fsp, factory())
 			}})
 		}
@@ -4155,7 +4394,11 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	w, h := 26, menu.GetItemCount()+2
 	for _, it := range menu.Items {
 		clean, _, _ := vtui.ParseAmpersandString(it.Text)
-		if iw := runewidth.StringWidth(clean) + 6; iw > w {
+		padding := 6
+		if it.Icon != "" {
+			padding += 2
+		}
+		if iw := runewidth.StringWidth(clean) + padding; iw > w {
 			w = iw
 		}
 	}
@@ -4193,7 +4436,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			action(fsp)
 		}
 	}
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 // clearBookmarkSlot empties one slot straight from the drive menu, which
@@ -4236,8 +4479,26 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 	}
 }
 func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) bool {
+	return pf.navigateToPath(fsp, targetPath, false)
+}
+
+// navigateToCachedPath is the explicit trusted transition used by folder
+// history. It may take the no-I/O route only when this exact VFS/path already
+// has an authoritative panel cache; a stale uncached history entry is still
+// validated synchronously so navigation can skip it.
+func (pf *PanelsFrame) navigateToCachedPath(fsp *FileSystemPanel, targetPath string) bool {
+	return pf.navigateToPath(fsp, targetPath, true)
+}
+
+func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, allowCachedOptimistic bool) bool {
 	if targetPath == "" {
 		return false
+	}
+	setPath := func(path string) error {
+		if allowCachedOptimistic && fsp.hasCachedDirectoryPath(path) {
+			return fsp.setKnownDirectoryPath(path)
+		}
+		return fsp.setVerifiedDirectoryPath(path)
 	}
 	// An explicit command/history navigation supersedes a provider mount that
 	// has not installed its child VFS yet.
@@ -4274,7 +4535,7 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 	// entirely user-facing while allowing the provider to translate the path to
 	// its internal object identity in the asynchronous Open call.
 	if fsp.vfs.IsAbs(targetPath) {
-		if err := fsp.setKnownDirectoryPath(targetPath); err == nil {
+		if err := setPath(targetPath); err == nil {
 			fsp.pendingSelection = ".."
 			fsp.ReadDirectory()
 			return true
@@ -4399,10 +4660,10 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 		return false
 	}
 
-	// 4. Change path on the current VFS. Remote VFSes may take the optimistic,
-	// no-I/O route here; ReadDirectory validates the target in the background
-	// while a cached view can become interactive immediately.
-	if err := fsp.setKnownDirectoryPath(targetPath); err == nil {
+	// 4. Change path on the current VFS. Arbitrary callers use normal SetPath
+	// validation; an explicitly trusted cache/history transition may take the
+	// optimistic no-I/O route and let ReadDirectory revalidate in the background.
+	if err := setPath(targetPath); err == nil {
 		fsp.pendingSelection = ".."
 		fsp.ReadDirectory()
 		return true
@@ -4505,7 +4766,7 @@ func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 		fsp.fastFindMode = false
 		fsp.fastFindStr = ""
 		fsp.suppressNextFolderHistory(path)
-		if !pf.NavigateToPath(fsp, path) {
+		if !pf.navigateToCachedPath(fsp, path) {
 			fsp.clearFolderHistorySuppression()
 			continue
 		}

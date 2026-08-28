@@ -27,6 +27,10 @@
 
 #include <msgpack.hpp>
 
+#include <atomic>
+#include <map>
+#include <string>
+
 namespace
 {
 QVariantMap galleryScene(int entryCount, int cursorRow = 0,
@@ -199,6 +203,51 @@ QVariantMap protocolStringFields(const QByteArray &payload)
     }
     return fields;
 }
+
+QVariantMap terminalFrame(qulonglong character)
+{
+    QVariantList cell;
+    cell.append(0);
+    cell.append(QVariant::fromValue(character));
+    cell.append(QVariant::fromValue<qulonglong>(0));
+    QVariantList cells;
+    cells.append(QVariant::fromValue(cell));
+    return {
+        {QStringLiteral("type"), QStringLiteral("frame")},
+        {QStringLiteral("width"), 4},
+        {QStringLiteral("height"), 2},
+        {QStringLiteral("full"), true},
+        {QStringLiteral("cells"), cells},
+    };
+}
+
+class CountingGridItem final : public VtuiGridItem
+{
+public:
+    using VtuiGridItem::VtuiGridItem;
+
+    int paintNodeCallCount() const
+    {
+        return m_paintNodeCallCount.load(std::memory_order_acquire);
+    }
+
+    qulonglong frameRevision() const { return retainedFrameRevision(); }
+    quint64 cellCharacter(int index) const
+    {
+        return retainedCellCharacter(index);
+    }
+
+protected:
+    QSGNode *updatePaintNode(QSGNode *oldNode,
+                             UpdatePaintNodeData *data) override
+    {
+        m_paintNodeCallCount.fetch_add(1, std::memory_order_release);
+        return VtuiGridItem::updatePaintNode(oldNode, data);
+    }
+
+private:
+    std::atomic_int m_paintNodeCallCount{0};
+};
 }
 
 class F4GalleryPointerTests final : public QObject
@@ -208,8 +257,12 @@ class F4GalleryPointerTests final : public QObject
 private slots:
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
+    void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
     void semanticImeCommitUsesTextProtocol();
+    void semanticKeyRepeatSuppressesSyntheticRelease();
+    void semanticGridForwardsConsolePointerEvents();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
+    void quickSearchMatchMarkupTracksPanelStateAndPalette();
     void panelCapturesPointerAndAppliesSelectionModifiers();
     void folderDoubleClickSurvivesAcknowledgementTiming();
     void folderDoubleClickSurvivesStaleLoaderRevisionAndFocusStress();
@@ -245,6 +298,68 @@ void F4GalleryPointerTests::semanticGridPointerGatePreservesKeyboardFocus()
     grid->setPointerInputEnabled(true);
     QCOMPARE(grid->acceptedMouseButtons(), Qt::AllButtons);
     QVERIFY(grid->hasActiveFocus());
+}
+
+void F4GalleryPointerTests::hiddenSemanticGridDefersRenderingUntilFallbackEnabled()
+{
+    QQuickView view;
+    view.setColor(Qt::black);
+    view.setWidth(160);
+    view.setHeight(80);
+    auto *grid = new CountingGridItem(view.contentItem());
+    grid->setWidth(160);
+    grid->setHeight(80);
+    grid->setRenderingEnabled(false);
+    QVERIFY(grid->isVisible());
+
+    view.show();
+    QTRY_VERIFY_WITH_TIMEOUT(view.isExposed(), 3000);
+    QSignalSpy frameSwapped(&view, &QQuickWindow::frameSwapped);
+    view.update();
+    QTRY_VERIFY_WITH_TIMEOUT(!frameSwapped.isEmpty(), 3000);
+    QTest::qWait(30);
+    const int disabledBaseline = grid->paintNodeCallCount();
+    const qulonglong retainedBaseline = grid->frameRevision();
+
+    // Ingest multiple authoritative updates while the semantic surface owns
+    // the window. The second frame must replace the first in the retained
+    // cell buffer without scheduling the expensive texture path.
+    QVERIFY(QMetaObject::invokeMethod(
+        grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('A'))));
+    QCOMPARE(grid->frameRevision(), retainedBaseline + 1);
+    QCOMPARE(grid->cellCharacter(0), quint64('A'));
+    QVERIFY(QMetaObject::invokeMethod(
+        grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('B'))));
+    QCOMPARE(grid->frameRevision(), retainedBaseline + 2);
+    QCOMPARE(grid->cellCharacter(0), quint64('B'));
+    const QVariantMap hiddenCursor{
+        {QStringLiteral("type"), QStringLiteral("cursor")},
+        {QStringLiteral("x"), 0},
+        {QStringLiteral("y"), 0},
+        {QStringLiteral("visible"), false},
+        {QStringLiteral("shape"), 0},
+    };
+    QVERIFY(QMetaObject::invokeMethod(
+        grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, hiddenCursor)));
+
+    frameSwapped.clear();
+    view.update();
+    QTRY_VERIFY_WITH_TIMEOUT(!frameSwapped.isEmpty(), 3000);
+    QTest::qWait(30);
+    QCOMPARE(grid->paintNodeCallCount(), disabledBaseline);
+
+    // Re-enabling performs one rebuild/upload from the latest accumulated
+    // frame. Green (not the earlier red frame) proves state ingestion never
+    // stopped while rendering was gated.
+    frameSwapped.clear();
+    grid->setRenderingEnabled(true);
+    QTRY_COMPARE_WITH_TIMEOUT(grid->paintNodeCallCount(),
+                              disabledBaseline + 1, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!frameSwapped.isEmpty(), 3000);
+    QCOMPARE(grid->paintNodeCallCount(), disabledBaseline + 1);
 }
 
 void F4GalleryPointerTests::semanticImeCommitUsesTextProtocol()
@@ -306,6 +421,146 @@ void F4GalleryPointerTests::semanticImeCommitUsesTextProtocol()
     wireBuffer.append(peer->readAll());
     QVERIFY(wireBuffer.isEmpty());
     QCOMPARE(keyboardActivity.size(), 1);
+}
+
+void F4GalleryPointerTests::semanticKeyRepeatSuppressesSyntheticRelease()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("repeat-test-nonce"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray wireBuffer;
+    QByteArray payload;
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    QCOMPARE(protocolStringFields(payload).value(QStringLiteral("type")),
+             QStringLiteral("hello"));
+
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    const auto verifyKey = [](const QByteArray &messagePayload, bool down,
+                              bool repeat) {
+        const msgpack::object_handle handle = msgpack::unpack(
+            messagePayload.constData(),
+            static_cast<std::size_t>(messagePayload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("key"));
+        QCOMPARE(message.at("vk").as<qint64>(), qint64(9));
+        QCOMPARE(message.at("down").as<bool>(), down);
+        QCOMPARE(message.at("repeat").as<bool>(), repeat);
+    };
+
+    grid.sendQtKeyEvent(Qt::Key_Tab, QStringLiteral("\t"), true,
+                        Qt::NoModifier, 0, false);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    verifyKey(payload, true, false);
+
+    // Qt/Windows can report a held key as release(repeat), press(repeat).
+    // The first half is synthetic and must not terminate Go's held-key burst.
+    grid.sendQtKeyEvent(Qt::Key_Tab, QString(), false,
+                        Qt::NoModifier, 0, true);
+    QTest::qWait(30);
+    wireBuffer.append(peer->readAll());
+    QVERIFY2(wireBuffer.isEmpty(),
+             "synthetic autorepeat release reached the Go protocol");
+
+    grid.sendQtKeyEvent(Qt::Key_Tab, QStringLiteral("\t"), true,
+                        Qt::NoModifier, 0, true);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    verifyKey(payload, true, true);
+
+    grid.sendQtKeyEvent(Qt::Key_Tab, QString(), false,
+                        Qt::NoModifier, 0, false);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    verifyKey(payload, false, false);
+}
+
+void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("console-pointer-test-nonce"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray wireBuffer;
+    QByteArray payload;
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    QCOMPARE(protocolStringFields(payload).value(QStringLiteral("type")),
+             QStringLiteral("hello"));
+
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    QVERIFY(QMetaObject::invokeMethod(
+        &grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('A'))));
+    const qreal pointerX = grid.cellWidth() * 2 + 0.25;
+    const qreal pointerY = grid.cellHeight() + 0.25;
+
+    // Match native wheelEvent's 120-unit remainder conversion: an incomplete
+    // step is retained, and the second half-step emits one wheel message.
+    grid.sendQtWheelAt(pointerX, pointerY, 60, Qt::ShiftModifier);
+    QTest::qWait(30);
+    wireBuffer.append(peer->readAll());
+    QVERIFY2(wireBuffer.isEmpty(),
+             "a partial console wheel step reached the Go protocol");
+    grid.sendQtWheelAt(pointerX, pointerY, 60, Qt::ShiftModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("wheel"));
+        QCOMPARE(message.at("x").as<qint64>(), qint64(2));
+        QCOMPARE(message.at("y").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("dir").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("mods").as<qint64>(), qint64(0x0010));
+    }
+
+    // Middle down/up use the same cell and button-state mapping as native
+    // VtuiGridItem mouse events. Go turns the down event into Enter without a
+    // panel-coordinate selection operation.
+    grid.sendQtMouseAt(pointerX, pointerY, int(Qt::MiddleButton), true,
+                       Qt::ControlModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("x").as<qint64>(), qint64(2));
+        QCOMPARE(message.at("y").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0x0004));
+        QCOMPARE(message.at("flags").as<qint64>(), qint64(0));
+        QCOMPARE(message.at("down").as<bool>(), true);
+        QCOMPARE(message.at("mods").as<qint64>(), qint64(0x0008));
+    }
+    grid.sendQtMouseAt(pointerX, pointerY, int(Qt::MiddleButton), false,
+                       Qt::ControlModifier);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(),
+            static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("down").as<bool>(), false);
+    }
 }
 
 void F4GalleryPointerTests::viewerCaptureSurvivesHiddenGridFocusSlip()
@@ -454,6 +709,118 @@ void F4GalleryPointerTests::viewerCaptureSurvivesHiddenGridFocusSlip()
     QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
     QCOMPARE(protocolStringFields(payload).value(QStringLiteral("type")),
              QStringLiteral("key"));
+}
+
+void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
+{
+    QQuickView view;
+    view.setWidth(640);
+    view.setHeight(360);
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(galleryScene(4));
+    view.engine()->rootContext()->setContextProperty(
+        QStringLiteral("quickSearchBridge"), &bridge);
+
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            id: root
+            width: 640
+            height: 360
+            property color searchColor: "#c678dd"
+            property bool searchVisible: true
+            property var panelState: ({
+                "catalogRevision": 5,
+                "fastFind": searchVisible,
+                "fastFindText": searchVisible ? "*lder" : "",
+                "fastFindMatchColor": searchColor,
+                // Keep the old match map while closing to mirror a compact
+                // state merge that has not yet received its transient-field
+                // clear. The host must still stop painting matches as soon
+                // as fastFind becomes false.
+                "fastFindMatches": ({
+                    "entry-1": { "start": 2, "length": 4 },
+                    "entry-2": { "start": 1, "length": 1 }
+                })
+            })
+            Loader {
+                id: panelLoader
+                objectName: "quickSearchPanelLoader"
+                anchors.fill: parent
+                source: quickSearchBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = quickSearchBridge
+                    item.panel = Qt.binding(function() {
+                        return root.panelState
+                    })
+                    item.panelActive = true
+                    item.theme = ({
+                        "panelBackground": "#141922",
+                        "text": "#e8edf2",
+                        "cursor": "#285d8f",
+                        "selection": "#ffd43b"
+                    })
+                }
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:F4GalleryQuickSearch.qml")));
+    QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading,
+                             5000);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *rootObject = component.create();
+    QVERIFY2(rootObject, qPrintable(component.errorString()));
+    view.setContent(QUrl(QStringLiteral("inline:F4GalleryQuickSearch.qml")),
+                    &component, rootObject);
+    view.show();
+
+    QObject *loader = rootObject->findChild<QObject *>(
+        QStringLiteral("quickSearchPanelLoader"));
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    QObject *host = loader->property("item").value<QObject *>();
+    QObject *panel = host->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryPanel"));
+    QVERIFY(panel);
+    QObject *layout = panel->findChild<QObject *>(
+        QStringLiteral("galleryMasonryLayout"));
+    QVERIFY(layout);
+    QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 4, 5000);
+
+    auto labelForRow = [panel](int row) {
+        return panel->findChild<QObject *>(
+            QStringLiteral("galleryMasonryLabel-%1").arg(row));
+    };
+    QTRY_VERIFY(labelForRow(1));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        labelForRow(1)->property("text").toString().contains(
+            QStringLiteral("<font color=\"#c678dd\">lder</font>")),
+        3000);
+    QCOMPARE(labelForRow(0)->property("text").toString(),
+             QStringLiteral(".."));
+
+    const QString emoji = QString::fromUcs4(U"\U0001F600");
+    const QString emojiName = QStringLiteral("a") + emoji
+        + QStringLiteral("bc");
+    QVariant styledUnicode;
+    QVERIFY(QMetaObject::invokeMethod(
+        panel, "quickSearchStyledText", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, styledUnicode),
+        Q_ARG(QVariant, emojiName),
+        Q_ARG(QVariant, QStringLiteral("entry-2")), Q_ARG(QVariant, 0)));
+    QVERIFY(styledUnicode.toString().contains(
+        QStringLiteral(">") + emoji + QStringLiteral("</font>")));
+
+    rootObject->setProperty("searchColor", QColor(QStringLiteral("#25a244")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        labelForRow(1)->property("text").toString().contains(
+            QStringLiteral("<font color=\"#25a244\">lder</font>")),
+        3000);
+    rootObject->setProperty("searchVisible", false);
+    QTRY_COMPARE_WITH_TIMEOUT(labelForRow(1)->property("text").toString(),
+                              QStringLiteral("folder-01"), 3000);
 }
 
 void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
@@ -644,14 +1011,27 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
                            QStringLiteral("entry-4")}));
 
     first = actions.size();
-    QVERIFY(rowFour->property("acceptedButtons").toInt()
+    QVERIFY(!(rowFour->property("acceptedButtons").toInt()
+              & int(Qt::MiddleButton)));
+    QQuickItem *const middleButtonArea = panel->findChild<QQuickItem *>(
+        QStringLiteral("galleryMiddleButtonArea"));
+    QVERIFY(middleButtonArea);
+    QVERIFY(middleButtonArea->property("acceptedButtons").toInt()
             & int(Qt::MiddleButton));
+    // Middle-click is panel chrome, not a tile activation. In the default GUI
+    // mode the first click arms the shared auto-scroll gesture and a second
+    // click toggles it off; neither click changes the Go-side selection.
     QTest::mouseClick(&view, Qt::MiddleButton, Qt::NoModifier,
                       itemCenter(rowFour));
-    bridge.synchronizeScene(galleryScene(18, 4));
-    QCOMPARE(firstActionSince(actions, first, QStringLiteral("panel.open"))
-                 .value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("entry-4"));
+    QVERIFY(firstActionSince(actions, first, QStringLiteral("panel.open"))
+                .isEmpty());
+    QVERIFY(firstActionSince(actions, first,
+                             QStringLiteral("panel.setSelection")).isEmpty());
+    QVERIFY(panel->property("scrollingMode").toBool());
+    QTest::mouseClick(&view, Qt::MiddleButton, Qt::NoModifier,
+                      itemCenter(rowFour));
+    QTRY_VERIFY_WITH_TIMEOUT(!panel->property("scrollingMode").toBool(),
+                             1000);
 
     first = actions.size();
     QTest::mouseDClick(&view, Qt::LeftButton, Qt::NoModifier,
@@ -783,8 +1163,13 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
         QTest::mouseDClick(&view, Qt::LeftButton, Qt::NoModifier,
                            itemCenter(target));
         if (!cursorAcknowledgedBeforeDoubleClick) {
-            QVERIFY(firstActionSince(actions, first,
-                                     QStringLiteral("panel.open")).isEmpty());
+            // Folder opens carry a stable entry identity and do not depend on
+            // a cursor acknowledgement. The later scene only reconciles the
+            // cursor; it must not be what releases the double-click.
+            QCOMPARE(firstActionSince(actions, first,
+                                      QStringLiteral("panel.open"))
+                         .value(QStringLiteral("entryId")).toString(),
+                     QStringLiteral("entry-4"));
             bridge.synchronizeScene(galleryScene(18, 4, true));
         }
 

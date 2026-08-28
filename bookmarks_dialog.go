@@ -186,7 +186,7 @@ func (d *bookmarksDialog) open(slot int, onClose func()) {
 		})
 	}
 
-	vtui.FrameManager.Push(&bookmarksFrame{
+	vtui.FrameManager.PushMenu(&bookmarksFrame{
 		VMenu:      d.menu,
 		bottomHint: Msg("Bookmarks.BottomHint"),
 		onClose:    onClose,

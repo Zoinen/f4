@@ -4,6 +4,47 @@ import (
 	"testing"
 )
 
+func TestMenuItemToMapKeepsIconOptional(t *testing.T) {
+	withIcon := (MenuItemModel{Index: 1, Text: "Drive", Icon: "hard-drive"}).ToMap()
+	if withIcon["icon"] != "hard-drive" {
+		t.Fatalf("menu item icon was not serialized: %#v", withIcon)
+	}
+	withoutIcon := (MenuItemModel{Index: 2, Text: "Plain"}).ToMap()
+	if _, exists := withoutIcon["icon"]; exists {
+		t.Fatalf("empty menu item icon was serialized: %#v", withoutIcon)
+	}
+}
+
+func TestScenePatchSerializesBoundedSurfaceState(t *testing.T) {
+	patch := ScenePatch{
+		BaseRevision: 7,
+		Revision:     8,
+		Surface: &SurfacePatch{
+			SurfaceID: "editor:music.svg",
+			MapPatch: MapPatch{Set: M{
+				"cursorLine": 4,
+				"cursorPos":  12,
+			}},
+		},
+	}
+	out := patch.ToMap()
+	if out["type"] != "scene_patch" || out["baseRevision"] != uint64(7) ||
+		out["revision"] != uint64(8) {
+		t.Fatalf("unexpected surface patch envelope: %#v", out)
+	}
+	surface, ok := out["surface"].(M)
+	if !ok || surface["id"] != "editor:music.svg" {
+		t.Fatalf("surface identity was not serialized: %#v", out["surface"])
+	}
+	set, ok := surface["set"].(M)
+	if !ok || set["cursorLine"] != 4 || set["cursorPos"] != 12 {
+		t.Fatalf("surface scalar state was not serialized: %#v", surface)
+	}
+	if _, leaked := surface["rows"]; leaked {
+		t.Fatalf("surface patch unexpectedly carried document rows: %#v", surface)
+	}
+}
+
 func TestSceneToMapUsesAppSchema(t *testing.T) {
 	scene := Scene{
 		Width:         100,
@@ -13,12 +54,16 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 		QmlIconSet:    "system",
 		WorkspaceTabs: M{"visible": true, "mode": "always"},
 		Shell: &ShellModel{
-			ID:             "shell",
-			Mode:           "panels",
-			ActivePanel:    1,
-			ShowPanels:     true,
-			Wide:           true,
-			WidePanel:      1,
+			ID:          "shell",
+			Mode:        "panels",
+			ActivePanel: 1,
+			ShowPanels:  true,
+			Wide:        true,
+			WidePanel:   1,
+			PanelLayout: PanelLayoutModel{
+				Columns: 100, SplitColumn: 44,
+				LeftBottomInsetRows: 2, RightBottomInsetRows: 3,
+			},
 			Fallback:       true,
 			FallbackReason: "unsupported panel layout",
 			Panels: []PanelModel{{
@@ -26,6 +71,7 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				Side:                   1,
 				Active:                 true,
 				Path:                   "/tmp",
+				ShowFileInfo:           true,
 				GalleryLayoutMode:      "grid",
 				GalleryColumnCount:     3,
 				GalleryDensity:         184,
@@ -37,6 +83,12 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 				SelectionRevision:      3,
 				SeparateFileExtensions: true,
 				CursorEntryID:          "entry-alpha",
+				FastFind:               true,
+				FastFindText:           "*pha",
+				FastFindMatchColor:     "#c678dd",
+				FastFindMatches: map[string]FastFindMatchModel{
+					"entry-alpha": {Start: 2, Length: 3},
+				},
 				GalleryColumns: []PanelColumnModel{{
 					ID: "name", Role: "name", Index: 0, Title: "Name",
 					Width: 30, Alignment: "left", SortMode: "name", Sortable: true,
@@ -89,6 +141,11 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	if shell["wide"] != true || shell["widePanel"] != 1 {
 		t.Fatalf("wide panel metadata was not serialized: %#v", shell)
 	}
+	layout := shell["panelLayout"].(M)
+	if layout["columns"] != 100 || layout["splitColumn"] != 44 ||
+		layout["leftBottomInsetRows"] != 2 || layout["rightBottomInsetRows"] != 3 {
+		t.Fatalf("panel layout metadata was not serialized: %#v", layout)
+	}
 	if shell["fallback"] != true || shell["reason"] != "unsupported panel layout" {
 		t.Fatalf("unexpected fallback metadata: %#v", shell)
 	}
@@ -123,6 +180,18 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	if panels[0]["separateFileExtensions"] != true {
 		t.Fatalf("panel extension alignment setting was not serialized: %#v", panels[0])
 	}
+	if panels[0]["showFileInfo"] != true {
+		t.Fatalf("panel file-information setting was not serialized: %#v", panels[0])
+	}
+	if panels[0]["fastFind"] != true || panels[0]["fastFindText"] != "*pha" ||
+		panels[0]["fastFindMatchColor"] != "#c678dd" {
+		t.Fatalf("panel quick-search state was not serialized: %#v", panels[0])
+	}
+	matches := panels[0]["fastFindMatches"].(M)
+	match := matches["entry-alpha"].(M)
+	if match["start"] != 2 || match["length"] != 3 {
+		t.Fatalf("panel quick-search span was not serialized: %#v", matches)
+	}
 	entries := panels[0]["entries"].([]map[string]any)
 	if entries[0]["entryId"] != "entry-alpha" || entries[0]["localPath"] != "/tmp/alpha.txt" || entries[0]["version"] != "123:4" {
 		t.Fatalf("entry v3 fields were not serialized: %#v", entries[0])
@@ -143,6 +212,82 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 	infoRows := infoPanels[0]["rows"].([]map[string]any)
 	if infoRows[0]["label"] != "Computer" || infoRows[0]["value"] != "host" {
 		t.Fatalf("unexpected info rows: %#v", infoRows)
+	}
+}
+
+func TestDeferredPanelToMapKeepsBaseCatalogMinimal(t *testing.T) {
+	panel := PanelModel{
+		ID: "panel:left", Path: `D:\work`, CatalogRevision: 4,
+		SelectionRevision: 2, MetadataDeferred: true, MetadataRevision: 9,
+		HighlightRevision: 8, TotalSize: 99, SelectedSize: 22,
+		Entries: []FileEntryModel{{
+			Index: 0, EntryID: "entry-a", Name: "a.jpg", DisplayBaseName: "a",
+			DisplayExtension: "jpg", Path: `D:\work\a.jpg`, LocalPath: `D:\work\a.jpg`,
+			Size: 99, IsHidden: true, IsImage: true, Selected: true,
+			HighlightStyleID: "style-a",
+		}},
+		HighlightStyles: map[string]HighlightStyleModel{"style-a": {Marker: "!"}},
+	}
+	out := panel.ToMap()
+	if out["metadataDeferred"] != true || out["metadataRevision"] != int64(9) {
+		t.Fatalf("missing deferred metadata envelope: %#v", out)
+	}
+	for _, key := range []string{"highlightRevision", "totalSize", "selectedSize"} {
+		if _, ok := out[key]; ok {
+			t.Fatalf("deferred panel leaked %q: %#v", key, out)
+		}
+	}
+	styles := out["highlightStyles"].(M)
+	if styles["style-a"].(M)["marker"] != "!" {
+		t.Fatalf("minimal catalog lost its immediately resolvable style: %#v", styles)
+	}
+	entry := out["entries"].([]M)[0]
+	if entry["isImage"] != true || entry["isHidden"] != true || entry["selected"] != true {
+		t.Fatalf("minimal entry lacks interactive fields: %#v", entry)
+	}
+	if entry["highlightStyleId"] != "style-a" {
+		t.Fatalf("minimal entry lost its style identity: %#v", entry)
+	}
+	for _, key := range []string{"path", "localPath", "size", "mtimeNanos"} {
+		if _, ok := entry[key]; ok {
+			t.Fatalf("minimal entry leaked %q: %#v", key, entry)
+		}
+	}
+	if _, present := (FileEntryModel{Name: "visible"}).MinimalToMap()["isHidden"]; present {
+		t.Fatalf("ordinary rows must not pay for a false hidden flag")
+	}
+}
+
+func TestPanelCatalogMetadataChunkToMap(t *testing.T) {
+	chunk := PanelCatalogMetadataModel{
+		PanelID: "panel:left", Path: "/tmp", CatalogRevision: 3, MetadataRevision: 7,
+		HighlightRevision: 11, Offset: 64, Limit: 64, Total: 70, TotalSize: 123,
+		Final: true,
+		Entries: []FileEntryMetadataModel{{
+			Index: 64, EntryID: "entry-64", LocalPath: "/tmp/64", Size: 123,
+			SizeText: "123", MTime: "2026-08-17 12:34",
+			MTimeNanos: 123456, Mode: "-rw-r--r--", HighlightStyleID: "style-a",
+		}},
+		HighlightStyles: map[string]HighlightStyleModel{"style-a": {Marker: "!"}},
+	}.ToMap()
+	if chunk["type"] != "panel_catalog_metadata" || chunk["offset"] != 64 ||
+		chunk["limit"] != 64 || chunk["total"] != 70 || chunk["final"] != true ||
+		chunk["totalSize"] != int64(123) {
+		t.Fatalf("unexpected metadata chunk envelope: %#v", chunk)
+	}
+	entry := chunk["entries"].([]M)[0]
+	if entry["entryId"] != "entry-64" || entry["localPath"] != "/tmp/64" ||
+		entry["size"] != int64(123) || entry["sizeText"] != "123" ||
+		entry["mtime"] != "2026-08-17 12:34" ||
+		entry["mtimeNanos"] != int64(123456) || entry["mode"] != "-rw-r--r--" ||
+		entry["highlightStyleId"] != "style-a" {
+		t.Fatalf("unexpected metadata row: %#v", entry)
+	}
+	if _, duplicated := entry["isHidden"]; duplicated {
+		t.Fatalf("base hidden state was duplicated in metadata: %#v", entry)
+	}
+	if len(entry) != 9 {
+		t.Fatalf("metadata row schema grew unexpectedly: %#v", entry)
 	}
 }
 

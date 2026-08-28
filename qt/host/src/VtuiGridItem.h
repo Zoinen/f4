@@ -30,6 +30,8 @@ class VtuiGridItem : public QQuickItem
                NOTIFY inputMethodForwardingEnabledChanged)
     Q_PROPERTY(bool terminalInputEnabled READ terminalInputEnabled
                WRITE setTerminalInputEnabled NOTIFY terminalInputEnabledChanged)
+    Q_PROPERTY(bool renderingEnabled READ renderingEnabled
+               WRITE setRenderingEnabled NOTIFY renderingEnabledChanged)
 
 public:
     explicit VtuiGridItem(QQuickItem *parent = nullptr);
@@ -49,6 +51,8 @@ public:
     void setInputMethodForwardingEnabled(bool enabled);
     bool terminalInputEnabled() const { return m_terminalInputEnabled; }
     void setTerminalInputEnabled(bool enabled);
+    bool renderingEnabled() const { return m_renderingEnabled; }
+    void setRenderingEnabled(bool enabled);
 
     // Forward commander-owned shortcuts without moving focus back to the
     // hidden compatibility grid used by semantic QML surfaces.
@@ -57,11 +61,25 @@ public:
                                bool down,
                                int modifiers,
                                quint32 nativeScanCode = 0);
+    Q_INVOKABLE void sendQtKeyEvent(int key,
+                                    const QString &text,
+                                    bool down,
+                                    int modifiers,
+                                    quint32 nativeScanCode = 0,
+                                    bool autoRepeat = false);
     // Semantic QML surfaces do not give this item keyboard focus, so their
     // standard paste shortcuts must explicitly use the same clipboard path
     // as keyPressEvent instead of sending a literal Ctrl/Cmd+V to Go.
     Q_INVOKABLE void sendClipboardPaste();
     Q_INVOKABLE void sendQtText(const QString &text);
+    // Semantic panels use these entry points when the user explicitly opts
+    // into the classic F4 console wheel contract.  Coordinates are in this
+    // item's local logical coordinate system, so conversion to terminal
+    // cells stays identical to native mouse/wheel events (including HiDPI).
+    Q_INVOKABLE void sendQtMouseAt(qreal x, qreal y, int button, bool down,
+                                   int modifiers);
+    Q_INVOKABLE void sendQtWheelAt(qreal x, qreal y, int angleDeltaY,
+                                   int modifiers);
 
 signals:
     void controllerChanged();
@@ -70,6 +88,7 @@ signals:
     void pointerInputEnabledChanged();
     void inputMethodForwardingEnabledChanged();
     void terminalInputEnabledChanged();
+    void renderingEnabledChanged();
     // Emitted synchronously whenever text has actually been sent through the
     // terminal protocol. Semantic surfaces use this to bridge the short gap
     // before the next authoritative scene reflects command/fast-find input.
@@ -90,6 +109,15 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+    qulonglong retainedFrameRevision() const
+    {
+        return m_retainedFrameRevision;
+    }
+    quint64 retainedCellCharacter(int index) const
+    {
+        return index >= 0 && index < m_cells.size()
+            ? m_cells.at(index).ch : 0;
+    }
 
 private slots:
     void handleMessage(const QVariantMap &message);
@@ -140,9 +168,11 @@ private:
     int m_pressedButtonState = 0;
     qreal m_lastDevicePixelRatio = 0;
     bool m_imageDirty = true;
+    qulonglong m_retainedFrameRevision = 0;
     bool m_pointerInputEnabled = true;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    bool m_renderingEnabled = true;
     quint32 m_lastNativeAltScanCode = 0;
     QHash<int, int> m_forwardedKeyModifiers;
 };

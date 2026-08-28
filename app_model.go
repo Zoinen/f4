@@ -416,6 +416,7 @@ func (item appVMenu) model() extui.MenuModel {
 			Text:      clean,
 			RawText:   source.Text,
 			Hotkey:    hotkeyText,
+			Icon:      source.Icon,
 			Shortcut:  source.Shortcut,
 			Command:   source.Command,
 			Separator: source.Separator,
@@ -472,25 +473,70 @@ func appLegacyForNativeScene(legacy map[string]any, menus appVMenus,
 	for key, value := range legacy {
 		out[key] = value
 	}
-	frames := appMapSlice(legacy["frames"])
-	filtered := make([]map[string]any, 0, len(frames))
-	for _, frame := range frames {
-		if menus.isLegacyFrame(frame) || autocompletes.isLegacyFrame(frame) {
-			continue
-		}
+	stripFrame := func(frame map[string]any) map[string]any {
 		kind := semanticString(frame["kind"])
-		if kind == "panels" || kind == "shell" {
-			copyFrame := make(map[string]any, len(frame))
-			for key, value := range frame {
-				if key != "commandLine" {
-					copyFrame[key] = value
+		if kind != "panels" && kind != "shell" {
+			return frame
+		}
+		copyFrame := make(map[string]any, len(frame))
+		for key, value := range frame {
+			if key == "commandLine" {
+				continue
+			}
+			if key == "panels" {
+				panels := appMapSlice(value)
+				lightweight := make([]map[string]any, 0, len(panels))
+				for _, panel := range panels {
+					if !appBool(panel["metadataDeferred"]) {
+						lightweight = append(lightweight, panel)
+						continue
+					}
+					panelCopy := make(map[string]any, len(panel))
+					for panelKey, panelValue := range panel {
+						switch panelKey {
+						case "entries", "highlightStyles", "highlightRevision", "selectedSize", "totalSize":
+							continue
+						default:
+							panelCopy[panelKey] = panelValue
+						}
+					}
+					lightweight = append(lightweight, panelCopy)
+				}
+				copyFrame[key] = lightweight
+				continue
+			}
+			copyFrame[key] = value
+		}
+		return copyFrame
+	}
+	filterFrames := func(value any) []map[string]any {
+		frames := appMapSlice(value)
+		filtered := make([]map[string]any, 0, len(frames))
+		for _, frame := range frames {
+			if menus.isLegacyFrame(frame) || autocompletes.isLegacyFrame(frame) {
+				continue
+			}
+			filtered = append(filtered, stripFrame(frame))
+		}
+		return filtered
+	}
+
+	out["frames"] = filterFrames(legacy["frames"])
+	if screens := appMapSlice(legacy["screens"]); len(screens) > 0 {
+		strippedScreens := make([]map[string]any, 0, len(screens))
+		for _, screen := range screens {
+			screenCopy := make(map[string]any, len(screen))
+			for key, value := range screen {
+				if key == "frames" {
+					screenCopy[key] = filterFrames(value)
+				} else {
+					screenCopy[key] = value
 				}
 			}
-			frame = copyFrame
+			strippedScreens = append(strippedScreens, screenCopy)
 		}
-		filtered = append(filtered, frame)
+		out["screens"] = strippedScreens
 	}
-	out["frames"] = filtered
 	return out
 }
 
@@ -709,6 +755,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		Active:                 appBool(node["active"]),
 		Path:                   semanticString(node["path"]),
 		Title:                  semanticString(node["title"]),
+		ShowFileInfo:           appBool(node["showFileInfo"]),
 		GalleryLayoutMode:      galleryLayoutMode,
 		GalleryColumnCount:     galleryColumnCount,
 		GalleryDensity:         galleryDensity,
@@ -717,6 +764,8 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		PreviewCapable:         appBool(node["previewCapable"]),
 		CatalogRevision:        appInt64(node["catalogRevision"]),
 		SelectionRevision:      appInt64(node["selectionRevision"]),
+		MetadataDeferred:       appBool(node["metadataDeferred"]),
+		MetadataRevision:       appInt64(node["metadataRevision"]),
 		HighlightRevision:      appInt64(node["highlightRevision"]),
 		CursorEntryID:          semanticString(node["cursorEntryId"]),
 		SortMode:               semanticString(node["sortModeName"]),
@@ -727,10 +776,21 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		CatalogProvisional:     appBool(node["catalogProvisional"]),
 		FastFind:               appBool(node["fastFind"]),
 		FastFindText:           semanticString(node["fastFindText"]),
+		FastFindMatchColor:     semanticString(node["fastFindMatchColor"]),
 		SelectedCount:          semanticInt(node["selectedCount"]),
 		SelectedSize:           appInt64(node["selectedSize"]),
 		TotalCount:             semanticInt(node["totalCount"]),
 		TotalSize:              appInt64(node["totalSize"]),
+	}
+	if rawMatches, ok := node["fastFindMatches"].(map[string]any); ok {
+		panel.FastFindMatches = make(map[string]extui.FastFindMatchModel, len(rawMatches))
+		for entryID, rawMatch := range rawMatches {
+			match := appMap(rawMatch)
+			panel.FastFindMatches[entryID] = extui.FastFindMatchModel{
+				Start:  semanticInt(match["start"]),
+				Length: semanticInt(match["length"]),
+			}
+		}
 	}
 	parseColumns := func(value any) []extui.PanelColumnModel {
 		columns := appMapSlice(value)
@@ -769,6 +829,7 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		Name:             semanticString(node["name"]),
 		DisplayBaseName:  semanticString(node["displayBaseName"]),
 		DisplayExtension: semanticString(node["displayExtension"]),
+		Path:             semanticString(node["path"]),
 		LocalPath:        semanticString(node["localPath"]),
 		Size:             appInt64(node["size"]),
 		SizeText:         semanticString(node["sizeText"]),
@@ -777,6 +838,7 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		IsHidden:         appBool(node["isHidden"]),
 		IsExecutable:     appBool(node["isExecutable"]),
 		IsCached:         appBool(node["isCached"]),
+		IsImage:          appBool(node["isImage"]),
 		Selected:         appBool(node["selected"]),
 		SizeCalculated:   appBool(node["sizeCalculated"]),
 		MTime:            semanticString(node["mtime"]),
@@ -997,6 +1059,7 @@ func appMenuItemFromLegacy(node map[string]any) extui.MenuItemModel {
 		Text:      text,
 		RawText:   semanticString(node["rawText"]),
 		Hotkey:    semanticString(node["hotkey"]),
+		Icon:      semanticString(node["icon"]),
 		Shortcut:  semanticString(node["shortcut"]),
 		Command:   semanticInt(node["command"]),
 		Separator: appBool(node["separator"]),

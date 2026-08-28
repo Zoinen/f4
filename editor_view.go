@@ -1623,16 +1623,113 @@ func (ev *EditorView) VetoActionKey(e *vtinput.InputEvent) bool {
 // in a file, and a key pressed inside that window used to throw the position
 // away even when it moved nothing: Up at the top of a file left the user at the
 // top of the file, which is precisely where they did not want to be.
-func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
-	if ev.targetLine == -1 {
-		return ev.processKeyInner(e)
-	}
+type editorCursorPatchGuard struct {
+	eligible                  bool
+	editSession               int
+	scrollTop, scrollLeft     int
+	windowGeneration          uint64
+	windowRequestGeneration   uint64
+	extentKnown               bool
+	wordWrap, overtype        bool
+	modified, pasting, saving bool
+	selection, rectSelection  bool
+	hexMode, decodeMode       bool
+	disasmMode                int
+	showWhitespaces           bool
+	cursorBeyondEOL           bool
+	targetLine                int
+	autocompleteEnabled       bool
+	autocompleteMatchCount    int
+}
 
-	line, pos, edited := ev.CursorLine, ev.CursorPos, ev.edited
-	handled := ev.processKeyInner(e)
-	if ev.targetLine != -1 && (ev.CursorLine != line || ev.CursorPos != pos || ev.edited != edited) {
-		ev.targetLine = -1 // User took control, abort target jump
-		ev.ensureCursorVisible()
+func (ev *EditorView) editorCursorPatchGuard(e *vtinput.InputEvent) editorCursorPatchGuard {
+	guard := editorCursorPatchGuard{}
+	if ev == nil || e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown ||
+		ev.pt == nil || ev.li == nil || ev.engine == nil {
+		return guard
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
+		vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT:
+	default:
+		return guard
+	}
+	if e.ControlKeyState&(vtinput.ShiftPressed|vtinput.LeftAltPressed|
+		vtinput.RightAltPressed) != 0 {
+		return guard
+	}
+	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
+	if showHorzCross || showVertCross || ev.selActive || ev.rectSelActive ||
+		len(ev.acMatches) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 ||
+		ev.HexMode || ev.DecodeMode || ev.DisasmMode != 0 {
+		return guard
+	}
+	guard = editorCursorPatchGuard{
+		eligible:                true,
+		editSession:             ev.editSession,
+		scrollTop:               ev.ScrollTopRow,
+		scrollLeft:              ev.ScrollLeft,
+		windowGeneration:        ev.semanticWindowGeneration,
+		windowRequestGeneration: ev.semanticWindowRequestGeneration,
+		extentKnown:             ev.semanticExtentKnown,
+		wordWrap:                ev.WordWrap,
+		overtype:                ev.overtype,
+		modified:                ev.modified,
+		pasting:                 ev.pasting,
+		saving:                  ev.saving,
+		selection:               ev.selActive,
+		rectSelection:           ev.rectSelActive,
+		hexMode:                 ev.HexMode,
+		decodeMode:              ev.DecodeMode,
+		disasmMode:              ev.DisasmMode,
+		showWhitespaces:         ev.ShowWhitespaces,
+		cursorBeyondEOL:         ev.CursorBeyondEOL,
+		targetLine:              ev.targetLine,
+		autocompleteEnabled:     ev.acEnabled,
+		autocompleteMatchCount:  len(ev.acMatches),
+	}
+	return guard
+}
+
+func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) bool {
+	if !guard.eligible || !handled || ev == nil {
+		return false
+	}
+	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
+	return !showHorzCross && !showVertCross &&
+		guard.editSession == ev.editSession &&
+		guard.scrollTop == ev.ScrollTopRow && guard.scrollLeft == ev.ScrollLeft &&
+		guard.windowGeneration == ev.semanticWindowGeneration &&
+		guard.windowRequestGeneration == ev.semanticWindowRequestGeneration &&
+		guard.extentKnown == ev.semanticExtentKnown &&
+		guard.wordWrap == ev.WordWrap && guard.overtype == ev.overtype &&
+		guard.modified == ev.modified && guard.pasting == ev.pasting &&
+		guard.saving == ev.saving && guard.selection == ev.selActive &&
+		guard.rectSelection == ev.rectSelActive && !ev.selActive &&
+		!ev.rectSelActive && guard.hexMode == ev.HexMode &&
+		guard.decodeMode == ev.DecodeMode && guard.disasmMode == ev.DisasmMode &&
+		guard.showWhitespaces == ev.ShowWhitespaces &&
+		guard.cursorBeyondEOL == ev.CursorBeyondEOL &&
+		guard.targetLine == ev.targetLine && ev.targetLine == -1 &&
+		guard.autocompleteEnabled == ev.acEnabled &&
+		guard.autocompleteMatchCount == len(ev.acMatches) && len(ev.acMatches) == 0
+}
+
+func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
+	guard := ev.editorCursorPatchGuard(e)
+	var handled bool
+	if ev.targetLine == -1 {
+		handled = ev.processKeyInner(e)
+	} else {
+		line, pos, edited := ev.CursorLine, ev.CursorPos, ev.edited
+		handled = ev.processKeyInner(e)
+		if ev.targetLine != -1 && (ev.CursorLine != line || ev.CursorPos != pos || ev.edited != edited) {
+			ev.targetLine = -1 // User took control, abort target jump
+			ev.ensureCursorVisible()
+		}
+	}
+	if guard.canPublish(ev, handled) {
+		ev.queueSemanticCursorState()
 	}
 	return handled
 }
@@ -2831,9 +2928,48 @@ func nextIndexPoll(cur time.Duration) time.Duration {
 	return next
 }
 
+// applyPendingTarget restores the position saved for this document once the
+// line index contains the requested line. In-memory documents already have a
+// complete index before StartIndexing is called, while streaming documents
+// call this from the UI tasks that append index batches.
+func (ev *EditorView) applyPendingTarget() bool {
+	if ev.targetLine == -1 || ev.li == nil {
+		return false
+	}
+
+	ev.CursorLine = ev.targetLine
+	if ev.CursorLine >= ev.li.LineCount() {
+		ev.CursorLine = ev.li.LineCount() - 1
+	}
+	if ev.CursorLine < 0 {
+		ev.CursorLine = 0
+	}
+
+	targetOff := ev.li.GetLineOffset(ev.CursorLine) + ev.targetPos
+	if targetOff >= 0 && ev.asyncBuf != nil {
+		_, _ = ev.asyncBuf.Read(targetOff, 4096)
+	}
+
+	ev.CursorPos = ev.targetPos
+	ev.ScrollTopRow = ev.targetTopRow
+	ev.ScrollLeft = ev.targetLeft
+	if ev.ScrollLeft < 0 {
+		ev.ScrollLeft = 0
+	}
+	ev.targetLine = -1
+	ev.ensureCursorVisible()
+	ev.updateDesiredVisualCol()
+	return true
+}
+
 func (ev *EditorView) StartIndexing() {
 	if ev.asyncBuf == nil {
 		ev.semanticExtentKnown = true
+		// NewEditorView builds the complete line index synchronously for an
+		// in-memory piece table. Resolve saved state here instead of leaving
+		// targetLine active forever (which paints Loading and disables the
+		// cursor-only semantic patch path).
+		ev.applyPendingTarget()
 		return
 	}
 	if ev.indexCancel != nil {
@@ -2901,28 +3037,7 @@ func (ev *EditorView) StartIndexing() {
 						li.AppendOffsets(batchOffsets, maxSize)
 
 						if ev.targetLine != -1 && (li.LineCount() > ev.targetLine || len(res.Offsets) < batchSize) {
-							ev.CursorLine = ev.targetLine
-							if ev.CursorLine >= li.LineCount() {
-								ev.CursorLine = li.LineCount() - 1
-							}
-							if ev.CursorLine < 0 {
-								ev.CursorLine = 0
-							}
-
-							targetOff := li.GetLineOffset(ev.CursorLine) + ev.targetPos
-							if targetOff >= 0 && ev.asyncBuf != nil {
-								_, _ = ev.asyncBuf.Read(targetOff, 4096)
-							}
-
-							ev.CursorPos = ev.targetPos
-							ev.ScrollTopRow = ev.targetTopRow
-							ev.ScrollLeft = ev.targetLeft
-							if ev.ScrollLeft < 0 {
-								ev.ScrollLeft = 0
-							}
-							ev.targetLine = -1
-							ev.ensureCursorVisible()
-							ev.updateDesiredVisualCol()
+							ev.applyPendingTarget()
 						}
 
 						ev.engine.InvalidateFrom(lastLineBefore)
@@ -2945,27 +3060,7 @@ func (ev *EditorView) StartIndexing() {
 			if remoteSuccess {
 				vtui.FrameManager.PostTask(func() {
 					if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
-						if ev.targetLine != -1 {
-							ev.CursorLine = ev.targetLine
-							if ev.CursorLine >= li.LineCount() {
-								ev.CursorLine = li.LineCount() - 1
-							}
-							if ev.CursorLine < 0 {
-								ev.CursorLine = 0
-							}
-							targetOff := li.GetLineOffset(ev.CursorLine) + ev.targetPos
-							if targetOff >= 0 && ev.asyncBuf != nil {
-								_, _ = ev.asyncBuf.Read(targetOff, 4096)
-							}
-							ev.CursorPos = ev.targetPos
-							ev.ScrollTopRow = ev.targetTopRow
-							ev.ScrollLeft = ev.targetLeft
-							if ev.ScrollLeft < 0 {
-								ev.ScrollLeft = 0
-							}
-							ev.targetLine = -1
-							ev.ensureCursorVisible()
-							ev.updateDesiredVisualCol()
+						if ev.applyPendingTarget() {
 							vtui.FrameManager.Redraw()
 						}
 						if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
@@ -3048,22 +3143,7 @@ func (ev *EditorView) StartIndexing() {
 					li.AppendOffsets(currentBatch, maxSize)
 
 					if ev.targetLine != -1 && (li.LineCount() > ev.targetLine || batchEnd >= maxSize) {
-						ev.CursorLine = ev.targetLine
-						if ev.CursorLine >= li.LineCount() {
-							ev.CursorLine = li.LineCount() - 1
-						}
-						if ev.CursorLine < 0 {
-							ev.CursorLine = 0
-						}
-						ev.CursorPos = ev.targetPos
-						ev.ScrollTopRow = ev.targetTopRow
-						ev.ScrollLeft = ev.targetLeft
-						if ev.ScrollLeft < 0 {
-							ev.ScrollLeft = 0
-						}
-						ev.targetLine = -1
-						ev.ensureCursorVisible()
-						ev.updateDesiredVisualCol()
+						ev.applyPendingTarget()
 					}
 
 					ev.engine.InvalidateFrom(lastLineBefore)
@@ -3078,24 +3158,7 @@ func (ev *EditorView) StartIndexing() {
 		vtui.FrameManager.PostTask(func() {
 			if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
 				ev.semanticExtentKnown = true
-				if ev.targetLine != -1 {
-					ev.CursorLine = ev.targetLine
-					if ev.CursorLine >= li.LineCount() {
-						ev.CursorLine = li.LineCount() - 1
-					}
-					if ev.CursorLine < 0 {
-						ev.CursorLine = 0
-					}
-					ev.CursorPos = ev.targetPos
-					ev.ScrollTopRow = ev.targetTopRow
-					ev.ScrollLeft = ev.targetLeft
-					if ev.ScrollLeft < 0 {
-						ev.ScrollLeft = 0
-					}
-					ev.targetLine = -1
-					ev.ensureCursorVisible()
-					ev.updateDesiredVisualCol()
-				}
+				ev.applyPendingTarget()
 				if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 					ev.startHighlighting()
 				}
@@ -3677,7 +3740,7 @@ func (ev *EditorView) showCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(currIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 func (ev *EditorView) showConvertCodepageDialog() {
 	items, _ := vfs.BuildCodepageMenuItems(ev.Codepage, false)
@@ -3734,7 +3797,7 @@ func (ev *EditorView) showConvertCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(selIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func (ev *EditorView) selectWordUnderCursor() {

@@ -19,6 +19,50 @@ type OSVFS struct {
 	currentPath string
 }
 
+var _ OptimisticPathSetter = (*OSVFS)(nil)
+var _ PhasedDirectoryReader = (*OSVFS)(nil)
+var _ PhasedDirectoryReadProvider = (*OSVFS)(nil)
+
+// DirectoryReadPhase identifies which part of a phased directory listing a
+// chunk belongs to. The base phase contains only stable row identity and type
+// information. The metadata phase enriches those same rows without changing
+// their names, directory classification, or order.
+type DirectoryReadPhase uint8
+
+const (
+	DirectoryReadBase DirectoryReadPhase = iota
+	DirectoryReadMetadata
+)
+
+// PhasedDirectoryReader is an optional VFS capability. It lets a panel publish
+// an interactive names/types catalog before per-entry FileInfo work completes.
+// ReadDir remains the compatibility path for every provider that does not opt
+// in. Metadata chunks must refer to rows previously reported in the base phase
+// and must preserve Name, IsDir, and NoExtension. Base IsHidden must already be
+// authoritative so a panel can apply its visibility policy before enrichment.
+type PhasedDirectoryReader interface {
+	ReadDirPhased(context.Context, string, func(DirectoryReadPhase, []VFSItem)) error
+}
+
+// PhasedDirectoryReadProvider returns the concrete reader that owns the
+// capability. Requiring this explicit self-provider avoids accidentally using
+// a promoted OSVFS method on a wrapper which overrides ReadDir with different
+// semantics.
+type PhasedDirectoryReadProvider interface {
+	PhasedDirectoryReader() PhasedDirectoryReader
+}
+
+// OSVFSSetPathBenchmarkHook observes the synchronous validation stages in
+// SetPath. It is nil during normal operation so the VFS package does not need
+// to depend on the application's tracing implementation.
+var OSVFSSetPathBenchmarkHook func(event string, fields ...any)
+
+func osVFSSetPathBenchmarkEvent(event string, fields ...any) {
+	if OSVFSSetPathBenchmarkHook != nil {
+		OSVFSSetPathBenchmarkHook(event, fields...)
+	}
+}
+
 func NewOSVFS(initialPath string) *OSVFS {
 	abs, _ := filepath.Abs(initialPath)
 	return &OSVFS{currentPath: abs}
@@ -26,6 +70,27 @@ func NewOSVFS(initialPath string) *OSVFS {
 
 func (v *OSVFS) GetPath() string        { return v.currentPath }
 func (v *OSVFS) IsAbs(path string) bool { return filepath.IsAbs(path) }
+
+func (v *OSVFS) PhasedDirectoryReader() PhasedDirectoryReader { return v }
+
+// SetPathOptimistic changes the local view without probing the filesystem.
+// FileSystemPanel only uses this optional fast path after it has obtained a
+// directory path from an authoritative panel row (or another already accepted
+// navigation target). The following background ReadDir is deliberately the
+// validation point: if the row became stale, the panel's normal load-failure
+// recovery restores the parent and reports the error.
+func (v *OSVFS) SetPathOptimistic(path string) error {
+	target := path
+	if !filepath.IsAbs(path) && filepath.VolumeName(path) == "" {
+		target = filepath.Join(v.currentPath, path)
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	v.currentPath = abs
+	return nil
+}
 
 func (v *OSVFS) IsAtRoot() bool {
 	if runtime.GOOS == "windows" {
@@ -53,7 +118,14 @@ func (v *OSVFS) SetPath(path string) error {
 	// Сначала пробуем проверить оригинальный путь напрямую.
 	// Если он существует, доступен и является директорией (симлинком на нее),
 	// мы сохраняем оригинальный визуальный путь в панели без принудительного разыменования!
-	if st, errStat := os.Stat(prepareOSPath(abs)); errStat == nil && st.IsDir() {
+	osVFSSetPathBenchmarkEvent("osvfs.stat_initial.begin", "path", abs)
+	initialStat, errStat := os.Stat(prepareOSPath(abs))
+	initialFields := []any{"path", abs, "ok", errStat == nil, "isDir", errStat == nil && initialStat.IsDir()}
+	if errStat != nil {
+		initialFields = append(initialFields, "error", errStat.Error())
+	}
+	osVFSSetPathBenchmarkEvent("osvfs.stat_initial.end", initialFields...)
+	if errStat == nil && initialStat.IsDir() {
 		goto verify
 	}
 
@@ -103,7 +175,13 @@ func (v *OSVFS) SetPath(path string) error {
 	}
 
 verify:
+	osVFSSetPathBenchmarkEvent("osvfs.stat_verify.begin", "path", abs)
 	st, err := os.Stat(prepareOSPath(abs))
+	verifyFields := []any{"path", abs, "ok", err == nil, "isDir", err == nil && st.IsDir()}
+	if err != nil {
+		verifyFields = append(verifyFields, "error", err.Error())
+	}
+	osVFSSetPathBenchmarkEvent("osvfs.stat_verify.end", verifyFields...)
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: SetPath: Permission denied for %q, checking via sudo...", abs)
@@ -229,6 +307,186 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 		}
 	}
 	return nil
+}
+
+type phasedOSDirEntry struct {
+	entry os.DirEntry
+	base  VFSItem
+	info  os.FileInfo
+}
+
+// ReadDirPhased reports a complete names/types catalog first, then enriches
+// exactly those rows with ordinary OS metadata. On Unix, entries with a
+// conclusive DirEntry type reach the base callback without DirEntry.Info;
+// ambiguous and special entries fall back to Info because their directory
+// classification affects navigation. Windows' ReadDir implementation
+// already carries WIN32_FIND_DATA in each DirEntry, so Info is a zero-I/O view
+// of that enumeration record and is required to preserve hidden/reparse-point
+// semantics in the base catalog.
+func (v *OSVFS) ReadDirPhased(ctx context.Context, path string, onChunk func(DirectoryReadPhase, []VFSItem)) error {
+	dirPath := path
+	f, err := os.Open(prepareOSPath(dirPath))
+	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
+		if resolved, ok := wellKnownJunction(dirPath); ok {
+			vtui.DebugLog("VFS: ReadDirPhased: resolved junction %q -> %q", dirPath, resolved)
+			dirPath = resolved
+			f, err = os.Open(prepareOSPath(dirPath))
+		}
+	}
+	if err != nil {
+		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+			vtui.DebugLog("VFS: Permission denied for ReadDirPhased(%q), attempting sudo...", dirPath)
+			items, sudoErr := globalSudoClient.ReadDir(prepareOSPath(dirPath))
+			if sudoErr == nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				if len(items) > 0 && onChunk != nil {
+					base := make([]VFSItem, len(items))
+					for i := range items {
+						base[i] = directoryBaseItem(items[i])
+					}
+					onChunk(DirectoryReadBase, base)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return ctxErr
+					}
+					onChunk(DirectoryReadMetadata, items)
+				}
+				return nil
+			}
+			vtui.DebugLog("VFS: Sudo ReadDirPhased(%q) FAILED: %v", dirPath, sudoErr)
+		} else {
+			vtui.DebugLog("VFS: ReadDirPhased(%q) FAILED: %v (Permission: %v, SudoAvailable: %v)", dirPath, err, os.IsPermission(err), globalSudoClient.IsAvailable())
+		}
+		return err
+	}
+	defer f.Close()
+
+	// Keep the DirEntry objects until enumeration is complete. Publishing one
+	// complete base catalog avoids revision/order churn while metadata arrives.
+	pending := make([]phasedOSDirEntry, 0, 256)
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		entries, readErr := f.ReadDir(1000)
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return readErr
+		}
+		for _, entry := range entries {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			base, info := phasedOSDirectoryBase(dirPath, entry)
+			pending = append(pending, phasedOSDirEntry{entry: entry, base: base, info: info})
+		}
+	}
+
+	if onChunk == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if len(pending) == 0 {
+		// An empty result is still a complete authoritative base catalog. The
+		// panel adds its synthetic ".." row and can publish it immediately,
+		// without waiting for the later current/parent Stat decoration.
+		onChunk(DirectoryReadBase, []VFSItem{})
+		return ctx.Err()
+	}
+	base := make([]VFSItem, len(pending))
+	for i := range pending {
+		base[i] = pending[i].base
+	}
+	onChunk(DirectoryReadBase, base)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	// Bounded chunks keep enrichment cancellable for very large directories.
+	const metadataChunkSize = 256
+	for offset := 0; offset < len(pending); offset += metadataChunkSize {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		end := offset + metadataChunkSize
+		if end > len(pending) {
+			end = len(pending)
+		}
+		metadata := make([]VFSItem, 0, end-offset)
+		for i := offset; i < end; i++ {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			metadata = append(metadata, phasedOSDirectoryMetadata(pending[i]))
+		}
+		onChunk(DirectoryReadMetadata, metadata)
+	}
+	return nil
+}
+
+func directoryBaseItem(item VFSItem) VFSItem {
+	return VFSItem{
+		Name:        item.Name,
+		IsDir:       item.IsDir,
+		IsHidden:    item.IsHidden,
+		NoExtension: item.NoExtension,
+		IsSymlink:   item.IsSymlink,
+	}
+}
+
+func phasedOSDirectoryBase(dirPath string, entry os.DirEntry) (VFSItem, os.FileInfo) {
+	entryType := entry.Type()
+	isDir := entry.IsDir()
+	isSymlink := entryType&os.ModeSymlink != 0
+
+	// Windows needs the already-enumerated attribute record for hidden and
+	// reparse-point correctness. Elsewhere only ambiguous special entries need
+	// an Info fallback before their navigability can be published.
+	needsInfo := runtime.GOOS == "windows" || isSymlink ||
+		(!isDir && !entryType.IsRegular())
+	var info os.FileInfo
+	if needsInfo {
+		info, _ = entry.Info()
+	}
+	if info != nil {
+		if !isSymlink && (info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info)) {
+			isSymlink = true
+		}
+	}
+	if !isDir && (isSymlink || !entryType.IsRegular() || (info != nil && !info.Mode().IsRegular())) {
+		if target, statErr := os.Stat(filepath.Join(dirPath, entry.Name())); statErr == nil {
+			isDir = target.IsDir()
+		}
+	}
+	entryPath := filepath.Join(dirPath, entry.Name())
+	return VFSItem{
+		Name:      entry.Name(),
+		IsDir:     isDir,
+		IsSymlink: isSymlink,
+		IsHidden:  isHidden(entryPath, entry.Name(), info),
+	}, info
+}
+
+func phasedOSDirectoryMetadata(pending phasedOSDirEntry) VFSItem {
+	info := pending.info
+	if info == nil {
+		info, _ = pending.entry.Info()
+	}
+	item := pending.base
+	if info == nil {
+		return item
+	}
+	item.Size = info.Size()
+	item.SizeKnown = true
+	item.MTime = info.ModTime()
+	item.IsExecutable = info.Mode().Perm()&0111 != 0
+	fillPhysicalSizeCheap(&item, info)
+	return item
 }
 
 func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {

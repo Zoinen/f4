@@ -8,9 +8,14 @@
 #include <QGuiApplication>
 #include <QIconEngine>
 #include <QPainter>
-#include <QPalette>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QQuickItem>
+#include <QQuickView>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QSignalSpy>
+#include <QSvgRenderer>
 #include <QUrlQuery>
 #include <QtTest>
 
@@ -140,6 +145,82 @@ public:
         return {};
     }
 };
+
+QImage renderTintedSvgReference(const QString &iconName,
+                                int logicalSize,
+                                const QSize &physicalSize,
+                                const QColor &tint)
+{
+    const QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
+    const QString resourcePath = QStringLiteral(":") + source.path();
+    QSvgRenderer renderer(resourcePath);
+    if (!renderer.isValid()) {
+        return {};
+    }
+
+    QImage image(physicalSize, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    renderer.render(&painter,
+                    QRectF(QPointF(0, 0), QSizeF(physicalSize)));
+    painter.end();
+
+    for (int y = 0; y < image.height(); ++y) {
+        auto *scanline = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const int alpha = qAlpha(scanline[x]) * tint.alpha() / 255;
+            scanline[x] = qRgba(tint.red() * alpha / 255,
+                                tint.green() * alpha / 255,
+                                tint.blue() * alpha / 255,
+                                alpha);
+        }
+    }
+    return image;
+}
+
+QString exactImageDifference(const QImage &actual, const QImage &expected)
+{
+    if (actual.size() != expected.size()) {
+        return QStringLiteral("size %1x%2 != %3x%4")
+            .arg(actual.width()).arg(actual.height())
+            .arg(expected.width()).arg(expected.height());
+    }
+
+    const QImage actualArgb = actual.convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    const QImage expectedArgb = expected.convertToFormat(
+        QImage::Format_ARGB32_Premultiplied);
+    qsizetype mismatchCount = 0;
+    QPoint firstMismatch(-1, -1);
+    QRgb firstActual = 0;
+    QRgb firstExpected = 0;
+    for (int y = 0; y < actualArgb.height(); ++y) {
+        const auto *actualLine = reinterpret_cast<const QRgb *>(
+            actualArgb.constScanLine(y));
+        const auto *expectedLine = reinterpret_cast<const QRgb *>(
+            expectedArgb.constScanLine(y));
+        for (int x = 0; x < actualArgb.width(); ++x) {
+            if (actualLine[x] == expectedLine[x]) {
+                continue;
+            }
+            if (mismatchCount == 0) {
+                firstMismatch = QPoint(x, y);
+                firstActual = actualLine[x];
+                firstExpected = expectedLine[x];
+            }
+            ++mismatchCount;
+        }
+    }
+    if (mismatchCount == 0) {
+        return {};
+    }
+    return QStringLiteral(
+        "%1 differing pixels; first at (%2,%3): actual #%4, expected #%5")
+        .arg(mismatchCount)
+        .arg(firstMismatch.x()).arg(firstMismatch.y())
+        .arg(firstActual, 8, 16, QLatin1Char('0'))
+        .arg(firstExpected, 8, 16, QLatin1Char('0'));
+}
 }
 
 class F4IconProviderTests final : public QObject
@@ -147,12 +228,17 @@ class F4IconProviderTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void requestsAlwaysRunOffTheGuiThread();
     void routeValuesRoundTripWithoutUrlAmbiguity();
     void routeValuesRejectNonCanonicalInput();
     void normalizationIsDeterministic();
     void lucideSourcesAndFileClassification();
     void largeLucideRouteRendersAVisibleDprAwareFallback();
+    void chromeLucideRoutesRenderNamedResources();
+    void lucideRoutesPreserveRequestedTint();
+    void lucideFramebufferMatchesDirectSvgRender();
     void iconSetPropertiesAndRevision();
+    void diagnosticPatternIsOptInAndDprAware();
     void systemFileRoutePreservesMetadataAndColor();
     void systemNamedRoutePreservesName();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
@@ -160,6 +246,13 @@ private slots:
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
     void renderingUsesLogicalSizeAndDevicePixelRatio();
 };
+
+void F4IconProviderTests::requestsAlwaysRunOffTheGuiThread()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    QVERIFY(provider.flags().testFlag(
+        QQmlImageProviderBase::ForceAsynchronousImageLoading));
+}
 
 void F4IconProviderTests::routeValuesRoundTripWithoutUrlAmbiguity()
 {
@@ -299,6 +392,228 @@ void F4IconProviderTests::largeLucideRouteRendersAVisibleDprAwareFallback()
                             .arg(stroke.name(QColor::HexArgb))));
 }
 
+void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const QColor tint(QStringLiteral("#4e9bd4"));
+    const QStringList names{
+        QStringLiteral("arrow-down"),
+        QStringLiteral("arrow-down-a-z"),
+        QStringLiteral("arrow-down-wide-narrow"),
+        QStringLiteral("arrow-up"),
+        QStringLiteral("check"),
+        QStringLiteral("chevron-down"),
+        QStringLiteral("chevron-right"),
+        QStringLiteral("clock-3"),
+        QStringLiteral("columns-2"),
+        QStringLiteral("columns-3"),
+        QStringLiteral("file-pen-line"),
+        QStringLiteral("file-type"),
+        QStringLiteral("grid-3x3"),
+        QStringLiteral("hard-drive"),
+        QStringLiteral("images"),
+        QStringLiteral("layout-dashboard"),
+        QStringLiteral("list"),
+        QStringLiteral("list-checks"),
+        QStringLiteral("network"),
+        QStringLiteral("panel-left"),
+        QStringLiteral("panels-top-left"),
+        QStringLiteral("plus"),
+        QStringLiteral("x"),
+    };
+
+    for (const QString &name : names) {
+        QCOMPARE(F4IconProvider::normalizedIconName(name), name);
+        const QUrl source = icons.rasterizedLucideSource(
+            name, 16, 1.25, tint);
+        QCOMPARE(source.scheme(), QStringLiteral("image"));
+        QCOMPARE(source.host(), QStringLiteral("test-icons"));
+        QCOMPARE(QColor(QUrlQuery(source).queryItemValue(
+                     QStringLiteral("color"))), tint);
+
+        QSize reportedSize;
+        const QImage image = provider.requestImage(
+            F4IconProvider::routeId(source), &reportedSize, {});
+        QVERIFY2(!image.isNull(), qPrintable(name));
+        QCOMPARE(image.size(), QSize(20, 20));
+        QCOMPARE(reportedSize, image.size());
+
+        bool hasVisiblePixel = false;
+        for (int y = 0; y < image.height() && !hasVisiblePixel; ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y).alpha() > 0) {
+                    hasVisiblePixel = true;
+                    break;
+                }
+            }
+        }
+        QVERIFY2(hasVisiblePixel, qPrintable(name));
+    }
+}
+
+void F4IconProviderTests::lucideRoutesPreserveRequestedTint()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const QColor blue(QStringLiteral("#287fd1"));
+    const QColor amber(QStringLiteral("#e0a323"));
+
+    const QUrl blueSource = icons.rasterizedLucideSource(
+        QStringLiteral("folder"), 18, 1.75, blue);
+    const QUrl amberSource = icons.rasterizedLucideSource(
+        QStringLiteral("folder"), 18, 1.75, amber);
+    QVERIFY(blueSource != amberSource);
+    QCOMPARE(QColor(QUrlQuery(blueSource).queryItemValue(
+                 QStringLiteral("color"))), blue);
+    QCOMPARE(QColor(QUrlQuery(amberSource).queryItemValue(
+                 QStringLiteral("color"))), amber);
+
+    const QSize physicalSize = F4IconProvider::physicalSize(18, 1.75);
+    const QImage blueImage = provider.requestImage(
+        F4IconProvider::routeId(blueSource), nullptr, {});
+    const QImage amberImage = provider.requestImage(
+        F4IconProvider::routeId(amberSource), nullptr, {});
+    const QImage expectedBlue = renderTintedSvgReference(
+        QStringLiteral("folder"), 18, physicalSize, blue);
+    const QImage expectedAmber = renderTintedSvgReference(
+        QStringLiteral("folder"), 18, physicalSize, amber);
+
+    QVERIFY2(exactImageDifference(blueImage, expectedBlue).isEmpty(),
+             qPrintable(exactImageDifference(blueImage, expectedBlue)));
+    QVERIFY2(exactImageDifference(amberImage, expectedAmber).isEmpty(),
+             qPrintable(exactImageDifference(amberImage, expectedAmber)));
+    QVERIFY(!exactImageDifference(blueImage, amberImage).isEmpty());
+}
+
+void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
+{
+    constexpr int iconPosition = 8;
+    const QColor background(16, 32, 48);
+    const QColor tint(41, 178, 96);
+
+    QQuickView view;
+    view.setColor(background);
+    view.setResizeMode(QQuickView::SizeRootObjectToView);
+    view.resize(64, 64);
+    view.engine()->addImageProvider(
+        QStringLiteral("test-icons"),
+        new F4IconProvider(std::make_unique<NullBackend>()));
+
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 64
+            height: 64
+            Image {
+                objectName: "testedIcon"
+                x: 8
+                y: 8
+                width: 16
+                height: 16
+                smooth: false
+                cache: false
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:IconFramebufferProbe.qml")));
+    QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading,
+                             5000);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *rootObject = component.create();
+    QVERIFY2(rootObject, qPrintable(component.errorString()));
+    view.setContent(QUrl(QStringLiteral("inline:IconFramebufferProbe.qml")),
+                    &component, rootObject);
+
+    QObject *icon = rootObject->findChild<QObject *>(
+        QStringLiteral("testedIcon"));
+    QVERIFY(icon);
+    view.show();
+    QTRY_VERIFY_WITH_TIMEOUT(view.isExposed(), 5000);
+
+    const qreal dpr = view.devicePixelRatio();
+    if (dpr <= 1.0 || qFuzzyCompare(dpr, qRound(dpr))) {
+        QSKIP(qPrintable(QStringLiteral(
+            "fractional-DPR invocation required, got %1").arg(dpr)));
+    }
+
+    F4IconSet icons(QStringLiteral("test-icons"));
+    F4IconProvider directProvider(std::make_unique<NullBackend>());
+    const QPoint physicalOrigin(qRound(iconPosition * dpr),
+                                qRound(iconPosition * dpr));
+    const qreal snappedPosition = physicalOrigin.x() / dpr;
+    icon->setProperty("x", snappedPosition);
+    icon->setProperty("y", snappedPosition);
+
+    const QList<QPair<QString, int>> cases{
+        {QStringLiteral("chevron-right"), 12},
+        {QStringLiteral("chevron-down"), 11},
+        {QStringLiteral("arrow-up"), 14},
+        {QStringLiteral("columns-2"), 16},
+        {QStringLiteral("hard-drive"), 16},
+    };
+    for (const auto &[iconName, logicalIconSize] : cases) {
+        const QSize physicalIconSize = F4IconProvider::physicalSize(
+            logicalIconSize, dpr);
+        const qreal snappedLogicalSize = physicalIconSize.width() / dpr;
+        icon->setProperty("width", snappedLogicalSize);
+        icon->setProperty("height", snappedLogicalSize);
+        icon->setProperty("source", QUrl());
+        QCoreApplication::processEvents();
+
+        const QUrl source = icons.rasterizedLucideSource(
+            iconName, logicalIconSize, dpr, tint);
+        icon->setProperty("source", source);
+        QTRY_COMPARE_WITH_TIMEOUT(icon->property("status").toInt(), 1, 5000);
+
+        const QImage providerImage = directProvider.requestImage(
+            F4IconProvider::routeId(source), nullptr, {});
+        const QImage directSvg = renderTintedSvgReference(
+            iconName, logicalIconSize, physicalIconSize, tint);
+        QVERIFY2(!providerImage.isNull(), qPrintable(iconName));
+        QVERIFY2(!directSvg.isNull(), qPrintable(iconName));
+        const QString providerDifference = exactImageDifference(providerImage,
+                                                                 directSvg);
+        QVERIFY2(providerDifference.isEmpty(),
+                 qPrintable(iconName + QStringLiteral(": ")
+                            + providerDifference));
+
+        view.requestUpdate();
+        QImage framebuffer;
+        QTRY_VERIFY_WITH_TIMEOUT(
+            !(framebuffer = view.grabWindow()).isNull(), 5000);
+        QCOMPARE(framebuffer.size(),
+                 QSize(qRound(view.width() * dpr),
+                       qRound(view.height() * dpr)));
+
+        const QRect physicalRect(physicalOrigin, physicalIconSize);
+        QVERIFY(QRect(QPoint(), framebuffer.size()).contains(physicalRect));
+        const QImage actual = framebuffer.copy(physicalRect);
+
+        QImage expected(physicalIconSize,
+                        QImage::Format_ARGB32_Premultiplied);
+        expected.fill(background);
+        QPainter expectedPainter(&expected);
+        expectedPainter.drawImage(QPoint(), directSvg);
+        expectedPainter.end();
+
+        const QString framebufferDifference = exactImageDifference(actual,
+                                                                    expected);
+        if (!framebufferDifference.isEmpty()) {
+            const QString prefix = QDir::tempPath()
+                + QStringLiteral("/f4-icon-framebuffer-")
+                + QGuiApplication::platformName()
+                + u'-' + iconName + u'-'
+                + QString::number(logicalIconSize);
+            actual.save(prefix + QStringLiteral("-actual.png"));
+            expected.save(prefix + QStringLiteral("-expected.png"));
+        }
+        QVERIFY2(framebufferDifference.isEmpty(),
+                 qPrintable(iconName + QStringLiteral(": ")
+                            + framebufferDifference));
+    }
+}
+
 void F4IconProviderTests::iconSetPropertiesAndRevision()
 {
     F4IconSet icons(QStringLiteral("test-icons"));
@@ -347,6 +662,31 @@ void F4IconProviderTests::iconSetPropertiesAndRevision()
     QCOMPARE(query.queryItemValue(QStringLiteral("version")), QStringLiteral("77"));
     QCOMPARE(query.queryItemValue(QStringLiteral("fallback")),
              QStringLiteral("archive"));
+}
+
+void F4IconProviderTests::diagnosticPatternIsOptInAndDprAware()
+{
+    const auto record = std::make_shared<BackendRecord>();
+    F4IconProvider provider(std::make_unique<RecordingBackend>(record), true);
+    F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setIconSet(F4IconSet::System);
+
+    const QUrl source = icons.iconSource(QStringLiteral("folder"), 20, 1.25);
+    QSize reportedSize;
+    const QImage image = provider.requestImage(
+        F4IconProvider::routeId(source), &reportedSize, {});
+
+    QCOMPARE(image.size(), QSize(25, 25));
+    QCOMPARE(image.devicePixelRatio(), qreal(1.25));
+    QCOMPARE(reportedSize, QSize(20, 20));
+    QCOMPARE(image.pixelColor(0, 0), QColor(Qt::black));
+    QCOMPARE(image.pixelColor(image.width() - 1, image.height() - 1),
+             QColor(Qt::black));
+    QCOMPARE(image.pixelColor(1, 1), QColor(Qt::white));
+    QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2),
+             QColor(Qt::white));
+    QCOMPARE(record->namedRequests, 0);
+    QCOMPARE(record->fileRequests, 0);
 }
 
 void F4IconProviderTests::systemFileRoutePreservesMetadataAndColor()

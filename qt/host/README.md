@@ -130,3 +130,23 @@ Runtime lookup order from Go:
 
 The protocol is a 4-byte big-endian length prefix followed by a MessagePack map.
 The host accepts the upstream ExtUI `--f4-ext-*` startup arguments and keeps the older `--f4-qt-*` names as a compatibility fallback. It renders vtui cells in a custom `VtuiGridItem` while using semantic `sdk/extui` scenes for QML-native panels, menus, dialogs, document surfaces, and future sibling modules such as a possible editable-package integration with `ZoinGallery`.
+
+Protocol 3 installs one app-schema scene at semantic version 4 and then advances
+its monotonic `revision` with atomic `scene_patch` messages. Root and shell map
+patches are bounded; panel `state_update` operations never contain catalog rows,
+`selection_delta` carries only changed stable IDs and source indexes, and the
+rare `selection_replace` is reserved for journal overflow or recovery.
+`catalog_replace` is the only operation allowed to carry every row, and is sent
+only when that panel's `catalogRevision` changes.
+
+The Qt host validates the complete patch and every base revision before
+committing any part of it. It then emits targeted menu, command-line, panel-state,
+or catalog signals. In particular, opening or closing a menu does not emit
+`sceneChanged` and does not copy either panel catalog. A complete scene is the
+bootstrap and conservative recovery path for unsupported structural changes;
+ordinary redraws, cursor movement, selection, menus, and bounded shell state use
+the incremental path.
+
+Menu items may carry an optional semantic `icon` name. Empty icons are omitted
+from MessagePack; opening a drive menu therefore adds only its bounded menu rows
+and icon names to the `menus` root patch, never either file-panel catalog.

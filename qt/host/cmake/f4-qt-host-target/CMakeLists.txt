@@ -278,7 +278,6 @@ if(F4_QT_STATIC)
       Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
     _f4_import_conan_qt_qml_backing_module(QuickLayouts
       Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
-
     if(NOT TARGET Qt6::QOffscreenIntegrationPlugin)
       find_library(_f4_qoffscreen_archive
         NAMES qoffscreen
@@ -320,6 +319,34 @@ if(F4_QT_STATIC)
         endif()
       endif()
     endforeach()
+
+    # The preserved Conan plugin exports are loaded through a helper function.
+    # Promote their imported targets before returning so sibling test targets
+    # can link the same static QML plugin graph as f4-qt-host.
+    get_property(_f4_imported_qml_targets DIRECTORY
+      PROPERTY IMPORTED_TARGETS)
+    foreach(_f4_imported_qml_target IN LISTS _f4_imported_qml_targets)
+      if(_f4_imported_qml_target MATCHES "^Qt6::")
+        set_property(TARGET ${_f4_imported_qml_target}
+          PROPERTY IMPORTED_GLOBAL TRUE)
+      endif()
+    endforeach()
+
+    # The Basic style plugin export also lists its backing archive as an
+    # ordinary transitive link. The executable must retain that archive's QML
+    # resources, so the project links the backing target with WHOLE_ARCHIVE
+    # below. Remove only the duplicate ordinary form to keep CMake's link
+    # feature validation deterministic.
+    if(TARGET Qt6::qtquickcontrols2basicstyleplugin)
+      get_target_property(_f4_basic_style_links
+        Qt6::qtquickcontrols2basicstyleplugin INTERFACE_LINK_LIBRARIES)
+      if(_f4_basic_style_links)
+        list(REMOVE_ITEM _f4_basic_style_links
+          "$<LINK_ONLY:Qt6::QuickControls2Basic>")
+        set_target_properties(Qt6::qtquickcontrols2basicstyleplugin PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${_f4_basic_style_links}")
+      endif()
+    endif()
   endif()
   foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
     if(NOT TARGET ${plugin_target})

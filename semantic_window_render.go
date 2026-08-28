@@ -46,7 +46,7 @@ func semanticStyledViewerWindowRows(vv *ViewerView, window semanticSurfaceWindow
 				vv.renderHex(scr, width, rowCount)
 				return
 			}
-			vv.renderText(scr, width, rowCount)
+			vv.renderTextRows(scr, width, rowCount, false)
 		})
 
 	return semanticRowsWithRenderedRunsAt(window.rows, rendered.Rows, 0)

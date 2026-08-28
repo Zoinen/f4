@@ -71,6 +71,10 @@ func main() {
 	installHangDumpHandler()
 
 	vtui.SetupStderrLog()
+	closeNavigationBenchmarkOutput := navigationBenchmarkConfigureOutput()
+	defer closeNavigationBenchmarkOutput()
+	navigationBenchmarkEmit("", "trace.ready", "go.main",
+		"stderr", os.Stderr.Name())
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
 	LoadConfig() // Load config early to apply GUI font settings
 
@@ -78,6 +82,11 @@ func main() {
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
 		if GlobalPluginManager != nil {
 			GlobalPluginManager.CloseAll()
+		}
+		if history, ok := vtui.GlobalHistoryProvider.(*F4HistoryProvider); ok {
+			if err := history.Close(); err != nil {
+				vtui.DebugLog("HISTORY: shutdown persistence failed: %v", err)
+			}
 		}
 		shutdownProcessEnvironmentRuntime()
 		if GlobalFileState != nil {

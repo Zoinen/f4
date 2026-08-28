@@ -96,6 +96,37 @@ func (fm *frameManager) ExportSemanticScene() map[string]any {
 	return scene
 }
 
+// ExportSemanticSceneHeader exports only bounded global chrome. It never
+// visits screen frame stacks or calls application SemanticProvider methods, so
+// its cost is independent of file-catalog and document sizes.
+func (fm *frameManager) ExportSemanticSceneHeader() map[string]any {
+	if fm == nil || fm.scr == nil {
+		return nil
+	}
+	fm.SyncCurrentScreen()
+	scene := map[string]any{
+		"type":          "scene",
+		"version":       SemanticSceneVersion,
+		"width":         fm.scr.width,
+		"height":        fm.scr.height,
+		"activeScreen":  fm.ActiveIdx,
+		"workspaceTabs": fm.semanticWorkspaceTabs(),
+	}
+	if mb := fm.GetActiveMenuBar(); mb != nil {
+		scene["menuBar"] = semanticMenuBar(mb)
+	}
+	if fm.KeyBar != nil {
+		scene["keyBar"] = semanticKeyBar(fm.KeyBar)
+	}
+	if fm.currentToast != nil {
+		scene["toast"] = map[string]any{"message": fm.currentToast.Message}
+	}
+	if len(fm.Screens) > 1 {
+		scene["workspaceCount"] = len(fm.Screens)
+	}
+	return scene
+}
+
 func (fm *frameManager) semanticWorkspaceTabs() map[string]any {
 	mode := "multiple"
 	switch fm.WorkspaceTabMode {
@@ -773,7 +804,7 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 		subItems := make([]map[string]any, 0, len(item.SubItems))
 		for j, sub := range item.SubItems {
 			subClean, subHotkey, _ := ParseAmpersandString(sub.Text)
-			subItems = append(subItems, map[string]any{
+			subItem := map[string]any{
 				"index":     j,
 				"text":      subClean,
 				"rawText":   sub.Text,
@@ -781,7 +812,11 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 				"shortcut":  sub.Shortcut,
 				"command":   sub.Command,
 				"separator": sub.Separator,
-			})
+			}
+			if sub.Icon != "" {
+				subItem["icon"] = sub.Icon
+			}
+			subItems = append(subItems, subItem)
 		}
 
 		items = append(items, map[string]any{

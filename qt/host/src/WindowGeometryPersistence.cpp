@@ -12,6 +12,9 @@
 namespace {
 constexpr auto settingsGroup = "MainWindowGeometry";
 constexpr int settingsVersion = 1;
+constexpr int minimumRestoredWidth = 320;
+constexpr int minimumRestoredHeight = 240;
+constexpr int restoreStabilizationDelayMs = 50;
 
 QString stateName(PersistedWindowState state)
 {
@@ -147,22 +150,39 @@ QRect WindowGeometryPersistence::resolvedNormalGeometry(
     const PersistedWindowGeometry &stored,
     const QList<WindowScreenGeometry> &screens,
     const QString &primaryScreenName,
-    const QSize &minimumSize)
+    const QSize &minimumSize,
+    const QMargins &frameMargins)
 {
     if (!stored.valid || screens.isEmpty())
         return {};
 
     const WindowScreenGeometry *target = nullptr;
     for (const auto &screen : screens) {
-        if (screen.name == stored.screenName) {
+        if (screen.availableGeometry.isValid()
+            && screen.name == stored.screenName) {
             target = &screen;
             break;
         }
     }
     if (!target) {
+        qint64 largestIntersectionArea = 0;
         for (const auto &screen : screens) {
-            if (screen.availableGeometry.contains(
-                    stored.normalGeometry.center())) {
+            if (!screen.availableGeometry.isValid())
+                continue;
+            const QRect intersection = screen.availableGeometry.intersected(
+                stored.normalGeometry);
+            const qint64 intersectionArea = intersection.isValid()
+                ? qint64(intersection.width()) * intersection.height() : 0;
+            if (intersectionArea > largestIntersectionArea) {
+                largestIntersectionArea = intersectionArea;
+                target = &screen;
+            }
+        }
+    }
+    if (!target) {
+        for (const auto &screen : screens) {
+            if (screen.availableGeometry.isValid()
+                && screen.name == primaryScreenName) {
                 target = &screen;
                 break;
             }
@@ -170,19 +190,17 @@ QRect WindowGeometryPersistence::resolvedNormalGeometry(
     }
     if (!target) {
         for (const auto &screen : screens) {
-            if (screen.name == primaryScreenName) {
+            if (screen.availableGeometry.isValid()) {
                 target = &screen;
                 break;
             }
         }
     }
     if (!target)
-        target = &screens.constFirst();
+        return {};
 
     QRect geometry = stored.normalGeometry;
     const QRect available = target->availableGeometry;
-    if (!available.isValid())
-        return geometry;
 
     // Preserve the offset relative to the saved monitor. This keeps the
     // window in the same physical place when a monitor's global origin moves
@@ -193,17 +211,43 @@ QRect WindowGeometryPersistence::resolvedNormalGeometry(
             + (stored.normalGeometry.topLeft()
                - stored.screenAvailableGeometry.topLeft()));
     }
+    const bool intersectsTargetBeforeFitting = available.intersects(geometry);
 
-    const int minimumWidth = std::min(minimumSize.width(), available.width());
-    const int minimumHeight = std::min(minimumSize.height(), available.height());
+    int leftFrame = std::max(0, frameMargins.left());
+    int topFrame = std::max(0, frameMargins.top());
+    int rightFrame = std::max(0, frameMargins.right());
+    int bottomFrame = std::max(0, frameMargins.bottom());
+    if (leftFrame + rightFrame >= available.width())
+        leftFrame = rightFrame = 0;
+    if (topFrame + bottomFrame >= available.height())
+        topFrame = bottomFrame = 0;
+
+    const int maximumWidth = std::max(
+        1, available.width() - leftFrame - rightFrame);
+    const int maximumHeight = std::max(
+        1, available.height() - topFrame - bottomFrame);
+    const int minimumWidth = std::clamp(
+        std::max(1, minimumSize.width()), 1, maximumWidth);
+    const int minimumHeight = std::clamp(
+        std::max(1, minimumSize.height()), 1, maximumHeight);
     geometry.setWidth(std::clamp(geometry.width(), minimumWidth,
-                                 available.width()));
+                                 maximumWidth));
     geometry.setHeight(std::clamp(geometry.height(), minimumHeight,
-                                  available.height()));
-    geometry.moveLeft(std::clamp(geometry.left(), available.left(),
-                                 available.right() - geometry.width() + 1));
-    geometry.moveTop(std::clamp(geometry.top(), available.top(),
-                                available.bottom() - geometry.height() + 1));
+                                  maximumHeight));
+    const int minimumLeft = available.left() + leftFrame;
+    const int maximumLeft = available.right() - rightFrame
+        - geometry.width() + 1;
+    const int minimumTop = available.top() + topFrame;
+    const int maximumTop = available.bottom() - bottomFrame
+        - geometry.height() + 1;
+    if (!intersectsTargetBeforeFitting) {
+        geometry.moveCenter(QRect(
+            QPoint(minimumLeft, minimumTop),
+            QPoint(available.right() - rightFrame,
+                   available.bottom() - bottomFrame)).center());
+    }
+    geometry.moveLeft(std::clamp(geometry.left(), minimumLeft, maximumLeft));
+    geometry.moveTop(std::clamp(geometry.top(), minimumTop, maximumTop));
     return geometry;
 }
 
@@ -229,8 +273,7 @@ bool WindowGeometryPersistence::restoreImpl(bool deferShow)
         ? QGuiApplication::primaryScreen()->name() : QString();
     const QRect geometry = resolvedNormalGeometry(
         stored, currentScreens(), primaryName,
-        QSize(std::max(1, m_window->minimumWidth()),
-              std::max(1, m_window->minimumHeight())));
+        minimumRestoreSize(), m_window->frameMargins());
     if (!geometry.isValid())
         return false;
 
@@ -245,9 +288,12 @@ bool WindowGeometryPersistence::restoreImpl(bool deferShow)
     m_window->setGeometry(geometry);
     m_normalGeometry = geometry;
     m_lastNonMinimizedState = stored.state;
-    if (!deferShow)
+    if (!deferShow) {
         applyRestoredWindowState();
-    m_restoring = false;
+        scheduleRestoreStabilization();
+    } else {
+        m_restoring = false;
+    }
     return true;
 }
 
@@ -257,19 +303,73 @@ void WindowGeometryPersistence::showRestored()
         return;
     m_restoring = true;
     applyRestoredWindowState();
-    m_restoring = false;
+    scheduleRestoreStabilization();
 }
 
 void WindowGeometryPersistence::applyRestoredWindowState()
 {
     if (!m_window)
         return;
+
+    // Creating/showing the native window establishes its real non-client
+    // frame and per-monitor DPI. Reapply the client geometry only after that
+    // happened; otherwise Windows/QWK converts a pre-show frame as if it were
+    // client geometry and the saved height grows on every launch.
+    m_window->showNormal();
+    applyNormalGeometryWithCurrentFrame();
     if (m_lastNonMinimizedState == PersistedWindowState::Maximized)
         m_window->showMaximized();
     else if (m_lastNonMinimizedState == PersistedWindowState::FullScreen)
         m_window->showFullScreen();
-    else
-        m_window->showNormal();
+}
+
+void WindowGeometryPersistence::applyNormalGeometryWithCurrentFrame()
+{
+    if (!m_window || !m_normalGeometry.isValid())
+        return;
+
+    QScreen *screen = m_window->screen();
+    if (!screen)
+        screen = QGuiApplication::screenAt(m_normalGeometry.center());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return;
+
+    PersistedWindowGeometry current;
+    current.valid = true;
+    current.normalGeometry = m_normalGeometry;
+    current.screenName = screen->name();
+    current.screenAvailableGeometry = screen->availableGeometry();
+    const QRect fitted = resolvedNormalGeometry(
+        current, currentScreens(), screen->name(), minimumRestoreSize(),
+        m_window->frameMargins());
+    if (!fitted.isValid())
+        return;
+
+    m_window->setGeometry(fitted);
+    m_normalGeometry = fitted;
+}
+
+void WindowGeometryPersistence::scheduleRestoreStabilization()
+{
+    QTimer::singleShot(0, this, [this] {
+        if (!m_window) {
+            m_restoring = false;
+            return;
+        }
+        if (m_lastNonMinimizedState == PersistedWindowState::Windowed)
+            applyNormalGeometryWithCurrentFrame();
+
+        QTimer::singleShot(restoreStabilizationDelayMs, this, [this] {
+            if (m_window
+                && m_lastNonMinimizedState
+                    == PersistedWindowState::Windowed) {
+                applyNormalGeometryWithCurrentFrame();
+            }
+            m_restoring = false;
+        });
+    });
 }
 
 void WindowGeometryPersistence::save()
@@ -294,12 +394,21 @@ void WindowGeometryPersistence::save()
         stored.screenName = screen->name();
         stored.screenAvailableGeometry = screen->availableGeometry();
     }
+    const QString primaryName = QGuiApplication::primaryScreen()
+        ? QGuiApplication::primaryScreen()->name() : QString();
+    const QRect sanitized = resolvedNormalGeometry(
+        stored, currentScreens(), primaryName, minimumRestoreSize(),
+        m_window->frameMargins());
+    if (!sanitized.isValid())
+        return;
+    stored.normalGeometry = sanitized;
+    m_normalGeometry = sanitized;
     write(*m_settings, stored);
 }
 
 bool WindowGeometryPersistence::eventFilter(QObject *watched, QEvent *event)
 {
-    if (watched == m_window && !m_restoring) {
+    if (watched == m_window) {
         if (event->type() == QEvent::Close) {
             // The Go owner may terminate the sidecar immediately after QML's
             // closing handler sends quit. Persist before that signal crosses
@@ -307,8 +416,9 @@ bool WindowGeometryPersistence::eventFilter(QObject *watched, QEvent *event)
             // returning in time.
             m_saveTimer.stop();
             save();
-        } else if (event->type() == QEvent::Move
-                   || event->type() == QEvent::Resize) {
+        } else if (!m_restoring
+                   && (event->type() == QEvent::Move
+                       || event->type() == QEvent::Resize)) {
             rememberWindowedGeometry();
             m_saveTimer.start();
         }
@@ -325,6 +435,15 @@ void WindowGeometryPersistence::rememberWindowedGeometry()
     const QRect geometry = m_window->geometry();
     if (geometry.isValid() && geometry.width() > 0 && geometry.height() > 0)
         m_normalGeometry = geometry;
+}
+
+QSize WindowGeometryPersistence::minimumRestoreSize() const
+{
+    return QSize(
+        std::max(minimumRestoredWidth,
+                 m_window ? m_window->minimumWidth() : 0),
+        std::max(minimumRestoredHeight,
+                 m_window ? m_window->minimumHeight() : 0));
 }
 
 PersistedWindowState WindowGeometryPersistence::currentPersistentState() const

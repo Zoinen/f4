@@ -310,6 +310,21 @@ void VtuiGridItem::setTerminalInputEnabled(bool enabled)
     emit terminalInputEnabledChanged();
 }
 
+void VtuiGridItem::setRenderingEnabled(bool enabled)
+{
+    if (m_renderingEnabled == enabled) {
+        return;
+    }
+    m_renderingEnabled = enabled;
+    if (enabled) {
+        // Frames continue updating the authoritative cell buffer while the
+        // semantic surface covers this item. Paint the latest accumulated
+        // state exactly once when the fallback grid becomes visible again.
+        update();
+    }
+    emit renderingEnabledChanged();
+}
+
 bool VtuiGridItem::forwardKeyToController(int vk, int ch, bool down, int mods,
                                          bool repeat)
 {
@@ -355,6 +370,13 @@ void VtuiGridItem::releaseForwardedKeys()
 void VtuiGridItem::sendQtKey(int key, const QString &text, bool down,
                              int modifiers, quint32 nativeScanCode)
 {
+    sendQtKeyEvent(key, text, down, modifiers, nativeScanCode, false);
+}
+
+void VtuiGridItem::sendQtKeyEvent(int key, const QString &text, bool down,
+                                  int modifiers, quint32 nativeScanCode,
+                                  bool autoRepeat)
+{
     if (!m_controller) {
         return;
     }
@@ -366,13 +388,14 @@ void VtuiGridItem::sendQtKey(int key, const QString &text, bool down,
     }
     QKeyEvent event(down ? QEvent::KeyPress : QEvent::KeyRelease,
                     key, qtModifiers, nativeScanCode, nativeScanCode, 0,
-                    down ? text : QString());
+                    down ? text : QString(), autoRepeat);
     int nativeModifiers = modifiersFromEvent(qtModifiers);
     if (isEnhancedQtKey(key)) {
         nativeModifiers |= EnhancedKey;
     }
     const bool forwarded = forwardKeyToController(
-        keyToVk(&event), down ? keyChar(&event) : 0, down, nativeModifiers);
+        keyToVk(&event), down ? keyChar(&event) : 0, down, nativeModifiers,
+        autoRepeat);
     if (forwarded && down) {
         emit keyboardActivity();
     }
@@ -405,6 +428,45 @@ void VtuiGridItem::sendQtText(const QString &text)
     }
 }
 
+void VtuiGridItem::sendQtMouseAt(qreal x, qreal y, int button, bool down,
+                                 int modifiers)
+{
+    if (!m_controller) {
+        return;
+    }
+
+    const auto qtButton = static_cast<Qt::MouseButton>(button);
+    if (qtButton != Qt::LeftButton && qtButton != Qt::MiddleButton
+        && qtButton != Qt::RightButton) {
+        return;
+    }
+
+    const QPoint cell = cellForPosition(QPointF(x, y));
+    m_controller->sendMouse(cell.x(), cell.y(), buttonState(qtButton), 0,
+                             down,
+                             modifiersFromEvent(
+                                 Qt::KeyboardModifiers::fromInt(modifiers)));
+}
+
+void VtuiGridItem::sendQtWheelAt(qreal x, qreal y, int angleDeltaY,
+                                 int modifiers)
+{
+    if (!m_controller || angleDeltaY == 0) {
+        return;
+    }
+
+    const QPoint cell = cellForPosition(QPointF(x, y));
+    const int nativeModifiers = modifiersFromEvent(
+        Qt::KeyboardModifiers::fromInt(modifiers));
+    m_wheelRemainder += angleDeltaY;
+    while (std::abs(m_wheelRemainder) >= 120) {
+        const int direction = m_wheelRemainder > 0 ? 1 : -1;
+        m_controller->sendWheel(cell.x(), cell.y(), direction,
+                                nativeModifiers);
+        m_wheelRemainder -= direction * 120;
+    }
+}
+
 bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
 {
 #if defined(Q_OS_MACOS)
@@ -434,6 +496,14 @@ bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
 
 QSGNode *VtuiGridItem::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
 {
+    // The semantic UI keeps this item visible as a callable keyboard/IME
+    // sink. Opacity alone does not prevent an explicit update() from running
+    // this full-cell QPainter/texture-upload path, so suppress visual work
+    // independently while retaining every incoming frame in m_cells.
+    if (!m_renderingEnabled) {
+        return oldNode;
+    }
+
     auto *node = static_cast<QSGSimpleTextureNode *>(oldNode);
     if (!node) {
         node = new QSGSimpleTextureNode;
@@ -630,6 +700,7 @@ void VtuiGridItem::handleMessage(const QVariantMap &message)
             m_cells[index].ch = entry[1].toULongLong();
             m_cells[index].attr = entry[2].toULongLong();
         }
+        ++m_retainedFrameRevision;
         markDirty();
         return;
     }
@@ -675,7 +746,9 @@ void VtuiGridItem::resizeGrid(int cols, int rows)
 void VtuiGridItem::markDirty()
 {
     m_imageDirty = true;
-    update();
+    if (m_renderingEnabled) {
+        update();
+    }
 }
 
 qreal VtuiGridItem::currentDevicePixelRatio() const

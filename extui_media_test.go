@@ -861,7 +861,7 @@ func TestExtUiMediaServerCloseCancelsAndDrainsBlockingOpen(t *testing.T) {
 	}
 }
 
-func TestMediaVersionPrefersRevisionAndSemanticFingerprintTracksIt(t *testing.T) {
+func TestMediaVersionPrefersRevisionAndSemanticMetadataFingerprintTracksIt(t *testing.T) {
 	item := vfs.VFSItem{Name: "image.jpg", Size: 10, SizeKnown: true, Revision: "opaque-revision"}
 	if version, strength := mediaVersion(item, false, 7); version != item.Revision || strength != "strong" {
 		t.Fatalf("version/strength = %q/%q", version, strength)
@@ -882,11 +882,14 @@ func TestMediaVersionPrefersRevisionAndSemanticFingerprintTracksIt(t *testing.T)
 		t.Fatalf("session version ignored source refresh epoch: %q", refreshedSessionVersion)
 	}
 	panel := &FileSystemPanel{vfs: filesystem, entries: []*fileEntry{{VFSItem: item}}}
-	first, _ := panel.semanticFingerprints()
+	firstCatalog, firstMetadata, _ := panel.semanticFingerprints()
 	panel.entries[0].Revision = "opaque-revision-2"
-	second, _ := panel.semanticFingerprints()
-	if first == second {
-		t.Fatal("catalog fingerprint ignored VFSItem.Revision")
+	secondCatalog, secondMetadata, _ := panel.semanticFingerprints()
+	if firstCatalog != secondCatalog {
+		t.Fatal("VFSItem.Revision unexpectedly changed the base catalog fingerprint")
+	}
+	if firstMetadata == secondMetadata {
+		t.Fatal("metadata fingerprint ignored VFSItem.Revision")
 	}
 }
 

@@ -24,6 +24,15 @@ func (ev *EditorView) fadeSyntax(syntax []uint64, base uint64) []uint64 {
 	if len(syntax) == 0 {
 		return syntax
 	}
+	if vtui.FrameManager != nil {
+		if screen := vtui.FrameManager.Screen(); screen != nil && screen.Renderer != nil {
+			if renderer, ok := screen.Renderer.(interface {
+				WantsEditorSyntaxFade() bool
+			}); ok && !renderer.WantsEditorSyntaxFade() {
+				return syntax
+			}
+		}
+	}
 	if ev.syntaxFadeStart.IsZero() {
 		ev.syntaxFadeStart = time.Now()
 		// The frame heartbeat is too slow to carry a fade on its own.

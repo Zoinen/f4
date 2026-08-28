@@ -45,6 +45,40 @@ func collectQueuedTasks(idle time.Duration) []func() {
 	}
 }
 
+func TestEditorView_InMemoryStartIndexingAppliesSavedPosition(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	ev := NewEditorView(piecetable.New([]byte("zero\none\ntwo\n")), nil, "small.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 79, 24)
+	ev.SetVisible(true)
+
+	ev.targetLine = 2
+	ev.targetPos = 1
+	ev.targetTopRow = 1
+	ev.targetLeft = 0
+
+	ev.StartIndexing()
+
+	if ev.targetLine != -1 {
+		t.Fatalf("in-memory saved position remained pending: targetLine=%d", ev.targetLine)
+	}
+	if ev.CursorLine != 2 || ev.CursorPos != 1 {
+		t.Fatalf("cursor restored to %d:%d, want 2:1", ev.CursorLine, ev.CursorPos)
+	}
+
+	window := ev.semanticWindow()
+	rows := semanticStyledEditorWindowRows(ev, window, ev.semanticSurfaceWidth())
+	var rendered strings.Builder
+	for _, row := range rows {
+		for _, run := range row.Runs {
+			rendered.WriteString(run.Text)
+		}
+	}
+	if strings.Contains(rendered.String(), "Loading...") {
+		t.Fatalf("resolved in-memory editor still rendered a loading placeholder: %q", rendered.String())
+	}
+}
+
 // TestEditorView_IndexerRestoresTargetLineAfterLateDrain covers the FISH+ bug
 // where reopening a file at a saved position landed somewhere else entirely.
 //

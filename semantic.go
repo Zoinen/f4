@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -36,6 +37,7 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		ShowRightPanel: pf.showRightPanel,
 		Wide:           pf.wide,
 		WidePanel:      pf.widePanel,
+		PanelLayout:    pf.semanticPanelLayoutModel(ctx),
 		ShowKeyBar:     pf.showKeyBar,
 		TerminalBusy:   pf.isPtyBusy(),
 		TerminalActive: !pf.showPanels,
@@ -81,14 +83,64 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	return shell.ToMap()
 }
 
+func (pf *PanelsFrame) semanticPanelLayoutModel(ctx *vtui.SemanticContext) extui.PanelLayoutModel {
+	columns := pf.lastW
+	if ctx != nil && ctx.Width > 0 {
+		columns = ctx.Width
+	}
+	if columns < 0 {
+		columns = 0
+	}
+
+	widthDecrement := pf.widthDecrement
+	if maxWD := (columns / 2) - 10; maxWD > 0 {
+		if widthDecrement > maxWD {
+			widthDecrement = maxWD
+		}
+		if widthDecrement < -maxWD {
+			widthDecrement = -maxWD
+		}
+	} else {
+		widthDecrement = 0
+	}
+	splitColumn := 0
+	if columns > 0 {
+		splitColumn = columns/2 - widthDecrement
+	}
+
+	clampBottomInset := func(value int) int {
+		if value < 0 {
+			return 0
+		}
+		height := pf.lastH
+		if ctx != nil && ctx.Height > 0 {
+			height = ctx.Height
+		}
+		if maxHD := height - 7; maxHD > 0 && value > maxHD {
+			return maxHD
+		}
+		return value
+	}
+	return extui.PanelLayoutModel{
+		Columns:              columns,
+		SplitColumn:          splitColumn,
+		LeftBottomInsetRows:  clampBottomInset(pf.leftHeightDecrement),
+		RightBottomInsetRows: clampBottomInset(pf.rightHeightDecrement),
+	}
+}
+
 func (pf *PanelsFrame) semanticGridFallbackReason() string {
 	for _, panel := range pf.altPanels {
 		if panel != nil && panel.Kind() != "info" && panel.Kind() != "quick_view" {
 			return "the QML presentation does not yet support the " + panel.Kind() + " panel"
 		}
 	}
-	if pf.showPanels && (pf.widthDecrement != 0 || pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
-		return "the QML presentation does not yet support resized-panel layouts"
+	// Horizontal split geometry is part of the bounded shell contract and is
+	// rendered natively. Shortened panels expose live terminal rows, which need
+	// their own incremental terminal patch before that layout can leave the
+	// compatibility grid without regressing correctness.
+	if pf.showPanels && (pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
+		return "the QML presentation does not yet support shortened-panel layouts"
 	}
 	return ""
 }
@@ -197,9 +249,11 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		if vv.HexMode {
 			offset &= ^int64(0xF)
 		} else {
+			offset = vv.clampTextScrollOffset(offset)
 			offset = vv.backend.FindLineStart(offset)
 		}
 		vv.TopOffset = offset
+		vv.eofVisible = false
 		vv.semanticPendingScroll = false
 		vv.semanticPendingGeneration = 0
 		vv.semanticWindowGeneration = generation
@@ -219,6 +273,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 			vv.semanticWindowGeneration = generation
 			return true
 		}
+		offset = vv.clampTextScrollOffset(offset)
 		resolved, ready := vv.semanticResolveTextWindowOffset(offset)
 		if !ready {
 			vv.semanticPendingScroll = true
@@ -227,6 +282,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 			return true
 		}
 		vv.TopOffset = resolved
+		vv.eofVisible = false
 		vv.semanticPendingScroll = false
 		vv.semanticPendingGeneration = 0
 		vv.semanticWindowGeneration = generation
@@ -280,6 +336,7 @@ func HandleSemanticAction(action map[string]any) bool {
 						return false
 					}
 					menu.SetSelectPos(itemIndex)
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 
@@ -359,12 +416,11 @@ func HandleSemanticAction(action map[string]any) bool {
 						}
 					}
 					mb.Active = false
-					vtui.FrameManager.Redraw()
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 				mb.Active = true
 				mb.ActivateSubMenu(idx)
-				vtui.FrameManager.Redraw()
 				return true
 			}
 		}
@@ -401,11 +457,24 @@ func HandleSemanticAction(action map[string]any) bool {
 	}
 	for i := len(frames) - 1; i >= 0; i-- {
 		if handleSemanticFrameAction(frames[i], target, action) {
-			vtui.FrameManager.Redraw()
+			if !semanticMenuPresentationAction(actionName) {
+				vtui.FrameManager.Redraw()
+			}
 			return true
 		}
 	}
 	return false
+}
+
+func semanticMenuPresentationAction(actionName string) bool {
+	switch actionName {
+	case "menu_select", "menu.select", "menu_scroll", "menu.scroll",
+		"menuBar.itemSelect", "menu_bar_activate", "menuBar.activate",
+		"menuBar.toggle":
+		return true
+	default:
+		return false
+	}
 }
 
 func activeMenuBarSubmenu(mb *vtui.MenuBar, target string) *vtui.VMenu {
@@ -459,12 +528,14 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 				idx := semanticInt(action["index"])
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
 					menu.SetSelectPos(idx)
+					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
 				}
 			}
 		case "menu_scroll", "menu.scroll":
 			if menu, _ := appFrameVMenu(frame); menu != nil {
 				menu.ScrollBy(semanticInt(action["delta"]))
+				vtui.FrameManager.DeclareSemanticMenuState()
 				return true
 			}
 		}
@@ -548,7 +619,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 	case "activate_panel", "panel.activate":
 		side := semanticInt(action["side"])
 		if side >= 0 && side < len(pf.panels) {
-			pf.activeIdx = side
+			pf.setActivePanelForAction(action)
 			pf.lastKey = 0
 			if fsp, ok := pf.panels[side].(*FileSystemPanel); ok {
 				fsp.clearFastFindForSemanticPointerIntent()
@@ -579,6 +650,17 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		fsp.clearFastFindForSemanticPointerIntent()
 		fsp.pendingSelection = fsp.vfs.Base(oldPath)
 		fsp.ReadDirectory()
+		return true
+	case "panel_drive_menu", "panel.driveMenu":
+		side := pf.panelIndexForSemanticAction(action)
+		fsp := pf.panelForSemanticAction(action)
+		if side < 0 || fsp == nil {
+			return false
+		}
+		pf.setActivePanelForAction(action)
+		pf.lastKey = 0
+		fsp.clearFastFindForSemanticPointerIntent()
+		pf.showDriveMenu(side)
 		return true
 	case "panel_cursor", "panel.cursor":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
@@ -840,7 +922,16 @@ func closeActiveAutocompleteMenus() {
 func (pf *PanelsFrame) setActivePanelForAction(action map[string]any) {
 	side := pf.panelIndexForSemanticAction(action)
 	if side >= 0 && side < len(pf.panels) {
+		activeChanged := pf.activeIdx != side
 		pf.activeIdx = side
+		// A native panel interaction has the same input-focus semantics as a
+		// terminal mouse press. In search-first mode it must return keyboard
+		// input to the selected panel so the following Tab switches panels. An
+		// already panel-focused active side is a true no-op and must not enqueue
+		// another redraw/semantic export.
+		if activeChanged || pf.commandLineFocused {
+			pf.setCommandLineFocus(false)
+		}
 	}
 }
 
@@ -901,6 +992,11 @@ func (fp *FileSystemPanel) semanticEntryIndex(action map[string]any) (idx int, o
 				return idx, true
 			}
 		}
+		// Dropping an action is invisible to the user, so leave a trail: a
+		// client whose intent is silently discarded here simply appears to
+		// stop responding to clicks.
+		vtui.DebugLog("SEMANTIC: dropped action, entryId %q not in %q (%d entries, catalogRevision %d)",
+			entryID, fp.vfs.GetPath(), len(fp.entries), fp.catalogRevision)
 		return 0, false
 	}
 
@@ -984,17 +1080,14 @@ func (fp *FileSystemPanel) semanticSourceInfo() (sourceKind string, previewCapab
 	return "vfs", fp.vfs != nil
 }
 
-func (fp *FileSystemPanel) semanticEntryMetadata(entry *fileEntry, sourceKind string) (entryID, localPath string) {
-	if provider, ok := fp.vfs.(vfs.LocalPathProvider); ok {
-		path := fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
-		if resolved, err := provider.LocalPath(path); err == nil {
-			localPath = resolved
-		}
-	}
-	path := fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
-	identity := sourceKind + "\x00" + mediaSourceKey(fp.vfs, path)
+func (fp *FileSystemPanel) semanticEntryMetadata(entry *fileEntry, sourceKind string) (entryID, logicalPath string) {
+	logicalPath = fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
+	// Stable semantic identity must not perform LocalPath resolution.  Besides
+	// being potentially expensive for remote providers, local materialization
+	// is deferred metadata and must not advance the base catalog revision.
+	identity := sourceKind + "\x00" + fmt.Sprintf("%T", fp.vfs) + "\x00" + logicalPath
 	sum := sha256.Sum256([]byte(identity))
-	return fmt.Sprintf("entry-%x", sum[:16]), localPath
+	return fmt.Sprintf("entry-%x", sum[:16]), logicalPath
 }
 
 func writeSemanticFingerprintString(h hash.Hash, value string) {
@@ -1011,13 +1104,85 @@ func semanticMTimeNanos(value time.Time) int64 {
 	return value.UnixNano()
 }
 
-func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
+func semanticWriteUint64(h hash.Hash, value uint64) {
+	var encoded [8]byte
+	binary.LittleEndian.PutUint64(encoded[:], value)
+	_, _ = h.Write(encoded[:])
+}
+
+func semanticImageExtensions() map[string]struct{} {
+	// Snapshotting the decoder registry is extension-only: it
+	// never opens a file, invokes a decoder, or probes a plugin.  This gives Qt
+	// an explicit answer in the first catalog and prevents synchronous format
+	// discovery while delegates are being created.
+	extensions := make(map[string]struct{})
+	for _, decoder := range allImageDecoders() {
+		for _, extension := range decoder.Extensions {
+			extension = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(extension)), ".")
+			if extension != "" {
+				extensions[extension] = struct{}{}
+			}
+		}
+	}
+	return extensions
+}
+
+func semanticEntryIsImage(entry *fileEntry, extensions map[string]struct{}) bool {
+	if entry == nil || entry.IsDir || entry.Name == ".." {
+		return false
+	}
+	_, ok := extensions[imageExtension(entry.Name)]
+	return ok
+}
+
+func semanticHighlighterRevision() int64 {
+	if GlobalFileHighlighter == nil {
+		return 0
+	}
+	return GlobalFileHighlighter.Revision
+}
+
+// semanticHighlighterTimeDependencies reports the timestamp fields which can
+// affect the currently configured highlight result. MTime is always part of
+// deferred metadata, but ATime/CTime are not: hashing them unconditionally
+// makes an ordinary Windows directory traversal look like a semantic metadata
+// change because the OS updates the parent directory's access time. Keep those
+// otherwise-invisible timestamps authoritative only when a rule actually uses
+// them.
+func semanticHighlighterTimeDependencies() (accessed, created bool) {
+	if GlobalFileHighlighter == nil {
+		return false, false
+	}
+	for _, rule := range GlobalFileHighlighter.Rules {
+		usesDate := !rule.DateAfter.IsZero() || rule.DateAfterDur > 0 ||
+			!rule.DateBefore.IsZero() || rule.DateBeforeDur > 0
+		if !usesDate {
+			continue
+		}
+		switch rule.DateType {
+		case DateAccessed:
+			accessed = true
+		case DateCreated:
+			created = true
+		}
+	}
+	return accessed, created
+}
+
+func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) (uint64, uint64, uint64) {
 	catalog := fnv.New64a()
+	metadata := fnv.New64a()
 	selection := fnv.New64a()
 	selectedEntryIDs := make([]string, 0)
 	sourceKind, previewCapable := fp.semanticSourceInfo()
+	imageExtensions := semanticImageExtensions()
+	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
+	highlightUsesATime, highlightUsesCTime := semanticHighlighterTimeDependencies()
 	writeSemanticFingerprintString(catalog, sourceKind)
 	writeSemanticFingerprintString(catalog, fp.vfs.GetPath())
+	writeSemanticFingerprintString(metadata, sourceKind)
+	writeSemanticFingerprintString(metadata, fp.vfs.GetPath())
+	semanticWriteUint64(metadata, uint64(semanticHighlighterRevision()))
 	// This presentation option changes the normalized display fields consumed
 	// by unified Columns/Details without changing any VFS entry. Treat it as a
 	// catalog change so persistent Gallery sessions receive the new appearance
@@ -1032,40 +1197,68 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
 	} else {
 		_, _ = catalog.Write([]byte{0})
 	}
-	for _, entry := range fp.entries {
-		entryID, localPath := fp.semanticEntryMetadata(entry, sourceKind)
+	for _, entry := range entries {
+		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
 		writeSemanticFingerprintString(catalog, entryID)
-		writeSemanticFingerprintString(catalog, localPath)
+		writeSemanticFingerprintString(catalog, logicalPath)
 		writeSemanticFingerprintString(catalog, entry.Name)
-		writeSemanticFingerprintString(catalog, entry.Mode)
-		writeSemanticFingerprintString(catalog, entry.Revision)
-		var value [8]byte
-		binary.LittleEndian.PutUint64(value[:], uint64(entry.Size))
-		_, _ = catalog.Write(value[:])
-		binary.LittleEndian.PutUint64(value[:], uint64(semanticMTimeNanos(entry.MTime)))
-		_, _ = catalog.Write(value[:])
-		flags := byte(0)
+		baseFlags := byte(0)
 		if entry.IsDir {
-			flags |= 1 << 0
+			baseFlags |= 1 << 0
+		}
+		if entry.Name == ".." {
+			baseFlags |= 1 << 1
+		}
+		if entry.NoExtension {
+			baseFlags |= 1 << 2
+		}
+		if semanticEntryIsImage(entry, imageExtensions) {
+			baseFlags |= 1 << 3
 		}
 		if entry.IsHidden {
-			flags |= 1 << 1
+			baseFlags |= 1 << 4
 		}
+		_, _ = catalog.Write([]byte{baseFlags})
+
+		writeSemanticFingerprintString(metadata, entryID)
+		writeSemanticFingerprintString(metadata, entry.Mode)
+		// Provider revisions describe file content, not row identity/layout.
+		// Keep them out of CatalogRevision while still invalidating deferred
+		// metadata and broker-backed derived artifacts when bytes change.
+		writeSemanticFingerprintString(metadata, entry.Revision)
+		semanticWriteUint64(metadata, uint64(entry.Size))
+		semanticWriteUint64(metadata, uint64(semanticMTimeNanos(entry.MTime)))
+		if highlightUsesATime {
+			semanticWriteUint64(metadata, uint64(semanticMTimeNanos(entry.ATime)))
+		}
+		if highlightUsesCTime {
+			semanticWriteUint64(metadata, uint64(semanticMTimeNanos(entry.CTime)))
+		}
+		// Highlight rules can derive read-only/system/archive state from these
+		// platform mode fields even though the raw values are not serialized.
+		semanticWriteUint64(metadata, uint64(entry.UnixMode))
+		semanticWriteUint64(metadata, uint64(entry.WinAttrs))
+		metadataFlags := byte(0)
 		if entry.IsExecutable {
-			flags |= 1 << 2
+			metadataFlags |= 1 << 0
 		}
-		// IsCached describes how this snapshot was obtained, not the identity
-		// or presentation of the catalog. A warm navigation first publishes
-		// cached entries and then replaces them with the same fresh entries;
-		// including this bit needlessly advances CatalogRevision and makes
-		// native clients rebuild an unchanged catalog twice.
+		// Cache provenance is deliberately absent from the deferred metadata
+		// protocol. Replacing an otherwise identical cached row with its fresh
+		// counterpart must therefore not invalidate a metadata pull or force a
+		// second full catalog apply in the native frontend.
+		if !metadataDeferred && entry.IsCached {
+			metadataFlags |= 1 << 1
+		}
 		if entry.SizeCalculated {
-			flags |= 1 << 3
+			metadataFlags |= 1 << 2
 		}
-		if entry.SizeKnown {
-			flags |= 1 << 5
+		// A known empty file and a not-yet-enriched base row both carry Size=0.
+		// Keep that distinction in MetadataRevision so the later zero-byte
+		// enrichment invalidates an in-flight provisional metadata snapshot.
+		if entry.SizeKnown || entry.Size != 0 {
+			metadataFlags |= 1 << 3
 		}
-		_, _ = catalog.Write([]byte{flags})
+		_, _ = metadata.Write([]byte{metadataFlags})
 		if entry.Selected {
 			selectedEntryIDs = append(selectedEntryIDs, entryID)
 		}
@@ -1078,30 +1271,181 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64) {
 	for _, entryID := range selectedEntryIDs {
 		writeSemanticFingerprintString(selection, entryID)
 	}
-	return catalog.Sum64(), selection.Sum64()
+	return catalog.Sum64(), metadata.Sum64(), selection.Sum64()
+}
+
+func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64, uint64) {
+	return fp.semanticFingerprintsForEntries(fp.entries)
+}
+
+// semanticDeferredEntriesEquivalent compares exactly the state owned by a
+// negotiated deferred-catalog client. It deliberately inherits the same
+// cache-provenance and conditional ATime/CTime rules as revision generation,
+// without allocating complete semantic models or MessagePack-ready maps.
+func (fp *FileSystemPanel) semanticDeferredEntriesEquivalent(candidate []*fileEntry) bool {
+	if !extUiPanelCatalogMetadataIsEnabled() || len(candidate) != len(fp.entries) {
+		return false
+	}
+	// Deferred metadata resolves LocalPath lazily. The built-in OS VFS mapping
+	// is a pure path conversion; an arbitrary materializing provider may change
+	// its answer without changing VFSItem metadata, which would make reusing the
+	// old metadata revision incorrect. Providers without this capability have no
+	// local-path field to invalidate.
+	if _, hasLocalPaths := fp.vfs.(vfs.LocalPathProvider); hasLocalPaths {
+		if _, stableOSPath := fp.vfs.(*vfs.OSVFS); !stableOSPath {
+			return false
+		}
+	}
+	if !fp.semanticCachedCatalogExported {
+		return false
+	}
+	currentCatalog, currentMetadata, currentSelection :=
+		fp.semanticFingerprintsForEntries(fp.entries)
+	// Skipping the completion redraw is safe only after the cached view (and
+	// any interaction that happened while it was visible) has reached the
+	// negotiated semantic client. Otherwise updating the cached fingerprints
+	// below could acknowledge state which was never exported.
+	if !fp.semanticCatalogInitialized || !fp.semanticMetadataInitialized ||
+		!fp.semanticSelectionInitialized ||
+		currentCatalog != fp.semanticCatalogFingerprint ||
+		currentMetadata != fp.semanticMetadataFingerprint ||
+		currentSelection != fp.semanticSelectionFingerprint {
+		return false
+	}
+	candidateCatalog, candidateMetadata, candidateSelection :=
+		fp.semanticFingerprintsForEntries(candidate)
+	return currentCatalog == candidateCatalog &&
+		currentMetadata == candidateMetadata &&
+		currentSelection == candidateSelection
 }
 
 func (fp *FileSystemPanel) updateSemanticRevisions() {
-	catalog, selection := fp.semanticFingerprints()
-	if !fp.semanticCatalogInitialized || catalog != fp.semanticCatalogFingerprint {
+	catalog, metadata, selection := fp.semanticFingerprints()
+	catalogChanged := !fp.semanticCatalogInitialized || catalog != fp.semanticCatalogFingerprint
+	metadataChanged := !fp.semanticMetadataInitialized || metadata != fp.semanticMetadataFingerprint
+	// Legacy protocol-v2 clients receive the complete entry metadata in the
+	// panel catalog and have no independent metadata revision. Preserve their
+	// original revision contract by advancing CatalogRevision for every
+	// serialized metadata change. Negotiated clients keep the two revision
+	// domains separate so metadata never invalidates the fast base catalog.
+	if catalogChanged || (!extUiPanelCatalogMetadataIsEnabled() && metadataChanged) {
 		fp.semanticCatalogFingerprint = catalog
 		fp.semanticCatalogInitialized = true
 		fp.catalogRevision++
 	}
-	if !fp.semanticSelectionInitialized || selection != fp.semanticSelectionFingerprint {
+	if metadataChanged {
+		fp.semanticMetadataFingerprint = metadata
+		fp.semanticMetadataInitialized = true
+		fp.metadataRevision++
+	}
+	if fp.semanticSelectionNeedsSync {
+		// SetItemSelected already advanced SelectionRevision and recorded the
+		// exact changed rows. Synchronize the validation fingerprint without
+		// advancing the revision a second time during a later full fallback.
+		fp.semanticSelectionFingerprint = selection
+		fp.semanticSelectionInitialized = true
+		fp.semanticSelectionNeedsSync = false
+	} else if !fp.semanticSelectionInitialized || selection != fp.semanticSelectionFingerprint {
+		if fp.semanticSelectionInitialized {
+			// A caller changed selection without SetItemSelected. We know the new
+			// aggregate state but not the exact rows, so force the rare bounded-ID
+			// replacement instead of emitting an empty or incomplete sparse delta.
+			fp.semanticSelectionBaseRevision = fp.selectionRevision
+			fp.semanticSelectionChanges = nil
+			fp.semanticSelectionOverflow = true
+		}
 		fp.semanticSelectionFingerprint = selection
 		fp.semanticSelectionInitialized = true
 		fp.selectionRevision++
 	}
 }
 
+const maxSemanticSelectionChanges = 4096
+
+type semanticSelectionChange struct {
+	Index    int
+	EntryID  string
+	Selected bool
+}
+
+func (fp *FileSystemPanel) semanticSelectionPatch(baseRevision int64) (extui.PanelPatch, bool) {
+	if fp == nil || baseRevision == fp.selectionRevision {
+		return extui.PanelPatch{}, false
+	}
+	patch := extui.PanelPatch{
+		Side:              -1,
+		PanelID:           vtui.SemanticID(fp),
+		CatalogRevision:   fp.catalogRevision,
+		BaseSelection:     baseRevision,
+		SelectionRevision: fp.selectionRevision,
+	}
+	if fp.semanticSelectionOverflow || baseRevision != fp.semanticSelectionBaseRevision {
+		patch.Op = "selection_replace"
+		patch.SelectedEntryIDs = fp.semanticSelectedEntryIDs()
+		return patch, true
+	}
+	patch.Op = "selection_delta"
+	changes := make([]semanticSelectionChange, 0, len(fp.semanticSelectionChanges))
+	for _, change := range fp.semanticSelectionChanges {
+		changes = append(changes, change)
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Index == changes[j].Index {
+			return changes[i].EntryID < changes[j].EntryID
+		}
+		return changes[i].Index < changes[j].Index
+	})
+	patch.SelectionChanges = make([]extui.M, 0, len(changes))
+	for _, change := range changes {
+		patch.SelectionChanges = append(patch.SelectionChanges, extui.M{
+			"index": change.Index, "entryId": change.EntryID,
+			"selected": change.Selected,
+		})
+	}
+	return patch, true
+}
+
+func (fp *FileSystemPanel) semanticSelectedEntryIDs() []string {
+	if fp == nil {
+		return nil
+	}
+	cache := fp.semanticStaticCache
+	selected := make([]string, 0, len(fp.selectedItems))
+	if cache != nil && cache.catalogRevision == fp.catalogRevision && len(cache.entries) == len(fp.entries) {
+		for index, entry := range fp.entries {
+			if entry.Selected {
+				selected = append(selected, cache.entries[index].EntryID)
+			}
+		}
+	} else {
+		sourceKind, _ := fp.semanticSourceInfo()
+		for _, entry := range fp.entries {
+			if !entry.Selected {
+				continue
+			}
+			entryID, _ := fp.semanticEntryMetadata(entry, sourceKind)
+			selected = append(selected, entryID)
+		}
+	}
+	sort.Strings(selected)
+	return selected
+}
+
+func (fp *FileSystemPanel) acknowledgeSemanticSelection(revision int64) {
+	if fp == nil || revision != fp.selectionRevision {
+		return
+	}
+	fp.semanticSelectionBaseRevision = revision
+	fp.semanticSelectionChanges = nil
+	fp.semanticSelectionOverflow = false
+}
+
 type semanticPanelStaticCache struct {
 	catalogRevision       int64
-	highlightRevision     int64
 	separateFileExtension bool
-	entries               []extui.FileEntryModel
+	highlighterRevision   int64
 	highlightStyles       map[string]extui.HighlightStyleModel
-	totalSize             int64
+	entries               []extui.FileEntryModel
 	mediaBroker           *extUiMediaBroker
 	mediaSourceEpoch      int64
 }
@@ -1111,19 +1455,20 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 	cache := fp.semanticStaticCache
 	if cache != nil &&
 		cache.catalogRevision == fp.catalogRevision &&
-		cache.highlightRevision == GlobalFileHighlighter.Revision &&
 		cache.separateFileExtension == AppConfig.SeparateFileExtensions &&
+		cache.highlighterRevision == semanticHighlighterRevision() &&
 		cache.mediaBroker == mediaBroker &&
 		cache.mediaSourceEpoch == fp.mediaSourceEpoch {
 		return cache
 	}
 
+	imageExtensions := semanticImageExtensions()
 	cache = &semanticPanelStaticCache{
 		catalogRevision:       fp.catalogRevision,
-		highlightRevision:     GlobalFileHighlighter.Revision,
 		separateFileExtension: AppConfig.SeparateFileExtensions,
-		entries:               make([]extui.FileEntryModel, 0, len(fp.entries)),
+		highlighterRevision:   semanticHighlighterRevision(),
 		highlightStyles:       make(map[string]extui.HighlightStyleModel),
+		entries:               make([]extui.FileEntryModel, 0, len(fp.entries)),
 		mediaBroker:           mediaBroker,
 		mediaSourceEpoch:      fp.mediaSourceEpoch,
 	}
@@ -1131,7 +1476,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 	resourceIDs := make([]string, 0, len(fp.entries))
 	caps := fp.vfs.GetCapabilities()
 	for i, entry := range fp.entries {
-		entryID, localPath := fp.semanticEntryMetadata(entry, sourceKind)
+		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
 		displayBaseName := entry.Name
 		displayExtension := ""
 		if AppConfig.SeparateFileExtensions && !entry.NoExtension && !entry.IsDir && entry.Name != ".." {
@@ -1140,15 +1485,19 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 				displayExtension = extension
 			}
 		}
-		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(&entry.VFSItem)
+		// Only name/dir/hidden-based rules can resolve here: entry.VFSItem
+		// carries just the fast base-pass fields at this point, and
+		// SemanticStyle(..., false) skips any rule that needs more (see
+		// HighlightRule.hasDeferredPredicate). The metadata pass
+		// (semanticPanelModel's !metadataDeferred loop and
+		// BuildPanelCatalogMetadataChunk) recomputes with the complete item
+		// and overwrites this provisional style.
+		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(&entry.VFSItem, false)
 		if highlightStyleID != "" {
 			cache.highlightStyles[highlightStyleID] = highlightStyle
 		}
-		if !entry.IsDir {
-			cache.totalSize += entry.Size
-		}
-		entryPath := fp.vfs.Join(fp.vfs.GetPath(), entry.Name)
-		storage := mediaStorageClass(caps, localPath)
+		entryPath := logicalPath
+		storage := mediaStorageClass(caps, "")
 		version, versionStrength := mediaSourceVersion(fp.vfs, entry.VFSItem, storage == vfs.StorageClassLocal, fp.catalogRevision, fp.mediaSourceEpoch)
 		source := extui.ImageSourceModel{
 			SourceKey:       mediaSourceKey(fp.vfs, entryPath),
@@ -1162,7 +1511,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		if mediaBroker != nil && !entry.IsDir && entry.Name != ".." {
 			descriptor := mediaBroker.Register(mediaSourceRegistration{
 				PanelID: panelID, CatalogVersion: fp.catalogRevision, SourceEpoch: fp.mediaSourceEpoch, FS: fp.vfs,
-				Path: entryPath, Item: entry.VFSItem, LocalPath: localPath,
+				Path: entryPath, Item: entry.VFSItem,
 			})
 			source = extui.ImageSourceModel{
 				ResourceID: descriptor.ResourceID, SourceKey: descriptor.SourceKey,
@@ -1182,20 +1531,13 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 			Name:             entry.Name,
 			DisplayBaseName:  displayBaseName,
 			DisplayExtension: displayExtension,
-			LocalPath:        localPath,
-			Size:             entry.Size,
-			SizeText:         semanticFileSize(entry),
+			Path:             logicalPath,
 			IsDir:            entry.IsDir,
 			IsUp:             entry.Name == "..",
 			IsHidden:         entry.IsHidden,
-			IsExecutable:     entry.IsExecutable,
-			IsCached:         entry.IsCached,
-			SizeCalculated:   entry.SizeCalculated,
-			MTime:            entry.MTime.Format("2006-01-02 15:04"),
-			MTimeNanos:       semanticMTimeNanos(entry.MTime),
+			IsImage:          semanticEntryIsImage(entry, imageExtensions),
 			Version:          version,
 			Source:           sourceModel,
-			Mode:             entry.Mode,
 			HighlightStyleID: highlightStyleID,
 		})
 	}
@@ -1206,8 +1548,191 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 	return cache
 }
 
+type semanticPanelMetadataEntry struct {
+	index          int
+	entryID        string
+	logicalPath    string
+	item           vfs.VFSItem
+	sizeCalculated bool
+}
+
+type semanticPanelMetadataSnapshot struct {
+	panelID           string
+	path              string
+	catalogRevision   int64
+	metadataRevision  int64
+	highlightRevision int64
+	provider          vfs.LocalPathProvider
+	highlighter       *FileHighlighter
+	entries           []semanticPanelMetadataEntry
+	totalSize         int64
+}
+
+var semanticPanelMetadataSnapshots sync.Map // panel semantic ID -> *semanticPanelMetadataSnapshot
+
+// unpublishSemanticMetadataSnapshot releases the process-global reference to
+// a panel catalog when its owning workspace is disposed. CompareAndDelete is
+// intentional: a stale panel must never remove a newer snapshot which happens
+// to have been published under the same semantic ID.
+func (fp *FileSystemPanel) unpublishSemanticMetadataSnapshot() {
+	if fp == nil || fp.semanticMetadataSnapshot == nil {
+		return
+	}
+	snapshot := fp.semanticMetadataSnapshot
+	fp.semanticMetadataSnapshot = nil
+	semanticPanelMetadataSnapshots.CompareAndDelete(snapshot.panelID, snapshot)
+}
+
+func cloneSemanticFileHighlighter(source *FileHighlighter) *FileHighlighter {
+	if source == nil {
+		return nil
+	}
+	clone := &FileHighlighter{Revision: source.Revision, Rules: make([]HighlightRule, len(source.Rules))}
+	copy(clone.Rules, source.Rules)
+	for i := range clone.Rules {
+		clone.Rules[i].Masks = append([]string(nil), source.Rules[i].Masks...)
+	}
+	return clone
+}
+
+func (fp *FileSystemPanel) publishSemanticMetadataSnapshot(panelID string, baseEntries []extui.FileEntryModel) {
+	path := fp.vfs.GetPath()
+	cache := fp.semanticMetadataSnapshot
+	if cache != nil && cache.panelID == panelID && cache.path == path &&
+		cache.catalogRevision == fp.catalogRevision && cache.metadataRevision == fp.metadataRevision {
+		semanticPanelMetadataSnapshots.Store(panelID, cache)
+		return
+	}
+
+	snapshot := &semanticPanelMetadataSnapshot{
+		panelID:           panelID,
+		path:              path,
+		catalogRevision:   fp.catalogRevision,
+		metadataRevision:  fp.metadataRevision,
+		highlightRevision: semanticHighlighterRevision(),
+		highlighter:       cloneSemanticFileHighlighter(GlobalFileHighlighter),
+		entries:           make([]semanticPanelMetadataEntry, 0, len(fp.entries)),
+	}
+	if provider, ok := fp.vfs.(vfs.LocalPathProvider); ok {
+		snapshot.provider = provider
+	}
+	for index, entry := range fp.entries {
+		base := baseEntries[index]
+		snapshot.entries = append(snapshot.entries, semanticPanelMetadataEntry{
+			index:          index,
+			entryID:        base.EntryID,
+			logicalPath:    base.Path,
+			item:           entry.VFSItem,
+			sizeCalculated: entry.SizeCalculated,
+		})
+		if !entry.IsDir {
+			snapshot.totalSize += entry.Size
+		}
+	}
+	fp.semanticMetadataSnapshot = snapshot
+	semanticPanelMetadataSnapshots.Store(panelID, snapshot)
+}
+
+// commitSemanticMetadataMutation advances the deferred metadata revision and
+// replaces the pull snapshot at the exact point where panel rows were
+// enriched. Keep this out of semanticPanelHeaderModel: that exporter runs on
+// ordinary cursor/layout redraws and must remain row-free. Actual metadata
+// commits are rare and already touch every changed row, so one fingerprint
+// pass here preserves the compact state_update path without adding per-frame
+// catalog work.
+func (fp *FileSystemPanel) commitSemanticMetadataMutation() {
+	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
+		return
+	}
+	fp.updateSemanticRevisions()
+	static := fp.semanticStaticCache
+	if static == nil || static.catalogRevision != fp.catalogRevision ||
+		len(static.entries) != len(fp.entries) {
+		// A concurrent identity/order change requires the normal full-catalog
+		// fallback. semanticPanelHeaderModel will reject this stale cache.
+		return
+	}
+	fp.publishSemanticMetadataSnapshot(vtui.SemanticID(fp), static.entries)
+}
+
+const (
+	defaultPanelCatalogMetadataChunkLimit = 8
+	maxPanelCatalogMetadataChunkLimit     = 128
+)
+
+// BuildPanelCatalogMetadataChunk returns exactly one bounded deferred metadata
+// chunk. Every request is checked against the latest published base snapshot;
+// a navigation or metadata change therefore makes an old request fail cleanly.
+func BuildPanelCatalogMetadataChunk(panelID, path string, catalogRevision, metadataRevision int64,
+	offset, limit int) (map[string]any, bool) {
+	loaded, ok := semanticPanelMetadataSnapshots.Load(panelID)
+	if !ok {
+		return nil, false
+	}
+	snapshot, ok := loaded.(*semanticPanelMetadataSnapshot)
+	if !ok || snapshot == nil || snapshot.panelID != panelID || snapshot.path != path ||
+		snapshot.catalogRevision != catalogRevision || snapshot.metadataRevision != metadataRevision {
+		return nil, false
+	}
+	if offset < 0 || offset > len(snapshot.entries) {
+		return nil, false
+	}
+	if limit <= 0 {
+		limit = defaultPanelCatalogMetadataChunkLimit
+	}
+	if limit > maxPanelCatalogMetadataChunkLimit {
+		limit = maxPanelCatalogMetadataChunkLimit
+	}
+	end := offset + limit
+	if end > len(snapshot.entries) {
+		end = len(snapshot.entries)
+	}
+
+	chunk := extui.PanelCatalogMetadataModel{
+		PanelID:           panelID,
+		Path:              path,
+		CatalogRevision:   catalogRevision,
+		MetadataRevision:  metadataRevision,
+		HighlightRevision: snapshot.highlightRevision,
+		Offset:            offset,
+		Limit:             limit,
+		Total:             len(snapshot.entries),
+		TotalSize:         snapshot.totalSize,
+		Final:             end == len(snapshot.entries),
+		Entries:           make([]extui.FileEntryMetadataModel, 0, end-offset),
+		HighlightStyles:   make(map[string]extui.HighlightStyleModel),
+	}
+	for _, source := range snapshot.entries[offset:end] {
+		localPath := ""
+		if snapshot.provider != nil {
+			if resolved, err := snapshot.provider.LocalPath(source.logicalPath); err == nil {
+				localPath = resolved
+			}
+		}
+		highlightStyleID, highlightStyle := snapshot.highlighter.SemanticStyle(&source.item, true)
+		if highlightStyleID != "" {
+			chunk.HighlightStyles[highlightStyleID] = highlightStyle
+		}
+		entry := fileEntry{VFSItem: source.item, SizeCalculated: source.sizeCalculated}
+		mtimeNanos := semanticMTimeNanos(source.item.MTime)
+		chunk.Entries = append(chunk.Entries, extui.FileEntryMetadataModel{
+			Index:            source.index,
+			EntryID:          source.entryID,
+			LocalPath:        localPath,
+			Size:             semanticFileSizeValue(&entry),
+			SizeText:         semanticFileSize(&entry),
+			MTime:            source.item.MTime.Format("2006-01-02 15:04"),
+			MTimeNanos:       mtimeNanos,
+			Mode:             source.item.Mode,
+			HighlightStyleID: highlightStyleID,
+		})
+	}
+	return chunk.ToMap(), true
+}
+
 func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
 	fp.updateSemanticRevisions()
+	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
 	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
 	galleryLayoutRevision := fp.galleryLayoutRevision
 	if galleryLayoutRevision < 1 {
@@ -1216,16 +1741,72 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	sourceKind, previewCapable := fp.semanticSourceInfo()
 	static := fp.semanticStaticPanelData(sourceKind)
 	entries := append([]extui.FileEntryModel(nil), static.entries...)
+	var fastFindMatches map[string]extui.FastFindMatchModel
+	fastFindMatchColor := ""
+	if fp.fastFindMode && fp.fastFindStr != "" {
+		fastFindMatches = make(map[string]extui.FastFindMatchModel)
+		fastFindMatchColor = semanticAttrColor(
+			vtui.Palette[ColPanelHighlightText], true)
+	}
 	selectedCount := 0
 	var selectedSize int64
+	var totalSize int64
+	highlightRevision := int64(0)
+	var highlightStyles map[string]extui.HighlightStyleModel
+	var localPathProvider vfs.LocalPathProvider
+	if !metadataDeferred {
+		highlightRevision = semanticHighlighterRevision()
+		highlightStyles = make(map[string]extui.HighlightStyleModel)
+		localPathProvider, _ = fp.vfs.(vfs.LocalPathProvider)
+	} else {
+		// entries already carries each row's provisional (name/dir/hidden
+		// rule) HighlightStyleID copied from static.entries above; expose the
+		// styles it references so the frontend can resolve them immediately
+		// instead of waiting for the metadata pass.
+		highlightRevision = static.highlighterRevision
+		highlightStyles = static.highlightStyles
+	}
 	for i, entry := range fp.entries {
 		entries[i].Selected = entry.Selected
-		// Cache provenance is deliberately outside CatalogRevision, but keep
-		// the exported transient field truthful for clients that display it.
-		entries[i].IsCached = entry.IsCached
+		if fastFindMatches != nil {
+			if start, length, ok := fp.fastFindMatch(entry.Name); ok && length > 0 {
+				fastFindMatches[entries[i].EntryID] = extui.FastFindMatchModel{
+					Start: start, Length: length,
+				}
+			}
+		}
 		if entry.Selected {
 			selectedCount++
+		}
+		if metadataDeferred {
+			continue
+		}
+		if entry.Selected {
 			selectedSize += entry.Size
+		}
+		if !entry.IsDir {
+			totalSize += entry.Size
+		}
+
+		if localPathProvider != nil {
+			if resolved, err := localPathProvider.LocalPath(entries[i].Path); err == nil {
+				entries[i].LocalPath = resolved
+			}
+		}
+		entries[i].Size = semanticFileSizeValue(entry)
+		entries[i].SizeText = semanticFileSize(entry)
+		entries[i].IsHidden = entry.IsHidden
+		entries[i].IsExecutable = entry.IsExecutable
+		entries[i].IsCached = entry.IsCached
+		entries[i].SizeCalculated = entry.SizeCalculated
+		entries[i].MTime = entry.MTime.Format("2006-01-02 15:04")
+		entries[i].MTimeNanos = semanticMTimeNanos(entry.MTime)
+		entries[i].Version = fmt.Sprintf("%d:%d", entries[i].MTimeNanos, entry.Size)
+		entries[i].Mode = entry.Mode
+		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(&entry.VFSItem, true)
+		entries[i].HighlightStyleID = highlightStyleID
+		if highlightStyleID != "" {
+			highlightStyles[highlightStyleID] = highlightStyle
 		}
 	}
 	cursorEntryID := ""
@@ -1238,12 +1819,24 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		// updateTitle. Production panels always keep this free of TUI chrome.
 		semanticTitle = fp.currentTitle
 	}
+	panelID := vtui.SemanticID(fp)
+	if metadataDeferred {
+		fp.publishSemanticMetadataSnapshot(panelID, static.entries)
+	} else {
+		fp.unpublishSemanticMetadataSnapshot()
+	}
+	loading := fp.isLoading
+	if metadataDeferred && fp.semanticCachedCatalogReady {
+		loading = false
+		fp.semanticCachedCatalogExported = true
+	}
 	return extui.PanelModel{
-		ID:                     vtui.SemanticID(fp),
+		ID:                     panelID,
 		Side:                   side,
 		Active:                 active,
 		Path:                   fp.vfs.GetPath(),
 		Title:                  semanticTitle,
+		ShowFileInfo:           AppConfig.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
@@ -1252,24 +1845,107 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		PreviewCapable:         previewCapable,
 		CatalogRevision:        fp.catalogRevision,
 		SelectionRevision:      fp.selectionRevision,
-		HighlightRevision:      GlobalFileHighlighter.Revision,
-		HighlightStyles:        static.highlightStyles,
+		MetadataDeferred:       metadataDeferred,
+		MetadataRevision:       fp.metadataRevision,
+		HighlightRevision:      highlightRevision,
+		HighlightStyles:        highlightStyles,
 		CursorEntryID:          cursorEntryID,
 		SortMode:               sortModeName(fp.sortMode),
 		SortReverse:            fp.sortReverse,
 		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
 		Cursor:                 fp.GetCursorIndex(),
-		Loading:                fp.isLoading,
+		Loading:                loading,
 		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.fastFindMode,
 		FastFindText:           fp.fastFindStr,
+		FastFindMatchColor:     fastFindMatchColor,
+		FastFindMatches:        fastFindMatches,
 		SelectedCount:          selectedCount,
 		SelectedSize:           selectedSize,
 		TotalCount:             len(fp.entries),
-		TotalSize:              static.totalSize,
+		TotalSize:              totalSize,
 		GalleryColumns:         fp.semanticGalleryColumns(),
 		Entries:                entries,
 	}
+}
+
+// semanticPanelHeaderModel exports only the mutable, bounded panel state. The
+// immutable catalog stays in the renderer/Qt cache until CatalogRevision
+// changes. Returning false requests a complete fallback because no validated
+// catalog has been published for this panel yet.
+func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, side int, active bool) (extui.PanelModel, bool) {
+	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
+		return extui.PanelModel{}, false
+	}
+	static := fp.semanticStaticCache
+	if static == nil || static.catalogRevision != fp.catalogRevision || len(static.entries) != len(fp.entries) {
+		return extui.PanelModel{}, false
+	}
+	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
+	galleryLayoutRevision := fp.galleryLayoutRevision
+	if galleryLayoutRevision < 1 {
+		galleryLayoutRevision = 1
+	}
+	sourceKind, previewCapable := fp.semanticSourceInfo()
+	cursor := fp.GetCursorIndex()
+	cursorEntryID := ""
+	if cursor >= 0 && cursor < len(static.entries) {
+		cursorEntryID = static.entries[cursor].EntryID
+	}
+	var fastFindMatches map[string]extui.FastFindMatchModel
+	fastFindMatchColor := ""
+	if fp.fastFindMode && fp.fastFindStr != "" {
+		fastFindMatches = make(map[string]extui.FastFindMatchModel)
+		fastFindMatchColor = semanticAttrColor(vtui.Palette[ColPanelHighlightText], true)
+		for index, entry := range fp.entries {
+			if start, length, ok := fp.fastFindMatch(entry.Name); ok && length > 0 {
+				fastFindMatches[static.entries[index].EntryID] = extui.FastFindMatchModel{
+					Start: start, Length: length,
+				}
+			}
+		}
+	}
+	semanticTitle := fp.semanticTitle
+	if semanticTitle == "" {
+		semanticTitle = fp.currentTitle
+	}
+	loading := fp.isLoading
+	if fp.semanticCachedCatalogReady {
+		loading = false
+	}
+	return extui.PanelModel{
+		ID:                     vtui.SemanticID(fp),
+		Side:                   side,
+		Active:                 active,
+		Path:                   fp.vfs.GetPath(),
+		Title:                  semanticTitle,
+		ShowFileInfo:           AppConfig.ShowPanelFileInfo,
+		GalleryLayoutMode:      string(galleryLayoutMode),
+		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
+		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryLayoutRevision:  galleryLayoutRevision,
+		SourceKind:             sourceKind,
+		PreviewCapable:         previewCapable,
+		CatalogRevision:        fp.catalogRevision,
+		SelectionRevision:      fp.selectionRevision,
+		MetadataDeferred:       true,
+		MetadataRevision:       fp.metadataRevision,
+		HighlightRevision:      static.highlighterRevision,
+		CursorEntryID:          cursorEntryID,
+		SortMode:               sortModeName(fp.sortMode),
+		SortReverse:            fp.sortReverse,
+		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
+		Cursor:                 cursor,
+		Loading:                loading,
+		CatalogProvisional:     fp.catalogProvisional,
+		FastFind:               fp.fastFindMode,
+		FastFindText:           fp.fastFindStr,
+		FastFindMatchColor:     fastFindMatchColor,
+		FastFindMatches:        fastFindMatches,
+		SelectedCount:          len(fp.selectedItems),
+		TotalCount:             len(fp.entries),
+		GalleryColumns:         fp.semanticGalleryColumns(),
+	}, true
 }
 
 // semanticGalleryColumns gives the reusable Details renderer a stable Name +
@@ -1313,7 +1989,23 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 	}
 }
 
+func semanticFileSizeValue(entry *fileEntry) int64 {
+	if entry == nil {
+		return -1
+	}
+	// VFSItem.SizeKnown distinguishes a real empty file from the names/types
+	// phase of a phased directory read. Preserve compatibility with providers
+	// predating SizeKnown: every non-zero size was necessarily authoritative.
+	if entry.SizeKnown || entry.Size != 0 || entry.SizeCalculated {
+		return entry.Size
+	}
+	return -1
+}
+
 func semanticFileSize(entry *fileEntry) string {
+	if entry == nil {
+		return ""
+	}
 	if entry.IsDir {
 		if entry.SizeCalculated {
 			return formatIntWithSpaces(entry.Size)
@@ -1323,7 +2015,11 @@ func semanticFileSize(entry *fileEntry) string {
 		}
 		return ""
 	}
-	return formatIntWithSpaces(entry.Size)
+	size := semanticFileSizeValue(entry)
+	if size < 0 {
+		return ""
+	}
+	return formatIntWithSpaces(size)
 }
 
 func sortModeName(mode SortMode) string {
@@ -1574,6 +2270,7 @@ func (vv *ViewerView) semanticContentWidth() int {
 // the middle of that line, so snapping only to the previous newline loses the
 // actual viewport whenever a logical line occupies more than one screen row.
 func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool) {
+	offset = vv.clampTextScrollOffset(offset)
 	if vv.backend == nil || offset <= 0 {
 		return 0, true
 	}
@@ -1585,6 +2282,23 @@ func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool
 		return vv.backend.TryFindLineStart(offset)
 	}
 	return vv.semanticWrappedRowStart(offset, width)
+}
+
+// clampTextScrollOffset keeps text-mode viewports inside the file.  EOF is a
+// boundary, not a drawable byte, and resolving it as a line start can produce
+// a blank page (especially for files ending in a newline).
+func (vv *ViewerView) clampTextScrollOffset(offset int64) int64 {
+	if vv.backend == nil || offset <= 0 {
+		return 0
+	}
+	size := vv.backend.Size()
+	if size <= 0 {
+		return 0
+	}
+	if offset >= size {
+		return size - 1
+	}
+	return offset
 }
 
 // semanticWrappedRowStart returns the visual fragment containing offset. All
@@ -1951,18 +2665,37 @@ func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, text
 	return lineLen, textLen, false
 }
 
-func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	window := ev.semanticWindow()
+type semanticEditorCursorState struct {
+	line         int
+	pos          int
+	visualRow    int
+	visualColumn int
+	visible      bool
+	shape        string
+	absoluteRow  int64
+}
+
+func (state semanticEditorCursorState) ToMap() map[string]any {
+	return map[string]any{
+		"cursorLine":         state.line,
+		"cursorPos":          state.pos,
+		"cursorVisualRow":    state.visualRow,
+		"cursorVisualColumn": state.visualColumn,
+		"cursorVisible":      state.visible,
+		"cursorShape":        state.shape,
+		"cursorAbsoluteRow":  state.absoluteRow,
+	}
+}
+
+func (ev *EditorView) semanticSurfaceWidth() int {
 	width := ev.X2 - ev.X1 + 1
 	if ev.scrollBar != nil {
 		width--
 	}
-	window.rows = semanticStyledEditorWindowRows(ev, window, width)
-	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
-	visibleRows := window.rows
-	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
-		visibleRows = window.rows[window.viewportRow:visibleEnd]
-	}
+	return max(0, width)
+}
+
+func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	cursorOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	cursorAbsoluteRow, cursorAbsoluteColumn := ev.engine.LogicalToVisual(cursorOffset)
 	cursorVisualColumn := cursorAbsoluteColumn + ev.CursorVirtualSpaces - ev.ScrollLeft
@@ -1972,6 +2705,45 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if ev.overtype {
 		cursorShape = "block"
 	}
+	return semanticEditorCursorState{
+		line:         ev.CursorLine,
+		pos:          ev.CursorPos,
+		visualRow:    cursorAbsoluteRow - ev.ScrollTopRow,
+		visualColumn: cursorVisualColumn,
+		visible:      cursorVisible,
+		shape:        cursorShape,
+		absoluteRow:  int64(cursorAbsoluteRow),
+	}
+}
+
+func (ev *EditorView) queueSemanticCursorState() bool {
+	if ev == nil || ev.li == nil || ev.engine == nil || vtui.FrameManager == nil {
+		return false
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil || screen.Renderer == nil {
+		return false
+	}
+	renderer, ok := screen.Renderer.(interface {
+		QueueSurfaceState(string, map[string]any) bool
+	})
+	if !ok {
+		return false
+	}
+	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
+	return renderer.QueueSurfaceState(vtui.SemanticID(ev), state.ToMap())
+}
+
+func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
+	window := ev.semanticWindow()
+	width := ev.semanticSurfaceWidth()
+	window.rows = semanticStyledEditorWindowRows(ev, window, width)
+	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
+	visibleRows := window.rows
+	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
+		visibleRows = window.rows[window.viewportRow:visibleEnd]
+	}
+	cursor := ev.semanticCursorState(width)
 
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(ev),
@@ -1985,12 +2757,12 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		Saving:             ev.saving,
 		WordWrap:           ev.WordWrap,
 		Overtype:           ev.overtype,
-		CursorLine:         ev.CursorLine,
-		CursorPos:          ev.CursorPos,
-		CursorVisualRow:    cursorAbsoluteRow - ev.ScrollTopRow,
-		CursorVisualColumn: cursorVisualColumn,
-		CursorVisible:      cursorVisible,
-		CursorShape:        cursorShape,
+		CursorLine:         cursor.line,
+		CursorPos:          cursor.pos,
+		CursorVisualRow:    cursor.visualRow,
+		CursorVisualColumn: cursor.visualColumn,
+		CursorVisible:      cursor.visible,
+		CursorShape:        cursor.shape,
 		ScrollTop:          ev.ScrollTopRow,
 		ScrollLeft:         ev.ScrollLeft,
 		DocumentKey:        vtui.SemanticID(ev),
@@ -2004,7 +2776,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		ContentExtentKnown: ev.semanticExtentKnown,
 		ViewportRow:        window.viewportRow,
 		ViewportRows:       window.viewportRows,
-		CursorAbsoluteRow:  int64(cursorAbsoluteRow),
+		CursorAbsoluteRow:  cursor.absoluteRow,
 		WindowGeneration:   ev.semanticWindowGeneration,
 		Selection:          ev.selActive,
 		Rows:               visibleRows,

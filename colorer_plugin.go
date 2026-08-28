@@ -124,7 +124,51 @@ var (
 	colorerPoolMu  sync.Mutex
 	colorerIdle    *colorer.Session
 	colorerIdleDir string
+
+	colorerRegionCacheMu sync.RWMutex
+	colorerRegionCache   = make(map[string]colorerRegionCacheEntry)
 )
+
+type colorerRegionCacheEntry struct {
+	generation uint64
+	define     colorer.RegionDefine
+	found      bool
+}
+
+func cacheColorerRegion(session *colorer.Session, region string,
+	generation uint64,
+) {
+	if session == nil || region == "" {
+		return
+	}
+	rd, err := session.GetRegionDefine(region)
+	entry := colorerRegionCacheEntry{generation: generation}
+	if err == nil && rd != nil {
+		entry.define = *rd
+		entry.found = true
+	}
+	colorerRegionCacheMu.Lock()
+	colorerRegionCache[region] = entry
+	colorerRegionCacheMu.Unlock()
+}
+
+func cacheColorerRenderRegions(session *colorer.Session, generation uint64) {
+	cacheColorerRegion(session, colorerBackgroundRegion, generation)
+	cacheColorerRegion(session, colorerHorzCrossRegion, generation)
+	cacheColorerRegion(session, colorerVertCrossRegion, generation)
+}
+
+func cachedColorerRegionDefine(region string) *colorer.RegionDefine {
+	generation := ColorerSchemeGeneration()
+	colorerRegionCacheMu.RLock()
+	entry, present := colorerRegionCache[region]
+	colorerRegionCacheMu.RUnlock()
+	if !present || entry.generation != generation || !entry.found {
+		return nil
+	}
+	result := entry.define
+	return &result
+}
 
 func ensureFonokaiSchema(configsDir string) {
 	catalogPath := filepath.Join(configsDir, "base", "catalog.xml")
@@ -382,10 +426,23 @@ func ColorerSchemeGeneration() uint64 {
 	return schemeGeneration
 }
 
+func activeColorerScheme() (string, uint64) {
+	schemeMu.Lock()
+	name, generation := schemeName, schemeGeneration
+	schemeMu.Unlock()
+	if name == "" {
+		name = "default"
+	}
+	return name, generation
+}
+
 const colorerBackgroundRegion = "def:Text"
 
 // We need a helper to get region definition globally from the active scheme.
 func colorerGetRegionDefine(region string) *colorer.RegionDefine {
+	if cached := cachedColorerRegionDefine(region); cached != nil {
+		return cached
+	}
 	configsDir := ColorerConfigsDir()
 	session, err := acquireColorerSession(configsDir)
 	if err != nil {
@@ -393,16 +450,18 @@ func colorerGetRegionDefine(region string) *colorer.RegionDefine {
 	}
 	defer releaseColorerSession(session, configsDir)
 
-	schemeMu.Lock()
-	activeScheme := schemeName
-	schemeMu.Unlock()
-
-	if activeScheme == "" {
-		activeScheme = "default"
-	}
+	activeScheme, generation := activeColorerScheme()
 	_ = session.SetHRD("rgb", activeScheme)
 
 	rd, _ := session.GetRegionDefine(region)
+	entry := colorerRegionCacheEntry{generation: generation}
+	if rd != nil {
+		entry.define = *rd
+		entry.found = true
+	}
+	colorerRegionCacheMu.Lock()
+	colorerRegionCache[region] = entry
+	colorerRegionCacheMu.Unlock()
 	return rd
 }
 
@@ -414,7 +473,10 @@ func ColorerEditorBaseAttr(base uint64) uint64 {
 		return base
 	}
 
-	rd := colorerGetRegionDefine(colorerBackgroundRegion)
+	// A render must never initialize a second WASM session synchronously while
+	// the editor's own Colorer session is starting. The first frame uses the f4
+	// palette; the background session fills this cache and requests a redraw.
+	rd := cachedColorerRegionDefine(colorerBackgroundRegion)
 	if rd == nil {
 		return base
 	}
@@ -451,14 +513,9 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 			return
 		}
 
-		schemeMu.Lock()
-		activeScheme := schemeName
-		schemeMu.Unlock()
-
-		if activeScheme == "" {
-			activeScheme = "default"
-		}
+		activeScheme, generation := activeColorerScheme()
 		session.SetHRD("rgb", activeScheme)
+		cacheColorerRenderRegions(session, generation)
 
 		selected, sErr := session.SelectType(filename, firstLine)
 		vtui.DebugLog("COLORER: SelectType(%q, len=%d) -> selected=%v, err=%v", filename, len(firstLine), selected, sErr)
@@ -579,7 +636,7 @@ func (ch *ColorerHighlighter) Highlight(line string, prevState any, baseAttr uin
 // syncScheme picks up a change of colour scheme or of the editor's base
 // attribute. Only the colours are affected, never the parse position.
 func (ch *ColorerHighlighter) syncScheme(baseAttr uint64) {
-	gen := ColorerSchemeGeneration()
+	activeScheme, gen := activeColorerScheme()
 	if ch.baseKnown && ch.baseAttr == baseAttr && ch.schemeGen == gen {
 		return
 	}
@@ -589,14 +646,8 @@ func (ch *ColorerHighlighter) syncScheme(baseAttr uint64) {
 	ch.attrCache = nil
 	ch.bgCache = nil
 
-	schemeMu.Lock()
-	activeScheme := schemeName
-	schemeMu.Unlock()
-
-	if activeScheme == "" {
-		activeScheme = "default"
-	}
 	ch.session.SetHRD("rgb", activeScheme)
+	cacheColorerRenderRegions(ch.session, gen)
 }
 
 // attrsFor turns the regions of one parsed line into cell attributes, and

@@ -273,7 +273,7 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 		return false
 	}
 
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func confirmAndClearViewerEditorHistory(entries *[]viewerEditorHistoryEntry, search *historySearch, menu *vtui.VMenu) {

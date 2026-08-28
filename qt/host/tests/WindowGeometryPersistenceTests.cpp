@@ -18,6 +18,11 @@ private slots:
     void geometryTracksMovedScreenOrigin();
     void missingScreenFallsBackAndRemainsVisible();
     void oversizedGeometryFitsAvailableArea();
+    void tinyGeometryExpandsToSafeMinimum();
+    void frameMarginsStayInsideAvailableArea();
+    void farOutsideEveryScreenIsContainedByPrimaryScreen();
+    void savingTinyGeometryPersistsSafeVisibleRect();
+    void immediateCloseDuringRestoreStillSavesSafeGeometry();
     void realWindowSaveAndRestoreRoundTrip();
     void deferredRestoreRemainsHiddenUntilExplicitShow_data();
     void deferredRestoreRemainsHiddenUntilExplicitShow();
@@ -117,6 +122,122 @@ void WindowGeometryPersistenceTests::oversizedGeometryFitsAvailableArea()
     QCOMPARE(resolved, available);
 }
 
+void WindowGeometryPersistenceTests::tinyGeometryExpandsToSafeMinimum()
+{
+    PersistedWindowGeometry stored;
+    stored.valid = true;
+    stored.normalGeometry = QRect(4000, -500, 2, 3);
+    stored.screenName = QStringLiteral("secondary");
+    stored.screenAvailableGeometry = QRect(3840, -745, 1080, 1872);
+
+    const QRect resolved = WindowGeometryPersistence::resolvedNormalGeometry(
+        stored,
+        {{QStringLiteral("primary"), QRect(0, 0, 2194, 1186)},
+         {QStringLiteral("secondary"), QRect(3840, -745, 1080, 1872)}},
+        QStringLiteral("primary"));
+    QCOMPARE(resolved, QRect(4000, -500, 320, 240));
+}
+
+void WindowGeometryPersistenceTests::frameMarginsStayInsideAvailableArea()
+{
+    const QRect available(3840, -745, 1080, 1872);
+    const QMargins frameMargins(7, 12, 7, 7);
+    PersistedWindowGeometry stored;
+    stored.valid = true;
+    stored.normalGeometry = available;
+    stored.screenName = QStringLiteral("secondary");
+    stored.screenAvailableGeometry = available;
+
+    const QRect resolved = WindowGeometryPersistence::resolvedNormalGeometry(
+        stored, {{QStringLiteral("secondary"), available}},
+        QStringLiteral("secondary"), QSize(320, 240), frameMargins);
+    QCOMPARE(resolved, available.marginsRemoved(frameMargins));
+    QCOMPARE(resolved.marginsAdded(frameMargins), available);
+}
+
+void WindowGeometryPersistenceTests::farOutsideEveryScreenIsContainedByPrimaryScreen()
+{
+    const QRect primary(0, 0, 1920, 1040);
+    const QRect secondary(1920, -400, 1200, 1600);
+    PersistedWindowGeometry stored;
+    stored.valid = true;
+    stored.normalGeometry = QRect(150000, -120000, 800, 600);
+    stored.screenName = QStringLiteral("disconnected");
+    stored.screenAvailableGeometry = QRect(140000, -130000, 2560, 1440);
+
+    const QRect resolved = WindowGeometryPersistence::resolvedNormalGeometry(
+        stored,
+        {{QStringLiteral("primary"), primary},
+         {QStringLiteral("secondary"), secondary}},
+        QStringLiteral("primary"));
+    QVERIFY(primary.contains(resolved));
+    QCOMPARE(resolved.size(), QSize(800, 600));
+    QCOMPARE(resolved.center(), primary.center());
+}
+
+void WindowGeometryPersistenceTests::savingTinyGeometryPersistsSafeVisibleRect()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsPath =
+        directory.filePath(QStringLiteral("geometry.ini"));
+    QScreen *screen = QGuiApplication::primaryScreen();
+    QVERIFY(screen);
+    const QRect available = screen->availableGeometry();
+
+    QWindow window;
+    window.setGeometry(QRect(available.topLeft() + QPoint(5, 5),
+                             QSize(2, 3)));
+    window.show();
+    QTRY_VERIFY(window.isVisible());
+    WindowGeometryPersistence persistence(&window, settingsPath);
+    persistence.save();
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    const PersistedWindowGeometry stored =
+        WindowGeometryPersistence::read(settings);
+    QVERIFY(stored.valid);
+    QCOMPARE(stored.normalGeometry.width(), qMin(320, available.width()));
+    QCOMPARE(stored.normalGeometry.height(), qMin(240, available.height()));
+    QVERIFY(available.contains(stored.normalGeometry));
+    window.close();
+}
+
+void WindowGeometryPersistenceTests::immediateCloseDuringRestoreStillSavesSafeGeometry()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString settingsPath =
+        directory.filePath(QStringLiteral("geometry.ini"));
+    QScreen *screen = QGuiApplication::primaryScreen();
+    QVERIFY(screen);
+    const QRect available = screen->availableGeometry();
+
+    QSettings settings(settingsPath, QSettings::IniFormat);
+    PersistedWindowGeometry stored;
+    stored.valid = true;
+    stored.normalGeometry = QRect(available.topLeft() + QPoint(5, 5),
+                                  QSize(2, 3));
+    stored.screenName = screen->name();
+    stored.screenAvailableGeometry = available;
+    WindowGeometryPersistence::write(settings, stored);
+
+    QWindow window;
+    WindowGeometryPersistence persistence(&window, settingsPath);
+    QVERIFY(persistence.restoreDeferred());
+    persistence.showRestored();
+    QVERIFY(window.isVisible());
+    QVERIFY(window.close());
+    QTRY_VERIFY(!window.isVisible());
+
+    const PersistedWindowGeometry saved =
+        WindowGeometryPersistence::read(settings);
+    QVERIFY(saved.valid);
+    QCOMPARE(saved.normalGeometry.width(), qMin(320, available.width()));
+    QCOMPARE(saved.normalGeometry.height(), qMin(240, available.height()));
+    QVERIFY(available.contains(saved.normalGeometry));
+}
+
 void WindowGeometryPersistenceTests::realWindowSaveAndRestoreRoundTrip()
 {
     QTemporaryDir directory;
@@ -151,6 +272,8 @@ void WindowGeometryPersistenceTests::realWindowSaveAndRestoreRoundTrip()
     second.show();
     WindowGeometryPersistence persistence(&second, settingsPath);
     QVERIFY(persistence.restore());
+    QCOMPARE(second.geometry(), wanted);
+    QTest::qWait(80);
     QCOMPARE(second.geometry(), wanted);
 }
 
@@ -204,6 +327,10 @@ void WindowGeometryPersistenceTests::deferredRestoreRemainsHiddenUntilExplicitSh
         QTRY_COMPARE(window.visibility(), QWindow::FullScreen);
     else
         QTRY_COMPARE(window.visibility(), QWindow::Windowed);
+
+    QTest::qWait(80);
+    if (stored.state == PersistedWindowState::Windowed)
+        QCOMPARE(window.geometry(), normal);
 
     window.hide();
     persistence.save();

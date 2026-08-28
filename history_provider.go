@@ -2,14 +2,16 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/unxed/vtui"
 )
 
-import "time"
+const f4HistoryPersistenceDebounce = 100 * time.Millisecond
 
 type HistoryRecord struct {
 	Name      string    `json:"name"`
@@ -39,10 +41,50 @@ func (r HistoryRecord) DisplayText() string {
 }
 
 type F4HistoryProvider struct {
-	mu   sync.Mutex
-	path string
-	data map[string][]string
-	rich map[string][]HistoryRecord
+	mu        sync.Mutex
+	controlMu sync.Mutex
+	path      string
+	data      map[string][]string
+	rich      map[string][]HistoryRecord
+
+	revision          uint64
+	persistedRevision uint64
+	lastPersistErr    error
+	pendingKind       string
+	pendingID         string
+	pendingTrace      *navigationBenchmarkTrace
+	worker            *historyPersistenceWorker
+	closing           bool
+	closed            bool
+	closeDone         chan struct{}
+	closeErr          error
+
+	// Tests can lengthen the debounce and intercept the actual write without
+	// changing production timing or package-global state.
+	saveDebounce time.Duration
+	writeFile    func(string, []byte, os.FileMode) error
+}
+
+type historyPersistenceWorker struct {
+	wake    chan struct{}
+	control chan historyPersistenceRequest
+}
+
+type historyPersistenceRequest struct {
+	revision uint64
+	stop     bool
+	done     chan error
+}
+
+type historyPersistenceSnapshot struct {
+	revision uint64
+	path     string
+	data     map[string][]string
+	rich     map[string][]HistoryRecord
+	kind     string
+	id       string
+	trace    *navigationBenchmarkTrace
+	write    func(string, []byte, os.FileMode) error
 }
 
 func NewF4HistoryProvider() *F4HistoryProvider {
@@ -54,6 +96,323 @@ func NewF4HistoryProvider() *F4HistoryProvider {
 	}
 	hp.load()
 	return hp
+}
+
+func (hp *F4HistoryProvider) ensureMapsLocked() {
+	if hp.data == nil {
+		hp.data = make(map[string][]string)
+	}
+	if hp.rich == nil {
+		hp.rich = make(map[string][]HistoryRecord)
+	}
+}
+
+// lockForMutation serializes a rare save racing with Close. Close is terminal
+// for the current worker, but a later caller may safely reuse the provider and
+// starts a fresh worker rather than writing concurrently with the old one.
+func (hp *F4HistoryProvider) lockForMutation() {
+	for {
+		hp.mu.Lock()
+		if !hp.closing {
+			if hp.closed {
+				hp.closed = false
+				hp.closeErr = nil
+			}
+			hp.ensureMapsLocked()
+			return
+		}
+		done := hp.closeDone
+		hp.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+	}
+}
+
+func (hp *F4HistoryProvider) debounceLocked() time.Duration {
+	if hp.saveDebounce > 0 {
+		return hp.saveDebounce
+	}
+	return f4HistoryPersistenceDebounce
+}
+
+func (hp *F4HistoryProvider) ensureWorkerLocked() *historyPersistenceWorker {
+	if hp.worker != nil {
+		return hp.worker
+	}
+	worker := &historyPersistenceWorker{
+		wake:    make(chan struct{}, 1),
+		control: make(chan historyPersistenceRequest),
+	}
+	hp.worker = worker
+	go hp.runPersistenceWorker(worker)
+	return worker
+}
+
+func (hp *F4HistoryProvider) markDirtyLocked(kind, id string, trace *navigationBenchmarkTrace) uint64 {
+	hp.revision++
+	hp.pendingKind = kind
+	hp.pendingID = id
+	hp.pendingTrace = trace
+	worker := hp.ensureWorkerLocked()
+	select {
+	case worker.wake <- struct{}{}:
+	default:
+	}
+	return hp.revision
+}
+
+func clonePlainHistory(source map[string][]string) map[string][]string {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]string, len(source))
+	for id, history := range source {
+		result[id] = append([]string(nil), history...)
+	}
+	return result
+}
+
+func cloneRichHistory(source map[string][]HistoryRecord) map[string][]HistoryRecord {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string][]HistoryRecord, len(source))
+	for id, history := range source {
+		result[id] = append([]HistoryRecord(nil), history...)
+	}
+	return result
+}
+
+func (hp *F4HistoryProvider) pendingSnapshot(target uint64) (historyPersistenceSnapshot, bool) {
+	hp.mu.Lock()
+	defer hp.mu.Unlock()
+	if hp.persistedRevision >= target || hp.persistedRevision >= hp.revision {
+		return historyPersistenceSnapshot{}, false
+	}
+	write := hp.writeFile
+	if write == nil {
+		write = os.WriteFile
+	}
+	return historyPersistenceSnapshot{
+		revision: hp.revision,
+		path:     hp.path,
+		data:     clonePlainHistory(hp.data),
+		rich:     cloneRichHistory(hp.rich),
+		kind:     hp.pendingKind,
+		id:       hp.pendingID,
+		trace:    hp.pendingTrace,
+		write:    write,
+	}, true
+}
+
+func persistHistorySnapshot(snapshot historyPersistenceSnapshot) error {
+	benchmark := snapshot.trace
+	if benchmark != nil {
+		benchmark.event("history.mkdir.begin", "go.history", "kind", snapshot.kind,
+			"historyId", snapshot.id, "revision", snapshot.revision,
+			"path", filepath.Dir(snapshot.path))
+	}
+	mkdirErr := os.MkdirAll(filepath.Dir(snapshot.path), 0755)
+	if benchmark != nil {
+		fields := []any{"kind", snapshot.kind, "historyId", snapshot.id,
+			"revision", snapshot.revision, "path", filepath.Dir(snapshot.path), "ok", mkdirErr == nil}
+		if mkdirErr != nil {
+			fields = append(fields, "error", mkdirErr.Error())
+		}
+		benchmark.event("history.mkdir.end", "go.history", fields...)
+	}
+	if mkdirErr != nil {
+		return mkdirErr
+	}
+
+	wrapper := struct {
+		Data map[string][]string        `json:"data,omitempty"`
+		Rich map[string][]HistoryRecord `json:"rich,omitempty"`
+	}{Data: snapshot.data, Rich: snapshot.rich}
+	if benchmark != nil {
+		benchmark.event("history.marshal.begin", "go.history", "kind", snapshot.kind,
+			"historyId", snapshot.id, "revision", snapshot.revision,
+			"plainGroups", len(snapshot.data), "richGroups", len(snapshot.rich))
+	}
+	file, err := json.MarshalIndent(wrapper, "", "  ")
+	if benchmark != nil {
+		fields := []any{"kind", snapshot.kind, "historyId", snapshot.id,
+			"revision", snapshot.revision, "ok", err == nil, "payloadBytes", len(file)}
+		if err != nil {
+			fields = append(fields, "error", err.Error())
+		}
+		benchmark.event("history.marshal.end", "go.history", fields...)
+	}
+	if err != nil {
+		return err
+	}
+
+	if benchmark != nil {
+		benchmark.event("history.write.begin", "go.history", "kind", snapshot.kind,
+			"historyId", snapshot.id, "revision", snapshot.revision,
+			"path", snapshot.path, "payloadBytes", len(file))
+	}
+	err = snapshot.write(snapshot.path, file, 0644)
+	if benchmark != nil {
+		fields := []any{"kind", snapshot.kind, "historyId", snapshot.id,
+			"revision", snapshot.revision, "path", snapshot.path,
+			"payloadBytes", len(file), "ok", err == nil}
+		if err != nil {
+			fields = append(fields, "error", err.Error())
+		}
+		benchmark.event("history.write.end", "go.history", fields...)
+	}
+	return err
+}
+
+func (hp *F4HistoryProvider) persistThrough(target uint64) error {
+	for {
+		snapshot, pending := hp.pendingSnapshot(target)
+		if !pending {
+			hp.mu.Lock()
+			err := hp.lastPersistErr
+			if hp.persistedRevision >= target {
+				err = nil
+			}
+			hp.mu.Unlock()
+			return err
+		}
+
+		err := persistHistorySnapshot(snapshot)
+		hp.mu.Lock()
+		if err == nil {
+			if snapshot.revision > hp.persistedRevision {
+				hp.persistedRevision = snapshot.revision
+			}
+			hp.lastPersistErr = nil
+		} else {
+			hp.lastPersistErr = err
+		}
+		hp.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func stopAndDrainTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func (hp *F4HistoryProvider) runPersistenceWorker(worker *historyPersistenceWorker) {
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	for {
+		select {
+		case <-worker.wake:
+			hp.mu.Lock()
+			debounce := hp.debounceLocked()
+			hp.mu.Unlock()
+			if timer == nil {
+				timer = time.NewTimer(debounce)
+			} else {
+				stopAndDrainTimer(timer)
+				timer.Reset(debounce)
+			}
+			timerC = timer.C
+		case <-timerC:
+			timerC = nil
+			hp.mu.Lock()
+			target := hp.revision
+			hp.mu.Unlock()
+			_ = hp.persistThrough(target)
+		case request := <-worker.control:
+			stopAndDrainTimer(timer)
+			timerC = nil
+			err := hp.persistThrough(request.revision)
+			request.done <- err
+			if request.stop {
+				return
+			}
+		}
+	}
+}
+
+// Flush synchronously persists every in-memory revision accepted before the
+// call. Newer mutations may be folded into the same snapshot, but an older
+// snapshot can never overwrite them because one worker owns all disk writes.
+func (hp *F4HistoryProvider) Flush() error {
+	hp.controlMu.Lock()
+	defer hp.controlMu.Unlock()
+
+	for {
+		hp.mu.Lock()
+		if hp.closing {
+			done := hp.closeDone
+			hp.mu.Unlock()
+			if done != nil {
+				<-done
+			}
+			continue
+		}
+		target := hp.revision
+		if hp.persistedRevision >= target {
+			hp.mu.Unlock()
+			return nil
+		}
+		worker := hp.ensureWorkerLocked()
+		hp.mu.Unlock()
+
+		done := make(chan error, 1)
+		worker.control <- historyPersistenceRequest{revision: target, done: done}
+		return <-done
+	}
+}
+
+// Close is used by the application shutdown defer. It flushes the latest
+// revision and stops the provider's worker; a later Save* call can safely
+// reopen the provider, which keeps tests and embedded sessions reusable.
+func (hp *F4HistoryProvider) Close() error {
+	hp.controlMu.Lock()
+	defer hp.controlMu.Unlock()
+
+	hp.mu.Lock()
+	if hp.closed {
+		err := hp.closeErr
+		hp.mu.Unlock()
+		return err
+	}
+	hp.closing = true
+	hp.closeDone = make(chan struct{})
+	target := hp.revision
+	worker := hp.worker
+	if worker == nil && hp.persistedRevision < target {
+		worker = hp.ensureWorkerLocked()
+	}
+	doneClosing := hp.closeDone
+	hp.mu.Unlock()
+
+	var err error
+	if worker != nil {
+		done := make(chan error, 1)
+		worker.control <- historyPersistenceRequest{revision: target, stop: true, done: done}
+		err = <-done
+	}
+
+	hp.mu.Lock()
+	if hp.worker == worker {
+		hp.worker = nil
+	}
+	hp.closing = false
+	hp.closed = true
+	hp.closeErr = err
+	close(doneClosing)
+	hp.mu.Unlock()
+	return err
 }
 
 func (hp *F4HistoryProvider) load() {
@@ -95,29 +454,6 @@ func (hp *F4HistoryProvider) load() {
 	}
 }
 
-func (hp *F4HistoryProvider) save() {
-	hp.mu.Lock()
-	defer hp.mu.Unlock()
-	os.MkdirAll(filepath.Dir(hp.path), 0755)
-	wrapper := struct {
-		Data map[string][]string        `json:"data,omitempty"`
-		Rich map[string][]HistoryRecord `json:"rich,omitempty"`
-	}{
-		Data: hp.data,
-		Rich: hp.rich,
-	}
-	if len(hp.data) == 0 {
-		wrapper.Data = nil
-	}
-	if len(hp.rich) == 0 {
-		wrapper.Rich = nil
-	}
-	file, err := json.MarshalIndent(wrapper, "", "  ")
-	if err == nil {
-		os.WriteFile(hp.path, file, 0644)
-	}
-}
-
 func (hp *F4HistoryProvider) LoadHistory(id string) []string {
 	hp.mu.Lock()
 	defer hp.mu.Unlock()
@@ -131,13 +467,15 @@ func (hp *F4HistoryProvider) LoadHistory(id string) []string {
 }
 
 func (hp *F4HistoryProvider) SaveHistory(id string, history []string) {
-	hp.mu.Lock()
-	if hp.data == nil {
-		hp.data = make(map[string][]string)
-	}
-	hp.data[id] = history
+	benchmark := navigationBenchmarkCurrentUI()
+	hp.lockForMutation()
+	hp.data[id] = append([]string(nil), history...)
+	revision := hp.markDirtyLocked("plain", id, benchmark)
 	hp.mu.Unlock()
-	hp.save()
+	if benchmark != nil {
+		benchmark.event("history.persistence.scheduled", "go.ui", "kind", "plain",
+			"historyId", id, "revision", revision, "items", len(history))
+	}
 }
 func (hp *F4HistoryProvider) LoadRichHistory(id string) []HistoryRecord {
 	hp.mu.Lock()
@@ -151,13 +489,15 @@ func (hp *F4HistoryProvider) LoadRichHistory(id string) []HistoryRecord {
 }
 
 func (hp *F4HistoryProvider) SaveRichHistory(id string, history []HistoryRecord) {
-	hp.mu.Lock()
-	if hp.rich == nil {
-		hp.rich = make(map[string][]HistoryRecord)
-	}
-	hp.rich[id] = history
+	benchmark := navigationBenchmarkCurrentUI()
+	hp.lockForMutation()
+	hp.rich[id] = append([]HistoryRecord(nil), history...)
+	revision := hp.markDirtyLocked("rich", id, benchmark)
 	hp.mu.Unlock()
-	hp.save()
+	if benchmark != nil {
+		benchmark.event("history.persistence.scheduled", "go.ui", "kind", "rich",
+			"historyId", id, "revision", revision, "items", len(history))
+	}
 }
 
 func limitRichHistory(history []HistoryRecord, limit int) []HistoryRecord {
@@ -188,57 +528,160 @@ func limitRichHistory(history []HistoryRecord, limit int) []HistoryRecord {
 	return kept
 }
 
-func loadFolderHistoryRecords(provider vtui.HistoryProvider) ([]HistoryRecord, *F4HistoryProvider) {
-	hp, _ := provider.(*F4HistoryProvider)
-	plain := provider.LoadHistory("folders")
-	if hp == nil {
-		records := make([]HistoryRecord, 0, len(plain))
-		for _, path := range plain {
-			records = append(records, HistoryRecord{Name: path})
-		}
-		return records, nil
-	}
-	rich := hp.LoadRichHistory("folders")
+func mergeFolderHistoryRecords(plain []string, rich []HistoryRecord) []HistoryRecord {
 	records := make([]HistoryRecord, 0, len(plain))
 	for _, path := range plain {
 		var record HistoryRecord
+		matched := false
 		for _, candidate := range rich {
 			if sameFolderHistoryPath(candidate.Name, path) {
-				record = candidate
-				break
+				if !matched {
+					record = candidate
+					matched = true
+				} else {
+					record.Lock = record.Lock || candidate.Lock
+				}
 			}
 		}
 		record.Name = path
+		duplicate := -1
+		for i := range records {
+			if sameFolderHistoryPath(records[i].Name, path) {
+				duplicate = i
+				break
+			}
+		}
+		if duplicate >= 0 {
+			records[duplicate].Lock = records[duplicate].Lock || record.Lock
+			continue
+		}
 		records = append(records, record)
 	}
-	return records, hp
+	return records
+}
+
+func (hp *F4HistoryProvider) SaveFolderHistory(records []HistoryRecord) {
+	benchmark := navigationBenchmarkCurrentUI()
+	records = append([]HistoryRecord(nil), records...)
+	names := extractNames(records)
+	hp.lockForMutation()
+	hp.rich["folders"] = records
+	hp.data["folders"] = names
+	revision := hp.markDirtyLocked("folder_combined", "folders", benchmark)
+	hp.mu.Unlock()
+	if benchmark != nil {
+		benchmark.event("history.persistence.scheduled", "go.ui", "kind", "folder_combined",
+			"historyId", "folders", "revision", revision, "items", len(records))
+	}
+}
+
+// addFolderHistory updates the rich records and the plain MRU projection in a
+// single critical section. Concurrent callers are ordered by lock acquisition,
+// so none can overwrite an entry inserted by an earlier accepted navigation.
+func (hp *F4HistoryProvider) addFolderHistory(path string, benchmark *navigationBenchmarkTrace) (before, after int, revision uint64) {
+	hp.lockForMutation()
+	records := mergeFolderHistoryRecords(hp.data["folders"], hp.rich["folders"])
+	before = len(records)
+	current := HistoryRecord{Name: path}
+	newHistory := []HistoryRecord{current}
+	for _, record := range records {
+		if sameFolderHistoryPath(record.Name, path) {
+			newHistory[0].Lock = newHistory[0].Lock || record.Lock
+			continue
+		}
+		newHistory = append(newHistory, record)
+	}
+	newHistory = limitRichHistory(newHistory, 100)
+	hp.rich["folders"] = append([]HistoryRecord(nil), newHistory...)
+	hp.data["folders"] = extractNames(newHistory)
+	revision = hp.markDirtyLocked("folder_combined", "folders", benchmark)
+	after = len(newHistory)
+	hp.mu.Unlock()
+	return before, after, revision
+}
+
+func loadFolderHistoryRecords(provider vtui.HistoryProvider) ([]HistoryRecord, *F4HistoryProvider) {
+	benchmark := navigationBenchmarkCurrentUI()
+	hp, _ := provider.(*F4HistoryProvider)
+	if hp != nil {
+		if benchmark != nil {
+			benchmark.event("history.load_plain.begin", "go.ui", "historyId", "folders")
+			benchmark.event("history.load_rich.begin", "go.ui", "historyId", "folders")
+		}
+		hp.mu.Lock()
+		plain := append([]string(nil), hp.data["folders"]...)
+		rich := append([]HistoryRecord(nil), hp.rich["folders"]...)
+		hp.mu.Unlock()
+		if benchmark != nil {
+			benchmark.event("history.load_plain.end", "go.ui", "historyId", "folders", "items", len(plain))
+			benchmark.event("history.load_rich.end", "go.ui", "historyId", "folders", "items", len(rich))
+		}
+		return mergeFolderHistoryRecords(plain, rich), hp
+	}
+	if benchmark != nil {
+		benchmark.event("history.load_plain.begin", "go.ui", "historyId", "folders")
+	}
+	plain := provider.LoadHistory("folders")
+	if benchmark != nil {
+		benchmark.event("history.load_plain.end", "go.ui", "historyId", "folders", "items", len(plain))
+	}
+	records := make([]HistoryRecord, 0, len(plain))
+	for _, path := range plain {
+		records = append(records, HistoryRecord{Name: path})
+	}
+	return records, nil
 }
 
 func saveFolderHistoryRecords(hp *F4HistoryProvider, records []HistoryRecord) {
 	if hp == nil {
 		return
 	}
-	hp.SaveRichHistory("folders", records)
-	hp.SaveHistory("folders", extractNames(records))
+	benchmark := navigationBenchmarkCurrentUI()
+	if benchmark != nil {
+		benchmark.event("history.save_rich.begin", "go.ui", "historyId", "folders", "items", len(records))
+		benchmark.event("history.save_plain.begin", "go.ui", "historyId", "folders", "items", len(records))
+		benchmark.event("history.save_combined.begin", "go.ui", "historyId", "folders", "items", len(records))
+	}
+	hp.SaveFolderHistory(records)
+	if benchmark != nil {
+		benchmark.event("history.save_combined.end", "go.ui", "historyId", "folders", "items", len(records))
+		benchmark.event("history.save_rich.end", "go.ui", "historyId", "folders", "items", len(records))
+		benchmark.event("history.save_plain.end", "go.ui", "historyId", "folders", "items", len(records))
+	}
 }
 
 func AddFolderHistory(path string) {
 	if path == "" || path == "." || vtui.GlobalHistoryProvider == nil {
 		return
 	}
-	if records, hp := loadFolderHistoryRecords(vtui.GlobalHistoryProvider); hp != nil {
-		current := HistoryRecord{Name: path}
-		newHistory := []HistoryRecord{current}
-		for _, record := range records {
-			if sameFolderHistoryPath(record.Name, path) {
-				newHistory[0].Lock = record.Lock
-				continue
-			}
-			newHistory = append(newHistory, record)
+	if hp, ok := vtui.GlobalHistoryProvider.(*F4HistoryProvider); ok {
+		benchmark := navigationBenchmarkCurrentUI()
+		if benchmark != nil {
+			benchmark.event("history.load_plain.begin", "go.ui", "historyId", "folders")
+			benchmark.event("history.load_rich.begin", "go.ui", "historyId", "folders")
+			benchmark.event("history.update.begin", "go.ui", "historyId", "folders",
+				"path", path)
 		}
-		newHistory = limitRichHistory(newHistory, 100)
-		saveFolderHistoryRecords(hp, newHistory)
+		before, after, revision := hp.addFolderHistory(path, benchmark)
+		if benchmark != nil {
+			benchmark.event("history.load_plain.end", "go.ui", "historyId", "folders", "items", before)
+			benchmark.event("history.load_rich.end", "go.ui", "historyId", "folders", "items", before)
+			benchmark.event("history.update.end", "go.ui", "historyId", "folders",
+				"path", path, "itemsBefore", before, "itemsAfter", after)
+			benchmark.event("history.save_rich.begin", "go.ui", "historyId", "folders", "items", after)
+			benchmark.event("history.save_plain.begin", "go.ui", "historyId", "folders", "items", after)
+			benchmark.event("history.save_combined.begin", "go.ui", "historyId", "folders", "items", after)
+			benchmark.event("history.persistence.scheduled", "go.ui", "kind", "folder_combined",
+				"historyId", "folders", "revision", revision, "items", after)
+			benchmark.event("history.save_combined.end", "go.ui", "historyId", "folders", "items", after)
+			benchmark.event("history.save_rich.end", "go.ui", "historyId", "folders", "items", after)
+			benchmark.event("history.save_plain.end", "go.ui", "historyId", "folders", "items", after)
+		}
 		return
+	}
+	benchmark := navigationBenchmarkCurrentUI()
+	if benchmark != nil {
+		benchmark.event("history.update.begin", "go.ui", "historyId", "folders", "path", path)
 	}
 	h := vtui.GlobalHistoryProvider.LoadHistory("folders")
 	// Deduplicate and move to top
@@ -252,5 +695,13 @@ func AddFolderHistory(path string) {
 	if len(newHist) > 100 {
 		newHist = newHist[:100]
 	}
+	if benchmark != nil {
+		benchmark.event("history.update.end", "go.ui", "historyId", "folders",
+			"path", path, "itemsBefore", len(h), "itemsAfter", len(newHist))
+		benchmark.event("history.save_plain.begin", "go.ui", "historyId", "folders", "items", len(newHist))
+	}
 	vtui.GlobalHistoryProvider.SaveHistory("folders", newHist)
+	if benchmark != nil {
+		benchmark.event("history.save_plain.end", "go.ui", "historyId", "folders", "items", len(newHist))
+	}
 }

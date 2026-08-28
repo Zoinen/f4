@@ -13,11 +13,14 @@ type MenuItem struct {
 	// color. It is useful for non-hotkey metadata such as stable item numbers.
 	AccentPrefix string
 	Text         string
-	Shortcut     string // Optional right-aligned hotkey hint (e.g. "F3")
-	Command      int    // TV-style Command ID to emit when selected
-	OnClick      func() // Closure called when selected
-	UserData     any
-	Separator    bool
+	// Icon is an optional semantic icon name for graphical frontends. The
+	// terminal renderer deliberately ignores it and keeps the classic layout.
+	Icon      string
+	Shortcut  string // Optional right-aligned hotkey hint (e.g. "F3")
+	Command   int    // TV-style Command ID to emit when selected
+	OnClick   func() // Closure called when selected
+	UserData  any
+	Separator bool
 }
 
 // VMenu implements a vertical menu with navigation support.
@@ -91,6 +94,24 @@ func (m *VMenu) AddSeparator() {
 
 func (m *VMenu) GetItemCount() int { return len(m.Items) }
 
+func (m *VMenu) declareSemanticMenuState() {
+	if FrameManager != nil {
+		FrameManager.declareSemanticMenuState()
+	}
+}
+
+// handleSemanticNavigation delegates to ScrollView and declares a bounded
+// semantic update only when no OnSelect callback was invoked. OnSelect is an
+// application callback and may change the document or shell behind the menu.
+func (m *VMenu) handleSemanticNavigation(e *vtinput.InputEvent) bool {
+	oldPos := m.SelectPos
+	handled := m.HandleKey(e)
+	if handled && (m.OnSelect == nil || m.SelectPos == oldPos) {
+		m.declareSemanticMenuState()
+	}
+	return handled
+}
+
 // ProcessKey processes navigation keys.
 func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	if m.IsDisabled() || !e.KeyDown {
@@ -122,25 +143,28 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		if m.SelectPos == m.ItemCount-1 && !m.Wrap {
 			return false
 		}
-		return m.HandleKey(e)
+		return m.handleSemanticNavigation(e)
 	case vtinput.VK_UP:
 		if m.SelectPos == 0 && !isSubMenu && !m.Wrap {
 			return false
 		}
-		return m.HandleKey(e)
+		return m.handleSemanticNavigation(e)
 	case vtinput.VK_DOWN:
 		if m.SelectPos == m.ItemCount-1 && !isSubMenu && !m.Wrap {
 			return false
 		}
-		return m.HandleKey(e)
+		return m.handleSemanticNavigation(e)
 	case vtinput.VK_PRIOR: // PgUp
 		m.SetSelectPos(0)
+		m.declareSemanticMenuState()
 		return true
 	case vtinput.VK_NEXT: // PgDn
 		m.SetSelectPos(m.ItemCount - 1)
+		m.declareSemanticMenuState()
 		return true
 	case vtinput.VK_ESCAPE, vtinput.VK_F10:
 		m.SetExitCode(-1)
+		m.declareSemanticMenuState()
 		return FrameManager.GetTopFrame() == Frame(m)
 	case vtinput.VK_RETURN:
 		if m.SelectPos >= 0 && m.SelectPos < m.ItemCount {
@@ -198,7 +222,7 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	return m.HandleKey(e)
+	return m.handleSemanticNavigation(e)
 }
 
 func (m *VMenu) ResizeConsole(w, h int) {
@@ -246,6 +270,7 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 	if m.HandleMouseScroll(e) {
+		m.declareSemanticMenuState()
 		return true
 	}
 
@@ -262,6 +287,7 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 		if !m.Items[hoverIdx].Separator {
 			m.SetSelectPos(hoverIdx)
 		}
+		m.declareSemanticMenuState()
 		return true
 	}
 

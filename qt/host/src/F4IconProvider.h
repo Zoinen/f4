@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QIcon>
 #include <QImage>
 #include <QList>
@@ -30,7 +31,8 @@ class F4IconProvider final : public QQuickImageProvider
 {
 public:
     explicit F4IconProvider(
-        std::unique_ptr<F4IconProviderBackend> backend = {});
+        std::unique_ptr<F4IconProviderBackend> backend = {},
+        bool testPatternEnabled = false);
     ~F4IconProvider() override;
 
     QImage requestImage(const QString &id,
@@ -51,6 +53,7 @@ public:
 
 private:
     std::unique_ptr<F4IconProviderBackend> m_backend;
+    bool m_testPatternEnabled = false;
     std::mutex m_mutex;
 };
 
@@ -90,6 +93,13 @@ public:
     Q_INVOKABLE QUrl iconSource(const QString &name,
                                 int logicalSize,
                                 qreal devicePixelRatio) const;
+    Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
+                                            int logicalSize,
+                                            qreal devicePixelRatio) const;
+    Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
+                                            int logicalSize,
+                                            qreal devicePixelRatio,
+                                            const QColor &tint) const;
     Q_INVOKABLE QUrl fileIconSource(const QString &localPath,
                                     const QString &fileName,
                                     bool directory,

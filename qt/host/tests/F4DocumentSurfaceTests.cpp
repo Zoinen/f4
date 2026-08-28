@@ -33,6 +33,8 @@ class TestGrid : public QQuickItem
                WRITE setInputMethodForwardingEnabled)
     Q_PROPERTY(bool terminalInputEnabled READ terminalInputEnabled
                WRITE setTerminalInputEnabled)
+    Q_PROPERTY(bool renderingEnabled READ renderingEnabled
+               WRITE setRenderingEnabled)
 
 public:
     using QQuickItem::QQuickItem;
@@ -57,6 +59,8 @@ public:
     }
     bool terminalInputEnabled() const { return m_terminalInputEnabled; }
     void setTerminalInputEnabled(bool enabled) { m_terminalInputEnabled = enabled; }
+    bool renderingEnabled() const { return m_renderingEnabled; }
+    void setRenderingEnabled(bool enabled) { m_renderingEnabled = enabled; }
 
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
     Q_INVOKABLE void sendClipboardPaste() {}
@@ -72,6 +76,7 @@ private:
     bool m_pointerInputEnabled = false;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    bool m_renderingEnabled = true;
 };
 
 class TestShell final : public QObject
@@ -361,6 +366,8 @@ class F4DocumentSurfaceTests final : public QObject
 private slots:
     void initTestCase();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
+    void standaloneDocumentsEndAtSharedKeyBarSeparator();
+    void finalViewportAlignsLastRowBelowFractionalBottom();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
     void activeFlickRebasesAtomicallyAcrossWindowAck();
@@ -403,6 +410,79 @@ void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
         fixture.surface, "runBackground", Q_RETURN_ARG(QVariant, returned),
         Q_ARG(QVariant, QStringLiteral("#884422"))));
     QCOMPARE(QColor(returned.toString()), QColor(QStringLiteral("#884422")));
+}
+
+void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()
+{
+    const auto sceneWithKeyBar = [](const QVariantMap &frame) {
+        QVariantMap scene = documentScene(frame);
+        scene.insert(QStringLiteral("keyBar"), QVariantMap{
+            {QStringLiteral("visible"), true},
+            {QStringLiteral("items"), QVariantList{
+                 QVariantMap{{QStringLiteral("key"), QStringLiteral("F1")},
+                             {QStringLiteral("text"), QStringLiteral("Help")}},
+             }},
+        });
+        return scene;
+    };
+    const auto verify = [&](const QVariantMap &frame) {
+        DocumentFixture fixture(sceneWithKeyBar(frame));
+        QVERIFY(fixture.ready());
+        auto *keyBar = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("keyBar"));
+        auto *separator = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("keyBarTopSeparator"));
+        QVERIFY(keyBar);
+        QVERIFY(separator);
+        QTRY_VERIFY_WITH_TIMEOUT(keyBar->isVisible(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(fixture.list->height() > 0, 3000);
+
+        const qreal listBottom = fixture.list->mapToScene(
+            QPointF(0, fixture.list->height())).y();
+        const qreal keyBarTop = keyBar->mapToScene(QPointF(0, 0)).y();
+        const qreal separatorTop = separator->mapToScene(QPointF(0, 0)).y();
+        QVERIFY(qAbs(listBottom - keyBarTop) < 0.001);
+        QVERIFY(qAbs(separatorTop - keyBarTop) < 0.001);
+        QVERIFY(separator->height() > 0);
+        QVERIFY(qAbs(fixture.surface->property("bottomInset").toReal()
+                     - keyBar->height()) < 0.001);
+    };
+
+    verify(viewerFrame(0, 20, 0, 1));
+    verify(editorFrame(0, 40, 0, 1));
+}
+
+void F4DocumentSurfaceTests::finalViewportAlignsLastRowBelowFractionalBottom()
+{
+    // A 599 px surface leaves a one-pixel remainder below a 30-row,
+    // 20 px/row semantic window. The last row must be aligned to the bottom
+    // of the ListView rather than left one pixel below its visible area.
+    const QVariantMap frame = viewerFrame(700, 30, 700, 1, 10, 1000);
+    DocumentFixture fixture(documentScene(frame), 599);
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.surface->property("displayedRows").toList().size(), 30,
+        3000);
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const qreal minimumY = fixture.surface->property("loadedSlotStart").toInt()
+                           * rowHeight;
+    const qreal maximumY = qMax(
+        minimumY,
+        fixture.surface->property("loadedSlotEnd").toInt() * rowHeight
+            - fixture.list->height());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(fixture.list->property("contentY").toReal() - maximumY) < 0.01,
+        3000);
+    QVERIFY(maximumY > minimumY);
+
+    const qreal loadedBottom =
+        fixture.surface->property("loadedSlotEnd").toInt() * rowHeight;
+    QVERIFY(loadedBottom
+            <= fixture.list->property("contentY").toReal()
+                   + fixture.list->height() + 0.01);
 }
 
 void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions()

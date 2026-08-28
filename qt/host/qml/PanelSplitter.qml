@@ -26,6 +26,14 @@ Item {
     property color separatorColor: "#3a495b"
     property real gutterWidth: 16
     property real separatorWidth: 1
+    // A panel can paint an interactive overlay (e.g. a scrollbar) into its
+    // own reserved lane of this gutter. Keep the visual track/divider at the
+    // full gutter width, but narrow the pointer hit area so a press there
+    // reaches that overlay instead of starting a drag. "Leading" is the side
+    // nearer the panel before the divider (smaller x); "trailing" is the
+    // side nearer the panel after it (larger x).
+    property real leadingHitInset: 0
+    property real trailingHitInset: 0
     readonly property real effectiveMinimumWidth:
         Math.min(Math.max(0, minimumPanelWidth), Math.max(0, availableWidth / 2))
     readonly property real splitPosition: clampedPosition(availableWidth * ratio)
@@ -166,7 +174,11 @@ Item {
 
     MouseArea {
         id: pointer
-        anchors.fill: parent
+        x: splitter.leadingHitInset
+        width: Math.max(0, splitter.width - splitter.leadingHitInset
+                         - splitter.trailingHitInset)
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
         preventStealing: true

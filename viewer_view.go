@@ -152,10 +152,12 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			// Optimization: during fast drag, don't FindLineStart every pixel
 			// unless we are close to the target or moving slowly.
 			// For now, simple snap.
+			newOff = vv.clampTextScrollOffset(newOff)
 			newOff = vv.backend.FindLineStart(newOff)
 		}
 		if newOff != vv.TopOffset {
 			vv.TopOffset = newOff
+			vv.eofVisible = false
 			vtui.FrameManager.Redraw()
 		}
 	}
@@ -441,18 +443,26 @@ func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 }
 
 func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) {
+	vv.renderTextRows(scr, width, contentHeight, true)
+}
+
+// renderTextRows renders a bounded set of visual rows.  alignEnd is enabled
+// for the real viewer and disabled for semantic off-screen rendering: the
+// latter must keep its requested row-to-byte mapping intact.
+func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight int, alignEnd bool) {
 
 	attr := vtui.Palette[ColViewerText]
 	currOffset := vv.TopOffset
 	vv.lineOffsets = vv.lineOffsets[:0]
-	//lastRowWasEOF := false
+	size := vv.backend.Size()
 
 	for y := 0; y < contentHeight; y++ {
-		vv.lineOffsets = append(vv.lineOffsets, currOffset)
-		if currOffset >= vv.backend.Size() {
-			//lastRowWasEOF = true
+		// EOF is not a visual row.  Keeping it out of lineOffsets prevents
+		// PgDn from selecting a phantom row after the last real line.
+		if currOffset >= size {
 			break
 		}
+		vv.lineOffsets = append(vv.lineOffsets, currOffset)
 
 		// Read a generous chunk to handle wrapping
 		data, err := vv.backend.ReadAt(currOffset, width*4)
@@ -565,7 +575,51 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 			currOffset = tempOff
 		}
 	}
-	vv.eofVisible = (currOffset >= vv.backend.Size())
+
+	reachedEOF := currOffset >= vv.backend.Size()
+	if alignEnd && reachedEOF && len(vv.lineOffsets) < contentHeight && vv.TopOffset > 0 {
+		aligned, ready := vv.finalTextPageOffset(vv.TopOffset, width,
+			contentHeight-len(vv.lineOffsets))
+		if !ready {
+			// The tail is already drawable, but finding the preceding visual rows
+			// may have started an asynchronous cache fill.  Leave EOF unset so a
+			// redraw can retry the alignment instead of freezing an incomplete
+			// final page.
+			vv.eofVisible = false
+			return
+		}
+		if aligned < vv.TopOffset {
+			vv.TopOffset = aligned
+			vv.renderTextRows(scr, width, contentHeight, false)
+			return
+		}
+	}
+	vv.eofVisible = reachedEOF
+}
+
+// finalTextPageOffset returns the first visual row needed to fill the final
+// page whose current top row is offset.  It walks only the missing rows, so
+// reaching the end of a large file remains proportional to the viewport.
+func (vv *ViewerView) finalTextPageOffset(offset int64, width, rows int) (int64, bool) {
+	if rows <= 0 || offset <= 0 {
+		return offset, true
+	}
+
+	current := offset
+	for i := 0; i < rows && current > 0; i++ {
+		var previous int64
+		var ready bool
+		if vv.WrapMode {
+			previous, ready = vv.semanticPreviousTextRowStart(current, width)
+		} else {
+			previous, ready = vv.backend.TryFindLineStart(current - 1)
+		}
+		if !ready || previous >= current {
+			return offset, false
+		}
+		current = previous
+	}
+	return current, true
 }
 
 func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
@@ -653,6 +707,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 		}
+		vv.eofVisible = false
 		return true
 
 	case vtinput.VK_UP:
@@ -666,6 +721,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		if vv.TopOffset < 0 {
 			vv.TopOffset = 0
 		}
+		vv.eofVisible = false
 		return true
 
 	case vtinput.VK_NEXT: // PgDn
@@ -693,7 +749,15 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 		} else if len(vv.lineOffsets) > 0 {
-			vv.TopOffset = vv.lineOffsets[len(vv.lineOffsets)-1]
+			if vv.eofVisible {
+				return true
+			}
+			nextOffset := vv.lineOffsets[len(vv.lineOffsets)-1]
+			if nextOffset <= vv.TopOffset || nextOffset >= vv.backend.Size() {
+				return true
+			}
+			vv.TopOffset = nextOffset
+			vv.eofVisible = false
 		}
 		return true
 
@@ -710,10 +774,12 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		if vv.TopOffset < 0 {
 			vv.TopOffset = 0
 		}
+		vv.eofVisible = false
 		return true
 
 	case vtinput.VK_HOME:
 		vv.TopOffset = 0
+		vv.eofVisible = false
 		return true
 
 	case vtinput.VK_END:
@@ -1042,7 +1108,7 @@ func (vv *ViewerView) showCodepageDialog() {
 		}
 	}
 	menu.SetSelectPos(currIdx)
-	vtui.FrameManager.Push(menu)
+	vtui.FrameManager.PushMenu(menu)
 }
 
 func (vv *ViewerView) ProcessMouse(e *vtinput.InputEvent) bool {

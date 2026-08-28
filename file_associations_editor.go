@@ -198,7 +198,7 @@ func (s *assocEditorState) openList(selected int) {
 		})
 	}
 
-	vtui.FrameManager.Push(&userMenuFrame{
+	vtui.FrameManager.PushMenu(&userMenuFrame{
 		VMenu:      menu,
 		bottomHint: " Ins F4 Del Ctrl+Up/Down ",
 	})

@@ -84,16 +84,17 @@ type FileHighlighter struct {
 const maxHighlightMatchCacheEntries = 8192
 
 type highlightMatchCacheKey struct {
-	Name         string
-	Size         int64
-	MTime        int64
-	ATime        int64
-	CTime        int64
-	UnixMode     uint32
-	WinAttrs     uint32
-	IsDir        bool
-	IsHidden     bool
-	IsExecutable bool
+	Name          string
+	Size          int64
+	MTime         int64
+	ATime         int64
+	CTime         int64
+	UnixMode      uint32
+	WinAttrs      uint32
+	IsDir         bool
+	IsHidden      bool
+	IsExecutable  bool
+	MetadataKnown bool
 }
 
 var GlobalFileHighlighter *FileHighlighter
@@ -269,18 +270,19 @@ func (fh *FileHighlighter) clearMatchCache() {
 	fh.matchCacheMu.Unlock()
 }
 
-func highlightMatchKey(item *vfs.VFSItem) highlightMatchCacheKey {
+func highlightMatchKey(item *vfs.VFSItem, metadataKnown bool) highlightMatchCacheKey {
 	return highlightMatchCacheKey{
-		Name:         item.Name,
-		Size:         item.Size,
-		MTime:        semanticMTimeNanos(item.MTime),
-		ATime:        semanticMTimeNanos(item.ATime),
-		CTime:        semanticMTimeNanos(item.CTime),
-		UnixMode:     item.UnixMode,
-		WinAttrs:     item.WinAttrs,
-		IsDir:        item.IsDir,
-		IsHidden:     item.IsHidden,
-		IsExecutable: item.IsExecutable,
+		Name:          item.Name,
+		Size:          item.Size,
+		MTime:         semanticMTimeNanos(item.MTime),
+		ATime:         semanticMTimeNanos(item.ATime),
+		CTime:         semanticMTimeNanos(item.CTime),
+		UnixMode:      item.UnixMode,
+		WinAttrs:      item.WinAttrs,
+		IsDir:         item.IsDir,
+		IsHidden:      item.IsHidden,
+		IsExecutable:  item.IsExecutable,
+		MetadataKnown: metadataKnown,
 	}
 }
 
@@ -297,15 +299,15 @@ func (fh *FileHighlighter) hasRelativeDateRules() bool {
 // entry. Text rows, markers, and the semantic GUI representation all consume
 // the same result, so recomputing filepath.Match in each presentation path is
 // both redundant and especially expensive during key repeat.
-func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem) []int {
+func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem, metadataKnown bool) []int {
 	if fh == nil || item == nil {
 		return nil
 	}
 	if fh.hasRelativeDateRules() {
-		return fh.computeMatchedRuleIndices(item)
+		return fh.computeMatchedRuleIndices(item, metadataKnown)
 	}
 
-	key := highlightMatchKey(item)
+	key := highlightMatchKey(item, metadataKnown)
 	fh.matchCacheMu.RLock()
 	if fh.matchCacheRevision == fh.Revision {
 		if cached, ok := fh.matchCache[key]; ok {
@@ -315,7 +317,7 @@ func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem) []int {
 	}
 	fh.matchCacheMu.RUnlock()
 
-	matched := fh.computeMatchedRuleIndices(item)
+	matched := fh.computeMatchedRuleIndices(item, metadataKnown)
 	fh.matchCacheMu.Lock()
 	if fh.matchCacheRevision != fh.Revision || len(fh.matchCache) >= maxHighlightMatchCacheEntries {
 		fh.matchCache = make(map[highlightMatchCacheKey][]int)
@@ -328,10 +330,10 @@ func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem) []int {
 	return matched
 }
 
-func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem) []int {
+func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem, metadataKnown bool) []int {
 	var matched []int
 	for i := range fh.Rules {
-		if !fh.Rules[i].Match(item) {
+		if !fh.Rules[i].Match(item, metadataKnown) {
 			continue
 		}
 		matched = append(matched, i)
@@ -342,12 +344,12 @@ func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem) []int {
 	return matched
 }
 
-func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem) []int {
+func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem, metadataKnown bool) []int {
 	if fh == nil || item == nil {
 		return nil
 	}
 	if !item.IsHidden {
-		return fh.matchedRuleIndices(item)
+		return fh.matchedRuleIndices(item, metadataKnown)
 	}
 	var matched []int
 	for i := range fh.Rules {
@@ -356,7 +358,7 @@ func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem) []int {
 		if item.IsHidden && fh.Rules[i].AttrSet&AttrHidden != 0 {
 			continue
 		}
-		if !fh.Rules[i].Match(item) {
+		if !fh.Rules[i].Match(item, metadataKnown) {
 			continue
 		}
 		matched = append(matched, i)
@@ -444,7 +446,38 @@ func parseAttrFlags(s string) AttrFlags {
 	return flags
 }
 
-func (r *HighlightRule) Match(item *vfs.VFSItem) bool {
+// hasDeferredPredicate reports whether this rule filters on data that a
+// panel's fast base pass never has (size, dates, and the readonly/system/
+// archive/executable attributes, all only populated by the metadata pass).
+// Matching against those fields' zero values before metadata arrives can
+// produce a wrong color rather than merely no color yet (a zero time.Time,
+// for instance, satisfies almost any "before date X" rule).
+func (r *HighlightRule) hasDeferredPredicate() bool {
+	const deferredAttrs = AttrExecutable | AttrReadOnly | AttrSystem | AttrArchive
+	if r.AttrSet&deferredAttrs != 0 || r.AttrClear&deferredAttrs != 0 {
+		return true
+	}
+	if r.SizeAbove > 0 || r.SizeBelow > 0 {
+		return true
+	}
+	if !r.DateAfter.IsZero() || r.DateAfterDur > 0 ||
+		!r.DateBefore.IsZero() || r.DateBeforeDur > 0 {
+		return true
+	}
+	return false
+}
+
+// metadataKnown is false for a panel's fast base pass, where only
+// Name/IsDir/IsHidden/IsSymlink are populated. A rule that depends on other
+// fields is skipped entirely in that pass (see hasDeferredPredicate) rather
+// than evaluated against those fields' zero values, so the base pass shows
+// either the correct color or none — never a wrong one. The metadata pass
+// (metadataKnown true) re-evaluates every rule against the complete item and
+// its result overwrites the provisional one.
+func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown bool) bool {
+	if !metadataKnown && r.hasDeferredPredicate() {
+		return false
+	}
 	// Определение платформозависимых флагов "на лету"
 	isReadOnly := false
 	isSystem := false
@@ -554,7 +587,9 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 	attr := defaultAttr
 	matchedAny := false
 
-	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+	// Every GetColor caller renders a fully-loaded panel entry (text-mode
+	// rendering and path hints never see a deferred/partial VFSItem).
+	for _, ruleIndex := range fh.matchedRuleIndices(item, true) {
 		rule := fh.Rules[ruleIndex]
 		colorExpr := ""
 		if isCursor {
@@ -618,7 +653,7 @@ func (fh *FileHighlighter) GetMarker(item *vfs.VFSItem) string {
 	if item.Name == ".." {
 		return ""
 	}
-	for _, ruleIndex := range fh.matchedRuleIndices(item) {
+	for _, ruleIndex := range fh.matchedRuleIndices(item, true) {
 		rule := fh.Rules[ruleIndex]
 		if rule.Mark != "" {
 			return rule.Mark
@@ -689,13 +724,19 @@ func highlightStyleEmpty(style extui.HighlightStyleModel) bool {
 
 // SemanticStyle returns a presentation-neutral style for QML. It preserves
 // the existing Far cascade while keeping vtui attributes out of the scene.
-func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem) (string, extui.HighlightStyleModel) {
+// metadataKnown must be false when item only carries a panel's fast base-pass
+// fields (Name/IsDir/IsHidden/IsSymlink); rules that need anything else are
+// then skipped rather than matched against zero values (see
+// HighlightRule.hasDeferredPredicate). The later metadata pass calls this
+// again with metadataKnown true and its result supersedes the provisional
+// one.
+func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) (string, extui.HighlightStyleModel) {
 	var style extui.HighlightStyleModel
 	if fh == nil || item == nil {
 		return "", style
 	}
 	parentEntry := item.Name == ".."
-	for _, ruleIndex := range fh.semanticMatchedRuleIndices(item) {
+	for _, ruleIndex := range fh.semanticMatchedRuleIndices(item, metadataKnown) {
 		rule := fh.Rules[ruleIndex]
 		style.Groups = append(style.Groups, extui.HighlightGroupModel{
 			ID:   rule.RuleID,

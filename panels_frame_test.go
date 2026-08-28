@@ -175,6 +175,57 @@ func TestPanelsFrame_MouseGestureStaysWithOriginPanel(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_ActivePanelClickDoesNotRedrawUnchangedSearchFocus(t *testing.T) {
+	oldConfig := AppConfig
+	defer func() { AppConfig = oldConfig }()
+	AppConfig.NavigationMode = NavigationSearchFirst
+	AppConfig.AlwaysShowMenuBar = false
+
+	screen := vtui.NewSilentScreenBuf()
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	left := &mouseCaptureTestPanel{}
+	right := &mouseCaptureTestPanel{}
+	left.SetPosition(0, 0, 39, 20)
+	right.SetPosition(40, 0, 79, 20)
+	left.SetFocus(true)
+	pf := &PanelsFrame{
+		panels:             [2]Panel{left, right},
+		activeIdx:          0,
+		showPanels:         true,
+		showLeftPanel:      true,
+		showRightPanel:     true,
+		commandLineFocused: false,
+		cmdLine:            NewCommandLine(""),
+	}
+	pf.cmdLine.SetFocus(false)
+
+	if !pf.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 5, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("active-panel click was not handled")
+	}
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+		t.Fatal("unchanged active-panel focus manufactured a redraw")
+	default:
+	}
+	if pf.activeIdx != 0 || pf.commandLineFocused || !left.IsFocused() {
+		t.Fatalf("active focus changed: side=%d command=%v panel=%v",
+			pf.activeIdx, pf.commandLineFocused, left.IsFocused())
+	}
+}
+
 func TestPanelsFrame_MiddleMouseGestureTriggersOnce(t *testing.T) {
 	pf := &PanelsFrame{}
 
@@ -1003,6 +1054,47 @@ func TestPanelsFrame_KeyHandling(t *testing.T) {
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, ControlKeyState: vtinput.LeftCtrlPressed})
 	if pf.showPanels {
 		t.Error("Ctrl+O should hide panels even when PTY is busy")
+	}
+}
+
+func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
+	oldMode := AppConfig.NavigationMode
+	defer func() { AppConfig.NavigationMode = oldMode }()
+	AppConfig.NavigationMode = NavigationClassic
+
+	pf := &PanelsFrame{
+		showPanels: true, showLeftPanel: true, showRightPanel: true,
+		panels: [2]Panel{&FileSystemPanel{}, &FileSystemPanel{}},
+	}
+	if !pf.panelActivationFastPathEligible() {
+		t.Fatal("ordinary visible split panels were not eligible")
+	}
+
+	pf.wide = true
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("wide panels used the split-panel activation fast path")
+	}
+	pf.wide = false
+
+	pf.showLeftPanel = false
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("hidden left panel used the activation fast path")
+	}
+	pf.showLeftPanel = true
+	pf.showRightPanel = false
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("hidden right panel used the activation fast path")
+	}
+	pf.showRightPanel = true
+	pf.panels[0].(*FileSystemPanel).fastFindMode = true
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("fast-find state used the panel activation fast path")
+	}
+	pf.panels[0].(*FileSystemPanel).fastFindMode = false
+
+	AppConfig.NavigationMode = NavigationSearchFirst
+	if !pf.panelActivationFastPathEligible() {
+		t.Fatal("panel-focused search mode was excluded from the activation fast path")
 	}
 }
 func TestPanelsFrame_MenuCommands(t *testing.T) {
@@ -3930,7 +4022,32 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	waitForLoad(t, lp)
 	waitForLoad(t, rp)
 
-	// Test 1: Navigate to absolute path inside the archive
+	// Arbitrary path-control input must still be validated synchronously. An
+	// OSVFS optimistic setter is reserved for authoritative panel rows/caches.
+	originalPath := lp.vfs.GetPath()
+	missingPath := filepath.Join(tmpDir, "missing")
+	lp.saveToCache(missingPath, nil)
+	if !lp.hasCachedDirectoryPath(missingPath) {
+		t.Fatal("test setup did not create an exact cached missing path")
+	}
+	if pf.NavigateToPath(lp, missingPath) {
+		t.Fatalf("NavigateToPath trusted cache for missing typed path: %s", missingPath)
+	}
+	if got := lp.vfs.GetPath(); !sameFolderHistoryPath(got, originalPath) {
+		t.Fatalf("missing typed path changed panel from %q to %q", originalPath, got)
+	}
+	plainFile := filepath.Join(tmpDir, "plain.txt")
+	if err := os.WriteFile(plainFile, []byte("plain"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if pf.NavigateToPath(lp, plainFile) {
+		t.Fatalf("NavigateToPath accepted regular file as directory: %s", plainFile)
+	}
+	if got := lp.vfs.GetPath(); !sameFolderHistoryPath(got, originalPath) {
+		t.Fatalf("typed file changed panel from %q to %q", originalPath, got)
+	}
+
+	// Test 1: Navigate to absolute path inside the archive.
 	targetPath := filepath.Join(zipPath, "inner_dir")
 	ok := pf.NavigateToPath(lp, targetPath)
 	if !ok {
