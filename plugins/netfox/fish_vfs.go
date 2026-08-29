@@ -46,6 +46,24 @@ type FishVFS struct {
 	panelInfo   vfs.PanelInfoProvider
 }
 
+// FishCreateProvider supplies a dedicated write lane while the FISH+ session
+// continues to serve directory and metadata requests. Android uses ADB Sync
+// here because its shell-only base64 writer is correct but far too slow for
+// camera-sized transfers.
+type FishCreateProvider func(context.Context, string) (io.WriteCloser, error)
+
+// FishReadProvider supplies a dedicated read lane while the FISH+ session
+// continues to serve directory and command requests. Android uses operation-
+// scoped ADB Sync connections here so several gallery source reads can overlap
+// instead of queueing behind one shell protocol mutex.
+type FishReadProvider func(context.Context, string) (vfs.ReadAtCloser, error)
+
+// FishStatProvider supplies an operation-scoped metadata lane. It is separate
+// from FishReadProvider because callers frequently validate a catalog entry
+// without opening it, and forcing that validation through the serialized
+// FISH+ session would still bottleneck parallel reads.
+type FishStatProvider func(context.Context, string) (vfs.VFSItem, error)
+
 // fishConn keeps one FISH+ session alive for as long as any of the VFS
 // instances built on it is still in use. f4 clones a panel's file system in
 // several places — the "other panel" menu item and the frame snapshot taken
@@ -84,6 +102,16 @@ type fishConn struct {
 	dialAlt FishDialer
 	optsAlt fishplus.HandshakeOptions
 	closer  io.Closer
+
+	createMu       sync.RWMutex
+	createName     string
+	createProvider FishCreateProvider
+	readMu         sync.RWMutex
+	readName       string
+	readProvider   FishReadProvider
+	statMu         sync.RWMutex
+	statName       string
+	statProvider   FishStatProvider
 
 	mu     sync.Mutex
 	refs   int
@@ -646,6 +674,112 @@ func (v *FishVFS) SetPanelInfoProvider(provider vfs.PanelInfoProvider) {
 	v.panelInfoMu.Unlock()
 }
 
+// SetCreateProvider installs a connection-wide file creation lane. It is
+// shared by panel clones and pooled views just like the FISH+ connection.
+func (v *FishVFS) SetCreateProvider(name string, provider FishCreateProvider) {
+	if v.conn == nil {
+		return
+	}
+	v.conn.createMu.Lock()
+	v.conn.createName = strings.TrimSpace(name)
+	v.conn.createProvider = provider
+	v.conn.createMu.Unlock()
+}
+
+// CreateProviderName reports the dedicated write lane, or an empty string
+// when Create uses the FISH+ helper itself.
+func (v *FishVFS) CreateProviderName() string {
+	if v.conn == nil {
+		return ""
+	}
+	v.conn.createMu.RLock()
+	defer v.conn.createMu.RUnlock()
+	if v.conn.createProvider == nil {
+		return ""
+	}
+	return v.conn.createName
+}
+
+func (v *FishVFS) createProvider() FishCreateProvider {
+	if v.conn == nil {
+		return nil
+	}
+	v.conn.createMu.RLock()
+	defer v.conn.createMu.RUnlock()
+	return v.conn.createProvider
+}
+
+// SetReadProvider installs a connection-wide file read lane. It is shared by
+// panel clones and pooled views just like the FISH+ connection.
+func (v *FishVFS) SetReadProvider(name string, provider FishReadProvider) {
+	if v.conn == nil {
+		return
+	}
+	v.conn.readMu.Lock()
+	v.conn.readName = strings.TrimSpace(name)
+	v.conn.readProvider = provider
+	v.conn.readMu.Unlock()
+}
+
+// ReadProviderName reports the dedicated read lane, or an empty string when
+// Open uses the FISH+ helper itself.
+func (v *FishVFS) ReadProviderName() string {
+	if v.conn == nil {
+		return ""
+	}
+	v.conn.readMu.RLock()
+	defer v.conn.readMu.RUnlock()
+	if v.conn.readProvider == nil {
+		return ""
+	}
+	return v.conn.readName
+}
+
+func (v *FishVFS) readProvider() FishReadProvider {
+	if v.conn == nil {
+		return nil
+	}
+	v.conn.readMu.RLock()
+	defer v.conn.readMu.RUnlock()
+	return v.conn.readProvider
+}
+
+// SetStatProvider installs a connection-wide metadata lane. It is primarily
+// useful when a transport has an operation-scoped stat primitive that can run
+// concurrently with the shell-backed directory session.
+func (v *FishVFS) SetStatProvider(name string, provider FishStatProvider) {
+	if v.conn == nil {
+		return
+	}
+	v.conn.statMu.Lock()
+	v.conn.statName = strings.TrimSpace(name)
+	v.conn.statProvider = provider
+	v.conn.statMu.Unlock()
+}
+
+// StatProviderName reports the dedicated metadata lane, or an empty string
+// when Stat uses the FISH+ helper itself.
+func (v *FishVFS) StatProviderName() string {
+	if v.conn == nil {
+		return ""
+	}
+	v.conn.statMu.RLock()
+	defer v.conn.statMu.RUnlock()
+	if v.conn.statProvider == nil {
+		return ""
+	}
+	return v.conn.statName
+}
+
+func (v *FishVFS) statProvider() FishStatProvider {
+	if v.conn == nil {
+		return nil
+	}
+	v.conn.statMu.RLock()
+	defer v.conn.statMu.RUnlock()
+	return v.conn.statProvider
+}
+
 func (v *FishVFS) panelInfoProvider() vfs.PanelInfoProvider {
 	v.panelInfoMu.RLock()
 	defer v.panelInfoMu.RUnlock()
@@ -825,6 +959,9 @@ func validateFishEntryName(name string) error {
 // a symlink as one, and only resolves it to answer the IsDir question.
 func (v *FishVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	target := v.abs(p)
+	if provider := v.statProvider(); provider != nil {
+		return provider(ctx, target)
+	}
 	e, err := v.client().Lstat(ctx, target)
 	if err != nil {
 		return vfs.VFSItem{}, err
@@ -838,14 +975,24 @@ func (v *FishVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 }
 
 func (v *FishVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	return v.client().Open(ctx, v.abs(p))
+	target := v.abs(p)
+	if provider := v.readProvider(); provider != nil {
+		return provider(ctx, target)
+	}
+	return v.client().Open(ctx, target)
 }
 
 func (v *FishVFS) GetCapabilities() vfs.VFSCapabilities {
+	readAccess := vfs.ReadAccessNativeRange
+	if v.readProvider() != nil {
+		readAccess = vfs.ReadAccessHybridRange
+	}
 	return vfs.VFSCapabilities{
 		HasServerSideCopy:  true,
 		HasServerSideMove:  true,
 		HasRandomAccess:    true,
+		ReadAccess:         readAccess,
+		StorageClass:       vfs.StorageClassNetwork,
 		HasUnixPermissions: true,
 		HasSearch:          v.client().CanGrep(),
 	}
@@ -1195,7 +1342,11 @@ func (v *FishVFS) Copy(ctx context.Context, o, n string) error {
 // streams from the beginning. The handle buffers up to one transfer chunk,
 // so the copier's small writes do not each become a round trip.
 func (v *FishVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
-	w, err := v.client().Create(ctx, v.abs(p))
+	target := v.abs(p)
+	if provider := v.createProvider(); provider != nil {
+		return provider(ctx, target)
+	}
+	w, err := v.client().Create(ctx, target)
 	if err != nil {
 		return nil, err
 	}

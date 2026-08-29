@@ -140,11 +140,13 @@ private slots:
     void bridgeShutdownStopsRuntimeDuringDecode();
     void stableCatalogSkipsRebuildAndKeepsDynamicState();
     void coldProvisionalCatalogKeepsPreviousPanelVisible();
+    void compactFinalStateCommitsDeferredProvisionalCatalog();
     void panelIdentityReplacementResetsSession();
     void workspaceCachePreparesOffscreenAndActivatesBothSessions();
     void lateCacheBindsStartupViewportToExactSession();
     void rejectedCursorRestoresAuthoritativeState();
     void vfsUsesUnifiedSessionWithoutPreviews();
+    void vfsResourceDescriptorsRemainOpaqueAndPreviewable();
     void viewerWaitsForAuthoritativeCursor();
     void inactivePanelImageOpenWaitsForActiveAndCursor();
     void viewerIgnoresSemanticPresentation();
@@ -1610,6 +1612,7 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     for (int index = 0; index < entries.size(); ++index) {
         QVariantMap entry = entries.at(index).toMap();
         const QFileInfo imageInfo(imagePaths.at(index));
+        entry.insert(QStringLiteral("name"), imageInfo.fileName());
         entry.insert(QStringLiteral("localPath"), imageInfo.absoluteFilePath());
         entry.insert(QStringLiteral("isDir"), false);
         entry.insert(QStringLiteral("isImage"), true);
@@ -2607,6 +2610,71 @@ void F4GalleryBridgeTests::coldProvisionalCatalogKeepsPreviousPanelVisible()
     QVERIFY(session->catalogReady());
 }
 
+void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(testScene());
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    QCOMPARE(session->model()->rowCount(), 2);
+
+    QVariantMap provisional = testScene().value(QStringLiteral("shell"))
+                                  .toMap().value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    provisional.insert(QStringLiteral("path"),
+                       QStringLiteral("CloudFox:/$"));
+    provisional.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
+    provisional.insert(QStringLiteral("previewCapable"), false);
+    provisional.insert(QStringLiteral("catalogRevision"), qulonglong(43));
+    provisional.insert(QStringLiteral("loading"), true);
+    provisional.insert(QStringLiteral("catalogProvisional"), true);
+    provisional.insert(QStringLiteral("cursor"), 0);
+    provisional.insert(QStringLiteral("cursorEntryId"),
+                       QStringLiteral("cloudfox:add"));
+    provisional.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("cloudfox:add")},
+            {QStringLiteral("index"), 0},
+            {QStringLiteral("name"), QStringLiteral("<Add connection>")},
+            {QStringLiteral("isDir"), false},
+            {QStringLiteral("isImage"), false},
+            {QStringLiteral("selected"), false},
+        },
+    });
+    bridge.synchronizePanelCatalog(provisional);
+
+    // The destination is still provisional, so the previous populated panel
+    // intentionally remains visible.
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    QCOMPARE(session->model()->rowCount(), 2);
+
+    QVariantMap finalState = provisional;
+    finalState.remove(QStringLiteral("entries"));
+    finalState.remove(QStringLiteral("selectionRevision"));
+    finalState.insert(QStringLiteral("loading"), false);
+    finalState.insert(QStringLiteral("catalogProvisional"), false);
+    bridge.synchronizePanelState(QVariantMap{
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("panel-left-a")},
+        {QStringLiteral("catalogRevision"), qulonglong(43)},
+        {QStringLiteral("panel"), finalState},
+    });
+
+    QCOMPARE(session->currentPath(), QStringLiteral("CloudFox:/$"));
+    QCOMPARE(session->catalogRevision(), qulonglong(43));
+    QCOMPARE(session->model()->rowCount(), 1);
+    QCOMPARE(session->entryIdAt(0), QStringLiteral("cloudfox:add"));
+    QVERIFY(session->catalogReady());
+}
+
 void F4GalleryBridgeTests::viewerWaitsForAuthoritativeCursor()
 {
     QQmlEngine engine;
@@ -3483,6 +3551,85 @@ void F4GalleryBridgeTests::vfsUsesUnifiedSessionWithoutPreviews()
     QCOMPARE(session->model()->rowCount(), 2);
     QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
 }
+
+void F4GalleryBridgeTests::vfsResourceDescriptorsRemainOpaqueAndPreviewable()
+{
+    const QString version = QStringLiteral("strong:rev/α?etag=\"")
+        + QChar(u'\0') + QStringLiteral("tail");
+    QVariantMap sourceDescriptor{
+        {QStringLiteral("resourceId"), QStringLiteral("opaque:panel/7/image")},
+        {QStringLiteral("sourceKey"), QStringLiteral("s3:bucket/key.jpg")},
+        {QStringLiteral("version"), version},
+        {QStringLiteral("versionStrength"), QStringLiteral("strong")},
+        {QStringLiteral("storageClass"), QStringLiteral("remote")},
+        {QStringLiteral("accessProfile"), QStringLiteral("nativeRange")},
+        {QStringLiteral("mimeType"), QStringLiteral("image/jpeg")},
+        {QStringLiteral("size"), qlonglong(123456789)},
+        {QStringLiteral("sizeKnown"), true},
+    };
+    QVariantMap panel{
+        {QStringLiteral("entries"), QVariantList{QVariantMap{
+             {QStringLiteral("entryId"), QStringLiteral("vfs:image")},
+             {QStringLiteral("index"), 4},
+             {QStringLiteral("name"), QStringLiteral("remote.jpg")},
+             {QStringLiteral("isImage"), true},
+             {QStringLiteral("source"), sourceDescriptor},
+        }}},
+    };
+
+    F4GalleryBridge normalizationBridge(nullptr);
+    const QVariantMap normalized = normalizationBridge.normalizedEntries(panel)
+                                       .constFirst().toMap();
+    QCOMPARE(normalized.value(QStringLiteral("resourceId")),
+             sourceDescriptor.value(QStringLiteral("resourceId")));
+    QCOMPARE(normalized.value(QStringLiteral("sourceKey")),
+             sourceDescriptor.value(QStringLiteral("sourceKey")));
+    QCOMPARE(normalized.value(QStringLiteral("contentVersion")).toString(),
+             version);
+    QCOMPARE(normalized.value(QStringLiteral("version")).toString(), version);
+    QCOMPARE(normalized.value(QStringLiteral("versionStrength")),
+             sourceDescriptor.value(QStringLiteral("versionStrength")));
+    QCOMPARE(normalized.value(QStringLiteral("storageClass")),
+             sourceDescriptor.value(QStringLiteral("storageClass")));
+    QCOMPARE(normalized.value(QStringLiteral("accessProfile")),
+             sourceDescriptor.value(QStringLiteral("accessProfile")));
+    QCOMPARE(normalized.value(QStringLiteral("mimeType")),
+             sourceDescriptor.value(QStringLiteral("mimeType")));
+    QCOMPARE(normalized.value(QStringLiteral("size")).toLongLong(),
+             qlonglong(123456789));
+
+    QVariantMap scene = testScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    panel.insert(QStringLiteral("id"), QStringLiteral("vfs-panel"));
+    panel.insert(QStringLiteral("side"), 0);
+    panel.insert(QStringLiteral("active"), true);
+    panel.insert(QStringLiteral("path"), QStringLiteral("s3:/bucket"));
+    panel.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
+    panel.insert(QStringLiteral("previewCapable"), true);
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(99));
+    panel.insert(QStringLiteral("selectionRevision"), qulonglong(1));
+    panel.insert(QStringLiteral("cursor"), 4);
+    panel.insert(QStringLiteral("cursorEntryId"), QStringLiteral("vfs:image"));
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 1);
+    const int versionRole = session->model()->roleNames().key(
+        QByteArrayLiteral("versionToken"), -1);
+    QVERIFY(versionRole >= 0);
+    QCOMPARE(session->model()->data(session->model()->index(0, 0),
+                                    versionRole).toString(),
+             version);
+    bridge.requestOpen(0, QStringLiteral("vfs:image"), 4, true, 99);
+    QVERIFY(bridge.viewerVisible());
+}
+
 void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
 {
     QQmlEngine engine;

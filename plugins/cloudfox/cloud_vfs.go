@@ -159,11 +159,18 @@ func (r *cloudReadHandle) Read(ctx context.Context, p []byte) (int, error) {
 }
 
 func (r *cloudReadHandle) LocalPath() (string, bool) {
-	local, ok := r.ReadAtCloser.(interface{ LocalPath() (string, bool) })
+	local, ok := r.ReadAtCloser.(vfs.LocalBackingReader)
 	if !ok {
 		return "", false
 	}
 	return local.LocalPath()
+}
+
+func (r *cloudReadHandle) ReadAccessProfile() vfs.ReadAccessProfile {
+	if profiler, ok := r.ReadAtCloser.(vfs.ReadAccessProfiler); ok {
+		return profiler.ReadAccessProfile()
+	}
+	return vfs.ReadAccessUnknownExpensive
 }
 
 func (r *cloudReadHandle) Close() error {

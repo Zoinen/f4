@@ -9,6 +9,8 @@
 #include <QThread>
 #include <QVariant>
 
+#include <functional>
+
 class QtShellMessageDecoder;
 
 class QtShellController : public QObject
@@ -41,6 +43,12 @@ public:
     QVariantList commandMenuStates() const { return m_commandMenuStates; }
     QString startupError() const { return m_startupError; }
     static bool initialSceneReadyForDisplay(const QVariantMap &scene);
+
+    // Deliberately not a Qt signal, slot, property or invokable: the media
+    // endpoint and nonce are bearer capabilities for native transport code
+    // and must not enter the QML meta-object surface exposed as qtShell.
+    void setMediaAdvertisementHandler(
+        std::function<void(const QVariantMap &)> handler);
 
     // Opportunistically completes the initial loopback connection without
     // running a nested event loop. A timeout leaves the asynchronous socket
@@ -89,6 +97,8 @@ signals:
     void commandMenuStatesChanged(const QVariantList &states);
     void qmlIconSetChanged(const QString &name);
     void fatalError(const QString &message);
+    // Presentation-only messages. Sensitive media capabilities and native
+    // catalog payloads are removed before this reaches QML.
     void messageReceived(const QVariantMap &message);
 
     // Emitted after a complete frame has been removed from the socket but
@@ -168,6 +178,7 @@ private:
     int m_initialRows = 30;
     bool m_connected = false;
     bool m_helloSent = false;
+    bool m_serverHandshakeComplete = false;
     bool m_initialHandshakeComplete = false;
     QString m_startupError;
     QVariantMap m_scene;
@@ -177,4 +188,6 @@ private:
     QVariantMap m_commandLine;
     QVariantList m_commandMenus;
     QVariantList m_commandMenuStates;
+    QVariantMap m_mediaAdvertisement;
+    std::function<void(const QVariantMap &)> m_mediaAdvertisementHandler;
 };

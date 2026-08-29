@@ -1,4 +1,5 @@
 #include "F4GalleryBridge.h"
+#include "F4ImageSourceProvider.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
 
@@ -13,6 +14,7 @@
 
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
+#include <ZoinGallery/MediaTimingTrace.h>
 
 #include <utility>
 
@@ -118,7 +120,8 @@ QVariantMap rowFreePanelPresentation(QVariantMap panel)
 }
 
 F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
-                                 F4IconSet *iconSet)
+                                 F4IconSet *iconSet,
+                                 QtMediaClient *mediaClient)
     : QObject(parent)
     , m_iconSet(iconSet)
 {
@@ -161,6 +164,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     // the bridge no longer creates one OS thread per logical CPU.
     options.maxDecodeThreads = 4;
     options.persistentCache = true;
+    if (mediaClient) {
+        options.imageSourceProvider =
+            QSharedPointer<F4ImageSourceProvider>::create(mediaClient);
+    }
     auto *runtime = ZoinGallery::GalleryRuntime::install(engine, options);
     m_runtime = runtime;
     if (!runtime) {
@@ -981,6 +988,14 @@ void F4GalleryBridge::notifyFrameSwappedAt(
         requestNextPanelCatalogMetadata();
     }
 
+    if (ZoinGallery::MediaTimingTrace::enabled()) {
+        ZoinGallery::MediaTimingTrace::event(
+            QStringLiteral("qt.gallery.frame_swapped"), {
+                {QStringLiteral("serial"),
+                 QVariant::fromValue<qulonglong>(++m_mediaFrameSerial)},
+            });
+    }
+
     NavigationBenchmarkState &benchmark = m_navigationBenchmark;
     if (!benchmark.enabled) {
         return;
@@ -1618,13 +1633,10 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     }
     const size_t sideIndex = static_cast<size_t>(side);
     SideState &state = m_states[sideIndex];
-    if (!state.initialized
-        || patch.value(QStringLiteral("panelId")).toString()
-            != state.panelId
-        || revisionValue(patch, QStringLiteral("catalogRevision"))
-            != state.catalogRevision) {
-        return;
-    }
+    const QString panelId = patch.value(
+        QStringLiteral("panelId")).toString();
+    const qulonglong catalogRevision = revisionValue(
+        patch, QStringLiteral("catalogRevision"));
     const QVariant panelValue = patch.value(QStringLiteral("panel"));
     if (panelValue.metaType().id() != QMetaType::QVariantMap) {
         return;
@@ -1632,6 +1644,46 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     const QVariantMap panel = panelValue.toMap();
     if (panel.contains(QStringLiteral("entries"))
         || panel.contains(QStringLiteral("highlightStyles"))) {
+        return;
+    }
+    const QString op = patch.value(QStringLiteral("op")).toString();
+    if (!state.initialized || panelId != state.panelId) {
+        return;
+    }
+    if (catalogRevision != state.catalogRevision) {
+        // A cold path switch deliberately leaves the populated source session
+        // visible while provisional destination catalogs arrive. The
+        // controller still owns the latest complete provisional payload, and
+        // may finalize it with a row-free state_update when only
+        // catalogProvisional/loading changed. Commit that retained payload at
+        // this exact revision instead of rejecting the final state because the
+        // visible session still reports the source revision.
+        const QVariantMap deferred = m_panelSnapshots[sideIndex];
+        const QVariant provisionalValue = deferred.value(
+            QStringLiteral("catalogProvisional"));
+        const QVariant finalValue = panel.value(
+            QStringLiteral("catalogProvisional"));
+        const bool finalizesDeferredCatalog =
+            op == QStringLiteral("state_update")
+            && catalogRevision != 0
+            && deferred.value(QStringLiteral("id")).toString() == panelId
+            && revisionValue(deferred, QStringLiteral("catalogRevision"))
+                == catalogRevision
+            && deferred.contains(QStringLiteral("entries"))
+            && provisionalValue.metaType().id() == QMetaType::Bool
+            && provisionalValue.toBool()
+            && finalValue.metaType().id() == QMetaType::Bool
+            && !finalValue.toBool();
+        if (!finalizesDeferredCatalog) {
+            return;
+        }
+
+        QVariantMap authoritative = deferred;
+        for (auto it = panel.cbegin(); it != panel.cend(); ++it) {
+            authoritative.insert(it.key(), it.value());
+        }
+        synchronizePanel(side, authoritative);
+        schedulePanelCatalogMetadataRequest();
         return;
     }
 
@@ -1668,7 +1720,6 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
         || nextCurrentPath != state.currentPath;
     const bool metadataRestartNeeded = nextMetadataDeferred
         && metadataStreamChanged;
-    const QString op = patch.value(QStringLiteral("op")).toString();
     qulonglong nextSelectionRevision = state.selectionRevision;
     QStringList nextSelectedIds = state.selectedEntryIdList;
     QSet<QString> nextSelectedSet = state.selectedEntryIds;
@@ -2462,6 +2513,17 @@ QVariantList F4GalleryBridge::normalizedEntries(
     entries.reserve(sourceEntries.size());
     for (qsizetype row = 0; row < sourceEntries.size(); ++row) {
         const QVariantMap source = sourceEntries[row].toMap();
+        const QVariantMap descriptor = source.value(
+            QStringLiteral("source")).toMap();
+        const auto descriptorValue = [&source, &descriptor](
+                                         const QString &key,
+                                         const QString &legacyKey = QString()) {
+            if (descriptor.contains(key)) {
+                return descriptor.value(key);
+            }
+            const QString fallback = legacyKey.isEmpty() ? key : legacyKey;
+            return source.value(fallback);
+        };
         QVariantMap entry;
         entry.insert(QStringLiteral("entryId"), source.value(QStringLiteral("entryId")));
         entry.insert(QStringLiteral("index"), source.value(QStringLiteral("index"), row));
@@ -2489,6 +2551,36 @@ QVariantList F4GalleryBridge::normalizedEntries(
             entry.insert(QStringLiteral("localPath"),
                          source.value(QStringLiteral("path")));
         }
+        // Preserve broker identities as opaque values. They must never be
+        // reconstructed from a temporary local path, narrowed to an integer,
+        // or canonicalized by the host.
+        const QVariant resourceId = descriptorValue(QStringLiteral("resourceId"));
+        if (resourceId.isValid()) {
+            entry.insert(QStringLiteral("resourceId"), resourceId);
+        }
+        const QVariant sourceKey = descriptorValue(QStringLiteral("sourceKey"));
+        if (sourceKey.isValid()) {
+            entry.insert(QStringLiteral("sourceKey"), sourceKey);
+        }
+        QVariant contentVersion = descriptorValue(QStringLiteral("version"));
+        if (!contentVersion.isValid()) {
+            contentVersion = descriptorValue(QStringLiteral("contentVersion"));
+        }
+        if (contentVersion.isValid()) {
+            entry.insert(QStringLiteral("contentVersion"), contentVersion);
+            entry.insert(QStringLiteral("version"), contentVersion);
+        }
+        for (const QString &key : {
+                 QStringLiteral("versionStrength"),
+                 QStringLiteral("storageClass"),
+                 QStringLiteral("accessProfile"),
+                 QStringLiteral("mimeType"),
+                 QStringLiteral("sizeKnown")}) {
+            const QVariant value = descriptorValue(key);
+            if (value.isValid()) {
+                entry.insert(key, value);
+            }
+        }
         entry.insert(QStringLiteral("isDir"), source.value(QStringLiteral("isDir")));
         entry.insert(QStringLiteral("isUp"), source.value(QStringLiteral("isUp")));
         if (source.contains(QStringLiteral("isHidden"))) {
@@ -2503,8 +2595,11 @@ QVariantList F4GalleryBridge::normalizedEntries(
             entry.insert(QStringLiteral("mtimeNs"),
                          source.value(QStringLiteral("mtimeNanos")));
         }
-        for (const QString &key : {QStringLiteral("size"),
-                                   QStringLiteral("sizeText"),
+        const QVariant size = descriptorValue(QStringLiteral("size"));
+        if (size.isValid()) {
+            entry.insert(QStringLiteral("size"), size);
+        }
+        for (const QString &key : {QStringLiteral("sizeText"),
                                    QStringLiteral("sizeCalculated")}) {
             if (source.contains(key)) {
                 entry.insert(key, source.value(key));
@@ -3158,8 +3253,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const QString cursorEntryId = panel.value(QStringLiteral("cursorEntryId")).toString();
     const int cursorIndex = panel.value(QStringLiteral("cursor"), -1).toInt();
     const QString sourceKind = panel.value(QStringLiteral("sourceKind"), QStringLiteral("vfs")).toString();
-    const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool()
-        && sourceKind == QStringLiteral("local");
+    const bool previewCapable = panel.value(QStringLiteral("previewCapable")).toBool();
     const bool active = panel.value(QStringLiteral("active")).toBool();
     const bool loading = panel.value(QStringLiteral("loading")).toBool();
     const bool catalogProvisional = panel.value(
@@ -3170,6 +3264,24 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     const bool provisionalReplacementDeferred = catalogProvisional
         && state.initialized && panelId == state.panelId
         && currentPath != state.currentPath;
+
+    QVariantMap mediaPanelFields;
+    if (ZoinGallery::MediaTimingTrace::enabled()) {
+        mediaPanelFields = {
+            {QStringLiteral("side"), side},
+            {QStringLiteral("panelId"), panelId},
+            {QStringLiteral("path"), currentPath},
+            {QStringLiteral("catalogRevision"),
+             QVariant::fromValue<qulonglong>(catalogRevision)},
+            {QStringLiteral("entries"),
+             panel.value(QStringLiteral("entries")).toList().size()},
+            {QStringLiteral("loading"), loading},
+            {QStringLiteral("catalogProvisional"), catalogProvisional},
+            {QStringLiteral("layoutMode"), galleryLayoutMode},
+        };
+    }
+    ZoinGallery::MediaTimingTrace::Span mediaPanelSpan(
+        QStringLiteral("qt.gallery.bridge.panel"), mediaPanelFields);
 
     DeferredPanelOpenRepeat repeatToReplay;
 
@@ -3238,6 +3350,8 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // scene is being assembled. Keep the populated persistent session until
     // that scene arrives instead of replacing it with an incomplete catalog.
     if (provisionalReplacementDeferred) {
+        mediaPanelSpan.set(QStringLiteral("outcome"),
+                           QStringLiteral("provisional-deferred"));
         state.active = active;
         state.loading = loading;
         state.galleryLayoutMode = galleryLayoutMode;
@@ -3312,8 +3426,21 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // catalog reset ExternalCatalogModel consumes highlightStyle before
     // endResetModel(), avoiding a second full pass and a post-reset update
     // storm.
-    const QVariantList entries = normalizeCatalog
-        ? normalizedEntries(panel) : state.entries;
+    QVariantList entries;
+    if (normalizeCatalog) {
+        ZoinGallery::MediaTimingTrace::Span normalizeSpan(
+            QStringLiteral("qt.gallery.bridge.catalog_normalize"), {
+                {QStringLiteral("side"), side},
+                {QStringLiteral("path"), currentPath},
+                {QStringLiteral("inputEntries"),
+                 panel.value(QStringLiteral("entries")).toList().size()},
+            });
+        entries = normalizedEntries(panel);
+        normalizeSpan.set(QStringLiteral("outputEntries"), entries.size());
+    }
+    else {
+        entries = state.entries;
+    }
     const qint64 normalizeCompletedNs = traceCatalogStages && normalizeCatalog
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
     const QStringList selectedIds = catalogPayloadChanged || selectionChanged
@@ -3330,6 +3457,15 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
             catalogApplyStartedNs =
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
         }
+        ZoinGallery::MediaTimingTrace::Span applySpan(
+            QStringLiteral("qt.gallery.bridge.catalog_apply"), {
+                {QStringLiteral("side"), side},
+                {QStringLiteral("path"), currentPath},
+                {QStringLiteral("entries"), entries.size()},
+                {QStringLiteral("catalogRevision"),
+                 QVariant::fromValue<qulonglong>(catalogRevision)},
+                {QStringLiteral("catalogProvisional"), catalogProvisional},
+            });
         catalogApplied = session->applyExternalCatalog(entries, catalogRevision, {
             {QStringLiteral("currentPath"), currentPath},
             {QStringLiteral("sourceKind"), sourceKind},
@@ -3347,6 +3483,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
             catalogApplyCompletedNs =
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
         }
+        applySpan.set(QStringLiteral("applied"), catalogApplied);
     }
 
     if (session && !catalogChanged && appearanceChanged) {
@@ -3503,6 +3640,13 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
                 {QStringLiteral("catalogApplied"), catalogApplied},
             });
     }
+
+    mediaPanelSpan.set(QStringLiteral("outcome"), QStringLiteral("applied"));
+    mediaPanelSpan.set(QStringLiteral("catalogChanged"), catalogChanged);
+    mediaPanelSpan.set(QStringLiteral("catalogPayloadChanged"),
+                       catalogPayloadChanged);
+    mediaPanelSpan.set(QStringLiteral("catalogApplied"), catalogApplied);
+    mediaPanelSpan.set(QStringLiteral("normalizedEntries"), entries.size());
 
     if (!m_cacheWarmup && m_navigationBenchmark.enabled
         && m_navigationBenchmark.phase

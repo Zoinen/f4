@@ -559,6 +559,7 @@ type FileSystemPanel struct {
 	catalogRevision              int64
 	metadataRevision             int64
 	selectionRevision            int64
+	mediaSourceEpoch             int64
 	// Selection changes are journaled independently from the immutable file
 	// catalog. Native semantic renderers can therefore acknowledge one changed
 	// row without exporting or serializing every directory entry.
@@ -2362,6 +2363,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			"supersededBy", navigationBenchmarkTraceName(benchmark))
 	}
 	fp.benchmarkLoadTrace = benchmark
+	// Even when a backend cannot expose revision, size or mtime, a new listing
+	// is a new observation boundary for opaque media bytes. Strong/weak source
+	// versions remain stable; only the session-strength fallback consumes this.
+	fp.mediaSourceEpoch++
 	if fp.cancelLoad != nil {
 		fp.cancelLoad()
 		fp.cancelLoad = nil

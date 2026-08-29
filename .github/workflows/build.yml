@@ -489,7 +489,7 @@ jobs:
         # source and object trees are not. Keep this deliberately narrow so
         # an ARM Qt build can checkpoint within GitHub's cache quota.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}
         restore-keys: |
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
@@ -569,10 +569,9 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "Unable to export the mirrored xz recipe" }
 
         # Qt 6.11's ARM64 cross-build invokes the native qmldom tool. Conan
-        # Center's package cleanup currently removes its Qt6QmlTools CMake
-        # package, although the executable itself is built and installed.
-        # Keep that package in the build-context Qt package only; it lets the
-        # ARM64 configure phase resolve Qt6::qmldom through QT_HOST_PATH.
+        # Qt 6.11's ARM64 cross-build needs the native qmldom executable.  A
+        # small, target-only CMake config avoids importing all native QML tool
+        # targets into the target build, which CMake rejects as duplicates.
         if ("${{ matrix.arch }}" -eq "arm64") {
           conan download qt/6.11.1 --only-recipe --remote=conancenter
           if ($LASTEXITCODE -ne 0) { throw "Unable to download the Qt recipe" }
@@ -584,18 +583,11 @@ jobs:
           Copy-Item "$qtRecipe/conanfile.py", "$qtRecipe/conandata.yml", `
             "$qtRecipe/qtmodules6.11.1.conf" $qtRecipeCopy
           $qtRecipeFile = Join-Path $qtRecipeCopy "conanfile.py"
-          $qtRecipeText = Get-Content $qtRecipeFile -Raw
-          $qtRecipePatched = $qtRecipeText.Replace(
-            'excludes="Qt6HostInfoConfig.cmake"',
-            'excludes=["Qt6HostInfoConfig.cmake", "Qt6QmlToolsConfig.cmake"]'
-          ).Replace(
-            'if m != "Qt6HostInfo":',
-            'if m not in ["Qt6HostInfo", "Qt6QmlTools"]:'
-          )
-          $qtRecipePatched | Set-Content $qtRecipeFile -NoNewline
+          python ci/patch-qt-qmltools-recipe.py $qtRecipeFile
+          if ($LASTEXITCODE -ne 0) { throw "Unable to patch Qt QmlTools recipe" }
           if (!(Select-String -Quiet -Path $qtRecipeFile -SimpleMatch `
-            '"Qt6QmlToolsConfig.cmake"') -or !(Select-String -Quiet `
-            -Path $qtRecipeFile -SimpleMatch '["Qt6HostInfo", "Qt6QmlTools"]')) {
+            'set(Qt6QmlTools_FOUND TRUE)') -or !(Select-String -Quiet `
+            -Path $qtRecipeFile -SimpleMatch 'add_executable(Qt6::qmldom IMPORTED GLOBAL)')) {
             throw "The Qt QmlTools recipe patch was not installed"
           }
           conan export $qtRecipeCopy --name=qt --version=6.11.1
@@ -707,14 +699,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4

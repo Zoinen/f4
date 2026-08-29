@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os/exec"
 	"runtime"
@@ -695,6 +696,33 @@ func TestRemoteErrorIsReported(t *testing.T) {
 	}
 	if remote.Msg != "No such file or directory" {
 		t.Errorf("Msg = %q", remote.Msg)
+	}
+}
+
+func TestRemoteErrorMapsTypedFilesystemOutcome(t *testing.T) {
+	err := (&Response{Status: "err", Msg: "F4ERR:ENOENT:no such file or directory"}).Err("linfo /missing.png")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("typed metadata error = %v, want fs.ErrNotExist", err)
+	}
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Code != "ENOENT" || remote.Msg != "no such file or directory" {
+		t.Fatalf("typed metadata error = %#v, want decoded ENOENT", remote)
+	}
+	if strings.Contains(err.Error(), remoteErrorCodePrefix) {
+		t.Fatalf("user-facing error leaked wire code: %v", err)
+	}
+}
+
+func TestRemoteErrorMapsLegacyMetadataNotExistOnlyForStatCommands(t *testing.T) {
+	message := "stat: '/sdcard/DCIM/IMG_0001.PNG': No such file or directory"
+	metadataErr := (&Response{Status: "err", Msg: message}).Err("linfo /sdcard/DCIM/IMG_0001.PNG")
+	if !errors.Is(metadataErr, fs.ErrNotExist) {
+		t.Fatalf("legacy linfo error = %v, want fs.ErrNotExist", metadataErr)
+	}
+
+	execErr := (&Response{Status: "err", Msg: message}).Err("exec")
+	if errors.Is(execErr, fs.ErrNotExist) {
+		t.Fatalf("non-metadata error was reclassified as fs.ErrNotExist: %v", execErr)
 	}
 }
 

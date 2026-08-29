@@ -8,6 +8,10 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment ta
 
 project(F4QtHost LANGUAGES CXX)
 
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
@@ -142,6 +146,10 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.h"
@@ -153,6 +161,13 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.cpp"
 )
+
+if(APPLE)
+  list(APPEND F4_QT_HOST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.mm"
+  )
+endif()
 
 set(F4_LUCIDE_ICON_NAMES
   archive.svg
@@ -357,6 +372,23 @@ endif()
 if(BUILD_TESTING)
   find_package(Qt6 COMPONENTS Test REQUIRED)
 
+  if(APPLE)
+    add_executable(MacApplicationMenuTests
+      tests/MacApplicationMenuTests.mm
+      src/MacApplicationMenu.h
+      src/MacApplicationMenu.mm
+    )
+    target_include_directories(MacApplicationMenuTests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(MacApplicationMenuTests PRIVATE
+      Qt6::Core
+      Qt6::Test
+      "-framework AppKit"
+    )
+    add_test(NAME MacApplicationMenuTest COMMAND MacApplicationMenuTests)
+  endif()
+
   function(f4_add_icon_test_resources target)
     qt6_add_resources(${target} ${target}_f4_lucide_icons
       PREFIX "/F4QtHost/icons/lucide"
@@ -379,6 +411,16 @@ if(BUILD_TESTING)
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/f4.svg"
     )
   endfunction()
+
+  if(TARGET ZoinGalleryMasonryLayoutModesTests)
+    f4_add_icon_test_resources(ZoinGalleryMasonryLayoutModesTests)
+    add_test(NAME ZoinGalleryLucideTintFractionalDprTest
+      COMMAND ZoinGalleryMasonryLayoutModesTests
+        columnsAndDetailsUseIdenticalCompactLucideIcons)
+    set_tests_properties(ZoinGalleryLucideTintFractionalDprTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    )
+  endif()
 
   function(f4_link_static_test_platform target)
     if(F4_QT_STATIC)
@@ -645,23 +687,40 @@ if(BUILD_TESTING)
   target_compile_definitions(QtShellControllerTests PRIVATE
     F4_QT_HOST_TEST_EXECUTABLE="$<TARGET_FILE:f4-qt-host>"
   )
+
+  # Conan's CMakeDeps generator represents shared package components with an
+  # INTERFACE facade which links an internal imported dylib target. Such a
+  # facade has no TARGET_FILE_DIR of its own. The built host already carries
+  # the required rpaths on these configurations, so leave the optional test
+  # PATH hint empty instead of evaluating an invalid generator expression.
+  function(f4_test_runtime_directory out_variable target)
+    get_target_property(target_type ${target} TYPE)
+    if(target_type STREQUAL "INTERFACE_LIBRARY")
+      set(${out_variable} "" PARENT_SCOPE)
+    else()
+      set(${out_variable} "$<TARGET_FILE_DIR:${target}>" PARENT_SCOPE)
+    endif()
+  endfunction()
   if(F4_QT_STATIC)
     target_compile_definitions(QtShellControllerTests PRIVATE
       F4_QT_RUNTIME_DIRECTORY=""
     )
   else()
+    f4_test_runtime_directory(F4_QT_CORE_RUNTIME_DIRECTORY Qt6::Core)
     target_compile_definitions(QtShellControllerTests PRIVATE
-      F4_QT_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:Qt6::Core>"
+      F4_QT_RUNTIME_DIRECTORY="${F4_QT_CORE_RUNTIME_DIRECTORY}"
     )
   endif()
   if(USE_QWK)
+    f4_test_runtime_directory(F4_QWK_RUNTIME_DIRECTORY QWindowKit::Quick)
     target_compile_definitions(QtShellControllerTests PRIVATE
-      F4_QWK_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:QWindowKit::Quick>"
+      F4_QWK_RUNTIME_DIRECTORY="${F4_QWK_RUNTIME_DIRECTORY}"
     )
   endif()
   if(TARGET libraw::libraw_)
+    f4_test_runtime_directory(F4_LIBRAW_RUNTIME_DIRECTORY libraw::libraw_)
     target_compile_definitions(QtShellControllerTests PRIVATE
-      F4_LIBRAW_RUNTIME_DIRECTORY="$<TARGET_FILE_DIR:libraw::libraw_>"
+      F4_LIBRAW_RUNTIME_DIRECTORY="${F4_LIBRAW_RUNTIME_DIRECTORY}"
     )
   endif()
   add_dependencies(QtShellControllerTests f4-qt-host)
@@ -671,6 +730,32 @@ if(BUILD_TESTING)
     target_link_libraries(QtShellControllerTests PRIVATE msgpack-cxx::msgpack-cxx)
   endif()
   add_test(NAME QtShellControllerTest COMMAND QtShellControllerTests)
+
+  add_executable(QtMediaClientTests
+    tests/QtMediaClientTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/QtShellController.h
+    src/QtShellController.cpp
+  )
+  target_include_directories(QtMediaClientTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(QtMediaClientTests PRIVATE
+    F4_MEDIA_CLIENT_TESTING=1
+  )
+  target_link_libraries(QtMediaClientTests PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+    ZoinGallery::Core
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(QtMediaClientTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(QtMediaClientTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
+  add_test(NAME QtMediaClientTest COMMAND QtMediaClientTests)
 
   add_executable(WindowGeometryPersistenceTests
     tests/WindowGeometryPersistenceTests.cpp
@@ -694,6 +779,10 @@ if(BUILD_TESTING)
 
   add_executable(F4GalleryBridgeTests
     tests/F4GalleryBridgeTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/F4ImageSourceProvider.h
+    src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
     src/F4IconProvider.h
@@ -707,6 +796,7 @@ if(BUILD_TESTING)
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Network
     Qt6::Svg
     Qt6::Test
   )
@@ -720,16 +810,25 @@ if(BUILD_TESTING)
     ZoinGallery::Core
     ZoinGallery::Qml
   )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(F4GalleryBridgeTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(F4GalleryBridgeTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
   f4_link_static_zoingallery_plugin(F4GalleryBridgeTests)
   f4_link_static_test_platform(F4GalleryBridgeTests)
   f4_link_static_test_qml_plugins(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 
   add_executable(F4GalleryPointerTests
     tests/F4GalleryPointerTests.cpp
+    src/QtMediaClient.h
+    src/QtMediaClient.cpp
+    src/F4ImageSourceProvider.h
+    src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
     src/F4IconProvider.h
@@ -769,6 +868,6 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
   set_tests_properties(F4GalleryPointerTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 endif()

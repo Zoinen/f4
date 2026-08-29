@@ -77,7 +77,54 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	commitMediaPanelsForSemanticScene(legacy)
 	return scene.ToMap()
+}
+
+func semanticMediaPanelIDs(legacy map[string]any) []string {
+	seen := make(map[string]struct{})
+	panelIDs := make([]string, 0, 4)
+	collectFrames := func(frames []map[string]any) {
+		for _, frame := range frames {
+			kind := semanticString(frame["kind"])
+			if kind != "panels" && kind != "shell" {
+				continue
+			}
+			for _, panel := range appMapSlice(frame["panels"]) {
+				panelID := semanticString(panel["id"])
+				if panelID == "" {
+					continue
+				}
+				if _, duplicate := seen[panelID]; duplicate {
+					continue
+				}
+				seen[panelID] = struct{}{}
+				panelIDs = append(panelIDs, panelID)
+			}
+		}
+	}
+
+	// screens is the authoritative complete workspace set. frames is retained
+	// as a compatibility fallback not only for callers constructing a legacy
+	// scene by hand without a screens field, but also for the older live
+	// renderer which exports screen frame shells without copying the nested
+	// panel list into each screen frame.  In that case an empty result from
+	// screens must not retire every freshly registered broker resource.
+	if screens, present := legacy["screens"]; present {
+		for _, screen := range appMapSlice(screens) {
+			collectFrames(appMapSlice(screen["frames"]))
+		}
+	}
+	if len(panelIDs) == 0 {
+		collectFrames(appMapSlice(legacy["frames"]))
+	}
+	return panelIDs
+}
+
+func commitMediaPanelsForSemanticScene(legacy map[string]any) {
+	if broker := currentExtUiMediaBroker(); broker != nil {
+		broker.CommitScenePanels(semanticMediaPanelIDs(legacy))
+	}
 }
 
 // appQueueAwareWorkspaceTabs keeps vtui's stable workspace identity while
@@ -780,7 +827,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 }
 
 func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
-	return extui.FileEntryModel{
+	entry := extui.FileEntryModel{
 		Index:            semanticInt(node["index"]),
 		EntryID:          semanticString(node["entryId"]),
 		Name:             semanticString(node["name"]),
@@ -804,6 +851,19 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		Mode:             semanticString(node["mode"]),
 		HighlightStyleID: semanticString(node["highlightStyleId"]),
 	}
+	if source := appMap(node["source"]); source != nil {
+		entry.Source = &extui.ImageSourceModel{
+			ResourceID:      semanticString(source["resourceId"]),
+			SourceKey:       semanticString(source["sourceKey"]),
+			Version:         semanticString(source["version"]),
+			VersionStrength: semanticString(source["versionStrength"]),
+			Size:            appInt64(source["size"]),
+			SizeKnown:       appBool(source["sizeKnown"]),
+			AccessProfile:   semanticString(source["accessProfile"]),
+			StorageClass:    semanticString(source["storageClass"]),
+		}
+	}
+	return entry
 }
 
 func appHighlightStyleFromLegacy(node map[string]any) extui.HighlightStyleModel {

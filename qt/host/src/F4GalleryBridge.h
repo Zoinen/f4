@@ -16,6 +16,7 @@
 class QQmlEngine;
 class QTimer;
 class F4IconSet;
+class QtMediaClient;
 
 class F4GalleryBridge final : public QObject
 {
@@ -30,7 +31,8 @@ class F4GalleryBridge final : public QObject
 
 public:
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
-                             F4IconSet *iconSet = nullptr);
+                             F4IconSet *iconSet = nullptr,
+                             QtMediaClient *mediaClient = nullptr);
     ~F4GalleryBridge() override;
 
     bool available() const;
@@ -98,6 +100,8 @@ signals:
     void benchmarkFrameSwapped(qulonglong serial);
 
 private:
+    friend class F4GalleryBridgeTests;
+
     struct MetadataRange {
         int begin = 0;
         int end = 0;
@@ -359,6 +363,7 @@ private:
     bool m_viewerVisible = false;
     int m_viewerSide = -1;
     qulonglong m_panelActivationRevision = 0;
+    qulonglong m_mediaFrameSerial = 0;
     NavigationBenchmarkState m_navigationBenchmark;
     QTimer *m_navigationBenchmarkWatchdog = nullptr;
     QList<PendingNavigationBenchmarkTrace> m_pendingNavigationBenchmarkTrace;

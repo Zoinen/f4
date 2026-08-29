@@ -26,6 +26,39 @@ type fishPanelInfoStub struct {
 	refreshCalls int
 }
 
+type fishCaptureWriteCloser struct {
+	strings.Builder
+	closed bool
+}
+
+type fishMemoryReadHandle struct {
+	reader *strings.Reader
+	closed bool
+}
+
+func newFishMemoryReadHandle(data string) *fishMemoryReadHandle {
+	return &fishMemoryReadHandle{reader: strings.NewReader(data)}
+}
+
+func (r *fishMemoryReadHandle) ReadAt(_ context.Context, p []byte, off int64) (int, error) {
+	return r.reader.ReadAt(p, off)
+}
+
+func (r *fishMemoryReadHandle) Read(_ context.Context, p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *fishMemoryReadHandle) Size() int64 { return r.reader.Size() }
+func (r *fishMemoryReadHandle) Close() error {
+	r.closed = true
+	return nil
+}
+
+func (w *fishCaptureWriteCloser) Close() error {
+	w.closed = true
+	return nil
+}
+
 func (p *fishPanelInfoStub) PanelInfoKey(vfs.PanelInfoRequest) string { return p.key }
 func (p *fishPanelInfoStub) CachedPanelInfo(vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, bool) {
 	return p.snapshot, false
@@ -67,6 +100,74 @@ func TestFishVFSPanelInfoProviderSurvivesCloneForParent(t *testing.T) {
 	}
 	if _, err := clone.RefreshPanelInfo(context.Background(), req); err != nil || provider.refreshCalls != 1 {
 		t.Fatalf("RefreshPanelInfo = %v, calls %d", err, provider.refreshCalls)
+	}
+}
+
+func TestFishVFSCreateProviderIsSharedByClones(t *testing.T) {
+	original := &FishVFS{
+		conn: &fishConn{refs: 1},
+		path: "/sdcard/DCIM",
+	}
+	var gotPath string
+	writer := &fishCaptureWriteCloser{}
+	original.SetCreateProvider("adb-sync", func(_ context.Context, target string) (io.WriteCloser, error) {
+		gotPath = target
+		return writer, nil
+	})
+	clone := original.CloneForParent(vfs.NewNullVFS(0))
+
+	created, err := clone.Create(context.Background(), "IMG_0001.PNG")
+	if err != nil {
+		t.Fatalf("Create through clone: %v", err)
+	}
+	if _, err := created.Write([]byte("payload")); err != nil {
+		t.Fatalf("Write through provider: %v", err)
+	}
+	if err := created.Close(); err != nil {
+		t.Fatalf("Close through provider: %v", err)
+	}
+	if gotPath != "/sdcard/DCIM/IMG_0001.PNG" || writer.String() != "payload" || !writer.closed {
+		t.Fatalf("provider received path=%q payload=%q closed=%v", gotPath, writer.String(), writer.closed)
+	}
+	if got := clone.CreateProviderName(); got != "adb-sync" {
+		t.Fatalf("CreateProviderName = %q, want adb-sync", got)
+	}
+}
+
+func TestFishVFSReadAndStatProvidersAreSharedByClones(t *testing.T) {
+	original := &FishVFS{
+		conn: &fishConn{refs: 1},
+		path: "/sdcard/DCIM",
+	}
+	var openedPath, statPath string
+	reader := newFishMemoryReadHandle("thumbnail")
+	original.SetReadProvider("adb-sync-hybrid", func(_ context.Context, target string) (vfs.ReadAtCloser, error) {
+		openedPath = target
+		return reader, nil
+	})
+	original.SetStatProvider("adb-sync", func(_ context.Context, target string) (vfs.VFSItem, error) {
+		statPath = target
+		return vfs.VFSItem{Name: "IMG_0001.PNG", Size: 9}, nil
+	})
+	clone := original.CloneForParent(vfs.NewNullVFS(0))
+
+	opened, err := clone.Open(context.Background(), "IMG_0001.PNG")
+	if err != nil {
+		t.Fatalf("Open through clone: %v", err)
+	}
+	buf := make([]byte, 5)
+	if n, err := opened.ReadAt(context.Background(), buf, 0); err != nil || n != len(buf) || string(buf) != "thumb" {
+		t.Fatalf("ReadAt through provider = %d, %v, %q", n, err, buf)
+	}
+	item, err := clone.Stat(context.Background(), "IMG_0001.PNG")
+	if err != nil || item.Size != 9 {
+		t.Fatalf("Stat through provider = %#v, %v", item, err)
+	}
+	if openedPath != "/sdcard/DCIM/IMG_0001.PNG" || statPath != openedPath {
+		t.Fatalf("provider paths open=%q stat=%q", openedPath, statPath)
+	}
+	if clone.ReadProviderName() != "adb-sync-hybrid" || clone.StatProviderName() != "adb-sync" {
+		t.Fatalf("provider names read=%q stat=%q", clone.ReadProviderName(), clone.StatProviderName())
 	}
 }
 

@@ -180,7 +180,7 @@ func (v *AIVFS) Rename(ctx context.Context, oldPath, newPath string) error {
 func (v *AIVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem) error { return nil }
 
 func (v *AIVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true}
+	return vfs.VFSCapabilities{HasRandomAccess: true, ReadAccess: vfs.ReadAccessNativeRange, StorageClass: vfs.StorageClassVirtual}
 }
 
 func (v *AIVFS) Search(ctx context.Context, p string, pattern string) (chan int64, error) {

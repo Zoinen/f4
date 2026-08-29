@@ -19,18 +19,23 @@ type ScreenObject struct {
 	X1, Y1, X2, Y2 int
 	owner          CommandHandler
 	visible        bool
-	focused        bool
-	canFocus       bool
-	lockCount      int
-	helpTopic      string
-	growMode       GrowMode
-	hotkey         rune
-	Id             string
-	disabled       bool
-	Command        int
-	text           string
-	cleanText      string
-	hotkeyPos      int
+	// visibilityExplicit distinguishes a widget which has not reached its
+	// first Show yet from one which the application deliberately hid.  Both
+	// states historically share visible=false, but semantic frontends can be
+	// asked to present a newly pushed window before the first cell render.
+	visibilityExplicit bool
+	focused            bool
+	canFocus           bool
+	lockCount          int
+	helpTopic          string
+	growMode           GrowMode
+	hotkey             rune
+	Id                 string
+	disabled           bool
+	Command            int
+	text               string
+	cleanText          string
+	hotkeyPos          int
 }
 
 // GetHotkey returns the assigned hotkey rune for the object.
@@ -124,6 +129,7 @@ func (so *ScreenObject) Show(scr *ScreenBuf) {
 // Hide hides the object.
 func (so *ScreenObject) Hide(scr *ScreenBuf) {
 	so.visible = false
+	so.visibilityExplicit = true
 }
 
 // IsVisible returns true if the object is visible.
@@ -134,6 +140,15 @@ func (so *ScreenObject) IsVisible() bool {
 // SetVisible manually sets the visibility flag.
 func (so *ScreenObject) SetVisible(v bool) {
 	so.visible = v
+	so.visibilityExplicit = true
+}
+
+// semanticVisibility reports the logical visibility exported to semantic
+// frontends.  A newly constructed control is intended to appear on its first
+// Show even though the cell renderer has not set visible yet.  Explicit
+// SetVisible/Hide calls remain authoritative.
+func (so *ScreenObject) semanticVisibility() (visible, explicit bool) {
+	return so.visible, so.visibilityExplicit
 }
 
 // SetFocus sets or removes focus from the object.

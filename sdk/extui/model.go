@@ -192,8 +192,36 @@ type FileEntryModel struct {
 	MTime            string
 	MTimeNanos       int64
 	Version          string
+	Source           *ImageSourceModel
 	Mode             string
 	HighlightStyleID string
+}
+
+// ImageSourceModel is an opaque, broker-backed source descriptor. Native
+// frontends use ResourceID only on the separately authenticated media channel;
+// SourceKey and Version identify reusable derived artifacts.
+type ImageSourceModel struct {
+	ResourceID      string
+	SourceKey       string
+	Version         string
+	VersionStrength string
+	Size            int64
+	SizeKnown       bool
+	AccessProfile   string
+	StorageClass    string
+}
+
+func (s ImageSourceModel) ToMap() M {
+	return M{
+		"resourceId":      s.ResourceID,
+		"sourceKey":       s.SourceKey,
+		"version":         s.Version,
+		"versionStrength": s.VersionStrength,
+		"size":            s.Size,
+		"sizeKnown":       s.SizeKnown,
+		"accessProfile":   s.AccessProfile,
+		"storageClass":    s.StorageClass,
+	}
 }
 
 // FileEntryMetadataModel is the deferred, revision-bound portion of a file
@@ -752,6 +780,9 @@ func (e FileEntryModel) ToMap() M {
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
 	}
+	if e.Source != nil {
+		out["source"] = e.Source.ToMap()
+	}
 	return out
 }
 
@@ -786,6 +817,12 @@ func (e FileEntryModel) MinimalToMap() M {
 	// the deferred metadata pass recomputes it.
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	// Broker-backed source identities are part of the immediately usable
+	// catalog even when filesystem/stat metadata is deferred. Without this
+	// descriptor virtual-panel images have no readable source for thumbnails.
+	if e.Source != nil {
+		out["source"] = e.Source.ToMap()
 	}
 	return out
 }

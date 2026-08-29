@@ -167,6 +167,12 @@ ApplicationWindow {
         return false
     }
 
+    function showApplicationSettings() {
+        themeColorConfigurator.show()
+        themeColorConfigurator.requestActivate()
+        themeColorConfigurator.raise()
+    }
+
     function snapPx(val) {
         return Math.round(Number(val || 0) * root.dpr) / root.dpr
     }
@@ -3970,9 +3976,7 @@ ApplicationWindow {
                     if (themeColorConfigurator.visible) {
                         themeColorConfigurator.hide()
                     } else {
-                        themeColorConfigurator.show()
-                        themeColorConfigurator.requestActivate()
-                        themeColorConfigurator.raise()
+                        root.showApplicationSettings()
                     }
                 }
             }
@@ -5608,6 +5612,7 @@ ApplicationWindow {
                         root.lucideIconSource(
                             "network", 18, root.galleryPathTextColor)
                     text: root.cleanText(panel.title || panel.path)
+                    navigationPath: String(panel.path || "")
                     navigationHandler: function(path) {
                         root.action({
                             "action": "panel.navigatePath",

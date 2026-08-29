@@ -116,6 +116,66 @@ type VFSCapabilities struct {
 	// middle of a cp is a half-copied file. Default false, so a backend
 	// opts in only once its write path has actually been exercised.
 	HasWrite bool
+	// ReadAccess describes the expected cost of opening and randomly reading a
+	// file. HasRandomAccess remains the functional capability flag; it does not
+	// imply that ReadAt is cheap (some backends materialize the whole object on
+	// the first read). Zero is deliberately conservative for third-party VFSes
+	// compiled against older SDKs.
+	ReadAccess ReadAccessProfile
+	// StorageClass is a scheduling hint, not an authorization boundary. Empty
+	// keeps older/third-party backends source-compatible and means unknown.
+	StorageClass StorageClass
+}
+
+type StorageClass string
+
+const (
+	StorageClassLocal   StorageClass = "local"
+	StorageClassNetwork StorageClass = "network"
+	StorageClassVirtual StorageClass = "virtual"
+	StorageClassUnknown StorageClass = "unknown"
+)
+
+func (c StorageClass) String() string {
+	if c == "" {
+		return string(StorageClassUnknown)
+	}
+	return string(c)
+}
+
+// ReadAccessProfile describes how a VFS normally obtains bytes for a reader.
+// A reader may refine the default by implementing ReadAccessProfiler because
+// providers such as HTTP-backed drives can discover range support only after
+// the first response.
+type ReadAccessProfile uint8
+
+const (
+	ReadAccessUnknownExpensive ReadAccessProfile = iota
+	ReadAccessDirectLocal
+	ReadAccessNativeRange
+	ReadAccessHybridRange
+	ReadAccessMaterializeOnce
+)
+
+func (p ReadAccessProfile) String() string {
+	switch p {
+	case ReadAccessDirectLocal:
+		return "directLocal"
+	case ReadAccessNativeRange:
+		return "nativeRange"
+	case ReadAccessHybridRange:
+		return "hybridRange"
+	case ReadAccessMaterializeOnce:
+		return "materializeOnce"
+	default:
+		return "unknownExpensive"
+	}
+}
+
+// ReadAccessProfiler optionally refines a VFS-level ReadAccess default for an
+// already opened handle.
+type ReadAccessProfiler interface {
+	ReadAccessProfile() ReadAccessProfile
 }
 
 // VFS is the core interface for file operations in f4.
@@ -276,6 +336,14 @@ type PanelInfoProvider interface {
 // local storage.
 type LocalPathProvider interface {
 	LocalPath(path string) (string, error)
+}
+
+// LocalBackingReader exposes a provider-owned local materialization for an
+// opened reader. Callers must keep the reader open while using the path; Close
+// releases the lease and may delete the file. This avoids copying archive and
+// cloud provider caches into another temporary file.
+type LocalBackingReader interface {
+	LocalPath() (string, bool)
 }
 
 type BulkCopier interface {
@@ -857,7 +925,11 @@ type TempFileWrapper struct {
 	TempPath string
 }
 
-func (w *TempFileWrapper) Size() int64 { return w.SizeVal }
+func (w *TempFileWrapper) Size() int64               { return w.SizeVal }
+func (w *TempFileWrapper) LocalPath() (string, bool) { return w.TempPath, w.TempPath != "" }
+func (w *TempFileWrapper) ReadAccessProfile() ReadAccessProfile {
+	return ReadAccessMaterializeOnce
+}
 func (w *TempFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	return w.File.ReadAt(p, off)
 }

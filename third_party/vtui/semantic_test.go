@@ -46,9 +46,31 @@ func TestSemantic_DialogHierarchyExport(t *testing.T) {
 	if children[0]["kind"] != "button" || children[0]["text"] != "Ok" {
 		t.Errorf("unexpected button node: %#v", children[0])
 	}
+	if children[0]["visible"] != true {
+		t.Errorf("new dialog button was hidden before its first render: %#v", children[0])
+	}
 
 	if children[1]["kind"] != "checkbox" || children[1]["text"] != "Option" {
 		t.Errorf("unexpected checkbox node: %#v", children[1])
+	}
+}
+
+func TestSemantic_DialogPreservesExplicitlyHiddenChildBeforeFirstRender(t *testing.T) {
+	SetDefaultPalette()
+	dlg := NewCenteredDialog(40, 10, "Test Dlg")
+	visible := NewButton(2, 2, "Visible")
+	hidden := NewButton(2, 4, "Hidden")
+	hidden.SetVisible(false)
+	dlg.AddItem(visible)
+	dlg.AddItem(hidden)
+
+	node := dlg.SemanticNode(&SemanticContext{Width: 80, Height: 25})
+	children := node["children"].([]map[string]any)
+	if children[0]["visible"] != true {
+		t.Fatalf("untouched child should be logically visible: %#v", children[0])
+	}
+	if children[1]["visible"] != false {
+		t.Fatalf("explicitly hidden child became visible: %#v", children[1])
 	}
 }
 

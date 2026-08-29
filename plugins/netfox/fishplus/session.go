@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,13 +36,97 @@ var ErrBroken = errors.New("fishplus: session is out of sync")
 type RemoteError struct {
 	Cmd string
 	Msg string
+	// Code is a stable, helper-supplied POSIX-style error name. Older helpers
+	// did not send one; newRemoteError keeps their metadata errors compatible.
+	Code string
 }
 
 func (e *RemoteError) Error() string {
-	if e.Cmd == "" {
-		return "fishplus: remote error: " + e.Msg
+	msg := e.Msg
+	if msg == "" {
+		switch e.Code {
+		case "ENOENT", "ENOTDIR":
+			msg = "no such file or directory"
+		case "EACCES", "EPERM", "EROFS":
+			msg = "permission denied"
+		case "EEXIST":
+			msg = "file already exists"
+		default:
+			msg = "remote operation failed"
+		}
 	}
-	return "fishplus: " + e.Cmd + ": " + e.Msg
+	if e.Cmd == "" {
+		return "fishplus: remote error: " + msg
+	}
+	return "fishplus: " + e.Cmd + ": " + msg
+}
+
+// Unwrap exposes filesystem outcomes to generic VFS callers. In particular,
+// a destination probe must be able to distinguish an unused name from a
+// failed metadata request before it is safe to create the file.
+func (e *RemoteError) Unwrap() error {
+	switch e.Code {
+	case "ENOENT", "ENOTDIR":
+		return fs.ErrNotExist
+	case "EACCES", "EPERM", "EROFS":
+		return fs.ErrPermission
+	case "EEXIST":
+		return fs.ErrExist
+	case "EINVAL":
+		return fs.ErrInvalid
+	default:
+		return nil
+	}
+}
+
+const remoteErrorCodePrefix = "F4ERR:"
+
+func newRemoteError(cmd, wireMessage string) *RemoteError {
+	code, message := decodeRemoteErrorMessage(wireMessage)
+	if code == "" {
+		code = legacyMetadataErrorCode(cmd, message)
+	}
+	return &RemoteError{Cmd: cmd, Msg: message, Code: code}
+}
+
+func decodeRemoteErrorMessage(message string) (string, string) {
+	if !strings.HasPrefix(message, remoteErrorCodePrefix) {
+		return "", message
+	}
+	rest := strings.TrimPrefix(message, remoteErrorCodePrefix)
+	code, detail, found := strings.Cut(rest, ":")
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "", message
+	}
+	if !found {
+		detail = ""
+	}
+	return code, strings.TrimSpace(detail)
+}
+
+// Metadata responses from protocol-v1 helpers predating typed wire errors are
+// still common on a live pooled connection. Their POSIX helper runs in the C
+// locale, so narrowly recognize only stat-like missing/permission diagnostics.
+func legacyMetadataErrorCode(cmd, message string) string {
+	operation, _, _ := strings.Cut(strings.TrimSpace(cmd), " ")
+	if operation != "info" && operation != "linfo" {
+		return ""
+	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "no such file"),
+		strings.Contains(lower, "not a directory"),
+		strings.Contains(lower, "cannot find path"),
+		strings.Contains(lower, "could not find file"):
+		return "ENOENT"
+	case strings.Contains(lower, "permission denied"),
+		strings.Contains(lower, "access is denied"),
+		strings.Contains(lower, "access to the path"):
+		return "EACCES"
+	default:
+		return ""
+	}
 }
 
 // Features describes what the remote host is capable of, as detected by the
@@ -122,7 +207,7 @@ func (r *Response) Err(cmd string) error {
 	if r.OK() {
 		return nil
 	}
-	return &RemoteError{Cmd: cmd, Msg: r.Msg}
+	return newRemoteError(cmd, r.Msg)
 }
 
 // Session speaks the FISH+ protocol over a duplex byte stream, typically the

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/unxed/f4/plugins/netfox/fishplus"
 	"github.com/unxed/f4/vfs"
 )
 
@@ -91,6 +92,39 @@ func TestRecursiveCopyAbortsWhenDestinationStatIsInconclusive(t *testing.T) {
 				t.Fatalf("destination mutated after inconclusive Stat: Create=%d MkDir=%d", probe.createCalls, probe.mkdirCalls)
 			}
 		})
+	}
+}
+
+func TestRecursiveCopyAcceptsLegacyFishMissingDestination(t *testing.T) {
+	sourceRoot, destinationRoot := t.TempDir(), t.TempDir()
+	sourcePath := filepath.Join(sourceRoot, "IMG_0001.PNG")
+	destinationPath := filepath.Join(destinationRoot, "IMG_0001.PNG")
+	want := []byte("iphone image payload")
+	if err := os.WriteFile(sourcePath, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := (&fishplus.Response{
+		Status: "err",
+		Msg:    "stat: '/sdcard/DCIM/IMG_0001.PNG': No such file or directory",
+	}).Err("linfo /sdcard/DCIM/IMG_0001.PNG")
+	destination := &fileOpSafetyProbeVFS{
+		VFS:      vfs.NewOSVFS(destinationRoot),
+		statPath: destinationPath,
+		statErr:  missing,
+	}
+
+	if err := recursiveCopy(context.Background(), vfs.NewOSVFS(sourceRoot), sourcePath, destination, destinationPath, &FileOpState{}, 0); err != nil {
+		t.Fatalf("recursiveCopy: %v", err)
+	}
+	got, err := os.ReadFile(destinationPath)
+	if err != nil {
+		t.Fatalf("read destination: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("destination payload = %q, want %q", got, want)
+	}
+	if destination.createCalls != 1 {
+		t.Fatalf("destination Create calls = %d, want 1", destination.createCalls)
 	}
 }
 

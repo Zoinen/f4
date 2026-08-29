@@ -684,6 +684,8 @@ func (v *OSVFS) GetCapabilities() VFSCapabilities {
 		HasServerSideCopy:        true,
 		HasServerSideMove:        true,
 		HasRandomAccess:          true,
+		ReadAccess:               ReadAccessDirectLocal,
+		StorageClass:             StorageClassLocal,
 		HasSearch:                false,
 		HasUnixPermissions:       runtime.GOOS != "windows",
 		HasAtomicNoReplaceRename: true,
@@ -701,7 +703,9 @@ type osFileWrapper struct {
 	size int64
 }
 
-func (f *osFileWrapper) Size() int64 { return f.size }
+func (f *osFileWrapper) Size() int64                          { return f.size }
+func (f *osFileWrapper) LocalPath() (string, bool)            { return f.Name(), f.Name() != "" }
+func (f *osFileWrapper) ReadAccessProfile() ReadAccessProfile { return ReadAccessDirectLocal }
 func (f *osFileWrapper) Read(ctx context.Context, p []byte) (n int, err error) {
 	if ctx.Err() != nil {
 		return 0, ctx.Err()

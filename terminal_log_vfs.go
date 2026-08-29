@@ -41,7 +41,7 @@ func (v *TerminalLogVFS) SetAttributes(ctx context.Context, path string, item vf
 	return os.ErrPermission
 }
 func (v *TerminalLogVFS) GetCapabilities() vfs.VFSCapabilities {
-	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false}
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false, ReadAccess: vfs.ReadAccessDirectLocal, StorageClass: vfs.StorageClassVirtual}
 }
 func (v *TerminalLogVFS) Search(ctx context.Context, path string, pattern string) (chan int64, error) {
 	return nil, nil
