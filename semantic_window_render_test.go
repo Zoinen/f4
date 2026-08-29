@@ -232,3 +232,83 @@ func TestSemanticStyledEditorWindowRowsMatchesDisplayObjectAndRestoresState(t *t
 		t.Fatal("editor tab/whitespace rendering was not preserved in the semantic window")
 	}
 }
+
+func TestSemanticStyledEditorWindowRowsRepaintsOnlyChangedOverlap(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	var content strings.Builder
+	for index := 0; index < 200; index++ {
+		fmt.Fprintf(&content, "row-%03d alpha beta gamma\n", index)
+	}
+	editor := NewEditorView(piecetable.New([]byte(content.String())), nil,
+		"semantic-row-cache.txt")
+	defer editor.Close()
+	// This test exercises document-window reuse itself. Syntax/highlighter
+	// invalidation is covered by the render-context key and the existing exact
+	// renderer parity test above.
+	editor.highlighter = nil
+	editor.SetPosition(0, 0, 79, 8)
+	editor.SetVisible(true)
+	editor.ScrollTopRow = 80
+	width := editor.semanticSurfaceWidth()
+
+	window := editor.semanticWindow()
+	first := semanticStyledEditorWindowRows(editor, window, width)
+	if got, want := editor.semanticStyledRowsRendered, uint64(len(window.rows)); got != want {
+		t.Fatalf("initial rendered rows=%d, want %d", got, want)
+	}
+	if len(first) == 0 || first[0].ContentKey == "" {
+		t.Fatal("styled rows did not receive O(1) content identities")
+	}
+
+	editor.ScrollTopRow++
+	window = editor.semanticWindow()
+	before := editor.semanticStyledRowsRendered
+	shifted := semanticStyledEditorWindowRows(editor, window, width)
+	if got := editor.semanticStyledRowsRendered - before; got != 1 {
+		t.Fatalf("one-row edge scroll repainted %d rows, want 1", got)
+	}
+	wantShifted := semanticRenderStyledEditorWindowRows(editor, window, width)
+	if !reflect.DeepEqual(shifted, wantShifted) {
+		t.Fatal("cached edge-scroll rows differ from the canonical full render")
+	}
+
+	editor.selActive = true
+	editor.selAnchorOffset = editor.li.GetLineOffset(82)
+	editor.CursorLine = 82
+	editor.CursorPos = 3
+	before = editor.semanticStyledRowsRendered
+	selected := semanticStyledEditorWindowRows(editor, window, width)
+	if got := editor.semanticStyledRowsRendered - before; got != 1 {
+		t.Fatalf("same-row selection endpoint repainted %d rows, want 1", got)
+	}
+	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(selected, want) {
+		t.Fatal("cached same-row selection differs from the canonical full render")
+	}
+
+	editor.CursorLine = 83
+	editor.CursorPos = 2
+	before = editor.semanticStyledRowsRendered
+	selected = semanticStyledEditorWindowRows(editor, window, width)
+	if got := editor.semanticStyledRowsRendered - before; got != 2 {
+		t.Fatalf("selection crossing a row boundary repainted %d rows, want 2", got)
+	}
+	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(selected, want) {
+		t.Fatal("cached cross-row selection differs from the canonical full render")
+	}
+
+	oldThemeColor := vtui.ThemePalette[7]
+	defer func() { vtui.ThemePalette[7] = oldThemeColor }()
+	vtui.ThemePalette[7] ^= 0x00010101
+	before = editor.semanticStyledRowsRendered
+	themed := semanticStyledEditorWindowRows(editor, window, width)
+	if got, want := editor.semanticStyledRowsRendered-before,
+		uint64(len(window.rows)); got != want {
+		t.Fatalf("theme change repainted %d rows, want complete invalidation of %d",
+			got, want)
+	}
+	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(themed, want) {
+		t.Fatal("theme-invalidated cache differs from the canonical full render")
+	}
+}

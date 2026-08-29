@@ -8304,8 +8304,10 @@ ApplicationWindow {
         property int loadedSlotStart: 0
         property int loadedSlotEnd: 0
         property int liveRowDelegateCount: 0
+        property int poolSlotWriteCount: 0
         property int lastEditorMouseColumn: 0
         property int lastEditorMouseRow: 0
+        property var pendingEditorMouseMove: null
         property var latestWindowRows: []
         readonly property var cursorFrame:
             root.documentSurfaceStateOverride !== null
@@ -8354,9 +8356,9 @@ ApplicationWindow {
             return "none"
         }
 
-        function sendEditorMouse(mouse, phase, moved, doubleClick) {
+        function editorMouseAction(mouse, phase, moved, doubleClick) {
             if (frame.kind !== "editor")
-                return
+                return null
             var cellWidth = Math.max(1,
                                      documentFontMetrics.advanceWidth("M"))
             var column = Math.max(0, Math.floor((mouse.x - 10) / cellWidth))
@@ -8377,7 +8379,7 @@ ApplicationWindow {
             lastEditorMouseRow = row
             var buttons = phase === "release" ? Qt.NoButton
                                                : (mouse.buttons || mouse.button)
-            root.action({
+            return {
                 "target": root.cleanText(frame.id),
                 "action": "editor.mouse",
                 "phase": phase,
@@ -8389,12 +8391,40 @@ ApplicationWindow {
                 "shift": (mouse.modifiers & Qt.ShiftModifier) !== 0,
                 "ctrl": (mouse.modifiers & Qt.ControlModifier) !== 0,
                 "alt": (mouse.modifiers & Qt.AltModifier) !== 0
-            }, true)
+            }
+        }
+
+        function flushEditorMouseMove() {
+            if (pendingEditorMouseMove === null)
+                return
+            var actionMap = pendingEditorMouseMove
+            pendingEditorMouseMove = null
+            root.action(actionMap, true)
+        }
+
+        function sendEditorMouse(mouse, phase, moved, doubleClick) {
+            var actionMap = editorMouseAction(mouse, phase, moved,
+                                              doubleClick)
+            if (actionMap === null)
+                return
+            if (moved === true) {
+                // Native pointer devices can deliver several drag samples in
+                // one presentation interval. Only the newest endpoint can be
+                // visible; collapse the rest before crossing into Go.
+                pendingEditorMouseMove = actionMap
+                editorMouseMoveTimer.restart()
+                return
+            }
+            editorMouseMoveTimer.stop()
+            flushEditorMouseMove()
+            root.action(actionMap, true)
         }
 
         function releaseEditorMouse() {
             if (frame.kind !== "editor")
                 return
+            editorMouseMoveTimer.stop()
+            flushEditorMouseMove()
             root.action({
                 "target": root.cleanText(frame.id),
                 "action": "editor.mouse",
@@ -8422,6 +8452,12 @@ ApplicationWindow {
                 return root.cleanText(frame.windowStart) + ":"
                         + root.cleanText(frame.windowEnd) + ":" + contentKey
             return JSON.stringify(rows || [])
+        }
+
+        function rowSignature(row) {
+            var source = row || ({})
+            var contentKey = root.cleanText(source.contentKey)
+            return contentKey !== "" ? contentKey : JSON.stringify(source)
         }
 
         function clamp(value, minimum, maximum) {
@@ -8512,11 +8548,28 @@ ApplicationWindow {
 
         function setPoolSlot(slot, row) {
             if (slot < 0 || slot >= documentRowsModel.count)
-                return
+                return false
+            var current = documentRowsModel.get(slot)
+            if (current.loaded === true
+                    && rowSignature(current.rowData)
+                       === rowSignature(row || ({})))
+                return false
             documentRowsModel.set(slot, {
                 "loaded": true,
                 "rowData": row || ({})
             })
+            ++poolSlotWriteCount
+            return true
+        }
+
+        function clearPoolSlot(slot) {
+            if (slot < 0 || slot >= documentRowsModel.count)
+                return false
+            if (documentRowsModel.get(slot).loaded !== true)
+                return false
+            documentRowsModel.set(slot, emptyPoolSlot())
+            ++poolSlotWriteCount
+            return true
         }
 
         function poolCapacityFor(rows) {
@@ -8540,7 +8593,7 @@ ApplicationWindow {
             for (var slot = loadedSlotStart;
                  slot < loadedSlotEnd && slot < documentRowsModel.count;
                  ++slot)
-                documentRowsModel.set(slot, emptyPoolSlot())
+                clearPoolSlot(slot)
         }
 
         function recenterRows(rows, extent, fraction, deferPlacement) {
@@ -8565,7 +8618,7 @@ ApplicationWindow {
             }
         }
 
-        function mergeRowsWithoutRebase(nextRows) {
+        function mergeRowsWithoutRebase(nextRows, retainLiveUnion) {
             if (!displayedRows || displayedRows.length === 0) {
                 recenterRows(nextRows, Number(frame.viewportStart || 0), 0,
                              false)
@@ -8595,37 +8648,44 @@ ApplicationWindow {
             var unionStart = Math.min(loadedSlotStart, nextStart)
             var unionEnd = Math.max(loadedSlotEnd, nextEnd)
             var unionRows = []
-            for (var slot = unionStart; slot < unionEnd; ++slot) {
-                var incoming = slot - nextStart
-                var existing = slot - loadedSlotStart
-                var hasIncoming = incoming >= 0
-                        && incoming < nextRows.length
-                var hasExisting = existing >= 0
-                        && existing < displayedRows.length
-                // Do not replace overlap roles while they may own visible
-                // nested run delegates.  The latest content is applied by the
-                // idle compaction; during motion only entering edge slots are
-                // populated.
-                if (hasExisting)
-                    unionRows.push(displayedRows[existing])
-                else if (hasIncoming)
-                    unionRows.push(nextRows[incoming])
-                else
-                    return false
-            }
-
-            // Model count and every physical row index remain unchanged.
-            // Updating roles in preallocated, normally off-screen slots does
-            // not disturb ListView's kinetic timeline or local contentY.
+            // Model count and every physical row index remain unchanged. O(1)
+            // row content keys make overlap updates cheap: selection changes
+            // replace only their one or two affected delegates, while a
+            // one-row edge scroll only fills its entering edge slot.
             for (var j = 0; j < nextRows.length; ++j) {
                 var targetSlot = nextStart + j
-                if (targetSlot < loadedSlotStart
-                        || targetSlot >= loadedSlotEnd)
-                    setPoolSlot(targetSlot, nextRows[j])
+                setPoolSlot(targetSlot, nextRows[j])
             }
-            displayedRows = unionRows
-            loadedSlotStart = unionStart
-            loadedSlotEnd = unionEnd
+
+            if (retainLiveUnion === true) {
+                for (var slot = unionStart; slot < unionEnd; ++slot) {
+                    var incoming = slot - nextStart
+                    var existing = slot - loadedSlotStart
+                    var hasIncoming = incoming >= 0
+                            && incoming < nextRows.length
+                    var hasExisting = existing >= 0
+                            && existing < displayedRows.length
+                    if (hasIncoming)
+                        unionRows.push(nextRows[incoming])
+                    else if (hasExisting)
+                        unionRows.push(displayedRows[existing])
+                    else
+                        return false
+                }
+                displayedRows = unionRows
+                loadedSlotStart = unionStart
+                loadedSlotEnd = unionEnd
+                return true
+            }
+
+            for (var oldSlot = loadedSlotStart;
+                 oldSlot < loadedSlotEnd; ++oldSlot) {
+                if (oldSlot < nextStart || oldSlot >= nextEnd)
+                    clearPoolSlot(oldSlot)
+            }
+            displayedRows = nextRows
+            loadedSlotStart = nextStart
+            loadedSlotEnd = nextEnd
             return true
         }
 
@@ -8769,6 +8829,7 @@ ApplicationWindow {
                 initialPlacementTimer.stop()
                 requestWindowTimer.stop()
                 scrollBarRequestTimer.stop()
+                editorMouseMoveTimer.stop()
                 windowRequestPending = false
                 requestedExtent = 0
                 requestedFraction = 0
@@ -8777,6 +8838,7 @@ ApplicationWindow {
                 requestPreservesLiveAnchor = true
                 wheelGestureActive = false
                 queuedScrollBarPosition = -1
+                pendingEditorMouseMove = null
                 appliedWindowSignature = ""
                 lastViewportStart = -1
                 windowInitialized = false
@@ -8813,13 +8875,17 @@ ApplicationWindow {
 
             latestWindowRows = nextRows
             rebasingWindow = true
-            var keptKineticCoordinates = false
-            if (wasInitialized && kineticActive && acknowledged
-                    && requestPreservesLiveAnchor)
-                keptKineticCoordinates = mergeRowsWithoutRebase(nextRows)
-            if (!keptKineticCoordinates)
+            var keepLiveCoordinates = wasInitialized && kineticActive
+                    && acknowledged && requestPreservesLiveAnchor
+            var mergedOverlap = wasInitialized
+                    && mergeRowsWithoutRebase(nextRows,
+                                              keepLiveCoordinates)
+            if (!mergedOverlap) {
                 recenterRows(nextRows, targetExtent, targetFraction,
                              !wasInitialized)
+            } else if (!keepLiveCoordinates) {
+                placeAtExtent(targetExtent, targetFraction)
+            }
             appliedWindowSignature = nextSignature
             appliedDocumentKey = nextDocumentKey
             stableTopExtent = targetExtent
@@ -8836,13 +8902,10 @@ ApplicationWindow {
             // ACKs received during native motion only fill preallocated model
             // slots.  Neither model count, item indices nor contentY changes,
             // so the original Qt kinetic timeline continues bit-for-bit.
-            if (!windowRequestPending && queuedScrollBarPosition >= 0) {
-                var queued = queuedScrollBarPosition
-                queuedScrollBarPosition = -1
-                sendWindowRequest(queued * contentExtent, 0, 0, false)
-            } else {
+            if (!windowRequestPending && queuedScrollBarPosition >= 0)
+                scrollBarRequestTimer.restart()
+            else
                 requestWindowTimer.restart()
-            }
         }
 
         function handleWheel(wheel) {
@@ -8891,6 +8954,7 @@ ApplicationWindow {
             wheelCommitTimer.stop()
             requestWindowTimer.stop()
             scrollBarRequestTimer.stop()
+            editorMouseMoveTimer.stop()
             initialPlacementTimer.stop()
             wheelGestureActive = false
             windowRequestPending = false
@@ -8898,6 +8962,7 @@ ApplicationWindow {
             requestPreservesLiveAnchor = true
             resumeVelocity = 0
             queuedScrollBarPosition = -1
+            pendingEditorMouseMove = null
         }
         Component.onCompleted: scheduleFrameWindowSync()
 
@@ -9211,6 +9276,12 @@ ApplicationWindow {
         }
 
         Timer {
+            id: editorMouseMoveTimer
+            interval: 0
+            onTriggered: documentRoot.flushEditorMouseMove()
+        }
+
+        Timer {
             id: initialPlacementTimer
             interval: 0
             onTriggered: {
@@ -9236,14 +9307,18 @@ ApplicationWindow {
 
         Timer {
             id: scrollBarRequestTimer
-            interval: 32
+            // Coalesce all thumb changes posted in the current Qt event turn,
+            // then start immediately. There is still at most one
+            // authoritative request in flight; its ACK restarts this timer
+            // with only the newest retained position.
+            interval: 0
             onTriggered: {
                 if (documentRoot.queuedScrollBarPosition < 0)
                     return
-                if (documentRoot.windowRequestPending) {
-                    restart()
+                // The ACK path restarts us with the newest retained thumb
+                // position. Never poll or replay stale intermediate points.
+                if (documentRoot.windowRequestPending)
                     return
-                }
                 var position = documentRoot.queuedScrollBarPosition
                 documentRoot.queuedScrollBarPosition = -1
                 documentRoot.sendWindowRequest(position

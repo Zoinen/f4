@@ -183,6 +183,8 @@ QVariantList editorRows(int firstRow, int count)
         const int visualRow = firstRow + index;
         rows.append(QVariantMap{
             {QStringLiteral("visualRow"), visualRow},
+            {QStringLiteral("contentKey"),
+             QStringLiteral("editor-row-%1-v1").arg(visualRow)},
             {QStringLiteral("text"),
              QStringLiteral("editor row %1").arg(visualRow)},
         });
@@ -373,6 +375,7 @@ private slots:
     void activeFlickRebasesAtomicallyAcrossWindowAck();
     void activeUpwardEditorFlickKeepsStableSlotsAcrossAck();
     void frameOnlyEditorUpdateDoesNotResetLiveFlick();
+    void overlappingEditorUpdateTouchesOnlyChangedSlots();
     void scrollBarReflectsGlobalExtentAndKnownState();
     void editorScrollBarEndpointMapsLastViewportToRowNinety();
     void editorCursorTracksAbsoluteWindowRowAndVisibility();
@@ -933,6 +936,60 @@ void F4DocumentSurfaceTests::frameOnlyEditorUpdateDoesNotResetLiveFlick()
     QVERIFY(fixture.list->property("flicking").toBool());
     QVERIFY(qAbs(fixture.list->property("verticalVelocity").toReal()) > 1.0);
     QVERIFY(fixture.shell.actions.isEmpty());
+}
+
+void F4DocumentSurfaceTests::overlappingEditorUpdateTouchesOnlyChangedSlots()
+{
+    QVariantMap frame = editorFrame(40, 90, 70, 1);
+    DocumentFixture fixture(documentScene(frame), 400);
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(topExtent(fixture.surface, fixture.list) - 70.0) < 0.01,
+        3000);
+
+    QObject *rowModel = fixture.surface->findChild<QObject *>(
+        QStringLiteral("documentRowsModel"));
+    QVERIFY(rowModel);
+    const int poolCount = rowModel->property("count").toInt();
+
+    // A Shift/drag selection repaint keeps the same absolute window and
+    // changes only the content key of the endpoint row.
+    QVariantList rows = frame.value(QStringLiteral("windowRows")).toList();
+    QVariantMap changed = rows.at(44).toMap();
+    changed.insert(QStringLiteral("contentKey"),
+                   QStringLiteral("editor-row-84-selected"));
+    changed.insert(QStringLiteral("text"),
+                   QStringLiteral("editor row 84 selected"));
+    rows[44] = changed;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    fixture.surface->setProperty("poolSlotWriteCount", 0);
+    fixture.shell.setScene(documentScene(frame));
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "applyFrameWindow",
+                                      Qt::DirectConnection));
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), 1);
+    QCOMPARE(rowModel->property("count").toInt(), poolCount);
+    QVERIFY(qAbs(topExtent(fixture.surface, fixture.list) - 70.0) < 0.01);
+
+    // A one-row edge scroll keeps all 89 overlapping slots in place. One
+    // entering row is filled and the single leaving slot is cleared.
+    frame = editorFrame(41, 90, 71, 2);
+    rows = frame.value(QStringLiteral("windowRows")).toList();
+    changed = rows.at(43).toMap();
+    changed.insert(QStringLiteral("contentKey"),
+                   QStringLiteral("editor-row-84-selected"));
+    changed.insert(QStringLiteral("text"),
+                   QStringLiteral("editor row 84 selected"));
+    rows[43] = changed;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    fixture.surface->setProperty("poolSlotWriteCount", 0);
+    fixture.shell.setScene(documentScene(frame));
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "applyFrameWindow",
+                                      Qt::DirectConnection));
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), 2);
+    QCOMPARE(rowModel->property("count").toInt(), poolCount);
+    QVERIFY(qAbs(topExtent(fixture.surface, fixture.list) - 71.0) < 0.01);
 }
 
 void F4DocumentSurfaceTests::scrollBarReflectsGlobalExtentAndKnownState()
