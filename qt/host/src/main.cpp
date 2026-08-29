@@ -7,6 +7,10 @@
 #include "F4TextRenderingPolicy.h"
 #include "WindowGeometryPersistence.h"
 
+#if defined(Q_OS_MACOS)
+#include "MacApplicationMenu.h"
+#endif
+
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -15,12 +19,14 @@
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QKeySequence>
 #include <QProcess>
 #include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QQuickStyle>
+#include <QShortcut>
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
@@ -387,6 +393,9 @@ int main(int argc, char *argv[])
 
     QQuickWindow *rootWindow = nullptr;
     std::unique_ptr<WindowGeometryPersistence> windowGeometry;
+#if defined(Q_OS_MACOS)
+    std::unique_ptr<MacApplicationMenu> macApplicationMenu;
+#endif
     QTimer startupShowFallback;
     if (!engine.rootObjects().isEmpty()) {
         rootWindow = qobject_cast<QQuickWindow *>(
@@ -395,6 +404,48 @@ int main(int argc, char *argv[])
             windowGeometry =
                 std::make_unique<WindowGeometryPersistence>(
                     rootWindow, parser.value(windowGeometryFileOption));
+#if defined(Q_OS_MACOS)
+            const QPointer<QQuickWindow> settingsWindow(rootWindow);
+            const auto showApplicationSettings = [settingsWindow]() {
+                if (!settingsWindow) {
+                    return;
+                }
+                if (!QMetaObject::invokeMethod(
+                        settingsWindow,
+                        "showApplicationSettings",
+                        Qt::QueuedConnection)) {
+                    qWarning() << "Unable to invoke the QML settings window";
+                }
+            };
+            macApplicationMenu = std::make_unique<MacApplicationMenu>(
+                showApplicationSettings);
+            auto *settingsShortcut = new QShortcut(
+                QKeySequence::Preferences, rootWindow);
+            QObject::connect(settingsShortcut, &QShortcut::activated,
+                             rootWindow, showApplicationSettings);
+            const auto installMacApplicationMenu =
+                [menu = macApplicationMenu.get()]() {
+                    if (!menu->install()) {
+                        qWarning()
+                            << "Unable to install the macOS Settings menu item";
+                    }
+                };
+            installMacApplicationMenu();
+            // Qt's Cocoa integration finalizes the default application menu
+            // when the native event loop starts. Reapply its native metadata
+            // after that pass and whenever macOS activates f4 again. The
+            // QShortcut above owns keyboard dispatch even if Cocoa rebuilds
+            // the application menu around this custom item.
+            QTimer::singleShot(0, rootWindow, installMacApplicationMenu);
+            QObject::connect(
+                &app, &QGuiApplication::applicationStateChanged,
+                rootWindow,
+                [installMacApplicationMenu](Qt::ApplicationState state) {
+                    if (state == Qt::ApplicationActive) {
+                        installMacApplicationMenu();
+                    }
+                });
+#endif
             // main.qml starts hidden. Restore its screen, normal geometry and
             // intended window state without presenting the empty shell.
             windowGeometry->restoreDeferred();

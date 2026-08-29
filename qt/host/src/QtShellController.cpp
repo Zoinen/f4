@@ -309,12 +309,19 @@ QVariantMap makePresentationMessage(const QVariantMap &message,
         return presentation;
     }
     if (type == QStringLiteral("palette")) {
-        return {{QStringLiteral("type"), type},
-                {QStringLiteral("palette"), message.value(QStringLiteral("palette"))}};
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("colors"), message.value(QStringLiteral("colors"))},
+        };
     }
     if (type == QStringLiteral("frame")) {
-        return {{QStringLiteral("type"), type},
-                {QStringLiteral("frame"), message.value(QStringLiteral("frame"))}};
+        return {
+            {QStringLiteral("type"), type},
+            {QStringLiteral("width"), message.value(QStringLiteral("width"))},
+            {QStringLiteral("height"), message.value(QStringLiteral("height"))},
+            {QStringLiteral("full"), message.value(QStringLiteral("full"))},
+            {QStringLiteral("cells"), message.value(QStringLiteral("cells"))},
+        };
     }
     if (type == QStringLiteral("cursor")) {
         return {{QStringLiteral("type"), type},

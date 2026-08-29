@@ -8,6 +8,10 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment ta
 
 project(F4QtHost LANGUAGES CXX)
 
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
@@ -157,6 +161,13 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.cpp"
 )
+
+if(APPLE)
+  list(APPEND F4_QT_HOST_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.mm"
+  )
+endif()
 
 set(F4_LUCIDE_ICON_NAMES
   archive.svg
@@ -352,6 +363,23 @@ endif()
 if(BUILD_TESTING)
   find_package(Qt6 COMPONENTS Test REQUIRED)
 
+  if(APPLE)
+    add_executable(MacApplicationMenuTests
+      tests/MacApplicationMenuTests.mm
+      src/MacApplicationMenu.h
+      src/MacApplicationMenu.mm
+    )
+    target_include_directories(MacApplicationMenuTests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(MacApplicationMenuTests PRIVATE
+      Qt6::Core
+      Qt6::Test
+      "-framework AppKit"
+    )
+    add_test(NAME MacApplicationMenuTest COMMAND MacApplicationMenuTests)
+  endif()
+
   function(f4_add_icon_test_resources target)
     qt6_add_resources(${target} ${target}_f4_lucide_icons
       PREFIX "/F4QtHost/icons/lucide"
@@ -369,6 +397,16 @@ if(BUILD_TESTING)
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/f4.svg"
     )
   endfunction()
+
+  if(TARGET ZoinGalleryMasonryLayoutModesTests)
+    f4_add_icon_test_resources(ZoinGalleryMasonryLayoutModesTests)
+    add_test(NAME ZoinGalleryLucideTintFractionalDprTest
+      COMMAND ZoinGalleryMasonryLayoutModesTests
+        columnsAndDetailsUseIdenticalCompactLucideIcons)
+    set_tests_properties(ZoinGalleryLucideTintFractionalDprTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    )
+  endif()
 
   function(f4_link_static_test_platform target)
     if(F4_QT_STATIC)
@@ -696,6 +734,7 @@ if(BUILD_TESTING)
     Qt6::Core
     Qt6::Network
     Qt6::Test
+    ZoinGallery::Core
   )
   if(TARGET msgpack-cxx)
     target_link_libraries(QtMediaClientTests PRIVATE msgpack-cxx)

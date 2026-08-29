@@ -518,7 +518,7 @@ function Cmd-Info {
         }
         $win = Convert-PosixToWin $wire
         if (-not (Test-Path -LiteralPath $win)) {
-            Write-Err 'no such file'
+            Write-Err 'F4ERR:ENOENT:no such file or directory'
             return
         }
         $fi = Get-Item -LiteralPath $win -Force -ErrorAction Stop

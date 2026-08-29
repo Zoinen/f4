@@ -53,16 +53,23 @@ func TestHybridOpenerAttachesInfoWithoutWrappingBackend(t *testing.T) {
 
 	t.Run("Fish", func(t *testing.T) {
 		fish := &netfox.FishVFS{}
+		configured := false
 		opener := &hybridDeviceOpener{
 			info: info,
 			features: func(context.Context, string) (map[string]bool, error) {
 				return map[string]bool{"shell_v2": true}, nil
 			},
 			openFish: func(context.Context, vfs.VFS, DeviceInfo) (vfs.VFS, error) { return fish, nil },
+			configureFish: func(got *netfox.FishVFS, gotDevice DeviceInfo, features map[string]bool) {
+				configured = got == fish && gotDevice == device && features["shell_v2"]
+			},
 		}
 		mounted, err := opener.OpenDevice(context.Background(), nil, device)
 		if err != nil || mounted != fish {
 			t.Fatalf("mounted = %T, %v; want the original *FishVFS", mounted, err)
+		}
+		if !configured {
+			t.Fatal("FISH+ transfer lane was not configured before mounting")
 		}
 		provider, ok := mounted.(vfs.PanelInfoProvider)
 		if !ok || provider.PanelInfoKey(vfs.PanelInfoRequest{Path: "/"}) == "" {

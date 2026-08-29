@@ -365,6 +365,7 @@ func semanticChildren(ctx *SemanticContext, children []UIElement) []map[string]a
 		}
 		if sp, ok := child.(SemanticProvider); ok {
 			if node := sp.SemanticNode(ctx); node != nil {
+				node["visible"] = semanticElementVisible(child)
 				nodes = append(nodes, node)
 				continue
 			}
@@ -377,12 +378,28 @@ func semanticChildren(ctx *SemanticContext, children []UIElement) []map[string]a
 			"y":        y1,
 			"w":        x2 - x1 + 1,
 			"h":        y2 - y1 + 1,
-			"visible":  child.IsVisible(),
+			"visible":  semanticElementVisible(child),
 			"focused":  child.IsFocused(),
 			"disabled": child.IsDisabled(),
 		})
 	}
 	return nodes
+}
+
+func semanticElementVisible(element UIElement) bool {
+	if state, ok := element.(interface {
+		semanticVisibility() (visible, explicit bool)
+	}); ok {
+		visible, explicit := state.semanticVisibility()
+		if !explicit {
+			// Group.Show makes untouched children visible.  A semantic scene can
+			// be published immediately after Push, before that first cell render,
+			// so the zero-value physical flag is not a hidden-state declaration.
+			return true
+		}
+		return visible
+	}
+	return element.IsVisible()
 }
 
 func handleSemanticChildrenAction(children []UIElement, target string, action map[string]any) bool {

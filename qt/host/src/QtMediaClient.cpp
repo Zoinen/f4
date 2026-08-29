@@ -1,5 +1,7 @@
 #include "QtMediaClient.h"
 
+#include <ZoinGallery/MediaTimingTrace.h>
+
 #include <QCoreApplication>
 #include <QDeadlineTimer>
 #include <QHash>
@@ -26,6 +28,22 @@ constexpr qint64 MaxQueuedWriteBytes = 4 * 1024 * 1024;
 constexpr int MaxOutstandingRequests = 256;
 constexpr qsizetype MaxPendingReleases = 1024;
 constexpr int HandshakeTimeoutMs = 5000;
+
+QVariantMap mediaRequestFields(const QString &requestId,
+                               const QString &traceId,
+                               const QString &operation,
+                               const QString &resourceId,
+                               qint64 offset, qint64 length)
+{
+    return {
+        {QStringLiteral("requestId"), requestId},
+        {QStringLiteral("traceId"), traceId},
+        {QStringLiteral("operation"), operation},
+        {QStringLiteral("resourceId"), resourceId},
+        {QStringLiteral("offset"), offset},
+        {QStringLiteral("requestedBytes"), length},
+    };
+}
 
 void packString(msgpack::packer<msgpack::sbuffer> &packer,
                 const QString &value)
@@ -269,7 +287,8 @@ public:
         resetTransport(QStringLiteral("media endpoint removed"), false);
     }
 
-    void submit(const QString &requestId, const QString &operation,
+    void submit(const QString &requestId, const QString &traceId,
+                const QString &operation,
                 const QString &resourceId, qint64 offset, qint64 length,
                 int timeoutMs, Completion completion)
     {
@@ -302,6 +321,7 @@ public:
         }
 
         Pending pending;
+        pending.traceId = traceId;
         pending.operation = operation;
         pending.resourceId = resourceId;
         pending.offset = offset;
@@ -309,6 +329,18 @@ public:
         pending.deadline = QDeadlineTimer(std::max(timeoutMs, 1));
         pending.completion = std::move(completion);
         pending.releaseScope = m_releaseScope;
+        pending.queuedNs =
+            ZoinGallery::MediaTimingTrace::monotonicNanoseconds();
+        ZoinGallery::MediaTimingTrace::eventAt(
+            QStringLiteral("qt.media.request.queued"), pending.queuedNs,
+            ZoinGallery::MediaTimingTrace::mergedFields(
+                mediaRequestFields(requestId, traceId, operation,
+                                   resourceId, offset, length), {
+                    {QStringLiteral("ready"), m_ready},
+                    {QStringLiteral("pendingRequests"), m_pending.size() + 1},
+                    {QStringLiteral("transportEpoch"),
+                     QVariant::fromValue<qulonglong>(m_transportEpoch)},
+                }));
         m_pending.insert(requestId, std::move(pending));
         if (m_ready) {
             sendPending(requestId);
@@ -388,6 +420,7 @@ public:
 
 private:
     struct Pending {
+        QString traceId;
         QString operation;
         QString resourceId;
         qint64 offset = 0;
@@ -397,6 +430,8 @@ private:
         QtMediaResult provisionalResult;
         quint64 transportEpoch = 0;
         quint64 releaseScope = 0;
+        qint64 queuedNs = 0;
+        qint64 sentNs = 0;
         bool sent = false;
         bool awaitingMaterializeAck = false;
         bool materializeAckSent = false;
@@ -455,7 +490,19 @@ private:
         m_ready = false;
         notifyReady();
 
+        ZoinGallery::MediaTimingTrace::event(
+            QStringLiteral("qt.media.transport.connect.begin"), {
+                {QStringLiteral("transportEpoch"),
+                 QVariant::fromValue<qulonglong>(m_transportEpoch)},
+                {QStringLiteral("pendingRequests"), m_pending.size()},
+            });
+
         connect(m_socket, &QTcpSocket::connected, this, [this]() {
+            ZoinGallery::MediaTimingTrace::event(
+                QStringLiteral("qt.media.transport.connected"), {
+                    {QStringLiteral("transportEpoch"),
+                     QVariant::fromValue<qulonglong>(m_transportEpoch)},
+                });
             m_handshakeDeadline = QDeadlineTimer(HandshakeTimeoutMs);
             sendMap({
                 {QStringLiteral("type"), QStringLiteral("hello")},
@@ -596,7 +643,22 @@ private:
             message.insert(QStringLiteral("offset"), it->offset);
             message.insert(QStringLiteral("length"), it->length);
         }
+        if (!it->traceId.isEmpty()) {
+            message.insert(QStringLiteral("traceId"), it->traceId);
+        }
+        const qint64 sendStartedNs =
+            ZoinGallery::MediaTimingTrace::monotonicNanoseconds();
         if (!sendMap(message)) {
+            ZoinGallery::MediaTimingTrace::eventAt(
+                QStringLiteral("qt.media.request.send_failed"),
+                ZoinGallery::MediaTimingTrace::monotonicNanoseconds(),
+                ZoinGallery::MediaTimingTrace::mergedFields(
+                    mediaRequestFields(requestId, it->traceId,
+                                       it->operation, it->resourceId,
+                                       it->offset, it->length), {
+                        {QStringLiteral("queueNs"),
+                         sendStartedNs - it->queuedNs},
+                    }));
             Pending pending = std::move(it.value());
             m_pending.erase(it);
             QtMediaResult result;
@@ -607,7 +669,17 @@ private:
             return;
         }
         it->sent = true;
+        it->sentNs = sendStartedNs;
         it->transportEpoch = m_transportEpoch;
+        ZoinGallery::MediaTimingTrace::eventAt(
+            QStringLiteral("qt.media.request.sent"), sendStartedNs,
+            ZoinGallery::MediaTimingTrace::mergedFields(
+                mediaRequestFields(requestId, it->traceId, it->operation,
+                                   it->resourceId, it->offset, it->length), {
+                    {QStringLiteral("queueNs"), sendStartedNs - it->queuedNs},
+                    {QStringLiteral("transportEpoch"),
+                     QVariant::fromValue<qulonglong>(m_transportEpoch)},
+                }));
     }
 
     void sendMaterializeAck(const QString &requestId)
@@ -701,6 +773,13 @@ private:
             m_ready = true;
             m_reconnectDelayMs = 100;
             notifyReady();
+            ZoinGallery::MediaTimingTrace::event(
+                QStringLiteral("qt.media.transport.ready"), {
+                    {QStringLiteral("transportEpoch"),
+                     QVariant::fromValue<qulonglong>(m_transportEpoch)},
+                    {QStringLiteral("maxChunkSize"), m_maxChunkSize},
+                    {QStringLiteral("pendingRequests"), m_pending.size()},
+                });
             flushPendingAcks();
             flushPendingReleases();
             const QStringList ids = m_pending.keys();
@@ -769,6 +848,21 @@ private:
                 QStringLiteral("error"),
                 QStringLiteral("media request failed")).toString();
         }
+        const qint64 receivedNs =
+            ZoinGallery::MediaTimingTrace::monotonicNanoseconds();
+        ZoinGallery::MediaTimingTrace::eventAt(
+            QStringLiteral("qt.media.response.received"), receivedNs,
+            ZoinGallery::MediaTimingTrace::mergedFields(
+                mediaRequestFields(requestId, it->traceId, it->operation,
+                                   it->resourceId, it->offset, it->length), {
+                    {QStringLiteral("transportNs"), receivedNs - it->sentNs},
+                    {QStringLiteral("totalNs"), receivedNs - it->queuedNs},
+                    {QStringLiteral("bytes"), result.data.size()},
+                    {QStringLiteral("materializedBytes"), result.size},
+                    {QStringLiteral("ok"), result.ok},
+                    {QStringLiteral("errorCode"), result.errorCode},
+                    {QStringLiteral("error"), result.error},
+                }));
         if (result.ok
             && it->operation == QStringLiteral("materialize")) {
             it->provisionalResult = result;
@@ -821,6 +915,20 @@ private:
                 QStringLiteral("media lease acknowledgement failed"))
                                .toString();
         }
+        const qint64 acknowledgedNs =
+            ZoinGallery::MediaTimingTrace::monotonicNanoseconds();
+        ZoinGallery::MediaTimingTrace::eventAt(
+            QStringLiteral("qt.media.materialize.acknowledged"),
+            acknowledgedNs,
+            ZoinGallery::MediaTimingTrace::mergedFields(
+                mediaRequestFields(requestId, it->traceId, it->operation,
+                                   it->resourceId, it->offset, it->length), {
+                    {QStringLiteral("totalNs"),
+                     acknowledgedNs - it->queuedNs},
+                    {QStringLiteral("bytes"), result.size},
+                    {QStringLiteral("ok"), result.ok},
+                    {QStringLiteral("errorCode"), result.errorCode},
+                }));
         Pending pending = std::move(it.value());
         m_pending.erase(it);
         finish(requestId, pending.operation, result,
@@ -866,12 +974,14 @@ private:
             return;
         }
         const QStringList ids = m_pending.keys();
+        bool timedOutSentRequest = false;
         for (const QString &requestId : ids) {
             auto it = m_pending.find(requestId);
             if (it == m_pending.end() || !it->deadline.hasExpired()) {
                 continue;
             }
             if (it->sent) {
+                timedOutSentRequest = true;
                 sendMap({
                     {QStringLiteral("type"), QStringLiteral("cancel")},
                     {QStringLiteral("requestId"), requestId},
@@ -885,6 +995,15 @@ private:
             result.error = QStringLiteral("media request timed out");
             finish(requestId, pending.operation, result,
                    std::move(pending.completion));
+        }
+        // A timed-out request means the peer (or the VFS transport behind it)
+        // is no longer making progress.  Do not leave the old socket around:
+        // subsequent probes would otherwise reuse the same poisoned channel
+        // and repeatedly consume the timeout budget.  Reconnect after all
+        // expired completions have been delivered.
+        if (timedOutSentRequest && m_socket) {
+            protocolFailure(QStringLiteral("media request timed out; reconnecting"));
+            return;
         }
         flushPendingAcks();
         flushPendingReleases();
@@ -1122,7 +1241,7 @@ QString QtMediaClient::readRange(const QString &resourceId, qint64 offset,
         QMetaObject::invokeMethod(m_worker,
             [worker = m_worker, requestId, resourceId, offset, length,
              timeoutMs]() {
-                worker->submit(requestId, QStringLiteral("readRange"),
+                worker->submit(requestId, {}, QStringLiteral("readRange"),
                                resourceId, offset, length, timeoutMs, {});
             });
     }
@@ -1135,7 +1254,7 @@ QString QtMediaClient::materialize(const QString &resourceId, int timeoutMs)
     if (m_worker) {
         QMetaObject::invokeMethod(m_worker,
             [worker = m_worker, requestId, resourceId, timeoutMs]() {
-                worker->submit(requestId, QStringLiteral("materialize"),
+                worker->submit(requestId, {}, QStringLiteral("materialize"),
                                resourceId, 0, 0, timeoutMs, {});
             });
     }
@@ -1164,18 +1283,18 @@ void QtMediaClient::release(const QString &resourceId,
 
 QtMediaResult QtMediaClient::readRangeBlocking(
     const QString &resourceId, qint64 offset, qint64 length, int timeoutMs,
-    const std::function<bool()> &isCanceled)
+    const std::function<bool()> &isCanceled, const QString &traceId)
 {
     return requestBlocking(QStringLiteral("readRange"), resourceId,
-                           offset, length, timeoutMs, isCanceled);
+                           offset, length, timeoutMs, isCanceled, traceId);
 }
 
 QtMediaResult QtMediaClient::materializeBlocking(
     const QString &resourceId, int timeoutMs,
-    const std::function<bool()> &isCanceled)
+    const std::function<bool()> &isCanceled, const QString &traceId)
 {
     return requestBlocking(QStringLiteral("materialize"), resourceId,
-                           0, 0, timeoutMs, isCanceled);
+                           0, 0, timeoutMs, isCanceled, traceId);
 }
 
 QString QtMediaClient::nextRequestId()
@@ -1215,7 +1334,7 @@ void QtMediaClient::transportErrorFromWorker(const QString &message)
 QtMediaResult QtMediaClient::requestBlocking(
     const QString &operation, const QString &resourceId,
     qint64 offset, qint64 length, int timeoutMs,
-    const std::function<bool()> &isCanceled)
+    const std::function<bool()> &isCanceled, const QString &traceId)
 {
     QtMediaResult immediateFailure;
     if (!m_worker) {
@@ -1232,10 +1351,14 @@ QtMediaResult QtMediaClient::requestBlocking(
 
     const auto state = std::make_shared<BlockingState>();
     const QString requestId = nextRequestId();
+    ZoinGallery::MediaTimingTrace::Span blockingSpan(
+        QStringLiteral("qt.media.blocking"),
+        mediaRequestFields(requestId, traceId, operation, resourceId,
+                           offset, length));
     QMetaObject::invokeMethod(m_worker,
-        [worker = m_worker, state, requestId, operation, resourceId,
+        [worker = m_worker, state, requestId, traceId, operation, resourceId,
          offset, length, timeoutMs]() {
-            worker->submit(requestId, operation, resourceId, offset, length,
+            worker->submit(requestId, traceId, operation, resourceId, offset, length,
                 timeoutMs, [worker, state, operation, resourceId](
                                const QtMediaResult &result) {
                     bool accepted = false;
@@ -1288,7 +1411,14 @@ QtMediaResult QtMediaClient::requestBlocking(
         immediateFailure.error = deadline.hasExpired()
             ? QStringLiteral("media request timed out")
             : QStringLiteral("media request cancelled");
+        blockingSpan.set(QStringLiteral("ok"), false);
+        blockingSpan.set(QStringLiteral("errorCode"),
+                         immediateFailure.errorCode);
         return immediateFailure;
     }
+    blockingSpan.set(QStringLiteral("ok"), state->result.ok);
+    blockingSpan.set(QStringLiteral("bytes"), state->result.data.size());
+    blockingSpan.set(QStringLiteral("materializedBytes"), state->result.size);
+    blockingSpan.set(QStringLiteral("errorCode"), state->result.errorCode);
     return state->result;
 }

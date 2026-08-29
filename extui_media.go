@@ -395,6 +395,7 @@ func (b *extUiMediaBroker) CommitPanel(panelID string, revision int64, ids []str
 			next[id] = struct{}{}
 		}
 	}
+
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -517,8 +518,9 @@ func (b *extUiMediaBroker) acquire(id string) (*extUiMediaResource, error) {
 func (r *extUiMediaResource) finish() {
 	r.mu.Lock()
 	r.active--
-	retireNow := r.active == 0 && r.validRefs == 0 && len(r.leaseIDs) == 0
-	closeNow := !retireNow && r.active == 0 && r.releasePending && len(r.leaseIDs) == 0
+	idleNow := r.active == 0
+	retireNow := idleNow && r.validRefs == 0 && len(r.leaseIDs) == 0
+	closeNow := !retireNow && idleNow && r.releasePending && len(r.leaseIDs) == 0
 	if closeNow {
 		r.releasePending = false
 	}
@@ -527,6 +529,14 @@ func (r *extUiMediaResource) finish() {
 		r.broker.retireResource(r)
 	} else if closeNow {
 		r.closeCached()
+	} else if idleNow {
+		// Both a broker caller and its shared flight hold activity references.
+		// Whichever one releases the final reference must also release a remote
+		// transport handle; doing this only from the flight leaves a scheduling
+		// race that can permanently consume every slot in a small AFC pool.
+		if !r.closeMaterializedTransportHandle() {
+			r.closeTransientRangeHandle()
+		}
 	}
 }
 
@@ -540,11 +550,17 @@ func (r *extUiMediaResource) validate(ctx context.Context) error {
 	r.mu.Lock()
 	if r.validated {
 		r.mu.Unlock()
+		mediaTimingResourceEmit(ctx, "broker.validate.cached", "go.media", r)
 		return nil
 	}
 	r.mu.Unlock()
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.stat.begin", "go.media", startedNs, r)
 	item, err := r.fs.Stat(ctx, r.path)
 	if err != nil {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.stat.end", "go.media", finishedNs, r,
+			"durationNs", finishedNs-startedNs, "ok", false, "error", err.Error())
 		return err
 	}
 	valid := false
@@ -557,11 +573,18 @@ func (r *extUiMediaResource) validate(ctx context.Context) error {
 		valid = true
 	}
 	if !valid {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.stat.end", "go.media", finishedNs, r,
+			"durationNs", finishedNs-startedNs, "ok", false,
+			"error", errMediaSourceChanged.Error())
 		return errMediaSourceChanged
 	}
 	r.mu.Lock()
 	r.validated = true
 	r.mu.Unlock()
+	finishedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.stat.end", "go.media", finishedNs, r,
+		"durationNs", finishedNs-startedNs, "ok", true)
 	return nil
 }
 
@@ -573,17 +596,22 @@ func (r *extUiMediaResource) ensureHandle(ctx context.Context) (vfs.ReadAtCloser
 	if r.handle != nil {
 		handle := r.handle
 		r.mu.Unlock()
+		mediaTimingResourceEmit(ctx, "broker.open.cached", "go.media", r)
 		return handle, nil
 	}
 	if flight := r.openFlight; flight != nil {
 		flight.waiters++
+		waiters := flight.waiters
 		r.mu.Unlock()
+		mediaTimingResourceEmit(ctx, "broker.open.join", "go.media", r,
+			"waiters", waiters)
 		return waitMediaOpen(ctx, r, flight)
 	}
-	flightCtx, cancel := context.WithCancel(context.Background())
+	flightCtx, cancel := context.WithCancel(mediaTimingDetachedContext(ctx))
 	flight := &mediaOpenFlight{done: make(chan struct{}), cancel: cancel, waiters: 1}
 	r.openFlight = flight
 	r.mu.Unlock()
+	mediaTimingResourceEmit(ctx, "broker.open.owner", "go.media", r)
 	r.broker.flightWG.Add(1)
 	go func() {
 		defer r.broker.flightWG.Done()
@@ -611,10 +639,18 @@ func waitMediaOpen(ctx context.Context, resource *extUiMediaResource, flight *me
 
 func (r *extUiMediaResource) performOpen(ctx context.Context, flight *mediaOpenFlight) {
 	defer flight.cancel()
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.open.begin", "go.media", startedNs, r)
 	err := r.validate(ctx)
 	var handle vfs.ReadAtCloser
 	if err == nil {
+		openStartedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.vfs_open.begin", "go.media", openStartedNs, r)
 		handle, err = r.fs.Open(ctx, r.path)
+		openFinishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.vfs_open.end", "go.media", openFinishedNs, r,
+			"durationNs", openFinishedNs-openStartedNs, "ok", err == nil,
+			"error", mediaTimingError(err))
 	}
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
@@ -654,19 +690,37 @@ func (r *extUiMediaResource) performOpen(ctx context.Context, flight *mediaOpenF
 	if rejectedHandle != nil {
 		_ = rejectedHandle.Close()
 	}
+	finishedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.open.end", "go.media", finishedNs, r,
+		"durationNs", finishedNs-startedNs, "ok", err == nil,
+		"error", mediaTimingError(err))
 }
 
-func (r *extUiMediaResource) readAt(ctx context.Context, data []byte, offset int64) (int, error) {
+func (r *extUiMediaResource) readAt(ctx context.Context, data []byte, offset int64) (n int, err error) {
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.read_at.begin", "go.media", startedNs, r,
+		"offset", offset, "requestedBytes", len(data))
+	defer func() {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.read_at.end", "go.media", finishedNs, r,
+			"offset", offset, "requestedBytes", len(data), "bytes", n,
+			"durationNs", finishedNs-startedNs, "ok", err == nil || errors.Is(err, io.EOF),
+			"eof", errors.Is(err, io.EOF), "error", mediaTimingError(err))
+	}()
 	for {
-		handle, err := r.ensureHandle(ctx)
-		if err != nil {
-			return 0, err
+		handle, handleErr := r.ensureHandle(ctx)
+		if handleErr != nil {
+			return 0, handleErr
 		}
 
 		// A caller can obtain a shared handle just before another operation is
 		// canceled. Serialize the current-handle check, I/O, detach and Close so
 		// the canceled operation cannot close a handle underneath the next one.
+		lockStartedNs := navigationBenchmarkMonotonicNs()
 		r.ioMu.Lock()
+		lockFinishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.read_at.locked", "go.media", lockFinishedNs, r,
+			"offset", offset, "waitNs", lockFinishedNs-lockStartedNs)
 		r.mu.Lock()
 		if r.handle != handle {
 			r.mu.Unlock()
@@ -691,20 +745,46 @@ func (r *extUiMediaResource) readAt(ctx context.Context, data []byte, offset int
 			r.ioMu.Unlock()
 			return n, ctx.Err()
 		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			// A remote read can fail without canceling the caller's context (for
+			// example when AFC reports a lost transfer). Do not leave that
+			// poisoned handle installed: subsequent retries would reuse it and
+			// fail forever instead of reopening the source.
+			r.mu.Lock()
+			detached := r.handle == handle
+			if detached {
+				r.handle = nil
+				r.validated = false
+			}
+			r.mu.Unlock()
+			if detached {
+				_ = handle.Close()
+				r.broker.syncResourceAccounting(r)
+			}
+		}
 		r.ioMu.Unlock()
 		return n, readErr
 	}
 }
 
-func (b *extUiMediaBroker) ReadRange(ctx context.Context, id string, offset int64, length int) ([]byte, string, error) {
+func (b *extUiMediaBroker) ReadRange(ctx context.Context, id string, offset int64, length int) (data []byte, profile string, err error) {
 	if offset < 0 || length <= 0 || length > extUiMediaMaxRangeSize || offset > int64(^uint64(0)>>1)-int64(length) {
 		return nil, "", errMediaTooLarge
 	}
-	resource, err := b.acquire(id)
-	if err != nil {
-		return nil, "", err
+	resource, acquireErr := b.acquire(id)
+	if acquireErr != nil {
+		return nil, "", acquireErr
 	}
+	startedNs := navigationBenchmarkMonotonicNs()
+	cacheOutcome := "miss"
+	mediaTimingResourceEmitAt(ctx, "broker.range.begin", "go.media", startedNs, resource,
+		"offset", offset, "requestedBytes", length)
 	defer func() {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.range.end", "go.media", finishedNs, resource,
+			"offset", offset, "requestedBytes", length, "bytes", len(data),
+			"durationNs", finishedNs-startedNs, "cache", cacheOutcome,
+			"ok", err == nil, "error", mediaTimingError(err))
 		resource.finish()
 		b.operationWG.Done()
 		b.evictIdleHandles(nil)
@@ -714,6 +794,7 @@ func (b *extUiMediaBroker) ReadRange(ctx context.Context, id string, offset int6
 		if !valid {
 			return nil, profile, errMediaUnknownResource
 		}
+		cacheOutcome = "eof"
 		return []byte{}, profile, nil
 	}
 	if resource.sizeKnown && offset+int64(length) > resource.size {
@@ -729,6 +810,7 @@ func (b *extUiMediaBroker) ReadRange(ctx context.Context, id string, offset int6
 		if !valid {
 			return nil, profile, errMediaUnknownResource
 		}
+		cacheOutcome = "exact"
 		return data, profile, nil
 	}
 	for cachedKey, cached := range resource.ranges {
@@ -743,20 +825,28 @@ func (b *extUiMediaBroker) ReadRange(ctx context.Context, id string, offset int6
 		if !valid {
 			return nil, profile, errMediaUnknownResource
 		}
+		cacheOutcome = "covering"
 		return data, profile, nil
 	}
 	if flight := resource.rangeFlights[key]; flight != nil {
 		flight.waiters++
+		waiters := flight.waiters
 		resource.mu.Unlock()
+		cacheOutcome = "joined"
+		mediaTimingResourceEmit(ctx, "broker.range.join", "go.media", resource,
+			"offset", offset, "requestedBytes", length, "waiters", waiters)
 		return waitMediaRange(ctx, resource, key, flight)
 	}
-	flightCtx, cancel := context.WithCancel(context.Background())
+	flightCtx, cancel := context.WithCancel(mediaTimingDetachedContext(ctx))
 	flight := &mediaRangeFlight{done: make(chan struct{}), cancel: cancel, waiters: 1}
 	resource.rangeFlights[key] = flight
 	// The shared operation owns an activity reference independently of its
 	// callers, so canceling one waiter cannot let release close its handle.
 	resource.active++
 	resource.mu.Unlock()
+	cacheOutcome = "owner"
+	mediaTimingResourceEmit(ctx, "broker.range.owner", "go.media", resource,
+		"offset", offset, "requestedBytes", length)
 	resource.broker.flightWG.Add(1)
 	go func() {
 		defer resource.broker.flightWG.Done()
@@ -789,6 +879,9 @@ func waitMediaRange(ctx context.Context, resource *extUiMediaResource, key media
 
 func (resource *extUiMediaResource) performRange(ctx context.Context, key mediaRangeKey, flight *mediaRangeFlight) {
 	defer flight.cancel()
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.range_flight.begin", "go.media", startedNs, resource,
+		"offset", key.offset, "requestedBytes", key.length)
 	defer func() {
 		resource.finish()
 		resource.broker.evictIdleHandles(nil)
@@ -820,6 +913,11 @@ func (resource *extUiMediaResource) performRange(ctx context.Context, key mediaR
 	resource.mu.Unlock()
 	resource.broker.syncResourceAccounting(resource)
 	resource.broker.evictRangeCaches(resource)
+	finishedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.range_flight.end", "go.media", finishedNs, resource,
+		"offset", key.offset, "requestedBytes", key.length, "bytes", len(data),
+		"durationNs", finishedNs-startedNs, "ok", err == nil,
+		"error", mediaTimingError(err))
 }
 
 // syncResourceAccounting updates counters and eviction membership from one
@@ -991,18 +1089,24 @@ func (r *extUiMediaResource) materialize(ctx context.Context, tempDir string) (s
 	if r.materialized != "" {
 		path, size := r.materialized, r.materializedLen
 		r.mu.Unlock()
+		mediaTimingResourceEmit(ctx, "broker.materialize.cached", "go.media", r,
+			"bytes", size)
 		return path, size, nil
 	}
 	if flight := r.materializing; flight != nil {
 		flight.waiters++
+		waiters := flight.waiters
 		r.mu.Unlock()
+		mediaTimingResourceEmit(ctx, "broker.materialize.join", "go.media", r,
+			"waiters", waiters)
 		return waitMediaMaterialization(ctx, r, flight)
 	}
-	flightCtx, cancel := context.WithCancel(context.Background())
+	flightCtx, cancel := context.WithCancel(mediaTimingDetachedContext(ctx))
 	flight := &mediaMaterializeFlight{done: make(chan struct{}), cancel: cancel, waiters: 1}
 	r.materializing = flight
 	r.active++
 	r.mu.Unlock()
+	mediaTimingResourceEmit(ctx, "broker.materialize.owner", "go.media", r)
 	r.broker.flightWG.Add(1)
 	go func() {
 		defer r.broker.flightWG.Done()
@@ -1034,6 +1138,8 @@ func waitMediaMaterialization(ctx context.Context, resource *extUiMediaResource,
 
 func (r *extUiMediaResource) performMaterialization(ctx context.Context, tempDir string, flight *mediaMaterializeFlight) {
 	defer flight.cancel()
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.materialize_flight.begin", "go.media", startedNs, r)
 	defer func() {
 		r.finish()
 		r.broker.evictIdleHandles(nil)
@@ -1050,6 +1156,10 @@ func (r *extUiMediaResource) performMaterialization(ctx context.Context, tempDir
 	close(flight.done)
 	r.mu.Unlock()
 	r.broker.syncResourceAccounting(r)
+	finishedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.materialize_flight.end", "go.media", finishedNs, r,
+		"durationNs", finishedNs-startedNs, "bytes", size, "ownedCopy", own,
+		"ok", err == nil, "error", mediaTimingError(err))
 }
 
 func (r *extUiMediaResource) materializeOnce(ctx context.Context, tempDir string) (string, int64, bool, error) {
@@ -1169,17 +1279,23 @@ func (b *extUiMediaBroker) hasLease(resourceID, leaseID string) bool {
 	return leaseID != "" && b.leases[leaseID] == resourceID
 }
 
-func (b *extUiMediaBroker) Materialize(ctx context.Context, id string) (string, string, int64, string, error) {
-	resource, err := b.acquire(id)
-	if err != nil {
-		return "", "", 0, "", err
+func (b *extUiMediaBroker) Materialize(ctx context.Context, id string) (path string, leaseID string, size int64, profile string, err error) {
+	resource, acquireErr := b.acquire(id)
+	if acquireErr != nil {
+		return "", "", 0, "", acquireErr
 	}
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingResourceEmitAt(ctx, "broker.materialize.begin", "go.media", startedNs, resource)
 	defer func() {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingResourceEmitAt(ctx, "broker.materialize.end", "go.media", finishedNs, resource,
+			"durationNs", finishedNs-startedNs, "bytes", size,
+			"ok", err == nil, "error", mediaTimingError(err))
 		resource.finish()
 		b.operationWG.Done()
 		b.evictIdleHandles(nil)
 	}()
-	path, size, err := resource.materialize(ctx, b.tempDir)
+	path, size, err = resource.materialize(ctx, b.tempDir)
 	profile, valid := resource.profileAndValid()
 	if !valid {
 		return "", "", 0, profile, errMediaUnknownResource
@@ -1188,7 +1304,7 @@ func (b *extUiMediaBroker) Materialize(ctx context.Context, id string) (string, 
 		return "", "", 0, profile, err
 	}
 	b.evictOwnMaterializations(resource)
-	leaseID, err := b.newLease(resource)
+	leaseID, err = b.newLease(resource)
 	if err != nil {
 		return "", "", 0, profile, err
 	}
@@ -1362,6 +1478,50 @@ func (r *extUiMediaResource) closeIdleHandle() bool {
 		r.materialized = ""
 		r.materializedLen = 0
 	}
+	r.mu.Unlock()
+	_ = handle.Close()
+	r.broker.syncResourceAccounting(r)
+	return true
+}
+
+// closeTransientRangeHandle releases a native-range transport handle after a
+// completed range flight when the resource has no materialized/local backing
+// path and no active users.  The range bytes remain cached, so a future miss
+// can reopen the source without consuming a scarce handle indefinitely.
+func (r *extUiMediaResource) closeTransientRangeHandle() bool {
+	r.ioMu.Lock()
+	defer r.ioMu.Unlock()
+	r.mu.Lock()
+	if r.handle == nil || r.active != 0 || r.materialized != "" ||
+		len(r.leaseIDs) != 0 || r.accessProfile != vfs.ReadAccessNativeRange ||
+		r.storageClass == vfs.StorageClassLocal {
+		r.mu.Unlock()
+		return false
+	}
+	handle := r.handle
+	r.handle = nil
+	r.validated = false
+	r.mu.Unlock()
+	_ = handle.Close()
+	r.broker.syncResourceAccounting(r)
+	return true
+}
+
+// closeMaterializedTransportHandle is the materialize analogue of
+// closeTransientRangeHandle.  It only closes a broker-owned materialization's
+// transport handle; LocalBackingReader handles own the returned path and must
+// stay open because closing them removes their temporary backing file.
+func (r *extUiMediaResource) closeMaterializedTransportHandle() bool {
+	r.ioMu.Lock()
+	defer r.ioMu.Unlock()
+	r.mu.Lock()
+	if r.handle == nil || r.active != 0 || !r.materializedOwn || r.materialized == "" {
+		r.mu.Unlock()
+		return false
+	}
+	handle := r.handle
+	r.handle = nil
+	r.validated = false
 	r.mu.Unlock()
 	_ = handle.Close()
 	r.broker.syncResourceAccounting(r)
@@ -1754,7 +1914,15 @@ func (c *extUiMediaConn) start(message map[string]any) {
 	if requestID == "" {
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := mediaTimingWithCorrelation(
+		context.Background(), requestID, extUiString(message, "traceId"))
+	queuedNs := navigationBenchmarkMonotonicNs()
+	op := extUiString(message, "op")
+	mediaTimingEmitAt(ctx, "server.request.queued", "go.media", queuedNs,
+		"operation", op, "resourceId", extUiString(message, "resourceId"),
+		"offset", extUiMediaInt64(message["offset"]),
+		"requestedBytes", extUiInt(message, "length"))
+	ctx, cancel := context.WithCancel(ctx)
 	state := &extUiMediaRequestState{cancel: cancel}
 	c.mu.Lock()
 	if c.closed {
@@ -1779,7 +1947,14 @@ func (c *extUiMediaConn) start(message map[string]any) {
 		defer c.requestWG.Done()
 		select {
 		case c.sem <- struct{}{}:
+			startedNs := navigationBenchmarkMonotonicNs()
+			mediaTimingEmitAt(ctx, "server.request.admitted", "go.media", startedNs,
+				"operation", op, "resourceId", extUiString(message, "resourceId"),
+				"queueNs", startedNs-queuedNs)
 		case <-ctx.Done():
+			mediaTimingEmit(ctx, "server.request.cancelled_in_queue", "go.media",
+				"operation", op, "resourceId", extUiString(message, "resourceId"),
+				"queueNs", navigationBenchmarkMonotonicNs()-queuedNs)
 			c.respondError(requestID, ctx.Err())
 			c.finishRequest(requestID, state)
 			return
@@ -1792,17 +1967,41 @@ func (c *extUiMediaConn) start(message map[string]any) {
 
 func (c *extUiMediaConn) handle(ctx context.Context, requestID string, message map[string]any) {
 	resourceID := extUiString(message, "resourceId")
-	switch extUiString(message, "op") {
+	op := extUiString(message, "op")
+	startedNs := navigationBenchmarkMonotonicNs()
+	mediaTimingEmitAt(ctx, "server.handle.begin", "go.media", startedNs,
+		"operation", op, "resourceId", resourceID,
+		"offset", extUiMediaInt64(message["offset"]),
+		"requestedBytes", extUiInt(message, "length"))
+	defer func() {
+		finishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingEmitAt(ctx, "server.handle.end", "go.media", finishedNs,
+			"operation", op, "resourceId", resourceID,
+			"durationNs", finishedNs-startedNs)
+	}()
+	switch op {
 	case "readRange":
 		data, profile, err := c.broker.ReadRange(ctx, resourceID, extUiMediaInt64(message["offset"]), extUiInt(message, "length"))
 		if err != nil {
+			mediaTimingEmit(ctx, "server.response.error", "go.media",
+				"operation", op, "resourceId", resourceID,
+				"errorCode", mediaErrorCode(err), "error", err.Error())
 			c.respondError(requestID, err)
 			return
 		}
-		_ = c.send(map[string]any{"type": "response", "requestId": requestID, "ok": true, "data": data, "accessProfile": profile})
+		sendStartedNs := navigationBenchmarkMonotonicNs()
+		sendErr := c.send(map[string]any{"type": "response", "requestId": requestID, "ok": true, "data": data, "accessProfile": profile})
+		sendFinishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingEmitAt(ctx, "server.response.sent", "go.media", sendFinishedNs,
+			"operation", op, "resourceId", resourceID, "bytes", len(data),
+			"sendNs", sendFinishedNs-sendStartedNs, "ok", sendErr == nil,
+			"error", mediaTimingError(sendErr))
 	case "materialize":
 		path, leaseID, size, profile, err := c.broker.Materialize(ctx, resourceID)
 		if err != nil {
+			mediaTimingEmit(ctx, "server.response.error", "go.media",
+				"operation", op, "resourceId", resourceID,
+				"errorCode", mediaErrorCode(err), "error", err.Error())
 			c.respondError(requestID, err)
 			return
 		}
@@ -1815,11 +2014,22 @@ func (c *extUiMediaConn) handle(ctx context.Context, requestID string, message m
 		if provisional == nil {
 			return
 		}
-		if err := c.send(map[string]any{"type": "response", "requestId": requestID, "ok": true, "path": path, "leaseId": leaseID, "size": size, "accessProfile": profile}); err != nil {
+		sendStartedNs := navigationBenchmarkMonotonicNs()
+		sendErr := c.send(map[string]any{"type": "response", "requestId": requestID, "ok": true, "path": path, "leaseId": leaseID, "size": size, "accessProfile": profile})
+		sendFinishedNs := navigationBenchmarkMonotonicNs()
+		mediaTimingEmitAt(ctx, "server.response.sent", "go.media", sendFinishedNs,
+			"operation", op, "resourceId", resourceID, "bytes", size,
+			"sendNs", sendFinishedNs-sendStartedNs, "ok", sendErr == nil,
+			"error", mediaTimingError(sendErr))
+		if sendErr != nil {
 			c.dropProvisional(provisional)
 		}
 	default:
-		c.respondError(requestID, errors.New("unsupported media operation"))
+		err := errors.New("unsupported media operation")
+		mediaTimingEmit(ctx, "server.response.error", "go.media",
+			"operation", op, "resourceId", resourceID,
+			"errorCode", mediaErrorCode(err), "error", err.Error())
+		c.respondError(requestID, err)
 	}
 }
 

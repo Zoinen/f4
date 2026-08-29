@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strings"
 	"time"
 
@@ -44,11 +45,12 @@ func (s serverDeviceSource) RestartForAuthorization(ctx context.Context) error {
 }
 
 type hybridDeviceOpener struct {
-	features func(context.Context, string) (map[string]bool, error)
-	openFish func(context.Context, vfs.VFS, DeviceInfo) (vfs.VFS, error)
-	openSync func(context.Context, vfs.VFS, DeviceInfo, map[string]bool) (vfs.VFS, error)
-	pool     *fishSessionPool
-	info     *deviceInfoService
+	features      func(context.Context, string) (map[string]bool, error)
+	openFish      func(context.Context, vfs.VFS, DeviceInfo) (vfs.VFS, error)
+	configureFish func(*netfox.FishVFS, DeviceInfo, map[string]bool)
+	openSync      func(context.Context, vfs.VFS, DeviceInfo, map[string]bool) (vfs.VFS, error)
+	pool          *fishSessionPool
+	info          *deviceInfoService
 }
 
 func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, device DeviceInfo) (vfs.VFS, error) {
@@ -70,6 +72,9 @@ func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, dev
 			mounted, err = o.openFish(ctx, parent, device)
 		}
 		if err == nil {
+			if fish, ok := mounted.(*netfox.FishVFS); ok && o.configureFish != nil {
+				o.configureFish(fish, device, features)
+			}
 			return attachAndroidPanelInfo(mounted, o.info.provider(device, "FISH+", fishBackendDetail(mounted))), nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -113,7 +118,19 @@ func fishBackendDetail(mounted vfs.VFS) string {
 		return ""
 	}
 	features := fish.Client().Session().Features()
-	return fmt.Sprintf("list=%s, read=%s, write=%s", features.ListingMode(), features.ReadMode(), features.WriteMode())
+	readMode := features.ReadMode()
+	writeMode := features.WriteMode()
+	statMode := "fish"
+	if provider := fish.ReadProviderName(); provider != "" {
+		readMode = provider
+	}
+	if provider := fish.StatProviderName(); provider != "" {
+		statMode = provider
+	}
+	if provider := fish.CreateProviderName(); provider != "" {
+		writeMode = provider
+	}
+	return fmt.Sprintf("list=%s, stat=%s, read=%s, write=%s", features.ListingMode(), statMode, readMode, writeMode)
 }
 
 func deviceSessionTitle(device DeviceInfo) string {
@@ -230,6 +247,37 @@ func NewPlugin() *Plugin {
 		},
 		openSync: func(ctx context.Context, parent vfs.VFS, device DeviceInfo, features map[string]bool) (vfs.VFS, error) {
 			return openSyncDevice(ctx, parent, server, device, features)
+		},
+		configureFish: func(fish *netfox.FishVFS, device DeviceInfo, features map[string]bool) {
+			client := NewSyncClient(server, device.Serial, features)
+			syncBackend := syncClientFS{client: client}
+			fish.SetStatProvider("adb-sync", func(ctx context.Context, target string) (vfs.VFSItem, error) {
+				entry, err := client.Lstat(ctx, target)
+				if err != nil {
+					return vfs.VFSItem{}, err
+				}
+				entry.Name = path.Base(target)
+				item := syncEntryItem(entry)
+				if item.IsSymlink {
+					if followed, followErr := client.Stat(ctx, target); followErr == nil {
+						item.IsDir = followed.Mode&remoteModeType == remoteModeDir
+					}
+				}
+				return item, nil
+			})
+			fish.SetReadProvider("adb-sync-hybrid", func(_ context.Context, target string) (vfs.ReadAtCloser, error) {
+				if err := validateSyncPath(target); err != nil {
+					return nil, err
+				}
+				return newSyncHybridReadFile(syncBackend, target), nil
+			})
+			fish.SetCreateProvider("adb-sync", func(ctx context.Context, target string) (io.WriteCloser, error) {
+				target, err := mutationPath(target)
+				if err != nil {
+					return nil, err
+				}
+				return client.Send(ctx, target, 0644, time.Now())
+			})
 		},
 	}
 	return &Plugin{Source: serverDeviceSource{server: server}, Opener: opener, closer: pool, info: info}

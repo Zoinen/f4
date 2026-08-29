@@ -295,6 +295,50 @@ func TestAutoComplete_PathSpanReplaceAndDrillDown(t *testing.T) {
 	}
 }
 
+func TestAutoComplete_StalePathSpanClosesOnQueuedReturn(t *testing.T) {
+	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
+
+	old := PathHintProvider
+	defer func() { PathHintProvider = old }()
+	PathHintProvider = func(edit *Edit, word string, from, to int) []AutoCompleteItem {
+		return []AutoCompleteItem{{
+			Text:        `/sdcard/DCIM/`,
+			MatchStart:  -1,
+			MatchEnd:    -1,
+			ReplaceFrom: from,
+			ReplaceTo:   to,
+		}}
+	}
+
+	edit := NewEdit(0, 10, 40, `cd /sdcard/DCIM`)
+	edit.curPos = len(edit.text)
+	edit.PathHintsEnabled = true
+	ac := NewAutoCompleteMenu(edit)
+	FrameManager.Push(ac)
+
+	if len(ac.items) != 1 || ac.items[0].ReplaceFrom <= 0 {
+		t.Fatalf("expected one path item with a non-zero span: %+v", ac.items)
+	}
+
+	// Mirrors a second Return already queued by the Qt frontend after the
+	// first one executed the command and cleared the command-line edit.
+	edit.SetText("")
+	edit.curPos = 0
+	if !ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RETURN,
+	}) {
+		t.Fatal("Return should be consumed by the stale autocomplete menu")
+	}
+	if edit.GetText() != "" {
+		t.Fatalf("stale suggestion changed cleared edit to %q", edit.GetText())
+	}
+	if !ac.IsDone() {
+		t.Fatal("stale autocomplete menu should close")
+	}
+}
+
 func TestAutoComplete_NearCursorPosition(t *testing.T) {
 	SetDefaultPalette()
 	scr := NewSilentScreenBuf()

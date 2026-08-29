@@ -14,6 +14,7 @@
 
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
+#include <ZoinGallery/MediaTimingTrace.h>
 
 #include <utility>
 
@@ -990,6 +991,14 @@ void F4GalleryBridge::notifyFrameSwappedAt(
         requestNextPanelCatalogMetadata();
     }
 
+    if (ZoinGallery::MediaTimingTrace::enabled()) {
+        ZoinGallery::MediaTimingTrace::event(
+            QStringLiteral("qt.gallery.frame_swapped"), {
+                {QStringLiteral("serial"),
+                 QVariant::fromValue<qulonglong>(++m_mediaFrameSerial)},
+            });
+    }
+
     NavigationBenchmarkState &benchmark = m_navigationBenchmark;
     if (!benchmark.enabled) {
         return;
@@ -1627,13 +1636,10 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     }
     const size_t sideIndex = static_cast<size_t>(side);
     SideState &state = m_states[sideIndex];
-    if (!state.initialized
-        || patch.value(QStringLiteral("panelId")).toString()
-            != state.panelId
-        || revisionValue(patch, QStringLiteral("catalogRevision"))
-            != state.catalogRevision) {
-        return;
-    }
+    const QString panelId = patch.value(
+        QStringLiteral("panelId")).toString();
+    const qulonglong catalogRevision = revisionValue(
+        patch, QStringLiteral("catalogRevision"));
     const QVariant panelValue = patch.value(QStringLiteral("panel"));
     if (panelValue.metaType().id() != QMetaType::QVariantMap) {
         return;
@@ -1641,6 +1647,46 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
     const QVariantMap panel = panelValue.toMap();
     if (panel.contains(QStringLiteral("entries"))
         || panel.contains(QStringLiteral("highlightStyles"))) {
+        return;
+    }
+    const QString op = patch.value(QStringLiteral("op")).toString();
+    if (!state.initialized || panelId != state.panelId) {
+        return;
+    }
+    if (catalogRevision != state.catalogRevision) {
+        // A cold path switch deliberately leaves the populated source session
+        // visible while provisional destination catalogs arrive. The
+        // controller still owns the latest complete provisional payload, and
+        // may finalize it with a row-free state_update when only
+        // catalogProvisional/loading changed. Commit that retained payload at
+        // this exact revision instead of rejecting the final state because the
+        // visible session still reports the source revision.
+        const QVariantMap deferred = m_panelSnapshots[sideIndex];
+        const QVariant provisionalValue = deferred.value(
+            QStringLiteral("catalogProvisional"));
+        const QVariant finalValue = panel.value(
+            QStringLiteral("catalogProvisional"));
+        const bool finalizesDeferredCatalog =
+            op == QStringLiteral("state_update")
+            && catalogRevision != 0
+            && deferred.value(QStringLiteral("id")).toString() == panelId
+            && revisionValue(deferred, QStringLiteral("catalogRevision"))
+                == catalogRevision
+            && deferred.contains(QStringLiteral("entries"))
+            && provisionalValue.metaType().id() == QMetaType::Bool
+            && provisionalValue.toBool()
+            && finalValue.metaType().id() == QMetaType::Bool
+            && !finalValue.toBool();
+        if (!finalizesDeferredCatalog) {
+            return;
+        }
+
+        QVariantMap authoritative = deferred;
+        for (auto it = panel.cbegin(); it != panel.cend(); ++it) {
+            authoritative.insert(it.key(), it.value());
+        }
+        synchronizePanel(side, authoritative);
+        schedulePanelCatalogMetadataRequest();
         return;
     }
 
@@ -1677,7 +1723,6 @@ void F4GalleryBridge::synchronizePanelState(const QVariantMap &patch)
         || nextCurrentPath != state.currentPath;
     const bool metadataRestartNeeded = nextMetadataDeferred
         && metadataStreamChanged;
-    const QString op = patch.value(QStringLiteral("op")).toString();
     qulonglong nextSelectionRevision = state.selectionRevision;
     QStringList nextSelectedIds = state.selectedEntryIdList;
     QSet<QString> nextSelectedSet = state.selectedEntryIds;
@@ -3223,6 +3268,24 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         && state.initialized && panelId == state.panelId
         && currentPath != state.currentPath;
 
+    QVariantMap mediaPanelFields;
+    if (ZoinGallery::MediaTimingTrace::enabled()) {
+        mediaPanelFields = {
+            {QStringLiteral("side"), side},
+            {QStringLiteral("panelId"), panelId},
+            {QStringLiteral("path"), currentPath},
+            {QStringLiteral("catalogRevision"),
+             QVariant::fromValue<qulonglong>(catalogRevision)},
+            {QStringLiteral("entries"),
+             panel.value(QStringLiteral("entries")).toList().size()},
+            {QStringLiteral("loading"), loading},
+            {QStringLiteral("catalogProvisional"), catalogProvisional},
+            {QStringLiteral("layoutMode"), galleryLayoutMode},
+        };
+    }
+    ZoinGallery::MediaTimingTrace::Span mediaPanelSpan(
+        QStringLiteral("qt.gallery.bridge.panel"), mediaPanelFields);
+
     DeferredPanelOpenRepeat repeatToReplay;
 
     if (!m_cacheWarmup && m_inFlightPanelOpen.active
@@ -3290,6 +3353,8 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // scene is being assembled. Keep the populated persistent session until
     // that scene arrives instead of replacing it with an incomplete catalog.
     if (provisionalReplacementDeferred) {
+        mediaPanelSpan.set(QStringLiteral("outcome"),
+                           QStringLiteral("provisional-deferred"));
         state.active = active;
         state.loading = loading;
         state.galleryLayoutMode = galleryLayoutMode;
@@ -3364,8 +3429,21 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     // catalog reset ExternalCatalogModel consumes highlightStyle before
     // endResetModel(), avoiding a second full pass and a post-reset update
     // storm.
-    const QVariantList entries = normalizeCatalog
-        ? normalizedEntries(panel) : state.entries;
+    QVariantList entries;
+    if (normalizeCatalog) {
+        ZoinGallery::MediaTimingTrace::Span normalizeSpan(
+            QStringLiteral("qt.gallery.bridge.catalog_normalize"), {
+                {QStringLiteral("side"), side},
+                {QStringLiteral("path"), currentPath},
+                {QStringLiteral("inputEntries"),
+                 panel.value(QStringLiteral("entries")).toList().size()},
+            });
+        entries = normalizedEntries(panel);
+        normalizeSpan.set(QStringLiteral("outputEntries"), entries.size());
+    }
+    else {
+        entries = state.entries;
+    }
     const qint64 normalizeCompletedNs = traceCatalogStages && normalizeCatalog
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
     const QStringList selectedIds = catalogPayloadChanged || selectionChanged
@@ -3382,6 +3460,15 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
             catalogApplyStartedNs =
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
         }
+        ZoinGallery::MediaTimingTrace::Span applySpan(
+            QStringLiteral("qt.gallery.bridge.catalog_apply"), {
+                {QStringLiteral("side"), side},
+                {QStringLiteral("path"), currentPath},
+                {QStringLiteral("entries"), entries.size()},
+                {QStringLiteral("catalogRevision"),
+                 QVariant::fromValue<qulonglong>(catalogRevision)},
+                {QStringLiteral("catalogProvisional"), catalogProvisional},
+            });
         catalogApplied = session->applyExternalCatalog(entries, catalogRevision, {
             {QStringLiteral("currentPath"), currentPath},
             {QStringLiteral("sourceKind"), sourceKind},
@@ -3399,6 +3486,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
             catalogApplyCompletedNs =
                 F4NavigationBenchmarkTrace::monotonicNanoseconds();
         }
+        applySpan.set(QStringLiteral("applied"), catalogApplied);
     }
 
     if (session && !catalogChanged && appearanceChanged) {
@@ -3555,6 +3643,13 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
                 {QStringLiteral("catalogApplied"), catalogApplied},
             });
     }
+
+    mediaPanelSpan.set(QStringLiteral("outcome"), QStringLiteral("applied"));
+    mediaPanelSpan.set(QStringLiteral("catalogChanged"), catalogChanged);
+    mediaPanelSpan.set(QStringLiteral("catalogPayloadChanged"),
+                       catalogPayloadChanged);
+    mediaPanelSpan.set(QStringLiteral("catalogApplied"), catalogApplied);
+    mediaPanelSpan.set(QStringLiteral("normalizedEntries"), entries.size());
 
     if (!m_cacheWarmup && m_navigationBenchmark.enabled
         && m_navigationBenchmark.phase

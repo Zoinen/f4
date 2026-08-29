@@ -369,7 +369,11 @@ func TestBuildAppIncrementalSceneSkipsCoveredDesktop(t *testing.T) {
 	vtui.FrameManager.Init(screen)
 	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
 	vtui.FrameManager.Push(vtui.NewDesktop())
-	vtui.FrameManager.Push(vtui.NewCenteredDialog(32, 7, " Bounded "))
+	dialog := vtui.NewCenteredDialog(32, 7, " Bounded ")
+	dialog.AddItem(vtui.NewText(dialog.X1+2, dialog.Y1+2, "Name:", 0))
+	dialog.AddItem(vtui.NewEdit(dialog.X1+10, dialog.Y1+2, 16, "Google Drive"))
+	dialog.AddItem(vtui.NewButton(dialog.X1+10, dialog.Y2-2, "Authorize"))
+	vtui.FrameManager.Push(dialog)
 
 	projected, ok := BuildAppIncrementalScene(&vtui.SemanticContext{
 		Width: 100, Height: 30, ActiveScreen: 0,
@@ -383,6 +387,15 @@ func TestBuildAppIncrementalSceneSkipsCoveredDesktop(t *testing.T) {
 	}
 	if semanticString(dialogs[0]["kind"]) == "fallback" {
 		t.Fatalf("covered Desktop leaked into the app scene: %#v", dialogs)
+	}
+	children := appMapSlice(dialogs[0]["children"])
+	if len(children) != 3 {
+		t.Fatalf("projected dialog controls = %#v", children)
+	}
+	for _, child := range children {
+		if !appBool(child["visible"]) {
+			t.Fatalf("new dialog control was hidden before first render: %#v", child)
+		}
 	}
 }
 

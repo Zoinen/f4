@@ -584,13 +584,19 @@ f4_cmd_info() {
    fi
    ;;
   statbsd ) F4OUT=`stat $2 -f "$F4FMT_BSD" -- "$F4PATH" 2>&1`; F4RV=$? ;;
-  ls ) F4OUT=`f4_ls -d $2 -- "$F4PATH" 2>&1`; F4RV=$? ;;
+  # f4_ls intentionally hides diagnostics for directory enumeration. Metadata
+  # needs the diagnostic so a missing path can be returned as typed ENOENT.
+  ls ) F4OUT=`ls $F4LSOPT -d $2 -- "$F4PATH" 2>&1`; F4RV=$? ;;
  esac
  if [ $F4RV -eq 0 ] && [ -n "$F4OUT" ]; then
   f4_mode_line
   echo "$F4OUT"
   f4_end ok
  else
+  case "$F4OUT" in
+   *'No such file'* | *'not a directory'* | *'Not a directory'* ) F4OUT='F4ERR:ENOENT:no such file or directory' ;;
+   *'Permission denied'* ) F4OUT='F4ERR:EACCES:permission denied' ;;
+  esac
   f4_end err "$(f4_flat "$F4OUT")"
  fi
 }

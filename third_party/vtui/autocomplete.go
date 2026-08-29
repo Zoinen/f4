@@ -386,6 +386,15 @@ func (ac *AutoCompleteMenu) accept(idx int, injectEnter bool) {
 	}
 	e := ac.Edit
 	legacy := it.ReplaceTo <= it.ReplaceFrom
+	if !legacy && (it.ReplaceFrom < 0 || it.ReplaceFrom > len(e.text) ||
+		it.ReplaceTo > len(e.text)) {
+		// The edit may have been accepted and cleared while another Return
+		// event was already queued by a GUI frontend. A path hint then still
+		// carries the rune span from the previous text. Treat that suggestion
+		// as stale instead of slicing the new (often empty) edit buffer.
+		ac.Close()
+		return
+	}
 	if legacy {
 		e.SetText(it.Text)
 		e.curPos = len(e.text)

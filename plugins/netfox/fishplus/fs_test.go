@@ -2,8 +2,10 @@ package fishplus
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -415,8 +417,8 @@ func TestListingAgainstLocalShell(t *testing.T) {
 				t.Errorf("ReadLink = %q, want %q", target, "sub dir")
 			}
 
-			if _, err := c.Stat(ctx, filepath.Join(dir, "no such file")); err == nil {
-				t.Error("stat of a missing file succeeded")
+			if _, err := c.Stat(ctx, filepath.Join(dir, "no such file")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("stat of a missing file = %v, want fs.ErrNotExist", err)
 			}
 			if _, err := c.Enum(ctx, filepath.Join(dir, "a file.txt")); err == nil {
 				t.Error("enum of a regular file succeeded")

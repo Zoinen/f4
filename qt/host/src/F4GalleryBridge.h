@@ -362,6 +362,7 @@ private:
     bool m_viewerVisible = false;
     int m_viewerSide = -1;
     qulonglong m_panelActivationRevision = 0;
+    qulonglong m_mediaFrameSerial = 0;
     NavigationBenchmarkState m_navigationBenchmark;
     QTimer *m_navigationBenchmarkWatchdog = nullptr;
     QList<PendingNavigationBenchmarkTrace> m_pendingNavigationBenchmarkTrace;

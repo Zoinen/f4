@@ -20,9 +20,13 @@ import (
 
 const (
 	syncReadDirChunk = 500
-	remoteModeType   = 0170000
-	remoteModeDir    = 0040000
-	remoteModeLink   = 0120000
+	// ADB Sync cannot seek inside RECV. Prefix probes below this boundary use
+	// one short-lived stream; larger or non-prefix random reads materialize the
+	// source once so repeated decoding never downloads the same file again.
+	syncHybridPrefixLimit = 256 * 1024
+	remoteModeType        = 0170000
+	remoteModeDir         = 0040000
+	remoteModeLink        = 0120000
 )
 
 // syncFS is the narrow surface the VFS needs. SyncClient has deliberately
@@ -557,23 +561,32 @@ var (
 	_ vfs.CommandRunnerInfoProvider = (*SyncVFS)(nil)
 )
 
-// syncReadFile streams ordinary sequential reads directly from RECV. A caller
-// that asks for ReadAt triggers one local materialization, because the Sync
-// protocol has no offset operation unless sendrecv_v2 happens to be present and
-// older API-24 devices still need identical VFS semantics.
+// syncReadFile streams ordinary sequential reads directly from RECV. The
+// compatibility SyncVFS materializes on any ReadAt. A FISH+ Android mount sets
+// hybridPrefixes, allowing bounded prefix probes to use an independent RECV
+// connection while larger random reads materialize once. Every RECV is
+// operation-scoped, so files can transfer concurrently without sharing the
+// FISH+ request mutex.
 type syncReadFile struct {
 	mu sync.Mutex
 
-	client  syncFS
-	path    string
-	size    int64
-	offset  int64
-	stream  io.ReadCloser
-	cancel  context.CancelFunc
-	readErr error
-	temp    *os.File
-	tmp     string
-	closed  bool
+	client         syncFS
+	path           string
+	size           int64
+	offset         int64
+	stream         io.ReadCloser
+	cancel         context.CancelFunc
+	readErr        error
+	temp           *os.File
+	tmp            string
+	closed         bool
+	hybridPrefixes bool
+}
+
+func newSyncHybridReadFile(client syncFS, path string) *syncReadFile {
+	return &syncReadFile{
+		client: client, path: path, size: -1, hybridPrefixes: true,
+	}
 }
 
 func (f *syncReadFile) Size() int64 {
@@ -589,6 +602,9 @@ func (f *syncReadFile) LocalPath() (string, bool) {
 }
 
 func (f *syncReadFile) ReadAccessProfile() vfs.ReadAccessProfile {
+	if f.hybridPrefixes {
+		return vfs.ReadAccessHybridRange
+	}
 	return vfs.ReadAccessMaterializeOnce
 }
 
@@ -686,6 +702,34 @@ func (f *syncReadFile) materialize(ctx context.Context) error {
 	return nil
 }
 
+// readPrefixRange implements the only random-access shape ADB Sync can serve
+// without a full local copy: a bounded range near the start of the file. The
+// caller holds f.mu, which serializes requests for one resource; separate
+// resources still have independent ADB Sync connections and overlap freely.
+func (f *syncReadFile) readPrefixRange(ctx context.Context, p []byte, off int64) (int, error) {
+	stream, err := f.client.Receive(ctx, f.path)
+	if err != nil {
+		return 0, err
+	}
+	defer stream.Close()
+	if off > 0 {
+		if _, err := io.CopyN(io.Discard, stream, off); err != nil {
+			if errors.Is(err, io.EOF) {
+				return 0, io.EOF
+			}
+			return 0, err
+		}
+	}
+	n, err := io.ReadFull(stream, p)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		err = io.EOF
+	}
+	if errors.Is(err, io.EOF) {
+		f.size = off + int64(n)
+	}
+	return n, err
+}
+
 func (f *syncReadFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -697,6 +741,14 @@ func (f *syncReadFile) ReadAt(ctx context.Context, p []byte, off int64) (int, er
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if f.temp == nil && f.hybridPrefixes &&
+		off <= syncHybridPrefixLimit &&
+		int64(len(p)) <= int64(syncHybridPrefixLimit)-off {
+		return f.readPrefixRange(ctx, p, off)
 	}
 	if err := f.materialize(ctx); err != nil {
 		return 0, err

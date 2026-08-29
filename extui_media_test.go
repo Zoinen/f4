@@ -19,22 +19,25 @@ import (
 
 type countingMediaVFS struct {
 	*vfs.NullVFS
-	mu          sync.Mutex
-	data        []byte
-	item        vfs.VFSItem
-	profile     vfs.ReadAccessProfile
-	storage     vfs.StorageClass
-	backingPath string
-	openCount   int
-	readCount   int
-	readOffsets []int64
-	closeCount  int
-	openGate    chan struct{}
-	openStarted chan struct{}
-	openOnce    sync.Once
-	gate        chan struct{}
-	started     chan struct{}
-	startOnce   sync.Once
+	mu           sync.Mutex
+	data         []byte
+	item         vfs.VFSItem
+	profile      vfs.ReadAccessProfile
+	storage      vfs.StorageClass
+	backingPath  string
+	openCount    int
+	readCount    int
+	readOffsets  []int64
+	closeCount   int
+	openGate     chan struct{}
+	openStarted  chan struct{}
+	openOnce     sync.Once
+	gate         chan struct{}
+	started      chan struct{}
+	startOnce    sync.Once
+	failReadOnce bool
+	failReadErr  error
+	handleSlots  chan struct{}
 }
 
 func newCountingMediaVFS(data []byte) *countingMediaVFS {
@@ -80,14 +83,22 @@ func (f *countingMediaVFS) Open(ctx context.Context, _ string) (vfs.ReadAtCloser
 			return nil, ctx.Err()
 		}
 	}
-	return &countingMediaReader{owner: f}, nil
+	if f.handleSlots != nil {
+		select {
+		case f.handleSlots <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return &countingMediaReader{owner: f, slotHeld: f.handleSlots != nil}, nil
 }
 
 type countingMediaReader struct {
-	owner  *countingMediaVFS
-	mu     sync.Mutex
-	offset int64
-	closed bool
+	owner    *countingMediaVFS
+	mu       sync.Mutex
+	offset   int64
+	closed   bool
+	slotHeld bool
 }
 
 type rotatingSessionMediaVFS struct {
@@ -223,6 +234,11 @@ func (r *countingMediaReader) ReadAt(ctx context.Context, dst []byte, offset int
 	r.owner.readOffsets = append(r.owner.readOffsets, offset)
 	gate := r.owner.gate
 	started := r.owner.started
+	failRead := r.owner.failReadOnce
+	failErr := r.owner.failReadErr
+	if failRead {
+		r.owner.failReadOnce = false
+	}
 	if started != nil {
 		r.owner.startOnce.Do(func() { close(started) })
 	}
@@ -236,6 +252,12 @@ func (r *countingMediaReader) ReadAt(ctx context.Context, dst []byte, offset int
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
+	}
+	if failRead {
+		if failErr == nil {
+			failErr = errors.New("simulated transport read failure")
+		}
+		return 0, failErr
 	}
 	if offset >= int64(len(r.owner.data)) {
 		return 0, io.EOF
@@ -260,6 +282,10 @@ func (r *countingMediaReader) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.slotHeld {
+		<-r.owner.handleSlots
+		r.slotHeld = false
+	}
 	r.owner.mu.Lock()
 	r.owner.closeCount++
 	r.owner.mu.Unlock()
@@ -344,6 +370,75 @@ func TestExtUiMediaBrokerCoalescesRangeAndIsolatesCancellation(t *testing.T) {
 	}
 }
 
+func TestExtUiMediaBrokerReopensHandleAfterReadFailure(t *testing.T) {
+	filesystem := newCountingMediaVFS([]byte("0123456789abcdef"))
+	filesystem.failReadOnce = true
+	filesystem.failReadErr = errors.New("transport connection lost")
+	broker, err := newExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	descriptor := registerCountingMediaSource(t, broker, filesystem)
+
+	if _, _, err := broker.ReadRange(
+		context.Background(), descriptor.ResourceID, 0, 4); err == nil {
+		t.Fatal("first read unexpectedly succeeded")
+	}
+	data, _, err := broker.ReadRange(
+		context.Background(), descriptor.ResourceID, 0, 4)
+	if err != nil || string(data) != "0123" {
+		t.Fatalf("retry read = %q, %v", data, err)
+	}
+
+	filesystem.mu.Lock()
+	opens, closes, reads := filesystem.openCount, filesystem.closeCount, filesystem.readCount
+	filesystem.mu.Unlock()
+	if opens != 2 || closes < 1 || reads != 2 {
+		t.Fatalf("handle lifecycle = opens:%d closes:%d reads:%d, want 2, >=1, 2", opens, closes, reads)
+	}
+}
+
+func TestExtUiMediaBrokerNativeRangeDoesNotExhaustScarceHandles(t *testing.T) {
+	filesystem := newCountingMediaVFS([]byte("0123456789abcdef"))
+	filesystem.handleSlots = make(chan struct{}, 2)
+	broker, err := newExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+
+	ids := make([]string, 0, 3)
+	for index := range 3 {
+		descriptor := broker.Register(mediaSourceRegistration{
+			PanelID: "panel-1", CatalogVersion: 1, FS: filesystem,
+			Path: fmt.Sprintf("/gallery/image-%d.jpg", index), Item: filesystem.item,
+		})
+		ids = append(ids, descriptor.ResourceID)
+	}
+	broker.CommitPanel("panel-1", 1, ids)
+
+	for index, id := range ids {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		data, _, readErr := broker.ReadRange(ctx, id, 0, 4)
+		cancel()
+		if readErr != nil || string(data) != "0123" {
+			t.Fatalf("range %d = %q, %v", index, data, readErr)
+		}
+	}
+
+	filesystem.mu.Lock()
+	opens, closes := filesystem.openCount, filesystem.closeCount
+	filesystem.mu.Unlock()
+	broker.mu.Lock()
+	openHandles := broker.openHandles
+	broker.mu.Unlock()
+	if opens != 3 || closes != 3 || openHandles != 0 {
+		t.Fatalf("scarce handle lifecycle = opens:%d closes:%d broker:%d, want 3/3/0",
+			opens, closes, openHandles)
+	}
+}
+
 func TestExtUiMediaBrokerCanceledReadDoesNotBreakConcurrentRange(t *testing.T) {
 	filesystem := newCountingMediaVFS([]byte("0123456789abcdef"))
 	filesystem.gate = make(chan struct{})
@@ -401,8 +496,8 @@ func TestExtUiMediaBrokerCanceledReadDoesNotBreakConcurrentRange(t *testing.T) {
 	filesystem.mu.Lock()
 	opens, closes := filesystem.openCount, filesystem.closeCount
 	filesystem.mu.Unlock()
-	if opens != 2 || closes != 1 {
-		t.Fatalf("handles after cancellation = opens:%d closes:%d, want 2/1", opens, closes)
+	if opens != 2 || closes != 2 {
+		t.Fatalf("handles after cancellation = opens:%d closes:%d, want 2/2", opens, closes)
 	}
 }
 
@@ -567,8 +662,8 @@ func TestExtUiMediaBrokerMaterializationUsesRangePrefixAndSingleFlight(t *testin
 	offsets := append([]int64(nil), filesystem.readOffsets...)
 	opens := filesystem.openCount
 	filesystem.mu.Unlock()
-	if opens != 1 || !reflect.DeepEqual(offsets, []int64{0, 4}) {
-		t.Fatalf("opens/offsets = %d/%v, want 1/[0 4]", opens, offsets)
+	if opens != 2 || !reflect.DeepEqual(offsets, []int64{0, 4}) {
+		t.Fatalf("opens/offsets = %d/%v, want 2/[0 4]", opens, offsets)
 	}
 
 	broker.Release(descriptor.ResourceID, first.lease)
@@ -1088,8 +1183,8 @@ func TestExtUiMediaBrokerLargeCatalogAvoidsBelowThresholdSweeps(t *testing.T) {
 	if visits != 0 {
 		t.Fatalf("below-threshold request visited %d catalog resources", visits)
 	}
-	if openHandles != 1 || rangeBytes != 4 {
-		t.Fatalf("broker accounting handles/range = %d/%d, want 1/4", openHandles, rangeBytes)
+	if openHandles != 0 || rangeBytes != 4 {
+		t.Fatalf("broker accounting handles/range = %d/%d, want 0/4", openHandles, rangeBytes)
 	}
 }
 

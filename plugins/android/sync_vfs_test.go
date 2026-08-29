@@ -229,6 +229,58 @@ func TestSyncReadFileStreamsThenMaterializesForReadAt(t *testing.T) {
 	}
 }
 
+func TestSyncHybridReadFileKeepsSmallPrefixReadsRanged(t *testing.T) {
+	data := bytes.Repeat([]byte("abcd"), syncHybridPrefixLimit/4+16)
+	client := &fakeSyncFS{files: map[string][]byte{"/image.jpg": data}}
+	file := newSyncHybridReadFile(client, "/image.jpg")
+
+	first := make([]byte, 32*1024)
+	if n, err := file.ReadAt(context.Background(), first, 0); err != nil || n != len(first) {
+		t.Fatalf("prefix ReadAt = %d, %v", n, err)
+	}
+	second := make([]byte, 1024)
+	if n, err := file.ReadAt(context.Background(), second, 4096); err != nil || n != len(second) {
+		t.Fatalf("offset prefix ReadAt = %d, %v", n, err)
+	}
+	if client.receiveCall != 2 || file.temp != nil {
+		t.Fatalf("bounded probes materialized: calls=%d temp=%v", client.receiveCall, file.temp)
+	}
+	if got := file.ReadAccessProfile(); got != vfs.ReadAccessHybridRange {
+		t.Fatalf("ReadAccessProfile = %v", got)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestSyncHybridReadFileMaterializesLargeReadExactlyOnce(t *testing.T) {
+	data := bytes.Repeat([]byte("01234567"), (syncHybridPrefixLimit+64*1024)/8)
+	client := &fakeSyncFS{files: map[string][]byte{"/image.png": data}}
+	file := newSyncHybridReadFile(client, "/image.png")
+
+	large := make([]byte, syncHybridPrefixLimit+1)
+	if n, err := file.ReadAt(context.Background(), large, 0); err != nil || n != len(large) {
+		t.Fatalf("large ReadAt = %d, %v", n, err)
+	}
+	backing, ok := file.LocalPath()
+	if !ok || backing == "" || file.temp == nil {
+		t.Fatal("large read did not expose its one-time local backing")
+	}
+	tail := make([]byte, 16)
+	if n, err := file.ReadAt(context.Background(), tail, int64(len(data)-len(tail))); err != nil || n != len(tail) {
+		t.Fatalf("backed ReadAt = %d, %v", n, err)
+	}
+	if client.receiveCall != 1 {
+		t.Fatalf("RECV calls = %d, want one materialization", client.receiveCall)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(backing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary backing still exists: %v", err)
+	}
+}
+
 func TestSyncVFSMutationsAreQuotedAndGuarded(t *testing.T) {
 	client := &fakeSyncFS{entries: map[string]SyncEntry{}, files: map[string][]byte{}}
 	var commands []string

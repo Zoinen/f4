@@ -54,10 +54,12 @@ public:
     QtMediaResult readRangeBlocking(
         const QString &resourceId, qint64 offset, qint64 length,
         int timeoutMs = 15000,
-        const std::function<bool()> &isCanceled = {});
+        const std::function<bool()> &isCanceled = {},
+        const QString &traceId = {});
     QtMediaResult materializeBlocking(
         const QString &resourceId, int timeoutMs = 120000,
-        const std::function<bool()> &isCanceled = {});
+        const std::function<bool()> &isCanceled = {},
+        const QString &traceId = {});
 
 signals:
     void readyChanged();
@@ -81,7 +83,8 @@ private:
     QtMediaResult requestBlocking(
         const QString &operation, const QString &resourceId,
         qint64 offset, qint64 length, int timeoutMs,
-        const std::function<bool()> &isCanceled);
+        const std::function<bool()> &isCanceled,
+        const QString &traceId);
 
     QThread m_thread;
     QtMediaWorker *m_worker = nullptr;

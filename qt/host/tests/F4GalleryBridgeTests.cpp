@@ -140,6 +140,7 @@ private slots:
     void bridgeShutdownStopsRuntimeDuringDecode();
     void stableCatalogSkipsRebuildAndKeepsDynamicState();
     void coldProvisionalCatalogKeepsPreviousPanelVisible();
+    void compactFinalStateCommitsDeferredProvisionalCatalog();
     void panelIdentityReplacementResetsSession();
     void workspaceCachePreparesOffscreenAndActivatesBothSessions();
     void lateCacheBindsStartupViewportToExactSession();
@@ -2551,6 +2552,71 @@ void F4GalleryBridgeTests::coldProvisionalCatalogKeepsPreviousPanelVisible()
     QCOMPARE(session->catalogRevision(), previousRevision + 1);
     QCOMPARE(session->model()->rowCount(), 2);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("cold:file"));
+    QVERIFY(session->catalogReady());
+}
+
+void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(testScene());
+
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    QCOMPARE(session->model()->rowCount(), 2);
+
+    QVariantMap provisional = testScene().value(QStringLiteral("shell"))
+                                  .toMap().value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    provisional.insert(QStringLiteral("path"),
+                       QStringLiteral("CloudFox:/$"));
+    provisional.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
+    provisional.insert(QStringLiteral("previewCapable"), false);
+    provisional.insert(QStringLiteral("catalogRevision"), qulonglong(43));
+    provisional.insert(QStringLiteral("loading"), true);
+    provisional.insert(QStringLiteral("catalogProvisional"), true);
+    provisional.insert(QStringLiteral("cursor"), 0);
+    provisional.insert(QStringLiteral("cursorEntryId"),
+                       QStringLiteral("cloudfox:add"));
+    provisional.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("cloudfox:add")},
+            {QStringLiteral("index"), 0},
+            {QStringLiteral("name"), QStringLiteral("<Add connection>")},
+            {QStringLiteral("isDir"), false},
+            {QStringLiteral("isImage"), false},
+            {QStringLiteral("selected"), false},
+        },
+    });
+    bridge.synchronizePanelCatalog(provisional);
+
+    // The destination is still provisional, so the previous populated panel
+    // intentionally remains visible.
+    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+    QCOMPARE(session->catalogRevision(), qulonglong(42));
+    QCOMPARE(session->model()->rowCount(), 2);
+
+    QVariantMap finalState = provisional;
+    finalState.remove(QStringLiteral("entries"));
+    finalState.remove(QStringLiteral("selectionRevision"));
+    finalState.insert(QStringLiteral("loading"), false);
+    finalState.insert(QStringLiteral("catalogProvisional"), false);
+    bridge.synchronizePanelState(QVariantMap{
+        {QStringLiteral("op"), QStringLiteral("state_update")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelId"), QStringLiteral("panel-left-a")},
+        {QStringLiteral("catalogRevision"), qulonglong(43)},
+        {QStringLiteral("panel"), finalState},
+    });
+
+    QCOMPARE(session->currentPath(), QStringLiteral("CloudFox:/$"));
+    QCOMPARE(session->catalogRevision(), qulonglong(43));
+    QCOMPARE(session->model()->rowCount(), 1);
+    QCOMPARE(session->entryIdAt(0), QStringLiteral("cloudfox:add"));
     QVERIFY(session->catalogReady());
 }
 

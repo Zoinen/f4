@@ -362,6 +362,46 @@ QByteArray panelActivationPatchFrame(int activeSide, quint64 revision,
     return framed(payload);
 }
 
+QByteArray textGridPaletteFrame()
+{
+    msgpack::sbuffer payload;
+    msgpack::packer<msgpack::sbuffer> packer(payload);
+    packer.pack_map(2);
+    packString(packer, QByteArrayLiteral("type"));
+    packString(packer, QByteArrayLiteral("palette"));
+    packString(packer, QByteArrayLiteral("colors"));
+    packer.pack_array(2);
+    packer.pack_uint32(0x00112233U);
+    packer.pack_uint32(0x00445566U);
+    return framed(payload);
+}
+
+QByteArray textGridCellFrame()
+{
+    msgpack::sbuffer payload;
+    msgpack::packer<msgpack::sbuffer> packer(payload);
+    packer.pack_map(5);
+    packString(packer, QByteArrayLiteral("type"));
+    packString(packer, QByteArrayLiteral("frame"));
+    packString(packer, QByteArrayLiteral("width"));
+    packer.pack_int(2);
+    packString(packer, QByteArrayLiteral("height"));
+    packer.pack_int(1);
+    packString(packer, QByteArrayLiteral("full"));
+    packer.pack_true();
+    packString(packer, QByteArrayLiteral("cells"));
+    packer.pack_array(2);
+    packer.pack_array(3);
+    packer.pack_int(0);
+    packer.pack_uint64('A');
+    packer.pack_uint64(0x010203U);
+    packer.pack_array(3);
+    packer.pack_int(1);
+    packer.pack_uint64('B');
+    packer.pack_uint64(0x040506U);
+    return framed(payload);
+}
+
 bool takeFrame(QTcpSocket *socket, QByteArray &wire, int timeoutMs = 3000)
 {
     QElapsedTimer elapsed;
@@ -431,6 +471,7 @@ private slots:
     void uiActionPacksLosslessTraceMetadata();
     void panelCatalogMetadataRequestUsesExactProtocolMap();
     void largeScenesDecodeOffGuiThreadInOrder();
+    void textGridPayloadsReachPresentationSignal();
     void commandLinePatchPreservesExistingScene();
     void scenePatchUpdatesMenusWithoutSceneProjectionSignal();
     void scenePatchAppliesBoundedEditorCursorAndStructuralTransition();
@@ -984,6 +1025,61 @@ void QtShellControllerTests::panelCatalogMetadataRequestUsesExactProtocolMap()
     QCOMPARE(message.at("metadataRevision").as<quint64>(), quint64(29));
     QCOMPARE(message.at("offset").as<qint64>(), qint64(96));
     QCOMPARE(message.at("limit").as<qint64>(), qint64(96));
+}
+
+void QtShellControllerTests::textGridPayloadsReachPresentationSignal()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("text-grid-payload-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+    QSignalSpy messages(&controller, &QtShellController::messageReceived);
+
+    const QByteArray palette = textGridPaletteFrame();
+    const QByteArray frame = textGridCellFrame();
+    QCOMPARE(peer->write(palette), static_cast<qint64>(palette.size()));
+    QCOMPARE(peer->write(frame), static_cast<qint64>(frame.size()));
+    peer->flush();
+
+    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 2, 3000);
+    const QVariantMap paletteMessage = messages.at(0).at(0).toMap();
+    QCOMPARE(paletteMessage.value(QStringLiteral("type")).toString(),
+             QStringLiteral("palette"));
+    const QVariantList colors = paletteMessage
+                                    .value(QStringLiteral("colors")).toList();
+    QCOMPARE(colors.size(), 2);
+    QCOMPARE(colors.at(0).toUInt(), 0x00112233U);
+    QCOMPARE(colors.at(1).toUInt(), 0x00445566U);
+    QVERIFY(!paletteMessage.contains(QStringLiteral("palette")));
+
+    const QVariantMap frameMessage = messages.at(1).at(0).toMap();
+    QCOMPARE(frameMessage.value(QStringLiteral("type")).toString(),
+             QStringLiteral("frame"));
+    QCOMPARE(frameMessage.value(QStringLiteral("width")).toInt(), 2);
+    QCOMPARE(frameMessage.value(QStringLiteral("height")).toInt(), 1);
+    QVERIFY(frameMessage.value(QStringLiteral("full")).toBool());
+    const QVariantList cells = frameMessage
+                                   .value(QStringLiteral("cells")).toList();
+    QCOMPARE(cells.size(), 2);
+    const QVariantList firstCell = cells.at(0).toList();
+    const QVariantList secondCell = cells.at(1).toList();
+    QCOMPARE(firstCell.size(), 3);
+    QCOMPARE(secondCell.size(), 3);
+    QCOMPARE(firstCell.at(0).toInt(), 0);
+    QCOMPARE(firstCell.at(1).toULongLong(), qulonglong('A'));
+    QCOMPARE(firstCell.at(2).toULongLong(), qulonglong(0x010203U));
+    QCOMPARE(secondCell.at(0).toInt(), 1);
+    QCOMPARE(secondCell.at(1).toULongLong(), qulonglong('B'));
+    QCOMPARE(secondCell.at(2).toULongLong(), qulonglong(0x040506U));
+    QVERIFY(!frameMessage.contains(QStringLiteral("frame")));
 }
 
 void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
