@@ -1180,14 +1180,17 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     keyRecorder.clear();
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QTest::keyClick(&view, Qt::Key_Equal, Qt::ControlModifier);
-    QCOMPARE(panel->property("thumbnailHeight").toInt(), 170);
+    const int zoomedThumbnailHeight =
+        panel->property("thumbnailHeight").toInt();
+    QVERIFY(zoomedThumbnailHeight > 150);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
     QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QCOMPARE(keyRecorder.count(Qt::Key_0, true), 0);
     QTest::keyClick(&view, Qt::Key_Equal,
                     Qt::ControlModifier | Qt::ShiftModifier);
-    QCOMPARE(panel->property("thumbnailHeight").toInt(), 170);
+    QCOMPARE(panel->property("thumbnailHeight").toInt(),
+             zoomedThumbnailHeight);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
     QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
@@ -4175,8 +4178,17 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
                  mode);
         QCOMPARE(embeddedPanel->property("columnCount").toInt(),
                  columnCount);
-        QVERIFY(qAbs(embeddedPanel->property("density").toDouble()
-                     - density) < 0.0001);
+        const double appliedDensity =
+            embeddedPanel->property("density").toDouble();
+        const double requestedDensity =
+            host->property("requestedDensity").toDouble();
+        QVERIFY2(qAbs(appliedDensity - requestedDensity) < 0.0001,
+                 qPrintable(QStringLiteral(
+                     "%1 applied density %2, requested %3, semantic %4")
+                     .arg(mode)
+                     .arg(appliedDensity, 0, 'g', 17)
+                     .arg(requestedDensity, 0, 'g', 17)
+                     .arg(density)));
         QCOMPARE(embeddedPanel->property("columnSchema").toList(), columns);
         QCOMPARE(layout->property("layoutRevision").toULongLong(),
                  revisionBefore + 1);

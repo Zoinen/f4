@@ -130,7 +130,7 @@ QByteArray controlHello(quint16 mediaPort)
         packString(packer, QByteArrayLiteral("type"));
         packString(packer, QByteArrayLiteral("hello"));
         packString(packer, QByteArrayLiteral("protocol"));
-        packer.pack_int(2);
+        packer.pack_int(3);
         packString(packer, QByteArrayLiteral("nonce"));
         packString(packer, QByteArrayLiteral("control-secret"));
         packString(packer, QByteArrayLiteral("mediaProtocol"));

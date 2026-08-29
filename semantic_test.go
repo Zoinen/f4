@@ -405,15 +405,30 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	if entries[1]["isImage"] != false || entries[1]["isHidden"] != true {
 		t.Fatalf("minimal identity/type metadata is incomplete: %#v", entries[1])
 	}
-	for _, deferred := range []string{"path", "localPath", "size", "sizeText", "mtimeNanos", "version", "mode", "highlightStyleId"} {
+	for _, deferred := range []string{"path", "localPath", "size", "sizeText", "mtimeNanos", "version", "mode"} {
 		if _, present := entries[1][deferred]; present {
 			t.Fatalf("deferred entry field %q leaked into base scene: %#v", deferred, entries[1])
 		}
 	}
-	for _, deferred := range []string{"highlightRevision", "highlightStyles", "selectedSize", "totalSize"} {
+	for _, deferred := range []string{"highlightRevision", "selectedSize", "totalSize"} {
 		if _, present := node[deferred]; present {
 			t.Fatalf("deferred panel field %q leaked into base scene: %#v", deferred, node)
 		}
+	}
+	styles := appMap(node["highlightStyles"])
+	referencedStyles := make(map[string]bool)
+	for _, entry := range entries {
+		styleID := semanticString(entry["highlightStyleId"])
+		if styleID == "" {
+			continue
+		}
+		referencedStyles[styleID] = true
+		if _, present := styles[styleID]; !present {
+			t.Fatalf("minimal entry references missing highlight style %q: entries=%#v styles=%#v", styleID, entries, styles)
+		}
+	}
+	if len(styles) != len(referencedStyles) {
+		t.Fatalf("base scene exported unreferenced highlight styles: referenced=%#v styles=%#v", referencedStyles, styles)
 	}
 	chunk := semanticMetadataChunkForModel(t, model)
 	metadataEntries := appMapSlice(chunk["entries"])

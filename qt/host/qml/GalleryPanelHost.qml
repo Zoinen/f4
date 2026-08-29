@@ -260,7 +260,11 @@ FocusScope {
                 target.presentationMode = mode
             if (columnCountChanged)
                 target.columnCount = columnCount
-            if (densityChanged)
+            // setPresentationMode() restores that mode's remembered density.
+            // Even when the old mode already had the requested value, apply
+            // the host-owned value again after the mode switch so compact
+            // presentations cannot resurrect a stale per-mode row pitch.
+            if (densityChanged || modeChanged)
                 target.density = density
         } finally {
             if (transactionStarted) {
