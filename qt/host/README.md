@@ -51,6 +51,13 @@ at the delegate's logical size and device-pixel ratio so native multi-resolution
 or vector artwork is selected before it becomes a Qt Quick texture. Missing
 theme or remote-file icons fall back to the matching bundled Lucide glyph.
 
+### Bundled icon assets
+
+All other Qt menu and chrome icons use the vendored Lucide set in
+`icons/lucide`. The Android and iOS entries in the disk menu use the Android
+Logo and Apple Logo SVGs in `icons/streamline`, respectively. Those two icons
+were sourced from [Streamline's OS systems icon collection](https://www.streamlinehq.com/icons/logos-line/os-systems?icon=ico_UvfZHgqO6RKUzd9d).
+
 ## ZoinGallery panel
 
 ZoinGallery is the Qt frontend's single in-process panel renderer. The console

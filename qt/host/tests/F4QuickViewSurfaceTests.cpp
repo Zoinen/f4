@@ -13,6 +13,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QStringList>
 #include <QSvgRenderer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -256,6 +257,39 @@ public:
     {
         return {};
     }
+};
+
+class TestThemePersistence final : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QString themeFilePath READ themeFilePath CONSTANT)
+
+public:
+    QString themeFilePath() const
+    {
+        return QStringLiteral("test-gui_theme.ini");
+    }
+
+    Q_INVOKABLE QVariantMap loadTheme() const { return m_theme; }
+    Q_INVOKABLE bool saveTheme(const QVariantMap &theme)
+    {
+        m_theme = theme;
+        return true;
+    }
+    Q_INVOKABLE bool resetTheme()
+    {
+        ++m_resetCalls;
+        m_theme.clear();
+        return true;
+    }
+
+    void setTheme(const QVariantMap &theme) { m_theme = theme; }
+    QVariantMap theme() const { return m_theme; }
+    int resetCalls() const { return m_resetCalls; }
+
+private:
+    QVariantMap m_theme;
+    int m_resetCalls = 0;
 };
 
 QVariantList fileEntries(int count)
@@ -540,6 +574,7 @@ struct QuickViewFixture
     TestShell shell;
     TestGallery gallery;
     TestIcons icons;
+    TestThemePersistence themePersistence;
     F4TextRenderingPolicy textRenderingPolicy;
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
@@ -557,6 +592,8 @@ struct QuickViewFixture
                                                   &gallery);
         engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"),
                                                   &icons);
+        engine.rootContext()->setContextProperty(QStringLiteral("qtTheme"),
+                                                  &themePersistence);
         engine.rootContext()->setContextProperty(
             QStringLiteral("qtTextRendering"), &textRenderingPolicy);
         engine.rootContext()->setContextProperty(
@@ -599,10 +636,14 @@ private slots:
     void panelFileInfoSettingTogglesFooterWithoutRebuildingPanel();
     void fastFindOverlayIsIndependentFromPanelFooter();
     void galleryPanelColorsAreGroupedAndRemainLive();
+    void themeConfiguratorExposesOnlyLiveColorProperties();
+    void themeColorEditorUsesOklchCoordinates();
+    void themeConfiguratorRestoresSavedTheme();
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
     void rendererChoicesUseProductOrderAndShortcuts();
+    void rendererZoomControlsFollowLayoutCapability();
     void coverUncoverPreservesFilePanelAndRendererObjects();
     void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
@@ -674,6 +715,11 @@ void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMou
     QVERIFY(fixture.window);
     QQuickItem *keyBar = fixture.item(QStringLiteral("keyBar"));
     QVERIFY(keyBar);
+    const QColor themedFBarBackground(QStringLiteral("#654321"));
+    QVERIFY(fixture.window->setProperty("fBarBg", themedFBarBackground));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        keyBar->property("color").value<QColor>(),
+        themedFBarBackground, 1000);
     QQuickItem *f1 = visualItemWithText(keyBar, QStringLiteral("F1"));
     QQuickItem *f12 = visualItemWithText(keyBar, QStringLiteral("F12"));
     QQuickItem *f12Label = visualItemWithText(keyBar,
@@ -730,6 +776,49 @@ void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
     QTRY_VERIFY_WITH_TIMEOUT(panel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(loader->isVisible(), 3000);
     QVERIFY(!failure->isVisible());
+}
+
+void F4QuickViewSurfaceTests::rendererZoomControlsFollowLayoutCapability()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+
+    auto *menu = fixture.window->findChild<QObject *>(
+        QStringLiteral("panelRendererMenu-0"));
+    auto *zoomRow = fixture.item(QStringLiteral("panelRendererZoomRow-0"));
+    auto *zoomSlider = fixture.item(
+        QStringLiteral("panelRendererZoomSlider-0"));
+    QVERIFY(menu);
+    QVERIFY(zoomRow);
+    QVERIFY(zoomSlider);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY_WITH_TIMEOUT(zoomRow->isVisible(), 3000);
+    QVERIFY(zoomSlider->isVisible());
+
+    QVariantMap compactPanel = panel(0, true);
+    compactPanel.remove(QStringLiteral("entries"));
+    compactPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("details"));
+    compactPanel.insert(QStringLiteral("galleryDensity"), 61);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), compactPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(!zoomRow->isVisible(), 3000);
+    QVERIFY(!zoomSlider->isVisible());
+
+    compactPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("icons"));
+    compactPanel.insert(QStringLiteral("galleryDensity"), 64);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), compactPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(zoomRow->isVisible(), 3000);
+    QVERIFY(zoomSlider->isVisible());
+    QVERIFY(QMetaObject::invokeMethod(menu, "close"));
 }
 
 void F4QuickViewSurfaceTests::panelFileInfoSettingTogglesFooterWithoutRebuildingPanel()
@@ -965,8 +1054,13 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
 
     auto *loader = fixture.item(QStringLiteral("galleryPanelContent-0"));
     auto *path = fixture.item(QStringLiteral("panelPathTitle-0"));
+    auto *panelHeader = fixture.item(QStringLiteral("panelHeader-0"));
+    auto *panelHeaderPanelBackground = fixture.item(
+        QStringLiteral("panelHeaderPanelBackground-0"));
     QVERIFY(loader);
     QVERIFY(path);
+    QVERIFY(panelHeader);
+    QVERIFY(panelHeaderPanelBackground);
     QTRY_COMPARE_WITH_TIMEOUT(loader->property("status").toInt(), 1, 3000);
     QObject *const gallery = loader->property("item").value<QObject *>();
     QVERIFY(gallery);
@@ -1002,7 +1096,12 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
     const QColor scrollTrack(QStringLiteral("#556677"));
     const QColor pathText(QStringLiteral("#6789ab"));
     const QColor pathBackground(QStringLiteral("#223344"));
+    const QColor titleBarBackground(QStringLiteral("#112233"));
+    const QColor panelHeaderBackground(QStringLiteral("#80445566"));
 
+    QVERIFY(fixture.window->setProperty("titleBarBg", titleBarBackground));
+    QVERIFY(fixture.window->setProperty("panelPathBg",
+                                        panelHeaderBackground));
     QVERIFY(fixture.window->setProperty("galleryTextColor", textColor));
     QVERIFY(fixture.window->setProperty("galleryCardCursorBorderColor",
                                         cursorBorder));
@@ -1036,7 +1135,90 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
                               pathText, 3000);
     QCOMPARE(path->property("pathBackgroundColor").value<QColor>(),
              pathBackground);
+    QCOMPARE(panelHeader->property("color").value<QColor>(),
+             titleBarBackground);
+    QCOMPARE(panelHeaderPanelBackground->property("color").value<QColor>(),
+             panelHeaderBackground);
     QCOMPARE(loader->property("item").value<QObject *>(), gallery);
+}
+
+void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+
+    const QVariantList definitions =
+        fixture.window->property("themeColorDefinitions").toList();
+    QStringList colorIds;
+    for (const QVariant &definitionValue : definitions) {
+        colorIds.append(definitionValue.toMap()
+                            .value(QStringLiteral("id"))
+                            .toString());
+    }
+
+    for (const QString &obsolete : {
+             QStringLiteral("terminalBg"),
+             QStringLiteral("markedBg"),
+             QStringLiteral("markedText"),
+             QStringLiteral("folderIconColor"),
+             QStringLiteral("panelBg"),
+             QStringLiteral("panelBgAlt"),
+             QStringLiteral("panelHeaderBg"),
+             QStringLiteral("panelBorder"),
+             QStringLiteral("chromeBg"),
+         }) {
+        QVERIFY2(!colorIds.contains(obsolete), qPrintable(obsolete));
+        QVERIFY(!fixture.window->property(obsolete.toUtf8().constData())
+                     .isValid());
+    }
+
+    for (const QString &required : {
+             QStringLiteral("commandLineBg"),
+             QStringLiteral("titleBarBg"),
+             QStringLiteral("fBarBg"),
+             QStringLiteral("separatorActiveColor"),
+             QStringLiteral("galleryFolderIconColor"),
+         }) {
+        QVERIFY2(colorIds.contains(required), qPrintable(required));
+    }
+
+    QStringList panelsGroupIds;
+    QVariantMap activeAccent;
+    for (const QVariant &definitionValue : definitions) {
+        const QVariantMap definition = definitionValue.toMap();
+        if (definition.value(QStringLiteral("group")).toString()
+            == QStringLiteral("Panels"))
+            panelsGroupIds.append(definition.value(QStringLiteral("id"))
+                                    .toString());
+        if (definition.value(QStringLiteral("id")).toString()
+            == QStringLiteral("activeBorder")) {
+            activeAccent = definition;
+        }
+    }
+    QCOMPARE(panelsGroupIds, QStringList{QStringLiteral("panelPathBg")});
+    QCOMPARE(activeAccent.value(QStringLiteral("group")).toString(),
+             QStringLiteral("Icons & Accents"));
+    QCOMPARE(activeAccent.value(QStringLiteral("name")).toString(),
+             QStringLiteral("Attention / Active Label"));
+
+    auto *loader = fixture.item(QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(loader);
+    QTRY_COMPARE_WITH_TIMEOUT(loader->property("status").toInt(), 1, 3000);
+    QObject *const gallery = loader->property("item").value<QObject *>();
+    QVERIFY(gallery);
+    const QVariantMap theme = gallery->property("theme").toMap();
+    for (const QString &unusedGalleryKey : {
+             QStringLiteral("background"),
+             QStringLiteral("backgroundAlternate"),
+             QStringLiteral("border"),
+             QStringLiteral("activeBorder"),
+             QStringLiteral("marked"),
+             QStringLiteral("chrome"),
+             QStringLiteral("chromeText"),
+         }) {
+        QVERIFY2(!theme.contains(unusedGalleryKey),
+                 qPrintable(unusedGalleryKey));
+    }
 }
 
 void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware()
@@ -1151,6 +1333,184 @@ void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware
 #endif
 
     QMetaObject::invokeMethod(popup, "close");
+    dialog->hide();
+}
+
+void F4QuickViewSurfaceTests::themeColorEditorUsesOklchCoordinates()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    auto *hueSlider = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeHueSlider"));
+    auto *chromaSlider = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeChromaSlider"));
+    auto *chromaInput = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeChromaInputBox"));
+    QVERIFY(hueSlider);
+    QVERIFY(chromaSlider);
+    QVERIFY(chromaInput);
+
+    const QColor red(QStringLiteral("#ff0000"));
+    QVERIFY(QMetaObject::invokeMethod(
+        dialog, "setFromColor", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(red))));
+
+    // sRGB red is approximately OKLCH(0.628, 0.258, 29.2deg).
+    const qreal hueDegrees = dialog->property("selectedHue").toReal() * 360;
+    const qreal chroma = dialog->property("selectedChroma").toReal();
+    const qreal lightness = dialog->property("selectedLightness").toReal();
+    QVERIFY(qAbs(hueDegrees - 29.2) < 0.2);
+    QVERIFY(qAbs(chroma - 0.258) < 0.002);
+    QVERIFY(qAbs(lightness - 0.628) < 0.002);
+    QCOMPARE(chromaSlider->property("from").toReal(), 0.0);
+    QCOMPARE(chromaSlider->property("to").toReal(), 0.4);
+    QCOMPARE(chromaInput->property("implicitWidth").toReal(), 38.0);
+
+    dialog->show();
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
+    constexpr qreal requestedChroma = 0.35;
+    constexpr qreal initialHue = 0.20;
+    constexpr qreal highLightness = 0.95;
+    QVERIFY(dialog->setProperty("selectedChroma", requestedChroma));
+    QVERIFY(dialog->setProperty("selectedHue", initialHue));
+    QVERIFY(dialog->setProperty("selectedLightness", highLightness));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "applyCurrentColor",
+                                      Qt::DirectConnection));
+    QCOMPARE(dialog->property("selectedChroma").toReal(), requestedChroma);
+    QCOMPARE(dialog->property("selectedHue").toReal(), initialHue);
+
+    // L and H may require a different sRGB gamut mapping, but they must not
+    // feed that mapped chroma back into the independent editor coordinate.
+    constexpr qreal lowerLightness = 0.55;
+    QVERIFY(dialog->setProperty("selectedLightness", lowerLightness));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "applyCurrentColor",
+                                      Qt::DirectConnection));
+    QCOMPARE(dialog->property("selectedChroma").toReal(), requestedChroma);
+    QCOMPARE(dialog->property("selectedHue").toReal(), initialHue);
+
+    constexpr qreal changedHue = 0.75;
+    QVERIFY(dialog->setProperty("selectedHue", changedHue));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "applyCurrentColor",
+                                      Qt::DirectConnection));
+    QCOMPARE(dialog->property("selectedChroma").toReal(), requestedChroma);
+    QCOMPARE(dialog->property("selectedLightness").toReal(),
+             lowerLightness);
+    dialog->hide();
+}
+
+void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    auto *footer = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeColorFooter")) : nullptr;
+    auto *resetElementButton = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeResetElementButton")) : nullptr;
+    auto *resetAllButton = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeResetAllButton")) : nullptr;
+    auto *restoreSavedButton = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeRestoreSavedButton")) : nullptr;
+    auto *saveButton = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeSaveButton")) : nullptr;
+    auto *closeButton = dialog ? dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeCloseButton")) : nullptr;
+    QVERIFY(dialog);
+    QVERIFY(footer);
+    QVERIFY(resetElementButton);
+    QVERIFY(resetAllButton);
+    QVERIFY(restoreSavedButton);
+    QVERIFY(saveButton);
+    QVERIFY(closeButton);
+
+    dialog->resize(580, 560);
+    dialog->show();
+    QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
+    QCoreApplication::processEvents();
+    const auto verifyFooterLayout = [&]() {
+        qreal previousRight = 0;
+        QStringList footerButtonGeometry;
+        for (QQuickItem *button : {resetElementButton, resetAllButton,
+                                   restoreSavedButton, saveButton,
+                                   closeButton}) {
+            const QPointF origin = button->mapToItem(footer, QPointF{});
+            footerButtonGeometry.append(QStringLiteral("%1:%2+%3")
+                                            .arg(button->objectName())
+                                            .arg(origin.x())
+                                            .arg(button->width()));
+            QVERIFY(origin.x() >= previousRight);
+            previousRight = origin.x() + button->width();
+        }
+        const QByteArray footerLayoutDetails = QStringLiteral(
+            "footer buttons end at %1 but footer width is %2 (%3)")
+                                                   .arg(previousRight)
+                                                   .arg(footer->width())
+                                                   .arg(
+                                                       footerButtonGeometry.join(
+                                                           QStringLiteral(", ")))
+                                                   .toUtf8();
+        QVERIFY2(previousRight <= footer->width(),
+                 footerLayoutDetails.constData());
+    };
+    verifyFooterLayout();
+    dialog->resize(720, 560);
+    QCoreApplication::processEvents();
+    verifyFooterLayout();
+
+    const QColor savedWindowBackground(QStringLiteral("#112233"));
+    const QColor savedLegacyChrome(QStringLiteral("#445566"));
+    const QVariantMap savedTheme{
+        {QStringLiteral("windowBackgroundColor"),
+         savedWindowBackground.name(QColor::HexRgb)},
+        {QStringLiteral("chromeBg"),
+         savedLegacyChrome.name(QColor::HexRgb)},
+        {QStringLiteral("fontRenderType"), QStringLiteral("QtRendering")},
+        {QStringLiteral("mouseWheelMode"), QStringLiteral("console")},
+    };
+    fixture.themePersistence.setTheme(savedTheme);
+
+    QVERIFY(fixture.window->setProperty("windowBackgroundColor",
+                                        QColor(QStringLiteral("#abcdef"))));
+    QVERIFY(fixture.window->setProperty("titleBarBg",
+                                        QColor(QStringLiteral("#102030"))));
+    QVERIFY(fixture.window->setProperty("fBarBg",
+                                        QColor(QStringLiteral("#203040"))));
+    fixture.textRenderingPolicy.setRenderType(
+        int(QQuickWindow::NativeTextRendering));
+    QVERIFY(fixture.window->setProperty("mouseWheelMode",
+                                        QStringLiteral("gui")));
+
+    // Reset All is an editor operation. It must not erase the saved snapshot,
+    // otherwise Restore Saved could not undo the previewed defaults.
+    QVERIFY(QMetaObject::invokeMethod(resetAllButton, "clicked",
+                                      Qt::DirectConnection));
+    QCOMPARE(fixture.themePersistence.resetCalls(), 0);
+    QCOMPARE(fixture.themePersistence.theme(), savedTheme);
+    QCoreApplication::processEvents();
+    verifyFooterLayout();
+
+    QVERIFY(QMetaObject::invokeMethod(restoreSavedButton, "clicked",
+                                      Qt::DirectConnection));
+    QCOMPARE(fixture.window->property("windowBackgroundColor")
+                 .value<QColor>(), savedWindowBackground);
+    QCOMPARE(fixture.window->property("titleBarBg").value<QColor>(),
+             savedLegacyChrome);
+    QCOMPARE(fixture.window->property("fBarBg").value<QColor>(),
+             savedLegacyChrome);
+    QCOMPARE(fixture.textRenderingPolicy.renderTypeName(),
+             QStringLiteral("QtRendering"));
+    QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
+             QStringLiteral("console"));
+    QCOMPARE(dialog->property("statusToast").toString(),
+             QStringLiteral("Restored saved theme"));
+    QCoreApplication::processEvents();
+    verifyFooterLayout();
     dialog->hide();
 }
 
@@ -1314,8 +1674,8 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeColorWheel"),
         QStringLiteral("themeHueSlider"),
         QStringLiteral("themeHueInputBox"),
-        QStringLiteral("themeSaturationSlider"),
-        QStringLiteral("themeSaturationInputBox"),
+        QStringLiteral("themeChromaSlider"),
+        QStringLiteral("themeChromaInputBox"),
         QStringLiteral("themeLightnessSlider"),
         QStringLiteral("themeLightnessInputBox"),
         QStringLiteral("themeAlphaSlider"),
@@ -1329,6 +1689,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeColorFooter"),
         QStringLiteral("themeResetElementButton"),
         QStringLiteral("themeResetAllButton"),
+        QStringLiteral("themeRestoreSavedButton"),
         QStringLiteral("themeSaveButton"),
         QStringLiteral("themeCloseButton"),
     };
@@ -1455,7 +1816,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     };
     const QStringList layoutRowNames{
         QStringLiteral("themeHueRow"),
-        QStringLiteral("themeSaturationRow"),
+        QStringLiteral("themeChromaRow"),
         QStringLiteral("themeLightnessRow"),
         QStringLiteral("themeAlphaRow"),
     };
@@ -2453,11 +2814,20 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
         QStringLiteral("closeButton"));
     QQuickItem *const titleBar = fixture.item(
         QStringLiteral("titleBar"));
+    QQuickItem *const titleBarBackground = fixture.item(
+        QStringLiteral("titleBarBackground"));
     QVERIFY(appButton);
     QVERIFY(minimizeButton);
     QVERIFY(maximizeButton);
     QVERIFY(closeButton);
     QVERIFY(titleBar);
+    QVERIFY(titleBarBackground);
+    const QColor themedTitleBarBackground(QStringLiteral("#123456"));
+    QVERIFY(fixture.window->setProperty("titleBarBg",
+                                        themedTitleBarBackground));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        titleBarBackground->property("color").value<QColor>(),
+        themedTitleBarBackground, 1000);
     QQuickItem *appIcon = nullptr;
     QQuickItem *minimizeIcon = nullptr;
     QQuickItem *maximizeIcon = nullptr;
@@ -2512,10 +2882,10 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
     QCOMPARE(chromeFrame.size(),
              QSize(qRound(fixture.window->width() * dpr),
                    qRound(fixture.window->height() * dpr)));
-    const QColor chromeBackground = fixture.window->property(
-        "windowBackgroundColor").value<QColor>();
+    const QColor titleBarBackgroundColor = fixture.window->property(
+        "titleBarBg").value<QColor>();
     const auto verifyDirectSvgPixels = [dpr, rootItem, &chromeFrame,
-                                        chromeBackground](
+                                        titleBarBackgroundColor](
                                            QQuickItem *icon,
                                            const QString &description) {
         const QPointF origin = icon->mapToItem(rootItem, QPointF{});
@@ -2531,7 +2901,7 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
             ? tintValue.value<QColor>() : QColor{};
         const QImage expected = renderSvgReference(
             icon->property("source").toUrl(), physicalSize, tint,
-            chromeBackground);
+            titleBarBackgroundColor);
         QVERIFY2(!expected.isNull(), qPrintable(description));
         const QString difference = exactImageDifference(
             chromeFrame.copy(physicalRect), expected);
@@ -3124,10 +3494,11 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QVERIFY(promptItem);
     QVERIFY(inputItem);
     QVERIFY(cursor);
-    QCOMPARE(fixture.window->property("commandLineBg").value<QColor>().alpha(),
-             0);
+    const QColor defaultCommandLineBackground(QStringLiteral("#19000000"));
+    QCOMPARE(fixture.window->property("commandLineBg").value<QColor>(),
+             defaultCommandLineBackground);
     QCOMPARE(commandLineView->property("color").value<QColor>(),
-             QColor(Qt::transparent));
+             defaultCommandLineBackground);
     const QColor themedCommandLineBackground(QStringLiteral("#264653"));
     QVERIFY(fixture.window->setProperty("commandLineBg",
                                         themedCommandLineBackground));

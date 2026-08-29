@@ -20,6 +20,10 @@ FocusScope {
     readonly property real maximumDensity: 500
     readonly property real densityStep: 2
     readonly property real currentDensity: 30
+    readonly property bool densityAdjustable: {
+        const mode = String(panel.galleryLayoutMode || "masonry")
+        return mode !== "columns" && mode !== "details"
+    }
 
     Rectangle {
         anchors.fill: parent

@@ -95,6 +95,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-right"),
         QStringLiteral("clock-3"),
+        QStringLiteral("cloud"),
         QStringLiteral("columns-2"),
         QStringLiteral("columns-3"),
         QStringLiteral("database"),
@@ -133,6 +134,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("rows-4"),
         QStringLiteral("save"),
         QStringLiteral("search"),
+        QStringLiteral("sparkles"),
         QStringLiteral("square-terminal"),
         QStringLiteral("trash-2"),
         QStringLiteral("triangle-alert"),
@@ -140,6 +142,26 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("x"),
     };
     return names;
+}
+
+const QSet<QString> &streamlineIconNames()
+{
+    static const QSet<QString> names{
+        QStringLiteral("android-logo"),
+        QStringLiteral("apple-logo"),
+    };
+    return names;
+}
+
+bool isStreamlineIconName(QStringView name)
+{
+    return streamlineIconNames().contains(name.toString());
+}
+
+QUrl streamlineSource(const QString &iconName)
+{
+    return QUrl(QStringLiteral("qrc:/F4QtHost/icons/streamline/%1.svg")
+                    .arg(iconName));
 }
 
 QIcon firstThemeIcon(std::initializer_list<QString> names)
@@ -691,7 +713,9 @@ QString F4IconProvider::normalizedIconName(QStringView rawName)
     } else if (name == QStringLiteral("text")) {
         name = QStringLiteral("file-text");
     }
-    return lucideIconNames().contains(name) ? name : QStringLiteral("file");
+    return lucideIconNames().contains(name) || isStreamlineIconName(name)
+        ? name
+        : QStringLiteral("file");
 }
 
 QString F4IconProvider::lucideFileIconName(QStringView rawFileName,
@@ -790,6 +814,9 @@ QString F4IconProvider::lucideFileIconName(QStringView rawFileName,
 QUrl F4IconProvider::lucideSource(QStringView rawName, int logicalSize)
 {
     const QString iconName = normalizedIconName(rawName);
+    if (isStreamlineIconName(iconName)) {
+        return streamlineSource(iconName);
+    }
     const QString group = normalizedLogicalSize(logicalSize)
             >= LargeLucideIconThreshold
         ? QStringLiteral("lucide-gallery")
@@ -844,6 +871,12 @@ QUrl F4IconSet::iconSource(const QString &rawName,
                            qreal devicePixelRatio) const
 {
     const QString iconName = F4IconProvider::normalizedIconName(rawName);
+    // These two drive-menu symbols are deliberately bundled brand marks, not
+    // names delegated to a platform icon theme.  Keep their source stable
+    // when the user switches between the Lucide and System icon sets.
+    if (isStreamlineIconName(iconName)) {
+        return streamlineSource(iconName);
+    }
     if (m_iconSet == Lucide) {
         return F4IconProvider::lucideSource(iconName, logicalSize);
     }

@@ -1249,13 +1249,16 @@ func TestPanelsFrameSemanticActionAcceptsQMLNumbers(t *testing.T) {
 	if !pf.HandleSemanticAction(map[string]any{
 		"action":   "panel.cursor",
 		"side":     float64(1),
-		"index":    float64(0),
+		"index":    float64(1),
 		"activate": true,
 	}) {
 		t.Fatal("atomic cursor-and-activate action was not handled")
 	}
 	if pf.activeIdx != 1 {
 		t.Fatalf("activeIdx = %d, want 1", pf.activeIdx)
+	}
+	if right.GetCursorIndex() != 1 {
+		t.Fatalf("right cursor = %d, want 1", right.GetCursorIndex())
 	}
 
 	if !pf.HandleSemanticAction(map[string]any{
@@ -1442,6 +1445,7 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 	columns := left.semanticPanelModel(nil, 0, true)
 	if columns.GalleryLayoutMode != "columns" ||
 		columns.GalleryColumnCount != 3 ||
+		columns.GalleryDensity != 0 ||
 		columns.GalleryLayoutRevision <= initial.GalleryLayoutRevision {
 		t.Fatalf("layout action was not reflected in semantic scene: %#v", columns)
 	}
@@ -1480,6 +1484,26 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 	}) || left.galleryDensity(GalleryLayoutIcons) != 64 {
 		t.Fatalf("density reset did not restore the mode default: %d",
 			left.galleryDensity(GalleryLayoutIcons))
+	}
+
+	// A stale compact density sent by an older host is accepted as a harmless
+	// acknowledgement, but it is removed instead of becoming a user zoom.
+	left.galleryDensities[GalleryLayoutDetails] = 47
+	staleDetailsRevision := left.galleryLayoutRevision
+	if !pf.HandleSemanticAction(map[string]any{
+		"action":     "panel.setGalleryDensity",
+		"side":       0,
+		"layoutMode": "details",
+		"density":    31,
+	}) || left.galleryDensity(GalleryLayoutDetails) != 0 {
+		t.Fatal("stale Details density was not normalized to the host default")
+	}
+	if _, exists := left.galleryDensities[GalleryLayoutDetails]; exists {
+		t.Fatal("stale Details density remained in semantic state")
+	}
+	if left.galleryLayoutRevision != staleDetailsRevision+1 {
+		t.Fatalf("stale Details cleanup revision = %d, want %d",
+			left.galleryLayoutRevision, staleDetailsRevision+1)
 	}
 
 	// The long-standing TUI commands also select the corresponding strategy of
