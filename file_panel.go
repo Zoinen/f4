@@ -342,8 +342,9 @@ func parseGalleryLayoutMode(value string) (GalleryLayoutMode, bool) {
 func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximum int) {
 	switch mode {
 	case GalleryLayoutColumns, GalleryLayoutDetails:
-		// Zero asks the QML host to derive the untouched default from its font.
-		return 0, 22, 72
+		// Zero asks the QML host to derive its fixed row pitch from the font.
+		// Compact text presentations deliberately have no persisted user zoom.
+		return 0, 0, 0
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
@@ -353,7 +354,14 @@ func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	}
 }
 
+func galleryDensityAdjustable(mode GalleryLayoutMode) bool {
+	return mode != GalleryLayoutColumns && mode != GalleryLayoutDetails
+}
+
 func clampGalleryDensity(mode GalleryLayoutMode, density int) int {
+	if !galleryDensityAdjustable(mode) {
+		return 0
+	}
 	_, minimum, maximum := galleryDensityLimits(mode)
 	if density < minimum {
 		return minimum
@@ -1678,6 +1686,9 @@ func (fp *FileSystemPanel) galleryDensity(mode GalleryLayoutMode) int {
 	} else {
 		mode = GalleryLayoutMasonry
 	}
+	if !galleryDensityAdjustable(mode) {
+		return 0
+	}
 	if value, ok := fp.galleryDensities[mode]; ok {
 		return value
 	}
@@ -1744,6 +1755,12 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	if !ok {
 		return false
 	}
+	if !galleryDensityAdjustable(parsed) {
+		// Accept stale clients gracefully, but erase any pre-policy override so
+		// the next semantic scene and saved session use the host's default row
+		// pitch again.
+		return fp.ResetGalleryDensity(parsed)
+	}
 	density = clampGalleryDensity(parsed, density)
 	if fp.galleryDensities == nil {
 		fp.galleryDensities = make(map[GalleryLayoutMode]int)
@@ -1778,7 +1795,9 @@ func (fp *FileSystemPanel) ResetGalleryDensity(mode GalleryLayoutMode) bool {
 func cloneGalleryDensities(source map[GalleryLayoutMode]int) map[GalleryLayoutMode]int {
 	clone := make(map[GalleryLayoutMode]int, len(source))
 	for mode, density := range source {
-		clone[mode] = density
+		if galleryDensityAdjustable(mode) {
+			clone[mode] = clampGalleryDensity(mode, density)
+		}
 	}
 	return clone
 }
@@ -1806,12 +1825,7 @@ func clonePanelGallerySessionState(state panelGallerySessionState) panelGalleryS
 	if columns < minGalleryColumnCount || columns > maxGalleryColumnCount {
 		columns = defaultGalleryColumnCount
 	}
-	densities := make(map[GalleryLayoutMode]int)
-	for _, candidate := range galleryLayoutModes {
-		if density, present := state.Densities[candidate]; present {
-			densities[candidate] = clampGalleryDensity(candidate, density)
-		}
-	}
+	densities := cloneGalleryDensities(state.Densities)
 	return panelGallerySessionState{
 		LayoutMode:  mode,
 		ColumnCount: columns,

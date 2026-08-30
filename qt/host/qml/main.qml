@@ -261,26 +261,16 @@ ApplicationWindow {
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
     readonly property real menuItemHorizontalPadding: 14
-    property color panelBg: "#99121822"
     property color panelPathBg: "#26314152"
-    property color panelBgAlt: "#d910151d"
-    // Preserve the panel RGB while giving the large terminal surface enough
-    // coverage to stay visibly blue through QWK's dark macOS blur. It remains
-    // translucent; the previous 60% alpha collapsed to apparent opaque black.
-    property color terminalBg: "#d9121822"
-    property color commandLineBg: "transparent"
-    property color panelBorder: "#4e9bd4"
+    property color commandLineBg: "#19000000"
     property color activeBorder: "#f0c95a"
     property color textColor: "#e8edf2"
     property color mutedText: "#9aa7b5"
     property color selectedBg: "#285d8f"
     property color panelSelectionBg: "#18456e"
     property color panelSelectionBorder: "#1d5888"
-    property color folderIconColor: "#5ab2f1"
-    property color markedBg: "#4f5037"
-    property color markedText: "#ffd43b"
-    property color panelHeaderBg: "#1c2531"
-    property color chromeBg: "#202833"
+    property color titleBarBg: "#202833"
+    property color fBarBg: "#202833"
     property color chromeText: "#d7e0ea"
     property color dialogBg: "#171e27"
     property color dialogHeaderBg: "#1b242f"
@@ -1274,12 +1264,8 @@ ApplicationWindow {
 
     function galleryTheme() {
         return {
-            "background": galleryPanelBackgroundColor,
             "panelBackground": galleryPanelBackgroundColor,
-            "backgroundAlternate": galleryItemBackgroundColor,
             "viewerBackground": galleryViewerBackgroundColor,
-            "border": panelBorder,
-            "activeBorder": activeBorder,
             "cursor": galleryCursorColor,
             "cursorBackground": galleryCursorBackgroundColor,
             "cursorBorder": galleryCursorBorderColor,
@@ -1288,7 +1274,6 @@ ApplicationWindow {
             "mutedText": galleryMutedTextColor,
             "quickSearchMatch": galleryQuickSearchMatchColor,
             "selection": gallerySelectionColor,
-            "marked": galleryMarkedBackgroundColor,
             "markedBackground": galleryMarkedBackgroundColor,
             "markedText": galleryMarkedTextColor,
             "directoryText": galleryDirectoryTextColor,
@@ -1305,9 +1290,7 @@ ApplicationWindow {
             "scrollBarHandleBackgroundHovered": galleryScrollBarBackgroundHoverColor,
             "scrollBarHandleHovered": galleryScrollBarHoverColor,
             "scrollBarHandlePressed": galleryScrollBarPressedColor,
-            "scrollBarTrackHovered": galleryScrollBarTrackHoverColor,
-            "chrome": chromeBg,
-            "chromeText": chromeText
+            "scrollBarTrackHovered": galleryScrollBarTrackHoverColor
         }
     }
 
@@ -1601,20 +1584,15 @@ ApplicationWindow {
     readonly property var themeColorDefinitions: [
         // Window
         { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#1f242c" },
-        { id: "chromeBg", name: "Chrome / Tabs Background", group: "Window", defaultColor: "#202833" },
+        { id: "titleBarBg", name: "Chrome / Title Bar Background", group: "Window", defaultColor: "#202833" },
+        { id: "fBarBg", name: "Chrome / F-Bar Background", group: "Window", defaultColor: "#202833" },
         { id: "chromeText", name: "Chrome Text", group: "Window", defaultColor: "#d7e0ea" },
 
         // Panels
-        { id: "panelBg", name: "Panel Background", group: "Panels", defaultColor: "#99121822" },
-        { id: "panelBgAlt", name: "Panel Alternate Background", group: "Panels", defaultColor: "#d910151d" },
-        { id: "panelPathBg", name: "Panel Path Background", group: "Panels", defaultColor: "#26314152" },
-        { id: "panelHeaderBg", name: "Panel Header Cell Background", group: "Panels", defaultColor: "#1c2531" },
-        { id: "panelBorder", name: "Inactive Panel Border", group: "Panels", defaultColor: "#4e9bd4" },
-        { id: "activeBorder", name: "Active Panel Border", group: "Panels", defaultColor: "#f0c95a" },
+        { id: "panelPathBg", name: "Panel Header Background", group: "Panels", defaultColor: "#26314152" },
 
         // Terminal
-        { id: "terminalBg", name: "Terminal Background", group: "Terminal", defaultColor: "#d9121822" },
-        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "transparent" },
+        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "#19000000" },
 
         // Text
         { id: "textColor", name: "Primary Text Color", group: "Text", defaultColor: "#e8edf2" },
@@ -1622,14 +1600,12 @@ ApplicationWindow {
 
         // Selection
         { id: "selectedBg", name: "General Selection Background", group: "Selection", defaultColor: "#285d8f" },
-        { id: "panelSelectionBg", name: "Panel Cursor Background", group: "Selection", defaultColor: "#18456e" },
-        { id: "panelSelectionBorder", name: "Panel Cursor Border", group: "Selection", defaultColor: "#1d5888" },
-        { id: "markedBg", name: "Marked Item Background", group: "Selection", defaultColor: "#4f5037" },
-        { id: "markedText", name: "Marked Item Text", group: "Selection", defaultColor: "#ffd43b" },
+        { id: "panelSelectionBg", name: "Interactive Selection Background", group: "Selection", defaultColor: "#18456e" },
+        { id: "panelSelectionBorder", name: "Interactive Selection Border", group: "Selection", defaultColor: "#1d5888" },
 
         // Icons & Accents
-        { id: "folderIconColor", name: "Folder Icon Color", group: "Icons & Accents", defaultColor: "#5ab2f1" },
         { id: "dialogAccent", name: "Highlight / Accent Color", group: "Icons & Accents", defaultColor: "#4e9bd4" },
+        { id: "activeBorder", name: "Attention / Active Label", group: "Icons & Accents", defaultColor: "#f0c95a" },
 
         // Dialogs
         { id: "dialogBg", name: "Dialog Background", group: "Dialogs", defaultColor: "#171e27" },
@@ -1689,34 +1665,63 @@ ApplicationWindow {
     }
 
     function loadThemeFromPersistence() {
-        if (typeof qtTheme !== "undefined" && qtTheme) {
-            try {
-                const saved = qtTheme.loadTheme()
-                for (let i = 0; i < themeColorDefinitions.length; ++i) {
-                    const def = themeColorDefinitions[i]
-                    if (Object.prototype.hasOwnProperty.call(saved, def.id)
-                            && saved[def.id]) {
-                        const c = Qt.color(saved[def.id])
-                        if (c) {
-                            root[def.id] = c
-                        }
+        if (typeof qtTheme === "undefined" || !qtTheme)
+            return false
+
+        try {
+            const saved = qtTheme.loadTheme()
+            let applied = false
+            for (let i = 0; i < themeColorDefinitions.length; ++i) {
+                const def = themeColorDefinitions[i]
+                if (Object.prototype.hasOwnProperty.call(saved, def.id)
+                        && saved[def.id]) {
+                    const c = Qt.color(saved[def.id])
+                    if (c) {
+                        root[def.id] = c
+                        applied = true
                     }
                 }
-                if (saved.fontRenderType !== undefined
-                        && saved.fontRenderType !== "") {
-                    if (typeof qtTextRendering !== "undefined"
-                            && qtTextRendering) {
-                        qtTextRendering.setRenderTypeByName(
-                            String(saved.fontRenderType))
-                    }
-                }
-                if (saved.mouseWheelMode !== undefined
-                        && saved.mouseWheelMode !== "") {
-                    root.setMouseWheelMode(String(saved.mouseWheelMode))
-                }
-            } catch (error) {
-                console.warn("Unable to load the saved theme:", error)
             }
+            // Preserve the old shared chrome color when loading a theme
+            // saved before the title-bar/F-bar split.
+            if (Object.prototype.hasOwnProperty.call(saved, "chromeBg")
+                    && saved.chromeBg) {
+                const legacyChromeBg = Qt.color(saved.chromeBg)
+                const hasTitleBarBg =
+                    Object.prototype.hasOwnProperty.call(saved,
+                                                         "titleBarBg")
+                    && saved.titleBarBg
+                const hasFBarBg =
+                    Object.prototype.hasOwnProperty.call(saved, "fBarBg")
+                    && saved.fBarBg
+                if (legacyChromeBg) {
+                    if (!hasTitleBarBg) {
+                        root.titleBarBg = legacyChromeBg
+                        applied = true
+                    }
+                    if (!hasFBarBg) {
+                        root.fBarBg = legacyChromeBg
+                        applied = true
+                    }
+                }
+            }
+            if (saved.fontRenderType !== undefined
+                    && saved.fontRenderType !== "") {
+                if (typeof qtTextRendering !== "undefined"
+                        && qtTextRendering) {
+                    applied = qtTextRendering.setRenderTypeByName(
+                                  String(saved.fontRenderType)) || applied
+                }
+            }
+            if (saved.mouseWheelMode !== undefined
+                    && saved.mouseWheelMode !== "") {
+                applied = root.setMouseWheelMode(
+                              String(saved.mouseWheelMode)) || applied
+            }
+            return applied
+        } catch (error) {
+            console.warn("Unable to load the saved theme:", error)
+            return false
         }
     }
 
@@ -1742,9 +1747,6 @@ ApplicationWindow {
         if (typeof qtTextRendering !== "undefined" && qtTextRendering)
             qtTextRendering.setRenderTypeByName("NativeRendering")
         root.mouseWheelMode = "gui"
-        if (typeof qtTheme !== "undefined" && qtTheme) {
-            qtTheme.resetTheme()
-        }
     }
 
     function formatColorHex(clr) {
@@ -1765,11 +1767,12 @@ ApplicationWindow {
         id: cBtn
         property string text: ""
         property string iconSource: ""
+        property string toolTipText: text
         property bool highlighted: false
         signal clicked()
 
         implicitHeight: root.snapPx(30)
-        implicitWidth: root.snapPx(cBtnRow.implicitWidth + 24)
+        implicitWidth: root.snapPx(cBtnRow.implicitWidth + 20)
         Layout.preferredHeight: implicitHeight
         Layout.preferredWidth: implicitWidth
         Layout.minimumHeight: implicitHeight
@@ -1786,6 +1789,15 @@ ApplicationWindow {
         border.color: highlighted
                       ? root.dialogAccent
                       : (cBtnMouse.containsMouse ? root.controlHoverBg : root.controlBorder)
+        Accessible.role: Accessible.Button
+        Accessible.name: toolTipText
+
+        ZG.ToolTip {
+            visible: cBtnMouse.containsMouse && cBtn.toolTipText !== ""
+            delay: 500
+            timeout: 5000
+            text: cBtn.toolTipText
+        }
 
         RowLayout {
             id: cBtnRow
@@ -1991,8 +2003,13 @@ ApplicationWindow {
         readonly property var currentItem: (selectedIndex >= 0 && selectedIndex < root.themeColorDefinitions.length)
                                            ? root.themeColorDefinitions[selectedIndex] : null
 
+        // The editor uses OKLCH rather than HSL/HSV. Chroma is kept in the
+        // CSS/OKLCH-compatible 0..0.4 range; values outside the sRGB gamut
+        // are reduced while preserving lightness and hue.
+        readonly property real maxOklchChroma: 0.4
+        readonly property real wheelOklchChroma: 0.32
         property real selectedHue: 0
-        property real selectedSaturation: 0
+        property real selectedChroma: 0
         property real selectedLightness: 0.5
         property real selectedAlpha: 1.0
         property string filterQuery: ""
@@ -2181,12 +2198,171 @@ ApplicationWindow {
             return null
         }
 
+        function clampUnit(value) {
+            const numeric = Number(value)
+            if (!isFinite(numeric))
+                return 0
+            return Math.max(0, Math.min(1, numeric))
+        }
+
+        function clampOklchChroma(value) {
+            const numeric = Number(value)
+            if (!isFinite(numeric))
+                return 0
+            return Math.max(0, Math.min(maxOklchChroma, numeric))
+        }
+
+        function signedCubeRoot(value) {
+            return value < 0
+                    ? -Math.pow(-value, 1 / 3)
+                    : Math.pow(value, 1 / 3)
+        }
+
+        function srgbToLinear(value) {
+            const channel = clampUnit(value)
+            return channel <= 0.04045
+                    ? channel / 12.92
+                    : Math.pow((channel + 0.055) / 1.055, 2.4)
+        }
+
+        function linearToSrgb(value) {
+            const channel = Number(value)
+            if (!isFinite(channel))
+                return 0
+            return channel <= 0.0031308
+                    ? 12.92 * channel
+                    : 1.055 * Math.pow(channel, 1 / 2.4) - 0.055
+        }
+
+        function colorToOklab(colorValue) {
+            const red = srgbToLinear(colorValue.r)
+            const green = srgbToLinear(colorValue.g)
+            const blue = srgbToLinear(colorValue.b)
+
+            const l = signedCubeRoot(
+                0.4122214708 * red + 0.5363325363 * green
+                + 0.0514459929 * blue)
+            const m = signedCubeRoot(
+                0.2119034982 * red + 0.6806995451 * green
+                + 0.1073969566 * blue)
+            const s = signedCubeRoot(
+                0.0883024619 * red + 0.2817188376 * green
+                + 0.6299787005 * blue)
+
+            return {
+                lightness: 0.2104542553 * l + 0.7936177850 * m
+                            - 0.0040720468 * s,
+                a: 1.9779984951 * l - 2.4285922050 * m
+                   + 0.4505937099 * s,
+                b: 0.0259040371 * l + 0.7827717662 * m
+                   - 0.8086757660 * s,
+            }
+        }
+
+        function colorToOklch(colorValue) {
+            const lab = colorToOklab(colorValue)
+            const chroma = Math.sqrt(lab.a * lab.a + lab.b * lab.b)
+            let hue = Math.atan2(lab.b, lab.a) * 180 / Math.PI
+            if (hue < 0)
+                hue += 360
+            return {
+                lightness: clampUnit(lab.lightness),
+                chroma: clampOklchChroma(chroma),
+                hue: chroma > 0.000001 ? hue : 0,
+            }
+        }
+
+        function oklchToLinearRgb(lightness, chroma, hueDegrees) {
+            const hueRadians = Number(hueDegrees) * Math.PI / 180
+            const labA = Number(chroma) * Math.cos(hueRadians)
+            const labB = Number(chroma) * Math.sin(hueRadians)
+            const l = Number(lightness) + 0.3963377774 * labA
+                                      + 0.2158037573 * labB
+            const m = Number(lightness) - 0.1055613458 * labA
+                                      - 0.0638541728 * labB
+            const s = Number(lightness) - 0.0894841775 * labA
+                                      - 1.2914855480 * labB
+            const l3 = l * l * l
+            const m3 = m * m * m
+            const s3 = s * s * s
+            return {
+                r: 4.0767416621 * l3 - 3.3077115913 * m3
+                   + 0.2309699292 * s3,
+                g: -1.2684380046 * l3 + 2.6097574011 * m3
+                   - 0.3413193965 * s3,
+                b: -0.0041960863 * l3 - 0.7034186147 * m3
+                   + 1.7076147010 * s3,
+            }
+        }
+
+        function isInSrgbGamut(linearRgb) {
+            const epsilon = 0.000001
+            return linearRgb.r >= -epsilon && linearRgb.r <= 1 + epsilon
+                    && linearRgb.g >= -epsilon && linearRgb.g <= 1 + epsilon
+                    && linearRgb.b >= -epsilon && linearRgb.b <= 1 + epsilon
+        }
+
+        function oklchColor(lightness, chroma, hueDegrees, alpha) {
+            const safeLightness = clampUnit(lightness)
+            let safeChroma = clampOklchChroma(chroma)
+            let linearRgb = oklchToLinearRgb(safeLightness, safeChroma,
+                                              hueDegrees)
+
+            // A direct OKLCH value can fall outside sRGB. Gamut-map the
+            // generated display color by reducing chroma, but keep the
+            // editor's requested L/C/H coordinates untouched.
+            if (!isInSrgbGamut(linearRgb)) {
+                let low = 0
+                let high = safeChroma
+                for (let iteration = 0; iteration < 18; ++iteration) {
+                    const middle = (low + high) / 2
+                    const candidate = oklchToLinearRgb(
+                        safeLightness, middle, hueDegrees)
+                    if (isInSrgbGamut(candidate))
+                        low = middle
+                    else
+                        high = middle
+                }
+                safeChroma = low
+                linearRgb = oklchToLinearRgb(safeLightness, safeChroma,
+                                              hueDegrees)
+            }
+
+            const opacity = alpha === undefined ? selectedAlpha
+                                                 : clampUnit(alpha)
+            return {
+                color: Qt.rgba(
+                    clampUnit(linearToSrgb(linearRgb.r)),
+                    clampUnit(linearToSrgb(linearRgb.g)),
+                    clampUnit(linearToSrgb(linearRgb.b)), opacity),
+            }
+        }
+
+        function oklchColorValue(lightness, chroma, hueDegrees, alpha) {
+            return oklchColor(lightness, chroma, hueDegrees, alpha).color
+        }
+
+        function oklchDisplayRgb(lightness, chroma, hueDegrees) {
+            // The wheel is a preview, so avoid a binary-search gamut map for
+            // every one of its thousands of canvas cells. Clipping here is
+            // sufficient; committed colors still use oklchColor() below.
+            const linearRgb = oklchToLinearRgb(lightness, chroma, hueDegrees)
+            return [
+                clampUnit(linearToSrgb(linearRgb.r)),
+                clampUnit(linearToSrgb(linearRgb.g)),
+                clampUnit(linearToSrgb(linearRgb.b)),
+            ]
+        }
+
         function setFromColor(colorValue) {
-            if (colorValue.hslHue >= 0)
-                selectedHue = colorValue.hslHue
-            selectedSaturation = Math.max(0, Math.min(1, colorValue.hslSaturation))
-            selectedLightness = Math.max(0, Math.min(1, colorValue.hslLightness))
-            selectedAlpha = colorValue.a !== undefined ? Math.max(0, Math.min(1, colorValue.a)) : 1.0
+            if (!colorValue)
+                return
+            const oklch = colorToOklch(colorValue)
+            selectedHue = oklch.hue / 360
+            selectedChroma = oklch.chroma
+            selectedLightness = oklch.lightness
+            const alpha = Number(colorValue.a)
+            selectedAlpha = isFinite(alpha) ? clampUnit(alpha) : 1.0
             colorWheel.requestPaint()
         }
 
@@ -2205,8 +2381,9 @@ ApplicationWindow {
             if (flashElementAnimation.targetProperty === currentItem.id) {
                 themeColorConfigurator.stopAllFlashing()
             }
-            const c = Qt.hsla(selectedHue, selectedSaturation, selectedLightness, selectedAlpha)
-            root[currentItem.id] = c
+            const converted = oklchColor(selectedLightness, selectedChroma,
+                                          selectedHue * 360, selectedAlpha)
+            root[currentItem.id] = converted.color
             colorWheel.requestPaint()
         }
 
@@ -2859,7 +3036,7 @@ ApplicationWindow {
                             }
                         }
 
-                        // 2D Color Wheel
+                        // 2D OKLCH hue/chroma wheel at the current lightness.
                         Canvas {
                             id: colorWheel
                             objectName: "themeColorWheel"
@@ -2875,25 +3052,6 @@ ApplicationWindow {
                                     themeColorConfigurator.contentItem)
                             }
 
-                            function hueRgb(hue) {
-                                const hueSector = hue * 6
-                                const sector = Math.floor(hueSector) % 6
-                                const fraction = hueSector - Math.floor(hueSector)
-                                const falling = 1 - fraction
-                                const rising = fraction
-                                if (sector === 0)
-                                    return [255, Math.round(rising * 255), 0]
-                                if (sector === 1)
-                                    return [Math.round(falling * 255), 255, 0]
-                                if (sector === 2)
-                                    return [0, 255, Math.round(rising * 255)]
-                                if (sector === 3)
-                                    return [0, Math.round(falling * 255), 255]
-                                if (sector === 4)
-                                    return [Math.round(rising * 255), 0, 255]
-                                return [255, 0, Math.round(falling * 255)]
-                            }
-
                             function selectPoint(pointX, pointY) {
                                 const centerX = width / 2
                                 const centerY = height / 2
@@ -2905,7 +3063,11 @@ ApplicationWindow {
                                 if (hue < 0)
                                     hue += 1
                                 themeColorConfigurator.selectedHue = hue
-                                themeColorConfigurator.selectedSaturation = Math.min(1, distance / radius)
+                                themeColorConfigurator.selectedChroma =
+                                    Math.min(
+                                        themeColorConfigurator.wheelOklchChroma,
+                                        distance / radius
+                                        * themeColorConfigurator.wheelOklchChroma)
                                 themeColorConfigurator.applyCurrentColor()
                             }
 
@@ -2918,32 +3080,65 @@ ApplicationWindow {
                                 const radius = Math.max(1, Math.min(canvasWidth, canvasHeight) / 2 - 2)
 
                                 context.clearRect(0, 0, canvasWidth, canvasHeight)
-                                for (let sectorIndex = 0; sectorIndex < 360; ++sectorIndex) {
-                                    const startAngle = sectorIndex * 2 * Math.PI / 360
-                                    const endAngle = (sectorIndex + 1) * 2 * Math.PI / 360
-                                    const rgb = colorWheel.hueRgb(sectorIndex / 360)
-                                    context.fillStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")"
-                                    context.beginPath()
-                                    context.moveTo(centerX, centerY)
-                                    context.arc(centerX, centerY, radius, startAngle, endAngle, false)
-                                    context.closePath()
-                                    context.fill()
+                                const chromaSteps = 24
+                                const hueSteps = 180
+                                for (let chromaIndex = 0;
+                                     chromaIndex < chromaSteps;
+                                     ++chromaIndex) {
+                                    const innerRadius = radius * chromaIndex
+                                                         / chromaSteps
+                                    const outerRadius = radius
+                                                         * (chromaIndex + 1)
+                                                         / chromaSteps
+                                    const chroma =
+                                        (chromaIndex + 0.5) / chromaSteps
+                                        * themeColorConfigurator.wheelOklchChroma
+                                    for (let sectorIndex = 0;
+                                         sectorIndex < hueSteps;
+                                         ++sectorIndex) {
+                                        const startAngle = sectorIndex
+                                                           * 2 * Math.PI
+                                                           / hueSteps
+                                        const endAngle = (sectorIndex + 1)
+                                                         * 2 * Math.PI
+                                                         / hueSteps
+                                        const rgb =
+                                            themeColorConfigurator.oklchDisplayRgb(
+                                                themeColorConfigurator.selectedLightness,
+                                                chroma,
+                                                sectorIndex * 360 / hueSteps)
+                                        context.fillStyle = "rgb(" +
+                                            Math.round(rgb[0] * 255) + "," +
+                                            Math.round(rgb[1] * 255) + "," +
+                                            Math.round(rgb[2] * 255) + ")"
+                                        context.beginPath()
+                                        if (innerRadius <= 0) {
+                                            context.moveTo(centerX, centerY)
+                                        } else {
+                                            context.moveTo(
+                                                centerX + Math.cos(startAngle)
+                                                * innerRadius,
+                                                centerY + Math.sin(startAngle)
+                                                * innerRadius)
+                                        }
+                                        context.arc(centerX, centerY,
+                                                    outerRadius, startAngle,
+                                                    endAngle, false)
+                                        if (innerRadius > 0) {
+                                            context.arc(centerX, centerY,
+                                                        innerRadius, endAngle,
+                                                        startAngle, true)
+                                        }
+                                        context.closePath()
+                                        context.fill()
+                                    }
                                 }
 
-                                context.save()
-                                context.beginPath()
-                                context.arc(centerX, centerY, radius, 0, 2 * Math.PI, false)
-                                context.clip()
-                                const saturationGradient = context.createRadialGradient(
-                                            centerX, centerY, 0,
-                                            centerX, centerY, radius)
-                                saturationGradient.addColorStop(0, "rgba(255,255,255,1)")
-                                saturationGradient.addColorStop(1, "rgba(255,255,255,0)")
-                                context.fillStyle = saturationGradient
-                                context.fillRect(0, 0, canvasWidth, canvasHeight)
-                                context.restore()
-
-                                const markerDistance = themeColorConfigurator.selectedSaturation * radius
+                                const markerDistance = Math.min(
+                                    1,
+                                    themeColorConfigurator.selectedChroma
+                                    / themeColorConfigurator.wheelOklchChroma)
+                                    * radius
                                 const markerAngle = themeColorConfigurator.selectedHue * 2 * Math.PI
                                 const markerX = centerX + Math.cos(markerAngle) * markerDistance
                                 const markerY = centerY + Math.sin(markerAngle) * markerDistance
@@ -2967,7 +3162,7 @@ ApplicationWindow {
                             }
                         }
 
-                        // HUE Slider & Input
+                        // HUE (OKLCH) Slider & Input
                         RowLayout {
                             id: themeHueRow
                             objectName: "themeHueRow"
@@ -3007,13 +3202,62 @@ ApplicationWindow {
                                     radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
                                     gradient: Gradient {
                                         orientation: Gradient.Horizontal
-                                        GradientStop { position: 0.000; color: Qt.hsla(0.000, 1.0, 0.5, 1) }
-                                        GradientStop { position: 0.167; color: Qt.hsla(0.167, 1.0, 0.5, 1) }
-                                        GradientStop { position: 0.333; color: Qt.hsla(0.333, 1.0, 0.5, 1) }
-                                        GradientStop { position: 0.500; color: Qt.hsla(0.500, 1.0, 0.5, 1) }
-                                        GradientStop { position: 0.667; color: Qt.hsla(0.667, 1.0, 0.5, 1) }
-                                        GradientStop { position: 0.833; color: Qt.hsla(0.833, 1.0, 0.5, 1) }
-                                        GradientStop { position: 1.000; color: Qt.hsla(1.000, 1.0, 0.5, 1) }
+                                        GradientStop {
+                                            position: 0.000
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                0, 1)
+                                        }
+                                        GradientStop {
+                                            position: 0.167
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                60, 1)
+                                        }
+                                        GradientStop {
+                                            position: 0.333
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                120, 1)
+                                        }
+                                        GradientStop {
+                                            position: 0.500
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                180, 1)
+                                        }
+                                        GradientStop {
+                                            position: 0.667
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                240, 1)
+                                        }
+                                        GradientStop {
+                                            position: 0.833
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                300, 1)
+                                        }
+                                        GradientStop {
+                                            position: 1.000
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                Math.max(0.16,
+                                                         themeColorConfigurator.selectedChroma),
+                                                360, 1)
+                                        }
                                     }
                                 }
                                 handle: Rectangle {
@@ -3048,78 +3292,108 @@ ApplicationWindow {
                             }
                         }
 
-                        // SATURATION Slider & Input
+                        // CHROMA (OKLCH) Slider & Input
                         RowLayout {
-                            id: themeSaturationRow
-                            objectName: "themeSaturationRow"
+                            id: themeChromaRow
+                            objectName: "themeChromaRow"
                             Layout.fillWidth: true
                             Layout.preferredHeight: root.snapPx(20)
                             spacing: root.snapPx(6)
                             transform: Translate {
                                 x: root.dialogPixelOffsetX(
-                                    themeSaturationRow,
+                                    themeChromaRow,
                                     themeColorConfigurator.contentItem)
                                 y: root.dialogPixelOffsetY(
-                                    themeSaturationRow,
+                                    themeChromaRow,
                                     themeColorConfigurator.contentItem)
                             }
 
-                            Text { text: "S"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
+                            Text { text: "C"; color: root.mutedText; font.family: root.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: root.snapPx(12) }
                             Slider {
-                                id: saturationSlider
-                                objectName: "themeSaturationSlider"
-                                from: 0; to: 1; value: themeColorConfigurator.selectedSaturation
+                                id: chromaSlider
+                                objectName: "themeChromaSlider"
+                                from: 0; to: themeColorConfigurator.maxOklchChroma
+                                stepSize: 0.001
+                                value: themeColorConfigurator.selectedChroma
                                 Layout.fillWidth: false
                                 Layout.preferredWidth: root.snapPx(257)
                                 Layout.preferredHeight: root.snapPx(18)
                                 implicitHeight: root.snapPx(18)
                                 transform: Translate {
                                     x: root.dialogPixelOffsetX(
-                                        saturationSlider,
+                                        chromaSlider,
                                         themeColorConfigurator.contentItem)
                                     y: root.dialogPixelOffsetY(
-                                        saturationSlider,
+                                        chromaSlider,
                                         themeColorConfigurator.contentItem)
                                 }
-                                onMoved: { themeColorConfigurator.selectedSaturation = value; themeColorConfigurator.applyCurrentColor(); }
+                                onMoved: { themeColorConfigurator.selectedChroma = value; themeColorConfigurator.applyCurrentColor(); }
                                 background: Rectangle {
-                                    x: root.snapPx(saturationSlider.leftPadding + saturationSlider.handle.width / 2); y: root.snapPx(saturationSlider.topPadding)
-                                    width: root.snapPx(saturationSlider.availableWidth - saturationSlider.handle.width); height: root.snapPx(saturationSlider.availableHeight)
+                                    x: root.snapPx(chromaSlider.leftPadding + chromaSlider.handle.width / 2); y: root.snapPx(chromaSlider.topPadding)
+                                    width: root.snapPx(chromaSlider.availableWidth - chromaSlider.handle.width); height: root.snapPx(chromaSlider.availableHeight)
                                     radius: root.snapPx(height / 2); border.width: root.separatorWidth; border.color: root.controlBorder
                                     gradient: Gradient {
                                         orientation: Gradient.Horizontal
-                                        GradientStop { position: 0; color: Qt.hsla(themeColorConfigurator.selectedHue, 0, themeColorConfigurator.selectedLightness, 1) }
-                                        GradientStop { position: 1; color: Qt.hsla(themeColorConfigurator.selectedHue, 1, themeColorConfigurator.selectedLightness, 1) }
+                                        GradientStop {
+                                            position: 0
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                0,
+                                                themeColorConfigurator.selectedHue * 360,
+                                                1)
+                                        }
+                                        GradientStop {
+                                            position: 1
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                themeColorConfigurator.selectedLightness,
+                                                themeColorConfigurator.maxOklchChroma,
+                                                themeColorConfigurator.selectedHue * 360,
+                                                1)
+                                        }
                                     }
                                 }
                                 handle: Rectangle {
-                                    x: root.snapPx(saturationSlider.leftPadding + saturationSlider.visualPosition * (saturationSlider.availableWidth - width))
-                                    y: root.snapPx(saturationSlider.topPadding + (saturationSlider.availableHeight - height) / 2)
+                                    x: root.snapPx(chromaSlider.leftPadding + chromaSlider.visualPosition * (chromaSlider.availableWidth - width))
+                                    y: root.snapPx(chromaSlider.topPadding + (chromaSlider.availableHeight - height) / 2)
                                     width: root.snapPx(14); height: root.snapPx(14); radius: root.snapPx(7); color: root.controlBg; border.width: root.snapPx(2); border.color: root.textColor
                                 }
                             }
                             Rectangle {
-                                id: themeSaturationInputBox
-                                objectName: "themeSaturationInputBox"
-                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: sInput.activeFocus ? root.dialogAccent : root.controlBorder
+                                id: themeChromaInputBox
+                                objectName: "themeChromaInputBox"
+                                implicitWidth: root.snapPx(38); implicitHeight: root.snapPx(20); radius: root.snapPx(3); color: root.controlPressedBg; border.width: root.separatorWidth; border.color: cInput.activeFocus ? root.dialogAccent : root.controlBorder
                                 Layout.preferredWidth: root.snapPx(38)
                                 Layout.preferredHeight: root.snapPx(20)
                                 transform: Translate {
                                     x: root.dialogPixelOffsetX(
-                                        themeSaturationInputBox,
+                                        themeChromaInputBox,
                                         themeColorConfigurator.contentItem)
                                     y: root.dialogPixelOffsetY(
-                                        themeSaturationInputBox,
+                                        themeChromaInputBox,
                                         themeColorConfigurator.contentItem)
                                 }
                                 TextInput {
-                                    id: sInput
+                                    id: cInput
                                     anchors.fill: parent; anchors.leftMargin: root.snapPx(2); anchors.rightMargin: root.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                                     font.family: root.guiMonospaceFontFamily; font.pixelSize: 10; color: root.textColor; selectByMouse: true; selectionColor: root.selectedBg; selectedTextColor: root.textColor
-                                    validator: IntValidator { bottom: 0; top: 100 }
-                                    text: !activeFocus ? Math.round(themeColorConfigurator.selectedSaturation * 100).toString() : text
-                                    onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { themeColorConfigurator.selectedSaturation = Math.max(0, Math.min(100, val)) / 100; themeColorConfigurator.applyCurrentColor(); } }
-                                    onEditingFinished: { text = Math.round(themeColorConfigurator.selectedSaturation * 100).toString() }
+                                    validator: DoubleValidator {
+                                        bottom: 0
+                                        top: themeColorConfigurator.maxOklchChroma
+                                        decimals: 3
+                                        notation: DoubleValidator.StandardNotation
+                                    }
+                                    text: !activeFocus ? themeColorConfigurator.selectedChroma.toFixed(3) : text
+                                    onTextEdited: {
+                                        const val = parseFloat(text)
+                                        if (!isNaN(val)) {
+                                            themeColorConfigurator.selectedChroma =
+                                                themeColorConfigurator.clampOklchChroma(val)
+                                            themeColorConfigurator.applyCurrentColor()
+                                        }
+                                    }
+                                    onEditingFinished: {
+                                        text = themeColorConfigurator.selectedChroma.toFixed(3)
+                                    }
                                 }
                             }
                         }
@@ -3165,7 +3439,14 @@ ApplicationWindow {
                                     gradient: Gradient {
                                         orientation: Gradient.Horizontal
                                         GradientStop { position: 0; color: "#000000" }
-                                        GradientStop { position: 0.5; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, 0.5, 1) }
+                                        GradientStop {
+                                            position: 0.5
+                                            color: themeColorConfigurator.oklchColorValue(
+                                                0.5,
+                                                themeColorConfigurator.selectedChroma,
+                                                themeColorConfigurator.selectedHue * 360,
+                                                1)
+                                        }
                                         GradientStop { position: 1; color: "#ffffff" }
                                     }
                                 }
@@ -3260,8 +3541,22 @@ ApplicationWindow {
                                         radius: root.snapPx(height / 2)
                                         gradient: Gradient {
                                             orientation: Gradient.Horizontal
-                                            GradientStop { position: 0; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, themeColorConfigurator.selectedLightness, 0) }
-                                            GradientStop { position: 1; color: Qt.hsla(themeColorConfigurator.selectedHue, themeColorConfigurator.selectedSaturation, themeColorConfigurator.selectedLightness, 1) }
+                                            GradientStop {
+                                                position: 0
+                                                color: themeColorConfigurator.oklchColorValue(
+                                                    themeColorConfigurator.selectedLightness,
+                                                    themeColorConfigurator.selectedChroma,
+                                                    themeColorConfigurator.selectedHue * 360,
+                                                    0)
+                                            }
+                                            GradientStop {
+                                                position: 1
+                                                color: themeColorConfigurator.oklchColorValue(
+                                                    themeColorConfigurator.selectedLightness,
+                                                    themeColorConfigurator.selectedChroma,
+                                                    themeColorConfigurator.selectedHue * 360,
+                                                    1)
+                                            }
                                         }
                                     }
                                 }
@@ -3465,6 +3760,9 @@ ApplicationWindow {
                 RowLayout {
                     id: themeColorFooter
                     objectName: "themeColorFooter"
+                    readonly property bool compactActions:
+                        width < root.snapPx(675)
+                        || themeColorConfigurator.statusToast !== ""
                     Layout.fillWidth: false
                     Layout.preferredWidth: root.snapPx(parent.width)
                     Layout.preferredHeight: root.snapPx(30)
@@ -3491,7 +3789,9 @@ ApplicationWindow {
                                 themeResetElementButton,
                                 themeColorConfigurator.contentItem)
                         }
-                        text: "Reset Element"
+                        text: themeColorFooter.compactActions
+                              ? "" : "Reset Element"
+                        toolTipText: "Reset current element to default"
                         iconSource: root.lucideIconSource(
                                         "rotate-ccw", 14, root.textColor)
                         onClicked: {
@@ -3514,14 +3814,48 @@ ApplicationWindow {
                                 themeResetAllButton,
                                 themeColorConfigurator.contentItem)
                         }
-                        text: "Reset All"
+                        text: themeColorFooter.compactActions
+                              ? "" : "Reset All"
+                        toolTipText: "Reset all theme settings to defaults"
                         iconSource: root.lucideIconSource(
                                         "refresh-cw", 14, root.textColor)
                         onClicked: {
+                            themeColorConfigurator.stopAllFlashing()
                             root.resetThemeToDefaults()
                             if (themeColorConfigurator.currentItem)
                                 themeColorConfigurator.setFromColor(root[themeColorConfigurator.currentItem.id])
                             themeColorConfigurator.statusToast = "Reset all colors to default"
+                        }
+                    }
+
+                    ConfigDialogButton {
+                        id: themeRestoreSavedButton
+                        objectName: "themeRestoreSavedButton"
+                        transform: Translate {
+                            x: root.dialogPixelOffsetX(
+                                themeRestoreSavedButton,
+                                themeColorConfigurator.contentItem)
+                            y: root.dialogPixelOffsetY(
+                                themeRestoreSavedButton,
+                                themeColorConfigurator.contentItem)
+                        }
+                        text: "Restore"
+                        toolTipText: "Restore the last saved theme"
+                        iconSource: root.lucideIconSource(
+                                        "clock-3", 14, root.textColor)
+                        onClicked: {
+                            themeColorConfigurator.stopAllFlashing()
+                            if (root.loadThemeFromPersistence()) {
+                                if (themeColorConfigurator.currentItem) {
+                                    themeColorConfigurator.setFromColor(
+                                        root[themeColorConfigurator.currentItem.id])
+                                }
+                                themeColorConfigurator.statusToast =
+                                    "Restored saved theme"
+                            } else {
+                                themeColorConfigurator.statusToast =
+                                    "No saved theme found"
+                            }
                         }
                     }
 
@@ -3530,7 +3864,9 @@ ApplicationWindow {
                         color: root.activeBorder
                         font.pixelSize: 11
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideRight
                         visible: themeColorConfigurator.statusToast !== ""
                     }
 
@@ -3547,7 +3883,8 @@ ApplicationWindow {
                                 themeSaveButton,
                                 themeColorConfigurator.contentItem)
                         }
-                        text: "Save Theme"
+                        text: "Save"
+                        toolTipText: "Save the current theme"
                         highlighted: true
                         iconSource: root.lucideIconSource(
                                         "save", 14, "#ffffff")
@@ -3571,7 +3908,8 @@ ApplicationWindow {
                                 themeCloseButton,
                                 themeColorConfigurator.contentItem)
                         }
-                        text: "Close"
+                        text: themeColorFooter.compactActions ? "" : "Close"
+                        toolTipText: "Close the theme editor"
                         iconSource: root.lucideIconSource(
                                         "x", 14, root.textColor)
                         onClicked: themeColorConfigurator.close()
@@ -3590,7 +3928,7 @@ ApplicationWindow {
         Rectangle {
             anchors.fill: parent
             color: root.useTransparentWindowBackground
-                   ? root.panelBg : "transparent"
+                   ? root.windowBackgroundColor : "transparent"
         }
 
         Item {
@@ -3600,6 +3938,14 @@ ApplicationWindow {
             anchors.right: parent.right
             height: root.menuBarHeight
             z: 20
+
+            Rectangle {
+                id: titleBarBackground
+                objectName: "titleBarBackground"
+                anchors.fill: parent
+                color: root.titleBarBg
+                z: -1
+            }
 
             Item {
                 id: macSystemButtonArea
@@ -5160,14 +5506,26 @@ ApplicationWindow {
 
         Rectangle {
             id: panelHeader
+            objectName: "panelHeader-" + Number(panel.side || 0)
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
             height: Math.max(25, root.ch * 1.25)
                     + root.verticalContentSpacing
                     + root.pathRowExtraHeight
-            color: root.panelPathBg
+            // Keep the panel header color as a translucent foreground over
+            // the same chrome surface used by the title bar.
+            color: root.titleBarBg
             z: 2
+
+            Rectangle {
+                id: panelHeaderPanelBackground
+                objectName: "panelHeaderPanelBackground-"
+                            + Number(panel.side || 0)
+                anchors.fill: parent
+                color: root.panelPathBg
+                z: 0
+            }
 
             Rectangle {
                 anchors.left: parent.left
@@ -5858,7 +6216,7 @@ ApplicationWindow {
                         width: rendererMenu.availableWidth
                         height: 1
                         color: root.separatorColor
-                        visible: qtGallery.available
+                        visible: rendererZoomRow.visible
                     }
 
                     Item {
@@ -5866,8 +6224,10 @@ ApplicationWindow {
                         objectName: "panelRendererZoomRow-"
                                     + Number(panel.side || 0)
                         width: rendererMenu.availableWidth
-                        height: 48
+                        height: visible ? 48 : 0
                         visible: qtGallery.available
+                                 && panelRoot.galleryHost()
+                                 && panelRoot.galleryHost().densityAdjustable
 
                         Text {
                             id: rendererZoomLabel
@@ -6745,14 +7105,14 @@ ApplicationWindow {
                     spacing: 8
                     visible: modelData.kind === "section"
 
-                    Rectangle { height: 1; color: root.panelBorder; Layout.fillWidth: true }
+                    Rectangle { height: 1; color: root.dialogAccent; Layout.fillWidth: true }
                     Text {
                         text: root.cleanText(modelData.label)
                         color: root.activeBorder
                         font.pixelSize: 12
                         font.bold: true
                     }
-                    Rectangle { height: 1; color: root.panelBorder; Layout.fillWidth: true }
+                    Rectangle { height: 1; color: root.dialogAccent; Layout.fillWidth: true }
                 }
             }
         }
@@ -7074,7 +7434,7 @@ ApplicationWindow {
         readonly property int selectedIndex:
             indexForTaskId(localSelectedTaskId)
 
-        color: root.panelBgAlt
+        color: root.windowBackgroundColor
         Accessible.role: Accessible.Table
         Accessible.name: root.cleanText(queue.title || "Operations Queue")
         Accessible.description: root.cleanText(queue.accessibleDescription)
@@ -7399,7 +7759,7 @@ ApplicationWindow {
             anchors.top: parent.top
             anchors.topMargin: queueRoot.topInset
             height: 62
-            color: root.panelHeaderBg
+            color: root.titleBarBg
 
             Text {
                 anchors.left: parent.left
@@ -7476,7 +7836,7 @@ ApplicationWindow {
             anchors.right: parent.right
             anchors.top: queueChrome.bottom
             height: 34
-            color: root.chromeBg
+            color: root.titleBarBg
 
             Text {
                 x: root.contentSpacing
@@ -7597,7 +7957,7 @@ ApplicationWindow {
                                : rowHover.hovered
                                  ? root.controlHoverBg
                                  : index % 2 === 0
-                                   ? root.panelBg : root.panelBgAlt
+                                   ? root.dialogBg : root.windowBackgroundColor
                 border.width: current ? 1 : 0
                 border.color: root.panelSelectionBorder
                 Accessible.role: Accessible.ListItem
@@ -7890,7 +8250,7 @@ ApplicationWindow {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: queueRoot.bottomInset
             height: 54
-            color: root.panelHeaderBg
+            color: root.titleBarBg
             border.width: 1
             border.color: root.separatorColor
 
@@ -7959,8 +8319,10 @@ ApplicationWindow {
         property int loadedSlotStart: 0
         property int loadedSlotEnd: 0
         property int liveRowDelegateCount: 0
+        property int poolSlotWriteCount: 0
         property int lastEditorMouseColumn: 0
         property int lastEditorMouseRow: 0
+        property var pendingEditorMouseMove: null
         property var latestWindowRows: []
         readonly property var cursorFrame:
             root.documentSurfaceStateOverride !== null
@@ -8009,9 +8371,9 @@ ApplicationWindow {
             return "none"
         }
 
-        function sendEditorMouse(mouse, phase, moved, doubleClick) {
+        function editorMouseAction(mouse, phase, moved, doubleClick) {
             if (frame.kind !== "editor")
-                return
+                return null
             var cellWidth = Math.max(1,
                                      documentFontMetrics.advanceWidth("M"))
             var column = Math.max(0, Math.floor((mouse.x - 10) / cellWidth))
@@ -8032,7 +8394,7 @@ ApplicationWindow {
             lastEditorMouseRow = row
             var buttons = phase === "release" ? Qt.NoButton
                                                : (mouse.buttons || mouse.button)
-            root.action({
+            return {
                 "target": root.cleanText(frame.id),
                 "action": "editor.mouse",
                 "phase": phase,
@@ -8044,12 +8406,40 @@ ApplicationWindow {
                 "shift": (mouse.modifiers & Qt.ShiftModifier) !== 0,
                 "ctrl": (mouse.modifiers & Qt.ControlModifier) !== 0,
                 "alt": (mouse.modifiers & Qt.AltModifier) !== 0
-            }, true)
+            }
+        }
+
+        function flushEditorMouseMove() {
+            if (pendingEditorMouseMove === null)
+                return
+            var actionMap = pendingEditorMouseMove
+            pendingEditorMouseMove = null
+            root.action(actionMap, true)
+        }
+
+        function sendEditorMouse(mouse, phase, moved, doubleClick) {
+            var actionMap = editorMouseAction(mouse, phase, moved,
+                                              doubleClick)
+            if (actionMap === null)
+                return
+            if (moved === true) {
+                // Native pointer devices can deliver several drag samples in
+                // one presentation interval. Only the newest endpoint can be
+                // visible; collapse the rest before crossing into Go.
+                pendingEditorMouseMove = actionMap
+                editorMouseMoveTimer.restart()
+                return
+            }
+            editorMouseMoveTimer.stop()
+            flushEditorMouseMove()
+            root.action(actionMap, true)
         }
 
         function releaseEditorMouse() {
             if (frame.kind !== "editor")
                 return
+            editorMouseMoveTimer.stop()
+            flushEditorMouseMove()
             root.action({
                 "target": root.cleanText(frame.id),
                 "action": "editor.mouse",
@@ -8077,6 +8467,12 @@ ApplicationWindow {
                 return root.cleanText(frame.windowStart) + ":"
                         + root.cleanText(frame.windowEnd) + ":" + contentKey
             return JSON.stringify(rows || [])
+        }
+
+        function rowSignature(row) {
+            var source = row || ({})
+            var contentKey = root.cleanText(source.contentKey)
+            return contentKey !== "" ? contentKey : JSON.stringify(source)
         }
 
         function clamp(value, minimum, maximum) {
@@ -8167,11 +8563,28 @@ ApplicationWindow {
 
         function setPoolSlot(slot, row) {
             if (slot < 0 || slot >= documentRowsModel.count)
-                return
+                return false
+            var current = documentRowsModel.get(slot)
+            if (current.loaded === true
+                    && rowSignature(current.rowData)
+                       === rowSignature(row || ({})))
+                return false
             documentRowsModel.set(slot, {
                 "loaded": true,
                 "rowData": row || ({})
             })
+            ++poolSlotWriteCount
+            return true
+        }
+
+        function clearPoolSlot(slot) {
+            if (slot < 0 || slot >= documentRowsModel.count)
+                return false
+            if (documentRowsModel.get(slot).loaded !== true)
+                return false
+            documentRowsModel.set(slot, emptyPoolSlot())
+            ++poolSlotWriteCount
+            return true
         }
 
         function poolCapacityFor(rows) {
@@ -8195,7 +8608,7 @@ ApplicationWindow {
             for (var slot = loadedSlotStart;
                  slot < loadedSlotEnd && slot < documentRowsModel.count;
                  ++slot)
-                documentRowsModel.set(slot, emptyPoolSlot())
+                clearPoolSlot(slot)
         }
 
         function recenterRows(rows, extent, fraction, deferPlacement) {
@@ -8220,7 +8633,7 @@ ApplicationWindow {
             }
         }
 
-        function mergeRowsWithoutRebase(nextRows) {
+        function mergeRowsWithoutRebase(nextRows, retainLiveUnion) {
             if (!displayedRows || displayedRows.length === 0) {
                 recenterRows(nextRows, Number(frame.viewportStart || 0), 0,
                              false)
@@ -8250,37 +8663,44 @@ ApplicationWindow {
             var unionStart = Math.min(loadedSlotStart, nextStart)
             var unionEnd = Math.max(loadedSlotEnd, nextEnd)
             var unionRows = []
-            for (var slot = unionStart; slot < unionEnd; ++slot) {
-                var incoming = slot - nextStart
-                var existing = slot - loadedSlotStart
-                var hasIncoming = incoming >= 0
-                        && incoming < nextRows.length
-                var hasExisting = existing >= 0
-                        && existing < displayedRows.length
-                // Do not replace overlap roles while they may own visible
-                // nested run delegates.  The latest content is applied by the
-                // idle compaction; during motion only entering edge slots are
-                // populated.
-                if (hasExisting)
-                    unionRows.push(displayedRows[existing])
-                else if (hasIncoming)
-                    unionRows.push(nextRows[incoming])
-                else
-                    return false
-            }
-
-            // Model count and every physical row index remain unchanged.
-            // Updating roles in preallocated, normally off-screen slots does
-            // not disturb ListView's kinetic timeline or local contentY.
+            // Model count and every physical row index remain unchanged. O(1)
+            // row content keys make overlap updates cheap: selection changes
+            // replace only their one or two affected delegates, while a
+            // one-row edge scroll only fills its entering edge slot.
             for (var j = 0; j < nextRows.length; ++j) {
                 var targetSlot = nextStart + j
-                if (targetSlot < loadedSlotStart
-                        || targetSlot >= loadedSlotEnd)
-                    setPoolSlot(targetSlot, nextRows[j])
+                setPoolSlot(targetSlot, nextRows[j])
             }
-            displayedRows = unionRows
-            loadedSlotStart = unionStart
-            loadedSlotEnd = unionEnd
+
+            if (retainLiveUnion === true) {
+                for (var slot = unionStart; slot < unionEnd; ++slot) {
+                    var incoming = slot - nextStart
+                    var existing = slot - loadedSlotStart
+                    var hasIncoming = incoming >= 0
+                            && incoming < nextRows.length
+                    var hasExisting = existing >= 0
+                            && existing < displayedRows.length
+                    if (hasIncoming)
+                        unionRows.push(nextRows[incoming])
+                    else if (hasExisting)
+                        unionRows.push(displayedRows[existing])
+                    else
+                        return false
+                }
+                displayedRows = unionRows
+                loadedSlotStart = unionStart
+                loadedSlotEnd = unionEnd
+                return true
+            }
+
+            for (var oldSlot = loadedSlotStart;
+                 oldSlot < loadedSlotEnd; ++oldSlot) {
+                if (oldSlot < nextStart || oldSlot >= nextEnd)
+                    clearPoolSlot(oldSlot)
+            }
+            displayedRows = nextRows
+            loadedSlotStart = nextStart
+            loadedSlotEnd = nextEnd
             return true
         }
 
@@ -8424,6 +8844,7 @@ ApplicationWindow {
                 initialPlacementTimer.stop()
                 requestWindowTimer.stop()
                 scrollBarRequestTimer.stop()
+                editorMouseMoveTimer.stop()
                 windowRequestPending = false
                 requestedExtent = 0
                 requestedFraction = 0
@@ -8432,6 +8853,7 @@ ApplicationWindow {
                 requestPreservesLiveAnchor = true
                 wheelGestureActive = false
                 queuedScrollBarPosition = -1
+                pendingEditorMouseMove = null
                 appliedWindowSignature = ""
                 lastViewportStart = -1
                 windowInitialized = false
@@ -8468,13 +8890,17 @@ ApplicationWindow {
 
             latestWindowRows = nextRows
             rebasingWindow = true
-            var keptKineticCoordinates = false
-            if (wasInitialized && kineticActive && acknowledged
-                    && requestPreservesLiveAnchor)
-                keptKineticCoordinates = mergeRowsWithoutRebase(nextRows)
-            if (!keptKineticCoordinates)
+            var keepLiveCoordinates = wasInitialized && kineticActive
+                    && acknowledged && requestPreservesLiveAnchor
+            var mergedOverlap = wasInitialized
+                    && mergeRowsWithoutRebase(nextRows,
+                                              keepLiveCoordinates)
+            if (!mergedOverlap) {
                 recenterRows(nextRows, targetExtent, targetFraction,
                              !wasInitialized)
+            } else if (!keepLiveCoordinates) {
+                placeAtExtent(targetExtent, targetFraction)
+            }
             appliedWindowSignature = nextSignature
             appliedDocumentKey = nextDocumentKey
             stableTopExtent = targetExtent
@@ -8491,13 +8917,10 @@ ApplicationWindow {
             // ACKs received during native motion only fill preallocated model
             // slots.  Neither model count, item indices nor contentY changes,
             // so the original Qt kinetic timeline continues bit-for-bit.
-            if (!windowRequestPending && queuedScrollBarPosition >= 0) {
-                var queued = queuedScrollBarPosition
-                queuedScrollBarPosition = -1
-                sendWindowRequest(queued * contentExtent, 0, 0, false)
-            } else {
+            if (!windowRequestPending && queuedScrollBarPosition >= 0)
+                scrollBarRequestTimer.restart()
+            else
                 requestWindowTimer.restart()
-            }
         }
 
         function handleWheel(wheel) {
@@ -8546,6 +8969,7 @@ ApplicationWindow {
             wheelCommitTimer.stop()
             requestWindowTimer.stop()
             scrollBarRequestTimer.stop()
+            editorMouseMoveTimer.stop()
             initialPlacementTimer.stop()
             wheelGestureActive = false
             windowRequestPending = false
@@ -8553,6 +8977,7 @@ ApplicationWindow {
             requestPreservesLiveAnchor = true
             resumeVelocity = 0
             queuedScrollBarPosition = -1
+            pendingEditorMouseMove = null
         }
         Component.onCompleted: scheduleFrameWindowSync()
 
@@ -8866,6 +9291,12 @@ ApplicationWindow {
         }
 
         Timer {
+            id: editorMouseMoveTimer
+            interval: 0
+            onTriggered: documentRoot.flushEditorMouseMove()
+        }
+
+        Timer {
             id: initialPlacementTimer
             interval: 0
             onTriggered: {
@@ -8891,14 +9322,18 @@ ApplicationWindow {
 
         Timer {
             id: scrollBarRequestTimer
-            interval: 32
+            // Coalesce all thumb changes posted in the current Qt event turn,
+            // then start immediately. There is still at most one
+            // authoritative request in flight; its ACK restarts this timer
+            // with only the newest retained position.
+            interval: 0
             onTriggered: {
                 if (documentRoot.queuedScrollBarPosition < 0)
                     return
-                if (documentRoot.windowRequestPending) {
-                    restart()
+                // The ACK path restarts us with the newest retained thumb
+                // position. Never poll or replay stale intermediate points.
+                if (documentRoot.windowRequestPending)
                     return
-                }
                 var position = documentRoot.queuedScrollBarPosition
                 documentRoot.queuedScrollBarPosition = -1
                 documentRoot.sendWindowRequest(position
@@ -10283,7 +10718,7 @@ ApplicationWindow {
                 color: "#202833"
                 radius: 4
                 border.width: 1
-                border.color: root.panelBorder
+                border.color: root.dialogAccent
                 clip: true
                 z: 170
 
@@ -10974,7 +11409,7 @@ ApplicationWindow {
     component KeyBarView: Rectangle {
         property var keyBar: ({})
         objectName: "keyBar"
-        color: "transparent"
+        color: root.fBarBg
         visible: keyBar.visible !== false && keyBar.items !== undefined
 
         // This is application chrome, not panel/document content. Keeping the

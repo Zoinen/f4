@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-func TestLoadPanelGallerySessionStateMigratesLegacyIconsDefault(t *testing.T) {
+func TestLoadPanelGallerySessionStateMigratesLegacyDensityDefaults(t *testing.T) {
 	ini := ParseIni(bytes.NewBufferString(
 		"[LeftPanel]\nGalleryLayout = icons\nGalleryDensityIcons = 128\n"))
 	state := loadPanelGallerySessionState(ini, "LeftPanel")
@@ -40,6 +40,38 @@ func TestLoadPanelGallerySessionStateMigratesLegacyIconsDefault(t *testing.T) {
 	state = loadPanelGallerySessionState(ini, "LeftPanel")
 	if got := state.Densities[GalleryLayoutIcons]; got != 96 {
 		t.Fatalf("explicit Icons density changed to %d, want 96", got)
+	}
+
+	// Compact text layouts used to persist a mutable row density. Their row
+	// pitch is now derived by the QML host, so legacy values must not survive
+	// a session load and override that host default.
+	ini = ParseIni(bytes.NewBufferString(
+		"[LeftPanel]\nGalleryLayout = details\n" +
+			"GalleryDensityColumns = 34\nGalleryDensityDetails = 41\n"))
+	state = loadPanelGallerySessionState(ini, "LeftPanel")
+	if _, exists := state.Densities[GalleryLayoutColumns]; exists {
+		t.Fatalf("legacy Columns density survived load: %#v", state.Densities)
+	}
+	if _, exists := state.Densities[GalleryLayoutDetails]; exists {
+		t.Fatalf("legacy Details density survived load: %#v", state.Densities)
+	}
+
+	var encoded strings.Builder
+	writePanelGallerySessionState(&encoded, panelGallerySessionState{
+		LayoutMode:  GalleryLayoutDetails,
+		ColumnCount: 2,
+		Densities: map[GalleryLayoutMode]int{
+			GalleryLayoutColumns: 34,
+			GalleryLayoutDetails: 41,
+			GalleryLayoutIcons:   96,
+		},
+	})
+	if strings.Contains(encoded.String(), "GalleryDensityColumns") ||
+		strings.Contains(encoded.String(), "GalleryDensityDetails") {
+		t.Fatalf("compact density was persisted again:\n%s", encoded.String())
+	}
+	if !strings.Contains(encoded.String(), "GalleryDensityIcons = 96") {
+		t.Fatalf("adjustable density was lost while saving:\n%s", encoded.String())
 	}
 }
 
@@ -94,9 +126,21 @@ func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 		t.Fatalf("density revision = %d, want %d", panel.galleryLayoutRevision, revision+1)
 	}
 
+	// A stale compact-mode preference is removed rather than clamped. The
+	// semantic scene subsequently sends zero and the host derives the exact
+	// font-based default, including any fractional row pitch.
+	panel.galleryDensities[GalleryLayoutDetails] = 47
+	detailsRevision := panel.galleryLayoutRevision
 	if !panel.SetGalleryDensity(GalleryLayoutDetails, 1) ||
-		panel.galleryDensity(GalleryLayoutDetails) != 22 {
-		t.Fatal("Details density did not use its 22-pixel lower bound")
+		panel.galleryDensity(GalleryLayoutDetails) != 0 {
+		t.Fatal("Details density did not return to the host-owned default")
+	}
+	if _, exists := panel.galleryDensities[GalleryLayoutDetails]; exists {
+		t.Fatal("stale Details density was not removed")
+	}
+	if panel.galleryLayoutRevision != detailsRevision+1 {
+		t.Fatalf("removing stale Details density revision = %d, want %d",
+			panel.galleryLayoutRevision, detailsRevision+1)
 	}
 	if panel.SetGalleryDensity(GalleryLayoutMode("unknown"), 100) {
 		t.Fatal("unknown gallery density mode was accepted")

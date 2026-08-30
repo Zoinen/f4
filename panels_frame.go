@@ -34,7 +34,10 @@ const (
 	driveMenuIconNetwork    = "network"
 	driveMenuIconPhysical   = "database"
 	driveMenuIconBookmark   = "folder"
-	driveMenuIconVirtual    = "globe"
+	driveMenuIconCloud      = "cloud"
+	driveMenuIconAndroid    = "android-logo"
+	driveMenuIconIOS        = "apple-logo"
+	driveMenuIconAI         = "sparkles"
 )
 
 var DriveRegistry []DriveEntry
@@ -60,10 +63,16 @@ func RegisterDrive(name string, factory func() vfs.VFS) {
 func registeredDriveIcon(name string) string {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	switch {
+	case lower == "android":
+		return driveMenuIconAndroid
+	case lower == "ios":
+		return driveMenuIconIOS
+	case lower == "ai":
+		return driveMenuIconAI
 	case strings.Contains(lower, "net"):
 		return driveMenuIconNetwork
 	case strings.Contains(lower, "cloud"):
-		return driveMenuIconVirtual
+		return driveMenuIconCloud
 	default:
 		return driveMenuIconPhysical
 	}

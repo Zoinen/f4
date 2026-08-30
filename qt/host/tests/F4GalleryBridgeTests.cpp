@@ -828,6 +828,29 @@ void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
     QObject *leftHost = leftLoader->property("item").value<QObject *>();
     QObject *rightHost = rightLoader->property("item").value<QObject *>();
 
+    // A row click in the inactive panel must not first activate its previous
+    // cursor and only then send the clicked cursor. The bridge emits one
+    // semantic action which carries both changes atomically.
+    QObject *rightGalleryPanel = rightHost->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryPanel"));
+    QVERIFY(rightGalleryPanel);
+    QSignalSpy pointerActions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QVERIFY(QMetaObject::invokeMethod(
+        rightGalleryPanel, "handlePointerPress",
+        Q_ARG(QVariant, QVariant(1)),
+        Q_ARG(QVariant, QVariant::fromValue(int(Qt::LeftButton))),
+        Q_ARG(QVariant, QVariant::fromValue(int(Qt::NoModifier)))));
+    QTRY_COMPARE_WITH_TIMEOUT(pointerActions.size(), 1, 1000);
+    const QVariantMap pointerAction =
+        pointerActions.constFirst().constFirst().toMap();
+    QCOMPARE(pointerAction.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.cursor"));
+    QCOMPARE(pointerAction.value(QStringLiteral("side")).toInt(), 1);
+    QCOMPARE(pointerAction.value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("left:two"));
+    QCOMPARE(pointerAction.value(QStringLiteral("index")).toInt(), 9);
+    QVERIFY(pointerAction.value(QStringLiteral("activate")).toBool());
+
     QVERIFY(QMetaObject::invokeMethod(leftHost, "forceActiveFocus"));
     QTRY_VERIFY(leftHost->property("activeFocus").toBool());
     QVERIFY(!rightHost->property("activeFocus").toBool());
@@ -1157,17 +1180,52 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     keyRecorder.clear();
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QTest::keyClick(&view, Qt::Key_Equal, Qt::ControlModifier);
-    QCOMPARE(panel->property("thumbnailHeight").toInt(), 170);
+    const int zoomedThumbnailHeight =
+        panel->property("thumbnailHeight").toInt();
+    QVERIFY(zoomedThumbnailHeight > 150);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
     QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QCOMPARE(keyRecorder.count(Qt::Key_0, true), 0);
     QTest::keyClick(&view, Qt::Key_Equal,
                     Qt::ControlModifier | Qt::ShiftModifier);
-    QCOMPARE(panel->property("thumbnailHeight").toInt(), 170);
+    QCOMPARE(panel->property("thumbnailHeight").toInt(),
+             zoomedThumbnailHeight);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
     QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
+
+    // Compact text layouts consume the same hotkeys but keep their exact
+    // host-derived row pitch. None of these key paths may reach Go or turn a
+    // stale semantic density into a local zoom.
+    QVariantMap compactPanel = host->property("panel").toMap();
+    compactPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("details"));
+    compactPanel.insert(QStringLiteral("galleryDensity"), 61);
+    host->setProperty("panel", compactPanel);
+    QTRY_COMPARE(panel->property("presentationMode").toString(),
+                 QStringLiteral("details"));
+    QVERIFY(!host->property("densityAdjustable").toBool());
+    QVERIFY(!panel->property("densityAdjustmentEnabled").toBool());
+    const qreal fixedListDensity = panel->property("density").toReal();
+    actions.clear();
+    keyRecorder.clear();
+    QTest::keyClick(&view, Qt::Key_Equal, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_Minus, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
+    QCOMPARE(panel->property("density").toReal(), fixedListDensity);
+    QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_Minus, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_0, true), 0);
+    QCOMPARE(actions.size(), 0);
+
+    compactPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("masonry"));
+    compactPanel.insert(QStringLiteral("galleryDensity"), 150);
+    host->setProperty("panel", compactPanel);
+    QTRY_COMPARE(panel->property("presentationMode").toString(),
+                 QStringLiteral("masonry"));
+    QTRY_COMPARE(panel->property("thumbnailHeight").toInt(), 150);
 
     // Ctrl/Alt navigation, Tab, function keys, commander presentation keys,
     // Escape, and fast-find/text input all belong to Go.
@@ -2703,13 +2761,11 @@ void F4GalleryBridgeTests::inactivePanelImageOpenWaitsForActiveAndCursor()
     bridge.requestOpen(0, QStringLiteral("left:two"), 9, true, 42);
 
     QVERIFY(!bridge.viewerVisible());
-    QCOMPARE(actions.size(), 2);
-    QCOMPARE(actions.at(0).constFirst().toMap()
-                 .value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.activate"));
-    QCOMPARE(actions.at(1).constFirst().toMap()
-                 .value(QStringLiteral("action")).toString(),
+    QCOMPARE(actions.size(), 1);
+    const QVariantMap cursorAction = actions.constFirst().constFirst().toMap();
+    QCOMPARE(cursorAction.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.cursor"));
+    QVERIFY(cursorAction.value(QStringLiteral("activate")).toBool());
 
     // Cursor acknowledgement can precede activation acknowledgement. Keep
     // the viewer intent, but do not expose a viewer owned by an inactive side.
@@ -2719,7 +2775,7 @@ void F4GalleryBridgeTests::inactivePanelImageOpenWaitsForActiveAndCursor()
     scene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(scene);
     QVERIFY(!bridge.viewerVisible());
-    QCOMPARE(actions.size(), 2);
+    QCOMPARE(actions.size(), 1);
 
     // The same stable cursor becomes viewable when Go's tiny revisioned
     // activation acknowledgement arrives; neither catalog is synchronized.
@@ -2727,7 +2783,7 @@ void F4GalleryBridgeTests::inactivePanelImageOpenWaitsForActiveAndCursor()
     QVERIFY(bridge.viewerVisible());
     QCOMPARE(bridge.viewerSide(), 0);
     QCOMPARE(bridge.viewerSession(), bridge.sessionForSide(0));
-    QCOMPARE(actions.size(), 2);
+    QCOMPARE(actions.size(), 1);
 
     // Duplicate/stale activation delivery cannot roll the bridge state back.
     bridge.synchronizePanelActivation(1, 1);
@@ -3636,8 +3692,9 @@ void F4GalleryBridgeTests::activationSceneDoesNotSnapPendingCursorBackward()
     bridge.requestCursor(0, QStringLiteral("left:two"), 9, 42);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:two"));
 
-    // panel.activate is ordered before panel.cursor when an inactive Gallery
-    // is clicked. Its scene has the same catalog but the previous cursor.
+    // An activation-only scene can still race with a pending cursor intent
+    // and carry the previous cursor. Keep the local target until the cursor
+    // acknowledgement itself arrives.
     bridge.synchronizeScene(initial);
     QCOMPARE(session->cursorEntryId(), QStringLiteral("left:two"));
     QCOMPARE(session->currentIndex(), 1);
@@ -4003,6 +4060,8 @@ void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
 
     bridge.requestGalleryLayout(0, QStringLiteral("invalid"), 2);
     bridge.requestGalleryDensity(0, QStringLiteral("invalid"), 100);
+    bridge.requestGalleryDensity(0, QStringLiteral("columns"), 34);
+    bridge.requestGalleryDensity(0, QStringLiteral("details"), 34);
     bridge.requestSort(0, QStringLiteral("invalid"));
     QCOMPARE(actions.size(), 0);
 
@@ -4119,8 +4178,17 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
                  mode);
         QCOMPARE(embeddedPanel->property("columnCount").toInt(),
                  columnCount);
-        QVERIFY(qAbs(embeddedPanel->property("density").toDouble()
-                     - density) < 0.0001);
+        const double appliedDensity =
+            embeddedPanel->property("density").toDouble();
+        const double requestedDensity =
+            host->property("requestedDensity").toDouble();
+        QVERIFY2(qAbs(appliedDensity - requestedDensity) < 0.0001,
+                 qPrintable(QStringLiteral(
+                     "%1 applied density %2, requested %3, semantic %4")
+                     .arg(mode)
+                     .arg(appliedDensity, 0, 'g', 17)
+                     .arg(requestedDensity, 0, 'g', 17)
+                     .arg(density)));
         QCOMPARE(embeddedPanel->property("columnSchema").toList(), columns);
         QCOMPARE(layout->property("layoutRevision").toULongLong(),
                  revisionBefore + 1);
@@ -4410,13 +4478,16 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
         embeddedPanel, 3000);
     QCOMPARE(cachedViewport->property("opacity").toDouble(), 0.0);
 
-    // Explicit persisted zoom values keep the existing integer contract.
+    // Compact text layouts are intentionally fixed at the host-owned row
+    // pitch. A stale saved density cannot override the fractional default.
     configuredGallery.insert(QStringLiteral("galleryDensity"), 30);
     panelHostObject->setProperty("panel", configuredGallery);
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(embeddedPanel->property("density").toDouble() - 30.0)
+        qAbs(embeddedPanel->property("density").toDouble() - 24.2)
             < 0.0001,
         3000);
+    QVERIFY(!panelHostObject->property("densityAdjustable").toBool());
+    QVERIFY(!embeddedPanel->property("densityAdjustmentEnabled").toBool());
 
     // Icons starts at half of the former 128px cell scale. An untouched
     // semantic density must select that 64px default, while persisted
@@ -4432,6 +4503,15 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
         qAbs(embeddedPanel->property("density").toDouble() - 64.0)
             < 0.0001,
         3000);
+    QVERIFY(panelHostObject->property("densityAdjustable").toBool());
+    QVERIFY(embeddedPanel->property("densityAdjustmentEnabled").toBool());
+
+    configuredGallery.insert(QStringLiteral("galleryDensity"), 96);
+    panelHostObject->setProperty("panel", configuredGallery);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(embeddedPanel->property("density").toDouble() - 96.0)
+            < 0.0001,
+        3000);
 
     configuredGallery.insert(QStringLiteral("galleryLayoutMode"),
                              QStringLiteral("details"));
@@ -4441,13 +4521,14 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
         embeddedPanel->property("presentationMode").toString(),
         QStringLiteral("details"), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(embeddedPanel->property("density").toDouble() - 30.0)
+        qAbs(embeddedPanel->property("density").toDouble() - 24.2)
             < 0.0001,
         3000);
 
-    // Continuous zoom stays local. Only the final density commit crosses the
-    // semantic bridge, while Details header clicks preserve left/right mouse
-    // semantics through panel.sort and panel.sortMenu respectively.
+    // Details ignores both preview and final density requests. Adjustable
+    // modes still commit only their final value across the semantic bridge,
+    // while Details header clicks preserve left/right mouse semantics through
+    // panel.sort and panel.sortMenu respectively.
     QSignalSpy rendererActions(&bridge, &F4GalleryBridge::uiActionRequested);
     QVERIFY(QMetaObject::invokeMethod(
         embeddedPanel, "densityChangeRequested", Qt::DirectConnection,
@@ -4458,11 +4539,26 @@ void F4GalleryBridgeTests::loadsTwoSessionsAndWindowlessQml()
         embeddedPanel, "densityChangeRequested", Qt::DirectConnection,
         Q_ARG(QString, QStringLiteral("details")), Q_ARG(double, 44.0),
         Q_ARG(bool, true)));
+    QCOMPARE(rendererActions.size(), 0);
+
+    configuredGallery.insert(QStringLiteral("galleryLayoutMode"),
+                             QStringLiteral("icons"));
+    configuredGallery.insert(QStringLiteral("galleryDensity"), 64);
+    panelHostObject->setProperty("panel", configuredGallery);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        embeddedPanel->property("presentationMode").toString(),
+        QStringLiteral("icons"), 3000);
+    QVERIFY(QMetaObject::invokeMethod(
+        embeddedPanel, "densityChangeRequested", Qt::DirectConnection,
+        Q_ARG(QString, QStringLiteral("icons")), Q_ARG(double, 96.0),
+        Q_ARG(bool, true)));
     QCOMPARE(rendererActions.size(), 1);
     QVariantMap rendererAction = rendererActions.takeFirst().at(0).toMap();
     QCOMPARE(rendererAction.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.setGalleryDensity"));
-    QCOMPARE(rendererAction.value(QStringLiteral("density")).toInt(), 44);
+    QCOMPARE(rendererAction.value(QStringLiteral("layoutMode")).toString(),
+             QStringLiteral("icons"));
+    QCOMPARE(rendererAction.value(QStringLiteral("density")).toInt(), 96);
 
     QVERIFY(QMetaObject::invokeMethod(
         embeddedPanel, "sortRequested", Qt::DirectConnection,

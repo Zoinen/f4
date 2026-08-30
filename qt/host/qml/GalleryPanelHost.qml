@@ -87,34 +87,18 @@ FocusScope {
         String(panel.galleryLayoutMode || "masonry")
     readonly property int requestedColumnCount:
         Math.max(2, Math.min(3, Number(panel.galleryColumnCount || 2)))
-    readonly property real requestedDensity: {
-        const supplied = Number(panel.galleryDensity || 0)
-        if (supplied > 0)
-            return Math.round(supplied)
-        if (requestedPresentationMode === "columns"
-                || requestedPresentationMode === "details")
-            return Math.max(22, defaultListDensity)
-        return requestedPresentationMode === "grid" ? 160
-             : requestedPresentationMode === "icons" ? 64 : 150
-    }
+    readonly property bool densityAdjustable:
+        densityIsAdjustable(requestedPresentationMode)
+    readonly property real requestedDensity: densityFor(panel)
     readonly property real currentDensity:
         galleryPanel && typeof galleryPanel.density !== "undefined"
         ? Number(galleryPanel.density) : requestedDensity
     readonly property real minimumDensity:
-        requestedPresentationMode === "columns"
-        || requestedPresentationMode === "details" ? 22
-        : requestedPresentationMode === "grid" ? 96
-        : requestedPresentationMode === "icons" ? 18 : 30
+        minimumDensityFor(requestedPresentationMode)
     readonly property real maximumDensity:
-        requestedPresentationMode === "columns"
-        || requestedPresentationMode === "details" ? 72
-        : requestedPresentationMode === "grid" ? 320
-        : requestedPresentationMode === "icons" ? 256 : 500
+        maximumDensityFor(requestedPresentationMode)
     readonly property real densityStep:
-        requestedPresentationMode === "columns"
-        || requestedPresentationMode === "details" ? 2
-        : requestedPresentationMode === "grid" ? 8
-        : requestedPresentationMode === "icons" ? 2 : 20
+        densityStepFor(requestedPresentationMode)
     // This is the presentation state already committed to the active native
     // renderer. f4's external Details header consumes the same values, so it
     // can never get one frame ahead of the retained GalleryPanel body.
@@ -190,14 +174,40 @@ FocusScope {
                     Number(panelState && panelState.galleryColumnCount || 2)))
     }
 
+    function densityIsAdjustable(mode) {
+        return mode !== "columns" && mode !== "details"
+    }
+
+    function defaultDensityFor(mode) {
+        if (!densityIsAdjustable(mode))
+            return Math.max(22, defaultListDensity)
+        return mode === "grid" ? 160 : mode === "icons" ? 64 : 150
+    }
+
+    function minimumDensityFor(mode) {
+        if (!densityIsAdjustable(mode))
+            return defaultDensityFor(mode)
+        return mode === "grid" ? 96 : mode === "icons" ? 18 : 30
+    }
+
+    function maximumDensityFor(mode) {
+        if (!densityIsAdjustable(mode))
+            return defaultDensityFor(mode)
+        return mode === "grid" ? 320 : mode === "icons" ? 256 : 500
+    }
+
+    function densityStepFor(mode) {
+        return mode === "grid" ? 8 : mode === "icons" ? 2 : 20
+    }
+
     function densityFor(panelState) {
         const mode = presentationModeFor(panelState)
+        if (!densityIsAdjustable(mode))
+            return defaultDensityFor(mode)
         const supplied = Number(panelState && panelState.galleryDensity || 0)
         if (supplied > 0)
             return Math.round(supplied)
-        if (mode === "columns" || mode === "details")
-            return Math.max(22, defaultListDensity)
-        return mode === "grid" ? 160 : mode === "icons" ? 64 : 150
+        return defaultDensityFor(mode)
     }
 
     function applyRendererStateTo(target, panelState, publishState) {
@@ -250,7 +260,11 @@ FocusScope {
                 target.presentationMode = mode
             if (columnCountChanged)
                 target.columnCount = columnCount
-            if (densityChanged)
+            // setPresentationMode() restores that mode's remembered density.
+            // Even when the old mode already had the requested value, apply
+            // the host-owned value again after the mode switch so compact
+            // presentations cannot resurrect a stale per-mode row pitch.
+            if (densityChanged || modeChanged)
                 target.density = density
         } finally {
             if (transactionStarted) {
@@ -321,13 +335,16 @@ FocusScope {
     }
 
     function previewDensity(value) {
-        if (!galleryPanel || typeof galleryPanel.density === "undefined")
+        if (!densityAdjustable || !galleryPanel
+                || typeof galleryPanel.density === "undefined")
             return
         galleryPanel.density = Math.max(minimumDensity,
             Math.min(maximumDensity, Number(value)))
     }
 
     function commitDensity(value) {
+        if (!densityAdjustable)
+            return
         const normalized = Math.round(Math.max(minimumDensity,
             Math.min(maximumDensity, Number(value))))
         previewDensity(normalized)
@@ -535,35 +552,46 @@ FocusScope {
     function handleZoom(event) {
         if (!galleryPanel || !ownsZoomShortcut(event))
             return false
-        const mode = requestedPresentationMode
-        const minimum = mode === "columns" || mode === "details" ? 22
-                      : mode === "grid" ? 96
-                      : mode === "icons" ? 18 : 30
-        const maximum = mode === "columns" || mode === "details" ? 72
-                      : mode === "grid" ? 320
-                      : mode === "icons" ? 256 : 500
-        const defaultDensity = mode === "columns" || mode === "details"
-                ? Math.max(22, Math.round(defaultListDensity))
-                : mode === "grid" ? 160
-                : mode === "icons" ? 64 : 150
-        const step = mode === "columns" || mode === "details" ? 2
-                   : mode === "grid" ? 8
-                   : mode === "icons" ? 2 : 20
+        // Ctrl+/- and Ctrl+0 are consumed in the fixed compact modes so they
+        // cannot either resize rows locally or leak into the terminal.
+        if (!densityAdjustable)
+            return true
+
+        if (event.key === Qt.Key_0) {
+            const defaultDensity = defaultDensityFor(
+                        requestedPresentationMode)
+            if (typeof galleryPanel.resetDensity === "function")
+                galleryPanel.resetDensity(defaultDensity)
+            else
+                commitDensity(defaultDensity)
+            return true
+        }
+
+        const zoomIn = event.key === Qt.Key_Plus
+                || event.key === Qt.Key_Equal
+        const zoomOut = event.key === Qt.Key_Minus
+        if (!zoomIn && !zoomOut)
+            return false
+
+        // GalleryPanel delegates Grid/Icons stepping to MasonryLayout. That
+        // selects the next column-count interval rather than a raw pixel
+        // delta, so every zoom action changes the visible lattice.
+        if (typeof galleryPanel.stepDensity === "function") {
+            galleryPanel.stepDensity(zoomIn)
+            return true
+        }
+
+        // Compatibility with an older reusable renderer. Production uses the
+        // discrete path above; this fallback merely preserves safe local zoom
+        // for lightweight test/custom embedders.
+        const step = densityStep
         const currentValue = typeof galleryPanel.density !== "undefined"
                 ? galleryPanel.density : galleryPanel.thumbnailHeight
-        const current = Math.max(minimum, Math.min(maximum,
+        const current = Math.max(minimumDensity, Math.min(maximumDensity,
                               Math.round(Number(currentValue
-                                                || defaultDensity))))
-        var target = current
-        if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) {
-            target = Math.min(maximum, current + step)
-        } else if (event.key === Qt.Key_Minus) {
-            target = Math.max(minimum, current - step)
-        } else if (event.key === Qt.Key_0) {
-            target = Math.max(minimum, Math.min(maximum, defaultDensity))
-        } else {
-            return false
-        }
+                                                || requestedDensity))))
+        const target = zoomIn ? Math.min(maximumDensity, current + step)
+                              : Math.max(minimumDensity, current - step)
 
         if (target !== current) {
             // Reuse GalleryPanel's pinch commit path: it clamps using the
@@ -899,9 +927,11 @@ FocusScope {
 
         function onDensityChangeRequested(mode, density, finalChange) {
             if (host.applyingRendererState || !host.bridge
-                    || finalChange !== true)
+                    || finalChange !== true || !host.densityAdjustable)
                 return
             const normalizedMode = String(mode || host.requestedPresentationMode)
+            if (!host.densityIsAdjustable(normalizedMode))
+                return
             const normalizedDensity = Math.round(Number(density || 0))
             if (normalizedDensity > 0
                     && (normalizedMode !== host.requestedPresentationMode

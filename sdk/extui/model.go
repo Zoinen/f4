@@ -431,6 +431,11 @@ type TextRowModel struct {
 	EndOffset   int64
 	Text        string
 	Runs        []RunModel
+	// ContentKey identifies the rendered contents of one absolute document
+	// row. It deliberately excludes Index, which is local to a moving bounded
+	// window, so native views can retain an overlapping delegate while that
+	// window slides around it.
+	ContentKey string
 }
 
 type RunModel struct {
@@ -1084,6 +1089,34 @@ func WindowRowsContentKey(rows []TextRowModel) string {
 		writeUint64(uint64(len(value)))
 		_, _ = h.Write([]byte(value))
 	}
+
+	writeString("f4-window-content-v2")
+	writeUint64(uint64(len(rows)))
+	for _, row := range rows {
+		writeUint64(uint64(int64(row.Index)))
+		contentKey := row.ContentKey
+		if contentKey == "" {
+			contentKey = TextRowContentKey(row)
+		}
+		writeString(contentKey)
+	}
+	return "w1-" + strconv.FormatUint(h.Sum64(), 16)
+}
+
+// TextRowContentKey fingerprints one absolute rendered document row. Unlike
+// WindowRowsContentKey it excludes the window-local Index, which lets a QML
+// ListView compare overlapping rows in O(1) as the semantic window moves.
+func TextRowContentKey(row TextRowModel) string {
+	h := fnv.New64a()
+	var number [8]byte
+	writeUint64 := func(value uint64) {
+		binary.LittleEndian.PutUint64(number[:], value)
+		_, _ = h.Write(number[:])
+	}
+	writeString := func(value string) {
+		writeUint64(uint64(len(value)))
+		_, _ = h.Write([]byte(value))
+	}
 	writeBool := func(value bool) {
 		if value {
 			_, _ = h.Write([]byte{1})
@@ -1092,27 +1125,23 @@ func WindowRowsContentKey(rows []TextRowModel) string {
 		}
 	}
 
-	writeString("f4-window-content-v1")
-	writeUint64(uint64(len(rows)))
-	for _, row := range rows {
-		writeUint64(uint64(int64(row.Index)))
-		writeUint64(uint64(int64(row.VisualRow)))
-		writeUint64(uint64(int64(row.LogicalLine)))
-		writeUint64(uint64(row.Offset))
-		writeUint64(uint64(row.EndOffset))
-		writeString(row.Text)
-		writeUint64(uint64(len(row.Runs)))
-		for _, run := range row.Runs {
-			writeString(run.Text)
-			writeUint64(run.Attr)
-			writeString(run.Foreground)
-			writeString(run.Background)
-			writeBool(run.Bold)
-			writeBool(run.Underline)
-			writeBool(run.Strikeout)
-		}
+	writeString("f4-text-row-content-v1")
+	writeUint64(uint64(int64(row.VisualRow)))
+	writeUint64(uint64(int64(row.LogicalLine)))
+	writeUint64(uint64(row.Offset))
+	writeUint64(uint64(row.EndOffset))
+	writeString(row.Text)
+	writeUint64(uint64(len(row.Runs)))
+	for _, run := range row.Runs {
+		writeString(run.Text)
+		writeUint64(run.Attr)
+		writeString(run.Foreground)
+		writeString(run.Background)
+		writeBool(run.Bold)
+		writeBool(run.Underline)
+		writeBool(run.Strikeout)
 	}
-	return "w1-" + strconv.FormatUint(h.Sum64(), 16)
+	return "r1-" + strconv.FormatUint(h.Sum64(), 16)
 }
 
 func (r TextRowModel) ToMap() M {
@@ -1122,6 +1151,9 @@ func (r TextRowModel) ToMap() M {
 		"logicalLine": r.LogicalLine,
 		"offset":      r.Offset,
 		"endOffset":   r.EndOffset,
+	}
+	if r.ContentKey != "" {
+		out["contentKey"] = r.ContentKey
 	}
 	if r.Text != "" {
 		out["text"] = r.Text

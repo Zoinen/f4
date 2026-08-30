@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/plugins/chroma"
@@ -51,6 +52,10 @@ func BenchmarkDocumentSurfaceSemanticEditorWindow(b *testing.B) {
 				"document-surface-benchmark.go", "")
 			editor.SetPosition(0, 0, 159, 30)
 			editor.SetVisible(true)
+			// The native Qt semantic renderer intentionally disables the hidden
+			// cell-grid syntax fade. Model that production state so this benchmark
+			// measures steady-state edge scrolling rather than the one-off fade.
+			editor.syntaxFadeStart = time.Now().Add(-syntaxFadeDuration)
 			editor.ensureEngineWidth()
 			editor.ScrollTopRow = 64
 

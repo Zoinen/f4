@@ -67,6 +67,14 @@ type EditorView struct {
 	semanticWindowGeneration        uint64
 	semanticWindowRequestGeneration uint64
 	semanticExtentKnown             bool
+	// The Qt semantic surface slides a bounded three-viewport window through
+	// the document. Keep final styled rows for the current overlap so an edge
+	// scroll or selection endpoint move only repaints the rows whose pixels
+	// actually changed.
+	semanticStyledRows             map[int]semanticEditorStyledRowCacheEntry
+	semanticStyledRowsContext      semanticEditorStyledRowsContext
+	semanticStyledRowsContextValid bool
+	semanticStyledRowsRendered     uint64
 
 	WordWrap         bool
 	HexMode          bool

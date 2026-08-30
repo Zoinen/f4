@@ -3602,6 +3602,28 @@ func TestDriveMenu_SmartHotkeys(t *testing.T) {
 	}
 }
 
+func TestRegisteredDriveIconUsesPluginSpecificGlyphs(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "Android", want: driveMenuIconAndroid},
+		{name: " iOS ", want: driveMenuIconIOS},
+		{name: "AI", want: driveMenuIconAI},
+		{name: "CloudFox", want: driveMenuIconCloud},
+		{name: "NetFox", want: driveMenuIconNetwork},
+		{name: "Custom drive", want: driveMenuIconPhysical},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := registeredDriveIcon(tc.name); got != tc.want {
+				t.Fatalf("registeredDriveIcon(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDriveMenu_PhysicalKeys(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping Linux-specific physical key test")

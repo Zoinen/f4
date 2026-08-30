@@ -306,6 +306,19 @@ func TestWindowRowsContentKeyTracksTextAndCompleteRunStyle(t *testing.T) {
 	if original == "" || original != WindowRowsContentKey(append([]TextRowModel(nil), rows...)) {
 		t.Fatalf("unchanged rows produced unstable key %q", original)
 	}
+	rowKey := TextRowContentKey(rows[0])
+	reindexed := rows[0]
+	reindexed.Index++
+	if got := TextRowContentKey(reindexed); got != rowKey {
+		t.Fatalf("window-local row index changed absolute content key %q -> %q",
+			rowKey, got)
+	}
+	repainted := rows[0]
+	repainted.Runs = append([]RunModel(nil), rows[0].Runs...)
+	repainted.Runs[0].Foreground = "#abcdef"
+	if got := TextRowContentKey(repainted); got == rowKey {
+		t.Fatalf("row repaint retained content key %q", got)
+	}
 
 	mutations := map[string]func([]TextRowModel){
 		"row text":       func(copy []TextRowModel) { copy[1].Text = "World" },

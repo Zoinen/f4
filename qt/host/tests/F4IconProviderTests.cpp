@@ -233,6 +233,7 @@ private slots:
     void routeValuesRejectNonCanonicalInput();
     void normalizationIsDeterministic();
     void lucideSourcesAndFileClassification();
+    void diskPluginBrandSourcesAndRasterRoutes();
     void largeLucideRouteRendersAVisibleDprAwareFallback();
     void chromeLucideRoutesRenderNamedResources();
     void lucideRoutesPreserveRequestedTint();
@@ -363,6 +364,50 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
     QVERIFY(!galleryQuery.hasQueryItem(QStringLiteral("version")));
 }
 
+void F4IconProviderTests::diskPluginBrandSourcesAndRasterRoutes()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const QColor tint(QStringLiteral("#4e9bd4"));
+    constexpr int logicalSize = 16;
+    constexpr qreal devicePixelRatio = 1.25;
+    const QSize physicalSize = F4IconProvider::physicalSize(
+        logicalSize, devicePixelRatio);
+    const struct {
+        QString name;
+        QString source;
+    } iconsToVerify[] = {
+        {QStringLiteral("android-logo"),
+         QStringLiteral("qrc:/F4QtHost/icons/streamline/android-logo.svg")},
+        {QStringLiteral("apple-logo"),
+         QStringLiteral("qrc:/F4QtHost/icons/streamline/apple-logo.svg")},
+    };
+
+    for (const auto &icon : iconsToVerify) {
+        QCOMPARE(F4IconProvider::normalizedIconName(icon.name), icon.name);
+        QCOMPARE(F4IconProvider::lucideSource(icon.name, logicalSize).toString(),
+                 icon.source);
+        QCOMPARE(icons.iconSource(icon.name, logicalSize, devicePixelRatio).toString(),
+                 icon.source);
+
+        const QUrl rasterized = icons.rasterizedLucideSource(
+            icon.name, logicalSize, devicePixelRatio, tint);
+        const QImage actual = provider.requestImage(
+            F4IconProvider::routeId(rasterized), nullptr, {});
+        const QImage expected = renderTintedSvgReference(
+            icon.name, logicalSize, physicalSize, tint);
+        QVERIFY2(!actual.isNull(), qPrintable(icon.name));
+        QVERIFY2(exactImageDifference(actual, expected).isEmpty(),
+                 qPrintable(exactImageDifference(actual, expected)));
+    }
+
+    icons.setIconSet(F4IconSet::System);
+    for (const auto &icon : iconsToVerify) {
+        QCOMPARE(icons.iconSource(icon.name, logicalSize, devicePixelRatio).toString(),
+                 icon.source);
+    }
+}
+
 void F4IconProviderTests::largeLucideRouteRendersAVisibleDprAwareFallback()
 {
     F4IconProvider provider(std::make_unique<NullBackend>());
@@ -406,6 +451,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-right"),
         QStringLiteral("clock-3"),
+        QStringLiteral("cloud"),
         QStringLiteral("columns-2"),
         QStringLiteral("columns-3"),
         QStringLiteral("file-pen-line"),
@@ -420,6 +466,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("panel-left"),
         QStringLiteral("panels-top-left"),
         QStringLiteral("plus"),
+        QStringLiteral("sparkles"),
         QStringLiteral("x"),
     };
 

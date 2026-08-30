@@ -682,6 +682,9 @@ func loadPanelGallerySessionState(ini *IniFile, section string) panelGallerySess
 		}
 	}
 	for _, mode := range galleryLayoutModes {
+		if !galleryDensityAdjustable(mode) {
+			continue
+		}
 		key := "GalleryDensity" + strings.ToUpper(string(mode[:1])) + string(mode[1:])
 		var density int
 		if _, err := fmt.Sscanf(ini.GetString(section, key, ""), "%d", &density); err == nil {
@@ -736,6 +739,9 @@ func writePanelGallerySessionState(sb *strings.Builder, state panelGallerySessio
 	state = clonePanelGallerySessionState(state)
 	fmt.Fprintf(sb, "GalleryLayout = %s\nGalleryColumns = %d\n", state.LayoutMode, state.ColumnCount)
 	for _, mode := range galleryLayoutModes {
+		if !galleryDensityAdjustable(mode) {
+			continue
+		}
 		if density, ok := state.Densities[mode]; ok {
 			key := "GalleryDensity" + strings.ToUpper(string(mode[:1])) + string(mode[1:])
 			fmt.Fprintf(sb, "%s = %d\n", key, density)

@@ -74,6 +74,12 @@ qt6_add_resources(f4-qt-host f4_gallery_lucide_icons
   FILES ${F4_GALLERY_LUCIDE_ICONS}
 )
 
+qt6_add_resources(f4-qt-host f4_streamline_icons
+  PREFIX "/F4QtHost/icons/streamline"
+  BASE "${F4_QT_HOST_ROOT}/icons/streamline"
+  FILES ${F4_STREAMLINE_ICONS}
+)
+
 qt6_add_resources(f4-qt-host f4_app_icon
   PREFIX "/F4QtHost/icons/app"
   BASE "${F4_QT_HOST_ROOT}/../../assets/icon"

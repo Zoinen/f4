@@ -185,6 +185,7 @@ set(F4_LUCIDE_ICON_NAMES
   chevron-down.svg
   chevron-right.svg
   clock-3.svg
+  cloud.svg
   columns-2.svg
   columns-3.svg
   database.svg
@@ -223,6 +224,7 @@ set(F4_LUCIDE_ICON_NAMES
   rows-4.svg
   save.svg
   search.svg
+  sparkles.svg
   square-terminal.svg
   trash-2.svg
   triangle-alert.svg
@@ -231,6 +233,13 @@ set(F4_LUCIDE_ICON_NAMES
 )
 set(F4_LUCIDE_ICONS ${F4_LUCIDE_ICON_NAMES})
 list(TRANSFORM F4_LUCIDE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide/")
+
+set(F4_STREAMLINE_ICON_NAMES
+  android-logo.svg
+  apple-logo.svg
+)
+set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
+list(TRANSFORM F4_STREAMLINE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline/")
 
 # Gallery renders the same icons at a much larger size. Generate a second,
 # thinner set from the vendored Lucide SVGs at configure time so the two sets
@@ -407,6 +416,11 @@ if(BUILD_TESTING)
       PREFIX "/F4QtHost/icons/lucide-gallery"
       BASE "${F4_GALLERY_LUCIDE_DIR}"
       FILES ${F4_GALLERY_LUCIDE_ICONS}
+    )
+    qt6_add_resources(${target} ${target}_f4_streamline_icons
+      PREFIX "/F4QtHost/icons/streamline"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline"
+      FILES ${F4_STREAMLINE_ICONS}
     )
     qt6_add_resources(${target} ${target}_f4_app_icon
       PREFIX "/F4QtHost/icons/app"

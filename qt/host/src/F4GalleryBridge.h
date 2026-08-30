@@ -294,7 +294,8 @@ private:
                          const QString &entryId = QString(),
                          int index = -1,
                          qulonglong catalogRevision = 0,
-                         bool includeCatalogRevision = true);
+                         bool includeCatalogRevision = true,
+                         bool activate = false);
     qulonglong effectiveCatalogRevision(int side, qulonglong supplied) const;
     void commitPendingCursor(int side);
     void reconcilePendingCursor(int side);

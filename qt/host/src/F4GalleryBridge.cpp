@@ -552,7 +552,10 @@ void F4GalleryBridge::requestCursor(int side,
         return;
     }
     m_cursorCommitTimers[static_cast<size_t>(side)]->stop();
-    sendPanelAction(side, QStringLiteral("panel.cursor"), entryId, index, catalogRevision);
+    const bool activateTarget = !entryId.isEmpty()
+        && !m_states[static_cast<size_t>(side)].active;
+    sendPanelAction(side, QStringLiteral("panel.cursor"), entryId, index,
+                    catalogRevision, true, activateTarget);
 }
 
 void F4GalleryBridge::requestOpen(int side,
@@ -634,9 +637,6 @@ void F4GalleryBridge::requestOpen(int side,
             reconcilePendingViewer(side);
             return;
         }
-        if (!sideState.active) {
-            requestActivate(side);
-        }
         requestCursor(side, entryId, index, m_pendingViewer.catalogRevision);
         return;
     }
@@ -653,11 +653,9 @@ void F4GalleryBridge::requestOpen(int side,
     // The open therefore needs no prior cursor round trip, and must not wait
     // for one: once the two sides disagree about the cursor, Go has nothing
     // new to say (it suppresses unchanged semantic scenes), so a confirmation
-    // that never arrives would strand the open forever. panel.open also
-    // activates the owning panel on the Go side.
-    if (!sideState.active) {
-        requestActivate(side);
-    }
+    // that never arrives would strand the open forever. panel.open activates
+    // the owning panel and moves its cursor on the Go side in that same
+    // semantic operation.
     clearPendingCursor(side);
     reconcilePendingPanelOpen(side);
 }
@@ -755,13 +753,12 @@ void F4GalleryBridge::requestGalleryDensity(int side,
     if (!validSide(side)) {
         return;
     }
-    static const QSet<QString> supported = {
-        QStringLiteral("masonry"), QStringLiteral("columns"),
-        QStringLiteral("details"), QStringLiteral("grid"),
+    static const QSet<QString> adjustable = {
+        QStringLiteral("masonry"), QStringLiteral("grid"),
         QStringLiteral("icons"),
     };
     const QString normalized = layoutMode.trimmed().toLower();
-    if (!supported.contains(normalized)) {
+    if (!adjustable.contains(normalized)) {
         return;
     }
     emit uiActionRequested({
@@ -3713,7 +3710,8 @@ void F4GalleryBridge::sendPanelAction(int side,
                                       const QString &entryId,
                                       int index,
                                       qulonglong catalogRevision,
-                                      bool includeCatalogRevision)
+                                      bool includeCatalogRevision,
+                                      bool activate)
 {
     if (!validSide(side)) {
         return;
@@ -3733,6 +3731,9 @@ void F4GalleryBridge::sendPanelAction(int side,
         if (revision != 0) {
             action.insert(QStringLiteral("catalogRevision"), revision);
         }
+    }
+    if (activate) {
+        action.insert(QStringLiteral("activate"), true);
     }
     emit uiActionRequested(action);
 }
@@ -3774,7 +3775,8 @@ void F4GalleryBridge::commitPendingCursor(int side)
     }
     m_stateReconciliationPending[static_cast<size_t>(side)] = true;
     sendPanelAction(side, QStringLiteral("panel.cursor"), pending.entryId,
-                    pending.index, pending.catalogRevision);
+                    pending.index, pending.catalogRevision, true,
+                    !m_states[static_cast<size_t>(side)].active);
 }
 
 void F4GalleryBridge::reconcilePendingCursor(int side)
@@ -3826,7 +3828,8 @@ void F4GalleryBridge::reconcilePendingCursor(int side)
         }
         m_stateReconciliationPending[static_cast<size_t>(side)] = true;
         sendPanelAction(side, QStringLiteral("panel.cursor"), pending.entryId,
-                        pending.index, pending.catalogRevision);
+                        pending.index, pending.catalogRevision, true,
+                        !state.active);
     }
 }
 
