@@ -385,11 +385,22 @@ func ExecuteFileOp(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, dest
 	ExecuteFileOpAt(pf, srcVfs, dstVfs, srcVfs.GetPath(), names, destInput, isMove, mode, onComplete)
 }
 
+// ExecuteFileOpWithResult is the result-aware counterpart used by workflows
+// that must not continue after a failed or cancelled materialization. The
+// callback runs on the UI task queue after the operation has fully stopped.
+func ExecuteFileOpWithResult(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, names []string, destInput string, isMove bool, mode int, onResult func(error)) {
+	executeFileOpAt(pf, srcVfs, dstVfs, srcVfs.GetPath(), names, destInput, isMove, mode, nil, onResult)
+}
+
 // ExecuteFileOpAt uses the source directory captured at the user-action
 // boundary. Panel VFS instances are navigable, so consulting GetPath after a
 // goroutine or queued task starts can otherwise target same-named files in a
 // different directory.
 func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
+	executeFileOpAt(pf, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, onComplete, nil)
+}
+
+func executeFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func(), onResult func(error)) {
 	// A wildcard in the last component is a rename mask, as in far2l: the
 	// files land in the directory before it, under names the mask generates.
 	// Taken literally it would instead create a file called "*.1".
@@ -711,7 +722,22 @@ func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 			Preconditions: preconds,
 			ResKeys:       keys,
 			Run:           runFunc,
-			OnComplete:    onComplete,
+		}
+		task.OnComplete = func() {
+			if onComplete != nil {
+				onComplete()
+			}
+			if onResult == nil {
+				return
+			}
+			task.mu.Lock()
+			resultErr := task.ErrorMsg
+			cancelled := task.State == "Cancelled"
+			task.mu.Unlock()
+			if cancelled && resultErr == nil {
+				resultErr = context.Canceled
+			}
+			onResult(resultErr)
 		}
 		GlobalQueueManager.Enqueue(task)
 	} else { // Foreground or Background
@@ -745,6 +771,9 @@ func ExecuteFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 				}
 				if onComplete != nil {
 					onComplete()
+				}
+				if onResult != nil {
+					onResult(err)
 				}
 				if err != nil && err != context.Canceled {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Operation failed:\n%v", err), []string{"&Ok"})

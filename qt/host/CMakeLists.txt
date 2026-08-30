@@ -166,6 +166,8 @@ if(APPLE)
   list(APPEND F4_QT_HOST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacPlatformServices.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacPlatformServices.mm"
   )
 endif()
 
@@ -378,6 +380,21 @@ if(BUILD_TESTING)
       "-framework AppKit"
     )
     add_test(NAME MacApplicationMenuTest COMMAND MacApplicationMenuTests)
+
+    add_executable(MacPlatformServicesTests
+      tests/MacPlatformServicesTests.mm
+    )
+    target_include_directories(MacPlatformServicesTests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(MacPlatformServicesTests PRIVATE
+      Qt6::Core
+      Qt6::Test
+      "-framework AppKit"
+      "-framework NetFS"
+      "-framework Network"
+    )
+    add_test(NAME MacPlatformServicesTest COMMAND MacPlatformServicesTests)
   endif()
 
   function(f4_add_icon_test_resources target)
@@ -637,6 +654,17 @@ if(BUILD_TESTING)
       driveMenuIconsUseSemanticModelAndLiveTheme)
   set_tests_properties(F4QuickViewDriveMenuIconsTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewNestedMenuPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels)
+  set_tests_properties(F4QuickViewNestedMenuPixelGridTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+  )
+  add_test(NAME F4QuickViewNestedMenuHoverTest
+    COMMAND F4QuickViewSurfaceTests nestedMenuHoverUsesDelayedSubmenuAction)
+  set_tests_properties(F4QuickViewNestedMenuHoverTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
   add_test(NAME F4QuickViewTextPixelGridTest
     COMMAND F4QuickViewSurfaceTests

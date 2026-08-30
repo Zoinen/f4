@@ -1754,6 +1754,40 @@ loop:
 		t.Error("Source file was deleted even though Remove returned error")
 	}
 }
+
+func TestExecuteFileOpWithResultReportsMaterializationFailure(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	result := make(chan error, 1)
+
+	ExecuteFileOpWithResult(
+		nil,
+		vfs.NewOSVFS(srcDir),
+		vfs.NewOSVFS(dstDir),
+		[]string{"missing.txt"},
+		dstDir,
+		false,
+		2,
+		func(err error) { result <- err },
+	)
+
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case err := <-result:
+			if err == nil {
+				t.Fatal("result-aware file operation reported success after a copy failure")
+			}
+			return
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("timed out waiting for result-aware file operation")
+		}
+	}
+}
+
 func TestExecuteFileOp_ForegroundIntegrity(t *testing.T) {
 	// Проверяем, что Mode 2 (Foreground) по-прежнему работает без очереди
 	fm := vtui.FrameManager

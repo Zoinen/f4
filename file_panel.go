@@ -44,6 +44,16 @@ type panelMatchSpan struct {
 	width int
 }
 
+func (f *fileEntry) visibleName() string {
+	if f == nil {
+		return ""
+	}
+	if f.DisplayName != "" && f.Name != ".." {
+		return f.DisplayName
+	}
+	return f.Name
+}
+
 func (r *panelEntryRow) GetCellText(col int) string {
 	if col == 0 && len(r.fp.table.Columns) > 0 {
 		return formatPanelFileName(r.entry, r.fp.table.Columns[0].Width)
@@ -116,12 +126,13 @@ func shouldSeparatePanelExtension(entry *fileEntry) bool {
 }
 
 func formatPanelFileName(entry *fileEntry, width int) string {
+	visibleName := entry.visibleName()
 	if !shouldSeparatePanelExtension(entry) || width <= 0 {
-		return entry.displayName(entry.Name)
+		return entry.displayName(visibleName)
 	}
-	base, extension := splitFileExtension(entry.Name)
+	base, extension := splitFileExtension(visibleName)
 	if extension == "" {
-		return entry.displayName(entry.Name)
+		return entry.displayName(visibleName)
 	}
 
 	extensionWidth := runewidth.StringWidth(extension)
@@ -156,7 +167,8 @@ func panelFileNameMatchSpans(entry *fileEntry, width, matchStartRunes, matchedRu
 	if matchStartRunes < 0 || matchedRunes <= 0 || width <= 0 {
 		return nil
 	}
-	nameRunes := []rune(entry.Name)
+	visibleName := entry.visibleName()
+	nameRunes := []rune(visibleName)
 	if matchStartRunes >= len(nameRunes) {
 		return nil
 	}
@@ -179,7 +191,7 @@ func panelFileNameMatchSpans(entry *fileEntry, width, matchStartRunes, matchedRu
 		return nil
 	}
 
-	base, extension := splitFileExtension(entry.Name)
+	base, extension := splitFileExtension(visibleName)
 	if extension == "" {
 		if span, ok := clippedPanelMatchSpan(
 			prefixWidth+runewidth.StringWidth(string(nameRunes[:matchStartRunes])),
@@ -369,7 +381,7 @@ func (f *fileEntry) IsSelected() bool {
 func (f *fileEntry) GetCellText(col int) string {
 	switch col {
 	case 0:
-		return f.displayName(f.Name)
+		return f.displayName(f.visibleName())
 	case 1:
 		if f.IsDir {
 			if f.SizeCalculated {
@@ -994,16 +1006,16 @@ func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
 		cmp := 0
 		switch fp.sortMode {
 		case SortName:
-			cmp = compareNames(ei.Name, ej.Name)
+			cmp = compareNames(ei.visibleName(), ej.visibleName())
 		case SortExt:
-			extI := strings.ToLower(filepath.Ext(ei.Name))
-			extJ := strings.ToLower(filepath.Ext(ej.Name))
+			extI := strings.ToLower(filepath.Ext(ei.visibleName()))
+			extJ := strings.ToLower(filepath.Ext(ej.visibleName()))
 			if extI < extJ {
 				cmp = -1
 			} else if extI > extJ {
 				cmp = 1
 			} else {
-				cmp = compareNames(ei.Name, ej.Name)
+				cmp = compareNames(ei.visibleName(), ej.visibleName())
 			}
 		case SortTime:
 			if ei.MTime.Before(ej.MTime) {
@@ -1011,7 +1023,7 @@ func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
 			} else if ei.MTime.After(ej.MTime) {
 				cmp = 1
 			} else {
-				cmp = compareNames(ei.Name, ej.Name)
+				cmp = compareNames(ei.visibleName(), ej.visibleName())
 			}
 		case SortSize:
 			if ei.Size < ej.Size {
@@ -1019,10 +1031,10 @@ func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
 			} else if ei.Size > ej.Size {
 				cmp = 1
 			} else {
-				cmp = compareNames(ei.Name, ej.Name)
+				cmp = compareNames(ei.visibleName(), ej.visibleName())
 			}
 		default:
-			cmp = compareNames(ei.Name, ej.Name)
+			cmp = compareNames(ei.visibleName(), ej.visibleName())
 		}
 
 		if fp.sortReverse {
@@ -3059,6 +3071,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			} else {
 				fp.updateTitle(nil)
 			}
+			if err == nil {
+				fp.watchDirectoryChanges(ctx, loadVFS, path, loadIsCurrent)
+			}
 
 			if isFirstChunk {
 				fp.entries = nil
@@ -3098,6 +3113,31 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			return
 		})
 	})
+}
+
+func (fp *FileSystemPanel) watchDirectoryChanges(
+	ctx context.Context, fs vfs.VFS, path string, loadIsCurrent func() bool,
+) {
+	watcher, ok := fs.(vfs.DirectoryWatcher)
+	if !ok {
+		return
+	}
+	go func() {
+		var refreshOnce sync.Once
+		err := watcher.WatchDirectory(ctx, path, func() {
+			refreshOnce.Do(func() {
+				vtui.FrameManager.PostTask(func() {
+					if !loadIsCurrent() || fp.isLoading {
+						return
+					}
+					fp.ReadDirectory()
+				})
+			})
+		})
+		if err != nil && ctx.Err() == nil {
+			vtui.DebugLog("PANEL: directory watcher for %q stopped: %v", path, err)
+		}
+	}()
 }
 
 func (fp *FileSystemPanel) Refresh() {
@@ -3388,7 +3428,7 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 
 func (fp *FileSystemPanel) fastFindHasMatches() bool {
 	for _, entry := range fp.entries {
-		if _, _, ok := fp.fastFindMatch(entry.Name); ok {
+		if _, _, ok := fp.fastFindMatch(entry.visibleName()); ok {
 			return true
 		}
 	}
@@ -3425,7 +3465,7 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 			cellWidth := fp.table.Columns[column].Width
 			if entryIndex >= 0 && entryIndex < len(fp.entries) {
 				entry := fp.entries[entryIndex]
-				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.Name)
+				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.visibleName())
 				for _, span := range panelFileNameMatchSpans(entry, cellWidth, matchStart, matchedRunes) {
 					for cellOffset := 0; cellOffset < span.width; cellOffset++ {
 						cell := scr.GetCell(x+span.start+cellOffset, y)
@@ -4357,7 +4397,7 @@ func (fp *FileSystemPanel) ApplyMaskSelection(mask string, state bool) {
 		if e.Name == ".." {
 			continue
 		}
-		nameLower := strings.ToLower(e.Name)
+		nameLower := strings.ToLower(e.visibleName())
 		matched, _ := filepath.Match(maskLower, nameLower)
 		if matched {
 			fp.SetItemSelected(i, state)

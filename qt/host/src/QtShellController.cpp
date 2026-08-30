@@ -2003,6 +2003,22 @@ void QtShellController::setMediaAdvertisementHandler(
     }
 }
 
+void QtShellController::setPlatformRequestHandler(
+    std::function<void(const QVariantMap &)> handler)
+{
+    m_platformRequestHandler = std::move(handler);
+}
+
+bool QtShellController::sendPlatformMessage(const QVariantMap &message)
+{
+    const QString type = message.value(QStringLiteral("type")).toString();
+    if (type != QStringLiteral("platform_response")
+        && type != QStringLiteral("platform_event")) {
+        return false;
+    }
+    return sendMessage(message);
+}
+
 void QtShellController::updateCommandMenus(const QVariantList &menus,
                                            bool allowStateOnlyUpdate)
 {
@@ -2314,6 +2330,9 @@ void QtShellController::onConnected()
         {QStringLiteral("cellHeight"), cellHeight},
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
+#if defined(Q_OS_MACOS)
+             {QStringLiteral("macPlatformServicesV1"), true},
+#endif
          }},
     });
     m_helloSent = helloWritten;
@@ -2794,6 +2813,11 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
             if (m_mediaAdvertisementHandler) {
                 m_mediaAdvertisementHandler(m_mediaAdvertisement);
             }
+        }
+    } else if (messageType == QStringLiteral("platform_request")
+               || messageType == QStringLiteral("platform_cancel")) {
+        if (m_platformRequestHandler) {
+            m_platformRequestHandler(message);
         }
     } else if (messageType == QStringLiteral("scene")) {
         if (message.value(QStringLiteral("schema")).toString()

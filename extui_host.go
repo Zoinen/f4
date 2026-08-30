@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -3596,6 +3597,8 @@ type ExtUiHost struct {
 	cols                   int
 	rows                   int
 	panelCatalogMetadataV1 bool
+	platformServicesV1     bool
+	platform               *platformIPCClient
 }
 
 func RunExternalUI(cols, rows int, execPath string, args []string) error {
@@ -3672,6 +3675,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	}
 	panelCatalogMetadataV1 := extUiHelloCapability(
 		hello, extUiPanelCatalogMetadataCapability)
+	platformServicesV1 := runtime.GOOS == "darwin" && extUiHelloCapability(
+		hello, extUiPlatformServicesCapability)
 	previousPanelCatalogMetadata := setExtUiPanelCatalogMetadataEnabled(
 		panelCatalogMetadataV1)
 	defer setExtUiPanelCatalogMetadataEnabled(previousPanelCatalogMetadata)
@@ -3720,7 +3725,12 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	host := &ExtUiHost{
 		conn: conn, send: sender, cols: cols, rows: rows,
 		panelCatalogMetadataV1: panelCatalogMetadataV1,
+		platformServicesV1:     platformServicesV1,
 	}
+	host.platform = newPlatformIPCClient(sender, platformServicesV1)
+	restorePlatformIPC := setActivePlatformIPC(host.platform)
+	defer restorePlatformIPC()
+	defer host.platform.Close(errors.New("Qt host disconnected"))
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(cols, rows)
 	renderer := NewExtUiRenderer(conn, sender)
@@ -3757,6 +3767,9 @@ func (h *ExtUiHost) readLoop() {
 		msg, err := extUiReadMessageWithBenchmark(h.conn, timing)
 		if err != nil {
 			vtui.DebugLog("EXTUI_HOST: read loop stopped: %v", err)
+			if h.platform != nil {
+				h.platform.Close(err)
+			}
 			if h.reader != nil {
 				h.reader.Close()
 			}
@@ -3850,6 +3863,10 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		vtui.SetClipboard(extUiString(msg, "text"))
 	case "panel_catalog_metadata_request":
 		h.queuePanelCatalogMetadata(msg)
+	case "platform_response", "platform_event":
+		if h.platform != nil && h.platformServicesV1 {
+			h.platform.handleResponse(msg)
+		}
 	case "ui_action":
 		action := msg
 		if nested, ok := msg["action"].(map[string]any); ok {

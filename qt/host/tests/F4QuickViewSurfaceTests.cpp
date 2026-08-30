@@ -613,6 +613,8 @@ private slots:
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
+    void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
@@ -2805,6 +2807,186 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
     QTRY_VERIFY_WITH_TIMEOUT(
         !(rendered = fixture.window->grabWindow()).isNull(), 3000);
     QVERIFY(imageContainsColor(rendered, themedSelected));
+}
+
+void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels()
+{
+    const QVariantMap parentMenu = {
+        {QStringLiteral("id"), QStringLiteral("drive-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("x"), 67},
+        {QStringLiteral("y"), 5},
+        {QStringLiteral("w"), 24},
+        {QStringLiteral("h"), 4},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("viewHeight"), 1},
+        {QStringLiteral("items"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 0},
+             {QStringLiteral("id"), QStringLiteral("macos-locations")},
+             {QStringLiteral("text"), QStringLiteral("macOS Locations")},
+             {QStringLiteral("icon"), QStringLiteral("folder")},
+             {QStringLiteral("hasSubmenu"), true},
+             {QStringLiteral("separator"), false},
+             {QStringLiteral("disabled"), false},
+         }}},
+    };
+    const QVariantMap childMenu = {
+        {QStringLiteral("id"), QStringLiteral("locations-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("parentId"), QStringLiteral("drive-menu")},
+        {QStringLiteral("anchorIndex"), 0},
+        {QStringLiteral("x"), 0},
+        {QStringLiteral("y"), 0},
+        {QStringLiteral("w"), 25},
+        {QStringLiteral("h"), 7},
+        {QStringLiteral("selected"), 1},
+        {QStringLiteral("viewHeight"), 4},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("index"), 0},
+                 {QStringLiteral("id"), QStringLiteral("tags-header")},
+                 {QStringLiteral("text"), QStringLiteral("Tags")},
+                 {QStringLiteral("header"), true},
+                 {QStringLiteral("disabled"), true},
+                 {QStringLiteral("separator"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 1},
+                 {QStringLiteral("id"), QStringLiteral("red")},
+                 {QStringLiteral("text"), QStringLiteral("Red")},
+                 {QStringLiteral("icon"), QStringLiteral("tag-dot")},
+                 {QStringLiteral("iconColor"), QStringLiteral("#ff453a")},
+                 {QStringLiteral("disabled"), false},
+                 {QStringLiteral("separator"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 2},
+                 {QStringLiteral("text"), QStringLiteral("Network")},
+                 {QStringLiteral("icon"), QStringLiteral("network")},
+                 {QStringLiteral("hasSubmenu"), true},
+                 {QStringLiteral("disabled"), false},
+                 {QStringLiteral("separator"), false},
+             },
+         }},
+    };
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), QVariantList{parentMenu, childMenu});
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *const visualRoot = fixture.window->contentItem();
+    QQuickItem *parentPopup = nullptr;
+    QQuickItem *childPopup = nullptr;
+    QQuickItem *parentRow = nullptr;
+    QQuickItem *headerText = nullptr;
+    QQuickItem *tagDot = nullptr;
+    QQuickItem *parentChevron = nullptr;
+    QQuickItem *childChevron = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (parentPopup = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuPopup-drive-menu"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (childPopup = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuPopup-locations-menu"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (parentRow = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItem-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (headerText = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemText-locations-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (tagDot = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemColor-locations-menu-1"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (parentChevron = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemChevron-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (childChevron = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItemChevron-locations-menu-2"))), 3000);
+
+    QVERIFY(parentChevron->isVisible());
+    QVERIFY(childChevron->isVisible());
+    QVERIFY(tagDot->isVisible());
+    QCOMPARE(tagDot->property("color").value<QColor>(), QColor("#ff453a"));
+    QVERIFY(headerText->property("font").value<QFont>().bold());
+    QCOMPARE(headerText->x(), qreal(10));
+    QVERIFY(headerText->y() > 0);
+
+    const QPointF parentOrigin = parentPopup->mapToItem(visualRoot, QPointF{});
+    const QPointF childOrigin = childPopup->mapToItem(visualRoot, QPointF{});
+    const QPointF rowOrigin = parentRow->mapToItem(visualRoot, QPointF{});
+    QVERIFY2(childOrigin.x() < parentOrigin.x(),
+             "child menu should flip to the left at the right screen edge");
+    QVERIFY(qAbs(childOrigin.y() - rowOrigin.y()) < 1.0);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (QQuickItem *item : {parentPopup, childPopup, tagDot,
+                             parentChevron, childChevron}) {
+        const QPointF origin = item->mapToItem(visualRoot, QPointF{});
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001);
+        QVERIFY(qAbs(item->width() * dpr - qRound(item->width() * dpr)) < 0.001);
+        QVERIFY(qAbs(item->height() * dpr - qRound(item->height() * dpr)) < 0.001);
+    }
+
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(2, 2));
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1500);
+    QCOMPARE(fixture.shell.actions.constLast()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.closeChain"));
+}
+
+void F4QuickViewSurfaceTests::nestedMenuHoverUsesDelayedSubmenuAction() {
+  QVariantMap scene = shellScene({}, 0);
+  scene.insert(
+      QStringLiteral("menus"),
+      QVariantList{QVariantMap{
+          {QStringLiteral("id"), QStringLiteral("drive-menu")},
+          {QStringLiteral("kind"), QStringLiteral("menu")},
+          {QStringLiteral("role"), QStringLiteral("vmenu")},
+          {QStringLiteral("x"), 8},
+          {QStringLiteral("y"), 5},
+          {QStringLiteral("w"), 28},
+          {QStringLiteral("h"), 4},
+          {QStringLiteral("selected"), 0},
+          {QStringLiteral("viewHeight"), 1},
+          {QStringLiteral("items"),
+           QVariantList{QVariantMap{
+               {QStringLiteral("index"), 0},
+               {QStringLiteral("id"), QStringLiteral("macos-locations")},
+               {QStringLiteral("text"), QStringLiteral("macOS Locations")},
+               {QStringLiteral("hasSubmenu"), true},
+               {QStringLiteral("separator"), false},
+               {QStringLiteral("disabled"), false},
+           }}},
+      }});
+
+  QuickViewFixture fixture(scene);
+  QVERIFY(fixture.window);
+  QQuickItem *row = nullptr;
+  QTRY_VERIFY_WITH_TIMEOUT(
+      (row = visualItemWithObjectNamePrefix(
+           fixture.window->contentItem(),
+           QStringLiteral("semanticMenuItem-drive-menu-0"))),
+      3000);
+  fixture.shell.clearActions();
+  QTest::mouseMove(fixture.window, QPoint(2, 2));
+  QTest::mouseMove(
+      fixture.window,
+      row->mapToScene(QPointF(row->width() / 2, row->height() / 2)).toPoint());
+  QTest::qWait(90);
+  QCOMPARE(fixture.shell.actions.size(), 0);
+  QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1000);
+  const QVariantMap action = fixture.shell.actions.constFirst();
+  QCOMPARE(action.value(QStringLiteral("target")).toString(),
+           QStringLiteral("drive-menu"));
+  QCOMPARE(action.value(QStringLiteral("action")).toString(),
+           QStringLiteral("menu.openSubmenu"));
+  QCOMPARE(action.value(QStringLiteral("index")).toInt(), 0);
 }
 
 void F4QuickViewSurfaceTests::compactMenuStructureTransfersFocusWithoutSceneRebind()

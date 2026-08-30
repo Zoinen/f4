@@ -3088,6 +3088,10 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 					//        "Other panel" for f4's drive menu — the
 					//        exact symptom reported in unxed/f4#396).
 					if ev.KeyDown && ev.ButtonState != 0 {
+						if menu, ok := f.(*VMenu); ok {
+							menu.CloseChain()
+							break
+						}
 						if ev.ButtonState == vtinput.FromLeft1stButtonPressed {
 							f.ProcessKey(&vtinput.InputEvent{
 								Type:           vtinput.KeyEventType,

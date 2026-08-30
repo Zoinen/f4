@@ -466,6 +466,7 @@ private slots:
     void disconnectBeforeServerHelloReportsStartupFailure();
     void hostExecutableRefusedConnectionExitsTwoPromptly();
     void initialHandshakeCompletesWithoutGuiEventLoop();
+    void platformMessagesRouteOutsideQmlSurface();
     void startupWindowWaitsForVisibleCatalogs();
     void benchmarkTraceMetadataFollowsTopLevelThenActivePanel();
     void uiActionPacksLosslessTraceMetadata();
@@ -759,8 +760,13 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
              QStringLiteral("synchronous-handshake-test"));
     const std::map<std::string, bool> capabilities =
         message.at("capabilities").as<std::map<std::string, bool>>();
-    QCOMPARE(capabilities.size(), size_t(1));
     QCOMPARE(capabilities.at("panelCatalogMetadataV1"), true);
+#if defined(Q_OS_MACOS)
+    QCOMPARE(capabilities.size(), size_t(2));
+    QCOMPARE(capabilities.at("macPlatformServicesV1"), true);
+#else
+    QCOMPARE(capabilities.size(), size_t(1));
+#endif
 
     QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
     QSignalSpy messages(&controller, &QtShellController::messageReceived);
@@ -781,6 +787,62 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
     QVERIFY(controller.waitForInitialHandshake(0));
     QVERIFY(!peer->waitForReadyRead(25));
     QVERIFY(peer->readAll().isEmpty());
+}
+
+void QtShellControllerTests::platformMessagesRouteOutsideQmlSurface()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("platform-routing-test"), 80, 24);
+
+    QVariantMap receivedRequest;
+    controller.setPlatformRequestHandler(
+        [&receivedRequest](const QVariantMap &message) {
+            receivedRequest = message;
+        });
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray helloWire;
+    QVERIFY(takeFrame(peer, helloWire));
+    const QByteArray request = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("platform_request")},
+        {QStringLiteral("requestId"), QStringLiteral("platform-1")},
+        {QStringLiteral("operation"), QStringLiteral("macos.locations")},
+        {QStringLiteral("payload"), QVariantMap{}},
+    });
+    QCOMPARE(peer->write(request), static_cast<qint64>(request.size()));
+    peer->flush();
+    QTRY_COMPARE(receivedRequest.value(QStringLiteral("requestId")).toString(),
+                 QStringLiteral("platform-1"));
+    QCOMPARE(receivedRequest.value(QStringLiteral("operation")).toString(),
+             QStringLiteral("macos.locations"));
+
+    QVERIFY(controller.sendPlatformMessage({
+        {QStringLiteral("type"), QStringLiteral("platform_response")},
+        {QStringLiteral("requestId"), QStringLiteral("platform-1")},
+        {QStringLiteral("operation"), QStringLiteral("macos.locations")},
+        {QStringLiteral("final"), true},
+    }));
+    QByteArray payload;
+    QVERIFY(takePayload(peer, payload));
+    msgpack::object_handle handle = msgpack::unpack(
+        payload.constData(), static_cast<size_t>(payload.size()));
+    std::map<std::string, msgpack::object> response;
+    handle.get().convert(response);
+    QCOMPARE(response.at("type").as<std::string>(),
+             std::string("platform_response"));
+    QCOMPARE(response.at("requestId").as<std::string>(),
+             std::string("platform-1"));
+    QCOMPARE(response.at("final").as<bool>(), true);
+
+    QVERIFY(!controller.sendPlatformMessage({
+        {QStringLiteral("type"), QStringLiteral("platform_request")},
+    }));
 }
 
 void QtShellControllerTests::startupWindowWaitsForVisibleCatalogs()

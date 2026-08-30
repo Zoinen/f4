@@ -444,28 +444,34 @@ type RunModel struct {
 }
 
 type MenuModel struct {
-	ID       string
-	Role     string
-	Title    string
-	Active   bool
-	Selected int
-	Items    []MenuItemModel
-	Legacy   M
+	ID          string
+	Role        string
+	Title       string
+	Active      bool
+	Selected    int
+	ParentID    string
+	AnchorIndex int
+	Items       []MenuItemModel
+	Legacy      M
 }
 
 type MenuItemModel struct {
-	Index     int
-	Text      string
-	RawText   string
-	Hotkey    string
-	Icon      string
-	Shortcut  string
-	Command   int
-	Separator bool
-	Disabled  bool
-	Checked   bool
-	Items     []MenuItemModel
-	Legacy    M
+	Index      int
+	ID         string
+	Text       string
+	RawText    string
+	Hotkey     string
+	Icon       string
+	IconColor  string
+	Shortcut   string
+	Command    int
+	Separator  bool
+	Header     bool
+	Disabled   bool
+	Checked    bool
+	HasSubmenu bool
+	Items      []MenuItemModel
+	Legacy     M
 }
 
 type KeyBarModel struct {
@@ -1148,6 +1154,10 @@ func (m MenuModel) ToMap() M {
 		"selected": m.Selected,
 		"items":    menuItemsToMaps(m.Items),
 	}
+	if m.ParentID != "" {
+		out["parentId"] = m.ParentID
+		out["anchorIndex"] = m.AnchorIndex
+	}
 	for k, v := range m.Legacy {
 		if _, exists := out[k]; !exists {
 			out[k] = v
@@ -1170,6 +1180,18 @@ func (i MenuItemModel) ToMap() M {
 	}
 	if i.Icon != "" {
 		out["icon"] = i.Icon
+	}
+	if i.ID != "" {
+		out["id"] = i.ID
+	}
+	if i.IconColor != "" {
+		out["iconColor"] = i.IconColor
+	}
+	if i.Header {
+		out["header"] = true
+	}
+	if i.HasSubmenu {
+		out["hasSubmenu"] = true
 	}
 	if len(i.Items) > 0 {
 		out["items"] = menuItemsToMaps(i.Items)

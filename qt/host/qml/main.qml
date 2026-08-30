@@ -749,6 +749,20 @@ ApplicationWindow {
         return out
     }
 
+    function menuOverlayForId(menuId) {
+        var wanted = String(menuId || "")
+        if (wanted === "" || typeof overlayRepeater === "undefined")
+            return null
+        for (var i = 0; i < overlayRepeater.count; ++i) {
+            var loader = overlayRepeater.itemAt(i)
+            if (!loader || !loader.item || loader.item.frame === undefined)
+                continue
+            if (String(loader.item.frame.id || "") === wanted)
+                return loader.item
+        }
+        return null
+    }
+
     function createDialogOverlay(frame) {
         return dialogOverlayComponent.createObject(mainSurface,
                                                    { "frame": frame })
@@ -4713,6 +4727,7 @@ ApplicationWindow {
         }
 
         Repeater {
+            id: overlayRepeater
             model: root.overlayFrames()
             delegate: Loader {
                 id: overlayLoader
@@ -10372,13 +10387,22 @@ ApplicationWindow {
             readonly property bool hasLeadingIndicator: {
                 for (var i = 0; i < effectiveItems.length; ++i) {
                     if (effectiveItems[i].checked === true
-                            || root.cleanText(effectiveItems[i].icon) !== "")
+                            || root.cleanText(effectiveItems[i].icon) !== ""
+                            || root.cleanText(effectiveItems[i].iconColor) !== "")
                         return true
                 }
                 return false
             }
-            readonly property real menuRowHeight: Math.max(27, root.ch * 1.02)
-            readonly property real menuSeparatorHeight: 11
+            readonly property real menuRowHeight:
+                root.snapPx(Math.max(27, root.ch * 1.02))
+            // Section labels are intentionally separated from the preceding
+            // item. They are menu chrome, not rows that need to align with a
+            // leading icon or tag dot.
+            readonly property real menuHeaderTopPadding: root.snapPx(6)
+            readonly property real menuHeaderHeight:
+                root.snapPx(Math.max(23, root.ch * 0.9))
+                + menuHeaderTopPadding
+            readonly property real menuSeparatorHeight: root.snapPx(11)
             property int pointerSelectedIndex: -1
             property int semanticSelectedIndex: 0
             property int semanticTopIndex: 0
@@ -10505,8 +10529,10 @@ ApplicationWindow {
             }
 
             function preferredMenuWidth() {
-                if (!fromMenuBar || !previewMenuItem)
-                    return root.pxW(frame.w)
+                if (!fromMenuBar || !previewMenuItem) {
+                    var semanticWidth = root.pxW(frame.w)
+                    return Math.min(root.width - 8, Math.max(150, semanticWidth))
+                }
                 var preferred = 150
                 for (var i = 0; i < effectiveItems.length; ++i) {
                     var item = effectiveItems[i]
@@ -10524,11 +10550,62 @@ ApplicationWindow {
                 var height = 10
                 for (var i = 0; i < effectiveItems.length; ++i) {
                     height += effectiveItems[i].separator
-                              ? menuSeparatorHeight : menuRowHeight
+                              ? menuSeparatorHeight
+                              : effectiveItems[i].header === true
+                                ? menuHeaderHeight : menuRowHeight
                 }
                 if (root.cleanText(frame.bottomHint) !== "")
                     height += root.ch
                 return height
+            }
+
+            function popupWindowX() { return popupSurface.x }
+            function popupWindowY() { return popupSurface.y }
+            function popupWindowWidth() { return popupSurface.width }
+
+            function rowWindowY(index) {
+                var row = popupMenuList.itemAtIndex(index)
+                if (row) {
+                    var mapped = row.mapToItem(root.contentItem, 0, 0)
+                    return mapped.y
+                }
+                var y = popupSurface.y + popupMenuList.y
+                        - popupMenuList.contentY
+                for (var i = 0; i < effectiveItems.length && i < index; ++i) {
+                    y += effectiveItems[i].separator
+                         ? menuSeparatorHeight
+                         : effectiveItems[i].header === true
+                           ? menuHeaderHeight : menuRowHeight
+                }
+                return y
+            }
+
+            function preferredPopupX(popupWidth) {
+                var parentMenu = root.menuOverlayForId(frame.parentId)
+                if (parentMenu) {
+                    var right = parentMenu.popupWindowX()
+                                + parentMenu.popupWindowWidth() - 1
+                    if (right + popupWidth > root.width - 4)
+                        right = parentMenu.popupWindowX() - popupWidth + 1
+                    return Math.max(4, Math.min(root.width - popupWidth - 4,
+                                                right))
+                }
+                if (previewMenuItem)
+                    return semanticMenu.itemWindowX(effectiveMenuIndex)
+                return Math.max(4, Math.min(root.width - popupWidth - 4,
+                                            root.pxX(frame.x)))
+            }
+
+            function preferredPopupY(popupHeight) {
+                var parentMenu = root.menuOverlayForId(frame.parentId)
+                var desired = parentMenu
+                        ? parentMenu.rowWindowY(Number(frame.anchorIndex || 0))
+                        : fromMenuBar ? semanticMenu.windowBottom()
+                                      : root.pxY(frame.y)
+                var minimum = fromMenuBar ? semanticMenu.windowBottom() : 4
+                var maximum = root.height - root.keyBarHeight()
+                              - popupHeight - 4
+                return Math.max(minimum, Math.min(maximum, desired))
             }
 
             MouseArea {
@@ -10542,7 +10619,7 @@ ApplicationWindow {
                 preventStealing: true
                 onClicked: root.action({
                     "target": menuOverlay.frame.id,
-                    "action": "menu.close"
+                    "action": "menu.closeChain"
                 })
                 onPressed: {
                     root.menuBarPreviewIndex = -1
@@ -10553,16 +10630,12 @@ ApplicationWindow {
 
             Rectangle {
                 id: popupSurface
-                x: menuOverlay.previewMenuItem
-                   ? semanticMenu.itemWindowX(menuOverlay.effectiveMenuIndex)
-                   : root.pxX(menuOverlay.frame.x)
-                y: menuOverlay.fromMenuBar
-                   ? semanticMenu.windowBottom()
-                   : root.pxY(menuOverlay.frame.y)
-                width: menuOverlay.preferredMenuWidth()
-                height: Math.min(root.height - y - root.keyBarHeight() - 4,
-                                 Math.max(root.ch + 10,
-                                          menuOverlay.preferredMenuHeight()))
+                width: root.snapPx(menuOverlay.preferredMenuWidth())
+                height: root.snapPx(Math.min(root.height - root.keyBarHeight() - 8,
+                                             Math.max(root.ch + 10,
+                                                      menuOverlay.preferredMenuHeight())))
+                x: root.snapPx(menuOverlay.preferredPopupX(width))
+                y: root.snapPx(menuOverlay.preferredPopupY(height))
                 objectName: "semanticMenuPopup-" + root.cleanText(menuOverlay.frame.id)
                 color: root.dialogHeaderBg
                 border.width: 1
@@ -10586,7 +10659,7 @@ ApplicationWindow {
                     clip: true
                     currentIndex: menuOverlay.visualSelectedIndex
                     boundsBehavior: Flickable.StopAtBounds
-                    interactive: false
+                    interactive: contentHeight > height
 
                     function syncTopPosition() {
                         if (count > 0)
@@ -10604,10 +10677,13 @@ ApplicationWindow {
                         width: ListView.view.width
                         height: modelData.separator
                                 ? menuOverlay.menuSeparatorHeight
-                                : menuOverlay.menuRowHeight
+                                : modelData.header === true
+                                  ? menuOverlay.menuHeaderHeight
+                                  : menuOverlay.menuRowHeight
                         radius: 4
                         color: modelData.index === menuOverlay.visualSelectedIndex
                                && !modelData.separator
+                               && modelData.header !== true
                                ? root.selectedBg : "transparent"
 
                         Rectangle {
@@ -10628,9 +10704,21 @@ ApplicationWindow {
                                         + "-" + Number(modelData.index)
                             anchors.left: parent.left
                             anchors.right: shortcut.left
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: menuOverlay.hasLeadingIndicator
+                            anchors.verticalCenter: modelData.header === true
+                                                   ? undefined
+                                                   : parent.verticalCenter
+                            anchors.top: modelData.header === true
+                                         ? parent.top : undefined
+                            anchors.bottom: modelData.header === true
+                                            ? parent.bottom : undefined
+                            anchors.topMargin: modelData.header === true
+                                               ? menuOverlay.menuHeaderTopPadding
+                                               : 0
+                            anchors.leftMargin: modelData.header === true
+                                                ? 10
+                                                : menuOverlay.hasLeadingIndicator
                                                 ? 32 : 10
+                            verticalAlignment: Text.AlignVCenter
                             text: {
                                 var label = root.cleanText(modelData.text)
                                 if (menuOverlay.hasLeadingIndicator)
@@ -10639,8 +10727,10 @@ ApplicationWindow {
                                                          modelData.hotkey)
                             }
                             textFormat: Text.StyledText
-                            color: modelData.disabled ? root.mutedText : root.textColor
-                            font.pixelSize: 13
+                            color: modelData.disabled || modelData.header === true
+                                   ? root.mutedText : root.textColor
+                            font.pixelSize: modelData.header === true ? 12 : 13
+                            font.bold: modelData.header === true
                             visible: !modelData.separator
                             elide: Text.ElideRight
                         }
@@ -10654,10 +10744,14 @@ ApplicationWindow {
                                 modelData.checked === true ? "check"
                                 : root.cleanText(modelData.icon)
                             readonly property url semanticIconSource:
-                                semanticIconName === "" ? ""
+                                semanticIconName === ""
+                                || semanticIconName === "tag-dot" ? ""
                                 : root.resolvedIconSource(semanticIconName, 15)
                             readonly property color semanticIconColor:
-                                modelData.disabled ? root.mutedText : root.textColor
+                                modelData.disabled ? root.mutedText
+                                : root.cleanText(modelData.iconColor) !== ""
+                                  ? root.cleanText(modelData.iconColor)
+                                  : root.textColor
                             x: root.snapPx(10)
                             y: root.snapPx((parent.height - height) / 2)
                             width: root.snapPx(15)
@@ -10670,6 +10764,8 @@ ApplicationWindow {
                                 y: root.iconPixelOffsetY(leadingMenuIcon)
                             }
                             visible: !modelData.separator
+                                     && modelData.header !== true
+                                     && semanticIconName !== "tag-dot"
                                      && semanticIconName !== ""
                             icon.source: semanticIconSource
                             icon.width: 15
@@ -10677,22 +10773,87 @@ ApplicationWindow {
                             icon.color: semanticIconColor
                         }
 
+                        Rectangle {
+                            id: menuItemColor
+                            objectName: "semanticMenuItemColor-"
+                                        + root.cleanText(menuOverlay.frame.id)
+                                        + "-" + Number(modelData.index)
+                            x: root.snapPx(13)
+                            y: root.snapPx((parent.height - height) / 2)
+                            width: root.snapPx(10)
+                            height: width
+                            radius: width / 2
+                            color: root.cleanText(modelData.iconColor) !== ""
+                                   ? root.cleanText(modelData.iconColor)
+                                   : root.textColor
+                            property real alignmentRevision:
+                                popupSurface.x + popupSurface.y
+                                + popupMenuList.contentY + parent.y
+                            transform: Translate {
+                                x: root.iconPixelOffsetX(menuItemColor)
+                                y: root.iconPixelOffsetY(menuItemColor)
+                            }
+                            visible: !modelData.separator
+                                     && modelData.header !== true
+                                     && root.cleanText(modelData.icon) === "tag-dot"
+                        }
+
+                        Text {
+                            id: menuItemChevron
+                            objectName: "semanticMenuItemChevron-"
+                                        + root.cleanText(menuOverlay.frame.id)
+                                        + "-" + Number(modelData.index)
+                            x: root.snapPx(parent.width - width - 9)
+                            y: 0
+                            width: root.snapPx(15)
+                            height: root.snapPx(parent.height)
+                            text: "›"
+                            color: modelData.disabled ? root.mutedText : root.textColor
+                            font.pixelSize: 17
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            property real alignmentRevision:
+                                popupSurface.x + popupSurface.y
+                                + popupMenuList.contentY + parent.y
+                            transform: Translate {
+                                x: root.iconPixelOffsetX(menuItemChevron)
+                                y: root.iconPixelOffsetY(menuItemChevron)
+                            }
+                            visible: !modelData.separator
+                                     && modelData.header !== true
+                                     && modelData.hasSubmenu === true
+                        }
+
                         Text {
                             id: shortcut
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.rightMargin: 10
+                            anchors.rightMargin: modelData.hasSubmenu === true ? 28 : 10
                             text: root.cleanText(modelData.shortcut)
                             color: root.mutedText
                             font.pixelSize: 12
                             visible: !modelData.separator
+                                     && modelData.header !== true
+                        }
+
+                        Timer {
+                            id: submenuHoverTimer
+                            interval: 180
+                            repeat: false
+                            onTriggered: root.action({
+                                "target": menuOverlay.frame.id,
+                                "action": "menu.openSubmenu",
+                                "index": modelData.index
+                            }, true)
                         }
 
                         MouseArea {
                             id: itemMouse
                             anchors.fill: parent
                             hoverEnabled: true
-                            enabled: !modelData.separator && !modelData.disabled
+                            enabled: !modelData.separator
+                                     && modelData.header !== true
+                                     && !modelData.disabled
                             function selectFromPointer() {
                                 if (menuOverlay.fromMenuBar) {
                                     root.menuBarPointerHasSelectedItem = true
@@ -10734,7 +10895,13 @@ ApplicationWindow {
                                             itemMouse, mouse))
                                     selectFromPointer()
                             }
+                            onEntered: {
+                                if (modelData.hasSubmenu === true)
+                                    submenuHoverTimer.restart()
+                            }
+                            onExited: submenuHoverTimer.stop()
                             onClicked: {
+                                submenuHoverTimer.stop()
                                 if (menuOverlay.fromMenuBar) {
                                     root.action({
                                         "action": "menuBar.itemActivate",

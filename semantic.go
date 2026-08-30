@@ -469,6 +469,7 @@ func HandleSemanticAction(action map[string]any) bool {
 func semanticMenuPresentationAction(actionName string) bool {
 	switch actionName {
 	case "menu_select", "menu.select", "menu_scroll", "menu.scroll",
+		"menu_open_submenu", "menu.openSubmenu", "menu_close_submenu", "menu.closeSubmenu",
 		"menuBar.itemSelect", "menu_bar_activate", "menuBar.activate",
 		"menuBar.toggle":
 		return true
@@ -515,10 +516,26 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 		case "close", "dialog.close", "window.close":
 			frame.Close()
 			return true
+		case "menu_close_chain", "menu.closeChain":
+			if menu, _ := appFrameVMenu(frame); menu != nil {
+				menu.CloseChain()
+				return true
+			}
+		case "menu_close_submenu", "menu.closeSubmenu":
+			if menu, _ := appFrameVMenu(frame); menu != nil {
+				menu.CloseSubmenu()
+				return true
+			}
+		case "menu_open_submenu", "menu.openSubmenu":
+			if menu, _ := appFrameVMenu(frame); menu != nil {
+				idx := semanticInt(action["index"])
+				return menu.OpenSubmenu(idx)
+			}
 		case "menu_activate", "menu.activate":
 			if menu, _ := appFrameVMenu(frame); menu != nil {
 				idx := semanticInt(action["index"])
-				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
+				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator &&
+					!menu.Items[idx].Header && !menu.Items[idx].Disabled {
 					menu.SetSelectPos(idx)
 					return menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
 				}
@@ -526,7 +543,8 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 		case "menu_select", "menu.select":
 			if menu, _ := appFrameVMenu(frame); menu != nil {
 				idx := semanticInt(action["index"])
-				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
+				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator &&
+					!menu.Items[idx].Header && !menu.Items[idx].Disabled {
 					menu.SetSelectPos(idx)
 					vtui.FrameManager.DeclareSemanticMenuState()
 					return true
@@ -1477,10 +1495,11 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 	caps := fp.vfs.GetCapabilities()
 	for i, entry := range fp.entries {
 		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
-		displayBaseName := entry.Name
+		displayName := entry.visibleName()
+		displayBaseName := displayName
 		displayExtension := ""
 		if AppConfig.SeparateFileExtensions && !entry.NoExtension && !entry.IsDir && entry.Name != ".." {
-			if base, extension := splitFileExtension(entry.Name); extension != "" {
+			if base, extension := splitFileExtension(displayName); extension != "" {
 				displayBaseName = base
 				displayExtension = extension
 			}

@@ -9,6 +9,7 @@
 
 #if defined(Q_OS_MACOS)
 #include "MacApplicationMenu.h"
+#include "MacPlatformServices.h"
 #endif
 
 #include <QCommandLineOption>
@@ -235,6 +236,16 @@ int main(int argc, char *argv[])
     QQuickWindow::setDefaultAlphaBuffer(false);
 
     QtShellController controller(connectAddress, nonce, cols, rows, &app);
+#if defined(Q_OS_MACOS)
+    MacPlatformServices macPlatformServices(
+        [&controller](const QVariantMap &message) {
+            controller.sendPlatformMessage(message);
+        });
+    controller.setPlatformRequestHandler(
+        [&macPlatformServices](const QVariantMap &message) {
+            macPlatformServices.handleMessage(message);
+        });
+#endif
     int fatalExitCode = 0;
     QObject::connect(&controller, &QtShellController::fatalError, &app,
                      [&app, &fatalExitCode](const QString &message) {
