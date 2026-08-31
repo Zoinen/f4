@@ -171,6 +171,7 @@ const QSet<QString> &streamlineIconNames()
     static const QSet<QString> names{
         QStringLiteral("android-logo"),
         QStringLiteral("apple-logo"),
+        QStringLiteral("microsoft-windows-logo"),
     };
     return names;
 }

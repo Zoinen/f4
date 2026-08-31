@@ -1135,6 +1135,18 @@ ApplicationWindow {
                     value, s, root.iconDevicePixelRatio, color)
     }
 
+    function semanticMenuIconSource(name, size, tint) {
+        const value = root.cleanText(name)
+        if (value === "")
+            return ""
+        // Keep native icon-theme lookup for the optional system set. The
+        // bundled Lucide/Streamline symbols go through the DPR-sized image
+        // provider so IconImage never has to resample a raw SVG in the menu.
+        return qtIcons.system === true
+                ? root.resolvedIconSource(value, size)
+                : root.lucideIconSource(value, size, tint)
+    }
+
     function semanticPanelSplitRatio() {
         var shell = shellFrame()
         var layout = shell && shell.panelLayout ? shell.panelLayout : ({})
@@ -11412,7 +11424,7 @@ ApplicationWindow {
                             elide: Text.ElideRight
                         }
 
-                        IconLabel {
+                        IconImage {
                             id: leadingMenuIcon
                             objectName: "semanticMenuItemIcon-"
                                         + root.cleanText(menuOverlay.frame.id)
@@ -11423,7 +11435,9 @@ ApplicationWindow {
                             readonly property url semanticIconSource:
                                 semanticIconName === ""
                                 || semanticIconName === "tag-dot" ? ""
-                                : root.resolvedIconSource(semanticIconName, 15)
+                                : root.semanticMenuIconSource(
+                                      semanticIconName, 15,
+                                      semanticIconColor)
                             readonly property color semanticIconColor:
                                 modelData.disabled ? root.mutedText
                                 : root.cleanText(modelData.iconColor) !== ""
@@ -11444,10 +11458,11 @@ ApplicationWindow {
                                      && modelData.header !== true
                                      && semanticIconName !== "tag-dot"
                                      && semanticIconName !== ""
-                            icon.source: semanticIconSource
-                            icon.width: 15
-                            icon.height: 15
-                            icon.color: semanticIconColor
+                            sourceSize: Qt.size(15, 15)
+                            smooth: false
+                            mipmap: false
+                            source: semanticIconSource
+                            color: semanticIconColor
                         }
 
                         Rectangle {

@@ -68,7 +68,7 @@ type shellContextMenu struct {
 func addWindowsLocationsDriveItem(pf *PanelsFrame, panelIdx int, menu *vtui.VMenu) bool {
 	menu.AddItem(vtui.MenuItem{
 		Text:     Msg("WindowsLocations.DriveItem"),
-		Icon:     driveMenuIconLocal,
+		Icon:     driveMenuIconWindows,
 		Shortcut: "▶",
 		UserData: driveMenuCascadeAction(func(parent *vtui.VMenu) {
 			showWindowsLocationsMenu(pf, panelIdx, parent)

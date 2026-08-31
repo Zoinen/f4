@@ -382,6 +382,8 @@ void F4IconProviderTests::diskPluginBrandSourcesAndRasterRoutes()
          QStringLiteral("qrc:/F4QtHost/icons/streamline/android-logo.svg")},
         {QStringLiteral("apple-logo"),
          QStringLiteral("qrc:/F4QtHost/icons/streamline/apple-logo.svg")},
+        {QStringLiteral("microsoft-windows-logo"),
+         QStringLiteral("qrc:/F4QtHost/icons/streamline/microsoft-windows-logo.svg")},
     };
 
     for (const auto &icon : iconsToVerify) {

@@ -15,6 +15,19 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func TestWindowsLocationsDriveItemUsesWindowsLogo(t *testing.T) {
+	menu := vtui.NewVMenu(" Locations ")
+	if !addWindowsLocationsDriveItem(nil, 0, menu) {
+		t.Fatal("Windows locations drive item was not added")
+	}
+	if len(menu.Items) != 1 {
+		t.Fatalf("Windows locations item count = %d, want 1", len(menu.Items))
+	}
+	if got := menu.Items[0].Icon; got != driveMenuIconWindows {
+		t.Fatalf("Windows locations icon = %q, want %q", got, driveMenuIconWindows)
+	}
+}
+
 func TestWindowsLocationsMenuResolvesThemeAtRenderTime(t *testing.T) {
 	indices := []int{
 		vtui.ColMenuText,

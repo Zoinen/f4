@@ -259,6 +259,7 @@ list(TRANSFORM F4_LUCIDE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide
 set(F4_STREAMLINE_ICON_NAMES
   android-logo.svg
   apple-logo.svg
+  microsoft-windows-logo.svg
 )
 set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
 list(TRANSFORM F4_STREAMLINE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline/")

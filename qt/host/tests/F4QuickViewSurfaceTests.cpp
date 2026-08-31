@@ -3473,6 +3473,14 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
     QCOMPARE(disabledIcon->property("semanticIconName").toString(),
              QStringLiteral("hard-drive"));
     QVERIFY(normalIcon->property("semanticIconSource").toUrl().isValid());
+    const QUrl normalGlyphSource = normalIcon->property("source").toUrl();
+    QVERIFY2(normalGlyphSource.isValid(),
+             "menu icon must expose its actual pixel-aligned image source");
+    QVERIFY2(!normalIcon->property("smooth").toBool(),
+             "menu icon must not smooth-filter a DPR-sized texture");
+    QVERIFY2(!normalIcon->property("mipmap").toBool(),
+             "menu icon must not mipmap a DPR-sized texture");
+    QCOMPARE(normalIcon->property("sourceSize").toSize(), QSize(15, 15));
     QCOMPARE(iconRowText->x(), plainRowText->x());
 
     const QColor themedText(QStringLiteral("#ff31c48d"));
@@ -3489,8 +3497,18 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
         themedMuted, 3000);
     QTRY_COMPARE_WITH_TIMEOUT(selectedRow->property("color").value<QColor>(),
                               themedSelected, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        QUrlQuery(normalIcon->property("source").toUrl())
+            .queryItemValue(QStringLiteral("color")),
+        themedText.name(QColor::HexArgb), 3000);
 
     const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(QUrlQuery(normalGlyphSource)
+                 .queryItemValue(QStringLiteral("size")),
+             QStringLiteral("15"));
+    QCOMPARE(QUrlQuery(normalGlyphSource)
+                 .queryItemValue(QStringLiteral("dpr")),
+             QString::number(dpr, 'g', 12));
     const QPointF iconOrigin = normalIcon->mapToItem(
         fixture.window->contentItem(), QPointF{});
     QVERIFY(qAbs(iconOrigin.x() * dpr - qRound(iconOrigin.x() * dpr)) < 0.001);

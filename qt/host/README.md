@@ -54,9 +54,10 @@ theme or remote-file icons fall back to the matching bundled Lucide glyph.
 ### Bundled icon assets
 
 All other Qt menu and chrome icons use the vendored Lucide set in
-`icons/lucide`. The Android and iOS entries in the disk menu use the Android
-Logo and Apple Logo SVGs in `icons/streamline`, respectively. Those two icons
-were sourced from [Streamline's OS systems icon collection](https://www.streamlinehq.com/icons/logos-line/os-systems?icon=ico_UvfZHgqO6RKUzd9d).
+`icons/lucide`. The Android, iOS, and Windows locations entries in the disk
+menu use the Android Logo, Apple Logo, and Microsoft Windows Logo 2 SVGs in
+`icons/streamline`, respectively. These icons were sourced from [Streamline's
+OS systems icon collection](https://www.streamlinehq.com/icons/logos-line/os-systems?icon=ico_UvfZHgqO6RKUzd9d).
 
 ## ZoinGallery panel
 

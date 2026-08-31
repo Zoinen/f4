@@ -38,6 +38,7 @@ const (
 	driveMenuIconCloud      = "cloud"
 	driveMenuIconAndroid    = "android-logo"
 	driveMenuIconIOS        = "apple-logo"
+	driveMenuIconWindows    = "microsoft-windows-logo"
 	driveMenuIconAI         = "sparkles"
 )
 
