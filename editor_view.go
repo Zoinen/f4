@@ -67,6 +67,10 @@ type EditorView struct {
 	semanticWindowGeneration        uint64
 	semanticWindowRequestGeneration uint64
 	semanticExtentKnown             bool
+	// nativeViewportRows is the number of complete rows left after the QML
+	// document header and shared native chrome have been laid out. A zero value
+	// keeps the terminal geometry authoritative.
+	nativeViewportRows int
 	// The Qt semantic surface slides a bounded three-viewport window through
 	// the document. Keep final styled rows for the current overlap so an edge
 	// scroll or selection endpoint move only repaints the rows whose pixels
@@ -353,7 +357,7 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 			return
 		}
 		ev.ScrollTopRow = v
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		if height > 0 {
 			startLogLine, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
 			endLogLine, _ := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow + height - 1)
@@ -1156,12 +1160,12 @@ func (ev *EditorView) processKeyHex(e *vtinput.InputEvent) bool {
 		syncCursor()
 		return true
 	case vtinput.VK_PRIOR:
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		absPos -= 16 * height
 		syncCursor()
 		return true
 	case vtinput.VK_NEXT:
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		absPos += 16 * height
 		syncCursor()
 		return true
@@ -1999,7 +2003,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 
 	case vtinput.VK_PRIOR: // PgUp
 		handleNav()
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 		vRow, _ := ev.engine.LogicalToVisual(curOffset)
 		newVRow := vRow - height
@@ -2026,7 +2030,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 
 	case vtinput.VK_NEXT: // PgDn
 		handleNav()
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 		vRow, _ := ev.engine.LogicalToVisual(curOffset)
 		newVRow := vRow + height
@@ -2656,7 +2660,7 @@ func (ev *EditorView) syncVirtualSpaces() {
 // cursor walk on alone. Nothing happens once the cursor sits on the first or
 // last row. The selection is left untouched: scrolling is not a navigation.
 func (ev *EditorView) scrollViewBy(delta int) {
-	height := ev.Y2 - ev.Y1
+	height := ev.viewportHeight()
 	if height <= 0 {
 		return
 	}
@@ -2686,7 +2690,7 @@ func (ev *EditorView) ensureCursorVisible() {
 	}
 
 	if ev.HexMode || ev.DecodeMode {
-		height := ev.Y2 - ev.Y1
+		height := ev.viewportHeight()
 		if height <= 0 {
 			return
 		}
@@ -2754,7 +2758,7 @@ func (ev *EditorView) ensureCursorVisible() {
 	vCol += ev.CursorVirtualSpaces
 
 	width := ev.X2 - ev.X1 + 1
-	height := ev.Y2 - ev.Y1
+	height := ev.viewportHeight()
 
 	if ev.scrollBar != nil {
 		width--
@@ -2896,10 +2900,22 @@ func (ev *EditorView) SetPosition(x1, y1, x2, y2 int) {
 	}
 	if ev.scrollBar != nil {
 		ev.scrollBar.SetPosition(x2, y1+1, x2, y2)
-		ev.scrollBar.PgStep = y2 - y1
+		ev.scrollBar.PgStep = ev.viewportHeight()
 	}
 	ev.ensureEngineWidth()
 	ev.ensureCursorVisible()
+}
+
+// viewportHeight returns the row count used for cursor visibility and native
+// semantic navigation. DisplayObject still renders from the terminal frame
+// dimensions; bounded semantic styling temporarily changes those dimensions
+// to render its overscan window.
+func (ev *EditorView) viewportHeight() int {
+	height := ev.Y2 - ev.Y1
+	if ev.nativeViewportRows > 0 && ev.nativeViewportRows < height {
+		return ev.nativeViewportRows
+	}
+	return height
 }
 
 func (ev *EditorView) ResizeConsole(w, h int) {

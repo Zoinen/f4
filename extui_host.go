@@ -862,6 +862,7 @@ var semanticEditorSurfaceStateKeys = []string{
 	"cursorVisible",
 	"cursorShape",
 	"cursorAbsoluteRow",
+	"topBarRight",
 }
 
 func semanticEditorSurfaceStateValid(state map[string]any) bool {
@@ -897,6 +898,10 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 			if !ok || (shape != "underline" && shape != "block") {
 				return false
 			}
+		case "topBarRight":
+			if _, ok := value.(string); !ok {
+				return false
+			}
 		case "cursorLine", "cursorPos", "cursorAbsoluteRow":
 			if !integer(value, true) {
 				return false
@@ -910,11 +915,11 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 	return true
 }
 
-// QueueSurfaceState publishes only the scalar cursor state of the currently
-// displayed editor. The caller has already proved that the key changed no
-// document, selection, viewport, mode, or autocomplete state. Surface identity
-// and the exact scene revision keep late key repeats from touching a replacement
-// document.
+// QueueSurfaceState publishes only the scalar cursor state and right status
+// string of the currently displayed editor. The caller has already proved that
+// the key changed no document, selection, viewport, mode, or autocomplete
+// state. Surface identity and the exact scene revision keep late key repeats
+// from touching a replacement document.
 func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
 	state map[string]any,
 ) bool {

@@ -155,7 +155,8 @@ public:
     Q_INVOKABLE QUrl fileIconSource(const QString &, const QString &, bool,
                                     int, qreal, qlonglong) const
     {
-        return {};
+        return QUrl(QStringLiteral(
+            "qrc:/F4QtHost/icons/lucide/file-code.svg"));
     }
 };
 
@@ -216,6 +217,9 @@ QVariantMap viewerFrame(int firstOffset, int count, int viewportStart,
         {QStringLiteral("id"), QStringLiteral("document-under-test")},
         {QStringLiteral("kind"), QStringLiteral("viewer")},
         {QStringLiteral("defaultBackground"), QStringLiteral("#242424")},
+        {QStringLiteral("iconColor"), QStringLiteral("#8AE234")},
+        {QStringLiteral("topBarLeft"), QStringLiteral(" window.txt")},
+        {QStringLiteral("topBarRight"), QStringLiteral(" UTF-8 │ Text │ 42%     ")},
         {QStringLiteral("scrollUnit"), QStringLiteral("bytes")},
         {QStringLiteral("rows"), rows.mid(0, qMin(30, rows.size()))},
         {QStringLiteral("windowRows"), rows},
@@ -238,6 +242,9 @@ QVariantMap editorFrame(int firstRow, int count, int viewportStart,
     return {
         {QStringLiteral("id"), QStringLiteral("editor-window-test")},
         {QStringLiteral("kind"), QStringLiteral("editor")},
+        {QStringLiteral("iconColor"), QStringLiteral("#8AE234")},
+        {QStringLiteral("topBarLeft"), QStringLiteral(" window.txt")},
+        {QStringLiteral("topBarRight"), QStringLiteral(" UTF-8 │ 41,2     ")},
         {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
         {QStringLiteral("rows"), rows.mid(0, qMin(20, rows.size()))},
         {QStringLiteral("windowRows"), rows},
@@ -368,6 +375,8 @@ class F4DocumentSurfaceTests final : public QObject
 private slots:
     void initTestCase();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
+    void documentHeaderShowsConsoleTopBarForViewerAndEditor();
+    void nativeViewportExcludesHeaderAndKeepsBottomCursorVisible();
     void standaloneDocumentsEndAtSharedKeyBarSeparator();
     void finalViewportAlignsLastRowBelowFractionalBottom();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
@@ -413,6 +422,114 @@ void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
         fixture.surface, "runBackground", Q_RETURN_ARG(QVariant, returned),
         Q_ARG(QVariant, QStringLiteral("#884422"))));
     QCOMPARE(QColor(returned.toString()), QColor(QStringLiteral("#884422")));
+}
+
+void F4DocumentSurfaceTests::documentHeaderShowsConsoleTopBarForViewerAndEditor()
+{
+    const auto verify = [&](const QVariantMap &frame,
+                            const QString &expectedLeft,
+                            const QString &expectedRight) {
+        DocumentFixture fixture(documentScene(frame));
+        QVERIFY(fixture.ready());
+        auto *header = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentHeader"));
+        auto *left = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentHeaderLeft"));
+        auto *right = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentHeaderRight"));
+        auto *icon = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentHeaderIcon"));
+        auto *lucideIcon = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentHeaderLucideIcon"));
+        QVERIFY(header);
+        QVERIFY(left);
+        QVERIFY(right);
+        QVERIFY(icon);
+        QVERIFY(lucideIcon);
+        QTRY_VERIFY_WITH_TIMEOUT(header->isVisible(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(icon->isVisible(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(lucideIcon->isVisible(), 3000);
+        QCOMPARE(left->property("text").toString(), expectedLeft.trimmed());
+        QCOMPARE(right->property("text").toString(), expectedRight.trimmed());
+        QVERIFY(fixture.surface->property("documentFileIconAvailable").toBool());
+        QCOMPARE(fixture.surface->property("documentFileIconColor").value<QColor>(),
+                 QColor(QStringLiteral("#8AE234")));
+        QVERIFY(fixture.surface->property("documentFileIconSource")
+                    .toUrl()
+                    .toString()
+                    .contains(QStringLiteral("file-code.svg")));
+        QVERIFY(left->x() > icon->x());
+        QVERIFY(fixture.surface->property("documentHeaderHeight").toReal() > 0);
+        QVERIFY(fixture.surface->property("topInset").toReal()
+                > fixture.surface->property("surfaceMenuInset").toReal());
+
+        const qreal headerBottom = header->mapToScene(
+            QPointF(0, header->height())).y();
+        const qreal listTop = fixture.list->mapToScene(QPointF(0, 0)).y();
+        QVERIFY(qAbs(headerBottom - listTop) < 0.001);
+    };
+
+    verify(viewerFrame(0, 20, 0, 1), QStringLiteral(" window.txt"),
+           QStringLiteral(" UTF-8 │ Text │ 42%     "));
+    verify(editorFrame(0, 40, 0, 1), QStringLiteral(" window.txt"),
+           QStringLiteral(" UTF-8 │ 41,2     "));
+}
+
+void F4DocumentSurfaceTests::nativeViewportExcludesHeaderAndKeepsBottomCursorVisible()
+{
+    QVariantMap frame = editorFrame(0, 80, 0, 1);
+    frame.insert(QStringLiteral("viewportSpan"), 30);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+
+    QVariantMap viewportAction;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString()
+                == QStringLiteral("document.viewport")) {
+                viewportAction = action;
+            }
+        }
+        return !viewportAction.isEmpty()
+            && viewportAction.value(QStringLiteral("rows")).toInt() > 0;
+    }(), 3000);
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const int completeRows = static_cast<int>(std::floor(
+        (fixture.list->height() + 0.001) / rowHeight));
+    QCOMPARE(viewportAction.value(QStringLiteral("rows")).toInt(), completeRows);
+    QCOMPARE(fixture.surface->property("reportedViewportRows").toInt(),
+             completeRows);
+    QVERIFY(completeRows > 0);
+    QVERIFY(completeRows < 30);
+
+    frame.insert(QStringLiteral("viewportSpan"), completeRows);
+    frame.insert(QStringLiteral("cursorAbsoluteRow"), completeRows - 1);
+    frame.insert(QStringLiteral("windowGeneration"), 2);
+    fixture.shell.setScene(documentScene(frame));
+
+    QQuickItem *cursor = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((cursor = findEditorCursor(fixture.surface)) != nullptr,
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->isVisible(), 3000);
+    const qreal cursorTop = cursor->mapToItem(fixture.list, 0, 0).y();
+    QVERIFY(cursorTop >= 0.0);
+    QVERIFY(cursorTop + cursor->height() <= fixture.list->height() + 0.001);
+
+    fixture.shell.clearActions();
+    fixture.surface->setProperty("interactionActive", false);
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString()
+                    == QStringLiteral("document.viewport")
+                && action.value(QStringLiteral("rows")).toInt() == 0) {
+                return true;
+            }
+        }
+        return false;
+    }(), 3000);
 }
 
 void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()
@@ -1008,8 +1125,10 @@ void F4DocumentSurfaceTests::scrollBarReflectsGlobalExtentAndKnownState()
     const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
     const qreal visibleRows = fixture.list->height() / rowHeight;
     const qreal expectedVisibleSpan = visibleRows * 25.0;
-    QCOMPARE(visibleRows, 30.0);
-    QCOMPARE(expectedVisibleSpan, 750.0);
+    QVERIFY(visibleRows > 0.0);
+    QVERIFY(visibleRows < 30.0);
+    QVERIFY(expectedVisibleSpan > 0.0);
+    QVERIFY(expectedVisibleSpan < 750.0);
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(fixture.scrollBar->property("size").toReal()
              - expectedVisibleSpan / 10000.0) < 0.000001,
@@ -1047,19 +1166,23 @@ void F4DocumentSurfaceTests::editorScrollBarEndpointMapsLastViewportToRowNinety(
     QVERIFY(fixture.ready());
     QTRY_VERIFY_WITH_TIMEOUT(
         fixture.surface->property("windowInitialized").toBool(), 3000);
-    QCOMPARE(fixture.list->height()
-                 / fixture.surface->property("rowHeight").toReal(),
-             10.0);
+    const qreal visibleRows = fixture.list->height()
+                              / fixture.surface->property("rowHeight").toReal();
+    QVERIFY(visibleRows > 0.0);
+    QVERIFY(visibleRows < 10.0);
     QTRY_VERIFY_WITH_TIMEOUT(fixture.scrollBar->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(topExtent(fixture.surface, fixture.list) - 90.0) < 0.000001,
+        qAbs(topExtent(fixture.surface, fixture.list)
+             - (100.0 - visibleRows)) < 0.000001,
         3000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(fixture.scrollBar->property("position").toReal() - 0.9)
+        qAbs(fixture.scrollBar->property("position").toReal()
+             - (1.0 - visibleRows / 100.0))
             < 0.000001,
         3000);
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(fixture.scrollBar->property("size").toReal() - 0.1)
+        qAbs(fixture.scrollBar->property("size").toReal()
+             - visibleRows / 100.0)
             < 0.000001,
         3000);
     QCOMPARE(fixture.scrollBar->property("position").toReal()

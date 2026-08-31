@@ -1076,6 +1076,20 @@ ApplicationWindow {
                                   root.iconDevicePixelRatio)
     }
 
+    function fileIconSource(localPath, fileName, directory, logicalSize,
+                            version) {
+        // Keep document icons on the same native icon-set path as gallery
+        // entries. The C++ provider owns extension mapping, system-icon
+        // lookup, cache invalidation, and the Lucide/System distinction.
+        const generation = qtIcons.revision
+        const size = Number(logicalSize) > 0 ? Number(logicalSize) : 16
+        const iconVersion = Number(version) > 0 ? Number(version) : 0
+        return qtIcons.fileIconSource(
+                    root.cleanText(localPath), root.cleanText(fileName),
+                    directory === true, size, root.iconDevicePixelRatio,
+                    iconVersion)
+    }
+
     function lucideIconSource(name, size, tint) {
         const value = root.cleanText(name)
         if (value === "")
@@ -5032,6 +5046,7 @@ ApplicationWindow {
                 frame: root.currentDocumentFrame()
                        || root.retainedDocumentFrame || ({})
                 interactionActive: root.hasStandaloneDocumentSurface()
+                                   && !root.needsFallbackGrid()
             }
         }
 
@@ -8324,11 +8339,47 @@ ApplicationWindow {
         property int lastEditorMouseRow: 0
         property var pendingEditorMouseMove: null
         property var latestWindowRows: []
+        property int reportedViewportRows: 0
+        property string reportedViewportTarget: ""
         readonly property var cursorFrame:
             root.documentSurfaceStateOverride !== null
             && root.cleanText(root.documentSurfaceStateOverride.id)
                === root.cleanText(frame.id)
             ? root.documentSurfaceStateOverride : frame
+        readonly property bool showsConsoleTopBar:
+            !embedded && (frame.kind === "viewer" || frame.kind === "editor")
+        readonly property string topBarLeftText:
+            root.cleanText(frame.topBarLeft).trim()
+        readonly property string topBarRightText:
+            root.cleanText(cursorFrame.topBarRight !== undefined
+                           ? cursorFrame.topBarRight : frame.topBarRight).trim()
+        readonly property string documentFileName:
+            root.cleanText(frame.baseName).trim() !== ""
+            ? root.cleanText(frame.baseName).trim() : topBarLeftText
+        readonly property string documentFileLocalPath:
+            root.cleanText(frame.localPath)
+        readonly property int documentFileIconLogicalSize: 16
+        readonly property url documentFileIconSource:
+            showsConsoleTopBar
+            ? root.fileIconSource(documentFileLocalPath, documentFileName,
+                                  false, documentFileIconLogicalSize, 0)
+            : ""
+        readonly property bool documentFileIconFullColor:
+            qtIcons.fileIconsAreFullColor === true
+        readonly property color documentFileIconColor:
+            root.cleanText(frame.iconColor).trim() !== ""
+            ? root.cleanText(frame.iconColor).trim()
+            : root.galleryMutedTextColor
+        readonly property bool documentFileIconAvailable:
+            documentFileIconSource.toString() !== ""
+        readonly property real surfaceMenuInset:
+            embedded ? 0 : (semanticMenu.visible ? semanticMenu.height : 0)
+        readonly property real documentHeaderHeight:
+            showsConsoleTopBar
+            ? Math.max(25, root.ch * 1.25)
+              + root.verticalContentSpacing
+              + root.pathRowExtraHeight
+            : 0
         readonly property bool kineticActive:
             documentList.flicking || documentList.dragging
             || documentWheelAnimation.running || wheelGestureActive
@@ -8341,9 +8392,8 @@ ApplicationWindow {
             Math.max(0, Number(frame.contentExtent || 0))
         readonly property bool contentExtentKnown:
             frame.contentExtentKnown !== false
-        readonly property real topInset: embedded ? 0
-                                           : semanticMenu.visible
-                                             ? semanticMenu.height : 0
+        readonly property real topInset:
+            surfaceMenuInset + documentHeaderHeight
         readonly property real bottomInset: embedded ? 0
             : root.keyBarHeight()
         readonly property real rowHeight: Math.max(20, root.ch)
@@ -8448,6 +8498,62 @@ ApplicationWindow {
                 "column": lastEditorMouseColumn,
                 "row": lastEditorMouseRow
             }, true)
+        }
+
+        function completeViewportRows() {
+            if (rowHeight <= 0 || documentList.height <= 0)
+                return 0
+            // A partially visible final row cannot contain the editor cursor.
+            // Report only complete delegates to the core so its first hidden
+            // row is also the first row that triggers autoscroll.
+            return Math.max(1, Math.floor(
+                                (documentList.height + 0.001) / rowHeight))
+        }
+
+        function clearNativeViewport() {
+            if (reportedViewportTarget !== ""
+                    && reportedViewportRows > 0) {
+                root.action({
+                    "target": reportedViewportTarget,
+                    "action": "document.viewport",
+                    "rows": 0
+                }, true)
+            }
+            reportedViewportTarget = ""
+            reportedViewportRows = 0
+        }
+
+        function syncNativeViewport() {
+            if (embedded || !interactionActive || !showsConsoleTopBar) {
+                clearNativeViewport()
+                return
+            }
+            var target = root.cleanText(frame.id)
+            var rows = completeViewportRows()
+            if (target === "" || rows <= 0)
+                return
+            if (target === reportedViewportTarget
+                    && rows === reportedViewportRows)
+                return
+            if (reportedViewportTarget !== ""
+                    && target !== reportedViewportTarget) {
+                root.action({
+                    "target": reportedViewportTarget,
+                    "action": "document.viewport",
+                    "rows": 0
+                }, true)
+            }
+            reportedViewportTarget = target
+            reportedViewportRows = rows
+            root.action({
+                "target": target,
+                "action": "document.viewport",
+                "rows": rows
+            }, true)
+        }
+
+        function scheduleNativeViewportSync() {
+            nativeViewportSyncTimer.restart()
         }
 
         function sourceRows() {
@@ -8960,10 +9066,18 @@ ApplicationWindow {
                 frameSyncTimer.restart()
         }
 
-        onFrameChanged: scheduleFrameWindowSync()
+        onFrameChanged: {
+            scheduleFrameWindowSync()
+            scheduleNativeViewportSync()
+        }
+        onRowHeightChanged: scheduleNativeViewportSync()
+        onEmbeddedChanged: scheduleNativeViewportSync()
         onInteractionActiveChanged: {
-            if (interactionActive)
+            if (interactionActive) {
+                scheduleNativeViewportSync()
                 return
+            }
+            clearNativeViewport()
             documentList.cancelFlick()
             documentWheelAnimation.stop()
             wheelCommitTimer.stop()
@@ -8979,9 +9093,136 @@ ApplicationWindow {
             queuedScrollBarPosition = -1
             pendingEditorMouseMove = null
         }
-        Component.onCompleted: scheduleFrameWindowSync()
+        Component.onCompleted: {
+            scheduleFrameWindowSync()
+            scheduleNativeViewportSync()
+        }
 
         color: "transparent"
+
+        Rectangle {
+            id: documentHeader
+            objectName: "documentHeader"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: documentRoot.surfaceMenuInset
+            height: documentRoot.documentHeaderHeight
+            visible: documentRoot.showsConsoleTopBar
+            color: root.titleBarBg
+            z: 2
+
+            Rectangle {
+                id: documentHeaderBackground
+                objectName: "documentHeaderBackground"
+                anchors.fill: parent
+                color: root.panelPathBg
+                z: 0
+            }
+
+            Rectangle {
+                id: documentHeaderSeparator
+                objectName: "documentHeaderSeparator"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: root.separatorWidth
+                color: root.separatorColor
+            }
+
+            Item {
+                id: documentHeaderIcon
+                objectName: "documentHeaderIcon"
+                anchors.left: parent.left
+                anchors.leftMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                width: root.snapPx(18)
+                height: root.snapPx(18)
+                visible: documentRoot.documentFileIconAvailable
+                z: 1
+
+                IconLabel {
+                    id: documentHeaderLucideIcon
+                    objectName: "documentHeaderLucideIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    visible: !documentRoot.documentFileIconFullColor
+                    icon.source: documentRoot.documentFileIconSource
+                    icon.width: width
+                    icon.height: height
+                    icon.color: documentRoot.documentFileIconColor
+                }
+
+                Image {
+                    id: documentHeaderSystemIcon
+                    objectName: "documentHeaderSystemIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    source: documentRoot.documentFileIconSource
+                    fillMode: Image.PreserveAspectFit
+                    smooth: false
+                    mipmap: false
+                    asynchronous: true
+                    cache: true
+                    retainWhileLoading: true
+                    visible: documentRoot.documentFileIconFullColor
+                }
+
+                IconLabel {
+                    id: documentHeaderSystemFallbackIcon
+                    objectName: "documentHeaderSystemFallbackIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    visible: documentRoot.documentFileIconFullColor
+                             && documentHeaderSystemIcon.status !== Image.Ready
+                    icon.source: root.lucideIconSource(
+                                     "file", 16,
+                                     documentRoot.documentFileIconColor)
+                    icon.width: width
+                    icon.height: height
+                    icon.color: documentRoot.documentFileIconColor
+                }
+            }
+
+            Text {
+                id: documentHeaderRight
+                objectName: "documentHeaderRight"
+                anchors.right: parent.right
+                anchors.rightMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth,
+                               Math.max(0, parent.width
+                                       - 2 * root.panelTextInset))
+                text: documentRoot.topBarRightText
+                color: root.galleryPathTextColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: root.semanticTextFontPixelSize
+                horizontalAlignment: Text.AlignRight
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideLeft
+            }
+
+            Text {
+                id: documentHeaderLeft
+                objectName: "documentHeaderLeft"
+                anchors.left: documentHeaderIcon.visible
+                               ? documentHeaderIcon.right : parent.left
+                anchors.right: documentHeaderRight.left
+                anchors.leftMargin: documentHeaderIcon.visible
+                                   ? root.snapPx(7) : root.panelTextInset
+                anchors.rightMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                text: documentRoot.topBarLeftText
+                color: root.galleryPathTextColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: root.semanticTextFontPixelSize
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+        }
 
         FontMetrics {
             id: documentFontMetrics
@@ -9105,6 +9346,7 @@ ApplicationWindow {
                 documentRoot.syncScrollBar()
                 requestWindowTimer.restart()
             }
+            onHeightChanged: documentRoot.scheduleNativeViewportSync()
             onMovementEnded: {
                 if (documentRoot.rebasingWindow
                         || documentRoot.wheelGestureActive)
@@ -9288,6 +9530,12 @@ ApplicationWindow {
             id: frameSyncTimer
             interval: 0
             onTriggered: documentRoot.applyFrameWindow()
+        }
+
+        Timer {
+            id: nativeViewportSyncTimer
+            interval: 0
+            onTriggered: documentRoot.syncNativeViewport()
         }
 
         Timer {

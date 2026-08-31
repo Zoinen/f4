@@ -12,6 +12,7 @@ import (
 
 	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -101,6 +102,95 @@ func TestSemanticWindowProtocol_EditorKeepsThreeScreensAndStableOverlap(t *testi
 	}
 	if _, ok := semanticRowsByExtent(t, second, "rows")[oldBoundaryTop]; !ok {
 		t.Fatalf("new window lost live old-boundary anchor row %d", oldBoundaryTop)
+	}
+}
+
+func TestSemanticWindowProtocol_NativeViewportScrollsEditorAtFirstHiddenRow(t *testing.T) {
+	vtui.SetDefaultPalette()
+	var content strings.Builder
+	for row := 0; row < 40; row++ {
+		fmt.Fprintf(&content, "row-%03d\n", row)
+	}
+	editor := NewEditorView(piecetable.New([]byte(content.String())), nil, "viewport.txt")
+	defer editor.Close()
+	editor.SetPosition(0, 0, 39, 10)
+	editor.SetVisible(true)
+	target := vtui.SemanticID(editor)
+
+	if !editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "document.viewport", "rows": 8,
+	}) {
+		t.Fatal("native editor viewport was not handled")
+	}
+	if got := semanticInt(editor.SemanticNode(nil)["viewportRows"]); got != 8 {
+		t.Fatalf("semantic viewport rows=%d, want 8", got)
+	}
+
+	editor.ScrollTopRow = 0
+	editor.CursorLine = 7
+	editor.CursorPos = 0
+	editor.ensureCursorVisible()
+	if editor.ScrollTopRow != 0 {
+		t.Fatalf("last visible row scrolled early to %d", editor.ScrollTopRow)
+	}
+	editor.CursorLine = 8
+	editor.ensureCursorVisible()
+	if editor.ScrollTopRow != 1 {
+		t.Fatalf("first hidden row scrolled to %d, want 1", editor.ScrollTopRow)
+	}
+	cursor := editor.semanticCursorState(editor.semanticSurfaceWidth())
+	if !cursor.visible || cursor.visualRow != 7 {
+		t.Fatalf("cursor after immediate scroll=%#v, want visible row 7", cursor)
+	}
+
+	editor.HandleSemanticAction(map[string]any{
+		"target": target, "action": "document.viewport", "rows": 0,
+	})
+	if got := semanticInt(editor.SemanticNode(nil)["viewportRows"]); got != 10 {
+		t.Fatalf("cleared native viewport rows=%d, want terminal height 10", got)
+	}
+}
+
+func TestSemanticWindowProtocol_NativeViewportControlsViewerPageStep(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "viewport.bin")
+	if err := os.WriteFile(path, make([]byte, 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := NewViewerView(context.Background(), vfs.NewOSVFS(tmp), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	viewer.SetPosition(0, 0, 39, 10)
+	target := vtui.SemanticID(viewer)
+	if !viewer.HandleSemanticAction(map[string]any{
+		"target": target, "action": "document.viewport", "rows": 8,
+	}) {
+		t.Fatal("native viewer viewport was not handled")
+	}
+	if got := semanticInt(viewer.SemanticNode(nil)["viewportRows"]); got != 8 {
+		t.Fatalf("semantic viewer viewport rows=%d, want 8", got)
+	}
+
+	viewer.TopOffset = 0
+	viewer.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT,
+	})
+	if viewer.TopOffset != 8*16 {
+		t.Fatalf("native PgDn offset=%d, want %d", viewer.TopOffset, 8*16)
+	}
+
+	viewer.HandleSemanticAction(map[string]any{
+		"target": target, "action": "document.viewport", "rows": 0,
+	})
+	viewer.TopOffset = 0
+	viewer.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT,
+	})
+	if viewer.TopOffset != 10*16 {
+		t.Fatalf("terminal PgDn offset=%d, want %d", viewer.TopOffset, 10*16)
 	}
 }
 

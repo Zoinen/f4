@@ -49,6 +49,10 @@ type ViewerView struct {
 	semanticPendingOffset           int64
 	semanticPendingGeneration       uint64
 	semanticWrapSeek                semanticWrapSeekState
+	// nativeViewportRows is the number of complete text rows that fit in the
+	// semantic frontend after its pixel-sized chrome has been laid out. The
+	// terminal geometry remains authoritative when this is zero.
+	nativeViewportRows int
 
 	scrollBar *vtui.ScrollBar
 
@@ -191,7 +195,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			percent := 0
 			size := vv.backend.Size()
 			if size > 0 {
-				viewHeightBytes := int64(vv.Y2 - vv.Y1)
+				viewHeightBytes := int64(vv.viewportHeight())
 				if vv.HexMode {
 					viewHeightBytes *= 16
 				} else {
@@ -251,6 +255,18 @@ func (vv *ViewerView) SetPosition(x1, y1, x2, y2 int) {
 	if vv.scrollBar != nil {
 		vv.scrollBar.SetPosition(x2, y1+1, x2, y2)
 	}
+}
+
+// viewportHeight returns the height used by navigation and semantic windows.
+// Native chrome is measured in pixels and is not necessarily an integral
+// number of terminal cells, so the QML surface reports the complete rows that
+// actually remain visible.
+func (vv *ViewerView) viewportHeight() int {
+	height := vv.Y2 - vv.Y1
+	if vv.nativeViewportRows > 0 && vv.nativeViewportRows < height {
+		return vv.nativeViewportRows
+	}
+	return height
 }
 
 // GetMenuBar returns the viewer's menu bar. Items are regenerated from
@@ -639,7 +655,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		step = 16
 	}
 
-	contentHeight := int64(vv.Y2 - vv.Y1) // height - 1 (status line)
+	contentHeight := int64(vv.viewportHeight())
 
 	switch e.VirtualKeyCode {
 	case vtinput.VK_DOWN:
@@ -857,7 +873,7 @@ func (vv *ViewerView) gotoPosition(n int64) {
 	})
 }
 func (vv *ViewerView) jumpToEnd() {
-	contentHeight := int64(vv.Y2 - vv.Y1)
+	contentHeight := int64(vv.viewportHeight())
 	if vv.HexMode {
 		if vv.backend.Size() == 0 {
 			vv.TopOffset = 0

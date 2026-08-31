@@ -309,13 +309,26 @@ type TerminalModel struct {
 }
 
 type SurfaceModel struct {
-	ID                 string
-	Kind               string
-	DefaultBackground  string
-	Title              string
-	Path               string
-	BaseName           string
-	Mode               string
+	ID                string
+	Kind              string
+	DefaultBackground string
+	Title             string
+	Path              string
+	// LocalPath is the optional native filesystem path for this document.
+	// Virtual/search VFSes provide it when their result can be decoded directly
+	// by the native frontend; remote documents intentionally leave it empty.
+	LocalPath string
+	BaseName  string
+	Mode      string
+	// TopBarLeft and TopBarRight are the already-localized status strings
+	// rendered by the console viewer/editor bar. Native surfaces reuse them
+	// verbatim so the QML presentation cannot drift from the terminal one.
+	TopBarLeft  string
+	TopBarRight string
+	// IconColor is the normal file-highlighter foreground for this document.
+	// An empty value means that the native frontend should use its ordinary
+	// file-icon color.
+	IconColor          string
 	Busy               bool
 	Dirty              bool
 	Saving             bool
@@ -955,8 +968,11 @@ func (d SurfaceModel) ToMap() M {
 		"defaultBackground":  d.DefaultBackground,
 		"title":              d.Title,
 		"path":               d.Path,
+		"localPath":          d.LocalPath,
 		"baseName":           d.BaseName,
 		"mode":               d.Mode,
+		"topBarLeft":         d.TopBarLeft,
+		"topBarRight":        d.TopBarRight,
 		"busy":               d.Busy,
 		"dirty":              d.Dirty,
 		"saving":             d.Saving,
@@ -994,6 +1010,9 @@ func (d SurfaceModel) ToMap() M {
 	}
 	if d.Autocomplete != nil {
 		out["autocomplete"] = d.Autocomplete
+	}
+	if d.IconColor != "" {
+		out["iconColor"] = d.IconColor
 	}
 	return out
 }
