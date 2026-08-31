@@ -2060,7 +2060,11 @@ type semanticPanelCatalogDiff struct {
 }
 
 var semanticHiddenTerminalPresentationKeys = map[string]struct{}{
-	"cursorX": {}, "cursorY": {}, "rows": {},
+	"cursorX": {}, "cursorY": {}, "cursorAbsoluteRow": {},
+	"cursorVisible": {}, "rows": {}, "windowStart": {}, "windowEnd": {},
+	"viewportStart": {}, "viewportSpan": {}, "contentExtent": {},
+	"viewportRow": {}, "viewportRows": {}, "windowGeneration": {},
+	"windowContentKey": {}, "windowRows": {},
 }
 
 // semanticHiddenTerminalPresentationTransition recognizes the narrow PTY

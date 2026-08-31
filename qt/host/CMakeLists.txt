@@ -200,12 +200,14 @@ set(F4_LUCIDE_ICON_NAMES
   folder.svg
   folder-kanban.svg
   folder-lock.svg
+  folder-root.svg
   folder-up.svg
   globe.svg
   image.svg
   images.svg
   grid-3x3.svg
   hard-drive.svg
+  house.svg
   layout-dashboard.svg
   library.svg
   list.svg

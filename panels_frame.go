@@ -320,6 +320,18 @@ type PanelsFrame struct {
 	termView   *TerminalView
 	parser     *AnsiParser
 
+	// PTY parsing and history ingestion run at full speed, but a native
+	// semantic frontend only needs the newest terminal snapshot at an
+	// interactive frame rate. Without this gate every 32 KiB read could create
+	// another ordered app scene, leaving Ctrl+C queued behind seconds of stale
+	// QML work even after the foreground process had stopped.
+	terminalOutputRedrawMu         sync.Mutex
+	terminalOutputRedrawTimer      *time.Timer
+	terminalOutputRedrawLast       time.Time
+	terminalOutputRedrawPending    bool
+	terminalOutputRedrawClosed     bool
+	terminalOutputRedrawGeneration uint64
+
 	// Process-environment updates use their own locks so an Apply from a
 	// plugin cannot interleave a private assignment script with user input.
 	processEnvironmentMu                sync.Mutex
@@ -1121,8 +1133,8 @@ func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateCha
 	result := "requested"
 	if deferred {
 		result = "deferred_covered"
-	} else if vtui.FrameManager != nil {
-		vtui.FrameManager.Redraw()
+	} else {
+		result = pf.requestTerminalOutputRedraw(semanticStateChanged)
 	}
 	if navigationBenchmarkIsEnabled() {
 		marker := navigationBenchmarkRenderMarker()
@@ -1135,6 +1147,97 @@ func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateCha
 		}
 		navigationBenchmarkEmit(traceID, "terminal.output.redraw", "go.pty", fields...)
 	}
+}
+
+// A 30 Hz presentation cadence is smooth for streaming terminal text and
+// comfortably below the rate at which a complete semantic scene can occupy
+// Qt's GUI thread. The PTY reader and ANSI parser are deliberately not slowed:
+// only redundant visual snapshots are coalesced, and the trailing timer always
+// publishes the newest state after a burst ends.
+const terminalOutputRedrawInterval = time.Second / 30
+
+func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
+	if pf == nil || vtui.FrameManager == nil {
+		return "unavailable"
+	}
+
+	now := time.Now()
+	pf.terminalOutputRedrawMu.Lock()
+	if pf.terminalOutputRedrawClosed {
+		pf.terminalOutputRedrawMu.Unlock()
+		return "closed"
+	}
+
+	// Title, visibility, focus, alternate-screen, and busy transitions are
+	// control state rather than ordinary stream progress. Publish them without
+	// waiting for the cadence timer and invalidate any older trailing callback.
+	if immediate {
+		pf.terminalOutputRedrawGeneration++
+		if pf.terminalOutputRedrawTimer != nil {
+			pf.terminalOutputRedrawTimer.Stop()
+			pf.terminalOutputRedrawTimer = nil
+		}
+		pf.terminalOutputRedrawPending = false
+		pf.terminalOutputRedrawLast = now
+		pf.terminalOutputRedrawMu.Unlock()
+		vtui.FrameManager.Redraw()
+		return "requested"
+	}
+
+	if pf.terminalOutputRedrawPending {
+		pf.terminalOutputRedrawMu.Unlock()
+		return "coalesced"
+	}
+
+	elapsed := now.Sub(pf.terminalOutputRedrawLast)
+	if pf.terminalOutputRedrawLast.IsZero() || elapsed >= terminalOutputRedrawInterval {
+		pf.terminalOutputRedrawLast = now
+		pf.terminalOutputRedrawMu.Unlock()
+		vtui.FrameManager.Redraw()
+		return "requested"
+	}
+
+	delay := terminalOutputRedrawInterval - elapsed
+	pf.terminalOutputRedrawPending = true
+	pf.terminalOutputRedrawGeneration++
+	generation := pf.terminalOutputRedrawGeneration
+	pf.terminalOutputRedrawTimer = time.AfterFunc(delay, func() {
+		pf.publishScheduledTerminalOutputRedraw(generation)
+	})
+	pf.terminalOutputRedrawMu.Unlock()
+	return "scheduled"
+}
+
+func (pf *PanelsFrame) publishScheduledTerminalOutputRedraw(generation uint64) {
+	pf.terminalOutputRedrawMu.Lock()
+	if pf.terminalOutputRedrawClosed || !pf.terminalOutputRedrawPending ||
+		generation != pf.terminalOutputRedrawGeneration {
+		pf.terminalOutputRedrawMu.Unlock()
+		return
+	}
+	pf.terminalOutputRedrawPending = false
+	pf.terminalOutputRedrawTimer = nil
+	pf.terminalOutputRedrawLast = time.Now()
+	pf.terminalOutputRedrawMu.Unlock()
+
+	if vtui.FrameManager != nil {
+		vtui.FrameManager.Redraw()
+	}
+}
+
+func (pf *PanelsFrame) closeTerminalOutputRedraw() {
+	if pf == nil {
+		return
+	}
+	pf.terminalOutputRedrawMu.Lock()
+	pf.terminalOutputRedrawClosed = true
+	pf.terminalOutputRedrawPending = false
+	pf.terminalOutputRedrawGeneration++
+	if pf.terminalOutputRedrawTimer != nil {
+		pf.terminalOutputRedrawTimer.Stop()
+		pf.terminalOutputRedrawTimer = nil
+	}
+	pf.terminalOutputRedrawMu.Unlock()
 }
 
 // reportLocalPTYFailure surfaces a NewPTY() failure to the person instead of
@@ -1155,6 +1258,7 @@ func (pf *PanelsFrame) reportLocalPTYFailure() {
 }
 
 func (pf *PanelsFrame) Close() {
+	pf.closeTerminalOutputRedraw()
 	if pf.wide && pf.widePanel >= 0 && pf.widePanel < 2 {
 		if isAIPanel(pf.panels[pf.widePanel]) {
 			pf.exitWide()
@@ -1251,8 +1355,10 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 
 	// 1. Terminal Area: Fills everything except KeyBar
 	termY2 := h - 1
-	// KeyBar only takes space if it's actually visible (not in AltScreen and not busy)
-	if pf.showKeyBar && !pf.termView.UseAltScreen && !pf.isPtyBusy() {
+	// Normal-screen terminal mode remains inside the commander layout: Ctrl+O
+	// hides the panels, but keeps the command line and KeyBar. Only an
+	// alternate-screen application owns the complete window.
+	if pf.showKeyBar && !pf.termView.UseAltScreen {
 		termY2 = h - 2
 	}
 	termH := termY2 - contentY1 + 1
@@ -1523,7 +1629,7 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 		isFastFind = true
 	}
 
-	if (!pf.showPanels && (pf.termView.UseAltScreen || isBusy)) || topType == vtui.TypeUser+2 {
+	if (!pf.showPanels && pf.termView.UseAltScreen) || topType == vtui.TypeUser+2 {
 		pf.cmdLine.SetVisible(false)
 	} else {
 		isChatFocused := false
@@ -1531,7 +1637,9 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 			isChatFocused = true
 		}
 		pf.cmdLine.SetVisible(true)
-		pf.cmdLine.Edit.HideCursor = isFastFind || isChatFocused || (pf.searchFirstMode() && pf.showPanels && !pf.commandLineFocused)
+		pf.cmdLine.Edit.HideCursor = isFastFind || isChatFocused ||
+			(pf.searchFirstMode() && pf.showPanels && !pf.commandLineFocused) ||
+			(!pf.showPanels && isBusy)
 		cmdLineY := pf.lastH - 1
 		if pf.showKeyBar {
 			cmdLineY = pf.lastH - 2
@@ -1541,11 +1649,12 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 		pf.cmdLine.Show(scr)
 	}
 
-	// KeyBar is at the bottom. It should only be hidden if a child process
-	// in the terminal is running or using the alternate screen buffer.
+	// Ctrl+O is a panel-cover toggle, not a full-console toggle. Keep the
+	// commander KeyBar in normal-screen terminal mode even while a child owns
+	// terminal input; alternate-screen applications alone get every row.
 	isTop := vtui.FrameManager.GetTopFrameType() == vtui.TypeUser+1
 	if isTop { // Only the top-most user frame controls the keybar
-		if pf.showKeyBar && !pf.termView.UseAltScreen && (pf.showPanels || !isBusy) {
+		if pf.showKeyBar && !pf.termView.UseAltScreen {
 			vtui.FrameManager.KeyBar = pf.keyBar
 		} else {
 			vtui.FrameManager.KeyBar = nil

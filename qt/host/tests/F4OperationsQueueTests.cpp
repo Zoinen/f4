@@ -278,12 +278,29 @@ QVariantMap terminalScene()
     return {
         {QStringLiteral("schema"), QStringLiteral("app")},
         {QStringLiteral("workspaceTabs"), workspaceTabs(false)},
+        {QStringLiteral("keyBar"), QVariantMap{
+             {QStringLiteral("visible"), true},
+             {QStringLiteral("items"), QVariantList{
+                  QVariantMap{
+                      {QStringLiteral("key"), QStringLiteral("F1")},
+                      {QStringLiteral("text"), QStringLiteral("Help")},
+                  },
+              }},
+         }},
         {QStringLiteral("shell"), QVariantMap{
              {QStringLiteral("id"), QStringLiteral("panels")},
              {QStringLiteral("terminalActive"), true},
+             {QStringLiteral("terminalBusy"), true},
+             {QStringLiteral("showKeyBar"), true},
              {QStringLiteral("showLeftPanel"), true},
              {QStringLiteral("showRightPanel"), true},
              {QStringLiteral("panels"), QVariantList{}},
+             {QStringLiteral("commandLine"), QVariantMap{
+                  {QStringLiteral("id"), QStringLiteral("command-line")},
+                  {QStringLiteral("visible"), true},
+                  {QStringLiteral("prompt"), QStringLiteral("f4 % ")},
+                  {QStringLiteral("text"), QString()},
+              }},
              {QStringLiteral("terminal"), QVariantMap{
                   {QStringLiteral("id"), QStringLiteral("terminal")},
                   {QStringLiteral("rows"), QVariantList{}},
@@ -1035,6 +1052,20 @@ void F4OperationsQueueTests::terminalModeKeepsPersistentPanelsSurfaceVisible()
     QQuickItem *panelPair = fixture.item(QStringLiteral("persistentPanelPair"));
     QVERIFY(panelPair);
     QVERIFY(!panelPair->isVisible());
+
+    QQuickItem *terminal = fixture.item(QStringLiteral("terminalBackdrop"));
+    QQuickItem *commandLine = fixture.item(QStringLiteral("commandLineView"));
+    QQuickItem *keyBar = fixture.item(QStringLiteral("keyBar"));
+    QVERIFY(terminal);
+    QVERIFY(commandLine);
+    QVERIFY(keyBar);
+    QVERIFY(terminal->isVisible());
+    QVERIFY(commandLine->isVisible());
+    QVERIFY(keyBar->isVisible());
+    QVERIFY(commandLine->height() > 0.0);
+    QVERIFY(keyBar->height() > 0.0);
+    QVERIFY(terminal->y() + terminal->height() <= commandLine->y() + 0.5);
+    QVERIFY(commandLine->y() + commandLine->height() <= keyBar->y() + 0.5);
 }
 
 void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRendererButton()

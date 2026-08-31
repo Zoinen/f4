@@ -922,17 +922,42 @@ func appCommandLineFromLegacy(node map[string]any) extui.CommandLineModel {
 
 func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
 	term := extui.TerminalModel{
-		ID:        semanticString(node["id"]),
-		Title:     semanticString(node["title"]),
-		Visible:   appBoolDefault(node["visible"], true),
-		Focused:   appBool(node["focused"]),
-		AltScreen: appBool(node["altScreen"]),
-		Busy:      appBool(node["busy"]),
-		CursorX:   semanticInt(node["cursorX"]),
-		CursorY:   semanticInt(node["cursorY"]),
+		ID:                semanticString(node["id"]),
+		Title:             semanticString(node["title"]),
+		DefaultBackground: semanticString(node["defaultBackground"]),
+		Visible:           appBoolDefault(node["visible"], true),
+		Focused:           appBool(node["focused"]),
+		AltScreen:         appBool(node["altScreen"]),
+		Busy:              appBool(node["busy"]),
+		FollowTail: appBoolDefault(node["followTail"],
+			appInt64(node["contentExtent"]) <= 0 ||
+				appInt64(node["viewportStart"])+appInt64(node["viewportSpan"]) >=
+					appInt64(node["contentExtent"])),
+		CursorX:            semanticInt(node["cursorX"]),
+		CursorY:            semanticInt(node["cursorY"]),
+		CursorAbsoluteRow:  appInt64(node["cursorAbsoluteRow"]),
+		CursorVisible:      appBool(node["cursorVisible"]),
+		CursorShape:        semanticString(node["cursorShape"]),
+		SelectionEnabled:   appBool(node["selectionEnabled"]),
+		DocumentKey:        semanticString(node["documentKey"]),
+		ScrollAction:       semanticString(node["scrollAction"]),
+		ScrollUnit:         semanticString(node["scrollUnit"]),
+		WindowStart:        appInt64(node["windowStart"]),
+		WindowEnd:          appInt64(node["windowEnd"]),
+		ViewportStart:      appInt64(node["viewportStart"]),
+		ViewportSpan:       appInt64(node["viewportSpan"]),
+		ContentExtent:      appInt64(node["contentExtent"]),
+		ContentExtentKnown: appBool(node["contentExtentKnown"]),
+		ViewportRow:        semanticInt(node["viewportRow"]),
+		ViewportRows:       semanticInt(node["viewportRows"]),
+		WindowGeneration:   uint64(appInt64(node["windowGeneration"])),
+		WindowContentKey:   semanticString(node["windowContentKey"]),
 	}
 	for _, row := range appMapSlice(node["rows"]) {
 		term.Rows = append(term.Rows, appTextRowFromLegacy(row))
+	}
+	for _, row := range appMapSlice(node["windowRows"]) {
+		term.WindowRows = append(term.WindowRows, appTextRowFromLegacy(row))
 	}
 	return term
 }

@@ -57,6 +57,18 @@ type TerminalView struct {
 	// Скроллинг истории (визуальный ряд)
 	ScrollTopRow int
 
+	// Native semantic frontends render terminal scrollback through the same
+	// bounded row-window protocol as Viewer and Editor.  The complete history
+	// remains owned by pt/GridHistory/Lines; these fields contain only viewport
+	// coordinates and request sequencing, never a second copy of the log.
+	semanticViewportRows            int
+	semanticScrollTop               int
+	semanticFollowTail              bool
+	semanticBottomOverlayRows       int
+	semanticWindowGeneration        uint64
+	semanticWindowRequestGeneration uint64
+	semanticScratch                 []byte
+
 	Title                 string
 	Win32InputMode        bool
 	BracketedPasteMode    bool
@@ -100,10 +112,11 @@ type TerminalView struct {
 
 func NewTerminalView(w, h int) *TerminalView {
 	tv := &TerminalView{
-		Width:     w,
-		Height:    h,
-		AutoWrap:  true,
-		authCache: make(map[string]int),
+		Width:              w,
+		Height:             h,
+		AutoWrap:           true,
+		authCache:          make(map[string]int),
+		semanticFollowTail: true,
 	}
 	tv.ResetBuffer(w, h)
 	return tv
@@ -318,16 +331,26 @@ func (tv *TerminalView) rowHasText(y int) bool {
 func (tv *TerminalView) flushLogUnsafe() {}
 
 func (tv *TerminalView) pushRowToGridHistory(y int) {
+	const retainedGridRows = 2000
+	if len(tv.GridHistory) >= retainedGridRows && len(tv.GridHistoryWrap) > 0 {
+		// The oldest row is about to become compact PieceTable text, so its
+		// cell storage can immediately hold the entering row. Reusing it avoids
+		// allocating Width CharInfo values for every line of sustained output.
+		tv.extrudeGridHistoryRow(0)
+		lineCopy := tv.GridHistory[0]
+		if len(lineCopy) != len(tv.Lines[y]) {
+			lineCopy = make([]vtui.CharInfo, len(tv.Lines[y]))
+		}
+		copy(lineCopy, tv.Lines[y])
+		tv.GridHistory = append(tv.GridHistory[1:], lineCopy)
+		tv.GridHistoryWrap = append(tv.GridHistoryWrap[1:], tv.WrapFlags[y])
+		return
+	}
+
 	lineCopy := make([]vtui.CharInfo, len(tv.Lines[y]))
 	copy(lineCopy, tv.Lines[y])
 	tv.GridHistory = append(tv.GridHistory, lineCopy)
 	tv.GridHistoryWrap = append(tv.GridHistoryWrap, tv.WrapFlags[y])
-
-	if len(tv.GridHistory) > 2000 {
-		tv.extrudeGridHistoryRow(0)
-		tv.GridHistory = tv.GridHistory[1:]
-		tv.GridHistoryWrap = tv.GridHistoryWrap[1:]
-	}
 }
 
 func (tv *TerminalView) extrudeGridHistoryRow(idx int) {
@@ -362,15 +385,49 @@ func (tv *TerminalView) extrudeGridHistoryRow(idx int) {
 	}
 }
 
-func (tv *TerminalView) GetAllLogBytes() []byte {
+type terminalLogSnapshot struct {
+	data           []byte
+	viewportOffset int64
+}
+
+// terminalLogSnapshot captures the text and the byte position represented by
+// the native terminal viewport in one critical section. F3/F4 can therefore
+// open an immutable document without live output moving the target between
+// reading the scroll position and materialising the log.
+func (tv *TerminalView) terminalLogSnapshot() terminalLogSnapshot {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
+	layout := tv.semanticLayoutUnsafe()
+	targetRow := tv.semanticScrollTop
+	if layout.totalRows > 0 {
+		targetRow = max(0, min(targetRow, layout.totalRows-1))
+	} else {
+		targetRow = 0
+	}
+
 	hist, _ := tv.pt.Bytes()
 	var sb strings.Builder
+	// PieceTable text is normally most of the snapshot, so reserving it avoids
+	// repeatedly growing the builder while the short cell-backed tail is added.
+	sb.Grow(len(hist))
 	sb.Write(hist)
 
+	viewportOffset := int64(0)
+	offsetResolved := layout.totalRows == 0
+	if !offsetResolved && targetRow < layout.pieceRows {
+		_, _, start, ok := tv.semanticPieceFragmentUnsafe(targetRow)
+		if ok {
+			viewportOffset = int64(start)
+			offsetResolved = true
+		}
+	}
+
 	for i := 0; i < len(tv.GridHistory); i++ {
+		if !offsetResolved && targetRow == layout.pieceRows+i {
+			viewportOffset = int64(sb.Len())
+			offsetResolved = true
+		}
 		line := tv.GridHistory[i]
 		isWrapped := tv.GridHistoryWrap[i]
 		lastChar := len(line) - 1
@@ -409,7 +466,21 @@ func (tv *TerminalView) GetAllLogBytes() []byte {
 			}
 		}
 
+		activeTarget := -1
+		if !offsetResolved && targetRow >= layout.pieceRows+layout.historyRows {
+			screenRow := targetRow - layout.pieceRows - layout.historyRows
+			activeTarget = screenRow - layout.activeOffset
+			if activeTarget <= firstValidRow {
+				viewportOffset = int64(sb.Len())
+				offsetResolved = true
+			}
+		}
+
 		for y := firstValidRow; y <= lastValidRow && y < tv.Height; y++ {
+			if !offsetResolved && y == activeTarget {
+				viewportOffset = int64(sb.Len())
+				offsetResolved = true
+			}
 			line := tv.Lines[y]
 			isWrapped := tv.WrapFlags[y]
 
@@ -428,7 +499,20 @@ func (tv *TerminalView) GetAllLogBytes() []byte {
 			}
 		}
 	}
-	return []byte(sb.String())
+	if !offsetResolved {
+		// A viewport can legitimately sit in the blank bottom-gravity padding
+		// surrounding the active grid. The flattened log has no bytes for that
+		// padding, so its nearest representable position is EOF.
+		viewportOffset = int64(sb.Len())
+	}
+	return terminalLogSnapshot{
+		data:           []byte(sb.String()),
+		viewportOffset: viewportOffset,
+	}
+}
+
+func (tv *TerminalView) GetAllLogBytes() []byte {
+	return tv.terminalLogSnapshot().data
 }
 
 func (tv *TerminalView) PutChar(r rune, attr uint64) {

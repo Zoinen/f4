@@ -263,6 +263,38 @@ QVariantMap editorFrame(int firstRow, int count, int viewportStart,
     };
 }
 
+QVariantMap terminalFrame(int firstRow, int count, int viewportStart,
+                          int generation, int contentExtent = 50'000,
+                          bool followTail = false)
+{
+    const QVariantList rows = editorRows(firstRow, count);
+    return {
+        {QStringLiteral("id"), QStringLiteral("terminal-window-test")},
+        {QStringLiteral("kind"), QStringLiteral("terminal")},
+        {QStringLiteral("defaultBackground"), QStringLiteral("#000000")},
+        {QStringLiteral("columns"), 90},
+        {QStringLiteral("followTail"), followTail},
+        {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
+        {QStringLiteral("scrollAction"), QStringLiteral("terminal.scroll")},
+        {QStringLiteral("selectionEnabled"), true},
+        {QStringLiteral("windowRows"), rows},
+        {QStringLiteral("windowStart"), firstRow},
+        {QStringLiteral("windowEnd"), firstRow + count},
+        {QStringLiteral("viewportStart"), viewportStart},
+        {QStringLiteral("viewportSpan"), 20},
+        {QStringLiteral("viewportRow"),
+         qMax(0, viewportStart - firstRow)},
+        {QStringLiteral("viewportRows"), 20},
+        {QStringLiteral("contentExtent"), contentExtent},
+        {QStringLiteral("contentExtentKnown"), true},
+        {QStringLiteral("cursorAbsoluteRow"), viewportStart + 2},
+        {QStringLiteral("cursorX"), 3},
+        {QStringLiteral("cursorShape"), QStringLiteral("block")},
+        {QStringLiteral("cursorVisible"), true},
+        {QStringLiteral("windowGeneration"), generation},
+    };
+}
+
 void sendPixelWheel(QQuickWindow *window, const QPoint &position, int deltaY)
 {
     QWheelEvent event(position,
@@ -388,6 +420,12 @@ private slots:
     void scrollBarReflectsGlobalExtentAndKnownState();
     void editorScrollBarEndpointMapsLastViewportToRowNinety();
     void editorCursorTracksAbsoluteWindowRowAndVisibility();
+    void terminalScrollbackUsesBoundedWindowAndNativeViewport();
+    void terminalFollowTailTracksVisibleEndAndUserScroll();
+    void terminalDragSelectionSendsAbsoluteClipboardRange();
+    void terminalDragSelectionAutoScrollsBeyondViewportByDistance();
+    void terminalSelectionUsesNearestInsertionBoundary();
+    void terminalDoubleAndTripleClickSelectWordAndParagraph();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
 };
 
@@ -1250,6 +1288,443 @@ void F4DocumentSurfaceTests::editorCursorTracksAbsoluteWindowRowAndVisibility()
     fixture.shell.setScene(documentScene(frame));
     QTRY_COMPARE_WITH_TIMEOUT(cursor->property("windowRow").toInt(), -1, 3000);
     QVERIFY(!cursor->isVisible());
+}
+
+void F4DocumentSurfaceTests::terminalScrollbackUsesBoundedWindowAndNativeViewport()
+{
+    DocumentFixture fixture(documentScene(
+        terminalFrame(970, 90, 1000, 7)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.surface->property("displayedRows").toList().size(), 90, 3000);
+    QVERIFY(fixture.surface->property("terminalSurface").toBool());
+    QVERIFY(fixture.surface->property("hasWindowProtocol").toBool());
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.scrollBar->isVisible(), 3000);
+
+    QVariantMap viewportAction;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString()
+                == QStringLiteral("terminal.viewport")) {
+                viewportAction = action;
+            }
+        }
+        return viewportAction.value(QStringLiteral("rows")).toInt() > 0;
+    }(), 3000);
+    QCOMPARE(viewportAction.value(QStringLiteral("target")).toString(),
+             QStringLiteral("terminal-window-test"));
+
+    fixture.shell.clearActions();
+    const QPoint wheelPoint = fixture.list->mapToScene(
+        QPointF(180, fixture.list->height() / 2)).toPoint();
+    sendPixelWheel(fixture.window, wheelPoint, 120);
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString()
+                == QStringLiteral("terminal.scroll")) {
+                return action.value(QStringLiteral("visualRow")).toInt()
+                       < 1000
+                    && !action.value(QStringLiteral("followTail")).toBool()
+                    && action.value(QStringLiteral("generation")).toInt() == 8;
+            }
+        }
+        return false;
+    }(), 3000);
+}
+
+void F4DocumentSurfaceTests::terminalFollowTailTracksVisibleEndAndUserScroll()
+{
+    QVariantMap frame = terminalFrame(950, 70, 1000, 7, 1020, true);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    QVERIFY(fixture.surface->property("terminalFollowTailIntent").toBool());
+
+    const auto requestWindow = [&](qreal extent, bool preserveAnchor) {
+        QVariant accepted;
+        const qreal fraction = extent - std::floor(extent);
+        const bool invoked = QMetaObject::invokeMethod(
+            fixture.surface, "sendWindowRequest", Qt::DirectConnection,
+            Q_RETURN_ARG(QVariant, accepted),
+            Q_ARG(QVariant, QVariant(extent)),
+            Q_ARG(QVariant, QVariant(fraction)),
+            Q_ARG(QVariant, QVariant(0.0)),
+            Q_ARG(QVariant, QVariant(preserveAnchor)));
+        return invoked && accepted.toBool();
+    };
+    const auto lastAction = [&](const QString &name) {
+        QVariantMap found;
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString() == name)
+                found = action;
+        }
+        return found;
+    };
+
+    // A background overscan request can observe old local geometry while a
+    // newer output frame is already authoritative. It must preserve follow
+    // intent; only an actual wheel/drag/scrollbar gesture may suspend it.
+    fixture.surface->setProperty("rebasingWindow", true);
+    fixture.list->setProperty(
+        "contentY",
+        (fixture.surface->property("loadedSlotStart").toInt() + 2)
+            * fixture.surface->property("rowHeight").toReal());
+    fixture.surface->setProperty("rebasingWindow", false);
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "maybeRequestWindow",
+                                      Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !lastAction(QStringLiteral("terminal.scroll")).isEmpty(), 1000);
+    QVariantMap action = lastAction(QStringLiteral("terminal.scroll"));
+    QVERIFY(action.value(QStringLiteral("followTail")).toBool());
+    QCOMPARE(action.value(QStringLiteral("generation")).toInt(), 8);
+    frame = terminalFrame(950, 70, 1000, 8, 1020, true);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fixture.surface->property("windowRequestPending").toBool(), 3000);
+
+    // The native viewport exposes more rows than the stale integer viewport
+    // in this fixture. Its top is therefore before Go's maxTop even though the
+    // final row is visible. The request must carry intent, not infer it from
+    // equality with that stale coordinate.
+    const qreal visibleTailTop = topExtent(fixture.surface, fixture.list);
+    QVERIFY(visibleTailTop < 1000.0);
+    fixture.shell.clearActions();
+    QVERIFY(requestWindow(visibleTailTop, false));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !lastAction(QStringLiteral("terminal.scroll")).isEmpty(), 1000);
+    action = lastAction(QStringLiteral("terminal.scroll"));
+    QVERIFY(action.value(QStringLiteral("followTail")).toBool());
+    QVERIFY(action.value(QStringLiteral("visualRow")).toInt() < 1000);
+    QCOMPARE(action.value(QStringLiteral("generation")).toInt(), 9);
+
+    frame = terminalFrame(950, 70, 1000, 9, 1020, true);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fixture.surface->property("windowRequestPending").toBool(), 3000);
+    const qreal beforeLiveOutput = topExtent(fixture.surface, fixture.list);
+    frame = terminalFrame(955, 70, 1005, 9, 1025, true);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        topExtent(fixture.surface, fixture.list) > beforeLiveOutput + 4.0,
+        3000);
+
+    // The first upward wheel sample suspends follow-tail immediately, before
+    // the 180 ms window-request coalescer runs.
+    fixture.shell.clearActions();
+    const QPoint wheelPoint = fixture.list->mapToScene(
+        QPointF(180, fixture.list->height() / 2)).toPoint();
+    sendPixelWheel(fixture.window, wheelPoint, 120);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !lastAction(QStringLiteral("terminal.followTail")).isEmpty(), 1000);
+    QVERIFY(!lastAction(QStringLiteral("terminal.followTail"))
+                 .value(QStringLiteral("followTail")).toBool());
+    QVERIFY(!fixture.surface->property("terminalFollowTailIntent").toBool());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !lastAction(QStringLiteral("terminal.scroll")).isEmpty(), 1500);
+    action = lastAction(QStringLiteral("terminal.scroll"));
+    QVERIFY(!action.value(QStringLiteral("followTail")).toBool());
+
+    const int pinnedViewport = action.value(QStringLiteral("visualRow")).toInt();
+    const int pinnedGeneration = action.value(QStringLiteral("generation")).toInt();
+    frame = terminalFrame(qMax(0, pinnedViewport - 30), 70,
+                          pinnedViewport, pinnedGeneration, 1025, false);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fixture.surface->property("windowRequestPending").toBool(), 3000);
+    const qreal pinnedTop = topExtent(fixture.surface, fixture.list);
+    frame = terminalFrame(qMax(0, pinnedViewport - 30), 70,
+                          pinnedViewport, pinnedGeneration, 1030, false);
+    fixture.shell.setScene(documentScene(frame));
+    QTest::qWait(100);
+    QVERIFY(qAbs(topExtent(fixture.surface, fixture.list) - pinnedTop) < 0.01);
+
+    // A request that reaches the final row explicitly resumes follow-tail;
+    // the next output frame then advances the native viewport again.
+    fixture.shell.clearActions();
+    QVERIFY(requestWindow(1030.0, false));
+    action = lastAction(QStringLiteral("terminal.scroll"));
+    QVERIFY(!action.isEmpty());
+    QVERIFY(action.value(QStringLiteral("followTail")).toBool());
+    QVERIFY(fixture.surface->property("terminalFollowTailIntent").toBool());
+    const int resumeGeneration = action.value(QStringLiteral("generation")).toInt();
+    frame = terminalFrame(980, 50, 1010, resumeGeneration, 1030, true);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fixture.surface->property("windowRequestPending").toBool(), 3000);
+    const qreal resumedTop = topExtent(fixture.surface, fixture.list);
+    frame = terminalFrame(985, 50, 1015, resumeGeneration, 1035, true);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        topExtent(fixture.surface, fixture.list) > resumedTop + 4.0, 3000);
+}
+
+void F4DocumentSurfaceTests::terminalDragSelectionSendsAbsoluteClipboardRange()
+{
+    DocumentFixture fixture(documentScene(
+        terminalFrame(970, 90, 1000, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    fixture.shell.clearActions();
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const QPoint start = fixture.list->mapToScene(
+        QPointF(24, rowHeight * 1.5)).toPoint();
+    const QPoint end = fixture.list->mapToScene(
+        QPointF(64, rowHeight * 3.5)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(fixture.window, end, 20);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+
+    QVariantMap copyAction;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("action")).toString()
+                == QStringLiteral("terminal.copySelection")) {
+                copyAction = action;
+                return true;
+            }
+        }
+        return false;
+    }(), 3000);
+    QCOMPARE(copyAction.value(QStringLiteral("target")).toString(),
+             QStringLiteral("terminal-window-test"));
+    QCOMPARE(copyAction.value(QStringLiteral("startRow")).toInt(), 1001);
+    QCOMPARE(copyAction.value(QStringLiteral("endRow")).toInt(), 1003);
+    QVERIFY(copyAction.value(QStringLiteral("endColumn")).toInt()
+            > copyAction.value(QStringLiteral("startColumn")).toInt());
+    QVERIFY(copyAction.value(QStringLiteral("endExclusive")).toBool());
+    QVERIFY(fixture.surface->property("terminalSelectionVisible").toBool());
+    QVERIFY(!fixture.surface->property("terminalSelectionDragging").toBool());
+}
+
+void F4DocumentSurfaceTests::terminalSelectionUsesNearestInsertionBoundary()
+{
+    DocumentFixture fixture(documentScene(
+        terminalFrame(970, 90, 1000, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+
+    const qreal cellWidth = fixture.surface
+                                ->property("terminalCellWidth")
+                                .toReal();
+    const qreal inset = fixture.surface
+                            ->property("textHorizontalInset")
+                            .toReal();
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    QVariant leftHalf;
+    QVariant rightHalf;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionPointAt", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, leftHalf),
+        Q_ARG(QVariant, QVariant(inset + 4.25 * cellWidth)),
+        Q_ARG(QVariant, QVariant(1.5 * rowHeight))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionPointAt", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, rightHalf),
+        Q_ARG(QVariant, QVariant(inset + 4.75 * cellWidth)),
+        Q_ARG(QVariant, QVariant(1.5 * rowHeight))));
+    QCOMPARE(leftHalf.toMap().value(QStringLiteral("cellColumn")).toInt(), 4);
+    QCOMPARE(rightHalf.toMap().value(QStringLiteral("cellColumn")).toInt(), 4);
+    QCOMPARE(leftHalf.toMap().value(QStringLiteral("column")).toInt(), 4);
+    QCOMPARE(rightHalf.toMap().value(QStringLiteral("column")).toInt(), 5);
+
+    QVariant range;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "beginTerminalSelectionAt", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(1001)), Q_ARG(QVariant, QVariant(4))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "extendTerminalSelectionTo", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(1001)), Q_ARG(QVariant, QVariant(1))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionRangeForRow", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, range), Q_ARG(QVariant, QVariant(1001)),
+        Q_ARG(QVariant, QVariant(fixture.list->width()))));
+    QCOMPARE(range.toMap().value(QStringLiteral("start")).toInt(), 1);
+    QCOMPARE(range.toMap().value(QStringLiteral("end")).toInt(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "beginTerminalSelectionAt", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(1001)), Q_ARG(QVariant, QVariant(5))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "extendTerminalSelectionTo", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(1001)), Q_ARG(QVariant, QVariant(8))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionRangeForRow", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, range), Q_ARG(QVariant, QVariant(1001)),
+        Q_ARG(QVariant, QVariant(fixture.list->width()))));
+    QCOMPARE(range.toMap().value(QStringLiteral("start")).toInt(), 5);
+    QCOMPARE(range.toMap().value(QStringLiteral("end")).toInt(), 8);
+
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap action = fixture.shell.actions.constLast();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("terminal.copySelection"));
+    QVERIFY(action.value(QStringLiteral("endExclusive")).toBool());
+}
+
+void F4DocumentSurfaceTests::terminalDoubleAndTripleClickSelectWordAndParagraph()
+{
+    QVariantMap frame = terminalFrame(970, 90, 1000, 1);
+    QVariantList rows = frame.value(QStringLiteral("windowRows")).toList();
+    for (int absoluteRow = 1001; absoluteRow < 1004; ++absoluteRow) {
+        const int index = absoluteRow - 970;
+        QVariantMap row = rows.at(index).toMap();
+        row.insert(QStringLiteral("logicalRowStart"), 1001);
+        row.insert(QStringLiteral("logicalRowEnd"), 1004);
+        if (absoluteRow == 1002)
+            row.insert(QStringLiteral("text"), QStringLiteral("alpha beta gamma"));
+        rows[index] = row;
+    }
+    frame.insert(QStringLiteral("windowRows"), rows);
+
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+
+    QVariant clickCount;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "handleTerminalSelectionPressAt",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, clickCount),
+        Q_ARG(QVariant, QVariant(1002)), Q_ARG(QVariant, QVariant(7)),
+        Q_ARG(QVariant, QVariant(7)), Q_ARG(QVariant, QVariant(1000.0))));
+    QCOMPARE(clickCount.toInt(), 1);
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "handleTerminalSelectionPressAt",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, clickCount),
+        Q_ARG(QVariant, QVariant(1002)), Q_ARG(QVariant, QVariant(7)),
+        Q_ARG(QVariant, QVariant(7)), Q_ARG(QVariant, QVariant(1200.0))));
+    QCOMPARE(clickCount.toInt(), 2);
+    QVERIFY(fixture.surface->property("terminalSelectionVisible").toBool());
+    QVERIFY(!fixture.surface->property("terminalSelectionDragging").toBool());
+    QCOMPARE(fixture.surface->property("terminalSelectionAnchorRow").toInt(),
+             1002);
+    QCOMPARE(fixture.surface->property("terminalSelectionFocusRow").toInt(),
+             1002);
+    QCOMPARE(fixture.surface
+                 ->property("terminalSelectionAnchorColumn").toInt(), 6);
+    QCOMPARE(fixture.surface
+                 ->property("terminalSelectionFocusColumn").toInt(), 10);
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "handleTerminalSelectionPressAt",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, clickCount),
+        Q_ARG(QVariant, QVariant(1002)), Q_ARG(QVariant, QVariant(7)),
+        Q_ARG(QVariant, QVariant(7)), Q_ARG(QVariant, QVariant(1350.0))));
+    QCOMPARE(clickCount.toInt(), 3);
+    QCOMPARE(fixture.surface->property("terminalSelectionAnchorRow").toInt(),
+             1001);
+    QCOMPARE(fixture.surface->property("terminalSelectionFocusRow").toInt(),
+             1003);
+    QCOMPARE(fixture.surface
+                 ->property("terminalSelectionAnchorColumn").toInt(), 0);
+    QCOMPARE(fixture.surface
+                 ->property("terminalSelectionFocusColumn").toInt(), 90);
+}
+
+void F4DocumentSurfaceTests::terminalDragSelectionAutoScrollsBeyondViewportByDistance()
+{
+    DocumentFixture fixture(documentScene(
+        terminalFrame(930, 130, 1000, 1, 1030, true)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    fixture.shell.clearActions();
+
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const qreal initialTop = topExtent(fixture.surface, fixture.list);
+    const QPoint start = fixture.list->mapToScene(
+        QPointF(48, fixture.list->height() / 2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY(fixture.surface->property("terminalSelectionDragging").toBool());
+    const int anchor = fixture.surface
+                           ->property("terminalSelectionAnchorRow")
+                           .toInt();
+
+    QVariant nearVelocity;
+    QVariant farVelocity;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionAutoScrollVelocity",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, nearVelocity),
+        Q_ARG(QVariant, QVariant(-rowHeight / 2))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "terminalSelectionAutoScrollVelocity",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, farVelocity),
+        Q_ARG(QVariant, QVariant(-rowHeight * 4))));
+    QVERIFY(nearVelocity.toReal() < 0);
+    QVERIFY(farVelocity.toReal() < nearVelocity.toReal());
+    QVERIFY(qAbs(farVelocity.toReal()) > qAbs(nearVelocity.toReal()) * 3);
+
+    // Model a grabbed pointer above the viewport. MouseArea continues to own
+    // the real pointer grab outside its bounds; invoking the same QML handler
+    // directly keeps this offscreen test independent of window-system clipping.
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "updateTerminalSelectionPointer",
+        Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(48.0)),
+        Q_ARG(QVariant, QVariant(-rowHeight * 4))));
+    QVERIFY(fixture.surface
+                ->property("terminalSelectionAutoScrollDistance")
+                .toReal() < 0);
+    QObject *timer = fixture.surface->findChild<QObject *>(
+        QStringLiteral("terminalSelectionAutoScrollTimer"));
+    QVERIFY(timer);
+    QTRY_VERIFY_WITH_TIMEOUT(timer->property("running").toBool(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        topExtent(fixture.surface, fixture.list) < initialTop - 2.0, 1500);
+    QVERIFY(fixture.surface->property("terminalSelectionFocusRow").toInt()
+            < anchor);
+
+    QVariantMap followAction;
+    for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+        if (action.value(QStringLiteral("action")).toString()
+            == QStringLiteral("terminal.followTail")) {
+            followAction = action;
+        }
+    }
+    QVERIFY(!followAction.isEmpty());
+    QVERIFY(!followAction.value(QStringLiteral("followTail")).toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
+    QVERIFY(!timer->property("running").toBool());
+    QCOMPARE(fixture.surface
+                 ->property("terminalSelectionAutoScrollDistance")
+                 .toReal(),
+             0.0);
+
+    const qreal upwardTop = topExtent(fixture.surface, fixture.list);
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "beginTerminalSelectionAt", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(std::floor(upwardTop))),
+        Q_ARG(QVariant, QVariant(4))));
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "updateTerminalSelectionPointer",
+        Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(48.0)),
+        Q_ARG(QVariant, QVariant(fixture.list->height() + rowHeight * 3))));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        topExtent(fixture.surface, fixture.list) > upwardTop + 2.0, 1500);
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
+    QVERIFY(!timer->property("running").toBool());
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
 }
 
 void F4DocumentSurfaceTests::legacyRowsRemainScrollableWithoutWindowProtocol()

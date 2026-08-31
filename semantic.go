@@ -70,7 +70,8 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		shell.CommandLine = pf.cmdLine.semanticModel(ctx)
 	}
 	if pf.termView != nil {
-		shell.Terminal = pf.termView.semanticModel(ctx)
+		shell.Terminal = pf.termView.semanticModelWithBottomOverlay(
+			ctx, terminalCommandLineOverlayRows(shell.CommandLine))
 	}
 	if MacroMgr != nil && MacroMgr.Recording {
 		shell.MacroRecording = true
@@ -81,6 +82,13 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	}
 
 	return shell.ToMap()
+}
+
+func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel) int {
+	if commandLine != nil && commandLine.Visible {
+		return 1
+	}
+	return 0
 }
 
 func (pf *PanelsFrame) semanticPanelLayoutModel(ctx *vtui.SemanticContext) extui.PanelLayoutModel {
@@ -629,6 +637,9 @@ func handleSemanticElementAction(el vtui.UIElement, action map[string]any) bool 
 }
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
+	if pf.termView != nil && pf.termView.handleSemanticAction(action) {
+		return true
+	}
 	if semanticString(action["action"]) == "quickView.scroll" {
 		for _, panel := range pf.altPanels {
 			if quick, ok := panel.(*QuickViewPanel); ok && quick.HandleSemanticAction(action) {
@@ -2146,59 +2157,6 @@ func semanticEditPositions(edit *vtui.Edit, text string) (cursor, selectionStart
 	return cursor, selectionStart, selectionEnd
 }
 
-func (tv *TerminalView) semanticModel(ctx *vtui.SemanticContext) *extui.TerminalModel {
-	tv.mu.Lock()
-	defer tv.mu.Unlock()
-
-	buf := tv.Lines
-	if tv.UseAltScreen {
-		buf = tv.AltLines
-	}
-	offset := 0
-	if !tv.UseAltScreen {
-		lowestRow := 0
-		for y := tv.Height - 1; y >= 0; y-- {
-			if tv.rowHasText(y) {
-				lowestRow = y
-				break
-			}
-		}
-		if tv.CursorY > lowestRow {
-			lowestRow = tv.CursorY
-		}
-		if lowestRow < tv.Height-1 {
-			offset = (tv.Height - 1) - lowestRow
-		}
-	}
-
-	var rows []extui.TextRowModel
-	for y := 0; y < tv.Height && y < len(buf); y++ {
-		drawY := y + offset
-		if tv.UseAltScreen {
-			drawY = y
-		}
-		if drawY < 0 || drawY >= tv.Height {
-			continue
-		}
-		rows = append(rows, extui.TextRowModel{
-			Index: drawY,
-			Runs:  semanticRunsFromCells(buf[y]),
-		})
-	}
-
-	return &extui.TerminalModel{
-		ID:        vtui.SemanticID(tv),
-		Title:     tv.Title,
-		Visible:   tv.IsVisible(),
-		Focused:   tv.IsFocused(),
-		AltScreen: tv.UseAltScreen,
-		Busy:      tv.Muted,
-		CursorX:   tv.CursorX,
-		CursorY:   tv.CursorY + offset,
-		Rows:      rows,
-	}
-}
-
 func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if vv.semanticPendingScroll && vv.backend != nil {
 		generation := vv.semanticPendingGeneration
@@ -3042,15 +3000,7 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 		if !haveRun {
 			return
 		}
-		runs = append(runs, extui.RunModel{
-			Text:       b.String(),
-			Attr:       attr,
-			Foreground: semanticAttrColor(attr, true),
-			Background: semanticAttrColor(attr, false),
-			Bold:       attr&vtui.ForegroundIntensity != 0,
-			Underline:  attr&vtui.CommonLvbUnderscore != 0,
-			Strikeout:  attr&vtui.CommonLvbStrikeout != 0,
-		})
+		runs = append(runs, semanticRunModel(b.String(), attr))
 		b.Reset()
 	}
 	for _, cell := range cells {
@@ -3070,6 +3020,18 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 	}
 	flush()
 	return runs
+}
+
+func semanticRunModel(text string, attr uint64) extui.RunModel {
+	return extui.RunModel{
+		Text:       text,
+		Attr:       attr,
+		Foreground: semanticAttrColor(attr, true),
+		Background: semanticAttrColor(attr, false),
+		Bold:       attr&vtui.ForegroundIntensity != 0,
+		Underline:  attr&vtui.CommonLvbUnderscore != 0,
+		Strikeout:  attr&vtui.CommonLvbStrikeout != 0,
+	}
 }
 
 type semanticRenderedSurface struct {

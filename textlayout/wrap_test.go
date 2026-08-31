@@ -405,6 +405,51 @@ func TestWrapEngine_InvalidateFrom(t *testing.T) {
 		t.Errorf("Failed to recover total rows after invalidation, got %d", total)
 	}
 }
+
+func TestWrapEngine_LiveAppendPreservesAndAmortizesLineCaches(t *testing.T) {
+	pt := piecetable.New(bytes.Repeat([]byte("existing history\n"), 10_000))
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.SetWidth(80)
+	_ = we.GetTotalVisualRows()
+
+	if len(we.fragmentCache[0]) == 0 {
+		t.Fatal("initial fragment cache was not populated")
+	}
+	firstFragment := &we.fragmentCache[0][0]
+	fragmentCapacityChanges := 0
+	rowCapacityChanges := 0
+	fragmentCapacity := cap(we.fragmentCache)
+	rowCapacity := cap(we.rowOffsets)
+	for appended := 0; appended < 1_000; appended++ {
+		data := []byte("new output\n")
+		offset := pt.Size()
+		pt.Insert(offset, data)
+		li.UpdateAfterInsert(offset, data)
+		we.InvalidateFrom(li.LineCount() - 2)
+		_ = we.GetTotalVisualRows()
+		if cap(we.fragmentCache) != fragmentCapacity {
+			fragmentCapacityChanges++
+			fragmentCapacity = cap(we.fragmentCache)
+		}
+		if cap(we.rowOffsets) != rowCapacity {
+			rowCapacityChanges++
+			rowCapacity = cap(we.rowOffsets)
+		}
+	}
+
+	if &we.fragmentCache[0][0] != firstFragment {
+		t.Fatal("appending invalidated an unrelated cached history fragment")
+	}
+	if fragmentCapacityChanges > 1 || rowCapacityChanges > 1 {
+		t.Fatalf("line caches reallocated too often: fragments=%d rows=%d",
+			fragmentCapacityChanges, rowCapacityChanges)
+	}
+	if got, want := len(we.rowOffsets), li.LineCount(); got != want {
+		t.Fatalf("row-offset cache length=%d, want %d", got, want)
+	}
+}
 func TestWrapEngine_LazyCache_LargeJump(t *testing.T) {
 	// Create 1000 lines, each wrapping into 2 visual rows
 	line := "Word1 Word2 Word3 Word4 Word5\n"

@@ -698,6 +698,59 @@ func newUTF8EditorPieceTable(f vfs.ReadAtCloser, size int64, prefix []byte) (*pi
 	return piecetable.NewWithBuffer(buf), buf
 }
 
+type initialDocumentOffsetSource interface {
+	InitialOffset() (int64, bool)
+}
+
+func documentInitialOffset(v vfs.VFS) (int64, bool) {
+	source, ok := v.(initialDocumentOffsetSource)
+	if !ok {
+		return 0, false
+	}
+	return source.InitialOffset()
+}
+
+func applyInitialEditorOffset(editor *EditorView, v vfs.VFS) bool {
+	if editor == nil || editor.pt == nil || editor.li == nil || editor.engine == nil {
+		return false
+	}
+	offset, ok := documentInitialOffset(v)
+	if !ok {
+		return false
+	}
+	offset = max(int64(0), min(offset, int64(editor.pt.Size())))
+	byteOffset := int(offset)
+	line := editor.li.GetLineAtOffset(byteOffset)
+	lineOffset := editor.li.GetLineOffset(line)
+	if lineOffset < 0 {
+		lineOffset = 0
+	}
+	visualRow, _ := editor.engine.LogicalToVisual(byteOffset)
+	editor.targetLine = line
+	editor.targetPos = max(0, byteOffset-lineOffset)
+	editor.targetTopRow = max(0, visualRow)
+	editor.targetLeft = 0
+	return true
+}
+
+func applyInitialViewerOffset(viewer *ViewerView) bool {
+	if viewer == nil || viewer.backend == nil {
+		return false
+	}
+	offset, ok := documentInitialOffset(viewer.vfs)
+	if !ok {
+		return false
+	}
+	size := viewer.backend.Size()
+	if size <= 0 {
+		viewer.TopOffset = 0
+	} else {
+		viewer.TopOffset = max(int64(0), min(offset, size-1))
+	}
+	viewer.eofVisible = false
+	return true
+}
+
 func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 	var pt *piecetable.PieceTable
 	var buf *AsyncBuffer
@@ -720,7 +773,20 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 		cpID = vfs.DetectEncoding(header, AppConfig.EditorAutodetectCodePage, AppConfig.EditorDefaultCodePage)
 
 		if cpID == 65001 {
-			pt, buf = newUTF8EditorPieceTable(f, size, header)
+			if source, ok := v.(interface {
+				immutableBytes() ([]byte, bool)
+			}); ok {
+				if data, available := source.immutableBytes(); available && int64(len(data)) == size {
+					// Terminal history is already an immutable in-memory snapshot.
+					// Share those bytes with the piece table so a far-away F4
+					// position is indexed synchronously without copying the log.
+					pt = piecetable.New(data)
+				} else {
+					pt, buf = newUTF8EditorPieceTable(f, size, header)
+				}
+			} else {
+				pt, buf = newUTF8EditorPieceTable(f, size, header)
+			}
 		} else {
 			fullData := make([]byte, size)
 			_, _ = f.ReadAt(context.Background(), fullData, 0)
@@ -759,6 +825,7 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 	editor.file = f
 	editor.asyncBuf = buf
 	editor.ResizeConsole(pf.lastW, pf.lastH)
+	applyInitialEditorOffset(editor, v)
 	editor.StartIndexing()
 
 	vtui.FrameManager.AddScreen(editor)
@@ -973,6 +1040,7 @@ func showViewer(pf *PanelsFrame, viewer *ViewerView, path string) {
 		}
 	}
 	viewer.ResizeConsole(pf.lastW, pf.lastH)
+	applyInitialViewerOffset(viewer)
 	vtui.FrameManager.AddScreen(viewer)
 }
 
@@ -1420,12 +1488,12 @@ func actionNewFile(pf *PanelsFrame) {
 }
 
 func actionViewTerminalLog(pf *PanelsFrame) {
-	v := &TerminalLogVFS{tv: pf.termView}
+	v := NewTerminalLogVFS(pf.termView)
 	actionOpenViewer(pf, v, "Terminal Log")
 }
 
 func actionEditTerminalLog(pf *PanelsFrame) {
-	v := &TerminalLogVFS{tv: pf.termView}
+	v := NewTerminalLogVFS(pf.termView)
 	actionOpenEditor(pf, v, "Terminal Log")
 }
 

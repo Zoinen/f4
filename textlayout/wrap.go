@@ -36,6 +36,62 @@ type WrapEngine struct {
 	tmpBuf []byte // Reusable buffer for avoiding allocations
 }
 
+// growingCacheCapacity keeps the two line-indexed caches amortized O(1) when
+// a live terminal appends lines. Exact-size reallocations here used to copy an
+// array proportional to the complete scrollback on every semantic frame.
+func growingCacheCapacity(current, required int) int {
+	if current >= required {
+		return current
+	}
+	next := current
+	if next < 64 {
+		next = 64
+	}
+	for next < required {
+		next += max(64, next/2)
+	}
+	return next
+}
+
+func (we *WrapEngine) resizeFragmentCache(lineCount int) {
+	oldLength := len(we.fragmentCache)
+	if oldLength == lineCount {
+		return
+	}
+	if lineCount <= cap(we.fragmentCache) {
+		if lineCount < oldLength {
+			clear(we.fragmentCache[lineCount:])
+		}
+		we.fragmentCache = we.fragmentCache[:lineCount]
+		if lineCount > oldLength {
+			clear(we.fragmentCache[oldLength:])
+		}
+		return
+	}
+	grown := make([][]LineFragment, lineCount,
+		growingCacheCapacity(cap(we.fragmentCache), lineCount))
+	copy(grown, we.fragmentCache)
+	we.fragmentCache = grown
+}
+
+func (we *WrapEngine) resizeRowOffsets(lineCount int) {
+	oldLength := len(we.rowOffsets)
+	if oldLength == lineCount {
+		return
+	}
+	if lineCount <= cap(we.rowOffsets) {
+		we.rowOffsets = we.rowOffsets[:lineCount]
+		if lineCount > oldLength {
+			clear(we.rowOffsets[oldLength:])
+		}
+		return
+	}
+	grown := make([]int, lineCount,
+		growingCacheCapacity(cap(we.rowOffsets), lineCount))
+	copy(grown, we.rowOffsets)
+	we.rowOffsets = grown
+}
+
 func NewWrapEngine(pt *piecetable.PieceTable, li *piecetable.LineIndex) *WrapEngine {
 	return &WrapEngine{
 		pt:            pt,
@@ -107,9 +163,7 @@ func (we *WrapEngine) InvalidateFrom(logLineIdx int) {
 // GetFragments возвращает визуальные фрагменты для одной логической строки.
 func (we *WrapEngine) GetFragments(logLineIdx int) []LineFragment {
 	lineCount := we.li.LineCount()
-	if we.fragmentCache == nil || len(we.fragmentCache) != lineCount {
-		we.fragmentCache = make([][]LineFragment, lineCount)
-	}
+	we.resizeFragmentCache(lineCount)
 
 	if logLineIdx < 0 || logLineIdx >= lineCount {
 		return nil
@@ -278,20 +332,13 @@ func (we *WrapEngine) ensureRowCountCache(until int) {
 		return
 	}
 
-	if we.rowOffsets == nil || len(we.rowOffsets) != lineCount {
-		oldOffsets := we.rowOffsets
-		we.rowOffsets = make([]int, lineCount)
-		if oldOffsets != nil {
-			numToCopy := len(oldOffsets)
-			if numToCopy > lineCount {
-				numToCopy = lineCount
-			}
-			copy(we.rowOffsets, oldOffsets[:numToCopy])
-			if we.validUntil >= numToCopy {
-				we.validUntil = numToCopy - 1
-			}
-		} else {
+	if len(we.rowOffsets) != lineCount {
+		oldLength := len(we.rowOffsets)
+		we.resizeRowOffsets(lineCount)
+		if oldLength == 0 {
 			we.validUntil = -1
+		} else if we.validUntil >= lineCount {
+			we.validUntil = lineCount - 1
 		}
 	}
 

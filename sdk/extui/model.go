@@ -297,15 +297,36 @@ type CommandLineModel struct {
 }
 
 type TerminalModel struct {
-	ID        string
-	Title     string
-	Visible   bool
-	Focused   bool
-	AltScreen bool
-	Busy      bool
-	CursorX   int
-	CursorY   int
-	Rows      []TextRowModel
+	ID                 string
+	Title              string
+	Columns            int
+	DefaultBackground  string
+	Visible            bool
+	Focused            bool
+	AltScreen          bool
+	Busy               bool
+	FollowTail         bool
+	CursorX            int
+	CursorY            int
+	CursorAbsoluteRow  int64
+	CursorVisible      bool
+	CursorShape        string
+	SelectionEnabled   bool
+	DocumentKey        string
+	ScrollAction       string
+	ScrollUnit         string
+	WindowStart        int64
+	WindowEnd          int64
+	ViewportStart      int64
+	ViewportSpan       int64
+	ContentExtent      int64
+	ContentExtentKnown bool
+	ViewportRow        int
+	ViewportRows       int
+	WindowGeneration   uint64
+	WindowContentKey   string
+	Rows               []TextRowModel
+	WindowRows         []TextRowModel
 }
 
 type SurfaceModel struct {
@@ -437,13 +458,16 @@ type OperationsQueueItemModel struct {
 }
 
 type TextRowModel struct {
-	Index       int
-	VisualRow   int
-	LogicalLine int
-	Offset      int64
-	EndOffset   int64
-	Text        string
-	Runs        []RunModel
+	Index             int
+	VisualRow         int
+	LogicalLine       int
+	Offset            int64
+	EndOffset         int64
+	Text              string
+	Runs              []RunModel
+	HasLogicalRowSpan bool
+	LogicalRowStart   int
+	LogicalRowEnd     int
 	// ContentKey identifies the rendered contents of one absolute document
 	// row. It deliberately excludes Index, which is local to a moving bounded
 	// window, so native views can retain an overlapping delegate while that
@@ -947,18 +971,49 @@ func (c CommandLineModel) ToMap() M {
 }
 
 func (t TerminalModel) ToMap() M {
-	return M{
-		"id":        t.ID,
-		"kind":      "terminal",
-		"title":     t.Title,
-		"visible":   t.Visible,
-		"focused":   t.Focused,
-		"altScreen": t.AltScreen,
-		"busy":      t.Busy,
-		"cursorX":   t.CursorX,
-		"cursorY":   t.CursorY,
-		"rows":      rowsToMaps(t.Rows),
+	out := M{
+		"id":                 t.ID,
+		"kind":               "terminal",
+		"title":              t.Title,
+		"columns":            t.Columns,
+		"defaultBackground":  t.DefaultBackground,
+		"visible":            t.Visible,
+		"focused":            t.Focused,
+		"altScreen":          t.AltScreen,
+		"busy":               t.Busy,
+		"followTail":         t.FollowTail,
+		"cursorX":            t.CursorX,
+		"cursorY":            t.CursorY,
+		"cursorAbsoluteRow":  t.CursorAbsoluteRow,
+		"cursorVisible":      t.CursorVisible,
+		"cursorShape":        t.CursorShape,
+		"selectionEnabled":   t.SelectionEnabled,
+		"documentKey":        t.DocumentKey,
+		"scrollAction":       t.ScrollAction,
+		"scrollUnit":         t.ScrollUnit,
+		"windowStart":        t.WindowStart,
+		"windowEnd":          t.WindowEnd,
+		"viewportStart":      t.ViewportStart,
+		"viewportSpan":       t.ViewportSpan,
+		"contentExtent":      t.ContentExtent,
+		"contentExtentKnown": t.ContentExtentKnown,
+		"viewportRow":        t.ViewportRow,
+		"viewportRows":       t.ViewportRows,
+		"windowGeneration":   t.WindowGeneration,
 	}
+	if len(t.WindowRows) > 0 || t.ScrollUnit != "" {
+		key := t.WindowContentKey
+		if key == "" {
+			key = WindowRowsContentKey(t.WindowRows)
+		}
+		out["windowContentKey"] = key
+		out["windowRows"] = rowsToMaps(t.WindowRows)
+	} else {
+		// Compatibility for semantic producers predating the bounded terminal
+		// protocol.  A native window never sends the same rows twice.
+		out["rows"] = rowsToMaps(t.Rows)
+	}
+	return out
 }
 
 func (d SurfaceModel) ToMap() M {
@@ -1149,6 +1204,11 @@ func TextRowContentKey(row TextRowModel) string {
 	writeUint64(uint64(int64(row.LogicalLine)))
 	writeUint64(uint64(row.Offset))
 	writeUint64(uint64(row.EndOffset))
+	writeBool(row.HasLogicalRowSpan)
+	if row.HasLogicalRowSpan {
+		writeUint64(uint64(int64(row.LogicalRowStart)))
+		writeUint64(uint64(int64(row.LogicalRowEnd)))
+	}
 	writeString(row.Text)
 	writeUint64(uint64(len(row.Runs)))
 	for _, run := range row.Runs {
@@ -1173,6 +1233,10 @@ func (r TextRowModel) ToMap() M {
 	}
 	if r.ContentKey != "" {
 		out["contentKey"] = r.ContentKey
+	}
+	if r.HasLogicalRowSpan {
+		out["logicalRowStart"] = r.LogicalRowStart
+		out["logicalRowEnd"] = r.LogicalRowEnd
 	}
 	if r.Text != "" {
 		out["text"] = r.Text
