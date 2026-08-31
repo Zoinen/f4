@@ -51,6 +51,15 @@ if(F4_PORTABLE_STATIC)
   set_property(TARGET Qt6::Quick APPEND PROPERTY
     INTERFACE_LINK_LIBRARIES Qt6::OpenGL)
 
+  if(UNIX AND NOT APPLE)
+    # The portable Linux host supports both native Wayland/EGL and the XCB
+    # fallback. Conan packages the static Wayland module and its plugin
+    # archives, but does not expose the platform plugins as Qt components.
+    find_package(Qt6 COMPONENTS WaylandClient REQUIRED)
+    find_package(wayland REQUIRED)
+    find_package(xkbcommon REQUIRED)
+  endif()
+
   # A native Qt installation exposes Qt6::Core as STATIC_LIBRARY, while the
   # Conan package exposes the same static archives through an INTERFACE_LIBRARY
   # facade. Reject a directly shared target here; the portable CI audits the
@@ -97,14 +106,62 @@ set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
   "Generate ZoinGallery package installation rules" FORCE)
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
+
+if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
+  # Conan's static packages currently expose system C++ runtime libraries as
+  # literal "stdc++" interface entries. Those entries are emitted as an
+  # explicit dynamic -lstdc++ after the compiler driver's
+  # -static-libstdc++ selection, defeating the portable host contract. Remove
+  # only that metadata entry; the compiler still adds its static C++ runtime
+  # because the host's link options request it. Recurse over the submodule
+  # directory too, since its find_package calls own part of the dependency
+  # graph.
+  function(f4_strip_static_cpp_runtime_metadata directory)
+    get_property(F4_CONAN_IMPORTED_TARGETS
+      DIRECTORY "${directory}" PROPERTY IMPORTED_TARGETS)
+    get_property(F4_CONAN_BUILDSYSTEM_TARGETS
+      DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    list(APPEND F4_CONAN_IMPORTED_TARGETS ${F4_CONAN_BUILDSYSTEM_TARGETS})
+    foreach(F4_CONAN_IMPORTED_TARGET IN LISTS F4_CONAN_IMPORTED_TARGETS)
+      if(TARGET ${F4_CONAN_IMPORTED_TARGET})
+        get_target_property(F4_CONAN_LINK_LIBRARIES
+          ${F4_CONAN_IMPORTED_TARGET} INTERFACE_LINK_LIBRARIES)
+        if(F4_CONAN_LINK_LIBRARIES)
+          string(REPLACE "stdc++" "" F4_CONAN_LINK_LIBRARIES
+            "${F4_CONAN_LINK_LIBRARIES}")
+          set_target_properties(${F4_CONAN_IMPORTED_TARGET} PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${F4_CONAN_LINK_LIBRARIES}")
+        endif()
+      endif()
+    endforeach()
+    get_property(F4_CONAN_SUBDIRECTORIES
+      DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(F4_CONAN_SUBDIRECTORY IN LISTS F4_CONAN_SUBDIRECTORIES)
+      f4_strip_static_cpp_runtime_metadata("${F4_CONAN_SUBDIRECTORY}")
+    endforeach()
+  endfunction()
+
+  # The callback is deferred from ZoinGallery's own project directory so its
+  # directory-scoped imported Conan targets remain visible to TARGET checks.
+  set(F4_PREVIOUS_CMAKE_PROJECT_INCLUDE "${CMAKE_PROJECT_INCLUDE}")
+  set(CMAKE_PROJECT_INCLUDE
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/f4-zoin-gallery-portable-hook.cmake")
+endif()
 add_subdirectory(
   "${F4_ZOINGALLERY_SOURCE_DIR}"
   "${F4_ZOINGALLERY_BINARY_DIR}")
+if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
+  set(CMAKE_PROJECT_INCLUDE "${F4_PREVIOUS_CMAKE_PROJECT_INCLUDE}")
+  unset(F4_PREVIOUS_CMAKE_PROJECT_INCLUDE)
+endif()
 if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
   message(FATAL_ERROR
     "The bundled ZoinGallery submodule must provide Core and Qml targets")
 endif()
 set(ZoinGallery_QML_IMPORT_PATH "${F4_ZOINGALLERY_BINARY_DIR}")
+if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
+  f4_strip_static_cpp_runtime_metadata("${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 function(f4_link_static_zoingallery_plugin target)
   if(NOT TARGET ZoinGalleryQmlplugin)
@@ -295,6 +352,14 @@ else()
   add_subdirectory(cmake/f4-qt-host-target)
 endif()
 
+if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
+  # The host target can cause Qt's generated package facades to be completed
+  # while its transitive link interface is assembled.  Strip once more after
+  # that evaluation so a late Conan system-library entry cannot reintroduce a
+  # shared libstdc++ dependency after -static-libstdc++.
+  f4_strip_static_cpp_runtime_metadata("${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 # ZoinGallery's QML tests are created before the host target is included, so
 # they cannot use the static-test helpers declared in the BUILD_TESTING block
 # below.  Give their executables the same self-contained Qt platform and QML
@@ -308,16 +373,46 @@ if(F4_QT_STATIC)
       ZoinGalleryPanelGestureTests
       ZoinGalleryMasonryLayoutModesTests
       ZoinGalleryStandaloneShellSmokeTests)
-        if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
-          target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
-          target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
-            ${F4_REQUIRED_STATIC_QT_PLUGINS}
-            ${F4_REQUIRED_STATIC_QML_PLUGINS}
-            "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
-        endif()
+    if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
+      target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+      target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+        ${F4_REQUIRED_STATIC_QT_PLUGINS}
+        ${F4_REQUIRED_STATIC_QML_PLUGINS}
+        "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>"
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+    endif()
+  endforeach()
+endif()
+
+# The Core-only ZoinGallery tests use QTEST_MAIN, which selects a GUI
+# application when the library graph exposes QtGui.  Static Qt cannot discover
+# the offscreen platform or image-format plugins at runtime, so carry those
+# plugin imports into the tests that the submodule creates before this file's
+# BUILD_TESTING helpers are declared.
+if(F4_QT_STATIC)
+  foreach(F4_ZOIN_STATIC_CORE_TEST_TARGET IN ITEMS
+      ZoinGallerySelectionTests
+      ZoinGalleryViewerCacheTests
+      ZoinGalleryThumbnailMemoryCacheTests
+      ZoinGalleryEmbeddedImageProbeTests
+      ZoinGalleryDecodeSizePolicyTests
+      ZoinGalleryPersistentDerivedImageCacheTests
+      ZoinGalleryDecodeLifecycleTests)
+    if(TARGET ${F4_ZOIN_STATIC_CORE_TEST_TARGET})
+      target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
+      target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+        Qt6::QOffscreenIntegrationPlugin
+        Qt6::QGifPlugin
+        Qt6::QIcoPlugin
+        Qt6::QJpegPlugin
+        Qt6::QSvgPlugin
+        "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
+    endif()
   endforeach()
 endif()
 
@@ -495,6 +590,24 @@ if(BUILD_TESTING)
         Qt6::QSvgPlugin)
     endif()
   endfunction()
+
+  if(USE_QWK AND UNIX AND NOT APPLE)
+    add_executable(QWindowKitTitleBarTests
+      tests/QWindowKitTitleBarTests.cpp
+    )
+    target_link_libraries(QWindowKitTitleBarTests PRIVATE
+      Qt6::Core
+      Qt6::Gui
+      Qt6::Quick
+      Qt6::Test
+      QWindowKit::Quick
+    )
+    f4_link_static_test_platform(QWindowKitTitleBarTests)
+    add_test(NAME QWindowKitTitleBarTest COMMAND QWindowKitTitleBarTests)
+    set_tests_properties(QWindowKitTitleBarTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    )
+  endif()
 
   add_executable(F4IconProviderTests
     tests/F4IconProviderTests.cpp

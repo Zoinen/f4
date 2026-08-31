@@ -15,7 +15,9 @@ $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $QwkSource = Join-Path $RepoRoot "build\qwindowkit-src"
 $QwkBuild = Join-Path $RepoRoot "build\qwindowkit-build"
 $QwkInstall = Join-Path $RepoRoot "build\qwindowkit-install"
-$QwkMarker = Join-Path $QwkInstall ".f4-qwindowkit-ready-$Linkage-$BuildType"
+$QwkPatch = Join-Path $RepoRoot "ci\patches\qwindowkit-default-maximize-hint.patch"
+$QwkPatchHash = (Get-FileHash $QwkPatch -Algorithm SHA256).Hash.Substring(0, 16).ToLowerInvariant()
+$QwkMarker = Join-Path $QwkInstall ".f4-qwindowkit-ready-$Linkage-$BuildType-$QwkPatchHash"
 $QtVersion = Split-Path (Split-Path $QtRoot -Parent) -Leaf
 $QwkCxxFlags = @()
 $QwkPlatformArgs = @(
@@ -45,6 +47,28 @@ foreach ($includeDir in @(
 
 Remove-Item -Recurse -Force $QwkSource, $QwkBuild, $QwkInstall -ErrorAction SilentlyContinue
 git clone --recursive --branch main https://github.com/stdware/qwindowkit.git $QwkSource
+
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+& git -C $QwkSource apply --reverse --check $QwkPatch 2>$null
+$PatchAlreadyApplied = $LASTEXITCODE -eq 0
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSNativeCommandUseErrorActionPreference = $true
+}
+
+if ($PatchAlreadyApplied) {
+    Write-Host "QWindowKit default maximize-hint fix is already upstream"
+} else {
+    & git -C $QwkSource apply --check $QwkPatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "QWindowKit default maximize-hint patch does not apply"
+    }
+    & git -C $QwkSource apply $QwkPatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "QWindowKit default maximize-hint patch failed"
+    }
+}
 
 cmake -S $QwkSource -B $QwkBuild -G Ninja `
     "-DCMAKE_BUILD_TYPE=$BuildType" `
