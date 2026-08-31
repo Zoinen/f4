@@ -413,6 +413,32 @@ func semanticPanelStateForPatch(panel map[string]any) map[string]any {
 	return state
 }
 
+var semanticPanelStateIdentityKeys = [...]string{
+	"id", "kind", "side", "catalogRevision",
+	"metadataDeferred", "metadataRevision",
+}
+
+// semanticPanelStateDeltaForPatch keeps state_update proportional to the
+// actual state change. The Qt receiver merges this map into its authoritative
+// row-free panel cache; the identity tuple remains present on every update so
+// the receiver can reject stale or cross-panel deltas before committing them.
+func semanticPanelStateDeltaForPatch(previous, current map[string]any) map[string]any {
+	if reflect.DeepEqual(previous, current) {
+		return nil
+	}
+	delta := make(map[string]any)
+	for key, currentValue := range current {
+		if previousValue, present := previous[key]; present && reflect.DeepEqual(previousValue, currentValue) {
+			continue
+		}
+		delta[key] = currentValue
+	}
+	for _, key := range semanticPanelStateIdentityKeys {
+		delta[key] = current[key]
+	}
+	return delta
+}
+
 // buildAppScenePatch compares only bounded projections. Catalog changes are
 // intentionally declined here until their complete minimal panel payload has
 // been supplied by QueuePanelCatalogState; the ordinary full exporter remains
@@ -498,12 +524,39 @@ func buildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 			}
 			beforeState := semanticPanelStateForPatch(before)
 			panelState := semanticPanelStateForPatch(panel)
-			if !reflect.DeepEqual(beforeState, panelState) {
+			if panelStateDelta := semanticPanelStateDeltaForPatch(
+				beforeState, panelState); panelStateDelta != nil {
+				deltaKeys := make([]string, 0, len(panelStateDelta))
+				for key := range panelStateDelta {
+					deltaKeys = append(deltaKeys, key)
+				}
+				sort.Strings(deltaKeys)
+				rootSetKeys := make([]string, 0, len(rootSet))
+				for key := range rootSet {
+					rootSetKeys = append(rootSetKeys, key)
+				}
+				sort.Strings(rootSetKeys)
+				shellSetKeys := make([]string, 0, len(shellSet))
+				for key := range shellSet {
+					shellSetKeys = append(shellSetKeys, key)
+				}
+				sort.Strings(shellSetKeys)
+				navigationBenchmarkIncrementalEvent(
+					"scene.incremental.panel_state_delta",
+					"side", side,
+					"keys", strings.Join(deltaKeys, ","),
+					"fieldCount", len(deltaKeys),
+					"rootSetKeys", strings.Join(rootSetKeys, ","),
+					"shellSetKeys", strings.Join(shellSetKeys, ","),
+					"galleryLayoutMode",
+					semanticString(panelStateDelta["galleryLayoutMode"]),
+					"galleryDensity",
+					semanticInt(panelStateDelta["galleryDensity"]))
 				shellPatch.Panels = append(shellPatch.Panels, extui.PanelPatch{
 					Op: "state_update", Side: side,
 					PanelID:         semanticString(panel["id"]),
 					CatalogRevision: semanticInt64(panel["catalogRevision"]),
-					State:           panelState,
+					State:           panelStateDelta,
 				})
 			}
 			beforeSelection := semanticInt64(before["selectionRevision"])
@@ -531,58 +584,6 @@ func buildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 		}
 	}
 	return patch, acknowledgements, true
-}
-
-// buildAppWorkspaceActivationPatch is the panels-to-panels counterpart of the
-// structural document transition above. Every catalog is already resident in
-// a panel-identity keyed native Gallery session, so replacing the row-free
-// shell is complete and authoritative. A cache miss remains conservative and
-// falls back to the ordinary full scene exactly once; that full scene (or the
-// idle panel_cache warmup) establishes the tuple for future activations.
-func buildAppWorkspaceActivationPatch(previous map[string]any,
-	current *appIncrementalScene,
-	delivered map[string]semanticDeliveredPanelCatalog,
-) (extui.ScenePatch, bool) {
-	if previous == nil || current == nil || current.Scene == nil ||
-		semanticInt(previous["activeScreen"]) == semanticInt(current.Scene["activeScreen"]) {
-		return extui.ScenePatch{}, false
-	}
-	previousShell, previousHasShell := previous["shell"].(map[string]any)
-	currentShell, currentHasShell := current.Scene["shell"].(map[string]any)
-	if !previousHasShell || previousShell == nil ||
-		!currentHasShell || currentShell == nil {
-		return extui.ScenePatch{}, false
-	}
-	currentPanels := semanticPanelsBySide(current.Scene)
-	if len(currentPanels) == 0 {
-		return extui.ScenePatch{}, false
-	}
-	for side, panel := range currentPanels {
-		if !semanticPanelCatalogWasDelivered(panel, delivered) {
-			navigationBenchmarkIncrementalEvent(
-				"scene.incremental.workspace_cache_miss",
-				"side", side,
-				"panelId", semanticString(panel["id"]),
-				"catalogRevision", semanticInt64(panel["catalogRevision"]),
-				"selectionRevision", semanticInt64(panel["selectionRevision"]))
-			return extui.ScenePatch{}, false
-		}
-	}
-
-	rootSet, rootClear := semanticPatchChangedKeys(
-		previous, current.Scene, incrementalRootPatchKeys)
-	if rootSet == nil {
-		rootSet = make(map[string]any)
-	}
-	rootSet["shell"] = currentShell
-	navigationBenchmarkIncrementalEvent(
-		"scene.incremental.workspace_activation",
-		"fromScreen", semanticInt(previous["activeScreen"]),
-		"toScreen", semanticInt(current.Scene["activeScreen"]),
-		"panelCount", len(currentPanels))
-	return extui.ScenePatch{Root: &extui.MapPatch{
-		Set: rootSet, Clear: rootClear,
-	}}, true
 }
 
 func scenePatchEmpty(patch extui.ScenePatch) bool {
@@ -638,6 +639,49 @@ func semanticSceneStructuralCopy(value any) any {
 func semanticSceneStructuralMapCopy(scene map[string]any) map[string]any {
 	copyScene, _ := semanticSceneStructuralCopy(scene).(map[string]any)
 	return copyScene
+}
+
+// semanticNormalizeSparsePanelCatalogs repairs the one invariant that the
+// paged protocol cannot infer safely on the client: an authoritative catalog
+// whose entries are only a prefix of totalCount must explicitly advertise
+// that its remaining rows are deferred. Some semantic snapshots can be built
+// before the rows-capability handshake is observed, so normalize every scene
+// at the renderer boundary. The copy is structural only; entry payloads stay
+// shared and no complete catalog is retained or duplicated.
+func semanticNormalizeSparsePanelCatalogs(scene map[string]any) map[string]any {
+	panels, ok := semanticScenePanelMaps(scene)
+	if !ok {
+		return scene
+	}
+	normalized := scene
+	copied := false
+	for side, panel := range panels {
+		if panel == nil || !extUiBool(panel, "metadataDeferred") ||
+			extUiBool(panel, "catalogProvisional") ||
+			extUiBool(panel, "catalogRowsDeferred") {
+			continue
+		}
+		entries, entriesOK := semanticMapSlice(panel["entries"])
+		if !entriesOK {
+			continue
+		}
+		totalCount := extUiAnyInt(panel["totalCount"])
+		if totalCount <= len(entries) {
+			continue
+		}
+		if !copied {
+			normalized = semanticSceneStructuralMapCopy(scene)
+			copied = true
+		}
+		replacement := make(map[string]any, len(panel)+1)
+		for key, value := range panel {
+			replacement[key] = value
+		}
+		replacement["catalogRowsDeferred"] = true
+		semanticReplacePanelCatalogAliases(
+			normalized, semanticString(panel["id"]), side, replacement)
+	}
+	return normalized
 }
 
 // semanticReplacePanelCatalogAliases updates only structural app/legacy
@@ -713,6 +757,14 @@ func applyAppScenePatchToSnapshot(scene map[string]any, patch extui.ScenePatch) 
 			if operation.Panel != nil {
 				panels[operation.Side] = operation.Panel
 			}
+		case "catalog_append":
+			if panel == nil || operation.CatalogOffset != len(appMapSlice(panel["entries"])) {
+				continue
+			}
+			entries := appMapSlice(panel["entries"])
+			entries = append(entries, operation.Entries...)
+			panel["entries"] = entries
+			panel["catalogProvisional"] = !operation.CatalogFinal
 		case "selection_delta", "selection_replace":
 			panel["selectionRevision"] = operation.SelectionRevision
 		}

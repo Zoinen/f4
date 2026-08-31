@@ -321,6 +321,9 @@ int main(int argc, char *argv[])
     QObject::connect(&controller, &QtShellController::panelCatalogChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelCatalog);
+    QObject::connect(&controller, &QtShellController::panelCatalogAppendChanged,
+                     &galleryBridge,
+                     &F4GalleryBridge::synchronizePanelCatalogAppend);
     QObject::connect(&controller, &QtShellController::panelStateChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelState);
@@ -329,6 +332,9 @@ int main(int argc, char *argv[])
     QObject::connect(
         &galleryBridge, &F4GalleryBridge::panelCatalogMetadataRequested,
         &controller, &QtShellController::sendPanelCatalogMetadataRequest);
+    QObject::connect(
+        &galleryBridge, &F4GalleryBridge::panelCatalogRowsRequested,
+        &controller, &QtShellController::sendPanelCatalogRowsRequest);
     QObject::connect(&controller, &QtShellController::messageReceived,
                      &galleryBridge,
                      &F4GalleryBridge::handleProtocolMessage);
@@ -336,10 +342,10 @@ int main(int argc, char *argv[])
     // completeInitialHandshake() deliberately runs before Gallery/QML setup so
     // Go can initialize concurrently with the native object graph.  On a fast
     // local connection the controller may therefore already own the first
-    // semantic scene before the bridge's sceneChanged connection exists.  Seed
-    // the identity cache from that authoritative snapshot before QML creates a
-    // retained viewport; otherwise the first workspace can permanently capture
-    // an empty side fallback while later workspaces bind exact cached sessions.
+    // semantic scene before the bridge's sceneChanged connection exists. Seed
+    // the native sessions from that authoritative snapshot before QML binds
+    // the one viewport for each side; otherwise startup can briefly attach an
+    // empty side session.
     const QVariantMap initialGalleryScene = controller.scene();
     if (!initialGalleryScene.isEmpty()) {
         const QString initialIconSet = initialGalleryScene.value(

@@ -931,6 +931,7 @@ func (iv *ImageView) GetKeyLabels() *vtui.KeySet {
 		Normal: vtui.KeyBarLabels{
 			"", "", "", "", "", "", "", "", "", "Quit",
 		},
+		NormalIcons: vtui.KeyBarIconNames{"", "", "", "", "", "", "", "", "", "x", "", ""},
 	}
 }
 

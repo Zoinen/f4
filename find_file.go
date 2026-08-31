@@ -367,6 +367,9 @@ func (srw *SearchResultsWindow) GetKeyLabels() *vtui.KeySet {
 		Normal: vtui.KeyBarLabels{
 			"", "", "View", "Edit", "", "", "", "", "", "Quit", "", "",
 		},
+		NormalIcons: vtui.KeyBarIconNames{
+			"", "", "eye", "file-pen-line", "", "", "", "", "", "x", "", "",
+		},
 	}
 }
 

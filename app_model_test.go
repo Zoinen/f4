@@ -7,6 +7,65 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func TestAppMenuFromLegacyDefersClosedMenuBarSubmenus(t *testing.T) {
+	node := map[string]any{
+		"id": "main-menu", "active": false, "selected": 0,
+		"items": []map[string]any{{
+			"index": 0, "text": "&Left",
+			"items": []map[string]any{{
+				"index": 0, "text": "√&Details", "command": 17,
+			}},
+		}},
+	}
+
+	closed := appMenuFromLegacy(node, "menuBar").ToMap()
+	closedItems := appMapSlice(closed["items"])
+	if len(closedItems) != 1 {
+		t.Fatalf("closed menu-bar items = %#v", closedItems)
+	}
+	if _, present := closedItems[0]["items"]; present {
+		t.Fatalf("closed menu bar leaked hidden submenu: %#v", closedItems[0])
+	}
+	if len(appMapSlice(node["items"])[0]["items"].([]map[string]any)) != 1 {
+		t.Fatal("closed menu compaction mutated the source semantic node")
+	}
+
+	node["active"] = true
+	opened := appMenuFromLegacy(node, "menuBar").ToMap()
+	openedItems := appMapSlice(opened["items"])
+	children := appMapSlice(openedItems[0]["items"])
+	if len(children) != 1 || children[0]["checked"] != true ||
+		children[0]["text"] != "&Details" {
+		t.Fatalf("active menu bar lost authoritative submenu: %#v", openedItems)
+	}
+}
+
+func TestAppKeyBarFromLegacyPreservesBoundedIconMetadata(t *testing.T) {
+	model := appKeyBarFromLegacy(map[string]any{
+		"id": "keys", "visible": true, "modifier": "normal",
+		"items": []map[string]any{
+			{"index": 0, "key": "F1", "text": "Help", "icon": "circle-question-mark",
+				"alternatives": []map[string]any{
+					{"modifier": "ctrl", "text": "Left", "icon": "panel-left"},
+				}},
+			{"index": 1, "key": "F2", "text": ""},
+		},
+	})
+	out := model.ToMap()
+	items := out["items"].([]map[string]any)
+	if items[0]["icon"] != "circle-question-mark" {
+		t.Fatalf("key-bar icon was lost: %#v", items[0])
+	}
+	alternatives, ok := items[0]["alternatives"].([]extui.M)
+	if !ok || len(alternatives) != 1 || alternatives[0]["modifier"] != "ctrl" ||
+		alternatives[0]["text"] != "Left" || alternatives[0]["icon"] != "panel-left" {
+		t.Fatalf("key-bar alternatives were lost: %#v", items[0])
+	}
+	if _, exists := items[1]["icon"]; exists {
+		t.Fatalf("empty key-bar icon should stay omitted: %#v", items[1])
+	}
+}
+
 func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	oldPresentation := AppConfig.GuiPresentation
 	oldIconSet := AppConfig.QmlIconSet
@@ -127,6 +186,11 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 		panels[0]["galleryDensity"] != 150 ||
 		panels[0]["galleryLayoutRevision"] != int64(1) {
 		t.Fatalf("legacy panel did not receive Gallery layout defaults: %#v", panels[0])
+	}
+	if densities, ok := panels[0]["galleryDensities"].(map[string]any); !ok ||
+		densities["masonry"] != 150 || densities["grid"] != 160 ||
+		densities["icons"] != 64 || len(densities) != 3 {
+		t.Fatalf("legacy panel did not receive bounded density defaults: %#v", panels[0])
 	}
 	entries := panels[0]["entries"].([]map[string]any)
 	if entries[0]["displayBaseName"] != "archive.tar" ||

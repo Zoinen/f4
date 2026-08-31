@@ -1120,7 +1120,6 @@ func TestSession_DiskPersistence(t *testing.T) {
 		ColumnCount: 3,
 		Densities: map[GalleryLayoutMode]int{
 			GalleryLayoutMasonry: 211,
-			// Simulate a pre-policy session. SaveSession must strip it.
 			GalleryLayoutColumns: 34,
 		},
 	}
@@ -1179,11 +1178,9 @@ func TestSession_DiskPersistence(t *testing.T) {
 	}
 	if LastLeftGalleryState.LayoutMode != GalleryLayoutColumns ||
 		LastLeftGalleryState.ColumnCount != 3 ||
-		LastLeftGalleryState.Densities[GalleryLayoutMasonry] != 211 {
+		LastLeftGalleryState.Densities[GalleryLayoutMasonry] != 211 ||
+		LastLeftGalleryState.Densities[GalleryLayoutColumns] != 34 {
 		t.Fatalf("left gallery session state was not persisted: %#v", LastLeftGalleryState)
-	}
-	if _, exists := LastLeftGalleryState.Densities[GalleryLayoutColumns]; exists {
-		t.Fatalf("fixed Columns density was persisted: %#v", LastLeftGalleryState)
 	}
 	if LastRightGalleryState.LayoutMode != GalleryLayoutIcons ||
 		LastRightGalleryState.ColumnCount != 2 ||
@@ -1285,12 +1282,10 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	if captured.Left.Gallery.LayoutMode != GalleryLayoutGrid ||
 		captured.Left.Gallery.Densities[GalleryLayoutGrid] != 207 ||
 		captured.Right.Gallery.LayoutMode != GalleryLayoutColumns ||
-		captured.Right.Gallery.ColumnCount != 3 {
+		captured.Right.Gallery.ColumnCount != 3 ||
+		captured.Right.Gallery.Densities[GalleryLayoutColumns] != 31 {
 		t.Fatalf("Gallery state was not captured independently: left=%#v right=%#v",
 			captured.Left.Gallery, captured.Right.Gallery)
-	}
-	if _, exists := captured.Right.Gallery.Densities[GalleryLayoutColumns]; exists {
-		t.Fatalf("captured fixed Columns density: %#v", captured.Right.Gallery)
 	}
 	encoded, err := os.ReadFile(getSessionIniPath())
 	if err != nil {
@@ -1299,9 +1294,8 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	if strings.Contains(string(encoded), "Presentation =") {
 		t.Fatalf("retired panel Presentation was persisted:\n%s", encoded)
 	}
-	if strings.Contains(string(encoded), "GalleryDensityColumns") ||
-		strings.Contains(string(encoded), "GalleryDensityDetails") {
-		t.Fatalf("fixed compact density was persisted:\n%s", encoded)
+	if !strings.Contains(string(encoded), "GalleryDensityColumns = 31") {
+		t.Fatalf("compact density was not persisted:\n%s", encoded)
 	}
 
 	LastLeftGalleryState = defaultPanelGallerySessionState()
@@ -1315,12 +1309,10 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	if loaded.Left.Gallery.LayoutMode != GalleryLayoutGrid ||
 		loaded.Left.Gallery.Densities[GalleryLayoutGrid] != 207 ||
 		loaded.Right.Gallery.LayoutMode != GalleryLayoutColumns ||
-		loaded.Right.Gallery.ColumnCount != 3 {
+		loaded.Right.Gallery.ColumnCount != 3 ||
+		loaded.Right.Gallery.Densities[GalleryLayoutColumns] != 31 {
 		t.Fatalf("saved Gallery state was not restored: left=%#v right=%#v",
 			loaded.Left.Gallery, loaded.Right.Gallery)
-	}
-	if _, exists := loaded.Right.Gallery.Densities[GalleryLayoutColumns]; exists {
-		t.Fatalf("loaded fixed Columns density: %#v", loaded.Right.Gallery)
 	}
 }
 
@@ -1531,7 +1523,7 @@ func TestActionManagePlugins_Flow(t *testing.T) {
 		t.Errorf("Failed to add new plugin. Current: %v", AppConfig.RegisteredPlugins)
 	}
 }
-func TestActionRename_CacheAndSelection(t *testing.T) {
+func TestActionRename_PreservesPendingSelection(t *testing.T) {
 	fm := vtui.FrameManager
 	fm.Init(vtui.NewSilentScreenBuf())
 	SetDefaultF4Palette()
@@ -1550,9 +1542,6 @@ func TestActionRename_CacheAndSelection(t *testing.T) {
 	fsp.SetCursorIndex(0)
 	pf.activeIdx = 0
 
-	// Заполняем кэш данными
-	fsp.dirCache[fsp.cacheKey(fsp.vfs.GetPath())] = dirCacheEntry{items: []vfs.VFSItem{{Name: "old.txt"}}}
-
 	// 1. Тест успешного переименования
 	// Перехватываем InputBox внутри actionRename (в тестах он не блокирует)
 	// Мы вручную вызовем логику, которую должен был вызвать InputBox
@@ -1564,13 +1553,9 @@ func TestActionRename_CacheAndSelection(t *testing.T) {
 	fsp.vfs.Rename(context.Background(), oldPath, newPath)
 
 	// Выполняем UI-часть из actionRename (успех)
-	delete(fsp.dirCache, fsp.cacheKey(fsp.vfs.GetPath()))
 	fsp.pendingSelection = newName
 	pf.RefreshAll()
 
-	if _, ok := fsp.dirCache[fsp.cacheKey(fsp.vfs.GetPath())]; ok {
-		t.Error("Cache was not cleared after rename")
-	}
 	if fsp.pendingSelection != "new.txt" {
 		t.Errorf("Pending selection not set correctly: %q", fsp.pendingSelection)
 	}

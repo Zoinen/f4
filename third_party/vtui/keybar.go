@@ -9,21 +9,33 @@ import (
 // KeyBarLabels stores labels for F1-F12 for a specific modifier state.
 type KeyBarLabels [12]string
 
+// KeyBarIconNames stores optional semantic icon names for the same F1-F12
+// slots. Renderers that do not support icons can ignore this bounded metadata.
+type KeyBarIconNames [12]string
+
 // KeySet represents a full collection of KeyBar labels for all modifier states.
 type KeySet struct {
-	Normal KeyBarLabels
-	Shift  KeyBarLabels
-	Ctrl   KeyBarLabels
-	Alt    KeyBarLabels
+	Normal      KeyBarLabels
+	Shift       KeyBarLabels
+	Ctrl        KeyBarLabels
+	Alt         KeyBarLabels
+	NormalIcons KeyBarIconNames
+	ShiftIcons  KeyBarIconNames
+	CtrlIcons   KeyBarIconNames
+	AltIcons    KeyBarIconNames
 }
 
 // KeyBar implements the bottom row of function key hints.
 type KeyBar struct {
 	Bar
-	Normal KeyBarLabels
-	Shift  KeyBarLabels
-	Ctrl   KeyBarLabels
-	Alt    KeyBarLabels
+	Normal      KeyBarLabels
+	Shift       KeyBarLabels
+	Ctrl        KeyBarLabels
+	Alt         KeyBarLabels
+	NormalIcons KeyBarIconNames
+	ShiftIcons  KeyBarIconNames
+	CtrlIcons   KeyBarIconNames
+	AltIcons    KeyBarIconNames
 
 	shiftState bool
 	ctrlState  bool

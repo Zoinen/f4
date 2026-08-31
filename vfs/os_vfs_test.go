@@ -195,8 +195,8 @@ func TestOSVFS_ReadDirPhasedPublishesStableBaseBeforeMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDirPhased failed: %v", err)
 	}
-	if len(phases) < 2 || phases[0] != DirectoryReadBase {
-		t.Fatalf("phase order = %v, want base before metadata", phases)
+	if len(phases) == 0 || phases[0] != DirectoryReadBase {
+		t.Fatalf("phase order = %v, want an authoritative base first", phases)
 	}
 	seenMetadata := false
 	for _, phase := range phases {
@@ -207,10 +207,19 @@ func TestOSVFS_ReadDirPhasedPublishesStableBaseBeforeMetadata(t *testing.T) {
 			t.Fatalf("base phase appeared after metadata: %v", phases)
 		}
 	}
-	if len(base) != 3 || len(metadata) != len(base) {
+	if len(base) != 3 {
+		t.Fatalf("base size = %d, want 3", len(base))
+	}
+	if runtime.GOOS != "windows" && len(metadata) != len(base) {
 		t.Fatalf("base/metadata sizes = %d/%d, want 3/3", len(base), len(metadata))
 	}
 	for name, baseItem := range base {
+		if runtime.GOOS == "windows" {
+			if !baseItem.SizeKnown || baseItem.MTime.IsZero() {
+				t.Fatalf("Windows base row %q did not retain enumerated metadata: %+v", name, baseItem)
+			}
+			continue
+		}
 		metadataItem, ok := metadata[name]
 		if !ok {
 			t.Fatalf("metadata missing base row %q", name)
@@ -223,10 +232,14 @@ func TestOSVFS_ReadDirPhasedPublishesStableBaseBeforeMetadata(t *testing.T) {
 			t.Fatalf("base row %q leaked deferred metadata: %+v", name, baseItem)
 		}
 	}
-	if got := metadata["alpha.txt"]; !got.SizeKnown || got.Size != int64(len("payload")) || got.MTime.IsZero() {
+	metadataSource := metadata
+	if runtime.GOOS == "windows" {
+		metadataSource = base
+	}
+	if got := metadataSource["alpha.txt"]; !got.SizeKnown || got.Size != int64(len("payload")) || got.MTime.IsZero() {
 		t.Fatalf("file metadata was not enriched: %+v", got)
 	}
-	if got := metadata["folder"]; !got.IsDir || !got.SizeKnown {
+	if got := metadataSource["folder"]; !got.IsDir || !got.SizeKnown {
 		t.Fatalf("directory metadata was not enriched: %+v", got)
 	}
 }

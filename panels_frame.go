@@ -17,6 +17,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -505,13 +506,13 @@ func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
 // the native panel before the comparatively expensive terminal Show pass. The
 // renderer advances the exact app-scene revision immediately, so the
 // following redraw can use the row-free incremental exporter.
-func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenchmarkTrace) {
+func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenchmarkTrace) bool {
 	if fp == nil || vtui.FrameManager == nil {
-		return
+		return false
 	}
 	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
 	if len(frames) == 0 {
-		return
+		return false
 	}
 	var owner *PanelsFrame
 	for _, frame := range frames {
@@ -521,7 +522,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 	}
 	if owner == nil || frames[len(frames)-1] != owner ||
 		!owner.panelActivationFastPathEligible() {
-		return
+		return false
 	}
 	side := -1
 	for index, panel := range owner.panels {
@@ -531,23 +532,69 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 		}
 	}
 	if side < 0 || side != owner.activeIdx {
-		return
+		return false
 	}
 	screen := vtui.FrameManager.Screen()
 	if screen == nil {
-		return
+		return false
 	}
-	renderer, ok := screen.Renderer.(interface {
+	typedCompleteRenderer, typedCompleteOK := screen.Renderer.(interface {
+		QueuePanelCatalogModelStateWithCommandLine(int, extui.PanelModel, string, map[string]any, string) bool
+	})
+	typedRenderer, typedOK := screen.Renderer.(interface {
+		QueuePanelCatalogModelState(int, extui.PanelModel, string, string) bool
+	})
+	mapRenderer, mapOK := screen.Renderer.(interface {
 		QueuePanelCatalogState(int, map[string]any, string, string) bool
 	})
-	if !ok {
-		return
+	if !typedCompleteOK && !typedOK && !mapOK {
+		return false
 	}
-	panel := map[string]any(fp.semanticPanelModel(nil, side, true).ToMap())
-	if renderer.QueuePanelCatalogState(side, panel,
-		strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark)) {
+	modelStartedNs := int64(0)
+	if benchmark != nil {
+		modelStartedNs = navigationBenchmarkMonotonicNs()
+	}
+	previousBenchmark := navigationBenchmarkSetCurrentUI(benchmark)
+	model := fp.semanticPanelModel(nil, side, true)
+	navigationBenchmarkSetCurrentUI(previousBenchmark)
+	if benchmark != nil {
+		modelBuiltNs := navigationBenchmarkMonotonicNs()
+		benchmark.eventAt("model.semantic_panel.ready", "go.ui", modelBuiltNs,
+			"entries", len(model.Entries), "durationNs", modelBuiltNs-modelStartedNs)
+	}
+	queued := false
+	presentationComplete := false
+	if typedCompleteOK {
+		var commandLine map[string]any
+		if owner.cmdLine != nil {
+			owner.cmdLine.SetRichPrompt(owner.buildPrompt())
+			commandLine = owner.cmdLine.semanticModel(nil).ToMap()
+		}
+		queued = typedCompleteRenderer.QueuePanelCatalogModelStateWithCommandLine(
+			side, model, strings.TrimSpace(owner.GetTitle()), commandLine,
+			navigationBenchmarkTraceName(benchmark))
+		presentationComplete = queued
+	} else if typedOK {
+		queued = typedRenderer.QueuePanelCatalogModelState(side, model,
+			strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
+	} else {
+		mapStartedNs := int64(0)
+		if benchmark != nil {
+			mapStartedNs = navigationBenchmarkMonotonicNs()
+		}
+		panel := map[string]any(model.ToMap())
+		if benchmark != nil {
+			mappedNs := navigationBenchmarkMonotonicNs()
+			benchmark.eventAt("model.semantic_panel.mapped", "go.ui", mappedNs,
+				"entries", len(model.Entries), "durationNs", mappedNs-mapStartedNs)
+		}
+		queued = mapRenderer.QueuePanelCatalogState(side, panel,
+			strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
+	}
+	if queued {
 		fp.acknowledgeSemanticSelection(fp.selectionRevision)
 	}
+	return presentationComplete
 }
 
 func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
@@ -1660,15 +1707,15 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 		alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 		shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
 		if alt && !ctrl && !shift && (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
-			// History navigation is safe while a cache-first provider restore is
-			// pending: it cancels that restore and uses persistentPath, not the
-			// source VFS hidden beneath the cached rows.
+			// History navigation is safe while a provider restore is pending: it
+			// cancels that restore and uses persistentPath rather than the source
+			// VFS which remains installed until the mount succeeds.
 			return false
 		}
-		// Cached rows from the destination are visible immediately, but the old
-		// VFS remains installed until the asynchronous provider restore succeeds.
-		// Route keys through the panel so file actions cannot accidentally target
-		// the old filesystem. Cursor/workspace UI remains responsive; Esc cancels.
+		// The old VFS remains installed until the asynchronous provider restore
+		// succeeds. Route keys through the panel so file actions cannot
+		// accidentally target it. Cursor/workspace UI remains responsive; Esc
+		// cancels.
 		return true
 	}
 	if fsp == nil || !fsp.fastFindMode {
@@ -3297,18 +3344,31 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 			Msg("KeyBar.F5"), Msg("KeyBar.F6"), Msg("KeyBar.F7"), Msg("KeyBar.F8"),
 			Msg("KeyBar.F9"), Msg("KeyBar.F10"), Msg("KeyBar.F11"), Msg("KeyBar.F12"),
 		},
-		Shift: vtui.KeyBarLabels{"", "", "", "", "", "Rename", "", "", "Save", "", "", ""},
+		NormalIcons: vtui.KeyBarIconNames{
+			"circle-question-mark", "menu", "eye", "file-pen-line",
+			"copy", "folder-input", "folder-plus", "trash-2",
+			"menu", "log-out", "plug", "panels-top-left",
+		},
+		Shift:      vtui.KeyBarLabels{"", "", "", "", "", "Rename", "", "", "Save", "", "", Msg("KeyBar.ShiftF12")},
+		ShiftIcons: vtui.KeyBarIconNames{"", "", "", "", "", "pencil", "", "", "save", "", "", "monitor"},
 		Alt: vtui.KeyBarLabels{
 			Msg("KeyBar.AltF1"), Msg("KeyBar.AltF2"), Msg("KeyBar.AltF3"), "",
 			"", "", Msg("KeyBar.AltF7"), Msg("KeyBar.AltF8"), "", "", "", Msg("KeyBar.AltF12"),
 		},
+		AltIcons: vtui.KeyBarIconNames{
+			"hard-drive", "hard-drive", "binary", "", "", "", "search", "clock-3", "", "", "", "folder-clock",
+		},
 		Ctrl: vtui.KeyBarLabels{
 			Msg("KeyBar.CtrlF1"), Msg("KeyBar.CtrlF2"), Msg("KeyBar.CtrlF3"), Msg("KeyBar.CtrlF4"), Msg("KeyBar.CtrlF5"), Msg("KeyBar.CtrlF6"), Msg("KeyBar.CtrlF7"), "", "", "", "Fork", "Close",
+		},
+		CtrlIcons: vtui.KeyBarIconNames{
+			"panel-left", "panel-right", "arrow-down-a-z", "file-type", "clock-3", "arrow-down-wide-narrow", "list-restart", "", "", "", "git-fork", "x",
 		},
 	}
 	res := KeyBarLabelsForArea(area, fallbacks)
 	if overrideF2 {
 		res.Normal[1] = f2
+		res.NormalIcons[1] = "text-wrap"
 	}
 	return res
 }
@@ -4125,11 +4185,6 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.sortMode = fsp.sortMode
 			cloneFsp.sortReverse = fsp.sortReverse
 
-			cloneFsp.dirCache = make(map[dirCacheKey]dirCacheEntry)
-			for k, v := range fsp.dirCache {
-				cloneFsp.dirCache[k] = v
-			}
-
 			cloneFsp.selectedItems = make(map[string]bool)
 			for k, v := range fsp.selectedItems {
 				cloneFsp.selectedItems[k] = v
@@ -4488,27 +4543,20 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 	}
 }
 func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) bool {
-	return pf.navigateToPath(fsp, targetPath, false)
+	return pf.navigateToPath(fsp, targetPath)
 }
 
-// navigateToCachedPath is the explicit trusted transition used by folder
-// history. It may take the no-I/O route only when this exact VFS/path already
-// has an authoritative panel cache; a stale uncached history entry is still
-// validated synchronously so navigation can skip it.
-func (pf *PanelsFrame) navigateToCachedPath(fsp *FileSystemPanel, targetPath string) bool {
-	return pf.navigateToPath(fsp, targetPath, true)
+// navigateToHistoryPath validates history entries synchronously so stale
+// remote or deleted paths can be skipped safely.
+func (pf *PanelsFrame) navigateToHistoryPath(fsp *FileSystemPanel, targetPath string) bool {
+	return pf.navigateToPath(fsp, targetPath)
 }
 
-func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, allowCachedOptimistic bool) bool {
+func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string) bool {
 	if targetPath == "" {
 		return false
 	}
-	setPath := func(path string) error {
-		if allowCachedOptimistic && fsp.hasCachedDirectoryPath(path) {
-			return fsp.setKnownDirectoryPath(path)
-		}
-		return fsp.setVerifiedDirectoryPath(path)
-	}
+	setPath := fsp.setVerifiedDirectoryPath
 	// An explicit command/history navigation supersedes a provider mount that
 	// has not installed its child VFS yet.
 	providerOpenCanceled := fsp.providerOpenTask != nil
@@ -4707,7 +4755,10 @@ func sameFolderHistoryPath(a, b string) bool {
 			return false
 		}
 		normalize := func(value string) string {
-			return nativeVisualCachePath(value)
+			if os.PathSeparator == '\\' {
+				return strings.ReplaceAll(value, "/", "\\")
+			}
+			return strings.ReplaceAll(value, "\\", "/")
 		}
 		return normalize(a) == normalize(b)
 	}
@@ -4775,7 +4826,7 @@ func (pf *PanelsFrame) navigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 		fsp.fastFindMode = false
 		fsp.fastFindStr = ""
 		fsp.suppressNextFolderHistory(path)
-		if !pf.navigateToCachedPath(fsp, path) {
+		if !pf.navigateToHistoryPath(fsp, path) {
 			fsp.clearFolderHistorySuppression()
 			continue
 		}
@@ -4813,10 +4864,10 @@ func (pf *PanelsFrame) moveFolderHistory(fsp *FileSystemPanel, direction int) bo
 	if idx >= 0 && idx < len(pf.folderHistoryPos) {
 		pos = pf.folderHistoryPos[idx]
 	}
-	// During a cache-first cross-provider restore, the panel already presents
-	// providerOpenTarget while the source VFS remains installed until the
-	// asynchronous mount succeeds. History must follow the presented/persisted
-	// location; using the source VFS here skips that source entry on Alt+Left.
+	// During a cross-provider restore, providerOpenTarget is already the pending
+	// destination while the source VFS remains installed until the asynchronous
+	// mount succeeds. History must follow that persisted location; using the
+	// source VFS here skips its entry on Alt+Left.
 	current := fsp.persistentPath()
 	targetPos, _, ok := folderHistoryStep(history, current, pos, direction)
 	if !ok {

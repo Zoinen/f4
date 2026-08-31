@@ -28,6 +28,7 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl CONSTANT)
     Q_PROPERTY(bool navigationBenchmarkEnabled READ navigationBenchmarkEnabled CONSTANT)
+    Q_PROPERTY(bool benchmarkTraceEnabled READ benchmarkTraceEnabled CONSTANT)
 
 public:
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
@@ -42,19 +43,18 @@ public:
     QUrl panelComponentUrl() const;
     QUrl viewerComponentUrl() const;
     bool navigationBenchmarkEnabled() const;
+    bool benchmarkTraceEnabled() const;
 
     Q_INVOKABLE QObject *sessionForSide(int side) const;
     Q_INVOKABLE QObject *sessionForPanel(const QString &panelId,
                                          int side) const;
-    // Row-free snapshots for QML viewport warmup. Catalog entries remain in
-    // the identity-keyed C++ GallerySession and never cross this API.
-    Q_INVOKABLE QVariantList cachedPanelPresentations(int side) const;
     Q_INVOKABLE void requestActivate(int side);
     Q_INVOKABLE void requestCursor(int side,
                                    const QString &entryId,
                                    int index,
                                    qulonglong catalogRevision = 0,
-                                   bool deferCommit = false);
+                                   bool deferCommit = false,
+                                   bool selectionGesture = false);
     Q_INVOKABLE void requestOpen(int side,
                                  const QString &entryId,
                                  int index,
@@ -65,6 +65,10 @@ public:
                                       const QString &mode,
                                       const QVariantList &entryIds,
                                       qulonglong catalogRevision = 0);
+    Q_INVOKABLE void requestSelectionTransaction(
+        int side, const QVariantList &changes,
+        const QString &cursorEntryId = QString(), int cursorIndex = -1,
+        qulonglong catalogRevision = 0);
     Q_INVOKABLE void requestGalleryLayout(int side, const QString &layoutMode,
                                           int columnCount = 0);
     Q_INVOKABLE void requestGalleryDensity(int side, const QString &layoutMode,
@@ -81,6 +85,7 @@ public:
 public slots:
     void synchronizeScene(const QVariantMap &scene);
     void synchronizePanelCatalog(const QVariantMap &panel);
+    void synchronizePanelCatalogAppend(const QVariantMap &append);
     void synchronizePanelState(const QVariantMap &patch);
     void synchronizePanelActivation(int activePanel, qulonglong revision);
     void beginCompactProtocolMessage(const QVariantMap &message);
@@ -95,7 +100,7 @@ public slots:
 signals:
     void uiActionRequested(const QVariantMap &action);
     void panelCatalogMetadataRequested(const QVariantMap &request);
-    void panelCachePrepared(int side, const QVariantMap &panel);
+    void panelCatalogRowsRequested(const QVariantMap &request);
     void viewerChanged();
     void benchmarkFrameSwapped(qulonglong serial);
 
@@ -122,6 +127,14 @@ private:
         bool active = false;
         bool loading = false;
         bool catalogProvisional = false;
+        qulonglong provisionalFrameRequiredRenderSyncSerial = 0;
+        bool catalogRowsDeferred = false;
+        bool catalogRowsRequestInFlight = false;
+        int catalogRowsRequestOffset = -1;
+        int catalogRowsRequestLimit = 0;
+        int catalogRowsVisibleFirst = -1;
+        int catalogRowsVisibleLast = -1;
+        int totalCount = 0;
         bool metadataDeferred = false;
         bool metadataComplete = true;
         bool metadataRequestInFlight = false;
@@ -137,17 +150,15 @@ private:
         int metadataFailureCount = 0;
         QList<MetadataRange> metadataPendingRanges;
         QString galleryLayoutMode;
+        // Sparse catalogs keep only materialized viewport pages. rowCount is
+        // totalCount; this map resolves a logical row to its compact payload
+        // slot without allocating one QVariant per directory entry.
         QVariantList entries;
+        QHash<int, int> entryOffsetByRow;
         QStringList selectedEntryIdList;
         QHash<QString, int> sourceIndexByEntryId;
         QSet<QString> entryIds;
         QSet<QString> selectedEntryIds;
-    };
-
-    struct CachedPanel {
-        QPointer<QObject> session;
-        SideState state;
-        QVariantMap snapshot;
     };
 
     struct PendingViewer {
@@ -164,6 +175,17 @@ private:
         QString entryId;
         int index = -1;
         qulonglong catalogRevision = 0;
+        // A selection gesture owns cursor and selection as one transaction.
+        // If the catalog advances while it is in flight, keep that stable
+        // cursor visible until the atomic retry is acknowledged.
+        bool maskAcrossCatalog = false;
+    };
+
+    struct DeferredCatalogFinalization {
+        bool active = false;
+        bool scheduled = false;
+        qulonglong requiredRenderSyncSerial = 0;
+        QVariantMap panel;
     };
 
     struct PendingPanelOpen {
@@ -180,6 +202,11 @@ private:
         QString entryId;
         QString sourcePath;
         qulonglong catalogRevision = 0;
+        bool expectsPathChange = false;
+        // If the source scan completes after a directory-open intent, retain
+        // only its bounded wire page so a rejected navigation can recover.
+        // A successful path acknowledgement discards it immediately.
+        QVariantMap deferredSourcePanel;
     };
 
     // One held-key repeat which arrived while panel.open was still in flight.
@@ -198,6 +225,7 @@ private:
         bool active = false;
         QString panelId;
         qulonglong catalogRevision = 0;
+        qulonglong selectionRevision = 0;
         QHash<QString, bool> desiredByEntryId;
     };
 
@@ -270,14 +298,8 @@ private:
     bool canSkipUnchangedInactivePanel(int side,
                                        const QVariantMap &panel) const;
     void synchronizePanel(int side, const QVariantMap &panel);
-    QObject *createPanelSession();
-    void cacheCurrentPanel(int side);
     bool activatePanelSession(int side, const QString &panelId);
-    void synchronizePanelCache(const QVariantMap &panel,
-                               const QVariantMap &metadata = {});
-    bool applyCachedPanelMetadata(int side, const QVariantMap &metadata);
-    bool synchronizeWorkspaceShell(const QVariantMap &shell);
-    void requestPanelCatalogMetadata(int side);
+    bool requestPanelCatalogMetadata(int side);
     void requestNextPanelCatalogMetadata();
     void schedulePanelCatalogMetadataRequest();
     void resetPanelCatalogMetadataPlan(int side, bool ready);
@@ -288,6 +310,15 @@ private:
     void noteMetadataInputActivity();
     void prioritizePanelCatalogMetadataRow(int side, int row);
     int matchingMetadataSide(const QVariantMap &message) const;
+    void requestPanelCatalogRows(int side);
+    void schedulePanelCatalogRowsRequest(int side);
+    int matchingCatalogRowsSide(const QVariantMap &message) const;
+    bool catalogRowLoaded(const SideState &state, int row) const;
+    static int catalogEntryCount(const SideState &state);
+    static QVariantMap catalogEntryAt(const SideState &state, int row);
+    static bool setCatalogEntry(SideState &state, int row,
+                                const QVariant &entry);
+    void addPanelCatalogMetadataRange(int side, int begin, int end);
     void refreshDeferredIconAppearance(int side);
     void sendPanelAction(int side,
                          const QString &action,
@@ -302,7 +333,9 @@ private:
     void clearPendingCursor(int side);
     void reconcilePendingPanelOpen(int side);
     void clearPendingPanelOpen();
+    void markPanelOpenInFlight(int side, const QString &entryId);
     void clearInFlightPanelOpen();
+    void handlePanelOpenWatchdog();
     void replayDeferredPanelOpenRepeat(int side,
                                        const QString &panelId,
                                        const QString &sourcePath,
@@ -345,11 +378,9 @@ private:
     QPointer<QObject> m_runtime;
     std::array<QPointer<QObject>, 2> m_sessions;
     std::array<SideState, 2> m_states;
+    std::array<DeferredCatalogFinalization, 2>
+        m_deferredCatalogFinalizations;
     std::array<QVariantMap, 2> m_panelSnapshots;
-    QHash<QString, CachedPanel> m_panelCache;
-    QSet<QObject *> m_allSessions;
-    qulonglong m_nextPanelSessionId = 0;
-    bool m_cacheWarmup = false;
     std::array<bool, 2> m_stateReconciliationPending = {false, false};
     std::array<bool, 2> m_selectionActionPending = {false, false};
     std::array<PendingCursor, 2> m_pendingCursors;
@@ -374,6 +405,7 @@ private:
     qulonglong m_inputScenesSupersededBeforeFrame = 0;
     std::atomic<qulonglong> m_renderSyncSerial{0};
     bool m_metadataRequestScheduled = false;
+    std::array<bool, 2> m_catalogRowsRequestScheduled = {false, false};
     bool m_metadataInputBusy = false;
     QTimer *m_metadataIdleTimer = nullptr;
 };

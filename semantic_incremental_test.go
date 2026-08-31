@@ -54,6 +54,76 @@ func semanticValueContainsKey(value any, key string) bool {
 	return false
 }
 
+func TestSemanticNormalizeSparsePanelCatalogsMarksEveryAlias(t *testing.T) {
+	entries := []map[string]any{{
+		"index": 0, "entryId": "entry-0", "name": "..", "isDir": true,
+	}}
+	panel := incrementalTestPanel(0, entries)
+	panel["totalCount"] = 30_001
+	alias := incrementalTestPanel(0, entries)
+	alias["totalCount"] = 30_001
+	scene := map[string]any{
+		"type": "scene",
+		"shell": map[string]any{
+			"id": "shell", "kind": "shell", "activePanel": 0,
+			"panels": []map[string]any{panel},
+		},
+		"frames": []map[string]any{{
+			"id": "shell", "kind": "shell", "panels": []map[string]any{alias},
+		}},
+		"legacy": map[string]any{
+			"frames": []map[string]any{{
+				"id": "shell", "kind": "shell", "panels": []map[string]any{alias},
+			}},
+		},
+	}
+
+	normalized := semanticNormalizeSparsePanelCatalogs(scene)
+	if normalized == nil {
+		t.Fatal("sparse normalization returned no scene")
+	}
+	normalized["normalizationProbe"] = true
+	if _, present := scene["normalizationProbe"]; present {
+		t.Fatal("sparse normalization reused the caller scene map")
+	}
+	delete(normalized, "normalizationProbe")
+	if _, present := panel["catalogRowsDeferred"]; present {
+		t.Fatal("sparse normalization mutated the source panel")
+	}
+	var checked int
+	var inspect func(any)
+	inspect = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			if semanticString(typed["kind"]) == "filePanel" &&
+				semanticString(typed["id"]) == "panel-0" {
+				checked++
+				if typed["catalogRowsDeferred"] != true {
+					t.Fatalf("panel alias was not normalized: %#v", typed)
+				}
+				if got := len(appMapSlice(typed["entries"])); got != 1 {
+					t.Fatalf("normalization expanded the bounded page to %d rows", got)
+				}
+			}
+			for _, key := range []string{"shell", "panels", "frames", "screens", "legacy"} {
+				inspect(typed[key])
+			}
+		case []map[string]any:
+			for _, nested := range typed {
+				inspect(nested)
+			}
+		case []any:
+			for _, nested := range typed {
+				inspect(nested)
+			}
+		}
+	}
+	inspect(normalized)
+	if checked != 3 {
+		t.Fatalf("checked %d normalized aliases, want 3", checked)
+	}
+}
+
 func TestAppScenePatchMenuDoesNotCarryLargePanelCatalogs(t *testing.T) {
 	entries := make([]map[string]any, 20_000)
 	for index := range entries {
@@ -108,74 +178,6 @@ func TestAppScenePatchMenuDoesNotCarryLargePanelCatalogs(t *testing.T) {
 	}
 	if len(payload) > 1024 {
 		t.Fatalf("menu patch is %d bytes; expected a bounded packet", len(payload))
-	}
-}
-
-func TestAppWorkspaceActivationUsesOnlyDeliveredRowFreeShell(t *testing.T) {
-	entries := make([]map[string]any, 12_000)
-	for index := range entries {
-		entries[index] = map[string]any{
-			"index": index, "entryId": "entry", "name": "large.dll",
-		}
-	}
-	workspaceScene := func(screen int, shellID, panelPrefix string) map[string]any {
-		left := incrementalTestPanel(0, entries)
-		right := incrementalTestPanel(1, entries)
-		left["id"] = panelPrefix + "-left"
-		right["id"] = panelPrefix + "-right"
-		left["path"] = "C:/" + panelPrefix + "/left"
-		right["path"] = "C:/" + panelPrefix + "/right"
-		return map[string]any{
-			"type": "scene", "schema": "app", "version": 4,
-			"width": 120, "height": 40, "activeScreen": screen,
-			"workspaceCount": 2,
-			"workspaceTabs": map[string]any{"tabs": []map[string]any{
-				{"index": 0, "active": screen == 0, "text": "A"},
-				{"index": 1, "active": screen == 1, "text": "B"},
-			}},
-			"shell": map[string]any{
-				"id": shellID, "kind": "shell", "mode": "panels",
-				"activePanel": 0,
-				"panels":      []map[string]any{left, right},
-			},
-		}
-	}
-	previous := compactAppSemanticScene(workspaceScene(0, "shell-a", "a"))
-	currentScene := compactAppSemanticScene(workspaceScene(1, "shell-b", "b"))
-	current := &appIncrementalScene{Scene: currentScene}
-	if patch, _, ok := buildAppScenePatch(previous, current); ok {
-		t.Fatalf("generic panel patch unexpectedly accepted identity swap: %#v", patch)
-	}
-
-	delivered := make(map[string]semanticDeliveredPanelCatalog)
-	for _, panel := range semanticPanelsBySide(currentScene) {
-		panelID, catalog, ok := semanticDeliveredPanelFromMap(panel)
-		if !ok {
-			t.Fatalf("invalid test panel: %#v", panel)
-		}
-		delivered[panelID] = catalog
-	}
-	patch, ok := buildAppWorkspaceActivationPatch(previous, current, delivered)
-	if !ok || patch.Root == nil || patch.Root.Set["shell"] == nil {
-		t.Fatalf("delivered workspace activation rejected: ok=%v patch=%#v", ok, patch)
-	}
-	if semanticInt(patch.Root.Set["activeScreen"]) != 1 {
-		t.Fatalf("activation lost active screen: %#v", patch.Root.Set)
-	}
-	if semanticValueContainsKey(patch.ToMap(), "entries") {
-		t.Fatal("workspace activation leaked cached catalog entries")
-	}
-	payload, err := msgpack.Marshal(patch.ToMap())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(payload) > 4096 {
-		t.Fatalf("workspace activation is %d bytes; expected a bounded packet", len(payload))
-	}
-
-	delete(delivered, "b-right")
-	if cacheMiss, ok := buildAppWorkspaceActivationPatch(previous, current, delivered); ok {
-		t.Fatalf("cache-miss activation was accepted: %#v", cacheMiss)
 	}
 }
 
@@ -300,6 +302,22 @@ func TestAppScenePatchFileInfoSettingUsesCatalogFreePanelState(t *testing.T) {
 	if operation.Op != "state_update" || operation.State["showFileInfo"] != true {
 		t.Fatalf("file-information setting did not use state_update: %#v", operation)
 	}
+	for _, unrelated := range []string{
+		"path", "title", "cursor", "cursorEntryId", "galleryLayoutMode",
+		"galleryColumnCount", "galleryDensity", "galleryDensities", "galleryColumns",
+		"selectedCount", "totalCount",
+	} {
+		if _, present := operation.State[unrelated]; present {
+			t.Fatalf("file-information delta carried unchanged %q: %#v",
+				unrelated, operation.State)
+		}
+	}
+	for _, identity := range semanticPanelStateIdentityKeys {
+		if _, present := operation.State[identity]; !present {
+			t.Fatalf("file-information delta omitted identity %q: %#v",
+				identity, operation.State)
+		}
+	}
 	wire := patch.ToMap()
 	if semanticValueContainsKey(wire, "entries") ||
 		semanticValueContainsKey(wire, "highlightStyles") {
@@ -311,6 +329,76 @@ func TestAppScenePatchFileInfoSettingUsesCatalogFreePanelState(t *testing.T) {
 	}
 	if len(payload) > 1024 {
 		t.Fatalf("file-information patch is %d bytes; expected a bounded packet", len(payload))
+	}
+}
+
+func TestAppScenePatchGalleryLayoutUsesSmallStateDelta(t *testing.T) {
+	basePanel := incrementalTestPanel(0, nil)
+	basePanel["path"] = "C:/WINDOWS/system32"
+	basePanel["title"] = "system32"
+	basePanel["galleryLayoutMode"] = "details"
+	basePanel["galleryColumnCount"] = 2
+	basePanel["galleryDensity"] = 22
+	basePanel["galleryDensities"] = map[string]any{
+		"masonry": 150, "grid": 160, "icons": 64,
+	}
+	basePanel["galleryLayoutRevision"] = int64(17)
+	basePanel["galleryColumns"] = []map[string]any{
+		{"id": "name", "role": "name", "title": "Name", "width": 50},
+		{"id": "size", "role": "size", "title": "Size", "width": 14},
+	}
+	basePanel["fastFind"] = false
+	basePanel["fastFindText"] = ""
+	basePanel["fastFindMatches"] = map[string]any{}
+	basePanel["fastFindMatchColor"] = ""
+	previous := compactAppSemanticScene(map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"shell": map[string]any{
+			"id": "shell", "kind": "shell", "activePanel": 0,
+			"panels": []map[string]any{basePanel},
+		},
+	})
+	currentPanel := semanticShallowMapCopy(semanticPanelsBySide(previous)[0])
+	currentPanel["galleryLayoutMode"] = "icons"
+	currentPanel["galleryDensity"] = 64
+	currentPanel["galleryLayoutRevision"] = int64(18)
+	currentScene := semanticShallowMapCopy(previous)
+	currentShell := semanticShallowMapCopy(previous["shell"].(map[string]any))
+	currentShell["panels"] = []map[string]any{currentPanel}
+	currentScene["shell"] = currentShell
+
+	patch, acknowledgements, ok := buildAppScenePatch(previous,
+		&appIncrementalScene{Scene: currentScene})
+	if !ok || patch.Shell == nil || len(acknowledgements) != 0 ||
+		len(patch.Shell.Panels) != 1 {
+		t.Fatalf("gallery-layout transition rejected: ok=%v patch=%#v acknowledgements=%#v",
+			ok, patch, acknowledgements)
+	}
+	state := patch.Shell.Panels[0].State
+	for _, changed := range []string{
+		"galleryLayoutMode", "galleryDensity", "galleryLayoutRevision",
+	} {
+		if _, present := state[changed]; !present {
+			t.Fatalf("gallery-layout delta omitted %q: %#v", changed, state)
+		}
+	}
+	for _, unchanged := range []string{
+		"path", "title", "cursor", "cursorEntryId", "galleryColumnCount",
+		"galleryDensities", "galleryColumns", "fastFind", "fastFindText", "fastFindMatches",
+		"fastFindMatchColor", "selectedCount", "totalCount",
+	} {
+		if _, present := state[unchanged]; present {
+			t.Fatalf("gallery-layout delta carried unchanged %q: %#v",
+				unchanged, state)
+		}
+	}
+	payload, err := msgpack.Marshal(patch.ToMap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) > 512 {
+		t.Fatalf("gallery-layout patch is %d bytes; expected a small delta",
+			len(payload))
 	}
 }
 

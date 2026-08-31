@@ -46,6 +46,11 @@ type Table struct {
 	ScrollView
 	Columns []TableColumn
 	Rows    []TableRow
+	// rowProvider supplies rows lazily for large externally sorted models.
+	// It is mutually exclusive with Rows and lets a hidden/native-backed table
+	// keep exact scroll/cursor metrics without allocating one wrapper per item.
+	rowProvider func(index int) TableRow
+	rowCount    int
 
 	SelectCol        int
 	CellSelection    bool
@@ -196,8 +201,30 @@ func (c *TableColumn) minWidth() int {
 
 func (t *Table) SetRows(rows []TableRow) {
 	t.Rows = rows
+	t.rowProvider = nil
+	t.rowCount = len(rows)
 	t.ItemCount = len(rows)
 	t.resort()
+	t.clampSelectionAfterRowsChanged()
+	t.EnsureVisible()
+}
+
+// SetRowProvider installs an externally ordered virtual row source. Only rows
+// touched by rendering, sorting, or quick search are materialized.
+func (t *Table) SetRowProvider(count int, provider func(index int) TableRow) {
+	if count < 0 {
+		count = 0
+	}
+	t.Rows = nil
+	t.rowProvider = provider
+	t.rowCount = count
+	t.ItemCount = count
+	t.resort()
+	t.clampSelectionAfterRowsChanged()
+	t.EnsureVisible()
+}
+
+func (t *Table) clampSelectionAfterRowsChanged() {
 	if t.ItemCount == 0 {
 		t.SelectPos = 0
 	} else if t.SelectPos >= t.ItemCount {
@@ -205,7 +232,23 @@ func (t *Table) SetRows(rows []TableRow) {
 	} else if t.SelectPos < 0 {
 		t.SelectPos = 0
 	}
-	t.EnsureVisible()
+}
+
+func (t *Table) sourceRowCount() int {
+	if t.rowProvider != nil {
+		return t.rowCount
+	}
+	return len(t.Rows)
+}
+
+func (t *Table) sourceRow(index int) TableRow {
+	if index < 0 || index >= t.sourceRowCount() {
+		return nil
+	}
+	if t.rowProvider != nil {
+		return t.rowProvider(index)
+	}
+	return t.Rows[index]
 }
 
 // SetSort sorts rows by the given column. A negative col disables sorting.
@@ -225,7 +268,19 @@ func (t *Table) ClearSort() {
 // resort rebuilds the display-to-row index mapping. With no active sort it
 // is the identity mapping; the Rows slice itself is never reordered.
 func (t *Table) resort() {
-	n := len(t.Rows)
+	n := t.sourceRowCount()
+	if len(t.searchRunes) == 0 &&
+		(t.SortColumn < 0 || t.SortColumn >= len(t.Columns) || n < 2) {
+		t.order = t.order[:0]
+		t.ItemCount = n
+		if t.SelectPos >= t.ItemCount {
+			t.SelectPos = t.ItemCount - 1
+		}
+		if t.SelectPos < 0 {
+			t.SelectPos = 0
+		}
+		return
+	}
 	if cap(t.order) < n {
 		t.order = make([]int, n)
 	} else {
@@ -242,7 +297,7 @@ func (t *Table) resort() {
 		ascending := t.SortAscending
 		cmp := t.SortCompare
 		sort.SliceStable(t.order, func(i, j int) bool {
-			a, b := t.Rows[t.order[i]], t.Rows[t.order[j]]
+			a, b := t.sourceRow(t.order[i]), t.sourceRow(t.order[j])
 			c := 0
 			if cmp != nil {
 				c = cmp(a, b, col)
@@ -271,15 +326,20 @@ func (t *Table) resort() {
 func (t *Table) applySearchFilter() {
 	matcher := newFuzzyMatcher(string(t.searchRunes), t.SearchCaseSensitive)
 	t.matchBuf = t.matchBuf[:0]
-	if cap(t.matchSpans) < len(t.Rows) {
-		t.matchSpans = make([]cellHighlight, len(t.Rows))
+	rowCount := t.sourceRowCount()
+	if cap(t.matchSpans) < rowCount {
+		t.matchSpans = make([]cellHighlight, rowCount)
 	} else {
-		t.matchSpans = t.matchSpans[:len(t.Rows)]
+		t.matchSpans = t.matchSpans[:rowCount]
 	}
 	for i := range t.matchSpans {
 		t.matchSpans[i].col = -1
 	}
-	for i, row := range t.Rows {
+	for i := 0; i < rowCount; i++ {
+		row := t.sourceRow(i)
+		if row == nil {
+			continue
+		}
 		bestScore := -1
 		bestStart, bestEnd, bestCol := 0, 0, 0
 		for col := range t.Columns {
@@ -434,19 +494,23 @@ func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, attr uint64) {
 	widths := t.resolvedWidths()
 
 	currX := t.X1
+	var row TableRow
+	if rowIdx >= 0 {
+		row = t.sourceRow(rowIdx)
+	}
 	for colIdx, col := range t.Columns {
 		text := ""
 		if rowIdx == -1 {
 			text = col.Title
-		} else {
-			text = t.Rows[rowIdx].GetCellText(colIdx)
+		} else if row != nil {
+			text = row.GetCellText(colIdx)
 		}
 
 		isSelected := false
-		if rowIdx != -1 && rowIdx < len(t.Rows) {
-			if mcsr, ok := t.Rows[rowIdx].(MultiColSelectableRow); ok {
+		if row != nil {
+			if mcsr, ok := row.(MultiColSelectableRow); ok {
 				isSelected = mcsr.IsColSelected(colIdx)
-			} else if selRow, ok := t.Rows[rowIdx].(SelectableRow); ok {
+			} else if selRow, ok := row.(SelectableRow); ok {
 				isSelected = selRow.IsSelected()
 			}
 		}
@@ -473,7 +537,7 @@ func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, attr uint64) {
 				stateAttr = Palette[t.ColorItemSelectTextIdx]
 			}
 
-			if cr, ok := t.Rows[rowIdx].(CellColorableRow); ok {
+			if cr, ok := row.(CellColorableRow); ok {
 				stateAttr = cr.GetCellAttr(colIdx, stateAttr)
 			}
 		}

@@ -242,6 +242,7 @@ private slots:
     void diagnosticPatternIsOptInAndDprAware();
     void systemFileRoutePreservesMetadataAndColor();
     void systemNamedRoutePreservesName();
+    void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
@@ -447,26 +448,48 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("arrow-down-a-z"),
         QStringLiteral("arrow-down-wide-narrow"),
         QStringLiteral("arrow-up"),
+        QStringLiteral("binary"),
         QStringLiteral("check"),
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-right"),
+        QStringLiteral("circle-question-mark"),
         QStringLiteral("clock-3"),
         QStringLiteral("cloud"),
         QStringLiteral("columns-2"),
         QStringLiteral("columns-3"),
+        QStringLiteral("copy"),
+        QStringLiteral("eye"),
         QStringLiteral("file-pen-line"),
+        QStringLiteral("file-plus"),
         QStringLiteral("file-type"),
+        QStringLiteral("flask-conical"),
+        QStringLiteral("folder-clock"),
+        QStringLiteral("folder-input"),
+        QStringLiteral("folder-plus"),
+        QStringLiteral("git-fork"),
         QStringLiteral("grid-3x3"),
         QStringLiteral("hard-drive"),
         QStringLiteral("images"),
+        QStringLiteral("languages"),
         QStringLiteral("layout-dashboard"),
         QStringLiteral("list"),
         QStringLiteral("list-checks"),
+        QStringLiteral("list-restart"),
+        QStringLiteral("locate-fixed"),
+        QStringLiteral("log-out"),
+        QStringLiteral("maximize-2"),
+        QStringLiteral("menu"),
+        QStringLiteral("monitor"),
         QStringLiteral("network"),
         QStringLiteral("panel-left"),
+        QStringLiteral("panel-right"),
         QStringLiteral("panels-top-left"),
+        QStringLiteral("pencil"),
+        QStringLiteral("plug"),
         QStringLiteral("plus"),
+        QStringLiteral("space"),
         QStringLiteral("sparkles"),
+        QStringLiteral("text-wrap"),
         QStringLiteral("x"),
     };
 
@@ -779,6 +802,23 @@ void F4IconProviderTests::systemNamedRoutePreservesName()
     QCOMPARE(record->namedRequests, 1);
     QCOMPARE(record->fileRequests, 0);
     QCOMPARE(record->requestedName, QStringLiteral("square-terminal"));
+}
+
+void F4IconProviderTests::zeroRequestedSizeUsesLogicalFallback()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setIconSet(F4IconSet::Lucide);
+
+    const QUrl source = icons.rasterizedLucideSource(
+        QStringLiteral("folder"), 20, 1.25, QColor(Qt::white));
+    QSize reportedSize;
+    const QImage image = provider.requestImage(
+        F4IconProvider::routeId(source), &reportedSize, QSize(0, 0));
+
+    QVERIFY(!image.isNull());
+    QCOMPARE(image.size(), QSize(25, 25));
+    QCOMPARE(reportedSize, image.size());
 }
 
 void F4IconProviderTests::requestedPhysicalSizeOverridesStaleDevicePixelRatio()

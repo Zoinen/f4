@@ -29,6 +29,7 @@ const (
 	extUiProtocolVersion                = 3
 	extUiMaxMessageSize                 = 64 * 1024 * 1024
 	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
+	extUiPanelCatalogRowsCapability     = "panelCatalogRowsV1"
 )
 
 // Deferred panel metadata is a required extension of the lockstep protocol. Keep the
@@ -36,6 +37,7 @@ const (
 // advertises the exact capability in its hello. Tests which exercise the native
 // model directly opt in from TestMain.
 var extUiPanelCatalogMetadataEnabled atomic.Bool
+var extUiPanelCatalogRowsEnabled atomic.Bool
 
 func setExtUiPanelCatalogMetadataEnabled(enabled bool) bool {
 	return extUiPanelCatalogMetadataEnabled.Swap(enabled)
@@ -43,6 +45,14 @@ func setExtUiPanelCatalogMetadataEnabled(enabled bool) bool {
 
 func extUiPanelCatalogMetadataIsEnabled() bool {
 	return extUiPanelCatalogMetadataEnabled.Load()
+}
+
+func setExtUiPanelCatalogRowsEnabled(enabled bool) bool {
+	return extUiPanelCatalogRowsEnabled.Swap(enabled)
+}
+
+func extUiPanelCatalogRowsIsEnabled() bool {
+	return extUiPanelCatalogRowsEnabled.Load()
 }
 
 func extUiHelloCapability(hello map[string]any, name string) bool {
@@ -277,16 +287,6 @@ func extUiAnyInt(v any) int {
 	return 0
 }
 
-// semanticDeliveredPanelCatalog is the exact immutable base which the native
-// Gallery cache has acknowledged through the ordered local socket. Workspace
-// activation may be row-free only while both the catalog and its selection
-// overlay still match this tuple.
-type semanticDeliveredPanelCatalog struct {
-	catalogRevision   int64
-	selectionRevision int64
-	path              string
-}
-
 type ExtUiRenderer struct {
 	mu   sync.Mutex
 	conn net.Conn
@@ -312,7 +312,6 @@ type ExtUiRenderer struct {
 	pendingScenePatch           map[string]any
 	lastScene                   map[string]any
 	lastCompactScene            map[string]any
-	deliveredPanelCatalogs      map[string]semanticDeliveredPanelCatalog
 	sceneRevision               uint64
 	queuedPanelActivationSide   int
 	panelActivationQueued       bool
@@ -338,101 +337,13 @@ type ExtUiRenderer struct {
 	fallbackRevealPending        bool
 	lastWindowTitle              string
 	windowTitleValid             bool
-	panelCacheWarmupScheduled    bool
-	panelCacheWarmupRetries      int
 	closed                       bool
 }
 
 func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer {
 	return &ExtUiRenderer{
 		conn: conn, send: sender, cursorDirty: true,
-		deliveredPanelCatalogs: make(map[string]semanticDeliveredPanelCatalog),
 	}
-}
-
-func semanticDeliveredPanelFromMap(panel map[string]any) (string, semanticDeliveredPanelCatalog, bool) {
-	if panel == nil {
-		return "", semanticDeliveredPanelCatalog{}, false
-	}
-	panelID := semanticString(panel["id"])
-	catalogRevision := semanticInt64(panel["catalogRevision"])
-	if panelID == "" || catalogRevision <= 0 {
-		return "", semanticDeliveredPanelCatalog{}, false
-	}
-	return panelID, semanticDeliveredPanelCatalog{
-		catalogRevision:   catalogRevision,
-		selectionRevision: semanticInt64(panel["selectionRevision"]),
-		path:              semanticString(panel["path"]),
-	}, true
-}
-
-func (r *ExtUiRenderer) rememberDeliveredPanelLocked(panel map[string]any) {
-	panelID, delivered, ok := semanticDeliveredPanelFromMap(panel)
-	if !ok {
-		return
-	}
-	if r.deliveredPanelCatalogs == nil {
-		r.deliveredPanelCatalogs = make(map[string]semanticDeliveredPanelCatalog)
-	}
-	r.deliveredPanelCatalogs[panelID] = delivered
-}
-
-func (r *ExtUiRenderer) rememberDeliveredMessageLocked(message map[string]any) {
-	if message == nil {
-		return
-	}
-	switch semanticString(message["type"]) {
-	case "scene":
-		panels, ok := semanticScenePanelMaps(message)
-		if !ok {
-			return
-		}
-		for _, panel := range panels {
-			r.rememberDeliveredPanelLocked(panel)
-		}
-	case "panel_catalog", "panel_cache":
-		panel, _ := message["panel"].(map[string]any)
-		r.rememberDeliveredPanelLocked(panel)
-	case "scene_patch":
-		shellPatch, _ := message["shell"].(map[string]any)
-		operations := appMapSlice(shellPatch["panels"])
-		for _, operation := range operations {
-			panelID := semanticString(operation["panelId"])
-			delivered, present := r.deliveredPanelCatalogs[panelID]
-			switch semanticString(operation["op"]) {
-			case "catalog_replace":
-				panel, _ := operation["panel"].(map[string]any)
-				r.rememberDeliveredPanelLocked(panel)
-			case "selection_delta", "selection_replace":
-				if present {
-					delivered.selectionRevision = semanticInt64(operation["selectionRevision"])
-					r.deliveredPanelCatalogs[panelID] = delivered
-				}
-			}
-		}
-	}
-}
-
-func (r *ExtUiRenderer) deliveredPanelCatalogSnapshotLocked() map[string]semanticDeliveredPanelCatalog {
-	if len(r.deliveredPanelCatalogs) == 0 {
-		return nil
-	}
-	result := make(map[string]semanticDeliveredPanelCatalog, len(r.deliveredPanelCatalogs))
-	for panelID, delivered := range r.deliveredPanelCatalogs {
-		result[panelID] = delivered
-	}
-	return result
-}
-
-func semanticPanelCatalogWasDelivered(panel map[string]any,
-	delivered map[string]semanticDeliveredPanelCatalog,
-) bool {
-	panelID, expected, ok := semanticDeliveredPanelFromMap(panel)
-	if !ok {
-		return false
-	}
-	actual, present := delivered[panelID]
-	return present && actual == expected
 }
 
 // BeginSemanticSceneUpdate starts an input/task mutation boundary. Unless a
@@ -529,6 +440,15 @@ func (r *ExtUiRenderer) BindSemanticRenderPhaseDeferral(generation uint64) {
 	if r.deferSemanticRenderBound {
 		r.deferSemanticRenderGen = generation
 	}
+}
+
+func (r *ExtUiRenderer) SemanticRenderPhaseDeferralBound(generation uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deferSemanticRender && r.deferSemanticRenderBound &&
+		r.deferSemanticRenderGen == generation && !r.closed &&
+		!r.semanticUpdateOpen && !r.semanticFastPathUnsafe &&
+		r.nativeCellFrameSuppressed
 }
 
 // ConsumeSemanticRenderPhaseDeferral consumes the one-render permit armed by
@@ -1027,11 +947,87 @@ func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
 	return true
 }
 
-// QueuePanelCatalogState publishes an already complete minimal catalog from
-// the Go UI mutation itself. Catalog rows are the one intentionally unbounded
-// scene-patch payload; every unchanged panel and shell subtree stays shared.
+// A catalog replacement is intentionally atomic. Streaming a complete cold
+// directory in hundreds of catalog_append patches repeatedly detached the
+// growing QVariant scene and made QML recompute layout after every insertion,
+// turning a linear 30k-row transfer into O(N²) work. MessagePack's protocol
+// limit comfortably holds the minimal deferred catalog; QML still creates
+// delegates only for the visible viewport and its reuse margin.
+const semanticCatalogStreamChunkSize = 512
+
+func semanticPanelCatalogStreamPrefix(panel map[string]any,
+	entries []map[string]any, total int) map[string]any {
+	out := make(map[string]any, len(panel)+1)
+	for key, value := range panel {
+		out[key] = value
+	}
+	out["entries"] = append([]map[string]any(nil), entries...)
+	out["catalogProvisional"] = true
+	out["totalCount"] = total
+	// Fast-find matches are keyed by entry ID. A prefix must not claim matches
+	// for rows which have not reached Qt yet; the final state will restore the
+	// complete bounded match map through the normal row-free update.
+	if matches, ok := panel["fastFindMatches"].(map[string]any); ok {
+		filtered := make(map[string]any)
+		for _, entry := range entries {
+			if entryID := semanticString(entry["entryId"]); entryID != "" {
+				if match, present := matches[entryID]; present {
+					filtered[entryID] = match
+				}
+			}
+		}
+		if len(filtered) == 0 {
+			delete(out, "fastFindMatches")
+		} else {
+			out["fastFindMatches"] = filtered
+		}
+	}
+	return out
+}
+
+// QueuePanelCatalogModelState converts the bounded typed catalog directly.
+// Panel rows are paged from Go on demand; the protocol never retains or
+// reuses a complete panel snapshot.
+func (r *ExtUiRenderer) QueuePanelCatalogModelState(side int,
+	model extui.PanelModel, shellTitle, traceID string,
+) bool {
+	if side < 0 || side > 1 {
+		return false
+	}
+	return r.queuePanelCatalogState(
+		side, map[string]any(model.ToMap()), shellTitle, nil, false, traceID)
+}
+
+// QueuePanelCatalogModelStateWithCommandLine publishes every shell field that
+// directory navigation can change without running the hidden TUI Show pass.
+// Because the panel, title, and prompt advance in one revision, the renderer
+// can prove that the following native-frame render is redundant.
+func (r *ExtUiRenderer) QueuePanelCatalogModelStateWithCommandLine(side int,
+	model extui.PanelModel, shellTitle string, commandLine map[string]any,
+	traceID string,
+) bool {
+	if side < 0 || side > 1 {
+		return false
+	}
+	return r.queuePanelCatalogState(side, map[string]any(model.ToMap()),
+		shellTitle, commandLine, true, traceID)
+}
+
+// QueuePanelCatalogState publishes a minimal catalog in bounded immutable
+// chunks. The first chunk is a real interactive model, not a spinner-only
+// placeholder; later chunks use rowsInserted and never reset or renormalize
+// the rows that are already visible. Paged catalogs carry only a viewport-
+// sized slice and Qt asks Go for other slices as scrolling requires them.
 func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	shellTitle, traceID string,
+) bool {
+	return r.queuePanelCatalogState(
+		side, panel, shellTitle, nil, false, traceID)
+}
+
+func (r *ExtUiRenderer) queuePanelCatalogState(side int, panel map[string]any,
+	shellTitle string, commandLine map[string]any,
+	presentationComplete bool, traceID string,
 ) bool {
 	if side < 0 || side > 1 || panel == nil {
 		return false
@@ -1059,6 +1055,34 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	if catalogRevision <= baseCatalogRevision {
 		return false
 	}
+	entries := appMapSlice(panel["entries"])
+	totalCount := extUiAnyInt(panel["totalCount"])
+	if totalCount <= 0 {
+		totalCount = len(entries)
+	}
+	// An authoritative catalog shorter than totalCount is necessarily a sparse
+	// page. Preserve that invariant even when the snapshot originated before
+	// the rows capability handshake completed and therefore omitted the flag.
+	// A streamed legacy prefix is marked provisional below and remains a
+	// different protocol shape.
+	if totalCount > len(entries) && !extUiBool(panel, "catalogProvisional") &&
+		!extUiBool(panel, "catalogRowsDeferred") {
+		copyPanel := make(map[string]any, len(panel)+1)
+		for key, value := range panel {
+			copyPanel[key] = value
+		}
+		copyPanel["catalogRowsDeferred"] = true
+		panel = copyPanel
+	}
+	streamCatalog := extUiBool(panel, "metadataDeferred")
+	streamCatalog = streamCatalog && !extUiBool(panel, "catalogProvisional") &&
+		totalCount == len(entries) &&
+		len(entries) > semanticCatalogStreamChunkSize
+	wirePanel := panel
+	if streamCatalog {
+		wirePanel = semanticPanelCatalogStreamPrefix(
+			panel, entries[:semanticCatalogStreamChunkSize], totalCount)
+	}
 	shellPatch := &extui.ShellPatch{Panels: []extui.PanelPatch{{
 		Op: "catalog_replace", Side: side,
 		PanelID:             semanticString(panel["id"]),
@@ -1066,16 +1090,36 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 		CatalogRevision:     catalogRevision,
 		Panel:               panel,
 	}}}
-	if shell, ok := r.lastScene["shell"].(map[string]any); ok &&
-		shellTitle != "" && shellTitle != semanticString(shell["title"]) {
-		shellPatch.Set = extui.M{"title": shellTitle}
+	if shell, ok := r.lastScene["shell"].(map[string]any); ok {
+		shellSet := extui.M{}
+		if shellTitle != "" && shellTitle != semanticString(shell["title"]) {
+			shellSet["title"] = shellTitle
+		}
+		if commandLine != nil &&
+			!reflect.DeepEqual(commandLine, shell["commandLine"]) {
+			shellSet["commandLine"] = commandLine
+		}
+		if len(shellSet) != 0 {
+			shellPatch.Set = shellSet
+		}
 	}
 	patch := extui.ScenePatch{
 		BaseRevision: r.sceneRevision,
 		Revision:     r.sceneRevision + 1,
 		Shell:        shellPatch,
 	}
+	// Keep the complete panel in the local authoritative snapshot while the
+	// wire operation may carry only the first stream prefix.
 	wire := patch.ToMap()
+	if streamCatalog {
+		if shell, ok := wire["shell"].(map[string]any); ok {
+			if operations, ok := shell["panels"].([]map[string]any); ok && len(operations) > 0 {
+				operations[0]["panel"] = wirePanel
+				shell["panels"] = operations
+				wire["shell"] = shell
+			}
+		}
+	}
 	if traceID == "" {
 		if trace := navigationBenchmarkCurrentUI(); trace != nil {
 			traceID = trace.id
@@ -1084,15 +1128,53 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	if traceID != "" {
 		wire["benchmarkTraceId"] = traceID
 	}
-	benchmark := navigationBenchmarkPrepareImmediateMessage(wire)
-	if err := r.send.SendWithBenchmark(wire, benchmark); err != nil {
-		vtui.DebugLog("EXTUI_RENDERER: direct panel catalog send failed: %v", err)
-		r.closed = true
-		r.deferSemanticRender = false
+	sendImmediate := func(message map[string]any) bool {
+		benchmark := navigationBenchmarkPrepareImmediateMessage(message)
+		if err := r.send.SendWithBenchmark(message, benchmark); err != nil {
+			vtui.DebugLog("EXTUI_RENDERER: direct panel catalog send failed: %v", err)
+			r.closed = true
+			r.deferSemanticRender = false
+			return false
+		}
+		return true
+	}
+	if !sendImmediate(wire) {
 		return false
 	}
-	r.rememberDeliveredMessageLocked(wire)
 	r.sceneRevision = patch.Revision
+	if streamCatalog {
+		for offset := semanticCatalogStreamChunkSize; offset < len(entries); offset += semanticCatalogStreamChunkSize {
+			end := offset + semanticCatalogStreamChunkSize
+			if end > len(entries) {
+				end = len(entries)
+			}
+			appendPatch := extui.ScenePatch{
+				BaseRevision: r.sceneRevision,
+				Revision:     r.sceneRevision + 1,
+				Shell: &extui.ShellPatch{Panels: []extui.PanelPatch{{
+					Op:              "catalog_append",
+					Side:            side,
+					PanelID:         semanticString(panel["id"]),
+					CatalogRevision: catalogRevision,
+					CatalogOffset:   offset,
+					CatalogTotal:    totalCount,
+					CatalogFinal:    end == len(entries),
+					Entries:         entries[offset:end],
+				}}},
+			}
+			appendWire := appendPatch.ToMap()
+			if traceID != "" {
+				appendWire["benchmarkTraceId"] = traceID
+			}
+			if !sendImmediate(appendWire) {
+				return false
+			}
+			r.sceneRevision = appendPatch.Revision
+		}
+	}
+	// The initial wire operation may have contained only a prefix, but the
+	// snapshot patch deliberately contains the complete panel. Applying it
+	// here avoids appending every chunk to the Go-side authoritative scene.
 	r.lastScene = semanticSceneStructuralMapCopy(r.lastScene)
 	applyAppScenePatchToSnapshot(r.lastScene, patch)
 	if r.lastScene != nil {
@@ -1103,206 +1185,18 @@ func (r *ExtUiRenderer) QueuePanelCatalogState(side int, panel map[string]any,
 	// Command-line prompt, workspace title and menu state may be derived from
 	// the new path. Keep the next render, but let its row-free exporter send
 	// only those bounded follow-up fields.
-	r.deferSemanticRender = false
-	r.deferSemanticRenderBound = false
-	r.suppressSemanticExport = false
+	if presentationComplete {
+		r.deferSemanticRender = r.nativeCellFrameSuppressed
+		r.deferSemanticRenderBound = false
+		r.suppressSemanticExport = true
+	} else {
+		r.deferSemanticRender = false
+		r.deferSemanticRenderBound = false
+		r.suppressSemanticExport = false
+	}
 	if r.semanticUpdateOpen {
 		r.semanticUpdateHandled = true
 	}
-	return true
-}
-
-// QueuePanelCatalogCache transfers one inactive workspace catalog without
-// changing the authoritative visible scene revision. The Qt bridge builds it
-// in an off-screen, panel-identity keyed GallerySession; a later workspace
-// activation therefore needs only the bounded row-free scene patch.
-const panelCacheMetadataWarmupLimit = maxPanelCatalogMetadataChunkLimit
-
-func panelCacheMetadataWarmup(panel map[string]any) (map[string]any, bool) {
-	if panel == nil || !appBool(panel["metadataDeferred"]) {
-		return nil, true
-	}
-	entries := appMapSlice(panel["entries"])
-	if len(entries) == 0 {
-		return nil, true
-	}
-
-	// A retained viewport restores around the authoritative cursor. Materialize
-	// one bounded window around that row while the workspace is still hidden,
-	// so its first painted frame already has exact sizes, highlighting and
-	// path-aware icons. The remaining catalog stays deferred and continues to
-	// use the ordinary viewport-prioritized metadata protocol.
-	limit := min(panelCacheMetadataWarmupLimit, len(entries))
-	cursor := semanticInt(panel["cursor"])
-	if cursor < 0 || cursor >= len(entries) {
-		cursor = 0
-	}
-	offset := cursor - limit/2
-	if offset < 0 {
-		offset = 0
-	}
-	if maximum := len(entries) - limit; offset > maximum {
-		offset = maximum
-	}
-	return BuildPanelCatalogMetadataChunk(
-		semanticString(panel["id"]), semanticString(panel["path"]),
-		semanticInt64(panel["catalogRevision"]),
-		semanticInt64(panel["metadataRevision"]), offset, limit)
-}
-
-func (r *ExtUiRenderer) QueuePanelCatalogCache(panel map[string]any) bool {
-	if panel == nil || semanticString(panel["id"]) == "" ||
-		semanticInt64(panel["catalogRevision"]) <= 0 {
-		return false
-	}
-
-	// Metadata materialization can resolve local paths and highlighting. Keep
-	// that bounded work outside the renderer lock; the ordered sender and the
-	// exact revision recheck below still make delivery atomic.
-	r.mu.Lock()
-	if r.closed || r.send == nil {
-		r.mu.Unlock()
-		return false
-	}
-	if semanticPanelCatalogWasDelivered(panel, r.deliveredPanelCatalogs) {
-		r.mu.Unlock()
-		return true
-	}
-	r.mu.Unlock()
-
-	metadata, metadataOK := panelCacheMetadataWarmup(panel)
-	if !metadataOK {
-		return false
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed || r.send == nil {
-		return false
-	}
-	if semanticPanelCatalogWasDelivered(panel, r.deliveredPanelCatalogs) {
-		return true
-	}
-	wire := map[string]any{
-		"type":    "panel_cache",
-		"schema":  extui.Schema,
-		"version": extui.SceneVersion,
-		"panel":   panel,
-	}
-	if metadata != nil {
-		wire["metadata"] = metadata
-	}
-	if err := r.send.Send(wire); err != nil {
-		vtui.DebugLog("EXTUI_RENDERER: panel cache warmup send failed: %v", err)
-		r.closed = true
-		return false
-	}
-	r.rememberDeliveredMessageLocked(wire)
-	return true
-}
-
-func (r *ExtUiRenderer) nextPanelCatalogWarmup() (warmed, pending bool) {
-	if vtui.FrameManager == nil {
-		return false, false
-	}
-	for _, screen := range vtui.FrameManager.Screens {
-		if screen == nil {
-			continue
-		}
-		for _, frame := range screen.Frames {
-			panels, ok := frame.(*PanelsFrame)
-			if !ok || panels == nil {
-				continue
-			}
-			for side, panel := range panels.panels {
-				fsp, ok := panel.(*FileSystemPanel)
-				if !ok || fsp == nil {
-					continue
-				}
-				header, valid := fsp.semanticPanelHeaderModel(
-					nil, side, side == panels.activeIdx)
-				if !valid {
-					// Restored inactive workspaces have not necessarily been
-					// exported before, so their immutable semantic static cache
-					// does not exist yet. Build it here on the idle UI task instead
-					// of polling forever for an active-scene export to do it.
-					full := map[string]any(fsp.semanticPanelModel(
-						nil, side, side == panels.activeIdx).ToMap())
-					if r.QueuePanelCatalogCache(full) {
-						return true, true
-					}
-					pending = true
-					continue
-				}
-				headerMap := map[string]any(header.ToMap())
-				r.mu.Lock()
-				delivered := semanticPanelCatalogWasDelivered(
-					headerMap, r.deliveredPanelCatalogs)
-				closed := r.closed
-				r.mu.Unlock()
-				if closed {
-					return false, false
-				}
-				if delivered {
-					continue
-				}
-				full := map[string]any(fsp.semanticPanelModel(
-					nil, side, side == panels.activeIdx).ToMap())
-				if r.QueuePanelCatalogCache(full) {
-					return true, true
-				}
-				return false, true
-			}
-		}
-	}
-	return false, pending
-}
-
-func (r *ExtUiRenderer) scheduleNextPanelCatalogWarmup(delay time.Duration) {
-	time.AfterFunc(delay, func() {
-		if vtui.FrameManager == nil {
-			return
-		}
-		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
-			warmed, pending := r.nextPanelCatalogWarmup()
-			r.mu.Lock()
-			closed := r.closed
-			if !warmed && pending {
-				r.panelCacheWarmupRetries++
-			}
-			retries := r.panelCacheWarmupRetries
-			r.mu.Unlock()
-			if !closed {
-				switch {
-				case warmed:
-					r.mu.Lock()
-					r.panelCacheWarmupRetries = 0
-					r.mu.Unlock()
-					r.scheduleNextPanelCatalogWarmup(20 * time.Millisecond)
-				case pending && retries < 600:
-					// Restored network/VFS folders and large Windows directories
-					// can remain provisional for several seconds. Keep their
-					// off-screen warmup alive long enough to make the first tab
-					// activation a cache hit, backing off after the quick path.
-					delay := 150 * time.Millisecond
-					if retries > 20 {
-						delay = 500 * time.Millisecond
-					}
-					r.scheduleNextPanelCatalogWarmup(delay)
-				}
-			}
-			// Catalog warmup changes no visible Go state and needs no redraw.
-			return false
-		})
-	})
-}
-
-func (r *ExtUiRenderer) startPanelCatalogWarmupLocked() bool {
-	if r.panelCacheWarmupScheduled || r.closed ||
-		!r.nativeSemanticSurfaceEnabled {
-		return false
-	}
-	r.panelCacheWarmupScheduled = true
 	return true
 }
 
@@ -1311,6 +1205,15 @@ func (r *ExtUiRenderer) startPanelCatalogWarmupLocked() bool {
 // renderer through vtui's event, task, resize, and explicit redraw paths.
 func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
 	return false
+}
+
+// VirtualizePanelTableRows reports that the native panel owns presentation.
+// Go still keeps the authoritative entries and cursor metrics, but the hidden
+// compatibility table need only materialize rows if it is actually painted.
+func (r *ExtUiRenderer) VirtualizePanelTableRows() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nativeCellFrameSuppressed
 }
 
 // WantsEditorSyntaxFade reports whether the hidden cell-grid editor should
@@ -1675,7 +1578,6 @@ func (r *ExtUiRenderer) setSemanticSceneIncremental(ctx *vtui.SemanticContext,
 	}
 	baseRevision := r.sceneRevision
 	previous := r.lastCompactScene
-	deliveredCatalogs := r.deliveredPanelCatalogSnapshotLocked()
 	r.mu.Unlock()
 
 	current, supported := BuildAppIncrementalScene(ctx)
@@ -1685,11 +1587,6 @@ func (r *ExtUiRenderer) setSemanticSceneIncremental(ctx *vtui.SemanticContext,
 		return false
 	}
 	patch, acknowledgements, valid := buildAppScenePatch(previous, current)
-	if !valid {
-		patch, valid = buildAppWorkspaceActivationPatch(
-			previous, current, deliveredCatalogs)
-		acknowledgements = nil
-	}
 	if !valid {
 		navigationBenchmarkIncrementalEvent("scene.incremental.rejected",
 			"reason", "invalid_patch", "sceneRevision", baseRevision)
@@ -1782,6 +1679,7 @@ func (r *ExtUiRenderer) setSemanticSceneIncremental(ctx *vtui.SemanticContext,
 }
 
 func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
+	scene = semanticNormalizeSparsePanelCatalogs(scene)
 	benchmark := navigationBenchmarkSceneCompareBegin(scene)
 	compareResult := "full_scene"
 	if benchmark != nil {
@@ -2024,9 +1922,10 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 var semanticPanelCatalogMutableKeys = map[string]struct{}{
 	"path": {}, "title": {}, "catalogRevision": {}, "selectionRevision": {},
 	"cursorEntryId": {}, "cursor": {}, "loading": {}, "catalogProvisional": {},
-	"fastFind": {}, "fastFindText": {}, "fastFindMatchColor": {},
+	"catalogRowsDeferred": {},
+	"fastFind":            {}, "fastFindText": {}, "fastFindMatchColor": {},
 	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
-	"metadataRevision": {}, "entries": {},
+	"metadataRevision": {}, "entries": {}, "highlightStyles": {},
 }
 
 var semanticCommandLineNavigationKeys = map[string]struct{}{
@@ -3574,17 +3473,6 @@ func (r *ExtUiRenderer) Flush() {
 			r.mu.Unlock()
 			return
 		}
-		r.mu.Lock()
-		r.rememberDeliveredMessageLocked(msg)
-		startWarmup := semanticString(msg["type"]) == "scene" &&
-			semanticString(msg["schema"]) == extui.Schema &&
-			r.startPanelCatalogWarmupLocked()
-		r.mu.Unlock()
-		if startWarmup {
-			// Let the first authoritative frame reach the screen before doing
-			// bounded off-screen cache work for restored/inactive workspaces.
-			r.scheduleNextPanelCatalogWarmup(50 * time.Millisecond)
-		}
 	}
 }
 
@@ -3596,6 +3484,7 @@ type ExtUiHost struct {
 	cols                   int
 	rows                   int
 	panelCatalogMetadataV1 bool
+	panelCatalogRowsV1     bool
 }
 
 func RunExternalUI(cols, rows int, execPath string, args []string) error {
@@ -3672,9 +3561,14 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	}
 	panelCatalogMetadataV1 := extUiHelloCapability(
 		hello, extUiPanelCatalogMetadataCapability)
+	panelCatalogRowsV1 := extUiHelloCapability(
+		hello, extUiPanelCatalogRowsCapability)
 	previousPanelCatalogMetadata := setExtUiPanelCatalogMetadataEnabled(
 		panelCatalogMetadataV1)
 	defer setExtUiPanelCatalogMetadataEnabled(previousPanelCatalogMetadata)
+	previousPanelCatalogRows := setExtUiPanelCatalogRowsEnabled(
+		panelCatalogRowsV1)
+	defer setExtUiPanelCatalogRowsEnabled(previousPanelCatalogRows)
 
 	clientCols := extUiInt(hello, "cols")
 	clientRows := extUiInt(hello, "rows")
@@ -3720,6 +3614,7 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	host := &ExtUiHost{
 		conn: conn, send: sender, cols: cols, rows: rows,
 		panelCatalogMetadataV1: panelCatalogMetadataV1,
+		panelCatalogRowsV1:     panelCatalogRowsV1,
 	}
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(cols, rows)
@@ -3850,6 +3745,8 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		vtui.SetClipboard(extUiString(msg, "text"))
 	case "panel_catalog_metadata_request":
 		h.queuePanelCatalogMetadata(msg)
+	case "panel_catalog_rows_request":
+		h.queuePanelCatalogRows(msg)
 	case "ui_action":
 		action := msg
 		if nested, ok := msg["action"].(map[string]any); ok {
@@ -3862,7 +3759,7 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 			benchmark.eventAt("ui_task.queued", "go.ipc", queuedNs, "action", benchmark.action)
 		}
 		if vtui.FrameManager != nil {
-			vtui.FrameManager.PostTask(func() {
+			vtui.FrameManager.PostPriorityTask(func() {
 				if benchmark != nil {
 					startedNs := navigationBenchmarkMonotonicNs()
 					benchmark.eventAt("ui_task.started", "go.ui", startedNs,
@@ -3899,8 +3796,80 @@ func (h *ExtUiHost) queuePanelCatalogMetadata(msg map[string]any) bool {
 	for key, value := range msg {
 		request[key] = value
 	}
+	if h.panelCatalogRowsV1 && vtui.FrameManager != nil {
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+			h.serveLivePanelCatalogMetadata(request)
+			return false
+		})
+		return true
+	}
 	go h.servePanelCatalogMetadata(request)
 	return true
+}
+
+func (h *ExtUiHost) queuePanelCatalogRows(msg map[string]any) bool {
+	if h == nil || !h.panelCatalogRowsV1 || vtui.FrameManager == nil {
+		return false
+	}
+	request := make(map[string]any, len(msg))
+	for key, value := range msg {
+		request[key] = value
+	}
+	// Live panel state belongs to the UI thread. A bounded page is converted
+	// there, then the immutable response is written from a worker so pipe
+	// backpressure can never hold keyboard processing.
+	vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+		catalogRevision := extUiInt64(request, "catalogRevision")
+		response, ok := BuildLivePanelCatalogRows(
+			extUiString(request, "panelId"), extUiString(request, "path"),
+			catalogRevision, extUiInt(request, "offset"), extUiInt(request, "limit"))
+		if !ok {
+			response = map[string]any{
+				"type":            "panel_catalog_rows_rejected",
+				"panelId":         extUiString(request, "panelId"),
+				"path":            extUiString(request, "path"),
+				"catalogRevision": catalogRevision,
+				"offset":          extUiInt(request, "offset"),
+			}
+		}
+		if traceID := extUiString(request, "benchmarkTraceId"); traceID != "" {
+			response["benchmarkTraceId"] = traceID
+		}
+		go func() {
+			if err := h.send.Send(response); err != nil {
+				vtui.DebugLog("EXTUI_HOST: catalog rows response failed: %v", err)
+			}
+		}()
+		return false
+	})
+	return true
+}
+
+func (h *ExtUiHost) serveLivePanelCatalogMetadata(request map[string]any) {
+	catalogRevision := extUiInt64(request, "catalogRevision")
+	metadataRevision := extUiInt64(request, "metadataRevision")
+	response, ok := BuildLivePanelCatalogMetadataChunk(
+		extUiString(request, "panelId"), extUiString(request, "path"),
+		catalogRevision, metadataRevision,
+		extUiInt(request, "offset"), extUiInt(request, "limit"))
+	if !ok {
+		response = map[string]any{
+			"type":             "panel_catalog_metadata_rejected",
+			"panelId":          extUiString(request, "panelId"),
+			"path":             extUiString(request, "path"),
+			"catalogRevision":  catalogRevision,
+			"metadataRevision": metadataRevision,
+			"offset":           extUiInt(request, "offset"),
+		}
+	}
+	if traceID := extUiString(request, "benchmarkTraceId"); traceID != "" {
+		response["benchmarkTraceId"] = traceID
+	}
+	go func() {
+		if err := h.send.Send(response); err != nil {
+			vtui.DebugLog("EXTUI_HOST: live metadata response failed: %v", err)
+		}
+	}()
 }
 
 func (h *ExtUiHost) servePanelCatalogMetadata(request map[string]any) {

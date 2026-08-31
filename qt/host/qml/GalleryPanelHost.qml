@@ -6,6 +6,10 @@ FocusScope {
 
     property int side: 0
     property var panel: ({})
+    // Layout-only scene patches arrive independently from the row-free panel
+    // snapshot. Keeping this small overlay separate avoids invalidating every
+    // panel binding just because the renderer mode changed.
+    property var layoutState: null
     property var bridge: null
     property var keySink: null
     property string mouseWheelMode: "gui"
@@ -31,6 +35,14 @@ FocusScope {
     // mistaken for a Gallery selection/navigation command.
     property bool pendingCommanderInput: false
     property int pendingCommanderInputTimeoutMs: 2000
+    // A pointer press moves Gallery's session cursor immediately,
+    // while the expensive semantic cursor+activation action is intentionally
+    // deferred until mouse-up. Keep that new cursor visible on an inactive
+    // side during the round-trip; otherwise mouse-down appears to select
+    // nothing (or briefly exposes the panel's previous cursor on activation).
+    property bool pendingPointerActivation: false
+    property string pendingPointerActivationPanelId: ""
+    property int pendingPointerActivationTimeoutMs: 6000
     property real devicePixelRatio: 1.0
     property real defaultListDensity: 22
     // GalleryViewer drives these only while its shared thumbnail transition is
@@ -42,15 +54,20 @@ FocusScope {
     // command-line state before key-up (Return clears it immediately), so
     // remember every key sent to Go and always send its matching release.
     property var forwardedKeysDown: ({})
-    // A GalleryPanel owns its viewport delegates and scroll/layout caches.
-    // Retain one complete QML view per semantic panel identity so switching a
-    // workspace never rebinds a 5k-row session into an already-painted view.
-    // Inactive views stay laid out at opacity zero and become visible through
-    // one atomic property change.
-    property var galleryPanel: null
-    property var galleryPanelsById: ({})
-    property string activeGalleryPanelId: ""
-    property bool galleryPanelContainerReady: false
+    // Each visual side owns exactly one virtualized viewport. Directory and
+    // workspace changes replace its native session; they never retain or
+    // pre-create another GalleryPanel object tree off screen.
+    readonly property var galleryPanel: embeddedGalleryPanel
+    property var panelSession: null
+    // Reuse one immutable empty overlay so an ordinary directory update does
+    // not look like a new quick-search map to the visible delegates.
+    readonly property var emptyQuickSearchMatches: ({})
+
+    // The embedding shell uses this presentation-only signal to hand cursor
+    // ownership from the formerly active side to this one in the same
+    // mouse-down turn. cursorRequested still owns the single deferred
+    // semantic cursor+activation action sent on mouse-up.
+    signal pointerActivationPreviewRequested(int side)
 
     readonly property var effectiveHostCapabilities: ({
         cursor: hostCapabilities.cursor,
@@ -69,27 +86,26 @@ FocusScope {
                                                  || fastFindActive
                                                  || pendingCommanderInput
 
-    // Sessions are retained by semantic panel identity, not by visual side.
-    // While an inactive workspace is prepared, the currently painted host
-    // therefore keeps its old model. Changing both panel objects later swaps
-    // to two already-complete sessions in one QML transaction.
-    readonly property var session: bridge
-        ? (typeof bridge.sessionForPanel === "function"
-           ? bridge.sessionForPanel(String(panel.id || ""), side)
-           : bridge.sessionForSide(side))
-        : null
+    readonly property var session: panelSession
     readonly property bool benchmarkTracingEnabled:
         bridge
         && typeof bridge.navigationBenchmarkEnabled !== "undefined"
         && bridge.navigationBenchmarkEnabled === true
+    readonly property bool benchmarkTraceOutputEnabled:
+        bridge
+        && typeof bridge.benchmarkTraceEnabled !== "undefined"
+        && bridge.benchmarkTraceEnabled === true
     readonly property double catalogRevision: Number(panel.catalogRevision || 0)
+    readonly property var requestedRendererState: rendererStateFor(panel)
     readonly property string requestedPresentationMode:
-        String(panel.galleryLayoutMode || "masonry")
+        String(requestedRendererState.galleryLayoutMode || "masonry")
     readonly property int requestedColumnCount:
-        Math.max(2, Math.min(3, Number(panel.galleryColumnCount || 2)))
+        Math.max(2, Math.min(3,
+                            Number(requestedRendererState.galleryColumnCount
+                                   || 2)))
     readonly property bool densityAdjustable:
         densityIsAdjustable(requestedPresentationMode)
-    readonly property real requestedDensity: densityFor(panel)
+    readonly property real requestedDensity: densityFor(requestedRendererState)
     readonly property real currentDensity:
         galleryPanel && typeof galleryPanel.density !== "undefined"
         ? Number(galleryPanel.density) : requestedDensity
@@ -101,9 +117,10 @@ FocusScope {
         densityStepFor(requestedPresentationMode)
     // This is the presentation state already committed to the active native
     // renderer. f4's external Details header consumes the same values, so it
-    // can never get one frame ahead of the retained GalleryPanel body.
+    // can never get one frame ahead of the GalleryPanel body.
     property string appliedPresentationMode: "masonry"
     property var appliedColumnSchema: []
+    property string appliedRendererConfigSignature: ""
     property bool applyingRendererState: false
 
     // Qt converts each semantic panel snapshot into fresh JavaScript array and
@@ -165,6 +182,20 @@ FocusScope {
         return "@legacy-side:" + side
     }
 
+    function rendererStateFor(panelState) {
+        const base = panelState || ({})
+        const overlay = layoutState
+        if (!overlay)
+            return base
+        const baseId = String(base.id || "")
+        const overlayId = String(overlay.id || "")
+        if (baseId === "" || overlayId !== baseId
+                || Number(overlay.catalogRevision || 0)
+                   !== Number(base.catalogRevision || 0))
+            return base
+        return Object.assign({}, base, overlay)
+    }
+
     function presentationModeFor(panelState) {
         return String(panelState && panelState.galleryLayoutMode || "masonry")
     }
@@ -175,39 +206,92 @@ FocusScope {
     }
 
     function densityIsAdjustable(mode) {
-        return mode !== "columns" && mode !== "details"
+        return mode === "masonry" || mode === "columns"
+                || mode === "details" || mode === "grid"
+                || mode === "icons"
     }
 
     function defaultDensityFor(mode) {
-        if (!densityIsAdjustable(mode))
+        if (mode === "columns" || mode === "details")
             return Math.max(22, defaultListDensity)
         return mode === "grid" ? 160 : mode === "icons" ? 64 : 150
     }
 
     function minimumDensityFor(mode) {
-        if (!densityIsAdjustable(mode))
-            return defaultDensityFor(mode)
+        if (mode === "columns" || mode === "details")
+            return 22
         return mode === "grid" ? 96 : mode === "icons" ? 18 : 30
     }
 
     function maximumDensityFor(mode) {
-        if (!densityIsAdjustable(mode))
-            return defaultDensityFor(mode)
+        if (mode === "columns" || mode === "details")
+            return 72
         return mode === "grid" ? 320 : mode === "icons" ? 256 : 500
     }
 
     function densityStepFor(mode) {
-        return mode === "grid" ? 8 : mode === "icons" ? 2 : 20
+        return mode === "columns" || mode === "details" ? 2
+             : mode === "grid" ? 8 : mode === "icons" ? 2 : 20
+    }
+
+    function boundedDensityFor(mode, supplied) {
+        const numeric = Number(supplied)
+        const value = Number.isFinite(numeric) && numeric > 0
+                ? Math.round(numeric) : defaultDensityFor(mode)
+        return Math.max(minimumDensityFor(mode),
+                        Math.min(maximumDensityFor(mode), value))
     }
 
     function densityFor(panelState) {
         const mode = presentationModeFor(panelState)
-        if (!densityIsAdjustable(mode))
-            return defaultDensityFor(mode)
-        const supplied = Number(panelState && panelState.galleryDensity || 0)
-        if (supplied > 0)
-            return Math.round(supplied)
-        return defaultDensityFor(mode)
+        return boundedDensityFor(
+                    mode, panelState && panelState.galleryDensity || 0)
+    }
+
+    function presentationDensitiesFor(panelState) {
+        const supplied = panelState && panelState.galleryDensities
+                ? panelState.galleryDensities : ({})
+        const result = ({
+            "masonry": boundedDensityFor("masonry", supplied.masonry),
+            "columns": boundedDensityFor("columns", supplied.columns),
+            "details": boundedDensityFor("details", supplied.details),
+            "grid": boundedDensityFor("grid", supplied.grid),
+            "icons": boundedDensityFor("icons", supplied.icons)
+        })
+        const currentMode = presentationModeFor(panelState)
+        result[currentMode] = densityFor(panelState)
+        return result
+    }
+
+    function traceRendererApply(stage, mode) {
+        if (!benchmarkTraceOutputEnabled || !bridge
+                || typeof bridge.recordBenchmarkStage !== "function")
+            return
+        bridge.recordBenchmarkStage(side, "renderer.apply." + stage, {
+            "rendererMode": mode
+        })
+    }
+
+    function tracePanelSwitch(stage, panelState) {
+        if (!benchmarkTraceOutputEnabled || !bridge
+                || typeof bridge.recordBenchmarkStage !== "function")
+            return
+        bridge.recordBenchmarkStage(side, "panel.switch." + stage, {
+            "panelId": panelId(panelState),
+            "catalogRevision": Number(panelState
+                                      && panelState.catalogRevision || 0)
+        })
+    }
+
+    function rendererConfigSignature(panelState) {
+        const state = panelState || ({})
+        const densities = presentationDensitiesFor(state)
+        return [presentationModeFor(state),
+                columnCountFor(state), densityFor(state),
+                state.separateFileExtensions === true ? 1 : 0,
+                densities.masonry, densities.columns, densities.details,
+                densities.grid, densities.icons,
+                JSON.stringify(state.galleryColumns || [])].join("|")
     }
 
     function applyRendererStateTo(target, panelState, publishState) {
@@ -217,6 +301,7 @@ FocusScope {
         const mode = presentationModeFor(state)
         const columnCount = columnCountFor(state)
         const density = densityFor(state)
+        const nextPresentationDensities = presentationDensitiesFor(state)
         const nextColumnSchema = state.galleryColumns || []
         const modeChanged = typeof target.presentationMode !== "undefined"
                 && target.presentationMode !== mode
@@ -231,6 +316,8 @@ FocusScope {
         let transactionStarted = false
         applyingRendererState = true
         try {
+            if (needsLayoutTransaction)
+                traceRendererApply("begin", mode)
             if (needsLayoutTransaction
                     && typeof target.beginPresentationStateUpdate
                             === "function") {
@@ -238,13 +325,28 @@ FocusScope {
                             modeChanged || hostModeChanged)
                 transactionStarted = true
             }
+            if (needsLayoutTransaction)
+                traceRendererApply("transaction-started", mode)
             if (publishState === true) {
                 appliedPresentationMode = mode
                 if (!rendererValuesEqual(appliedColumnSchema,
                                          nextColumnSchema)) {
                     appliedColumnSchema = nextColumnSchema
                 }
+                appliedRendererConfigSignature =
+                        rendererConfigSignature(state)
             }
+            // The helper returns a fresh JavaScript object. Assign it only
+            // when a numeric value actually changed; GalleryPanel treats a
+            // new object identity as a density update and synchronously
+            // resynchronizes/prewarms every presentation cache.
+            if (typeof target.presentationDensities !== "undefined"
+                    && !rendererValuesEqual(target.presentationDensities,
+                                             nextPresentationDensities)) {
+                target.presentationDensities = nextPresentationDensities
+            }
+            if (needsLayoutTransaction)
+                traceRendererApply("host-state-published", mode)
             // Details delegates must see their final schema and filename
             // policy during the one native rewrap which creates them.
             if (typeof target.columnSchema !== "undefined"
@@ -256,82 +358,51 @@ FocusScope {
                 target.separateFileExtensions =
                         state.separateFileExtensions === true
             }
+            if (needsLayoutTransaction)
+                traceRendererApply("schema-applied", mode)
             if (modeChanged)
                 target.presentationMode = mode
+            if (needsLayoutTransaction)
+                traceRendererApply("mode-applied", mode)
             if (columnCountChanged)
                 target.columnCount = columnCount
             // setPresentationMode() restores that mode's remembered density.
-            // Even when the old mode already had the requested value, apply
-            // the host-owned value again after the mode switch so compact
-            // presentations cannot resurrect a stale per-mode row pitch.
+            // Apply the semantic value again after a mode switch so every
+            // presentation receives its current saved zoom in this transaction.
             if (densityChanged || modeChanged)
                 target.density = density
+            if (needsLayoutTransaction)
+                traceRendererApply("density-applied", mode)
         } finally {
+            if (needsLayoutTransaction)
+                traceRendererApply("transaction-ending", mode)
             if (transactionStarted) {
                 target.endPresentationStateUpdate(
                             modeChanged || hostModeChanged)
             }
+            if (needsLayoutTransaction)
+                traceRendererApply("end", mode)
             applyingRendererState = false
         }
     }
 
-    function sessionForPanelId(semanticPanelId) {
+    function sessionForPanelState(panelState) {
         if (!bridge)
             return null
-        if (semanticPanelId === legacyPanelId())
-            return bridge.sessionForSide(side)
-        return typeof bridge.sessionForPanel === "function"
-                ? bridge.sessionForPanel(semanticPanelId, side)
-                : bridge.sessionForSide(side)
+        // A side owns exactly one virtualized model. Directory and workspace
+        // changes replace its small materialized row window in place; QML
+        // never retains complete panel sessions behind semantic identities.
+        return bridge.sessionForSide(side)
     }
 
-    function ensureGalleryPanel(panelState, activate) {
-        if (!galleryPanelContainerReady)
-            return null
-        const semanticPanelId = panelId(panelState)
-        if (semanticPanelId === "")
-            return null
-        const exactSession = sessionForPanelId(semanticPanelId)
-        // A retained viewport keeps its model pointer for its whole lifetime.
-        // Do not manufacture one around a mutable side fallback while the
-        // identity cache is still being prepared.
-        if (!exactSession)
-            return null
-
-        var view = galleryPanelsById[semanticPanelId]
-        if (!view) {
-            view = galleryPanelComponent.createObject(galleryPanelContainer, {
-                "semanticPanelId": semanticPanelId,
-                "cachedPanel": panelState,
-                "fixedSession": exactSession
-            })
-            if (!view)
-                return null
-            const next = Object.assign({}, galleryPanelsById)
-            next[semanticPanelId] = view
-            galleryPanelsById = next
-        } else {
-            view.cachedPanel = panelState
-            // Recovery for a viewport constructed by an older/late startup
-            // path.  Normal cache hits keep the same QObject and never rebind.
-            if (view.fixedSession !== exactSession)
-                view.fixedSession = exactSession
-        }
-        applyRendererStateTo(view, panelState, activate === true)
-        if (activate === true) {
-            activeGalleryPanelId = semanticPanelId
-            galleryPanel = view
-        }
-        return view
-    }
-
-    function warmCachedGalleryPanels() {
-        if (!bridge
-                || typeof bridge.cachedPanelPresentations !== "function")
-            return
-        const cached = bridge.cachedPanelPresentations(side) || []
-        for (let index = 0; index < cached.length; ++index)
-            ensureGalleryPanel(cached[index], false)
+    function refreshPanelSession() {
+        tracePanelSwitch("begin", panel)
+        const exactSession = sessionForPanelState(panel)
+        tracePanelSwitch("session-resolved", panel)
+        if (panelSession !== exactSession)
+            panelSession = exactSession
+        tracePanelSwitch("session-applied", panel)
+        return exactSession
     }
 
     function previewDensity(value) {
@@ -354,7 +425,7 @@ FocusScope {
     }
 
     function applyRendererState() {
-        applyRendererStateTo(galleryPanel, panel, true)
+        applyRendererStateTo(galleryPanel, requestedRendererState, true)
     }
 
     function forwardBenchmarkStage(stage, metadata) {
@@ -387,34 +458,30 @@ FocusScope {
     }
 
     onPanelChanged: {
-        const view = ensureGalleryPanel(panel, true)
-        if (!view) {
-            activeGalleryPanelId = ""
-            galleryPanel = null
-            appliedPresentationMode = "masonry"
-            appliedColumnSchema = []
+        if (pendingPointerActivation
+                && pendingPointerActivationPanelId !== panelId(panel))
+            finishPendingPointerActivation()
+        refreshPanelSession()
+        const nextRendererState = rendererStateFor(panel)
+        if (rendererConfigSignature(nextRendererState)
+                !== appliedRendererConfigSignature) {
+            applyRendererStateTo(galleryPanel, nextRendererState, true)
         }
         if (benchmarkTracingEnabled)
             Qt.callLater(forwardHostBenchmarkState)
     }
+    onBridgeChanged: refreshPanelSession()
+    onSideChanged: refreshPanelSession()
+    // QML invalidates requestedRendererState after emitting layoutState's
+    // change signal. Read the new overlay directly here; consuming the bound
+    // property can otherwise apply the previous mode and make every shortcut
+    // appear one transition late.
+    onLayoutStateChanged: applyRendererStateTo(
+                              galleryPanel, rendererStateFor(panel), true)
     onDefaultListDensityChanged: applyRendererState()
     Component.onCompleted: {
-        galleryPanelContainerReady = true
-        warmCachedGalleryPanels()
-        ensureGalleryPanel(panel, true)
-    }
-
-    Connections {
-        target: host.bridge
-        ignoreUnknownSignals: true
-        function onPanelCachePrepared(panelSide, panelState) {
-            if (Number(panelSide) !== host.side)
-                return
-            const preparedId = host.panelId(panelState)
-            const activate = preparedId !== ""
-                    && preparedId === host.panelId(host.panel)
-            host.ensureGalleryPanel(panelState, activate)
-        }
+        refreshPanelSession()
+        applyRendererState()
     }
 
     function currentItemImageGeometry(targetItem) {
@@ -432,7 +499,9 @@ FocusScope {
     }
 
     onPanelActiveChanged: {
-        if (!panelActive)
+        if (panelActive)
+            finishPendingPointerActivation()
+        else
             finishPendingCommanderInput()
     }
 
@@ -509,6 +578,20 @@ FocusScope {
         pendingCommanderInputTimer.stop()
     }
 
+    function beginPendingPointerActivation(semanticPanelId) {
+        if (panelActive)
+            return
+        pendingPointerActivationPanelId = String(semanticPanelId || "")
+        pendingPointerActivation = true
+        pendingPointerActivationTimer.restart()
+    }
+
+    function finishPendingPointerActivation() {
+        pendingPointerActivation = false
+        pendingPointerActivationPanelId = ""
+        pendingPointerActivationTimer.stop()
+    }
+
     Timer {
         id: pendingCommanderInputTimer
         interval: Math.max(1, host.pendingCommanderInputTimeoutMs)
@@ -552,11 +635,6 @@ FocusScope {
     function handleZoom(event) {
         if (!galleryPanel || !ownsZoomShortcut(event))
             return false
-        // Ctrl+/- and Ctrl+0 are consumed in the fixed compact modes so they
-        // cannot either resize rows locally or leak into the terminal.
-        if (!densityAdjustable)
-            return true
-
         if (event.key === Qt.Key_0) {
             const defaultDensity = defaultDensityFor(
                         requestedPresentationMode)
@@ -573,9 +651,9 @@ FocusScope {
         if (!zoomIn && !zoomOut)
             return false
 
-        // GalleryPanel delegates Grid/Icons stepping to MasonryLayout. That
-        // selects the next column-count interval rather than a raw pixel
-        // delta, so every zoom action changes the visible lattice.
+        // GalleryPanel delegates stepping to MasonryLayout. Grid and Icons
+        // cross one cell-count interval; compact text modes change row pitch
+        // by their two-pixel step.
         if (typeof galleryPanel.stepDensity === "function") {
             galleryPanel.stepDensity(zoomIn)
             return true
@@ -654,6 +732,18 @@ FocusScope {
             // Compatibility for lightweight embedders and QML test sinks.
             keySink.sendQtKey(event.key, event.text, down,
                               event.modifiers, event.nativeScanCode)
+        }
+    }
+
+    Timer {
+        id: pendingPointerActivationTimer
+        interval: Math.max(1, host.pendingPointerActivationTimeoutMs)
+        repeat: false
+        onTriggered: {
+            // The active-scene acknowledgement normally clears this latch.
+            // Drop it eventually if the action is rejected or the host goes
+            // away, so an inactive panel cannot keep a stale cursor forever.
+            host.finishPendingPointerActivation()
         }
     }
 
@@ -754,149 +844,106 @@ FocusScope {
         }
     }
 
-    Item {
-        id: galleryPanelContainer
+    ZG.GalleryPanel {
+        id: embeddedGalleryPanel
+        objectName: "embeddedGalleryPanel"
         anchors.fill: parent
-    }
+        session: host.session
+        presentationDensities: ({})
+        theme: host.theme
+        metrics: host.metrics
+        // A 500 ms brick interpolation after an auxiliary metadata batch only
+        // makes an already-ready panel look as if it is rebuilding.
+        animateLayoutChanges: false
+        // Standalone ZoinGallery talks about previewable images. f4 owns a
+        // general file catalog, so expose an empty state only after the
+        // authoritative folder load has completed.
+        emptyStateEnabled: host.session !== null
+                           && host.panel.loading !== true
+                           && host.panel.catalogProvisional !== true
+        emptyStateText: qsTr("Folder is empty")
+        scrollBarsReady: host.panel.catalogProvisional !== true
+        quickSearchMatches: host.panel.fastFind === true
+                            ? (host.panel.fastFindMatches
+                               || host.emptyQuickSearchMatches)
+                            : host.emptyQuickSearchMatches
+        quickSearchMatchColor: {
+            const supplied = String(host.panel.fastFindMatchColor || "")
+            if (supplied !== "")
+                return supplied
+            return host.theme && host.theme.quickSearchMatch !== undefined
+                    ? host.theme.quickSearchMatch : foregroundColor
+        }
+        // f4 keeps the Details column header outside the reusable viewport so
+        // every unified layout shares one exact geometry and interaction
+        // surface.
+        showDetailsHeader: false
+        hostCapabilities: host.effectiveHostCapabilities
+        devicePixelRatio: host.devicePixelRatio
+        viewerTransitionActive: host.viewerTransitionActive
+        viewerTransitionEntryId: host.viewerTransitionEntryId
+        showCursor: host.panelActive
+                    || (host.pendingPointerActivation
+                        && host.pendingPointerActivationPanelId
+                           === host.panelId(host.panel))
+        focus: true
+        autoFocus: false
+        mouseWheelMode: host.mouseWheelMode
+        benchmarkTracingEnabled: host.benchmarkTracingEnabled
 
-    Component {
-        id: galleryPanelComponent
-
-        ZG.GalleryPanel {
-            id: cachedGalleryPanel
-            property string semanticPanelId: ""
-            property var cachedPanel: ({})
-            property var fixedSession: null
-            readonly property bool activeForHost:
-                host.activeGalleryPanelId === semanticPanelId
-
-            objectName: activeForHost
-                        ? "embeddedGalleryPanel"
-                        : "cachedGalleryPanel-" + semanticPanelId
-            anchors.fill: parent
-            z: activeForHost ? 1 : 0
-            visible: true
-            opacity: activeForHost ? 1 : 0
-            enabled: activeForHost
-            session: fixedSession
-            theme: host.theme
-            metrics: host.metrics
-            // f4 receives exact metadata incrementally and swaps retained
-            // workspaces atomically. A 500 ms brick interpolation after an
-            // auxiliary metadata batch only makes a ready panel look as if it
-            // is rebuilding, so embedded panels keep deterministic geometry.
-            animateLayoutChanges: false
-            // Standalone ZoinGallery talks about previewable images.  f4 owns
-            // a general file catalog, so expose an empty state only after the
-            // authoritative folder load has completed.
-            emptyStateEnabled: activeForHost
-                               && fixedSession !== null
-                               && cachedPanel.loading !== true
-                               && cachedPanel.catalogProvisional !== true
-            emptyStateText: qsTr("Folder is empty")
-            // Match spans are transient. A compact state merge may briefly
-            // retain an older map while fast-find is being closed; never
-            // paint it on a hidden/cached workspace.
-            quickSearchMatches: activeForHost
-                                && host.panel
-                                && host.panel.fastFind === true
-                                ? (host.panel.fastFindMatches || ({})) : ({})
-            quickSearchMatchColor: {
-                const supplied = activeForHost
-                        ? String(host.panel.fastFindMatchColor || "") : ""
-                if (supplied !== "")
-                    return supplied
-                return host.theme
-                        && host.theme.quickSearchMatch !== undefined
-                        ? host.theme.quickSearchMatch : foregroundColor
+        onActivateRequested: {
+            if (host.bridge && !host.panelActive)
+                host.bridge.requestActivate(host.side)
+        }
+        onCursorRequested: (entryId, index, deferCommit) => {
+            if (!host.bridge)
+                return
+            if (!host.panelActive) {
+                host.beginPendingPointerActivation(host.panelId(host.panel))
+                host.pointerActivationPreviewRequested(host.side)
             }
-            // f4 keeps the Details column header outside the reusable
-            // viewport so every unified layout shares one exact geometry and
-            // interaction surface.
-            showDetailsHeader: false
-            hostCapabilities: host.effectiveHostCapabilities
-            devicePixelRatio: host.devicePixelRatio
-            viewerTransitionActive: activeForHost
-                                    && host.viewerTransitionActive
-            viewerTransitionEntryId: activeForHost
-                                     ? host.viewerTransitionEntryId : ""
-            // Keep an off-screen workspace in the exact cursor appearance it
-            // will have when revealed. Lucide image-provider URLs include the
-            // semantic tint; hiding the cursor here used to change that URL on
-            // activation and made the selected icon arrive one frame late.
-            showCursor: activeForHost ? host.panelActive
-                                      : cachedPanel.active === true
-            // Only the currently exposed cached viewport participates in the
-            // host FocusScope. The others remain polished but inert.
-            focus: activeForHost
-            autoFocus: false
-            mouseWheelMode: host.mouseWheelMode
-            benchmarkTracingEnabled: activeForHost
-                                     && host.benchmarkTracingEnabled
-
-            Component.onCompleted: {
-                host.applyRendererStateTo(cachedGalleryPanel,
-                                          cachedGalleryPanel.cachedPanel,
-                                          false)
+            host.bridge.requestCursor(
+                        host.side, entryId, index, host.catalogRevision,
+                        deferCommit,
+                        deferCommit
+                        && (embeddedGalleryPanel.keyboardShiftSelectionActive
+                            || embeddedGalleryPanel.keyboardToggleSelectionActive))
+        }
+        onOpenRequested: (entryId, index, isImage, autoRepeat) => {
+            if (host.bridge) {
+                host.bridge.requestOpen(host.side, entryId, index, isImage,
+                                        host.catalogRevision, autoRepeat)
             }
-            onCachedPanelChanged: {
-                if (!activeForHost) {
-                    host.applyRendererStateTo(
-                                cachedGalleryPanel,
-                                cachedGalleryPanel.cachedPanel,
-                                false)
-                }
+        }
+        onSelectionRequested: (mode, entryIds) => {
+            if (host.bridge) {
+                host.bridge.requestSelection(host.side, mode, entryIds,
+                                             host.catalogRevision)
             }
-            onActiveForHostChanged: {
-                if (!activeForHost)
-                    return
-                host.galleryPanel = cachedGalleryPanel
+        }
+        onSelectionTransactionRequested: (changes, cursorEntryId,
+                                           cursorIndex) => {
+            if (host.bridge) {
+                host.bridge.requestSelectionTransaction(
+                            host.side, changes, cursorEntryId, cursorIndex,
+                            host.catalogRevision)
             }
-
-            onActivateRequested: {
-                if (activeForHost && !host.panelActive)
-                    host.bridge.requestActivate(host.side)
+        }
+        onMetadataVisibleRangeChanged: (firstRow, lastRow) => {
+            if (host.bridge) {
+                host.bridge.reportMetadataVisibleRange(
+                            host.side, firstRow, lastRow,
+                            host.catalogRevision)
             }
-            onCursorRequested: (entryId, index, deferCommit) => {
-                if (activeForHost) {
-                    host.bridge.requestCursor(host.side, entryId, index,
-                                              host.catalogRevision,
-                                              deferCommit)
-                }
-            }
-            onOpenRequested: (entryId, index, isImage, autoRepeat) => {
-                if (activeForHost) {
-                    host.bridge.requestOpen(host.side, entryId, index, isImage,
-                                            host.catalogRevision, autoRepeat)
-                }
-            }
-            onSelectionRequested: (mode, entryIds) => {
-                if (activeForHost) {
-                    host.bridge.requestSelection(host.side, mode, entryIds,
-                                                 host.catalogRevision)
-                }
-            }
-            onMetadataVisibleRangeChanged: (firstRow, lastRow) => {
-                if (activeForHost && host.bridge) {
-                    host.bridge.reportMetadataVisibleRange(
-                                host.side, firstRow, lastRow,
-                                host.catalogRevision)
-                }
-            }
-            onBenchmarkStage: (stage, metadata) => {
-                if (activeForHost)
-                    host.forwardBenchmarkStage(stage, metadata)
-            }
-            onConsoleWheelRequested: (x, y, angleDeltaY, modifiers) => {
-                if (activeForHost)
-                    host.forwardConsoleWheel(x, y, angleDeltaY, modifiers)
-            }
-            onConsoleMouseButtonRequested: (x, y, button, down, modifiers) => {
-                if (activeForHost) {
-                    host.forwardConsoleMouseButton(x, y, button, down,
-                                                   modifiers)
-                }
-            }
+        }
+        onBenchmarkStage: (stage, metadata) => {
+            host.forwardBenchmarkStage(stage, metadata)
+        }
+        onConsoleWheelRequested: (x, y, angleDeltaY, modifiers) => {
+            host.forwardConsoleWheel(x, y, angleDeltaY, modifiers)
+        }
+        onConsoleMouseButtonRequested: (x, y, button, down, modifiers) => {
+            host.forwardConsoleMouseButton(x, y, button, down, modifiers)
         }
     }
 

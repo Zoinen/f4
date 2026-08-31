@@ -222,6 +222,7 @@ type frameManager struct {
 	redrawGeneration  atomic.Uint64
 	TaskChan          chan func()
 	taskChanIn        chan func()
+	PriorityTaskChan  chan func()
 	currentPostedTask *postedTaskExecution
 	inputUpdateActive bool
 	inputUnchanged    bool
@@ -666,6 +667,13 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 			}
 		}()
 	}
+	if fm.PriorityTaskChan == nil {
+		// Native semantic input must not wait behind catalog metadata and other
+		// background bookkeeping. A direct buffered lane also avoids the relay
+		// goroutine scheduling delay of the unbounded ordinary task queue.
+		PriorityTaskChanSize := 1024
+		fm.PriorityTaskChan = make(chan func(), PriorityTaskChanSize)
+	}
 
 	fm.injectedEvents = make([]*vtinput.InputEvent, 0)
 	SetDefaultPalette()
@@ -957,8 +965,16 @@ func frameManagerBenchmarkCaller(skip int) string {
 func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 	select {
 	case <-fm.RedrawChan:
+		var task func()
 		select {
-		case task := <-fm.TaskChan:
+		case task = <-fm.PriorityTaskChan:
+		default:
+			select {
+			case task = <-fm.TaskChan:
+			default:
+			}
+		}
+		if task != nil {
 			// Keep the older request observable to runPostedTask. A direct
 			// transition may own redraws created by this task, but must not claim
 			// unrelated work merely because this priority check consumed its
@@ -968,7 +984,6 @@ func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 			if !result.taskRedrawOmitted {
 				fm.Redraw()
 			}
-		default:
 		}
 		return true
 	default:
@@ -977,9 +992,9 @@ func (fm *frameManager) coalescePendingRedrawWithReadyTask() bool {
 }
 
 // PostTask schedules a function to be executed safely on the main UI thread.
-func (fm *frameManager) postTask(task func(), callerSkip int) {
+func (fm *frameManager) wrapPostedTask(task func(), callerSkip int) func() {
 	if task == nil {
-		return
+		return nil
 	}
 	if frameManagerBenchmarkEnabled() {
 		taskID := fm.benchmarkTaskSeq.Add(1)
@@ -1003,13 +1018,63 @@ func (fm *frameManager) postTask(task func(), callerSkip int) {
 			original()
 		}
 	}
+	return task
+}
+
+func (fm *frameManager) postTask(task func(), callerSkip int) {
+	task = fm.wrapPostedTask(task, callerSkip)
+	if task == nil {
+		return
+	}
 	if fm.taskChanIn != nil {
 		fm.taskChanIn <- task
 	}
 }
 
 func (fm *frameManager) PostTask(task func()) {
-	fm.postTask(task, 3)
+	fm.postTask(task, 4)
+}
+
+// PostPriorityTask schedules authoritative native input ahead of background
+// UI bookkeeping while preserving FIFO order among input actions themselves.
+// The large direct buffer provides bounded backpressure-free delivery for
+// ordinary input bursts; a pathological overflow falls back to the ordinary
+// unbounded queue rather than blocking the IPC reader.
+func (fm *frameManager) postPriorityTask(task func(), callerSkip int) {
+	task = fm.wrapPostedTask(task, callerSkip)
+	if task == nil {
+		return
+	}
+	if fm.PriorityTaskChan != nil {
+		select {
+		case fm.PriorityTaskChan <- task:
+			return
+		default:
+		}
+	}
+	if fm.taskChanIn != nil {
+		fm.taskChanIn <- task
+	}
+}
+
+func (fm *frameManager) PostPriorityTask(task func()) {
+	fm.postPriorityTask(task, 4)
+}
+
+// PostPriorityTaskWithRedrawDecision is the input-priority counterpart of
+// PostTaskWithRedrawDecision. It is used by a freshly enumerated viewport
+// preview, whose stale generation must neither mutate nor redraw the panel.
+func (fm *frameManager) PostPriorityTaskWithRedrawDecision(task func() bool) {
+	if task == nil {
+		return
+	}
+	fm.postPriorityTask(func() {
+		needsRedraw := task()
+		if execution := fm.currentPostedTask; execution != nil {
+			execution.redrawDecisionSet = true
+			execution.needsRedraw = needsRedraw
+		}
+	}, 4)
 }
 
 // PostTaskWithRedrawDecision schedules a UI task whose return value states
@@ -1029,19 +1094,39 @@ func (fm *frameManager) PostTaskWithRedrawDecision(task func() bool) {
 			execution.redrawDecisionSet = true
 			execution.needsRedraw = needsRedraw
 		}
-	}, 3)
+	}, 4)
 }
 
 // DeclareCurrentInputUnchanged records an application-level proof that the
 // active input handler only scheduled asynchronous work and has not changed
-// the current presentation. It is intentionally scoped to dispatchEvent;
-// calls from background goroutines or posted tasks are ignored.
+// the current presentation. Native semantic actions are delivered as posted
+// UI tasks, so they share the same unchanged boundary instead of forcing an
+// intermediate placeholder scene before their asynchronous result arrives.
 func (fm *frameManager) DeclareCurrentInputUnchanged() bool {
-	if fm == nil || !fm.inputUpdateActive {
+	if fm == nil {
 		return false
 	}
-	fm.inputUnchanged = true
-	return true
+	if fm.inputUpdateActive {
+		fm.inputUnchanged = true
+		return true
+	}
+	if execution := fm.currentPostedTask; execution != nil {
+		execution.redrawDecisionSet = true
+		execution.needsRedraw = false
+		return true
+	}
+	return false
+}
+
+// CurrentTaskDeclaredUnchanged reports whether the active posted UI task has
+// supplied an unchanged proof. Callers which ordinarily append a generic
+// redraw after dispatch use this to avoid invalidating that proof.
+func (fm *frameManager) CurrentTaskDeclaredUnchanged() bool {
+	if fm == nil || fm.currentPostedTask == nil {
+		return false
+	}
+	execution := fm.currentPostedTask
+	return execution.redrawDecisionSet && !execution.needsRedraw
 }
 
 // EmitCommand broadcasts a command starting from the top-most frame
@@ -1125,6 +1210,10 @@ func (fm *frameManager) WaitFar2lResponse(id uint8, timeout time.Duration) *vtin
 		select {
 		case res := <-ch:
 			return res
+		case task := <-fm.PriorityTaskChan:
+			if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+				fm.Redraw()
+			}
 		case task := <-fm.TaskChan:
 			if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
 				fm.Redraw()
@@ -2127,6 +2216,14 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 		}
 	}
 	generationAfter := fm.redrawGeneration.Load()
+	directDeferralOwnsTaskRedraw := false
+	if !cleanupChanged && !redrawPendingBefore &&
+		generationAfter != redrawGeneration {
+		if state, ok := renderer.(SemanticRenderPhaseDeferralState); ok {
+			directDeferralOwnsTaskRedraw =
+				state.SemanticRenderPhaseDeferralBound(generationAfter)
+		}
+	}
 	directMenuOwnsTaskRedraw := directMenuPublished && !cleanupChanged &&
 		generationAfter == redrawGeneration
 	// A stack transition commonly calls Redraw itself (Push/RemoveFrame). The
@@ -2152,8 +2249,11 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	if directTransitionOwnsTaskRedraw {
 		taskRedrawOmitted = true
 	}
+	if directDeferralOwnsTaskRedraw {
+		taskRedrawOmitted = true
+	}
 	omitRender := taskRedrawOmitted && !pendingRedraw &&
-		!directTransitionOwnsTaskRedraw
+		!directTransitionOwnsTaskRedraw && !directDeferralOwnsTaskRedraw
 	frameManagerBenchmarkEvent("task.finished",
 		"taskId", execution.benchmarkTaskID,
 		"source", execution.benchmarkSource,
@@ -2166,6 +2266,7 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 		"unchangedAccepted", unchangedAccepted,
 		"directMenuPublished", directMenuPublished,
 		"directTransitionPublished", directTransitionPublished,
+		"directDeferralOwnsTaskRedraw", directDeferralOwnsTaskRedraw,
 		"redrawPending", pendingRedraw,
 		"taskRedrawOmitted", taskRedrawOmitted,
 		"omitRender", omitRender)
@@ -2323,13 +2424,33 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 		}
 		fm.injectedMu.Unlock()
 
-		if !injected && fm.coalescePendingRedrawWithReadyTask() {
+		if !injected {
+			select {
+			case task := <-fm.PriorityTaskChan:
+				result := fm.runPostedTask(task)
+				if !result.taskRedrawOmitted {
+					fm.Redraw()
+				}
+				skipNextRender = result.renderOmitted
+				loopAgain = true
+			default:
+			}
+		}
+
+		if !injected && !loopAgain && fm.coalescePendingRedrawWithReadyTask() {
 			loopAgain = true
 		}
 
 		if !injected && !loopAgain {
 			select {
 			case <-fm.RedrawChan:
+				loopAgain = true
+			case task := <-fm.PriorityTaskChan:
+				result := fm.runPostedTask(task)
+				if !result.taskRedrawOmitted {
+					fm.Redraw()
+				}
+				skipNextRender = result.renderOmitted
 				loopAgain = true
 			case task := <-fm.TaskChan:
 				// The task became ready after the priority check above.
@@ -2388,6 +2509,16 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 				break
 			}
 
+			select {
+			case task := <-fm.PriorityTaskChan:
+				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+					fm.Redraw()
+				}
+				drainCount++
+				continue
+			default:
+			}
+
 			idleTimer.Reset(2 * time.Millisecond)
 			select {
 			case ev, ok := <-fm.EventChan:
@@ -2405,6 +2536,18 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 				}
 				if len(fm.frames) > 0 {
 					fm.dispatchEvent(ev, false)
+				}
+				drainCount++
+				continue
+			case task := <-fm.PriorityTaskChan:
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+					fm.Redraw()
 				}
 				drainCount++
 				continue
@@ -2521,6 +2664,10 @@ func (fm *frameManager) renderPhase() {
 				fm.KeyBar.Shift = ks.Shift
 				fm.KeyBar.Ctrl = ks.Ctrl
 				fm.KeyBar.Alt = ks.Alt
+				fm.KeyBar.NormalIcons = ks.NormalIcons
+				fm.KeyBar.ShiftIcons = ks.ShiftIcons
+				fm.KeyBar.CtrlIcons = ks.CtrlIcons
+				fm.KeyBar.AltIcons = ks.AltIcons
 				break
 			}
 		}

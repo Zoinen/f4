@@ -134,6 +134,28 @@ func TestHighlightRule_Match(t *testing.T) {
 	}
 }
 
+func TestHighlightRule_CompiledMaskIndexMatchesGlobFallback(t *testing.T) {
+	rule := HighlightRule{
+		Masks:      []string{"*.go", "README", "a*", "*.[0-9]"},
+		IgnoreCase: true,
+	}
+	highlighter := &FileHighlighter{UserRules: []HighlightRule{rule}}
+	highlighter.CombineRules()
+	compiled := highlighter.Rules[0]
+	fallback := compiled
+	fallback.maskIndex = nil
+
+	for _, name := range []string{
+		"main.go", "MAIN.GO", "README", "readme", "archive.tar", "a-file",
+		"file.1", "file.txt", "nested\\main.go",
+	} {
+		item := vfs.VFSItem{Name: name}
+		if got, want := compiled.Match(&item, true), fallback.Match(&item, true); got != want {
+			t.Fatalf("compiled Match(%q) = %v, fallback = %v", name, got, want)
+		}
+	}
+}
+
 func TestHighlightRule_MatchAttributes(t *testing.T) {
 	ruleDir := HighlightRule{
 		AttrSet: AttrDirectory,

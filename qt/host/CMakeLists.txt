@@ -175,10 +175,12 @@ set(F4_LUCIDE_ICON_NAMES
   arrow-down-a-z.svg
   arrow-down-wide-narrow.svg
   arrow-up.svg
+  binary.svg
   book-open.svg
   check.svg
   circle-check.svg
   circle-play.svg
+  circle-question-mark.svg
   circle-x.svg
   chevron-down.svg
   chevron-right.svg
@@ -186,35 +188,53 @@ set(F4_LUCIDE_ICON_NAMES
   cloud.svg
   columns-2.svg
   columns-3.svg
+  copy.svg
   database.svg
+  eye.svg
   file.svg
   file-clock.svg
   file-code.svg
   file-cog.svg
   file-lock.svg
   file-pen-line.svg
+  file-plus.svg
   file-text.svg
   file-type.svg
+  flask-conical.svg
   folder.svg
+  folder-clock.svg
+  folder-input.svg
   folder-kanban.svg
   folder-lock.svg
+  folder-plus.svg
   folder-up.svg
+  git-fork.svg
   globe.svg
   image.svg
   images.svg
   grid-3x3.svg
   hard-drive.svg
   layout-dashboard.svg
+  languages.svg
   library.svg
   list.svg
   list-checks.svg
+  list-restart.svg
   list-tree.svg
   loader-circle.svg
+  locate-fixed.svg
+  log-out.svg
+  maximize-2.svg
+  menu.svg
+  monitor.svg
   music.svg
   network.svg
   panels-top-left.svg
   panel-left.svg
+  panel-right.svg
   palette.svg
+  pencil.svg
+  plug.svg
   plus.svg
   refresh-cw.svg
   rotate-ccw.svg
@@ -223,7 +243,9 @@ set(F4_LUCIDE_ICON_NAMES
   save.svg
   search.svg
   sparkles.svg
+  space.svg
   square-terminal.svg
+  text-wrap.svg
   trash-2.svg
   triangle-alert.svg
   video.svg
