@@ -10,7 +10,38 @@ import (
 )
 
 type TerminalLogVFS struct {
-	tv *TerminalView
+	tv                *TerminalView
+	data              []byte
+	initialOffset     int64
+	immutableSnapshot bool
+}
+
+func NewTerminalLogVFS(tv *TerminalView) *TerminalLogVFS {
+	v := &TerminalLogVFS{tv: tv}
+	if tv == nil {
+		return v
+	}
+	snapshot := tv.terminalLogSnapshot()
+	v.data = snapshot.data
+	v.initialOffset = snapshot.viewportOffset
+	v.immutableSnapshot = true
+	return v
+}
+
+// InitialOffset is the byte boundary corresponding to the first terminal row
+// that was visible when this immutable F3/F4 snapshot was created.
+func (v *TerminalLogVFS) InitialOffset() (int64, bool) {
+	if v == nil || !v.immutableSnapshot {
+		return 0, false
+	}
+	return v.initialOffset, true
+}
+
+func (v *TerminalLogVFS) immutableBytes() ([]byte, bool) {
+	if v == nil || !v.immutableSnapshot {
+		return nil, false
+	}
+	return v.data, true
 }
 
 func (v *TerminalLogVFS) IsAtRoot() bool            { return true }
@@ -54,6 +85,12 @@ func (v *TerminalLogVFS) Clone() vfs.VFS     { return v }
 func (v *TerminalLogVFS) Close() error       { return nil }
 
 func (v *TerminalLogVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, error) {
+	if v.immutableSnapshot {
+		return &terminalLogWrapper{data: v.data}, nil
+	}
+	if v.tv == nil {
+		return &terminalLogWrapper{}, nil
+	}
 	return &terminalLogWrapper{data: v.tv.GetAllLogBytes()}, nil
 }
 

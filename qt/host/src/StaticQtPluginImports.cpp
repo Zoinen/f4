@@ -6,6 +6,11 @@ Q_IMPORT_PLUGIN(QOffscreenIntegrationPlugin)
 Q_IMPORT_PLUGIN(QWindowsIntegrationPlugin)
 #elif defined(Q_OS_LINUX)
 Q_IMPORT_PLUGIN(QXcbIntegrationPlugin)
+Q_IMPORT_PLUGIN(QXcbEglIntegrationPlugin)
+Q_IMPORT_PLUGIN(QXcbGlxIntegrationPlugin)
+Q_IMPORT_PLUGIN(QWaylandIntegrationPlugin)
+Q_IMPORT_PLUGIN(QWaylandEglClientBufferPlugin)
+Q_IMPORT_PLUGIN(QWaylandXdgShellIntegrationPlugin)
 #endif
 
 Q_IMPORT_PLUGIN(QGifPlugin)

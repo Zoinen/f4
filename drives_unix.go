@@ -12,8 +12,8 @@ import (
 func getPlatformDrives() []DriveEntry {
 	home, _ := os.UserHomeDir()
 	drives := []DriveEntry{
-		{Name: "/ Root", Icon: driveMenuIconLocal, Factory: func() vfs.VFS { return vfs.NewOSVFS("/") }},
-		{Name: "~ Home", Icon: driveMenuIconBookmark, Factory: func() vfs.VFS { return vfs.NewOSVFS(home) }},
+		{Name: "/ Root", Icon: "folder-root", Factory: func() vfs.VFS { return vfs.NewOSVFS("/") }},
+		{Name: "~ Home", Icon: "house", Factory: func() vfs.VFS { return vfs.NewOSVFS(home) }},
 	}
 	if runtime.GOOS != "darwin" {
 		drives = append(drives, DriveEntry{

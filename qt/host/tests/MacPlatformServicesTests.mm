@@ -294,6 +294,13 @@ void MacPlatformServicesTests::
       QVERIFY(QFileInfo::exists(path));
     }
     const QString id = row.value(QStringLiteral("id")).toString();
+    if (id == QStringLiteral("home")) {
+      QCOMPARE(row.value(QStringLiteral("icon")).toString(),
+               QStringLiteral("house"));
+    } else if (id == QStringLiteral("root-volume")) {
+      QCOMPARE(row.value(QStringLiteral("icon")).toString(),
+               QStringLiteral("folder-root"));
+    }
     sawHome = sawHome || id == QStringLiteral("home");
     sawRoot = sawRoot || id == QStringLiteral("root-volume");
     sawNetwork = sawNetwork || id == QStringLiteral("network");

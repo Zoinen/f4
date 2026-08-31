@@ -1845,11 +1845,31 @@ func TestPanelsFrame_KeyBarSuppression(t *testing.T) {
 		t.Error("KeyBar should be registered in FrameManager in busy mode when panels are visible")
 	}
 
-	// 4. Busy mode and panels hidden: KeyBar should be UNregistered (Issue #50)
+	// 4. Busy normal-screen mode and panels hidden remains in the commander
+	// layout: Ctrl+O hides only the panels, not the command line or KeyBar.
 	pf.showPanels = false
 	pf.Show(scr)
+	if vtui.FrameManager.KeyBar == nil {
+		t.Error("KeyBar should remain registered in normal-screen terminal mode")
+	}
+	if !pf.cmdLine.IsVisible() {
+		t.Error("command line should remain visible in normal-screen terminal mode")
+	}
+	if pf.termView.Y2 != 23 {
+		t.Errorf("normal-screen terminal should reserve the KeyBar row: Y2=%d, want 23", pf.termView.Y2)
+	}
+
+	// 5. A real alternate-screen application owns the complete surface.
+	pf.termView.UseAltScreen = true
+	pf.Show(scr)
 	if vtui.FrameManager.KeyBar != nil {
-		t.Error("KeyBar should be UNregistered from FrameManager in busy mode when panels are hidden")
+		t.Error("KeyBar should be unregistered in hidden-panels AltScreen mode")
+	}
+	if pf.cmdLine.IsVisible() {
+		t.Error("command line should be hidden in hidden-panels AltScreen mode")
+	}
+	if pf.termView.Y2 != 24 {
+		t.Errorf("AltScreen terminal should use the full height: Y2=%d, want 24", pf.termView.Y2)
 	}
 }
 func TestPanelsFrame_RefreshAll(t *testing.T) {

@@ -1,0 +1,18 @@
+diff --git a/src/core/contexts/qtwindowcontext.cpp b/src/core/contexts/qtwindowcontext.cpp
+index 9f41816..1b19a9f 100644
+--- a/src/core/contexts/qtwindowcontext.cpp
++++ b/src/core/contexts/qtwindowcontext.cpp
+@@ -230,7 +230,12 @@ namespace QWK {
+                 if (me->button() == Qt::LeftButton && inTitleBar && !fixedSize) {
+                     Qt::WindowFlags windowFlags = delegate->getWindowFlags(host);
+                     Qt::WindowStates windowState = delegate->getWindowState(host);
+-                    if ((windowFlags & Qt::WindowMaximizeButtonHint) &&
++                    // Individual button hints only become authoritative when
++                    // CustomizeWindowHint is set; otherwise Qt uses defaults.
++                    const bool maximizeEnabled =
++                        !(windowFlags & Qt::CustomizeWindowHint) ||
++                        (windowFlags & Qt::WindowMaximizeButtonHint);
++                    if (maximizeEnabled &&
+                         !(windowState & Qt::WindowFullScreen)) {
+                         if (windowState & Qt::WindowMaximized) {
+                             delegate->setWindowState(host, windowState & ~Qt::WindowMaximized);

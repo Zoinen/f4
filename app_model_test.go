@@ -480,8 +480,11 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 				"defaultBackground":  "#242424",
 				"title":              " Editor ",
 				"path":               "/tmp/a.txt",
+				"localPath":          "/tmp/a.txt",
 				"baseName":           "a.txt",
 				"mode":               "text",
+				"topBarLeft":         " a.txt",
+				"topBarRight":        " UTF-8 │ 3,7     ",
 				"cursorVisualRow":    2,
 				"cursorVisualColumn": 7,
 				"cursorVisible":      true,
@@ -516,8 +519,13 @@ func TestBuildAppSceneFromLegacyPromotesDocumentSurface(t *testing.T) {
 	scene := BuildAppSceneFromLegacy(nil, legacy)
 	surface := scene["surface"].(map[string]any)
 	if surface["kind"] != "editor" || surface["baseName"] != "a.txt" ||
+		surface["localPath"] != "/tmp/a.txt" ||
 		surface["defaultBackground"] != "#242424" {
 		t.Fatalf("unexpected surface: %#v", surface)
+	}
+	if surface["topBarLeft"] != " a.txt" ||
+		surface["topBarRight"] != " UTF-8 │ 3,7     " {
+		t.Fatalf("top bar strings were not promoted: %#v", surface)
 	}
 	if surface["cursorVisualRow"] != 2 || surface["cursorVisualColumn"] != 7 ||
 		surface["cursorVisible"] != true || surface["cursorShape"] != "block" {

@@ -668,6 +668,7 @@ private slots:
     void commandLineCursorTracksFirstTextPatch();
     void autocompleteReturnTargetsShellCommandHandler();
     void widePanelDoesNotRevealTerminalBackdrop();
+    void terminalScrollBarStaysInsideTheExposedPanelSide();
 };
 
 void F4QuickViewSurfaceTests::initTestCase()
@@ -3179,6 +3180,13 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
     verifyDirectSvgIcon(minimizeIcon, QStringLiteral("minimize icon"));
     verifyDirectSvgIcon(maximizeIcon, QStringLiteral("maximize icon"));
     verifyDirectSvgIcon(closeIcon, QStringLiteral("close icon"));
+    const QColor darkChromeIconColor(QStringLiteral("#ffffff"));
+    QCOMPARE(minimizeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
+    QCOMPARE(maximizeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
+    QCOMPARE(closeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
 
     const QPointF titleBarOrigin = titleBar->mapToItem(rootItem, QPointF{});
     const qreal titleBarCenterY = titleBarOrigin.y() + titleBar->height() / 2;
@@ -4203,6 +4211,73 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     QVERIFY(!backdrop->isVisible());
     QCOMPARE(widePanel->x(), 0.0);
     QCOMPARE(widePanel->width(), fixture.window->width());
+}
+
+void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("showLeftPanel"), false);
+    shell.insert(QStringLiteral("showRightPanel"), true);
+    shell.insert(QStringLiteral("panelLayout"), QVariantMap{
+        {QStringLiteral("columns"), 100},
+        {QStringLiteral("splitColumn"), 40},
+        {QStringLiteral("leftBottomInsetRows"), 0},
+        {QStringLiteral("rightBottomInsetRows"), 0},
+    });
+    shell.insert(QStringLiteral("terminal"), QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("terminal-exposed-side")},
+        {QStringLiteral("kind"), QStringLiteral("terminal")},
+        {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
+        {QStringLiteral("scrollAction"), QStringLiteral("terminal.scroll")},
+        {QStringLiteral("selectionEnabled"), true},
+        {QStringLiteral("windowRows"), visualRows(0, 90)},
+        {QStringLiteral("windowStart"), 0},
+        {QStringLiteral("windowEnd"), 90},
+        {QStringLiteral("viewportStart"), 30},
+        {QStringLiteral("viewportSpan"), 24},
+        {QStringLiteral("viewportRow"), 30},
+        {QStringLiteral("viewportRows"), 24},
+        {QStringLiteral("contentExtent"), 10'000},
+        {QStringLiteral("contentExtentKnown"), true},
+        {QStringLiteral("windowGeneration"), 1},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *backdrop = fixture.item(QStringLiteral("terminalBackdrop"));
+    QVERIFY(backdrop);
+    QTRY_VERIFY_WITH_TIMEOUT(backdrop->isVisible(), 3000);
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (surface = fixture.item(QStringLiteral("terminalDocumentSurface")))
+            != nullptr,
+        3000);
+    auto *scrollBar = surface->findChild<QQuickItem *>(
+        QStringLiteral("documentScrollBar"));
+    QVERIFY(scrollBar);
+    QTRY_VERIFY_WITH_TIMEOUT(scrollBar->isVisible(), 3000);
+
+    const qreal splitX = backdrop->width() * 0.4;
+    const qreal leftExposedBarRight = scrollBar->mapToItem(
+        backdrop, QPointF(scrollBar->width(), 0)).x();
+    QVERIFY(qAbs(leftExposedBarRight - splitX) < 0.01);
+    QVERIFY(qAbs(backdrop->property("scrollBarRightInset").toReal()
+                 - backdrop->width() * 0.6) < 0.01);
+
+    shell.insert(QStringLiteral("showLeftPanel"), true);
+    shell.insert(QStringLiteral("showRightPanel"), false);
+    scene.insert(QStringLiteral("shell"), shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(backdrop->property("scrollBarRightInset").toReal()) < 0.01,
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(scrollBar->mapToItem(backdrop,
+                                 QPointF(scrollBar->width(), 0)).x()
+             - backdrop->width()) < 0.01,
+        3000);
 }
 
 void F4QuickViewSurfaceTests::autocompleteReturnTargetsShellCommandHandler()

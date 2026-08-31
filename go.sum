@@ -342,6 +342,8 @@ github.com/unxed/colorer4go v0.1.14 h1:7M+LXUwolR5zs+OgXSjSq29Wa1dGgmYHV8BywTN+Q
 github.com/unxed/colorer4go v0.1.14/go.mod h1:3H2jIU3HsmlT7ChlpX+rnYrF2JM22ekgy/eyIBa7Cdo=
 github.com/unxed/ffibridge v0.1.0 h1:SdhCgScnOyqMrdi35WIZkFg4q4R7LVZTsk/clBbael4=
 github.com/unxed/ffibridge v0.1.0/go.mod h1:2uCjcSNsDKZh+g4Q5nlKX91XHJuOUCG2XCagLo+py4E=
+github.com/unxed/goffi v0.1.4 h1:XKBAm1DkskXmg7GQ5v2Qg2jFs/fUyqar7Wc9h3nKgLE=
+github.com/unxed/goffi v0.1.4/go.mod h1:5yfNuseCh+0XTe9cbg8lGtZtOA12DU+Nm9Vfp6IDnFo=
 github.com/unxed/id3-go v0.1.1 h1:uoT2sRwsSQB84FBRGNDOdeY/g2EktD72ABv9Y1JJkA8=
 github.com/unxed/id3-go v0.1.1/go.mod h1:vscXqA1d+PD9t8WiqN8jaHZMDzvcqPbAvpie3QelMnQ=
 github.com/unxed/keytrans v0.1.30 h1:kuhFPI4erwouj1RZrDja1yl648Leg10yV10bjeTKijc=

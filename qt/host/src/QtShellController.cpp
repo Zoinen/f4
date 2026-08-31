@@ -982,6 +982,9 @@ bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
         return shape == QStringLiteral("underline")
             || shape == QStringLiteral("block");
     }
+    if (key == QStringLiteral("topBarRight")) {
+        return valueHasType(value, QMetaType::QString);
+    }
     qlonglong number = 0;
     if (!integerValue(value, &number)) {
         return false;
@@ -2080,6 +2083,7 @@ bool applyScenePatch(const QVariantMap &message,
             QStringLiteral("cursorVisible"),
             QStringLiteral("cursorShape"),
             QStringLiteral("cursorAbsoluteRow"),
+            QStringLiteral("topBarRight"),
         };
         const QVariantMap mapPatch = {
             {QStringLiteral("set"),
@@ -3397,7 +3401,8 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                      QStringLiteral("cursorVisualColumn"),
                      QStringLiteral("cursorVisible"),
                      QStringLiteral("cursorShape"),
-                     QStringLiteral("cursorAbsoluteRow")}) {
+                     QStringLiteral("cursorAbsoluteRow"),
+                     QStringLiteral("topBarRight")}) {
                 state.insert(key, surface.value(key));
             }
             compactRootPatch.insert(QStringLiteral("surfaceState"), state);

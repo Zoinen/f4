@@ -769,13 +769,13 @@ struct MacPlatformServices::Impl {
                     QStringLiteral("folder"), QStringLiteral("iCloud Drive"),
                     200);
       appendPathRow(rows, seenPaths, QStringLiteral("home"),
-                    QStringLiteral("locations"), home, QStringLiteral("folder"),
+                    QStringLiteral("locations"), home, QStringLiteral("house"),
                     NSUserName() ? qString(NSUserName()) : QString(), 210);
 
       NSURL *root = [NSURL fileURLWithPath:@"/" isDirectory:YES];
       appendPathRow(rows, seenPaths, QStringLiteral("root-volume"),
                     QStringLiteral("locations"), root,
-                    QStringLiteral("hard-drive"),
+                    QStringLiteral("folder-root"),
                     QStringLiteral("Macintosh HD"), 220);
       if (includeMountedVolumes) {
         NSArray<NSURLResourceKey> *volumeKeys = @[

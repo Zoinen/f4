@@ -96,6 +96,7 @@ trap checkpoint_conan_packages EXIT
 TARGET_ARCH="${TARGET_ARCH:-amd64}"
 build_dir="qt/host/build-portable-linux-${TARGET_ARCH}"
 dist_dir="dist/f4-linux-${TARGET_ARCH}"
+launcher_output="${F4_LAUNCHER_OUTPUT:-${dist_dir}/f4}"
 
 cmake_executable="/opt/f4-build-venv/bin/cmake"
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
@@ -155,8 +156,10 @@ conan export "${fontconfig_recipe_copy}" --name=fontconfig --version=2.15.0
 # rebuild every target-side native package even if Conan Center offers a GCC
 # 11 binary; build-only tools are allowed from the remote when they run on
 # 2.27. m4 is the exception: its remote binary requires newer glibc, so rebuild
-# it too. Once this container has completed successfully, persist a marker in
-# the cached package graph and let Conan reuse those baseline-built packages.
+# it too. Ninja is also forced because a locally populated Conan cache may
+# contain a build-tool binary linked against the workstation's newer glibc.
+# Once this container has completed successfully, persist a marker in the
+# cached package graph and let Conan reuse those baseline-built packages.
 target_packages=(
     brotli bzip2 double-conversion expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
@@ -167,6 +170,9 @@ baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
 if [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
+    conan_build_args+=(--build='ninja/*')
+    conan_build_args+=(--build='pkgconf/*')
+    conan_build_args+=(--build='gperf/*')
     for package in "${target_packages[@]}"; do
         conan_build_args+=("--build=${package}/*")
     done
@@ -188,6 +194,7 @@ for attempt in 1 2 3; do
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
         -o:h 'qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows' \
         -o:h 'glib/*:with_elf=False' \
+        -o:h 'wayland/*:shared=True' \
         -o:h 'xkbcommon/*:with_wayland=True' \
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
@@ -282,39 +289,32 @@ echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' .
 echo "Embedded Qt payload tests passed"
-mkdir -p "${dist_dir}"
+mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
-# Keep the launcher independent of the host libc; the resulting artifact is
-# audited for zero dynamic dependencies below.
+# The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in
+# its deliberate static/stub mode so it contributes neither fake-CGo startup
+# hooks nor cgo_import_dynamic metadata.  This keeps the zero-interpreter,
+# zero-DT_NEEDED contract valid while the ordinary build retains full FFI.
 CGO_ENABLED=0 GOOS=linux GOARCH="${TARGET_ARCH}" go build -trimpath \
     -buildmode=exe \
-    -tags f4_embedded_qt_host \
+    -tags 'goffi_static f4_embedded_qt_host' \
     -ldflags='-s -w' \
-    -o "${dist_dir}/f4" .
+    -o "${launcher_output}" .
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
-# link.  The launcher has no DT_NEEDED entries; remove that inert header so the
-# portable artifact meets the explicit no-interpreter contract.
-if readelf -l "${dist_dir}/f4" | grep -q 'INTERP'; then
+# link.  The goffi_static build normally prevents that; keep this guard for
+# toolchain drift.
+if readelf -l "${launcher_output}" | grep -q 'INTERP'; then
     echo "Removing Go launcher PT_INTERP"
-    python ci/remove-elf-interpreter.py "${dist_dir}/f4"
+    python ci/remove-elf-interpreter.py "${launcher_output}"
 fi
-# The cgo-free FFI implementation uses Go's cgo_import_dynamic metadata for
-# optional plugin calls.  The embedded Qt launcher never exercises that path;
-# remove the metadata-only system-library edges so the distributed launcher
-# remains a genuinely self-contained ELF.  Keep the final audit below as the
-# guard against any new dynamic dependency.
-for runtime_lib in libc.so.6 libdl.so.2 libpthread.so.0; do
-    if readelf -d "${dist_dir}/f4" | grep -Fq "Shared library: [$runtime_lib]"; then
-        echo "Removing optional Go launcher DT_NEEDED $runtime_lib"
-        patchelf --remove-needed "$runtime_lib" "${dist_dir}/f4"
-    fi
-done
 echo "Auditing static Go launcher"
-bash ci/audit-static-go-linux.sh "${dist_dir}/f4"
+bash ci/audit-static-go-linux.sh "${launcher_output}"
 
-artifact_files="$(find "${dist_dir}" -maxdepth 1 -type f -printf '%f\n')"
-if [[ "${artifact_files}" != "f4" ]]; then
-    echo "error: portable Linux artifact must contain only the Go launcher" >&2
-    printf '%s\n' "${artifact_files}" >&2
-    exit 1
+if [[ "${launcher_output}" == "${dist_dir}/f4" ]]; then
+    artifact_files="$(find "${dist_dir}" -maxdepth 1 -type f -printf '%f\n')"
+    if [[ "${artifact_files}" != "f4" ]]; then
+        echo "error: portable Linux artifact must contain only the Go launcher" >&2
+        printf '%s\n' "${artifact_files}" >&2
+        exit 1
+    fi
 fi

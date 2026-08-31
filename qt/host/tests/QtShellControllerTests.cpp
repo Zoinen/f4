@@ -1625,6 +1625,8 @@ void QtShellControllerTests::scenePatchAppliesBoundedEditorCursorAndStructuralTr
         {QStringLiteral("cursorVisible"), true},
         {QStringLiteral("cursorShape"), QStringLiteral("underline")},
         {QStringLiteral("cursorAbsoluteRow"), qlonglong(0)},
+        {QStringLiteral("topBarLeft"), QStringLiteral(" music.svg")},
+        {QStringLiteral("topBarRight"), QStringLiteral(" UTF-8 │ 1,0     ")},
         {QStringLiteral("rows"), rows},
         {QStringLiteral("windowRows"), rows},
     };
@@ -1661,6 +1663,8 @@ void QtShellControllerTests::scenePatchAppliesBoundedEditorCursorAndStructuralTr
              {QStringLiteral("set"), QVariantMap{
                   {QStringLiteral("cursorPos"), 1},
                   {QStringLiteral("cursorVisualColumn"), 1},
+                  {QStringLiteral("topBarRight"),
+                   QStringLiteral(" UTF-8 │ 1,1     ")},
               }},
          }},
     });
@@ -1676,6 +1680,8 @@ void QtShellControllerTests::scenePatchAppliesBoundedEditorCursorAndStructuralTr
     QCOMPARE(updatedSurface.value(QStringLiteral("cursorPos")).toInt(), 1);
     QCOMPARE(updatedSurface.value(
                  QStringLiteral("cursorVisualColumn")).toInt(), 1);
+    QCOMPARE(updatedSurface.value(QStringLiteral("topBarRight")).toString(),
+             QStringLiteral(" UTF-8 │ 1,1     "));
     QCOMPARE(updatedSurface.value(QStringLiteral("rows")).toList(), rows);
     QCOMPARE(updatedSurface.value(QStringLiteral("windowRows")).toList(), rows);
     const QVariantMap cursorProjection = compactChanged.constLast()
@@ -1687,6 +1693,8 @@ void QtShellControllerTests::scenePatchAppliesBoundedEditorCursorAndStructuralTr
     QCOMPARE(cursorProjection.value(QStringLiteral("cursorPos")).toInt(), 1);
     QCOMPARE(cursorProjection.value(
                  QStringLiteral("cursorVisualColumn")).toInt(), 1);
+    QCOMPARE(cursorProjection.value(QStringLiteral("topBarRight")).toString(),
+             QStringLiteral(" UTF-8 │ 1,1     "));
 
     const QVariantMap shell = {
         {QStringLiteral("id"), QStringLiteral("panels")},

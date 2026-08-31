@@ -422,6 +422,10 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        // f4 currently has one intentionally dark UI. Replace ZoinGallery's
+        // desktop color-scheme binding so a light KDE/Windows/macOS setting
+        // cannot turn controls black on f4's dark chrome later at runtime.
+        ZG.Style.isDarkTheme = true
         loadThemeFromPersistence()
         captureRetainedSurfaces()
         if (!f4UsesQwk)
@@ -1122,6 +1126,20 @@ ApplicationWindow {
         const generation = qtIcons.revision
         return qtIcons.iconSource(name, logicalSize,
                                   root.iconDevicePixelRatio)
+    }
+
+    function fileIconSource(localPath, fileName, directory, logicalSize,
+                            version) {
+        // Keep document icons on the same native icon-set path as gallery
+        // entries. The C++ provider owns extension mapping, system-icon
+        // lookup, cache invalidation, and the Lucide/System distinction.
+        const generation = qtIcons.revision
+        const size = Number(logicalSize) > 0 ? Number(logicalSize) : 16
+        const iconVersion = Number(version) > 0 ? Number(version) : 0
+        return qtIcons.fileIconSource(
+                    root.cleanText(localPath), root.cleanText(fileName),
+                    directory === true, size, root.iconDevicePixelRatio,
+                    iconVersion)
     }
 
     function lucideIconSource(name, size, tint) {
@@ -2685,6 +2703,14 @@ ApplicationWindow {
                                 font.pixelSize: 9
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeFontRenderTypeDescription,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeFontRenderTypeDescription,
+                                        themeColorConfigurator.contentItem)
+                                }
                             }
                         }
 
@@ -2770,6 +2796,14 @@ ApplicationWindow {
                                 font.pixelSize: 9
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeMouseWheelDescription,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeMouseWheelDescription,
+                                        themeColorConfigurator.contentItem)
+                                }
                             }
                         }
 
@@ -3164,7 +3198,11 @@ ApplicationWindow {
                         RowLayout {
                             id: themeActiveColorRow
                             objectName: "themeActiveColorRow"
-                            Layout.fillWidth: true
+                            Layout.fillWidth: false
+                            Layout.preferredWidth: root.snapPx(320)
+                            Layout.minimumWidth: root.snapPx(320)
+                            Layout.maximumWidth: root.snapPx(320)
+                            width: root.snapPx(320)
                             Layout.preferredHeight: root.snapPx(26)
                             Layout.minimumHeight: root.snapPx(26)
                             Layout.maximumHeight: root.snapPx(26)
@@ -4870,7 +4908,7 @@ ApplicationWindow {
                     onClicked: root.showMinimized()
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Minimize,
                                                         minimizeButton)
                         }
@@ -4900,7 +4938,7 @@ ApplicationWindow {
                     }
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Maximize,
                                                         maximizeButton)
                         }
@@ -4933,7 +4971,7 @@ ApplicationWindow {
                     onClicked: root.close()
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Close,
                                                         closeButton)
                         }
@@ -5074,7 +5112,14 @@ ApplicationWindow {
                     visible: panelsRoot.frame.terminalActive === true
                              || (root.widePanelSide() < 0
                                  && (panelsRoot.frame.showLeftPanel === false
-                                     || panelsRoot.frame.showRightPanel === false))
+                                     || panelsRoot.frame.showRightPanel === false
+                                     || Number((panelsRoot.frame.panelLayout
+                                                || {}).leftBottomInsetRows
+                                               || 0) > 0
+                                     || Number((panelsRoot.frame.panelLayout
+                                                || {}).rightBottomInsetRows
+                                               || 0) > 0))
+                    shell: panelsRoot.frame
                     terminal: panelsRoot.frame.terminal || ({})
                 }
 
@@ -5260,6 +5305,7 @@ ApplicationWindow {
                 frame: root.currentDocumentFrame()
                        || root.retainedDocumentFrame || ({})
                 interactionActive: root.hasStandaloneDocumentSurface()
+                                   && !root.needsFallbackGrid()
             }
         }
 
@@ -5851,6 +5897,11 @@ ApplicationWindow {
                     // content line; do not add the standalone control's inset.
                     leadingInset: 0
                     showDriveIcon: false
+                    // Remote panels can expose a Windows-native path even
+                    // when the Qt host itself is running on another OS.
+                    windowsPathSeparators:
+                        Qt.platform.os === "windows"
+                        || String(panel.path || "").indexOf("\\") >= 0
                     breadcrumbFontPixelSize: root.semanticTextFontPixelSize
                     pathBackgroundColor: root.galleryPathBackgroundColor
                     pathTextColor: root.galleryPathTextColor
@@ -7480,32 +7531,52 @@ ApplicationWindow {
     }
 
     component TerminalBackdrop: Rectangle {
+        id: terminalBackdrop
         property var terminal: ({})
+        property var shell: ({})
+        property bool terminalSurfaceCreated: false
+        readonly property real splitRatio: {
+            var layout = shell && shell.panelLayout
+                    ? shell.panelLayout : ({})
+            var columns = Number(layout.columns || 0)
+            var splitColumn = Number(layout.splitColumn || 0)
+            return columns > 0 && splitColumn > 0 && splitColumn < columns
+                    ? splitColumn / columns : 0.5
+        }
+        // If only the left side is exposed, the right edge of the terminal is
+        // underneath the still-visible right panel. Keep the scrollbar on the
+        // exposed side of the split instead of allowing that panel to cover it.
+        readonly property real scrollBarRightInset:
+            shell && shell.terminalActive !== true
+            && shell.showLeftPanel === false
+            && shell.showRightPanel !== false
+            ? width * (1 - splitRatio) : 0
         objectName: "terminalBackdrop"
         color: "transparent"
         clip: true
 
-        // Keep the terminal's newest row attached to the bottom of its own
-        // viewport. The commander command line lives immediately below this
-        // rectangle, so reducing the viewport must move rows upward instead
-        // of clipping the latest output behind the prompt.
-        Item {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: (terminal.rows || []).length * root.ch
+        onVisibleChanged: {
+            if (visible)
+                terminalSurfaceCreated = true
+        }
+        Component.onCompleted: {
+            if (visible)
+                terminalSurfaceCreated = true
+        }
 
-            Repeater {
-                model: terminal.rows || []
-
-                delegate: ConsoleRunRow {
-                    x: 0
-                    y: Math.max(0, Number(modelData.index || 0)) * root.ch
-                    width: parent.width
-                    height: root.ch
-                    transparentBlackBackground: true
-                    runs: modelData.runs || []
-                    fallbackText: root.rowText(modelData)
+        // Terminal history uses the same bounded, pooled row-window renderer
+        // as Viewer/Editor. QML retains only a few viewports while Go's
+        // PieceTable/GridHistory remain the sole owners of complete scrollback.
+        Loader {
+            anchors.fill: parent
+            active: terminalBackdrop.terminalSurfaceCreated
+            sourceComponent: Component {
+                DocumentSurface {
+                    frame: terminalBackdrop.terminal
+                    embedded: true
+                    interactionActive: terminalBackdrop.visible
+                    scrollBarRightInset: terminalBackdrop.scrollBarRightInset
+                    surfaceObjectName: "terminalDocumentSurface"
                 }
             }
         }
@@ -8550,6 +8621,7 @@ ApplicationWindow {
         // so applying the global menu/keybar insets there would double-pad it.
         property bool embedded: false
         property bool interactionActive: true
+        property real scrollBarRightInset: 0
         property var displayedRows: []
         property bool windowInitialized: false
         property bool rebasingWindow: false
@@ -8578,14 +8650,78 @@ ApplicationWindow {
         property int lastEditorMouseRow: 0
         property var pendingEditorMouseMove: null
         property var latestWindowRows: []
+        property int reportedViewportRows: 0
+        property string reportedViewportTarget: ""
+        property string reportedViewportAction: ""
+        property bool terminalSelectionVisible: false
+        property bool terminalSelectionDragging: false
+        property int terminalSelectionAnchorRow: -1
+        property int terminalSelectionAnchorColumn: -1
+        property int terminalSelectionFocusRow: -1
+        property int terminalSelectionFocusColumn: -1
+        property int terminalClickCount: 0
+        property real terminalLastClickAt: 0
+        property int terminalLastClickRow: -1
+        property int terminalLastClickColumn: -1
+        property real terminalSelectionPointerX: 0
+        property real terminalSelectionPointerY: 0
+        // Signed distance in pixels beyond the terminal viewport. A negative
+        // value scrolls toward older rows; a positive value scrolls toward
+        // newer rows. The history itself remains exclusively in Go.
+        property real terminalSelectionAutoScrollDistance: 0
+        property real terminalSelectionAutoScrollLastTick: 0
+        // This is the user's live intent, not merely the last viewport state
+        // received from Go. It changes on the first native scroll sample so a
+        // queued output frame cannot pull the user back to the tail while the
+        // coalesced window request is still in flight.
+        property bool terminalFollowTailIntent: true
+        property bool terminalFollowTailInitialized: false
         readonly property var cursorFrame:
             root.documentSurfaceStateOverride !== null
             && root.cleanText(root.documentSurfaceStateOverride.id)
                === root.cleanText(frame.id)
             ? root.documentSurfaceStateOverride : frame
+        readonly property bool showsConsoleTopBar:
+            !embedded && (frame.kind === "viewer" || frame.kind === "editor")
+        readonly property bool terminalSurface: frame.kind === "terminal"
+        readonly property bool terminalSelectionEnabled:
+            terminalSurface && frame.selectionEnabled === true
+        readonly property string topBarLeftText:
+            root.cleanText(frame.topBarLeft).trim()
+        readonly property string topBarRightText:
+            root.cleanText(cursorFrame.topBarRight !== undefined
+                           ? cursorFrame.topBarRight : frame.topBarRight).trim()
+        readonly property string documentFileName:
+            root.cleanText(frame.baseName).trim() !== ""
+            ? root.cleanText(frame.baseName).trim() : topBarLeftText
+        readonly property string documentFileLocalPath:
+            root.cleanText(frame.localPath)
+        readonly property int documentFileIconLogicalSize: 16
+        readonly property url documentFileIconSource:
+            showsConsoleTopBar
+            ? root.fileIconSource(documentFileLocalPath, documentFileName,
+                                  false, documentFileIconLogicalSize, 0)
+            : ""
+        readonly property bool documentFileIconFullColor:
+            qtIcons.fileIconsAreFullColor === true
+        readonly property color documentFileIconColor:
+            root.cleanText(frame.iconColor).trim() !== ""
+            ? root.cleanText(frame.iconColor).trim()
+            : root.galleryMutedTextColor
+        readonly property bool documentFileIconAvailable:
+            documentFileIconSource.toString() !== ""
+        readonly property real surfaceMenuInset:
+            embedded ? 0 : (semanticMenu.visible ? semanticMenu.height : 0)
+        readonly property real documentHeaderHeight:
+            showsConsoleTopBar
+            ? Math.max(25, root.ch * 1.25)
+              + root.verticalContentSpacing
+              + root.pathRowExtraHeight
+            : 0
         readonly property bool kineticActive:
             documentList.flicking || documentList.dragging
             || documentWheelAnimation.running || wheelGestureActive
+            || terminalSelectionAutoScrollTimer.running
         readonly property bool hasWindowProtocol:
             root.cleanText(frame.scrollUnit) !== ""
             && frame.windowRows !== undefined
@@ -8595,12 +8731,14 @@ ApplicationWindow {
             Math.max(0, Number(frame.contentExtent || 0))
         readonly property bool contentExtentKnown:
             frame.contentExtentKnown !== false
-        readonly property real topInset: embedded ? 0
-                                           : semanticMenu.visible
-                                             ? semanticMenu.height : 0
+        readonly property real topInset:
+            surfaceMenuInset + documentHeaderHeight
         readonly property real bottomInset: embedded ? 0
             : root.keyBarHeight()
         readonly property real rowHeight: Math.max(20, root.ch)
+        readonly property real textHorizontalInset: terminalSurface ? 0 : 10
+        readonly property real terminalCellWidth:
+            Math.max(1, documentFontMetrics.advanceWidth("M"))
 
         function runBackground(value) {
             var background = root.cleanText(value).toLowerCase()
@@ -8702,6 +8840,404 @@ ApplicationWindow {
                 "column": lastEditorMouseColumn,
                 "row": lastEditorMouseRow
             }, true)
+        }
+
+        function terminalSelectionPointAt(pointX, pointY) {
+            var modelIndex = Math.floor(
+                        (documentList.contentY + pointY) / rowHeight)
+            var windowIndex = modelIndex - loadedSlotStart
+            var absoluteRow = windowIndex >= 0
+                    && windowIndex < displayedRows.length
+                    ? rowExtent(windowIndex)
+                    : Number(frame.viewportStart || 0)
+                      + Math.floor(pointY / rowHeight)
+            var totalRows = Math.max(1, Number(frame.contentExtent || 1))
+            var relativeColumn = (pointX - textHorizontalInset)
+                    / terminalCellWidth
+            var columns = terminalColumnCount(documentList.width)
+            return {
+                "row": Math.max(0, Math.min(totalRows - 1,
+                                              Math.floor(absoluteRow))),
+                // Selection endpoints are insertion boundaries. The nearest
+                // half-cell decides whether the boundary before or after the
+                // pointed character is used.
+                "column": Math.max(0, Math.min(columns,
+                                      Math.floor(relativeColumn + 0.5))),
+                "cellColumn": Math.max(0, Math.min(columns - 1,
+                                          Math.floor(relativeColumn)))
+            }
+        }
+
+        function terminalSelectionPoint(mouse) {
+            return terminalSelectionPointAt(mouse.x, mouse.y)
+        }
+
+        function terminalSelectionPointAtViewportEdge() {
+            return terminalSelectionPointAt(
+                        terminalSelectionPointerX,
+                        clamp(terminalSelectionPointerY, 0,
+                              Math.max(0, documentList.height - 0.001)))
+        }
+
+        function terminalColumnCount(rowWidth) {
+            var semanticColumns = Math.floor(Number(frame.columns || 0))
+            if (semanticColumns > 0)
+                return semanticColumns
+            return Math.max(1, Math.floor(
+                        (Number(rowWidth || documentList.width)
+                         - textHorizontalInset) / terminalCellWidth))
+        }
+
+        function terminalRowDataAt(absoluteRow) {
+            for (var index = 0; index < displayedRows.length; ++index) {
+                if (Number((displayedRows[index] || {}).visualRow || 0)
+                        === Number(absoluteRow))
+                    return displayedRows[index]
+            }
+            return null
+        }
+
+        function terminalCharacterAt(text, index) {
+            var first = text.charCodeAt(index)
+            if (first >= 0xD800 && first <= 0xDBFF
+                    && index + 1 < text.length) {
+                var second = text.charCodeAt(index + 1)
+                if (second >= 0xDC00 && second <= 0xDFFF)
+                    return text.slice(index, index + 2)
+            }
+            return text.charAt(index)
+        }
+
+        function terminalCharacterCellWidth(character, column) {
+            if (character === "\t")
+                return 8 - (column % 8)
+            var measured = Number(documentFontMetrics.advanceWidth(character))
+            if (!isFinite(measured) || measured <= 0)
+                return 1
+            return Math.max(1, Math.round(measured / terminalCellWidth))
+        }
+
+        function selectTerminalWordAt(absoluteRow, cellColumn) {
+            var rowData = terminalRowDataAt(absoluteRow)
+            var text = rowData ? root.rowText(rowData) : ""
+            var cells = []
+            var column = 0
+            for (var index = 0; index < text.length;) {
+                var character = terminalCharacterAt(text, index)
+                var width = terminalCharacterCellWidth(character, column)
+                cells.push({
+                    "start": column,
+                    "end": column + width,
+                    "word": character.trim().length > 0
+                })
+                column += width
+                index += character.length
+            }
+
+            var hit = -1
+            for (var cell = 0; cell < cells.length; ++cell) {
+                if (cellColumn >= cells[cell].start
+                        && cellColumn < cells[cell].end) {
+                    hit = cell
+                    break
+                }
+            }
+            if (hit < 0 || !cells[hit].word) {
+                terminalSelectionVisible = false
+                terminalSelectionDragging = false
+                return false
+            }
+
+            var first = hit
+            var last = hit
+            while (first > 0 && cells[first - 1].word)
+                --first
+            while (last + 1 < cells.length && cells[last + 1].word)
+                ++last
+            terminalSelectionAnchorRow = Math.floor(absoluteRow)
+            terminalSelectionAnchorColumn = cells[first].start
+            terminalSelectionFocusRow = terminalSelectionAnchorRow
+            terminalSelectionFocusColumn = cells[last].end
+            terminalSelectionVisible = true
+            terminalSelectionDragging = false
+            stopTerminalSelectionAutoScroll()
+            return true
+        }
+
+        function selectTerminalParagraphAt(absoluteRow) {
+            var rowData = terminalRowDataAt(absoluteRow) || ({})
+            var totalRows = Math.max(1, Number(frame.contentExtent || 1))
+            var start = rowData.logicalRowStart !== undefined
+                    ? Number(rowData.logicalRowStart) : Number(absoluteRow)
+            var end = rowData.logicalRowEnd !== undefined
+                    ? Number(rowData.logicalRowEnd) : Number(absoluteRow) + 1
+            start = Math.max(0, Math.min(totalRows - 1, Math.floor(start)))
+            end = Math.max(start + 1,
+                           Math.min(totalRows, Math.floor(end)))
+            terminalSelectionAnchorRow = start
+            terminalSelectionAnchorColumn = 0
+            terminalSelectionFocusRow = end - 1
+            terminalSelectionFocusColumn = terminalColumnCount(documentList.width)
+            terminalSelectionVisible = true
+            terminalSelectionDragging = false
+            stopTerminalSelectionAutoScroll()
+            return true
+        }
+
+        function registerTerminalClick(absoluteRow, cellColumn, timestamp) {
+            var now = Number(timestamp || Date.now())
+            var sameCell = Math.floor(absoluteRow) === terminalLastClickRow
+                    && Math.floor(cellColumn) === terminalLastClickColumn
+            if (sameCell && now >= terminalLastClickAt
+                    && now - terminalLastClickAt <= 400)
+                terminalClickCount = Math.min(3, terminalClickCount + 1)
+            else
+                terminalClickCount = 1
+            terminalLastClickAt = now
+            terminalLastClickRow = Math.floor(absoluteRow)
+            terminalLastClickColumn = Math.floor(cellColumn)
+            return terminalClickCount
+        }
+
+        function handleTerminalSelectionPressAt(absoluteRow, boundaryColumn,
+                                                  cellColumn, timestamp) {
+            terminalSelectionVisible = false
+            stopTerminalSelectionAutoScroll()
+            var count = registerTerminalClick(
+                        absoluteRow, cellColumn, timestamp)
+            if (count === 1) {
+                beginTerminalSelectionAt(absoluteRow, boundaryColumn)
+            } else if (count === 2) {
+                selectTerminalWordAt(absoluteRow, cellColumn)
+            } else {
+                selectTerminalParagraphAt(absoluteRow)
+                terminalClickCount = 0
+            }
+            return count
+        }
+
+        function terminalSelectionAutoScrollVelocity(distance) {
+            var signedDistance = Number(distance || 0)
+            if (Math.abs(signedDistance) < 0.001)
+                return 0
+            var rowsBeyond = Math.abs(signedDistance) / rowHeight
+            // Three rows/second just outside the edge permits precise
+            // selection. Linear plus quadratic acceleration makes a distant
+            // drag cross very large histories quickly without an unbounded
+            // jump when a frame is delayed.
+            var rowsPerSecond = Math.min(
+                        240, 3 + rowsBeyond * 12
+                             + rowsBeyond * rowsBeyond * 2)
+            return (signedDistance < 0 ? -1 : 1)
+                    * rowsPerSecond * rowHeight
+        }
+
+        function stopTerminalSelectionAutoScroll() {
+            terminalSelectionAutoScrollTimer.stop()
+            terminalSelectionAutoScrollDistance = 0
+            terminalSelectionAutoScrollLastTick = 0
+        }
+
+        function updateTerminalSelectionPointer(pointX, pointY) {
+            terminalSelectionPointerX = Number(pointX || 0)
+            terminalSelectionPointerY = Number(pointY || 0)
+            var outside = 0
+            if (terminalSelectionPointerY < 0)
+                outside = terminalSelectionPointerY
+            else if (terminalSelectionPointerY > documentList.height)
+                outside = terminalSelectionPointerY - documentList.height
+            terminalSelectionAutoScrollDistance = outside
+            if (!terminalSelectionDragging || Math.abs(outside) < 0.001) {
+                terminalSelectionAutoScrollTimer.stop()
+                terminalSelectionAutoScrollLastTick = 0
+                return
+            }
+
+            // Selection-driven scrolling is explicit user intent. Suspend
+            // output following before the first timer tick so a racing frame
+            // cannot pull the selection back to the tail.
+            var state = topState()
+            setTerminalFollowTailIntent(
+                        outside > 0 && requestReachesContentEnd(state.extent),
+                        true)
+            if (!terminalSelectionAutoScrollTimer.running) {
+                terminalSelectionAutoScrollLastTick = Date.now()
+                terminalSelectionAutoScrollTimer.start()
+            }
+        }
+
+        function advanceTerminalSelectionAutoScroll(elapsedMs) {
+            if (!terminalSelectionDragging || !interactionActive
+                    || Math.abs(terminalSelectionAutoScrollDistance) < 0.001) {
+                stopTerminalSelectionAutoScroll()
+                return 0
+            }
+            var seconds = clamp(Number(elapsedMs || 16), 1, 50) / 1000
+            var previousY = documentList.contentY
+            var nextY = clamp(
+                        previousY
+                        + terminalSelectionAutoScrollVelocity(
+                            terminalSelectionAutoScrollDistance) * seconds,
+                        minimumLoadedY(), maximumLoadedY())
+            if (Math.abs(nextY - previousY) > 0.001) {
+                documentList.contentY = nextY
+                wheelTarget = nextY
+                var state = topState()
+                setTerminalFollowTailIntent(
+                            terminalSelectionAutoScrollDistance > 0
+                            && requestReachesContentEnd(state.extent), true)
+            } else {
+                // We reached the edge of the bounded QML window. Ask Go for
+                // the adjacent window; the repeating timer continues using
+                // the same pointer distance after its generation is ACKed.
+                maybeRequestWindow()
+            }
+            var point = terminalSelectionPointAtViewportEdge()
+            extendTerminalSelectionTo(point.row, point.column)
+            return nextY - previousY
+        }
+
+        function beginTerminalSelectionAt(row, column) {
+            terminalSelectionAnchorRow = Math.max(0, Math.floor(row))
+            terminalSelectionAnchorColumn = Math.max(0, Math.floor(column))
+            terminalSelectionFocusRow = terminalSelectionAnchorRow
+            terminalSelectionFocusColumn = terminalSelectionAnchorColumn
+            terminalSelectionVisible = true
+            terminalSelectionDragging = true
+        }
+
+        function extendTerminalSelectionTo(row, column) {
+            if (!terminalSelectionDragging)
+                return
+            terminalSelectionFocusRow = Math.max(0, Math.floor(row))
+            terminalSelectionFocusColumn = Math.max(0, Math.floor(column))
+        }
+
+        function commitTerminalSelection() {
+            if (!terminalSelectionDragging)
+                return
+            terminalSelectionDragging = false
+            stopTerminalSelectionAutoScroll()
+            if (terminalSelectionAnchorRow === terminalSelectionFocusRow
+                    && terminalSelectionAnchorColumn
+                       === terminalSelectionFocusColumn) {
+                terminalSelectionVisible = false
+                return
+            }
+            root.action({
+                "target": root.cleanText(frame.id),
+                "action": "terminal.copySelection",
+                "startRow": terminalSelectionAnchorRow,
+                "startColumn": terminalSelectionAnchorColumn,
+                "endRow": terminalSelectionFocusRow,
+                "endColumn": terminalSelectionFocusColumn,
+                "endExclusive": true
+            }, true)
+        }
+
+        function normalizedTerminalSelection() {
+            var startRow = terminalSelectionAnchorRow
+            var startColumn = terminalSelectionAnchorColumn
+            var endRow = terminalSelectionFocusRow
+            var endColumn = terminalSelectionFocusColumn
+            if (startRow > endRow
+                    || (startRow === endRow && startColumn > endColumn)) {
+                var swapRow = startRow
+                var swapColumn = startColumn
+                startRow = endRow
+                startColumn = endColumn
+                endRow = swapRow
+                endColumn = swapColumn
+            }
+            return {
+                "startRow": startRow,
+                "startColumn": startColumn,
+                "endRow": endRow,
+                "endColumn": endColumn
+            }
+        }
+
+        function terminalSelectionRangeForRow(absoluteRow, rowWidth) {
+            if (!terminalSelectionVisible || absoluteRow < 0)
+                return { "valid": false, "start": 0, "end": 0 }
+            var selection = normalizedTerminalSelection()
+            if (absoluteRow < selection.startRow
+                    || absoluteRow > selection.endRow)
+                return { "valid": false, "start": 0, "end": 0 }
+            var maxColumns = terminalColumnCount(rowWidth)
+            var start = absoluteRow === selection.startRow
+                    ? selection.startColumn : 0
+            var end = absoluteRow === selection.endRow
+                    ? selection.endColumn : maxColumns
+            start = Math.max(0, Math.min(maxColumns, start))
+            end = Math.max(start, Math.min(maxColumns, end))
+            return { "valid": end > start, "start": start, "end": end }
+        }
+
+        function completeViewportRows() {
+            if (rowHeight <= 0 || documentList.height <= 0)
+                return 0
+            // A partially visible final row cannot contain the editor cursor.
+            // Report only complete delegates to the core so its first hidden
+            // row is also the first row that triggers autoscroll.
+            return Math.max(1, Math.floor(
+                                (documentList.height + 0.001) / rowHeight))
+        }
+
+        function clearNativeViewport() {
+            if (reportedViewportTarget !== ""
+                    && reportedViewportRows > 0) {
+                root.action({
+                    "target": reportedViewportTarget,
+                    "action": reportedViewportAction !== ""
+                              ? reportedViewportAction : "document.viewport",
+                    "rows": 0
+                }, true)
+            }
+            reportedViewportTarget = ""
+            reportedViewportAction = ""
+            reportedViewportRows = 0
+        }
+
+        function syncNativeViewport() {
+            if (!interactionActive
+                    || (!terminalSurface
+                        && (embedded || !showsConsoleTopBar))) {
+                clearNativeViewport()
+                return
+            }
+            var target = root.cleanText(frame.id)
+            var rows = completeViewportRows()
+            var viewportAction = terminalSurface
+                    ? "terminal.viewport" : "document.viewport"
+            if (target === "" || rows <= 0)
+                return
+            if (target === reportedViewportTarget
+                    && rows === reportedViewportRows
+                    && viewportAction === reportedViewportAction)
+                return
+            if (reportedViewportTarget !== ""
+                    && (target !== reportedViewportTarget
+                        || viewportAction !== reportedViewportAction)) {
+                root.action({
+                    "target": reportedViewportTarget,
+                    "action": reportedViewportAction !== ""
+                              ? reportedViewportAction : "document.viewport",
+                    "rows": 0
+                }, true)
+            }
+            reportedViewportTarget = target
+            reportedViewportAction = viewportAction
+            reportedViewportRows = rows
+            root.action({
+                "target": target,
+                "action": viewportAction,
+                "rows": rows
+            }, true)
+        }
+
+        function scheduleNativeViewportSync() {
+            nativeViewportSyncTimer.restart()
         }
 
         function sourceRows() {
@@ -8979,9 +9515,23 @@ ApplicationWindow {
                             loadedSlotEnd * rowHeight - documentList.height)
         }
 
+        function semanticFrameFollowsTail() {
+            if (!terminalSurface)
+                return false
+            if (frame.followTail !== undefined)
+                return frame.followTail === true
+            if (!contentExtentKnown || contentExtent <= 0)
+                return true
+            var viewportEnd = Number(frame.viewportStart || 0)
+                    + Number(frame.viewportSpan || 0)
+            return viewportEnd >= contentExtent - 0.000001
+        }
+
         function frameReachesContentEnd() {
             if (!contentExtentKnown || contentExtent <= 0)
                 return false
+            if (terminalSurface && terminalFollowTailInitialized)
+                return terminalFollowTailIntent
             var viewportEnd = Number(frame.viewportStart || 0)
                     + Number(frame.viewportSpan || 0)
             return viewportEnd >= contentExtent - 0.000001
@@ -9014,6 +9564,39 @@ ApplicationWindow {
                                - extentAtContentY(top))
         }
 
+        function requestReachesContentEnd(extent) {
+            if (!terminalSurface || !contentExtentKnown)
+                return false
+            if (contentExtent <= 0)
+                return true
+            // QML may expose a partial extra row compared with the complete
+            // row count reported to Go. Seeing that final row is sufficient:
+            // an explicit followTail request will snap to whatever the current
+            // core max is, even if output races ahead of this numeric extent.
+            var span = Math.max(visibleExtentSpan(),
+                                Number(frame.viewportSpan || 0))
+            return Number(extent || 0) + span
+                    >= contentExtent - 0.000001
+        }
+
+        function setTerminalFollowTailIntent(followTail, notifyCore) {
+            if (!terminalSurface)
+                return
+            var desired = followTail === true
+            var changed = !terminalFollowTailInitialized
+                    || terminalFollowTailIntent !== desired
+            terminalFollowTailIntent = desired
+            terminalFollowTailInitialized = true
+            if (!changed || notifyCore !== true
+                    || root.cleanText(frame.id) === "")
+                return
+            root.action({
+                "target": root.cleanText(frame.id),
+                "action": "terminal.followTail",
+                "followTail": desired
+            }, true)
+        }
+
         function syncScrollBar() {
             if (!documentScrollBar.visible || documentScrollBar.pressed)
                 return
@@ -9033,8 +9616,20 @@ ApplicationWindow {
             var total = Math.max(0, contentExtent)
             var target = clamp(Number(extent || 0), 0, total)
             var current = Number(frame.viewportStart || 0)
+            // Background window prefetches must never turn off follow-tail
+            // merely because a frame and its native geometry are briefly out
+            // of phase while output is arriving. User-input handlers update
+            // terminalFollowTailIntent before their coalesced request reaches
+            // this function. Reaching the end is still accepted directly so
+            // End/scrollbar-style callers resume without an equality race.
+            var requestedFollowTail = terminalSurface
+                    && (terminalFollowTailIntent
+                        || requestReachesContentEnd(target))
+            var followStateChanged = terminalSurface
+                    && requestedFollowTail !== semanticFrameFollowsTail()
             if (Math.abs(target - current) < 0.000001
-                    && Math.abs(fraction) < 0.000001)
+                    && Math.abs(fraction) < 0.000001
+                    && !followStateChanged)
                 return false
 
             windowRequestPending = true
@@ -9053,6 +9648,10 @@ ApplicationWindow {
             if (documentKey !== "")
                 actionMap.contentKey = documentKey
             actionMap.generation = requestedGeneration
+            if (terminalSurface) {
+                actionMap.followTail = requestedFollowTail
+                setTerminalFollowTailIntent(requestedFollowTail, false)
+            }
             if (frame.scrollUnit === "rows")
                 actionMap.visualRow = Math.floor(target)
             else
@@ -9087,6 +9686,14 @@ ApplicationWindow {
             var nextDocumentKey = documentKey
             var documentChanged = windowInitialized
                     && nextDocumentKey !== appliedDocumentKey
+            if (!terminalSurface) {
+                terminalFollowTailInitialized = false
+            } else if (!terminalFollowTailInitialized || documentChanged) {
+                terminalFollowTailIntent = semanticFrameFollowsTail()
+                terminalFollowTailInitialized = true
+            } else if (frame.altScreen === true) {
+                terminalFollowTailIntent = true
+            }
             if (documentChanged) {
                 // A source-panel cursor move may replace a Quick View while a
                 // wheel gesture/request from the old file is still live. Drop
@@ -9099,6 +9706,11 @@ ApplicationWindow {
                 requestWindowTimer.stop()
                 scrollBarRequestTimer.stop()
                 editorMouseMoveTimer.stop()
+                terminalSelectionDragging = false
+                terminalSelectionVisible = false
+                terminalClickCount = 0
+                terminalLastClickAt = 0
+                stopTerminalSelectionAutoScroll()
                 windowRequestPending = false
                 requestedExtent = 0
                 requestedFraction = 0
@@ -9119,6 +9731,8 @@ ApplicationWindow {
             var generation = Number(frame.windowGeneration || 0)
             var acknowledged = windowRequestPending
                     && generation >= requestedGeneration
+            if (terminalSurface && acknowledged)
+                setTerminalFollowTailIntent(semanticFrameFollowsTail(), false)
             var viewportChanged = windowInitialized
                     && Number(frame.viewportStart || 0) !== lastViewportStart
             if (windowInitialized && !acknowledged && !viewportChanged
@@ -9128,7 +9742,10 @@ ApplicationWindow {
             }
             var targetExtent = oldState.extent
             var targetFraction = oldState.fraction
-            if (!windowInitialized || viewportChanged) {
+            var acceptsViewportChange = !terminalSurface
+                    || terminalFollowTailIntent || acknowledged
+            if (!windowInitialized
+                    || (viewportChanged && acceptsViewportChange)) {
                 targetExtent = Number(frame.viewportStart || 0)
                 targetFraction = acknowledged ? requestedFraction : 0
             }
@@ -9202,6 +9819,10 @@ ApplicationWindow {
                 documentWheelAnimation.to = wheelTarget
                 documentWheelAnimation.restart()
             }
+            if (terminalSurface) {
+                setTerminalFollowTailIntent(requestReachesContentEnd(
+                    extentAtContentY(wheelTarget)), true)
+            }
             wheel.accepted = true
         }
 
@@ -9214,16 +9835,28 @@ ApplicationWindow {
                 frameSyncTimer.restart()
         }
 
-        onFrameChanged: scheduleFrameWindowSync()
+        onFrameChanged: {
+            scheduleFrameWindowSync()
+            scheduleNativeViewportSync()
+        }
+        onRowHeightChanged: scheduleNativeViewportSync()
+        onEmbeddedChanged: scheduleNativeViewportSync()
         onInteractionActiveChanged: {
-            if (interactionActive)
+            if (interactionActive) {
+                scheduleNativeViewportSync()
                 return
+            }
+            clearNativeViewport()
             documentList.cancelFlick()
             documentWheelAnimation.stop()
             wheelCommitTimer.stop()
             requestWindowTimer.stop()
             scrollBarRequestTimer.stop()
             editorMouseMoveTimer.stop()
+            terminalSelectionDragging = false
+            terminalClickCount = 0
+            terminalLastClickAt = 0
+            stopTerminalSelectionAutoScroll()
             initialPlacementTimer.stop()
             wheelGestureActive = false
             windowRequestPending = false
@@ -9233,9 +9866,147 @@ ApplicationWindow {
             queuedScrollBarPosition = -1
             pendingEditorMouseMove = null
         }
-        Component.onCompleted: scheduleFrameWindowSync()
+        Component.onCompleted: {
+            scheduleFrameWindowSync()
+            scheduleNativeViewportSync()
+        }
 
         color: "transparent"
+
+        Rectangle {
+            id: documentHeader
+            objectName: documentRoot.surfaceObjectName === "documentSurface"
+                        ? "documentHeader"
+                        : documentRoot.surfaceObjectName + "Header"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: documentRoot.surfaceMenuInset
+            height: documentRoot.documentHeaderHeight
+            visible: documentRoot.showsConsoleTopBar
+            color: root.titleBarBg
+            z: 2
+
+            Rectangle {
+                id: documentHeaderBackground
+                objectName: "documentHeaderBackground"
+                anchors.fill: parent
+                color: root.panelPathBg
+                z: 0
+            }
+
+            Rectangle {
+                id: documentHeaderSeparator
+                objectName: "documentHeaderSeparator"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: root.separatorWidth
+                color: root.separatorColor
+            }
+
+            Item {
+                id: documentHeaderIcon
+                objectName: documentRoot.surfaceObjectName === "documentSurface"
+                            ? "documentHeaderIcon"
+                            : documentRoot.surfaceObjectName + "HeaderIcon"
+                anchors.left: parent.left
+                anchors.leftMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                width: root.snapPx(18)
+                height: root.snapPx(18)
+                visible: documentRoot.documentFileIconAvailable
+                z: 1
+
+                IconLabel {
+                    id: documentHeaderLucideIcon
+                    objectName: documentRoot.surfaceObjectName === "documentSurface"
+                                ? "documentHeaderLucideIcon"
+                                : documentRoot.surfaceObjectName
+                                  + "HeaderLucideIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    visible: !documentRoot.documentFileIconFullColor
+                    icon.source: documentRoot.documentFileIconSource
+                    icon.width: width
+                    icon.height: height
+                    icon.color: documentRoot.documentFileIconColor
+                }
+
+                Image {
+                    id: documentHeaderSystemIcon
+                    objectName: "documentHeaderSystemIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    source: documentRoot.documentFileIconSource
+                    fillMode: Image.PreserveAspectFit
+                    smooth: false
+                    mipmap: false
+                    asynchronous: true
+                    cache: true
+                    retainWhileLoading: true
+                    visible: documentRoot.documentFileIconFullColor
+                }
+
+                IconLabel {
+                    id: documentHeaderSystemFallbackIcon
+                    objectName: "documentHeaderSystemFallbackIcon"
+                    anchors.centerIn: parent
+                    width: root.snapPx(16)
+                    height: root.snapPx(16)
+                    visible: documentRoot.documentFileIconFullColor
+                             && documentHeaderSystemIcon.status !== Image.Ready
+                    icon.source: root.lucideIconSource(
+                                     "file", 16,
+                                     documentRoot.documentFileIconColor)
+                    icon.width: width
+                    icon.height: height
+                    icon.color: documentRoot.documentFileIconColor
+                }
+            }
+
+            Text {
+                id: documentHeaderRight
+                objectName: documentRoot.surfaceObjectName === "documentSurface"
+                            ? "documentHeaderRight"
+                            : documentRoot.surfaceObjectName + "HeaderRight"
+                anchors.right: parent.right
+                anchors.rightMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth,
+                               Math.max(0, parent.width
+                                       - 2 * root.panelTextInset))
+                text: documentRoot.topBarRightText
+                color: root.galleryPathTextColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: root.semanticTextFontPixelSize
+                horizontalAlignment: Text.AlignRight
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideLeft
+            }
+
+            Text {
+                id: documentHeaderLeft
+                objectName: documentRoot.surfaceObjectName === "documentSurface"
+                            ? "documentHeaderLeft"
+                            : documentRoot.surfaceObjectName + "HeaderLeft"
+                anchors.left: documentHeaderIcon.visible
+                               ? documentHeaderIcon.right : parent.left
+                anchors.right: documentHeaderRight.left
+                anchors.leftMargin: documentHeaderIcon.visible
+                                   ? root.snapPx(7) : root.panelTextInset
+                anchors.rightMargin: root.panelTextInset
+                anchors.verticalCenter: parent.verticalCenter
+                text: documentRoot.topBarLeftText
+                color: root.galleryPathTextColor
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: root.semanticTextFontPixelSize
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+        }
 
         FontMetrics {
             id: documentFontMetrics
@@ -9295,8 +10066,9 @@ ApplicationWindow {
                 Row {
                     id: runRow
                     anchors.left: parent.left
-                    anchors.leftMargin: 10
+                    anchors.leftMargin: documentRoot.textHorizontalInset
                     height: parent.height
+                    z: 1
                     visible: documentRow.loaded
                              && documentRow.rowData.runs !== undefined
                              && documentRow.rowData.runs.length > 0
@@ -9331,8 +10103,8 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
+                    anchors.leftMargin: documentRoot.textHorizontalInset
+                    anchors.rightMargin: documentRoot.textHorizontalInset
                     visible: documentRow.loaded
                              && (!documentRow.rowData.runs
                                  || documentRow.rowData.runs.length === 0)
@@ -9341,6 +10113,29 @@ ApplicationWindow {
                     font.family: root.guiMonospaceFontFamily
                     font.pixelSize: 13
                     elide: Text.ElideRight
+                    z: 1
+                }
+
+                readonly property var terminalSelectionRange:
+                    documentRoot.terminalSelectionRangeForRow(
+                        loaded ? Number(rowData.visualRow || 0) : -1, width)
+
+                Rectangle {
+                    x: documentRoot.textHorizontalInset
+                       + documentRow.terminalSelectionRange.start
+                         * documentRoot.terminalCellWidth
+                    y: 0
+                    width: Math.max(0,
+                        (documentRow.terminalSelectionRange.end
+                         - documentRow.terminalSelectionRange.start)
+                        * documentRoot.terminalCellWidth)
+                    height: parent.height
+                    visible: documentRoot.terminalSurface
+                             && documentRow.loaded
+                             && documentRow.terminalSelectionRange.valid
+                    color: root.selectedBg
+                    opacity: 0.72
+                    z: 0
                 }
             }
 
@@ -9357,8 +10152,17 @@ ApplicationWindow {
                 }
                 documentRoot.captureTopState()
                 documentRoot.syncScrollBar()
+                if (documentRoot.terminalSurface
+                        && (documentRoot.wheelGestureActive
+                            || dragging || flicking)) {
+                    var state = documentRoot.topState()
+                    documentRoot.setTerminalFollowTailIntent(
+                        documentRoot.requestReachesContentEnd(state.extent),
+                        true)
+                }
                 requestWindowTimer.restart()
             }
+            onHeightChanged: documentRoot.scheduleNativeViewportSync()
             onMovementEnded: {
                 if (documentRoot.rebasingWindow
                         || documentRoot.wheelGestureActive)
@@ -9379,13 +10183,15 @@ ApplicationWindow {
             readonly property bool block:
                 documentRoot.cursorFrame.cursorShape === "block"
             readonly property int windowRow:
-                frame.kind === "editor"
+                frame.kind === "editor" || frame.kind === "terminal"
                 ? documentRoot.indexForExtent(
                       Number(documentRoot.cursorFrame.cursorAbsoluteRow || 0),
                                               documentRoot.displayedRows)
                 : -1
-            x: 10 + Math.max(0, Number(
-                                 documentRoot.cursorFrame.cursorVisualColumn || 0))
+            x: documentRoot.textHorizontalInset + Math.max(0, Number(
+                    frame.kind === "terminal"
+                    ? documentRoot.cursorFrame.cursorX || 0
+                    : documentRoot.cursorFrame.cursorVisualColumn || 0))
                     * documentFontMetrics.advanceWidth("M")
             y: (documentRoot.loadedSlotStart + Math.max(0, windowRow))
                * documentRoot.rowHeight
@@ -9395,10 +10201,12 @@ ApplicationWindow {
             height: documentRoot.rowHeight - (block ? 2 : 4)
             color: "#ffffff"
             opacity: blinkOn ? 1 : 0
-            visible: frame.kind === "editor"
+            visible: (frame.kind === "editor" || frame.kind === "terminal")
                      && documentRoot.cursorFrame.cursorVisible === true
                      && windowRow >= 0
-                     && Number(documentRoot.cursorFrame.cursorVisualColumn) >= 0
+                     && Number(frame.kind === "terminal"
+                               ? documentRoot.cursorFrame.cursorX
+                               : documentRoot.cursorFrame.cursorVisualColumn) >= 0
             z: 5
 
             onVisibleChanged: {
@@ -9436,28 +10244,78 @@ ApplicationWindow {
             anchors.bottom: documentList.bottom
             acceptedButtons: frame.kind === "editor"
                              ? Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                             : documentRoot.terminalSelectionEnabled
+                               ? Qt.LeftButton
                              : Qt.NoButton
             preventStealing: frame.kind === "editor"
+                             || documentRoot.terminalSelectionEnabled
             propagateComposedEvents: true
             enabled: documentRoot.interactionActive
-            cursorShape: frame.kind === "editor" ? Qt.IBeamCursor
-                                                  : Qt.ArrowCursor
+            cursorShape: frame.kind === "editor"
+                         || documentRoot.terminalSelectionEnabled
+                         ? Qt.IBeamCursor : Qt.ArrowCursor
             z: 8
             onPressed: mouse => {
-                documentRoot.sendEditorMouse(mouse, "press", false, false)
+                if (frame.kind === "editor") {
+                    documentRoot.sendEditorMouse(mouse, "press", false, false)
+                } else if (documentRoot.terminalSelectionEnabled) {
+                    documentList.cancelFlick()
+                    documentWheelAnimation.stop()
+                    var point = documentRoot.terminalSelectionPoint(mouse)
+                    documentRoot.handleTerminalSelectionPressAt(
+                                point.row, point.column,
+                                point.cellColumn, Date.now())
+                    documentRoot.updateTerminalSelectionPointer(mouse.x,
+                                                                  mouse.y)
+                }
                 mouse.accepted = true
             }
             onPositionChanged: mouse => {
                 if (frame.kind === "editor" && mouse.buttons !== Qt.NoButton)
                     documentRoot.sendEditorMouse(mouse, "move", true, false)
+                else if (documentRoot.terminalSelectionDragging
+                         && mouse.buttons !== Qt.NoButton) {
+                    documentRoot.updateTerminalSelectionPointer(mouse.x,
+                                                                  mouse.y)
+                    var point = documentRoot.terminalSelectionPointAtViewportEdge()
+                    documentRoot.extendTerminalSelectionTo(point.row,
+                                                            point.column)
+                }
             }
             onReleased: mouse => {
-                documentRoot.sendEditorMouse(mouse, "release", false, false)
+                if (frame.kind === "editor") {
+                    documentRoot.sendEditorMouse(mouse, "release", false, false)
+                } else if (documentRoot.terminalSelectionDragging) {
+                    documentRoot.updateTerminalSelectionPointer(mouse.x,
+                                                                  mouse.y)
+                    var point = documentRoot.terminalSelectionPointAtViewportEdge()
+                    documentRoot.extendTerminalSelectionTo(point.row,
+                                                            point.column)
+                    documentRoot.commitTerminalSelection()
+                }
                 mouse.accepted = true
             }
-            onCanceled: documentRoot.releaseEditorMouse()
+            onCanceled: {
+                if (frame.kind === "editor")
+                    documentRoot.releaseEditorMouse()
+                else {
+                    documentRoot.terminalSelectionDragging = false
+                    documentRoot.stopTerminalSelectionAutoScroll()
+                }
+            }
             onDoubleClicked: mouse => {
-                documentRoot.sendEditorMouse(mouse, "press", false, true)
+                if (frame.kind === "editor")
+                    documentRoot.sendEditorMouse(mouse, "press", false, true)
+                else if (documentRoot.terminalSelectionEnabled
+                         && documentRoot.terminalClickCount === 1) {
+                    // Most Qt platforms emit onPressed for the second press;
+                    // this fallback covers backends that surface only the
+                    // composed double-click signal.
+                    var point = documentRoot.terminalSelectionPoint(mouse)
+                    documentRoot.handleTerminalSelectionPressAt(
+                                point.row, point.column,
+                                point.cellColumn, Date.now())
+                }
                 mouse.accepted = true
             }
             // Wheel gestures stay in the native QML scrolling pipeline for
@@ -9473,6 +10331,8 @@ ApplicationWindow {
             anchors.top: documentList.top
             anchors.bottom: documentList.bottom
             anchors.right: documentList.right
+            anchors.rightMargin: Math.max(0,
+                                          documentRoot.scrollBarRightInset)
             width: 15
             orientation: Qt.Vertical
             policy: T.ScrollBar.AlwaysOn
@@ -9501,6 +10361,11 @@ ApplicationWindow {
             onPositionChanged: {
                 if (!pressed)
                     return
+                if (documentRoot.terminalSurface) {
+                    documentRoot.setTerminalFollowTailIntent(
+                        documentRoot.requestReachesContentEnd(
+                            position * documentRoot.contentExtent), true)
+                }
                 documentRoot.queuedScrollBarPosition = position
                 scrollBarRequestTimer.restart()
             }
@@ -9532,6 +10397,10 @@ ApplicationWindow {
                 documentRoot.wheelGestureActive = false
                 documentRoot.compactWindowIfIdle()
                 var state = documentRoot.topState()
+                if (documentRoot.terminalSurface)
+                    documentRoot.setTerminalFollowTailIntent(
+                        documentRoot.requestReachesContentEnd(state.extent),
+                        true)
                 if (!documentRoot.sendWindowRequest(state.extent,
                                                      state.fraction, 0))
                     requestWindowTimer.restart()
@@ -9545,9 +10414,30 @@ ApplicationWindow {
         }
 
         Timer {
+            id: nativeViewportSyncTimer
+            interval: 0
+            onTriggered: documentRoot.syncNativeViewport()
+        }
+
+        Timer {
             id: editorMouseMoveTimer
             interval: 0
             onTriggered: documentRoot.flushEditorMouseMove()
+        }
+
+        Timer {
+            id: terminalSelectionAutoScrollTimer
+            objectName: "terminalSelectionAutoScrollTimer"
+            interval: 16
+            repeat: true
+            onTriggered: {
+                var now = Date.now()
+                var elapsed = documentRoot.terminalSelectionAutoScrollLastTick > 0
+                        ? now - documentRoot.terminalSelectionAutoScrollLastTick
+                        : interval
+                documentRoot.terminalSelectionAutoScrollLastTick = now
+                documentRoot.advanceTerminalSelectionAutoScroll(elapsed)
+            }
         }
 
         Timer {

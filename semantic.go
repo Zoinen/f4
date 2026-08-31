@@ -70,7 +70,8 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		shell.CommandLine = pf.cmdLine.semanticModel(ctx)
 	}
 	if pf.termView != nil {
-		shell.Terminal = pf.termView.semanticModel(ctx)
+		shell.Terminal = pf.termView.semanticModelWithBottomOverlay(
+			ctx, terminalCommandLineOverlayRows(shell.CommandLine))
 	}
 	if MacroMgr != nil && MacroMgr.Recording {
 		shell.MacroRecording = true
@@ -81,6 +82,13 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	}
 
 	return shell.ToMap()
+}
+
+func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel) int {
+	if commandLine != nil && commandLine.Visible {
+		return 1
+	}
+	return 0
 }
 
 func (pf *PanelsFrame) semanticPanelLayoutModel(ctx *vtui.SemanticContext) extui.PanelLayoutModel {
@@ -233,6 +241,10 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 	}
 
 	switch semanticString(action["action"]) {
+	case "document.viewport":
+		rows := max(0, semanticInt(action["rows"]))
+		vv.nativeViewportRows = rows
+		return true
 	case "viewer.scroll":
 		generation, accepted := semanticAcceptWindowGeneration(action,
 			vv.semanticWindowGeneration, &vv.semanticWindowRequestGeneration)
@@ -629,6 +641,9 @@ func handleSemanticElementAction(el vtui.UIElement, action map[string]any) bool 
 }
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
+	if pf.termView != nil && pf.termView.handleSemanticAction(action) {
+		return true
+	}
 	if semanticString(action["action"]) == "quickView.scroll" {
 		for _, panel := range pf.altPanels {
 			if quick, ok := panel.(*QuickViewPanel); ok && quick.HandleSemanticAction(action) {
@@ -2812,59 +2827,6 @@ func semanticEditPositions(edit *vtui.Edit, text string) (cursor, selectionStart
 	return cursor, selectionStart, selectionEnd
 }
 
-func (tv *TerminalView) semanticModel(ctx *vtui.SemanticContext) *extui.TerminalModel {
-	tv.mu.Lock()
-	defer tv.mu.Unlock()
-
-	buf := tv.Lines
-	if tv.UseAltScreen {
-		buf = tv.AltLines
-	}
-	offset := 0
-	if !tv.UseAltScreen {
-		lowestRow := 0
-		for y := tv.Height - 1; y >= 0; y-- {
-			if tv.rowHasText(y) {
-				lowestRow = y
-				break
-			}
-		}
-		if tv.CursorY > lowestRow {
-			lowestRow = tv.CursorY
-		}
-		if lowestRow < tv.Height-1 {
-			offset = (tv.Height - 1) - lowestRow
-		}
-	}
-
-	var rows []extui.TextRowModel
-	for y := 0; y < tv.Height && y < len(buf); y++ {
-		drawY := y + offset
-		if tv.UseAltScreen {
-			drawY = y
-		}
-		if drawY < 0 || drawY >= tv.Height {
-			continue
-		}
-		rows = append(rows, extui.TextRowModel{
-			Index: drawY,
-			Runs:  semanticRunsFromCells(buf[y]),
-		})
-	}
-
-	return &extui.TerminalModel{
-		ID:        vtui.SemanticID(tv),
-		Title:     tv.Title,
-		Visible:   tv.IsVisible(),
-		Focused:   tv.IsFocused(),
-		AltScreen: tv.UseAltScreen,
-		Busy:      tv.Muted,
-		CursorX:   tv.CursorX,
-		CursorY:   tv.CursorY + offset,
-		Rows:      rows,
-	}
-}
-
 func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if vv.semanticPendingScroll && vv.backend != nil {
 		generation := vv.semanticPendingGeneration
@@ -2896,6 +2858,7 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	if vv.HexMode {
 		mode = "hex"
 	}
+	topBarLeft, topBarRight := semanticTopBarStrings(vv.topBar)
 
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(vv),
@@ -2903,8 +2866,12 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		DefaultBackground:  semanticAttrColor(vtui.Palette[ColViewerText], false),
 		Title:              vv.GetTitle(),
 		Path:               vv.path,
+		LocalPath:          semanticLocalPath(vv.vfs, vv.path),
 		BaseName:           semanticBaseName(vv.vfs, vv.path),
 		Mode:               mode,
+		TopBarLeft:         topBarLeft,
+		TopBarRight:        topBarRight,
+		IconColor:          semanticFileIconColor(semanticBaseName(vv.vfs, vv.path)),
 		HexMode:            vv.HexMode,
 		WrapMode:           vv.WrapMode,
 		Busy:               vv.Busy,
@@ -2996,7 +2963,7 @@ func (vv *ViewerView) clampTextScrollOffset(offset int64) int64 {
 // FrameManager for a redraw.
 func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, bool) {
 	seek := &vv.semanticWrapSeek
-	historyLimit := semanticWindowBufferRows(max(1, vv.Y2-vv.Y1)) + 1
+	historyLimit := semanticWindowBufferRows(max(1, vv.viewportHeight())) + 1
 	if seek.width != width || len(seek.history) != historyLimit ||
 		(!seek.active && !seek.ready) ||
 		(seek.target != offset && (!seek.ready || offset < seek.resolved)) {
@@ -3179,7 +3146,7 @@ func (vv *ViewerView) semanticWindow() semanticSurfaceWindow {
 		return window
 	}
 	width := vv.semanticContentWidth()
-	contentHeight := vv.Y2 - vv.Y1
+	contentHeight := vv.viewportHeight()
 	if width <= 0 || contentHeight <= 0 {
 		return window
 	}
@@ -3364,6 +3331,19 @@ type semanticEditorCursorState struct {
 	absoluteRow  int64
 }
 
+func semanticTopBarStrings(topBar *TopBar) (left, right string) {
+	if topBar == nil {
+		return "", ""
+	}
+	if topBar.GetLeft != nil {
+		left = topBar.GetLeft()
+	}
+	if topBar.GetRight != nil {
+		right = topBar.GetRight()
+	}
+	return left, right
+}
+
 func (state semanticEditorCursorState) ToMap() map[string]any {
 	return map[string]any{
 		"cursorLine":         state.line,
@@ -3387,8 +3367,10 @@ func (ev *EditorView) semanticSurfaceWidth() int {
 func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	cursorOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	cursorAbsoluteRow, cursorAbsoluteColumn := ev.engine.LogicalToVisual(cursorOffset)
+	cursorVisualRow := cursorAbsoluteRow - ev.ScrollTopRow
 	cursorVisualColumn := cursorAbsoluteColumn + ev.CursorVirtualSpaces - ev.ScrollLeft
 	cursorVisible := ev.IsVisible() && !ev.pasting && !ev.saving &&
+		cursorVisualRow >= 0 && cursorVisualRow < ev.viewportHeight() &&
 		cursorVisualColumn >= 0 && cursorVisualColumn < width
 	cursorShape := "underline"
 	if ev.overtype {
@@ -3397,7 +3379,7 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	return semanticEditorCursorState{
 		line:         ev.CursorLine,
 		pos:          ev.CursorPos,
-		visualRow:    cursorAbsoluteRow - ev.ScrollTopRow,
+		visualRow:    cursorVisualRow,
 		visualColumn: cursorVisualColumn,
 		visible:      cursorVisible,
 		shape:        cursorShape,
@@ -3420,7 +3402,9 @@ func (ev *EditorView) queueSemanticCursorState() bool {
 		return false
 	}
 	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
-	return renderer.QueueSurfaceState(vtui.SemanticID(ev), state.ToMap())
+	stateMap := state.ToMap()
+	_, stateMap["topBarRight"] = semanticTopBarStrings(ev.topBar)
+	return renderer.QueueSurfaceState(vtui.SemanticID(ev), stateMap)
 }
 
 func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
@@ -3433,6 +3417,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		visibleRows = window.rows[window.viewportRow:visibleEnd]
 	}
 	cursor := ev.semanticCursorState(width)
+	topBarLeft, topBarRight := semanticTopBarStrings(ev.topBar)
 
 	surface := extui.SurfaceModel{
 		ID:                 vtui.SemanticID(ev),
@@ -3440,7 +3425,11 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		DefaultBackground:  semanticAttrColor(ColorerEditorBaseAttr(vtui.Palette[ColEditorText]), false),
 		Title:              ev.GetTitle(),
 		Path:               ev.filePath,
+		LocalPath:          semanticLocalPath(ev.vfs, ev.filePath),
 		BaseName:           semanticBaseName(ev.vfs, ev.filePath),
+		TopBarLeft:         topBarLeft,
+		TopBarRight:        topBarRight,
+		IconColor:          semanticFileIconColor(semanticBaseName(ev.vfs, ev.filePath)),
 		Busy:               ev.IsBusy(),
 		Dirty:              ev.modified,
 		Saving:             ev.saving,
@@ -3491,6 +3480,20 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 	}
 
 	switch semanticString(action["action"]) {
+	case "document.viewport":
+		rows := max(0, semanticInt(action["rows"]))
+		ev.nativeViewportRows = rows
+		if ev.scrollBar != nil {
+			ev.scrollBar.PgStep = ev.viewportHeight()
+		}
+		if ev.engine != nil {
+			maxTop := max(0, ev.engine.GetTotalVisualRows()-max(1, ev.viewportHeight()))
+			if ev.ScrollTopRow > maxTop {
+				ev.ScrollTopRow = maxTop
+			}
+		}
+		ev.ensureCursorVisible()
+		return true
 	case "editor.setText":
 		text := semanticString(action["text"])
 		ev.SetText(text)
@@ -3568,7 +3571,7 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		}
 		ev.ensureEngineWidth()
 		top := semanticInt(action["visualRow"])
-		height := max(1, ev.Y2-ev.Y1)
+		height := max(1, ev.viewportHeight())
 		maxTop := max(0, ev.engine.GetTotalVisualRows()-height)
 		if top < 0 {
 			top = 0
@@ -3592,7 +3595,7 @@ func (ev *EditorView) semanticWindow() semanticSurfaceWindow {
 		return window
 	}
 	ev.ensureEngineWidth()
-	height := ev.Y2 - ev.Y1
+	height := ev.viewportHeight()
 	if height <= 0 {
 		return window
 	}
@@ -3667,15 +3670,7 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 		if !haveRun {
 			return
 		}
-		runs = append(runs, extui.RunModel{
-			Text:       b.String(),
-			Attr:       attr,
-			Foreground: semanticAttrColor(attr, true),
-			Background: semanticAttrColor(attr, false),
-			Bold:       attr&vtui.ForegroundIntensity != 0,
-			Underline:  attr&vtui.CommonLvbUnderscore != 0,
-			Strikeout:  attr&vtui.CommonLvbStrikeout != 0,
-		})
+		runs = append(runs, semanticRunModel(b.String(), attr))
 		b.Reset()
 	}
 	for _, cell := range cells {
@@ -3695,6 +3690,18 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 	}
 	flush()
 	return runs
+}
+
+func semanticRunModel(text string, attr uint64) extui.RunModel {
+	return extui.RunModel{
+		Text:       text,
+		Attr:       attr,
+		Foreground: semanticAttrColor(attr, true),
+		Background: semanticAttrColor(attr, false),
+		Bold:       attr&vtui.ForegroundIntensity != 0,
+		Underline:  attr&vtui.CommonLvbUnderscore != 0,
+		Strikeout:  attr&vtui.CommonLvbStrikeout != 0,
+	}
 }
 
 type semanticRenderedSurface struct {
@@ -3797,6 +3804,30 @@ func semanticBaseName(v interface{ Base(string) string }, path string) string {
 		return v.Base(path)
 	}
 	return filepath.Base(path)
+}
+
+func semanticLocalPath(v vfs.VFS, path string) string {
+	if v == nil || path == "" {
+		return ""
+	}
+	provider, ok := v.(vfs.LocalPathProvider)
+	if !ok {
+		return ""
+	}
+	localPath, err := provider.LocalPath(path)
+	if err != nil {
+		return ""
+	}
+	return localPath
+}
+
+func semanticFileIconColor(fileName string) string {
+	if fileName == "" || GlobalFileHighlighter == nil {
+		return ""
+	}
+	_, style := GlobalFileHighlighter.SemanticStyle(
+		&vfs.VFSItem{Name: fileName}, false)
+	return style.Normal.Foreground
 }
 
 func semanticString(v any) string {

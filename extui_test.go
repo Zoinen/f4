@@ -751,6 +751,7 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 			"cursorVisualRow": 0, "cursorVisualColumn": 0,
 			"cursorVisible": true, "cursorShape": "underline",
 			"cursorAbsoluteRow": int64(0), "rows": rows,
+			"topBarLeft": " music.svg", "topBarRight": " UTF-8 │ 1,0     ",
 		},
 	}
 	renderer.SetSemanticScene(initial)
@@ -768,6 +769,7 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 		"cursorVisualRow": 0, "cursorVisualColumn": 1,
 		"cursorVisible": true, "cursorShape": "underline",
 		"cursorAbsoluteRow": int64(0),
+		"topBarRight":       " UTF-8 │ 1,1     ",
 	})
 	if !accepted {
 		t.Fatal("bounded cursor state was rejected")
@@ -821,6 +823,7 @@ func TestExtUiRenderer_DirectEditorCursorStateRejectsWrongSurface(t *testing.T) 
 			"cursorVisualRow": 0, "cursorVisualColumn": 0,
 			"cursorVisible": true, "cursorShape": "underline",
 			"cursorAbsoluteRow": int64(0),
+			"topBarRight":       " UTF-8 │ 1,0     ",
 		},
 	})
 	renderer.Flush()
@@ -831,6 +834,7 @@ func TestExtUiRenderer_DirectEditorCursorStateRejectsWrongSurface(t *testing.T) 
 		"cursorVisualRow": 0, "cursorVisualColumn": 1,
 		"cursorVisible": true, "cursorShape": "underline",
 		"cursorAbsoluteRow": int64(0),
+		"topBarRight":       " UTF-8 │ 1,1     ",
 	}) {
 		t.Fatal("cursor state for a replacement surface was accepted")
 	}

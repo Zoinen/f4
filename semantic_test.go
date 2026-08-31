@@ -2087,6 +2087,14 @@ func TestSemantic_ViewerWindowIsBoundedAndByteAddressed(t *testing.T) {
 		node["contentExtentKnown"] != true {
 		t.Fatalf("invalid viewer window contract: %#v", node)
 	}
+	if got := semanticString(node["topBarLeft"]); got != " window.txt" {
+		t.Fatalf("viewer top bar left=%q, want %q", got, " window.txt")
+	}
+	viewerStatus := semanticString(node["topBarRight"])
+	if !strings.Contains(viewerStatus, vfs.DisplayCodepageName(viewer.Codepage)) ||
+		!strings.Contains(viewerStatus, "%") {
+		t.Fatalf("viewer top bar right=%q does not contain codepage and progress", viewerStatus)
+	}
 
 	beforeGeneration := viewer.semanticWindowGeneration
 	viewer.TopOffset = 0
@@ -2479,6 +2487,14 @@ func TestSemantic_EditorWindowAndScrollPreserveCursor(t *testing.T) {
 	}
 	if got := appInt64(node["cursorAbsoluteRow"]); got != int64(cursorLine) {
 		t.Fatalf("cursor absolute row=%d, want %d", got, cursorLine)
+	}
+	if got := semanticString(node["topBarLeft"]); got != " window.txt" {
+		t.Fatalf("editor top bar left=%q, want %q", got, " window.txt")
+	}
+	editorStatus := semanticString(node["topBarRight"])
+	if !strings.Contains(editorStatus, vfs.DisplayCodepageName(ev.Codepage)) ||
+		!strings.Contains(editorStatus, "45,2") {
+		t.Fatalf("editor top bar right=%q does not contain codepage and cursor", editorStatus)
 	}
 	if !ev.HandleSemanticAction(map[string]any{
 		"target": vtui.SemanticID(ev), "action": "editor.scroll", "visualRow": 73,
