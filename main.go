@@ -11,12 +11,22 @@ import (
 	"strings"
 
 	"github.com/unxed/f4/fusefs"
+	"github.com/unxed/f4/internal/winshell"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
 func main() {
+	if winshell.IsBrokerInvocation(os.Args) {
+		if err := winshell.RunBroker(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	defer winshell.ShutdownDefaultClient()
+
 	vtui.AppName = "f4"
 	installConsoleCtrlHandler()
 	var sudoDispatcher string
@@ -432,6 +442,9 @@ func SetupUI() {
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная
 	// синхронизация для vfs, чтобы конфиг портативного режима был единым.
 	vfs.CustomConfigDir = configDir
+	if err := winshell.RegisterDefaultProvider(); err != nil {
+		vtui.DebugLog("WINDOWS SHELL: URI provider unavailable: %v", err)
+	}
 
 	os.MkdirAll(configDir, 0755)
 	GlobalHotkeysMgr = NewHotkeyManager(filepath.Join(configDir, "hotkeys.ini"))

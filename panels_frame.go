@@ -143,7 +143,7 @@ func (pf *PanelsFrame) addCommandHistory(cmd string) {
 	var newRich []HistoryRecord
 	curDir := ""
 	if fsp := pf.getActivePanel(); fsp != nil {
-		curDir = fsp.vfs.GetPath()
+		curDir = fsp.persistentPath()
 	}
 
 	newRich = append(newRich, HistoryRecord{
@@ -241,7 +241,7 @@ func handlePanelPathEditHotkey(e *vtinput.InputEvent) bool {
 	if panel == nil || panel.vfs == nil || panel.vfs.GetPath() == "" {
 		return false
 	}
-	edit.InsertString(panel.vfs.GetPath())
+	edit.InsertString(panel.persistentPath())
 	vtui.FrameManager.Redraw()
 	return true
 }
@@ -1971,7 +1971,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			if isBookmarkSave {
 				if fsp := pf.getActivePanel(); fsp != nil {
-					set[slot] = Bookmark{Path: fsp.vfs.GetPath()}
+					set[slot] = Bookmark{Path: fsp.persistentPath()}
 					if err := SaveBookmarks(file, set); err != nil {
 						vtui.DebugLog("BOOKMARKS: save %q failed: %v", file, err)
 					}
@@ -4278,6 +4278,8 @@ func (pf *PanelsFrame) showDriveMenu(panelIdx int) {
 	pf.showDriveMenuAt(panelIdx, 0)
 }
 
+type driveMenuCascadeAction func(parent *vtui.VMenu)
+
 // showDriveMenuAt opens the drive menu with the cursor on selectPos. The
 // bookmark keys reopen the menu at the row they acted on, the way far2l
 // loops ChangeDiskMenu around its own Pos (panels/panel.cpp:168).
@@ -4299,6 +4301,9 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		fsp.ReadDirectory()
 		pf.RefreshAll()
 	}})
+	if addWindowsLocationsDriveItem(pf, panelIdx, menu) {
+		menu.AddSeparator()
+	}
 
 	// 2. Fixed platform paths (Root, Home)
 	for _, drv := range getPlatformDrives() {
@@ -4396,6 +4401,13 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 
 	// Обработка физических клавиш / и ~ (layout-independent)
 	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
+		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_RETURN || e.VirtualKeyCode == vtinput.VK_RIGHT) &&
+			menu.SelectPos >= 0 && menu.SelectPos < len(menu.Items) {
+			if open, ok := menu.Items[menu.SelectPos].UserData.(driveMenuCascadeAction); ok {
+				open(menu)
+				return true
+			}
+		}
 		// far2l binds three keys on the bookmark rows of this menu
 		// (panels/panel.cpp:544-600): Ins opens the bookmarks dialog, F4
 		// opens it on the slot under the cursor, Del clears that slot.
@@ -4493,6 +4505,20 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	menu.SetPosition(x, y, x+w-1, y+h-1)
 
 	menu.OnAction = func(idx int) {
+		if idx < 0 || idx >= len(menu.Items) {
+			return
+		}
+		if open, ok := menu.Items[idx].UserData.(driveMenuCascadeAction); ok {
+			// VMenu marks itself done after OnAction returns. Mouse activation
+			// therefore reuses the same frame on the next UI turn and places the
+			// child above it, preserving a real cascade just like keyboard Right.
+			vtui.FrameManager.PostTask(func() {
+				menu.ClearDone()
+				vtui.FrameManager.Push(menu)
+				open(menu)
+			})
+			return
+		}
 		menu.Close()
 		fsp, ok := pf.panels[panelIdx].(*FileSystemPanel)
 		if !ok {

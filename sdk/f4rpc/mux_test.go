@@ -1,6 +1,8 @@
 package f4rpc
 
 import (
+	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -39,6 +41,37 @@ func TestSession_CallAndServe(t *testing.T) {
 
 	if res != "Hello (RPC)" {
 		t.Errorf("Unexpected RPC response: %q", res)
+	}
+}
+
+func TestSessionCallContextCancellationReleasesCaller(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	client := NewSession(reader, io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := client.CallContext(ctx, "Blocked", nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallContext error = %v, want context.Canceled", err)
+	}
+}
+
+func TestSessionServeEOFReleasesPendingCalls(t *testing.T) {
+	reader, writer := io.Pipe()
+	client := NewSession(reader, io.Discard)
+	done := make(chan error, 1)
+	go func() { done <- client.Call("Blocked", nil, nil) }()
+	time.Sleep(10 * time.Millisecond)
+	_ = writer.Close()
+	_ = client.Serve()
+	select {
+	case err := <-done:
+		if !ErrClosed(err) {
+			t.Fatalf("pending call error = %v, want closed transport", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending call was not released after EOF")
 	}
 }
 
