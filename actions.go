@@ -1750,8 +1750,6 @@ func actionRename(pf *PanelsFrame) {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to rename:\n%v", err), []string{"&Ok"})
 					fsp.pendingSelection = name
 				} else {
-					// Clear cache to ensure the new name is visible immediately
-					delete(fsp.dirCache, fsp.cacheKey(fsp.vfs.GetPath()))
 					fsp.pendingSelection = newName
 				}
 				pf.RefreshAll()

@@ -68,6 +68,102 @@ type HighlightRule struct {
 
 	// Каскадная обработка (Continue Processing)
 	ContinueProcessing bool
+
+	// maskIndex is prepared when the complete rule list is combined. It is an
+	// immutable acceleration structure for the common exact/suffix masks; the
+	// original filepath.Match fallback remains available for arbitrary globs.
+	maskIndex *highlightMaskIndex
+}
+
+type highlightMaskIndex struct {
+	all      bool
+	exact    map[string]struct{}
+	suffix   map[string]struct{}
+	fallback []string
+	masks    []string
+}
+
+func compileHighlightMaskIndex(rule HighlightRule) *highlightMaskIndex {
+	index := &highlightMaskIndex{}
+	if len(rule.Masks) == 0 {
+		index.all = true
+		return index
+	}
+	for _, rawMask := range rule.Masks {
+		mask := rawMask
+		if rule.IgnoreCase {
+			mask = strings.ToLower(mask)
+		}
+		index.masks = append(index.masks, mask)
+		switch {
+		case mask == "*":
+			index.all = true
+		case !strings.ContainsAny(mask, "*?[]\\/"):
+			if index.exact == nil {
+				index.exact = make(map[string]struct{})
+			}
+			index.exact[mask] = struct{}{}
+		case strings.HasPrefix(mask, "*.") &&
+			!strings.ContainsAny(mask[2:], "*?[]\\/"):
+			if index.suffix == nil {
+				index.suffix = make(map[string]struct{})
+			}
+			index.suffix[mask[1:]] = struct{}{}
+		default:
+			index.fallback = append(index.fallback, mask)
+		}
+	}
+	return index
+}
+
+func (index *highlightMaskIndex) matches(name string, ignoreCase bool) bool {
+	if index == nil {
+		return false
+	}
+	lookup := name
+	if ignoreCase {
+		lookup = strings.ToLower(lookup)
+	}
+	if len(index.masks) == 0 {
+		return true
+	}
+	if strings.ContainsAny(lookup, "\\/") {
+		for _, mask := range index.masks {
+			matched, err := filepath.Match(mask, lookup)
+			if err == nil && matched {
+				return true
+			}
+		}
+		return false
+	}
+	if index.all {
+		// filepath.Match treats path separators as structural even for "*".
+		// VFS entry names normally cannot contain them, but retain that behavior
+		// for direct HighlightRule callers as well.
+		if !strings.ContainsAny(lookup, "\\/") {
+			return true
+		}
+	}
+	if _, ok := index.exact[lookup]; ok {
+		return true
+	}
+	for dot := strings.IndexByte(lookup, '.'); dot >= 0; {
+		if _, ok := index.suffix[lookup[dot:]]; ok {
+			return true
+		}
+		next := strings.IndexByte(lookup[dot+1:], '.')
+		if next < 0 {
+			break
+		}
+		dot += next + 1
+	}
+	for _, mask := range index.fallback {
+		matched, err := filepath.Match(mask, lookup)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 type FileHighlighter struct {
@@ -79,9 +175,20 @@ type FileHighlighter struct {
 	matchCacheMu       sync.RWMutex
 	matchCacheRevision int64
 	matchCache         map[highlightMatchCacheKey][]int
+
+	semanticStyleCacheMu       sync.RWMutex
+	semanticStyleCacheRevision int64
+	semanticStyleCache         map[string]semanticStyleCacheValue
 }
 
 const maxHighlightMatchCacheEntries = 8192
+
+const maxSemanticStyleCacheEntries = 8192
+
+type semanticStyleCacheValue struct {
+	id    string
+	style extui.HighlightStyleModel
+}
 
 type highlightMatchCacheKey struct {
 	Name          string
@@ -134,6 +241,9 @@ func (fh *FileHighlighter) CombineRules() {
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
 	}
 	fh.Revision = highlightRulesRevision(fh.Rules)
+	for i := range fh.Rules {
+		fh.Rules[i].maskIndex = compileHighlightMaskIndex(fh.Rules[i])
+	}
 	fh.clearMatchCache()
 	vtui.DebugLog("HIGHLIGHT: Loaded %d file highlighting rules", len(fh.Rules))
 }
@@ -268,6 +378,10 @@ func (fh *FileHighlighter) clearMatchCache() {
 	fh.matchCache = nil
 	fh.matchCacheRevision = fh.Revision
 	fh.matchCacheMu.Unlock()
+	fh.semanticStyleCacheMu.Lock()
+	fh.semanticStyleCache = nil
+	fh.semanticStyleCacheRevision = fh.Revision
+	fh.semanticStyleCacheMu.Unlock()
 }
 
 func highlightMatchKey(item *vfs.VFSItem, metadataKnown bool) highlightMatchCacheKey {
@@ -560,6 +674,9 @@ func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown bool) bool {
 	}
 
 	// Проверка по маске имени файла
+	if r.maskIndex != nil {
+		return r.maskIndex.matches(item.Name, r.IgnoreCase)
+	}
 	if len(r.Masks) == 0 {
 		return true
 	}
@@ -722,6 +839,17 @@ func highlightStyleEmpty(style extui.HighlightStyleModel) bool {
 		style.SelectedCursor.Foreground == "" && style.SelectedCursor.Background == ""
 }
 
+func semanticStyleCacheKey(matched []int, parentEntry bool) string {
+	key := make([]byte, 1+len(matched)*4)
+	if parentEntry {
+		key[0] = 1
+	}
+	for index, ruleIndex := range matched {
+		binary.LittleEndian.PutUint32(key[1+index*4:], uint32(ruleIndex))
+	}
+	return string(key)
+}
+
 // SemanticStyle returns a presentation-neutral style for QML. It preserves
 // the existing Far cascade while keeping vtui attributes out of the scene.
 // metadataKnown must be false when item only carries a panel's fast base-pass
@@ -736,7 +864,17 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 		return "", style
 	}
 	parentEntry := item.Name == ".."
-	for _, ruleIndex := range fh.semanticMatchedRuleIndices(item, metadataKnown) {
+	matched := fh.semanticMatchedRuleIndices(item, metadataKnown)
+	cacheKey := semanticStyleCacheKey(matched, parentEntry)
+	fh.semanticStyleCacheMu.RLock()
+	if fh.semanticStyleCacheRevision == fh.Revision {
+		if cached, ok := fh.semanticStyleCache[cacheKey]; ok {
+			fh.semanticStyleCacheMu.RUnlock()
+			return cached.id, cached.style
+		}
+	}
+	fh.semanticStyleCacheMu.RUnlock()
+	for _, ruleIndex := range matched {
 		rule := fh.Rules[ruleIndex]
 		style.Groups = append(style.Groups, extui.HighlightGroupModel{
 			ID:   rule.RuleID,
@@ -763,9 +901,24 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 		}
 	}
 	if highlightStyleEmpty(style) {
+		fh.rememberSemanticStyle(cacheKey, "", style)
 		return "", style
 	}
 	encoded, _ := json.Marshal(style)
 	digest := sha256.Sum256(encoded)
-	return hex.EncodeToString(digest[:]), style
+	id := hex.EncodeToString(digest[:])
+	fh.rememberSemanticStyle(cacheKey, id, style)
+	return id, style
+}
+
+func (fh *FileHighlighter) rememberSemanticStyle(key, id string, style extui.HighlightStyleModel) {
+	fh.semanticStyleCacheMu.Lock()
+	defer fh.semanticStyleCacheMu.Unlock()
+	if fh.semanticStyleCacheRevision != fh.Revision || len(fh.semanticStyleCache) >= maxSemanticStyleCacheEntries {
+		fh.semanticStyleCache = make(map[string]semanticStyleCacheValue)
+		fh.semanticStyleCacheRevision = fh.Revision
+	} else if fh.semanticStyleCache == nil {
+		fh.semanticStyleCache = make(map[string]semanticStyleCacheValue)
+	}
+	fh.semanticStyleCache[key] = semanticStyleCacheValue{id: id, style: style}
 }

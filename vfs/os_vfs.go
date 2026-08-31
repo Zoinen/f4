@@ -32,6 +32,11 @@ type DirectoryReadPhase uint8
 const (
 	DirectoryReadBase DirectoryReadPhase = iota
 	DirectoryReadMetadata
+	// DirectoryReadPreview is an optional, provisional leading window. It is
+	// never authoritative and is followed by DirectoryReadBase. Readers may use
+	// it to overlap rendering a stable name-sorted prefix with the remainder of
+	// a very large local directory enumeration.
+	DirectoryReadPreview
 )
 
 // PhasedDirectoryReader is an optional VFS capability. It lets a panel publish
@@ -316,15 +321,38 @@ type phasedOSDirEntry struct {
 }
 
 // ReadDirPhased reports a complete names/types catalog first, then enriches
-// exactly those rows with ordinary OS metadata. On Unix, entries with a
+// rows whose metadata was not already available. On Unix, entries with a
 // conclusive DirEntry type reach the base callback without DirEntry.Info;
 // ambiguous and special entries fall back to Info because their directory
 // classification affects navigation. Windows' ReadDir implementation
 // already carries WIN32_FIND_DATA in each DirEntry, so Info is a zero-I/O view
-// of that enumeration record and is required to preserve hidden/reparse-point
-// semantics in the base catalog.
+// of that enumeration record and is used to make the base row complete. This
+// keeps the first UI commit from being followed by a redundant full-catalog
+// metadata mutation for large local directories.
 func (v *OSVFS) ReadDirPhased(ctx context.Context, path string, onChunk func(DirectoryReadPhase, []VFSItem)) error {
 	dirPath := path
+	// Windows can expose the complete WIN32 directory record directly. Avoid
+	// wrapping every row in os.DirEntry/os.FileInfo interfaces only to unpack
+	// the same record again below; on very large local directories those
+	// transient objects dominate the cold navigation path. Other platforms (or
+	// unsupported Windows filesystems) keep using the portable implementation.
+	if items, handled, fastErr := readCompleteOSDirectoryBasePhased(
+		ctx,
+		prepareOSPath(dirPath),
+		func(preview []VFSItem) {
+			if onChunk != nil {
+				onChunk(DirectoryReadPreview, preview)
+			}
+		},
+	); handled {
+		if fastErr != nil {
+			return fastErr
+		}
+		if onChunk != nil {
+			onChunk(DirectoryReadBase, items)
+		}
+		return ctx.Err()
+	}
 	f, err := os.Open(prepareOSPath(dirPath))
 	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
 		if resolved, ok := wellKnownJunction(dirPath); ok {
@@ -424,7 +452,9 @@ func (v *OSVFS) ReadDirPhased(ctx context.Context, path string, onChunk func(Dir
 			}
 			metadata = append(metadata, phasedOSDirectoryMetadata(pending[i]))
 		}
-		onChunk(DirectoryReadMetadata, metadata)
+		if len(metadata) > 0 {
+			onChunk(DirectoryReadMetadata, metadata)
+		}
 	}
 	return nil
 }
@@ -464,12 +494,24 @@ func phasedOSDirectoryBase(dirPath string, entry os.DirEntry) (VFSItem, os.FileI
 		}
 	}
 	entryPath := filepath.Join(dirPath, entry.Name())
-	return VFSItem{
+	item := VFSItem{
 		Name:      entry.Name(),
 		IsDir:     isDir,
 		IsSymlink: isSymlink,
 		IsHidden:  isHidden(entryPath, entry.Name(), info),
-	}, info
+	}
+	if info != nil && runtime.GOOS == "windows" {
+		// On Windows entry.Info() reads the WIN32_FIND_DATA already attached to
+		// the directory enumeration. Carry those fields into the base phase so
+		// the panel does not need a second O(N) metadata commit after showing the
+		// directory.
+		item.Size = info.Size()
+		item.SizeKnown = true
+		item.MTime = info.ModTime()
+		item.IsExecutable = info.Mode().Perm()&0111 != 0
+		fillPhysicalSizeCheap(&item, info)
+	}
+	return item, info
 }
 
 func phasedOSDirectoryMetadata(pending phasedOSDirEntry) VFSItem {

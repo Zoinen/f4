@@ -882,13 +882,12 @@ type SessionIdentity interface {
 	SessionKey() any
 }
 
-// DirectoryCacheIdentity gives panel directory caches a stable, comparable
-// identity across short-lived VFS instances for the same configured remote.
-// It is used only as an in-memory cache key and must not contain credentials.
-// Implementations should change it whenever connection settings which affect
-// directory contents change.
-type DirectoryCacheIdentity interface {
-	DirectoryCacheKey() any
+// StableDirectoryIdentity gives derived media and quick-view artifacts a
+// stable, comparable namespace across short-lived VFS instances for the same
+// configured remote. It must not contain credentials, and implementations
+// should change it whenever connection settings affecting file identity do.
+type StableDirectoryIdentity interface {
+	StableDirectoryKey() any
 }
 
 // ServerSideCopier is implemented by a file system that can copy an object

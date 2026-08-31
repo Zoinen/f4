@@ -864,24 +864,59 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 
 func semanticKeyBar(kb *KeyBar) map[string]any {
 	labels := kb.Normal
+	icons := kb.NormalIcons
 	modifier := "normal"
 	if kb.shiftState {
 		labels = kb.Shift
+		icons = kb.ShiftIcons
 		modifier = "shift"
 	} else if kb.ctrlState {
 		labels = kb.Ctrl
+		icons = kb.CtrlIcons
 		modifier = "ctrl"
 	} else if kb.altState {
 		labels = kb.Alt
+		icons = kb.AltIcons
 		modifier = "alt"
+	}
+	variants := []struct {
+		modifier string
+		labels   KeyBarLabels
+		icons    KeyBarIconNames
+	}{
+		{modifier: "normal", labels: kb.Normal, icons: kb.NormalIcons},
+		{modifier: "shift", labels: kb.Shift, icons: kb.ShiftIcons},
+		{modifier: "ctrl", labels: kb.Ctrl, icons: kb.CtrlIcons},
+		{modifier: "alt", labels: kb.Alt, icons: kb.AltIcons},
 	}
 	items := make([]map[string]any, 0, len(labels))
 	for i, label := range labels {
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"index": i,
 			"key":   fmt.Sprintf("F%d", i+1),
 			"text":  label,
-		})
+		}
+		if icons[i] != "" {
+			item["icon"] = icons[i]
+		}
+		alternatives := make([]map[string]any, 0, len(variants)-1)
+		for _, variant := range variants {
+			if variant.modifier == modifier || variant.labels[i] == "" {
+				continue
+			}
+			alternative := map[string]any{
+				"modifier": variant.modifier,
+				"text":     variant.labels[i],
+			}
+			if variant.icons[i] != "" {
+				alternative["icon"] = variant.icons[i]
+			}
+			alternatives = append(alternatives, alternative)
+		}
+		if len(alternatives) > 0 {
+			item["alternatives"] = alternatives
+		}
+		items = append(items, item)
 	}
 	x1, y1, x2, y2 := kb.GetPosition()
 	return map[string]any{

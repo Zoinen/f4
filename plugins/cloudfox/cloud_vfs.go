@@ -1112,14 +1112,14 @@ func (c *CloudVFS) SessionKey() any {
 	return c.session
 }
 
-type cloudDirectoryCacheKey struct {
+type cloudStableDirectoryKey struct {
 	Provider  ProviderType
 	ID        string
 	UpdatedAt int64
 }
 
-func (c *CloudVFS) DirectoryCacheKey() any {
-	return cloudDirectoryCacheKey{
+func (c *CloudVFS) StableDirectoryKey() any {
+	return cloudStableDirectoryKey{
 		Provider:  c.connection.Provider,
 		ID:        c.connection.ID,
 		UpdatedAt: c.connection.UpdatedAt.UnixNano(),

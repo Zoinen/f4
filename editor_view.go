@@ -3237,6 +3237,9 @@ func (ev *EditorView) GetKeyLabels() *vtui.KeySet {
 			Msg("KeyBar.EditorF1"), Msg("KeyBar.EditorF2"), Msg("KeyBar.EditorF3"),
 			"", Msg("KeyBar.EditorF5"), "", Msg("KeyBar.EditorF7"), nextCpName, "", Msg("KeyBar.EditorF10"),
 		},
+		NormalIcons: vtui.KeyBarIconNames{
+			"circle-question-mark", "save", "text-wrap", "", "space", "", "search", "languages", "", "x", "", "",
+		},
 	}
 	res := KeyBarLabelsForArea("Editor", fallbacks)
 	if hm := GlobalHotkeysMgr; hm != nil {

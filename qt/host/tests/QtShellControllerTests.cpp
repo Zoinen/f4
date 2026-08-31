@@ -1863,6 +1863,28 @@ void QtShellControllerTests::scenePatchAppliesSparseSelectionWithoutCatalogRewri
         {QStringLiteral("side"), 0},
         {QStringLiteral("active"), true},
         {QStringLiteral("showFileInfo"), true},
+        {QStringLiteral("galleryLayoutMode"), QStringLiteral("details")},
+        {QStringLiteral("galleryColumnCount"), 2},
+        {QStringLiteral("galleryDensity"), 22},
+        {QStringLiteral("galleryDensities"), QVariantMap{
+             {QStringLiteral("masonry"), 150},
+             {QStringLiteral("columns"), 34},
+             {QStringLiteral("details"), 22},
+             {QStringLiteral("grid"), 160},
+             {QStringLiteral("icons"), 64},
+         }},
+        {QStringLiteral("galleryLayoutRevision"), qulonglong(7)},
+        {QStringLiteral("galleryColumns"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("name")},
+                 {QStringLiteral("role"), QStringLiteral("name")},
+             },
+             QVariantMap{
+                 {QStringLiteral("id"), QStringLiteral("size")},
+                 {QStringLiteral("role"), QStringLiteral("size")},
+             },
+         }},
+        {QStringLiteral("separateFileExtensions"), true},
         {QStringLiteral("catalogRevision"), qulonglong(10)},
         {QStringLiteral("selectionRevision"), qulonglong(4)},
         {QStringLiteral("entries"), QVariantList{QVariantMap{
@@ -1995,6 +2017,78 @@ void QtShellControllerTests::scenePatchAppliesSparseSelectionWithoutCatalogRewri
         .value(QStringLiteral("panel")).toMap();
     QCOMPARE(compactPanel.value(QStringLiteral("showFileInfo")).toBool(), false);
     QVERIFY(!compactPanel.contains(QStringLiteral("entries")));
+
+    const QVariantMap layoutState = {
+        {QStringLiteral("id"), QStringLiteral("left")},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("catalogRevision"), qulonglong(10)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(1)},
+        {QStringLiteral("galleryLayoutMode"), QStringLiteral("icons")},
+        {QStringLiteral("galleryDensity"), 64},
+        {QStringLiteral("galleryDensities"), QVariantMap{
+             {QStringLiteral("masonry"), 150},
+             {QStringLiteral("grid"), 160},
+             {QStringLiteral("icons"), 64},
+         }},
+        {QStringLiteral("galleryLayoutRevision"), qulonglong(8)},
+    };
+    const QByteArray layoutPatch = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(3)},
+        {QStringLiteral("revision"), qulonglong(4)},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{QVariantMap{
+                  {QStringLiteral("op"), QStringLiteral("state_update")},
+                  {QStringLiteral("side"), 0},
+                  {QStringLiteral("panelId"), QStringLiteral("left")},
+                  {QStringLiteral("catalogRevision"), qulonglong(10)},
+                  {QStringLiteral("state"), layoutState},
+              }}},
+         }},
+    });
+    QCOMPARE(peer->write(layoutPatch),
+             static_cast<qint64>(layoutPatch.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(panelStateChanged.size(), 3, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(compactChanged.size(), 3, 3000);
+    QCOMPARE(sceneChanged.size(), 0);
+    QCOMPARE(presentationChanged.size(), 0);
+
+    const QVariantMap committedLayoutPanel = controller.scene().value(
+        QStringLiteral("shell")).toMap().value(
+            QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(committedLayoutPanel.value(QStringLiteral("galleryLayoutMode")),
+             QVariant(QStringLiteral("icons")));
+    QCOMPARE(committedLayoutPanel.value(QStringLiteral("galleryDensity"))
+                 .toInt(), 64);
+    QCOMPARE(committedLayoutPanel.value(QStringLiteral("entries")).toList(),
+             entriesBeforeFileInfoToggle);
+
+    const QVariantMap compactLayoutPatch = compactChanged.at(2)
+        .constFirst().toMap();
+    QVERIFY(!compactLayoutPatch.contains(QStringLiteral("panel")));
+    const QVariantMap compactLayout = compactLayoutPatch.value(
+        QStringLiteral("panelLayoutState")).toMap();
+    QCOMPARE(compactLayout.value(QStringLiteral("galleryLayoutMode")),
+             QVariant(QStringLiteral("icons")));
+    QCOMPARE(compactLayout.value(QStringLiteral("galleryDensity")).toInt(),
+             64);
+    QCOMPARE(compactLayout.value(QStringLiteral("galleryDensities")).toMap(),
+             layoutState.value(QStringLiteral("galleryDensities")).toMap());
+    // Keep the compact frontend message as sparse as the validated wire
+    // operation. QML accumulates this bounded overlay by panel identity, so a
+    // view-mode shortcut never retransmits the unchanged column schema.
+    QVERIFY(!compactLayout.contains(QStringLiteral("galleryColumnCount")));
+    QVERIFY(!compactLayout.contains(QStringLiteral("galleryColumns")));
+    QVERIFY(!compactLayout.contains(
+        QStringLiteral("separateFileExtensions")));
+    QVERIFY(!compactLayout.contains(QStringLiteral("path")));
+    QVERIFY(!compactLayout.contains(QStringLiteral("showFileInfo")));
+    QVERIFY(!compactLayout.contains(QStringLiteral("entries")));
 }
 
 void QtShellControllerTests::scenePatchClearsTransientFastFindMatchesWithoutCatalogRewrite()
@@ -2167,7 +2261,7 @@ void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()
     QByteArray helloWire;
     QVERIFY(takeFrame(peer, helloWire));
 
-    const QVariantMap initialPanel = panel(
+    QVariantMap initialPanel = panel(
         qulonglong(10), QStringLiteral("left:old"));
     const QByteArray initial = variantFrame({
         {QStringLiteral("type"), QStringLiteral("scene")},
@@ -2198,7 +2292,7 @@ void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()
     sceneChanged.clear();
     presentationChanged.clear();
 
-    const QVariantMap replacement = panel(
+    QVariantMap replacement = panel(
         qulonglong(11), QStringLiteral("left:new"));
     const QByteArray patch = variantFrame({
         {QStringLiteral("type"), QStringLiteral("scene_patch")},
@@ -2239,6 +2333,48 @@ void QtShellControllerTests::scenePatchReplacesOnlyChangedCatalog()
                      QStringLiteral("isHidden")).toBool(),
              true);
     QVERIFY(!compactChanged.constFirst().constFirst().toMap().value(
+                 QStringLiteral("panel")).toMap().contains(
+                     QStringLiteral("entries")));
+
+    // A replacement always carries its bounded row page. The controller does
+    // not retain complete catalogs keyed by previously visited directories.
+    QVariantMap revisit = initialPanel;
+    revisit.insert(QStringLiteral("catalogRevision"), qulonglong(12));
+    revisit.insert(QStringLiteral("metadataRevision"), qulonglong(12));
+    const QByteArray revisitPatch = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("baseRevision"), qulonglong(2)},
+        {QStringLiteral("revision"), qulonglong(3)},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("panels"), QVariantList{QVariantMap{
+                  {QStringLiteral("op"),
+                   QStringLiteral("catalog_replace")},
+                  {QStringLiteral("side"), 0},
+                  {QStringLiteral("panelId"), QStringLiteral("left")},
+                  {QStringLiteral("baseCatalogRevision"), qulonglong(11)},
+                  {QStringLiteral("catalogRevision"), qulonglong(12)},
+                  {QStringLiteral("panel"), revisit},
+              }}},
+         }},
+    });
+    QCOMPARE(peer->write(revisitPatch),
+             static_cast<qint64>(revisitPatch.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(catalogChanged.size(), 2, 3000);
+    QCOMPARE(compactChanged.size(), 2);
+    QCOMPARE(fatalErrors.size(), 0);
+    const QVariantMap restored = controller.scene().value(
+        QStringLiteral("shell")).toMap().value(
+            QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(restored.value(QStringLiteral("catalogRevision")).toULongLong(),
+             qulonglong(12));
+    QCOMPARE(restored.value(QStringLiteral("entries")).toList()
+                 .constFirst().toMap().value(
+                     QStringLiteral("entryId")).toString(),
+             QStringLiteral("left:old"));
+    QVERIFY(!compactChanged.constLast().constFirst().toMap().value(
                  QStringLiteral("panel")).toMap().contains(
                      QStringLiteral("entries")));
 }

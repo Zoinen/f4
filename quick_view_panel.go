@@ -121,7 +121,7 @@ type QuickViewPanel struct {
 // sessions sharing a preview. Revision is preferred when a provider supplies
 // one; size and mtime keep ordinary files responsive to a refreshed listing.
 type quickViewSelectionKey struct {
-	source   dirCacheKey
+	source   string
 	revision string
 	size     int64
 	mtimeNS  int64
@@ -1113,7 +1113,7 @@ type quickViewFileResult struct {
 
 func makeQuickViewSelectionKey(filesystem vfs.VFS, path string, item vfs.VFSItem) quickViewSelectionKey {
 	return quickViewSelectionKey{
-		source:   directoryCacheKey(filesystem, path),
+		source:   mediaSourceKey(filesystem, path),
 		revision: item.Revision,
 		size:     item.Size,
 		mtimeNS:  item.MTime.UnixNano(),

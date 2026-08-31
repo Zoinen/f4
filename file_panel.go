@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
 
@@ -27,7 +30,6 @@ type fileEntry struct {
 	Selected       bool
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
-	IsCached       bool
 }
 type mediumRow struct {
 	fp *FileSystemPanel
@@ -342,9 +344,9 @@ func parseGalleryLayoutMode(value string) (GalleryLayoutMode, bool) {
 func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximum int) {
 	switch mode {
 	case GalleryLayoutColumns, GalleryLayoutDetails:
-		// Zero asks the QML host to derive its fixed row pitch from the font.
-		// Compact text presentations deliberately have no persisted user zoom.
-		return 0, 0, 0
+		// Zero asks the QML host to derive the untouched default from its font.
+		// Explicit compact zoom values use the same bounded row-pitch contract.
+		return 0, 22, 72
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
@@ -354,14 +356,7 @@ func galleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	}
 }
 
-func galleryDensityAdjustable(mode GalleryLayoutMode) bool {
-	return mode != GalleryLayoutColumns && mode != GalleryLayoutDetails
-}
-
 func clampGalleryDensity(mode GalleryLayoutMode, density int) int {
-	if !galleryDensityAdjustable(mode) {
-		return 0
-	}
 	_, minimum, maximum := galleryDensityLimits(mode)
 	if density < minimum {
 		return minimum
@@ -419,30 +414,6 @@ func (f *fileEntry) GetCellAttr(col int, defaultAttr uint64) uint64 {
 }
 
 // FileSystemPanel is a panel displaying files on disk.
-const maxDirCache = 50
-
-type dirCacheEntry struct {
-	items       []vfs.VFSItem
-	time        time.Time
-	showUpEntry bool
-	// upItem preserves the parent-directory metadata used by the synthetic
-	// ".." row. Without it, a cache hit publishes a zero-time row and the
-	// completed refresh immediately replaces it with the parent's real MTime,
-	// making an otherwise identical semantic catalog look changed.
-	upItem vfs.VFSItem
-}
-
-// dirCacheKey qualifies a path with the filesystem it belongs to. Remote
-// roots are commonly all named "/"; using the path alone briefly showed one
-// Android device's cached directory while another device was being loaded.
-// A shared-session identity preserves the fast preview across pooled FISH+
-// views. Other comparable VFS implementations are scoped to their exact
-// instance, giving a safe cache miss rather than a false hit after reopening.
-type dirCacheKey struct {
-	identity      any
-	qualifiedPath string
-}
-
 type directoryLoadRequest struct {
 	load       func()
 	benchmark  *navigationBenchmarkTrace
@@ -493,48 +464,55 @@ type FileSystemPanel struct {
 	// finish a callback concurrently with cancellation.
 	loadGeneration uint64
 	isLoading      bool
+	// catalogInteractive becomes true as soon as the panel owns a useful,
+	// destination-bound row window. A local preview can therefore be visible and
+	// actionable while the same uncached enumeration continues building the
+	// complete authoritative catalog. isLoading remains true until that worker
+	// finishes, but semantic frontends no longer gate interaction or animation.
+	catalogInteractive bool
 	// catalogProvisional marks the synthetic cold-load placeholder (normally
 	// just ".."). Native frontends keep the destination hidden until the first
 	// authoritative catalog arrives instead of briefly painting an empty list.
-	catalogProvisional bool
-	// semanticCachedCatalogReady distinguishes a complete cache replacement
-	// from a cold/phased base while ReadDir is still running. The cached rows are
-	// already interactive and have a coherent metadata snapshot, so a capable
-	// native frontend need not remain in its loading gate during revalidation.
-	semanticCachedCatalogReady bool
-	// semanticCachedCatalogExported proves that the complete cached model was
-	// constructed for the negotiated frontend. Completion may omit its own
-	// redraw only after this transition; otherwise the cache redraw might still
-	// be pending behind an exceptionally fast ReadDir.
-	semanticCachedCatalogExported bool
-	loadingTimer                  *time.Timer
-	loadingFrame                  int
-	loadingGeneration             uint64
-	loadQueueMu                   sync.Mutex
-	loadWorkerActive              bool
-	pendingDirectoryLoad          *directoryLoadRequest
-	benchmarkLoadTrace            *navigationBenchmarkTrace
-	providerOpenTask              *vtui.TaskContext
-	providerOpenDialog            *vtui.Window
-	directoryErrorDialog          *vtui.Window
-	providerOpenTarget            string
-	providerOpenSourceSelect      string
-	providerOpenResult            func(bool) bool
-	pendingSelection              string
-	providerEntryName             string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	suppressFolderHistoryPath     string // one-shot: history/menu navigation must not reorder MRU
-	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
-	fastFindMode                  bool
-	fastFindStr                   string
-	fastFindMatcherKey            string
-	fastFindMatchers              []*vtui.FuzzyMatcher
-	showInactiveCursor            bool
+	catalogProvisional         bool
+	loadingTimer               *time.Timer
+	loadingFrame               int
+	loadingGeneration          uint64
+	loadQueueMu                sync.Mutex
+	loadWorkerActive           bool
+	pendingDirectoryLoad       *directoryLoadRequest
+	benchmarkLoadTrace         *navigationBenchmarkTrace
+	providerOpenTask           *vtui.TaskContext
+	providerOpenDialog         *vtui.Window
+	directoryErrorDialog       *vtui.Window
+	providerOpenTarget         string
+	providerOpenSourceSelect   string
+	providerOpenResult         func(bool) bool
+	pendingSelection           string
+	providerEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
+	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
+	fastFindMode               bool
+	fastFindStr                string
+	fastFindMatcherKey         string
+	fastFindMatchers           []*vtui.FuzzyMatcher
+	fastFindMatcherQueries     []string
+	// Fast Find is evaluated lazily by row. A 30k-entry directory must not be
+	// re-matched in full merely because one character or the cursor changed;
+	// only rows touched by navigation or the bounded semantic viewport are
+	// retained for the current query/catalog generation.
+	fastFindMatchCacheKey               string
+	fastFindMatchCacheCatalogGeneration uint64
+	fastFindMatchCacheEntryCount        int
+	fastFindMatchCache                  map[int]fastFindCachedMatch
+	fastFindMatchEvaluations            uint64
+	fastFindAnyMatchKnown               bool
+	fastFindAnyMatch                    bool
+	showInactiveCursor                  bool
 
 	sortMode    SortMode
 	sortReverse bool
 
 	lastDirMTime time.Time
-	dirCache     map[dirCacheKey]dirCacheEntry
 
 	isCheckingRefresh bool
 	currentTitle      string
@@ -581,6 +559,11 @@ type FileSystemPanel struct {
 	semanticSelectionNeedsSync    bool
 	semanticStaticCache           *semanticPanelStaticCache
 	semanticMetadataSnapshot      *semanticPanelMetadataSnapshot
+	semanticCatalogGeneration     uint64
+	semanticPublishedGeneration   uint64
+	semanticPagedSignature        string
+	semanticPagedResourceRevision int64
+	semanticPagedResourceIDs      map[string]struct{}
 }
 
 var DisableLoadingAnimationInTests = true
@@ -600,7 +583,6 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		lastRightClickedIdx:   -1,
 		semanticRightIndex:    -1,
 		semanticPriorIndex:    -1,
-		dirCache:              make(map[dirCacheKey]dirCacheEntry),
 		selectedItems:         make(map[string]bool),
 		selectionEpoch:        make(map[string]uint64),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
@@ -622,36 +604,9 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	return fp
 }
 
-func directoryCacheKey(fs vfs.VFS, path string) dirCacheKey {
-	key := dirCacheKey{qualifiedPath: FileStateKey(fs, path)}
-	if stable, ok := fs.(vfs.DirectoryCacheIdentity); ok {
-		if cacheKey := stable.DirectoryCacheKey(); cacheKey != nil {
-			if cacheType := reflect.TypeOf(cacheKey); cacheType != nil && cacheType.Comparable() {
-				key.identity = cacheKey
-				return key
-			}
-		}
-	}
-	if identity, ok := fs.(vfs.SessionIdentity); ok {
-		if sessionKey := identity.SessionKey(); sessionKey != nil {
-			if sessionType := reflect.TypeOf(sessionKey); sessionType != nil && sessionType.Comparable() {
-				key.identity = sessionKey
-				return key
-			}
-		}
-	}
-	// VFS is an interface and implementations are not required to be
-	// comparable. Every built-in VFS is pointer-backed, but keep the fallback
-	// safe for plugins that use a slice/map-bearing value implementation.
-	if fs != nil && reflect.TypeOf(fs).Comparable() {
-		key.identity = fs
-	}
-	return key
-}
-
-// sameVFSInstance is deliberately stricter than cache identity. Two pooled
-// remote views may share cached directory data, but an asynchronous provider
-// transition belongs to the exact parent object it was started from.
+// sameVFSInstance binds asynchronous provider work to the exact VFS object
+// that started it. Two views may share a remote session, but one view's
+// navigation must never install a result into the other.
 func sameVFSInstance(a, b vfs.VFS) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -683,50 +638,6 @@ func panelSortSupportsPhasedDirectoryRead(mode SortMode) bool {
 	return mode != SortSize && mode != SortTime
 }
 
-func (fp *FileSystemPanel) cacheKey(path string) dirCacheKey {
-	return directoryCacheKey(fp.vfs, path)
-}
-
-func (fp *FileSystemPanel) saveToCache(path string, items []vfs.VFSItem) {
-	showUpEntry := fp.vfs != nil && (!fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil)
-	fp.saveToCacheKey(fp.cacheKey(path), items, showUpEntry)
-}
-
-func (fp *FileSystemPanel) saveToCacheKey(key dirCacheKey, items []vfs.VFSItem, showUpEntry bool) {
-	fp.saveToCacheKeyWithUpItem(key, items, showUpEntry, vfs.VFSItem{})
-}
-
-func (fp *FileSystemPanel) saveToCacheKeyWithUpItem(key dirCacheKey, items []vfs.VFSItem, showUpEntry bool, upItem vfs.VFSItem) {
-	if fp.dirCache == nil {
-		fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
-	}
-	if showUpEntry {
-		upItem = panelUpEntryItem(upItem, true)
-	} else {
-		upItem = vfs.VFSItem{}
-	}
-	fp.dirCache[key] = dirCacheEntry{
-		items:       items,
-		time:        time.Now(),
-		showUpEntry: showUpEntry,
-		upItem:      upItem,
-	}
-
-	if len(fp.dirCache) > maxDirCache {
-		var oldestKey dirCacheKey
-		var oldestTime time.Time
-		hasOldest := false
-		for candidate, entry := range fp.dirCache {
-			if !hasOldest || entry.time.Before(oldestTime) {
-				oldestKey = candidate
-				oldestTime = entry.time
-				hasOldest = true
-			}
-		}
-		delete(fp.dirCache, oldestKey)
-	}
-}
-
 func panelUpEntryItem(stat vfs.VFSItem, hasStat bool) vfs.VFSItem {
 	item := vfs.VFSItem{Name: "..", IsDir: true}
 	if !hasStat {
@@ -744,15 +655,37 @@ func panelUpEntryItem(stat vfs.VFSItem, hasStat bool) vfs.VFSItem {
 func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntry bool,
 	upItem vfs.VFSItem, filesystem vfs.VFS, path string,
 ) []*fileEntry {
-	entries := make([]*fileEntry, 0, len(items)+1)
+	visibleCount := len(items)
+	if !AppConfig.ShowHiddenFiles {
+		visibleCount = 0
+		for _, item := range items {
+			if item.Name == ".." || !item.IsHidden {
+				visibleCount++
+			}
+		}
+	}
+	entryCount := visibleCount
 	if showUpEntry {
-		entries = append(entries, &fileEntry{VFSItem: upItem})
+		entryCount++
+	}
+	entries := make([]*fileEntry, 0, entryCount)
+	// One backing allocation replaces one heap object per file. Interior
+	// pointers keep the backing array alive for exactly as long as the panel
+	// rows; no directory data is cached or duplicated by this layout.
+	backing := make([]fileEntry, entryCount)
+	next := 0
+	if showUpEntry {
+		backing[next].VFSItem = upItem
+		entries = append(entries, &backing[next])
+		next++
 	}
 	for _, item := range items {
 		if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
 			continue
 		}
-		entry := &fileEntry{VFSItem: item}
+		backing[next].VFSItem = item
+		entry := &backing[next]
+		next++
 		fp.applyPersistentSelection(entry, filesystem, path)
 		entries = append(entries, entry)
 	}
@@ -760,87 +693,51 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 	return entries
 }
 
-// refreshEquivalentCachedEntries updates the authoritative data behind live
-// cached rows without replacing either fileEntry or vtui.TableRow objects.
-// Selection, Ctrl+M snapshots, cursor and viewport therefore remain exactly as
-// the user left them while ReadDir was running.
-func (fp *FileSystemPanel) refreshEquivalentCachedEntries(fresh []*fileEntry) bool {
-	if !fp.semanticDeferredEntriesEquivalent(fresh) {
-		return false
-	}
-	for index, source := range fresh {
-		live := fp.entries[index]
-		live.VFSItem = source.VFSItem
-		live.SizeCalculated = source.SizeCalculated
-		live.IsCached = false
-	}
-
-	// The helper proved these values equal before the in-place refresh. Keep
-	// initialized revision caches explicitly aligned with the live entries; no
-	// revision or semantic snapshot invalidation is necessary because none of
-	// the negotiated client's observable fields changed.
-	catalog, metadata, selection := fp.semanticFingerprintsForEntries(fp.entries)
-	if fp.semanticCatalogInitialized {
-		fp.semanticCatalogFingerprint = catalog
-	}
-	if fp.semanticMetadataInitialized {
-		fp.semanticMetadataFingerprint = metadata
-	}
-	if fp.semanticSelectionInitialized {
-		fp.semanticSelectionFingerprint = selection
-	}
-	return true
-}
-
-func nativeVisualCachePath(value string) string {
-	if os.PathSeparator == '\\' {
-		return strings.ReplaceAll(value, "/", "\\")
-	}
-	return strings.ReplaceAll(value, "\\", "/")
-}
-
-// showCachedStandalonePath renders a previously visited provider directory
-// before the provider reconnect/restore task has completed. The old VFS stays
-// installed until that task succeeds, so these rows are presentation-only;
-// the panel's provider-open guard prevents actions from being dispatched
-// against the old filesystem meanwhile.
-func (fp *FileSystemPanel) showCachedStandalonePath(target string) bool {
-	if fp == nil || target == "" || fp.dirCache == nil || AppConfig.SyncPanelLoad {
-		return false
-	}
-	want := nativeVisualCachePath(target)
-	var cached dirCacheEntry
-	found := false
-	for key, candidate := range fp.dirCache {
-		if nativeVisualCachePath(key.qualifiedPath) != want {
-			continue
+func fileEntriesFromItems(items []vfs.VFSItem) []*fileEntry {
+	if AppConfig.ShowHiddenFiles && len(items) >= 4096 {
+		entries := make([]*fileEntry, len(items))
+		backing := make([]fileEntry, len(items))
+		workerCount := min(runtime.GOMAXPROCS(0), 8)
+		workerCount = min(workerCount, (len(items)+2047)/2048)
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+		for worker := 0; worker < workerCount; worker++ {
+			start := len(items) * worker / workerCount
+			end := len(items) * (worker + 1) / workerCount
+			go func() {
+				defer workers.Done()
+				for index := start; index < end; index++ {
+					backing[index].VFSItem = items[index]
+					entries[index] = &backing[index]
+				}
+			}()
 		}
-		if !found || candidate.time.After(cached.time) {
-			cached = candidate
-			found = true
+		workers.Wait()
+		return entries
+	}
+	visibleCount := len(items)
+	if !AppConfig.ShowHiddenFiles {
+		visibleCount = 0
+		for _, item := range items {
+			if item.Name == ".." || !item.IsHidden {
+				visibleCount++
+			}
 		}
 	}
-	if !found {
-		return false
-	}
-
-	fp.entries = nil
-	if cached.showUpEntry {
-		fp.entries = append(fp.entries, &fileEntry{
-			VFSItem:  panelUpEntryItem(cached.upItem, true),
-			IsCached: true,
-		})
-	}
-	for _, item := range cached.items {
+	entries := make([]*fileEntry, 0, visibleCount)
+	backing := make([]fileEntry, visibleCount)
+	next := 0
+	for _, item := range items {
 		if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
 			continue
 		}
-		fp.entries = append(fp.entries, &fileEntry{VFSItem: item, IsCached: true})
+		backing[next].VFSItem = item
+		entries = append(entries, &backing[next])
+		next++
 	}
-	fp.sortEntries()
-	fp.SetCursorIndex(0)
-	return true
+	return entries
 }
+
 func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
 	if idx >= 0 && idx < len(fp.entries) {
 		e := fp.entries[idx]
@@ -964,13 +861,252 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 
 func (fp *FileSystemPanel) sortEntries() {
 	fp.sortEntrySlice(fp.entries)
+	fp.markSemanticCatalogMutation()
 }
 
-// sortEntrySlice applies the panel's current ordering to a detached candidate
-// catalog. Warm-cache completion uses it to prove the fresh result has exactly
-// the same semantic order before touching the live table rows.
+func comparePanelFolded(left, right string) int {
+	// The common local-filesystem case is ASCII. Compare folded bytes in place
+	// instead of allocating two lowercase strings for every O(N log N) sort
+	// comparison; retain Unicode's established ordering as the fallback.
+	limit := len(left)
+	if len(right) < limit {
+		limit = len(right)
+	}
+	for index := 0; index < limit; index++ {
+		leftByte, rightByte := left[index], right[index]
+		if leftByte >= 0x80 || rightByte >= 0x80 {
+			leftFolded, rightFolded := strings.ToLower(left), strings.ToLower(right)
+			if leftFolded < rightFolded {
+				return -1
+			}
+			if leftFolded > rightFolded {
+				return 1
+			}
+			return 0
+		}
+		if leftByte >= 'A' && leftByte <= 'Z' {
+			leftByte += 'a' - 'A'
+		}
+		if rightByte >= 'A' && rightByte <= 'Z' {
+			rightByte += 'a' - 'A'
+		}
+		if leftByte < rightByte {
+			return -1
+		}
+		if leftByte > rightByte {
+			return 1
+		}
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	return 0
+}
+
+func comparePanelNames(left, right string) int {
+	if folded := comparePanelFolded(left, right); folded != 0 {
+		return folded
+	}
+	return strings.Compare(left, right)
+}
+
+func (fp *FileSystemPanel) compareEntryOrder(ei, ej *fileEntry) int {
+	if ei.Name == ".." || ej.Name == ".." {
+		if ei.Name == ej.Name {
+			return 0
+		}
+		if ei.Name == ".." {
+			return -1
+		}
+		return 1
+	}
+	if ei.IsDir != ej.IsDir {
+		if ei.IsDir {
+			return -1
+		}
+		return 1
+	}
+
+	cmp := 0
+	leftName := ei.visibleName()
+	rightName := ej.visibleName()
+	switch fp.sortMode {
+	case SortName:
+		cmp = comparePanelNames(leftName, rightName)
+	case SortExt:
+		cmp = comparePanelFolded(filepath.Ext(leftName), filepath.Ext(rightName))
+		if cmp == 0 {
+			cmp = comparePanelNames(leftName, rightName)
+		}
+	case SortTime:
+		if ei.MTime.Before(ej.MTime) {
+			cmp = -1
+		} else if ei.MTime.After(ej.MTime) {
+			cmp = 1
+		} else {
+			cmp = comparePanelNames(leftName, rightName)
+		}
+	case SortSize:
+		if ei.Size < ej.Size {
+			cmp = -1
+		} else if ei.Size > ej.Size {
+			cmp = 1
+		} else {
+			cmp = comparePanelNames(leftName, rightName)
+		}
+	default:
+		cmp = comparePanelNames(leftName, rightName)
+	}
+	if fp.sortReverse {
+		return -cmp
+	}
+	return cmp
+}
+
+// Windows directory indexes already enumerate names in case-insensitive name
+// order. The panel only additionally groups folders before files. Prove both
+// subsequences are ordered, then perform that grouping in one linear pass.
+// Providers with any other order fall through to the general comparison sort.
+func (fp *FileSystemPanel) tryLinearNameSort(entries []*fileEntry) bool {
+	if fp.sortMode != SortName || len(entries) <= 1 {
+		return false
+	}
+	start := 0
+	if entries[0].Name == ".." {
+		start = 1
+	}
+	var lastDir, lastFile *fileEntry
+	directoryCount := 0
+	filesSeen := false
+	grouped := true
+	orderedNames := func(previous, current *fileEntry) bool {
+		if previous == nil {
+			return true
+		}
+		cmp := comparePanelNames(previous.visibleName(), current.visibleName())
+		if fp.sortReverse {
+			cmp = -cmp
+		}
+		return cmp <= 0
+	}
+	for _, entry := range entries[start:] {
+		if entry.Name == ".." {
+			return false
+		}
+		if entry.IsDir {
+			if !orderedNames(lastDir, entry) {
+				return false
+			}
+			lastDir = entry
+			directoryCount++
+			if filesSeen {
+				grouped = false
+			}
+		} else {
+			if !orderedNames(lastFile, entry) {
+				return false
+			}
+			lastFile = entry
+			filesSeen = true
+		}
+	}
+	if grouped {
+		return true
+	}
+	ordered := make([]*fileEntry, len(entries)-start)
+	directoryIndex := 0
+	fileIndex := directoryCount
+	for _, entry := range entries[start:] {
+		if entry.IsDir {
+			ordered[directoryIndex] = entry
+			directoryIndex++
+		} else {
+			ordered[fileIndex] = entry
+			fileIndex++
+		}
+	}
+	copy(entries[start:], ordered)
+	return true
+}
+
+func panelFoldKey(value string) string {
+	needsASCII := false
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character >= 0x80 {
+			return strings.ToLower(value)
+		}
+		if character >= 'A' && character <= 'Z' {
+			needsASCII = true
+		}
+	}
+	if !needsASCII {
+		return value
+	}
+	folded := []byte(value)
+	for index, character := range folded {
+		if character >= 'A' && character <= 'Z' {
+			folded[index] = character + ('a' - 'A')
+		}
+	}
+	return string(folded)
+}
+
+// Shared-prefix Windows component names make byte-at-a-time comparator work
+// disproportionately expensive. Build each folded key once, then let Go's
+// optimized native string comparison handle the N log N ordering.
+func (fp *FileSystemPanel) sortEntriesByPreparedName(entries []*fileEntry) {
+	type keyedEntry struct {
+		entry  *fileEntry
+		folded string
+	}
+	keyed := make([]keyedEntry, len(entries))
+	for index, entry := range entries {
+		keyed[index] = keyedEntry{entry: entry, folded: panelFoldKey(entry.visibleName())}
+	}
+	slices.SortFunc(keyed, func(left, right keyedEntry) int {
+		if left.entry.Name == ".." || right.entry.Name == ".." {
+			if left.entry.Name == right.entry.Name {
+				return 0
+			}
+			if left.entry.Name == ".." {
+				return -1
+			}
+			return 1
+		}
+		if left.entry.IsDir != right.entry.IsDir {
+			if left.entry.IsDir {
+				return -1
+			}
+			return 1
+		}
+		cmp := strings.Compare(left.folded, right.folded)
+		if cmp == 0 {
+			cmp = strings.Compare(left.entry.visibleName(), right.entry.visibleName())
+		}
+		if fp.sortReverse {
+			cmp = -cmp
+		}
+		return cmp
+	})
+	for index := range keyed {
+		entries[index] = keyed[index].entry
+	}
+}
+
+// sortEntrySlice applies the panel's current ordering to a detached catalog.
 func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
 	if fp.sortMode == SortUnsorted || len(entries) <= 1 {
+		return
+	}
+	if fp.tryLinearNameSort(entries) {
+		return
+	}
+	if fp.sortMode == SortName {
+		fp.sortEntriesByPreparedName(entries)
 		return
 	}
 
@@ -979,76 +1115,8 @@ func (fp *FileSystemPanel) sortEntrySlice(entries []*fileEntry) {
 	// sort.Interface's ordering contract and could reshuffle an otherwise
 	// unchanged catalog on refresh, invalidating Gallery revisions and cursor
 	// identities spuriously.
-	sort.SliceStable(entries, func(i, j int) bool {
-		ei, ej := entries[i], entries[j]
-
-		// ".." всегда сверху. Keep the comparison strict even
-		// for malformed/virtual catalogs containing more than one parent row.
-		if ei.Name == ".." || ej.Name == ".." {
-			return ei.Name == ".." && ej.Name != ".."
-		}
-
-		// Папки всегда сверху
-		if ei.IsDir != ej.IsDir {
-			return ei.IsDir
-		}
-
-		compareNames := func(left, right string) int {
-			leftFolded := strings.ToLower(left)
-			rightFolded := strings.ToLower(right)
-			if leftFolded < rightFolded {
-				return -1
-			}
-			if leftFolded > rightFolded {
-				return 1
-			}
-			if left < right {
-				return -1
-			}
-			if left > right {
-				return 1
-			}
-			return 0
-		}
-
-		cmp := 0
-		switch fp.sortMode {
-		case SortName:
-			cmp = compareNames(ei.visibleName(), ej.visibleName())
-		case SortExt:
-			extI := strings.ToLower(filepath.Ext(ei.visibleName()))
-			extJ := strings.ToLower(filepath.Ext(ej.visibleName()))
-			if extI < extJ {
-				cmp = -1
-			} else if extI > extJ {
-				cmp = 1
-			} else {
-				cmp = compareNames(ei.visibleName(), ej.visibleName())
-			}
-		case SortTime:
-			if ei.MTime.Before(ej.MTime) {
-				cmp = -1
-			} else if ei.MTime.After(ej.MTime) {
-				cmp = 1
-			} else {
-				cmp = compareNames(ei.visibleName(), ej.visibleName())
-			}
-		case SortSize:
-			if ei.Size < ej.Size {
-				cmp = -1
-			} else if ei.Size > ej.Size {
-				cmp = 1
-			} else {
-				cmp = compareNames(ei.visibleName(), ej.visibleName())
-			}
-		default:
-			cmp = compareNames(ei.visibleName(), ej.visibleName())
-		}
-
-		if fp.sortReverse {
-			cmp = -cmp
-		}
-		return cmp < 0
+	slices.SortFunc(entries, func(left, right *fileEntry) int {
+		return fp.compareEntryOrder(left, right)
 	})
 }
 
@@ -1686,14 +1754,30 @@ func (fp *FileSystemPanel) galleryDensity(mode GalleryLayoutMode) int {
 	} else {
 		mode = GalleryLayoutMasonry
 	}
-	if !galleryDensityAdjustable(mode) {
-		return 0
-	}
 	if value, ok := fp.galleryDensities[mode]; ok {
-		return value
+		return clampGalleryDensity(mode, value)
 	}
 	defaultValue, _, _ := galleryDensityLimits(mode)
 	return defaultValue
+}
+
+// galleryDensitiesSnapshot is the bounded zoom contract needed by native
+// renderers to prepare another presentation before it becomes active. Compact
+// defaults stay omitted because their exact row pitch belongs to frontend font
+// metrics; an explicit user override is included and persisted like any other
+// mode.
+func (fp *FileSystemPanel) galleryDensitiesSnapshot() map[string]int {
+	densities := make(map[string]int, len(galleryLayoutModes))
+	for _, mode := range galleryLayoutModes {
+		if density, overridden := fp.galleryDensities[mode]; overridden {
+			densities[string(mode)] = clampGalleryDensity(mode, density)
+			continue
+		}
+		if defaultValue, _, _ := galleryDensityLimits(mode); defaultValue > 0 {
+			densities[string(mode)] = defaultValue
+		}
+	}
+	return densities
 }
 
 func (fp *FileSystemPanel) effectiveGalleryLayoutMode() GalleryLayoutMode {
@@ -1755,12 +1839,6 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	if !ok {
 		return false
 	}
-	if !galleryDensityAdjustable(parsed) {
-		// Accept stale clients gracefully, but erase any pre-policy override so
-		// the next semantic scene and saved session use the host's default row
-		// pitch again.
-		return fp.ResetGalleryDensity(parsed)
-	}
 	density = clampGalleryDensity(parsed, density)
 	if fp.galleryDensities == nil {
 		fp.galleryDensities = make(map[GalleryLayoutMode]int)
@@ -1773,9 +1851,9 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	return true
 }
 
-// ResetGalleryDensity removes the per-mode override. Compact modes then use
-// the host's exact font-derived row height, so Columns and Details share the
-// same untouched density instead of persisting two nearly-equal integers.
+// ResetGalleryDensity removes the per-mode override. Compact modes then return
+// to the host's exact font-derived row height instead of persisting a rounded
+// approximation of that default.
 func (fp *FileSystemPanel) ResetGalleryDensity(mode GalleryLayoutMode) bool {
 	parsed, ok := parseGalleryLayoutMode(string(mode))
 	if !ok {
@@ -1794,8 +1872,8 @@ func (fp *FileSystemPanel) ResetGalleryDensity(mode GalleryLayoutMode) bool {
 
 func cloneGalleryDensities(source map[GalleryLayoutMode]int) map[GalleryLayoutMode]int {
 	clone := make(map[GalleryLayoutMode]int, len(source))
-	for mode, density := range source {
-		if galleryDensityAdjustable(mode) {
+	for _, mode := range galleryLayoutModes {
+		if density, present := source[mode]; present {
 			clone[mode] = clampGalleryDensity(mode, density)
 		}
 	}
@@ -1937,7 +2015,7 @@ func (fp *FileSystemPanel) updateTitle(err error) {
 		title += " [Error]"
 	}
 	fp.semanticTitle = title
-	if err == nil && fp.isLoading {
+	if err == nil && fp.isLoading && !fp.catalogInteractive {
 		title += " " + panelLoadingPulse[fp.loadingFrame%len(panelLoadingPulse)]
 	}
 	fp.currentTitle = title
@@ -1956,7 +2034,6 @@ func (fp *FileSystemPanel) startLoadingAnimation() {
 	fp.stopLoadingAnimation()
 	fp.loadingFrame = 0
 	fp.updateTitle(nil)
-	vtui.FrameManager.Redraw()
 
 	// In tests, do not run the infinite timer loop to prevent task queue leakage.
 	if DisableLoadingAnimationInTests && flag.Lookup("test.v") != nil {
@@ -1973,7 +2050,6 @@ func (fp *FileSystemPanel) startLoadingAnimation() {
 				}
 				fp.loadingFrame = (fp.loadingFrame + 1) % len(panelLoadingPulse)
 				fp.updateTitle(nil)
-				vtui.FrameManager.Redraw()
 				scheduleNext()
 				return true
 			})
@@ -2165,18 +2241,13 @@ func (fp *FileSystemPanel) openVFSAsync(
 	fp.providerOpenTarget = persistentTarget
 	fp.providerOpenSourceSelect = sourceSelection
 	fp.isLoading = true
+	fp.catalogInteractive = false
 	fp.startLoadingAnimation()
-	cachedPreview := fp.showCachedStandalonePath(persistentTarget)
-	if !cachedPreview {
-		// Keep the source rows as a stable placeholder when this destination has
-		// never been visited. Input is guarded until the provider switch, so they
-		// cannot dispatch operations against the wrong VFS.
-		fp.Refresh()
-		vtui.FrameManager.Redraw()
-	} else {
-		fp.Refresh()
-		vtui.FrameManager.Redraw()
-	}
+	// Keep the source rows as a stable placeholder while the provider opens.
+	// Input is guarded until the provider switch, so these rows cannot dispatch
+	// operations against the wrong VFS.
+	fp.Refresh()
+	vtui.FrameManager.Redraw()
 	fp.providerOpenTask = vtui.RunAsync(func(task *vtui.TaskContext) {
 		newVFS, err := open(task.Context)
 		if err == nil && newVFS == nil {
@@ -2230,10 +2301,8 @@ func (fp *FileSystemPanel) openVFSAsync(
 }
 
 // showCurrentVFSLoadingRows atomically stops the panel from exposing rows that
-// belonged to a VFS it has just left. ReadDirectory will replace this minimal
-// view immediately from cache when allowed; without a cache (or when
-// SyncPanelLoad deliberately bypasses it), only a real parent row is safe to
-// keep interactive while the new listing is in flight.
+// belonged to a VFS it has just left. Only a real parent row is safe to keep
+// interactive while the new listing is in flight.
 func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
 	fp.entries = nil
 	if fp.vfs != nil && (!fp.vfs.IsAtRoot() || fp.vfs.ParentVFS() != nil) {
@@ -2290,26 +2359,14 @@ func (fp *FileSystemPanel) setDirectoryPath(target string, knownDirectory bool) 
 }
 
 // setKnownDirectoryPath is reserved for a directory identity already supplied
-// by the active VFS (for example Enter on a panel row) or an exact panel-cache
-// hit. The following ReadDir remains authoritative if that identity went stale.
+// by the active VFS (for example Enter on a panel row). The following ReadDir
+// remains authoritative if that identity went stale.
 func (fp *FileSystemPanel) setKnownDirectoryPath(target string) error {
 	return fp.setDirectoryPath(target, true)
 }
 
 func (fp *FileSystemPanel) setVerifiedDirectoryPath(target string) error {
 	return fp.setDirectoryPath(target, false)
-}
-
-func (fp *FileSystemPanel) hasCachedDirectoryPath(target string) bool {
-	if fp == nil || fp.vfs == nil || fp.dirCache == nil || AppConfig.SyncPanelLoad {
-		return false
-	}
-	resolved, err := fp.vfs.Abs(target)
-	if err != nil {
-		return false
-	}
-	_, ok := fp.dirCache[directoryCacheKey(fp.vfs, resolved)]
-	return ok
 }
 
 func (fp *FileSystemPanel) suppressNextFolderHistory(path string) {
@@ -2375,10 +2432,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			"supersededBy", navigationBenchmarkTraceName(benchmark))
 	}
 	fp.benchmarkLoadTrace = benchmark
-	// Even when a backend cannot expose revision, size or mtime, a new listing
-	// is a new observation boundary for opaque media bytes. Strong/weak source
-	// versions remain stable; only the session-strength fallback consumes this.
-	fp.mediaSourceEpoch++
 	if fp.cancelLoad != nil {
 		fp.cancelLoad()
 		fp.cancelLoad = nil
@@ -2389,8 +2442,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	fp.loadGeneration++
 	loadGeneration := fp.loadGeneration
 	fp.isLoading = true
-	fp.semanticCachedCatalogReady = false
-	fp.semanticCachedCatalogExported = false
+	fp.catalogInteractive = false
 	fp.startLoadingAnimation()
 
 	loadVFS := fp.vfs
@@ -2407,7 +2459,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		benchmark.event("directory_read.begin", "go.ui", "path", path, "keepEntries", keepEntries)
 	}
 	suppressionToken, hasFolderHistorySuppression := fp.folderHistorySuppression(path)
-	cacheKey := directoryCacheKey(loadVFS, path)
 	loadAtRoot := loadVFS.IsAtRoot()
 	showUpEntry := !loadAtRoot || loadVFS.ParentVFS() != nil
 	if fp.previousSelectionVFS != nil && !fp.previousSelectionMatches(loadVFS, path) {
@@ -2456,63 +2507,19 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 	}
 
-	hasCache := false
-	cacheInitialCursorName := ""
-	cacheInitialCursorIndex := -1
-	if !keepEntries {
-		if fp.dirCache == nil {
-			fp.dirCache = make(map[dirCacheKey]dirCacheEntry)
+	// Advance the observation epoch only when a real destination listing is
+	// committed. The placeholder does not identify any destination file.
+	sourceEpochAdvanced := false
+	advanceSourceEpoch := func() {
+		if sourceEpochAdvanced {
+			return
 		}
-		if cached, ok := fp.dirCache[cacheKey]; ok && !AppConfig.SyncPanelLoad {
-			hasCache = true
-			fp.catalogProvisional = false
-			fp.semanticCachedCatalogReady = true
-			vtui.DebugLog("PANEL: Using cached entries for %s", path)
-			fp.entries = nil
-
-			if showUpEntry {
-				fp.entries = append(fp.entries, &fileEntry{
-					VFSItem:  panelUpEntryItem(cached.upItem, true),
-					IsCached: true,
-				})
-			}
-
-			for _, item := range cached.items {
-				if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
-					continue
-				}
-				entry := &fileEntry{VFSItem: item, IsCached: true}
-				fp.applyPersistentSelection(entry, loadVFS, path)
-				fp.entries = append(fp.entries, entry)
-			}
-
-			fp.sortEntries()
-
-			target := fp.pendingSelection
-			if target != "" {
-				for i, entry := range fp.entries {
-					if entry.Name == target {
-						fp.SetCursorIndex(i)
-						fp.pendingSelection = ""
-						break
-					}
-				}
-			}
-			fp.Refresh()
-			cacheInitialCursorName = fp.getRawSelectedName()
-			cacheInitialCursorIndex = fp.GetCursorIndex()
-			if benchmark != nil {
-				benchmark.event("model.provisional.ready", "go.ui", "phase", "cached",
-					"cacheHit", true, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
-				navigationBenchmarkPublishScene(benchmark, "cached")
-			}
-			publishPanelCatalogImmediate(fp, benchmark)
-			vtui.FrameManager.Redraw()
-		}
+		fp.mediaSourceEpoch++
+		sourceEpochAdvanced = true
 	}
 
 	isFirstChunk := true
-	if !keepEntries && !hasCache {
+	if !keepEntries {
 		fp.catalogProvisional = true
 		fp.entries = nil
 		if showUpEntry {
@@ -2520,25 +2527,42 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 		fp.SetCursorIndex(0)
 		fp.Refresh()
+		deferredPlaceholder := false
+		if vtui.FrameManager != nil {
+			screen := vtui.FrameManager.Screen()
+			if screen != nil {
+				if _, ok := screen.Renderer.(vtui.SemanticInputUnchangedRenderer); ok {
+					deferredPlaceholder = vtui.FrameManager.DeclareCurrentInputUnchanged()
+				}
+			}
+		}
 		if benchmark != nil {
 			benchmark.event("model.provisional.ready", "go.ui", "phase", "placeholder",
-				"cacheHit", false, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
-			navigationBenchmarkPublishScene(benchmark, "placeholder")
+				"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex(),
+				"semanticDeferred", deferredPlaceholder)
+			if !deferredPlaceholder {
+				navigationBenchmarkPublishScene(benchmark, "placeholder")
+			}
 		}
-		vtui.FrameManager.Redraw()
+		if !deferredPlaceholder {
+			vtui.FrameManager.Redraw()
+		}
 	}
 	if keepEntries {
 		fp.catalogProvisional = false
 	}
 	if keepEntries && benchmark != nil {
 		benchmark.event("model.provisional.ready", "go.ui", "phase", "retained",
-			"cacheHit", false, "entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+			"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
 		navigationBenchmarkPublishScene(benchmark, "retained")
 	}
 
 	phasedReader := phasedDirectoryReaderFor(loadVFS)
-	usePhasedRead := phasedReader != nil && !keepEntries && !hasCache &&
+	usePhasedRead := phasedReader != nil && !keepEntries &&
 		!AppConfig.SyncPanelLoad && panelSortSupportsPhasedDirectoryRead(fp.sortMode)
+	loadSortMode, loadSortReverse := fp.sortMode, fp.sortReverse
+	previewEligible := loadSortMode == SortName && !loadSortReverse &&
+		!AppConfig.SyncPanelLoad
 	loadIsCurrent := func() bool {
 		if ctx.Err() != nil || fp.loadCtx != ctx || fp.loadGeneration != loadGeneration ||
 			!sameVFSInstance(fp.vfs, loadVFS) {
@@ -2559,9 +2583,91 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		var pendingMetadata []vfs.VFSItem
 		chunkCount := 0
 		metadataChunkCount := 0
+		authoritativeCatalogQueued := false
+		authoritativePresentationComplete := false
 		if benchmark != nil {
 			benchmark.event("filesystem.readdir.begin", "go.worker", "path", path,
 				"phased", usePhasedRead)
+		}
+
+		publishCatalogPreview := func(chunk []vfs.VFSItem) {
+			// A preview is useful only when the panel's requested order matches the
+			// reader's stable leading directory window. The authoritative base below
+			// remains the sole source for every other sort order.
+			if len(chunk) == 0 || !previewEligible || ctx.Err() != nil {
+				return
+			}
+			previewEntries := fileEntriesFromItems(chunk)
+			if len(previewEntries) == 0 || ctx.Err() != nil {
+				return
+			}
+			previewQueuedNs := int64(0)
+			if benchmark != nil {
+				previewQueuedNs = navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.preview.queued", "go.worker", previewQueuedNs,
+					"entries", len(previewEntries))
+			}
+			vtui.FrameManager.PostPriorityTaskWithRedrawDecision(func() bool {
+				if !loadIsCurrent() || !isFirstChunk {
+					return false
+				}
+
+				target := fp.pendingSelection
+				if target != "" && target != ".." {
+					found := false
+					for _, entry := range previewEntries {
+						if entry.Name == target {
+							found = true
+							break
+						}
+					}
+					// Showing an unrelated first row before snapping to a remembered
+					// child is worse than retaining the previous panel for a few ms.
+					if !found {
+						return false
+					}
+				}
+
+				advanceSourceEpoch()
+				fp.entries = nil
+				if showUpEntry {
+					fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+				}
+				if len(fp.selectedItems) != 0 ||
+					(fp.previousSelectionMatches(loadVFS, path) && len(fp.previousSelection) != 0) {
+					for _, entry := range previewEntries {
+						fp.applyPersistentSelection(entry, loadVFS, path)
+					}
+				}
+				fp.entries = append(fp.entries, previewEntries...)
+				fp.sortEntries()
+				fp.catalogProvisional = true
+				fp.catalogInteractive = true
+				fp.stopLoadingAnimation()
+				fp.updateTitle(nil)
+
+				cursorIndex := 0
+				if target != "" {
+					for index, entry := range fp.entries {
+						if entry.Name == target {
+							cursorIndex = index
+							break
+						}
+					}
+				}
+				fp.SetCursorIndex(cursorIndex)
+				if benchmark != nil {
+					startedNs := navigationBenchmarkMonotonicNs()
+					benchmark.eventAt("model.preview.ready", "go.ui", startedNs,
+						"entries", len(fp.entries), "queueNs", startedNs-previewQueuedNs,
+						"cursorIndex", fp.GetCursorIndex())
+					navigationBenchmarkPublishScene(benchmark, "preview")
+				}
+				publishPanelCatalogImmediate(fp, benchmark)
+				fp.Refresh()
+				vtui.FrameManager.Redraw()
+				return true
+			})
 		}
 
 		publishCatalogChunk := func(chunk []vfs.VFSItem, authoritativeBase bool) {
@@ -2575,40 +2681,53 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if ctx.Err() != nil {
 				return
 			}
-			accumulated = append(accumulated, chunk...)
-			if authoritativeBase {
-				if accumulatedByName == nil {
-					accumulatedByName = make(map[string]int, len(accumulated))
-				}
-				for index, item := range accumulated {
-					accumulatedByName[item.Name] = index
-				}
+			// Directory-reader chunks are immutable after the callback. Take
+			// ownership of the first complete base instead of copying tens of
+			// thousands of VFSItem values into an identical accumulator.
+			if len(accumulated) == 0 && authoritativeBase {
+				accumulated = chunk
+			} else {
+				accumulated = append(accumulated, chunk...)
 			}
 			if ctx.Err() != nil {
 				return
 			}
 
-			// A cached directory is already a complete, interactive view. Keep it
-			// on screen while all real chunks are collected and replace it once,
-			// atomically, in the completion task. Rendering partial real chunks
-			// would make the panel jump and could overwrite user interaction with
-			// a stale pendingSelection.
-			if AppConfig.SyncPanelLoad || hasCache {
+			if AppConfig.SyncPanelLoad {
 				return
 			}
 
-			newEntries := make([]*fileEntry, 0, len(chunk))
-			for _, item := range chunk {
-				// Hide hidden files if configured, but never hide '..'
-				if !AppConfig.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
-					continue
-				}
-				entry := &fileEntry{VFSItem: item}
-				newEntries = append(newEntries, entry)
+			conversionStartedNs := int64(0)
+			if benchmark != nil {
+				conversionStartedNs = navigationBenchmarkMonotonicNs()
+			}
+			newEntries := fileEntriesFromItems(chunk)
+			if benchmark != nil {
+				conversionFinishedNs := navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
+					"chunk", chunkIndex, "entries", len(newEntries),
+					"durationNs", conversionFinishedNs-conversionStartedNs)
 			}
 
 			if ctx.Err() != nil {
 				return
+			}
+			preSorted := false
+			if authoritativeBase && len(newEntries) > 1 {
+				sortStartedNs := navigationBenchmarkMonotonicNs()
+				sorter := FileSystemPanel{
+					sortMode:    loadSortMode,
+					sortReverse: loadSortReverse,
+				}
+				sorter.sortEntrySlice(newEntries)
+				sortFinishedNs := navigationBenchmarkMonotonicNs()
+				preSorted = true
+				if benchmark != nil {
+					benchmark.eventAt("model.chunk.presorted", "go.worker",
+						sortFinishedNs, "chunk", chunkIndex,
+						"entries", len(newEntries), "durationNs",
+						sortFinishedNs-sortStartedNs)
+				}
 			}
 
 			chunkQueuedNs := int64(0)
@@ -2617,14 +2736,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				benchmark.eventAt("model.chunk.queued", "go.worker", chunkQueuedNs,
 					"chunk", chunkIndex, "chunkEntries", len(newEntries))
 			}
-			vtui.FrameManager.PostTask(func() {
+			if authoritativeBase {
+				authoritativeCatalogQueued = true
+			}
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 				if benchmark != nil {
 					startedNs := navigationBenchmarkMonotonicNs()
 					benchmark.eventAt("model.chunk.started", "go.ui", startedNs,
 						"chunk", chunkIndex, "queueNs", startedNs-chunkQueuedNs)
 				}
 				if !loadIsCurrent() {
-					return
+					return false
 				}
 
 				currentSelected := fp.getRawSelectedName()
@@ -2635,6 +2757,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				if isFirstChunk {
+					advanceSourceEpoch()
 					fp.entries = nil
 					if showUpEntry {
 						upItem := vfs.VFSItem{Name: "..", IsDir: true}
@@ -2643,17 +2766,33 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					isFirstChunk = false
 				}
 
-				// Apply current and Ctrl+M snapshots to incoming items.
-				for _, e := range newEntries {
-					fp.applyPersistentSelection(e, loadVFS, path)
+				selectionStartedNs := navigationBenchmarkMonotonicNs()
+				// Empty selection maps are overwhelmingly common during folder
+				// navigation; avoid two hash lookups for every catalog row.
+				if len(fp.selectedItems) != 0 ||
+					(fp.previousSelectionMatches(loadVFS, path) && len(fp.previousSelection) != 0) {
+					for _, e := range newEntries {
+						fp.applyPersistentSelection(e, loadVFS, path)
+					}
 				}
 
+				selectionFinishedNs := navigationBenchmarkMonotonicNs()
 				fp.entries = append(fp.entries, newEntries...)
-				fp.sortEntries()
+				appendFinishedNs := navigationBenchmarkMonotonicNs()
+				if preSorted && fp.sortMode == loadSortMode &&
+					fp.sortReverse == loadSortReverse {
+					fp.markSemanticCatalogMutation()
+				} else {
+					fp.sortEntries()
+				}
+				sortFinishedNs := navigationBenchmarkMonotonicNs()
 				if authoritativeBase {
 					// This catalog is complete and authoritative for row identity and
 					// order. Metadata is deliberately still loading in the background.
 					fp.catalogProvisional = false
+					fp.catalogInteractive = true
+					fp.stopLoadingAnimation()
+					fp.updateTitle(nil)
 				}
 
 				// Фокусировка на нужном файле
@@ -2680,17 +2819,24 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.SetCursorIndex(0)
 				}
 
-				fp.Refresh()
 				if benchmark != nil {
 					benchmark.event("model.chunk.ready", "go.ui", "chunk", chunkIndex,
-						"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex())
+						"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex(),
+						"selectionNs", selectionFinishedNs-selectionStartedNs,
+						"appendNs", appendFinishedNs-selectionFinishedNs,
+						"sortNs", sortFinishedNs-appendFinishedNs)
 					navigationBenchmarkPublishScene(benchmark, "chunk")
 				}
 				if authoritativeBase {
-					publishPanelCatalogImmediate(fp, benchmark)
+					authoritativePresentationComplete =
+						publishPanelCatalogImmediate(fp, benchmark)
 				}
+				// The native catalog does not depend on the hidden terminal table.
+				// Publish its bounded page first, then rebuild the fallback rows.
+				fp.Refresh()
 
 				vtui.FrameManager.Redraw() // Рисуем каждый чанк!
+				return true
 			})
 		}
 
@@ -2699,20 +2845,41 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if ctx.Err() != nil {
 				return
 			}
-			// Keep the authoritative cache snapshot in sync without disturbing
-			// the names/types order established by the base phase.
+			// Enrich the authoritative names/types base without disturbing its
+			// identity or order.
+			if accumulatedByName == nil {
+				accumulatedByName = make(map[string]int, len(accumulated))
+				for index, item := range accumulated {
+					accumulatedByName[item.Name] = index
+				}
+			}
+			metadataToPublish := make([]vfs.VFSItem, 0, len(chunk))
 			for _, item := range chunk {
 				index, ok := accumulatedByName[item.Name]
 				if !ok || index < 0 || index >= len(accumulated) ||
 					accumulated[index].IsDir != item.IsDir || accumulated[index].NoExtension != item.NoExtension {
+					metadataToPublish = append(metadataToPublish, item)
+					continue
+				}
+				// On Windows the base phase is built from the same WIN32_FIND_DATA
+				// record as the metadata phase. Keep the base row and, most
+				// importantly, do not queue a second full-catalog UI mutation for
+				// metadata that is already complete. If the record changed between
+				// phases, retain the normal enrichment path.
+				baseItem := accumulated[index]
+				if baseItem.SizeKnown && baseItem.Size == item.Size &&
+					baseItem.MTime.Equal(item.MTime) &&
+					baseItem.IsExecutable == item.IsExecutable &&
+					baseItem.PhysicalSize == item.PhysicalSize {
 					continue
 				}
 				accumulated[index] = item
+				metadataToPublish = append(metadataToPublish, item)
 			}
-			pendingMetadata = append(pendingMetadata, chunk...)
+			pendingMetadata = append(pendingMetadata, metadataToPublish...)
 			if benchmark != nil {
 				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
-					"chunk", metadataChunkCount, "chunkEntries", len(chunk),
+					"chunk", metadataChunkCount, "chunkEntries", len(metadataToPublish),
 					"phase", "metadata")
 			}
 		}
@@ -2731,9 +2898,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				benchmark.eventAt("model.metadata.queued", "go.worker", metadataQueuedNs,
 					"chunks", metadataChunkCount, "entries", len(metadataCopy))
 			}
-			vtui.FrameManager.PostTask(func() {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 				if !loadIsCurrent() {
-					return
+					return false
 				}
 				byName := make(map[string]*fileEntry, len(fp.entries))
 				for _, entry := range fp.entries {
@@ -2752,7 +2919,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 					entry, ok := byName[item.Name]
 					if !ok || entry.IsDir != item.IsDir || entry.NoExtension != item.NoExtension {
-						return
+						return false
 					}
 				}
 				for _, item := range metadataCopy {
@@ -2772,6 +2939,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					navigationBenchmarkPublishScene(benchmark, "metadata")
 				}
 				vtui.FrameManager.Redraw()
+				return true
 			})
 		}
 
@@ -2779,20 +2947,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		if usePhasedRead {
 			err = phasedReader.ReadDirPhased(ctx, path, func(phase vfs.DirectoryReadPhase, chunk []vfs.VFSItem) {
 				switch phase {
+				case vfs.DirectoryReadPreview:
+					publishCatalogPreview(chunk)
 				case vfs.DirectoryReadBase:
 					publishCatalogChunk(chunk, true)
 				case vfs.DirectoryReadMetadata:
 					mergeMetadataChunk(chunk)
 				}
 			})
-			// Publish enrichment once, after the provider has completed all of its
-			// bounded worker-side chunks. The complete base task was queued first,
-			// so it still gets its own fast frame; one atomic metadata commit avoids
-			// reserializing the full minimal catalog and restarting the frontend pull
-			// protocol for every 256 rows.
-			if err == nil {
-				publishMetadata(pendingMetadata)
-			}
 		} else {
 			err = loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
 				publishCatalogChunk(chunk, false)
@@ -2883,9 +3045,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				"path", path, "entries", len(accumulated), "chunks", chunkCount)
 		}
 		vtui.FrameManager.PostTaskWithRedrawDecision(func() (needsRedraw bool) {
-			// Completion tasks retain PostTask's conservative redraw by default.
-			// Only the exact warm-cache equivalence proof below opts out.
-			needsRedraw = true
+			completionPresentationChanged := false
 			if benchmark != nil {
 				startedNs := navigationBenchmarkMonotonicNs()
 				benchmark.eventAt("model.final.started", "go.ui", startedNs,
@@ -2900,81 +3060,11 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 				return
 			}
+			needsRedraw = true
 
-			if err == nil {
-				fp.saveToCacheKeyWithUpItem(cacheKey, accumulated, showUpEntry, upItem)
-			}
-
-			freshCacheEquivalent := false
-			if hasCache && err == nil {
-				// The cached rows stayed interactive during ReadDir. Snapshot their
-				// live state immediately before replacing them; this is deliberately
-				// done in the UI task rather than when the load was started.
-				liveCursorName := fp.getRawSelectedName()
-				liveCursorIndex := fp.GetCursorIndex()
-				liveCursorOffset := liveCursorIndex - fp.table.TopPos
-				cursorMoved := liveCursorName != cacheInitialCursorName || liveCursorIndex != cacheInitialCursorIndex
-
-				if fp.selectedItems == nil {
-					fp.selectedItems = make(map[string]bool)
-				}
-				for _, entry := range fp.entries {
-					if entry.Name == ".." {
-						continue
-					}
-					if entry.Selected {
-						fp.selectedItems[entry.Name] = true
-					} else {
-						delete(fp.selectedItems, entry.Name)
-					}
-				}
-
-				freshEntries := fp.freshDirectoryEntries(
-					accumulated, showUpEntry, upItem, loadVFS, path)
-				freshCacheEquivalent = fp.refreshEquivalentCachedEntries(freshEntries)
-				if freshCacheEquivalent {
-					// The visible catalog and every negotiated metadata field are
-					// unchanged. Keep the live cursor, viewport and table identities;
-					// only the row backing data/cache provenance was refreshed.
-					fp.pendingSelection = ""
-					isFirstChunk = false
-				} else {
-					fp.entries = freshEntries
-
-					// An unresolved navigation target still wins if the user did not
-					// move on the cache. Once the cursor moved, the live cached row is
-					// the user's latest and therefore authoritative choice.
-					target := liveCursorName
-					if fp.pendingSelection != "" && !cursorMoved {
-						target = fp.pendingSelection
-					}
-					newCursorIndex := -1
-					for i, entry := range fp.entries {
-						if entry.Name == target {
-							newCursorIndex = i
-							break
-						}
-					}
-					if newCursorIndex < 0 {
-						newCursorIndex = liveCursorIndex
-					}
-					if newCursorIndex >= len(fp.entries) {
-						newCursorIndex = len(fp.entries) - 1
-					}
-					if newCursorIndex < 0 {
-						newCursorIndex = 0
-					}
-
-					newTop := newCursorIndex - liveCursorOffset
-					if newTop < 0 {
-						newTop = 0
-					}
-					fp.table.TopPos = newTop
-					fp.SetCursorIndex(newCursorIndex)
-					fp.pendingSelection = ""
-					isFirstChunk = false
-				}
-			} else if AppConfig.SyncPanelLoad && err == nil {
+			if AppConfig.SyncPanelLoad && err == nil {
+				completionPresentationChanged = true
+				advanceSourceEpoch()
 				fp.entries = nil
 				if showUpEntry {
 					fp.entries = []*fileEntry{{VFSItem: upItem}}
@@ -3003,28 +3093,31 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 			if err == nil {
 				// Clean up persistent selection only after the fresh list has been
-				// built. With a cache, doing this earlier would compare the marks
-				// against stale rows rather than the completed ReadDir result.
-				validNames := make(map[string]bool, len(fp.entries))
-				for _, e := range fp.entries {
-					validNames[e.Name] = true
-				}
-				for name := range fp.selectedItems {
-					if !validNames[name] {
-						delete(fp.selectedItems, name)
+				// built, so the completed ReadDir result is authoritative.
+				previousSelectionNeedsCleanup :=
+					fp.previousSelectionMatches(loadVFS, path) &&
+						len(fp.previousSelection) != 0
+				if len(fp.selectedItems) != 0 || previousSelectionNeedsCleanup {
+					validNames := make(map[string]bool, len(fp.entries))
+					for _, e := range fp.entries {
+						validNames[e.Name] = true
 					}
-				}
-				if fp.previousSelectionMatches(loadVFS, path) {
-					for name := range fp.previousSelection {
+					for name := range fp.selectedItems {
 						if !validNames[name] {
-							delete(fp.previousSelection, name)
+							delete(fp.selectedItems, name)
+							completionPresentationChanged = true
+						}
+					}
+					if previousSelectionNeedsCleanup {
+						for name := range fp.previousSelection {
+							if !validNames[name] {
+								delete(fp.previousSelection, name)
+							}
 						}
 					}
 				}
-				// The non-cached chunk path creates ".." before the deferred parent
-				// Stat is available. Bring that already-visible row up to the same
-				// metadata as the atomic cached/SyncPanelLoad replacement paths and
-				// as the entry retained in the directory cache.
+				// The chunk path creates ".." before the deferred parent Stat is
+				// available. Enrich that already-visible row at completion.
 				if showUpEntry {
 					for _, entry := range fp.entries {
 						if entry.Name == ".." {
@@ -3036,12 +3129,11 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			fp.catalogProvisional = false
-			fp.semanticCachedCatalogReady = false
-			fp.semanticCachedCatalogExported = false
 			fp.stopLoadingAnimation()
 
 			fp.lastDirMTime = dirStat.MTime
 			fp.isLoading = false
+			fp.catalogInteractive = false
 			if err != nil && err != context.Canceled {
 				if benchmark != nil {
 					benchmark.event("model.final.error", "go.ui", "path", path,
@@ -3090,6 +3182,8 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			if isFirstChunk {
+				completionPresentationChanged = true
+				advanceSourceEpoch()
 				fp.entries = nil
 				if showUpEntry {
 					fp.entries = []*fileEntry{{VFSItem: upItem}}
@@ -3098,34 +3192,39 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			if fp.pendingSelection != "" {
+				completionPresentationChanged = true
 				fp.SelectName(fp.pendingSelection)
 				fp.pendingSelection = ""
 			}
-			if freshCacheEquivalent {
-				if benchmark != nil {
-					benchmark.event("model.final.fresh_equivalent.skipped", "go.ui",
-						"path", path, "entries", len(fp.entries), "chunks", chunkCount,
-						"cursorIndex", fp.GetCursorIndex(), "cacheHit", true,
-						"redraw", false, "semanticExport", false)
-				}
-			} else {
+			if !authoritativeCatalogQueued {
 				fp.Refresh()
-				if benchmark != nil {
-					benchmark.event("model.final.ready", "go.ui", "phase", "fresh", "path", path,
-						"entries", len(fp.entries), "chunks", chunkCount,
-						"cursorIndex", fp.GetCursorIndex(), "cacheHit", hasCache)
+			}
+			if benchmark != nil {
+				benchmark.event("model.final.ready", "go.ui", "phase", "fresh", "path", path,
+					"entries", len(fp.entries), "chunks", chunkCount,
+					"cursorIndex", fp.GetCursorIndex(),
+					"catalogAlreadyPublished", authoritativeCatalogQueued)
+				if !authoritativeCatalogQueued {
 					navigationBenchmarkPublishScene(benchmark, "fresh")
 				}
 			}
 			if fp.benchmarkLoadTrace == benchmark {
 				fp.benchmarkLoadTrace = nil
 			}
-			if !freshCacheEquivalent {
+			if !authoritativeCatalogQueued {
 				vtui.FrameManager.Redraw()
+			} else if authoritativePresentationComplete &&
+				!completionPresentationChanged {
+				needsRedraw = false
 			}
-			needsRedraw = !freshCacheEquivalent
 			return
 		})
+		// Publish enrichment only after the complete listing task has been queued.
+		// The base catalog is the interactive result; metadata is decoration and
+		// must never sit in front of the navigation commit in the UI queue.
+		if usePhasedRead && err == nil {
+			publishMetadata(pendingMetadata)
+		}
 	})
 }
 
@@ -3157,7 +3256,33 @@ func (fp *FileSystemPanel) watchDirectoryChanges(
 func (fp *FileSystemPanel) Refresh() {
 	idx := fp.GetCursorIndex()
 	fp.updateSortColumnTitles()
-	if fp.gridColumnCount() == 1 {
+	virtualRows := false
+	if vtui.FrameManager != nil {
+		if screen := vtui.FrameManager.Screen(); screen != nil {
+			if renderer, ok := screen.Renderer.(interface {
+				VirtualizePanelTableRows() bool
+			}); ok {
+				virtualRows = renderer.VirtualizePanelTableRows()
+			}
+		}
+	}
+	if virtualRows {
+		if fp.gridColumnCount() == 1 {
+			fp.table.SetRowProvider(len(fp.entries), func(index int) vtui.TableRow {
+				if index < 0 || index >= len(fp.entries) {
+					return nil
+				}
+				return &panelEntryRow{fp: fp, entry: fp.entries[index]}
+			})
+		} else {
+			fp.table.SetRowProvider(len(fp.entries), func(index int) vtui.TableRow {
+				if index < 0 || index >= len(fp.entries) {
+					return nil
+				}
+				return &mediumRow{fp: fp, r: index}
+			})
+		}
+	} else if fp.gridColumnCount() == 1 {
 		rows := make([]vtui.TableRow, len(fp.entries))
 		for i, e := range fp.entries {
 			rows[i] = &panelEntryRow{fp: fp, entry: e}
@@ -3414,14 +3539,38 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 	if fp.fastFindMatcherKey != queryText {
 		fp.fastFindMatcherKey = queryText
 		fp.fastFindMatchers = fp.fastFindMatchers[:0]
+		fp.fastFindMatcherQueries = fp.fastFindMatcherQueries[:0]
+		seen := make(map[string]struct{}, 2)
 		for _, query := range []string{
 			queryText,
 			vtui.GlobalXlator.TranscodeString(queryText),
 		} {
+			if _, duplicate := seen[query]; duplicate {
+				continue
+			}
+			seen[query] = struct{}{}
 			if m := vtui.NewFuzzyMatcher(query, false); m != nil {
 				fp.fastFindMatchers = append(fp.fastFindMatchers, m)
+				fp.fastFindMatcherQueries = append(fp.fastFindMatcherQueries, query)
 			}
 		}
+	}
+	// One- and two-rune fuzzy queries accept zero edits. Avoid running the
+	// bit-vector matcher over every long WinSxS component name while looking
+	// for the first matching initial(s); a folded prefix/substring comparison
+	// is exactly equivalent for this threshold and has no per-row allocation.
+	if utf8.RuneCountInString(queryText) <= 2 {
+		bestStart, bestLength := -1, 0
+		for _, query := range fp.fastFindMatcherQueries {
+			start, length, found := fastFindShortExactMatch(name, query, anywhere)
+			if found && (bestStart < 0 || start < bestStart) {
+				bestStart, bestLength = start, length
+			}
+		}
+		if bestStart >= 0 {
+			return bestStart, bestLength, true
+		}
+		return 0, 0, false
 	}
 	bestScore := -1
 	bestStart, bestEnd := 0, -1
@@ -3440,11 +3589,300 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 	return bestStart, bestEnd - bestStart + 1, true
 }
 
-func (fp *FileSystemPanel) fastFindHasMatches() bool {
-	for _, entry := range fp.entries {
-		if _, _, ok := fp.fastFindMatch(entry.visibleName()); ok {
-			return true
+func fastFindShortExactMatch(name, query string, anywhere bool) (start, length int, ok bool) {
+	queryRunes := utf8.RuneCountInString(query)
+	if queryRunes == 0 || queryRunes > 2 {
+		return 0, 0, false
+	}
+	if fastFindASCII(name) && fastFindASCII(query) {
+		last := len(name) - len(query)
+		if last < 0 {
+			return 0, 0, false
 		}
+		if !anywhere {
+			last = 0
+		}
+		for candidate := 0; candidate <= last; candidate++ {
+			matched := true
+			for offset := range len(query) {
+				if fastFindLowerASCII(name[candidate+offset]) !=
+					fastFindLowerASCII(query[offset]) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return candidate, queryRunes, true
+			}
+		}
+		return 0, 0, false
+	}
+
+	nameRunes := []rune(name)
+	needle := []rune(query)
+	last := len(nameRunes) - len(needle)
+	if last < 0 {
+		return 0, 0, false
+	}
+	if !anywhere {
+		last = 0
+	}
+	for candidate := 0; candidate <= last; candidate++ {
+		matched := true
+		for offset, queryRune := range needle {
+			nameRune := nameRunes[candidate+offset]
+			if nameRune != queryRune &&
+				unicode.ToLower(nameRune) != unicode.ToLower(queryRune) &&
+				unicode.ToUpper(nameRune) != unicode.ToUpper(queryRune) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return candidate, len(needle), true
+		}
+	}
+	return 0, 0, false
+}
+
+func fastFindASCII(value string) bool {
+	for index := range len(value) {
+		if value[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+func fastFindLowerASCII(value byte) byte {
+	if value >= 'A' && value <= 'Z' {
+		return value + ('a' - 'A')
+	}
+	return value
+}
+
+type fastFindIndexRange struct {
+	first int
+	end   int
+}
+
+const fastFindBinarySearchMinimumRows = 1024
+
+// fastFindSortedShortCandidate uses the panel's existing name ordering as an
+// index. One- and two-rune anchored queries are exact prefixes (the fuzzy
+// threshold is zero), so every match is in one contiguous range per
+// directory/file group and keyboard-layout variant. No panel-sized auxiliary
+// index is retained.
+func (fp *FileSystemPanel) fastFindSortedShortCandidate(
+	searchStart, step int,
+) (candidate, probes int, found, supported bool) {
+	if fp == nil || len(fp.entries) < fastFindBinarySearchMinimumRows ||
+		fp.sortMode != SortName || fp.sortReverse ||
+		strings.HasPrefix(fp.fastFindStr, "*") ||
+		utf8.RuneCountInString(fp.fastFindStr) > 2 {
+		return 0, 0, false, false
+	}
+
+	start := 0
+	if fp.entries[0] == nil {
+		return 0, 0, false, false
+	}
+	if fp.entries[0].Name == ".." {
+		start = 1
+	}
+	split := start + sort.Search(len(fp.entries)-start, func(offset int) bool {
+		return !fp.entries[start+offset].IsDir
+	})
+	groups := [...]fastFindIndexRange{
+		{first: start, end: split},
+		{first: split, end: len(fp.entries)},
+	}
+
+	queries := []string{
+		fp.fastFindStr,
+		vtui.GlobalXlator.TranscodeString(fp.fastFindStr),
+	}
+	seen := make(map[string]struct{}, len(queries))
+	ranges := make([]fastFindIndexRange, 0, len(groups)*len(queries))
+	for _, query := range queries {
+		if query == "" {
+			continue
+		}
+		if _, duplicate := seen[query]; duplicate {
+			continue
+		}
+		seen[query] = struct{}{}
+		for _, group := range groups {
+			length := group.end - group.first
+			if length <= 0 {
+				continue
+			}
+			lower := sort.Search(length, func(offset int) bool {
+				probes++
+				return comparePanelFolded(
+					fp.entries[group.first+offset].visibleName(), query) >= 0
+			})
+			if lower >= length {
+				continue
+			}
+			if _, _, ok := fastFindShortExactMatch(
+				fp.entries[group.first+lower].visibleName(), query, false); !ok {
+				continue
+			}
+			upper := sort.Search(length, func(offset int) bool {
+				probes++
+				name := fp.entries[group.first+offset].visibleName()
+				if comparePanelFolded(name, query) <= 0 {
+					return false
+				}
+				_, _, prefix := fastFindShortExactMatch(name, query, false)
+				return !prefix
+			})
+			if upper > lower {
+				ranges = append(ranges, fastFindIndexRange{
+					first: group.first + lower,
+					end:   group.first + upper,
+				})
+			}
+		}
+	}
+	if len(ranges) == 0 {
+		return 0, probes, false, true
+	}
+
+	slices.SortFunc(ranges, func(left, right fastFindIndexRange) int {
+		if left.first != right.first {
+			return left.first - right.first
+		}
+		return left.end - right.end
+	})
+	merged := ranges[:0]
+	for _, current := range ranges {
+		last := len(merged) - 1
+		if last >= 0 && current.first <= merged[last].end {
+			merged[last].end = max(merged[last].end, current.end)
+			continue
+		}
+		merged = append(merged, current)
+	}
+
+	if step >= 0 {
+		for _, matchRange := range merged {
+			if searchStart < matchRange.end {
+				return max(searchStart, matchRange.first), probes, true, true
+			}
+		}
+		return merged[0].first, probes, true, true
+	}
+	for index := len(merged) - 1; index >= 0; index-- {
+		matchRange := merged[index]
+		if searchStart >= matchRange.first {
+			return min(searchStart, matchRange.end-1), probes, true, true
+		}
+	}
+	last := merged[len(merged)-1]
+	return last.end - 1, probes, true, true
+}
+
+type fastFindCachedMatch struct {
+	start  int
+	length int
+	ok     bool
+}
+
+const maxFastFindRetainedRows = 2 * semanticFastFindRowsLimit
+
+func (fp *FileSystemPanel) ensureFastFindMatchCache() {
+	if fp.fastFindMatchCacheKey == fp.fastFindStr &&
+		fp.fastFindMatchCacheCatalogGeneration == fp.semanticCatalogGeneration &&
+		fp.fastFindMatchCacheEntryCount == len(fp.entries) {
+		return
+	}
+	preserveKnownNoMatch := fp.fastFindMatchCacheCatalogGeneration == fp.semanticCatalogGeneration &&
+		fp.fastFindMatchCacheEntryCount == len(fp.entries) &&
+		fp.fastFindAnyMatchKnown && !fp.fastFindAnyMatch &&
+		fastFindQueryStrictlyExtends(fp.fastFindMatchCacheKey, fp.fastFindStr)
+	fp.fastFindMatchCacheKey = fp.fastFindStr
+	fp.fastFindMatchCacheCatalogGeneration = fp.semanticCatalogGeneration
+	fp.fastFindMatchCacheEntryCount = len(fp.entries)
+	if fp.fastFindMatchCache == nil {
+		fp.fastFindMatchCache = make(map[int]fastFindCachedMatch, 128)
+	} else {
+		clear(fp.fastFindMatchCache)
+	}
+	fp.fastFindAnyMatchKnown = preserveKnownNoMatch
+	fp.fastFindAnyMatch = false
+}
+
+func fastFindQueryStrictlyExtends(previous, current string) bool {
+	previousAnywhere := strings.HasPrefix(previous, "*")
+	currentAnywhere := strings.HasPrefix(current, "*")
+	if previousAnywhere != currentAnywhere {
+		return false
+	}
+	previous = strings.TrimPrefix(previous, "*")
+	current = strings.TrimPrefix(current, "*")
+	if previous == "" || len(current) <= len(previous) ||
+		!strings.HasPrefix(current, previous) {
+		return false
+	}
+	previousRunes := utf8.RuneCountInString(previous)
+	currentRunes := utf8.RuneCountInString(current)
+	// Up to two runes the matcher is exact, as it is again above its 64-rune
+	// bit-vector limit. Inside the fuzzy range the accepted edit threshold can
+	// grow when a character is appended, so an empty shorter query does not
+	// prove that its extension is empty.
+	return currentRunes <= 2 || previousRunes > 64
+}
+
+// fastFindMatchAt memoizes only rows actually inspected for the current
+// query. The map normally remains viewport-sized; it grows beyond that only
+// when finding the next/previous match genuinely has to cross more rows.
+func (fp *FileSystemPanel) fastFindMatchAt(index int) (startRunes, matchedRunes int, ok bool) {
+	if index < 0 || index >= len(fp.entries) || fp.entries[index] == nil {
+		return 0, 0, false
+	}
+	fp.ensureFastFindMatchCache()
+	if match, cached := fp.fastFindMatchCache[index]; cached {
+		return match.start, match.length, match.ok
+	}
+	startRunes, matchedRunes, ok = fp.fastFindMatch(fp.entries[index].visibleName())
+	fp.fastFindMatchEvaluations++
+	if len(fp.fastFindMatchCache) < maxFastFindRetainedRows || ok {
+		fp.fastFindMatchCache[index] = fastFindCachedMatch{
+			start: startRunes, length: matchedRunes, ok: ok,
+		}
+	}
+	return startRunes, matchedRunes, ok
+}
+
+// compactFastFindMatchCache prevents a necessary long traversal (including
+// the first proof that there are no matches) from becoming a panel-sized
+// retained cache. Rendering repopulates only its bounded semantic/visible
+// window after this point.
+func (fp *FileSystemPanel) compactFastFindMatchCache(matchedIndex int) {
+	if len(fp.fastFindMatchCache) <= maxFastFindRetainedRows {
+		return
+	}
+	match, retainMatch := fp.fastFindMatchCache[matchedIndex]
+	clear(fp.fastFindMatchCache)
+	if retainMatch {
+		fp.fastFindMatchCache[matchedIndex] = match
+	}
+}
+
+func (fp *FileSystemPanel) fastFindHasMatches() bool {
+	fp.ensureFastFindMatchCache()
+	if fp.fastFindAnyMatchKnown {
+		return fp.fastFindAnyMatch
+	}
+	// Production query edits always call doFastFind first, which proves the
+	// answer while stopping at the first match. Keep direct/test construction
+	// useful without turning rendering back into an implicit O(N) search.
+	if _, _, ok := fp.fastFindMatchAt(fp.GetCursorIndex()); ok {
+		fp.fastFindAnyMatchKnown = true
+		fp.fastFindAnyMatch = true
+		return true
 	}
 	return false
 }
@@ -3458,6 +3896,10 @@ func fastFindMatchAttr(baseAttr, matchAttr uint64) uint64 {
 
 func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 	if !fp.fastFindMode || fp.fastFindStr == "" || !fp.table.IsVisible() {
+		return
+	}
+	fp.ensureFastFindMatchCache()
+	if fp.fastFindAnyMatchKnown && !fp.fastFindAnyMatch {
 		return
 	}
 	height := fp.table.ViewHeight
@@ -3479,7 +3921,7 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 			cellWidth := fp.table.Columns[column].Width
 			if entryIndex >= 0 && entryIndex < len(fp.entries) {
 				entry := fp.entries[entryIndex]
-				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.visibleName())
+				matchStart, matchedRunes, _ := fp.fastFindMatchAt(entryIndex)
 				for _, span := range panelFileNameMatchSpans(entry, cellWidth, matchStart, matchedRunes) {
 					for cellOffset := 0; cellOffset < span.width; cellOffset++ {
 						cell := scr.GetCell(x+span.start+cellOffset, y)
@@ -3949,9 +4391,9 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 	if fp.providerOpenTask != nil {
-		// The visible rows belong to the destination cache while fp.vfs still
-		// points at the source. Consume panel mouse input until the switch so a
-		// double-click/context action cannot run against the wrong filesystem.
+		// The provider is still resolving while fp.vfs points at the source.
+		// Consume panel mouse input until the switch so a double-click/context
+		// action cannot run against the wrong filesystem.
 		return true
 	}
 
@@ -4278,62 +4720,97 @@ func (fp *FileSystemPanel) ReplaceMarkedNames(names []string) {
 // GetSuccessorName determines which file should receive focus after the current
 // selection (or focused item) is deleted or moved.
 func (fp *FileSystemPanel) doFastFind(dir int) {
-	if fp.fastFindStr == "" {
+	if fp.fastFindStr == "" || len(fp.entries) == 0 {
+		return
+	}
+	benchmark := navigationBenchmarkCurrentUI()
+	benchmarkEnabled := navigationBenchmarkIsEnabled()
+	startedNs := int64(0)
+	if benchmarkEnabled {
+		startedNs = navigationBenchmarkMonotonicNs()
+	}
+	fp.ensureFastFindMatchCache()
+	evaluationsBefore := fp.fastFindMatchEvaluations
+	emitBenchmark := func(checkedRows int, matched bool, matchedIndex int, knownNoMatch bool) {
+		if !benchmarkEnabled {
+			return
+		}
+		finishedNs := navigationBenchmarkMonotonicNs()
+		navigationBenchmarkEmitAt(navigationBenchmarkTraceName(benchmark),
+			"fast_find.search", "go.ui", finishedNs,
+			"direction", dir,
+			"queryRunes", len([]rune(fp.fastFindStr)),
+			"totalRows", len(fp.entries),
+			"checkedRows", checkedRows,
+			"evaluatedRows", fp.fastFindMatchEvaluations-evaluationsBefore,
+			"retainedRows", len(fp.fastFindMatchCache),
+			"matched", matched,
+			"matchedIndex", matchedIndex,
+			"knownNoMatch", knownNoMatch,
+			"durationNs", finishedNs-startedNs)
+	}
+	if fp.fastFindAnyMatchKnown && !fp.fastFindAnyMatch {
+		emitBenchmark(0, false, -1, true)
 		return
 	}
 	startIdx := fp.GetCursorIndex()
-
-	checkMatch := func(i int) bool {
-		_, _, ok := fp.fastFindMatch(fp.entries[i].Name)
-		return ok
+	step := 1
+	firstOffset := 0
+	if dir > 0 {
+		firstOffset = 1
+	} else if dir < 0 {
+		step = -1
+		firstOffset = -1
 	}
-
-	if dir == 0 {
-		for i := startIdx; i < len(fp.entries); i++ {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
+	count := len(fp.entries)
+	firstIndex := (startIdx + firstOffset) % count
+	if firstIndex < 0 {
+		firstIndex += count
+	}
+	acceptMatch := func(index, checked int) {
+		fp.fastFindAnyMatchKnown = true
+		fp.fastFindAnyMatch = true
+		fp.compactFastFindMatchCache(index)
+		fp.SetCursorIndex(index)
+		fp.Refresh()
+		emitBenchmark(checked, true, index, false)
+	}
+	if _, _, ok := fp.fastFindMatchAt(firstIndex); ok {
+		acceptMatch(firstIndex, 1)
+		return
+	}
+	if candidate, probes, found, supported :=
+		fp.fastFindSortedShortCandidate(firstIndex, step); supported {
+		if found {
+			if _, _, ok := fp.fastFindMatchAt(candidate); ok {
+				acceptMatch(candidate, probes+2)
 				return
 			}
-		}
-		for i := 0; i < startIdx; i++ {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
-				return
-			}
-		}
-	} else if dir == 1 {
-		for i := startIdx + 1; i < len(fp.entries); i++ {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
-				return
-			}
-		}
-		for i := 0; i <= startIdx; i++ {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
-				return
-			}
-		}
-	} else if dir == -1 {
-		for i := startIdx - 1; i >= 0; i-- {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
-				return
-			}
-		}
-		for i := len(fp.entries) - 1; i >= startIdx; i-- {
-			if checkMatch(i) {
-				fp.SetCursorIndex(i)
-				fp.Refresh()
-				return
-			}
+			// A sorted range and the canonical matcher must agree. If a
+			// provider ever violates that invariant, preserve correctness by
+			// falling through to the ordinary bounded traversal.
+		} else {
+			fp.fastFindAnyMatchKnown = true
+			fp.fastFindAnyMatch = false
+			clear(fp.fastFindMatchCache)
+			emitBenchmark(probes+1, false, -1, false)
+			return
 		}
 	}
+	for checked := 1; checked < count; checked++ {
+		index := (firstIndex + checked*step) % count
+		if index < 0 {
+			index += count
+		}
+		if _, _, ok := fp.fastFindMatchAt(index); ok {
+			acceptMatch(index, checked+1)
+			return
+		}
+	}
+	fp.fastFindAnyMatchKnown = true
+	fp.fastFindAnyMatch = false
+	clear(fp.fastFindMatchCache)
+	emitBenchmark(count, false, -1, false)
 }
 
 // SaveSelection snapshots the current selection. The name map is the durable

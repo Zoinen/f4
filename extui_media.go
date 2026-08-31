@@ -232,8 +232,8 @@ func mediaSourceNamespace(filesystem vfs.VFS) string {
 			return "local"
 		}
 	}
-	if stable, ok := filesystem.(vfs.DirectoryCacheIdentity); ok {
-		if key := stable.DirectoryCacheKey(); key != nil {
+	if stable, ok := filesystem.(vfs.StableDirectoryIdentity); ok {
+		if key := stable.StableDirectoryKey(); key != nil {
 			return "stable:" + mediaComparableIdentity(key)
 		}
 	}

@@ -195,21 +195,49 @@ inline void eventAt(const QString &name,
 
     const QByteArray json = QJsonDocument(object).toJson(
         QJsonDocument::Compact);
-    qInfo().noquote() << "F4_NAV_BENCHMARK_TRACE" << json;
-
     // GUI-subsystem builds do not necessarily have a console sink for qInfo.
     // Keep file output opt-in and local to benchmark mode so live cross-
     // process traces can still include the Qt decode/apply/render boundaries.
     static const QString outputPath = qEnvironmentVariable(
         "F4_NAV_BENCHMARK_QT_OUTPUT");
-    if (!outputPath.isEmpty()) {
+    if (outputPath.isEmpty()) {
+        qInfo().noquote() << "F4_NAV_BENCHMARK_TRACE" << json;
+    }
+    else {
         static QMutex outputMutex;
+        // Opening and closing the trace file for every event added several
+        // milliseconds of disk I/O to the very GUI-thread spans being
+        // measured. Keep one append handle for the benchmark process. QFile
+        // writes reach the OS immediately, and the process close releases the
+        // handle after the final runner event.
+        static QFile *output = []() -> QFile * {
+            auto *file = new QFile(qEnvironmentVariable(
+                "F4_NAV_BENCHMARK_QT_OUTPUT"));
+            if (!file->open(QIODevice::WriteOnly | QIODevice::Append)) {
+                delete file;
+                return nullptr;
+            }
+            if (QCoreApplication *application =
+                    QCoreApplication::instance()) {
+                QObject::connect(
+                    application, &QCoreApplication::aboutToQuit,
+                    application, [file]() { file->flush(); },
+                    Qt::DirectConnection);
+            }
+            return file;
+        }();
         const QMutexLocker locker(&outputMutex);
-        QFile output(outputPath);
-        if (output.open(QIODevice::WriteOnly | QIODevice::Append)) {
-            output.write("F4_NAV_BENCHMARK_TRACE ");
-            output.write(json);
-            output.write("\n");
+        if (output) {
+            output->write("F4_NAV_BENCHMARK_TRACE ");
+            output->write(json);
+            output->write("\n");
+            if (name == QStringLiteral("qt.gallery.runner.finished")
+                || name == QStringLiteral("qt.gallery.runner.failed")) {
+                output->flush();
+            }
+        }
+        else {
+            qInfo().noquote() << "F4_NAV_BENCHMARK_TRACE" << json;
         }
     }
 }

@@ -122,6 +122,7 @@ type PanelModel struct {
 	GalleryLayoutMode     string
 	GalleryColumnCount    int
 	GalleryDensity        int
+	GalleryDensities      map[string]int
 	GalleryLayoutRevision int64
 	SourceKind            string
 	PreviewCapable        bool
@@ -130,8 +131,12 @@ type PanelModel struct {
 	// MetadataDeferred means Entries contains only the interactive catalog
 	// identity.  Expensive filesystem/display metadata is fetched separately
 	// with the exact CatalogRevision and MetadataRevision advertised here.
-	MetadataDeferred       bool
-	MetadataRevision       int64
+	MetadataDeferred bool
+	MetadataRevision int64
+	// CatalogRowsDeferred means Entries is a bounded, absolute-indexed window
+	// into TotalCount. Native clients keep a sparse model and request only
+	// ranges which enter the viewport.
+	CatalogRowsDeferred    bool
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
@@ -185,7 +190,6 @@ type FileEntryModel struct {
 	IsUp             bool
 	IsHidden         bool
 	IsExecutable     bool
-	IsCached         bool
 	IsImage          bool
 	Selected         bool
 	SizeCalculated   bool
@@ -255,6 +259,19 @@ type PanelCatalogMetadataModel struct {
 	Final             bool
 	Entries           []FileEntryMetadataModel
 	HighlightStyles   map[string]HighlightStyleModel
+}
+
+// PanelCatalogRowsModel is a bounded page of the current immutable catalog.
+// Index values in Entries are absolute and must fall in [Offset, Offset+Limit).
+type PanelCatalogRowsModel struct {
+	PanelID         string
+	Path            string
+	CatalogRevision int64
+	Offset          int
+	Limit           int
+	Total           int
+	Entries         []FileEntryModel
+	HighlightStyles map[string]HighlightStyleModel
 }
 
 type HighlightGroupModel struct {
@@ -524,9 +541,20 @@ type KeyBarModel struct {
 }
 
 type KeyBarItemModel struct {
-	Index int
-	Key   string
-	Text  string
+	Index        int
+	Key          string
+	Text         string
+	Icon         string
+	Alternatives []KeyBarAlternativeModel
+}
+
+// KeyBarAlternativeModel describes the same function-key slot under another
+// modifier state. It is intentionally compact: the GUI can render a context
+// menu without receiving another scene or the full command tree.
+type KeyBarAlternativeModel struct {
+	Modifier string
+	Text     string
+	Icon     string
 }
 
 type DialogModel struct {
@@ -739,6 +767,12 @@ func (p PanelModel) ToMap() M {
 		}
 		return columns
 	}
+	galleryDensities := M{}
+	for mode, density := range p.GalleryDensities {
+		if density > 0 {
+			galleryDensities[mode] = density
+		}
+	}
 	out := M{
 		"id":                     p.ID,
 		"kind":                   "filePanel",
@@ -750,6 +784,7 @@ func (p PanelModel) ToMap() M {
 		"galleryLayoutMode":      p.GalleryLayoutMode,
 		"galleryColumnCount":     p.GalleryColumnCount,
 		"galleryDensity":         p.GalleryDensity,
+		"galleryDensities":       galleryDensities,
 		"galleryLayoutRevision":  p.GalleryLayoutRevision,
 		"sourceKind":             p.SourceKind,
 		"previewCapable":         p.PreviewCapable,
@@ -791,6 +826,9 @@ func (p PanelModel) ToMap() M {
 		out["totalSize"] = p.TotalSize
 		out["entries"] = entriesToMaps(p.Entries)
 	}
+	if p.CatalogRowsDeferred {
+		out["catalogRowsDeferred"] = true
+	}
 	if len(p.HighlightStyles) > 0 {
 		styles := make(M, len(p.HighlightStyles))
 		for id, style := range p.HighlightStyles {
@@ -816,7 +854,6 @@ func (e FileEntryModel) ToMap() M {
 		"isUp":             e.IsUp,
 		"isHidden":         e.IsHidden,
 		"isExecutable":     e.IsExecutable,
-		"isCached":         e.IsCached,
 		"isImage":          e.IsImage,
 		"selected":         e.Selected,
 		"sizeCalculated":   e.SizeCalculated,
@@ -910,6 +947,31 @@ func (p PanelCatalogMetadataModel) ToMap() M {
 		"totalSize":         p.TotalSize,
 		"final":             p.Final,
 		"entries":           entries,
+	}
+	if len(p.HighlightStyles) > 0 {
+		styles := make(M, len(p.HighlightStyles))
+		for id, style := range p.HighlightStyles {
+			styles[id] = style.ToMap()
+		}
+		out["highlightStyles"] = styles
+	}
+	return out
+}
+
+func (p PanelCatalogRowsModel) ToMap() M {
+	entries := make([]M, 0, len(p.Entries))
+	for _, entry := range p.Entries {
+		entries = append(entries, entry.MinimalToMap())
+	}
+	out := M{
+		"type":            "panel_catalog_rows",
+		"panelId":         p.PanelID,
+		"path":            p.Path,
+		"catalogRevision": p.CatalogRevision,
+		"offset":          p.Offset,
+		"limit":           p.Limit,
+		"total":           p.Total,
+		"entries":         entries,
 	}
 	if len(p.HighlightStyles) > 0 {
 		styles := make(M, len(p.HighlightStyles))
@@ -1330,7 +1392,25 @@ func (k KeyBarModel) ToMap() M {
 }
 
 func (i KeyBarItemModel) ToMap() M {
-	return M{"index": i.Index, "key": i.Key, "text": i.Text}
+	out := M{"index": i.Index, "key": i.Key, "text": i.Text}
+	if i.Icon != "" {
+		out["icon"] = i.Icon
+	}
+	if len(i.Alternatives) > 0 {
+		alternatives := make([]M, 0, len(i.Alternatives))
+		for _, alternative := range i.Alternatives {
+			item := M{
+				"modifier": alternative.Modifier,
+				"text":     alternative.Text,
+			}
+			if alternative.Icon != "" {
+				item["icon"] = alternative.Icon
+			}
+			alternatives = append(alternatives, item)
+		}
+		out["alternatives"] = alternatives
+	}
+	return out
 }
 
 func (d DialogModel) ToMap() M {

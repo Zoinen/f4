@@ -87,10 +87,12 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("arrow-down-a-z"),
         QStringLiteral("arrow-down-wide-narrow"),
         QStringLiteral("arrow-up"),
+        QStringLiteral("binary"),
         QStringLiteral("book-open"),
         QStringLiteral("check"),
         QStringLiteral("circle-check"),
         QStringLiteral("circle-play"),
+        QStringLiteral("circle-question-mark"),
         QStringLiteral("circle-x"),
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-right"),
@@ -98,20 +100,28 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("cloud"),
         QStringLiteral("columns-2"),
         QStringLiteral("columns-3"),
+        QStringLiteral("copy"),
         QStringLiteral("database"),
+        QStringLiteral("eye"),
         QStringLiteral("file"),
         QStringLiteral("file-clock"),
         QStringLiteral("file-code"),
         QStringLiteral("file-cog"),
         QStringLiteral("file-lock"),
         QStringLiteral("file-pen-line"),
+        QStringLiteral("file-plus"),
         QStringLiteral("file-text"),
         QStringLiteral("file-type"),
+        QStringLiteral("flask-conical"),
         QStringLiteral("folder"),
+        QStringLiteral("folder-clock"),
+        QStringLiteral("folder-input"),
         QStringLiteral("folder-kanban"),
         QStringLiteral("folder-lock"),
+        QStringLiteral("folder-plus"),
         QStringLiteral("folder-root"),
         QStringLiteral("folder-up"),
+        QStringLiteral("git-fork"),
         QStringLiteral("globe"),
         QStringLiteral("grid-3x3"),
         QStringLiteral("hard-drive"),
@@ -119,16 +129,26 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("image"),
         QStringLiteral("images"),
         QStringLiteral("layout-dashboard"),
+        QStringLiteral("languages"),
         QStringLiteral("library"),
         QStringLiteral("list"),
         QStringLiteral("list-checks"),
+        QStringLiteral("list-restart"),
         QStringLiteral("list-tree"),
         QStringLiteral("loader-circle"),
+        QStringLiteral("locate-fixed"),
+        QStringLiteral("log-out"),
+        QStringLiteral("maximize-2"),
+        QStringLiteral("menu"),
+        QStringLiteral("monitor"),
         QStringLiteral("music"),
         QStringLiteral("network"),
         QStringLiteral("panel-left"),
+        QStringLiteral("panel-right"),
         QStringLiteral("panels-top-left"),
         QStringLiteral("palette"),
+        QStringLiteral("pencil"),
+        QStringLiteral("plug"),
         QStringLiteral("plus"),
         QStringLiteral("refresh-cw"),
         QStringLiteral("rotate-ccw"),
@@ -137,7 +157,9 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("save"),
         QStringLiteral("search"),
         QStringLiteral("sparkles"),
+        QStringLiteral("space"),
         QStringLiteral("square-terminal"),
+        QStringLiteral("text-wrap"),
         QStringLiteral("trash-2"),
         QStringLiteral("triangle-alert"),
         QStringLiteral("video"),
@@ -327,7 +349,8 @@ QString resourceFileName(const QUrl &url)
 
 QImage imageAtPhysicalSize(const QPixmap &pixmap, const QSize &targetSize)
 {
-    if (pixmap.isNull() || !targetSize.isValid()) {
+    if (pixmap.isNull() || targetSize.width() <= 0
+        || targetSize.height() <= 0) {
         return {};
     }
 
@@ -390,7 +413,7 @@ void tintMask(QImage &image, const QColor &requestedColor)
 QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
                          int logicalSize, const QColor &tint)
 {
-    if (!targetSize.isValid()) {
+    if (targetSize.width() <= 0 || targetSize.height() <= 0) {
         return {};
     }
     const QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
@@ -499,7 +522,11 @@ QImage F4IconProvider::requestImage(const QString &id,
     } else if (targetSize.height() <= 0 && targetSize.width() > 0) {
         targetSize.setHeight(targetSize.width());
     }
-    if (!targetSize.isValid()) {
+    // QSize(0, 0) is valid according to QSize::isValid(), but it cannot back a
+    // QImage paint device. Hidden/prewarmed QML Images can transiently request
+    // exactly that size; render their logical fallback instead of flooding
+    // stderr from QPainter::begin on a null image.
+    if (targetSize.width() <= 0 || targetSize.height() <= 0) {
         targetSize = physicalSize(effectiveLogicalSize, devicePixelRatio);
     }
 

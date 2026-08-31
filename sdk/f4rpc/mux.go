@@ -1,6 +1,8 @@
 package f4rpc
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -27,8 +29,15 @@ type Session struct {
 	dec      *msgpack.Decoder
 	mu       sync.Mutex
 	handlers map[string]Handler
-	pending  map[uint32]chan *Message
+	pending  map[uint32]chan callResult
 	nextID   uint32
+	closed   bool
+	closeErr error
+}
+
+type callResult struct {
+	msg *Message
+	err error
 }
 
 // NewSession creates a new RPC session.
@@ -37,7 +46,7 @@ func NewSession(r io.Reader, w io.Writer) *Session {
 		enc:      msgpack.NewEncoder(w),
 		dec:      msgpack.NewDecoder(r),
 		handlers: make(map[string]Handler),
-		pending:  make(map[uint32]chan *Message),
+		pending:  make(map[uint32]chan callResult),
 	}
 }
 
@@ -48,12 +57,21 @@ func (s *Session) Register(method string, h Handler) {
 
 // Call makes a synchronous RPC call to the remote endpoint.
 func (s *Session) Call(method string, params any, result any) error {
-	id := atomic.AddUint32(&s.nextID, 1)
-	ch := make(chan *Message, 1)
+	return s.CallContext(context.Background(), method, params, result)
+}
 
-	s.mu.Lock()
-	s.pending[id] = ch
-	s.mu.Unlock()
+// CallContext makes a synchronous RPC call which can be abandoned by the
+// caller. Cancellation removes the request from the pending set immediately;
+// a late response is safely ignored. The remote handler is not forcibly
+// interrupted by this transport-level primitive, so protocols which support
+// active cancellation should expose an explicit cancel method as well.
+func (s *Session) CallContext(ctx context.Context, method string, params any, result any) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	var rawParams msgpack.RawMessage
 	if params != nil {
@@ -64,6 +82,20 @@ func (s *Session) Call(method string, params any, result any) error {
 		rawParams = b
 	}
 
+	id := atomic.AddUint32(&s.nextID, 1)
+	ch := make(chan callResult, 1)
+
+	s.mu.Lock()
+	if s.closed {
+		err := s.closeErr
+		if err == nil {
+			err = io.ErrClosedPipe
+		}
+		s.mu.Unlock()
+		return err
+	}
+	s.pending[id] = ch
+
 	req := &Message{
 		Type:   0,
 		ID:     id,
@@ -71,18 +103,30 @@ func (s *Session) Call(method string, params any, result any) error {
 		Data:   rawParams,
 	}
 
-	s.mu.Lock()
 	err := s.enc.Encode(req)
-	s.mu.Unlock()
-
 	if err != nil {
-		s.mu.Lock()
 		delete(s.pending, id)
 		s.mu.Unlock()
 		return fmt.Errorf("send request error: %w", err)
 	}
+	s.mu.Unlock()
 
-	resp := <-ch
+	var response callResult
+	select {
+	case response = <-ch:
+	case <-ctx.Done():
+		s.mu.Lock()
+		delete(s.pending, id)
+		s.mu.Unlock()
+		return ctx.Err()
+	}
+	if response.err != nil {
+		return response.err
+	}
+	resp := response.msg
+	if resp == nil {
+		return io.ErrUnexpectedEOF
+	}
 	if resp.Error != "" {
 		return fmt.Errorf("rpc error: %s", resp.Error)
 	}
@@ -100,10 +144,15 @@ func (s *Session) Serve() error {
 	for {
 		var msg Message
 		if err := s.dec.Decode(&msg); err != nil {
+			serveErr := err
+			if err != io.EOF {
+				serveErr = fmt.Errorf("decode error: %w", err)
+			}
+			s.failPending(serveErr)
 			if err == io.EOF {
 				return nil
 			}
-			return fmt.Errorf("decode error: %w", err)
+			return serveErr
 		}
 
 		if msg.Type == 1 { // Response
@@ -114,11 +163,34 @@ func (s *Session) Serve() error {
 			}
 			s.mu.Unlock()
 			if ok {
-				ch <- &msg
+				ch <- callResult{msg: &msg}
 			}
 		} else if msg.Type == 0 { // Request
 			go s.handleRequest(&msg)
 		}
+	}
+}
+
+// failPending marks the session closed and releases every caller waiting for
+// a response. It is intentionally idempotent because both sides of a pipe can
+// notice shutdown at nearly the same time.
+func (s *Session) failPending(err error) {
+	if err == nil {
+		err = io.ErrClosedPipe
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.closeErr = err
+	pending := s.pending
+	s.pending = make(map[uint32]chan callResult)
+	s.mu.Unlock()
+
+	for _, ch := range pending {
+		ch <- callResult{err: err}
 	}
 }
 
@@ -149,6 +221,15 @@ func (s *Session) handleRequest(req *Message) {
 	}
 
 	s.mu.Lock()
-	s.enc.Encode(resp)
+	if !s.closed {
+		_ = s.enc.Encode(resp)
+	}
 	s.mu.Unlock()
+}
+
+// ErrClosed reports whether err came from a session whose transport ended.
+// Callers normally use this to decide whether a child process may be safely
+// restarted; it deliberately does not classify context cancellation.
+func ErrClosed(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.ErrUnexpectedEOF)
 }

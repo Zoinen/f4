@@ -110,7 +110,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 		}
 	}
 	if left, ok := pf.panels[0].(*FileSystemPanel); ok {
-		path := left.vfs.GetPath()
+		path := left.persistentPath()
 		cursor := left.GetSelectedName()
 		if isAIPanel(left) {
 			path = aiPrevPath[0]
@@ -126,7 +126,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 		}
 	}
 	if right, ok := pf.panels[1].(*FileSystemPanel); ok {
-		path := right.vfs.GetPath()
+		path := right.persistentPath()
 		cursor := right.GetSelectedName()
 		if isAIPanel(right) {
 			path = aiPrevPath[1]

@@ -18,6 +18,10 @@ func productionPanelCatalogLegacy(path string, catalogRevision, metadataRevision
 			"sourceKind": "local", "previewCapable": true,
 			"catalogRevision": catalog, "selectionRevision": int64(1),
 			"metadataDeferred": true, "metadataRevision": metadata,
+			"highlightRevision": int64(1),
+			"highlightStyles": map[string]any{
+				"style-" + name: map[string]any{"marker": name},
+			},
 			"cursor": 0, "cursorEntryId": id + ":" + name,
 			"loading": true, "catalogProvisional": panelProvisional,
 			"sortModeName": "name", "sortReverse": false,

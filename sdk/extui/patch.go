@@ -27,6 +27,10 @@ type PanelPatch struct {
 	PanelID             string
 	CatalogRevision     int64
 	BaseCatalogRevision int64
+	CatalogOffset       int
+	CatalogTotal        int
+	CatalogFinal        bool
+	Entries             []M
 	Panel               M
 	State               M
 	BaseSelection       int64
@@ -45,6 +49,12 @@ func (p PanelPatch) ToMap() M {
 	}
 	if p.BaseCatalogRevision != 0 || p.Op == "catalog_replace" {
 		out["baseCatalogRevision"] = p.BaseCatalogRevision
+	}
+	if p.Op == "catalog_append" {
+		out["offset"] = p.CatalogOffset
+		out["totalCount"] = p.CatalogTotal
+		out["final"] = p.CatalogFinal
+		out["entries"] = append([]M(nil), p.Entries...)
 	}
 	if p.Panel != nil {
 		out["panel"] = p.Panel

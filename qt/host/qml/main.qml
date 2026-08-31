@@ -56,7 +56,7 @@ ApplicationWindow {
         ? macSystemButtonAreaLeftMargin + 74 : 0
     readonly property int macSystemButtonAreaLeftMargin: panelTextInset
     readonly property real titleBarContentVerticalOffset: 1
-    property color windowBackgroundColor: "#1f242c"
+    property color windowBackgroundColor: "#191d23"
     color: useTransparentWindowBackground ? "transparent" : root.windowBackgroundColor
 
     // Gallery receives full catalogs directly in C++. Keep those row payloads
@@ -73,6 +73,18 @@ ApplicationWindow {
     property var toastOverride: null
     property var leftPanelPresentationOverride: null
     property var rightPanelPresentationOverride: null
+    property var leftPanelLayoutStateOverride: null
+    property var rightPanelLayoutStateOverride: null
+
+    function mergePanelLayoutState(currentState, delta) {
+        const next = delta || ({})
+        const current = currentState || ({})
+        const samePanel = String(current.id || "") !== ""
+                && String(current.id || "") === String(next.id || "")
+                && Number(current.catalogRevision || 0)
+                   === Number(next.catalogRevision || 0)
+        return Object.assign({}, samePanel ? current : ({}), next)
+    }
     readonly property var workspaceTabs:
         workspaceTabsOverride !== null
         ? workspaceTabsOverride : (scene.workspaceTabs || ({}))
@@ -261,16 +273,16 @@ ApplicationWindow {
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
     readonly property real menuItemHorizontalPadding: 14
-    property color panelPathBg: "#26314152"
-    property color commandLineBg: "#19000000"
+    property color panelPathBg: "#26576478"
+    property color commandLineBg: "#141921"
     property color activeBorder: "#f0c95a"
     property color textColor: "#e8edf2"
     property color mutedText: "#9aa7b5"
     property color selectedBg: "#285d8f"
     property color panelSelectionBg: "#18456e"
     property color panelSelectionBorder: "#1d5888"
-    property color titleBarBg: "#202833"
-    property color fBarBg: "#202833"
+    property color titleBarBg: "#19202b"
+    property color fBarBg: "#19202b"
     property color chromeText: "#d7e0ea"
     property color dialogBg: "#171e27"
     property color dialogHeaderBg: "#1b242f"
@@ -278,7 +290,7 @@ ApplicationWindow {
     property color controlHoverBg: "#2a3745"
     property color controlPressedBg: "#10161e"
     property color controlBorder: "#3a495b"
-    property color separatorColor: "#30363d"
+    property color separatorColor: "#2d3642"
     property color separatorHoverColor: "#464d55"
     property color separatorActiveColor: "#59616a"
     property color dialogAccent: "#4e9bd4"
@@ -287,10 +299,13 @@ ApplicationWindow {
     // those colors as first-class root properties so the configurator can
     // preview, persist, and reset them through the same path as f4's native
     // QML colors instead of handing the gallery a one-time palette snapshot.
-    property color galleryPanelBackgroundColor: "transparent"
-    property color galleryViewerBackgroundColor: "transparent"
+    property color galleryPanelBackgroundColor: "#00000000"
+    property color galleryViewerBackgroundColor: "#00000000"
     property color galleryTextColor: "#e8edf2"
     property color galleryMutedTextColor: "#9aa7b5"
+    property color galleryFileTextColor: "#c4cbd3"
+    property color galleryFolderTextColor: "#ffffff"
+    property bool galleryNeutralFileTextColors: true
     property color galleryQuickSearchMatchColor: "#e8edf2"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -301,22 +316,24 @@ ApplicationWindow {
     property color gallerySelectionColor: "#ffd43b"
     property color galleryMarkedBackgroundColor: "#4f5037"
     property color galleryMarkedTextColor: "#ffd43b"
-    property color galleryItemBackgroundColor: "transparent"
-    property color galleryDirectoryBackgroundColor: "transparent"
-    property color galleryItemHoverColor: "transparent"
+    property color galleryItemBackgroundColor: "#00000000"
+    property color galleryDirectoryBackgroundColor: "#00000000"
+    // A low-alpha white overlay lightens the actual surface beneath a brick,
+    // including the intentionally transparent default panel/card surfaces.
+    property color galleryItemHoverColor: "#1a75afe5"
     property color galleryLabelBackgroundColor: "#aa101216"
     property color galleryPreviewBackdropColor: "#4d000000"
     property color gallerySeparatorColor: "#30363d"
     property color galleryHeaderTextColor: "#d7e0ea"
     property color galleryControlHoverColor: "#2a3745"
-    property color galleryScrollBarHandleColor: "#4a4a4a"
-    property color galleryScrollBarBackgroundHoverColor: "#676767"
-    property color galleryScrollBarHoverColor: "#878787"
-    property color galleryScrollBarPressedColor: "#505050"
+    property color galleryScrollBarHandleColor: "#434b57"
+    property color galleryScrollBarBackgroundHoverColor: "#5f6875"
+    property color galleryScrollBarHoverColor: "#7f8896"
+    property color galleryScrollBarPressedColor: "#47515d"
     property color galleryScrollBarTrackHoverColor: "#0fffffff"
-    property color galleryPathBackgroundColor: "transparent"
+    property color galleryPathBackgroundColor: "#00000000"
     property color galleryPathTextColor: "#e8edf2"
-    property color galleryPathHoverColor: "#222c38"
+    property color galleryPathHoverColor: "#2a3745"
     property color galleryPathItemHoverColor: "#2a3745"
     property color galleryPathItemPressedColor: "#10161e"
     readonly property real iconDevicePixelRatio:
@@ -370,6 +387,14 @@ ApplicationWindow {
     // This preserves both persistent panel/Gallery instances and avoids
     // running every panel binding at keyboard-repeat frequency.
     property int panelActivationOverride: -1
+    // Pointer drag keeps its semantic cursor+activation action deferred until
+    // mouse-up, but cursor ownership is a two-panel visual invariant. Preview
+    // the target side here so one mouse-down simultaneously reveals its new
+    // cursor and hides the former side's cursor. Authoritative compact/full
+    // scene state acknowledges this projection; the watchdog rolls it back if
+    // no acknowledgement arrives.
+    property int pointerPanelActivationOverride: -1
+    property int pointerPanelActivationTimeoutMs: 6000
     // While a menu-bar submenu is open, pointer traversal must feel local.
     // Go remains authoritative for activation, but waiting for a complete
     // semantic-scene round trip just to paint the adjacent submenu creates a
@@ -779,6 +804,9 @@ ApplicationWindow {
     }
 
     function effectiveActivePanelSide() {
+        if (pointerPanelActivationOverride === 0
+                || pointerPanelActivationOverride === 1)
+            return pointerPanelActivationOverride
         if (panelActivationOverride === 0 || panelActivationOverride === 1)
             return panelActivationOverride
         var shell = shellFrame()
@@ -798,6 +826,26 @@ ApplicationWindow {
         return activeSide >= 0
                ? Number(panel && panel.side) === activeSide
                : Boolean(panel && panel.active === true)
+    }
+
+    function beginPointerPanelActivation(side) {
+        const normalized = Number(side)
+        if (normalized !== 0 && normalized !== 1)
+            return
+        pointerPanelActivationOverride = normalized
+        pointerPanelActivationTimer.restart()
+    }
+
+    function finishPointerPanelActivation() {
+        pointerPanelActivationOverride = -1
+        pointerPanelActivationTimer.stop()
+    }
+
+    Timer {
+        id: pointerPanelActivationTimer
+        interval: Math.max(1, root.pointerPanelActivationTimeoutMs)
+        repeat: false
+        onTriggered: root.finishPointerPanelActivation()
     }
 
     function galleryInputRoutingActive() {
@@ -1199,6 +1247,31 @@ ApplicationWindow {
         return Math.max(0, Number(fallbackIndex || 0))
     }
 
+    function keyBarModifierShortcut(functionKey, modifier) {
+        const key = cleanText(functionKey).trim()
+        const normalized = cleanText(modifier).toLowerCase().trim()
+        if (normalized === "shift")
+            return "Shift+" + key
+        if (normalized === "ctrl" || normalized === "control")
+            return "Ctrl+" + key
+        if (normalized === "alt")
+            return "Alt+" + key
+        return key
+    }
+
+    function keyBarModifierFlags(modifier) {
+        const normalized = cleanText(modifier).toLowerCase().trim()
+        var result = 0
+        if (normalized.indexOf("shift") >= 0)
+            result |= 0x0010
+        if (normalized.indexOf("ctrl") >= 0
+                || normalized.indexOf("control") >= 0)
+            result |= 0x0008
+        if (normalized.indexOf("alt") >= 0)
+            result |= 0x0002
+        return result
+    }
+
     function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
         const chromeWidth = closeEnabled === true ? 64 : 46
         return snapPx(Math.min(workspaceTabMaxWidth,
@@ -1253,7 +1326,8 @@ ApplicationWindow {
         for (var k = 0; k < characters.length; ++k) {
             var escaped = richTextEscape(characters[k])
             result += k === mnemonicIndex
-                    ? "<font color=\"#9fc8dc\">" + escaped + "</font>"
+                    ? "<font color=\"" + root.dialogAccent + "\">"
+                      + escaped + "</font>"
                     : escaped
         }
         return result
@@ -1286,6 +1360,9 @@ ApplicationWindow {
             "cardCursorBorder": galleryCardCursorBorderColor,
             "text": galleryTextColor,
             "mutedText": galleryMutedTextColor,
+            "fileText": galleryFileTextColor,
+            "folderText": galleryFolderTextColor,
+            "neutralFileTextColors": galleryNeutralFileTextColors,
             "quickSearchMatch": galleryQuickSearchMatchColor,
             "selection": gallerySelectionColor,
             "markedBackground": galleryMarkedBackgroundColor,
@@ -1348,7 +1425,10 @@ ApplicationWindow {
         toastOverride = null
         leftPanelPresentationOverride = null
         rightPanelPresentationOverride = null
+        leftPanelLayoutStateOverride = null
+        rightPanelLayoutStateOverride = null
         panelActivationOverride = -1
+        finishPointerPanelActivation()
         captureRetainedSurfaces()
         syncAutocompleteSelection()
         if (qtGallery.viewerVisible
@@ -1366,6 +1446,7 @@ ApplicationWindow {
         ignoreUnknownSignals: true
         function onPanelActivationChanged(activePanel, revision) {
             root.panelActivationOverride = Number(activePanel)
+            root.finishPointerPanelActivation()
             // FilePanelView transfers focus synchronously when its compact
             // panelIsActive binding flips. Only alternate/covered surfaces
             // need the generic deferred focus router.
@@ -1393,7 +1474,10 @@ ApplicationWindow {
                     // can never paint a new session under stale old chrome.
                     root.leftPanelPresentationOverride = null
                     root.rightPanelPresentationOverride = null
+                    root.leftPanelLayoutStateOverride = null
+                    root.rightPanelLayoutStateOverride = null
                     root.panelActivationOverride = -1
+                    root.finishPointerPanelActivation()
                 }
                 structuralSurfaceChanged = true
             }
@@ -1408,14 +1492,34 @@ ApplicationWindow {
                     && patch.surfaceState !== null)
                 root.documentSurfaceStateOverride = patch.surfaceState
             const activePanel = Number(patch.activePanel)
-            if (activePanel === 0 || activePanel === 1)
+            if (activePanel === 0 || activePanel === 1) {
                 root.panelActivationOverride = activePanel
+                root.finishPointerPanelActivation()
+            }
             if (patch.panel !== undefined && patch.panel !== null) {
                 const side = Number(patch.side)
-                if (side === 0)
+                if (side === 0) {
+                    root.leftPanelLayoutStateOverride = null
                     root.leftPanelPresentationOverride = patch.panel
-                else if (side === 1)
+                } else if (side === 1) {
+                    root.rightPanelLayoutStateOverride = null
                     root.rightPanelPresentationOverride = patch.panel
+                }
+            }
+            if (patch.panelLayoutState !== undefined
+                    && patch.panelLayoutState !== null) {
+                const layoutSide = Number(patch.side)
+                if (layoutSide === 0) {
+                    root.leftPanelLayoutStateOverride =
+                            root.mergePanelLayoutState(
+                                root.leftPanelLayoutStateOverride,
+                                patch.panelLayoutState)
+                } else if (layoutSide === 1) {
+                    root.rightPanelLayoutStateOverride =
+                            root.mergePanelLayoutState(
+                                root.rightPanelLayoutStateOverride,
+                                patch.panelLayoutState)
+                }
             }
             if (patch.workspaceTabs !== undefined
                     && patch.workspaceTabs !== null)
@@ -1595,18 +1699,19 @@ ApplicationWindow {
         }
     }
 
+    readonly property int themeSchemaVersion: 1
     readonly property var themeColorDefinitions: [
         // Window
-        { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#1f242c" },
-        { id: "titleBarBg", name: "Chrome / Title Bar Background", group: "Window", defaultColor: "#202833" },
-        { id: "fBarBg", name: "Chrome / F-Bar Background", group: "Window", defaultColor: "#202833" },
+        { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#191d23" },
+        { id: "titleBarBg", name: "Chrome / Title Bar Background", group: "Window", defaultColor: "#19202b" },
+        { id: "fBarBg", name: "Chrome / F-Bar Background", group: "Window", defaultColor: "#19202b" },
         { id: "chromeText", name: "Chrome Text", group: "Window", defaultColor: "#d7e0ea" },
 
         // Panels
-        { id: "panelPathBg", name: "Panel Header Background", group: "Panels", defaultColor: "#26314152" },
+        { id: "panelPathBg", name: "Panel Header Background", group: "Panels", defaultColor: "#26576478" },
 
         // Terminal
-        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "#19000000" },
+        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "#141921" },
 
         // Text
         { id: "textColor", name: "Primary Text Color", group: "Text", defaultColor: "#e8edf2" },
@@ -1632,15 +1737,17 @@ ApplicationWindow {
         { id: "controlBorder", name: "Control Border", group: "Controls", defaultColor: "#3a495b" },
 
         // Separators
-        { id: "separatorColor", name: "Separator Color", group: "Separators", defaultColor: "#30363d" },
+        { id: "separatorColor", name: "Separator Color", group: "Separators", defaultColor: "#2d3642" },
         { id: "separatorHoverColor", name: "Separator Hover Color", group: "Separators", defaultColor: "#464d55" },
         { id: "separatorActiveColor", name: "Separator Active Color", group: "Separators", defaultColor: "#59616a" },
 
         // ZoinGallery panel and viewer
-        { id: "galleryPanelBackgroundColor", name: "Gallery Panel Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryViewerBackgroundColor", name: "Gallery Viewer Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryPanelBackgroundColor", name: "Gallery Panel Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryViewerBackgroundColor", name: "Gallery Viewer Background", group: "Panel Colors", defaultColor: "#00000000" },
         { id: "galleryTextColor", name: "File Text", group: "Panel Colors", defaultColor: "#e8edf2" },
         { id: "galleryMutedTextColor", name: "Secondary File Text", group: "Panel Colors", defaultColor: "#9aa7b5" },
+        { id: "galleryFileTextColor", name: "Neutral File Text", group: "Panel Colors", defaultColor: "#c4cbd3" },
+        { id: "galleryFolderTextColor", name: "Neutral Folder Text", group: "Panel Colors", defaultColor: "#ffffff" },
         { id: "galleryQuickSearchMatchColor", name: "Quick Search Match", group: "Panel Colors", defaultColor: "#e8edf2" },
         { id: "galleryDirectoryTextColor", name: "Directory Text", group: "Panel Colors", defaultColor: "#98d8ff" },
         { id: "galleryFolderIconColor", name: "Folder Icon", group: "Panel Colors", defaultColor: "#5ab2f1" },
@@ -1651,22 +1758,22 @@ ApplicationWindow {
         { id: "gallerySelectionColor", name: "Selection Border", group: "Panel Colors", defaultColor: "#ffd43b" },
         { id: "galleryMarkedBackgroundColor", name: "Marked Row Background", group: "Panel Colors", defaultColor: "#4f5037" },
         { id: "galleryMarkedTextColor", name: "Marked Item Text", group: "Panel Colors", defaultColor: "#ffd43b" },
-        { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryItemHoverColor", name: "Card Hover", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryItemHoverColor", name: "Item Hover", group: "Panel Colors", defaultColor: "#1a75afe5" },
         { id: "galleryLabelBackgroundColor", name: "Thumbnail Label Background", group: "Panel Colors", defaultColor: "#aa101216" },
         { id: "galleryPreviewBackdropColor", name: "Preview Placeholder", group: "Panel Colors", defaultColor: "#4d000000" },
         { id: "gallerySeparatorColor", name: "Gallery Separator", group: "Panel Colors", defaultColor: "#30363d" },
         { id: "galleryHeaderTextColor", name: "Gallery Header Text", group: "Panel Colors", defaultColor: "#d7e0ea" },
         { id: "galleryControlHoverColor", name: "Gallery Control Hover", group: "Panel Colors", defaultColor: "#2a3745" },
-        { id: "galleryScrollBarHandleColor", name: "Scrollbar Handle", group: "Panel Colors", defaultColor: "#4a4a4a" },
-        { id: "galleryScrollBarBackgroundHoverColor", name: "Scrollbar Hover Background", group: "Panel Colors", defaultColor: "#676767" },
-        { id: "galleryScrollBarHoverColor", name: "Scrollbar Handle Hover", group: "Panel Colors", defaultColor: "#878787" },
-        { id: "galleryScrollBarPressedColor", name: "Scrollbar Handle Pressed", group: "Panel Colors", defaultColor: "#505050" },
+        { id: "galleryScrollBarHandleColor", name: "Scrollbar Handle", group: "Panel Colors", defaultColor: "#434b57" },
+        { id: "galleryScrollBarBackgroundHoverColor", name: "Scrollbar Hover Background", group: "Panel Colors", defaultColor: "#5f6875" },
+        { id: "galleryScrollBarHoverColor", name: "Scrollbar Handle Hover", group: "Panel Colors", defaultColor: "#7f8896" },
+        { id: "galleryScrollBarPressedColor", name: "Scrollbar Handle Pressed", group: "Panel Colors", defaultColor: "#47515d" },
         { id: "galleryScrollBarTrackHoverColor", name: "Scrollbar Track Hover", group: "Panel Colors", defaultColor: "#0fffffff" },
-        { id: "galleryPathBackgroundColor", name: "Path Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryPathBackgroundColor", name: "Path Background", group: "Panel Colors", defaultColor: "#00000000" },
         { id: "galleryPathTextColor", name: "Path Text", group: "Panel Colors", defaultColor: "#e8edf2" },
-        { id: "galleryPathHoverColor", name: "Path Hover", group: "Panel Colors", defaultColor: "#222c38" },
+        { id: "galleryPathHoverColor", name: "Path Hover", group: "Panel Colors", defaultColor: "#2a3745" },
         { id: "galleryPathItemHoverColor", name: "Breadcrumb Hover", group: "Panel Colors", defaultColor: "#2a3745" },
         { id: "galleryPathItemPressedColor", name: "Breadcrumb Pressed", group: "Panel Colors", defaultColor: "#10161e" }
     ]
@@ -1684,6 +1791,7 @@ ApplicationWindow {
 
         try {
             const saved = qtTheme.loadTheme()
+            const savedSchemaVersion = Number(saved.themeSchemaVersion || 0)
             let applied = false
             for (let i = 0; i < themeColorDefinitions.length; ++i) {
                 const def = themeColorDefinitions[i]
@@ -1691,7 +1799,17 @@ ApplicationWindow {
                         && saved[def.id]) {
                     const c = Qt.color(saved[def.id])
                     if (c) {
-                        root[def.id] = c
+                        // Before hover was visible in every presentation its
+                        // shipped value was transparent, and Save persisted
+                        // that inert default. Upgrade only those legacy files;
+                        // schema-aware themes may still deliberately disable
+                        // hover by choosing a transparent color.
+                        const legacyTransparentItemHover =
+                            savedSchemaVersion < 1
+                            && def.id === "galleryItemHoverColor"
+                            && Number(c.a) === 0
+                        root[def.id] = legacyTransparentItemHover
+                                ? Qt.color(def.defaultColor) : c
                         applied = true
                     }
                 }
@@ -1732,6 +1850,12 @@ ApplicationWindow {
                 applied = root.setMouseWheelMode(
                               String(saved.mouseWheelMode)) || applied
             }
+            if (saved.neutralFileTextColors !== undefined) {
+                const value = saved.neutralFileTextColors
+                root.galleryNeutralFileTextColors = value === true
+                        || String(value).toLowerCase() === "true"
+                applied = true
+            }
             return applied
         } catch (error) {
             console.warn("Unable to load the saved theme:", error)
@@ -1748,6 +1872,8 @@ ApplicationWindow {
             }
             map.fontRenderType = root.fontRenderTypeName
             map.mouseWheelMode = root.mouseWheelMode
+            map.neutralFileTextColors = root.galleryNeutralFileTextColors
+            map.themeSchemaVersion = root.themeSchemaVersion
             return qtTheme.saveTheme(map)
         }
         return false
@@ -1761,6 +1887,7 @@ ApplicationWindow {
         if (typeof qtTextRendering !== "undefined" && qtTextRendering)
             qtTextRendering.setRenderTypeByName("NativeRendering")
         root.mouseWheelMode = "gui"
+        root.galleryNeutralFileTextColors = true
     }
 
     function formatColorHex(clr) {
@@ -1999,6 +2126,7 @@ ApplicationWindow {
                          ? root.controlHoverBg : "transparent"
             }
         }
+
     }
 
     Window {
@@ -2665,6 +2793,92 @@ ApplicationWindow {
                                 if (root.setMouseWheelMode(value))
                                     themeColorConfigurator.statusToast =
                                         "Mouse wheel: " + root.mouseWheelModeName
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    id: themeNeutralFileTextPanel
+                    objectName: "themeNeutralFileTextPanel"
+                    Layout.fillWidth: false
+                    Layout.preferredWidth: root.snapPx(parent.width)
+                    Layout.preferredHeight: root.snapPx(42)
+                    implicitHeight: root.snapPx(42)
+                    transform: Translate {
+                        x: root.dialogPixelOffsetX(
+                            themeNeutralFileTextPanel,
+                            themeColorConfigurator.contentItem)
+                        y: root.dialogPixelOffsetY(
+                            themeNeutralFileTextPanel,
+                            themeColorConfigurator.contentItem)
+                    }
+                    radius: root.snapPx(4)
+                    color: root.dialogHeaderBg
+                    border.width: root.separatorWidth
+                    border.color: root.controlBorder
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: root.snapPx(8)
+                        anchors.rightMargin: root.snapPx(8)
+                        spacing: root.snapPx(8)
+
+                        ColumnLayout {
+                            id: themeNeutralFileTextLabels
+                            objectName: "themeNeutralFileTextLabels"
+                            Layout.fillWidth: true
+                            spacing: root.snapPx(1)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeNeutralFileTextLabels,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeNeutralFileTextLabels,
+                                    themeColorConfigurator.contentItem)
+                            }
+
+                            Text {
+                                id: themeNeutralFileTextTitle
+                                objectName: "themeNeutralFileTextTitle"
+                                text: "Panel file and folder text"
+                                color: root.textColor
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 11
+                                font.weight: Font.Bold
+                            }
+
+                            Text {
+                                id: themeNeutralFileTextDescription
+                                objectName: "themeNeutralFileTextDescription"
+                                text: "Use neutral text colors; semantic colors still tint icons"
+                                color: root.mutedText
+                                font.family: root.guiMonospaceFontFamily
+                                font.pixelSize: 9
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        DialogCheckBox {
+                            id: themeNeutralFileTextCheckBox
+                            objectName: "themeNeutralFileTextCheckBox"
+                            text: "Enabled"
+                            checked: root.galleryNeutralFileTextColors
+                            Layout.preferredWidth: root.snapPx(100)
+                            transform: Translate {
+                                x: root.dialogPixelOffsetX(
+                                    themeNeutralFileTextCheckBox,
+                                    themeColorConfigurator.contentItem)
+                                y: root.dialogPixelOffsetY(
+                                    themeNeutralFileTextCheckBox,
+                                    themeColorConfigurator.contentItem)
+                            }
+                            onClicked: {
+                                root.galleryNeutralFileTextColors = checked
+                                themeColorConfigurator.statusToast = checked
+                                        ? "Neutral panel text enabled"
+                                        : "Semantic panel text enabled"
                             }
                         }
                     }
@@ -4929,12 +5143,14 @@ ApplicationWindow {
 
                         FilePanelView {
                             panel: panelsRoot.panelForSide(0)
+                            layoutState: root.leftPanelLayoutStateOverride
                             visible: root.panelSideVisible(0)
                                       && !panelsRoot.altPanelForSide(0)
                         }
 
                         FilePanelView {
                             panel: panelsRoot.panelForSide(1)
+                            layoutState: root.rightPanelLayoutStateOverride
                             visible: root.panelSideVisible(1)
                                       && !panelsRoot.altPanelForSide(1)
                         }
@@ -5335,6 +5551,22 @@ ApplicationWindow {
         id: panelRoot
         objectName: "filePanel-" + Number(panel.side || 0)
         property var panel: ({})
+        property var layoutState: null
+        readonly property bool layoutStateMatchesPanel:
+            layoutState !== null
+            && String(layoutState.id || "") === String(panel.id || "")
+            && Number(layoutState.catalogRevision || 0)
+               === Number(panel.catalogRevision || 0)
+        readonly property string effectiveGalleryLayoutMode:
+            root.cleanText(layoutStateMatchesPanel
+                           && layoutState.galleryLayoutMode !== undefined
+                           ? layoutState.galleryLayoutMode
+                           : panel.galleryLayoutMode)
+        readonly property int effectiveGalleryColumnCount:
+            Number(layoutStateMatchesPanel
+                   && layoutState.galleryColumnCount !== undefined
+                   ? layoutState.galleryColumnCount
+                   : panel.galleryColumnCount) || 2
         readonly property bool backendLoading: panel.loading === true
         property bool loadingIndicatorVisible: false
         property int loadingIndicatorFrame: 0
@@ -5377,10 +5609,10 @@ ApplicationWindow {
                 return false
             if (choice.wideToggle === true)
                 return root.widePanelSide() === Number(panel.side || 0)
-            if (root.cleanText(panel.galleryLayoutMode) !== choice.layoutMode)
+            if (effectiveGalleryLayoutMode !== choice.layoutMode)
                 return false
             return choice.layoutMode !== "columns"
-                    || Number(panel.galleryColumnCount || 2)
+                    || effectiveGalleryColumnCount
                        === Number(choice.columnCount || 2)
         }
 
@@ -6286,7 +6518,7 @@ ApplicationWindow {
                                     root.action({
                                         "action": "panel.resetGalleryDensity",
                                         "side": panel.side,
-                                        "layoutMode": panel.galleryLayoutMode
+                                        "layoutMode": effectiveGalleryLayoutMode
                                     }, true)
                                 }
                             }
@@ -6559,6 +6791,8 @@ ApplicationWindow {
                     return
                 item.side = panel.side
                 item.panel = Qt.binding(() => panelRoot.panel)
+                if (typeof item.layoutState !== "undefined")
+                    item.layoutState = Qt.binding(() => panelRoot.layoutState)
                 item.bridge = qtGallery
                 item.keySink = grid
                 item.theme = Qt.binding(function() {
@@ -6591,6 +6825,14 @@ ApplicationWindow {
                 if (item.panelActive)
                     item.forceActiveFocus()
                 panelRoot.updateRegisteredGalleryPanelHost()
+            }
+        }
+
+        Connections {
+            target: galleryPanelContent.item
+            ignoreUnknownSignals: true
+            function onPointerActivationPreviewRequested(side) {
+                root.beginPointerPanelActivation(side)
             }
         }
 
@@ -12268,10 +12510,45 @@ ApplicationWindow {
     }
 
     component KeyBarView: Rectangle {
+        id: keyBarRoot
         property var keyBar: ({})
         objectName: "keyBar"
         color: root.fBarBg
         visible: keyBar.visible !== false && keyBar.items !== undefined
+
+        function openAlternativeMenu(anchorItem, item, functionKey,
+                                     functionIndex) {
+            const alternatives = item && item.alternatives
+                    ? item.alternatives : []
+            const activeModifier = root.cleanText(keyBar.modifier || "normal")
+                    .trim().toLowerCase()
+            var rows = []
+            for (var i = 0; i < alternatives.length; ++i) {
+                const alternative = alternatives[i] || ({})
+                const modifier = root.cleanText(alternative.modifier)
+                        .trim().toLowerCase()
+                const text = root.cleanText(alternative.text)
+                if (text === "" || modifier === activeModifier)
+                    continue
+                rows.push({
+                    "text": text,
+                    "icon": root.cleanText(alternative.icon),
+                    "modifier": modifier,
+                    "shortcut": root.keyBarModifierShortcut(
+                                     functionKey, modifier)
+                })
+            }
+            if (rows.length === 0)
+                return false
+            if (keyBarAlternativeMenu.opened)
+                keyBarAlternativeMenu.close()
+            keyBarAlternativeMenu.anchorItem = anchorItem
+            keyBarAlternativeMenu.functionKey = functionKey
+            keyBarAlternativeMenu.functionIndex = functionIndex
+            keyBarAlternativeMenu.menuItems = rows
+            keyBarAlternativeMenu.open()
+            return true
+        }
 
         // This is application chrome, not panel/document content. Keeping the
         // separator in the shared F-bar makes panels, viewer and editor end at
@@ -12289,8 +12566,8 @@ ApplicationWindow {
 
         Row {
             anchors.fill: parent
-            anchors.leftMargin: root.contentSpacing
-            anchors.rightMargin: root.contentSpacing
+            anchors.leftMargin: 0
+            anchors.rightMargin: 0
             anchors.topMargin: root.actionBarVerticalMargin
             anchors.bottomMargin: root.actionBarVerticalMargin
             Repeater {
@@ -12304,34 +12581,52 @@ ApplicationWindow {
                     readonly property int functionIndex:
                         root.keyBarFunctionIndex(
                             { "key": actionButton.functionKey }, index)
+                    readonly property string iconName:
+                        root.cleanText(modelData.icon)
                     objectName: "key-bar-action-" + (functionIndex + 1)
                     width: parent.width / 12
                     height: parent.height
+                    radius: root.snapPx(5)
                     color: actionButtonMouse.pressed
                            ? root.panelSelectionBorder
                            : actionButtonMouse.containsMouse
+                             || (keyBarAlternativeMenu.opened
+                                 && keyBarAlternativeMenu.functionIndex
+                                    === actionButton.functionIndex)
                              ? root.panelSelectionBg : "transparent"
 
-                    Text {
-                        id: functionKeyLabel
-                        objectName: "key-bar-shortcut-"
+                    PixelAlignedImage {
+                        id: actionIcon
+                        objectName: "key-bar-icon-"
                                     + (actionButton.functionIndex + 1)
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.leftMargin: root.actionButtonHorizontalMargin
-                        text: actionButton.functionKey
-                        color: actionButtonMouse.containsMouse
-                               ? root.textColor : root.dialogAccent
-                        font.pixelSize: 11
+                        width: visible ? root.snapPx(14) : 0
+                        height: visible ? root.snapPx(14) : 0
+                        visible: actionButton.iconName !== ""
+                        smooth: false
+                        mipmap: false
+                        alignmentRevision: actionButton.x + actionButton.y
+                                           + actionButton.width
+                                           + actionButton.height
+                        source: root.lucideIconSource(
+                                    actionButton.iconName, 14,
+                                    actionButtonMouse.containsMouse
+                                    ? root.textColor : root.chromeText)
                     }
 
                     Text {
+                        id: actionTextLabel
                         objectName: "key-bar-label-"
                                     + (actionButton.functionIndex + 1)
-                        anchors.left: functionKeyLabel.right
-                        anchors.leftMargin: 7
-                        anchors.right: parent.right
-                        anchors.rightMargin: root.actionButtonHorizontalMargin
+                        anchors.left: actionIcon.visible
+                                      ? actionIcon.right : parent.left
+                        anchors.leftMargin: actionIcon.visible
+                                            ? 7
+                                            : root.actionButtonHorizontalMargin
+                        anchors.right: functionKeyLabel.left
+                        anchors.rightMargin: 7
                         anchors.verticalCenter: parent.verticalCenter
                         text: root.mnemonicText(modelData.text,
                                                 modelData.hotkey)
@@ -12339,6 +12634,19 @@ ApplicationWindow {
                         color: root.chromeText
                         font.pixelSize: 11
                         elide: Text.ElideRight
+                    }
+
+                    Text {
+                        id: functionKeyLabel
+                        objectName: "key-bar-shortcut-"
+                                    + (actionButton.functionIndex + 1)
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.rightMargin: root.actionButtonHorizontalMargin
+                        text: actionButton.functionKey
+                        color: actionButtonMouse.containsMouse
+                               ? root.textColor : root.mutedText
+                        font.pixelSize: 11
                     }
 
                     Rectangle {
@@ -12356,8 +12664,16 @@ ApplicationWindow {
                         id: actionButtonMouse
                         anchors.fill: parent
                         hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
                         cursorShape: Qt.PointingHandCursor
                         onClicked: function(mouse) {
+                            if (mouse.button === Qt.RightButton) {
+                                keyBarRoot.openAlternativeMenu(
+                                    actionButton, modelData,
+                                    actionButton.functionKey,
+                                    actionButton.functionIndex)
+                                return
+                            }
                             // Dispatch the same semantic F-key that is
                             // visibly labelled. Repeater's injected `index`
                             // can transiently shadow a map field while a
@@ -12377,6 +12693,198 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+
+        Popup {
+            id: keyBarAlternativeMenu
+            objectName: "keyBarAlternativeMenu"
+            parent: Overlay.overlay
+            property var anchorItem: null
+            property string functionKey: ""
+            property int functionIndex: -1
+            property var menuItems: []
+            readonly property real menuRowHeight: root.snapPx(31)
+
+            function preferredWidth() {
+                var widestLabel = 0
+                var widestShortcut = 0
+                for (var i = 0; i < menuItems.length; ++i) {
+                    const item = menuItems[i] || ({})
+                    widestLabel = Math.max(widestLabel,
+                        keyBarAlternativeFontMetrics.advanceWidth(
+                            root.cleanText(item.text)))
+                    widestShortcut = Math.max(widestShortcut,
+                        keyBarAlternativeFontMetrics.advanceWidth(
+                            root.cleanText(item.shortcut)))
+                }
+                return Math.max(root.snapPx(220),
+                                root.snapPx(62) + widestLabel
+                                + widestShortcut)
+            }
+
+            width: Math.min(root.width - root.snapPx(12), preferredWidth())
+            implicitHeight: menuItems.length * menuRowHeight
+                             + topPadding + bottomPadding
+            height: Math.min(root.height - root.snapPx(12),
+                             Math.max(menuRowHeight + topPadding + bottomPadding,
+                                      implicitHeight))
+            padding: root.snapPx(6)
+            modal: false
+            dim: false
+            focus: false
+            z: 1001
+            closePolicy: Popup.CloseOnEscape
+                         | Popup.CloseOnPressOutside
+                         | Popup.CloseOnPressOutsideParent
+
+            onAboutToShow: {
+                if (!anchorItem) {
+                    close()
+                    return
+                }
+                const point = anchorItem.mapToItem(
+                    root.contentItem, anchorItem.width / 2, 0)
+                x = Math.max(root.snapPx(6), Math.min(
+                    root.width - width - root.snapPx(6),
+                    point.x - width / 2))
+                var popupY = point.y - height - root.snapPx(4)
+                if (popupY < root.snapPx(6))
+                    popupY = point.y + anchorItem.height + root.snapPx(4)
+                y = Math.max(root.snapPx(6), Math.min(
+                    root.height - height - root.snapPx(6), popupY))
+            }
+
+            onClosed: {
+                anchorItem = null
+                functionKey = ""
+                functionIndex = -1
+                menuItems = []
+            }
+
+            background: Rectangle {
+                color: root.dialogHeaderBg
+                radius: root.snapPx(8)
+                border.width: root.separatorWidth
+                border.color: root.controlBorder
+            }
+
+            FontMetrics {
+                id: keyBarAlternativeFontMetrics
+                font.family: root.guiMonospaceFontFamily
+                font.pixelSize: 12
+            }
+
+            contentItem: ListView {
+                id: keyBarAlternativeList
+                objectName: "keyBarAlternativeList"
+                anchors.fill: parent
+                clip: true
+                model: keyBarAlternativeMenu.menuItems
+                boundsBehavior: Flickable.StopAtBounds
+
+                delegate: Rectangle {
+                    id: keyBarAlternativeRow
+                    required property var modelData
+                    objectName: "keyBarAlternative-"
+                                + root.cleanText(modelData.modifier)
+                    width: keyBarAlternativeList.width
+                    height: keyBarAlternativeMenu.menuRowHeight
+                    radius: root.snapPx(5)
+                    color: keyBarAlternativeMouse.containsMouse
+                           ? root.controlHoverBg : "transparent"
+
+                    Item {
+                        id: keyBarAlternativeIconSlot
+                        anchors.left: parent.left
+                        anchors.leftMargin: root.snapPx(8)
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: root.snapPx(18)
+                        height: root.snapPx(18)
+
+                        PixelAlignedImage {
+                            objectName: "keyBarAlternativeIcon-"
+                                        + root.cleanText(modelData.modifier)
+                            anchors.centerIn: parent
+                            width: root.snapPx(16)
+                            height: root.snapPx(16)
+                            visible: root.cleanText(modelData.icon) !== ""
+                            smooth: false
+                            mipmap: false
+                            source: root.lucideIconSource(
+                                        root.cleanText(modelData.icon), 16,
+                                        keyBarAlternativeMouse.containsMouse
+                                        ? root.textColor : root.chromeText)
+                        }
+                    }
+
+                    Text {
+                        id: keyBarAlternativeLabel
+                        objectName: "keyBarAlternativeLabel-"
+                                    + root.cleanText(modelData.modifier)
+                        anchors.left: keyBarAlternativeIconSlot.right
+                        anchors.right: keyBarAlternativeShortcut.left
+                        anchors.leftMargin: root.snapPx(8)
+                        anchors.rightMargin: root.snapPx(12)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.cleanText(modelData.text)
+                        color: root.textColor
+                        font.family: root.guiMonospaceFontFamily
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        id: keyBarAlternativeShortcut
+                        objectName: "keyBarAlternativeShortcut-"
+                                    + root.cleanText(modelData.modifier)
+                        anchors.right: parent.right
+                        anchors.rightMargin: root.snapPx(10)
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.cleanText(modelData.shortcut)
+                        color: root.mutedText
+                        font.family: root.guiMonospaceFontFamily
+                        font.pixelSize: 11
+                    }
+
+                    MouseArea {
+                        id: keyBarAlternativeMouse
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton
+                        hoverEnabled: true
+                        onClicked: {
+                            const keyNumber = Number(
+                                keyBarAlternativeMenu.functionKey
+                                    .replace(/^F/i, ""))
+                            const clickedIndex = !isNaN(keyNumber)
+                                    && keyNumber >= 1 && keyNumber <= 24
+                                    ? keyNumber - 1
+                                    : keyBarAlternativeMenu.functionIndex
+                            const vk = 0x70 + clickedIndex
+                            const modifiers = root.keyBarModifierFlags(
+                                modelData.modifier)
+                            qtShell.sendKey(vk, 0, true, modifiers)
+                            qtShell.sendKey(vk, 0, false, modifiers)
+                            keyBarAlternativeMenu.close()
+                        }
+                    }
+                }
+            }
+        }
+
+        MouseArea {
+            // Popup.CloseOnPressOutside is not delivered reliably when a
+            // non-windowed popup is parented to Overlay.overlay above the
+            // persistent panel/grid pointer layers. Keep the dismiss plane
+            // immediately below the popup so outside presses always close it
+            // without moving the file-panel cursor underneath.
+            parent: Overlay.overlay
+            anchors.fill: parent
+            visible: keyBarAlternativeMenu.opened
+            enabled: visible
+            z: 1000
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                             | Qt.MiddleButton
+            onPressed: keyBarAlternativeMenu.close()
         }
     }
 

@@ -226,7 +226,7 @@ func TestNavigationBenchmarkCapturesUIActionQueue(t *testing.T) {
 	}, nil)
 
 	select {
-	case task := <-vtui.FrameManager.TaskChan:
+	case task := <-vtui.FrameManager.PriorityTaskChan:
 		task()
 	case <-time.After(2 * time.Second):
 		t.Fatal("semantic action did not reach the UI task queue")

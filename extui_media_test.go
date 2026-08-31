@@ -1282,3 +1282,43 @@ func TestSemanticStaticEntryRegistersBrokerSourceDescriptor(t *testing.T) {
 		t.Fatalf("semantic source = %#v", source)
 	}
 }
+
+func TestDeferredSemanticStaticCatalogRegistersOnlyImageSources(t *testing.T) {
+	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
+
+	filesystem := newCountingMediaVFS([]byte("0123456789"))
+	broker, err := newExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	restore := setActiveExtUiMediaBroker(broker)
+	defer restore()
+
+	panel := &FileSystemPanel{
+		vfs: filesystem,
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "image.jpg", Size: 10, SizeKnown: true}},
+			{VFSItem: vfs.VFSItem{Name: "notes.txt", Size: 20, SizeKnown: true}},
+			{VFSItem: vfs.VFSItem{Name: "folder", IsDir: true}},
+		},
+	}
+	panel.updateSemanticRevisions()
+	static := panel.semanticStaticPanelData("vfs")
+	if len(static.entries) != 3 {
+		t.Fatalf("semantic entries = %#v", static.entries)
+	}
+	if static.entries[0].Source == nil || !static.entries[0].IsImage {
+		t.Fatalf("image source was omitted: %#v", static.entries[0])
+	}
+	if static.entries[1].Source != nil || static.entries[1].IsImage {
+		t.Fatalf("non-image source was registered: %#v", static.entries[1])
+	}
+	if static.entries[2].Source != nil {
+		t.Fatalf("directory source was registered: %#v", static.entries[2])
+	}
+	if ids := broker.resourceIDs(); len(ids) != 1 {
+		t.Fatalf("broker resources = %d, want one image resource", len(ids))
+	}
+}

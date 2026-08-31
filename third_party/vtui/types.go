@@ -263,6 +263,14 @@ type SemanticRenderPhaseDeferrer interface {
 	ConsumeSemanticRenderPhaseDeferral(redrawGeneration uint64) bool
 }
 
+// SemanticRenderPhaseDeferralState lets a posted-task dispatcher distinguish
+// a task-owned redraw from unrelated pending work after a direct native update
+// has been bound. Returning true does not consume the permit; renderPhase does
+// that at the normal scene-graph boundary.
+type SemanticRenderPhaseDeferralState interface {
+	SemanticRenderPhaseDeferralBound(redrawGeneration uint64) bool
+}
+
 // SemanticSceneUpdateTracker brackets input dispatches and queued UI tasks.
 // A renderer may use the boundary to invalidate a compact update when another
 // unverified model mutation is processed before the next semantic export.

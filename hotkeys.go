@@ -525,30 +525,33 @@ func (hm *HotkeyManager) Unbind(area, key string) {
 // gets an empty label.
 func KeyBarLabelsForArea(area string, fallbacks *vtui.KeySet) *vtui.KeySet {
 	var fbNormal, fbShift, fbAlt, fbCtrl vtui.KeyBarLabels
+	var fbNormalIcons, fbShiftIcons, fbAltIcons, fbCtrlIcons vtui.KeyBarIconNames
 	if fallbacks != nil {
 		fbNormal, fbShift, fbAlt, fbCtrl = fallbacks.Normal, fallbacks.Shift, fallbacks.Alt, fallbacks.Ctrl
+		fbNormalIcons, fbShiftIcons = fallbacks.NormalIcons, fallbacks.ShiftIcons
+		fbAltIcons, fbCtrlIcons = fallbacks.AltIcons, fallbacks.CtrlIcons
 	}
-	resolve := func(prefix, keyNum, fb string) string {
+	resolve := func(prefix, keyNum, fb, fbIcon string) (string, string) {
 		if hm := GlobalHotkeysMgr; hm != nil {
 			if actName := hm.GetAction(area, prefix+keyNum); actName != "" {
 				if strings.EqualFold(actName, "none") {
-					return ""
+					return "", ""
 				}
 				if act, ok := GetAction(actName); ok {
-					return plainLabel(act.DisplayLabel())
+					return plainLabel(act.DisplayLabel()), keyBarIconForAction(act.Name)
 				}
 			}
 		}
-		return fb
+		return fb, fbIcon
 	}
 
 	set := &vtui.KeySet{}
 	for i := 0; i < 12; i++ {
 		keyNum := fmt.Sprintf("F%d", i+1)
-		set.Normal[i] = resolve("", keyNum, fbNormal[i])
-		set.Shift[i] = resolve("Shift", keyNum, fbShift[i])
-		set.Alt[i] = resolve("Alt", keyNum, fbAlt[i])
-		set.Ctrl[i] = resolve("Ctrl", keyNum, fbCtrl[i])
+		set.Normal[i], set.NormalIcons[i] = resolve("", keyNum, fbNormal[i], fbNormalIcons[i])
+		set.Shift[i], set.ShiftIcons[i] = resolve("Shift", keyNum, fbShift[i], fbShiftIcons[i])
+		set.Alt[i], set.AltIcons[i] = resolve("Alt", keyNum, fbAlt[i], fbAltIcons[i])
+		set.Ctrl[i], set.CtrlIcons[i] = resolve("Ctrl", keyNum, fbCtrl[i], fbCtrlIcons[i])
 	}
 	return set
 }

@@ -19,6 +19,9 @@
 
 namespace
 {
+bool nonNegativeInteger(const QVariant &value, qulonglong *result = nullptr);
+bool integerValue(const QVariant &value, qlonglong *result = nullptr);
+
 constexpr quint32 MaxMessageSize = 64 * 1024 * 1024;
 // Keep decode-ahead bounded by both bytes and frame count. The byte budget is
 // no larger than the socket buffer that the old single-frame pipeline left
@@ -556,6 +559,31 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
     panel.value(QStringLiteral("metadataRevision"))
         .toULongLong(&metadataRevisionOK);
     const QVariant entriesValue = panel.value(QStringLiteral("entries"));
+    bool catalogProvisional = false;
+    if (panel.contains(QStringLiteral("catalogProvisional"))) {
+        const QVariant provisionalValue = panel.value(
+            QStringLiteral("catalogProvisional"));
+        if (provisionalValue.metaType().id() != QMetaType::Bool) {
+            return false;
+        }
+        catalogProvisional = provisionalValue.toBool();
+    }
+    bool catalogRowsDeferred = false;
+    if (panel.contains(QStringLiteral("catalogRowsDeferred"))) {
+        const QVariant deferredValue = panel.value(
+            QStringLiteral("catalogRowsDeferred"));
+        if (deferredValue.metaType().id() != QMetaType::Bool) {
+            return false;
+        }
+        catalogRowsDeferred = deferredValue.toBool();
+    }
+    qulonglong totalCount = 0;
+    const bool hasTotalCount = panel.contains(QStringLiteral("totalCount"));
+    if (hasTotalCount
+        && !nonNegativeInteger(panel.value(QStringLiteral("totalCount")),
+                               &totalCount)) {
+        return false;
+    }
     if (!panelSideOK || panelSide != side
         || panel.value(QStringLiteral("id")).toString().isEmpty()
         || panel.value(QStringLiteral("kind")).toString()
@@ -571,6 +599,13 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
             != QMetaType::Bool
         || !panel.value(QStringLiteral("metadataDeferred")).toBool()
         || entriesValue.metaType().id() != QMetaType::QVariantList) {
+        return false;
+    }
+    const qsizetype entryCount = entriesValue.toList().size();
+    if (hasTotalCount
+        && (totalCount < static_cast<qulonglong>(entryCount)
+            || (!catalogProvisional && !catalogRowsDeferred
+                && totalCount != static_cast<qulonglong>(entryCount)))) {
         return false;
     }
     for (const QString &heavyKey : {
@@ -599,53 +634,64 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
 
     QSet<QString> entryIds;
     const QVariantList entries = entriesValue.toList();
+    int firstSourceIndex = -1;
     for (qsizetype row = 0; row < entries.size(); ++row) {
-        if (entries.at(row).metaType().id() != QMetaType::QVariantMap) {
-            return false;
-        }
-        const QVariantMap entry = entries.at(row).toMap();
-        bool indexOK = false;
-        const int index = entry.value(QStringLiteral("index"))
-                              .toInt(&indexOK);
-        const QString entryId = entry.value(
-            QStringLiteral("entryId")).toString();
-        if (!indexOK || index != row || entryId.isEmpty()
-            || entryIds.contains(entryId)
-            || entry.value(QStringLiteral("name")).metaType().id()
-                != QMetaType::QString
-            || (entry.contains(QStringLiteral("path"))
-                && entry.value(QStringLiteral("path")).metaType().id()
-                    != QMetaType::QString)
-            || entry.value(QStringLiteral("isDir")).metaType().id()
-                != QMetaType::Bool
-            || entry.value(QStringLiteral("isUp")).metaType().id()
-                != QMetaType::Bool
-            || (entry.contains(QStringLiteral("isHidden"))
-                && entry.value(QStringLiteral("isHidden")).metaType().id()
-                    != QMetaType::Bool)
-            || entry.value(QStringLiteral("isImage")).metaType().id()
-                != QMetaType::Bool
-            || entry.value(QStringLiteral("selected")).metaType().id()
-                != QMetaType::Bool
-            || (entry.contains(QStringLiteral("highlightStyleId"))
-                && (entry.value(QStringLiteral("highlightStyleId"))
-                        .metaType().id() != QMetaType::QString
-                    || entry.value(QStringLiteral("highlightStyleId"))
-                           .toString().isEmpty()))) {
-            return false;
-        }
-        entryIds.insert(entryId);
-        for (const QString &heavyKey : {
-                 QStringLiteral("localPath"), QStringLiteral("size"),
-                 QStringLiteral("sizeText"), QStringLiteral("isExecutable"),
-                 QStringLiteral("isCached"),
-                 QStringLiteral("sizeCalculated"), QStringLiteral("mtime"),
-                 QStringLiteral("mtimeNanos"), QStringLiteral("version"),
-                 QStringLiteral("mode")}) {
-            if (entry.contains(heavyKey)) {
+            if (entries.at(row).metaType().id() != QMetaType::QVariantMap) {
                 return false;
             }
-        }
+            const QVariantMap entry = entries.at(row).toMap();
+            bool indexOK = false;
+            const int index = entry.value(QStringLiteral("index"))
+                                  .toInt(&indexOK);
+            const QString entryId = entry.value(
+                QStringLiteral("entryId")).toString();
+            if (row == 0) {
+                firstSourceIndex = index;
+            }
+            const int expectedIndex = catalogRowsDeferred
+                ? firstSourceIndex + static_cast<int>(row)
+                : static_cast<int>(row);
+            if (!indexOK || index < 0
+                || (hasTotalCount
+                    && static_cast<qulonglong>(index) >= totalCount)
+                || index != expectedIndex || entryId.isEmpty()
+                || entryIds.contains(entryId)
+                || entry.value(QStringLiteral("name")).metaType().id()
+                    != QMetaType::QString
+                || (entry.contains(QStringLiteral("path"))
+                    && entry.value(QStringLiteral("path")).metaType().id()
+                        != QMetaType::QString)
+                || entry.value(QStringLiteral("isDir")).metaType().id()
+                    != QMetaType::Bool
+                || entry.value(QStringLiteral("isUp")).metaType().id()
+                    != QMetaType::Bool
+                || (entry.contains(QStringLiteral("isHidden"))
+                    && entry.value(QStringLiteral("isHidden")).metaType().id()
+                        != QMetaType::Bool)
+                || entry.value(QStringLiteral("isImage")).metaType().id()
+                    != QMetaType::Bool
+                || entry.value(QStringLiteral("selected")).metaType().id()
+                    != QMetaType::Bool
+                || (entry.contains(QStringLiteral("highlightStyleId"))
+                    && (entry.value(QStringLiteral("highlightStyleId"))
+                            .metaType().id() != QMetaType::QString
+                        || entry.value(QStringLiteral("highlightStyleId"))
+                               .toString().isEmpty()))) {
+                return false;
+            }
+            entryIds.insert(entryId);
+            for (const QString &heavyKey : {
+                     QStringLiteral("localPath"), QStringLiteral("size"),
+                     QStringLiteral("sizeText"),
+                     QStringLiteral("isExecutable"),
+                     QStringLiteral("sizeCalculated"),
+                     QStringLiteral("mtime"),
+                     QStringLiteral("mtimeNanos"),
+                     QStringLiteral("version"), QStringLiteral("mode")}) {
+                if (entry.contains(heavyKey)) {
+                    return false;
+                }
+            }
     }
 
     if ((panel.contains(QStringLiteral("fastFind"))
@@ -818,7 +864,7 @@ bool hasNonEmptyMap(const QVariantMap &container, const QString &key)
         && !value.toMap().isEmpty();
 }
 
-bool nonNegativeInteger(const QVariant &value, qulonglong *result = nullptr)
+bool nonNegativeInteger(const QVariant &value, qulonglong *result)
 {
     const int type = value.metaType().id();
     const bool signedInteger = type == QMetaType::Char
@@ -851,7 +897,7 @@ bool nonNegativeInteger(const QVariant &value, qulonglong *result = nullptr)
     return true;
 }
 
-bool integerValue(const QVariant &value, qlonglong *result = nullptr)
+bool integerValue(const QVariant &value, qlonglong *result)
 {
     const int type = value.metaType().id();
     const bool integer = type == QMetaType::Char
@@ -1101,6 +1147,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
     static const QSet<QString> boolKeys = {
         QStringLiteral("active"), QStringLiteral("previewCapable"),
         QStringLiteral("metadataDeferred"),
+        QStringLiteral("catalogRowsDeferred"),
         QStringLiteral("sortReverse"),
         QStringLiteral("separateFileExtensions"),
         QStringLiteral("loading"),
@@ -1133,6 +1180,22 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
             bool densityOK = false;
             const double density = it.value().toDouble(&densityOK);
             valid = densityOK && density >= 0.0;
+        } else if (key == QStringLiteral("galleryDensities")) {
+            const QVariantMap densities = it.value().toMap();
+            static const QSet<QString> densityModes = {
+                QStringLiteral("masonry"), QStringLiteral("columns"),
+                QStringLiteral("details"), QStringLiteral("grid"),
+                QStringLiteral("icons"),
+            };
+            valid = it.value().metaType().id() == QMetaType::QVariantMap
+                && densities.size() <= densityModes.size();
+            for (auto densityIt = densities.cbegin();
+                 valid && densityIt != densities.cend(); ++densityIt) {
+                bool densityOK = false;
+                const double density = densityIt.value().toDouble(&densityOK);
+                valid = densityModes.contains(densityIt.key())
+                    && densityOK && density > 0.0 && density <= 500.0;
+            }
         } else if (key == QStringLiteral("galleryColumns")) {
             valid = it.value().metaType().id() == QMetaType::QVariantList;
         } else if (key == QStringLiteral("fastFindMatches")) {
@@ -1176,6 +1239,7 @@ struct AppliedScenePatch
     QVariantMap scene;
     QVariantMap presentationScene;
     QList<QVariantMap> catalogPanels;
+    QList<QVariantMap> catalogAppends;
     QList<QVariantMap> panelPatches;
     QList<QVariantMap> compactPatches;
     QSet<QString> rootKeys;
@@ -1187,8 +1251,8 @@ struct AppliedScenePatch
 bool applyScenePatch(const QVariantMap &message,
                      const QVariantMap &currentScene,
                      const QVariantMap &currentPresentationScene,
-                     qulonglong currentRevision, AppliedScenePatch *result,
-                     QString *error)
+                     qulonglong currentRevision,
+                     AppliedScenePatch *result, QString *error)
 {
     static const QSet<QString> envelopeKeys = {
         QStringLiteral("type"), QStringLiteral("schema"),
@@ -1349,6 +1413,7 @@ bool applyScenePatch(const QVariantMap &message,
                 QVariantMap signalOperation = operation;
                 QVariantMap nextPanel = panel;
                 QVariantMap nextPresentationPanel = presentationPanel;
+                bool layoutOnlyStateUpdate = false;
                 if (op == QStringLiteral("catalog_replace")) {
                     static const QSet<QString> allowed = {
                         QStringLiteral("op"), QStringLiteral("side"),
@@ -1368,7 +1433,7 @@ bool applyScenePatch(const QVariantMap &message,
                     qulonglong baseCatalogRevision = 0;
                     qulonglong catalogRevision = 0;
                     qulonglong currentCatalogRevision = 0;
-                    const QVariant replacementValue = operation.value(
+                    QVariant replacementValue = operation.value(
                         QStringLiteral("panel"));
                     if (operation.value(QStringLiteral("panelId"))
                             != panel.value(QStringLiteral("id"))
@@ -1413,8 +1478,8 @@ bool applyScenePatch(const QVariantMap &message,
                         || replacementRevision != catalogRevision
                         || !activePanelOK
                         || !validPanelCatalogEnvelope(
-                            compatibilityEnvelope, next.scene,
-                            &validatedSide, &validatedPanel)
+                             compatibilityEnvelope, next.scene,
+                             &validatedSide, &validatedPanel)
                         || validatedSide != side) {
                         *error = QStringLiteral(
                             "Invalid replacement panel catalog");
@@ -1437,6 +1502,259 @@ bool applyScenePatch(const QVariantMap &message,
                         {QStringLiteral("side"), side},
                         {QStringLiteral("panel"), nextPresentationPanel},
                     });
+                    continue;
+                }
+                if (op == QStringLiteral("catalog_append")) {
+                    static const QSet<QString> allowed = {
+                        QStringLiteral("op"), QStringLiteral("side"),
+                        QStringLiteral("panelId"),
+                        QStringLiteral("catalogRevision"),
+                        QStringLiteral("offset"),
+                        QStringLiteral("totalCount"),
+                        QStringLiteral("final"), QStringLiteral("entries"),
+                    };
+                    for (auto it = operation.cbegin();
+                         it != operation.cend(); ++it) {
+                        if (!allowed.contains(it.key())) {
+                            *error = QStringLiteral(
+                                "Unknown catalog-append field");
+                            return false;
+                        }
+                    }
+
+                    qulonglong operationRevision = 0;
+                    qulonglong currentRevision = 0;
+                    qulonglong currentTotal = 0;
+                    qulonglong offsetValue = 0;
+                    qulonglong totalValue = 0;
+                    const QVariant entriesValue = operation.value(
+                        QStringLiteral("entries"));
+                    const QVariant finalValue = operation.value(
+                        QStringLiteral("final"));
+                    const QVariant currentEntriesValue = panel.value(
+                        QStringLiteral("entries"));
+                    const QVariant currentProvisionalValue = panel.value(
+                        QStringLiteral("catalogProvisional"));
+                    const QVariant currentTotalValue = panel.value(
+                        QStringLiteral("totalCount"));
+                    if (operation.value(QStringLiteral("panelId"))
+                            .metaType().id() != QMetaType::QString
+                        || operation.value(QStringLiteral("panelId"))
+                            != panel.value(QStringLiteral("id"))
+                        || !nonNegativeInteger(operation.value(
+                            QStringLiteral("catalogRevision")),
+                            &operationRevision)
+                        || !nonNegativeInteger(panel.value(
+                            QStringLiteral("catalogRevision")),
+                            &currentRevision)
+                        || operationRevision != currentRevision
+                        || currentProvisionalValue.metaType().id()
+                            != QMetaType::Bool
+                        || !currentProvisionalValue.toBool()
+                        || currentEntriesValue.metaType().id()
+                            != QMetaType::QVariantList
+                        || !nonNegativeInteger(operation.value(
+                            QStringLiteral("offset")), &offsetValue)
+                        || !nonNegativeInteger(operation.value(
+                            QStringLiteral("totalCount")), &totalValue)
+                        || !nonNegativeInteger(currentTotalValue,
+                                               &currentTotal)
+                        || currentTotal != totalValue
+                        || currentTotal <= offsetValue
+                        || finalValue.metaType().id() != QMetaType::Bool
+                        || entriesValue.metaType().id()
+                            != QMetaType::QVariantList
+                        || entriesValue.toList().isEmpty()
+                        || offsetValue != static_cast<qulonglong>(
+                               currentEntriesValue.toList().size())
+                        || totalValue <= offsetValue
+                        || totalValue < offsetValue
+                            + static_cast<qulonglong>(
+                                entriesValue.toList().size())
+                        || finalValue.toBool() !=
+                               (offsetValue + static_cast<qulonglong>(
+                                   entriesValue.toList().size()) == totalValue)) {
+                        *error = QStringLiteral(
+                            "Invalid catalog append envelope");
+                        return false;
+                    }
+
+                    const QVariantList currentEntries = currentEntriesValue.toList();
+                    QSet<QString> entryIds;
+                    entryIds.reserve(totalValue > static_cast<qulonglong>(
+                                         std::numeric_limits<int>::max())
+                                         ? currentEntries.size()
+                                         : static_cast<int>(totalValue));
+                    for (const QVariant &currentEntryValue : currentEntries) {
+                        if (currentEntryValue.metaType().id()
+                                != QMetaType::QVariantMap) {
+                            *error = QStringLiteral(
+                                "Invalid current catalog row");
+                            return false;
+                        }
+                        const QString entryId = currentEntryValue.toMap().value(
+                            QStringLiteral("entryId")).toString();
+                        if (entryId.isEmpty() || entryIds.contains(entryId)) {
+                            *error = QStringLiteral(
+                                "Invalid current catalog identity");
+                            return false;
+                        }
+                        entryIds.insert(entryId);
+                    }
+
+                    static const QSet<QString> entryKeys = {
+                        QStringLiteral("index"),
+                        QStringLiteral("entryId"),
+                        QStringLiteral("name"),
+                        QStringLiteral("displayBaseName"),
+                        QStringLiteral("displayExtension"),
+                        QStringLiteral("isDir"), QStringLiteral("isUp"),
+                        QStringLiteral("isImage"),
+                        QStringLiteral("isHidden"),
+                        QStringLiteral("selected"),
+                        QStringLiteral("highlightStyleId"),
+                        QStringLiteral("source"),
+                    };
+                    static const QSet<QString> sourceKeys = {
+                        QStringLiteral("resourceId"),
+                        QStringLiteral("sourceKey"),
+                        QStringLiteral("version"),
+                        QStringLiteral("versionStrength"),
+                        QStringLiteral("size"),
+                        QStringLiteral("sizeKnown"),
+                        QStringLiteral("accessProfile"),
+                        QStringLiteral("storageClass"),
+                    };
+                    const QVariantList appendedEntries = entriesValue.toList();
+                    for (qsizetype index = 0;
+                         index < appendedEntries.size(); ++index) {
+                        if (appendedEntries.at(index).metaType().id()
+                                != QMetaType::QVariantMap) {
+                            *error = QStringLiteral(
+                                "Catalog append row must be a map");
+                            return false;
+                        }
+                        const QVariantMap entry = appendedEntries.at(index).toMap();
+                        for (auto it = entry.cbegin(); it != entry.cend(); ++it) {
+                            if (!entryKeys.contains(it.key())) {
+                                *error = QStringLiteral(
+                                    "Catalog append row contains heavy or unknown data");
+                                return false;
+                            }
+                        }
+                        qlonglong row = -1;
+                        const QString entryId = entry.value(
+                            QStringLiteral("entryId")).toString();
+                        if (!integerValue(entry.value(QStringLiteral("index")),
+                                          &row)
+                            || row != static_cast<qlonglong>(offsetValue)
+                                + index
+                            || entry.value(QStringLiteral("entryId"))
+                                   .metaType().id() != QMetaType::QString
+                            || entryId.isEmpty() || entryIds.contains(entryId)
+                            || entry.value(QStringLiteral("name"))
+                                   .metaType().id() != QMetaType::QString
+                            || entry.value(QStringLiteral("isDir"))
+                                   .metaType().id() != QMetaType::Bool
+                            || entry.value(QStringLiteral("isUp"))
+                                   .metaType().id() != QMetaType::Bool
+                            || entry.value(QStringLiteral("isImage"))
+                                   .metaType().id() != QMetaType::Bool
+                            || entry.value(QStringLiteral("selected"))
+                                   .metaType().id() != QMetaType::Bool
+                            || (entry.contains(QStringLiteral("isHidden"))
+                                && entry.value(QStringLiteral("isHidden"))
+                                       .metaType().id() != QMetaType::Bool)
+                            || (entry.contains(
+                                    QStringLiteral("displayBaseName"))
+                                && entry.value(QStringLiteral(
+                                      "displayBaseName")).metaType().id()
+                                    != QMetaType::QString)
+                            || (entry.contains(
+                                    QStringLiteral("displayExtension"))
+                                && entry.value(QStringLiteral(
+                                      "displayExtension")).metaType().id()
+                                    != QMetaType::QString)
+                            || (entry.contains(
+                                    QStringLiteral("highlightStyleId"))
+                                && (entry.value(QStringLiteral(
+                                         "highlightStyleId")).metaType().id()
+                                        != QMetaType::QString
+                                    || entry.value(QStringLiteral(
+                                         "highlightStyleId")).toString()
+                                           .isEmpty()))) {
+                            *error = QStringLiteral(
+                                "Invalid catalog append row");
+                            return false;
+                        }
+                        if (entry.contains(QStringLiteral("source"))) {
+                            const QVariant sourceValue = entry.value(
+                                QStringLiteral("source"));
+                            if (sourceValue.metaType().id()
+                                    != QMetaType::QVariantMap) {
+                                *error = QStringLiteral(
+                                    "Invalid catalog append source");
+                                return false;
+                            }
+                            const QVariantMap source = sourceValue.toMap();
+                            for (auto it = source.cbegin();
+                                 it != source.cend(); ++it) {
+                                if (!sourceKeys.contains(it.key())) {
+                                    *error = QStringLiteral(
+                                        "Unknown catalog append source field");
+                                    return false;
+                                }
+                                if (it.key() == QStringLiteral("size")) {
+                                    qlonglong size = 0;
+                                    if (!integerValue(it.value(), &size)) {
+                                        *error = QStringLiteral(
+                                            "Invalid catalog append source size");
+                                        return false;
+                                    }
+                                } else if (it.key() == QStringLiteral(
+                                               "sizeKnown")) {
+                                    if (it.value().metaType().id()
+                                            != QMetaType::Bool) {
+                                        *error = QStringLiteral(
+                                            "Invalid catalog append source flag");
+                                        return false;
+                                    }
+                                } else if (it.value().metaType().id()
+                                           != QMetaType::QString) {
+                                    *error = QStringLiteral(
+                                        "Invalid catalog append source identity");
+                                    return false;
+                                }
+                            }
+                        }
+                        entryIds.insert(entryId);
+                    }
+
+                    QVariantList combinedEntries = currentEntries;
+                    combinedEntries += appendedEntries;
+                    nextPanel.insert(QStringLiteral("entries"),
+                                     combinedEntries);
+                    nextPanel.insert(QStringLiteral("totalCount"),
+                                     operation.value(QStringLiteral("totalCount")));
+                    nextPanel.insert(QStringLiteral("catalogProvisional"),
+                                     !finalValue.toBool());
+                    nextPresentationPanel = withoutNativePanelPayload(nextPanel);
+                    if (!replaceShellPanel(next.scene, side, nextPanel)
+                        || !replaceShellPanel(next.presentationScene, side,
+                                              nextPresentationPanel)) {
+                        *error = QStringLiteral(
+                            "Could not commit catalog append");
+                        return false;
+                    }
+                    next.catalogAppends.push_back(signalOperation);
+                    if (finalValue.toBool()) {
+                        next.compactPatches.push_back(QVariantMap{
+                            {QStringLiteral("type"),
+                             QStringLiteral("scene_patch")},
+                            {QStringLiteral("side"), side},
+                            {QStringLiteral("panel"), nextPresentationPanel},
+                        });
+                    }
                     continue;
                 }
                 if (!validPanelIdentity(operation, panel, side, nullptr,
@@ -1484,6 +1802,29 @@ bool applyScenePatch(const QVariantMap &message,
                         stateForCommit.insert(QStringLiteral("fastFindMatchColor"),
                                               QString{});
                     }
+                    static const QSet<QString> identityKeys = {
+                        QStringLiteral("id"), QStringLiteral("kind"),
+                        QStringLiteral("side"),
+                        QStringLiteral("catalogRevision"),
+                        QStringLiteral("metadataDeferred"),
+                        QStringLiteral("metadataRevision"),
+                    };
+                    static const QSet<QString> layoutKeys = {
+                        QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("galleryColumnCount"),
+                        QStringLiteral("galleryDensity"),
+                        QStringLiteral("galleryDensities"),
+                        QStringLiteral("galleryLayoutRevision"),
+                        QStringLiteral("galleryColumns"),
+                        QStringLiteral("separateFileExtensions"),
+                    };
+                    QSet<QString> semanticStateKeys(stateForCommit.keyBegin(),
+                                                    stateForCommit.keyEnd());
+                    semanticStateKeys.subtract(identityKeys);
+                    QSet<QString> nonLayoutKeys = semanticStateKeys;
+                    nonLayoutKeys.subtract(layoutKeys);
+                    layoutOnlyStateUpdate = !semanticStateKeys.isEmpty()
+                        && nonLayoutKeys.isEmpty();
                     for (auto it = stateForCommit.cbegin();
                          it != stateForCommit.cend(); ++it) {
                         nextPanel.insert(it.key(), it.value());
@@ -1660,13 +2001,45 @@ bool applyScenePatch(const QVariantMap &message,
                 signalPatch.insert(QStringLiteral("panel"),
                                    withoutNativePanelPayload(nextPanel));
                 next.panelPatches.push_back(signalPatch);
-                next.compactPatches.push_back(QVariantMap{
-                    {QStringLiteral("type"),
-                     QStringLiteral("scene_patch")},
-                    {QStringLiteral("side"), side},
-                    {QStringLiteral("panel"),
-                     withoutNativePanelPayload(nextPanel)},
-                });
+                if (layoutOnlyStateUpdate) {
+                    static const QSet<QString> compactLayoutKeys = {
+                        QStringLiteral("id"), QStringLiteral("kind"),
+                        QStringLiteral("side"),
+                        QStringLiteral("catalogRevision"),
+                        QStringLiteral("metadataDeferred"),
+                        QStringLiteral("metadataRevision"),
+                        QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("galleryColumnCount"),
+                        QStringLiteral("galleryDensity"),
+                        QStringLiteral("galleryDensities"),
+                        QStringLiteral("galleryLayoutRevision"),
+                        QStringLiteral("galleryColumns"),
+                        QStringLiteral("separateFileExtensions"),
+                    };
+                    const QVariantMap layoutDelta = signalOperation.value(
+                        QStringLiteral("state")).toMap();
+                    QVariantMap layoutState;
+                    for (const QString &key : compactLayoutKeys) {
+                        if (layoutDelta.contains(key)) {
+                            layoutState.insert(key,
+                                               layoutDelta.value(key));
+                        }
+                    }
+                    next.compactPatches.push_back(QVariantMap{
+                        {QStringLiteral("type"),
+                         QStringLiteral("scene_patch")},
+                        {QStringLiteral("side"), side},
+                        {QStringLiteral("panelLayoutState"), layoutState},
+                    });
+                } else {
+                    next.compactPatches.push_back(QVariantMap{
+                        {QStringLiteral("type"),
+                         QStringLiteral("scene_patch")},
+                        {QStringLiteral("side"), side},
+                        {QStringLiteral("panel"),
+                         withoutNativePanelPayload(nextPanel)},
+                    });
+                }
             }
         }
     }
@@ -2302,6 +2675,15 @@ void QtShellController::sendPanelCatalogMetadataRequest(
     sendMessage(message);
 }
 
+void QtShellController::sendPanelCatalogRowsRequest(
+    const QVariantMap &request)
+{
+    QVariantMap message = request;
+    message.insert(QStringLiteral("type"),
+                   QStringLiteral("panel_catalog_rows_request"));
+    sendMessage(message);
+}
+
 void QtShellController::sendQuit()
 {
     sendMessage({{QStringLiteral("type"), QStringLiteral("quit")}});
@@ -2334,6 +2716,7 @@ void QtShellController::onConnected()
         {QStringLiteral("cellHeight"), cellHeight},
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
+             {QStringLiteral("panelCatalogRowsV1"), true},
 #if defined(Q_OS_MACOS)
              {QStringLiteral("macPlatformServicesV1"), true},
 #endif
@@ -2793,6 +3176,9 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
     qint64 catalogPresentationSignalDurationNs = 0;
     qint64 scenePatchCoreDurationNs = 0;
     qint64 scenePatchCompactApplyingDurationNs = 0;
+    qint64 scenePatchPanelCatalogDurationNs = 0;
+    qint64 scenePatchPanelStateDurationNs = 0;
+    qint64 scenePatchCompactPanelDurationNs = 0;
     qint64 scenePatchCompactRootDurationNs = 0;
     qint64 scenePatchPresentationSignalDurationNs = 0;
     if (messageType == QStringLiteral("hello")) {
@@ -2926,15 +3312,33 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
         if (traceEnabled) {
             scenePatchCompactApplyingDurationNs =
                 scenePatchStageTimer.nsecsElapsed();
+            scenePatchStageTimer.restart();
         }
         for (const QVariantMap &panel : applied.catalogPanels) {
             emit panelCatalogChanged(panel);
         }
+        for (const QVariantMap &append : applied.catalogAppends) {
+            emit panelCatalogAppendChanged(append);
+        }
+        if (traceEnabled) {
+            scenePatchPanelCatalogDurationNs =
+                scenePatchStageTimer.nsecsElapsed();
+            scenePatchStageTimer.restart();
+        }
         for (const QVariantMap &panelPatch : applied.panelPatches) {
             emit panelStateChanged(panelPatch);
         }
+        if (traceEnabled) {
+            scenePatchPanelStateDurationNs =
+                scenePatchStageTimer.nsecsElapsed();
+            scenePatchStageTimer.restart();
+        }
         for (const QVariantMap &compactPatch : applied.compactPatches) {
             emit compactPresentationChanged(compactPatch);
+        }
+        if (traceEnabled) {
+            scenePatchCompactPanelDurationNs =
+                scenePatchStageTimer.nsecsElapsed();
         }
         QVariantMap compactRootPatch;
         compactRootPatch.insert(QStringLiteral("type"),
@@ -3034,6 +3438,23 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
         QSet<QString> presentationShellKeys = applied.shellKeys;
         presentationShellKeys.remove(QStringLiteral("commandLine"));
         presentationShellKeys.remove(QStringLiteral("activePanel"));
+        // The shell title is session metadata; the visible panel and tab
+        // titles are carried by their dedicated compact projections.  It is
+        // not consumed from root.scene, so do not invalidate the complete
+        // persistent QML scene for a title-only update.
+        presentationShellKeys.remove(QStringLiteral("title"));
+        // The terminal payload is retained in the authoritative scene for
+        // fallback/terminal activation, but it is not read by the visible
+        // panels surface while the terminal is hidden.  Do not invalidate the
+        // complete persistent QML scene for every PTY output batch in that
+        // state: reevaluating root.scene walks the whole Commander object tree
+        // and was measurable on large catalogs.  Keep terminalActive in the
+        // key set so the transition which actually reveals/hides the terminal
+        // still emits the full presentation notification.
+        if (!m_scene.value(QStringLiteral("shell")).toMap().value(
+                QStringLiteral("terminalActive")).toBool()) {
+            presentationShellKeys.remove(QStringLiteral("terminal"));
+        }
         if (!presentationRootKeys.isEmpty()
             || !presentationShellKeys.isEmpty()) {
             if (traceEnabled) {
@@ -3048,12 +3469,56 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
     } else if (messageType == QStringLiteral("panel_catalog")) {
         int side = -1;
         QVariantMap panel;
+        const QVariantMap catalogMessage = message;
         QElapsedTimer catalogStageTimer;
         if (traceEnabled) {
             catalogStageTimer.start();
         }
         const bool validCatalog = validPanelCatalogEnvelope(
-            message, m_scene, &side, &panel);
+            catalogMessage, m_scene, &side, &panel);
+        if (traceEnabled && !validCatalog) {
+            const QVariantMap rejectedPanel = catalogMessage.value(
+                QStringLiteral("panel")).toMap();
+            const int rejectedSide = message.value(
+                QStringLiteral("side")).toInt();
+            QVariantMap currentPanel;
+            shellPanelAtSide(m_scene, rejectedSide, &currentPanel);
+            F4NavigationBenchmarkTrace::event(
+                QStringLiteral("qt.panel_catalog.rejected"), traceId, {
+                    {QStringLiteral("side"), rejectedSide},
+                    {QStringLiteral("activePanel"), message.value(
+                         QStringLiteral("activePanel"))},
+                    {QStringLiteral("currentActivePanel"), m_scene.value(
+                         QStringLiteral("shell")).toMap().value(
+                             QStringLiteral("activePanel"))},
+                    {QStringLiteral("panelId"), rejectedPanel.value(
+                         QStringLiteral("id"))},
+                    {QStringLiteral("currentPanelId"), currentPanel.value(
+                         QStringLiteral("id"))},
+                    {QStringLiteral("catalogRevision"), rejectedPanel.value(
+                         QStringLiteral("catalogRevision"))},
+                    {QStringLiteral("currentCatalogRevision"),
+                     currentPanel.value(QStringLiteral("catalogRevision"))},
+                    {QStringLiteral("metadataDeferred"), rejectedPanel.value(
+                         QStringLiteral("metadataDeferred"))},
+                    {QStringLiteral("catalogRowsDeferred"),
+                     rejectedPanel.value(QStringLiteral(
+                         "catalogRowsDeferred"))},
+                    {QStringLiteral("catalogProvisional"),
+                     rejectedPanel.value(QStringLiteral(
+                         "catalogProvisional"))},
+                    {QStringLiteral("entries"), rejectedPanel.value(
+                         QStringLiteral("entries")).toList().size()},
+                    {QStringLiteral("totalCount"), rejectedPanel.value(
+                         QStringLiteral("totalCount"))},
+                    {QStringLiteral("workspaceTabsType"),
+                     message.value(QStringLiteral("workspaceTabs"))
+                         .metaType().id()},
+                    {QStringLiteral("menusType"),
+                     message.value(QStringLiteral("menus"))
+                         .metaType().id()},
+                });
+        }
         if (traceEnabled) {
             catalogValidationDurationNs = catalogStageTimer.nsecsElapsed();
         }
@@ -3066,7 +3531,7 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
             const QVariantMap presentationPanel =
                 withoutNativePanelPayload(panel);
             const QVariantMap presentationPatch =
-                compactPresentationPatch(message, presentationPanel);
+                compactPresentationPatch(catalogMessage, presentationPanel);
             bool activePanelOK = false;
             const int activePanel = message.value(
                 QStringLiteral("activePanel")).toInt(&activePanelOK);
@@ -3074,10 +3539,10 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                 && replaceShellPanel(nextScene, side, panel)
                 && replaceShellPanel(nextPresentationScene, side,
                                      presentationPanel)) {
-                applyPanelCatalogCompactFields(nextScene, message,
+                applyPanelCatalogCompactFields(nextScene, catalogMessage,
                                                activePanel);
                 applyPanelCatalogCompactFields(nextPresentationScene,
-                                               message, activePanel);
+                                               catalogMessage, activePanel);
                 m_scene = std::move(nextScene);
                 m_presentationScene = std::move(nextPresentationScene);
                 if (traceEnabled) {
@@ -3330,6 +3795,12 @@ void QtShellController::applyFrameDecoded(quint64 epoch, quint64 sequence,
                  scenePatchCoreDurationNs},
                 {QStringLiteral("scenePatchCompactApplyingDurationNs"),
                  scenePatchCompactApplyingDurationNs},
+                {QStringLiteral("scenePatchPanelCatalogDurationNs"),
+                 scenePatchPanelCatalogDurationNs},
+                {QStringLiteral("scenePatchPanelStateDurationNs"),
+                 scenePatchPanelStateDurationNs},
+                {QStringLiteral("scenePatchCompactPanelDurationNs"),
+                 scenePatchCompactPanelDurationNs},
                 {QStringLiteral("scenePatchCompactRootDurationNs"),
                  scenePatchCompactRootDurationNs},
                 {QStringLiteral("scenePatchPresentationSignalDurationNs"),
@@ -3433,6 +3904,12 @@ void QtShellController::failProtocol(const QString &message)
         return;
     }
     m_protocolFailed = true;
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.protocol.failed"), {}, {
+            {QStringLiteral("message"), message},
+            {QStringLiteral("sceneRevision"),
+             QVariant::fromValue<qulonglong>(m_sceneRevision)},
+        });
     if (!m_initialHandshakeComplete && m_startupError.isEmpty()) {
         m_startupError = message;
     }

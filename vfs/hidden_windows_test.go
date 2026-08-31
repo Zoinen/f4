@@ -73,7 +73,6 @@ func TestOSVFSReadDirPhasedBasePreservesWindowsHiddenFiltering(t *testing.T) {
 
 	v := NewOSVFS(directory)
 	baseHidden := false
-	metadataHidden := false
 	if err := v.ReadDirPhased(context.Background(), directory, func(phase DirectoryReadPhase, items []VFSItem) {
 		for _, item := range items {
 			if item.Name != "hidden.txt" {
@@ -81,14 +80,12 @@ func TestOSVFSReadDirPhasedBasePreservesWindowsHiddenFiltering(t *testing.T) {
 			}
 			if phase == DirectoryReadBase {
 				baseHidden = item.IsHidden
-			} else {
-				metadataHidden = item.IsHidden
 			}
 		}
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !baseHidden || !metadataHidden {
-		t.Fatalf("hidden classification changed between phases: base=%v metadata=%v", baseHidden, metadataHidden)
+	if !baseHidden {
+		t.Fatal("authoritative Windows base lost FILE_ATTRIBUTE_HIDDEN")
 	}
 }

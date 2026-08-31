@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -114,44 +113,6 @@ func TestSemanticPanelFileInfoSettingIsBoundedDynamicState(t *testing.T) {
 	}
 	if len(header.Entries) != 0 || header.CatalogRevision != full.CatalogRevision {
 		t.Fatalf("file-information toggle rebuilt or leaked the catalog: %#v", header)
-	}
-}
-
-func TestSemanticEquivalentWarmCacheRequiresStableLocalPathMapping(t *testing.T) {
-	previousCapability := setExtUiPanelCatalogMetadataEnabled(true)
-	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
-	previousHighlighter := GlobalFileHighlighter
-	GlobalFileHighlighter = &FileHighlighter{}
-	t.Cleanup(func() { GlobalFileHighlighter = previousHighlighter })
-
-	newPanel := func(filesystem vfs.VFS) *FileSystemPanel {
-		fp := &FileSystemPanel{
-			vfs:           filesystem,
-			table:         vtui.NewTable(0, 0, 40, 10, nil),
-			selectedItems: make(map[string]bool),
-			entries: []*fileEntry{{
-				VFSItem: vfs.VFSItem{Name: "photo.jpg", Size: 42}, IsCached: true,
-			}},
-			semanticCachedCatalogReady: true,
-		}
-		fp.semanticPanelModel(nil, 0, true)
-		t.Cleanup(fp.unpublishSemanticMetadataSnapshot)
-		return fp
-	}
-	candidate := []*fileEntry{{VFSItem: vfs.VFSItem{Name: "photo.jpg", Size: 42}}}
-
-	materializing := &semanticMaterializingVFS{
-		NullVFS: vfs.NewNullVFS(0), localRoot: t.TempDir(),
-	}
-	remotePanel := newPanel(materializing)
-	materializing.localRoot = t.TempDir()
-	if remotePanel.semanticDeferredEntriesEquivalent(candidate) {
-		t.Fatal("mutable materializing LocalPathProvider was accepted for no-redraw completion")
-	}
-
-	osPanel := newPanel(vfs.NewOSVFS(t.TempDir()))
-	if !osPanel.semanticDeferredEntriesEquivalent(candidate) {
-		t.Fatal("stable OSVFS local-path mapping was rejected for equivalent completion")
 	}
 }
 
@@ -439,10 +400,150 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	if metadataEntries[1]["mtimeNanos"] != wantNanos || metadataEntries[1]["size"] != int64(1234) {
 		t.Fatalf("unexpected deferred file version metadata: %#v", metadataEntries[1])
 	}
-	for _, redundant := range []string{"physicalSize", "isExecutable", "isCached", "isImage", "sizeCalculated", "atimeNanos", "ctimeNanos", "version", "revision", "unixMode", "uid", "gid", "winAttrs"} {
+	for _, redundant := range []string{"physicalSize", "isExecutable", "isImage", "sizeCalculated", "atimeNanos", "ctimeNanos", "version", "revision", "unixMode", "uid", "gid", "winAttrs"} {
 		if _, present := metadataEntries[1][redundant]; present {
 			t.Fatalf("redundant metadata field %q was serialized: %#v", redundant, metadataEntries[1])
 		}
+	}
+}
+
+func TestSemanticPagedPanelExportsViewportAndServesOnlyRequestedRows(t *testing.T) {
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	directory := t.TempDir()
+	const entryCount = 30_000
+	entries := make([]*fileEntry, entryCount)
+	for index := range entries {
+		entries[index] = &fileEntry{VFSItem: vfs.VFSItem{
+			Name:  fmt.Sprintf("entry-%05d.txt", index),
+			IsDir: index%7 == 0,
+		}}
+	}
+	fp := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(directory),
+		table:         vtui.NewTable(0, 0, 80, 40, nil),
+		selectedItems: make(map[string]bool),
+		entries:       entries,
+	}
+	t.Cleanup(fp.unpublishSemanticMetadataSnapshot)
+	fp.SetCursorIndex(15_000)
+
+	model := fp.semanticPanelModel(
+		&vtui.SemanticContext{Width: 160, Height: 50}, 0, true)
+	if !model.CatalogRowsDeferred || model.TotalCount != entryCount {
+		t.Fatalf("paged catalog contract = deferred %v total %d, want true/%d",
+			model.CatalogRowsDeferred, model.TotalCount, entryCount)
+	}
+	if len(model.Entries) != initialPanelCatalogRowsLimit {
+		t.Fatalf("initial catalog page = %d rows, want %d",
+			len(model.Entries), initialPanelCatalogRowsLimit)
+	}
+	if fp.semanticMetadataSnapshot != nil {
+		t.Fatal("paged panel retained a complete metadata snapshot")
+	}
+
+	const offset = 12_345
+	response, ok := BuildLivePanelCatalogRows(
+		model.ID, directory, model.CatalogRevision, offset,
+		maxPanelCatalogRowsLimit)
+	if !ok {
+		t.Fatal("current bounded row request was rejected")
+	}
+	page := appMapSlice(response["entries"])
+	if len(page) != maxPanelCatalogRowsLimit {
+		t.Fatalf("requested page = %d rows, want %d",
+			len(page), maxPanelCatalogRowsLimit)
+	}
+	if semanticInt(page[0]["index"]) != offset ||
+		semanticString(page[0]["name"]) != "entry-12345.txt" {
+		t.Fatalf("first requested row = %#v", page[0])
+	}
+	if _, ok := BuildLivePanelCatalogRows(
+		model.ID, directory, model.CatalogRevision-1, offset, 1); ok {
+		t.Fatal("stale catalog revision unexpectedly served rows")
+	}
+}
+
+func TestSemanticPagedFastFindHeaderMatchesOnlyViewportWindow(t *testing.T) {
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	directory := t.TempDir()
+	const entryCount = 30_000
+	const cursor = 15_000
+	entries := make([]*fileEntry, entryCount)
+	for index := range entries {
+		entries[index] = &fileEntry{VFSItem: vfs.VFSItem{
+			Name: fmt.Sprintf("entry-%05d.txt", index),
+		}}
+	}
+	fp := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(directory),
+		table:         vtui.NewTable(0, 0, 80, 40, nil),
+		selectedItems: make(map[string]bool),
+		entries:       entries,
+	}
+	fp.SetCursorIndex(cursor)
+	fp.fastFindMode = true
+	fp.fastFindStr = "entry"
+
+	header, ok := fp.semanticPanelHeaderModel(
+		&vtui.SemanticContext{Width: 160, Height: 50}, 0, true)
+	if !ok {
+		t.Fatal("paged fast-find header was rejected")
+	}
+	if len(header.Entries) != 0 {
+		t.Fatalf("fast-find header leaked %d catalog rows", len(header.Entries))
+	}
+	if got := len(header.FastFindMatches); got != semanticFastFindRowsLimit {
+		t.Fatalf("fast-find map has %d rows, want bounded window %d", got,
+			semanticFastFindRowsLimit)
+	}
+	if got := len(fp.fastFindMatchCache); got != semanticFastFindRowsLimit {
+		t.Fatalf("fast-find evaluated %d of %d rows", got, entryCount)
+	}
+	if _, present := header.FastFindMatches[header.CursorEntryID]; !present {
+		t.Fatalf("cursor %q is outside bounded fast-find map", header.CursorEntryID)
+	}
+
+	// Re-exporting the same header must reuse the lazy row results instead of
+	// evaluating the remaining 29,744 entries.
+	second, ok := fp.semanticPanelHeaderModel(nil, 0, true)
+	if !ok || len(second.FastFindMatches) != semanticFastFindRowsLimit {
+		t.Fatalf("second bounded header = ok:%v matches:%d", ok,
+			len(second.FastFindMatches))
+	}
+	if got := len(fp.fastFindMatchCache); got != semanticFastFindRowsLimit {
+		t.Fatalf("unchanged header expanded match cache to %d rows", got)
+	}
+
+	first, end, active := fp.semanticFastFindRange()
+	fp.SetCursorIndex(cursor + 1)
+	stableFirst, stableEnd, stableActive := fp.semanticFastFindRange()
+	if !active || !stableActive || first != stableFirst || end != stableEnd {
+		t.Fatalf("adjacent cursor shifted fast-find window: (%d,%d,%v) -> (%d,%d,%v)",
+			first, end, active, stableFirst, stableEnd, stableActive)
+	}
+	third, ok := fp.semanticPanelHeaderModel(nil, 0, true)
+	if !ok || !reflect.DeepEqual(second.FastFindMatches, third.FastFindMatches) {
+		t.Fatal("adjacent cursor rebuilt the bounded fast-find match map")
+	}
+	if got := len(fp.fastFindMatchCache); got != semanticFastFindRowsLimit {
+		t.Fatalf("stable cursor step expanded match cache to %d rows", got)
+	}
+}
+
+func TestSemanticFastFindWindowLimitMatchesLayoutCapacity(t *testing.T) {
+	fp := &FileSystemPanel{galleryLayoutMode: GalleryLayoutDetails}
+	if got := fp.semanticFastFindWindowLimit(); got != semanticFastFindDetailsRowsLimit {
+		t.Fatalf("details fast-find window = %d, want %d",
+			got, semanticFastFindDetailsRowsLimit)
+	}
+	fp.galleryLayoutMode = GalleryLayoutGrid
+	if got := fp.semanticFastFindWindowLimit(); got != semanticFastFindRowsLimit {
+		t.Fatalf("grid fast-find window = %d, want %d",
+			got, semanticFastFindRowsLimit)
 	}
 }
 
@@ -513,81 +614,6 @@ NormalColor = foreground:#123456
 	}
 }
 
-func TestSemanticCatalogRevisionIgnoresCacheProvenance(t *testing.T) {
-	tmp := t.TempDir()
-	fp := &FileSystemPanel{
-		vfs:           vfs.NewOSVFS(tmp),
-		frame:         vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, tmp),
-		table:         vtui.NewTable(1, 1, 38, 6, nil),
-		selectedItems: make(map[string]bool),
-		entries: []*fileEntry{{
-			VFSItem:  vfs.VFSItem{Name: "cached.txt", Size: 42},
-			IsCached: true,
-		}},
-	}
-
-	cached := fp.semanticPanelModel(nil, 0, true)
-	cachedMetadata := appMapSlice(semanticMetadataChunkForModel(t, cached)["entries"])
-	if cached.CatalogRevision != 1 {
-		t.Fatalf("unexpected cached snapshot: revision=%d metadata=%+v",
-			cached.CatalogRevision, cachedMetadata[0])
-	}
-	if _, present := cachedMetadata[0]["isCached"]; present {
-		t.Fatalf("cache provenance leaked into native metadata: %+v", cachedMetadata[0])
-	}
-
-	fp.entries[0].IsCached = false
-	fresh := fp.semanticPanelModel(nil, 0, true)
-	if fresh.CatalogRevision != cached.CatalogRevision {
-		t.Fatalf("cache provenance advanced catalog revision: cached=%d fresh=%d",
-			cached.CatalogRevision, fresh.CatalogRevision)
-	}
-	if fresh.MetadataRevision != cached.MetadataRevision {
-		t.Fatalf("non-serialized cache provenance advanced metadata revision: cached=%d fresh=%d",
-			cached.MetadataRevision, fresh.MetadataRevision)
-	}
-	freshMetadata := appMapSlice(semanticMetadataChunkForModel(t, fresh)["entries"])
-	if _, present := freshMetadata[0]["isCached"]; present {
-		t.Fatalf("fresh cache provenance leaked into native metadata: %+v", freshMetadata[0])
-	}
-
-	fp.entries[0].Size++
-	changed := fp.semanticPanelModel(nil, 0, true)
-	if changed.CatalogRevision != fresh.CatalogRevision || changed.MetadataRevision != fresh.MetadataRevision+1 {
-		t.Fatalf("size change touched wrong revisions: fresh=(%d,%d) changed=(%d,%d)",
-			fresh.CatalogRevision, fresh.MetadataRevision, changed.CatalogRevision, changed.MetadataRevision)
-	}
-}
-
-func TestSemanticLegacyCatalogRetainsCacheProvenance(t *testing.T) {
-	previousCapability := setExtUiPanelCatalogMetadataEnabled(false)
-	t.Cleanup(func() { setExtUiPanelCatalogMetadataEnabled(previousCapability) })
-
-	fp := &FileSystemPanel{
-		vfs:           vfs.NewOSVFS(t.TempDir()),
-		frame:         vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, "test"),
-		table:         vtui.NewTable(1, 1, 38, 6, nil),
-		selectedItems: make(map[string]bool),
-		entries: []*fileEntry{{
-			VFSItem: vfs.VFSItem{Name: "cached.txt", Size: 42}, IsCached: true,
-		}},
-	}
-
-	cached := fp.semanticPanelModel(nil, 0, true)
-	if got := appMapSlice(cached.ToMap()["entries"])[0]["isCached"]; got != true {
-		t.Fatalf("legacy cached row lost cache provenance: %#v", got)
-	}
-	fp.entries[0].IsCached = false
-	fresh := fp.semanticPanelModel(nil, 0, true)
-	if fresh.CatalogRevision != cached.CatalogRevision+1 {
-		t.Fatalf("legacy cache transition did not advance catalog revision: cached=%d fresh=%d",
-			cached.CatalogRevision, fresh.CatalogRevision)
-	}
-	if got := appMapSlice(fresh.ToMap()["entries"])[0]["isCached"]; got != false {
-		t.Fatalf("legacy fresh row retained cache provenance: %#v", got)
-	}
-}
-
 func TestSemanticDeferredMetadataRevisionTracksOnlyRelevantAccessTime(t *testing.T) {
 	previousHighlighter := GlobalFileHighlighter
 	GlobalFileHighlighter = &FileHighlighter{}
@@ -646,139 +672,71 @@ func TestSemanticPanelExportsCatalogProvisionalState(t *testing.T) {
 	if !model.CatalogProvisional || !model.Loading {
 		t.Fatalf("placeholder state not exported: %#v", model)
 	}
+	fp.catalogInteractive = true
+	model = fp.semanticPanelModel(nil, 0, true)
+	if !model.CatalogProvisional || model.Loading {
+		t.Fatalf("usable provisional catalog remained interaction-blocking: %#v", model)
+	}
+	fp.catalogInteractive = false
 	fp.catalogProvisional = false
 	model = fp.semanticPanelModel(nil, 0, true)
 	if model.CatalogProvisional || !model.Loading {
 		t.Fatalf("cold authoritative base must remain loading until completion: %#v", model)
 	}
-	fp.semanticCachedCatalogReady = true
-	model = fp.semanticPanelModel(nil, 0, true)
-	if model.Loading {
-		t.Fatalf("complete cached base remained semantically loading: %#v", model)
-	}
 }
 
-func TestSemanticCatalogRevisionStableAcrossCachedFreshUpEntry(t *testing.T) {
-	oldConfig := AppConfig
-	AppConfig.SyncPanelLoad = false
-	AppConfig.ShowHiddenFiles = true
-	defer func() { AppConfig = oldConfig }()
+func TestSemanticOpenSurvivesMatchingProvisionalCatalogReplacement(t *testing.T) {
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
 
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	parent := t.TempDir()
-	child := filepath.Join(parent, "child")
-	if err := os.Mkdir(child, 0o755); err != nil {
-		t.Fatal(err)
+	directory := t.TempDir()
+	fp := &FileSystemPanel{
+		vfs:                vfs.NewOSVFS(directory),
+		table:              vtui.NewTable(0, 0, 80, 24, nil),
+		selectedItems:      make(map[string]bool),
+		catalogProvisional: true,
+		catalogInteractive: true,
+		entries: []*fileEntry{{
+			VFSItem: vfs.VFSItem{Name: "..", IsDir: true},
+		}},
 	}
-	if err := os.WriteFile(filepath.Join(child, "file.txt"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(fp.unpublishSemanticMetadataSnapshot)
 
-	fp := NewFileSystemPanel(0, 0, 40, 10, vfs.NewOSVFS(child))
-	t.Cleanup(func() {
-		if fp.cancelLoad != nil {
-			fp.cancelLoad()
-		}
-		fp.stopLoadingAnimation()
-	})
-	waitForLoad(t, fp)
+	preview := fp.semanticPanelModel(nil, 0, true)
+	if len(preview.Entries) != 1 {
+		t.Fatalf("preview entries = %d, want 1", len(preview.Entries))
+	}
+	upID := preview.Entries[0].EntryID
 
-	fresh := fp.semanticPanelModel(nil, 0, true)
-	freshMetadata := appMapSlice(semanticMetadataChunkForModel(t, fresh)["entries"])
-	if len(fresh.Entries) == 0 || !fresh.Entries[0].IsUp || appInt64(freshMetadata[0]["mtimeNanos"]) == 0 {
-		t.Fatalf("fresh parent row lacks stat metadata: %+v", fresh.Entries)
+	fp.entries = []*fileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "authoritative", IsDir: true}},
 	}
-
-	// A same-path refresh publishes the complete cache synchronously, then
-	// replaces it after ReadDir and parent Stat finish. The parent row must be
-	// identical across both models; cache provenance alone is transient.
-	fp.readDirectoryEx(false)
-	cached := fp.semanticPanelModel(nil, 0, true)
-	cachedMetadata := appMapSlice(semanticMetadataChunkForModel(t, cached)["entries"])
-	if !fp.entries[0].IsCached {
-		t.Fatalf("cache refresh did not retain cached parent provenance: %+v", fp.entries[0])
-	}
-	if !fp.isLoading || cached.Loading {
-		t.Fatalf("complete cache was not immediately usable during revalidation: internalLoading=%v semanticLoading=%v",
-			fp.isLoading, cached.Loading)
-	}
-	if cachedMetadata[0]["mtimeNanos"] != freshMetadata[0]["mtimeNanos"] {
-		t.Fatalf("cached parent mtime = %v, want fresh mtime %v",
-			cachedMetadata[0]["mtimeNanos"], freshMetadata[0]["mtimeNanos"])
-	}
-	if cached.CatalogRevision != fresh.CatalogRevision {
-		t.Fatalf("cached parent metadata advanced catalog revision: fresh=%d cached=%d",
-			fresh.CatalogRevision, cached.CatalogRevision)
-	}
-	if !reflect.DeepEqual(cached.ToMap(), fresh.ToMap()) {
-		t.Fatalf("unchanged warm cache produced a second semantic base:\nfresh=%#v\ncached=%#v",
-			fresh.ToMap(), cached.ToMap())
+	fp.catalogProvisional = false
+	fp.markSemanticCatalogMutation()
+	authoritative := fp.semanticPanelModel(nil, 0, true)
+	if authoritative.CatalogRevision == preview.CatalogRevision {
+		t.Fatal("authoritative replacement did not advance catalog revision")
 	}
 
-	waitForLoad(t, fp)
-	refreshed := fp.semanticPanelModel(nil, 0, true)
-	if fp.entries[0].IsCached {
-		t.Fatalf("completed refresh retained cache provenance: %+v", fp.entries[0])
+	staleOpen := map[string]any{
+		"action":          "panel.open",
+		"entryId":         upID,
+		"index":           0,
+		"catalogRevision": preview.CatalogRevision,
 	}
-	if refreshed.CatalogRevision != cached.CatalogRevision {
-		t.Fatalf("unchanged fresh replacement advanced catalog revision: cached=%d refreshed=%d",
-			cached.CatalogRevision, refreshed.CatalogRevision)
-	}
-	if !reflect.DeepEqual(refreshed.ToMap(), cached.ToMap()) {
-		t.Fatalf("unchanged fresh replacement produced a second semantic base:\ncached=%#v\nrefreshed=%#v",
-			cached.ToMap(), refreshed.ToMap())
-	}
-}
-
-func TestSemanticCatalogStableAcrossAlternatingWarmDirectories(t *testing.T) {
-	oldConfig := AppConfig
-	AppConfig.SyncPanelLoad = false
-	AppConfig.ShowHiddenFiles = true
-	defer func() { AppConfig = oldConfig }()
-
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	parent := t.TempDir()
-	child := filepath.Join(parent, "child")
-	if err := os.Mkdir(child, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(child, "file.txt"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
+	if index, ok := fp.semanticEntryIndex(staleOpen); !ok || index != 0 {
+		t.Fatalf("matching stale open resolved to (%d, %v), want (0, true)", index, ok)
 	}
 
-	fp := NewFileSystemPanel(0, 0, 40, 10, vfs.NewOSVFS(child))
-	t.Cleanup(func() {
-		if fp.cancelLoad != nil {
-			fp.cancelLoad()
-		}
-		fp.stopLoadingAnimation()
-	})
-	waitForLoad(t, fp)
-
-	oldPath := fp.vfs.GetPath()
-	if err := fp.setKnownDirectoryPath(parent); err != nil {
-		t.Fatal(err)
+	staleCursor := map[string]any{
+		"action":          "panel.cursor",
+		"entryId":         upID,
+		"index":           0,
+		"catalogRevision": preview.CatalogRevision,
 	}
-	fp.pendingSelection = fp.vfs.Base(oldPath)
-	fp.ReadDirectory()
-	waitForLoad(t, fp)
-
-	if err := fp.setKnownDirectoryPath(child); err != nil {
-		t.Fatal(err)
-	}
-	fp.pendingSelection = ".."
-	fp.ReadDirectory()
-	cachedModel := fp.semanticPanelModel(nil, 0, true)
-	cached := cachedModel.ToMap()
-	if !fp.semanticCachedCatalogReady {
-		t.Fatal("child cache was not exposed synchronously")
-	}
-	waitForLoad(t, fp)
-	freshModel := fp.semanticPanelModel(nil, 0, true)
-	fresh := freshModel.ToMap()
-	if difference := semanticFirstDifferencePath(cached, fresh, "$"); difference != "" {
-		t.Fatalf("unchanged alternating warm directory produced a second catalog at %s",
-			difference)
+	if index, ok := fp.semanticEntryIndex(staleCursor); ok {
+		t.Fatalf("stale cursor unexpectedly resolved to %d", index)
 	}
 }
 
@@ -1072,30 +1030,6 @@ func TestPanelCatalogMetadataChunksAreOrderedBoundedAndRejectStaleRequests(t *te
 		t.Fatalf("first chunk order mismatch: %#v", firstRows)
 	}
 
-	cachePanel := map[string]any(first.ToMap())
-	cachePanel["cursor"] = 100
-	cachePanel["cursorEntryId"] = first.Entries[100].EntryID
-	warmup, ok := panelCacheMetadataWarmup(cachePanel)
-	if !ok || semanticInt(warmup["offset"]) != 36 ||
-		semanticInt(warmup["limit"]) != panelCacheMetadataWarmupLimit ||
-		len(appMapSlice(warmup["entries"])) != panelCacheMetadataWarmupLimit {
-		t.Fatalf("unexpected cursor-centered cache warmup: %#v", warmup)
-	}
-	var wire bytes.Buffer
-	renderer := NewExtUiRenderer(nil, &extUiMessageSender{w: &wire})
-	if !renderer.QueuePanelCatalogCache(cachePanel) {
-		t.Fatal("panel cache with bounded metadata warmup was rejected")
-	}
-	cacheMessage, err := extUiReadMessage(&wire)
-	if err != nil {
-		t.Fatalf("panel cache wire message was not readable: %v", err)
-	}
-	wireMetadata, ok := cacheMessage["metadata"].(map[string]any)
-	if cacheMessage["type"] != "panel_cache" || !ok ||
-		semanticInt(wireMetadata["offset"]) != 36 ||
-		semanticInt(wireMetadata["limit"]) != panelCacheMetadataWarmupLimit {
-		t.Fatalf("panel cache omitted its metadata warmup: %#v", cacheMessage)
-	}
 	lastChunk, ok := BuildPanelCatalogMetadataChunk(first.ID, first.Path,
 		first.CatalogRevision, first.MetadataRevision, 192, 999)
 	if !ok || lastChunk["limit"] != 128 || lastChunk["final"] != true ||
@@ -1418,6 +1352,42 @@ func TestPanelsFrameSemanticGalleryActionsUseStableIDsAndRevisions(t *testing.T)
 		t.Fatal("batch index compatibility selection was not applied")
 	}
 
+	transactionBase := left.semanticPanelModel(nil, 0, true)
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setSelection",
+		"side":   0,
+		"mode":   "set",
+		"changes": []any{
+			map[string]any{"entryId": alphaID, "selected": false},
+			map[string]any{"entryId": betaID, "selected": true},
+		},
+		"cursorEntryId":     alphaID,
+		"cursorIndex":       1,
+		"catalogRevision":   transactionBase.CatalogRevision,
+		"selectionRevision": transactionBase.SelectionRevision,
+	}) || left.entries[1].Selected || !left.entries[2].Selected ||
+		left.GetCursorIndex() != 1 {
+		t.Fatal("atomic selection/cursor transaction was not applied")
+	}
+
+	// Validate every stable identity before mutating either half. A bad final
+	// cursor must not leave an otherwise-valid selection change behind.
+	beforeRejected := left.entries[1].Selected
+	fresh := left.semanticPanelModel(nil, 0, true)
+	if pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setSelection",
+		"side":   0,
+		"mode":   "set",
+		"changes": []any{
+			map[string]any{"entryId": alphaID, "selected": !beforeRejected},
+		},
+		"cursorEntryId":     "missing",
+		"catalogRevision":   fresh.CatalogRevision,
+		"selectionRevision": fresh.SelectionRevision,
+	}) || left.entries[1].Selected != beforeRejected {
+		t.Fatal("invalid atomic selection cursor partially mutated selection")
+	}
+
 	beforeAlpha := left.entries[1].Selected
 	if pf.HandleSemanticAction(map[string]any{
 		"action":   "panel.setSelection",
@@ -1503,24 +1473,32 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 			left.galleryDensity(GalleryLayoutIcons))
 	}
 
-	// A stale compact density sent by an older host is accepted as a harmless
-	// acknowledgement, but it is removed instead of becoming a user zoom.
+	// Compact density changes are independent layout-only state, just like
+	// image-centric modes, and remain bounded at the semantic boundary.
 	left.galleryDensities[GalleryLayoutDetails] = 47
-	staleDetailsRevision := left.galleryLayoutRevision
+	detailsRevision := left.galleryLayoutRevision
 	if !pf.HandleSemanticAction(map[string]any{
 		"action":     "panel.setGalleryDensity",
 		"side":       0,
 		"layoutMode": "details",
 		"density":    31,
+	}) || left.galleryDensity(GalleryLayoutDetails) != 31 {
+		t.Fatal("Details density action was not applied")
+	}
+	if details := left.semanticPanelModel(nil, 0, true); details.GalleryDensity != 0 || details.GalleryDensities["details"] != 31 {
+		t.Fatalf("Details density was not exported in bounded layout state: %#v",
+			details.GalleryDensities)
+	}
+	if left.galleryLayoutRevision != detailsRevision+1 {
+		t.Fatalf("Details density revision = %d, want %d",
+			left.galleryLayoutRevision, detailsRevision+1)
+	}
+	if !pf.HandleSemanticAction(map[string]any{
+		"action":     "panel.resetGalleryDensity",
+		"side":       0,
+		"layoutMode": "details",
 	}) || left.galleryDensity(GalleryLayoutDetails) != 0 {
-		t.Fatal("stale Details density was not normalized to the host default")
-	}
-	if _, exists := left.galleryDensities[GalleryLayoutDetails]; exists {
-		t.Fatal("stale Details density remained in semantic state")
-	}
-	if left.galleryLayoutRevision != staleDetailsRevision+1 {
-		t.Fatalf("stale Details cleanup revision = %d, want %d",
-			left.galleryLayoutRevision, staleDetailsRevision+1)
+		t.Fatal("Details density reset did not restore the host default")
 	}
 
 	// The long-standing TUI commands also select the corresponding strategy of

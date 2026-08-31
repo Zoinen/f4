@@ -150,6 +150,9 @@ func (r *semanticSuppressionTestRenderer) ConsumeSemanticRenderPhaseDeferral(gen
 	}
 	return deferRender
 }
+func (r *semanticSuppressionTestRenderer) SemanticRenderPhaseDeferralBound(generation uint64) bool {
+	return r.deferRender && r.deferBound && r.deferGen == generation
+}
 func (r *semanticSuppressionTestRenderer) BeginSemanticSceneUpdate() { r.begin++ }
 func (r *semanticSuppressionTestRenderer) EndSemanticSceneUpdate()   { r.end++ }
 func (r *semanticSuppressionTestRenderer) EndSemanticSceneUpdateUnchanged() bool {
@@ -490,6 +493,33 @@ func TestFrameManager_DeclaredUnchangedInputDefersIntermediateRender(t *testing.
 	}
 }
 
+func TestFrameManager_DeclaredUnchangedPostedTaskDefersIntermediateRender(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &unchangedTaskRunTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+	fm.renderPhase()
+
+	result := fm.runPostedTask(func() {
+		if !fm.DeclareCurrentInputUnchanged() {
+			t.Fatal("active posted task rejected its unchanged proof")
+		}
+		if !fm.CurrentTaskDeclaredUnchanged() {
+			t.Fatal("posted unchanged proof was not observable by the dispatcher")
+		}
+	})
+	if !result.taskRedrawOmitted || !result.renderOmitted {
+		t.Fatalf("posted unchanged result = %#v; want no task redraw or render", result)
+	}
+	if fm.CurrentTaskDeclaredUnchanged() {
+		t.Fatal("posted unchanged proof escaped its task boundary")
+	}
+}
+
 func TestFrameManager_PostedFrameTransitionDoesNotAddRedundantRedraw(t *testing.T) {
 	oldFM := FrameManager
 	fm := &frameManager{}
@@ -520,6 +550,35 @@ func TestFrameManager_PostedFrameTransitionDoesNotAddRedundantRedraw(t *testing.
 	fm.renderPhase()
 	if renderer.renders != baselineRenders {
 		t.Fatal("posted direct transition rebuilt the covered frame")
+	}
+}
+
+func TestFrameManager_PostedDirectUpdateKeepsOnlyItsBoundRedraw(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	renderer := &semanticSuppressionTestRenderer{}
+	scr.Renderer = renderer
+	fm.Init(scr)
+	fm.Push(NewDesktop())
+	defer fm.Shutdown()
+	fm.renderPhase()
+
+	result := fm.runPostedTask(func() {
+		renderer.deferRender = true
+		fm.Redraw()
+	})
+	if !result.taskRedrawOmitted || result.renderOmitted {
+		t.Fatalf("posted direct result = %#v; want no duplicate redraw and one consume boundary",
+			result)
+	}
+	baselineRenders := renderer.renders
+	fm.renderPhase()
+	if renderer.renders != baselineRenders {
+		t.Fatal("posted direct update rebuilt the native-covered frame")
+	}
+	if renderer.deferBound || renderer.deferRender {
+		t.Fatal("posted direct render permit was not consumed")
 	}
 }
 
@@ -1112,6 +1171,40 @@ func TestFrameManager_PostTask(t *testing.T) {
 
 	if !taskExecuted {
 		t.Error("Posted task was not executed")
+	}
+}
+
+func TestFrameManager_PostPriorityTaskUsesDirectInputLane(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(10, 10)
+	fm.Init(scr)
+	defer fm.Shutdown()
+
+	ordinaryExecuted := false
+	priorityExecuted := false
+	fm.PostTask(func() { ordinaryExecuted = true })
+	fm.PostPriorityTask(func() { priorityExecuted = true })
+
+	select {
+	case task := <-fm.PriorityTaskChan:
+		task()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("priority task was not posted directly")
+	}
+	if !priorityExecuted || ordinaryExecuted {
+		t.Fatalf("priority/ordinary execution = %v/%v, want true/false",
+			priorityExecuted, ordinaryExecuted)
+	}
+
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("ordinary task was lost behind priority input")
+	}
+	if !ordinaryExecuted {
+		t.Fatal("ordinary task did not remain available")
 	}
 }
 

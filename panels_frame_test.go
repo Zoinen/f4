@@ -2853,53 +2853,6 @@ func TestPanelsFrame_NonRunnableOpen(t *testing.T) {
 		t.Errorf("associated-file launch = %#v, want %#v", launch, want)
 	}
 }
-func TestPanelsFrame_SwitchVFSPreservesQualifiedDirectoryCache(t *testing.T) {
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	pf := NewPanelsFrame()
-	defer pf.Close()
-	pf.ResizeConsole(80, 25)
-
-	fsp := pf.panels[0].(*FileSystemPanel)
-	fsp.dirCache[fsp.cacheKey("/test/path")] = dirCacheEntry{}
-	if len(fsp.dirCache) != 1 {
-		t.Fatal("Cache setup failed")
-	}
-
-	pf.switchToVFS(fsp, vfs.NewOSVFS(t.TempDir()))
-
-	if len(fsp.dirCache) != 1 {
-		t.Error("switchToVFS discarded the qualified directory cache")
-	}
-}
-
-func TestPanelsFrame_Clone_CachePreservation(t *testing.T) {
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	pf := NewPanelsFrame()
-	defer pf.Close()
-	pf.ResizeConsole(80, 25)
-
-	fsp := pf.panels[0].(*FileSystemPanel)
-	items := []vfs.VFSItem{{Name: "cached_item"}}
-	cacheKey := fsp.cacheKey("/test/path")
-	fsp.dirCache[cacheKey] = dirCacheEntry{items: items}
-
-	clone := pf.Clone()
-	defer clone.Close()
-	cloneFsp := clone.panels[0].(*FileSystemPanel)
-
-	if len(cloneFsp.dirCache) != 1 {
-		t.Fatalf("Cache not cloned, length is %d", len(cloneFsp.dirCache))
-	}
-	if cached, ok := cloneFsp.dirCache[cacheKey]; !ok || len(cached.items) != 1 || cached.items[0].Name != "cached_item" {
-		t.Error("Cloned cache content is incorrect")
-	}
-
-	// Verify independence
-	cloneFsp.dirCache[cloneFsp.cacheKey("/new/path")] = dirCacheEntry{}
-	if len(fsp.dirCache) != 1 {
-		t.Error("Cloned cache is not independent from original")
-	}
-}
 
 func TestExecuteFileOp_BackgroundButtonTrigger(t *testing.T) {
 	// This test ensures that the logic inside Background button click works
@@ -4064,16 +4017,12 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	waitForLoad(t, lp)
 	waitForLoad(t, rp)
 
-	// Arbitrary path-control input must still be validated synchronously. An
-	// OSVFS optimistic setter is reserved for authoritative panel rows/caches.
+	// Arbitrary path-control input must be validated synchronously. The OSVFS
+	// optimistic setter is reserved for authoritative panel rows.
 	originalPath := lp.vfs.GetPath()
 	missingPath := filepath.Join(tmpDir, "missing")
-	lp.saveToCache(missingPath, nil)
-	if !lp.hasCachedDirectoryPath(missingPath) {
-		t.Fatal("test setup did not create an exact cached missing path")
-	}
 	if pf.NavigateToPath(lp, missingPath) {
-		t.Fatalf("NavigateToPath trusted cache for missing typed path: %s", missingPath)
+		t.Fatalf("NavigateToPath accepted missing typed path: %s", missingPath)
 	}
 	if got := lp.vfs.GetPath(); !sameFolderHistoryPath(got, originalPath) {
 		t.Fatalf("missing typed path changed panel from %q to %q", originalPath, got)

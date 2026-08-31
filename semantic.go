@@ -450,7 +450,9 @@ func HandleSemanticAction(action map[string]any) bool {
 		for i := len(frames) - 1; i >= 0; i-- {
 			if panels, ok := frames[i].(*PanelsFrame); ok {
 				if panels.HandleSemanticAction(action) {
-					vtui.FrameManager.Redraw()
+					if !vtui.FrameManager.CurrentTaskDeclaredUnchanged() {
+						vtui.FrameManager.Redraw()
+					}
 					return true
 				}
 			}
@@ -458,7 +460,9 @@ func HandleSemanticAction(action map[string]any) bool {
 	}
 	for i := len(frames) - 1; i >= 0; i-- {
 		if h, ok := frames[i].(vtui.SemanticActionHandler); ok && h.HandleSemanticAction(action) {
-			vtui.FrameManager.Redraw()
+			if !vtui.FrameManager.CurrentTaskDeclaredUnchanged() {
+				vtui.FrameManager.Redraw()
+			}
 			return true
 		}
 	}
@@ -794,6 +798,10 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			if !fsp.applySemanticSelection(action) {
 				return false
 			}
+			if semanticBool(action["activate"]) {
+				pf.setActivePanelForAction(action)
+				pf.lastKey = 0
+			}
 			fsp.clearFastFindForSemanticPointerIntent()
 			return true
 		}
@@ -1012,12 +1020,78 @@ func (fp *FileSystemPanel) semanticEntryIndex(action map[string]any) (idx int, o
 				"index", idx, "found", ok, "catalogRevision", fp.catalogRevision)
 		}()
 	}
+	entryID := semanticString(action["entryId"])
+	rawRevision, hasRevision := action["catalogRevision"]
+	if extUiPanelCatalogRowsIsEnabled() && entryID != "" && hasRevision &&
+		semanticInt64(rawRevision) == fp.catalogRevision {
+		if rawIndex, present := action["index"]; present {
+			candidate := semanticInt(rawIndex)
+			if candidate >= 0 && candidate < len(fp.entries) &&
+				fp.entries[candidate] != nil {
+				sourceKind, _ := fp.semanticSourceInfo()
+				actualID, _ := fp.semanticEntryMetadata(
+					fp.entries[candidate], sourceKind)
+				if actualID == entryID {
+					return candidate, true
+				}
+			}
+		}
+	}
+	// Native catalog actions carry a stable entry identity. When the action is
+	// for the exact catalog we just exported, resolve that identity through the
+	// immutable static catalog instead of fingerprinting every row again. The
+	// cheap identity check against the live row makes this safe even for a
+	// plugin/test which replaced or reordered fp.entries without going through a
+	// normal panel mutation path; such a mismatch falls back to the exhaustive
+	// revision update below.
+	static := fp.semanticStaticCache
+	if entryID != "" && hasRevision && static != nil &&
+		static.catalogRevision == fp.catalogRevision &&
+		len(static.entries) == len(fp.entries) &&
+		semanticInt64(rawRevision) == fp.catalogRevision {
+		if candidate, present := static.entryIndexByID[entryID]; present &&
+			candidate >= 0 && candidate < len(fp.entries) {
+			sourceKind, _ := fp.semanticSourceInfo()
+			actualID, _ := fp.semanticEntryMetadata(fp.entries[candidate], sourceKind)
+			if actualID == entryID {
+				return candidate, true
+			}
+		}
+	}
+
 	fp.updateSemanticRevisions()
-	if rawRevision, ok := action["catalogRevision"]; ok && semanticInt64(rawRevision) != fp.catalogRevision {
+	if hasRevision && semanticInt64(rawRevision) != fp.catalogRevision {
+		// A useful provisional window can be replaced by the authoritative
+		// catalog while an Enter action is already in transit. Opening remains
+		// safe when both the row position and its path-derived stable identity
+		// still match the current catalog. Keep every other revisioned action
+		// strict: stale cursor, pointer, and selection intents must never move to
+		// a different row after a replacement.
+		if semanticString(action["action"]) == "panel.open" && entryID != "" {
+			if rawIndex, present := action["index"]; present {
+				candidate := semanticInt(rawIndex)
+				if candidate >= 0 && candidate < len(fp.entries) &&
+					fp.entries[candidate] != nil {
+					sourceKind, _ := fp.semanticSourceInfo()
+					actualID, _ := fp.semanticEntryMetadata(
+						fp.entries[candidate], sourceKind)
+					if actualID == entryID {
+						return candidate, true
+					}
+				}
+			}
+		}
 		return 0, false
 	}
 
-	if entryID := semanticString(action["entryId"]); entryID != "" {
+	if entryID != "" {
+		if static := fp.semanticStaticCache; static != nil &&
+			static.catalogRevision == fp.catalogRevision &&
+			len(static.entries) == len(fp.entries) {
+			if candidate, present := static.entryIndexByID[entryID]; present {
+				return candidate, true
+			}
+		}
 		sourceKind, _ := fp.semanticSourceInfo()
 		for idx, entry := range fp.entries {
 			id, _ := fp.semanticEntryMetadata(entry, sourceKind)
@@ -1075,8 +1149,44 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 		wanted[idx] = struct{}{}
 	}
 
+	selectionChanges := make(map[int]bool)
+	if rawChanges, present := action["changes"]; present {
+		changes, ok := semanticMapSlice(rawChanges)
+		if !ok {
+			return false
+		}
+		for _, change := range changes {
+			id := semanticString(change["entryId"])
+			selected, hasSelected := change["selected"]
+			idx, found := byID[id]
+			if id == "" || !hasSelected || !found {
+				return false
+			}
+			selectionChanges[idx] = semanticBool(selected)
+		}
+	}
+
+	cursorIndex := -1
+	hasCursor := false
+	if cursorID := semanticString(action["cursorEntryId"]); cursorID != "" {
+		var found bool
+		cursorIndex, found = byID[cursorID]
+		if !found {
+			return false
+		}
+		hasCursor = true
+	} else if rawCursorIndex, present := action["cursorIndex"]; present {
+		cursorIndex = semanticInt(rawCursorIndex)
+		if cursorIndex < 0 || cursorIndex >= len(fp.entries) {
+			return false
+		}
+		hasCursor = true
+	}
+
 	mode := strings.ToLower(semanticString(action["mode"]))
-	if mode == "" {
+	if mode == "" && len(selectionChanges) > 0 {
+		mode = "set"
+	} else if mode == "" {
 		mode = "replace"
 	}
 	switch mode {
@@ -1097,8 +1207,18 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 		for idx := range wanted {
 			fp.ToggleSelection(idx)
 		}
+	case "set":
+		if len(selectionChanges) == 0 {
+			return false
+		}
+		for idx, selected := range selectionChanges {
+			fp.SetItemSelected(idx, selected)
+		}
 	default:
 		return false
+	}
+	if hasCursor {
+		fp.SetCursorIndex(cursorIndex)
 	}
 	return true
 }
@@ -1209,7 +1329,6 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) 
 	selectedEntryIDs := make([]string, 0)
 	sourceKind, previewCapable := fp.semanticSourceInfo()
 	imageExtensions := semanticImageExtensions()
-	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
 	highlightUsesATime, highlightUsesCTime := semanticHighlighterTimeDependencies()
 	writeSemanticFingerprintString(catalog, sourceKind)
 	writeSemanticFingerprintString(catalog, fp.vfs.GetPath())
@@ -1275,13 +1394,6 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*fileEntry) 
 		if entry.IsExecutable {
 			metadataFlags |= 1 << 0
 		}
-		// Cache provenance is deliberately absent from the deferred metadata
-		// protocol. Replacing an otherwise identical cached row with its fresh
-		// counterpart must therefore not invalidate a metadata pull or force a
-		// second full catalog apply in the native frontend.
-		if !metadataDeferred && entry.IsCached {
-			metadataFlags |= 1 << 1
-		}
 		if entry.SizeCalculated {
 			metadataFlags |= 1 << 2
 		}
@@ -1311,49 +1423,19 @@ func (fp *FileSystemPanel) semanticFingerprints() (uint64, uint64, uint64) {
 	return fp.semanticFingerprintsForEntries(fp.entries)
 }
 
-// semanticDeferredEntriesEquivalent compares exactly the state owned by a
-// negotiated deferred-catalog client. It deliberately inherits the same
-// cache-provenance and conditional ATime/CTime rules as revision generation,
-// without allocating complete semantic models or MessagePack-ready maps.
-func (fp *FileSystemPanel) semanticDeferredEntriesEquivalent(candidate []*fileEntry) bool {
-	if !extUiPanelCatalogMetadataIsEnabled() || len(candidate) != len(fp.entries) {
-		return false
+func (fp *FileSystemPanel) updateSemanticRevisions() {
+	if extUiPanelCatalogRowsIsEnabled() {
+		sourceKind, _ := fp.semanticSourceInfo()
+		fp.ensureSemanticPagedRevisions(sourceKind)
+		return
 	}
-	// Deferred metadata resolves LocalPath lazily. The built-in OS VFS mapping
-	// is a pure path conversion; an arbitrary materializing provider may change
-	// its answer without changing VFSItem metadata, which would make reusing the
-	// old metadata revision incorrect. Providers without this capability have no
-	// local-path field to invalidate.
-	if _, hasLocalPaths := fp.vfs.(vfs.LocalPathProvider); hasLocalPaths {
-		if _, stableOSPath := fp.vfs.(*vfs.OSVFS); !stableOSPath {
-			return false
-		}
-	}
-	if !fp.semanticCachedCatalogExported {
-		return false
-	}
-	currentCatalog, currentMetadata, currentSelection :=
-		fp.semanticFingerprintsForEntries(fp.entries)
-	// Skipping the completion redraw is safe only after the cached view (and
-	// any interaction that happened while it was visible) has reached the
-	// negotiated semantic client. Otherwise updating the cached fingerprints
-	// below could acknowledge state which was never exported.
-	if !fp.semanticCatalogInitialized || !fp.semanticMetadataInitialized ||
-		!fp.semanticSelectionInitialized ||
-		currentCatalog != fp.semanticCatalogFingerprint ||
-		currentMetadata != fp.semanticMetadataFingerprint ||
-		currentSelection != fp.semanticSelectionFingerprint {
-		return false
-	}
-	candidateCatalog, candidateMetadata, candidateSelection :=
-		fp.semanticFingerprintsForEntries(candidate)
-	return currentCatalog == candidateCatalog &&
-		currentMetadata == candidateMetadata &&
-		currentSelection == candidateSelection
+	catalog, metadata, selection := fp.semanticFingerprints()
+	fp.updateSemanticRevisionsFromFingerprints(catalog, metadata, selection)
 }
 
-func (fp *FileSystemPanel) updateSemanticRevisions() {
-	catalog, metadata, selection := fp.semanticFingerprints()
+func (fp *FileSystemPanel) updateSemanticRevisionsFromFingerprints(
+	catalog, metadata, selection uint64,
+) {
 	catalogChanged := !fp.semanticCatalogInitialized || catalog != fp.semanticCatalogFingerprint
 	metadataChanged := !fp.semanticMetadataInitialized || metadata != fp.semanticMetadataFingerprint
 	// Legacy protocol-v2 clients receive the complete entry metadata in the
@@ -1479,12 +1561,19 @@ type semanticPanelStaticCache struct {
 	highlighterRevision   int64
 	highlightStyles       map[string]extui.HighlightStyleModel
 	entries               []extui.FileEntryModel
+	entryIndexByID        map[string]int
 	mediaBroker           *extUiMediaBroker
 	mediaSourceEpoch      int64
 }
 
+func emptySemanticSelectionFingerprint() uint64 {
+	return fnv.New64a().Sum64()
+}
+
 func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticPanelStaticCache {
 	mediaBroker := currentExtUiMediaBroker()
+	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
+	benchmark := navigationBenchmarkCurrentUI()
 	cache := fp.semanticStaticCache
 	if cache != nil &&
 		cache.catalogRevision == fp.catalogRevision &&
@@ -1502,14 +1591,34 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		highlighterRevision:   semanticHighlighterRevision(),
 		highlightStyles:       make(map[string]extui.HighlightStyleModel),
 		entries:               make([]extui.FileEntryModel, 0, len(fp.entries)),
+		entryIndexByID:        make(map[string]int, len(fp.entries)),
 		mediaBroker:           mediaBroker,
 		mediaSourceEpoch:      fp.mediaSourceEpoch,
 	}
 	panelID := vtui.SemanticID(fp)
 	resourceIDs := make([]string, 0, len(fp.entries))
 	caps := fp.vfs.GetCapabilities()
+	rowsStartedNs := int64(0)
+	if benchmark != nil {
+		rowsStartedNs = navigationBenchmarkMonotonicNs()
+	}
+	imageCount := 0
+	styleDurationNs := int64(0)
+	sourceDurationNs := int64(0)
+	// On a cold large directory the base scene is meant to expose names and
+	// types immediately. Even the cheap/provisional highlighter walk is still
+	// O(N), and its result is superseded by the bounded metadata stream anyway.
+	// Keep the eager path for small catalogs (and for complete catalogs) where
+	// the first-frame appearance is worth the tiny traversal.
+	const eagerDeferredStyleRows = 256
+	eagerStyle := !metadataDeferred || len(fp.entries) <= eagerDeferredStyleRows
 	for i, entry := range fp.entries {
 		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
+		cache.entryIndexByID[entryID] = i
+		isImage := semanticEntryIsImage(entry, imageExtensions)
+		if isImage {
+			imageCount++
+		}
 		displayName := entry.visibleName()
 		displayBaseName := displayName
 		displayExtension := ""
@@ -1526,38 +1635,71 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		// (semanticPanelModel's !metadataDeferred loop and
 		// BuildPanelCatalogMetadataChunk) recomputes with the complete item
 		// and overwrites this provisional style.
-		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(&entry.VFSItem, false)
+		highlightStyleID := ""
+		var highlightStyle extui.HighlightStyleModel
+		if eagerStyle {
+			styleStartedNs := int64(0)
+			if benchmark != nil {
+				styleStartedNs = navigationBenchmarkMonotonicNs()
+			}
+			highlightStyleID, highlightStyle = GlobalFileHighlighter.SemanticStyle(
+				&entry.VFSItem, false)
+			if benchmark != nil {
+				styleDurationNs += navigationBenchmarkMonotonicNs() - styleStartedNs
+			}
+		}
 		if highlightStyleID != "" {
 			cache.highlightStyles[highlightStyleID] = highlightStyle
 		}
-		entryPath := logicalPath
-		storage := mediaStorageClass(caps, "")
-		version, versionStrength := mediaSourceVersion(fp.vfs, entry.VFSItem, storage == vfs.StorageClassLocal, fp.catalogRevision, fp.mediaSourceEpoch)
-		source := extui.ImageSourceModel{
-			SourceKey:       mediaSourceKey(fp.vfs, entryPath),
-			Version:         version,
-			VersionStrength: versionStrength,
-			Size:            entry.Size,
-			SizeKnown:       entry.SizeKnown || entry.Size != 0,
-			AccessProfile:   caps.ReadAccess.String(),
-			StorageClass:    storage.String(),
-		}
-		if mediaBroker != nil && !entry.IsDir && entry.Name != ".." {
-			descriptor := mediaBroker.Register(mediaSourceRegistration{
-				PanelID: panelID, CatalogVersion: fp.catalogRevision, SourceEpoch: fp.mediaSourceEpoch, FS: fp.vfs,
-				Path: entryPath, Item: entry.VFSItem,
-			})
-			source = extui.ImageSourceModel{
-				ResourceID: descriptor.ResourceID, SourceKey: descriptor.SourceKey,
-				Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
-				Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
-				AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
-			}
-			resourceIDs = append(resourceIDs, descriptor.ResourceID)
-		}
+		// In the negotiated deferred-metadata protocol, the base catalog only
+		// needs a broker source for rows which can actually request a thumbnail.
+		// Registering every non-directory (including thousands of DLL/TXT rows)
+		// creates a broker resource, hashes several identities, and takes the
+		// broker mutex once per row while Enter is waiting for the first catalog.
+		// Non-image rows get their path/metadata in the bounded metadata stream and
+		// never enter ZoinGallery's image pipeline, so omitting their descriptor is
+		// both safe and materially cheaper. Legacy complete catalogs retain the
+		// previous descriptor contract.
+		needsSourceDescriptor := !metadataDeferred || isImage
+		version := ""
 		var sourceModel *extui.ImageSourceModel
-		if !entry.IsDir && entry.Name != ".." {
-			sourceModel = &source
+		sourceStartedNs := int64(0)
+		if benchmark != nil {
+			sourceStartedNs = navigationBenchmarkMonotonicNs()
+		}
+		if needsSourceDescriptor {
+			entryPath := logicalPath
+			storage := mediaStorageClass(caps, "")
+			var versionStrength string
+			version, versionStrength = mediaSourceVersion(fp.vfs, entry.VFSItem, storage == vfs.StorageClassLocal, fp.catalogRevision, fp.mediaSourceEpoch)
+			source := extui.ImageSourceModel{
+				SourceKey:       mediaSourceKey(fp.vfs, entryPath),
+				Version:         version,
+				VersionStrength: versionStrength,
+				Size:            entry.Size,
+				SizeKnown:       entry.SizeKnown || entry.Size != 0,
+				AccessProfile:   caps.ReadAccess.String(),
+				StorageClass:    storage.String(),
+			}
+			if mediaBroker != nil && !entry.IsDir && entry.Name != ".." {
+				descriptor := mediaBroker.Register(mediaSourceRegistration{
+					PanelID: panelID, CatalogVersion: fp.catalogRevision, SourceEpoch: fp.mediaSourceEpoch, FS: fp.vfs,
+					Path: entryPath, Item: entry.VFSItem,
+				})
+				source = extui.ImageSourceModel{
+					ResourceID: descriptor.ResourceID, SourceKey: descriptor.SourceKey,
+					Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
+					Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
+					AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
+				}
+				resourceIDs = append(resourceIDs, descriptor.ResourceID)
+			}
+			if !entry.IsDir && entry.Name != ".." {
+				sourceModel = &source
+			}
+		}
+		if benchmark != nil {
+			sourceDurationNs += navigationBenchmarkMonotonicNs() - sourceStartedNs
 		}
 		cache.entries = append(cache.entries, extui.FileEntryModel{
 			Index:            i,
@@ -1569,14 +1711,31 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 			IsDir:            entry.IsDir,
 			IsUp:             entry.Name == "..",
 			IsHidden:         entry.IsHidden,
-			IsImage:          semanticEntryIsImage(entry, imageExtensions),
+			IsImage:          isImage,
 			Version:          version,
 			Source:           sourceModel,
 			HighlightStyleID: highlightStyleID,
 		})
 	}
+	if benchmark != nil {
+		rowsFinishedNs := navigationBenchmarkMonotonicNs()
+		benchmark.eventAt("model.semantic_static.rows", "go.ui", rowsFinishedNs,
+			"entries", len(fp.entries), "images", imageCount,
+			"styleDurationNs", styleDurationNs, "sourceDurationNs", sourceDurationNs,
+			"durationNs", rowsFinishedNs-rowsStartedNs)
+	}
 	if mediaBroker != nil {
+		commitStartedNs := int64(0)
+		if benchmark != nil {
+			commitStartedNs = navigationBenchmarkMonotonicNs()
+		}
 		mediaBroker.CommitPanel(panelID, fp.catalogRevision, resourceIDs)
+		if benchmark != nil {
+			commitFinishedNs := navigationBenchmarkMonotonicNs()
+			benchmark.eventAt("model.semantic_static.commit", "go.ui", commitFinishedNs,
+				"resources", len(resourceIDs),
+				"durationNs", commitFinishedNs-commitStartedNs)
+		}
 	}
 	fp.semanticStaticCache = cache
 	return cache
@@ -1609,7 +1768,11 @@ var semanticPanelMetadataSnapshots sync.Map // panel semantic ID -> *semanticPan
 // intentional: a stale panel must never remove a newer snapshot which happens
 // to have been published under the same semantic ID.
 func (fp *FileSystemPanel) unpublishSemanticMetadataSnapshot() {
-	if fp == nil || fp.semanticMetadataSnapshot == nil {
+	if fp == nil {
+		return
+	}
+	semanticLivePanels.CompareAndDelete(vtui.SemanticID(fp), fp)
+	if fp.semanticMetadataSnapshot == nil {
 		return
 	}
 	snapshot := fp.semanticMetadataSnapshot
@@ -1676,6 +1839,12 @@ func (fp *FileSystemPanel) publishSemanticMetadataSnapshot(panelID string, baseE
 // catalog work.
 func (fp *FileSystemPanel) commitSemanticMetadataMutation() {
 	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
+		return
+	}
+	if extUiPanelCatalogRowsIsEnabled() {
+		sourceKind, _ := fp.semanticSourceInfo()
+		fp.ensureSemanticPagedRevisions(sourceKind)
+		fp.metadataRevision++
 		return
 	}
 	fp.updateSemanticRevisions()
@@ -1764,21 +1933,447 @@ func BuildPanelCatalogMetadataChunk(panelID, path string, catalogRevision, metad
 	return chunk.ToMap(), true
 }
 
-func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
-	fp.updateSemanticRevisions()
-	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
+const (
+	// A details viewport paints about 39 rows at the default density. Forty-
+	// eight leaves a small scroll overscan while keeping cold catalog resets
+	// bounded to rows which can affect the first frame.
+	initialPanelCatalogRowsLimit = 48
+	maxPanelCatalogRowsLimit     = 256
+	// Fast Find is transient viewport decoration. Keep its exported match map
+	// bounded to painted/buffered rows instead of serializing one entry for an
+	// entire large directory on every keystroke.
+	semanticFastFindRowsLimit        = maxPanelCatalogRowsLimit
+	semanticFastFindDetailsRowsLimit = 128
+)
+
+// semanticLivePanels is an ownership registry, not a row cache. Requests are
+// executed on the UI thread and read the current FileSystemPanel directly;
+// no converted catalog survives a navigation and no second 30k-row copy is
+// retained merely for the native frontend.
+var semanticLivePanels sync.Map // panel semantic ID -> *FileSystemPanel
+
+func (fp *FileSystemPanel) markSemanticCatalogMutation() {
+	if fp == nil {
+		return
+	}
+	fp.semanticCatalogGeneration++
+	fp.semanticStaticCache = nil
+}
+
+func (fp *FileSystemPanel) semanticPagedModelSignature(sourceKind string) string {
+	if fp == nil || fp.vfs == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\x00%T\x00%s\x00%d\x00%t\x00%t\x00%d",
+		sourceKind, fp.vfs, fp.vfs.GetPath(), fp.sortMode, fp.sortReverse,
+		AppConfig.SeparateFileExtensions, fp.mediaSourceEpoch)
+}
+
+// ensureSemanticPagedRevisions advances revision domains from known panel
+// mutations. The ordinary compatibility exporter still fingerprints every
+// row, but a negotiated paged client must not spend O(N) before it can paint
+// an O(viewport) model.
+func (fp *FileSystemPanel) ensureSemanticPagedRevisions(sourceKind string) {
+	if fp == nil {
+		return
+	}
+	signature := fp.semanticPagedModelSignature(sourceKind)
+	if !fp.semanticCatalogInitialized ||
+		fp.semanticPublishedGeneration != fp.semanticCatalogGeneration ||
+		fp.semanticPagedSignature != signature {
+		fp.catalogRevision++
+		fp.metadataRevision++
+		fp.semanticCatalogInitialized = true
+		fp.semanticMetadataInitialized = true
+		fp.semanticPublishedGeneration = fp.semanticCatalogGeneration
+		fp.semanticPagedSignature = signature
+		fp.semanticStaticCache = nil
+		fp.unpublishSemanticMetadataSnapshot()
+		fp.semanticPagedResourceRevision = 0
+		fp.semanticPagedResourceIDs = nil
+	}
+	if !fp.semanticSelectionInitialized {
+		fp.semanticSelectionInitialized = true
+		fp.semanticSelectionFingerprint = emptySemanticSelectionFingerprint()
+		fp.selectionRevision++
+	}
+}
+
+func semanticPanelCatalogRange(total, cursor, limit int) (int, int) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	if cursor < 0 || cursor >= total {
+		cursor = 0
+	}
+	offset := cursor - limit/2
+	if offset < 0 {
+		offset = 0
+	}
+	if maximum := total - limit; offset > maximum {
+		offset = maximum
+	}
+	return offset, offset + limit
+}
+
+func (fp *FileSystemPanel) semanticFastFindRange() (int, int, bool) {
+	if fp == nil || !fp.fastFindMode || fp.fastFindStr == "" || len(fp.entries) == 0 {
+		return 0, 0, false
+	}
+	first, end := semanticFastFindWindowRange(
+		len(fp.entries), fp.GetCursorIndex(), fp.semanticFastFindWindowLimit())
+	return first, end, true
+}
+
+func (fp *FileSystemPanel) semanticFastFindWindowLimit() int {
+	// Details paints about 39 rows and keeps one viewport of delegates on
+	// either side. A stable 128-row window therefore covers the complete
+	// visible/overscan set while halving the map sent for every query edit.
+	// Tile/column layouts can expose substantially more entries at once and
+	// retain the wider general-purpose window.
+	if fp != nil && fp.effectiveGalleryLayoutMode() == GalleryLayoutDetails {
+		return semanticFastFindDetailsRowsLimit
+	}
+	return semanticFastFindRowsLimit
+}
+
+// semanticFastFindWindowRange keeps the bounded highlight window stable while
+// the cursor moves inside it. Re-centering on every Ctrl+Enter changed two map
+// keys but forced the entire map through the semantic patch and QML binding on
+// every step. A quarter-window stride leaves at least three eighths of the
+// window on either side of the cursor and replaces it only once per stride.
+func semanticFastFindWindowRange(total, cursor, limit int) (int, int) {
+	if total <= 0 {
+		return 0, 0
+	}
+	if limit <= 0 || limit >= total {
+		return 0, total
+	}
+	cursor = max(0, min(cursor, total-1))
+	stride := max(1, limit/4)
+	leadingMargin := (limit - stride) / 2
+	offset := cursor/stride*stride - leadingMargin
+	offset = max(0, min(offset, total-limit))
+	return offset, offset + limit
+}
+
+func (fp *FileSystemPanel) semanticFastFindMatches(
+	first, end int, entryIDAt func(int) string,
+) map[string]extui.FastFindMatchModel {
+	if fp == nil || !fp.fastFindMode || fp.fastFindStr == "" || entryIDAt == nil {
+		return nil
+	}
+	fp.ensureFastFindMatchCache()
+	if fp.fastFindAnyMatchKnown && !fp.fastFindAnyMatch {
+		return nil
+	}
+	first = max(0, first)
+	end = min(len(fp.entries), end)
+	if first >= end {
+		return nil
+	}
+	matches := make(map[string]extui.FastFindMatchModel, end-first)
+	for index := first; index < end; index++ {
+		start, length, ok := fp.fastFindMatchAt(index)
+		if !ok || length <= 0 {
+			continue
+		}
+		if entryID := entryIDAt(index); entryID != "" {
+			matches[entryID] = extui.FastFindMatchModel{
+				Start: start, Length: length,
+			}
+		}
+	}
+	return matches
+}
+
+func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
+	[]extui.FileEntryModel, map[string]extui.HighlightStyleModel, bool,
+) {
+	if fp == nil || fp.vfs == nil || offset < 0 || offset > len(fp.entries) {
+		return nil, nil, false
+	}
+	if limit <= 0 {
+		limit = initialPanelCatalogRowsLimit
+	}
+	if limit > maxPanelCatalogRowsLimit {
+		limit = maxPanelCatalogRowsLimit
+	}
+	end := offset + limit
+	if end > len(fp.entries) {
+		end = len(fp.entries)
+	}
+	sourceKind, _ := fp.semanticSourceInfo()
+	imageExtensions := semanticImageExtensions()
+	styles := make(map[string]extui.HighlightStyleModel)
+	rows := make([]extui.FileEntryModel, 0, end-offset)
+	mediaBroker := currentExtUiMediaBroker()
+	panelID := vtui.SemanticID(fp)
+	if fp.semanticPagedResourceRevision != fp.catalogRevision {
+		fp.semanticPagedResourceRevision = fp.catalogRevision
+		fp.semanticPagedResourceIDs = make(map[string]struct{})
+	}
+	caps := fp.vfs.GetCapabilities()
+	for index := offset; index < end; index++ {
+		entry := fp.entries[index]
+		if entry == nil {
+			return nil, nil, false
+		}
+		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
+		displayBaseName := entry.Name
+		displayExtension := ""
+		if AppConfig.SeparateFileExtensions && !entry.NoExtension &&
+			!entry.IsDir && entry.Name != ".." {
+			if base, extension := splitFileExtension(entry.Name); extension != "" {
+				displayBaseName, displayExtension = base, extension
+			}
+		}
+		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(
+			&entry.VFSItem, false)
+		if highlightStyleID != "" {
+			styles[highlightStyleID] = highlightStyle
+		}
+		isImage := semanticEntryIsImage(entry, imageExtensions)
+		version := ""
+		var sourceModel *extui.ImageSourceModel
+		if isImage {
+			storage := mediaStorageClass(caps, "")
+			var versionStrength string
+			version, versionStrength = mediaSourceVersion(
+				fp.vfs, entry.VFSItem, storage == vfs.StorageClassLocal,
+				fp.catalogRevision, fp.mediaSourceEpoch)
+			source := extui.ImageSourceModel{
+				SourceKey:       mediaSourceKey(fp.vfs, logicalPath),
+				Version:         version,
+				VersionStrength: versionStrength,
+				Size:            entry.Size,
+				SizeKnown:       entry.SizeKnown || entry.Size != 0,
+				AccessProfile:   caps.ReadAccess.String(),
+				StorageClass:    storage.String(),
+			}
+			if mediaBroker != nil {
+				descriptor := mediaBroker.Register(mediaSourceRegistration{
+					PanelID: panelID, CatalogVersion: fp.catalogRevision,
+					SourceEpoch: fp.mediaSourceEpoch, FS: fp.vfs,
+					Path: logicalPath, Item: entry.VFSItem,
+				})
+				source = extui.ImageSourceModel{
+					ResourceID: descriptor.ResourceID, SourceKey: descriptor.SourceKey,
+					Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
+					Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
+					AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
+				}
+				if descriptor.ResourceID != "" {
+					fp.semanticPagedResourceIDs[descriptor.ResourceID] = struct{}{}
+				}
+			}
+			sourceModel = &source
+		}
+		rows = append(rows, extui.FileEntryModel{
+			Index: index, EntryID: entryID, Name: entry.Name,
+			DisplayBaseName: displayBaseName, DisplayExtension: displayExtension,
+			Path: logicalPath, IsDir: entry.IsDir, IsUp: entry.Name == "..",
+			IsHidden: entry.IsHidden, IsImage: isImage, Selected: entry.Selected,
+			Version: version, Source: sourceModel, HighlightStyleID: highlightStyleID,
+		})
+	}
+	if mediaBroker != nil {
+		resourceIDs := make([]string, 0, len(fp.semanticPagedResourceIDs))
+		for resourceID := range fp.semanticPagedResourceIDs {
+			resourceIDs = append(resourceIDs, resourceID)
+		}
+		mediaBroker.CommitPanel(panelID, fp.catalogRevision, resourceIDs)
+	}
+	return rows, styles, true
+}
+
+func BuildLivePanelCatalogRows(panelID, path string, catalogRevision int64,
+	offset, limit int,
+) (map[string]any, bool) {
+	loaded, ok := semanticLivePanels.Load(panelID)
+	if !ok {
+		return nil, false
+	}
+	fp, ok := loaded.(*FileSystemPanel)
+	if !ok || fp == nil || fp.vfs == nil || fp.vfs.GetPath() != path ||
+		fp.catalogRevision != catalogRevision || offset < 0 || offset > len(fp.entries) {
+		return nil, false
+	}
+	rows, styles, ok := fp.semanticPagedRows(offset, limit)
+	if !ok || len(rows) == 0 && offset != len(fp.entries) {
+		return nil, false
+	}
+	return extui.PanelCatalogRowsModel{
+		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
+		Offset: offset, Limit: len(rows), Total: len(fp.entries),
+		Entries: rows, HighlightStyles: styles,
+	}.ToMap(), true
+}
+
+func BuildLivePanelCatalogMetadataChunk(panelID, path string,
+	catalogRevision, metadataRevision int64, offset, limit int,
+) (map[string]any, bool) {
+	loaded, ok := semanticLivePanels.Load(panelID)
+	if !ok {
+		return nil, false
+	}
+	fp, ok := loaded.(*FileSystemPanel)
+	if !ok || fp == nil || fp.vfs == nil || fp.vfs.GetPath() != path ||
+		fp.catalogRevision != catalogRevision || fp.metadataRevision != metadataRevision ||
+		offset < 0 || offset > len(fp.entries) {
+		return nil, false
+	}
+	if limit <= 0 {
+		limit = defaultPanelCatalogMetadataChunkLimit
+	}
+	if limit > maxPanelCatalogMetadataChunkLimit {
+		limit = maxPanelCatalogMetadataChunkLimit
+	}
+	end := offset + limit
+	if end > len(fp.entries) {
+		end = len(fp.entries)
+	}
+	sourceKind, _ := fp.semanticSourceInfo()
+	provider, _ := fp.vfs.(vfs.LocalPathProvider)
+	chunk := extui.PanelCatalogMetadataModel{
+		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
+		MetadataRevision:  metadataRevision,
+		HighlightRevision: semanticHighlighterRevision(),
+		Offset:            offset, Limit: end - offset, Total: len(fp.entries),
+		Final:           end == len(fp.entries),
+		Entries:         make([]extui.FileEntryMetadataModel, 0, end-offset),
+		HighlightStyles: make(map[string]extui.HighlightStyleModel),
+	}
+	for index := offset; index < end; index++ {
+		entry := fp.entries[index]
+		if entry == nil {
+			return nil, false
+		}
+		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
+		localPath := ""
+		if provider != nil {
+			if resolved, err := provider.LocalPath(logicalPath); err == nil {
+				localPath = resolved
+			}
+		}
+		highlightStyleID, highlightStyle := GlobalFileHighlighter.SemanticStyle(
+			&entry.VFSItem, true)
+		if highlightStyleID != "" {
+			chunk.HighlightStyles[highlightStyleID] = highlightStyle
+		}
+		if !entry.IsDir {
+			chunk.TotalSize += entry.Size
+		}
+		chunk.Entries = append(chunk.Entries, extui.FileEntryMetadataModel{
+			Index: index, EntryID: entryID, LocalPath: localPath,
+			Size: semanticFileSizeValue(entry), SizeText: semanticFileSize(entry),
+			MTime:      entry.MTime.Format("2006-01-02 15:04"),
+			MTimeNanos: semanticMTimeNanos(entry.MTime), Mode: entry.Mode,
+			HighlightStyleID: highlightStyleID,
+		})
+	}
+	return chunk.ToMap(), true
+}
+
+func (fp *FileSystemPanel) semanticPagedPanelModel(
+	ctx *vtui.SemanticContext, side int, active bool,
+) extui.PanelModel {
+	sourceKind, previewCapable := fp.semanticSourceInfo()
+	fp.ensureSemanticPagedRevisions(sourceKind)
+	panelID := vtui.SemanticID(fp)
+	semanticLivePanels.Store(panelID, fp)
+	cursor := fp.GetCursorIndex()
+	offset, end := semanticPanelCatalogRange(
+		len(fp.entries), cursor, initialPanelCatalogRowsLimit)
+	entries, highlightStyles, _ := fp.semanticPagedRows(offset, end-offset)
+	cursorEntryID := ""
+	if cursor >= 0 && cursor < len(fp.entries) {
+		cursorEntryID, _ = fp.semanticEntryMetadata(fp.entries[cursor], sourceKind)
+	}
+	fastFindMatches := fp.semanticFastFindMatches(
+		offset, end, func(index int) string {
+			return entries[index-offset].EntryID
+		})
 	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
 	galleryLayoutRevision := fp.galleryLayoutRevision
 	if galleryLayoutRevision < 1 {
 		galleryLayoutRevision = 1
 	}
+	semanticTitle := fp.semanticTitle
+	if semanticTitle == "" {
+		semanticTitle = fp.currentTitle
+	}
+	return extui.PanelModel{
+		ID: panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
+		Title: semanticTitle, ShowFileInfo: AppConfig.ShowPanelFileInfo,
+		GalleryLayoutMode:     string(galleryLayoutMode),
+		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
+		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:      fp.galleryDensitiesSnapshot(),
+		GalleryLayoutRevision: galleryLayoutRevision,
+		SourceKind:            sourceKind, PreviewCapable: previewCapable,
+		CatalogRevision:   fp.catalogRevision,
+		SelectionRevision: fp.selectionRevision,
+		MetadataDeferred:  true, MetadataRevision: fp.metadataRevision,
+		CatalogRowsDeferred: true,
+		HighlightRevision:   semanticHighlighterRevision(),
+		HighlightStyles:     highlightStyles,
+		CursorEntryID:       cursorEntryID,
+		SortMode:            sortModeName(fp.sortMode), SortReverse: fp.sortReverse,
+		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
+		Cursor:                 cursor, Loading: fp.semanticLoading(),
+		CatalogProvisional: fp.catalogProvisional,
+		FastFind:           fp.fastFindMode, FastFindText: fp.fastFindStr,
+		FastFindMatchColor: func() string {
+			if fp.fastFindMode && fp.fastFindStr != "" {
+				return semanticAttrColor(vtui.Palette[ColPanelHighlightText], true)
+			}
+			return ""
+		}(),
+		FastFindMatches: fastFindMatches,
+		SelectedCount:   len(fp.selectedItems), TotalCount: len(fp.entries),
+		GalleryColumns: fp.semanticGalleryColumns(), Entries: entries,
+	}
+}
+
+func (fp *FileSystemPanel) semanticLoading() bool {
+	return fp != nil && fp.isLoading && !fp.catalogInteractive
+}
+
+func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
+	if extUiPanelCatalogRowsIsEnabled() {
+		return fp.semanticPagedPanelModel(ctx, side, active)
+	}
+	benchmark := navigationBenchmarkCurrentUI()
+	metadataDeferred := extUiPanelCatalogMetadataIsEnabled()
 	sourceKind, previewCapable := fp.semanticSourceInfo()
+	revisionsStartedNs := int64(0)
+	if benchmark != nil {
+		revisionsStartedNs = navigationBenchmarkMonotonicNs()
+	}
+	fp.updateSemanticRevisions()
+	if benchmark != nil {
+		revisionsFinishedNs := navigationBenchmarkMonotonicNs()
+		benchmark.eventAt("model.semantic_revisions", "go.ui", revisionsFinishedNs,
+			"durationNs", revisionsFinishedNs-revisionsStartedNs)
+	}
+	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
+	galleryLayoutRevision := fp.galleryLayoutRevision
+	if galleryLayoutRevision < 1 {
+		galleryLayoutRevision = 1
+	}
 	static := fp.semanticStaticPanelData(sourceKind)
-	entries := append([]extui.FileEntryModel(nil), static.entries...)
+	entries := static.entries
 	var fastFindMatches map[string]extui.FastFindMatchModel
 	fastFindMatchColor := ""
-	if fp.fastFindMode && fp.fastFindStr != "" {
-		fastFindMatches = make(map[string]extui.FastFindMatchModel)
+	if first, end, active := fp.semanticFastFindRange(); active {
+		fastFindMatches = fp.semanticFastFindMatches(
+			first, end, func(index int) string {
+				return static.entries[index].EntryID
+			})
 		fastFindMatchColor = semanticAttrColor(
 			vtui.Palette[ColPanelHighlightText], true)
 	}
@@ -1800,15 +2395,16 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		highlightRevision = static.highlighterRevision
 		highlightStyles = static.highlightStyles
 	}
+	needsDynamicRows := !metadataDeferred ||
+		fp.semanticSelectionFingerprint != emptySemanticSelectionFingerprint()
+	if needsDynamicRows {
+		entries = append([]extui.FileEntryModel(nil), static.entries...)
+	}
 	for i, entry := range fp.entries {
-		entries[i].Selected = entry.Selected
-		if fastFindMatches != nil {
-			if start, length, ok := fp.fastFindMatch(entry.Name); ok && length > 0 {
-				fastFindMatches[entries[i].EntryID] = extui.FastFindMatchModel{
-					Start: start, Length: length,
-				}
-			}
+		if !needsDynamicRows {
+			break
 		}
+		entries[i].Selected = entry.Selected
 		if entry.Selected {
 			selectedCount++
 		}
@@ -1831,7 +2427,6 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		entries[i].SizeText = semanticFileSize(entry)
 		entries[i].IsHidden = entry.IsHidden
 		entries[i].IsExecutable = entry.IsExecutable
-		entries[i].IsCached = entry.IsCached
 		entries[i].SizeCalculated = entry.SizeCalculated
 		entries[i].MTime = entry.MTime.Format("2006-01-02 15:04")
 		entries[i].MTimeNanos = semanticMTimeNanos(entry.MTime)
@@ -1859,11 +2454,6 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	} else {
 		fp.unpublishSemanticMetadataSnapshot()
 	}
-	loading := fp.isLoading
-	if metadataDeferred && fp.semanticCachedCatalogReady {
-		loading = false
-		fp.semanticCachedCatalogExported = true
-	}
 	return extui.PanelModel{
 		ID:                     panelID,
 		Side:                   side,
@@ -1874,6 +2464,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
@@ -1888,7 +2479,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		SortReverse:            fp.sortReverse,
 		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
 		Cursor:                 fp.GetCursorIndex(),
-		Loading:                loading,
+		Loading:                fp.semanticLoading(),
 		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.fastFindMode,
 		FastFindText:           fp.fastFindStr,
@@ -1903,16 +2494,97 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	}
 }
 
+func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
+	ctx *vtui.SemanticContext, side int, active bool,
+) (extui.PanelModel, bool) {
+	if fp == nil || fp.vfs == nil {
+		return extui.PanelModel{}, false
+	}
+	sourceKind, previewCapable := fp.semanticSourceInfo()
+	fp.ensureSemanticPagedRevisions(sourceKind)
+	panelID := vtui.SemanticID(fp)
+	semanticLivePanels.Store(panelID, fp)
+	cursor := fp.GetCursorIndex()
+	cursorEntryID := ""
+	if cursor >= 0 && cursor < len(fp.entries) && fp.entries[cursor] != nil {
+		cursorEntryID, _ = fp.semanticEntryMetadata(fp.entries[cursor], sourceKind)
+	}
+	var fastFindMatches map[string]extui.FastFindMatchModel
+	fastFindMatchColor := ""
+	if first, end, active := fp.semanticFastFindRange(); active {
+		fastFindMatchColor = semanticAttrColor(
+			vtui.Palette[ColPanelHighlightText], true)
+		fastFindMatches = fp.semanticFastFindMatches(
+			first, end, func(index int) string {
+				entry := fp.entries[index]
+				if entry == nil {
+					return ""
+				}
+				entryID, _ := fp.semanticEntryMetadata(entry, sourceKind)
+				return entryID
+			})
+	}
+	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
+	galleryLayoutRevision := fp.galleryLayoutRevision
+	if galleryLayoutRevision < 1 {
+		galleryLayoutRevision = 1
+	}
+	semanticTitle := fp.semanticTitle
+	if semanticTitle == "" {
+		semanticTitle = fp.currentTitle
+	}
+	return extui.PanelModel{
+		ID: panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
+		Title: semanticTitle, ShowFileInfo: AppConfig.ShowPanelFileInfo,
+		GalleryLayoutMode:     string(galleryLayoutMode),
+		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
+		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:      fp.galleryDensitiesSnapshot(),
+		GalleryLayoutRevision: galleryLayoutRevision,
+		SourceKind:            sourceKind, PreviewCapable: previewCapable,
+		CatalogRevision:   fp.catalogRevision,
+		SelectionRevision: fp.selectionRevision,
+		MetadataDeferred:  true, MetadataRevision: fp.metadataRevision,
+		CatalogRowsDeferred: true,
+		HighlightRevision:   semanticHighlighterRevision(),
+		CursorEntryID:       cursorEntryID,
+		SortMode:            sortModeName(fp.sortMode), SortReverse: fp.sortReverse,
+		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
+		Cursor:                 cursor, Loading: fp.semanticLoading(),
+		CatalogProvisional: fp.catalogProvisional,
+		FastFind:           fp.fastFindMode, FastFindText: fp.fastFindStr,
+		FastFindMatchColor: fastFindMatchColor,
+		FastFindMatches:    fastFindMatches,
+		SelectedCount:      len(fp.selectedItems), TotalCount: len(fp.entries),
+		GalleryColumns: fp.semanticGalleryColumns(),
+	}, true
+}
+
 // semanticPanelHeaderModel exports only the mutable, bounded panel state. The
 // immutable catalog stays in the renderer/Qt cache until CatalogRevision
 // changes. Returning false requests a complete fallback because no validated
 // catalog has been published for this panel yet.
 func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, side int, active bool) (extui.PanelModel, bool) {
+	if extUiPanelCatalogRowsIsEnabled() {
+		return fp.semanticPagedPanelHeaderModel(ctx, side, active)
+	}
 	if fp == nil || !extUiPanelCatalogMetadataIsEnabled() {
 		return extui.PanelModel{}, false
 	}
 	static := fp.semanticStaticCache
-	if static == nil || static.catalogRevision != fp.catalogRevision || len(static.entries) != len(fp.entries) {
+	if static == nil || static.catalogRevision != fp.catalogRevision {
+		return extui.PanelModel{}, false
+	}
+	// During a cold directory transition Go has already changed the visible
+	// path, but the real catalog is still being read. Keep the previously
+	// published static catalog as the immutable base for this one provisional
+	// state update. The native bridge intentionally keeps that old Gallery
+	// session painted until the authoritative catalog_replace arrives; making
+	// the header invalid here would fall back to a full scene and resend every
+	// row of the other panel as well.
+	provisionalReplacement := fp.catalogProvisional &&
+		len(static.entries) != len(fp.entries)
+	if len(static.entries) != len(fp.entries) && !provisionalReplacement {
 		return extui.PanelModel{}, false
 	}
 	galleryLayoutMode := fp.effectiveGalleryLayoutMode()
@@ -1928,24 +2600,16 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 	}
 	var fastFindMatches map[string]extui.FastFindMatchModel
 	fastFindMatchColor := ""
-	if fp.fastFindMode && fp.fastFindStr != "" {
-		fastFindMatches = make(map[string]extui.FastFindMatchModel)
+	if first, end, active := fp.semanticFastFindRange(); !provisionalReplacement && active {
 		fastFindMatchColor = semanticAttrColor(vtui.Palette[ColPanelHighlightText], true)
-		for index, entry := range fp.entries {
-			if start, length, ok := fp.fastFindMatch(entry.Name); ok && length > 0 {
-				fastFindMatches[static.entries[index].EntryID] = extui.FastFindMatchModel{
-					Start: start, Length: length,
-				}
-			}
-		}
+		fastFindMatches = fp.semanticFastFindMatches(
+			first, end, func(index int) string {
+				return static.entries[index].EntryID
+			})
 	}
 	semanticTitle := fp.semanticTitle
 	if semanticTitle == "" {
 		semanticTitle = fp.currentTitle
-	}
-	loading := fp.isLoading
-	if fp.semanticCachedCatalogReady {
-		loading = false
 	}
 	return extui.PanelModel{
 		ID:                     vtui.SemanticID(fp),
@@ -1957,6 +2621,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
@@ -1970,15 +2635,20 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		SortReverse:            fp.sortReverse,
 		SeparateFileExtensions: AppConfig.SeparateFileExtensions,
 		Cursor:                 cursor,
-		Loading:                loading,
+		Loading:                fp.semanticLoading(),
 		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.fastFindMode,
 		FastFindText:           fp.fastFindStr,
 		FastFindMatchColor:     fastFindMatchColor,
 		FastFindMatches:        fastFindMatches,
-		SelectedCount:          len(fp.selectedItems),
-		TotalCount:             len(fp.entries),
-		GalleryColumns:         fp.semanticGalleryColumns(),
+		SelectedCount: func() int {
+			if provisionalReplacement {
+				return 0
+			}
+			return len(fp.selectedItems)
+		}(),
+		TotalCount:     len(static.entries),
+		GalleryColumns: fp.semanticGalleryColumns(),
 	}, true
 }
 

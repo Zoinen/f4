@@ -757,6 +757,23 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 	} else {
 		galleryDensity, _, _ = galleryDensityLimits(parsedGalleryLayoutMode)
 	}
+	galleryDensities := make(map[string]int, len(galleryLayoutModes))
+	suppliedGalleryDensities := appMap(node["galleryDensities"])
+	for _, mode := range galleryLayoutModes {
+		density := semanticInt(suppliedGalleryDensities[string(mode)])
+		if density <= 0 {
+			density, _, _ = galleryDensityLimits(mode)
+			if density <= 0 {
+				// The untouched compact default is derived from exact frontend
+				// font metrics, so it remains absent until the user zooms.
+				continue
+			}
+		}
+		galleryDensities[string(mode)] = clampGalleryDensity(mode, density)
+	}
+	if galleryDensity > 0 {
+		galleryDensities[string(parsedGalleryLayoutMode)] = galleryDensity
+	}
 	galleryLayoutRevision := appInt64(node["galleryLayoutRevision"])
 	if galleryLayoutRevision < 1 {
 		galleryLayoutRevision = 1
@@ -771,6 +788,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		GalleryLayoutMode:      galleryLayoutMode,
 		GalleryColumnCount:     galleryColumnCount,
 		GalleryDensity:         galleryDensity,
+		GalleryDensities:       galleryDensities,
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		SourceKind:             sourceKind,
 		PreviewCapable:         appBool(node["previewCapable"]),
@@ -849,7 +867,6 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		IsUp:             appBool(node["isUp"]),
 		IsHidden:         appBool(node["isHidden"]),
 		IsExecutable:     appBool(node["isExecutable"]),
-		IsCached:         appBool(node["isCached"]),
 		IsImage:          appBool(node["isImage"]),
 		Selected:         appBool(node["selected"]),
 		SizeCalculated:   appBool(node["sizeCalculated"]),
@@ -1103,6 +1120,21 @@ func appMenuFromLegacy(node map[string]any, role string) extui.MenuModel {
 	for _, item := range appMapSlice(node["items"]) {
 		menu.Items = append(menu.Items, appMenuItemFromLegacy(item))
 	}
+	if role == "menuBar" && !menu.Active {
+		// The closed native menu bar only paints its top-level labels. Shipping
+		// every submenu here made a panel layout shortcut resend the complete
+		// command tree merely because a hidden view-mode checkmark changed.
+		// Active menu-bar snapshots still retain all children so opening a menu
+		// and previewing adjacent submenus remains authoritative and immediate.
+		for index := range menu.Items {
+			menu.Items[index].Items = nil
+			if _, present := menu.Items[index].Legacy["items"]; present {
+				legacy := semanticShallowMapCopy(menu.Items[index].Legacy)
+				delete(legacy, "items")
+				menu.Items[index].Legacy = legacy
+			}
+		}
+	}
 	return menu
 }
 
@@ -1134,11 +1166,21 @@ func appKeyBarFromLegacy(node map[string]any) extui.KeyBarModel {
 		Modifier: semanticString(node["modifier"]),
 	}
 	for _, item := range appMapSlice(node["items"]) {
-		keyBar.Items = append(keyBar.Items, extui.KeyBarItemModel{
+		modelItem := extui.KeyBarItemModel{
 			Index: semanticInt(item["index"]),
 			Key:   semanticString(item["key"]),
 			Text:  semanticString(item["text"]),
-		})
+			Icon:  semanticString(item["icon"]),
+		}
+		for _, alternative := range appMapSlice(item["alternatives"]) {
+			modelItem.Alternatives = append(modelItem.Alternatives,
+				extui.KeyBarAlternativeModel{
+					Modifier: semanticString(alternative["modifier"]),
+					Text:     semanticString(alternative["text"]),
+					Icon:     semanticString(alternative["icon"]),
+				})
+		}
+		keyBar.Items = append(keyBar.Items, modelItem)
 	}
 	return keyBar
 }

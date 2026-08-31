@@ -646,6 +646,7 @@ private slots:
     void rendererZoomControlsFollowLayoutCapability();
     void coverUncoverPreservesFilePanelAndRendererObjects();
     void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
+    void pointerActivationPreviewHandsOffBothPanelCursors();
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
     void workspaceSeparatorBreaksUnderActiveTab();
@@ -705,6 +706,23 @@ void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMou
             {QStringLiteral("index"), index},
             {QStringLiteral("key"), QStringLiteral("F%1").arg(index + 1)},
             {QStringLiteral("text"), QStringLiteral("Action %1").arg(index + 1)},
+            {QStringLiteral("icon"), index == 11
+                 ? QStringLiteral("panels-top-left")
+                 : QStringLiteral("circle-play")},
+            {QStringLiteral("alternatives"), index == 11
+                 ? QVariantList{
+                       QVariantMap{
+                           {QStringLiteral("modifier"), QStringLiteral("shift")},
+                           {QStringLiteral("text"), QStringLiteral("Shift action")},
+                           {QStringLiteral("icon"), QStringLiteral("pencil")},
+                       },
+                       QVariantMap{
+                           {QStringLiteral("modifier"), QStringLiteral("ctrl")},
+                           {QStringLiteral("text"), QStringLiteral("Ctrl action")},
+                           {QStringLiteral("icon"), QStringLiteral("copy")},
+                       },
+                   }
+                 : QVariantList{}},
         });
     }
     QVariantMap scene = shellScene();
@@ -719,7 +737,11 @@ void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMou
     QQuickItem *keyBar = fixture.item(QStringLiteral("keyBar"));
     QVERIFY(keyBar);
     const QColor themedFBarBackground(QStringLiteral("#654321"));
+    const QColor themedMutedText(QStringLiteral("#708090"));
+    const QColor themedAccent(QStringLiteral("#607080"));
     QVERIFY(fixture.window->setProperty("fBarBg", themedFBarBackground));
+    QVERIFY(fixture.window->setProperty("mutedText", themedMutedText));
+    QVERIFY(fixture.window->setProperty("dialogAccent", themedAccent));
     QTRY_COMPARE_WITH_TIMEOUT(
         keyBar->property("color").value<QColor>(),
         themedFBarBackground, 1000);
@@ -730,15 +752,112 @@ void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMou
     QVERIFY(f1);
     QVERIFY(f12);
     QVERIFY(f12Label);
-    QCOMPARE(f1->property("text").toString(), QStringLiteral("F1"));
-    QCOMPARE(f12->property("text").toString(), QStringLiteral("F12"));
-    QVERIFY(f12Label->mapToScene(QPointF{}).x()
-            >= f12->mapToScene(QPointF(f12->width(), 0)).x() + 6.0);
     QQuickItem *f12Button = f12->parentItem();
     QVERIFY(f12Button);
+    QQuickItem *f12Icon = nullptr;
+    for (QQuickItem *child : f12Button->childItems()) {
+        const QUrl source = child->property("source").toUrl();
+        if (source.path()
+            == QStringLiteral("/F4QtHost/icons/lucide/panels-top-left.svg")) {
+            f12Icon = child;
+            break;
+        }
+    }
+    QVERIFY(f12Icon);
+    QVERIFY(f12Icon->isVisible());
+    QCOMPARE(f1->property("text").toString(), QStringLiteral("F1"));
+    QCOMPARE(f12->property("text").toString(), QStringLiteral("F12"));
+    QCOMPARE(f12->property("color").value<QColor>(), themedMutedText);
+    QVariant mnemonic;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "mnemonicText", Q_RETURN_ARG(QVariant, mnemonic),
+        Q_ARG(QVariant, QVariant(QStringLiteral("&File"))),
+        Q_ARG(QVariant, QVariant(QString()))));
+    QCOMPARE(mnemonic.toString(),
+             QStringLiteral("<font color=\"%1\">F</font>ile")
+                 .arg(themedAccent.name(QColor::HexRgb)));
+    QCOMPARE(f12Icon->property("source").toUrl().path(),
+             QStringLiteral("/F4QtHost/icons/lucide/panels-top-left.svg"));
+    QVERIFY(f12Label->mapToScene(QPointF{}).x()
+            >= f12Icon->mapToScene(QPointF(f12Icon->width(), 0)).x() + 6.0);
+    QVERIFY(f12->mapToScene(QPointF{}).x()
+            >= f12Label->mapToScene(QPointF(f12Label->width(), 0)).x() + 6.0);
     QCOMPARE(f12Button->property("functionKey").toString(),
-             QStringLiteral("F12"));
+              QStringLiteral("F12"));
     QCOMPARE(f12Button->property("functionIndex").toInt(), 11);
+    QCOMPARE(f12Button->property("iconName").toString(),
+             QStringLiteral("panels-top-left"));
+    QVERIFY(f12->mapToScene(QPointF(f12->width(), 0)).x()
+            <= f12Button->mapToScene(QPointF(f12Button->width(), 0)).x());
+
+    fixture.shell.clearKeyEvents();
+    QTest::mouseClick(fixture.window, Qt::RightButton, Qt::NoModifier,
+                      f12Button->mapToScene(
+                          QPointF(f12Button->width() / 2.0,
+                                  f12Button->height() / 2.0)).toPoint());
+    auto *alternativeMenu = fixture.window->findChild<QObject *>(
+        QStringLiteral("keyBarAlternativeMenu"));
+    QVERIFY(alternativeMenu);
+    QTRY_VERIFY_WITH_TIMEOUT(alternativeMenu->property("opened").toBool(),
+                             1000);
+    auto *alternativeList = fixture.item(QStringLiteral(
+        "keyBarAlternativeList"));
+    QVERIFY(alternativeList);
+    QTRY_COMPARE_WITH_TIMEOUT(alternativeList->property("count").toInt(), 2,
+                              1000);
+    QQuickItem *shiftRow = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (shiftRow = visualItemWithObjectNamePrefix(
+             alternativeList, QStringLiteral("keyBarAlternative-shift")))
+            != nullptr,
+        1000);
+    auto *shiftLabel = visualItemWithObjectNamePrefix(
+        alternativeList, QStringLiteral("keyBarAlternativeLabel-shift"));
+    auto *shiftShortcut = visualItemWithObjectNamePrefix(
+        alternativeList, QStringLiteral("keyBarAlternativeShortcut-shift"));
+    auto *shiftIcon = visualItemWithObjectNamePrefix(
+        alternativeList, QStringLiteral("keyBarAlternativeIcon-shift"));
+    QVERIFY(shiftRow);
+    QVERIFY(shiftLabel);
+    QVERIFY(shiftShortcut);
+    QVERIFY(shiftIcon);
+    QCOMPARE(shiftRow->property("radius").toReal(), 5.0);
+    QCOMPARE(shiftLabel->property("text").toString(),
+             QStringLiteral("Shift action"));
+    QCOMPARE(shiftShortcut->property("text").toString(),
+             QStringLiteral("Shift+F12"));
+    QCOMPARE(shiftIcon->property("source").toUrl().path(),
+             QStringLiteral("/F4QtHost/icons/lucide/pencil.svg"));
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(50, 50));
+    QTRY_VERIFY_WITH_TIMEOUT(!alternativeMenu->property("opened").toBool(),
+                             1000);
+
+    QTest::mouseClick(fixture.window, Qt::RightButton, Qt::NoModifier,
+                      f12Button->mapToScene(
+                          QPointF(f12Button->width() / 2.0,
+                                  f12Button->height() / 2.0)).toPoint());
+    QTRY_VERIFY_WITH_TIMEOUT(alternativeMenu->property("opened").toBool(),
+                             1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (shiftRow = visualItemWithObjectNamePrefix(
+             alternativeList, QStringLiteral("keyBarAlternative-shift")))
+            != nullptr,
+        1000);
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      shiftRow->mapToScene(
+                          QPointF(shiftRow->width() / 2.0,
+                                  shiftRow->height() / 2.0)).toPoint());
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.keyEvents.size(), 2, 1000);
+    QVERIFY(!alternativeMenu->property("opened").toBool());
+    QCOMPARE(fixture.shell.keyEvents[0].value(QStringLiteral("vk")).toInt(),
+             0x7b);
+    QCOMPARE(fixture.shell.keyEvents[0].value(QStringLiteral("mods")).toInt(),
+             0x0010);
+    QCOMPARE(fixture.shell.keyEvents[1].value(QStringLiteral("down")).toBool(),
+             false);
 
     fixture.shell.clearKeyEvents();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::ShiftModifier,
@@ -808,8 +927,19 @@ void F4QuickViewSurfaceTests::rendererZoomControlsFollowLayoutCapability()
         {QStringLiteral("side"), 0},
         {QStringLiteral("panel"), compactPanel},
     });
-    QTRY_VERIFY_WITH_TIMEOUT(!zoomRow->isVisible(), 3000);
-    QVERIFY(!zoomSlider->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(zoomRow->isVisible(), 3000);
+    QVERIFY(zoomSlider->isVisible());
+
+    compactPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("columns"));
+    compactPanel.insert(QStringLiteral("galleryDensity"), 34);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), compactPanel},
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(zoomRow->isVisible(), 3000);
+    QVERIFY(zoomSlider->isVisible());
 
     compactPanel.insert(QStringLiteral("galleryLayoutMode"),
                         QStringLiteral("icons"));
@@ -1101,11 +1231,15 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
     const QColor pathBackground(QStringLiteral("#223344"));
     const QColor titleBarBackground(QStringLiteral("#112233"));
     const QColor panelHeaderBackground(QStringLiteral("#80445566"));
+    const QColor fileText(QStringLiteral("#aabbcc"));
+    const QColor folderText(QStringLiteral("#ddeeff"));
 
     QVERIFY(fixture.window->setProperty("titleBarBg", titleBarBackground));
     QVERIFY(fixture.window->setProperty("panelPathBg",
                                         panelHeaderBackground));
     QVERIFY(fixture.window->setProperty("galleryTextColor", textColor));
+    QVERIFY(fixture.window->setProperty("galleryFileTextColor", fileText));
+    QVERIFY(fixture.window->setProperty("galleryFolderTextColor", folderText));
     QVERIFY(fixture.window->setProperty("galleryCardCursorBorderColor",
                                         cursorBorder));
     QVERIFY(fixture.window->setProperty("galleryItemHoverColor", cardHover));
@@ -1128,6 +1262,12 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
              cursorBorder);
     QCOMPARE(liveTheme().value(QStringLiteral("itemHover")).value<QColor>(),
              cardHover);
+    QCOMPARE(liveTheme().value(QStringLiteral("fileText")).value<QColor>(),
+             fileText);
+    QCOMPARE(liveTheme().value(QStringLiteral("folderText")).value<QColor>(),
+             folderText);
+    QCOMPARE(liveTheme().value(QStringLiteral("neutralFileTextColors")).toBool(),
+             true);
     QCOMPARE(liveTheme().value(QStringLiteral("scrollBarHandle"))
                  .value<QColor>(),
              scrollHandle);
@@ -1177,12 +1317,63 @@ void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
 
     for (const QString &required : {
              QStringLiteral("commandLineBg"),
-             QStringLiteral("titleBarBg"),
-             QStringLiteral("fBarBg"),
-             QStringLiteral("separatorActiveColor"),
-             QStringLiteral("galleryFolderIconColor"),
+              QStringLiteral("titleBarBg"),
+              QStringLiteral("fBarBg"),
+              QStringLiteral("separatorActiveColor"),
+              QStringLiteral("galleryFileTextColor"),
+              QStringLiteral("galleryFolderTextColor"),
+              QStringLiteral("galleryFolderIconColor"),
          }) {
         QVERIFY2(colorIds.contains(required), qPrintable(required));
+    }
+
+    const QVariantMap expectedDefaults{
+        {QStringLiteral("windowBackgroundColor"), QStringLiteral("#191d23")},
+        {QStringLiteral("titleBarBg"), QStringLiteral("#19202b")},
+        {QStringLiteral("fBarBg"), QStringLiteral("#19202b")},
+        {QStringLiteral("panelPathBg"), QStringLiteral("#26576478")},
+        {QStringLiteral("commandLineBg"), QStringLiteral("#141921")},
+        {QStringLiteral("separatorColor"), QStringLiteral("#2d3642")},
+        {QStringLiteral("galleryPanelBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryViewerBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryItemBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryDirectoryBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryItemHoverColor"),
+         QStringLiteral("#1a75afe5")},
+        {QStringLiteral("galleryScrollBarHandleColor"),
+         QStringLiteral("#434b57")},
+        {QStringLiteral("galleryScrollBarBackgroundHoverColor"),
+         QStringLiteral("#5f6875")},
+        {QStringLiteral("galleryScrollBarHoverColor"),
+         QStringLiteral("#7f8896")},
+        {QStringLiteral("galleryScrollBarPressedColor"),
+         QStringLiteral("#47515d")},
+        {QStringLiteral("galleryPathBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryPathHoverColor"),
+         QStringLiteral("#2a3745")},
+    };
+    QVariantMap configuredDefaults;
+    for (const QVariant &definitionValue : definitions) {
+        const QVariantMap definition = definitionValue.toMap();
+        const QString id = definition.value(QStringLiteral("id")).toString();
+        configuredDefaults.insert(
+            id, definition.value(QStringLiteral("defaultColor")));
+    }
+    for (auto it = expectedDefaults.constBegin();
+         it != expectedDefaults.constEnd(); ++it) {
+        QVERIFY2(configuredDefaults.contains(it.key()),
+                 qPrintable(it.key()));
+        const QColor expected(it.value().toString());
+        QCOMPARE(QColor(configuredDefaults.value(it.key()).toString()),
+                 expected);
+        QCOMPARE(fixture.window
+                     ->property(it.key().toUtf8().constData())
+                     .value<QColor>(), expected);
     }
 
     QStringList panelsGroupIds;
@@ -1473,8 +1664,12 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
          savedWindowBackground.name(QColor::HexRgb)},
         {QStringLiteral("chromeBg"),
          savedLegacyChrome.name(QColor::HexRgb)},
+        // This was the shipped value before brick hover became visible.
+        {QStringLiteral("galleryItemHoverColor"),
+         QStringLiteral("#00000000")},
         {QStringLiteral("fontRenderType"), QStringLiteral("QtRendering")},
         {QStringLiteral("mouseWheelMode"), QStringLiteral("console")},
+        {QStringLiteral("neutralFileTextColors"), false},
     };
     fixture.themePersistence.setTheme(savedTheme);
 
@@ -1488,6 +1683,7 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
         int(QQuickWindow::NativeTextRendering));
     QVERIFY(fixture.window->setProperty("mouseWheelMode",
                                         QStringLiteral("gui")));
+    QVERIFY(fixture.window->setProperty("galleryNeutralFileTextColors", true));
 
     // Reset All is an editor operation. It must not erase the saved snapshot,
     // otherwise Restore Saved could not undo the previewed defaults.
@@ -1497,6 +1693,8 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
     QCOMPARE(fixture.themePersistence.theme(), savedTheme);
     QCoreApplication::processEvents();
     verifyFooterLayout();
+    QVERIFY(fixture.window->setProperty("galleryItemHoverColor",
+                                        QColor(QStringLiteral("#abcdef"))));
 
     QVERIFY(QMetaObject::invokeMethod(restoreSavedButton, "clicked",
                                       Qt::DirectConnection));
@@ -1506,10 +1704,15 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
              savedLegacyChrome);
     QCOMPARE(fixture.window->property("fBarBg").value<QColor>(),
              savedLegacyChrome);
+    QCOMPARE(fixture.window->property("galleryItemHoverColor")
+                 .value<QColor>(),
+             QColor(QStringLiteral("#1a75afe5")));
     QCOMPARE(fixture.textRenderingPolicy.renderTypeName(),
              QStringLiteral("QtRendering"));
     QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
              QStringLiteral("console"));
+    QCOMPARE(fixture.window->property("galleryNeutralFileTextColors").toBool(),
+             false);
     QCOMPARE(dialog->property("statusToast").toString(),
              QStringLiteral("Restored saved theme"));
     QCoreApplication::processEvents();
@@ -1665,6 +1868,11 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelCombo"),
         QStringLiteral("themeMouseWheelComboIndicator"),
         QStringLiteral("themeMouseWheelComboBackground"),
+        QStringLiteral("themeNeutralFileTextPanel"),
+        QStringLiteral("themeNeutralFileTextLabels"),
+        QStringLiteral("themeNeutralFileTextTitle"),
+        QStringLiteral("themeNeutralFileTextDescription"),
+        QStringLiteral("themeNeutralFileTextCheckBox"),
         QStringLiteral("themeHeaderDivider"),
         QStringLiteral("themeDialogHeader"),
         QStringLiteral("themeColorFilter"),
@@ -1706,6 +1914,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelLabels"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeNeutralFileTextLabels"),
+        QStringLiteral("themeNeutralFileTextTitle"),
+        QStringLiteral("themeNeutralFileTextDescription"),
     };
     for (const QString &name : optionVisualNames) {
         QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
@@ -1991,6 +2202,53 @@ void F4QuickViewSurfaceTests::compactActivationPreservesPanelObjectsAndRebindsOn
     QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
 }
 
+void F4QuickViewSurfaceTests::pointerActivationPreviewHandsOffBothPanelCursors()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+
+    QQuickItem *const leftLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-0"));
+    QQuickItem *const rightLoader = fixture.item(
+        QStringLiteral("galleryPanelContent-1"));
+    QVERIFY(leftLoader);
+    QVERIFY(rightLoader);
+    QTRY_VERIFY_WITH_TIMEOUT(leftLoader->property("item").value<QObject *>(),
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(rightLoader->property("item").value<QObject *>(),
+                             3000);
+    QObject *const leftHost = leftLoader->property("item").value<QObject *>();
+    QObject *const rightHost = rightLoader->property("item").value<QObject *>();
+    QVERIFY(leftHost->property("panelActive").toBool());
+    QVERIFY(leftHost->property("showCursor").toBool());
+    QVERIFY(!rightHost->property("panelActive").toBool());
+    QVERIFY(!rightHost->property("showCursor").toBool());
+    QCOMPARE(fixture.window->property(
+                 "pointerPanelActivationOverride").toInt(), -1);
+
+    // This signal is emitted inside the inactive panel's mouse-down stack.
+    // Both cursor bindings must flip before it returns; waiting for another
+    // event-loop turn would allow one frame containing two cursors.
+    QVERIFY(QMetaObject::invokeMethod(rightHost,
+                                      "beginPointerActivationPreview"));
+    QCOMPARE(fixture.window->property(
+                 "pointerPanelActivationOverride").toInt(), 1);
+    QVERIFY(!leftHost->property("panelActive").toBool());
+    QVERIFY(!leftHost->property("showCursor").toBool());
+    QVERIFY(rightHost->property("panelActive").toBool());
+    QVERIFY(rightHost->property("showCursor").toBool());
+    QCOMPARE(fixture.shell.actions.size(), 0);
+
+    // Authoritative compact activation replaces the preview atomically: the
+    // override disappears without momentarily restoring the former cursor.
+    fixture.shell.activatePanel(1, 1);
+    QCOMPARE(fixture.window->property(
+                 "pointerPanelActivationOverride").toInt(), -1);
+    QVERIFY(!leftHost->property("showCursor").toBool());
+    QVERIFY(rightHost->property("showCursor").toBool());
+    QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
 void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation()
 {
     QuickViewFixture fixture(shellScene({}, 0), true);
@@ -2106,6 +2364,72 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
     QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
 
+    const QVariantMap layoutState = {
+        {QStringLiteral("id"), projectedPanel.value(QStringLiteral("id"))},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("catalogRevision"), qulonglong(9)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(3)},
+        {QStringLiteral("galleryLayoutMode"), QStringLiteral("icons")},
+        {QStringLiteral("galleryColumnCount"), 3},
+        {QStringLiteral("galleryDensity"), 64},
+        {QStringLiteral("galleryLayoutRevision"), qulonglong(2)},
+        {QStringLiteral("galleryColumns"),
+         projectedPanel.value(QStringLiteral("galleryColumns"))},
+        {QStringLiteral("separateFileExtensions"), true},
+    };
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelLayoutState"), layoutState},
+    });
+
+    // A renderer-only update must become visible in the same event-loop turn
+    // without replacing the panel map that feeds path, footer, search and
+    // selection bindings.
+    QCOMPARE(leftHost->property("appliedPresentationMode").toString(),
+             QStringLiteral("icons"));
+    QVERIFY(!columnHeader->isVisible());
+    QCOMPARE(leftHost->property("layoutState").toMap(), layoutState);
+    QCOMPARE(leftHost->property("panel").toMap(), projectedPanel);
+    QCOMPARE(leftPanel->property("panel").toMap(), projectedPanel);
+    QCOMPARE(fixture.window->property(
+                 "leftPanelPresentationOverride").toMap(), projectedPanel);
+    QCOMPARE(fixture.window->property(
+                 "leftPanelLayoutStateOverride").toMap(), layoutState);
+    QCOMPARE(leftPanelChanged.size(), 1);
+    QCOMPARE(rightPanelChanged.size(), 0);
+    QCOMPARE(sceneChanged.size(), 0);
+
+    QVariantMap densityDelta = {
+        {QStringLiteral("id"), projectedPanel.value(QStringLiteral("id"))},
+        {QStringLiteral("kind"), QStringLiteral("filePanel")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("catalogRevision"), qulonglong(9)},
+        {QStringLiteral("metadataDeferred"), true},
+        {QStringLiteral("metadataRevision"), qulonglong(3)},
+        {QStringLiteral("galleryDensity"), 72},
+        {QStringLiteral("galleryLayoutRevision"), qulonglong(3)},
+    };
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panelLayoutState"), densityDelta},
+    });
+    QVariantMap mergedLayoutState = layoutState;
+    mergedLayoutState.insert(QStringLiteral("galleryDensity"), 72);
+    mergedLayoutState.insert(QStringLiteral("galleryLayoutRevision"),
+                             qulonglong(3));
+    QCOMPARE(leftHost->property("appliedPresentationMode").toString(),
+             QStringLiteral("icons"));
+    QCOMPARE(leftHost->property("layoutState").toMap(), mergedLayoutState);
+    QCOMPARE(fixture.window->property(
+                 "leftPanelLayoutStateOverride").toMap(), mergedLayoutState);
+    QCOMPARE(leftPanelChanged.size(), 1);
+    QCOMPARE(rightPanelChanged.size(), 0);
+    QCOMPARE(sceneChanged.size(), 0);
+
     // The full protocol signal remains available to native C++ consumers,
     // but QML must never inspect its catalog payload or use it as chrome.
     QVariantMap ignoredPanel = projectedPanel;
@@ -2150,6 +2474,10 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
                 "leftPanelPresentationOverride").isNull());
     QVERIFY(fixture.window->property(
                 "rightPanelPresentationOverride").isNull());
+    QVERIFY(fixture.window->property(
+                "leftPanelLayoutStateOverride").isNull());
+    QVERIFY(fixture.window->property(
+                "rightPanelLayoutStateOverride").isNull());
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
@@ -3677,7 +4005,7 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QVERIFY(promptItem);
     QVERIFY(inputItem);
     QVERIFY(cursor);
-    const QColor defaultCommandLineBackground(QStringLiteral("#19000000"));
+    const QColor defaultCommandLineBackground(QStringLiteral("#141921"));
     QCOMPARE(fixture.window->property("commandLineBg").value<QColor>(),
              defaultCommandLineBackground);
     QCOMPARE(commandLineView->property("color").value<QColor>(),

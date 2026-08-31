@@ -15,6 +15,28 @@ func TestMenuItemToMapKeepsIconOptional(t *testing.T) {
 	}
 }
 
+func TestKeyBarItemToMapKeepsIconOptional(t *testing.T) {
+	withIcon := (KeyBarItemModel{Index: 2, Key: "F3", Text: "View", Icon: "eye"}).ToMap()
+	if withIcon["icon"] != "eye" {
+		t.Fatalf("key-bar icon was not serialized: %#v", withIcon)
+	}
+	withoutIcon := (KeyBarItemModel{Index: 3, Key: "F4", Text: ""}).ToMap()
+	if _, exists := withoutIcon["icon"]; exists {
+		t.Fatalf("empty key-bar icon was serialized: %#v", withoutIcon)
+	}
+	withAlternative := (KeyBarItemModel{
+		Index: 2, Key: "F3", Text: "View", Icon: "eye",
+		Alternatives: []KeyBarAlternativeModel{
+			{Modifier: "shift", Text: "Edit", Icon: "file-pen-line"},
+		},
+	}).ToMap()
+	alternatives, ok := withAlternative["alternatives"].([]M)
+	if !ok || len(alternatives) != 1 || alternatives[0]["modifier"] != "shift" ||
+		alternatives[0]["text"] != "Edit" || alternatives[0]["icon"] != "file-pen-line" {
+		t.Fatalf("key-bar alternatives were not serialized: %#v", withAlternative)
+	}
+}
+
 func TestScenePatchSerializesBoundedSurfaceState(t *testing.T) {
 	patch := ScenePatch{
 		BaseRevision: 7,
@@ -67,14 +89,17 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 			Fallback:       true,
 			FallbackReason: "unsupported panel layout",
 			Panels: []PanelModel{{
-				ID:                     "panel:right",
-				Side:                   1,
-				Active:                 true,
-				Path:                   "/tmp",
-				ShowFileInfo:           true,
-				GalleryLayoutMode:      "grid",
-				GalleryColumnCount:     3,
-				GalleryDensity:         184,
+				ID:                 "panel:right",
+				Side:               1,
+				Active:             true,
+				Path:               "/tmp",
+				ShowFileInfo:       true,
+				GalleryLayoutMode:  "grid",
+				GalleryColumnCount: 3,
+				GalleryDensity:     184,
+				GalleryDensities: map[string]int{
+					"masonry": 150, "grid": 184, "icons": 64,
+				},
 				GalleryLayoutRevision:  9,
 				SourceKind:             "local",
 				PreviewCapable:         true,
@@ -169,6 +194,11 @@ func TestSceneToMapUsesAppSchema(t *testing.T) {
 		panels[0]["galleryDensity"] != 184 ||
 		panels[0]["galleryLayoutRevision"] != int64(9) {
 		t.Fatalf("gallery layout fields were not serialized: %#v", panels[0])
+	}
+	densities := panels[0]["galleryDensities"].(M)
+	if densities["masonry"] != 150 || densities["grid"] != 184 ||
+		densities["icons"] != 64 || len(densities) != 3 {
+		t.Fatalf("bounded per-mode densities were not serialized: %#v", densities)
 	}
 	galleryColumns := panels[0]["galleryColumns"].([]map[string]any)
 	if len(galleryColumns) != 1 || galleryColumns[0]["id"] != "name" ||

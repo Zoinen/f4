@@ -3,6 +3,8 @@
 #include <QAbstractSocket>
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QList>
 #include <QObject>
 #include <QQueue>
 #include <QTcpSocket>
@@ -75,6 +77,8 @@ public:
     Q_INVOKABLE void sendUiAction(const QVariantMap &action);
     Q_INVOKABLE void sendPanelCatalogMetadataRequest(
         const QVariantMap &request);
+    Q_INVOKABLE void sendPanelCatalogRowsRequest(
+        const QVariantMap &request);
     Q_INVOKABLE void sendQuit();
 
 signals:
@@ -82,8 +86,10 @@ signals:
     void sceneChanged();
     void presentationSceneChanged();
     void panelCatalogChanged(const QVariantMap &panel);
+    void panelCatalogAppendChanged(const QVariantMap &append);
     // Row-free panel state and sparse selection updates. Catalog rows remain
-    // immutable between panelCatalogChanged notifications.
+    // immutable between catalog notifications; large catalogs extend through
+    // panelCatalogAppendChanged without another model reset.
     void panelStateChanged(const QVariantMap &patch);
     // Row-free projection for QML-only panel/chrome bindings. Full catalog
     // rows stay on the direct C++ bridge signal above.

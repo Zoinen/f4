@@ -1174,9 +1174,13 @@ func (vv *ViewerView) GetKeyLabels() *vtui.KeySet {
 			Msg("KeyBar.ViewerF1"), Msg("KeyBar.ViewerF2"), Msg("KeyBar.ViewerF3"), Msg("KeyBar.ViewerF4"),
 			"", "", Msg("KeyBar.ViewerF7"), nextCpName, "", Msg("KeyBar.ViewerF10"),
 		},
+		NormalIcons: vtui.KeyBarIconNames{
+			"circle-question-mark", "text-wrap", "x", "binary", "", "", "search", "languages", "", "x", "", "",
+		},
 		Alt: vtui.KeyBarLabels{
 			"", "", "", "", "", "", "", Msg("KeyBar.ViewerAltF8"), "", "",
 		},
+		AltIcons: vtui.KeyBarIconNames{"", "", "", "", "", "", "", "locate-fixed", "", "", "", ""},
 	}
 	res := KeyBarLabelsForArea("Viewer", fallbacks)
 	if hm := GlobalHotkeysMgr; hm != nil {

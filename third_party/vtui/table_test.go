@@ -1219,3 +1219,36 @@ func TestTable_QuickSearchBottomUpMouse(t *testing.T) {
 		t.Errorf("click on empty space must be ignored, got %d", tbl.SelectPos)
 	}
 }
+
+func TestTable_VirtualRowsMaterializeOnlyVisibleRange(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewScreenBuf()
+	scr.AllocBuf(24, 8)
+	tbl := NewTable(0, 0, 24, 8, []TableColumn{{Title: "Name", Width: 20}})
+
+	calls := 0
+	tbl.SetRowProvider(30_000, func(index int) TableRow {
+		calls++
+		return mockRow{col1: "row-" + strconv.Itoa(index)}
+	})
+	if tbl.ItemCount != 30_000 || len(tbl.Rows) != 0 {
+		t.Fatalf("virtual table state: count=%d materialized=%d",
+			tbl.ItemCount, len(tbl.Rows))
+	}
+	if calls != 0 {
+		t.Fatalf("installing an unsorted provider materialized %d rows", calls)
+	}
+
+	tbl.Show(scr)
+	if calls == 0 || calls > tbl.ViewHeight {
+		t.Fatalf("first viewport materialized %d rows for height %d",
+			calls, tbl.ViewHeight)
+	}
+	firstViewportCalls := calls
+	tbl.TopPos = tbl.ItemCount - tbl.ViewHeight
+	tbl.Show(scr)
+	if calls-firstViewportCalls > tbl.ViewHeight {
+		t.Fatalf("last viewport materialized %d rows for height %d",
+			calls-firstViewportCalls, tbl.ViewHeight)
+	}
+}

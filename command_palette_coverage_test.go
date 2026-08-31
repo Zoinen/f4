@@ -111,6 +111,12 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"viewer_view.go:(*ViewerView).ProcessKey": {
 		class: paletteAuditActionArea, rationale: "viewer commands are registered actions; scrolling and selection remain local primitives",
 	},
+	"windows_locations_menu_windows.go:(*shellContextMenu).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "Windows Shell extension commands are discovered at runtime and selected inside the transient native-context cascade",
+	},
+	"windows_locations_menu_windows.go:(*windowsLocationsMenu).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the Windows navigation tree owns only transient expand, collapse and activation keys inside the drive-menu cascade",
+	},
 	"plugins/dummy_rpc/main.go:(*DummyPlugin).ProcessKey": {
 		class: paletteAuditTransportHook, rationale: "this is the RPC plugin ProcessKey protocol hook, not an in-process frame",
 	},
@@ -185,6 +191,12 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"viewer_view.go:(*ViewerView).showCodepageDialog#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered viewer codepage action opens the runtime codepage list",
+	},
+	"windows_locations_menu_windows.go:showShellContextMenu#1": {
+		class: paletteAuditModalLocal, rationale: "IContextMenu supplies a runtime, item-specific command tree that exists only while its transient menu token is alive",
+	},
+	"windows_locations_menu_windows.go:showWindowsLocationsMenu#1": {
+		class: paletteAuditDynamicProvider, rationale: "the Windows Shell broker supplies the user's live Explorer navigation roots and namespace extensions",
 	},
 }
 
