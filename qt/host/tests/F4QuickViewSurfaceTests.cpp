@@ -1326,6 +1326,55 @@ void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
         QVERIFY2(colorIds.contains(required), qPrintable(required));
     }
 
+    const QVariantMap expectedDefaults{
+        {QStringLiteral("windowBackgroundColor"), QStringLiteral("#191d23")},
+        {QStringLiteral("titleBarBg"), QStringLiteral("#19202b")},
+        {QStringLiteral("fBarBg"), QStringLiteral("#19202b")},
+        {QStringLiteral("panelPathBg"), QStringLiteral("#26576478")},
+        {QStringLiteral("commandLineBg"), QStringLiteral("#141921")},
+        {QStringLiteral("separatorColor"), QStringLiteral("#2d3642")},
+        {QStringLiteral("galleryPanelBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryViewerBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryItemBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryDirectoryBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryItemHoverColor"),
+         QStringLiteral("#1a75afe5")},
+        {QStringLiteral("galleryScrollBarHandleColor"),
+         QStringLiteral("#434b57")},
+        {QStringLiteral("galleryScrollBarBackgroundHoverColor"),
+         QStringLiteral("#5f6875")},
+        {QStringLiteral("galleryScrollBarHoverColor"),
+         QStringLiteral("#7f8896")},
+        {QStringLiteral("galleryScrollBarPressedColor"),
+         QStringLiteral("#47515d")},
+        {QStringLiteral("galleryPathBackgroundColor"),
+         QStringLiteral("#00000000")},
+        {QStringLiteral("galleryPathHoverColor"),
+         QStringLiteral("#2a3745")},
+    };
+    QVariantMap configuredDefaults;
+    for (const QVariant &definitionValue : definitions) {
+        const QVariantMap definition = definitionValue.toMap();
+        const QString id = definition.value(QStringLiteral("id")).toString();
+        configuredDefaults.insert(
+            id, definition.value(QStringLiteral("defaultColor")));
+    }
+    for (auto it = expectedDefaults.constBegin();
+         it != expectedDefaults.constEnd(); ++it) {
+        QVERIFY2(configuredDefaults.contains(it.key()),
+                 qPrintable(it.key()));
+        const QColor expected(it.value().toString());
+        QCOMPARE(QColor(configuredDefaults.value(it.key()).toString()),
+                 expected);
+        QCOMPARE(fixture.window
+                     ->property(it.key().toUtf8().constData())
+                     .value<QColor>(), expected);
+    }
+
     QStringList panelsGroupIds;
     QVariantMap activeAccent;
     for (const QVariant &definitionValue : definitions) {
@@ -1656,7 +1705,7 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
              savedLegacyChrome);
     QCOMPARE(fixture.window->property("galleryItemHoverColor")
                  .value<QColor>(),
-             QColor(QStringLiteral("#0cffffff")));
+             QColor(QStringLiteral("#1a75afe5")));
     QCOMPARE(fixture.textRenderingPolicy.renderTypeName(),
              QStringLiteral("QtRendering"));
     QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
@@ -3955,7 +4004,7 @@ void F4QuickViewSurfaceTests::commandLineUsesOriginalSemanticRendererAndCursor()
     QVERIFY(promptItem);
     QVERIFY(inputItem);
     QVERIFY(cursor);
-    const QColor defaultCommandLineBackground(QStringLiteral("#19000000"));
+    const QColor defaultCommandLineBackground(QStringLiteral("#141921"));
     QCOMPARE(fixture.window->property("commandLineBg").value<QColor>(),
              defaultCommandLineBackground);
     QCOMPARE(commandLineView->property("color").value<QColor>(),

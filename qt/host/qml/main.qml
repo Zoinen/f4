@@ -56,7 +56,7 @@ ApplicationWindow {
         ? macSystemButtonAreaLeftMargin + 74 : 0
     readonly property int macSystemButtonAreaLeftMargin: panelTextInset
     readonly property real titleBarContentVerticalOffset: 1
-    property color windowBackgroundColor: "#1f242c"
+    property color windowBackgroundColor: "#191d23"
     color: useTransparentWindowBackground ? "transparent" : root.windowBackgroundColor
 
     // Gallery receives full catalogs directly in C++. Keep those row payloads
@@ -273,16 +273,16 @@ ApplicationWindow {
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
     readonly property real menuItemHorizontalPadding: 14
-    property color panelPathBg: "#26314152"
-    property color commandLineBg: "#19000000"
+    property color panelPathBg: "#26576478"
+    property color commandLineBg: "#141921"
     property color activeBorder: "#f0c95a"
     property color textColor: "#e8edf2"
     property color mutedText: "#9aa7b5"
     property color selectedBg: "#285d8f"
     property color panelSelectionBg: "#18456e"
     property color panelSelectionBorder: "#1d5888"
-    property color titleBarBg: "#202833"
-    property color fBarBg: "#202833"
+    property color titleBarBg: "#19202b"
+    property color fBarBg: "#19202b"
     property color chromeText: "#d7e0ea"
     property color dialogBg: "#171e27"
     property color dialogHeaderBg: "#1b242f"
@@ -290,7 +290,7 @@ ApplicationWindow {
     property color controlHoverBg: "#2a3745"
     property color controlPressedBg: "#10161e"
     property color controlBorder: "#3a495b"
-    property color separatorColor: "#30363d"
+    property color separatorColor: "#2d3642"
     property color separatorHoverColor: "#464d55"
     property color separatorActiveColor: "#59616a"
     property color dialogAccent: "#4e9bd4"
@@ -299,8 +299,8 @@ ApplicationWindow {
     // those colors as first-class root properties so the configurator can
     // preview, persist, and reset them through the same path as f4's native
     // QML colors instead of handing the gallery a one-time palette snapshot.
-    property color galleryPanelBackgroundColor: "transparent"
-    property color galleryViewerBackgroundColor: "transparent"
+    property color galleryPanelBackgroundColor: "#00000000"
+    property color galleryViewerBackgroundColor: "#00000000"
     property color galleryTextColor: "#e8edf2"
     property color galleryMutedTextColor: "#9aa7b5"
     property color galleryFileTextColor: "#c4cbd3"
@@ -316,24 +316,24 @@ ApplicationWindow {
     property color gallerySelectionColor: "#ffd43b"
     property color galleryMarkedBackgroundColor: "#4f5037"
     property color galleryMarkedTextColor: "#ffd43b"
-    property color galleryItemBackgroundColor: "transparent"
-    property color galleryDirectoryBackgroundColor: "transparent"
+    property color galleryItemBackgroundColor: "#00000000"
+    property color galleryDirectoryBackgroundColor: "#00000000"
     // A low-alpha white overlay lightens the actual surface beneath a brick,
     // including the intentionally transparent default panel/card surfaces.
-    property color galleryItemHoverColor: "#0cffffff"
+    property color galleryItemHoverColor: "#1a75afe5"
     property color galleryLabelBackgroundColor: "#aa101216"
     property color galleryPreviewBackdropColor: "#4d000000"
     property color gallerySeparatorColor: "#30363d"
     property color galleryHeaderTextColor: "#d7e0ea"
     property color galleryControlHoverColor: "#2a3745"
-    property color galleryScrollBarHandleColor: "#4a4a4a"
-    property color galleryScrollBarBackgroundHoverColor: "#676767"
-    property color galleryScrollBarHoverColor: "#878787"
-    property color galleryScrollBarPressedColor: "#505050"
+    property color galleryScrollBarHandleColor: "#434b57"
+    property color galleryScrollBarBackgroundHoverColor: "#5f6875"
+    property color galleryScrollBarHoverColor: "#7f8896"
+    property color galleryScrollBarPressedColor: "#47515d"
     property color galleryScrollBarTrackHoverColor: "#0fffffff"
-    property color galleryPathBackgroundColor: "transparent"
+    property color galleryPathBackgroundColor: "#00000000"
     property color galleryPathTextColor: "#e8edf2"
-    property color galleryPathHoverColor: "#222c38"
+    property color galleryPathHoverColor: "#2a3745"
     property color galleryPathItemHoverColor: "#2a3745"
     property color galleryPathItemPressedColor: "#10161e"
     readonly property real iconDevicePixelRatio:
@@ -1688,16 +1688,16 @@ ApplicationWindow {
     readonly property int themeSchemaVersion: 1
     readonly property var themeColorDefinitions: [
         // Window
-        { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#1f242c" },
-        { id: "titleBarBg", name: "Chrome / Title Bar Background", group: "Window", defaultColor: "#202833" },
-        { id: "fBarBg", name: "Chrome / F-Bar Background", group: "Window", defaultColor: "#202833" },
+        { id: "windowBackgroundColor", name: "Window Background", group: "Window", defaultColor: "#191d23" },
+        { id: "titleBarBg", name: "Chrome / Title Bar Background", group: "Window", defaultColor: "#19202b" },
+        { id: "fBarBg", name: "Chrome / F-Bar Background", group: "Window", defaultColor: "#19202b" },
         { id: "chromeText", name: "Chrome Text", group: "Window", defaultColor: "#d7e0ea" },
 
         // Panels
-        { id: "panelPathBg", name: "Panel Header Background", group: "Panels", defaultColor: "#26314152" },
+        { id: "panelPathBg", name: "Panel Header Background", group: "Panels", defaultColor: "#26576478" },
 
         // Terminal
-        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "#19000000" },
+        { id: "commandLineBg", name: "Command Line Background", group: "Terminal", defaultColor: "#141921" },
 
         // Text
         { id: "textColor", name: "Primary Text Color", group: "Text", defaultColor: "#e8edf2" },
@@ -1723,13 +1723,13 @@ ApplicationWindow {
         { id: "controlBorder", name: "Control Border", group: "Controls", defaultColor: "#3a495b" },
 
         // Separators
-        { id: "separatorColor", name: "Separator Color", group: "Separators", defaultColor: "#30363d" },
+        { id: "separatorColor", name: "Separator Color", group: "Separators", defaultColor: "#2d3642" },
         { id: "separatorHoverColor", name: "Separator Hover Color", group: "Separators", defaultColor: "#464d55" },
         { id: "separatorActiveColor", name: "Separator Active Color", group: "Separators", defaultColor: "#59616a" },
 
         // ZoinGallery panel and viewer
-        { id: "galleryPanelBackgroundColor", name: "Gallery Panel Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryViewerBackgroundColor", name: "Gallery Viewer Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryPanelBackgroundColor", name: "Gallery Panel Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryViewerBackgroundColor", name: "Gallery Viewer Background", group: "Panel Colors", defaultColor: "#00000000" },
         { id: "galleryTextColor", name: "File Text", group: "Panel Colors", defaultColor: "#e8edf2" },
         { id: "galleryMutedTextColor", name: "Secondary File Text", group: "Panel Colors", defaultColor: "#9aa7b5" },
         { id: "galleryFileTextColor", name: "Neutral File Text", group: "Panel Colors", defaultColor: "#c4cbd3" },
@@ -1744,22 +1744,22 @@ ApplicationWindow {
         { id: "gallerySelectionColor", name: "Selection Border", group: "Panel Colors", defaultColor: "#ffd43b" },
         { id: "galleryMarkedBackgroundColor", name: "Marked Row Background", group: "Panel Colors", defaultColor: "#4f5037" },
         { id: "galleryMarkedTextColor", name: "Marked Item Text", group: "Panel Colors", defaultColor: "#ffd43b" },
-        { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "transparent" },
-        { id: "galleryItemHoverColor", name: "Item Hover", group: "Panel Colors", defaultColor: "#0cffffff" },
+        { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "#00000000" },
+        { id: "galleryItemHoverColor", name: "Item Hover", group: "Panel Colors", defaultColor: "#1a75afe5" },
         { id: "galleryLabelBackgroundColor", name: "Thumbnail Label Background", group: "Panel Colors", defaultColor: "#aa101216" },
         { id: "galleryPreviewBackdropColor", name: "Preview Placeholder", group: "Panel Colors", defaultColor: "#4d000000" },
         { id: "gallerySeparatorColor", name: "Gallery Separator", group: "Panel Colors", defaultColor: "#30363d" },
         { id: "galleryHeaderTextColor", name: "Gallery Header Text", group: "Panel Colors", defaultColor: "#d7e0ea" },
         { id: "galleryControlHoverColor", name: "Gallery Control Hover", group: "Panel Colors", defaultColor: "#2a3745" },
-        { id: "galleryScrollBarHandleColor", name: "Scrollbar Handle", group: "Panel Colors", defaultColor: "#4a4a4a" },
-        { id: "galleryScrollBarBackgroundHoverColor", name: "Scrollbar Hover Background", group: "Panel Colors", defaultColor: "#676767" },
-        { id: "galleryScrollBarHoverColor", name: "Scrollbar Handle Hover", group: "Panel Colors", defaultColor: "#878787" },
-        { id: "galleryScrollBarPressedColor", name: "Scrollbar Handle Pressed", group: "Panel Colors", defaultColor: "#505050" },
+        { id: "galleryScrollBarHandleColor", name: "Scrollbar Handle", group: "Panel Colors", defaultColor: "#434b57" },
+        { id: "galleryScrollBarBackgroundHoverColor", name: "Scrollbar Hover Background", group: "Panel Colors", defaultColor: "#5f6875" },
+        { id: "galleryScrollBarHoverColor", name: "Scrollbar Handle Hover", group: "Panel Colors", defaultColor: "#7f8896" },
+        { id: "galleryScrollBarPressedColor", name: "Scrollbar Handle Pressed", group: "Panel Colors", defaultColor: "#47515d" },
         { id: "galleryScrollBarTrackHoverColor", name: "Scrollbar Track Hover", group: "Panel Colors", defaultColor: "#0fffffff" },
-        { id: "galleryPathBackgroundColor", name: "Path Background", group: "Panel Colors", defaultColor: "transparent" },
+        { id: "galleryPathBackgroundColor", name: "Path Background", group: "Panel Colors", defaultColor: "#00000000" },
         { id: "galleryPathTextColor", name: "Path Text", group: "Panel Colors", defaultColor: "#e8edf2" },
-        { id: "galleryPathHoverColor", name: "Path Hover", group: "Panel Colors", defaultColor: "#222c38" },
+        { id: "galleryPathHoverColor", name: "Path Hover", group: "Panel Colors", defaultColor: "#2a3745" },
         { id: "galleryPathItemHoverColor", name: "Breadcrumb Hover", group: "Panel Colors", defaultColor: "#2a3745" },
         { id: "galleryPathItemPressedColor", name: "Breadcrumb Pressed", group: "Panel Colors", defaultColor: "#10161e" }
     ]
