@@ -51,6 +51,9 @@ public:
     // and must not enter the QML meta-object surface exposed as qtShell.
     void setMediaAdvertisementHandler(
         std::function<void(const QVariantMap &)> handler);
+    void setPlatformRequestHandler(
+        std::function<void(const QVariantMap &)> handler);
+    bool sendPlatformMessage(const QVariantMap &message);
 
     // Opportunistically completes the initial loopback connection without
     // running a nested event loop. A timeout leaves the asynchronous socket
@@ -196,4 +199,5 @@ private:
     QVariantList m_commandMenuStates;
     QVariantMap m_mediaAdvertisement;
     std::function<void(const QVariantMap &)> m_mediaAdvertisementHandler;
+    std::function<void(const QVariantMap &)> m_platformRequestHandler;
 };

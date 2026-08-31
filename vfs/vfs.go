@@ -48,7 +48,11 @@ type HostAPI interface {
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
 	Name string
-	Size int64
+	// DisplayName optionally replaces Name in visual surfaces only. Name stays
+	// the provider's stable path component, so duplicate search results can be
+	// disambiguated without changing transfer names or operations.
+	DisplayName string
+	Size        int64
 	// SizeKnown distinguishes a real zero-byte file from a remote object whose
 	// length is unavailable until Open/materialization. Non-zero Size is always
 	// treated as known for backwards compatibility with existing VFS plugins.
@@ -214,6 +218,16 @@ type VFS interface {
 
 	Clone() VFS
 	Close() error
+}
+
+// DirectoryWatcher is an optional live-change source for virtual directory
+// implementations whose contents are maintained by an external index or
+// discovery service. WatchDirectory blocks until ctx is cancelled or the
+// provider fails. Implementations must not call onChange after returning.
+// Notifications are edge-triggered hints: callers re-run ReadDir to obtain an
+// authoritative snapshot rather than attempting to apply provider deltas.
+type DirectoryWatcher interface {
+	WatchDirectory(ctx context.Context, path string, onChange func()) error
 }
 
 // ManagedTransferWriter marks a destination whose Close performs the actual

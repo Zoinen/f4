@@ -100,6 +100,8 @@ if(APPLE)
   target_link_libraries(f4-qt-host PRIVATE
     "-framework AppKit"
     "-framework Carbon"
+    "-framework NetFS"
+    "-framework Network"
   )
   # The host binary is also copied into a small application bundle below so
   # LaunchServices can own the adaptive Icon Composer icon. Keep the bare

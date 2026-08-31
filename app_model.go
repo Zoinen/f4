@@ -404,6 +404,10 @@ func (item appVMenu) model() extui.MenuModel {
 			"menuBarSubmenu": item.menuBarSubmenu,
 		},
 	}
+	if parent := item.menu.ParentMenu(); parent != nil {
+		menu.ParentID = vtui.SemanticID(parent)
+		menu.AnchorIndex = item.menu.ParentIndex()
+	}
 	for i, source := range item.menu.Items {
 		clean, hotkey, _ := vtui.ParseAmpersandString(source.Text)
 		clean, checked := appNormalizeMenuCheckmark(clean)
@@ -411,21 +415,25 @@ func (item appVMenu) model() extui.MenuModel {
 		if hotkey != 0 {
 			hotkeyText = string(hotkey)
 		}
-		disabled := false
+		disabled := source.Disabled
 		if vtui.FrameManager != nil {
-			disabled = vtui.FrameManager.DisabledCommands.IsDisabled(source.Command)
+			disabled = disabled || vtui.FrameManager.DisabledCommands.IsDisabled(source.Command)
 		}
 		menu.Items = append(menu.Items, extui.MenuItemModel{
-			Index:     i,
-			Text:      clean,
-			RawText:   source.Text,
-			Hotkey:    hotkeyText,
-			Icon:      source.Icon,
-			Shortcut:  source.Shortcut,
-			Command:   source.Command,
-			Separator: source.Separator,
-			Disabled:  disabled,
-			Checked:   checked,
+			Index:      i,
+			ID:         source.ID,
+			Text:       clean,
+			RawText:    source.Text,
+			Hotkey:     hotkeyText,
+			Icon:       source.Icon,
+			IconColor:  source.IconColor,
+			Shortcut:   source.Shortcut,
+			Command:    source.Command,
+			Separator:  source.Separator,
+			Header:     source.Header,
+			Disabled:   disabled,
+			Checked:    checked,
+			HasSubmenu: source.Submenu != nil,
 		})
 	}
 	return menu

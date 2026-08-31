@@ -4323,6 +4323,9 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			pf.switchToVFS(fsp, factory())
 		}})
 	}
+	if platformItem, ok := macOSLocationsMenuItem(pf, panelIdx); ok {
+		menu.AddItem(platformItem)
+	}
 
 	// 3. Folder bookmarks. far2l lists the assigned slots right here in
 	// the same menu (panels/panel.cpp, AddBookmarkItems) with the slot

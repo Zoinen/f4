@@ -581,6 +581,33 @@ func TestAppVMenuModelPreservesNativeMenuState(t *testing.T) {
 	}
 }
 
+func TestAppVMenuModelExportsNestedHeadersColorsAndStableIDs(t *testing.T) {
+	parent := vtui.NewVMenu("Parent")
+	parent.SetId("parent-menu")
+	parent.SetPosition(2, 2, 20, 8)
+	parent.AddItem(vtui.MenuItem{ID: "locations", Text: "Locations", Submenu: func() *vtui.VMenu {
+		return nil
+	}})
+	parent.AddItem(vtui.MenuItem{
+		ID: "tags-header", Text: "Tags", Header: true, Disabled: true,
+	})
+	parent.AddItem(vtui.MenuItem{
+		ID: "red", Text: "Red", Icon: "tag-dot", IconColor: "#ff453a",
+	})
+	model := (appVMenu{frame: parent, menu: parent}).model().ToMap()
+	items := model["items"].([]map[string]any)
+	if items[0]["id"] != "locations" || items[0]["hasSubmenu"] != true {
+		t.Fatalf("submenu semantics missing: %#v", items[0])
+	}
+	if items[1]["id"] != "tags-header" || items[1]["header"] != true ||
+		items[1]["disabled"] != true {
+		t.Fatalf("header semantics missing: %#v", items[1])
+	}
+	if items[2]["id"] != "red" || items[2]["iconColor"] != "#ff453a" {
+		t.Fatalf("tag color semantics missing: %#v", items[2])
+	}
+}
+
 func TestAppAutocompleteStartsWithoutImplicitSelection(t *testing.T) {
 	edit := vtui.NewEdit(0, 0, 40, "git st")
 	edit.History = []string{"git status", "git stash"}

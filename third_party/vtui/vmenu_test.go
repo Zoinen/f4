@@ -2,6 +2,7 @@ package vtui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/unxed/vtinput"
 )
@@ -147,5 +148,253 @@ func TestVMenu_MouseMoveIgnoresSeparatorAndOutside(t *testing.T) {
 	}
 	if m.SelectPos != 2 {
 		t.Fatalf("outside movement must not change selection, got %d", m.SelectPos)
+	}
+}
+
+func TestVMenuNestedKeyboardOpenCloseAndEdgePlacement(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	root := NewVMenu("Root")
+	root.SetPosition(30, 8, 39, 11)
+	root.AddItem(MenuItem{
+		ID: "locations", Text: "Locations",
+		Submenu: func() *VMenu {
+			child := NewVMenu("Child")
+			child.AddItem(MenuItem{ID: "header", Text: "Favorites", Header: true})
+			child.AddItem(MenuItem{ID: "home", Text: "Home"})
+			return child
+		},
+	})
+	fm.PushMenu(root)
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RIGHT,
+	}, false)
+	if len(fm.frames) != 3 {
+		t.Fatalf("frame stack after opening child = %d, want 3", len(fm.frames))
+	}
+	child, ok := fm.GetTopFrame().(*VMenu)
+	if !ok || child.ParentMenu() != root || child.ParentIndex() != 0 {
+		t.Fatalf("nested relationship was not retained: %#v", fm.GetTopFrame())
+	}
+	if child.SelectPos != 1 {
+		t.Fatalf("nonselectable header received focus; selected = %d", child.SelectPos)
+	}
+	x1, y1, x2, y2 := child.GetPosition()
+	if x1 < 0 || y1 < 0 || x2 >= 40 || y2 >= 12 || x1 >= root.X1 {
+		t.Fatalf("edge-flipped child position = (%d,%d)-(%d,%d)", x1, y1, x2, y2)
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_LEFT,
+	}, false)
+	if fm.GetTopFrame() != root || root.childMenu != nil {
+		t.Fatalf("Left did not restore the parent menu; top=%T child=%p",
+			fm.GetTopFrame(), root.childMenu)
+	}
+}
+
+func TestVMenuReplaceItemsPreservesStableSelection(t *testing.T) {
+	menu := NewVMenu("Dynamic")
+	menu.ReplaceItems([]MenuItem{
+		{ID: "header", Text: "Locations", Header: true},
+		{ID: "home", Text: "Home"},
+		{ID: "volume", Text: "Volume"},
+	})
+	menu.SetSelectPos(2)
+	menu.TopPos = 1
+	menu.ReplaceItems([]MenuItem{
+		{ID: "header", Text: "Locations", Header: true},
+		{ID: "cloud", Text: "Cloud"},
+		{ID: "volume", Text: "Renamed volume"},
+		{ID: "home", Text: "Home"},
+	})
+	if menu.SelectPos != 2 || menu.Items[menu.SelectPos].ID != "volume" {
+		t.Fatalf("selection was not preserved by ID: pos=%d item=%#v",
+			menu.SelectPos, menu.Items[menu.SelectPos])
+	}
+	menu.ReplaceItems([]MenuItem{{ID: "header", Text: "Tags", Header: true},
+		{ID: "all", Text: "All Tags"}})
+	if menu.SelectPos != 1 {
+		t.Fatalf("missing selection did not fall back to first selectable row: %d",
+			menu.SelectPos)
+	}
+}
+
+func TestVMenuHoverOpensSubmenuAfterDelay(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	root := NewVMenu("Root")
+	root.SetPosition(10, 5, 30, 9)
+	root.AddItem(MenuItem{
+		ID: "locations", Text: "Locations",
+		Submenu: func() *VMenu {
+			child := NewVMenu("Child")
+			child.AddItem(MenuItem{ID: "home", Text: "Home"})
+			return child
+		},
+	})
+	fm.PushMenu(root)
+
+	if !root.ProcessMouse(&vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		MouseX:          15,
+		MouseY:          6,
+		MouseEventFlags: vtinput.MouseMoved,
+	}) {
+		t.Fatal("hover over submenu row was not handled")
+	}
+
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	case <-time.After(time.Second):
+		t.Fatal("submenu hover did not post an opening task")
+	}
+	if root.childMenu == nil || fm.GetTopFrame() != root.childMenu {
+		t.Fatalf("hover did not open the anchored child: child=%p top=%T",
+			root.childMenu, fm.GetTopFrame())
+	}
+	root.CloseChain()
+}
+
+func TestVMenuReplaceItemsRetainsOpenChildByStableID(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	submenuFactory := func() *VMenu {
+		child := NewVMenu("Child")
+		child.AddItem(MenuItem{ID: "home", Text: "Home"})
+		return child
+	}
+	root := NewVMenu("Root")
+	root.SetPosition(10, 4, 30, 12)
+	root.ReplaceItems([]MenuItem{
+		{ID: "first", Text: "First"},
+		{ID: "locations", Text: "Locations", Submenu: submenuFactory},
+	})
+	fm.PushMenu(root)
+	if !root.OpenSubmenu(1) {
+		t.Fatal("failed to open initial child")
+	}
+	child := root.childMenu
+	_, oldY, _, _ := child.GetPosition()
+
+	root.ReplaceItems([]MenuItem{
+		{ID: "header", Text: "Places", Header: true},
+		{ID: "first", Text: "First"},
+		{ID: "locations", Text: "Locations", Submenu: submenuFactory},
+	})
+	_, newY, _, _ := child.GetPosition()
+	if root.childMenu != child || fm.GetTopFrame() != child {
+		t.Fatal("asynchronous replacement discarded the open child")
+	}
+	if root.childIndex != 2 || child.ParentIndex() != 2 {
+		t.Fatalf("child anchor after replacement = root %d / child %d, want 2",
+			root.childIndex, child.ParentIndex())
+	}
+	if newY != oldY+1 {
+		t.Fatalf("child was not repositioned with its stable row: y %d -> %d",
+			oldY, newY)
+	}
+	root.CloseChain()
+}
+
+func TestVMenuOutsideClickClosesNestedChain(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	root := NewVMenu("Root")
+	root.SetPosition(10, 5, 30, 12)
+	root.AddItem(MenuItem{
+		ID: "locations", Text: "Locations",
+		Submenu: func() *VMenu {
+			child := NewVMenu("Child")
+			child.AddItem(MenuItem{ID: "home", Text: "Home"})
+			return child
+		},
+	})
+	fm.PushMenu(root)
+	if !root.OpenSubmenu(0) {
+		t.Fatal("failed to open nested menu")
+	}
+	child := root.childMenu
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		KeyDown:     true,
+		MouseX:      2,
+		MouseY:      2,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}, false)
+	if !root.IsDone() || !child.IsDone() {
+		t.Fatalf("outside click left menu chain open: root=%v child=%v",
+			root.IsDone(), child.IsDone())
+	}
+	if root.childMenu != nil {
+		t.Fatal("outside click retained the nested relationship")
+	}
+}
+
+func TestVMenuCloseChainNotifiesEachMenuExactlyOnce(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	rootClosed := 0
+	childClosed := 0
+	root := NewVMenu("Root")
+	root.OnClose = func() { rootClosed++ }
+	root.AddItem(MenuItem{
+		ID: "dynamic", Text: "Dynamic",
+		Submenu: func() *VMenu {
+			child := NewVMenu("Child")
+			child.OnClose = func() { childClosed++ }
+			child.AddItem(MenuItem{ID: "loading", Text: "Loading", Disabled: true})
+			return child
+		},
+	})
+	fm.PushMenu(root)
+	if !root.OpenSubmenu(0) {
+		t.Fatal("failed to open child")
+	}
+	root.CloseChain()
+	root.CloseChain()
+	if rootClosed != 1 || childClosed != 1 {
+		t.Fatalf("close callbacks = root %d, child %d; want one each",
+			rootClosed, childClosed)
 	}
 }
