@@ -29,6 +29,7 @@
 #include <QQuickStyle>
 #include <QShortcut>
 #include <QStringList>
+#include <QStyleHints>
 #include <QTimer>
 #include <QUrl>
 
@@ -137,7 +138,20 @@ int main(int argc, char *argv[])
         return launchCoreShortcut(argc, argv);
     }
 
+#if defined(F4_PORTABLE_STATIC_LINUX)
+    // Prefer the session-native Wayland plugin and retain XCB as a fallback.
+    // This must be selected before QGuiApplication loads a platform plugin.
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsSet("WAYLAND_DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("wayland;xcb"));
+    }
+#endif
+
     QGuiApplication app(argc, argv);
+    // f4 currently ships one deliberately dark UI. Do not let the desktop
+    // color scheme make Qt Quick controls and ZoinGallery's shared style pick
+    // light-theme (black) title-bar icons on that dark surface.
+    QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
     const QIcon applicationIcon(

@@ -489,7 +489,7 @@ jobs:
         # source and object trees are not. Keep this deliberately narrow so
         # an ARM Qt build can checkpoint within GitHub's cache quota.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}
         restore-keys: |
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
@@ -699,14 +699,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patch-qt-qmltools-recipe.py') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4

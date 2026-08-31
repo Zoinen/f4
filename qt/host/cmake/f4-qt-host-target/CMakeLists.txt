@@ -90,6 +90,7 @@ target_include_directories(f4-qt-host PRIVATE "${F4_QT_HOST_ROOT}/src")
 
 target_compile_definitions(f4-qt-host PRIVATE
   $<$<BOOL:${USE_QWK}>:__USE_QWK>
+  $<$<AND:$<BOOL:${F4_PORTABLE_STATIC}>,$<PLATFORM_ID:Linux>>:F4_PORTABLE_STATIC_LINUX>
 )
 
 set_target_properties(f4-qt-host PROPERTIES
@@ -397,25 +398,70 @@ if(F4_QT_STATIC)
     Qt6::QuickEffects
     Qt6::QuickLayouts)
 
-  # Conan exposes Qt's Linux platform implementation as separate static
-  # archives with a real cycle: qxcb -> Qt6XcbQpa -> Qt6Gui. GNU ld scans an
-  # ordinary archive only once, so rescan this small platform group until all
-  # of its private Qt symbols are resolved. Windows' linker does not need it.
+  # Conan exposes Qt's Linux platform and graphics integrations as separate
+  # static archives, but only creates a target for the base XCB plugin. Retain
+  # native Wayland/EGL plus XCB's EGL/GLX fallbacks explicitly. The platform
+  # archives have cycles through their private Qt modules, so rescan the group
+  # until every plugin entry point and implementation symbol is resolved.
   if(UNIX AND NOT APPLE)
     find_library(_f4_qxcb_archive NAMES qxcb
       PATHS "${_f4_conan_qt_package_folder}/plugins/platforms"
       NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_qxcb_egl_archive NAMES qxcb-egl-integration
+      PATHS "${_f4_conan_qt_package_folder}/plugins/xcbglintegrations"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_qxcb_glx_archive NAMES qxcb-glx-integration
+      PATHS "${_f4_conan_qt_package_folder}/plugins/xcbglintegrations"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_qwayland_archive NAMES qwayland
+      PATHS "${_f4_conan_qt_package_folder}/plugins/platforms"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_qwayland_egl_archive NAMES qt-plugin-wayland-egl
+      PATHS "${_f4_conan_qt_package_folder}/plugins/wayland-graphics-integration-client"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_qwayland_xdg_shell_archive NAMES xdg-shell
+      PATHS "${_f4_conan_qt_package_folder}/plugins/wayland-shell-integration"
+      NO_DEFAULT_PATH REQUIRED)
     find_library(_f4_xcb_qpa_archive NAMES Qt6XcbQpa
+      PATHS "${_f4_conan_qt_package_folder}/lib"
+      NO_DEFAULT_PATH REQUIRED)
+    find_library(_f4_wayland_client_archive NAMES Qt6WaylandClient
       PATHS "${_f4_conan_qt_package_folder}/lib"
       NO_DEFAULT_PATH REQUIRED)
     find_library(_f4_gui_archive NAMES Qt6Gui
       PATHS "${_f4_conan_qt_package_folder}/lib"
       NO_DEFAULT_PATH REQUIRED)
+
+    # Mesa's EGL/Vulkan drivers use the process-wide Wayland client ABI. Do
+    # not embed Conan's static libwayland into the executable: that would
+    # collide with the system copy loaded by the graphics driver and corrupt
+    # Wayland protocol marshalling. Resolve shared Wayland libraries
+    # explicitly while retaining static Qt and xkbcommon.
+    set(_f4_saved_find_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".so")
+    find_library(_f4_wayland_client_shared NAMES wayland-client REQUIRED)
+    find_library(_f4_wayland_cursor_shared NAMES wayland-cursor REQUIRED)
+    find_library(_f4_wayland_egl_shared NAMES wayland-egl REQUIRED)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES "${_f4_saved_find_library_suffixes}")
     target_link_libraries(f4-qt-host PRIVATE
-      "$<LINK_GROUP:RESCAN,${_f4_qxcb_archive},${_f4_xcb_qpa_archive},${_f4_gui_archive}>")
+      "$<LINK_GROUP:RESCAN,${_f4_qxcb_archive},${_f4_qxcb_egl_archive},${_f4_qxcb_glx_archive},${_f4_qwayland_archive},${_f4_qwayland_egl_archive},${_f4_qwayland_xdg_shell_archive},${_f4_xcb_qpa_archive},${_f4_wayland_client_archive},${_f4_gui_archive}>"
+      "${_f4_wayland_client_shared}"
+      "${_f4_wayland_cursor_shared}"
+      "${_f4_wayland_egl_shared}"
+      xkbcommon::libxkbcommon)
     unset(_f4_qxcb_archive CACHE)
+    unset(_f4_qxcb_egl_archive CACHE)
+    unset(_f4_qxcb_glx_archive CACHE)
+    unset(_f4_qwayland_archive CACHE)
+    unset(_f4_qwayland_egl_archive CACHE)
+    unset(_f4_qwayland_xdg_shell_archive CACHE)
     unset(_f4_xcb_qpa_archive CACHE)
+    unset(_f4_wayland_client_archive CACHE)
     unset(_f4_gui_archive CACHE)
+    unset(_f4_wayland_client_shared CACHE)
+    unset(_f4_wayland_cursor_shared CACHE)
+    unset(_f4_wayland_egl_shared CACHE)
+    unset(_f4_saved_find_library_suffixes)
   endif()
 
   # The production host never enables QML debugging, so exclude the ordinary

@@ -168,6 +168,10 @@ require (
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.14
 
+// The portable launcher builds goffi in static/stub mode so optional GPU FFI
+// does not pull fake-CGo's libc/pthread startup hooks into the Qt-only binary.
+replace github.com/go-webgpu/goffi => github.com/unxed/goffi v0.1.4
+
 replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 
 // replace github.com/unxed/colorer4go => ../../../dev/colorer4go

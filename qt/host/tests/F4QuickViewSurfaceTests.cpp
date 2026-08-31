@@ -3180,6 +3180,13 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
     verifyDirectSvgIcon(minimizeIcon, QStringLiteral("minimize icon"));
     verifyDirectSvgIcon(maximizeIcon, QStringLiteral("maximize icon"));
     verifyDirectSvgIcon(closeIcon, QStringLiteral("close icon"));
+    const QColor darkChromeIconColor(QStringLiteral("#ffffff"));
+    QCOMPARE(minimizeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
+    QCOMPARE(maximizeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
+    QCOMPARE(closeIcon->property("color").value<QColor>(),
+             darkChromeIconColor);
 
     const QPointF titleBarOrigin = titleBar->mapToItem(rootItem, QPointF{});
     const qreal titleBarCenterY = titleBarOrigin.y() + titleBar->height() / 2;

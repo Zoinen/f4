@@ -422,6 +422,10 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        // f4 currently has one intentionally dark UI. Replace ZoinGallery's
+        // desktop color-scheme binding so a light KDE/Windows/macOS setting
+        // cannot turn controls black on f4's dark chrome later at runtime.
+        ZG.Style.isDarkTheme = true
         loadThemeFromPersistence()
         captureRetainedSurfaces()
         if (!f4UsesQwk)
@@ -2687,6 +2691,14 @@ ApplicationWindow {
                                 font.pixelSize: 9
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeFontRenderTypeDescription,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeFontRenderTypeDescription,
+                                        themeColorConfigurator.contentItem)
+                                }
                             }
                         }
 
@@ -2772,6 +2784,14 @@ ApplicationWindow {
                                 font.pixelSize: 9
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
+                                transform: Translate {
+                                    x: root.dialogPixelOffsetX(
+                                        themeMouseWheelDescription,
+                                        themeColorConfigurator.contentItem)
+                                    y: root.dialogPixelOffsetY(
+                                        themeMouseWheelDescription,
+                                        themeColorConfigurator.contentItem)
+                                }
                             }
                         }
 
@@ -3166,7 +3186,11 @@ ApplicationWindow {
                         RowLayout {
                             id: themeActiveColorRow
                             objectName: "themeActiveColorRow"
-                            Layout.fillWidth: true
+                            Layout.fillWidth: false
+                            Layout.preferredWidth: root.snapPx(320)
+                            Layout.minimumWidth: root.snapPx(320)
+                            Layout.maximumWidth: root.snapPx(320)
+                            width: root.snapPx(320)
                             Layout.preferredHeight: root.snapPx(26)
                             Layout.minimumHeight: root.snapPx(26)
                             Layout.maximumHeight: root.snapPx(26)
@@ -4872,7 +4896,7 @@ ApplicationWindow {
                     onClicked: root.showMinimized()
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Minimize,
                                                         minimizeButton)
                         }
@@ -4902,7 +4926,7 @@ ApplicationWindow {
                     }
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Maximize,
                                                         maximizeButton)
                         }
@@ -4935,7 +4959,7 @@ ApplicationWindow {
                     onClicked: root.close()
 
                     Component.onCompleted: {
-                        if (!root.useMacNativeTitleBar) {
+                        if (f4UsesQwk && !root.useMacNativeTitleBar) {
                             windowAgent.setSystemButton(WindowAgent.Close,
                                                         closeButton)
                         }
@@ -5861,6 +5885,11 @@ ApplicationWindow {
                     // content line; do not add the standalone control's inset.
                     leadingInset: 0
                     showDriveIcon: false
+                    // Remote panels can expose a Windows-native path even
+                    // when the Qt host itself is running on another OS.
+                    windowsPathSeparators:
+                        Qt.platform.os === "windows"
+                        || String(panel.path || "").indexOf("\\") >= 0
                     breadcrumbFontPixelSize: root.semanticTextFontPixelSize
                     pathBackgroundColor: root.galleryPathBackgroundColor
                     pathTextColor: root.galleryPathTextColor

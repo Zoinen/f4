@@ -9,7 +9,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qwk_source="${repo_root}/build/qwindowkit-src"
 qwk_build="${repo_root}/build/qwindowkit-build"
 qwk_install="${repo_root}/build/qwindowkit-install"
-qwk_marker="${qwk_install}/.f4-qwindowkit-ready-${linkage}-${build_type}"
+qwk_patch="${repo_root}/ci/patches/qwindowkit-default-maximize-hint.patch"
+qwk_patch_hash="$(cmake -E sha256sum "${qwk_patch}" | awk '{print substr($1, 1, 16)}')"
+qwk_marker="${qwk_install}/.f4-qwindowkit-ready-${linkage}-${build_type}-${qwk_patch_hash}"
 qt_version="$(basename "$(dirname "${qt_root}")")"
 qwk_cxx_flags=""
 qwk_platform_args=()
@@ -47,6 +49,13 @@ done
 
 rm -rf "${qwk_source}" "${qwk_build}" "${qwk_install}"
 git clone --recursive --branch main https://github.com/stdware/qwindowkit.git "${qwk_source}"
+
+if git -C "${qwk_source}" apply --reverse --check "${qwk_patch}" 2>/dev/null; then
+    echo "QWindowKit default maximize-hint fix is already upstream"
+else
+    git -C "${qwk_source}" apply --check "${qwk_patch}"
+    git -C "${qwk_source}" apply "${qwk_patch}"
+fi
 
 cmake -S "${qwk_source}" -B "${qwk_build}" -G Ninja \
     -DCMAKE_BUILD_TYPE="${build_type}" \
