@@ -261,9 +261,7 @@ func TestWindowsLocationAccessErrorDialogShowsReasonAndResolvesThemeAtRenderTime
 	var lines []string
 	for _, child := range dialog.GetChildren() {
 		if text, ok := child.(*vtui.Text); ok {
-			if value, exists := text.GetProperty("text"); exists {
-				lines = append(lines, value.S)
-			}
+			lines = append(lines, text.GetText())
 		}
 	}
 	message := strings.Join(lines, "\n")
