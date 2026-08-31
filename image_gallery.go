@@ -19,11 +19,17 @@ const (
 	imageTileRows = 9
 )
 
-var (
-	imageTileNameAttr   = vtui.SetRGBBoth(0, 0xC0C0C0, 0x101010)
-	imageTileCursorAttr = vtui.SetRGBBoth(0, 0x101010, 0xC0C0C0)
-	imageTilePickedAttr = vtui.SetRGBBoth(0, 0xFFFF00, 0x101010)
-)
+func imageTileNameAttr() uint64 {
+	return vtui.Palette[ColViewerText]
+}
+
+func imageTileCursorAttr() uint64 {
+	return vtui.Palette[ColViewerStatus]
+}
+
+func imageTilePickedAttr() uint64 {
+	return vtui.Palette[ColViewerArrows]
+}
 
 // imageGallery is the state of the grid: where the cursor is, which row of
 // tiles is the first one on screen, and the thumbnails that have arrived so
@@ -232,12 +238,12 @@ func (iv *ImageView) showTile(scr *vtui.ScreenBuf, idx, col, row, cw, ch int) {
 		name = iv.vfs.Base(path)
 	}
 
-	attr := imageTileNameAttr
+	attr := imageTileNameAttr()
 	switch {
 	case idx == iv.gal.cursor:
-		attr = imageTileCursorAttr
+		attr = imageTileCursorAttr()
 	case iv.selected[path]:
-		attr = imageTilePickedAttr
+		attr = imageTilePickedAttr()
 	}
 
 	caption := runewidth.Truncate(" "+name, imageTileCols, "…")

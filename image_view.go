@@ -27,14 +27,18 @@ const (
 	imageViewPrefetchRadius = 2
 )
 
-var imageViewBackAttr = vtui.SetRGBBoth(0, 0xC0C0C0, 0x101010)
+func imageViewBackAttr() uint64 {
+	return vtui.Palette[ColViewerText]
+}
 
-// imageOverlayAttr is what the info panel is written with. The background
-// only matters on backends that paint it over the picture; where the terminal
-// honours a negative z index, the picture shows through it.
-var imageOverlayAttr = vtui.SetRGBBoth(0, 0xFFFFFF, 0x202020)
+// imageOverlayAttr is what the info panel is written with. Resolve it at
+// render time so a viewer that is already open follows a theme change.
+func imageOverlayAttr() uint64 {
+	return vtui.Palette[ColViewerStatus]
+}
 
-// ImageView shows a single picture full screen.
+// ImageView shows a picture inside its workspace tab or across the whole
+// screen when full-screen mode is enabled.
 type ImageView struct {
 	vtui.BaseFrame
 	topBar *TopBar
@@ -370,15 +374,18 @@ func (iv *ImageView) SetPosition(x1, y1, x2, y2 int) {
 	}
 }
 
-// ResizeConsole lays the viewer out over the console. In the whole screen
-// mode the row that normally belongs to the key bar is taken by the picture.
+// ResizeConsole lays the viewer out inside the active workspace tab. In the
+// whole screen mode both the workspace tab row and the row that normally
+// belongs to the key bar are taken by the picture.
 func (iv *ImageView) ResizeConsole(w, h int) {
 	iv.conW, iv.conH = w, h
+	top := vtui.FrameManager.WorkspaceTopInset()
 	bottom := h - 2
 	if iv.full {
+		top = 0
 		bottom = h - 1
 	}
-	iv.SetPosition(0, 0, w-1, bottom)
+	iv.SetPosition(0, top, w-1, bottom)
 }
 
 // SetZoom applies a new zoom factor, 1 meaning "fit into the window".
@@ -576,7 +583,7 @@ func (iv *ImageView) pickMark() string {
 // Zero leaves the palette in charge.
 func (iv *ImageView) titleAttr() uint64 {
 	if iv.selected[iv.path] {
-		return imageTilePickedAttr
+		return imageTilePickedAttr()
 	}
 	return 0
 }
@@ -740,7 +747,7 @@ func (iv *ImageView) drawOverlay(scr *vtui.ScreenBuf) {
 		if w := runewidth.StringWidth(text); w < width {
 			text += strings.Repeat(" ", width-w)
 		}
-		scr.Write(x1, row, vtui.StringToCharInfo(text, imageOverlayAttr))
+		scr.Write(x1, row, vtui.StringToCharInfo(text, imageOverlayAttr()))
 	}
 }
 
@@ -755,7 +762,7 @@ func (iv *ImageView) Show(scr *vtui.ScreenBuf) {
 
 	x1, y1, x2, y2 := iv.GetPosition()
 	top := y1 + iv.barHeight()
-	scr.FillRect(x1, top, x2, y2, ' ', imageViewBackAttr)
+	scr.FillRect(x1, top, x2, y2, ' ', imageViewBackAttr())
 	if iv.gal != nil {
 		iv.showGallery(scr)
 		return
@@ -771,7 +778,7 @@ func (iv *ImageView) Show(scr *vtui.ScreenBuf) {
 		if x < x1 {
 			x = x1
 		}
-		scr.Write(x, (top+y2)/2, vtui.StringToCharInfo(msg, imageViewBackAttr))
+		scr.Write(x, (top+y2)/2, vtui.StringToCharInfo(msg, imageViewBackAttr()))
 		return
 	}
 	scr.Graphics().DrawImage(iv.gfxKey, p)
@@ -943,3 +950,12 @@ func (iv *ImageView) GetTitle() string {
 	}
 	return "Image"
 }
+
+func (iv *ImageView) GetWorkspaceTabTitle() string {
+	if iv.path != "" {
+		return filepath.Base(iv.path)
+	}
+	return "Image"
+}
+
+func (iv *ImageView) GetWorkspaceTabMarker() string { return "I" }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,6 +25,9 @@ func newImageTestScreen(t *testing.T) *vtui.ScreenBuf {
 
 func newTestImageView(t *testing.T, w, h int) *ImageView {
 	t.Helper()
+	oldTabMode := vtui.FrameManager.WorkspaceTabMode
+	vtui.FrameManager.WorkspaceTabMode = vtui.WorkspaceTabsNever
+	t.Cleanup(func() { vtui.FrameManager.WorkspaceTabMode = oldTabMode })
 	iv := &ImageView{
 		path:    "test.png",
 		surface: vtui.NewImageSurface(w, h),
@@ -33,6 +37,143 @@ func newTestImageView(t *testing.T, w, h int) *ImageView {
 	}
 	iv.ResizeConsole(80, 25)
 	return iv
+}
+
+func TestImageViewNonFullscreenOccupiesWorkspaceTabContent(t *testing.T) {
+	restoreBars(t)
+	oldTabMode := vtui.FrameManager.WorkspaceTabMode
+	vtui.FrameManager.WorkspaceTabMode = vtui.WorkspaceTabsAlways
+	t.Cleanup(func() { vtui.FrameManager.WorkspaceTabMode = oldTabMode })
+
+	iv := &ImageView{
+		path:    "test.png",
+		surface: vtui.NewImageSurface(100, 100),
+		decoder: "test",
+		zoom:    1,
+		gfxKey:  "workspace-content-test",
+	}
+	iv.ResizeConsole(80, 25)
+
+	x1, y1, x2, y2 := iv.GetPosition()
+	if x1 != 0 || y1 != 1 || x2 != 79 || y2 != 23 {
+		t.Fatalf("normal image frame = (%d,%d)-(%d,%d), want tab content (0,1)-(79,23)", x1, y1, x2, y2)
+	}
+	p, ok := iv.placementFor(newImageTestScreen(t))
+	if !ok {
+		t.Fatal("normal image layout failed")
+	}
+	if p.Row != 2 || p.Rows != 22 {
+		t.Fatalf("normal image placement = row %d, %d rows; want row 2 and 22 rows below its title", p.Row, p.Rows)
+	}
+
+	iv.SetFullScreen(true)
+	x1, y1, x2, y2 = iv.GetPosition()
+	if x1 != 0 || y1 != 0 || x2 != 79 || y2 != 24 {
+		t.Fatalf("fullscreen image frame = (%d,%d)-(%d,%d), want the whole screen", x1, y1, x2, y2)
+	}
+	p, ok = iv.placementFor(newImageTestScreen(t))
+	if !ok || p.Row != 0 || p.Rows != 25 {
+		t.Fatalf("fullscreen image placement = row %d, %d rows; want row 0 and 25 rows", p.Row, p.Rows)
+	}
+
+	iv.SetFullScreen(false)
+	_, y1, _, y2 = iv.GetPosition()
+	if y1 != 1 || y2 != 23 {
+		t.Fatalf("leaving fullscreen restored rows %d..%d, want tab content rows 1..23", y1, y2)
+	}
+}
+
+func TestImageViewRenderUsesCurrentViewerPalette(t *testing.T) {
+	oldText := vtui.Palette[ColViewerText]
+	oldStatus := vtui.Palette[ColViewerStatus]
+	oldArrows := vtui.Palette[ColViewerArrows]
+	t.Cleanup(func() {
+		vtui.Palette[ColViewerText] = oldText
+		vtui.Palette[ColViewerStatus] = oldStatus
+		vtui.Palette[ColViewerArrows] = oldArrows
+	})
+
+	textAttr1 := vtui.SetRGBBoth(0, 0x111111, 0x121212)
+	statusAttr1 := vtui.SetRGBBoth(0, 0x222222, 0x232323)
+	arrowsAttr1 := vtui.SetRGBBoth(0, 0x333333, 0x343434)
+	vtui.Palette[ColViewerText] = textAttr1
+	vtui.Palette[ColViewerStatus] = statusAttr1
+	vtui.Palette[ColViewerArrows] = arrowsAttr1
+
+	iv := &ImageView{
+		path:      "one.png",
+		surface:   vtui.NewImageSurface(10, 10),
+		decoder:   "test",
+		zoom:      1,
+		gfxKey:    "palette-test",
+		overlay:   true,
+		fileSize:  100,
+		sizeKnown: true,
+		selected:  map[string]bool{"one.png": true, "two.png": true},
+	}
+	iv.topBar = NewTopBar(func() string { return " one.png" }, func() string { return " image " })
+	iv.topBar.GetAttr = iv.titleAttr
+	iv.topBar.SetVisible(true)
+	iv.SetPosition(0, 1, 59, 13)
+
+	scr := newImageTestScreen(t)
+	scr.Graphics().BeginFrame()
+	iv.Show(scr)
+	scr.Graphics().EndFrame()
+	if got := scr.GetCell(59, 13).Attributes; got != textAttr1 {
+		t.Fatalf("image background attr = %016X, want current Viewer.Text %016X", got, textAttr1)
+	}
+	if got := scr.GetCell(0, 2).Attributes; got != statusAttr1 {
+		t.Fatalf("image overlay attr = %016X, want current Viewer.Status %016X", got, statusAttr1)
+	}
+	if got := scr.GetCell(0, 1).Attributes; got != arrowsAttr1 {
+		t.Fatalf("picked image title attr = %016X, want current Viewer.Arrows %016X", got, arrowsAttr1)
+	}
+
+	textAttr2 := vtui.SetRGBBoth(0, 0x444444, 0x454545)
+	statusAttr2 := vtui.SetRGBBoth(0, 0x555555, 0x565656)
+	arrowsAttr2 := vtui.SetRGBBoth(0, 0x666666, 0x676767)
+	vtui.Palette[ColViewerText] = textAttr2
+	vtui.Palette[ColViewerStatus] = statusAttr2
+	vtui.Palette[ColViewerArrows] = arrowsAttr2
+	iv.overlay = false
+	iv.siblings = []string{"one.png", "two.png", "three.png"}
+	iv.gal = &imageGallery{
+		cursor: 0,
+		thumbs: map[string]*vtui.ImageSurface{
+			"one.png":   vtui.NewImageSurface(4, 4),
+			"two.png":   vtui.NewImageSurface(4, 4),
+			"three.png": vtui.NewImageSurface(4, 4),
+		},
+		asked: make(map[string]bool),
+	}
+
+	scr.Graphics().BeginFrame()
+	iv.Show(scr)
+	scr.Graphics().EndFrame()
+	captionRow := 2 + imageTileRows - 1
+	if got := scr.GetCell(0, captionRow).Attributes; got != statusAttr2 {
+		t.Fatalf("gallery cursor attr after theme change = %016X, want %016X", got, statusAttr2)
+	}
+	if got := scr.GetCell(imageTileCols, captionRow).Attributes; got != arrowsAttr2 {
+		t.Fatalf("gallery picked attr after theme change = %016X, want %016X", got, arrowsAttr2)
+	}
+	if got := scr.GetCell(2*imageTileCols, captionRow).Attributes; got != textAttr2 {
+		t.Fatalf("gallery normal attr after theme change = %016X, want %016X", got, textAttr2)
+	}
+	if got := scr.GetCell(0, 1).Attributes; got != arrowsAttr2 {
+		t.Fatalf("open image title ignored theme change: got %016X, want %016X", got, arrowsAttr2)
+	}
+}
+
+func TestImageViewWorkspaceTabIdentity(t *testing.T) {
+	iv := &ImageView{path: filepath.Join("photos", "sunset.png")}
+	if got := iv.GetWorkspaceTabTitle(); got != "sunset.png" {
+		t.Fatalf("workspace tab title = %q, want image base name", got)
+	}
+	if got := iv.GetWorkspaceTabMarker(); got != "I" {
+		t.Fatalf("workspace tab marker = %q, want I", got)
+	}
 }
 
 func TestImageViewFitsAndCentres(t *testing.T) {
@@ -347,7 +488,7 @@ func TestImageViewTitleMarksAPickedPicture(t *testing.T) {
 	if iv.pickMark() == "" {
 		t.Error("a picked picture must be marked in the title")
 	}
-	if iv.titleAttr() != imageTilePickedAttr {
+	if iv.titleAttr() != imageTilePickedAttr() {
 		t.Error("a picked picture must colour the title bar")
 	}
 

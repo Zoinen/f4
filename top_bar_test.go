@@ -51,9 +51,9 @@ func TestTopBar_AttributeCallback(t *testing.T) {
 	tb.SetPosition(0, 0, 39, 0)
 	tb.SetVisible(true)
 
-	tb.GetAttr = func() uint64 { return imageTilePickedAttr }
+	tb.GetAttr = func() uint64 { return imageTilePickedAttr() }
 	tb.Show(scr)
-	if got := scr.GetCell(0, 0).Attributes; got != imageTilePickedAttr {
+	if got := scr.GetCell(0, 0).Attributes; got != imageTilePickedAttr() {
 		t.Errorf("the callback colour must win, got %016X", got)
 	}
 
