@@ -31,6 +31,37 @@ type fileEntry struct {
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
 }
+
+// directoryFileEntryWriter is the one authoritative source allocation used by
+// the windowed local-directory path. VFS fills it after publishing the exact
+// bounded window, avoiding a second full []VFSItem copy of the same rows.
+type directoryFileEntryWriter struct {
+	backing   []fileEntry
+	entries   []*fileEntry
+	completed bool
+}
+
+func (writer *directoryFileEntryWriter) BeginDirectoryItems(total int) {
+	writer.backing = make([]fileEntry, max(0, total))
+	writer.entries = make([]*fileEntry, max(0, total))
+	writer.completed = false
+}
+
+func (writer *directoryFileEntryWriter) WriteDirectoryItem(
+	index int,
+	item vfs.VFSItem,
+) {
+	if index < 0 || index >= len(writer.backing) {
+		return
+	}
+	writer.backing[index].VFSItem = item
+	writer.entries[index] = &writer.backing[index]
+}
+
+func (writer *directoryFileEntryWriter) EndDirectoryItems() {
+	writer.completed = true
+}
+
 type mediumRow struct {
 	fp *FileSystemPanel
 	r  int
@@ -473,7 +504,11 @@ type FileSystemPanel struct {
 	// catalogProvisional marks the synthetic cold-load placeholder (normally
 	// just ".."). Native frontends keep the destination hidden until the first
 	// authoritative catalog arrives instead of briefly painting an empty list.
-	catalogProvisional         bool
+	catalogProvisional bool
+	// catalogLogicalCount is non-zero only while a paged frontend has received
+	// an exact sparse catalog before the complete source rows have finished
+	// materializing. It is a scalar protocol fact, never a rendered-row cache.
+	catalogLogicalCount        int
 	loadingTimer               *time.Timer
 	loadingFrame               int
 	loadingGeneration          uint64
@@ -629,6 +664,19 @@ func phasedDirectoryReaderFor(filesystem vfs.VFS) vfs.PhasedDirectoryReader {
 		// A promoted OSVFS capability belongs to the embedded OSVFS, not to a
 		// wrapper which may override ReadDir. Only an explicit self capability
 		// is safe to use.
+		return nil
+	}
+	return reader
+}
+
+func windowedDirectoryReaderFor(filesystem vfs.VFS) vfs.WindowedDirectoryReader {
+	provider, ok := filesystem.(vfs.WindowedDirectoryReadProvider)
+	if !ok {
+		return nil
+	}
+	reader := provider.WindowedDirectoryReader()
+	readerVFS, ok := reader.(vfs.VFS)
+	if !ok || !sameVFSInstance(readerVFS, filesystem) {
 		return nil
 	}
 	return reader
@@ -865,52 +913,11 @@ func (fp *FileSystemPanel) sortEntries() {
 }
 
 func comparePanelFolded(left, right string) int {
-	// The common local-filesystem case is ASCII. Compare folded bytes in place
-	// instead of allocating two lowercase strings for every O(N log N) sort
-	// comparison; retain Unicode's established ordering as the fallback.
-	limit := len(left)
-	if len(right) < limit {
-		limit = len(right)
-	}
-	for index := 0; index < limit; index++ {
-		leftByte, rightByte := left[index], right[index]
-		if leftByte >= 0x80 || rightByte >= 0x80 {
-			leftFolded, rightFolded := strings.ToLower(left), strings.ToLower(right)
-			if leftFolded < rightFolded {
-				return -1
-			}
-			if leftFolded > rightFolded {
-				return 1
-			}
-			return 0
-		}
-		if leftByte >= 'A' && leftByte <= 'Z' {
-			leftByte += 'a' - 'A'
-		}
-		if rightByte >= 'A' && rightByte <= 'Z' {
-			rightByte += 'a' - 'A'
-		}
-		if leftByte < rightByte {
-			return -1
-		}
-		if leftByte > rightByte {
-			return 1
-		}
-	}
-	if len(left) < len(right) {
-		return -1
-	}
-	if len(left) > len(right) {
-		return 1
-	}
-	return 0
+	return vfs.CompareFoldedNames(left, right)
 }
 
 func comparePanelNames(left, right string) int {
-	if folded := comparePanelFolded(left, right); folded != 0 {
-		return folded
-	}
-	return strings.Compare(left, right)
+	return vfs.CompareNames(left, right)
 }
 
 func (fp *FileSystemPanel) compareEntryOrder(ei, ej *fileEntry) int {
@@ -1033,65 +1040,115 @@ func (fp *FileSystemPanel) tryLinearNameSort(entries []*fileEntry) bool {
 }
 
 func panelFoldKey(value string) string {
-	needsASCII := false
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if character >= 0x80 {
-			return strings.ToLower(value)
-		}
-		if character >= 'A' && character <= 'Z' {
-			needsASCII = true
-		}
-	}
-	if !needsASCII {
-		return value
-	}
-	folded := []byte(value)
-	for index, character := range folded {
-		if character >= 'A' && character <= 'Z' {
-			folded[index] = character + ('a' - 'A')
-		}
-	}
-	return string(folded)
+	return vfs.FoldNameKey(value)
 }
 
 // Shared-prefix Windows component names make byte-at-a-time comparator work
 // disproportionately expensive. Build each folded key once, then let Go's
 // optimized native string comparison handle the N log N ordering.
+type panelNameSortEntry struct {
+	entry  *fileEntry
+	folded string
+}
+
+func comparePreparedPanelName(left, right panelNameSortEntry, reverse bool) int {
+	if left.entry.Name == ".." || right.entry.Name == ".." {
+		if left.entry.Name == right.entry.Name {
+			return 0
+		}
+		if left.entry.Name == ".." {
+			return -1
+		}
+		return 1
+	}
+	if left.entry.IsDir != right.entry.IsDir {
+		if left.entry.IsDir {
+			return -1
+		}
+		return 1
+	}
+	cmp := strings.Compare(left.folded, right.folded)
+	if cmp == 0 {
+		cmp = strings.Compare(left.entry.visibleName(), right.entry.visibleName())
+	}
+	if reverse {
+		cmp = -cmp
+	}
+	return cmp
+}
+
+func mergePreparedPanelNames(destination, source []panelNameSortEntry,
+	leftStart, middle, rightEnd int, reverse bool,
+) {
+	left, right, output := leftStart, middle, leftStart
+	for left < middle && right < rightEnd {
+		if comparePreparedPanelName(source[left], source[right], reverse) <= 0 {
+			destination[output] = source[left]
+			left++
+		} else {
+			destination[output] = source[right]
+			right++
+		}
+		output++
+	}
+	output += copy(destination[output:rightEnd], source[left:middle])
+	copy(destination[output:rightEnd], source[right:rightEnd])
+}
+
+// sortEntriesByPreparedName folds every name once. Large local catalogs are
+// split into independent runs and merged in parallel; this keeps exact global
+// ordering while avoiding a serial 30k-row comparison pass before the first
+// bounded Qt catalog window can be published.
 func (fp *FileSystemPanel) sortEntriesByPreparedName(entries []*fileEntry) {
-	type keyedEntry struct {
-		entry  *fileEntry
-		folded string
+	keyed := make([]panelNameSortEntry, len(entries))
+	workerCount := 1
+	if len(entries) >= 8192 {
+		workerCount = min(runtime.GOMAXPROCS(0), 8)
+		workerCount = min(workerCount, (len(entries)+4095)/4096)
 	}
-	keyed := make([]keyedEntry, len(entries))
-	for index, entry := range entries {
-		keyed[index] = keyedEntry{entry: entry, folded: panelFoldKey(entry.visibleName())}
+	runSize := (len(entries) + workerCount - 1) / workerCount
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for worker := 0; worker < workerCount; worker++ {
+		start := worker * runSize
+		end := min(start+runSize, len(entries))
+		go func() {
+			defer workers.Done()
+			for index := start; index < end; index++ {
+				entry := entries[index]
+				keyed[index] = panelNameSortEntry{
+					entry: entry, folded: panelFoldKey(entry.visibleName()),
+				}
+			}
+			slices.SortFunc(keyed[start:end], func(left, right panelNameSortEntry) int {
+				return comparePreparedPanelName(left, right, fp.sortReverse)
+			})
+		}()
 	}
-	slices.SortFunc(keyed, func(left, right keyedEntry) int {
-		if left.entry.Name == ".." || right.entry.Name == ".." {
-			if left.entry.Name == right.entry.Name {
-				return 0
+	workers.Wait()
+
+	if workerCount > 1 {
+		scratch := make([]panelNameSortEntry, len(keyed))
+		source, destination := keyed, scratch
+		for runSize < len(keyed) {
+			pairCount := (len(keyed) + 2*runSize - 1) / (2 * runSize)
+			workers.Add(pairCount)
+			for pair := 0; pair < pairCount; pair++ {
+				leftStart := pair * 2 * runSize
+				middle := min(leftStart+runSize, len(keyed))
+				rightEnd := min(middle+runSize, len(keyed))
+				go func() {
+					defer workers.Done()
+					mergePreparedPanelNames(destination, source,
+						leftStart, middle, rightEnd, fp.sortReverse)
+				}()
 			}
-			if left.entry.Name == ".." {
-				return -1
-			}
-			return 1
+			workers.Wait()
+			source, destination = destination, source
+			runSize *= 2
 		}
-		if left.entry.IsDir != right.entry.IsDir {
-			if left.entry.IsDir {
-				return -1
-			}
-			return 1
-		}
-		cmp := strings.Compare(left.folded, right.folded)
-		if cmp == 0 {
-			cmp = strings.Compare(left.entry.visibleName(), right.entry.visibleName())
-		}
-		if fp.sortReverse {
-			cmp = -cmp
-		}
-		return cmp
-	})
+		keyed = source
+	}
 	for index := range keyed {
 		entries[index] = keyed[index].entry
 	}
@@ -2443,6 +2500,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	loadGeneration := fp.loadGeneration
 	fp.isLoading = true
 	fp.catalogInteractive = false
+	fp.catalogLogicalCount = 0
 	fp.startLoadingAnimation()
 
 	loadVFS := fp.vfs
@@ -2563,6 +2621,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	loadSortMode, loadSortReverse := fp.sortMode, fp.sortReverse
 	previewEligible := loadSortMode == SortName && !loadSortReverse &&
 		!AppConfig.SyncPanelLoad
+	windowedReader := windowedDirectoryReaderFor(loadVFS)
+	useWindowedRead := windowedReader != nil && usePhasedRead && previewEligible &&
+		extUiPanelCatalogRowsIsEnabled()
+	loadPendingSelection := fp.pendingSelection
 	loadIsCurrent := func() bool {
 		if ctx.Err() != nil || fp.loadCtx != ctx || fp.loadGeneration != loadGeneration ||
 			!sameVFSInstance(fp.vfs, loadVFS) {
@@ -2582,8 +2644,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		var accumulatedByName map[string]int
 		var pendingMetadata []vfs.VFSItem
 		chunkCount := 0
+		directoryEntryCount := 0
 		metadataChunkCount := 0
 		authoritativeCatalogQueued := false
+		authoritativeWindowQueued := false
 		authoritativePresentationComplete := false
 		if benchmark != nil {
 			benchmark.event("filesystem.readdir.begin", "go.worker", "path", path,
@@ -2670,45 +2734,94 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			})
 		}
 
-		publishCatalogChunk := func(chunk []vfs.VFSItem, authoritativeBase bool) {
-			chunkCount++
-			chunkIndex := chunkCount
-			if benchmark != nil {
-				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
-					"chunk", chunkIndex, "chunkEntries", len(chunk),
-					"entriesBefore", len(accumulated), "phase", "base")
-			}
-			if ctx.Err() != nil {
+		publishCatalogWindow := func(window vfs.DirectoryWindow) {
+			if !useWindowedRead || window.TotalCount < 0 ||
+				len(window.Entries) > window.TotalCount || ctx.Err() != nil {
 				return
 			}
-			// Directory-reader chunks are immutable after the callback. Take
-			// ownership of the first complete base instead of copying tens of
-			// thousands of VFSItem values into an identical accumulator.
-			if len(accumulated) == 0 && authoritativeBase {
-				accumulated = chunk
-			} else {
-				accumulated = append(accumulated, chunk...)
+			windowEntries := fileEntriesFromItems(window.Entries)
+			target := loadPendingSelection
+			targetFound := target == "" || target == ".." && showUpEntry
+			if !targetFound {
+				for _, entry := range windowEntries {
+					if entry.Name == target {
+						targetFound = true
+						break
+					}
+				}
 			}
-			if ctx.Err() != nil {
+			// A remembered row outside the bounded prefix needs the complete
+			// catalog to calculate its authoritative index and viewport.
+			if !targetFound {
 				return
 			}
-
-			if AppConfig.SyncPanelLoad {
-				return
-			}
-
-			conversionStartedNs := int64(0)
+			authoritativeWindowQueued = true
+			windowQueuedNs := int64(0)
 			if benchmark != nil {
-				conversionStartedNs = navigationBenchmarkMonotonicNs()
+				windowQueuedNs = navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.window.queued", "go.worker", windowQueuedNs,
+					"entries", len(windowEntries), "totalCount", window.TotalCount)
 			}
-			newEntries := fileEntriesFromItems(chunk)
-			if benchmark != nil {
-				conversionFinishedNs := navigationBenchmarkMonotonicNs()
-				benchmark.eventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
-					"chunk", chunkIndex, "entries", len(newEntries),
-					"durationNs", conversionFinishedNs-conversionStartedNs)
-			}
+			vtui.FrameManager.PostPriorityTaskWithRedrawDecision(func() bool {
+				if !loadIsCurrent() || !isFirstChunk {
+					return false
+				}
+				advanceSourceEpoch()
+				fp.entries = nil
+				if showUpEntry {
+					fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+				}
+				if len(fp.selectedItems) != 0 ||
+					(fp.previousSelectionMatches(loadVFS, path) && len(fp.previousSelection) != 0) {
+					for _, entry := range windowEntries {
+						fp.applyPersistentSelection(entry, loadVFS, path)
+					}
+				}
+				fp.entries = append(fp.entries, windowEntries...)
+				fp.sortEntrySlice(fp.entries)
+				fp.markSemanticCatalogMutation()
+				fp.catalogLogicalCount = window.TotalCount
+				if showUpEntry {
+					fp.catalogLogicalCount++
+				}
+				fp.catalogProvisional = false
+				fp.catalogInteractive = true
+				fp.stopLoadingAnimation()
+				fp.updateTitle(nil)
 
+				cursorIndex := 0
+				if target != "" {
+					for index, entry := range fp.entries {
+						if entry.Name == target {
+							cursorIndex = index
+							if fp.pendingSelection == target {
+								fp.pendingSelection = ""
+							}
+							break
+						}
+					}
+				}
+				fp.SetCursorIndex(cursorIndex)
+				if benchmark != nil {
+					startedNs := navigationBenchmarkMonotonicNs()
+					benchmark.eventAt("model.window.ready", "go.ui", startedNs,
+						"entries", len(fp.entries), "totalCount", fp.catalogLogicalCount,
+						"queueNs", startedNs-windowQueuedNs, "cursorIndex", fp.GetCursorIndex())
+					navigationBenchmarkPublishScene(benchmark, "window")
+				}
+				authoritativePresentationComplete =
+					publishPanelCatalogImmediate(fp, benchmark)
+				fp.Refresh()
+				vtui.FrameManager.Redraw()
+				return true
+			})
+		}
+
+		queueCatalogEntries := func(
+			newEntries []*fileEntry,
+			authoritativeBase bool,
+			chunkIndex int,
+		) {
 			if ctx.Err() != nil {
 				return
 			}
@@ -2781,9 +2894,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				appendFinishedNs := navigationBenchmarkMonotonicNs()
 				if preSorted && fp.sortMode == loadSortMode &&
 					fp.sortReverse == loadSortReverse {
-					fp.markSemanticCatalogMutation()
+					if !authoritativeWindowQueued {
+						fp.markSemanticCatalogMutation()
+					}
 				} else {
-					fp.sortEntries()
+					fp.sortEntrySlice(fp.entries)
+					if !authoritativeWindowQueued {
+						fp.markSemanticCatalogMutation()
+					}
 				}
 				sortFinishedNs := navigationBenchmarkMonotonicNs()
 				if authoritativeBase {
@@ -2824,10 +2942,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						"entries", len(fp.entries), "cursorIndex", fp.GetCursorIndex(),
 						"selectionNs", selectionFinishedNs-selectionStartedNs,
 						"appendNs", appendFinishedNs-selectionFinishedNs,
-						"sortNs", sortFinishedNs-appendFinishedNs)
-					navigationBenchmarkPublishScene(benchmark, "chunk")
+						"sortNs", sortFinishedNs-appendFinishedNs,
+						"windowAlreadyPublished", authoritativeWindowQueued)
+					if !authoritativeWindowQueued {
+						navigationBenchmarkPublishScene(benchmark, "chunk")
+					}
 				}
-				if authoritativeBase {
+				if authoritativeBase && !authoritativeWindowQueued {
 					authoritativePresentationComplete =
 						publishPanelCatalogImmediate(fp, benchmark)
 				}
@@ -2835,9 +2956,50 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				// Publish its bounded page first, then rebuild the fallback rows.
 				fp.Refresh()
 
-				vtui.FrameManager.Redraw() // Рисуем каждый чанк!
-				return true
+				if !authoritativeWindowQueued {
+					vtui.FrameManager.Redraw() // Рисуем каждый чанк!
+					return true
+				}
+				return false
 			})
+		}
+
+		publishCatalogChunk := func(chunk []vfs.VFSItem, authoritativeBase bool) {
+			chunkCount++
+			chunkIndex := chunkCount
+			if benchmark != nil {
+				benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
+					"chunk", chunkIndex, "chunkEntries", len(chunk),
+					"entriesBefore", len(accumulated), "phase", "base")
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			// Directory-reader chunks are immutable after the callback. Take
+			// ownership of the first complete base instead of copying tens of
+			// thousands of VFSItem values into an identical accumulator.
+			if len(accumulated) == 0 && authoritativeBase {
+				accumulated = chunk
+			} else {
+				accumulated = append(accumulated, chunk...)
+			}
+			directoryEntryCount = len(accumulated)
+			if ctx.Err() != nil || AppConfig.SyncPanelLoad {
+				return
+			}
+
+			conversionStartedNs := int64(0)
+			if benchmark != nil {
+				conversionStartedNs = navigationBenchmarkMonotonicNs()
+			}
+			newEntries := fileEntriesFromItems(chunk)
+			if benchmark != nil {
+				conversionFinishedNs := navigationBenchmarkMonotonicNs()
+				benchmark.eventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
+					"chunk", chunkIndex, "entries", len(newEntries),
+					"durationNs", conversionFinishedNs-conversionStartedNs)
+			}
+			queueCatalogEntries(newEntries, authoritativeBase, chunkIndex)
 		}
 
 		mergeMetadataChunk := func(chunk []vfs.VFSItem) {
@@ -2945,7 +3107,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 		var err error
 		if usePhasedRead {
-			err = phasedReader.ReadDirPhased(ctx, path, func(phase vfs.DirectoryReadPhase, chunk []vfs.VFSItem) {
+			onPhasedChunk := func(phase vfs.DirectoryReadPhase, chunk []vfs.VFSItem) {
 				switch phase {
 				case vfs.DirectoryReadPreview:
 					publishCatalogPreview(chunk)
@@ -2954,14 +3116,43 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				case vfs.DirectoryReadMetadata:
 					mergeMetadataChunk(chunk)
 				}
-			})
+			}
+			if useWindowedRead {
+				sourceWriter := &directoryFileEntryWriter{}
+				err = windowedReader.ReadDirWindowed(
+					ctx, path,
+					vfs.DirectoryWindowRequest{
+						Limit:         initialPanelCatalogRowsLimit,
+						IncludeHidden: AppConfig.ShowHiddenFiles,
+						Writer:        sourceWriter,
+					},
+					publishCatalogWindow,
+					onPhasedChunk,
+				)
+				if err == nil && sourceWriter.completed && ctx.Err() == nil {
+					chunkCount++
+					chunkIndex := chunkCount
+					directoryEntryCount = len(sourceWriter.entries)
+					if benchmark != nil {
+						benchmark.event("filesystem.readdir.chunk", "go.worker", "path", path,
+							"chunk", chunkIndex, "chunkEntries", directoryEntryCount,
+							"entriesBefore", 0, "phase", "direct-source")
+						benchmark.event("model.chunk.converted", "go.worker",
+							"chunk", chunkIndex, "entries", directoryEntryCount,
+							"durationNs", 0, "directSource", true)
+					}
+					queueCatalogEntries(sourceWriter.entries, true, chunkIndex)
+				}
+			} else {
+				err = phasedReader.ReadDirPhased(ctx, path, onPhasedChunk)
+			}
 		} else {
 			err = loadVFS.ReadDir(ctx, path, func(chunk []vfs.VFSItem) {
 				publishCatalogChunk(chunk, false)
 			})
 		}
 		if benchmark != nil {
-			fields := []any{"path", path, "chunks", chunkCount, "entries", len(accumulated), "ok", err == nil}
+			fields := []any{"path", path, "chunks", chunkCount, "entries", directoryEntryCount, "ok", err == nil}
 			if usePhasedRead {
 				fields = append(fields, "metadataChunks", metadataChunkCount, "phased", true)
 			}
@@ -3042,7 +3233,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		if benchmark != nil {
 			completionQueuedNs = navigationBenchmarkMonotonicNs()
 			benchmark.eventAt("model.final.queued", "go.worker", completionQueuedNs,
-				"path", path, "entries", len(accumulated), "chunks", chunkCount)
+				"path", path, "entries", directoryEntryCount, "chunks", chunkCount)
 		}
 		vtui.FrameManager.PostTaskWithRedrawDecision(func() (needsRedraw bool) {
 			completionPresentationChanged := false
@@ -3128,6 +3319,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 			}
 
+			if err == nil && (!authoritativeWindowQueued ||
+				fp.catalogLogicalCount == len(fp.entries)) {
+				fp.catalogLogicalCount = 0
+			}
 			fp.catalogProvisional = false
 			fp.stopLoadingAnimation()
 
@@ -3137,7 +3332,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if err != nil && err != context.Canceled {
 				if benchmark != nil {
 					benchmark.event("model.final.error", "go.ui", "path", path,
-						"entries", len(accumulated), "chunks", chunkCount, "error", err.Error())
+						"entries", directoryEntryCount, "chunks", chunkCount, "error", err.Error())
 				}
 				if fp.benchmarkLoadTrace == benchmark {
 					fp.benchmarkLoadTrace = nil

@@ -203,12 +203,50 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerFrameApply.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerFrameApply.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerSceneFrames.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerPanelFrames.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerFrameTrace.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellControllerStateStores.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiProtocol.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiProtocol.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiMessageDecoder.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiMessageDecoder.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiSceneReducer.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiSceneReducer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiScenePatchReducer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiSnapshotReducer.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiTransport.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiTransport.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ShellStateStore.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ShellStateStore.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiStateStores.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiStateStores.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeSceneSync.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalogAppend.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelState.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeBenchmark.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalog.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelSync.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeIntents.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeProtocol.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeRowsResponse.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeMetadataResponse.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelSessionRegistry.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelSessionRegistry.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelIntentController.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelIntentController.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ViewerCoordinator.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ViewerCoordinator.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4IconProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/WindowGeometryPersistence.h"
@@ -494,6 +532,133 @@ endif()
 if(BUILD_TESTING)
   find_package(Qt6 COMPONENTS Test REQUIRED)
 
+  find_program(F4_ARCHITECTURE_PYTHON NAMES python3 python)
+  if(F4_ARCHITECTURE_PYTHON)
+    add_test(NAME F4QtArchitectureCheck
+      COMMAND ${F4_ARCHITECTURE_PYTHON}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/ZoinGallery/tools/check_architecture.py
+        --root ${CMAKE_CURRENT_SOURCE_DIR}/../..
+        --qml-root qt/host/qml
+        --cpp-root qt/host/src
+        --require-bound-qml
+        --fail-on-file-limit
+        --fail-on-function-limit)
+  endif()
+
+  add_executable(ExtUiProtocolTests
+    tests/ExtUiProtocolTests.cpp
+    src/ExtUiProtocol.h
+    src/ExtUiProtocol.cpp
+    src/ExtUiMessageDecoder.h
+    src/ExtUiMessageDecoder.cpp
+  )
+  target_include_directories(ExtUiProtocolTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(ExtUiProtocolTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  target_compile_definitions(ExtUiProtocolTests PRIVATE
+    F4_EXTUI_GOLDEN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/extui/testdata/v4_envelopes.msgpack"
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(ExtUiProtocolTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(ExtUiProtocolTests PRIVATE msgpack-cxx::msgpack-cxx)
+  endif()
+  add_test(NAME ExtUiProtocolTest COMMAND ExtUiProtocolTests)
+
+  add_executable(ShellStateStoreTests
+    tests/ShellStateStoreTests.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
+  )
+  target_include_directories(ShellStateStoreTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(ShellStateStoreTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME ShellStateStoreTest COMMAND ShellStateStoreTests)
+
+  add_executable(ExtUiSceneReducerTests
+    tests/ExtUiSceneReducerTests.cpp
+    src/ExtUiSceneReducer.h
+    src/ExtUiSceneReducer.cpp
+    src/ExtUiScenePatchReducer.cpp
+    src/ExtUiSnapshotReducer.cpp
+  )
+  target_include_directories(ExtUiSceneReducerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(ExtUiSceneReducerTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME ExtUiSceneReducerTest COMMAND ExtUiSceneReducerTests)
+
+  add_executable(ViewerCoordinatorTests
+    tests/ViewerCoordinatorTests.cpp
+    src/ViewerCoordinator.h
+    src/ViewerCoordinator.cpp
+  )
+  target_include_directories(ViewerCoordinatorTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(ViewerCoordinatorTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME ViewerCoordinatorTest COMMAND ViewerCoordinatorTests)
+
+  add_executable(PanelCatalogModelTests
+    tests/PanelCatalogModelTests.cpp
+    src/PanelCatalogModel.h
+    src/PanelCatalogModel.cpp
+  )
+  target_include_directories(PanelCatalogModelTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(PanelCatalogModelTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME PanelCatalogModelTest COMMAND PanelCatalogModelTests)
+
+  add_executable(PanelSessionRegistryTests
+    tests/PanelSessionRegistryTests.cpp
+    src/PanelCatalogModel.h
+    src/PanelCatalogModel.cpp
+    src/PanelSessionRegistry.h
+    src/PanelSessionRegistry.cpp
+  )
+  target_include_directories(PanelSessionRegistryTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(PanelSessionRegistryTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME PanelSessionRegistryTest COMMAND PanelSessionRegistryTests)
+
+  add_executable(PanelIntentControllerTests
+    tests/PanelIntentControllerTests.cpp
+    src/PanelIntentController.h
+    src/PanelIntentController.cpp
+  )
+  target_include_directories(PanelIntentControllerTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(PanelIntentControllerTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME PanelIntentControllerTest COMMAND PanelIntentControllerTests)
+
   if(APPLE)
     add_executable(MacApplicationMenuTests
       tests/MacApplicationMenuTests.mm
@@ -693,18 +858,87 @@ if(BUILD_TESTING)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
 
+  # Tests that instantiate the shell use the same component graph as the
+  # production host. Keep one resource manifest so extracting a QML type can
+  # never silently leave one of the fixture executables with an incomplete
+  # lexical module.
+  set(F4_HOST_TEST_QML_FILES
+    qml/main.qml
+    qml/F4HostWindow.qml
+    qml/PanelSplitter.qml
+    qml/GalleryPanelHost.qml
+    qml/GalleryPanelHostAdapter.qml
+    qml/GalleryPanelInputRouter.qml
+    qml/GalleryViewerHost.qml
+    qml/HostPixelAlignedImage.qml
+    qml/HostPresentationUtilities.qml
+    qml/FilePanelView.qml
+    qml/PanelPairSurface.qml
+    qml/PanelsSurface.qml
+    qml/ShellSurfaceHost.qml
+    qml/ShellShortcuts.qml
+    qml/ShellSceneStore.qml
+    qml/ShellInteractionController.qml
+    qml/FilePanelChrome.qml
+    qml/PanelRendererMenu.qml
+    qml/QuickViewPanelView.qml
+    qml/InfoPanelView.qml
+    qml/CommandLineView.qml
+    qml/ConsoleRunRow.qml
+    qml/DocumentSurface.qml
+    qml/DocumentViewportController.qml
+    qml/DocumentRowPool.qml
+    qml/DocumentTerminalSelectionController.qml
+    qml/DocumentEditorPointerController.qml
+    qml/TerminalBackdrop.qml
+    qml/OperationsQueueSurface.qml
+    qml/OperationsQueueController.qml
+    qml/DialogButton.qml
+    qml/QueueActionButton.qml
+    qml/QueueSummaryItem.qml
+    qml/ConfigDialogButton.qml
+    qml/ThemeRenderTypeComboBox.qml
+    qml/ThemeEditor.qml
+    qml/ThemeDraftModel.qml
+    qml/HostThemePalette.qml
+    qml/ThemeColorWheel.qml
+    qml/ThemeColorEditorPane.qml
+    qml/ThemeEditorFooter.qml
+    qml/SemanticMenuBar.qml
+    qml/ShellTitleBar.qml
+    qml/WorkspaceTabs.qml
+    qml/DialogCheckBox.qml
+    qml/DialogRadioButton.qml
+    qml/DialogProgressBar.qml
+    qml/DialogTextField.qml
+    qml/DialogComboBox.qml
+    qml/DialogResizeHandle.qml
+    qml/SemanticWidgetDelegate.qml
+    qml/GenericDialog.qml
+    qml/DialogOverlay.qml
+    qml/AutocompletePopup.qml
+    qml/SemanticMenuPopup.qml
+    qml/OverlayHost.qml
+    qml/KeyBarView.qml
+    qml/ToastView.qml
+  )
+
   add_executable(F4DocumentSurfaceTests
     tests/F4DocumentSurfaceTests.cpp
+    tests/TestExtUiStateController.h
+    tests/TestExtUiStateController.cpp
     src/DummyQWK.h
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(F4DocumentSurfaceTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   qt6_add_resources(F4DocumentSurfaceTests f4_document_surface_test_qml
     PREFIX "/F4QtHost"
-    FILES
-      qml/main.qml
-      qml/PanelSplitter.qml
+    FILES ${F4_HOST_TEST_QML_FILES}
   )
   f4_add_icon_test_resources(F4DocumentSurfaceTests)
   target_link_libraries(F4DocumentSurfaceTests PRIVATE
@@ -719,23 +953,33 @@ if(BUILD_TESTING)
   f4_link_static_zoingallery_plugin(F4DocumentSurfaceTests)
   f4_link_static_test_platform(F4DocumentSurfaceTests)
   f4_link_static_test_qml_plugins(F4DocumentSurfaceTests)
+  set(F4_HOST_QML_TEST_ENV
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+  )
+  set(F4_HOST_QML_DPR_TEST_ENV
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+  )
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
 
   add_executable(F4OperationsQueueTests
     tests/F4OperationsQueueTests.cpp
+    tests/TestExtUiStateController.h
+    tests/TestExtUiStateController.cpp
     src/DummyQWK.h
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(F4OperationsQueueTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   qt6_add_resources(F4OperationsQueueTests f4_operations_queue_test_qml
     PREFIX "/F4QtHost"
-    FILES
-      qml/main.qml
-      qml/PanelSplitter.qml
+    FILES ${F4_HOST_TEST_QML_FILES}
   )
   f4_add_icon_test_resources(F4OperationsQueueTests)
   target_link_libraries(F4OperationsQueueTests PRIVATE
@@ -752,14 +996,20 @@ if(BUILD_TESTING)
   f4_link_static_test_qml_plugins(F4OperationsQueueTests)
   add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
 
   add_executable(F4QuickViewSurfaceTests
     tests/F4QuickViewSurfaceTests.cpp
+    tests/TestExtUiStateController.h
+    tests/TestExtUiStateController.cpp
     src/DummyQWK.h
     src/F4TextRenderingPolicy.h
     src/F4TextRenderingPolicy.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(F4QuickViewSurfaceTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -767,8 +1017,7 @@ if(BUILD_TESTING)
   qt6_add_resources(F4QuickViewSurfaceTests f4_quick_view_surface_test_qml
     PREFIX "/F4QtHost"
     FILES
-      qml/main.qml
-      qml/PanelSplitter.qml
+      ${F4_HOST_TEST_QML_FILES}
       tests/TestGalleryPanel.qml
   )
   f4_add_icon_test_resources(F4QuickViewSurfaceTests)
@@ -788,59 +1037,79 @@ if(BUILD_TESTING)
   f4_link_static_test_image_plugins(F4QuickViewSurfaceTests)
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
   add_test(NAME F4QuickViewIconPixelGridTest
     COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewPanelDriveButtonTest
     COMMAND F4QuickViewSurfaceTests
       panelDriveButtonUsesPathIconAndRequestsDriveMenu)
   set_tests_properties(F4QuickViewPanelDriveButtonTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewDriveMenuIconsTest
     COMMAND F4QuickViewSurfaceTests
       driveMenuIconsUseSemanticModelAndLiveTheme)
   set_tests_properties(F4QuickViewDriveMenuIconsTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewNestedMenuPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels)
   set_tests_properties(F4QuickViewNestedMenuPixelGridTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewNestedMenuHoverTest
     COMMAND F4QuickViewSurfaceTests nestedMenuHoverUsesDelayedSubmenuAction)
   set_tests_properties(F4QuickViewNestedMenuHoverTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
   add_test(NAME F4QuickViewTextPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       workspaceTabTextParentsStayOnPhysicalPixelGrid)
   set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewPathBreadcrumbPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       pathBreadcrumbTextStaysFixedWhenNavigatingDeeper)
   set_tests_properties(F4QuickViewPathBreadcrumbPixelGridTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewThemeDialogPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       themeDialogControlsStayOnPhysicalPixelGridAt175Percent)
   set_tests_properties(F4QuickViewThemeDialogPixelGridTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
 
   add_executable(QtShellControllerTests
     tests/QtShellControllerTests.cpp
     src/QtShellController.h
     src/QtShellController.cpp
+    src/QtShellControllerFrameApply.h
+    src/QtShellControllerFrameApply.cpp
+    src/QtShellControllerSceneFrames.cpp
+    src/QtShellControllerPanelFrames.cpp
+    src/QtShellControllerFrameTrace.cpp
+    src/QtShellControllerStateStores.cpp
+    src/ExtUiProtocol.h
+    src/ExtUiProtocol.cpp
+    src/ExtUiMessageDecoder.h
+    src/ExtUiMessageDecoder.cpp
+    src/ExtUiSceneReducer.h
+    src/ExtUiSceneReducer.cpp
+    src/ExtUiScenePatchReducer.cpp
+    src/ExtUiSnapshotReducer.cpp
+    src/ExtUiTransport.h
+    src/ExtUiTransport.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(QtShellControllerTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -852,6 +1121,8 @@ if(BUILD_TESTING)
   )
   target_compile_definitions(QtShellControllerTests PRIVATE
     F4_QT_HOST_TEST_EXECUTABLE="$<TARGET_FILE:f4-qt-host>"
+    F4_QT_HOST_BUILD_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}"
+    F4_EXTUI_REDUCER_TEST_HARNESS=1
   )
 
   # Conan's CMakeDeps generator represents shared package components with an
@@ -897,12 +1168,80 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME QtShellControllerTest COMMAND QtShellControllerTests)
 
+  # Compiles the controller through its real production branch (without the
+  # legacy reducer-test oracle) and proves that independent v4 streams never
+  # assemble or retain a complete application scene.
+  add_executable(QtShellControllerProductionTests
+    tests/QtShellControllerProductionTests.cpp
+    src/QtShellController.h
+    src/QtShellController.cpp
+    src/QtShellControllerFrameApply.h
+    src/QtShellControllerFrameApply.cpp
+    src/QtShellControllerSceneFrames.cpp
+    src/QtShellControllerPanelFrames.cpp
+    src/QtShellControllerFrameTrace.cpp
+    src/QtShellControllerStateStores.cpp
+    src/ExtUiProtocol.h
+    src/ExtUiProtocol.cpp
+    src/ExtUiMessageDecoder.h
+    src/ExtUiMessageDecoder.cpp
+    src/ExtUiSceneReducer.h
+    src/ExtUiSceneReducer.cpp
+    src/ExtUiScenePatchReducer.cpp
+    src/ExtUiSnapshotReducer.cpp
+    src/ExtUiTransport.h
+    src/ExtUiTransport.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
+  )
+  target_include_directories(QtShellControllerProductionTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(QtShellControllerProductionTests PRIVATE
+    F4_EXTUI_PRODUCTION_TESTING=1
+  )
+  target_link_libraries(QtShellControllerProductionTests PRIVATE
+    Qt6::Core
+    Qt6::Network
+    Qt6::Test
+  )
+  if(TARGET msgpack-cxx)
+    target_link_libraries(QtShellControllerProductionTests PRIVATE msgpack-cxx)
+  elseif(TARGET msgpack-cxx::msgpack-cxx)
+    target_link_libraries(QtShellControllerProductionTests PRIVATE
+      msgpack-cxx::msgpack-cxx)
+  endif()
+  add_test(NAME QtShellControllerProductionTest
+    COMMAND QtShellControllerProductionTests)
+
   add_executable(QtMediaClientTests
     tests/QtMediaClientTests.cpp
     src/QtMediaClient.h
     src/QtMediaClient.cpp
     src/QtShellController.h
     src/QtShellController.cpp
+    src/QtShellControllerFrameApply.h
+    src/QtShellControllerFrameApply.cpp
+    src/QtShellControllerSceneFrames.cpp
+    src/QtShellControllerPanelFrames.cpp
+    src/QtShellControllerFrameTrace.cpp
+    src/QtShellControllerStateStores.cpp
+    src/ExtUiProtocol.h
+    src/ExtUiProtocol.cpp
+    src/ExtUiMessageDecoder.h
+    src/ExtUiMessageDecoder.cpp
+    src/ExtUiSceneReducer.h
+    src/ExtUiSceneReducer.cpp
+    src/ExtUiScenePatchReducer.cpp
+    src/ExtUiSnapshotReducer.cpp
+    src/ExtUiTransport.h
+    src/ExtUiTransport.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(QtMediaClientTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -951,6 +1290,24 @@ if(BUILD_TESTING)
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
+    src/F4GalleryBridgeSceneSync.cpp
+    src/F4GalleryBridgeCatalogAppend.cpp
+    src/F4GalleryBridgePanelState.cpp
+    src/F4GalleryBridgeBenchmark.cpp
+    src/F4GalleryBridgeCatalog.cpp
+    src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeIntents.cpp
+    src/F4GalleryBridgeProtocol.cpp
+    src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeMetadataResponse.cpp
+    src/PanelCatalogModel.h
+    src/PanelCatalogModel.cpp
+    src/PanelSessionRegistry.h
+    src/PanelSessionRegistry.cpp
+    src/PanelIntentController.h
+    src/PanelIntentController.cpp
+    src/ViewerCoordinator.h
+    src/ViewerCoordinator.cpp
     src/F4IconProvider.h
     src/F4IconProvider.cpp
   )
@@ -970,6 +1327,8 @@ if(BUILD_TESTING)
     PREFIX "/F4QtHost"
     FILES
       qml/GalleryPanelHost.qml
+      qml/GalleryPanelHostAdapter.qml
+      qml/GalleryPanelInputRouter.qml
       qml/GalleryViewerHost.qml
   )
   target_link_libraries(F4GalleryBridgeTests PRIVATE
@@ -997,12 +1356,50 @@ if(BUILD_TESTING)
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridge.cpp
+    src/F4GalleryBridgeSceneSync.cpp
+    src/F4GalleryBridgeCatalogAppend.cpp
+    src/F4GalleryBridgePanelState.cpp
+    src/F4GalleryBridgeBenchmark.cpp
+    src/F4GalleryBridgeCatalog.cpp
+    src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeIntents.cpp
+    src/F4GalleryBridgeProtocol.cpp
+    src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeMetadataResponse.cpp
+    src/PanelCatalogModel.h
+    src/PanelCatalogModel.cpp
+    src/PanelSessionRegistry.h
+    src/PanelSessionRegistry.cpp
+    src/PanelIntentController.h
+    src/PanelIntentController.cpp
+    src/ViewerCoordinator.h
+    src/ViewerCoordinator.cpp
     src/F4IconProvider.h
     src/F4IconProvider.cpp
     src/VtuiGridItem.h
     src/VtuiGridItem.cpp
     src/QtShellController.h
     src/QtShellController.cpp
+    src/QtShellControllerFrameApply.h
+    src/QtShellControllerFrameApply.cpp
+    src/QtShellControllerSceneFrames.cpp
+    src/QtShellControllerPanelFrames.cpp
+    src/QtShellControllerFrameTrace.cpp
+    src/QtShellControllerStateStores.cpp
+    src/ExtUiProtocol.h
+    src/ExtUiProtocol.cpp
+    src/ExtUiMessageDecoder.h
+    src/ExtUiMessageDecoder.cpp
+    src/ExtUiSceneReducer.h
+    src/ExtUiSceneReducer.cpp
+    src/ExtUiScenePatchReducer.cpp
+    src/ExtUiSnapshotReducer.cpp
+    src/ExtUiTransport.h
+    src/ExtUiTransport.cpp
+    src/ShellStateStore.h
+    src/ShellStateStore.cpp
+    src/ExtUiStateStores.h
+    src/ExtUiStateStores.cpp
   )
   target_include_directories(F4GalleryPointerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   f4_add_icon_test_resources(F4GalleryPointerTests)
@@ -1010,6 +1407,8 @@ if(BUILD_TESTING)
     PREFIX "/F4QtHost"
     FILES
       qml/GalleryPanelHost.qml
+      qml/GalleryPanelHostAdapter.qml
+      qml/GalleryPanelInputRouter.qml
       qml/GalleryViewerHost.qml
   )
   target_link_libraries(F4GalleryPointerTests PRIVATE

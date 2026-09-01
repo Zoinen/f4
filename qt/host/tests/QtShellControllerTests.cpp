@@ -22,6 +22,7 @@
 #include <msgpack.hpp>
 
 #include <map>
+#include <optional>
 
 namespace
 {
@@ -145,6 +146,27 @@ QByteArray variantFrame(const QVariantMap &message)
     msgpack::packer<msgpack::sbuffer> packer(payload);
     packVariant(packer, message);
     return framed(payload);
+}
+
+QByteArray semanticFrame(quint64 sequence, const QString &streamId,
+                         quint64 revision, const QString &kind,
+                         const QVariantMap &payload,
+                         std::optional<quint64> baseRevision = std::nullopt)
+{
+    QVariantMap envelope{
+        {QStringLiteral("type"), QStringLiteral("extui")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("sequence"), sequence},
+        {QStringLiteral("streamId"), streamId},
+        {QStringLiteral("revision"), revision},
+        {QStringLiteral("kind"), kind},
+        {QStringLiteral("payload"), payload},
+    };
+    if (baseRevision.has_value()) {
+        envelope.insert(QStringLiteral("baseRevision"),
+                        baseRevision.value());
+    }
+    return variantFrame(envelope);
 }
 
 QByteArray sceneFrame(quint64 sequence, int rowCount,
@@ -459,6 +481,7 @@ class QtShellControllerTests final : public QObject
 
 private slots:
     void initTestCase();
+    void qmlMetaObjectDoesNotExposeMasterScene();
     void benchmarkMonotonicClockAdvances();
     void keyEventsPackUniqueTraceMetadataAndStages();
     void malformedAddressReportsFatalErrorAfterConstruction();
@@ -483,6 +506,7 @@ private slots:
     void panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSignal();
     void panelChromePatchUpdatesOnlyChromeWithoutCatalogSignals();
     void panelActivationPatchIsRevisionedAndCatalogFree();
+    void revisionGapRequestsAndAppliesOnlyOneStreamSnapshot();
     void destructionWithQueuedDecodeIsSafe();
 };
 
@@ -690,6 +714,9 @@ void QtShellControllerTests::hostExecutableRefusedConnectionExitsTwoPromptly()
     process.setProcessChannelMode(QProcess::MergedChannels);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     QStringList runtimeDirectories{
+#if defined(F4_QT_HOST_BUILD_DIRECTORY)
+        QString::fromUtf8(F4_QT_HOST_BUILD_DIRECTORY),
+#endif
         QString::fromUtf8(F4_QT_RUNTIME_DIRECTORY),
 #if defined(F4_QWK_RUNTIME_DIRECTORY)
         QString::fromUtf8(F4_QWK_RUNTIME_DIRECTORY),
@@ -761,11 +788,12 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
     const std::map<std::string, bool> capabilities =
         message.at("capabilities").as<std::map<std::string, bool>>();
     QCOMPARE(capabilities.at("panelCatalogMetadataV1"), true);
+    QCOMPARE(capabilities.at("panelCatalogRowsV1"), true);
 #if defined(Q_OS_MACOS)
-    QCOMPARE(capabilities.size(), size_t(2));
+    QCOMPARE(capabilities.size(), size_t(3));
     QCOMPARE(capabilities.at("macPlatformServicesV1"), true);
 #else
-    QCOMPARE(capabilities.size(), size_t(1));
+    QCOMPARE(capabilities.size(), size_t(2));
 #endif
 
     QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
@@ -774,7 +802,7 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
         {QStringLiteral("type"), QStringLiteral("hello")},
         {QStringLiteral("nonce"),
          QStringLiteral("synchronous-handshake-test")},
-        {QStringLiteral("protocol"), 3},
+        {QStringLiteral("protocol"), 4},
     });
     QCOMPARE(peer->write(serverHello),
              static_cast<qint64>(serverHello.size()));
@@ -933,7 +961,7 @@ void QtShellControllerTests::startupWindowWaitsForVisibleCatalogs()
             {QStringLiteral("kind"), QStringLiteral("viewer")},
         }},
     }));
-    QVERIFY(QtShellController::initialSceneReadyForDisplay({
+    QVERIFY(!QtShellController::initialSceneReadyForDisplay({
         {QStringLiteral("frames"), QVariantList{
             QVariantMap{{QStringLiteral("kind"),
                          QStringLiteral("fallback")}},
@@ -1208,8 +1236,16 @@ void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
         ++sceneSignalDepth;
         maximumSceneSignalDepth = qMax(maximumSceneSignalDepth,
                                        sceneSignalDepth);
-        if (controller.scene().value(
-                QStringLiteral("sequence")).toULongLong() == 1) {
+        deliveryThreadWasCorrect = deliveryThreadWasCorrect
+            && QThread::currentThread() == controller.thread();
+        const qulonglong appliedSequence = controller.scene().value(
+            QStringLiteral("sequence")).toULongLong();
+        received.append(appliedSequence);
+        deliveryEvents.append(QStringLiteral("r%1").arg(appliedSequence));
+        if (received.size() == 1) {
+            heartbeatsBeforeFirstDelivery = heartbeatCount;
+        }
+        if (appliedSequence == 1) {
             // Exercise a nested event loop like a synchronous QML observer or
             // modal UI can. Decode-ahead results must wait until this scene
             // finishes applying instead of reentering the controller.
@@ -1221,16 +1257,6 @@ void QtShellControllerTests::largeScenesDecodeOffGuiThreadInOrder()
             }
         }
         --sceneSignalDepth;
-    });
-    connect(&controller, &QtShellController::messageReceived,
-            this, [&](const QVariantMap &message) {
-        deliveryThreadWasCorrect = deliveryThreadWasCorrect
-            && QThread::currentThread() == controller.thread();
-        received.append(message.value(QStringLiteral("sequence")).toULongLong());
-        deliveryEvents.append(QStringLiteral("r%1").arg(received.constLast()));
-        if (received.size() == 1) {
-            heartbeatsBeforeFirstDelivery = heartbeatCount;
-        }
     });
 
     QCOMPARE(peer->write(first), static_cast<qint64>(first.size()));
@@ -1304,7 +1330,6 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
                                   &QtShellController::commandLineChanged);
     QSignalSpy commandMenusChanged(&controller,
                                    &QtShellController::commandMenusChanged);
-    QSignalSpy messages(&controller, &QtShellController::messageReceived);
 
     const QByteArray initial = commandLineSceneFrame(QByteArray(), 0);
     QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
@@ -1325,7 +1350,6 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(commandLineChanged.size(), 2, 3000);
     QTRY_COMPARE_WITH_TIMEOUT(commandMenusChanged.size(), 1, 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 2, 3000);
     QCOMPARE(sceneChanged.size(), 1);
 
     const QVariantMap patchedShell = controller.scene()
@@ -1454,9 +1478,20 @@ void QtShellControllerTests::commandLinePatchPreservesExistingScene()
         presentationLegacy.value(QStringLiteral("frames"))));
     verifyPresentationCatalog(panelFromScreens(
         presentationLegacy.value(QStringLiteral("screens"))));
-    QCOMPARE(messages.constLast().constFirst()
-                 .toMap().value(QStringLiteral("type")).toString(),
-             QStringLiteral("command_line"));
+}
+
+void QtShellControllerTests::qmlMetaObjectDoesNotExposeMasterScene()
+{
+    const QMetaObject &meta = QtShellController::staticMetaObject;
+    QCOMPARE(meta.indexOfProperty("scene"), -1);
+    QCOMPARE(meta.indexOfProperty("presentationScene"), -1);
+    QCOMPARE(meta.indexOfProperty("commandLine"), -1);
+    QCOMPARE(meta.indexOfProperty("commandMenus"), -1);
+    QVERIFY(meta.indexOfProperty("chromeState") >= 0);
+    QVERIFY(meta.indexOfProperty("workspaceState") >= 0);
+    QVERIFY(meta.indexOfProperty("overlayState") >= 0);
+    QVERIFY(meta.indexOfProperty("commandLineState") >= 0);
+    QVERIFY(meta.indexOfProperty("surfaceRegistry") >= 0);
 }
 
 void QtShellControllerTests::scenePatchUpdatesMenusWithoutSceneProjectionSignal()
@@ -2457,13 +2492,15 @@ void QtShellControllerTests::panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSig
     QSignalSpy commandMenusChanged(
         &controller, &QtShellController::commandMenusChanged);
     QSignalSpy messages(&controller, &QtShellController::messageReceived);
+    QSignalSpy compactApplied(
+        &controller, &QtShellController::compactMessageApplied);
 
     const QByteArray initial = variantFrame(initialScene);
     QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
     QCOMPARE(presentationChanged.size(), 1);
-    QCOMPARE(messages.size(), 1);
+    QCOMPARE(messages.size(), 0);
     const QVariantMap untouchedRight = controller.scene()
                                            .value(QStringLiteral("shell"))
                                            .toMap()
@@ -2548,7 +2585,8 @@ void QtShellControllerTests::panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSig
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(catalogChanged.size(), 1, 3000);
     QTRY_COMPARE_WITH_TIMEOUT(compactPresentation.size(), 1, 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 2, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(compactApplied.size(), 1, 3000);
+    QCOMPARE(messages.size(), 0);
 
     QCOMPARE(sceneChanged.size(), 1);
     QCOMPARE(presentationChanged.size(), 0);
@@ -2623,7 +2661,9 @@ void QtShellControllerTests::panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSig
     QCOMPARE(peer->write(invalidFrame),
              static_cast<qint64>(invalidFrame.size()));
     peer->flush();
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 3, 3000);
+    QTest::qWait(30);
+    QCOMPARE(messages.size(), 0);
+    QCOMPARE(compactApplied.size(), 1);
     QCOMPARE(catalogChanged.size(), 1);
     QCOMPARE(compactPresentation.size(), 1);
     QCOMPARE(sceneChanged.size(), 1);
@@ -2668,7 +2708,7 @@ void QtShellControllerTests::panelChromePatchUpdatesOnlyChromeWithoutCatalogSign
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
     QCOMPARE(presentationChanged.size(), 1);
-    QCOMPARE(messages.size(), 1);
+    QCOMPARE(messages.size(), 0);
 
     const QVariantList fullPanelsBefore = controller.scene()
                                               .value(QStringLiteral("shell"))
@@ -2717,8 +2757,8 @@ void QtShellControllerTests::panelChromePatchUpdatesOnlyChromeWithoutCatalogSign
     QCOMPARE(peer->write(patchFrame),
              static_cast<qint64>(patchFrame.size()));
     peer->flush();
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 1, 3000);
     QTRY_COMPARE_WITH_TIMEOUT(compactPresentation.size(), 1, 3000);
+    QCOMPARE(messages.size(), 0);
 
     // Chrome updates keep both controller caches authoritative without
     // invalidating the heavyweight QML presentation. Only a validated,
@@ -2775,13 +2815,12 @@ void QtShellControllerTests::panelChromePatchUpdatesOnlyChromeWithoutCatalogSign
 
     const QVariantMap acceptedFullScene = fullScene;
     const QVariantMap acceptedPresentationScene = presentationScene;
-    const auto sendRejected = [&](const QVariantMap &invalid,
-                                  int expectedMessageCount) {
+    const auto sendRejected = [&](const QVariantMap &invalid) {
         const QByteArray frame = variantFrame(invalid);
         QCOMPARE(peer->write(frame), static_cast<qint64>(frame.size()));
         peer->flush();
-        QTRY_COMPARE_WITH_TIMEOUT(messages.size(), expectedMessageCount,
-                                  3000);
+        QTest::qWait(30);
+        QCOMPARE(messages.size(), 0);
         QCOMPARE(presentationChanged.size(), 0);
         QCOMPARE(compactPresentation.size(), 1);
         QCOMPARE(controller.scene(), acceptedFullScene);
@@ -2791,14 +2830,14 @@ void QtShellControllerTests::panelChromePatchUpdatesOnlyChromeWithoutCatalogSign
 
     QVariantMap unknownKey = patch;
     unknownKey.insert(QStringLiteral("side"), 0);
-    sendRejected(unknownKey, 2);
+    sendRejected(unknownKey);
     QVariantMap invalidActivePanel = patch;
     invalidActivePanel.insert(QStringLiteral("activePanel"),
                               QStringLiteral("1"));
-    sendRejected(invalidActivePanel, 3);
+    sendRejected(invalidActivePanel);
     QVariantMap invalidMenus = patch;
     invalidMenus.insert(QStringLiteral("menus"), QVariantMap{});
-    sendRejected(invalidMenus, 4);
+    sendRejected(invalidMenus);
 }
 
 void QtShellControllerTests::panelActivationPatchIsRevisionedAndCatalogFree()
@@ -2823,6 +2862,8 @@ void QtShellControllerTests::panelActivationPatchIsRevisionedAndCatalogFree()
     QSignalSpy commandLineChanged(
         &controller, &QtShellController::commandLineChanged);
     QSignalSpy messages(&controller, &QtShellController::messageReceived);
+    QSignalSpy compactApplied(
+        &controller, &QtShellController::compactMessageApplied);
 
     const QByteArray initial = panelActivationSceneFrame(0);
     QCOMPARE(peer->write(initial), static_cast<qint64>(initial.size()));
@@ -2843,7 +2884,8 @@ void QtShellControllerTests::panelActivationPatchIsRevisionedAndCatalogFree()
     QCOMPARE(peer->write(patch), static_cast<qint64>(patch.size()));
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(activationChanged.size(), 1, 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 2, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(compactApplied.size(), 1, 3000);
+    QCOMPARE(messages.size(), 0);
 
     // Activation has a dedicated bridge/QML notification. It must not wake
     // either scene observer, which would rebind both persistent panels.
@@ -2896,7 +2938,9 @@ void QtShellControllerTests::panelActivationPatchIsRevisionedAndCatalogFree()
     const QByteArray stale = panelActivationPatchFrame(0, 1);
     QCOMPARE(peer->write(stale), static_cast<qint64>(stale.size()));
     peer->flush();
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 3, 3000);
+    QTest::qWait(30);
+    QCOMPARE(messages.size(), 0);
+    QCOMPARE(compactApplied.size(), 1);
     QCOMPARE(activationChanged.size(), 1);
     QCOMPARE(presentationChanged.size(), 1);
     verifyActiveSide(controller.scene(), true);
@@ -2905,11 +2949,105 @@ void QtShellControllerTests::panelActivationPatchIsRevisionedAndCatalogFree()
     QCOMPARE(peer->write(newer), static_cast<qint64>(newer.size()));
     peer->flush();
     QTRY_COMPARE_WITH_TIMEOUT(activationChanged.size(), 2, 3000);
+    QCOMPARE(compactApplied.size(), 2);
     QCOMPARE(activationChanged.constLast().at(0).toInt(), 0);
     QCOMPARE(activationChanged.constLast().at(1).toULongLong(),
              qulonglong(2));
     QCOMPARE(sceneChanged.size(), 1);
     QCOMPARE(presentationChanged.size(), 1);
+}
+
+void QtShellControllerTests::revisionGapRequestsAndAppliesOnlyOneStreamSnapshot()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = QStringLiteral("stream-gap-test");
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        nonce, 80, 24);
+    QSignalSpy fatal(&controller, &QtShellController::fatalError);
+    QSignalSpy messages(&controller, &QtShellController::messageReceived);
+    QSignalSpy commandLineChanged(
+        &controller, &QtShellController::commandLineChanged);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray clientHello;
+    QVERIFY(takeFrame(peer, clientHello));
+    const QByteArray serverHello = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("hello")},
+        {QStringLiteral("nonce"), nonce},
+        {QStringLiteral("protocol"), 4},
+    });
+    QCOMPARE(peer->write(serverHello), qint64(serverHello.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 1, 3000);
+
+    QSignalSpy sceneChanged(&controller, &QtShellController::sceneChanged);
+    const QByteArray initialScene = variantFrame({
+        {QStringLiteral("type"), QStringLiteral("scene")},
+        {QStringLiteral("shell"), QVariantMap{
+             {QStringLiteral("commandLine"), QVariantMap{
+                  {QStringLiteral("text"), QString()},
+              }},
+         }},
+    });
+    QCOMPARE(peer->write(initialScene), qint64(initialScene.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(sceneChanged.size(), 1, 3000);
+    commandLineChanged.clear();
+
+    const QByteArray first = semanticFrame(
+        1, QStringLiteral("command-line"), 1, QStringLiteral("patch"),
+        {{QStringLiteral("type"), QStringLiteral("command_line")},
+         {QStringLiteral("commandLine"), QVariantMap{
+              {QStringLiteral("text"), QStringLiteral("first")}}}},
+        0);
+    QCOMPARE(peer->write(first), qint64(first.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(commandLineChanged.size(), 1, 3000);
+    QCOMPARE(messages.size(), 1);
+
+    const QByteArray gap = semanticFrame(
+        2, QStringLiteral("command-line"), 3, QStringLiteral("patch"),
+        {{QStringLiteral("type"), QStringLiteral("command_line")},
+         {QStringLiteral("commandLine"), QVariantMap{
+              {QStringLiteral("text"), QStringLiteral("missing-base")}}}},
+        2);
+    QCOMPARE(peer->write(gap), qint64(gap.size()));
+    peer->flush();
+
+    QByteArray requestPayload;
+    QVERIFY(takePayload(peer, requestPayload));
+    msgpack::object_handle requestHandle = msgpack::unpack(
+        requestPayload.constData(),
+        static_cast<size_t>(requestPayload.size()));
+    std::map<std::string, msgpack::object> request;
+    requestHandle.get().convert(request);
+    QCOMPARE(QString::fromStdString(request.at("type").as<std::string>()),
+             QStringLiteral("stream_snapshot_request"));
+    QCOMPARE(QString::fromStdString(
+                 request.at("streamId").as<std::string>()),
+             QStringLiteral("command-line"));
+    QCOMPARE(request.at("revision").as<quint64>(), quint64(1));
+    QCOMPARE(messages.size(), 1);
+
+    const QByteArray snapshot = semanticFrame(
+        3, QStringLiteral("command-line"), 4,
+        QStringLiteral("snapshot"),
+        {{QStringLiteral("type"), QStringLiteral("command_line_snapshot")},
+         {QStringLiteral("state"), QVariantMap{
+              {QStringLiteral("commandLine"), QVariantMap{
+                   {QStringLiteral("text"),
+                    QStringLiteral("resynchronized")}}}}}});
+    QCOMPARE(peer->write(snapshot), qint64(snapshot.size()));
+    peer->flush();
+    QTRY_COMPARE_WITH_TIMEOUT(
+        controller.commandLine().value(QStringLiteral("text")).toString(),
+        QStringLiteral("resynchronized"), 3000);
+    QCOMPARE(commandLineChanged.size(), 2);
+    QCOMPARE(fatal.size(), 0);
 }
 
 QTEST_GUILESS_MAIN(QtShellControllerTests)

@@ -10,6 +10,7 @@
 #include <QString>
 #include <QStringView>
 #include <QUrl>
+#include <QUrlQuery>
 
 #include <memory>
 #include <mutex>
@@ -52,6 +53,26 @@ public:
     static QUrl lucideSource(QStringView name, int logicalSize);
 
 private:
+    struct ImageRequest {
+        QString route;
+        QString primary;
+        QUrlQuery query;
+        int logicalSize = 16;
+        qreal devicePixelRatio = 1.0;
+        qreal renderDevicePixelRatio = 1.0;
+        QSize targetSize;
+    };
+
+    bool parseImageRequest(const QString &id,
+                           const QSize &requestedSize,
+                           ImageRequest &request) const;
+    QImage renderTestPattern(const ImageRequest &request,
+                             QSize *size) const;
+    QImage renderLucideRequest(const ImageRequest &request,
+                               QSize *size) const;
+    QImage renderNativeRequest(const ImageRequest &request,
+                               QSize *size);
+
     std::unique_ptr<F4IconProviderBackend> m_backend;
     bool m_testPatternEnabled = false;
     std::mutex m_mutex;

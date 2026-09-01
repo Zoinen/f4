@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,8 +38,12 @@ NormalColor = background:#778899
 	if id == "" || highlighter.Revision == 0 {
 		t.Fatal("semantic style and revision must be stable and non-empty")
 	}
-	if style.Icon != "file://"+iconPath {
-		t.Fatalf("resolved icon = %q, want file://%s", style.Icon, iconPath)
+	wantIcon := (&url.URL{Scheme: "file", Path: iconPath}).String()
+	if style.Icon != wantIcon {
+		t.Fatalf("resolved icon = %q, want %q", style.Icon, wantIcon)
+	}
+	if style.IconKey != "" {
+		t.Fatalf("custom icon unexpectedly gained semantic key %q", style.IconKey)
 	}
 	if style.Normal.Foreground != "#112233" || style.Normal.Background != "#778899" {
 		t.Fatalf("unexpected cascaded normal patch: %#v", style.Normal)
@@ -70,6 +75,9 @@ Icon = https://example.invalid/file.svg
 	_, parent := highlighter.SemanticStyle(&vfs.VFSItem{Name: "..", IsDir: true}, true)
 	if parent.Icon != "qrc:/F4QtHost/icons/lucide/folder-up.svg" {
 		t.Fatalf("parent icon = %q", parent.Icon)
+	}
+	if parent.IconKey != "folder-up" {
+		t.Fatalf("parent semantic icon key = %q, want folder-up", parent.IconKey)
 	}
 	if parent.Marker != "" || parent.Normal.Foreground != "" {
 		t.Fatalf("parent must keep console color/marker special case: %#v", parent)

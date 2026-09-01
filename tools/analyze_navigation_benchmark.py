@@ -226,7 +226,12 @@ def compact_fields(event: dict[str, Any]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("trace", type=Path, help="combined Go/Qt stderr trace")
+    parser.add_argument(
+        "trace",
+        nargs="+",
+        type=Path,
+        help="one combined trace, or separate Go and Qt trace files",
+    )
     parser.add_argument(
         "--include-warmup",
         action="store_true",
@@ -241,10 +246,18 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    events = parse_events(args.trace)
+    events = [
+        event
+        for trace_path in args.trace
+        for event in parse_events(trace_path)
+    ]
     attach_sequence_trace_ids(events)
     if not events:
-        print(f"No {MARKER.strip()} events found in {args.trace}", file=sys.stderr)
+        print(
+            f"No {MARKER.strip()} events found in "
+            + ", ".join(str(path) for path in args.trace),
+            file=sys.stderr,
+        )
         return 2
 
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -279,7 +292,7 @@ def main() -> int:
                 trace_events, next_action_by_trace.get(trace_id)
             )
 
-    print(f"Trace file: {args.trace}")
+    print("Trace files: " + ", ".join(str(path) for path in args.trace))
     print(f"Parsed events: {len(events)}; correlated transition traces: {len(transitions)}")
     if not transitions:
         print("No completed runner action traces were found.", file=sys.stderr)

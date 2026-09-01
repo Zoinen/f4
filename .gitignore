@@ -28,3 +28,5 @@ afailed.*
 /embedded/f4-qt-host.gz
 /dist/
 .qa-gallery-modes/
+__pycache__/
+*.py[cod]

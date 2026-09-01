@@ -2019,6 +2019,16 @@ func semanticPanelCatalogRange(total, cursor, limit int) (int, int) {
 	return offset, offset + limit
 }
 
+func (fp *FileSystemPanel) semanticCatalogTotalCount() int {
+	if fp == nil {
+		return 0
+	}
+	if fp.catalogLogicalCount > len(fp.entries) {
+		return fp.catalogLogicalCount
+	}
+	return len(fp.entries)
+}
+
 func (fp *FileSystemPanel) semanticFastFindRange() (int, int, bool) {
 	if fp == nil || !fp.fastFindMode || fp.fastFindStr == "" || len(fp.entries) == 0 {
 		return 0, 0, false
@@ -2208,7 +2218,7 @@ func BuildLivePanelCatalogRows(panelID, path string, catalogRevision int64,
 	}
 	return extui.PanelCatalogRowsModel{
 		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
-		Offset: offset, Limit: len(rows), Total: len(fp.entries),
+		Offset: offset, Limit: len(rows), Total: fp.semanticCatalogTotalCount(),
 		Entries: rows, HighlightStyles: styles,
 	}.ToMap(), true
 }
@@ -2242,8 +2252,8 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
 		MetadataRevision:  metadataRevision,
 		HighlightRevision: semanticHighlighterRevision(),
-		Offset:            offset, Limit: end - offset, Total: len(fp.entries),
-		Final:           end == len(fp.entries),
+		Offset:            offset, Limit: end - offset, Total: fp.semanticCatalogTotalCount(),
+		Final:           end == fp.semanticCatalogTotalCount(),
 		Entries:         make([]extui.FileEntryMetadataModel, 0, end-offset),
 		HighlightStyles: make(map[string]extui.HighlightStyleModel),
 	}
@@ -2286,8 +2296,9 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 	panelID := vtui.SemanticID(fp)
 	semanticLivePanels.Store(panelID, fp)
 	cursor := fp.GetCursorIndex()
+	totalCount := fp.semanticCatalogTotalCount()
 	offset, end := semanticPanelCatalogRange(
-		len(fp.entries), cursor, initialPanelCatalogRowsLimit)
+		totalCount, cursor, initialPanelCatalogRowsLimit)
 	entries, highlightStyles, _ := fp.semanticPagedRows(offset, end-offset)
 	cursorEntryID := ""
 	if cursor >= 0 && cursor < len(fp.entries) {
@@ -2334,7 +2345,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 			return ""
 		}(),
 		FastFindMatches: fastFindMatches,
-		SelectedCount:   len(fp.selectedItems), TotalCount: len(fp.entries),
+		SelectedCount:   len(fp.selectedItems), TotalCount: totalCount,
 		GalleryColumns: fp.semanticGalleryColumns(), Entries: entries,
 	}
 }
@@ -2555,7 +2566,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		FastFind:           fp.fastFindMode, FastFindText: fp.fastFindStr,
 		FastFindMatchColor: fastFindMatchColor,
 		FastFindMatches:    fastFindMatches,
-		SelectedCount:      len(fp.selectedItems), TotalCount: len(fp.entries),
+		SelectedCount:      len(fp.selectedItems), TotalCount: fp.semanticCatalogTotalCount(),
 		GalleryColumns: fp.semanticGalleryColumns(),
 	}, true
 }

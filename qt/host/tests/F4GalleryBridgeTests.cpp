@@ -155,6 +155,7 @@ private slots:
     void inactivePanelImageOpenWaitsForActiveAndCursor();
     void viewerIgnoresSemanticPresentation();
     void galleryPresentationStateCommitsSynchronouslyInOneLayoutPass();
+    void catalogPathChangeAppliesPresentationBeforeSessionSignals();
     void equalGalleryColumnSchemaDoesNotResetLayout();
     void loadsTwoSessionsAndWindowlessQml();
 };
@@ -404,7 +405,7 @@ void F4GalleryBridgeTests::frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery(
     F4GalleryBridge bridge(nullptr);
     BenchmarkMessageCapture traceMessages;
     const QString traceId = QStringLiteral("frame-boundary-test");
-    bridge.handleProtocolMessage({
+    bridge.handleCompactProtocolMessage({
         {QStringLiteral("type"), QStringLiteral("panel_activation")},
         {QStringLiteral("benchmarkTraceId"), traceId},
     });
@@ -984,7 +985,7 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(panel);
     QTRY_VERIFY(panel->property("activeFocus").toBool());
     QObject *galleryLayout = panel->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(galleryLayout);
     QTRY_COMPARE(galleryLayout->property("count").toInt(), 4);
     QVERIFY2(galleryLayout->property("contentHeight").toReal()
@@ -1621,7 +1622,7 @@ void F4GalleryBridgeTests::galleryKeepsAuthoritativeCursorVisible()
     view.show();
     view.requestActivate();
 
-    QObject *layout = rootObject->findChild<QObject *>(QStringLiteral("galleryMasonryLayout"));
+    QObject *layout = rootObject->findChild<QObject *>(QStringLiteral("galleryViewportItem"));
     QVERIFY(layout);
     QTRY_COMPARE(layout->property("count").toInt(), 48);
     QTRY_VERIFY(layout->property("contentHeight").toDouble()
@@ -2538,7 +2539,8 @@ void F4GalleryBridgeTests::sparseFinalWaitsForProvisionalPreviewFrame()
     QCOMPARE(session->model()->rowCount(), entries.size());
     QVERIFY(session->catalogReady());
     const qulonglong requiredFrame =
-        bridge.m_states[0].provisionalFrameRequiredRenderSyncSerial;
+        bridge.m_panelSessions.catalog(0)
+            .provisionalFrameRequiredRenderSyncSerial;
     QVERIFY(requiredFrame > 0);
 
     QSignalSpy modelReset(session->model(), &QAbstractItemModel::modelReset);
@@ -2572,7 +2574,8 @@ void F4GalleryBridgeTests::sparseFinalWaitsForProvisionalPreviewFrame()
     QTRY_COMPARE(session->model()->rowCount(), 30'000);
     QCOMPARE(modelReset.size(), 1);
     QVERIFY(!bridge.m_deferredCatalogFinalizations[0].active);
-    QCOMPARE(bridge.m_states[0].provisionalFrameRequiredRenderSyncSerial,
+    QCOMPARE(bridge.m_panelSessions.catalog(0)
+                 .provisionalFrameRequiredRenderSyncSerial,
              qulonglong(0));
 }
 
@@ -2970,11 +2973,11 @@ void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
     QVariantMap stale = deferredMetadataResponse(
         request, ActiveCount, 91);
     stale.insert(QStringLiteral("metadataRevision"), qulonglong(999));
-    bridge.handleProtocolMessage(stale);
+    bridge.handlePanelCatalogMetadataMessage(stale);
     QVERIFY(session->localPathAt(0).isEmpty());
     QCOMPARE(requests.size(), 1);
 
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         request, ActiveCount, 91));
     QCOMPARE(resetSpy.size(), 0);
     QCOMPARE(session->localPathAt(0),
@@ -3002,7 +3005,7 @@ void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
            + request.value(QStringLiteral("limit")).toInt()
            < InitialVisibleEnd) {
         const int requestCountBeforeResponse = requests.size();
-        bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
             request, ActiveCount, 91));
         QCOMPARE(requests.size(), requestCountBeforeResponse);
         bridge.notifyRenderSynchronized();
@@ -3010,7 +3013,7 @@ void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
         QTRY_COMPARE(requests.size(), requestCountBeforeResponse + 1);
         request = requests.constLast().constFirst().toMap();
     }
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         request, ActiveCount, 91));
     QCOMPARE(resetSpy.size(), 0);
     QCOMPARE(session->localPathAt(31), QStringLiteral(
@@ -3033,7 +3036,7 @@ void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
     rejected.insert(QStringLiteral("type"),
                     QStringLiteral("panel_catalog_metadata_rejected"));
     rejected.remove(QStringLiteral("limit"));
-    bridge.handleProtocolMessage(rejected);
+    bridge.handlePanelCatalogMetadataMessage(rejected);
     QCoreApplication::processEvents();
     QCOMPARE(requests.size(), ActiveVisibleRequestCount + 1);
 
@@ -3069,7 +3072,7 @@ void F4GalleryBridgeTests::staleMetadataFrameFallbackCannotReleaseNewerChunk()
     bridge.notifyRenderSynchronized();
     bridge.notifyFrameSwapped(1);
     QTRY_COMPARE(requests.size(), 1);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         requests.constLast().constFirst().toMap(), EntryCount, 95));
 
     // Arm the second chunk while the first chunk's 17 ms fallback is still
@@ -3079,7 +3082,7 @@ void F4GalleryBridgeTests::staleMetadataFrameFallbackCannotReleaseNewerChunk()
     bridge.notifyFrameSwapped(2);
     QCoreApplication::processEvents();
     QCOMPARE(requests.size(), 2);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         requests.constLast().constFirst().toMap(), EntryCount, 95));
     QTest::qWait(8);
     QCOMPARE(requests.size(), 2);
@@ -3127,7 +3130,7 @@ void F4GalleryBridgeTests::deferredMetadataPrioritizesCursorAndVisibleRange()
     // response. It cannot release or replace the current cursor transaction.
     QVariantMap outOfOrderRequest = cursorRequest;
     outOfOrderRequest.insert(QStringLiteral("offset"), 96);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         outOfOrderRequest, EntryCount, 92));
     QCOMPARE(requests.size(), 1);
     QVERIFY(session->localPathAt(119).isEmpty());
@@ -3135,7 +3138,7 @@ void F4GalleryBridgeTests::deferredMetadataPrioritizesCursorAndVisibleRange()
     // This page reaches the server's end and therefore carries final=true,
     // but earlier gaps remain. Client-plan completion, not page position,
     // decides when GallerySession's metadata stream becomes terminal.
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         cursorRequest, EntryCount, 92));
     QCOMPARE(session->localPathAt(119), QStringLiteral(
         "D:/resolved/panel-priority-metadata/item-119.txt"));
@@ -3150,7 +3153,7 @@ void F4GalleryBridgeTests::deferredMetadataPrioritizesCursorAndVisibleRange()
                                            .constFirst().toMap();
     QCOMPARE(visibleRequest.value(QStringLiteral("offset")).toInt(), 96);
     QCOMPARE(visibleRequest.value(QStringLiteral("limit")).toInt(), 8);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         visibleRequest, EntryCount, 92));
     QCOMPARE(session->localPathAt(96), QStringLiteral(
         "D:/resolved/panel-priority-metadata/item-96.txt"));
@@ -3186,7 +3189,7 @@ void F4GalleryBridgeTests::enteringDetailsReprioritizesDeferredVisibleMetadata()
     const QVariantMap cursorRequest = requests.constFirst()
                                           .constFirst().toMap();
     QCOMPARE(cursorRequest.value(QStringLiteral("offset")).toInt(), 0);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         cursorRequest, EntryCount, 111));
     QCoreApplication::processEvents();
     QCOMPARE(requests.size(), 1);
@@ -3251,7 +3254,7 @@ void F4GalleryBridgeTests::malformedMetadataRetriesThenReleasesGlobalSlot()
     QVariantMap invalidLimit = deferredMetadataResponse(
         firstRequest, 16, 93);
     invalidLimit.insert(QStringLiteral("limit"), 7);
-    bridge.handleProtocolMessage(invalidLimit);
+    bridge.handlePanelCatalogMetadataMessage(invalidLimit);
     QTRY_COMPARE(requests.size(), 2);
     const QVariantMap retryRequest = requests.constLast()
                                          .constFirst().toMap();
@@ -3269,7 +3272,7 @@ void F4GalleryBridgeTests::malformedMetadataRetriesThenReleasesGlobalSlot()
                         QStringLiteral("wrong-entry"));
     invalidEntries[0] = invalidEntry;
     invalidIdentity.insert(QStringLiteral("entries"), invalidEntries);
-    bridge.handleProtocolMessage(invalidIdentity);
+    bridge.handlePanelCatalogMetadataMessage(invalidIdentity);
 
     // The bounded retry is now exhausted. The active stream terminates and
     // the inactive side can consume the one global transaction slot.
@@ -3308,7 +3311,7 @@ void F4GalleryBridgeTests::metadataBackgroundWaitsForInputIdle()
     const QVariantMap cursorRequest = requests.constFirst()
                                           .constFirst().toMap();
     QCOMPARE(cursorRequest.value(QStringLiteral("offset")).toInt(), 0);
-    bridge.handleProtocolMessage(deferredMetadataResponse(
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(
         cursorRequest, EntryCount, 94));
 
     // Once the cursor chunk is present, repeated activation/open activity
@@ -4014,7 +4017,7 @@ void F4GalleryBridgeTests::repeatedOpenReplaysAgainstUsefulLocalPreview()
 void F4GalleryBridgeTests::panelCatalogRowsRequestStartsAtFirstMissingRow()
 {
     F4GalleryBridge bridge(nullptr);
-    F4GalleryBridge::SideState &state = bridge.m_states[0];
+    F4GalleryBridge::SideState &state = bridge.m_panelSessions.catalog(0);
     state.initialized = true;
     state.panelId = QStringLiteral("paged-preview");
     state.currentPath = QStringLiteral("C:\\Windows\\WinSxS");
@@ -4431,7 +4434,7 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
     QObject *embeddedPanel = host->findChild<QObject *>(
         QStringLiteral("embeddedGalleryPanel"));
     QObject *layout = host->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(embeddedPanel);
     QVERIFY(layout);
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -4537,6 +4540,96 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
     switchPresentation(QStringLiteral("icons"), 3, 64);
 }
 
+void F4GalleryBridgeTests::catalogPathChangeAppliesPresentationBeforeSessionSignals()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    engine.addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+
+    const QVariantMap scene = longCatalogScene(140, 37);
+    bridge.synchronizeScene(scene);
+    QVariantMap initialPanel = scene.value(QStringLiteral("shell")).toMap()
+                                   .value(QStringLiteral("panels")).toList()
+                                   .constFirst().toMap();
+    initialPanel.insert(QStringLiteral("galleryLayoutMode"),
+                        QStringLiteral("masonry"));
+
+    QQmlComponent panelHost(&engine, bridge.panelComponentUrl());
+    QTRY_VERIFY_WITH_TIMEOUT(panelHost.status() != QQmlComponent::Loading,
+                             5000);
+    QVERIFY2(panelHost.isReady(), qPrintable(panelHost.errorString()));
+    QScopedPointer<QObject> host(panelHost.create());
+    QVERIFY2(host, qPrintable(panelHost.errorString()));
+    host->setProperty("width", 640);
+    host->setProperty("height", 480);
+    host->setProperty("side", 0);
+    host->setProperty(
+        "bridge", QVariant::fromValue(static_cast<QObject *>(&bridge)));
+    host->setProperty("panel", initialPanel);
+
+    QObject *embeddedPanel = host->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryPanel"));
+    QObject *layout = host->findChild<QObject *>(
+        QStringLiteral("galleryViewportItem"));
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(embeddedPanel);
+    QVERIFY(layout);
+    QVERIFY(session);
+    QTRY_COMPARE(embeddedPanel->property("presentationMode").toString(),
+                 QStringLiteral("masonry"));
+    QTRY_COMPARE(layout->property("count").toInt(), 140);
+
+    QVariantMap destination = initialPanel;
+    destination.insert(QStringLiteral("path"), QStringLiteral("/tmp/next"));
+    destination.insert(QStringLiteral("catalogRevision"), qulonglong(78));
+    destination.insert(QStringLiteral("galleryLayoutMode"),
+                       QStringLiteral("details"));
+    destination.insert(QStringLiteral("galleryDensity"), 30);
+
+    QString modeObservedByPathSignal;
+    bool transactionObservedByPathSignal = false;
+    connect(session, &ZoinGallery::GallerySession::currentPathChanged,
+            this, [&]() {
+        modeObservedByPathSignal = embeddedPanel->property(
+            "presentationMode").toString();
+        transactionObservedByPathSignal = host->property(
+            "applyingRendererState").toBool();
+    });
+    QSignalSpy transactionStarted(
+        &bridge, &F4GalleryBridge::panelPresentationTransactionStarted);
+    QSignalSpy transactionFinished(
+        &bridge, &F4GalleryBridge::panelPresentationTransactionFinished);
+    QVERIFY(transactionStarted.isValid());
+    QVERIFY(transactionFinished.isValid());
+
+    const qulonglong delegateCommitBefore =
+        layout->property("delegateCommitRevision").toULongLong();
+    bridge.synchronizePanelCatalog(destination);
+
+    QCOMPARE(transactionStarted.size(), 1);
+    QCOMPARE(transactionFinished.size(), 1);
+    QCOMPARE(modeObservedByPathSignal, QStringLiteral("details"));
+    QVERIFY(transactionObservedByPathSignal);
+    QCOMPARE(embeddedPanel->property("presentationMode").toString(),
+             QStringLiteral("details"));
+    QVERIFY(!host->property("applyingRendererState").toBool());
+    QCOMPARE(layout->property("delegateCommitRevision").toULongLong(),
+             delegateCommitBefore + 1);
+    // The semantic panel projection intentionally trails the direct catalog
+    // stream here. The renderer must nevertheless already be coherent.
+    QCOMPARE(host->property("panel").toMap()
+                 .value(QStringLiteral("galleryLayoutMode")).toString(),
+             QStringLiteral("masonry"));
+
+    QVERIFY(host->setProperty("panel", destination));
+    QTest::qWait(20);
+    QCOMPARE(layout->property("delegateCommitRevision").toULongLong(),
+             delegateCommitBefore + 1);
+}
+
 void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
 {
     QQmlEngine engine;
@@ -4586,7 +4679,7 @@ void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
     QObject *embeddedPanel = host->findChild<QObject *>(
         QStringLiteral("embeddedGalleryPanel"));
     QObject *layout = host->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(embeddedPanel);
     QVERIFY(layout);
     QTRY_COMPARE(embeddedPanel->property("presentationMode").toString(),
@@ -4601,6 +4694,13 @@ void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
     QVERIFY(rendererStateChanged.isValid());
     QVERIFY(columnSchemaChanged.isValid());
     QVERIFY(layoutReset.isValid());
+    // Native geometry completion can trail the observable QML properties by
+    // one event turn. Establish a settled baseline before measuring the next
+    // semantic renderer update.
+    QTest::qWait(20);
+    rendererStateChanged.clear();
+    columnSchemaChanged.clear();
+    layoutReset.clear();
 
     // A fresh semantic map carries new QVariant/JavaScript wrappers even
     // though its schema value is unchanged. Loading still changes, proving a
@@ -4621,7 +4721,10 @@ void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
     panel.insert(QStringLiteral("galleryColumns"), equalColumns);
     panel.insert(QStringLiteral("loading"), false);
     host->setProperty("panel", panel);
-    QTRY_VERIFY_WITH_TIMEOUT(rendererStateChanged.size() >= 2, 3000);
+    // Loading is not renderer state. An equal schema must therefore perform
+    // no renderer transaction at all.
+    QTest::qWait(20);
+    QCOMPARE(rendererStateChanged.size(), 0);
     QCOMPARE(columnSchemaChanged.size(), 0);
     QCOMPARE(layoutReset.size(), 0);
 
@@ -4632,7 +4735,9 @@ void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
     changedColumns[1] = changedSize;
     panel.insert(QStringLiteral("galleryColumns"), changedColumns);
     host->setProperty("panel", panel);
-    QTRY_VERIFY_WITH_TIMEOUT(rendererStateChanged.size() >= 2, 3000);
+    // One atomic renderer transaction toggles applyingRendererState once on
+    // entry and once on exit.
+    QTRY_COMPARE_WITH_TIMEOUT(rendererStateChanged.size(), 2, 3000);
     QTRY_COMPARE(columnSchemaChanged.size(), 1);
     QTRY_VERIFY_WITH_TIMEOUT(layoutReset.size() >= 1, 3000);
     QCOMPARE(embeddedPanel->property("columnSchema").toList(),

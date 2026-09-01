@@ -832,11 +832,38 @@ func mergeHighlightPatch(target *extui.HighlightColorPatchModel, patch extui.Hig
 }
 
 func highlightStyleEmpty(style extui.HighlightStyleModel) bool {
-	return len(style.Groups) == 0 && style.Marker == "" && style.Icon == "" &&
+	return len(style.Groups) == 0 && style.Marker == "" && style.IconKey == "" && style.Icon == "" &&
 		style.Normal.Foreground == "" && style.Normal.Background == "" &&
 		style.Selected.Foreground == "" && style.Selected.Background == "" &&
 		style.Cursor.Foreground == "" && style.Cursor.Background == "" &&
 		style.SelectedCursor.Foreground == "" && style.SelectedCursor.Background == ""
+}
+
+// semanticHighlightIconKey keeps host-owned Lucide resources out of the
+// reusable gallery contract. Custom qrc/file URLs intentionally keep only
+// Icon: those are user appearance overrides, not semantic icon names.
+func semanticHighlightIconKey(source string) string {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || strings.ToLower(parsed.Scheme) != "qrc" {
+		return ""
+	}
+	path := filepath.ToSlash(parsed.Path)
+	if !strings.Contains(path, "/lucide/") && !strings.Contains(path, "/lucide-gallery/") {
+		return ""
+	}
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if name == "" {
+		return ""
+	}
+	for _, character := range name {
+		if (character < 'a' || character > 'z') &&
+			(character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') &&
+			character != '-' && character != '_' {
+			return ""
+		}
+	}
+	return name
 }
 
 func semanticStyleCacheKey(matched []int, parentEntry bool) string {
@@ -882,6 +909,7 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 		})
 		if style.Icon == "" && rule.IconURL != "" {
 			style.Icon = rule.IconURL
+			style.IconKey = semanticHighlightIconKey(rule.IconURL)
 		}
 		if !parentEntry {
 			if style.Marker == "" && rule.Mark != "" {

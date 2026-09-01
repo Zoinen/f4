@@ -1,4 +1,5 @@
 #include "DummyQWK.h"
+#include "TestExtUiStateController.h"
 
 #include <QAccessible>
 #include <QColor>
@@ -75,23 +76,19 @@ private:
     bool m_renderingEnabled = true;
 };
 
-class TestShell final : public QObject
+class TestShell final : public TestExtUiStateController
 {
     Q_OBJECT
     Q_PROPERTY(int initialCols READ initialCols CONSTANT)
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
-    Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
-    Q_PROPERTY(QVariantMap presentationScene READ scene NOTIFY sceneChanged)
 
 public:
     int initialCols() const { return 100; }
     int initialRows() const { return 34; }
-    QVariantMap scene() const { return m_scene; }
 
     void setScene(const QVariantMap &scene)
     {
-        m_scene = scene;
-        emit sceneChanged();
+        applyScene(scene);
     }
 
     void clearActions() { actions.clear(); }
@@ -107,11 +104,7 @@ public:
     QVector<QVariantMap> actions;
 
 signals:
-    void sceneChanged();
     void uiActionSent(const QVariantMap &action);
-
-private:
-    QVariantMap m_scene;
 };
 
 class TestGallery final : public QObject
@@ -1265,8 +1258,7 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
     // Overlay repeaters are driven by scene changes after QML construction in
     // production, so enter the dialog scene through the same transition.
     fixture.shell.setScene(dialogScene());
-    QCOMPARE(fixture.window->property("scene").toMap()
-                 .value(QStringLiteral("dialogs")).toList().size(), 1);
+    QCOMPARE(fixture.shell.overlayState()->dialogs().size(), 1);
     QVariant overlayFrames;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "overlayFrames", Q_RETURN_ARG(QVariant, overlayFrames)));

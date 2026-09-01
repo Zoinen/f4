@@ -231,7 +231,12 @@ inline void eventAt(const QString &name,
             output->write("F4_NAV_BENCHMARK_TRACE ");
             output->write(json);
             output->write("\n");
-            if (name == QStringLiteral("qt.gallery.runner.finished")
+            if (name == QStringLiteral("qt.startup.process.ready")
+                || name == QStringLiteral("qt.startup.qml.loaded")
+                || name == QStringLiteral("qt.startup.event-loop.enter")
+                || name == QStringLiteral("qt.startup.event-loop.exit")
+                || name == QStringLiteral("qt.gallery.runner.configured")
+                || name == QStringLiteral("qt.gallery.runner.finished")
                 || name == QStringLiteral("qt.gallery.runner.failed")) {
                 output->flush();
             }

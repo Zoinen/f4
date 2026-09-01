@@ -4876,39 +4876,6 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string) b
 	return false
 }
 
-func sameFolderHistoryPath(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	uriA, aIsURI := normalizedURIIdentity(a)
-	uriB, bIsURI := normalizedURIIdentity(b)
-	if aIsURI || bIsURI {
-		return aIsURI && bIsURI && uriA == uriB
-	}
-	isVisualVirtual := func(value string) bool {
-		colon := strings.IndexByte(value, ':')
-		return colon > 1 && len(value) > colon+1 && (value[colon+1] == '/' || value[colon+1] == '\\')
-	}
-	if isVisualVirtual(a) || isVisualVirtual(b) {
-		if !isVisualVirtual(a) || !isVisualVirtual(b) {
-			return false
-		}
-		normalize := func(value string) string {
-			if os.PathSeparator == '\\' {
-				return strings.ReplaceAll(value, "/", "\\")
-			}
-			return strings.ReplaceAll(value, "\\", "/")
-		}
-		return normalize(a) == normalize(b)
-	}
-	a = filepath.Clean(a)
-	b = filepath.Clean(b)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
-}
-
 // folderHistoryStep resolves a move in newest-first provider storage.
 // direction < 0 means Back (towards older entries), direction > 0 means
 // Forward (towards newer entries).

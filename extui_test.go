@@ -19,6 +19,31 @@ type extUiSignalWriter struct {
 	writes chan struct{}
 }
 
+// Initial v4 state is a set of independent stream snapshots. Tests that are
+// about the following incremental action must consume the complete bootstrap,
+// not just its first frame, or an unrelated stream is mistaken for the action.
+func extUiDrainBufferedMessages(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	messages := make([]map[string]any, 0, 8)
+	for buf.Len() > 0 {
+		message, err := extUiReadMessage(buf)
+		if err != nil {
+			t.Fatalf("read ExtUI message: %v", err)
+		}
+		messages = append(messages, message)
+	}
+	return messages
+}
+
+func extUiBufferedMessageOfType(messages []map[string]any, messageType string) map[string]any {
+	for _, message := range messages {
+		if extUiString(message, "type") == messageType {
+			return message
+		}
+	}
+	return nil
+}
+
 func extUiScenePatchPanelOperation(message map[string]any, index int) map[string]any {
 	shell, _ := message["shell"].(map[string]any)
 	panels, _ := shell["panels"].([]any)
@@ -27,6 +52,15 @@ func extUiScenePatchPanelOperation(message map[string]any, index int) map[string
 	}
 	operation, _ := panels[index].(map[string]any)
 	return operation
+}
+
+func extUiDirectPanelCatalog(message map[string]any, side int) (map[string]any, bool) {
+	if extUiString(message, "type") != "panel_catalog" ||
+		extUiInt(message, "side") != side {
+		return nil, false
+	}
+	panel, ok := message["panel"].(map[string]any)
+	return panel, ok
 }
 
 func (w *extUiSignalWriter) Write(payload []byte) (int, error) {
@@ -288,9 +322,7 @@ func TestExtUiRenderer_DeduplicatesSemanticScenes(t *testing.T) {
 	}
 	renderer.SetSemanticScene(first)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("first scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	// ExportSemanticScene allocates new maps and slices on each redraw. Equal
 	// content must still be suppressed before it reaches MessagePack and Qt.
@@ -331,12 +363,13 @@ func TestExtUiRenderer_DeduplicatesSemanticScenes(t *testing.T) {
 
 	renderer.SetSemanticScene(changed)
 	renderer.Flush()
-	got, err := extUiReadMessage(&buf)
-	if err != nil {
-		t.Fatalf("changed scene was not sent: %v", err)
+	messages := extUiDrainBufferedMessages(t, &buf)
+	got := extUiBufferedMessageOfType(messages, "panel_catalog_snapshot")
+	if got == nil {
+		t.Fatalf("changed panel stream was not sent: %#v", messages)
 	}
-	panels := got["shell"].(map[string]any)["panels"].([]any)
-	entries := panels[0].(map[string]any)["entries"].([]any)
+	state := got["state"].(map[string]any)
+	entries := state["panel"].(map[string]any)["entries"].([]any)
 	if id := entries[0].(map[string]any)["entryId"]; id != "photo:2" {
 		t.Fatalf("changed scene entry mismatch: %v", id)
 	}
@@ -381,9 +414,7 @@ func TestExtUiRenderer_CommandLineChangesUseSmallCoalescedPatch(t *testing.T) {
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
 	initialWireBytes := buf.Len()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	// Several keystrokes before the renderer flushes must collapse to the most
 	// recent authoritative command line, without retransmitting either panel.
@@ -433,12 +464,12 @@ func TestExtUiRenderer_CommandLineChangesUseSmallCoalescedPatch(t *testing.T) {
 	// scene so the native client cannot apply a patch to a stale catalog.
 	renderer.SetSemanticScene(scene("abcd", 4, "photo:2"))
 	renderer.Flush()
-	got, err = extUiReadMessage(&buf)
-	if err != nil {
-		t.Fatalf("changed full scene was not sent: %v", err)
+	messages := extUiDrainBufferedMessages(t, &buf)
+	if extUiBufferedMessageOfType(messages, "scene") != nil {
+		t.Fatalf("catalog mutation sent a whole scene: %#v", messages)
 	}
-	if got["type"] != "scene" {
-		t.Fatalf("catalog mutation was incorrectly sent as %#v", got["type"])
+	if extUiBufferedMessageOfType(messages, "panel_catalog_snapshot") == nil {
+		t.Fatalf("catalog mutation omitted its panel stream: %#v", messages)
 	}
 }
 
@@ -482,9 +513,7 @@ func TestExtUiRenderer_PanelActivationUsesRevisionedCatalogFreePatch(t *testing.
 	renderer.SetSemanticScene(scene(0, "right:1"))
 	renderer.Flush()
 	fullWireBytes := buf.Len()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	renderer.QueuePanelActivation(1)
 	renderer.SetSemanticScene(scene(1, "right:1"))
@@ -506,7 +535,10 @@ func TestExtUiRenderer_PanelActivationUsesRevisionedCatalogFreePatch(t *testing.
 	if _, present := patch["shell"]; present {
 		t.Fatalf("activation patch contains semantic shell/catalog: %#v", patch)
 	}
-	if patchWireBytes >= 96 || patchWireBytes*100 >= fullWireBytes {
+	// v4 adds stream identity and two independent revision counters to the
+	// tiny scalar payload. It must still remain comfortably below one percent
+	// of either catalog-bearing scene.
+	if patchWireBytes >= 256 || patchWireBytes*100 >= fullWireBytes {
 		t.Fatalf("activation patch is not tiny: patch=%d full=%d",
 			patchWireBytes, fullWireBytes)
 	}
@@ -532,12 +564,12 @@ func TestExtUiRenderer_PanelActivationUsesRevisionedCatalogFreePatch(t *testing.
 	renderer.QueuePanelActivation(1)
 	renderer.SetSemanticScene(scene(1, "right:2"))
 	renderer.Flush()
-	changed, err := extUiReadMessage(&buf)
-	if err != nil {
-		t.Fatalf("changed full scene was not sent: %v", err)
+	messages := extUiDrainBufferedMessages(t, &buf)
+	if extUiBufferedMessageOfType(messages, "scene") != nil {
+		t.Fatalf("catalog mutation sent a whole scene: %#v", messages)
 	}
-	if changed["type"] != "scene" {
-		t.Fatalf("catalog mutation was incorrectly sent as %#v", changed["type"])
+	if extUiBufferedMessageOfType(messages, "panel_catalog_snapshot") == nil {
+		t.Fatalf("catalog mutation omitted its panel stream: %#v", messages)
 	}
 }
 
@@ -606,9 +638,7 @@ func TestExtUiRenderer_DirectPanelActivationSkipsOneExportAndAdvancesScene(t *te
 	}
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	renderer.BeginSemanticSceneUpdate()
 	commandLine := map[string]any{
@@ -674,9 +704,7 @@ func TestExtUiRenderer_NativeDirectActivationDefersOneWholeRender(t *testing.T) 
 	initial := panelActivationFastPathScene(0, `Panels: C:\left`)
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 	if !renderer.nativeCellFrameSuppressed {
 		t.Fatal("native app scene did not take ownership of the cell surface")
 	}
@@ -756,9 +784,7 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 	}
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial editor scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 	if !renderer.nativeCellFrameSuppressed {
 		t.Fatal("native editor scene did not own the cell surface")
 	}
@@ -827,7 +853,7 @@ func TestExtUiRenderer_DirectEditorCursorStateRejectsWrongSurface(t *testing.T) 
 		},
 	})
 	renderer.Flush()
-	_, _ = extUiReadMessage(&wire)
+	extUiDrainBufferedMessages(t, &wire)
 	renderer.BeginSemanticSceneUpdate()
 	if renderer.QueueSurfaceState("editor:replacement", map[string]any{
 		"cursorLine": 0, "cursorPos": 1,
@@ -853,7 +879,7 @@ func TestExtUiRenderer_ExplicitUnchangedInputDefersNativeRender(t *testing.T) {
 	}
 	renderer.SetSemanticScene(panelActivationFastPathScene(0, `C:\large`))
 	renderer.Flush()
-	_, _ = extUiReadMessage(&wire)
+	extUiDrainBufferedMessages(t, &wire)
 
 	renderer.BeginSemanticSceneUpdate()
 	if !renderer.SetSemanticInputUnchanged() {
@@ -881,9 +907,7 @@ func TestExtUiRenderer_DirectActivationSuppressesSceneInCellFallback(t *testing.
 	initial["shell"].(map[string]any)["reason"] = "resized panels"
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial fallback scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 	if renderer.nativeCellFrameSuppressed {
 		t.Fatal("cell fallback incorrectly hid its grid")
 	}
@@ -917,7 +941,7 @@ func TestExtUiRenderer_UnchangedTaskBoundaryPreservesExistingDirectProofs(t *tes
 		}
 		renderer.SetSemanticScene(panelActivationFastPathScene(0, `Panels: C:\left`))
 		renderer.Flush()
-		_, _ = extUiReadMessage(&wire)
+		extUiDrainBufferedMessages(t, &wire)
 
 		renderer.BeginSemanticSceneUpdate()
 		renderer.QueuePanelActivation(1, `Panels: D:\right`)
@@ -942,7 +966,7 @@ func TestExtUiRenderer_UnchangedTaskBoundaryPreservesExistingDirectProofs(t *tes
 		}
 		renderer.SetSemanticScene(panelActivationFastPathScene(0, `Panels: C:\left`))
 		renderer.Flush()
-		_, _ = extUiReadMessage(&wire)
+		extUiDrainBufferedMessages(t, &wire)
 		panels, ok := semanticScenePanelMaps(renderer.lastScene)
 		if !ok || len(panels) != 2 {
 			t.Fatal("initial scene has no panels")
@@ -958,9 +982,8 @@ func TestExtUiRenderer_UnchangedTaskBoundaryPreservesExistingDirectProofs(t *tes
 			t.Fatal("exact catalog replacement was rejected")
 		}
 		message, _ := extUiReadMessage(&wire)
-		operation := extUiScenePatchPanelOperation(message, 0)
-		if message["type"] != "scene_patch" ||
-			operation["op"] != "catalog_replace" ||
+		deliveredPanel, ok := extUiDirectPanelCatalog(message, 0)
+		if !ok || deliveredPanel["path"] != `C:\left\child` ||
 			renderer.sceneRevision != beforeRevision+1 {
 			t.Fatalf("catalog replacement did not advance exact scene state: %#v", message)
 		}
@@ -986,7 +1009,7 @@ func TestExtUiRenderer_UnchangedTaskBoundaryRejectsTouchedSemanticState(t *testi
 	}
 	renderer.SetSemanticScene(panelActivationFastPathScene(0, `Panels: C:\left`))
 	renderer.Flush()
-	_, _ = extUiReadMessage(&wire)
+	extUiDrainBufferedMessages(t, &wire)
 
 	renderer.BeginSemanticSceneUpdate()
 	renderer.QueuePanelActivation(1, `Panels: D:\right`)
@@ -1028,9 +1051,7 @@ func TestExtUiRenderer_RenderDeferralRequiresNegotiatedNativeSurface(t *testing.
 			}
 			renderer.SetSemanticScene(initial)
 			renderer.Flush()
-			if _, err := extUiReadMessage(&wire); err != nil {
-				t.Fatalf("initial scene was not sent: %v", err)
-			}
+			extUiDrainBufferedMessages(t, &wire)
 
 			renderer.BeginSemanticSceneUpdate()
 			renderer.QueuePanelActivation(1, `Panels: D:\right`)
@@ -1057,9 +1078,7 @@ func TestExtUiRenderer_DirectPanelCatalogCanFollowProjectedActivation(t *testing
 	initial := panelActivationFastPathScene(0, `Panels: C:\left`)
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	renderer.QueuePanelActivation(1, `Panels: D:\right`)
 	activation, err := extUiReadMessage(&wire)
@@ -1087,9 +1106,8 @@ func TestExtUiRenderer_DirectPanelCatalogCanFollowProjectedActivation(t *testing
 	}}
 	renderer.QueuePanelCatalogState(1, directPanel, `Panels: D:\right\child`, "")
 	catalog, err := extUiReadMessage(&wire)
-	operation := extUiScenePatchPanelOperation(catalog, 0)
-	if err != nil || catalog["type"] != "scene_patch" ||
-		operation["op"] != "catalog_replace" || extUiInt(operation, "side") != 1 {
+	deliveredPanel, ok := extUiDirectPanelCatalog(catalog, 1)
+	if err != nil || !ok || deliveredPanel["path"] != `D:\right\child` {
 		t.Fatalf("catalog after projected activation was not immediate: %#v, %v", catalog, err)
 	}
 	if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
@@ -1138,9 +1156,7 @@ func TestExtUiRenderer_DirectPanelActivationPublishesEachInputAndFallsBackWhenUn
 	renderer := &ExtUiRenderer{send: &extUiMessageSender{w: &buf}}
 	renderer.SetSemanticScene(panelActivationFastPathScene(0, `Panels: C:\left`))
 	renderer.Flush()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	renderer.BeginSemanticSceneUpdate()
 	renderer.QueuePanelActivation(1, `Panels: D:\right`)
@@ -1286,9 +1302,7 @@ func TestExtUiRenderer_PanelCatalogUsesSmallAuthoritativePatch(t *testing.T) {
 	renderer.SetSemanticScene(first)
 	renderer.Flush()
 	fullWireBytes := buf.Len()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatalf("initial full scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	second := scene(`D:\Code\f4\plugins`, 11, "left:new")
 	renderer.SetSemanticScene(second)
@@ -1447,19 +1461,21 @@ func TestExtUiRenderer_PanelCatalogFallsBackForUnsafeCombinedChanges(t *testing.
 			base := baseScene()
 			renderer.SetSemanticScene(base)
 			renderer.Flush()
-			if _, err := extUiReadMessage(&buf); err != nil {
-				t.Fatal(err)
-			}
+			extUiDrainBufferedMessages(t, &buf)
 			changed := clone(base)
 			tc.mutate(changed)
 			renderer.SetSemanticScene(changed)
 			renderer.Flush()
-			message, err := extUiReadMessage(&buf)
-			if err != nil {
-				t.Fatalf("fallback scene was not sent: %v", err)
+			messages := extUiDrainBufferedMessages(t, &buf)
+			if extUiBufferedMessageOfType(messages, "scene") != nil {
+				t.Fatalf("unsafe transition sent a whole scene: %#v", messages)
 			}
-			if message["type"] != "scene" {
-				t.Fatalf("unsafe transition used compact patch: %#v", message)
+			if extUiBufferedMessageOfType(messages, "panel_catalog") != nil ||
+				extUiBufferedMessageOfType(messages, "scene_patch") != nil {
+				t.Fatalf("unsafe transition used an optimistic patch: %#v", messages)
+			}
+			if extUiBufferedMessageOfType(messages, "panel_catalog_snapshot") == nil {
+				t.Fatalf("unsafe transition omitted its authoritative panel stream: %#v", messages)
 			}
 		})
 	}
@@ -1517,9 +1533,7 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 	renderer := &ExtUiRenderer{send: &extUiMessageSender{w: &buf}}
 	renderer.SetSemanticScene(base)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&buf); err != nil {
-		t.Fatal(err)
-	}
+	extUiDrainBufferedMessages(t, &buf)
 
 	renderer.QueuePanelCatalogState(0, changedPanel,
 		`Panels: D:\Code\f4`, "trace:direct-catalog")
@@ -1527,10 +1541,8 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 	if err != nil {
 		t.Fatalf("direct catalog was not sent before render/Flush: %v", err)
 	}
-	immediateOperation := extUiScenePatchPanelOperation(immediate, 0)
-	if immediate["type"] != "scene_patch" ||
-		immediateOperation["op"] != "catalog_replace" ||
-		immediateOperation["panel"].(map[string]any)["path"] != `D:\Code\f4` {
+	immediatePanel, ok := extUiDirectPanelCatalog(immediate, 0)
+	if !ok || immediatePanel["path"] != `D:\Code\f4` {
 		t.Fatalf("unexpected direct catalog: %#v", immediate)
 	}
 
@@ -1581,7 +1593,7 @@ func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *tes
 	renderer.nativeSemanticSurfaceEnabled = true
 	renderer.SetSemanticScene(base)
 	renderer.Flush()
-	_, _ = extUiReadMessage(&buf)
+	extUiDrainBufferedMessages(t, &buf)
 	direct := semanticShallowMapCopy(basePanel)
 	direct["path"] = `D:\new`
 	direct["catalogRevision"] = int64(2)
@@ -1599,8 +1611,8 @@ func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *tes
 	renderer.QueuePanelCatalogState(0, second, "Panels: newer", "")
 	renderer.EndSemanticSceneUpdate()
 	chained, err := extUiReadMessage(&buf)
-	if err != nil || chained["type"] != "scene_patch" ||
-		extUiScenePatchPanelOperation(chained, 0)["op"] != "catalog_replace" {
+	chainedPanel, ok := extUiDirectPanelCatalog(chained, 0)
+	if err != nil || !ok || chainedPanel["path"] != `D:\newer` {
 		t.Fatalf("exact chained catalog was not emitted: %#v, %v", chained, err)
 	}
 	if renderer.ConsumeSemanticRenderPhaseDeferral(0) {
@@ -1616,9 +1628,12 @@ func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *tes
 	changed["dialogs"] = []map[string]any{{"id": "unexpected"}}
 	renderer.SetSemanticScene(changed)
 	renderer.Flush()
-	correction, err := extUiReadMessage(&buf)
-	if err != nil || correction["type"] != "scene" {
-		t.Fatalf("unsafe direct projection was not corrected by a full scene: %#v, %v", correction, err)
+	corrections := extUiDrainBufferedMessages(t, &buf)
+	if extUiBufferedMessageOfType(corrections, "scene") != nil {
+		t.Fatalf("unsafe direct projection sent a whole scene: %#v", corrections)
+	}
+	if extUiBufferedMessageOfType(corrections, "dialogs_snapshot") == nil {
+		t.Fatalf("unsafe direct projection omitted the changed dialog stream: %#v", corrections)
 	}
 }
 
@@ -1636,15 +1651,13 @@ func TestExtUiRenderer_DirectPanelCatalogRollbackForcesAuthoritativeScene(t *tes
 	renderer := &ExtUiRenderer{send: &extUiMessageSender{w: &wire}}
 	renderer.SetSemanticScene(base)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 	renderer.QueuePanelCatalogState(0, projectedPanels[0],
 		`Panels: D:\Code\f4\plugins`, "")
-	if direct, err := extUiReadMessage(&wire); err != nil ||
-		direct["type"] != "scene_patch" ||
-		extUiScenePatchPanelOperation(direct, 0)["op"] != "catalog_replace" {
+	if direct, err := extUiReadMessage(&wire); err != nil {
 		t.Fatalf("direct projection was not sent: %#v, %v", direct, err)
+	} else if directPanel, ok := extUiDirectPanelCatalog(direct, 0); !ok || directPanel["path"] != `D:\Code\f4\plugins` {
+		t.Fatalf("direct projection was not sent: %#v", direct)
 	}
 
 	// The authoritative UI mutation can still reject/roll back after the
@@ -1652,9 +1665,12 @@ func TestExtUiRenderer_DirectPanelCatalogRollbackForcesAuthoritativeScene(t *tes
 	// correct the client, not be mistaken for an equal/no-op scene.
 	renderer.SetSemanticScene(base)
 	renderer.Flush()
-	correction, err := extUiReadMessage(&wire)
-	if err != nil || correction["type"] != "scene" {
-		t.Fatalf("rolled-back direct projection was not corrected: %#v, %v", correction, err)
+	corrections := extUiDrainBufferedMessages(t, &wire)
+	if extUiBufferedMessageOfType(corrections, "scene") != nil {
+		t.Fatalf("rolled-back projection sent a whole scene: %#v", corrections)
+	}
+	if extUiBufferedMessageOfType(corrections, "panel_catalog_snapshot") == nil {
+		t.Fatalf("rolled-back projection omitted the authoritative panel stream: %#v", corrections)
 	}
 	if !semanticScenesEqual(renderer.lastScene, base) {
 		t.Fatal("rollback correction did not retain the authoritative base scene")
@@ -1696,26 +1712,25 @@ func TestExtUiRenderer_FlushSendsSemanticStateBeforeCellFrame(t *testing.T) {
 	queueFrame()
 	renderer.SetSemanticScene(scene(`D:\left`, 1))
 	renderer.Flush()
-	first, err := extUiReadMessage(&buf)
-	if err != nil {
-		t.Fatal(err)
+	initialMessages := extUiDrainBufferedMessages(t, &buf)
+	if len(initialMessages) < 2 ||
+		initialMessages[len(initialMessages)-1]["type"] != "frame" {
+		t.Fatalf("initial stream/frame order = %#v", initialMessages)
 	}
-	second, err := extUiReadMessage(&buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first["type"] != "scene" || second["type"] != "frame" {
-		t.Fatalf("full scene/frame order = %v, %v", first["type"], second["type"])
+	for _, message := range initialMessages[:len(initialMessages)-1] {
+		if message["type"] == "frame" || message["type"] == "cursor" {
+			t.Fatalf("cell protocol preceded semantic bootstrap: %#v", initialMessages)
+		}
 	}
 
 	queueFrame()
 	renderer.SetSemanticScene(scene(`D:\left\child`, 2))
 	renderer.Flush()
-	first, err = extUiReadMessage(&buf)
+	first, err := extUiReadMessage(&buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err = extUiReadMessage(&buf)
+	second, err := extUiReadMessage(&buf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1741,9 +1756,13 @@ func TestExtUiRenderer_SuppressesHiddenNativeCellFrameAndRestoresFallback(t *tes
 	renderer.SetCursor(0, 0, true, vtui.CursorShapeBlock)
 	renderer.Render(cells, nil, 1, 1, true)
 	renderer.Flush()
-	message, err := extUiReadMessage(&wire)
-	if err != nil || message["type"] != "scene" {
-		t.Fatalf("native scene message = %#v, %v", message, err)
+	initialMessages := extUiDrainBufferedMessages(t, &wire)
+	if extUiBufferedMessageOfType(initialMessages, "shell_snapshot") == nil {
+		t.Fatalf("native shell stream was not sent: %#v", initialMessages)
+	}
+	if extUiBufferedMessageOfType(initialMessages, "frame") != nil ||
+		extUiBufferedMessageOfType(initialMessages, "cursor") != nil {
+		t.Fatalf("hidden native grid crossed the wire: %#v", initialMessages)
 	}
 	if wire.Len() != 0 {
 		t.Fatalf("hidden native grid emitted %d extra bytes", wire.Len())
@@ -1773,14 +1792,20 @@ func TestExtUiRenderer_SuppressesHiddenNativeCellFrameAndRestoresFallback(t *tes
 	// fallback grid is revealed for the first time.
 	renderer.Render(cells, cells, 1, 1, false)
 	renderer.Flush()
-	for index, want := range []string{"frame", "cursor", "scene"} {
-		message, err = extUiReadMessage(&wire)
-		if err != nil || message["type"] != want {
-			t.Fatalf("fallback message %d = %#v, %v; want %q", index, message, err, want)
-		}
-		if want == "frame" && message["full"] != true {
-			t.Fatalf("restored fallback frame is not full: %#v", message)
-		}
+	fallbackMessages := extUiDrainBufferedMessages(t, &wire)
+	if len(fallbackMessages) < 3 ||
+		fallbackMessages[0]["type"] != "frame" ||
+		fallbackMessages[1]["type"] != "cursor" {
+		t.Fatalf("fallback did not publish cells before semantic reveal: %#v", fallbackMessages)
+	}
+	if fallbackMessages[0]["full"] != true {
+		t.Fatalf("restored fallback frame is not full: %#v", fallbackMessages[0])
+	}
+	if extUiBufferedMessageOfType(fallbackMessages[2:], "chrome_snapshot") == nil {
+		t.Fatalf("fallback reveal omitted the changed chrome stream: %#v", fallbackMessages)
+	}
+	if extUiBufferedMessageOfType(fallbackMessages[2:], "scene") != nil {
+		t.Fatalf("fallback reveal sent a whole scene: %#v", fallbackMessages)
 	}
 	if wire.Len() != 0 {
 		t.Fatalf("unexpected fallback messages: %d bytes", wire.Len())
@@ -1809,9 +1834,9 @@ func TestExtUiRenderer_IncrementalTextPresentationRevealIsAtomic(t *testing.T) {
 	renderer.SetSemanticScene(nativeScene)
 	renderer.Render(cells, nil, 1, 1, true)
 	renderer.Flush()
-	initial, err := extUiReadMessage(&wire)
-	if err != nil || initial["type"] != "scene" {
-		t.Fatalf("initial native scene = %#v, %v", initial, err)
+	initialMessages := extUiDrainBufferedMessages(t, &wire)
+	if extUiBufferedMessageOfType(initialMessages, "shell_snapshot") == nil {
+		t.Fatalf("initial native shell stream was not sent: %#v", initialMessages)
 	}
 
 	patch := extui.ScenePatch{
@@ -1914,11 +1939,13 @@ func TestExtUiRenderer_CellFramesRemainWithoutNegotiatedNativeCapability(t *test
 	})
 	renderer.Render([]vtui.CharInfo{{Char: 'x'}}, nil, 1, 1, true)
 	renderer.Flush()
-	for index, want := range []string{"scene", "frame", "cursor"} {
-		message, err := extUiReadMessage(&wire)
-		if err != nil || message["type"] != want {
-			t.Fatalf("legacy message %d = %#v, %v; want %q", index, message, err, want)
-		}
+	messages := extUiDrainBufferedMessages(t, &wire)
+	if len(messages) < 3 || messages[len(messages)-2]["type"] != "frame" ||
+		messages[len(messages)-1]["type"] != "cursor" {
+		t.Fatalf("cell protocols did not follow semantic bootstrap: %#v", messages)
+	}
+	if extUiBufferedMessageOfType(messages, "shell_snapshot") == nil {
+		t.Fatalf("semantic shell stream was not sent: %#v", messages)
 	}
 }
 
@@ -1933,5 +1960,241 @@ func TestExtUiRenderer_DeduplicatesWindowTitles(t *testing.T) {
 	}
 	if wire.Len() != 0 {
 		t.Fatalf("duplicate title emitted %d extra bytes", wire.Len())
+	}
+}
+
+func TestExtUiMessageSender_RevisionsAreIndependentPerSemanticStream(t *testing.T) {
+	var wire bytes.Buffer
+	sender := &extUiMessageSender{w: &wire}
+	messages := []map[string]any{
+		{"type": "command_line", "commandLine": map[string]any{"text": "a"}},
+		{"type": "panel_catalog", "side": 0, "panel": map[string]any{"id": "left"}},
+		{"type": "command_line", "commandLine": map[string]any{"text": "ab"}},
+	}
+	for _, message := range messages {
+		if err := sender.Send(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantStreams := []string{"command-line", "panel/0", "command-line"}
+	wantRevisions := []int{1, 1, 2}
+	for index := range wantStreams {
+		envelope, err := extUiReadWireMessage(&wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if envelope["type"] != extui.EnvelopeType ||
+			extUiInt(envelope, "sequence") != index+1 ||
+			extUiString(envelope, "streamId") != wantStreams[index] ||
+			extUiInt(envelope, "revision") != wantRevisions[index] {
+			t.Fatalf("envelope %d = %#v", index, envelope)
+		}
+	}
+}
+
+func TestExtUiScenePatchSplitsCanonicalStreamsBeforeSerialization(t *testing.T) {
+	patch := extui.ScenePatch{
+		BaseRevision: 10,
+		Revision:     11,
+		Root: &extui.MapPatch{Set: extui.M{
+			"menus":         []map[string]any{{"id": "menu"}},
+			"workspaceTabs": map[string]any{"active": 2},
+		}},
+		Shell: &extui.ShellPatch{
+			MapPatch: extui.MapPatch{Set: extui.M{
+				"title":       "Panels",
+				"commandLine": map[string]any{"text": "dir"},
+			}},
+			Panels: []extui.PanelPatch{
+				{Op: "state", Side: 0, State: extui.M{"cursor": 1}},
+				{Op: "state", Side: 1, State: extui.M{"cursor": 2}},
+			},
+		},
+		Surface: &extui.SurfacePatch{
+			SurfaceID: "editor-1",
+			MapPatch:  extui.MapPatch{Set: extui.M{"cursorLine": 3}},
+		},
+	}.ToMap()
+	dispatches := extUiSemanticDispatches(patch)
+	want := []string{
+		"panel/0", "panel/1", "menus", "workspaces",
+		"document/editor-1",
+	}
+	if len(dispatches) != len(want) {
+		t.Fatalf("dispatch count = %d, want %d: %#v",
+			len(dispatches), len(want), dispatches)
+	}
+	for index, dispatch := range dispatches {
+		if dispatch.streamID != want[index] {
+			t.Fatalf("dispatch %d stream = %q, want %q",
+				index, dispatch.streamID, want[index])
+		}
+		if dispatch.streamID == "transaction" {
+			t.Fatal("scene patch retained transaction stream")
+		}
+		if strings.HasPrefix(dispatch.streamID, "panel/") {
+			if _, containsRoot := dispatch.payload["root"]; containsRoot {
+				t.Fatalf("panel dispatch contains root state: %#v", dispatch.payload)
+			}
+		}
+	}
+}
+
+func TestExtUiInitialSceneSplitsCanonicalSnapshotsBeforeSerialization(t *testing.T) {
+	scene := map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"width": 120, "height": 40,
+		"workspaceTabs": map[string]any{"tabs": []any{}},
+		"menuBar":       map[string]any{"items": []map[string]any{{"text": "Files"}}},
+		"menus":         []map[string]any{{"id": "menu-secret"}},
+		"shell": map[string]any{
+			"id": "shell", "activePanel": 0,
+			"commandLine": map[string]any{"id": "command-line", "text": ""},
+			"panels": []map[string]any{
+				{"id": "left", "side": 0, "entries": []map[string]any{{"name": "left-only"}}},
+				{"id": "right", "side": 1, "entries": []map[string]any{{"name": "right-only"}}},
+			},
+		},
+	}
+	dispatches := extUiSemanticDispatches(scene)
+	if len(dispatches) < 6 {
+		t.Fatalf("bootstrap dispatch count = %d: %#v", len(dispatches), dispatches)
+	}
+	if dispatches[len(dispatches)-1].streamID != "shell" {
+		t.Fatalf("last bootstrap stream = %q, want shell", dispatches[len(dispatches)-1].streamID)
+	}
+	for _, dispatch := range dispatches {
+		if dispatch.kind != extui.KindSnapshot ||
+			!strings.HasSuffix(extUiString(dispatch.payload, "type"), "_snapshot") {
+			t.Fatalf("non-snapshot bootstrap dispatch: %#v", dispatch)
+		}
+		encoded, err := msgpack.Marshal(dispatch.payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch dispatch.streamID {
+		case "panel/0":
+			if bytes.Contains(encoded, []byte("right-only")) || bytes.Contains(encoded, []byte("menu-secret")) {
+				t.Fatal("left panel snapshot serialized unrelated state")
+			}
+		case "panel/1":
+			if bytes.Contains(encoded, []byte("left-only")) || bytes.Contains(encoded, []byte("menu-secret")) {
+				t.Fatal("right panel snapshot serialized unrelated state")
+			}
+		case "menus":
+			if bytes.Contains(encoded, []byte("left-only")) || bytes.Contains(encoded, []byte("right-only")) {
+				t.Fatal("menus snapshot serialized panel catalogs")
+			}
+		case "shell":
+			if bytes.Contains(encoded, []byte("left-only")) || bytes.Contains(encoded, []byte("right-only")) {
+				t.Fatal("shell snapshot serialized panel rows")
+			}
+		}
+	}
+}
+
+func TestExtUiHost_StreamSnapshotRequestDoesNotSerializeOtherPanel(t *testing.T) {
+	var wire bytes.Buffer
+	sender := &extUiMessageSender{w: &wire}
+	renderer := NewExtUiRenderer(nil, sender)
+	renderer.lastScene = map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"shell": map[string]any{
+			"activePanel": 1,
+			"panels": []map[string]any{
+				{"id": "left", "side": 0, "entries": []map[string]any{{"name": "left-secret"}}},
+				{"id": "right", "side": 1, "entries": []map[string]any{{"name": "right-visible"}}},
+			},
+		},
+		"menus": []map[string]any{{"id": "unrelated-menu"}},
+	}
+	host := &ExtUiHost{send: sender, renderer: renderer}
+	host.handleMessage(map[string]any{
+		"type": "stream_snapshot_request", "streamId": "panel/1",
+	})
+	encoded := append([]byte(nil), wire.Bytes()...)
+	envelope, err := extUiReadWireMessage(&wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extUiString(envelope, "streamId") != "panel/1" ||
+		extUiString(envelope, "kind") != extui.KindSnapshot {
+		t.Fatalf("unexpected snapshot envelope: %#v", envelope)
+	}
+	payload, ok := envelope["payload"].(map[string]any)
+	if !ok || payload["type"] != "panel_catalog_snapshot" {
+		t.Fatalf("unexpected snapshot payload: %#v", envelope["payload"])
+	}
+	state := payload["state"].(map[string]any)
+	panel := state["panel"].(map[string]any)
+	if extUiString(panel, "id") != "right" {
+		t.Fatalf("snapshot panel = %#v", panel)
+	}
+	if bytes.Contains(encoded, []byte("left-secret")) ||
+		bytes.Contains(encoded, []byte("unrelated-menu")) {
+		t.Fatal("panel-local snapshot serialized unrelated scene state")
+	}
+}
+
+func TestExtUiChangedSceneSnapshotMessagesAreStrictlyStreamLocal(t *testing.T) {
+	panel := func(id, marker string, side int) map[string]any {
+		return map[string]any{
+			"id": id, "side": side, "catalogRevision": int64(7),
+			"entries": []map[string]any{{
+				"entryId": id + ":entry", "name": marker,
+			}},
+		}
+	}
+	previous := map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"shell": map[string]any{
+			"activePanel": 0,
+			"panels": []map[string]any{
+				panel("left", "left-secret", 0),
+				panel("right", "right-secret", 1),
+			},
+		},
+		"menus":   []map[string]any{{"id": "menu", "text": "old-menu"}},
+		"dialogs": []map[string]any{},
+	}
+	current := semanticSceneStructuralMapCopy(previous)
+	current["dialogs"] = []map[string]any{{
+		"id": "dialog", "title": "changed-dialog",
+	}}
+
+	messages := extUiChangedSceneSnapshotMessages(previous, current)
+	if len(messages) != 1 || extUiString(messages[0], "streamId") != "dialogs" {
+		t.Fatalf("dialog-only diff routed to %#v", messages)
+	}
+	encoded, err := msgpack.Marshal(messages[0]["payload"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"left-secret", "right-secret", "old-menu"} {
+		if bytes.Contains(encoded, []byte(forbidden)) {
+			t.Fatalf("dialog snapshot serialized unrelated %q", forbidden)
+		}
+	}
+
+	current = semanticSceneStructuralMapCopy(previous)
+	currentShell := semanticShallowMapCopy(
+		previous["shell"].(map[string]any))
+	currentPanels := append([]map[string]any(nil),
+		previous["shell"].(map[string]any)["panels"].([]map[string]any)...)
+	currentPanels[0] = panel("left", "new-left-only", 0)
+	currentShell["panels"] = currentPanels
+	current["shell"] = currentShell
+	messages = extUiChangedSceneSnapshotMessages(previous, current)
+	if len(messages) != 1 || extUiString(messages[0], "streamId") != "panel/0" {
+		t.Fatalf("row-only panel diff routed to %#v", messages)
+	}
+	encoded, err = msgpack.Marshal(messages[0]["payload"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte("new-left-only")) ||
+		bytes.Contains(encoded, []byte("right-secret")) ||
+		bytes.Contains(encoded, []byte("old-menu")) {
+		t.Fatalf("panel snapshot crossed stream boundaries: %q", encoded)
 	}
 }

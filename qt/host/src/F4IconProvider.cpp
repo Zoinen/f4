@@ -487,164 +487,162 @@ QImage F4IconProvider::requestImage(const QString &id,
         *size = {};
     }
 
-    const QUrl routeUrl = QUrl::fromEncoded(
-        QByteArrayLiteral("f4icon://provider/") + id.toUtf8(),
-        QUrl::StrictMode);
-    if (!routeUrl.isValid()) {
+    ImageRequest request;
+    if (!parseImageRequest(id, requestedSize, request)) {
         return {};
-    }
-
-    QString routePath = routeUrl.path();
-    if (routePath.startsWith(u'/')) {
-        routePath.remove(0, 1);
-    }
-    const qsizetype separator = routePath.indexOf(u'/');
-    if (separator <= 0 || separator == routePath.size() - 1) {
-        return {};
-    }
-    const QString route = routePath.left(separator);
-    const QString encodedPrimary = routePath.mid(separator + 1);
-    bool primaryOk = false;
-    const QString primary = decodeRouteValue(encodedPrimary, &primaryOk);
-    if (!primaryOk) {
-        return {};
-    }
-
-    const QUrlQuery query(routeUrl);
-    bool logicalOk = false;
-    const int logicalSize = normalizedLogicalSize(
-        queryValue(query, QStringLiteral("size")).toInt(&logicalOk));
-    const qreal devicePixelRatio = normalizedDevicePixelRatio(
-        queryValue(query, QStringLiteral("dpr")).toDouble());
-    const int effectiveLogicalSize = logicalOk ? logicalSize : 16;
-    QSize targetSize = requestedSize;
-    if (targetSize.width() <= 0 && targetSize.height() > 0) {
-        targetSize.setWidth(targetSize.height());
-    } else if (targetSize.height() <= 0 && targetSize.width() > 0) {
-        targetSize.setHeight(targetSize.width());
-    }
-    // QSize(0, 0) is valid according to QSize::isValid(), but it cannot back a
-    // QImage paint device. Hidden/prewarmed QML Images can transiently request
-    // exactly that size; render their logical fallback instead of flooding
-    // stderr from QPainter::begin on a null image.
-    if (targetSize.width() <= 0 || targetSize.height() <= 0) {
-        targetSize = physicalSize(effectiveLogicalSize, devicePixelRatio);
     }
 
     if (m_testPatternEnabled) {
-        targetSize.setWidth(std::max(1, targetSize.width()));
-        targetSize.setHeight(std::max(1, targetSize.height()));
-
-        // Diagnostic image for checking icon geometry and DPR handling: a
-        // solid white box with an exact one-physical-pixel black border.
-        QImage testImage(targetSize, QImage::Format_ARGB32_Premultiplied);
-        testImage.fill(Qt::white);
-        for (int x = 0; x < targetSize.width(); ++x) {
-            testImage.setPixelColor(x, 0, Qt::black);
-            testImage.setPixelColor(x, targetSize.height() - 1, Qt::black);
-        }
-        for (int y = 0; y < targetSize.height(); ++y) {
-            testImage.setPixelColor(0, y, Qt::black);
-            testImage.setPixelColor(targetSize.width() - 1, y, Qt::black);
-        }
-        testImage.setDevicePixelRatio(devicePixelRatio);
-        if (size) {
-            *size = QSize(effectiveLogicalSize, effectiveLogicalSize);
-        }
-        return testImage;
+        return renderTestPattern(request, size);
     }
+    return request.route == QStringLiteral("lucide")
+        ? renderLucideRequest(request, size)
+        : renderNativeRequest(request, size);
+}
 
-    // requestedSize is the physical texture size Qt Quick needs on the
-    // current screen. Derive the render scale from it so moving a window
-    // between screens with different DPRs cannot leave a Gallery/model URL
-    // tied to the primary screen's scale. The URL DPR remains the fallback
-    // for direct callers and requests without an explicit source size.
-    qreal renderDevicePixelRatio = devicePixelRatio;
-    if (requestedSize.isValid() && effectiveLogicalSize > 0) {
-        renderDevicePixelRatio = normalizedDevicePixelRatio(
-            qreal(std::max(targetSize.width(), targetSize.height()))
-            / qreal(effectiveLogicalSize));
+bool F4IconProvider::parseImageRequest(
+    const QString &id, const QSize &requestedSize,
+    ImageRequest &request) const
+{
+    const QUrl url = QUrl::fromEncoded(
+        QByteArrayLiteral("f4icon://provider/") + id.toUtf8(),
+        QUrl::StrictMode);
+    if (!url.isValid()) {
+        return false;
     }
-
-    // The default Lucide Gallery route is served from asynchronous Qt Quick
-    // image-loader threads. QIcon's SVG engine renders through QPixmap, which
-    // is GUI-thread-bound on Windows and produced null paint devices during
-    // startup. Render the immutable resource directly into a QImage instead;
-    // this is thread-safe and also avoids serializing generic file icons on
-    // the native icon-provider mutex.
-    if (route == QStringLiteral("lucide")) {
-        const QString iconName = normalizedIconName(primary);
-        const QColor requestedTint(
-            queryValue(query, QStringLiteral("color")));
-        QImage image = renderLucideImage(iconName, targetSize,
-                                        effectiveLogicalSize,
-                                        requestedTint.isValid()
-                                            ? requestedTint
-                                            : fallbackTintColor());
-        if (size && !image.isNull()) {
-            *size = image.size();
-        }
-        return image;
+    QString path = url.path();
+    if (path.startsWith(u'/')) {
+        path.remove(0, 1);
     }
+    const qsizetype separator = path.indexOf(u'/');
+    if (separator <= 0 || separator == path.size() - 1) {
+        return false;
+    }
+    request.route = path.left(separator);
+    bool primaryOk = false;
+    request.primary = decodeRouteValue(
+        path.mid(separator + 1), &primaryOk);
+    if (!primaryOk) {
+        return false;
+    }
+    request.query = QUrlQuery(url);
+    bool logicalOk = false;
+    const int logicalSize = normalizedLogicalSize(queryValue(
+        request.query, QStringLiteral("size")).toInt(&logicalOk));
+    request.logicalSize = logicalOk ? logicalSize : 16;
+    request.devicePixelRatio = normalizedDevicePixelRatio(queryValue(
+        request.query, QStringLiteral("dpr")).toDouble());
+    request.targetSize = requestedSize;
+    if (request.targetSize.width() <= 0
+        && request.targetSize.height() > 0) {
+        request.targetSize.setWidth(request.targetSize.height());
+    } else if (request.targetSize.height() <= 0
+               && request.targetSize.width() > 0) {
+        request.targetSize.setHeight(request.targetSize.width());
+    }
+    if (request.targetSize.width() <= 0
+        || request.targetSize.height() <= 0) {
+        request.targetSize = physicalSize(
+            request.logicalSize, request.devicePixelRatio);
+    }
+    request.renderDevicePixelRatio = request.devicePixelRatio;
+    if (requestedSize.isValid() && request.logicalSize > 0) {
+        request.renderDevicePixelRatio = normalizedDevicePixelRatio(
+            qreal(std::max(request.targetSize.width(),
+                           request.targetSize.height()))
+            / qreal(request.logicalSize));
+    }
+    return true;
+}
 
+QImage F4IconProvider::renderTestPattern(
+    const ImageRequest &request, QSize *size) const
+{
+    QSize target = request.targetSize;
+    target.setWidth(std::max(1, target.width()));
+    target.setHeight(std::max(1, target.height()));
+    QImage image(target, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    for (int x = 0; x < target.width(); ++x) {
+        image.setPixelColor(x, 0, Qt::black);
+        image.setPixelColor(x, target.height() - 1, Qt::black);
+    }
+    for (int y = 0; y < target.height(); ++y) {
+        image.setPixelColor(0, y, Qt::black);
+        image.setPixelColor(target.width() - 1, y, Qt::black);
+    }
+    image.setDevicePixelRatio(request.devicePixelRatio);
+    if (size) {
+        *size = QSize(request.logicalSize, request.logicalSize);
+    }
+    return image;
+}
+
+QImage F4IconProvider::renderLucideRequest(
+    const ImageRequest &request, QSize *size) const
+{
+    const QColor tint(queryValue(
+        request.query, QStringLiteral("color")));
+    QImage image = renderLucideImage(
+        normalizedIconName(request.primary), request.targetSize,
+        request.logicalSize,
+        tint.isValid() ? tint : fallbackTintColor());
+    if (size && !image.isNull()) {
+        *size = image.size();
+    }
+    return image;
+}
+
+QImage F4IconProvider::renderNativeRequest(
+    const ImageRequest &request, QSize *size)
+{
+    std::lock_guard lock(m_mutex);
+#ifdef Q_OS_WIN
+    ensureComInitializedForCurrentThread();
+#endif
     QString fallbackName;
     QIcon icon;
-    {
-        // Native theme engines and their caches are not uniformly documented
-        // as thread-safe. QQuickImageProvider may call us from loader threads,
-        // so serialize both lookup and QPixmap generation.
-        std::lock_guard lock(m_mutex);
-#ifdef Q_OS_WIN
-        ensureComInitializedForCurrentThread();
-#endif
-        if (route == QStringLiteral("theme")) {
-            fallbackName = normalizedIconName(primary);
-            icon = m_backend->iconForName(primary);
-        } else if (route == QStringLiteral("file")) {
-            bool fileNameOk = false;
-            const QString fileName = decodeRouteValue(
-                queryValue(query, QStringLiteral("name")), &fileNameOk);
-            if (!fileNameOk) {
-                return {};
-            }
-            const bool directory = queryValue(query, QStringLiteral("dir"))
-                                       == QStringLiteral("1");
-            fallbackName = normalizedIconName(
-                queryValue(query, QStringLiteral("fallback")));
-            if (fallbackName == QStringLiteral("file")) {
-                fallbackName = lucideFileIconName(fileName, directory);
-            }
-            icon = m_backend->iconForFile(primary, fileName, directory);
-        } else {
+    if (request.route == QStringLiteral("theme")) {
+        fallbackName = normalizedIconName(request.primary);
+        icon = m_backend->iconForName(request.primary);
+    } else if (request.route == QStringLiteral("file")) {
+        bool fileNameOk = false;
+        const QString fileName = decodeRouteValue(queryValue(
+            request.query, QStringLiteral("name")), &fileNameOk);
+        if (!fileNameOk) {
             return {};
         }
-
-        QPixmap pixmap;
-        if (!icon.isNull()) {
-            pixmap = icon.pixmap(QSize(effectiveLogicalSize,
-                                       effectiveLogicalSize),
-                                 renderDevicePixelRatio,
-                                 QIcon::Normal,
-                                 QIcon::Off);
+        const bool directory = queryValue(
+            request.query, QStringLiteral("dir")) == QStringLiteral("1");
+        fallbackName = normalizedIconName(queryValue(
+            request.query, QStringLiteral("fallback")));
+        if (fallbackName == QStringLiteral("file")) {
+            fallbackName = lucideFileIconName(fileName, directory);
         }
-        if (pixmap.isNull()) {
-            const QUrl fallback = lucideSource(fallbackName,
-                                               effectiveLogicalSize);
-            QIcon fallbackIcon(resourceFileName(fallback));
-            pixmap = fallbackIcon.pixmap(
-                QSize(effectiveLogicalSize, effectiveLogicalSize),
-                renderDevicePixelRatio,
-                QIcon::Normal,
-                QIcon::Off);
-            pixmap = paletteTintedMask(std::move(pixmap));
-        }
-
-        QImage image = imageAtPhysicalSize(pixmap, targetSize);
-        if (size && !image.isNull()) {
-            *size = image.size();
-        }
-        return image;
+        icon = m_backend->iconForFile(
+            request.primary, fileName, directory);
+    } else {
+        return {};
     }
+    QPixmap pixmap;
+    if (!icon.isNull()) {
+        pixmap = icon.pixmap(
+            QSize(request.logicalSize, request.logicalSize),
+            request.renderDevicePixelRatio, QIcon::Normal, QIcon::Off);
+    }
+    if (pixmap.isNull()) {
+        QIcon fallbackIcon(resourceFileName(lucideSource(
+            fallbackName, request.logicalSize)));
+        pixmap = fallbackIcon.pixmap(
+            QSize(request.logicalSize, request.logicalSize),
+            request.renderDevicePixelRatio, QIcon::Normal, QIcon::Off);
+        pixmap = paletteTintedMask(std::move(pixmap));
+    }
+    QImage image = imageAtPhysicalSize(pixmap, request.targetSize);
+    if (size && !image.isNull()) {
+        *size = image.size();
+    }
+    return image;
 }
 
 QString F4IconProvider::encodeRouteValue(QStringView value)
@@ -746,7 +744,7 @@ QString F4IconProvider::normalizedIconName(QStringView rawName)
     return lucideIconNames().contains(name) || isStreamlineIconName(name)
         ? name
         : QStringLiteral("file");
-}
+} // architecture-check: allow-function-lines flat immutable extension-to-icon table
 
 QString F4IconProvider::lucideFileIconName(QStringView rawFileName,
                                            bool directory)

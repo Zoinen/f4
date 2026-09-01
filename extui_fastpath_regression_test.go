@@ -218,9 +218,7 @@ func TestExtUiRenderer_HiddenTerminalLogicalChangesForceFullScene(t *testing.T) 
 				productionPanelCatalogLegacy(`D:\Code\f4`, 10, 20, false, "old"))
 			renderer.SetSemanticScene(previous)
 			renderer.Flush()
-			if _, err := extUiReadMessage(&wire); err != nil {
-				t.Fatalf("initial scene was not sent: %v", err)
-			}
+			extUiDrainBufferedMessages(t, &wire)
 
 			currentLegacy := productionPanelCatalogLegacy(
 				`D:\Code\f4\plugins`, 11, 21, false, "new")
@@ -228,12 +226,16 @@ func TestExtUiRenderer_HiddenTerminalLogicalChangesForceFullScene(t *testing.T) 
 			current := BuildAppSceneFromLegacy(nil, currentLegacy)
 			renderer.SetSemanticScene(current)
 			renderer.Flush()
-			message, err := extUiReadMessage(&wire)
-			if err != nil {
-				t.Fatalf("authoritative correction was not sent: %v", err)
+			messages := extUiDrainBufferedMessages(t, &wire)
+			foundShell := false
+			for _, message := range messages {
+				if message["type"] == "scene" {
+					t.Fatalf("logical terminal change sent a whole scene: %#v", message)
+				}
+				foundShell = foundShell || message["type"] == "shell_snapshot"
 			}
-			if message["type"] != "scene" {
-				t.Fatalf("logical terminal change used compact path: %#v", message)
+			if !foundShell {
+				t.Fatalf("logical terminal correction omitted the shell stream: %#v", messages)
 			}
 		})
 	}
@@ -246,9 +248,7 @@ func TestExtUiRenderer_CoveredTerminalPromptUpdateIsDeferredUntilReveal(t *testi
 		productionPanelCatalogLegacy(`D:\Code\f4`, 10, 20, false, "old"))
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	covered := BuildAppSceneFromLegacy(nil,
 		productionPanelCatalogLegacy(`D:\Code\f4`, 10, 20, false, "old"))
@@ -272,12 +272,16 @@ func TestExtUiRenderer_CoveredTerminalPromptUpdateIsDeferredUntilReveal(t *testi
 	revealedTerminal["rows"] = terminal["rows"]
 	renderer.SetSemanticScene(BuildAppSceneFromLegacy(nil, revealedLegacy))
 	renderer.Flush()
-	message, err := extUiReadMessage(&wire)
-	if err != nil {
-		t.Fatalf("revealed terminal scene was not sent: %v", err)
+	messages := extUiDrainBufferedMessages(t, &wire)
+	foundShell := false
+	for _, message := range messages {
+		if message["type"] == "scene" {
+			t.Fatalf("terminal reveal sent a whole scene: %#v", message)
+		}
+		foundShell = foundShell || message["type"] == "shell_snapshot"
 	}
-	if message["type"] != "scene" {
-		t.Fatalf("terminal reveal used compact message: %#v", message)
+	if !foundShell {
+		t.Fatalf("terminal reveal omitted the shell stream: %#v", messages)
 	}
 }
 
@@ -300,9 +304,7 @@ func TestExtUiRenderer_DirectPanelActivationAdoptsTracedRenderedCommandLine(t *t
 	}
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial traced scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	projectedCommandLine := map[string]any{
 		"id": "command-line", "kind": "commandLine",
@@ -382,9 +384,7 @@ func TestExtUiRenderer_TraceAnnotationsDoNotChangeLogicalScene(t *testing.T) {
 	}
 	renderer.SetSemanticScene(first)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial traced scene was not sent: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	second := panelActivationFastPathScene(0, "Panels: left")
 	second["benchmarkTraceId"] = "trace:second"

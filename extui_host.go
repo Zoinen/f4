@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	extUiProtocolVersion                = 3
+	extUiProtocolVersion                = 4
 	extUiMaxMessageSize                 = 64 * 1024 * 1024
 	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
 	extUiPanelCatalogRowsCapability     = "panelCatalogRowsV1"
@@ -145,8 +146,16 @@ func extUiSendMessageWithBenchmark(w io.Writer, msg map[string]any, benchmark *n
 }
 
 type extUiMessageSender struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu                   sync.Mutex
+	w                    io.Writer
+	nextSemanticSequence uint64
+	streamRevisions      map[string]uint64
+}
+
+type extUiSemanticDispatch struct {
+	streamID string
+	kind     string
+	payload  map[string]any
 }
 
 func (s *extUiMessageSender) Send(msg map[string]any) error {
@@ -154,21 +163,530 @@ func (s *extUiMessageSender) Send(msg map[string]any) error {
 }
 
 func (s *extUiMessageSender) SendWithBenchmark(msg map[string]any, benchmark *navigationBenchmarkMessage) error {
+	dispatches := extUiSemanticDispatches(msg)
+	if len(dispatches) == 0 {
+		return s.sendWithBenchmark(msg, benchmark, "", "", false)
+	}
+	if len(dispatches) == 1 {
+		dispatch := dispatches[0]
+		return s.sendWithBenchmark(dispatch.payload, benchmark,
+			dispatch.streamID, dispatch.kind, true)
+	}
+	return s.sendSemanticBatchWithBenchmark(dispatches, benchmark)
+}
+
+func (s *extUiMessageSender) SendSemanticSnapshot(streamID string,
+	payload map[string]any,
+) error {
+	return s.sendWithBenchmark(payload,
+		navigationBenchmarkMessageFromMap(payload), streamID,
+		extui.KindSnapshot, true)
+}
+
+func (s *extUiMessageSender) sendWithBenchmark(msg map[string]any,
+	benchmark *navigationBenchmarkMessage, streamID, kind string,
+	semantic bool,
+) error {
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.wait", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
 			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
 	}
 	s.mu.Lock()
+	wireMessage := msg
+	if semantic {
+		if streamID == "" || kind == "" {
+			s.mu.Unlock()
+			err := fmt.Errorf("invalid semantic stream envelope")
+			navigationBenchmarkMessageSent(benchmark, err)
+			return err
+		}
+		if s.streamRevisions == nil {
+			s.streamRevisions = make(map[string]uint64)
+		}
+		s.nextSemanticSequence++
+		baseRevision := s.streamRevisions[streamID]
+		revision := baseRevision + 1
+		envelope := extui.Envelope{
+			Sequence: s.nextSemanticSequence,
+			StreamID: streamID,
+			Revision: revision,
+			Kind:     kind,
+			Payload:  msg,
+		}
+		if kind != extui.KindSnapshot {
+			envelope.BaseRevision = extui.Revision(baseRevision)
+		}
+		wireMessage = envelope.ToMap()
+		s.streamRevisions[streamID] = revision
+	}
 	if benchmark != nil {
 		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.acquired", "go.transport",
 			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
 			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
 	}
-	err := extUiSendMessageWithBenchmark(s.w, msg, benchmark)
+	err := extUiSendMessageWithBenchmark(s.w, wireMessage, benchmark)
 	s.mu.Unlock()
 	navigationBenchmarkMessageSent(benchmark, err)
 	return err
+}
+
+func (s *extUiMessageSender) sendSemanticBatchWithBenchmark(
+	dispatches []extUiSemanticDispatch,
+	benchmark *navigationBenchmarkMessage,
+) error {
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.wait", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
+	}
+	s.mu.Lock()
+	if s.streamRevisions == nil {
+		s.streamRevisions = make(map[string]uint64)
+	}
+	if benchmark != nil {
+		navigationBenchmarkEmit(benchmark.traceID, "transport.send_lock.acquired", "go.transport",
+			"phase", benchmark.phase, "phaseSequence", benchmark.phaseSequence,
+			"sceneSequence", benchmark.sceneSequence, "messageType", benchmark.messageType)
+	}
+	var sendErr error
+	for _, dispatch := range dispatches {
+		if dispatch.streamID == "" || dispatch.kind == "" || dispatch.payload == nil {
+			sendErr = fmt.Errorf("invalid semantic stream batch")
+			break
+		}
+		s.nextSemanticSequence++
+		baseRevision := s.streamRevisions[dispatch.streamID]
+		revision := baseRevision + 1
+		envelope := extui.Envelope{
+			Sequence:     s.nextSemanticSequence,
+			StreamID:     dispatch.streamID,
+			Revision:     revision,
+			BaseRevision: extui.Revision(baseRevision),
+			Kind:         dispatch.kind,
+			Payload:      dispatch.payload,
+		}
+		if dispatch.kind == extui.KindSnapshot {
+			envelope.BaseRevision = nil
+		}
+		if sendErr = extUiSendMessageWithBenchmark(
+			s.w, envelope.ToMap(), benchmark); sendErr != nil {
+			break
+		}
+		s.streamRevisions[dispatch.streamID] = revision
+	}
+	s.mu.Unlock()
+	navigationBenchmarkMessageSent(benchmark, sendErr)
+	return sendErr
+}
+
+func extUiSemanticDispatches(msg map[string]any) []extUiSemanticDispatch {
+	if extUiString(msg, "type") == "semantic_stream_snapshot" {
+		streamID := extUiString(msg, "streamId")
+		payload, _ := msg["payload"].(map[string]any)
+		if streamID == "" || payload == nil {
+			return nil
+		}
+		return []extUiSemanticDispatch{{
+			streamID: streamID,
+			kind:     extui.KindSnapshot,
+			payload:  payload,
+		}}
+	}
+	if extUiString(msg, "type") == "scene" {
+		return extUiSplitSceneSnapshot(msg)
+	}
+	if extUiString(msg, "type") == "scene_patch" {
+		if dispatches := extUiSplitScenePatch(msg); len(dispatches) > 0 {
+			return dispatches
+		}
+	}
+	streamID, kind, semantic := extUiSemanticStream(msg)
+	if !semantic {
+		return nil
+	}
+	return []extUiSemanticDispatch{{
+		streamID: streamID,
+		kind:     kind,
+		payload:  msg,
+	}}
+}
+
+// extUiChangedSceneSnapshotMessages is the fallback reconciliation path for
+// state changes which cannot be represented by one of the smaller intent-
+// specific patches. It compares independent stream projections and queues a
+// snapshot only for streams whose owned state actually changed. The complete
+// scene remains Go-local authoritative state and is never handed to the wire
+// encoder from this path.
+func extUiChangedSceneSnapshotMessages(previous, current map[string]any) []map[string]any {
+	if previous == nil {
+		dispatches := extUiSplitSceneSnapshot(current)
+		messages := make([]map[string]any, 0, len(dispatches))
+		for _, dispatch := range dispatches {
+			messages = append(messages, map[string]any{
+				"type":     "semantic_stream_snapshot",
+				"streamId": dispatch.streamID,
+				"payload":  dispatch.payload,
+			})
+		}
+		return messages
+	}
+	streamIDs := []string{
+		"chrome", "workspaces", "menus", "dialogs", "operations",
+		"command-line",
+	}
+	appendPanelStreams := func(scene map[string]any) {
+		if panels, ok := semanticScenePanelMaps(scene); ok {
+			for side := range panels {
+				streamIDs = append(streamIDs, "panel/"+strconv.Itoa(side))
+			}
+		}
+	}
+	appendDocumentStream := func(scene map[string]any) {
+		surface, _ := scene["surface"].(map[string]any)
+		if surface == nil {
+			return
+		}
+		id := semanticString(surface["id"])
+		if id == "" {
+			id = "active"
+		}
+		streamIDs = append(streamIDs, "document/"+id)
+	}
+	appendPanelStreams(previous)
+	appendPanelStreams(current)
+	appendDocumentStream(previous)
+	appendDocumentStream(current)
+	// Shell is deliberately last: it exposes the composed surface only after
+	// every changed catalog/document model in this transaction is installed.
+	streamIDs = append(streamIDs, "shell")
+
+	seen := make(map[string]struct{}, len(streamIDs))
+	messages := make([]map[string]any, 0, len(streamIDs))
+	for _, streamID := range streamIDs {
+		if _, duplicate := seen[streamID]; duplicate {
+			continue
+		}
+		seen[streamID] = struct{}{}
+		nextPayload, nextOK := semanticStreamSnapshot(current, streamID)
+		previousPayload, previousOK := semanticStreamSnapshot(previous, streamID)
+		if !nextOK {
+			// A document stream can disappear. An empty typed document snapshot
+			// removes only that stream's surface in Qt.
+			if strings.HasPrefix(streamID, "document/") && previousOK {
+				nextPayload = map[string]any{
+					"type":  semanticStreamSnapshotPayloadType(streamID),
+					"state": map[string]any{},
+				}
+				nextOK = true
+			}
+		}
+		if !nextOK {
+			continue
+		}
+		if previousOK && reflect.DeepEqual(
+			previousPayload["state"], nextPayload["state"]) {
+			continue
+		}
+		for _, key := range []string{"benchmarkTraceId", "benchmark"} {
+			if value, present := current[key]; present {
+				nextPayload[key] = value
+			}
+		}
+		messages = append(messages, map[string]any{
+			"type":     "semantic_stream_snapshot",
+			"streamId": streamID,
+			"payload":  nextPayload,
+		})
+	}
+	return messages
+}
+
+// extUiSplitSceneSnapshot performs the v4 bootstrap as independent typed
+// stream snapshots. In particular, a panel catalog is never serialized with
+// menus, documents, or the other panel. The shell snapshot is emitted last so
+// the Qt host cannot expose a stable panels surface before both catalog models
+// have received their bounded initial windows.
+func extUiSplitSceneSnapshot(scene map[string]any) []extUiSemanticDispatch {
+	if scene == nil {
+		return nil
+	}
+	streamIDs := []string{
+		"chrome", "workspaces", "menus", "dialogs", "operations",
+		"command-line",
+	}
+	if panels, ok := semanticScenePanelMaps(scene); ok {
+		for _, panel := range panels {
+			streamIDs = append(streamIDs,
+				"panel/"+strconv.Itoa(extUiInt(panel, "side")))
+		}
+	}
+	if surface, ok := scene["surface"].(map[string]any); ok {
+		id := semanticString(surface["id"])
+		if id == "" {
+			id = "active"
+		}
+		streamIDs = append(streamIDs, "document/"+id)
+	}
+	streamIDs = append(streamIDs, "shell")
+
+	dispatches := make([]extUiSemanticDispatch, 0, len(streamIDs))
+	seen := make(map[string]struct{}, len(streamIDs))
+	for _, streamID := range streamIDs {
+		if _, duplicate := seen[streamID]; duplicate {
+			continue
+		}
+		seen[streamID] = struct{}{}
+		payload, ok := semanticStreamSnapshot(scene, streamID)
+		if !ok {
+			continue
+		}
+		state, _ := payload["state"].(map[string]any)
+		if len(state) == 0 {
+			continue
+		}
+		dispatches = append(dispatches, extUiSemanticDispatch{
+			streamID: streamID,
+			kind:     extui.KindSnapshot,
+			payload:  payload,
+		})
+	}
+	return dispatches
+}
+
+func extUiSplitScenePatch(msg map[string]any) []extUiSemanticDispatch {
+	var dispatches []extUiSemanticDispatch
+	appendGroupedMapPatch := func(location string, value any,
+		route func(string) string,
+	) {
+		patch, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		groups := extUiGroupMapPatch(patch, route)
+		streams := make([]string, 0, len(groups))
+		for streamID := range groups {
+			streams = append(streams, streamID)
+		}
+		sort.Strings(streams)
+		for _, streamID := range streams {
+			payload := extUiScenePatchPayloadBase(msg)
+			payload[location] = groups[streamID]
+			dispatches = append(dispatches, extUiSemanticDispatch{
+				streamID: streamID,
+				kind:     extui.KindPatch,
+				payload:  payload,
+			})
+		}
+	}
+
+	if shell, ok := msg["shell"].(map[string]any); ok {
+		panelValues := extUiAnyMapSlice(shell["panels"])
+		for index, panel := range panelValues {
+			side := extUiInt(panel, "side")
+			payload := extUiScenePatchPayloadBase(msg)
+			panelShell := map[string]any{
+				"panels": []map[string]any{panel},
+			}
+			// Shell title/prompt changes are derived from this catalog
+			// transition. Keep them with the first affected panel so the
+			// frontend commits one visible folder-entry transaction, while
+			// unrelated root streams remain physically separate.
+			if index == 0 {
+				for _, key := range []string{"set", "clear"} {
+					if value, present := shell[key]; present {
+						panelShell[key] = value
+					}
+				}
+			}
+			payload["shell"] = panelShell
+			dispatches = append(dispatches, extUiSemanticDispatch{
+				streamID: "panel/" + strconv.Itoa(side),
+				kind:     extui.KindPatch,
+				payload:  payload,
+			})
+		}
+		if len(panelValues) == 0 {
+			appendGroupedMapPatch("shell", shell, func(key string) string {
+				if key == "commandLine" {
+					return "command-line"
+				}
+				return "shell"
+			})
+		}
+	}
+	rootRoute := extUiRootFieldStream
+	if root, ok := msg["root"].(map[string]any); ok &&
+		extUiMapPatchContainsKey(root, "menus") &&
+		msg["shell"] == nil && msg["surface"] == nil {
+		// Popup lifecycle is one bounded visual transaction. Contextual keybar
+		// and workspace-title changes belong to that menu transaction too; a
+		// second envelope would expose an avoidable intermediate frame.
+		rootRoute = func(string) string { return "menus" }
+	}
+	appendGroupedMapPatch("root", msg["root"], rootRoute)
+	if surface, ok := msg["surface"].(map[string]any); ok {
+		id := extUiString(surface, "id")
+		if id == "" {
+			id = "active"
+		}
+		payload := extUiScenePatchPayloadBase(msg)
+		payload["surface"] = surface
+		dispatches = append(dispatches, extUiSemanticDispatch{
+			streamID: "document/" + id,
+			kind:     extui.KindPatch,
+			payload:  payload,
+		})
+	}
+	return dispatches
+}
+
+func extUiScenePatchPayloadBase(msg map[string]any) map[string]any {
+	payload := map[string]any{
+		"type":    "scene_patch",
+		"schema":  msg["schema"],
+		"version": msg["version"],
+	}
+	for _, key := range []string{
+		"baseRevision", "revision", "benchmarkTraceId", "benchmark",
+	} {
+		if value, present := msg[key]; present {
+			payload[key] = value
+		}
+	}
+	return payload
+}
+
+func extUiGroupMapPatch(patch map[string]any,
+	route func(string) string,
+) map[string]map[string]any {
+	groups := map[string]map[string]any{}
+	ensure := func(streamID string) map[string]any {
+		group := groups[streamID]
+		if group == nil {
+			group = map[string]any{}
+			groups[streamID] = group
+		}
+		return group
+	}
+	if set, ok := patch["set"].(map[string]any); ok {
+		for key, value := range set {
+			streamID := route(key)
+			group := ensure(streamID)
+			groupSet, _ := group["set"].(map[string]any)
+			if groupSet == nil {
+				groupSet = map[string]any{}
+				group["set"] = groupSet
+			}
+			groupSet[key] = value
+		}
+	}
+	for _, key := range extUiAnyStringSlice(patch["clear"]) {
+		streamID := route(key)
+		group := ensure(streamID)
+		clear, _ := group["clear"].([]string)
+		group["clear"] = append(clear, key)
+	}
+	return groups
+}
+
+func extUiAnyMapSlice(value any) []map[string]any {
+	switch values := value.(type) {
+	case []map[string]any:
+		return values
+	case []any:
+		result := make([]map[string]any, 0, len(values))
+		for _, item := range values {
+			if mapped, ok := item.(map[string]any); ok {
+				result = append(result, mapped)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func extUiAnyStringSlice(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return values
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func extUiMapPatchContainsKey(patch map[string]any, key string) bool {
+	if set, ok := patch["set"].(map[string]any); ok {
+		if _, present := set[key]; present {
+			return true
+		}
+	}
+	for _, candidate := range extUiAnyStringSlice(patch["clear"]) {
+		if candidate == key {
+			return true
+		}
+	}
+	return false
+}
+
+func extUiSemanticStream(msg map[string]any) (string, string, bool) {
+	switch extUiString(msg, "type") {
+	case "scene_patch":
+		// A well-formed ScenePatch is split above. Keep malformed/empty payloads
+		// on a bounded canonical stream so the receiver can reject them without
+		// reviving the former cross-stream "transaction" escape hatch.
+		return "chrome", extui.KindPatch, true
+	case "panel_catalog":
+		return "panel/" + strconv.Itoa(extUiInt(msg, "side")),
+			extui.KindReset, true
+	case "panel_chrome", "panel_activation":
+		return "shell", extui.KindPatch, true
+	case "command_line":
+		return "command-line", extui.KindPatch, true
+	case "panel_catalog_metadata", "panel_catalog_metadata_rejected":
+		return extUiPanelMessageStream(msg), extui.KindMetadata, true
+	case "panel_catalog_rows", "panel_catalog_rows_rejected":
+		return extUiPanelMessageStream(msg), extui.KindRows, true
+	}
+	return "", "", false
+}
+
+func extUiPanelMessageStream(msg map[string]any) string {
+	if side, present := msg["side"]; present {
+		return "panel/" + strconv.Itoa(extUiAnyInt(side))
+	}
+	if panelID := extUiString(msg, "panelId"); panelID != "" {
+		return "panel-id/" + panelID
+	}
+	return "panel/unknown"
+}
+
+func extUiRootFieldStream(key string) string {
+	switch key {
+	case "workspaceTabs", "workspaceCount", "activeScreen":
+		return "workspaces"
+	case "menuBar", "menus":
+		return "menus"
+	case "dialogs":
+		return "dialogs"
+	case "operationsQueue":
+		return "operations"
+	case "surface":
+		return "document/active"
+	case "shell":
+		return "shell"
+	default:
+		return "chrome"
+	}
 }
 
 func extUiReadMessage(r io.Reader) (map[string]any, error) {
@@ -176,6 +694,33 @@ func extUiReadMessage(r io.Reader) (map[string]any, error) {
 }
 
 func extUiReadMessageWithBenchmark(r io.Reader, timing *navigationBenchmarkReadTiming) (map[string]any, error) {
+	msg, err := extUiReadWireMessageWithBenchmark(r, timing)
+	if err != nil {
+		return nil, err
+	}
+	// Existing Go-side reducer tests consume the typed payload, while the Qt
+	// peer validates the envelope itself. Application code never receives a
+	// semantic envelope from Qt.
+	if extUiString(msg, "type") == extui.EnvelopeType {
+		if extUiInt(msg, "version") != extui.EnvelopeVersion {
+			return nil, fmt.Errorf("unsupported extui semantic envelope")
+		}
+		payloadMap, ok := msg["payload"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("invalid extui semantic payload")
+		}
+		return payloadMap, nil
+	}
+	return msg, nil
+}
+
+func extUiReadWireMessage(r io.Reader) (map[string]any, error) {
+	return extUiReadWireMessageWithBenchmark(r, nil)
+}
+
+func extUiReadWireMessageWithBenchmark(r io.Reader,
+	timing *navigationBenchmarkReadTiming,
+) (map[string]any, error) {
 	if timing != nil {
 		timing.readStartNs = navigationBenchmarkMonotonicNs()
 	}
@@ -345,6 +890,34 @@ func NewExtUiRenderer(conn net.Conn, sender *extUiMessageSender) *ExtUiRenderer 
 	return &ExtUiRenderer{
 		conn: conn, send: sender, cursorDirty: true,
 	}
+}
+
+// SendStreamSnapshot answers a revision-gap request without serializing an
+// unrelated application scene. The renderer's lastScene is the authoritative
+// immutable semantic snapshot; each projection below contains only one
+// protocol stream's state.
+func (r *ExtUiRenderer) SendStreamSnapshot(streamID string) bool {
+	if r == nil || streamID == "" {
+		return false
+	}
+	r.mu.Lock()
+	if r.closed || r.send == nil {
+		r.mu.Unlock()
+		return false
+	}
+	payload, ok := semanticStreamSnapshot(r.lastScene, streamID)
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if err := r.send.SendSemanticSnapshot(streamID, payload); err != nil {
+		vtui.DebugLog("EXTUI_RENDERER: stream snapshot send failed: %v", err)
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
+		return false
+	}
+	return true
 }
 
 // BeginSemanticSceneUpdate starts an input/task mutation boundary. Unless a
@@ -1114,17 +1687,21 @@ func (r *ExtUiRenderer) queuePanelCatalogState(side int, panel map[string]any,
 		Revision:     r.sceneRevision + 1,
 		Shell:        shellPatch,
 	}
-	// Keep the complete panel in the local authoritative snapshot while the
-	// wire operation may carry only the first stream prefix.
-	wire := patch.ToMap()
-	if streamCatalog {
-		if shell, ok := wire["shell"].(map[string]any); ok {
-			if operations, ok := shell["panels"].([]map[string]any); ok && len(operations) > 0 {
-				operations[0]["panel"] = wirePanel
-				shell["panels"] = operations
-				wire["shell"] = shell
-			}
-		}
+	// The panel stream has a dedicated reset payload in v4. Sending the
+	// catalog as a generic scene patch made Qt rebuild an isolated map scene,
+	// derive the same panel descriptor again, and notify QML in a second stage.
+	// Keep ScenePatch only as the Go-local authoritative state transition.
+	wire := map[string]any{
+		"type":        "panel_catalog",
+		"activePanel": activeSide,
+		"side":        side,
+		"panel":       wirePanel,
+	}
+	if title, present := shellPatch.Set["title"]; present {
+		wire["shellTitle"] = title
+	}
+	if prompt, present := shellPatch.Set["commandLine"]; present {
+		wire["commandLine"] = prompt
 	}
 	if traceID == "" {
 		if trace := navigationBenchmarkCurrentUI(); trace != nil {
@@ -2702,6 +3279,136 @@ func semanticScenePanelMaps(scene map[string]any) ([]map[string]any, bool) {
 	}
 }
 
+func semanticStreamSnapshot(scene map[string]any,
+	streamID string,
+) (map[string]any, bool) {
+	if scene == nil {
+		return nil, false
+	}
+	state := map[string]any{}
+	switch streamID {
+	case "chrome":
+		for _, key := range []string{
+			"schema", "version", "width", "height", "presentation",
+			"qmlIconSet", "keyBar", "toast",
+		} {
+			if value, present := scene[key]; present {
+				state[key] = value
+			}
+		}
+	case "workspaces":
+		for _, key := range []string{
+			"activeScreen", "workspaceCount", "workspaceTabs",
+		} {
+			if value, present := scene[key]; present {
+				state[key] = value
+			}
+		}
+	case "menus":
+		for _, key := range []string{"menuBar", "menus"} {
+			if value, present := scene[key]; present {
+				state[key] = value
+			}
+		}
+	case "dialogs":
+		if value, present := scene["dialogs"]; present {
+			state["dialogs"] = value
+		}
+	case "operations":
+		if value, present := scene["operationsQueue"]; present {
+			state["operationsQueue"] = value
+		}
+	case "command-line":
+		shell, ok := scene["shell"].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if value, present := shell["commandLine"]; present {
+			state["commandLine"] = value
+		}
+	case "shell":
+		shell, ok := scene["shell"].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		projected := semanticShallowMapCopy(shell)
+		delete(projected, "commandLine")
+		if panels, panelsOK := semanticScenePanelMaps(scene); panelsOK {
+			compactPanels := make([]map[string]any, 0, len(panels))
+			for _, panel := range panels {
+				compact := semanticShallowMapCopy(panel)
+				delete(compact, "entries")
+				delete(compact, "highlightStyles")
+				compactPanels = append(compactPanels, compact)
+			}
+			projected["panels"] = compactPanels
+		}
+		state["shell"] = projected
+	default:
+		if strings.HasPrefix(streamID, "panel/") {
+			side, err := strconv.Atoi(strings.TrimPrefix(streamID, "panel/"))
+			panels, ok := semanticScenePanelMaps(scene)
+			if err != nil || !ok || side < 0 || side >= len(panels) {
+				return nil, false
+			}
+			state["side"] = side
+			state["panel"] = panels[side]
+		} else if strings.HasPrefix(streamID, "panel-id/") {
+			panelID := strings.TrimPrefix(streamID, "panel-id/")
+			panels, ok := semanticScenePanelMaps(scene)
+			if !ok {
+				return nil, false
+			}
+			for side, panel := range panels {
+				if semanticString(panel["id"]) == panelID {
+					state["side"] = side
+					state["panel"] = panel
+					break
+				}
+			}
+			if _, present := state["panel"]; !present {
+				return nil, false
+			}
+		} else if strings.HasPrefix(streamID, "document/") {
+			if surface, present := scene["surface"]; present {
+				state["surface"] = surface
+			}
+		} else {
+			return nil, false
+		}
+	}
+	return map[string]any{
+		"type":  semanticStreamSnapshotPayloadType(streamID),
+		"state": state,
+	}, true
+}
+
+func semanticStreamSnapshotPayloadType(streamID string) string {
+	switch {
+	case streamID == "chrome":
+		return "chrome_snapshot"
+	case streamID == "workspaces":
+		return "workspaces_snapshot"
+	case streamID == "menus":
+		return "menus_snapshot"
+	case streamID == "dialogs":
+		return "dialogs_snapshot"
+	case streamID == "operations":
+		return "operations_snapshot"
+	case streamID == "command-line":
+		return "command_line_snapshot"
+	case streamID == "shell":
+		return "shell_snapshot"
+	case strings.HasPrefix(streamID, "panel/") ||
+		strings.HasPrefix(streamID, "panel-id/"):
+		return "panel_catalog_snapshot"
+	case strings.HasPrefix(streamID, "document/"):
+		return "document_snapshot"
+	default:
+		return "unknown_snapshot"
+	}
+}
+
 // semanticSceneWithPanelActivation builds the exact logical successor for a
 // plain split-panel Tab without traversing or copying catalog entries. It
 // updates the typed shell and the active-workspace legacy aliases emitted by
@@ -3376,7 +4083,9 @@ func (r *ExtUiRenderer) Flush() {
 			"shape":   int(r.cursorShape),
 		})
 		if r.pendingScene != nil {
-			messages = append(messages, r.pendingScene)
+			messages = append(messages,
+				extUiChangedSceneSnapshotMessages(
+					r.lastScene, r.pendingScene)...)
 			r.lastScene = semanticShallowMapCopy(r.pendingScene)
 			delete(r.lastScene, "revision")
 			r.pendingScene = nil
@@ -3392,7 +4101,9 @@ func (r *ExtUiRenderer) Flush() {
 		r.fallbackRevealPending = false
 	}
 	if !r.fallbackRevealPending && r.pendingScene != nil {
-		messages = append(messages, r.pendingScene)
+		messages = append(messages,
+			extUiChangedSceneSnapshotMessages(
+				r.lastScene, r.pendingScene)...)
 		// ExportSemanticScene and f4's adapter create a fresh immutable map for
 		// every redraw. Remember the last snapshot here so cell-grid redraws and
 		// cursor blinking do not repeatedly serialize and deliver the same large
@@ -3497,6 +4208,7 @@ type ExtUiHost struct {
 	panelCatalogRowsV1     bool
 	platformServicesV1     bool
 	platform               *platformIPCClient
+	renderer               *ExtUiRenderer
 }
 
 func RunExternalUI(cols, rows int, execPath string, args []string) error {
@@ -3638,6 +4350,7 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(cols, rows)
 	renderer := NewExtUiRenderer(conn, sender)
+	host.renderer = renderer
 	// The deferred-catalog capability is an exact opt-in from a client which
 	// owns native panel semantics. Older protocol-v2 clients keep receiving the
 	// complete cell stream even if they tolerate app-schema scene messages.
@@ -3769,6 +4482,10 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		h.queuePanelCatalogMetadata(msg)
 	case "panel_catalog_rows_request":
 		h.queuePanelCatalogRows(msg)
+	case "stream_snapshot_request":
+		if h.renderer != nil {
+			h.renderer.SendStreamSnapshot(extUiString(msg, "streamId"))
+		}
 	case "platform_response", "platform_event":
 		if h.platform != nil && h.platformServicesV1 {
 			h.platform.handleResponse(msg)
@@ -4018,12 +4735,16 @@ func findExtUiPath(backend string) (string, error) {
 }
 
 func extUiExecutablePaths(dir, binName, goos string) []string {
+	join := filepath.Join
+	if goos != "windows" {
+		join = path.Join
+	}
 	paths := make([]string, 0, 2)
 	if goos == "darwin" && binName == "f4-qt-host" {
-		paths = append(paths, filepath.Join(dir, "f4-qt-host.app", "Contents",
+		paths = append(paths, join(dir, "f4-qt-host.app", "Contents",
 			"MacOS", "f4-qt-host"))
 	}
-	return append(paths, filepath.Join(dir, binName))
+	return append(paths, join(dir, binName))
 }
 
 func extUiFileExists(path string) bool {

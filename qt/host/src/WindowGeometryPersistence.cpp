@@ -59,6 +59,105 @@ QScreen *screenNamed(const QString &name)
     }
     return nullptr;
 }
+
+const WindowScreenGeometry *matchingStoredScreen(
+    const QList<WindowScreenGeometry> &screens,
+    const PersistedWindowGeometry &stored)
+{
+    for (const auto &screen : screens) {
+        if (screen.availableGeometry.isValid()
+            && screen.name == stored.screenName) {
+            return &screen;
+        }
+    }
+    return nullptr;
+}
+
+const WindowScreenGeometry *largestIntersectingScreen(
+    const QList<WindowScreenGeometry> &screens, const QRect &geometry)
+{
+    const WindowScreenGeometry *target = nullptr;
+    qint64 largestArea = 0;
+    for (const auto &screen : screens) {
+        if (!screen.availableGeometry.isValid())
+            continue;
+        const QRect intersection = screen.availableGeometry.intersected(
+            geometry);
+        const qint64 area = intersection.isValid()
+            ? qint64(intersection.width()) * intersection.height() : 0;
+        if (area > largestArea) {
+            largestArea = area;
+            target = &screen;
+        }
+    }
+    return target;
+}
+
+const WindowScreenGeometry *fallbackScreen(
+    const QList<WindowScreenGeometry> &screens,
+    const QString &primaryScreenName)
+{
+    for (const auto &screen : screens) {
+        if (screen.availableGeometry.isValid()
+            && screen.name == primaryScreenName) {
+            return &screen;
+        }
+    }
+    for (const auto &screen : screens) {
+        if (screen.availableGeometry.isValid())
+            return &screen;
+    }
+    return nullptr;
+}
+
+QRect fitRestoredGeometry(
+    QRect geometry, const QRect &savedAvailable, const QRect &available,
+    const QSize &minimumSize, const QMargins &frameMargins)
+{
+    if (savedAvailable.isValid()) {
+        geometry.moveTopLeft(
+            available.topLeft()
+            + (geometry.topLeft() - savedAvailable.topLeft()));
+    }
+    const bool intersectedBeforeFitting = available.intersects(geometry);
+    int leftFrame = std::max(0, frameMargins.left());
+    int topFrame = std::max(0, frameMargins.top());
+    int rightFrame = std::max(0, frameMargins.right());
+    int bottomFrame = std::max(0, frameMargins.bottom());
+    if (leftFrame + rightFrame >= available.width())
+        leftFrame = rightFrame = 0;
+    if (topFrame + bottomFrame >= available.height())
+        topFrame = bottomFrame = 0;
+    const int maximumWidth = std::max(
+        1, available.width() - leftFrame - rightFrame);
+    const int maximumHeight = std::max(
+        1, available.height() - topFrame - bottomFrame);
+    geometry.setWidth(std::clamp(
+        geometry.width(),
+        std::clamp(std::max(1, minimumSize.width()), 1, maximumWidth),
+        maximumWidth));
+    geometry.setHeight(std::clamp(
+        geometry.height(),
+        std::clamp(std::max(1, minimumSize.height()), 1, maximumHeight),
+        maximumHeight));
+    const int minimumLeft = available.left() + leftFrame;
+    const int maximumLeft = available.right() - rightFrame
+        - geometry.width() + 1;
+    const int minimumTop = available.top() + topFrame;
+    const int maximumTop = available.bottom() - bottomFrame
+        - geometry.height() + 1;
+    if (!intersectedBeforeFitting) {
+        geometry.moveCenter(QRect(
+            QPoint(minimumLeft, minimumTop),
+            QPoint(available.right() - rightFrame,
+                   available.bottom() - bottomFrame)).center());
+    }
+    geometry.moveLeft(std::clamp(
+        geometry.left(), minimumLeft, maximumLeft));
+    geometry.moveTop(std::clamp(
+        geometry.top(), minimumTop, maximumTop));
+    return geometry;
+}
 }
 
 WindowGeometryPersistence::WindowGeometryPersistence(
@@ -155,100 +254,17 @@ QRect WindowGeometryPersistence::resolvedNormalGeometry(
 {
     if (!stored.valid || screens.isEmpty())
         return {};
-
-    const WindowScreenGeometry *target = nullptr;
-    for (const auto &screen : screens) {
-        if (screen.availableGeometry.isValid()
-            && screen.name == stored.screenName) {
-            target = &screen;
-            break;
-        }
-    }
-    if (!target) {
-        qint64 largestIntersectionArea = 0;
-        for (const auto &screen : screens) {
-            if (!screen.availableGeometry.isValid())
-                continue;
-            const QRect intersection = screen.availableGeometry.intersected(
-                stored.normalGeometry);
-            const qint64 intersectionArea = intersection.isValid()
-                ? qint64(intersection.width()) * intersection.height() : 0;
-            if (intersectionArea > largestIntersectionArea) {
-                largestIntersectionArea = intersectionArea;
-                target = &screen;
-            }
-        }
-    }
-    if (!target) {
-        for (const auto &screen : screens) {
-            if (screen.availableGeometry.isValid()
-                && screen.name == primaryScreenName) {
-                target = &screen;
-                break;
-            }
-        }
-    }
-    if (!target) {
-        for (const auto &screen : screens) {
-            if (screen.availableGeometry.isValid()) {
-                target = &screen;
-                break;
-            }
-        }
-    }
+    const WindowScreenGeometry *target = matchingStoredScreen(
+        screens, stored);
+    if (!target)
+        target = largestIntersectingScreen(screens, stored.normalGeometry);
+    if (!target)
+        target = fallbackScreen(screens, primaryScreenName);
     if (!target)
         return {};
-
-    QRect geometry = stored.normalGeometry;
-    const QRect available = target->availableGeometry;
-
-    // Preserve the offset relative to the saved monitor. This keeps the
-    // window in the same physical place when a monitor's global origin moves
-    // because another display was attached or removed.
-    if (stored.screenAvailableGeometry.isValid()) {
-        geometry.moveTopLeft(
-            available.topLeft()
-            + (stored.normalGeometry.topLeft()
-               - stored.screenAvailableGeometry.topLeft()));
-    }
-    const bool intersectsTargetBeforeFitting = available.intersects(geometry);
-
-    int leftFrame = std::max(0, frameMargins.left());
-    int topFrame = std::max(0, frameMargins.top());
-    int rightFrame = std::max(0, frameMargins.right());
-    int bottomFrame = std::max(0, frameMargins.bottom());
-    if (leftFrame + rightFrame >= available.width())
-        leftFrame = rightFrame = 0;
-    if (topFrame + bottomFrame >= available.height())
-        topFrame = bottomFrame = 0;
-
-    const int maximumWidth = std::max(
-        1, available.width() - leftFrame - rightFrame);
-    const int maximumHeight = std::max(
-        1, available.height() - topFrame - bottomFrame);
-    const int minimumWidth = std::clamp(
-        std::max(1, minimumSize.width()), 1, maximumWidth);
-    const int minimumHeight = std::clamp(
-        std::max(1, minimumSize.height()), 1, maximumHeight);
-    geometry.setWidth(std::clamp(geometry.width(), minimumWidth,
-                                 maximumWidth));
-    geometry.setHeight(std::clamp(geometry.height(), minimumHeight,
-                                  maximumHeight));
-    const int minimumLeft = available.left() + leftFrame;
-    const int maximumLeft = available.right() - rightFrame
-        - geometry.width() + 1;
-    const int minimumTop = available.top() + topFrame;
-    const int maximumTop = available.bottom() - bottomFrame
-        - geometry.height() + 1;
-    if (!intersectsTargetBeforeFitting) {
-        geometry.moveCenter(QRect(
-            QPoint(minimumLeft, minimumTop),
-            QPoint(available.right() - rightFrame,
-                   available.bottom() - bottomFrame)).center());
-    }
-    geometry.moveLeft(std::clamp(geometry.left(), minimumLeft, maximumLeft));
-    geometry.moveTop(std::clamp(geometry.top(), minimumTop, maximumTop));
-    return geometry;
+    return fitRestoredGeometry(
+        stored.normalGeometry, stored.screenAvailableGeometry,
+        target->availableGeometry, minimumSize, frameMargins);
 }
 
 bool WindowGeometryPersistence::restore()

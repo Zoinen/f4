@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"runtime"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -65,9 +68,19 @@ type completeOSDirectoryRecord struct {
 	modifiedTimeNs int64
 }
 
+type completeOSDirectoryPreparedRecord struct {
+	record completeOSDirectoryRecord
+	folded string
+}
+
+type completeOSDirectoryWindowPlanner struct {
+	request DirectoryWindowRequest
+	items   []completeOSDirectoryPreparedRecord
+}
+
 const (
-	directoryRecordChunkSize = 512
-	directoryNameChunkSize   = 64 * 1024
+	directoryRecordChunkSize = 1024
+	directoryNameChunkSize   = 128 * 1024
 	// One details viewport currently paints about 39 rows. Keep four spare rows
 	// overscan without making the first semantic/QML hand-off normalize and
 	// bind rows which cannot contribute to the first frame.
@@ -81,6 +94,7 @@ type completeOSDirectoryBuilder struct {
 	names          []byte
 	rowCount       int
 	directoryCount int
+	hiddenCount    int
 	nameBytes      int
 }
 
@@ -115,6 +129,9 @@ func (builder *completeOSDirectoryBuilder) appendRecord(record completeOSDirecto
 	builder.rowCount++
 	if record.attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 {
 		builder.directoryCount++
+	}
+	if record.attributes&windows.FILE_ATTRIBUTE_HIDDEN != 0 {
+		builder.hiddenCount++
 	}
 }
 
@@ -182,6 +199,177 @@ func materializeCompleteOSDirectoryBase(builder *completeOSDirectoryBuilder) []V
 	return items
 }
 
+func writeCompleteOSDirectoryBase(
+	builder *completeOSDirectoryBuilder,
+	request DirectoryWindowRequest,
+) {
+	writer := request.Writer
+	if writer == nil {
+		return
+	}
+	totalCount := builder.rowCount
+	if !request.IncludeHidden {
+		totalCount -= builder.hiddenCount
+	}
+	writer.BeginDirectoryItems(totalCount)
+	index := 0
+	for _, records := range builder.recordChunks {
+		for _, record := range records {
+			if !request.IncludeHidden && record.attributes&windows.FILE_ATTRIBUTE_HIDDEN != 0 {
+				continue
+			}
+			writer.WriteDirectoryItem(index, completeOSDirectoryItem(record))
+			index++
+		}
+	}
+	writer.EndDirectoryItems()
+	runtime.KeepAlive(builder)
+}
+
+func compareCompleteOSDirectoryPreparedRecords(
+	left, right completeOSDirectoryPreparedRecord,
+) int {
+	leftDirectory := left.record.attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
+	rightDirectory := right.record.attributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0
+	if leftDirectory != rightDirectory {
+		if leftDirectory {
+			return -1
+		}
+		return 1
+	}
+	if folded := strings.Compare(left.folded, right.folded); folded != 0 {
+		return folded
+	}
+	return strings.Compare(left.record.name, right.record.name)
+}
+
+func (planner *completeOSDirectoryWindowPlanner) consider(
+	record completeOSDirectoryRecord,
+) {
+	if planner == nil || planner.request.Limit <= 0 ||
+		(!planner.request.IncludeHidden && record.attributes&windows.FILE_ATTRIBUTE_HIDDEN != 0) {
+		return
+	}
+	candidate := completeOSDirectoryPreparedRecord{
+		record: record,
+		folded: FoldNameKey(record.name),
+	}
+	planner.considerPrepared(candidate)
+}
+
+func (planner *completeOSDirectoryWindowPlanner) considerPrepared(
+	candidate completeOSDirectoryPreparedRecord,
+) {
+	if len(planner.items) < planner.request.Limit {
+		planner.items = append(planner.items, candidate)
+		planner.heapUp(len(planner.items) - 1)
+		return
+	}
+	if compareCompleteOSDirectoryPreparedRecords(candidate, planner.items[0]) >= 0 {
+		return
+	}
+	planner.items[0] = candidate
+	planner.heapDown(0)
+}
+
+func planCompleteOSDirectoryWindow(
+	builder *completeOSDirectoryBuilder,
+	request DirectoryWindowRequest,
+) DirectoryWindow {
+	workerCount := min(runtime.GOMAXPROCS(0), 8)
+	workerCount = min(workerCount, len(builder.recordChunks))
+	if builder.rowCount < 4096 {
+		workerCount = min(workerCount, 1)
+	}
+	if workerCount <= 0 {
+		planner := completeOSDirectoryWindowPlanner{request: request}
+		return planner.window(builder)
+	}
+	planners := make([]completeOSDirectoryWindowPlanner, workerCount)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for worker := 0; worker < workerCount; worker++ {
+		start := len(builder.recordChunks) * worker / workerCount
+		end := len(builder.recordChunks) * (worker + 1) / workerCount
+		planner := &planners[worker]
+		planner.request = request
+		planner.items = make([]completeOSDirectoryPreparedRecord, 0, max(0, request.Limit))
+		go func() {
+			defer workers.Done()
+			for _, records := range builder.recordChunks[start:end] {
+				for _, record := range records {
+					planner.consider(record)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	merged := completeOSDirectoryWindowPlanner{
+		request: request,
+		items:   make([]completeOSDirectoryPreparedRecord, 0, max(0, request.Limit)),
+	}
+	for index := range planners {
+		for _, candidate := range planners[index].items {
+			merged.considerPrepared(candidate)
+		}
+	}
+	return merged.window(builder)
+}
+
+func (planner *completeOSDirectoryWindowPlanner) heapUp(index int) {
+	for index > 0 {
+		parent := (index - 1) / 2
+		if compareCompleteOSDirectoryPreparedRecords(
+			planner.items[parent], planner.items[index]) >= 0 {
+			return
+		}
+		planner.items[parent], planner.items[index] =
+			planner.items[index], planner.items[parent]
+		index = parent
+	}
+}
+
+func (planner *completeOSDirectoryWindowPlanner) heapDown(index int) {
+	for {
+		left := index*2 + 1
+		if left >= len(planner.items) {
+			return
+		}
+		largest := left
+		right := left + 1
+		if right < len(planner.items) && compareCompleteOSDirectoryPreparedRecords(
+			planner.items[right], planner.items[left]) > 0 {
+			largest = right
+		}
+		if compareCompleteOSDirectoryPreparedRecords(
+			planner.items[index], planner.items[largest]) >= 0 {
+			return
+		}
+		planner.items[index], planner.items[largest] =
+			planner.items[largest], planner.items[index]
+		index = largest
+	}
+}
+
+func (planner *completeOSDirectoryWindowPlanner) window(
+	builder *completeOSDirectoryBuilder,
+) DirectoryWindow {
+	totalCount := builder.rowCount
+	if !planner.request.IncludeHidden {
+		totalCount -= builder.hiddenCount
+	}
+	slices.SortFunc(planner.items, compareCompleteOSDirectoryPreparedRecords)
+	window := DirectoryWindow{
+		Entries:    make([]VFSItem, len(planner.items)),
+		TotalCount: totalCount,
+	}
+	for index, prepared := range planner.items {
+		window.Entries[index] = completeOSDirectoryItem(prepared.record)
+	}
+	runtime.KeepAlive(builder)
+	return window
+}
+
 func materializeCompleteOSDirectoryPreview(
 	builder *completeOSDirectoryBuilder,
 	limit int,
@@ -215,8 +403,23 @@ func readCompleteOSDirectoryBasePhased(
 	path string,
 	onPreview func([]VFSItem),
 ) (items []VFSItem, handled bool, err error) {
-	return readCompleteOSDirectoryBaseWithQuery(
-		ctx, path, directoryQueryBufferSize, queryCompleteOSDirectoryWin32, onPreview, nil)
+	items, handled, _, err = readCompleteOSDirectoryBaseWindowed(
+		ctx, path, DirectoryWindowRequest{}, onPreview, nil)
+	return items, handled, err
+}
+
+func readCompleteOSDirectoryBaseWindowed(
+	ctx context.Context,
+	path string,
+	request DirectoryWindowRequest,
+	onPreview func([]VFSItem),
+	onWindow func(DirectoryWindow),
+) (items []VFSItem, handled bool, streamed bool, err error) {
+	items, handled, err = readCompleteOSDirectoryBaseWithQuery(
+		ctx, path, directoryQueryBufferSize, queryCompleteOSDirectoryWin32,
+		request, onPreview, onWindow, nil)
+	streamed = handled && err == nil && request.Writer != nil
+	return items, handled, streamed, err
 }
 
 func readCompleteOSDirectoryBaseWithBuffer(
@@ -226,7 +429,8 @@ func readCompleteOSDirectoryBaseWithBuffer(
 	onStats func(completeOSDirectoryReadStats),
 ) (items []VFSItem, handled bool, err error) {
 	return readCompleteOSDirectoryBaseWithQuery(
-		ctx, path, bufferSize, queryCompleteOSDirectoryWin32, nil, onStats)
+		ctx, path, bufferSize, queryCompleteOSDirectoryWin32,
+		DirectoryWindowRequest{}, nil, nil, onStats)
 }
 
 func readCompleteOSDirectoryBaseWithQuery(
@@ -234,7 +438,9 @@ func readCompleteOSDirectoryBaseWithQuery(
 	path string,
 	bufferSize int,
 	query completeOSDirectoryQuery,
+	windowRequest DirectoryWindowRequest,
 	onPreview func([]VFSItem),
+	onWindow func(DirectoryWindow),
 	onStats func(completeOSDirectoryReadStats),
 ) (items []VFSItem, handled bool, err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -290,6 +496,13 @@ func readCompleteOSDirectoryBaseWithQuery(
 		if queryErr != nil {
 			if queryErr == windows.ERROR_NO_MORE_FILES ||
 				queryErr == windows.ERROR_FILE_NOT_FOUND {
+				if onWindow != nil {
+					onWindow(planCompleteOSDirectoryWindow(&builder, windowRequest))
+				}
+				if windowRequest.Writer != nil {
+					writeCompleteOSDirectoryBase(&builder, windowRequest)
+					return nil, true, nil
+				}
 				materializeStarted := time.Time{}
 				if tracePhases {
 					materializeStarted = time.Now()

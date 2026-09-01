@@ -505,9 +505,7 @@ func TestExtUiRendererIncrementalReconciliationClearsUnsafeBoundary(t *testing.T
 	renderer := &ExtUiRenderer{send: &extUiMessageSender{w: &wire}}
 	renderer.SetSemanticScene(projected.Scene)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not delivered: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	renderer.BeginSemanticSceneUpdate()
 	renderer.EndSemanticSceneUpdate()
@@ -570,9 +568,7 @@ func TestExtUiRendererDirectMenuLifecycleNeverExportsLargeCatalogs(t *testing.T)
 	}
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
-	if _, err := extUiReadMessage(&wire); err != nil {
-		t.Fatalf("initial scene was not delivered: %v", err)
-	}
+	extUiDrainBufferedMessages(t, &wire)
 
 	// A compact panel activation uses its own scalar wire message but still
 	// advances the renderer's logical app snapshot. The following menu patch

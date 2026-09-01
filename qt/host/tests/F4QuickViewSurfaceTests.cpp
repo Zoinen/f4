@@ -1,10 +1,12 @@
 #include "DummyQWK.h"
 #include "F4TextRenderingPolicy.h"
+#include "TestExtUiStateController.h"
 
 #include <QCoreApplication>
 #include <QColor>
 #include <QFont>
 #include <QImage>
+#include <QMetaProperty>
 #include <QPainter>
 #include <QPointF>
 #include <QQmlApplicationEngine>
@@ -87,40 +89,23 @@ private:
     bool m_renderingEnabled = true;
 };
 
-class TestShell final : public QObject
+class TestShell final : public TestExtUiStateController
 {
     Q_OBJECT
     Q_PROPERTY(int initialCols READ initialCols CONSTANT)
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
-    Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
-    Q_PROPERTY(QVariantMap presentationScene READ scene NOTIFY sceneChanged)
-    Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
-    Q_PROPERTY(QVariantList commandMenus READ commandMenus NOTIFY commandMenusChanged)
 
 public:
     int initialCols() const { return 110; }
     int initialRows() const { return 34; }
-    QVariantMap scene() const { return m_scene; }
-    QVariantMap commandLine() const { return m_commandLine; }
-    QVariantList commandMenus() const { return m_commandMenus; }
 
     void setScene(const QVariantMap &scene)
     {
-        m_scene = scene;
-        m_commandLine = scene.value(QStringLiteral("shell")).toMap()
-                            .value(QStringLiteral("commandLine")).toMap();
-        const QVariantList menus = scene.value(QStringLiteral("menus")).toList();
-        if (menus != m_commandMenus) {
-            m_commandMenus = menus;
-            emit commandMenusChanged();
-        }
-        emit commandLineChanged();
-        emit sceneChanged();
+        applyScene(scene);
     }
     void setCommandLine(const QVariantMap &commandLine)
     {
-        m_commandLine = commandLine;
-        emit commandLineChanged();
+        applyCommandLine(commandLine);
     }
     void clearActions() { actions.clear(); }
     void clearKeyEvents() { keyEvents.clear(); }
@@ -142,10 +127,9 @@ public:
     }
     void setCommandMenus(const QVariantList &menus)
     {
-        if (menus == m_commandMenus)
+        if (menus == overlayState()->commandMenus())
             return;
-        m_commandMenus = menus;
-        emit commandMenusChanged();
+        applyCommandMenus(menus);
     }
 
     Q_INVOKABLE void sendUiAction(const QVariantMap &action)
@@ -168,19 +152,8 @@ public:
     QVector<QVariantMap> keyEvents;
 
 signals:
-    void sceneChanged();
-    void commandLineChanged();
-    void commandMenusChanged();
-    void commandMenuStatesChanged(const QVariantList &states);
-    void panelActivationChanged(int activePanel, qulonglong revision);
-    void compactPresentationChanged(const QVariantMap &patch);
-    void messageReceived(const QVariantMap &message);
     void uiActionSent(const QVariantMap &action);
 
-private:
-    QVariantMap m_scene;
-    QVariantMap m_commandLine;
-    QVariantList m_commandMenus;
 };
 
 class TestGallery final : public QObject
@@ -462,6 +435,25 @@ QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
             return match;
     }
     return nullptr;
+}
+
+QVariantMap qmlObjectProperties(const QVariant &value)
+{
+    if (QObject *object = value.value<QObject *>())
+    {
+        QVariantMap result;
+        const QMetaObject *metaObject = object->metaObject();
+        for (int index = QObject::staticMetaObject.propertyCount();
+             index < metaObject->propertyCount(); ++index)
+        {
+            const QMetaProperty property = metaObject->property(index);
+            if (property.isReadable())
+                result.insert(QString::fromLatin1(property.name()),
+                              property.read(object));
+        }
+        return result;
+    }
+    return value.toMap();
 }
 
 QQuickItem *visualItemWithObjectNamePrefix(QQuickItem *root,
@@ -1252,7 +1244,7 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
                                         pathBackground));
 
     const auto liveTheme = [gallery] {
-        return gallery->property("theme").toMap();
+        return qmlObjectProperties(gallery->property("theme"));
     };
     QTRY_COMPARE_WITH_TIMEOUT(
         liveTheme().value(QStringLiteral("text")).value<QColor>(), textColor,
@@ -1400,7 +1392,7 @@ void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
     QTRY_COMPARE_WITH_TIMEOUT(loader->property("status").toInt(), 1, 3000);
     QObject *const gallery = loader->property("item").value<QObject *>();
     QVERIFY(gallery);
-    const QVariantMap theme = gallery->property("theme").toMap();
+    const QVariantMap theme = qmlObjectProperties(gallery->property("theme"));
     for (const QString &unusedGalleryKey : {
              QStringLiteral("background"),
              QStringLiteral("backgroundAlternate"),

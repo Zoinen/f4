@@ -529,31 +529,35 @@ func limitRichHistory(history []HistoryRecord, limit int) []HistoryRecord {
 }
 
 func mergeFolderHistoryRecords(plain []string, rich []HistoryRecord) []HistoryRecord {
+	richByIdentity := make(map[string]HistoryRecord, len(rich))
+	for _, candidate := range rich {
+		identity, valid := folderHistoryPathIdentity(candidate.Name)
+		if !valid {
+			continue
+		}
+		if existing, present := richByIdentity[identity]; present {
+			existing.Lock = existing.Lock || candidate.Lock
+			richByIdentity[identity] = existing
+		} else {
+			richByIdentity[identity] = candidate
+		}
+	}
+
 	records := make([]HistoryRecord, 0, len(plain))
+	recordByIdentity := make(map[string]int, len(plain))
 	for _, path := range plain {
-		var record HistoryRecord
-		matched := false
-		for _, candidate := range rich {
-			if sameFolderHistoryPath(candidate.Name, path) {
-				if !matched {
-					record = candidate
-					matched = true
-				} else {
-					record.Lock = record.Lock || candidate.Lock
-				}
-			}
+		identity, valid := folderHistoryPathIdentity(path)
+		record := HistoryRecord{}
+		if valid {
+			record = richByIdentity[identity]
 		}
 		record.Name = path
-		duplicate := -1
-		for i := range records {
-			if sameFolderHistoryPath(records[i].Name, path) {
-				duplicate = i
-				break
-			}
-		}
-		if duplicate >= 0 {
+		if duplicate, present := recordByIdentity[identity]; valid && present {
 			records[duplicate].Lock = records[duplicate].Lock || record.Lock
 			continue
+		}
+		if valid {
+			recordByIdentity[identity] = len(records)
 		}
 		records = append(records, record)
 	}

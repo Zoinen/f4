@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Window
 import ZoinGallery 1.0 as ZG
@@ -14,7 +16,7 @@ FocusScope {
     // Kept for source compatibility with older host loaders.  The full-area
     // viewer never calls this sink: its keyboard surface is modal.
     property var keySink: null
-    property var theme: ({})
+    property ZG.GalleryThemePalette theme: ZG.GalleryThemePalette {}
     // The host keeps this Loader alive beneath commander dialogs. Reacquire
     // focus when the viewer becomes the top input surface again.
     property bool surfaceActive: true

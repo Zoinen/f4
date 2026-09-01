@@ -12,6 +12,8 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -319,6 +321,13 @@ type phasedPanelVFS struct {
 	ordinaryCalls atomic.Int64
 }
 
+type windowedPanelVFS struct {
+	*phasedPanelVFS
+	windowSent chan struct{}
+	release    chan struct{}
+	windowOnce sync.Once
+}
+
 func newPhasedPanelLoad(base, metadata []vfs.VFSItem, blocked bool) *phasedPanelLoad {
 	load := &phasedPanelLoad{
 		base:         base,
@@ -356,6 +365,48 @@ func (p *phasedPanelVFS) Base(value string) string                         { ret
 func (p *phasedPanelVFS) PhasedDirectoryReader() vfs.PhasedDirectoryReader { return p }
 func (p *phasedPanelVFS) Stat(context.Context, string) (vfs.VFSItem, error) {
 	return vfs.VFSItem{Name: p.GetPath(), IsDir: true}, nil
+}
+
+func (p *windowedPanelVFS) PhasedDirectoryReader() vfs.PhasedDirectoryReader { return p }
+
+func (p *windowedPanelVFS) WindowedDirectoryReader() vfs.WindowedDirectoryReader { return p }
+
+func (p *windowedPanelVFS) ReadDirWindowed(
+	ctx context.Context,
+	value string,
+	request vfs.DirectoryWindowRequest,
+	onWindow func(vfs.DirectoryWindow),
+	onChunk func(vfs.DirectoryReadPhase, []vfs.VFSItem),
+) error {
+	load := p.loads[path.Clean(value)]
+	if load == nil {
+		return os.ErrNotExist
+	}
+	limit := min(request.Limit, len(load.base))
+	if onWindow != nil {
+		onWindow(vfs.DirectoryWindow{
+			Entries:    append([]vfs.VFSItem(nil), load.base[:limit]...),
+			TotalCount: len(load.base),
+		})
+	}
+	p.windowOnce.Do(func() { close(p.windowSent) })
+	if p.release != nil {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if request.Writer != nil {
+		request.Writer.BeginDirectoryItems(len(load.base))
+		for index, item := range load.base {
+			request.Writer.WriteDirectoryItem(index, item)
+		}
+		request.Writer.EndDirectoryItems()
+	} else if onChunk != nil {
+		onChunk(vfs.DirectoryReadBase, append([]vfs.VFSItem(nil), load.base...))
+	}
+	return ctx.Err()
 }
 
 func (p *phasedPanelVFS) ReadDir(ctx context.Context, value string, onChunk func([]vfs.VFSItem)) error {
@@ -833,6 +884,68 @@ func TestFileSystemPanel_PhasedDirectoryPublishesStableCatalogThenMergesMetadata
 	}
 	if got := filesystem.ordinaryCalls.Load(); got != 0 {
 		t.Fatalf("ordinary ReadDir calls = %d, want 0", got)
+	}
+}
+
+func TestFileSystemPanelWindowedDirectoryPublishesExactSparseCatalogOnce(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	t.Cleanup(func() { AppConfig = oldConfig })
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	base := make([]vfs.VFSItem, 300)
+	for index := range base {
+		base[index] = vfs.VFSItem{
+			Name:  fmt.Sprintf("folder-%05d", index),
+			IsDir: true,
+		}
+	}
+	load := newPhasedPanelLoad(base, nil, false)
+	filesystem := &windowedPanelVFS{
+		phasedPanelVFS: newPhasedPanelVFS(
+			"/catalog", map[string]*phasedPanelLoad{"/catalog": load}),
+		windowSent: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	panel := NewFileSystemPanel(0, 0, 80, 25, filesystem)
+	t.Cleanup(func() {
+		if panel.cancelLoad != nil {
+			panel.cancelLoad()
+		}
+		if panel.loadingTimer != nil {
+			panel.loadingTimer.Stop()
+		}
+	})
+
+	waitForPanelSignal(t, filesystem.windowSent, "bounded catalog window")
+	waitForPanelCondition(t, "exact sparse panel catalog", func() bool {
+		return panel.catalogLogicalCount == len(base)+1 &&
+			!panel.catalogProvisional && len(panel.entries) <= initialPanelCatalogRowsLimit+1
+	})
+	windowModel := panel.semanticPanelModel(nil, 0, true)
+	if windowModel.TotalCount != len(base)+1 ||
+		len(windowModel.Entries) > initialPanelCatalogRowsLimit {
+		t.Fatalf("window model = %d/%d rows, want bounded exact 48/%d",
+			len(windowModel.Entries), windowModel.TotalCount, len(base)+1)
+	}
+
+	close(filesystem.release)
+	waitForLoad(t, panel)
+	finalModel := panel.semanticPanelModel(nil, 0, true)
+	if len(panel.entries) != len(base)+1 || panel.catalogLogicalCount != 0 {
+		t.Fatalf("complete source = %d rows, logical=%d, want %d/0",
+			len(panel.entries), panel.catalogLogicalCount, len(base)+1)
+	}
+	if finalModel.CatalogRevision != windowModel.CatalogRevision {
+		t.Fatalf("full source materialization advanced catalog revision: window=%d final=%d",
+			windowModel.CatalogRevision, finalModel.CatalogRevision)
+	}
+	if finalModel.TotalCount != windowModel.TotalCount {
+		t.Fatalf("full source changed exact total: window=%d final=%d",
+			windowModel.TotalCount, finalModel.TotalCount)
 	}
 }
 
@@ -4037,6 +4150,47 @@ func TestFileSystemPanel_DuplicateParentRowsRemainStrictAndStable(t *testing.T) 
 		panel.sortEntries()
 		if panel.entries[0] != firstParent || panel.entries[1] != secondParent {
 			t.Fatalf("duplicate parent rows lost strict stable order on pass %d", pass)
+		}
+	}
+}
+
+func TestFileSystemPanel_ParallelNameSortMatchesSerialOrder(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(4)
+	defer runtime.GOMAXPROCS(previousProcs)
+
+	const entryCount = 9007
+	makeEntries := func() []*fileEntry {
+		entries := make([]*fileEntry, 0, entryCount+1)
+		entries = append(entries, &fileEntry{
+			VFSItem: vfs.VFSItem{Name: "..", IsDir: true},
+		})
+		for index := 0; index < entryCount; index++ {
+			permuted := (index * 7919) % entryCount
+			name := fmt.Sprintf("component-%05d-%c", permuted,
+				'a'+rune(index%26))
+			if index%11 == 0 {
+				name = strings.ToUpper(name)
+			}
+			entries = append(entries, &fileEntry{
+				VFSItem: vfs.VFSItem{Name: name, IsDir: index%7 == 0},
+			})
+		}
+		return entries
+	}
+
+	for _, reverse := range []bool{false, true} {
+		panel := &FileSystemPanel{sortMode: SortName, sortReverse: reverse}
+		actual := makeEntries()
+		expected := append([]*fileEntry(nil), actual...)
+		slices.SortStableFunc(expected, panel.compareEntryOrder)
+
+		panel.sortEntrySlice(actual)
+		for index := range expected {
+			if actual[index] != expected[index] {
+				t.Fatalf("reverse=%v row %d = %q, want %q", reverse,
+					index, actual[index].visibleName(),
+					expected[index].visibleName())
+			}
 		}
 	}
 }

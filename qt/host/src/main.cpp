@@ -148,6 +148,16 @@ int main(int argc, char *argv[])
 #endif
 
     QGuiApplication app(argc, argv);
+    // main.qml deliberately starts hidden so the first native presentation is
+    // an already-composed semantic frame. Keep the process alive during that
+    // bounded startup interval; otherwise Qt can quit before the first store
+    // update gets a chance to reveal the only top-level window.
+    QGuiApplication::setQuitOnLastWindowClosed(false);
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.startup.process.ready"), {}, {
+            {QStringLiteral("benchmarkTarget"),
+             qEnvironmentVariable("F4_NAV_BENCHMARK_TARGET")},
+        });
     // f4 currently ships one deliberately dark UI. Do not let the desktop
     // color scheme make Qt Quick controls and ZoinGallery's shared style pick
     // light-theme (black) title-bar icons on that dark surface.
@@ -325,16 +335,6 @@ int main(int argc, char *argv[])
                      &app, [](const QString &message) {
         qWarning().noquote() << "f4 media channel:" << message;
     });
-    QObject::connect(&controller, &QtShellController::sceneChanged,
-                     &galleryBridge, [&controller, &galleryBridge, &iconSet]() {
-        const QVariantMap scene = controller.scene();
-        const QString sceneIconSet = scene.value(
-            QStringLiteral("qmlIconSet")).toString();
-        if (!sceneIconSet.isEmpty()) {
-            iconSet.setName(sceneIconSet);
-        }
-        galleryBridge.synchronizeScene(scene);
-    });
     QObject::connect(&controller, &QtShellController::qmlIconSetChanged,
                      &iconSet, &F4IconSet::setName);
     QObject::connect(&controller, &QtShellController::panelActivationChanged,
@@ -343,6 +343,9 @@ int main(int argc, char *argv[])
     QObject::connect(&controller, &QtShellController::compactMessageApplying,
                      &galleryBridge,
                      &F4GalleryBridge::beginCompactProtocolMessage);
+    QObject::connect(&controller, &QtShellController::compactMessageApplied,
+                     &galleryBridge,
+                     &F4GalleryBridge::handleCompactProtocolMessage);
     QObject::connect(&controller, &QtShellController::panelCatalogChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelCatalog);
@@ -360,25 +363,25 @@ int main(int argc, char *argv[])
     QObject::connect(
         &galleryBridge, &F4GalleryBridge::panelCatalogRowsRequested,
         &controller, &QtShellController::sendPanelCatalogRowsRequest);
-    QObject::connect(&controller, &QtShellController::messageReceived,
+    QObject::connect(&controller, &QtShellController::panelCatalogRowsReceived,
                      &galleryBridge,
-                     &F4GalleryBridge::handleProtocolMessage);
+                     &F4GalleryBridge::handlePanelCatalogRowsMessage);
+    QObject::connect(
+        &controller, &QtShellController::panelCatalogMetadataReceived,
+        &galleryBridge,
+        &F4GalleryBridge::handlePanelCatalogMetadataMessage);
 
-    // completeInitialHandshake() deliberately runs before Gallery/QML setup so
-    // Go can initialize concurrently with the native object graph.  On a fast
-    // local connection the controller may therefore already own the first
-    // semantic scene before the bridge's sceneChanged connection exists. Seed
-    // the native sessions from that authoritative snapshot before QML binds
-    // the one viewport for each side; otherwise startup can briefly attach an
-    // empty side session.
-    const QVariantMap initialGalleryScene = controller.scene();
-    if (!initialGalleryScene.isEmpty()) {
-        const QString initialIconSet = initialGalleryScene.value(
-            QStringLiteral("qmlIconSet")).toString();
-        if (!initialIconSet.isEmpty()) {
-            iconSet.setName(initialIconSet);
+    // Handshake processing may finish before bridge signal connections are
+    // installed. Replay only the two bounded panel streams; never reconstruct
+    // or hand the bridge a complete application scene.
+    for (int side = 0; side < 2; ++side) {
+        const QVariantMap panel = controller.panelCatalogSnapshot(side);
+        if (!panel.isEmpty()) {
+            galleryBridge.synchronizePanelCatalog(panel);
         }
-        galleryBridge.synchronizeScene(initialGalleryScene);
+    }
+    if (!controller.chromeState()->qmlIconSet().isEmpty()) {
+        iconSet.setName(controller.chromeState()->qmlIconSet());
     }
 
     F4ThemePersistence themePersistence;
@@ -414,6 +417,10 @@ int main(int argc, char *argv[])
     }, Qt::QueuedConnection);
 
     engine.load(url);
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.startup.qml.loaded"), {}, {
+            {QStringLiteral("rootObjectCount"), engine.rootObjects().size()},
+        });
 
     // QQmlApplicationEngine may process platform/socket events while building
     // the object graph. Do not enter app.exec() if that exposed a startup
@@ -506,6 +513,7 @@ int main(int argc, char *argv[])
                 *shown = true;
                 if (guardedFallback)
                     guardedFallback->stop();
+                QGuiApplication::setQuitOnLastWindowClosed(true);
                 guardedWindow->requestUpdate();
                 guardedGeometry->showRestored();
                 applyMacInitialShowWorkaround(guardedWindow);
@@ -520,11 +528,10 @@ int main(int argc, char *argv[])
             };
             const auto revealAfterSemanticScene =
                 [rootWindow, revealWindow, &controller]() {
-                if (!QtShellController::initialSceneReadyForDisplay(
-                        controller.presentationScene())) {
+                if (!controller.initialStateReadyForDisplay()) {
                     return;
                 }
-                // sceneChanged is synchronous. Queue one turn so QML's scene
+                // Store signals are synchronous. Queue one turn so QML's
                 // bindings, retained-surface capture and Loader activation
                 // finish before the native window becomes visible.
                 QTimer::singleShot(0, rootWindow,
@@ -532,15 +539,24 @@ int main(int argc, char *argv[])
                     revealWindow(QStringLiteral("semantic-scene"));
                 });
             };
-            QObject::connect(&controller, &QtShellController::sceneChanged,
+            QObject::connect(controller.chromeState(),
+                             &ChromeStateStore::presentationChanged,
                              rootWindow, revealAfterSemanticScene);
-            // The phased Go catalog normally replaces the startup placeholder
-            // through a compact scene patch. That path deliberately avoids
-            // sceneChanged, so listen to both presentation-level and targeted
-            // compact updates instead of waiting for the visual fallback.
+            QObject::connect(controller.surfaceRegistry(),
+                             &SurfaceRegistry::shellChanged,
+                             rootWindow, revealAfterSemanticScene);
+            QObject::connect(controller.surfaceRegistry(),
+                             &SurfaceRegistry::documentChanged,
+                             rootWindow, revealAfterSemanticScene);
+            QObject::connect(controller.surfaceRegistry(),
+                             &SurfaceRegistry::operationsQueueChanged,
+                             rootWindow, revealAfterSemanticScene);
             QObject::connect(&controller,
-                             &QtShellController::presentationSceneChanged,
-                             rootWindow, revealAfterSemanticScene);
+                             &QtShellController::panelCatalogChanged,
+                             rootWindow,
+                             [revealAfterSemanticScene](const QVariantMap &) {
+                                 revealAfterSemanticScene();
+                             });
             QObject::connect(&controller,
                              &QtShellController::compactPresentationChanged,
                              rootWindow,
@@ -571,7 +587,13 @@ int main(int argc, char *argv[])
     if (const int exitCode = startupFailureExitCode(); exitCode != 0) {
         return exitCode;
     }
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.startup.event-loop.enter"));
     const int exitCode = app.exec();
+    F4NavigationBenchmarkTrace::event(
+        QStringLiteral("qt.startup.event-loop.exit"), {}, {
+            {QStringLiteral("exitCode"), exitCode},
+        });
 
     if (windowGeometry) {
         windowGeometry->save();

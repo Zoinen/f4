@@ -22,6 +22,8 @@ type OSVFS struct {
 var _ OptimisticPathSetter = (*OSVFS)(nil)
 var _ PhasedDirectoryReader = (*OSVFS)(nil)
 var _ PhasedDirectoryReadProvider = (*OSVFS)(nil)
+var _ WindowedDirectoryReader = (*OSVFS)(nil)
+var _ WindowedDirectoryReadProvider = (*OSVFS)(nil)
 
 // DirectoryReadPhase identifies which part of a phased directory listing a
 // chunk belongs to. The base phase contains only stable row identity and type
@@ -57,6 +59,54 @@ type PhasedDirectoryReadProvider interface {
 	PhasedDirectoryReader() PhasedDirectoryReader
 }
 
+// DirectoryWindowRequest describes the only catalog prefix needed before a
+// large local directory has been materialized into the panel's complete source
+// model. The request is deliberately about source rows, not rendered delegates.
+type DirectoryWindowRequest struct {
+	Limit         int
+	IncludeHidden bool
+	Writer        DirectoryItemWriter
+}
+
+// DirectoryItemWriter receives the complete authoritative source catalog
+// directly after the bounded window has been published. It eliminates an
+// otherwise redundant full []VFSItem allocation; implementations own the one
+// source store they fill and must not retain the writer after ReadDirWindowed.
+type DirectoryItemWriter interface {
+	BeginDirectoryItems(total int)
+	WriteDirectoryItem(index int, item VFSItem)
+	EndDirectoryItems()
+}
+
+// DirectoryWindow is an authoritative, name-sorted prefix paired with the
+// exact logical source row count. Entries never contains more than the
+// requested limit, while TotalCount describes the complete filtered catalog.
+type DirectoryWindow struct {
+	Entries    []VFSItem
+	TotalCount int
+}
+
+// WindowedDirectoryReader optionally exposes an authoritative bounded window
+// before it materializes the complete []VFSItem result. The ordinary phased
+// callback still follows with the complete base, preserving the VFS contract
+// for terminal and non-paged consumers.
+type WindowedDirectoryReader interface {
+	ReadDirWindowed(
+		context.Context,
+		string,
+		DirectoryWindowRequest,
+		func(DirectoryWindow),
+		func(DirectoryReadPhase, []VFSItem),
+	) error
+}
+
+// WindowedDirectoryReadProvider follows the same explicit self-provider rule
+// as PhasedDirectoryReadProvider so wrappers cannot accidentally advertise a
+// promoted OSVFS optimization for a different ReadDir implementation.
+type WindowedDirectoryReadProvider interface {
+	WindowedDirectoryReader() WindowedDirectoryReader
+}
+
 // OSVFSSetPathBenchmarkHook observes the synchronous validation stages in
 // SetPath. It is nil during normal operation so the VFS package does not need
 // to depend on the application's tracing implementation.
@@ -77,6 +127,8 @@ func (v *OSVFS) GetPath() string        { return v.currentPath }
 func (v *OSVFS) IsAbs(path string) bool { return filepath.IsAbs(path) }
 
 func (v *OSVFS) PhasedDirectoryReader() PhasedDirectoryReader { return v }
+
+func (v *OSVFS) WindowedDirectoryReader() WindowedDirectoryReader { return v }
 
 // SetPathOptimistic changes the local view without probing the filesystem.
 // FileSystemPanel only uses this optional fast path after it has obtained a
@@ -330,25 +382,50 @@ type phasedOSDirEntry struct {
 // keeps the first UI commit from being followed by a redundant full-catalog
 // metadata mutation for large local directories.
 func (v *OSVFS) ReadDirPhased(ctx context.Context, path string, onChunk func(DirectoryReadPhase, []VFSItem)) error {
+	return v.readDirPhased(ctx, path, DirectoryWindowRequest{}, nil, onChunk)
+}
+
+// ReadDirWindowed is the bounded-catalog variant used by native paged panels.
+// Unsupported filesystems simply take the existing portable phased path and
+// omit the early window callback.
+func (v *OSVFS) ReadDirWindowed(
+	ctx context.Context,
+	path string,
+	request DirectoryWindowRequest,
+	onWindow func(DirectoryWindow),
+	onChunk func(DirectoryReadPhase, []VFSItem),
+) error {
+	return v.readDirPhased(ctx, path, request, onWindow, onChunk)
+}
+
+func (v *OSVFS) readDirPhased(
+	ctx context.Context,
+	path string,
+	windowRequest DirectoryWindowRequest,
+	onWindow func(DirectoryWindow),
+	onChunk func(DirectoryReadPhase, []VFSItem),
+) error {
 	dirPath := path
 	// Windows can expose the complete WIN32 directory record directly. Avoid
 	// wrapping every row in os.DirEntry/os.FileInfo interfaces only to unpack
 	// the same record again below; on very large local directories those
 	// transient objects dominate the cold navigation path. Other platforms (or
 	// unsupported Windows filesystems) keep using the portable implementation.
-	if items, handled, fastErr := readCompleteOSDirectoryBasePhased(
+	if items, handled, streamed, fastErr := readCompleteOSDirectoryBaseWindowed(
 		ctx,
 		prepareOSPath(dirPath),
+		windowRequest,
 		func(preview []VFSItem) {
 			if onChunk != nil {
 				onChunk(DirectoryReadPreview, preview)
 			}
 		},
+		onWindow,
 	); handled {
 		if fastErr != nil {
 			return fastErr
 		}
-		if onChunk != nil {
+		if onChunk != nil && !streamed {
 			onChunk(DirectoryReadBase, items)
 		}
 		return ctx.Err()

@@ -13,3 +13,13 @@ func readCompleteOSDirectoryBasePhased(
 ) ([]VFSItem, bool, error) {
 	return nil, false, nil
 }
+
+func readCompleteOSDirectoryBaseWindowed(
+	context.Context,
+	string,
+	DirectoryWindowRequest,
+	func([]VFSItem),
+	func(DirectoryWindow),
+) ([]VFSItem, bool, bool, error) {
+	return nil, false, false, nil
+}

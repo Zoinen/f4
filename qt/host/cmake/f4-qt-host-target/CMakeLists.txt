@@ -16,9 +16,63 @@ endif()
 
 set(F4_QT_HOST_QML_FILES
   "${F4_QT_HOST_ROOT}/qml/main.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4HostWindow.qml"
   "${F4_QT_HOST_ROOT}/qml/PanelSplitter.qml"
   "${F4_QT_HOST_ROOT}/qml/GalleryPanelHost.qml"
+  "${F4_QT_HOST_ROOT}/qml/GalleryPanelHostAdapter.qml"
+  "${F4_QT_HOST_ROOT}/qml/GalleryPanelInputRouter.qml"
   "${F4_QT_HOST_ROOT}/qml/GalleryViewerHost.qml"
+  "${F4_QT_HOST_ROOT}/qml/HostPixelAlignedImage.qml"
+  "${F4_QT_HOST_ROOT}/qml/HostPresentationUtilities.qml"
+  "${F4_QT_HOST_ROOT}/qml/FilePanelView.qml"
+  "${F4_QT_HOST_ROOT}/qml/PanelPairSurface.qml"
+  "${F4_QT_HOST_ROOT}/qml/PanelsSurface.qml"
+  "${F4_QT_HOST_ROOT}/qml/ShellSurfaceHost.qml"
+  "${F4_QT_HOST_ROOT}/qml/ShellShortcuts.qml"
+  "${F4_QT_HOST_ROOT}/qml/ShellSceneStore.qml"
+  "${F4_QT_HOST_ROOT}/qml/ShellInteractionController.qml"
+  "${F4_QT_HOST_ROOT}/qml/FilePanelChrome.qml"
+  "${F4_QT_HOST_ROOT}/qml/PanelRendererMenu.qml"
+  "${F4_QT_HOST_ROOT}/qml/QuickViewPanelView.qml"
+  "${F4_QT_HOST_ROOT}/qml/InfoPanelView.qml"
+  "${F4_QT_HOST_ROOT}/qml/CommandLineView.qml"
+  "${F4_QT_HOST_ROOT}/qml/ConsoleRunRow.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentSurface.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentViewportController.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentRowPool.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentTerminalSelectionController.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentEditorPointerController.qml"
+  "${F4_QT_HOST_ROOT}/qml/TerminalBackdrop.qml"
+  "${F4_QT_HOST_ROOT}/qml/OperationsQueueSurface.qml"
+  "${F4_QT_HOST_ROOT}/qml/OperationsQueueController.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogButton.qml"
+  "${F4_QT_HOST_ROOT}/qml/QueueActionButton.qml"
+  "${F4_QT_HOST_ROOT}/qml/QueueSummaryItem.qml"
+  "${F4_QT_HOST_ROOT}/qml/ConfigDialogButton.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeRenderTypeComboBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeEditor.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeDraftModel.qml"
+  "${F4_QT_HOST_ROOT}/qml/HostThemePalette.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeColorWheel.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeColorEditorPane.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeEditorFooter.qml"
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuBar.qml"
+  "${F4_QT_HOST_ROOT}/qml/ShellTitleBar.qml"
+  "${F4_QT_HOST_ROOT}/qml/WorkspaceTabs.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogCheckBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogRadioButton.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogProgressBar.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogTextField.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogComboBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogResizeHandle.qml"
+  "${F4_QT_HOST_ROOT}/qml/SemanticWidgetDelegate.qml"
+  "${F4_QT_HOST_ROOT}/qml/GenericDialog.qml"
+  "${F4_QT_HOST_ROOT}/qml/DialogOverlay.qml"
+  "${F4_QT_HOST_ROOT}/qml/AutocompletePopup.qml"
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuPopup.qml"
+  "${F4_QT_HOST_ROOT}/qml/OverlayHost.qml"
+  "${F4_QT_HOST_ROOT}/qml/KeyBarView.qml"
+  "${F4_QT_HOST_ROOT}/qml/ToastView.qml"
 )
 
 # Keep the historical resource URLs even though this deliberately clean
@@ -27,14 +81,176 @@ set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/main.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/main.qml")
 set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4HostWindow.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4HostWindow.qml")
+set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/PanelSplitter.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/PanelSplitter.qml")
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/GalleryPanelHost.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/GalleryPanelHost.qml")
 set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/GalleryPanelHostAdapter.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/GalleryPanelHostAdapter.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/GalleryPanelInputRouter.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/GalleryPanelInputRouter.qml")
+set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/GalleryViewerHost.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/GalleryViewerHost.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/HostPixelAlignedImage.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/HostPixelAlignedImage.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/HostPresentationUtilities.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/HostPresentationUtilities.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/FilePanelView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/FilePanelView.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/PanelPairSurface.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/PanelPairSurface.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/PanelsSurface.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/PanelsSurface.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ShellSurfaceHost.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ShellSurfaceHost.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ShellShortcuts.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ShellShortcuts.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ShellSceneStore.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ShellSceneStore.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ShellInteractionController.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ShellInteractionController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/FilePanelChrome.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/FilePanelChrome.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/PanelRendererMenu.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/PanelRendererMenu.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/QuickViewPanelView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/QuickViewPanelView.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/InfoPanelView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/InfoPanelView.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/CommandLineView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/CommandLineView.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ConsoleRunRow.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ConsoleRunRow.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentSurface.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentSurface.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentViewportController.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentViewportController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentRowPool.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentRowPool.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentTerminalSelectionController.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentTerminalSelectionController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentEditorPointerController.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentEditorPointerController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/TerminalBackdrop.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/TerminalBackdrop.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/OperationsQueueSurface.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/OperationsQueueSurface.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/OperationsQueueController.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/OperationsQueueController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogButton.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogButton.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/QueueActionButton.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/QueueActionButton.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/QueueSummaryItem.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/QueueSummaryItem.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ConfigDialogButton.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ConfigDialogButton.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeRenderTypeComboBox.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeRenderTypeComboBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeEditor.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeEditor.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeDraftModel.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeDraftModel.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/HostThemePalette.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/HostThemePalette.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeColorWheel.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeColorWheel.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeColorEditorPane.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeColorEditorPane.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeEditorFooter.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeEditorFooter.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuBar.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/SemanticMenuBar.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ShellTitleBar.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ShellTitleBar.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/WorkspaceTabs.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/WorkspaceTabs.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogCheckBox.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogCheckBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogRadioButton.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogRadioButton.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogProgressBar.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogProgressBar.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogTextField.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogTextField.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogComboBox.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogComboBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogResizeHandle.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogResizeHandle.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/SemanticWidgetDelegate.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/SemanticWidgetDelegate.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/GenericDialog.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/GenericDialog.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DialogOverlay.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DialogOverlay.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/AutocompletePopup.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/AutocompletePopup.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuPopup.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/SemanticMenuPopup.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/OverlayHost.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/OverlayHost.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/KeyBarView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/KeyBarView.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ToastView.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ToastView.qml")
 
 add_executable(f4-qt-host ${F4_QT_HOST_SOURCES})
 

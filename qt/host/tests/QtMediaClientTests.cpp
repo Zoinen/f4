@@ -130,7 +130,7 @@ QByteArray controlHello(quint16 mediaPort)
         packString(packer, QByteArrayLiteral("type"));
         packString(packer, QByteArrayLiteral("hello"));
         packString(packer, QByteArrayLiteral("protocol"));
-        packer.pack_int(3);
+        packer.pack_int(4);
         packString(packer, QByteArrayLiteral("nonce"));
         packString(packer, QByteArrayLiteral("control-secret"));
         packString(packer, QByteArrayLiteral("mediaProtocol"));
@@ -148,20 +148,35 @@ QByteArray controlHello(quint16 mediaPort)
 QByteArray controlScene()
 {
     return frame([](auto &packer) {
-        packer.pack_map(4);
+        packer.pack_map(7);
         packString(packer, QByteArrayLiteral("type"));
-        packString(packer, QByteArrayLiteral("scene"));
+        packString(packer, QByteArrayLiteral("extui"));
+        packString(packer, QByteArrayLiteral("version"));
+        packer.pack_int(4);
         packString(packer, QByteArrayLiteral("sequence"));
-        packer.pack_int(17);
-        packString(packer, QByteArrayLiteral("resourceId"));
-        packString(packer, QByteArrayLiteral("must-not-reach-qml"));
-        packString(packer, QByteArrayLiteral("shell"));
-        packer.pack_map(1);
-        packString(packer, QByteArrayLiteral("panels"));
-        packer.pack_array(1);
+        packer.pack_int(1);
+        packString(packer, QByteArrayLiteral("streamId"));
+        packString(packer, QByteArrayLiteral("panel/0"));
+        packString(packer, QByteArrayLiteral("revision"));
+        packer.pack_int(1);
+        packString(packer, QByteArrayLiteral("kind"));
+        packString(packer, QByteArrayLiteral("snapshot"));
+        packString(packer, QByteArrayLiteral("payload"));
         packer.pack_map(2);
+        packString(packer, QByteArrayLiteral("type"));
+        packString(packer, QByteArrayLiteral("panel_catalog_snapshot"));
+        packString(packer, QByteArrayLiteral("state"));
+        packer.pack_map(2);
+        packString(packer, QByteArrayLiteral("side"));
+        packer.pack_int(0);
+        packString(packer, QByteArrayLiteral("panel"));
+        packer.pack_map(4);
         packString(packer, QByteArrayLiteral("id"));
         packString(packer, QByteArrayLiteral("left"));
+        packString(packer, QByteArrayLiteral("side"));
+        packer.pack_int(0);
+        packString(packer, QByteArrayLiteral("resourceId"));
+        packString(packer, QByteArrayLiteral("must-not-reach-qml"));
         packString(packer, QByteArrayLiteral("entries"));
         packer.pack_array(1);
         packer.pack_map(2);
@@ -589,6 +604,8 @@ void QtMediaClientTests::pendingMediaNeverBlocksControlScenes()
     QCOMPARE(stringField(payload, "type"), QStringLiteral("hello"));
 
     QSignalSpy messages(&controller, &QtShellController::messageReceived);
+    QSignalSpy catalogs(&controller,
+                        &QtShellController::panelCatalogChanged);
     sendFrame(controlPeer.data(), controlHello(mediaServer.serverPort()));
     QTRY_COMPARE(advertisementCount, 1);
     QCOMPARE(nativeAdvertisement.value(QStringLiteral("nonce")).toString(),
@@ -616,27 +633,23 @@ void QtMediaClientTests::pendingMediaNeverBlocksControlScenes()
     QElapsedTimer elapsed;
     elapsed.start();
     sendFrame(controlPeer.data(), controlScene());
-    QTRY_COMPARE_WITH_TIMEOUT(messages.size(), 2, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(catalogs.size(), 1, 1000);
     QVERIFY(elapsed.elapsed() < 1000);
-    QCOMPARE(controller.scene().value(QStringLiteral("sequence")).toInt(), 17);
-    QCOMPARE(controller.scene().value(QStringLiteral("resourceId")).toString(),
+    QCOMPARE(messages.size(), 1);
+    const QVariantMap nativePanel = controller.scene()
+        .value(QStringLiteral("shell")).toMap()
+        .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(nativePanel.value(QStringLiteral("resourceId")).toString(),
              QStringLiteral("must-not-reach-qml"));
-    QVERIFY(!controller.presentationScene().contains(
-        QStringLiteral("resourceId")));
     const QVariantMap presentationPanel = controller.presentationScene()
         .value(QStringLiteral("shell")).toMap()
         .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    QVERIFY(!presentationPanel.contains(QStringLiteral("resourceId")));
     QVERIFY(!presentationPanel.contains(QStringLiteral("entries")));
-    const QVariantMap publicScene = messages.at(1).constFirst().toMap();
-    QVERIFY(!publicScene.contains(QStringLiteral("resourceId")));
-    const QVariantMap publicPanel = publicScene
-        .value(QStringLiteral("shell")).toMap()
-        .value(QStringLiteral("panels")).toList().constFirst().toMap();
-    QVERIFY(!publicPanel.contains(QStringLiteral("entries")));
 
     sendFrame(controlPeer.data(), controlCursorWithTransportFields());
-    QTRY_COMPARE(messages.size(), 3);
-    const QVariantMap publicCursor = messages.at(2).constFirst().toMap();
+    QTRY_COMPARE(messages.size(), 2);
+    const QVariantMap publicCursor = messages.at(1).constFirst().toMap();
     QCOMPARE(publicCursor.value(QStringLiteral("type")).toString(),
              QStringLiteral("cursor"));
     QCOMPARE(publicCursor.value(QStringLiteral("x")).toInt(), 3);

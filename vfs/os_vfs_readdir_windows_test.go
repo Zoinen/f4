@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 	"unicode/utf16"
@@ -100,6 +101,55 @@ func TestReadCompleteOSDirectoryBasePublishesOneBoundedPreview(t *testing.T) {
 	}
 }
 
+func TestOSVFSReadDirWindowedPublishesExactBoundedCatalogBeforeBase(t *testing.T) {
+	directory := t.TempDir()
+	for _, name := range []string{"b-dir", "a-dir"} {
+		if err := os.Mkdir(filepath.Join(directory, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"b.txt", "a.txt"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	filesystem := NewOSVFS(directory)
+	var window DirectoryWindow
+	var eventOrder []string
+	err := filesystem.ReadDirWindowed(
+		context.Background(), directory,
+		DirectoryWindowRequest{Limit: 3, IncludeHidden: true},
+		func(value DirectoryWindow) {
+			window = value
+			eventOrder = append(eventOrder, "window")
+		},
+		func(phase DirectoryReadPhase, _ []VFSItem) {
+			if phase == DirectoryReadBase {
+				eventOrder = append(eventOrder, "base")
+			}
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.TotalCount != 4 || len(window.Entries) != 3 {
+		t.Fatalf("window = %#v, want 3/4 rows", window)
+	}
+	gotNames := []string{
+		window.Entries[0].Name,
+		window.Entries[1].Name,
+		window.Entries[2].Name,
+	}
+	wantNames := []string{"a-dir", "b-dir", "a.txt"}
+	if !slices.Equal(gotNames, wantNames) {
+		t.Fatalf("window names = %#v, want %#v", gotNames, wantNames)
+	}
+	if !slices.Equal(eventOrder, []string{"window", "base"}) {
+		t.Fatalf("callback order = %#v, want window before base", eventOrder)
+	}
+}
+
 func TestReadCompleteOSDirectoryBaseDiagnosticPath(t *testing.T) {
 	directory := os.Getenv("F4_TEST_LARGE_DIRECTORY")
 	if directory == "" {
@@ -122,30 +172,44 @@ func BenchmarkReadCompleteOSDirectoryBase(b *testing.B) {
 		b.Skip("F4_TEST_LARGE_DIRECTORY is not set")
 	}
 	path := prepareOSPath(directory)
-	b.Run("Win32/64KiB", func(b *testing.B) {
-		b.ReportAllocs()
-		var queryCount int64
-		var queryDuration time.Duration
-		var parseDuration time.Duration
-		var nameBytes int64
-		for iteration := 0; iteration < b.N; iteration++ {
-			items, handled, err := readCompleteOSDirectoryBaseWithQuery(
-				context.Background(), path, directoryQueryBufferSize,
-				queryCompleteOSDirectoryWin32, nil, func(stats completeOSDirectoryReadStats) {
-					queryCount += int64(stats.QueryCount)
-					queryDuration += stats.QueryDuration
-					parseDuration += stats.ParseDuration
-					nameBytes += int64(stats.NameBytes)
-				})
-			if err != nil || !handled || len(items) == 0 {
-				b.Fatalf("fast directory read = %d rows, handled=%v, err=%v",
-					len(items), handled, err)
+	for _, bufferSize := range []int{64 << 10, 128 << 10, 256 << 10, 512 << 10, 1 << 20} {
+		bufferSize := bufferSize
+		b.Run(fmt.Sprintf("Win32/%dKiB", bufferSize>>10), func(b *testing.B) {
+			b.ReportAllocs()
+			var queryCount int64
+			var queryDuration time.Duration
+			var parseDuration time.Duration
+			var windowDuration time.Duration
+			var nameBytes int64
+			for iteration := 0; iteration < b.N; iteration++ {
+				iterationStarted := time.Now()
+				items, handled, err := readCompleteOSDirectoryBaseWithQuery(
+					context.Background(), path, bufferSize,
+					queryCompleteOSDirectoryWin32,
+					DirectoryWindowRequest{Limit: 48, IncludeHidden: true}, nil,
+					func(window DirectoryWindow) {
+						if window.TotalCount <= 0 || len(window.Entries) > 48 {
+							b.Fatalf("invalid bounded window: %#v", window)
+						}
+						windowDuration += time.Since(iterationStarted)
+					},
+					func(stats completeOSDirectoryReadStats) {
+						queryCount += int64(stats.QueryCount)
+						queryDuration += stats.QueryDuration
+						parseDuration += stats.ParseDuration
+						nameBytes += int64(stats.NameBytes)
+					})
+				if err != nil || !handled || len(items) == 0 {
+					b.Fatalf("fast directory read = %d rows, handled=%v, err=%v",
+						len(items), handled, err)
+				}
 			}
-		}
-		b.ReportMetric(float64(queryCount)/float64(b.N), "queries/op")
-		b.ReportMetric(float64(queryDuration.Nanoseconds())/float64(b.N), "query-ns/op")
-		b.ReportMetric(float64(parseDuration.Nanoseconds())/float64(b.N), "parse-ns/op")
-		b.ReportMetric(float64(unsafe.Sizeof(VFSItem{})), "VFSItem-B")
-		b.ReportMetric(float64(nameBytes)/float64(b.N), "name-B/op")
-	})
+			b.ReportMetric(float64(queryCount)/float64(b.N), "queries/op")
+			b.ReportMetric(float64(queryDuration.Nanoseconds())/float64(b.N), "query-ns/op")
+			b.ReportMetric(float64(parseDuration.Nanoseconds())/float64(b.N), "parse-ns/op")
+			b.ReportMetric(float64(windowDuration.Nanoseconds())/float64(b.N), "window-ns/op")
+			b.ReportMetric(float64(unsafe.Sizeof(VFSItem{})), "VFSItem-B")
+			b.ReportMetric(float64(nameBytes)/float64(b.N), "name-B/op")
+		})
+	}
 }

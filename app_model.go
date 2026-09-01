@@ -901,6 +901,7 @@ func appHighlightStyleFromLegacy(node map[string]any) extui.HighlightStyleModel 
 	}
 	style := extui.HighlightStyleModel{
 		Marker:         semanticString(node["marker"]),
+		IconKey:        semanticString(node["iconKey"]),
 		Icon:           semanticString(node["icon"]),
 		Normal:         patch(node["normal"]),
 		Selected:       patch(node["selected"]),

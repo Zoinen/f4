@@ -285,8 +285,13 @@ type HighlightColorPatchModel struct {
 }
 
 type HighlightStyleModel struct {
-	Groups         []HighlightGroupModel
-	Marker         string
+	Groups []HighlightGroupModel
+	Marker string
+	// IconKey is the presentation-neutral name of an icon supplied by the
+	// embedding shell (for example "folder-up").  Icon remains available for
+	// genuinely external/custom URLs; bundled host resource paths must not be
+	// required by reusable renderers.
+	IconKey        string
 	Icon           string
 	Normal         HighlightColorPatchModel
 	Selected       HighlightColorPatchModel
@@ -1002,6 +1007,7 @@ func (s HighlightStyleModel) ToMap() M {
 	return M{
 		"groups":         groups,
 		"marker":         s.Marker,
+		"iconKey":        s.IconKey,
 		"icon":           s.Icon,
 		"normal":         s.Normal.ToMap(),
 		"selected":       s.Selected.ToMap(),

@@ -1,4 +1,5 @@
 #include "DummyQWK.h"
+#include "TestExtUiStateController.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -79,23 +80,19 @@ private:
     bool m_renderingEnabled = true;
 };
 
-class TestShell final : public QObject
+class TestShell final : public TestExtUiStateController
 {
     Q_OBJECT
     Q_PROPERTY(int initialCols READ initialCols CONSTANT)
     Q_PROPERTY(int initialRows READ initialRows CONSTANT)
-    Q_PROPERTY(QVariantMap scene READ scene NOTIFY sceneChanged)
-    Q_PROPERTY(QVariantMap presentationScene READ scene NOTIFY sceneChanged)
 
 public:
     int initialCols() const { return 90; }
     int initialRows() const { return 30; }
-    QVariantMap scene() const { return m_scene; }
 
     void setScene(const QVariantMap &scene)
     {
-        m_scene = scene;
-        emit sceneChanged();
+        applyScene(scene);
     }
 
     void clearActions() { actions.clear(); }
@@ -111,11 +108,7 @@ public:
     QVector<QVariantMap> actions;
 
 signals:
-    void sceneChanged();
     void uiActionSent(const QVariantMap &action);
-
-private:
-    QVariantMap m_scene;
 };
 
 class TestGallery final : public QObject
@@ -1741,11 +1734,17 @@ void F4DocumentSurfaceTests::legacyRowsRemainScrollableWithoutWindowProtocol()
         {QStringLiteral("rows"), rows},
     };
     const QVariantMap legacyScene{
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("presentation"), QStringLiteral("qml")},
         {QStringLiteral("workspaceTabs"), QVariantMap{
              {QStringLiteral("newTab"), QVariantMap{}},
              {QStringLiteral("counter"), QVariantMap{}},
          }},
-        {QStringLiteral("frames"), QVariantList{legacyFrame}},
+        // A bounded descriptor may still carry its initial rows without the
+        // optional document-window paging extension. v4 no longer discovers
+        // document surfaces through the former top-level frames stack.
+        {QStringLiteral("surface"), legacyFrame},
     };
 
     DocumentFixture fixture(legacyScene);

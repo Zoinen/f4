@@ -785,7 +785,7 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
     QObject *layout = panel->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(layout);
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 4, 5000);
 
@@ -907,7 +907,7 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
     QObject *layout = panel->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(layout);
     // The reusable panel root deliberately permits its overlay scrollbar to
     // occupy the embedding host's trailing inset.  The actual viewport owns
@@ -919,7 +919,7 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
 
     auto pointerForRow = [panel](int row) {
         return panel->findChild<QQuickItem *>(
-            QStringLiteral("galleryBrickPointer-%1").arg(row));
+            QStringLiteral("gallerySelectionSurface-%1").arg(row));
     };
     QTRY_VERIFY(pointerForRow(0));
     QTRY_VERIFY(pointerForRow(4));
@@ -944,24 +944,24 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     auto *folderIcon = panel->findChild<QObject *>(
         QStringLiteral("gallerySourceColorIcon-0"));
     QVERIFY(folderMaskIcon);
-    QVERIFY(folderIcon);
-    QVERIFY(!folderMaskIcon->property("visible").toBool());
-    QTRY_VERIFY(folderIcon->property("visible").toBool());
-    QVERIFY(folderIcon->property("source").toUrl().toString().contains(
+    QVERIFY(!folderIcon);
+    QTRY_VERIFY(folderMaskIcon->property("visible").toBool());
+    QVERIFY(folderMaskIcon->property("source").toUrl().toString().contains(
         QStringLiteral("FolderIcon.svg")));
-    QCOMPARE(folderIcon->property("opacity").toReal(), 1.0);
+    QVERIFY(folderMaskIcon->property("opacity").toReal() > 0.0);
 
-    auto *selectionIndicator = panel->findChild<QObject *>(
-        QStringLiteral("gallerySelectionIndicator-1"));
-    QVERIFY(selectionIndicator);
-    QVERIFY(!selectionIndicator->property("visible").toBool());
+    auto *selectionSurface = panel->findChild<QObject *>(
+        QStringLiteral("gallerySelectionSurface-1"));
+    QVERIFY(selectionSurface);
     QVERIFY(panel->property("cursorColor") != panel->property("selectionColor"));
 
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
 
     QQuickItem *rowOne = pointerForRow(1);
     QVERIFY(rowOne);
-    QVERIFY(rowOne->property("hoverEnabled").toBool());
+    // Tile MouseAreas own buttons only. Hover is tracked once by the shared
+    // button-transparent pointer layer so recycled delegates do not fight
+    // over hover state while the cursor moves.
     QTest::mouseMove(&view, itemCenter(rowOne));
     QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
                       itemCenter(rowOne));
@@ -1118,13 +1118,13 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
     QObject *layout = panel->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(layout);
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 18, 5000);
 
     auto pointerForRow = [panel](int row) {
         return panel->findChild<QQuickItem *>(
-            QStringLiteral("galleryBrickPointer-%1").arg(row));
+            QStringLiteral("gallerySelectionSurface-%1").arg(row));
     };
     QTRY_VERIFY(pointerForRow(4));
 
@@ -1303,11 +1303,11 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesStaleLoaderRevisionAndFocus
             QStringLiteral("embeddedGalleryPanel"));
         QVERIFY(panel);
         QObject *layout = panel->findChild<QObject *>(
-            QStringLiteral("galleryMasonryLayout"));
+            QStringLiteral("galleryViewportItem"));
         QVERIFY(layout);
         QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 18, 5000);
         auto *target = panel->findChild<QQuickItem *>(
-            QStringLiteral("galleryBrickPointer-%1").arg(targetRow));
+            QStringLiteral("gallerySelectionSurface-%1").arg(targetRow));
         QTRY_VERIFY(target);
 
         if (displaceFocus) {
@@ -1344,12 +1344,12 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesStaleLoaderRevisionAndFocus
                 QStringLiteral("embeddedGalleryPanel"));
             QVERIFY(panel);
             layout = panel->findChild<QObject *>(
-                QStringLiteral("galleryMasonryLayout"));
+                QStringLiteral("galleryViewportItem"));
             QVERIFY(layout);
             QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 18,
                                       5000);
             target = panel->findChild<QQuickItem *>(
-                QStringLiteral("galleryBrickPointer-%1").arg(targetRow));
+                QStringLiteral("gallerySelectionSurface-%1").arg(targetRow));
             QTRY_VERIFY(target);
         }
         if (displaceFocus) {
@@ -1483,13 +1483,13 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panel);
     QObject *layout = panel->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QVERIFY(layout);
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 3, 5000);
 
     auto pointerForRow = [panel](int row) {
         return panel->findChild<QQuickItem *>(
-            QStringLiteral("galleryBrickPointer-%1").arg(row));
+            QStringLiteral("gallerySelectionSurface-%1").arg(row));
     };
     QTRY_VERIFY(pointerForRow(0));
     QTRY_VERIFY(pointerForRow(1));
@@ -1639,7 +1639,7 @@ void F4GalleryPointerTests::galleryModeSwitchPositionsCursorImmediately()
     QObject *galleryHost = galleryLoader->property("item").value<QObject *>();
     QVERIFY(galleryHost);
     QObject *layout = galleryHost->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QObject *scrollAnimation = galleryHost->findChild<QObject *>(
         QStringLiteral("galleryPanelScrollAnimation"));
     QVERIFY(layout);
@@ -1763,7 +1763,7 @@ void F4GalleryPointerTests::panelVisibilityKeepsLiveGalleryViewport()
     QVERIFY(originalPair);
     QVERIFY(originalHost);
     QPointer<QObject> originalLayout = originalHost->findChild<QObject *>(
-        QStringLiteral("galleryMasonryLayout"));
+        QStringLiteral("galleryViewportItem"));
     QObject *scrollAnimation = originalHost->findChild<QObject *>(
         QStringLiteral("galleryPanelScrollAnimation"));
     QVERIFY(originalLayout);
@@ -1791,7 +1791,7 @@ void F4GalleryPointerTests::panelVisibilityKeepsLiveGalleryViewport()
         QCOMPARE(panelLoader->property("item").value<QObject *>(),
                  originalHost.data());
         QCOMPARE(originalHost->findChild<QObject *>(
-                     QStringLiteral("galleryMasonryLayout")),
+                     QStringLiteral("galleryViewportItem")),
                  originalLayout.data());
         QCOMPARE(qRound(originalLayout->property("contentY").toReal()), 47);
         QVERIFY(!scrollAnimation->property("running").toBool());
@@ -1877,7 +1877,7 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     auto layoutForLoader = [loader]() -> QObject * {
         QObject *host = loader->property("item").value<QObject *>();
         return host ? host->findChild<QObject *>(
-            QStringLiteral("galleryMasonryLayout")) : nullptr;
+            QStringLiteral("galleryViewportItem")) : nullptr;
     };
     QTRY_VERIFY(layoutForLoader());
     QTRY_VERIFY(layoutForLoader()->property("contentHeight").toReal()

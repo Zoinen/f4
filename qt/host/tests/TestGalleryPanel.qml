@@ -1,4 +1,5 @@
 import QtQuick
+import ZoinGallery 1.0 as ZG
 
 FocusScope {
     property int side: 0
@@ -6,8 +7,9 @@ FocusScope {
     property var layoutState: null
     property var bridge: null
     property var keySink: null
-    property var theme: ({})
-    property var metrics: ({})
+    property ZG.GalleryThemePalette theme: ZG.GalleryThemePalette {}
+    property ZG.GalleryPresentationMetrics metrics:
+        ZG.GalleryPresentationMetrics {}
     property real devicePixelRatio: 1
     property real defaultListDensity: 22
     property bool panelActive: false
