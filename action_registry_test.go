@@ -55,6 +55,67 @@ func TestActionRegistry(t *testing.T) {
 		t.Error("RunAction should return false for missing action")
 	}
 }
+
+func TestRunActionRequestsRedrawForConsumedAction(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	defer vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	RegisterAction(Action{
+		Name:    "Test.ConsumedRedraw",
+		Handler: func() bool { return true },
+	})
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	if !RunAction("Test.ConsumedRedraw") {
+		t.Fatal("RunAction did not execute the test action")
+	}
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+	default:
+		t.Fatal("successful action did not request a redraw")
+	}
+}
+
+func TestPanelViewIconsActionChangesLayoutAndRequestsRedraw(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := setupMockPanelsFrame()
+	t.Cleanup(func() {
+		pf.Close()
+		vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	})
+	pf.activeIdx = 0
+	vtui.FrameManager.Push(pf)
+
+	for {
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	fsp := pf.panels[0].(*FileSystemPanel)
+	if !RunAction("Panel.ViewIcons") {
+		t.Fatal("Panel.ViewIcons did not run")
+	}
+	if got := fsp.effectiveGalleryLayoutMode(); got != GalleryLayoutIcons {
+		t.Fatalf("Panel.ViewIcons selected %q, want %q", got, GalleryLayoutIcons)
+	}
+	select {
+	case <-vtui.FrameManager.RedrawChan:
+	default:
+		t.Fatal("Panel.ViewIcons did not request a redraw")
+	}
+}
+
 func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
 	a, ok := GetAction("Editor.HexMode")
 	if !ok {

@@ -106,12 +106,23 @@ func RunAction(name string) bool {
 		// Fast Find is a transient panel input mode. Any action means the user
 		// is leaving it, including actions that replace a file panel in place
 		// (Info/Quick View) and therefore do not push a focus-stealing frame.
+		fastFindCanceled := false
 		if !strings.EqualFold(name, commandPaletteActionName) {
-			if pf := findPanelsFrame(); pf != nil && pf.cancelFastFind() && vtui.FrameManager != nil {
-				vtui.FrameManager.Redraw()
+			if pf := findPanelsFrame(); pf != nil {
+				fastFindCanceled = pf.cancelFastFind()
 			}
 		}
-		return a.Handler()
+		handled := a.Handler()
+		// MacroManager.Filter consumes a bound key before the active frame gets
+		// to process it.  Such an action can still mutate semantic state (for
+		// example Ctrl+5 changes the gallery presentation), so the action
+		// boundary must request the frame that publishes that mutation.  The
+		// FrameManager channel is capacity-one and coalesces this with redraws
+		// already requested by the handler.
+		if (handled || fastFindCanceled) && vtui.FrameManager != nil {
+			vtui.FrameManager.Redraw()
+		}
+		return handled
 	}
 	return false
 }
