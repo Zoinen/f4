@@ -35,9 +35,6 @@ Rectangle {
     property alias queuedScrollBarPosition: viewportController.queuedScrollBarPosition
     property alias appliedWindowSignature: viewportController.appliedWindowSignature
     property alias appliedDocumentKey: viewportController.appliedDocumentKey
-    property alias initialPlacementPending: viewportController.initialPlacementPending
-    property alias initialPlacementExtent: viewportController.initialPlacementExtent
-    property alias initialPlacementFraction: viewportController.initialPlacementFraction
     property alias loadedSlotStart: viewportController.loadedSlotStart
     property alias loadedSlotEnd: viewportController.loadedSlotEnd
     property int liveRowDelegateCount: 0

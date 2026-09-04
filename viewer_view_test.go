@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -98,6 +97,32 @@ func TestViewerLargeBinaryOpensLazilyInHexMode(t *testing.T) {
 	file.mu.Unlock()
 	if maxRead > 16*1024 {
 		t.Fatalf("opening binary file read %d bytes at once, want at most the 16 KiB header", maxRead)
+	}
+}
+
+func TestViewerFirstWindowReusesDetectionHeader(t *testing.T) {
+	file := &largeBinaryFile{size: 300 * 1024 * 1024}
+	viewer, err := NewViewerView(context.Background(),
+		&singleFileVFS{VFS: vfs.NewOSVFS(t.TempDir()), file: file}, "large.7z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	// The header has already been read to detect hex/text mode. Its bytes
+	// cover the first viewport and overscan without another asynchronous read.
+	viewer.SetPosition(0, 0, 119, 50)
+	window := viewer.semanticWindow()
+	if len(window.rows) == 0 {
+		t.Fatal("first window was empty")
+	}
+	if !strings.Contains(window.rows[0].Text, "37 7A") {
+		t.Fatalf("first window did not contain the already-read file header: %q", window.rows[0].Text)
+	}
+	if reads := file.readRanges(); len(reads) != 1 {
+		t.Fatalf("opening fetched the header more than once: %+v", reads)
+	}
+	if viewer.backend.isFetching {
+		t.Fatal("first viewport needlessly started an asynchronous read")
 	}
 }
 
@@ -927,28 +952,9 @@ func TestViewerView_Codepages_Load(t *testing.T) {
 		t.Errorf("Expected detected codepage 866, got %d", vv.Codepage)
 	}
 
-	_, err = vv.backend.ReadAt(0, 12)
-	if err != piecetable.ErrLoading {
-		t.Fatalf("Expected ErrLoading on first read, got %v", err)
-	}
-
-	var data []byte
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if time.Now().After(deadline) {
-			t.Fatal("Timeout waiting for codepage viewer fetch")
-		}
-		select {
-		case task := <-vtui.FrameManager.TaskChan:
-			task()
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		data, err = vv.backend.ReadAt(0, 12)
-		if err == nil {
-			break
-		}
+	data, err := vv.backend.ReadAt(0, 12)
+	if err != nil {
+		t.Fatalf("Already-decoded prefix should be readable immediately: %v", err)
 	}
 
 	if string(data) != "Привет" {

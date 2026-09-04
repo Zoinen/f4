@@ -280,7 +280,16 @@ func NewEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string) *EditorVie
 
 func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorConfig bool) *EditorView {
 	li := piecetable.NewLineIndex()
-	li.Rebuild(pt)
+	indexSource := pt
+	if buf, ok := pt.GetOriginalBuffer().(*AsyncBuffer); ok {
+		// The first block is already available when opening a streamed file.
+		// ForEachRange requests a megabyte at a time; using it here discards
+		// that ready prefix when the rest returns ErrLoading, leaving a blank
+		// first window until the background indexer publishes a batch.
+		prefix, _ := pt.GetRange(0, min(pt.Size(), buf.chunkSize))
+		indexSource = piecetable.New(prefix)
+	}
+	li.Rebuild(indexSource)
 	ev := &EditorView{
 		pt:                  pt,
 		li:                  li,
@@ -300,7 +309,7 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 		CursorBeyondEOL:     AppConfig.EditorCursorBeyondEOL,
 		UseEditorConfig:     useEditorConfig && AppConfig.EditorUseEditorConfig,
 		Codepage:            65001,
-		semanticExtentKnown: true,
+		semanticExtentKnown: indexSource.Size() == pt.Size(),
 	}
 	if ev.TabSize <= 0 {
 		ev.TabSize = 8
@@ -3003,6 +3012,11 @@ func (ev *EditorView) StartIndexing() {
 	ev.editSession++
 	ev.semanticExtentKnown = false
 	sessionID := ev.editSession
+	// A saved position inside the ready prefix needs no background round trip.
+	// The final indexed line may be incomplete, so leave that target pending.
+	if ev.targetLine >= 0 && ev.targetLine < ev.li.LineCount()-1 {
+		ev.applyPendingTarget()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ev.indexCancel = cancel

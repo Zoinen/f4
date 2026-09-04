@@ -88,10 +88,12 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		detectLen = int(size)
 	}
 	header := make([]byte, detectLen)
-	if _, err := f.ReadAt(ctx, header, 0); err != nil && err != io.EOF {
+	n, err := f.ReadAt(ctx, header, 0)
+	if err != nil && err != io.EOF {
 		_ = f.Close()
 		return nil, fmt.Errorf("read file header: %w", err)
 	}
+	header = header[:n]
 
 	cpID := vfs.DetectEncoding(header, AppConfig.ViewerAutodetectCodePage, AppConfig.ViewerDefaultCodePage)
 	binary := viewerHeaderLooksBinary(header, cpID)
@@ -105,8 +107,12 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 	bCtx, bCancel := context.WithCancel(context.Background())
 	if cpID == 65001 {
 		backend = &ViewerBackend{
-			file:         f,
-			size:         size,
+			file: f,
+			size: size,
+			// Detection already fetched these source bytes. Reuse them for
+			// the first bounded window instead of returning ErrLoading and
+			// fetching the same prefix again after the viewer is visible.
+			cacheData:    header,
 			path:         path,
 			totalLines:   -1,
 			totalForSize: -1,
@@ -130,6 +136,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		backend = &ViewerBackend{
 			file:         memFile,
 			size:         int64(len(decoded)),
+			cacheData:    decoded[:min(len(decoded), 16*1024)],
 			path:         path,
 			totalLines:   -1,
 			totalForSize: -1,

@@ -34,9 +34,8 @@ Item {
     property real queuedScrollBarPosition: -1
     property string appliedWindowSignature: ""
     property string appliedDocumentKey: ""
-    property bool initialPlacementPending: false
-    property real initialPlacementExtent: 0
-    property real initialPlacementFraction: 0
+    property bool componentReady: false
+    property bool frameWindowSyncPending: false
     property int loadedSlotStart: 0
     property int loadedSlotEnd: 0
     property alias poolSlotWriteCount: rowPoolController.slotWriteCount
@@ -236,7 +235,7 @@ Item {
             clearPoolSlot(slot)
     }
 
-    function recenterRows(rows, extent, fraction, deferPlacement) {
+    function recenterRows(rows, extent, fraction) {
         const source = rows || []
         ensurePoolCapacity(rowPoolController.capacityFor(source))
         clearLoadedSlots()
@@ -248,19 +247,17 @@ Item {
         loadedSlotStart = start
         loadedSlotEnd = start + source.length
 
-        if (deferPlacement) {
-            initialPlacementExtent = extent
-            initialPlacementFraction = fraction
-            initialPlacementPending = true
-            initialPlacementTimer.restart()
-        } else {
-            placeAtExtent(extent, fraction)
-        }
+        // The pool, its content extent and its viewport are one transaction.
+        // Deferring placement to a second animation tick paints empty pool
+        // slots (or the preceding document) before the actual first page.
+        documentList.forceLayout()
+        placeAtExtent(extent, fraction)
+        documentList.forceLayout()
     }
 
     function mergeRowsWithoutRebase(nextRows, retainLiveUnion) {
         if (!displayedRows || displayedRows.length === 0) {
-            recenterRows(nextRows, Number(frame.viewportStart || 0), 0, false)
+            recenterRows(nextRows, Number(frame.viewportStart || 0), 0)
             return true
         }
 
@@ -326,7 +323,7 @@ Item {
             return
         const state = topState()
         rebasingWindow = true
-        recenterRows(latestWindowRows, state.extent, state.fraction, false)
+        recenterRows(latestWindowRows, state.extent, state.fraction)
         rebasingWindow = false
         captureTopState()
         syncScrollBar()
@@ -472,7 +469,8 @@ Item {
     }
 
     function maybeRequestWindow() {
-        if (!interactionActive || rebasingWindow || windowRequestPending
+        if (!interactionActive || rebasingWindow || frameWindowSyncPending
+                || windowRequestPending
                 || !hasWindowProtocol || !displayedRows
                 || displayedRows.length === 0)
             return
@@ -570,8 +568,7 @@ Item {
         const mergedOverlap = wasInitialized
                 && mergeRowsWithoutRebase(nextRows, keepLiveCoordinates)
         if (!mergedOverlap)
-            recenterRows(nextRows, targetExtent, targetFraction,
-                         !wasInitialized)
+            recenterRows(nextRows, targetExtent, targetFraction)
         else if (!keepLiveCoordinates)
             placeAtExtent(targetExtent, targetFraction)
         appliedWindowSignature = nextSignature
@@ -580,8 +577,7 @@ Item {
         stableTopFraction = targetFraction
         lastViewportStart = Number(frame.viewportStart || 0)
         rebasingWindow = false
-        if (wasInitialized)
-            windowInitialized = true
+        windowInitialized = true
         if (acknowledged) {
             windowRequestPending = false
             resumeVelocity = 0
@@ -626,15 +622,16 @@ Item {
     }
 
     function scheduleFrameWindowSync() {
-        if (hostWindow.cleanText(frame.kind) !== "")
-            frameSyncTimer.restart()
+        if (!componentReady || hostWindow.cleanText(frame.kind) === "")
+            return
+        frameWindowSyncPending = true
+        hostWindow.update()
     }
 
     function stopMotion() {
         documentList.cancelFlick()
         wheelAnimation.stop()
         wheelCommitTimer.stop()
-        initialPlacementTimer.stop()
         requestWindowTimer.stop()
         scrollBarRequestTimer.stop()
     }
@@ -708,8 +705,21 @@ Item {
         queuedScrollBarPosition = -1
     }
     Component.onCompleted: {
+        componentReady = true
         scheduleFrameWindowSync()
         scheduleNativeViewportSync()
+    }
+
+    Connections {
+        target: controller.hostWindow
+        enabled: controller.frameWindowSyncPending
+        function onAfterAnimating() {
+            // Bindings and incoming stream updates have settled, but this
+            // frame has not been synchronized to the render thread yet.
+            // Commit rows and placement together, once, before it can paint.
+            controller.frameWindowSyncPending = false
+            controller.applyFrameWindow()
+        }
     }
 
     DocumentRowPool {
@@ -750,32 +760,9 @@ Item {
     }
 
     Timer {
-        id: frameSyncTimer
-        interval: 0
-        onTriggered: controller.applyFrameWindow()
-    }
-
-    Timer {
         id: nativeViewportSyncTimer
         interval: 0
         onTriggered: controller.syncNativeViewport()
-    }
-
-    Timer {
-        id: initialPlacementTimer
-        interval: 0
-        onTriggered: {
-            if (!controller.initialPlacementPending)
-                return
-            controller.rebasingWindow = true
-            controller.placeAtExtent(controller.initialPlacementExtent,
-                                     controller.initialPlacementFraction)
-            controller.rebasingWindow = false
-            controller.initialPlacementPending = false
-            controller.windowInitialized = true
-            controller.captureTopState()
-            controller.syncScrollBar()
-        }
     }
 
     Timer {

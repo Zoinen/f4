@@ -404,6 +404,8 @@ private slots:
     void compactDocumentUpdatesKeepViewportActive();
     void closingDocumentDoesNotReprojectItsRows();
     void unrelatedStreamsDoNotReprojectDocumentRows();
+    void openingDocumentHasNoStaleOrUnpositionedFrame_data();
+    void openingDocumentHasNoStaleOrUnpositionedFrame();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
     void documentHeaderShowsConsoleTopBarForViewerAndEditor();
     void nativeViewportExcludesHeaderAndKeepsBottomCursorVisible();
@@ -539,6 +541,69 @@ void F4DocumentSurfaceTests::unrelatedStreamsDoNotReprojectDocumentRows()
     QCoreApplication::processEvents();
     QCOMPARE(frames.size(), 0);
     QCOMPARE(active.size(), 0);
+}
+
+void F4DocumentSurfaceTests::openingDocumentHasNoStaleOrUnpositionedFrame_data()
+{
+    QTest::addColumn<bool>("editor");
+    QTest::addColumn<bool>("reopen");
+    QTest::newRow("first-viewer") << false << false;
+    QTest::newRow("first-editor") << true << false;
+    QTest::newRow("reopen-viewer") << false << true;
+    QTest::newRow("reopen-editor") << true << true;
+}
+
+void F4DocumentSurfaceTests::openingDocumentHasNoStaleOrUnpositionedFrame()
+{
+    QFETCH(bool, editor);
+    QFETCH(bool, reopen);
+    QVariantMap oldFrame = editor ? editorFrame(0, 60, 0, 1)
+                                  : viewerFrame(0, 60, 0, 1);
+    oldFrame.insert(QStringLiteral("documentKey"), QStringLiteral("old-document"));
+    DocumentFixture fixture(documentScene(reopen ? oldFrame : QVariantMap{}));
+    if (!reopen) {
+        QVERIFY(fixture.window);
+        fixture.window->setProperty("documentSurfacePrewarmed", true);
+        fixture.surface = fixture.window->findChild<QQuickItem *>(
+            QStringLiteral("documentSurface"));
+        QVERIFY(fixture.surface);
+        fixture.list = fixture.surface->findChild<QQuickItem *>(QStringLiteral("documentList"));
+        fixture.scrollBar = fixture.surface->findChild<QQuickItem *>(QStringLiteral("documentScrollBar"));
+    }
+    QVERIFY(fixture.ready());
+    if (reopen)
+        QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    fixture.shell.surfaceRegistry()->applyDocument({}, 2);
+    QTRY_VERIFY(!fixture.surface->isVisible());
+
+    const qreal wantedTop = editor ? 220 : 1200;
+    QVariantMap nextFrame = editor ? editorFrame(200, 100, 220, 1)
+                                   : viewerFrame(1000, 100, 1200, 1, 10, 5000);
+    nextFrame.insert(QStringLiteral("id"), QStringLiteral("new-document"));
+    nextFrame.insert(QStringLiteral("documentKey"), QStringLiteral("new-document"));
+    struct PresentedState { bool initialized; QString key; qreal top; };
+    QList<PresentedState> frames;
+    // beforeSynchronizing observes exactly what the next frame will consume;
+    // waiting only for the final state misses a one-frame empty/stale surface.
+    const auto connection = QObject::connect(fixture.window,
+        &QQuickWindow::beforeSynchronizing, fixture.window, [&] {
+            if (fixture.surface->isVisible()) {
+                frames.append({fixture.surface->property("windowInitialized").toBool(),
+                    fixture.surface->property("appliedDocumentKey").toString(),
+                    topExtent(fixture.surface, fixture.list)});
+            }
+        }, Qt::DirectConnection);
+    fixture.shell.surfaceRegistry()->applyDocument(nextFrame, 3);
+    fixture.window->update();
+    QTRY_VERIFY(!frames.isEmpty());
+    QTest::qWait(80);
+    QObject::disconnect(connection);
+    for (const auto &frame : frames) {
+        QVERIFY2(frame.initialized, "A visible document frame had no viewport placement");
+        QCOMPARE(frame.key, QStringLiteral("new-document"));
+        QCOMPARE(frame.top, wantedTop);
+    }
+    QVERIFY(!fixture.window->grabWindow().isNull());
 }
 
 void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
