@@ -98,31 +98,50 @@ Item {
     }
 
     function currentDocumentFrame() {
+        return documentFrame
+    }
+
+    // Share one observable document projection between visibility, focus and
+    // the persistent document loader.
+    readonly property var documentFrame: {
         if (documentPresentationOverrideSet) {
             return isDocumentSurface(documentPresentationOverride)
                     ? documentPresentationOverride : null
         }
-        return surfaceRegistry.hasDocument
-                && isDocumentSurface(surfaceRegistry.document)
-                ? surfaceRegistry.document : null
+        if (!surfaceRegistry.hasDocument)
+            return null
+        const frame = surfaceRegistry.document
+        return isDocumentSurface(frame) ? frame : null
     }
 
-    function captureRetainedSurfaces() {
+    function captureShellSurface() {
         const shell = currentShellFrame()
         if (shell !== null) {
             retainedShellFrame = shell
             retainedShellSurfaceCreated = true
         }
+    }
+
+    function captureDocumentSurface() {
         const document = currentDocumentFrame()
         if (document !== null) {
             retainedDocumentFrame = document
             retainedDocumentSurfaceCreated = true
         }
+    }
+
+    function captureOperationsSurface() {
         const queue = currentOperationsQueue()
         if (queue !== null) {
             retainedOperationsQueue = queue
             retainedOperationsQueueCreated = true
         }
+    }
+
+    function captureRetainedSurfaces() {
+        captureShellSurface()
+        captureDocumentSurface()
+        captureOperationsSurface()
     }
 
     function frames() {
@@ -204,7 +223,7 @@ Item {
     }
 
     function hasStandaloneDocumentSurface() {
-        return currentDocumentFrame() !== null
+        return documentFrame !== null
     }
 
     function firstFrame(kind) {
@@ -307,30 +326,64 @@ Item {
         sceneReset()
     }
 
+    function resetShellProjection() {
+        shellPresentationOverrideSet = false
+        shellPresentationOverride = null
+        leftPanelPresentationOverride = null
+        rightPanelPresentationOverride = null
+        leftPanelLayoutStateOverride = null
+        rightPanelLayoutStateOverride = null
+        panelActivationOverride = -1
+        captureShellSurface()
+        sceneReset()
+    }
+
+    function resetDocumentProjection() {
+        documentPresentationOverrideSet = false
+        documentPresentationOverride = null
+        documentSurfaceStateOverride = null
+        captureDocumentSurface()
+        sceneReset()
+    }
+
+    function resetOperationsQueueProjection() {
+        captureOperationsSurface()
+        sceneReset()
+    }
+
     function applyCompactPatch(patch) {
         if (!patch)
             return
         let structuralSurfaceChanged = false
         const replaceShell = patch.replaceShell === true
+        if (replaceShell) {
+            // In production the typed shell store has already published the
+            // replacement. The compact lane only invalidates older overrides.
+            shellPresentationOverrideSet = false
+            shellPresentationOverride = null
+            leftPanelPresentationOverride = null
+            rightPanelPresentationOverride = null
+            leftPanelLayoutStateOverride = null
+            rightPanelLayoutStateOverride = null
+            panelActivationOverride = -1
+            activePanelAcknowledged(-1)
+        }
         if (patch.shellPresent === true
                 && (replaceShell || currentShellFrame() === null)) {
-            shellPresentationOverrideSet = true
             shellPresentationOverride = patch.shell
-            if (replaceShell) {
-                leftPanelPresentationOverride = null
-                rightPanelPresentationOverride = null
-                leftPanelLayoutStateOverride = null
-                rightPanelLayoutStateOverride = null
-                panelActivationOverride = -1
-                activePanelAcknowledged(-1)
-            }
+            shellPresentationOverrideSet = true
+            captureShellSurface()
             structuralSurfaceChanged = true
         }
         if (patch.surfacePresent !== undefined) {
-            documentPresentationOverrideSet = true
+            // Publish the value before enabling its override. Otherwise the
+            // binding briefly observes a null document, clears its native
+            // viewport, then registers it again: every reply repeats the loop.
             documentPresentationOverride = patch.surfacePresent === true
                     ? patch.surface : null
+            documentPresentationOverrideSet = true
             documentSurfaceStateOverride = null
+            captureDocumentSurface()
             structuralSurfaceChanged = true
         }
         if (patch.surfaceState !== undefined && patch.surfaceState !== null)
@@ -372,7 +425,6 @@ Item {
         if (patch.toast !== undefined && patch.toast !== null)
             toastOverride = patch.toast
         if (structuralSurfaceChanged) {
-            captureRetainedSurfaces()
             structuralSurfaceUpdated()
         }
     }
@@ -397,9 +449,9 @@ Item {
     Connections {
         target: store.surfaceRegistry
 
-        function onShellChanged() { store.resetSceneProjection() }
-        function onDocumentChanged() { store.resetSceneProjection() }
-        function onOperationsQueueChanged() { store.resetSceneProjection() }
+        function onShellChanged() { store.resetShellProjection() }
+        function onDocumentChanged() { store.resetDocumentProjection() }
+        function onOperationsQueueChanged() { store.resetOperationsQueueProjection() }
     }
 
     Connections {

@@ -995,6 +995,9 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
              QStringLiteral("toggle"));
     QCOMPARE(selection.value(QStringLiteral("entryIds")).toList(),
              QVariantList{QStringLiteral("entry-3")});
+    QCOMPARE(selection.value(QStringLiteral("cursorEntryId")).toString(),
+             QStringLiteral("entry-3"));
+    QCOMPARE(selection.value(QStringLiteral("cursorIndex")).toInt(), 103);
     QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
 
     first = actions.size();

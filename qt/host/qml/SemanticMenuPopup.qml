@@ -17,8 +17,20 @@ Item {
         fromMenuBar && hostWindow.menuBarPreviewIndex >= 0
         ? hostWindow.menuBarPreviewIndex
         : Number(hostWindow.menuBarModel.selected || 0)
-    readonly property var previewMenuItem:
-        fromMenuBar ? hostWindow.menuBarItem(effectiveMenuIndex) : null
+    // Keep the model dependency visible to QML.  Looking the item up through
+    // hostWindow.menuBarItem() hides the read from the binding engine; when a
+    // popup is created in the same turn as the menu-bar update it then keeps a
+    // null preview until an unrelated key event (such as Alt) re-evaluates it.
+    readonly property var previewMenuItem: {
+        if (!fromMenuBar)
+            return null
+        const items = hostWindow.menuBarModel.items || []
+        for (var i = 0; i < items.length; ++i) {
+            if (Number(items[i].index) === Number(effectiveMenuIndex))
+                return items[i]
+        }
+        return null
+    }
     readonly property var effectiveItems:
         previewMenuItem && previewMenuItem.items
         ? previewMenuItem.items : (frame.items || [])

@@ -137,6 +137,7 @@ class QtShellControllerProductionTests final : public QObject
 
 private slots:
     void streamUpdatesNeverAssembleMasterScene();
+    void pagedSelectionKeepsBoundedCatalog();
 };
 
 void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
@@ -258,7 +259,13 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
     }, 1)));
     QTRY_COMPARE(catalogChanges.size(), 1);
     QCOMPARE(shellChanges.size(), 0);
-    QCOMPARE(legacyPresentationChanges.size(), 0);
+    // The production path must project the new row-free descriptor as well;
+    // otherwise QML keeps the previous panel.loading value and can leave its
+    // local loading indicator running after the native catalog is ready.
+    QCOMPARE(legacyPresentationChanges.size(), 1);
+    QVERIFY(!legacyPresentationChanges.constFirst().constFirst().toMap()
+                 .value(QStringLiteral("panel")).toMap()
+                 .contains(QStringLiteral("entries")));
     QCOMPARE(controller.panelCatalogSnapshot(0).value(
                  QStringLiteral("entries")).toList().size(), 64);
     QCOMPARE(controller.panelCatalogSnapshot(0).value(
@@ -302,6 +309,143 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
     QCOMPARE(controller.panelCatalogSnapshot(0).value(
                  QStringLiteral("entries")).toList().size(), 64);
     QVERIFY(!controller.retainsMasterSceneForTesting());
+
+    QSignalSpy documentChanges(controller.surfaceRegistry(),
+                               &SurfaceRegistry::documentChanged);
+    legacyPresentationChanges.clear();
+    QVariantMap document{
+        {QStringLiteral("id"), QStringLiteral("editor")},
+        {QStringLiteral("kind"), QStringLiteral("editor")},
+        {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
+        {QStringLiteral("windowRows"), QVariantList{
+            QVariantMap{{QStringLiteral("visualRow"), 0},
+                        {QStringLiteral("text"), QStringLiteral("visible text")}},
+        }},
+    };
+    QVERIFY(sendFrame(peer, envelope(8, QStringLiteral("document/editor"), 1,
+                                    QStringLiteral("snapshot"), {
+        {QStringLiteral("type"), QStringLiteral("document_snapshot")},
+        {QStringLiteral("state"), QVariantMap{{QStringLiteral("surface"), document}}},
+    })));
+    QTRY_COMPARE(documentChanges.size(), 1);
+    QCOMPARE(controller.surfaceRegistry()->document(), document);
+
+    document.insert(QStringLiteral("viewportStart"), 1);
+    QVERIFY(sendFrame(peer, envelope(9, QStringLiteral("document/editor"), 2,
+                                    QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{{QStringLiteral("set"),
+            QVariantMap{{QStringLiteral("surface"), document}}}}},
+    }, 1)));
+    QTRY_COMPARE(documentChanges.size(), 2);
+    QCOMPARE(controller.surfaceRegistry()->document(), document);
+    QCOMPARE(legacyPresentationChanges.size(), 0);
+
+    QVERIFY(sendFrame(peer, envelope(10, QStringLiteral("document/editor"), 3,
+                                     QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{{QStringLiteral("clear"),
+            QVariantList{QStringLiteral("surface")}}}},
+    }, 2)));
+    QTRY_COMPARE(documentChanges.size(), 3);
+    QVERIFY(!controller.surfaceRegistry()->hasDocument());
+    QCOMPARE(legacyPresentationChanges.size(), 0);
+    QCOMPARE(controller.panelCatalogSnapshot(0).value(
+                 QStringLiteral("entries")).toList().size(), 64);
+
+    const QVariantMap keyBar{{QStringLiteral("visible"), true}};
+    QVERIFY(sendFrame(peer, envelope(11, QStringLiteral("chrome"), 2,
+                                     QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{{QStringLiteral("set"),
+            QVariantMap{{QStringLiteral("keyBar"), keyBar}}}}},
+    }, 1)));
+    QTRY_COMPARE(controller.chromeState()->keyBar(), keyBar);
+    QCOMPARE(legacyPresentationChanges.size(), 0);
+
+    const QVariantMap nextShell{{QStringLiteral("kind"), QStringLiteral("panels")},
+                                {QStringLiteral("activePanel"), 0}};
+    QVERIFY(sendFrame(peer, envelope(12, QStringLiteral("shell"), 2,
+                                     QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{{QStringLiteral("set"),
+            QVariantMap{{QStringLiteral("shell"), nextShell}}}}},
+    }, 1)));
+    QTRY_COMPARE(controller.surfaceRegistry()->shell(), nextShell);
+    QCOMPARE(legacyPresentationChanges.size(), 1);
+    const auto invalidation = legacyPresentationChanges.first().first().toMap();
+    QVERIFY(invalidation.value(QStringLiteral("replaceShell")).toBool());
+    QVERIFY(!invalidation.contains(QStringLiteral("shell")));
+    QVERIFY(!invalidation.contains(QStringLiteral("shellPresent")));
+}
+
+void QtShellControllerProductionTests::pagedSelectionKeepsBoundedCatalog()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("paged-selection"), 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+
+    QSignalSpy errors(&controller, &QtShellController::fatalError);
+    QSignalSpy changes(&controller, &QtShellController::panelStateChanged);
+    QSignalSpy catalogs(&controller, &QtShellController::panelCatalogChanged);
+    QVariantMap panel = panelWithRows(2);
+    QVariantList entries = panel.value("entries").toList();
+    for (int slot = 0; slot < entries.size(); ++slot) {
+        QVariantMap entry = entries.at(slot).toMap();
+        entry.insert("index", 500 + slot);
+        entry.insert("entryId", QStringLiteral("entry-%1").arg(500 + slot));
+        entries[slot] = entry;
+    }
+    panel.insert("entries", entries);
+    panel.insert("catalogRowsDeferred", true);
+    panel.insert("totalCount", 30000);
+    QVERIFY(sendFrame(peer, envelope(1, "panel/0", 1, "snapshot", {
+        {"type", "panel_catalog_snapshot"},
+        {"state", QVariantMap{{"side", 0}, {"panel", panel}}},
+    })));
+    QTRY_COMPARE(catalogs.size(), 1);
+    catalogs.clear();
+
+    // Right-click on a materialized logical row, then selection outside the
+    // initial window (e.g. after End). Both must stay sparse on the wire/model.
+    quint64 revision = 1;
+    for (int row : {500, 29999}) {
+        const quint64 next = revision + 1;
+        const QVariantMap operation{{"op", "selection_delta"}, {"side", 0},
+            {"panelId", "left"}, {"catalogRevision", 1},
+            {"baseSelectionRevision", revision}, {"selectionRevision", next},
+            {"changes", QVariantList{QVariantMap{{"index", row},
+                {"entryId", QStringLiteral("entry-%1").arg(row)},
+                {"selected", true}}}}};
+        QVERIFY(sendFrame(peer, envelope(next, "panel/0", next, "patch", {
+            {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+            {"shell", QVariantMap{{"panels", QVariantList{operation}}}},
+        }, revision)));
+        QTRY_COMPARE(changes.size(), int(next - 1));
+        revision = next;
+        QVERIFY(errors.isEmpty());
+        QVERIFY(controller.connected());
+        QCOMPARE(controller.panelCatalogSnapshot(0).value("entries").toList(), entries);
+        QCOMPARE(controller.panelCatalogSnapshot(0).value("selectionRevision").toULongLong(), next);
+        QVERIFY(!changes.last().first().toMap().value("panel").toMap().contains("entries"));
+        QVERIFY(catalogs.isEmpty());
+        QVERIFY(!controller.retainsMasterSceneForTesting());
+    }
 }
 
 QTEST_MAIN(QtShellControllerProductionTests)

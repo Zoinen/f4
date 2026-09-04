@@ -57,6 +57,7 @@ Rectangle {
         boundsBehavior: Flickable.StopAtBounds
 
         delegate: Item {
+            required property var modelData
             width: ListView.view.width
             height: modelData.kind === "blank" ? 10
                     : modelData.kind === "section" ? 30

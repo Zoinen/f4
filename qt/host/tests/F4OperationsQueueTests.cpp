@@ -419,7 +419,37 @@ QVariantMap dialogScene()
             {QStringLiteral("w"), 64},
             {QStringLiteral("h"), 27},
             {QStringLiteral("showClose"), true},
-            {QStringLiteral("children"), QVariantList{}},
+            {QStringLiteral("children"), QVariantList{
+                 QVariantMap{
+                     {QStringLiteral("id"), QStringLiteral("appearance-label")},
+                     {QStringLiteral("kind"), QStringLiteral("text")},
+                     {QStringLiteral("text"), QStringLiteral("Appearance content")},
+                     {QStringLiteral("x"), 2},
+                     {QStringLiteral("y"), 2},
+                     {QStringLiteral("w"), 40},
+                     {QStringLiteral("h"), 1},
+                 },
+                 QVariantMap{
+                     {QStringLiteral("id"), QStringLiteral("appearance-checkbox")},
+                     {QStringLiteral("kind"), QStringLiteral("checkbox")},
+                     {QStringLiteral("text"), QStringLiteral("Show hidden files")},
+                     {QStringLiteral("x"), 2},
+                     {QStringLiteral("y"), 4},
+                     {QStringLiteral("w"), 40},
+                     {QStringLiteral("h"), 1},
+                 },
+                 QVariantMap{
+                     {QStringLiteral("id"), QStringLiteral("appearance-navigation")},
+                     {QStringLiteral("kind"), QStringLiteral("radioGroup")},
+                     {QStringLiteral("items"), QVariantList{
+                          QStringLiteral("First"), QStringLiteral("Second")}},
+                     {QStringLiteral("selected"), 0},
+                     {QStringLiteral("x"), 2},
+                     {QStringLiteral("y"), 7},
+                     {QStringLiteral("w"), 40},
+                     {QStringLiteral("h"), 3},
+                 },
+             }},
         },
     });
     return scene;
@@ -909,6 +939,14 @@ void F4OperationsQueueTests::wheelScrollsNativelyAndEmptyErrorStateIsVisible()
     QQuickItem *scrollBar = fixture.item(
         QStringLiteral("operationsQueueScrollBar"));
     QVERIFY(scrollBar);
+    QCOMPARE(scrollBar->property("hostWindow").value<QObject *>(), fixture.window);
+    for (const QColor color : {QColor("#56b2d7"), QColor("#de7851")}) {
+        QVERIFY(fixture.window->setProperty("galleryScrollBarHandleColor", color));
+        QCOMPARE(scrollBar->property("handleColor").value<QColor>(), color);
+        QVERIFY(fixture.window->setProperty("galleryScrollBarPressedColor", color));
+        QCOMPARE(scrollBar->property("handlePressedColor").value<QColor>(), color);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+    }
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(scrollBar->property("position").toReal()
              - (1.0 - scrollBar->property("size").toReal())) < 0.001,
@@ -1259,6 +1297,58 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
     // production, so enter the dialog scene through the same transition.
     fixture.shell.setScene(dialogScene());
     QCOMPARE(fixture.shell.overlayState()->dialogs().size(), 1);
+
+    // Drive the real OverlayHost model as production does. Updating the
+    // frame for the same overlay key must retain the Loader/GenericDialog
+    // instance, otherwise a just-finished drag loses its local geometry.
+    QQuickItem *overlayHost = fixture.item(QStringLiteral("semanticOverlayHost"));
+    QVERIFY(overlayHost);
+    QObject *frameModel = overlayHost->findChild<QObject *>(
+        QStringLiteral("semanticOverlayFrameModel"));
+    QObject *frameRepeater = overlayHost->findChild<QObject *>(
+        QStringLiteral("semanticOverlayRepeater"));
+    QVERIFY(frameModel);
+    QVERIFY(frameRepeater);
+    QTRY_COMPARE(frameModel->property("count").toInt(), 1);
+    QQuickItem *overlayLoader = nullptr;
+    QVERIFY(QMetaObject::invokeMethod(
+        frameRepeater, "itemAt", Q_RETURN_ARG(QQuickItem *, overlayLoader),
+        Q_ARG(int, 0)));
+    QVERIFY(overlayLoader);
+    QQuickItem *liveHeader = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (liveHeader = overlayLoader->findChild<QQuickItem *>(
+             QStringLiteral("dialogMoveHandle"))),
+        3000);
+    QQuickItem *liveDialog = liveHeader->parentItem();
+    QVERIFY(liveDialog);
+    QVERIFY(QMetaObject::invokeMethod(
+        liveDialog, "setUserGeometry",
+        Q_ARG(QVariant, QVariant(180.0)),
+        Q_ARG(QVariant, QVariant(120.0)),
+        Q_ARG(QVariant, QVariant(560.0)),
+        Q_ARG(QVariant, QVariant(420.0))));
+    const QQuickItem *liveDialogBefore = liveDialog;
+    QVariantMap updatedScene = dialogScene();
+    QVariantList updatedDialogs = updatedScene.value(
+        QStringLiteral("dialogs")).toList();
+    QVariantMap updatedDialog = updatedDialogs.constFirst().toMap();
+    updatedDialog.insert(QStringLiteral("x"), 22);
+    updatedDialog.insert(QStringLiteral("y"), 5);
+    updatedDialogs[0] = updatedDialog;
+    updatedScene.insert(QStringLiteral("dialogs"), updatedDialogs);
+    fixture.shell.setScene(updatedScene);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (liveHeader = overlayLoader->findChild<QQuickItem *>(
+             QStringLiteral("dialogMoveHandle"))),
+        1000);
+    QQuickItem *liveDialogAfter = liveHeader->parentItem();
+    QVERIFY(liveDialogBefore == liveDialogAfter);
+    QCOMPARE(liveDialogAfter->x(), 180.0);
+    QCOMPARE(liveDialogAfter->y(), 120.0);
+    QCOMPARE(liveDialogAfter->width(), 560.0);
+    QCOMPARE(liveDialogAfter->height(), 420.0);
+
     QVariant overlayFrames;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "overlayFrames", Q_RETURN_ARG(QVariant, overlayFrames)));
@@ -1297,6 +1387,27 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
              QStringLiteral("dialogCloseButton"))),
         1000);
 
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visualItemWithText(createdOverlayItem, QStringLiteral("Appearance content")),
+        1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visualItemWithText(createdOverlayItem,
+                           QStringLiteral("Show hidden files")),
+        1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visualItemWithText(createdOverlayItem, QStringLiteral("First")),
+        1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visualItemWithText(createdOverlayItem, QStringLiteral("Second")),
+        1000);
+    QQuickItem *dialogBody = createdOverlayObject->findChild<QQuickItem *>(
+        QStringLiteral("dialogBody"));
+    QQuickItem *dialogBodyScrollBar = createdOverlayObject->findChild<QQuickItem *>(
+        QStringLiteral("dialogBodyScrollBar"));
+    QVERIFY(dialogBody);
+    QVERIFY(dialogBodyScrollBar);
+    QTRY_VERIFY_WITH_TIMEOUT(!dialogBodyScrollBar->isVisible(), 1000);
+
     QVERIFY(header->isVisible());
     QVERIFY(resizeCorner->isVisible());
     QCOMPARE(maximizeButton->property("source").toUrl().toString(),
@@ -1318,6 +1429,8 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
     QCOMPARE(dialog->width(), 560.0);
     QCOMPARE(dialog->height(), 420.0);
 
+    // Updating the semantic payload for the same dialog must not replace the
+    // local geometry while the authoritative action is being acknowledged.
     const QRectF start(dialog->x(), dialog->y(), dialog->width(),
                        dialog->height());
     QVERIFY(QMetaObject::invokeMethod(

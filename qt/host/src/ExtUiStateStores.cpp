@@ -198,6 +198,12 @@ void OverlayStateStore::applyMenuState(const QVariantMap &state,
 void OverlayStateStore::applyDialogsState(const QVariantMap &state,
                                           qulonglong revision)
 {
+    // Dialog geometry is committed optimistically by QML. A delayed frame
+    // from the same stream must not roll that state back after a newer frame
+    // has already been accepted.
+    if (revision < m_dialogRevision) {
+        return;
+    }
     advanceRevision(revision, &m_dialogRevision,
                     [this] { emit dialogRevisionChanged(); });
     const QVariantList dialogs = state.value(

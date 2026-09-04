@@ -95,6 +95,8 @@ Item {
             }
 
             delegate: Rectangle {
+                required property int index
+                required property var modelData
                 width: ListView.view.width
                 height: autocompleteOverlay.rowHeight
                 radius: 3

@@ -631,6 +631,8 @@ private slots:
     void themeConfiguratorExposesOnlyLiveColorProperties();
     void themeColorEditorUsesOklchCoordinates();
     void themeConfiguratorRestoresSavedTheme();
+    void themeSelectionBordersAreLiveAndPersisted();
+    void themeBooleanOptionsFollowLivePalette();
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
@@ -647,6 +649,7 @@ private slots:
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void menuBarPopupStartsUnderClickedItem();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
@@ -813,7 +816,8 @@ void F4QuickViewSurfaceTests::functionBarShowsExplicitFunctionKeysAndForwardsMou
     QVERIFY(shiftLabel);
     QVERIFY(shiftShortcut);
     QVERIFY(shiftIcon);
-    QCOMPARE(shiftRow->property("radius").toReal(), 5.0);
+    const qreal barDpr = fixture.window->devicePixelRatio();
+    QCOMPARE(shiftRow->property("radius").toReal(), qRound(5.0 * barDpr) / barDpr);
     QCOMPARE(shiftLabel->property("text").toString(),
              QStringLiteral("Shift action"));
     QCOMPARE(shiftShortcut->property("text").toString(),
@@ -1554,7 +1558,9 @@ void F4QuickViewSurfaceTests::themeColorEditorUsesOklchCoordinates()
     QVERIFY(qAbs(lightness - 0.628) < 0.002);
     QCOMPARE(chromaSlider->property("from").toReal(), 0.0);
     QCOMPARE(chromaSlider->property("to").toReal(), 0.4);
-    QCOMPARE(chromaInput->property("implicitWidth").toReal(), 38.0);
+    const qreal dialogDpr = dialog->devicePixelRatio();
+    QCOMPARE(chromaInput->property("implicitWidth").toReal(),
+             qRound(38.0 * dialogDpr) / dialogDpr);
 
     dialog->show();
     QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
@@ -1712,6 +1718,121 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
     dialog->hide();
 }
 
+void F4QuickViewSurfaceTests::themeSelectionBordersAreLiveAndPersisted()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    auto *checkBox = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeSelectionBorderCheckBox"));
+    QVERIFY(checkBox);
+    const auto liveBorderSetting = [&] {
+        return qmlObjectProperties(fixture.window->property("galleryThemePalette"))
+            .value(QStringLiteral("showSelectionBorders")).toBool();
+    };
+    QVERIFY(fixture.window->property("galleryShowSelectionBorders").toBool());
+    QVERIFY(checkBox->property("checked").toBool());
+    QVERIFY(liveBorderSetting());
+    dialog->show();
+    QTRY_VERIFY(dialog->isVisible());
+    const int initialActions = fixture.shell.actions.size();
+    QTest::mouseClick(dialog, Qt::LeftButton, Qt::NoModifier,
+        checkBox->mapToScene(QPointF(checkBox->width() / 2, checkBox->height() / 2)).toPoint());
+    QVERIFY(!fixture.window->property("galleryShowSelectionBorders").toBool());
+    QVERIFY(!checkBox->property("checked").toBool());
+    QVERIFY(!liveBorderSetting());
+    QCOMPARE(fixture.shell.actions.size(), initialActions);
+
+    const auto clickButton = [dialog](const QString &name) {
+        auto *button = dialog->findChild<QQuickItem *>(name);
+        return button && QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection);
+    };
+    QVERIFY(clickButton(QStringLiteral("themeSaveButton")));
+    QVERIFY(fixture.themePersistence.theme().contains(QStringLiteral("showSelectionBorders")));
+    QCOMPARE(fixture.themePersistence.theme().value(QStringLiteral("showSelectionBorders")).toBool(), false);
+    QVERIFY(clickButton(QStringLiteral("themeResetAllButton")));
+    QVERIFY(checkBox->property("checked").toBool());
+    QVERIFY(liveBorderSetting());
+    QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+    QVERIFY(!checkBox->property("checked").toBool());
+    QVERIFY(!liveBorderSetting());
+
+    // QSettings returns strings, and old themes have no selection-border key.
+    for (const QString &saved : {QStringLiteral("true"), QStringLiteral("false")}) {
+        fixture.themePersistence.setTheme({{QStringLiteral("showSelectionBorders"), saved}});
+        QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+        QCOMPARE(liveBorderSetting(), saved == QStringLiteral("true"));
+        QCOMPARE(checkBox->property("checked").toBool(), liveBorderSetting());
+    }
+    fixture.themePersistence.setTheme({{QStringLiteral("windowBackgroundColor"), QStringLiteral("#123456")}});
+    QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+    QVERIFY(liveBorderSetting());
+    QVERIFY(checkBox->property("checked").toBool());
+    dialog->hide();
+}
+
+void F4QuickViewSurfaceTests::themeBooleanOptionsFollowLivePalette()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    dialog->show();
+    QTRY_VERIFY(dialog->isVisible());
+    for (const QString &prefix : {QStringLiteral("themeNeutralFileText"),
+                                  QStringLiteral("themeSelectionBorder")}) {
+        auto *row = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("Panel"));
+        auto *title = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("Title"));
+        auto *description = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("Description"));
+        auto *checkBox = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("CheckBox"));
+        auto *indicator = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("Indicator"));
+        auto *mark = dialog->findChild<QQuickItem *>(prefix + QStringLiteral("CheckMark"));
+        QVERIFY(row && title && description && checkBox && indicator && mark);
+        for (const bool alternate : {false, true}) {
+            const QColor background(alternate ? "#352847" : "#263e45");
+            const QColor text(alternate ? "#ffdfbb" : "#e1fbd3");
+            const QColor muted(alternate ? "#adcbfb" : "#d2a3eb");
+            const QColor accent(alternate ? "#7ccd54" : "#ea8255");
+            const QColor control(alternate ? "#493259" : "#153429");
+            for (const auto &setting : {qMakePair("dialogHeaderBg", background),
+                    qMakePair("textColor", text), qMakePair("mutedText", muted),
+                    qMakePair("dialogAccent", accent), qMakePair("controlBg", control)}) {
+                QVERIFY(fixture.window->setProperty(setting.first, setting.second));
+            }
+            QCOMPARE(row->property("color").value<QColor>(), background);
+            QCOMPARE(title->property("color").value<QColor>(), text);
+            QCOMPARE(description->property("color").value<QColor>(), muted);
+            for (const bool checked : {true, false}) {
+                const char *setting = prefix == QStringLiteral("themeSelectionBorder")
+                    ? "galleryShowSelectionBorders" : "galleryNeutralFileTextColors";
+                QVERIFY(fixture.window->setProperty(setting, checked));
+                QTest::mouseMove(dialog, QPoint(4, 4));
+                QTRY_COMPARE(indicator->property("color").value<QColor>(), checked ? accent : control);
+                QCOMPARE(mark->isVisible(), checked);
+                if (!checked) {
+                    checkBox->forceActiveFocus(Qt::TabFocusReason);
+                    QTRY_VERIFY(checkBox->hasActiveFocus());
+                }
+                QImage frame;
+                QTRY_VERIFY(!(frame = dialog->grabWindow()).isNull());
+                const QRectF rect = row->mapRectToScene(row->boundingRect());
+                const qreal dpr = dialog->devicePixelRatio();
+                const QImage rowFrame = frame.copy(QRect(qRound(rect.x() * dpr), qRound(rect.y() * dpr),
+                    qRound(rect.width() * dpr), qRound(rect.height() * dpr)));
+                QVERIFY(imageContainsColor(rowFrame, background));
+                QVERIFY(imageContainsColor(rowFrame, checked ? accent : control));
+                QVERIFY(imageContainsColor(rowFrame, text));
+                if (!checked)
+                    QVERIFY(imageContainsColor(rowFrame, accent));
+            }
+        }
+    }
+    dialog->hide();
+}
+
 void F4QuickViewSurfaceTests::themeColorListHoverAndPressFlashHaveExplicitLifetimes()
 {
     QuickViewFixture fixture(shellScene());
@@ -1805,7 +1926,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     if (qAbs(dpr - 1.75) >= 0.001)
         QSKIP("175% scale invocation required");
 
-    dialog->resize(720, 560);
+    dialog->resize(720, 720);
     dialog->show();
     dialog->requestActivate();
     QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
@@ -1865,6 +1986,17 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeNeutralFileTextTitle"),
         QStringLiteral("themeNeutralFileTextDescription"),
         QStringLiteral("themeNeutralFileTextCheckBox"),
+        QStringLiteral("themeNeutralFileTextCheckBoxText"),
+        QStringLiteral("themeNeutralFileTextIndicator"),
+        QStringLiteral("themeNeutralFileTextCheckMark"),
+        QStringLiteral("themeSelectionBorderPanel"),
+        QStringLiteral("themeSelectionBorderLabels"),
+        QStringLiteral("themeSelectionBorderTitle"),
+        QStringLiteral("themeSelectionBorderDescription"),
+        QStringLiteral("themeSelectionBorderCheckBox"),
+        QStringLiteral("themeSelectionBorderCheckBoxText"),
+        QStringLiteral("themeSelectionBorderIndicator"),
+        QStringLiteral("themeSelectionBorderCheckMark"),
         QStringLiteral("themeHeaderDivider"),
         QStringLiteral("themeDialogHeader"),
         QStringLiteral("themeColorFilter"),
@@ -1925,6 +2057,12 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeFontRenderTypeDescription"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeNeutralFileTextTitle"),
+        QStringLiteral("themeNeutralFileTextDescription"),
+        QStringLiteral("themeNeutralFileTextCheckBoxText"),
+        QStringLiteral("themeSelectionBorderTitle"),
+        QStringLiteral("themeSelectionBorderDescription"),
+        QStringLiteral("themeSelectionBorderCheckBoxText"),
     };
     for (const QString &name : optionTextLeafNames) {
         QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
@@ -1976,6 +2114,8 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     for (const QString &name : {
              QStringLiteral("themeFontRenderTypeDescription"),
              QStringLiteral("themeMouseWheelDescription"),
+             QStringLiteral("themeNeutralFileTextDescription"),
+             QStringLiteral("themeSelectionBorderDescription"),
          }) {
         QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
         QVERIFY2(item, qPrintable(name));
@@ -2724,7 +2864,9 @@ void F4QuickViewSurfaceTests::workspaceSeparatorBreaksUnderActiveTab()
     QImage rendered;
     QTRY_VERIFY_WITH_TIMEOUT(
         !(rendered = fixture.window->grabWindow()).isNull(), 3000);
-    const qreal scale = rendered.devicePixelRatio();
+    // grabWindow() may return physical pixels with DPR metadata == 1 on
+    // the software/offscreen backend. Derive the actual capture scale.
+    const qreal scale = qreal(rendered.width()) / fixture.window->width();
     const QPointF activeOrigin = activeTab->mapToItem(
         fixture.window->contentItem(), QPointF{});
     const auto renderedColor = [&](qreal x, qreal y) {
@@ -3523,6 +3665,75 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
     QTRY_VERIFY_WITH_TIMEOUT(
         !(rendered = fixture.window->grabWindow()).isNull(), 3000);
     QVERIFY(imageContainsColor(rendered, themedSelected));
+}
+
+void F4QuickViewSurfaceTests::menuBarPopupStartsUnderClickedItem()
+{
+    const QVariantMap menuBar = QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("main-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("menuBar")},
+        {QStringLiteral("active"), true},
+        {QStringLiteral("selected"), 2},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("index"), 0},
+                 {QStringLiteral("text"), QStringLiteral("Left")},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 1},
+                 {QStringLiteral("text"), QStringLiteral("Files")},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 2},
+                 {QStringLiteral("text"), QStringLiteral("Options")},
+             },
+         }},
+    };
+    const QVariantMap optionsMenu = QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("options-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("menuBarSubmenu"), true},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("items"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 0},
+             {QStringLiteral("text"), QStringLiteral("Panel settings")},
+             {QStringLiteral("separator"), false},
+             {QStringLiteral("disabled"), false},
+         }}},
+    };
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), QVariantList{optionsMenu});
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    // Simulate the pointer preview selecting Options while the asynchronous
+    // menu-bar state is still being installed. The popup is already alive
+    // when the model arrives, which is the production race.
+    fixture.window->setProperty("menuBarPreviewIndex", 2);
+    scene.insert(QStringLiteral("menuBar"), menuBar);
+    fixture.shell.setScene(scene);
+
+    QQuickItem *popup = nullptr;
+    QQuickItem *menuItem = nullptr;
+    QQuickItem *const visualRoot = fixture.window->contentItem();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (popup = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuPopup-options-menu"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (menuItem = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuBarItem-2"))),
+        3000);
+
+    const qreal popupX = popup->mapToItem(visualRoot, QPointF{}).x();
+    const qreal menuItemX = menuItem->mapToItem(visualRoot, QPointF{}).x();
+    QVERIFY2(qAbs(popupX - menuItemX) < 0.5,
+             qPrintable(QStringLiteral(
+                 "popup x=%1, menu item x=%2")
+                            .arg(popupX, 0, 'f', 3)
+                            .arg(menuItemX, 0, 'f', 3)));
 }
 
 void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels()

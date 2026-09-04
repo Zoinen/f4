@@ -13,6 +13,12 @@ Rectangle {
     required property bool usesQwk
     property var menu: ({})
     property int pointerHoverIndex: -1
+    // itemWindowX() reads delegate geometry through JavaScript.  QML cannot
+    // infer dependencies on the delegate's dynamically-created x/width from
+    // that call, so publish one explicit revision whenever the Row settles.
+    // This keeps a popup opened during the same turn aligned on its first
+    // rendered frame instead of waiting for the next keyboard event.
+    property int layoutRevision: 0
     readonly property int effectiveSelected:
         hostWindow.menuBarPreviewIndex >= 0
         ? hostWindow.menuBarPreviewIndex : Number(menu.selected || 0)
@@ -121,16 +127,18 @@ Rectangle {
     }
 
     function itemWindowX(menuIndex) {
+        const layoutRevision = menuBarRoot.layoutRevision
         for (var i = 0; i < menuItemRepeater.count; ++i) {
             var visualItem = menuItemRepeater.itemAt(i)
             if (visualItem
                     && Number(visualItem.menuIndex) === Number(menuIndex))
                 return visualItem.mapToItem(semanticLayer, 0, 0).x
+                        + layoutRevision * 0
         }
         var fallbackItem = hostWindow.menuBarItem(menuIndex)
         return mapToItem(semanticLayer,
                          fallbackItem ? hostWindow.pxX(fallbackItem.x) : 0,
-                         0).x
+                         0).x + layoutRevision * 0
     }
 
     function windowBottom() {
@@ -152,9 +160,13 @@ Rectangle {
                 required property var modelData
                 readonly property var menuData: modelData
                 readonly property int menuIndex: Number(modelData.index)
+                objectName: "semanticMenuBarItem-" + menuIndex
                 height: parent.height
                 width: label.implicitWidth
                        + hostWindow.menuItemHorizontalPadding * 2
+
+                onXChanged: menuBarRoot.layoutRevision += 1
+                onWidthChanged: menuBarRoot.layoutRevision += 1
 
                 function registerNativeHitTarget() {
                     if (menuItemHitTarget.nativeHitTargetRegistered

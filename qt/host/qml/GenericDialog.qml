@@ -335,6 +335,7 @@ Rectangle {
 
     Flickable {
         id: dialogBody
+        objectName: "dialogBody"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -351,19 +352,11 @@ Rectangle {
         onHeightChanged: contentY = Math.min(contentY, Math.max(0, contentHeight - height))
         onContentHeightChanged: contentY = Math.min(contentY, Math.max(0, contentHeight - height))
 
-        T.ScrollBar.vertical: T.ScrollBar {
-            policy: T.ScrollBar.AsNeeded
-            width: 10
-            rightPadding: 2
-            contentItem: Rectangle {
-                implicitWidth: 5
-                radius: width / 2
-                color: parent.pressed || parent.hovered ? hostWindow.dialogAccent : hostWindow.mutedText
-                opacity: parent.active ? 0.85 : 0.55
-                Behavior on color { ColorAnimation { duration: 90 } }
-                Behavior on opacity { NumberAnimation { duration: 90 } }
-            }
-            background: Item { }
+        ScrollBar.vertical: F4ScrollBar {
+            objectName: "dialogBodyScrollBar"
+            hostWindow: dialogRoot.hostWindow
+            policy: ScrollBar.AsNeeded
+            visible: dialogBody.contentHeight > dialogBody.height + 0.5
         }
 
         Item {
@@ -373,6 +366,7 @@ Rectangle {
             Repeater {
                 model: frame.children || []
                 delegate: SemanticWidgetDelegate {
+                    required property var modelData
                     hostWindow: dialogRoot.hostWindow
                     widget: modelData
                     originX: frame.x || 0

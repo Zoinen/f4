@@ -144,6 +144,8 @@ ApplicationWindow {
     property alias galleryFolderTextColor: themePalette.galleryFolderTextColor
     property alias galleryNeutralFileTextColors:
         themePalette.galleryNeutralFileTextColors
+    property alias galleryShowSelectionBorders:
+        themePalette.galleryShowSelectionBorders
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:
@@ -297,6 +299,8 @@ ApplicationWindow {
         return sceneStoreApi && sceneStoreApi.hasOperationsQueueSurface()
     }
     function currentShellFrame() { return sceneStoreApi.currentShellFrame() }
+    readonly property var documentFrame:
+        sceneStoreApi ? sceneStoreApi.documentFrame : null
     function currentDocumentFrame() { return sceneStoreApi.currentDocumentFrame() }
     function captureRetainedSurfaces() {
         if (sceneStoreApi)

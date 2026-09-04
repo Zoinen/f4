@@ -139,9 +139,13 @@ QVariantMap QtShellController::streamReducerScene(
     mergeMap(&scene, workspaceStoreState(m_workspaceState));
     mergeMap(&scene, menuStoreState(m_overlayState));
     scene.insert(QStringLiteral("dialogs"), m_overlayState->dialogs());
-    scene.insert(QStringLiteral("operationsQueue"),
-                 m_surfaceRegistry->operationsQueue());
-    scene.insert(QStringLiteral("surface"), m_surfaceRegistry->document());
+    if (streamId == QStringLiteral("operations")) {
+        scene.insert(QStringLiteral("operationsQueue"),
+                     m_surfaceRegistry->operationsQueue());
+    }
+    if (streamId.startsWith(QStringLiteral("document/"))) {
+        scene.insert(QStringLiteral("surface"), m_surfaceRegistry->document());
+    }
 
     QVariantMap shell = m_surfaceRegistry->shell();
     if (shell.isEmpty()) {
@@ -272,6 +276,14 @@ void QtShellController::applyCompactFieldsToTypedState(
         const int side = panel.value(QStringLiteral("side")).toInt();
         replaceOrAppendPanel(&shell, side, withoutNativePanelPayload(panel));
     }
+    for (int side = 0; side < 2; ++side) {
+        const QVariantMap &catalog =
+            m_panelCatalogSnapshots[static_cast<size_t>(side)];
+        if (!catalog.isEmpty()) {
+            replaceOrAppendPanel(&shell, side,
+                                 withoutNativePanelPayload(catalog));
+        }
+    }
     QVariantList descriptors = shell.value(QStringLiteral("panels")).toList();
     for (qsizetype index = 0; index < descriptors.size(); ++index) {
         QVariantMap descriptor = descriptors.at(index).toMap();
@@ -285,11 +297,6 @@ void QtShellController::applyCompactFieldsToTypedState(
     }
     shell.insert(QStringLiteral("panels"), descriptors);
     m_shellState->applyShell(shell, revision);
-    // A panel catalog reset is projected through the bounded panel override
-    // below. Replacing SurfaceRegistry::shell here would synchronously reset
-    // the complete composed shell and then apply that same panel a second
-    // time, making one folder transition visibly and computationally two
-    // separate transactions. Shell/chrome frames still update the registry.
     if (!replacePanelDescriptor) {
         m_surfaceRegistry->applyShell(shell, revision);
     }

@@ -103,6 +103,8 @@ Item {
             Repeater {
                 model: widget.items || []
                 delegate: DialogRadioButton {
+                    required property var modelData
+                    required property int index
                     hostWindow: widgetRoot.hostWindow
                     width: parent.width
                     height: widgetRoot.height
@@ -124,6 +126,8 @@ Item {
             model: widget.items || []
             delegate: Rectangle {
                 id: listRow
+                required property var modelData
+                required property int index
                 width: ListView.view.width
                 height: Math.max(21, hostWindow.ch)
                 radius: 4

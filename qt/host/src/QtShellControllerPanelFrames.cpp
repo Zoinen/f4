@@ -108,10 +108,10 @@ bool QtShellController::commitPanelCatalogFrame(
     if (!activePanelOK) {
         return false;
     }
-#if defined(F4_QT_SCENE_TEST_API)
     const QVariantMap presentationPanel = withoutNativePanelPayload(panel);
     const QVariantMap presentationPatch = compactPresentationPatch(
         message, presentationPanel);
+#if defined(F4_QT_SCENE_TEST_API)
     QVariantMap nextScene = m_scene;
     QVariantMap nextPresentationScene = m_presentationScene;
     if (!replaceShellPanel(nextScene, side, panel)
@@ -155,14 +155,7 @@ bool QtShellController::commitPanelCatalogFrame(
         trace->panelCatalogSignalDurationNs = timer.nsecsElapsed();
         timer.restart();
     }
-#if defined(F4_QT_SCENE_TEST_API)
-    // The test API retains the legacy projected scene so reducer compatibility
-    // can be verified in isolation. Production QML consumes typed state stores
-    // and panelCatalogChanged directly; emitting this map projection there
-    // repeats the same binding work and makes one catalog reset visible as two
-    // separate UI transactions.
     emit compactPresentationChanged(presentationPatch);
-#endif
     if (trace->enabled) {
         trace->catalogPresentationSignalDurationNs = timer.nsecsElapsed();
     }

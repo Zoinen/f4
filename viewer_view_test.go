@@ -243,15 +243,20 @@ func TestViewerView_PageDownKeepsFinalTextPageStable(t *testing.T) {
 	vtui.SetDefaultPalette()
 
 	for _, tc := range []struct {
-		name  string
-		wrap  bool
-		lines int
-		want  int64
+		name       string
+		wrap       bool
+		lines      int
+		want       int64
+		nativeRows int
 	}{
 		{name: "wrapped-short-final-page", wrap: true, lines: 5, want: 4},
 		{name: "unwrapped-short-final-page", wrap: false, lines: 5, want: 4},
 		{name: "wrapped-full-final-page", wrap: true, lines: 10, want: 24},
 		{name: "unwrapped-full-final-page", wrap: false, lines: 10, want: 24},
+		{name: "native-wrapped-short-final-page", wrap: true, lines: 5, want: 4, nativeRows: 4},
+		{name: "native-unwrapped-short-final-page", wrap: false, lines: 5, want: 4, nativeRows: 4},
+		{name: "native-wrapped-full-final-page", wrap: true, lines: 10, want: 24, nativeRows: 4},
+		{name: "native-unwrapped-full-final-page", wrap: false, lines: 10, want: 24, nativeRows: 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var content strings.Builder
@@ -267,15 +272,20 @@ func TestViewerView_PageDownKeepsFinalTextPageStable(t *testing.T) {
 				ctx:       ctx,
 				cancelCtx: cancel,
 			}
-			vv := &ViewerView{backend: backend, WrapMode: tc.wrap}
+			vv := &ViewerView{backend: backend, WrapMode: tc.wrap, nativeViewportRows: tc.nativeRows}
 			defer vv.Close()
 
-			vv.SetPosition(0, 0, 39, 4) // Four content rows plus the status row.
+			terminalRows := 4
+			if tc.nativeRows > 0 {
+				// Native chrome leaves fewer complete rows than the terminal grid.
+				terminalRows += 2
+			}
+			vv.SetPosition(0, 0, 39, terminalRows)
 			scr := vtui.NewSilentScreenBuf()
-			scr.AllocBuf(40, 5)
+			scr.AllocBuf(40, terminalRows+1)
 
 			render := func() {
-				vv.renderText(scr, 40, 4)
+				vv.Show(scr)
 			}
 			pageDown := func() {
 				vv.ProcessKey(&vtinput.InputEvent{

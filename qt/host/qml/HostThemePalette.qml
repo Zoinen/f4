@@ -43,6 +43,7 @@ Item {
     property color galleryFileTextColor: "#c4cbd3"
     property color galleryFolderTextColor: "#ffffff"
     property bool galleryNeutralFileTextColors: true
+    property bool galleryShowSelectionBorders: true
     property color galleryQuickSearchMatchColor: "#e8edf2"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -144,6 +145,7 @@ Item {
             fileText: palette.galleryFileTextColor
             folderText: palette.galleryFolderTextColor
             neutralFileTextColors: palette.galleryNeutralFileTextColors
+            showSelectionBorders: palette.galleryShowSelectionBorders
             quickSearchMatch: palette.galleryQuickSearchMatchColor
             selection: palette.gallerySelectionColor
             markedBackground: palette.galleryMarkedBackgroundColor
@@ -253,6 +255,16 @@ Item {
                         || String(value).toLowerCase() === "true"
                 applied = true
             }
+            if (saved.showSelectionBorders !== undefined) {
+                const value = saved.showSelectionBorders
+                galleryShowSelectionBorders = value === true
+                        || String(value).toLowerCase() === "true"
+                applied = true
+            } else if (Object.keys(saved).length > 0) {
+                // Older saved themes predate the option. Restoring one must
+                // also undo an unsaved switch to text-only selection.
+                galleryShowSelectionBorders = true
+            }
             return applied
         } catch (error) {
             console.warn("Unable to load the saved theme:", error)
@@ -271,6 +283,7 @@ Item {
         values.fontRenderType = hostWindow.fontRenderTypeName
         values.mouseWheelMode = hostWindow.mouseWheelMode
         values.neutralFileTextColors = galleryNeutralFileTextColors
+        values.showSelectionBorders = galleryShowSelectionBorders
         values.themeSchemaVersion = schemaVersion
         return persistence.saveTheme(values)
     }
@@ -284,6 +297,7 @@ Item {
             textRendering.setRenderTypeByName("NativeRendering")
         hostWindow.mouseWheelMode = "gui"
         galleryNeutralFileTextColors = true
+        galleryShowSelectionBorders = true
     }
 
     function formatColorHex(colorValue) {

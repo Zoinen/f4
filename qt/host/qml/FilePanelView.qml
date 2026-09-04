@@ -382,8 +382,8 @@ Rectangle {
             item.panel = Qt.binding(() => panelRoot.panel)
             if (typeof item.layoutState !== "undefined")
                 item.layoutState = Qt.binding(() => panelRoot.layoutState)
-            item.bridge = qtGallery
-            item.keySink = grid
+            item.bridge = panelRoot.galleryController
+            item.keySink = panelRoot.focusTarget
             item.theme = Qt.binding(() => panelRoot.galleryTheme)
             item.metrics = Qt.binding(() => panelRoot.galleryMetrics)
             item.devicePixelRatio = Qt.binding(
@@ -585,7 +585,7 @@ Rectangle {
             }
 
             Connections {
-                target: root
+                target: panelRoot.hostWindow
                 function onKeyboardActivityRevisionChanged() {
                     fastFindCursor.restartBlink()
                 }

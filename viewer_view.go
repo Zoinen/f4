@@ -315,8 +315,10 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	if vv.scrollBar != nil {
 		width-- // Не рисуем текст поверх скроллбара
 	}
-	height := vv.Y2 - vv.Y1 + 1
-	contentHeight := height - 1
+	// Rendering also adjusts TopOffset and EOF state. Use the same complete-row
+	// viewport as navigation, or the hidden terminal render scrolls native EOF
+	// pages backwards and leaves the last lines below the QML viewport.
+	contentHeight := vv.viewportHeight()
 
 	bgAttr := vtui.Palette[ColViewerText]
 
@@ -341,7 +343,6 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	if vv.scrollBar != nil && vv.backend.Size() > 0 {
 		maxOffset := int(vv.backend.Size())
 		if vv.HexMode {
-			contentHeight := vv.Y2 - vv.Y1
 			if contentHeight > 0 {
 				lastLineOffset := int((vv.backend.Size() - 1) &^ 0xF)
 				maxOffset = lastLineOffset - (contentHeight-1)*16

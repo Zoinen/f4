@@ -701,16 +701,18 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return true
 	case "panel_cursor", "panel.cursor":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
-			idx, ok := fsp.semanticEntryIndex(action)
-			if !ok {
-				return false
-			}
+			activated := false
 			// A native GUI row click targets an item and activates its panel as
 			// one visual operation. Applying those intents atomically prevents
 			// an intermediate scene from highlighting the panel's old cursor.
 			if semanticBool(action["activate"]) {
 				pf.setActivePanelForAction(action)
 				pf.lastKey = 0
+				activated = true
+			}
+			idx, ok := fsp.semanticEntryIndex(action)
+			if !ok {
+				return activated
 			}
 			fsp.clearFastFindForSemanticPointerIntent()
 			fsp.SetCursorIndex(idx)
@@ -963,16 +965,7 @@ func closeActiveAutocompleteMenus() {
 func (pf *PanelsFrame) setActivePanelForAction(action map[string]any) {
 	side := pf.panelIndexForSemanticAction(action)
 	if side >= 0 && side < len(pf.panels) {
-		activeChanged := pf.activeIdx != side
-		pf.activeIdx = side
-		// A native panel interaction has the same input-focus semantics as a
-		// terminal mouse press. In search-first mode it must return keyboard
-		// input to the selected panel so the following Tab switches panels. An
-		// already panel-focused active side is a true no-op and must not enqueue
-		// another redraw/semantic export.
-		if activeChanged || pf.commandLineFocused {
-			pf.setCommandLineFocus(false)
-		}
+		pf.switchActivePanel(side)
 	}
 }
 

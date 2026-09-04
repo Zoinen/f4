@@ -1223,6 +1223,115 @@ func TestPanelsFrameSemanticActionAcceptsQMLNumbers(t *testing.T) {
 	}
 }
 
+func TestPanelsFrameSemanticActivationNotifiesRenderer(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	renderer := &searchFirstActivationRenderer{side: -1}
+	vtui.FrameManager.Screen().Renderer = renderer
+
+	tmp := t.TempDir()
+	left := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(tmp),
+		frame:         vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, tmp),
+		table:         vtui.NewTable(1, 1, 38, 6, nil),
+		viewMode:      ViewModeDetailed,
+		selectedItems: make(map[string]bool),
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+			{VFSItem: vfs.VFSItem{Name: "left.txt", Size: 10}},
+		},
+	}
+	right := &FileSystemPanel{
+		vfs:           vfs.NewOSVFS(tmp),
+		frame:         vtui.NewBorderedFrame(40, 0, 79, 9, vtui.SingleBox, tmp),
+		table:         vtui.NewTable(41, 1, 78, 6, nil),
+		viewMode:      ViewModeDetailed,
+		selectedItems: make(map[string]bool),
+		entries: []*fileEntry{
+			{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+			{VFSItem: vfs.VFSItem{Name: "right.txt", Size: 20}},
+		},
+	}
+	pf := &PanelsFrame{
+		panels:         [2]Panel{left, right},
+		activeIdx:      1,
+		showPanels:     true,
+		showLeftPanel:  true,
+		showRightPanel: true,
+		cmdLine:        NewCommandLine("$ "),
+		termView:       NewTerminalView(80, 24),
+	}
+	vtui.FrameManager.Push(pf)
+
+	// 1. panel.activate on left panel (side 0)
+	renderer.calls = 0
+	renderer.side = -1
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.activate",
+		"side":   0,
+	}) {
+		t.Fatal("panel.activate on left panel was not handled")
+	}
+	if pf.activeIdx != 0 {
+		t.Fatalf("activeIdx = %d, want 0", pf.activeIdx)
+	}
+	if renderer.calls != 1 || renderer.side != 0 {
+		t.Fatalf("panel.activate did not notify renderer: calls=%d side=%d", renderer.calls, renderer.side)
+	}
+
+	// Redundant activate on already active panel should NOT re-notify renderer
+	renderer.calls = 0
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.activate",
+		"side":   0,
+	}) {
+		t.Fatal("redundant panel.activate was not handled")
+	}
+	if renderer.calls != 0 {
+		t.Fatalf("redundant panel.activate notified renderer: calls=%d", renderer.calls)
+	}
+
+	// 2. panel.cursor with activate: true on right panel (side 1)
+	renderer.calls = 0
+	renderer.side = -1
+	rightModel := right.semanticPanelModel(nil, 1, true)
+	if !pf.HandleSemanticAction(map[string]any{
+		"action":          "panel.cursor",
+		"side":            1,
+		"entryId":         rightModel.Entries[1].EntryID,
+		"index":           1,
+		"catalogRevision": rightModel.CatalogRevision,
+		"activate":        true,
+	}) {
+		t.Fatal("panel.cursor with activate was not handled")
+	}
+	if pf.activeIdx != 1 {
+		t.Fatalf("activeIdx = %d, want 1", pf.activeIdx)
+	}
+	if renderer.calls != 1 || renderer.side != 1 {
+		t.Fatalf("panel.cursor with activate did not notify renderer: calls=%d side=%d", renderer.calls, renderer.side)
+	}
+
+	// 3. panel.cursor with activate: true and stale/mismatched revision should STILL activate panel
+	renderer.calls = 0
+	renderer.side = -1
+	if !pf.HandleSemanticAction(map[string]any{
+		"action":          "panel.cursor",
+		"side":            0,
+		"entryId":         "stale-entry-id",
+		"index":           999,
+		"catalogRevision": int64(99999),
+		"activate":        true,
+	}) {
+		t.Fatal("panel.cursor with stale revision and activate was not handled")
+	}
+	if pf.activeIdx != 0 {
+		t.Fatalf("activeIdx = %d, want 0", pf.activeIdx)
+	}
+	if renderer.calls != 1 || renderer.side != 0 {
+		t.Fatalf("stale panel.cursor with activate did not notify renderer: calls=%d side=%d", renderer.calls, renderer.side)
+	}
+}
+
 func TestPanelsFrameSemanticPointerIntentsClearFastFind(t *testing.T) {
 	tmp := t.TempDir()
 	panel := &FileSystemPanel{

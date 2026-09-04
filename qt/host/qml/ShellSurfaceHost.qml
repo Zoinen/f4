@@ -78,8 +78,10 @@ Item {
             sourceComponent: DocumentSurface {
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar
-                frame: surfaces.hostWindow.currentDocumentFrame()
-                       || surfaces.hostWindow.retainedDocumentFrame || ({})
+                // The store publishes each non-null document here. Closing
+                // changes visibility only: rebinding the hidden document to
+                // an equivalent fallback re-evaluates every text run on Esc.
+                frame: surfaces.hostWindow.retainedDocumentFrame
                 interactionActive:
                     surfaces.hostWindow.hasStandaloneDocumentSurface()
                     && !surfaces.hostWindow.needsFallbackGrid()

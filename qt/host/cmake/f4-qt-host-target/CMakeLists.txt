@@ -45,11 +45,20 @@ set(F4_QT_HOST_QML_FILES
   "${F4_QT_HOST_ROOT}/qml/TerminalBackdrop.qml"
   "${F4_QT_HOST_ROOT}/qml/OperationsQueueSurface.qml"
   "${F4_QT_HOST_ROOT}/qml/OperationsQueueController.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4Button.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4TextField.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4CheckBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4RadioButton.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4ComboBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4ScrollBar.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4Slider.qml"
+  "${F4_QT_HOST_ROOT}/qml/F4ToolTip.qml"
   "${F4_QT_HOST_ROOT}/qml/DialogButton.qml"
   "${F4_QT_HOST_ROOT}/qml/QueueActionButton.qml"
   "${F4_QT_HOST_ROOT}/qml/QueueSummaryItem.qml"
   "${F4_QT_HOST_ROOT}/qml/ConfigDialogButton.qml"
   "${F4_QT_HOST_ROOT}/qml/ThemeRenderTypeComboBox.qml"
+  "${F4_QT_HOST_ROOT}/qml/ThemeBooleanOption.qml"
   "${F4_QT_HOST_ROOT}/qml/ThemeEditor.qml"
   "${F4_QT_HOST_ROOT}/qml/ThemeDraftModel.qml"
   "${F4_QT_HOST_ROOT}/qml/HostThemePalette.qml"
@@ -168,6 +177,30 @@ set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/OperationsQueueController.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/OperationsQueueController.qml")
 set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4Button.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4Button.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4TextField.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4TextField.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4CheckBox.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4CheckBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4RadioButton.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4RadioButton.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4ComboBox.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4ComboBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4ScrollBar.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4ScrollBar.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4Slider.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4Slider.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/F4ToolTip.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/F4ToolTip.qml")
+set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/DialogButton.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/DialogButton.qml")
 set_source_files_properties(
@@ -182,6 +215,9 @@ set_source_files_properties(
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/ThemeRenderTypeComboBox.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeRenderTypeComboBox.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ThemeBooleanOption.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeBooleanOption.qml")
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/ThemeEditor.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/ThemeEditor.qml")

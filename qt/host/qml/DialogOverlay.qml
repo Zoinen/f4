@@ -30,6 +30,6 @@ Item {
         id: dialogSurface
         hostWindow: dialogOverlay.hostWindow
         menuBar: dialogOverlay.menuBar
-        frame: parent.frame
+        frame: dialogOverlay.frame
     }
 }

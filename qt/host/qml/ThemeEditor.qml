@@ -15,9 +15,9 @@ Window {
     objectName: "themeColorConfigurator"
     title: "Theme Color Configurator"
     width: hostWindow.snapPx(720)
-    height: hostWindow.snapPx(560)
+    height: hostWindow.snapPx(772)
     minimumWidth: hostWindow.snapPx(580)
-    minimumHeight: hostWindow.snapPx(440)
+    minimumHeight: hostWindow.snapPx(612)
     visible: false
     color: hostWindow.dialogBg
     flags: Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint
@@ -341,102 +341,31 @@ Window {
                 }
             }
 
-            Rectangle {
-                id: themeNeutralFileTextPanel
-                objectName: "themeNeutralFileTextPanel"
-                Layout.fillWidth: true
-                Layout.preferredHeight: hostWindow.snapPx(42)
-                implicitHeight: hostWindow.snapPx(42)
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(
-                        themeNeutralFileTextPanel,
-                        themeColorConfigurator.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(
-                        themeNeutralFileTextPanel,
-                        themeColorConfigurator.contentItem)
+            ThemeBooleanOption {
+                hostWindow: themeColorConfigurator.hostWindow
+                pixelGridRoot: themeColorConfigurator.contentItem
+                namePrefix: "themeNeutralFileText"
+                title: "Panel file and folder text"
+                description: "Use neutral text colors; semantic colors still tint icons"
+                checked: hostWindow.galleryNeutralFileTextColors
+                onToggled: function(checked) {
+                    hostWindow.galleryNeutralFileTextColors = checked
+                    themeColorConfigurator.statusToast = checked
+                            ? "Neutral panel text enabled" : "Semantic panel text enabled"
                 }
-                radius: hostWindow.snapPx(4)
-                color: hostWindow.dialogHeaderBg
-                border.width: hostWindow.separatorWidth
-                border.color: hostWindow.controlBorder
+            }
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: hostWindow.snapPx(8)
-                    anchors.rightMargin: hostWindow.snapPx(8)
-                    spacing: hostWindow.snapPx(8)
-
-                    ColumnLayout {
-                        id: themeNeutralFileTextLabels
-                        objectName: "themeNeutralFileTextLabels"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: hostWindow.snapPx(22)
-                        Layout.minimumHeight: Layout.preferredHeight
-                        Layout.maximumHeight: Layout.preferredHeight
-                        spacing: hostWindow.snapPx(1)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeNeutralFileTextLabels,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeNeutralFileTextLabels,
-                                themeColorConfigurator.contentItem)
-                        }
-
-                        Text {
-                            id: themeNeutralFileTextTitle
-                            objectName: "themeNeutralFileTextTitle"
-                            text: "Panel file and folder text"
-                            color: hostWindow.textColor
-                            font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 11
-                            font.weight: Font.Bold
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: hostWindow.snapPx(implicitHeight)
-                            Layout.minimumHeight: Layout.preferredHeight
-                            Layout.maximumHeight: Layout.preferredHeight
-                        }
-
-                        Text {
-                            id: themeNeutralFileTextDescription
-                            objectName: "themeNeutralFileTextDescription"
-                            text: "Use neutral text colors; semantic colors still tint icons"
-                            color: hostWindow.mutedText
-                            font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 9
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: hostWindow.snapPx(implicitHeight)
-                            Layout.minimumHeight: Layout.preferredHeight
-                            Layout.maximumHeight: Layout.preferredHeight
-                        }
-                    }
-
-                    DialogCheckBox {
-                        id: themeNeutralFileTextCheckBox
-                        hostWindow: themeColorConfigurator.hostWindow
-                        objectName: "themeNeutralFileTextCheckBox"
-                        text: "Enabled"
-                        checked: hostWindow.galleryNeutralFileTextColors
-                        Layout.preferredWidth: hostWindow.snapPx(100)
-                        Layout.preferredHeight: hostWindow.snapPx(25)
-                        Layout.minimumHeight: Layout.preferredHeight
-                        Layout.maximumHeight: Layout.preferredHeight
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeNeutralFileTextCheckBox,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeNeutralFileTextCheckBox,
-                                themeColorConfigurator.contentItem)
-                        }
-                        onClicked: {
-                            hostWindow.galleryNeutralFileTextColors = checked
-                            themeColorConfigurator.statusToast = checked
-                                    ? "Neutral panel text enabled"
-                                    : "Semantic panel text enabled"
-                        }
-                    }
+            ThemeBooleanOption {
+                hostWindow: themeColorConfigurator.hostWindow
+                pixelGridRoot: themeColorConfigurator.contentItem
+                namePrefix: "themeSelectionBorder"
+                title: "Selection borders"
+                description: "Outline marked items in every view; disable for text-color marking only"
+                checked: hostWindow.galleryShowSelectionBorders
+                onToggled: function(checked) {
+                    hostWindow.galleryShowSelectionBorders = checked
+                    themeColorConfigurator.statusToast = checked
+                            ? "Selection borders enabled" : "Text-only selection enabled"
                 }
             }
 
@@ -461,9 +390,10 @@ Window {
                         Layout.maximumHeight: hostWindow.snapPx(28)
                         implicitHeight: hostWindow.snapPx(28)
 
-                        Rectangle {
+                        F4TextField {
                             id: themeColorFilter
                             objectName: "themeColorFilter"
+                            hostWindow: themeColorConfigurator.hostWindow
                             width: hostWindow.snapPx(parent.width)
                             height: parent.height
                             transform: Translate {
@@ -474,50 +404,11 @@ Window {
                                     themeColorFilter,
                                     themeColorConfigurator.contentItem)
                             }
-                            radius: hostWindow.snapPx(4)
-                            color: hostWindow.controlPressedBg
-                            border.width: hostWindow.separatorWidth
-                            border.color: filterInput.activeFocus ? hostWindow.dialogAccent : hostWindow.controlBorder
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: hostWindow.snapPx(8)
-                                anchors.rightMargin: hostWindow.snapPx(8)
-                                spacing: hostWindow.snapPx(6)
-
-                                IconLabel {
-                                    icon.source: hostWindow.lucideIconSource(
-                                                     "search", 14,
-                                                     hostWindow.mutedText)
-                                    icon.width: hostWindow.snapPx(14)
-                                    icon.height: hostWindow.snapPx(14)
-                                    icon.color: hostWindow.mutedText
-                                }
-
-                                TextInput {
-                                    id: filterInput
-                                    Layout.fillWidth: true
-                                    verticalAlignment: TextInput.AlignVCenter
-                                    font.family: hostWindow.guiMonospaceFontFamily
-                                    font.pixelSize: 11
-                                    color: hostWindow.textColor
-                                    selectByMouse: true
-                                    selectionColor: hostWindow.selectedBg
-                                    selectedTextColor: hostWindow.textColor
-
-                                    Text {
-                                        text: "Filter elements..."
-                                        color: hostWindow.mutedText
-                                        font.family: hostWindow.guiMonospaceFontFamily
-                                        font.pixelSize: 11
-                                        anchors.fill: parent
-                                        verticalAlignment: Text.AlignVCenter
-                                        visible: !filterInput.text && !filterInput.activeFocus
-                                    }
-
-                                    onTextChanged: themeColorConfigurator.filterQuery = text.toLowerCase().trim()
-                                }
-                            }
+                            leadingIconSource: hostWindow.lucideIconSource(
+                                                   "search", 14,
+                                                   hostWindow.mutedText)
+                            placeholderText: "Filter elements..."
+                            onTextEdited: themeColorConfigurator.filterQuery = text.toLowerCase().trim()
                         }
                     }
 
@@ -544,23 +435,12 @@ Window {
                             boundsBehavior: Flickable.StopAtBounds
                             model: hostWindow.themeColorDefinitions.length
 
-                        ScrollBar.vertical: ScrollBar {
-                            id: themeListScrollBar
-                            objectName: "themeListScrollBar"
-                            policy: ScrollBar.AsNeeded
-                            width: hostWindow.snapPx(8)
-                            contentItem: Rectangle {
-                                implicitWidth: hostWindow.snapPx(6)
-                                radius: hostWindow.snapPx(3)
-                                color: themeListScrollBar.pressed ? hostWindow.dialogAccent
-                                       : themeListScrollBar.hovered ? hostWindow.controlHoverBg
-                                       : hostWindow.controlBorder
+                            ScrollBar.vertical: F4ScrollBar {
+                                id: themeListScrollBar
+                                objectName: "themeListScrollBar"
+                                hostWindow: themeColorConfigurator.hostWindow
+                                policy: ScrollBar.AsNeeded
                             }
-                            background: Rectangle {
-                                implicitWidth: hostWindow.snapPx(8)
-                                color: "transparent"
-                        }
-                    }
 
                         delegate: Item {
                             id: itemDelegate

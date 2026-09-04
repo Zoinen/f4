@@ -486,9 +486,10 @@ Rectangle {
         }
     }
 
-    T.ScrollBar {
+    F4ScrollBar {
         id: queueScrollBar
         objectName: "operationsQueueScrollBar"
+        hostWindow: queueRoot.hostWindow
         anchors.top: operationsQueueList.top
         anchors.bottom: operationsQueueList.bottom
         anchors.right: parent.right

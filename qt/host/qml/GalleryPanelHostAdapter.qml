@@ -481,7 +481,9 @@ Item {
         ignoreUnknownSignals: true
 
         function onPresentationModeChanged() {
-            if (adapter.applyingRendererState || !adapter.bridge
+            if (adapter.applyingRendererState
+                    || adapter.panelPresentationTransactionActive
+                    || !adapter.bridge
                     || typeof adapter.galleryPanel.presentationMode
                             === "undefined")
                 return
@@ -494,7 +496,9 @@ Item {
         }
 
         function onColumnCountChanged() {
-            if (adapter.applyingRendererState || !adapter.bridge
+            if (adapter.applyingRendererState
+                    || adapter.panelPresentationTransactionActive
+                    || !adapter.bridge
                     || adapter.requestedPresentationMode !== "columns")
                 return
             const columns = Number(adapter.galleryPanel.columnCount || 0)

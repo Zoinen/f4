@@ -724,7 +724,8 @@ void F4GalleryBridge::reconcilePendingPanelOpen(int side)
     clearPendingPanelOpen();
     markPanelOpenInFlight(side, entryId);
     sendPanelAction(side, QStringLiteral("panel.open"), entryId,
-                    currentSourceIndex, 0, false);
+                    currentSourceIndex, 0, false,
+                    !m_panelSessions.catalog(side).active);
 }
 
 void F4GalleryBridge::clearPendingPanelOpen()
@@ -946,6 +947,14 @@ void F4GalleryBridge::emitSelectionAction(int side, const QString &mode,
     intent.includeCatalogRevision = true;
 
     const size_t sideIndex = static_cast<size_t>(side);
+    const PendingCursor &pendingCursor = m_pendingCursors[sideIndex];
+    if (pendingCursor.active && !pendingCursor.entryId.isEmpty()
+        && pendingCursor.panelId == m_panelSessions.catalog(side).panelId) {
+        intent.cursorEntryId = pendingCursor.entryId;
+        intent.cursorIndex = pendingCursor.index;
+        intent.activate = !m_panelSessions.catalog(side).active;
+    }
+
     const qulonglong selectionRevision = m_panelSessions.catalog(static_cast<int>(sideIndex)).selectionRevision;
     // Multiple Gallery selection gestures can reach Go before the semantic
     // scene acknowledging the first one returns. Only the first action is

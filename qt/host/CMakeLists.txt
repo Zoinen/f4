@@ -185,6 +185,7 @@ foreach(F4_ZOIN_QML_TEST_TARGET IN ITEMS
     ZoinGallerySessionTests
     ZoinGalleryQmlInteractionTests
     ZoinGalleryReusableViewerPrimitivesTests
+    ZoinGalleryEntryHoverTests
     ZoinGalleryPanelGestureTests
     ZoinGalleryMasonryLayoutModesTests
     ZoinGalleryStandaloneShellSmokeTests
@@ -411,6 +412,7 @@ if(F4_QT_STATIC)
       ZoinGallerySessionTests
       ZoinGalleryQmlInteractionTests
       ZoinGalleryReusableViewerPrimitivesTests
+      ZoinGalleryEntryHoverTests
       ZoinGalleryPanelGestureTests
       ZoinGalleryMasonryLayoutModesTests
       ZoinGalleryStandaloneShellSmokeTests)
@@ -421,8 +423,9 @@ if(F4_QT_STATIC)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
-        ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>"
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
     endif()
   endforeach()
@@ -451,8 +454,9 @@ if(F4_QT_STATIC)
         Qt6::QGifPlugin
         Qt6::QIcoPlugin
         Qt6::QJpegPlugin
-        Qt6::QSvgPlugin
-        "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
     endif()
   endforeach()
 endif()
@@ -893,11 +897,20 @@ if(BUILD_TESTING)
     qml/TerminalBackdrop.qml
     qml/OperationsQueueSurface.qml
     qml/OperationsQueueController.qml
+    qml/F4Button.qml
+    qml/F4TextField.qml
+    qml/F4CheckBox.qml
+    qml/F4RadioButton.qml
+    qml/F4ComboBox.qml
+    qml/F4ScrollBar.qml
+    qml/F4Slider.qml
+    qml/F4ToolTip.qml
     qml/DialogButton.qml
     qml/QueueActionButton.qml
     qml/QueueSummaryItem.qml
     qml/ConfigDialogButton.qml
     qml/ThemeRenderTypeComboBox.qml
+    qml/ThemeBooleanOption.qml
     qml/ThemeEditor.qml
     qml/ThemeDraftModel.qml
     qml/HostThemePalette.qml

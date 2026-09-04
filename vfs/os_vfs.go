@@ -774,6 +774,17 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 }
 
 func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) error {
+	// This path is for devices, which cannot have a temporary sibling. Normal
+	// files must use the editor's staged save: a prefix write followed by an
+	// unsupported shifted piece otherwise corrupts the source before fallback,
+	// and a shortened piece table would leave the old tail on disk.
+	info, err := os.Stat(prepareOSPath(path))
+	if err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		return fmt.Errorf("in-place patching is only supported for devices")
+	}
 	f, err := os.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
 	if err != nil {
 		return err

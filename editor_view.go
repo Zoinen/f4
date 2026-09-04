@@ -4082,6 +4082,10 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 					perr := patcher.PatchInPlace(ctx.Context, ev.filePath, pieces)
 					if perr == nil {
 						saved = true
+						// The original was committed directly; there is no staged
+						// sibling to rename during finalization.
+						useTemp = false
+						tempPath = ""
 					} else {
 						vtui.DebugLog("EDITOR: in-place patch unavailable: %v", perr)
 					}

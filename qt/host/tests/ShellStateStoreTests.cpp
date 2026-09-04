@@ -14,6 +14,7 @@ private slots:
     void unchangedStateDoesNotInvalidateBindings();
     void surfaceRegistryRejectsCatalogPayloads();
     void overlayUpdatesDoNotInvalidateSurfaces();
+    void staleDialogRevisionDoesNotRestoreOlderGeometry();
 };
 
 void ShellStateStoreTests::extractsOnlyFixedShellRoles()
@@ -169,6 +170,40 @@ void ShellStateStoreTests::overlayUpdatesDoNotInvalidateSurfaces()
              QStringLiteral("shell"));
     QCOMPARE(overlays.commandMenus().size(), 1);
     QCOMPARE(overlays.dialogs().size(), 1);
+}
+
+void ShellStateStoreTests::staleDialogRevisionDoesNotRestoreOlderGeometry()
+{
+    OverlayStateStore overlays;
+    const auto dialogAt = [](int x, int y, int w, int h) {
+        return QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("panel-settings")},
+            {QStringLiteral("x"), x},
+            {QStringLiteral("y"), y},
+            {QStringLiteral("w"), w},
+            {QStringLiteral("h"), h},
+        };
+    };
+
+    overlays.applyDialogsState(QVariantMap{
+        {QStringLiteral("dialogs"), QVariantList{dialogAt(10, 4, 60, 25)}}},
+        10);
+    QSignalSpy dialogsChanged(&overlays, &OverlayStateStore::dialogsChanged);
+    QSignalSpy revisionChanged(&overlays,
+                               &OverlayStateStore::dialogRevisionChanged);
+
+    overlays.applyDialogsState(QVariantMap{
+        {QStringLiteral("dialogs"), QVariantList{dialogAt(2, 1, 40, 15)}}},
+        9);
+
+    QCOMPARE(overlays.dialogRevision(), 10ULL);
+    const QVariantMap stored = overlays.dialogs().constFirst().toMap();
+    QCOMPARE(stored.value(QStringLiteral("x")).toInt(), 10);
+    QCOMPARE(stored.value(QStringLiteral("y")).toInt(), 4);
+    QCOMPARE(stored.value(QStringLiteral("w")).toInt(), 60);
+    QCOMPARE(stored.value(QStringLiteral("h")).toInt(), 25);
+    QCOMPARE(dialogsChanged.count(), 0);
+    QCOMPARE(revisionChanged.count(), 0);
 }
 
 QTEST_GUILESS_MAIN(ShellStateStoreTests)

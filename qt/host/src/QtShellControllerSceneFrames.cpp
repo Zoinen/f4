@@ -20,6 +20,9 @@ QVariantMap compactRootPatch(
 {
     QVariantMap patch{{QStringLiteral("type"),
                        QStringLiteral("scene_patch")}};
+#if defined(F4_QT_SCENE_TEST_API)
+    // Production root state is already published by its typed store. Only
+    // the legacy reducer oracle needs this second map projection.
     for (const QString &key : {QStringLiteral("workspaceTabs"),
                                QStringLiteral("menuBar"),
                                QStringLiteral("keyBar"),
@@ -31,11 +34,13 @@ QVariantMap compactRootPatch(
         patch.insert(key, value.metaType().id() == QMetaType::QVariantMap
                               ? value : QVariant(QVariantMap{}));
     }
+#endif
     if (applied.shellKeys.contains(QStringLiteral("activePanel"))) {
         patch.insert(QStringLiteral("activePanel"),
                      scene.value(QStringLiteral("shell")).toMap().value(
                          QStringLiteral("activePanel")));
     }
+#if defined(F4_QT_SCENE_TEST_API)
     for (const QString &key : {QStringLiteral("shell"),
                                QStringLiteral("surface")}) {
         if (!applied.rootKeys.contains(key)) {
@@ -48,6 +53,9 @@ QVariantMap compactRootPatch(
         patch.insert(key, present ? presentationScene.value(key)
                                   : QVariant(QVariantMap{}));
     }
+#else
+    Q_UNUSED(presentationScene);
+#endif
     return patch;
 }
 
@@ -223,6 +231,15 @@ bool QtShellController::applyStreamSnapshotFrame(
             m_panelCatalogSnapshots[static_cast<size_t>(side)] = catalogPanel;
         }
         emit panelCatalogChanged(catalogPanel);
+        // Keep the QML panel descriptor in lockstep with the native catalog
+        // model. The snapshot itself may contain thousands of rows, so only
+        // send its bounded row-free descriptor through the presentation lane.
+        emit compactPresentationChanged(QVariantMap{
+            {QStringLiteral("type"), message.value(QStringLiteral("type"))},
+            {QStringLiteral("side"), side},
+            {QStringLiteral("panel"),
+             withoutNativePanelPayload(catalogPanel)},
+        });
     }
 #endif
     return true;

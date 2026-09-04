@@ -2567,23 +2567,8 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			// info / quick view / tree panel becomes visually
 			// focused but stays put; commands still target the
 			// source file panel underneath.
-			if activationPatchEligible && vtui.FrameManager != nil {
-				if screen := vtui.FrameManager.Screen(); screen != nil {
-					if renderer, ok := screen.Renderer.(interface {
-						QueuePanelActivationState(int, string, map[string]any)
-					}); ok {
-						shellTitle := strings.TrimSpace(pf.GetTitle())
-						pf.cmdLine.SetRichPrompt(pf.buildPrompt())
-						commandLine := pf.cmdLine.semanticModel(nil).ToMap()
-						renderer.QueuePanelActivationState(
-							pf.activeIdx, shellTitle, commandLine)
-					} else if renderer, ok := screen.Renderer.(interface {
-						QueuePanelActivation(int, ...string)
-					}); ok {
-						renderer.QueuePanelActivation(
-							pf.activeIdx, strings.TrimSpace(pf.GetTitle()))
-					}
-				}
+			if activationPatchEligible {
+				pf.notifyPanelActivation()
 			}
 			activationDone()
 			return true
@@ -2999,15 +2984,9 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 			}
 			activeChanged := pf.activeIdx != i && e.ButtonState != 0
 			if activeChanged {
-				pf.activeIdx = i
-				pf.lastKey = 0
+				pf.switchActivePanel(i)
 				vtui.FrameManager.Redraw()
-			}
-			// An already active panel with panel focus needs no second focus
-			// transition. Besides being redundant, setCommandLineFocus redraws the
-			// whole frame and used to turn setup clicks into semantic scene sends.
-			if pf.searchFirstMode() && e.ButtonState != 0 &&
-				(activeChanged || pf.commandLineFocused) {
+			} else if pf.searchFirstMode() && e.ButtonState != 0 && pf.commandLineFocused {
 				pf.setCommandLineFocus(false)
 			}
 			if isInitialPress {
@@ -3046,6 +3025,57 @@ func (pf *PanelsFrame) getInactivePanel() *FileSystemPanel {
 		return fsp
 	}
 	return nil
+}
+
+func (pf *PanelsFrame) notifyPanelActivation() {
+	if vtui.FrameManager == nil {
+		return
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil {
+		return
+	}
+	if renderer, ok := screen.Renderer.(interface {
+		QueuePanelActivationState(int, string, map[string]any)
+	}); ok {
+		shellTitle := strings.TrimSpace(pf.GetTitle())
+		var commandLine map[string]any
+		if pf.cmdLine != nil {
+			pf.cmdLine.SetRichPrompt(pf.buildPrompt())
+			if model := pf.cmdLine.semanticModel(nil); model != nil {
+				commandLine = model.ToMap()
+			}
+		}
+		renderer.QueuePanelActivationState(
+			pf.activeIdx, shellTitle, commandLine)
+	} else if renderer, ok := screen.Renderer.(interface {
+		QueuePanelActivation(int, ...string)
+	}); ok {
+		renderer.QueuePanelActivation(
+			pf.activeIdx, strings.TrimSpace(pf.GetTitle()))
+	}
+}
+
+func (pf *PanelsFrame) switchActivePanel(side int) bool {
+	if side < 0 || side >= len(pf.panels) {
+		return false
+	}
+	activeChanged := pf.activeIdx != side
+	pf.activeIdx = side
+	pf.lastKey = 0
+	if pf.activeIdx == 0 && !pf.showLeftPanel {
+		pf.showLeftPanel = true
+	}
+	if pf.activeIdx == 1 && !pf.showRightPanel {
+		pf.showRightPanel = true
+	}
+	if activeChanged || pf.commandLineFocused {
+		pf.setCommandLineFocus(false)
+	}
+	if activeChanged {
+		pf.notifyPanelActivation()
+	}
+	return activeChanged
 }
 
 // cancelFastFind closes the transient search UI whenever control leaves the
@@ -4036,7 +4066,7 @@ func (pf *PanelsFrame) GetTitle() string {
 		if pf.executing {
 			return "Terminal (executing)"
 		}
-		if pf.termView.Title != "" {
+		if pf.termView != nil && pf.termView.Title != "" {
 			return pf.termView.Title
 		}
 		return "Terminal"

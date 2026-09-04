@@ -1,5 +1,6 @@
 #include "ExtUiSceneReducer.h"
 
+#include <QHash>
 #include <QMetaType>
 
 #include <limits>
@@ -1022,6 +1023,50 @@ bool applyScenePatch(const QVariantMap &message,
                         return false;
                     }
                     const QVariantList entries = entriesValue.toList();
+                    const bool paged = panel.value(
+                        QStringLiteral("catalogRowsDeferred")).toBool();
+                    qulonglong logicalCount = entries.size();
+                    QHash<qlonglong, QString> knownIdsByRow;
+                    QHash<QString, qlonglong> knownRowsById;
+                    if (paged) {
+                        if (!nonNegativeInteger(panel.value(
+                                QStringLiteral("totalCount")), &logicalCount)
+                            || logicalCount > std::numeric_limits<int>::max()) {
+                            *error = QStringLiteral("Invalid selection catalog row count");
+                            return false;
+                        }
+                        // This is only the bounded initial window, not the
+                        // catalog. Its slots need not start at logical row 0;
+                        // later pages belong to the native catalog model.
+                        for (const QVariant &entryValue : entries) {
+                            const QVariantMap entry = entryValue.toMap();
+                            qlonglong row = -1;
+                            const QString id = entry.value(
+                                QStringLiteral("entryId")).toString();
+                            if (!integerValue(entry.value(QStringLiteral("index")), &row)
+                                || row < 0 || qulonglong(row) >= logicalCount
+                                || id.isEmpty() || knownIdsByRow.contains(row)
+                                || knownRowsById.contains(id)) {
+                                *error = QStringLiteral("Invalid selection catalog window");
+                                return false;
+                            }
+                            knownIdsByRow.insert(row, id);
+                            knownRowsById.insert(id, row);
+                        }
+                    }
+                    const auto matchesCatalog = [&](qlonglong row, const QString &id) {
+                        if (row < 0 || qulonglong(row) >= logicalCount) {
+                            return false;
+                        }
+                        if (!paged) {
+                            return entries.at(row).toMap().value(
+                                QStringLiteral("entryId")) == id;
+                        }
+                        const auto knownId = knownIdsByRow.constFind(row);
+                        const auto knownRow = knownRowsById.constFind(id);
+                        return (knownId == knownIdsByRow.cend() || *knownId == id)
+                            && (knownRow == knownRowsById.cend() || *knownRow == row);
+                    };
                     if (op == QStringLiteral("selection_delta")) {
                         const QVariant changesValue = operation.value(
                             QStringLiteral("changes"));
@@ -1059,14 +1104,12 @@ bool applyScenePatch(const QVariantMap &message,
                                 QStringLiteral("entryId")).toString();
                             if (!integerValue(change.value(
                                     QStringLiteral("index")), &index)
-                                || index < 0 || index >= entries.size()
                                 || entryId.isEmpty()
                                 || change.value(QStringLiteral("entryId"))
                                        .metaType().id() != QMetaType::QString
                                 || change.value(QStringLiteral("selected"))
                                        .metaType().id() != QMetaType::Bool
-                                || entries.at(index).toMap().value(
-                                       QStringLiteral("entryId")) != entryId
+                                || !matchesCatalog(index, entryId)
                                 || changedIndexes.contains(
                                        static_cast<int>(index))
                                 || changedIds.contains(entryId)) {
@@ -1097,18 +1140,27 @@ bool applyScenePatch(const QVariantMap &message,
                             }
                             requestedIds.insert(idValue.toString());
                         }
-                        QSet<QString> unresolved = requestedIds;
-                        for (const QVariant &entryValue : entries) {
-                            unresolved.remove(entryValue.toMap().value(
-                                QStringLiteral("entryId")).toString());
-                            if (unresolved.isEmpty()) {
-                                break;
-                            }
-                        }
-                        if (!unresolved.isEmpty()) {
-                            *error = QStringLiteral(
-                                "Replacement selection ID is not in catalog");
+                        if (qulonglong(requestedIds.size()) > logicalCount) {
+                            *error = QStringLiteral("Selection exceeds catalog row count");
                             return false;
+                        }
+                        // The revision-validated backend is authoritative for
+                        // IDs outside a paged window. Do not fetch/enumerate the
+                        // whole catalog just to acknowledge its selection set.
+                        if (!paged) {
+                            QSet<QString> unresolved = requestedIds;
+                            for (const QVariant &entryValue : entries) {
+                                unresolved.remove(entryValue.toMap().value(
+                                    QStringLiteral("entryId")).toString());
+                                if (unresolved.isEmpty()) {
+                                    break;
+                                }
+                            }
+                            if (!unresolved.isEmpty()) {
+                                *error = QStringLiteral(
+                                    "Replacement selection ID is not in catalog");
+                                return false;
+                            }
                         }
                     }
                     nextPanel.insert(QStringLiteral("selectionRevision"),

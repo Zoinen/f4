@@ -399,6 +399,11 @@ class F4DocumentSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void styledDocumentRunsAreVisible_data();
+    void styledDocumentRunsAreVisible();
+    void compactDocumentUpdatesKeepViewportActive();
+    void closingDocumentDoesNotReprojectItsRows();
+    void unrelatedStreamsDoNotReprojectDocumentRows();
     void documentSurfaceDoesNotPaintItsOwnBackdrop();
     void documentHeaderShowsConsoleTopBarForViewerAndEditor();
     void nativeViewportExcludesHeaderAndKeepsBottomCursorVisible();
@@ -421,6 +426,120 @@ private slots:
     void terminalDoubleAndTripleClickSelectWordAndParagraph();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
 };
+
+void F4DocumentSurfaceTests::styledDocumentRunsAreVisible_data()
+{
+    QTest::addColumn<bool>("editor");
+    QTest::newRow("viewer") << false;
+    QTest::newRow("editor") << true;
+}
+
+void F4DocumentSurfaceTests::styledDocumentRunsAreVisible()
+{
+    QFETCH(bool, editor);
+    QVariantMap frame = editor ? editorFrame(0, 30, 0, 1)
+                               : viewerFrame(0, 30, 0, 1);
+    QVariantList rows = frame.value(QStringLiteral("windowRows")).toList();
+    QVariantMap first = rows.first().toMap();
+    first.insert(QStringLiteral("runs"), QVariantList{
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("styled content")},
+                    {QStringLiteral("foreground"), QStringLiteral("#39dc85")},
+                    {QStringLiteral("bold"), true}},
+        QVariantMap{{QStringLiteral("text"), QStringLiteral(" theme content")}},
+    });
+    rows[0] = first;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    const auto findRun = [&](const QString &text) -> QQuickItem * {
+        QList<QQuickItem *> pending{fixture.list};
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            if (item->objectName() == QStringLiteral("documentRunText")
+                && item->isVisible() && item->property("text").toString() == text)
+                return item;
+            pending.append(item->childItems());
+        }
+        return nullptr;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(findRun(QStringLiteral("styled content")), 1000);
+    auto *styled = findRun(QStringLiteral("styled content"));
+    QCOMPARE(styled->property("color").value<QColor>(), QColor("#39dc85"));
+    QVERIFY(styled->property("font").value<QFont>().bold());
+    QVERIFY(styled->width() > 0);
+    QVERIFY(styled->mapToItem(fixture.list, QPointF()).y() >= 0);
+    QVERIFY(styled->mapToItem(fixture.list, QPointF()).y() < fixture.list->height());
+    auto *themed = findRun(QStringLiteral(" theme content"));
+    QVERIFY(themed);
+    QVERIFY(fixture.window->setProperty("textColor", QColor("#e39142")));
+    QTRY_COMPARE(themed->property("color").value<QColor>(), QColor("#e39142"));
+    QVERIFY(!fixture.window->grabWindow().isNull());
+}
+
+void F4DocumentSurfaceTests::compactDocumentUpdatesKeepViewportActive()
+{
+    QVariantMap frame = editorFrame(0, 60, 0, 1);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QTRY_VERIFY(fixture.surface->property("reportedViewportRows").toInt() > 0);
+    fixture.shell.clearActions();
+    QSignalSpy activeChanges(fixture.surface, SIGNAL(interactionActiveChanged()));
+    // Production commits the typed store, then publishes the compact surface
+    // projection in the same event. No intermediate "closed" document exists.
+    for (int revision = 2; revision <= 4; ++revision) {
+        frame.insert(QStringLiteral("windowGeneration"), revision);
+        fixture.shell.surfaceRegistry()->applyDocument(frame, revision);
+        emit fixture.shell.compactPresentationChanged({
+            {QStringLiteral("surfacePresent"), true},
+            {QStringLiteral("surface"), frame},
+        });
+        QCoreApplication::processEvents();
+    }
+    QCOMPARE(activeChanges.size(), 0);
+    for (const auto &action : fixture.shell.actions) {
+        QVERIFY2(action.value(QStringLiteral("action")) != "document.viewport",
+                 "A document update must not reset or re-register its viewport");
+    }
+}
+
+void F4DocumentSurfaceTests::closingDocumentDoesNotReprojectItsRows()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 120, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QSignalSpy frames(fixture.surface, SIGNAL(frameChanged()));
+    const int writes = fixture.surface->property("poolSlotWriteCount").toInt();
+    fixture.shell.surfaceRegistry()->applyDocument({}, 2);
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.surface->isVisible());
+    QCOMPARE(frames.size(), 0);
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), writes);
+}
+
+void F4DocumentSurfaceTests::unrelatedStreamsDoNotReprojectDocumentRows()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 120, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QSignalSpy frames(fixture.surface, SIGNAL(frameChanged()));
+    QSignalSpy active(fixture.surface, SIGNAL(interactionActiveChanged()));
+    auto *registry = fixture.shell.surfaceRegistry();
+    registry->applyShell({}, 2);
+    const QVariantMap shell{{QStringLiteral("kind"), QStringLiteral("panels")},
+                            {QStringLiteral("title"), QStringLiteral("Panels")}};
+    registry->applyShell(shell, 3);
+    emit fixture.shell.compactPresentationChanged({
+        {QStringLiteral("shellPresent"), true},
+        {QStringLiteral("replaceShell"), true},
+        {QStringLiteral("shell"), shell},
+    });
+    registry->applyOperationsQueue({{QStringLiteral("kind"), "operationsQueue"}}, 1);
+    QCoreApplication::processEvents();
+    QCOMPARE(frames.size(), 0);
+    QCOMPARE(active.size(), 0);
+}
 
 void F4DocumentSurfaceTests::documentSurfaceDoesNotPaintItsOwnBackdrop()
 {

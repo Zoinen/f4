@@ -112,6 +112,17 @@ void F4GalleryBridge::derivePanelStateValues(
         QStringLiteral("cursorEntryId"), state.cursorEntryId).toString();
     context->cursorIndex = context->panel.value(
         QStringLiteral("cursor"), state.cursorIndex).toInt();
+    const PendingCursor &pending = m_pendingCursors[context->sideIndex];
+    const int pendingSourceIndex =
+        state.sourceIndexByEntryId.value(pending.entryId, -1);
+    if (pending.active && pending.panelId == context->panelId
+        && (pending.catalogRevision == context->catalogRevision
+            || pending.maskAcrossCatalog)
+        && pending.entryId != context->cursorEntryId
+        && pendingSourceIndex >= 0) {
+        context->cursorEntryId = pending.entryId;
+        context->cursorIndex = pendingSourceIndex;
+    }
     context->nextCurrentPath = context->panel.value(
         QStringLiteral("path"), state.currentPath).toString();
     context->nextSourceKind = context->panel.value(

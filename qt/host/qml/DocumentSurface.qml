@@ -417,6 +417,7 @@ Rectangle {
                            ? documentRow.rowData.runs || [] : []
 
                     delegate: Rectangle {
+                        required property var modelData
                         height: runRow.height
                         width: runLabel.implicitWidth
                         color: documentRoot.runBackground(
@@ -424,6 +425,7 @@ Rectangle {
 
                         Text {
                             id: runLabel
+                            objectName: "documentRunText"
                             anchors.verticalCenter: parent.verticalCenter
                             text: hostWindow.cleanText(modelData.text)
                             color: hostWindow.cleanText(modelData.foreground) !== ""
@@ -632,39 +634,25 @@ Rectangle {
         onWheel: wheel => documentRoot.handleWheel(wheel)
     }
 
-    T.ScrollBar {
+    F4ScrollBar {
         id: documentScrollBar
         objectName: "documentScrollBar"
+        hostWindow: documentRoot.hostWindow
         parent: documentRoot
         anchors.top: documentList.top
         anchors.bottom: documentList.bottom
         anchors.right: documentList.right
         anchors.rightMargin: Math.max(0,
                                       documentRoot.scrollBarRightInset)
-        width: 15
+        thickness: 15
         orientation: Qt.Vertical
         policy: T.ScrollBar.AlwaysOn
-        hoverEnabled: true
         visible: documentRoot.hasWindowProtocol
                  && documentRoot.interactionActive
                  && documentRoot.contentExtentKnown
                  && documentRoot.contentExtent
                     > Math.max(0, Number(frame.viewportSpan || 0))
         z: 10
-
-        contentItem: Rectangle {
-            implicitWidth: 15
-            implicitHeight: 15
-            anchors.margins: 4
-            radius: 4
-            color: documentScrollBar.pressed ? "#505050"
-                 : documentScrollBar.hovered ? "#676767" : "#4a4a4a"
-        }
-        background: Rectangle {
-            color: documentScrollBar.hovered || documentScrollBar.pressed
-                   ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
-            radius: 15
-        }
 
         onPositionChanged: viewportController.scrollBarPositionChanged()
         onPressedChanged: viewportController.scrollBarPressedChanged()

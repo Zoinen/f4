@@ -52,22 +52,23 @@ Item {
         height: parent.height
     }
 
-    ZG.Button {
+    F4Button {
         id: appIcon
         objectName: "appIconButton"
+        hostWindow: titleBar.hostWindow
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         implicitWidth: hostWindow.snapPx(46)
-        implicitHeight: parent.height
+        implicitHeight: hostWindow.snapPx(30)
         width: visible ? implicitWidth : 0
         height: parent.height
         visible: usesQwk && Qt.platform.os !== "osx"
+        variant: "tool"
 
         leftPadding: 0
         topPadding: 0
         rightPadding: 0
         bottomPadding: 0
-        colorfulIcon: true
 
         contentItem: Item {
             HostPixelAlignedImage {
