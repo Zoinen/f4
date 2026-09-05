@@ -8,6 +8,42 @@ import (
 	"github.com/unxed/vtinput"
 )
 
+func TestHelpView_F1DoesNotNestAnotherHelpView(t *testing.T) {
+	oldFM := FrameManager
+	oldEngine := GlobalHelpEngine
+	fm := NewFrameManager()
+	FrameManager = fm
+	t.Cleanup(func() {
+		fm.Shutdown()
+		FrameManager = oldFM
+		GlobalHelpEngine = oldEngine
+	})
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+
+	engine := NewHelpEngine(&mockHelpVFS{})
+	engine.AddTopic(&HelpTopic{Name: "Root", Lines: []string{"Root help"}})
+	engine.AddTopic(&HelpTopic{Name: "Contents", Lines: []string{"Contents help"}})
+	GlobalHelpEngine = engine
+
+	hv := NewHelpView(engine, "Root")
+	fm.Push(hv)
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        true,
+		VirtualKeyCode: vtinput.VK_F1,
+	}, false)
+
+	if len(fm.frames) != 1 {
+		t.Fatalf("F1 on HelpView created %d frames, want 1", len(fm.frames))
+	}
+	if fm.GetTopFrame() != hv {
+		t.Fatal("F1 on HelpView replaced the active help frame")
+	}
+}
+
 func TestHelpView_Navigation(t *testing.T) {
 	tmpDir := t.TempDir()
 	helpPath := filepath.Join(tmpDir, "test.hlf")
@@ -197,19 +233,19 @@ func TestHelpView_VisualRendering(t *testing.T) {
 	scr.AllocBuf(32, 7)
 	hv.Show(scr)
 
-	// Check "Normal" (X=1..6 in local, X=1..6 in global because hv is at 0)
-	checkCell(t, scr, 1, 1, 'N', Palette[ColHelpText])
+	// Help text has one blank cell between it and each vertical frame border.
+	checkCell(t, scr, 2, 1, 'N', Palette[ColHelpText])
 
-	// Check "Bold" (starts at X=8)
-	checkCell(t, scr, 8, 1, 'B', Palette[ColHelpBold])
+	// Check "Bold" (starts at X=9)
+	checkCell(t, scr, 9, 1, 'B', Palette[ColHelpBold])
 
-	// Check "Link" (starts at X=13)
-	checkCell(t, scr, 13, 1, 'L', Palette[ColHelpLink])
+	// Check "Link" (starts at X=14)
+	checkCell(t, scr, 14, 1, 'L', Palette[ColHelpLink])
 
 	// 2. Select link and check highlight
 	hv.selectedIdx = 0
 	hv.Show(scr)
-	checkCell(t, scr, 13, 1, 'L', Palette[ColHelpSelectedLink])
+	checkCell(t, scr, 14, 1, 'L', Palette[ColHelpSelectedLink])
 }
 
 func TestHelpView_History_Empty(t *testing.T) {
@@ -326,16 +362,66 @@ func TestHelpView_MultiLinkLineRendering(t *testing.T) {
 	// 1. Выбрана первая ссылка (L1)
 	hv.selectedIdx = 0
 	hv.Show(scr)
-	// Текст: "L1 and L2". Отступ окна 1.
-	// L1: X=1. " and ": 5 символов. L2: X=1+2+5 = 8.
-	checkCell(t, scr, 1, 1, 'L', Palette[ColHelpSelectedLink])
-	checkCell(t, scr, 8, 1, 'L', Palette[ColHelpLink])
+	// Текст: "L1 and L2". Отступ от рамки — один столбец.
+	// L1: X=2. " and ": 5 символов. L2: X=2+2+5 = 9.
+	checkCell(t, scr, 2, 1, 'L', Palette[ColHelpSelectedLink])
+	checkCell(t, scr, 9, 1, 'L', Palette[ColHelpLink])
 
 	// 2. Выбираем вторую ссылку (L2)
 	hv.selectedIdx = 1
 	hv.Show(scr)
-	checkCell(t, scr, 1, 1, 'L', Palette[ColHelpLink])
-	checkCell(t, scr, 8, 1, 'L', Palette[ColHelpSelectedLink])
+	checkCell(t, scr, 2, 1, 'L', Palette[ColHelpLink])
+	checkCell(t, scr, 9, 1, 'L', Palette[ColHelpSelectedLink])
+}
+
+func TestHelpView_LayoutClipsLongLinesAndPositionsScrollBar(t *testing.T) {
+	SetDefaultPalette()
+	engine := NewHelpEngine(&mockHelpVFS{})
+	lines := make([]string, 20)
+	for i := range lines {
+		lines[i] = "This line is deliberately much longer than the help window viewport"
+	}
+	engine.AddTopic(&HelpTopic{Name: "Long", Lines: lines})
+	hv := NewHelpView(engine, "Long")
+	hv.SetPosition(2, 1, 30, 8)
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	hv.Show(scr)
+	layout := hv.layout()
+	if !layout.showScrollBar {
+		t.Fatal("long topic did not request a scrollbar")
+	}
+	if got, want := hv.scrollBar.X1, hv.X2-2; got != want {
+		t.Fatalf("scrollbar x = %d, want right padding column %d", got, want)
+	}
+	if got := rune(scr.GetCell(hv.X2-1, hv.Y1+1).Char); got != ' ' {
+		t.Fatalf("cell next to right border = %q, want padding", got)
+	}
+	if got := rune(scr.GetCell(hv.X2, hv.Y1+1).Char); got != '║' {
+		t.Fatalf("right border was overwritten by help text: got %q", got)
+	}
+	if got := rune(scr.GetCell(hv.X1+1, hv.Y1+1).Char); got != ' ' {
+		t.Fatalf("cell next to left border = %q, want padding", got)
+	}
+	if got := rune(scr.GetCell(hv.X1+2, hv.Y1+1).Char); got != 'T' {
+		t.Fatalf("text did not start after left padding: got %q", got)
+	}
+}
+
+func TestHelpView_EscapeClosesWithoutGoingBack(t *testing.T) {
+	engine := NewHelpEngine(&mockHelpVFS{})
+	engine.AddTopic(&HelpTopic{Name: "Root", Lines: []string{"root"}})
+	engine.AddTopic(&HelpTopic{Name: "Nested", Lines: []string{"nested"}})
+	hv := NewHelpView(engine, "Root")
+	hv.SwitchTopic("Nested")
+
+	if !hv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE}) {
+		t.Fatal("Escape was not handled")
+	}
+	if !hv.IsDone() {
+		t.Fatal("Escape did not close HelpView")
+	}
 }
 func TestHelpView_BorderColors(t *testing.T) {
 	SetDefaultPalette()

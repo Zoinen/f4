@@ -299,13 +299,17 @@ func TestSessionPoolCloseCancelsInFlightBackendOperation(t *testing.T) {
 
 func TestCloudReadHandleOutlivesOpenCallContext(t *testing.T) {
 	cloud := testCloudVFS(t, &readableFakeBackend{fakeBackend: &fakeBackend{}})
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	openCtx, cancelOpen := context.WithCancel(context.Background())
 	handle, err := cloud.Open(openCtx, cloud.GetPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer handle.Close()
+	defer func() { _ = handle.Close() }()
 
 	// Viewer opening runs inside a progress task. Completion cancels that
 	// task, but the returned handle must remain usable by subsequent paints.
@@ -318,7 +322,11 @@ func TestCloudReadHandleOutlivesOpenCallContext(t *testing.T) {
 
 func TestCloudVFSResolvesF5DestinationWithTrailingSlash(t *testing.T) {
 	cloud := testCloudVFS(t, &fakeBackend{})
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	directoryTarget := cloud.GetPath() + "/"
 	if !cloud.IsAbs(directoryTarget) {
 		t.Fatalf("F5 destination %q is not recognized as absolute", directoryTarget)
@@ -335,7 +343,11 @@ func TestCloudVFSResolvesF5DestinationWithTrailingSlash(t *testing.T) {
 
 func TestCloudVFSPanelTitleShowsFullPlatformPath(t *testing.T) {
 	cloud := testCloudVFS(t, &fakeBackend{})
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	separator := string(os.PathSeparator)
 	if got, want := cloud.PanelTitle(cloud.GetPath()), "Test:"+separator; got != want {
 		t.Fatalf("root PanelTitle = %q, want %q", got, want)
@@ -360,7 +372,11 @@ func TestCloudVFSPublicContractUsesOnlyVisualPaths(t *testing.T) {
 		},
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	separator := string(os.PathSeparator)
 	root := "Test:" + separator
 	if got := cloud.GetPath(); got != root {
@@ -423,7 +439,11 @@ func TestCloudVFSRestoresVisualPathByResolvingEachDirectory(t *testing.T) {
 		},
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := cloud.restoreVisualPath(context.Background(), []string{"First", "Second"}); err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +474,11 @@ func TestGooglePanelTitleUsesCachedDisplayHierarchy(t *testing.T) {
 		transferNames: make(map[string]string),
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := cloud.SetPath(cloud.publicPath(second)); err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +495,11 @@ func TestCloudVFSDisambiguatesAcrossPagesAndResolvesOpaqueLocations(t *testing.T
 		{{VFSItem: vfs.VFSItem{Name: "report.txt"}, Location: "/ids/object-b"}},
 	}}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	var names []string
 	if err := cloud.ReadDir(context.Background(), cloud.GetPath(), func(items []vfs.VFSItem) {
 		for _, item := range items {
@@ -527,7 +555,11 @@ func TestCloudVFSSanitizesPathLikeProviderLabelsButKeepsOpaqueIdentity(t *testin
 		{VFSItem: vfs.VFSItem{Name: "a/b\\c"}, Location: "/ids/separator-label"},
 	}}}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	var names []string
 	if err := cloud.ReadDir(context.Background(), cloud.GetPath(), func(items []vfs.VFSItem) {
 		for _, item := range items {
@@ -584,7 +616,11 @@ func TestCloudVFSTransferNameIsDestinationAware(t *testing.T) {
 		VFSItem: vfs.VFSItem{Name: "document.docx"}, Location: "/ids/native", TransferName: "document.docx",
 	}}}}}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := cloud.ReadDir(context.Background(), cloud.GetPath(), func([]vfs.VFSItem) {}); err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +629,11 @@ func TestCloudVFSTransferNameIsDestinationAware(t *testing.T) {
 		t.Fatalf("external transfer name = %q", got)
 	}
 	clone := cloud.Clone().(*CloudVFS)
-	defer clone.Close()
+	t.Cleanup(func() {
+		if err := clone.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if got := cloud.TransferName(source, clone); got != "document" {
 		t.Fatalf("same-session transfer name = %q", got)
 	}
@@ -601,12 +641,20 @@ func TestCloudVFSTransferNameIsDestinationAware(t *testing.T) {
 
 func TestTrashCapabilityIsExposedOnlyByTrashBackends(t *testing.T) {
 	plain := testCloudVFS(t, &fakeBackend{})
-	defer plain.Close()
+	t.Cleanup(func() {
+		if err := plain.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if _, ok := wrapCloudVFS(plain).(vfs.TrashVFS); ok {
 		t.Fatal("plain backend unexpectedly exposes TrashVFS")
 	}
 	trash := testCloudVFS(t, &fakeTrashBackend{fakeBackend: &fakeBackend{}})
-	defer trash.Close()
+	t.Cleanup(func() {
+		if err := trash.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if _, ok := wrapCloudVFS(trash).(vfs.TrashVFS); !ok {
 		t.Fatal("trash backend does not expose TrashVFS")
 	}

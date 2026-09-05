@@ -1,6 +1,10 @@
 package vtui
 
-import "math"
+import (
+	"math"
+	"runtime"
+	"sync"
+)
 
 // resampleTap is one source sample contributing to a destination sample.
 type resampleTap struct {
@@ -92,7 +96,20 @@ func ScaleSurface(src *ImageSurface, w, h int) *ImageSurface {
 	if w == src.Width && h == src.Height {
 		return src
 	}
+	// Opaque shrink is the gallery-tile and native-zoom norm: the integer
+	// box filter beats the float path on both time and memory.
+	if src.Opaque && w < src.Width && h < src.Height {
+		if out := scaleSurfaceBox(src, w, h); out != nil {
+			return out
+		}
+	}
+	return scaleSurfaceFloat(src, w, h)
+}
 
+// scaleSurfaceFloat is the premultiplied, area-weighted resampler. It is the
+// reference for every source with alpha or a grow; opaque downscales take the
+// integer box filter instead.
+func scaleSurfaceFloat(src *ImageSurface, w, h int) *ImageSurface {
 	xt := buildResampleTaps(src.Width, w)
 	yt := buildResampleTaps(src.Height, h)
 
@@ -117,6 +134,9 @@ func ScaleSurface(src *ImageSurface, w, h int) *ImageSurface {
 	}
 
 	out := NewImageSurface(w, h)
+	if out == nil {
+		return nil
+	}
 	for y := 0; y < h; y++ {
 		dstOff := y * out.Stride
 		for x := 0; x < w; x++ {
@@ -139,6 +159,218 @@ func ScaleSurface(src *ImageSurface, w, h int) *ImageSurface {
 			out.Pix[o+3] = clampToByte(pa)
 		}
 	}
+	out.Opaque = src.Opaque
+	return out
+}
+
+// scaleRun is one destination run along an axis: the source window it averages
+// and the reciprocal that turns a window sum into the average.
+type scaleRun struct {
+	first int
+	count uint32
+	inv   uint64 // (1<<32)/count: (sum*inv)>>32 is the exact integer average
+}
+
+// buildScaleRuns lays out the source window each destination sample covers
+// when shrinking: dst i averages source [i*src/dst, (i+1)*src/dst).
+func buildScaleRuns(srcLen, dstLen int) []scaleRun {
+	runs := make([]scaleRun, dstLen)
+	for i := 0; i < dstLen; i++ {
+		x1 := (i * srcLen) / dstLen
+		x2 := ((i + 1) * srcLen) / dstLen
+		if x2 == x1 {
+			x2 = x1 + 1
+		}
+		count := uint32(x2 - x1)
+		// A count of 1 would need the reciprocal 2^32, which overflows a
+		// 32-bit word: keep the multiplier 64-bit wide.
+		runs[i] = scaleRun{first: x1, count: count, inv: (uint64(1) << 32) / uint64(count)}
+	}
+	return runs
+}
+
+// scaleWorkers bounds the box filter's pass parallelism; goroutines only pay
+// above a few hundred rows or columns.
+var scaleWorkers = func() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 1 {
+		return 1
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}()
+
+// scaleSerialRows is the smallest axis the box filter splits across workers.
+const scaleSerialRows = 256
+
+// scaleSurfaceBox downsamples an opaque source with a separable box filter:
+// integer prefix sums per row and a sliding window per column, no per-pixel
+// float math and no premultiply pass. It averages the same pixel windows as
+// the float path (sRGB output matches within a few units); alpha needs the
+// premultiply float path.
+func scaleSurfaceBox(src *ImageSurface, w, h int) *ImageSurface {
+	if !src.Valid() || w <= 0 || h <= 0 {
+		return nil
+	}
+	sw, sh := src.Width, src.Height
+	out := NewImageSurface(w, h)
+	if out == nil {
+		return nil
+	}
+	xr := buildScaleRuns(sw, w)
+	yr := buildScaleRuns(sh, h)
+
+	// Horizontal pass: average each source row into w columns. Prefix sums in
+	// uint32 keep window sums exact; the averages fit uint16. Rows are
+	// independent, so they split across workers, one prefix bank each.
+	tmp := make([]uint16, w*sh*3)
+	workers := scaleWorkers
+	if sh < scaleSerialRows {
+		workers = 1
+	}
+	rowPass := func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			row := y * src.Stride
+			tRow := y * w * 3
+			for cx := range xr {
+				r := &xr[cx]
+				x2 := r.first + int(r.count)
+				var rSum, gSum, bSum uint32
+				for x := r.first; x < x2; x++ {
+					o := row + x*4
+					rSum += uint32(src.Pix[o])
+					gSum += uint32(src.Pix[o+1])
+					bSum += uint32(src.Pix[o+2])
+				}
+				o := tRow + cx*3
+				tmp[o] = uint16((uint64(rSum) * r.inv) >> 32)
+				tmp[o+1] = uint16((uint64(gSum) * r.inv) >> 32)
+				tmp[o+2] = uint16((uint64(bSum) * r.inv) >> 32)
+			}
+		}
+	}
+	if workers == 1 {
+		rowPass(0, sh)
+	} else {
+		var wg sync.WaitGroup
+		rowsPer := (sh + workers - 1) / workers
+		for wkr := 0; wkr < workers; wkr++ {
+			y0 := wkr * rowsPer
+			y1 := y0 + rowsPer
+			if y1 > sh {
+				y1 = sh
+			}
+			if y0 >= y1 {
+				continue
+			}
+			wg.Add(1)
+			go func(y0, y1 int) {
+				defer wg.Done()
+				rowPass(y0, y1)
+			}(y0, y1)
+		}
+		wg.Wait()
+	}
+
+	// Vertical pass: slide one window over the tmp rows keeping a running
+	// column sum, so every byte is read once (each row added and subtracted
+	// once). Output columns are independent, so each worker takes a band.
+	if w >= scaleSerialRows && workers > 1 {
+		var wg sync.WaitGroup
+		colBanks := make([]uint32, w*3*workers)
+		colsPer := (w + workers - 1) / workers
+		for wkr := 0; wkr < workers; wkr++ {
+			x0 := wkr * colsPer
+			x1 := x0 + colsPer
+			if x1 > w {
+				x1 = w
+			}
+			if x0 >= x1 {
+				continue
+			}
+			bank := wkr * 3 * w
+			wg.Add(1)
+			go func(x0, x1, bank int) {
+				defer wg.Done()
+				n := x1 - x0
+				colR := colBanks[bank : bank+n]
+				colG := colBanks[bank+w : bank+w+n]
+				colB := colBanks[bank+2*w : bank+2*w+n]
+				curY1, curY2 := 0, 0
+				for cy := range yr {
+					r := &yr[cy]
+					nextY2 := r.first + int(r.count)
+					for y := curY2; y < nextY2; y++ {
+						row := y * w * 3
+						for i := 0; i < n; i++ {
+							o := row + (x0+i)*3
+							colR[i] += uint32(tmp[o])
+							colG[i] += uint32(tmp[o+1])
+							colB[i] += uint32(tmp[o+2])
+						}
+					}
+					for y := curY1; y < r.first; y++ {
+						row := y * w * 3
+						for i := 0; i < n; i++ {
+							o := row + (x0+i)*3
+							colR[i] -= uint32(tmp[o])
+							colG[i] -= uint32(tmp[o+1])
+							colB[i] -= uint32(tmp[o+2])
+						}
+					}
+					curY1, curY2 = r.first, nextY2
+					inv := r.inv
+					o := cy*out.Stride + x0*4
+					for i := 0; i < n; i++ {
+						out.Pix[o+i*4] = uint8((uint64(colR[i]) * inv) >> 32)
+						out.Pix[o+i*4+1] = uint8((uint64(colG[i]) * inv) >> 32)
+						out.Pix[o+i*4+2] = uint8((uint64(colB[i]) * inv) >> 32)
+						out.Pix[o+i*4+3] = 255
+					}
+				}
+			}(x0, x1, bank)
+		}
+		wg.Wait()
+	} else {
+		colR := make([]uint32, w)
+		colG := make([]uint32, w)
+		colB := make([]uint32, w)
+		curY1, curY2 := 0, 0
+		for cy := range yr {
+			r := &yr[cy]
+			nextY2 := r.first + int(r.count)
+			for y := curY2; y < nextY2; y++ {
+				row := y * w * 3
+				for x := 0; x < w; x++ {
+					o := row + x*3
+					colR[x] += uint32(tmp[o])
+					colG[x] += uint32(tmp[o+1])
+					colB[x] += uint32(tmp[o+2])
+				}
+			}
+			for y := curY1; y < r.first; y++ {
+				row := y * w * 3
+				for x := 0; x < w; x++ {
+					o := row + x*3
+					colR[x] -= uint32(tmp[o])
+					colG[x] -= uint32(tmp[o+1])
+					colB[x] -= uint32(tmp[o+2])
+				}
+			}
+			curY1, curY2 = r.first, nextY2
+			inv := r.inv
+			o := cy * out.Stride
+			for x := 0; x < w; x++ {
+				out.Pix[o+x*4] = uint8((uint64(colR[x]) * inv) >> 32)
+				out.Pix[o+x*4+1] = uint8((uint64(colG[x]) * inv) >> 32)
+				out.Pix[o+x*4+2] = uint8((uint64(colB[x]) * inv) >> 32)
+				out.Pix[o+x*4+3] = 255
+			}
+		}
+	}
+	out.Opaque = true
 	return out
 }
 

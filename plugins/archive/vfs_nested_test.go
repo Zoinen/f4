@@ -25,9 +25,15 @@ func TestArchiveVFS_NestedZip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	innerFile.Write([]byte("nested file content"))
-	innerZw.Close()
-	innerF.Close()
+	if _, err := innerFile.Write([]byte("nested file content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := innerZw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := innerF.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	outerZipPath := filepath.Join(tmpDir, "outer.zip")
 	opts := archive.Options{
@@ -47,13 +53,19 @@ func TestArchiveVFS_NestedZip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.Close()
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	vOuter, err := NewArchiveVFS(&vfs.OSVFS{}, outerZipPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer vOuter.Close()
+	t.Cleanup(func() {
+		if err := vOuter.Close(); err != nil {
+			t.Errorf("close outer archive VFS: %v", err)
+		}
+	})
 
 	solidPath := vOuter.Join(outerZipPath, "Solid.zip")
 	t.Logf("Opening Solid.zip: %q", solidPath)
@@ -61,7 +73,11 @@ func TestArchiveVFS_NestedZip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAILED to open Solid.zip: %v", err)
 	}
-	defer vSolid.Close()
+	t.Cleanup(func() {
+		if err := vSolid.Close(); err != nil {
+			t.Errorf("close solid archive VFS: %v", err)
+		}
+	})
 
 	nestedPath := vSolid.Join(solidPath, "inner.zip")
 	t.Logf("Opening nested archive VFS: %q", nestedPath)
@@ -70,13 +86,17 @@ func TestArchiveVFS_NestedZip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FAILED to open nested ZIP (inner.zip): %v", err)
 	}
-	defer vInner.Close()
+	t.Cleanup(func() {
+		if err := vInner.Close(); err != nil {
+			t.Errorf("close nested archive VFS: %v", err)
+		}
+	})
 
 	rc, err := vInner.Open(context.Background(), vInner.Join(nestedPath, "test.txt"))
 	if err != nil {
 		t.Fatalf("FAILED to open file inside nested ZIP: %v", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	data, err := io.ReadAll(ctxReader{rc, context.Background()})
 	if err != nil {

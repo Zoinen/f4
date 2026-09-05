@@ -119,7 +119,7 @@ func NewPlugin(values ...Options) *Plugin {
 		// the same machine; new portable credentials are still saved to the vault.
 		keyringStore = NewKeyringStore()
 	}
-	var vaultStore SecretStore = opts.Vault
+	var vaultStore = opts.Vault
 	var concreteVault *VaultStore
 	if vaultStore == nil {
 		concreteVault = NewVaultStore(opts.VaultPath, opts.PasswordPrompt)

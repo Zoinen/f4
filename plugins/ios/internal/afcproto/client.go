@@ -208,6 +208,7 @@ func (c *Client) SetModTime(ctx context.Context, name string, mtime time.Time) e
 		return pathError("chtimes", name, fs.ErrInvalid)
 	}
 	nanos := seconds*int64(time.Second) + nanosecond
+	// #nosec G115 -- the preceding checks prove nanos is non-negative and no greater than MaxInt64.
 	header := append(putUint64s(uint64(nanos)), pathBytes(clean)...)
 	_, err = c.exchange(ctx, opSetFileModTime, header, nil, opStatus)
 	return pathError("chtimes", name, err)

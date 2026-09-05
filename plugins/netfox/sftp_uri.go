@@ -53,13 +53,13 @@ func (p *sftpURIProvider) OpenURI(ctx context.Context, current vfs.VFS, raw stri
 		}
 	}
 
-	v, err := NewSFTPVFS(nil, host, port, name, pass, 15, "", netproxy.Resolve(netproxy.Settings{}))
+	v, err := NewSFTPVFS(nil, host, port, name, pass, "", 15, "", netproxy.Resolve(netproxy.Settings{}))
 	if err != nil {
 		return nil, err
 	}
 	if p := strings.TrimSpace(u.Path); p != "" && p != "/" {
 		if err := v.SetPath(p); err != nil {
-			v.Close()
+			_ = v.Close() // Preserve the invalid-path error.
 			return nil, err
 		}
 	}

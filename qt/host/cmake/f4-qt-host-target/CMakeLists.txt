@@ -1,8 +1,9 @@
 set(F4_QT_HOST_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
+set(F4_APP_ICON_ROOT "${F4_QT_HOST_ROOT}/../../cmd/f4/assets/icon")
 
 if(WIN32)
   set(F4_WINDOWS_ICON_FILE
-    "${F4_QT_HOST_ROOT}/../../assets/icon/generated/f4.ico")
+    "${F4_APP_ICON_ROOT}/generated/f4.ico")
   if(NOT EXISTS "${F4_WINDOWS_ICON_FILE}")
     message(FATAL_ERROR "The generated Windows application icon is missing: ${F4_WINDOWS_ICON_FILE}")
   endif()
@@ -334,8 +335,8 @@ qt6_add_resources(f4-qt-host f4_streamline_icons
 
 qt6_add_resources(f4-qt-host f4_app_icon
   PREFIX "/F4QtHost/icons/app"
-  BASE "${F4_QT_HOST_ROOT}/../../assets/icon"
-  FILES "${F4_QT_HOST_ROOT}/../../assets/icon/f4.svg"
+  BASE "${F4_APP_ICON_ROOT}"
+  FILES "${F4_APP_ICON_ROOT}/f4.svg"
 )
 
 target_include_directories(f4-qt-host PRIVATE "${F4_QT_HOST_ROOT}/src")

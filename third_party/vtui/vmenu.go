@@ -42,14 +42,20 @@ type MenuItem struct {
 // VMenu implements a vertical menu with navigation support.
 type VMenu struct {
 	ScrollView
-	title      string
-	Items      []MenuItem
-	done       bool
-	exitCode   int
-	OnAction   func(int)
-	OnKeyDown  func(*vtinput.InputEvent) bool
-	HideShadow bool
-	BoxType    int
+	title    string
+	Items    []MenuItem
+	done     bool
+	exitCode int
+	// selectAtOpen is SelectPos as of the last ClearDone. Browsing moves
+	// SelectPos live (arrows, mouse hover), so cancelling has to put it
+	// back: dialogs read SelectPos as the confirmed choice, and without the
+	// restore an Esc'd dropdown silently commits whatever row the user
+	// happened to stop on.
+	selectAtOpen int
+	OnAction     func(int)
+	OnKeyDown    func(*vtinput.InputEvent) bool
+	HideShadow   bool
+	BoxType      int
 	// OnClose is invoked exactly once for one shown lifetime. Dynamic menus use
 	// it to cancel native requests and live queries when their chain closes.
 	OnClose func()
@@ -406,14 +412,8 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			return false
 		}
 		return m.handleSemanticNavigation(e)
-	case vtinput.VK_PRIOR: // PgUp
-		m.SetSelectPos(0)
-		m.declareSemanticMenuState()
-		return true
-	case vtinput.VK_NEXT: // PgDn
-		m.SetSelectPos(m.ItemCount - 1)
-		m.declareSemanticMenuState()
-		return true
+	// PgUp/PgDn fall through to HandleKey like Home/End do: HandleNavKey
+	// pages via PageBy, which clamps at the list ends even though Wrap is on.
 	case vtinput.VK_ESCAPE, vtinput.VK_F10:
 		if m.parentMenu != nil && e.VirtualKeyCode == vtinput.VK_ESCAPE {
 			m.finish(-1, false)
@@ -427,28 +427,35 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		return FrameManager.GetTopFrame() == Frame(m)
 	case vtinput.VK_RETURN:
 		if m.SelectPos >= 0 && m.SelectPos < m.ItemCount {
-			item := m.Items[m.SelectPos]
-			if !m.itemSelectable(m.SelectPos) {
-				return true
-			}
-			if m.OpenSubmenu(m.SelectPos) {
-				return true
-			}
-			if FrameManager.DisabledCommands.IsDisabled(item.Command) {
-				return true
-			}
+			keepOpen := false
+			// Virtual consumers size the menu via ItemCount without backing
+			// Items; such rows carry no command to fire, but the selection is
+			// still confirmed through OnAction and the exit code.
+			if m.SelectPos < len(m.Items) {
+				item := m.Items[m.SelectPos]
+				if !m.itemSelectable(m.SelectPos) {
+					return true
+				}
+				if m.OpenSubmenu(m.SelectPos) {
+					return true
+				}
+				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
+					return true
+				}
 
-			// 1. Fire the actual action (bubbles through owner)
-			oldCmd := m.Command
-			m.Command = item.Command
-			m.FireAction(item.OnClick, item.UserData)
-			m.Command = oldCmd
+				// 1. Fire the actual action (bubbles through owner)
+				oldCmd := m.Command
+				m.Command = item.Command
+				m.FireAction(item.OnClick, item.UserData)
+				m.Command = oldCmd
+				keepOpen = item.KeepOpen
+			}
 
 			// 2. Notify listener (may close the menu)
 			if m.OnAction != nil {
 				m.OnAction(m.SelectPos)
 			}
-			if item.KeepOpen {
+			if keepOpen {
 				m.declareSemanticMenuState()
 				return true
 			}
@@ -531,7 +538,13 @@ func (m *VMenu) GetType() FrameType {
 }
 
 func (m *VMenu) SetExitCode(code int) {
-	m.finish(code, code == -1)
+	m.done = true
+	m.exitCode = code
+	if code == -1 {
+		// Cancelled: undo the browsing highlight (see selectAtOpen).
+		m.SetSelectPos(m.selectAtOpen)
+		FrameManager.EmitCommand(CmMenuClose, nil)
+	}
 }
 
 func (m *VMenu) IsDone() bool {
@@ -549,7 +562,7 @@ func (m *VMenu) HasShadow() bool       { return !m.HideShadow }
 func (m *VMenu) ClearDone() {
 	m.done = false
 	m.exitCode = -1
-	m.closeNotified = false
+	m.selectAtOpen = m.SelectPos
 }
 
 // ProcessMouse handles mouse wheel scrolling, menu item hover, and clicks.
@@ -574,7 +587,9 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 			m.cancelSubmenuHover()
 			return false
 		}
-		if m.itemSelectable(hoverIdx) {
+		// Rows past len(Items) belong to virtual consumers that only set
+		// ItemCount; they are plain selectable rows, not separators.
+		if hoverIdx >= len(m.Items) || m.itemSelectable(hoverIdx) {
 			m.SetSelectPos(hoverIdx)
 			if m.HasSubmenu(hoverIdx) {
 				m.scheduleSubmenuHover(hoverIdx)
@@ -590,26 +605,32 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	if e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown {
 		clickIdx := m.GetClickIndex(int(e.MouseY))
-		if clickIdx != -1 && m.itemSelectable(clickIdx) {
+		if clickIdx != -1 && (clickIdx >= len(m.Items) || m.itemSelectable(clickIdx)) {
 			m.SetSelectPos(clickIdx)
-			item := m.Items[clickIdx]
-			if m.OpenSubmenu(clickIdx) {
-				return true
-			}
-			if FrameManager.DisabledCommands.IsDisabled(item.Command) {
-				return true
-			}
+			keepOpen := false
+			// Virtual rows (ItemCount beyond len(Items)) have no command to
+			// fire; the click still selects and confirms them.
+			if clickIdx < len(m.Items) {
+				item := m.Items[clickIdx]
+				if m.OpenSubmenu(clickIdx) {
+					return true
+				}
+				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
+					return true
+				}
 
-			// Fire Action BEFORE calling OnAction/SetExitCode
-			oldCmd := m.Command
-			m.Command = item.Command
-			m.FireAction(item.OnClick, item.UserData)
-			m.Command = oldCmd
+				// Fire Action BEFORE calling OnAction/SetExitCode
+				oldCmd := m.Command
+				m.Command = item.Command
+				m.FireAction(item.OnClick, item.UserData)
+				m.Command = oldCmd
+				keepOpen = item.KeepOpen
+			}
 
 			if m.OnAction != nil {
 				m.OnAction(clickIdx)
 			}
-			if item.KeepOpen {
+			if keepOpen {
 				m.declareSemanticMenuState()
 				return true
 			}

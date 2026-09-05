@@ -41,7 +41,9 @@ func (d *scriptedADBDialer) dial(ctx context.Context, network, address string) (
 	d.mu.Unlock()
 	client, server := net.Pipe()
 	go func() {
-		defer server.Close()
+		defer func() {
+			_ = server.Close() // connection cleanup only
+		}()
 		handler(server)
 	}()
 	return client, nil
@@ -204,7 +206,9 @@ func TestOpenServiceSelectsTransportThenService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenService: %v", err)
 	}
-	defer stream.Close()
+	defer func() {
+		_ = stream.Close() // connection cleanup only
+	}()
 	got := make([]byte, len("service bytes"))
 	if _, err := io.ReadFull(stream, got); err != nil {
 		t.Fatalf("read service: %v", err)
@@ -537,7 +541,9 @@ func TestShellStreamFramesStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenShellRaw: %v", err)
 	}
-	defer raw.Close()
+	defer func() {
+		_ = raw.Close() // connection cleanup only
+	}()
 	if _, err := raw.Write([]byte("request")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -603,7 +609,9 @@ func TestFailedConnectStartsInstalledADBAndRetries(t *testing.T) {
 		}
 		client, peer := net.Pipe()
 		go func() {
-			defer peer.Close()
+			defer func() {
+				_ = peer.Close() // connection cleanup only
+			}()
 			expectTestRequest(t, peer, "host:devices-l")
 			writeTestHostReply(t, peer, "")
 		}()
@@ -631,22 +639,19 @@ func TestFailedConnectStartsInstalledADBAndRetries(t *testing.T) {
 }
 
 func TestCancelledHostRequestUnblocksRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	server, dialer := testServer(t, func(conn net.Conn) {
 		expectTestRequest(t, conn, "host:devices-l")
+		cancel()
 		_, _ = io.Copy(io.Discard, conn)
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	started := time.Now()
 	_, err := server.Devices(ctx)
 	if err == nil {
 		t.Fatal("Devices unexpectedly succeeded")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Devices error = %v, want context deadline", err)
-	}
-	if time.Since(started) > time.Second {
-		t.Fatalf("cancellation took %v", time.Since(started))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Devices error = %v, want context canceled", err)
 	}
 	dialer.assertDone()
 }
@@ -698,13 +703,13 @@ func writeFakeADBExecutable(t *testing.T, root string) string {
 		name = "adb.exe"
 	}
 	path := filepath.Join(root, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(path, []byte("fake"), 0755); err != nil {
+	if err := os.WriteFile(path, []byte("fake"), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := os.Chmod(path, 0755); err != nil {
+	if err := os.Chmod(path, 0700); err != nil { // #nosec G302 -- the fake adb must be executable for command-discovery tests.
 		t.Fatalf("Chmod: %v", err)
 	}
 	return path

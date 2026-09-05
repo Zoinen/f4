@@ -298,7 +298,7 @@ func TestS3DiscoveryRoutesCRUDCopyAndRangeByLocationRegion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	buffer := make([]byte, 4)
 	if n, err := reader.ReadAt(context.Background(), buffer, 0); n != 4 || err != nil || !bytes.Equal(buffer, []byte("data")) {
 		t.Fatalf("ReadAt = %d, %v, %q", n, err, buffer)

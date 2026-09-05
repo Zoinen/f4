@@ -2,6 +2,7 @@ package cloudfox
 
 import (
 	"context"
+	// #nosec G501 -- Yandex MD5 is used only as a provider-supplied transfer checksum; SHA-256 is preferred and TLS authenticates the peer.
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
@@ -69,10 +70,10 @@ func (r *yandexCachedReader) ReadAccessProfile() vfs.ReadAccessProfile {
 	return vfs.ReadAccessMaterializeOnce
 }
 func (r *yandexCachedReader) LocalPath() (string, bool) {
-	if r.File == nil || r.File.Name() == "" {
+	if r.File == nil || r.Name() == "" {
 		return "", false
 	}
-	return r.File.Name(), true
+	return r.Name(), true
 }
 func (r *yandexCachedReader) Read(ctx context.Context, p []byte) (int, error) {
 	if err := ctx.Err(); err != nil {
@@ -382,6 +383,7 @@ func yandexExpectedHasher(resource yandexResource) (hash.Hash, string, error) {
 		return sha256.New(), sha, nil
 	}
 	if md5sum != "" {
+		// #nosec G401 -- this is a non-security transfer checksum supplied by Yandex; it is not used for authentication.
 		return md5.New(), md5sum, nil
 	}
 	return nil, "", nil

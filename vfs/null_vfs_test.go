@@ -13,11 +13,13 @@ func TestNullVFS_DirectoryListing(t *testing.T) {
 	ctx := context.Background()
 
 	var files []string
-	v.ReadDir(ctx, "/", func(items []VFSItem) {
+	if err := v.ReadDir(ctx, "/", func(items []VFSItem) {
 		for _, item := range items {
 			files = append(files, item.Name)
 		}
-	})
+	}); err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
 
 	// 6 static files + 'upload' + 'scenarios' = 8
 	if len(files) != 8 {
@@ -102,7 +104,9 @@ func TestNullVFS_Writer(t *testing.T) {
 	if err != nil || n != 9 {
 		t.Errorf("Write failed: n=%d, err=%v", n, err)
 	}
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
 }
 
 func TestNullVFS_ReadZeroes(t *testing.T) {
@@ -175,7 +179,9 @@ func TestNullVFS_BasicMethods(t *testing.T) {
 		t.Errorf("Expected path /, got %s", v.GetPath())
 	}
 
-	v.SetPath("/upload")
+	if err := v.SetPath("/upload"); err != nil {
+		t.Fatalf("SetPath(/upload) failed: %v", err)
+	}
 	if v.IsAtRoot() {
 		t.Error("Should not be at root after SetPath(/upload)")
 	}
@@ -204,7 +210,9 @@ func TestNullVFS_BasicMethods(t *testing.T) {
 
 func TestNullVFS_NativeSlashes(t *testing.T) {
 	v := NewNullVFS(0)
-	v.SetPath("/test/path")
+	if err := v.SetPath("/test/path"); err != nil {
+		t.Fatalf("SetPath(/test/path) failed: %v", err)
+	}
 
 	path := v.GetPath()
 	expected := filepath.FromSlash("/test/path")
@@ -219,9 +227,11 @@ func TestNullVFS_Scenarios(t *testing.T) {
 
 	t.Run("IOPS Scenario", func(t *testing.T) {
 		var items []VFSItem
-		v.ReadDir(ctx, "/scenarios/iops", func(chunk []VFSItem) {
+		if err := v.ReadDir(ctx, "/scenarios/iops", func(chunk []VFSItem) {
 			items = append(items, chunk...)
-		})
+		}); err != nil {
+			t.Fatalf("ReadDir failed: %v", err)
+		}
 		if len(items) != 10000 {
 			t.Errorf("Expected 10000 files in IOPS scenario, got %d", len(items))
 		}
@@ -323,7 +333,7 @@ func TestNullVFS_OpenCreateMetadataLatency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		dur := time.Since(start)
 		if dur < 90*time.Millisecond {
@@ -338,7 +348,11 @@ func TestNullVFS_OpenCreateMetadataLatency(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer w.Close()
+		t.Cleanup(func() {
+			if err := w.Close(); err != nil {
+				t.Errorf("close writer: %v", err)
+			}
+		})
 
 		dur := time.Since(start)
 		if dur < 90*time.Millisecond {

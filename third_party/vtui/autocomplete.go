@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
@@ -88,7 +89,7 @@ func NewAutoCompleteMenu(edit *Edit) *AutoCompleteMenu {
 
 	ac.lb = NewListBox(0, 0, 10, 10, nil)
 	ac.lb.ColorTextIdx = ColDialogText
-	ac.lb.ColorSelectedTextIdx = ColDialogSelectedButton
+	ac.lb.ColorSelectedTextIdx = ColMenuBarSelected
 	ac.lb.ShowScrollBar = true
 	ac.lb.IsSelectable = func(i int) bool {
 		return i >= 0 && i < len(ac.items) && !ac.items[i].Separator
@@ -154,6 +155,26 @@ func (ac *AutoCompleteMenu) applyColumns() {
 
 func (ac *AutoCompleteMenu) HasMatches() bool {
 	return len(ac.Matches) > 0
+}
+
+// SelectPos returns the index of the currently selected item in the menu.
+func (ac *AutoCompleteMenu) SelectPos() int {
+	if ac.lb != nil {
+		return ac.lb.SelectPos
+	}
+	return -1
+}
+
+// IsBusy reports true if the underlying frame is busy (e.g. PanelsFrame in console view),
+// suppressing full-screen Flush passes that would otherwise overwrite host console history.
+func (ac *AutoCompleteMenu) IsBusy() bool {
+	if FrameManager != nil && len(FrameManager.frames) > 1 {
+		under := FrameManager.frames[len(FrameManager.frames)-2]
+		if under != nil && under.IsBusy() {
+			return true
+		}
+	}
+	return false
 }
 
 // capAutoCompleteGroups keeps at most n non-separator items in each
@@ -229,21 +250,49 @@ func (ac *AutoCompleteMenu) UpdateMatches() {
 	}
 	pathCount := len(ac.items)
 
-	// Legacy history: case-insensitive prefix match, deduplicated.
+	// Legacy history: matched by the fuzzy matcher, deduplicated. Ranking
+	// (highest first): exact match (score remapped to -1), prefix, substring
+	// (the further left, the better), everything else by ascending score —
+	// a plain (score, match start) ordering implements all of it.
 	text := ac.Edit.GetText()
 	if text != "" {
-		textLower := strings.ToLower(text)
-		needleEnd := len([]rune(text)) - 1
+		matcher := NewFuzzyMatcher(text, false)
 		seen := make(map[string]bool)
+		type histMatch struct {
+			text       string
+			score      int
+			start, end int
+		}
+
+		var hist []histMatch
 		for _, h := range ac.Edit.History {
-			if !strings.HasPrefix(strings.ToLower(h), textLower) || seen[h] {
+			if seen[h] {
+				continue
+			}
+			score, start, end, ok := matcher.Match(h)
+			if !ok {
 				continue
 			}
 			seen[h] = true
-			if pathCount > 0 && len(ac.items) == pathCount {
+			if matcher.IsMatchExact() {
+				score = -1 // exact match always wins sort
+			}
+			hist = append(hist, histMatch{h, score, start, end})
+		}
+
+		sort.SliceStable(hist, func(a, b int) bool {
+			if hist[a].score != hist[b].score {
+				return hist[a].score < hist[b].score
+			}
+
+			return hist[a].start < hist[b].start
+		})
+
+		for i, hm := range hist {
+			if pathCount > 0 && i == 0 {
 				ac.items = append(ac.items, AutoCompleteItem{Separator: true, MatchStart: -1, MatchEnd: -1})
 			}
-			ac.items = append(ac.items, AutoCompleteItem{Text: h, MatchStart: 0, MatchEnd: needleEnd})
+			ac.items = append(ac.items, AutoCompleteItem{Text: hm.text, MatchStart: hm.start, MatchEnd: hm.end})
 		}
 	}
 

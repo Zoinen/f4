@@ -81,7 +81,7 @@ func TestYandexTrashAndPermanentDeletePollAcceptedOperation(t *testing.T) {
 			mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusAccepted)
-			_, _ = fmt.Fprintf(w, `{"href":%q,"method":"GET"}`, "http://"+r.Host+"/operations/1")
+			_, _ = fmt.Fprintf(w, `{"href":%q,"method":"GET"}`, "http://"+r.Host+"/operations/1") // #nosec G705 -- this closed httptest server uses its own controlled Host to form a fixture operation URL.
 		case r.URL.Path == "/operations/1" && r.Method == http.MethodGet:
 			operationChecks++
 			w.Header().Set("Content-Type", "application/json")
@@ -275,6 +275,71 @@ func TestYandexDoesNotFollowAuthenticatedStatusRedirect(t *testing.T) {
 	targetMu.Unlock()
 	if gotTargetRequests != 0 {
 		t.Fatalf("authenticated redirect target was requested %d time(s)", gotTargetRequests)
+	}
+}
+
+func TestYandexTemporaryURLsStayWithinTransferOrigins(t *testing.T) {
+	t.Parallel()
+	backend := &yandexDiskBackend{baseURL: "https://cloud-api.yandex.net/v1/disk"}
+
+	for _, raw := range []string{
+		"https://downloader.disk.yandex.net/signed",
+		"https://uploader.disk.yandex.net/signed",
+		"https://node.storage.yandex.net/signed",
+		"https://cloud-api.yandex.net/v1/disk/signed",
+	} {
+		if _, err := backend.validateTemporaryURL(raw); err != nil {
+			t.Errorf("validateTemporaryURL(%q): %v", raw, err)
+		}
+	}
+	for _, raw := range []string{
+		"https://127.0.0.1/metadata",
+		"https://disk.yandex.net.attacker.example/signed",
+		"https://uploader.disk.yandex.net:8443/signed",
+		"http://downloader.disk.yandex.net/signed",
+	} {
+		if _, err := backend.validateTemporaryURL(raw); err == nil {
+			t.Errorf("validateTemporaryURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+}
+
+func TestYandexDoesNotFollowTemporaryURLRedirectOutsideTransferOrigins(t *testing.T) {
+	t.Parallel()
+
+	var targetMu sync.Mutex
+	targetRequests := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetMu.Lock()
+		targetRequests++
+		targetMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/internal", http.StatusFound)
+	}))
+	defer source.Close()
+
+	backend := &yandexDiskBackend{client: source.Client(), baseURL: source.URL}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, source.URL+"/signed", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := backend.do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("temporary redirect response status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	targetMu.Lock()
+	gotTargetRequests := targetRequests
+	targetMu.Unlock()
+	if gotTargetRequests != 0 {
+		t.Fatalf("temporary redirect target was requested %d time(s)", gotTargetRequests)
 	}
 }
 
@@ -532,7 +597,7 @@ func TestYandexSignedTransferFailuresNeverExposeTemporaryCredentials(t *testing.
 						case "/resources":
 							body = `{"name":"file.bin","path":"disk:/file.bin","type":"file","size":1,"revision":1,"resource_id":"resource-1"}`
 						case "/resources/download", "/resources/upload":
-							body = fmt.Sprintf(`{"href":%q,"method":%q}`, "https://cdn.test/"+pathSecret+"?signature="+querySecret, map[bool]string{true: "PUT", false: "GET"}[request.URL.Path == "/resources/upload"])
+							body = fmt.Sprintf(`{"href":%q,"method":%q}`, "https://downloader.disk.yandex.net/"+pathSecret+"?signature="+querySecret, map[bool]string{true: "PUT", false: "GET"}[request.URL.Path == "/resources/upload"])
 						default:
 							return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("not found")), Request: request}, nil
 						}
@@ -541,7 +606,7 @@ func TestYandexSignedTransferFailuresNeverExposeTemporaryCredentials(t *testing.
 					if failure == "transport" {
 						return nil, transportErr
 					}
-					body := "gateway echoed https://cdn.test/" + pathSecret + "?signature=" + querySecret
+					body := "gateway echoed https://downloader.disk.yandex.net/" + pathSecret + "?signature=" + querySecret
 					return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(body)), Request: request, Header: make(http.Header)}, nil
 				})}
 				backend := &yandexDiskBackend{client: client, baseURL: "https://api.test", token: "token", root: "disk:/"}

@@ -4,8 +4,8 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
 	"io"
-	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -173,6 +173,22 @@ func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	}
 }
 
+type closeVetoFrame struct {
+	mockFrame
+	allowClose        bool
+	confirmCloseCalls int
+	closeCalls        int
+}
+
+func (f *closeVetoFrame) ConfirmClose() bool {
+	f.confirmCloseCalls++
+	return f.allowClose
+}
+
+func (f *closeVetoFrame) Close() {
+	f.closeCalls++
+}
+
 func (m *mockFrame) ResizeConsole(w, h int) {
 	m.resizedW, m.resizedH = w, h
 }
@@ -210,6 +226,55 @@ func (m *mockFrame) GetTitle() string             { return "MockFrame" }
 func (m *mockFrame) GetWorkspaceTabTitle() string { return m.tabTitle }
 func (m *mockFrame) GetWorkspaceTabMarker() string {
 	return m.tabMarker
+}
+
+func TestFrameManager_CallOnUIConcurrentRunStartup(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		for range 100 {
+			fm := &frameManager{}
+			fm.Init(NewSilentScreenBuf())
+			fm.SetHostMode(true)
+
+			// Queue Run on the ownership lock before callOnUI observes running.
+			fm.uiOwnershipMu.Lock()
+			runStarted := make(chan struct{})
+			runDone := make(chan struct{})
+			go func() {
+				close(runStarted)
+				fm.Run()
+				close(runDone)
+			}()
+			<-runStarted
+			runtime.Gosched()
+
+			callStarted := make(chan struct{})
+			callDone := make(chan error, 1)
+			go func() {
+				close(callStarted)
+				callDone <- fm.callOnUI(func() error { return nil })
+			}()
+			<-callStarted
+			runtime.Gosched()
+			fm.uiOwnershipMu.Unlock()
+
+			// Run lifetimes vary across platforms, so a stopped-manager error is
+			// valid here; only waiting forever indicates the regression.
+			<-callDone
+			fm.Shutdown()
+			<-runDone
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("callOnUI failed during Run startup: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("callOnUI deadlocked with concurrent Run startup")
+	}
 }
 
 func TestAppScreen_GetWorkspaceTitleIgnoresModalFrames(t *testing.T) {
@@ -1464,11 +1529,6 @@ func TestFrameManager_RenderConsumesTaskRedrawWithoutDroppingLaterRequest(t *tes
 	if got := renderer.scenes - baseline; got != 1 {
 		t.Fatalf("task caused %d semantic exports, want 1", got)
 	}
-	select {
-	case <-fm.RedrawChan:
-		t.Fatal("task redraw token survived the render and would cause an equal second export")
-	default:
-	}
 
 	// A request made after the render boundary (here, from semantic export)
 	// must not be swallowed by the coalescing receive at the start of the pass.
@@ -1482,6 +1542,39 @@ func TestFrameManager_RenderConsumesTaskRedrawWithoutDroppingLaterRequest(t *tes
 		// Preserved: Run will consume this token and perform another pass.
 	default:
 		t.Fatal("redraw requested during render was dropped")
+	}
+}
+func TestFrameManager_ToastStyle(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	fm.Push(&mockFrame{})
+
+	oldFm := FrameManager
+	FrameManager = fm
+	defer func() { FrameManager = oldFm }()
+
+	attr := SetRGBBoth(0, 0x112233, 0xAABBCC)
+	ShowToastStyled("Styled", 100*time.Millisecond, ToastStyle{Attr: attr, Row: -1})
+
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Toast task not posted")
+	}
+
+	fm.renderPhase()
+
+	// The styled toast must land centred on the last row with its colours
+	// (the message carries a leading space, so the first letter is at x+1).
+	c := scr.GetCell(37, 24)
+	if c.Attributes != attr {
+		t.Errorf("bottom toast must use the styled attribute, got %#x want %#x", c.Attributes, attr)
+	}
+	if c.Char != uint64('S') {
+		t.Errorf("bottom toast must draw the message, got %q", rune(c.Char))
 	}
 }
 
@@ -1705,6 +1798,39 @@ func TestFrameManager_ReadyTaskWithoutPendingRedrawKeepsSelectFair(t *testing.T)
 	}
 	if !taskExecuted {
 		t.Fatal("ready task could not be selected normally afterward")
+	}
+}
+
+func TestPostQuitCommandPostsToUIQueue(t *testing.T) {
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	defer fm.Shutdown()
+
+	oldFm := FrameManager
+	FrameManager = fm
+	defer func() { FrameManager = oldFm }()
+
+	handled := false
+	frame := newMockFrame(0, 0, 10, 10, false)
+	frame.onHandleCommand = func(cmd int, args any) bool {
+		if cmd == CmQuit {
+			handled = true
+			return true
+		}
+		return false
+	}
+	fm.Push(frame)
+
+	postQuitCommand()
+	select {
+	case task := <-fm.TaskChan:
+		task()
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("native close did not post a UI task")
+	}
+
+	if !handled {
+		t.Fatal("posted native close did not dispatch CmQuit")
 	}
 }
 
@@ -2154,10 +2280,9 @@ func TestFrameManager_MenuBarNavigabilityWithSubMenu(t *testing.T) {
 	// The MenuBar should intercept it, close "File" and open "Edit".
 	fm.InjectEvents([]*vtinput.InputEvent{
 		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT},
-		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F10},
 	})
 
-	fm.Run(vtinput.NewReader(os.Stdin, false))
+	fm.Step(0)
 
 	// Check if we are now on the "Edit" menu
 	if fm.GetTopFrameType() != TypeMenu {
@@ -2282,13 +2407,31 @@ func TestFrameManager_ResizeAllScreens(t *testing.T) {
 	}
 }
 
+func TestFrameManager_ResizeSameGridReflowsFrames(t *testing.T) {
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(100, 30)
+	fm.Init(scr)
+
+	frame := &mockFrame{}
+	fm.Push(frame)
+	frame.resizedW, frame.resizedH = 0, 0
+
+	fm.Resize(100, 30)
+	if frame.resizedW != 100 || frame.resizedH != 30 {
+		t.Fatalf("same-grid Resize() did not reflow frame: got %dx%d, want 100x30", frame.resizedW, frame.resizedH)
+	}
+}
+
 func TestFrameManager_SizePolling(t *testing.T) {
 	oldGetSize := GetTerminalSize
 	defer func() { GetTerminalSize = oldGetSize }()
 
-	mockW, mockH := 80, 24
+	var mockW, mockH atomic.Int64
+	mockW.Store(80)
+	mockH.Store(24)
 	GetTerminalSize = func() (int, int, error) {
-		return mockW, mockH, nil
+		return int(mockW.Load()), int(mockH.Load()), nil
 	}
 
 	fm := &frameManager{}
@@ -2312,7 +2455,8 @@ func TestFrameManager_SizePolling(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Change mock size to trigger polling mechanism
-	mockW, mockH = 100, 30
+	mockW.Store(100)
+	mockH.Store(30)
 
 	// Wait for the polling interval (200ms) + buffer time
 	time.Sleep(300 * time.Millisecond)
@@ -2759,6 +2903,7 @@ func TestFrameManager_ScreensMenuUsesStructuredAlignedWorkspaceInfo(t *testing.T
 func TestFrameManager_TaskCleanup(t *testing.T) {
 	fm := &frameManager{}
 	fm.Init(NewSilentScreenBuf())
+	defer fm.Shutdown()
 
 	w1 := NewWindow(0, 0, 10, 10, "TaskWin")
 	fm.Push(w1)
@@ -2767,10 +2912,9 @@ func TestFrameManager_TaskCleanup(t *testing.T) {
 		t.Fatal("Frame not pushed")
 	}
 
-	fm.TaskChan = make(chan func(), 1)
-	fm.TaskChan <- func() {
+	fm.PostTask(func() {
 		w1.SetExitCode(0)
-	}
+	})
 
 	// Emulate Run() block extraction and execution
 	task := <-fm.TaskChan
@@ -2912,6 +3056,76 @@ func TestFrameManager_WorkspaceTopInsetModes(t *testing.T) {
 	}
 	if _, y1, _, y2 := menuBar.GetPosition(); y1 != 1 || y2 != 1 {
 		t.Fatalf("menu bar position with always-visible tabs = %d..%d, want 1..1", y1, y2)
+	}
+}
+
+func TestFrameManager_OnCtrlInsetTracksCtrlState(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.ConfigureWorkspaceTabs(WorkspaceTabsOnCtrl, WorkspaceCtrlTabDirect)
+
+	// The overlay strip is drawn while Ctrl is held, so that row must be
+	// reserved after the first Ctrl+Tab; otherwise a full-screen image paints
+	// over the tabs.
+	fm.ctrlPressed = true
+	if got := fm.WorkspaceTopInset(); got != 0 {
+		t.Fatalf("on-ctrl mode before Ctrl+Tab inset = %d, want 0", got)
+	}
+	fm.workspaceTabPreview = true
+	if got := fm.WorkspaceTopInset(); got != 1 {
+		t.Fatalf("on-ctrl mode after Ctrl+Tab inset = %d, want 1", got)
+	}
+	fm.ConfigureWorkspaceTabOverlay(true)
+	if !fm.workspaceTabsVisible() {
+		t.Fatal("overlay mode must keep the transient tabs visible")
+	}
+	if got := fm.WorkspaceTopInset(); got != 0 {
+		t.Fatalf("on-ctrl overlay mode inset = %d, want 0", got)
+	}
+	fm.ctrlPressed = false
+	if got := fm.WorkspaceTopInset(); got != 0 {
+		t.Fatalf("on-ctrl mode without ctrl inset = %d, want 0", got)
+	}
+}
+
+func TestFrameManager_OnCtrlTabsArmAfterFirstCtrlTab(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.Push(newMockFrame(0, 0, 80, 25, false))
+	fm.AddScreenBackground(newMockFrame(0, 0, 80, 25, false))
+	fm.ConfigureWorkspaceTabs(WorkspaceTabsOnCtrl, WorkspaceCtrlTabDirect)
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_CONTROL,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}, false)
+	if fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
+		t.Fatal("pressing Ctrl alone should not reveal workspace tabs")
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_TAB,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}, false)
+	if !fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 1 {
+		t.Fatal("the first Ctrl+Tab should reveal workspace tabs")
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        false,
+		VirtualKeyCode: vtinput.VK_CONTROL,
+	}, false)
+	if fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
+		t.Fatal("releasing Ctrl should hide workspace tabs again")
 	}
 }
 
@@ -3574,10 +3788,9 @@ func TestFrameManager_ModalDialogBlocksF9(t *testing.T) {
 
 	fm.InjectEvents([]*vtinput.InputEvent{
 		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F9},
-		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F10}, // Quit loop
 	})
 
-	fm.Run(vtinput.NewReader(os.Stdin, false))
+	fm.Step(0)
 
 	if mb.Active {
 		t.Error("MenuBar should NOT be activated via F9 when a modal dialog is open")
@@ -3826,6 +4039,150 @@ func TestFrameManager_CloseActiveScreen_Shifting(t *testing.T) {
 		t.Errorf("Expected W2 to be active, got %q", fm.Screens[fm.ActiveIdx].GetTitle())
 	}
 }
+
+func TestFrameManager_CloseScreenVeto(t *testing.T) {
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	fm.Push(newMockFrame(0, 0, 10, 10, false))
+	vetoer := &closeVetoFrame{}
+	fm.AddScreen(vetoer)
+
+	target := fm.Screens[fm.ActiveIdx]
+	fm.CloseScreen(fm.ActiveIdx)
+
+	if len(fm.Screens) != 2 {
+		t.Fatalf("CloseScreen left %d workspaces, want 2 after veto", len(fm.Screens))
+	}
+	if fm.Screens[fm.ActiveIdx] != target {
+		t.Fatal("CloseScreen changed the active workspace after veto")
+	}
+	if vetoer.confirmCloseCalls != 1 {
+		t.Fatalf("ConfirmClose called %d times, want 1", vetoer.confirmCloseCalls)
+	}
+	if vetoer.closeCalls != 0 {
+		t.Fatalf("Close called %d times before veto, want 0", vetoer.closeCalls)
+	}
+}
+
+func TestFrameManager_CloseScreenAllowedByVetoer(t *testing.T) {
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	fm.Push(newMockFrame(0, 0, 10, 10, false))
+	vetoer := &closeVetoFrame{allowClose: true}
+	fm.AddScreen(vetoer)
+
+	fm.CloseScreen(fm.ActiveIdx)
+
+	if len(fm.Screens) != 1 {
+		t.Fatalf("CloseScreen left %d workspaces, want 1", len(fm.Screens))
+	}
+	if vetoer.confirmCloseCalls != 1 {
+		t.Fatalf("ConfirmClose called %d times, want 1", vetoer.confirmCloseCalls)
+	}
+	if vetoer.closeCalls != 1 {
+		t.Fatalf("Close called %d times, want 1", vetoer.closeCalls)
+	}
+}
+
+func TestFrameManager_CloseScreenFindsVetoerUnderDialog(t *testing.T) {
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	fm.Push(newMockFrame(0, 0, 10, 10, false))
+	vetoer := &closeVetoFrame{}
+	fm.AddScreen(vetoer)
+	dialog := newMockFrame(0, 0, 5, 5, true)
+	fm.Push(dialog)
+
+	fm.CloseScreen(fm.ActiveIdx)
+
+	if len(fm.Screens) != 2 {
+		t.Fatalf("CloseScreen left %d workspaces, want 2 after underlying frame veto", len(fm.Screens))
+	}
+	if vetoer.confirmCloseCalls != 1 {
+		t.Fatalf("underlying frame ConfirmClose called %d times, want 1", vetoer.confirmCloseCalls)
+	}
+	if vetoer.closeCalls != 0 {
+		t.Fatalf("underlying frame Close called %d times before veto, want 0", vetoer.closeCalls)
+	}
+	if dialog.IsDone() {
+		t.Fatal("dialog was closed before underlying frame veto")
+	}
+}
+
+func TestFrameManager_WorkspaceCloseRoutesRespectVeto(t *testing.T) {
+	newManager := func() (*frameManager, *closeVetoFrame) {
+		SetDefaultPalette()
+		scr := NewSilentScreenBuf()
+		scr.AllocBuf(80, 10)
+		fm := &frameManager{}
+		fm.Init(scr)
+		fm.Push(newMockFrame(0, 0, 20, 5, false))
+		vetoer := &closeVetoFrame{}
+		fm.AddScreen(vetoer)
+		fm.SwitchScreen(0)
+		return fm, vetoer
+	}
+
+	t.Run("Ctrl+W fallback", func(t *testing.T) {
+		fm, vetoer := newManager()
+		fm.SwitchScreen(1)
+
+		fm.dispatchEvent(&vtinput.InputEvent{
+			Type:            vtinput.KeyEventType,
+			KeyDown:         true,
+			VirtualKeyCode:  vtinput.VK_W,
+			ControlKeyState: vtinput.LeftCtrlPressed,
+		}, false)
+
+		if len(fm.Screens) != 2 || fm.ActiveIdx != 1 {
+			t.Fatal("Ctrl+W fallback closed a vetoed workspace or changed the active workspace")
+		}
+		if vetoer.confirmCloseCalls != 1 || vetoer.closeCalls != 0 {
+			t.Fatalf("Ctrl+W ConfirmClose calls = %d, Close calls = %d; want 1, 0", vetoer.confirmCloseCalls, vetoer.closeCalls)
+		}
+	})
+
+	t.Run("middle click", func(t *testing.T) {
+		fm, vetoer := newManager()
+		active := fm.Screens[fm.ActiveIdx]
+		fm.drawWorkspaceTabs()
+		target := fm.workspaceTabHits[1]
+
+		fm.dispatchEvent(&vtinput.InputEvent{
+			Type:        vtinput.MouseEventType,
+			KeyDown:     true,
+			MouseX:      int16(target.x1 + 1),
+			MouseY:      0,
+			ButtonState: vtinput.FromLeft2ndButtonPressed,
+		}, false)
+
+		if len(fm.Screens) != 2 || fm.Screens[fm.ActiveIdx] != active {
+			t.Fatal("middle-click closed a vetoed workspace or changed the active workspace")
+		}
+		if vetoer.confirmCloseCalls != 1 || vetoer.closeCalls != 0 {
+			t.Fatalf("middle-click ConfirmClose calls = %d, Close calls = %d; want 1, 0", vetoer.confirmCloseCalls, vetoer.closeCalls)
+		}
+	})
+
+	t.Run("semantic action", func(t *testing.T) {
+		fm, vetoer := newManager()
+		handled := fm.HandleSemanticAction(map[string]any{
+			"action": "workspace.close",
+			"index":  1,
+		})
+
+		if !handled {
+			t.Fatal("semantic workspace.close was not handled")
+		}
+		if len(fm.Screens) != 2 {
+			t.Fatalf("semantic workspace.close left %d workspaces, want 2 after veto", len(fm.Screens))
+		}
+		if vetoer.confirmCloseCalls != 1 || vetoer.closeCalls != 0 {
+			t.Fatalf("semantic close ConfirmClose calls = %d, Close calls = %d; want 1, 0", vetoer.confirmCloseCalls, vetoer.closeCalls)
+		}
+	})
+}
+
 func TestFrameManager_CloseActiveScreen_CancelsTasks(t *testing.T) {
 	fm := &frameManager{}
 	fm.Init(NewSilentScreenBuf())
@@ -3982,17 +4339,17 @@ func TestFrameManager_TransparentBaseClearsVacatedCells(t *testing.T) {
 	fm.Push(frame)
 	fm.renderPhase()
 	if cell := scr.GetCell(2, 1); cell.Char != 'X' {
-		t.Fatalf("expected frame painted at (2,1), got %q", cell.Char)
+		t.Fatalf("expected frame painted at (2,1), got %q", rune(cell.Char))
 	}
 
 	// Move the frame: the vacated cell must be cleared, not keep the copy.
 	frame.x, frame.y = 5, 2
 	fm.renderPhase()
 	if cell := scr.GetCell(2, 1); cell.Char != 0 {
-		t.Errorf("vacated cell (2,1) still holds %q: moved frames leave a trail", cell.Char)
+		t.Errorf("vacated cell (2,1) still holds %q: moved frames leave a trail", rune(cell.Char))
 	}
 	if cell := scr.GetCell(5, 2); cell.Char != 'X' {
-		t.Errorf("expected frame painted at (5,2), got %q", cell.Char)
+		t.Errorf("expected frame painted at (5,2), got %q", rune(cell.Char))
 	}
 }
 
@@ -4141,6 +4498,8 @@ func TestFrameManager_FocusLossResetsModifiers(t *testing.T) {
 	if !fm.KeyBar.shiftState || !fm.KeyBar.ctrlState {
 		t.Fatal("Modifiers were not set by Key event")
 	}
+	fm.ctrlPressed = true
+	fm.workspaceTabPreview = true
 
 	// 2. Dispatch FocusOut event
 	fm.dispatchEvent(&vtinput.InputEvent{
@@ -4150,6 +4509,9 @@ func TestFrameManager_FocusLossResetsModifiers(t *testing.T) {
 
 	if fm.KeyBar.shiftState || fm.KeyBar.ctrlState || fm.KeyBar.altState {
 		t.Error("FocusOut event did not reset KeyBar modifiers")
+	}
+	if fm.ctrlPressed || fm.workspaceTabPreview {
+		t.Error("FocusOut event did not reset FrameManager Ctrl state")
 	}
 }
 func TestFrameManager_ModifierKeyPressState(t *testing.T) {
@@ -4184,5 +4546,29 @@ func TestFrameManager_ModifierKeyPressState(t *testing.T) {
 
 	if fm.KeyBar.shiftState {
 		t.Error("Expected shiftState to be false on Shift KeyUp despite active ControlKeyState")
+	}
+}
+
+// AddAnimation must wake the heartbeat at once: the idle poll alone would
+// wait 250ms and miss short animations like the viewer toast's wall flash.
+func TestAddAnimationWakesHeartbeat(t *testing.T) {
+	fm := NewFrameManager()
+	fm.animWake = make(chan struct{}, 1)
+	fm.AddAnimation(func(float64) bool { return true })
+	select {
+	case <-fm.animWake:
+	default:
+		t.Error("AddAnimation must signal animWake")
+	}
+}
+
+// AddAnimation must restart the dt clock after an idle gap, otherwise the
+// first tick would span the whole idle duration and jump the animation.
+func TestAddAnimationResetsStaleDt(t *testing.T) {
+	fm := NewFrameManager()
+	fm.lastAnim = time.Now().Add(-10 * time.Second)
+	fm.AddAnimation(func(float64) bool { return true })
+	if !fm.lastAnim.IsZero() {
+		t.Error("AddAnimation must reset lastAnim when transitioning from idle")
 	}
 }

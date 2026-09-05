@@ -91,16 +91,16 @@ func (v *SFTPVFS) encodePath(p string) string {
 	return p
 }
 
-func NewSFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, cp string, px netproxy.Settings) (*SFTPVFS, error) {
+func NewSFTPVFS(parent vfs.VFS, host, port, user, pass, keyPath string, timeout int, cp string, px netproxy.Settings) (*SFTPVFS, error) {
 	vtui.DebugLog("NET: Initiating SFTP connection to %s:%s (user: %s)", host, port, user)
-	sshClient, err := DialSSH(host, port, user, pass, timeout, px)
+	sshClient, err := DialSSH(host, port, user, pass, keyPath, timeout, px)
 	if err != nil {
 		return nil, err
 	}
 
 	sftpClient, err := sftp.NewClient(sshClient)
 	if err != nil {
-		sshClient.Close()
+		_ = sshClient.Close() // Preserve the SFTP startup failure.
 		return nil, err
 	}
 	vtui.DebugLog("NET: SFTP session established successfully")
@@ -347,6 +347,12 @@ func (v *SFTPVFS) GetCapabilities() vfs.VFSCapabilities {
 	// the reason the whole feature was worth building.
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: true, HasWrite: true, ReadAccess: vfs.ReadAccessNativeRange, StorageClass: vfs.StorageClassNetwork}
 }
+
+// The upstream SFTP client multiplexes independent requests safely over one
+// SSH connection. This lets FUSE serve directory listings, stats, and reads
+// concurrently instead of making a remote mount wait behind one operation.
+func (*SFTPVFS) SupportsConcurrentCalls() bool { return true }
+
 func (v *SFTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 
 func (v *SFTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
@@ -357,7 +363,7 @@ func (v *SFTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) 
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close() // Preserve the remote stat failure.
 		return nil, err
 	}
 	return &sftpFileWrapper{File: f, size: info.Size()}, nil
@@ -368,6 +374,9 @@ func (v *SFTPVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) 
 }
 func (v *SFTPVFS) ParentVFS() vfs.VFS { return v.parent }
 func (v *SFTPVFS) Close() error {
+	if v == nil {
+		return nil
+	}
 	var err error
 	v.closeOnce.Do(func() {
 		if v.shared != nil {
@@ -401,7 +410,9 @@ func (v *SFTPVFS) OpenPty(cols, rows int) (any, error) {
 		return nil, err
 	}
 	pty.SetSize(cols, rows)
-	pty.Run("")
+	if err := pty.Run(""); err != nil {
+		return nil, fmt.Errorf("sftp: start SSH PTY: %w", errors.Join(err, pty.Close()))
+	}
 	return pty, nil
 }
 
@@ -521,7 +532,7 @@ func runSFTPCommandSessionWithCodec(
 	cb func(line string),
 	codec sftpCommandCodec,
 ) (int, error) {
-	defer session.Close()
+	defer func() { _ = session.Close() }() // Command status comes from Wait.
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -686,17 +697,24 @@ func (p *sftpProvider) CanOpen(ctx context.Context, parent vfs.VFS, pth string) 
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // The configuration file is read-only.
 	var cfg NetFoxConfig
-	json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg)
+	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
+		return false
+	}
 	return cfg.Type == "sftp" || cfg.Type == ""
 }
 func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs.VFS, error) {
 	w := parent.(*netFoxVFSWrapper)
-	f, _ := w.Open(ctx, pth)
-	defer f.Close()
+	f, err := w.Open(ctx, pth)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }() // The configuration file is read-only.
 	var cfg NetFoxConfig
-	json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg)
+	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("netfox: decode SFTP connection: %w", err)
+	}
 	port := cfg.Port
 	if port == "" {
 		port = "22"
@@ -707,7 +725,11 @@ func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 			timeout = t
 		}
 	}
-	return NewSFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Codepage, cfg.Proxy())
+	res, err := NewSFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Codepage, cfg.Proxy())
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 type sftpProtocolHandler struct{}

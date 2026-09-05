@@ -166,31 +166,6 @@ func parseFarRegex(expr string) (string, string, error) {
 	return "", "", fmt.Errorf("unterminated /regular expression/")
 }
 
-func (p *replacementProgram) apply(input string) string {
-	result, _ := p.applyWithRanges(input)
-	return result
-}
-
-func replaceFold(input, search, repl string) string {
-	if search == "" {
-		return input
-	}
-	lowerInput, lowerSearch := strings.ToLower(input), strings.ToLower(search)
-	var out strings.Builder
-	for {
-		idx := strings.Index(lowerInput, lowerSearch)
-		if idx < 0 {
-			out.WriteString(input)
-			break
-		}
-		out.WriteString(input[:idx])
-		out.WriteString(repl)
-		input = input[idx+len(search):]
-		lowerInput = lowerInput[idx+len(search):]
-	}
-	return out.String()
-}
-
 func farReplacement(src string) string {
 	// coregex follows Go's $1 expansion. Far additionally accepts a backslash
 	// before a literal replacement character; remove that quoting here.

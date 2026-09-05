@@ -42,8 +42,7 @@ func renameSameObject(oldPath, newPath string) error {
 	}
 	tmpPath := tmp.Name()
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
+		return errors.Join(err, os.Remove(tmpPath))
 	}
 	if err := os.Remove(tmpPath); err != nil {
 		return err

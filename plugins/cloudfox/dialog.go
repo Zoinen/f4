@@ -466,12 +466,13 @@ func sanitizeSecretsForConnection(connection Connection, values SecretValues) {
 	case ProviderWebDAV:
 		var settings WebDAVSettings
 		_ = json.Unmarshal(connection.Settings, &settings)
-		if settings.Auth == "anonymous" {
+		switch settings.Auth {
+		case "anonymous":
 			delete(values, "password")
 			delete(values, "bearer_token")
-		} else if settings.Auth == "bearer" {
+		case "bearer":
 			delete(values, "password")
-		} else {
+		default:
 			delete(values, "bearer_token")
 		}
 	}

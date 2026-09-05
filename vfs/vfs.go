@@ -2,6 +2,8 @@ package vfs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"reflect"
@@ -26,7 +28,7 @@ type App interface {
 	RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter TaskReporter) error, onComplete func(err error))
 	// UI Bridge
 	Message(title, msg string, buttons []string) int
-	InputBox(title, prompt, history string, callback func(string))
+	InputBox(title, prompt, defaultText string, callback func(string))
 	Menu(title string, items []string, callback func(int))
 }
 
@@ -180,6 +182,15 @@ func (p ReadAccessProfile) String() string {
 // already opened handle.
 type ReadAccessProfiler interface {
 	ReadAccessProfile() ReadAccessProfile
+}
+
+// ConcurrentVFS marks a backend whose independent VFS calls may run at the
+// same time. The FUSE bridge serializes calls by default because most VFS
+// implementations were designed around one UI-thread conversation. A
+// backend may opt in only after its client, session state, and file handles
+// have been checked for concurrent use.
+type ConcurrentVFS interface {
+	SupportsConcurrentCalls() bool
 }
 
 // VFS is the core interface for file operations in f4.
@@ -362,6 +373,19 @@ type LocalBackingReader interface {
 
 type BulkCopier interface {
 	CopyBulk(ctx context.Context, srcPaths []string, dstVfs VFS, dstDir string, reporter TaskReporter) error
+}
+
+// BulkCopierAt copies paths relative to an explicit source directory. Unlike
+// BulkCopier, it is safe for queued and background work after a navigable VFS
+// has moved away from the directory where the operation was requested.
+type BulkCopierAt interface {
+	CopyBulkAt(ctx context.Context, srcDir string, srcPaths []string, dstVfs VFS, dstDir string, reporter TaskReporter) error
+}
+
+// BulkScannerAt gathers copy statistics relative to an explicit source
+// directory using the same access pattern as a snapshot-aware bulk copy.
+type BulkScannerAt interface {
+	ScanBulkAt(ctx context.Context, srcDir string, srcPaths []string, cb ScanCallback) (OpStats, error)
 }
 type ArchiveLockManager struct {
 	mu    sync.Mutex
@@ -717,6 +741,25 @@ type PatchPiece struct {
 	Data   []byte
 }
 
+// ValidateInPlacePieces reports whether pieces can be written over the file
+// they came from. Patching in place can only express edits that leave every
+// unchanged piece at the offset it already occupies, because the writing is
+// what moves the bytes and there is nowhere to move them to.
+//
+// It exists to be called before the first write rather than during: refusing
+// halfway through is not a refusal at all, since the file is already damaged
+// and a caller falling back to a full rewrite reads those bytes back.
+func ValidateInPlacePieces(pieces []PatchPiece) error {
+	var offset int64
+	for _, p := range pieces {
+		if p.Data == nil && p.Offset != offset {
+			return fmt.Errorf("in-place patching requires unchanged pieces to remain at their original offsets (no insertions or deletions)")
+		}
+		offset += p.Length
+	}
+	return nil
+}
+
 // DeltaWriter is implemented by a file system that can build a file out of
 // pieces of another one on its own side. An editor saving a one byte change
 // in a large remote file then sends one byte rather than the file. Like the
@@ -749,6 +792,18 @@ type FindQuery struct {
 	Text string
 	// IgnoreCase folds case for Text.
 	IgnoreCase bool
+	// WholeWords requires a text match to be delimited by non-word runes.
+	WholeWords bool
+	// Regex treats Text as a Go regular expression instead of a literal.
+	Regex bool
+	// NotContaining inverts the content match. It has no effect when Text is empty.
+	NotContaining bool
+	// FindFolders includes matching directories in the result set. Directories
+	// are still traversed when this is false.
+	FindFolders bool
+	// FindSymlinks includes symlinks as leaves and never follows them into a
+	// directory. This prevents a symlink loop from making a search unbounded.
+	FindSymlinks bool
 	// Limit caps the number of hits; zero leaves it to the file system.
 	Limit int
 	// Progress, when non-nil, is called periodically while the search
@@ -780,6 +835,11 @@ type FindProgress struct {
 type FileFinder interface {
 	FindFiles(ctx context.Context, dir string, q FindQuery) ([]FoundEntry, error)
 }
+
+// ErrFindOptionsUnsupported tells a caller that a server-side finder cannot
+// express the requested query. The caller can then fall back to the generic
+// VFS walk without treating a capability gap as a failed search.
+var ErrFindOptionsUnsupported = errors.New("find options are not supported by this file system")
 
 // PtyShellIntegration is an optional interface for a VFS that owns a
 // remote PTY. It lets the VFS compose the exact bytes to send for the
@@ -952,7 +1012,9 @@ func (w *TempFileWrapper) Read(ctx context.Context, p []byte) (int, error) {
 
 func (w *TempFileWrapper) Close() error {
 	err := w.File.Close()
-	os.Remove(w.TempPath)
+	if w.TempPath != "" {
+		err = errors.Join(err, os.Remove(w.TempPath))
+	}
 	return err
 }
 
@@ -1010,6 +1072,34 @@ type SymlinkVFS interface {
 	// Symlink creates linkPath pointing at target. target is stored as
 	// given: a relative link has to stay relative.
 	Symlink(ctx context.Context, target, linkPath string) error
+}
+
+// HardlinkVFS is implemented by backends that support creating hard links.
+type HardlinkVFS interface {
+	Hardlink(ctx context.Context, target, linkPath string) error
+}
+
+// JunctionVFS is implemented by backends that support directory junctions.
+type JunctionVFS interface {
+	Junction(ctx context.Context, target, linkPath string) error
+}
+
+// Readlink is a helper that calls Readlink if VFS implements SymlinkVFS.
+func Readlink(ctx context.Context, v VFS, path string) (string, error) {
+	if s, ok := v.(SymlinkVFS); ok {
+		return s.Readlink(ctx, path)
+	}
+	return "", os.ErrInvalid
+}
+
+// Lstat is a helper that calls Lstat if VFS implements Lstat, otherwise falls back to Stat.
+func Lstat(ctx context.Context, v VFS, path string) (VFSItem, error) {
+	if l, ok := v.(interface {
+		Lstat(ctx context.Context, path string) (VFSItem, error)
+	}); ok {
+		return l.Lstat(ctx, path)
+	}
+	return v.Stat(ctx, path)
 }
 
 // RandomWriteVFS is implemented by backends that can write at an offset

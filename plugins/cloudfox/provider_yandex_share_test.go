@@ -243,7 +243,7 @@ func TestYandexShareRejectsUnsupportedOptionsAndRootBeforeNetwork(t *testing.T) 
 func TestYandexShareErrorsDoNotExposeProviderResponseURLs(t *testing.T) {
 	t.Parallel()
 
-	const secretURL = "https://share.invalid/d/must-not-leak"
+	const secretURL = "https://share.invalid/d/must-not-leak" // #nosec G101 -- a synthetic secret-bearing URL verifies provider-error redaction.
 	t.Run("metadata", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -388,7 +388,7 @@ func TestYandexCreateShareLinkReportsUnknownStateWhenRollbackCannotBeConfirmed(t
 	t.Parallel()
 
 	const (
-		secretURL  = "https://user:sensitive-token@share.invalid/file"
+		secretURL  = "https://user:sensitive-token@share.invalid/file" // #nosec G101 -- synthetic credential-bearing URL verifies rollback error redaction.
 		secretBody = "rollback-sensitive-response"
 	)
 	var metadataRequests, publishes, rollbacks atomic.Int32
@@ -576,7 +576,7 @@ func TestYandexShareCyclesAreSerializedAndQueueCancellationIsPrompt(t *testing.T
 func TestYandexShareRejectsInvalidPublicURLBeforeMutationWithoutLeakingIt(t *testing.T) {
 	t.Parallel()
 
-	const invalidURL = "https://user:sensitive-password@share.invalid/file"
+	const invalidURL = "https://user:sensitive-password@share.invalid/file" // #nosec G101 -- invalid synthetic userinfo verifies rejection without secret leakage.
 	var puts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {

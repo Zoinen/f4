@@ -1,8 +1,10 @@
 package netfox
 
 import (
-	"golang.org/x/crypto/ssh"
 	"io"
+
+	"github.com/unxed/vtui"
+	"golang.org/x/crypto/ssh"
 )
 
 type SSHPty struct {
@@ -25,7 +27,7 @@ func NewSSHPty(client *ssh.Client) (*SSHPty, error) {
 		ssh.IUTF8:         1,
 	}
 	if err := sess.RequestPty("xterm-256color", 24, 80, modes); err != nil {
-		sess.Close()
+		_ = sess.Close() // Preserve the PTY request failure.
 		return nil, err
 	}
 	in, _ := sess.StdinPipe()
@@ -36,9 +38,13 @@ func NewSSHPty(client *ssh.Client) (*SSHPty, error) {
 func (p *SSHPty) Read(b []byte) (int, error)  { return p.stdout.Read(b) }
 func (p *SSHPty) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 func (p *SSHPty) Close() error                { return p.session.Close() }
-func (p *SSHPty) SetSize(cols, rows int)      { p.session.WindowChange(rows, cols) }
-func (p *SSHPty) IsBusy() bool                { return false }
-func (p *SSHPty) Wait() error                 { return p.session.Wait() }
+func (p *SSHPty) SetSize(cols, rows int) {
+	if err := p.session.WindowChange(rows, cols); err != nil {
+		vtui.DebugLog("NET: failed to resize SSH PTY: %v", err)
+	}
+}
+func (p *SSHPty) IsBusy() bool { return false }
+func (p *SSHPty) Wait() error  { return p.session.Wait() }
 func (p *SSHPty) Run(name string, args ...string) error {
 	if name == "" {
 		return p.session.Shell()

@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !arm
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
 
 package vtui
 
@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hajimehoshi/ebiten/v2"
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
 )
@@ -197,11 +198,14 @@ func (r *EbitenRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bo
 					// anything the geometric path declines goes to the font.
 					px, py := currX*r.cellW, y*r.cellH
 					if isBoxDrawRune(ch) &&
-						drawBoxGlyph(img, ch, px, py, r.cellW*rw, r.cellH, r.scale, rgbColor(fg)) {
+						drawBoxGlyph(img, ch, px, py, r.cellW*rw, r.cellH, r.scale, fg) {
 						sx += rw
 						continue
 					}
 					r.drawCachedGlyph(img, curr.Char, px, py, rw, fg, cbg)
+				}
+				if curr.Attributes&CommonLvbUnderscore != 0 {
+					drawUnderline(img, currX*r.cellW, y*r.cellH, r.cellW*rw, r.cellH, r.scale, fg)
 				}
 
 				if cursorVisible && y == r.cursorY && r.cursorX >= currX && r.cursorX < currX+rw {
@@ -408,6 +412,19 @@ func (r *EbitenRenderer) ResizeWindow(cols, rows int) {
 	}
 }
 
+// WindowPosition returns the current desktop position of the Ebitengine
+// window. Ebitengine owns the native window, so the query is delegated to
+// its platform-aware API.
+func (r *EbitenRenderer) WindowPosition() (x, y int, ok bool) {
+	x, y = ebiten.WindowPosition()
+	return x, y, true
+}
+
+// SetWindowPosition moves the Ebitengine window without changing its size.
+func (r *EbitenRenderer) SetWindowPosition(x, y int) {
+	ebiten.SetWindowPosition(x, y)
+}
+
 // takeFrame hands the current framebuffer to the game loop and reports
 // whether it changed since last time. The pixels are returned rather than
 // copied because WritePixels reads them synchronously, still under the lock.
@@ -432,3 +449,7 @@ func (r *EbitenRenderer) takeTitle() (string, bool) {
 	r.titleChanged = false
 	return r.title, true
 }
+
+// needsIdleBlinkHeartbeat marks EbitenRenderer as needing the idle blink
+// heartbeat in FrameManager.Run(). See softwareBlinkRenderer.
+func (r *EbitenRenderer) needsIdleBlinkHeartbeat() {}

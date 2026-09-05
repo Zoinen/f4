@@ -50,7 +50,7 @@ func TestGrepAgainstLocalShell(t *testing.T) {
 	content := body.String()
 
 	file := filepath.Join(t.TempDir(), "a big log.txt")
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +139,7 @@ func TestLinesAgainstLocalShell(t *testing.T) {
 	content := body.String()
 	dir := t.TempDir()
 	file := filepath.Join(dir, "a log.txt")
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,7 +192,7 @@ func TestLinesAgainstLocalShell(t *testing.T) {
 	}
 
 	empty := filepath.Join(dir, "empty")
-	if err := os.WriteFile(empty, nil, 0644); err != nil {
+	if err := os.WriteFile(empty, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	if idx, err = c.Lines(ctx, empty, 1, 10); err != nil {
@@ -235,7 +235,7 @@ func TestFindAgainstLocalShell(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 
-	if err := os.MkdirAll(filepath.Join(root, "sub dir", "deeper"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "sub dir", "deeper"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	files := map[string]string{
@@ -246,7 +246,7 @@ func TestFindAgainstLocalShell(t *testing.T) {
 		"sub dir/skip me.bin":  "hello binary\n",
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

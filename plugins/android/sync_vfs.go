@@ -671,7 +671,7 @@ func (f *syncReadFile) materialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }() // The receive stream is read-only.
 
 	tmp, err := os.CreateTemp("", "f4-android-*")
 	if err != nil {
@@ -681,8 +681,8 @@ func (f *syncReadFile) materialize(ctx context.Context) error {
 	keep := false
 	defer func() {
 		if !keep {
-			tmp.Close()
-			os.Remove(name)
+			_ = tmp.Close()     // The incomplete cache is discarded below.
+			_ = os.Remove(name) // Internal temporary-file cleanup is best effort.
 		}
 	}()
 	n, err := io.Copy(tmp, stream)

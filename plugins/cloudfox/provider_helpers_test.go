@@ -1,6 +1,36 @@
 package cloudfox
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	"github.com/unxed/f4/vfs"
+)
+
+type progressTestReporter struct {
+	updates []int
+}
+
+func (*progressTestReporter) UpdateScan(string, int64, int64) {}
+func (r *progressTestReporter) UpdateTransfer(_ string, _ string, currentPct int, _ string, _ int, _ string) {
+	r.updates = append(r.updates, currentPct)
+}
+func (*progressTestReporter) IsCancelled() bool { return false }
+
+var _ vfs.TaskReporter = (*progressTestReporter)(nil)
+
+func TestProviderUploadProgressSuppressesLateBodyUpdates(t *testing.T) {
+	reporter := &progressTestReporter{}
+	progress := &providerUploadProgress{reporter: reporter, action: "Uploading", name: "item"}
+
+	progress.update(99)
+	progress.complete()
+	progress.update(99)
+
+	if !reflect.DeepEqual(reporter.updates, []int{99, 100}) {
+		t.Fatalf("progress updates = %v, want [99 100]", reporter.updates)
+	}
+}
 
 func TestStrongETagAcceptsOnlyOneRFCEntityTag(t *testing.T) {
 	t.Parallel()

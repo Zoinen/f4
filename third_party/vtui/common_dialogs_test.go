@@ -57,6 +57,7 @@ func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool
 
 func TestSelectDirDialog_ArrowVsEnter(t *testing.T) {
 	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
 	tmpDir := t.TempDir()
 	vfs := &testVFS{currentPath: tmpDir}
 
@@ -128,6 +129,7 @@ func TestInputBox_OkCallback(t *testing.T) {
 
 func TestSelectFileDialog_Selection(t *testing.T) {
 	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
 	tmpDir := t.TempDir()
 	v := &testVFS{currentPath: tmpDir}
 	os.WriteFile(filepath.Join(tmpDir, "dummy.txt"), []byte("data"), 0644)
@@ -170,6 +172,7 @@ func TestSelectFileDialog_Selection(t *testing.T) {
 
 func TestSelectDirDialog_Filtering(t *testing.T) {
 	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
 	tmpDir := t.TempDir()
 	os.Mkdir(filepath.Join(tmpDir, "subfolder"), 0755)
 	os.WriteFile(filepath.Join(tmpDir, "should_be_hidden.txt"), []byte("data"), 0644)
@@ -199,6 +202,7 @@ func TestSelectDirDialog_Filtering(t *testing.T) {
 
 func TestDialogNavigation_UX(t *testing.T) {
 	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
 	tmpDir := t.TempDir()
 	subPath := filepath.Join(tmpDir, "my_work_folder")
 	os.Mkdir(subPath, 0755)
@@ -410,6 +414,31 @@ func TestShowMessage_HeightTruncation(t *testing.T) {
 	// Should pass layout validation
 	AssertLayout(t, dlg)
 }
+
+func TestMessageDialog_IndicTextMatchesTerminalWidth(t *testing.T) {
+	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
+
+	dlg := createMessageDialog("Title", "संस्कृतम्", []string{"&Ok"}, MessageInfo)
+	var txt *Text
+	for _, item := range dlg.GetChildren() {
+		if candidate, ok := item.(*Text); ok {
+			txt = candidate
+			break
+		}
+	}
+	if txt == nil {
+		t.Fatal("message dialog text element not found")
+	}
+
+	if got, want := txt.X2-txt.X1+1, StringWidth("संस्कृतम्"); got != want {
+		t.Fatalf("dialog text width = %d, want StringWidth %d", got, want)
+	}
+	if got, want := len(StringToCharInfo("संस्कृतम्", 0)), StringWidth("संस्कृतम्"); got != want {
+		t.Fatalf("rendered cell count = %d, want StringWidth %d", got, want)
+	}
+}
+
 func TestCommonDialogs_WarningMapping(t *testing.T) {
 	SetDefaultPalette()
 	FrameManager.Init(NewSilentScreenBuf())

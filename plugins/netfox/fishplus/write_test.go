@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -67,7 +66,9 @@ func TestWriteEncodedRequest(t *testing.T) {
 			t.Errorf("payload line is not base64: %v", err)
 		}
 		gotPayload = string(raw)
-		fmt.Fprintf(w, "D\n.%s %s ok\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, "D\n.%s %s ok\n", token, req.ID); err != nil {
+			t.Errorf("write base64 response: %v", err)
+		}
 	}, 2)
 	if err := sess.Handshake(context.Background()); err != nil {
 		t.Fatalf("handshake: %v", err)
@@ -108,7 +109,9 @@ func TestWriteBreaksSessionWithoutDrainMarker(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sess := newMockPeer(t, "ok FISHPLUS 1 dd base64 write:b64", func(w io.Writer, token string, req mockRequest) {
-				fmt.Fprintf(w, "%s.%s %s err disk on fire\n", tc.lines, token, req.ID)
+				if _, err := fmt.Fprintf(w, "%s.%s %s err disk on fire\n", tc.lines, token, req.ID); err != nil {
+					t.Errorf("write failure response: %v", err)
+				}
 			}, 2)
 			if err := sess.Handshake(context.Background()); err != nil {
 				t.Fatalf("handshake: %v", err)
@@ -158,7 +161,7 @@ func TestWriteAgainstLocalShell(t *testing.T) {
 	}
 
 	blob := make([]byte, 200000)
-	rand.New(rand.NewSource(11)).Read(blob)
+	fillDeterministicBytes(t, 11, blob)
 
 	tried := 0
 	for _, mode := range WriteModes {
@@ -184,18 +187,25 @@ func TestWriteAgainstLocalShell(t *testing.T) {
 				t.Fatalf("file mismatch: got %d bytes, want %d", len(got), len(blob))
 			}
 
-			patches := [][2]int64{{0, 1}, {1, 1}, {65535, 3}, {65536, 65536}, {12345, 4321}, {199999, 1}}
+			patches := []struct {
+				offset  int64
+				length  int
+				pattern byte
+			}{
+				{0, 1, 0}, {1, 1, 1}, {65535, 3, 255}, {65536, 65536, 0}, {12345, 4321, 57}, {199999, 1, 63},
+			}
 			want := append([]byte(nil), blob...)
 			for _, p := range patches {
-				off, length := p[0], p[1]
-				data := make([]byte, length)
+				data := make([]byte, p.length)
+				var indexByte byte
 				for i := range data {
-					data[i] = byte(off) ^ byte(i)
+					data[i] = p.pattern ^ indexByte
+					indexByte++
 				}
-				if err := c.Write(ctx, file, off, data); err != nil {
-					t.Fatalf("write %d+%d: %v", off, length, err)
+				if err := c.Write(ctx, file, p.offset, data); err != nil {
+					t.Fatalf("write %d+%d: %v", p.offset, p.length, err)
 				}
-				copy(want[off:], data)
+				copy(want[p.offset:], data)
 			}
 			if got, err = os.ReadFile(file); err != nil {
 				t.Fatal(err)
@@ -303,7 +313,7 @@ func TestWriteErrorsKeepSessionUsable(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dir := filepath.Join(root, "a directory")
-	if err := os.Mkdir(dir, 0755); err != nil {
+	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("payload "), 1000)
@@ -352,7 +362,7 @@ func TestTruncateAgainstLocalShell(t *testing.T) {
 		t.Errorf("size = %d, want 0", info.Size())
 	}
 
-	if err := os.WriteFile(file, bytes.Repeat([]byte("x"), 100), 0644); err != nil {
+	if err := os.WriteFile(file, bytes.Repeat([]byte("x"), 100), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if c.Session().Features().Has("truncate") {

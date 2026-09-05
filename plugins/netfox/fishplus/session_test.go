@@ -102,14 +102,25 @@ func newMockPeer(t *testing.T, banner string, handle func(w io.Writer, token str
 			reqs <- req
 		}
 	}()
+	peerDone := make(chan struct{})
 	go func() {
+		defer close(peerDone)
 		if banner != "" {
-			fmt.Fprintf(peerW, "Last login: never, this host is a fake\n")
+			if _, err := fmt.Fprintf(peerW, "Last login: never, this host is a fake\n"); err != nil {
+				t.Errorf("write mock login banner: %v", err)
+				return
+			}
 			// The bootstrap announces itself, takes the script, and only
 			// then does the helper get to speak.
-			fmt.Fprintf(peerW, "%s\n", ReadyMarker(sess.Token()))
+			if _, err := fmt.Fprintf(peerW, "%s\n", ReadyMarker(sess.Token())); err != nil {
+				t.Errorf("write mock ready marker: %v", err)
+				return
+			}
 			<-uploaded
-			fmt.Fprintf(peerW, ".%s 0 %s\n", sess.Token(), banner)
+			if _, err := fmt.Fprintf(peerW, ".%s 0 %s\n", sess.Token(), banner); err != nil {
+				t.Errorf("write mock handshake response: %v", err)
+				return
+			}
 		}
 		for req := range reqs {
 			if handle != nil {
@@ -118,8 +129,9 @@ func newMockPeer(t *testing.T, banner string, handle func(w io.Writer, token str
 		}
 	}()
 	t.Cleanup(func() {
-		cliW.Close()
-		peerW.Close()
+		_ = cliW.Close()  // pipe cleanup only
+		_ = peerW.Close() // pipe cleanup only
+		<-peerDone
 	})
 	return sess
 }
@@ -446,7 +458,9 @@ func TestCloseWakesRequestWaitingForGate(t *testing.T) {
 
 func TestTryNoopTimeoutInterruptsSilentTransport(t *testing.T) {
 	clientConn, peerConn := net.Pipe()
-	defer peerConn.Close()
+	defer func() {
+		_ = peerConn.Close() // connection cleanup only
+	}()
 	sess := NewSession(clientConn, clientConn, clientConn)
 	requestSeen := make(chan struct{})
 	go func() {
@@ -487,8 +501,12 @@ func TestTryNoopTimeoutInterruptsSilentTransport(t *testing.T) {
 
 func TestTryNoopReleasesSessionBeforeReturning(t *testing.T) {
 	clientConn, peerConn := net.Pipe()
-	defer clientConn.Close()
-	defer peerConn.Close()
+	defer func() {
+		_ = clientConn.Close() // connection cleanup only
+	}()
+	defer func() {
+		_ = peerConn.Close() // connection cleanup only
+	}()
 	sess := NewSession(clientConn, clientConn, clientConn)
 	go func() {
 		reader := bufio.NewReader(peerConn)
@@ -565,10 +583,21 @@ func TestHandshakeReportsRemoteFailure(t *testing.T) {
 
 func TestExecCollectsTextLines(t *testing.T) {
 	sess := newMockPeer(t, "ok FISHPLUS 1 stat", func(w io.Writer, token string, req mockRequest) {
-		fmt.Fprintf(w, "first\n")
-		fmt.Fprintf(w, "#not a data frame in text mode\n")
-		fmt.Fprintf(w, "last\n")
-		fmt.Fprintf(w, ".%s %s ok\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, "first\n"); err != nil {
+			t.Errorf("write first response line: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "#not a data frame in text mode\n"); err != nil {
+			t.Errorf("write hash-prefixed response line: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "last\n"); err != nil {
+			t.Errorf("write last response line: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, ".%s %s ok\n", token, req.ID); err != nil {
+			t.Errorf("write text response terminator: %v", err)
+		}
 	})
 	if err := sess.Handshake(context.Background()); err != nil {
 		t.Fatalf("handshake: %v", err)
@@ -597,7 +626,10 @@ func TestExecPathEscapesOnlyWhenNecessary(t *testing.T) {
 		mu.Lock()
 		seen = append(seen, req)
 		mu.Unlock()
-		fmt.Fprintf(w, ".%s %s ok\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, ".%s %s ok\n", token, req.ID); err != nil {
+			t.Errorf("write path response terminator: %v", err)
+			return
+		}
 		done <- struct{}{}
 	}, 1)
 	if err := sess.Handshake(context.Background()); err != nil {
@@ -650,11 +682,25 @@ func TestExecRejectsWhitespaceArguments(t *testing.T) {
 func TestExecDataReadsBinaryFrames(t *testing.T) {
 	payload := []byte{0x00, 0x01, '\n', 0xff, '.', '#', 'x'}
 	sess := newMockPeer(t, "ok FISHPLUS 1 dd", func(w io.Writer, token string, req mockRequest) {
-		fmt.Fprintf(w, "#%d\n", len(payload))
-		w.Write(payload)
-		fmt.Fprintf(w, "#%d\n", 3)
-		w.Write([]byte("abc"))
-		fmt.Fprintf(w, ".%s %s ok\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, "#%d\n", len(payload)); err != nil {
+			t.Errorf("write binary frame header: %v", err)
+			return
+		}
+		if _, err := w.Write(payload); err != nil {
+			t.Errorf("write binary frame payload: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, "#%d\n", 3); err != nil {
+			t.Errorf("write second binary frame header: %v", err)
+			return
+		}
+		if _, err := w.Write([]byte("abc")); err != nil {
+			t.Errorf("write second binary frame payload: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, ".%s %s ok\n", token, req.ID); err != nil {
+			t.Errorf("write binary response terminator: %v", err)
+		}
 	})
 	if err := sess.Handshake(context.Background()); err != nil {
 		t.Fatalf("handshake: %v", err)
@@ -674,7 +720,9 @@ func TestExecDataReadsBinaryFrames(t *testing.T) {
 
 func TestRemoteErrorIsReported(t *testing.T) {
 	sess := newMockPeer(t, "ok FISHPLUS 1", func(w io.Writer, token string, req mockRequest) {
-		fmt.Fprintf(w, ".%s %s err No such file or directory\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, ".%s %s err No such file or directory\n", token, req.ID); err != nil {
+			t.Errorf("write remote error response: %v", err)
+		}
 	})
 	if err := sess.Handshake(context.Background()); err != nil {
 		t.Fatalf("handshake: %v", err)
@@ -799,16 +847,18 @@ func TestBase64BootstrapAgainstLocalShell(t *testing.T) {
 	}
 	sess := NewSession(stdin, stdout, stdin)
 	t.Cleanup(func() {
-		sess.Close()
+		if err := sess.Close(); err != nil {
+			t.Errorf("close shell session: %v", err)
+		}
 		done := make(chan struct{})
 		go func() {
-			cmd.Wait()
+			_ = cmd.Wait() // process cleanup only
 			close(done)
 		}()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill() // process cleanup only
 		}
 	})
 
@@ -857,16 +907,18 @@ func TestHelperAgainstLocalShell(t *testing.T) {
 	}
 	sess := NewSession(stdin, stdout, stdin)
 	t.Cleanup(func() {
-		sess.Close()
+		if err := sess.Close(); err != nil {
+			t.Errorf("close shell session: %v", err)
+		}
 		done := make(chan struct{})
 		go func() {
-			cmd.Wait()
+			_ = cmd.Wait() // process cleanup only
 			close(done)
 		}()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill() // process cleanup only
 		}
 	})
 

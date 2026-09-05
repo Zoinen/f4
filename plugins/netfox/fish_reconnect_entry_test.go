@@ -20,7 +20,11 @@ func TestFishReconnectRepointsTheView(t *testing.T) {
 		}
 		t.Fatalf("open: %v", err)
 	}
-	defer v.Close()
+	defer func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	was := v.GetPath()
 	dead := v.Client()
@@ -60,7 +64,9 @@ func TestFishCanReconnectFollowsTheDialer(t *testing.T) {
 	if !withDialer.CanReconnect() {
 		t.Error("a site opened through a dialer says it cannot reconnect")
 	}
-	withDialer.Close()
+	if err := withDialer.Close(); err != nil {
+		t.Fatalf("close reconnectable filesystem: %v", err)
+	}
 	if withDialer.CanReconnect() {
 		t.Error("a closed connection still offers a reconnect")
 	}
@@ -85,13 +91,21 @@ func TestFishReconnectTwiceSharesOneSession(t *testing.T) {
 		}
 		t.Fatalf("open: %v", err)
 	}
-	defer first.Close()
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	second, ok := first.Clone().(*FishVFS)
 	if !ok {
 		t.Fatal("Clone did not hand back a FishVFS")
 	}
-	defer second.Close()
+	defer func() {
+		if err := second.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	first.Client().Session().MarkBroken()
 

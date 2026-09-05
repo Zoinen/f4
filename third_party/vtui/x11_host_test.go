@@ -1,10 +1,14 @@
+//go:build (linux || openbsd || netbsd || dragonfly || darwin || freebsd || windows || illumos || solaris) && !android
+
 package vtui
 
 import (
+	"image"
 	"io"
 	"testing"
 	"time"
 
+	"github.com/jezek/xgb/xproto"
 	"github.com/unxed/vtinput"
 )
 
@@ -91,6 +95,51 @@ func TestX11Host_DirtySpanLogic(t *testing.T) {
 	}
 }
 
+func TestX11RendererKeepsPartialWindowMarginsCleared(t *testing.T) {
+	const (
+		windowWidth  = 13
+		windowHeight = 7
+		cellWidth    = 5
+		cellHeight   = 3
+	)
+
+	host := &X11Host{
+		width:  windowWidth,
+		height: windowHeight,
+		cellW:  cellWidth,
+		cellH:  cellHeight,
+		// Simulate the cell-aligned backing image from the previous configure.
+		imgBuf:     image.NewRGBA(image.Rect(0, 0, 2*cellWidth, 2*cellHeight)),
+		dirtyLines: make([]bool, windowHeight),
+	}
+	for i := range host.imgBuf.Pix {
+		host.imgBuf.Pix[i] = 0xcc
+	}
+
+	renderer := NewX11Renderer(host, nil)
+	buf := make([]CharInfo, 2*2)
+	renderer.Render(buf, make([]CharInfo, len(buf)), 2, 2, true)
+
+	if got := host.imgBuf.Bounds().Size(); got.X != windowWidth || got.Y != windowHeight {
+		t.Fatalf("backing image size = %v, want %dx%d", got, windowWidth, windowHeight)
+	}
+	if host.width != windowWidth || host.height != windowHeight {
+		t.Fatalf("host window size changed to %dx%d, want %dx%d", host.width, host.height, windowWidth, windowHeight)
+	}
+
+	for y := 0; y < windowHeight; y++ {
+		for x := 0; x < windowWidth; x++ {
+			if x < 2*cellWidth && y < 2*cellHeight {
+				continue
+			}
+			r, g, b, _ := host.imgBuf.At(x, y).RGBA()
+			if r != 0 || g != 0 || b != 0 {
+				t.Fatalf("stale pixel at (%d,%d) = #%02x%02x%02x", x, y, r>>8, g>>8, b>>8)
+			}
+		}
+	}
+}
+
 func TestX11Host_SendEvent_ClosedChannelSafety(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -118,9 +167,86 @@ func TestX11Host_SendEvent_ClosedChannelSafety(t *testing.T) {
 	h.sendEvent(&vtinput.InputEvent{Type: vtinput.ResizeEventType})
 }
 
+func TestX11HostFocusLossClearsKeyboardState(t *testing.T) {
+	pr, pw := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	t.Cleanup(func() {
+		reader.Close()
+		_ = pw.Close()
+	})
+
+	h := &X11Host{
+		reader:      reader,
+		closeChan:   make(chan struct{}),
+		currentMods: vtinput.LeftCtrlPressed | vtinput.RightAltPressed | vtinput.ShiftPressed,
+		lCtrl:       true,
+		rCtrl:       true,
+		lAlt:        true,
+		rAlt:        true,
+		lShift:      true,
+		rShift:      true,
+	}
+
+	h.handleFocusEvent(false)
+	h.mu.Lock()
+	if h.currentMods != 0 || h.lCtrl || h.rCtrl || h.lAlt || h.rAlt || h.lShift || h.rShift {
+		h.mu.Unlock()
+		t.Fatal("focus loss did not clear X11 keyboard state")
+	}
+	h.mu.Unlock()
+
+	select {
+	case event := <-reader.EventChan:
+		if event.Type != vtinput.FocusEventType || event.SetFocus {
+			t.Fatalf("focus loss event = %+v, want FocusEvent(false)", event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for X11 focus loss event")
+	}
+
+	h.handleFocusEvent(true)
+	select {
+	case event := <-reader.EventChan:
+		if event.Type != vtinput.FocusEventType || !event.SetFocus {
+			t.Fatalf("focus gain event = %+v, want FocusEvent(true)", event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for X11 focus gain event")
+	}
+}
+
+func TestX11ModifierStateHealing(t *testing.T) {
+	h := &X11Host{}
+
+	mods := h.syncModifierStateLocked(xproto.ModMaskControl, vtinput.VK_A, true)
+	if mods != vtinput.LeftCtrlPressed || !h.lCtrl || h.rCtrl {
+		t.Fatalf("active aggregate Ctrl = mods:%d sides:%v/%v, want left Ctrl", mods, h.lCtrl, h.rCtrl)
+	}
+
+	h.lCtrl, h.rCtrl = true, true
+	mods = h.syncModifierStateLocked(0, vtinput.VK_A, true)
+	if mods != 0 || h.lCtrl || h.rCtrl {
+		t.Fatalf("inactive aggregate Ctrl = mods:%d sides:%v/%v, want cleared state", mods, h.lCtrl, h.rCtrl)
+	}
+
+	// X11 reports a modifier key release with the state from before the
+	// release. The already-applied key transition must not be healed back in.
+	h.lCtrl = false
+	mods = h.syncModifierStateLocked(xproto.ModMaskControl, vtinput.VK_LCONTROL, false)
+	if h.lCtrl {
+		t.Fatal("modifier release recreated left Ctrl side")
+	}
+	if mods != vtinput.LeftCtrlPressed {
+		t.Fatalf("modifier release result = %d, want aggregate Ctrl", mods)
+	}
+}
+
 func TestX11Renderer_GlyphCacheUniqueness(t *testing.T) {
-	ch1 := RegisterCluster("e\u0301")
-	ch2 := RegisterCluster("e\u0308")
+	// Clusters with no precomposed form, so they stay composite: NFC folds
+	// "e\u0301"-style sequences to plain runes and they would never hit the
+	// glyph-key path this test guards.
+	ch1 := RegisterCluster("a\u0305")
+	ch2 := RegisterCluster("e\u0305")
 
 	key1 := glyphKey{ch1, 0, 0, 1}
 	key2 := glyphKey{ch2, 0, 0, 1}

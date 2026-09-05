@@ -42,6 +42,7 @@ var skipDirs = map[string]bool{
 	"build":        true,
 	"node_modules": true,
 	"testdata":     true,
+	"third_party":  true,
 	"tools":        true,
 	"vendor":       true,
 }
@@ -232,5 +233,6 @@ func WriteBaseline(path string, findings []Finding) error {
 		b.WriteString(id)
 		b.WriteString("\n")
 	}
+	// #nosec G306 -- baseline files are source-control artifacts intended to be readable by the project team.
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

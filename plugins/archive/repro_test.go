@@ -85,9 +85,10 @@ func TestHangReproduction_RootChroot(t *testing.T) {
 			archiverErr = err
 			return
 		}
-		defer a.Close()
-
 		archiverErr = a.Archive(context.Background(), fileMap)
+		if closeErr := a.Close(); archiverErr == nil {
+			archiverErr = closeErr
+		}
 	}()
 
 	select {
@@ -107,11 +108,15 @@ func TestActionAddArchive_OverwriteWarning(t *testing.T) {
 	v := vfs.NewOSVFS(tmpDir)
 
 	dummyFile := v.Join(tmpDir, "file_to_archive.txt")
-	os.WriteFile(dummyFile, []byte("some content"), 0644)
+	if err := os.WriteFile(dummyFile, []byte("some content"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	archiveName := v.Base(tmpDir) + ".zip"
 	existingArchive := v.Join(tmpDir, archiveName)
-	os.WriteFile(existingArchive, []byte("existing zip content"), 0644)
+	if err := os.WriteFile(existingArchive, []byte("existing zip content"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	app := &mockOverwriteApp{
 		t:     t,
@@ -143,16 +148,26 @@ func TestIssue137_ArchiveOpenIsLazyAndContextAware(t *testing.T) {
 	w, _ := zw.Create("large.bin")
 	chunk := []byte(strings.Repeat("A", 1024*1024))
 	for i := 0; i < 5; i++ {
-		w.Write(chunk)
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
 	}
-	zw.Close()
-	f.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	vArc, err := NewArchiveVFS(&vfs.OSVFS{}, zipPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer vArc.Close()
+	t.Cleanup(func() {
+		if err := vArc.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	// Test 1: Open should be fast and not block
 	start := time.Now()
@@ -163,7 +178,7 @@ func TestIssue137_ArchiveOpenIsLazyAndContextAware(t *testing.T) {
 	if time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("BUG REPRODUCED: Open took too long, likely synchronously extracting!")
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	// Test 2: ReadAt respects cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -186,7 +201,9 @@ func TestArchivePlugin_ConcurrentOperationWarning(t *testing.T) {
 	v := vfs.NewOSVFS(tmpDir)
 
 	dummyFile := filepath.Join(tmpDir, "test.zip")
-	os.WriteFile(dummyFile, []byte("dummy zip content"), 0644)
+	if err := os.WriteFile(dummyFile, []byte("dummy zip content"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate an active operation already running for this archive
 	absPath, _ := v.Abs(dummyFile)
@@ -215,17 +232,25 @@ func TestIssue150_Concurrent7zReadDir(t *testing.T) {
 
 	// 1. Создаем тестовое дерево папок и файлов
 	srcDir := filepath.Join(tmpDir, "src")
-	os.MkdirAll(filepath.Join(srcDir, "dir1/dir2"), 0755)
-	os.WriteFile(filepath.Join(srcDir, "dir1/file1.txt"), []byte("data1"), 0644)
-	os.WriteFile(filepath.Join(srcDir, "dir1/dir2/file2.txt"), []byte("data2"), 0644)
+	if err := os.MkdirAll(filepath.Join(srcDir, "dir1/dir2"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "dir1/file1.txt"), []byte("data1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "dir1/dir2/file2.txt"), []byte("data2"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	fileMap := make(map[string]os.FileInfo)
-	filepath.Walk(srcDir, func(p string, fi os.FileInfo, err error) error {
+	if err := filepath.Walk(srcDir, func(p string, fi os.FileInfo, err error) error {
 		if err == nil && p != srcDir {
 			fileMap[p] = fi
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Сжимаем с флагом Solid
 	a, err := archive.NewArchiver(archivePath, srcDir, archive.Options{Solid: true})
@@ -233,7 +258,9 @@ func TestIssue150_Concurrent7zReadDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = a.Archive(context.Background(), fileMap)
-	a.Close()
+	if closeErr := a.Close(); closeErr != nil {
+		t.Fatalf("close concurrent archive fixture: %v", closeErr)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +270,11 @@ func TestIssue150_Concurrent7zReadDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	// 3. Запускаем конкурентный обход дерева файлов
 	var wg sync.WaitGroup
@@ -271,17 +302,25 @@ func TestIssue150_7zDirectoryStructureAndSolid(t *testing.T) {
 	archivePath := filepath.Join(tmpDir, "test_structure.7z")
 
 	srcDir := filepath.Join(tmpDir, "src")
-	os.MkdirAll(filepath.Join(srcDir, "empty_dir"), 0755)
-	os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("solid content 1"), 0644)
-	os.WriteFile(filepath.Join(srcDir, "file2.txt"), []byte("solid content 2"), 0644)
+	if err := os.MkdirAll(filepath.Join(srcDir, "empty_dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("solid content 1"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "file2.txt"), []byte("solid content 2"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	fileMap := make(map[string]os.FileInfo)
-	filepath.Walk(srcDir, func(p string, fi os.FileInfo, err error) error {
+	if err := filepath.Walk(srcDir, func(p string, fi os.FileInfo, err error) error {
 		if err == nil && p != srcDir {
 			fileMap[p] = fi
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Запаковываем в Solid-режиме
 	a, err := archive.NewArchiver(archivePath, srcDir, archive.Options{Solid: true})
@@ -289,7 +328,9 @@ func TestIssue150_7zDirectoryStructureAndSolid(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = a.Archive(context.Background(), fileMap)
-	a.Close()
+	if closeErr := a.Close(); closeErr != nil {
+		t.Fatalf("close solid archive fixture: %v", closeErr)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,11 +340,11 @@ func TestIssue150_7zDirectoryStructureAndSolid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	// Проверяем, что директории помечены как IsDir() и имеют размер 0 (а не дублируются как файлы)
 	foundDir := false
-	var commonStreamID int = -1
+	var commonStreamID = -1
 
 	for _, file := range zr.File {
 		isDir := file.FileInfo().IsDir()

@@ -12,6 +12,7 @@ type ComboBox struct {
 	Menu              *VMenu
 	DropdownOnly      bool // If true, manual text entry is not allowed
 	editMouseCaptured bool
+	editMouseMoved    bool
 }
 
 func NewComboBox(x, y, width int, items []string) *ComboBox {
@@ -58,13 +59,15 @@ func (cb *ComboBox) MoveRelative(dx, dy int) {
 }
 
 func (cb *ComboBox) applyLayout() {
-	hbox := NewHBoxLayout(cb.X1, cb.Y1, cb.X2-cb.X1+1, 1)
-	hbox.Spacing = 0
-	hbox.Add(cb.Edit, Margins{}, AlignFill)
-	// Add a dummy text element for the arrow to participate in the layout math
-	arrow := NewText(0, 0, "↓", 0)
-	hbox.Add(arrow, Margins{}, AlignTop)
-	hbox.Apply()
+	// The arrow is painted by ComboBox.DisplayObject at X2. Keep the edit
+	// portion adjacent to it whenever the outer control is resized by a
+	// layout. A generic HBox cannot express this one-cell trailing affordance
+	// because its AlignFill mode only stretches the cross-axis.
+	editX2 := cb.X2
+	if cb.X2 > cb.X1 {
+		editX2--
+	}
+	cb.Edit.SetPosition(cb.X1, cb.Y1, editX2, cb.Y1)
 }
 
 func (cb *ComboBox) Show(scr *ScreenBuf) {
@@ -88,13 +91,16 @@ func (cb *ComboBox) DisplayObject(scr *ScreenBuf) {
 			bgIdx = cb.Edit.ColorSelectedIdx
 			fgIdx = ColDialogComboSelectedHighlight
 
+			oldTextIdx := cb.Edit.ColorTextIdx
 			oldStart, oldEnd := cb.Edit.selStart, cb.Edit.selEnd
 
+			cb.Edit.ColorTextIdx = cb.Edit.ColorSelectedIdx
 			cb.Edit.selStart = 0
 			cb.Edit.selEnd = len(cb.Edit.text)
 
 			cb.Edit.Show(scr)
 
+			cb.Edit.ColorTextIdx = oldTextIdx
 			cb.Edit.selStart, cb.Edit.selEnd = oldStart, oldEnd
 		} else {
 			cb.Edit.Show(scr)
@@ -162,21 +168,33 @@ func (cb *ComboBox) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if cb.editMouseCaptured {
 		cb.Edit.ProcessMouse(e)
+		if e.MouseEventFlags&vtinput.MouseMoved != 0 && e.ButtonState != 0 {
+			cb.editMouseMoved = true
+		}
 		if e.ButtonState == 0 {
+			openMenu := !cb.editMouseMoved
 			cb.editMouseCaptured = false
+			cb.editMouseMoved = false
+			if openMenu {
+				cb.Open()
+			}
 			return true
 		}
 		return true
 	}
 	if e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
 		mx := int(e.MouseX)
-		// If arrow clicked or DropdownOnly is true and clicked anywhere within the bounds
+		// The arrow and DropdownOnly controls open on press. For an editable
+		// control, defer opening until release so a drag can still select text.
 		if mx == cb.X2 || cb.DropdownOnly {
 			cb.Open()
 			return true
 		}
 		if cb.Edit.HitTest(mx, int(e.MouseY)) {
+			cb.Edit.ProcessMouse(e)
 			cb.editMouseCaptured = true
+			cb.editMouseMoved = false
+			return true
 		}
 	}
 	return cb.Edit.ProcessMouse(e)
@@ -228,6 +246,7 @@ func (cb *ComboBox) SetFocus(f bool) {
 	cb.Edit.SetFocus(f)
 	if !f {
 		cb.editMouseCaptured = false
+		cb.editMouseMoved = false
 	}
 }
 
@@ -236,6 +255,7 @@ func (cb *ComboBox) SetDisabled(d bool) {
 	cb.Edit.SetDisabled(d)
 	if d {
 		cb.editMouseCaptured = false
+		cb.editMouseMoved = false
 	}
 }
 func (cb *ComboBox) WantsChars() bool {

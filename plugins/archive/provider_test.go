@@ -27,14 +27,18 @@ func TestArchiveProvider_CanOpen(t *testing.T) {
 
 	// 1. Valid formats (e.g. .zip)
 	tmpZip := filepath.Join(t.TempDir(), "test.zip")
-	os.WriteFile(tmpZip, []byte("PK\x03\x04..."), 0644) // Zip magic bytes
+	if err := os.WriteFile(tmpZip, []byte("PK\x03\x04..."), 0600); err != nil { // Zip magic bytes
+		t.Fatal(err)
+	}
 	if !p.CanOpen(ctx, nil, tmpZip) {
 		t.Errorf("Expected CanOpen=true for %q", tmpZip)
 	}
 
 	// 2. Invalid formats (e.g. .txt)
 	tmpTxt := filepath.Join(t.TempDir(), "test.txt")
-	os.WriteFile(tmpTxt, []byte("plain text"), 0644)
+	if err := os.WriteFile(tmpTxt, []byte("plain text"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	if p.CanOpen(ctx, nil, tmpTxt) {
 		t.Errorf("Expected CanOpen=false for %q", tmpTxt)
 	}
@@ -47,7 +51,9 @@ func TestArchiveProvider_Open(t *testing.T) {
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "empty.zip")
 	// Write empty zip structure (22 bytes EOCD)
-	os.WriteFile(zipPath, []byte("\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), 0644)
+	if err := os.WriteFile(zipPath, []byte("\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	parent := vfs.NewOSVFS(tmpDir)
 
@@ -55,7 +61,11 @@ func TestArchiveProvider_Open(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer v.Close()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	if _, ok := v.(*ArchiveVFS); !ok {
 		t.Errorf("Expected Open to return *ArchiveVFS, got %T", v)

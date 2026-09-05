@@ -1180,9 +1180,9 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QVERIFY(sortDirection->x() < sortLabel->x());
     QVERIFY(sortLabel->x() < sortChevron->x());
     const qreal sortHorizontalPadding = sortButton->width()
-            - sortButtonContent->implicitWidth();
+            - sortButtonContent->width();
     const qreal rendererHorizontalPadding = renderer->width()
-            - rendererContent->implicitWidth();
+            - rendererContent->width();
     QCOMPARE(sortHorizontalPadding, 16.0);
     QCOMPARE(rendererHorizontalPadding, sortHorizontalPadding);
     QVERIFY(sortButton->x() < renderer->x());

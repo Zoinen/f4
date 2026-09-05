@@ -5,9 +5,12 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 type ColorProfile int
@@ -55,12 +58,18 @@ func detectColorProfile(goos string) ColorProfile {
 
 var IsFreeBSDConsole bool
 
+// IsFreeBSDSyscons narrows IsFreeBSDConsole to the syscons driver, the only
+// one that aliases a bright background onto the VGA blink bit. See
+// console_freebsd.go for the driver sources this is based on.
+var IsFreeBSDSyscons bool
+
 func init() {
 	IsFreeBSDConsole = (runtime.GOOS == "freebsd" &&
 		os.Getenv("DISPLAY") == "" &&
 		os.Getenv("SSH_CLIENT") == "" &&
 		os.Getenv("TMUX") == "" &&
 		os.Getenv("WAYLAND_DISPLAY") == "")
+	IsFreeBSDSyscons = detectFreeBSDSyscons()
 }
 
 // ScreenBuf implements double buffering to minimize terminal write operations.
@@ -98,6 +107,53 @@ type ScreenBuf struct {
 	Writer   io.Writer // Output destination, defaults to os.Stdout
 
 	graphics GraphicsLayer
+}
+
+// SessionConfig configures I/O streams and initial dimensions for a UI session.
+type SessionConfig struct {
+	Out    io.Writer
+	In     io.Reader
+	Width  int
+	Height int
+}
+
+// SetOutput changes the writer destination for flushed frame output.
+func (s *ScreenBuf) SetOutput(w io.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Writer = w
+}
+
+// WritePassthrough writes bytes straight to the terminal output, bypassing the
+// shadow buffer. Takes writeMu so it can never interleave with a frame.
+func (s *ScreenBuf) WritePassthrough(p []byte) {
+	if s == nil || len(p) == 0 {
+		return
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	w := io.Writer(os.Stdout)
+	if s.Writer != nil {
+		w = s.Writer
+	}
+	const writeChunk = 8192
+	for len(p) > 0 {
+		n := len(p)
+		if n > writeChunk {
+			n = writeChunk
+		}
+		w.Write(p[:n])
+		p = p[n:]
+	}
+}
+
+// WritePassthrough writes raw bytes directly to the active ScreenBuf's output,
+// bypassing the shadow buffer and serializing with frame rendering.
+func WritePassthrough(p []byte) {
+	if FrameManager != nil && FrameManager.scr != nil {
+		FrameManager.scr.WritePassthrough(p)
+	}
 }
 
 // NewScreenBuf creates a new ScreenBuf instance.
@@ -288,8 +344,11 @@ func (s *ScreenBuf) ApplyShadow(x1, y1, x2, y2 int) {
 				}
 			}
 
-			bg = ((bg>>16&0xFF)/2)<<16 | ((bg>>8&0xFF)/2)<<8 | ((bg & 0xFF) / 2)
-			fg = ((fg>>16&0xFF)/2)<<16 | ((fg>>8&0xFF)/2)<<8 | ((fg & 0xFF) / 2)
+			// Use 3/8 (0.375) factor: in 16-color quantization (Win32 console / DOS),
+			// dark blue desktop (0x0000A0) drops to Black (0) creating crisp Far-style shadows,
+			// while light gray dialogs (0xC0C0C0) drop to DarkGray (8).
+			bg = (((bg>>16&0xFF)*3)/8)<<16 | (((bg>>8&0xFF)*3)/8)<<8 | (((bg & 0xFF) * 3) / 8)
+			fg = (((fg>>16&0xFF)*3)/8)<<16 | (((fg>>8&0xFF)*3)/8)<<8 | (((fg & 0xFF) * 3) / 8)
 
 			s.buf[offset+x].Attributes = SetRGBBoth(attr, fg, bg)
 		}
@@ -430,12 +489,29 @@ func (s *ScreenBuf) FillRect(x1, y1, x2, y2 int, char rune, attributes uint64) {
 	}
 }
 
+// SetCursorPos moves the caret. It deliberately says nothing about whether
+// the caret is visible: that is SetCursorVisible's business, and callers
+// disagree on the order they call the two in (Edit shows then positions,
+// EditorView and MultiLineEdit position then show), so a position setter
+// that also hid the caret produced different results in different widgets
+// for the same out-of-range coordinate. Out-of-range positions are clamped
+// to the screen instead; a caret cannot be placed off-screen, but asking
+// for that no longer silently turns it off. See f4 issue #518.
 func (s *ScreenBuf) SetCursorPos(x, y int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.width <= 0 || s.height <= 0 || x < 0 || x >= s.width || y < 0 || y >= s.height {
-		s.cursorVisible = false
+	if s.width <= 0 || s.height <= 0 {
 		return
+	}
+	if x < 0 {
+		x = 0
+	} else if x >= s.width {
+		x = s.width - 1
+	}
+	if y < 0 {
+		y = 0
+	} else if y >= s.height {
+		y = s.height - 1
 	}
 	if s.cursorX != x || s.cursorY != y {
 		s.cursorX, s.cursorY = x, y
@@ -451,6 +527,7 @@ func (s *ScreenBuf) SetCursorVisible(visible bool) {
 		s.cursorDirty = true
 	}
 }
+
 func (s *ScreenBuf) SetCursorShape(shape CursorShape) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -641,11 +718,71 @@ type framePreparer interface {
 	PrepareFlush() func()
 }
 
-// AnsiRenderer реализует SurfaceRenderer через ESC-последовательности.
+// byteBuffer is a reusable byte slice buffer with zero allocations across frames.
+type byteBuffer []byte
+
+func (b *byteBuffer) Len() int {
+	return len(*b)
+}
+
+func (b *byteBuffer) Cap() int {
+	return cap(*b)
+}
+
+func (b *byteBuffer) Reset() {
+	*b = (*b)[:0]
+}
+
+func (b *byteBuffer) Grow(n int) {
+	if cap(*b)-len(*b) < n {
+		newBuf := make([]byte, len(*b), 2*cap(*b)+n)
+		copy(newBuf, *b)
+		*b = newBuf
+	}
+}
+
+func (b *byteBuffer) Write(p []byte) (int, error) {
+	*b = append(*b, p...)
+	return len(p), nil
+}
+
+func (b *byteBuffer) WriteByte(c byte) error {
+	*b = append(*b, c)
+	return nil
+}
+
+func (b *byteBuffer) WriteString(s string) (int, error) {
+	*b = append(*b, s...)
+	return len(s), nil
+}
+
+func (b *byteBuffer) WriteRune(r rune) (int, error) {
+	if r < 0x80 {
+		*b = append(*b, byte(r))
+		return 1, nil
+	}
+	var buf [utf8.UTFMax]byte
+	n := utf8.EncodeRune(buf[:], r)
+	*b = append(*b, buf[:n]...)
+	return n, nil
+}
+
+func (b *byteBuffer) String() string {
+	if len(*b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(*b), len(*b))
+}
+
+func (b *byteBuffer) Bytes() []byte {
+	return *b
+}
+
+// AnsiRenderer implements SurfaceRenderer via ESC sequences.
 type AnsiRenderer struct {
 	parent   *ScreenBuf
 	lastAttr uint64
-	frameOut strings.Builder
+	frameOut byteBuffer
 
 	cursorX, cursorY int
 	cursorVis        bool
@@ -660,31 +797,84 @@ type AnsiRenderer struct {
 	gfxProto GraphicsProtocol
 	gfxGen   uint64
 	gfxKitty *kittyEncoder
+	gfxSixel *sixelEncoder
+	gfxFar2l *far2lEncoder
 	gfxList  []ImagePlacement
 }
 
 func (r *AnsiRenderer) SetPalette(pal *[256]uint32) {
+	if IsFreeBSDConsole {
+		// The FreeBSD system consoles have a fixed palette and do not parse
+		// OSC 4.  syscons would print the payload after the unknown ESC ]
+		// introducer, turning one palette update into a screenful of garbage.
+		return
+	}
 	if r.parent.quantCache == nil {
 		r.parent.quantCache = make(map[uint32]uint8)
 	}
 	if pal == nil {
 		return
 	}
+	// All changed entries go into a single OSC 4 message (xterm accepts
+	// multiple ;index;spec pairs). One message per frame instead of up to
+	// 256: terminals that repaint per OSC message (iTerm2) take seconds to
+	// chew through individual messages, which showed up as a multi-second
+	// visible freeze on startup and exit.
 	changed := false
 	for i := 0; i < 256; i++ {
 		if !r.parent.HostPaletteValid[i] || r.parent.HostPalette[i] != pal[i] {
-			changed = true
+			if !changed {
+				changed = true
+				r.frameOut.WriteString("\x1b]4")
+			}
 			pr, pg, pb := rgb(pal[i])
-			r.frameOut.WriteString(fmt.Sprintf("\x1b]4;%d;rgb:%02x/%02x/%02x\x07", i, pr, pg, pb))
+			r.frameOut.WriteString(fmt.Sprintf(";%d;rgb:%02x/%02x/%02x", i, pr, pg, pb))
 			r.parent.HostPalette[i] = pal[i]
 			r.parent.HostPaletteValid[i] = true
 		}
 	}
-	// One rebuild for the whole palette change, not one per changed entry:
-	// a full (re)load used to allocate 256 maps in a row.
 	if changed {
+		r.frameOut.WriteString("\x07")
 		r.parent.quantCache = make(map[uint32]uint8)
 	}
+}
+
+// isGhostProneText reports Unicode that can shift width through font
+// fallback; box/block runes are fixed single-column cells that never shift.
+func isGhostProneText(ch uint64) bool {
+	if ch < 0x80 {
+		return false
+	}
+	if ch >= 0x2500 && ch <= 0x259F {
+		return false
+	}
+	return true
+}
+
+// cellAdvanceTrusted reports whether every terminal can be relied upon to
+// advance its cursor by exactly the columns vtui gave this cell: printable
+// ASCII, the box drawing and block element ranges, and the single column
+// letters of Latin, Greek and Cyrillic. Everything else (a composite cluster,
+// a wide character, an emoji, any script a terminal shapes) may be measured
+// differently by the terminal than by go-runewidth, and the renderer resyncs
+// the cursor after it. wide is true when the cell is followed by a filler:
+// go-runewidth widens Cyrillic in an East Asian locale, the terminal need not.
+func cellAdvanceTrusted(ch uint64, wide bool) bool {
+	switch {
+	case wide:
+		return false
+	case ch < 0x80:
+		return true
+	case ch >= 0x2500 && ch <= 0x259F:
+		return true
+	case IsCompChar(ch):
+		return false
+	case ch >= 0xA0 && ch <= 0x052F:
+		// Latin-1 Supplement through Cyrillic Supplement; the combining
+		// diacritical marks block sits in the middle of that range.
+		return ch < 0x0300 || ch > 0x036F
+	}
+	return false
 }
 
 func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
@@ -702,10 +892,13 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 		return
 	}
 
-	r.frameOut.WriteString("\x1b[?25l") // Hide cursor during draw
+	if !IsFreeBSDConsole {
+		r.frameOut.WriteString("\x1b[?2026h\x1b[?25l") // Atomic update + hide cursor during draw
+	}
 
 	r.termCursorInvalid = true
 	lastX, lastY := -1, -1
+	resync := false
 	r.lastAttr = ^uint64(0)
 
 	var activePal *[256]uint32
@@ -716,26 +909,103 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 	}
 
 	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			idx := y*w + x
-			if !force && buf[idx] == shadow[idx] {
+		rowOff := y * w
+		firstDiff, lastDiff := -1, -1
+		rowHasGhost := false
+
+		if force {
+			firstDiff = 0
+			lastDiff = w - 1
+			rowHasGhost = true
+		} else {
+			for x := 0; x < w; x++ {
+				bCell := buf[rowOff+x]
+				sCell := shadow[rowOff+x]
+				if bCell != sCell {
+					if firstDiff == -1 {
+						firstDiff = x
+					}
+					lastDiff = x
+				}
+				if isGhostProneText(bCell.Char) || isGhostProneText(sCell.Char) || IsCompChar(bCell.Char) || IsCompChar(sCell.Char) {
+					rowHasGhost = true
+				}
+			}
+		}
+
+		if firstDiff == -1 {
+			continue
+		}
+
+		// Font fallback can shift columns of text Unicode, so such rows
+		// redraw in full to wipe out ghost remnants; ASCII and box-drawing
+		// rows keep the sparse diff.
+		var startX, endX int
+		if rowHasGhost {
+			startX = 0
+			endX = w - 1
+		} else {
+			startX = firstDiff
+			endX = lastDiff
+		}
+
+		for x := startX; x <= endX; x++ {
+			idx := rowOff + x
+			if !force && !rowHasGhost && buf[idx] == shadow[idx] {
 				continue
 			}
-
-			if x != lastX+1 || y != lastY {
-				r.frameOut.WriteString(fmt.Sprintf("\x1b[%d;%dH", y+1, x+1))
-			}
-
-			attr := buf[idx].Attributes
-			r.frameOut.WriteString(attributesToANSI(attr, r.lastAttr, activePal, r.parent.ColorProfile, r.parent.quantCache))
-			r.lastAttr = attr
 
 			char := buf[idx].Char
 			if char == WideCharFiller {
-				lastX, lastY = x, y
+				// The right half of a wide character. If its left half was
+				// just written the terminal cursor already sits past it;
+				// otherwise leave lastX alone so the next cell repositions.
+				if lastY == y && lastX == x-1 {
+					lastX = x
+				}
 				continue
 			}
-			r.frameOut.WriteString(CellString(char))
+
+			if x != lastX+1 || y != lastY || resync {
+				if y == lastY && !rowHasGhost && !resync {
+					if x > lastX+1 {
+						r.writeRelCursor(x-lastX-1, 'C')
+					} else {
+						r.writeRelCursor(lastX+1-x, 'D')
+					}
+				} else {
+					r.writeCursorPos(y+1, x+1)
+				}
+				resync = false
+			}
+
+			attr := buf[idx].Attributes
+			if attr != r.lastAttr {
+				writeAttributesToBuffer(&r.frameOut, attr, r.lastAttr, activePal, r.parent.ColorProfile, r.parent.quantCache)
+				r.lastAttr = attr
+			}
+
+			if char == 0 {
+				r.frameOut.WriteByte(' ')
+			} else if char < 0x80 {
+				r.frameOut.WriteByte(byte(char))
+			} else if IsCompChar(char) {
+				r.frameOut.WriteString(CellString(char))
+			} else {
+				r.frameOut.WriteRune(rune(char))
+			}
+			// A terminal advances by the columns *it* measures for the text,
+			// not by the cells vtui allotted, and no two width tables fully
+			// agree (Indic conjuncts, ambiguous width, emoji sequences, the
+			// Unicode version). Text is written as a stream, so one column
+			// of disagreement used to drag everything after it on the row
+			// along: that is the leaning dialog of unxed/f4#546. After any
+			// cell where the two could differ, the next cell is placed with
+			// an absolute cursor position, which confines the damage to the
+			// cell itself.
+			if !cellAdvanceTrusted(char, x+1 < w && buf[idx+1].Char == WideCharFiller) {
+				resync = true
+			}
 			lastX, lastY = x, y
 		}
 	}
@@ -748,37 +1018,65 @@ func (r *AnsiRenderer) SetCursor(x, y int, vis bool, shape CursorShape) {
 	r.cursorShape = shape
 }
 
-func (r *AnsiRenderer) SetWindowTitle(title string) {
-	r.frameOut.WriteString(fmt.Sprintf("\x1b]0;%s\x07", title))
+// writeCursorPos emits CSI Y;X H without allocating.
+func (r *AnsiRenderer) writeCursorPos(row, col int) {
+	var buf [16]byte
+	b := strconv.AppendInt(append(buf[:0], "\x1b["...), int64(row), 10)
+	b = append(b, ';')
+	b = strconv.AppendInt(b, int64(col), 10)
+	b = append(b, 'H')
+	r.frameOut.Write(b)
 }
 
-// Flush composes the frame and writes it out immediately. ScreenBuf.Flush
-// uses PrepareFlush instead, so that the write happens outside ScreenBuf.mu;
-// this entry point remains for direct callers.
+// writeRelCursor emits CSI n C (right) / CSI n D (left); n is omitted for 1.
+func (r *AnsiRenderer) writeRelCursor(n int, dir byte) {
+	var buf [12]byte
+	b := append(buf[:0], "\x1b["...)
+	if n != 1 {
+		b = strconv.AppendInt(b, int64(n), 10)
+	}
+	b = append(b, dir)
+	r.frameOut.Write(b)
+}
+
+func (r *AnsiRenderer) SetWindowTitle(title string) {
+	if IsFreeBSDConsole {
+		return
+	}
+	// Titles are not part of a frame: write under writeMu so an update can
+	// neither resend the pending frame nor race the render loop.
+	r.parent.writeMu.Lock()
+	defer r.parent.writeMu.Unlock()
+	r.write(fmt.Sprintf("\x1b]0;%s\x07", title))
+}
+
+// Flush composes the frame and writes it out immediately.
 func (r *AnsiRenderer) Flush() {
 	deliver := r.PrepareFlush()
 	if deliver == nil {
 		return
 	}
-	// Direct callers (SetWindowTitle, for one) bypass ScreenBuf.Flush, so
-	// take writeMu here to keep their output from landing in the middle of
-	// a frame. Safe against self-deadlock: ScreenBuf.Flush reaches this
-	// renderer through PrepareFlush, never through this method.
 	r.parent.writeMu.Lock()
 	defer r.parent.writeMu.Unlock()
 	deliver()
 }
 
-// PrepareFlush appends the cursor state to the pending frame and returns a
-// closure that writes the whole payload to the terminal, or nil if the frame
-// turned out empty. Splitting the two lets the caller release its locks
-// before a write that may block for an unbounded time.
+// PrepareFlush appends the cursor state and mode 2026 termination to the pending frame.
 func (r *AnsiRenderer) PrepareFlush() func() {
 	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape {
-		r.frameOut.WriteString(fmt.Sprintf("\x1b[%d;%dH", r.cursorY+1, r.cursorX+1))
-		if r.cursorVis {
+		r.writeCursorPos(r.cursorY+1, r.cursorX+1)
+		if IsFreeBSDConsole {
+			if r.cursorVis {
+				r.frameOut.WriteString("\x1b[=0S")
+			} else {
+				r.frameOut.WriteString("\x1b[=1S")
+			}
+		} else if r.cursorVis {
 			r.frameOut.WriteString("\x1b[?25h")
-			if ManageCursorStyle {
+			// On a classic Windows console the shape goes through
+			// SetConsoleCursorInfo below and DECSCUSR must stay off the
+			// stream: see cursorStyleViaConsoleAPI.
+			if ManageCursorStyle && !cursorStyleViaConsoleAPI() {
 				if os.Getenv("TERM") == "linux" {
 					if r.cursorShape == CursorShapeBlock {
 						r.frameOut.WriteString("\x1b[?6c")
@@ -793,10 +1091,11 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 					}
 				}
 			}
-			SetCursorStyleOS(r.cursorVis, r.cursorShape)
 		} else {
 			r.frameOut.WriteString("\x1b[?25l")
-			SetCursorStyleOS(false, r.cursorShape)
+		}
+		if !r.firstInit || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape {
+			SetCursorStyleOS(r.cursorVis, r.cursorShape)
 		}
 		r.lastSentCursorX = r.cursorX
 		r.lastSentCursorY = r.cursorY
@@ -806,11 +1105,17 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 		r.firstInit = true
 	}
 
-	payload := r.frameOut.String()
-	r.frameOut.Reset()
-	if payload == "" {
+	if r.frameOut.Len() > 0 && !IsFreeBSDConsole {
+		r.frameOut.WriteString("\x1b[?2026l")
+	}
+
+	payloadLen := r.frameOut.Len()
+	if payloadLen == 0 {
 		return nil
 	}
+
+	payload := r.frameOut.String()
+	r.frameOut.Reset()
 
 	return func() {
 		writeStart := time.Now()
@@ -818,7 +1123,7 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 		writeDur := time.Since(writeStart)
 
 		if writeDur > 10*time.Millisecond {
-			DebugLog("PROFILE: Atomic Write Slow! Time:%v Bytes:%d", writeDur, len(payload))
+			DebugLog("PROFILE: Atomic Write Slow! Time:%v Bytes:%d", writeDur, payloadLen)
 		}
 	}
 }
@@ -827,10 +1132,35 @@ func (r *AnsiRenderer) write(s string) {
 	if s == "" {
 		return
 	}
+	w := io.Writer(os.Stdout)
 	if r.parent.Writer != nil {
-		io.WriteString(r.parent.Writer, s)
-	} else {
-		os.Stdout.WriteString(s)
+		w = r.parent.Writer
+	}
+	// Hand large frames over in chunks so a relay reading the tty (WSL,
+	// ConPTY) can keep up; a byte lost mid-frame becomes U+FFFD on screen.
+	//
+	// Advance by what was actually written, not by what was offered: a
+	// short write used to drop the rest of its chunk silently, and since
+	// every painted frame opens with ESC[?25l and only restores the caret
+	// with ESC[?25h at the very end, a frame truncated in the middle left
+	// the caret hidden until something changed its state again. Give up on
+	// a hard error rather than spinning on a dead tty. See f4 issue #518.
+	const writeChunk = 8192
+	for len(s) > 0 {
+		n := len(s)
+		if n > writeChunk {
+			n = writeChunk
+		}
+		written, err := io.WriteString(w, s[:n])
+		if written > 0 {
+			s = s[written:]
+		}
+		if err != nil {
+			return
+		}
+		if written == 0 {
+			return
+		}
 	}
 }
 
@@ -843,13 +1173,22 @@ func (s *ScreenBuf) GetCursorPos() (int, int) {
 
 // ScreenRow reads a stretch of one row back out of the screen.
 func ScreenRow(scr *ScreenBuf, y, x1, x2 int) string {
-	runes := make([]rune, x2-x1+1)
-	for i := range runes {
-		cell := scr.GetCell(x1+i, y)
-		runes[i] = rune(cell.Char)
-		if runes[i] == 0 {
-			runes[i] = ' '
+	if x1 > x2 {
+		return ""
+	}
+	var sb strings.Builder
+	for x := x1; x <= x2; x++ {
+		cell := scr.GetCell(x, y)
+		if cell.Char == WideCharFiller {
+			continue
+		}
+		if cell.Char == 0 {
+			sb.WriteByte(' ')
+		} else if IsCompChar(cell.Char) {
+			sb.WriteString(CellString(cell.Char))
+		} else {
+			sb.WriteRune(rune(cell.Char))
 		}
 	}
-	return string(runes)
+	return sb.String()
 }

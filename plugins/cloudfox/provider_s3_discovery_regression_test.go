@@ -125,7 +125,7 @@ func (f *s3SignedRegionFixture) ServeHTTP(writer http.ResponseWriter, request *h
 	}
 	writer.Header().Set("Content-Type", "application/xml")
 	writer.WriteHeader(http.StatusBadRequest)
-	_, _ = fmt.Fprintf(writer, `<Error><Code>UnexpectedRequest</Code><Message>%s %s</Message></Error>`, request.Method, request.URL.RequestURI())
+	_, _ = fmt.Fprintf(writer, `<Error><Code>UnexpectedRequest</Code><Message>%s %s</Message></Error>`, request.Method, request.URL.RequestURI()) // #nosec G705 -- this closed httptest server reflects only its controlled regression-test request in an error body.
 }
 
 type s3HistoryRegressionFactory struct {
@@ -219,7 +219,7 @@ func (f *s3DiscoveryHTTPFixture) ServeHTTP(writer http.ResponseWriter, request *
 	}
 	writer.Header().Set("Content-Type", "application/xml")
 	writer.WriteHeader(http.StatusBadRequest)
-	_, _ = fmt.Fprintf(writer, `<Error><Code>UnexpectedRequest</Code><Message>%s %s</Message></Error>`, request.Method, request.URL.RequestURI())
+	_, _ = fmt.Fprintf(writer, `<Error><Code>UnexpectedRequest</Code><Message>%s %s</Message></Error>`, request.Method, request.URL.RequestURI()) // #nosec G705 -- this closed httptest server reflects only its controlled regression-test request in an error body.
 }
 
 func openS3DiscoveryRegressionBackend(t *testing.T, server *httptest.Server, bucket string) *s3Backend {
@@ -370,7 +370,11 @@ func TestS3ExplicitBucketNeverRequiresListBuckets(t *testing.T) {
 	defer server.Close()
 
 	backend := openS3DiscoveryRegressionBackend(t, server, "manual")
-	defer backend.Close()
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if entries := readS3DiscoveryEntries(t, backend, backend.Root()); len(entries) != 0 {
 		t.Fatalf("manual bucket root entries = %#v, want empty", entries)
 	}
@@ -391,7 +395,11 @@ func TestS3DiscoveryCloudVFSUsesVisualNativePathsAndRestoresThem(t *testing.T) {
 
 	backend := openS3DiscoveryRegressionBackend(t, server, "")
 	cloud := newS3DiscoveryRegressionCloud(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 
 	separator := string(os.PathSeparator)
 	root := "S3 test:" + separator
@@ -434,7 +442,11 @@ func TestS3DiscoveryCloudVFSUsesVisualNativePathsAndRestoresThem(t *testing.T) {
 
 	freshBackend := openS3DiscoveryRegressionBackend(t, server, "")
 	fresh := newS3DiscoveryRegressionCloud(t, freshBackend)
-	defer fresh.Close()
+	t.Cleanup(func() {
+		if err := fresh.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := fresh.restoreVisualPath(context.Background(), []string{"alpha", "folder"}); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +460,11 @@ func TestS3DiscoveryGuardsAccountAndBucketRootsWithoutAPIRequests(t *testing.T) 
 	server := httptest.NewServer(fixture)
 	defer server.Close()
 	backend := openS3DiscoveryRegressionBackend(t, server, "")
-	defer backend.Close()
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 
 	bucket := findS3DiscoveryEntry(t, readS3DiscoveryEntries(t, backend, backend.Root()), "alpha")
 	newBucket := backend.Join(backend.Root(), "new-bucket")
@@ -508,11 +524,19 @@ func TestS3ExplicitBucketRejectsDiscoveryLocationForAnotherBucket(t *testing.T) 
 	server := httptest.NewServer(fixture)
 	defer server.Close()
 	discovery := openS3DiscoveryRegressionBackend(t, server, "")
-	defer discovery.Close()
+	t.Cleanup(func() {
+		if err := discovery.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	alpha := findS3DiscoveryEntry(t, readS3DiscoveryEntries(t, discovery, discovery.Root()), "alpha")
 
 	explicit := openS3DiscoveryRegressionBackend(t, server, "beta")
-	defer explicit.Close()
+	t.Cleanup(func() {
+		if err := explicit.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	before := fixture.requestCount()
 	if normalized, err := explicit.Normalize(alpha.Location); err == nil {
 		t.Fatalf("manual beta backend accepted alpha discovery location as %q", normalized)
@@ -541,7 +565,11 @@ func TestS3DiscoverySameSessionVisualHistoryUsesCachedBucketRegionOnFirstRequest
 	defer server.Close()
 	backend := openS3SignedDiscoveryRegressionBackend(t, server)
 	cloud := newS3DiscoveryRegressionCloud(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 
 	separator := string(os.PathSeparator)
 	root := "S3 test:" + separator
@@ -597,7 +625,9 @@ func TestS3DiscoveryFreshSessionRestoresVisualHistoryBeforeRegionalObjectList(t 
 		Region: "us-east-1", Endpoint: server.URL, UsePathStyle: true, Auth: "static", AllowInsecure: true,
 	})
 	if err != nil {
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after settings failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	credentials := SecretValues{"access_key_id": "test-access", "secret_access_key": "test-secret"}
@@ -605,32 +635,44 @@ func TestS3DiscoveryFreshSessionRestoresVisualHistoryBeforeRegionalObjectList(t 
 		Name: "History S3", Provider: ProviderS3, Settings: settings,
 	}, &credentials, SecretStorageVault)
 	if err != nil {
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after save failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	historyPath := connection.Name + ":" + separator + "history-eu" + separator + "folder"
 	provider := &connectionProvider{plugin: plugin}
 	if !provider.CanOpen(context.Background(), vfs.NewOSVFS(t.TempDir()), historyPath) {
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after rejected path: %v", closeErr)
+		}
 		t.Fatalf("provider rejected S3 visual history path %q", historyPath)
 	}
 	opened, err := provider.Open(context.Background(), vfs.NewOSVFS(t.TempDir()), historyPath)
 	if err != nil {
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after open failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	if got := opened.GetPath(); got != historyPath {
 		_ = opened.Close()
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after path mismatch: %v", closeErr)
+		}
 		t.Fatalf("fresh-session restored path = %q, want %q", got, historyPath)
 	}
 	if err := opened.ReadDir(context.Background(), historyPath, func([]vfs.VFSItem) {}); err != nil {
 		_ = opened.Close()
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after read failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	if err := opened.Close(); err != nil {
-		plugin.Close()
+		if closeErr := plugin.Close(); closeErr != nil {
+			t.Errorf("close plugin after VFS close failure: %v", closeErr)
+		}
 		t.Fatal(err)
 	}
 	if err := plugin.Close(); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -168,7 +169,7 @@ func TestNetFoxPluginRegistersContextualPanelCommands(t *testing.T) {
 
 func TestNetFoxPluginCommandRegistrationFailureRollsBackBeforeLegacySideEffects(t *testing.T) {
 	for failAt := 1; failAt <= 2; failAt++ {
-		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
+		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
 			host := &netFoxPluginTestHost{failAtCall: failAt}
 			plugin := &NetFoxPlugin{}
 			if err := plugin.Init(host); err == nil {

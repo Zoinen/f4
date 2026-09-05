@@ -1,4 +1,4 @@
-//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris
+//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64)
 
 package vtui
 
@@ -68,6 +68,80 @@ func TestGogpuHost_SendEvent_NonBlocking(t *testing.T) {
 		t.Fatal("sendEvent blocked on full queue during MouseMoved event")
 	}
 }
+
+func TestGogpuModifierStateHealing(t *testing.T) {
+	oldCmdIsCtrl := gogpuCmdIsCtrl
+	defer func() { gogpuCmdIsCtrl = oldCmdIsCtrl }()
+	gogpuCmdIsCtrl = false
+
+	host := &GogpuHost{}
+	mods := host.syncMods(gpucontext.KeyA, gpucontext.ModShift|gpucontext.ModControl|gpucontext.ModAlt, true)
+	want := vtinput.ShiftPressed | vtinput.LeftCtrlPressed | vtinput.LeftAltPressed
+	if mods != want || !host.lShift || !host.lCtrl || !host.lAlt {
+		t.Fatalf("active aggregate modifiers = mods:%d sides shift:%v ctrl:%v alt:%v, want %d and healed sides",
+			mods, host.lShift, host.lCtrl, host.lAlt, want)
+	}
+
+	host.lCtrl, host.rCtrl = true, true
+	host.lAlt, host.rAlt = true, true
+	host.lShift, host.rShift = true, true
+	mods = host.syncMods(gpucontext.KeyA, 0, true)
+	if mods != 0 || host.lCtrl || host.rCtrl || host.lAlt || host.rAlt || host.lShift || host.rShift {
+		t.Fatalf("inactive aggregate modifiers = mods:%d sides ctrl:%v/%v alt:%v/%v shift:%v/%v, want cleared state",
+			mods, host.lCtrl, host.rCtrl, host.lAlt, host.rAlt, host.lShift, host.rShift)
+	}
+
+	// A modifier release can carry the pre-release aggregate mask. The
+	// already-applied key transition must not be recreated by the healer.
+	host.syncMods(gpucontext.KeyLeftControl, gpucontext.ModControl, false)
+	if host.lCtrl || host.rCtrl {
+		t.Fatalf("modifier release recreated a Ctrl side: %v/%v", host.lCtrl, host.rCtrl)
+	}
+}
+
+func TestGogpuFocusLossClearsKeyboardState(t *testing.T) {
+	pr, pw := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	t.Cleanup(func() {
+		reader.Close()
+		_ = pw.Close()
+	})
+
+	host := &GogpuHost{
+		reader:            reader,
+		pendingKeyEvent:   &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true},
+		pendingKeyTimer:   time.NewTimer(time.Hour),
+		lastVK:            vtinput.VK_A,
+		suppressTextInput: true,
+		currentMods:       vtinput.LeftCtrlPressed | vtinput.RightAltPressed | vtinput.ShiftPressed,
+		lCtrl:             true,
+		rCtrl:             true,
+		lAlt:              true,
+		rAlt:              true,
+		lShift:            true,
+		rShift:            true,
+		superDown:         true,
+	}
+
+	host.handleFocus(false)
+	host.mu.Lock()
+	if host.pendingKeyEvent != nil || host.pendingKeyTimer != nil || host.lastVK != 0 || host.suppressTextInput || host.currentMods != 0 ||
+		host.lCtrl || host.rCtrl || host.lAlt || host.rAlt || host.lShift || host.rShift || host.superDown {
+		host.mu.Unlock()
+		t.Fatal("focus loss did not clear GoGPU keyboard state")
+	}
+	host.mu.Unlock()
+
+	select {
+	case event := <-reader.EventChan:
+		if event.Type != vtinput.FocusEventType || event.SetFocus {
+			t.Fatalf("focus loss event = %+v, want FocusEvent(false)", event)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for GoGPU focus loss event")
+	}
+}
+
 func TestGogpuHost_GetTerminalSize(t *testing.T) {
 	host := &GogpuHost{
 		cellW: 8,
@@ -248,5 +322,194 @@ func TestGetSystemScrollLines(t *testing.T) {
 	// Under non-Windows, it should return 3
 	if runtime.GOOS != "windows" && lines != 3 {
 		t.Errorf("Expected 3 scroll lines on non-Windows platforms, got %d", lines)
+	}
+}
+
+// An Option chord types a symbol of its own on macOS: [NSEvent characters]
+// for Option+T is "†". That text is the composition, not the chord, and the
+// key press has already been delivered carrying the character of the key
+// itself — so it must neither reach the application nor teach the key that it
+// now stands for "†". The key press claims the text (one-shot flag), the text
+// consumes the claim.
+func TestGogpuHost_ComposedChordTextIsDropped(t *testing.T) {
+	oldComposes := gogpuAltComposesText
+	defer func() { gogpuAltComposesText = oldComposes }()
+	gogpuAltComposesText = true
+
+	pr, _ := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	defer reader.Close()
+
+	host := &GogpuHost{
+		reader:        reader,
+		lastRuneForVK: map[uint16]rune{vtinput.VK_T: 't'},
+		lastVK:        vtinput.VK_T,
+		currentMods:   vtinput.LeftAltPressed,
+	}
+
+	host.suppressTextInput = gogpuKeystrokeSwallowsText(gpucontext.KeyT, vtinput.VK_T, vtinput.LeftAltPressed)
+	if !host.suppressTextInput {
+		t.Fatal("Alt chord press did not claim its composed text")
+	}
+	host.handleTextInput("†")
+
+	select {
+	case ev := <-reader.EventChan:
+		t.Fatalf("composed chord text was delivered: %s", ev.String())
+	default:
+	}
+	if host.suppressTextInput {
+		t.Error("claim not consumed; the next genuine text would be dropped")
+	}
+	if got := host.lastRuneForVK[vtinput.VK_T]; got != 't' {
+		t.Errorf("VK_T now stands for %q, want it left as %q", got, 't')
+	}
+	if got := host.charForVK(vtinput.VK_T); got != 't' {
+		t.Errorf("charForVK(VK_T) = %q, want %q", got, 't')
+	}
+}
+
+// Text that arrives without a key press of its own — the character viewer, an
+// IME commit — was never claimed by a chord press, so it goes through even
+// when modifier state went stale (the picker swallows the key-ups that would
+// have cleared it).
+func TestGogpuHost_KeylessTextSurvivesStaleMods(t *testing.T) {
+	oldComposes := gogpuAltComposesText
+	defer func() { gogpuAltComposesText = oldComposes }()
+	gogpuAltComposesText = true
+
+	pr, _ := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	defer reader.Close()
+
+	host := &GogpuHost{
+		reader:      reader,
+		currentMods: vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed,
+	}
+
+	host.handleTextInput("😀")
+
+	select {
+	case ev := <-reader.EventChan:
+		if ev.Char != '😀' {
+			t.Errorf("delivered %q, want %q", ev.Char, '😀')
+		}
+	default:
+		t.Fatal("keyless text was dropped on stale modifier state")
+	}
+}
+
+// Only the composed text of a chord goes away. Plain typing is what the whole
+// text path exists for, and it still becomes the character of the key press
+// waiting for it.
+func TestGogpuHost_PlainTextInputStillArrives(t *testing.T) {
+	oldComposes := gogpuAltComposesText
+	defer func() { gogpuAltComposesText = oldComposes }()
+	gogpuAltComposesText = true
+
+	pr, _ := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	defer reader.Close()
+
+	host := &GogpuHost{
+		reader: reader,
+		pendingKeyEvent: &vtinput.InputEvent{
+			Type:           vtinput.KeyEventType,
+			KeyDown:        true,
+			VirtualKeyCode: vtinput.VK_A,
+		},
+	}
+
+	host.handleTextInput("ф")
+
+	select {
+	case ev := <-reader.EventChan:
+		if ev.Char != 'ф' || ev.VirtualKeyCode != vtinput.VK_A {
+			t.Errorf("delivered %s, want VK_A carrying %q", ev.String(), 'ф')
+		}
+	default:
+		t.Fatal("plain typing was dropped")
+	}
+	if got := host.lastRuneForVK[vtinput.VK_A]; got != 'ф' {
+		t.Errorf("VK_A learned %q, want %q", got, 'ф')
+	}
+}
+
+// Where the platform does not compose for a chord, its text is the character
+// the user asked for and has to go through: Alt with Ctrl is AltGr on Windows
+// and Linux, and AltGr+E is €.
+func TestGogpuHost_AltGrTextSurvivesWhereNothingComposes(t *testing.T) {
+	oldComposes := gogpuAltComposesText
+	defer func() { gogpuAltComposesText = oldComposes }()
+	gogpuAltComposesText = false
+
+	pr, _ := io.Pipe()
+	reader := vtinput.NewReader(pr, true)
+	defer reader.Close()
+
+	host := &GogpuHost{
+		reader:      reader,
+		currentMods: vtinput.RightAltPressed | vtinput.LeftCtrlPressed,
+	}
+
+	host.suppressTextInput = gogpuKeystrokeSwallowsText(gpucontext.KeyE, vtinput.VK_E, host.currentMods)
+	host.handleTextInput("€")
+
+	select {
+	case ev := <-reader.EventChan:
+		if ev.Char != '€' {
+			t.Errorf("delivered %q, want %q", ev.Char, '€')
+		}
+	default:
+		t.Fatal("AltGr text was dropped")
+	}
+}
+
+// The character a chord carries is the one its key was seen to type on this
+// layout, and failing that the one its virtual key is named after. Keys that
+// name no character keep none.
+func TestGogpuHost_CharForVK(t *testing.T) {
+	host := &GogpuHost{lastRuneForVK: map[uint16]rune{vtinput.VK_A: 'ф'}}
+
+	if got := host.charForVK(vtinput.VK_A); got != 'ф' {
+		t.Errorf("charForVK(VK_A) = %q, want the layout's %q", got, 'ф')
+	}
+	if got := host.charForVK(vtinput.VK_T); got != 't' {
+		t.Errorf("charForVK(VK_T) = %q, want %q", got, 't')
+	}
+	if got := host.charForVK(vtinput.VK_F5); got != 0 {
+		t.Errorf("charForVK(VK_F5) = %q, want no character", got)
+	}
+	if got := (&GogpuHost{}).charForVK(vtinput.VK_T); got != 't' {
+		t.Errorf("charForVK(VK_T) with no layout memory = %q, want %q", got, 't')
+	}
+}
+
+func TestGogpuKeystrokeSwallowsText(t *testing.T) {
+	oldComposes := gogpuAltComposesText
+	defer func() { gogpuAltComposesText = oldComposes }()
+
+	tests := []struct {
+		name     string
+		composes bool
+		key      gpucontext.Key
+		vk       uint16
+		mods     vtinput.ControlKeyState
+		want     bool
+	}{
+		{"plain typing", true, gpucontext.KeyA, vtinput.VK_A, 0, false},
+		{"Shift alone", true, gpucontext.KeyA, vtinput.VK_A, vtinput.ShiftPressed, false},
+		{"Alt chord", true, gpucontext.KeyT, vtinput.VK_T, vtinput.LeftAltPressed, true},
+		{"Ctrl chord", true, gpucontext.KeyA, vtinput.VK_A, vtinput.RightCtrlPressed, true},
+		{"Alt chord, nothing composes", false, gpucontext.KeyT, vtinput.VK_T, vtinput.LeftAltPressed, false},
+		{"AltGr shape, nothing composes", false, gpucontext.KeyE, vtinput.VK_E, vtinput.RightAltPressed | vtinput.LeftCtrlPressed, false},
+		{"keypad navigation", false, gpucontext.KeyNumpad5, vtinput.VK_CLEAR, 0, true},
+		{"keypad digit", false, gpucontext.KeyNumpad5, vtinput.VK_NUMPAD5, vtinput.NumLockOn, false},
+	}
+	for _, tt := range tests {
+		gogpuAltComposesText = tt.composes
+		if got := gogpuKeystrokeSwallowsText(tt.key, tt.vk, tt.mods); got != tt.want {
+			t.Errorf("gogpuKeystrokeSwallowsText(%s) = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

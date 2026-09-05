@@ -269,18 +269,6 @@ func cropPadHighlighted(value string, offset, width int, baseAttr, matchAttr uin
 	return cells
 }
 
-func cropPad(value string, offset, width int) string {
-	runes := []rune(value)
-	if offset > len(runes) {
-		offset = len(runes)
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	value = runewidth.Truncate(string(runes[offset:]), width, "")
-	return value + strings.Repeat(" ", maxInt(0, width-runewidth.StringWidth(value)))
-}
-
 func (p *previewList) ProcessKey(e *vtinput.InputEvent) bool {
 	if !e.KeyDown || len(p.rows) == 0 {
 		return false
@@ -802,7 +790,7 @@ func fixedLines(value string, width, count int) []string {
 }
 
 func (d *Dialog) editWordDiv() {
-	d.host.InputBox(tr("VisRen.WordDivTitle", "Word delimiters"), tr("VisRen.WordDivPrompt", "Characters separating words (maximum 18):"), "VisRenWordDiv", func(value string) {
+	d.host.InputBox(tr("VisRen.WordDivTitle", "Word delimiters"), tr("VisRen.WordDivPrompt", "Characters separating words (maximum 18):"), d.wordDiv, func(value string) {
 		runes := []rune(value)
 		if len(runes) > 18 {
 			runes = runes[:18]

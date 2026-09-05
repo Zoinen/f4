@@ -1,0 +1,90 @@
+name: ConPTY line-wrap probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  system-conpty:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Report host
+        run: |
+          New-Item -ItemType Directory -Force -Path probe-out | Out-Null
+          $log = "probe-out/host.txt"
+          cmd /c ver | Tee-Object -FilePath $log
+          "conhost: " + (Get-Item C:\Windows\System32\conhost.exe).VersionInfo.FileVersion | Tee-Object -FilePath $log -Append
+          "image:   $env:ImageVersion" | Tee-Object -FilePath $log -Append
+
+      - name: Install pywinpty
+        run: pip install pywinpty
+
+      - name: Probe
+        run: python tools/conpty_probe.py
+
+      - name: Upload probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conpty-probe-output
+          path: probe-out/
+
+  bundled-conpty:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch a post-rewrite ConPTY from a Windows Terminal release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path probe-out, conpty | Out-Null
+          $tag = gh release list --repo microsoft/terminal --limit 60 --json tagName `
+                 | ConvertFrom-Json `
+                 | Where-Object { $_.tagName -match '^v1\.(2[2-9]|[3-9][0-9])\.' } `
+                 | Select-Object -First 1 -ExpandProperty tagName
+          if (-not $tag) { throw "no release >= v1.22 found" }
+          "release: $tag" | Tee-Object -FilePath probe-out/bundle.txt
+          gh release download $tag --repo microsoft/terminal --pattern "*ConPTY*.nupkg" --dir dl
+          $pkg = Get-ChildItem dl -Filter *.nupkg | Select-Object -First 1
+          if (-not $pkg) { throw "no ConPTY nupkg asset in $tag" }
+          "package: $($pkg.Name)" | Tee-Object -FilePath probe-out/bundle.txt -Append
+          Copy-Item $pkg.FullName dl/pkg.zip
+          Expand-Archive dl/pkg.zip -DestinationPath dl/pkg -Force
+          Get-ChildItem dl/pkg -Recurse -File | ForEach-Object {
+            $_.FullName.Substring((Resolve-Path dl/pkg).Path.Length + 1)
+          } | Tee-Object -FilePath probe-out/pkg-contents.txt | Out-Null
+          $dll = Get-ChildItem dl/pkg -Recurse -Filter conpty.dll `
+                 | Where-Object { $_.FullName -match '\\win-x64\\' } `
+                 | Select-Object -First 1
+          if (-not $dll) { throw "x64 conpty.dll not found - see probe-out/pkg-contents.txt" }
+          $exe = Get-ChildItem dl/pkg -Recurse -Filter OpenConsole.exe `
+                 | Where-Object { $_.FullName -match '\\x64\\' } `
+                 | Select-Object -First 1
+          if (-not $exe) { throw "x64 OpenConsole.exe not found - see probe-out/pkg-contents.txt" }
+          "picked:  $($dll.FullName)" | Tee-Object -FilePath probe-out/bundle.txt -Append
+          "picked:  $($exe.FullName)" | Tee-Object -FilePath probe-out/bundle.txt -Append
+          Copy-Item $dll.FullName conpty/
+          Copy-Item $exe.FullName conpty/
+          Get-ChildItem conpty | ForEach-Object {
+            "$($_.Name)  $($_.VersionInfo.FileVersion)"
+          } | Tee-Object -FilePath probe-out/bundle.txt -Append
+
+      - name: Probe bundled ConPTY
+        run: python tools/conpty_probe.py conpty/conpty.dll
+
+      - name: Upload probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conpty-probe-output-bundled
+          path: probe-out/

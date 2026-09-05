@@ -262,7 +262,7 @@ func (c *Connection) downloadFileData(responseToken, fileID uint64, writer io.Wr
 	if err != nil {
 		return fmt.Errorf("downloadFileData: failed to connect to data service: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // Download-connection cleanup is best effort.
 
 	request := make([]byte, 40)
 	copy(request[:8], "rwb!FILE")

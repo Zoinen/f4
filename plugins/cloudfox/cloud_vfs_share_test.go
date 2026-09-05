@@ -49,7 +49,11 @@ func TestCloudVFSShareLinkAdapterResolvesAliasesAndCopiesCapabilities(t *testing
 		created: vfs.ShareLink{URL: "https://share.example/new?token=opaque", Role: vfs.ShareRoleViewer, ExpiresAt: time.Now().Add(time.Hour)},
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := cloud.ReadDir(context.Background(), cloud.GetPath(), func([]vfs.VFSItem) {}); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +106,11 @@ func TestCloudVFSShareLinkAdapterRejectsUnsafeURLs(t *testing.T) {
 				created:     vfs.ShareLink{URL: raw},
 			}
 			cloud := testCloudVFS(t, backend)
-			defer cloud.Close()
+			t.Cleanup(func() {
+				if err := cloud.Close(); err != nil {
+					t.Errorf("close test resource: %v", err)
+				}
+			})
 			if _, err := cloud.ShareLinkInfo(context.Background(), cloud.GetPath()); err == nil {
 				t.Fatal("unsafe info URL was accepted")
 			}
@@ -130,7 +138,11 @@ func TestCloudVFSShareLinkAdapterRejectsMismatchedMutationResultsAsUnknown(t *te
 		t.Run(name, func(t *testing.T) {
 			backend := &fakeShareBackend{fakeBackend: &fakeBackend{}, created: created}
 			cloud := testCloudVFS(t, backend)
-			defer cloud.Close()
+			t.Cleanup(func() {
+				if err := cloud.Close(); err != nil {
+					t.Errorf("close test resource: %v", err)
+				}
+			})
 			_, err := cloud.CreateShareLink(context.Background(), cloud.GetPath(), request)
 			if !errors.Is(err, vfs.ErrOperationStateUnknown) {
 				t.Fatalf("CreateShareLink error = %v", err)
@@ -141,7 +153,11 @@ func TestCloudVFSShareLinkAdapterRejectsMismatchedMutationResultsAsUnknown(t *te
 
 func TestCloudVFSShareLinkAdapterReportsUnsupportedBackend(t *testing.T) {
 	cloud := testCloudVFS(t, &fakeBackend{})
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if _, err := cloud.ShareLinkInfo(context.Background(), cloud.GetPath()); !errors.Is(err, ErrShareLinksUnsupported) {
 		t.Fatalf("ShareLinkInfo error = %v", err)
 	}

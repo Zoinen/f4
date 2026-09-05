@@ -55,7 +55,11 @@ func TestIOSDeviceIntegration(t *testing.T) {
 	if !ok {
 		t.Fatalf("Media backend = %T, want *AFCVFS", mounted)
 	}
-	defer media.Close()
+	t.Cleanup(func() {
+		if err := media.Close(); err != nil {
+			t.Errorf("close Media filesystem: %v", err)
+		}
+	})
 
 	repeated, err := backend.openMedia(ctx, nil, selected)
 	if err != nil {
@@ -221,7 +225,11 @@ func TestIOSDeviceIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open application %q: %v", testBundle, err)
 		}
-		defer appVFS.Close()
+		t.Cleanup(func() {
+			if err := appVFS.Close(); err != nil {
+				t.Errorf("close application filesystem: %v", err)
+			}
+		})
 		var appEntries []vfs.VFSItem
 		if err := appVFS.ReadDir(ctx, appVFS.GetPath(), func(chunk []vfs.VFSItem) {
 			appEntries = append(appEntries, chunk...)
@@ -260,7 +268,11 @@ func TestIOSDeviceIntegration(t *testing.T) {
 		t.Fatalf("open CoreDevice %s: %v", label, err)
 	}
 	coreVFS := newCoreVFS(media, selected, domain, identifier, label+" (CoreDevice)", service, backend.core)
-	defer coreVFS.Close()
+	t.Cleanup(func() {
+		if err := coreVFS.Close(); err != nil {
+			t.Errorf("close CoreDevice filesystem: %v", err)
+		}
+	})
 	corePath := strings.TrimSpace(os.Getenv("F4_IOS_TEST_CORE_PATH"))
 	if corePath == "" {
 		corePath = coreVFS.GetPath()

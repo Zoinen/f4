@@ -3297,30 +3297,36 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
     QQuickItem *minimizeIcon = nullptr;
     QQuickItem *maximizeIcon = nullptr;
     QQuickItem *closeIcon = nullptr;
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (appIcon = visualItemWithSource(
-             appButton,
-             QUrl(QStringLiteral("qrc:/F4QtHost/icons/app/f4.svg")))), 3000);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (minimizeIcon = visualItemWithObjectNamePrefix(
-             minimizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (maximizeIcon = visualItemWithObjectNamePrefix(
-             maximizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
-    QTRY_VERIFY_WITH_TIMEOUT(
-        (closeIcon = visualItemWithObjectNamePrefix(
-             closeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
-    verifyDirectSvgIcon(appIcon, QStringLiteral("application icon"));
-    verifyDirectSvgIcon(minimizeIcon, QStringLiteral("minimize icon"));
-    verifyDirectSvgIcon(maximizeIcon, QStringLiteral("maximize icon"));
-    verifyDirectSvgIcon(closeIcon, QStringLiteral("close icon"));
-    const QColor darkChromeIconColor(QStringLiteral("#ffffff"));
-    QCOMPARE(minimizeIcon->property("color").value<QColor>(),
-             darkChromeIconColor);
-    QCOMPARE(maximizeIcon->property("color").value<QColor>(),
-             darkChromeIconColor);
-    QCOMPARE(closeIcon->property("color").value<QColor>(),
-             darkChromeIconColor);
+    const bool customTitleBarIconsVisible = appButton->isVisible();
+    QCOMPARE(minimizeButton->isVisible(), customTitleBarIconsVisible);
+    QCOMPARE(maximizeButton->isVisible(), customTitleBarIconsVisible);
+    QCOMPARE(closeButton->isVisible(), customTitleBarIconsVisible);
+    if (customTitleBarIconsVisible) {
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (appIcon = visualItemWithSource(
+                 appButton,
+                 QUrl(QStringLiteral("qrc:/F4QtHost/icons/app/f4.svg")))), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (minimizeIcon = visualItemWithObjectNamePrefix(
+                 minimizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (maximizeIcon = visualItemWithObjectNamePrefix(
+                 maximizeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(
+            (closeIcon = visualItemWithObjectNamePrefix(
+                 closeButton, QStringLiteral("titleBarButtonIcon"))), 3000);
+        verifyDirectSvgIcon(appIcon, QStringLiteral("application icon"));
+        verifyDirectSvgIcon(minimizeIcon, QStringLiteral("minimize icon"));
+        verifyDirectSvgIcon(maximizeIcon, QStringLiteral("maximize icon"));
+        verifyDirectSvgIcon(closeIcon, QStringLiteral("close icon"));
+        const QColor darkChromeIconColor(QStringLiteral("#ffffff"));
+        QCOMPARE(minimizeIcon->property("color").value<QColor>(),
+                 darkChromeIconColor);
+        QCOMPARE(maximizeIcon->property("color").value<QColor>(),
+                 darkChromeIconColor);
+        QCOMPARE(closeIcon->property("color").value<QColor>(),
+                 darkChromeIconColor);
+    }
 
     const QPointF titleBarOrigin = titleBar->mapToItem(rootItem, QPointF{});
     const qreal titleBarCenterY = titleBarOrigin.y() + titleBar->height() / 2;
@@ -3337,11 +3343,13 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
                                 .arg(description)
                                 .arg(delta, 0, 'f', 6)));
     };
-    verifyWindowControlCenter(minimizeIcon,
-                              QStringLiteral("minimize icon"));
-    verifyWindowControlCenter(maximizeIcon,
-                              QStringLiteral("maximize icon"));
-    verifyWindowControlCenter(closeIcon, QStringLiteral("close icon"));
+    if (customTitleBarIconsVisible) {
+        verifyWindowControlCenter(minimizeIcon,
+                                  QStringLiteral("minimize icon"));
+        verifyWindowControlCenter(maximizeIcon,
+                                  QStringLiteral("maximize icon"));
+        verifyWindowControlCenter(closeIcon, QStringLiteral("close icon"));
+    }
 
     QTest::mouseMove(fixture.window, QPoint(450, 300));
     minimizeButton->setOpacity(1.0);
@@ -3381,10 +3389,12 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
                  qPrintable(description + QStringLiteral(": ")
                             + difference));
     };
-    verifyDirectSvgPixels(appIcon, QStringLiteral("application icon"));
-    verifyDirectSvgPixels(minimizeIcon, QStringLiteral("minimize icon"));
-    verifyDirectSvgPixels(maximizeIcon, QStringLiteral("maximize icon"));
-    verifyDirectSvgPixels(closeIcon, QStringLiteral("close icon"));
+    if (customTitleBarIconsVisible) {
+        verifyDirectSvgPixels(appIcon, QStringLiteral("application icon"));
+        verifyDirectSvgPixels(minimizeIcon, QStringLiteral("minimize icon"));
+        verifyDirectSvgPixels(maximizeIcon, QStringLiteral("maximize icon"));
+        verifyDirectSvgPixels(closeIcon, QStringLiteral("close icon"));
+    }
 
     QQuickItem *const pathSeparator = visualItemWithObjectNamePrefix(
         pathControl, QStringLiteral("pathBreadcrumbRoot-separator"));

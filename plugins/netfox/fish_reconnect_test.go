@@ -39,13 +39,16 @@ func localShellDialer(t *testing.T) FishDialer {
 			return nil, nil, nil, err
 		}
 		t.Cleanup(func() {
-			stdin.Close()
+			_ = stdin.Close() // process cleanup only
 			done := make(chan struct{})
-			go func() { cmd.Wait(); close(done) }()
+			go func() {
+				_ = cmd.Wait() // process cleanup only
+				close(done)
+			}()
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):
-				cmd.Process.Kill()
+				_ = cmd.Process.Kill() // process cleanup only
 			}
 		})
 		return stdin, stdout, stdin, nil
@@ -65,7 +68,11 @@ func TestFishReconnectReplacesADeadSession(t *testing.T) {
 		}
 		t.Fatalf("open: %v", err)
 	}
-	defer v.Close()
+	defer func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	was := v.GetPath()
 	dead := v.conn.current()
@@ -104,7 +111,11 @@ func TestFishReconnectYieldsToOneThatAlreadyHappened(t *testing.T) {
 		}
 		t.Fatalf("open: %v", err)
 	}
-	defer v.Close()
+	defer func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	dead := v.conn.current()
 	dead.Session().MarkBroken()
@@ -150,7 +161,9 @@ func TestFishReconnectAfterCloseRefuses(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	dead := v.conn.current()
-	v.Close()
+	if err := v.Close(); err != nil {
+		t.Fatalf("close filesystem before reconnect: %v", err)
+	}
 
 	if _, err := v.conn.reconnect(context.Background(), dead); !errors.Is(err, fishplus.ErrBroken) {
 		t.Fatalf("reconnect after close answered %v, want ErrBroken", err)

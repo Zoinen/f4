@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -18,13 +19,20 @@ func RunSudoAskpass() {
 	parentStr := os.Getenv("F4_ASKPASS_PARENT")
 	fmt.Fprintf(os.Stderr, "F4_ASKPASS: Helper started for parent PID %s\n", parentStr)
 
-	// Log environment to a file for debugging
+	// The dispatcher's stderr is not visible to the f4 process, so this file is
+	// how a failed elevation gets diagnosed: SudoClient reads it back when the
+	// socket never appears.
+	//
+	// It deliberately does not record the environment. The path is predictable
+	// and lives in a directory every local user can write, so anything written
+	// here is within reach of another user who created the file first, and the
+	// environment is where tokens and passwords live. O_NOFOLLOW stops the
+	// other half of that: a symlink planted here would redirect the write.
 	debugLogPath := filepath.Join(os.TempDir(), fmt.Sprintf("f4-sudo-debug-%d.txt", os.Getuid()))
-	debugLog, _ := os.OpenFile(debugLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+	debugLog, _ := os.OpenFile(debugLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] ASKPASS: PID=%d, ParentPID=%s, Args=%v\n", time.Now().Format("15:04:05"), os.Getpid(), parentStr, os.Args)
-		fmt.Fprintf(debugLog, "[%s] ASKPASS: Environ=%v\n", time.Now().Format("15:04:05"), os.Environ())
-		debugLog.Close()
+		_, _ = fmt.Fprintf(debugLog, "[%s] ASKPASS: PID=%d, ParentPID=%s, Args=%v\n", time.Now().Format("15:04:05"), os.Getpid(), parentStr, os.Args) // Debug logging is best-effort.
+		_ = debugLog.Close()                                                                                                                          // Debug log persistence is best-effort.
 	}
 	parentPID, _ := strconv.Atoi(parentStr)
 	if parentPID == 0 {
@@ -47,10 +55,11 @@ func RunSudoAskpass() {
 	if err != nil {
 		os.Exit(1)
 	}
-	defer conn.Close()
 
 	// Request password
-	fmt.Fprintf(conn, "GET\n")
+	if _, err := fmt.Fprintf(conn, "GET\n"); err != nil {
+		os.Exit(1)
+	}
 
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
@@ -60,22 +69,35 @@ func RunSudoAskpass() {
 
 	// Output password to sudo
 	vtui.DebugLog("F4_ASKPASS: Sending %d bytes to sudo stdout", n)
-	os.Stdout.Write(buf[:n])
+	if _, err := os.Stdout.Write(buf[:n]); err != nil {
+		os.Exit(1)
+	}
 	// Sudo expects the password followed by a newline or just the password depending on the version.
 	// Most implementations use a trailing newline.
-	os.Stdout.Write([]byte("\n"))
+	if _, err := os.Stdout.Write([]byte("\n")); err != nil {
+		os.Exit(1)
+	}
+	_ = conn.Close() // The request is complete; process exit remains authoritative.
 	os.Exit(0)
 }
 
 func (c *SudoClient) runAskpassServer(path string) {
-	os.Remove(path)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		vtui.DebugLog("SUDO_CLIENT: remove stale askpass socket %q: %v", path, err)
+		return
+	}
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		vtui.DebugLog("SUDO_CLIENT: runAskpassServer Listen failed for %q: %v", path, err)
 		return
 	}
-	defer l.Close()
-	os.Chmod(path, 0600)
+	defer func() {
+		_ = l.Close() // Listener cleanup cannot affect a completed request.
+	}()
+	if err := os.Chmod(path, 0600); err != nil {
+		vtui.DebugLog("SUDO_CLIENT: secure askpass socket %q: %v", path, err)
+		return
+	}
 
 	for {
 		conn, err := l.Accept()
@@ -90,7 +112,9 @@ func (c *SudoClient) runAskpassServer(path string) {
 
 func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 	vtui.DebugLog("SUDO_CLIENT: Received askpass request from helper, current attempts: %d", c.attempts)
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close() // Request writes are checked before transport cleanup.
+	}()
 
 	// Max 3 attempts per connection session to prevent UI lockup
 	if c.attempts >= 3 {
@@ -157,7 +181,9 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 	password := <-resChan
 	if password != "" {
 		vtui.DebugLog("SUDO_CLIENT: Password received from UI, sending to helper...")
-		conn.Write([]byte(password))
+		if _, err := conn.Write([]byte(password)); err != nil {
+			vtui.DebugLog("SUDO_CLIENT: Failed to send password to helper: %v", err)
+		}
 	} else {
 		vtui.DebugLog("SUDO_CLIENT: Password dialog cancelled by user.")
 	}

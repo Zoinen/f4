@@ -267,6 +267,8 @@ func (s *ConnectionStore) update(ctx context.Context, mutate func(*connectionDoc
 
 func (s *ConnectionStore) readUnlocked() (connectionDocument, error) {
 	doc := connectionDocument{Version: connectionFileVersion}
+	// #nosec G703 -- s.path is the caller-selected metadata file itself (or the
+	// fixed ConfigDir/CloudFox.json default), not a child name from a provider.
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return doc, nil
@@ -340,6 +342,7 @@ func writeJSONAtomic(filename string, value any) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("cloudfox: create config directory: %w", err)
 	}
+	// #nosec G302 -- dir is a directory, for which owner-only 0700 is the restrictive mode.
 	if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrPermission) {
 		return fmt.Errorf("cloudfox: protect config directory: %w", err)
 	}

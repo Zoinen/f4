@@ -1,9 +1,6 @@
 package vtui
 
-import (
-	"github.com/mattn/go-runewidth"
-	"github.com/unxed/vtinput"
-)
+import "github.com/unxed/vtinput"
 
 // Button represents an interactive button.
 type Button struct {
@@ -23,7 +20,7 @@ func NewButton(x, y int, text string) *Button {
 	// Buttons in Far always look like "[ Text ]"
 	b.SetText(text)
 	// Calculate width based on the parsed clean text
-	b.X2 = b.X1 + runewidth.StringWidth(b.cleanText) - 1
+	b.X2 = b.X1 + StringWidth(b.cleanText) - 1
 	return b
 }
 
@@ -50,7 +47,11 @@ func (b *Button) DisplayObject(scr *ScreenBuf) {
 	if !b.IsVisible() {
 		return
 	}
-	n, h := b.GetStateAttrs(ColDialogButton, ColDialogSelectedButton, ColDialogHighlightButton, ColDialogHighlightSelectedButton)
+	normalIdx := ColDialogButton
+	if b.IsDefault {
+		normalIdx = ColDialogHighlightButton
+	}
+	n, h := b.GetStateAttrs(normalIdx, ColDialogSelectedButton, ColDialogHighlightButton, ColDialogHighlightSelectedButton)
 	if b.mousePressed {
 		n, h = b.GetStateAttrs(ColDialogSelectedButton, ColDialogSelectedButton, ColDialogHighlightSelectedButton, ColDialogHighlightSelectedButton)
 	}
@@ -106,5 +107,33 @@ func (b *Button) SetDisabled(d bool) {
 	if d {
 		b.mouseArmed = false
 		b.mousePressed = false
+	}
+}
+
+func (b *Button) SizeSpecH() SizeSpec {
+	if b.sizeSpecH != nil {
+		return *b.sizeSpecH
+	}
+	w := StringWidth(b.cleanText)
+	if w < 8 {
+		w = 8
+	}
+	return SizeSpec{
+		Hint:    w,
+		Min:     6,
+		Policy:  PolicyFixed,
+		Stretch: 1,
+	}
+}
+
+func (b *Button) SizeSpecV() SizeSpec {
+	if b.sizeSpecV != nil {
+		return *b.sizeSpecV
+	}
+	return SizeSpec{
+		Hint:    1,
+		Min:     1,
+		Policy:  PolicyFixed,
+		Stretch: 1,
 	}
 }

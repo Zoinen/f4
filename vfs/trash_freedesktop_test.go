@@ -109,13 +109,35 @@ func TestFreedesktopTrashRejectsItsOwnAncestor(t *testing.T) {
 	}
 }
 
-func TestFreedesktopTrashRejectsUnsafeDirectory(t *testing.T) {
+func TestFreedesktopTrashRepairsBroadPermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Trash")
-	if err := os.Mkdir(path, 0755); err != nil {
+	if err := os.Mkdir(path, 0775); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateTrashDir(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != privateTrashDirMode {
+		t.Fatalf("repaired trash directory mode = %#o, want %#o", got, privateTrashDirMode)
+	}
+}
+
+func TestFreedesktopTrashRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	path := filepath.Join(root, "Trash")
+	if err := os.Mkdir(target, privateTrashDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensurePrivateTrashDir(path); err == nil {
-		t.Fatal("world-readable trash directory was accepted")
+		t.Fatal("symlink trash directory was accepted")
 	}
 }
 
@@ -138,6 +160,15 @@ func TestOSVFSFreedesktopTrashEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	dataHome := filepath.Join(root, "data")
 	t.Setenv("XDG_DATA_HOME", dataHome)
+	trashRoot := filepath.Join(dataHome, "Trash")
+	for _, path := range []string{trashRoot, filepath.Join(trashRoot, "files"), filepath.Join(trashRoot, "info")} {
+		if err := os.MkdirAll(path, 0775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0775); err != nil {
+			t.Fatal(err)
+		}
+	}
 	work := filepath.Join(root, "work")
 	if err := os.Mkdir(work, 0700); err != nil {
 		t.Fatal(err)
@@ -160,5 +191,14 @@ func TestOSVFSFreedesktopTrashEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dataHome, "Trash", "info", "recoverable.txt.trashinfo")); err != nil {
 		t.Fatalf("trash metadata missing: %v", err)
+	}
+	for _, path := range []string{trashRoot, filepath.Join(trashRoot, "files"), filepath.Join(trashRoot, "info")} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != privateTrashDirMode {
+			t.Errorf("%s mode = %#o, want %#o", path, got, privateTrashDirMode)
+		}
 	}
 }

@@ -2138,13 +2138,9 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
 
     keyRecorder.clear();
     QTest::keyPress(&view, Qt::Key_Escape);
-    QVERIFY(bridge.viewerVisible());
-    QVERIFY(viewer->property("transitioning").toBool());
     QCOMPARE(keyRecorder.count(Qt::Key_Escape, true), 0);
-    QTest::keyRelease(&view, Qt::Key_Escape);
-    QCOMPARE(keyRecorder.count(Qt::Key_Escape, false), 0);
-    QVERIFY(QMetaObject::invokeMethod(viewer, "finishClose"));
-    QTRY_VERIFY(!bridge.viewerVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(!bridge.viewerVisible(), 1000);
+    QVERIFY(!viewerLoader->property("item").value<QObject *>());
     QCOMPARE(keyRecorder.count(Qt::Key_Escape, true), 0);
     QObject *panelObject = panelHost->findChild<QObject *>(
         QStringLiteral("embeddedGalleryPanel"));

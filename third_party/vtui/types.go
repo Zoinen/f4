@@ -73,6 +73,9 @@ type UIElement interface {
 	GetOwner() CommandHandler
 	GetHotkey() rune
 	GetId() string
+	SetId(string)
+	ID() string
+	SetID(string)
 	GetHelp() string
 	ProcessKey(e *vtinput.InputEvent) bool
 	ProcessMouse(e *vtinput.InputEvent) bool
@@ -83,6 +86,8 @@ type UIElement interface {
 	WantsChars() bool
 	GetFocusLink() UIElement
 	MoveRelative(dx, dy int)
+	SizeSpecH() SizeSpec
+	SizeSpecV() SizeSpec
 }
 
 // Container is an interface for elements that have child UI elements.

@@ -91,6 +91,7 @@ func readPacket(r io.Reader, expectedNumber uint64) (packet, error) {
 		return packet{}, fmt.Errorf("%w: AFC packet exceeds configured bounds", ErrProtocol)
 	}
 
+	// #nosec G115 -- maxPacketSize caps both validated wire lengths at 64 MiB.
 	headerLen := int(h.ThisLen - headerSize)
 	payloadLen := int(h.EntireLen - h.ThisLen)
 	p := packet{

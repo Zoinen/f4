@@ -23,7 +23,7 @@ const (
 	realMutationEnv        = "F4_CLOUDFOX_REAL_MUTATION"
 	realMutationConfirmed  = "CONFIRMED"
 	realConfigDirEnv       = "F4_CLOUDFOX_REAL_CONFIG_DIR"
-	realVaultPasswordEnv   = "F4_CLOUDFOX_REAL_VAULT_PASSWORD"
+	realVaultPasswordEnv   = "F4_CLOUDFOX_REAL_VAULT_PASSWORD" // #nosec G101 -- this is an environment-variable name, not a credential value.
 	realGoogleSelectorEnv  = "F4_CLOUDFOX_REAL_GOOGLE_CONNECTION"
 	realYandexSelectorEnv  = "F4_CLOUDFOX_REAL_YANDEX_CONNECTION"
 	realYandexDialRetryEnv = "F4_CLOUDFOX_REAL_YANDEX_DIAL_RETRIES"
@@ -68,7 +68,7 @@ func TestRealSavedCloudConnections(t *testing.T) {
 	if !filepath.IsAbs(configDir) {
 		t.Fatal("real CloudFox config directory must be absolute")
 	}
-	info, err := os.Stat(configDir)
+	info, err := os.Stat(configDir) // #nosec G703 -- this explicitly opted-in integration test must inspect the operator-supplied absolute config directory.
 	if err != nil || !info.IsDir() {
 		t.Fatal("real CloudFox config directory is unavailable")
 	}
@@ -490,8 +490,12 @@ func TestRealRetryTCPDialContextRetriesOnlyUnestablishedTCPConnections(t *testin
 
 	calls = 0
 	connected, peer := net.Pipe()
-	defer connected.Close()
-	defer peer.Close()
+	defer func() {
+		_ = connected.Close() // connection cleanup only
+	}()
+	defer func() {
+		_ = peer.Close() // connection cleanup only
+	}()
 	dial = realRetryTCPDialContext(func(context.Context, string, string) (net.Conn, error) {
 		calls++
 		return connected, wantErr
@@ -713,7 +717,7 @@ func realPatternBytes(size int, seed byte) []byte {
 		state ^= state << 13
 		state ^= state >> 17
 		state ^= state << 5
-		payload[i] = byte(state)
+		payload[i] = byte(state) // #nosec G115 -- the fixture generator deliberately emits the xorshift state's low byte.
 	}
 	return payload
 }

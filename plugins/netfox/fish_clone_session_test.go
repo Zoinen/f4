@@ -18,7 +18,11 @@ func TestFishCloneStartsOnTheLiveSession(t *testing.T) {
 		}
 		t.Fatalf("open: %v", err)
 	}
-	defer v.Close()
+	defer func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	// One view reconnects; every other view of the connection follows, which
 	// is what the clone then has to be born on too.
@@ -26,7 +30,11 @@ func TestFishCloneStartsOnTheLiveSession(t *testing.T) {
 	if !ok {
 		t.Fatal("Clone did not hand back a FishVFS")
 	}
-	defer reconnecting.Close()
+	defer func() {
+		if err := reconnecting.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	dead := v.Client()
 	dead.Session().MarkBroken()
@@ -41,7 +49,11 @@ func TestFishCloneStartsOnTheLiveSession(t *testing.T) {
 	if !ok {
 		t.Fatal("Clone did not hand back a FishVFS")
 	}
-	defer fresh.Close()
+	defer func() {
+		if err := fresh.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	if fresh.Client() == dead {
 		t.Fatal("the clone was born holding the session that had died")

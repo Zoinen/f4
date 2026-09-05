@@ -6,8 +6,9 @@
 | Platform | Format | Link |
 | :--- | :--- | :--- |
 | **Windows** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-amd64.zip) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-arm64.zip) |
+| **Windows 7/8/8.1** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows7-amd64.zip) |
 | **macOS** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-arm64.tar.gz) |
-| **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) |
+| **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) / [386](https://github.com/unxed/f4/releases/download/nightly/f4-linux-386.tar.gz) / [mips](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips.tar.gz) / [mipsle](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mipsle.tar.gz) / [mips64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64.tar.gz) / [mips64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64le.tar.gz) / [riscv64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-riscv64.tar.gz) / [loong64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-loong64.tar.gz) / [ppc64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64.tar.gz) / [ppc64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64le.tar.gz) |
 | **FreeBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-arm64.tar.gz) |
 | **DragonflyBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-dragonfly-amd64.tar.gz) |
 | **OpenBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-openbsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-openbsd-arm64.tar.gz) |
@@ -39,7 +40,7 @@ This project is built around several core philosophical and technical principles
 4. **Consistent UX:** Adherence to a strict set of [Navigation and Interaction Guidelines](UX_GUIDELINES.md) that blend the best of classic TUI paradigms.
 5. **Bazaar Policy:** Openness to community contributions and patches.
 
-*Trade-offs:* The compiled binary is currently ~50MB, which might not fit in highly constrained environments like home routers.
+*Trade-offs:* The compiled binary is currently ~110MB, which might not fit in highly constrained environments like home routers.
 
 ### UI & Input
 
@@ -56,20 +57,57 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 
 **Command Line Options:**
 *   `--gui`: Start in GUI mode using the best available backend for your OS.
+*   `--gui=win32`: Use native Win32/GDI graphical windowing (Windows and Wine).
 *   `--gui=gogpu`: Use the hardware-accelerated (GPU) renderer.
 *   `--gui=x11`: Use native X11 windowing (Linux/BSD/macOS).
 *   `--gui=wayland`: Use native Wayland windowing (Linux/BSD).
+*   `--gui=ebiten`: Use the portable Ebitengine graphical backend (Windows/Linux/macOS).
+*   `--tty=ansi`: Force terminal mode with ANSI input/output.
+*   `--tty=win32`: Force terminal mode with the Windows Console API (`winapi` is an alias).
+*   `--gui=auto` / `--tty=auto`: Ignore the configured default backend for this run and detect one.
+
+The available backends and their main characteristics are:
+
+| Backend or mode | Platforms | Characteristics |
+| --- | --- | --- |
+| `--gui=win32` | Windows, Wine | Native Win32 window and GDI rendering; does not require ConPTY. |
+| `--gui=gogpu` | Platforms supported by gogpu | Hardware-accelerated rendering when the required graphics stack is available. |
+| `--gui=x11` | X11 desktops (Linux/BSD/macOS) | Native X11 windowing. |
+| `--gui=wayland` | Linux/BSD with Wayland | Native Wayland windowing. |
+| `--gui=ebiten` | Windows/Linux/macOS | Portable graphical fallback with no gogpu stack requirement. |
+| `--tty=ansi` | ANSI-compatible terminals | Renders through the terminal's byte stream. |
+| `--tty=win32` (`winapi`) | Windows and Wine consoles | Uses the Windows Console API; useful when ConPTY is unavailable. |
+| `Panel.ConsoleMode = host` | Host terminals with PTY support | Sends the shell to the host terminal for native scrollback, selection, and job control; f4 falls back to a simple execution mode when a PTY is unavailable. |
 
 Example:
 ```bash
 ./f4 --gui=gogpu
 ```
 
+**Configured defaults:**
+
+To avoid repeating the same switch on every start, the choice can be saved in
+`settings.ini` under `Options > Startup settings` (or by hand):
+
+```ini
+[Startup]
+Mode = gui          ; auto (detect, the default), tty, or gui
+GuiBackend = gogpu  ; empty means detect; win32, gogpu, ebiten, x11, wayland
+TTYBackend =        ; empty means detect; ansi, winapi
+```
+
+`Mode` decides which renderer family f4 opens when neither `--gui` nor `--tty`
+is given, and the two backend keys say which renderer that family uses. They
+are only defaults: the command line still wins on any individual run, and
+`--gui=auto` / `--tty=auto` fall back to detection for that run. A configured
+backend that turns out to be unusable on the current machine falls back to
+automatic selection rather than preventing f4 from starting.
+
 ### Integrated Terminal & OS Integration
 
 *   **Built-in Terminal:** A fully-fledged built-in terminal running underneath the panels, just like `far2l`.
-*   **VTE Mirror Architecture:** To handle the complex differences between Unix byte-streams and Windows ConPTY 2D-rendering, the terminal uses a custom hybrid grid-and-extrusion engine. Read the [Terminal Architecture Guide](TERMINAL.md) for details.
-*   **Windows Strategy:** Currently, we target recent Windows versions only. Reasons are they support ConPTY and console interfaces working via ESC sequences. At the same time, f4's modular architecture makes it possible to implement rendering via Windows Console API in future (in fact, our Far-compatible internal architecture is ideally suited for this), so if you want f4 to run on your XP box you will not have to write too much code. Similarly, no one is stopping you from writing a layer for f4's built-in terminal that uses winpty instead of conpty to work on older Windows versions.
+*   **VTE Mirror Architecture:** The built-in terminal maintains its own parsed grid, while host-console mode can mirror the same PTY stream directly to the terminal. Read the [Terminal Architecture Guide](TERMINAL.md) for details.
+*   **Windows Strategy:** f4 supports both recent Windows terminals and environments where ConPTY is unavailable. Native Windows console mode uses the Windows Console API, and the Win32/GDI GUI backend works without a host terminal; under Wine, f4 can use the same Win32 GUI path or the `win32`/`winapi` console backend. ConPTY is therefore an optional integration path, not a prerequisite for running f4 on Windows.
 
 ### Plugin Architecture (Out-of-Process RPC)
 
@@ -129,10 +167,11 @@ To maintain the performance and quality of `f4`, all contributors (including AI 
 5. **FFI and Native Interoperability:** Avoid CGO to preserve easy cross-compilation. If native interoperability is necessary, utilize the `unxed/pureffi` library for fast, non-CGO FFI.
 6. **Language:** All code, comments, documentation, and commit messages must be in English to facilitate international collaboration.
 7. **Plan-First & Fail-Fast:** For complex tasks, start with a clear plan, break the work into incremental, logical chunks, and focus on failing fast to catch architectural flaws early.
+8. **Dialog Layouts (vtui AutoLayout):** All new dialogs must be built using `vtui` AutoLayout. Existing dialogs should be gradually refactored to AutoLayout (starting with those where layout misalignment occurs on resize). For details and API reference, see the [AutoLayout Engine Guide](https://github.com/unxed/vtui/blob/main/AUTOLAYOUT.md).
 
 Recommended instruction for LLMs:
 
-> If the task is large, break it down into multiple responses and start with a plan. For complex tasks, use an iterative, incremental approach similar to Agile or RUP. Follow the "fail fast" principle. Write tests for the generated code immediately. Use English for comments and similar elements to facilitate international collaboration. Keep licensing compliance in mind: for example, you cannot copy code verbatim—or nearly verbatim—from a GPL project into a BSD project; you must implement your own solution for the same problem. In garbage-collected languages, avoid allocating memory within hot loops.
+> If the task is large, break it down into multiple responses and start with a plan. For complex tasks, use an iterative, incremental approach similar to Agile or RUP. Follow the "fail fast" principle. Write tests for the generated code immediately. Use English for comments and similar elements to facilitate international collaboration. Build all new dialogs using vtui AutoLayout and gradually refactor existing ones (see https://github.com/unxed/vtui/blob/main/AUTOLAYOUT.md). Keep licensing compliance in mind: for example, you cannot copy code verbatim—or nearly verbatim—from a GPL project into a BSD project; you must implement your own solution for the same problem. In garbage-collected languages, avoid allocating memory within hot loops.
 
 ---
 ### Getting Started (Ubuntu)
@@ -155,15 +194,15 @@ cd f4
 ```bash
 cd f4
 go mod tidy
-CGO_ENABLED=0 go build .
+CGO_ENABLED=0 go build ./cmd/f4
 ```
 
 The generated platform icons are committed to the repository, so a normal
-build does not need an image converter. If `assets/icon/f4.svg` is changed,
+build does not need an image converter. If `cmd/f4/assets/icon/f4.svg` is changed,
 regenerate PNG, ICO, ICNS, and Windows resources on any supported OS with:
 
 ```bash
-go generate
+go generate ./cmd/f4
 ```
 
 **4. Run**
@@ -172,12 +211,14 @@ go generate
 ```
 
 **5. Debug Mode**
-To enable detailed logging to `debug.log`, run with the `--debug` flag:
+To enable detailed logging to `Logs/debug.log` inside the active f4 profile,
+run with the `--debug` flag:
 ```bash
 ./f4 --debug
 ```
 
-You can also specify a custom log file using `--log`:
+You can also specify a custom log file using `--log`; an explicit path is
+kept unchanged:
 ```bash
 ./f4 --log /tmp/f4_trace.log
 ```
@@ -215,12 +256,12 @@ f4 is inspired by:
 * ConPTY — [Win32 Input Mode](https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md)
 * [DN (DOS Navigator)](https://www.ritlabs.com/en/products/dn/)
 * [Far Manager 2/3](https://github.com/FarGroup/FarManager), [far2l](https://github.com/elfmz/far2l/), [far2m](https://github.com/shmuz/far2m)
-* [FreeType](https://github.com/freetype/freetype) — auto-hinting
+* [FreeType](https://github.com/freetype/freetype) — [auto-hinting](https://freetype.org/autohinting/index.html) ([details](https://github.com/unxed/kiwi-go#discrete-cassowary--tui-grid-hinting), [other details](https://github.com/unxed/vtui/blob/main/AUTOLAYOUT.md))
 * [Midnight Commander](https://midnight-commander.org/) — FISH/SHELL protocol concept
 * [Telegram](https://telegram.org/) — single-binary distribution and automatic updates
 * [Turbo Text Editor](https://github.com/magiblot/turbo)
 * [Turbo Vision](https://github.com/magiblot/tvision)
-* TrueType — [bytecode hinting](https://learn.microsoft.com/en-us/typography/opentype/spec/tt_instructions)
+* TrueType — [bytecode hinting](https://learn.microsoft.com/en-us/typography/opentype/spec/tt_instructions) ([details](https://github.com/unxed/kiwi-go#discrete-cassowary--tui-grid-hinting), [other details](https://github.com/unxed/vtui/blob/main/AUTOLAYOUT.md))
 * [Visual Studio Code](https://github.com/microsoft/vscode) — piece table
 * [vtm](https://github.com/directvt/vtm)
 * [Windows Console API](https://learn.microsoft.com/en-us/windows/console/console-functions) — data types

@@ -27,36 +27,128 @@ type ScrollView struct {
 
 	OnSelect func(int)
 	OnAction func(int)
+
+	rowProvider RowProvider
+}
+
+// RowProvider supplies row data on demand for virtualized list controls.
+type RowProvider interface {
+	RowCount() int
+	Row(index int) []string
+}
+
+// SetRowProvider configures the on-demand data source for the scroll view.
+func (sv *ScrollView) SetRowProvider(p RowProvider) {
+	sv.rowProvider = p
+	if p != nil {
+		sv.ItemCount = p.RowCount()
+	} else {
+		sv.ItemCount = 0
+	}
+	sv.SetSelectPos(sv.SelectPos)
+}
+
+// InvalidateRows informs the scroll view that row data or count has changed.
+func (sv *ScrollView) InvalidateRows(from, to int) {
+	if sv.rowProvider != nil {
+		sv.ItemCount = sv.rowProvider.RowCount()
+		sv.SetSelectPos(sv.SelectPos)
+	}
+}
+
+// GetRowProvider returns the active RowProvider, if any.
+func (sv *ScrollView) GetRowProvider() RowProvider {
+	return sv.rowProvider
 }
 
 // ScrollBy shifts the view and the selection by the same amount, keeping the cursor vertically stable.
 // If the view hits a boundary, the remaining scroll delta is applied to the cursor.
+// The selection clamps at the list ends even when Wrap is on: wrapping is an
+// arrow-key affordance, and a wheel notch or page jump at the boundary should
+// stop there, not teleport across the list.
 func (sv *ScrollView) ScrollBy(delta int) {
-	if sv.ItemCount == 0 {
+	if sv.ItemCount == 0 || delta == 0 {
 		return
 	}
 
-	targetTop := sv.TopPos + delta
-	maxTop := sv.ItemCount - sv.ViewHeight
-	if maxTop < 0 {
-		maxTop = 0
+	if sv.ViewHeight > 0 {
+		targetTop := sv.TopPos + delta
+		maxTop := sv.ItemCount - sv.ViewHeight
+		if maxTop < 0 {
+			maxTop = 0
+		}
+		if targetTop < 0 {
+			targetTop = 0
+		}
+		if targetTop > maxTop {
+			targetTop = maxTop
+		}
+		sv.TopPos = targetTop
 	}
-	if targetTop < 0 {
-		targetTop = 0
+	// With ViewHeight 0 (not laid out yet) TopPos is left alone: any shift
+	// would be meaningless and EnsureVisible cannot repair it.
+
+	// SetSelectPos re-runs EnsureVisible, which reconciles TopPos when the
+	// clamped or nudged selection lands outside the shifted view.
+	sv.setSelectPosClamped(sv.SelectPos+delta, delta)
+}
+
+// setSelectPosClamped clamps target to the list bounds, steers it off
+// unselectable rows (first continuing in the direction of travel, then
+// backwards), and applies it. When no row is selectable at all the clamped
+// target is kept: virtualized consumers drive ItemCount without backing
+// items, and their rows all report unselectable.
+func (sv *ScrollView) setSelectPosClamped(target, dir int) {
+	if target < 0 {
+		target = 0
 	}
-	if targetTop > maxTop {
-		targetTop = maxTop
+	if target >= sv.ItemCount {
+		target = sv.ItemCount - 1
 	}
+	if sv.IsSelectable != nil && !sv.IsSelectable(target) {
+		step := 1
+		if dir < 0 {
+			step = -1
+		}
+		found := -1
+		for p := target + step; p >= 0 && p < sv.ItemCount; p += step {
+			if sv.IsSelectable(p) {
+				found = p
+				break
+			}
+		}
+		if found == -1 {
+			for p := target - step; p >= 0 && p < sv.ItemCount; p -= step {
+				if sv.IsSelectable(p) {
+					found = p
+					break
+				}
+			}
+		}
+		if found != -1 {
+			target = found
+		}
+	}
+	sv.SetSelectPos(target)
+}
 
-	// Move the cursor by the requested delta to keep it physically stable on the screen,
-	// or to push it towards the boundary if the view itself cannot scroll further.
-	sv.MoveSelection(delta)
-
-	// Force the view to the calculated target
-	sv.TopPos = targetTop
-
-	// Safety check in case MoveSelection jumped out of bounds due to unselectable items
-	sv.EnsureVisible()
+// PageBy moves the view and the selection one screenful up (dir < 0) or down
+// (dir > 0). Repeated presses walk the list a screen at a time, keep the
+// cursor on its row within the view, and stop at the ends without wrapping.
+// Before layout (ViewHeight 0) it degrades to a single-row move so the keys
+// still act.
+func (sv *ScrollView) PageBy(dir int) {
+	if dir == 0 {
+		return
+	}
+	page := sv.ViewHeight
+	if page < 1 {
+		page = 1
+	}
+	if dir < 0 {
+		page = -page
+	}
+	sv.ScrollBy(page)
 }
 
 func (sv *ScrollView) MoveRelative(dx, dy int) {
@@ -214,9 +306,9 @@ func (sv *ScrollView) HandleNavKey(vk uint16) bool {
 	case vtinput.VK_DOWN:
 		sv.MoveSelection(1)
 	case vtinput.VK_PRIOR:
-		sv.MoveSelection(-sv.ViewHeight)
+		sv.PageBy(-1)
 	case vtinput.VK_NEXT:
-		sv.MoveSelection(sv.ViewHeight)
+		sv.PageBy(1)
 	case vtinput.VK_HOME:
 		sv.SetSelectPos(0)
 	case vtinput.VK_END:

@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,17 @@ import (
 type diskFileWrapper struct {
 	*os.File
 	size int64
+}
+
+func probeSeekSize(f io.Seeker) (size int64, found bool, err error) {
+	pos, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, false, nil
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, false, fmt.Errorf("restore device offset after size probe: %w", err)
+	}
+	return pos, pos > 0, nil
 }
 
 func (f *diskFileWrapper) Size() int64 { return f.size }
@@ -72,7 +84,10 @@ func (v *DisksVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSI
 func (v *DisksVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	name := v.Base(path)
 	devPath := resolveDevicePath(name)
-	size := getDeviceSize(devPath, nil)
+	size, err := getDeviceSize(devPath, nil)
+	if err != nil {
+		return VFSItem{}, err
+	}
 	return VFSItem{Name: name, Size: size, SizeKnown: true, MTime: time.Now()}, nil
 }
 
@@ -88,12 +103,20 @@ func (v *DisksVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) 
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		sudoF, sudoErr := globalSudoClient.Open(prepareOSPath(devPath), os.O_RDWR, 0)
 		if sudoErr == nil {
-			size := getDeviceSize(devPath, sudoF)
+			size, sizeErr := getDeviceSize(devPath, sudoF)
+			if sizeErr != nil {
+				_ = sudoF.Close() // The handle cannot be returned at the wrong offset.
+				return nil, sizeErr
+			}
 			return &diskFileWrapper{File: sudoF, size: size}, nil
 		}
 		sudoF, sudoErr = globalSudoClient.Open(prepareOSPath(devPath), os.O_RDONLY, 0)
 		if sudoErr == nil {
-			size := getDeviceSize(devPath, sudoF)
+			size, sizeErr := getDeviceSize(devPath, sudoF)
+			if sizeErr != nil {
+				_ = sudoF.Close() // The handle cannot be returned at the wrong offset.
+				return nil, sizeErr
+			}
 			return &diskFileWrapper{File: sudoF, size: size}, nil
 		}
 		return nil, sudoErr
@@ -103,11 +126,21 @@ func (v *DisksVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) 
 		return nil, err
 	}
 
-	size := getDeviceSize(devPath, f)
+	size, sizeErr := getDeviceSize(devPath, f)
+	if sizeErr != nil {
+		_ = f.Close() // The handle cannot be returned at the wrong offset.
+		return nil, sizeErr
+	}
 	return &diskFileWrapper{File: f, size: size}, nil
 }
 
-func (v *DisksVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) error {
+func (v *DisksVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) (returnErr error) {
+	// A raw disk cannot grow or shift, so a patch that would move the pieces
+	// after it has to be refused before anything is written over the device.
+	if err := ValidateInPlacePieces(pieces); err != nil {
+		return err
+	}
+
 	name := v.Base(path)
 	devPath := resolveDevicePath(name)
 
@@ -120,7 +153,9 @@ func (v *DisksVFS) PatchInPlace(ctx context.Context, path string, pieces []Patch
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		returnErr = errors.Join(returnErr, f.Close())
+	}()
 
 	var newOffset int64 = 0
 	for _, p := range pieces {
@@ -130,10 +165,6 @@ func (v *DisksVFS) PatchInPlace(ctx context.Context, path string, pieces []Patch
 		if p.Data != nil {
 			if _, err := f.WriteAt(p.Data, newOffset); err != nil {
 				return err
-			}
-		} else {
-			if p.Offset != newOffset {
-				return fmt.Errorf("in-place patching requires unchanged pieces to remain at their original offsets (no insertions/deletions on raw disks)")
 			}
 		}
 		newOffset += p.Length

@@ -1,6 +1,9 @@
 package vtui
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestClusterWidth_Combining(t *testing.T) {
 	cases := []struct {
@@ -22,6 +25,10 @@ func TestClusterWidth_Combining(t *testing.T) {
 		{"regional indicator flag", "🇩🇪", 2},
 		{"keycap", "1\uFE0F\u20E3", 2},
 		{"lone combining mark", "\u0301", 1},
+		{"devanagari conjunct", "स\u094Dकृ", 2},
+		{"thaana with fili", "ދި", 1},
+		{"letter with zero width joiner", "a\u200D", 1},
+		{"decomposed hangul syllable", "\u1100\u1161\u11A8", 2},
 	}
 	for _, c := range cases {
 		if got := ClusterWidth(c.in); got != c.want {
@@ -30,7 +37,94 @@ func TestClusterWidth_Combining(t *testing.T) {
 	}
 }
 
-func TestStringWidth_MatchesWcwidth(t *testing.T) {
+// clusterList walks s through ForEachClusterAt and returns the emitted
+// (text, width) pairs.
+func clusterList(s string) []string {
+	var out []string
+	ForEachClusterAt(s, func(cluster string, width, _, _ int) {
+		out = append(out, fmt.Sprintf("%s:%d", cluster, width))
+	})
+	return out
+}
+
+// TestClusterPaths_Equivalent is the safety net for the rune-by-rune fast
+// path: for a broad corpus of names (ASCII, Cyrillic, CJK, Hangul, Japanese,
+// emoji, ZWJ sequences, flags, combining marks, Indic, Thai, Arabic, symbols,
+// controls) the fast path must emit exactly the same clusters, widths and
+// rune offsets as the reference uniseg walk.
+func TestClusterPaths_Equivalent(t *testing.T) {
+	corpus := []string{
+		"",
+		"report_2026_final.txt",
+		"отчет_2026_финал.txt",
+		"报告_2026_最终版.txt",
+		"한글_문서_2026_최종본.hwp",
+		"ㄱㄴㄷㄹㅁㅂㅅ_자모.txt",
+		"ひらがな_カタカナ_日本語.txt",
+		"🚂🐐🦆🐏💐🍍💗👄  😳😎🖤",
+		"👨\u200D👩\u200D👧\u200D👦 family.jpg",
+		"👍🏽👍🏻👍🏿 test.md",
+		"1\uFE0F\u20E3 keycap.txt",
+		"🇷🇺 отчёт 🇯🇵 報告",
+		"café_resumé_naïve.txt",
+		"नमस्ते_दुनिया_2026.txt",
+		"на\u0483звание_файла.txt",
+		"か\u3099き\u309Aく.txt",
+		"soft\u00ADhyphen.txt",
+		"अनु\u091C्ञा_2026.txt",
+		"বাংলা_ফাইল_পরীক্ষা.docx",
+		"สวัสดี_โลก_2569.pdf",
+		"تقريرُ_المشروعِ_2026.docx",
+		"العَرَبِيَّة.txt",
+		"ျမန္မာစာ.txt",
+		"한국어_파일_테스트.txt",
+		"日本語のテスト.txt",
+		"تقرير_المشروع_2026.docx",
+		"✓ ★ ♥ ⚠ ²³⁄₄",
+		"ＡＢＣ 全角 テスト",
+		"line1\nline2\r\ntab\tend",
+		"a\uFFFD\uFFFDb",
+		"x\x01y\x7Fz",
+	}
+	for _, s := range corpus {
+		dispatched := clusterList(s)
+		uniseg := clusterListRef(s)
+		if len(dispatched) != len(uniseg) {
+			t.Errorf("%q: dispatched %d clusters, uniseg %d\nfast: %v\nref:  %v",
+				s, len(dispatched), len(uniseg), dispatched, uniseg)
+			continue
+		}
+		for i := range dispatched {
+			if dispatched[i] != uniseg[i] {
+				t.Errorf("%q: cluster %d fast=%q uniseg=%q\nfast: %v\nref:  %v",
+					s, i, dispatched[i], uniseg[i], dispatched, uniseg)
+				break
+			}
+		}
+		if got, want := StringWidth(s), displayWidthOf(s); got != want {
+			t.Errorf("%q: StringWidth = %d, terminal display walk = %d", s, got, want)
+		}
+	}
+}
+
+// clusterListRef walks s with the reference uniseg walk.
+func clusterListRef(s string) []string {
+	var out []string
+	forEachClusterUniseg(s, func(cluster string, width, _, _ int) {
+		out = append(out, fmt.Sprintf("%s:%d", cluster, width))
+	})
+	return out
+}
+
+func displayWidthOf(s string) int {
+	total := 0
+	forEachDisplayCluster(s, func(_ string, w, _, _ int) {
+		total += w
+	})
+	return total
+}
+
+func TestStringWidth_MatchesTerminalDisplayPolicy(t *testing.T) {
 	cases := []struct {
 		in   string
 		want int
@@ -38,6 +132,7 @@ func TestStringWidth_MatchesWcwidth(t *testing.T) {
 		{"", 0},
 		{"hello", 5},
 		{"नमस्ते", 4},
+		{"বাংলা", 4},
 		{"مرحبا", 5},
 		{"A世B", 4},
 		{"👨\u200D👩\u200D👦!", 3},
@@ -92,13 +187,14 @@ func TestCellString_SpecialCells(t *testing.T) {
 	}
 }
 
+// A decomposed letter is kept in one cell, stored in its precomposed (NFC) form.
 func TestStringToCharInfo_KeepsMarksWithBase(t *testing.T) {
 	ci := StringToCharInfo("e\u0301X", 7)
 	if len(ci) != 2 {
 		t.Fatalf("expected 2 cells, got %d", len(ci))
 	}
-	if CellString(ci[0].Char) != "e\u0301" {
-		t.Errorf("cell 0: got %q, want %q", CellString(ci[0].Char), "e\u0301")
+	if CellString(ci[0].Char) != "é" {
+		t.Errorf("cell 0: got %q, want %q", CellString(ci[0].Char), "é")
 	}
 	if ci[1].Char != 'X' {
 		t.Errorf("cell 1: got %X, want 'X'", ci[1].Char)
@@ -112,14 +208,92 @@ func TestStringToCharInfo_KeepsMarksWithBase(t *testing.T) {
 
 func TestStringToCharInfo_Devanagari(t *testing.T) {
 	// The whole point of the exercise: a Hindi word must claim exactly as many
-	// cells as a wcwidth terminal gives it, or every dialog around it shifts.
+	// cells as the terminal advances for it, or every dialog around it shifts.
+	// Windows Terminal (grapheme mode) and VTE both advance four for नमस्ते:
+	// न, म, and the conjunct स्ते, which sums to two columns.
 	ci := StringToCharInfo("नमस्ते", 0)
 	if len(ci) != 4 {
 		t.Fatalf("expected 4 cells for नमस्ते, got %d", len(ci))
 	}
 	for i, c := range ci {
-		if c.Char == WideCharFiller {
-			t.Errorf("cell %d: no cell of this word is wide", i)
+		if (c.Char == WideCharFiller) != (i == 3) {
+			t.Errorf("cell %d: only the conjunct's second column is a filler (%X)", i, c.Char)
+		}
+	}
+}
+
+func TestTerminalClustersKeepIndicConjunctsAtomic(t *testing.T) {
+	var got []string
+	var widths []int
+	forEachTerminalCluster("संस्कृतम्", func(cluster string, width, _, _ int) {
+		got = append(got, cluster)
+		widths = append(widths, width)
+	})
+	want := []string{"सं", "स्कृ", "त", "म्"}
+	wantWidth := []int{1, 2, 1, 1}
+	if len(got) != len(want) {
+		t.Fatalf("terminal clusters = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] || widths[i] != wantWidth[i] {
+			t.Errorf("cluster %d = %q width %d, want %q width %d", i, got[i], widths[i], want[i], wantWidth[i])
+		}
+	}
+}
+
+func TestJoinsConjunct_OnlyLinkerScripts(t *testing.T) {
+	cases := []struct {
+		prev, next string
+		want       bool
+	}{
+		{"स\u094D", "क", true},  // Devanagari
+		{"ব\u09CD", "ল", true},  // Bengali
+		{"க\u0BCD", "ஷ", false}, // Tamil: no GB9c
+		{"ಕ\u0CCD", "ಷ", false}, // Kannada: not a linker in Unicode 16
+		{"स\u094D", " ", false}, // linker followed by a non consonant
+		{"स", "क", false},
+	}
+	for _, c := range cases {
+		if got := JoinsConjunct(c.prev, c.next); got != c.want {
+			t.Errorf("JoinsConjunct(%q, %q) = %v, want %v", c.prev, c.next, got, c.want)
+		}
+	}
+}
+
+func TestBidiMapsUseTerminalClusterBoundaries(t *testing.T) {
+	oldMode := DefaultBidiMode
+	DefaultBidiMode = BidiFull
+	t.Cleanup(func() { DefaultBidiMode = oldMode })
+
+	text := "संस्कृतम् ދިވެހިބަސް"
+	_, runeMap := VisualStringWithRuneMap(text)
+	var clusters int
+	forEachTerminalCluster(text, func(string, int, int, int) { clusters++ })
+	if len(runeMap) != clusters {
+		t.Fatalf("bidi rune map has %d entries for %d terminal clusters", len(runeMap), clusters)
+	}
+	seen := make(map[int]bool, len(runeMap))
+	for _, runeIndex := range runeMap {
+		if seen[runeIndex] {
+			t.Fatalf("bidi rune map repeats logical cluster at rune %d: %v", runeIndex, runeMap)
+		}
+		seen[runeIndex] = true
+	}
+	if len(seen) != clusters {
+		t.Fatalf("bidi rune map covers %d clusters, want %d", len(seen), clusters)
+	}
+}
+
+func TestStringToCharInfo_BengaliShaping(t *testing.T) {
+	// বাংলা is two clusters of two columns each: the spacing mark া takes a
+	// column of its own in every terminal.
+	ci := StringToCharInfo("বাংলা", 0)
+	if len(ci) != 4 {
+		t.Fatalf("expected 4 cells for বাংলা, got %d", len(ci))
+	}
+	for i, c := range ci {
+		if (c.Char == WideCharFiller) != (i%2 == 1) {
+			t.Errorf("cell %d: expected fillers in the second column of each cluster (%X)", i, c.Char)
 		}
 	}
 }
@@ -177,7 +351,10 @@ func TestTruncateString_NeverSplitsACluster(t *testing.T) {
 	if got := TruncateString("A世B", 3, ""); got != "A世" {
 		t.Errorf("got %q, want %q", got, "A世")
 	}
-	if got := TruncateString("e\u0301XY", 2, ""); got != "e\u0301X" {
+	if got := TruncateString("e\u0301XY", 2, ""); got != "\u00e9X" {
+		// The truncating path rebuilds from sanitized clusters, which fold
+		// decomposed sequences to NFC; the mark still travels with its
+		// base, stored precomposed.
 		t.Errorf("combining mark must travel with its base: got %q", got)
 	}
 	if got := TruncateString("abcdef", 4, "…"); got != "abc…" {
@@ -198,6 +375,31 @@ func TestSanitizeCluster_Controls(t *testing.T) {
 	if s, _ := SanitizeCluster("\uFFFD"); s != "?" {
 		t.Errorf("replacement char: got %q", s)
 	}
+	// Anything a terminal would execute or swallow must become a visible,
+	// one column placeholder; otherwise the rest of the row shifts.
+	for _, in := range []string{"\u0085", "\u009B", "\u2028", "\u2029", "\u200B", "\u200E", "\u202D", "\uFEFF", "\u00AD"} {
+		if s, w := SanitizeCluster(in); s != "·" || w != 1 {
+			t.Errorf("SanitizeCluster(%q) = %q width %d, want · width 1", in, s, w)
+		}
+	}
+	// A lone mark gets a base so that it occupies the column it claims.
+	if s, w := SanitizeCluster("\u0301"); s != "\u25CC\u0301" || w != 1 {
+		t.Errorf("lone mark: got %q width %d", s, w)
+	}
+	// The rune-by-rune fast path must agree with the segmenting path.
+	for _, in := range []string{"a\u0085b", "x\u2028y", "\u009Bz"} {
+		if got, want := clusterList(in), clusterListUniseg(in); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("paths disagree for %q: simple %v, uniseg %v", in, got, want)
+		}
+	}
+}
+
+func clusterListUniseg(s string) []string {
+	var out []string
+	forEachClusterUniseg(s, func(cluster string, width, _, _ int) {
+		out = append(out, fmt.Sprintf("%s:%d", cluster, width))
+	})
+	return out
 }
 
 func TestEmojiPresentationWideSetting(t *testing.T) {
@@ -211,5 +413,38 @@ func TestEmojiPresentationWideSetting(t *testing.T) {
 	EmojiPresentationWide = true
 	if got := ClusterWidth("❤\uFE0F"); got != 2 {
 		t.Errorf("with the setting on emoji presentation is wide: got %d, want 2", got)
+	}
+}
+
+// TestRegisterCluster_NFC: a decomposed letter is stored as its precomposed
+// rune so every backend renders it as one ordinary cell.
+func TestRegisterCluster_NFC(t *testing.T) {
+	if got := RegisterCluster("и\u0306"); got != uint64('й') {
+		t.Fatalf("RegisterCluster(NFD й) = %#x, want %#x", got, uint64('й'))
+	}
+	if got := RegisterCluster("e\u0301"); got != uint64('é') {
+		t.Fatalf("RegisterCluster(NFD é) = %#x, want %#x", got, uint64('é'))
+	}
+	if got := RegisterCluster("a\u0305"); !IsCompChar(got) {
+		t.Fatalf("RegisterCluster(a+overline) = %#x, want composite", got)
+	}
+}
+
+// TestStringToCharInfo_NFDHangul: decomposed Hangul (what macOS filesystems
+// return) is folded to the composed syllable, one wide cell plus filler.
+func TestStringToCharInfo_NFDHangul(t *testing.T) {
+	const nfd = "\u1112\u1161\u11ab" // NFD 한
+	ci := StringToCharInfo(nfd, 0)
+	if len(ci) != 2 {
+		t.Fatalf("expected 2 cells for NFD 한, got %d", len(ci))
+	}
+	if CellString(ci[0].Char) != "한" {
+		t.Errorf("cell 0: got %q, want %q", CellString(ci[0].Char), "한")
+	}
+	if ci[1].Char != WideCharFiller {
+		t.Errorf("cell 1: got %#x, want WideCharFiller", ci[1].Char)
+	}
+	if got := StringWidth(nfd); got != 2 {
+		t.Errorf("StringWidth = %d, want 2", got)
 	}
 }

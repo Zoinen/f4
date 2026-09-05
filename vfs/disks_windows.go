@@ -5,7 +5,6 @@ package vfs
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -53,26 +52,27 @@ func getPlatformBlockDevices(ctx context.Context) []VFSItem {
 	return items
 }
 
-func getDeviceSize(devPath string, f *os.File) int64 {
+func getDeviceSize(devPath string, f *os.File) (int64, error) {
 	if f != nil {
-		if pos, err := f.Seek(0, io.SeekEnd); err == nil && pos > 0 {
-			f.Seek(0, io.SeekStart)
-			return pos
+		if size, found, err := probeSeekSize(f); err != nil {
+			return 0, err
+		} else if found {
+			return size, nil
 		}
 	}
 	ptr, err := windows.UTF16PtrFromString(devPath)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	h, err := windows.CreateFile(ptr, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
 	defer windows.CloseHandle(h)
 	var length int64
 	var returned uint32
 	if err := windows.DeviceIoControl(h, 0x7405C, nil, 0, (*byte)(unsafe.Pointer(&length)), 8, &returned, nil); err == nil {
-		return length
+		return length, nil
 	}
-	return 0
+	return 0, nil
 }

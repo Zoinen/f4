@@ -190,6 +190,10 @@ func (f *File) readChunk(ctx context.Context, p []byte) (int, error) {
 }
 
 func (f *File) seek(ctx context.Context, offset int64) error {
+	if offset < 0 {
+		return pathError("seek", f.path, fs.ErrInvalid)
+	}
+	// #nosec G115 -- negative offsets are rejected immediately above.
 	_, err := f.client.exchange(ctx, opFileSeek, putUint64s(f.handle, uint64(io.SeekStart), uint64(offset)), nil, opStatus)
 	return pathError("seek", f.path, err)
 }

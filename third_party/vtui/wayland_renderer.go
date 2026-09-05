@@ -1,10 +1,11 @@
-//go:build linux && !arm
+//go:build linux && !android && (amd64 || arm64)
 
 package vtui
 
 import (
 	"image"
 	"image/color"
+	"math"
 	"time"
 
 	"golang.org/x/image/font"
@@ -47,6 +48,14 @@ func NewWaylandRenderer(host *WaylandHost, face font.Face) *WaylandRenderer {
 	}
 }
 
+// setFace replaces the rasterizer after the Wayland output scale changes.
+// The caller holds host.mu, which also protects rendering.
+func (r *WaylandRenderer) setFace(face font.Face) {
+	r.face = face
+	r.glyphCache = make(map[glyphKey]*image.RGBA)
+	r.gfxKnown = false
+}
+
 func (r *WaylandRenderer) SetPalette(pal *[256]uint32) {
 	// Native RGB environment, palette mapping occurs logically upstream
 }
@@ -76,10 +85,11 @@ func (r *WaylandRenderer) ResizeWindow(cols, rows int) {
 	widget := r.host.widget
 	cw := r.host.cellW
 	ch := r.host.cellH
+	scale := r.host.scale
 	r.host.mu.Unlock()
 
 	if widget != nil {
-		widget.ScheduleResize(int32(cols*cw), int32(rows*ch))
+		widget.ScheduleResize(logicalWaylandPixels(cols*cw, scale), logicalWaylandPixels(rows*ch, scale))
 	}
 }
 
@@ -226,9 +236,12 @@ func (r *WaylandRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw b
 
 				if char != 0 && char != ' ' {
 					r.stats.glyphs++
-					if !r.drawCustomChar(img, char, cpx, py, cw, ch, fgColor) {
+					if !r.drawCustomChar(img, char, cpx, py, cw, ch, cfg) {
 						r.drawCachedGlyph(img, currCell.Char, cpx, py, rw, cfg, cbg, fgColor, bgColor)
 					}
+				}
+				if currCell.Attributes&CommonLvbUnderscore != 0 {
+					drawUnderline(img, cpx, py, cw*rw, ch, int(math.Ceil(r.host.scale)), cfg)
 				}
 
 				if cursorVisible && y == r.cursorY && r.cursorX >= currX && r.cursorX < currX+rw {
@@ -316,14 +329,20 @@ func (r *WaylandRenderer) drawCachedGlyph(img *image.RGBA, cellVal uint64, px, p
 	}
 }
 
-func (r *WaylandRenderer) drawCustomChar(img *image.RGBA, char rune, px, py, cw, ch int, col color.Color) bool {
-	return drawBoxGlyph(img, char, px, py, cw, ch, r.host.scale, col)
+func (r *WaylandRenderer) drawCustomChar(img *image.RGBA, char rune, px, py, cw, ch int, fg uint32) bool {
+	return drawBoxGlyph(img, char, px, py, cw, ch, int(math.Ceil(r.host.scale)), fg)
 }
 
 func (r *WaylandRenderer) Flush() {
 	start := time.Now()
-	// Trigger the Wayland host to push the buffer to the compositor
-	r.host.widget.ScheduleRedraw()
+	// Wake DisplayRun and let its callback schedule the deferred redraw on
+	// the Wayland goroutine. Direct ScheduleRedraw from FrameManager's
+	// goroutine can leave the queued redraw invisible until another event.
+	r.host.requestPresent()
 	r.stats.totalFlush += time.Since(start)
 	r.stats.frameCount++
 }
+
+// needsIdleBlinkHeartbeat marks WaylandRenderer as needing the idle blink
+// heartbeat in FrameManager.Run(). See softwareBlinkRenderer.
+func (r *WaylandRenderer) needsIdleBlinkHeartbeat() {}

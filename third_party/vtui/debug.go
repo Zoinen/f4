@@ -14,13 +14,41 @@ var (
 	logRotated         bool
 	logFile            *os.File
 	currentLogFilename string
+	lastLogSync        time.Time
+	testLogger         func(string, ...any)
 )
 
-func rotateLogs(basePath string) {
-	if logFile != nil {
-		logFile.Close()
-		logFile = nil
+const debugLogSyncInterval = 2 * time.Second
+
+var syncLogFile = func(file *os.File) error {
+	return file.Sync()
+}
+
+func syncLogFileLocked(now time.Time, force bool) {
+	if logFile == nil {
+		return
 	}
+	if !force && !lastLogSync.IsZero() && now.Sub(lastLogSync) < debugLogSyncInterval {
+		return
+	}
+	if err := syncLogFile(logFile); err == nil {
+		lastLogSync = now
+	}
+}
+
+func closeLogFileLocked() {
+	if logFile == nil {
+		return
+	}
+	syncLogFileLocked(time.Now(), true)
+	_ = logFile.Close()
+	logFile = nil
+	currentLogFilename = ""
+	lastLogSync = time.Time{}
+}
+
+func rotateLogs(basePath string) {
+	closeLogFileLocked()
 	ext := filepath.Ext(basePath)
 	prefix := strings.TrimSuffix(basePath, ext)
 
@@ -42,11 +70,30 @@ var diskLoggingEnabled = true
 func ConfigDiskLogging(enabled bool) {
 	logMu.Lock()
 	diskLoggingEnabled = enabled
-	if !enabled && logFile != nil {
-		logFile.Close()
-		logFile = nil
+	if !enabled {
+		closeLogFileLocked()
 	}
 	logMu.Unlock()
+}
+
+// SetTestLogger installs the callback used by DebugLog when VTUI_DEBUG=test.
+// It returns a restore function so a test can scope the global logger safely:
+//
+//	restore := SetTestLogger(t.Logf)
+//	defer restore()
+//
+// The callback may be called from any goroutine, just like DebugLog itself.
+func SetTestLogger(logger func(string, ...any)) func() {
+	logMu.Lock()
+	previous := testLogger
+	testLogger = logger
+	logMu.Unlock()
+
+	return func() {
+		logMu.Lock()
+		testLogger = previous
+		logMu.Unlock()
+	}
 }
 
 // DebugLog writes a timestamped message to debug.log file.
@@ -61,6 +108,29 @@ func DebugLog(format string, a ...any) {
 
 	env := os.Getenv("VTUI_DEBUG")
 	if env == "" {
+		return
+	}
+
+	if env == "stderr" {
+		logMu.Lock()
+		_, _ = fmt.Fprintln(os.Stderr, fullMsg)
+		logMu.Unlock()
+		return
+	}
+
+	if env == "test" {
+		logMu.Lock()
+		logger := testLogger
+		logMu.Unlock()
+		if logger != nil {
+			logger("%s", fullMsg)
+			return
+		}
+		// Keep VTUI_DEBUG=test useful for ad-hoc test commands even when the
+		// caller did not install a testing.T logger.
+		logMu.Lock()
+		_, _ = fmt.Fprintln(os.Stderr, fullMsg)
+		logMu.Unlock()
 		return
 	}
 
@@ -84,19 +154,19 @@ func DebugLog(format string, a ...any) {
 	}
 
 	if logFile != nil && currentLogFilename != filename {
-		logFile.Close()
-		logFile = nil
+		closeLogFileLocked()
 	}
 
 	if logFile == nil {
 		var err error
 		logFile, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		currentLogFilename = filename
+		lastLogSync = time.Now()
 		recordLogMemory(fmt.Sprintf("[SYS] Opened new log file %q (Err: %v, PID: %d)", filename, err, os.Getpid()))
 	}
 	if logFile != nil {
-		fmt.Fprintln(logFile, fullMsg)
-		logFile.Sync()
+		_, _ = fmt.Fprintln(logFile, fullMsg)
+		syncLogFileLocked(time.Now(), false)
 	}
 	logMu.Unlock()
 }

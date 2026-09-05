@@ -19,7 +19,7 @@ import (
 // the layout validator then fails on text no user will ever see. That is
 // exactly how TestConnectionDialogLayout broke when the connection dialog
 // stopped carrying its captions as literals.
-const hostStringsPath = "../../lang/en.lng"
+const hostStringsPath = "../../cmd/f4/lang/en.lng"
 
 // loadHostStrings does for the [Strings] section what f4's InitLang does:
 // trim, unescape \n, push into vtui. It is a plain parser rather than a call

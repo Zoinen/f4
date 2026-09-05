@@ -86,11 +86,6 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 	if c.APIKey == "" && !isLocal(c.BaseURL) {
 		return "", Usage{}, ErrNoKey
 	}
-	body, err := json.Marshal(chatRequest{Model: c.Model, Messages: msgs})
-	if err != nil {
-		return "", Usage{}, err
-	}
-
 	req := chatRequest{Model: c.Model, Messages: msgs}
 	if strings.Contains(strings.ToLower(c.Model), "gemini") {
 		// Embed native Gemini search tools directly into OpenAI-compatible payload
@@ -102,7 +97,7 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 			*/
 		}
 	}
-	body, err = json.Marshal(req)
+	body, err := json.Marshal(req)
 	if err != nil {
 		return "", Usage{}, err
 	}
@@ -202,7 +197,7 @@ func (c Config) do(ctx context.Context, method, url string, body []byte) ([]byte
 			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
-		resp.Body.Close()
+		_ = resp.Body.Close() // Response-body cleanup is best effort.
 		if readErr != nil {
 			lastErr = readErr
 			continue

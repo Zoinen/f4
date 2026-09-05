@@ -713,8 +713,8 @@ if(BUILD_TESTING)
     )
     qt6_add_resources(${target} ${target}_f4_app_icon
       PREFIX "/F4QtHost/icons/app"
-      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon"
-      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/f4.svg"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon"
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/f4.svg"
     )
   endfunction()
 

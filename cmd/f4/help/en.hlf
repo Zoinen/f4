@@ -1,0 +1,780 @@
+@Contents
+$f4 Help Index (Version: %Ver)
+f4 — efficient and cozy file manager in go
+
+~Viewer / Editor keys~ViewerEditor@
+~Panel navigation~PanelNav@
+~Mouse wheel settings~MouseWheel@
+~Visual File Renamer (VisRen)~VisRen@
+~View README.md~README@
+
+@VisRen
+$Visual File Renamer (VisRen)
+
+VisRen is F4's native visual batch renamer. It builds every new name
+before anything is changed and shows source and destination names
+side by side.
+It works with files and directories on a local file-system panel.
+
+If panel items are marked, VisRen opens them in panel order. If no
+items are marked, it uses the item under the panel cursor. The parent
+entry ".." is
+never used. Open VisRen with F11 and choose "Visual File Renamer"; the
+assigned menu letter can also activate it.
+
+~Quick start and dialog fields~VisRenQuickStart@
+~Name masks, extensions, ranges, counters and escapes~VisRenMasks@
+~Case conversion, transliteration and processing order~VisRenTransforms@
+~Dates, ID3, image/EXIF and executable metadata~VisRenMetadata@
+~Search, plain replacement and regular expressions~VisRenSearch@
+~Preview navigation, keyboard and mouse reference~VisRenPreview@
+~Editing the rename list in the UTF-8 editor~VisRenEditor@
+~Rename execution, errors, the log and Undo~VisRenRename@
+~Portable filename rules and important limitations~VisRenSafety@
+~Practical recipes~VisRenExamples@
+
+The implementation follows FarPlugins VisRen 3.2.0, with stricter
+filename/editor validation, stable random values and portable metadata.
+
+@VisRenQuickStart
+$VisRen: quick start and dialog fields
+
+#A typical rename#
+
+  1. Mark the required files/directories with Ins, or place the panel
+     cursor on one item if only that item is needed.
+  2. Press F11 and select VisRen.
+  3. Enter masks for the name and extension. Defaults [N] and [E] keep
+     both parts unchanged.
+  4. Optionally enter Search for and Replace with text. Focus starts
+     in Search for; Tab moves directly to Replace with.
+  5. Inspect every destination. F3 shows the complete source,
+     destination, or diagnostic for the current row.
+  6. Choose Rename or press Enter on the default button.
+
+#Name and Extension#
+
+These two fields build the destination basename and extension separately.
+The extension field does not include the dot. An empty extension result
+removes the extension. Literal text is copied as typed; bracketed
+expressions insert source text, counters, metadata or transformations.
+
+The last dot separates the source name and extension. Thus archive.tar.gz
+has name archive.tar and extension gz. README has no extension. A dotfile
+such as .gitignore has an empty name and extension gitignore.
+
+#Templates and [+]#
+
+The Name templates and Extension templates lists contain expressions
+valid for the corresponding mask. Choosing an entry only selects it.
+The [+] button inserts that selected template at the caret and returns
+focus to the corresponding mask, exactly like the original VisRen.
+When a template list has focus, Ins inserts its current entry while
+keeping focus in the list. Range and counter placeholders become usable
+values when inserted.
+
+#Search controls#
+
+Search and replacement are applied after both masks have built one
+complete filename. Case sensitive is enabled initially. Regular
+expression switches between literal search and regex mode. Details are
+in the Search topic.
+
+#Live preview and diagnostics#
+
+Every edit updates the preview. If a mask, range, counter, regex, or
+resulting filename is invalid, all destinations become <Error!>.
+Rename and F4 Editor are disabled. F3 shows the actual diagnostic.
+
+The four edit fields use F4's history. Values used for Rename are added
+to their histories. Word delimiters for [T] are stored separately in
+the VisRen user configuration.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenMasks
+$VisRen: masks, ranges, counters and escapes
+
+#Basic expressions#
+
+  [N]          Original name without the last extension.
+  [E]          Original extension without its leading dot.
+  [[]          A literal opening square bracket.
+  []]          A literal closing square bracket.
+
+All text outside expressions is literal. A stray closing bracket, an
+unclosed opening bracket, or an unknown expression is an error.
+
+#Ranges#
+
+A range immediately follows N or E. Positions count Unicode characters,
+not bytes, and start at 1. A negative position counts backward from
+the end. The same forms work with E, for example [E1-3].
+
+For the source name abcdefghij:
+
+  [N2]         b                 one character
+  [N2-5]       bcde              positions 2 through 5, inclusive
+  [N2,5]       bcdef             five characters starting at position 2
+  [N2-]        bcdefghij         position 2 through the end
+  [N-2]        i                 second character from the end
+  [N2--5]      bcdef             position 2 through fifth from the end
+  [N-8-5]      cde               eighth-from-end through fifth-from-end
+  [N-8,5]      cdefg             five chars starting eighth from the end
+  [N-5-]       fghij             fifth from the end through the end
+
+An out-of-bounds part is clipped where possible or produces an empty
+result. Position zero and a reversed range are errors. The range
+template from the drop-down uses the longest source name or extension.
+
+#Counters#
+
+  [C1]         1, 2, 3, ...
+  [C001]       001, 002, 003, ...
+  [C001+5]     001, 006, 011, ...
+  [C10+-2]     10, 08, 06, ...
+
+The initial digits set the first value and minimum display width. They
+may contain at most nine digits. If +step is omitted, the step is 1. The
+counter follows the preview order, so Ctrl+Up/Down or drag-and-drop
+changes assigned values. Width is a minimum: larger values are not cut.
+
+#Combining expressions#
+
+Expressions and literals can be freely combined. For example,
+[C001+1]_[N1-12] creates a three-digit sequence, an underscore, and the
+first twelve characters of the old name. Transform expressions add no
+text; they modify the part as described in the Transformations topic.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenTransforms
+$VisRen: transformations and processing order
+
+#Case transformations#
+
+  [L]          Convert the entire mask result to lower case.
+  [U]          Convert it to upper case.
+  [F]          Upper-case the first character; lower-case the rest.
+  [T]          Upper-case the first character of every word.
+  [M]          Format an "Artist - title" style music name.
+
+[T] uses the word delimiters "-. _&" by default. Select [T] in either
+template list and press F4 to edit the delimiter characters. At most 18
+characters are stored in the VisRen configuration and reused later.
+
+[M] recognizes " - " or "_-_" between artist and title. Artist words are
+title-cased; the title starts with one capital and otherwise becomes
+lower case. The isolated Russian conjunction meaning "and" in an
+artist name is
+lower-cased, matching the original VisRen behavior.
+
+If several case expressions occur in one mask, priority is fixed in this
+order: [L], [U], [F], [T], [M]. Only the highest-priority one is applied.
+
+#Transliteration#
+
+  [TL]         Transliterate Russian Cyrillic to VisRen Latin spelling.
+  [TR]         Convert that Latin spelling back to Russian Cyrillic.
+
+The mapping is the original VisRen table: for example ё -> jo, ж -> zh,
+х -> kh, щ -> shh, ю -> ju and я -> ja. Letter case is preserved where
+possible. Reverse conversion chooses the longest matching Latin sequence.
+If both [TL] and [TR] are present, [TL] has priority.
+
+#Exact processing order#
+
+  1. Name and extension expressions are expanded.
+  2. The two parts are joined with a dot when the extension is non-empty.
+  3. Search/Replace is applied to that complete filename.
+  4. The result is split again at its last dot.
+  5. Transliteration is applied to the part whose mask requested it.
+  6. The selected case transformation is applied last.
+  7. The final single filename component is validated.
+
+This order matters. A case transform also affects replacement text
+inserted into its part, while Search can match the generated extension.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenMetadata
+$VisRen: dates and file metadata
+
+Metadata is read lazily and cached once for each source item. Missing or
+unsupported fields expand to an empty string and do not stop preview.
+
+#File timestamps and session values#
+
+  [DM]         Last-modification date in local time: YYYY.MM.DD
+  [TM]         Last-modification time in local time: hh-mm-ss
+  [R]          Random decimal number from 0 through 32767
+
+[R] is assigned once when the dialog opens. It stays stable while masks
+are edited and follows its source when rows are reordered. A new
+VisRen session assigns new values.
+
+#MP3 / ID3#
+
+The track-number expression is an opening bracket, the ASCII number sign
+(U+0023), and a closing bracket. The remaining expressions are:
+
+  [t]          Track title
+  [a]          Artist
+  [l]          Album
+  [y]          Year/date
+  [g]          Genre
+
+ID3v2.3 and ID3v2.4 frames are preferred when an ID3v2 tag exists.
+Otherwise ID3v1.1 is used, including its track number and genre table.
+Supported ID3 encodings include legacy system text, UTF-8 and UTF-16.
+
+#Images and EXIF#
+
+  [c]          JPEG EXIF camera maker
+  [m]          JPEG EXIF camera model
+  [d]          Capture date: YYYY.MM.DD hh-mm-ss
+  [r]          Pixel dimensions as WIDTHxHEIGHT
+
+Dimensions are available for JPEG, BMP, GIF and PNG. EXIF maker, model
+and capture date are read from JPEG. If there is no usable EXIF date,
+[d] uses its modification date and time. Note that lower-case [m]/[r] are
+metadata, while upper-case [M]/[R] are transformation/random expressions.
+
+#Executable version#
+
+  [V]          Fixed file version from a Windows PE .exe or .dll resource
+
+PE version data is parsed natively on every supported operating system. A
+file with no usable fixed version expands [V] to an empty string.
+
+Metadata text containing path separators or other forbidden filename
+characters is discarded or caught by final filename validation. Always
+inspect the preview when tags come from files you do not control.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenSearch
+$VisRen: Search, Replace and regular expressions
+
+Search/Replace runs on the complete name produced by both masks,
+including the generated dot and extension. An empty Search for field
+disables this
+stage. Every non-overlapping match is replaced.
+
+#Plain mode#
+
+With Regular expression unchecked, Search for is literal text. When Case
+sensitive is checked, File and file differ. When unchecked, matching
+compares lower-case text; replacement is inserted exactly as typed.
+
+Example: masks [N] and [E], Search for "draft_", and an empty Replace
+value turn draft_report.txt into report.txt.
+
+#Regular-expression mode#
+
+Enable Regular expression for F4's Go/coregex-style engine. A pattern
+can be entered directly or as /pattern/i. In slash form, write a
+literal slash as \/. The optional i flag ignores case. Clearing Case
+sensitive does the same. No suffix flag other than i is accepted.
+
+Replacement references use $0 for the full match and $1 through $9 for
+capturing groups. For example, on 001-report.txt:
+
+  Search for:       /(\d+)-([^.]+)/
+  Replace with:     $2-$1
+  Result:           report-001.txt
+
+A malformed pattern, unterminated /pattern/, or unsupported flag makes
+the preview show <Error!>, disables Rename and Editor, and exposes the
+parser diagnostic through F3.
+
+Press Backspace to return to the VisRen contents.
+
+Matches found in the original name are highlighted in the left preview
+column. Highlighting follows Case sensitive and Regular expression,
+marks every visible match and remains aligned while the column scrolls.
+Text emitted by Replace with is highlighted in the right column. For a
+regular expression this includes the complete expanded replacement;
+an empty replacement has no visible text to highlight.
+
+@VisRenPreview
+$VisRen: preview, keyboard and mouse
+
+The left preview column is the source; the right is the destination.
+The first row is current when the dialog opens, while keyboard focus
+begins in Search for. F12 moves focus to preview; from there it returns
+to the Name mask.
+
+When the list is taller than the visible preview, a vertical scrollbar
+appears at its right edge. Its arrows, track and draggable thumb scroll
+the list; the mouse wheel works over the preview as well. The scrollbar
+disappears automatically when every row fits.
+
+#General keys#
+
+  F1                   Open this help.
+  F2                   Toggle recording of the rename log.
+  F3                   Show full names or the current error diagnostic.
+  F4                   Open the list in the editor.
+  F4 on [T] template   Edit title-case word delimiters.
+  F5                   Maximize/restore the dialog.
+  F6                   Load the available Undo operation.
+  F8                   Clear the rename log after confirmation.
+  F12                  Move focus to/from the preview.
+  Alt+N                Focus the Name mask.
+  Alt+E                Focus the Extension mask.
+  Alt+S                Focus Search for.
+  Alt+P                Focus Replace with.
+  Alt+C                Toggle Case sensitive.
+  Alt+G                Toggle Regular expression.
+  Alt+T                Focus the Name template list.
+  Alt+L                Focus the Extension template list.
+  Enter                Activate the default Rename action.
+  Esc                  Close the dialog without renaming.
+
+#Keys while the preview has focus#
+
+  Up/Down              Move the current row.
+  Home/End             Move to the first/last row.
+  PgUp/PgDn            Move by a preview page.
+  Del                   Remove the row from this operation only.
+  Ctrl+Up/Down          Reorder rows; counters follow the new order.
+  Ctrl+Left/Right       Move the column divider.
+  Ctrl+Num5             Center the divider and reset both scroll offsets.
+  Alt+Left/Right        Scroll the source column horizontally.
+  Left/Right            Scroll the destination column horizontally.
+  Ctrl+PgUp             Close VisRen and return to the source item.
+
+#Templates and mouse#
+
+  Ins in a template list inserts the current template into its mask.
+  Drag a preview row with the left button to reorder it.
+  Right-click a preview row to show its full names/diagnostic.
+  Double-left-click a row to return to that source on the panel.
+  Click the zoom control in the title to maximize/restore.
+  Click the Log renaming mark to toggle it; click the rest of the line
+  to clear an existing log after confirmation.
+
+Terminal resize and F5 restore an even two-column preview split.
+Manual divider and horizontal-scroll changes can then be applied again.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenEditor
+$VisRen: editing the list in the UTF-8 editor
+
+F4 asks for the export form with explicit action buttons, then opens a
+temporary UTF-8 document titled "Rename list of files" in F4's editor:
+
+  Source + target      "source name"    "destination name"
+  Targets only                          "destination name"
+
+Every value is quoted. Quotes, backslashes and controls inside a
+name use escaped string notation. Keep the surrounding quotes intact.
+
+#Strict validation#
+
+When the editor closes, VisRen requires:
+
+  - exactly the same number of lines as the preview;
+  - exactly one or two quoted columns, according to the chosen mode;
+  - no extra text outside quoted values;
+  - an unchanged source column in two-column mode;
+  - one valid portable filename component for every destination.
+
+Do not add or remove lines. In two-column mode, source identity and row
+order must stay exact; only destinations may change. In one-column mode,
+each destination remains tied to its source by line position. These
+checks catch source changes or malformed quoting before renaming.
+
+On error, VisRen reports the reason and offers Edit again. The editor
+reopens at the offending line with your content preserved. A valid
+edited
+list starts sequential renaming when the editor closes. If the generated
+list is byte-for-byte unchanged but contains mask changes, VisRen
+asks for confirmation before using it.
+
+Editor is disabled while preview contains <Error!> or an Undo list is
+displayed.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenRename
+$VisRen: execution, errors, log and Undo
+
+#Sequential rename#
+
+Rows are processed once, from top to bottom in their current order. An
+unchanged name is skipped. A source that disappeared after opening the
+dialog is also skipped. Files and directories use the same rules.
+
+A destination owned by another object is never overwritten. A case-only
+rename of the same object is supported, using a temporary name when
+required. Other cycles are not staged: for example a -> b and b -> a
+normally reaches a destination-exists error, like the original VisRen.
+
+#Runtime errors#
+
+Permissions, occupied/duplicate targets, platform limits and other
+filesystem errors offer:
+
+  Retry                Try the same row again.
+  Skip                 Leave this source unchanged and continue.
+  Skip all             Skip later errors without asking again.
+  Cancel               Stop; do not process the remaining rows.
+
+The operation is not transactional. Successful earlier renames remain in
+place after Skip or Cancel. Failed and unprocessed sources stay marked
+on the panel for retry. The completion message reports how many
+rows succeeded.
+
+#Rename log#
+
+Log renaming is enabled when a new dialog opens. Its check mark means
+successful pairs will be recorded in memory. F2 or the clickable mark
+toggles recording. The log is not written to disk and is lost when F4
+exits. It stores only the successful pairs and directory from the latest
+rename operation; a trailing * on the label means a log is available.
+
+F8, or clicking the rest of the log line, clears it after confirmation.
+Running a rename while logging is disabled also leaves no Undo batch.
+
+#Undo (F6)#
+
+F6 loads the last batch in reverse order and shows destinations
+returning to source names. The title shows the saved directory. Choose
+Rename and confirm Undo, or answer No to return to normal rename mode.
+
+Undo uses the same no-overwrite and error rules. It changes to the saved
+directory before starting. The log is cleared after the attempt, even
+if only part succeeds, while unresolved items remain marked.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenSafety
+$VisRen: filename safety and limitations
+
+Every changed destination must be one portable filename component. VisRen
+rejects:
+
+  - an empty name, "." or "..";
+  - control characters (Unicode values below U+0020 or NUL);
+  - <, >, :, ", *, ?, /, backslash or vertical bar;
+  - a trailing space or dot;
+  - DOS device basenames CON, PRN, AUX, NUL, COM1..COM9 or LPT1..LPT9,
+    regardless of case or extension.
+
+A slash cannot move an item into another directory. An unchanged
+source name is allowed and simply skipped, even when that existing source
+would not pass the portable rules as a newly generated name.
+
+Preview validation catches mask syntax and portable-name errors. It
+does not reserve destinations. Existing targets, duplicate results,
+permissions, filesystem length limits and cycles can still produce a
+runtime error. No target is overwritten.
+
+Metadata can be absent or malformed and then expands to empty text.
+Use separators carefully and always check the preview. VisRen never
+creates a transaction or invents temporary names for multi-item cycles.
+
+Press Backspace to return to the VisRen contents.
+
+@VisRenExamples
+$VisRen: practical recipes
+
+#Number files and normalize extensions#
+
+  Name mask:       [C001+1]_[N]
+  Extension mask:  [E][L]
+
+Produces 001_Old name.jpg, 002_Other name.jpg, and so on. Reorder the
+preview first if the counter must follow a different sequence.
+
+#Keep only a useful part of a fixed-width name#
+
+  Source:          20260805_report_final.txt
+  Name mask:       [N10-21]
+  Extension mask:  [E]
+  Result:          report_final.txt
+
+#Remove a literal prefix#
+
+  Masks:           [N] and [E]
+  Search for:      draft_
+  Replace with:    (empty)
+
+#Swap regex groups#
+
+  Source:          001-report.txt
+  Search for:      /(\d+)-([^.]+)/
+  Replace with:    $2-$1
+  Result:          report-001.txt
+
+#Name MP3 files from tags#
+
+  Name mask:       [a] - [t]
+  Extension mask:  [E][L]
+
+Track-number prefixes can be made with the counter, or with the ID3 track
+expression described in the Dates and metadata topic. Missing artist
+or title tags expand to empty text, so inspect separators in the preview.
+
+#Name photographs by capture time and dimensions#
+
+  Name mask:       [d]_[r]_[C001]
+  Extension mask:  [E][L]
+
+JPEG uses EXIF capture time when present; other supported images use file
+modification time for [d].
+
+#Transliterate and add literal brackets#
+
+  Name mask:       [[]archive[]]_[N][TL]
+  Extension mask:  [E][L]
+
+The source Пример.TXT becomes [archive]_Primer.txt with VisRen's
+original transliteration table.
+
+Press Backspace to return to the VisRen contents.
+
+@Panels
+$f4 Help Index (Version: %Ver)
+f4 is an experimental Far Manager / far2l clone in Go.
+
+~Viewer / Editor keys~ViewerEditor@
+~Panel navigation~PanelNav@
+~MediaInfo plugin~MediaInfo@
+~Console modes (Ctrl+O)~ConsoleModes@
+~Environment Manager plugin~EnvironmentManager@
+~View README.md~README@
+
+@ViewerEditor
+$Viewer & Editor Keys
+This topic is generated dynamically from the action registry.
+
+@ViewerNav
+$Navigation Keys
+Editor:
+  Ctrl+Left     - Previous word boundary
+  Ctrl+Right    - Next word boundary
+  Ctrl+Shift+Left/Right - Select by words
+  Home/End      - Line start / end
+  PgUp/PgDn     - Page up / down
+
+Viewer:
+  Up/Down       - Scroll one line
+  PgUp/PgDn     - Scroll one page
+  Home/End      - File start / end
+
+@PanelNav
+$Panel Navigation
+This topic is generated dynamically from the action registry.
+
+F8 follows the "Use the trash" setting. When enabled, F4 refuses the
+operation if the active file system has no recoverable trash; it never falls
+back to permanent deletion. Shift+Del and Shift+NumDel always delete
+permanently. Permanent removal is also available as a separate Files-menu
+command and can be assigned its own hotkey.
+@ConsoleModes
+$Console modes (Ctrl+O)
+    f4 supports two modes for running shell commands and viewing console output:
+
+  Own terminal (default)
+    Commands run in f4's built-in terminal emulator underneath the panels.
+    Ctrl+O toggles between the panels and the internal terminal screen.
+
+  Host console
+    Commands run directly in the host terminal's primary screen buffer with
+    full native scrollback, mouse selection, and job control (Ctrl+C, Ctrl+Z).
+    Panels live in the alternate screen buffer; Ctrl+O switches between the
+    panels and the real host console.
+    When "Show command line over host console" is enabled, f4 keeps its command
+    line and keybar at the bottom of the host screen.
+
+@ApplyCmd
+$Apply command (Ctrl+G)
+Apply command runs a command template for marked panel entries in panel order,
+or for the current entry when nothing is marked. Directories are included;
+the parent row (..) is never processed. Processed marks can be restored with
+Ctrl+M.
+
+Sequential runs one command at a time. Parallel uses the selected worker
+limit. Queue runs one sequential batch in the background. All modes execute
+on the host that owns the active panel and provide one cancellable transcript.
+Commands are noninteractive and receive closed standard input.
+
+The transcript window can be resized or expanded with F5 and may be closed
+while commands continue to run. Closing it does not cancel the batch; use
+Cancel for that. Send to editor opens the currently retained transcript in a
+new editable workspace.
+
+Scalar substitutions are inserted verbatim: quote them in the template when
+needed, for example tool "!.!". A leading @ suppresses the displayed expanded
+command but not its output. Environment variables are expanded by the target
+shell.
+
+Common substitutions:
+  !!       literal exclamation mark
+  !.!      current name with extension
+  !        current name without the final extension
+  !`       extension without the dot
+  !~       short name without extension (long-name fallback when unavailable)
+  !-!/!+! short name with extension (long-name fallback when unavailable)
+  !\ or !/ current panel directory
+  !=\ or !=/ resolved real directory
+  !:       drive or filesystem root
+  !?!      description (currently empty)
+  !&       selected names inline
+  !&~/Q/q  short names / force quoting / quote only when needed
+  !@...!   temporary file containing long selected names
+  !$...!   temporary file containing short selected names
+  !?title?initial! value requested once before the batch starts
+  !# / !^  switch to passive / active panel
+  ![ / !]  switch to left / right panel
+
+Active-panel !& and list-file tokens run once for the captured selection.
+List modifiers: F full paths, Q quoted entries, S forward slashes, A target
+encoding, U UTF-8 with BOM, W UTF-16LE.
+
+@ShellNav
+$Panel Navigation Keys
+  Tab           - Switch active panel
+  Insert        - Select file/folder
+  Ctrl+Tab      - Cycle workspaces
+  Alt+1..9      - Switch to the workspace with that tab number (when enabled)
+  Ctrl+W        - Close workspace
+  Ctrl+N        - Fork active panel to new workspace
+
+@History
+$Commands History (Alt+F8)
+    The commands history shows the list of previously executed commands.
+Besides the cursor keys, the following keyboard shortcuts are available:
+
+  Paste selected command into command line          Enter
+  (Left-click acts the same)
+  Cancel the dialog                                 Esc, F10
+
+  Toggle substring / prefix incremental search      F2
+  Show or hide the command folder column            Ctrl+F2
+  Insert the command folder into the command line   Ctrl+Shift+Enter
+  Go to the command folder on the active panel      Ctrl+PgDn
+  Type any character to filter the visible entries
+  Backspace to remove the last filter character
+
+  Delete the current history item                   Shift+Del
+  Clear the entire commands history (confirmed)     Del
+
+  Copy the selected command to the clipboard        Ctrl+C, Ctrl+Ins
+
+@HistoryViewEdit
+$Viewer and Editor History (Alt+F11)
+    This history lists files opened in the internal viewer or editor.
+Enter repeats the most recent action for that file; the mode is shown in the
+right-hand column.
+
+  Repeat the stored View/Edit action                 Enter
+  Open in the viewer                                 F3
+  Open in the editor                                 F4
+  Toggle substring / prefix incremental search      F2
+  Delete the current history item                   Shift+Del
+  Clear the entire history (confirmed)              Del
+  Copy the selected path to the clipboard           Ctrl+C, Ctrl+Ins
+  Cancel the dialog                                 Esc, F10
+
+@HistoryFolders
+$Folders History (Alt+F12)
+    The folders history shows the list of previously visited directories.
+Besides the cursor keys, the following keyboard shortcuts are available:
+
+  Go to selected folder on the active panel         Enter
+  (Left-click acts the same)
+  Go to selected folder on the passive panel        Shift+Enter
+  Insert selected path into the command line        Ctrl+Enter
+  Cancel the dialog                                 Esc, F10
+
+  Toggle substring / prefix incremental search      F2
+  Type any character to filter the visible entries
+  Backspace to remove the last filter character
+
+  Delete the current history item                   Shift+Del
+  Clear the entire folders history (confirmed)      Del
+  Remove entries with non-existing paths (confirmed) Ctrl+R
+
+  Copy the selected path to the clipboard           Ctrl+C, Ctrl+Ins
+
+@MediaInfo
+$MediaInfo plugin
+    The built-in MediaInfo plugin reads common media containers directly
+through the active file system, including remote VFS panels. It is written in
+pure Go and does not require CGO or the native MediaInfo library.
+
+  F11, Media information   Analyze the file under the cursor
+  Ctrl+Q                   Show a fast bounded media preview
+  MediaInfo:path           Analyze a path from the command line
+  F4 in the report         Open an unsaved .MediaInfo.txt report in the editor
+
+The command prefix, Quick View provider, report language, Inform-compatible
+template, and default editor mode are configured under Options | Plugin
+configuration | MediaInfo. Quick View deliberately leaves images and text
+subtitle files to their native preview providers.
+
+@EnvironmentManager
+$Environment Manager plugin
+    Environment Manager keeps ordered sets of process variables. Enabled
+profiles are applied from top to bottom; later values override earlier ones.
+An empty value removes a variable. The resulting environment is used by f4,
+future child processes, and idle local workspace shells. Remote shells are
+never changed.
+
+  F11, Environment Manager   Open the profile list
+  Ins / Del / F4 / F5        Add, delete, edit, or duplicate a profile
+  Space / + / -              Toggle, enable, or disable a profile
+  Ctrl+Up / Ctrl+Down        Reorder profiles
+  Ctrl+Ins / Shift+Del       Copy or cut a profile
+  Shift+Ins                  Paste a profile
+  Alt+F4                     Always edit the profile in f4's editor
+  Shift+F3 / Shift+F4        View or edit the complete process environment
+  F2                         Configure ignored variables and editor preference
+
+On Windows, the configuration dialog can import the Environment Manager data
+stored by Far Manager 3. It checks the 64-bit and 32-bit registry views and
+offers to append the imported profiles or replace the current list. The Far
+registry is only read and is never modified.
+
+An ampersand before a character in a profile name assigns that manager hotkey;
+use && for a literal ampersand. Moving an edge profile again with Ctrl+Up or
+Ctrl+Down creates a group separator. The Always use editor setting makes plain
+F4 use f4's editor too.
+
+Use %NAME% to refer to a value produced by the baseline or an earlier profile.
+Unix-like systems also accept $NAME and ${NAME}. Use %% and $$ for literal
+markers. Profile data is stored as clear text and is not a secrets vault.
+
+Command-line operations:
+
+  envman:                    Open without the external-change prompt
+  envman:+Name/-Name/*Name  Enable, disable, or toggle the first exact match
+  envman:<file / >file      Import or export NAME=value text
+  envman:e                   Edit the complete managed environment
+
+Changes made only inside a child shell cannot propagate back into f4. On a
+normal F11 open, an unmanaged-change prompt can restore the profile target,
+import the delta as an enabled profile, ignore its names, or cancel.
+
+Macros can call f4.envman, envman, 4D766E45, or 0x4D766E45 with one profile or
+file operation string. Opening the manager or full editor is intentionally not
+supported from a macro call.
+
+@MouseWheel
+$Mouse wheel settings
+
+Options - Mouse wheel settings opens a dialog that controls how many lines
+one wheel notch scrolls, separately for the file panels, the editor, the
+viewer, menus, and tables and lists; up and down are set independently.
+
+A value of 0 follows the operating system's wheel setting (this is the
+default). Any positive value overrides it and scrolls exactly that many
+lines per notch.
+
+Other scrolling surfaces (the help viewer, multi-line edits in dialogs)
+always follow the system setting.

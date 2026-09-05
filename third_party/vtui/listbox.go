@@ -68,6 +68,13 @@ func (lb *ListBox) SelectName(name string) {
 	}
 }
 
+func (lb *ListBox) SetRowProvider(p RowProvider) {
+	lb.Table.SetRowProvider(p)
+	if len(lb.Columns) > 0 {
+		lb.Columns[0].Width = lb.GetContentWidth()
+	}
+}
+
 func (lb *ListBox) SetPosition(x1, y1, x2, y2 int) {
 	lb.Table.SetPosition(x1, y1, x2, y2)
 	if len(lb.Columns) > 0 {

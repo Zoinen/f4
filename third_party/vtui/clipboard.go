@@ -34,6 +34,15 @@ func DisableTerminalClipboard() { noTerminalBehind.Store(true) }
 // TerminalClipboardDisabled reports whether the OSC 52 fallback is suppressed.
 func TerminalClipboardDisabled() bool { return noTerminalBehind.Load() }
 
+// SkipOSClipboard routes Set/GetClipboard past the OS clipboard helpers so
+// all traffic stays in the process-local buffer. Test suites set it (together
+// with DisableTerminalClipboard to silence the OSC 52 fallback): the real
+// path shells out to pbcopy/xclip and reads back a clipboard that is global
+// to the machine — slow and racy on a shared CI runner, and clobbering the
+// developer's clipboard locally. Set it once before spawning goroutines;
+// a test that genuinely targets the OS clipboard can switch it back off.
+func SkipOSClipboard(skip bool) { testSkipOSClipboard = skip }
+
 // SetClipboard copies text to the system clipboard.
 func SetClipboard(text string) {
 	DebugLog("CLIPBOARD: SetClipboard called, len: %d", len(text))

@@ -27,7 +27,7 @@ func TestMutationsAgainstLocalShell(t *testing.T) {
 	}
 
 	file := filepath.Join(nested, "a file.txt")
-	if err := os.WriteFile(file, []byte("hello"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(root, "one two", "moved file.txt")
@@ -78,7 +78,7 @@ func TestMutationsAgainstLocalShell(t *testing.T) {
 	if err := c.MkDir(ctx, deep); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(deep, "leaf"), []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(deep, "leaf"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.RemoveAll(ctx, filepath.Join(root, "tree")); err != nil {
@@ -95,7 +95,7 @@ func TestMutationsRequireSafePaths(t *testing.T) {
 	dir := t.TempDir()
 
 	victim := filepath.Join(dir, "victim.txt")
-	if err := os.WriteFile(victim, []byte("keep me"), 0644); err != nil {
+	if err := os.WriteFile(victim, []byte("keep me"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,7 +132,7 @@ func TestMutationsRequireSafePaths(t *testing.T) {
 	// A name that merely starts with dots is not a ".." component and must
 	// stay usable, or the guard has grown too wide.
 	dotty := filepath.Join(dir, "..hidden")
-	if err := os.WriteFile(dotty, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(dotty, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Chmod(ctx, dotty, 0600); err != nil {
@@ -158,7 +158,7 @@ func TestChownAgainstLocalShell(t *testing.T) {
 	c := newLocalShellClient(t)
 	ctx := context.Background()
 	file := filepath.Join(t.TempDir(), "owned file")
-	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if !c.Session().Features().Has("chown") {
@@ -229,10 +229,12 @@ func TestChtimesOnSimulatedBSDHost(t *testing.T) {
 	bin := t.TempDir()
 	stubs := map[string]string{
 		"touch": "#!/bin/sh\nfor a in \"$@\"; do\n case $a in -d) exit 1 ;; esac\ndone\nexec " + realTouch + " \"$@\"\n",
-		"date":  "#!/bin/sh\ncase $1 in\n -r) shift; e=$1; shift; exec " + realDate + " -d \"@$e\" \"$@\" ;;\n -d) exit 1 ;;\nesac\nexec " + realDate + " \"$@\"\n",
+		// The -r branch must not assume a GNU date underneath: on macOS the
+		// real date is BSD, where the epoch spelling is -r, not -d @epoch.
+		"date": "#!/bin/sh\ncase $1 in\n -r) shift; e=$1; shift\n  out=`" + realDate + " -d \"@$e\" \"$@\" 2>/dev/null` || out=`" + realDate + " -r \"$e\" \"$@\" 2>/dev/null`\n  [ -n \"$out\" ] || exit 1\n  echo \"$out\"; exit 0 ;;\n -d) exit 1 ;;\nesac\nexec " + realDate + " \"$@\"\n",
 	}
 	for name, body := range stubs {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0755); err != nil {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0700); err != nil { // #nosec G306 -- these command stubs must be executable via PATH.
 			t.Fatal(err)
 		}
 	}
@@ -247,7 +249,7 @@ func checkChtimes(t *testing.T, c *Client) {
 	t.Helper()
 	ctx := context.Background()
 	file := filepath.Join(t.TempDir(), "timed file")
-	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if !c.Session().Features().Has("touch") {
@@ -321,7 +323,7 @@ func TestSymlinkAgainstLocalShell(t *testing.T) {
 		t.Skip("no ln on this machine")
 	}
 
-	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("hi"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "target.txt"), []byte("hi"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -384,7 +386,7 @@ func TestSymlinkAgainstLocalShell(t *testing.T) {
 	// Including when it is a directory, which is the case where ln would
 	// otherwise put the link inside it instead of failing.
 	dir := filepath.Join(root, "a dir")
-	if err := os.Mkdir(dir, 0755); err != nil {
+	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Symlink(ctx, dir, "target.txt"); err == nil {

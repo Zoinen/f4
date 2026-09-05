@@ -2,6 +2,7 @@ package cloudfox
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/unxed/f4/vfs"
@@ -155,7 +156,7 @@ func TestPluginRegistersContextCommandsAndUnregistersThem(t *testing.T) {
 
 func TestPluginCommandRegistrationFailureRollsBackWithoutGlobalSideEffects(t *testing.T) {
 	for failCommand := 1; failCommand <= 3; failCommand++ {
-		t.Run(string(rune('0'+failCommand)), func(t *testing.T) {
+		t.Run(strconv.Itoa(failCommand), func(t *testing.T) {
 			plugin := NewPlugin(Options{ConfigDir: t.TempDir(), Portable: true, Factories: []BackendFactory{}})
 			host := &cloudFoxContributionHostMock{failCommand: failCommand}
 			if err := plugin.Init(host); err == nil {

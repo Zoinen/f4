@@ -2,6 +2,7 @@ package netfox
 
 import (
 	"bytes"
+	"context"
 	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
 	"net"
@@ -16,12 +17,16 @@ func TestNetFoxVFS_ConfigPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_net.json")
 	// Ensure the file is created for consistency in tests
-	os.WriteFile(dbPath, []byte("{}"), 0644)
+	if err := os.WriteFile(dbPath, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	nf := NewNetFoxVFS(dbPath)
 
 	// 1. Test Saving
 	cfg := NetFoxConfig{Type: "sftp", Host: "1.2.3.4", User: "root", Pass: "plaintext_secret", Timeout: "15"}
-	nf.SaveConfig("My Server", cfg)
+	if err := nf.SaveConfig("My Server", cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	// Check if password was actually encrypted on disk
 	rawJSON, _ := os.ReadFile(dbPath)
@@ -49,21 +54,66 @@ func TestNetFoxVFS_ConfigPersistence(t *testing.T) {
 
 	// 3. Test ReadDir (visual representation)
 	found := false
-	nf.ReadDir(nil, "", func(items []vfs.VFSItem) {
+	if err := nf.ReadDir(context.Background(), "", func(items []vfs.VFSItem) {
 		for _, itm := range items {
 			if itm.Name == "My Server" {
 				found = true
 			}
 		}
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if !found {
 		t.Error("ReadDir failed to list saved connection")
 	}
 
 	// 4. Test Removal
-	nf.Remove(nil, "My Server")
+	if err := nf.Remove(context.Background(), "My Server"); err != nil {
+		t.Fatal(err)
+	}
 	if len(nf.getConfigs()) != 0 {
 		t.Error("Config was not removed")
+	}
+}
+
+func TestNetFoxVFS_DamagedConfigIsNeverOverwritten(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "connections.json")
+	original := []byte("{not-json\n")
+	if err := os.WriteFile(dbPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nf := NewNetFoxVFS(dbPath)
+	if err := nf.SaveConfig("new", NetFoxConfig{Type: "sftp", Host: "example"}); err == nil {
+		t.Fatal("saving over damaged connections file unexpectedly succeeded")
+	}
+	got, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("damaged file changed after rejected save: %q", got)
+	}
+}
+
+func TestNetFoxVFS_InvalidWriterDoesNotSaveEmptyConfig(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "connections.json")
+	nf := NewNetFoxVFS(dbPath)
+	if err := nf.SaveConfig("existing", NetFoxConfig{Type: "sftp", Host: "example"}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := nf.Create(context.TODO(), "existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("not-json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err == nil {
+		t.Fatal("invalid JSON writer unexpectedly succeeded")
+	}
+	configs := nf.getConfigs()
+	if got := configs["existing"].Host; got != "example" {
+		t.Fatalf("invalid writer changed existing profile: %q", got)
 	}
 }
 
@@ -73,7 +123,9 @@ func TestNetFox_TimeoutAndDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to start mock TCP server: %v", err)
 	}
-	defer l.Close()
+	defer func() {
+		_ = l.Close() // listener cleanup only
+	}()
 
 	addr := l.Addr().String()
 	host, port, _ := net.SplitHostPort(addr)
@@ -82,7 +134,9 @@ func TestNetFox_TimeoutAndDial(t *testing.T) {
 	go func() {
 		conn, err := l.Accept()
 		if err == nil {
-			defer conn.Close()
+			defer func() {
+				_ = conn.Close() // connection cleanup only
+			}()
 			time.Sleep(2 * time.Second)
 		}
 	}()

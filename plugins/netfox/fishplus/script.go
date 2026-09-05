@@ -13,7 +13,7 @@ const ProtocolVersion = 1
 
 // tokenPlaceholder is replaced by a per-session random token before the
 // helper is sent to the remote shell.
-const tokenPlaceholder = "__F4_TOKEN__"
+const tokenPlaceholder = "__F4_TOKEN__" // #nosec G101 -- public marker replaced by a fresh token before transmission.
 
 //go:embed helper.sh
 var helperSource string

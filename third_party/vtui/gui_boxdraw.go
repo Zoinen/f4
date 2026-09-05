@@ -4,63 +4,16 @@ package vtui
 
 import (
 	"image"
-	"image/color"
 )
 
-// drawBoxGlyph rasterises the box-drawing, arrow and block characters
-// geometrically instead of going through the font.
-//
-// Fonts are the wrong tool for these: a monospace face renders U+2500 and its
-// neighbours as glyphs positioned by metrics, so adjacent cells leave hairline
-// gaps at the joins and a frame comes out dotted. Drawing the segments
-// directly against the cell rectangle makes them meet exactly, which is what a
-// Far Manager style UI is made of.
-//
-// thick is the line width in pixels, normally the display scale factor, so
-// frames stay proportionate on a HiDPI screen. Bounds come from img itself,
-// so the caller does not have to pass a surface size that could disagree with
-// the buffer. Returns false for characters it does not handle, leaving the
-// caller to fall back to the font.
-func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, col color.Color) bool {
+// drawBoxGlyph rasterizes box-drawing, arrow, and block characters
+// geometrically to ensure seamless joins against the cell rectangle.
+func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, rgb uint32) bool {
 	mx, my := px+cw/2, py+ch/2
 	if thick < 1 {
 		thick = 1
 	}
-	cr, cg, cb, _ := col.RGBA()
-	r8, g8, b8 := uint8(cr>>8), uint8(cg>>8), uint8(cb>>8)
-
-	drawHLine := func(x1, x2, y int) {
-		for x := x1; x <= x2; x++ {
-			if x < 0 || x >= img.Rect.Max.X {
-				continue
-			}
-			for t := 0; t < thick; t++ {
-				if y+t < 0 || y+t >= img.Rect.Max.Y {
-					continue
-				}
-				off := (y+t)*img.Stride + x*4
-				if off+3 < len(img.Pix) {
-					img.Pix[off], img.Pix[off+1], img.Pix[off+2], img.Pix[off+3] = r8, g8, b8, 255
-				}
-			}
-		}
-	}
-	drawVLine := func(x, y1, y2 int) {
-		for y := y1; y <= y2; y++ {
-			if y < 0 || y >= img.Rect.Max.Y {
-				continue
-			}
-			for t := 0; t < thick; t++ {
-				if x+t < 0 || x+t >= img.Rect.Max.X {
-					continue
-				}
-				off := y*img.Stride + (x+t)*4
-				if off+3 < len(img.Pix) {
-					img.Pix[off], img.Pix[off+1], img.Pix[off+2], img.Pix[off+3] = r8, g8, b8, 255
-				}
-			}
-		}
-	}
+	r8, g8, b8 := uint8(rgb>>16), uint8(rgb>>8), uint8(rgb)
 
 	ofs := cw / 4
 	if ofs < 1 {
@@ -69,154 +22,154 @@ func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, col col
 
 	switch char {
 	case '─':
-		drawHLine(px, px+cw-1, my)
+		drawBoxHLine(img, px, px+cw-1, my, thick, r8, g8, b8)
 		return true
 	case '│':
-		drawVLine(mx, py, py+ch-1)
+		drawBoxVLine(img, mx, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '┌':
-		drawHLine(mx, px+cw-1, my)
-		drawVLine(mx, my, py+ch-1)
+		drawBoxHLine(img, mx, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, my, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '┐':
-		drawHLine(px, mx, my)
-		drawVLine(mx, my, py+ch-1)
+		drawBoxHLine(img, px, mx, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, my, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '└':
-		drawHLine(mx, px+cw-1, my)
-		drawVLine(mx, py, my)
+		drawBoxHLine(img, mx, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, my, thick, r8, g8, b8)
 		return true
 	case '┘':
-		drawHLine(px, mx, my)
-		drawVLine(mx, py, my)
+		drawBoxHLine(img, px, mx, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, my, thick, r8, g8, b8)
 		return true
 	case '├':
-		drawHLine(mx, px+cw-1, my)
-		drawVLine(mx, py, py+ch-1)
+		drawBoxHLine(img, mx, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '┤':
-		drawHLine(px, mx, my)
-		drawVLine(mx, py, py+ch-1)
+		drawBoxHLine(img, px, mx, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '┬':
-		drawHLine(px, px+cw-1, my)
-		drawVLine(mx, my, py+ch-1)
+		drawBoxHLine(img, px, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, my, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '┴':
-		drawHLine(px, px+cw-1, my)
-		drawVLine(mx, py, my)
+		drawBoxHLine(img, px, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, my, thick, r8, g8, b8)
 		return true
 	case '┼':
-		drawHLine(px, px+cw-1, my)
-		drawVLine(mx, py, py+ch-1)
+		drawBoxHLine(img, px, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '═':
-		drawHLine(px, px+cw-1, my-ofs)
-		drawHLine(px, px+cw-1, my+ofs)
+		drawBoxHLine(img, px, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, px+cw-1, my+ofs, thick, r8, g8, b8)
 		return true
 	case '║':
-		drawVLine(mx-ofs, py, py+ch-1)
-		drawVLine(mx+ofs, py, py+ch-1)
+		drawBoxVLine(img, mx-ofs, py, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╔':
-		drawHLine(mx+ofs, px+cw-1, my-ofs)
-		drawHLine(mx-ofs, px+cw-1, my+ofs)
-		drawVLine(mx-ofs, my+ofs, py+ch-1)
-		drawVLine(mx+ofs, my-ofs, py+ch-1)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, mx-ofs, px+cw-1, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, my+ofs, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, my-ofs, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╗':
-		drawHLine(px, mx-ofs, my-ofs)
-		drawHLine(px, mx+ofs, my+ofs)
-		drawVLine(mx+ofs, my+ofs, py+ch-1)
-		drawVLine(mx-ofs, my-ofs, py+ch-1)
+		drawBoxHLine(img, px, mx-ofs, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, mx+ofs, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, my+ofs, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, my-ofs, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╚':
-		drawHLine(mx-ofs, px+cw-1, my-ofs)
-		drawHLine(mx+ofs, px+cw-1, my+ofs)
-		drawVLine(mx-ofs, py, my-ofs)
-		drawVLine(mx+ofs, py, my+ofs)
+		drawBoxHLine(img, mx-ofs, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, my-ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, my+ofs, thick, r8, g8, b8)
 		return true
 	case '╝':
-		drawHLine(px, mx+ofs, my-ofs)
-		drawHLine(px, mx-ofs, my+ofs)
-		drawVLine(mx+ofs, py, my-ofs)
-		drawVLine(mx-ofs, py, my+ofs)
+		drawBoxHLine(img, px, mx+ofs, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, mx-ofs, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, my-ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, my+ofs, thick, r8, g8, b8)
 		return true
 	case '╠':
-		drawHLine(mx-ofs, px+cw-1, my-ofs)
-		drawHLine(mx+ofs, px+cw-1, my+ofs)
-		drawVLine(mx-ofs, py, py+ch-1)
-		drawVLine(mx+ofs, py, py+ch-1)
+		drawBoxHLine(img, mx-ofs, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╣':
-		drawHLine(px, mx+ofs, my-ofs)
-		drawHLine(px, mx-ofs, my+ofs)
-		drawVLine(mx-ofs, py, py+ch-1)
-		drawVLine(mx+ofs, py, py+ch-1)
+		drawBoxHLine(img, px, mx+ofs, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, mx-ofs, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╟':
-		drawHLine(mx+ofs, px+cw-1, my)
-		drawVLine(mx-ofs, py, py+ch-1)
-		drawVLine(mx+ofs, py, py+ch-1)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╢':
-		drawHLine(px, mx-ofs, my)
-		drawVLine(mx-ofs, py, py+ch-1)
-		drawVLine(mx+ofs, py, py+ch-1)
+		drawBoxHLine(img, px, mx-ofs, my, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, py+ch-1, thick, r8, g8, b8)
 		return true
 	case '╩':
-		drawHLine(px, px+cw-1, my+ofs)
-		drawHLine(px, mx-ofs, my-ofs)
-		drawHLine(mx+ofs, px+cw-1, my-ofs)
-		drawVLine(mx-ofs, py, my-ofs)
-		drawVLine(mx+ofs, py, my-ofs)
+		drawBoxHLine(img, px, px+cw-1, my+ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, mx-ofs, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, py, my-ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, py, my-ofs, thick, r8, g8, b8)
 		return true
 	case '╦':
-		drawHLine(px, px+cw-1, my-ofs)
-		drawHLine(px, mx-ofs, my+ofs)
-		drawHLine(mx+ofs, px+cw-1, my+ofs)
-		drawVLine(mx-ofs, my+ofs, py+ch-1)
-		drawVLine(mx+ofs, my+ofs, py+ch-1)
+		drawBoxHLine(img, px, px+cw-1, my-ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, px, mx-ofs, my+ofs, thick, r8, g8, b8)
+		drawBoxHLine(img, mx+ofs, px+cw-1, my+ofs, thick, r8, g8, b8)
+		drawBoxVLine(img, mx-ofs, my+ofs, py+ch-1, thick, r8, g8, b8)
+		drawBoxVLine(img, mx+ofs, my+ofs, py+ch-1, thick, r8, g8, b8)
 		return true
 
 	// Arrows and Triangles
 	case '↑':
 		yTop := py + ch/6
 		yBot := py + ch - ch/6
-		drawVLine(mx, yTop, yBot)
+		drawBoxVLine(img, mx, yTop, yBot, thick, r8, g8, b8)
 		arm := cw / 4
 		if arm < 2 {
 			arm = 2
 		}
 		for i := 0; i <= arm; i++ {
-			drawHLine(mx-i, mx+i, yTop+i)
+			drawBoxHLine(img, mx-i, mx+i, yTop+i, thick, r8, g8, b8)
 		}
 		return true
 	case '↓':
 		yTop := py + ch/6
 		yBot := py + ch - ch/6
-		drawVLine(mx, yTop, yBot)
+		drawBoxVLine(img, mx, yTop, yBot, thick, r8, g8, b8)
 		arm := cw / 4
 		if arm < 2 {
 			arm = 2
 		}
 		for i := 0; i <= arm; i++ {
-			drawHLine(mx-(arm-i), mx+(arm-i), yBot-arm+i)
+			drawBoxHLine(img, mx-(arm-i), mx+(arm-i), yBot-arm+i, thick, r8, g8, b8)
 		}
 		return true
 	case '↕':
 		yTop := py + ch/6
 		yBot := py + ch - ch/6
-		drawVLine(mx, yTop, yBot)
+		drawBoxVLine(img, mx, yTop, yBot, thick, r8, g8, b8)
 		arm := cw / 4
 		if arm < 2 {
 			arm = 2
 		}
 		for i := 0; i <= arm; i++ {
-			drawHLine(mx-i, mx+i, yTop+i)
+			drawBoxHLine(img, mx-i, mx+i, yTop+i, thick, r8, g8, b8)
 		}
 		for i := 0; i <= arm; i++ {
-			drawHLine(mx-(arm-i), mx+(arm-i), yBot-arm+i)
+			drawBoxHLine(img, mx-(arm-i), mx+(arm-i), yBot-arm+i, thick, r8, g8, b8)
 		}
 		return true
 	case '▲':
@@ -229,7 +182,7 @@ func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, col col
 		}
 		for y := yTop; y <= yBot; y++ {
 			dx := (y - yTop) * maxW / max(hSpan, 1)
-			drawHLine(mx-dx, mx+dx, y)
+			drawBoxHLine(img, mx-dx, mx+dx, y, thick, r8, g8, b8)
 		}
 		return true
 	case '▼':
@@ -242,7 +195,7 @@ func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, col col
 		}
 		for y := yTop; y <= yBot; y++ {
 			dx := (yBot - y) * maxW / max(hSpan, 1)
-			drawHLine(mx-dx, mx+dx, y)
+			drawBoxHLine(img, mx-dx, mx+dx, y, thick, r8, g8, b8)
 		}
 		return true
 	case '█':
@@ -265,19 +218,57 @@ func drawBoxGlyph(img *image.RGBA, char rune, px, py, cw, ch, thick int, col col
 	return false
 }
 
-// isBoxDrawRune reports whether a rune is worth offering to drawBoxGlyph.
-//
-// It is a cheap range test in front of a thirty-way switch, and the switch
-// would otherwise run for every letter on the screen. The ranges are the box
-// drawing and block elements blocks plus the arrows drawBoxGlyph handles;
-// being generous costs only a switch that returns false, whereas being too
-// narrow would silently send a frame character back to the font.
-func isBoxDrawRune(r rune) bool {
-	return (r >= 0x2500 && r <= 0x259F) || (r >= 0x2190 && r <= 0x2195) ||
-		r == 0x25B2 || r == 0x25BC
+// drawBoxHLine/drawBoxVLine paint one clipped segment. Package functions so
+// the packed colour stays a uint32 (color.Color conversion allocates);
+// bounds are clamped once up front, not per pixel.
+func drawBoxHLine(img *image.RGBA, x1, x2, y, thick int, r8, g8, b8 uint8) {
+	if x1 < 0 {
+		x1 = 0
+	}
+	if x2 >= img.Rect.Max.X {
+		x2 = img.Rect.Max.X - 1
+	}
+	y0, y1 := y, y+thick-1
+	if y0 < 0 {
+		y0 = 0
+	}
+	if y1 >= img.Rect.Max.Y {
+		y1 = img.Rect.Max.Y - 1
+	}
+	if x1 > x2 || y0 > y1 || y1*img.Stride+x2*4+3 >= len(img.Pix) {
+		return
+	}
+	for yy := y0; yy <= y1; yy++ {
+		off := yy*img.Stride + x1*4
+		for x := x1; x <= x2; x++ {
+			img.Pix[off], img.Pix[off+1], img.Pix[off+2], img.Pix[off+3] = r8, g8, b8, 255
+			off += 4
+		}
+	}
 }
 
-// rgbColor turns the packed 0xRRGGBB used throughout the buffer into a color.
-func rgbColor(v uint32) color.RGBA {
-	return color.RGBA{R: uint8(v >> 16), G: uint8(v >> 8), B: uint8(v), A: 255}
+func drawBoxVLine(img *image.RGBA, x, y1, y2, thick int, r8, g8, b8 uint8) {
+	if y1 < 0 {
+		y1 = 0
+	}
+	if y2 >= img.Rect.Max.Y {
+		y2 = img.Rect.Max.Y - 1
+	}
+	x0, x1 := x, x+thick-1
+	if x0 < 0 {
+		x0 = 0
+	}
+	if x1 >= img.Rect.Max.X {
+		x1 = img.Rect.Max.X - 1
+	}
+	if x0 > x1 || y1 > y2 || y2*img.Stride+x1*4+3 >= len(img.Pix) {
+		return
+	}
+	for yy := y1; yy <= y2; yy++ {
+		off := yy*img.Stride + x0*4
+		for xx := x0; xx <= x1; xx++ {
+			img.Pix[off], img.Pix[off+1], img.Pix[off+2], img.Pix[off+3] = r8, g8, b8, 255
+			off += 4
+		}
+	}
 }

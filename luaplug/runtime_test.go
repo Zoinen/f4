@@ -224,7 +224,11 @@ func TestUnsafeStdlibOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer r.Close()
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
 
 	if err := r.LoadString("plugin", "has_os = os ~= nil"); err != nil {
 		t.Fatalf("LoadString: %v", err)
@@ -244,7 +248,11 @@ func TestRuntimeTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer r.Close()
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
 
 	start := time.Now()
 	err = r.LoadString("spin", "while true do end")
@@ -265,11 +273,11 @@ func TestLoadStringSkipsShebang(t *testing.T) {
 }
 func TestLoadFileAddsPackagePath(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "helper.lua"), []byte("return { answer = 42 }"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "helper.lua"), []byte("return { answer = 42 }"), 0o600); err != nil {
 		t.Fatalf("write helper: %v", err)
 	}
 	main := filepath.Join(dir, "plugin.lua")
-	if err := os.WriteFile(main, []byte("answer = require('helper').answer"), 0o644); err != nil {
+	if err := os.WriteFile(main, []byte("answer = require('helper').answer"), 0o600); err != nil {
 		t.Fatalf("write plugin: %v", err)
 	}
 

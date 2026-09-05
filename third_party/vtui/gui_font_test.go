@@ -1,6 +1,9 @@
 package vtui
 
 import (
+	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -87,6 +90,62 @@ func TestGetFontCandidates(t *testing.T) {
 	}
 	if !foundDirCandidate {
 		t.Error("Expected directory-specific candidates for custom font")
+	}
+}
+
+func TestFontconfigMonospacePath(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("fontconfig lookup is Linux-only")
+	}
+	previous := runFontconfigMonospace
+	runFontconfigMonospace = func() (string, error) { return "/tmp/Mono.ttf", nil }
+	t.Cleanup(func() { runFontconfigMonospace = previous })
+
+	if got := fontconfigMonospacePath(); got != "/tmp/Mono.ttf" {
+		t.Errorf("fontconfigMonospacePath() = %q, want /tmp/Mono.ttf", got)
+	}
+}
+
+func TestParseFontconfigPaths(t *testing.T) {
+	base := "/fonts"
+	if runtime.GOOS == "windows" {
+		base = `C:\fonts`
+	}
+	emojiPath := filepath.Join(base, "Emoji.ttf")
+	symbolPath := filepath.Join(base, "Symbola.ttf")
+	got := parseFontconfigPaths(emojiPath + "\n" + emojiPath + "\nrelative.ttf\n " + symbolPath + " \n")
+	want := []string{emojiPath, symbolPath}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseFontconfigPaths() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFallbackPathsForGUI_DeduplicatesFontconfigMatches(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("fontconfig fallback lookup is Linux-only")
+	}
+	previous := runFontconfigEmoji
+	runFontconfigEmoji = func() ([]string, error) {
+		return []string{fallbackFontPaths[0], "/tmp/Emoji.ttf", "/tmp/Emoji.ttf"}, nil
+	}
+	t.Cleanup(func() { runFontconfigEmoji = previous })
+
+	paths := fallbackPathsForGUI()
+	count := 0
+	for _, path := range paths {
+		if path == "/tmp/Emoji.ttf" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("dynamic emoji path count = %d, want 1 in %#v", count, paths)
+	}
+	for i, path := range paths {
+		for _, earlier := range paths[:i] {
+			if earlier == path {
+				t.Fatalf("duplicate fallback path %q in %#v", path, paths)
+			}
+		}
 	}
 }
 

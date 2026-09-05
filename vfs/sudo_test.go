@@ -3,10 +3,12 @@
 package vfs
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -16,7 +18,9 @@ func mockSudoDispatcher(t *testing.T, l *net.UnixListener, stop chan struct{}) {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close() // connection cleanup errors are uninteresting
+	}()
 
 	for {
 		select {
@@ -66,10 +70,18 @@ func mockSudoDispatcher(t *testing.T, l *net.UnixListener, stop chan struct{}) {
 			if req.Path == "/protected/file.txt" {
 				tmp, err := os.CreateTemp("", "sudo-test-open-*")
 				if err == nil {
-					tmp.Write([]byte("elevated content"))
-					tmp.Seek(0, 0)
-					fdToSend = int(tmp.Fd())
 					tmpFileToClean = tmp
+					if _, err := tmp.Write([]byte("elevated content")); err != nil {
+						t.Errorf("write temporary response file: %v", err)
+						resp.Error = err.Error()
+						break
+					}
+					if _, err := tmp.Seek(0, 0); err != nil {
+						t.Errorf("rewind temporary response file: %v", err)
+						resp.Error = err.Error()
+						break
+					}
+					fdToSend = int(tmp.Fd())
 				} else {
 					resp.Error = err.Error()
 				}
@@ -109,20 +121,30 @@ func mockSudoDispatcher(t *testing.T, l *net.UnixListener, stop chan struct{}) {
 		if err := sendMsg(conn, resp, fdToSend); err != nil {
 			t.Logf("mockSudoDispatcher sendMsg error: %v", err)
 			if tmpFileToClean != nil {
-				tmpFileToClean.Close()
-				os.Remove(tmpFileToClean.Name())
+				if err := tmpFileToClean.Close(); err != nil {
+					t.Errorf("close temporary response file: %v", err)
+				}
+				if err := os.Remove(tmpFileToClean.Name()); err != nil {
+					t.Errorf("remove temporary response file: %v", err)
+				}
 			}
 			return
 		}
 		if tmpFileToClean != nil {
-			tmpFileToClean.Close()
-			os.Remove(tmpFileToClean.Name())
+			if err := tmpFileToClean.Close(); err != nil {
+				t.Errorf("close temporary response file: %v", err)
+			}
+			if err := os.Remove(tmpFileToClean.Name()); err != nil {
+				t.Errorf("remove temporary response file: %v", err)
+			}
 		}
 	}
 }
 
 func TestSudoClient_IPCProtocol(t *testing.T) {
-	tmpDir := t.TempDir()
+	// Not t.TempDir(): on macOS its path is long enough to overflow
+	// sun_path (~104 bytes) and bind fails with EINVAL.
+	tmpDir := shortSocketDir(t)
 	sockPath := filepath.Join(tmpDir, "sudo-test.sock")
 
 	addr, err := net.ResolveUnixAddr("unix", sockPath)
@@ -130,11 +152,10 @@ func TestSudoClient_IPCProtocol(t *testing.T) {
 		t.Fatalf("ResolveUnixAddr failed: %v", err)
 	}
 
-	l, err := net.ListenUnix("unix", addr)
-	if err != nil {
-		t.Fatalf("ListenUnix failed: %v", err)
-	}
-	defer l.Close()
+	l := listenUnixForTest(t, addr)
+	defer func() {
+		_ = l.Close() // listener cleanup errors are uninteresting
+	}()
 
 	stopChan := make(chan struct{})
 	defer close(stopChan)
@@ -155,7 +176,9 @@ func TestSudoClient_IPCProtocol(t *testing.T) {
 		t.Fatalf("Failed to connect to mock dispatcher: %v", err)
 	}
 	client.conn = conn
-	defer client.conn.Close()
+	defer func() {
+		_ = client.conn.Close() // connection cleanup errors are uninteresting
+	}()
 
 	// 1. Тест Stat
 	t.Run("Stat Success", func(t *testing.T) {
@@ -192,7 +215,7 @@ func TestSudoClient_IPCProtocol(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open failed: %v", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		content, err := io.ReadAll(f)
 		if err != nil {
@@ -239,15 +262,14 @@ func TestSudoClient_IPCProtocol(t *testing.T) {
 }
 
 func TestSudoClient_DisconnectRecovery(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := shortSocketDir(t)
 	sockPath := filepath.Join(tmpDir, "sudo-recovery.sock")
 
 	addr, _ := net.ResolveUnixAddr("unix", sockPath)
-	l, err := net.ListenUnix("unix", addr)
-	if err != nil {
-		t.Fatalf("ListenUnix failed: %v", err)
-	}
-	defer l.Close()
+	l := listenUnixForTest(t, addr)
+	defer func() {
+		_ = l.Close() // listener cleanup errors are uninteresting
+	}()
 
 	stopChan := make(chan struct{})
 	defer close(stopChan)
@@ -269,7 +291,9 @@ func TestSudoClient_DisconnectRecovery(t *testing.T) {
 	client.conn = conn
 
 	// Закрываем соединение, имитируя неожиданный обрыв связи
-	client.conn.Close()
+	if err := client.conn.Close(); err != nil {
+		t.Fatalf("Close connection failed: %v", err)
+	}
 
 	// Первый вызов на закрытом сокете должен завершиться ошибкой и сбросить c.conn
 	_, _, err = client.SendRequest(SudoRequest{Cmd: CmdPing})
@@ -281,4 +305,33 @@ func TestSudoClient_DisconnectRecovery(t *testing.T) {
 	if client.conn != nil {
 		t.Error("Expected client.conn to be set to nil after sendMsg failure")
 	}
+}
+
+// shortSocketDir returns a freshly created directory with a path short
+// enough for a unix socket: t.TempDir() on macOS easily exceeds the
+// ~104-byte sun_path limit and bind(2) fails with EINVAL.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "f4sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove short socket directory: %v", err)
+		}
+	})
+	return dir
+}
+
+func listenUnixForTest(t *testing.T, addr *net.UnixAddr) *net.UnixListener {
+	t.Helper()
+	l, err := net.ListenUnix("unix", addr)
+	if errors.Is(err, syscall.EPERM) {
+		t.Skipf("sandbox does not permit Unix socket bind: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("ListenUnix failed: %v", err)
+	}
+	return l
 }

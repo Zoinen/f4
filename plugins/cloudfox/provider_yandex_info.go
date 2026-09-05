@@ -15,7 +15,7 @@ func (b *yandexDiskBackend) refreshAbout(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return mapProviderHTTPError(resp, readSmallResponse(resp))
 	}

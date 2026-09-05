@@ -155,7 +155,11 @@ func TestADBFishStartupTiming(t *testing.T) {
 	}
 
 	pool := newFishSessionPool()
-	defer pool.Close()
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Errorf("close FISH+ session pool: %v", err)
+		}
+	})
 	opener := &hybridDeviceOpener{
 		features: server.Features,
 		pool:     pool,
@@ -333,7 +337,11 @@ func TestADBDeviceIntegration(t *testing.T) {
 		}
 	}
 	pool := newFishSessionPool()
-	defer pool.Close()
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Errorf("close FISH+ session pool: %v", err)
+		}
+	})
 	opener := &hybridDeviceOpener{
 		features: func(context.Context, string) (map[string]bool, error) { return features, nil },
 		pool:     pool,
@@ -349,7 +357,11 @@ func TestADBDeviceIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open Android filesystem: %v", err)
 	}
-	defer mounted.Close()
+	t.Cleanup(func() {
+		if err := mounted.Close(); err != nil {
+			t.Errorf("close Android filesystem: %v", err)
+		}
+	})
 	var fishMounted *netfox.FishVFS
 	if os.Getenv("F4_ADB_TEST_FISH") != "" {
 		var ok bool

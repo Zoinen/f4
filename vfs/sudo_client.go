@@ -40,9 +40,11 @@ func GetSudoClient() *SudoClient {
 
 // IsAvailable checks if the SudoClient has been initialized.
 func (c *SudoClient) IsAvailable() bool {
-	res := c != nil
-	if !res {
+	res := c != nil && sudoClientSupported()
+	if c == nil {
 		vtui.DebugLog("SUDO_CLIENT: IsAvailable() returning FALSE (client is nil)")
+	} else if !sudoClientSupported() {
+		vtui.DebugLog("SUDO_CLIENT: IsAvailable() returning FALSE (platform does not support the Unix dispatcher)")
 	}
 	return res
 }
@@ -58,11 +60,13 @@ func (c *SudoClient) Connect() error {
 
 	vtui.DebugLog("SUDO_CLIENT: Initializing connection... UID=%d GID=%d", os.Getuid(), os.Getgid())
 	c.sockPath = filepath.Join(os.TempDir(), fmt.Sprintf("f4-sudo-%d.sock", os.Getpid()))
-	os.Remove(c.sockPath)
+	_ = os.Remove(c.sockPath) // The root dispatcher retries removal before its authoritative bind.
 
 	// Start internal askpass server to handle dialog requests from the helper process
 	askPassSock := getAskpassSocketPath(os.Getpid())
-	os.Remove(askPassSock)
+	if err := os.Remove(askPassSock); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("cannot remove stale askpass socket %q; remove it and retry: %w", askPassSock, err)
+	}
 	go c.runAskpassServer(askPassSock)
 	// We don't remove askPassSock here, it will be removed by the server goroutine or on exit
 
@@ -162,7 +166,7 @@ func (c *SudoClient) Connect() error {
 	if matches, _ := filepath.Glob(filepath.Join(os.TempDir(), "f4-canary-*.txt")); len(matches) > 0 {
 		vtui.DebugLog("SUDO_CLIENT: DEBUG: Canary files found: %v. Dispatcher WAS running.", matches)
 		for _, m := range matches {
-			os.Remove(m)
+			_ = os.Remove(m) // Canary cleanup is diagnostic only.
 		}
 	} else {
 		vtui.DebugLog("SUDO_CLIENT: DEBUG: No canary files found. Dispatcher never reached RunSudoDispatcher.")
@@ -178,7 +182,7 @@ func (c *SudoClient) Connect() error {
 			}
 		}
 		// Clean up to avoid double-logging on next attempt
-		os.Remove(debugLogPath)
+		_ = os.Remove(debugLogPath) // Harvested debug-log cleanup is best-effort.
 	}
 
 	return fmt.Errorf("failed to connect to elevated dispatcher: %v", err)
@@ -195,7 +199,7 @@ func (c *SudoClient) SendRequest(req SudoRequest) (SudoResponse, *os.File, error
 
 	vtui.DebugLog("SUDO_CLIENT: Sending request: Cmd=%d, Path=%q", req.Cmd, req.Path)
 	if err := sendMsg(c.conn, req, -1); err != nil {
-		c.conn.Close()
+		_ = c.conn.Close() // Preserve the protocol error that forced disconnect.
 		c.conn = nil
 		return SudoResponse{}, nil, err
 	}
@@ -203,14 +207,14 @@ func (c *SudoClient) SendRequest(req SudoRequest) (SudoResponse, *os.File, error
 	var resp SudoResponse
 	f, err := recvMsg(c.conn, &resp)
 	if err != nil {
-		c.conn.Close()
+		_ = c.conn.Close() // Preserve the protocol error that forced disconnect.
 		c.conn = nil
 		return SudoResponse{}, nil, err
 	}
 
 	if resp.Error != "" {
 		if f != nil {
-			f.Close()
+			_ = f.Close() // The rejected response's descriptor was never used.
 		}
 		return resp, nil, errors.New(resp.Error)
 	}

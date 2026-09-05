@@ -25,7 +25,11 @@ func TestAFCTransferWaiterWakesWhenLostClientReleasesCapacity(t *testing.T) {
 		dials.Add(1)
 		return &poolTestConnection{}, nil
 	})
-	defer session.Close()
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close AFC session: %v", err)
+		}
+	})
 
 	first, err := session.leaseTransfer(context.Background())
 	if err != nil {
@@ -79,7 +83,11 @@ func TestAFCTransferDialStartedBeforeResetIsDiscarded(t *testing.T) {
 		}
 		return &poolTestConnection{}, nil
 	})
-	defer session.Close()
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Errorf("close AFC session: %v", err)
+		}
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -1,7 +1,9 @@
 package vtui
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"unicode"
 
 	"github.com/unxed/vtinput"
@@ -19,6 +21,8 @@ type Group struct {
 	WrapFocus    bool
 	links        []autoLink
 	mouseCapture UIElement
+	autoCounters map[string]int
+	ids          map[string]bool
 }
 
 func (g *Group) SetFocusDirection(direction int) {
@@ -107,7 +111,39 @@ func walk(el UIElement, fn func(UIElement) bool) bool {
 
 // AddItem adds a UI element to the group.
 func (g *Group) AddItem(item UIElement) {
+	if item == nil {
+		return
+	}
 	item.SetOwner(g)
+
+	if g.autoCounters == nil {
+		g.autoCounters = make(map[string]int)
+	}
+	if g.ids == nil {
+		g.ids = make(map[string]bool)
+	}
+
+	id := item.GetId()
+	if id == "" {
+		typeName := reflect.TypeOf(item).String()
+		if strings.HasPrefix(typeName, "*vtui.") {
+			typeName = strings.TrimPrefix(typeName, "*vtui.")
+		} else if strings.HasPrefix(typeName, "*") {
+			typeName = strings.TrimPrefix(typeName, "*")
+		}
+		if dot := strings.LastIndex(typeName, "."); dot >= 0 {
+			typeName = typeName[dot+1:]
+		}
+		g.autoCounters[typeName]++
+		id = fmt.Sprintf("auto:%s:%d", typeName, g.autoCounters[typeName])
+		item.SetId(id)
+	} else {
+		if g.ids[id] {
+			panic(fmt.Sprintf("vtui: duplicate element ID %q in container", id))
+		}
+	}
+	g.ids[id] = true
+
 	g.items = append(g.items, item)
 
 	// Restore focus initialization logic

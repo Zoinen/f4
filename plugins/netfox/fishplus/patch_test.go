@@ -3,7 +3,6 @@ package fishplus
 import (
 	"bytes"
 	"context"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,10 +17,10 @@ func TestPatchAgainstLocalShell(t *testing.T) {
 
 	dir := t.TempDir()
 	old := make([]byte, 200000)
-	rand.New(rand.NewSource(5)).Read(old)
+	fillDeterministicBytes(t, 5, old)
 	src := filepath.Join(dir, "an old file.bin")
 	dst := filepath.Join(dir, "new one.bin")
-	if err := os.WriteFile(src, old, 0644); err != nil {
+	if err := os.WriteFile(src, old, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,7 +50,7 @@ func TestPatchAgainstLocalShell(t *testing.T) {
 			// Insertion, deletion and reordering at once, with a literal
 			// larger than one chunk so that the splitting is exercised.
 			blob := make([]byte, 70000)
-			rand.New(rand.NewSource(9)).Read(blob)
+			fillDeterministicBytes(t, 9, blob)
 			err = c.Patch(ctx, src, dst, []PatchSegment{
 				Copy(50000, 10000), Literal(blob), Copy(0, 1), Copy(199999, 1),
 			})

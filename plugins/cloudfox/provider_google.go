@@ -406,10 +406,10 @@ func (r *googleCachedReader) ReadAccessProfile() vfs.ReadAccessProfile {
 	return vfs.ReadAccessMaterializeOnce
 }
 func (r *googleCachedReader) LocalPath() (string, bool) {
-	if r == nil || r.File == nil || r.File.Name() == "" {
+	if r == nil || r.File == nil || r.Name() == "" {
 		return "", false
 	}
-	return r.File.Name(), true
+	return r.Name(), true
 }
 func (r *googleCachedReader) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if err := ctx.Err(); err != nil {
@@ -1639,7 +1639,7 @@ func (r *googleRangeReader) ReadAt(ctx context.Context, p []byte, off int64) (in
 		}
 		return local.ReadAt(ctx, p, off)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode != http.StatusPartialContent {
 		return 0, errors.New("cloudfox: Google Drive stopped honoring byte ranges")
 	}
@@ -1668,28 +1668,24 @@ func (r *googleRangeReader) Read(ctx context.Context, p []byte) (int, error) {
 }
 
 func googleResponseToTemp(ctx context.Context, resp *http.Response, displayName string) (*providerTempReader, error) {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	f, err := os.CreateTemp("", "f4-cloudfox-google-export-*")
 	if err != nil {
 		return nil, err
 	}
 	name := f.Name()
-	cleanup := func() {
-		f.Close()
-		os.Remove(name)
+	cleanup := func() error {
+		return errors.Join(f.Close(), os.Remove(name))
 	}
 	if err := f.Chmod(0o600); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	written, err := copyGoogleResponse(ctx, f, resp.Body, resp.ContentLength, displayName)
 	if err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	return newProviderTempReader(f, name, written), nil
 }
@@ -1795,7 +1791,7 @@ func (b *googleDriveBackend) Open(ctx context.Context, location string) (vfs.Rea
 		return nil, err
 	}
 	b.cacheGoogleFile(location, file, b.Dir(location))
-	etag := strongETag(file.ServerResponse.Header.Get("ETag"))
+	etag := strongETag(file.Header.Get("ETag"))
 	fingerprint := googleDownloadFingerprint(file, etag, "")
 	if cached, ok := downloads.open(file.Id, fingerprint); ok {
 		return cached, nil
@@ -2020,8 +2016,10 @@ func googlePanelSnapshot(about *drive.About, refreshed time.Time) vfs.PanelInfoS
 	if about.StorageQuota != nil && about.StorageQuota.Limit > 0 {
 		available := uint64(0)
 		if about.StorageQuota.Usage < about.StorageQuota.Limit {
+			// #nosec G115 -- both signed quota values are positive here and Usage is smaller than Limit.
 			available = uint64(about.StorageQuota.Limit - about.StorageQuota.Usage)
 		}
+		// #nosec G115 -- the surrounding condition proves Limit is positive.
 		account.Fields = append(account.Fields, vfs.PanelInfoField{ID: "quota", Label: "Storage", Kind: vfs.PanelInfoUsage, TotalBytes: uint64(about.StorageQuota.Limit), AvailableBytes: available})
 	}
 	snapshot.Sections = []vfs.PanelInfoSection{account}

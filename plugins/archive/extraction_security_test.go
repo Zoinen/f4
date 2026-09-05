@@ -35,7 +35,7 @@ func TestArchiveVFSCopyBulkRejectsTraversal(t *testing.T) {
 			test.write(t, archivePath)
 
 			destination := filepath.Join(workspace, "extracted")
-			if err := os.MkdirAll(destination, 0o755); err != nil {
+			if err := os.MkdirAll(destination, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			outside := filepath.Join(workspace, "escaped.txt")
@@ -48,7 +48,11 @@ func TestArchiveVFSCopyBulkRejectsTraversal(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open malicious fixture: %v", err)
 			}
-			defer archiveVFS.Close()
+			t.Cleanup(func() {
+				if err := archiveVFS.Close(); err != nil {
+					t.Errorf("close malicious archive fixture: %v", err)
+				}
+			})
 			if archiveVFS.format != test.wantFormat {
 				t.Fatalf("fixture dispatch format = %q, want %q", archiveVFS.format, test.wantFormat)
 			}

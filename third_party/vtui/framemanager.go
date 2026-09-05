@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
+	"github.com/unxed/vtui/vreactive"
 	"golang.org/x/term"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -79,6 +81,13 @@ type Frame interface {
 	Close()
 	GetTitle() string
 	GetProgress() int // Returns 0-100, or -1 if no progress
+}
+
+// CloseVetoer lets a frame veto workspace closing. ConfirmClose is consulted
+// before frames are closed; returning false aborts the close, and the frame may
+// have pushed its own confirmation dialog.
+type CloseVetoer interface {
+	ConfirmClose() bool
 }
 
 // AppScreen represents an isolated workspace with its own frame stack.
@@ -222,6 +231,9 @@ type frameManager struct {
 	redrawGeneration  atomic.Uint64
 	TaskChan          chan func()
 	taskChanIn        chan func()
+	taskDone          chan struct{}
+	taskMu            sync.Mutex
+	taskWG            sync.WaitGroup
 	PriorityTaskChan  chan func()
 	currentPostedTask *postedTaskExecution
 	inputUpdateActive bool
@@ -229,12 +241,21 @@ type frameManager struct {
 	benchmarkTaskSeq  atomic.Uint64
 	EventChan         chan *vtinput.InputEvent
 	EventFilter       func(*vtinput.InputEvent) bool
-	injectedEvents    []*vtinput.InputEvent
-	injectedMu        sync.Mutex
-	OnRender          func(scr *ScreenBuf)
+	// needsRender is set from background goroutines as well as the UI one --
+	// Redraw is part of the public surface and the toast timer calls it while
+	// the render loop is reading this same flag -- so it cannot be a plain
+	// bool.
+	needsRender    atomic.Bool
+	injectedEvents []*vtinput.InputEvent
+	injectedMu     sync.Mutex
+	OnRender       func(scr *ScreenBuf)
 
 	pendingFar2l map[uint8]chan *vtinput.Far2lStack
 	far2lMu      sync.Mutex
+	// Far2lEnabled is the startup default. Negotiation completes after Run has
+	// started, so its result belongs to this manager rather than that global.
+	far2lEnabled    atomic.Bool
+	far2lConfigured atomic.Bool
 
 	// Global standard UI components
 	DisabledCommands CommandSet
@@ -250,10 +271,14 @@ type frameManager struct {
 	capturedFrame Frame // Points to the active screen's captured frame
 
 	// Switcher State
-	ctrlPressed              bool
-	switcherMenu             *VMenu
-	WorkspaceTabMode         WorkspaceTabMode
-	WorkspaceCtrlTabMode     WorkspaceCtrlTabMode
+	ctrlPressed          bool
+	workspaceTabPreview  bool
+	switcherMenu         *VMenu
+	WorkspaceTabMode     WorkspaceTabMode
+	WorkspaceCtrlTabMode WorkspaceCtrlTabMode
+	// WorkspaceTabOverlay keeps the transient WorkspaceTabsOnCtrl strip on
+	// top of the first frame row instead of reserving a row for it.
+	WorkspaceTabOverlay      bool
 	WorkspaceAltNumberSwitch bool
 	WorkspaceTabBarAttr      uint64
 	WorkspaceActiveAttr      uint64
@@ -264,7 +289,19 @@ type frameManager struct {
 	workspaceNewTabX         int
 	workspaceTabDrag         *AppScreen
 	workspaceTabDragHits     []workspaceTabHit
-	running                  bool
+	// The UI graph itself stays single-goroutine-owned. These atomics only
+	// coordinate callers which need to stop that goroutine or observe that its
+	// shutdown has completed.
+	running       atomic.Bool
+	stopRequested atomic.Bool
+	shutdown      atomic.Bool
+	// uiOwnershipMu serializes direct UI access with transitions into and out
+	// of Run. It must never span the event loop because callOnUI waits on it.
+	uiOwnershipMu sync.Mutex
+	lifecycleMu   sync.Mutex
+	runDone       chan struct{}
+	shutdownDone  bool
+	lastTitle     string
 
 	lastMouseClickTime        time.Time
 	lastMouseX, lastMouseY    int
@@ -278,26 +315,57 @@ type frameManager struct {
 	semanticMenuTailKey       uint16
 	semanticMenuTailModifiers vtinput.ControlKeyState
 	semanticMenuDeclared      bool
+	animations                []func(dt float64) bool
+	animMu                    sync.Mutex
+	lastAnim                  time.Time
+	animWake                  chan struct{} // heartbeat wakes on new animations
+	eventSink                 func(UIEvent)
+	eventSinkMu               sync.RWMutex
+	hostMode                  bool
+}
+
+// SetHostMode configures whether FrameManager keeps running when frames slice is initially empty (used by vtui-host).
+func (fm *frameManager) SetHostMode(enabled bool) {
+	fm.hostMode = enabled
 }
 
 type Toast struct {
 	Message string
 	Expires time.Time
+	Style   ToastStyle
+}
+
+// ToastStyle is the optional presentation of a toast: colours and row.
+// The zero value is the default: white on dark grey at the top row.
+type ToastStyle struct {
+	// Attr overrides the default toast colours; zero keeps the default.
+	Attr uint64
+	// Row places the toast vertically: 0 = top (default), a positive value
+	// is an absolute row, a negative one counts from the bottom (-1 = last).
+	Row int
 }
 
 // ShowToast displays a non-blocking popup message at the top of the screen that disappears after the duration.
 func ShowToast(msg string, dur time.Duration) {
-	if FrameManager == nil {
+	ShowToastStyled(msg, dur, ToastStyle{})
+}
+
+// ShowToastStyled is ShowToast with an explicit style (colours and row).
+func ShowToastStyled(msg string, dur time.Duration, style ToastStyle) {
+	fm := FrameManager
+	if fm == nil {
 		return
 	}
-	FrameManager.PostTask(func() {
-		FrameManager.currentToast = &Toast{Message: msg, Expires: time.Now().Add(dur)}
-		FrameManager.Redraw()
+	fm.PostTask(func() {
+		fm.currentToast = &Toast{Message: msg, Expires: time.Now().Add(dur), Style: style}
+		fm.Redraw()
+		// The redraw that clears the toast happens after the toast's lifetime,
+		// long after this call returned. Reading the global from that sleeping
+		// goroutine races anything that reassigns FrameManager in the
+		// meantime, so redraw the manager the toast was actually shown on.
 		go func() {
 			time.Sleep(dur)
-			if FrameManager != nil {
-				FrameManager.Redraw()
-			}
+			fm.Redraw()
 		}()
 	})
 }
@@ -310,8 +378,14 @@ func (fm *frameManager) GetActiveToast() string {
 	return ""
 }
 
-// DismissToast removes the currently visible notification. It is intended for
-// semantic frontends which provide a pointer-accessible close control.
+// ClearToast immediately dismisses any active toast.
+func (fm *frameManager) ClearToast() {
+	fm.currentToast = nil
+}
+
+// DismissToast removes the currently visible notification and reports whether
+// there was one to dismiss. Semantic frontends use the result for pointer
+// actions that can avoid a redundant scene rebuild.
 func (fm *frameManager) DismissToast() bool {
 	if fm == nil || fm.currentToast == nil {
 		return false
@@ -323,11 +397,64 @@ func (fm *frameManager) DismissToast() bool {
 // FrameManager is the global instance of the frame manager.
 var FrameManager = &frameManager{}
 
+// FrameManagerType is the exported type for the frame manager.
+type FrameManagerType = frameManager
+
+// NewFrameManager creates a new, independent FrameManager instance.
+func NewFrameManager() *FrameManagerType {
+	return &frameManager{}
+}
+
+func (fm *frameManager) AddAnimation(anim func(dt float64) bool) {
+	fm.animMu.Lock()
+	defer fm.animMu.Unlock()
+	if len(fm.animations) == 0 {
+		fm.lastAnim = time.Time{}
+	}
+	fm.animations = append(fm.animations, anim)
+	// Wake the heartbeat at once: a 250ms poll would miss short animations
+	// such as the viewer toast's wall flash.
+	if fm.animWake != nil {
+		select {
+		case fm.animWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (fm *frameManager) tickAnimations() {
+	fm.animMu.Lock()
+	if len(fm.animations) == 0 {
+		fm.animMu.Unlock()
+		return
+	}
+
+	now := time.Now()
+	if fm.lastAnim.IsZero() {
+		fm.lastAnim = now
+	}
+	dt := now.Sub(fm.lastAnim).Seconds()
+	fm.lastAnim = now
+
+	var active []func(float64) bool
+	for _, anim := range fm.animations {
+		done := anim(dt)
+		if !done {
+			active = append(active, anim)
+		}
+	}
+	fm.animations = active
+	fm.animMu.Unlock()
+
+	fm.Redraw()
+}
+
 // WorkspaceTopInset is the number of rows reserved above application frames
 // for the persistent workspace tab bar.
 func (fm *frameManager) WorkspaceTopInset() int {
 	if fm.WorkspaceTabMode == WorkspaceTabsAlways ||
-		(fm.WorkspaceTabMode == WorkspaceTabsMultiple && len(fm.Screens) > 1) {
+		(fm.WorkspaceTabMode == WorkspaceTabsMultiple && len(fm.Screens) > 1) ||
+		(fm.WorkspaceTabMode == WorkspaceTabsOnCtrl && fm.ctrlPressed && fm.workspaceTabPreview && !fm.WorkspaceTabOverlay) {
 		return 1
 	}
 	return 0
@@ -345,6 +472,19 @@ func (fm *frameManager) ConfigureWorkspaceTabs(tabMode WorkspaceTabMode, ctrlTab
 	oldInset := fm.WorkspaceTopInset()
 	fm.WorkspaceTabMode = tabMode
 	fm.WorkspaceCtrlTabMode = ctrlTabMode
+	if oldInset != fm.WorkspaceTopInset() {
+		fm.ResizeAllScreens()
+	}
+	fm.Redraw()
+}
+
+// ConfigureWorkspaceTabOverlay controls whether the transient
+// WorkspaceTabsOnCtrl strip overlays the first frame row. When disabled, the
+// strip reserves its own row after the first Ctrl+Tab, preserving the default
+// layout-safe behavior for full-screen frame content.
+func (fm *frameManager) ConfigureWorkspaceTabOverlay(enabled bool) {
+	oldInset := fm.WorkspaceTopInset()
+	fm.WorkspaceTabOverlay = enabled
 	if oldInset != fm.WorkspaceTopInset() {
 		fm.ResizeAllScreens()
 	}
@@ -565,17 +705,22 @@ func (fm *frameManager) CloseScreen(idx int) {
 	if idx < 0 || idx >= len(fm.Screens) {
 		return
 	}
+	fm.SyncCurrentScreen()
+	screenToClose := fm.Screens[idx]
+	for _, frame := range screenToClose.Frames {
+		if vetoer, ok := frame.(CloseVetoer); ok && !vetoer.ConfirmClose() {
+			return
+		}
+	}
 	if len(fm.Screens) <= 1 {
 		fm.EmitCommand(CmQuit, nil)
 		return
 	}
 
 	oldInset := fm.WorkspaceTopInset()
-	fm.SyncCurrentScreen()
 	closedIdx := idx
 	activeScreen := fm.Screens[fm.ActiveIdx]
 	closingActive := closedIdx == fm.ActiveIdx
-	screenToClose := fm.Screens[closedIdx]
 	for i := len(screenToClose.Frames) - 1; i >= 0; i-- {
 		screenToClose.Frames[i].Close()
 	}
@@ -617,6 +762,12 @@ func (fm *frameManager) Screen() *ScreenBuf {
 
 // Init initializes the FrameManager with a ScreenBuf.
 func (fm *frameManager) Init(scr *ScreenBuf) {
+	fm.shutdown.Store(false)
+	fm.stopRequested.Store(false)
+	fm.lifecycleMu.Lock()
+	fm.shutdownDone = false
+	fm.lifecycleMu.Unlock()
+
 	fm.scr = scr
 	fm.frames = make([]Frame, 0, 10)
 	fm.Screens = []*AppScreen{{Number: 1, Frames: fm.frames}}
@@ -631,41 +782,20 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.workspaceNewTabX = -1
 	fm.workspaceTabDrag = nil
 	fm.workspaceTabDragHits = nil
+	fm.currentToast = nil
 	fm.semanticMenuTailKey = 0
 	fm.semanticMenuTailModifiers = 0
 	fm.semanticMenuDeclared = false
+	fm.needsRender.Store(true)
+	fm.far2lEnabled.Store(Far2lEnabled)
+	fm.far2lConfigured.Store(true)
 
 	if fm.RedrawChan == nil {
 		fm.RedrawChan = make(chan struct{}, 1)
 	}
 
-	if fm.taskChanIn == nil {
-		fm.taskChanIn = make(chan func())
-		fm.TaskChan = make(chan func())
-
-		go func() {
-			var queue []func()
-			for {
-				if len(queue) == 0 {
-					task, ok := <-fm.taskChanIn
-					if !ok {
-						return
-					}
-					queue = append(queue, task)
-				} else {
-					select {
-					case task, ok := <-fm.taskChanIn:
-						if !ok {
-							return
-						}
-						queue = append(queue, task)
-					case fm.TaskChan <- queue[0]:
-						queue[0] = nil
-						queue = queue[1:]
-					}
-				}
-			}
-		}()
+	if fm.animWake == nil {
+		fm.animWake = make(chan struct{}, 1)
 	}
 	if fm.PriorityTaskChan == nil {
 		// Native semantic input must not wait behind catalog metadata and other
@@ -675,6 +805,8 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 		fm.PriorityTaskChan = make(chan func(), PriorityTaskChanSize)
 	}
 
+	fm.startTaskPump()
+
 	fm.injectedEvents = make([]*vtinput.InputEvent, 0)
 	SetDefaultPalette()
 
@@ -683,6 +815,8 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	// Hide cursor globally at start
 	fm.scr.SetCursorVisible(false)
 
+	vreactive.GlobalUpdateQueue = fm
+	vreactive.GlobalAnimationManager = fm
 	// Ensure terminal is in a known state before sending escape sequences
 	if _, ok := fm.scr.Renderer.(*AnsiRenderer); ok {
 		initTerminalOS()
@@ -690,6 +824,67 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 		os.Stdout.WriteString("\x1b]104\x07")
 	}
 
+}
+
+// startTaskPump creates one queue pump for this manager. The goroutine uses
+// captured channels because Init and Shutdown replace the lifecycle fields.
+func (fm *frameManager) startTaskPump() {
+	fm.taskMu.Lock()
+	defer fm.taskMu.Unlock()
+	if fm.taskChanIn != nil {
+		return
+	}
+
+	in := make(chan func())
+	out := make(chan func())
+	done := make(chan struct{})
+	fm.taskChanIn = in
+	fm.TaskChan = out
+	fm.taskDone = done
+	fm.taskWG.Add(1)
+	go func() {
+		defer fm.taskWG.Done()
+		var queue []func()
+		for {
+			if len(queue) == 0 {
+				select {
+				case task := <-in:
+					queue = append(queue, task)
+				case <-done:
+					return
+				}
+				continue
+			}
+
+			select {
+			case task := <-in:
+				queue = append(queue, task)
+			case out <- queue[0]:
+				queue[0] = nil
+				queue = queue[1:]
+			case <-done:
+				return
+			}
+		}
+	}()
+}
+
+func (fm *frameManager) stopTaskPump() {
+	fm.taskMu.Lock()
+	done := fm.taskDone
+	if done != nil {
+		close(done)
+		fm.taskDone = nil
+		fm.taskChanIn = nil
+		fm.TaskChan = nil
+	}
+	fm.taskMu.Unlock()
+
+	// The pump never takes taskMu. Waiting after the unlock also keeps a task
+	// which was already posting from being trapped behind this teardown.
+	if done != nil {
+		fm.taskWG.Wait()
+	}
 }
 
 // Push adds a new frame to the top of the stack and assigns a number if it's non-modal.
@@ -909,6 +1104,7 @@ func (fm *frameManager) HardRefresh() {
 
 // Redraw triggers an asynchronous redraw request.
 func (fm *frameManager) Redraw() {
+	fm.needsRender.Store(true)
 	generation := fm.redrawGeneration.Add(1)
 	queued := fm.notifyRedraw()
 	if frameManagerBenchmarkEnabled() {
@@ -922,8 +1118,6 @@ func (fm *frameManager) Redraw() {
 }
 
 // notifyRedraw wakes the render loop without claiming a new redraw generation.
-// It is used when a request races a deferred render after incrementing the
-// generation while RedrawChan was still occupied by an older notification.
 func (fm *frameManager) notifyRedraw() bool {
 	select {
 	case fm.RedrawChan <- struct{}{}:
@@ -1023,23 +1217,71 @@ func (fm *frameManager) wrapPostedTask(task func(), callerSkip int) func() {
 
 func (fm *frameManager) postTask(task func(), callerSkip int) {
 	task = fm.wrapPostedTask(task, callerSkip)
-	if task == nil {
-		return
-	}
-	if fm.taskChanIn != nil {
-		fm.taskChanIn <- task
-	}
+	fm.enqueueTask(task)
 }
 
 func (fm *frameManager) PostTask(task func()) {
 	fm.postTask(task, 4)
 }
 
-// PostPriorityTask schedules authoritative native input ahead of background
+func (fm *frameManager) enqueueTask(task func()) bool {
+	if task == nil {
+		return false
+	}
+	fm.taskMu.Lock()
+	in, done := fm.taskChanIn, fm.taskDone
+	fm.taskMu.Unlock()
+	if in == nil || done == nil {
+		return false
+	}
+	select {
+	case in <- task:
+		return true
+	case <-done:
+		return false
+	}
+}
+
+func (fm *frameManager) hasTaskPump() bool {
+	fm.taskMu.Lock()
+	defer fm.taskMu.Unlock()
+	return fm.taskChanIn != nil && fm.taskDone != nil
+}
+
+// callOnUI runs fn on the event-loop goroutine and waits for its result. Before
+// Run starts, uiOwnershipMu makes direct setup calls and Run mutually exclusive.
+func (fm *frameManager) callOnUI(fn func() error) error {
+	fm.uiOwnershipMu.Lock()
+	if !fm.running.Load() {
+		defer fm.uiOwnershipMu.Unlock()
+		if fm.shutdown.Load() {
+			return fmt.Errorf("frame manager is shut down")
+		}
+		return fn()
+	}
+	fm.uiOwnershipMu.Unlock()
+
+	result := make(chan error, 1)
+	fm.lifecycleMu.Lock()
+	runDone := fm.runDone
+	if !fm.running.Load() || runDone == nil {
+		fm.lifecycleMu.Unlock()
+		return fmt.Errorf("frame manager stopped before scheduling task")
+	}
+	fm.lifecycleMu.Unlock()
+	if !fm.enqueueTask(func() { result <- fn() }) {
+		return fmt.Errorf("frame manager task pump is stopped")
+	}
+	select {
+	case err := <-result:
+		return err
+	case <-runDone:
+		return fmt.Errorf("frame manager stopped before running task")
+	}
+}
+
+// postPriorityTask schedules authoritative native input ahead of background
 // UI bookkeeping while preserving FIFO order among input actions themselves.
-// The large direct buffer provides bounded backpressure-free delivery for
-// ordinary input bursts; a pathological overflow falls back to the ordinary
-// unbounded queue rather than blocking the IPC reader.
 func (fm *frameManager) postPriorityTask(task func(), callerSkip int) {
 	task = fm.wrapPostedTask(task, callerSkip)
 	if task == nil {
@@ -1052,9 +1294,7 @@ func (fm *frameManager) postPriorityTask(task func(), callerSkip int) {
 		default:
 		}
 	}
-	if fm.taskChanIn != nil {
-		fm.taskChanIn <- task
-	}
+	fm.enqueueTask(task)
 }
 
 func (fm *frameManager) PostPriorityTask(task func()) {
@@ -1156,7 +1396,41 @@ func (fm *frameManager) EmitCommand(cmd int, args any) bool {
 		}
 	}
 	DebugLog("COMMAND: No one handled %d", cmd)
+	srcID := ""
+	if s, ok := args.(string); ok {
+		srcID = s
+	}
+	forwarded := fm.hasEventSink()
+	fm.emitEventSink(UIEvent{
+		Kind:  "command",
+		Cmd:   cmd,
+		SrcID: srcID,
+	})
+	// When running under a bindings host (vtui-host), an unhandled command is
+	// still "handled" in the sense that it was forwarded to the client over
+	// the protocol. Reporting it as unhandled here made the fallback Enter
+	// key path in BaseWindow.ProcessKey (case vtinput.VK_RETURN ->
+	// TriggerDefaultAction) fire a *second* synthetic Enter at the very same
+	// button, because Button.ProcessKey -> FireAction -> EmitCommand had
+	// already forwarded the "Ok" click once. That produced two "command"
+	// events per real keypress/click, which is why Python/Node bindings
+	// callbacks such as u.message(...) fired twice (see
+	// bindings/KNOWN_BUGS.md: double Enter/Esc on the Result dialog, "два
+	// окна вместо одного"). Plain in-process Go apps never registered an
+	// event sink, so this only changes behavior for the hosted/bindings
+	// case where it actually fixes the double dispatch.
+	if forwarded {
+		return true
+	}
 	return false
+}
+
+// hasEventSink reports whether a host event sink (e.g. the bindings
+// protocol session) is currently registered.
+func (fm *frameManager) hasEventSink() bool {
+	fm.eventSinkMu.RLock()
+	defer fm.eventSinkMu.RUnlock()
+	return fm.eventSink != nil
 }
 
 // InjectEvents adds simulated input events to the front of the queue.
@@ -1166,18 +1440,224 @@ func (fm *frameManager) InjectEvents(events []*vtinput.InputEvent) {
 	fm.injectedMu.Unlock()
 }
 
-// Shutdown clears all frames, effectively stopping the application loop.
+// PostEvent queues a synthetic event into the input queue. Thread-safe.
+func (fm *frameManager) PostEvent(ev vtinput.InputEvent) {
+	evCopy := ev
+	fm.InjectEvents([]*vtinput.InputEvent{&evCopy})
+}
+
+// Step processes at most one event or task from the queue.
+// timeout < 0 blocks until an event/task is processed or shutdown.
+// timeout == 0 processes an available event/task or returns immediately.
+// timeout > 0 waits up to the given duration.
+// Returns false when the application should terminate (no frames left or shutdown).
+func (fm *frameManager) Step(timeout time.Duration) bool {
+	return fm.stepWithSize(timeout, GetTerminalSize)
+}
+
+func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int, int, error)) bool {
+	if fm.IsShutdown() {
+		return false
+	}
+	if !fm.hostMode && len(fm.frames) == 0 {
+		return false
+	}
+
+	if fm.needsRender.Swap(false) {
+		fm.renderPhase()
+	}
+
+	var e *vtinput.InputEvent
+	injected := false
+
+	fm.injectedMu.Lock()
+	if len(fm.injectedEvents) > 0 {
+		e = fm.injectedEvents[0]
+		fm.injectedEvents = fm.injectedEvents[1:]
+		injected = true
+	}
+	fm.injectedMu.Unlock()
+
+	if injected {
+		if e != nil {
+			if e.Type == vtinput.ResizeEventType {
+				fm.handleResizeWith(getSize)
+			} else {
+				fm.dispatchEvent(e, true)
+			}
+			fm.needsRender.Store(true)
+		}
+		fm.cleanupDoneFrames()
+		return !fm.IsShutdown() && len(fm.frames) > 0
+	}
+
+	if timeout == 0 {
+		select {
+		case task := <-fm.PriorityTaskChan:
+			fm.runQueuedTask(task)
+			fm.cleanupDoneFrames()
+			return !fm.IsShutdown() && len(fm.frames) > 0
+		default:
+		}
+		select {
+		case <-fm.RedrawChan:
+			fm.needsRender.Store(true)
+		case task := <-fm.PriorityTaskChan:
+			fm.runQueuedTask(task)
+		case task := <-fm.TaskChan:
+			fm.runQueuedTask(task)
+		case ev, ok := <-fm.EventChan:
+			if !ok {
+				return false
+			}
+			if ev != nil {
+				if ev.Type == vtinput.ResizeEventType {
+					fm.handleResizeWith(getSize)
+				} else {
+					fm.dispatchEvent(ev, false)
+				}
+				fm.needsRender.Store(true)
+			}
+		default:
+		}
+		fm.cleanupDoneFrames()
+		return !fm.IsShutdown() && len(fm.frames) > 0
+	}
+
+	if timeout < 0 {
+		select {
+		case task := <-fm.PriorityTaskChan:
+			fm.runQueuedTask(task)
+			fm.cleanupDoneFrames()
+			return !fm.IsShutdown() && len(fm.frames) > 0
+		default:
+		}
+		select {
+		case <-fm.RedrawChan:
+			fm.needsRender.Store(true)
+		case task := <-fm.PriorityTaskChan:
+			fm.runQueuedTask(task)
+		case task := <-fm.TaskChan:
+			fm.runQueuedTask(task)
+		case ev, ok := <-fm.EventChan:
+			if !ok {
+				return false
+			}
+			if ev != nil {
+				if ev.Type == vtinput.ResizeEventType {
+					fm.handleResizeWith(getSize)
+				} else {
+					fm.dispatchEvent(ev, false)
+				}
+				fm.needsRender.Store(true)
+			}
+		}
+		fm.cleanupDoneFrames()
+		return !fm.IsShutdown() && len(fm.frames) > 0
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-fm.RedrawChan:
+		fm.needsRender.Store(true)
+	case task := <-fm.PriorityTaskChan:
+		fm.runQueuedTask(task)
+	case task := <-fm.TaskChan:
+		fm.runQueuedTask(task)
+	case ev, ok := <-fm.EventChan:
+		if !ok {
+			return false
+		}
+		if ev != nil {
+			if ev.Type == vtinput.ResizeEventType {
+				fm.handleResizeWith(getSize)
+			} else {
+				fm.dispatchEvent(ev, false)
+			}
+			fm.needsRender.Store(true)
+		}
+	}
+	fm.cleanupDoneFrames()
+	return !fm.IsShutdown() && len(fm.frames) > 0
+}
+
+func (fm *frameManager) handleResize() {
+	fm.handleResizeWith(GetTerminalSize)
+}
+
+func (fm *frameManager) handleResizeWith(getSize func() (int, int, error)) {
+	width, height, err := getSize()
+	DebugLog("FM_RESIZE: handleResize triggered. GetTerminalSize returned: %dx%d (err: %v). Current scr: %dx%d", width, height, err, fm.scr.width, fm.scr.height)
+	if err != nil {
+		return
+	}
+	fm.Resize(width, height)
+}
+
+// Shutdown clears all frames, stops the event loop, and cleanly restores the terminal state. Safe and idempotent.
 func (fm *frameManager) Shutdown() {
+	fm.shutdown.Store(true)
+	fm.stopRequested.Store(true)
+	select {
+	case fm.RedrawChan <- struct{}{}:
+	default:
+	}
+	if fm.running.Load() {
+		return
+	}
+
+	fm.uiOwnershipMu.Lock()
+	if !fm.running.Load() {
+		fm.finishShutdown()
+	}
+	fm.uiOwnershipMu.Unlock()
+}
+
+// shutdownAndWait is for owners outside the UI goroutine, such as a protocol
+// session. Shutdown itself cannot always wait because UI callbacks call it too.
+func (fm *frameManager) shutdownAndWait() {
+	fm.Shutdown()
+	fm.lifecycleMu.Lock()
+	done := fm.runDone
+	fm.lifecycleMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (fm *frameManager) finishShutdown() {
+	fm.lifecycleMu.Lock()
+	if fm.shutdownDone {
+		fm.lifecycleMu.Unlock()
+		return
+	}
+	fm.shutdownDone = true
 	fm.Screens = nil
 	fm.frames = nil
 	fm.capturedFrame = nil
-	// In tests we don't actually want to close the channel because
-	// other tests might still have pending background goroutines.
+	fm.lifecycleMu.Unlock()
+
+	if fm.scr != nil {
+		fm.scr.SetCursorVisible(true)
+		// If a Suspend already restored the terminal (quit path), this flush
+		// would paint a full frame -- including the theme palette OSC 4 dump
+		// -- onto the user's shell screen, and the Suspend() below is a
+		// no-op that never resets it back.
+		if _, ansi := fm.scr.Renderer.(*AnsiRenderer); !ansi || IsPrepared() {
+			fm.scr.Flush()
+		}
+	}
+	Suspend()
+	CleanupStderrLog()
+	fm.stopTaskPump()
 }
 
 // IsShutdown returns true if the FrameManager has been shut down explicitly.
 func (fm *frameManager) IsShutdown() bool {
-	return fm.Screens == nil
+	return fm.shutdown.Load()
 }
 
 func (fm *frameManager) RegisterFar2lWaiter(id uint8) chan *vtinput.Far2lStack {
@@ -1405,7 +1885,7 @@ func (fm *frameManager) workspaceTabsVisible() bool {
 	case WorkspaceTabsMultiple:
 		return len(fm.Screens) > 1
 	case WorkspaceTabsOnCtrl:
-		return fm.ctrlPressed
+		return fm.ctrlPressed && fm.workspaceTabPreview
 	default:
 		return false
 	}
@@ -1815,9 +2295,12 @@ func (fm *frameManager) cleanupOrphanedMenus() {
 
 // SetWindowTitle updates the terminal or application window title.
 func (fm *frameManager) SetWindowTitle(title string) {
+	if title == fm.lastTitle {
+		return
+	}
+	fm.lastTitle = title
 	if fm.scr != nil && fm.scr.Renderer != nil {
 		fm.scr.Renderer.SetWindowTitle(title)
-		fm.scr.Renderer.Flush()
 	}
 }
 
@@ -1826,6 +2309,103 @@ func SetWindowTitle(title string) {
 	if FrameManager != nil {
 		FrameManager.SetWindowTitle(title)
 	}
+}
+
+// GetWindowPosition returns the native GUI window's top-left screen position.
+// It reports ok=false for terminal renderers and GUI backends that do not
+// expose a desktop position.
+func (fm *frameManager) GetWindowPosition() (x, y int, ok bool) {
+	if fm.scr == nil || fm.scr.Renderer == nil {
+		return 0, 0, false
+	}
+	if r, ok := fm.scr.Renderer.(interface {
+		WindowPosition() (int, int, bool)
+	}); ok {
+		return r.WindowPosition()
+	}
+	return 0, 0, false
+}
+
+// SetWindowPosition moves the native GUI window when the active backend
+// supports desktop positioning. Terminal renderers simply ignore the call.
+func (fm *frameManager) SetWindowPosition(x, y int) {
+	if fm.scr == nil || fm.scr.Renderer == nil {
+		return
+	}
+	if r, ok := fm.scr.Renderer.(interface {
+		SetWindowPosition(int, int)
+	}); ok {
+		r.SetWindowPosition(x, y)
+	}
+}
+
+// GetWindowPosition returns the active GUI window's top-left screen position.
+func GetWindowPosition() (x, y int, ok bool) {
+	if FrameManager == nil {
+		return 0, 0, false
+	}
+	return FrameManager.GetWindowPosition()
+}
+
+// SetWindowPosition moves the active GUI window when its backend supports it.
+func SetWindowPosition(x, y int) {
+	if FrameManager != nil {
+		FrameManager.SetWindowPosition(x, y)
+	}
+}
+
+// SetEventSink registers a unified callback receiving all semantic UI events.
+func (fm *frameManager) SetEventSink(fn func(UIEvent)) {
+	fm.eventSinkMu.Lock()
+	defer fm.eventSinkMu.Unlock()
+	fm.eventSink = fn
+}
+
+func (fm *frameManager) emitEventSink(ev UIEvent) {
+	fm.eventSinkMu.RLock()
+	sink := fm.eventSink
+	fm.eventSinkMu.RUnlock()
+	if sink != nil {
+		sink(ev)
+	}
+}
+
+// Resize updates the terminal/screen buffer dimensions and adjusts all frames.
+func (fm *frameManager) Resize(width, height int) {
+	if width <= 0 || height <= 0 || fm.scr == nil {
+		return
+	}
+	if width == fm.scr.width && height == fm.scr.height {
+		// A pixel renderer can replace its backing buffer without changing the
+		// terminal grid (for example after a Wayland fractional-scale update).
+		// Frames still need to recalculate their geometry in that case; a plain
+		// redraw leaves the startup layout sized for the old backing buffer.
+		fm.ResizeAllScreens()
+		fm.Redraw()
+		return
+	}
+	fm.scr.AllocBuf(width, height)
+	for _, s := range fm.Screens {
+		for _, f := range s.Frames {
+			f.ResizeConsole(width, height)
+		}
+	}
+	if fm.MenuBar != nil {
+		top := fm.WorkspaceTopInset()
+		fm.MenuBar.SetPosition(0, top, width-1, top)
+	}
+	if fm.KeyBar != nil {
+		fm.KeyBar.SetPosition(0, height-1, width-1, height-1)
+	}
+	if fm.StatusLine != nil {
+		fm.StatusLine.SetPosition(0, height-1, width-1, height-1)
+	}
+	fm.emitEventSink(UIEvent{
+		Kind:  "resize",
+		Index: width,
+		Value: PropValInt(height),
+	})
+	fm.Redraw()
 }
 
 // GetTopFrameType returns the type of the topmost frame or -1 if empty.
@@ -1841,6 +2421,65 @@ func (fm *frameManager) GetTopFrame() Frame {
 		return nil
 	}
 	return fm.frames[len(fm.frames)-1]
+}
+
+func frameMatchesID(f Frame, id string) bool {
+	if so, ok := f.(interface{ ID() string }); ok && so.ID() == id {
+		return true
+	}
+	if so, ok := f.(interface{ GetId() string }); ok && so.GetId() == id {
+		return true
+	}
+	return false
+}
+
+// Lookup finds an element by its ID within the specified frame (or active frame if frameID is empty).
+func (fm *frameManager) Lookup(frameID, objID string) (UIElement, bool) {
+	fm.SyncCurrentScreen()
+	var targetFrame Frame
+
+	if frameID == "" {
+		targetFrame = fm.GetTopFrame()
+	} else {
+		for _, s := range fm.Screens {
+			for _, f := range s.Frames {
+				if frameMatchesID(f, frameID) {
+					targetFrame = f
+					break
+				}
+			}
+			if targetFrame != nil {
+				break
+			}
+		}
+	}
+
+	if targetFrame == nil {
+		return nil, false
+	}
+
+	el, ok := targetFrame.(UIElement)
+	if !ok {
+		return nil, false
+	}
+
+	if objID == "" || frameMatchesID(targetFrame, objID) {
+		return el, true
+	}
+
+	var found UIElement
+	walk(el, func(child UIElement) bool {
+		if child.GetId() == objID || child.ID() == objID {
+			found = child
+			return false
+		}
+		return true
+	})
+
+	if found != nil {
+		return found, true
+	}
+	return nil, false
 }
 
 func (fm *frameManager) GetScreenSize() int {
@@ -1862,8 +2501,20 @@ func (fm *frameManager) GetBackendName() string {
 		return "Console"
 	}
 	rName := fmt.Sprintf("%T", fm.scr.Renderer)
+	if strings.Contains(rName, "Win32Console") {
+		return "Console (WinAPI)"
+	}
+	if strings.Contains(rName, "Win32Gui") {
+		return "GUI (Win32)"
+	}
+	if strings.Contains(rName, "Ansi") {
+		return "Console (ANSI)"
+	}
 	if strings.Contains(rName, "Gogpu") {
 		return "GUI (GoGPU)"
+	}
+	if strings.Contains(rName, "Ebiten") {
+		return "GUI (Ebiten)"
 	}
 	if strings.Contains(rName, "X11") {
 		return "GUI (X11)"
@@ -1875,9 +2526,11 @@ func (fm *frameManager) GetBackendName() string {
 }
 func (fm *frameManager) GetSyncStats() string {
 	tLen, tCap := 0, 0
+	fm.taskMu.Lock()
 	if fm.TaskChan != nil {
 		tLen, tCap = len(fm.TaskChan), cap(fm.TaskChan)
 	}
+	fm.taskMu.Unlock()
 	eLen, eCap := 0, 0
 	if fm.EventChan != nil {
 		eLen, eCap = len(fm.EventChan), cap(fm.EventChan)
@@ -1887,11 +2540,22 @@ func (fm *frameManager) GetSyncStats() string {
 
 // GetTerminalSize is a variable to allow mocking terminal size in tests.
 var GetTerminalSize = func() (int, int, error) {
-	w, h, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil {
-		w, h, err = term.GetSize(int(os.Stdin.Fd()))
+	w, h, _ := term.GetSize(int(os.Stdout.Fd()))
+	if w <= 0 || h <= 0 {
+		w, h, _ = term.GetSize(int(os.Stdin.Fd()))
 	}
-	return w, h, err
+	if w <= 0 || h <= 0 {
+		if cols, errC := strconv.Atoi(os.Getenv("COLUMNS")); errC == nil && cols > 0 {
+			w = cols
+		}
+		if lines, errL := strconv.Atoi(os.Getenv("LINES")); errL == nil && lines > 0 {
+			h = lines
+		}
+	}
+	if w <= 0 || h <= 0 {
+		w, h = 80, 25
+	}
+	return w, h, nil
 }
 
 func (fm *frameManager) ResizeWindow(cols, rows int) {
@@ -2276,25 +2940,85 @@ func (fm *frameManager) runPostedTask(task func()) postedTaskResult {
 	}
 }
 
+func (fm *frameManager) runQueuedTask(task func()) {
+	if task == nil {
+		return
+	}
+	if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
+		fm.Redraw()
+	}
+}
+
 // Stop signals the main loop to exit.
 func (fm *frameManager) Stop() {
 	DebugLog("FM: Stop() requested. Deactivating menus and exiting loop.")
-	// Safety: deactivate top menu before leaving to avoid stale sub-menus on return
-	if fm.MenuBar != nil {
-		fm.MenuBar.Active = false
-	}
-	fm.running = false
+	fm.stopRequested.Store(true)
 	// Wake up the select loop immediately
 	fm.Redraw()
 }
 
+// postQuitCommand schedules a native-window close on the UI event-loop
+// goroutine. Native window callbacks run on a backend-owned goroutine or
+// thread, while EmitCommand walks and mutates the frame stack. Keeping that
+// traversal on the same goroutine as keyboard and terminal input prevents a
+// close request from racing session/settings updates.
+func postQuitCommand() {
+	fm := FrameManager
+	if fm == nil || fm.IsShutdown() {
+		return
+	}
+	fm.PostTask(func() {
+		fm.EmitCommand(CmQuit, nil)
+	})
+}
+
 // Run starts the main application event loop.
-func (fm *frameManager) Run(reader *vtinput.Reader) {
-	DebugLog("FM: Run() ENTERED with Reader[%p]", reader)
-	fm.Reader = reader
-	fm.running = true
+// softwareBlinkRenderer is implemented by renderers that draw their own
+// cursor in pixels (rather than relying on a native console/terminal
+// blink) and therefore need the idle heartbeat in Run() to keep it
+// blinking while otherwise idle. Each such renderer declares the marker
+// method in its own file, under its own build tag -- see Run()'s
+// needsSoftwareBlinkHeartbeat check for why a direct type switch doesn't
+// work here.
+type softwareBlinkRenderer interface {
+	needsIdleBlinkHeartbeat()
+}
+
+func (fm *frameManager) Run(readers ...*vtinput.Reader) {
+	// Only hold uiOwnershipMu while publishing the running transition. Never
+	// extend it across the event loop: callOnUI may be waiting for this lock.
+	fm.uiOwnershipMu.Lock()
+	if fm.shutdown.Load() {
+		fm.uiOwnershipMu.Unlock()
+		return
+	}
+	fm.lifecycleMu.Lock()
+	if fm.running.Load() {
+		fm.lifecycleMu.Unlock()
+		fm.uiOwnershipMu.Unlock()
+		return
+	}
+	runDone := make(chan struct{})
+	fm.running.Store(true)
+	fm.runDone = runDone
+	fm.lifecycleMu.Unlock()
+	fm.uiOwnershipMu.Unlock()
+	fm.stopRequested.Store(false)
+
+	if len(readers) > 0 && readers[0] != nil {
+		fm.Reader = readers[0]
+		fm.EventChan = readers[0].GetEventChan()
+		defer readers[0].Close()
+	}
+	workersDone := make(chan struct{})
+	var workers sync.WaitGroup
 	// Restore cursor visibility on exit
 	defer func() {
+		close(workersDone)
+		workers.Wait()
+		if fm.stopRequested.Load() && fm.MenuBar != nil {
+			fm.MenuBar.Active = false
+		}
 		if r := recover(); r != nil {
 			// Note: RecordCrash now generates its own full stack dump
 			DebugLog("FATAL PANIC IN RUN LOOP: %v", r)
@@ -2307,265 +3031,202 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 			CleanupStderrLog()
 			os.Exit(2)
 		}
-		fm.running = false
-		fm.scr.SetCursorVisible(true)
-		fm.scr.Flush()
+		fm.uiOwnershipMu.Lock()
+		fm.running.Store(false)
+		if fm.shutdown.Load() {
+			fm.finishShutdown()
+		} else if fm.scr != nil {
+			fm.scr.SetCursorVisible(true)
+			// Skip the flush if Suspend already restored the terminal: this
+			// defer runs after the quit path's Suspend(), and a frame written
+			// now lands on the user's shell screen and re-applies the theme
+			// palette OSC 4 that Suspend's OSC 104 just reset.
+			if _, ansi := fm.scr.Renderer.(*AnsiRenderer); !ansi || IsPrepared() {
+				fm.scr.Flush()
+			}
+		}
 		CleanupStderrLog()
+		fm.lifecycleMu.Lock()
+		if fm.runDone == runDone {
+			close(runDone)
+			fm.runDone = nil
+		}
+		fm.lifecycleMu.Unlock()
+		fm.uiOwnershipMu.Unlock()
 	}()
-
-	fm.EventChan = reader.GetEventChan()
-	defer reader.Close()
 
 	// Configure channel for tracking window resizing
 	sigChan := make(chan os.Signal, 1)
 	watchResizeSignal(sigChan)
+	defer signal.Stop(sigChan)
+	getTerminalSize := GetTerminalSize
 
-	// Terminal renderers own cursor blinking and animation, while native hosts
-	// can opt out and remain blocked until a real event or redraw request.
-	if rendererWantsPeriodicRedraw(fm.scr.Renderer) {
-		go func() {
-			for fm.running {
-				time.Sleep(250 * time.Millisecond)
-				fm.Redraw()
-			}
-		}()
+	// Heartbeat for animations and cursor blinking: ticks at ~30fps while
+	// animations are active. The lighter 250ms idle tick only exists for
+	// backends that draw their own cursor in software (the GUI-pixel
+	// renderers: gogpu, ebiten, X11, Wayland, Win32 GUI) -- their blink
+	// toggling lives in Render/DrawToScreen and only runs when something
+	// calls Redraw/Flush, so without this idle tick the cursor freezes
+	// wherever its blink phase happened to be when the last animation
+	// ended.
+	//
+	// Native console/terminal backends (Win32 console API, ANSI/VT to a
+	// real terminal) must NOT get this idle tick: they have no blink state
+	// of their own to advance, so every idle Redraw() is a pure no-op
+	// SetConsoleCursorInfo/cursor-position call -- and under Wine those
+	// redundant calls visibly disturb the console frontend's own native
+	// blink timer (jittery, uneven, or stopped entirely depending on the
+	// frontend). This is exactly how real FAR2 for Windows behaves: it
+	// only touches the cursor on genuine state changes and otherwise lets
+	// the OS blink it, with no periodic poking at all. See f4 issue #518.
+	//
+	// Checked via the softwareBlinkRenderer marker interface rather than a
+	// type switch on concrete renderer types: several of those types
+	// (WaylandRenderer, EbitenRenderer) only exist under their own
+	// platform build tags, and a type switch naming them directly fails to
+	// compile on platforms where they're absent (e.g. Windows lacks
+	// WaylandRenderer entirely). Each renderer file declares its own
+	// marker method under its own build tag instead.
+	needsSoftwareBlinkHeartbeat := false
+	if fm.scr != nil {
+		if _, ok := fm.scr.Renderer.(softwareBlinkRenderer); ok {
+			needsSoftwareBlinkHeartbeat = true
+		}
 	}
 
-	// Terminal size polling (handles Windows and fallback for missed SIGWINCH)
-	sizeChan := make(chan struct{}, 1)
+	workers.Add(1)
 	go func() {
-		lastW, lastH, _ := GetTerminalSize()
-		for fm.running {
-			time.Sleep(200 * time.Millisecond)
-			w, h, err := GetTerminalSize()
-			if err == nil && w > 0 && h > 0 && (w != lastW || h != lastH) {
-				lastW, lastH = w, h
-				select {
-				case sizeChan <- struct{}{}:
-				default:
+		defer workers.Done()
+		tmr := time.NewTimer(33 * time.Millisecond)
+		if !tmr.Stop() {
+			select {
+			case <-tmr.C:
+			default:
+			}
+		}
+		defer tmr.Stop()
+
+		idleTmr := time.NewTimer(250 * time.Millisecond)
+		if !idleTmr.Stop() {
+			select {
+			case <-idleTmr.C:
+			default:
+			}
+		}
+		defer idleTmr.Stop()
+
+		for {
+			fm.animMu.Lock()
+			hasAnims := len(fm.animations) > 0
+			fm.animMu.Unlock()
+
+			if !hasAnims {
+				if !needsSoftwareBlinkHeartbeat {
+					// No animations and this backend blinks its own
+					// cursor natively: sleep until a real animation
+					// wakes us, exactly like before dfe297a.
+					select {
+					case <-fm.animWake:
+						continue
+					case <-workersDone:
+						return
+					}
 				}
+				idleTmr.Reset(250 * time.Millisecond)
+				select {
+				case <-fm.animWake:
+					if !idleTmr.Stop() {
+						select {
+						case <-idleTmr.C:
+						default:
+						}
+					}
+					continue
+				case <-idleTmr.C:
+					fm.Redraw()
+					continue
+				case <-workersDone:
+					return
+				}
+			}
+
+			tmr.Reset(33 * time.Millisecond)
+			select {
+			case <-fm.animWake:
+				if !tmr.Stop() {
+					select {
+					case <-tmr.C:
+					default:
+					}
+				}
+			case <-tmr.C:
+				fm.PostTask(func() { fm.tickAnimations() })
+			case <-workersDone:
+				return
 			}
 		}
 	}()
 
-	handleResize := func() {
-		endSemanticUpdate := fm.beginSemanticSceneUpdate()
-		defer endSemanticUpdate(false)
-		width, height, err := GetTerminalSize()
-		DebugLog("FM_RESIZE: handleResize triggered. GetTerminalSize returned: %dx%d (err: %v). Current scr: %dx%d", width, height, err, fm.scr.width, fm.scr.height)
-		if err != nil {
-			return // Keep existing size if we can't determine the new one
-		}
-
-		if width > 0 && height > 0 && (width != fm.scr.width || height != fm.scr.height) {
-
-			fm.scr.AllocBuf(width, height)
-
-			for _, s := range fm.Screens {
-				for _, f := range s.Frames {
-					f.ResizeConsole(width, height)
-				}
-			}
-
-			// Re-dock global UI elements to the new screen edges.
-			// This ensures they stay at the top/bottom regardless of whether
-			// the active frame also tries to resize them.
-			if fm.MenuBar != nil {
-				top := fm.WorkspaceTopInset()
-				fm.MenuBar.SetPosition(0, top, width-1, top)
-			}
-			if fm.KeyBar != nil {
-				fm.KeyBar.SetPosition(0, height-1, width-1, height-1)
-			}
-			if fm.StatusLine != nil {
-				fm.StatusLine.SetPosition(0, height-1, width-1, height-1)
-			}
-
-			fm.Redraw()
-		}
-	}
-
-	// --- Main application loop ---
-	// Persistent timer to avoid allocations in the drain loop
-	idleTimer := time.NewTimer(time.Hour)
-	if !idleTimer.Stop() {
-		select {
-		case <-idleTimer.C:
-		default:
-		}
-	}
-	DebugLog("FM: Entering Run loop. MenuBar set: %v, KeyBar set: %v", fm.MenuBar != nil, fm.KeyBar != nil)
-	skipNextRender := false
-	for fm.running {
-		if len(fm.frames) == 0 {
-			DebugLog("FM: No frames left, exiting Run loop.")
-			return
-		}
-
-		if skipNextRender {
-			// The preceding standalone task proved that it did not change the
-			// visible/semantic state and owned no redraw. Return directly to the
-			// blocking wait instead of spinning through a redundant render.
-			skipNextRender = false
-		} else {
-			fm.renderPhase()
-		}
-
-		// 3. Event waiting (Blocking)
-		var e *vtinput.InputEvent
-		injected := false
-		loopAgain := false
-
-		fm.injectedMu.Lock()
-		if len(fm.injectedEvents) > 0 {
-			e = fm.injectedEvents[0]
-			fm.injectedEvents = fm.injectedEvents[1:]
-			injected = true
-		}
-		fm.injectedMu.Unlock()
-
-		if !injected {
-			select {
-			case task := <-fm.PriorityTaskChan:
-				result := fm.runPostedTask(task)
-				if !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				skipNextRender = result.renderOmitted
-				loopAgain = true
-			default:
-			}
-		}
-
-		if !injected && !loopAgain && fm.coalescePendingRedrawWithReadyTask() {
-			loopAgain = true
-		}
-
-		if !injected && !loopAgain {
-			select {
-			case <-fm.RedrawChan:
-				loopAgain = true
-			case task := <-fm.PriorityTaskChan:
-				result := fm.runPostedTask(task)
-				if !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				skipNextRender = result.renderOmitted
-				loopAgain = true
-			case task := <-fm.TaskChan:
-				// The task became ready after the priority check above.
-				result := fm.runPostedTask(task)
-				if !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				skipNextRender = result.renderOmitted
-				loopAgain = true
-			case <-sigChan:
-				handleResize()
-				loopAgain = true
-			case <-sizeChan:
-				handleResize()
-				loopAgain = true
-			case ev, ok := <-fm.EventChan:
-				if !ok {
-					DebugLog("FM: eventChan closed, exiting Run() // in Event waiting (Blocking)")
+	// Terminal size polling: skipped in GUI backends; adaptive fallback in TTY.
+	sizeChan := make(chan struct{}, 1)
+	if !fm.isGUI() {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			lastW, lastH, _ := getTerminalSize()
+			interval := 200 * time.Millisecond
+			for {
+				timer := time.NewTimer(interval)
+				select {
+				case <-timer.C:
+				case <-workersDone:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
 					return
 				}
-				e = ev
+				w, h, err := getTerminalSize()
+				if err == nil && w > 0 && h > 0 && (w != lastW || h != lastH) {
+					lastW, lastH = w, h
+					interval = 200 * time.Millisecond
+					select {
+					case sizeChan <- struct{}{}:
+					default:
+					}
+				} else if interval < 2*time.Second {
+					interval += 200 * time.Millisecond
+				}
+			}
+		}()
+	}
+
+	// Forward resize notifications to the event queue
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for {
+			select {
+			case <-sigChan:
+				fm.PostTask(func() { fm.handleResizeWith(getTerminalSize) })
+			case <-sizeChan:
+				fm.PostTask(func() { fm.handleResizeWith(getTerminalSize) })
+			case <-workersDone:
+				return
 			}
 		}
+	}()
 
-		if loopAgain {
-			continue
+	for !fm.stopRequested.Load() && !fm.IsShutdown() {
+		if !fm.hostMode && len(fm.frames) == 0 {
+			break
 		}
-		if e == nil {
-			continue
-		}
-		if e.Type == vtinput.Far2lEventType {
-			// Protocol level events handled inside dispatchEvent to cover both main loop and drain loop
-			fm.dispatchEvent(e, injected)
-			continue
-		}
-		if e.Type == vtinput.ResizeEventType {
-			handleResize()
-			continue
-		}
-
-		if e.Type == vtinput.KeyEventType && e.KeyDown {
-			DebugLog("KEY: VK=%s Char=%d Src=%s ActiveFrames=%d", vtinput.VKString(e.VirtualKeyCode), e.Char, e.InputSource, len(fm.frames))
-		}
-
-		fm.dispatchEvent(e, injected)
-
-		// 4. Queue "Drain"
-		// Burst process pending events and tasks to avoid redundant renders.
-		// This naturally throttles the UI when a background thread spams updates.
-		drainStart := time.Now()
-		drainCount := 0
-		for fm.running && !fm.IsShutdown() {
-			// Prevent event flood from starving the renderer (e.g. held down key)
-			if time.Since(drainStart) > 20*time.Millisecond {
-				DebugLog("FM_PERF: Drain loop break due to 20ms timeout. Processed %d events/tasks.", drainCount)
+		if !fm.stepWithSize(-1, getTerminalSize) {
+			if !fm.hostMode {
 				break
 			}
-
-			select {
-			case task := <-fm.PriorityTaskChan:
-				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				drainCount++
-				continue
-			default:
-			}
-
-			idleTimer.Reset(2 * time.Millisecond)
-			select {
-			case ev, ok := <-fm.EventChan:
-				if !idleTimer.Stop() {
-					select {
-					case <-idleTimer.C:
-					default:
-					}
-				}
-				if !ok {
-					return
-				}
-				if ev == nil {
-					continue
-				}
-				if len(fm.frames) > 0 {
-					fm.dispatchEvent(ev, false)
-				}
-				drainCount++
-				continue
-			case task := <-fm.PriorityTaskChan:
-				if !idleTimer.Stop() {
-					select {
-					case <-idleTimer.C:
-					default:
-					}
-				}
-				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				drainCount++
-				continue
-			case task := <-fm.TaskChan:
-				if !idleTimer.Stop() {
-					select {
-					case <-idleTimer.C:
-					default:
-					}
-				}
-				if result := fm.runPostedTask(task); !result.taskRedrawOmitted {
-					fm.Redraw()
-				}
-				drainCount++
-				continue
-			case <-idleTimer.C:
-			}
-			break
 		}
 	}
 }
@@ -2701,6 +3362,13 @@ func (fm *frameManager) renderPhase() {
 		}
 
 		// 2. Отрисовываем стэк экранов от базового до текущего
+		isTopFrame := func(sIdx int, frame Frame) bool {
+			if sIdx != fm.ActiveIdx {
+				return false
+			}
+			top := fm.GetActiveFrames(sIdx)
+			return len(top) > 0 && top[len(top)-1] == frame
+		}
 		for sIdx := baseIdx; sIdx <= fm.ActiveIdx; sIdx++ {
 			frames := fm.GetActiveFrames(sIdx)
 			for _, frame := range frames {
@@ -2713,6 +3381,21 @@ func (fm *frameManager) renderPhase() {
 					}
 				}
 				frame.Show(fm.scr)
+
+				// Only the topmost frame owns the caret. Frames are
+				// painted bottom-up, and a frame under the top one has no
+				// way of knowing something was pushed over it: it keeps
+				// setting the screen cursor from its own state (an editor
+				// at its caret, a panel at its command line). Normally the
+				// frame above overwrites that with its own focused input
+				// field, so nothing shows -- but a top frame whose focus
+				// sits on a control with no caret of its own (a checkbox,
+				// a button, a DropdownOnly combobox) overwrites nothing,
+				// and the caret from below stays on screen, painted in
+				// whatever the dialog is covering. See f4 issue #518.
+				if !isTopFrame(sIdx, frame) {
+					fm.scr.SetCursorVisible(false)
+				}
 			}
 		}
 
@@ -2750,11 +3433,26 @@ func (fm *frameManager) renderPhase() {
 			} else {
 				msg := " " + fm.currentToast.Message + " "
 				attr := SetRGBBoth(0, 0xFFFFFF, 0x444444) // White on Dark Gray
+				row := 0
+				if fm.currentToast.Style.Attr != 0 {
+					attr = fm.currentToast.Style.Attr
+				}
+				switch {
+				case fm.currentToast.Style.Row < 0:
+					row = fm.scr.height + fm.currentToast.Style.Row
+				case fm.currentToast.Style.Row > 0:
+					row = fm.currentToast.Style.Row
+				}
+				if row < 0 {
+					row = 0
+				} else if row >= fm.scr.height {
+					row = fm.scr.height - 1
+				}
 				x := (fm.scr.width - runewidth.StringWidth(msg)) / 2
 				if x < 0 {
 					x = 0
 				}
-				fm.scr.Write(x, 0, StringToCharInfo(msg, attr))
+				fm.scr.Write(x, row, StringToCharInfo(msg, attr))
 			}
 		}
 
@@ -2922,8 +3620,14 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 	if ev.Type == vtinput.Far2lEventType {
 		DebugLog("FM_DISPATCH: Processing Far2l event: cmd=%q", ev.Far2lCommand)
 		if ev.Far2lCommand == "ok" {
-			DebugLog("FM_DISPATCH: Far2l extensions successfully negotiated with host. Setting Far2lEnabled = true")
-			Far2lEnabled = true
+			DebugLog("FM_DISPATCH: Far2l extensions successfully negotiated with host")
+			fm.far2lEnabled.Store(true)
+			// A screen may have asked for its graphics protocol before the
+			// asynchronous far2l acknowledgement arrived. Switch it now so
+			// image viewers do not retain the initial GraphicsNone/kitty choice.
+			if fm.scr != nil {
+				fm.scr.Graphics().SetProtocol(GraphicsFar2l)
+			}
 			return
 		}
 		if ev.Far2lCommand == "reply" {
@@ -3010,7 +3714,14 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 	}
 
 	// Track Ctrl state for Switcher logic
-	if ev.Type == vtinput.KeyEventType {
+	if ev.Type == vtinput.FocusEventType && !ev.SetFocus {
+		// A GUI backend may lose the modifier key release together with
+		// keyboard focus. Clear the manager-side state as well as the backend
+		// tracker, otherwise the transient workspace UI can remain visible
+		// until an unrelated key event arrives.
+		fm.ctrlPressed = false
+		fm.workspaceTabPreview = false
+	} else if ev.Type == vtinput.KeyEventType {
 		wasCtrlPressed := fm.ctrlPressed
 		ctrl := (ev.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 		if ev.VirtualKeyCode == vtinput.VK_CONTROL || ev.VirtualKeyCode == vtinput.VK_LCONTROL || ev.VirtualKeyCode == vtinput.VK_RCONTROL {
@@ -3018,6 +3729,14 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		}
 		fm.ctrlPressed = ctrl
 		if wasCtrlPressed != fm.ctrlPressed && fm.WorkspaceTabMode == WorkspaceTabsOnCtrl {
+			if !fm.ctrlPressed {
+				fm.workspaceTabPreview = false
+			}
+			// The overlay tab strip takes and releases the top row as Ctrl is
+			// held after the first Ctrl+Tab, so frames must relayout; a plain
+			// redraw would leave the image where it was and let it paint over
+			// the tabs.
+			fm.ResizeAllScreens()
 			fm.Redraw()
 		}
 
@@ -3268,6 +3987,11 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 
 		// Workspace cycling (Ctrl+Tab / Ctrl+Shift+Tab).
 		if ev.VirtualKeyCode == vtinput.VK_TAB && (fm.ctrlPressed || fm.switcherMenu != nil) {
+			if fm.WorkspaceTabMode == WorkspaceTabsOnCtrl && !fm.workspaceTabPreview {
+				fm.workspaceTabPreview = true
+				fm.ResizeAllScreens()
+				fm.Redraw()
+			}
 			shift := (ev.ControlKeyState & vtinput.ShiftPressed) != 0
 			cycled := false
 			if fm.WorkspaceCtrlTabMode == WorkspaceCtrlTabMenu || fm.WorkspaceTabMode == WorkspaceTabsNever {
@@ -3412,4 +4136,19 @@ func (fm *frameManager) markMultiClick(ev *vtinput.InputEvent, now time.Time) {
 		fm.lastMouseClickCount = 0
 		DebugLog("FM: TripleClick generated at (%d,%d)", ev.MouseX, ev.MouseY)
 	}
+}
+
+func (fm *frameManager) isGUI() bool {
+	if ActiveBackend() != "" {
+		return true
+	}
+	if fm.scr != nil && fm.scr.Renderer != nil {
+		switch fm.scr.Renderer.(type) {
+		case *AnsiRenderer, *Win32ConsoleRenderer:
+			return false
+		default:
+			return true
+		}
+	}
+	return false
 }

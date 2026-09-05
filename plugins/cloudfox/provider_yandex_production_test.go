@@ -69,7 +69,7 @@ func yandexHasIntermediateProgress(samples []int) bool {
 
 func yandexReadAll(t *testing.T, reader vfs.ReadAtCloser) string {
 	t.Helper()
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	data, err := io.ReadAll(vfsReaderAdapter{ctx: context.Background(), reader: reader})
 	if err != nil {
 		t.Fatal(err)

@@ -51,7 +51,7 @@ func readVFSFile(ctx context.Context, filesystem vfs.VFS, path string, limit int
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }() // The environment file is read-only.
 	if size := reader.Size(); size > limit {
 		return nil, fmt.Errorf("environment file is too large (%d bytes; limit %d)", size, limit)
 	}

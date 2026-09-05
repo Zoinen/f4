@@ -1,4 +1,4 @@
-//go:build !(linux || windows || darwin) || arm
+//go:build !(linux || windows || darwin) || android || !(amd64 || arm64)
 
 package vtui
 

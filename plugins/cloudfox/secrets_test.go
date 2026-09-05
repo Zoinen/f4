@@ -130,7 +130,7 @@ func TestRepositoryRollsBackStagedSecretOnMetadataFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := testConnection("same", ProviderWebDAV)
-	other := SecretValues{"secret": "must-be-rolled-back"}
+	other := SecretValues{"secret": "must-be-rolled-back"} // #nosec G101 -- synthetic secret verifies cleanup after a failed metadata save.
 	if _, err := repo.Save(context.Background(), second, &other, SecretStorageKeyring); !errors.Is(err, ErrDuplicateName) {
 		t.Fatalf("duplicate Save = %v", err)
 	}

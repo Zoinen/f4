@@ -140,7 +140,7 @@ func TestWebDAVOpenUsesByteRangeReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if reader.Size() != 6 {
 		t.Fatalf("Size = %d", reader.Size())
 	}
@@ -181,7 +181,7 @@ func TestWebDAVOpenFallsBackWhenRangesAreIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	buffer := make([]byte, 3)
 	n, err := reader.ReadAt(context.Background(), buffer, 1)
 	if err != nil || n != 3 || string(buffer) != "bcd" {

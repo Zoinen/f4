@@ -66,7 +66,7 @@ else:
 }
 
 echo "Building f4..."
-go build -o f4_test_binary
+go build -o f4_test_binary ./cmd/f4
 
 mkdir -p "$TEST_DIR"
 touch "$DAEMON_LOG"

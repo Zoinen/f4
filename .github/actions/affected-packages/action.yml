@@ -1,0 +1,142 @@
+name: Affected packages
+description: >-
+  Compute which Go packages a pull request actually touches, directly or
+  through the import graph, so test jobs can skip the rest. Resolves to
+  "all" outside pull requests and whenever the diff contains anything that
+  cannot be safely attributed to a package (go.mod, the workflow itself,
+  submodule bumps, unknown files) -- guessing wrong here would silently
+  skip real tests, so every doubt falls back to the full run.
+outputs:
+  packages:
+    description: Space-separated import paths to test, or the literal "all"
+    value: ${{ steps.calc.outputs.packages }}
+  build:
+    description: Whether the diff affects code included in a compiled binary
+    value: ${{ steps.calc.outputs.build }}
+runs:
+  using: composite
+  steps:
+    - id: calc
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        all() { echo "packages=all" >> "$GITHUB_OUTPUT"; echo "build=yes" >> "$GITHUB_OUTPUT"; echo "affected: all ($1)"; exit 0; }
+
+        if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+          all "not a pull request"
+        fi
+
+        # Diff against the CURRENT head of the base branch, fetched by name.
+        # Not github.event.pull_request.base.sha: that is frozen at PR
+        # creation time, so after any push to the base branch it drags the
+        # base's own changes into the diff forever. The checkout is the
+        # shallow merge commit (base + PR), so if the base has not moved
+        # since the event this two-dot diff is exactly the PR's changes; if
+        # it has moved, the diff gains base-side noise, which can only widen
+        # the result toward "all" -- the safe direction. No arrays or
+        # mapfile anywhere in this script: macOS runners resolve
+        # `shell: bash` to the system bash 3.2. Paths in this repository
+        # contain no spaces.
+        git fetch --quiet --depth=1 origin "refs/heads/$GITHUB_BASE_REF" || all "base fetch failed"
+        files=$(git diff --name-only FETCH_HEAD HEAD)
+        [ -n "$files" ] || all "empty diff"
+
+        dirs=""
+        while IFS= read -r f; do
+          case "$f" in
+            go.mod|go.sum|vtui|vtinput|.github/*|.golangci*)
+              all "$f changes what every package sees" ;;
+            cmd/f4/*)
+              # Language files, help pages, icons and testdata are read by
+              # cmd/f4's tests at run time; attribute the whole subtree to
+              # the package rather than reasoning per file type.
+              dirs="$dirs cmd/f4" ;;
+            */testdata/*)
+              dirs="$dirs ${f%%/testdata/*}" ;;
+            *.go)
+              dirs="$dirs $(dirname "$f")" ;;
+            *)
+              all "cannot attribute $f to a package" ;;
+          esac
+        done <<<"$files"
+
+        # Classify build impact separately from test impact above. Tests and
+        # testdata never enter a shipped binary; cmd/f4's other files always
+        # do because that package embeds non-Go resources. For Go elsewhere,
+        # resolve the owning package and check only main packages' production
+        # dependency graph -- Deps deliberately excludes test imports.
+        build=no
+        build_all() { build=yes; echo "build affected: yes ($1)"; }
+        build_dirs=""
+        while IFS= read -r f; do
+          case "$f" in
+            *_test.go|*/testdata/*)
+              ;;
+            cmd/f4/*)
+              build=yes ;;
+            *.go)
+              build_dirs="$build_dirs $(dirname "$f")" ;;
+            *)
+              build_all "cannot attribute $f to a compiled binary" ;;
+          esac
+        done <<<"$files"
+
+        if [ "$build" != "yes" ] && [ -n "$build_dirs" ]; then
+          build_changed=$(printf './%s\n' $build_dirs | sort -u | xargs go list 2>/dev/null) \
+            || build_all "changed build path is not a package"
+          if [ "$build" != "yes" ]; then
+            mains=$(go list -f '{{if eq .Name "main"}}{{.ImportPath}}{{end}}' ./...) \
+              || build_all "cannot list main packages"
+          fi
+          if [ "$build" != "yes" ] && [ -z "$mains" ]; then
+            build_all "no main packages"
+          fi
+          if [ "$build" != "yes" ]; then
+            production=$(printf '%s\n' "$mains" \
+              | xargs go list -f '{{.ImportPath}} {{join .Deps " "}}' \
+              | tr ' ' '\n' | sed '/^$/d' | sort -u) \
+              || build_all "cannot list production dependencies"
+          fi
+
+          if [ "$build" != "yes" ]; then
+            while IFS= read -r pkg; do
+              if grep -Fqx "$pkg" <<<"$production"; then
+                build=yes
+                break
+              fi
+            done <<<"$build_changed"
+          fi
+        fi
+
+        changed=$(printf './%s\n' $dirs | sort -u | xargs go list 2>/dev/null) \
+          || all "changed path is not a package"
+
+        # Two passes over one package listing. Deps is already transitive,
+        # so pass one finds every package whose import graph reaches a
+        # changed one. Test imports are direct-only, so pass two widens the
+        # result to packages whose _test.go files import anything from pass
+        # one -- that covers a test-only dependency changing underneath.
+        affected=$(go list -f '{{.ImportPath}}|{{join .Deps " "}}|{{join .TestImports " "}} {{join .XTestImports " "}}' ./... \
+          | awk -F'|' -v changed="$(tr '\n' ' ' <<<"$changed")" '
+            BEGIN { n = split(changed, c, " "); for (i = 1; i <= n; i++) ch[c[i]] = 1 }
+            {
+              pkg[NR] = $1; deps[NR] = $2; timp[NR] = $3
+              hit = ch[$1] ? 1 : 0
+              if (!hit) { m = split($2, d, " "); for (i = 1; i <= m; i++) if (ch[d[i]]) { hit = 1; break } }
+              if (hit) imp[$1] = 1
+            }
+            END {
+              for (r = 1; r <= NR; r++) {
+                ok = imp[pkg[r]]
+                if (!ok) { m = split(timp[r], t, " "); for (i = 1; i <= m; i++) if (imp[t[i]]) { ok = 1; break } }
+                if (ok) print pkg[r]
+              }
+            }')
+
+        echo "build=$build" >> "$GITHUB_OUTPUT"
+        echo "build affected: $build"
+        [ -n "$affected" ] || { echo "packages=" >> "$GITHUB_OUTPUT"; echo "affected: none"; exit 0; }
+        echo "packages=$(tr '\n' ' ' <<<"$affected" | sed 's/ $//')" >> "$GITHUB_OUTPUT"
+        echo "affected: $(wc -l <<<"$affected" | tr -d ' ') of $(go list ./... | wc -l | tr -d ' ') packages"
+        printf '  %s\n' $affected

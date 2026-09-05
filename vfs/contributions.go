@@ -1,6 +1,11 @@
 package vfs
 
-import "context"
+import (
+	"context"
+
+	"github.com/unxed/vtinput"
+	"github.com/unxed/vtui"
+)
 
 // Registration is a live plugin contribution. Unregister is safe to call
 // more than once.
@@ -22,6 +27,10 @@ type PluginCommand struct {
 	Location PluginCommandLocation
 	Label    string // English fallback shown when LabelKey is empty or unavailable.
 	LabelKey string // optional host localization key resolved in the active UI language.
+	// MenuPath optionally places a panel command in the generated main menu
+	// (for example, "Files" or "Commands"). Empty keeps it available through
+	// the plugin menu and command palette without adding another main-menu row.
+	MenuPath string
 	// LocalizedLabels optionally carries plugin-owned translations keyed by
 	// language code (for example, "en", "ru", or "pt-BR"). Host catalog
 	// LabelKey translations take precedence; Label remains the final fallback.
@@ -82,6 +91,67 @@ type ContributionHost interface {
 	RegisterPluginCommand(PluginCommand) (Registration, error)
 	RegisterCommandPrefix(id, prefix string, handler func(App, string)) (CommandPrefixRegistration, error)
 	RegisterMacroCallProvider(MacroCallProvider) (Registration, error)
+}
+
+// PanelState is the immutable, UI-safe snapshot of one file panel exposed to
+// a panel plugin. VFS handles are deliberately omitted: a panel plugin gets
+// paths and selection metadata, while file operations continue to go through
+// the normal VFS/plugin APIs.
+type PanelState struct {
+	Side          int
+	Active        bool
+	Path          string
+	SelectedName  string
+	SelectedNames []string
+}
+
+// PanelContext describes the panel slot occupied by a plugin and both file
+// panels around it. It is refreshed before every draw and input event, so a
+// plugin never has to guess whether the neighbouring selection changed.
+type PanelContext struct {
+	Side       int
+	ActiveSide int
+	Bounds     [4]int
+	Current    PanelState
+	Other      PanelState
+}
+
+// Panel is the drawable/input surface a native or RPC panel plugin supplies.
+// Implementations normally compose vtui controls and forward these methods
+// to their root control.
+type Panel interface {
+	Show(*vtui.ScreenBuf)
+	ProcessKey(*vtinput.InputEvent) bool
+	ProcessMouse(*vtinput.InputEvent) bool
+	SetFocus(bool)
+	IsFocused() bool
+	SetPosition(x1, y1, x2, y2 int)
+	GetPosition() (x1, y1, x2, y2 int)
+	GetSelectedName() string
+}
+
+// PanelController adds lifecycle and state delivery to a drawable panel.
+type PanelController interface {
+	Panel
+	SetContext(PanelContext)
+	Close() error
+}
+
+// PanelProvider describes a panel-only plugin contribution. The host exposes
+// an automatically searchable "Open <Title>" command for every provider.
+// Open is called on the UI goroutine and should construct controls quickly;
+// long-running work belongs in the existing task APIs.
+type PanelProvider struct {
+	ID          string
+	Title       string
+	Description string
+	Open        func(PanelContext) (PanelController, error)
+}
+
+// PanelContributionHost is separate from ContributionHost so older host
+// implementations and test doubles remain source-compatible.
+type PanelContributionHost interface {
+	RegisterPanelProvider(PanelProvider) (Registration, error)
 }
 
 // ProcessEnvironmentVariable is one name/value pair in f4's actual process

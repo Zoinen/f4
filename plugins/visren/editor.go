@@ -43,7 +43,13 @@ func parseEditorList(data []byte, rows []Preview, twoColumns bool) ([]string, in
 	}
 
 	destinations := make([]string, len(rows))
+	remainingRows := rows
 	for idx, line := range lines {
+		if len(remainingRows) == 0 {
+			return nil, idx, fmt.Errorf("line %d has no corresponding preview row", idx+1)
+		}
+		row := remainingRows[0]
+		remainingRows = remainingRows[1:]
 		values, err := quotedFields(line)
 		expected := 1
 		if twoColumns {
@@ -55,11 +61,11 @@ func parseEditorList(data []byte, rows []Preview, twoColumns bool) ([]string, in
 			}
 			return nil, idx, fmt.Errorf("line %d: %w", idx+1, err)
 		}
-		if twoColumns && values[0] != rows[idx].Item.Source {
+		if twoColumns && values[0] != row.Item.Source {
 			return nil, idx, fmt.Errorf("line %d: source column was changed", idx+1)
 		}
 		destination := values[len(values)-1]
-		if destination != rows[idx].Item.Source {
+		if destination != row.Item.Source {
 			if err := ValidateFilename(destination); err != nil {
 				return nil, idx, fmt.Errorf("line %d: %w", idx+1, err)
 			}

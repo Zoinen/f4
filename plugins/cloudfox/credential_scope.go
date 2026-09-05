@@ -16,7 +16,7 @@ import (
 // credential bundle instead of the plaintext profile. An attacker who can
 // rewrite CloudFox.json therefore cannot retarget credentials to another
 // endpoint without making this binding fail.
-const credentialScopeSecretKey = "_cloudfox_credential_scope_v1"
+const credentialScopeSecretKey = "_cloudfox_credential_scope_v1" // #nosec G101 -- public keyring record label, not a credential value.
 
 // credentialScope returns an opaque digest of the settings which decide where
 // credentials can be sent. OAuth providers already bind their credentials to

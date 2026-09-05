@@ -172,12 +172,18 @@ Rectangle {
     ToolButton {
         id: sortButton
         objectName: "panelSortButton-" + Number(panel.side || 0)
+        readonly property real snappedContentWidth:
+            hostWindow.snapPx(sortButtonContent.implicitWidth)
         anchors.right: presentationButton.left
         anchors.rightMargin: hostWindow.snapPx(4)
         y: hostWindow.snapPx((parent.height - height) / 2)
-        width: hostWindow.snapPx(sortButtonContent.implicitWidth
-                           + hostWindow.actionButtonHorizontalMargin * 2)
+        width: snappedContentWidth
+               + hostWindow.actionButtonHorizontalMargin * 2
         height: hostWindow.snapPx(Math.min(parent.height - 4, 28))
+        leftPadding: hostWindow.actionButtonHorizontalMargin
+        rightPadding: hostWindow.actionButtonHorizontalMargin
+        topPadding: 0
+        bottomPadding: 0
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
 
@@ -198,7 +204,7 @@ Rectangle {
                         + Number(panel.side || 0)
             x: hostWindow.snapPx((parent.width - width) / 2)
             y: hostWindow.snapPx((parent.height - height) / 2)
-            width: hostWindow.snapPx(implicitWidth)
+            width: sortButton.snappedContentWidth
             height: hostWindow.snapPx(implicitHeight)
             spacing: hostWindow.snapPx(5)
             property real alignmentRevision:
@@ -460,6 +466,10 @@ Rectangle {
         width: presentationButtonContent.implicitWidth
                + hostWindow.actionButtonHorizontalMargin * 2
         height: Math.min(parent.height - 4, 28)
+        leftPadding: hostWindow.actionButtonHorizontalMargin
+        rightPadding: hostWindow.actionButtonHorizontalMargin
+        topPadding: 0
+        bottomPadding: 0
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
         // Once the renderer popup is open its contents are the

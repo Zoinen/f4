@@ -4,7 +4,6 @@ package vtui
 
 import (
 	"image"
-	"image/color"
 	"testing"
 )
 
@@ -23,7 +22,7 @@ func litPixels(img *image.RGBA) int {
 }
 
 func TestDrawBoxGlyph_DrawsKnownRunes(t *testing.T) {
-	white := color.RGBA{255, 255, 255, 255}
+	const white = uint32(0xffffff)
 	for _, r := range []rune{'─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
 		'═', '║', '╔', '╗', '╚', '╝', '╠', '╣', '↑', '↓', '▲', '▼', '█'} {
 		img := newTestSurface(16, 16)
@@ -42,7 +41,7 @@ func TestDrawBoxGlyph_DrawsKnownRunes(t *testing.T) {
 func TestDrawBoxGlyph_DeclinesUnknownRunes(t *testing.T) {
 	for _, r := range []rune{'A', 'ж', '0', ' ', '字', '€'} {
 		img := newTestSurface(16, 16)
-		if drawBoxGlyph(img, r, 0, 0, 16, 16, 1, color.White) {
+		if drawBoxGlyph(img, r, 0, 0, 16, 16, 1, 0xffffff) {
 			t.Errorf("drawBoxGlyph(%q) claimed to handle a text rune", r)
 		}
 		if litPixels(img) != 0 {
@@ -55,9 +54,9 @@ func TestDrawBoxGlyph_DeclinesUnknownRunes(t *testing.T) {
 func TestDrawBoxGlyph_ClipsAtSurfaceEdge(t *testing.T) {
 	img := newTestSurface(16, 16)
 	for _, r := range []rune{'┼', '╬', '█', '▲'} {
-		drawBoxGlyph(img, r, 12, 12, 8, 8, 2, color.White) // runs past both edges
+		drawBoxGlyph(img, r, 12, 12, 8, 8, 2, 0xffffff) // runs past both edges
 	}
-	drawBoxGlyph(img, '┼', -4, -4, 8, 8, 1, color.White)
+	drawBoxGlyph(img, '┼', -4, -4, 8, 8, 1, 0xffffff)
 }
 
 // Adjacent horizontal frame cells must join: the seam column between two
@@ -65,8 +64,8 @@ func TestDrawBoxGlyph_ClipsAtSurfaceEdge(t *testing.T) {
 func TestDrawBoxGlyph_AdjacentCellsJoin(t *testing.T) {
 	const cw, ch = 8, 16
 	img := newTestSurface(cw*2, ch)
-	drawBoxGlyph(img, '─', 0, 0, cw, ch, 1, color.White)
-	drawBoxGlyph(img, '─', cw, 0, cw, ch, 1, color.White)
+	drawBoxGlyph(img, '─', 0, 0, cw, ch, 1, 0xffffff)
+	drawBoxGlyph(img, '─', cw, 0, cw, ch, 1, 0xffffff)
 
 	mid := ch / 2
 	for x := 0; x < cw*2; x++ {
@@ -81,8 +80,8 @@ func TestDrawBoxGlyph_AdjacentCellsJoin(t *testing.T) {
 func TestDrawBoxGlyph_ScaleThickensLines(t *testing.T) {
 	thin := newTestSurface(16, 16)
 	thick := newTestSurface(16, 16)
-	drawBoxGlyph(thin, '─', 0, 0, 16, 16, 1, color.White)
-	drawBoxGlyph(thick, '─', 0, 0, 16, 16, 3, color.White)
+	drawBoxGlyph(thin, '─', 0, 0, 16, 16, 1, 0xffffff)
+	drawBoxGlyph(thick, '─', 0, 0, 16, 16, 3, 0xffffff)
 
 	if litPixels(thick) <= litPixels(thin) {
 		t.Errorf("scale 3 lit %d pixels, scale 1 lit %d; expected more",
@@ -108,7 +107,7 @@ func TestIsBoxDrawRune(t *testing.T) {
 func TestIsBoxDrawRune_CoversEverythingDrawBoxGlyphHandles(t *testing.T) {
 	for r := rune(0x2000); r < 0x2800; r++ {
 		img := newTestSurface(8, 8)
-		if drawBoxGlyph(img, r, 0, 0, 8, 8, 1, color.White) && !isBoxDrawRune(r) {
+		if drawBoxGlyph(img, r, 0, 0, 8, 8, 1, 0xffffff) && !isBoxDrawRune(r) {
 			t.Errorf("drawBoxGlyph handles %q (U+%04X) but isBoxDrawRune rejects it", r, r)
 		}
 	}

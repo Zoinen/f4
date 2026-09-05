@@ -47,7 +47,7 @@ func TestRealSavedCloudConnectionSemantics(t *testing.T) {
 	if configDir == "" || !filepath.IsAbs(configDir) {
 		t.Fatal("real CloudFox semantics require an absolute config directory")
 	}
-	info, err := os.Stat(configDir)
+	info, err := os.Stat(configDir) // #nosec G703 -- the doubly opted-in semantics test intentionally loads the operator-supplied absolute config directory.
 	if err != nil || !info.IsDir() {
 		t.Fatal("real CloudFox config directory is unavailable")
 	}
@@ -162,7 +162,11 @@ func runRealSavedSemantics(t *testing.T, plugin *Plugin, connection Connection) 
 	}
 
 	root, writeRoot := openRealSemanticsRoot(t, ctx, plugin, connection)
-	defer root.Close()
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	removeRealSemanticsNormalFolder(t, ctx, root, writeRoot, titleName)
 
 	trashPath := createRealSemanticsDirectory(t, ctx, root, writeRoot, trashName)
@@ -345,7 +349,7 @@ func assertRealSemanticsFile(t *testing.T, ctx context.Context, filesystem vfs.V
 	if err != nil {
 		t.Fatalf("open recovered marker: %s", redactRealProviderError(err))
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	got := make([]byte, len(expected))
 	n, err := r.ReadAt(ctx, got, 0)
 	if n != len(expected) || (err != nil && !errors.Is(err, io.EOF)) || string(got) != string(expected) {
@@ -461,7 +465,9 @@ func realYandexAboutShape(ctx context.Context, backend *yandexDiskBackend) (bool
 	if err != nil {
 		return false, false, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close() // response body cleanup only
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, false, mapProviderHTTPError(resp, readSmallResponse(resp))
 	}
@@ -531,7 +537,6 @@ func restoreRealYandexTrash(t *testing.T, ctx context.Context, backend *yandexDi
 }
 
 func realYandexTrashEntries(ctx context.Context, backend *yandexDiskBackend) ([]yandexResource, error) {
-	const pageSize = 1000
 	var result []yandexResource
 	for offset := 0; ; {
 		query := url.Values{
@@ -545,12 +550,12 @@ func realYandexTrashEntries(ctx context.Context, backend *yandexDiskBackend) ([]
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			message := readSmallResponse(resp)
-			resp.Body.Close()
+			_ = resp.Body.Close() // response body cleanup only
 			return nil, mapProviderHTTPError(resp, message)
 		}
 		var resource yandexResource
 		err = json.NewDecoder(resp.Body).Decode(&resource)
-		resp.Body.Close()
+		_ = resp.Body.Close() // response body cleanup only
 		if err != nil {
 			return nil, err
 		}
@@ -703,7 +708,11 @@ func cleanupRealSemanticsArtifacts(t *testing.T, plugin *Plugin, connectionID st
 		return
 	}
 	filesystem, writeRoot := openRealSemanticsRoot(t, ctx, plugin, connection)
-	defer filesystem.Close()
+	t.Cleanup(func() {
+		if err := filesystem.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	for _, name := range names {
 		if !strings.HasPrefix(name, realSemanticsPrefix) || strings.ContainsAny(name, "/\\") {
 			t.Errorf("refusing unsafe real semantics cleanup name")

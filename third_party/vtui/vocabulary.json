@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "widgets": {
+    "Widget": {
+      "summary": "Base abstract UI element",
+      "properties": {
+        "id": { "type": "string", "default": "", "summary": "Unique string identifier of the element" },
+        "visible": { "type": "bool", "default": true, "summary": "Visibility state of the element" },
+        "enabled": { "type": "bool", "default": true, "summary": "Interactive availability state" },
+        "help": { "type": "string", "default": "", "summary": "Contextual F1 help topic identifier" },
+        "grow": { "type": "int", "default": 0, "summary": "GrowMode anchor flags for absolute layout" },
+        "align": { "type": "string", "default": "fill", "summary": "Alignment within the layout cell (fill, start, center, end)" },
+        "stretch": { "type": "int", "default": 1, "summary": "Stretch weight for extra space distribution" },
+        "minWidth": { "type": "int", "default": 0, "summary": "Minimum width in character cells" },
+        "minHeight": { "type": "int", "default": 0, "summary": "Minimum height in character cells" },
+        "maxWidth": { "type": "int", "default": 0, "summary": "Maximum width (0 = unconstrained)" },
+        "maxHeight": { "type": "int", "default": 0, "summary": "Maximum height (0 = unconstrained)" }
+      },
+      "signals": ["focus", "blur"]
+    },
+    "Dialog": {
+      "extends": "Window",
+      "summary": "Modal dialog window",
+      "properties": {},
+      "signals": ["closed"],
+      "localizable": ["title"],
+      "sizeHint": { "w": 40, "h": 10 },
+      "minSize": { "w": 10, "h": 5 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "Window": {
+      "extends": "Widget",
+      "summary": "Non-modal movable window or dialog",
+      "properties": {
+        "title": { "type": "string", "default": "", "summary": "Window title" },
+        "showClose": { "type": "bool", "default": true, "summary": "Show close button [x]" },
+        "showZoom": { "type": "bool", "default": true, "summary": "Show zoom/maximize button [↕]" },
+        "isWarning": { "type": "bool", "default": false, "summary": "Use warning (red) color palette" },
+        "autoSize": { "type": "bool", "default": false, "summary": "Automatically compute window size from contents" },
+        "center": { "type": "bool", "default": true, "summary": "Center window on screen" }
+      },
+      "signals": ["closed"],
+      "localizable": ["title"],
+      "sizeHint": { "w": 60, "h": 20 },
+      "minSize": { "w": 10, "h": 5 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "BorderedFrame": {
+      "extends": "Widget",
+      "summary": "Single or double bordered frame with title",
+      "properties": {
+        "title": { "type": "string", "default": "", "summary": "Frame title" },
+        "boxType": { "type": "int", "default": 2, "summary": "Border type: 1 (SingleBox) or 2 (DoubleBox)" },
+        "showClose": { "type": "bool", "default": false, "summary": "Show close button" }
+      },
+      "signals": [],
+      "localizable": ["title"],
+      "sizeHint": { "w": 20, "h": 5 },
+      "minSize": { "w": 4, "h": 3 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "GroupBox": {
+      "extends": "Widget",
+      "summary": "Framed group container with header title",
+      "properties": {
+        "title": { "type": "string", "default": "", "summary": "Group header title" }
+      },
+      "signals": [],
+      "localizable": ["title"],
+      "sizeHint": { "w": 20, "h": 6 },
+      "minSize": { "w": 6, "h": 3 },
+      "sizePolicy": { "h": "expanding", "v": "preferred" }
+    },
+    "Button": {
+      "extends": "Widget",
+      "summary": "Action push button",
+      "properties": {
+        "text": { "type": "string", "default": "&Ok", "summary": "Button caption with mnemonic (&)" },
+        "default": { "type": "bool", "default": false, "summary": "Default button activated on Enter" },
+        "command": { "type": "int", "default": 0, "summary": "Command ID sent when clicked" }
+      },
+      "signals": ["clicked"],
+      "localizable": ["text"],
+      "sizeHint": { "w": 10, "h": 1 },
+      "minSize": { "w": 6, "h": 1 },
+      "sizePolicy": { "h": "fixed", "v": "fixed" }
+    },
+    "Checkbox": {
+      "extends": "Widget",
+      "summary": "Two- or three-state checkbox",
+      "properties": {
+        "state": { "type": "int", "default": 0, "summary": "0 = unchecked, 1 = checked, 2 = indeterminate" },
+        "text": { "type": "string", "default": "", "summary": "Checkbox label with mnemonic" },
+        "threeState": { "type": "bool", "default": false, "summary": "Enable third indeterminate state" }
+      },
+      "signals": ["changed"],
+      "localizable": ["text"],
+      "sizeHint": { "w": 16, "h": 1 },
+      "minSize": { "w": 6, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "fixed" }
+    },
+    "RadioButton": {
+      "extends": "Widget",
+      "summary": "Individual radio button",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Radio button label with mnemonic" },
+        "selected": { "type": "bool", "default": false, "summary": "Selected state" }
+      },
+      "signals": ["changed"],
+      "localizable": ["text"],
+      "sizeHint": { "w": 16, "h": 1 },
+      "minSize": { "w": 6, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "fixed" }
+    },
+    "RadioGroup": {
+      "extends": "Widget",
+      "summary": "Mutually exclusive radio button cluster",
+      "properties": {
+        "items": { "type": "stringList", "default": [], "summary": "List of option labels" },
+        "selected": { "type": "int", "default": 0, "summary": "Index of selected item" },
+        "columns": { "type": "int", "default": 1, "summary": "Number of grid columns" }
+      },
+      "signals": ["changed"],
+      "localizable": ["items"],
+      "sizeHint": { "w": 20, "h": 3 },
+      "minSize": { "w": 8, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "CheckGroup": {
+      "extends": "Widget",
+      "summary": "Independent checkbox cluster in a grid",
+      "properties": {
+        "items": { "type": "stringList", "default": [], "summary": "List of checkbox labels" },
+        "data": { "type": "int", "default": 0, "summary": "Bitmask of checked states" },
+        "columns": { "type": "int", "default": 1, "summary": "Number of grid columns" }
+      },
+      "signals": ["changed"],
+      "localizable": ["items"],
+      "sizeHint": { "w": 20, "h": 3 },
+      "minSize": { "w": 8, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "Edit": {
+      "extends": "Widget",
+      "summary": "Single-line text input field",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Entered text content" },
+        "password": { "type": "bool", "default": false, "summary": "Mask input characters with asterisks" },
+        "historyId": { "type": "string", "default": "", "summary": "Input history list identifier" },
+        "showHistoryButton": { "type": "bool", "default": false, "summary": "Show history dropdown arrow [v]" }
+      },
+      "signals": ["changed", "activated"],
+      "localizable": ["text"],
+      "sizeHint": { "w": 20, "h": 1 },
+      "minSize": { "w": 3, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "MultiLineEdit": {
+      "extends": "Widget",
+      "summary": "Multi-line text input field",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Text content with line breaks" }
+      },
+      "signals": ["changed"],
+      "localizable": ["text"],
+      "sizeHint": { "w": 30, "h": 5 },
+      "minSize": { "w": 10, "h": 2 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
+    },
+    "Label": {
+      "extends": "Widget",
+      "summary": "Text label bound to an input field",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Label text with mnemonic" },
+        "buddy": { "type": "string", "default": "", "summary": "ID of the associated input widget" }
+      },
+      "signals": [],
+      "localizable": ["text"],
+      "sizeHint": { "w": 10, "h": 1 },
+      "minSize": { "w": 1, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "fixed" }
+    },
+    "Text": {
+      "extends": "Widget",
+      "summary": "Static text label",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Displayed text" }
+      },
+      "signals": [],
+      "localizable": ["text"],
+      "sizeHint": { "w": 10, "h": 1 },
+      "minSize": { "w": 1, "h": 1 },
+      "sizePolicy": { "h": "preferred", "v": "fixed" }
+    },
+    "ListBox": {
+      "extends": "Widget",
+      "summary": "Single-column scrollable list",
+      "properties": {
+        "items": { "type": "stringList", "default": [], "summary": "List of displayed string items" },
+        "selected": { "type": "int", "default": 0, "summary": "Selected item index" },
+        "multiSelect": { "type": "bool", "default": false, "summary": "Enable multi-selection" }
+      },
+      "signals": ["selected", "activated"],
+      "localizable": ["items"],
+      "sizeHint": { "w": 20, "h": 8 },
+      "minSize": { "w": 5, "h": 3 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
+    },
+    "ComboBox": {
+      "extends": "Widget",
+      "summary": "Dropdown list with optional text entry",
+      "properties": {
+        "text": { "type": "string", "default": "", "summary": "Current text in edit field" },
+        "items": { "type": "stringList", "default": [], "summary": "List of dropdown items" },
+        "dropdownOnly": { "type": "bool", "default": false, "summary": "Disable manual text typing" }
+      },
+      "signals": ["changed", "selected"],
+      "localizable": ["items", "text"],
+      "sizeHint": { "w": 20, "h": 1 },
+      "minSize": { "w": 6, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "Table": {
+      "extends": "Widget",
+      "summary": "Multi-column data table",
+      "properties": {
+        "showHeader": { "type": "bool", "default": true, "summary": "Show column headers" },
+        "showSeparators": { "type": "bool", "default": true, "summary": "Show vertical column separators" },
+        "sortable": { "type": "bool", "default": false, "summary": "Enable column header click sorting" },
+        "quickSearch": { "type": "bool", "default": false, "summary": "Enable fuzzy quick search" },
+        "selected": { "type": "int", "default": 0, "summary": "Selected row index" }
+      },
+      "signals": ["selected", "activated"],
+      "sizeHint": { "w": 40, "h": 10 },
+      "minSize": { "w": 10, "h": 4 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
+    },
+    "VMenu": {
+      "extends": "Widget",
+      "summary": "Vertical context or popup menu",
+      "properties": {
+        "title": { "type": "string", "default": "", "summary": "Menu title" },
+        "selected": { "type": "int", "default": 0, "summary": "Selected menu item index" }
+      },
+      "signals": ["selected", "activated"],
+      "localizable": ["title"],
+      "sizeHint": { "w": 20, "h": 8 },
+      "minSize": { "w": 8, "h": 3 },
+      "sizePolicy": { "h": "preferred", "v": "preferred" }
+    },
+    "MenuBar": {
+      "extends": "Widget",
+      "summary": "Top horizontal menu bar",
+      "properties": {},
+      "signals": ["activated"],
+      "sizeHint": { "w": 80, "h": 1 },
+      "minSize": { "w": 10, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "KeyBar": {
+      "extends": "Widget",
+      "summary": "Bottom function key bar F1-F12",
+      "properties": {},
+      "signals": ["clicked"],
+      "sizeHint": { "w": 80, "h": 1 },
+      "minSize": { "w": 36, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "StatusLine": {
+      "extends": "Widget",
+      "summary": "Contextual status line and hotkey hints",
+      "properties": {},
+      "signals": [],
+      "sizeHint": { "w": 80, "h": 1 },
+      "minSize": { "w": 10, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "ProgressBar": {
+      "extends": "Widget",
+      "summary": "Progress bar indicator",
+      "properties": {
+        "percent": { "type": "int", "default": 0, "summary": "Completion percentage from 0 to 100" }
+      },
+      "signals": [],
+      "sizeHint": { "w": 20, "h": 1 },
+      "minSize": { "w": 5, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "Separator": {
+      "extends": "Widget",
+      "summary": "Horizontal divider line",
+      "properties": {
+        "connectLeft": { "type": "bool", "default": true, "summary": "Join left edge with surrounding frame" },
+        "connectRight": { "type": "bool", "default": true, "summary": "Join right edge with surrounding frame" }
+      },
+      "signals": [],
+      "sizeHint": { "w": 20, "h": 1 },
+      "minSize": { "w": 2, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "fixed" }
+    },
+    "Spacer": {
+      "extends": "Widget",
+      "summary": "Flexible layout spacer",
+      "properties": {},
+      "signals": [],
+      "sizeHint": { "w": 1, "h": 1 },
+      "minSize": { "w": 0, "h": 0 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
+    },
+    "Desktop": {
+      "extends": "Widget",
+      "summary": "Background desktop canvas",
+      "properties": {},
+      "signals": [],
+      "sizeHint": { "w": 80, "h": 25 },
+      "minSize": { "w": 10, "h": 5 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
+    }
+  },
+  "layouts": {
+    "VBox": {
+      "summary": "Vertical sequential layout",
+      "properties": {
+        "spacing": { "type": "int", "default": 1, "summary": "Spacing between elements" },
+        "margins": { "type": "rect", "default": [0, 0, 0, 0], "summary": "Margins [top, right, bottom, left]" }
+      }
+    },
+    "HBox": {
+      "summary": "Horizontal sequential layout",
+      "properties": {
+        "spacing": { "type": "int", "default": 1, "summary": "Spacing between elements" },
+        "margins": { "type": "rect", "default": [0, 0, 0, 0], "summary": "Margins [top, right, bottom, left]" },
+        "align": { "type": "string", "default": "left", "summary": "Block alignment (left, center, right)" }
+      }
+    },
+    "Grid": {
+      "summary": "Two-dimensional grid layout",
+      "properties": {
+        "spacing": { "type": "rect", "default": [1, 1], "summary": "Horizontal and vertical spacing" },
+        "margins": { "type": "rect", "default": [0, 0, 0, 0], "summary": "Grid margins" }
+      }
+    },
+    "Form": {
+      "summary": "Two-column form layout (label + field)",
+      "properties": {
+        "spacing": { "type": "int", "default": 1, "summary": "Row spacing" },
+        "margins": { "type": "rect", "default": [0, 0, 0, 0], "summary": "Form margins" }
+      }
+    },
+    "Stack": {
+      "summary": "Multi-layer stacked container (displays one child at a time)",
+      "properties": {
+        "currentIndex": { "type": "int", "default": 0, "summary": "Active layer index" }
+      }
+    },
+    "Absolute": {
+      "summary": "Classic absolute positioning with GrowMode anchors",
+      "properties": {}
+    }
+  },
+  "commands": {
+    "CmValid": 0,
+    "CmQuit": 1,
+    "CmOK": 2,
+    "CmCancel": 3,
+    "CmYes": 4,
+    "CmNo": 5,
+    "CmDefault": 6,
+    "CmClose": 7,
+    "CmZoom": 8,
+    "CmResize": 9,
+    "CmNext": 10,
+    "CmPrev": 11,
+    "CmHelp": 12,
+    "CmReceivedFocus": 13,
+    "CmReleasedFocus": 14,
+    "CmMenuLeft": 302,
+    "CmMenuRight": 303,
+    "CmMenuClose": 304,
+    "CmApp": 1000
+  },
+  "paletteRoles": [
+    "dialog.bg",
+    "dialog.fg",
+    "dialog.box",
+    "dialog.title",
+    "dialog.highlightTitle",
+    "dialog.edit",
+    "dialog.editSelected",
+    "dialog.editUnchanged",
+    "dialog.button",
+    "dialog.selectedButton",
+    "dialog.highlightButton",
+    "dialog.highlightSelectedButton",
+    "dialog.comboText",
+    "dialog.comboSelectedText",
+    "dialog.comboHighlight",
+    "dialog.comboSelectedHighlight",
+    "dialog.comboBox",
+    "dialog.comboTitle",
+    "dialog.comboScrollbar",
+    "menu.text",
+    "menu.selectedText",
+    "menu.highlight",
+    "menu.selectedHighlight",
+    "menu.box",
+    "menu.title",
+    "table.text",
+    "table.selectedText",
+    "table.title",
+    "table.box",
+    "table.columnTitle",
+    "table.scrollbar",
+    "desktop.bg",
+    "keybar.num",
+    "keybar.text",
+    "menubar.item",
+    "menubar.selected",
+    "menubar.highlight",
+    "menubar.selectedHighlight",
+    "help.text",
+    "help.bold",
+    "help.link",
+    "help.selectedLink",
+    "help.box",
+    "help.title",
+    "warn.text",
+    "warn.highlightText",
+    "warn.box",
+    "warn.title",
+    "warn.highlightTitle",
+    "warn.edit",
+    "warn.button",
+    "warn.selectedButton",
+    "warn.highlightButton",
+    "warn.highlightSelectedButton"
+  ]
+}

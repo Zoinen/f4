@@ -9,10 +9,14 @@ cd plugins/dummy_rpc
 go build -o f4-rpc-dummy-plugin
 cd ../..
 
-echo "3. Running f4 in test mode (Output will go to debug.log)..."
-rm -f debug.log
-VTUI_DEBUG=1 go run . -test-plugins
+TEST_ROOT=$(mktemp -d)
+trap 'rm -rf "$TEST_ROOT"' EXIT
+export XDG_CONFIG_HOME="$TEST_ROOT/config"
+LOG_PATH="$XDG_CONFIG_HOME/f4/Logs/debug.log"
+
+echo "3. Running f4 in test mode (Output will go to $LOG_PATH)..."
+VTUI_DEBUG=1 go run ./cmd/f4 -test-plugins
 
 echo ""
-echo "=== debug.log Output ==="
-cat debug.log
+echo "=== $LOG_PATH Output ==="
+cat "$LOG_PATH"

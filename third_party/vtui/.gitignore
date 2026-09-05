@@ -4,3 +4,10 @@ run*.sh
 cmd/test-app/test-app
 cmd/test-app/test-app.exe
 .codex-build/
+bindings/python/tests/__pycache__
+bindings/python/vtui/__pycache__
+bindings/c/build
+bindings/cpp/build
+afix.ap
+afailed.*
+test-app.exe

@@ -16,18 +16,22 @@ func newFFIRuntime(t *testing.T) *Runtime {
 
 	bridge := ffibridge.New(ffibridge.Options{})
 	if _, err := bridge.OpenLibC(); err != nil {
-		bridge.Close()
+		_ = bridge.Close() // bridge cleanup cannot affect a skipped test
 		t.Skipf("no system C library available: %v", err)
 	}
 
 	r, err := New(Options{Name: "ffi test", FFI: bridge, CallTimeout: 5 * time.Second})
 	if err != nil {
-		bridge.Close()
+		_ = bridge.Close() // bridge cleanup cannot affect the primary failure
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = r.Close()
-		bridge.Close()
+		if err := r.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+		if err := bridge.Close(); err != nil {
+			t.Errorf("close FFI bridge: %v", err)
+		}
 	})
 	return r
 }

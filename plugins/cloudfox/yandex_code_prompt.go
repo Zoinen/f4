@@ -83,10 +83,14 @@ func showYandexAuthorizationCodeDialog(ctx context.Context, result chan<- yandex
 	dlg.SetFocusedItem(code)
 	vtui.FrameManager.Push(dlg)
 
+	// Read on the goroutine that starts this work, not inside it: the
+	// work outlives the call, and reading the global from it races
+	// anything that reassigns vtui.FrameManager meanwhile.
+	frames := vtui.FrameManager
 	go func() {
 		<-ctx.Done()
-		if vtui.FrameManager != nil {
-			vtui.FrameManager.PostTask(func() {
+		if frames != nil {
+			frames.PostTask(func() {
 				if !dlg.IsDone() {
 					dlg.Close()
 				}

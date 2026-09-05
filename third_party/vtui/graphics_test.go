@@ -1,12 +1,24 @@
 package vtui
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func fakeEnv(pairs map[string]string) func(string) string {
 	return func(k string) string { return pairs[k] }
 }
 
 func TestDetectGraphicsProtocol(t *testing.T) {
+	// WezTerm speaks kitty natively on Unix. On Windows, and in a WSL session
+	// hosted by WezTerm on Windows, the app is bridged through ConPTY, whose
+	// capability the environment cannot express: env detection must stay
+	// silent and leave the decision to the active DA1 query.
+	weztermWant := GraphicsKitty
+	if runtime.GOOS == "windows" {
+		weztermWant = GraphicsNone
+	}
+
 	cases := []struct {
 		name string
 		env  map[string]string
@@ -15,7 +27,9 @@ func TestDetectGraphicsProtocol(t *testing.T) {
 		{"kitty by term", map[string]string{"TERM": "xterm-kitty"}, GraphicsKitty},
 		{"kitty by window id", map[string]string{"KITTY_WINDOW_ID": "1"}, GraphicsKitty},
 		{"ghostty", map[string]string{"TERM_PROGRAM": "ghostty"}, GraphicsKitty},
-		{"wezterm", map[string]string{"WEZTERM_PANE": "0"}, GraphicsKitty},
+		{"wezterm", map[string]string{"WEZTERM_PANE": "0"}, weztermWant},
+		{"wezterm via wsl", map[string]string{"WEZTERM_PANE": "0", "WSL_DISTRO_NAME": "Ubuntu"}, GraphicsNone},
+		{"windows terminal", map[string]string{"WT_SESSION": "abc-123"}, GraphicsSixel},
 		{"iterm", map[string]string{"TERM_PROGRAM": "iTerm.app"}, GraphicsITerm2},
 		{"konsole", map[string]string{"KONSOLE_VERSION": "220400"}, GraphicsSixel},
 		{"foot", map[string]string{"TERM": "foot-extra"}, GraphicsSixel},
@@ -34,6 +48,100 @@ func TestDetectGraphicsProtocol(t *testing.T) {
 	}
 }
 
+func TestEnvGraphicsProtocolsListsAlternates(t *testing.T) {
+	// Windows Terminal offers only sixel; a plain xterm offers nothing.
+	wt := envGraphicsProtocolsWith(fakeEnv(map[string]string{"WT_SESSION": "x"}))
+	if len(wt) != 1 || wt[0] != GraphicsSixel {
+		t.Errorf("windows terminal must offer only sixel, got %v", wt)
+	}
+	if got := envGraphicsProtocolsWith(fakeEnv(map[string]string{"TERM": "xterm-256color"})); len(got) != 0 {
+		t.Errorf("a plain xterm must offer no protocols, got %v", got)
+	}
+	// WezTerm on Unix leads with kitty and lists sixel as the alternate. On
+	// Windows, and in a WSL session hosted from Windows, the ConPTY bridge
+	// makes the env result ambiguous, so the list stays empty and the active
+	// DA1 query takes over.
+	wezterm := envGraphicsProtocolsWith(fakeEnv(map[string]string{"WEZTERM_PANE": "0"}))
+	if runtime.GOOS == "windows" {
+		if len(wezterm) != 0 {
+			t.Errorf("wezterm on windows must defer to the DA1 query, got %v", wezterm)
+		}
+	} else {
+		if len(wezterm) != 2 || wezterm[0] != GraphicsKitty || wezterm[1] != GraphicsSixel {
+			t.Errorf("wezterm on unix must offer kitty then sixel, got %v", wezterm)
+		}
+	}
+	weztermWSL := envGraphicsProtocolsWith(fakeEnv(map[string]string{"WEZTERM_PANE": "0", "WSL_DISTRO_NAME": "Ubuntu"}))
+	if len(weztermWSL) != 0 {
+		t.Errorf("wezterm through a wsl conpty bridge must defer to the DA1 query, got %v", weztermWSL)
+	}
+}
+
+func TestProbeGraphicsProtocolsWezTermAfterDA1(t *testing.T) {
+	// A WezTerm reached through the modern ConPTY bridge declares sixel in
+	// DA1 (parameter 4); when it does, kitty is also available and preferred.
+	got := probeGraphicsProtocolsWith(
+		fakeEnv(map[string]string{"WEZTERM_PANE": "0", "WSL_DISTRO_NAME": "Ubuntu"}),
+		func() bool { return true },
+	)
+	if len(got) != 2 || got[0] != GraphicsKitty || got[1] != GraphicsSixel {
+		t.Errorf("wezterm after a sixel-positive DA1 must offer kitty then sixel, got %v", got)
+	}
+
+	// An old ConPTY that swallows sixel also answers DA1 without parameter 4,
+	// so no protocol is offered and the viewer falls back to half-block.
+	got = probeGraphicsProtocolsWith(
+		fakeEnv(map[string]string{"WEZTERM_PANE": "0", "WSL_DISTRO_NAME": "Ubuntu"}),
+		func() bool { return false },
+	)
+	if len(got) != 0 {
+		t.Errorf("wezterm through an old conpty must offer nothing, got %v", got)
+	}
+
+	// A bare conhost still offers only sixel.
+	got = probeGraphicsProtocolsWith(fakeEnv(map[string]string{"TERM": "xterm"}), func() bool { return true })
+	if len(got) != 1 || got[0] != GraphicsSixel {
+		t.Errorf("a sixel conhost must offer only sixel, got %v", got)
+	}
+}
+
+func TestParseCellSizeResponse(t *testing.T) {
+	cw, ch, ok := parseCellSizeResponse("\x1b[6;20;10t")
+	if !ok || cw != 10 || ch != 20 {
+		t.Errorf("cell size = %dx%d ok=%v, want 10x20 true", cw, ch, ok)
+	}
+	if _, _, ok := parseCellSizeResponse("\x1b[?62;c"); ok {
+		t.Error("a DA1 answer is not a cell size report")
+	}
+	if _, _, ok := parseCellSizeResponse("\x1b[6;0;10t"); ok {
+		t.Error("a zero cell height must be rejected")
+	}
+}
+
+func TestGraphicsLayerEffectiveCellSize(t *testing.T) {
+	var g GraphicsLayer
+	g.SetProtocol(GraphicsKitty)
+	g.SetCellSize(9, 19)
+	if cw, ch := g.EffectiveCellSize(); cw != 9 || ch != 19 {
+		t.Errorf("kitty must use the reported cell, got %dx%d", cw, ch)
+	}
+
+	// Sixel uses the reported cell on terminals that rasterise at font size
+	// (WezTerm), rather than conhost's fixed virtual cell.
+	g.SetProtocol(GraphicsSixel)
+	t.Setenv("WEZTERM_PANE", "0")
+	if cw, ch := g.EffectiveCellSize(); cw != 9 || ch != 19 {
+		t.Errorf("sixel on a font-sized terminal must use the reported cell, got %dx%d", cw, ch)
+	}
+
+	// Windows Terminal rasterises sixel into a fixed 10x20 virtual cell, so
+	// the effective size overrides the font metrics the terminal reports.
+	t.Setenv("WT_SESSION", "abc-123")
+	if cw, ch := g.EffectiveCellSize(); cw != 10 || ch != 20 {
+		t.Errorf("sixel on windows terminal must use 10x20, got %dx%d", cw, ch)
+	}
+}
+
 func TestImageSurfacePixelAccess(t *testing.T) {
 	s := NewImageSurface(3, 2)
 	if !s.Valid() {
@@ -49,6 +157,19 @@ func TestImageSurfacePixelAccess(t *testing.T) {
 	s.SetPixel(3, 0, 1, 1, 1, 1)
 	if _, _, _, a := s.PixelAt(99, 99); a != 0 {
 		t.Error("out of range read should be transparent")
+	}
+}
+
+func TestImageSurfaceRejectsOverflowGeometry(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	if NewImageSurface(maxInt, maxInt) != nil {
+		t.Fatal("overflowing allocation must be rejected")
+	}
+	if NewImageSurfaceFromPix(maxInt, 2, maxInt, nil) != nil {
+		t.Fatal("overflowing wrapped geometry must be rejected")
+	}
+	if (&ImageSurface{Width: maxInt, Height: 2, Stride: maxInt}).Valid() {
+		t.Fatal("overflowing surface must be invalid")
 	}
 }
 

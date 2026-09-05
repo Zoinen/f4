@@ -21,10 +21,11 @@ type fakeXPCConnection struct {
 }
 
 func TestReceiveFileDataToWriterValidatesAndStreams(t *testing.T) {
-	payload := []byte("core-device-data")
+	const payloadText = "core-device-data"
+	payload := []byte(payloadText)
 	header := make([]byte, 40)
 	copy(header[:8], "rwb!FILE")
-	binary.BigEndian.PutUint32(header[36:40], uint32(len(payload)))
+	binary.BigEndian.PutUint32(header[36:40], uint32(len(payloadText)))
 	var output bytes.Buffer
 	if err := receiveFileDataToWriter(bytes.NewReader(append(header, payload...)), &output); err != nil {
 		t.Fatal(err)

@@ -16,7 +16,7 @@ func TestRunAgainstLocalShell(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestRunAgainstLocalShell(t *testing.T) {
 
 	// A command reading stdin must not take the request stream with it,
 	// which is the whole reason this is a job.
-	if _, code, err = c.RunOutput(ctx, dir, "cat"); err != nil {
+	if _, _, err = c.RunOutput(ctx, dir, "cat"); err != nil {
 		t.Fatalf("a command reading stdin: %v", err)
 	}
 	if err := c.Session().Noop(ctx); err != nil {

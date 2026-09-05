@@ -117,6 +117,25 @@ debug.log, and which line is *missing* says where the gesture died:
   - gogpu limitation: a drag out begins on the first frame after it is asked
     for, since the platform side may only be touched from the main loop. The
     request wakes that loop itself, so the delay is a frame, not a wait
-- Windows / macOS outside gogpu: planned
+- win32 GUI backend (OLE): both directions done, in win32_dnd_windows.go
+  (drag source, ole32!DoDragDrop) and win32_droptarget_windows.go (drop
+  target, ole32!RegisterDragDrop). CF_HDROP is the format both directions
+  speak; the source also offers CF_UNICODETEXT so a text field receives the
+  names rather than nothing
+- win32 limitation: the drop target is built only for amd64 and arm64.
+  IDropTarget takes POINTL by value, and where an eight-byte struct sits in
+  a call frame differs between the 64-bit ABIs and 32-bit stdcall. Nothing
+  ships for 32-bit Windows, so those builds keep the WM_DROPFILES path and
+  register no target
+- win32: WS_EX_ACCEPTFILES and WM_DROPFILES are kept as a fallback for
+  sources that never speak OLE, and for the case where RegisterDragDrop
+  fails. That path learns of the gesture only after the drop, so it
+  synthesises enter, over and drop back to back and cannot report an effect
+  to the source
+- Windows under Wine: a drag out reaches other Wine windows only. Wine
+  bridges XDND into OLE for drops coming in, but has no bridge the other
+  way, so a payload offered to a native X11 application finds no target and
+  the pointer says no. That is upstream, not here
+- macOS outside gogpu: planned
 - terminals: no protocol exists; nothing is registered, so both directions
   are reported as unsupported rather than half working

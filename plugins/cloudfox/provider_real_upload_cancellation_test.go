@@ -47,7 +47,7 @@ func TestRealSavedCloudUploadCancellation(t *testing.T) {
 	if configDir == "" || !filepath.IsAbs(configDir) {
 		t.Fatal("real upload cancellation requires an absolute config directory")
 	}
-	if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+	if info, err := os.Stat(configDir); err != nil || !info.IsDir() { // #nosec G703 -- the doubly opted-in cancellation test intentionally loads the operator-supplied absolute config directory.
 		t.Fatal("real upload-cancellation config directory is unavailable")
 	}
 

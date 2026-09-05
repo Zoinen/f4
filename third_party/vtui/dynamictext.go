@@ -17,7 +17,7 @@ func NewDynamicText(x, y, w int, color uint64, cb func() string) *DynamicText {
 
 func (dt *DynamicText) Show(scr *ScreenBuf) {
 	if dt.GetValue != nil {
-		dt.content = dt.GetValue()
+		dt.SetText(dt.GetValue())
 	}
 	dt.Text.Show(scr)
 }

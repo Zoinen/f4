@@ -349,7 +349,7 @@ func (c *Client) dropJobQuietly(id int) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), jobDropTimeout)
 	defer cancel()
-	c.DropJob(ctx, id)
+	_ = c.DropJob(ctx, id) // Session teardown removes any job left behind.
 }
 
 // parseScanLine reads one line of scan output: "P <bytes> <dirbytes>

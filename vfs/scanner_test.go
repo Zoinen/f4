@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,8 +46,12 @@ func TestGenericScan_FlatFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	v := NewOSVFS(tmpDir)
 
-	os.WriteFile(filepath.Join(tmpDir, "f1.txt"), []byte("abc"), 0644)  // 3 bytes
-	os.WriteFile(filepath.Join(tmpDir, "f2.txt"), []byte("defg"), 0644) // 4 bytes
+	if err := os.WriteFile(filepath.Join(tmpDir, "f1.txt"), []byte("abc"), 0600); err != nil { // 3 bytes
+		t.Fatalf("Failed to create f1.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "f2.txt"), []byte("defg"), 0600); err != nil { // 4 bytes
+		t.Fatalf("Failed to create f2.txt: %v", err)
+	}
 
 	stats, err := GenericScan(context.Background(), v, tmpDir, []string{"f1.txt", "f2.txt"}, nil)
 	if err != nil {
@@ -76,10 +81,16 @@ func TestGenericScan_Recursive(t *testing.T) {
 
 	rootDir := filepath.Join(tmpDir, "root_dir")
 	subDir := filepath.Join(rootDir, "sub_dir")
-	os.MkdirAll(subDir, 0755)
+	if err := os.MkdirAll(subDir, 0700); err != nil {
+		t.Fatalf("Failed to create scan directories: %v", err)
+	}
 
-	os.WriteFile(filepath.Join(rootDir, "file1.txt"), make([]byte, 5), 0644)
-	os.WriteFile(filepath.Join(subDir, "file2.txt"), make([]byte, 10), 0644)
+	if err := os.WriteFile(filepath.Join(rootDir, "file1.txt"), make([]byte, 5), 0600); err != nil {
+		t.Fatalf("Failed to create file1.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "file2.txt"), make([]byte, 10), 0600); err != nil {
+		t.Fatalf("Failed to create file2.txt: %v", err)
+	}
 
 	var lastReportedPath string
 	callCount := 0
@@ -120,7 +131,9 @@ func TestGenericScan_Cancellation(t *testing.T) {
 	tmpDir := t.TempDir()
 	v := NewOSVFS(tmpDir)
 
-	os.MkdirAll(filepath.Join(tmpDir, "dir1", "dir2", "dir3"), 0755)
+	if err := os.MkdirAll(filepath.Join(tmpDir, "dir1", "dir2", "dir3"), 0700); err != nil {
+		t.Fatalf("Failed to create scan tree: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -184,10 +197,17 @@ func TestGenericScan_Errors(t *testing.T) {
 	mv := &mockScannerVFS{}
 
 	t.Run("Stat error", func(t *testing.T) {
-		mv.err = fmt.Errorf("stat failed")
+		statErr := fmt.Errorf("stat failed")
+		mv.err = statErr
 		_, err := GenericScan(context.Background(), mv, "/", []string{"badfile"}, nil)
-		if err == nil || err.Error() != "stat failed" {
-			t.Errorf("Expected stat error, got %v", err)
+		// The scan names the item it could not stat and keeps the
+		// original error underneath: with several names in one scan,
+		// which of them failed is the whole question.
+		if !errors.Is(err, statErr) {
+			t.Errorf("Expected the stat error to survive wrapping, got %v", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "badfile") {
+			t.Errorf("Expected the failing path to be named, got %v", err)
 		}
 	})
 
@@ -274,13 +294,13 @@ func (m *mockFastVFS) Scan(ctx context.Context, basePath string, names []string,
 func TestGenericScan_SymlinkDirLeafVsFollow(t *testing.T) {
 	tmp := t.TempDir()
 	real := filepath.Join(tmp, "real")
-	if err := os.Mkdir(real, 0755); err != nil {
+	if err := os.Mkdir(real, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(real, "a.bin"), make([]byte, 100), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(real, "a.bin"), make([]byte, 100), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(real, "b.bin"), make([]byte, 50), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(real, "b.bin"), make([]byte, 50), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(real, filepath.Join(tmp, "link")); err != nil {
@@ -339,7 +359,7 @@ func TestGenericScan_FileSymlinkDoesNotDoublePhysical(t *testing.T) {
 	// 64 KiB — big enough that a duplicate contribution is unmistakable
 	// against the noise of a symlink's own inode blocks.
 	const targetSize = 64 * 1024
-	if err := os.WriteFile(target, make([]byte, targetSize), 0644); err != nil {
+	if err := os.WriteFile(target, make([]byte, targetSize), 0600); err != nil {
 		t.Fatal(err)
 	}
 	v := NewOSVFS(tmp)
@@ -382,7 +402,7 @@ func TestGenericScan_FileSymlinkDoesNotDoublePhysical(t *testing.T) {
 func TestGenericScan_HardLinkDedup(t *testing.T) {
 	tmp := t.TempDir()
 	orig := filepath.Join(tmp, "original")
-	if err := os.WriteFile(orig, make([]byte, 8192), 0644); err != nil {
+	if err := os.WriteFile(orig, make([]byte, 8192), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Link(orig, filepath.Join(tmp, "link1")); err != nil {

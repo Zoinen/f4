@@ -198,20 +198,23 @@ func ParseArgs(argv []string) (Command, *Spec, error) {
 func parseFstabArgs(args []string) (Command, *Spec, error) {
 	spec := NewSpec()
 	var positional []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
+	for len(args) != 0 {
+		arg := args[0]
+		args = args[1:]
+		switch arg {
 		case "-o":
-			if i+1 >= len(args) {
+			if len(args) == 0 {
 				return CmdMount, nil, errors.New("-o needs a value")
 			}
-			i++
-			if err := spec.ApplyOptions(args[i]); err != nil {
+			options := args[0]
+			args = args[1:]
+			if err := spec.ApplyOptions(options); err != nil {
 				return CmdMount, nil, err
 			}
 		case "-n", "-v", "-s", "-f":
 			// mount(8) niceties we have nothing to do with.
 		default:
-			positional = append(positional, args[i])
+			positional = append(positional, arg)
 		}
 	}
 	if len(positional) < 2 {

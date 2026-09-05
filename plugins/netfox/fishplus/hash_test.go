@@ -16,7 +16,7 @@ func TestHashAgainstLocalShell(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "sub dir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "sub dir"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	files := map[string]string{
@@ -26,7 +26,7 @@ func TestHashAgainstLocalShell(t *testing.T) {
 		"alone.txt":        "on its own\n",
 	}
 	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

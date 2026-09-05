@@ -25,6 +25,10 @@ type Handler func(data msgpack.RawMessage) (any, error)
 
 // Session multiplexes concurrent requests and responses over an io.Reader and io.Writer.
 type Session struct {
+	// OnError is called when an asynchronous response cannot be sent and may be called from a serving goroutine.
+	// It is nil by default; if set, it must be set before Serve is called and be safe to call from serving goroutines.
+	OnError func(error)
+
 	enc      *msgpack.Encoder
 	dec      *msgpack.Decoder
 	mu       sync.Mutex
@@ -155,7 +159,8 @@ func (s *Session) Serve() error {
 			return serveErr
 		}
 
-		if msg.Type == 1 { // Response
+		switch msg.Type {
+		case 1: // Response
 			s.mu.Lock()
 			ch, ok := s.pending[msg.ID]
 			if ok {
@@ -165,7 +170,7 @@ func (s *Session) Serve() error {
 			if ok {
 				ch <- callResult{msg: &msg}
 			}
-		} else if msg.Type == 0 { // Request
+		case 0: // Request
 			go s.handleRequest(&msg)
 		}
 	}
@@ -221,10 +226,14 @@ func (s *Session) handleRequest(req *Message) {
 	}
 
 	s.mu.Lock()
+	var encodeErr error
 	if !s.closed {
-		_ = s.enc.Encode(resp)
+		encodeErr = s.enc.Encode(resp)
 	}
 	s.mu.Unlock()
+	if encodeErr != nil && s.OnError != nil {
+		s.OnError(fmt.Errorf("response %d was not sent: %w", req.ID, encodeErr))
+	}
 }
 
 // ErrClosed reports whether err came from a session whose transport ended.

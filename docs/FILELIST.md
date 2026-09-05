@@ -1,0 +1,1341 @@
+# Project Structure
+
+    .
+    ├── AGENTS.md
+    ├── cmd
+    │   └── f4
+    │       ├── action_copyname_parent_test.go
+    │       ├── action_copy_window_title_test.go
+    │       ├── action_marked_clipboard_test.go
+    │       ├── action_menu.go
+    │       ├── action_menu_test.go
+    │       ├── action_menu_visibility_test.go
+    │       ├── action_registry.go
+    │       ├── action_registry_test.go
+    │       ├── action_restore_selection_test.go
+    │       ├── actions.go
+    │       ├── action_shortcut_conflict_test.go
+    │       ├── actions_test.go
+    │       ├── ai_chat_panel.go
+    │       ├── ai_chat_panel_test.go
+    │       ├── ansi_parser.go
+    │       ├── ansi_parser_sync_test.go
+    │       ├── ansi_parser_test.go
+    │       ├── api.go
+    │       ├── api_test.go
+    │       ├── appearance_settings_test.go
+    │       ├── apply_command_batch.go
+    │       ├── apply_command_batch_test.go
+    │       ├── apply_command.go
+    │       ├── apply_command_output.go
+    │       ├── apply_command_resources.go
+    │       ├── apply_command_resources_test.go
+    │       ├── apply_command_subst.go
+    │       ├── apply_command_subst_test.go
+    │       ├── apply_command_test.go
+    │       ├── apply_command_transcript.go
+    │       ├── apply_shortname_other.go
+    │       ├── apply_shortname_windows.go
+    │       ├── apply_shutdown.go
+    │       ├── archive_index_fallback.go
+    │       ├── archive_index.go
+    │       ├── archive_index_test.go
+    │       ├── arkanoid.go
+    │       ├── arkanoid_test.go
+    │       ├── assets
+    │       │   └── icon
+    │       │       ├── f4-16.svg
+    │       │       ├── f4-24.svg
+    │       │       ├── f4-30.svg
+    │       │       ├── f4-32.svg
+    │       │       ├── f4-36.svg
+    │       │       ├── f4-42.svg
+    │       │       ├── f4.svg
+    │       │       ├── generated
+    │       │       │   ├── f4-1024.png
+    │       │       │   ├── f4-128.png
+    │       │       │   ├── f4-16.png
+    │       │       │   ├── f4-24.png
+    │       │       │   ├── f4-256.png
+    │       │       │   ├── f4-28.png
+    │       │       │   ├── f4-30.png
+    │       │       │   ├── f4-32.png
+    │       │       │   ├── f4-36.png
+    │       │       │   ├── f4-42.png
+    │       │       │   ├── f4-48.png
+    │       │       │   ├── f4-512.png
+    │       │       │   ├── f4-56.png
+    │       │       │   ├── f4-64.png
+    │       │       │   ├── f4.icns
+    │       │       │   └── f4.ico
+    │       │       └── README.md
+    │       ├── async_buffer.go
+    │       ├── async_buffer_test.go
+    │       ├── atomic_file.go
+    │       ├── atomic_file_test.go
+    │       ├── attributes_dialog.go
+    │       ├── attributes_dialog_unix.go
+    │       ├── attributes_dialog_windows.go
+    │       ├── attributes_dialog_windows_test.go
+    │       ├── attributes_test.go
+    │       ├── autosave_settings_test.go
+    │       ├── background_jobs.go
+    │       ├── background_jobs_session_test.go
+    │       ├── background_jobs_test.go
+    │       ├── background_jobs_window.go
+    │       ├── bookmarks_dialog.go
+    │       ├── bookmarks_dialog_test.go
+    │       ├── bookmarks.go
+    │       ├── bookmarks_test.go
+    │       ├── child_env.go
+    │       ├── child_env_test.go
+    │       ├── clipboard_async.go
+    │       ├── cloudfox_real_archive_test.go
+    │       ├── cloudfox_real_cross_cloud_test.go
+    │       ├── cloudfox_real_large_f5_test.go
+    │       ├── cloudfox_real_ui_test.go
+    │       ├── cmd_session.go
+    │       ├── cmd_session_test.go
+    │       ├── colorer_async.go
+    │       ├── colorer_downloader.go
+    │       ├── colorer_plugin.go
+    │       ├── colorer_plugin_test.go
+    │       ├── colorer_settings.go
+    │       ├── colorer_settings_test.go
+    │       ├── colors.go
+    │       ├── colorspace.go
+    │       ├── colorspace_test.go
+    │       ├── colors_test.go
+    │       ├── command_history_paths.go
+    │       ├── command_history_paths_test.go
+    │       ├── command_line.go
+    │       ├── command_line_test.go
+    │       ├── command_palette_coverage_test.go
+    │       ├── command_palette_direct_frames.go
+    │       ├── command_palette_direct_frames_test.go
+    │       ├── command_palette_direct_panels_test.go
+    │       ├── command_palette_drives.go
+    │       ├── command_palette_drives_test.go
+    │       ├── command_palette_dynamic_test.go
+    │       ├── command_palette_frames.go
+    │       ├── command_palette.go
+    │       ├── command_palette_help.go
+    │       ├── command_palette_help_test.go
+    │       ├── command_palette_i18n.go
+    │       ├── command_palette_i18n_test.go
+    │       ├── command_palette_macros.go
+    │       ├── command_palette_menu_test.go
+    │       ├── command_palette_modal.go
+    │       ├── command_palette_panels.go
+    │       ├── command_palette_prefixes.go
+    │       ├── command_palette_search.go
+    │       ├── command_palette_search_test.go
+    │       ├── command_palette_test.go
+    │       ├── command_palette_ui.go
+    │       ├── command_palette_ui_test.go
+    │       ├── command_palette_workspace.go
+    │       ├── command_prefix_registry.go
+    │       ├── command_prefix_registry_test.go
+    │       ├── command_quotes.go
+    │       ├── command_quotes_test.go
+    │       ├── command_quoting.go
+    │       ├── command_quoting_test.go
+    │       ├── command_runner.go
+    │       ├── command_runner_test.go
+    │       ├── command_runner_unix.go
+    │       ├── command_runner_unix_test.go
+    │       ├── command_runner_windows.go
+    │       ├── command_runner_windows_test.go
+    │       ├── commands.go
+    │       ├── config.go
+    │       ├── config_overlay.go
+    │       ├── config_overlay_test.go
+    │       ├── config_test.go
+    │       ├── console_ctrl_handler_other.go
+    │       ├── console_ctrl_handler_windows.go
+    │       ├── console_overlay_other.go
+    │       ├── console_overlay_windows.go
+    │       ├── console_passthrough.go
+    │       ├── console_passthrough_test.go
+    │       ├── cpu_info_darwin.go
+    │       ├── cpu_info.go
+    │       ├── cpu_info_linux.go
+    │       ├── cpu_info_other.go
+    │       ├── cpu_info_windows.go
+    │       ├── delete_trash_test.go
+    │       ├── detach_unix.go
+    │       ├── detach_windows.go
+    │       ├── dialog_button_layout.go
+    │       ├── dialog_layouts_test.go
+    │       ├── dialog_reporter_test.go
+    │       ├── dragdrop.go
+    │       ├── dragdrop_test.go
+    │       ├── drives_unix.go
+    │       ├── drives_windows.go
+    │       ├── editor_base64.go
+    │       ├── editor_base64_test.go
+    │       ├── editor_binary_open_test.go
+    │       ├── editor_codepage_test.go
+    │       ├── editor_delta_test.go
+    │       ├── editor_fade.go
+    │       ├── editor_fade_test.go
+    │       ├── editor_features_test.go
+    │       ├── editor_find_all.go
+    │       ├── editor_find_all_test.go
+    │       ├── editor_grapheme.go
+    │       ├── editor_highlight_budget_test.go
+    │       ├── editor_index_status.go
+    │       ├── editor_index_status_test.go
+    │       ├── editor_mmap_test.go
+    │       ├── editor_replace_confirm.go
+    │       ├── editor_restore_keys_test.go
+    │       ├── editor_save_inplace_test.go
+    │       ├── editor_search_lazy_test.go
+    │       ├── editor_search_remote.go
+    │       ├── editor_search_remote_test.go
+    │       ├── editor_search_zerocopy_test.go
+    │       ├── editor_shiftdel_test.go
+    │       ├── editor_target_line_test.go
+    │       ├── editor_veto_test.go
+    │       ├── editor_view_ads_test.go
+    │       ├── editor_view.go
+    │       ├── editor_view_test.go
+    │       ├── editor_wrap_safety.go
+    │       ├── editor_wrap_safety_test.go
+    │       ├── envman_help_test.go
+    │       ├── external_tools.go
+    │       ├── external_tools_test.go
+    │       ├── external_ui.go
+    │       ├── extui_host.go
+    │       ├── extui_test.go
+    │       ├── far2l_auth.go
+    │       ├── far2l_image.go
+    │       ├── far2l_image_test.go
+    │       ├── farcolor_exp.go
+    │       ├── farcolor_test.go
+    │       ├── farmenu_file.go
+    │       ├── farmenu_file_test.go
+    │       ├── fast_find_overlay_test.go
+    │       ├── file_associations_dispatch_test.go
+    │       ├── file_associations_editor.go
+    │       ├── file_associations.go
+    │       ├── file_associations_test.go
+    │       ├── file_associations_ui.go
+    │       ├── file_mask.go
+    │       ├── file_mask_test.go
+    │       ├── file_op_dialog.go
+    │       ├── file_op_dialog_test.go
+    │       ├── file_ops_coverage_test.go
+    │       ├── file_ops.go
+    │       ├── file_ops_safety_test.go
+    │       ├── file_ops_test.go
+    │       ├── file_ops_transfer_name_test.go
+    │       ├── file_op_tracker.go
+    │       ├── file_op_tracker_test.go
+    │       ├── file_panel.go
+    │       ├── file_panel_sorting_regression_test.go
+    │       ├── file_panel_test.go
+    │       ├── file_state.go
+    │       ├── file_state_key_test.go
+    │       ├── file_state_test.go
+    │       ├── find_file.go
+    │       ├── find_file_test.go
+    │       ├── fkeys_hidden_panels_test.go
+    │       ├── folder_history_actions_test.go
+    │       ├── folder_history_navigation_test.go
+    │       ├── folder_history_panel_test.go
+    │       ├── frame_manager_capture_test.go
+    │       ├── frame_manager_test_helpers_test.go
+    │       ├── framework_actions.go
+    │       ├── framework_actions_test.go
+    │       ├── fs_info_darwin.go
+    │       ├── fs_info.go
+    │       ├── fs_info_linux.go
+    │       ├── fs_info_other.go
+    │       ├── fs_info_windows.go
+    │       ├── fuse_mount_action.go
+    │       ├── fuse_mount_list.go
+    │       ├── gpu_info_darwin.go
+    │       ├── gpu_info.go
+    │       ├── gpu_info_linux.go
+    │       ├── gpu_info_other.go
+    │       ├── gpu_info_windows.go
+    │       ├── grabber.go
+    │       ├── grabber_test.go
+    │       ├── graphics_compat.go
+    │       ├── graphics_compat_test.go
+    │       ├── gui_backend_capability_ffi.go
+    │       ├── gui_backend_capability.go
+    │       ├── gui_backend_capability_stub.go
+    │       ├── gui_backend_capability_test.go
+    │       ├── gui_font_catalog.go
+    │       ├── gui_font_catalog_test.go
+    │       ├── gui_font_catalog_unix.go
+    │       ├── gui_font_catalog_windows.go
+    │       ├── gui_font_combo.go
+    │       ├── gui_font.go
+    │       ├── gui_font_notwindows.go
+    │       ├── gui_font_test.go
+    │       ├── gui_font_windows.go
+    │       ├── gui_font_windows_test.go
+    │       ├── gui_unix.go
+    │       ├── gui_unix_test.go
+    │       ├── gui_windows.go
+    │       ├── hang_dump_unix.go
+    │       ├── hang_dump_windows.go
+    │       ├── hardcoded_strings_test.go
+    │       ├── help
+    │       │   ├── ar.hlf
+    │       │   ├── be.hlf
+    │       │   ├── bn.hlf
+    │       │   ├── cs.hlf
+    │       │   ├── de.hlf
+    │       │   ├── en.hlf
+    │       │   ├── es.hlf
+    │       │   ├── et.hlf
+    │       │   ├── fi.hlf
+    │       │   ├── he.hlf
+    │       │   ├── hi.hlf
+    │       │   ├── hu.hlf
+    │       │   ├── hy.hlf
+    │       │   ├── ja.hlf
+    │       │   ├── ka.hlf
+    │       │   ├── ko.hlf
+    │       │   ├── lt.hlf
+    │       │   ├── lv.hlf
+    │       │   ├── pl.hlf
+    │       │   ├── README.md
+    │       │   ├── ru.hlf
+    │       │   ├── tr.hlf
+    │       │   ├── uk.hlf
+    │       │   └── zh.hlf
+    │       ├── help.go
+    │       ├── help_keys_ar_test.go
+    │       ├── help_keys_he_test.go
+    │       ├── help_keys_ru_test.go
+    │       ├── help_keys_test.go
+    │       ├── help_keys_tr_test.go
+    │       ├── help_lang_test.go
+    │       ├── help_search.go
+    │       ├── help_search_test.go
+    │       ├── help_test.go
+    │       ├── highlight_files.go
+    │       ├── highlight_files_test.go
+    │       ├── history_dialog.go
+    │       ├── history_dialog_test.go
+    │       ├── history_hint_test.go
+    │       ├── history_provider.go
+    │       ├── history_provider_test.go
+    │       ├── hotkeys.go
+    │       ├── hotkeys_test.go
+    │       ├── hotkeys_ui.go
+    │       ├── hotkeys_ui_test.go
+    │       ├── image_bmp.go
+    │       ├── image_console_overlay.go
+    │       ├── image_console_stats.go
+    │       ├── image_console_stats_test.go
+    │       ├── image_decode.go
+    │       ├── image_decode_test.go
+    │       ├── image_external.go
+    │       ├── image_external_test.go
+    │       ├── image_formats_test.go
+    │       ├── image_gallery.go
+    │       ├── image_gallery_test.go
+    │       ├── image_native_darwin.go
+    │       ├── image_native_darwin_test.go
+    │       ├── image_pipeline.go
+    │       ├── image_pipeline_test.go
+    │       ├── image_preview.go
+    │       ├── image_preview_test.go
+    │       ├── image_qoi.go
+    │       ├── image_slideshow.go
+    │       ├── image_slideshow_test.go
+    │       ├── image_transform.go
+    │       ├── image_transform_test.go
+    │       ├── image_view.go
+    │       ├── image_view_orient_test.go
+    │       ├── image_view_overlay_test.go
+    │       ├── image_view_test.go
+    │       ├── image_x11_overlay.go
+    │       ├── image_x11_overlay_test.go
+    │       ├── info_panel.go
+    │       ├── info_panel_test.go
+    │       ├── info_usage.go
+    │       ├── ini.go
+    │       ├── ini_test.go
+    │       ├── input_translation.go
+    │       ├── input_translation_test.go
+    │       ├── issue149_test.go
+    │       ├── issue54_test.go
+    │       ├── issue561_test.go
+    │       ├── issue631_test.go
+    │       ├── issue815_test.go
+    │       ├── keybar_injected_test.go
+    │       ├── kitty_graphics.go
+    │       ├── kitty_graphics_test.go
+    │       ├── kitty_metrics_test.go
+    │       ├── kitty_placements.go
+    │       ├── kitty_placements_test.go
+    │       ├── lang
+    │       │   ├── ar.lng
+    │       │   ├── be.lng
+    │       │   ├── bn.lng
+    │       │   ├── coverage_baseline.txt
+    │       │   ├── cs.lng
+    │       │   ├── de.lng
+    │       │   ├── en.lng
+    │       │   ├── es.lng
+    │       │   ├── et.lng
+    │       │   ├── fi.lng
+    │       │   ├── he.lng
+    │       │   ├── hi.lng
+    │       │   ├── hu.lng
+    │       │   ├── hy.lng
+    │       │   ├── ja.lng
+    │       │   ├── ka.lng
+    │       │   ├── ko.lng
+    │       │   ├── lt.lng
+    │       │   ├── lv.lng
+    │       │   ├── pl.lng
+    │       │   ├── README.md
+    │       │   ├── ru.lng
+    │       │   ├── tr.lng
+    │       │   ├── uk.lng
+    │       │   └── zh.lng
+    │       ├── lang_bidi_test.go
+    │       ├── lang_consistency_test.go
+    │       ├── lang_contamination_test.go
+    │       ├── lang_fallback_priority_test.go
+    │       ├── lang.go
+    │       ├── lang_homoglyphs_test.go
+    │       ├── lang_packs.go
+    │       ├── lang_packs_test.go
+    │       ├── lang_scripts_test.go
+    │       ├── lang_test.go
+    │       ├── language_list_test.go
+    │       ├── libc_default.go
+    │       ├── libc_default_test.go
+    │       ├── libc_musl.go
+    │       ├── libc_musl_test.go
+    │       ├── lua_plugin.go
+    │       ├── lua_plugin_test.go
+    │       ├── macro_ctrlletter_test.go
+    │       ├── macro_export.go
+    │       ├── macro_export_test.go
+    │       ├── macro.go
+    │       ├── macro_host.go
+    │       ├── macro_lua_api.go
+    │       ├── macro_lua.go
+    │       ├── macro_lua_test.go
+    │       ├── macro_plugin_calls.go
+    │       ├── macro_plugin_calls_test.go
+    │       ├── macro_reload_test.go
+    │       ├── macro_test.go
+    │       ├── main.go
+    │       ├── managed_execution_test.go
+    │       ├── manual_uac_validation_windows_test.go
+    │       ├── mapped_file.go
+    │       ├── mapped_file_test.go
+    │       ├── mapped_file_unix.go
+    │       ├── mapped_file_windows.go
+    │       ├── mem_info.go
+    │       ├── mem_info_linux.go
+    │       ├── mem_info_other.go
+    │       ├── mem_info_windows.go
+    │       ├── menu_history.go
+    │       ├── menu_history_test.go
+    │       ├── misc.go
+    │       ├── module_root_test.go
+    │       ├── navigation_mode.go
+    │       ├── navigation_mode_test.go
+    │       ├── nested_input_mode_test.go
+    │       ├── numeric_conversions_test.go
+    │       ├── panel_actions.go
+    │       ├── panel_actions_test.go
+    │       ├── panel_menu_test.go
+    │       ├── panel_plugins.go
+    │       ├── panel_plugins_test.go
+    │       ├── panels_frame_drivecursor_windows_test.go
+    │       ├── panels_frame.go
+    │       ├── panels_frame_pty_test.go
+    │       ├── panels_frame_test.go
+    │       ├── path_hints.go
+    │       ├── path_hints_test.go
+    │       ├── path_identity.go
+    │       ├── path_identity_test.go
+    │       ├── plughost_ffi.go
+    │       ├── plughost_ffi_test.go
+    │       ├── plughost.go
+    │       ├── plugin_contributions.go
+    │       ├── plugin_contributions_test.go
+    │       ├── plugin_identity_test.go
+    │       ├── plugin_permissions.go
+    │       ├── plugin_permissions_test.go
+    │       ├── plugin_permissions_ui.go
+    │       ├── plugin_permissions_ui_test.go
+    │       ├── plugin_scaffold.go
+    │       ├── plugin_scaffold_test.go
+    │       ├── plugins.go
+    │       ├── plugring.go
+    │       ├── plugring_meta.go
+    │       ├── plugring_meta_test.go
+    │       ├── plugring_policy_test.go
+    │       ├── plugring_rows_test.go
+    │       ├── plugring_test.go
+    │       ├── plugring_ui.go
+    │       ├── plugring_ui_test.go
+    │       ├── portable_test.go
+    │       ├── process_environment.go
+    │       ├── process_environment_runtime_unix.go
+    │       ├── process_environment_runtime_windows.go
+    │       ├── process_environment_shell.go
+    │       ├── process_environment_test.go
+    │       ├── proxy_settings_test.go
+    │       ├── proxy_settings_ui.go
+    │       ├── pty_bsd_dragonfly.go
+    │       ├── pty_bsd_freebsd.go
+    │       ├── pty_bsd.go
+    │       ├── pty_bsd_test.go
+    │       ├── pty_cloexec_test.go
+    │       ├── pty_darwin.go
+    │       ├── pty_diag_unix.go
+    │       ├── pty_diag_windows.go
+    │       ├── pty_interface.go
+    │       ├── pty_pollable_test.go
+    │       ├── pty_ptm.go
+    │       ├── pty_ptm_netbsd.go
+    │       ├── pty_ptm_openbsd.go
+    │       ├── pty_solaris.go
+    │       ├── pty_test.go
+    │       ├── pty_unix.go
+    │       ├── pty_windows.go
+    │       ├── pty_windows_test.go
+    │       ├── queue_manager.go
+    │       ├── queue_manager_test.go
+    │       ├── quick_view_panel.go
+    │       ├── quick_view_panel_test.go
+    │       ├── quick_view_provider_api.go
+    │       ├── quick_view_provider_test.go
+    │       ├── race_disabled_test.go
+    │       ├── race_enabled_test.go
+    │       ├── reconnect.go
+    │       ├── reconnect_test.go
+    │       ├── remote_command.go
+    │       ├── resolve_command_other.go
+    │       ├── resolve_command_windows.go
+    │       ├── resolve_command_windows_test.go
+    │       ├── rpc_commands.go
+    │       ├── rpc_commands_test.go
+    │       ├── rpc_lua_test.go
+    │       ├── rpc_panel.go
+    │       ├── rpc_plugin.go
+    │       ├── rpc_plugin_test.go
+    │       ├── rpc_vfs.go
+    │       ├── rpc_vfs_test.go
+    │       ├── rsrc_windows_amd64.syso
+    │       ├── rsrc_windows_arm64.syso
+    │       ├── search_history.go
+    │       ├── search_history_test.go
+    │       ├── semantic.go
+    │       ├── semantic_test.go
+    │       ├── session_test.go
+    │       ├── session_unix.go
+    │       ├── session_unix_test.go
+    │       ├── session_windows.go
+    │       ├── share_dialog.go
+    │       ├── share_dialog_test.go
+    │       ├── sheet_actions.go
+    │       ├── sheet_actions_test.go
+    │       ├── sheet_dialogs.go
+    │       ├── sheet_frame.go
+    │       ├── sheet_frame_test.go
+    │       ├── sheet_palette.go
+    │       ├── shell_integration_test.go
+    │       ├── shell_mode.go
+    │       ├── shell_mode_test.go
+    │       ├── shell_session_test.go
+    │       ├── should_try_gui_test.go
+    │       ├── simple_exec.go
+    │       ├── simple_exec_other.go
+    │       ├── simple_exec_test.go
+    │       ├── simple_exec_windows.go
+    │       ├── sixel_decode.go
+    │       ├── sixel_decode_test.go
+    │       ├── sixel_layers_test.go
+    │       ├── sixel_terminal.go
+    │       ├── sixel_terminal_test.go
+    │       ├── solaris_pty_alloc_test.go
+    │       ├── solaris_pty_backend_test.go
+    │       ├── solaris_pty.go
+    │       ├── solaris_streams.go
+    │       ├── solaris_streams_mock_linux_test.go
+    │       ├── solaris_streams_mock_other_test.go
+    │       ├── solaris_streams_mock_test.go
+    │       ├── solaris_streams_test.go
+    │       ├── sqlite_actions.go
+    │       ├── sqlite_actions_test.go
+    │       ├── startup_backend.go
+    │       ├── startup_backend_test.go
+    │       ├── startup_settings.go
+    │       ├── static_direct_actions.go
+    │       ├── static_direct_actions_test.go
+    │       ├── style_combo_colors_test.go
+    │       ├── style_completeness_test.go
+    │       ├── style_default_dark_test.go
+    │       ├── style.go
+    │       ├── style_overrides_test.go
+    │       ├── styles
+    │       │   ├── classic.ini
+    │       │   ├── default_dark.ini
+    │       │   ├── modern.ini
+    │       │   ├── radiola.ini
+    │       │   └── radiola.md
+    │       ├── style_test.go
+    │       ├── sudo_dispatcher_args_test.go
+    │       ├── terminal_log_console_other.go
+    │       ├── terminal_log_console_windows.go
+    │       ├── terminal_log_vfs.go
+    │       ├── terminal_log_vfs_test.go
+    │       ├── terminal_redraw.go
+    │       ├── terminal_selection_test.go
+    │       ├── terminal_view.go
+    │       ├── terminal_view_test.go
+    │       ├── test_cache_helper_test.go
+    │       ├── test_fallback_lang_test.go
+    │       ├── test_main_test.go
+    │       ├── text_editor_bridge.go
+    │       ├── text_editor_bridge_test.go
+    │       ├── themed_table.go
+    │       ├── title.go
+    │       ├── title_test.go
+    │       ├── title_unix.go
+    │       ├── title_windows.go
+    │       ├── top_bar.go
+    │       ├── top_bar_test.go
+    │       ├── translate_kitty.go
+    │       ├── translate_kitty_test.go
+    │       ├── ttyx_keys.go
+    │       ├── ttyx_keys_test.go
+    │       ├── ttyx_probe.go
+    │       ├── ttyx_probe_parse.go
+    │       ├── ttyx_probe_unix.go
+    │       ├── ttyx_probe_windows.go
+    │       ├── ttyx_session.go
+    │       ├── unicode_input_test.go
+    │       ├── update_elevation_other.go
+    │       ├── update_elevation_windows.go
+    │       ├── update_helper_args.go
+    │       ├── updater.go
+    │       ├── updater_issue635_test.go
+    │       ├── updater_libc_test.go
+    │       ├── updater_repro_lock_other_test.go
+    │       ├── updater_repro_lock_windows_test.go
+    │       ├── updater_repro_test.go
+    │       ├── updater_test.go
+    │       ├── uri_navigation_test.go
+    │       ├── url_links.go
+    │       ├── url_links_test.go
+    │       ├── user_menu.go
+    │       ├── user_menu_ini.go
+    │       ├── user_menu_ini_test.go
+    │       ├── user_menu_script.go
+    │       ├── user_menu_subst.go
+    │       ├── user_menu_subst_test.go
+    │       ├── user_menu_ui.go
+    │       ├── user_menu_ui_test.go
+    │       ├── video_player.go
+    │       ├── video_player_test.go
+    │       ├── video_view.go
+    │       ├── viewer_backend.go
+    │       ├── viewer_backend_test.go
+    │       ├── viewer_editor_history.go
+    │       ├── viewer_editor_history_test.go
+    │       ├── viewer_text.go
+    │       ├── viewer_text_test.go
+    │       ├── viewer_view.go
+    │       ├── viewer_view_test.go
+    │       ├── visren_editor_bridge.go
+    │       ├── vtvibe_ap.go
+    │       ├── vtvibe_host.go
+    │       ├── vtvibe_host_test.go
+    │       ├── wasm_plugin.go
+    │       ├── wasm_plugin_test.go
+    │       ├── win32_backend_test.go
+    │       ├── window_icon_darwin.go
+    │       ├── window_icon_unix.go
+    │       ├── window_icon_windows.go
+    │       ├── window_icon_windows_test.go
+    │       ├── window_position.go
+    │       ├── winepath_other.go
+    │       ├── winepath_windows.go
+    │       ├── wine_probe.go
+    │       ├── wine_probe_other.go
+    │       ├── wine_probe_windows.go
+    │       ├── word_nav.go
+    │       ├── word_nav_test.go
+    │       ├── workspace_routing_test.go
+    │       ├── workspace_session.go
+    │       ├── workspace_session_test.go
+    │       └── zzz_pty_leak_check_test.go
+    ├── colorer
+    │   └── configs
+    │       └── base
+    │           └── hrd
+    │               └── rgb
+    │                   └── radiola.hrd
+    ├── docs
+    │   ├── COLORS.md
+    │   ├── CONSOLE_MODES.md
+    │   ├── CONPTY_GATE_REQUIREMENTS.md
+    │   ├── CONPTY_NATIVE_AGENT.md
+    │   ├── CONPTY_NATIVE_AUDIT.md
+    │   ├── CONPTY_NATIVE_PROBE.md
+    │   ├── CONPTY_FUTURE_IDEAS.md
+    │   ├── CONPTY_NATIVE_TEST.md
+    │   ├── PINNED_CONSOLE.md
+    │   ├── PINNED_HOST_FACTS.md
+    │   ├── CURSOR.md
+    │   ├── DRAGDROP.md
+    │   ├── FFI.md
+    │   ├── FILELIST.md
+    │   ├── FISH+.md
+    │   ├── FISH_PLUS_S2S.md
+    │   ├── FUSE.md
+    │   ├── HIGHLIGHTING.md
+    │   ├── HIGHLIGHT.md
+    │   ├── I18N.md
+    │   ├── IDEAS.md
+    │   ├── IMAGES_PLAN.md
+    │   ├── issue-561-solutions.md
+    │   ├── ISSUES
+    │   │   ├── ISSUE_165_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_215_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_247_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_248_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_260_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_262_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_264_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_266_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_278_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_309_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_397_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_411_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_453_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_492_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_493_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_523_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_526_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_546_FOLLOWUP_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_546_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_601_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_606_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_608_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_651_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_677_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_689_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_693_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_703_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_724_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_725_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_727_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_744_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_793_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_807_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_87_SOLUTION_REVIEW.md
+    │   │   └── ISSUE_95_SOLUTION_REVIEW.md
+    │   ├── L10N_REPORT_GUIDE.md
+    │   ├── LUA.md
+    │   ├── MACROS.md
+    │   ├── PLUGIN_PLAN.md
+    │   ├── PLUGINS.md
+    │   ├── PLUGRING.md
+    │   ├── PORTABILITY_BSD.md
+    │   ├── REVIEW.md
+    │   ├── TERMINAL.md
+    │   ├── TEST_OPTIMIZATION_PLAN.md
+    │   ├── TTYX.md
+    │   ├── USER_MENU.md
+    │   ├── UX_GUIDELINES.md
+    │   ├── VFS.md
+    │   ├── VIDEO.md
+    │   ├── VTML.md
+    │   ├── VTVIBE.md
+    │   ├── WINCON.md
+    │   └── WINE.md
+    ├── embedded.go
+    ├── filelist_update.sh
+    ├── fusefs
+    │   ├── bench-all.sh
+    │   ├── BENCH.md
+    │   ├── bench.sh
+    │   ├── bridge.go
+    │   ├── bridge_test.go
+    │   ├── cli.go
+    │   ├── cli_test.go
+    │   ├── fusefs.go
+    │   ├── FUSE.md
+    │   ├── mountspec.go
+    │   ├── node_fuse.go
+    │   ├── node_unsupported.go
+    │   ├── platform_other.go
+    │   ├── platform_unix.go
+    │   ├── registry.go
+    │   ├── staged_test.go
+    │   └── writers_test.go
+    ├── .github
+    │   └── workflows
+    │       └── build.yml
+    ├── .gitignore
+    ├── .golangci-strict.yml
+    ├── .golangci.yml
+    ├── go.mod
+    ├── go.sum
+    ├── highlight.ini
+    ├── internal
+    │   ├── hideconsole
+    │   │   ├── go.mod
+    │   │   └── hideconsole.go
+    │   ├── netproxy
+    │   │   ├── netproxy.go
+    │   │   └── netproxy_test.go
+    │   ├── ttyx
+    │   │   ├── keys.go
+    │   │   ├── overlay.go
+    │   │   ├── session.go
+    │   │   ├── ttyx_events_test.go
+    │   │   ├── ttyx_test.go
+    │   │   └── watch.go
+    │   └── wincon
+    │       ├── blit_test.go
+    │       ├── geometry.go
+    │       ├── overlay_other.go
+    │       ├── overlay_state.go
+    │       ├── overlay_state_test.go
+    │       ├── overlay_windows.go
+    │       ├── stats.go
+    │       ├── stats_windows.go
+    │       └── wincon_test.go
+    ├── LICENSE
+    ├── luaplug
+    │   ├── convert.go
+    │   ├── convert_test.go
+    │   ├── f4rpc.go
+    │   ├── ffi.go
+    │   ├── ffi_test.go
+    │   ├── goid.go
+    │   ├── luastate_test.go
+    │   ├── runtime.go
+    │   ├── runtime_test.go
+    │   └── sandbox.go
+    ├── packaging
+    │   ├── linux
+    │   │   └── f4.desktop
+    │   └── macos
+    │       └── Info.plist
+    ├── piecetable
+    │   ├── concurrent_test.go
+    │   ├── lineindex_equivalence_test.go
+    │   ├── lineindex.go
+    │   ├── lineindex_test.go
+    │   ├── piecetable.go
+    │   └── piecetable_test.go
+    ├── plugins
+    │   ├── android
+    │   │   ├── adb_integration_test.go
+    │   │   ├── adb_sync.go
+    │   │   ├── adb_sync_test.go
+    │   │   ├── adb_transport.go
+    │   │   ├── adb_transport_test.go
+    │   │   ├── command_runner_info_test.go
+    │   │   ├── device.go
+    │   │   ├── device_test.go
+    │   │   ├── fish_pool.go
+    │   │   ├── fish_pool_test.go
+    │   │   ├── info.go
+    │   │   ├── info_test.go
+    │   │   ├── manager.go
+    │   │   ├── manager_test.go
+    │   │   ├── pathutil.go
+    │   │   ├── pathutil_test.go
+    │   │   ├── README.md
+    │   │   ├── sync_vfs.go
+    │   │   └── sync_vfs_test.go
+    │   ├── archive
+    │   │   ├── archive.go
+    │   │   ├── archive_materialize_unix_test.go
+    │   │   ├── archive_plugin_test.go
+    │   │   ├── archive_test.go
+    │   │   ├── archive_write_regression_test.go
+    │   │   ├── clone_test.go
+    │   │   ├── compressed_regular_test.go
+    │   │   ├── extraction_security_test.go
+    │   │   ├── issue815_f3_test.go
+    │   │   ├── materialize.go
+    │   │   ├── password.go
+    │   │   ├── password_test.go
+    │   │   ├── production_regression_test.go
+    │   │   ├── provider.go
+    │   │   ├── provider_special_unix_test.go
+    │   │   ├── provider_test.go
+    │   │   ├── repro_test.go
+    │   │   ├── vfs.go
+    │   │   ├── vfs_nested_test.go
+    │   │   ├── vfs_test.go
+    │   │   └── zip_encoding.go
+    │   ├── chroma
+    │   │   ├── chroma.go
+    │   │   └── chroma_test.go
+    │   ├── cloudfox
+    │   │   ├── cloud_vfs.go
+    │   │   ├── cloud_vfs_share_test.go
+    │   │   ├── cloud_vfs_test.go
+    │   │   ├── credential_scope.go
+    │   │   ├── credential_scope_test.go
+    │   │   ├── dialog.go
+    │   │   ├── dialog_google_test.go
+    │   │   ├── dialog_s3_test.go
+    │   │   ├── manager.go
+    │   │   ├── oauth.go
+    │   │   ├── password_prompt.go
+    │   │   ├── plugin_contributions_test.go
+    │   │   ├── plugin.go
+    │   │   ├── plugin_test.go
+    │   │   ├── provider_capabilities_test.go
+    │   │   ├── provider_google.go
+    │   │   ├── provider_google_production_test.go
+    │   │   ├── provider_google_real_native_integration_test.go
+    │   │   ├── provider_google_share.go
+    │   │   ├── provider_google_share_test.go
+    │   │   ├── provider_google_test.go
+    │   │   ├── provider_helpers.go
+    │   │   ├── provider_helpers_test.go
+    │   │   ├── provider_mutation_test.go
+    │   │   ├── provider_real_diagnostics_test.go
+    │   │   ├── provider_real_saved_integration_test.go
+    │   │   ├── provider_real_semantics_test.go
+    │   │   ├── provider_real_sharing_integration_test.go
+    │   │   ├── provider_real_upload_cancellation_test.go
+    │   │   ├── provider_s3_discovery_core_test.go
+    │   │   ├── provider_s3_discovery_regression_test.go
+    │   │   ├── provider_s3.go
+    │   │   ├── provider_s3_real_discovery_test.go
+    │   │   ├── provider_s3_share.go
+    │   │   ├── provider_s3_share_test.go
+    │   │   ├── provider_s3_test.go
+    │   │   ├── provider_webdav_edge_test.go
+    │   │   ├── provider_webdav.go
+    │   │   ├── provider_webdav_integration_test.go
+    │   │   ├── provider_webdav_share.go
+    │   │   ├── provider_webdav_share_test.go
+    │   │   ├── provider_webdav_test.go
+    │   │   ├── provider_yandex_cache.go
+    │   │   ├── provider_yandex.go
+    │   │   ├── provider_yandex_info.go
+    │   │   ├── provider_yandex_production_test.go
+    │   │   ├── provider_yandex_share.go
+    │   │   ├── provider_yandex_share_test.go
+    │   │   ├── provider_yandex_test.go
+    │   │   ├── secrets.go
+    │   │   ├── secrets_test.go
+    │   │   ├── session.go
+    │   │   ├── store.go
+    │   │   ├── store_lock_unix.go
+    │   │   ├── store_lock_windows.go
+    │   │   ├── store_test.go
+    │   │   ├── test_main_test.go
+    │   │   ├── types.go
+    │   │   ├── uri.go
+    │   │   ├── uri_test.go
+    │   │   ├── vault.go
+    │   │   └── yandex_code_prompt.go
+    │   ├── dummy_internal
+    │   │   ├── dummy_internal.go
+    │   │   └── dummy_internal_test.go
+    │   ├── dummy_lua
+    │   │   ├── plugin.lua
+    │   │   └── README.md
+    │   ├── dummy_rpc
+    │   │   └── main.go
+    │   ├── envman
+    │   │   ├── codec.go
+    │   │   ├── codec_test.go
+    │   │   ├── commands.go
+    │   │   ├── commands_test.go
+    │   │   ├── dialogs.go
+    │   │   ├── environment_document.go
+    │   │   ├── far3_import.go
+    │   │   ├── far3_import_other.go
+    │   │   ├── far3_import_test.go
+    │   │   ├── far3_import_ui.go
+    │   │   ├── far3_import_windows.go
+    │   │   ├── far3_import_windows_test.go
+    │   │   ├── manager_frame.go
+    │   │   ├── manager_ops.go
+    │   │   ├── manager_ui.go
+    │   │   ├── messages.go
+    │   │   ├── model.go
+    │   │   ├── model_test.go
+    │   │   ├── plugin.go
+    │   │   ├── plugin_test.go
+    │   │   ├── README.md
+    │   │   ├── settings.go
+    │   │   ├── settings_test.go
+    │   │   ├── strings.go
+    │   │   ├── ui_test.go
+    │   │   └── vfs_io.go
+    │   ├── id3editor
+    │   │   ├── plugin_contributions_test.go
+    │   │   ├── plugin.go
+    │   │   └── plugin_test.go
+    │   ├── ios
+    │   │   ├── afc_vfs.go
+    │   │   ├── afc_vfs_test.go
+    │   │   ├── apps.go
+    │   │   ├── core_access.go
+    │   │   ├── core_access_stub.go
+    │   │   ├── core_access_supported.go
+    │   │   ├── core_access_supported_test.go
+    │   │   ├── core_tunnel_supported.go
+    │   │   ├── core_vfs.go
+    │   │   ├── core_vfs_test.go
+    │   │   ├── internal
+    │   │   │   ├── afcproto
+    │   │   │   │   ├── client.go
+    │   │   │   │   ├── client_test.go
+    │   │   │   │   ├── doc.go
+    │   │   │   │   ├── errors.go
+    │   │   │   │   ├── file.go
+    │   │   │   │   ├── path.go
+    │   │   │   │   ├── protocol.go
+    │   │   │   │   ├── protocol_test.go
+    │   │   │   │   └── types.go
+    │   │   │   └── corefileservice
+    │   │   │       ├── doc.go
+    │   │   │       ├── fileservice.go
+    │   │   │       └── fileservice_test.go
+    │   │   ├── ios_integration_test.go
+    │   │   ├── LICENSE.go-ios
+    │   │   ├── manager.go
+    │   │   ├── manager_test.go
+    │   │   ├── native_source.go
+    │   │   ├── plugin.go
+    │   │   ├── plugin_test.go
+    │   │   ├── README.md
+    │   │   ├── selectors.go
+    │   │   ├── selectors_test.go
+    │   │   └── services.go
+    │   ├── mediainfo
+    │   │   ├── analyzer.go
+    │   │   ├── backend_test.go
+    │   │   ├── cache.go
+    │   │   ├── cache_test.go
+    │   │   ├── config_dialog.go
+    │   │   ├── dialog.go
+    │   │   ├── dialog_theme_test.go
+    │   │   ├── exif_report_test.go
+    │   │   ├── format_gaps_test.go
+    │   │   ├── locale.go
+    │   │   ├── macro.go
+    │   │   ├── macro_test.go
+    │   │   ├── matroska_bounds_test.go
+    │   │   ├── model.go
+    │   │   ├── open.go
+    │   │   ├── open_test.go
+    │   │   ├── parse_audio.go
+    │   │   ├── parse_ebu_stl.go
+    │   │   ├── parse_heif.go
+    │   │   ├── parse_image.go
+    │   │   ├── parse_iso.go
+    │   │   ├── parse_matroska.go
+    │   │   ├── parse_riff.go
+    │   │   ├── parse_subtitle.go
+    │   │   ├── parse_tiff.go
+    │   │   ├── parse_tiff_limits_test.go
+    │   │   ├── plugin.go
+    │   │   ├── plugin_test.go
+    │   │   ├── quickview_provider.go
+    │   │   ├── quickview_provider_test.go
+    │   │   ├── README.md
+    │   │   ├── render.go
+    │   │   ├── render_limits_test.go
+    │   │   ├── report_text.go
+    │   │   ├── report_view.go
+    │   │   ├── settings.go
+    │   │   ├── settings_test.go
+    │   │   ├── source.go
+    │   │   ├── subtitle_limits_test.go
+    │   │   └── util.go
+    │   ├── netfox
+    │   │   ├── crypto.go
+    │   │   ├── crypto_test.go
+    │   │   ├── dev
+    │   │   │   ├── README.md
+    │   │   │   └── unxed_f4_issue_316.json
+    │   │   ├── dialog.go
+    │   │   ├── dialog_test.go
+    │   │   ├── fish_clone_session_test.go
+    │   │   ├── fish_dialer_test.go
+    │   │   ├── fishplus
+    │   │   │   ├── cancel_test.go
+    │   │   │   ├── cand
+    │   │   │   ├── exec.go
+    │   │   │   ├── exec_test.go
+    │   │   │   ├── fs.go
+    │   │   │   ├── fs_test.go
+    │   │   │   ├── hash.go
+    │   │   │   ├── hash_test.go
+    │   │   │   ├── helper.ps1
+    │   │   │   ├── helper.sh
+    │   │   │   ├── job.go
+    │   │   │   ├── job_test.go
+    │   │   │   ├── keepalive.go
+    │   │   │   ├── keepalive_test.go
+    │   │   │   ├── ls.go
+    │   │   │   ├── ls_test.go
+    │   │   │   ├── mutate.go
+    │   │   │   ├── mutate_test.go
+    │   │   │   ├── patch.go
+    │   │   │   ├── patch_test.go
+    │   │   │   ├── paths.go
+    │   │   │   ├── paths_test.go
+    │   │   │   ├── random_fixture_test.go
+    │   │   │   ├── read.go
+    │   │   │   ├── read_test.go
+    │   │   │   ├── script.go
+    │   │   │   ├── script_pwsh_test.go
+    │   │   │   ├── script_test.go
+    │   │   │   ├── search.go
+    │   │   │   ├── search_test.go
+    │   │   │   ├── session.go
+    │   │   │   ├── session_pwsh_test.go
+    │   │   │   ├── session_test.go
+    │   │   │   ├── sizes
+    │   │   │   ├── WINDOWS_PORT.md
+    │   │   │   ├── write.go
+    │   │   │   └── write_test.go
+    │   │   ├── fish_pool.go
+    │   │   ├── fish_reconnect_entry_test.go
+    │   │   ├── fish_reconnect_test.go
+    │   │   ├── fish_vfs.go
+    │   │   ├── fish_vfs_test.go
+    │   │   ├── ftp_clone_test.go
+    │   │   ├── ftp_vfs.go
+    │   │   ├── lang_test.go
+    │   │   ├── netfox.go
+    │   │   ├── netfox_test.go
+    │   │   ├── plugin_contributions_test.go
+    │   │   ├── proxy_dialog.go
+    │   │   ├── registry.go
+    │   │   ├── sftp_command_test.go
+    │   │   ├── sftp_dial_test.go
+    │   │   ├── sftp_uri.go
+    │   │   ├── sftp_vfs.go
+    │   │   ├── ssh_agent_forwarding_test.go
+    │   │   ├── ssh_dial.go
+    │   │   ├── ssh_dial_test.go
+    │   │   ├── ssh_pty.go
+    │   │   ├── vfs_abs_test.go
+    │   │   └── vfs.go
+    │   ├── sqlite
+    │   │   ├── locale.go
+    │   │   ├── plugin.go
+    │   │   ├── plugin_test.go
+    │   │   └── ui.go
+    │   └── visren
+    │       ├── config.go
+    │       ├── config_test.go
+    │       ├── dialog.go
+    │       ├── dialog_test.go
+    │       ├── editor.go
+    │       ├── editor_test.go
+    │       ├── engine_test.go
+    │       ├── LICENSE.upstream
+    │       ├── masks.go
+    │       ├── metadata.go
+    │       ├── metadata_test.go
+    │       ├── model.go
+    │       ├── plugin.go
+    │       ├── plugin_test.go
+    │       ├── rename.go
+    │       ├── rename_test.go
+    │       ├── replace.go
+    │       ├── transforms.go
+    │       └── word_div_prompt_test.go
+    ├── plugring
+    │   ├── hello_plugring.lua
+    │   └── index.yaml
+    ├── README.md
+    ├── screenshot.png
+    ├── sdk
+    │   ├── extui
+    │   │   ├── model.go
+    │   │   └── model_test.go
+    │   ├── f4plugin
+    │   │   └── plugin.go
+    │   ├── f4rpc
+    │   │   ├── mux.go
+    │   │   └── mux_test.go
+    │   └── lua
+    │       └── f4rpc.lua
+    ├── sheet
+    │   ├── cell.go
+    │   ├── expr.go
+    │   ├── sheet.go
+    │   ├── sheet_test.go
+    │   ├── store.go
+    │   └── xlsx.go
+    ├── SPREADSHEET.md
+    ├── test_plugins.sh
+    ├── test_resurrect.sh
+    ├── textlayout
+    │   ├── cluster.go
+    │   ├── wrap.go
+    │   └── wrap_test.go
+    ├── time.txt
+    ├── tools
+    │   ├── find_hardcoded.go
+    │   ├── fishplus_probe.sh
+    │   ├── fishplus_testlab
+    │   │   ├── fishclient.py
+    │   │   ├── TESTLAB.md
+    │   │   └── test_patch.py
+    │   ├── hardcode
+    │   │   ├── hardcode.go
+    │   │   └── hardcode_test.go
+    │   ├── hardcoded_baseline.txt
+    │   ├── icons
+    │   │   ├── go.mod
+    │   │   ├── go.sum
+    │   │   ├── main.go
+    │   │   ├── main_test.go
+    │   │   └── third_party
+    │   │       └── oksvg
+    │   │           ├── definitions.go
+    │   │           ├── draw.go
+    │   │           ├── .gitignore
+    │   │           ├── go.mod
+    │   │           ├── icon_cursor.go
+    │   │           ├── LICENSE
+    │   │           ├── path_cursor.go
+    │   │           ├── path_style.go
+    │   │           ├── public.go
+    │   │           ├── README.md
+    │   │           ├── svg_icon.go
+    │   │           ├── svg_path.go
+    │   │           └── utils.go
+    │   ├── langfmt
+    │   │   ├── main.go
+    │   │   └── main_test.go
+    │   ├── test_runner.sh
+    │   ├── ttytest
+    │   │   ├── analyze_log.py
+    │   │   ├── README.md
+    │   │   ├── scenarios.py
+    │   │   └── ttytest.py
+    │   ├── wine_color_probe
+    │   │   ├── main.go
+    │   │   └── main_other.go
+    │   └── wine_syscall_probe
+    │       ├── go.mod
+    │       ├── main.go
+    │       └── probe_amd64.s
+    ├── vfs
+    │   ├── bulk_copy_test.go
+    │   ├── codepages.go
+    │   ├── codepages_test.go
+    │   ├── codepages_unix.go
+    │   ├── codepages_unix_test.go
+    │   ├── codepages_windows.go
+    │   ├── contributions.go
+    │   ├── destination_overwrite_test.go
+    │   ├── device_size_test.go
+    │   ├── disks_unix.go
+    │   ├── disks_unix_test.go
+    │   ├── disks_vfs.go
+    │   ├── disks_vfs_test.go
+    │   ├── disks_windows.go
+    │   ├── hidden_unix.go
+    │   ├── hidden_windows.go
+    │   ├── hostfs
+    │   │   ├── errno_windows.go
+    │   │   ├── hostfs_posix.go
+    │   │   ├── hostfs_windows.go
+    │   │   └── hostfs_winescape.go
+    │   ├── hostmode
+    │   │   └── hostmode.go
+    │   ├── hostpath
+    │   │   ├── hostpath_posix.go
+    │   │   └── hostpath_windows.go
+    │   ├── isabs_test.go
+    │   ├── lock_manager_test.go
+    │   ├── null_vfs.go
+    │   ├── null_vfs_test.go
+    │   ├── os_vfs_contract_coverage_test.go
+    │   ├── os_vfs_dot_test.go
+    │   ├── os_vfs.go
+    │   ├── os_vfs_junction_stub.go
+    │   ├── os_vfs_noreplace_test.go
+    │   ├── os_vfs_physical_other.go
+    │   ├── os_vfs_physical_test.go
+    │   ├── os_vfs_physical_unix.go
+    │   ├── os_vfs_physical_windows.go
+    │   ├── os_vfs_platform_unix.go
+    │   ├── os_vfs_platform_windows.go
+    │   ├── os_vfs_posix_atimespec.go
+    │   ├── os_vfs_posix_atim.go
+    │   ├── os_vfs_search.go
+    │   ├── os_vfs_search_test.go
+    │   ├── os_vfs_symlink_test.go
+    │   ├── os_vfs_test.go
+    │   ├── os_vfs_unix_test.go
+    │   ├── os_vfs_windows.go
+    │   ├── os_vfs_windows_test.go
+    │   ├── patch_inplace_test.go
+    │   ├── privileges_windows.go
+    │   ├── quick_view.go
+    │   ├── quick_view_test.go
+    │   ├── rename_noreplace_darwin.go
+    │   ├── rename_noreplace.go
+    │   ├── rename_noreplace_linux.go
+    │   ├── rename_noreplace_unix.go
+    │   ├── rename_noreplace_windows.go
+    │   ├── scanner.go
+    │   ├── scanner_test.go
+    │   ├── session_identity_test.go
+    │   ├── share.go
+    │   ├── share_test.go
+    │   ├── sudo_askpass_unix.go
+    │   ├── sudo_askpass_windows.go
+    │   ├── sudo_client.go
+    │   ├── sudo_client_platform_unix.go
+    │   ├── sudo_client_platform_windows.go
+    │   ├── sudo_client_windows_test.go
+    │   ├── sudo_dispatcher_unix.go
+    │   ├── sudo_dispatcher_windows.go
+    │   ├── sudo_ipc_unix.go
+    │   ├── sudo_ipc_windows.go
+    │   ├── sudo_msg.go
+    │   ├── sudo_test.go
+    │   ├── trash_darwin.go
+    │   ├── trash_freedesktop.go
+    │   ├── trash_freedesktop_test.go
+    │   ├── trash.go
+    │   ├── trash_test.go
+    │   ├── trash_windows.go
+    │   ├── uri_provider.go
+    │   ├── uri_provider_test.go
+    │   ├── utils.go
+    │   ├── utils_test.go
+    │   └── vfs.go
+    └── vtvibe
+        ├── ap.go
+        ├── ap_test.go
+        ├── memtree.go
+        ├── pack.go
+        ├── provider.go
+        ├── provider_test.go
+        ├── session.go
+        ├── session_test.go
+        └── vfs.go
+
+    72 directories, 1259 files

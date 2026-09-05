@@ -27,6 +27,15 @@ type helpHistoryEntry struct {
 
 const helpBackButton = "[←]"
 
+type helpViewLayout struct {
+	contentX1, contentY1 int
+	contentX2, contentY2 int
+	contentWidth         int
+	contentHeight        int
+	scrollBarX           int
+	showScrollBar        bool
+}
+
 func NewHelpView(engine *HelpEngine, startTopic string) *HelpView {
 	hv := &HelpView{
 		BaseWindow:  *NewBaseWindow(0, 0, 76, 20, " Help "),
@@ -118,16 +127,16 @@ func (hv *HelpView) Show(scr *ScreenBuf) {
 		return
 	}
 
-	x1, y1, x2, y2 := hv.X1+1, hv.Y1+1, hv.X2-1, hv.Y2-1
-	width := x2 - x1 + 1
-	height := y2 - y1 + 1
-
-	if hv.scrollBar != nil {
-		width--
+	layout := hv.layout()
+	if layout.contentWidth <= 0 || layout.contentHeight <= 0 {
+		return
 	}
+	x1, y1 := layout.contentX1, layout.contentY1
+	width, height := layout.contentWidth, layout.contentHeight+hv.current.StickyRows
 
 	// Fill background
-	scr.FillRect(x1, y1, x2, y2, ' ', Palette[ColHelpText])
+	scr.PushClipRect(layout.contentX1, layout.contentY1, layout.contentX2, layout.contentY2)
+	scr.FillRect(layout.contentX1, layout.contentY1, layout.contentX2, layout.contentY2, ' ', Palette[ColHelpText])
 
 	// 1. Draw Sticky Headers
 	for i := 0; i < hv.current.StickyRows; i++ {
@@ -144,16 +153,41 @@ func (hv *HelpView) Show(scr *ScreenBuf) {
 		}
 		hv.renderLine(scr, x1, contentY+i, hv.current.Lines[lineIdx], width, lineIdx)
 	}
+	scr.PopClipRect()
 
-	if hv.scrollBar != nil {
-		totalScrollable := len(hv.current.Lines) - hv.current.StickyRows
-		if totalScrollable > contentH {
-			hv.scrollBar.SetParams(hv.scrollTop, 0, totalScrollable-contentH)
-			hv.scrollBar.SetPosition(hv.X2-1, hv.Y1+1+hv.current.StickyRows, hv.X2-1, hv.Y2-1)
-			hv.scrollBar.PgStep = contentH
-			hv.scrollBar.Show(scr)
-		}
+	if layout.showScrollBar {
+		hv.scrollBar.SetParams(hv.scrollTop, 0, len(hv.current.Lines)-hv.current.StickyRows-layout.contentHeight)
+		hv.scrollBar.SetPosition(layout.scrollBarX, hv.Y1+1+hv.current.StickyRows, layout.scrollBarX, hv.Y2-1)
+		hv.scrollBar.PgStep = layout.contentHeight
+		hv.scrollBar.Show(scr)
 	}
+}
+
+func (hv *HelpView) layout() helpViewLayout {
+	l := helpViewLayout{
+		contentX1:  hv.X1 + 2,
+		contentY1:  hv.Y1 + 1,
+		contentX2:  hv.X2 - 2,
+		contentY2:  hv.Y2 - 1,
+		scrollBarX: hv.X2 - 2,
+	}
+	stickyRows := 0
+	if hv.current != nil {
+		stickyRows = hv.current.StickyRows
+	}
+	l.contentHeight = l.contentY2 - l.contentY1 + 1 - stickyRows
+	if l.contentHeight <= 0 {
+		return l
+	}
+	if hv.current != nil {
+		totalScrollable := len(hv.current.Lines) - stickyRows
+		l.showScrollBar = hv.scrollBar != nil && totalScrollable > l.contentHeight
+	}
+	if l.showScrollBar {
+		l.contentX2--
+	}
+	l.contentWidth = l.contentX2 - l.contentX1 + 1
+	return l
 }
 func (hv *HelpView) renderLine(scr *ScreenBuf, x, y int, line string, width int, lineIdx int) {
 	isCentered := strings.HasPrefix(line, "^")
@@ -226,14 +260,34 @@ func (hv *HelpView) renderLine(scr *ScreenBuf, x, y int, line string, width int,
 	offX := 0
 	if isCentered {
 		vLen := 0
-		for _, c := range cells {
-			if c.Char != WideCharFiller {
-				vLen++
-			}
+		vLen = len(cells)
+		if vLen > width {
+			cells = fitHelpCells(cells, width)
+			vLen = len(cells)
 		}
 		offX = (width - vLen) / 2
+	} else {
+		cells = fitHelpCells(cells, width)
 	}
 	scr.Write(x+offX, y, cells)
+}
+
+func fitHelpCells(cells []CharInfo, width int) []CharInfo {
+	if width <= 0 {
+		return nil
+	}
+	if len(cells) <= width {
+		return cells
+	}
+	cells = cells[:width]
+	// Do not leave the base cell of a wide rune without its filler cell at
+	// the edge of the viewport. It would otherwise be rendered as a clipped
+	// half-glyph by some terminal backends.
+	if len(cells) > 0 && cells[len(cells)-1].Char != WideCharFiller &&
+		runewidth.RuneWidth(rune(cells[len(cells)-1].Char)) > 1 {
+		cells = cells[:len(cells)-1]
+	}
+	return cells
 }
 
 func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
@@ -246,6 +300,10 @@ func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
 
 	// 1. Handle Help-specific navigation BEFORE BaseWindow focus cycling
 	switch e.VirtualKeyCode {
+	case vtinput.VK_F1:
+		// Help is already active; do not let BaseWindow.ShowHelp nest another view.
+		return true
+
 	case vtinput.VK_TAB:
 		if len(hv.current.Links) == 0 {
 			return hv.BaseWindow.ProcessKey(e)
@@ -273,6 +331,12 @@ func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
 
 	case vtinput.VK_BACK:
 		hv.PopTopic()
+		return true
+
+	case vtinput.VK_ESCAPE:
+		// Escape always closes the help window. Backspace is the explicit
+		// history-navigation key and must remain separate from window closing.
+		hv.Close()
 		return true
 
 	case vtinput.VK_UP:
@@ -457,13 +521,10 @@ func (hv *HelpView) ResizeConsole(w, h int) {
 }
 
 func (hv *HelpView) findLinkAt(mx, my int) int {
-	x1, y1, x2, y2 := hv.X1+1, hv.Y1+1, hv.X2-1, hv.Y2-1
-	width := x2 - x1 + 1
-	if hv.scrollBar != nil {
-		width--
-	}
+	layout := hv.layout()
+	x1, y1, width := layout.contentX1, layout.contentY1, layout.contentWidth
 
-	if my < y1 || my > y2 || mx < x1 || mx > x1+width-1 {
+	if width <= 0 || my < y1 || my > layout.contentY2 || mx < x1 || mx > x1+width-1 {
 		return -1
 	}
 
@@ -541,6 +602,9 @@ func (hv *HelpView) findLinkAt(mx, my int) int {
 
 	offX := 0
 	if isCentered {
+		if visualX > width {
+			visualX = width
+		}
 		offX = (width - visualX) / 2
 	}
 

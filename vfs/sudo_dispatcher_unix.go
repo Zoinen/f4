@@ -7,7 +7,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/unxed/vtui"
@@ -22,16 +24,37 @@ func RunSudoDispatcher(sockPath string) {
 	if sudoUid == "" {
 		sudoUid = fmt.Sprintf("%d", os.Getuid())
 	}
-	debugLogPath := filepath.Join(os.TempDir(), fmt.Sprintf("f4-sudo-debug-%s.txt", sudoUid))
-	debugLog, _ := os.OpenFile(debugLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+	sudoGid := os.Getenv("SUDO_GID")
+	if sudoGid == "" {
+		sudoGid = fmt.Sprintf("%d", os.Getgid())
+	}
+	invokingUID, uidErr := strconv.Atoi(sudoUid)
+	invokingGID, gidErr := strconv.Atoi(sudoGid)
+	if uidErr != nil || gidErr != nil || invokingUID < 0 || invokingGID < 0 {
+		fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Invalid SUDO_UID/SUDO_GID\n")
+		os.Exit(1)
+	}
+	// Derive the filename from the validated integer, not the raw sudo
+	// environment value: this process is root and a forged SUDO_UID must not
+	// turn the diagnostic path into a traversal outside the temp directory.
+	debugLogPath := filepath.Join(os.TempDir(), fmt.Sprintf("f4-sudo-debug-%d.txt", invokingUID))
+	// O_NOFOLLOW: the path is predictable and lives in a directory every local
+	// user can write, so without it another user can pre-create a symlink here
+	// and have root append its diagnostics to a file of their choosing.
+	debugLog, _ := os.OpenFile(debugLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0600)
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] DISPATCHER STARTING: EUID=%d PID=%d Sock=%q\n", time.Now().Format("15:04:05"), os.Geteuid(), os.Getpid(), sockPath)
-		defer debugLog.Close()
+		_, _ = fmt.Fprintf(debugLog, "[%s] DISPATCHER STARTING: EUID=%d PID=%d Sock=%q\n", time.Now().Format("15:04:05"), os.Geteuid(), os.Getpid(), sockPath) // Debug logging is best-effort.
 	}
 
 	// Create a canary file to prove execution
 	canaryPath := filepath.Join(os.TempDir(), fmt.Sprintf("f4-canary-%d.txt", os.Getpid()))
-	os.WriteFile(canaryPath, []byte(fmt.Sprintf("EUID=%d", os.Geteuid())), 0666)
+	// Same reasoning as the debug log, and worse: WriteFile truncates, so a
+	// symlink planted here would have root empty the target rather than just
+	// append to it.
+	if canary, err := os.OpenFile(canaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0600); err == nil {
+		_, _ = fmt.Fprintf(canary, "EUID=%d", os.Geteuid()) // The canary is diagnostic only.
+		_ = canary.Close()
+	}
 
 	fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: STARTING (EUID=%d, PID=%d)\n", os.Geteuid(), os.Getpid())
 	if os.Geteuid() != 0 {
@@ -41,7 +64,7 @@ func RunSudoDispatcher(sockPath string) {
 	}
 	vtui.DebugLog("SUDO_DISPATCHER: Initializing on %q as root", sockPath)
 
-	os.Remove(sockPath)
+	_ = os.Remove(sockPath) // ListenUnix reports an actionable bind error if the path still blocks startup.
 	vtui.DebugLog("SUDO_DISPATCHER: Creating socket %q", sockPath)
 	addr, err := net.ResolveUnixAddr("unix", sockPath)
 	if err != nil {
@@ -54,29 +77,34 @@ func RunSudoDispatcher(sockPath string) {
 		fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: ListenUnix failed: %v\n", err)
 		os.Exit(1)
 	}
-	defer l.Close()
-
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] DISPATCHER: Socket created.\n", time.Now().Format("15:04:05"))
+		_, _ = fmt.Fprintf(debugLog, "[%s] DISPATCHER: Socket created.\n", time.Now().Format("15:04:05")) // Debug logging is best-effort.
 	}
 
 	fi, _ := os.Stat(sockPath)
 	fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Socket created. Initial perms: %v\n", fi.Mode())
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] DISPATCHER: Initial perms: %v\n", time.Now().Format("15:04:05"), fi.Mode())
+		_, _ = fmt.Fprintf(debugLog, "[%s] DISPATCHER: Initial perms: %v\n", time.Now().Format("15:04:05"), fi.Mode()) // Debug logging is best-effort.
 	}
 
-	fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Setting permissions 0666...\n")
+	fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Restricting socket to uid=%d gid=%d...\n", invokingUID, invokingGID)
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] DISPATCHER: Chmod 0666 starting...\n", time.Now().Format("15:04:05"))
+		_, _ = fmt.Fprintf(debugLog, "[%s] DISPATCHER: Restricting socket to uid=%d gid=%d.\n", time.Now().Format("15:04:05"), invokingUID, invokingGID) // Debug logging is best-effort.
 	}
-	// Permissions 0666 allow the non-root f4 process to connect to the root-owned socket.
-	err = os.Chmod(sockPath, 0666)
+	// Only the f4 process which invoked sudo may connect to the root dispatcher.
+	// A world-writable socket would let another local user race the legitimate
+	// client and issue arbitrary filesystem operations as root.
+	err = os.Chown(sockPath, invokingUID, invokingGID)
+	if err == nil {
+		err = os.Chmod(sockPath, 0600)
+	}
 	if debugLog != nil {
-		fmt.Fprintf(debugLog, "[%s] DISPATCHER: Chmod result: %v\n", time.Now().Format("15:04:05"), err)
+		_, _ = fmt.Fprintf(debugLog, "[%s] DISPATCHER: Socket restriction result: %v\n", time.Now().Format("15:04:05"), err) // Debug logging is best-effort.
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Chmod failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "SUDO_DISPATCHER: Socket restriction failed: %v\n", err)
+		_ = l.Close()
+		os.Exit(1)
 	}
 
 	// In this design, we accept a single connection, process its requests,
@@ -85,11 +113,17 @@ func RunSudoDispatcher(sockPath string) {
 	if err == nil {
 		handleSudoClient(conn)
 	}
+	_ = l.Close() // The single-client dispatcher is done.
+	if debugLog != nil {
+		_ = debugLog.Close() // Best effort before the explicit process exit.
+	}
 	os.Exit(0)
 }
 
 func handleSudoClient(conn *net.UnixConn) {
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close() // Transport cleanup cannot change a completed request.
+	}()
 
 	for {
 		var req SudoRequest
@@ -107,6 +141,7 @@ func handleSudoClient(conn *net.UnixConn) {
 
 		resp := SudoResponse{}
 		fd := -1
+		var openedFile *os.File
 
 		vtui.DebugLog("SUDO_DISPATCHER: Processing Cmd=%d, Path=%q", req.Cmd, req.Path)
 
@@ -125,8 +160,8 @@ func handleSudoClient(conn *net.UnixConn) {
 					resp.Error = err.Error()
 				} else {
 					fd = int(f.Fd())
+					openedFile = f
 					vtui.DebugLog("SUDO_DISPATCHER: Open(%q) SUCCESS, FD=%d", req.Path, fd)
-					defer f.Close() // Safe to close in dispatcher, FD is duplicated across Unix socket
 				}
 			}
 
@@ -215,6 +250,9 @@ func handleSudoClient(conn *net.UnixConn) {
 		}
 
 		err = sendMsg(conn, resp, fd)
+		if openedFile != nil {
+			_ = openedFile.Close() // sendMsg duplicated the descriptor for the client.
+		}
 		if err != nil {
 			return
 		}

@@ -2,10 +2,13 @@ package textlayout
 
 import (
 	"bytes"
-	"github.com/unxed/f4/piecetable"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/unxed/f4/piecetable"
+	"github.com/unxed/vtui"
 )
 
 func TestWrapEngine_SimpleWrap(t *testing.T) {
@@ -30,6 +33,29 @@ func TestWrapEngine_SimpleWrap(t *testing.T) {
 		if text != expectedTexts[i] {
 			t.Errorf("Frag %d: expected %q, got %q", i, expectedTexts[i], text)
 		}
+	}
+}
+
+func TestWrapEngine_BidiCaretUsesVisualClusterOrder(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	text := "שלום"
+	pt := piecetable.New([]byte(text))
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.ToggleWrap(false)
+
+	if _, col := we.LogicalToVisual(0); col != 4 {
+		t.Fatalf("logical start visual column = %d, want 4", col)
+	}
+	if _, col := we.LogicalToVisual(len(text)); col != 0 {
+		t.Fatalf("logical end visual column = %d, want 0", col)
+	}
+	if got := we.VisualToLogical(0, 1); got != len(text)-2 {
+		t.Fatalf("visual column 1 logical offset = %d, want %d", got, len(text)-2)
 	}
 }
 
@@ -533,6 +559,47 @@ func TestWrapEngine_CacheResilience(t *testing.T) {
 		t.Errorf("Engine did not reset total rows after index change, got %d", total)
 	}
 }
+
+func TestWrapEngine_IndicVisualClusters(t *testing.T) {
+	text := "संस्कृतम्"
+	pt := piecetable.New([]byte(text))
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+
+	we := NewWrapEngine(pt, li)
+	we.ToggleWrap(false)
+
+	var offsets []int
+	var columns []int
+	offset, column := 0, 0
+	for rest := text; len(rest) > 0; {
+		cluster, width, size := NextVisualCluster(rest)
+		if cluster == "" || size <= 0 {
+			t.Fatalf("invalid cluster result for %q", rest)
+		}
+		offsets = append(offsets, offset)
+		columns = append(columns, column)
+		offset += size
+		column += width
+		rest = rest[size:]
+	}
+	offsets = append(offsets, offset)
+	columns = append(columns, column)
+
+	if got := len(offsets); got != 5 {
+		t.Fatalf("expected four visual clusters plus EOF, got %d", got-1)
+	}
+	for i := range offsets {
+		row, col := we.LogicalToVisual(offsets[i])
+		if row != 0 || col != columns[i] {
+			t.Errorf("logical offset %d: got visual (%d,%d), want (0,%d)", offsets[i], row, col, columns[i])
+		}
+		if got := we.VisualToLogical(0, columns[i]); got != offsets[i] {
+			t.Errorf("visual column %d: got logical offset %d, want %d", columns[i], got, offsets[i])
+		}
+	}
+}
+
 func TestWrapEngine_BoundarySafety(t *testing.T) {
 	pt := piecetable.New([]byte("line1\nline2"))
 	li := piecetable.NewLineIndex()
@@ -556,6 +623,102 @@ func TestWrapEngine_BoundarySafety(t *testing.T) {
 		}
 	})
 }
+
+func TestVisualClustersInVisualOrderPreservesTerminalClustersInBidiParagraph(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	text := "संस्कृतम् ދިވެހިބަސް"
+	logical := VisualClusters(text)
+	visual := VisualClustersInVisualOrder(text)
+	if len(visual) != len(logical) {
+		t.Fatalf("visual cluster count = %d, want %d", len(visual), len(logical))
+	}
+
+	wantStarts := make(map[int]bool, len(logical))
+	for _, cluster := range logical {
+		wantStarts[cluster.Start] = true
+	}
+	seen := make(map[int]bool, len(visual))
+	for _, cluster := range visual {
+		if !wantStarts[cluster.Start] {
+			t.Fatalf("visual cluster starts at unexpected byte %d", cluster.Start)
+		}
+		if seen[cluster.Start] {
+			t.Fatalf("visual cluster start %d was emitted twice", cluster.Start)
+		}
+		seen[cluster.Start] = true
+	}
+	if len(seen) != len(wantStarts) {
+		t.Fatalf("visual clusters covered %d logical starts, want %d", len(seen), len(wantStarts))
+	}
+}
+
+func TestVisualClustersInVisualOrderKeepsLeadingThaanaBeforeLatinText(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	t.Cleanup(func() { vtui.DefaultBidiMode = oldMode })
+
+	text := "ދިވެހިބަސް - Divehi (Maldivian) - BiDi"
+	var got strings.Builder
+	for _, cluster := range VisualClustersInVisualOrder(text) {
+		got.WriteString(cluster.Text)
+	}
+
+	// A left to right line: the Thaana word is reversed in place, the rest
+	// of the line stays where it is (unxed/f4#546, "f4 changed the word
+	// order").
+	want := "ސްބަހިވެދި - Divehi (Maldivian) - BiDi"
+	if got.String() != want {
+		t.Fatalf("visual text = %q, want %q", got.String(), want)
+	}
+}
+
+func TestWrapEngine_BidiVisualMoveLeavesRTLRunInVisualDirection(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	t.Cleanup(func() { vtui.DefaultBidiMode = oldMode })
+
+	text := "abc אבג def"
+	logical := logicalTextClusters(text)
+	caret := buildVisualCaretMap(text)
+	if got, want := caret.LogicalToVisual[len(logical)-4], 4; got != want {
+		t.Fatalf("caret at the end of RTL run = %d, want visual boundary %d", got, want)
+	}
+
+	tests := []struct {
+		name      string
+		pos       int
+		direction int
+		want      int
+	}{
+		{
+			name:      "left leaves RTL run",
+			pos:       len([]byte("abc אבג")),
+			direction: -1,
+			want:      len([]byte("abc")),
+		},
+		{
+			name:      "right enters RTL run from its left edge",
+			pos:       len([]byte("abc אבג")),
+			direction: 1,
+			want:      len([]byte("abc אב")),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := fragmentVisualMove(text, test.pos, test.direction)
+			if !ok {
+				t.Fatalf("visual move was rejected at byte offset %d", test.pos)
+			}
+			if got != test.want {
+				t.Fatalf("visual move from %d in direction %d = %d, want %d", test.pos, test.direction, got, test.want)
+			}
+		})
+	}
+}
+
 func TestWrapEngine_LogicalToVisual_CappedLine(t *testing.T) {
 	// Tests safety when a logical line is massive (binary) and indexing is capped at 64KB.
 	// Create 100KB of data with NO newlines.
@@ -576,5 +739,109 @@ func TestWrapEngine_LogicalToVisual_CappedLine(t *testing.T) {
 
 	if row < 0 || col < 0 {
 		t.Errorf("LogicalToVisual returned negative coordinates for capped line: (%d, %d)", row, col)
+	}
+}
+
+func BenchmarkWrapEngine_GetFragments_ASCII(b *testing.B) {
+	line := []byte("The quick brown fox jumps over the lazy dog and runs across the wide fields 1234567890\n")
+	var buf bytes.Buffer
+	for i := 0; i < 1000; i++ {
+		buf.Write(line)
+	}
+	pt := piecetable.New(buf.Bytes())
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.SetWidth(80)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		we.InvalidateCache()
+		_ = we.GetFragments(i % 1000)
+	}
+}
+
+func BenchmarkWrapEngine_GetFragments_NoWrap(b *testing.B) {
+	line := []byte("The quick brown fox jumps over the lazy dog and runs across the wide fields 1234567890\n")
+	var buf bytes.Buffer
+	for i := 0; i < 1000; i++ {
+		buf.Write(line)
+	}
+	pt := piecetable.New(buf.Bytes())
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.SetWidth(80)
+	we.ToggleWrap(false)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = we.GetFragments(i % 1000)
+	}
+}
+
+// TestWrapEngine_NoWrapCacheStaysBounded pins the memory ceiling of the
+// unwrapped layout cache. Without a budget, every line the user scrolls past
+// stays cached, so simply paging through a file grew the heap without limit.
+func TestWrapEngine_NoWrapCacheStaysBounded(t *testing.T) {
+	var buf bytes.Buffer
+	for i := 0; i < 20000; i++ {
+		buf.WriteString(strings.Repeat("a", 79))
+		buf.WriteByte('\n')
+	}
+	pt := piecetable.New(buf.Bytes())
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.SetWidth(80)
+	we.ToggleWrap(false)
+
+	for i := 0; i < li.LineCount(); i++ {
+		we.GetFragments(i)
+	}
+
+	if we.noWrapCached > noWrapCacheBudget {
+		t.Errorf("cached %d cluster entries, budget is %d", we.noWrapCached, noWrapCacheBudget)
+	}
+
+	// The budget must not cost correctness: an evicted line is recomputed.
+	frags := we.GetFragments(0)
+	if len(frags) != 1 || frags[0].VisualWidth != 79 {
+		t.Fatalf("line 0 after eviction: %+v", frags)
+	}
+	if _, col := we.LogicalToVisual(40); col != 40 {
+		t.Errorf("column after eviction = %d, want 40", col)
+	}
+}
+
+// TestWrapEngine_NoWrapCacheInvalidatedOnEdit guards the counter that backs the
+// budget: a stale count would either leak or evict on every single lookup.
+func TestWrapEngine_NoWrapCacheInvalidatedOnEdit(t *testing.T) {
+	pt := piecetable.New([]byte("hello world\nsecond line\n"))
+	li := piecetable.NewLineIndex()
+	li.Rebuild(pt)
+	we := NewWrapEngine(pt, li)
+	we.SetWidth(80)
+	we.ToggleWrap(false)
+
+	we.GetFragments(0)
+	we.GetFragments(1)
+	cachedBefore := we.noWrapCached
+
+	insert := []byte("XX")
+	pt.Insert(0, insert)
+	li.UpdateAfterInsert(0, insert)
+	we.InvalidateFrom(0)
+
+	if we.noWrapCached != 0 {
+		t.Errorf("cluster count after full invalidation = %d, want 0", we.noWrapCached)
+	}
+	if cachedBefore == 0 {
+		t.Error("expected the unwrapped lines to be cached in the first place")
+	}
+	if got := we.GetFragments(0)[0].VisualWidth; got != 13 {
+		t.Errorf("width after edit = %d, want 13", got)
 	}
 }

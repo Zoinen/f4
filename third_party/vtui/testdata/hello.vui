@@ -1,0 +1,34 @@
+{
+  "vuiVersion": 1,
+  "root": {
+    "type": "Dialog",
+    "id": "helloDlg",
+    "props": { "title": " Hello vtui ", "showClose": true, "autoSize": true, "center": true },
+    "layout": { "type": "VBox", "spacing": 1, "margins": [1, 2, 1, 2] },
+    "children": [
+      {
+        "type": "Group",
+        "layout": { "type": "Form", "spacing": 1 },
+        "children": [
+          { "type": "Label", "props": { "text": "&Name:", "buddy": "nameEdit" } },
+          { "type": "Edit", "id": "nameEdit", "props": { "text": "Type here..." } }
+        ]
+      },
+      { "type": "Spacer", "props": { "stretch": 1 } },
+      {
+        "type": "Group",
+        "layout": { "type": "HBox", "spacing": 2, "align": "center" },
+        "children": [
+          { "type": "Button", "id": "okBtn", "props": { "text": "&Ok", "default": true } },
+          { "type": "Button", "id": "cancelBtn", "props": { "text": "&Cancel" } }
+        ]
+      }
+    ]
+  },
+  "connections": [
+    { "from": "okBtn", "signal": "clicked", "command": "CmOk" },
+    { "from": "cancelBtn", "signal": "clicked", "command": "CmCancel" },
+    { "from": "nameEdit", "signal": "changed", "emit": true }
+  ],
+  "tabOrder": ["nameEdit", "okBtn", "cancelBtn"]
+}

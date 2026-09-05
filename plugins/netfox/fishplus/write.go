@@ -150,8 +150,7 @@ func (c *Client) WriteFile(ctx context.Context, p string, data []byte) error {
 		return err
 	}
 	if _, err := w.Write(data); err != nil {
-		w.Close()
-		return err
+		return errors.Join(err, w.Close())
 	}
 	return w.Close()
 }

@@ -88,14 +88,14 @@ func RunCLI(argv []string) (code int, handled bool) {
 
 func runMount(spec *Spec, stdout, stderr io.Writer) int {
 	if err := spec.Validate(); err != nil {
-		fmt.Fprintf(stderr, "f4: %v\n", err)
+		diagnose(stderr, "f4: %v\n", err)
 		if errors.Is(err, ErrWriteNotImplemented) {
 			return ExitUnsupported
 		}
 		return ExitUsage
 	}
 	if !Supported() {
-		fmt.Fprintf(stderr, "f4: mounting is not supported on this platform\n")
+		diagnose(stderr, "f4: mounting is not supported on this platform\n")
 		return ExitUnsupported
 	}
 	if spec.Daemon {
@@ -112,7 +112,7 @@ func mountAndServe(spec *Spec, stdout, stderr io.Writer) int {
 	mountPoint, wait, err := mountOnce(*spec)
 	if err != nil {
 		reportReady(ready, readyMessage{OK: false, Error: err.Error()})
-		emit(stderr, spec.JSON, readyMessage{OK: false, Error: err.Error()},
+		_ = emit(stderr, spec.JSON, readyMessage{OK: false, Error: err.Error()}, // The exit status already reports this failure.
 			fmt.Sprintf("f4: mount %s: %v\n", spec.Source, err))
 		return ExitFailed
 	}
@@ -125,13 +125,21 @@ func mountAndServe(spec *Spec, stdout, stderr io.Writer) int {
 	})
 	if regErr != nil {
 		// A mount that works but is not listed is still a working mount.
-		fmt.Fprintf(stderr, "f4: warning: could not record the mount: %v\n", regErr)
+		diagnose(stderr, "f4: warning: could not record the mount: %v\n", regErr)
 	}
-	defer Deregister(rec.ID)
+	defer func() {
+		if err := Deregister(rec.ID); err != nil {
+			diagnose(stderr, "f4: warning: could not remove the mount record: %v\n", err)
+		}
+	}()
 
 	reportReady(ready, readyMessage{OK: true, MountPoint: mountPoint, PID: os.Getpid()})
-	emit(stdout, spec.JSON, readyMessage{OK: true, MountPoint: mountPoint, PID: os.Getpid()},
-		mountPoint+"\n")
+	if err := emit(stdout, spec.JSON, readyMessage{OK: true, MountPoint: mountPoint, PID: os.Getpid()},
+		mountPoint+"\n"); err != nil {
+		diagnose(stderr, "f4: report mounted path: %v\n", err)
+		_ = unmountOwn(mountPoint) // A failed mount command must not leave its mount behind.
+		return ExitFailed
+	}
 
 	// Held from here rather than looked up afterwards: by the time the wait
 	// returns the mount is gone from the registry, which is exactly when
@@ -141,7 +149,7 @@ func mountAndServe(spec *Spec, stdout, stderr io.Writer) int {
 	waitOrSignal(wait, mountPoint)
 	if mounted != nil {
 		if report := mounted.Stats(); report != "" {
-			fmt.Fprint(stderr, report)
+			diagnose(stderr, "%s", report)
 		}
 	}
 	return ExitOK
@@ -182,15 +190,15 @@ func waitOrSignal(wait func(), mountPoint string) {
 func spawnDaemon(spec *Spec, stdout, stderr io.Writer) int {
 	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(stderr, "f4: cannot locate the f4 binary: %v\n", err)
+		diagnose(stderr, "f4: cannot locate the f4 binary: %v\n", err)
 		return ExitFailed
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
-		fmt.Fprintf(stderr, "f4: %v\n", err)
+		diagnose(stderr, "f4: %v\n", err)
 		return ExitFailed
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }() // Read-side close errors cannot affect the readiness result.
 
 	cmd := exec.Command(exe, spec.ChildArgs()...)
 	cmd.Env = append(os.Environ(), daemonReadyFDEnv+"=3")
@@ -201,26 +209,33 @@ func spawnDaemon(spec *Spec, stdout, stderr io.Writer) int {
 	cmd.SysProcAttr = detachAttr()
 
 	if err := cmd.Start(); err != nil {
-		w.Close()
-		fmt.Fprintf(stderr, "f4: cannot start the mount process: %v\n", err)
+		_ = w.Close() // The child never started, so this pipe carried no data.
+		diagnose(stderr, "f4: cannot start the mount process: %v\n", err)
 		return ExitFailed
 	}
 	// The parent must drop its copy, or the read below never sees EOF.
-	w.Close()
+	if err := w.Close(); err != nil {
+		_ = cmd.Process.Kill()
+		diagnose(stderr, "f4: close readiness pipe: %v\n", err)
+		return ExitFailed
+	}
 
 	msg, err := awaitReady(r, spec.Timeout)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		fmt.Fprintf(stderr, "f4: mount %s: %v (try --foreground to see what happens)\n", spec.Source, err)
+		diagnose(stderr, "f4: mount %s: %v (try --foreground to see what happens)\n", spec.Source, err)
 		return ExitFailed
 	}
 	if !msg.OK {
-		emit(stderr, spec.JSON, msg, fmt.Sprintf("f4: mount %s: %s\n", spec.Source, msg.Error))
+		_ = emit(stderr, spec.JSON, msg, fmt.Sprintf("f4: mount %s: %s\n", spec.Source, msg.Error)) // The exit status already reports this failure.
 		return ExitFailed
 	}
 	// Let the child outlive us.
 	_ = cmd.Process.Release()
-	emit(stdout, spec.JSON, msg, msg.MountPoint+"\n")
+	if err := emit(stdout, spec.JSON, msg, msg.MountPoint+"\n"); err != nil {
+		diagnose(stderr, "f4: report mounted path: %v (mount remains active at %s)\n", err, msg.MountPoint)
+		return ExitFailed
+	}
 	return ExitOK
 }
 
@@ -279,13 +294,13 @@ func reportReady(w *os.File, msg readyMessage) {
 	if err == nil {
 		_, _ = w.Write(append(blob, '\n'))
 	}
-	w.Close()
+	_ = w.Close() // The parent observes a failed readiness write as EOF or a timeout.
 }
 
 func runUmount(spec *Spec, stdout, stderr io.Writer) int {
 	target := spec.Source
 	if strings.TrimSpace(target) == "" {
-		fmt.Fprintf(stderr, "f4: --umount needs a mount point\n")
+		diagnose(stderr, "f4: --umount needs a mount point\n")
 		return ExitUsage
 	}
 
@@ -294,7 +309,7 @@ func runUmount(spec *Spec, stdout, stderr io.Writer) int {
 	if !found {
 		abs, err := filepath.Abs(target)
 		if err != nil {
-			fmt.Fprintf(stderr, "f4: %v\n", err)
+			diagnose(stderr, "f4: %v\n", err)
 			return ExitUsage
 		}
 		mountPoint = filepath.Clean(abs)
@@ -312,16 +327,16 @@ func runUmount(spec *Spec, stdout, stderr io.Writer) int {
 
 	if err != nil {
 		if isBusy(err) {
-			emit(stderr, spec.JSON, readyMessage{Error: "busy", MountPoint: mountPoint},
+			_ = emit(stderr, spec.JSON, readyMessage{Error: "busy", MountPoint: mountPoint}, // The exit status already reports this failure.
 				fmt.Sprintf("f4: %s is busy — something is still inside it\n", mountPoint))
 			return ExitBusy
 		}
 		if !found {
-			emit(stderr, spec.JSON, readyMessage{Error: err.Error(), MountPoint: mountPoint},
+			_ = emit(stderr, spec.JSON, readyMessage{Error: err.Error(), MountPoint: mountPoint}, // The exit status already reports this failure.
 				fmt.Sprintf("f4: no mount at %s (%v)\n", mountPoint, err))
 			return ExitNoSuchMount
 		}
-		emit(stderr, spec.JSON, readyMessage{Error: err.Error(), MountPoint: mountPoint},
+		_ = emit(stderr, spec.JSON, readyMessage{Error: err.Error(), MountPoint: mountPoint}, // The exit status already reports this failure.
 			fmt.Sprintf("f4: unmount %s: %v\n", mountPoint, err))
 		return ExitFailed
 	}
@@ -329,7 +344,10 @@ func runUmount(spec *Spec, stdout, stderr io.Writer) int {
 	if found {
 		_ = Deregister(rec.ID)
 	}
-	emit(stdout, spec.JSON, readyMessage{OK: true, MountPoint: mountPoint}, "")
+	if err := emit(stdout, spec.JSON, readyMessage{OK: true, MountPoint: mountPoint}, ""); err != nil {
+		diagnose(stderr, "f4: report unmount result: %v\n", err)
+		return ExitFailed
+	}
 	return ExitOK
 }
 
@@ -345,7 +363,7 @@ func isBusy(err error) bool {
 func runList(spec *Spec, stdout, stderr io.Writer) int {
 	recs, err := Mounts()
 	if err != nil {
-		fmt.Fprintf(stderr, "f4: %v\n", err)
+		diagnose(stderr, "f4: %v\n", err)
 		return ExitFailed
 	}
 	if spec.JSON {
@@ -355,7 +373,7 @@ func runList(spec *Spec, stdout, stderr io.Writer) int {
 			recs = []Record{}
 		}
 		if err := enc.Encode(recs); err != nil {
-			fmt.Fprintf(stderr, "f4: %v\n", err)
+			diagnose(stderr, "f4: %v\n", err)
 			return ExitFailed
 		}
 		return ExitOK
@@ -364,25 +382,41 @@ func runList(spec *Spec, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "MOUNT POINT\tMODE\tPID\tAGE\tSOURCE")
-	for _, r := range recs {
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
-			r.MountPoint, r.Mode(), r.PID, r.Age().Truncate(time.Second), r.Source)
+	if _, err := fmt.Fprintln(tw, "MOUNT POINT\tMODE\tPID\tAGE\tSOURCE"); err != nil {
+		diagnose(stderr, "f4: write mount list: %v\n", err)
+		return ExitFailed
 	}
-	tw.Flush()
+	for _, r := range recs {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\n",
+			r.MountPoint, r.Mode(), r.PID, r.Age().Truncate(time.Second), r.Source); err != nil {
+			diagnose(stderr, "f4: write mount list: %v\n", err)
+			return ExitFailed
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		diagnose(stderr, "f4: write mount list: %v\n", err)
+		return ExitFailed
+	}
 	return ExitOK
 }
 
 // emit writes either the JSON object or the human line, never both.
-func emit(w io.Writer, asJSON bool, msg readyMessage, human string) {
+func emit(w io.Writer, asJSON bool, msg readyMessage, human string) error {
 	if asJSON {
 		blob, err := json.Marshal(msg)
-		if err == nil {
-			fmt.Fprintf(w, "%s\n", blob)
+		if err != nil {
+			return err
 		}
-		return
+		_, err = fmt.Fprintf(w, "%s\n", blob)
+		return err
 	}
 	if human != "" {
-		fmt.Fprint(w, human)
+		_, err := fmt.Fprint(w, human)
+		return err
 	}
+	return nil
+}
+
+func diagnose(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...) // A failed diagnostic has nowhere else to be reported.
 }

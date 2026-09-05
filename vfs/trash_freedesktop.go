@@ -17,6 +17,8 @@ import (
 
 var _ TrashVFS = (*OSVFS)(nil)
 
+const privateTrashDirMode = 0700
+
 // MoveToTrash implements the FreeDesktop.org Trash specification. It never
 // invokes sudo and never falls back to a cross-device copy or Remove.
 func (v *OSVFS) MoveToTrash(ctx context.Context, path string) error {
@@ -50,14 +52,14 @@ func moveToFreedesktopTrash(ctx context.Context, source string) error {
 	}
 	sourceDev, _, ok := unixStatIdentity(sourceInfo)
 	if !ok {
-		return fmt.Errorf("cannot determine source filesystem for trash: %s", source)
+		return fmt.Errorf("cannot determine source filesystem for Recycle Bin: %s", source)
 	}
 
 	var homeTrash freedesktopTrash
 	homeRoot, homeErr := freedesktopHomeTrashRoot()
 	if homeErr == nil {
 		if isPathWithin(homeRoot, source) {
-			homeErr = fmt.Errorf("home trash is inside the selected item")
+			homeErr = fmt.Errorf("home Recycle Bin is inside the selected item")
 		} else {
 			homeTrash, homeErr = prepareHomeTrashAt(homeRoot)
 		}
@@ -75,12 +77,12 @@ func moveToFreedesktopTrash(ctx context.Context, source string) error {
 		return err
 	}
 	if source == mountRoot {
-		return fmt.Errorf("cannot move a filesystem mount root to trash: %s", source)
+		return fmt.Errorf("cannot move a filesystem mount root to Recycle Bin: %s", source)
 	}
 	volumeTrash, err := prepareVolumeTrash(mountRoot)
 	if err != nil {
 		if homeErr != nil {
-			return fmt.Errorf("home trash unavailable (%v); volume trash unavailable: %w", homeErr, err)
+			return fmt.Errorf("home Recycle Bin unavailable (%v); volume Recycle Bin unavailable: %w", homeErr, err)
 		}
 		return err
 	}
@@ -157,7 +159,7 @@ func ensureTrashSubdirs(t freedesktopTrash) error {
 }
 
 func ensurePrivateTrashDir(path string) error {
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, privateTrashDirMode); err != nil {
 		return err
 	}
 	info, err := os.Lstat(path)
@@ -166,13 +168,29 @@ func ensurePrivateTrashDir(path string) error {
 	}
 	_, owner, ok := unixStatIdentity(info)
 	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("unsafe trash directory: %s", path)
+		return fmt.Errorf("unsafe Recycle Bin directory: %s", path)
 	}
 	if owner != uint32(os.Getuid()) {
-		return fmt.Errorf("trash directory is owned by uid %d, not uid %d: %s", owner, os.Getuid(), path)
+		return fmt.Errorf("Recycle Bin directory is owned by uid %d, not uid %d: %s", owner, os.Getuid(), path)
 	}
 	if info.Mode().Perm()&0077 != 0 {
-		return fmt.Errorf("trash directory permissions are too broad (%#o): %s", info.Mode().Perm(), path)
+		// Existing desktop trash implementations may have created these
+		// directories with 0755/0775. Repair them when they are owned by the
+		// current user instead of making F8 deletion unusable forever.
+		if err := os.Chmod(path, privateTrashDirMode); err != nil {
+			return fmt.Errorf("cannot restrict Recycle Bin directory permissions (%#o): %s: %w", info.Mode().Perm(), path, err)
+		}
+		info, err = os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		_, owner, ok = unixStatIdentity(info)
+		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || owner != uint32(os.Getuid()) {
+			return fmt.Errorf("Recycle Bin directory changed while repairing permissions: %s", path)
+		}
+		if info.Mode().Perm()&0077 != 0 {
+			return fmt.Errorf("Recycle Bin directory permissions are too broad (%#o): %s", info.Mode().Perm(), path)
+		}
 	}
 	return nil
 }
@@ -214,17 +232,17 @@ func filesystemMountRoot(source string, sourceDevice uint64) (string, error) {
 
 func moveIntoFreedesktopTrash(ctx context.Context, source string, trash freedesktopTrash) error {
 	if isPathWithin(source, trash.root) {
-		return fmt.Errorf("item is already inside the trash: %s", source)
+		return fmt.Errorf("item is already inside the Recycle Bin: %s", source)
 	}
 	if isPathWithin(trash.root, source) {
-		return fmt.Errorf("cannot move an ancestor of the trash into itself: %s", source)
+		return fmt.Errorf("cannot move an ancestor of the Recycle Bin into itself: %s", source)
 	}
 	trashPath := source
 	if !trash.absolutePaths {
 		var err error
 		trashPath, err = filepath.Rel(trash.pathBase, source)
 		if err != nil || trashPath == "." || strings.HasPrefix(trashPath, ".."+string(filepath.Separator)) || trashPath == ".." {
-			return fmt.Errorf("cannot express trash path relative to mount root: %s", source)
+			return fmt.Errorf("cannot express Recycle Bin path relative to mount root: %s", source)
 		}
 	}
 	// EscapedPath applies URL percent-encoding while preserving path
@@ -234,7 +252,7 @@ func moveIntoFreedesktopTrash(ctx context.Context, source string, trash freedesk
 	encodedPath := (&url.URL{Path: filepath.ToSlash(trashPath)}).EscapedPath()
 	base := filepath.Base(source)
 	if base == "." || base == string(filepath.Separator) || base == "" {
-		return fmt.Errorf("invalid trash item name: %s", source)
+		return fmt.Errorf("invalid Recycle Bin item name: %s", source)
 	}
 
 	for suffix := 0; suffix < 100000; suffix++ {
@@ -271,7 +289,7 @@ func moveIntoFreedesktopTrash(ctx context.Context, source string, trash freedesk
 		}
 		return nil
 	}
-	return fmt.Errorf("cannot allocate a unique name in trash for %s", source)
+	return fmt.Errorf("cannot allocate a unique name in Recycle Bin for %s", source)
 }
 
 func writeExclusiveFile(path string, data []byte, mode os.FileMode) (err error) {

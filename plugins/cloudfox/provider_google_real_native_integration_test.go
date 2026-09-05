@@ -326,7 +326,7 @@ func openRealSavedGoogleBackend(t *testing.T) *googleDriveBackend {
 	if !filepath.IsAbs(configDir) {
 		t.Fatal("real CloudFox config directory must be absolute")
 	}
-	info, err := os.Stat(configDir)
+	info, err := os.Stat(configDir) // #nosec G703 -- the opted-in real-provider test intentionally loads the operator-supplied absolute config directory.
 	if err != nil || !info.IsDir() {
 		t.Fatal("real CloudFox config directory is unavailable")
 	}
@@ -532,7 +532,7 @@ func assertRealGoogleBytes(t *testing.T, ctx context.Context, backend Backend, l
 	if err != nil {
 		t.Fatalf("reopen Google Drive shortcut target: %v", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if len(expected) != 0 {
 		buffer := make([]byte, min(17, len(expected)))
 		n, readErr := reader.ReadAt(ctx, buffer, int64(len(expected)-len(buffer)))

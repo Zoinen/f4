@@ -45,12 +45,12 @@ func TestReadID3v2OverridesV1(t *testing.T) {
 		payload := append([]byte{3}, []byte(value)...)
 		buf := make([]byte, 10+len(payload))
 		copy(buf[:4], id)
-		binary.BigEndian.PutUint32(buf[4:8], uint32(len(payload)))
+		binary.BigEndian.PutUint32(buf[4:8], id3FixtureUint32(len(payload)))
 		copy(buf[10:], payload)
 		return buf
 	}
 	body := append(frame("TIT2", "V2 title"), frame("TRCK", "03/12")...)
-	header := []byte{'I', 'D', '3', 3, 0, 0, byte(len(body) >> 21), byte(len(body) >> 14), byte(len(body) >> 7), byte(len(body))}
+	header := []byte{'I', 'D', '3', 3, 0, 0, id3FixtureByte(len(body) >> 21), id3FixtureByte(len(body) >> 14), id3FixtureByte(len(body) >> 7), id3FixtureByte(len(body))}
 	data := append(header, body...)
 	padding := make([]byte, 128)
 	copy(padding[:3], "TAG")
@@ -68,6 +68,14 @@ func TestReadID3v2OverridesV1(t *testing.T) {
 	if meta.Title != "V2 title" || meta.Track != "03" || meta.Artist != "" {
 		t.Fatalf("metadata=%+v", meta)
 	}
+}
+
+func id3FixtureUint32(value int) uint32 {
+	return uint32(value) // #nosec G115 -- ID3 test frames are bounded well below the format's uint32 size field.
+}
+
+func id3FixtureByte(value int) byte {
+	return byte(value) // #nosec G115 -- callers pass seven-bit chunks from the small ID3 test body.
 }
 
 func TestReadImageDimensionsAndDate(t *testing.T) {

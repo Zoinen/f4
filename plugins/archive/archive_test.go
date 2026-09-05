@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -25,13 +26,81 @@ func TestActionExtractArchive_Integrity(t *testing.T) {
 	f, _ := os.Create(srcZip)
 	zw := zip.NewWriter(f)
 	fw, _ := zw.Create("extracted.txt")
-	fw.Write([]byte("content to extract"))
-	zw.Create("empty_dir/")
-	zw.Close()
-	f.Close()
+	if _, err := fw.Write([]byte("content to extract")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Create("empty_dir/"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	destDir := filepath.Join(tmpDir, "output")
-	os.Mkdir(destDir, 0755)
+	if err := os.Mkdir(destDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestActionExtractArchive_Encrypted7zPromptsForPassword(t *testing.T) {
+	sevenZip, err := exec.LookPath("7z")
+	if err != nil {
+		t.Skip("7z command is not installed")
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "secret.txt"), []byte("secret data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(tmpDir, "secret.7z")
+	// Keep headers visible: this is the real-world case where a wrong password
+	// can be accepted while listing the archive and rejected only by payload
+	// integrity validation during extraction.
+	cmd := exec.Command(sevenZip, "a", "-t7z", "-pCorrect", "-bd", archivePath, "secret.txt")
+	cmd.Dir = tmpDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create encrypted 7z: %v: %s", err, output)
+	}
+
+	destDir := filepath.Join(tmpDir, "output")
+	if err := os.Mkdir(destDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	prompts := 0
+	previousPrompt := archivePasswordPrompt
+	archivePasswordPrompt = func(context.Context, string) (string, error) {
+		prompts++
+		if prompts == 1 {
+			return "Wrong", nil
+		}
+		return "Correct", nil
+	}
+	t.Cleanup(func() { archivePasswordPrompt = previousPrompt })
+
+	app := &mockAppForProgress{
+		t:          t,
+		activeVfs:  vfs.NewOSVFS(tmpDir),
+		passiveVfs: vfs.NewOSVFS(destDir),
+		names:      []string{filepath.Base(archivePath)},
+		done:       make(chan struct{}),
+	}
+	actionExtractArchive(app)
+	<-app.done
+
+	if prompts != 2 {
+		t.Fatalf("password prompt count = %d, want 2", prompts)
+	}
+	data, err := os.ReadFile(filepath.Join(destDir, "secret.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "secret data" {
+		t.Fatalf("extracted content = %q, want %q", data, "secret data")
+	}
 }
 
 func TestZipCompression_Deflate(t *testing.T) {
@@ -40,7 +109,9 @@ func TestZipCompression_Deflate(t *testing.T) {
 
 	data := []byte(strings.Repeat("A", 1000))
 	filePath := filepath.Join(tmpDir, "data.txt")
-	os.WriteFile(filePath, data, 0644)
+	if err := os.WriteFile(filePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	out, err := os.Create(arcPath)
 	if err != nil {
@@ -57,7 +128,9 @@ func TestZipCompression_Deflate(t *testing.T) {
 	}
 
 	err = z.Archive(context.Background(), out, files)
-	out.Close()
+	if closeErr := out.Close(); closeErr != nil {
+		t.Fatalf("close output archive: %v", closeErr)
+	}
 
 	if err != nil {
 		t.Fatalf("Archiving failed: %v", err)
@@ -67,7 +140,7 @@ func TestZipCompression_Deflate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to open resulting zip: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if len(r.File) == 0 {
 		t.Fatal("Zip is empty")
@@ -150,12 +223,20 @@ func TestActionExtractArchive_ProgressUpdates(t *testing.T) {
 	f, _ := os.Create(srcZip)
 	zw := zip.NewWriter(f)
 	fw, _ := zw.Create("file.txt")
-	fw.Write([]byte("some data"))
-	zw.Close()
-	f.Close()
+	if _, err := fw.Write([]byte("some data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	destDir := filepath.Join(tmpDir, "output")
-	os.Mkdir(destDir, 0755)
+	if err := os.Mkdir(destDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 
 	activeVfs := vfs.NewOSVFS(tmpDir)
 	passiveVfs := vfs.NewOSVFS(destDir)
@@ -194,7 +275,9 @@ func TestActionAddArchive_ProgressUpdates(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("data"), 0644)
+	if err := os.WriteFile(filepath.Join(tmpDir, "file1.txt"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	activeVfs := vfs.NewOSVFS(tmpDir)
 
@@ -288,13 +371,21 @@ func TestActionExtractArchive_Cancellation(t *testing.T) {
 	zw := zip.NewWriter(f)
 	for i := 0; i < 100; i++ {
 		fw, _ := zw.Create(fmt.Sprintf("file_%d.txt", i))
-		fw.Write([]byte("some data to simulate work"))
+		if _, err := fw.Write([]byte("some data to simulate work")); err != nil {
+			t.Fatal(err)
+		}
 	}
-	zw.Close()
-	f.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	destDir := filepath.Join(tmpDir, "output_cancel")
-	os.Mkdir(destDir, 0755)
+	if err := os.Mkdir(destDir, 0700); err != nil {
+		t.Fatal(err)
+	}
 
 	activeVfs := vfs.NewOSVFS(tmpDir)
 	passiveVfs := vfs.NewOSVFS(destDir)

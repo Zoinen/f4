@@ -54,15 +54,15 @@ func (plugin *Plugin) GetName() string {
 
 func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	if api == nil {
-		return errors.New("Environment Manager: nil host API")
+		return errors.New("environment manager: nil host API")
 	}
 	contributions, ok := api.(vfs.ContributionHost)
 	if !ok {
-		return errors.New("Environment Manager: this host does not support plugin contributions")
+		return errors.New("environment manager: this host does not support plugin contributions")
 	}
 	environmentHost, ok := api.(vfs.ProcessEnvironmentHost)
 	if !ok {
-		return errors.New("Environment Manager: this host does not expose its process environment")
+		return errors.New("environment manager: this host does not expose its process environment")
 	}
 	plugin.mu.Lock()
 	if !plugin.options.WindowsCaseFold && !plugin.options.ExpandDollarSyntax && len(plugin.options.ReservedNames) == 0 {
@@ -73,7 +73,7 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	plugin.mu.Lock()
 	if plugin.initialized || plugin.api != nil {
 		plugin.mu.Unlock()
-		return errors.New("Environment Manager: plugin is already initialized")
+		return errors.New("environment manager: plugin is already initialized")
 	}
 	plugin.api = api
 	plugin.envHost = environmentHost
@@ -82,7 +82,7 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	store, loadErr := NewStoreWithOptions(plugin.settingsDirectory(), plugin.options)
 	if store == nil {
 		plugin.resetAfterFailedInit()
-		return fmt.Errorf("Environment Manager: open settings: %w", loadErr)
+		return fmt.Errorf("environment manager: open settings: %w", loadErr)
 	}
 	if loadErr != nil {
 		api.Log(loadErr.Error() + "; using defaults")
@@ -91,7 +91,7 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	engine, err := NewEngine(snapshotLines(initial), plugin.options)
 	if err != nil {
 		plugin.resetAfterFailedInit()
-		return fmt.Errorf("Environment Manager: capture baseline environment: %w", err)
+		return fmt.Errorf("environment manager: capture baseline environment: %w", err)
 	}
 	plugin.mu.Lock()
 	plugin.store = store
@@ -119,7 +119,7 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 		Run:            plugin.openFromMenu,
 	})
 	if err != nil {
-		return rollback(fmt.Errorf("Environment Manager: register panel command: %w", err))
+		return rollback(fmt.Errorf("environment manager: register panel command: %w", err))
 	}
 	registrations = append(registrations, panelRegistration)
 
@@ -134,13 +134,13 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 		Run:            plugin.configure,
 	})
 	if err != nil {
-		return rollback(fmt.Errorf("Environment Manager: register configuration command: %w", err))
+		return rollback(fmt.Errorf("environment manager: register configuration command: %w", err))
 	}
 	registrations = append(registrations, configRegistration)
 
 	prefixRegistration, err := contributions.RegisterCommandPrefix(prefixID, commandPrefix, plugin.handlePrefix)
 	if err != nil {
-		return rollback(fmt.Errorf("Environment Manager: register command prefix: %w", err))
+		return rollback(fmt.Errorf("environment manager: register command prefix: %w", err))
 	}
 	registrations = append(registrations, prefixRegistration)
 	plugin.mu.Lock()
@@ -152,12 +152,12 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 		Call: plugin.callMacro,
 	})
 	if err != nil {
-		return rollback(fmt.Errorf("Environment Manager: register macro provider: %w", err))
+		return rollback(fmt.Errorf("environment manager: register macro provider: %w", err))
 	}
 	registrations = append(registrations, macroRegistration)
 
 	if err := plugin.applyStoredConfig(); err != nil {
-		return rollback(fmt.Errorf("Environment Manager: apply startup profiles: %w", err))
+		return rollback(fmt.Errorf("environment manager: apply startup profiles: %w", err))
 	}
 	plugin.mu.Lock()
 	plugin.registrations = registrations
@@ -325,15 +325,6 @@ func (plugin *Plugin) setLastApplied(snapshot vfs.ProcessEnvironmentSnapshot) {
 	plugin.mu.Lock()
 	plugin.lastApplied = cloneEnvironmentSnapshot(snapshot)
 	plugin.mu.Unlock()
-}
-
-func (plugin *Plugin) log(format string, arguments ...any) {
-	plugin.mu.Lock()
-	api := plugin.api
-	plugin.mu.Unlock()
-	if api != nil {
-		api.Log(fmt.Sprintf(format, arguments...))
-	}
 }
 
 func snapshotLines(snapshot vfs.ProcessEnvironmentSnapshot) []string {

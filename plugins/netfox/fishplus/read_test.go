@@ -3,9 +3,9 @@ package fishplus
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,8 +44,13 @@ func TestFeaturesReadMode(t *testing.T) {
 // size cannot make the client allocate it.
 func TestReadRejectsOversizedFrame(t *testing.T) {
 	sess := newMockPeer(t, "ok FISHPLUS 1 dd base64 read:dd", func(w io.Writer, token string, req mockRequest) {
-		fmt.Fprintf(w, "S 10\n#%d\n", int64(MaxFrameLen)+1)
-		fmt.Fprintf(w, ".%s %s ok\n", token, req.ID)
+		if _, err := fmt.Fprintf(w, "S 10\n#%d\n", int64(MaxFrameLen)+1); err != nil {
+			t.Errorf("write oversized frame header: %v", err)
+			return
+		}
+		if _, err := fmt.Fprintf(w, ".%s %s ok\n", token, req.ID); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("write oversized frame terminator: %v", err)
+		}
 	}, 1)
 	if err := sess.Handshake(context.Background()); err != nil {
 		t.Fatalf("handshake: %v", err)
@@ -69,14 +74,13 @@ func TestReadAgainstLocalShell(t *testing.T) {
 	// Keep the length odd. Plain dd must not fall back to bs=1 when a read
 	// reaches EOF merely because the final byte count has no useful divisor.
 	blob := make([]byte, 300001)
-	rng := rand.New(rand.NewSource(7))
-	rng.Read(blob)
+	rng := fillDeterministicBytes(t, 7, blob)
 	blobPath := filepath.Join(dir, "a blob.bin")
-	if err := os.WriteFile(blobPath, blob, 0644); err != nil {
+	if err := os.WriteFile(blobPath, blob, 0600); err != nil {
 		t.Fatal(err)
 	}
 	emptyPath := filepath.Join(dir, "empty")
-	if err := os.WriteFile(emptyPath, nil, 0644); err != nil {
+	if err := os.WriteFile(emptyPath, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,9 +183,9 @@ func TestFileReadAtAndCache(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	blob := make([]byte, 200000)
-	rand.New(rand.NewSource(11)).Read(blob)
+	fillDeterministicBytes(t, 11, blob)
 	p := filepath.Join(dir, "handle.bin")
-	if err := os.WriteFile(p, blob, 0644); err != nil {
+	if err := os.WriteFile(p, blob, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -189,7 +193,7 @@ func TestFileReadAtAndCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	f.SetChunkSize(4096)
 	if f.Size() != int64(len(blob)) {
 		t.Errorf("Size = %d, want %d", f.Size(), len(blob))
@@ -246,7 +250,9 @@ func TestFileReadAtAndCache(t *testing.T) {
 		t.Errorf("ReadFile returned %d bytes, want %d", len(all), len(blob))
 	}
 
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file before closed-state check: %v", err)
+	}
 	if _, err := f.ReadAt(ctx, buf, 0); err != ErrClosed {
 		t.Errorf("ReadAt after Close = %v, want ErrClosed", err)
 	}

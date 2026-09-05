@@ -1,0 +1,13 @@
+{
+  "name": "vtui",
+  "version": "0.1.0",
+  "description": "Declarative, stateful Desktop-class TUI framework for Node.js",
+  "main": "index.js",
+  "types": "vtui.d.ts",
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "keywords": ["tui", "terminal", "gui", "far-manager", "turbo-vision"],
+  "author": "unxed",
+  "license": "BSD-3-Clause"
+}

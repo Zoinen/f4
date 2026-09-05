@@ -3,6 +3,7 @@ package envman
 import (
 	"errors"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -327,7 +328,7 @@ func TestPluginCloseWaitsForActiveEnvironmentOperation(t *testing.T) {
 
 func TestPluginRegistrationFailureRollsBackEveryEarlierContribution(t *testing.T) {
 	for failAt := 1; failAt <= 4; failAt++ {
-		t.Run(string(rune('0'+failAt)), func(t *testing.T) {
+		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
 			host := &failingContributionHost{envManTestHost: newEnvManTestHost(), failAt: failAt}
 			plugin := NewPlugin(t.TempDir())
 			if err := plugin.Init(host); err == nil {

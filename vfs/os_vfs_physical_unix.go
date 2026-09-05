@@ -30,6 +30,7 @@ func fillPhysicalSizeCheap(item *VFSItem, info os.FileInfo) {
 		// reached through multiple paths). Also free — Stat_t is
 		// already loaded. Windows and stubs leave these zero, so the
 		// scanner just doesn't dedup there.
+		// #nosec G115 -- Device is an opaque equality key; sign extension of a signed dev_t is lossless for identity comparisons.
 		item.Device = uint64(stat.Dev)
 		item.Inode = uint64(stat.Ino)
 	}
@@ -67,6 +68,7 @@ func (v *OSVFS) FileIdentity(_ context.Context, path string) (device, inode uint
 	if !ok {
 		return 0, 0, false
 	}
+	// #nosec G115 -- Device is an opaque equality key; sign extension of a signed dev_t is lossless for identity comparisons.
 	return uint64(stat.Dev), uint64(stat.Ino), true
 }
 

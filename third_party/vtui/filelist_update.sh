@@ -1,6 +1,6 @@
 #!/bin/bash
 
-OUTPUT="filelist.md"
+OUTPUT="FILELIST.md"
 
 echo "# Project Structure" > "$OUTPUT"
 echo "" >> "$OUTPUT"

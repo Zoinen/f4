@@ -92,6 +92,7 @@ func TestVMenu_ScrollbarMouseClick(t *testing.T) {
 	if m.TopPos != 0 { // 5 - height (5) = 0
 		t.Errorf("VMenu PageUp click failed, pos %d", m.TopPos)
 	}
+	m.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
 }
 func TestVMenu_Hotkeys(t *testing.T) {
 	m := NewVMenu("Menu")
@@ -642,6 +643,72 @@ func TestEdit_WordSelection_FarSpec(t *testing.T) {
 		t.Errorf("Selection fail: expected [0:12], got [%d:%d]", e.selStart, e.selEnd)
 	}
 }
+
+func TestEdit_WordSelection_BidiFullKeepsCtrlWordNavigation(t *testing.T) {
+	oldMode := DefaultBidiMode
+	DefaultBidiMode = BidiFull
+	defer func() { DefaultBidiMode = oldMode }()
+
+	left := NewEdit(0, 0, 100, "select this word")
+	left.ClearSelection()
+	left.curPos = len(left.text)
+	left.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	if left.selStart != 12 || left.selEnd != 16 {
+		t.Fatalf("BidiFull Ctrl+Shift+Left selected [%d:%d], want [12:16]", left.selStart, left.selEnd)
+	}
+
+	right := NewEdit(0, 0, 100, "select this word")
+	right.ClearSelection()
+	right.curPos = 0
+	right.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_RIGHT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	if right.selStart != 0 || right.selEnd != 7 {
+		t.Fatalf("BidiFull Ctrl+Shift+Right selected [%d:%d], want [0:7]", right.selStart, right.selEnd)
+	}
+}
+
+func TestEdit_WordSelection_FromFullValuePreservesWholeWord(t *testing.T) {
+	SetDefaultPalette()
+
+	e := NewEdit(0, 0, 20, "syslog")
+	e.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+
+	if e.selStart != 0 || e.selEnd != len(e.text) {
+		t.Fatalf("Ctrl+Shift+Left cleared the initial full selection: [%d:%d]", e.selStart, e.selEnd)
+	}
+
+	e.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: '1'})
+	if got := e.GetText(); got != "1" {
+		t.Fatalf("typing after Ctrl+Shift+Left produced %q, want %q", got, "1")
+	}
+}
+
+func TestEdit_WordSelection_FromFullValueKeepsDividerBoundary(t *testing.T) {
+	SetDefaultPalette()
+
+	e := NewEdit(0, 0, 20, "syslog.2.gz")
+	e.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode:  vtinput.VK_LEFT,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+
+	if e.selStart != 0 || e.selEnd != len([]rune("syslog.2.")) {
+		t.Fatalf("Ctrl+Shift+Left changed the divider boundary: [%d:%d]", e.selStart, e.selEnd)
+	}
+}
+
 func TestEdit_WordJumps_DifferentDividers(t *testing.T) {
 	// A change of divider kind is not a word boundary in far2l, so plain
 	// Ctrl+Right crosses the whole run at once (issue #280).
@@ -700,6 +767,7 @@ func TestEdit_RightArrow_FullSelection_StaysInFocus(t *testing.T) {
 	}
 }
 func TestEdit_FullSelectionColorsOnlyTextPortion(t *testing.T) {
+	preserveTestPalette(t)
 	SetDefaultPalette()
 	Palette[ColDialogEdit] = SetRGBBoth(0, 0xEEEEEC, 0x37322C)
 	Palette[ColDialogEditUnchanged] = SetRGBBoth(0, 0x2E2A24, 0xE6B450)
