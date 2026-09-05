@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/klauspost/compress/flate"
 	"github.com/unxed/archives"
 	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtui"
+	"github.com/unxed/zip"
 	zipperarchive "github.com/unxed/zipper/archive"
 )
 
@@ -106,6 +108,49 @@ func showArchivePasswordDialog(archiveName string, result chan<- archivePassword
 	}
 
 	vtui.FrameManager.Push(dlg)
+}
+
+// zipCryptoPayloadError reports the errors a ZipCrypto member produces when
+// a wrong password slips past the format's one-byte password check, which
+// happens for 1 in 256 wrong passwords: the stored payload then fails its
+// CRC (zip.ErrChecksum) or the deflate stream turns out to be garbage.
+// Neither error mentions a password, so isArchivePasswordRetryError cannot
+// see it; the archive VFS applies this only after it has installed a
+// password, i.e. when the member is known to be encrypted.
+func zipCryptoPayloadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, zip.ErrChecksum) {
+		return true
+	}
+	var corrupt flate.CorruptInputError
+	return errors.As(err, &corrupt)
+}
+
+// passwordInstalled reports whether the archive is open with a password,
+// i.e. whether its members are known to be encrypted.
+func (v *ArchiveVFS) passwordInstalled() bool {
+	if v == nil {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.password != ""
+}
+
+// memberReadError is applied to every error returned while reading a member
+// after a password has been installed. It reclassifies the ZipCrypto
+// wrong-password symptoms above as a rejected password, so the password
+// dialog comes back exactly as it does for the other 255 wrong passwords.
+func (v *ArchiveVFS) memberReadError(err error) error {
+	if v == nil || err == nil || !zipCryptoPayloadError(err) {
+		return err
+	}
+	if !v.passwordInstalled() {
+		return err
+	}
+	return fmt.Errorf("%w: %w", newArchivePasswordValidationError("payload does not decrypt with this password"), err)
 }
 
 // promptArchivePasswordUntilProvided asks for a password the way FAR does:

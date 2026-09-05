@@ -1252,6 +1252,16 @@ func init() {
 		Handler:     withPF(func(pf *PanelsFrame) { actionStartupSettings(pf) }),
 	})
 	RegisterAction(Action{
+		Name:        "Settings.Portable",
+		Area:        "Shell",
+		Label:       "Portable Mode",
+		LabelKey:    "Menu.PortableSettings",
+		Description: "Keep the profile next to the program (Far-style f4.ini) or in the user directory",
+		DescKey:     "Action.Settings.Portable.Desc",
+		MenuPath:    "Options",
+		Handler:     withPF(func(pf *PanelsFrame) { actionPortableSettings(pf) }),
+	})
+	RegisterAction(Action{
 		Name:        "Settings.Confirmations",
 		Area:        "Shell",
 		Label:       "Confirmations Settings",

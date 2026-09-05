@@ -823,6 +823,7 @@ func (w *archiveReadWrapper) extractToTempRandom(ctx context.Context) error {
 			break
 		}
 		n, errRead := src.Read(buf)
+		errRead = w.v.memberReadError(errRead)
 		if n > 0 {
 			if _, werr := tmp.Write(buf[:n]); werr != nil {
 				loopErr = werr
@@ -1145,10 +1146,12 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 	w.mu.Unlock()
 
 	// 7z may return a full-sized, garbage payload with EOF for a wrong
-	// password when its headers remain visible. Materialize 7z members before
-	// exposing bytes so the size/CRC checks can retry without leaking data to
-	// the caller. TAR/ZIP keep their lazy and random-access paths unchanged.
-	if v != nil && strings.EqualFold(filepath.Ext(v.displayName), ".7z") {
+	// password when its headers remain visible, and a ZipCrypto member whose
+	// wrong password slipped past the one-byte check yields garbage until the
+	// CRC is compared at EOF. Materialize such members before exposing bytes
+	// so the size/CRC checks can retry without leaking data to the caller.
+	// Unencrypted TAR/ZIP keep their lazy and random-access paths unchanged.
+	if v != nil && (strings.EqualFold(filepath.Ext(v.displayName), ".7z") || v.passwordInstalled()) {
 		if err := w.materialize(ctx, false); err != nil {
 			return 0, err
 		}
@@ -1162,6 +1165,7 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 	var err error
 	for {
 		n, err = f.Read(p)
+		err = w.v.memberReadError(err)
 		if n > 0 {
 			w.mu.Lock()
 			w.readPos += int64(n)
@@ -1492,7 +1496,7 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 		if info != nil {
 			fileName = info.Name()
 		}
-		errExtract := extractWithProgress(ctx, srcFile, tmp, size, fileName, update, reporter)
+		errExtract := v.memberReadError(extractWithProgress(ctx, srcFile, tmp, size, fileName, update, reporter))
 		_ = srcFile.Close() // The archive member was opened only for reading.
 		if errExtract == nil && hasExpectedCRC {
 			if _, err := tmp.Seek(0, io.SeekStart); err != nil {

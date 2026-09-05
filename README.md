@@ -103,6 +103,28 @@ are only defaults: the command line still wins on any individual run, and
 backend that turns out to be unusable on the current machine falls back to
 automatic selection rather than preventing f4 from starting.
 
+### Portable Mode
+
+Like Far Manager 3, f4 can keep its whole profile next to the binary instead
+of in the per-user directory (`%APPDATA%\f4`, `~/.config/f4`, ...). Drop an
+`f4.ini` (shared by `f4` and `f4-gui`) or `<binary>.ini` (e.g. `f4.exe.ini`)
+beside the executable:
+
+```ini
+[General]
+UseSystemProfiles = 0
+;Profile = %F4HOME%\Profile   ; optional; F4HOME is the binary's directory
+```
+
+Settings, history, `Macros/scripts`, `plugring`, styles and crash logs then
+live under `Profile/` (or the `Profile=` directory) and the folder can be
+copied to another machine as is. A commented `f4.example.ini` ships with every
+release; `Options > Portable mode` inside f4 writes the ini for you and offers
+to copy the current profile over. The switch applies on the next start — the
+ini is read before the profile is located, so the mode cannot be stored inside
+the profile itself. `F4_GENERAL_USE_SYSTEM_PROFILES=0` in the environment does
+the same for a single run.
+
 ### Integrated Terminal & OS Integration
 
 *   **Built-in Terminal:** A fully-fledged built-in terminal running underneath the panels, just like `far2l`.

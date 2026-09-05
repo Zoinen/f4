@@ -39,8 +39,8 @@ require (
 	github.com/unxed/tar v0.1.128
 	github.com/unxed/vtinput v0.1.7
 	github.com/unxed/vtui v0.1.316
-	github.com/unxed/zip v0.1.130
-	github.com/unxed/zipper v0.1.152
+	github.com/unxed/zip v0.1.131
+	github.com/unxed/zipper v0.1.153
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/woozymasta/png v1.2.0
 	github.com/yuin/gopher-lua v1.1.1
@@ -127,7 +127,7 @@ require (
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.19.2
 	github.com/klauspost/pgzip v1.2.6
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/miekg/dns v1.1.57 // indirect

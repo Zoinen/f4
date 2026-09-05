@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -35,34 +33,64 @@ func GetF4ConfigDir() string {
 		if err != nil {
 			exe = os.Args[0]
 		}
+		if abs, err := filepath.Abs(exe); err == nil {
+			exe = abs
+		}
 		exeDir := filepath.Dir(exe)
 
-		// Ищем Far.exe.ini (имя_бинарника.ini) или f4.ini в папке программы
-		iniPath := exe + ".ini"
-		// #nosec G703 -- iniPath is the executable path plus ".ini", not an untrusted path component.
-		if _, err := os.Stat(iniPath); os.IsNotExist(err) {
-			iniPath = filepath.Join(exeDir, "f4.ini")
+		// F4HOME mirrors Far3's FARHOME: the directory the executable was
+		// started from. It is exported so that Profile= in <exe>.ini,
+		// user menu commands, macros and plugins can all refer to it, and
+		// it is set before the ini is read so the ini can already use it.
+		if os.Getenv("F4HOME") == "" {
+			_ = os.Setenv("F4HOME", exeDir)
 		}
 
-		useSystemProfiles := true
-		// #nosec G703 -- iniPath is either executable.ini or the fixed f4.ini name in the executable directory.
-		if _, err := os.Stat(iniPath); err == nil {
-			ini := ParseIni(bytesReader(iniPath))
-			if ini.GetString("General", "UseSystemProfiles", "1") == "0" {
-				useSystemProfiles = false
-			}
-		}
-
-		if !useSystemProfiles {
-			cachedF4Portable = true
-			cachedF4ConfigDir = filepath.Join(exeDir, "Profile")
+		// Ищем f4.exe.ini (имя_бинарника.ini) или f4.ini в папке программы
+		ini := LoadIni(portableIniPath(exe))
+		cachedF4ConfigDir, cachedF4Portable = resolveProfileDir(exeDir, ini)
+		if cachedF4Portable {
 			_ = os.MkdirAll(cachedF4ConfigDir, 0700)
-		} else {
-			sysDir, _ := userConfigDir()
-			cachedF4ConfigDir = filepath.Join(sysDir, "f4")
 		}
 	})
 	return cachedF4ConfigDir
+}
+
+// resolveProfileDir picks the configuration directory from the executable
+// directory and the parsed <exe>.ini, following Far3's Far.exe.ini rules:
+//
+//   - UseSystemProfiles missing or non-zero: the per-user directory
+//     (%APPDATA%\f4, ~/.config/f4, ...) exactly as before.
+//   - UseSystemProfiles=0: <exeDir>/Profile, unless [General] Profile= names
+//     another directory. That value may use %F4HOME% (or $F4HOME) for the
+//     executable directory and any other environment variable; a relative
+//     path is taken relative to the executable directory.
+//
+// It is separated from GetF4ConfigDir so tests can exercise every branch
+// without touching the process-wide cache.
+func resolveProfileDir(exeDir string, ini *IniFile) (dir string, portable bool) {
+	if ini == nil || ini.GetString("General", "UseSystemProfiles", "1") != "0" {
+		sysDir, _ := userConfigDir()
+		return filepath.Join(sysDir, "f4"), false
+	}
+	return portableProfileDirFor(exeDir, ini), true
+}
+
+// portableProfileDirFor is the directory a portable profile lands in for the
+// given executable directory and ini, regardless of UseSystemProfiles.
+func portableProfileDirFor(exeDir string, ini *IniFile) string {
+	custom := ""
+	if ini != nil {
+		custom = strings.TrimSpace(ini.GetString("General", "Profile", ""))
+	}
+	if custom == "" {
+		return filepath.Join(exeDir, "Profile")
+	}
+	custom = expandProfileVars(custom, exeDir)
+	if !filepath.IsAbs(custom) {
+		custom = filepath.Join(exeDir, custom)
+	}
+	return filepath.Clean(custom)
 }
 
 // IsPortableProfile reports whether f4.ini selected the executable-local
@@ -71,11 +99,6 @@ func GetF4ConfigDir() string {
 func IsPortableProfile() bool {
 	_ = GetF4ConfigDir()
 	return cachedF4Portable
-}
-
-func bytesReader(p string) io.Reader {
-	b, _ := os.ReadFile(p)
-	return bytes.NewReader(b)
 }
 
 func parseHistoryShowTimes(value string) [historyTypeCount]int {
