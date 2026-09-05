@@ -337,6 +337,16 @@ qt6_add_resources(f4-qt-host f4_app_icon
   BASE "${F4_QT_HOST_ROOT}/../../assets/icon"
   FILES "${F4_QT_HOST_ROOT}/../../assets/icon/f4.svg"
 )
+if(WIN32)
+  # Keep the runtime icon identical to the multi-resolution PE resource above.
+  # Use a separate BASE so the qrc URL remains /icons/app/f4.ico instead of
+  # exposing the generated/ directory in the runtime resource path.
+  qt6_add_resources(f4-qt-host f4_windows_app_icon
+    PREFIX "/F4QtHost/icons/app"
+    BASE "${F4_QT_HOST_ROOT}/../../assets/icon/generated"
+    FILES "${F4_WINDOWS_ICON_FILE}"
+  )
+endif()
 
 target_include_directories(f4-qt-host PRIVATE "${F4_QT_HOST_ROOT}/src")
 

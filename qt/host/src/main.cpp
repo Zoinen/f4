@@ -164,8 +164,16 @@ int main(int argc, char *argv[])
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
+#if defined(Q_OS_WIN)
+    // The Windows executable embeds the same multi-resolution ICO in its PE
+    // resource. Load that ICO for QWindow as well, so title-bar and taskbar
+    // requests select the prepared size instead of scaling the SVG fallback.
+    const QIcon applicationIcon(
+        QStringLiteral(":/F4QtHost/icons/app/f4.ico"));
+#else
     const QIcon applicationIcon(
         QStringLiteral(":/F4QtHost/icons/app/f4.svg"));
+#endif
     if (!applicationIcon.isNull()) {
         QGuiApplication::setWindowIcon(applicationIcon);
     }
