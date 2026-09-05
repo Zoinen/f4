@@ -1,3 +1,4 @@
+#include "F4ApplicationIcon.h"
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
@@ -19,7 +20,6 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QGuiApplication>
-#include <QIcon>
 #include <QKeySequence>
 #include <QProcess>
 #include <QPointer>
@@ -164,11 +164,9 @@ int main(int argc, char *argv[])
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
-    const QIcon applicationIcon(
-        QStringLiteral(":/F4QtHost/icons/app/f4.svg"));
-    if (!applicationIcon.isNull()) {
-        QGuiApplication::setWindowIcon(applicationIcon);
-    }
+    // On macOS this is deliberately a no-op: LaunchServices must keep the
+    // adaptive Icon Composer asset from the application bundle authoritative.
+    F4ApplicationIcon::installRuntimeFallback();
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Qt/QML sidecar renderer for f4"));
