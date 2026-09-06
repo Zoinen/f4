@@ -454,7 +454,7 @@ func SetupUI() {
 	// are generated from the action registry and must reflect the
 	// user's overrides from hotkeys.ini.
 	InitHelpSystem()
-	vtui.FrameManager.EventFilter = MacroMgr.Filter
+	vtui.FrameManager.EventFilter = applicationActivationFilter(MacroMgr.Filter)
 
 	pluginsDisabled := false
 	for _, arg := range os.Args {

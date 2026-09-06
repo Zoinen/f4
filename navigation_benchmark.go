@@ -243,7 +243,7 @@ func navigationBenchmarkTraceID(outer, action map[string]any) string {
 
 func navigationBenchmarkIsNavigationAction(action string) bool {
 	switch action {
-	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh":
+	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh", "editor.mouse":
 		return true
 	default:
 		return false
@@ -300,6 +300,8 @@ func navigationBenchmarkTraceForKey(message map[string]any, timing *navigationBe
 		action = "key.tab"
 	case vtinput.VK_F4:
 		action = "key.f4"
+	case vtinput.VK_F3:
+		action = "key.f3"
 	case vtinput.VK_ESCAPE:
 		action = "key.escape"
 	case vtinput.VK_RIGHT:

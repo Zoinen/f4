@@ -115,7 +115,15 @@ bool validShellPatchValue(const QString &key, const QVariant &value)
 
 bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
 {
-    if (key == QStringLiteral("cursorVisible")) {
+    if (key == QStringLiteral("layoutRevision")
+        || key == QStringLiteral("windowGeneration")) {
+        return nonNegativeInteger(value);
+    }
+    if (key == QStringLiteral("cursorVisible")
+        || key == QStringLiteral("selection")
+        || key == QStringLiteral("selectionBold")
+        || key == QStringLiteral("selectionUnderline")
+        || key == QStringLiteral("selectionStrikeout")) {
         return valueHasType(value, QMetaType::Bool);
     }
     if (key == QStringLiteral("cursorShape")) {
@@ -126,7 +134,10 @@ bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
         return shape == QStringLiteral("underline")
             || shape == QStringLiteral("block");
     }
-    if (key == QStringLiteral("topBarRight")) {
+    if (key == QStringLiteral("topBarRight")
+        || key == QStringLiteral("selectionForeground")
+        || key == QStringLiteral("selectionBackground")
+        || key == QStringLiteral("documentKey")) {
         return valueHasType(value, QMetaType::QString);
     }
     qlonglong number = 0;
@@ -135,7 +146,10 @@ bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
     }
     if (key == QStringLiteral("cursorLine")
         || key == QStringLiteral("cursorPos")
-        || key == QStringLiteral("cursorAbsoluteRow")) {
+        || key == QStringLiteral("cursorAbsoluteRow")
+        || key == QStringLiteral("cursorAbsoluteColumn")
+        || key == QStringLiteral("selectionAnchorRow")
+        || key == QStringLiteral("selectionAnchorColumn")) {
         return number >= 0;
     }
     return key == QStringLiteral("cursorVisualRow")
@@ -1257,6 +1271,8 @@ bool applyScenePatch(const QVariantMap &message,
             return false;
         }
         static const QSet<QString> surfaceStateKeys = {
+            QStringLiteral("layoutRevision"),
+            QStringLiteral("windowGeneration"),
             QStringLiteral("cursorLine"),
             QStringLiteral("cursorPos"),
             QStringLiteral("cursorVisualRow"),
@@ -1264,8 +1280,44 @@ bool applyScenePatch(const QVariantMap &message,
             QStringLiteral("cursorVisible"),
             QStringLiteral("cursorShape"),
             QStringLiteral("cursorAbsoluteRow"),
+            QStringLiteral("cursorAbsoluteColumn"),
+            QStringLiteral("selection"),
+            QStringLiteral("selectionAnchorRow"),
+            QStringLiteral("selectionAnchorColumn"),
+            QStringLiteral("selectionForeground"),
+            QStringLiteral("selectionBackground"),
+            QStringLiteral("selectionBold"),
+            QStringLiteral("selectionUnderline"),
+            QStringLiteral("selectionStrikeout"),
+            QStringLiteral("documentKey"),
             QStringLiteral("topBarRight"),
         };
+        const QVariantMap state = surfacePatch.value(QStringLiteral("set")).toMap();
+        for (const QString &key : {QStringLiteral("layoutRevision"),
+                                   QStringLiteral("windowGeneration")}) {
+            if (!state.contains(key))
+                continue; // Older producers send cursor/status scalars only.
+            qulonglong incoming = 0;
+            qulonglong current = 0;
+            qulonglong presented = 0;
+            if (!nonNegativeInteger(state.value(key), &incoming)
+                || !nonNegativeInteger(surface.value(key), &current)
+                || !nonNegativeInteger(presentationSurface.value(key), &presented)
+                || incoming != current || incoming != presented) {
+                *error = QStringLiteral("Scene surface patch %1 mismatch").arg(key);
+                return false;
+            }
+        }
+        if (state.contains(QStringLiteral("documentKey"))) {
+            const QVariant incoming = state.value(QStringLiteral("documentKey"));
+            if (incoming.metaType().id() != QMetaType::QString
+                || incoming.toString().isEmpty()
+                || incoming != surface.value(QStringLiteral("documentKey"))
+                || incoming != presentationSurface.value(QStringLiteral("documentKey"))) {
+                *error = QStringLiteral("Scene surface patch documentKey mismatch");
+                return false;
+            }
+        }
         const QVariantMap mapPatch = {
             {QStringLiteral("set"),
              surfacePatch.value(QStringLiteral("set"))},
@@ -1278,6 +1330,12 @@ bool applyScenePatch(const QVariantMap &message,
                 validSurfaceStatePatchValue, nullptr, error)) {
             return false;
         }
+        // These are fences for the existing row mapping, not content changes.
+        // Keeping them in surfaceKeys would route a cursor-only transaction
+        // through documentChanged and invalidate all row-bearing QML bindings.
+        next.surfaceKeys.remove(QStringLiteral("layoutRevision"));
+        next.surfaceKeys.remove(QStringLiteral("windowGeneration"));
+        next.surfaceKeys.remove(QStringLiteral("documentKey"));
         next.scene.insert(QStringLiteral("surface"), surface);
         next.presentationScene.insert(QStringLiteral("surface"),
                                       presentationSurface);

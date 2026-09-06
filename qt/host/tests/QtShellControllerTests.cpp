@@ -789,11 +789,12 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
         message.at("capabilities").as<std::map<std::string, bool>>();
     QCOMPARE(capabilities.at("panelCatalogMetadataV1"), true);
     QCOMPARE(capabilities.at("panelCatalogRowsV1"), true);
+    QCOMPARE(capabilities.at("documentViewportV1"), true);
 #if defined(Q_OS_MACOS)
-    QCOMPARE(capabilities.size(), size_t(3));
+    QCOMPARE(capabilities.size(), size_t(4));
     QCOMPARE(capabilities.at("macPlatformServicesV1"), true);
 #else
-    QCOMPARE(capabilities.size(), size_t(2));
+    QCOMPARE(capabilities.size(), size_t(3));
 #endif
 
     QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);

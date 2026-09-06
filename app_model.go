@@ -379,6 +379,8 @@ func appFrameVMenu(frame vtui.Frame) (*vtui.VMenu, string) {
 		return item.VMenu, item.bottomHint
 	case *userMenuFrame:
 		return item.VMenu, item.bottomHint
+	case interface{ MenuControl() *vtui.VMenu }:
+		return item.MenuControl(), ""
 	default:
 		return nil, ""
 	}
@@ -404,7 +406,16 @@ func (item appVMenu) model() extui.MenuModel {
 			"menuBarSubmenu": item.menuBarSubmenu,
 		},
 	}
-	if parent := item.menu.ParentMenu(); parent != nil {
+	if owner, ok := item.menu.GetOwner().(*vtui.ComboBox); ok && owner.DropdownOnly {
+		menu.OwnerID = vtui.SemanticID(owner)
+		menu.Presentation = "dropdown"
+	}
+	if parent := item.menu.ParentFrame(); parent != nil {
+		menu.ParentID = vtui.SemanticID(parent)
+		menu.AnchorIndex = item.menu.ParentIndex()
+	} else if parent := item.menu.ParentMenu(); parent != nil {
+		// Compatibility for menu controls linked before their owning frame
+		// identity was recorded.
 		menu.ParentID = vtui.SemanticID(parent)
 		menu.AnchorIndex = item.menu.ParentIndex()
 	}
@@ -433,7 +444,7 @@ func (item appVMenu) model() extui.MenuModel {
 			Header:     source.Header,
 			Disabled:   disabled,
 			Checked:    checked,
-			HasSubmenu: source.Submenu != nil,
+			HasSubmenu: item.menu.HasSubmenu(i),
 		})
 	}
 	return menu
@@ -982,50 +993,64 @@ func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
 
 func appSurfaceFromLegacy(node map[string]any) extui.SurfaceModel {
 	surface := extui.SurfaceModel{
-		ID:                 semanticString(node["id"]),
-		Kind:               semanticString(node["kind"]),
-		DefaultBackground:  semanticString(node["defaultBackground"]),
-		Title:              semanticString(node["title"]),
-		Path:               semanticString(node["path"]),
-		LocalPath:          semanticString(node["localPath"]),
-		BaseName:           semanticString(node["baseName"]),
-		Mode:               semanticString(node["mode"]),
-		TopBarLeft:         semanticString(node["topBarLeft"]),
-		TopBarRight:        semanticString(node["topBarRight"]),
-		IconColor:          semanticString(node["iconColor"]),
-		Busy:               appBool(node["busy"]),
-		Dirty:              appBool(node["dirty"]),
-		Saving:             appBool(node["saving"]),
-		HexMode:            appBool(node["hexMode"]),
-		WrapMode:           appBool(node["wrapMode"]),
-		WordWrap:           appBool(node["wordWrap"]),
-		Overtype:           appBool(node["overtype"]),
-		TopOffset:          appInt64(node["topOffset"]),
-		Size:               appInt64(node["size"]),
-		CursorLine:         semanticInt(node["cursorLine"]),
-		CursorPos:          semanticInt(node["cursorPos"]),
-		CursorVisualRow:    semanticInt(node["cursorVisualRow"]),
-		CursorVisualColumn: semanticInt(node["cursorVisualColumn"]),
-		CursorVisible:      appBool(node["cursorVisible"]),
-		CursorShape:        semanticString(node["cursorShape"]),
-		ScrollTop:          semanticInt(node["scrollTop"]),
-		ScrollLeft:         semanticInt(node["scrollLeft"]),
-		DocumentKey:        semanticString(node["documentKey"]),
-		ScrollAction:       semanticString(node["scrollAction"]),
-		ScrollUnit:         semanticString(node["scrollUnit"]),
-		WindowStart:        appInt64(node["windowStart"]),
-		WindowEnd:          appInt64(node["windowEnd"]),
-		ViewportStart:      appInt64(node["viewportStart"]),
-		ViewportSpan:       appInt64(node["viewportSpan"]),
-		ContentExtent:      appInt64(node["contentExtent"]),
-		ContentExtentKnown: appBool(node["contentExtentKnown"]),
-		ViewportRow:        semanticInt(node["viewportRow"]),
-		ViewportRows:       semanticInt(node["viewportRows"]),
-		CursorAbsoluteRow:  appInt64(node["cursorAbsoluteRow"]),
-		WindowGeneration:   uint64(appInt64(node["windowGeneration"])),
-		WindowContentKey:   semanticString(node["windowContentKey"]),
-		Selection:          appBool(node["selection"]),
-		Autocomplete:       appMap(node["autocomplete"]),
+		ID:                      semanticString(node["id"]),
+		Kind:                    semanticString(node["kind"]),
+		DefaultBackground:       semanticString(node["defaultBackground"]),
+		Title:                   semanticString(node["title"]),
+		Path:                    semanticString(node["path"]),
+		LocalPath:               semanticString(node["localPath"]),
+		BaseName:                semanticString(node["baseName"]),
+		Mode:                    semanticString(node["mode"]),
+		TopBarLeft:              semanticString(node["topBarLeft"]),
+		TopBarRight:             semanticString(node["topBarRight"]),
+		IconColor:               semanticString(node["iconColor"]),
+		Busy:                    appBool(node["busy"]),
+		Dirty:                   appBool(node["dirty"]),
+		Saving:                  appBool(node["saving"]),
+		HexMode:                 appBool(node["hexMode"]),
+		WrapMode:                appBool(node["wrapMode"]),
+		WordWrap:                appBool(node["wordWrap"]),
+		Overtype:                appBool(node["overtype"]),
+		TopOffset:               appInt64(node["topOffset"]),
+		Size:                    appInt64(node["size"]),
+		CursorLine:              semanticInt(node["cursorLine"]),
+		CursorPos:               semanticInt(node["cursorPos"]),
+		CursorVisualRow:         semanticInt(node["cursorVisualRow"]),
+		CursorVisualColumn:      semanticInt(node["cursorVisualColumn"]),
+		CursorVisible:           appBool(node["cursorVisible"]),
+		CursorShape:             semanticString(node["cursorShape"]),
+		CursorAbsoluteColumn:    semanticInt(node["cursorAbsoluteColumn"]),
+		ScrollTop:               semanticInt(node["scrollTop"]),
+		ScrollLeft:              semanticInt(node["scrollLeft"]),
+		DocumentKey:             semanticString(node["documentKey"]),
+		ScrollAction:            semanticString(node["scrollAction"]),
+		ScrollUnit:              semanticString(node["scrollUnit"]),
+		WindowStart:             appInt64(node["windowStart"]),
+		WindowEnd:               appInt64(node["windowEnd"]),
+		ViewportStart:           appInt64(node["viewportStart"]),
+		ViewportSpan:            appInt64(node["viewportSpan"]),
+		ContentExtent:           appInt64(node["contentExtent"]),
+		ContentExtentKnown:      appBool(node["contentExtentKnown"]),
+		ViewportRow:             semanticInt(node["viewportRow"]),
+		ViewportRows:            semanticInt(node["viewportRows"]),
+		CursorAbsoluteRow:       appInt64(node["cursorAbsoluteRow"]),
+		WindowGeneration:        uint64(appInt64(node["windowGeneration"])),
+		ViewportColumns:         semanticInt(node["viewportColumns"]),
+		WindowRequestGeneration: uint64(appInt64(node["windowRequestGeneration"])),
+		GeometryRevision:        uint64(appInt64(node["geometryRevision"])),
+		LayoutRevision:          uint64(appInt64(node["layoutRevision"])),
+		LayoutPending:           semanticBool(node["layoutPending"]),
+		LoadError:               semanticString(node["loadError"]),
+		WindowContentKey:        semanticString(node["windowContentKey"]),
+		Selection:               appBool(node["selection"]),
+		SelectionAnchorRow:      appInt64(node["selectionAnchorRow"]),
+		SelectionAnchorColumn:   semanticInt(node["selectionAnchorColumn"]),
+		SelectionForeground:     semanticString(node["selectionForeground"]),
+		SelectionBackground:     semanticString(node["selectionBackground"]),
+		SelectionBold:           appBool(node["selectionBold"]),
+		SelectionUnderline:      appBool(node["selectionUnderline"]),
+		SelectionStrikeout:      appBool(node["selectionStrikeout"]),
+		Autocomplete:            appMap(node["autocomplete"]),
 	}
 	for _, row := range appMapSlice(node["rows"]) {
 		surface.Rows = append(surface.Rows, appTextRowFromLegacy(row))
@@ -1099,13 +1124,15 @@ func appOperationsQueueFromLegacy(node map[string]any) extui.OperationsQueueMode
 
 func appTextRowFromLegacy(node map[string]any) extui.TextRowModel {
 	return extui.TextRowModel{
-		Index:       semanticInt(node["index"]),
-		VisualRow:   semanticInt(node["visualRow"]),
-		LogicalLine: semanticInt(node["logicalLine"]),
-		Offset:      appInt64(node["offset"]),
-		EndOffset:   appInt64(node["endOffset"]),
-		Text:        semanticString(node["text"]),
-		Runs:        appRunsFromLegacy(node["runs"]),
+		Index:          semanticInt(node["index"]),
+		VisualRow:      semanticInt(node["visualRow"]),
+		LogicalLine:    semanticInt(node["logicalLine"]),
+		Offset:         appInt64(node["offset"]),
+		EndOffset:      appInt64(node["endOffset"]),
+		VisualWidth:    semanticInt(node["visualWidth"]),
+		HasVisualWidth: node["visualWidth"] != nil,
+		Text:           semanticString(node["text"]),
+		Runs:           appRunsFromLegacy(node["runs"]),
 	}
 }
 

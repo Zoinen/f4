@@ -183,17 +183,19 @@ QtObject {
 
     function workspaceTabIconName(tab) {
         tab = tab || ({})
-        const configured = cleanText(tab.iconName)
-        if (configured !== "")
-            return configured
+        // The semantic surface kind is authoritative.  A tab can receive a
+        // header-only update before a full scene, so an older iconName must
+        // not make a viewer/editor look like the panels surface again.
         switch (cleanText(tab.surfaceKind)) {
         case "operationsQueue": return "list-checks"
         case "editor": return "file-pen-line"
         case "viewer": return "file-text"
+        case "imageViewer": return "image"
         case "terminal": return "square-terminal"
         case "panels": return "panels-top-left"
-        default: return "panels-top-left"
         }
+        const configured = cleanText(tab.iconName)
+        return configured !== "" ? configured : "panels-top-left"
     }
 
     function workspaceTabLabel(tab) {

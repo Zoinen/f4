@@ -22,9 +22,10 @@ type trackedReadRange struct {
 }
 
 type tailTrackingFile struct {
-	size int64
-	mu   sync.Mutex
-	read []trackedReadRange
+	size         int64
+	newlineEvery int64
+	mu           sync.Mutex
+	read         []trackedReadRange
 }
 
 type largeBinaryFile struct {
@@ -144,6 +145,13 @@ func (f *tailTrackingFile) ReadAt(ctx context.Context, p []byte, off int64) (int
 	}
 	for i := 0; i < n; i++ {
 		p[i] = 'x'
+	}
+	if f.newlineEvery > 0 {
+		for absolute := off; absolute < off+int64(n); absolute++ {
+			if (absolute+1)%f.newlineEvery == 0 {
+				p[absolute-off] = '\n'
+			}
+		}
 	}
 	f.mu.Lock()
 	f.read = append(f.read, trackedReadRange{offset: off, length: n})
@@ -350,14 +358,19 @@ func TestViewerView_PageDownKeepsFinalTextPageStable(t *testing.T) {
 }
 
 func TestViewerView_EndJumpReadsOnlyTailOfLargeFile(t *testing.T) {
-	const fileSize = int64(392077017)
+	const (
+		fileSize = int64(392077017)
+		lineSize = int64(97)
+		height   = int64(40)
+	)
+	want := ((fileSize-1)/lineSize - (height - 1)) * lineSize
 	for _, tc := range []struct {
 		name string
 		wrap bool
 	}{{name: "wrapped", wrap: true}, {name: "unwrapped", wrap: false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-			file := &tailTrackingFile{size: fileSize}
+			file := &tailTrackingFile{size: fileSize, newlineEvery: lineSize}
 			indexer := &indexingVFS{offsets: []int64{0}, total: 1}
 			ctx, cancel := context.WithCancel(context.Background())
 			backend := &ViewerBackend{
@@ -369,38 +382,42 @@ func TestViewerView_EndJumpReadsOnlyTailOfLargeFile(t *testing.T) {
 				ctx:          ctx,
 				cancelCtx:    cancel,
 			}
-			vv := &ViewerView{backend: backend, WrapMode: tc.wrap}
+			vv := &ViewerView{
+				backend: backend, WrapMode: tc.wrap,
+				nativeViewportColumns: 120, nativeViewportRows: 40,
+			}
 			defer vv.Close()
-			vv.SetPosition(0, 0, 120, 40)
 
 			if !vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_END}) {
 				t.Fatal("End was not handled")
 			}
 			deadline := time.After(2 * time.Second)
-			for vv.Busy || vv.TopOffset == 0 {
+			for vv.Busy {
 				select {
 				case task := <-vtui.FrameManager.TaskChan:
 					task()
 				case <-deadline:
-					t.Fatal("tail-only End jump timed out")
+					t.Fatal("bounded End jump timed out")
 				}
 			}
 
+			if vv.TopOffset != want {
+				t.Fatalf("End top offset=%d, want %d", vv.TopOffset, want)
+			}
 			if indexer.calls != 0 {
-				t.Fatalf("End jump made %d whole-file line-index calls", indexer.calls)
+				t.Fatalf("anchored End jump made %d whole-file line-index calls", indexer.calls)
 			}
 			ranges := file.ranges()
 			if len(ranges) != 1 {
-				t.Fatalf("End jump made %d range reads, want one: %+v", len(ranges), ranges)
+				t.Fatalf("anchored End jump made %d source reads, want one: %+v", len(ranges), ranges)
 			}
-			if ranges[0].length > 256*1024 {
-				t.Fatalf("End jump read %d bytes, want at most one 256 KiB window", ranges[0].length)
-			}
-			if ranges[0].offset < fileSize-256*1024 {
-				t.Fatalf("End jump read from offset %d, want only the file tail", ranges[0].offset)
-			}
-			if vv.TopOffset < fileSize-256*1024 {
-				t.Fatalf("End jump landed at %d, outside the final cache window", vv.TopOffset)
+			for _, read := range ranges {
+				if read.length > 256*1024 {
+					t.Fatalf("End jump issued an oversized source read: %+v", read)
+				}
+				if read.offset < fileSize-256*1024 {
+					t.Fatalf("End jump read outside the final source window: %+v", read)
+				}
 			}
 		})
 	}
@@ -589,7 +606,10 @@ func TestViewerView_FileClosure(t *testing.T) {
 
 	// 2. Проверка закрытия через HandleCommand
 	mockFile.closed = false
-	vv.Done = false
+	vv, err = NewViewerView(context.Background(), v, "test.txt")
+	if err != nil {
+		t.Fatalf("Failed to create second viewer: %v", err)
+	}
 	vv.HandleCommand(vtui.CmClose, nil)
 
 	if !vv.IsDone() {

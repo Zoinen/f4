@@ -109,6 +109,7 @@ class F4GalleryBridgeTests final : public QObject
 private slots:
     void initTestCase();
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
+    void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
     void deferredCursorCommitsOnlyLatest();
     void staleCursorIntentRetriesAgainstNewCatalog();
@@ -398,6 +399,44 @@ void F4GalleryBridgeTests::initTestCase()
     // Enable it before constructing a bridge so frame-boundary tracing can be
     // verified deterministically.
     QVERIFY(qputenv("F4_NAV_BENCHMARK_TRACE", QByteArrayLiteral("1")));
+}
+
+void F4GalleryBridgeTests::documentWindowTraceWaitsForCommittedRenderSync()
+{
+    F4GalleryBridge bridge(nullptr);
+    BenchmarkMessageCapture capture;
+    bridge.notifyRenderSynchronized();
+    bridge.recordDocumentWindowCommit({{"documentKey", "doc-trace"},
+        {"kind", "viewer"}, {"layoutRevision", 4}, {"windowGeneration", 7},
+        {"windowStart", 23}, {"rowCount", 49}, {"prepareMs", 3},
+        {"windowContentKey", "styled-publication-hash"},
+        {"rowsAndPlacementMs", 8}, {"finishMs", 4}, {"text", "must not be logged"}});
+    bridge.notifyFrameSwapped(1); // This frame predates the commit.
+    auto events = capture.events();
+    QCOMPARE(events.size(), 1);
+    QCOMPARE(events.first().value("event").toString(), "qt.document.window.committed");
+    QVERIFY(!events.first().contains("text"));
+    bridge.notifyRenderSynchronized();
+    const qint64 before = F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    bridge.captureFrameSwapped();
+    const qint64 after = F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    QTest::qWait(10);
+    events = capture.events();
+    QCOMPARE(events.size(), 2);
+    const auto frame = events.last();
+    QCOMPARE(frame.value("event").toString(), "qt.document.window.frame.swapped");
+    QCOMPARE(frame.value("documentKey").toString(), "doc-trace");
+    QCOMPARE(frame.value("layoutRevision").toInt(), 4);
+    QCOMPARE(frame.value("windowGeneration").toInt(), 7);
+    QCOMPARE(frame.value("rowCount").toInt(), 49);
+    QCOMPARE(frame.value("windowContentKey").toString(), QString("styled-publication-hash"));
+    QCOMPARE(frame.value("prepareMs").toInt(), 3);
+    QCOMPARE(frame.value("rowsAndPlacementMs").toInt(), 8);
+    QCOMPARE(frame.value("finishMs").toInt(), 4);
+    const qint64 boundary = frame.value("monotonicNs").toInteger();
+    QVERIFY(boundary >= before && boundary <= after);
+    bridge.notifyFrameSwapped(3);
+    QCOMPARE(capture.events().size(), 2);
 }
 
 void F4GalleryBridgeTests::frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery()

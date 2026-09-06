@@ -398,3 +398,131 @@ func TestVMenuCloseChainNotifiesEachMenuExactlyOnce(t *testing.T) {
 			rootClosed, childClosed)
 	}
 }
+
+type wrappedVMenuTestFrame struct {
+	*VMenu
+}
+
+func TestVMenuCustomSubmenuFrameLifecycle(t *testing.T) {
+	previous := FrameManager
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	FrameManager = fm
+	defer func() { FrameManager = previous }()
+	fm.Push(NewDesktop())
+
+	rootMenu := NewVMenu("Root")
+	rootMenu.SetPosition(10, 5, 30, 12)
+	rootFrame := &wrappedVMenuTestFrame{VMenu: rootMenu}
+	closed := 0
+	var children []*wrappedVMenuTestFrame
+	submenuFactory := func() Frame {
+		childMenu := NewVMenu("Child")
+		childMenu.AddItem(MenuItem{ID: "home", Text: "Home"})
+		childMenu.OnClose = func() { closed++ }
+		child := &wrappedVMenuTestFrame{VMenu: childMenu}
+		children = append(children, child)
+		return child
+	}
+	rootMenu.AddItem(MenuItem{
+		ID: "locations", Text: "Locations", SubmenuFrame: submenuFactory,
+	})
+	fm.PushMenu(rootFrame)
+
+	if rootFrame.MenuControl() != rootMenu || !rootMenu.HasSubmenu(0) {
+		t.Fatal("custom menu-frame provider or submenu capability was not retained")
+	}
+	rootMenu.Show(scr)
+	if got := rune(scr.GetCell(rootMenu.X2-2, rootMenu.Y1+1).Char); got != '▶' {
+		t.Fatalf("custom submenu indicator = %q, want right chevron", got)
+	}
+	if !rootMenu.OpenSubmenu(0) || len(children) != 1 {
+		t.Fatal("failed to open custom submenu frame")
+	}
+	first := children[0]
+	if fm.GetTopFrame() != first || rootMenu.childFrame != first {
+		t.Fatalf("custom wrapper was not pushed as the actual frame: top=%T child=%T",
+			fm.GetTopFrame(), rootMenu.childFrame)
+	}
+	if first.ParentMenu() != rootMenu || first.ParentFrame() != rootFrame ||
+		first.ParentIndex() != 0 {
+		t.Fatalf("custom child relationship = menu %p frame %T index %d",
+			first.ParentMenu(), first.ParentFrame(), first.ParentIndex())
+	}
+
+	if !first.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT,
+	}) {
+		t.Fatal("Left was not handled by custom child")
+	}
+	if fm.GetTopFrame() != rootFrame || rootMenu.IsDone() || !first.IsDone() ||
+		rootMenu.childMenu != nil || rootMenu.childFrame != nil || closed != 1 {
+		t.Fatalf("Left lifecycle: top=%T rootDone=%v childDone=%v child=%p frame=%T closed=%d",
+			fm.GetTopFrame(), rootMenu.IsDone(), first.IsDone(), rootMenu.childMenu,
+			rootMenu.childFrame, closed)
+	}
+
+	if !rootMenu.OpenSubmenu(0) || len(children) != 2 {
+		t.Fatal("failed to reopen custom submenu frame")
+	}
+	second := children[1]
+	if !second.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE,
+	}) {
+		t.Fatal("Escape was not handled by custom child")
+	}
+	if fm.GetTopFrame() != rootFrame || rootMenu.IsDone() || !second.IsDone() || closed != 2 {
+		t.Fatalf("Escape lifecycle: top=%T rootDone=%v childDone=%v closed=%d",
+			fm.GetTopFrame(), rootMenu.IsDone(), second.IsDone(), closed)
+	}
+
+	if !rootMenu.OpenSubmenu(0) || len(children) != 3 {
+		t.Fatal("failed to open custom child for replacement")
+	}
+	third := children[2]
+	_, oldY, _, _ := third.GetPosition()
+	rootMenu.ReplaceItems([]MenuItem{
+		{ID: "header", Text: "Places", Header: true},
+		{ID: "locations", Text: "Locations", SubmenuFrame: submenuFactory},
+	})
+	_, newY, _, _ := third.GetPosition()
+	if rootMenu.childMenu != third.VMenu || rootMenu.childFrame != third ||
+		fm.GetTopFrame() != third || third.ParentIndex() != 1 ||
+		third.ParentFrame() != rootFrame || newY != oldY+1 {
+		t.Fatalf("replacement lost custom child: menu=%p frame=%T top=%T parent=%T index=%d y=%d->%d",
+			rootMenu.childMenu, rootMenu.childFrame, fm.GetTopFrame(), third.ParentFrame(),
+			third.ParentIndex(), oldY, newY)
+	}
+	rootMenu.SetPosition(20, 8, 40, 15)
+	third.RepositionSubmenu()
+	repositionedX, repositionedY, _, _ := third.GetPosition()
+	if repositionedX != 41 || repositionedY != 10 {
+		t.Fatalf("custom child explicit reposition = (%d,%d), want (41,10)",
+			repositionedX, repositionedY)
+	}
+
+	rootMenu.CloseSubmenu()
+	rootMenu.CloseSubmenu()
+	if fm.GetTopFrame() != rootFrame || rootMenu.IsDone() || !third.IsDone() || closed != 3 {
+		t.Fatalf("explicit close lifecycle: top=%T rootDone=%v childDone=%v closed=%d",
+			fm.GetTopFrame(), rootMenu.IsDone(), third.IsDone(), closed)
+	}
+
+	if !rootMenu.OpenSubmenu(1) || len(children) != 4 {
+		t.Fatal("failed to open custom child for chain close")
+	}
+	fourth := children[3]
+	rootMenu.CloseChain()
+	rootMenu.CloseChain()
+	if !rootMenu.IsDone() || !fourth.IsDone() || rootMenu.childFrame != nil || closed != 4 {
+		t.Fatalf("chain close lifecycle: rootDone=%v childDone=%v frame=%T closed=%d",
+			rootMenu.IsDone(), fourth.IsDone(), rootMenu.childFrame, closed)
+	}
+	for _, frame := range fm.frames {
+		if frame == fourth {
+			t.Fatal("chain close left the custom child wrapper in the frame stack")
+		}
+	}
+}

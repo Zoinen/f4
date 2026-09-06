@@ -10,134 +10,237 @@ import (
 	"github.com/unxed/vtui"
 )
 
-// AsyncBuffer provides non-blocking access to a file, returning ErrLoading
-// and triggering background fetches when data is missing.
+// AsyncBuffer retains the editor's original-source chunks. Missing reads use a
+// single sequential loader, not a goroutine per chunk. The indexer can consume
+// the same source directly with ReadContext without polling the UI task queue.
 type AsyncBuffer struct {
 	file      vfs.ReadAtCloser
 	size      int
 	ctx       context.Context
 	cancelCtx context.CancelFunc
 
-	mu        sync.Mutex
-	loaded    map[int][]byte // Chunk index -> Data
-	fetching  map[int]bool   // Chunk index -> is currently being fetched
-	chunkSize int
+	mu           sync.Mutex
+	loaded       map[int][]byte
+	fetching     map[int]bool
+	chunkSize    int
+	worker       bool
+	readToken    chan struct{}
+	errors       map[int]error
+	redrawQueued bool
 }
 
 func NewAsyncBuffer(ctx context.Context, f vfs.ReadAtCloser) *AsyncBuffer {
 	bCtx, bCancel := context.WithCancel(ctx)
 	return &AsyncBuffer{
-		file:      f,
-		size:      int(f.Size()),
-		ctx:       bCtx,
-		cancelCtx: bCancel,
-		loaded:    make(map[int][]byte),
-		fetching:  make(map[int]bool),
-		chunkSize: 32 * 1024, // 32 KB chunks
+		file: f, size: int(f.Size()), ctx: bCtx, cancelCtx: bCancel,
+		loaded: make(map[int][]byte), fetching: make(map[int]bool), chunkSize: 32 * 1024,
 	}
 }
 
 func (b *AsyncBuffer) Close() {
-	b.cancelCtx()
+	if b.cancelCtx != nil {
+		b.cancelCtx()
+	}
 }
 
-func (b *AsyncBuffer) Size() int {
-	return b.size
-}
+func (b *AsyncBuffer) Size() int { return b.size }
 
-// Prewarm synchronously loads the first chunk so the first render
-// never sees ErrLoading, avoiding a brief [Loading...] flash.
-func (b *AsyncBuffer) prewarm() {
-	if b.size == 0 {
-		return
-	}
-	sz := b.chunkSize
-	if sz > b.size {
-		sz = b.size
-	}
-	data := make([]byte, sz)
-	n, err := b.file.ReadAt(b.ctx, data, 0)
-	if b.ctx.Err() != nil {
-		return
-	}
+// seedPrefix transfers the already-read encoding probe into the original
+// source buffer. A partial first chunk remains readable without a second read.
+func (b *AsyncBuffer) seedPrefix(prefix []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if err == nil || err == io.EOF {
-		b.loaded[0] = data[:n]
+	for off := 0; off < len(prefix); off += b.chunkSize {
+		b.loaded[off/b.chunkSize] = prefix[off:min(off+b.chunkSize, len(prefix))]
 	}
+}
+
+func (b *AsyncBuffer) prewarm() {
+	_, _ = b.ReadContext(b.ctx, 0, min(b.chunkSize, b.size))
 }
 
 func (b *AsyncBuffer) Read(offset, length int) ([]byte, error) {
+	if err := b.ctx.Err(); err != nil {
+		return nil, err
+	}
 	if offset < 0 || offset >= b.size || length <= 0 {
 		return nil, nil
 	}
-	if offset+length > b.size {
-		length = b.size - offset
-	}
-
-	startChunk := offset / b.chunkSize
-	endChunk := (offset + length - 1) / b.chunkSize
-
-	res := make([]byte, 0, length)
-	missingData := false
-
+	length = min(length, b.size-offset)
 	b.mu.Lock()
-	for i := startChunk; i <= endChunk; i++ {
-		if data, ok := b.loaded[i]; ok {
-			// Chunk is loaded. Extract needed bytes.
-			cStart := i * b.chunkSize
-
-			takeStart := offset - cStart
-			if takeStart < 0 {
-				takeStart = 0
-			}
-
-			takeEnd := (offset + length) - cStart
-			if takeEnd > len(data) {
-				takeEnd = len(data)
-			}
-
-			if takeEnd > takeStart {
-				res = append(res, data[takeStart:takeEnd]...)
-			}
-		} else {
-			missingData = true
-			if !b.fetching[i] {
-				b.fetching[i] = true
-				go b.fetchChunk(i)
-			}
+	defer b.mu.Unlock()
+	missing := false
+	var failure error
+	for i := offset / b.chunkSize; i <= (offset+length-1)/b.chunkSize; i++ {
+		end := min(offset+length-i*b.chunkSize, b.chunkSize)
+		if len(b.loaded[i]) >= end {
+			continue
 		}
+		if err := b.errors[i]; err != nil {
+			failure = err
+			delete(b.errors, i) // A subsequent explicit request may retry.
+			continue
+		}
+		missing = true
+		b.fetching[i] = true
 	}
-	b.mu.Unlock()
-
-	if missingData {
+	if missing && !b.worker {
+		b.worker = true
+		go b.fetchPending()
+	}
+	if failure != nil {
+		return nil, failure
+	}
+	if missing {
 		return nil, piecetable.ErrLoading
 	}
-	return res, nil
+	return b.copyRangeLocked(offset, length), nil
 }
 
-func (b *AsyncBuffer) fetchChunk(idx int) {
-	off := int64(idx * b.chunkSize)
-	sz := b.chunkSize
-	if off+int64(sz) > int64(b.size) {
-		sz = int(int64(b.size) - off)
+func (b *AsyncBuffer) copyRangeLocked(offset, length int) []byte {
+	if offset/b.chunkSize == (offset+length-1)/b.chunkSize {
+		start := offset % b.chunkSize
+		return b.loaded[offset/b.chunkSize][start : start+length]
 	}
+	result := make([]byte, 0, length)
+	for at := offset; at < offset+length; {
+		data := b.loaded[at/b.chunkSize]
+		start := at % b.chunkSize
+		n := min(len(data)-start, offset+length-at)
+		result = append(result, data[start:start+n]...)
+		at += n
+	}
+	return result
+}
 
-	buf := make([]byte, sz)
-	n, err := b.file.ReadAt(b.ctx, buf, off)
-
+// ReadContext waits for real bytes, never a timer or a UI redraw. Reads are
+// bounded by the existing chunk size and serialized with interactive misses.
+func (b *AsyncBuffer) ReadContext(ctx context.Context, offset, length int) ([]byte, error) {
+	if offset < 0 || offset >= b.size || length <= 0 {
+		return nil, nil
+	}
+	length = min(length, b.size-offset)
+	for i := offset / b.chunkSize; i <= (offset+length-1)/b.chunkSize; i++ {
+		if err := b.loadChunk(ctx, i); err != nil {
+			return nil, err
+		}
+	}
 	b.mu.Lock()
-	delete(b.fetching, idx)
+	defer b.mu.Unlock()
+	return b.copyRangeLocked(offset, length), nil
+}
 
-	if b.ctx.Err() == nil && (err == nil || err == io.EOF) {
-		b.loaded[idx] = buf[:n]
-	} else if err != nil && err != context.Canceled {
-		// Report error but allow retry on next UI scroll
-		vtui.DebugLog("AsyncBuffer: failed to fetch chunk %d: %v", idx, err)
+func (b *AsyncBuffer) loadChunk(ctx context.Context, idx int) error {
+	b.mu.Lock()
+	if b.readToken == nil {
+		b.readToken = make(chan struct{}, 1)
+		b.readToken <- struct{}{}
 	}
+	token := b.readToken
 	b.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.ctx.Done():
+		return b.ctx.Err()
+	case <-token:
+	}
+	defer func() { token <- struct{}{} }()
+	if err := b.ctx.Err(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	sz := min(b.chunkSize, b.size-idx*b.chunkSize)
+	b.mu.Lock()
+	prefix := b.loaded[idx]
+	b.mu.Unlock()
+	if len(prefix) >= sz {
+		return nil
+	}
+	data := make([]byte, sz)
+	copy(data, prefix)
+	readCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(b.ctx, cancel)
+	_, err := readDocumentBytes(readCtx, b.file, data[len(prefix):], int64(idx*b.chunkSize+len(prefix)))
+	stop()
+	cancel()
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.ctx.Err(); err != nil {
+		return err
+	}
+	b.loaded[idx] = data
+	delete(b.errors, idx)
+	return nil
+}
 
-	vtui.FrameManager.PostTask(func() {
-		vtui.FrameManager.Redraw()
-	})
+func (b *AsyncBuffer) fetchPending() {
+	for {
+		b.mu.Lock()
+		idx := -1
+		for pending := range b.fetching {
+			if idx < 0 || pending < idx {
+				idx = pending
+			}
+		}
+		if idx < 0 || b.ctx.Err() != nil {
+			clear(b.fetching)
+			b.worker = false
+			b.mu.Unlock()
+			return
+		}
+		b.mu.Unlock()
+		err := b.loadChunk(b.ctx, idx)
+		b.mu.Lock()
+		delete(b.fetching, idx)
+		if err != nil && b.ctx.Err() == nil {
+			if b.errors == nil {
+				b.errors = make(map[int]error)
+			}
+			b.errors[idx] = err
+		}
+		queueRedraw := b.ctx.Err() == nil && vtui.FrameManager != nil && !b.redrawQueued
+		if queueRedraw {
+			b.redrawQueued = true
+		}
+		b.mu.Unlock()
+		if queueRedraw {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+				b.mu.Lock()
+				b.redrawQueued = false
+				b.mu.Unlock()
+				return b.ctx.Err() == nil
+			})
+		}
+	}
+}
+
+// readDocumentBytes respects short reads and errors without manufacturing zero
+// bytes. Callers bound dst to their source window or prepared document size.
+func readDocumentBytes(ctx context.Context, file vfs.ReadAtCloser, dst []byte, off int64) (int, error) {
+	total := 0
+	for total < len(dst) {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		// Direct-local operations remain bounded even for explicit long reads.
+		end := min(len(dst), total+256*1024)
+		n, err := file.ReadAt(ctx, dst[total:end], off+int64(total))
+		if n < 0 || n > len(dst)-total {
+			return total, io.ErrUnexpectedEOF
+		}
+		total += n
+		if err != nil && !(err == io.EOF && total == len(dst)) {
+			return total, err
+		}
+		if n == 0 && total < len(dst) {
+			return total, io.ErrNoProgress
+		}
+	}
+	return total, nil
 }

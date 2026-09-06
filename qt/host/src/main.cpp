@@ -162,6 +162,10 @@ int main(int argc, char *argv[])
     // color scheme make Qt Quick controls and ZoinGallery's shared style pick
     // light-theme (black) title-bar icons on that dark surface.
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+    // Qt's built-in TextInput caret timer otherwise requests scene-graph
+    // frames forever. f4 supplies an activity-bounded custom caret where a
+    // blink cue is useful, and leaves every other input with a solid caret.
+    QGuiApplication::styleHints()->setCursorFlashTime(0);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
 #if defined(Q_OS_WIN)
@@ -310,6 +314,13 @@ int main(int argc, char *argv[])
     if (const int exitCode = startupFailureExitCode(); exitCode != 0) {
         return exitCode;
     }
+
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged,
+                     &controller, [&controller](Qt::ApplicationState state) {
+        controller.sendApplicationFocus(state == Qt::ApplicationActive);
+    });
+    controller.sendApplicationFocus(
+        app.applicationState() == Qt::ApplicationActive);
 
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral(":/"));

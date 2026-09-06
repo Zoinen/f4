@@ -1,6 +1,7 @@
 package textlayout
 
 import (
+	"io"
 	"sort"
 	"unicode/utf8"
 
@@ -16,7 +17,31 @@ type LineFragment struct {
 	ByteOffsetStart int // Смещение начала фрагмента (от начала всего файла/буфера)
 	ByteOffsetEnd   int // Смещение конца фрагмента
 	VisualWidth     int // Ширина фрагмента в колонках терминала (учитывая CJK)
+	// VisualColumnStart is the logical-line column of the first cell. Tabs
+	// continue their logical tab stops across a soft wrap.
+	VisualColumnStart int
+	RuneStart         int // Logical-line rune index, for syntax attributes.
+	Loading           bool
 }
+
+// A line's existing layout entry also owns its unfinished scan. No source
+// content is retained: the continuation is just the coordinates of the one
+// unfinished row. Completed lines need only their fragments.
+type lineLayout struct {
+	fragments []LineFragment
+	pending   *lineScan
+}
+
+type lineScan struct {
+	offset, start, column, runeStart int
+	width, runes                     int
+	spaceEnd, spaceWidth, spaceRunes int
+	stopped                          bool // A newline was reached before the index.
+}
+
+func (l *lineLayout) complete() bool { return l.fragments != nil && l.pending == nil }
+
+const layoutReadBytes = 4096
 
 // WrapEngine отвечает за вычисление визуальной разметки текста.
 type WrapEngine struct {
@@ -24,7 +49,7 @@ type WrapEngine struct {
 	li            *piecetable.LineIndex
 	wrapWidth     int
 	wordWrap      bool
-	fragmentCache [][]LineFragment
+	fragmentCache []lineLayout
 	tabSize       int
 
 	// rowOffsets[i] хранит общее количество визуальных строк во всех
@@ -33,7 +58,8 @@ type WrapEngine struct {
 	totalRows  int
 	validUntil int // Index of the last logical line with a valid calculated row offset
 
-	tmpBuf []byte // Reusable buffer for avoiding allocations
+	tmpBuf        []byte // Reusable buffer for avoiding allocations
+	lastReadError error
 }
 
 // growingCacheCapacity keeps the two line-indexed caches amortized O(1) when
@@ -68,7 +94,7 @@ func (we *WrapEngine) resizeFragmentCache(lineCount int) {
 		}
 		return
 	}
-	grown := make([][]LineFragment, lineCount,
+	grown := make([]lineLayout, lineCount,
 		growingCacheCapacity(cap(we.fragmentCache), lineCount))
 	copy(grown, we.fragmentCache)
 	we.fragmentCache = grown
@@ -100,6 +126,7 @@ func NewWrapEngine(pt *piecetable.PieceTable, li *piecetable.LineIndex) *WrapEng
 		wordWrap:      true,
 		fragmentCache: nil,
 		tabSize:       8,
+		validUntil:    -1,
 	}
 }
 
@@ -144,6 +171,7 @@ func (we *WrapEngine) InvalidateCache() {
 	we.validUntil = -1
 	we.rowOffsets = nil
 	we.totalRows = 0
+	we.lastReadError = nil
 }
 
 func (we *WrapEngine) InvalidateFrom(logLineIdx int) {
@@ -152,7 +180,7 @@ func (we *WrapEngine) InvalidateFrom(logLineIdx int) {
 	}
 	if we.fragmentCache != nil && logLineIdx < len(we.fragmentCache) {
 		for i := logLineIdx; i < len(we.fragmentCache); i++ {
-			we.fragmentCache[i] = nil
+			we.fragmentCache[i] = lineLayout{}
 		}
 	}
 	if logLineIdx <= we.validUntil {
@@ -160,272 +188,393 @@ func (we *WrapEngine) InvalidateFrom(logLineIdx int) {
 	}
 }
 
-// GetFragments возвращает визуальные фрагменты для одной логической строки.
+// GetFragments explicitly requests the complete logical line. Viewport callers
+// use GetFragmentsThrough so a giant line cannot monopolize its first frame.
 func (we *WrapEngine) GetFragments(logLineIdx int) []LineFragment {
-	lineCount := we.li.LineCount()
-	we.resizeFragmentCache(lineCount)
+	return we.GetFragmentsThrough(logLineIdx, int(^uint(0)>>1))
+}
 
-	if logLineIdx < 0 || logLineIdx >= lineCount {
+// GetFragmentsThrough resolves only the requested fragment prefix. A pending
+// suffix is never returned as an authoritative fragment or visual row count.
+func (we *WrapEngine) GetFragmentsThrough(logLineIdx, count int) []LineFragment {
+	we.advanceLine(logLineIdx, max(1, count), int(^uint(0)>>1), -1, -1)
+	if logLineIdx < 0 || logLineIdx >= len(we.fragmentCache) {
 		return nil
 	}
-
-	if we.fragmentCache[logLineIdx] != nil {
-		return we.fragmentCache[logLineIdx]
+	layout := &we.fragmentCache[logLineIdx]
+	if len(layout.fragments) != 0 {
+		return layout.fragments
 	}
+	start := we.li.GetLineOffset(logLineIdx)
+	return []LineFragment{{
+		LogicalLineIdx: logLineIdx, ByteOffsetStart: start,
+		ByteOffsetEnd: start, VisualWidth: 16, Loading: true,
+	}}
+}
 
-	startOffset := we.li.GetLineOffset(logLineIdx)
-	endOffset := we.pt.Size()
-	if logLineIdx+1 < we.li.LineCount() {
-		endOffset = we.li.GetLineOffset(logLineIdx + 1)
-	} else {
-		// If this is the unindexed tail, cap the processing to prevent loading gigabytes
-		if endOffset-startOffset > 64*1024 {
-			endOffset = startOffset + 64*1024
-		}
+// GetFragmentsForOffset resolves the fragment containing a source anchor, not
+// the rest of that logical line. This also distinguishes a wrap boundary from
+// the end of the line: its following fragment must exist before a hit is mapped.
+func (we *WrapEngine) GetFragmentsForOffset(logLineIdx, offset int) []LineFragment {
+	we.advanceLine(logLineIdx, int(^uint(0)>>1), int(^uint(0)>>1), offset, -1)
+	if logLineIdx < 0 || logLineIdx >= len(we.fragmentCache) {
+		return nil
 	}
-
-	we.tmpBuf = we.tmpBuf[:0]
-	var err error
-	we.tmpBuf, err = we.pt.AppendRange(we.tmpBuf, startOffset, endOffset-startOffset)
-
-	// If data is not ready, return a dummy visual fragment
-	if err == piecetable.ErrLoading {
-		frag := LineFragment{
-			LogicalLineIdx:  logLineIdx,
-			ByteOffsetStart: startOffset,
-			ByteOffsetEnd:   endOffset,
-			VisualWidth:     16, // Width of "[ Loading... ]"
-		}
-		return []LineFragment{frag} // DO NOT CACHE LOADING STUBS
-	}
-
-	lineData := we.tmpBuf
-	truncated := false
-
-	// Убираем \n или \r\n с конца
-	if len(lineData) > 0 && lineData[len(lineData)-1] == '\n' {
-		lineData = lineData[:len(lineData)-1]
-		if len(lineData) > 0 && lineData[len(lineData)-1] == '\r' {
-			lineData = lineData[:len(lineData)-1]
-		}
-	}
-
-	// PREVENT LONG-LINE FLASH:
-	// If lineData STILL contains '\n' in the middle (because LineIndex hasn't indexed it yet),
-	// truncate it to the first '\n' to prevent rendering multiple lines as one continuous paragraph.
-	for i, b := range lineData {
-		if b == '\n' {
-			lineData = lineData[:i]
-			if i > 0 && lineData[i-1] == '\r' {
-				lineData = lineData[:i-1]
-			}
-			truncated = true
-			break
-		}
-	}
-
-	if !we.wordWrap || we.wrapWidth <= 0 {
-		width := 0
-		tmpData := lineData
-		for len(tmpData) > 0 {
-			r, size := utf8.DecodeRune(tmpData)
-			rw := 1
-			if r == '\t' {
-				rw = we.tabSize - (width % we.tabSize)
-			} else if r >= 0x7F {
-				rw = runewidth.RuneWidth(r)
-			}
-			if rw < 0 {
-				rw = 1
-			}
-			width += rw
-			tmpData = tmpData[size:]
-		}
-
-		frag := LineFragment{
-			LogicalLineIdx:  logLineIdx,
-			ByteOffsetStart: startOffset,
-			ByteOffsetEnd:   startOffset + len(lineData),
-			VisualWidth:     width,
-		}
-		if !truncated {
-			we.fragmentCache[logLineIdx] = []LineFragment{frag}
-		}
-		return []LineFragment{frag}
-	}
-
-	var fragments []LineFragment
-	bytePos := 0
-	dataLen := len(lineData)
-
-	cumulativeVisualWidth := 0
-	for bytePos < dataLen {
-		visualWidth := 0
-		fragStartByte := bytePos
-		lastSpaceEnd := -1
-		lastSpaceWidth := 0
-
-		scanPos := bytePos
-		for scanPos < dataLen {
-			r, size := utf8.DecodeRune(lineData[scanPos:])
-			w := 1
-			if r == '\t' {
-				w = we.tabSize - ((cumulativeVisualWidth + visualWidth) % we.tabSize)
-			} else if r >= 0x7F {
-				w = runewidth.RuneWidth(r)
-			}
-			if w <= 0 {
-				w = 1
-			}
-
-			if visualWidth+w > we.wrapWidth {
-				if r == ' ' {
-					// Пробел не влезает, но мы его забираем в конец этой строки
-					scanPos += size
-					visualWidth += w
-				} else if lastSpaceEnd != -1 {
-					// Word Wrap: откатываемся к последнему пробелу
-					scanPos = lastSpaceEnd
-					visualWidth = lastSpaceWidth
-				} else if scanPos == fragStartByte {
-					// Даже один символ не влез (CJK в узком окне) - поглощаем его
-					scanPos += size
-					visualWidth = w
-				}
-				break
-			}
-
-			visualWidth += w
-			scanPos += size
-			if r == ' ' {
-				lastSpaceEnd = scanPos
-				lastSpaceWidth = visualWidth
-			}
-		}
-
-		fragments = append(fragments, LineFragment{
-			LogicalLineIdx:  logLineIdx,
-			ByteOffsetStart: startOffset + fragStartByte,
-			ByteOffsetEnd:   startOffset + scanPos,
-			VisualWidth:     visualWidth,
-		})
-		cumulativeVisualWidth += visualWidth
-		bytePos = scanPos
-	}
-
-	if len(fragments) == 0 {
-		fragments = append(fragments, LineFragment{LogicalLineIdx: logLineIdx, ByteOffsetStart: startOffset, ByteOffsetEnd: startOffset})
-	}
-
-	if !truncated {
-		we.fragmentCache[logLineIdx] = fragments
+	fragments := we.projectedFragments(logLineIdx)
+	if scan := we.fragmentCache[logLineIdx].pending; !we.wordWrap && scan != nil && !scan.stopped && scan.offset <= offset && len(fragments) > 0 {
+		fragments[0].Loading = true
 	}
 	return fragments
 }
 
-func (we *WrapEngine) ensureRowCountCache(until int) {
-	lineCount := we.li.LineCount()
-	if until >= lineCount {
-		until = lineCount - 1
+// GetProjectionFragments resolves the visible horizontal span of an unwrapped
+// row. Its remaining source width has no bearing on the number of rows. A
+// partial row is ready only after every requested cell has been scanned.
+func (we *WrapEngine) GetProjectionFragments(logLineIdx, count, columns int) []LineFragment {
+	if we.wordWrap {
+		return we.GetFragmentsThrough(logLineIdx, count)
 	}
-	if we.validUntil >= until && we.rowOffsets != nil && len(we.rowOffsets) == lineCount {
-		return
-	}
-
-	if len(we.rowOffsets) != lineCount {
-		oldLength := len(we.rowOffsets)
-		we.resizeRowOffsets(lineCount)
-		if oldLength == 0 {
-			we.validUntil = -1
-		} else if we.validUntil >= lineCount {
-			we.validUntil = lineCount - 1
+	we.advanceLine(logLineIdx, 1, int(^uint(0)>>1), -1, max(1, columns))
+	fragments := we.projectedFragments(logLineIdx)
+	if logLineIdx >= 0 && logLineIdx < len(we.fragmentCache) {
+		if scan := we.fragmentCache[logLineIdx].pending; scan != nil && !scan.stopped && scan.width < max(1, columns) && len(fragments) > 0 {
+			fragments[0].Loading = true
 		}
 	}
+	return fragments
+}
 
+func (we *WrapEngine) projectedFragments(logLineIdx int) []LineFragment {
+	if logLineIdx < 0 || logLineIdx >= len(we.fragmentCache) {
+		return nil
+	}
+	layout := &we.fragmentCache[logLineIdx]
+	if we.wordWrap || len(layout.fragments) != 0 {
+		return layout.fragments
+	}
+	if scan := layout.pending; scan != nil {
+		return []LineFragment{{
+			LogicalLineIdx: logLineIdx, ByteOffsetStart: scan.start,
+			ByteOffsetEnd: scan.offset, VisualWidth: scan.width,
+			Loading: scan.width == 0 && !scan.stopped,
+		}}
+	}
+	return nil
+}
+
+func (we *WrapEngine) runeWidth(r rune, column int) int {
+	if r == '\t' {
+		return we.tabSize - column%we.tabSize
+	}
+	if r >= 0x7f {
+		return max(1, runewidth.RuneWidth(r))
+	}
+	return 1
+}
+
+// advanceLine scans sequential bounded reads and commits only complete visual
+// rows. Word-wrap carry consists of coordinates/widths, so even a word crossing
+// a read boundary is scanned once. UTF-8 and CRLF need at most three lookahead
+// bytes; a chunk boundary is never interpreted as EOF or a new tab origin.
+func (we *WrapEngine) advanceLine(logLineIdx, fragmentLimit, byteBudget, throughOffset, throughColumn int) (consumed int, progressed bool) {
+	lineCount := we.li.LineCount()
+	we.resizeFragmentCache(lineCount)
+	if logLineIdx < 0 || logLineIdx >= lineCount {
+		return 0, false
+	}
+	layout := &we.fragmentCache[logLineIdx]
+	if layout.complete() {
+		return 0, false
+	}
+	end := we.pt.Size()
+	if logLineIdx+1 < lineCount {
+		end = we.li.GetLineOffset(logLineIdx + 1)
+	}
+	start := we.li.GetLineOffset(logLineIdx)
+	scan := lineScan{offset: start, start: start, spaceEnd: -1}
+	if layout.pending != nil {
+		scan = *layout.pending
+	}
+	if scan.stopped {
+		return 0, false
+	}
+	finished := false
+	defer func() {
+		if finished {
+			layout.pending = nil
+			return
+		}
+		if layout.pending == nil {
+			layout.pending = new(lineScan)
+		}
+		*layout.pending = scan
+	}()
+	appendFragment := func(end, width, runes int) {
+		layout.fragments = append(layout.fragments, LineFragment{
+			LogicalLineIdx: logLineIdx, ByteOffsetStart: scan.start,
+			ByteOffsetEnd: end, VisualWidth: width,
+			VisualColumnStart: scan.column, RuneStart: scan.runeStart,
+		})
+		scan.start = end
+		scan.column += width
+		scan.runeStart += runes
+		scan.width -= width
+		scan.runes -= runes
+		scan.spaceEnd = -1
+		progressed = true
+	}
+	finishLine := func(contentEnd int, indexedEnd bool) {
+		if scan.start < contentEnd || len(layout.fragments) == 0 {
+			appendFragment(contentEnd, scan.width, scan.runes)
+		}
+		finished = indexedEnd
+		scan.stopped = !indexedEnd
+		progressed = true
+	}
+	satisfied := func() bool {
+		if !we.wordWrap {
+			if throughOffset >= 0 {
+				return scan.offset > throughOffset
+			}
+			if throughColumn >= 0 {
+				return scan.width >= throughColumn
+			}
+		}
+		if throughOffset >= 0 {
+			return len(layout.fragments) > 0 && layout.fragments[len(layout.fragments)-1].ByteOffsetEnd > throughOffset
+		}
+		return len(layout.fragments) >= fragmentLimit
+	}
+	for !finished && !scan.stopped && !satisfied() {
+		if scan.offset >= end {
+			finishLine(end, true)
+			break
+		}
+		if consumed >= max(1, byteBudget) {
+			break
+		}
+		readLength := min(layoutReadBytes, end-scan.offset, min(layoutReadBytes, max(1, byteBudget)-consumed)+utf8.UTFMax-1)
+		we.tmpBuf = we.tmpBuf[:0]
+		var err error
+		we.tmpBuf, err = we.pt.AppendRange(we.tmpBuf, scan.offset, readLength)
+		if err != nil {
+			if err != piecetable.ErrLoading {
+				we.lastReadError = err
+			}
+			break
+		}
+		if len(we.tmpBuf) == 0 {
+			we.lastReadError = io.ErrUnexpectedEOF
+			break
+		}
+		we.lastReadError = nil
+		data := we.tmpBuf
+		readStart := scan.offset
+		for len(data) > 0 && !finished && !scan.stopped && !satisfied() {
+			if consumed >= max(1, byteBudget) {
+				break
+			}
+			// Retain a partial rune/CR only as its source position; the next
+			// bounded read supplies the remaining bytes.
+			if !utf8.FullRune(data) && scan.offset+len(data) < end {
+				break
+			}
+			if data[0] == '\r' && len(data) == 1 && scan.offset+1 < end {
+				break
+			}
+			newline := 0
+			if data[0] == '\n' {
+				newline = 1
+			} else if len(data) >= 2 && data[0] == '\r' && data[1] == '\n' {
+				newline = 2
+			}
+			if newline != 0 {
+				contentEnd := scan.offset
+				scan.offset += newline
+				consumed += newline
+				finishLine(contentEnd, logLineIdx+1 < lineCount && scan.offset == end)
+				break
+			}
+			r, size := utf8.DecodeRune(data)
+			width := we.runeWidth(r, scan.column+scan.width)
+			if we.wordWrap && scan.width+width > we.wrapWidth {
+				if r == ' ' || scan.start == scan.offset {
+					scan.width += width
+					scan.runes++
+					scan.offset += size
+					consumed += size
+					data = data[size:]
+					appendFragment(scan.offset, scan.width, scan.runes)
+				} else if scan.spaceEnd >= 0 {
+					appendFragment(scan.spaceEnd, scan.spaceWidth, scan.spaceRunes)
+				} else {
+					appendFragment(scan.offset, scan.width, scan.runes)
+				}
+				continue
+			}
+			scan.width += width
+			scan.runes++
+			scan.offset += size
+			consumed += size
+			data = data[size:]
+			if r == ' ' {
+				scan.spaceEnd, scan.spaceWidth, scan.spaceRunes = scan.offset, scan.width, scan.runes
+			}
+		}
+		if scan.offset >= end && !finished && !scan.stopped {
+			finishLine(end, true)
+		}
+		if scan.offset == readStart && !satisfied() && !finished && !scan.stopped {
+			// A short underlying read cannot manufacture an invalid rune or
+			// spin forever while waiting for the rest of a source character.
+			we.lastReadError = io.ErrUnexpectedEOF
+			break
+		}
+	}
+	return consumed, progressed || consumed > 0
+}
+
+// LastReadError distinguishes a source failure from a pending read. It is
+// cleared when actual data arrives or a new layout/source is installed.
+func (we *WrapEngine) LastReadError() error { return we.lastReadError }
+
+// updateRowOffsets commits prefix sums only across complete logical lines,
+// while preserving the ready row prefix of the one incomplete current line.
+func (we *WrapEngine) updateRowOffsets() {
+	lineCount := we.li.LineCount()
+	if len(we.rowOffsets) > lineCount {
+		we.InvalidateCache()
+	}
+	we.resizeFragmentCache(lineCount)
+	we.resizeRowOffsets(lineCount)
 	if !we.wordWrap {
 		for i := we.validUntil + 1; i < lineCount; i++ {
 			we.rowOffsets[i] = i
 		}
-		we.totalRows = lineCount
-		we.validUntil = lineCount - 1
+		we.validUntil, we.totalRows = lineCount-1, lineCount
 		return
 	}
+	current := 0
+	if we.validUntil >= 0 {
+		current = we.rowOffsets[we.validUntil] + len(we.fragmentCache[we.validUntil].fragments)
+	}
+	for line := we.validUntil + 1; line < lineCount; line++ {
+		we.rowOffsets[line] = current
+		if !we.fragmentCache[line].complete() {
+			break
+		}
+		current += len(we.fragmentCache[line].fragments)
+		we.validUntil = line
+	}
+	we.totalRows = current
+}
 
-	currentOffset := 0
-	start := we.validUntil + 1
-	if start > 0 {
-		currentOffset = we.rowOffsets[start-1] + len(we.GetFragments(start-1))
-	}
-
-	for i := start; i <= until; i++ {
-		we.rowOffsets[i] = currentOffset
-		currentOffset += len(we.GetFragments(i))
-	}
-	if until > we.validUntil {
-		we.validUntil = until
-	}
-	if we.validUntil == lineCount-1 {
-		we.totalRows = currentOffset
+func (we *WrapEngine) ensureRowCountCache(until int) {
+	we.updateRowOffsets()
+	until = min(until, we.li.LineCount()-1)
+	for we.validUntil < until {
+		line := we.validUntil + 1
+		we.GetFragments(line)
+		we.updateRowOffsets()
+		if we.validUntil < line {
+			break
+		}
 	}
 }
 
-// GetTotalVisualRows возвращает общее количество визуальных строк в документе.
+// GetTotalVisualRows is an explicit full-layout request. First-frame and
+// scrolling callers use KnownVisualRows / GetLogLineAtVisualRow instead.
 func (we *WrapEngine) GetTotalVisualRows() int {
 	we.ensureRowCountCache(we.li.LineCount() - 1)
-	return we.totalRows
+	rows, _ := we.KnownVisualRows()
+	return rows
 }
 
-// GetRowOffset возвращает индекс первой визуальной строки для данной логической строки.
+// KnownVisualRows reports only ready rows. The final line is not complete
+// until its real end has been read, even if its prefix already fills a window.
+func (we *WrapEngine) KnownVisualRows() (rows int, complete bool) {
+	we.updateRowOffsets()
+	lineCount := we.li.LineCount()
+	if !we.wordWrap {
+		return lineCount, true
+	}
+	rows = we.totalRows
+	if line := we.validUntil + 1; line < lineCount {
+		rows += len(we.fragmentCache[line].fragments)
+	}
+	return rows, we.validUntil == lineCount-1
+}
+
+// AdvanceVisualRows performs the next bounded portion of extent calculation
+// on the owning UI thread. The byte budget applies inside a single giant line,
+// not only between lines. At most one UTF-8 rune can cross the budget boundary.
+func (we *WrapEngine) AdvanceVisualRows(maxLines, maxBytes int) (progressed, complete bool) {
+	if _, complete = we.KnownVisualRows(); complete {
+		return false, true
+	}
+	remaining := max(1, maxBytes)
+	for count := 0; count < max(1, maxLines) && remaining > 0; count++ {
+		line := we.validUntil + 1
+		if line >= we.li.LineCount() {
+			break
+		}
+		consumed, advanced := we.advanceLine(line, int(^uint(0)>>1), remaining, -1, -1)
+		remaining -= consumed
+		progressed = progressed || advanced
+		we.updateRowOffsets()
+		if !advanced || we.validUntil < line {
+			break
+		}
+	}
+	_, complete = we.KnownVisualRows()
+	return progressed, complete
+}
+
+// GetRowOffset needs the preceding lines, not the remainder of this line.
 func (we *WrapEngine) GetRowOffset(logLineIdx int) int {
-	we.ensureRowCountCache(logLineIdx)
 	if logLineIdx < 0 {
 		return 0
 	}
+	we.ensureRowCountCache(logLineIdx - 1)
 	if logLineIdx >= len(we.rowOffsets) {
-		we.ensureRowCountCache(we.li.LineCount() - 1)
 		return we.totalRows
 	}
 	return we.rowOffsets[logLineIdx]
 }
 
-// GetLogLineAtVisualRow переводит абсолютный индекс визуальной строки в индекс
-// логической строки и порядковый номер фрагмента внутри неё.
+// GetLogLineAtVisualRow advances only far enough to identify the requested
+// row, including when all requested rows belong to one enormous logical line.
 func (we *WrapEngine) GetLogLineAtVisualRow(visualRow int) (logLineIdx int, fragIdx int) {
-	if visualRow < 0 {
+	we.updateRowOffsets()
+	lineCount := we.li.LineCount()
+	if visualRow < 0 || lineCount == 0 {
 		return 0, 0
 	}
-
-	// Lazy calculation until we find the row or hit EOF
-	lineCount := we.li.LineCount()
-	for we.validUntil < lineCount-1 {
-		var lastCalculatedRow int
-		if we.validUntil >= 0 {
-			lastCalculatedRow = we.rowOffsets[we.validUntil] + len(we.GetFragments(we.validUntil))
-		}
-		if lastCalculatedRow > visualRow {
+	if !we.wordWrap {
+		return min(visualRow, lineCount-1), 0
+	}
+	for {
+		known, complete := we.KnownVisualRows()
+		if known > visualRow || complete {
 			break
 		}
-		// Expand cache in chunks
-		nextTarget := we.validUntil + 100
-		if nextTarget >= lineCount {
-			nextTarget = lineCount - 1
+		line := we.validUntil + 1
+		_, advanced := we.advanceLine(line, visualRow-we.rowOffsets[line]+1, int(^uint(0)>>1), -1, -1)
+		we.updateRowOffsets()
+		if !advanced || (we.validUntil < line && we.fragmentCache[line].pending.stopped) {
+			return line, max(0, visualRow-we.rowOffsets[line])
 		}
-		we.ensureRowCountCache(nextTarget)
 	}
-
-	if visualRow >= we.totalRows && we.validUntil == lineCount-1 {
-		return lineCount - 1, 0
-	}
-
-	// Binary search on the valid portion of the cache
-	logLineIdx = sort.Search(we.validUntil+1, func(i int) bool {
+	// Include the current partial line in the searchable prefix.
+	count := min(lineCount, we.validUntil+2)
+	logLineIdx = sort.Search(count, func(i int) bool {
 		return we.rowOffsets[i] > visualRow
 	}) - 1
-
-	if logLineIdx < 0 {
-		logLineIdx = 0
+	logLineIdx = max(0, logLineIdx)
+	fragIdx = max(0, visualRow-we.rowOffsets[logLineIdx])
+	if we.validUntil == lineCount-1 {
+		fragIdx = min(fragIdx, max(0, len(we.fragmentCache[logLineIdx].fragments)-1))
 	}
-	fragIdx = visualRow - we.rowOffsets[logLineIdx]
 	return
 }
 
@@ -435,15 +584,14 @@ func (we *WrapEngine) LogicalToVisual(byteOffset int) (visualRow, visualCol int)
 		byteOffset = 0
 	}
 	logLineIdx := we.li.GetLineAtOffset(byteOffset)
-	we.ensureRowCountCache(logLineIdx)
-	fragments := we.GetFragments(logLineIdx)
+	we.ensureRowCountCache(logLineIdx - 1)
+	fragments := we.GetFragmentsForOffset(logLineIdx, byteOffset)
 	totalRow := we.rowOffsets[logLineIdx]
 
 	if len(fragments) > 0 {
 		lastFrag := fragments[len(fragments)-1]
 		if byteOffset > lastFrag.ByteOffsetEnd {
-			// Safety for capped binary lines: if offset is beyond indexed fragments,
-			// snap to the end of the last visible fragment.
+			// Newline bytes belong to the end of the final content fragment.
 			byteOffset = lastFrag.ByteOffsetEnd
 		}
 	}
@@ -461,7 +609,7 @@ func (we *WrapEngine) LogicalToVisual(byteOffset int) (visualRow, visualCol int)
 					r, size := utf8.DecodeRune(data)
 					rw := 1
 					if r == '\t' {
-						rw = we.tabSize - (width % we.tabSize)
+						rw = we.tabSize - ((frag.VisualColumnStart + width) % we.tabSize)
 					} else if r >= 0x7F {
 						rw = runewidth.RuneWidth(r)
 					}
@@ -489,7 +637,7 @@ func (we *WrapEngine) VisualToLogical(visualRow, visualCol int) int {
 		return 0
 	}
 	logLineIdx, fragIdx := we.GetLogLineAtVisualRow(visualRow)
-	fragments := we.GetFragments(logLineIdx)
+	fragments := we.GetProjectionFragments(logLineIdx, fragIdx+1, max(1, visualCol+1))
 	if fragments == nil {
 		vtui.DebugLog("DEBUG_V2L_FAIL: No fragments for LogLine %d", logLineIdx)
 		return 0
@@ -500,13 +648,23 @@ func (we *WrapEngine) VisualToLogical(visualRow, visualCol int) int {
 	frag := fragments[fragIdx]
 
 	vtui.DebugLog("DEBUG_V2L_START: Row:%d Col:%d -> LogLine:%d Frag:%d StartOff:%d EndOff:%d", visualRow, visualCol, logLineIdx, fragIdx, frag.ByteOffsetStart, frag.ByteOffsetEnd)
+	return we.FragmentColumnToLogical(frag, visualCol)
+}
 
+// FragmentColumnToLogical resolves a position in an already identified source
+// fragment. Native pointer events use this to avoid reinterpreting a displayed
+// row through a newer viewport's top row or terminal coordinates.
+func (we *WrapEngine) FragmentColumnToLogical(frag LineFragment, visualCol int) int {
 	if frag.ByteOffsetStart >= frag.ByteOffsetEnd || visualCol <= 0 {
 		return frag.ByteOffsetStart
 	}
 
 	we.tmpBuf = we.tmpBuf[:0]
-	we.tmpBuf, _ = we.pt.AppendRange(we.tmpBuf, frag.ByteOffsetStart, frag.ByteOffsetEnd-frag.ByteOffsetStart)
+	readLength := frag.ByteOffsetEnd - frag.ByteOffsetStart
+	if visualCol < readLength/utf8.UTFMax {
+		readLength = visualCol * utf8.UTFMax
+	}
+	we.tmpBuf, _ = we.pt.AppendRange(we.tmpBuf, frag.ByteOffsetStart, readLength)
 	lineData := we.tmpBuf
 	offset := frag.ByteOffsetStart
 	currentCol := 0
@@ -515,7 +673,7 @@ func (we *WrapEngine) VisualToLogical(visualRow, visualCol int) int {
 		r, size := utf8.DecodeRune(lineData)
 		rw := 1
 		if r == '\t' {
-			rw = we.tabSize - (currentCol % we.tabSize)
+			rw = we.tabSize - ((frag.VisualColumnStart + currentCol) % we.tabSize)
 		} else if r >= 0x7F {
 			rw = runewidth.RuneWidth(r)
 		}

@@ -128,10 +128,16 @@ bool QtShellController::commitPanelCatalogFrame(
     if (!hasSemanticEnvelope) {
         return false;
     }
+    // Install the catalog before deriving compact shell state. Apart from
+    // making the same-side descriptor authoritative, this retains the final
+    // row-free state if QML was still being constructed when its signal fired.
+    storePanelCatalogSnapshot(side, panel);
     applyCompactFieldsToTypedState(message, activePanel,
                                    envelope.revision, true, panel);
 #endif
-    m_panelCatalogSnapshots[static_cast<size_t>(side)] = panel;
+#if defined(F4_QT_SCENE_TEST_API)
+    storePanelCatalogSnapshot(side, panel);
+#endif
     if (trace->enabled) {
         trace->catalogScenePatchDurationNs = timer.nsecsElapsed();
     }
@@ -245,7 +251,7 @@ bool QtShellController::applyPanelActivationFrame(
             continue;
         }
         panel.insert(QStringLiteral("active"), side == activePanel);
-        m_panelCatalogSnapshots[static_cast<size_t>(side)] = panel;
+        storePanelCatalogSnapshot(side, panel);
     }
     applyCompactFieldsToTypedState(compactFields, activePanel,
                                    envelope.revision, false);

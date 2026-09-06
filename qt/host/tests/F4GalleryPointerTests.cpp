@@ -559,6 +559,51 @@ void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
         std::map<std::string, msgpack::object> message;
         handle.get().convert(message);
         QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0));
+        QCOMPARE(message.at("down").as<bool>(), false);
+    }
+
+    // ButtonState is the state after each event, matching the console input
+    // contract consumed by vtui controls. In particular, a release must not
+    // repeat the transitioned button: buttons use the zero state to fire and
+    // dialogs use it to retire their pointer capture.
+    QQuickView view;
+    view.setWidth(160);
+    view.setHeight(80);
+    auto *nativeGrid = new VtuiGridItem(view.contentItem());
+    nativeGrid->setWidth(view.width());
+    nativeGrid->setHeight(view.height());
+    nativeGrid->setController(&controller);
+    QVERIFY(QMetaObject::invokeMethod(
+        nativeGrid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('A'))));
+    view.show();
+    QTRY_VERIFY_WITH_TIMEOUT(view.isExposed(), 3000);
+
+    const QPoint nativePointer(
+        qRound(nativeGrid->cellWidth() * 2 + 0.25),
+        qRound(nativeGrid->cellHeight() + 0.25));
+    QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, nativePointer);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(), static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0x0001));
+        QCOMPARE(message.at("down").as<bool>(), true);
+    }
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier,
+                        nativePointer);
+    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    {
+        const msgpack::object_handle handle = msgpack::unpack(
+            payload.constData(), static_cast<std::size_t>(payload.size()));
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0));
         QCOMPARE(message.at("down").as<bool>(), false);
     }
 }

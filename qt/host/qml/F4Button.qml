@@ -16,13 +16,13 @@ T.Button {
     property bool colorfulIcon: false
     property string toolTipText: ""
     property bool semanticFocus: false
-
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
     }
 
     focusPolicy: Qt.NoFocus
     hoverEnabled: true
+    font: control.hostWindow ? control.hostWindow.font : Qt.font({})
 
     implicitHeight: snap(variant === "tool" ? 28 : 30)
     implicitWidth: {
@@ -45,48 +45,83 @@ T.Button {
         hostWindow: control.hostWindow
     }
 
-    contentItem: RowLayout {
-        id: btnRow
-        spacing: control.snap(6)
+    contentItem: Item {
+        id: buttonContentItem
+        objectName: control.objectName ? (control.objectName + "ContentItem")
+                                       : "buttonContentItem"
+        implicitWidth: btnRow.implicitWidth
+        implicitHeight: btnRow.implicitHeight
 
-        HostPixelAlignedImage {
-            id: btnIcon
-            objectName: control.objectName ? (control.objectName + "Icon") : "buttonIcon"
-            hostWindow: control.hostWindow
-            width: control.snap(control.iconSize)
-            height: control.snap(control.iconSize)
-            sourceSize: Qt.size(control.iconSize, control.iconSize)
-            source: control.iconSource
-            visible: control.iconSource !== ""
-            smooth: false
-            mipmap: false
-        }
+        RowLayout {
+            id: btnRow
+            objectName: control.objectName ? (control.objectName + "Content")
+                                           : "buttonContent"
+            width: implicitWidth
+            height: implicitHeight
+            // centerIn rounds an odd-sized RowLayout to an integer logical
+            // coordinate. At fractional DPR that moves the whole label away
+            // from the actual button center. The row is a layout-only item;
+            // keep its exact geometric center and pixel-align its painted
+            // text/icon children independently below.
+            x: (parent.width - width) / 2
+            y: (parent.height - height) / 2
+            spacing: btnIcon.visible && btnText.visible ? control.snap(6) : 0
 
-        Text {
-            id: btnText
-            objectName: control.objectName ? (control.objectName + "Text") : "buttonText"
-            text: {
-                if (control.hostWindow && control.mnemonic !== "")
-                    return control.hostWindow.mnemonicText(control.text, control.mnemonic)
-                return control.text
+            HostPixelAlignedImage {
+                id: btnIcon
+                objectName: control.objectName
+                            ? (control.objectName + "Icon") : "buttonIcon"
+                hostWindow: control.hostWindow
+                width: visible ? control.snap(control.iconSize) : 0
+                height: visible ? control.snap(control.iconSize) : 0
+                sourceSize: Qt.size(control.iconSize, control.iconSize)
+                source: control.iconSource
+                visible: control.iconSource.toString() !== ""
+                smooth: false
+                mipmap: false
+                Layout.alignment: Qt.AlignVCenter
             }
-            textFormat: control.mnemonic !== "" ? Text.StyledText : Text.PlainText
-            color: control.variant === "accent"
-                   ? "#ffffff"
-                   : (control.enabled
-                      ? (control.hostWindow ? control.hostWindow.textColor : "#ffffff")
-                      : (control.hostWindow ? control.hostWindow.mutedText : "#888888"))
-            font.family: control.hostWindow ? control.hostWindow.guiMonospaceFontFamily : "monospace"
-            font.pixelSize: control.variant === "tool" ? 12 : 11
-            font.weight: (control.highlighted || control.variant === "accent") ? Font.Bold : Font.Normal
-            visible: control.text !== ""
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-            Layout.alignment: Qt.AlignVCenter
+
+            Text {
+                id: btnText
+                objectName: control.objectName
+                            ? (control.objectName + "Text") : "buttonText"
+                text: {
+                    if (control.hostWindow && control.mnemonic !== "")
+                        return control.hostWindow.mnemonicText(
+                                    control.text, control.mnemonic)
+                    return control.text
+                }
+                textFormat: control.mnemonic !== ""
+                            ? Text.StyledText : Text.PlainText
+                color: control.variant === "accent"
+                       ? "#ffffff"
+                       : (control.enabled
+                          ? (control.hostWindow
+                             ? control.hostWindow.textColor : "#ffffff")
+                          : (control.hostWindow
+                             ? control.hostWindow.mutedText : "#888888"))
+                font: control.font
+                visible: control.text !== ""
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                Layout.alignment: Qt.AlignVCenter
+                transform: Translate {
+                    x: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetX(
+                             btnText, control.hostWindow.contentItem) : 0
+                    y: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetY(
+                             btnText, control.hostWindow.contentItem) : 0
+                }
+            }
         }
     }
 
     background: Rectangle {
+        objectName: control.objectName ? (control.objectName + "Background")
+                                       : "buttonBackground"
+        readonly property color testBorderColor: border.color
         radius: control.snap(4)
         color: {
             const isAccent = control.highlighted || control.variant === "accent"
@@ -118,6 +153,8 @@ T.Button {
         }
 
         border.width: {
+            if (control.flat)
+                return 0
             if (control.variant === "flat" && !control.hovered && !control.semanticFocus)
                 return 0
             return control.hostWindow ? control.hostWindow.separatorWidth : 1

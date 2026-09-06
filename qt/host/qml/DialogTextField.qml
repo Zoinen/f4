@@ -18,6 +18,8 @@ F4TextField {
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        cursorShape: Qt.IBeamCursor
         onPressed: dialogEdit.hostWindow.action({
             "target": dialogEdit.widget.id,
             "action": "control.focus"

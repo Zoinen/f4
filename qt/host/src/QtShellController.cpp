@@ -351,6 +351,20 @@ void QtShellController::sendKey(int vk, int ch, bool down, int mods)
     sendKeyEvent(vk, ch, down, mods, false);
 }
 
+void QtShellController::sendApplicationFocus(bool focused)
+{
+    if (!m_helloSent || !m_connected
+        || (m_haveReportedApplicationFocus
+            && m_reportedApplicationFocus == focused)) {
+        return;
+    }
+    if (sendMessage({{QStringLiteral("type"), QStringLiteral("focus")},
+                     {QStringLiteral("focused"), focused}})) {
+        m_haveReportedApplicationFocus = true;
+        m_reportedApplicationFocus = focused;
+    }
+}
+
 void QtShellController::sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat)
 {
     QVariantMap message{
@@ -499,6 +513,7 @@ void QtShellController::onConnected()
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
              {QStringLiteral("panelCatalogRowsV1"), true},
+             {QStringLiteral("documentViewportV1"), true},
 #if defined(Q_OS_MACOS)
              {QStringLiteral("macPlatformServicesV1"), true},
 #endif

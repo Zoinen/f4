@@ -26,11 +26,21 @@ type ViewerBackend struct {
 	totalLines   int64
 	totalForSize int64
 
-	mu         sync.Mutex
-	cacheOff   int64
-	cacheData  []byte
-	isFetching bool
-	readErr    error
+	mu                     sync.Mutex
+	cacheOff               int64
+	cacheData              []byte
+	isFetching             bool
+	readErr                error
+	readErrOff             int64
+	readErrLen             int
+	fetchOff               int64
+	fetchLen               int
+	fetchCancel            context.CancelFunc
+	fetchSerial            uint64
+	readNotificationWanted bool
+	ready                  chan struct{}
+	closeOnce              sync.Once
+	closeErr               error
 
 	// A line start can be farther away than the cache window (a minified
 	// document or a file containing one very long line is a common example).
@@ -70,10 +80,19 @@ func NewViewerBackend(ctx context.Context, v vfs.VFS, path string) (*ViewerBacke
 }
 
 func (b *ViewerBackend) Close() error {
-	if b.cancelCtx != nil {
-		b.cancelCtx()
-	}
-	return b.file.Close()
+	b.closeOnce.Do(func() {
+		if b.cancelCtx != nil {
+			b.cancelCtx()
+		}
+		b.mu.Lock()
+		if b.fetchCancel != nil {
+			b.fetchCancel()
+		}
+		b.signalReadyLocked()
+		b.mu.Unlock()
+		b.closeErr = b.file.Close()
+	})
+	return b.closeErr
 }
 
 func (b *ViewerBackend) Size() int64 {
@@ -83,63 +102,198 @@ func (b *ViewerBackend) Size() int64 {
 		b.size = newSize
 		b.mu.Unlock()
 	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.size
 }
 
 func (b *ViewerBackend) ReadAt(offset int64, length int) ([]byte, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if offset >= b.size {
+	if b.ctx != nil && b.ctx.Err() != nil {
+		b.mu.Unlock()
+		return nil, b.ctx.Err()
+	}
+	if offset < 0 || length <= 0 || offset >= b.size {
+		b.mu.Unlock()
 		return nil, io.EOF
 	}
 	if offset+int64(length) > b.size {
 		length = int(b.size - offset)
 	}
-	if b.readErr != nil {
-		return nil, b.readErr
-	}
-
 	// Check cache hit
 	if b.cacheData != nil && offset >= b.cacheOff && (offset+int64(length)) <= (b.cacheOff+int64(len(b.cacheData))) {
 		start := offset - b.cacheOff
-		return b.cacheData[start : start+int64(length)], nil
+		data := b.cacheData[start : start+int64(length)]
+		b.mu.Unlock()
+		return data, nil
+	}
+	if b.readErr != nil {
+		if offset >= b.readErrOff && offset+int64(length) <= b.readErrOff+int64(b.readErrLen) {
+			err := b.readErr
+			b.mu.Unlock()
+			return nil, err
+		}
+		// A new source range is a fresh request, not a retry loop for the
+		// failed row. Let navigation away from an unreadable region proceed.
+		b.readErr = nil
 	}
 
-	// Cache miss -> Trigger fetch in background
+	// The read-access contract distinguishes a bounded native file read from a
+	// network/extraction operation. Local misses need no goroutine/UI round trip.
+	fetchOff := max(int64(0), offset-64*1024)
+	fetchLen := int(min(int64(256*1024), b.size-fetchOff))
+	// Large explicit requests are not retained in the viewport buffer.
+	oversized := offset+int64(length) > fetchOff+int64(fetchLen)
+	if oversized {
+		fetchOff, fetchLen = offset, length
+	}
+	direct := documentReadAccess(b.file, b.owner) == vfs.ReadAccessDirectLocal
+	if direct {
+		b.mu.Unlock()
+		data := make([]byte, fetchLen)
+		n, err := readDocumentBytes(b.ctx, b.file, data, fetchOff)
+		if err != nil && err != io.EOF {
+			b.mu.Lock()
+			b.readErr, b.readErrOff, b.readErrLen = err, fetchOff, fetchLen
+			b.mu.Unlock()
+			return nil, err
+		}
+		b.mu.Lock()
+		if b.ctx.Err() != nil {
+			b.mu.Unlock()
+			return nil, b.ctx.Err()
+		}
+		if !oversized {
+			b.cacheOff, b.cacheData = fetchOff, data[:n]
+		}
+		b.readErr = nil
+		b.mu.Unlock()
+		start := int(offset - fetchOff)
+		if start >= n {
+			return nil, io.EOF
+		}
+		end := min(start+length, n)
+		return data[start:end], err
+	}
+	// Only the newest missing range is retained. A superseded read may finish,
+	// but it cannot replace the visible source window or cause a stale redraw.
+	b.readNotificationWanted = true
+	if !b.isFetching || offset < b.fetchOff || offset+int64(length) > b.fetchOff+int64(b.fetchLen) {
+		b.fetchOff, b.fetchLen = fetchOff, fetchLen
+		b.fetchSerial++
+		if b.fetchCancel != nil {
+			b.fetchCancel()
+		}
+	}
 	if !b.isFetching {
 		b.isFetching = true
-
-		fetchOff := offset - 64*1024
-		if fetchOff < 0 {
-			fetchOff = 0
-		}
-		fetchLen := 256 * 1024 // We only keep 256KB in memory
-		if fetchOff+int64(fetchLen) > b.size {
-			fetchLen = int(b.size - fetchOff)
-		}
-
-		go func() {
-			buf := make([]byte, fetchLen)
-			n, err := b.file.ReadAt(b.ctx, buf, fetchOff)
-
-			vtui.FrameManager.PostTask(func() {
-				b.mu.Lock()
-				if b.ctx.Err() == nil {
-					if err == nil || err == io.EOF {
-						b.cacheOff = fetchOff
-						b.cacheData = buf[:n]
-					} else {
-						b.readErr = err
-					}
-				}
-				b.isFetching = false
-				b.mu.Unlock()
-				vtui.FrameManager.Redraw()
-			})
-		}()
+		go b.fetchLatest()
 	}
+	b.mu.Unlock()
 	return nil, piecetable.ErrLoading
+}
+
+func documentReadAccess(file vfs.ReadAtCloser, owner vfs.VFS) vfs.ReadAccessProfile {
+	if source, ok := file.(vfs.ReadAccessProfiler); ok {
+		return source.ReadAccessProfile()
+	}
+	if _, ok := file.(*vfs.MemoryReadAtCloser); ok {
+		return vfs.ReadAccessDirectLocal
+	}
+	if owner != nil {
+		return owner.GetCapabilities().ReadAccess
+	}
+	return vfs.ReadAccessUnknownExpensive
+}
+
+func (b *ViewerBackend) signalReadyLocked() {
+	if b.ready != nil {
+		close(b.ready)
+	}
+	b.ready = make(chan struct{})
+}
+
+// ReadContext is for background navigation. Completion wakes it immediately;
+// unlike polling, readiness does not depend on the UI consuming a posted task.
+func (b *ViewerBackend) ReadContext(ctx context.Context, offset int64, length int) ([]byte, error) {
+	for {
+		b.mu.Lock()
+		if b.ready == nil {
+			b.ready = make(chan struct{})
+		}
+		ready := b.ready
+		b.mu.Unlock()
+		data, err := b.ReadAt(offset, length)
+		if err != piecetable.ErrLoading {
+			return data, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-b.ctx.Done():
+			return nil, b.ctx.Err()
+		case <-ready:
+		}
+	}
+}
+
+func (b *ViewerBackend) fetchLatest() {
+	for {
+		b.mu.Lock()
+		off, length, serial := b.fetchOff, b.fetchLen, b.fetchSerial
+		ctx, cancel := context.WithCancel(b.ctx)
+		b.fetchCancel = cancel
+		b.mu.Unlock()
+		data := make([]byte, length)
+		n, err := readDocumentBytes(ctx, b.file, data, off)
+		b.mu.Lock()
+		stale := off != b.fetchOff || length != b.fetchLen || ctx.Err() != nil
+		cancel()
+		b.fetchCancel = nil
+		if b.ctx.Err() != nil {
+			b.isFetching = false
+			b.signalReadyLocked()
+			b.mu.Unlock()
+			return
+		}
+		if stale {
+			b.mu.Unlock()
+			continue
+		}
+		if err == nil || err == io.EOF {
+			b.cacheOff, b.cacheData = off, data[:n]
+			b.readErr = nil
+		} else {
+			b.readErr, b.readErrOff, b.readErrLen = err, off, length
+		}
+		b.isFetching = false
+		b.signalReadyLocked()
+		b.mu.Unlock()
+		if vtui.FrameManager != nil {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+				b.mu.Lock()
+				defer b.mu.Unlock()
+				return b.ctx.Err() == nil && b.fetchSerial == serial && !b.isFetching && b.readNotificationWanted
+			})
+		}
+		return
+	}
+}
+
+// A ready visible window may omit an unfinished overscan row. Its optional
+// read can finish quietly; a later missing visible read renews the notification.
+func (b *ViewerBackend) suppressOptionalReadNotification() {
+	b.mu.Lock()
+	b.readNotificationWanted = false
+	b.mu.Unlock()
+}
+
+// LastReadError distinguishes an incomplete source range from one whose read
+// actually failed; semantic navigation must not acknowledge the latter.
+func (b *ViewerBackend) LastReadError() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.readErr
 }
 
 // SearchFrom asks the file system for the first occurrence of pattern at or
@@ -297,12 +451,19 @@ func (b *ViewerBackend) FindLineStart(offset int64) int64 {
 // A false ready result means the requested cache window is being fetched; the
 // caller must retain its last complete viewport and retry on the next redraw.
 func (b *ViewerBackend) TryFindLineStart(offset int64) (resolved int64, ready bool) {
+	resolved, ready, _ = b.tryFindLineStartBounded(offset, 0)
+	return
+}
+
+// The native UI may yield a local seek after bounded work even when every
+// read is immediately ready. Console callers retain the synchronous adapter.
+func (b *ViewerBackend) tryFindLineStartBounded(offset int64, maxBytes int) (resolved int64, ready, yielded bool) {
 	if offset <= 0 {
 		b.mu.Lock()
 		b.lineSeekActive = false
 		b.lineSeekCurr = 0
 		b.mu.Unlock()
-		return 0, true
+		return 0, true, false
 	}
 
 	b.mu.Lock()
@@ -315,6 +476,7 @@ func (b *ViewerBackend) TryFindLineStart(offset int64) (resolved int64, ready bo
 	b.mu.Unlock()
 
 	chunkSize := int64(4096)
+	processed := 0
 	for curr > 0 {
 		start := curr - chunkSize
 		if start < 0 {
@@ -328,23 +490,32 @@ func (b *ViewerBackend) TryFindLineStart(offset int64) (resolved int64, ready bo
 				b.lineSeekCurr = curr
 			}
 			b.mu.Unlock()
-			return offset, false
+			return offset, false, false
 		}
 		if err != nil {
 			b.finishLineStartSeek(offset)
-			return offset, true
+			return offset, false, false
 		}
 
 		for i := len(data) - 1; i >= 0; i-- {
 			if data[i] == '\n' {
 				b.finishLineStartSeek(offset)
-				return start + int64(i) + 1, true
+				return start + int64(i) + 1, true, false
 			}
 		}
+		processed += len(data)
 		curr = start
+		if curr > 0 && maxBytes > 0 && processed >= maxBytes {
+			b.mu.Lock()
+			if b.lineSeekActive && b.lineSeekTarget == offset {
+				b.lineSeekCurr = curr
+			}
+			b.mu.Unlock()
+			return offset, false, true
+		}
 	}
 	b.finishLineStartSeek(offset)
-	return 0, true
+	return 0, true, false
 }
 
 func (b *ViewerBackend) finishLineStartSeek(offset int64) {

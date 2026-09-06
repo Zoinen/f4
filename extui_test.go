@@ -192,10 +192,26 @@ func TestExtUiHostPreservesNativeKeyRepeatHint(t *testing.T) {
 	}
 }
 
+func TestExtUiHostForwardsApplicationActivation(t *testing.T) {
+	reader := vtinput.NewReader(bytes.NewReader(nil), true)
+	defer reader.Close()
+	host := &ExtUiHost{reader: reader}
+	for _, focused := range []bool{false, true} {
+		host.handleMessage(map[string]any{"type": "focus", "focused": focused})
+		event := <-reader.EventChan
+		if event == nil || event.Type != vtinput.FocusEventType || event.SetFocus != focused || event.InputSource != "extui" {
+			t.Fatalf("application activation was not preserved: %#v", event)
+		}
+	}
+}
+
 func TestExtUiRenderer_DisablesTerminalRedrawHeartbeat(t *testing.T) {
 	renderer := NewExtUiRenderer(nil, nil)
 	if renderer.WantsPeriodicRedraw() {
 		t.Fatal("native external UI must own idle cursor animation")
+	}
+	if !renderer.UsesEventDrivenResize() {
+		t.Fatal("native external UI must use its authoritative resize events")
 	}
 }
 
@@ -775,10 +791,16 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 		"width": 120, "height": 40, "activeScreen": 0,
 		"surface": map[string]any{
 			"id": "editor:music.svg", "kind": "editor",
-			"cursorLine": 0, "cursorPos": 0,
+			"documentKey": "editor:music.svg", "layoutRevision": uint64(3),
+			"windowGeneration": uint64(7),
+			"cursorLine":       0, "cursorPos": 0,
 			"cursorVisualRow": 0, "cursorVisualColumn": 0,
 			"cursorVisible": true, "cursorShape": "underline",
-			"cursorAbsoluteRow": int64(0), "rows": rows,
+			"cursorAbsoluteRow": int64(0), "cursorAbsoluteColumn": 0,
+			"selection": false, "selectionAnchorRow": int64(0),
+			"selectionAnchorColumn": 0, "selectionForeground": "#ffffff",
+			"selectionBackground": "#3b6290", "selectionBold": false,
+			"selectionUnderline": false, "selectionStrikeout": false, "rows": rows,
 			"topBarLeft": " music.svg", "topBarRight": " UTF-8 │ 1,0     ",
 		},
 	}
@@ -791,11 +813,17 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 
 	renderer.BeginSemanticSceneUpdate()
 	accepted := renderer.QueueSurfaceState("editor:music.svg", map[string]any{
-		"cursorLine": 0, "cursorPos": 1,
+		"documentKey": "editor:music.svg", "layoutRevision": uint64(3),
+		"windowGeneration": uint64(7),
+		"cursorLine":       0, "cursorPos": 1,
 		"cursorVisualRow": 0, "cursorVisualColumn": 1,
 		"cursorVisible": true, "cursorShape": "underline",
-		"cursorAbsoluteRow": int64(0),
-		"topBarRight":       " UTF-8 │ 1,1     ",
+		"cursorAbsoluteRow": int64(0), "cursorAbsoluteColumn": 1,
+		"selection": true, "selectionAnchorRow": int64(0),
+		"selectionAnchorColumn": 0, "selectionForeground": "#ffffff",
+		"selectionBackground": "#3b6290", "selectionBold": false,
+		"selectionUnderline": false, "selectionStrikeout": false,
+		"topBarRight": " UTF-8 │ 1,1     ",
 	})
 	if !accepted {
 		t.Fatal("bounded cursor state was rejected")
@@ -821,7 +849,7 @@ func TestExtUiRenderer_DirectEditorCursorStateIsTinyAndDefersRender(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(payload) > 512 {
+	if len(payload) > 768 {
 		t.Fatalf("cursor patch is %d bytes; expected a tiny scalar packet", len(payload))
 	}
 	renderer.EndSemanticSceneUpdate()
@@ -845,22 +873,34 @@ func TestExtUiRenderer_DirectEditorCursorStateRejectsWrongSurface(t *testing.T) 
 		"type": "scene", "schema": "app", "version": extui.SceneVersion,
 		"surface": map[string]any{
 			"id": "editor:one", "kind": "editor",
-			"cursorLine": 0, "cursorPos": 0,
+			"documentKey": "editor:one", "layoutRevision": uint64(1),
+			"windowGeneration": uint64(1),
+			"cursorLine":       0, "cursorPos": 0,
 			"cursorVisualRow": 0, "cursorVisualColumn": 0,
 			"cursorVisible": true, "cursorShape": "underline",
-			"cursorAbsoluteRow": int64(0),
-			"topBarRight":       " UTF-8 │ 1,0     ",
+			"cursorAbsoluteRow": int64(0), "cursorAbsoluteColumn": 0,
+			"selection": false, "selectionAnchorRow": int64(0),
+			"selectionAnchorColumn": 0, "selectionForeground": "#ffffff",
+			"selectionBackground": "#3b6290", "selectionBold": false,
+			"selectionUnderline": false, "selectionStrikeout": false,
+			"topBarRight": " UTF-8 │ 1,0     ",
 		},
 	})
 	renderer.Flush()
 	extUiDrainBufferedMessages(t, &wire)
 	renderer.BeginSemanticSceneUpdate()
 	if renderer.QueueSurfaceState("editor:replacement", map[string]any{
-		"cursorLine": 0, "cursorPos": 1,
+		"documentKey": "editor:replacement", "layoutRevision": uint64(1),
+		"windowGeneration": uint64(1),
+		"cursorLine":       0, "cursorPos": 1,
 		"cursorVisualRow": 0, "cursorVisualColumn": 1,
 		"cursorVisible": true, "cursorShape": "underline",
-		"cursorAbsoluteRow": int64(0),
-		"topBarRight":       " UTF-8 │ 1,1     ",
+		"cursorAbsoluteRow": int64(0), "cursorAbsoluteColumn": 1,
+		"selection": false, "selectionAnchorRow": int64(0),
+		"selectionAnchorColumn": 0, "selectionForeground": "#ffffff",
+		"selectionBackground": "#3b6290", "selectionBold": false,
+		"selectionUnderline": false, "selectionStrikeout": false,
+		"topBarRight": " UTF-8 │ 1,1     ",
 	}) {
 		t.Fatal("cursor state for a replacement surface was accepted")
 	}

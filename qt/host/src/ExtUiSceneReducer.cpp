@@ -106,6 +106,22 @@ QVariantMap withoutNativePanelPayloadAliases(QVariantMap scene)
 
 QVariant sanitizePresentationValue(const QVariant &value);
 
+#if defined(F4_EXTUI_PRODUCTION_TESTING)
+namespace {
+thread_local quint64 presentationDocumentRowVisits = 0;
+}
+
+void resetPresentationTraversalForTesting()
+{
+    presentationDocumentRowVisits = 0;
+}
+
+quint64 presentationDocumentRowVisitsForTesting()
+{
+    return presentationDocumentRowVisits;
+}
+#endif
+
 QVariantMap makePresentationScene(QVariantMap scene)
 {
     scene = withoutNativePanelPayloadAliases(std::move(scene));
@@ -118,12 +134,57 @@ QVariantMap makePresentationScene(QVariantMap scene)
     return sanitizePresentationValue(scene).toMap();
 }
 
+QVariantMap makePatchPresentationScene(const QVariantMap &scene,
+                                      const QVariantMap &message)
+{
+    QVariantMap prior;
+    // Root patches replace or clear complete values. The presentation signal
+    // consumes only their changed keys, so no prior root value is needed.
+    // Shell deltas can edit a panel catalog and still need its prior shape.
+    if (message.contains(QStringLiteral("shell"))) {
+        prior.insert(QStringLiteral("shell"),
+                     scene.value(QStringLiteral("shell")));
+    }
+    if (message.contains(QStringLiteral("surface"))) {
+        // Editor state deltas validate identity and export cursor/status
+        // scalars. Their rows remain owned by the authoritative typed store;
+        // neither validation nor the compact state signal reads those rows.
+        // Selecting these fields before sanitizing also avoids walking the
+        // previous window merely to update a caret or replace a document.
+        const QVariantMap surface = scene.value(QStringLiteral("surface")).toMap();
+        QVariantMap state;
+        for (const char *name : {
+                 "id", "kind", "documentKey", "layoutRevision", "windowGeneration",
+                 "cursorLine", "cursorPos", "cursorVisualRow",
+                  "cursorVisualColumn", "cursorVisible", "cursorShape",
+                  "cursorAbsoluteRow", "cursorAbsoluteColumn", "selection",
+                  "selectionAnchorRow", "selectionAnchorColumn",
+                  "selectionForeground", "selectionBackground",
+                  "selectionBold", "selectionUnderline", "selectionStrikeout",
+                  "topBarRight"}) {
+            const QString key = QString::fromLatin1(name);
+            const auto value = surface.constFind(key);
+            if (value != surface.cend())
+                state.insert(key, value.value());
+        }
+        prior.insert(QStringLiteral("surface"), state);
+    }
+    // Keep the same capability stripping for every value that is actually
+    // projected. This is a bounded, per-transaction view, not another cache.
+    return makePresentationScene(std::move(prior));
+}
+
 QVariant sanitizePresentationValue(const QVariant &value)
 {
     if (value.metaType().id() == QMetaType::QVariantMap) {
         const QVariantMap source = value.toMap();
         QVariantMap sanitized;
         for (auto it = source.cbegin(); it != source.cend(); ++it) {
+#if defined(F4_EXTUI_PRODUCTION_TESTING)
+            if (it.key() == QStringLiteral("rows")
+                || it.key() == QStringLiteral("windowRows"))
+                ++presentationDocumentRowVisits;
+#endif
             if (it.key() == QStringLiteral("resourceId")
                 || it.key() == QStringLiteral("leaseId")
                 || it.key() == QStringLiteral("mediaEndpoint")

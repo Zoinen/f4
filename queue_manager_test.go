@@ -138,6 +138,208 @@ func TestQueueManager_ConcurrencyLimit(t *testing.T) {
 		t.Error("Task 2 never started")
 	}
 }
+
+func startPrivateQueueWorker(t *testing.T) *OpQueueManager {
+	t.Helper()
+	qm := &OpQueueManager{
+		activeKeys: make(map[string]bool),
+		workerWake: make(chan struct{}, 1),
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	wake := qm.workerWakeChannel()
+	go func() {
+		qm.workerLoopOn(wake, stop)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("private queue worker did not stop")
+		}
+	})
+	return qm
+}
+
+func waitForQueueManagerMutexHeld(t *testing.T, qm *OpQueueManager) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if qm.mu.TryLock() {
+			qm.mu.Unlock()
+			runtime.Gosched()
+			continue
+		}
+		return
+	}
+	t.Fatal("queue worker did not begin its dispatch pass")
+}
+
+func waitForQueueManagerMutexReleased(t *testing.T, qm *OpQueueManager) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if qm.mu.TryLock() {
+			qm.mu.Unlock()
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatal("queue worker did not finish its dispatch pass")
+}
+
+func waitForQueueTaskTerminal(t *testing.T, task *QueueTask) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		task.mu.Lock()
+		terminal := queueTaskTerminal(task.State)
+		task.mu.Unlock()
+		if terminal {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("queue task did not reach a terminal state")
+}
+
+func TestQueueManagerWorkerIdleBlocksUntilWake(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	qm := startPrivateQueueWorker(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	task := &QueueTask{
+		State:  "Queued",
+		ctx:    ctx,
+		cancel: cancel,
+		Run: func(context.Context, TaskReporter, vtui.Frame) error {
+			close(started)
+			return nil
+		},
+	}
+	qm.mu.Lock()
+	qm.tasks = append(qm.tasks, task)
+	qm.mu.Unlock()
+
+	// A polling worker would discover this deliberately unannounced task after
+	// its next interval. The event-driven worker must remain asleep.
+	select {
+	case <-started:
+		t.Fatal("idle queue worker scanned without a wake event")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	qm.wakeWorker()
+	select {
+	case <-started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("queued work did not start promptly after a wake event")
+	}
+	waitForQueueTaskTerminal(t, task)
+}
+
+func TestQueueManagerWorkerDoesNotPollResourceBlockedTasks(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	qm := startPrivateQueueWorker(t)
+	qm.activeKeys["disk"] = true
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	task := &QueueTask{
+		State:   "Queued",
+		ResKeys: []string{"disk"},
+		ctx:     ctx,
+		cancel:  cancel,
+		Run: func(context.Context, TaskReporter, vtui.Frame) error {
+			close(started)
+			return nil
+		},
+	}
+	qm.tasks = append(qm.tasks, task)
+
+	// Hold the task lock so the test can observe that the worker has consumed
+	// the wake and entered this dispatch pass before the resource is released.
+	task.mu.Lock()
+	qm.wakeWorker()
+	waitForQueueManagerMutexHeld(t, qm)
+	task.mu.Unlock()
+	waitForQueueManagerMutexReleased(t, qm)
+
+	qm.mu.Lock()
+	qm.activeKeys["disk"] = false
+	qm.mu.Unlock()
+	select {
+	case <-started:
+		t.Fatal("resource-blocked task was started by a periodic rescan")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	qm.wakeWorker()
+	select {
+	case <-started:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("resource-blocked task did not start promptly after release wake")
+	}
+	waitForQueueTaskTerminal(t, task)
+}
+
+func TestQueueManagerTaskCompletionWakesResourceWaiter(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	qm := startPrivateQueueWorker(t)
+
+	blockerStarted := make(chan struct{})
+	releaseBlocker := make(chan struct{})
+	blocker := &QueueTask{
+		ResKeys: []string{"disk"},
+		Run: func(context.Context, TaskReporter, vtui.Frame) error {
+			close(blockerStarted)
+			<-releaseBlocker
+			return nil
+		},
+	}
+	qm.Enqueue(blocker)
+	select {
+	case <-blockerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("resource-owning task did not start")
+	}
+
+	waiterStarted := make(chan struct{})
+	waiter := &QueueTask{
+		ResKeys: []string{"disk"},
+		Run: func(context.Context, TaskReporter, vtui.Frame) error {
+			close(waiterStarted)
+			return nil
+		},
+	}
+	// Synchronize with the dispatch pass that observes the occupied resource,
+	// so the only subsequent event capable of starting waiter is blocker release.
+	waiter.mu.Lock()
+	qm.Enqueue(waiter)
+	waitForQueueManagerMutexHeld(t, qm)
+	waiter.mu.Unlock()
+	waitForQueueManagerMutexReleased(t, qm)
+
+	select {
+	case <-waiterStarted:
+		t.Fatal("resource waiter started before its owner completed")
+	default:
+	}
+	close(releaseBlocker)
+	select {
+	case <-waiterStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("resource release did not wake the blocked queue task promptly")
+	}
+	waitForQueueTaskTerminal(t, blocker)
+	waitForQueueTaskTerminal(t, waiter)
+}
+
 func TestQueueManager_ConflictDetection(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmp := t.TempDir()
@@ -155,7 +357,8 @@ func TestQueueManager_ConflictDetection(t *testing.T) {
 
 	// 1. Ставим задачу в очередь с текущим состоянием файла
 	task := &QueueTask{
-		Type: "Copy",
+		Type:    "Copy",
+		ResKeys: []string{getResourceKey(v)},
 		Preconditions: []OpPrecondition{
 			{Vfs: v, Path: path, MTime: st.MTime, Size: st.Size, IsDir: false},
 		},
@@ -180,6 +383,7 @@ func TestQueueManager_ConflictDetection(t *testing.T) {
 	qm.mu.Lock()
 	qm.activeKeys = make(map[string]bool)
 	qm.mu.Unlock()
+	qm.wakeWorker()
 
 	// Ждем обработки
 	timeout := time.After(2 * time.Second)

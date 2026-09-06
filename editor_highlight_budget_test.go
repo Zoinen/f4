@@ -82,21 +82,6 @@ func TestHighlightDuty(t *testing.T) {
 	}
 }
 
-func TestNextIndexPoll(t *testing.T) {
-	if got := nextIndexPoll(indexPollMin); got != 2*indexPollMin {
-		t.Errorf("poll should double, got %v", got)
-	}
-	if got := nextIndexPoll(indexPollMax); got != indexPollMax {
-		t.Errorf("poll should saturate at indexPollMax, got %v", got)
-	}
-	if got := nextIndexPoll(0); got != indexPollMin {
-		t.Errorf("poll should never drop below indexPollMin, got %v", got)
-	}
-	if indexPollMax >= 20*time.Millisecond {
-		t.Error("the poll cap must stay well under the old fixed 20ms sleep")
-	}
-}
-
 // The regression this whole change is about: one slice must cost a bounded
 // amount of UI time no matter how slow the highlighter is. The previous
 // implementation walked a fixed 200 or 2500 lines per slice, which is a

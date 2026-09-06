@@ -37,6 +37,19 @@ type MenuItem struct {
 	// Submenu creates the anchored child lazily. A fresh child is requested on
 	// every opening so callers can start an asynchronous refresh at that point.
 	Submenu func() *VMenu
+	// SubmenuFrame is the custom-frame counterpart to Submenu. The returned
+	// frame must expose its embedded menu through MenuFrameProvider. Keeping the
+	// actual frame in the stack preserves custom keyboard, mouse, rendering, and
+	// close behavior while VMenu continues to own the common cascade lifecycle.
+	// If both factories are set, SubmenuFrame takes precedence.
+	SubmenuFrame func() Frame
+}
+
+// MenuFrameProvider exposes the VMenu control hosted by a custom menu frame.
+// VMenu implements this itself, and a frame embedding *VMenu inherits the
+// implementation automatically.
+type MenuFrameProvider interface {
+	MenuControl() *VMenu
 }
 
 // VMenu implements a vertical menu with navigation support.
@@ -55,9 +68,12 @@ type VMenu struct {
 	OnClose func()
 
 	parentMenu    *VMenu
+	parentFrame   Frame
 	parentIndex   int
 	childMenu     *VMenu
+	childFrame    Frame
 	childIndex    int
+	hostFrame     Frame
 	closeNotified bool
 	hoverMu       sync.Mutex
 	hoverTimer    *time.Timer
@@ -183,7 +199,7 @@ func (m *VMenu) ReplaceItems(items []MenuItem) {
 		if childID != "" {
 			for i := range m.Items {
 				if m.Items[i].ID == childID && m.itemSelectable(i) &&
-					m.Items[i].Submenu != nil {
+					m.HasSubmenu(i) {
 					nextChildIndex = i
 					break
 				}
@@ -194,6 +210,7 @@ func (m *VMenu) ReplaceItems(items []MenuItem) {
 		} else {
 			m.childIndex = nextChildIndex
 			m.childMenu.parentIndex = nextChildIndex
+			m.childMenu.parentFrame = m.menuFrame()
 			m.positionSubmenu(m.childMenu, nextChildIndex)
 		}
 	}
@@ -203,11 +220,42 @@ func (m *VMenu) ReplaceItems(items []MenuItem) {
 	m.declareSemanticMenuState()
 }
 
-func (m *VMenu) ParentMenu() *VMenu { return m.parentMenu }
-func (m *VMenu) ParentIndex() int   { return m.parentIndex }
+func (m *VMenu) MenuControl() *VMenu { return m }
+func (m *VMenu) ParentMenu() *VMenu  { return m.parentMenu }
+func (m *VMenu) ParentFrame() Frame  { return m.parentFrame }
+func (m *VMenu) ParentIndex() int    { return m.parentIndex }
+
+// RepositionSubmenu asks the parent to recompute this menu's anchored
+// placement. Dynamic custom menu frames call it after replacing asynchronous
+// rows or when their available screen geometry changes.
+func (m *VMenu) RepositionSubmenu() {
+	if m != nil && m.parentMenu != nil {
+		m.parentMenu.positionSubmenu(m, m.parentIndex)
+	}
+}
+
+func (m *VMenu) menuFrame() Frame {
+	if m != nil && m.hostFrame != nil {
+		return m.hostFrame
+	}
+	return m
+}
+
+func bindMenuFrame(frame Frame) *VMenu {
+	provider, ok := frame.(MenuFrameProvider)
+	if !ok {
+		return nil
+	}
+	menu := provider.MenuControl()
+	if menu != nil {
+		menu.hostFrame = frame
+	}
+	return menu
+}
 
 func (m *VMenu) HasSubmenu(index int) bool {
-	return index >= 0 && index < len(m.Items) && m.Items[index].Submenu != nil
+	return index >= 0 && index < len(m.Items) &&
+		(m.Items[index].Submenu != nil || m.Items[index].SubmenuFrame != nil)
 }
 
 func (m *VMenu) positionSubmenu(child *VMenu, index int) {
@@ -215,11 +263,11 @@ func (m *VMenu) positionSubmenu(child *VMenu, index int) {
 		return
 	}
 	width := 24
-	for _, item := range child.Items {
+	for itemIndex, item := range child.Items {
 		clean, _, _ := ParseAmpersandString(item.Text)
 		itemWidth := runewidth.StringWidth(item.AccentPrefix) +
 			runewidth.StringWidth(clean) + runewidth.StringWidth(item.Shortcut) + 6
-		if item.Submenu != nil {
+		if child.HasSubmenu(itemIndex) {
 			itemWidth += 2
 		}
 		if itemWidth > width {
@@ -270,18 +318,27 @@ func (m *VMenu) OpenSubmenu(index int) bool {
 	}
 	m.CloseSubmenu()
 	m.ScrollView.SetSelectPos(index)
-	child := m.Items[index].Submenu()
+	item := m.Items[index]
+	var childFrame Frame
+	if item.SubmenuFrame != nil {
+		childFrame = item.SubmenuFrame()
+	} else if item.Submenu != nil {
+		childFrame = item.Submenu()
+	}
+	child := bindMenuFrame(childFrame)
 	if child == nil {
 		return false
 	}
 	child.parentMenu = m
+	child.parentFrame = m.menuFrame()
 	child.parentIndex = index
 	child.SetOwner(m)
 	child.ClearDone()
 	m.positionSubmenu(child, index)
 	m.childMenu = child
+	m.childFrame = childFrame
 	m.childIndex = index
-	FrameManager.PushMenu(child)
+	FrameManager.PushMenu(childFrame)
 	return true
 }
 
@@ -312,11 +369,18 @@ func (m *VMenu) CloseSubmenu() {
 	if child == nil {
 		return
 	}
+	childFrame := m.childFrame
+	if childFrame == nil {
+		childFrame = child.menuFrame()
+	}
 	m.childMenu = nil
+	m.childFrame = nil
 	m.childIndex = -1
 	child.finish(-1, false)
+	child.parentMenu = nil
+	child.parentFrame = nil
 	if FrameManager != nil {
-		FrameManager.RemoveFrame(child)
+		FrameManager.RemoveFrame(childFrame)
 		m.declareSemanticMenuState()
 	}
 }
@@ -372,10 +436,7 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	switch e.VirtualKeyCode {
 	case vtinput.VK_LEFT:
 		if m.parentMenu != nil {
-			m.finish(-1, false)
-			m.parentMenu.childMenu = nil
-			m.parentMenu.childIndex = -1
-			m.declareSemanticMenuState()
+			m.parentMenu.CloseSubmenu()
 			return true
 		}
 		if isSubMenu {
@@ -416,10 +477,7 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	case vtinput.VK_ESCAPE, vtinput.VK_F10:
 		if m.parentMenu != nil && e.VirtualKeyCode == vtinput.VK_ESCAPE {
-			m.finish(-1, false)
-			m.parentMenu.childMenu = nil
-			m.parentMenu.childIndex = -1
-			m.declareSemanticMenuState()
+			m.parentMenu.CloseSubmenu()
 			return true
 		}
 		m.SetExitCode(-1)
@@ -783,7 +841,7 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 		if shortcutText != "" {
 			p.DrawString(m.X2-vLenShortcut, currY, shortcutText, itemAttr)
 		}
-		if item.Submenu != nil {
+		if m.HasSubmenu(itemIdx) {
 			p.DrawString(m.X2-2, currY, "▶", itemAttr)
 		}
 	}

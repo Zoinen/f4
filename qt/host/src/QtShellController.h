@@ -107,6 +107,8 @@ public:
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
     void sendKeyEvent(int vk, int ch, bool down, int mods, bool repeat);
+    // Application activation only; never connected to QML/control focus.
+    void sendApplicationFocus(bool focused);
     Q_INVOKABLE void sendText(const QString &text, int mods = 0);
     Q_INVOKABLE void sendMouse(int x, int y, int button, int flags, bool down, int mods);
     Q_INVOKABLE void sendWheel(int x, int y, int dir, int mods);
@@ -284,6 +286,7 @@ private:
     void commitTypedScenePatch(
         const QString &streamId,
         const ExtUiSceneReducer::AppliedScenePatch &applied);
+    void storePanelCatalogSnapshot(int side, const QVariantMap &panel);
     void applyCompactFieldsToTypedState(const QVariantMap &message,
                                         int activePanel,
                                         qulonglong revision,
@@ -317,6 +320,8 @@ private:
     int m_initialRows = 30;
     bool m_connected = false;
     bool m_helloSent = false;
+    bool m_haveReportedApplicationFocus = false;
+    bool m_reportedApplicationFocus = false;
     bool m_serverHandshakeComplete = false;
     bool m_initialHandshakeComplete = false;
     QString m_startupError;

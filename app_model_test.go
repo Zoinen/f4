@@ -589,6 +589,23 @@ func TestAppVMenuModelPreservesNativeMenuState(t *testing.T) {
 	}
 }
 
+func TestAppVMenuModelIdentifiesDropdownOnlyComboOwner(t *testing.T) {
+	combo := vtui.NewComboBox(7, 9, 24, []string{"Never", "Always", "Auto"})
+	combo.SetId("panels-scrollbar")
+	combo.DropdownOnly = true
+	combo.Menu.SetId("panels-scrollbar-menu")
+	combo.Menu.SetPosition(7, 10, 30, 14)
+
+	model := (appVMenu{frame: combo.Menu, menu: combo.Menu}).model().ToMap()
+	if model["presentation"] != "dropdown" {
+		t.Fatalf("dropdown presentation missing: %#v", model)
+	}
+	if model["ownerId"] != vtui.SemanticID(combo) {
+		t.Fatalf("dropdown owner = %#v, want %#v", model["ownerId"],
+			vtui.SemanticID(combo))
+	}
+}
+
 func TestAppVMenuModelExportsNestedHeadersColorsAndStableIDs(t *testing.T) {
 	parent := vtui.NewVMenu("Parent")
 	parent.SetId("parent-menu")

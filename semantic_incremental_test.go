@@ -566,19 +566,60 @@ func TestExtUiRendererDirectMenuLifecycleNeverExportsLargeCatalogs(t *testing.T)
 		send:                         &extUiMessageSender{w: &wire},
 		nativeSemanticSurfaceEnabled: true,
 	}
+	screen.Renderer = renderer
 	renderer.SetSemanticScene(initial)
 	renderer.Flush()
 	extUiDrainBufferedMessages(t, &wire)
 
-	// A compact panel activation uses its own scalar wire message but still
-	// advances the renderer's logical app snapshot. The following menu patch
-	// must therefore remain bounded and use the exact scene state Qt owns.
+	menu := vtui.NewVMenu(" Drives ")
+	menu.AddItem(vtui.MenuItem{
+		Text: "Other panel", Icon: "panels-top-left",
+	})
+	menu.AddItem(vtui.MenuItem{Text: "C: Local", Icon: "hard-drive"})
+	menu.SetPosition(10, 5, 35, 9)
+
+	// Clicking the drive icon on the inactive panel performs both mutations in
+	// one posted task. The activation and root-only menu patch use independent
+	// wire streams, but together they are the atomic result of that one click.
+	// If the renderer treats panel_activation as the entire handled boundary,
+	// this first menu is stranded in Go. A second click then opens a duplicate,
+	// which is why an outside click appears to need two presses as well.
 	renderer.BeginSemanticSceneUpdate()
 	renderer.QueuePanelActivation(1)
+	allowSemanticMenuAfterPanelActivation()
+	vtui.FrameManager.Push(menu)
+	if !renderer.SetSemanticMenuState(nil) {
+		t.Fatal("inactive-panel activation discarded the drive menu update")
+	}
 	renderer.EndSemanticSceneUpdate()
-	activation, err := extUiReadMessage(&wire)
-	if err != nil || activation["type"] != "panel_activation" {
-		t.Fatalf("direct activation before menu = %#v, %v", activation, err)
+	openWireBytes := wire.Len()
+	openedMessages := extUiDrainBufferedMessages(t, &wire)
+	if len(openedMessages) != 2 ||
+		semanticString(openedMessages[0]["type"]) != "panel_activation" ||
+		semanticString(openedMessages[1]["type"]) != "scene_patch" {
+		t.Fatalf("combined click wire order = %#v, want activation then menu patch",
+			openedMessages)
+	}
+	activation := extUiBufferedMessageOfType(openedMessages, "panel_activation")
+	opened := extUiBufferedMessageOfType(openedMessages, "scene_patch")
+	if activation == nil || extUiInt(activation, "activePanel") != 1 {
+		t.Fatalf("combined click omitted panel activation: %#v", openedMessages)
+	}
+	if opened == nil || !semanticValueContainsKey(opened, "icon") {
+		t.Fatalf("combined click omitted the drive menu: %#v", openedMessages)
+	}
+	if semanticValueContainsKey(opened, "entries") {
+		t.Fatalf("combined click leaked a file catalog: %#v", opened)
+	}
+	if menus := appMapSlice(renderer.lastCompactScene["menus"]); len(menus) != 1 {
+		t.Fatalf("combined click installed %d drive menus, want exactly one", len(menus))
+	}
+	if renderer.semanticUpdatePanelActivation || renderer.semanticUpdateActivationMenu {
+		t.Fatal("successful composed menu retained transaction permissions")
+	}
+	if openWireBytes > 4352 {
+		t.Fatalf("combined activation/menu update is %d bytes, want bounded packets",
+			openWireBytes)
 	}
 	compactShell, _ := renderer.lastCompactScene["shell"].(map[string]any)
 	if got := semanticInt(compactShell["activePanel"]); got != 1 {
@@ -590,15 +631,8 @@ func TestExtUiRendererDirectMenuLifecycleNeverExportsLargeCatalogs(t *testing.T)
 		t.Fatalf("compact snapshot panel activation = %#v", compactPanels)
 	}
 	if !renderer.ConsumeSemanticSceneExportSuppression() {
-		t.Fatal("direct activation did not suppress its full export")
+		t.Fatal("combined activation/menu update did not suppress its full export")
 	}
-
-	menu := vtui.NewVMenu(" Drives ")
-	menu.AddItem(vtui.MenuItem{
-		Text: "Other panel", Icon: "panels-top-left",
-	})
-	menu.AddItem(vtui.MenuItem{Text: "C: Local", Icon: "hard-drive"})
-	menu.SetPosition(10, 5, 35, 9)
 
 	assertDirectMenuPatch := func(name string, mutate func()) map[string]any {
 		t.Helper()
@@ -628,12 +662,6 @@ func TestExtUiRendererDirectMenuLifecycleNeverExportsLargeCatalogs(t *testing.T)
 		return message
 	}
 
-	opened := assertDirectMenuPatch("open", func() {
-		vtui.FrameManager.Push(menu)
-	})
-	if !semanticValueContainsKey(opened, "icon") {
-		t.Fatal("open menu patch lost drive icons")
-	}
 	assertDirectMenuPatch("selection", func() { menu.SetSelectPos(1) })
 	closed := assertDirectMenuPatch("close", func() {
 		menu.Close()
@@ -648,6 +676,49 @@ func TestExtUiRendererDirectMenuLifecycleNeverExportsLargeCatalogs(t *testing.T)
 	if !foundMenus {
 		t.Fatalf("close patch did not clear menus: %#v", closed)
 	}
+	if menus := appMapSlice(renderer.lastCompactScene["menus"]); len(menus) != 0 {
+		t.Fatalf("one close left %d drive menus behind", len(menus))
+	}
+}
+
+func TestExtUiRendererMenuCompositionRequiresExplicitActivationContract(t *testing.T) {
+	screen := vtui.NewSilentScreenBuf()
+	screen.AllocBuf(100, 30)
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+	vtui.FrameManager.Push(vtui.NewDesktop())
+
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		nativeSemanticSurfaceEnabled: true,
+	}
+	renderer.SetSemanticScene(panelActivationFastPathScene(
+		0, `Panels: C:\left`))
+	renderer.Flush()
+	extUiDrainBufferedMessages(t, &wire)
+
+	menu := vtui.NewVMenu(" Drives ")
+	menu.AddItem(vtui.MenuItem{Text: "C: Local", Icon: "hard-drive"})
+	menu.SetPosition(10, 5, 35, 8)
+	renderer.BeginSemanticSceneUpdate()
+	renderer.QueuePanelActivation(1, `Panels: D:\right`)
+	vtui.FrameManager.Push(menu)
+	if renderer.SetSemanticMenuState(nil) {
+		t.Fatal("undeclared activation inherited permission for a second compact update")
+	}
+	renderer.EndSemanticSceneUpdate()
+
+	messages := extUiDrainBufferedMessages(t, &wire)
+	if len(messages) != 1 || semanticString(messages[0]["type"]) != "panel_activation" {
+		t.Fatalf("rejected composition sent unexpected messages: %#v", messages)
+	}
+	if renderer.suppressSemanticExport || renderer.deferSemanticRender ||
+		!renderer.semanticFastPathUnsafe {
+		t.Fatal("rejected composition did not restore the authoritative export path")
+	}
+	menu.Close()
+	vtui.FrameManager.RemoveFrame(menu)
 }
 
 func TestAppScenePatchSeparatesSparseSelectionFromPanelState(t *testing.T) {

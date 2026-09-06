@@ -317,6 +317,7 @@ func TestNavigationBenchmarkTracesEditorRouteKeys(t *testing.T) {
 		action string
 		phase  string
 	}{
+		{name: "f3", vk: vtinput.VK_F3, action: "key.f3", phase: "f3-dispatch"},
 		{name: "f4", vk: vtinput.VK_F4, action: "key.f4", phase: "f4-dispatch"},
 		{name: "escape", vk: vtinput.VK_ESCAPE, action: "key.escape", phase: "escape-dispatch"},
 		{name: "right", vk: vtinput.VK_RIGHT, action: "key.right", phase: "right-dispatch"},

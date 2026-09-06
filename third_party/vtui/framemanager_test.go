@@ -19,10 +19,14 @@ type mockFrame struct {
 	onHandleCommand    func(cmd int, args any) bool
 	tabTitle           string
 	tabMarker          string
+	surfaceKind        string
 	resizedW, resizedH int
 }
 
-type periodicRedrawTestRenderer struct{ wants bool }
+type periodicRedrawTestRenderer struct {
+	wants             bool
+	eventDrivenResize bool
+}
 
 func (*periodicRedrawTestRenderer) Render([]CharInfo, []CharInfo, int, int, bool) {}
 func (*periodicRedrawTestRenderer) SetCursor(int, int, bool, CursorShape)         {}
@@ -30,6 +34,7 @@ func (*periodicRedrawTestRenderer) SetPalette(*[256]uint32)                     
 func (*periodicRedrawTestRenderer) SetWindowTitle(string)                         {}
 func (*periodicRedrawTestRenderer) Flush()                                        {}
 func (r *periodicRedrawTestRenderer) WantsPeriodicRedraw() bool                   { return r.wants }
+func (r *periodicRedrawTestRenderer) UsesEventDrivenResize() bool                 { return r.eventDrivenResize }
 
 type defaultRedrawTestRenderer struct{}
 
@@ -173,6 +178,19 @@ func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	}
 }
 
+func TestEventDrivenResizeRendererCapability(t *testing.T) {
+	if !rendererUsesEventDrivenResize(&periodicRedrawTestRenderer{eventDrivenResize: true}) {
+		t.Fatal("native renderer did not disable terminal-size polling")
+	}
+	if rendererUsesEventDrivenResize(&periodicRedrawTestRenderer{}) {
+		t.Fatal("renderer without authoritative resize events disabled polling")
+	}
+	var renderer SurfaceRenderer = &defaultRedrawTestRenderer{}
+	if rendererUsesEventDrivenResize(renderer) {
+		t.Fatal("legacy renderer did not retain terminal-size polling")
+	}
+}
+
 func (m *mockFrame) ResizeConsole(w, h int) {
 	m.resizedW, m.resizedH = w, h
 }
@@ -211,6 +229,7 @@ func (m *mockFrame) GetWorkspaceTabTitle() string { return m.tabTitle }
 func (m *mockFrame) GetWorkspaceTabMarker() string {
 	return m.tabMarker
 }
+func (m *mockFrame) GetWorkspaceTabSurfaceKind() string { return m.surfaceKind }
 
 func TestAppScreen_GetWorkspaceTitleIgnoresModalFrames(t *testing.T) {
 	workspace := newMockFrame(0, 0, 40, 20, false)
@@ -2328,6 +2347,43 @@ func TestFrameManager_SizePolling(t *testing.T) {
 		t.Errorf("Polling failed to resize ScreenBuf. Got %dx%d", scr.Width(), scr.Height())
 	}
 }
+
+func TestFrameManager_EventDrivenResizeDoesNotPollWhileIdle(t *testing.T) {
+	oldGetSize := GetTerminalSize
+	defer func() { GetTerminalSize = oldGetSize }()
+
+	var sizeReads atomic.Int32
+	GetTerminalSize = func() (int, int, error) {
+		sizeReads.Add(1)
+		return 80, 24, nil
+	}
+
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.Renderer = &periodicRedrawTestRenderer{eventDrivenResize: true}
+	scr.AllocBuf(80, 24)
+	fm.Init(scr)
+	fm.Push(&mockFrame{})
+
+	done := make(chan struct{})
+	pr, pw := io.Pipe()
+	go func() {
+		fm.Run(vtinput.NewReader(pr, false))
+		close(done)
+	}()
+
+	// Span three complete legacy 200 ms polling intervals. The platform reader
+	// may synthesize one startup resize, but an event-driven host must not add a
+	// periodic stream of terminal-size reads after it settles.
+	time.Sleep(650 * time.Millisecond)
+	if got := sizeReads.Load(); got > 1 {
+		t.Fatalf("event-driven renderer repeatedly polled terminal size %d times", got)
+	}
+
+	fm.Stop()
+	_ = pw.Close()
+	<-done
+}
 func TestFrameManager_ResizeRobustness(t *testing.T) {
 	oldGetSize := GetTerminalSize
 	defer func() { GetTerminalSize = oldGetSize }()
@@ -3256,9 +3312,11 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	}
 	first := makeFrame("Left ↔ Right")
 	first.tabMarker = "P"
+	first.surfaceKind = "panels"
 	fm.Push(first)
 	second := makeFrame("Python")
 	second.tabMarker = "T"
+	second.surfaceKind = "terminal"
 	fm.AddScreen(second)
 	fm.drawWorkspaceTabs()
 	fm.drawWorkspaceCounter()
@@ -3283,6 +3341,9 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	}
 	if tabs[0]["marker"] != "P" || tabs[1]["marker"] != "T" {
 		t.Fatalf("workspace markers were not separated from titles: %#v", tabs)
+	}
+	if tabs[0]["surfaceKind"] != "panels" || tabs[1]["surfaceKind"] != "terminal" {
+		t.Fatalf("workspace surface kinds were not exported: %#v", tabs)
 	}
 	if tabs[0]["tooltipPrimary"] != "MockFrame" || tabs[0]["tooltipSecondary"] != "" {
 		t.Fatalf("workspace tooltip metadata missing from first tab: %#v", tabs[0])
@@ -3310,6 +3371,37 @@ func TestFrameManager_WorkspaceTabsSemanticModelAndActions(t *testing.T) {
 	}
 	if !fm.HandleSemanticAction(map[string]any{"action": "workspace.close", "target": tabs[1]["id"]}) || len(fm.Screens) != 1 {
 		t.Fatalf("semantic workspace.close left %d workspaces, want 1", len(fm.Screens))
+	}
+}
+
+func TestFrameManager_WorkspaceTabsHeaderPreservesSurfaceKind(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(60, 10)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.ConfigureWorkspaceTabs(WorkspaceTabsAlways, WorkspaceCtrlTabDirect)
+
+	viewer := newMockFrame(0, 0, 20, 5, false)
+	viewer.tabTitle = "pyw.exe"
+	viewer.surfaceKind = "viewer"
+	fm.Push(viewer)
+	editor := newMockFrame(0, 0, 20, 5, false)
+	editor.tabTitle = "pyw.exe"
+	editor.surfaceKind = "editor"
+	fm.AddScreen(editor)
+
+	header := fm.ExportSemanticSceneHeader()
+	bar, ok := header["workspaceTabs"].(map[string]any)
+	if !ok {
+		t.Fatalf("workspaceTabs header missing: %#v", header["workspaceTabs"])
+	}
+	tabs, ok := bar["tabs"].([]map[string]any)
+	if !ok || len(tabs) != 2 {
+		t.Fatalf("workspace tabs header = %#v, want two tabs", bar["tabs"])
+	}
+	if tabs[0]["surfaceKind"] != "viewer" || tabs[1]["surfaceKind"] != "editor" {
+		t.Fatalf("header surface kinds = %#v, want viewer/editor", tabs)
 	}
 }
 

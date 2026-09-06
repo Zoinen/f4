@@ -281,6 +281,7 @@ set(F4_LUCIDE_ICON_NAMES
   circle-question-mark.svg
   circle-x.svg
   chevron-down.svg
+  chevron-up.svg
   chevron-right.svg
   clock-3.svg
   cloud.svg
@@ -375,11 +376,11 @@ foreach(icon_name IN LISTS F4_LUCIDE_ICON_NAMES)
   set(icon_output "${F4_GALLERY_LUCIDE_DIR}/${icon_name}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${icon_source}")
   file(READ "${icon_source}" icon_svg)
-  string(REPLACE "stroke-width=\"2\""
+  string(REGEX REPLACE "stroke-width=\"[0-9.]+\""
     "stroke-width=\"${F4_GALLERY_LUCIDE_STROKE_WIDTH}\""
     gallery_icon_svg "${icon_svg}")
   if(gallery_icon_svg STREQUAL icon_svg)
-    message(FATAL_ERROR "Lucide icon ${icon_name} has no expected stroke-width=\"2\"")
+    message(FATAL_ERROR "Lucide icon ${icon_name} has no numeric stroke-width")
   endif()
   file(WRITE "${icon_output}" "${gallery_icon_svg}")
   list(APPEND F4_GALLERY_LUCIDE_ICONS "${icon_output}")
@@ -888,9 +889,13 @@ if(BUILD_TESTING)
     qml/QuickViewPanelView.qml
     qml/InfoPanelView.qml
     qml/CommandLineView.qml
+    qml/ActivityBoundedCursorBlink.qml
     qml/ConsoleRunRow.qml
     qml/DocumentSurface.qml
+    qml/DocumentHeader.qml
+    qml/DocumentRowDelegate.qml
     qml/DocumentViewportController.qml
+    qml/DocumentWindowPresenter.qml
     qml/DocumentRowPool.qml
     qml/DocumentTerminalSelectionController.qml
     qml/DocumentEditorPointerController.qml
@@ -930,6 +935,7 @@ if(BUILD_TESTING)
     qml/GenericDialog.qml
     qml/DialogOverlay.qml
     qml/AutocompletePopup.qml
+    qml/SemanticMenuItemDelegate.qml
     qml/SemanticMenuPopup.qml
     qml/OverlayHost.qml
     qml/KeyBarView.qml
@@ -976,6 +982,17 @@ if(BUILD_TESTING)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
+  add_test(NAME F4DocumentSurfacePixelGridTest COMMAND F4DocumentSurfaceTests
+    documentLeavesStayOnPhysicalPixelGridAt175Percent)
+  set_tests_properties(F4DocumentSurfacePixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  if(WIN32)
+    # The offscreen font database does not discover Windows' system fonts.
+    # Real glyphs, not missing-font boxes, are required for this visual test.
+    set_property(TEST F4DocumentSurfacePixelGridTest APPEND PROPERTY
+      ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
+  endif()
 
   add_executable(F4OperationsQueueTests
     tests/F4OperationsQueueTests.cpp
@@ -1011,6 +1028,16 @@ if(BUILD_TESTING)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
+  add_test(NAME F4SemanticDialogControlsPixelGridTest
+    COMMAND F4OperationsQueueTests
+      semanticDialogControlsUseWindowFontAndStayPixelAligned)
+  set_tests_properties(F4SemanticDialogControlsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  if(WIN32)
+    set_property(TEST F4SemanticDialogControlsPixelGridTest APPEND PROPERTY
+      ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
+  endif()
 
   add_executable(F4QuickViewSurfaceTests
     tests/F4QuickViewSurfaceTests.cpp
@@ -1055,6 +1082,13 @@ if(BUILD_TESTING)
   add_test(NAME F4QuickViewIconPixelGridTest
     COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4KeyBarPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      functionBarSameCountUpdatesPreserveDelegates
+      functionBarLeavesStaySharpAndThemeLiveAt175Percent)
+  set_tests_properties(F4KeyBarPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewPanelDriveButtonTest

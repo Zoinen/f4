@@ -321,6 +321,9 @@ type PanelsFrame struct {
 	ptyMutex   sync.Mutex
 	termView   *TerminalView
 	parser     *AnsiParser
+	// Last dimensions negotiated with each live shell, not document/layout data.
+	lastPTYGeometry         map[PtyBackend]ptyGeometry
+	terminalGeometryPending bool
 
 	// PTY parsing and history ingestion run at full speed, but a native
 	// semantic frontend only needs the newest terminal snapshot at an
@@ -508,7 +511,7 @@ func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
 	}
 	for _, panel := range pf.panels {
 		fsp, ok := panel.(*FileSystemPanel)
-		if !ok || fsp.fastFindMode {
+		if !ok || fsp.fastFindMode || fsp.fastFindStr != "" {
 			return false
 		}
 	}
@@ -1059,6 +1062,7 @@ func (pf *PanelsFrame) takeLocalPTY() PtyBackend {
 	pf.ptyMutex.Lock()
 	defer pf.ptyMutex.Unlock()
 	pty := pf.pty
+	delete(pf.lastPTYGeometry, pty)
 	pf.pty = nil
 	return pty
 }
@@ -1306,6 +1310,7 @@ func (pf *PanelsFrame) reportLocalPTYFailure() {
 }
 
 func (pf *PanelsFrame) Close() {
+	cancelPendingDocumentOpen(pf)
 	pf.closeTerminalOutputRedraw()
 	if pf.wide && pf.widePanel >= 0 && pf.widePanel < 2 {
 		if isAIPanel(pf.panels[pf.widePanel]) {
@@ -1343,6 +1348,7 @@ func (pf *PanelsFrame) Close() {
 		pty.Close()
 	}
 	pf.remotePtys = nil
+	pf.lastPTYGeometry = nil
 	pf.BaseFrame.Close()
 }
 
@@ -1414,17 +1420,20 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		termH = 0
 	}
 
-	if pty := pf.localPTY(); pty != nil {
+	if pf.terminalWorkspaceActive() {
 		pf.ptyMutex.Lock()
 		cw, ch := pf.termView.CellSize()
-		setPtySize(pty, w, termH, cw, ch)
+		pf.negotiatePTYGeometry(pf.pty, w, termH, cw, ch)
 		for _, remotePty := range pf.remotePtys {
-			setPtySize(remotePty, w, termH, cw, ch)
+			pf.negotiatePTYGeometry(remotePty, w, termH, cw, ch)
 		}
 		pf.ptyMutex.Unlock()
 
 		pf.termView.SetPosition(0, contentY1, w-1, termY2)
 		pf.termView.Resize(w, termH)
+		pf.terminalGeometryPending = false
+	} else {
+		pf.terminalGeometryPending = true
 	}
 
 	// 2. Panel Area: Leaves one additional line for the f4 CommandLine.
@@ -1696,19 +1705,22 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 		pf.cmdLine.SetPosition(0, cmdLineY, pf.lastW-1, cmdLineY)
 		pf.cmdLine.Show(scr)
 	}
-
-	// Ctrl+O is a panel-cover toggle, not a full-console toggle. Keep the
-	// commander KeyBar in normal-screen terminal mode even while a child owns
-	// terminal input; alternate-screen applications alone get every row.
-	isTop := vtui.FrameManager.GetTopFrameType() == vtui.TypeUser+1
-	if isTop { // Only the top-most user frame controls the keybar
-		if pf.showKeyBar && !pf.termView.UseAltScreen {
-			vtui.FrameManager.KeyBar = pf.keyBar
-		} else {
-			vtui.FrameManager.KeyBar = nil
-		}
+	// Preserve callers that paint a panel frame directly; normal FrameManager
+	// and semantic transitions resolve this ownership before any painting.
+	if vtui.FrameManager.GetTopFrameType() == vtui.TypeUser+1 {
+		vtui.FrameManager.KeyBar = pf.GetKeyBar()
 	}
 
+}
+
+// Global chrome ownership must be available to semantic transitions before
+// DisplayObject runs. Ctrl+O keeps the bar; alternate-screen applications and
+// the explicit keybar option alone reserve its bottom row for content.
+func (pf *PanelsFrame) GetKeyBar() *vtui.KeyBar {
+	if pf.showKeyBar && (pf.termView == nil || !pf.termView.UseAltScreen) {
+		return pf.keyBar
+	}
+	return nil
 }
 
 // InterceptPluginKey lets global plugin hotkeys and the active panel's
@@ -1802,6 +1814,9 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.KeyEventType || !e.KeyDown {
 		return false
 	}
+	if pf.pendingDocumentOpenOwnsKey(e) {
+		return true
+	}
 	// Checked ahead of the panels-visible guard: the command line keeps
 	// its selection keys in terminal mode too, where the drive menus are
 	// bound in the Terminal area.
@@ -1874,6 +1889,15 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 }
 
 func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
+	if pf.pendingDocumentOpenOwnsKey(e) {
+		cancelPendingDocumentOpen(pf)
+		return true
+	}
+	// Do this before the raw AltScreen key path as well: a terminal app must
+	// receive deferred geometry before it is exposed on workspace activation.
+	if e.Type == vtinput.FocusEventType && e.SetFocus && pf.terminalGeometryPending && pf.lastW > 0 && pf.lastH > 0 {
+		pf.ResizeConsole(pf.lastW, pf.lastH)
+	}
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
@@ -1990,10 +2014,8 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			pf.cancelFastFind()
 		}
 		pf.SetFocus(e.SetFocus)
-		// Reload macros from disk when regaining focus to share them across instances
-		if e.SetFocus && MacroMgr != nil {
-			MacroMgr.Load()
-		}
+		// Shared macros reload only on real application activation, not these
+		// internal focus notifications from closing documents or dialogs.
 		// Propagate application focus without losing the explicit search-first target.
 		if pf.searchFirstMode() {
 			pf.cmdLine.SetFocus(e.SetFocus && pf.commandLineFocused)
@@ -3056,11 +3078,48 @@ func (pf *PanelsFrame) notifyPanelActivation() {
 	}
 }
 
+// invalidateSemanticSceneUpdate marks the current native input/task boundary
+// as requiring an authoritative export. Compact projections deliberately omit
+// panel modes such as Fast Find and nonstandard panel layouts.
+func invalidateSemanticSceneUpdate() {
+	if vtui.FrameManager == nil {
+		return
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil || screen.Renderer == nil {
+		return
+	}
+	if renderer, ok := screen.Renderer.(interface {
+		InvalidateSemanticSceneUpdate()
+	}); ok {
+		renderer.InvalidateSemanticSceneUpdate()
+	}
+}
+
+// allowSemanticMenuAfterPanelActivation declares the exact compound gesture
+// used by native panel header menus. The renderer will honor it only when a
+// compact activation was already accepted in this same mutation boundary.
+func allowSemanticMenuAfterPanelActivation() {
+	if vtui.FrameManager == nil {
+		return
+	}
+	screen := vtui.FrameManager.Screen()
+	if screen == nil || screen.Renderer == nil {
+		return
+	}
+	if renderer, ok := screen.Renderer.(interface {
+		AllowSemanticMenuAfterPanelActivation()
+	}); ok {
+		renderer.AllowSemanticMenuAfterPanelActivation()
+	}
+}
+
 func (pf *PanelsFrame) switchActivePanel(side int) bool {
 	if side < 0 || side >= len(pf.panels) {
 		return false
 	}
 	activeChanged := pf.activeIdx != side
+	activationPatchEligible := activeChanged && pf.panelActivationFastPathEligible()
 	pf.activeIdx = side
 	pf.lastKey = 0
 	if pf.activeIdx == 0 && !pf.showLeftPanel {
@@ -3073,7 +3132,11 @@ func (pf *PanelsFrame) switchActivePanel(side int) bool {
 		pf.setCommandLineFocus(false)
 	}
 	if activeChanged {
-		pf.notifyPanelActivation()
+		if activationPatchEligible {
+			pf.notifyPanelActivation()
+		} else {
+			invalidateSemanticSceneUpdate()
+		}
 	}
 	return activeChanged
 }
@@ -3575,16 +3638,25 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 // dialog. A task that completes before delay never creates a visible screen,
 // avoiding a one-frame flash for fast remote operations.
 func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
+	pf.runProgressTaskAfterContext(nil, delay, title, startMsg, forked, worker, onComplete)
+}
+
+// A document's presentation lifetime may end before an expensive provider
+// returns from Open/Read. Cancelling it suppresses queued progress and closes
+// an already-shown dialog immediately; completion still releases resources.
+// A nil lifetime preserves the ordinary progress-task caller contract.
+func (pf *PanelsFrame) runProgressTaskAfterContext(lifetime context.Context, delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
+	presentationAllowed := func() bool { return lifetime == nil || lifetime.Err() == nil }
 	dlg := vtui.NewCenteredDialog(50, 12, title)
 	dlg.AttentionSuppressed = true
 
-	lbl := vtui.NewText(0, 0, startMsg, vtui.Palette[vtui.ColDialogText])
+	lbl := vtui.NewText(0, 0, startMsg, 0)
 	dlg.AddItem(lbl)
 
 	pb := vtui.NewProgressBar(0, 0, 46)
 	dlg.AddItem(pb)
 
-	lblHint := vtui.NewText(0, 0, Msg("Op.SwitchHint"), vtui.Palette[vtui.ColDialogText])
+	lblHint := vtui.NewText(0, 0, Msg("Op.SwitchHint"), 0)
 	dlg.AddItem(lblHint)
 
 	btnCancel := vtui.NewButton(0, 0, Msg("vtui.Cancel"))
@@ -3609,11 +3681,14 @@ func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg
 
 	done := make(chan struct{})
 	dialogShown := false // accessed only from UI tasks
-	showDialog := func() {
+	showDialog := func() bool {
+		if !presentationAllowed() {
+			return false
+		}
 		if delay > 0 {
 			select {
 			case <-done:
-				return
+				return false
 			default:
 			}
 		}
@@ -3625,22 +3700,27 @@ func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg
 			vtui.FrameManager.AddScreenHeadless(dlg)
 		}
 		dialogShown = true
+		return true
 	}
 
 	var showTimer *time.Timer
 	if delay > 0 {
 		showTimer = time.AfterFunc(delay, func() {
-			vtui.FrameManager.PostTask(showDialog)
+			vtui.FrameManager.PostTaskWithRedrawDecision(showDialog)
 		})
 	} else {
 		// Preserve the existing immediate-dialog contract for callers that do
 		// not opt into a delay.
-		vtui.FrameManager.PostTask(showDialog)
+		vtui.FrameManager.PostTaskWithRedrawDecision(showDialog)
 	}
 
+	var stopLifetimeWatch func() bool // installed before another UI task can run
 	taskCtx = vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		update := func(msg string, percent int) {
-			ctx.RunOnUI(func() {
+			ctx.RunOnUIWithRedrawDecision(func() bool {
+				if !presentationAllowed() {
+					return false
+				}
 				if msg != "" {
 					safeMsg := runewidth.Truncate(msg, 46, "...")
 					lbl.SetText(safeMsg)
@@ -3649,7 +3729,7 @@ func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg
 					pb.SetPercent(percent)
 					dlg.SetProgress(percent)
 				}
-				vtui.FrameManager.Redraw()
+				return true
 			})
 		}
 		err := worker(ctx.Context, update)
@@ -3657,15 +3737,36 @@ func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg
 		if showTimer != nil {
 			showTimer.Stop()
 		}
-		ctx.RunOnUI(func() {
-			if dialogShown {
+		ctx.RunOnUIWithRedrawDecision(func() bool {
+			if stopLifetimeWatch != nil {
+				stopLifetimeWatch()
+			}
+			changed := presentationAllowed()
+			if dialogShown && !dlg.IsDone() {
 				dlg.Close()
+				changed = true
 			}
 			if onComplete != nil {
 				onComplete(err)
 			}
+			return changed
 		})
 	})
+	if lifetime != nil {
+		stopLifetimeWatch = context.AfterFunc(lifetime, func() {
+			taskCtx.Cancel()
+			if showTimer != nil {
+				showTimer.Stop()
+			}
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+				if !dialogShown || dlg.IsDone() {
+					return false
+				}
+				dlg.Close()
+				return true
+			})
+		})
+	}
 }
 func (pf *PanelsFrame) RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter vfs.TaskReporter) error, onComplete func(err error)) {
 	dlg := NewFileOpProgressDialog(title)
@@ -4134,6 +4235,13 @@ func (pf *PanelsFrame) GetWorkspaceTabMarker() string {
 	return "T"
 }
 
+func (pf *PanelsFrame) GetWorkspaceTabSurfaceKind() string {
+	if pf.showPanels {
+		return "panels"
+	}
+	return "terminal"
+}
+
 // GetWorkspaceMenuInfo supplies the Screens popup with full panel paths. The
 // compact tab title above intentionally uses only leaf directory names.
 func (pf *PanelsFrame) GetWorkspaceMenuInfo() vtui.WorkspaceMenuInfo {
@@ -4418,8 +4526,6 @@ func (pf *PanelsFrame) showDriveMenu(panelIdx int) {
 	pf.showDriveMenuAt(panelIdx, 0)
 }
 
-type driveMenuCascadeAction func(parent *vtui.VMenu)
-
 // showDriveMenuAt opens the drive menu with the cursor on selectPos. The
 // bookmark keys reopen the menu at the row they acted on, the way far2l
 // loops ChangeDiskMenu around its own Pos (panels/panel.cpp:168).
@@ -4541,13 +4647,6 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 
 	// Обработка физических клавиш / и ~ (layout-independent)
 	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
-		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_RETURN || e.VirtualKeyCode == vtinput.VK_RIGHT) &&
-			menu.SelectPos >= 0 && menu.SelectPos < len(menu.Items) {
-			if open, ok := menu.Items[menu.SelectPos].UserData.(driveMenuCascadeAction); ok {
-				open(menu)
-				return true
-			}
-		}
 		// far2l binds three keys on the bookmark rows of this menu
 		// (panels/panel.cpp:544-600): Ins opens the bookmarks dialog, F4
 		// opens it on the slot under the cursor, Del clears that slot.
@@ -4648,17 +4747,6 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		if idx < 0 || idx >= len(menu.Items) {
 			return
 		}
-		if open, ok := menu.Items[idx].UserData.(driveMenuCascadeAction); ok {
-			// VMenu marks itself done after OnAction returns. Mouse activation
-			// therefore reuses the same frame on the next UI turn and places the
-			// child above it, preserving a real cascade just like keyboard Right.
-			vtui.FrameManager.PostTask(func() {
-				menu.ClearDone()
-				vtui.FrameManager.Push(menu)
-				open(menu)
-			})
-			return
-		}
 		menu.Close()
 		fsp, ok := pf.panels[panelIdx].(*FileSystemPanel)
 		if !ok {
@@ -4700,6 +4788,7 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 			pf.ptyMutex.Lock()
 			if pty, ok := pf.remotePtys[fsp.vfs]; ok {
 				pty.Close()
+				delete(pf.lastPTYGeometry, pty)
 				delete(pf.remotePtys, fsp.vfs)
 			}
 			pf.ptyMutex.Unlock()
@@ -4740,6 +4829,7 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string) b
 		pf.ptyMutex.Lock()
 		if pty, ok := pf.remotePtys[fsp.vfs]; ok {
 			pty.Close()
+			delete(pf.lastPTYGeometry, pty)
 			delete(pf.remotePtys, fsp.vfs)
 		}
 		pf.ptyMutex.Unlock()

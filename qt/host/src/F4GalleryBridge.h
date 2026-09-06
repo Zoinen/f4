@@ -52,7 +52,13 @@ public:
     bool navigationBenchmarkEnabled() const;
     bool benchmarkTraceEnabled() const;
 
+    // Reuse the panel's native SVG middle-scroll cursor for document surfaces
+    // without making those surfaces depend on a MasonryLayout instance.
+    Q_INVOKABLE void setScrollingMouseCursor(bool scrollingMode,
+                                              int direction = 0,
+                                              qreal devicePixelRatio = 0);
     Q_INVOKABLE QObject *sessionForSide(int side) const;
+    Q_INVOKABLE void recordDocumentWindowCommit(const QVariantMap &window);
     Q_INVOKABLE QObject *sessionForPanel(const QString &panelId,
                                          int side) const;
     Q_INVOKABLE void requestActivate(int side);
@@ -455,6 +461,9 @@ private:
     QList<PendingNavigationBenchmarkTrace> m_pendingNavigationBenchmarkTrace;
     QVariant m_lastInputSceneTraceId;
     QVariant m_pendingInputFrameTraceId;
+    QVariantMap m_pendingDocumentWindow;
+    qint64 m_pendingDocumentWindowCommitNs = 0;
+    qulonglong m_pendingDocumentWindowRenderSync = 0;
     qint64 m_pendingInputFrameSceneEndNs = 0;
     qulonglong m_pendingInputFrameRequiredRenderSyncSerial = 0;
     qulonglong m_inputScenesSupersededBeforeFrame = 0;

@@ -16,6 +16,7 @@
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
 #include <ZoinGallery/MediaTimingTrace.h>
+#include <ZoinGallery/SvgCursor.h>
 
 #include <algorithm>
 #include <utility>
@@ -288,6 +289,15 @@ bool F4GalleryBridge::benchmarkTraceEnabled() const
     return F4NavigationBenchmarkTrace::enabled();
 }
 
+void F4GalleryBridge::setScrollingMouseCursor(bool scrollingMode,
+                                               int direction,
+                                               qreal devicePixelRatio)
+{
+    SvgCursor::setScrollingModeCursor(
+        scrollingMode, direction,
+        devicePixelRatio > 0 ? devicePixelRatio : availableDevicePixelRatio());
+}
+
 QObject *F4GalleryBridge::sessionForSide(int side) const
 {
     return m_panelSessions.session(side);
@@ -343,11 +353,46 @@ void F4GalleryBridge::notifyFrameSwapped(qulonglong synchronizedSerial)
 void F4GalleryBridge::notifyFrameSwappedAt(
     qulonglong synchronizedSerial, qint64 frameBoundaryNs)
 {
+    if (!m_pendingDocumentWindow.isEmpty()
+        && synchronizedSerial >= m_pendingDocumentWindowRenderSync) {
+        QVariantMap fields = std::move(m_pendingDocumentWindow);
+        fields.insert(QStringLiteral("commitToFrameNs"),
+                      frameBoundaryNs - m_pendingDocumentWindowCommitNs);
+        F4NavigationBenchmarkTrace::eventAt(
+            QStringLiteral("qt.document.window.frame.swapped"), frameBoundaryNs,
+            {}, fields);
+        m_pendingDocumentWindow.clear();
+    }
     finishPendingInputFrameTrace(synchronizedSerial, frameBoundaryNs);
     releaseFrameBoundMetadata(synchronizedSerial);
     scheduleDeferredCatalogFinalizations(synchronizedSerial);
     recordMediaFrameSwap();
     advanceNavigationBenchmarkFrame(frameBoundaryNs);
+}
+void F4GalleryBridge::recordDocumentWindowCommit(const QVariantMap &window)
+{
+    if (!F4NavigationBenchmarkTrace::enabled())
+        return;
+    // The document identity, not the latest unrelated IPC/input trace, joins
+    // this ready transaction to Go's document.window.projected event.
+    QVariantMap fields;
+    for (const auto *key : {"documentKey", "kind", "layoutRevision",
+                           "geometryRevision", "windowGeneration", "windowStart",
+                           "windowEnd", "viewportStart", "viewportColumns",
+                           "viewportRows", "rowCount", "windowContentKey", "prepareMs",
+                           "rowsAndPlacementMs", "finishMs"}) {
+        const QString name = QString::fromLatin1(key);
+        fields.insert(name, window.value(name));
+    }
+    if (fields.value(QStringLiteral("documentKey")).toString().isEmpty())
+        return;
+    m_pendingDocumentWindowCommitNs = F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    m_pendingDocumentWindowRenderSync =
+        m_renderSyncSerial.load(std::memory_order_acquire) + 1;
+    m_pendingDocumentWindow = fields;
+    F4NavigationBenchmarkTrace::eventAt(
+        QStringLiteral("qt.document.window.committed"),
+        m_pendingDocumentWindowCommitNs, {}, fields);
 }
 void F4GalleryBridge::finishPendingInputFrameTrace(
     qulonglong synchronizedSerial, qint64 frameBoundaryNs)

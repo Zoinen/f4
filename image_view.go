@@ -959,3 +959,5 @@ func (iv *ImageView) GetWorkspaceTabTitle() string {
 }
 
 func (iv *ImageView) GetWorkspaceTabMarker() string { return "I" }
+
+func (iv *ImageView) GetWorkspaceTabSurfaceKind() string { return "imageViewer" }

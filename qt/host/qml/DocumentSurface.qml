@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
-import QtQuick.Controls.impl
+import ZoinGallery 1.0 as ZG
 
 Rectangle {
     id: documentRoot
@@ -22,12 +22,14 @@ Rectangle {
     property alias windowInitialized: viewportController.windowInitialized
     property alias rebasingWindow: viewportController.rebasingWindow
     property alias windowRequestPending: viewportController.windowRequestPending
+    property alias pendingWindowIntent: viewportController.pendingWindowIntent
     property alias requestedExtent: viewportController.requestedExtent
     property alias requestedFraction: viewportController.requestedFraction
     property alias requestedGeneration: viewportController.requestedGeneration
     property alias resumeVelocity: viewportController.resumeVelocity
     property alias requestPreservesLiveAnchor: viewportController.requestPreservesLiveAnchor
     property alias wheelGestureActive: viewportController.wheelGestureActive
+    property alias middleAutoScrollActive: viewportController.middleAutoScrollActive
     property alias stableTopExtent: viewportController.stableTopExtent
     property alias stableTopFraction: viewportController.stableTopFraction
     property alias lastViewportStart: viewportController.lastViewportStart
@@ -35,6 +37,11 @@ Rectangle {
     property alias queuedScrollBarPosition: viewportController.queuedScrollBarPosition
     property alias appliedWindowSignature: viewportController.appliedWindowSignature
     property alias appliedDocumentKey: viewportController.appliedDocumentKey
+    property alias appliedLayoutRevision: viewportController.appliedLayoutRevision
+    property alias appliedWindowGeneration: viewportController.appliedWindowGeneration
+    property alias canceledWindowGeneration: viewportController.canceledWindowGeneration
+    property alias reportedViewportColumns: viewportController.reportedViewportColumns
+    property alias geometryRevision: viewportController.geometryRevision
     property alias loadedSlotStart: viewportController.loadedSlotStart
     property alias loadedSlotEnd: viewportController.loadedSlotEnd
     property int liveRowDelegateCount: 0
@@ -62,26 +69,59 @@ Rectangle {
     property alias terminalSelectionAutoScrollLastTick: terminalSelectionController.autoScrollLastTick
     property alias terminalFollowTailIntent: viewportController.terminalFollowTailIntent
     property alias terminalFollowTailInitialized: viewportController.terminalFollowTailInitialized
+    readonly property var presentationFrame: viewportController.presentationFrame
     readonly property var cursorFrame:
         hostWindow.documentSurfaceStateOverride !== null
         && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.id)
            === hostWindow.cleanText(frame.id)
-        ? hostWindow.documentSurfaceStateOverride : frame
+        && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.documentKey)
+           === hostWindow.cleanText(documentKey)
+        && (!standaloneViewport || (frame.layoutPending !== true
+            && (hostWindow.documentSurfaceStateOverride.layoutRevision === undefined
+                || Number(hostWindow.documentSurfaceStateOverride.layoutRevision)
+                    === appliedLayoutRevision)
+            && (hostWindow.documentSurfaceStateOverride.windowGeneration === undefined
+                || Number(hostWindow.documentSurfaceStateOverride.windowGeneration)
+                    === appliedWindowGeneration)))
+        ? hostWindow.documentSurfaceStateOverride : presentationFrame
     readonly property bool showsConsoleTopBar:
         !embedded && (frame.kind === "viewer" || frame.kind === "editor")
     readonly property bool terminalSurface: frame.kind === "terminal"
+    readonly property bool standaloneViewport:
+        !embedded && !terminalSurface && surfaceObjectName === "documentSurface"
+    readonly property bool inputPresentationActive:
+        interactionActive && visible && hostWindow.active
+        && !hostWindow.hasBlockingOverlay()
+    readonly property bool middleAutoScrollAllowed:
+        standaloneViewport && inputPresentationActive
+        && hostWindow.mouseWheelMode === "gui"
     readonly property bool terminalSelectionEnabled:
         terminalSurface && frame.selectionEnabled === true
-    readonly property string topBarLeftText:
-        hostWindow.cleanText(frame.topBarLeft).trim()
+    readonly property string topBarLeftText: {
+        const path = hostWindow.cleanText(presentationFrame.path).trim()
+        const legacyCaption = hostWindow.cleanText(
+                    presentationFrame.topBarLeft).trim()
+        const baseName = hostWindow.cleanText(
+                    presentationFrame.baseName).trim()
+        // Generated/plugin editor buffers deliberately replace their
+        // temporary file name with a meaningful caption. Ordinary files use
+        // the full logical path supplied by the core.
+        const explicitEditorCaption = presentationFrame.kind === "editor"
+                && baseName !== "" && legacyCaption !== baseName
+        if (showsConsoleTopBar && path !== "" && !explicitEditorCaption)
+            return path
+        return legacyCaption
+    }
     readonly property string topBarRightText:
-        hostWindow.cleanText(cursorFrame.topBarRight !== undefined
-                       ? cursorFrame.topBarRight : frame.topBarRight).trim()
+        viewportController.loadError !== ""
+        ? "Read error: " + viewportController.loadError
+        : hostWindow.cleanText(cursorFrame.topBarRight !== undefined
+                       ? cursorFrame.topBarRight : presentationFrame.topBarRight).trim()
     readonly property string documentFileName:
-        hostWindow.cleanText(frame.baseName).trim() !== ""
-        ? hostWindow.cleanText(frame.baseName).trim() : topBarLeftText
+        hostWindow.cleanText(presentationFrame.baseName).trim() !== ""
+        ? hostWindow.cleanText(presentationFrame.baseName).trim() : topBarLeftText
     readonly property string documentFileLocalPath:
-        hostWindow.cleanText(frame.localPath)
+        hostWindow.cleanText(presentationFrame.localPath)
     readonly property int documentFileIconLogicalSize: 16
     readonly property url documentFileIconSource:
         showsConsoleTopBar
@@ -91,8 +131,8 @@ Rectangle {
     readonly property bool documentFileIconFullColor:
         qtIcons.fileIconsAreFullColor === true
     readonly property color documentFileIconColor:
-        hostWindow.cleanText(frame.iconColor).trim() !== ""
-        ? hostWindow.cleanText(frame.iconColor).trim()
+        hostWindow.cleanText(presentationFrame.iconColor).trim() !== ""
+        ? hostWindow.cleanText(presentationFrame.iconColor).trim()
         : hostWindow.galleryMutedTextColor
     readonly property bool documentFileIconAvailable:
         documentFileIconSource.toString() !== ""
@@ -100,10 +140,17 @@ Rectangle {
         embedded ? 0 : (menuBar.visible ? menuBar.height : 0)
     readonly property real documentHeaderHeight:
         showsConsoleTopBar
-        ? Math.max(25, hostWindow.ch * 1.25)
-          + hostWindow.verticalContentSpacing
-          + hostWindow.pathRowExtraHeight
+        ? prospectiveHeaderHeight
         : 0
+    readonly property real prospectiveHeaderHeight: hostWindow.snapPx(
+        Math.max(25, hostWindow.ch * 1.25) + hostWindow.verticalContentSpacing
+        + hostWindow.pathRowExtraHeight)
+    readonly property real documentGutterWidth: standaloneViewport
+        ? hostWindow.snapPx(15) + Math.max(0, scrollBarRightInset) : 0
+    readonly property real prospectiveViewportWidth:
+        Math.max(0, width - 2 * textHorizontalInset - documentGutterWidth)
+    readonly property real prospectiveViewportHeight: Math.max(0,
+        height - surfaceMenuInset - prospectiveHeaderHeight - bottomInset)
     readonly property bool kineticActive: viewportController.kineticActive
     readonly property bool hasWindowProtocol:
         viewportController.hasWindowProtocol
@@ -115,15 +162,50 @@ Rectangle {
         surfaceMenuInset + documentHeaderHeight
     readonly property real bottomInset: embedded ? 0
         : hostWindow.keyBarHeight()
-    readonly property real rowHeight: Math.max(20, hostWindow.ch)
-    readonly property real textHorizontalInset: terminalSurface ? 0 : 10
+    readonly property real rowHeight: standaloneViewport
+        ? hostWindow.snapPx(Math.max(20, hostWindow.ch)) : Math.max(20, hostWindow.ch)
+    readonly property real textHorizontalInset: terminalSurface ? 0
+        : standaloneViewport ? hostWindow.snapPx(10) : 10
     readonly property real terminalCellWidth:
-        Math.max(1, documentFontMetrics.advanceWidth("M"))
+        Math.max(1, standaloneViewport ? documentCellProbe.implicitWidth / 64
+                                      : documentFontMetrics.advanceWidth("M"))
+    // Share the ancestor-to-window dependency chain once. Body text depends
+    // only on this origin and its known local layout; repeating a 12-parent
+    // dependency walk for every glyph run turns a row commit into a web of
+    // unnecessary binding reevaluations.
+    readonly property point pixelGridOrigin: {
+        let revision = hostWindow.width + hostWindow.height + hostWindow.dpr
+        let ancestor = documentRoot
+        while (ancestor && ancestor !== hostWindow.contentItem) {
+            revision += ancestor.x + ancestor.y + ancestor.width + ancestor.height
+            ancestor = ancestor.parent
+        }
+        const origin = documentRoot.mapToItem(hostWindow.contentItem, 0, 0)
+        return Qt.point(origin.x + revision * 0, origin.y)
+    }
+
+    function bodyPixelOffsetX(localX) {
+        const origin = pixelGridOrigin.x + localX
+        return standaloneViewport && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
+    }
+    function bodyPixelOffsetY(localY) {
+        const origin = pixelGridOrigin.y + localY
+        return standaloneViewport && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
+    }
+
+    function pixelOffsetX(item) {
+        return standaloneViewport && !kineticActive
+                ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem) : 0
+    }
+    function pixelOffsetY(item) {
+        return standaloneViewport && !kineticActive
+                ? hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem) : 0
+    }
 
     function runBackground(value) {
         var background = hostWindow.cleanText(value).toLowerCase()
         var defaultBackground = hostWindow.cleanText(
-                    frame.defaultBackground).toLowerCase()
+                    presentationFrame.defaultBackground).toLowerCase()
         if ((defaultBackground !== ""
                 && background === defaultBackground)
                 || background === "#000000"
@@ -131,6 +213,43 @@ Rectangle {
                 || background === "black")
             return "transparent"
         return background !== "" ? value : "transparent"
+    }
+
+    function editorSelectionRangeForRow(visualRow, visualWidth) {
+        let empty = ({ "valid": false, "start": 0, "end": 0 })
+        if (frame.kind !== "editor" || presentationFrame.hexMode === true
+                || presentationFrame.decodeMode === true
+                || cursorFrame.selection !== true || visualRow < 0)
+            return empty
+        let anchorRow = Number(cursorFrame.selectionAnchorRow || 0)
+        let anchorColumn = Number(cursorFrame.selectionAnchorColumn || 0)
+        let focusRow = Number(cursorFrame.cursorAbsoluteRow || 0)
+        let focusColumn = Number(cursorFrame.cursorAbsoluteColumn || 0)
+        if (anchorRow > focusRow
+                || (anchorRow === focusRow && anchorColumn > focusColumn)) {
+            let swapRow = anchorRow
+            let swapColumn = anchorColumn
+            anchorRow = focusRow
+            anchorColumn = focusColumn
+            focusRow = swapRow
+            focusColumn = swapColumn
+        }
+        if (visualRow < anchorRow || visualRow > focusRow)
+            return empty
+        let start = visualRow === anchorRow ? anchorColumn : 0
+        let end = visualRow === focusRow ? focusColumn : Math.max(0, visualWidth)
+        const scrollLeft = Math.max(0, Number(presentationFrame.scrollLeft || 0))
+        const rowEnd = Math.max(0, Number(visualWidth || 0) - scrollLeft)
+        const viewportEnd = Math.max(0, Number(presentationFrame.viewportColumns || 0))
+        start = Math.max(0, start - scrollLeft)
+        end = Math.max(0, end - scrollLeft)
+        if (viewportEnd > 0) {
+            start = Math.min(start, viewportEnd)
+            end = Math.min(end, viewportEnd)
+        }
+        start = Math.min(start, rowEnd)
+        end = Math.min(end, rowEnd)
+        return ({ "valid": end > start, "start": start, "end": end })
     }
 
 
@@ -212,153 +331,55 @@ Rectangle {
     function handleWheel(wheel) {
         viewportController.handleWheel(wheel)
     }
+    function beginMiddleAutoScroll() {
+        return viewportController.beginMiddleAutoScroll()
+    }
+    function endMiddleAutoScroll(commitPosition) {
+        return viewportController.endMiddleAutoScroll(commitPosition)
+    }
+    function cancelPendingWindowIntent() {
+        viewportController.cancelPendingIntent()
+    }
 
     color: "transparent"
 
-    Rectangle {
+    DocumentHeader {
         id: documentHeader
-        objectName: documentRoot.surfaceObjectName === "documentSurface"
-                    ? "documentHeader"
-                    : documentRoot.surfaceObjectName + "Header"
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.topMargin: documentRoot.surfaceMenuInset
-        height: documentRoot.documentHeaderHeight
-        visible: documentRoot.showsConsoleTopBar
-        color: hostWindow.titleBarBg
-        z: 2
-
-        Rectangle {
-            id: documentHeaderBackground
-            objectName: "documentHeaderBackground"
-            anchors.fill: parent
-            color: hostWindow.panelPathBg
-            z: 0
-        }
-
-        Rectangle {
-            id: documentHeaderSeparator
-            objectName: "documentHeaderSeparator"
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: hostWindow.separatorWidth
-            color: hostWindow.separatorColor
-        }
-
-        Item {
-            id: documentHeaderIcon
-            objectName: documentRoot.surfaceObjectName === "documentSurface"
-                        ? "documentHeaderIcon"
-                        : documentRoot.surfaceObjectName + "HeaderIcon"
-            anchors.left: parent.left
-            anchors.leftMargin: hostWindow.panelTextInset
-            anchors.verticalCenter: parent.verticalCenter
-            width: hostWindow.snapPx(18)
-            height: hostWindow.snapPx(18)
-            visible: documentRoot.documentFileIconAvailable
-            z: 1
-
-            IconLabel {
-                id: documentHeaderLucideIcon
-                objectName: documentRoot.surfaceObjectName === "documentSurface"
-                            ? "documentHeaderLucideIcon"
-                            : documentRoot.surfaceObjectName
-                              + "HeaderLucideIcon"
-                anchors.centerIn: parent
-                width: hostWindow.snapPx(16)
-                height: hostWindow.snapPx(16)
-                visible: !documentRoot.documentFileIconFullColor
-                icon.source: documentRoot.documentFileIconSource
-                icon.width: width
-                icon.height: height
-                icon.color: documentRoot.documentFileIconColor
-            }
-
-            Image {
-                id: documentHeaderSystemIcon
-                objectName: "documentHeaderSystemIcon"
-                anchors.centerIn: parent
-                width: hostWindow.snapPx(16)
-                height: hostWindow.snapPx(16)
-                source: documentRoot.documentFileIconSource
-                fillMode: Image.PreserveAspectFit
-                smooth: false
-                mipmap: false
-                asynchronous: true
-                cache: true
-                retainWhileLoading: true
-                visible: documentRoot.documentFileIconFullColor
-            }
-
-            IconLabel {
-                id: documentHeaderSystemFallbackIcon
-                objectName: "documentHeaderSystemFallbackIcon"
-                anchors.centerIn: parent
-                width: hostWindow.snapPx(16)
-                height: hostWindow.snapPx(16)
-                visible: documentRoot.documentFileIconFullColor
-                         && documentHeaderSystemIcon.status !== Image.Ready
-                icon.source: hostWindow.lucideIconSource(
-                                 "file", 16,
-                                 documentRoot.documentFileIconColor)
-                icon.width: width
-                icon.height: height
-                icon.color: documentRoot.documentFileIconColor
-            }
-        }
-
-        Text {
-            id: documentHeaderRight
-            objectName: documentRoot.surfaceObjectName === "documentSurface"
-                        ? "documentHeaderRight"
-                        : documentRoot.surfaceObjectName + "HeaderRight"
-            anchors.right: parent.right
-            anchors.rightMargin: hostWindow.panelTextInset
-            anchors.verticalCenter: parent.verticalCenter
-            width: Math.min(implicitWidth,
-                           Math.max(0, parent.width
-                                   - 2 * hostWindow.panelTextInset))
-            text: documentRoot.topBarRightText
-            color: hostWindow.galleryPathTextColor
-            font.family: hostWindow.guiMonospaceFontFamily
-            font.pixelSize: hostWindow.semanticTextFontPixelSize
-            horizontalAlignment: Text.AlignRight
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideLeft
-        }
-
-        Text {
-            id: documentHeaderLeft
-            objectName: documentRoot.surfaceObjectName === "documentSurface"
-                        ? "documentHeaderLeft"
-                        : documentRoot.surfaceObjectName + "HeaderLeft"
-            anchors.left: documentHeaderIcon.visible
-                           ? documentHeaderIcon.right : parent.left
-            anchors.right: documentHeaderRight.left
-            anchors.leftMargin: documentHeaderIcon.visible
-                               ? hostWindow.snapPx(7) : hostWindow.panelTextInset
-            anchors.rightMargin: hostWindow.panelTextInset
-            anchors.verticalCenter: parent.verticalCenter
-            text: documentRoot.topBarLeftText
-            color: hostWindow.galleryPathTextColor
-            font.family: hostWindow.guiMonospaceFontFamily
-            font.pixelSize: hostWindow.semanticTextFontPixelSize
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-        }
+        hostWindow: documentRoot.hostWindow
+        documentRoot: documentRoot
     }
 
     FontMetrics {
         id: documentFontMetrics
         font.family: hostWindow.guiMonospaceFontFamily
-        font.pixelSize: 13
+        font.pixelSize: hostWindow.semanticTextFontPixelSize
+    }
+
+    // FontMetrics resolves a different native font/DPI size from QQuickText
+    // on Windows (11 px vs the actual 7 px Consolas 13 advance). Measure the
+    // same renderer and resolved font as the real leaves, before opening any
+    // document. A long string avoids rounding one fractional glyph advance.
+    Text {
+        id: documentCellProbe
+        objectName: "documentCellProbe"
+        visible: false
+        text: "M".repeat(64)
+        textFormat: Text.PlainText
+        font.family: hostWindow.guiMonospaceFontFamily
+        font.pixelSize: hostWindow.semanticTextFontPixelSize
+        renderType: hostWindow.fontRenderType
     }
 
     ListView {
         id: documentList
         objectName: "documentList"
+        // Never expose the previous file during a new document's first load.
+        // Keep its slots untouched until the new ready window commits once.
+        visible: !documentRoot.standaloneViewport
+                 || (documentRoot.interactionActive
+                     && documentRoot.windowInitialized
+                     && documentRoot.documentKey
+                        === documentRoot.appliedDocumentKey)
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -372,109 +393,11 @@ Rectangle {
         reuseItems: true
         cacheBuffer: documentRoot.rowHeight * 2
 
-        delegate: Rectangle {
-            id: documentRow
-            objectName: "documentRowDelegate"
-            required property bool loaded
-            required property var rowData
-            property bool countedAsLive: true
-            width: ListView.view.width
-            height: documentRoot.rowHeight
-            color: "transparent"
-            Component.onCompleted: ++documentRoot.liveRowDelegateCount
-            Component.onDestruction: {
-                if (countedAsLive)
-                    --documentRoot.liveRowDelegateCount
-            }
-            ListView.onPooled: {
-                if (countedAsLive) {
-                    countedAsLive = false
-                    --documentRoot.liveRowDelegateCount
-                }
-            }
-            ListView.onReused: {
-                if (!countedAsLive) {
-                    countedAsLive = true
-                    ++documentRoot.liveRowDelegateCount
-                }
-            }
-
-            Row {
-                id: runRow
-                anchors.left: parent.left
-                anchors.leftMargin: documentRoot.textHorizontalInset
-                height: parent.height
-                z: 1
-                visible: documentRow.loaded
-                         && documentRow.rowData.runs !== undefined
-                         && documentRow.rowData.runs.length > 0
-
-                Repeater {
-                    model: documentRow.loaded
-                           ? documentRow.rowData.runs || [] : []
-
-                    delegate: Rectangle {
-                        required property var modelData
-                        height: runRow.height
-                        width: runLabel.implicitWidth
-                        color: documentRoot.runBackground(
-                                   modelData.background)
-
-                        Text {
-                            id: runLabel
-                            objectName: "documentRunText"
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: hostWindow.cleanText(modelData.text)
-                            color: hostWindow.cleanText(modelData.foreground) !== ""
-                                   ? modelData.foreground : hostWindow.textColor
-                            font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 13
-                            font.bold: modelData.bold === true
-                            font.underline: modelData.underline === true
-                            font.strikeout: modelData.strikeout === true
-                        }
-                    }
-                }
-            }
-
-            Text {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: documentRoot.textHorizontalInset
-                anchors.rightMargin: documentRoot.textHorizontalInset
-                visible: documentRow.loaded
-                         && (!documentRow.rowData.runs
-                             || documentRow.rowData.runs.length === 0)
-                text: hostWindow.rowText(documentRow.rowData)
-                color: hostWindow.textColor
-                font.family: hostWindow.guiMonospaceFontFamily
-                font.pixelSize: 13
-                elide: Text.ElideRight
-                z: 1
-            }
-
-            readonly property var terminalSelectionRange:
-                documentRoot.terminalSelectionRangeForRow(
-                    loaded ? Number(rowData.visualRow || 0) : -1, width)
-
-            Rectangle {
-                x: documentRoot.textHorizontalInset
-                   + documentRow.terminalSelectionRange.start
-                     * documentRoot.terminalCellWidth
-                y: 0
-                width: Math.max(0,
-                    (documentRow.terminalSelectionRange.end
-                     - documentRow.terminalSelectionRange.start)
-                    * documentRoot.terminalCellWidth)
-                height: parent.height
-                visible: documentRoot.terminalSurface
-                         && documentRow.loaded
-                         && documentRow.terminalSelectionRange.valid
-                color: hostWindow.selectedBg
-                opacity: 0.72
-                z: 0
-            }
+        delegate: DocumentRowDelegate {
+            hostWindow: documentRoot.hostWindow
+            documentRoot: documentRoot
+            documentList: documentList
+            viewportController: viewportController
         }
 
         onContentYChanged: viewportController.contentYChanged()
@@ -486,7 +409,10 @@ Rectangle {
         id: editorCursor
         objectName: "editorCursor"
         parent: documentList.contentItem
-        property bool blinkOn: true
+        property alias blinkOn: editorCursorBlinkController.blinkOn
+        property alias blinkInterval: editorCursorBlinkController.interval
+        readonly property bool blinkTimerRunning:
+            editorCursorBlinkController.running
         readonly property bool block:
             documentRoot.cursorFrame.cursorShape === "block"
         readonly property int windowRow:
@@ -495,51 +421,49 @@ Rectangle {
                   Number(documentRoot.cursorFrame.cursorAbsoluteRow || 0),
                                           documentRoot.displayedRows)
             : -1
+        readonly property var rowDelegate:
+            windowRow >= 0 ? viewportController.rowItem(windowRow) : null
         x: documentRoot.textHorizontalInset + Math.max(0, Number(
                 frame.kind === "terminal"
                 ? documentRoot.cursorFrame.cursorX || 0
                 : documentRoot.cursorFrame.cursorVisualColumn || 0))
-                * documentFontMetrics.advanceWidth("M")
-        y: (documentRoot.loadedSlotStart + Math.max(0, windowRow))
-           * documentRoot.rowHeight
-           + (block ? 1 : 2)
-        width: block ? Math.max(1, documentFontMetrics.advanceWidth("M"))
+                * documentRoot.terminalCellWidth
+        y: rowDelegate !== null
+           ? rowDelegate.y + (block ? 1 : 2)
+           : -documentRoot.rowHeight
+        width: block ? documentRoot.terminalCellWidth
                      : 2
         height: documentRoot.rowHeight - (block ? 2 : 4)
-        color: "#ffffff"
+        color: hostWindow.textColor
         opacity: blinkOn ? 1 : 0
         visible: (frame.kind === "editor" || frame.kind === "terminal")
+                 && (!documentRoot.standaloneViewport
+                     || documentRoot.cursorFrame.layoutRevision === undefined
+                     || Number(documentRoot.cursorFrame.layoutRevision)
+                        === documentRoot.appliedLayoutRevision)
                  && documentRoot.cursorFrame.cursorVisible === true
                  && windowRow >= 0
+                 && rowDelegate !== null
                  && Number(frame.kind === "terminal"
                            ? documentRoot.cursorFrame.cursorX
                            : documentRoot.cursorFrame.cursorVisualColumn) >= 0
         z: 5
-
-        onVisibleChanged: {
-            if (visible)
-                restartBlink()
+        transform: Translate {
+            x: documentRoot.pixelOffsetX(editorCursor)
+            y: documentRoot.pixelOffsetY(editorCursor)
         }
 
         function restartBlink() {
-            blinkOn = true
-            if (visible)
-                editorCursorBlinkTimer.restart()
+            editorCursorBlinkController.restart()
         }
 
-        Connections {
-            target: hostWindow
-            function onKeyboardActivityRevisionChanged() {
-                editorCursor.restartBlink()
-            }
-        }
-
-        Timer {
-            id: editorCursorBlinkTimer
-            interval: 520
-            running: editorCursor.visible
-            repeat: true
-            onTriggered: editorCursor.blinkOn = !editorCursor.blinkOn
+        ActivityBoundedCursorBlink {
+            id: editorCursorBlinkController
+            objectName: documentRoot.surfaceObjectName
+                        + "CursorBlinkController"
+            active: editorCursor.visible
+                    && documentRoot.inputPresentationActive
+            activityRevision: hostWindow.keyboardActivityRevision
         }
     }
 
@@ -550,19 +474,23 @@ Rectangle {
         anchors.top: documentList.top
         anchors.bottom: documentList.bottom
         acceptedButtons: frame.kind === "editor"
-                         ? Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+                         ? Qt.LeftButton | Qt.RightButton
+                           | (documentRoot.standaloneViewport
+                              && hostWindow.mouseWheelMode === "gui"
+                              ? Qt.NoButton : Qt.MiddleButton)
                          : documentRoot.terminalSelectionEnabled
                            ? Qt.LeftButton
                          : Qt.NoButton
         preventStealing: frame.kind === "editor"
                          || documentRoot.terminalSelectionEnabled
         propagateComposedEvents: true
-        enabled: documentRoot.interactionActive
+        enabled: documentRoot.inputPresentationActive
         cursorShape: frame.kind === "editor"
                      || documentRoot.terminalSelectionEnabled
                      ? Qt.IBeamCursor : Qt.ArrowCursor
         z: 8
         onPressed: mouse => {
+            editorCursor.restartBlink()
             if (frame.kind === "editor") {
                 documentRoot.sendEditorMouse(mouse, "press", false, false)
             } else if (documentRoot.terminalSelectionEnabled) {
@@ -578,10 +506,12 @@ Rectangle {
             mouse.accepted = true
         }
         onPositionChanged: mouse => {
-            if (frame.kind === "editor" && mouse.buttons !== Qt.NoButton)
+            if (frame.kind === "editor" && mouse.buttons !== Qt.NoButton) {
+                editorCursor.restartBlink()
                 documentRoot.sendEditorMouse(mouse, "move", true, false)
-            else if (documentRoot.terminalSelectionDragging
+            } else if (documentRoot.terminalSelectionDragging
                      && mouse.buttons !== Qt.NoButton) {
+                editorCursor.restartBlink()
                 documentRoot.updateTerminalSelectionPointer(mouse.x,
                                                               mouse.y)
                 var point = documentRoot.terminalSelectionPointAtViewportEdge()
@@ -590,6 +520,7 @@ Rectangle {
             }
         }
         onReleased: mouse => {
+            editorCursor.restartBlink()
             if (frame.kind === "editor") {
                 documentRoot.sendEditorMouse(mouse, "release", false, false)
             } else if (documentRoot.terminalSelectionDragging) {
@@ -611,6 +542,7 @@ Rectangle {
             }
         }
         onDoubleClicked: mouse => {
+            editorCursor.restartBlink()
             if (frame.kind === "editor")
                 documentRoot.sendEditorMouse(mouse, "press", false, true)
             else if (documentRoot.terminalSelectionEnabled
@@ -629,6 +561,93 @@ Rectangle {
         // both viewers and editors.  Only button/drag selection events
         // need the canonical Go editor mouse handler.
         onWheel: wheel => documentRoot.handleWheel(wheel)
+    }
+
+    // The browser-style middle gesture owns a stable panel-level pointer
+    // area. hoverEnabled is essential: a stationary click releases the
+    // button while leaving auto-scroll armed, and later buttonless movement
+    // must continue updating the shared frame-driven controller.
+    MouseArea {
+        id: documentMiddleButtonArea
+        objectName: "documentMiddleButtonArea"
+        anchors.left: documentList.left
+        anchors.right: documentScrollBar.visible
+                       ? documentScrollBar.left : documentList.right
+        anchors.top: documentList.top
+        anchors.bottom: documentList.bottom
+        acceptedButtons: Qt.MiddleButton
+        hoverEnabled: enabled
+        preventStealing: true
+        enabled: documentRoot.middleAutoScrollAllowed
+        cursorShape: middleAutoScrollController.scrollingMode
+                     ? Qt.SizeVerCursor
+                     : frame.kind === "editor" ? Qt.IBeamCursor
+                                                : Qt.ArrowCursor
+        z: 9
+
+        onPressed: mouse => {
+            if (middleAutoScrollController.scrollingMode)
+                documentRoot.endMiddleAutoScroll(false)
+            else
+                documentRoot.beginMiddleAutoScroll()
+            mouse.accepted = true
+        }
+        onPositionChanged: middleAutoScrollController.updatePointerMotion()
+        onReleased: mouse => {
+            if (middleAutoScrollController.scrollingStarted)
+                documentRoot.endMiddleAutoScroll(true)
+            mouse.accepted = true
+        }
+        onCanceled: documentRoot.endMiddleAutoScroll(true)
+    }
+
+    // AutoScrollController also drives the gallery's middle gesture. This
+    // zero-size adapter gives its reusable contentY/setScrollingMode contract
+    // to ListView without duplicating its frame-rate-independent speed math.
+    Item {
+        id: documentAutoScrollLayout
+        visible: false
+        width: 0
+        height: 0
+        property alias contentY: documentList.contentY
+        property bool scrollingMode: false
+        property int scrollingDirection: 0
+
+        // Keep the panel's cursor transition on the shared native path. The
+        // adapter deliberately coalesces repeated frame callbacks: changing
+        // the SVG cursor is a presentation transition, not per-frame work.
+        function setScrollingMode(active, direction) {
+            const nextMode = active === true
+            const nextDirection = nextMode
+                    ? Number(direction || 0) : 0
+            if (scrollingMode === nextMode
+                    && scrollingDirection === nextDirection)
+                return
+            scrollingMode = nextMode
+            scrollingDirection = nextDirection
+
+            const gallery = documentRoot.hostWindow.galleryControllerApi
+            if (gallery && typeof gallery.setScrollingMouseCursor
+                    === "function") {
+                gallery.setScrollingMouseCursor(
+                    nextMode, nextDirection,
+                    Number(documentRoot.hostWindow.dpr || 1))
+            }
+        }
+
+        Component.onDestruction: {
+            if (scrollingMode)
+                setScrollingMode(false, 0)
+        }
+    }
+
+    ZG.AutoScrollController {
+        id: middleAutoScrollController
+        objectName: "documentMouseAutoScrollController"
+        layout: documentAutoScrollLayout
+        pointerSource: documentMiddleButtonArea
+        horizontal: false
+        scrollExtent: documentRoot.hostWindow.height
     }
 
     F4ScrollBar {
@@ -662,7 +681,7 @@ Rectangle {
         fontMetrics: documentFontMetrics
         viewportController: viewportController
         frame: documentRoot.frame
-        interactionActive: documentRoot.interactionActive
+        interactionActive: documentRoot.inputPresentationActive
         rowHeight: documentRoot.rowHeight
         textHorizontalInset: documentRoot.textHorizontalInset
         terminalCellWidth: documentRoot.terminalCellWidth
@@ -676,6 +695,9 @@ Rectangle {
         viewportController: viewportController
         frame: documentRoot.frame
         rowHeight: documentRoot.rowHeight
+        textHorizontalInset: documentRoot.textHorizontalInset
+        textViewportWidth: documentRoot.prospectiveViewportWidth
+        documentCellWidth: documentRoot.terminalCellWidth
     }
 
     DocumentViewportController {
@@ -685,11 +707,18 @@ Rectangle {
         documentScrollBar: documentScrollBar
         terminalSelectionController: terminalSelectionController
         editorPointerController: editorPointerController
+        middleAutoScrollController: middleAutoScrollController
         frame: documentRoot.frame
         embedded: documentRoot.embedded
         interactionActive: documentRoot.interactionActive
         showsConsoleTopBar: documentRoot.showsConsoleTopBar
         terminalSurface: documentRoot.terminalSurface
         rowHeight: documentRoot.rowHeight
+        standaloneViewport: documentRoot.standaloneViewport
+        standaloneViewportWidth: documentRoot.prospectiveViewportWidth
+        standaloneViewportHeight: documentRoot.prospectiveViewportHeight
+        documentCellWidth: documentRoot.terminalCellWidth
+        middleAutoScrollAllowed: documentRoot.middleAutoScrollAllowed
     }
+
 }

@@ -110,7 +110,10 @@ Rectangle {
     Rectangle {
         id: commandCursor
         objectName: "commandLineCursor"
-        property bool blinkOn: true
+        property alias blinkOn: commandCursorBlinkController.blinkOn
+        property alias blinkInterval: commandCursorBlinkController.interval
+        readonly property bool blinkTimerRunning:
+            commandCursorBlinkController.running
         readonly property bool block: commandLine.cursorShape === "block"
         readonly property int textPosition: commandInput.cursorPosition
         readonly property rect caretRect: commandInput.cursorRectangle
@@ -125,29 +128,23 @@ Rectangle {
         z: 2
 
         function restartBlink() {
-            blinkOn = true
-            if (visible)
-                commandCursorBlinkTimer.restart()
+            commandCursorBlinkController.restart()
         }
 
-        onVisibleChanged: {
-            if (visible)
-                restartBlink()
-        }
-
-        Connections {
-            target: hostWindow
-            function onKeyboardActivityRevisionChanged() {
-                commandCursor.restartBlink()
-            }
-        }
-
-        Timer {
-            id: commandCursorBlinkTimer
-            interval: 520
-            running: commandCursor.visible
-            repeat: true
-            onTriggered: commandCursor.blinkOn = !commandCursor.blinkOn
+        ActivityBoundedCursorBlink {
+            id: commandCursorBlinkController
+            objectName: "commandLineCursorBlinkController"
+            active: commandCursor.visible
+                    && commandLineRoot.visible
+                    && hostWindow.active
+                    && hostWindow.isAppScene()
+                    && !hostWindow.needsFallbackGrid()
+                    && !hostWindow.hasBlockingOverlay()
+                    && !hostWindow.hasStandaloneDocumentSurface()
+                    && !hostWindow.hasOperationsQueueSurface()
+                    && (!hostWindow.galleryControllerApi
+                        || !hostWindow.galleryControllerApi.viewerVisible)
+            activityRevision: hostWindow.keyboardActivityRevision
         }
     }
 

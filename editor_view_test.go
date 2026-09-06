@@ -889,7 +889,9 @@ func TestEditorView_WordWrapScrolling(t *testing.T) {
 	ev := NewEditorView(pt, nil, "")
 	defer ev.Close()
 	ev.WordWrap = true
-	ev.SetPosition(0, 0, 9, 2) // Высота 3, высота текста 2
+	// X2 is inclusive and the editor reserves its last column for the scroll
+	// bar, so X2=10 gives the ten text cells this test describes.
+	ev.SetPosition(0, 0, 10, 2) // Высота 3, высота текста 2
 	ev.engine.SetWidth(10)
 
 	ev.ensureCursorVisible()

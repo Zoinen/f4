@@ -169,8 +169,13 @@ func TestSemanticStyledEditorWindowRowsMatchesDisplayObjectAndRestoresState(t *t
 	width := editor.X2 - editor.X1
 	window := editor.semanticWindow()
 
+	// Native rows are the immutable base projection. Compare them with the
+	// console renderer with regular stream selection disabled; Qt paints that
+	// selection from the separately fenced scalar overlay state.
+	editor.selActive = false
 	expected := semanticRenderSurface(editor.X1, editor.Y1+1,
 		editor.X1+width-1, editor.Y2, editor.DisplayObject)
+	editor.selActive = true
 	editor.ScrollTopRow = 24
 	editor.scrollBar.Value = 13
 	editor.scrollBar.Min = 2
@@ -280,8 +285,8 @@ func TestSemanticStyledEditorWindowRowsRepaintsOnlyChangedOverlap(t *testing.T) 
 	editor.CursorPos = 3
 	before = editor.semanticStyledRowsRendered
 	selected := semanticStyledEditorWindowRows(editor, window, width)
-	if got := editor.semanticStyledRowsRendered - before; got != 1 {
-		t.Fatalf("same-row selection endpoint repainted %d rows, want 1", got)
+	if got := editor.semanticStyledRowsRendered - before; got != 0 {
+		t.Fatalf("same-row selection endpoint repainted %d base rows, want 0", got)
 	}
 	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(selected, want) {
 		t.Fatal("cached same-row selection differs from the canonical full render")
@@ -291,8 +296,8 @@ func TestSemanticStyledEditorWindowRowsRepaintsOnlyChangedOverlap(t *testing.T) 
 	editor.CursorPos = 2
 	before = editor.semanticStyledRowsRendered
 	selected = semanticStyledEditorWindowRows(editor, window, width)
-	if got := editor.semanticStyledRowsRendered - before; got != 2 {
-		t.Fatalf("selection crossing a row boundary repainted %d rows, want 2", got)
+	if got := editor.semanticStyledRowsRendered - before; got != 0 {
+		t.Fatalf("selection crossing a row boundary repainted %d base rows, want 0", got)
 	}
 	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(selected, want) {
 		t.Fatal("cached cross-row selection differs from the canonical full render")

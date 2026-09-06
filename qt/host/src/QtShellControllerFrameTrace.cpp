@@ -99,6 +99,10 @@ void QtShellController::traceFrameCompletion(
                    trace.catalogPresentationSignalDurationNs);
     metrics.insert(QStringLiteral("scenePatchCoreDurationNs"),
                    trace.scenePatchCoreDurationNs);
+    metrics.insert(QStringLiteral("scenePatchReducerDurationNs"),
+                   trace.scenePatchReducerDurationNs);
+    metrics.insert(QStringLiteral("scenePatchTypedCommitDurationNs"),
+                   trace.scenePatchTypedCommitDurationNs);
     metrics.insert(QStringLiteral("scenePatchCompactApplyingDurationNs"),
                    trace.scenePatchCompactApplyingDurationNs);
     metrics.insert(QStringLiteral("scenePatchPanelCatalogDurationNs"),

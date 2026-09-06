@@ -17,9 +17,9 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/sdk/extui"
+	"github.com/unxed/f4/textlayout"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -239,13 +239,16 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 	if vtui.SemanticID(vv) != target {
 		return false
 	}
+	vv.ensureTextLayoutSettings()
 
 	switch semanticString(action["action"]) {
 	case "document.viewport":
-		rows := max(0, semanticInt(action["rows"]))
-		vv.nativeViewportRows = rows
+		applyNativeDocumentViewport(vv, targetedDocumentGeometry(action, vv.nativeViewportColumns))
 		return true
 	case "viewer.scroll":
+		if !semanticDocumentLayoutMatches(action, vtui.SemanticID(vv), vv.semanticLayoutRevision) {
+			return true
+		}
 		generation, accepted := semanticAcceptWindowGeneration(action,
 			vv.semanticWindowGeneration, &vv.semanticWindowRequestGeneration)
 		if !accepted {
@@ -271,33 +274,22 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		vv.semanticWindowGeneration = generation
 		return true
 	case "viewer.scrollWindow":
-		generation, accepted := semanticAcceptWindowGeneration(action,
-			vv.semanticWindowGeneration, &vv.semanticWindowRequestGeneration)
+		if !semanticDocumentLayoutMatches(action, vtui.SemanticID(vv), vv.semanticLayoutRevision) {
+			return true
+		}
+		generation, accepted := semanticAcceptWindowGeneration(action, vv.semanticWindowGeneration, &vv.semanticWindowRequestGeneration)
 		if !accepted {
 			return true
 		}
-		offset := semanticInt64(action["offset"])
-		offset = max(int64(0), min(offset, vv.backend.Size()))
+		offset := max(int64(0), min(semanticInt64(action["offset"]), vv.backend.Size()))
 		if vv.HexMode {
-			vv.TopOffset = offset &^ int64(0xF)
-			vv.semanticPendingScroll = false
-			vv.semanticPendingGeneration = 0
-			vv.semanticWindowGeneration = generation
-			return true
+			offset &= ^int64(15)
+		} else {
+			offset = vv.clampTextScrollOffset(offset)
 		}
-		offset = vv.clampTextScrollOffset(offset)
-		resolved, ready := vv.semanticResolveTextWindowOffset(offset)
-		if !ready {
-			vv.semanticPendingScroll = true
-			vv.semanticPendingOffset = offset
-			vv.semanticPendingGeneration = generation
-			return true
-		}
-		vv.TopOffset = resolved
-		vv.eofVisible = false
-		vv.semanticPendingScroll = false
-		vv.semanticPendingGeneration = 0
-		vv.semanticWindowGeneration = generation
+		vv.semanticPendingScroll = true
+		vv.semanticPendingOffset = offset
+		vv.semanticPendingGeneration = generation
 		return true
 	case "control.focus":
 		vv.SetFocus(true)
@@ -310,6 +302,9 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 func HandleSemanticAction(action map[string]any) bool {
 	if action == nil {
 		return false
+	}
+	if handleStandaloneDocumentViewport(action) {
+		return true
 	}
 	actionName := semanticString(action["action"])
 	target := semanticString(action["target"])
@@ -516,6 +511,15 @@ func toggleGuiPresentation() GuiPresentationMode {
 	AppConfig.GuiPresentation = nextGuiPresentationMode(AppConfig.GuiPresentation)
 	SaveConfig()
 	if vtui.FrameManager != nil {
+		for _, screen := range vtui.FrameManager.Screens {
+			for _, frame := range screen.Frames {
+				if AppConfig.GuiPresentation == GuiPresentationText {
+					applyNativeDocumentViewport(frame, nativeDocumentGeometry{})
+				} else {
+					seedNativeDocumentViewport(frame)
+				}
+			}
+		}
 		vtui.FrameManager.HardRefresh()
 		message := Msg("Presentation.GUI")
 		if AppConfig.GuiPresentation == GuiPresentationText {
@@ -553,7 +557,10 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator &&
 					!menu.Items[idx].Header && !menu.Items[idx].Disabled {
 					menu.SetSelectPos(idx)
-					return menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
+					// A frame may wrap VMenu to add authoritative activation
+					// semantics while retaining the shared menu projection. Route
+					// Enter through that actual frame so the wrapper is not bypassed.
+					return frame.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
 				}
 			}
 		case "menu_select", "menu.select":
@@ -568,7 +575,11 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 			}
 		case "menu_scroll", "menu.scroll":
 			if menu, _ := appFrameVMenu(frame); menu != nil {
-				menu.ScrollBy(semanticInt(action["delta"]))
+				if top, absolute := action["top"]; absolute {
+					menu.ScrollBy(semanticInt(top) - menu.TopPos)
+				} else {
+					menu.ScrollBy(semanticInt(action["delta"]))
+				}
 				vtui.FrameManager.DeclareSemanticMenuState()
 				return true
 			}
@@ -697,6 +708,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		pf.setActivePanelForAction(action)
 		pf.lastKey = 0
 		fsp.clearFastFindForSemanticPointerIntent()
+		allowSemanticMenuAfterPanelActivation()
 		pf.showDriveMenu(side)
 		return true
 	case "panel_cursor", "panel.cursor":
@@ -916,6 +928,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			pf.setActivePanelForAction(action)
 			pf.lastKey = 0
 			fsp.clearFastFindForSemanticPointerIntent()
+			allowSemanticMenuAfterPanelActivation()
 			actionSortMenu(pf)
 			return true
 		}
@@ -1000,6 +1013,10 @@ func (fp *FileSystemPanel) clearFastFindForSemanticPointerIntent() {
 	}
 	fp.fastFindMode = false
 	fp.fastFindStr = ""
+	// Fast Find is panel state, so neither a scalar panel activation nor a
+	// root-only menu patch can represent this mutation. Fall back to the
+	// authoritative incremental/full scene for this uncommon transition.
+	invalidateSemanticSceneUpdate()
 }
 
 func (fp *FileSystemPanel) semanticEntryIndex(action map[string]any) (idx int, ok bool) {
@@ -2832,27 +2849,70 @@ func semanticEditPositions(edit *vtui.Edit, text string) (cursor, selectionStart
 }
 
 func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	if vv.semanticPendingScroll && vv.backend != nil {
-		generation := vv.semanticPendingGeneration
-		if generation <= vv.semanticWindowGeneration ||
-			generation != vv.semanticWindowRequestGeneration {
-			// A newer request already owns the viewport. A late cache fill for the
-			// superseded seek must never move it backwards.
-			vv.semanticPendingScroll = false
-			vv.semanticPendingGeneration = 0
-		} else if resolved, ready := vv.semanticResolveTextWindowOffset(vv.semanticPendingOffset); ready {
-			vv.TopOffset = resolved
-			vv.semanticPendingScroll = false
-			vv.semanticPendingGeneration = 0
-			vv.semanticWindowGeneration = generation
+	vv.ensureTextLayoutSettings()
+	if vv.semanticLayoutRevision == 0 {
+		vv.semanticLayoutRevision = 1
+	}
+	window := semanticSurfaceWindow{viewportRows: vv.viewportHeight()}
+	layoutReady := !nativeDocumentLayoutPending(vv.nativeViewportRevision)
+	if layoutReady && vv.semanticNeedsReflow {
+		resolved, ready := vv.TopOffset&^int64(15), true
+		if !vv.HexMode {
+			resolved, ready = vv.semanticResolveTextWindowOffset(vv.TopOffset)
+		}
+		if ready {
+			vv.TopOffset, vv.semanticNeedsReflow = resolved, false
+		} else {
+			layoutReady = false
 		}
 	}
-	window := vv.semanticWindow()
-	width := vv.X2 - vv.X1 + 1
-	if vv.scrollBar != nil {
-		width--
+	if layoutReady {
+		if vv.semanticPendingScroll {
+			generation := vv.semanticPendingGeneration
+			if generation <= vv.semanticWindowGeneration || generation != vv.semanticWindowRequestGeneration {
+				vv.semanticPendingScroll = false
+			} else {
+				resolved, ready := vv.semanticPendingOffset&^int64(15), true
+				if pendingOffset, resumable := vv.pendingConstructionOffset(); resumable {
+					resolved = pendingOffset
+				} else if !vv.HexMode {
+					resolved, ready = vv.semanticResolveTextWindowOffset(vv.semanticPendingOffset)
+				}
+				if ready {
+					previous := vv.TopOffset
+					vv.TopOffset = resolved
+					window = vv.semanticWindow()
+					if window.ready {
+						vv.semanticWindowGeneration = generation
+						vv.semanticPendingScroll = false
+						vv.semanticPendingGeneration = 0
+					} else {
+						vv.TopOffset = previous
+					}
+				}
+			}
+		} else {
+			window = vv.semanticWindow()
+		}
 	}
-	window.rows = semanticStyledViewerWindowRows(vv, window, width)
+	if window.ready && window.loadError == "" {
+		vv.semanticLoadError = ""
+	}
+	if window.loadError == "" {
+		window.loadError = vv.semanticLoadError
+	}
+	if window.ready {
+		vv.lineOffsets = vv.lineOffsets[:0]
+		for i := window.viewportRow; i < min(len(window.rows), window.viewportRow+window.viewportRows); i++ {
+			vv.lineOffsets = append(vv.lineOffsets, window.rows[i].Offset)
+		}
+		vv.eofVisible = vv.TopOffset+window.viewportSpan >= vv.backend.Size()
+		vv.lastKnownSize = vv.backend.Size()
+	}
+	width := vv.semanticContentWidth()
+	for i := range window.rows {
+		window.rows[i].Text = ""
+	}
 	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
 	visibleRows := window.rows
 	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
@@ -2865,41 +2925,50 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	topBarLeft, topBarRight := semanticTopBarStrings(vv.topBar)
 
 	surface := extui.SurfaceModel{
-		ID:                 vtui.SemanticID(vv),
-		Kind:               "viewer",
-		DefaultBackground:  semanticAttrColor(vtui.Palette[ColViewerText], false),
-		Title:              vv.GetTitle(),
-		Path:               vv.path,
-		LocalPath:          semanticLocalPath(vv.vfs, vv.path),
-		BaseName:           semanticBaseName(vv.vfs, vv.path),
-		Mode:               mode,
-		TopBarLeft:         topBarLeft,
-		TopBarRight:        topBarRight,
-		IconColor:          semanticFileIconColor(semanticBaseName(vv.vfs, vv.path)),
-		HexMode:            vv.HexMode,
-		WrapMode:           vv.WrapMode,
-		Busy:               vv.Busy,
-		TopOffset:          vv.TopOffset,
-		Size:               vv.backend.Size(),
-		DocumentKey:        vtui.SemanticID(vv),
-		ScrollAction:       "viewer.scrollWindow",
-		ScrollUnit:         "bytes",
-		WindowStart:        window.start,
-		WindowEnd:          window.end,
-		ViewportStart:      vv.TopOffset,
-		ViewportSpan:       window.viewportSpan,
-		ContentExtent:      vv.backend.Size(),
-		ContentExtentKnown: true,
-		ViewportRow:        window.viewportRow,
-		ViewportRows:       window.viewportRows,
-		WindowGeneration:   vv.semanticWindowGeneration,
-		Rows:               visibleRows,
-		WindowRows:         window.rows,
+		ID:                      vtui.SemanticID(vv),
+		Kind:                    "viewer",
+		DefaultBackground:       semanticAttrColor(vtui.Palette[ColViewerText], false),
+		Title:                   vv.GetTitle(),
+		Path:                    vv.path,
+		LocalPath:               semanticLocalPath(vv.vfs, vv.path),
+		BaseName:                semanticBaseName(vv.vfs, vv.path),
+		Mode:                    mode,
+		TopBarLeft:              topBarLeft,
+		TopBarRight:             topBarRight,
+		IconColor:               semanticFileIconColor(semanticBaseName(vv.vfs, vv.path)),
+		HexMode:                 vv.HexMode,
+		WrapMode:                vv.WrapMode,
+		Busy:                    vv.Busy,
+		TopOffset:               vv.TopOffset,
+		Size:                    vv.backend.Size(),
+		DocumentKey:             vtui.SemanticID(vv),
+		ScrollAction:            "viewer.scrollWindow",
+		ScrollUnit:              "bytes",
+		WindowStart:             window.start,
+		WindowEnd:               window.end,
+		ViewportStart:           vv.TopOffset,
+		ViewportSpan:            window.viewportSpan,
+		ContentExtent:           vv.backend.Size(),
+		ContentExtentKnown:      true,
+		ViewportRow:             window.viewportRow,
+		ViewportRows:            window.viewportRows,
+		WindowGeneration:        vv.semanticWindowGeneration,
+		WindowRequestGeneration: vv.semanticWindowRequestGeneration,
+		ViewportColumns:         width,
+		GeometryRevision:        vv.nativeViewportRevision,
+		LayoutRevision:          vv.semanticLayoutRevision,
+		LayoutPending:           !window.ready,
+		LoadError:               window.loadError,
+		Rows:                    visibleRows,
+		WindowRows:              window.rows,
 	}
+	traceDocumentWindow(&surface)
 	return surface.ToMap()
 }
 
 type semanticSurfaceWindow struct {
+	ready        bool
+	loadError    string
 	rows         []extui.TextRowModel
 	start        int64
 	end          int64
@@ -2917,11 +2986,7 @@ func semanticWindowBufferRows(viewportRows int) int {
 }
 
 func (vv *ViewerView) semanticContentWidth() int {
-	width := vv.X2 - vv.X1 + 1
-	if vv.scrollBar != nil {
-		width--
-	}
-	return width
+	return vv.viewportWidth()
 }
 
 // semanticResolveTextWindowOffset maps an arbitrary byte position used by the
@@ -2935,7 +3000,15 @@ func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool
 		return 0, true
 	}
 	if !vv.WrapMode {
-		return vv.backend.TryFindLineStart(offset)
+		resolved, ready := vv.backend.TryFindLineStart(offset)
+		if !ready {
+			if err := vv.backend.LastReadError(); err != nil {
+				vv.semanticLoadError = err.Error()
+			}
+		} else {
+			vv.semanticLoadError = ""
+		}
+		return resolved, ready
 	}
 	width := vv.semanticContentWidth()
 	if width <= 0 {
@@ -2966,6 +3039,7 @@ func (vv *ViewerView) clampTextScrollOffset(offset int64) int64 {
 // intact and is retried through semanticPendingScroll after ViewerBackend asks
 // FrameManager for a redraw.
 func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, bool) {
+	vv.ensureTextLayoutSettings()
 	seek := &vv.semanticWrapSeek
 	historyLimit := semanticWindowBufferRows(max(1, vv.viewportHeight())) + 1
 	if seek.width != width || len(seek.history) != historyLimit ||
@@ -2985,17 +3059,25 @@ func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, b
 		seek.active = true
 		seek.ready = false
 		seek.curr = seek.resolved
+		seek.currColumn = seek.resolvedColumn
 		seek.lineStartReady = true
 	}
 
 	if !seek.lineStartReady {
-		lineStart, ready := vv.backend.TryFindLineStart(offset)
+		lineStart, ready, yielded := vv.backend.tryFindLineStartBounded(offset, viewerProjectionWorkBytes)
 		if !ready {
+			if yielded {
+				vv.scheduleProjectionContinuation()
+			}
+			if err := vv.backend.LastReadError(); err != nil {
+				vv.semanticLoadError = err.Error()
+			}
 			return offset, false
 		}
 		seek.curr = lineStart
+		seek.currColumn = 0
 		seek.lineStartReady = true
-		seek.appendHistory(lineStart)
+		seek.appendHistory(lineStart, 0)
 		if lineStart >= offset {
 			seek.finish(lineStart)
 			return lineStart, true
@@ -3006,36 +3088,49 @@ func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, b
 		return seek.curr, true
 	}
 
+	started, processed, iterations := time.Now(), 0, 0
 	for seek.curr < offset && seek.curr < vv.backend.Size() {
-		data, err := vv.backend.ReadAt(seek.curr, width*4)
+		data, err := vv.backend.ReadAt(seek.curr, max(4, width*4))
 		if err == piecetable.ErrLoading {
 			return offset, false
 		}
 		if err != nil || len(data) == 0 {
-			seek.finish(seek.curr)
-			return seek.curr, true
+			vv.semanticLoadError = "unexpected end of source while resolving wrapped row"
+			if err != nil {
+				vv.semanticLoadError = err.Error()
+			}
+			return offset, false
 		}
-		lineLen, _, _ := semanticViewerLineLen(data, width, true)
-		if lineLen <= 0 {
-			seek.finish(seek.curr)
-			return seek.curr, true
+		vv.semanticLoadError = ""
+		scan := scanViewerText(data, width, true, seek.currColumn, 0, false)
+		if scan.lineLen <= 0 {
+			vv.semanticLoadError = "wrapped row resolver made no source progress"
+			return offset, false
 		}
-		nextOffset := min(seek.curr+int64(lineLen), vv.backend.Size())
+		nextOffset := min(seek.curr+int64(scan.lineLen), vv.backend.Size())
 		if offset < nextOffset {
 			seek.finish(seek.curr)
 			return seek.curr, true
 		}
 		if offset == nextOffset {
-			seek.appendHistory(nextOffset)
+			seek.currColumn = scan.nextColumn
+			seek.appendHistory(nextOffset, scan.nextColumn)
 			seek.finish(nextOffset)
 			return nextOffset, true
 		}
 		if nextOffset <= seek.curr {
-			seek.finish(seek.curr)
-			return seek.curr, true
+			vv.semanticLoadError = "wrapped row resolver made no source progress"
+			return offset, false
 		}
 		seek.curr = nextOffset
-		seek.appendHistory(nextOffset)
+		seek.currColumn = scan.nextColumn
+		seek.appendHistory(nextOffset, scan.nextColumn)
+		processed += scan.lineLen
+		iterations++
+		if processed >= viewerProjectionWorkBytes || (iterations%32 == 0 && time.Since(started) >= 2*time.Millisecond) {
+			vv.scheduleProjectionContinuation()
+			return offset, false
+		}
 	}
 	seek.finish(seek.curr)
 	return seek.curr, true
@@ -3044,7 +3139,7 @@ func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, b
 func (seek *semanticWrapSeekState) reset(target int64, width, historyLimit int) {
 	history := seek.history
 	if len(history) != historyLimit {
-		history = make([]int64, historyLimit)
+		history = make([]viewerRowPosition, historyLimit)
 	}
 	*seek = semanticWrapSeekState{
 		active:  true,
@@ -3054,33 +3149,35 @@ func (seek *semanticWrapSeekState) reset(target int64, width, historyLimit int) 
 	}
 }
 
-func (seek *semanticWrapSeekState) appendHistory(offset int64) {
+func (seek *semanticWrapSeekState) appendHistory(offset int64, column int) {
 	limit := len(seek.history)
 	if limit == 0 {
 		return
 	}
 	if seek.historyCount > 0 {
 		last := (seek.historyHead + seek.historyCount - 1) % limit
-		if seek.history[last] == offset {
+		if seek.history[last].offset == offset {
+			seek.history[last].column = column
 			return
 		}
 	}
 	if seek.historyCount < limit {
 		index := (seek.historyHead + seek.historyCount) % limit
-		seek.history[index] = offset
+		seek.history[index] = viewerRowPosition{offset: offset, column: column}
 		seek.historyCount++
 		return
 	}
-	seek.history[seek.historyHead] = offset
+	seek.history[seek.historyHead] = viewerRowPosition{offset: offset, column: column}
 	seek.historyHead = (seek.historyHead + 1) % limit
 }
 
 func (seek *semanticWrapSeekState) finish(offset int64) {
 	seek.curr = offset
 	seek.resolved = offset
+	seek.resolvedColumn = seek.currColumn
 	seek.active = false
 	seek.ready = true
-	seek.appendHistory(offset)
+	seek.appendHistory(offset, seek.currColumn)
 }
 
 func (seek *semanticWrapSeekState) previousHistoryOffset(offset int64, width int) (int64, bool) {
@@ -3089,11 +3186,27 @@ func (seek *semanticWrapSeekState) previousHistoryOffset(offset int64, width int
 	}
 	for logicalIndex := seek.historyCount - 1; logicalIndex > 0; logicalIndex-- {
 		index := (seek.historyHead + logicalIndex) % len(seek.history)
-		if seek.history[index] != offset {
+		if seek.history[index].offset != offset {
 			continue
 		}
 		previous := (seek.historyHead + logicalIndex - 1) % len(seek.history)
-		return seek.history[previous], true
+		return seek.history[previous].offset, true
+	}
+	return 0, false
+}
+
+func (seek *semanticWrapSeekState) historyColumn(offset int64, width int) (int, bool) {
+	if seek.width != width {
+		return 0, false
+	}
+	if seek.ready && seek.resolved == offset {
+		return seek.resolvedColumn, true
+	}
+	for i := seek.historyCount - 1; i >= 0; i-- {
+		position := seek.history[(seek.historyHead+i)%len(seek.history)]
+		if position.offset == offset {
+			return position.column, true
+		}
 	}
 	return 0, false
 }
@@ -3102,237 +3215,110 @@ func (seek *semanticWrapSeekState) previousHistoryOffset(offset int64, width int
 // to walk the fragments of the containing logical line; FindLineStart alone
 // would skip all of those fragments and jump directly to the previous '\n'.
 func (vv *ViewerView) semanticPreviousTextRowStart(offset int64, width int) (int64, bool) {
+	position, ready := vv.semanticPreviousTextRowPosition(offset, width)
+	return position.offset, ready
+}
+
+func (vv *ViewerView) semanticPreviousTextRowPosition(offset int64, width int) (viewerRowPosition, bool) {
 	if offset <= 0 {
-		return 0, true
+		return viewerRowPosition{}, true
 	}
 	if !vv.WrapMode || width <= 0 {
-		return vv.backend.TryFindLineStart(offset - 1)
+		start, ready := vv.backend.TryFindLineStart(offset - 1)
+		return viewerRowPosition{offset: start}, ready
 	}
 	if previous, ok := vv.semanticWrapSeek.previousHistoryOffset(offset, width); ok {
-		return previous, true
+		column, _ := vv.semanticWrapSeek.historyColumn(previous, width)
+		return viewerRowPosition{offset: previous, column: column}, true
 	}
-	if vv.semanticWrapSeek.active && !vv.semanticWrapSeek.ready {
-		// Do not reset ViewerBackend's persistent physical-line seek while a new
-		// semantic window is still being resolved. The old QML window remains
-		// usable until the generation acknowledgement arrives.
-		return offset, false
-	}
-
-	lineStart, ready := vv.backend.TryFindLineStart(offset - 1)
-	if !ready {
-		return offset, false
-	}
-	currOffset := lineStart
-	for currOffset < offset && currOffset < vv.backend.Size() {
-		data, err := vv.backend.ReadAt(currOffset, width*4)
-		if err == piecetable.ErrLoading {
-			return offset, false
-		}
-		if err != nil || len(data) == 0 {
-			return currOffset, true
-		}
-		lineLen, _, _ := semanticViewerLineLen(data, width, true)
-		if lineLen <= 0 {
-			return currOffset, true
-		}
-		nextOffset := min(currOffset+int64(lineLen), vv.backend.Size())
-		if nextOffset >= offset || nextOffset <= currOffset {
-			return currOffset, true
-		}
-		currOffset = nextOffset
-	}
-	return lineStart, true
+	// The byte before a fragment start belongs to its preceding fragment.
+	// Reuse the resumable resolver: a physical line can span many source read
+	// windows, so a fresh forward scan on every callback would oscillate.
+	previous, ready := vv.semanticWrappedRowStart(offset-1, width)
+	return viewerRowPosition{offset: previous, column: vv.semanticWrapSeek.resolvedColumn}, ready
 }
 
 func (vv *ViewerView) semanticWindow() semanticSurfaceWindow {
-	var window semanticSurfaceWindow
+	window := semanticSurfaceWindow{ready: true}
 	if vv.backend == nil {
 		return window
 	}
-	width := vv.semanticContentWidth()
-	contentHeight := vv.viewportHeight()
-	if width <= 0 || contentHeight <= 0 {
+	width, height := vv.semanticContentWidth(), vv.viewportHeight()
+	window.viewportRows = height
+	if width <= 0 || height <= 0 || vv.Busy {
+		window.ready = false
 		return window
 	}
-	window.viewportRows = contentHeight
-	if vv.Busy {
-		window.rows = []extui.TextRowModel{{Index: 0, Offset: vv.TopOffset,
-			EndOffset: vv.TopOffset, Text: " [ Loading... ] "}}
-		window.start, window.end = vv.TopOffset, vv.TopOffset
-		return window
+	build, ready, err := vv.constructWindow(width, height, semanticWindowBufferRows(height), &vv.semanticProjection)
+	window.start, window.end, window.viewportRow, window.ready = build.start, build.current, build.viewportRow, ready
+	if err != nil && !viewerProjectionLoading(err) {
+		window.loadError = err.Error()
 	}
-	bufferRows := semanticWindowBufferRows(contentHeight)
-	startOffset := vv.TopOffset
-	if vv.HexMode {
-		startOffset -= int64(bufferRows * 16)
-		if startOffset < 0 {
-			startOffset = 0
-		}
-		startOffset &= ^int64(0xF)
-	} else {
-		for i := 0; i < bufferRows && startOffset > 0; i++ {
-			previous, ready := vv.semanticPreviousTextRowStart(startOffset, width)
-			if !ready {
-				break
-			}
-			if previous >= startOffset {
-				break
-			}
-			startOffset = previous
-		}
+	// Unfinished source spans are never exported, and successful publication
+	// owns this array independently from the discarded construction state.
+	for _, constructed := range build.rows {
+		projection := constructed.projection
+		row := extui.TextRowModel{Index: len(window.rows), Offset: constructed.start, EndOffset: projection.end,
+			Text: projection.text, Runs: semanticRunsFromCells(projection.cells)}
+		row.ContentKey = extui.TextRowContentKey(row)
+		window.rows = append(window.rows, row)
 	}
-	window.start = startOffset
-	maxRows := contentHeight + 2*bufferRows
-	if vv.HexMode {
-		currOffset := startOffset &^ 0xF
-		for y := 0; y < maxRows && currOffset < vv.backend.Size(); y++ {
-			data, err := vv.backend.ReadAt(currOffset, 16)
-			if err != nil && err != piecetable.ErrLoading {
-				break
-			}
-			endOffset := min(currOffset+16, vv.backend.Size())
-			window.rows = append(window.rows, extui.TextRowModel{
-				Index:     y,
-				Offset:    currOffset,
-				EndOffset: endOffset,
-				Text:      semanticHexLine(currOffset, data),
-			})
-			if currOffset == vv.TopOffset {
-				window.viewportRow = y
-			}
-			currOffset = endOffset
-		}
-		window.end = currOffset
-		visibleEnd := min(window.viewportRow+contentHeight, len(window.rows))
-		if visibleEnd > window.viewportRow {
-			window.viewportSpan = window.rows[visibleEnd-1].EndOffset - vv.TopOffset
-		}
-		return window
-	}
-
-	currOffset := startOffset
-	for y := 0; y < maxRows; y++ {
-		if currOffset >= vv.backend.Size() {
-			break
-		}
-		data, err := vv.backend.ReadAt(currOffset, width*4)
-		if err == piecetable.ErrLoading {
-			window.rows = append(window.rows, extui.TextRowModel{Index: y,
-				Offset: currOffset, EndOffset: currOffset, Text: " [ Loading... ] "})
-			break
-		}
-		if err != nil || len(data) == 0 {
-			break
-		}
-		lineLen, textLen, foundNewline := semanticViewerLineLen(data, width, vv.WrapMode)
-		if lineLen <= 0 {
-			break
-		}
-		nextOffset := min(currOffset+int64(lineLen), vv.backend.Size())
-		if !vv.WrapMode && !foundNewline {
-			// The displayed prefix is width-bounded, but one semantic row still
-			// represents one complete logical line in no-wrap mode. Continue in
-			// small bounded reads just like ViewerView.renderText.
-			for nextOffset < vv.backend.Size() {
-				chunk, readErr := vv.backend.ReadAt(nextOffset, 1024)
-				if readErr != nil || len(chunk) == 0 {
-					break
-				}
-				newline := -1
-				for i, char := range chunk {
-					if char == '\n' {
-						newline = i
-						break
-					}
-				}
-				if newline >= 0 {
-					nextOffset += int64(newline + 1)
-					break
-				}
-				nextOffset += int64(len(chunk))
-			}
-		}
-		window.rows = append(window.rows, extui.TextRowModel{Index: y,
-			Offset: currOffset, EndOffset: nextOffset, Text: string(data[:textLen])})
-		if currOffset == vv.TopOffset {
-			window.viewportRow = y
-		}
-		currOffset = nextOffset
-	}
-	window.end = currOffset
-	visibleEnd := min(window.viewportRow+contentHeight, len(window.rows))
-	if visibleEnd > window.viewportRow {
-		window.viewportSpan = window.rows[visibleEnd-1].EndOffset - vv.TopOffset
+	end := min(window.viewportRow+height, len(window.rows))
+	if build.foundViewport && end > window.viewportRow {
+		window.viewportSpan = window.rows[end-1].EndOffset - vv.TopOffset
 	}
 	return window
 }
 
 func semanticHexLine(offset int64, data []byte) string {
-	hexPart := ""
-	asciiPart := ""
+	const digits = "0123456789ABCDEF"
+	var line strings.Builder
+	line.Grow(80)
+	fmt.Fprintf(&line, "%010X: ", offset)
 	for i := 0; i < 16; i++ {
 		if i < len(data) {
-			hexPart += fmt.Sprintf("%02X ", data[i])
-			r := rune(data[i])
-			if r < 32 || r > 126 {
-				r = '.'
-			}
-			asciiPart += string(r)
+			line.WriteByte(digits[data[i]>>4])
+			line.WriteByte(digits[data[i]&15])
+			line.WriteByte(' ')
 		} else {
-			hexPart += "   "
+			line.WriteString("   ")
 		}
 		if i == 7 {
-			hexPart += " "
+			line.WriteByte(' ')
 		}
 	}
-	return fmt.Sprintf("%010X: %s | %s", offset, hexPart, asciiPart)
+	line.WriteString(" | ")
+	for _, value := range data[:min(16, len(data))] {
+		if value < 32 || value > 126 {
+			value = '.'
+		}
+		line.WriteByte(value)
+	}
+	return line.String()
 }
 
 func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, textLen int, foundNewline bool) {
-	visualWidth := 0
-	tabSize := 8
-	if AppConfig.EditorTabSize > 0 {
-		tabSize = AppConfig.EditorTabSize
-	}
-	for lineLen < len(data) {
-		r, size := utf8.DecodeRune(data[lineLen:])
-		if r == '\n' {
-			lineLen += size
-			return lineLen, textLen, true
-		}
-		if r == '\r' {
-			lineLen += size
-			continue
-		}
-		rw := 1
-		if r == '\t' {
-			rw = tabSize - (visualWidth % tabSize)
-		} else {
-			rw = runewidth.RuneWidth(r)
-			if rw <= 0 {
-				rw = 1
-			}
-		}
-		if wrap && visualWidth+rw > width {
-			return lineLen, textLen, false
-		}
-		visualWidth += rw
-		lineLen += size
-		if wrap || visualWidth <= width {
-			textLen = lineLen
-		}
-	}
-	return lineLen, textLen, false
+	scan := scanViewerText(data, width, wrap, 0, 0, false)
+	return scan.lineLen, scan.textLen, scan.newline
 }
 
 type semanticEditorCursorState struct {
-	line         int
-	pos          int
-	visualRow    int
-	visualColumn int
-	visible      bool
-	shape        string
-	absoluteRow  int64
+	line                  int
+	pos                   int
+	visualRow             int
+	visualColumn          int
+	visible               bool
+	shape                 string
+	absoluteRow           int64
+	absoluteColumn        int
+	selection             bool
+	selectionAnchorRow    int64
+	selectionAnchorColumn int
+	selectionForeground   string
+	selectionBackground   string
+	selectionBold         bool
+	selectionUnderline    bool
+	selectionStrikeout    bool
 }
 
 func semanticTopBarStrings(topBar *TopBar) (left, right string) {
@@ -3350,22 +3336,27 @@ func semanticTopBarStrings(topBar *TopBar) (left, right string) {
 
 func (state semanticEditorCursorState) ToMap() map[string]any {
 	return map[string]any{
-		"cursorLine":         state.line,
-		"cursorPos":          state.pos,
-		"cursorVisualRow":    state.visualRow,
-		"cursorVisualColumn": state.visualColumn,
-		"cursorVisible":      state.visible,
-		"cursorShape":        state.shape,
-		"cursorAbsoluteRow":  state.absoluteRow,
+		"cursorLine":            state.line,
+		"cursorPos":             state.pos,
+		"cursorVisualRow":       state.visualRow,
+		"cursorVisualColumn":    state.visualColumn,
+		"cursorVisible":         state.visible,
+		"cursorShape":           state.shape,
+		"cursorAbsoluteRow":     state.absoluteRow,
+		"cursorAbsoluteColumn":  state.absoluteColumn,
+		"selection":             state.selection,
+		"selectionAnchorRow":    state.selectionAnchorRow,
+		"selectionAnchorColumn": state.selectionAnchorColumn,
+		"selectionForeground":   state.selectionForeground,
+		"selectionBackground":   state.selectionBackground,
+		"selectionBold":         state.selectionBold,
+		"selectionUnderline":    state.selectionUnderline,
+		"selectionStrikeout":    state.selectionStrikeout,
 	}
 }
 
 func (ev *EditorView) semanticSurfaceWidth() int {
-	width := ev.X2 - ev.X1 + 1
-	if ev.scrollBar != nil {
-		width--
-	}
-	return max(0, width)
+	return ev.viewportWidth()
 }
 
 func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
@@ -3374,21 +3365,36 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	cursorVisualRow := cursorAbsoluteRow - ev.ScrollTopRow
 	cursorVisualColumn := cursorAbsoluteColumn + ev.CursorVirtualSpaces - ev.ScrollLeft
 	cursorVisible := ev.IsVisible() && !ev.pasting && !ev.saving &&
-		cursorVisualRow >= 0 && cursorVisualRow < ev.viewportHeight() &&
 		cursorVisualColumn >= 0 && cursorVisualColumn < width
 	cursorShape := "underline"
 	if ev.overtype {
 		cursorShape = "block"
 	}
-	return semanticEditorCursorState{
-		line:         ev.CursorLine,
-		pos:          ev.CursorPos,
-		visualRow:    cursorVisualRow,
-		visualColumn: cursorVisualColumn,
-		visible:      cursorVisible,
-		shape:        cursorShape,
-		absoluteRow:  int64(cursorAbsoluteRow),
+	selected := semanticRunModel("", vtui.Palette[vtui.ColDialogEditSelected])
+	state := semanticEditorCursorState{
+		line:           ev.CursorLine,
+		pos:            ev.CursorPos,
+		visualRow:      cursorVisualRow,
+		visualColumn:   cursorVisualColumn,
+		visible:        cursorVisible,
+		shape:          cursorShape,
+		absoluteRow:    int64(cursorAbsoluteRow),
+		absoluteColumn: cursorAbsoluteColumn + ev.CursorVirtualSpaces,
+		selection: ev.selActive && !ev.rectSelActive && !ev.HexMode &&
+			!ev.DecodeMode && ev.DisasmMode == 0 && !ev.saving &&
+			!ev.pasting && ev.targetLine == -1,
+		selectionForeground: selected.Foreground,
+		selectionBackground: selected.Background,
+		selectionBold:       selected.Bold,
+		selectionUnderline:  selected.Underline,
+		selectionStrikeout:  selected.Strikeout,
 	}
+	if state.selection {
+		anchorRow, anchorColumn := ev.engine.LogicalToVisual(ev.selAnchorOffset)
+		state.selectionAnchorRow = int64(anchorRow)
+		state.selectionAnchorColumn = anchorColumn
+	}
+	return state
 }
 
 func (ev *EditorView) queueSemanticCursorState() bool {
@@ -3407,14 +3413,44 @@ func (ev *EditorView) queueSemanticCursorState() bool {
 	}
 	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
 	stateMap := state.ToMap()
+	stateMap["layoutRevision"] = ev.semanticLayoutRevision
+	stateMap["windowGeneration"] = ev.semanticWindowGeneration
+	stateMap["documentKey"] = vtui.SemanticID(ev)
 	_, stateMap["topBarRight"] = semanticTopBarStrings(ev.topBar)
 	return renderer.QueueSurfaceState(vtui.SemanticID(ev), stateMap)
 }
 
 func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	window := ev.semanticWindow()
+	ev.ensureEngineWidth()
+	window := semanticSurfaceWindow{viewportRows: ev.viewportHeight()}
+	previousTop := ev.ScrollTopRow
+	if !nativeDocumentLayoutPending(ev.nativeViewportRevision) && ev.targetLine == -1 {
+		if ev.semanticPendingScroll {
+			ev.ScrollTopRow = ev.semanticPendingTop
+		}
+		window = ev.semanticWindowMetadata()
+	}
 	width := ev.semanticSurfaceWidth()
-	window.rows = semanticStyledEditorWindowRows(ev, window, width)
+	if window.loadError == "" {
+		window.loadError = ev.semanticLoadError
+	}
+	if window.ready {
+		window.rows = semanticStyledEditorWindowRows(ev, window, width)
+		window.ready = len(window.rows) == int(window.end-window.start)
+		if !window.ready && window.loadError == "" {
+			window.loadError = ev.semanticLoadError
+		}
+		ev.scheduleNativeVisualExtent()
+	}
+	if ev.semanticPendingScroll {
+		if window.ready {
+			ev.semanticWindowGeneration = ev.semanticPendingGeneration
+			ev.semanticPendingScroll = false
+		} else {
+			ev.ScrollTopRow = previousTop
+		}
+	}
+	totalRows, extentReady := ev.engine.KnownVisualRows()
 	visibleEnd := min(window.viewportRow+window.viewportRows, len(window.rows))
 	visibleRows := window.rows
 	if window.viewportRow >= 0 && window.viewportRow <= visibleEnd {
@@ -3424,47 +3460,63 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	topBarLeft, topBarRight := semanticTopBarStrings(ev.topBar)
 
 	surface := extui.SurfaceModel{
-		ID:                 vtui.SemanticID(ev),
-		Kind:               "editor",
-		DefaultBackground:  semanticAttrColor(ColorerEditorBaseAttr(vtui.Palette[ColEditorText]), false),
-		Title:              ev.GetTitle(),
-		Path:               ev.filePath,
-		LocalPath:          semanticLocalPath(ev.vfs, ev.filePath),
-		BaseName:           semanticBaseName(ev.vfs, ev.filePath),
-		TopBarLeft:         topBarLeft,
-		TopBarRight:        topBarRight,
-		IconColor:          semanticFileIconColor(semanticBaseName(ev.vfs, ev.filePath)),
-		Busy:               ev.IsBusy(),
-		Dirty:              ev.modified,
-		Saving:             ev.saving,
-		WordWrap:           ev.WordWrap,
-		Overtype:           ev.overtype,
-		CursorLine:         cursor.line,
-		CursorPos:          cursor.pos,
-		CursorVisualRow:    cursor.visualRow,
-		CursorVisualColumn: cursor.visualColumn,
-		CursorVisible:      cursor.visible,
-		CursorShape:        cursor.shape,
-		ScrollTop:          ev.ScrollTopRow,
-		ScrollLeft:         ev.ScrollLeft,
-		DocumentKey:        vtui.SemanticID(ev),
-		ScrollAction:       "editor.scroll",
-		ScrollUnit:         "rows",
-		WindowStart:        window.start,
-		WindowEnd:          window.end,
-		ViewportStart:      int64(ev.ScrollTopRow),
-		ViewportSpan:       window.viewportSpan,
-		ContentExtent:      int64(ev.engine.GetTotalVisualRows()),
-		ContentExtentKnown: ev.semanticExtentKnown,
-		ViewportRow:        window.viewportRow,
-		ViewportRows:       window.viewportRows,
-		CursorAbsoluteRow:  cursor.absoluteRow,
-		WindowGeneration:   ev.semanticWindowGeneration,
-		Selection:          ev.selActive,
-		Rows:               visibleRows,
-		WindowRows:         window.rows,
-		Autocomplete:       ev.semanticAutocomplete(),
+		ID:                      vtui.SemanticID(ev),
+		Kind:                    "editor",
+		DefaultBackground:       semanticAttrColor(ColorerEditorBaseAttr(vtui.Palette[ColEditorText]), false),
+		Title:                   ev.GetTitle(),
+		Path:                    ev.filePath,
+		LocalPath:               semanticLocalPath(ev.vfs, ev.filePath),
+		BaseName:                semanticBaseName(ev.vfs, ev.filePath),
+		TopBarLeft:              topBarLeft,
+		TopBarRight:             topBarRight,
+		IconColor:               semanticFileIconColor(semanticBaseName(ev.vfs, ev.filePath)),
+		Busy:                    ev.IsBusy(),
+		Dirty:                   ev.modified,
+		Saving:                  ev.saving,
+		WordWrap:                ev.WordWrap,
+		Overtype:                ev.overtype,
+		CursorLine:              cursor.line,
+		CursorPos:               cursor.pos,
+		CursorVisualRow:         cursor.visualRow,
+		CursorVisualColumn:      cursor.visualColumn,
+		CursorVisible:           cursor.visible,
+		CursorShape:             cursor.shape,
+		CursorAbsoluteColumn:    cursor.absoluteColumn,
+		ScrollTop:               ev.ScrollTopRow,
+		ScrollLeft:              ev.ScrollLeft,
+		DocumentKey:             vtui.SemanticID(ev),
+		ScrollAction:            "editor.scroll",
+		ScrollUnit:              "rows",
+		WindowStart:             window.start,
+		WindowEnd:               window.end,
+		ViewportStart:           int64(ev.ScrollTopRow),
+		ViewportSpan:            window.viewportSpan,
+		ContentExtent:           int64(totalRows),
+		ContentExtentKnown:      ev.semanticExtentKnown && extentReady,
+		ViewportRow:             window.viewportRow,
+		ViewportRows:            window.viewportRows,
+		CursorAbsoluteRow:       cursor.absoluteRow,
+		WindowGeneration:        ev.semanticWindowGeneration,
+		WindowRequestGeneration: ev.semanticWindowRequestGeneration,
+		ViewportColumns:         width,
+		GeometryRevision:        ev.nativeViewportRevision,
+		LayoutRevision:          ev.semanticLayoutRevision,
+		LayoutPending:           !window.ready,
+		LoadError:               window.loadError,
+		Selection:               cursor.selection,
+		SelectionAnchorRow:      cursor.selectionAnchorRow,
+		SelectionAnchorColumn:   cursor.selectionAnchorColumn,
+		SelectionForeground:     cursor.selectionForeground,
+		SelectionBackground:     cursor.selectionBackground,
+		SelectionBold:           cursor.selectionBold,
+		SelectionUnderline:      cursor.selectionUnderline,
+		SelectionStrikeout:      cursor.selectionStrikeout,
+		Rows:                    visibleRows,
+		WindowRows:              window.rows,
+		Autocomplete:            ev.semanticAutocomplete(),
 	}
+	traceDocumentWindow(&surface)
+	ev.tracePointerWindow(&surface)
 	return surface.ToMap()
 }
 
@@ -3485,18 +3537,7 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 
 	switch semanticString(action["action"]) {
 	case "document.viewport":
-		rows := max(0, semanticInt(action["rows"]))
-		ev.nativeViewportRows = rows
-		if ev.scrollBar != nil {
-			ev.scrollBar.PgStep = ev.viewportHeight()
-		}
-		if ev.engine != nil {
-			maxTop := max(0, ev.engine.GetTotalVisualRows()-max(1, ev.viewportHeight()))
-			if ev.ScrollTopRow > maxTop {
-				ev.ScrollTopRow = maxTop
-			}
-		}
-		ev.ensureCursorVisible()
+		applyNativeDocumentViewport(ev, targetedDocumentGeometry(action, ev.nativeViewportColumns))
 		return true
 	case "editor.setText":
 		text := semanticString(action["text"])
@@ -3526,6 +3567,17 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		ev.Search(pattern, caseSensitive, reverse, false, false, next)
 		return true
 	case "editor.mouse":
+		pointerDisposition := "legacy"
+		if navigationBenchmarkIsEnabled() {
+			ev.tracePointerAction(action, "received", "received")
+			defer func() { ev.tracePointerAction(action, "applied", pointerDisposition) }()
+		}
+		if !semanticDocumentLayoutMatches(action, vtui.SemanticID(ev), ev.semanticLayoutRevision) &&
+			semanticString(action["phase"]) != "release" && semanticString(action["phase"]) != "cancel" {
+			pointerDisposition = "stale-layout"
+			vtui.FrameManager.DeclareCurrentInputUnchanged()
+			return true
+		}
 		buttonState := uint32(0)
 		switch semanticString(action["button"]) {
 		case "left":
@@ -3534,6 +3586,9 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 			buttonState = vtinput.RightmostButtonPressed
 		case "middle":
 			buttonState = vtinput.FromLeft2ndButtonPressed
+		}
+		if phase := semanticString(action["phase"]); phase == "release" || phase == "cancel" {
+			buttonState = 0
 		}
 		flags := uint32(0)
 		if semanticBool(action["moved"]) {
@@ -3552,7 +3607,10 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		if semanticBool(action["alt"]) {
 			controlState |= vtinput.LeftAltPressed
 		}
-		column := max(0, semanticInt(action["column"]))
+		column := semanticInt(action["column"])
+		if _, sourceAddressed := action["rowOffset"]; !sourceAddressed {
+			column = max(0, column)
+		}
 		row := max(0, semanticInt(action["row"]))
 		event := &vtinput.InputEvent{
 			Type:            vtinput.MouseEventType,
@@ -3561,13 +3619,33 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 			ButtonState:     buttonState,
 			MouseEventFlags: flags,
 			WheelDirection:  semanticInt(action["wheelDirection"]),
-			KeyDown:         semanticString(action["phase"]) != "release",
+			KeyDown:         semanticString(action["phase"]) != "release" && semanticString(action["phase"]) != "cancel",
 			ControlKeyState: controlState,
 			InputSource:     "semantic",
+		}
+		if offset, exists := action["rowOffset"]; exists {
+			guard := ev.editorCursorStateGuard()
+			changed := ev.processDocumentPointer(event, semanticInt64(offset), column,
+				max(0, semanticInt(action["scrollLeft"])),
+				uint64(max(int64(0), semanticInt64(action["layoutRevision"]))))
+			if !changed {
+				pointerDisposition = "unchanged"
+				vtui.FrameManager.DeclareCurrentInputUnchanged()
+			} else {
+				pointerDisposition = "row-update"
+				navigationBenchmarkPublishScene(navigationBenchmarkCurrentUI(), "editor.pointer")
+				if guard.canPublish(ev, true) && ev.queueSemanticCursorState() {
+					pointerDisposition = "cursor-state"
+				}
+			}
+			return true
 		}
 		ev.ProcessMouse(event)
 		return true
 	case "editor.scroll":
+		if !semanticDocumentLayoutMatches(action, vtui.SemanticID(ev), ev.semanticLayoutRevision) {
+			return true
+		}
 		generation, accepted := semanticAcceptWindowGeneration(action,
 			ev.semanticWindowGeneration, &ev.semanticWindowRequestGeneration)
 		if !accepted {
@@ -3576,15 +3654,18 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		ev.ensureEngineWidth()
 		top := semanticInt(action["visualRow"])
 		height := max(1, ev.viewportHeight())
-		maxTop := max(0, ev.engine.GetTotalVisualRows()-height)
+		ev.engine.GetLogLineAtVisualRow(max(0, top+height-1))
+		knownRows, extentReady := ev.engine.KnownVisualRows()
+		maxTop := max(0, knownRows-height)
 		if top < 0 {
 			top = 0
 		}
-		if top > maxTop {
+		if extentReady && ev.semanticExtentKnown && top > maxTop {
 			top = maxTop
 		}
-		ev.ScrollTopRow = top
-		ev.semanticWindowGeneration = generation
+		ev.semanticPendingScroll = true
+		ev.semanticPendingTop = top
+		ev.semanticPendingGeneration = generation
 		return true
 	case "control.focus":
 		ev.SetFocus(true)
@@ -3593,8 +3674,67 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 	return false
 }
 
+// Pointer tracing records only bounded coordinates and lifecycle identity, not
+// document text. The existing Qt action trace ID joins its outgoing pack event
+// to this applied source position and the later ready-window cursor record.
+func (ev *EditorView) tracePointerAction(action map[string]any, phase, disposition string) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	_, generationKnown := action["windowGeneration"]
+	_, sourceAddressed := action["rowOffset"]
+	navigationBenchmarkUIEvent("editor.pointer."+phase,
+		"documentKey", vtui.SemanticID(ev), "layoutRevision", ev.semanticLayoutRevision,
+		"windowGeneration", ev.semanticWindowGeneration, "requestGeneration", ev.semanticWindowRequestGeneration,
+		"inputDocumentKey", semanticString(action["documentKey"]),
+		"inputLayoutRevision", semanticInt64(action["layoutRevision"]),
+		"inputWindowGenerationKnown", generationKnown, "inputWindowGeneration", semanticInt64(action["windowGeneration"]),
+		"sourceAddressed", sourceAddressed, "fragmentOffset", semanticInt64(action["rowOffset"]),
+		"column", semanticInt(action["column"]), "inputScrollLeft", semanticInt(action["scrollLeft"]),
+		"pointerPhase", semanticString(action["phase"]), "button", semanticString(action["button"]),
+		"moved", semanticBool(action["moved"]), "disposition", disposition,
+		"cursorLine", ev.CursorLine, "cursorPos", ev.CursorPos,
+		"cursorOffset", ev.li.GetLineOffset(ev.CursorLine)+ev.CursorPos,
+		"selectionActive", ev.selActive, "selectionAnchor", ev.selAnchorOffset,
+		"rectSelectionActive", ev.rectSelActive, "rectAnchorLine", ev.rectSelStartLine, "rectAnchorColumn", ev.rectSelStartCol,
+		"pointerCaptured", ev.semanticPointerActive, "viewportStart", ev.ScrollTopRow, "scrollLeft", ev.ScrollLeft)
+}
+
+func (ev *EditorView) tracePointerWindow(surface *extui.SurfaceModel) {
+	if !navigationBenchmarkIsEnabled() {
+		return
+	}
+	traceID := ""
+	if trace := navigationBenchmarkCurrentOrPublishedTrace(); trace != nil {
+		traceID = trace.id
+	}
+	windowContentKey := surface.WindowContentKey
+	if windowContentKey == "" {
+		windowContentKey = extui.WindowRowsContentKey(surface.WindowRows)
+	}
+	navigationBenchmarkEmit(traceID, "editor.pointer.window", "go.ui",
+		"documentKey", surface.DocumentKey, "layoutRevision", surface.LayoutRevision,
+		"windowContentKey", windowContentKey,
+		"windowGeneration", surface.WindowGeneration, "requestGeneration", surface.WindowRequestGeneration,
+		"ready", !surface.LayoutPending, "windowStart", surface.WindowStart, "windowEnd", surface.WindowEnd,
+		"rows", len(surface.WindowRows), "viewportStart", surface.ViewportStart, "scrollLeft", ev.ScrollLeft,
+		"cursorLine", surface.CursorLine, "cursorPos", surface.CursorPos,
+		"cursorOffset", ev.li.GetLineOffset(ev.CursorLine)+ev.CursorPos,
+		"cursorAbsoluteRow", surface.CursorAbsoluteRow, "cursorVisualColumn", surface.CursorVisualColumn,
+		"selectionActive", ev.selActive, "selectionAnchor", ev.selAnchorOffset,
+		"rectSelectionActive", ev.rectSelActive, "rectAnchorLine", ev.rectSelStartLine, "rectAnchorColumn", ev.rectSelStartCol)
+}
+
 func (ev *EditorView) semanticWindow() semanticSurfaceWindow {
-	var window semanticSurfaceWindow
+	return ev.semanticWindowRows(false)
+}
+
+func (ev *EditorView) semanticWindowMetadata() semanticSurfaceWindow {
+	return ev.semanticWindowRows(true)
+}
+
+func (ev *EditorView) semanticWindowRows(metadataOnly bool) semanticSurfaceWindow {
+	window := semanticSurfaceWindow{}
 	if ev.pt == nil || ev.li == nil || ev.engine == nil {
 		return window
 	}
@@ -3604,46 +3744,61 @@ func (ev *EditorView) semanticWindow() semanticSurfaceWindow {
 		return window
 	}
 	window.viewportRows = height
-	bufferRows := semanticWindowBufferRows(height)
-	windowStart := max(0, ev.ScrollTopRow-bufferRows)
-	totalRows := ev.engine.GetTotalVisualRows()
-	windowEnd := min(totalRows, ev.ScrollTopRow+height+bufferRows)
-	window.start = int64(windowStart)
-	window.end = int64(windowEnd)
-	window.viewportRow = ev.ScrollTopRow - windowStart
-	window.viewportSpan = int64(min(height, max(0, totalRows-ev.ScrollTopRow)))
-	startLogLine, startFragIdx := ev.engine.GetLogLineAtVisualRow(windowStart)
-	for logIdx := startLogLine; logIdx < ev.li.LineCount() && len(window.rows) < windowEnd-windowStart; logIdx++ {
-		frags := ev.engine.GetFragments(logIdx)
-		baseVRow := ev.engine.GetRowOffset(logIdx)
-		for fIdx, frag := range frags {
-			if logIdx == startLogLine && fIdx < startFragIdx {
+	buffer := semanticWindowBufferRows(height)
+	start := max(0, ev.ScrollTopRow-buffer)
+	end := ev.ScrollTopRow + height + buffer
+	ev.engine.GetLogLineAtVisualRow(max(0, end-1))
+	total, complete := ev.engine.KnownVisualRows()
+	if err := ev.engine.LastReadError(); err != nil && err != piecetable.ErrLoading {
+		window.loadError = err.Error()
+	}
+	end = min(end, total)
+	window.start, window.end = int64(start), int64(end)
+	window.viewportRow = ev.ScrollTopRow - start
+	window.viewportSpan = int64(min(height, max(0, total-ev.ScrollTopRow)))
+	line, fragment := ev.engine.GetLogLineAtVisualRow(start)
+	for logIdx := line; logIdx < ev.li.LineCount() && len(window.rows) < end-start; logIdx++ {
+		base := ev.engine.GetRowOffset(logIdx)
+		var fragments []textlayout.LineFragment
+		if metadataOnly {
+			fragments = ev.engine.GetProjectionFragments(logIdx, end-base, ev.ScrollLeft+ev.viewportWidth())
+		} else {
+			fragments = ev.engine.GetFragmentsThrough(logIdx, end-base)
+		}
+		for index, frag := range fragments {
+			if logIdx == line && index < fragment {
 				continue
 			}
-			data, err := ev.pt.GetRange(frag.ByteOffsetStart, frag.ByteOffsetEnd-frag.ByteOffsetStart)
-			text := string(data)
-			if err == piecetable.ErrLoading {
-				text = " [ Loading... ] "
-			} else if err != nil {
-				text = ""
+			if frag.Loading {
+				if err := ev.engine.LastReadError(); err != nil {
+					window.loadError = err.Error()
+				}
+				return window
 			}
-			visualRow := baseVRow + fIdx
-			if visualRow >= windowEnd {
+			visual := base + index
+			if visual >= end {
 				break
+			}
+			text := ""
+			if !metadataOnly {
+				data, err := ev.pt.GetRange(frag.ByteOffsetStart, frag.ByteOffsetEnd-frag.ByteOffsetStart)
+				if err != nil {
+					if err != piecetable.ErrLoading {
+						window.loadError = err.Error()
+					}
+					return window
+				}
+				text = string(data)
 			}
 			window.rows = append(window.rows, extui.TextRowModel{
-				Index:       len(window.rows),
-				VisualRow:   visualRow,
-				LogicalLine: logIdx,
-				Offset:      int64(frag.ByteOffsetStart),
-				EndOffset:   int64(frag.ByteOffsetEnd),
-				Text:        text,
+				Index: len(window.rows), VisualRow: visual, LogicalLine: logIdx,
+				Offset: int64(frag.ByteOffsetStart), EndOffset: int64(frag.ByteOffsetEnd),
+				VisualWidth: frag.VisualWidth, HasVisualWidth: true, Text: text,
 			})
-			if len(window.rows) >= windowEnd-windowStart {
-				break
-			}
 		}
 	}
+	visible := len(window.rows) - window.viewportRow
+	window.ready = visible >= height || (complete && ev.semanticExtentKnown && int(window.end) >= total)
 	return window
 }
 
@@ -3677,11 +3832,22 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 		runs = append(runs, semanticRunModel(b.String(), attr))
 		b.Reset()
 	}
+	pairedFillers := 0
 	for _, cell := range cells {
 		if cell.Char == vtui.WideCharFiller {
-			continue
+			// A complete wide glyph already occupies the filler's display
+			// column in Qt, so its paired marker must not become another cell.
+			// Horizontal clipping can, however, leave the continuation marker
+			// as the first visible cell. Preserve that orphan as a blank or all
+			// following text shifts left by one column.
+			if pairedFillers > 0 {
+				pairedFillers--
+				continue
+			}
+			cell.Char = ' '
+		} else {
+			pairedFillers = max(0, vtui.ClusterWidth(vtui.CellString(cell.Char))-1)
 		}
-		ch := cellRune(cell.Char)
 		if !haveRun {
 			attr = cell.Attributes
 			haveRun = true
@@ -3690,7 +3856,7 @@ func semanticRunsFromCells(cells []vtui.CharInfo) []extui.RunModel {
 			attr = cell.Attributes
 			haveRun = true
 		}
-		b.WriteRune(ch)
+		b.WriteString(vtui.CellString(cell.Char))
 	}
 	flush()
 	return runs

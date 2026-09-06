@@ -186,6 +186,10 @@ func (cb *ComboBox) Open() {
 	if cb.IsDisabled() {
 		return
 	}
+	// Opening is also a focus transfer.  Physical mouse dispatch normally sets
+	// the containing Group's focus before reaching ComboBox.ProcessMouse; the
+	// semantic Qt path reaches Open directly, so keep both paths equivalent.
+	cb.SetFocus(true)
 
 	// 1. Calculate required width based on items
 	maxWidth := cb.X2 - cb.X1 + 1

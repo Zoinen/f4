@@ -59,6 +59,84 @@ func TestComboBox_DropdownOnly_Enter(t *testing.T) {
 		t.Error("Enter should open dropdown menu when DropdownOnly is true")
 	}
 }
+
+func TestComboBox_DropdownOnly_SemanticOpen(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+
+	cb := NewComboBox(0, 0, 20, []string{"A", "B"})
+	if cb.IsFocused() {
+		t.Fatal("combo should start unfocused")
+	}
+	cb.DropdownOnly = true
+	if !cb.HandleSemanticAction(map[string]any{"action": "control.open"}) {
+		t.Fatal("control.open semantic action was not handled")
+	}
+	if top := fm.GetTopFrame(); top == nil || top != cb.Menu {
+		t.Fatalf("control.open top frame = %T, want the combo menu", top)
+	}
+	if !cb.IsFocused() {
+		t.Fatal("semantic control.open should transfer focus to the combo")
+	}
+}
+
+func TestComboBox_SemanticOpenTransfersGroupFocus(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+
+	dlg := NewDialog(0, 0, 40, 10, "Combo focus")
+	first := NewButton(1, 1, "First")
+	cb := NewComboBox(1, 3, 20, []string{"A", "B"})
+	cb.DropdownOnly = true
+	dlg.AddItem(first)
+	dlg.AddItem(cb)
+	fm.Push(dlg)
+	if dlg.GetFocusedItem() != first {
+		t.Fatalf("dialog should start focused on first control, got %T",
+			dlg.GetFocusedItem())
+	}
+
+	if !fm.HandleSemanticAction(map[string]any{
+		"target": SemanticID(cb), "action": "control.open",
+	}) {
+		t.Fatal("dialog did not route semantic control.open to combo")
+	}
+	if dlg.GetFocusedItem() != cb {
+		t.Fatalf("semantic control.open focused %T, want combo", dlg.GetFocusedItem())
+	}
+	if top := fm.GetTopFrame(); top != cb.Menu {
+		t.Fatalf("semantic control.open top frame = %T, want combo menu", top)
+	}
+
+	// The same mouse-originated semantic action must also select the complete
+	// focus path when the combo is nested in a visual GroupBox.
+	fm.Init(NewSilentScreenBuf())
+	nested := NewDialog(0, 0, 50, 14, "Nested combo focus")
+	box := NewGroupBox(1, 1, 40, 10, "Options")
+	nestedCombo := NewComboBox(3, 3, 20, []string{"A", "B"})
+	nestedCombo.DropdownOnly = true
+	box.AddItem(nestedCombo)
+	nested.AddItem(box)
+	fm.Push(nested)
+	if !fm.HandleSemanticAction(map[string]any{
+		"target": SemanticID(nestedCombo), "action": "control.open",
+	}) {
+		t.Fatal("nested dialog did not route semantic control.open to combo")
+	}
+	if nested.GetFocusedItem() != box {
+		t.Fatalf("nested semantic control.open focused %T, want group box",
+			nested.GetFocusedItem())
+	}
+	if box.GetFocusedItem() != nestedCombo {
+		t.Fatalf("nested group focused %T, want combo", box.GetFocusedItem())
+	}
+	if top := fm.GetTopFrame(); top != nestedCombo.Menu {
+		t.Fatalf("nested semantic control.open top frame = %T, want combo menu", top)
+	}
+}
+
 func TestComboBox_OpenFlip(t *testing.T) {
 	SetDefaultPalette()
 	scr := NewSilentScreenBuf()

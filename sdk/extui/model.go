@@ -364,31 +364,34 @@ type SurfaceModel struct {
 	BaseName  string
 	Mode      string
 	// TopBarLeft and TopBarRight are the already-localized status strings
-	// rendered by the console viewer/editor bar. Native surfaces reuse them
-	// verbatim so the QML presentation cannot drift from the terminal one.
+	// rendered by the console viewer/editor bar. Native surfaces use Path for
+	// an ordinary standalone document caption, while retaining TopBarLeft for
+	// explicit generated-buffer titles and as a compatibility fallback.
+	// TopBarRight remains the shared status presentation.
 	TopBarLeft  string
 	TopBarRight string
 	// IconColor is the normal file-highlighter foreground for this document.
 	// An empty value means that the native frontend should use its ordinary
 	// file-icon color.
-	IconColor          string
-	Busy               bool
-	Dirty              bool
-	Saving             bool
-	HexMode            bool
-	WrapMode           bool
-	WordWrap           bool
-	Overtype           bool
-	TopOffset          int64
-	Size               int64
-	CursorLine         int
-	CursorPos          int
-	CursorVisualRow    int
-	CursorVisualColumn int
-	CursorVisible      bool
-	CursorShape        string
-	ScrollTop          int
-	ScrollLeft         int
+	IconColor            string
+	Busy                 bool
+	Dirty                bool
+	Saving               bool
+	HexMode              bool
+	WrapMode             bool
+	WordWrap             bool
+	Overtype             bool
+	TopOffset            int64
+	Size                 int64
+	CursorLine           int
+	CursorPos            int
+	CursorVisualRow      int
+	CursorVisualColumn   int
+	CursorVisible        bool
+	CursorShape          string
+	CursorAbsoluteColumn int
+	ScrollTop            int
+	ScrollLeft           int
 	// DocumentKey changes when the content represented by a persistent native
 	// viewport changes. ScrollAction names the semantic action used to request
 	// another bounded window.
@@ -396,25 +399,39 @@ type SurfaceModel struct {
 	ScrollAction string
 	// ScrollUnit describes the absolute coordinate space used by the bounded
 	// semantic text window: "bytes" for Viewer and "rows" for Editor.
-	ScrollUnit         string
-	WindowStart        int64
-	WindowEnd          int64
-	ViewportStart      int64
-	ViewportSpan       int64
-	ContentExtent      int64
-	ContentExtentKnown bool
-	ViewportRow        int
-	ViewportRows       int
-	CursorAbsoluteRow  int64
-	WindowGeneration   uint64
+	ScrollUnit              string
+	WindowStart             int64
+	WindowEnd               int64
+	ViewportStart           int64
+	ViewportSpan            int64
+	ContentExtent           int64
+	ContentExtentKnown      bool
+	ViewportRow             int
+	ViewportRows            int
+	CursorAbsoluteRow       int64
+	WindowGeneration        uint64
+	WindowRequestGeneration uint64
+	// Native document layout negotiation is independent of the console grid.
+	ViewportColumns  int
+	GeometryRevision uint64
+	LayoutRevision   uint64
+	LayoutPending    bool
+	LoadError        string
 	// WindowContentKey fingerprints every row and styled run in WindowRows.
 	// Native renderers use it to avoid re-serializing a multi-megabyte model
 	// merely to discover that an unrelated scene update left the window intact.
-	WindowContentKey string
-	Selection        bool
-	Autocomplete     M
-	Rows             []TextRowModel
-	WindowRows       []TextRowModel
+	WindowContentKey      string
+	Selection             bool
+	SelectionAnchorRow    int64
+	SelectionAnchorColumn int
+	SelectionForeground   string
+	SelectionBackground   string
+	SelectionBold         bool
+	SelectionUnderline    bool
+	SelectionStrikeout    bool
+	Autocomplete          M
+	Rows                  []TextRowModel
+	WindowRows            []TextRowModel
 }
 
 // OperationsQueueModel is the native representation of the background
@@ -485,6 +502,8 @@ type TextRowModel struct {
 	LogicalLine       int
 	Offset            int64
 	EndOffset         int64
+	VisualWidth       int
+	HasVisualWidth    bool
 	Text              string
 	Runs              []RunModel
 	HasLogicalRowSpan bool
@@ -508,15 +527,17 @@ type RunModel struct {
 }
 
 type MenuModel struct {
-	ID          string
-	Role        string
-	Title       string
-	Active      bool
-	Selected    int
-	ParentID    string
-	AnchorIndex int
-	Items       []MenuItemModel
-	Legacy      M
+	ID           string
+	Role         string
+	Title        string
+	Active       bool
+	Selected     int
+	OwnerID      string
+	Presentation string
+	ParentID     string
+	AnchorIndex  int
+	Items        []MenuItemModel
+	Legacy       M
 }
 
 type MenuItemModel struct {
@@ -1086,50 +1107,64 @@ func (t TerminalModel) ToMap() M {
 
 func (d SurfaceModel) ToMap() M {
 	out := M{
-		"id":                 d.ID,
-		"kind":               d.Kind,
-		"defaultBackground":  d.DefaultBackground,
-		"title":              d.Title,
-		"path":               d.Path,
-		"localPath":          d.LocalPath,
-		"baseName":           d.BaseName,
-		"mode":               d.Mode,
-		"topBarLeft":         d.TopBarLeft,
-		"topBarRight":        d.TopBarRight,
-		"busy":               d.Busy,
-		"dirty":              d.Dirty,
-		"saving":             d.Saving,
-		"hexMode":            d.HexMode,
-		"wrapMode":           d.WrapMode,
-		"wordWrap":           d.WordWrap,
-		"overtype":           d.Overtype,
-		"topOffset":          d.TopOffset,
-		"size":               d.Size,
-		"cursorLine":         d.CursorLine,
-		"cursorPos":          d.CursorPos,
-		"cursorVisualRow":    d.CursorVisualRow,
-		"cursorVisualColumn": d.CursorVisualColumn,
-		"cursorVisible":      d.CursorVisible,
-		"cursorShape":        d.CursorShape,
-		"scrollTop":          d.ScrollTop,
-		"scrollLeft":         d.ScrollLeft,
-		"documentKey":        d.DocumentKey,
-		"scrollAction":       d.ScrollAction,
-		"scrollUnit":         d.ScrollUnit,
-		"windowStart":        d.WindowStart,
-		"windowEnd":          d.WindowEnd,
-		"viewportStart":      d.ViewportStart,
-		"viewportSpan":       d.ViewportSpan,
-		"contentExtent":      d.ContentExtent,
-		"contentExtentKnown": d.ContentExtentKnown,
-		"viewportRow":        d.ViewportRow,
-		"viewportRows":       d.ViewportRows,
-		"cursorAbsoluteRow":  d.CursorAbsoluteRow,
-		"windowGeneration":   d.WindowGeneration,
-		"windowContentKey":   d.windowContentKey(),
-		"selection":          d.Selection,
-		"rows":               rowsToMaps(d.Rows),
-		"windowRows":         rowsToMaps(d.WindowRows),
+		"id":                      d.ID,
+		"kind":                    d.Kind,
+		"defaultBackground":       d.DefaultBackground,
+		"title":                   d.Title,
+		"path":                    d.Path,
+		"localPath":               d.LocalPath,
+		"baseName":                d.BaseName,
+		"mode":                    d.Mode,
+		"topBarLeft":              d.TopBarLeft,
+		"topBarRight":             d.TopBarRight,
+		"busy":                    d.Busy,
+		"dirty":                   d.Dirty,
+		"saving":                  d.Saving,
+		"hexMode":                 d.HexMode,
+		"wrapMode":                d.WrapMode,
+		"wordWrap":                d.WordWrap,
+		"overtype":                d.Overtype,
+		"topOffset":               d.TopOffset,
+		"size":                    d.Size,
+		"cursorLine":              d.CursorLine,
+		"cursorPos":               d.CursorPos,
+		"cursorVisualRow":         d.CursorVisualRow,
+		"cursorVisualColumn":      d.CursorVisualColumn,
+		"cursorVisible":           d.CursorVisible,
+		"cursorShape":             d.CursorShape,
+		"cursorAbsoluteColumn":    d.CursorAbsoluteColumn,
+		"scrollTop":               d.ScrollTop,
+		"scrollLeft":              d.ScrollLeft,
+		"documentKey":             d.DocumentKey,
+		"scrollAction":            d.ScrollAction,
+		"scrollUnit":              d.ScrollUnit,
+		"windowStart":             d.WindowStart,
+		"windowEnd":               d.WindowEnd,
+		"viewportStart":           d.ViewportStart,
+		"viewportSpan":            d.ViewportSpan,
+		"contentExtent":           d.ContentExtent,
+		"contentExtentKnown":      d.ContentExtentKnown,
+		"viewportRow":             d.ViewportRow,
+		"viewportRows":            d.ViewportRows,
+		"cursorAbsoluteRow":       d.CursorAbsoluteRow,
+		"windowGeneration":        d.WindowGeneration,
+		"windowRequestGeneration": d.WindowRequestGeneration,
+		"viewportColumns":         d.ViewportColumns,
+		"geometryRevision":        d.GeometryRevision,
+		"layoutRevision":          d.LayoutRevision,
+		"layoutPending":           d.LayoutPending,
+		"loadError":               d.LoadError,
+		"windowContentKey":        d.windowContentKey(),
+		"selection":               d.Selection,
+		"selectionAnchorRow":      d.SelectionAnchorRow,
+		"selectionAnchorColumn":   d.SelectionAnchorColumn,
+		"selectionForeground":     d.SelectionForeground,
+		"selectionBackground":     d.SelectionBackground,
+		"selectionBold":           d.SelectionBold,
+		"selectionUnderline":      d.SelectionUnderline,
+		"selectionStrikeout":      d.SelectionStrikeout,
+		"rows":                    rowsToMaps(d.Rows),
+		"windowRows":              rowsToMaps(d.WindowRows),
 	}
 	if d.Autocomplete != nil {
 		out["autocomplete"] = d.Autocomplete
@@ -1272,6 +1307,10 @@ func TextRowContentKey(row TextRowModel) string {
 	writeUint64(uint64(int64(row.LogicalLine)))
 	writeUint64(uint64(row.Offset))
 	writeUint64(uint64(row.EndOffset))
+	writeBool(row.HasVisualWidth)
+	if row.HasVisualWidth {
+		writeUint64(uint64(int64(row.VisualWidth)))
+	}
 	writeBool(row.HasLogicalRowSpan)
 	if row.HasLogicalRowSpan {
 		writeUint64(uint64(int64(row.LogicalRowStart)))
@@ -1306,6 +1345,9 @@ func (r TextRowModel) ToMap() M {
 		out["logicalRowStart"] = r.LogicalRowStart
 		out["logicalRowEnd"] = r.LogicalRowEnd
 	}
+	if r.HasVisualWidth {
+		out["visualWidth"] = r.VisualWidth
+	}
 	if r.Text != "" {
 		out["text"] = r.Text
 	}
@@ -1336,6 +1378,12 @@ func (m MenuModel) ToMap() M {
 		"active":   m.Active,
 		"selected": m.Selected,
 		"items":    menuItemsToMaps(m.Items),
+	}
+	if m.OwnerID != "" {
+		out["ownerId"] = m.OwnerID
+	}
+	if m.Presentation != "" {
+		out["presentation"] = m.Presentation
 	}
 	if m.ParentID != "" {
 		out["parentId"] = m.ParentID

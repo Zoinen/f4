@@ -390,12 +390,12 @@ func TestWrapEngine_InvalidateFrom(t *testing.T) {
 	}
 
 	// Line 0 and 1 cache should still exist
-	if we.fragmentCache[1] == nil {
+	if we.fragmentCache[1].fragments == nil {
 		t.Error("Cache for Line 1 should not have been cleared")
 	}
 
 	// Line 2 and later cache should be nil
-	if we.fragmentCache[2] != nil {
+	if we.fragmentCache[2].fragments != nil {
 		t.Error("Cache for Line 2 should have been cleared")
 	}
 
@@ -414,10 +414,10 @@ func TestWrapEngine_LiveAppendPreservesAndAmortizesLineCaches(t *testing.T) {
 	we.SetWidth(80)
 	_ = we.GetTotalVisualRows()
 
-	if len(we.fragmentCache[0]) == 0 {
+	if len(we.fragmentCache[0].fragments) == 0 {
 		t.Fatal("initial fragment cache was not populated")
 	}
-	firstFragment := &we.fragmentCache[0][0]
+	firstFragment := &we.fragmentCache[0].fragments[0]
 	fragmentCapacityChanges := 0
 	rowCapacityChanges := 0
 	fragmentCapacity := cap(we.fragmentCache)
@@ -439,7 +439,7 @@ func TestWrapEngine_LiveAppendPreservesAndAmortizesLineCaches(t *testing.T) {
 		}
 	}
 
-	if &we.fragmentCache[0][0] != firstFragment {
+	if &we.fragmentCache[0].fragments[0] != firstFragment {
 		t.Fatal("appending invalidated an unrelated cached history fragment")
 	}
 	if fragmentCapacityChanges > 1 || rowCapacityChanges > 1 {
@@ -556,9 +556,8 @@ func TestWrapEngine_BoundarySafety(t *testing.T) {
 		}
 	})
 }
-func TestWrapEngine_LogicalToVisual_CappedLine(t *testing.T) {
-	// Tests safety when a logical line is massive (binary) and indexing is capped at 64KB.
-	// Create 100KB of data with NO newlines.
+func TestWrapEngine_LogicalToVisual_LongLine(t *testing.T) {
+	// Source anchors beyond the former 64 KiB cap must remain reachable.
 	data := make([]byte, 100*1024)
 	for i := range data {
 		data[i] = 'a'
@@ -570,11 +569,9 @@ func TestWrapEngine_LogicalToVisual_CappedLine(t *testing.T) {
 	we := NewWrapEngine(pt, li)
 	we.SetWidth(80)
 
-	// LogicalToVisual for an offset far beyond the 64KB cap.
-	// It should NOT crash and should return the end of the indexed fragment.
 	row, col := we.LogicalToVisual(90 * 1024)
 
-	if row < 0 || col < 0 {
-		t.Errorf("LogicalToVisual returned negative coordinates for capped line: (%d, %d)", row, col)
+	if row != 90*1024/80 || col != 90*1024%80 || we.VisualToLogical(row, col) != 90*1024 {
+		t.Errorf("long-line source anchor was misplaced: (%d, %d)", row, col)
 	}
 }

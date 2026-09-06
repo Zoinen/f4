@@ -12,8 +12,10 @@ import (
 )
 
 type searchFirstActivationRenderer struct {
-	calls int
-	side  int
+	calls           int
+	side            int
+	invalidations   int
+	activationMenus int
 }
 
 func (*searchFirstActivationRenderer) Render([]vtui.CharInfo, []vtui.CharInfo, int, int, bool) {
@@ -25,6 +27,14 @@ func (*searchFirstActivationRenderer) Flush()                                   
 func (r *searchFirstActivationRenderer) QueuePanelActivationState(side int, _ string, _ map[string]any) {
 	r.calls++
 	r.side = side
+}
+
+func (r *searchFirstActivationRenderer) InvalidateSemanticSceneUpdate() {
+	r.invalidations++
+}
+
+func (r *searchFirstActivationRenderer) AllowSemanticMenuAfterPanelActivation() {
+	r.activationMenus++
 }
 
 func TestPanelNavigationModeConfigRoundTripAndMigration(t *testing.T) {

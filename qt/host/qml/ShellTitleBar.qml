@@ -64,6 +64,7 @@ Item {
         height: parent.height
         visible: usesQwk && Qt.platform.os !== "osx"
         variant: "tool"
+        flat: true
 
         leftPadding: 0
         topPadding: 0

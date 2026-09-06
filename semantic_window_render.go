@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 )
@@ -23,7 +24,6 @@ type semanticEditorStyledRowsContext struct {
 
 type semanticEditorRowSelectionKey struct {
 	kind        uint8
-	start, end  int64
 	left, right int
 }
 
@@ -41,7 +41,6 @@ type semanticEditorStyledRowCacheEntry struct {
 
 type semanticEditorSelectionState struct {
 	kind        uint8
-	start, end  int64
 	top, bottom int
 	left, right int
 }
@@ -94,17 +93,13 @@ func semanticStyledViewerWindowRows(vv *ViewerView, window semanticSurfaceWindow
 		semanticRowsWithRenderedRunsAt(window.rows, rendered.Rows, 0))
 }
 
-// semanticStyledEditorWindowRows reuses EditorView.DisplayObject for an
-// arbitrary bounded visual-row range.  This retains every detail of the
-// terminal renderer (syntax, selections, crosshair, whitespace/tab display,
-// horizontal scrolling and line backgrounds) without maintaining a second
-// styling implementation for QML.
-//
-// DisplayObject observes ScrollTopRow and the frame height, so both are
-// changed only for the duration of the off-screen render.  Its scrollbar is
-// also restored exactly.  Syntax and wrap-engine caches may be warmed by the
-// read; those caches are intentionally retained, while user-visible editor
-// state is not changed.
+// semanticStyledEditorWindowRows consumes the shared editor row projection
+// directly for text. Syntax, rectangular selection, crosshair, whitespace,
+// horizontal scrolling and autocomplete therefore have one styling
+// implementation for console and native output without a temporary screen or
+// viewport mutation. Regular stream selection is a separate native overlay so
+// moving its endpoint never mutates these base rows. Non-text modes retain
+// their existing specialized renderer.
 func semanticStyledEditorWindowRows(ev *EditorView, window semanticSurfaceWindow, width int) []extui.TextRowModel {
 	if ev == nil || width <= 0 || len(window.rows) == 0 {
 		return window.rows
@@ -158,6 +153,11 @@ func semanticStyledEditorWindowRows(ev *EditorView, window semanticSurfaceWindow
 		}
 		ev.semanticStyledRowsRendered += uint64(last - first)
 		styled := semanticRenderStyledEditorWindowRows(ev, rangeWindow, width)
+		if len(styled) != last-first {
+			ev.semanticStyledRows = nil
+			ev.semanticStyledRowsContextValid = false
+			return nil
+		}
 		copy(result[first:last], styled)
 		first = last
 	}
@@ -186,19 +186,52 @@ func semanticRenderStyledEditorWindowRows(ev *EditorView, window semanticSurface
 	if ev == nil || width <= 0 || len(window.rows) == 0 {
 		return window.rows
 	}
+	if !ev.HexMode && !ev.DecodeMode && !ev.saving && !ev.pasting && ev.targetLine == -1 {
+		result := append([]extui.TextRowModel(nil), window.rows...)
+		projected, failed := 0, false
+		ev.projectTextRows(int(window.start), width, len(result), ev.textProjectionStyle(), func(row editorProjectedTextRow) {
+			index := row.visualRow - int(window.start)
+			if row.err != nil {
+				failed = true
+				if row.err != piecetable.ErrLoading {
+					ev.semanticLoadError = row.err.Error()
+				}
+				return
+			}
+			if index < 0 || index >= len(result) ||
+				result[index].Offset != int64(row.fragment.ByteOffsetStart) ||
+				result[index].EndOffset != int64(row.fragment.ByteOffsetEnd) {
+				failed = true
+				return
+			}
+			result[index].Text = ""
+			result[index].Runs = semanticRunsFromCells(row.cells)
+			projected++
+		})
+		if failed || projected != len(result) {
+			return nil
+		}
+		ev.semanticLoadError = ""
+		return semanticRowsWithContentKeys(result)
+	}
 
 	scrollTopRow := ev.ScrollTopRow
-	y2 := ev.Y2
+	x2, y2 := ev.X2, ev.Y2
 	visible := ev.IsVisible()
 	scrollBar := semanticCaptureScrollBar(ev.scrollBar)
 	defer func() {
 		ev.ScrollTopRow = scrollTopRow
+		ev.X2 = x2
 		ev.Y2 = y2
 		ev.SetVisible(visible)
 		semanticRestoreScrollBar(ev.scrollBar, scrollBar)
 	}()
 
 	ev.ScrollTopRow = int(window.start)
+	ev.X2 = ev.X1 + width - 1
+	if ev.scrollBar != nil {
+		ev.X2++
+	}
 	ev.Y2 = ev.Y1 + len(window.rows)
 	// SemanticNode is normally requested only for visible frames, but making
 	// the off-screen render independent of that flag keeps the helper total
@@ -293,12 +326,6 @@ func semanticEditorSelectionStateFor(ev *EditorView) semanticEditorSelectionStat
 			kind: 2, top: top, bottom: bottom, left: left, right: right,
 		}
 	}
-	if ev.selActive {
-		start, end := ev.getSelectionRange()
-		return semanticEditorSelectionState{
-			kind: 1, start: int64(start), end: int64(end),
-		}
-	}
 	return semanticEditorSelectionState{}
 }
 
@@ -307,14 +334,6 @@ func semanticEditorStyledRowKeyFor(row extui.TextRowModel,
 ) semanticEditorStyledRowKey {
 	selectionKey := semanticEditorRowSelectionKey{}
 	switch selection.kind {
-	case 1:
-		start := max(selection.start, row.Offset)
-		end := min(selection.end, row.EndOffset)
-		if start < end {
-			selectionKey = semanticEditorRowSelectionKey{
-				kind: 1, start: start, end: end,
-			}
-		}
 	case 2:
 		if row.VisualRow >= selection.top && row.VisualRow <= selection.bottom {
 			selectionKey = semanticEditorRowSelectionKey{

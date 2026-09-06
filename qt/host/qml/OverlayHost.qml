@@ -41,6 +41,23 @@ Item {
         return -1
     }
 
+    function frameIsWanted(key) {
+        const wanted = frames || []
+        for (let index = 0; index < wanted.length; ++index) {
+            if (frameKey(wanted[index]) === key)
+                return true
+        }
+        return false
+    }
+
+    function finishFrameExit(key) {
+        if (frameIsWanted(key))
+            return
+        const index = modelIndexForKey(key)
+        if (index >= 0 && overlayFrameModel.get(index).isClosing === true)
+            overlayFrameModel.remove(index)
+    }
+
     function syncFrameModel() {
         const wanted = frames || []
 
@@ -56,8 +73,16 @@ Item {
                     break
                 }
             }
-            if (!present)
-                overlayFrameModel.remove(index)
+            if (!present) {
+                const row = overlayFrameModel.get(index)
+                const frame = row.modelFrame || ({})
+                if (String(frame.presentation || "") === "dropdown") {
+                    if (row.isClosing !== true)
+                        overlayFrameModel.setProperty(index, "isClosing", true)
+                } else {
+                    overlayFrameModel.remove(index)
+                }
+            }
         }
 
         // Reorder, insert, and update only the rows whose semantic payload
@@ -71,7 +96,8 @@ Item {
             if (currentIndex < 0) {
                 overlayFrameModel.insert(index, {
                     "key": key,
-                    "modelFrame": wantedFrame
+                    "modelFrame": wantedFrame,
+                    "isClosing": false
                 })
                 continue
             }
@@ -82,6 +108,8 @@ Item {
             if (overlayFrameModel.get(currentIndex).modelFrame !== wantedFrame)
                 overlayFrameModel.setProperty(currentIndex, "modelFrame",
                                                wantedFrame)
+            if (overlayFrameModel.get(currentIndex).isClosing === true)
+                overlayFrameModel.setProperty(currentIndex, "isClosing", false)
         }
     }
 
@@ -142,12 +170,18 @@ Item {
             id: overlayLoader
             required property int index
             required property var modelFrame
+            required property bool isClosing
             property var frame: modelFrame || ({})
 
             function bindFrame() {
                 if (item && item.frame !== undefined) {
                     item.frame = Qt.binding(function() {
                         return overlayLoader.frame
+                    })
+                }
+                if (item && item.closing !== undefined) {
+                    item.closing = Qt.binding(function() {
+                        return overlayLoader.isClosing
                     })
                 }
             }
@@ -161,6 +195,15 @@ Item {
                              : dialogOverlayComponent
             onLoaded: bindFrame()
             z: 100 + index
+
+            Connections {
+                target: overlayLoader.item
+                ignoreUnknownSignals: true
+                function onCloseAnimationFinished() {
+                    overlayHost.finishFrameExit(
+                                overlayHost.frameKey(overlayLoader.frame))
+                }
+            }
         }
     }
 }

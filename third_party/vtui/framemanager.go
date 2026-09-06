@@ -81,6 +81,14 @@ type Frame interface {
 	GetProgress() int // Returns 0-100, or -1 if no progress
 }
 
+// KeyBarProvider supplies workspace-owned global chrome without painting its
+// cells. A nil bar explicitly hides it (for example an alternate-screen app).
+// Frames without a provider retain the inherited global bar and may still
+// override its labels through GetKeyLabels, including modal dialogs.
+type KeyBarProvider interface {
+	GetKeyBar() *KeyBar
+}
+
 // AppScreen represents an isolated workspace with its own frame stack.
 type AppScreen struct {
 	Number        int // Stable workspace number; never changes during its lifetime.
@@ -99,6 +107,16 @@ type WorkspaceTabTitleProvider interface {
 // rendered separately from the title so it can use a subdued foreground.
 type WorkspaceTabMarkerProvider interface {
 	GetWorkspaceTabMarker() string
+}
+
+// WorkspaceTabSurfaceProvider identifies the surface represented by a
+// workspace tab.  The value is deliberately presentation-neutral: native
+// clients use it to select their own icon and do not have to infer a tab kind
+// from a localized title or from the compact marker used by the cell renderer.
+// Implementations should return an empty string when the frame has no
+// surface-specific identity.
+type WorkspaceTabSurfaceProvider interface {
+	GetWorkspaceTabSurfaceKind() string
 }
 
 // WorkspaceMenuInfo describes the richer, full-width representation of a
@@ -508,10 +526,12 @@ func (fm *frameManager) AddScreen(f Frame) {
 	oldInset := fm.WorkspaceTopInset()
 	fm.SyncCurrentScreen()
 	newIdx := fm.insertScreenAfterActive(fm.createScreen(f, false))
+	// The outgoing workspace is already hidden when the tab-strip inset is
+	// reapplied. Resource-owning frames can defer hidden terminal negotiation.
+	fm.SwitchScreen(newIdx)
 	if oldInset != fm.WorkspaceTopInset() {
 		fm.ResizeAllScreens()
 	}
-	fm.SwitchScreen(newIdx)
 	fm.Redraw()
 }
 
@@ -694,6 +714,10 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 
 // Push adds a new frame to the top of the stack and assigns a number if it's non-modal.
 func (fm *frameManager) Push(f Frame) {
+	// Bind the actual host identity before focus or semantic export. Plain
+	// VMenus bind to themselves; custom frames embedding a VMenu retain their
+	// wrapper identity for stack removal and nested parent relationships.
+	bindMenuFrame(f)
 	if !f.IsModal() && f.GetType() != TypeDesktop {
 		// Find a free number from 1 to 9
 		used := make(map[int]bool)
@@ -1909,6 +1933,13 @@ func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 	return true
 }
 
+func rendererUsesEventDrivenResize(renderer SurfaceRenderer) bool {
+	if renderer, ok := renderer.(EventDrivenResizeRenderer); ok {
+		return renderer.UsesEventDrivenResize()
+	}
+	return false
+}
+
 type semanticMenuInputState struct {
 	activeScreen int
 	active       bool
@@ -2047,9 +2078,35 @@ func (fm *frameManager) publishSemanticSceneTransition(
 	if !ok {
 		return false
 	}
+	fm.refreshKeyBarState()
 	return renderer.SetSemanticSceneTransition(&SemanticContext{
 		Width: fm.scr.width, Height: fm.scr.height, ActiveScreen: fm.ActiveIdx,
 	})
+}
+
+// refreshKeyBarState is layout state, not rendering. Both normal painting and
+// direct semantic transitions must resolve the same active owner/labels so a
+// document close cannot leave the departed viewer's shortcuts on the panels.
+func (fm *frameManager) refreshKeyBarState() {
+	for i := len(fm.frames) - 1; i >= 0; i-- {
+		if provider, ok := fm.frames[i].(KeyBarProvider); ok {
+			fm.KeyBar = provider.GetKeyBar()
+			break
+		}
+	}
+	if fm.KeyBar == nil {
+		return
+	}
+	for i := len(fm.frames) - 1; i >= 0; i-- {
+		if ks := fm.frames[i].GetKeyLabels(); ks != nil {
+			fm.KeyBar.Normal, fm.KeyBar.Shift = ks.Normal, ks.Shift
+			fm.KeyBar.Ctrl, fm.KeyBar.Alt = ks.Ctrl, ks.Alt
+			fm.KeyBar.NormalIcons, fm.KeyBar.ShiftIcons = ks.NormalIcons, ks.ShiftIcons
+			fm.KeyBar.CtrlIcons, fm.KeyBar.AltIcons = ks.CtrlIcons, ks.AltIcons
+			break
+		}
+	}
+	fm.KeyBar.SetVisible(!fm.HideBars)
 }
 
 func (fm *frameManager) publishDeclaredSemanticInputUnchanged(
@@ -2333,20 +2390,22 @@ func (fm *frameManager) Run(reader *vtinput.Reader) {
 
 	// Terminal size polling (handles Windows and fallback for missed SIGWINCH)
 	sizeChan := make(chan struct{}, 1)
-	go func() {
-		lastW, lastH, _ := GetTerminalSize()
-		for fm.running {
-			time.Sleep(200 * time.Millisecond)
-			w, h, err := GetTerminalSize()
-			if err == nil && w > 0 && h > 0 && (w != lastW || h != lastH) {
-				lastW, lastH = w, h
-				select {
-				case sizeChan <- struct{}{}:
-				default:
+	if !rendererUsesEventDrivenResize(fm.scr.Renderer) {
+		go func() {
+			lastW, lastH, _ := GetTerminalSize()
+			for fm.running {
+				time.Sleep(200 * time.Millisecond)
+				w, h, err := GetTerminalSize()
+				if err == nil && w > 0 && h > 0 && (w != lastW || h != lastH) {
+					lastW, lastH = w, h
+					select {
+					case sizeChan <- struct{}{}:
+					default:
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	handleResize := func() {
 		endSemanticUpdate := fm.beginSemanticSceneUpdate()
@@ -2655,23 +2714,7 @@ func (fm *frameManager) renderPhase() {
 		fm.StatusLine.UpdateContext(topic)
 	}
 
-	// Update KeyBar content from the active frame
-	if fm.KeyBar != nil {
-		// Find the topmost frame that provides key labels
-		for i := len(fm.frames) - 1; i >= 0; i-- {
-			if ks := fm.frames[i].GetKeyLabels(); ks != nil {
-				fm.KeyBar.Normal = ks.Normal
-				fm.KeyBar.Shift = ks.Shift
-				fm.KeyBar.Ctrl = ks.Ctrl
-				fm.KeyBar.Alt = ks.Alt
-				fm.KeyBar.NormalIcons = ks.NormalIcons
-				fm.KeyBar.ShiftIcons = ks.ShiftIcons
-				fm.KeyBar.CtrlIcons = ks.CtrlIcons
-				fm.KeyBar.AltIcons = ks.AltIcons
-				break
-			}
-		}
-	}
+	fm.refreshKeyBarState()
 
 	// If the frame is "busy" (e.g., mass insertion in progress), skip drawing
 	// and Flush to avoid flickering and save CPU.

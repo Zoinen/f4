@@ -12,7 +12,45 @@ Item {
     required property QtObject shellController
     anchors.fill: parent
     property var frame: ({})
+    property bool closing: false
+    property bool componentReady: false
+    property real revealProgress: 1
+    property int openingSelectedIndex: 0
+    property int closingSelectedIndex: 0
+    property real closeContentShiftTarget: 0
+    property bool dropdownOpenSettled: false
+    property bool dropdownPresentationInitialized: false
+    readonly property bool dropdownAnimationRunning:
+        dropdownOpenAnimation.running || dropdownCloseAnimation.running
+    signal closeAnimationFinished()
+
+    readonly property bool dropdownMode:
+        hostWindow.cleanText(frame.presentation) === "dropdown"
+        && hostWindow.cleanText(frame.ownerId) !== ""
+    readonly property var dropdownAnchor: {
+        const revision = hostWindow.dropdownAnchorRevision
+        return revision >= 0 && dropdownMode
+                ? hostWindow.dropdownAnchorForId(frame.ownerId) : null
+    }
+    readonly property rect dropdownAnchorRect: {
+        const anchor = dropdownAnchor
+        if (anchor) {
+            const mapped = anchor.mapToItem(hostWindow.contentItem, 0, 0)
+            return Qt.rect(hostWindow.snapPx(mapped.x),
+                           hostWindow.snapPx(mapped.y),
+                           hostWindow.snapPx(anchor.width),
+                           hostWindow.snapPx(anchor.height))
+        }
+        const fallbackHeight = hostWindow.dialogControlHeight
+        return Qt.rect(hostWindow.snapPx(hostWindow.pxX(frame.x)),
+                       hostWindow.snapPx(hostWindow.pxY(frame.y)
+                                         - fallbackHeight),
+                       hostWindow.snapPx(hostWindow.pxW(frame.w)),
+                       hostWindow.snapPx(fallbackHeight))
+    }
     readonly property bool fromMenuBar: frame.menuBarSubmenu === true
+    readonly property bool hasParentMenu:
+        hostWindow.cleanText(frame.parentId) !== ""
     readonly property int effectiveMenuIndex:
         fromMenuBar && hostWindow.menuBarPreviewIndex >= 0
         ? hostWindow.menuBarPreviewIndex
@@ -49,6 +87,8 @@ Item {
     }
     readonly property real menuRowHeight:
         hostWindow.snapPx(Math.max(27, hostWindow.ch * 1.02))
+    readonly property real effectiveMenuRowHeight:
+        dropdownMode ? dropdownAnchorRect.height : menuRowHeight
     // Section labels are intentionally separated from the preceding
     // item. They are menu chrome, not rows that need to align with a
     // leading icon or tag dot.
@@ -57,6 +97,69 @@ Item {
         hostWindow.snapPx(Math.max(23, hostWindow.ch * 0.9))
         + menuHeaderTopPadding
     readonly property real menuSeparatorHeight: hostWindow.snapPx(11)
+    readonly property real menuEdgeInset: hostWindow.snapPx(5)
+    readonly property real menuContentHeight: {
+        var height = 0
+        for (var i = 0; i < effectiveItems.length; ++i) {
+            height += effectiveItems[i].separator
+                      ? menuSeparatorHeight
+                      : effectiveItems[i].header === true
+                        ? menuHeaderHeight : effectiveMenuRowHeight
+        }
+        return height
+    }
+    readonly property real dropdownMinimumY: hostWindow.snapPx(4)
+    readonly property real dropdownMaximumY:
+        hostWindow.snapPx(hostWindow.height - hostWindow.keyBarHeight() - 4)
+    readonly property real dropdownHeightBeforeSelection:
+        heightBeforeIndex(openingSelectedIndex)
+    readonly property real dropdownSelectedHeight:
+        itemHeightAt(openingSelectedIndex)
+    readonly property real dropdownDesiredTop:
+        dropdownAnchorRect.y - dropdownHeightBeforeSelection - menuEdgeInset
+    readonly property real dropdownDesiredBottom:
+        dropdownAnchorRect.y + dropdownSelectedHeight
+        + menuContentHeight - dropdownHeightBeforeSelection
+        - dropdownSelectedHeight + menuEdgeInset
+    readonly property real dropdownOpenTop:
+        hostWindow.snapPx(Math.max(dropdownMinimumY, dropdownDesiredTop))
+    readonly property real dropdownOpenBottom:
+        hostWindow.snapPx(Math.min(dropdownMaximumY, dropdownDesiredBottom))
+    readonly property real dropdownOpenHeight:
+        hostWindow.snapPx(Math.max(dropdownAnchorRect.height,
+                                   dropdownOpenBottom - dropdownOpenTop))
+    readonly property real dropdownViewportHeight:
+        hostWindow.snapPx(Math.max(dropdownAnchorRect.height,
+                                   dropdownOpenHeight - 2 * menuEdgeInset))
+    readonly property real dropdownInitialContentY: {
+        const wanted = dropdownOpenTop + menuEdgeInset
+                + dropdownHeightBeforeSelection - dropdownAnchorRect.y
+        return Math.max(0, Math.min(
+            Math.max(0, menuContentHeight - dropdownViewportHeight), wanted))
+    }
+    readonly property real dropdownContentShift:
+        dropdownMode && closing
+        ? (1 - revealProgress) * closeContentShiftTarget : 0
+    // The list has a five-pixel presentation inset on its left edge.  Make
+    // the expanding frame one inset wider and move it left by that same
+    // amount.  This keeps the selected row's text and the collapsed combo's
+    // text on the exact same screen x while preserving the chevron's x.
+    readonly property real dropdownFrameWidth:
+        hostWindow.snapPx(dropdownAnchorRect.width + menuEdgeInset)
+    readonly property real dropdownFrameX:
+        hostWindow.snapPx(dropdownAnchorRect.x - menuEdgeInset)
+    readonly property real dropdownAnchorTextPadding: {
+        const anchor = dropdownAnchor
+        const content = anchor ? anchor.contentItem : null
+        return content && content.leftPadding !== undefined
+                ? Number(content.leftPadding) : hostWindow.snapPx(10)
+    }
+    readonly property real dropdownMenuTextMargin:
+        hasLeadingIndicator ? 32 : 10
+    readonly property real dropdownListX:
+        hostWindow.snapPx(Math.max(0, menuEdgeInset
+                                   + dropdownAnchorTextPadding
+                                   - dropdownMenuTextMargin))
     property int pointerSelectedIndex: -1
     property int semanticSelectedIndex: 0
     property int semanticTopIndex: 0
@@ -75,10 +178,99 @@ Item {
         : previewIsAhead ? 0
         : semanticSelectedIndex
 
+    function boundedItemIndex(index) {
+        return Math.max(0, Math.min(Math.max(0, effectiveItems.length - 1),
+                                    Number(index || 0)))
+    }
+
+    function itemHeightAt(index) {
+        if (index < 0 || index >= effectiveItems.length)
+            return effectiveMenuRowHeight
+        const item = effectiveItems[index]
+        return item.separator ? menuSeparatorHeight
+             : item.header === true ? menuHeaderHeight
+             : effectiveMenuRowHeight
+    }
+
+    function heightBeforeIndex(index) {
+        const end = Math.max(0, Math.min(effectiveItems.length,
+                                         Number(index || 0)))
+        var height = 0
+        for (var i = 0; i < end; ++i)
+            height += itemHeightAt(i)
+        return height
+    }
+
+    function dropdownRowWindowY(index) {
+        const row = popupMenuList.itemAtIndex(index)
+        if (row)
+            return row.mapToItem(hostWindow.contentItem, 0, 0).y
+        return dropdownOpenTop + menuEdgeInset - popupMenuList.contentY
+                + heightBeforeIndex(index)
+    }
+
+    function initializeDropdownPosition() {
+        if (!dropdownMode || popupMenuList.count <= 0)
+            return
+        popupMenuList.contentY = dropdownInitialContentY
+    }
+
+    function beginDropdownOpening() {
+        if (!dropdownMode)
+            return
+        dropdownCloseAnimation.stop()
+        closeContentShiftTarget = 0
+        dropdownOpenSettled = false
+        initializeDropdownPosition()
+        dropdownOpenAnimation.start()
+    }
+
+    function initializeDropdownPresentation() {
+        if (!componentReady || !dropdownMode
+                || dropdownPresentationInitialized)
+            return
+        dropdownPresentationInitialized = true
+        openingSelectedIndex = boundedItemIndex(
+                    Math.max(0, Number(frame.selected || 0)))
+        closingSelectedIndex = openingSelectedIndex
+        closeContentShiftTarget = 0
+        revealProgress = 0
+        dropdownOpenSettled = false
+        syncListSelection()
+        initializeDropdownPosition()
+        if (closing)
+            beginDropdownClosing()
+        else
+            beginDropdownOpening()
+    }
+
+    function beginDropdownClosing() {
+        if (!dropdownMode) {
+            closeAnimationFinished()
+            return
+        }
+        dropdownOpenAnimation.stop()
+        closingSelectedIndex = boundedItemIndex(visualSelectedIndex)
+        closeContentShiftTarget = dropdownAnchorRect.y
+                - dropdownRowWindowY(closingSelectedIndex)
+        dropdownOpenSettled = false
+        if (revealProgress <= 0.001) {
+            closeAnimationFinished()
+            return
+        }
+        dropdownCloseAnimation.start()
+    }
+
     function syncFrameState() {
         semanticSelectedIndex = Math.max(0,
             Number(frame.selected || 0))
         semanticTopIndex = Math.max(0, Number(frame.top || 0))
+    }
+
+    function syncListSelection() {
+        const wanted = Math.max(-1, Number(visualSelectedIndex))
+        if (popupMenuList.currentIndex !== wanted)
+            popupMenuList.currentIndex = wanted
     }
 
     function applyCommandMenuStates(states) {
@@ -159,14 +351,69 @@ Item {
 
     onFrameChanged: {
         syncFrameState()
+        Qt.callLater(syncListSelection)
         if (!fromMenuBar)
             pointerSelectedIndex = -1
         else
             Qt.callLater(reconcilePointerState)
+        initializeDropdownPresentation()
+    }
+    onDropdownModeChanged: {
+        if (dropdownMode) {
+            Qt.callLater(initializeDropdownPresentation)
+            return
+        }
+        dropdownOpenAnimation.stop()
+        dropdownCloseAnimation.stop()
+        dropdownPresentationInitialized = false
+        dropdownOpenSettled = false
+        revealProgress = 1
+    }
+    onVisualSelectedIndexChanged: Qt.callLater(syncListSelection)
+    onClosingChanged: {
+        if (!componentReady || !dropdownMode)
+            return
+        if (closing)
+            beginDropdownClosing()
+        else
+            beginDropdownOpening()
     }
     Component.onCompleted: {
         syncFrameState()
+        componentReady = true
+        Qt.callLater(syncListSelection)
         Qt.callLater(reconcilePointerState)
+        initializeDropdownPresentation()
+    }
+
+    NumberAnimation {
+        id: dropdownOpenAnimation
+        target: menuOverlay
+        property: "revealProgress"
+        to: 1
+        duration: 190
+        easing.type: Easing.OutCubic
+        onFinished: {
+            if (!menuOverlay.closing) {
+                menuOverlay.revealProgress = 1
+                menuOverlay.dropdownOpenSettled = true
+            }
+        }
+    }
+
+    NumberAnimation {
+        id: dropdownCloseAnimation
+        target: menuOverlay
+        property: "revealProgress"
+        to: 0
+        duration: 150
+        easing.type: Easing.InCubic
+        onFinished: {
+            if (menuOverlay.closing) {
+                menuOverlay.revealProgress = 0
+                menuOverlay.closeAnimationFinished()
+            }
+        }
     }
 
     Connections {
@@ -201,16 +448,9 @@ Item {
     }
 
     function preferredMenuHeight() {
-        var height = 10
-        for (var i = 0; i < effectiveItems.length; ++i) {
-            height += effectiveItems[i].separator
-                      ? menuSeparatorHeight
-                      : effectiveItems[i].header === true
-                        ? menuHeaderHeight : menuRowHeight
-        }
-        if (hostWindow.cleanText(frame.bottomHint) !== "")
-            height += hostWindow.ch
-        return height
+        return menuContentHeight + menuEdgeInset
+               + (hostWindow.cleanText(frame.bottomHint) !== ""
+                  ? hostWindow.ch : menuEdgeInset)
     }
 
     function popupWindowX() { return popupSurface.x }
@@ -232,6 +472,32 @@ Item {
                    ? menuHeaderHeight : menuRowHeight
         }
         return y
+    }
+
+    function nativeTopIndex() {
+        if (popupMenuList.count <= 0)
+            return 0
+        // indexAt() consumes content coordinates, while contentY is the
+        // native viewport's current origin. Probe just inside its top edge so
+        // separators and section headers participate in the same mapping as
+        // ordinary rows.
+        var index = popupMenuList.indexAt(
+                    hostWindow.snapPx(1),
+                    popupMenuList.contentY + hostWindow.snapPx(1))
+        if (index >= 0)
+            return index
+        return Math.max(0, popupMenuList.count - 1)
+    }
+
+    function commitNativeScrollTop() {
+        const top = nativeTopIndex()
+        semanticTopIndex = top
+        popupMenuList.positionViewAtIndex(top, ListView.Beginning)
+        hostWindow.action({
+            "target": menuOverlay.frame.id,
+            "action": "menu.scroll",
+            "top": top
+        }, true)
     }
 
     function preferredPopupX(popupWidth) {
@@ -268,6 +534,13 @@ Item {
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.topMargin: menuOverlay.fromMenuBar ? menuBar.height : 0
+        // Only the root popup owns the chain-wide backdrop. A child Loader is
+        // stacked above its parent and also fills the window, so an enabled
+        // backdrop here would intercept every pointer event intended for the
+        // parent popup. The child's own popup surface remains interactive;
+        // clicks elsewhere fall through to this chain's root backdrop.
+        enabled: !menuOverlay.hasParentMenu && !menuOverlay.closing
+        visible: enabled
         acceptedButtons: Qt.AllButtons
         hoverEnabled: true
         preventStealing: true
@@ -284,301 +557,189 @@ Item {
 
     Rectangle {
         id: popupSurface
-        width: hostWindow.snapPx(menuOverlay.preferredMenuWidth())
-        height: hostWindow.snapPx(Math.min(hostWindow.height - hostWindow.keyBarHeight() - 8,
-                                     Math.max(hostWindow.ch + 10,
-                                              menuOverlay.preferredMenuHeight())))
-        x: hostWindow.snapPx(menuOverlay.preferredPopupX(width))
-        y: hostWindow.snapPx(menuOverlay.preferredPopupY(height))
+        width: menuOverlay.dropdownMode
+               ? menuOverlay.dropdownFrameWidth
+               : hostWindow.snapPx(menuOverlay.preferredMenuWidth())
+        height: menuOverlay.dropdownMode
+                ? menuOverlay.dropdownAnchorRect.height
+                  + (menuOverlay.dropdownOpenHeight
+                     - menuOverlay.dropdownAnchorRect.height)
+                    * menuOverlay.revealProgress
+                : hostWindow.snapPx(Math.min(
+                    hostWindow.height - hostWindow.keyBarHeight() - 8,
+                    Math.max(hostWindow.ch + 10,
+                             menuOverlay.preferredMenuHeight())))
+        x: menuOverlay.dropdownMode
+           ? menuOverlay.dropdownFrameX
+           : hostWindow.snapPx(menuOverlay.preferredPopupX(width))
+        y: menuOverlay.dropdownMode
+           ? menuOverlay.dropdownAnchorRect.y
+             + (menuOverlay.dropdownOpenTop
+                - menuOverlay.dropdownAnchorRect.y)
+               * menuOverlay.revealProgress
+           : hostWindow.snapPx(menuOverlay.preferredPopupY(height))
         objectName: "semanticMenuPopup-"
                     + hostWindow.cleanText(menuOverlay.frame.id)
         color: hostWindow.dialogHeaderBg
-        border.width: 1
+        border.width: menuOverlay.dropdownMode
+                      ? hostWindow.separatorWidth : 1
         border.color: hostWindow.controlBorder
-        radius: 7
+        radius: menuOverlay.dropdownMode
+                ? 4 + 3 * menuOverlay.revealProgress : 7
         clip: true
+        enabled: !menuOverlay.closing
         z: 160
 
         ListView {
             id: popupMenuList
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.topMargin: 5
-            anchors.bottomMargin: hostWindow.cleanText(menuOverlay.frame.bottomHint) !== ""
-                                  ? hostWindow.ch : 5
-            anchors.leftMargin: 5
-            anchors.rightMargin: 5
+            objectName: "semanticMenuList-"
+                        + hostWindow.cleanText(menuOverlay.frame.id)
+            x: menuOverlay.dropdownMode
+               ? menuOverlay.dropdownListX : menuOverlay.menuEdgeInset
+            y: menuOverlay.dropdownMode
+               ? menuOverlay.dropdownOpenTop + menuOverlay.menuEdgeInset
+                 - popupSurface.y
+               : menuOverlay.menuEdgeInset
+            width: Math.max(1, popupSurface.width
+                               - (menuOverlay.dropdownMode
+                                  ? menuOverlay.dropdownListX
+                                  : menuOverlay.menuEdgeInset))
+            height: menuOverlay.dropdownMode
+                    ? menuOverlay.dropdownViewportHeight
+                    : Math.max(1, popupSurface.height
+                               - menuOverlay.menuEdgeInset
+                               - (hostWindow.cleanText(
+                                      menuOverlay.frame.bottomHint) !== ""
+                                  ? hostWindow.ch
+                                  : menuOverlay.menuEdgeInset))
+            // The list reaches the popup edge so its attached scrollbar can
+            // sit flush right. Delegates retain the visual five-pixel inset.
+            anchors.rightMargin: 0
             model: menuOverlay.effectiveItems
             clip: true
-            currentIndex: menuOverlay.visualSelectedIndex
+            // ListView resets currentIndex while installing a model. Keep the
+            // visual cursor synchronized explicitly with the authoritative Go
+            // menu selection instead of allowing that local reset to win.
+            currentIndex: -1
             boundsBehavior: Flickable.StopAtBounds
-            interactive: contentHeight > height
+            interactive: popupMenuScrollBar.nativeOverflow
+            transform: Translate {
+                y: menuOverlay.dropdownContentShift
+            }
 
             function syncTopPosition() {
-                if (count > 0)
+                if (menuOverlay.dropdownMode
+                        && !menuOverlay.dropdownOpenSettled) {
+                    menuOverlay.initializeDropdownPosition()
+                    return
+                }
+                if (count > 0 && !popupMenuScrollBar.pressed)
                     positionViewAtIndex(menuOverlay.semanticTopIndex,
                                         ListView.Beginning)
             }
 
-            Component.onCompleted: Qt.callLater(syncTopPosition)
-            onModelChanged: Qt.callLater(syncTopPosition)
+            Component.onCompleted: {
+                Qt.callLater(menuOverlay.syncListSelection)
+                Qt.callLater(syncTopPosition)
+            }
+            onModelChanged: {
+                Qt.callLater(menuOverlay.syncListSelection)
+                Qt.callLater(syncTopPosition)
+            }
+            onCountChanged: {
+                if (menuOverlay.dropdownMode
+                        && !menuOverlay.dropdownOpenSettled)
+                    menuOverlay.initializeDropdownPosition()
+            }
 
-            delegate: Rectangle {
-                required property var modelData
-                objectName: "semanticMenuItem-"
+            delegate: SemanticMenuItemDelegate {
+                hostWindow: menuOverlay.hostWindow
+                overlayController: menuOverlay
+                popupSurfaceItem: popupSurface
+                popupList: popupMenuList
+                scrollBar: popupMenuScrollBar
+            }
+
+            ScrollBar.vertical: F4ScrollBar {
+                id: popupMenuScrollBar
+                objectName: "semanticMenuScrollBar-"
                             + hostWindow.cleanText(menuOverlay.frame.id)
-                            + "-" + Number(modelData.index)
-                width: ListView.view.width
-                height: modelData.separator
-                        ? menuOverlay.menuSeparatorHeight
-                        : modelData.header === true
-                          ? menuOverlay.menuHeaderHeight
-                          : menuOverlay.menuRowHeight
-                radius: 4
-                color: modelData.index === menuOverlay.visualSelectedIndex
-                       && !modelData.separator
-                       && modelData.header !== true
-                       ? hostWindow.selectedBg : "transparent"
+                hostWindow: menuOverlay.hostWindow
+                thickness: 8
+                readonly property bool nativeOverflow:
+                    menuOverlay.menuContentHeight
+                    > popupMenuList.height
+                      + 0.5 / Math.max(1, menuOverlay.hostWindow.dpr)
+                policy: nativeOverflow
+                        ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
+                z: 3
+                property bool nativeDragActive: false
 
-                Rectangle {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 1
-                    color: hostWindow.separatorColor
-                    opacity: 0.68
-                    visible: modelData.separator
-                }
-
-                Text {
-                    objectName: "semanticMenuItemText-"
-                                + hostWindow.cleanText(menuOverlay.frame.id)
-                                + "-" + Number(modelData.index)
-                    anchors.left: parent.left
-                    anchors.right: shortcut.left
-                    anchors.verticalCenter: modelData.header === true
-                                           ? undefined
-                                           : parent.verticalCenter
-                    anchors.top: modelData.header === true
-                                 ? parent.top : undefined
-                    anchors.bottom: modelData.header === true
-                                    ? parent.bottom : undefined
-                    anchors.topMargin: modelData.header === true
-                                       ? menuOverlay.menuHeaderTopPadding
-                                       : 0
-                    anchors.leftMargin: modelData.header === true
-                                        ? 10
-                                        : menuOverlay.hasLeadingIndicator
-                                        ? 32 : 10
-                    verticalAlignment: Text.AlignVCenter
-                    text: {
-                        var label = hostWindow.cleanText(modelData.text)
-                        if (menuOverlay.hasLeadingIndicator)
-                            label = label.replace(/^\s+/, "")
-                        return hostWindow.mnemonicText(label,
-                                                 modelData.hotkey)
-                    }
-                    textFormat: Text.StyledText
-                    color: modelData.disabled || modelData.header === true
-                           ? hostWindow.mutedText : hostWindow.textColor
-                    font.pixelSize: modelData.header === true ? 12 : 13
-                    font.bold: modelData.header === true
-                    visible: !modelData.separator
-                    elide: Text.ElideRight
-                }
-
-                IconImage {
-                    id: leadingMenuIcon
-                    objectName: "semanticMenuItemIcon-"
-                                + hostWindow.cleanText(menuOverlay.frame.id)
-                                + "-" + Number(modelData.index)
-                    readonly property string semanticIconName:
-                        modelData.checked === true ? "check"
-                        : hostWindow.cleanText(modelData.icon)
-                    readonly property url semanticIconSource:
-                        semanticIconName === ""
-                        || semanticIconName === "tag-dot" ? ""
-                        : hostWindow.semanticMenuIconSource(
-                              semanticIconName, 15,
-                              semanticIconColor)
-                    readonly property color semanticIconColor:
-                        modelData.disabled ? hostWindow.mutedText
-                        : hostWindow.cleanText(modelData.iconColor) !== ""
-                          ? hostWindow.cleanText(modelData.iconColor)
-                          : hostWindow.textColor
-                    x: hostWindow.snapPx(10)
-                    y: hostWindow.snapPx((parent.height - height) / 2)
-                    width: hostWindow.snapPx(15)
-                    height: hostWindow.snapPx(15)
-                    property real alignmentRevision:
-                        popupSurface.x + popupSurface.y
-                        + popupMenuList.contentY + parent.y
-                    transform: Translate {
-                        x: hostWindow.iconPixelOffsetX(leadingMenuIcon)
-                        y: hostWindow.iconPixelOffsetY(leadingMenuIcon)
-                    }
-                    visible: !modelData.separator
-                             && modelData.header !== true
-                             && semanticIconName !== "tag-dot"
-                             && semanticIconName !== ""
-                    sourceSize: Qt.size(15, 15)
-                    smooth: false
-                    mipmap: false
-                    source: semanticIconSource
-                    color: semanticIconColor
-                }
-
-                Rectangle {
-                    id: menuItemColor
-                    objectName: "semanticMenuItemColor-"
-                                + hostWindow.cleanText(menuOverlay.frame.id)
-                                + "-" + Number(modelData.index)
-                    x: hostWindow.snapPx(13)
-                    y: hostWindow.snapPx((parent.height - height) / 2)
-                    width: hostWindow.snapPx(10)
-                    height: width
-                    radius: width / 2
-                    color: hostWindow.cleanText(modelData.iconColor) !== ""
-                           ? hostWindow.cleanText(modelData.iconColor)
-                           : hostWindow.textColor
-                    property real alignmentRevision:
-                        popupSurface.x + popupSurface.y
-                        + popupMenuList.contentY + parent.y
-                    transform: Translate {
-                        x: hostWindow.iconPixelOffsetX(menuItemColor)
-                        y: hostWindow.iconPixelOffsetY(menuItemColor)
-                    }
-                    visible: !modelData.separator
-                             && modelData.header !== true
-                             && hostWindow.cleanText(modelData.icon) === "tag-dot"
-                }
-
-                Text {
-                    id: menuItemChevron
-                    objectName: "semanticMenuItemChevron-"
-                                + hostWindow.cleanText(menuOverlay.frame.id)
-                                + "-" + Number(modelData.index)
-                    x: hostWindow.snapPx(parent.width - width - 9)
-                    y: 0
-                    width: hostWindow.snapPx(15)
-                    height: hostWindow.snapPx(parent.height)
-                    text: "›"
-                    color: modelData.disabled ? hostWindow.mutedText : hostWindow.textColor
-                    font.pixelSize: 17
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    property real alignmentRevision:
-                        popupSurface.x + popupSurface.y
-                        + popupMenuList.contentY + parent.y
-                    transform: Translate {
-                        x: hostWindow.iconPixelOffsetX(menuItemChevron)
-                        y: hostWindow.iconPixelOffsetY(menuItemChevron)
-                    }
-                    visible: !modelData.separator
-                             && modelData.header !== true
-                             && modelData.hasSubmenu === true
-                }
-
-                Text {
-                    id: shortcut
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.rightMargin: modelData.hasSubmenu === true ? 28 : 10
-                    text: hostWindow.cleanText(modelData.shortcut)
-                    color: hostWindow.mutedText
-                    font.pixelSize: 12
-                    visible: !modelData.separator
-                             && modelData.header !== true
-                }
-
-                Timer {
-                    id: submenuHoverTimer
-                    interval: 180
-                    repeat: false
-                    onTriggered: hostWindow.action({
-                        "target": menuOverlay.frame.id,
-                        "action": "menu.openSubmenu",
-                        "index": modelData.index
-                    }, true)
-                }
-
-                MouseArea {
-                    id: itemMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    enabled: !modelData.separator
-                             && modelData.header !== true
-                             && !modelData.disabled
-                    function selectFromPointer() {
-                        if (menuOverlay.fromMenuBar) {
-                            hostWindow.menuBarPointerHasSelectedItem = true
-                            if (hostWindow.menuPointerItemIndex < 0
-                                    && !menuOverlay.previewIsAhead
-                                    && menuOverlay.semanticSelectedIndex
-                                       === modelData.index)
-                                return
-                            if (hostWindow.menuPointerMenuIndex
-                                    === menuOverlay.effectiveMenuIndex
-                                    && hostWindow.menuPointerItemIndex
-                                       === modelData.index)
-                                return
-                            hostWindow.menuPointerMenuIndex
-                                    = menuOverlay.effectiveMenuIndex
-                            hostWindow.menuPointerItemIndex = modelData.index
-                            hostWindow.menuPointerFrameId
-                                    = String(menuOverlay.frame.id || "")
-                            hostWindow.scheduleMenuPointerSync()
-                        } else {
-                            if (menuOverlay.pointerSelectedIndex
-                                    === modelData.index)
-                                return
-                            menuOverlay.pointerSelectedIndex = modelData.index
-                            hostWindow.action({
-                                "target": menuOverlay.frame.id,
-                                "action": "menu.select",
-                                "index": modelData.index
-                            }, true)
-                        }
-                    }
-                    // Delegate creation and ListView scrolling both
-                    // produce local position changes under a stationary
-                    // cursor. Only movement in window coordinates is
-                    // allowed to take selection ownership.
-                    onPositionChanged: (mouse) => {
-                        if (containsMouse
-                                && menuOverlay.pointerActuallyMoved(
-                                    itemMouse, mouse))
-                            selectFromPointer()
-                    }
-                    onEntered: {
-                        if (modelData.hasSubmenu === true)
-                            submenuHoverTimer.restart()
-                    }
-                    onExited: submenuHoverTimer.stop()
-                    onClicked: {
-                        submenuHoverTimer.stop()
-                        if (menuOverlay.fromMenuBar) {
-                            hostWindow.action({
-                                "action": "menuBar.itemActivate",
-                                "menuIndex": menuOverlay.effectiveMenuIndex,
-                                "index": modelData.index
-                            }, true)
-                        } else {
-                            hostWindow.action({
-                                "target": menuOverlay.frame.id,
-                                "action": "menu.activate",
-                                "index": modelData.index
-                            }, true)
-                        }
-                        hostWindow.menuBarPreviewIndex = -1
-                        hostWindow.clearMenuPointerSelection()
+                onPressedChanged: {
+                    if (pressed) {
+                        nativeDragActive = true
+                    } else if (nativeDragActive) {
+                        nativeDragActive = false
+                        menuOverlay.commitNativeScrollTop()
                     }
                 }
             }
+        }
+
+        IconLabel {
+            id: dropdownChevronDown
+            objectName: "semanticDropdownChevronDown-"
+                        + hostWindow.cleanText(menuOverlay.frame.id)
+            readonly property url rasterizedIconSource:
+                hostWindow.lucideIconSource(
+                    "chevron-down", 14, hostWindow.textColor)
+            x: hostWindow.snapPx(parent.width - width - 10)
+            y: menuOverlay.dropdownAnchorRect.y - popupSurface.y
+               + hostWindow.snapPx(
+                   (menuOverlay.dropdownAnchorRect.height - height) / 2)
+            width: hostWindow.snapPx(14)
+            height: hostWindow.snapPx(14)
+            icon.source: rasterizedIconSource
+            icon.width: hostWindow.snapPx(14)
+            icon.height: hostWindow.snapPx(14)
+            icon.color: hostWindow.textColor
+            opacity: 1 - menuOverlay.revealProgress
+            visible: menuOverlay.dropdownMode && opacity > 0
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(
+                       dropdownChevronDown, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(
+                       dropdownChevronDown, hostWindow.contentItem)
+            }
+            z: 5
+        }
+
+        IconLabel {
+            id: dropdownChevronUp
+            objectName: "semanticDropdownChevronUp-"
+                        + hostWindow.cleanText(menuOverlay.frame.id)
+            readonly property url rasterizedIconSource:
+                hostWindow.lucideIconSource(
+                    "chevron-up", 14, hostWindow.textColor)
+            x: hostWindow.snapPx(parent.width - width - 10)
+            y: menuOverlay.dropdownAnchorRect.y - popupSurface.y
+               + hostWindow.snapPx(
+                   (menuOverlay.dropdownAnchorRect.height - height) / 2)
+            width: hostWindow.snapPx(14)
+            height: hostWindow.snapPx(14)
+            icon.source: rasterizedIconSource
+            icon.width: hostWindow.snapPx(14)
+            icon.height: hostWindow.snapPx(14)
+            icon.color: hostWindow.textColor
+            opacity: menuOverlay.revealProgress
+            visible: menuOverlay.dropdownMode && opacity > 0
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(
+                       dropdownChevronUp, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(
+                       dropdownChevronUp, hostWindow.contentItem)
+            }
+            z: 5
         }
 
         MouseArea {
@@ -611,20 +772,5 @@ Item {
             visible: text !== ""
         }
 
-        Rectangle {
-            readonly property int itemCount: menuOverlay.effectiveItems.length
-            readonly property int pageSize: Math.max(1, Number(menuOverlay.frame.viewHeight || itemCount))
-            anchors.right: parent.right
-            anchors.rightMargin: 2
-            width: 3
-            height: Math.max(12, popupMenuList.height * Math.min(1, pageSize / Math.max(1, itemCount)))
-            y: popupMenuList.y + (popupMenuList.height - height)
-               * Math.max(0, Number(menuOverlay.frame.top || 0))
-               / Math.max(1, itemCount - pageSize)
-            radius: 2
-            color: hostWindow.mutedText
-            visible: itemCount > pageSize
-            opacity: 0.75
-        }
     }
 }

@@ -1,9 +1,40 @@
 #pragma once
 
 #include <QObject>
+#include <QAbstractListModel>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
+
+// The current physical document slots. Nested runs remain QVariant values,
+// not dynamically generated QML ListModels. There is no document history.
+class DocumentRowsModel final : public QAbstractListModel
+{
+    Q_OBJECT
+    Q_PROPERTY(int count READ rowCount NOTIFY countChanged)
+public:
+    enum Role { LoadedRole = Qt::UserRole + 1, RowDataRole };
+    explicit DocumentRowsModel(QObject *parent = nullptr) : QAbstractListModel(parent)
+    { setObjectName(QStringLiteral("documentRowsModel")); }
+    int rowCount(const QModelIndex &parent = {}) const override;
+    QVariant data(const QModelIndex &index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
+    Q_INVOKABLE QVariantMap get(int slot) const;
+    Q_INVOKABLE void ensureCapacity(int capacity);
+    Q_INVOKABLE void set(int slot, const QVariantMap &value);
+    Q_INVOKABLE int replaceWindow(int start, const QVariantList &rows,
+                                  int previousStart, int previousEnd,
+                                  bool forceReplacement, bool clearOutside);
+    Q_INVOKABLE void commit();
+signals:
+    void countChanged();
+private:
+    struct Slot { bool loaded = false; QVariantMap row; bool changed = false; };
+    QList<Slot> m_slots;
+    int m_changedFirst = -1;
+    int m_changedLast = -1;
+    qint64 m_updateStartedNs = 0;
+};
 
 class ChromeStateStore final : public QObject
 {
@@ -161,6 +192,7 @@ class SurfaceRegistry final : public QObject
     Q_PROPERTY(qulonglong operationsRevision READ operationsRevision NOTIFY operationsRevisionChanged)
     Q_PROPERTY(QVariantMap shell READ shell NOTIFY shellChanged)
     Q_PROPERTY(QVariantMap document READ document NOTIFY documentChanged)
+    Q_PROPERTY(QVariantMap documentMetadata READ documentMetadata NOTIFY documentChanged)
     Q_PROPERTY(QVariantMap operationsQueue READ operationsQueue NOTIFY operationsQueueChanged)
     Q_PROPERTY(bool hasShell READ hasShell NOTIFY shellChanged)
     Q_PROPERTY(bool hasDocument READ hasDocument NOTIFY documentChanged)
@@ -174,13 +206,24 @@ public:
     qulonglong operationsRevision() const { return m_operationsRevision; }
     QVariantMap shell() const { return m_shell; }
     QVariantMap document() const { return m_document; }
+    QVariantMap documentMetadata() const;
+    Q_INVOKABLE QVariant documentWindowRows(const QString &documentKey,
+                                            qulonglong publication) const;
     QVariantMap operationsQueue() const { return m_operationsQueue; }
     bool hasShell() const { return !m_shell.isEmpty(); }
     bool hasDocument() const { return !m_document.isEmpty(); }
     bool hasOperationsQueue() const { return !m_operationsQueue.isEmpty(); }
 
     void applyShell(const QVariantMap &shell, qulonglong revision);
+    // Catalog frames have their own notification lane. Keep the row-free
+    // descriptor in the retained shell current without invalidating the
+    // complete shell/panel QML projection a second time.
+    void adoptShellPanelDescriptor(int side, const QVariantMap &panel);
     void applyDocument(const QVariantMap &document, qulonglong revision);
+    // Cursor/status changes still advance authoritative state, but do not
+    // invalidate the row-bearing document property consumed by QML.
+    void applyDocumentState(const QVariantMap &document, qulonglong revision);
+    Q_INVOKABLE QObject *createDocumentRowsModel(QObject *owner);
     void applyOperationsQueue(const QVariantMap &queue,
                               qulonglong revision);
     void reset();
@@ -198,6 +241,7 @@ signals:
 private:
     qulonglong m_shellRevision = 0;
     qulonglong m_documentRevision = 0;
+    qulonglong m_documentPublication = 0;
     qulonglong m_operationsRevision = 0;
     QVariantMap m_shell;
     QVariantMap m_document;

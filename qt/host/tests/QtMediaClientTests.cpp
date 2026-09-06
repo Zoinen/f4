@@ -286,10 +286,52 @@ class QtMediaClientTests final : public QObject
 
 private slots:
     void handshakeRangeMaterializeCancelAndReconnect();
+    void deadlineTimerSleepsWhenIdleAndTargetsOutstandingRequest();
     void blockingMaterializeTimeoutReleasesLateAcknowledgedLease();
     void releaseSurvivesBackpressureReconnectAndReconfiguration();
     void pendingMediaNeverBlocksControlScenes();
 };
+
+void QtMediaClientTests::deadlineTimerSleepsWhenIdleAndTargetsOutstandingRequest()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtMediaClient client;
+    QSignalSpy failed(&client, &QtMediaClient::requestFailed);
+    client.configure(advertisement(server.serverPort()));
+
+    QTRY_VERIFY(server.hasPendingConnections());
+    QScopedPointer<QTcpSocket> peer(server.nextPendingConnection());
+    QVERIFY(peer);
+    QByteArray payload;
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QStringLiteral("hello"));
+    sendFrame(peer.data(), mediaHello());
+    QTRY_VERIFY(client.ready());
+
+    // A connected, negotiated media channel with no work has no deadline and
+    // therefore must not wake its worker thread periodically.
+    QTRY_VERIFY(!client.deadlineTimerActiveForTest());
+    const quint64 idleWakeCount = client.deadlineTimerWakeCountForTest();
+    QTest::qWait(180);
+    QCOMPARE(client.deadlineTimerWakeCountForTest(), idleWakeCount);
+    QVERIFY(!client.deadlineTimerActiveForTest());
+
+    const QString requestId = client.readRange(
+        QStringLiteral("deadline-resource"), 0, 4, 400);
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "requestId"), requestId);
+    QTRY_VERIFY(client.deadlineTimerActiveForTest());
+    const int remaining = client.deadlineTimerRemainingTimeForTest();
+    QVERIFY(remaining > 0);
+    QVERIFY(remaining <= 400);
+
+    QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 1000);
+    QCOMPARE(failed.constFirst().at(0).toString(), requestId);
+    QCOMPARE(failed.constFirst().at(1).toString(),
+             QStringLiteral("timeout"));
+    QVERIFY(client.deadlineTimerWakeCountForTest() > idleWakeCount);
+}
 
 void QtMediaClientTests::handshakeRangeMaterializeCancelAndReconnect()
 {

@@ -80,9 +80,13 @@ func (p *PTY) Read(b []byte) (int, error) {
 }
 
 func (p *PTY) SetSize(cols, rows int) {
+	_ = p.SetSizeChecked(cols, rows)
+}
+
+func (p *PTY) SetSizeChecked(cols, rows int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	windows.ResizePseudoConsole(p.console, windows.Coord{X: int16(cols), Y: int16(rows)})
+	return windows.ResizePseudoConsole(p.console, windows.Coord{X: int16(cols), Y: int16(rows)})
 }
 
 func (p *PTY) Run(name string, args ...string) error {

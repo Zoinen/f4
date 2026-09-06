@@ -96,6 +96,9 @@ signals:
     // Drives native caret blink timing independently of scene round trips.
     // Auto-repeat emits this for every accepted key press.
     void keyboardActivity();
+    // Emitted synchronously before Home/End reaches Go so a semantic
+    // document can retire any older queued scroll destination first.
+    void edgeNavigationAboutToForward(int key);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
