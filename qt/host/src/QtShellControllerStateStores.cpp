@@ -171,12 +171,18 @@ QVariantMap QtShellController::streamReducerScene(
     }
     shell.insert(QStringLiteral("commandLine"),
                  m_commandLineState->frame());
-    if (streamId.startsWith(QStringLiteral("panel/"))
-        || streamId.startsWith(QStringLiteral("panel-id/"))) {
+    const bool panelStream = streamId.startsWith(QStringLiteral("panel/"))
+        || streamId.startsWith(QStringLiteral("panel-id/"));
+    if (panelStream || streamId == QStringLiteral("shell")) {
         for (int side = 0; side < 2; ++side) {
             const QVariantMap panel = panelCatalogSnapshot(side);
             if (!panel.isEmpty()) {
-                replaceOrAppendPanel(&shell, side, panel);
+                // Catalog updates travel independently of shell chrome.
+                // A later shell patch resets QML's compact overrides, so its
+                // base must carry the current completion flags and revision.
+                // Shell patches still retain no catalog rows.
+                replaceOrAppendPanel(&shell, side, panelStream
+                    ? panel : withoutNativePanelPayload(panel));
             }
         }
     }

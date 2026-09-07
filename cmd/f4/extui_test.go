@@ -1573,6 +1573,41 @@ func TestExtUiRenderer_DirectPanelCatalogPrecedesRenderAndReconcilesWithChrome(t
 	}
 }
 
+func TestExtUiRenderer_DirectPanelCatalogCanUpdateInactiveSide(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{send: &extUiMessageSender{w: &wire}}
+	renderer.SetSemanticScene(panelActivationFastPathScene(0, `Panels: C:\left`))
+	renderer.Flush()
+	extUiDrainBufferedMessages(t, &wire)
+
+	panels, ok := semanticScenePanelMaps(renderer.lastScene)
+	if !ok || len(panels) != 2 {
+		t.Fatal("initial scene has no panels")
+	}
+	inactive := semanticShallowMapCopy(panels[1])
+	inactive["path"] = `D:\right\complete`
+	inactive["title"] = `D:\right\complete`
+	inactive["catalogRevision"] = int64(12)
+	inactive["metadataRevision"] = int64(12)
+	inactive["entries"] = []map[string]any{{
+		"entryId": "right:complete", "name": "complete.jpg",
+	}}
+	if !renderer.QueuePanelCatalogState(1, inactive, "", "") {
+		t.Fatal("inactive catalog replacement was rejected")
+	}
+	message, err := extUiReadMessage(&wire)
+	if err != nil {
+		t.Fatalf("inactive catalog was not sent: %v", err)
+	}
+	delivered, ok := extUiDirectPanelCatalog(message, 1)
+	if !ok || delivered["path"] != `D:\right\complete` {
+		t.Fatalf("unexpected inactive catalog message: %#v", message)
+	}
+	if extUiInt(message, "activePanel") != 0 || delivered["active"] != false {
+		t.Fatalf("inactive catalog changed focus: %#v", message)
+	}
+}
+
 func TestExtUiRenderer_DirectPanelCatalogMismatchForcesAuthoritativeScene(t *testing.T) {
 	basePanel := map[string]any{
 		"id": "left", "kind": "filePanel", "side": 0, "active": true,

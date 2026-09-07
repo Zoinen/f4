@@ -607,31 +607,40 @@ type FileSystemPanel struct {
 	// catalogLogicalCount is non-zero only while a paged frontend has received
 	// an exact sparse catalog before the complete source rows have finished
 	// materializing. It is a scalar protocol fact, never a rendered-row cache.
-	catalogLogicalCount        int
-	loadingTimer               *time.Timer
-	loadingFrame               int
-	loadingVisible             bool
-	loadingGeneration          uint64
-	loadQueueMu                sync.Mutex
-	loadWorkerWG               sync.WaitGroup // joins the single directory-load queue worker
-	loadWorkerActive           bool
-	pendingDirectoryLoad       *directoryLoadRequest
-	benchmarkLoadTrace         *navigationBenchmarkTrace
-	providerOpenTask           *vtui.TaskContext
-	providerOpenDialog         *vtui.Window
-	directoryErrorDialog       *vtui.Window
-	providerOpenTarget         string
-	providerOpenSourceSelect   string
-	providerOpenResult         func(bool) bool
-	pendingSelection           string
-	providerEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
-	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
-	fastFindMode               bool
-	fastFindStr                string
-	fastFindMatcherKey         string
-	fastFindMatchers           []*vtui.FuzzyMatcher
-	fastFindMatcherQueries     []string
+	catalogLogicalCount int
+	// semanticPendingMu protects the immutable full source which a directory
+	// worker has finished converting but whose UI append task has not run yet.
+	// Native row requests can arrive in that interval, so the semantic pager
+	// must not mistake the bounded presentation window for the authoritative
+	// source.
+	semanticPendingMu             sync.RWMutex
+	semanticPendingEntries        []*fileEntry
+	semanticPendingUpEntry        *fileEntry
+	semanticPendingLoadGeneration uint64
+	loadingTimer                  *time.Timer
+	loadingFrame                  int
+	loadingVisible                bool
+	loadingGeneration             uint64
+	loadQueueMu                   sync.Mutex
+	loadWorkerWG                  sync.WaitGroup // joins the single directory-load queue worker
+	loadWorkerActive              bool
+	pendingDirectoryLoad          *directoryLoadRequest
+	benchmarkLoadTrace            *navigationBenchmarkTrace
+	providerOpenTask              *vtui.TaskContext
+	providerOpenDialog            *vtui.Window
+	directoryErrorDialog          *vtui.Window
+	providerOpenTarget            string
+	providerOpenSourceSelect      string
+	providerOpenResult            func(bool) bool
+	pendingSelection              string
+	providerEntryName             string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath     string // one-shot: history/menu navigation must not reorder MRU
+	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
+	fastFindMode                  bool
+	fastFindStr                   string
+	fastFindMatcherKey            string
+	fastFindMatchers              []*vtui.FuzzyMatcher
+	fastFindMatcherQueries        []string
 	// Fast Find is evaluated lazily by row. A 30k-entry directory must not be
 	// re-matched in full merely because one character or the cursor changed;
 	// only rows touched by navigation or the bounded semantic viewport are
@@ -2741,6 +2750,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	fp.cancelLoad = cancel
 	fp.loadGeneration++
 	loadGeneration := fp.loadGeneration
+	fp.resetSemanticPendingSource(loadGeneration)
 	fp.isLoading = true
 	fp.catalogInteractive = false
 	fp.catalogLogicalCount = 0
@@ -3099,6 +3109,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 			if authoritativeBase {
 				authoritativeCatalogQueued = true
+				// The worker owns an immutable full source before the UI append
+				// task runs. Publish that source to the live pager so a native
+				// viewport request which follows the bounded window can be served
+				// immediately instead of being rejected against fp.entries.
+				fp.setSemanticPendingSource(
+					loadGeneration, newEntries, showUpEntry)
 			}
 			loadFrames.PostTaskWithRedrawDecision(func() bool {
 				if benchmark != nil {
@@ -3139,6 +3155,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 				selectionFinishedNs := navigationBenchmarkMonotonicNs()
 				fp.entries = append(fp.entries, newEntries...)
+				if authoritativeBase {
+					fp.clearSemanticPendingSource(loadGeneration)
+				}
 				appendFinishedNs := navigationBenchmarkMonotonicNs()
 				if preSorted && fp.sortMode == loadSortMode &&
 					fp.sortReverse == loadSortReverse {
@@ -3640,6 +3659,30 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.pendingSelection = ""
 			}
 			if !authoritativeCatalogQueued {
+				// ReadDir is the compatibility path used by size/time sorts. Its
+				// callback is intentionally non-authoritative while chunks are
+				// arriving, so the completed full catalog must replace the bounded
+				// sparse page. The revision bump is required because the row shape
+				// changes from a sparse window to a dense catalog even though the
+				// underlying directory identity is unchanged.
+				if extUiPanelCatalogRowsIsEnabled() && fp.semanticCatalogCanBeDense() {
+					fp.markSemanticCatalogMutation()
+					authoritativePresentationComplete =
+						publishPanelCatalogImmediate(fp, benchmark)
+					fp.Refresh()
+				} else {
+					fp.Refresh()
+					authoritativePresentationComplete =
+						publishPanelCatalogImmediate(fp, benchmark)
+				}
+			} else if extUiPanelCatalogRowsIsEnabled() && fp.semanticCatalogCanBeDense() {
+				// A windowed name-sort load already sent its bounded prefix. Once
+				// the complete source is available, promote small folders to the
+				// dense model so Masonry receives every image's eventual natural
+				// dimensions. Large folders intentionally remain sparse.
+				fp.markSemanticCatalogMutation()
+				authoritativePresentationComplete =
+					publishPanelCatalogImmediate(fp, benchmark)
 				fp.Refresh()
 			}
 			if benchmark != nil {

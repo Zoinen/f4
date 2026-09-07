@@ -2032,6 +2032,8 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     QVERIFY(session);
     view.engine()->rootContext()->setContextProperty(
         QStringLiteral("pointerViewerBridge"), &bridge);
+    view.engine()->rootContext()->setContextProperty(
+        QStringLiteral("pointerViewerThumbnail"), QUrl::fromLocalFile(imagePaths.at(1)));
 
     QQmlComponent component(view.engine());
     component.setData(R"QML(
@@ -2062,15 +2064,43 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
                 property bool viewerTransitionActive: false
                 property string viewerTransitionEntryId: ""
 
+                property var entry: ({ highlightLabelBackground: "#80000000" })
+                Rectangle {
+                    id: sourceBorder
+                    anchors.fill: parent
+                    color: "transparent"
+                    border.width: 1
+                    border.color: "#0088ff"
+                    radius: 6
+                    readonly property real nominalBorderWidth: 0
+                    readonly property bool selectionBorderVisible: false
+                    property var entry: ({ current: true, panelRoot: { showCursor: false } })
+                    readonly property color visualBorderColor: border.color
+                }
+                function currentItemSelectionSurface() { return sourceBorder }
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: 28
+                    color: sourcePanel.entry.highlightLabelBackground
+                    Text {
+                        id: sourceCaption
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        text: "wide.png"
+                        color: "white"
+                    }
+                }
+                function currentItemCaption() { return sourceCaption }
+
                 function currentItemImageGeometry(targetItem) {
                     const point = targetItem.mapFromItem(sourcePanel, 0, 0)
                     return Qt.rect(point.x, point.y, width, height)
                 }
 
                 function currentItemImageSource() {
-                    const session = pointerViewerBridge.viewerSession
-                    return session
-                            ? session.viewerSourceAt(session.currentIndex) : ""
+                    return pointerViewerThumbnail
                 }
             }
             Loader {
@@ -2110,8 +2140,49 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     auto *pointerArea = viewer->findChild<QQuickItem *>(
         QStringLiteral("galleryViewerPointerArea"));
     QVERIFY(pointerArea);
+    auto *caption = viewerHost->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerTransitionCaption"));
+    QVERIFY(caption);
+    auto *border = viewerHost->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerTransitionBorder"));
+    QVERIFY(border);
+    QCOMPARE(border->property("border").value<QObject *>()->property("width").toReal(), 1.0);
+    QTRY_VERIFY(viewer->property("transitionProgress").toReal() > 0);
+    // The image viewport can still have its pre-fit geometry on the first
+    // frame. The caption must start at its source rectangle regardless.
+    auto *transition = viewer->property("transitionAnimation").value<QObject *>();
+    QVERIFY(transition);
+    QVERIFY(QMetaObject::invokeMethod(transition, "pause"));
+    const qreal savedProgress = viewer->property("transitionProgress").toReal();
+    viewer->setProperty("transitionProgress", 0.0);
+    auto *initialViewport = viewer->property("flickableArea").value<QObject *>();
+    QVERIFY(initialViewport);
+    auto *initialImage = initialViewport->property("image").value<QQuickItem *>();
+    QVERIFY(initialImage);
+    const qreal savedImageX = initialImage->x();
+    initialImage->setX(savedImageX + 42);
+    const QRectF captionSource = caption->property("sourceRect").toRectF();
+    QCOMPARE(caption->x(), captionSource.x());
+    QCOMPARE(caption->y(), captionSource.y());
+    QCOMPARE(caption->width(), captionSource.width());
+    const QRectF borderSource = border->property("sourceRect").toRectF();
+    QCOMPARE(QRectF(border->x(), border->y(), border->width(), border->height()),
+             borderSource);
+    initialImage->setX(savedImageX);
+    viewer->setProperty("transitionProgress", savedProgress);
+    QVERIFY(QMetaObject::invokeMethod(transition, "resume"));
+    QVERIFY(viewer->property("transitionProgress").toReal() < 1);
+    QVERIFY(caption->isVisible());
+    QVERIFY(border->isVisible());
+    QCOMPARE(border->opacity(), caption->opacity());
+    QCOMPARE(caption->opacity(), 1 - viewer->property("transitionProgress").toReal());
+    QCOMPARE(viewerHost->findChild<QObject *>(
+                 QStringLiteral("galleryViewerTransitionCaptionText"))
+                 ->property("text").toString(), QStringLiteral("wide.png"));
     QTRY_COMPARE_WITH_TIMEOUT(viewer->property("transitionProgress").toReal(),
                               qreal(1), 2000);
+    QVERIFY(!caption->isVisible());
+    QVERIFY(!border->isVisible());
     // beginOpen() is intentionally scheduled with Qt.callLater so the Loader
     // and source tile have final geometry. Waiting for !transitioning first can
     // pass before that callback even starts; terminal progress proves the open
@@ -2257,6 +2328,12 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     QTest::qWait(40);
     QVERIFY(bridge.viewerVisible());
     QVERIFY(viewer);
+    QCOMPARE(viewer->property("animationDuration").toInt(), 150);
+    QVERIFY(caption->isVisible());
+    QVERIFY(caption->opacity() > 0 && caption->opacity() < 1);
+    QVERIFY(border->isVisible());
+    QCOMPARE(border->opacity(), caption->opacity());
+    QCOMPARE(caption->opacity(), 1 - viewer->property("transitionProgress").toReal());
     QTRY_VERIFY_WITH_TIMEOUT(!bridge.viewerVisible(), 2000);
     QTRY_VERIFY(!viewer);
     QVERIFY(!session->viewerOpen());

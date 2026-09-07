@@ -21,7 +21,6 @@ Item {
            : 0
     height: hostWindow.snapPx(36)
     visible: hostWindow.workspaceTabs.visible === true
-    opacity: hostWindow.normalSurfaceOpacity
     z: 2
     property Item activeWorkspaceTab: null
     property int activeWorkspaceTabSeparatorRevision: 0
@@ -445,6 +444,7 @@ Item {
 
                         Text {
                             id: workspaceNumber
+                            width: hostWindow.snapPx(implicitWidth)
                             objectName: "workspace-tab-number-"
                                         + workspaceTab.objectName
                             anchors.right: parent.right

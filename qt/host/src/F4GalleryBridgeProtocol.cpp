@@ -295,6 +295,20 @@ void F4GalleryBridge::schedulePanelCatalogRowsRequest(int side)
     });
 }
 
+void F4GalleryBridge::schedulePanelCatalogRowsRetry(int side)
+{
+    if (!validSide(side)) {
+        return;
+    }
+    // A rejected page can mean that Go has published the exact total before
+    // its worker has appended the complete source. Give that append task and
+    // the IPC queue a short turn before asking again; stale revisions are
+    // harmless because requestPanelCatalogRows revalidates the session state.
+    QTimer::singleShot(25, this, [this, side]() {
+        schedulePanelCatalogRowsRequest(side);
+    });
+}
+
 void F4GalleryBridge::addPanelCatalogMetadataRange(
     int side, int begin, int end)
 {

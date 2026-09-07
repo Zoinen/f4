@@ -143,6 +143,31 @@ FocusScope {
         panelAdapter.applyRendererState()
     }
 
+    function currentItemCaption() {
+        return currentItemDecoration("galleryMasonryLabel-")
+    }
+
+    function currentItemSelectionSurface() {
+        return currentItemDecoration("gallerySelectionSurface-")
+    }
+
+    function currentItemDecoration(prefix) {
+        const entry = embeddedGalleryPanel.currentTransitionItem()
+        function findLabel(item) {
+            if (!item)
+                return null
+            if (String(item.objectName).startsWith(prefix))
+                return item
+            for (const child of item.children) {
+                const label = findLabel(child)
+                if (label)
+                    return label
+            }
+            return null
+        }
+        return findLabel(entry)
+    }
+
     function currentItemImageGeometry(targetItem) {
         if (!targetItem
                 || typeof embeddedGalleryPanel.currentItemImageGeometry

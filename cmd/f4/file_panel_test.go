@@ -940,13 +940,91 @@ func TestFileSystemPanelWindowedDirectoryPublishesExactSparseCatalogOnce(t *test
 		t.Fatalf("complete source = %d rows, logical=%d, want %d/0",
 			len(panel.entries), panel.catalogLogicalCount, len(base)+1)
 	}
-	if finalModel.CatalogRevision != windowModel.CatalogRevision {
-		t.Fatalf("full source materialization advanced catalog revision: window=%d final=%d",
+	if finalModel.CatalogRevision <= windowModel.CatalogRevision {
+		t.Fatalf("dense promotion did not advance catalog revision: window=%d final=%d",
 			windowModel.CatalogRevision, finalModel.CatalogRevision)
 	}
 	if finalModel.TotalCount != windowModel.TotalCount {
 		t.Fatalf("full source changed exact total: window=%d final=%d",
 			windowModel.TotalCount, finalModel.TotalCount)
+	}
+	if finalModel.CatalogRowsDeferred || len(finalModel.Entries) != len(base)+1 {
+		t.Fatalf("final catalog = deferred %v rows %d, want dense %d",
+			finalModel.CatalogRowsDeferred, len(finalModel.Entries), len(base)+1)
+	}
+}
+
+func TestFileSystemPanelWindowedDirectoryRowRequestCanRetryUntilSourceReady(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := AppConfig
+	AppConfig.SyncPanelLoad = false
+	AppConfig.ShowHiddenFiles = true
+	t.Cleanup(func() { AppConfig = oldConfig })
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	base := make([]vfs.VFSItem, 96)
+	for index := range base {
+		base[index] = vfs.VFSItem{Name: fmt.Sprintf("image-%03d.jpg", index)}
+	}
+	load := newPhasedPanelLoad(base, nil, false)
+	filesystem := &windowedPanelVFS{
+		phasedPanelVFS: newPhasedPanelVFS(
+			"/catalog", map[string]*phasedPanelLoad{"/catalog": load}),
+		windowSent: make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	panel := NewFileSystemPanel(0, 0, 80, 25, filesystem)
+	t.Cleanup(func() {
+		select {
+		case <-filesystem.release:
+		default:
+			close(filesystem.release)
+		}
+		if panel.cancelLoad != nil {
+			panel.cancelLoad()
+		}
+		if panel.loadingTimer != nil {
+			panel.loadingTimer.Stop()
+		}
+	})
+
+	waitForPanelSignal(t, filesystem.windowSent, "bounded catalog window")
+	waitForPanelCondition(t, "exact sparse panel catalog", func() bool {
+		return panel.catalogLogicalCount == len(base)+1 &&
+			len(panel.entries) <= initialPanelCatalogRowsLimit+1
+	})
+	model := panel.semanticPanelModel(nil, 0, true)
+	const offset = initialPanelCatalogRowsLimit + 1
+	if _, ok := BuildLivePanelCatalogRows(
+		model.ID, model.Path, model.CatalogRevision, offset, 16); ok {
+		t.Fatal("row request succeeded before the full source was available")
+	}
+	if !LivePanelCatalogRowsRetryable(
+		model.ID, model.Path, model.CatalogRevision) {
+		t.Fatal("source-not-ready rejection was not marked retryable")
+	}
+
+	close(filesystem.release)
+	waitForLoad(t, panel)
+	finalModel := panel.semanticPanelModel(nil, 0, true)
+	if finalModel.CatalogRowsDeferred || finalModel.TotalCount != len(base)+1 {
+		t.Fatalf("final catalog = deferred %v total %d, want dense/%d",
+			finalModel.CatalogRowsDeferred, finalModel.TotalCount, len(base)+1)
+	}
+	if _, ok := BuildLivePanelCatalogRows(
+		model.ID, model.Path, model.CatalogRevision, offset, 16); ok {
+		t.Fatal("stale sparse row request succeeded after dense promotion")
+	}
+	response, ok := BuildLivePanelCatalogRows(
+		finalModel.ID, finalModel.Path, finalModel.CatalogRevision, offset, 16)
+	if !ok {
+		t.Fatal("row request remained rejected after full source materialization")
+	}
+	rows := appMapSlice(response["entries"])
+	if len(rows) != 16 || semanticString(rows[0]["name"]) != "image-048.jpg" {
+		t.Fatalf("materialized row page = %d rows, first=%q",
+			len(rows), semanticString(rows[0]["name"]))
 	}
 }
 

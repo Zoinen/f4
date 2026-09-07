@@ -171,7 +171,9 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
         }},
     })));
 
-    const QVariantMap panel = panelWithRows(30000);
+    QVariantMap panel = panelWithRows(30000);
+    panel.insert(QStringLiteral("loading"), true);
+    panel.insert(QStringLiteral("catalogProvisional"), true);
     QVERIFY(sendFrame(peer, envelope(2, QStringLiteral("panel/0"), 1,
                         QStringLiteral("snapshot"), {
         {QStringLiteral("type"),
@@ -247,6 +249,8 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
     replacement.insert(QStringLiteral("metadataRevision"), quint64(2));
     replacement.insert(QStringLiteral("totalCount"), quint64(30000));
     replacement.insert(QStringLiteral("catalogRowsDeferred"), true);
+    replacement.insert(QStringLiteral("loading"), false);
+    replacement.insert(QStringLiteral("catalogProvisional"), false);
     replacement.insert(QStringLiteral("path"),
                        QStringLiteral("C:/Windows/WinSxS/Manifests"));
     QVERIFY(sendFrame(peer, envelope(6, QStringLiteral("panel/0"), 2,
@@ -369,16 +373,36 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
     QTRY_COMPARE(controller.chromeState()->keyBar(), keyBar);
     QCOMPARE(legacyPresentationChanges.size(), 0);
 
+    // An unrelated shell update clears QML's compact panel overrides. Its
+    // descriptor must therefore retain the latest catalog's completion flags.
+    QVERIFY(sendFrame(peer, envelope(12, QStringLiteral("shell"), 2,
+                                     QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("shell"), QVariantMap{{QStringLiteral("set"),
+            QVariantMap{{QStringLiteral("title"), QStringLiteral("Updated")}}}}},
+    }, 1)));
+    QTRY_COMPARE(controller.surfaceRegistry()->shell().value("title").toString(),
+                 QStringLiteral("Updated"));
+    const auto completed = controller.surfaceRegistry()->shell()
+        .value("panels").toList().first().toMap();
+    QCOMPARE(completed.value("catalogRevision").toULongLong(), quint64(2));
+    QVERIFY(!completed.value("loading").toBool());
+    QVERIFY(!completed.value("catalogProvisional").toBool());
+    QVERIFY(!completed.contains("entries"));
+    legacyPresentationChanges.clear();
+
     const QVariantMap nextShell{{QStringLiteral("kind"), QStringLiteral("panels")},
                                 {QStringLiteral("activePanel"), 0}};
-    QVERIFY(sendFrame(peer, envelope(12, QStringLiteral("shell"), 2,
+    QVERIFY(sendFrame(peer, envelope(13, QStringLiteral("shell"), 3,
                                      QStringLiteral("patch"), {
         {QStringLiteral("type"), QStringLiteral("scene_patch")},
         {QStringLiteral("schema"), QStringLiteral("app")},
         {QStringLiteral("version"), 4},
         {QStringLiteral("root"), QVariantMap{{QStringLiteral("set"),
             QVariantMap{{QStringLiteral("shell"), nextShell}}}}},
-    }, 1)));
+    }, 2)));
     QTRY_COMPARE(controller.surfaceRegistry()->shell(), nextShell);
     QCOMPARE(legacyPresentationChanges.size(), 1);
     const auto invalidation = legacyPresentationChanges.first().first().toMap();
