@@ -138,3 +138,70 @@ func TestViewerPermanentSeekErrorNeverAcknowledgesReadyWindow(t *testing.T) {
 		t.Fatalf("failed source became a ready row: %+v", node)
 	}
 }
+
+func TestViewerProjectionDecodeMode(t *testing.T) {
+	code := []byte{
+		0x48, 0x83, 0xec, 0x28, // sub rsp, 0x28
+		0xe8, 0x00, 0x00, 0x00, 0x00, // call +0
+		0x48, 0x83, 0xc4, 0x28, // add rsp, 0x28
+		0xc3, // ret
+	}
+	viewer := cachedSemanticViewer(code)
+	applyNativeDocumentViewport(viewer, nativeDocumentGeometry{columns: 80, rows: 10, revision: 1})
+	viewer.DecodeMode = true
+	viewer.DisasmMode = 64
+
+	node := viewer.SemanticNode(nil)
+	if node["mode"] != "decode" || node["decodeMode"] != true {
+		t.Fatalf("unexpected mode in node: %+v", node)
+	}
+	rows := appMapSlice(node["windowRows"])
+	if len(rows) < 4 {
+		t.Fatalf("expected at least 4 disassembly rows, got %d", len(rows))
+	}
+	expectedOffsets := []int64{0, 4, 9, 13}
+	expectedEnds := []int64{4, 9, 13, 14}
+	for i := 0; i < 4; i++ {
+		off := appInt64(rows[i]["offset"])
+		end := appInt64(rows[i]["endOffset"])
+		if off != expectedOffsets[i] || end != expectedEnds[i] {
+			t.Fatalf("row %d offsets mismatch: got (%d, %d), want (%d, %d)", i, off, end, expectedOffsets[i], expectedEnds[i])
+		}
+	}
+}
+
+func TestViewerDecodeModeScrollWindowAction(t *testing.T) {
+	code := []byte{
+		0x48, 0x83, 0xec, 0x28, // sub rsp, 0x28 (0..4)
+		0xe8, 0x00, 0x00, 0x00, 0x00, // call +0 (4..9)
+		0x48, 0x83, 0xc4, 0x28, // add rsp, 0x28 (9..13)
+		0xc3, // ret (13..14)
+	}
+	viewer := cachedSemanticViewer(code)
+	applyNativeDocumentViewport(viewer, nativeDocumentGeometry{columns: 80, rows: 10, revision: 1})
+	viewer.DecodeMode = true
+	viewer.DisasmMode = 64
+
+	firstNode := viewer.SemanticNode(nil)
+	generation := appInt64(firstNode["windowGeneration"])
+
+	// Scroll to offset 4 (second instruction)
+	viewer.HandleSemanticAction(map[string]any{
+		"target":         vtui.SemanticID(viewer),
+		"action":         "viewer.scrollWindow",
+		"offset":         int64(4),
+		"generation":     uint64(generation + 1),
+		"layoutRevision": viewer.semanticLayoutRevision,
+	})
+
+	secondNode := viewer.SemanticNode(nil)
+	if viewer.TopOffset != 4 {
+		t.Fatalf("expected TopOffset 4 after scroll and SemanticNode, got %d", viewer.TopOffset)
+	}
+
+	rows := appMapSlice(secondNode["windowRows"])
+	if len(rows) == 0 || appInt64(rows[0]["offset"]) != 0 {
+		// Window should include preceding instruction row at offset 0
+		t.Fatalf("expected window to contain preceding instruction row at offset 0: %+v", rows[0])
+	}
+}

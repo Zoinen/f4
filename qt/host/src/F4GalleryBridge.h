@@ -57,6 +57,11 @@ public:
     Q_INVOKABLE void setScrollingMouseCursor(bool scrollingMode,
                                               int direction = 0,
                                               qreal devicePixelRatio = 0);
+    // An immediate viewer close can complete before the matching native key
+    // release is delivered. Keep that release on the modal side of the
+    // bridge instead of letting it leak into the newly focused panel.
+    Q_INVOKABLE void suppressKeyRelease(int key);
+    Q_INVOKABLE bool consumeSuppressedKeyRelease(int key);
     Q_INVOKABLE QObject *sessionForSide(int side) const;
     Q_INVOKABLE void recordDocumentWindowCommit(const QVariantMap &window);
     Q_INVOKABLE QObject *sessionForPanel(const QString &panelId,
@@ -472,4 +477,6 @@ private:
     std::array<bool, 2> m_catalogRowsRequestScheduled = {false, false};
     bool m_metadataInputBusy = false;
     QTimer *m_metadataIdleTimer = nullptr;
+    QTimer *m_suppressedKeyReleaseTimer = nullptr;
+    int m_suppressedKeyRelease = -1;
 };

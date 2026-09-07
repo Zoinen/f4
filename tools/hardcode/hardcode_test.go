@@ -45,6 +45,12 @@ func gen() {
 	NewButton(nil, 0, "IgnoredBecauseItIsATool")
 }
 `)
+	writeFile(t, filepath.Join(root, "third_party", "demo.go"), `package demo
+
+func build() {
+	NewButton(nil, 0, "IgnoredBecauseItIsThirdParty")
+}
+`)
 
 	findings, err := Scan(root)
 	if err != nil {

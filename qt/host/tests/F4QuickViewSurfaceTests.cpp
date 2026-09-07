@@ -652,6 +652,10 @@ struct QuickViewFixture
             QStringLiteral("f4GuiFontPixelSize"), 13);
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4WorktreeBranchName"), worktreeBranch);
+        if (!worktreeBranch.isEmpty()) {
+            engine.rootContext()->setContextProperty(
+                QStringLiteral("f4WorktreeBranch"), worktreeBranch);
+        }
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
                                                   usesQwk);
         DummyQWK::registerTypes(&engine);
@@ -709,6 +713,7 @@ private slots:
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void worktreeBranchAppearsCenteredInTitleBar();
+    void worktreeBranchIsCenteredInTitleBar();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
@@ -736,6 +741,35 @@ void F4QuickViewSurfaceTests::initTestCase()
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4QuickViewSurfaceTests::worktreeBranchIsCenteredInTitleBar()
+{
+    QuickViewFixture fixture(shellScene(), false, true,
+                             QStringLiteral("feature/worktree-test"));
+    QVERIFY(fixture.window);
+
+    QQuickItem *const titleBar = fixture.item(QStringLiteral("titleBar"));
+    QQuickItem *const branchLabel = fixture.item(
+        QStringLiteral("worktreeBranchLabel"));
+    QVERIFY(titleBar);
+    QVERIFY(branchLabel);
+    QTRY_VERIFY_WITH_TIMEOUT(branchLabel->isVisible(), 1000);
+    QCOMPARE(branchLabel->property("text").toString(),
+             QStringLiteral("feature/worktree-test"));
+
+    const QPointF titleBarOrigin = titleBar->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF branchOrigin = branchLabel->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const qreal titleBarCenterX = titleBarOrigin.x() + titleBar->width() / 2;
+    const qreal branchCenterX = branchOrigin.x() + branchLabel->width() / 2;
+    QVERIFY2(qAbs(titleBarCenterX - branchCenterX) <= 0.51,
+             qPrintable(QStringLiteral("title=%1 branch=%2 labelX=%3 labelWidth=%4")
+                            .arg(titleBarCenterX)
+                            .arg(branchCenterX)
+                            .arg(branchOrigin.x())
+                            .arg(branchLabel->width())));
 }
 
 void F4QuickViewSurfaceTests::semanticSceneGatesOnlyGridRendering()

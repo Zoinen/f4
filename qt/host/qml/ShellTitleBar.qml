@@ -139,6 +139,8 @@ Item {
         opacity: hostWindow.normalSurfaceOpacity
     }
 
+
+
     WorkspaceTabs {
         id: workspaceBar
         hostWindow: titleBar.hostWindow

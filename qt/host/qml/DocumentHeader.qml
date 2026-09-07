@@ -138,6 +138,7 @@ Rectangle {
                                 - 2 * documentHeader.hostWindow.panelTextInset))
         text: documentHeader.documentRoot.topBarRightText
         textFormat: Text.PlainText
+        renderType: documentHeader.hostWindow.fontRenderType
         color: documentHeader.hostWindow.galleryPathTextColor
         font.family: documentHeader.hostWindow.guiMonospaceFontFamily
         font.pixelSize: documentHeader.hostWindow.semanticTextFontPixelSize
@@ -167,6 +168,7 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         text: documentHeader.documentRoot.topBarLeftText
         textFormat: Text.PlainText
+        renderType: documentHeader.hostWindow.fontRenderType
         color: documentHeader.hostWindow.galleryPathTextColor
         font.family: documentHeader.hostWindow.guiMonospaceFontFamily
         font.pixelSize: documentHeader.hostWindow.semanticTextFontPixelSize

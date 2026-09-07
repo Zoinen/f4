@@ -226,6 +226,8 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ExtUiStateStores.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClient.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClientWire.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClientWire.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
@@ -256,6 +258,8 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ThemePersistence.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4TextRenderingPolicy.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4WorktreeIdentity.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4WorktreeIdentity.cpp"
 )
 
 if(APPLE)
@@ -842,6 +846,20 @@ if(BUILD_TESTING)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
   )
 
+  add_executable(F4WorktreeIdentityTests
+    tests/F4WorktreeIdentityTests.cpp
+    src/F4WorktreeIdentity.h
+    src/F4WorktreeIdentity.cpp
+  )
+  target_include_directories(F4WorktreeIdentityTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(F4WorktreeIdentityTests PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  add_test(NAME F4WorktreeIdentityTest COMMAND F4WorktreeIdentityTests)
+
   add_executable(F4PanelSplitterTests
     tests/F4PanelSplitterTests.cpp
   )
@@ -1092,6 +1110,10 @@ if(BUILD_TESTING)
   set_tests_properties(F4KeyBarPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  if(WIN32)
+    set_property(TEST F4KeyBarPixelGridTest APPEND PROPERTY
+      ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
+  endif()
   add_test(NAME F4QuickViewPanelDriveButtonTest
     COMMAND F4QuickViewSurfaceTests
       panelDriveButtonUsesPathIconAndRequestsDriveMenu)
@@ -1273,6 +1295,8 @@ if(BUILD_TESTING)
     tests/QtMediaClientTests.cpp
     src/QtMediaClient.h
     src/QtMediaClient.cpp
+    src/QtMediaClientWire.h
+    src/QtMediaClientWire.cpp
     src/QtShellController.h
     src/QtShellController.cpp
     src/QtShellControllerFrameApply.h
@@ -1339,6 +1363,8 @@ if(BUILD_TESTING)
     tests/F4GalleryBridgeTests.cpp
     src/QtMediaClient.h
     src/QtMediaClient.cpp
+    src/QtMediaClientWire.h
+    src/QtMediaClientWire.cpp
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
@@ -1405,6 +1431,8 @@ if(BUILD_TESTING)
     tests/F4GalleryPointerTests.cpp
     src/QtMediaClient.h
     src/QtMediaClient.cpp
+    src/QtMediaClientWire.h
+    src/QtMediaClientWire.cpp
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h

@@ -323,6 +323,15 @@ func extUiChangedSceneSnapshotMessages(previous, current map[string]any) []map[s
 		dispatches := extUiSplitSceneSnapshot(current)
 		messages := make([]map[string]any, 0, len(dispatches))
 		for _, dispatch := range dispatches {
+			// Benchmark annotations belong to the authoritative scene export,
+			// not to one particular semantic stream. Preserve them on every
+			// bootstrap payload so the first envelope observed by a transport
+			// probe can still be correlated with the export that produced it.
+			for _, key := range []string{"benchmarkTraceId", "benchmark"} {
+				if value, present := current[key]; present {
+					dispatch.payload[key] = value
+				}
+			}
 			messages = append(messages, map[string]any{
 				"type":     "semantic_stream_snapshot",
 				"streamId": dispatch.streamID,

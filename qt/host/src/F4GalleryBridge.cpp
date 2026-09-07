@@ -197,6 +197,11 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
         m_metadataInputBusy = false;
         schedulePanelCatalogMetadataRequest();
     });
+    m_suppressedKeyReleaseTimer = new QTimer(this);
+    m_suppressedKeyReleaseTimer->setSingleShot(true);
+    m_suppressedKeyReleaseTimer->setInterval(1000);
+    connect(m_suppressedKeyReleaseTimer, &QTimer::timeout, this,
+            [this]() { m_suppressedKeyRelease = -1; });
     if (!engine) {
         return;
     }
@@ -296,6 +301,23 @@ void F4GalleryBridge::setScrollingMouseCursor(bool scrollingMode,
     SvgCursor::setScrollingModeCursor(
         scrollingMode, direction,
         devicePixelRatio > 0 ? devicePixelRatio : availableDevicePixelRatio());
+}
+
+void F4GalleryBridge::suppressKeyRelease(int key)
+{
+    m_suppressedKeyRelease = key;
+    if (m_suppressedKeyReleaseTimer)
+        m_suppressedKeyReleaseTimer->start();
+}
+
+bool F4GalleryBridge::consumeSuppressedKeyRelease(int key)
+{
+    if (m_suppressedKeyRelease != key)
+        return false;
+    m_suppressedKeyRelease = -1;
+    if (m_suppressedKeyReleaseTimer)
+        m_suppressedKeyReleaseTimer->stop();
+    return true;
 }
 
 QObject *F4GalleryBridge::sessionForSide(int side) const

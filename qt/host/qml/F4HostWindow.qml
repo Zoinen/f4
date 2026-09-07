@@ -41,6 +41,9 @@ ApplicationWindow {
     readonly property int guiMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)
+    readonly property string worktreeBranch:
+        typeof f4WorktreeBranch !== "undefined"
+        ? String(f4WorktreeBranch) : ""
 
     readonly property bool useSystemTransparentWindowBackground: false
     readonly property bool supportsTransparentWindowBackground:

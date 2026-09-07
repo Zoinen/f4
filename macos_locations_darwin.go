@@ -85,7 +85,7 @@ type macOSLocationsMenuState struct {
 }
 
 func newMacOSLocationsMenu(pf *PanelsFrame, panelIdx int) *vtui.VMenu {
-	menu := vtui.NewVMenu(" macOS Locations ")
+	menu := vtui.NewVMenu(" " + Msg("MacOSLocations.Title") + " ")
 	menu.SetId(fmt.Sprintf("macos-locations-%d", panelIdx))
 	state := &macOSLocationsMenuState{}
 	rows := cachedMacOSLocations()

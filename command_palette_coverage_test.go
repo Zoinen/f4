@@ -192,11 +192,14 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"viewer_view.go:(*ViewerView).showCodepageDialog#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered viewer codepage action opens the runtime codepage list",
 	},
+	"macos_locations_darwin.go:newMacOSLocationsMenu#1": {
+		class: paletteAuditDynamicProvider, rationale: "the macOS location broker supplies the user's live Finder locations and namespace entries",
+	},
+	"windows_locations_menu_windows.go:newWindowsLocationsMenu#1": {
+		class: paletteAuditDynamicProvider, rationale: "the Windows Shell broker supplies the user's live Explorer navigation roots and namespace extensions",
+	},
 	"windows_locations_menu_windows.go:showShellContextMenu#1": {
 		class: paletteAuditModalLocal, rationale: "IContextMenu supplies a runtime, item-specific command tree that exists only while its transient menu token is alive",
-	},
-	"windows_locations_menu_windows.go:showWindowsLocationsMenu#1": {
-		class: paletteAuditDynamicProvider, rationale: "the Windows Shell broker supplies the user's live Explorer navigation roots and namespace extensions",
 	},
 }
 
@@ -365,7 +368,7 @@ func commandPaletteParseProductionGo(t *testing.T) []commandPaletteParsedGo {
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", "testdata", "vendor":
+			case ".git", "testdata", "vendor", "third_party":
 				if path != root {
 					return fs.SkipDir
 				}

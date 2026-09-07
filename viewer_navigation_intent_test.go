@@ -280,3 +280,223 @@ func TestViewerEndRetargetsWhenViewportChangesDuringCalculation(t *testing.T) {
 			viewer.TopOffset, want)
 	}
 }
+
+func TestViewerPageDownSupersedesPendingNativeWindow(t *testing.T) {
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	viewer := cachedSemanticViewer(data)
+	viewer.HexMode = true
+	viewer.TopOffset = 0
+	viewer.semanticWindowGeneration = 10
+	viewer.semanticWindowRequestGeneration = 10
+
+	// A native scroll request was accepted as pending.
+	if !viewer.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(viewer), "action": "viewer.scrollWindow",
+		"offset": int64(16), "generation": uint64(11),
+	}) {
+		t.Fatal("native scroll request was not handled")
+	}
+
+	if !pressViewerNavigationKey(viewer, vtinput.VK_NEXT) {
+		t.Fatal("PageDown was not handled")
+	}
+
+	wantOffset := int64(16 * viewer.viewportHeight())
+	if viewer.TopOffset != wantOffset || viewer.semanticPendingScroll {
+		t.Fatalf("PageDown was not applied: top=%d want=%d pending=%v",
+			viewer.TopOffset, wantOffset, viewer.semanticPendingScroll)
+	}
+	node := viewer.SemanticNode(nil)
+	if got := appInt64(node["viewportStart"]); got != wantOffset {
+		t.Fatalf("published viewport starts at %d after PageDown, want %d", got, wantOffset)
+	}
+	if viewer.semanticWindowGeneration != 12 || viewer.semanticWindowRequestGeneration != 12 {
+		t.Fatalf("PageDown did not publish fresh generation 12: acknowledged=%d high=%d",
+			viewer.semanticWindowGeneration, viewer.semanticWindowRequestGeneration)
+	}
+	if got := appInt64(node["windowGeneration"]); got != 12 {
+		t.Fatalf("PageDown scene generation=%d, want 12", got)
+	}
+}
+
+func TestViewerPageUpSupersedesPendingNativeWindow(t *testing.T) {
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	viewer := cachedSemanticViewer(data)
+	viewer.HexMode = true
+	pageBytes := int64(16 * viewer.viewportHeight())
+	viewer.TopOffset = pageBytes * 2
+	viewer.semanticWindowGeneration = 20
+	viewer.semanticWindowRequestGeneration = 20
+
+	// A native scroll request was accepted as pending.
+	if !viewer.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(viewer), "action": "viewer.scrollWindow",
+		"offset": pageBytes * 3, "generation": uint64(21),
+	}) {
+		t.Fatal("native scroll request was not handled")
+	}
+
+	if !pressViewerNavigationKey(viewer, vtinput.VK_PRIOR) {
+		t.Fatal("PageUp was not handled")
+	}
+
+	wantOffset := pageBytes
+	if viewer.TopOffset != wantOffset || viewer.semanticPendingScroll {
+		t.Fatalf("PageUp was not applied: top=%d want=%d pending=%v",
+			viewer.TopOffset, wantOffset, viewer.semanticPendingScroll)
+	}
+	node := viewer.SemanticNode(nil)
+	if got := appInt64(node["viewportStart"]); got != wantOffset {
+		t.Fatalf("published viewport starts at %d after PageUp, want %d", got, wantOffset)
+	}
+	if viewer.semanticWindowGeneration != 22 || viewer.semanticWindowRequestGeneration != 22 {
+		t.Fatalf("PageUp did not publish fresh generation 22: acknowledged=%d high=%d",
+			viewer.semanticWindowGeneration, viewer.semanticWindowRequestGeneration)
+	}
+	if got := appInt64(node["windowGeneration"]); got != 22 {
+		t.Fatalf("PageUp scene generation=%d, want 22", got)
+	}
+}
+
+func TestViewerDecodeModePageDownSupersedesPendingNativeWindow(t *testing.T) {
+	// NOP instructions (0x90), 1 byte each
+	data := make([]byte, 1024)
+	for i := range data {
+		data[i] = 0x90
+	}
+	viewer := cachedSemanticViewer(data)
+	viewer.DecodeMode = true
+	viewer.TopOffset = 0
+	viewer.semanticWindowGeneration = 10
+	viewer.semanticWindowRequestGeneration = 10
+
+	// A native scroll request was accepted as pending.
+	if !viewer.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(viewer), "action": "viewer.scrollWindow",
+		"offset": int64(10), "generation": uint64(11),
+	}) {
+		t.Fatal("native scroll request was not handled")
+	}
+
+	if !pressViewerNavigationKey(viewer, vtinput.VK_NEXT) {
+		t.Fatal("PageDown was not handled")
+	}
+
+	wantOffset := int64(viewer.viewportHeight())
+	if viewer.TopOffset != wantOffset || viewer.semanticPendingScroll {
+		t.Fatalf("PageDown was not applied: top=%d want=%d pending=%v",
+			viewer.TopOffset, wantOffset, viewer.semanticPendingScroll)
+	}
+	node := viewer.SemanticNode(nil)
+	if got := appInt64(node["viewportStart"]); got != wantOffset {
+		t.Fatalf("published viewport starts at %d after PageDown, want %d", got, wantOffset)
+	}
+	if viewer.semanticWindowGeneration != 12 || viewer.semanticWindowRequestGeneration != 12 {
+		t.Fatalf("PageDown did not publish fresh generation 12: acknowledged=%d high=%d",
+			viewer.semanticWindowGeneration, viewer.semanticWindowRequestGeneration)
+	}
+	if got := appInt64(node["windowGeneration"]); got != 12 {
+		t.Fatalf("PageDown scene generation=%d, want 12", got)
+	}
+}
+
+func TestViewerArrowAndWheelNavigationSupersedePendingNativeWindow(t *testing.T) {
+	data := make([]byte, 4096)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  uint16
+		from int64
+		want int64
+	}{
+		{name: "up", key: vtinput.VK_UP, from: 32, want: 16},
+		{name: "down", key: vtinput.VK_DOWN, from: 16, want: 32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			viewer := cachedSemanticViewer(data)
+			viewer.HexMode = true
+			viewer.TopOffset = tc.from
+			viewer.semanticWindowGeneration = 10
+			viewer.semanticWindowRequestGeneration = 10
+			if !viewer.HandleSemanticAction(map[string]any{
+				"target": vtui.SemanticID(viewer), "action": "viewer.scrollWindow",
+				"offset": int64(128), "generation": uint64(11),
+			}) {
+				t.Fatal("native scroll request was not handled")
+			}
+			if !pressViewerNavigationKey(viewer, tc.key) {
+				t.Fatalf("%s was not handled", tc.name)
+			}
+			if viewer.TopOffset != tc.want || viewer.semanticPendingScroll {
+				t.Fatalf("%s was overwritten: top=%d want=%d pending=%v",
+					tc.name, viewer.TopOffset, tc.want, viewer.semanticPendingScroll)
+			}
+			node := viewer.SemanticNode(nil)
+			if got := appInt64(node["viewportStart"]); got != tc.want {
+				t.Fatalf("%s published viewport starts at %d, want %d",
+					tc.name, got, tc.want)
+			}
+			if got := viewer.semanticWindowGeneration; got != 12 {
+				t.Fatalf("%s did not publish successor generation: %d", tc.name, got)
+			}
+		})
+	}
+
+	originalConfig := AppConfig
+	t.Cleanup(func() { AppConfig = originalConfig })
+	AppConfig.WheelViewerDown = 1
+	viewer := cachedSemanticViewer(data)
+	viewer.HexMode = true
+	viewer.TopOffset = 16
+	viewer.semanticWindowGeneration = 20
+	viewer.semanticWindowRequestGeneration = 20
+	if !viewer.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(viewer), "action": "viewer.scrollWindow",
+		"offset": int64(128), "generation": uint64(21),
+	}) {
+		t.Fatal("native wheel destination was not handled")
+	}
+	if !viewer.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, WheelDirection: -1,
+	}) {
+		t.Fatal("wheel event was not handled")
+	}
+	if viewer.TopOffset != 32 || viewer.semanticPendingScroll {
+		t.Fatalf("wheel navigation was overwritten: top=%d want=32 pending=%v",
+			viewer.TopOffset, viewer.semanticPendingScroll)
+	}
+}
+
+func TestViewerGotoLineRejectsOlderCompletionAfterNavigation(t *testing.T) {
+	data := []byte(strings.Repeat("row\n", 1000))
+	viewer, file := navigationTestViewer(t, data, 40, 8)
+	viewer.WrapMode = false
+	viewer.gotoPosition(500)
+	select {
+	case <-file.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Go to line calculation did not start")
+	}
+	if !pressViewerNavigationKey(viewer, vtinput.VK_HOME) {
+		t.Fatal("Home was not handled while Go to line was pending")
+	}
+	file.unblock()
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(2 * time.Second):
+		t.Fatal("Go to line completion was not delivered")
+	}
+	if viewer.TopOffset != 0 {
+		t.Fatalf("stale Go to line completion overwrote Home: top=%d", viewer.TopOffset)
+	}
+}

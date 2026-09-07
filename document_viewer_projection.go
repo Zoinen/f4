@@ -9,6 +9,7 @@ import (
 
 	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/vtui"
+	"golang.org/x/arch/x86/x86asm"
 )
 
 // A row is a projection of one ready source span, not a retained rendering.
@@ -35,7 +36,8 @@ type viewerWindowConstructionKey struct {
 	width, height, overscan   int
 	tabSize                   int
 	layout, geometry, request uint64
-	hex, wrap                 bool
+	hex, decode, wrap         bool
+	disasmMode                int
 	textAttr, arrowAttr       uint64
 }
 
@@ -120,6 +122,51 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 		row.cells = cells
 		return row, nil
 	}
+	if vv.DecodeMode {
+		maxLen := int(min(int64(15), vv.backend.Size()-offset))
+		if maxLen <= 0 {
+			return row, io.EOF
+		}
+		data, err := vv.backend.ReadAt(offset, maxLen)
+		if err != nil && (err != io.EOF || len(data) == 0) {
+			return row, err
+		}
+		if len(data) == 0 {
+			return row, io.ErrUnexpectedEOF
+		}
+		mode := vv.effectiveDisasmMode()
+		instLen := 1
+		asmStr := fmt.Sprintf("db 0x%02X", data[0])
+		inst, decErr := x86asm.Decode(data, mode)
+		if decErr == nil {
+			instLen = inst.Len
+			asmStr = x86asm.IntelSyntax(inst, uint64(offset), nil)
+		}
+		row.end = offset + int64(instLen)
+		hexStr := ""
+		for i := 0; i < instLen; i++ {
+			hexStr += fmt.Sprintf("%02X ", data[i])
+		}
+		row.text = fmt.Sprintf("%010X: %-24s%s", offset, hexStr, asmStr)
+		cells := make([]vtui.CharInfo, width)
+		for i := range cells {
+			cells[i] = vtui.CharInfo{Char: ' ', Attributes: attr}
+		}
+		put := func(at int, s string, color uint64) {
+			for _, r := range s {
+				if at >= width {
+					break
+				}
+				cells[at] = vtui.CharInfo{Char: uint64(r), Attributes: color}
+				at++
+			}
+		}
+		put(0, fmt.Sprintf("%010X: ", offset), vtui.Palette[ColViewerArrows])
+		put(12, fmt.Sprintf("%-24s", hexStr), attr)
+		put(38, asmStr, attr)
+		row.cells = cells
+		return row, nil
+	}
 	if *pending == nil {
 		*pending = &viewerRowConstruction{}
 	}
@@ -187,8 +234,10 @@ func (vv *ViewerView) constructionKey(top int64, width, height, overscan int) vi
 		size: vv.backend.Size(), width: width, height: height, overscan: overscan,
 		tabSize: effectiveViewerTabSize(),
 		layout:  vv.semanticLayoutRevision, geometry: vv.nativeViewportRevision,
-		request: vv.semanticWindowRequestGeneration, hex: vv.HexMode, wrap: vv.WrapMode,
-		textAttr: vtui.Palette[ColViewerText], arrowAttr: vtui.Palette[ColViewerArrows]}
+		request: vv.semanticWindowRequestGeneration,
+		hex:     vv.HexMode, decode: vv.DecodeMode, wrap: vv.WrapMode,
+		disasmMode: vv.effectiveDisasmMode(),
+		textAttr:   vtui.Palette[ColViewerText], arrowAttr: vtui.Palette[ColViewerArrows]}
 }
 
 func effectiveViewerTabSize() int {
@@ -273,6 +322,35 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 	if !build.originReady {
 		if key.hex {
 			build.start = max(int64(0), key.top-int64(overscan*16)) &^ int64(15)
+		} else if key.decode {
+			build.start = key.top
+			var precedingOffsets []int64
+			curr := key.top
+			mode := vv.effectiveDisasmMode()
+			for len(precedingOffsets) < overscan && curr > 0 {
+				prev := vv.findPrecedingInstructionOffset(curr)
+				if prev >= curr {
+					break
+				}
+				data, err := vv.backend.ReadAt(prev, 15)
+				if err != nil && len(data) == 0 {
+					break
+				}
+				inst, decErr := x86asm.Decode(data, mode)
+				instLen := 1
+				if decErr == nil {
+					instLen = inst.Len
+				}
+				if prev+int64(instLen) != curr {
+					break
+				}
+				precedingOffsets = append(precedingOffsets, prev)
+				curr = prev
+			}
+			if len(precedingOffsets) > 0 {
+				build.start = precedingOffsets[len(precedingOffsets)-1]
+				build.preceding = len(precedingOffsets)
+			}
 		} else {
 			column, err := vv.viewerRowOrigin(build.start, width)
 			if err != nil {
@@ -283,7 +361,7 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 		build.originReady = true
 	}
 	if !build.initialized {
-		for !key.hex && build.preceding < overscan && build.start > 0 {
+		for !key.hex && !key.decode && build.preceding < overscan && build.start > 0 {
 			previous, ready := vv.semanticPreviousTextRowPosition(build.start, width)
 			if !ready {
 				if vv.semanticLoadError != "" {
@@ -313,7 +391,7 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 		if row.end <= build.current {
 			return build, false, io.ErrNoProgress
 		}
-		if build.current == key.top {
+		if !build.foundViewport && (build.current == key.top || (key.decode && build.current >= key.top)) {
 			build.viewportRow, build.foundViewport = len(build.rows), true
 		}
 		build.rows = append(build.rows, viewerConstructedRow{start: build.current, projection: row})
@@ -390,7 +468,7 @@ func scanViewerText(data []byte, width int, wrap bool, origin int, attr uint64, 
 // carry nextColumn directly, so their tab origin never requires prefix rereads.
 func (vv *ViewerView) viewerRowOrigin(offset int64, width int) (int, error) {
 	vv.ensureTextLayoutSettings()
-	if !vv.WrapMode || vv.HexMode || offset <= 0 {
+	if !vv.WrapMode || vv.HexMode || vv.DecodeMode || offset <= 0 {
 		return 0, nil
 	}
 	if column, ok := vv.semanticWrapSeek.historyColumn(offset, width); ok {

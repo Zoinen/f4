@@ -235,6 +235,16 @@ func findPanelsFrame() *PanelsFrame {
 		return nil
 	}
 	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+	// Tests and a few embedding callers construct Screens directly instead of
+	// going through AddScreen, so the active screen's exported frame slice can
+	// be populated while the manager's fast-path slice is still empty. Keep the
+	// normal fast path, but do not report “no panels” for that valid state.
+	if len(frames) == 0 {
+		active := vtui.FrameManager.ActiveIdx
+		if active >= 0 && active < len(vtui.FrameManager.Screens) && vtui.FrameManager.Screens[active] != nil {
+			frames = vtui.FrameManager.Screens[active].Frames
+		}
+	}
 	for i := len(frames) - 1; i >= 0; i-- {
 		if pf, ok := frames[i].(*PanelsFrame); ok && !pf.closed {
 			return pf

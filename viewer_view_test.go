@@ -1052,3 +1052,166 @@ func TestViewerView_Codepages_MultipleSwitchNoCrash(t *testing.T) {
 		t.Error("ViewerView failed to close cleanly after codepage switches")
 	}
 }
+
+func TestViewerView_DecodeMode(t *testing.T) {
+	vtui.SetDefaultPalette()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "code.bin")
+	// Machine code:
+	// 48 89 e5: mov rbp, rsp (3 bytes)
+	// 48 83 ec 10: sub rsp, 0x10 (4 bytes)
+	// b8 2a 00 00 00: mov eax, 42 (5 bytes)
+	// c3: ret (1 byte)
+	code := []byte{
+		0x48, 0x89, 0xe5,
+		0x48, 0x83, 0xec, 0x10,
+		0xb8, 0x2a, 0x00, 0x00, 0x00,
+		0xc3,
+	}
+	if err := os.WriteFile(path, code, 0644); err != nil {
+		t.Fatalf("Failed to write fixture: %v", err)
+	}
+
+	v := vfs.NewOSVFS(tmpDir)
+	vv, err := NewViewerView(context.Background(), v, path)
+	if err != nil {
+		t.Fatalf("Failed to create ViewerView: %v", err)
+	}
+	defer vv.Close()
+	vtui.FrameManager.Push(vv)
+
+	vv.HexMode = false
+	vv.DecodeMode = false
+	vv.TopOffset = 0
+
+	// 1st F4: Hex Mode
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	if !vv.HexMode || vv.DecodeMode {
+		t.Fatalf("Expected HexMode after 1st F4, got HexMode=%v DecodeMode=%v", vv.HexMode, vv.DecodeMode)
+	}
+
+	// 2nd F4: Decode Mode
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	if vv.HexMode || !vv.DecodeMode {
+		t.Fatalf("Expected DecodeMode after 2nd F4, got HexMode=%v DecodeMode=%v", vv.HexMode, vv.DecodeMode)
+	}
+
+	if mode := vv.effectiveDisasmMode(); mode != 64 {
+		t.Errorf("effectiveDisasmMode=%d, want 64", mode)
+	}
+
+	// Test semantic window
+	vv.nativeViewportColumns = 80
+	vv.nativeViewportRows = 10
+	vv.semanticLayoutRevision = 1
+	window := vv.semanticWindow()
+	if !window.ready {
+		t.Fatalf("semanticWindow not ready in DecodeMode")
+	}
+	if len(window.rows) < 4 {
+		t.Fatalf("Expected at least 4 instruction rows, got %d", len(window.rows))
+	}
+	// Row 0: mov rbp, rsp (offset 0, len 3)
+	if window.rows[0].Offset != 0 || window.rows[0].EndOffset != 3 {
+		t.Errorf("Row 0 offsets: [%d, %d), want [0, 3)", window.rows[0].Offset, window.rows[0].EndOffset)
+	}
+	if !strings.Contains(window.rows[0].Text, "mov") {
+		t.Errorf("Row 0 text does not contain 'mov': %q", window.rows[0].Text)
+	}
+	// Row 1: sub rsp, 0x10 (offset 3, len 4)
+	if window.rows[1].Offset != 3 || window.rows[1].EndOffset != 7 {
+		t.Errorf("Row 1 offsets: [%d, %d), want [3, 7)", window.rows[1].Offset, window.rows[1].EndOffset)
+	}
+	// Row 2: mov eax, 0x2a (offset 7, len 5)
+	if window.rows[2].Offset != 7 || window.rows[2].EndOffset != 12 {
+		t.Errorf("Row 2 offsets: [%d, %d), want [7, 12)", window.rows[2].Offset, window.rows[2].EndOffset)
+	}
+	// Row 3: ret (offset 12, len 1)
+	if window.rows[3].Offset != 12 || window.rows[3].EndOffset != 13 {
+		t.Errorf("Row 3 offsets: [%d, %d), want [12, 13)", window.rows[3].Offset, window.rows[3].EndOffset)
+	}
+
+	// Test navigation in DecodeMode:
+	// Down from offset 0 -> offset 3
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if vv.TopOffset != 3 {
+		t.Errorf("VK_DOWN TopOffset=%d, want 3", vv.TopOffset)
+	}
+
+	// Down from offset 3 -> offset 7
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if vv.TopOffset != 7 {
+		t.Errorf("VK_DOWN TopOffset=%d, want 7", vv.TopOffset)
+	}
+
+	// Up from offset 7 -> offset 3
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	if vv.TopOffset != 3 {
+		t.Errorf("VK_UP TopOffset=%d, want 3", vv.TopOffset)
+	}
+
+	// Up from offset 3 -> offset 0
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	if vv.TopOffset != 0 {
+		t.Errorf("VK_UP TopOffset=%d, want 0", vv.TopOffset)
+	}
+
+	// 3rd F4: Back to Text Mode
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	if vv.HexMode || vv.DecodeMode {
+		t.Fatalf("Expected TextMode after 3rd F4, got HexMode=%v DecodeMode=%v", vv.HexMode, vv.DecodeMode)
+	}
+}
+
+func TestViewerView_DecodeModeAfterPageDown(t *testing.T) {
+	var sb strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&sb, "line %04d: this is some sample content for viewer testing %d\n", i, i*42)
+	}
+	data := []byte(sb.String())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	backend := &ViewerBackend{
+		file:      &vfs.MemoryReadAtCloser{Data: data},
+		size:      int64(len(data)),
+		cacheData: data,
+		ctx:       ctx,
+		cancelCtx: cancel,
+	}
+	vv := &ViewerView{backend: backend}
+	defer vv.Close()
+	vv.nativeViewportColumns = 80
+	vv.nativeViewportRows = 20
+	vv.SetPosition(0, 0, 80, 20)
+	vtui.FrameManager.Push(vv)
+	defer vtui.FrameManager.Pop()
+
+	// Initial render populates lineOffsets
+	vv.SemanticNode(nil)
+
+	for i := 0; i < 5; i++ {
+		pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
+		vv.SemanticNode(nil)
+	}
+	t.Logf("After PgDn, TopOffset=%d", vv.TopOffset)
+
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	if !vv.HexMode || vv.DecodeMode {
+		t.Fatalf("Expected HexMode after 1st F4, got HexMode=%v DecodeMode=%v", vv.HexMode, vv.DecodeMode)
+	}
+	t.Logf("After Hex F4, TopOffset=%d", vv.TopOffset)
+
+	pressKey(vv, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4})
+	if vv.HexMode || !vv.DecodeMode {
+		t.Fatalf("Expected DecodeMode after 2nd F4, got HexMode=%v DecodeMode=%v", vv.HexMode, vv.DecodeMode)
+	}
+	t.Logf("After Decode F4, TopOffset=%d", vv.TopOffset)
+
+	window := vv.semanticWindow()
+	t.Logf("semanticWindow: ready=%v, len(rows)=%d, viewportRow=%d, start=%d, end=%d",
+		window.ready, len(window.rows), window.viewportRow, window.start, window.end)
+	if !window.ready {
+		t.Fatalf("semanticWindow is NOT ready in DecodeMode after PgDn! viewportRow=%d", window.viewportRow)
+	}
+}

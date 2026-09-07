@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -198,6 +197,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			newOff = vv.backend.FindLineStart(newOff)
 		}
 		if newOff != vv.TopOffset {
+			vv.beginViewerNavigationIntent()
 			vv.TopOffset = newOff
 			vv.eofVisible = false
 			vtui.FrameManager.Redraw()
@@ -254,11 +254,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			}
 			mode := Msg("Viewer.ModeText")
 			if vv.DecodeMode {
-				modeBits := vv.DisasmMode
-				if modeBits == 0 {
-					modeBits = 64
-				}
-				mode = fmt.Sprintf("Dec:%d", modeBits)
+				mode = fmt.Sprintf("Dec:%d", vv.effectiveDisasmMode())
 			} else if vv.HexMode {
 				mode = Msg("Viewer.ModeHex")
 			}
@@ -432,52 +428,80 @@ func (vv *ViewerView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 	vv.eofVisible = currOffset >= vv.backend.Size()
 }
 
-func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
-	attr := vtui.Palette[ColViewerText]
-	offAttr := vtui.Palette[ColViewerArrows]
-	currOffset := vv.TopOffset
-
-	for y := 0; y < contentHeight; y++ {
-		if currOffset >= vv.backend.Size() {
-			break
-		}
-
-		data, err := vv.backend.ReadAt(currOffset, 15)
-		if err == piecetable.ErrLoading {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", attr))
-			break
-		}
-		if err != nil && len(data) == 0 {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf(" [ Error: %v ] ", err), attr))
-			break
-		}
-
-		if vv.DisasmMode == 0 {
+func (vv *ViewerView) effectiveDisasmMode() int {
+	if !vv.DecodeMode {
+		return 0
+	}
+	if vv.DisasmMode == 0 {
+		if vv.backend != nil {
 			header, _ := vv.backend.ReadAt(0, 1024)
 			vv.DisasmMode = detectX86Mode(header)
 		}
-
-		instLen := 1
-		asmStr := fmt.Sprintf("db 0x%02X", data[0])
-		inst, err := x86asm.Decode(data, vv.DisasmMode)
-		if err == nil {
-			instLen = inst.Len
-			asmStr = x86asm.IntelSyntax(inst, uint64(currOffset), nil)
-		}
-
-		line := fmt.Sprintf("%010X: ", currOffset)
-		scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
-
-		hexStr := ""
-		for i := 0; i < instLen; i++ {
-			hexStr += fmt.Sprintf("%02X ", data[i])
-		}
-		scr.Write(vv.X1+12, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf("%-24s", hexStr), attr))
-		scr.Write(vv.X1+38, vv.Y1+1+y, vtui.StringToCharInfo(asmStr, attr))
-
-		currOffset += int64(instLen)
 	}
-	vv.eofVisible = (currOffset >= vv.backend.Size())
+	if vv.DisasmMode == 0 {
+		return 64
+	}
+	return vv.DisasmMode
+}
+
+func (vv *ViewerView) findPrecedingInstructionOffset(target int64) int64 {
+	if target <= 0 || vv.backend == nil {
+		return 0
+	}
+	if build := vv.semanticProjection; build != nil {
+		for i := len(build.rows) - 1; i >= 0; i-- {
+			if build.rows[i].projection.end == target {
+				return build.rows[i].start
+			}
+		}
+	}
+	for i := 1; i < len(vv.lineOffsets); i++ {
+		if vv.lineOffsets[i] == target {
+			return vv.lineOffsets[i-1]
+		}
+	}
+	mode := vv.effectiveDisasmMode()
+	minAnchor := max(int64(0), target-64)
+	for anchor := minAnchor; anchor < target; anchor++ {
+		curr := anchor
+		var prev int64 = -1
+		for curr < target {
+			data, err := vv.backend.ReadAt(curr, 15)
+			if err != nil && len(data) == 0 {
+				break
+			}
+			instLen := 1
+			inst, decErr := x86asm.Decode(data, mode)
+			if decErr == nil {
+				instLen = inst.Len
+			}
+			prev = curr
+			curr += int64(instLen)
+		}
+		if curr == target && prev >= 0 {
+			return prev
+		}
+	}
+	return max(int64(0), target-1)
+}
+
+func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
+	attr := vtui.Palette[ColViewerText]
+	currOffset := vv.TopOffset
+	for y := 0; y < contentHeight && currOffset < vv.backend.Size(); y++ {
+		row, err := vv.projectRow(currOffset, width)
+		if err != nil {
+			message := fmt.Sprintf(" [ Error: %v ] ", err)
+			if viewerProjectionLoading(err) {
+				message = " [ Loading... ] "
+			}
+			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(message, attr))
+			break
+		}
+		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
+		currOffset = row.end
+	}
+	vv.eofVisible = currOffset >= vv.backend.Size()
 }
 
 func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) {
@@ -584,17 +608,17 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 
 	switch e.VirtualKeyCode {
 	case vtinput.VK_DOWN:
+		// Arrow and wheel navigation are direct destinations too. Retire any
+		// native window request before changing TopOffset, otherwise its
+		// delayed acknowledgement can replay over this input.
+		vv.beginViewerNavigationIntent()
 		if vv.eofVisible {
 			return true // Prevent scrolling past End of File
 		}
 		if vv.DecodeMode {
 			data, _ := vv.backend.ReadAt(vv.TopOffset, 15)
 			if len(data) > 0 {
-				if vv.DisasmMode == 0 {
-					header, _ := vv.backend.ReadAt(0, 1024)
-					vv.DisasmMode = detectX86Mode(header)
-				}
-				inst, err := x86asm.Decode(data, vv.DisasmMode)
+				inst, err := x86asm.Decode(data, vv.effectiveDisasmMode())
 				if err == nil {
 					vv.TopOffset += int64(inst.Len)
 				} else {
@@ -649,8 +673,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_UP:
+		vv.beginViewerNavigationIntent()
 		if vv.DecodeMode {
-			vv.TopOffset -= 1
+			vv.TopOffset = vv.findPrecedingInstructionOffset(vv.TopOffset)
 		} else if vv.HexMode {
 			vv.TopOffset -= step
 		} else {
@@ -663,11 +688,14 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_NEXT: // PgDn
+		vv.beginViewerNavigationIntent()
+		oldOffset := vv.TopOffset
 		if vv.DecodeMode {
+			mode := vv.effectiveDisasmMode()
 			for i := 0; i < int(contentHeight); i++ {
 				data, _ := vv.backend.ReadAt(vv.TopOffset, 15)
 				if len(data) > 0 {
-					inst, err := x86asm.Decode(data, 64)
+					inst, err := x86asm.Decode(data, mode)
 					if err == nil {
 						vv.TopOffset += int64(inst.Len)
 					} else {
@@ -677,6 +705,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			if vv.TopOffset >= vv.backend.Size() {
 				vv.TopOffset = vv.backend.Size() - 1
+				if vv.TopOffset < 0 {
+					vv.TopOffset = 0
+				}
 			}
 		} else if vv.HexMode {
 			vv.TopOffset += 16 * contentHeight
@@ -695,13 +726,22 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				return true
 			}
 			vv.TopOffset = nextOffset
+		}
+		if vv.TopOffset != oldOffset {
 			vv.eofVisible = false
 		}
 		return true
 
 	case vtinput.VK_PRIOR: // PgUp
+		vv.beginViewerNavigationIntent()
+		oldOffset := vv.TopOffset
 		if vv.DecodeMode {
-			vv.TopOffset -= 15 * contentHeight
+			for i := 0; i < int(contentHeight); i++ {
+				vv.TopOffset = vv.findPrecedingInstructionOffset(vv.TopOffset)
+				if vv.TopOffset == 0 {
+					break
+				}
+			}
 		} else if vv.HexMode {
 			vv.TopOffset -= step * contentHeight
 		} else {
@@ -712,7 +752,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		if vv.TopOffset < 0 {
 			vv.TopOffset = 0
 		}
-		vv.eofVisible = false
+		if vv.TopOffset != oldOffset {
+			vv.eofVisible = false
+		}
 		return true
 
 	case vtinput.VK_HOME:
@@ -761,6 +803,7 @@ func (vv *ViewerView) askGoto() {
 }
 
 func (vv *ViewerView) gotoPosition(n int64) {
+	intent := vv.beginViewerNavigationIntent()
 	if vv.HexMode {
 		size := vv.backend.Size()
 		if n >= size {
@@ -784,7 +827,8 @@ func (vv *ViewerView) gotoPosition(n int64) {
 		defer stop()
 		off, ok := backend.LineStart(ctx.Context, n)
 		ctx.RunOnUIWithRedrawDecision(func() bool {
-			if vv.IsDone() || vv.backend != backend || backend.ctx.Err() != nil {
+			if vv.IsDone() || vv.backend != backend ||
+				vv.viewerNavigationGeneration != intent || backend.ctx.Err() != nil {
 				return false
 			}
 			vv.Busy = false
@@ -821,7 +865,7 @@ func (vv *ViewerView) beginViewerNavigationIntent() uint64 {
 	// the in-flight request generation, so the keyboard-produced window must be
 	// newer than both the last published and last accepted native generations.
 	latestGeneration := max(vv.semanticWindowGeneration,
-		vv.semanticWindowRequestGeneration)
+		vv.semanticWindowRequestGeneration, vv.semanticPendingGeneration)
 	if latestGeneration != ^uint64(0) {
 		latestGeneration++
 	}
@@ -867,6 +911,22 @@ func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
 			if vv.TopOffset < 0 {
 				vv.TopOffset = 0
 			}
+		}
+		return
+	}
+	if vv.DecodeMode {
+		if vv.backend.Size() == 0 {
+			vv.TopOffset = 0
+		} else {
+			curr := max(int64(0), vv.backend.Size()-1)
+			for i := int64(0); i < contentHeight-1 && curr > 0; i++ {
+				prev := vv.findPrecedingInstructionOffset(curr)
+				if prev >= curr {
+					break
+				}
+				curr = prev
+			}
+			vv.TopOffset = curr
 		}
 		return
 	}

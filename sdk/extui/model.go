@@ -378,6 +378,7 @@ type SurfaceModel struct {
 	Dirty                bool
 	Saving               bool
 	HexMode              bool
+	DecodeMode           bool
 	WrapMode             bool
 	WordWrap             bool
 	Overtype             bool
@@ -1121,6 +1122,7 @@ func (d SurfaceModel) ToMap() M {
 		"dirty":                   d.Dirty,
 		"saving":                  d.Saving,
 		"hexMode":                 d.HexMode,
+		"decodeMode":              d.DecodeMode,
 		"wrapMode":                d.WrapMode,
 		"wordWrap":                d.WordWrap,
 		"overtype":                d.Overtype,

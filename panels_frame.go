@@ -336,6 +336,7 @@ type PanelsFrame struct {
 	terminalOutputRedrawPending    bool
 	terminalOutputRedrawClosed     bool
 	terminalOutputRedrawGeneration uint64
+	terminalOutputRedrawCallbacks  sync.WaitGroup
 
 	// Process-environment updates use their own locks so an Apply from a
 	// plugin cannot interleave a private assignment script with user input.
@@ -1225,13 +1226,20 @@ func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 	// waiting for the cadence timer and invalidate any older trailing callback.
 	if immediate {
 		pf.terminalOutputRedrawGeneration++
+		waitForCallback := false
 		if pf.terminalOutputRedrawTimer != nil {
-			pf.terminalOutputRedrawTimer.Stop()
+			waitForCallback = !pf.terminalOutputRedrawTimer.Stop()
+			if !waitForCallback {
+				pf.terminalOutputRedrawCallbacks.Done()
+			}
 			pf.terminalOutputRedrawTimer = nil
 		}
 		pf.terminalOutputRedrawPending = false
 		pf.terminalOutputRedrawLast = now
 		pf.terminalOutputRedrawMu.Unlock()
+		if waitForCallback {
+			pf.terminalOutputRedrawCallbacks.Wait()
+		}
 		vtui.FrameManager.Redraw()
 		return "requested"
 	}
@@ -1253,17 +1261,23 @@ func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 	pf.terminalOutputRedrawPending = true
 	pf.terminalOutputRedrawGeneration++
 	generation := pf.terminalOutputRedrawGeneration
+	lifecycle := vtui.FrameManager.LifecycleGeneration()
+	pf.terminalOutputRedrawCallbacks.Add(1)
 	pf.terminalOutputRedrawTimer = time.AfterFunc(delay, func() {
-		pf.publishScheduledTerminalOutputRedraw(generation)
+		defer pf.terminalOutputRedrawCallbacks.Done()
+		pf.publishScheduledTerminalOutputRedraw(generation, lifecycle)
 	})
 	pf.terminalOutputRedrawMu.Unlock()
 	return "scheduled"
 }
 
-func (pf *PanelsFrame) publishScheduledTerminalOutputRedraw(generation uint64) {
+func (pf *PanelsFrame) publishScheduledTerminalOutputRedraw(
+	generation, lifecycle uint64,
+) {
 	pf.terminalOutputRedrawMu.Lock()
 	if pf.terminalOutputRedrawClosed || !pf.terminalOutputRedrawPending ||
-		generation != pf.terminalOutputRedrawGeneration {
+		generation != pf.terminalOutputRedrawGeneration ||
+		lifecycle != vtui.FrameManager.LifecycleGeneration() {
 		pf.terminalOutputRedrawMu.Unlock()
 		return
 	}
@@ -1285,11 +1299,18 @@ func (pf *PanelsFrame) closeTerminalOutputRedraw() {
 	pf.terminalOutputRedrawClosed = true
 	pf.terminalOutputRedrawPending = false
 	pf.terminalOutputRedrawGeneration++
+	waitForCallback := false
 	if pf.terminalOutputRedrawTimer != nil {
-		pf.terminalOutputRedrawTimer.Stop()
+		waitForCallback = !pf.terminalOutputRedrawTimer.Stop()
+		if !waitForCallback {
+			pf.terminalOutputRedrawCallbacks.Done()
+		}
 		pf.terminalOutputRedrawTimer = nil
 	}
 	pf.terminalOutputRedrawMu.Unlock()
+	if waitForCallback {
+		pf.terminalOutputRedrawCallbacks.Wait()
+	}
 }
 
 // reportLocalPTYFailure surfaces a NewPTY() failure to the person instead of

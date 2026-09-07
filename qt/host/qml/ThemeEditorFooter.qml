@@ -10,8 +10,11 @@ RowLayout {
     required property Window editorWindow
     required property ThemeDraftModel draft
     objectName: "themeColorFooter"
+    // The five full-label buttons need slightly more than the default
+    // 720-pixel window's content width after icon/text rounding. Switch to
+    // icon-only reset actions before the row can overflow its layout.
     readonly property bool compactActions:
-        width < hostWindow.snapPx(675)
+        width < hostWindow.snapPx(700)
         || draft.statusToast !== ""
     Layout.fillWidth: false
     Layout.preferredWidth: hostWindow.snapPx(parent.width)

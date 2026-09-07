@@ -156,7 +156,7 @@ Item {
             }
         }
         return Number(documentList.originY || 0)
-                + modelIndex * Math.round(rowHeight)
+                + modelIndex * rowHeight
     }
 
     function windowIndexAtViewportY(viewportY) {
@@ -182,15 +182,10 @@ Item {
     function topState() {
         if (!displayedRows || displayedRows.length === 0)
             return { "index": 0, "fraction": 0, "extent": 0 }
-        let modelIndex = modelIndexAtContentY(documentList.contentY)
-        if (modelIndex < 0)
-            modelIndex = loadedSlotStart
-        const index = clamp(modelIndex - loadedSlotStart,
-                            0, displayedRows.length - 1)
-        const item = itemForModelIndex(loadedSlotStart + index)
-        const fraction = item !== null && item.height > 0
-                ? clamp((documentList.contentY - item.y) / item.height,
-                        0, 0.999999) : 0
+        const raw = Math.max(0, documentList.contentY) / rowHeight
+                - loadedSlotStart
+        const index = clamp(Math.floor(raw), 0, displayedRows.length - 1)
+        const fraction = clamp(raw - index, 0, 0.999999)
         const start = rowExtent(index)
         const end = rowEndExtent(index)
         return {
@@ -203,25 +198,18 @@ Item {
     function extentAtContentY(contentY) {
         if (!displayedRows || displayedRows.length === 0)
             return 0
-        let modelIndex = modelIndexAtContentY(contentY)
-        if (modelIndex < 0) {
-            const state = topState()
-            modelIndex = loadedSlotStart + Math.floor(
-                state.index + state.fraction
-                + (Number(contentY || 0) - documentList.contentY) / rowHeight)
-        }
-        const index = clamp(modelIndex - loadedSlotStart,
-                            0, displayedRows.length)
-        if (index >= displayedRows.length)
+        const raw = Math.max(0, Number(contentY || 0)) / rowHeight
+                - loadedSlotStart
+        const bounded = clamp(raw, 0, displayedRows.length)
+        if (bounded >= displayedRows.length)
             return rowEndExtent(displayedRows.length - 1)
-        const item = itemForModelIndex(loadedSlotStart + index)
-        const fraction = item !== null && item.height > 0
-                ? clamp((Number(contentY || 0) - item.y) / item.height,
-                        0, 0.999999) : 0
+        const index = Math.floor(bounded)
+        const fraction = bounded - index
         const start = rowExtent(index)
         const end = rowEndExtent(index)
         return start + (end - start) * fraction
     }
+
 
     function captureTopState() {
         if (rebasingWindow || !windowInitialized)
@@ -264,8 +252,7 @@ Item {
     }
 
     function recenterRows(rows, extent, fraction, forceReplacement) {
-        if (standaloneViewport)
-            rowTextSuspended = true
+        rowTextSuspended = false
         const source = rows || []
         ensurePoolCapacity(rowPoolController.capacityFor(source))
         const start = Math.max(0, Math.floor(
@@ -325,6 +312,8 @@ Item {
         const nextStart = loadedSlotStart + oldIndex - nextIndex
         const nextEnd = nextStart + nextRows.length
         if (nextStart < 0 || nextEnd > rowPoolController.count)
+            return false
+        if (retainLiveUnion !== true && Math.abs(oldIndex - nextIndex) > 5)
             return false
 
         const unionStart = Math.min(loadedSlotStart, nextStart)
@@ -391,11 +380,11 @@ Item {
     }
 
     function maximumLoadedY() {
-        const lastIndex = loadedSlotEnd - 1
-        const lastItem = itemForModelIndex(lastIndex)
-        const bottom = lastItem !== null
-                ? lastItem.y + lastItem.height
-                : modelCoordinateForIndex(lastIndex) + rowHeight
+        // Use the coordinate immediately after the loaded range. Looking at
+        // the last instantiated delegate can be wrong while ListView is
+        // rebasing its bounded pool: that delegate may still carry the old
+        // local origin, which leaves blank rows below a follow-tail frame.
+        const bottom = modelCoordinateForIndex(loadedSlotEnd)
         return Math.max(minimumLoadedY(), bottom - documentList.height)
     }
 
@@ -410,27 +399,53 @@ Item {
     }
 
     function placeAtExtent(extent, fraction) {
-        if (frameReachesContentEnd()) {
-            if (loadedSlotEnd > loadedSlotStart) {
-                documentList.positionViewAtIndex(loadedSlotEnd - 1,
-                                                 ListView.End)
-                documentList.forceLayout()
-            }
-            documentList.contentY = maximumLoadedY()
-            coordinator.wheelTarget = documentList.contentY
-            return
+        // The terminal's semantic viewport is negotiated using Go's
+        // integer viewport span, while the native ListView can expose a
+        // larger physical viewport.  A follow-tail frame must therefore be
+        // placed at the native viewport's actual bottom, not at the stale
+        // semantic viewportStart. Otherwise the last row is visible only
+        // because the delegate pool extends below the viewport and the next
+        // scroll request starts from the wrong extent.
+        const followTailToActualViewport = terminalSurface
+                && coordinator.terminalFollowTailIntent
+                && contentExtentKnown && contentExtent > 0 && rowHeight > 0
+        let targetExtent = extent
+        if (followTailToActualViewport) {
+            const visibleRows = Math.max(1, documentList.height / rowHeight)
+            targetExtent = Math.max(0, contentExtent - visibleRows)
+            fraction = 0
         }
-        let index = indexForExtent(extent, displayedRows)
+        let index = indexForExtent(targetExtent, displayedRows)
         if (index < 0) {
             index = clamp(Number(presentationFrame.viewportRow || 0), 0,
                           Math.max(0, displayedRows.length - 1))
         }
+        if (followTailToActualViewport) {
+            const start = rowExtent(index, displayedRows)
+            fraction = clamp(targetExtent - start, 0, 0.999999)
+        }
         const modelIndex = loadedSlotStart + index
+        if (frameReachesContentEnd() && !followTailToActualViewport) {
+            const maxY = maximumLoadedY()
+            const anchorY = modelCoordinateForIndex(modelIndex)
+            if (maxY > anchorY) {
+                if (loadedSlotEnd > loadedSlotStart) {
+                    documentList.positionViewAtIndex(loadedSlotEnd - 1,
+                                                     ListView.End)
+                    documentList.forceLayout()
+                }
+                const item = itemForModelIndex(modelIndex)
+                const itemY = item !== null ? item.y : anchorY
+                documentList.contentY = Math.max(itemY, maxY)
+                coordinator.wheelTarget = documentList.contentY
+                return
+            }
+        }
         documentList.positionViewAtIndex(modelIndex, ListView.Beginning)
         documentList.forceLayout()
         const item = itemForModelIndex(modelIndex)
-        const itemHeight = item !== null ? item.height : rowHeight
-        const itemY = item !== null ? item.y : documentList.contentY
+        const itemHeight = item !== null && item.height > 0 ? item.height : rowHeight
+        const itemY = item !== null ? item.y : modelCoordinateForIndex(modelIndex)
         documentList.contentY = itemY + fraction * itemHeight
         coordinator.wheelTarget = documentList.contentY
     }
@@ -562,6 +577,9 @@ Item {
         const generation = Number(frame.windowGeneration || 0)
         const acknowledged = coordinator.windowRequestPending
                 && generation >= coordinator.requestedGeneration
+        const pendingEmbeddedIntent = !standaloneViewport
+                && coordinator.pendingWindowIntent !== null
+                ? coordinator.pendingWindowIntent : null
         if (terminalSurface && acknowledged)
             coordinator.setTerminalFollowTailIntent(coordinator.semanticFrameFollowsTail(), false)
         const viewportChanged = windowInitialized
@@ -583,26 +601,33 @@ Item {
             targetFraction = acknowledged ? coordinator.requestedFraction : 0
         }
         if (acknowledged) {
+            const matchesRequestedExtent = Math.abs(Number(frame.viewportStart || 0)
+                    - coordinator.requestedExtent) < 0.000001
             targetExtent = Number(frame.viewportStart !== undefined
                     && frame.viewportStart !== null
                     ? frame.viewportStart : coordinator.requestedExtent)
-            targetFraction = coordinator.requestedFraction
-            if (coordinator.requestPreservesLiveAnchor
-                    && indexForExtent(oldState.extent, nextRows) >= 0) {
+            targetFraction = matchesRequestedExtent ? coordinator.requestedFraction : 0
+            if (!viewportChanged && (kineticActive || coordinator.wheelGestureActive)
+                    && coordinator.requestPreservesLiveAnchor
+                && indexForExtent(oldState.extent, nextRows) >= 0) {
                 targetExtent = oldState.extent
                 targetFraction = oldState.fraction
+            }
+            // Embedded Quick View has no separate ACK for a replaceable local
+            // wheel destination. Preserve that local motion when the first
+            // request is acknowledged; sending a second request here would
+            // leave the view pending forever because the test/app may not
+            // publish another semantic window immediately.
+            if (pendingEmbeddedIntent !== null) {
+                targetExtent = Number(pendingEmbeddedIntent.extent || 0)
+                targetFraction = Number(pendingEmbeddedIntent.fraction || 0)
             }
         }
 
         latestWindowRows = nextRows
         appliedFrame = frame
         rebasingWindow = true
-        // An in-place selection/style update is still an atomic viewport
-        // transaction, but it does not move any row. Keep untouched text
-        // live; clearing it would reshape every visible line per mouse move.
-        rowTextSuspended = standaloneViewport && (!wasInitialized || layoutChanged
-            || Math.abs(targetExtent - oldState.extent) > 0.000001
-            || Math.abs(targetFraction - oldState.fraction) > 0.000001)
+        rowTextSuspended = false
         const rowsStartedMs = traceWindow ? Date.now() : 0
         const keepLiveCoordinates = wasInitialized && !layoutChanged && kineticActive
                 && acknowledged && coordinator.requestPreservesLiveAnchor
@@ -611,8 +636,12 @@ Item {
         if (!mergedOverlap)
             recenterRows(nextRows, targetExtent, targetFraction,
                          standaloneViewport && (!wasInitialized || layoutChanged))
-        else if (!keepLiveCoordinates)
+        else if (!keepLiveCoordinates) {
             placeAtExtent(targetExtent, targetFraction)
+            documentList.forceLayout()
+            if (standaloneViewport)
+                placeAtExtent(targetExtent, targetFraction)
+        }
         const finishStartedMs = traceWindow ? Date.now() : 0
         appliedWindowSignature = nextSignature
         appliedDocumentKey = nextDocumentKey
@@ -629,6 +658,8 @@ Item {
         if (acknowledged) {
             coordinator.windowRequestPending = false
             coordinator.resumeVelocity = 0
+            if (pendingEmbeddedIntent !== null)
+                coordinator.pendingWindowIntent = null
         }
         syncScrollBar()
         if (acknowledged && standaloneViewport)

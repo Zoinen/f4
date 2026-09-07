@@ -1903,8 +1903,32 @@ void F4DocumentSurfaceTests::styledDocumentRunsAreVisible()
     QVERIFY(styled->mapToItem(fixture.list, QPointF()).y() < fixture.list->height());
     auto *themed = findRun(QStringLiteral(" theme content"));
     QVERIFY(themed);
+    const qreal styledX = styled->mapToItem(fixture.list, QPointF()).x();
+    const qreal themedX = themed->mapToItem(fixture.list, QPointF()).x();
+    QVERIFY(themedX > styledX);
+    QVERIFY(themedX >= styledX + styled->width() - 1.0);
     QVERIFY(fixture.window->setProperty("textColor", QColor("#e39142")));
     QTRY_COMPARE(themed->property("color").value<QColor>(), QColor("#e39142"));
+
+    // Updating row runs dynamically (as during fast scrolling) must place
+    // run segments synchronously without overlap or reset to x=0.
+    first.insert(QStringLiteral("runs"), QVariantList{
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("000001EE90: ")}},
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|")}},
+    });
+    first.insert(QStringLiteral("contentKey"), QStringLiteral("styled-row-v2"));
+    rows[0] = first;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(findRun(QStringLiteral("000001EE90: ")), 1000);
+    auto *addrRun = findRun(QStringLiteral("000001EE90: "));
+    auto *bytesRun = findRun(QStringLiteral("00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|"));
+    QVERIFY(addrRun);
+    QVERIFY(bytesRun);
+    const qreal addrX = addrRun->mapToItem(fixture.list, QPointF()).x();
+    const qreal bytesX = bytesRun->mapToItem(fixture.list, QPointF()).x();
+    QVERIFY(bytesX > addrX);
+    QVERIFY(bytesX >= addrX + addrRun->width() - 1.0);
     QVERIFY(!fixture.window->grabWindow().isNull());
 }
 
@@ -2193,14 +2217,23 @@ void F4DocumentSurfaceTests::nativeViewportExcludesHeaderAndKeepsBottomCursorVis
     QVERIFY(cursorTop >= 0.0);
     QVERIFY(cursorTop + cursor->height() <= fixture.list->height() + 0.001);
 
+    const int reportedRows = fixture.surface->property("reportedViewportRows").toInt();
+    QCOMPARE(fixture.surface->property("reportedViewportTarget").toString(),
+             QStringLiteral("app"));
+    QVERIFY(reportedRows > 0);
     fixture.shell.clearActions();
     fixture.surface->setProperty("interactionActive", false);
-    QTest::qWait(30);
+    QTest::qWait(100);
+    // Standalone geometry is negotiated for the window session, rather than
+    // owned by the currently displayed file. Deactivating/closing a document
+    // must not clear the app viewport and make the next document inherit a
+    // zero-row layout.
     for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
-        if (action.value("action") == "document.viewport")
-            QVERIFY(action.value("rows").toInt() > 0);
+        QVERIFY2(action.value(QStringLiteral("rows")).toInt() != 0,
+                 "standalone document deactivation cleared app viewport");
     }
-    QCOMPARE(fixture.surface->property("reportedViewportRows").toInt(), completeRows);
+    QCOMPARE(fixture.surface->property("reportedViewportRows").toInt(),
+             reportedRows);
 }
 
 void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()

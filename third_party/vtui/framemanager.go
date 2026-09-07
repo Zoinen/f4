@@ -234,22 +234,23 @@ type frameManager struct {
 	ActiveIdx         int
 	activationHistory []*AppScreen
 
-	frames            []Frame // Points to the active screen's frame stack
-	scr               *ScreenBuf
-	RedrawChan        chan struct{}
-	redrawGeneration  atomic.Uint64
-	TaskChan          chan func()
-	taskChanIn        chan func()
-	PriorityTaskChan  chan func()
-	currentPostedTask *postedTaskExecution
-	inputUpdateActive bool
-	inputUnchanged    bool
-	benchmarkTaskSeq  atomic.Uint64
-	EventChan         chan *vtinput.InputEvent
-	EventFilter       func(*vtinput.InputEvent) bool
-	injectedEvents    []*vtinput.InputEvent
-	injectedMu        sync.Mutex
-	OnRender          func(scr *ScreenBuf)
+	frames              []Frame // Points to the active screen's frame stack
+	scr                 *ScreenBuf
+	RedrawChan          chan struct{}
+	redrawGeneration    atomic.Uint64
+	lifecycleGeneration atomic.Uint64
+	TaskChan            chan func()
+	taskChanIn          chan func()
+	PriorityTaskChan    chan func()
+	currentPostedTask   *postedTaskExecution
+	inputUpdateActive   bool
+	inputUnchanged      bool
+	benchmarkTaskSeq    atomic.Uint64
+	EventChan           chan *vtinput.InputEvent
+	EventFilter         func(*vtinput.InputEvent) bool
+	injectedEvents      []*vtinput.InputEvent
+	injectedMu          sync.Mutex
+	OnRender            func(scr *ScreenBuf)
 
 	pendingFar2l map[uint8]chan *vtinput.Far2lStack
 	far2lMu      sync.Mutex
@@ -635,8 +636,16 @@ func (fm *frameManager) Screen() *ScreenBuf {
 	return fm.scr
 }
 
+// LifecycleGeneration changes whenever Init replaces the active screen and
+// frame stack. Deferred callbacks can use it to avoid delivering work from a
+// previous embedding/test lifecycle into the newly initialized UI.
+func (fm *frameManager) LifecycleGeneration() uint64 {
+	return fm.lifecycleGeneration.Load()
+}
+
 // Init initializes the FrameManager with a ScreenBuf.
 func (fm *frameManager) Init(scr *ScreenBuf) {
+	fm.lifecycleGeneration.Add(1)
 	fm.scr = scr
 	fm.frames = make([]Frame, 0, 10)
 	fm.Screens = []*AppScreen{{Number: 1, Frames: fm.frames}}

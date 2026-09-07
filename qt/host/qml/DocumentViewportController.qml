@@ -252,8 +252,7 @@ Item {
 
     function sendWindowRequest(extent, fraction, velocity,
                                preserveLiveAnchor, forceRequest) {
-        if (!interactionActive || !hasWindowProtocol
-                || (windowRequestPending && !standaloneViewport))
+        if (!interactionActive || !hasWindowProtocol)
             return false
         if (standaloneViewport && (!windowInitialized
                 || documentKey !== appliedDocumentKey
@@ -261,21 +260,16 @@ Item {
             return false
         const total = Math.max(0, contentExtent)
         const boundedTarget = clamp(Number(extent || 0), 0, total)
-        // Go observes only the integer visualRow/offset sent below. ListView
-        // may leave contentY at a fractional logical pixel, especially at a
-        // non-integer DPR, so topState() can report 2.0004 while the remote
-        // viewport is already 2. Comparing that unobservable fraction (or its
-        // separate local placement fraction) retriggers the same request
-        // after every ACK.
         const target = Math.floor(boundedTarget)
         if (windowRequestPending) {
+            const nextFraction = clamp(Number(fraction || 0), 0, 0.999999)
             if (target === requestedExtent) {
                 pendingWindowIntent = null
                 return false
             }
             // One active request, one replaceable destination. Do not make
             // the IPC/decode/model queues process every intermediate drag.
-            pendingWindowIntent = {"extent": target, "fraction": fraction,
+            pendingWindowIntent = {"extent": target, "fraction": nextFraction,
                 "velocity": velocity, "preserveLiveAnchor": preserveLiveAnchor}
             return true
         }

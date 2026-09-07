@@ -263,6 +263,8 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		}
 		if vv.HexMode {
 			offset &= ^int64(0xF)
+		} else if vv.DecodeMode {
+			// In DecodeMode, offset is a raw byte offset
 		} else {
 			offset = vv.clampTextScrollOffset(offset)
 			offset = vv.backend.FindLineStart(offset)
@@ -284,6 +286,8 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		offset := max(int64(0), min(semanticInt64(action["offset"]), vv.backend.Size()))
 		if vv.HexMode {
 			offset &= ^int64(15)
+		} else if vv.DecodeMode {
+			// In DecodeMode, offset is a raw byte offset
 		} else {
 			offset = vv.clampTextScrollOffset(offset)
 		}
@@ -2857,7 +2861,9 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	layoutReady := !nativeDocumentLayoutPending(vv.nativeViewportRevision)
 	if layoutReady && vv.semanticNeedsReflow {
 		resolved, ready := vv.TopOffset&^int64(15), true
-		if !vv.HexMode {
+		if vv.DecodeMode {
+			resolved, ready = vv.TopOffset, true
+		} else if !vv.HexMode {
 			resolved, ready = vv.semanticResolveTextWindowOffset(vv.TopOffset)
 		}
 		if ready {
@@ -2875,6 +2881,8 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 				resolved, ready := vv.semanticPendingOffset&^int64(15), true
 				if pendingOffset, resumable := vv.pendingConstructionOffset(); resumable {
 					resolved = pendingOffset
+				} else if vv.DecodeMode {
+					resolved, ready = vv.semanticPendingOffset, true
 				} else if !vv.HexMode {
 					resolved, ready = vv.semanticResolveTextWindowOffset(vv.semanticPendingOffset)
 				}
@@ -2919,7 +2927,9 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		visibleRows = window.rows[window.viewportRow:visibleEnd]
 	}
 	mode := "text"
-	if vv.HexMode {
+	if vv.DecodeMode {
+		mode = "decode"
+	} else if vv.HexMode {
 		mode = "hex"
 	}
 	topBarLeft, topBarRight := semanticTopBarStrings(vv.topBar)
@@ -2937,6 +2947,7 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		TopBarRight:             topBarRight,
 		IconColor:               semanticFileIconColor(semanticBaseName(vv.vfs, vv.path)),
 		HexMode:                 vv.HexMode,
+		DecodeMode:              vv.DecodeMode,
 		WrapMode:                vv.WrapMode,
 		Busy:                    vv.Busy,
 		TopOffset:               vv.TopOffset,
@@ -3000,7 +3011,10 @@ func (vv *ViewerView) semanticResolveTextWindowOffset(offset int64) (int64, bool
 		return 0, true
 	}
 	if !vv.WrapMode {
-		resolved, ready := vv.backend.TryFindLineStart(offset)
+		resolved, ready, yielded := vv.backend.tryFindLineStartBounded(offset, viewerProjectionWorkBytes)
+		if yielded {
+			vv.scheduleProjectionContinuation()
+		}
 		if !ready {
 			if err := vv.backend.LastReadError(); err != nil {
 				vv.semanticLoadError = err.Error()
@@ -3224,7 +3238,15 @@ func (vv *ViewerView) semanticPreviousTextRowPosition(offset int64, width int) (
 		return viewerRowPosition{}, true
 	}
 	if !vv.WrapMode || width <= 0 {
-		start, ready := vv.backend.TryFindLineStart(offset - 1)
+		start, ready, yielded := vv.backend.tryFindLineStartBounded(offset-1, viewerProjectionWorkBytes)
+		if yielded {
+			vv.scheduleProjectionContinuation()
+		}
+		if !ready {
+			if err := vv.backend.LastReadError(); err != nil {
+				vv.semanticLoadError = err.Error()
+			}
+		}
 		return viewerRowPosition{offset: start}, ready
 	}
 	if previous, ok := vv.semanticWrapSeek.previousHistoryOffset(offset, width); ok {
@@ -3360,6 +3382,9 @@ func (ev *EditorView) semanticSurfaceWidth() int {
 }
 
 func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
+	if ev.reflow != nil {
+		return semanticEditorCursorState{line: ev.CursorLine, pos: ev.CursorPos}
+	}
 	cursorOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	cursorAbsoluteRow, cursorAbsoluteColumn := ev.engine.LogicalToVisual(cursorOffset)
 	cursorVisualRow := cursorAbsoluteRow - ev.ScrollTopRow
@@ -3421,10 +3446,10 @@ func (ev *EditorView) queueSemanticCursorState() bool {
 }
 
 func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
-	ev.ensureEngineWidth()
+	layoutReady := ev.ensureEngineWidth()
 	window := semanticSurfaceWindow{viewportRows: ev.viewportHeight()}
 	previousTop := ev.ScrollTopRow
-	if !nativeDocumentLayoutPending(ev.nativeViewportRevision) && ev.targetLine == -1 {
+	if layoutReady && !nativeDocumentLayoutPending(ev.nativeViewportRevision) && ev.targetLine == -1 {
 		if ev.semanticPendingScroll {
 			ev.ScrollTopRow = ev.semanticPendingTop
 		}
@@ -3654,7 +3679,6 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		ev.ensureEngineWidth()
 		top := semanticInt(action["visualRow"])
 		height := max(1, ev.viewportHeight())
-		ev.engine.GetLogLineAtVisualRow(max(0, top+height-1))
 		knownRows, extentReady := ev.engine.KnownVisualRows()
 		maxTop := max(0, knownRows-height)
 		if top < 0 {
@@ -3738,7 +3762,10 @@ func (ev *EditorView) semanticWindowRows(metadataOnly bool) semanticSurfaceWindo
 	if ev.pt == nil || ev.li == nil || ev.engine == nil {
 		return window
 	}
-	ev.ensureEngineWidth()
+	if !ev.ensureEngineWidth() {
+		window.loadError = ev.semanticLoadError
+		return window
+	}
 	height := ev.viewportHeight()
 	if height <= 0 {
 		return window
@@ -3747,8 +3774,18 @@ func (ev *EditorView) semanticWindowRows(metadataOnly bool) semanticSurfaceWindo
 	buffer := semanticWindowBufferRows(height)
 	start := max(0, ev.ScrollTopRow-buffer)
 	end := ev.ScrollTopRow + height + buffer
-	ev.engine.GetLogLineAtVisualRow(max(0, end-1))
+	mapping := ev.engine.AdvanceToVisualRow(max(0, end-1), editorMappingWorkBytes)
+	if !mapping.Ready {
+		ev.continueEditorMapping(mapping.Progress, mapping.Err)
+		window.loadError = ev.semanticLoadError
+		return window
+	}
 	total, complete := ev.engine.KnownVisualRows()
+	if complete && ev.semanticExtentKnown && ev.semanticPendingScroll {
+		ev.ScrollTopRow = min(ev.ScrollTopRow, max(0, total-height))
+		start = max(0, ev.ScrollTopRow-buffer)
+		end = ev.ScrollTopRow + height + buffer
+	}
 	if err := ev.engine.LastReadError(); err != nil && err != piecetable.ErrLoading {
 		window.loadError = err.Error()
 	}

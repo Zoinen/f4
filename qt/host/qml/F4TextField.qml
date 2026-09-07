@@ -24,6 +24,7 @@ Item {
     property bool acceptableInput: innerInput.acceptableInput
 
     property bool hasBackground: true
+    readonly property bool hovered: control.enabled && fieldHover.hovered
     property url leadingIconSource: ""
     property real leadingIconSize: 14
     property bool semanticFocus: false
@@ -240,6 +241,11 @@ Item {
     implicitHeight: snap(32)
     implicitWidth: snap(180)
 
+    HoverHandler {
+        id: fieldHover
+        enabled: control.enabled
+    }
+
     Rectangle {
         id: bgRect
         objectName: control.objectName ? (control.objectName + "Background")
@@ -248,7 +254,10 @@ Item {
         anchors.fill: parent
         visible: control.hasBackground
         radius: control.snap(4)
-        color: control.hostWindow ? control.hostWindow.controlPressedBg : "#18202a"
+        color: control.hostWindow
+               ? (control.hovered ? control.hostWindow.controlHoverBg
+                                  : control.hostWindow.controlPressedBg)
+               : "#18202a"
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
             if (innerInput.activeFocus || control.semanticFocus)

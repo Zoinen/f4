@@ -2255,6 +2255,7 @@ func init() {
 			vv.semanticLayoutRevision++
 			vv.semanticNeedsReflow = true
 			vv.semanticPendingScroll = false
+			vv.semanticProjection, vv.consoleProjection = nil, nil
 			vv.semanticWrapSeek = semanticWrapSeekState{}
 			if !vv.HexMode && !vv.DecodeMode {
 				vv.HexMode = true

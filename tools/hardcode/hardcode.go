@@ -42,6 +42,7 @@ var skipDirs = map[string]bool{
 	"build":        true,
 	"node_modules": true,
 	"testdata":     true,
+	"third_party":  true,
 	"tools":        true,
 	"vendor":       true,
 }

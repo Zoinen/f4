@@ -83,6 +83,8 @@ type EditorView struct {
 	layoutWidth             int
 	layoutWordWrap          bool
 	layoutTabSize           int
+	reflow                  *editorReflow
+	reflowTaskPending       bool
 	semanticPointerActive   bool
 	semanticPointerRevision uint64
 	// The Qt semantic surface slides a bounded three-viewport window through
@@ -372,13 +374,20 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 	ev.scrollBar.SetOwner(ev)
 	ev.scrollBar.OnScroll = func(v int) {
 		if ev.HexMode || ev.DecodeMode {
+			oldOffset := ev.HexTopOffset
 			if ev.HexMode {
 				ev.HexTopOffset = v &^ 0xF
 			} else {
 				ev.HexTopOffset = v
 			}
+			if ev.HexTopOffset != oldOffset {
+				ev.fenceSemanticNavigation()
+			}
 			vtui.FrameManager.Redraw()
 			return
+		}
+		if ev.ScrollTopRow != v {
+			ev.fenceSemanticNavigation()
 		}
 		ev.ScrollTopRow = v
 		height := ev.viewportHeight()
@@ -881,12 +890,22 @@ func (ev *EditorView) startHighlighting() {
 		}
 	}()
 }
-func (ev *EditorView) ensureEngineWidth() {
+func (ev *EditorView) ensureEngineWidth() bool {
 	width := max(1, ev.viewportWidth())
 	changed := ev.layoutWidth != width || ev.layoutWordWrap != ev.WordWrap || ev.layoutTabSize != ev.TabSize
-	anchor := -1
-	if changed && ev.layoutWidth > 0 && (ev.layoutWordWrap || ev.WordWrap) {
-		anchor = ev.engine.VisualToLogical(ev.ScrollTopRow, 0)
+	if ev.reflow != nil && ev.reflow.session != ev.editSession {
+		ev.reflow = nil
+	}
+	if changed && ev.reflow == nil && ev.layoutWidth > 0 && (ev.layoutWordWrap || ev.WordWrap) {
+		ev.reflow = &editorReflow{top: ev.ScrollTopRow, session: ev.editSession}
+	}
+	if pending := ev.reflow; pending != nil && !pending.anchorReady {
+		mapping := ev.engine.AdvanceToVisualRow(pending.top, editorMappingWorkBytes)
+		if !mapping.Ready {
+			ev.continueEditorMapping(mapping.Progress, mapping.Err)
+			return false
+		}
+		pending.anchor, pending.anchorReady = mapping.Offset, true
 	}
 	ev.engine.SetWidth(width)
 	ev.engine.ToggleWrap(ev.WordWrap)
@@ -894,10 +913,17 @@ func (ev *EditorView) ensureEngineWidth() {
 	if changed {
 		ev.layoutWidth, ev.layoutWordWrap, ev.layoutTabSize = width, ev.WordWrap, ev.TabSize
 		ev.invalidateDocumentMapping()
-		if anchor >= 0 {
-			ev.ScrollTopRow, _ = ev.engine.LogicalToVisual(anchor)
-		}
 	}
+	if pending := ev.reflow; pending != nil {
+		mapping := ev.engine.AdvanceToOffset(pending.anchor, editorMappingWorkBytes)
+		if !mapping.Ready {
+			ev.continueEditorMapping(mapping.Progress, mapping.Err)
+			return false
+		}
+		ev.ScrollTopRow = mapping.Row
+		ev.reflow = nil
+	}
+	return true
 }
 
 func (ev *EditorView) updateDesiredVisualCol() {
@@ -1302,8 +1328,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		return
 	}
 
-	ev.ensureEngineWidth()
-	if nativeDocumentCellPaintOwned(scr) {
+	if !ev.ensureEngineWidth() || nativeDocumentCellPaintOwned(scr) {
 		return
 	}
 	height := ev.Y2 - ev.Y1
@@ -1603,11 +1628,13 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 }
 
 func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
-	guard := ev.editorCursorPatchGuard(e)
-	if e != nil && e.Type == vtinput.KeyEventType && e.KeyDown &&
-		(e.VirtualKeyCode == vtinput.VK_HOME || e.VirtualKeyCode == vtinput.VK_END) {
-		ev.fenceSemanticEdgeNavigation()
+	if editorNavigationKey(e) {
+		ev.fenceSemanticNavigation()
 	}
+	// Take the publication snapshot after fencing. The fence intentionally
+	// advances the window generation, and that generation belongs to this
+	// keyboard move rather than making the scalar cursor patch ineligible.
+	guard := ev.editorCursorPatchGuard(e)
 	var handled bool
 	if ev.targetLine == -1 {
 		handled = ev.processKeyInner(e)
@@ -1625,19 +1652,45 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 	return handled
 }
 
-// fenceSemanticEdgeNavigation makes a keyboard edge move newer than every
-// native scroll intent that could still be in flight. Qt cancels its local
-// destination before forwarding Home/End, then accepts only this successor
-// generation; an old scroll action or delayed projection cannot move the
+func editorNavigationKey(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
+		vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT:
+		return true
+	case vtinput.VK_E, vtinput.VK_X:
+		// Ctrl+E/Ctrl+X are the editor's alternate vertical movement keys.
+		return e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	default:
+		return false
+	}
+}
+
+// fenceSemanticNavigation makes a direct keyboard move newer than every
+// native scroll intent that could still be in flight. Qt may still have a
+// replaceable destination or an acknowledgement queued; advancing the
+// generation and dropping that destination prevents it from moving the
 // viewport back over the caret (or the active Shift selection).
-func (ev *EditorView) fenceSemanticEdgeNavigation() {
+func (ev *EditorView) fenceSemanticNavigation() {
+	// A normal keyboard move does not need a new window identity when there is
+	// no native destination in flight. Keeping the installed generation in that
+	// case lets the cursor-only fast path publish its scalar patch against the
+	// scene that is already on screen. Only an outstanding/replacable native
+	// request needs to be retired with a successor generation.
+	nativeRequestOutstanding := ev.semanticPendingScroll ||
+		ev.semanticPendingGeneration != 0 ||
+		ev.semanticWindowRequestGeneration != ev.semanticWindowGeneration
 	generation := max(ev.semanticWindowGeneration,
 		ev.semanticWindowRequestGeneration, ev.semanticPendingGeneration)
-	if generation != ^uint64(0) {
+	if nativeRequestOutstanding && generation != ^uint64(0) {
 		generation++
 	}
-	ev.semanticWindowGeneration = generation
-	ev.semanticWindowRequestGeneration = generation
+	if nativeRequestOutstanding {
+		ev.semanticWindowGeneration = generation
+		ev.semanticWindowRequestGeneration = generation
+	}
 	ev.semanticPendingScroll = false
 	ev.semanticPendingTop = ev.ScrollTopRow
 	ev.semanticPendingGeneration = 0
@@ -2609,7 +2662,9 @@ func (ev *EditorView) ensureCursorVisible() {
 	// A wrap/tab/width action may call this before the next paint. Resolve the
 	// caret in the new layout, rather than scrolling with the old mapping and
 	// only reflowing it later in SemanticNode/DisplayObject.
-	ev.ensureEngineWidth()
+	if !ev.ensureEngineWidth() {
+		return
+	}
 
 	if ev.HexMode || ev.DecodeMode {
 		height := ev.viewportHeight()

@@ -18,7 +18,7 @@ F4HostWindow {
     bottomPadding: 0
     visible: false
     worktreeBranchName: typeof f4WorktreeBranchName === "undefined"
-                        ? "" : String(f4WorktreeBranchName).trim()
+                        ? worktreeBranch : String(f4WorktreeBranchName).trim()
     title: {
         const base = fallbackExplanation !== ""
                      ? "f4 [Using text presentation: "

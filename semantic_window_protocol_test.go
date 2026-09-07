@@ -454,6 +454,90 @@ func TestSemanticWindowProtocol_EditorEdgeNavigationFencesPendingScroll(t *testi
 	}
 }
 
+func TestSemanticWindowProtocol_EditorArrowAndWheelNavigationFencePendingScroll(t *testing.T) {
+	var content strings.Builder
+	for row := 0; row < 200; row++ {
+		fmt.Fprintf(&content, "row-%03d alpha beta gamma\n", row)
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  uint16
+		want int
+	}{
+		{name: "up", key: vtinput.VK_UP, want: 44},
+		{name: "down", key: vtinput.VK_DOWN, want: 46},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			editor := NewEditorView(piecetable.New([]byte(content.String())), nil,
+				"arrow-navigation.txt")
+			defer editor.Close()
+			editor.highlighter = nil
+			editor.SetPosition(0, 0, 39, 8)
+			editor.SetVisible(true)
+			editor.ScrollTopRow = 40
+			editor.CursorLine, editor.CursorPos = 45, 8
+			target := vtui.SemanticID(editor)
+			if !editor.HandleSemanticAction(map[string]any{
+				"target": target, "action": "editor.scroll", "visualRow": 120,
+				"generation": uint64(11),
+			}) || !editor.semanticPendingScroll {
+				t.Fatal("test scroll destination was not pending")
+			}
+			if !editor.ProcessKey(&vtinput.InputEvent{
+				Type: vtinput.KeyEventType, KeyDown: true,
+				VirtualKeyCode: tc.key,
+			}) {
+				t.Fatalf("%s was not handled", tc.name)
+			}
+			if editor.semanticPendingScroll ||
+				editor.semanticWindowGeneration != 12 ||
+				editor.semanticWindowRequestGeneration != 12 {
+				t.Fatalf("%s fence state: pending=%v window=%d request=%d",
+					tc.name, editor.semanticPendingScroll,
+					editor.semanticWindowGeneration,
+					editor.semanticWindowRequestGeneration)
+			}
+			if editor.CursorLine != tc.want {
+				t.Fatalf("%s moved cursor to line %d, want %d",
+					tc.name, editor.CursorLine, tc.want)
+			}
+			state := editor.SemanticNode(nil)
+			if semanticInt64(state["windowGeneration"]) != 12 {
+				t.Fatalf("%s scene generation=%v, want 12",
+					tc.name, state["windowGeneration"])
+			}
+		})
+	}
+
+	originalConfig := AppConfig
+	t.Cleanup(func() { AppConfig = originalConfig })
+	AppConfig.WheelEditorDown = 1
+	editor := NewEditorView(piecetable.New([]byte(content.String())), nil,
+		"wheel-navigation.txt")
+	defer editor.Close()
+	editor.highlighter = nil
+	editor.SetPosition(0, 0, 39, 8)
+	editor.SetVisible(true)
+	editor.ScrollTopRow = 40
+	editor.CursorLine, editor.CursorPos = 45, 8
+	if !editor.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(editor), "action": "editor.scroll",
+		"visualRow": 120, "generation": uint64(21),
+	}) {
+		t.Fatal("native wheel destination was not handled")
+	}
+	if !editor.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, WheelDirection: -1,
+	}) {
+		t.Fatal("wheel event was not handled")
+	}
+	if editor.semanticPendingScroll || editor.semanticWindowGeneration != 22 {
+		t.Fatalf("wheel fence state: pending=%v window=%d",
+			editor.semanticPendingScroll, editor.semanticWindowGeneration)
+	}
+}
+
 func TestSemanticWindowProtocol_ContentKeyIgnoresCursorAndStreamSelection(t *testing.T) {
 	vtui.SetDefaultPalette()
 	editor := NewEditorView(piecetable.New([]byte("alpha\nbeta\ngamma\ndelta\n")), nil,

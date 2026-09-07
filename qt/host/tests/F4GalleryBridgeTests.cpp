@@ -2177,14 +2177,16 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
 
     keyRecorder.clear();
     QTest::keyPress(&view, Qt::Key_Escape);
-    QVERIFY(bridge.viewerVisible());
-    QVERIFY(viewer->property("transitioning").toBool());
+    // Escape is Gallery's modal escape hatch: unlike Enter it intentionally
+    // skips the thumbnail return animation and tears down the bridge-owned
+    // surface as soon as the completion signal is delivered.
+    QTRY_VERIFY_WITH_TIMEOUT(!bridge.viewerVisible(), 1000);
     QCOMPARE(keyRecorder.count(Qt::Key_Escape, true), 0);
     QTest::keyRelease(&view, Qt::Key_Escape);
     QCOMPARE(keyRecorder.count(Qt::Key_Escape, false), 0);
-    QVERIFY(QMetaObject::invokeMethod(viewer, "finishClose"));
-    QTRY_VERIFY(!bridge.viewerVisible());
     QCOMPARE(keyRecorder.count(Qt::Key_Escape, true), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(!viewerLoader->property("item").value<QObject *>(),
+                             1000);
     QObject *panelObject = panelHost->findChild<QObject *>(
         QStringLiteral("embeddedGalleryPanel"));
     QVERIFY(panelObject);

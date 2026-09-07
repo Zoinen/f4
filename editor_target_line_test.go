@@ -20,7 +20,10 @@ import (
 func drainPendingTasks() {
 	for {
 		select {
+		case <-vtui.FrameManager.PriorityTaskChan:
+			continue
 		case <-vtui.FrameManager.TaskChan:
+			continue
 		default:
 			return
 		}
@@ -35,11 +38,17 @@ func drainPendingTasks() {
 // instead would assume the queue is buffered, and it is not.
 func collectQueuedTasks(idle time.Duration) []func() {
 	var tasks []func()
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
 	for {
 		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			tasks = append(tasks, task)
+			timer.Reset(idle)
 		case task := <-vtui.FrameManager.TaskChan:
 			tasks = append(tasks, task)
-		case <-time.After(idle):
+			timer.Reset(idle)
+		case <-timer.C:
 			return tasks
 		}
 	}
@@ -131,6 +140,8 @@ func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 			break
 		}
 		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		case <-deadline:
@@ -149,8 +160,11 @@ func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 	// Hold the first publication instead of applying it immediately. Indexing
 	// must not fill the input queue with the rest of the file in the meantime.
 	tasks := collectQueuedTasks(300 * time.Millisecond)
-	if len(tasks) != 1 {
-		t.Fatalf("the indexer queued %d tasks, want one bounded batch", len(tasks))
+	// The immutable index publication is one batch. A separate completion
+	// callback may arrive in the same idle window to clear the worker's
+	// indexing flag; it is bookkeeping, not another batch of offsets.
+	if len(tasks) < 1 || len(tasks) > 2 {
+		t.Fatalf("the indexer queued %d tasks, want one batch plus completion bookkeeping", len(tasks))
 	}
 
 	for _, task := range tasks {
@@ -159,6 +173,8 @@ func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 	deadline = time.After(5 * time.Second)
 	for ev.targetLine != -1 {
 		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		case <-deadline:

@@ -5,6 +5,7 @@
 #include "QtShellController.h"
 #include "F4ThemePersistence.h"
 #include "F4TextRenderingPolicy.h"
+#include "F4WorktreeIdentity.h"
 #include "WindowGeometryPersistence.h"
 
 #if defined(Q_OS_MACOS)
@@ -427,6 +428,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(
         QStringLiteral("f4WorktreeBranchName"),
         parser.value(worktreeBranchOption).trimmed());
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4WorktreeBranch"),
+        F4WorktreeIdentity::resolveActiveWorktreeBranch(
+            {QDir::currentPath(), QCoreApplication::applicationDirPath()}));
 #if defined(__USE_QWK)
     const QString platformName = QGuiApplication::platformName();
     const bool useQwkAtRuntime = platformName != QStringLiteral("offscreen")

@@ -16,12 +16,9 @@ Rectangle {
 
     objectName: "documentRowDelegate"
     property bool countedAsLive: true
-    // During an atomic rebase, data notifications refer to slots at the old
-    // viewport until placement finishes. Shape text only once the live
-    // delegates occupy the committed viewport.
+    // Live delegate text remains active for loaded slots so viewport rebases
+    // and navigation updates do not blank the text between placement and render.
     readonly property bool contentActive: loaded
-        && (!documentRoot.standaloneViewport
-            || (countedAsLive && !viewportController.rowTextSuspended))
     width: ListView.view.width
     height: documentRoot.rowHeight
     color: "transparent"
@@ -43,7 +40,7 @@ Rectangle {
         }
     }
 
-    Row {
+    Item {
         id: runRow
         anchors.left: parent.left
         anchors.leftMargin: documentRow.documentRoot.textHorizontalInset
@@ -53,7 +50,28 @@ Rectangle {
                  && documentRow.rowData.runs !== undefined
                  && documentRow.rowData.runs.length > 0
 
+        function runOffset(targetIndex) {
+            if (targetIndex <= 0)
+                return 0
+            let offset = 0
+            const runs = documentRow.rowData.runs || []
+            const cellWidth = Number(documentRow.documentRoot.terminalCellWidth || 0)
+            for (let i = 0; i < targetIndex && i < runs.length; i++) {
+                const r = runs[i]
+                if (r) {
+                    const item = runRepeater.itemAt(i)
+                    if (item && item.width > 0) {
+                        offset += item.width
+                    } else {
+                        offset += Math.max(0, Number((r.text || "").length) * cellWidth)
+                    }
+                }
+            }
+            return offset
+        }
+
         Repeater {
+            id: runRepeater
             // A new array value is not a new set of visual objects. Keep the
             // same run leaves while their count is stable; data/style bindings
             // update them in place.
@@ -68,8 +86,11 @@ Rectangle {
                 required property int index
                 readonly property var runData:
                     (documentRow.rowData.runs || [])[index] || ({})
+                x: runRow.runOffset(index)
                 height: runRow.height
-                width: runLabel.implicitWidth
+                width: Math.max(runLabel.implicitWidth,
+                                Number((runSegment.runData.text || "").length)
+                                * Number(documentRow.documentRoot.terminalCellWidth || 0))
                 color: documentRow.documentRoot.runBackground(
                            runData.background)
 
@@ -81,6 +102,7 @@ Rectangle {
                         ? documentRow.hostWindow.cleanText(
                               runSegment.runData.text) : ""
                     textFormat: Text.PlainText
+                    renderType: documentRow.hostWindow.fontRenderType
                     color: documentRow.hostWindow.cleanText(
                                runSegment.runData.foreground) !== ""
                            ? runSegment.runData.foreground
@@ -124,9 +146,10 @@ Rectangle {
         // Styled runs already own their text layout. An invisible fallback
         // must not concatenate and shape the same row again.
         text: documentRow.contentActive && (!documentRow.rowData.runs
-                  || documentRow.rowData.runs.length === 0)
+                   || documentRow.rowData.runs.length === 0)
               ? documentRow.hostWindow.rowText(documentRow.rowData) : ""
         textFormat: Text.PlainText
+        renderType: documentRow.hostWindow.fontRenderType
         color: documentRow.hostWindow.textColor
         font.family: documentRow.hostWindow.guiMonospaceFontFamily
         font.pixelSize: documentRow.hostWindow.semanticTextFontPixelSize
@@ -184,7 +207,7 @@ Rectangle {
         clip: true
         z: 2
 
-        Text {
+            Text {
             id: editorSelectedText
             objectName: "documentEditorSelectedText"
             x: documentRow.documentRoot.textHorizontalInset
@@ -193,6 +216,7 @@ Rectangle {
             text: documentRow.contentActive && editorSelectionClip.visible
                   ? documentRow.hostWindow.rowText(documentRow.rowData) : ""
             textFormat: Text.PlainText
+            renderType: documentRow.hostWindow.fontRenderType
             color: documentRow.hostWindow.cleanText(
                        documentRow.documentRoot.cursorFrame.selectionForeground)
                    !== ""
