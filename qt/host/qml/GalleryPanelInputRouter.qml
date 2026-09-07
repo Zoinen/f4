@@ -298,7 +298,12 @@ Item {
     }
 
     function handleReleased(event) {
-        if (isPasteShortcut(event)) {
+        if (router.bridge
+                && typeof router.bridge.consumeSuppressedKeyRelease
+                   === "function"
+                && router.bridge.consumeSuppressedKeyRelease(event.key)) {
+            event.accepted = true
+        } else if (isPasteShortcut(event)) {
             event.accepted = true
         } else if (forwardedKeysDown[String(event.key)]) {
             forwardQtKey(event, false)

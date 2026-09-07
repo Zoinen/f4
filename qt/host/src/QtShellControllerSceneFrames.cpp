@@ -85,12 +85,24 @@ void addSurfaceState(QVariantMap *patch,
     QVariantMap state{{QStringLiteral("id"),
                        surface.value(QStringLiteral("id"))}};
     for (const QString &key : {QStringLiteral("cursorLine"),
+                               QStringLiteral("documentKey"),
+                               QStringLiteral("layoutRevision"),
+                               QStringLiteral("windowGeneration"),
                                QStringLiteral("cursorPos"),
                                QStringLiteral("cursorVisualRow"),
                                QStringLiteral("cursorVisualColumn"),
                                QStringLiteral("cursorVisible"),
                                QStringLiteral("cursorShape"),
                                QStringLiteral("cursorAbsoluteRow"),
+                               QStringLiteral("cursorAbsoluteColumn"),
+                               QStringLiteral("selection"),
+                               QStringLiteral("selectionAnchorRow"),
+                               QStringLiteral("selectionAnchorColumn"),
+                               QStringLiteral("selectionForeground"),
+                               QStringLiteral("selectionBackground"),
+                               QStringLiteral("selectionBold"),
+                               QStringLiteral("selectionUnderline"),
+                               QStringLiteral("selectionStrikeout"),
                                QStringLiteral("topBarRight")}) {
         state.insert(key, surface.value(key));
     }
@@ -182,7 +194,7 @@ bool QtShellController::applyStreamSnapshotFrame(
     if (!catalogPanel.isEmpty()) {
         const int side = catalogPanel.value(QStringLiteral("side")).toInt();
         if (side >= 0 && side < 2) {
-            m_panelCatalogSnapshots[static_cast<size_t>(side)] = catalogPanel;
+            storePanelCatalogSnapshot(side, catalogPanel);
         }
         emit panelCatalogChanged(catalogPanel);
     }
@@ -228,7 +240,7 @@ bool QtShellController::applyStreamSnapshotFrame(
     if (!catalogPanel.isEmpty()) {
         const int side = catalogPanel.value(QStringLiteral("side")).toInt();
         if (side >= 0 && side < 2) {
-            m_panelCatalogSnapshots[static_cast<size_t>(side)] = catalogPanel;
+            storePanelCatalogSnapshot(side, catalogPanel);
         }
         emit panelCatalogChanged(catalogPanel);
         // Keep the QML panel descriptor in lockstep with the native catalog
@@ -344,13 +356,20 @@ bool QtShellController::applyScenePatchFrame(const QVariantMap &message,
     reducerMessage.insert(QStringLiteral("revision"), envelope.revision);
     const QVariantMap reducerScene = streamReducerScene(envelope.streamId);
     if (!applyScenePatch(reducerMessage, reducerScene,
-                         makePresentationScene(reducerScene),
+                         makePatchPresentationScene(reducerScene, reducerMessage),
                          envelope.baseRevision, &applied, &error)) {
         failProtocol(error.isEmpty() ? QStringLiteral("Invalid app scene patch")
                                      : error);
         return false;
     }
+    if (trace->enabled) {
+        trace->scenePatchReducerDurationNs = stageTimer.nsecsElapsed();
+    }
     commitTypedScenePatch(envelope.streamId, applied);
+    if (trace->enabled) {
+        trace->scenePatchTypedCommitDurationNs = stageTimer.nsecsElapsed()
+            - trace->scenePatchReducerDurationNs;
+    }
 #endif
     if (trace->enabled) {
         trace->scenePatchCoreDurationNs = stageTimer.nsecsElapsed();
@@ -378,7 +397,7 @@ void QtShellController::emitScenePatchSignals(
     for (const QVariantMap &panel : applied.catalogPanels) {
         const int side = panel.value(QStringLiteral("side")).toInt();
         if (side >= 0 && side < 2) {
-            m_panelCatalogSnapshots[static_cast<size_t>(side)] = panel;
+            storePanelCatalogSnapshot(side, panel);
         }
         emit panelCatalogChanged(panel);
     }

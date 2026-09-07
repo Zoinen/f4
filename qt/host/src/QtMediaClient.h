@@ -51,6 +51,12 @@ public:
                  const QString &leaseId = QString(),
                  quint64 releaseScope = 0);
 
+#if defined(F4_MEDIA_CLIENT_TESTING)
+    quint64 deadlineTimerWakeCountForTest() const;
+    bool deadlineTimerActiveForTest() const;
+    int deadlineTimerRemainingTimeForTest() const;
+#endif
+
     QtMediaResult readRangeBlocking(
         const QString &resourceId, qint64 offset, qint64 length,
         int timeoutMs = 15000,

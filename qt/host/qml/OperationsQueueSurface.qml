@@ -28,6 +28,9 @@ Rectangle {
     readonly property real bottomInset: queueController.bottomInset
     readonly property real rowHeight: queueController.rowHeight
     readonly property int selectedIndex: queueController.selectedIndex
+    readonly property bool presentationActive:
+        interactionActive && hostWindow.active
+        && !hostWindow.hasBlockingOverlay()
 
     function navigate(command) { return queueController.navigate(command) }
     function activateSelection() { return queueController.activateSelection() }
@@ -421,13 +424,14 @@ Rectangle {
                 }
                 T.BusyIndicator {
                     id: rowBusy
+                    objectName: "operationsQueueBusy-" + queueRow.taskId
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                     width: 22
                     height: 22
                     visible: queueRow.active
                              && !queueRow.totalProgressKnown
-                    running: visible
+                    running: visible && queueRoot.presentationActive
                     Accessible.name: queueRow.state
                 }
             }

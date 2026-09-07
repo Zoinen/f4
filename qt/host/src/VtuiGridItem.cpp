@@ -90,6 +90,11 @@ bool isEnhancedQtKey(int key)
     }
 }
 
+bool isEdgeNavigationQtKey(int key)
+{
+    return key == Qt::Key_Home || key == Qt::Key_End;
+}
+
 bool containsPrintableText(const QString &text)
 {
     for (const QChar character : text) {
@@ -393,6 +398,9 @@ void VtuiGridItem::sendQtKeyEvent(int key, const QString &text, bool down,
     if (isEnhancedQtKey(key)) {
         nativeModifiers |= EnhancedKey;
     }
+    if (down && m_terminalInputEnabled && isEdgeNavigationQtKey(key)) {
+        emit edgeNavigationAboutToForward(key);
+    }
     const bool forwarded = forwardKeyToController(
         keyToVk(&event), down ? keyChar(&event) : 0, down, nativeModifiers,
         autoRepeat);
@@ -442,7 +450,8 @@ void VtuiGridItem::sendQtMouseAt(qreal x, qreal y, int button, bool down,
     }
 
     const QPoint cell = cellForPosition(QPointF(x, y));
-    m_controller->sendMouse(cell.x(), cell.y(), buttonState(qtButton), 0,
+    m_controller->sendMouse(cell.x(), cell.y(),
+                             down ? buttonState(qtButton) : 0, 0,
                              down,
                              modifiersFromEvent(
                                  Qt::KeyboardModifiers::fromInt(modifiers)));
@@ -554,6 +563,10 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
         }
+        if (m_terminalInputEnabled
+            && isEdgeNavigationQtKey(event->key())) {
+            emit edgeNavigationAboutToForward(event->key());
+        }
         const bool forwarded = forwardKeyToController(
             keyToVk(event), keyChar(event), true, mods,
             event->isAutoRepeat());
@@ -613,8 +626,8 @@ void VtuiGridItem::mouseReleaseEvent(QMouseEvent *event)
         event->ignore();
         return;
     }
-    sendMouseEvent(event, 0, false);
     m_pressedButtonState &= ~buttonState(event->button());
+    sendMouseEvent(event, 0, false);
     event->accept();
 }
 
@@ -987,8 +1000,8 @@ void VtuiGridItem::sendMouseEvent(QMouseEvent *event, int flags, bool down)
         return;
     }
     const QPoint cell = cellForPosition(event->position());
-    const int button = flags == MouseMoved ? m_pressedButtonState : buttonState(event->button());
-    m_controller->sendMouse(cell.x(), cell.y(), button, flags, down, modifiersFromEvent(event->modifiers()));
+    m_controller->sendMouse(cell.x(), cell.y(), m_pressedButtonState, flags,
+                            down, modifiersFromEvent(event->modifiers()));
 }
 
 void VtuiGridItem::maybeSendResize()

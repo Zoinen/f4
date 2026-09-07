@@ -28,17 +28,35 @@ type PtyPixelSizer interface {
 	SetSizePixels(cols, rows, xpixel, ypixel int)
 }
 
+// Optional acknowledgements let the presentation layer suppress a repeated
+// resize only after the backend confirms it. Legacy void setters remain valid
+// but must not be remembered as successfully negotiated geometry.
+type PtySizeAcknowledger interface {
+	SetSizeChecked(cols, rows int) error
+}
+
+type PtyPixelSizeAcknowledger interface {
+	SetSizePixelsChecked(cols, rows, xpixel, ypixel int) error
+}
+
 // setPtySize tells the child how large its terminal is, in pixels as well
 // whenever both the backend and the host can say.
-func setPtySize(p PtyBackend, cols, rows, cellW, cellH int) {
+func setPtySize(p PtyBackend, cols, rows, cellW, cellH int) (acknowledged bool, err error) {
 	if p == nil {
-		return
+		return false, nil
 	}
 	if sizer, ok := p.(PtyPixelSizer); ok && cellW > 0 && cellH > 0 {
+		if checked, ok := p.(PtyPixelSizeAcknowledger); ok {
+			return true, checked.SetSizePixelsChecked(cols, rows, cols*cellW, rows*cellH)
+		}
 		sizer.SetSizePixels(cols, rows, cols*cellW, rows*cellH)
-		return
+		return false, nil
+	}
+	if checked, ok := p.(PtySizeAcknowledger); ok {
+		return true, checked.SetSizeChecked(cols, rows)
 	}
 	p.SetSize(cols, rows)
+	return false, nil
 }
 
 // ptyPixels clamps a pixel dimension to what the winsize structure carries.

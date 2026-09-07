@@ -8,6 +8,16 @@ import QWindowKit 1.0
 Item {
     id: surfaces
 
+    function cancelDocumentWindowIntentForEdgeNavigation() {
+        const document = documentLayer.item
+        if (document && document.interactionActive
+                && !surfaces.hostWindow.hasBlockingOverlay()
+                && !surfaces.hostWindow.hasOperationsQueueSurface()
+                && (document.frame.kind === "viewer"
+                    || document.frame.kind === "editor"))
+            document.cancelPendingWindowIntent()
+    }
+
     required property ApplicationWindow hostWindow
     required property WindowAgent nativeWindowAgent
     required property bool nativeWindowAgentReady
@@ -70,6 +80,7 @@ Item {
         }
 
         Loader {
+            id: documentLayer
             objectName: "persistentDocumentLayer"
             anchors.fill: parent
             active: surfaces.hostWindow.retainedDocumentSurfaceCreated
@@ -163,7 +174,16 @@ Item {
         menuBar: surfaces.menuBar
         semanticLayer: surfaces
         shellController: surfaces.shellController
-        frames: surfaces.hostWindow.overlayFrames()
+        // overlayFrames() is a helper function, so make its stream revisions
+        // an explicit binding dependency. This is important when a popup is
+        // closed in the fallback/console presentation and the native surface
+        // becomes visible again: the overlay model must not resurrect that
+        // old frame on the next GUI presentation change.
+        frames: {
+            if (surfaces.hostWindow.overlayFramesRevision === "")
+                return []
+            return surfaces.hostWindow.overlayFrames()
+        }
         anchors.fill: parent
         z: 100
     }

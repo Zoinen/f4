@@ -64,6 +64,7 @@ Item {
         height: parent.height
         visible: usesQwk && Qt.platform.os !== "osx"
         variant: "tool"
+        flat: true
 
         leftPadding: 0
         topPadding: 0
@@ -111,6 +112,28 @@ Item {
                                ? -windowButtons.width : 0
         height: parent.height
         opacity: hostWindow.normalSurfaceOpacity
+    }
+
+    Text {
+        id: worktreeBranchLabel
+        objectName: "worktreeBranchLabel"
+        anchors.centerIn: parent
+        width: Math.min(implicitWidth,
+                        Math.max(0, parent.width - hostWindow.snapPx(32)))
+        height: parent.height
+        text: hostWindow.worktreeBranch
+        color: hostWindow.chromeText
+        opacity: 0.82
+        font.family: hostWindow.guiMonospaceFontFamily
+        font.pixelSize: hostWindow.guiMonospaceFontPixelSize
+        renderType: hostWindow.fontRenderType
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideMiddle
+        maximumLineCount: 1
+        visible: text.length > 0
+        enabled: false
+        z: 0.5
     }
 
     WorkspaceTabs {

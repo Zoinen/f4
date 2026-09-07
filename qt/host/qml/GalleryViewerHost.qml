@@ -97,8 +97,14 @@ FocusScope {
             // Do not synchronously destroy this Loader while GalleryViewer is
             // still emitting its completion signals.
             const owningBridge = host.bridge
-            if (owningBridge)
+            if (owningBridge) {
+                if (galleryViewer.immediateCloseRequested
+                        && typeof owningBridge.suppressKeyRelease
+                           === "function") {
+                    owningBridge.suppressKeyRelease(Qt.Key_Escape)
+                }
                 Qt.callLater(() => owningBridge.closeViewer())
+            }
         }
     }
 }

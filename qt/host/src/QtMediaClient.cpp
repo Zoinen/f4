@@ -1,4 +1,5 @@
 #include "QtMediaClient.h"
+#include "QtMediaClientWire.h"
 
 #include <ZoinGallery/MediaTimingTrace.h>
 
@@ -18,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 namespace
@@ -43,130 +45,6 @@ QVariantMap mediaRequestFields(const QString &requestId,
         {QStringLiteral("offset"), offset},
         {QStringLiteral("requestedBytes"), length},
     };
-}
-
-void packString(msgpack::packer<msgpack::sbuffer> &packer,
-                const QString &value)
-{
-    const QByteArray bytes = value.toUtf8();
-    packer.pack_str(static_cast<uint32_t>(bytes.size()));
-    packer.pack_str_body(bytes.constData(),
-                         static_cast<uint32_t>(bytes.size()));
-}
-
-void packVariant(msgpack::packer<msgpack::sbuffer> &packer,
-                 const QVariant &value)
-{
-    if (!value.isValid() || value.isNull()) {
-        packer.pack_nil();
-        return;
-    }
-    switch (value.typeId()) {
-    case QMetaType::Bool:
-        packer.pack(value.toBool());
-        return;
-    case QMetaType::Int:
-    case QMetaType::Short:
-    case QMetaType::SChar:
-    case QMetaType::LongLong:
-        packer.pack_int64(value.toLongLong());
-        return;
-    case QMetaType::UInt:
-    case QMetaType::UShort:
-    case QMetaType::UChar:
-    case QMetaType::ULongLong:
-        packer.pack_uint64(value.toULongLong());
-        return;
-    case QMetaType::QString:
-        packString(packer, value.toString());
-        return;
-    case QMetaType::QByteArray: {
-        const QByteArray bytes = value.toByteArray();
-        packer.pack_bin(static_cast<uint32_t>(bytes.size()));
-        packer.pack_bin_body(bytes.constData(),
-                             static_cast<uint32_t>(bytes.size()));
-        return;
-    }
-    case QMetaType::QVariantMap: {
-        const QVariantMap map = value.toMap();
-        packer.pack_map(static_cast<uint32_t>(map.size()));
-        for (auto it = map.cbegin(); it != map.cend(); ++it) {
-            packString(packer, it.key());
-            packVariant(packer, it.value());
-        }
-        return;
-    }
-    default:
-        packString(packer, value.toString());
-        return;
-    }
-}
-
-QVariant unpackObject(const msgpack::object &object)
-{
-    switch (object.type) {
-    case msgpack::type::NIL:
-        return {};
-    case msgpack::type::BOOLEAN:
-        return object.via.boolean;
-    case msgpack::type::POSITIVE_INTEGER:
-        return QVariant::fromValue<qulonglong>(object.via.u64);
-    case msgpack::type::NEGATIVE_INTEGER:
-        return QVariant::fromValue<qlonglong>(object.via.i64);
-    case msgpack::type::STR:
-        return QString::fromUtf8(object.via.str.ptr,
-                                 static_cast<qsizetype>(object.via.str.size));
-    case msgpack::type::BIN:
-        return QByteArray(object.via.bin.ptr,
-                          static_cast<qsizetype>(object.via.bin.size));
-    case msgpack::type::MAP: {
-        QVariantMap map;
-        for (uint32_t index = 0; index < object.via.map.size; ++index) {
-            const auto &item = object.via.map.ptr[index];
-            map.insert(unpackObject(item.key).toString(),
-                       unpackObject(item.val));
-        }
-        return map;
-    }
-    case msgpack::type::ARRAY: {
-        QVariantList list;
-        list.reserve(static_cast<qsizetype>(object.via.array.size));
-        for (uint32_t index = 0; index < object.via.array.size; ++index) {
-            list.push_back(unpackObject(object.via.array.ptr[index]));
-        }
-        return list;
-    }
-    default:
-        return {};
-    }
-}
-
-quint32 readBigEndianSize(const QByteArray &header)
-{
-    const auto byte = [&header](int index) {
-        return static_cast<quint32>(
-            static_cast<unsigned char>(header.at(index)));
-    };
-    return (byte(0) << 24) | (byte(1) << 16) | (byte(2) << 8)
-        | byte(3);
-}
-
-QByteArray frameFor(const QVariantMap &message)
-{
-    msgpack::sbuffer payload;
-    msgpack::packer<msgpack::sbuffer> packer(payload);
-    packVariant(packer, message);
-    if (payload.size() == 0 || payload.size() > MaxMediaFrameSize) {
-        return {};
-    }
-    const quint32 size = static_cast<quint32>(payload.size());
-    QByteArray frame(4, Qt::Uninitialized);
-    frame[0] = static_cast<char>((size >> 24) & 0xff);
-    frame[1] = static_cast<char>((size >> 16) & 0xff);
-    frame[2] = static_cast<char>((size >> 8) & 0xff);
-    frame[3] = static_cast<char>(size & 0xff);
-    frame.append(payload.data(), static_cast<qsizetype>(payload.size()));
-    return frame;
 }
 
 bool parseEndpoint(const QString &endpoint, QString *host, quint16 *port)
@@ -342,6 +220,7 @@ public:
                      QVariant::fromValue<qulonglong>(m_transportEpoch)},
                 }));
         m_pending.insert(requestId, std::move(pending));
+        scheduleDeadlineTimer();
         if (m_ready) {
             sendPending(requestId);
         } else if (!m_socket
@@ -365,6 +244,7 @@ public:
         releaseProvisional(it.value());
         Pending pending = std::move(it.value());
         m_pending.erase(it);
+        scheduleDeadlineTimer();
         QtMediaResult result;
         result.errorCode = QStringLiteral("cancelled");
         result.error = QStringLiteral("media request cancelled");
@@ -450,10 +330,15 @@ private:
     {
         if (!m_deadlineTimer) {
             m_deadlineTimer = new QTimer(this);
-            m_deadlineTimer->setInterval(50);
+            m_deadlineTimer->setSingleShot(true);
+            m_deadlineTimer->setTimerType(Qt::PreciseTimer);
             connect(m_deadlineTimer, &QTimer::timeout, this,
-                    [this]() { expireRequests(); });
-            m_deadlineTimer->start();
+                    [this]() {
+#if defined(F4_MEDIA_CLIENT_TESTING)
+                        ++m_deadlineTimerWakeCount;
+#endif
+                        expireRequests();
+                    });
         }
         if (!m_reconnectTimer) {
             m_reconnectTimer = new QTimer(this);
@@ -461,6 +346,43 @@ private:
             connect(m_reconnectTimer, &QTimer::timeout, this,
                     [this]() { connectSocket(); });
         }
+    }
+
+    void scheduleDeadlineTimer()
+    {
+        if (!m_deadlineTimer) {
+            return;
+        }
+
+        qint64 nearestMs = -1;
+        const auto includeDeadline = [&nearestMs](const QDeadlineTimer &deadline) {
+            const qint64 remainingMs = deadline.remainingTime();
+            if (remainingMs < 0) {
+                return;
+            }
+            if (nearestMs < 0 || remainingMs < nearestMs) {
+                nearestMs = remainingMs;
+            }
+        };
+
+        if (!m_ready && m_socket
+            && m_socket->state() == QAbstractSocket::ConnectedState) {
+            includeDeadline(m_handshakeDeadline);
+        }
+        for (auto it = m_pending.cbegin(); it != m_pending.cend(); ++it) {
+            includeDeadline(it->deadline);
+        }
+
+        if (nearestMs < 0) {
+            m_deadlineTimer->stop();
+            return;
+        }
+        // QDeadlineTimer and QTimer may use different rounding rules. A
+        // minimum one-millisecond delay prevents an early coarse deadline
+        // observation from immediately re-queuing a zero-timer spin.
+        m_deadlineTimer->start(static_cast<int>(std::clamp<qint64>(
+            std::max<qint64>(nearestMs, 1), 1,
+            std::numeric_limits<int>::max())));
     }
 
     void connectSocket()
@@ -478,6 +400,7 @@ private:
         m_socket = new QTcpSocket(this);
         m_socket->setReadBufferSize(MaxMediaFrameSize + 4);
         ++m_transportEpoch;
+        m_handshakeDeadline = QDeadlineTimer(QDeadlineTimer::Forever);
 #if defined(F4_MEDIA_CLIENT_TESTING)
         if (m_testRejectNextReleaseTransport) {
             m_testRejectedReleaseTransportEpoch = m_transportEpoch;
@@ -504,6 +427,7 @@ private:
                      QVariant::fromValue<qulonglong>(m_transportEpoch)},
                 });
             m_handshakeDeadline = QDeadlineTimer(HandshakeTimeoutMs);
+            scheduleDeadlineTimer();
             sendMap({
                 {QStringLiteral("type"), QStringLiteral("hello")},
                 {QStringLiteral("protocol"), 1},
@@ -526,6 +450,7 @@ private:
                                       : QStringLiteral("media socket error"));
         });
         m_socket->connectToHost(m_host, m_port);
+        scheduleDeadlineTimer();
     }
 
     bool sendMap(const QVariantMap &message)
@@ -534,7 +459,8 @@ private:
             || m_socket->state() != QAbstractSocket::ConnectedState) {
             return false;
         }
-        const QByteArray frame = frameFor(message);
+        const QByteArray frame = QtMediaClientWire::frameFor(message,
+                                                             MaxMediaFrameSize);
         if (frame.isEmpty()) {
             return false;
         }
@@ -661,6 +587,7 @@ private:
                     }));
             Pending pending = std::move(it.value());
             m_pending.erase(it);
+            scheduleDeadlineTimer();
             QtMediaResult result;
             result.errorCode = QStringLiteral("backpressure");
             result.error = QStringLiteral("media request write queue is full");
@@ -721,7 +648,7 @@ private:
                 if (m_header.size() < 4) {
                     return;
                 }
-                m_expectedSize = readBigEndianSize(m_header);
+                m_expectedSize = QtMediaClientWire::readBigEndianSize(m_header);
                 m_header.clear();
                 if (m_expectedSize == 0
                     || m_expectedSize > MaxMediaFrameSize) {
@@ -743,7 +670,7 @@ private:
             try {
                 const auto object = msgpack::unpack(
                     payload.constData(), static_cast<size_t>(payload.size()));
-                const QVariant decoded = unpackObject(object.get());
+                const QVariant decoded = QtMediaClientWire::unpackObject(object.get());
                 if (decoded.metaType().id() != QMetaType::QVariantMap) {
                     protocolFailure(QStringLiteral("media frame is not a map"));
                     return;
@@ -771,6 +698,7 @@ private:
                 std::min(m_maxChunkSize,
                          qint64(MaxMediaFrameSize - 1024)));
             m_ready = true;
+            m_handshakeDeadline = QDeadlineTimer(QDeadlineTimer::Forever);
             m_reconnectDelayMs = 100;
             notifyReady();
             ZoinGallery::MediaTimingTrace::event(
@@ -786,6 +714,7 @@ private:
             for (const QString &requestId : ids) {
                 sendPending(requestId);
             }
+            scheduleDeadlineTimer();
             return;
         }
         if (type == QStringLiteral("ack")) {
@@ -876,6 +805,7 @@ private:
         }
         Pending pending = std::move(it.value());
         m_pending.erase(it);
+        scheduleDeadlineTimer();
         finish(requestId, pending.operation, result,
                std::move(pending.completion));
     }
@@ -931,6 +861,7 @@ private:
                 }));
         Pending pending = std::move(it.value());
         m_pending.erase(it);
+        scheduleDeadlineTimer();
         finish(requestId, pending.operation, result,
                std::move(pending.completion));
     }
@@ -1007,6 +938,7 @@ private:
         }
         flushPendingAcks();
         flushPendingReleases();
+        scheduleDeadlineTimer();
     }
 
     void handleDisconnect(const QString &message)
@@ -1018,6 +950,7 @@ private:
         }
         m_handlingDisconnect = true;
         m_ready = false;
+        m_handshakeDeadline = QDeadlineTimer(QDeadlineTimer::Forever);
         notifyReady();
         m_header.clear();
         m_payload.clear();
@@ -1045,6 +978,7 @@ private:
             m_reconnectTimer->start(m_reconnectDelayMs);
             m_reconnectDelayMs = std::min(m_reconnectDelayMs * 2, 2000);
         }
+        scheduleDeadlineTimer();
         m_handlingDisconnect = false;
     }
 
@@ -1061,6 +995,7 @@ private:
     void resetTransport(const QString &message, bool reconnect)
     {
         m_ready = false;
+        m_handshakeDeadline = QDeadlineTimer(QDeadlineTimer::Forever);
         notifyReady();
         if (m_socket) {
             m_socket->blockSignals(true);
@@ -1072,6 +1007,7 @@ private:
         m_payload.clear();
         m_expectedSize = 0;
         const auto pending = std::exchange(m_pending, {});
+        scheduleDeadlineTimer();
         for (auto it = pending.cbegin(); it != pending.cend(); ++it) {
             releaseProvisional(it.value());
             QtMediaResult result;
@@ -1173,6 +1109,24 @@ private:
     bool m_flushingReleases = false;
     bool m_releaseOverflowReported = false;
 #if defined(F4_MEDIA_CLIENT_TESTING)
+public:
+    quint64 deadlineTimerWakeCountForTest() const
+    {
+        return m_deadlineTimerWakeCount;
+    }
+
+    bool deadlineTimerActiveForTest() const
+    {
+        return m_deadlineTimer && m_deadlineTimer->isActive();
+    }
+
+    int deadlineTimerRemainingTimeForTest() const
+    {
+        return m_deadlineTimer ? m_deadlineTimer->remainingTime() : -1;
+    }
+
+private:
+    quint64 m_deadlineTimerWakeCount = 0;
     quint64 m_testRejectedReleaseTransportEpoch = 0;
     bool m_testRejectNextReleaseTransport = false;
     int m_testSuccessfulMaterializeCompletionDelayMs = 0;
@@ -1210,6 +1164,42 @@ qint64 QtMediaClient::maxChunkSize() const
 {
     return m_maxChunkSize.load(std::memory_order_acquire);
 }
+
+#if defined(F4_MEDIA_CLIENT_TESTING)
+quint64 QtMediaClient::deadlineTimerWakeCountForTest() const
+{
+    quint64 wakeCount = 0;
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker, [worker = m_worker, &wakeCount]() {
+            wakeCount = worker->deadlineTimerWakeCountForTest();
+        }, Qt::BlockingQueuedConnection);
+    }
+    return wakeCount;
+}
+
+bool QtMediaClient::deadlineTimerActiveForTest() const
+{
+    bool active = false;
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker, [worker = m_worker, &active]() {
+            active = worker->deadlineTimerActiveForTest();
+        }, Qt::BlockingQueuedConnection);
+    }
+    return active;
+}
+
+int QtMediaClient::deadlineTimerRemainingTimeForTest() const
+{
+    int remainingTime = -1;
+    if (m_worker) {
+        QMetaObject::invokeMethod(
+            m_worker, [worker = m_worker, &remainingTime]() {
+                remainingTime = worker->deadlineTimerRemainingTimeForTest();
+            }, Qt::BlockingQueuedConnection);
+    }
+    return remainingTime;
+}
+#endif
 
 void QtMediaClient::configure(const QVariantMap &advertisement)
 {

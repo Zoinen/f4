@@ -24,6 +24,12 @@ type semanticBlockingLocalVFS struct {
 	readDone    chan struct{}
 }
 
+type semanticExpensiveReader struct{ vfs.ReadAtCloser }
+
+func (semanticExpensiveReader) ReadAccessProfile() vfs.ReadAccessProfile {
+	return vfs.ReadAccessUnknownExpensive
+}
+
 type semanticMaterializingVFS struct {
 	*vfs.NullVFS
 	localRoot string
@@ -1762,12 +1768,18 @@ func TestPanelsFrameSemanticPanelNavigatePath(t *testing.T) {
 }
 
 func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	screen := vtui.NewSilentScreenBuf()
+	vtui.FrameManager.Init(screen)
 	SetDefaultF4Palette()
+	renderer := &searchFirstActivationRenderer{side: -1}
+	screen.Renderer = renderer
 
 	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
 	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
-	pf := &PanelsFrame{panels: [2]Panel{left, right}, activeIdx: 1}
+	pf := &PanelsFrame{
+		panels: [2]Panel{left, right}, activeIdx: 1,
+		showPanels: true, showLeftPanel: true, showRightPanel: true,
+	}
 
 	if !pf.HandleSemanticAction(map[string]any{
 		"action": "panel.driveMenu",
@@ -1777,6 +1789,10 @@ func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
 	}
 	if pf.activeIdx != 0 {
 		t.Fatalf("drive menu did not activate requested panel: %d", pf.activeIdx)
+	}
+	if renderer.calls != 1 || renderer.side != 0 || renderer.activationMenus != 1 {
+		t.Fatalf("inactive drive click published activation/menu contract = %d/%d/%d, want 1/0/1",
+			renderer.calls, renderer.side, renderer.activationMenus)
 	}
 	if menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu); !ok {
 		t.Fatalf("drive menu action opened %T instead of VMenu",
@@ -2243,8 +2259,8 @@ func TestSemantic_ViewerTenGiBHexWindowStaysSparseAndInt64Addressed(t *testing.T
 	}) {
 		t.Fatal("far 64-bit viewer scroll was not handled")
 	}
-	if viewer.TopOffset != wantTop {
-		t.Fatalf("far scroll top=%d, want 16-byte-aligned %d", viewer.TopOffset, wantTop)
+	if viewer.TopOffset != 0 || viewer.semanticWindowGeneration != 0 || !viewer.semanticPendingScroll {
+		t.Fatalf("far request committed before source readiness: top=%d generation=%d pending=%v", viewer.TopOffset, viewer.semanticWindowGeneration, viewer.semanticPendingScroll)
 	}
 
 	// The first snapshot starts one asynchronous cache fill at the far window.
@@ -2271,6 +2287,9 @@ func TestSemantic_ViewerTenGiBHexWindowStaysSparseAndInt64Addressed(t *testing.T
 	}
 
 	node := viewer.SemanticNode(nil)
+	if viewer.TopOffset != wantTop || viewer.semanticPendingScroll || viewer.semanticWindowGeneration == 0 {
+		t.Fatalf("ready far window was not committed: top=%d generation=%d pending=%v", viewer.TopOffset, viewer.semanticWindowGeneration, viewer.semanticPendingScroll)
+	}
 	viewportRows := semanticInt(node["viewportRows"])
 	bufferRows := semanticWindowBufferRows(viewportRows)
 	windowRows := appMapSlice(node["windowRows"])
@@ -2413,7 +2432,7 @@ func TestSemantic_ViewerWrappedScrollWindowUsesVisualRows(t *testing.T) {
 	}
 
 	deadline := time.After(2 * time.Second)
-	var node map[string]any
+	node := viewer.SemanticNode(nil)
 	for viewer.semanticPendingScroll {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
@@ -2460,8 +2479,12 @@ func TestSemantic_ViewerWrappedScrollWindowUsesVisualRows(t *testing.T) {
 	}) {
 		t.Fatal("cached wrapped viewer scroll was not handled")
 	}
+	if !viewer.semanticPendingScroll || viewer.TopOffset != wantTop {
+		t.Fatal("cached request committed before the requested projection")
+	}
+	node = viewer.SemanticNode(nil)
 	if viewer.semanticPendingScroll {
-		t.Fatal("cached wrapped viewer scroll unexpectedly became pending")
+		t.Fatal("cached wrapped projection did not acknowledge its ready window")
 	}
 	if viewer.TopOffset != nextTop {
 		t.Fatalf("cached wrapped seek top=%d, want visual row start %d",
@@ -2482,6 +2505,9 @@ func TestSemantic_ViewerWrappedSeekResumesAcrossCacheWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer viewer.Close()
+	// Exercise asynchronous cache-window negotiation explicitly. OS readers
+	// now use bounded direct-local reads and need not take the pending path.
+	viewer.backend.file = semanticExpensiveReader{viewer.backend.file}
 	viewer.SetPosition(0, 0, 19, 8)
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -2502,7 +2528,7 @@ func TestSemantic_ViewerWrappedSeekResumesAcrossCacheWindows(t *testing.T) {
 
 	deadline := time.After(10 * time.Second)
 	cacheFills := 0
-	var node map[string]any
+	node := viewer.SemanticNode(nil) // Projection initiates readiness-driven I/O.
 	for viewer.semanticPendingScroll {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
@@ -2610,6 +2636,10 @@ func TestSemantic_EditorWindowAndScrollPreserveCursor(t *testing.T) {
 	}) {
 		t.Fatal("editor scroll was not handled")
 	}
+	if ev.ScrollTopRow != 40 || !ev.semanticPendingScroll {
+		t.Fatalf("unpublished scroll changed viewport: top=%d pending=%v", ev.ScrollTopRow, ev.semanticPendingScroll)
+	}
+	ev.SemanticNode(nil) // Ready rows and viewport placement commit together.
 	if ev.ScrollTopRow != 73 || ev.CursorLine != cursorLine || ev.CursorPos != cursorPos {
 		t.Fatalf("scroll changed editor state: top=%d cursor=%d:%d", ev.ScrollTopRow,
 			ev.CursorLine, ev.CursorPos)
@@ -2618,6 +2648,10 @@ func TestSemantic_EditorWindowAndScrollPreserveCursor(t *testing.T) {
 	ev.HandleSemanticAction(map[string]any{
 		"target": vtui.SemanticID(ev), "action": "editor.scroll", "visualRow": 1 << 30,
 	})
+	if ev.semanticWindowGeneration != before {
+		t.Fatal("clamped request acknowledged before its window was projected")
+	}
+	ev.SemanticNode(nil)
 	if ev.semanticWindowGeneration != before+1 {
 		t.Fatalf("clamped editor generation=%d, want %d", ev.semanticWindowGeneration, before+1)
 	}
@@ -2788,6 +2822,97 @@ func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
 		if frame == ev {
 			t.Fatal("editor remained open after activating File > Exit")
 		}
+	}
+}
+
+func TestPanelSettingsSemanticMenuActivationOwnsGoFocusAndScene(t *testing.T) {
+	oldFM := *vtui.FrameManager
+	defer func() { *vtui.FrameManager = oldFM }()
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 42)
+	vtui.FrameManager.Init(scr)
+	vtui.FrameManager.Push(vtui.NewDesktop())
+
+	// Keep this route free of a ConPTY: Panel Settings does not need a live
+	// filesystem or shell, but PanelsFrame's focus contract does require its
+	// ordinary command-line and terminal view objects.
+	pf := &PanelsFrame{
+		activeIdx: 1, widePanel: -1, showPanels: true, showKeyBar: true,
+		showLeftPanel: true, showRightPanel: true,
+	}
+	pf.menuBar = vtui.NewMenuBar(nil)
+	pf.menuBar.SetOwner(pf)
+	pf.menuBar.Items = pf.buildMenuItems()
+	pf.cmdLine = NewCommandLine(">")
+	pf.keyBar = vtui.NewKeyBar()
+	pf.keyBar.SetOwner(pf)
+	pf.termView = NewTerminalView(100, 40)
+	vtui.FrameManager.Push(pf)
+
+	panelSettings, ok := GetAction("Settings.Panel")
+	if !ok {
+		t.Fatal("Settings.Panel action is not registered")
+	}
+	wantLabel := plainLabel(panelSettings.DisplayLabel())
+	menuIndex, itemIndex := -1, -1
+	for topIndex, top := range pf.GetMenuBar().Items {
+		for subIndex, sub := range top.SubItems {
+			// Registry-generated menu items invoke actions through OnClick rather
+			// than the legacy numeric Command field. Match the user-visible action
+			// label so the test exercises the same generated menu as Qt.
+			gotLabel := plainLabel(strings.TrimSpace(strings.TrimPrefix(sub.Text, "√")))
+			if gotLabel == wantLabel {
+				menuIndex, itemIndex = topIndex, subIndex
+				break
+			}
+		}
+	}
+	if menuIndex < 0 || itemIndex < 0 {
+		t.Fatal("Options > Panel Settings is absent from the panels menu")
+	}
+	if !HandleSemanticAction(map[string]any{
+		"action": "menuBar.toggle", "index": menuIndex,
+	}) {
+		t.Fatal("Options menu was not opened through the semantic route")
+	}
+	if !HandleSemanticAction(map[string]any{
+		"action": "menuBar.itemActivate", "menuIndex": menuIndex,
+		"index": itemIndex,
+	}) {
+		t.Fatal("Panel Settings was not activated through the semantic route")
+	}
+
+	dialog, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if !ok || dialog.GetTitle() != Msg("PanelSettings.Title") {
+		t.Fatalf("Go top frame = %T %q, want Panel Settings dialog",
+			vtui.FrameManager.GetTopFrame(), vtui.FrameManager.GetTopFrame().GetTitle())
+	}
+	if !dialog.IsFocused() || pf.IsFocused() {
+		t.Fatalf("Go focus stayed on panels: dialog=%v panels=%v",
+			dialog.IsFocused(), pf.IsFocused())
+	}
+	focused := dialog.GetFocusedItem()
+	if focused == nil || !focused.IsFocused() {
+		t.Fatalf("Panel Settings has no focused Go control: %T", focused)
+	}
+	if _, ok := focused.(*vtui.Checkbox); !ok {
+		t.Fatalf("initial Panel Settings focus = %T, want checkbox", focused)
+	}
+
+	projected, supported := BuildAppIncrementalScene(&vtui.SemanticContext{
+		Width: 100, Height: 42, ActiveScreen: 0,
+	})
+	if !supported || projected == nil {
+		t.Fatal("Panel Settings is absent from the bounded Go scene")
+	}
+	dialogs := appMapSlice(projected.Scene["dialogs"])
+	if len(dialogs) != 1 || semanticString(dialogs[0]["title"]) != Msg("PanelSettings.Title") {
+		t.Fatalf("projected dialogs = %#v", dialogs)
+	}
+	children := appMapSlice(dialogs[0]["children"])
+	if len(children) == 0 || !appBool(children[0]["focused"]) {
+		t.Fatalf("projected Panel Settings focus = %#v", children)
 	}
 }
 

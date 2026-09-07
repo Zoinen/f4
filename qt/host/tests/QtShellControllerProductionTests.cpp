@@ -1,5 +1,7 @@
 #include "QtShellController.h"
+#include "ExtUiSceneReducer.h"
 
+#include <QElapsedTimer>
 #include <QHostAddress>
 #include <QSignalSpy>
 #include <QTcpServer>
@@ -136,9 +138,363 @@ class QtShellControllerProductionTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void applicationFocusIsDeduplicated();
+    void documentCursorStateDoesNotInvalidateRows();
+    void documentCursorStateRejectsWrongMapping_data();
+    void documentCursorStateRejectsWrongMapping();
+    void patchPresentationIsDemandShapedAndSanitized();
+    void catalogCompletionSurvivesLateQmlConstruction();
     void streamUpdatesNeverAssembleMasterScene();
     void pagedSelectionKeepsBoundedCatalog();
 };
+
+void QtShellControllerProductionTests::applicationFocusIsDeduplicated()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+                                 "application-focus", 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+    controller.sendApplicationFocus(false);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    QCOMPARE(peer->readAll(), frame({{"type", "focus"}, {"focused", false}}));
+    controller.sendApplicationFocus(false);
+    QCoreApplication::processEvents();
+    QCOMPARE(peer->bytesAvailable(), 0);
+    controller.sendApplicationFocus(true);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    QCOMPARE(peer->readAll(), frame({{"type", "focus"}, {"focused", true}}));
+    controller.sendApplicationFocus(true);
+    QCoreApplication::processEvents();
+    QCOMPARE(peer->bytesAvailable(), 0);
+}
+
+void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = "document-state-only";
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+                                 nonce, 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+    QVERIFY(sendFrame(peer, {{"type", "hello"}, {"protocol", 4}, {"nonce", nonce}}));
+    QVariantList rows;
+    for (int row = 0; row < 147; ++row) {
+        rows.append(QVariantMap{{"offset", row * 310},
+            {"runs", QVariantList{QVariantMap{
+                {"text", QString(310, QLatin1Char('x'))},
+                {"foreground", "#d3d7cf"}, {"background", "#2e3436"}}}}});
+    }
+    const QVariantMap document{{"id", "state-editor"}, {"kind", "editor"},
+                               {"documentKey", "editor-instance-4"},
+                               {"windowRows", rows}, {"layoutRevision", 3},
+                               {"windowGeneration", 7}};
+    QSignalSpy changed(controller.surfaceRegistry(), &SurfaceRegistry::documentChanged);
+    QSignalSpy compact(&controller, &QtShellController::compactPresentationChanged);
+    QVERIFY(sendFrame(peer, envelope(1, "document/state-editor", 1, "snapshot", {
+        {"type", "document_snapshot"},
+        {"state", QVariantMap{{"surface", document}}},
+    })));
+    QTRY_COMPARE(changed.size(), 1);
+    const QVariantList committedRows = controller.surfaceRegistry()->document()
+                                          .value("windowRows").toList();
+    ExtUiSceneReducer::resetPresentationTraversalForTesting();
+    compact.clear();
+    QVERIFY(sendFrame(peer, envelope(2, "document/state-editor", 2, "patch", {
+        {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"surface", QVariantMap{{"id", "state-editor"},
+            {"set", QVariantMap{{"layoutRevision", 3}, {"windowGeneration", 7},
+                {"documentKey", "editor-instance-4"},
+                {"cursorLine", 0}, {"cursorPos", 5}, {"cursorVisualRow", 0},
+                {"cursorVisualColumn", 5}, {"cursorVisible", true},
+                {"cursorShape", "underline"}, {"cursorAbsoluteRow", 0},
+                {"cursorAbsoluteColumn", 5}, {"selection", true},
+                {"selectionAnchorRow", 0}, {"selectionAnchorColumn", 2},
+                {"selectionForeground", "#ffffff"},
+                {"selectionBackground", "#3b6290"},
+                {"selectionBold", false}, {"selectionUnderline", false},
+                {"selectionStrikeout", false},
+                {"topBarRight", " UTF-8 | 1,6"}}}}},
+    }, 1)));
+    QTRY_COMPARE(compact.size(), 1);
+    QCOMPARE(changed.size(), 1);
+    QCOMPARE(ExtUiSceneReducer::presentationDocumentRowVisitsForTesting(), quint64(0));
+    QCOMPARE(controller.surfaceRegistry()->document().value("cursorPos").toInt(), 5);
+    QCOMPARE(controller.surfaceRegistry()->document().value("windowRows").toList(), rows);
+    const QVariantList unchangedRows = controller.surfaceRegistry()->document()
+                                          .value("windowRows").toList();
+    QCOMPARE(unchangedRows.constData(), committedRows.constData());
+    QCOMPARE(compact.first().first().toMap().value("surfaceState").toMap()
+                 .value("cursorPos").toInt(), 5);
+    QCOMPARE(compact.first().first().toMap().value("surfaceState").toMap()
+                 .value("documentKey").toString(), QString("editor-instance-4"));
+    QCOMPARE(compact.first().first().toMap().value("surfaceState").toMap()
+                 .value("layoutRevision").toULongLong(), quint64(3));
+    QCOMPARE(compact.first().first().toMap().value("surfaceState").toMap()
+                 .value("windowGeneration").toULongLong(), quint64(7));
+    const QVariantMap selectionState = compact.first().first().toMap()
+                                           .value("surfaceState").toMap();
+    QCOMPARE(selectionState.value("cursorAbsoluteColumn").toInt(), 5);
+    QCOMPARE(selectionState.value("selection").toBool(), true);
+    QCOMPARE(selectionState.value("selectionAnchorColumn").toInt(), 2);
+    QCOMPARE(selectionState.value("selectionForeground").toString(),
+             QString("#ffffff"));
+    QCOMPARE(selectionState.value("selectionBackground").toString(),
+             QString("#3b6290"));
+    // Legacy producers may omit both fences; this still cannot alter rows.
+    QVERIFY(sendFrame(peer, envelope(3, "document/state-editor", 3, "patch", {
+        {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"surface", QVariantMap{{"id", "state-editor"},
+            {"set", QVariantMap{{"cursorPos", 6}}}}},
+    }, 2)));
+    QTRY_COMPARE(compact.size(), 2);
+    QCOMPARE(changed.size(), 1);
+    QCOMPARE(controller.surfaceRegistry()->document().value("cursorPos").toInt(), 6);
+    QCOMPARE(ExtUiSceneReducer::presentationDocumentRowVisitsForTesting(), quint64(0));
+    QCOMPARE(compact.last().first().toMap().value("surfaceState").toMap()
+                 .value("selection").toBool(), true);
+    QVERIFY(!controller.retainsMasterSceneForTesting());
+
+    // Clearing a stream selection is a set-to-false update. The demand-shaped
+    // compact state must retain that explicit value while leaving row storage
+    // and delegates outside the update path.
+    QVERIFY(sendFrame(peer, envelope(4, "document/state-editor", 4, "patch", {
+        {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"surface", QVariantMap{{"id", "state-editor"},
+            {"set", QVariantMap{{"layoutRevision", 3}, {"windowGeneration", 7},
+                {"documentKey", "editor-instance-4"},
+                {"selection", false}}}}},
+    }, 3)));
+    QTRY_COMPARE(compact.size(), 3);
+    QCOMPARE(changed.size(), 1);
+    QCOMPARE(ExtUiSceneReducer::presentationDocumentRowVisitsForTesting(), quint64(0));
+    const QVariantMap clearedState = compact.last().first().toMap()
+                                         .value("surfaceState").toMap();
+    QVERIFY(clearedState.contains("selection"));
+    QCOMPARE(clearedState.value("selection").toBool(), false);
+    QCOMPARE(controller.surfaceRegistry()->document().value("windowRows").toList(),
+             rows);
+}
+
+void QtShellControllerProductionTests::documentCursorStateRejectsWrongMapping_data()
+{
+    QTest::addColumn<QString>("field");
+    QTest::addColumn<QVariant>("value");
+    QTest::newRow("old-layout") << QString("layoutRevision") << QVariant(2);
+    QTest::newRow("future-layout") << QString("layoutRevision") << QVariant(4);
+    QTest::newRow("old-window") << QString("windowGeneration") << QVariant(6);
+    QTest::newRow("future-window") << QString("windowGeneration") << QVariant(8);
+    QTest::newRow("negative-layout") << QString("layoutRevision") << QVariant(-1);
+    QTest::newRow("string-window") << QString("windowGeneration") << QVariant("7");
+    QTest::newRow("wrong-document") << QString("documentKey") << QVariant("other");
+}
+
+void QtShellControllerProductionTests::documentCursorStateRejectsWrongMapping()
+{
+    QFETCH(QString, field);
+    QFETCH(QVariant, value);
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = "document-state-mapping";
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+                                 nonce, 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+    QVERIFY(sendFrame(peer, {{"type", "hello"}, {"protocol", 4}, {"nonce", nonce}}));
+    const QVariantMap document{{"id", "state-editor"}, {"kind", "editor"},
+        {"documentKey", "editor-instance-4"},
+        {"layoutRevision", 3}, {"windowGeneration", 7}, {"cursorPos", 1},
+        {"windowRows", QVariantList{QVariantMap{{"text", "unchanged"}}}}};
+    QSignalSpy changed(controller.surfaceRegistry(), &SurfaceRegistry::documentChanged);
+    QSignalSpy compact(&controller, &QtShellController::compactPresentationChanged);
+    QSignalSpy errors(&controller, &QtShellController::fatalError);
+    QVERIFY(sendFrame(peer, envelope(1, "document/state-editor", 1, "snapshot", {
+        {"type", "document_snapshot"}, {"state", QVariantMap{{"surface", document}}},
+    })));
+    QTRY_COMPARE(changed.size(), 1);
+    compact.clear();
+    QVariantMap state{{"documentKey", "editor-instance-4"},
+                      {"layoutRevision", 3}, {"windowGeneration", 7},
+                      {"cursorPos", 9}};
+    state.insert(field, value);
+    QVERIFY(sendFrame(peer, envelope(2, "document/state-editor", 2, "patch", {
+        {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"surface", QVariantMap{{"id", "state-editor"}, {"set", state}}},
+    }, 1)));
+    QTRY_COMPARE(errors.size(), 1);
+    QCOMPARE(changed.size(), 1);
+    QVERIFY(compact.isEmpty());
+    QCOMPARE(controller.surfaceRegistry()->document(), document);
+    QCOMPARE(controller.surfaceRegistry()->documentRevision(), quint64(1));
+    QVERIFY(errors.first().first().toString().contains(field));
+}
+
+void QtShellControllerProductionTests::patchPresentationIsDemandShapedAndSanitized()
+{
+    using namespace ExtUiSceneReducer;
+    QVariantList rows;
+    for (int row = 0; row < 147; ++row) {
+        rows.append(QVariantMap{{"visualRow", row},
+            {"runs", QVariantList{QVariantMap{
+                {"text", QString(310, QLatin1Char('x'))},
+                {"foreground", "#d3d7cf"}, {"background", "#2e3436"}}}}});
+    }
+    const QVariantMap capability{{"resourceId", "private-resource"},
+                                 {"leaseId", "private-lease"},
+                                 {"label", "public"}};
+    const QVariantMap scene{
+        {"schema", "app"},
+        {"surface", QVariantMap{{"id", "document"}, {"kind", "editor"},
+            {"layoutRevision", 3}, {"windowGeneration", 7},
+            {"windowRows", rows}, {"rows", rows}, {"cursorPos", 9},
+            {"resourceId", "private-document"}}},
+        {"shell", QVariantMap{{"id", "shell"}, {"kind", "shell"},
+            {"source", capability}, {"nested", QVariantList{capability}},
+            {"terminal", QVariantMap{{"rows", rows}}}}},
+    };
+    const QVariantMap cursorPatch{{"surface", QVariantMap{
+        {"id", "document"}, {"set", QVariantMap{{"cursorPos", 10}}}}}};
+
+    // The counter detects traversal, not merely an unchanged final QVariant.
+    // The old production call must visit both row aliases and the hidden
+    // terminal tree; the patch-specific projection visits none of them.
+    resetPresentationTraversalForTesting();
+    const QVariantMap full = makePresentationScene(scene);
+    QCOMPARE(presentationDocumentRowVisitsForTesting(), quint64(3));
+    resetPresentationTraversalForTesting();
+    const QVariantMap projected = makePatchPresentationScene(scene, cursorPatch);
+    QCOMPARE(presentationDocumentRowVisitsForTesting(), quint64(0));
+    QCOMPARE(projected.keys(), QStringList{QStringLiteral("surface")});
+    auto expectedState = full.value("surface").toMap();
+    expectedState.remove("rows");
+    expectedState.remove("windowRows");
+    QCOMPARE(projected.value("surface").toMap(), expectedState);
+
+    // Full root replacements never read the previous document. Shell deltas
+    // still preserve the established stripping boundary for needed data.
+    const QVariantMap replacement{{"root", QVariantMap{{"set", QVariantMap{
+        {"surface", QVariantMap{{"id", "next"}, {"kind", "viewer"}}}}}}}};
+    QVERIFY(makePatchPresentationScene(scene, replacement).isEmpty());
+    const QVariantMap shellPatch{{"shell", QVariantMap{{"set", QVariantMap{
+        {"showPanels", true}}}}}};
+    const QVariantMap shellProjection = makePatchPresentationScene(scene, shellPatch);
+    QCOMPARE(shellProjection.keys(), QStringList{QStringLiteral("shell")});
+    QCOMPARE(shellProjection.value("shell"), full.value("shell"));
+    QVERIFY(!shellProjection.value("shell").toMap().contains("source"));
+    const auto nested = shellProjection.value("shell").toMap()
+                            .value("nested").toList().first().toMap();
+    QCOMPARE(nested, QVariantMap({{"label", "public"}}));
+
+    // Informational, same-process comparison of the removed traversal only.
+    // No wall-clock threshold or end-to-end claim belongs in this regression.
+    QElapsedTimer timer;
+    timer.start();
+    for (int iteration = 0; iteration < 100; ++iteration)
+        makePresentationScene(scene);
+    const qint64 fullNs = timer.nsecsElapsed();
+    timer.restart();
+    for (int iteration = 0; iteration < 100; ++iteration)
+        makePatchPresentationScene(scene, cursorPatch);
+    qInfo() << "100 prior-tree/full vs demand-shaped cursor projections ms"
+            << fullNs / 1e6 << timer.nsecsElapsed() / 1e6;
+}
+
+void QtShellControllerProductionTests::catalogCompletionSurvivesLateQmlConstruction()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = QStringLiteral("late-qml-panel-catalog");
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        nonce, 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+    QVERIFY(sendFrame(peer, {
+        {QStringLiteral("type"), QStringLiteral("hello")},
+        {QStringLiteral("protocol"), 4},
+        {QStringLiteral("nonce"), nonce},
+    }));
+
+    QVariantMap loadingPanel = panelWithRows(3);
+    loadingPanel.insert(QStringLiteral("loading"), true);
+    QVERIFY(sendFrame(peer, envelope(1, QStringLiteral("panel/0"), 1,
+                        QStringLiteral("snapshot"), {
+        {QStringLiteral("type"), QStringLiteral("panel_catalog_snapshot")},
+        {QStringLiteral("state"), QVariantMap{
+            {QStringLiteral("side"), 0},
+            {QStringLiteral("panel"), loadingPanel},
+        }},
+    })));
+
+    QVariantMap loadingDescriptor = loadingPanel;
+    loadingDescriptor.remove(QStringLiteral("entries"));
+    QVERIFY(sendFrame(peer, envelope(2, QStringLiteral("shell"), 1,
+                        QStringLiteral("snapshot"), {
+        {QStringLiteral("type"), QStringLiteral("shell_snapshot")},
+        {QStringLiteral("state"), QVariantMap{
+            {QStringLiteral("shell"), QVariantMap{
+                {QStringLiteral("id"), QStringLiteral("shell")},
+                {QStringLiteral("kind"), QStringLiteral("shell")},
+                {QStringLiteral("mode"), QStringLiteral("panels")},
+                {QStringLiteral("activePanel"), 0},
+                {QStringLiteral("showPanels"), true},
+                {QStringLiteral("panels"),
+                 QVariantList{loadingDescriptor}},
+            }},
+        }},
+    })));
+    QTRY_VERIFY(controller.surfaceRegistry()->hasShell());
+    QCOMPARE(controller.surfaceRegistry()->shell()
+                 .value(QStringLiteral("panels")).toList().constFirst().toMap()
+                 .value(QStringLiteral("loading")).toBool(), true);
+
+    // These signals may be emitted while QQmlApplicationEngine is still
+    // constructing ShellSceneStore. The retained shell must therefore adopt
+    // the bounded final descriptor as backing state without shellChanged,
+    // which would unnecessarily reset both live panels in the normal case.
+    QSignalSpy shellChanges(controller.surfaceRegistry(),
+                            &SurfaceRegistry::shellChanged);
+    QSignalSpy compactChanges(&controller,
+                              &QtShellController::compactPresentationChanged);
+    QVariantMap readyPanel = loadingPanel;
+    readyPanel.insert(QStringLiteral("catalogRevision"), quint64(2));
+    readyPanel.insert(QStringLiteral("metadataRevision"), quint64(2));
+    readyPanel.insert(QStringLiteral("loading"), false);
+    QVERIFY(sendFrame(peer, envelope(3, QStringLiteral("panel/0"), 2,
+                        QStringLiteral("reset"), {
+        {QStringLiteral("type"), QStringLiteral("panel_catalog")},
+        {QStringLiteral("activePanel"), 0},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), readyPanel},
+    }, 1)));
+    QTRY_COMPARE(compactChanges.size(), 1);
+    QCOMPARE(shellChanges.size(), 0);
+
+    const QVariantMap retainedDescriptor = controller.surfaceRegistry()->shell()
+        .value(QStringLiteral("panels")).toList().constFirst().toMap();
+    QCOMPARE(retainedDescriptor.value(QStringLiteral("loading")).toBool(),
+             false);
+    QCOMPARE(retainedDescriptor.value(QStringLiteral("catalogRevision"))
+                 .toULongLong(), quint64(2));
+    QVERIFY(!retainedDescriptor.contains(QStringLiteral("entries")));
+    QCOMPARE(controller.panelCatalogSnapshot(0)
+                 .value(QStringLiteral("entries")).toList().size(), 3);
+    QVERIFY(!controller.retainsMasterSceneForTesting());
+}
 
 void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
 {

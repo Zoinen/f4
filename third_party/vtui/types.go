@@ -162,6 +162,14 @@ type PeriodicRedrawRenderer interface {
 	WantsPeriodicRedraw() bool
 }
 
+// EventDrivenResizeRenderer reports that a renderer's host delivers explicit
+// ResizeEventType input whenever its authoritative dimensions change. Such a
+// host must not also poll the terminal file descriptors for size while idle.
+// Renderers which do not implement this capability retain legacy polling.
+type EventDrivenResizeRenderer interface {
+	UsesEventDrivenResize() bool
+}
+
 // SemanticContext содержит контекст для генерации семантического дерева.
 type SemanticContext struct {
 	Width        int

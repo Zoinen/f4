@@ -176,6 +176,7 @@ type OpQueueManager struct {
 	activeKeys     map[string]bool
 	frame          *QueueFrame
 	refreshPending bool
+	workerWake     chan struct{}
 }
 
 var GlobalQueueManager *OpQueueManager
@@ -183,9 +184,28 @@ var GlobalQueueManager *OpQueueManager
 func init() {
 	GlobalQueueManager = &OpQueueManager{
 		activeKeys: make(map[string]bool),
+		workerWake: make(chan struct{}, 1),
 	}
 	go GlobalQueueManager.workerLoop()
 }
+
+func (qm *OpQueueManager) workerWakeChannel() chan struct{} {
+	qm.mu.Lock()
+	defer qm.mu.Unlock()
+	if qm.workerWake == nil {
+		qm.workerWake = make(chan struct{}, 1)
+	}
+	return qm.workerWake
+}
+
+func (qm *OpQueueManager) wakeWorker() {
+	ch := qm.workerWakeChannel()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 func (qm *OpQueueManager) RequestRefresh() {
 	qm.mu.Lock()
 	if qm.refreshPending {
@@ -227,6 +247,7 @@ func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 	task.ctx, task.cancel = context.WithCancel(context.Background())
 	qm.tasks = append(qm.tasks, task)
 	qm.mu.Unlock()
+	qm.wakeWorker()
 
 	vtui.FrameManager.PostTask(func() {
 		qm.EnsureQueueWorkspace()
@@ -421,40 +442,67 @@ func (qm *OpQueueManager) postTaskCompletion(t *QueueTask) {
 }
 
 func (qm *OpQueueManager) workerLoop() {
+	qm.workerLoopUntil(nil)
+}
+
+// workerLoopUntil runs the queue dispatcher until stop is closed. A nil stop
+// channel gives the process-lifetime behavior used by the application. Keeping
+// the wait interruptible lets focused tests stop their private dispatchers
+// without leaving goroutines behind.
+func (qm *OpQueueManager) workerLoopUntil(stop <-chan struct{}) {
+	wake := qm.workerWakeChannel()
+	qm.workerLoopOn(wake, stop)
+}
+
+func (qm *OpQueueManager) workerLoopOn(wake <-chan struct{}, stop <-chan struct{}) {
 	for {
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-wake:
+		case <-stop:
+			return
+		}
 
-		qm.mu.Lock()
-		var toRun *QueueTask
-		for _, t := range qm.tasks {
-			t.mu.Lock()
-			isQueued := t.State == "Queued"
-			t.mu.Unlock()
+		for {
+			qm.mu.Lock()
+			var toRun *QueueTask
+			for _, t := range qm.tasks {
+				t.mu.Lock()
+				isQueued := t.State == "Queued"
+				t.mu.Unlock()
 
-			if isQueued {
-				canRun := true
-				for _, rk := range t.ResKeys {
-					if qm.activeKeys[rk] {
-						canRun = false
+				if isQueued {
+					canRun := true
+					for _, rk := range t.ResKeys {
+						if qm.activeKeys[rk] {
+							canRun = false
+							break
+						}
+					}
+					if canRun {
+						toRun = t
+						for _, rk := range t.ResKeys {
+							qm.activeKeys[rk] = true
+						}
+						t.mu.Lock()
+						t.State = "Starting"
+						t.mu.Unlock()
 						break
 					}
 				}
-				if canRun {
-					toRun = t
-					for _, rk := range t.ResKeys {
-						qm.activeKeys[rk] = true
-					}
-					t.mu.Lock()
-					t.State = "Starting"
-					t.mu.Unlock()
-					break
-				}
 			}
-		}
-		qm.mu.Unlock()
+			qm.mu.Unlock()
 
-		if toRun != nil {
-			go qm.executeTask(toRun)
+			if toRun != nil {
+				go qm.executeTask(toRun)
+				// Start every task whose resource set is currently independent
+				// before blocking again.
+				continue
+			}
+
+			// Either the queue is empty or every queued task is waiting on an
+			// active resource. Enqueue and resource release are the only events
+			// that can make progress possible, and both signal workerWake.
+			break
 		}
 	}
 }
@@ -532,6 +580,7 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 		qm.activeKeys[rk] = false
 	}
 	qm.mu.Unlock()
+	qm.wakeWorker()
 
 	vtui.DebugLog("QUEUE_DEBUG: Task %d finalized with state %s. Posting OnComplete.", t.ID, finalState)
 

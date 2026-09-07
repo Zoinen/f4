@@ -323,6 +323,15 @@ func extUiChangedSceneSnapshotMessages(previous, current map[string]any) []map[s
 		dispatches := extUiSplitSceneSnapshot(current)
 		messages := make([]map[string]any, 0, len(dispatches))
 		for _, dispatch := range dispatches {
+			// Benchmark annotations belong to the authoritative scene export,
+			// not to one particular semantic stream. Preserve them on every
+			// bootstrap payload so the first envelope observed by a transport
+			// probe can still be correlated with the export that produced it.
+			for _, key := range []string{"benchmarkTraceId", "benchmark"} {
+				if value, present := current[key]; present {
+					dispatch.payload[key] = value
+				}
+			}
 			messages = append(messages, map[string]any{
 				"type":     "semantic_stream_snapshot",
 				"streamId": dispatch.streamID,
@@ -868,12 +877,19 @@ type ExtUiRenderer struct {
 	deferSemanticRenderGen      uint64
 	semanticUpdateOpen          bool
 	semanticUpdateHandled       bool
-	semanticUpdateTouched       bool
-	semanticUpdateCheckpoint    bool
-	semanticUpdatePreviousBound bool
-	semanticFastPathUnsafe      bool
-	panelActivationProjected    bool
-	directPanelCatalog          map[string]any
+	// semanticUpdatePanelActivation records the one compact update which may
+	// legally compose with a root-only menu patch in the same UI transaction.
+	// Clicking the drive button on the inactive panel activates that panel and
+	// opens its menu atomically; treating the activation as the whole boundary
+	// drops the menu and lets the next click create a duplicate popup.
+	semanticUpdatePanelActivation bool
+	semanticUpdateActivationMenu  bool
+	semanticUpdateTouched         bool
+	semanticUpdateCheckpoint      bool
+	semanticUpdatePreviousBound   bool
+	semanticFastPathUnsafe        bool
+	panelActivationProjected      bool
+	directPanelCatalog            map[string]any
 	// The semantic Qt presentation fully owns native app surfaces. Its cell
 	// grid remains instantiated only as a fallback/input sink, so serializing
 	// the hidden TUI buffer on every panel mutation wastes the latency budget.
@@ -939,6 +955,45 @@ func (r *ExtUiRenderer) BeginSemanticSceneUpdate() {
 	}
 	r.semanticUpdateOpen = true
 	r.semanticUpdateHandled = false
+	r.semanticUpdatePanelActivation = false
+	r.semanticUpdateActivationMenu = false
+	r.deferSemanticRenderBound = false
+}
+
+// AllowSemanticMenuAfterPanelActivation is the explicit application contract
+// for the rare compound action whose complete semantic result is one compact
+// panel activation followed by one root-only menu update. Keeping this opt-in
+// prevents unrelated mutations after activation from inheriting the exception.
+func (r *ExtUiRenderer) AllowSemanticMenuAfterPanelActivation() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.semanticUpdateActivationMenu = r.semanticUpdateOpen &&
+		r.semanticUpdateHandled && r.semanticUpdatePanelActivation &&
+		!r.semanticFastPathUnsafe
+}
+
+// InvalidateSemanticSceneUpdate restores the authoritative render/export path
+// when a UI transaction mutates state outside the compact projection it had
+// already queued. For example, leaving Fast Find while activating a panel and
+// opening its drive menu changes panel state in addition to shell activation
+// and root menu state.
+func (r *ExtUiRenderer) InvalidateSemanticSceneUpdate() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invalidateSemanticSceneUpdateLocked()
+}
+
+func (r *ExtUiRenderer) invalidateSemanticSceneUpdateLocked() {
+	if !r.semanticUpdateOpen {
+		return
+	}
+	r.semanticUpdateTouched = true
+	r.semanticUpdateHandled = false
+	r.semanticUpdatePanelActivation = false
+	r.semanticUpdateActivationMenu = false
+	r.semanticFastPathUnsafe = true
+	r.suppressSemanticExport = false
+	r.deferSemanticRender = false
 	r.deferSemanticRenderBound = false
 }
 
@@ -954,6 +1009,8 @@ func (r *ExtUiRenderer) EndSemanticSceneUpdate() {
 	}
 	r.semanticUpdateOpen = false
 	r.semanticUpdateHandled = false
+	r.semanticUpdatePanelActivation = false
+	r.semanticUpdateActivationMenu = false
 	r.semanticUpdateTouched = false
 	r.semanticUpdateCheckpoint = false
 }
@@ -973,6 +1030,8 @@ func (r *ExtUiRenderer) EndSemanticSceneUpdateUnchanged() bool {
 	}
 	r.semanticUpdateOpen = false
 	r.semanticUpdateHandled = false
+	r.semanticUpdatePanelActivation = false
+	r.semanticUpdateActivationMenu = false
 	r.semanticUpdateTouched = false
 	r.semanticUpdateCheckpoint = false
 	r.deferSemanticRenderBound = r.semanticUpdatePreviousBound
@@ -1112,6 +1171,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		rejection = "direct_panel_catalog"
 	}
 	if rejection != "" {
+		r.invalidateSemanticSceneUpdateLocked()
 		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
 			"reason", rejection, "side", side,
 			"sceneRevision", r.sceneRevision)
@@ -1125,6 +1185,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	patched, rejection := semanticSceneWithPanelActivation(
 		basis, side, title, commandLine)
 	if rejection != "" {
+		r.invalidateSemanticSceneUpdateLocked()
 		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
 			"reason", rejection, "side", side,
 			"sceneRevision", r.sceneRevision)
@@ -1149,6 +1210,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		r.deferSemanticRenderBound = false
 		if r.semanticUpdateOpen {
 			r.semanticUpdateHandled = true
+			r.semanticUpdatePanelActivation = true
 		}
 		navigationBenchmarkUIEvent("panel.activate.direct_accepted",
 			"result", "unchanged", "side", side,
@@ -1159,8 +1221,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		// A title mutation while returning to the delivered side cannot have
 		// come from panel activation alone. Preserve the regular full-export
 		// fallback for that unexpected state.
-		r.semanticFastPathUnsafe = true
-		r.suppressSemanticExport = false
+		r.invalidateSemanticSceneUpdateLocked()
 		navigationBenchmarkUIEvent("panel.activate.direct_rejected",
 			"reason", "same_side_title_changed", "side", side,
 			"sceneRevision", r.sceneRevision)
@@ -1201,8 +1262,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		if err := r.send.SendWithBenchmark(patch, benchmark); err != nil {
 			vtui.DebugLog("EXTUI_RENDERER: direct activation send failed: %v", err)
 			r.closed = true
-			r.suppressSemanticExport = false
-			r.deferSemanticRender = false
+			r.invalidateSemanticSceneUpdateLocked()
 			return
 		}
 		r.lastScene = patched
@@ -1218,6 +1278,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 		r.deferSemanticRenderBound = false
 		if r.semanticUpdateOpen {
 			r.semanticUpdateHandled = true
+			r.semanticUpdatePanelActivation = true
 		}
 		navigationBenchmarkUIEvent("panel.activate.direct_accepted",
 			"result", "sent", "side", side, "revision", revision,
@@ -1231,6 +1292,7 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 	r.pendingPanelActivationScene = patched
 	if r.semanticUpdateOpen {
 		r.semanticUpdateHandled = true
+		r.semanticUpdatePanelActivation = true
 	}
 	navigationBenchmarkUIEvent("panel.activate.direct_accepted",
 		"result", "queued", "side", side, "revision", revision,
@@ -1245,6 +1307,11 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 	current, supported := BuildAppMenuState(ctx)
 	if !supported {
+		r.mu.Lock()
+		if r.semanticUpdatePanelActivation {
+			r.invalidateSemanticSceneUpdateLocked()
+		}
+		r.mu.Unlock()
 		navigationBenchmarkUIEvent("menu_state.direct_rejected",
 			"reason", "projection_unsupported")
 		return false
@@ -1260,7 +1327,8 @@ func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 	r.semanticUpdateTouched = true
 	rejection := ""
 	switch {
-	case r.semanticUpdateHandled:
+	case r.semanticUpdateHandled &&
+		!(r.semanticUpdatePanelActivation && r.semanticUpdateActivationMenu):
 		rejection = "boundary_already_handled"
 	case r.closed:
 		rejection = "closed"
@@ -1288,6 +1356,12 @@ func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 		rejection = "direct_panel_catalog"
 	}
 	if rejection != "" {
+		// Once activation has crossed the wire, failure to publish the menu
+		// must not retain its render-deferral permit. The ordinary export will
+		// reconcile the already-activated shell with the complete menu state.
+		if r.semanticUpdatePanelActivation {
+			r.invalidateSemanticSceneUpdateLocked()
+		}
 		navigationBenchmarkUIEvent("menu_state.direct_rejected",
 			"reason", rejection, "sceneRevision", r.sceneRevision)
 		return false
@@ -1300,6 +1374,8 @@ func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 		r.deferSemanticRender = r.nativeCellFrameSuppressed
 		r.deferSemanticRenderBound = false
 		r.semanticUpdateHandled = true
+		r.semanticUpdatePanelActivation = false
+		r.semanticUpdateActivationMenu = false
 		r.panelActivationQueued = false
 	}
 	if len(rootSet) == 0 && len(rootClear) == 0 {
@@ -1355,13 +1431,25 @@ var semanticEditorSurfaceStateKeys = []string{
 	"cursorVisible",
 	"cursorShape",
 	"cursorAbsoluteRow",
+	"cursorAbsoluteColumn",
+	"selection",
+	"selectionAnchorRow",
+	"selectionAnchorColumn",
+	"selectionForeground",
+	"selectionBackground",
+	"selectionBold",
+	"selectionUnderline",
+	"selectionStrikeout",
 	"topBarRight",
 }
 
+var semanticEditorSurfaceIdentityKeys = []string{
+	"documentKey",
+	"layoutRevision",
+	"windowGeneration",
+}
+
 func semanticEditorSurfaceStateValid(state map[string]any) bool {
-	if len(state) != len(semanticEditorSurfaceStateKeys) {
-		return false
-	}
 	integer := func(value any, nonNegative bool) bool {
 		if value == nil {
 			return false
@@ -1376,13 +1464,34 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 			return false
 		}
 	}
+	// These are identity preconditions, not mutable cursor/selection fields.
+	// Carry all three on every compact update because QML replaces its compact
+	// override atomically instead of merging it with the previous one.
+	if len(state) != len(semanticEditorSurfaceStateKeys)+len(semanticEditorSurfaceIdentityKeys) {
+		return false
+	}
+	for _, key := range semanticEditorSurfaceIdentityKeys {
+		value, present := state[key]
+		if !present {
+			return false
+		}
+		if key == "documentKey" {
+			text, ok := value.(string)
+			if !ok || text == "" {
+				return false
+			}
+		} else if !integer(value, true) {
+			return false
+		}
+	}
 	for _, key := range semanticEditorSurfaceStateKeys {
 		value, present := state[key]
 		if !present {
 			return false
 		}
 		switch key {
-		case "cursorVisible":
+		case "cursorVisible", "selection", "selectionBold",
+			"selectionUnderline", "selectionStrikeout":
 			if _, ok := value.(bool); !ok {
 				return false
 			}
@@ -1391,11 +1500,12 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 			if !ok || (shape != "underline" && shape != "block") {
 				return false
 			}
-		case "topBarRight":
+		case "topBarRight", "selectionForeground", "selectionBackground":
 			if _, ok := value.(string); !ok {
 				return false
 			}
-		case "cursorLine", "cursorPos", "cursorAbsoluteRow":
+		case "cursorLine", "cursorPos", "cursorAbsoluteRow",
+			"cursorAbsoluteColumn", "selectionAnchorRow", "selectionAnchorColumn":
 			if !integer(value, true) {
 				return false
 			}
@@ -1408,11 +1518,10 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 	return true
 }
 
-// QueueSurfaceState publishes only the scalar cursor state and right status
-// string of the currently displayed editor. The caller has already proved that
-// the key changed no document, selection, viewport, mode, or autocomplete
-// state. Surface identity and the exact scene revision keep late key repeats
-// from touching a replacement document.
+// QueueSurfaceState publishes only the scalar caret, stream-selection and
+// right-status presentation of the currently displayed editor. Base rows are
+// immutable across these updates. Surface/document/layout/window identity and
+// the exact scene revision keep late input from touching a replacement view.
 func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
 	state map[string]any,
 ) bool {
@@ -1461,6 +1570,22 @@ func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
 		semanticString(compactSurface["kind"]) != "editor") {
 		rejection = "surface_identity_mismatch"
 	}
+	if rejection == "" {
+		for _, key := range semanticEditorSurfaceIdentityKeys {
+			matches := false
+			if key == "documentKey" {
+				matches = semanticString(state[key]) == semanticString(surface[key]) &&
+					semanticString(state[key]) == semanticString(compactSurface[key])
+			} else {
+				matches = semanticInt64(state[key]) == semanticInt64(surface[key]) &&
+					semanticInt64(state[key]) == semanticInt64(compactSurface[key])
+			}
+			if !matches {
+				rejection = "surface_layout_mismatch"
+				break
+			}
+		}
+	}
 	if rejection != "" {
 		navigationBenchmarkUIEvent("surface_state.direct_rejected",
 			"reason", rejection, "surfaceId", surfaceID,
@@ -1470,6 +1595,14 @@ func (r *ExtUiRenderer) QueueSurfaceState(surfaceID string,
 
 	set, clear := semanticPatchChangedKeys(surface, state,
 		semanticEditorSurfaceStateKeys)
+	// Identity fields are validation fences, so they must remain on the wire
+	// even though their values intentionally equal the installed surface.
+	if set == nil {
+		set = make(map[string]any, len(semanticEditorSurfaceIdentityKeys))
+	}
+	for _, key := range semanticEditorSurfaceIdentityKeys {
+		set[key] = state[key]
+	}
 	armDirectResult := func() {
 		r.suppressSemanticExport = true
 		r.deferSemanticRender = r.nativeCellFrameSuppressed
@@ -1788,6 +1921,13 @@ func (r *ExtUiRenderer) queuePanelCatalogState(side int, panel map[string]any,
 // renderer through vtui's event, task, resize, and explicit redraw paths.
 func (r *ExtUiRenderer) WantsPeriodicRedraw() bool {
 	return false
+}
+
+// UsesEventDrivenResize reports that the external host owns authoritative
+// dimensions and sends a ResizeEventType whenever they change. Polling the
+// attached console would both wake the idle core and observe the wrong window.
+func (r *ExtUiRenderer) UsesEventDrivenResize() bool {
+	return true
 }
 
 // VirtualizePanelTableRows reports that the native panel owns presentation.
@@ -4295,6 +4435,10 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	previousPanelCatalogRows := setExtUiPanelCatalogRowsEnabled(
 		panelCatalogRowsV1)
 	defer setExtUiPanelCatalogRowsEnabled(previousPanelCatalogRows)
+	previousDocumentViewport := nativeDocumentViewport
+	nativeDocumentViewport.enabled = extUiHelloCapability(hello, "documentViewportV1")
+	nativeDocumentViewport.geometry = nativeDocumentGeometry{}
+	defer func() { nativeDocumentViewport = previousDocumentViewport }()
 
 	clientCols := extUiInt(hello, "cols")
 	clientRows := extUiInt(hello, "rows")
@@ -4402,6 +4546,9 @@ func (h *ExtUiHost) handleMessage(msg map[string]any) {
 
 func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navigationBenchmarkReadTiming) {
 	switch extUiString(msg, "type") {
+	case "focus":
+		h.sendEvent(&vtinput.InputEvent{Type: vtinput.FocusEventType,
+			SetFocus: extUiBool(msg, "focused"), InputSource: "extui"})
 	case "resize":
 		cols, rows := extUiInt(msg, "cols"), extUiInt(msg, "rows")
 		if cols <= 0 || rows <= 0 {

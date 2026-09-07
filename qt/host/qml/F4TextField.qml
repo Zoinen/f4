@@ -30,6 +30,7 @@ Item {
     property bool remoteControlled: false
     property int remoteCursorPosition: 0
     property bool remoteCursorVisible: false
+    property int cursorActivityRevision: 0
 
     signal accepted()
     signal textEdited()
@@ -51,6 +52,9 @@ Item {
 
     Rectangle {
         id: bgRect
+        objectName: control.objectName ? (control.objectName + "Background")
+                                       : "textFieldBackground"
+        readonly property color testBorderColor: border.color
         anchors.fill: parent
         visible: control.hasBackground
         radius: control.snap(4)
@@ -90,24 +94,48 @@ Item {
 
             Text {
                 id: placeholderLabel
+                objectName: control.objectName
+                            ? (control.objectName + "Placeholder")
+                            : "textFieldPlaceholder"
                 anchors.fill: parent
                 verticalAlignment: Text.AlignVCenter
                 visible: innerInput.text === "" && !innerInput.inputMethodComposing
                 color: control.hostWindow ? control.hostWindow.mutedText : "#666666"
                 font: innerInput.font
                 elide: Text.ElideRight
+                transform: Translate {
+                    x: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetX(
+                             placeholderLabel,
+                             control.hostWindow.contentItem) : 0
+                    y: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetY(
+                             placeholderLabel,
+                             control.hostWindow.contentItem) : 0
+                }
             }
 
             TextInput {
                 id: innerInput
+                objectName: control.objectName
+                            ? (control.objectName + "TextInput")
+                            : "textFieldTextInput"
                 anchors.fill: parent
                 verticalAlignment: TextInput.AlignVCenter
                 color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
                 selectionColor: control.hostWindow ? control.hostWindow.selectedBg : "#2c7be5"
                 selectedTextColor: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
-                font.pixelSize: 13
+                font: control.hostWindow ? control.hostWindow.font : Qt.font({})
                 selectByMouse: !control.remoteControlled
                 clip: true
+                transform: Translate {
+                    x: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetX(
+                             innerInput, control.hostWindow.contentItem) : 0
+                    y: control.hostWindow
+                       ? control.hostWindow.dialogPixelOffsetY(
+                             innerInput, control.hostWindow.contentItem) : 0
+                }
 
                 Binding {
                     target: innerInput
@@ -123,21 +151,61 @@ Item {
                 }
 
                 onAccepted: control.accepted()
-                onTextEdited: control.textEdited()
+                onTextEdited: {
+                    ++control.cursorActivityRevision
+                    control.textEdited()
+                }
                 onEditingFinished: control.editingFinished()
+                onCursorPositionChanged: ++control.cursorActivityRevision
 
                 cursorDelegate: Rectangle {
                     id: customCursor
-                    property bool blinkOn: true
-                    width: 1
+                    objectName: control.objectName
+                                ? (control.objectName + "Cursor")
+                                : "textFieldCursor"
+                    property alias blinkOn: textCursorBlinkController.blinkOn
+                    property alias blinkInterval:
+                        textCursorBlinkController.interval
+                    readonly property bool blinkTimerRunning:
+                        textCursorBlinkController.running
+                    width: control.hostWindow
+                           ? control.hostWindow.separatorWidth : 1
                     color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
                     opacity: blinkOn ? 1.0 : 0.0
+                    function restartBlink() {
+                        textCursorBlinkController.restart()
+                    }
+                    transform: Translate {
+                        x: control.hostWindow
+                           ? control.hostWindow.dialogPixelOffsetX(
+                                 customCursor,
+                                 control.hostWindow.contentItem) : 0
+                        y: control.hostWindow
+                           ? control.hostWindow.dialogPixelOffsetY(
+                                 customCursor,
+                                 control.hostWindow.contentItem) : 0
+                    }
 
-                    Timer {
+                    ActivityBoundedCursorBlink {
+                        id: textCursorBlinkController
+                        objectName: control.objectName
+                                    ? (control.objectName
+                                       + "CursorBlinkController")
+                                    : "textFieldCursorBlinkController"
                         interval: 480
-                        running: innerInput.cursorVisible
-                        repeat: true
-                        onTriggered: customCursor.blinkOn = !customCursor.blinkOn
+                        active: customCursor.visible
+                                && control.visible
+                                && innerInput.cursorVisible
+                                && (innerInput.activeFocus
+                                    || control.semanticFocus)
+                                && (!control.hostWindow
+                                    || control.hostWindow.active)
+                                && !editMenu.visible
+                        activityRevision:
+                            control.cursorActivityRevision
+                            + (control.hostWindow
+                               ? control.hostWindow.keyboardActivityRevision
+                               : 0)
                     }
                 }
             }
@@ -147,6 +215,11 @@ Item {
     MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.RightButton
+        hoverEnabled: true
+        // The field remains remote-controlled for semantic dialogs, but it is
+        // still a text-edit surface.  Keep the native I-beam cursor while
+        // hovering it instead of exposing the default arrow.
+        cursorShape: Qt.IBeamCursor
         onClicked: (mouse) => {
             if (mouse.button === Qt.RightButton && !control.readOnly) {
                 editMenu.popup()

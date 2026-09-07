@@ -1354,6 +1354,7 @@ CloudFox.YandexAuthorizationCode=Authorization &code:
 CloudFox.Continue=&Continue
 WindowsLocations.Title=Windows locations
 WindowsLocations.DriveItem=Windows locations
+MacOSLocations.Title=macOS Locations
 WindowsLocations.GalleryTitle=Gallery
 WindowsLocations.GalleryIndexingInstruction=Turn on indexing
 WindowsLocations.GalleryIndexingContent=Indexing must be turned on to use File Explorer Gallery.

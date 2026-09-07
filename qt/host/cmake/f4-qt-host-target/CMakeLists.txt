@@ -36,9 +36,13 @@ set(F4_QT_HOST_QML_FILES
   "${F4_QT_HOST_ROOT}/qml/QuickViewPanelView.qml"
   "${F4_QT_HOST_ROOT}/qml/InfoPanelView.qml"
   "${F4_QT_HOST_ROOT}/qml/CommandLineView.qml"
+  "${F4_QT_HOST_ROOT}/qml/ActivityBoundedCursorBlink.qml"
   "${F4_QT_HOST_ROOT}/qml/ConsoleRunRow.qml"
   "${F4_QT_HOST_ROOT}/qml/DocumentSurface.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentHeader.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentRowDelegate.qml"
   "${F4_QT_HOST_ROOT}/qml/DocumentViewportController.qml"
+  "${F4_QT_HOST_ROOT}/qml/DocumentWindowPresenter.qml"
   "${F4_QT_HOST_ROOT}/qml/DocumentRowPool.qml"
   "${F4_QT_HOST_ROOT}/qml/DocumentTerminalSelectionController.qml"
   "${F4_QT_HOST_ROOT}/qml/DocumentEditorPointerController.qml"
@@ -78,6 +82,7 @@ set(F4_QT_HOST_QML_FILES
   "${F4_QT_HOST_ROOT}/qml/GenericDialog.qml"
   "${F4_QT_HOST_ROOT}/qml/DialogOverlay.qml"
   "${F4_QT_HOST_ROOT}/qml/AutocompletePopup.qml"
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuItemDelegate.qml"
   "${F4_QT_HOST_ROOT}/qml/SemanticMenuPopup.qml"
   "${F4_QT_HOST_ROOT}/qml/OverlayHost.qml"
   "${F4_QT_HOST_ROOT}/qml/KeyBarView.qml"
@@ -150,14 +155,26 @@ set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/CommandLineView.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/CommandLineView.qml")
 set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/ActivityBoundedCursorBlink.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/ActivityBoundedCursorBlink.qml")
+set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/ConsoleRunRow.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/ConsoleRunRow.qml")
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/DocumentSurface.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentSurface.qml")
 set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentHeader.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentHeader.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentRowDelegate.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentRowDelegate.qml")
+set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/DocumentViewportController.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentViewportController.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/DocumentWindowPresenter.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentWindowPresenter.qml")
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/DocumentRowPool.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/DocumentRowPool.qml")
@@ -275,6 +292,9 @@ set_source_files_properties(
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/AutocompletePopup.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/AutocompletePopup.qml")
+set_source_files_properties(
+  "${F4_QT_HOST_ROOT}/qml/SemanticMenuItemDelegate.qml"
+  PROPERTIES QT_RESOURCE_ALIAS "qml/SemanticMenuItemDelegate.qml")
 set_source_files_properties(
   "${F4_QT_HOST_ROOT}/qml/SemanticMenuPopup.qml"
   PROPERTIES QT_RESOURCE_ALIAS "qml/SemanticMenuPopup.qml")

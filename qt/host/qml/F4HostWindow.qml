@@ -31,6 +31,8 @@ ApplicationWindow {
     property bool workspaceBarHitTestRegistered: false
     property int macWindowEffectApplyAttempts: 0
     property int keyboardActivityRevision: 0
+    property var dropdownAnchorItems: ({})
+    property int dropdownAnchorRevision: 0
 
     readonly property string guiMonospaceFontFamily:
         String(f4GuiFontFamily || "").length > 0
@@ -38,6 +40,9 @@ ApplicationWindow {
     readonly property int guiMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)
+    readonly property string worktreeBranch:
+        typeof f4WorktreeBranch !== "undefined"
+        ? String(f4WorktreeBranch) : ""
 
     readonly property bool useSystemTransparentWindowBackground: false
     readonly property bool supportsTransparentWindowBackground:
@@ -112,6 +117,13 @@ ApplicationWindow {
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
     readonly property real menuItemHorizontalPadding: 14
+    readonly property real dialogControlHeight: snapPx(Math.max(
+        32, dialogControlFontMetrics.height + 12))
+
+    FontMetrics {
+        id: dialogControlFontMetrics
+        font: host.font
+    }
 
     property alias panelPathBg: themePalette.panelPathBg
     property alias commandLineBg: themePalette.commandLineBg
@@ -311,6 +323,8 @@ ApplicationWindow {
     }
     function frames() { return sceneStoreApi.frames() }
     function overlayFrames() { return sceneStoreApi.overlayFrames() }
+    readonly property string overlayFramesRevision:
+        sceneStoreApi ? String(sceneStoreApi.overlayFramesRevision || "") : ""
     function hasBlockingOverlay() {
         return sceneStoreApi && sceneStoreApi.hasBlockingOverlay()
     }
@@ -387,6 +401,30 @@ ApplicationWindow {
     function menuOverlayForId(menuId) {
         return interactionControllerApi.menuOverlayForId(menuId)
     }
+    function registerDropdownAnchor(ownerId, item) {
+        const key = cleanText(ownerId)
+        if (key === "" || !item || dropdownAnchorItems[key] === item)
+            return
+        const next = Object.assign({}, dropdownAnchorItems)
+        next[key] = item
+        dropdownAnchorItems = next
+        dropdownAnchorRevision += 1
+    }
+    function unregisterDropdownAnchor(ownerId, item) {
+        const key = cleanText(ownerId)
+        if (key === "" || dropdownAnchorItems[key] !== item)
+            return
+        const next = Object.assign({}, dropdownAnchorItems)
+        delete next[key]
+        dropdownAnchorItems = next
+        dropdownAnchorRevision += 1
+    }
+    function dropdownAnchorForId(ownerId) {
+        const revision = dropdownAnchorRevision
+        const key = cleanText(ownerId)
+        return revision >= 0 && key !== "" && dropdownAnchorItems[key]
+                ? dropdownAnchorItems[key] : null
+    }
     function createDialogOverlay(frame) {
         return interactionControllerApi.createDialogOverlay(frame)
     }
@@ -433,6 +471,27 @@ ApplicationWindow {
     function pxY(value) { return presentationUtilities.pxY(value) }
     function pxW(value) { return presentationUtilities.pxW(value) }
     function pxH(value) { return presentationUtilities.pxH(value) }
+    function dialogWidgetUsesControlHeight(widget) {
+        if (!widget)
+            return false
+        const kind = String(widget.kind || "")
+        return kind === "button" || kind === "edit" || kind === "comboBox"
+    }
+    function dialogWidgetSemanticHeight(widget) {
+        return Math.max(22, pxH(Number(widget && widget.h || 1)))
+    }
+    function dialogWidgetVisualHeight(widget) {
+        const semanticHeight = dialogWidgetSemanticHeight(widget)
+        return dialogWidgetUsesControlHeight(widget)
+                ? Math.max(semanticHeight, dialogControlHeight)
+                : semanticHeight
+    }
+    function dialogWidgetVisualTop(relativeRow, widget) {
+        const semanticTop = pxY(relativeRow)
+        const semanticHeight = dialogWidgetSemanticHeight(widget)
+        const visualHeight = dialogWidgetVisualHeight(widget)
+        return snapPx(semanticTop + (semanticHeight - visualHeight) / 2)
+    }
     function nativePanelSplitPosition() {
         return presentationUtilities.nativePanelSplitPosition()
     }

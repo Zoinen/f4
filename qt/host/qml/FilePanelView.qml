@@ -36,6 +36,13 @@ Rectangle {
     readonly property bool backendLoading: panel.loading === true
     property bool loadingIndicatorVisible: false
     property int loadingIndicatorFrame: 0
+    readonly property bool loadingIndicatorPulseRunning:
+        loadingIndicatorPulse.running
+    readonly property bool loadingIndicatorDelayRunning:
+        loadingIndicatorDelay.running
+    readonly property bool loadingIndicatorActive:
+        backendLoading && visible && hostWindow.active
+        && hostWindow.nativeTwoPanelSurfaceActive
     readonly property var loadingIndicatorFrames: [
         "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
     ]
@@ -163,7 +170,7 @@ Rectangle {
     readonly property real nativeSplitPosition: hostWindow.nativePanelSplitPosition()
 
     function synchronizeLoadingIndicator() {
-        if (backendLoading) {
+        if (loadingIndicatorActive) {
             loadingIndicatorDelay.restart()
             return
         }
@@ -173,7 +180,7 @@ Rectangle {
         loadingIndicatorFrame = 0
     }
 
-    onBackendLoadingChanged: synchronizeLoadingIndicator()
+    onLoadingIndicatorActiveChanged: synchronizeLoadingIndicator()
     Component.onCompleted: synchronizeLoadingIndicator()
 
     Timer {
@@ -181,7 +188,7 @@ Rectangle {
         interval: 120
         repeat: false
         onTriggered: {
-            if (!panelRoot.backendLoading)
+            if (!panelRoot.loadingIndicatorActive)
                 return
             panelRoot.loadingIndicatorFrame = 0
             panelRoot.loadingIndicatorVisible = true
@@ -194,7 +201,7 @@ Rectangle {
         interval: 100
         repeat: true
         onTriggered: {
-            if (!panelRoot.backendLoading) {
+            if (!panelRoot.loadingIndicatorActive) {
                 panelRoot.synchronizeLoadingIndicator()
                 return
             }
@@ -559,7 +566,11 @@ Rectangle {
             id: fastFindCursor
             objectName: "panelFastFindCursor-"
                         + Number(panel.side || 0)
-            property bool blinkOn: true
+            property alias blinkOn: fastFindCursorBlinkController.blinkOn
+            property alias blinkInterval:
+                fastFindCursorBlinkController.interval
+            readonly property bool blinkTimerRunning:
+                fastFindCursorBlinkController.running
             readonly property real textAdvance:
                 fastFindFontMetrics.advanceWidth(fastFindQuery.text)
             x: fastFindQuery.x
@@ -574,29 +585,20 @@ Rectangle {
             z: 2
 
             function restartBlink() {
-                blinkOn = true
-                if (visible)
-                    fastFindCursorBlinkTimer.restart()
+                fastFindCursorBlinkController.restart()
             }
 
-            onVisibleChanged: {
-                if (visible)
-                    restartBlink()
-            }
-
-            Connections {
-                target: panelRoot.hostWindow
-                function onKeyboardActivityRevisionChanged() {
-                    fastFindCursor.restartBlink()
-                }
-            }
-
-            Timer {
-                id: fastFindCursorBlinkTimer
-                interval: 520
-                running: fastFindCursor.visible
-                repeat: true
-                onTriggered: fastFindCursor.blinkOn = !fastFindCursor.blinkOn
+            ActivityBoundedCursorBlink {
+                id: fastFindCursorBlinkController
+                objectName: "panelFastFindCursorBlinkController-"
+                            + Number(panel.side || 0)
+                active: fastFindCursor.visible
+                        && fastFindOverlay.visible
+                        && panelRoot.visible
+                        && panelRoot.panelIsActive
+                        && hostWindow.active
+                        && hostWindow.nativeTwoPanelSurfaceActive
+                activityRevision: hostWindow.keyboardActivityRevision
             }
         }
     }

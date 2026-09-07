@@ -37,9 +37,7 @@ Item {
     height: 0
 
     function pointAt(pointX, pointY) {
-        const modelIndex = Math.floor(
-                    (documentList.contentY + pointY) / rowHeight)
-        const windowIndex = modelIndex - viewportController.loadedSlotStart
+        const windowIndex = viewportController.windowIndexAtViewportY(pointY)
         const rows = viewportController.displayedRows
         const absoluteRow = windowIndex >= 0 && windowIndex < rows.length
                 ? viewportController.rowExtent(windowIndex)
@@ -365,6 +363,11 @@ Item {
         clickCount = 0
         lastClickAt = 0
         stopAutoScroll()
+    }
+
+    onInteractionActiveChanged: {
+        if (!interactionActive)
+            cancelInteraction()
     }
 
     Timer {

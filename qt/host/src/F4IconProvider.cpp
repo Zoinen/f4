@@ -95,6 +95,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("circle-question-mark"),
         QStringLiteral("circle-x"),
         QStringLiteral("chevron-down"),
+        QStringLiteral("chevron-up"),
         QStringLiteral("chevron-right"),
         QStringLiteral("clock-3"),
         QStringLiteral("cloud"),

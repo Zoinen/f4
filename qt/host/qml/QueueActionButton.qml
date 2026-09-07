@@ -24,6 +24,10 @@ DialogButton {
             spacing: 7
 
             IconLabel {
+                id: queueActionIcon
+                objectName: queueActionButton.objectName
+                            ? (queueActionButton.objectName + "Icon")
+                            : "queueActionButtonIcon"
                 visible: queueActionButton.iconName !== ""
                 width: visible ? 15 : 0
                 height: 15
@@ -41,9 +45,23 @@ DialogButton {
                                ? "#f4f8fc" : hostWindow.textColor)
                             : hostWindow.mutedText
                 opacity: queueActionButton.enabled ? 1 : 0.52
+                transform: Translate {
+                    x: queueActionButton.hostWindow
+                       ? queueActionButton.hostWindow.dialogPixelOffsetX(
+                             queueActionIcon,
+                             queueActionButton.hostWindow.contentItem) : 0
+                    y: queueActionButton.hostWindow
+                       ? queueActionButton.hostWindow.dialogPixelOffsetY(
+                             queueActionIcon,
+                             queueActionButton.hostWindow.contentItem) : 0
+                }
             }
 
             Text {
+                id: queueActionText
+                objectName: queueActionButton.objectName
+                            ? (queueActionButton.objectName + "Text")
+                            : "queueActionButtonText"
                 anchors.verticalCenter: parent.verticalCenter
                 text: hostWindow.mnemonicText(queueActionButton.text,
                                         queueActionButton.mnemonicHotkey)
@@ -53,9 +71,18 @@ DialogButton {
                           ? "#f4f8fc" : hostWindow.textColor)
                        : hostWindow.mutedText
                 opacity: queueActionButton.enabled ? 1 : 0.52
-                font.pixelSize: 13
-                font.weight: Font.Medium
+                font: queueActionButton.font
                 elide: Text.ElideRight
+                transform: Translate {
+                    x: queueActionButton.hostWindow
+                       ? queueActionButton.hostWindow.dialogPixelOffsetX(
+                             queueActionText,
+                             queueActionButton.hostWindow.contentItem) : 0
+                    y: queueActionButton.hostWindow
+                       ? queueActionButton.hostWindow.dialogPixelOffsetY(
+                             queueActionText,
+                             queueActionButton.hostWindow.contentItem) : 0
+                }
             }
         }
     }

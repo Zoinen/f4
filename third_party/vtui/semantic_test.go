@@ -55,6 +55,37 @@ func TestSemantic_DialogHierarchyExport(t *testing.T) {
 	}
 }
 
+func TestSemantic_GroupBoxExportsVisualFrameAndChildren(t *testing.T) {
+	dlg := NewDialog(0, 0, 39, 14, "Groups")
+	group := NewGroupBox(3, 4, 30, 9, " &Flags ")
+	child := NewCheckbox(5, 5, "Read only", false)
+	group.AddItem(child)
+	dlg.AddItem(group)
+
+	dialogNode := dlg.SemanticNode(&SemanticContext{Width: 80, Height: 25})
+	groups := dialogNode["children"].([]map[string]any)
+	if len(groups) != 1 {
+		t.Fatalf("expected one visual group, got %#v", groups)
+	}
+	node := groups[0]
+	if node["kind"] != "group" || node["title"] != "Flags" {
+		t.Fatalf("unexpected group box node: %#v", node)
+	}
+	if node["hotkey"] != "f" || node["bordered"] != true {
+		t.Fatalf("group box lost visual metadata: %#v", node)
+	}
+	children := node["children"].([]map[string]any)
+	if len(children) != 1 || children[0]["kind"] != "checkbox" ||
+		children[0]["text"] != "Read only" {
+		t.Fatalf("group box children were not preserved: %#v", children)
+	}
+
+	plain := NewGroup(0, 0, 10, 2).SemanticNode(nil)
+	if _, exists := plain["bordered"]; exists {
+		t.Fatalf("plain group was incorrectly marked as bordered: %#v", plain)
+	}
+}
+
 func TestSemantic_DialogPreservesExplicitlyHiddenChildBeforeFirstRender(t *testing.T) {
 	SetDefaultPalette()
 	dlg := NewCenteredDialog(40, 10, "Test Dlg")

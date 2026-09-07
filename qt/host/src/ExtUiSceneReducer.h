@@ -27,6 +27,14 @@ bool nonNegativeInteger(const QVariant &value,
 bool hasNonEmptyMap(const QVariantMap &container, const QString &key);
 
 QVariantMap makePresentationScene(QVariantMap scene);
+// Temporary input for the production patch projection. Only prior values
+// consumed by a delta belong here; replacements do not need the old tree.
+QVariantMap makePatchPresentationScene(const QVariantMap &scene,
+                                      const QVariantMap &message);
+#if defined(F4_EXTUI_PRODUCTION_TESTING)
+void resetPresentationTraversalForTesting();
+quint64 presentationDocumentRowVisitsForTesting();
+#endif
 QVariantMap makePresentationMessage(
     const QVariantMap &message,
     const QVariantMap &presentationScene);

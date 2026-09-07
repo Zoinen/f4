@@ -1353,6 +1353,7 @@ CloudFox.YandexAuthorizationCode=Код &авторизации:
 CloudFox.Continue=&Продолжить
 WindowsLocations.Title=Расположения Windows
 WindowsLocations.DriveItem=Расположения Windows
+MacOSLocations.Title=Расположения macOS
 WindowsLocations.GalleryTitle=Галерея
 WindowsLocations.GalleryIndexingInstruction=Включите индексирование
 WindowsLocations.GalleryIndexingContent=Чтобы использовать галерею Проводника, необходимо включить индексирование.

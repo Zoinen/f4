@@ -82,6 +82,23 @@ func main() {
 			},
 		}.ToMap(),
 	}
+	fixtures = append(fixtures, extui.Envelope{
+		Sequence: 5, StreamID: "document/fixture", Revision: 1, Kind: extui.KindSnapshot,
+		Payload: extui.M{"type": "document_snapshot", "state": extui.M{
+			"surface": extui.SurfaceModel{
+				ID: "fixture-editor", Kind: "editor", DocumentKey: "fixture-editor", ScrollAction: "editor.scroll", ScrollUnit: "rows",
+				ViewportColumns: 97, ViewportRows: 28, GeometryRevision: 3, LayoutRevision: 7, WindowGeneration: 11,
+				ContentExtent: 1, ContentExtentKnown: true, WindowEnd: 1, ViewportSpan: 1,
+				CursorAbsoluteRow: 0, CursorAbsoluteColumn: 4, CursorVisible: true, CursorShape: "underline",
+				Selection: true, SelectionAnchorRow: 0, SelectionAnchorColumn: 1,
+				SelectionForeground: "#ffffff", SelectionBackground: "#3b6290",
+				SelectionBold: true, SelectionUnderline: true, SelectionStrikeout: true,
+				WindowRows: []extui.TextRowModel{{
+					Index: 0, Offset: 0, EndOffset: 5, VisualWidth: 5, HasVisualWidth: true, Text: "hello",
+				}},
+			}.ToMap(),
+		}},
+	}.ToMap())
 
 	encoded, err := msgpack.Marshal(fixtures)
 	if err != nil {

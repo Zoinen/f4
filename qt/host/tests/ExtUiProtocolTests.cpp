@@ -52,7 +52,7 @@ private slots:
         QCOMPARE(decoded.at(0).at(1).toULongLong(), quint64(17));
 
         const QVariantList fixtures = decoded.at(0).at(2).toList();
-        QCOMPARE(fixtures.size(), 4);
+        QCOMPARE(fixtures.size(), 5);
         ExtUiProtocol::StreamRegistry registry;
         QStringList streams;
         for (const QVariant &fixtureValue : fixtures) {
@@ -66,7 +66,8 @@ private slots:
         QCOMPARE(streams, QStringList({QStringLiteral("command-line"),
                                       QStringLiteral("panel/0"),
                                       QStringLiteral("menus"),
-                                      QStringLiteral("menus")}));
+                                      QStringLiteral("menus"),
+                                      QStringLiteral("document/fixture")}));
 
         const QVariantMap panelEnvelope = fixtures.at(1).toMap();
         const QVariantMap panelState = panelEnvelope
@@ -80,6 +81,31 @@ private slots:
                  quint64(19));
         QCOMPARE(registry.revision(QStringLiteral("panel/0")), quint64(7));
         QCOMPARE(registry.revision(QStringLiteral("menus")), quint64(5));
+        const QVariantMap document = fixtures.at(4).toMap()
+            .value(QStringLiteral("payload")).toMap()
+            .value(QStringLiteral("state")).toMap()
+            .value(QStringLiteral("surface")).toMap();
+        QCOMPARE(document.value(QStringLiteral("viewportColumns")).toInt(), 97);
+        QCOMPARE(document.value(QStringLiteral("viewportRows")).toInt(), 28);
+        QCOMPARE(document.value(QStringLiteral("geometryRevision")).toInt(), 3);
+        QCOMPARE(document.value(QStringLiteral("layoutRevision")).toInt(), 7);
+        QCOMPARE(document.value(QStringLiteral("windowGeneration")).toInt(), 11);
+        QCOMPARE(document.value(QStringLiteral("cursorAbsoluteColumn")).toInt(), 4);
+        QVERIFY(document.value(QStringLiteral("selection")).toBool());
+        QCOMPARE(document.value(QStringLiteral("selectionAnchorRow")).toInt(), 0);
+        QCOMPARE(document.value(QStringLiteral("selectionAnchorColumn")).toInt(), 1);
+        QCOMPARE(document.value(QStringLiteral("selectionForeground")).toString(),
+                 QStringLiteral("#ffffff"));
+        QCOMPARE(document.value(QStringLiteral("selectionBackground")).toString(),
+                 QStringLiteral("#3b6290"));
+        QVERIFY(document.value(QStringLiteral("selectionBold")).toBool());
+        QVERIFY(document.value(QStringLiteral("selectionUnderline")).toBool());
+        QVERIFY(document.value(QStringLiteral("selectionStrikeout")).toBool());
+        QVERIFY(!document.value(QStringLiteral("layoutPending")).toBool());
+        const QVariantMap row = document.value(QStringLiteral("windowRows"))
+                                    .toList().first().toMap();
+        QCOMPARE(row.value(QStringLiteral("endOffset")).toInt(), 5);
+        QCOMPARE(row.value(QStringLiteral("visualWidth")).toInt(), 5);
     }
 
     void independentStreamsAdvanceIndependently()

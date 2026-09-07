@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/f4/piecetable"
@@ -685,17 +686,26 @@ func runExternalEditor(pf *PanelsFrame, cmdStr, path string) {
 }
 
 func newUTF8EditorPieceTable(f vfs.ReadAtCloser, size int64, prefix []byte) (*piecetable.PieceTable, *AsyncBuffer) {
+	pt, buf, _ := newUTF8EditorPieceTableContext(context.Background(), f, size, prefix)
+	return pt, buf
+}
+
+func newUTF8EditorPieceTableContext(ctx context.Context, f vfs.ReadAtCloser, size int64, prefix []byte) (*piecetable.PieceTable, *AsyncBuffer, error) {
 	// For small files the encoding probe already contains every byte. Feeding
 	// those bytes directly to the piece table avoids reading the file again and
 	// starting an indexer whose first and final UI updates would repaint the
 	// editor immediately after it was shown.
 	if int64(len(prefix)) == size {
-		return piecetable.New(prefix), nil
+		return piecetable.New(prefix), nil, nil
 	}
 
 	buf := NewAsyncBuffer(context.Background(), f)
-	buf.prewarm()
-	return piecetable.NewWithBuffer(buf), buf
+	buf.seedPrefix(prefix)
+	if _, err := buf.ReadContext(ctx, 0, min(buf.chunkSize, int(size))); err != nil {
+		buf.Close()
+		return nil, nil, err
+	}
+	return piecetable.NewWithBuffer(buf), buf, nil
 }
 
 type initialDocumentOffsetSource interface {
@@ -751,10 +761,50 @@ func applyInitialViewerOffset(viewer *ViewerView) bool {
 	return true
 }
 
-func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
+type preparedEditorDocument struct {
+	pt       *piecetable.PieceTable
+	buf      *AsyncBuffer
+	file     vfs.ReadAtCloser
+	codepage int
+}
+
+type editorOpeningEncoding struct {
+	defaultCodepage int
+	autodetect      bool
+}
+
+// Opening options are captured on the UI thread, before any provider I/O.
+// A pending open must not read mutable application settings from its worker.
+func snapshotEditorOpeningEncoding() editorOpeningEncoding {
+	return editorOpeningEncoding{
+		defaultCodepage: AppConfig.EditorDefaultCodePage,
+		autodetect:      AppConfig.EditorAutodetectCodePage,
+	}
+}
+
+func (prepared *preparedEditorDocument) close() {
+	if prepared == nil {
+		return
+	}
+	if prepared.buf != nil {
+		prepared.buf.Close()
+	}
+	if prepared.file != nil {
+		_ = prepared.file.Close()
+	}
+}
+
+// prepareEditorDocument is the synchronous/UI-thread adapter. Background opens
+// pass their already-captured settings to prepareEditorDocumentWithEncoding.
+func prepareEditorDocument(ctx context.Context, v vfs.VFS, path string, f vfs.ReadAtCloser) (*preparedEditorDocument, error) {
+	return prepareEditorDocumentWithEncoding(ctx, v, path, f, snapshotEditorOpeningEncoding())
+}
+
+// Ownership of f transfers only when preparation succeeds.
+func prepareEditorDocumentWithEncoding(ctx context.Context, v vfs.VFS, path string, f vfs.ReadAtCloser, encoding editorOpeningEncoding) (*preparedEditorDocument, error) {
 	var pt *piecetable.PieceTable
 	var buf *AsyncBuffer
-	cpID := AppConfig.EditorDefaultCodePage
+	cpID := encoding.defaultCodepage
 	fileSize := int64(0)
 	probeBytes := 0
 
@@ -766,11 +816,14 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 			detectLen = int(size)
 		}
 		header := make([]byte, detectLen)
-		n, _ := f.ReadAt(context.Background(), header, 0)
+		n, err := readDocumentBytes(ctx, f, header, 0)
+		if err != nil {
+			return nil, fmt.Errorf("read file header: %w", err)
+		}
 		probeBytes = n
 		header = header[:n]
 
-		cpID = vfs.DetectEncoding(header, AppConfig.EditorAutodetectCodePage, AppConfig.EditorDefaultCodePage)
+		cpID = vfs.DetectEncoding(header, encoding.autodetect, encoding.defaultCodepage)
 
 		if cpID == 65001 {
 			if source, ok := v.(interface {
@@ -782,14 +835,20 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 					// position is indexed synchronously without copying the log.
 					pt = piecetable.New(data)
 				} else {
-					pt, buf = newUTF8EditorPieceTable(f, size, header)
+					pt, buf, err = newUTF8EditorPieceTableContext(ctx, f, size, header)
 				}
 			} else {
-				pt, buf = newUTF8EditorPieceTable(f, size, header)
+				pt, buf, err = newUTF8EditorPieceTableContext(ctx, f, size, header)
+			}
+			if err != nil {
+				return nil, err
 			}
 		} else {
 			fullData := make([]byte, size)
-			_, _ = f.ReadAt(context.Background(), fullData, 0)
+			copy(fullData, header)
+			if _, err := readDocumentBytes(ctx, f, fullData[len(header):], int64(len(header))); err != nil {
+				return nil, fmt.Errorf("read file: %w", err)
+			}
 			decoded, err := vfs.DecodeBytes(fullData, cpID)
 			if err != nil {
 				decoded = fullData
@@ -807,9 +866,26 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 		"codepage", cpID,
 		"asyncBuffer", buf != nil,
 		"pieceTableSize", pt.Size())
+	return &preparedEditorDocument{pt: pt, buf: buf, file: f, codepage: cpID}, nil
+}
 
-	editor := NewEditorView(pt, v, path)
-	editor.Codepage = cpID
+// showEditor remains the synchronous adapter for callers that already own a
+// prepared local file. Interactive opens use showPreparedEditor below.
+func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
+	prepared, err := prepareEditorDocument(context.Background(), v, path, f)
+	if err != nil {
+		if f != nil {
+			_ = f.Close()
+		}
+		vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
+		return
+	}
+	showPreparedEditor(pf, v, path, prepared)
+}
+
+func showPreparedEditor(pf *PanelsFrame, v vfs.VFS, path string, prepared *preparedEditorDocument) {
+	editor := NewEditorView(prepared.pt, v, path)
+	editor.Codepage = prepared.codepage
 	if _, isDisks := v.(*vfs.DisksVFS); isDisks {
 		editor.HexMode = true
 	}
@@ -822,8 +898,9 @@ func showEditor(pf *PanelsFrame, v vfs.VFS, path string, f vfs.ReadAtCloser) {
 			editor.targetLeft = state.EditorLeft
 		}
 	}
-	editor.file = f
-	editor.asyncBuf = buf
+	editor.file = prepared.file
+	editor.asyncBuf = prepared.buf
+	seedNativeDocumentViewport(editor)
 	editor.ResizeConsole(pf.lastW, pf.lastH)
 	applyInitialEditorOffset(editor, v)
 	editor.StartIndexing()
@@ -895,6 +972,103 @@ func actionOpenEditor(pf *PanelsFrame, v vfs.VFS, path string) {
 	openEditorInternal(pf, v, path)
 }
 
+// Pending opens are UI-owned lifecycle state. Holding F3/F4 does not start
+// duplicate work, and a closed/superseded request never publishes a new screen.
+type pendingDocumentOpen struct {
+	key    string
+	ctx    context.Context
+	cancel context.CancelFunc
+	trace  *navigationBenchmarkTrace
+}
+
+var pendingDocumentOpens = make(map[*PanelsFrame]*pendingDocumentOpen)
+
+func beginPendingDocumentOpen(pf *PanelsFrame, kind string, v vfs.VFS, path string) *pendingDocumentOpen {
+	key := kind + ":" + FileStateKey(v, path)
+	if existing := pendingDocumentOpens[pf]; existing != nil {
+		if existing.key == key && existing.ctx.Err() == nil {
+			return nil
+		}
+		existing.cancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	op := &pendingDocumentOpen{key: key, ctx: ctx, cancel: cancel, trace: navigationBenchmarkCurrentUI()}
+	pendingDocumentOpens[pf] = op
+	return op
+}
+
+func cancelPendingDocumentOpen(pf *PanelsFrame) bool {
+	if op := pendingDocumentOpens[pf]; op != nil {
+		delete(pendingDocumentOpens, pf)
+		op.cancel()
+		op.trace.event("document.open.cancelled", "go.ui")
+		return true
+	}
+	return false
+}
+
+func finishPendingDocumentOpen(pf *PanelsFrame, op *pendingDocumentOpen) bool {
+	current := pendingDocumentOpens[pf] == op
+	if current {
+		delete(pendingDocumentOpens, pf)
+	}
+	valid := current && op.ctx.Err() == nil && (pf == nil || !pf.IsDone())
+	if !valid {
+		op.trace.event("document.open.obsolete", "go.ui")
+	}
+	op.cancel()
+	return valid
+}
+
+func runPendingDocumentOpen(pf *PanelsFrame, v vfs.VFS, op *pendingDocumentOpen, description string, worker func(context.Context) error, complete func(error)) {
+	// Preserve the original input identity through preparation and the UI
+	// queue, so opt-in profiling measures the presented open, not a warm row
+	// projection or an unrelated later key. The disabled path stays direct.
+	if op.trace != nil {
+		prepare, publish := worker, complete
+		var queuedAt atomic.Int64
+		worker = func(ctx context.Context) error {
+			started := navigationBenchmarkMonotonicNs()
+			op.trace.eventAt("document.open.prepare.begin", "go.worker", started)
+			err := prepare(ctx)
+			finished := navigationBenchmarkMonotonicNs()
+			queuedAt.Store(finished)
+			op.trace.eventAt("document.open.prepare.end", "go.worker", finished,
+				"durationNs", finished-started, "failed", err != nil)
+			return err
+		}
+		complete = func(err error) {
+			previous := navigationBenchmarkSetCurrentUI(op.trace)
+			defer navigationBenchmarkSetCurrentUI(previous)
+			op.trace.event("document.open.ui.begin", "go.ui", "queueNs", navigationBenchmarkMonotonicNs()-queuedAt.Load())
+			if pendingDocumentOpens[pf] == op && op.ctx.Err() == nil && err == nil && (pf == nil || !pf.IsDone()) {
+				navigationBenchmarkPublishScene(op.trace, "document.open.ready")
+			}
+			publish(err)
+			op.trace.event("document.open.ui.end", "go.ui")
+		}
+	}
+	if isLocalOSVFS(v) {
+		vtui.RunAsync(func(task *vtui.TaskContext) {
+			err := worker(op.ctx)
+			task.RunOnUIWithRedrawDecision(func() bool {
+				current := pendingDocumentOpens[pf] == op && op.ctx.Err() == nil && (pf == nil || !pf.IsDone())
+				complete(err)
+				return current
+			})
+		})
+		if vtui.FrameManager != nil {
+			vtui.FrameManager.DeclareCurrentInputUnchanged()
+		}
+		return
+	}
+	pf.runProgressTaskAfterContext(op.ctx, openingProgressDelay, " Opening... ", description, false, func(ctx context.Context, update func(string, int)) error {
+		stop := context.AfterFunc(ctx, op.cancel)
+		defer stop()
+		return worker(context.WithValue(op.ctx, vfs.ProgressKey, vfs.ProgressCallback(update)))
+	}, complete)
+}
+
 func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 	if AppConfig.EditorHighlighter == "Colorer" && !SchemasExist() {
 		go func() {
@@ -918,66 +1092,38 @@ func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 		}()
 		return
 	}
-	if isLocalOSVFS(v) {
-		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			var f vfs.ReadAtCloser
-			if v != nil {
-				if stat, errStat := v.Stat(ctx.Context, path); errStat == nil && stat.IsDir {
-					ctx.RunOnUI(func() {
-						vtui.ShowMessage(" Error ", "Cannot edit a directory.", []string{"&Ok"})
-					})
-					return
-				}
-				var err error
-				f, err = v.Open(ctx.Context, path)
-				if err != nil {
-					if os.IsNotExist(err) {
-						f = nil
-					} else {
-						ctx.RunOnUI(func() {
-							if err == os.ErrInvalid {
-								vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets, Devices).", []string{"&Ok"})
-							} else {
-								vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
-							}
-						})
-						return
-					}
-				}
-			}
-			ctx.RunOnUI(func() {
-				showEditor(pf, v, path, f)
-			})
-		})
-		// Opening a local file completes in a posted UI task. Until that task
-		// pushes the editor, this input changed no visible state; avoid painting
-		// the large source panel in the gap between the request and completion.
-		if vtui.FrameManager != nil {
-			vtui.FrameManager.DeclareCurrentInputUnchanged()
-		}
+	op := beginPendingDocumentOpen(pf, "editor", v, path)
+	if op == nil {
 		return
 	}
-
-	var f vfs.ReadAtCloser
-	pf.runProgressTaskAfter(openingProgressDelay, " Opening... ", "Preparing to edit file...", false, func(ctx context.Context, update func(msg string, percent int)) error {
-		update("Opening file...", -1)
+	encoding := snapshotEditorOpeningEncoding()
+	var prepared *preparedEditorDocument
+	runPendingDocumentOpen(pf, v, op, "Preparing to edit file...", func(ctx context.Context) error {
+		var f vfs.ReadAtCloser
 		var err error
 		if v != nil {
 			if stat, errStat := v.Stat(ctx, path); errStat == nil && stat.IsDir {
 				return fmt.Errorf("cannot edit a directory")
 			}
-			ctx = context.WithValue(ctx, vfs.ProgressKey, vfs.ProgressCallback(update))
 			f, err = v.Open(ctx, path)
 			if err != nil {
 				if os.IsNotExist(err) || strings.Contains(err.Error(), "no such file") || strings.Contains(err.Error(), "not found") {
 					f = nil
-					return nil
+				} else {
+					return err
 				}
-				return err
 			}
 		}
-		return nil
+		prepared, err = prepareEditorDocumentWithEncoding(ctx, v, path, f, encoding)
+		if err != nil && f != nil {
+			_ = f.Close()
+		}
+		return err
 	}, func(err error) {
+		if !finishPendingDocumentOpen(pf, op) {
+			prepared.close()
+			return
+		}
 		if err != nil {
 			if err != context.Canceled {
 				if err == os.ErrInvalid {
@@ -988,7 +1134,7 @@ func openEditorInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 			}
 			return
 		}
-		showEditor(pf, v, path, f)
+		showPreparedEditor(pf, v, path, prepared)
 	})
 }
 
@@ -1039,6 +1185,7 @@ func showViewer(pf *PanelsFrame, viewer *ViewerView, path string) {
 			viewer.HexMode = state.ViewerHex
 		}
 	}
+	seedNativeDocumentViewport(viewer)
 	viewer.ResizeConsole(pf.lastW, pf.lastH)
 	applyInitialViewerOffset(viewer)
 	vtui.FrameManager.AddScreen(viewer)
@@ -1150,42 +1297,28 @@ func openViewerInternal(pf *PanelsFrame, v vfs.VFS, path string) {
 	if tryOpenImageViewer(pf, v, path) {
 		return
 	}
-	if isLocalOSVFS(v) {
-		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			if v != nil {
-				if stat, err := v.Stat(ctx.Context, path); err == nil && stat.IsDir {
-					ctx.RunOnUI(func() {
-						vtui.ShowMessage(" Error ", "Cannot view a directory.", []string{"&Ok"})
-					})
-					return
-				}
-			}
-
-			viewer, err := NewViewerView(ctx.Context, v, path)
-			ctx.RunOnUI(func() {
-				if err == nil {
-					showViewer(pf, viewer, path)
-				} else {
-					vtui.DebugLog("PANELS: Failed to open viewer for %s: %v", path, err)
-					if err == os.ErrInvalid {
-						vtui.ShowMessage(" Error ", "Cannot open special files (Named Pipes, Sockets).", []string{"&Ok"})
-					} else {
-						vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file:\n%v", err), []string{"&Ok"})
-					}
-				}
-			})
-		})
+	op := beginPendingDocumentOpen(pf, "viewer", v, path)
+	if op == nil {
 		return
 	}
 
 	var viewer *ViewerView
-	pf.runProgressTaskAfter(openingProgressDelay, " Opening... ", "Preparing to open file...", false, func(ctx context.Context, update func(msg string, percent int)) error {
-		update("Opening file...", -1)
-		ctx = context.WithValue(ctx, vfs.ProgressKey, vfs.ProgressCallback(update))
+	runPendingDocumentOpen(pf, v, op, "Preparing to open file...", func(ctx context.Context) error {
+		if v != nil {
+			if stat, err := v.Stat(ctx, path); err == nil && stat.IsDir {
+				return fmt.Errorf("cannot view a directory")
+			}
+		}
 		var err error
 		viewer, err = NewViewerView(ctx, v, path)
 		return err
 	}, func(err error) {
+		if !finishPendingDocumentOpen(pf, op) {
+			if viewer != nil {
+				_ = viewer.backend.Close()
+			}
+			return
+		}
 		if err != nil {
 			if err != context.Canceled {
 				if err == os.ErrInvalid {

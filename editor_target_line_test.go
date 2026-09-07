@@ -20,7 +20,10 @@ import (
 func drainPendingTasks() {
 	for {
 		select {
+		case <-vtui.FrameManager.PriorityTaskChan:
+			continue
 		case <-vtui.FrameManager.TaskChan:
+			continue
 		default:
 			return
 		}
@@ -35,11 +38,17 @@ func drainPendingTasks() {
 // instead would assume the queue is buffered, and it is not.
 func collectQueuedTasks(idle time.Duration) []func() {
 	var tasks []func()
+	timer := time.NewTimer(idle)
+	defer timer.Stop()
 	for {
 		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			tasks = append(tasks, task)
+			timer.Reset(idle)
 		case task := <-vtui.FrameManager.TaskChan:
 			tasks = append(tasks, task)
-		case <-time.After(idle):
+			timer.Reset(idle)
+		case <-timer.C:
 			return tasks
 		}
 	}
@@ -82,11 +91,9 @@ func TestEditorView_InMemoryStartIndexingAppliesSavedPosition(t *testing.T) {
 // TestEditorView_IndexerRestoresTargetLineAfterLateDrain covers the FISH+ bug
 // where reopening a file at a saved position landed somewhere else entirely.
 //
-// The whole file sits in one already loaded chunk, so the indexing goroutine
-// runs to the end of it without ever needing the UI thread again. Every batch
-// it posted is therefore executed after the scan is over, which is what
-// happens over FISH+ once a burst of chunks has been stored: the batches are
-// drained in one pass while the goroutine is already finished.
+// The UI may drain an index update long after it was produced. The worker now
+// waits for that immutable batch to be applied before producing another, so
+// there cannot be a backlog of stale updates after a close or navigation.
 func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	drainPendingTasks()
@@ -133,6 +140,8 @@ func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 			break
 		}
 		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		case <-deadline:
@@ -148,17 +157,29 @@ func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
 
 	ev.StartIndexing()
 
-	// Two batches queued means the scan has reached the end of the file.
+	// Hold the first publication instead of applying it immediately. Indexing
+	// must not fill the input queue with the rest of the file in the meantime.
 	tasks := collectQueuedTasks(300 * time.Millisecond)
-	if len(tasks) < 2 {
-		t.Fatalf("the indexer posted %d batches, expected at least 2", len(tasks))
+	// The immutable index publication is one batch. A separate completion
+	// callback may arrive in the same idle window to clear the worker's
+	// indexing flag; it is bookkeeping, not another batch of offsets.
+	if len(tasks) < 1 || len(tasks) > 2 {
+		t.Fatalf("the indexer queued %d tasks, want one batch plus completion bookkeeping", len(tasks))
 	}
 
 	for _, task := range tasks {
 		task()
 	}
-	if ev.targetLine != -1 {
-		t.Fatal("the saved position was never applied")
+	deadline = time.After(5 * time.Second)
+	for ev.targetLine != -1 {
+		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatal("the saved position was never applied")
+		}
 	}
 
 	if ev.CursorLine != targetLine {

@@ -7,11 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/unxed/f4/piecetable"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -49,10 +47,27 @@ type ViewerView struct {
 	semanticPendingOffset           int64
 	semanticPendingGeneration       uint64
 	semanticWrapSeek                semanticWrapSeekState
+	semanticLoadError               string
+	semanticNeedsReflow             bool
+	semanticProjection              *viewerWindowConstruction
+	consoleProjection               *viewerWindowConstruction
+	projectionContinuationPending   bool
+	projectionContinuationKey       viewerWindowConstructionKey
+	// viewerNavigationGeneration is the UI-thread ordering fence between a
+	// direct keyboard destination and older asynchronous/native scrolling.
+	// endNavigationAttempt distinguishes retries of the same logical End after
+	// a viewport reflow from obsolete calculations using the previous layout.
+	viewerNavigationGeneration uint64
+	endNavigationAttempt       uint64
+	endNavigationCancel        context.CancelFunc
 	// nativeViewportRows is the number of complete text rows that fit in the
 	// semantic frontend after its pixel-sized chrome has been laid out. The
 	// terminal geometry remains authoritative when this is zero.
-	nativeViewportRows int
+	nativeViewportRows     int
+	nativeViewportColumns  int
+	nativeViewportRevision uint64
+	semanticLayoutRevision uint64
+	layoutTabSize          int
 
 	scrollBar *vtui.ScrollBar
 
@@ -70,10 +85,17 @@ type semanticWrapSeekState struct {
 	width          int
 	curr           int64
 	resolved       int64
+	currColumn     int
+	resolvedColumn int
 	lineStartReady bool
-	history        []int64
+	history        []viewerRowPosition
 	historyHead    int
 	historyCount   int
+}
+
+type viewerRowPosition struct {
+	offset int64
+	column int
 }
 
 func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, error) {
@@ -88,7 +110,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		detectLen = int(size)
 	}
 	header := make([]byte, detectLen)
-	n, err := f.ReadAt(ctx, header, 0)
+	n, err := readDocumentBytes(ctx, f, header, 0)
 	if err != nil && err != io.EOF {
 		_ = f.Close()
 		return nil, fmt.Errorf("read file header: %w", err)
@@ -114,6 +136,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			// fetching the same prefix again after the viewer is visible.
 			cacheData:    header,
 			path:         path,
+			owner:        v,
 			totalLines:   -1,
 			totalForSize: -1,
 			ctx:          bCtx,
@@ -124,8 +147,13 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		}
 	} else {
 		fullData := make([]byte, size)
-		_, _ = f.ReadAt(ctx, fullData, 0)
-		f.Close()
+		copy(fullData, header)
+		_, readErr := readDocumentBytes(ctx, f, fullData[len(header):], int64(len(header)))
+		_ = f.Close()
+		if readErr != nil {
+			bCancel()
+			return nil, fmt.Errorf("read file: %w", readErr)
+		}
 
 		decoded, err := vfs.DecodeBytes(fullData, cpID)
 		if err != nil {
@@ -146,12 +174,14 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 	}
 
 	vv := &ViewerView{
-		backend:  backend,
-		vfs:      v,
-		path:     path,
-		HexMode:  binary,
-		WrapMode: true,
-		Codepage: cpID,
+		backend:                backend,
+		vfs:                    v,
+		path:                   path,
+		HexMode:                binary,
+		WrapMode:               true,
+		Codepage:               cpID,
+		semanticLayoutRevision: 1,
+		layoutTabSize:          effectiveViewerTabSize(),
 	}
 	vv.scrollBar = vtui.NewScrollBar(0, 0, 0)
 	vv.scrollBar.SetOwner(vv)
@@ -167,6 +197,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			newOff = vv.backend.FindLineStart(newOff)
 		}
 		if newOff != vv.TopOffset {
+			vv.beginViewerNavigationIntent()
 			vv.TopOffset = newOff
 			vv.eofVisible = false
 			vtui.FrameManager.Redraw()
@@ -223,11 +254,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 			}
 			mode := Msg("Viewer.ModeText")
 			if vv.DecodeMode {
-				modeBits := vv.DisasmMode
-				if modeBits == 0 {
-					modeBits = 64
-				}
-				mode = fmt.Sprintf("Dec:%d", modeBits)
+				mode = fmt.Sprintf("Dec:%d", vv.effectiveDisasmMode())
 			} else if vv.HexMode {
 				mode = Msg("Viewer.ModeHex")
 			}
@@ -252,7 +279,14 @@ func viewerHeaderLooksBinary(header []byte, cpID int) bool {
 }
 
 func (vv *ViewerView) SetPosition(x1, y1, x2, y2 int) {
+	previousWidth := vv.viewportWidth()
 	vv.ScreenObject.SetPosition(x1, y1, x2, y2)
+	if vv.viewportWidth() != previousWidth {
+		vv.semanticNeedsReflow = true
+		vv.semanticWrapSeek = semanticWrapSeekState{}
+		vv.semanticLayoutRevision++
+		vv.lineOffsets = nil
+	}
 	if vv.topBar != nil {
 		vv.topBar.SetPosition(x1, y1, x2, y1)
 	}
@@ -270,10 +304,21 @@ func (vv *ViewerView) SetPosition(x1, y1, x2, y2 int) {
 // actually remain visible.
 func (vv *ViewerView) viewportHeight() int {
 	height := vv.Y2 - vv.Y1
-	if vv.nativeViewportRows > 0 && vv.nativeViewportRows < height {
+	if vv.nativeViewportRows > 0 {
 		return vv.nativeViewportRows
 	}
 	return height
+}
+
+func (vv *ViewerView) viewportWidth() int {
+	if vv.nativeViewportColumns > 0 {
+		return vv.nativeViewportColumns
+	}
+	width := vv.X2 - vv.X1 + 1
+	if vv.scrollBar != nil {
+		width--
+	}
+	return max(1, width)
 }
 
 // GetMenuBar returns the viewer's menu bar. Items are regenerated from
@@ -308,6 +353,7 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	if !vv.IsVisible() {
 		return
 	}
+	vv.ensureTextLayoutSettings()
 
 	// AUTO-SCROLL LOGIC (tail -f)
 	currentSize := vv.backend.Size()
@@ -317,11 +363,11 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 		return
 	}
 	vv.lastKnownSize = currentSize
-
-	width := vv.X2 - vv.X1 + 1
-	if vv.scrollBar != nil {
-		width-- // Не рисуем текст поверх скроллбара
+	if nativeDocumentCellPaintOwned(scr) {
+		return
 	}
+
+	width := vv.viewportWidth()
 	// Rendering also adjusts TopOffset and EOF state. Use the same complete-row
 	// viewport as navigation, or the hidden terminal render scrolls native EOF
 	// pages backwards and leaves the last lines below the QML viewport.
@@ -365,105 +411,97 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 
 func (vv *ViewerView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 	attr := vtui.Palette[ColViewerText]
-	offAttr := vtui.Palette[ColViewerArrows]
-
-	currOffset := vv.TopOffset &^ 0xF // Align to 16 bytes
-	//lastRowWasEOF := false
-
-	for y := 0; y < contentHeight; y++ {
-		if currOffset >= vv.backend.Size() {
-			//lastRowWasEOF = true
-			break
-		}
-
-		data, err := vv.backend.ReadAt(currOffset, 16)
-		if err == piecetable.ErrLoading {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", attr))
-			break
-		}
+	currOffset := vv.TopOffset &^ 0xF
+	for y := 0; y < contentHeight && currOffset < vv.backend.Size(); y++ {
+		row, err := vv.projectRow(currOffset, width)
 		if err != nil {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf(" [ Error: %v ] ", err), attr))
+			message := fmt.Sprintf(" [ Error: %v ] ", err)
+			if viewerProjectionLoading(err) {
+				message = " [ Loading... ] "
+			}
+			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(message, attr))
 			break
 		}
-
-		line := fmt.Sprintf("%010X: ", currOffset)
-		scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
-
-		// Hex part
-		hexStr := ""
-		for i := 0; i < 16; i++ {
-			if i < len(data) {
-				hexStr += fmt.Sprintf("%02X ", data[i])
-			} else {
-				hexStr += "   "
-			}
-			if i == 7 {
-				hexStr += " "
-			}
-		}
-		scr.Write(vv.X1+12, vv.Y1+1+y, vtui.StringToCharInfo(hexStr, attr))
-
-		// ASCII part
-		asciiStr := "│ "
-		for i := 0; i < len(data); i++ {
-			r := rune(data[i])
-			if r < 32 || r > 126 {
-				r = '.'
-			}
-			asciiStr += string(r)
-		}
-		scr.Write(vv.X1+12+50, vv.Y1+1+y, vtui.StringToCharInfo(asciiStr, attr))
-
-		currOffset += 16
+		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
+		currOffset = row.end
 	}
-	vv.eofVisible = (currOffset >= vv.backend.Size())
+	vv.eofVisible = currOffset >= vv.backend.Size()
 }
-func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
-	attr := vtui.Palette[ColViewerText]
-	offAttr := vtui.Palette[ColViewerArrows]
-	currOffset := vv.TopOffset
 
-	for y := 0; y < contentHeight; y++ {
-		if currOffset >= vv.backend.Size() {
-			break
-		}
-
-		data, err := vv.backend.ReadAt(currOffset, 15)
-		if err == piecetable.ErrLoading {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", attr))
-			break
-		}
-		if err != nil && len(data) == 0 {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf(" [ Error: %v ] ", err), attr))
-			break
-		}
-
-		if vv.DisasmMode == 0 {
+func (vv *ViewerView) effectiveDisasmMode() int {
+	if !vv.DecodeMode {
+		return 0
+	}
+	if vv.DisasmMode == 0 {
+		if vv.backend != nil {
 			header, _ := vv.backend.ReadAt(0, 1024)
 			vv.DisasmMode = detectX86Mode(header)
 		}
-
-		instLen := 1
-		asmStr := fmt.Sprintf("db 0x%02X", data[0])
-		inst, err := x86asm.Decode(data, vv.DisasmMode)
-		if err == nil {
-			instLen = inst.Len
-			asmStr = x86asm.IntelSyntax(inst, uint64(currOffset), nil)
-		}
-
-		line := fmt.Sprintf("%010X: ", currOffset)
-		scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
-
-		hexStr := ""
-		for i := 0; i < instLen; i++ {
-			hexStr += fmt.Sprintf("%02X ", data[i])
-		}
-		scr.Write(vv.X1+12, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf("%-24s", hexStr), attr))
-		scr.Write(vv.X1+38, vv.Y1+1+y, vtui.StringToCharInfo(asmStr, attr))
-
-		currOffset += int64(instLen)
 	}
-	vv.eofVisible = (currOffset >= vv.backend.Size())
+	if vv.DisasmMode == 0 {
+		return 64
+	}
+	return vv.DisasmMode
+}
+
+func (vv *ViewerView) findPrecedingInstructionOffset(target int64) int64 {
+	if target <= 0 || vv.backend == nil {
+		return 0
+	}
+	if build := vv.semanticProjection; build != nil {
+		for i := len(build.rows) - 1; i >= 0; i-- {
+			if build.rows[i].projection.end == target {
+				return build.rows[i].start
+			}
+		}
+	}
+	for i := 1; i < len(vv.lineOffsets); i++ {
+		if vv.lineOffsets[i] == target {
+			return vv.lineOffsets[i-1]
+		}
+	}
+	mode := vv.effectiveDisasmMode()
+	minAnchor := max(int64(0), target-64)
+	for anchor := minAnchor; anchor < target; anchor++ {
+		curr := anchor
+		var prev int64 = -1
+		for curr < target {
+			data, err := vv.backend.ReadAt(curr, 15)
+			if err != nil && len(data) == 0 {
+				break
+			}
+			instLen := 1
+			inst, decErr := x86asm.Decode(data, mode)
+			if decErr == nil {
+				instLen = inst.Len
+			}
+			prev = curr
+			curr += int64(instLen)
+		}
+		if curr == target && prev >= 0 {
+			return prev
+		}
+	}
+	return max(int64(0), target-1)
+}
+
+func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
+	attr := vtui.Palette[ColViewerText]
+	currOffset := vv.TopOffset
+	for y := 0; y < contentHeight && currOffset < vv.backend.Size(); y++ {
+		row, err := vv.projectRow(currOffset, width)
+		if err != nil {
+			message := fmt.Sprintf(" [ Error: %v ] ", err)
+			if viewerProjectionLoading(err) {
+				message = " [ Loading... ] "
+			}
+			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(message, attr))
+			break
+		}
+		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
+		currOffset = row.end
+	}
+	vv.eofVisible = currOffset >= vv.backend.Size()
 }
 
 func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) {
@@ -474,133 +512,35 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 // for the real viewer and disabled for semantic off-screen rendering: the
 // latter must keep its requested row-to-byte mapping intact.
 func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight int, alignEnd bool) {
-
+	vv.ensureTextLayoutSettings()
 	attr := vtui.Palette[ColViewerText]
-	currOffset := vv.TopOffset
-	vv.lineOffsets = vv.lineOffsets[:0]
-	size := vv.backend.Size()
-
-	for y := 0; y < contentHeight; y++ {
-		// EOF is not a visual row.  Keeping it out of lineOffsets prevents
-		// PgDn from selecting a phantom row after the last real line.
-		if currOffset >= size {
-			break
-		}
-		vv.lineOffsets = append(vv.lineOffsets, currOffset)
-
-		// Read a generous chunk to handle wrapping
-		data, err := vv.backend.ReadAt(currOffset, width*4)
-		if err == piecetable.ErrLoading {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", attr))
-			break
-		}
-		if err != nil {
-			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(fmt.Sprintf(" [ Error: %v ] ", err), attr))
-			break
-		}
-		if len(data) == 0 {
-			break
-		}
-
-		lineLen := 0
-		textLen := 0
-		visualWidth := 0
-		foundNewline := false
-		tabSize := 8
-		if AppConfig.EditorTabSize > 0 {
-			tabSize = AppConfig.EditorTabSize
-		}
-
-		for lineLen < len(data) {
-			r, size := utf8.DecodeRune(data[lineLen:])
-			if r == '\n' {
-				lineLen += size
-				foundNewline = true
-				break
+	if vv.semanticNeedsReflow {
+		resolved, ready := vv.semanticResolveTextWindowOffset(vv.TopOffset)
+		if !ready {
+			message := " [ Loading... ] "
+			if vv.semanticLoadError != "" {
+				message = " [ Error: " + vv.semanticLoadError + " ] "
 			}
-			if r == '\r' {
-				lineLen += size
-				continue
-			}
-
-			rw := 1
-			if r == '\t' {
-				rw = tabSize - (visualWidth % tabSize)
-			} else {
-				rw = runewidth.RuneWidth(r)
-				if rw <= 0 {
-					rw = 1
-				}
-			}
-			if vv.WrapMode && visualWidth+rw > width {
-				// Wrap occurred
-				break
-			}
-			visualWidth += rw
-			lineLen += size
-			textLen = lineLen
+			scr.Write(vv.X1, vv.Y1+1, vtui.StringToCharInfo(message, attr))
+			return
 		}
-
-		// Build []vtui.CharInfo for the line
-		var cells []vtui.CharInfo
-		lineBytes := data[:textLen]
-		visualCol := 0
-
-		for len(lineBytes) > 0 {
-			r, size := utf8.DecodeRune(lineBytes)
-			lineBytes = lineBytes[size:]
-
-			if r == '\t' {
-				w := tabSize - (visualCol % tabSize)
-				for i := 0; i < w; i++ {
-					cells = append(cells, vtui.CharInfo{Char: ' ', Attributes: attr})
-				}
-				visualCol += w
-			} else {
-				displayRune, w := vtui.SanitizeRune(r)
-				if r < 0x20 || r == 0x7F {
-					displayRune = ' '
-				}
-				if w > 0 {
-					charVal := uint64(displayRune)
-					for i := 0; i < w; i++ {
-						cells = append(cells, vtui.CharInfo{Char: charVal, Attributes: attr})
-						charVal = uint64(vtui.WideCharFiller)
-					}
-					visualCol += w
-				}
-			}
-		}
-
-		scr.Write(vv.X1, vv.Y1+1+y, cells)
-		currOffset += int64(lineLen)
-
-		if !foundNewline && !vv.WrapMode {
-			// In no-wrap mode, we must consume until the actual newline
-			tempOff := currOffset
-			for {
-				b, err := vv.backend.ReadAt(tempOff, 1024)
-				if err != nil || len(b) == 0 {
-					break
-				}
-				found := false
-				for i, char := range b {
-					if char == '\n' {
-						tempOff += int64(i + 1)
-						found = true
-						break
-					}
-				}
-				if found {
-					break
-				}
-				tempOff += int64(len(b))
-			}
-			currOffset = tempOff
-		}
+		vv.TopOffset, vv.semanticNeedsReflow = resolved, false
 	}
-
-	reachedEOF := currOffset >= vv.backend.Size()
+	vv.lineOffsets = vv.lineOffsets[:0]
+	build, _, err := vv.constructWindow(width, contentHeight, 0, &vv.consoleProjection)
+	for y, constructed := range build.rows {
+		// Only ready rows participate in paging and EOF alignment.
+		vv.lineOffsets = append(vv.lineOffsets, constructed.start)
+		scr.Write(vv.X1, vv.Y1+1+y, constructed.projection.cells)
+	}
+	if err != nil {
+		message := fmt.Sprintf(" [ Error: %v ] ", err)
+		if viewerProjectionLoading(err) {
+			message = " [ Loading... ] "
+		}
+		scr.Write(vv.X1, vv.Y1+1+len(build.rows), vtui.StringToCharInfo(message, attr))
+	}
+	reachedEOF := build.current >= vv.backend.Size()
 	if alignEnd && reachedEOF && len(vv.lineOffsets) < contentHeight && vv.TopOffset > 0 {
 		aligned, ready := vv.finalTextPageOffset(vv.TopOffset, width,
 			contentHeight-len(vv.lineOffsets))
@@ -650,6 +590,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 	if !e.KeyDown {
 		return false
 	}
+	vv.ensureTextLayoutSettings()
 
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
@@ -667,17 +608,17 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 
 	switch e.VirtualKeyCode {
 	case vtinput.VK_DOWN:
+		// Arrow and wheel navigation are direct destinations too. Retire any
+		// native window request before changing TopOffset, otherwise its
+		// delayed acknowledgement can replay over this input.
+		vv.beginViewerNavigationIntent()
 		if vv.eofVisible {
 			return true // Prevent scrolling past End of File
 		}
 		if vv.DecodeMode {
 			data, _ := vv.backend.ReadAt(vv.TopOffset, 15)
 			if len(data) > 0 {
-				if vv.DisasmMode == 0 {
-					header, _ := vv.backend.ReadAt(0, 1024)
-					vv.DisasmMode = detectX86Mode(header)
-				}
-				inst, err := x86asm.Decode(data, vv.DisasmMode)
+				inst, err := x86asm.Decode(data, vv.effectiveDisasmMode())
 				if err == nil {
 					vv.TopOffset += int64(inst.Len)
 				} else {
@@ -693,10 +634,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		} else {
 			// Fail-safe: if lineOffsets not populated (e.g. before first render),
 			// try to proactively find the next line start from current offset.
-			width := vv.X2 - vv.X1 + 1
-			if vv.scrollBar != nil {
-				width--
-			}
+			width := vv.viewportWidth()
 			data, err := vv.backend.ReadAt(vv.TopOffset, width*4)
 			if err == nil && len(data) > 0 {
 				lineLen := 0
@@ -735,8 +673,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_UP:
+		vv.beginViewerNavigationIntent()
 		if vv.DecodeMode {
-			vv.TopOffset -= 1
+			vv.TopOffset = vv.findPrecedingInstructionOffset(vv.TopOffset)
 		} else if vv.HexMode {
 			vv.TopOffset -= step
 		} else {
@@ -749,11 +688,14 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_NEXT: // PgDn
+		vv.beginViewerNavigationIntent()
+		oldOffset := vv.TopOffset
 		if vv.DecodeMode {
+			mode := vv.effectiveDisasmMode()
 			for i := 0; i < int(contentHeight); i++ {
 				data, _ := vv.backend.ReadAt(vv.TopOffset, 15)
 				if len(data) > 0 {
-					inst, err := x86asm.Decode(data, 64)
+					inst, err := x86asm.Decode(data, mode)
 					if err == nil {
 						vv.TopOffset += int64(inst.Len)
 					} else {
@@ -763,6 +705,9 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			if vv.TopOffset >= vv.backend.Size() {
 				vv.TopOffset = vv.backend.Size() - 1
+				if vv.TopOffset < 0 {
+					vv.TopOffset = 0
+				}
 			}
 		} else if vv.HexMode {
 			vv.TopOffset += 16 * contentHeight
@@ -781,13 +726,22 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				return true
 			}
 			vv.TopOffset = nextOffset
+		}
+		if vv.TopOffset != oldOffset {
 			vv.eofVisible = false
 		}
 		return true
 
 	case vtinput.VK_PRIOR: // PgUp
+		vv.beginViewerNavigationIntent()
+		oldOffset := vv.TopOffset
 		if vv.DecodeMode {
-			vv.TopOffset -= 15 * contentHeight
+			for i := 0; i < int(contentHeight); i++ {
+				vv.TopOffset = vv.findPrecedingInstructionOffset(vv.TopOffset)
+				if vv.TopOffset == 0 {
+					break
+				}
+			}
 		} else if vv.HexMode {
 			vv.TopOffset -= step * contentHeight
 		} else {
@@ -798,10 +752,13 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		if vv.TopOffset < 0 {
 			vv.TopOffset = 0
 		}
-		vv.eofVisible = false
+		if vv.TopOffset != oldOffset {
+			vv.eofVisible = false
+		}
 		return true
 
 	case vtinput.VK_HOME:
+		vv.beginViewerNavigationIntent()
 		vv.TopOffset = 0
 		vv.eofVisible = false
 		return true
@@ -846,6 +803,7 @@ func (vv *ViewerView) askGoto() {
 }
 
 func (vv *ViewerView) gotoPosition(n int64) {
+	intent := vv.beginViewerNavigationIntent()
 	if vv.HexMode {
 		size := vv.backend.Size()
 		if n >= size {
@@ -863,25 +821,87 @@ func (vv *ViewerView) gotoPosition(n int64) {
 	// cannot index, a walk over the file, so it does not happen on the UI
 	// thread and the user can cancel it.
 	vv.Busy = true
+	backend := vv.backend
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
-		off, ok := vv.backend.LineStart(ctx.Context, n)
-		ctx.RunOnUI(func() {
+		stop := context.AfterFunc(backend.ctx, ctx.Cancel)
+		defer stop()
+		off, ok := backend.LineStart(ctx.Context, n)
+		ctx.RunOnUIWithRedrawDecision(func() bool {
+			if vv.IsDone() || vv.backend != backend ||
+				vv.viewerNavigationGeneration != intent || backend.ctx.Err() != nil {
+				return false
+			}
 			vv.Busy = false
 			if !ok {
 				if ctx.Err() == nil {
 					vtui.ShowMessageOn(vv, " Go to line ",
 						fmt.Sprintf("Line %d is past the end of the file.", n), []string{"&Ok"})
 				}
-				return
+				return true
 			}
 			vv.TopOffset = off
 			vv.eofVisible = false
 			vtui.FrameManager.Redraw()
+			return true
 		})
 	})
 }
+
+// beginViewerNavigationIntent makes a direct keyboard destination newer than
+// any native window request that was already accepted by the core. Advancing
+// the acknowledgement is important: the native surface may still be waiting
+// for that generation and would otherwise reject the keyboard-produced scene
+// as older, then replay its pending destination over Home/End.
+func (vv *ViewerView) beginViewerNavigationIntent() uint64 {
+	if vv.endNavigationCancel != nil {
+		vv.endNavigationCancel()
+		vv.endNavigationCancel = nil
+	}
+	vv.viewerNavigationGeneration++
+	// A direct keyboard destination is itself a new presentation generation.
+	// Merely acknowledging the newest native request is insufficient: QML may
+	// have one replaceable destination that has not been sent yet.  The native
+	// surface cancels that local intent synchronously on Home/End and rejects
+	// the in-flight request generation, so the keyboard-produced window must be
+	// newer than both the last published and last accepted native generations.
+	latestGeneration := max(vv.semanticWindowGeneration,
+		vv.semanticWindowRequestGeneration, vv.semanticPendingGeneration)
+	if latestGeneration != ^uint64(0) {
+		latestGeneration++
+	}
+	vv.semanticWindowGeneration = latestGeneration
+	vv.semanticWindowRequestGeneration = latestGeneration
+	vv.semanticPendingScroll = false
+	vv.semanticPendingOffset = 0
+	vv.semanticPendingGeneration = 0
+	vv.semanticProjection = nil
+	vv.consoleProjection = nil
+	vv.projectionContinuationPending = false
+	vv.semanticWrapSeek = semanticWrapSeekState{}
+	// A superseded End computation may still finish on a source that cannot
+	// cancel an issued read. Its generation fence below prevents publication;
+	// it must not keep the replacement keyboard destination visually busy.
+	vv.Busy = false
+	return vv.viewerNavigationGeneration
+}
+
 func (vv *ViewerView) jumpToEnd() {
-	contentHeight := int64(vv.viewportHeight())
+	intent := vv.beginViewerNavigationIntent()
+	vv.jumpToEndForIntent(intent)
+}
+
+func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
+	if intent != vv.viewerNavigationGeneration || vv.backend == nil {
+		return
+	}
+	if vv.endNavigationCancel != nil {
+		vv.endNavigationCancel()
+		vv.endNavigationCancel = nil
+	}
+	vv.ensureTextLayoutSettings()
+	vv.endNavigationAttempt++
+	attempt := vv.endNavigationAttempt
+	contentHeight := int64(max(1, vv.viewportHeight()))
 	if vv.HexMode {
 		if vv.backend.Size() == 0 {
 			vv.TopOffset = 0
@@ -894,6 +914,22 @@ func (vv *ViewerView) jumpToEnd() {
 		}
 		return
 	}
+	if vv.DecodeMode {
+		if vv.backend.Size() == 0 {
+			vv.TopOffset = 0
+		} else {
+			curr := max(int64(0), vv.backend.Size()-1)
+			for i := int64(0); i < contentHeight-1 && curr > 0; i++ {
+				prev := vv.findPrecedingInstructionOffset(curr)
+				if prev >= curr {
+					break
+				}
+				curr = prev
+			}
+			vv.TopOffset = curr
+		}
+		return
+	}
 
 	if vv.backend.Size() == 0 {
 		vv.TopOffset = 0
@@ -901,110 +937,97 @@ func (vv *ViewerView) jumpToEnd() {
 	}
 
 	vv.Busy = true
+	width := vv.viewportWidth()
+	backend := vv.backend
+	size := backend.Size()
+	wrapMode := vv.WrapMode
+	layoutRevision := vv.semanticLayoutRevision
+	viewportRevision := vv.nativeViewportRevision
+	layoutTabSize := effectiveViewerTabSize()
+	requestGeneration := vv.semanticWindowRequestGeneration
+	scanContext, cancelScan := context.WithCancel(backend.ctx)
+	vv.endNavigationCancel = cancelScan
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
-		defer ctx.RunOnUI(func() { vv.Busy = false })
-		width := vv.X2 - vv.X1 + 1
-		if vv.scrollBar != nil {
-			width--
+		stopTaskCancellation := context.AfterFunc(ctx.Context, cancelScan)
+		defer stopTaskCancellation()
+		defer cancelScan()
+		defer ctx.RunOnUIWithRedrawDecision(func() bool {
+			if !vv.IsDone() && vv.backend == backend &&
+				vv.viewerNavigationGeneration == intent &&
+				vv.endNavigationAttempt == attempt {
+				vv.endNavigationCancel = nil
+				changed := vv.Busy
+				vv.Busy = false
+				return changed
+			}
+			return false
+		})
+
+		// The common End path remains one bounded tail range. If that arbitrary
+		// byte boundary cuts a logical line whose suffix cannot fill the
+		// viewport, correctness requires resolving a real newline/BOF anchor;
+		// that explicit fallback remains cancellable and uses fixed-size reads.
+		tailLength := int(min(size, int64(viewerEndTailWindow)))
+		startOff := size - int64(tailLength)
+		tail, err := backend.ReadContext(scanContext, startOff, tailLength)
+		if err != nil || len(tail) != tailLength {
+			return
 		}
 
-		chunkSize := contentHeight * int64(width) * 4
-		if chunkSize < 16*1024 {
-			chunkSize = 16 * 1024
+		endResult, ready, err := viewerFastEndOffset(scanContext, tail, startOff, size,
+			width, int(contentHeight), wrapMode, layoutTabSize)
+		if err != nil {
+			return
 		}
-
-		// Ctrl+End must be a random-access operation. A remote line index has
-		// to scan the entire file to count its lines; for a binary file that
-		// usually yields line 1 at offset 0 and makes the viewer download the
-		// whole file as well. One backend cache window is enough to lay out the
-		// final screen, including wrapped text, and maps to a bounded FISH+
-		// range read regardless of the file size.
-		const tailWindow = 192 * 1024
-		if chunkSize < tailWindow {
-			chunkSize = tailWindow
-		}
-		startOff := vv.backend.Size() - chunkSize
-		if startOff < 0 {
-			startOff = 0
-		}
-
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			_, err := vv.backend.ReadAt(startOff, 1024)
-			if err != piecetable.ErrLoading {
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		var offsets []int64
-		currOff := startOff
-
-		tabSize := 8
-		if AppConfig.EditorTabSize > 0 {
-			tabSize = AppConfig.EditorTabSize
-		}
-		for currOff < vv.backend.Size() {
-			if ctx.Err() != nil {
-				return
-			}
-			data, err := vv.backend.ReadAt(currOff, 64*1024)
-			if err == piecetable.ErrLoading {
-				time.Sleep(20 * time.Millisecond)
-				continue
-			}
-			if err != nil || len(data) == 0 {
-				break
-			}
-
-			scanPos := 0
-			for scanPos < len(data) {
-				offsets = append(offsets, currOff+int64(scanPos))
-				lineLen := 0
-				visualWidth := 0
-				foundNewline := false
-				for scanPos+lineLen < len(data) {
-					r, size := utf8.DecodeRune(data[scanPos+lineLen:])
-					if r == '\n' {
-						lineLen += size
-						foundNewline = true
-						break
-					}
-					if r == '\r' {
-						lineLen += size
-						continue
-					}
-					rw := 1
-					if r == '\t' {
-						rw = tabSize - (visualWidth % tabSize)
-					} else {
-						rw = runewidth.RuneWidth(r)
-						if rw <= 0 {
-							rw = 1
-						}
-					}
-					if vv.WrapMode && visualWidth+rw > width {
-						break
-					}
-					visualWidth += rw
-					lineLen += size
-				}
-				scanPos += lineLen
-				if !foundNewline && !vv.WrapMode {
-					break
+		if !ready {
+			// A tail boundary inside a logical line has no trustworthy wrap or
+			// tab origin. Prefer a remote line index when one exists; otherwise
+			// seek backward in cancellable bounded slices until a real line
+			// start (and enough preceding logical rows) is proven.
+			anchor, indexed := backend.LineStartFromEnd(scanContext, contentHeight)
+			if !indexed || anchor < 0 || anchor >= size {
+				anchor, err = viewerEndLogicalAnchor(scanContext, backend, size,
+					int(contentHeight), startOff, tail)
+				if err != nil {
+					return
 				}
 			}
-			currOff += int64(scanPos)
+			endResult, err = viewerEndOffsetFromAnchor(scanContext, backend, anchor,
+				startOff, size, tail, width, int(contentHeight), wrapMode, layoutTabSize)
+			if err != nil {
+				return
+			}
 		}
 
-		ctx.RunOnUI(func() {
-			if int64(len(offsets)) <= contentHeight {
-				vv.TopOffset = startOff
-			} else {
-				vv.TopOffset = offsets[len(offsets)-int(contentHeight)]
+		ctx.RunOnUIWithRedrawDecision(func() bool {
+			if vv.IsDone() || vv.backend != backend || backend.ctx.Err() != nil ||
+				vv.viewerNavigationGeneration != intent ||
+				vv.endNavigationAttempt != attempt ||
+				vv.semanticWindowRequestGeneration != requestGeneration {
+				return false
+			}
+			// End names a logical destination, not coordinates in the layout
+			// that happened to exist when its bounded tail read began. If native
+			// geometry or wrapping changed meanwhile, keep the same one-press
+			// intent and recalculate against the current complete-row viewport.
+			if vv.semanticLayoutRevision != layoutRevision ||
+				vv.nativeViewportRevision != viewportRevision ||
+				vv.viewportWidth() != width ||
+				int64(vv.viewportHeight()) != contentHeight ||
+				vv.WrapMode != wrapMode || effectiveViewerTabSize() != layoutTabSize ||
+				backend.Size() != size {
+				vv.jumpToEndForIntent(intent)
+				return false
+			}
+			vv.Busy = false
+			cancelScan()
+			vv.endNavigationCancel = nil
+			vv.TopOffset = endResult.top.offset
+			if wrapMode {
+				vv.seedViewerEndWrapSeek(endResult, width)
 			}
 			vtui.FrameManager.Redraw()
+			return true
 		})
 	})
 }
@@ -1026,6 +1049,7 @@ func (vv *ViewerView) ReloadWithCodepage(cpID int) {
 			file:         f,
 			size:         size,
 			path:         vv.path,
+			owner:        vv.vfs,
 			totalLines:   -1,
 			totalForSize: -1,
 			ctx:          bCtx,
@@ -1060,6 +1084,7 @@ func (vv *ViewerView) ReloadWithCodepage(cpID int) {
 	oldBackend := vv.backend
 	vv.backend = backend
 	vv.Codepage = cpID
+	vv.semanticLayoutRevision++
 	vv.TopOffset = vv.backend.FindLineStart(vv.TopOffset)
 
 	if oldBackend != nil {
@@ -1161,6 +1186,10 @@ func (vv *ViewerView) ResizeConsole(w, h int) {
 }
 
 func (vv *ViewerView) Close() {
+	vv.semanticProjection, vv.consoleProjection = nil, nil
+	if vv.IsDone() {
+		return
+	}
 	if GlobalFileState != nil && vv.path != "" {
 		GlobalFileState.SaveViewerStateAsync(FileStateKey(vv.vfs, vv.path), vv.TopOffset, vv.WrapMode, vv.HexMode)
 	}

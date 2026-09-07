@@ -4,11 +4,18 @@
 #include <QAccessible>
 #include <QColor>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QFont>
+#include <QGuiApplication>
+#include <QImage>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QPointer>
+#include <QScopeGuard>
+#include <QStyleHints>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVariantList>
@@ -16,6 +23,8 @@
 #include <QWheelEvent>
 #include <QtQml>
 #include <QtTest>
+
+#include <cmath>
 
 namespace
 {
@@ -65,6 +74,9 @@ public:
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
     Q_INVOKABLE void sendClipboardPaste() {}
     Q_INVOKABLE void sendQtText(const QString &) {}
+
+signals:
+    void keyboardActivity();
 
 private:
     QObject *m_controller = nullptr;
@@ -455,6 +467,171 @@ QVariantMap dialogScene()
     return scene;
 }
 
+QVariantMap dialogControlsScene(bool focused, bool dropdownOnly = false)
+{
+    QVariantMap scene = dialogScene();
+    QVariantList dialogs = scene.value(QStringLiteral("dialogs")).toList();
+    QVariantMap dialog = dialogs.constFirst().toMap();
+    QVariantList children = dialog.value(QStringLiteral("children")).toList();
+
+    for (qsizetype index = 0; index < children.size(); ++index) {
+        QVariantMap child = children.at(index).toMap();
+        const QString kind = child.value(QStringLiteral("kind")).toString();
+        if (kind == QStringLiteral("checkbox")) {
+            child.insert(QStringLiteral("state"), focused ? 1 : 0);
+            child.insert(QStringLiteral("focused"), focused);
+        } else if (kind == QStringLiteral("radioGroup")) {
+            child.insert(QStringLiteral("selected"), focused ? 1 : 0);
+            child.insert(QStringLiteral("focused"), focused);
+        }
+        children[index] = child;
+    }
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-edit")},
+        {QStringLiteral("kind"), QStringLiteral("edit")},
+        {QStringLiteral("text"), QStringLiteral("C:\\Windows")},
+        {QStringLiteral("focused"), focused},
+        {QStringLiteral("cursor"), 10},
+        {QStringLiteral("x"), 2},
+        {QStringLiteral("y"), 12},
+        {QStringLiteral("w"), 32},
+        {QStringLiteral("h"), 2},
+    });
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-combo")},
+        {QStringLiteral("kind"), QStringLiteral("comboBox")},
+        {QStringLiteral("text"), QStringLiteral("Second option")},
+        {QStringLiteral("selected"), 1},
+        {QStringLiteral("focused"), focused},
+        {QStringLiteral("dropdownOnly"), dropdownOnly},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{{QStringLiteral("text"),
+                          QStringLiteral("First option")}},
+             QVariantMap{{QStringLiteral("text"),
+                          QStringLiteral("Second option")}},
+             QVariantMap{{QStringLiteral("text"),
+                          QStringLiteral("Third option")}},
+         }},
+        {QStringLiteral("x"), 2},
+        {QStringLiteral("y"), 15},
+        {QStringLiteral("w"), 32},
+        {QStringLiteral("h"), 2},
+    });
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-apply")},
+        {QStringLiteral("kind"), QStringLiteral("button")},
+        {QStringLiteral("text"), QStringLiteral("Apply")},
+        {QStringLiteral("focused"), focused},
+        {QStringLiteral("x"), 2},
+        {QStringLiteral("y"), 18},
+        {QStringLiteral("w"), 16},
+        {QStringLiteral("h"), 2},
+    });
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-list")},
+        {QStringLiteral("kind"), QStringLiteral("listBox")},
+        {QStringLiteral("focused"), focused},
+        {QStringLiteral("items"), QVariantList{
+             QStringLiteral("First row"), QStringLiteral("Second row")}},
+        {QStringLiteral("cursor"), 0},
+        {QStringLiteral("x"), 38},
+        {QStringLiteral("y"), 2},
+        {QStringLiteral("w"), 22},
+        {QStringLiteral("h"), 6},
+    });
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-group")},
+        {QStringLiteral("kind"), QStringLiteral("group")},
+        {QStringLiteral("title"), QStringLiteral("Advanced")},
+        {QStringLiteral("bordered"), true},
+        {QStringLiteral("x"), 38},
+        {QStringLiteral("y"), 12},
+        {QStringLiteral("w"), 22},
+        {QStringLiteral("h"), 7},
+        {QStringLiteral("children"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("id"),
+                  QStringLiteral("appearance-group-label")},
+                 {QStringLiteral("kind"), QStringLiteral("text")},
+                 {QStringLiteral("text"), QStringLiteral("Nested option")},
+                 {QStringLiteral("x"), 40},
+                 {QStringLiteral("y"), 14},
+                 {QStringLiteral("w"), 18},
+                 {QStringLiteral("h"), 1},
+             },
+         }},
+    });
+    children.append(QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("appearance-borderless-group")},
+        {QStringLiteral("kind"), QStringLiteral("group")},
+        {QStringLiteral("title"), QStringLiteral("Borderless")},
+        {QStringLiteral("bordered"), false},
+        {QStringLiteral("x"), 38},
+        {QStringLiteral("y"), 21},
+        {QStringLiteral("w"), 22},
+        {QStringLiteral("h"), 4},
+        {QStringLiteral("children"), QVariantList{}},
+    });
+
+    dialog.insert(QStringLiteral("children"), children);
+    dialogs[0] = dialog;
+    scene.insert(QStringLiteral("dialogs"), dialogs);
+    return scene;
+}
+
+QVariantMap dialogComboMenu(int selected)
+{
+    return {
+        {QStringLiteral("id"), QStringLiteral("appearance-combo-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("active"), true},
+        {QStringLiteral("selected"), selected},
+        {QStringLiteral("ownerId"), QStringLiteral("appearance-combo")},
+        {QStringLiteral("presentation"), QStringLiteral("dropdown")},
+        {QStringLiteral("top"), 0},
+        {QStringLiteral("x"), 20},
+        {QStringLiteral("y"), 17},
+        {QStringLiteral("w"), 32},
+        {QStringLiteral("h"), 5},
+        {QStringLiteral("viewHeight"), 3},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("index"), 0},
+                 {QStringLiteral("text"), QStringLiteral("First option")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("header"), false},
+                 {QStringLiteral("disabled"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 1},
+                 {QStringLiteral("text"), QStringLiteral("Second option")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("header"), false},
+                 {QStringLiteral("disabled"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 2},
+                 {QStringLiteral("text"), QStringLiteral("Third option")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("header"), false},
+                 {QStringLiteral("disabled"), false},
+             },
+         }},
+    };
+}
+
+QVariantMap dialogComboMenuScene(int selected,
+                                 const QString &presentation = {})
+{
+    QVariantMap scene = dialogControlsScene(true, true);
+    scene.insert(QStringLiteral("menus"),
+                 QVariantList{dialogComboMenu(selected)});
+    if (!presentation.isEmpty())
+        scene.insert(QStringLiteral("presentation"), presentation);
+    return scene;
+}
+
 QPoint itemCenter(QQuickItem *item)
 {
     const QPointF scenePoint = item->mapToScene(
@@ -582,11 +759,19 @@ private slots:
     void panelLoadingPulseIsDelayedLocalAndDoesNotMoveRendererButton();
     void rendererPopupClosesOnOutsidePress();
     void semanticDialogsMoveResizeAndUseZoinWindowButtons();
+    void dialogOpenRestoresGlobalKeyboardSinkAndSemanticControlFocus();
+    void semanticDialogKeyboardFocusFramesAreDistinctAndThemeLive();
+    void semanticDialogComboBoxFollowsGoOwnedMenuState();
+    void semanticOverlayMenuStreamClearsWhileFallbackSurfaceIsHidden();
+    void semanticDialogInteractiveControlsOverflowOneRowWithoutReflow();
+    void semanticDialogControlsUseWindowFontAndStayPixelAligned();
+    void dialogTextCursorBlinkSettlesAndFocusStopsIt();
 };
 
 void F4OperationsQueueTests::initTestCase()
 {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+    QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
 }
 
@@ -981,17 +1166,38 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QVariantList items;
     for (int id = 1; id <= 30; ++id)
         items.append(task(id, QStringLiteral("Queued"), 0));
+    items[0] = task(1, QStringLiteral("Scanning"), 0);
     const QVariantMap queue = queueModel(items, 1, true);
     fixture.shell.setScene(queueScene(queue));
 
     QQuickItem *queueSurface = nullptr;
     QQuickItem *queueList = nullptr;
+    QObject *queueBusy = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
         (queueSurface = fixture.item(QStringLiteral("operationsQueueSurface"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (queueList = fixture.item(QStringLiteral("operationsQueueList"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(queueList->property("contentHeight").toReal()
                              > queueList->height(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (queueBusy = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("operationsQueueBusy-1"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(queueBusy->property("running").toBool(), 1000);
+
+    // Retained surfaces must not leave a hidden indeterminate animation
+    // running below a modal/menu layer. It resumes when the queue can present
+    // frames again because the operation itself remains active.
+    QVariantMap queueWithDialog = queueScene(queue);
+    queueWithDialog.insert(QStringLiteral("dialogs"),
+                           dialogScene().value(QStringLiteral("dialogs")));
+    fixture.shell.setScene(queueWithDialog);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !queueBusy->property("running").toBool(), 1000);
+    fixture.shell.setScene(queueScene(queue));
+    QTRY_VERIFY_WITH_TIMEOUT(queueBusy->property("running").toBool(), 1000);
+
     queueList->setProperty("contentY", 180.0);
     QVERIFY(QMetaObject::invokeMethod(queueList, "flick",
                                       Qt::DirectConnection,
@@ -1003,6 +1209,8 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QTRY_VERIFY_WITH_TIMEOUT(panelPair->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
         !queueSurface->property("interactionActive").toBool(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !queueBusy->property("running").toBool(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(!queueList->property("flicking").toBool(), 1000);
     const qreal frozenQueueY = queueList->property("contentY").toReal();
     QTest::qWait(60);
@@ -1026,6 +1234,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
 
     fixture.shell.setScene(queueScene(queue));
     QTRY_VERIFY_WITH_TIMEOUT(queueSurface->isVisible(), 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(queueBusy->property("running").toBool(), 1000);
     QCOMPARE(fixture.item(QStringLiteral("operationsQueueList")), queueList);
     QCOMPARE(queueList->property("contentY").toReal(), frozenQueueY);
 
@@ -1105,6 +1314,7 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QVERIFY(fixture.window);
 
     QQuickItem *path = nullptr;
+    QQuickItem *panelView = nullptr;
     QQuickItem *pulse = nullptr;
     QQuickItem *sortButton = nullptr;
     QQuickItem *sortButtonContent = nullptr;
@@ -1114,6 +1324,8 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QObject *sortMenu = nullptr;
     QQuickItem *renderer = nullptr;
     QQuickItem *rendererContent = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (panelView = fixture.item(QStringLiteral("filePanel-0"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (path = fixture.item(QStringLiteral("panelPathTitle-0"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1187,11 +1399,24 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QCOMPARE(rendererHorizontalPadding, sortHorizontalPadding);
     QVERIFY(sortButton->x() < renderer->x());
 
+    const auto panelActions = [&fixture]() {
+        QVector<QVariantMap> result;
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            // The standalone Qt viewport negotiation is session state and may
+            // complete while this panel-only interaction is being exercised.
+            if (action.value(QStringLiteral("action")).toString()
+                != QStringLiteral("document.viewport")) {
+                result.append(action);
+            }
+        }
+        return result;
+    };
+
     fixture.shell.clearActions();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       itemCenter(sortButton));
     QTRY_VERIFY_WITH_TIMEOUT(sortMenu->property("opened").toBool(), 1000);
-    QVERIFY(fixture.shell.actions.isEmpty());
+    QVERIFY(panelActions().isEmpty());
     QQuickItem *sortNameLabel = nullptr;
     QQuickItem *sortNameCheck = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1214,14 +1439,15 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       firstSortChoice);
     QTRY_VERIFY_WITH_TIMEOUT(!sortMenu->property("opened").toBool(), 1000);
-    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1000);
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("action"))
+    QTRY_COMPARE_WITH_TIMEOUT(panelActions().size(), 1, 1000);
+    const QVector<QVariantMap> sortActions = panelActions();
+    QCOMPARE(sortActions.constFirst().value(QStringLiteral("action"))
                  .toString(),
              QStringLiteral("panel.sort"));
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("side"))
+    QCOMPARE(sortActions.constFirst().value(QStringLiteral("side"))
                  .toInt(),
              0);
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("mode"))
+    QCOMPARE(sortActions.constFirst().value(QStringLiteral("mode"))
                  .toString(),
              QStringLiteral("name"));
     const qreal rendererX = renderer->x();
@@ -1240,6 +1466,8 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     // clean path, advances locally in QML, and hides synchronously on ACK.
     fixture.shell.setScene(loadingPanelScene(true));
     QTRY_VERIFY_WITH_TIMEOUT(pulse->isVisible(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        panelView->property("loadingIndicatorPulseRunning").toBool(), 500);
     const QString firstFrame = pulse->property("text").toString();
     QVERIFY(!firstFrame.isEmpty());
     QCOMPARE(path->property("text").toString(),
@@ -1247,6 +1475,19 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QCOMPARE(renderer->x(), rendererX);
     QTRY_VERIFY_WITH_TIMEOUT(
         pulse->property("text").toString() != firstFrame, 500);
+
+    // The panel object is deliberately retained below Viewer/Editor. Loading
+    // may continue, but its invisible pulse must stop requesting frames.
+    fixture.shell.setScene(documentScene());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !panelView->property("loadingIndicatorPulseRunning").toBool(), 500);
+    QVERIFY(!panelView->property("loadingIndicatorDelayRunning").toBool());
+    QVERIFY(!pulse->isVisible());
+
+    fixture.shell.setScene(loadingPanelScene(true));
+    QTRY_VERIFY_WITH_TIMEOUT(pulse->isVisible(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        panelView->property("loadingIndicatorPulseRunning").toBool(), 500);
 
     fixture.shell.setScene(loadingPanelScene(false));
     QTRY_VERIFY_WITH_TIMEOUT(!pulse->isVisible(), 200);
@@ -1281,6 +1522,15 @@ void F4OperationsQueueTests::rendererPopupClosesOnOutsidePress()
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       itemCenter(button));
     QTRY_VERIFY_WITH_TIMEOUT(popup->property("opened").toBool(), 1000);
+
+    // An open menu is a stable surface. Allow the Basic style's bounded
+    // opening/hover transitions to finish, then require the scene graph to
+    // sleep while the menu remains visible and untouched.
+    QTest::qWait(350);
+    QSignalSpy idleMenuFrames(fixture.window, &QQuickWindow::frameSwapped);
+    QVERIFY(idleMenuFrames.isValid());
+    QTest::qWait(160);
+    QCOMPARE(idleMenuFrames.size(), 0);
 
     // Pick an unambiguous point in the panel body, outside both the popup and
     // its renderer button. The same press must only dismiss the popup.
@@ -1480,6 +1730,1153 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
     fixture.window->setProperty("dialogHeaderBg", secondHeader);
     QTRY_COMPARE(header->property("color").value<QColor>(), secondHeader);
     QVERIFY(!fixture.window->grabWindow().isNull());
+}
+
+void F4OperationsQueueTests::dialogOpenRestoresGlobalKeyboardSinkAndSemanticControlFocus()
+{
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+
+    auto *grid = fixture.window->findChild<TestGrid *>();
+    QQuickItem *panelFocusOwner = fixture.item(
+        QStringLiteral("semanticOverlayHost"));
+    QVERIFY(grid);
+    QVERIFY(panelFocusOwner);
+
+    // Reproduce a native gallery panel owning Qt keyboard focus at the exact
+    // moment a semantic dialog arrives on its independent protocol stream.
+    panelFocusOwner->forceActiveFocus();
+    QTRY_VERIFY_WITH_TIMEOUT(panelFocusOwner->hasActiveFocus(), 1000);
+    QVERIFY(!grid->hasActiveFocus());
+
+    const QVariantMap focusedScene = dialogControlsScene(true);
+    fixture.shell.overlayState()->applyDialogsState({
+        {QStringLiteral("dialogs"),
+         focusedScene.value(QStringLiteral("dialogs")).toList()},
+    }, 100);
+
+    // The grid remains the raw-key forwarding sink. The actual control focus
+    // is Go-owned and must be represented by the semantic focus frame rather
+    // than by letting the covered panel retain Qt focus.
+    QTRY_VERIFY_WITH_TIMEOUT(grid->hasActiveFocus(), 1000);
+    QQuickItem *checkBox = nullptr;
+    QQuickItem *checkFocusFrame = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkBox = visualItem(fixture.window->contentItem(), QStringLiteral(
+             "dialogWidget-appearance-checkboxCheckBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkFocusFrame = visualItem(fixture.window->contentItem(),
+             QStringLiteral(
+                 "dialogWidget-appearance-checkboxCheckBoxFocusFrame"))),
+        3000);
+    QVERIFY(checkBox->property("semanticFocus").toBool());
+    QTRY_COMPARE_WITH_TIMEOUT(
+        checkFocusFrame->property("testBorderColor").value<QColor>(),
+        fixture.window->property("dialogAccent").value<QColor>(), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        checkFocusFrame->property("testBorderWidth").toReal(),
+        fixture.window->property("separatorWidth").toReal(), 1000);
+}
+
+void F4OperationsQueueTests::semanticDialogKeyboardFocusFramesAreDistinctAndThemeLive()
+{
+    QueueFixture fixture(dialogControlsScene(false));
+    QVERIFY(fixture.window);
+
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QVERIFY(rootItem);
+    QQuickItem *checkBox = nullptr;
+    QQuickItem *checkFocusFrame = nullptr;
+    QQuickItem *radioButton = nullptr;
+    QQuickItem *radioFocusFrame = nullptr;
+    QQuickItem *listBox = nullptr;
+    QQuickItem *listFocusFrame = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkBox = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-checkboxCheckBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-checkboxCheckBoxFocusFrame"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioButton = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-navigationRadio-0"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-navigationRadio-0FocusFrame"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (listBox = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-listListBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (listFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-listListFocusFrame"))),
+        3000);
+
+    const QColor normalBorder(QStringLiteral("#334455"));
+    const QColor firstAccent(QStringLiteral("#4a90e2"));
+    QVERIFY(fixture.window->setProperty("controlBorder", normalBorder));
+    QVERIFY(fixture.window->setProperty("dialogAccent", firstAccent));
+
+    // Selection and focus are independent. The selected radio button must not
+    // look keyboard-focused until the semantic model says it is focused.
+    QVERIFY(radioButton->property("checked").toBool());
+    QVERIFY(checkBox->setProperty("checked", true));
+    for (QQuickItem *frame : {checkFocusFrame, radioFocusFrame,
+                              listFocusFrame}) {
+        QTRY_COMPARE_WITH_TIMEOUT(
+            frame->property("testBorderColor").value<QColor>(),
+            normalBorder, 1000);
+        QCOMPARE(frame->property("testBorderWidth").toReal(), 0.0);
+    }
+    QImage unfocusedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(unfocusedFrame = fixture.window->grabWindow()).isNull(), 3000);
+
+    QVERIFY(checkBox->setProperty("semanticFocus", true));
+    QVERIFY(radioButton->setProperty("semanticFocus", true));
+    QVERIFY(listBox->setProperty("semanticFocus", true));
+    const qreal separatorWidth =
+        fixture.window->property("separatorWidth").toReal();
+    for (QQuickItem *frame : {checkFocusFrame, radioFocusFrame,
+                              listFocusFrame}) {
+        QTRY_COMPARE_WITH_TIMEOUT(
+            frame->property("testBorderColor").value<QColor>(),
+            firstAccent, 1000);
+        QTRY_COMPARE_WITH_TIMEOUT(
+            frame->property("testBorderWidth").toReal(),
+            separatorWidth, 1000);
+    }
+
+    const QColor changedAccent(QStringLiteral("#2fbcff"));
+    QVERIFY(fixture.window->setProperty("dialogAccent", changedAccent));
+    for (QQuickItem *frame : {checkFocusFrame, radioFocusFrame,
+                              listFocusFrame}) {
+        QTRY_COMPARE_WITH_TIMEOUT(
+            frame->property("testBorderColor").value<QColor>(),
+            changedAccent, 1000);
+    }
+
+    QImage focusedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(focusedFrame = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(focusedFrame != unfocusedFrame);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required for the physical-pixel gate");
+    for (QQuickItem *frame : {checkFocusFrame, radioFocusFrame,
+                              listFocusFrame}) {
+        const QPointF origin = frame->mapToItem(rootItem, QPointF{});
+        const QPointF physicalOrigin = origin * dpr;
+        const qreal physicalWidth = frame->width() * dpr;
+        const qreal physicalHeight = frame->height() * dpr;
+        const QString details = QStringLiteral(
+            "%1 geometry is (%2,%3) %4x%5 physical px")
+                                    .arg(frame->objectName())
+                                    .arg(physicalOrigin.x(), 0, 'f', 6)
+                                    .arg(physicalOrigin.y(), 0, 'f', 6)
+                                    .arg(physicalWidth, 0, 'f', 6)
+                                    .arg(physicalHeight, 0, 'f', 6);
+        QVERIFY2(qAbs(physicalOrigin.x()
+                      - qRound(physicalOrigin.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalOrigin.y()
+                      - qRound(physicalOrigin.y())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalWidth - qRound(physicalWidth)) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalHeight - qRound(physicalHeight)) < 0.001,
+                 qPrintable(details));
+    }
+}
+
+void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
+{
+    QueueFixture fixture(dialogControlsScene(true, true));
+    QVERIFY(fixture.window);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
+
+    auto *grid = fixture.window->findChild<TestGrid *>();
+    QQuickItem *combo = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (combo = visualItem(fixture.window->contentItem(), QStringLiteral(
+             "dialogWidget-appearance-comboComboBox"))),
+        3000);
+    QVERIFY(grid);
+    QTRY_VERIFY_WITH_TIMEOUT(grid->hasActiveFocus(), 1000);
+    QVERIFY(combo->property("semanticFocus").toBool());
+    QVERIFY(!combo->hasActiveFocus());
+    QCOMPARE(combo->property("count").toInt(), 3);
+    QVERIFY(combo->property("externallyOwnedPopup").toBool());
+    QVERIFY(!combo->property("editable").toBool());
+
+    const QPointer<QObject> nativePopup =
+        combo->property("popup").value<QObject *>();
+    QVERIFY(nativePopup);
+    const auto comboActions = [&fixture]() {
+        QVector<QVariantMap> result;
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("target")).toString()
+                == QStringLiteral("appearance-combo")) {
+                result.append(action);
+            }
+        }
+        return result;
+    };
+
+    fixture.shell.clearActions();
+    QSignalSpy externalPopupSpy(combo, SIGNAL(externalPopupRequested()));
+    QVERIFY(externalPopupSpy.isValid());
+    const QPoint comboVisiblePoint = combo->mapToScene(
+        QPointF(combo->width() * 0.75, combo->height() / 2.0)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      comboVisiblePoint);
+    QTRY_COMPARE_WITH_TIMEOUT(externalPopupSpy.size(), 1, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(comboActions().size(), 1, 1000);
+    QCOMPARE(comboActions().constFirst().value(QStringLiteral("action")).toString(),
+             QStringLiteral("control.open"));
+    QVERIFY(!nativePopup->property("visible").toBool());
+
+    // Neither physical Enter key belongs to QML. The global key sink remains
+    // focused and forwards it to Go, while the local ComboBox popup stays
+    // closed until Go publishes its VMenu.
+    for (const auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+        fixture.shell.clearActions();
+        QTest::keyClick(fixture.window, key);
+        QTest::qWait(30);
+        QVERIFY(!nativePopup->property("visible").toBool());
+        QCOMPARE(comboActions().size(), 0);
+        QVERIFY(grid->hasActiveFocus());
+    }
+
+    // This is the response produced by ComboBox.ProcessKey in Go. QML must
+    // present that semantic menu above its owning full-window dialog rather
+    // than opening a second, Qt-owned popup beneath or outside the Go stack.
+    fixture.shell.setScene(dialogComboMenuScene(1));
+    QVariant overlayFrames;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "overlayFrames",
+        Q_RETURN_ARG(QVariant, overlayFrames)));
+    const QVariantList frames = overlayFrames.toList();
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.at(0).toMap().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("dialog"));
+    QCOMPARE(frames.at(1).toMap().value(QStringLiteral("kind")).toString(),
+             QStringLiteral("menu"));
+
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QPointer<QQuickItem> semanticPopup;
+    QPointer<QQuickItem> semanticList;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (semanticPopup = visualItem(rootItem, QStringLiteral(
+             "semanticMenuPopup-appearance-combo-menu"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (semanticList = visualItem(rootItem, QStringLiteral(
+             "semanticMenuList-appearance-combo-menu"))),
+        3000);
+    QPointer<QQuickItem> semanticMenuOverlay = semanticPopup->parentItem();
+    QVERIFY(semanticMenuOverlay);
+    QVERIFY(semanticMenuOverlay->property("dropdownMode").toBool());
+    QCOMPARE(semanticMenuOverlay->property("semanticSelectedIndex").toInt(),
+             1);
+    QCOMPARE(semanticMenuOverlay->property("visualSelectedIndex").toInt(),
+             1);
+    QTRY_COMPARE_WITH_TIMEOUT(semanticList->property("currentIndex").toInt(),
+                              1, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        semanticMenuOverlay->property("dropdownOpenSettled").toBool(), 1000);
+    QCOMPARE(semanticMenuOverlay->property("revealProgress").toReal(), 1.0);
+    QVERIFY(!semanticMenuOverlay->property("dropdownAnimationRunning").toBool());
+
+    QQuickItem *selectedRow = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (selectedRow = visualItem(rootItem, QStringLiteral(
+             "semanticMenuItem-appearance-combo-menu-1"))),
+        1000);
+    const QPointF comboTop = combo->mapToItem(rootItem, QPointF{});
+    const QPointF selectedTop = selectedRow->mapToItem(rootItem, QPointF{});
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const qreal snappedComboTop = qRound(comboTop.y() * dpr) / dpr;
+    QVERIFY2(qAbs(selectedTop.y() - snappedComboTop) < 0.01,
+             qPrintable(QStringLiteral(
+                 "selected dropdown row moved from its control: %1 vs %2")
+                             .arg(selectedTop.y()).arg(snappedComboTop)));
+    const qreal menuEdgeInset = semanticMenuOverlay->property(
+        "menuEdgeInset").toReal();
+    const QPointF popupTopBeforeWidth = semanticPopup->mapToItem(
+        rootItem, QPointF{});
+    QVERIFY2(qAbs((semanticPopup->width()
+                   - combo->width() - menuEdgeInset) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "dropdown frame width did not include the presentation inset: "
+                 "popup=%1 combo=%2 inset=%3")
+                            .arg(semanticPopup->width())
+                            .arg(combo->width())
+                            .arg(menuEdgeInset)));
+    QVERIFY2(qAbs((popupTopBeforeWidth.x()
+                   - (comboTop.x() - menuEdgeInset)) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "dropdown frame x did not compensate its presentation inset: "
+                 "popup=%1 combo=%2 inset=%3")
+                            .arg(popupTopBeforeWidth.x())
+                            .arg(comboTop.x())
+                            .arg(menuEdgeInset)));
+    const QPointF popupTop = semanticPopup->mapToItem(rootItem, QPointF{});
+    QVERIFY(popupTop.y() < comboTop.y());
+    QVERIFY(popupTop.y() + semanticPopup->height()
+            > comboTop.y() + combo->height());
+    QVERIFY(!nativePopup->property("visible").toBool());
+    QVERIFY(grid->hasActiveFocus());
+
+    QQuickItem *selectedText = nullptr;
+    QQuickItem *comboText = nullptr;
+    QQuickItem *expandedChevron = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (selectedText = visualItem(rootItem, QStringLiteral(
+             "semanticMenuItemText-appearance-combo-menu-1"))),
+        1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (comboText = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-comboComboBoxText"))),
+        1000);
+    const QPointF comboTextTop = comboText->mapToItem(rootItem, QPointF{});
+    const QPointF selectedTextTop = selectedText->mapToItem(rootItem, QPointF{});
+    QVERIFY2(qAbs((selectedTextTop.x() - comboTextTop.x()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "selected dropdown text moved horizontally: popup=%1 combo=%2")
+                            .arg(selectedTextTop.x())
+                            .arg(comboTextTop.x())));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (expandedChevron = visualItem(rootItem, QStringLiteral(
+             "semanticDropdownChevronUp-appearance-combo-menu"))),
+        1000);
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required for the dropdown pixel gate");
+    const auto verifyPixelAlignedLeaf = [rootItem, dpr](QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(rootItem, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString details = QStringLiteral(
+            "%1 physical origin is (%2, %3)")
+                                    .arg(leaf->objectName())
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                 qPrintable(details));
+        const QPointF xAxis = leaf->mapToItem(rootItem, QPointF(1, 0)) - origin;
+        const QPointF yAxis = leaf->mapToItem(rootItem, QPointF(0, 1)) - origin;
+        QVERIFY2(qAbs(xAxis.x() - 1.0) < 0.001
+                     && qAbs(xAxis.y()) < 0.001
+                     && qAbs(yAxis.x()) < 0.001
+                     && qAbs(yAxis.y() - 1.0) < 0.001,
+                 qPrintable(QStringLiteral("%1 has a non-translation transform")
+                                .arg(leaf->objectName())));
+    };
+    for (QQuickItem *leaf : {selectedRow, selectedText, expandedChevron})
+        verifyPixelAlignedLeaf(leaf);
+    const QPointF physicalPopupTop = popupTop * dpr;
+    const qreal physicalPopupWidth = semanticPopup->width() * dpr;
+    const qreal physicalPopupHeight = semanticPopup->height() * dpr;
+    QVERIFY(qAbs(physicalPopupTop.x() - qRound(physicalPopupTop.x())) < 0.001);
+    QVERIFY(qAbs(physicalPopupTop.y() - qRound(physicalPopupTop.y())) < 0.001);
+    QVERIFY(qAbs(physicalPopupWidth - qRound(physicalPopupWidth)) < 0.001);
+    QVERIFY(qAbs(physicalPopupHeight - qRound(physicalPopupHeight)) < 0.001);
+    QVERIFY(expandedChevron->property("rasterizedIconSource").toString()
+                .contains(QStringLiteral("dpr=1.75")));
+    QImage expandedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(expandedFrame = fixture.window->grabWindow()).isNull(), 3000);
+
+    // Once the bounded transition finishes, this surface must be completely
+    // idle: no timer or perpetual animation may keep presenting frames.
+    QTest::qWait(350);
+    QSignalSpy idleDropdownFrames(fixture.window, &QQuickWindow::frameSwapped);
+    QVERIFY(idleDropdownFrames.isValid());
+    QTest::qWait(160);
+    QCOMPARE(idleDropdownFrames.size(), 0);
+
+    const auto menuActions = [&fixture]() {
+        QVector<QVariantMap> result;
+        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+            if (action.value(QStringLiteral("target")).toString()
+                == QStringLiteral("appearance-combo-menu")) {
+                result.append(action);
+            }
+        }
+        return result;
+    };
+    QQuickItem *firstRow = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (firstRow = visualItem(rootItem, QStringLiteral(
+             "semanticMenuItem-appearance-combo-menu-0"))),
+        1000);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(firstRow));
+    QTRY_COMPARE_WITH_TIMEOUT(menuActions().size(), 2, 1000);
+    QCOMPARE(menuActions().at(0).value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.select"));
+    QCOMPARE(menuActions().at(0).value(QStringLiteral("index")).toInt(), 0);
+    QCOMPARE(menuActions().at(1).value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.activate"));
+    QCOMPARE(menuActions().at(1).value(QStringLiteral("index")).toInt(), 0);
+
+    QQuickItem *const overlayHost = fixture.item(
+        QStringLiteral("semanticOverlayHost"));
+    QVERIFY(overlayHost);
+    QObject *const frameRepeater = overlayHost->findChild<QObject *>(
+        QStringLiteral("semanticOverlayRepeater"));
+    QVERIFY(frameRepeater);
+    QQuickItem *dialogLoader = nullptr;
+    QQuickItem *menuLoader = nullptr;
+    QVERIFY(QMetaObject::invokeMethod(
+        frameRepeater, "itemAt", Q_RETURN_ARG(QQuickItem *, dialogLoader),
+        Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(
+        frameRepeater, "itemAt", Q_RETURN_ARG(QQuickItem *, menuLoader),
+        Q_ARG(int, 1)));
+    QVERIFY(dialogLoader);
+    QVERIFY(menuLoader);
+    QVERIFY(menuLoader->z() > dialogLoader->z());
+
+    // Selection and closure continue to be projections of Go state.
+    fixture.shell.setScene(dialogComboMenuScene(0));
+    QTRY_COMPARE_WITH_TIMEOUT(semanticList->property("currentIndex").toInt(),
+                              0, 1000);
+    fixture.shell.setScene(dialogControlsScene(true, true));
+    QVERIFY(!semanticMenuOverlay.isNull());
+    QVERIFY(semanticMenuOverlay->property("closing").toBool());
+    QCOMPARE(semanticMenuOverlay->property("closingSelectedIndex").toInt(), 0);
+    QVERIFY(semanticMenuOverlay->property("dropdownAnimationRunning").toBool());
+    QVERIFY(visualItem(rootItem, QStringLiteral(
+        "semanticMenuPopup-appearance-combo-menu")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        semanticMenuOverlay.isNull()
+            && !visualItem(rootItem, QStringLiteral(
+                   "semanticMenuPopup-appearance-combo-menu")),
+        1000);
+
+    // Text presentation owns the same Go menu in the fallback grid. Hidden
+    // native controls must never register an application-wide Enter handler
+    // or open a GUI popup on top of console mode.
+    fixture.shell.setScene(dialogComboMenuScene(1, QStringLiteral("text")));
+    QVariant fallback;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "needsFallbackGrid",
+        Q_RETURN_ARG(QVariant, fallback)));
+    QVERIFY(fallback.toBool());
+    for (const auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+        fixture.shell.clearActions();
+        QTest::keyClick(fixture.window, key);
+        QTest::qWait(30);
+        QCOMPARE(comboActions().size(), 0);
+        QVERIFY(grid->hasActiveFocus());
+    }
+}
+
+void F4OperationsQueueTests::semanticOverlayMenuStreamClearsWhileFallbackSurfaceIsHidden()
+{
+    QVariantMap scene = dialogControlsScene(true, true);
+    scene.insert(QStringLiteral("presentation"), QStringLiteral("text"));
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+
+    // In console/text presentation the native surface is hidden, but the
+    // overlay model still receives the same Go-owned menu stream.  Closing
+    // that stream must retire the retained dropdown before a later GUI
+    // presentation can make the hidden QML surface visible again.
+    fixture.shell.applyCommandMenus(QVariantList{dialogComboMenu(1)});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        visualItem(fixture.window->contentItem(), QStringLiteral(
+            "semanticMenuPopup-appearance-combo-menu")),
+        1000);
+    fixture.shell.applyCommandMenus({});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !visualItem(fixture.window->contentItem(), QStringLiteral(
+            "semanticMenuPopup-appearance-combo-menu")),
+        1000);
+}
+
+void F4OperationsQueueTests::semanticDialogInteractiveControlsOverflowOneRowWithoutReflow()
+{
+    QVariantMap scene = dialogControlsScene(false);
+    QVariantList dialogs = scene.value(QStringLiteral("dialogs")).toList();
+    QVariantMap dialog = dialogs.constFirst().toMap();
+    QVariantList children = dialog.value(QStringLiteral("children")).toList();
+    for (qsizetype index = 0; index < children.size(); ++index) {
+        QVariantMap child = children.at(index).toMap();
+        const QString id = child.value(QStringLiteral("id")).toString();
+        if (id == QStringLiteral("appearance-edit")
+            || id == QStringLiteral("appearance-combo")
+            || id == QStringLiteral("appearance-apply")) {
+            child.insert(QStringLiteral("h"), 1);
+            children[index] = child;
+        }
+    }
+    dialog.insert(QStringLiteral("children"), children);
+    dialogs[0] = dialog;
+    scene.insert(QStringLiteral("dialogs"), dialogs);
+
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
+    fixture.shell.setScene(scene);
+
+    QQuickItem *const visualRoot = fixture.window->contentItem();
+    QVERIFY(visualRoot);
+    QQuickItem *editRoot = nullptr;
+    QQuickItem *comboRoot = nullptr;
+    QQuickItem *buttonRoot = nullptr;
+    QQuickItem *labelRoot = nullptr;
+    QQuickItem *edit = nullptr;
+    QQuickItem *combo = nullptr;
+    QQuickItem *button = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editRoot = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-editRoot"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (comboRoot = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-comboRoot"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (buttonRoot = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-applyRoot"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (labelRoot = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-labelRoot"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (edit = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-editEdit"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (combo = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-comboComboBox"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (button = visualItem(visualRoot,
+             QStringLiteral("dialogWidget-appearance-applyButton"))), 3000);
+
+    const qreal cellHeight = fixture.window->property("ch").toReal();
+    const qreal semanticHeight = qMax<qreal>(22.0, qRound(cellHeight));
+    const qreal dialogControlHeight =
+        fixture.window->property("dialogControlHeight").toReal();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    struct ControlGeometry {
+        QQuickItem *root;
+        QQuickItem *control;
+        int relativeRow;
+        const char *description;
+    };
+    const QList<ControlGeometry> controls{
+        {editRoot, edit, 8, "edit"},
+        {comboRoot, combo, 11, "combo box"},
+        {buttonRoot, button, 14, "button"},
+    };
+    for (const ControlGeometry &entry : controls) {
+        const qreal semanticTop = qRound(entry.relativeRow * cellHeight);
+        const qreal semanticCenter = semanticTop + semanticHeight / 2.0;
+        const qreal visualCenter = entry.root->y() + entry.root->height() / 2.0;
+        const QString geometry = QStringLiteral(
+            "%1 visual y=%2 height=%3; semantic y=%4 height=%5")
+                                     .arg(QString::fromLatin1(entry.description))
+                                     .arg(entry.root->y(), 0, 'f', 6)
+                                     .arg(entry.root->height(), 0, 'f', 6)
+                                     .arg(semanticTop, 0, 'f', 6)
+                                     .arg(semanticHeight, 0, 'f', 6);
+        QVERIFY2(entry.root->height() > semanticHeight,
+                 qPrintable(geometry));
+        QCOMPARE(entry.root->height(), dialogControlHeight);
+        QCOMPARE(entry.control->height(), entry.root->height());
+        QVERIFY2(qAbs((visualCenter - semanticCenter) * dpr) <= 0.51,
+                 qPrintable(geometry));
+    }
+
+    // A plain text row continues to use the semantic grid height. Only the
+    // interactive native controls are allowed to paint outside their row.
+    QCOMPARE(labelRoot->height(), semanticHeight);
+
+    // Hit testing follows the visual rectangle. Map a point above the
+    // unchanged semantic top and prove that the actual native button contains
+    // it, rather than merely enlarging a decorative wrapper.
+    const qreal buttonSemanticTop = qRound(14 * cellHeight);
+    QVERIFY(buttonRoot->y() < buttonSemanticTop);
+    const QPoint protrudingButtonPoint = buttonRoot->mapToScene(
+        QPointF(buttonRoot->width() / 2.0, 1.0)).toPoint();
+    QVERIFY(protrudingButtonPoint.y()
+            < buttonRoot->parentItem()->mapToScene(
+                  QPointF(0, buttonSemanticTop)).y());
+    const QPointF buttonLocal = button->mapFromScene(protrudingButtonPoint);
+    QVERIFY2(button->contains(buttonLocal),
+             qPrintable(QStringLiteral(
+                 "protruding point maps to button-local (%1, %2) in %3x%4")
+                            .arg(buttonLocal.x(), 0, 'f', 6)
+                            .arg(buttonLocal.y(), 0, 'f', 6)
+                            .arg(button->width(), 0, 'f', 6)
+                            .arg(button->height(), 0, 'f', 6)));
+
+    QImage rendered;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(rendered = fixture.window->grabWindow()).isNull(), 3000);
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required for the physical-pixel gate");
+
+    for (const ControlGeometry &entry : controls) {
+        const QPointF origin = entry.root->mapToItem(visualRoot, QPointF{});
+        const QPointF physical = origin * dpr;
+        const qreal physicalWidth = entry.root->width() * dpr;
+        const qreal physicalHeight = entry.root->height() * dpr;
+        const QString details = QStringLiteral(
+            "%1 root physical geometry is (%2, %3) %4x%5")
+                                    .arg(QString::fromLatin1(entry.description))
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6)
+                                    .arg(physicalWidth, 0, 'f', 6)
+                                    .arg(physicalHeight, 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalWidth - qRound(physicalWidth)) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physicalHeight - qRound(physicalHeight)) < 0.001,
+                 qPrintable(details));
+    }
+
+    QList<QQuickItem *> leaves;
+    for (const QString &name : {
+             QStringLiteral("dialogWidget-appearance-editEditTextInput"),
+             QStringLiteral("dialogWidget-appearance-comboComboBoxText"),
+             QStringLiteral("dialogWidget-appearance-comboComboBoxIndicator"),
+             QStringLiteral("dialogWidget-appearance-applyButtonText")}) {
+        QQuickItem *leaf = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((leaf = visualItem(visualRoot, name)), 3000);
+        leaves.append(leaf);
+    }
+    for (QQuickItem *leaf : std::as_const(leaves)) {
+        const QPointF origin = leaf->mapToItem(visualRoot, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString details = QStringLiteral(
+            "%1 physical origin is (%2, %3)")
+                                    .arg(leaf->objectName())
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                 qPrintable(details));
+
+        const QPointF xAxis = leaf->mapToItem(visualRoot, QPointF(1, 0)) - origin;
+        const QPointF yAxis = leaf->mapToItem(visualRoot, QPointF(0, 1)) - origin;
+        QVERIFY2(qAbs(xAxis.x() - 1.0) < 0.001
+                     && qAbs(xAxis.y()) < 0.001
+                     && qAbs(yAxis.x()) < 0.001
+                     && qAbs(yAxis.y() - 1.0) < 0.001,
+                 qPrintable(QStringLiteral("%1 has a non-translation transform")
+                                .arg(leaf->objectName())));
+    }
+}
+
+void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAligned()
+{
+    const QFont previousFont = QGuiApplication::font();
+    const auto restoreFont = qScopeGuard([previousFont]() {
+        QGuiApplication::setFont(previousFont);
+    });
+    QFont dialogFont = previousFont;
+    dialogFont.setPixelSize(17);
+    dialogFont.setWeight(QFont::Medium);
+    QGuiApplication::setFont(dialogFont);
+
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+
+    const QColor firstText(QStringLiteral("#d4e5f6"));
+    const QColor firstMuted(QStringLiteral("#8091a2"));
+    const QColor firstControl(QStringLiteral("#172839"));
+    const QColor firstPressed(QStringLiteral("#294a5b"));
+    const QColor firstBorder(QStringLiteral("#3b5c6d"));
+    const QColor firstAccent(QStringLiteral("#4d7e8f"));
+    for (const auto &entry : {
+             qMakePair("textColor", firstText),
+             qMakePair("mutedText", firstMuted),
+             qMakePair("controlBg", firstControl),
+             qMakePair("controlPressedBg", firstPressed),
+             qMakePair("controlBorder", firstBorder),
+             qMakePair("dialogAccent", firstAccent),
+         }) {
+        QVERIFY(fixture.window->setProperty(entry.first, entry.second));
+    }
+
+    fixture.shell.setScene(dialogControlsScene(false));
+
+    QQuickItem *button = nullptr;
+    QQuickItem *buttonContent = nullptr;
+    QQuickItem *buttonIcon = nullptr;
+    QQuickItem *buttonText = nullptr;
+    QQuickItem *checkBox = nullptr;
+    QQuickItem *checkFocusFrame = nullptr;
+    QQuickItem *checkMark = nullptr;
+    QQuickItem *checkText = nullptr;
+    QQuickItem *radioButton = nullptr;
+    QQuickItem *radioFocusFrame = nullptr;
+    QQuickItem *radioIndicator = nullptr;
+    QQuickItem *radioMark = nullptr;
+    QQuickItem *radioText = nullptr;
+    QQuickItem *edit = nullptr;
+    QQuickItem *editCursor = nullptr;
+    QQuickItem *editText = nullptr;
+    QQuickItem *combo = nullptr;
+    QQuickItem *comboText = nullptr;
+    QQuickItem *comboIndicator = nullptr;
+    QQuickItem *plainText = nullptr;
+    QQuickItem *listText = nullptr;
+    QQuickItem *listBox = nullptr;
+    QQuickItem *listFocusFrame = nullptr;
+    QQuickItem *groupRoot = nullptr;
+    QQuickItem *groupTitle = nullptr;
+    QQuickItem *nestedRoot = nullptr;
+    QQuickItem *nestedText = nullptr;
+    QQuickItem *borderlessGroupTitle = nullptr;
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QVERIFY(rootItem);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (button = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-applyButton"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (buttonContent = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-applyButtonContent"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (buttonIcon = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-applyButtonIcon"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (buttonText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-applyButtonText"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkBox = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-checkboxCheckBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-checkboxCheckBoxFocusFrame"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-checkboxCheckBoxText"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (checkMark = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-checkboxCheckBoxCheckMark"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioButton = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-navigationRadio-0"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-navigationRadio-0FocusFrame"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-navigationRadio-0Text"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioIndicator = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-navigationRadio-0Indicator"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (radioMark = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-navigationRadio-0SelectionMark"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (edit = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-editEdit"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-editEditTextInput"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (combo = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-comboComboBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (comboText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-comboComboBoxText"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (comboIndicator = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-comboComboBoxIndicator"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (plainText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-labelText"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (listText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-listListItemText-0"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (listBox = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-listListBox"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (listFocusFrame = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-listListFocusFrame"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (groupRoot = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-groupRoot"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (groupTitle = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-groupGroupTitle"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (nestedRoot = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-group-labelRoot"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (nestedText = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-group-labelText"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (borderlessGroupTitle = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-borderless-groupGroupTitle"))),
+        3000);
+
+    QList<QQuickItem *> textLeaves{
+        buttonText, checkText, radioText, editText, comboText, plainText,
+        listText, groupTitle, nestedText, borderlessGroupTitle,
+    };
+    const QFont initialWindowFont = fixture.window->property("font").value<QFont>();
+    QCOMPARE(initialWindowFont, dialogFont);
+    for (QQuickItem *leaf : std::as_const(textLeaves))
+        QCOMPARE(leaf->property("font").value<QFont>(), initialWindowFont);
+    for (QQuickItem *leaf : {buttonText, checkText, radioText, editText,
+                             comboText, plainText, listText, nestedText}) {
+        QCOMPARE(leaf->property("color").value<QColor>(), firstText);
+    }
+    QCOMPARE(groupTitle->property("color").value<QColor>(), firstMuted);
+    QCOMPARE(borderlessGroupTitle->property("color").value<QColor>(),
+             firstMuted);
+
+    QQuickItem *const buttonBackground = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-applyButtonBackground"));
+    QQuickItem *const checkIndicator = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-checkboxCheckBoxIndicator"));
+    QQuickItem *const editBackground = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-editEditBackground"));
+    QQuickItem *const comboBackground = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-comboComboBoxBackground"));
+    QQuickItem *const groupBorder = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-groupGroupBorder"));
+    QQuickItem *const borderlessGroupBorder = visualItem(rootItem,
+        QStringLiteral("dialogWidget-appearance-borderless-groupGroupBorder"));
+    QVERIFY(buttonBackground);
+    QVERIFY(checkIndicator);
+    QVERIFY(checkFocusFrame);
+    QVERIFY(radioFocusFrame);
+    QVERIFY(editBackground);
+    QVERIFY(comboBackground);
+    QVERIFY(listBox);
+    QVERIFY(listFocusFrame);
+    QVERIFY(groupBorder);
+    QVERIFY(borderlessGroupBorder);
+    QCOMPARE(buttonBackground->property("color").value<QColor>(), firstControl);
+    QCOMPARE(checkIndicator->property("color").value<QColor>(), firstControl);
+    QCOMPARE(buttonBackground->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(comboBackground->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(checkFocusFrame->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(checkFocusFrame->property("testBorderWidth").toReal(), 0.0);
+    QCOMPARE(radioFocusFrame->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(radioFocusFrame->property("testBorderWidth").toReal(), 0.0);
+    QCOMPARE(listFocusFrame->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(listFocusFrame->property("testBorderWidth").toReal(), 0.0);
+    QCOMPARE(groupBorder->property("testBorderColor").value<QColor>(),
+             firstBorder);
+    QCOMPARE(groupBorder->property("testBorderWidth").toReal(), 1.0);
+    QCOMPARE(borderlessGroupBorder->property("testBorderWidth").toReal(), 0.0);
+
+    const QPointF nestedInGroup = nestedRoot->mapToItem(groupRoot, QPointF{});
+    const qreal expectedNestedX = qRound(2.0
+        * fixture.window->property("cw").toReal());
+    const qreal expectedNestedY = qRound(2.0
+        * fixture.window->property("ch").toReal());
+    QCOMPARE(nestedInGroup.x(), expectedNestedX);
+    QCOMPARE(nestedInGroup.y(), expectedNestedY);
+    QVERIFY(nestedInGroup.x() >= 0.0);
+    QVERIFY(nestedInGroup.y() >= 0.0);
+    QVERIFY(nestedInGroup.x() + nestedRoot->width() <= groupRoot->width());
+    QVERIFY(nestedInGroup.y() + nestedRoot->height() <= groupRoot->height());
+
+    QImage normalFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(normalFrame = fixture.window->grabWindow()).isNull(), 3000);
+
+    QFont updatedFont = initialWindowFont;
+    updatedFont.setPixelSize(19);
+    updatedFont.setItalic(!updatedFont.italic());
+    QVERIFY(fixture.window->setProperty("font", updatedFont));
+    for (QQuickItem *leaf : std::as_const(textLeaves)) {
+        QTRY_COMPARE_WITH_TIMEOUT(leaf->property("font").value<QFont>(),
+                                  updatedFont, 3000);
+    }
+
+    const QColor secondText(QStringLiteral("#f1dac2"));
+    const QColor secondMuted(QStringLiteral("#a98b7c"));
+    const QColor secondControl(QStringLiteral("#253647"));
+    const QColor secondPressed(QStringLiteral("#476879"));
+    const QColor secondBorder(QStringLiteral("#698a9b"));
+    const QColor secondAccent(QStringLiteral("#8bacbd"));
+    for (const auto &entry : {
+             qMakePair("textColor", secondText),
+             qMakePair("mutedText", secondMuted),
+             qMakePair("controlBg", secondControl),
+             qMakePair("controlPressedBg", secondPressed),
+             qMakePair("controlBorder", secondBorder),
+             qMakePair("dialogAccent", secondAccent),
+         }) {
+        QVERIFY(fixture.window->setProperty(entry.first, entry.second));
+    }
+    QVERIFY(button->setProperty("semanticFocus", true));
+    QVERIFY(checkBox->setProperty("semanticFocus", true));
+    QVERIFY(checkBox->setProperty("checked", true));
+    QVERIFY(radioButton->setProperty("semanticFocus", true));
+    QVERIFY(radioButton->setProperty("checked", true));
+    QVERIFY(edit->setProperty("semanticFocus", true));
+    QVERIFY(edit->setProperty("remoteCursorVisible", true));
+    QVERIFY(combo->setProperty("semanticFocus", true));
+    QVERIFY(listBox->setProperty("semanticFocus", true));
+    QCoreApplication::processEvents();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editCursor = visualItem(rootItem,
+             QStringLiteral("dialogWidget-appearance-editEditCursor"))),
+        3000);
+
+    QTRY_COMPARE_WITH_TIMEOUT(buttonBackground->property("color").value<QColor>(),
+                              secondPressed, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        buttonBackground->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(checkIndicator->property("color").value<QColor>(),
+                              secondAccent, 3000);
+    const QUrl checkIconSource = checkMark->property("source").toUrl();
+    QVERIFY(checkIconSource.isValid());
+    QCOMPARE(checkIconSource.fileName(), QStringLiteral("check.svg"));
+    QCOMPARE(QUrlQuery(checkIconSource).queryItemValue(QStringLiteral("size")),
+             QStringLiteral("12"));
+    QCOMPARE(QUrlQuery(checkIconSource).queryItemValue(QStringLiteral("dpr")),
+             QString::number(fixture.window->devicePixelRatio()));
+    QCOMPARE(checkMark->property("opticalVerticalOffset").toReal()
+                 * fixture.window->devicePixelRatio(),
+             1.0);
+    QCOMPARE(checkMark->property("sourceSize").toSize(), QSize(12, 12));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editBackground->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        comboBackground->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        checkFocusFrame->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        checkFocusFrame->property("testBorderWidth").toReal(),
+        fixture.window->property("separatorWidth").toReal(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        radioFocusFrame->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        radioFocusFrame->property("testBorderWidth").toReal(),
+        fixture.window->property("separatorWidth").toReal(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        listFocusFrame->property("testBorderColor").value<QColor>(),
+        secondAccent, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        listFocusFrame->property("testBorderWidth").toReal(),
+        fixture.window->property("separatorWidth").toReal(), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        groupBorder->property("testBorderColor").value<QColor>(),
+        secondBorder, 3000);
+    for (QQuickItem *leaf : {buttonText, checkText, radioText, editText,
+                             comboText, plainText, listText, nestedText}) {
+        QTRY_COMPARE_WITH_TIMEOUT(leaf->property("color").value<QColor>(),
+                                  secondText, 3000);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(groupTitle->property("color").value<QColor>(),
+                              secondMuted, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        borderlessGroupTitle->property("color").value<QColor>(),
+        secondMuted, 3000);
+
+    QObject *const popup = combo->property("popup").value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY_WITH_TIMEOUT(popup->property("visible").toBool(), 3000);
+    QQuickItem *popupText = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (popupText = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-comboComboBoxPopupItemText-0"))),
+        3000);
+    QCOMPARE(popupText->property("font").value<QFont>(), updatedFont);
+    QCOMPARE(popupText->property("color").value<QColor>(), secondText);
+    textLeaves.append(popupText);
+
+    const QPointF buttonContentCenter = buttonContent->mapToItem(
+        button, QPointF(buttonContent->width() / 2.0,
+                        buttonContent->height() / 2.0));
+    const QPointF buttonTextCenter = buttonText->mapToItem(
+        button, QPointF(buttonText->width() / 2.0, buttonText->height() / 2.0));
+    const QPointF buttonCenter(button->width() / 2.0, button->height() / 2.0);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY(!buttonIcon->isVisible());
+    QCOMPARE(buttonIcon->width(), 0.0);
+    QCOMPARE(buttonIcon->height(), 0.0);
+    QVERIFY2(qAbs((buttonContentCenter.x() - buttonCenter.x()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "button content is horizontally off-center by %1 physical px "
+                 "(button %2x%3, content %4x%5 at %6,%7)")
+                            .arg((buttonContentCenter.x() - buttonCenter.x()) * dpr,
+                                 0, 'f', 6)
+                            .arg(button->width()).arg(button->height())
+                            .arg(buttonContent->width()).arg(buttonContent->height())
+                            .arg(buttonContent->x()).arg(buttonContent->y())));
+    QVERIFY2(qAbs((buttonContentCenter.y() - buttonCenter.y()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "button content is vertically off-center by %1 physical px")
+                            .arg((buttonContentCenter.y() - buttonCenter.y()) * dpr,
+                                 0, 'f', 6)));
+    QVERIFY2(qAbs((buttonTextCenter.x() - buttonCenter.x()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "button text is horizontally off-center by %1 physical px "
+                 "(content %2x%3; text %4x%5 at %6,%7; icon %8x%9 at %10,%11, "
+                 "visible=%12, source=%13)")
+                            .arg((buttonTextCenter.x() - buttonCenter.x()) * dpr,
+                                 0, 'f', 6)
+                            .arg(buttonContent->width()).arg(buttonContent->height())
+                            .arg(buttonText->width()).arg(buttonText->height())
+                            .arg(buttonText->x()).arg(buttonText->y())
+                            .arg(buttonIcon->width()).arg(buttonIcon->height())
+                            .arg(buttonIcon->x()).arg(buttonIcon->y())
+                            .arg(buttonIcon->isVisible())
+                            .arg(buttonIcon->property("source").toString())));
+    QVERIFY2(qAbs((buttonTextCenter.y() - buttonCenter.y()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "button text is vertically off-center by %1 physical px")
+                            .arg((buttonTextCenter.y() - buttonCenter.y()) * dpr,
+                                 0, 'f', 6)));
+
+    QImage focusedFrame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(focusedFrame = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(focusedFrame != normalFrame);
+
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required for the physical-pixel gate");
+
+    QList<QQuickItem *> visualLeaves = textLeaves;
+    visualLeaves.append(checkIndicator);
+    visualLeaves.append(checkMark);
+    visualLeaves.append(radioIndicator);
+    visualLeaves.append(radioMark);
+    visualLeaves.append(editCursor);
+    visualLeaves.append(comboIndicator);
+    visualLeaves.append(checkFocusFrame);
+    visualLeaves.append(radioFocusFrame);
+    visualLeaves.append(listFocusFrame);
+    for (QQuickItem *leaf : std::as_const(visualLeaves)) {
+        const QPointF origin = leaf->mapToItem(rootItem, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString details = QStringLiteral(
+            "%1 physical origin is (%2, %3)")
+                                    .arg(leaf->objectName())
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                 qPrintable(details));
+
+        const QPointF xAxis = leaf->mapToItem(rootItem, QPointF(1, 0)) - origin;
+        const QPointF yAxis = leaf->mapToItem(rootItem, QPointF(0, 1)) - origin;
+        QVERIFY2(qAbs(xAxis.x() - 1.0) < 0.001
+                     && qAbs(xAxis.y()) < 0.001
+                     && qAbs(yAxis.x()) < 0.001
+                     && qAbs(yAxis.y() - 1.0) < 0.001,
+                 qPrintable(QStringLiteral("%1 has a non-translation transform")
+                                .arg(leaf->objectName())));
+    }
+}
+
+void F4OperationsQueueTests::dialogTextCursorBlinkSettlesAndFocusStopsIt()
+{
+    QueueFixture fixture(dialogControlsScene(true));
+    QVERIFY(fixture.window);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
+    QCOMPARE(QGuiApplication::styleHints()->cursorFlashTime(), 0);
+
+    auto *edit = visualItem(
+        fixture.window->contentItem(),
+        QStringLiteral("dialogWidget-appearance-editEdit"));
+    QQuickItem *cursor = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (cursor = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("dialogWidget-appearance-editEditCursor"))),
+        3000);
+    QVERIFY(edit);
+    QTRY_VERIFY_WITH_TIMEOUT(cursor->isVisible(), 3000);
+    QVERIFY(cursor->setProperty("blinkInterval", 20));
+    QVERIFY(QMetaObject::invokeMethod(cursor, "restartBlink"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        cursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !cursor->property("blinkTimerRunning").toBool(), 500);
+    QVERIFY(cursor->property("blinkOn").toBool());
+
+    QSignalSpy settledFrames(fixture.window, &QQuickWindow::frameSwapped);
+    QVERIFY(settledFrames.isValid());
+    QElapsedTimer settleDeadline;
+    QElapsedTimer quietPeriod;
+    settleDeadline.start();
+    quietPeriod.start();
+    int observedFrames = 0;
+    while (quietPeriod.elapsed() < 300 && settleDeadline.elapsed() < 3000) {
+        QTest::qWait(10);
+        if (settledFrames.size() != observedFrames) {
+            observedFrames = settledFrames.size();
+            quietPeriod.restart();
+        }
+    }
+    QVERIFY2(quietPeriod.elapsed() >= 300,
+             "dialog surface never reached frame quiescence");
+    settledFrames.clear();
+    QTest::qWait(700);
+    QCOMPARE(settledFrames.size(), 0);
+
+    auto *grid = fixture.window->findChild<TestGrid *>();
+    QVERIFY(grid);
+    emit grid->keyboardActivity();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        cursor->property("blinkTimerRunning").toBool(), 500);
+
+    QVERIFY(edit->setProperty("semanticFocus", false));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !cursor->property("blinkTimerRunning").toBool(), 500);
+    QVERIFY(cursor->property("blinkOn").toBool());
 }
 
 QTEST_MAIN(F4OperationsQueueTests)

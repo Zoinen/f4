@@ -1618,8 +1618,9 @@ type mockSlowVFS struct {
 	openDelay time.Duration
 }
 
-func (m *mockSlowVFS) GetPath() string     { return "/mock" }
-func (m *mockSlowVFS) IsAbs(p string) bool { return true }
+func (m *mockSlowVFS) GetPath() string              { return "/mock" }
+func (m *mockSlowVFS) IsAbs(p string) bool          { return true }
+func (m *mockSlowVFS) Abs(p string) (string, error) { return p, nil }
 func (m *mockSlowVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	return vfs.VFSItem{Name: "file.txt", IsDir: false, Size: 100}, nil
 }

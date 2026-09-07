@@ -5,6 +5,7 @@
 #include "QtShellController.h"
 #include "F4ThemePersistence.h"
 #include "F4TextRenderingPolicy.h"
+#include "F4WorktreeIdentity.h"
 #include "WindowGeometryPersistence.h"
 
 #if defined(Q_OS_MACOS)
@@ -162,6 +163,10 @@ int main(int argc, char *argv[])
     // color scheme make Qt Quick controls and ZoinGallery's shared style pick
     // light-theme (black) title-bar icons on that dark surface.
     QGuiApplication::styleHints()->setColorScheme(Qt::ColorScheme::Dark);
+    // Qt's built-in TextInput caret timer otherwise requests scene-graph
+    // frames forever. f4 supplies an activity-bounded custom caret where a
+    // blink cue is useful, and leaves every other input with a solid caret.
+    QGuiApplication::styleHints()->setCursorFlashTime(0);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
 #if defined(Q_OS_WIN)
@@ -311,6 +316,13 @@ int main(int argc, char *argv[])
         return exitCode;
     }
 
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged,
+                     &controller, [&controller](Qt::ApplicationState state) {
+        controller.sendApplicationFocus(state == Qt::ApplicationActive);
+    });
+    controller.sendApplicationFocus(
+        app.applicationState() == Qt::ApplicationActive);
+
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral(":/"));
 
@@ -408,6 +420,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontFamily"), guiFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4WorktreeBranch"),
+        F4WorktreeIdentity::resolveActiveWorktreeBranch(
+            {QDir::currentPath(), QCoreApplication::applicationDirPath()}));
 #if defined(__USE_QWK)
     const QString platformName = QGuiApplication::platformName();
     const bool useQwkAtRuntime = platformName != QStringLiteral("offscreen")

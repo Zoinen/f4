@@ -66,11 +66,27 @@ type EditorView struct {
 	// no-ops at the beginning/end of the document.
 	semanticWindowGeneration        uint64
 	semanticWindowRequestGeneration uint64
+	semanticPendingScroll           bool
+	semanticPendingTop              int
+	semanticPendingGeneration       uint64
+	semanticExtentTaskPending       bool
+	semanticExtentTaskRevision      uint64
 	semanticExtentKnown             bool
+	semanticLoadError               string
 	// nativeViewportRows is the number of complete rows left after the QML
 	// document header and shared native chrome have been laid out. A zero value
 	// keeps the terminal geometry authoritative.
-	nativeViewportRows int
+	nativeViewportRows      int
+	nativeViewportColumns   int
+	nativeViewportRevision  uint64
+	semanticLayoutRevision  uint64
+	layoutWidth             int
+	layoutWordWrap          bool
+	layoutTabSize           int
+	reflow                  *editorReflow
+	reflowTaskPending       bool
+	semanticPointerActive   bool
+	semanticPointerRevision uint64
 	// The Qt semantic surface slides a bounded three-viewport window through
 	// the document. Keep final styled rows for the current overlap so an edge
 	// scroll or selection endpoint move only repaints the rows whose pixels
@@ -160,8 +176,9 @@ type EditorView struct {
 	CursorVirtualSpaces int
 	UseEditorConfig     bool
 
-	highlighting    bool
-	highlightCancel context.CancelFunc
+	highlighting        bool
+	highlightCancel     context.CancelFunc
+	highlightGeneration uint64
 
 	// OnClose, if set, fires once after the editor has been torn down.
 	// Used by callers (e.g. the user menu's Ctrl+F4 handler) that want
@@ -249,13 +266,13 @@ type editorState struct {
 }
 
 func (ev *EditorView) Close() {
+	ev.semanticPendingScroll = false
+	ev.semanticPointerActive = false
+	ev.editSession++
 	if GlobalFileState != nil && ev.filePath != "" {
 		GlobalFileState.SaveEditorStateAsync(FileStateKey(ev.vfs, ev.filePath), ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.WordWrap)
 	}
-	if ev.highlightCancel != nil {
-		ev.highlightCancel()
-		ev.highlightCancel = nil
-	}
+	ev.cancelHighlighting()
 	if ev.indexCancel != nil {
 		ev.indexCancel()
 	}
@@ -357,13 +374,20 @@ func newEditorView(pt *piecetable.PieceTable, v vfs.VFS, path string, useEditorC
 	ev.scrollBar.SetOwner(ev)
 	ev.scrollBar.OnScroll = func(v int) {
 		if ev.HexMode || ev.DecodeMode {
+			oldOffset := ev.HexTopOffset
 			if ev.HexMode {
 				ev.HexTopOffset = v &^ 0xF
 			} else {
 				ev.HexTopOffset = v
 			}
+			if ev.HexTopOffset != oldOffset {
+				ev.fenceSemanticNavigation()
+			}
 			vtui.FrameManager.Redraw()
 			return
+		}
+		if ev.ScrollTopRow != v {
+			ev.fenceSemanticNavigation()
 		}
 		ev.ScrollTopRow = v
 		height := ev.viewportHeight()
@@ -432,6 +456,8 @@ func (ev *EditorView) SetText(text string) {
 	}
 	ev.edited = true
 	ev.editSession++
+	ev.invalidateDocumentMapping()
+	ev.cancelHighlighting()
 
 	ev.pt = piecetable.New([]byte(text))
 	ev.li.Rebuild(ev.pt)
@@ -443,6 +469,8 @@ func (ev *EditorView) SetText(text string) {
 }
 
 func (ev *EditorView) clearCaches() {
+	ev.invalidateDocumentMapping()
+	ev.cancelHighlighting()
 	ev.engine.InvalidateCache()
 	// Undo, redo and a reload replace the text wholesale. Colorer caches
 	// colours by line number and has no way to notice that on its own.
@@ -562,10 +590,7 @@ func (ev *EditorView) Redo() {
 	vtui.DebugLog("EDITOR: Executed Redo, remaining: %d, modified: %v", len(ev.redoStack), ev.modified)
 }
 func (ev *EditorView) invalidateStates(fromLine int) {
-	if ev.highlightCancel != nil {
-		ev.highlightCancel()
-		ev.highlightCancel = nil
-	}
+	ev.cancelHighlighting()
 	if fromLine < len(ev.lineStates) {
 		ev.lineStates = ev.lineStates[:fromLine]
 	}
@@ -632,10 +657,11 @@ const (
 // It crosses from the UI thread back to the walker goroutine, which is why
 // every view field the decision depends on is read inside the slice itself.
 type highlightSlicePlan struct {
-	done  bool
-	lines int
-	work  time.Duration
-	idle  time.Duration
+	done     bool
+	indexing bool
+	lines    int
+	work     time.Duration
+	idle     time.Duration
 }
 
 // highlightDuty reports the share of wall-clock time the walker may spend on
@@ -698,7 +724,7 @@ func usesStateChain(h vtui.Highlighter) bool {
 // the stall the user can feel; how many lines fit into it is left to the
 // highlighter.
 func (ev *EditorView) highlightSlice(bgAttr uint64) highlightSlicePlan {
-	var plan highlightSlicePlan
+	plan := highlightSlicePlan{indexing: ev.indexing}
 
 	// The highlighter can be replaced under a running walker: the Colorer
 	// session finishes loading in the background and takes the place of the
@@ -766,6 +792,15 @@ func (ev *EditorView) highlightSlice(bgAttr uint64) highlightSlicePlan {
 	return plan
 }
 
+func (ev *EditorView) cancelHighlighting() {
+	if ev.highlightCancel != nil {
+		ev.highlightCancel()
+		ev.highlightCancel = nil
+	}
+	ev.highlightGeneration++
+	ev.highlighting = false
+}
+
 func (ev *EditorView) startHighlighting() {
 	if ev.highlighter == nil || ev.highlighting {
 		return
@@ -779,19 +814,22 @@ func (ev *EditorView) startHighlighting() {
 
 	ev.highlighting = true
 	sessionID := ev.editSession
+	ev.highlightGeneration++
+	generation := ev.highlightGeneration
+	bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ev.highlightCancel = cancel
 
 	go func() {
 		defer func() {
-			vtui.FrameManager.PostTask(func() {
-				ev.highlighting = false
-				vtui.FrameManager.Redraw()
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+				if generation == ev.highlightGeneration && !ev.IsDone() {
+					ev.highlighting = false
+				}
+				return false
 			})
 		}()
-
-		bgAttr := ColorerEditorBaseAttr(vtui.Palette[ColEditorText])
 
 		startedAt := time.Now()
 		walked := 0
@@ -806,22 +844,23 @@ func (ev *EditorView) startHighlighting() {
 		plans := make(chan highlightSlicePlan, 1)
 
 		for {
-			if ctx.Err() != nil || ev.IsDone() {
+			if ctx.Err() != nil {
 				return
 			}
 
-			vtui.FrameManager.PostTask(func() {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 				plan := highlightSlicePlan{done: true}
 				defer func() { plans <- plan }()
 
-				if ctx.Err() != nil {
-					return
+				if ctx.Err() != nil || generation != ev.highlightGeneration || ev.IsDone() {
+					return false
 				}
 				if ev.editSession != sessionID || ev.highlighter == nil {
 					cancel() // Self-terminate stale worker loop
-					return
+					return false
 				}
 				plan = ev.highlightSlice(bgAttr)
+				return false // highlightSlice explicitly redraws changed visible rows.
 			})
 
 			var plan highlightSlicePlan
@@ -840,10 +879,10 @@ func (ev *EditorView) startHighlighting() {
 				stalls = 0
 			}
 
-			if plan.done || (stalls >= hlMaxStallSlices && !ev.indexing) {
+			if plan.done || (stalls >= hlMaxStallSlices && !plan.indexing) {
 				return
 			}
-			if ctx.Err() != nil || ev.IsDone() {
+			if ctx.Err() != nil {
 				return
 			}
 
@@ -851,16 +890,40 @@ func (ev *EditorView) startHighlighting() {
 		}
 	}()
 }
-func (ev *EditorView) ensureEngineWidth() {
-	width := ev.X2 - ev.X1 + 1
-	if ev.scrollBar != nil {
-		width--
+func (ev *EditorView) ensureEngineWidth() bool {
+	width := max(1, ev.viewportWidth())
+	changed := ev.layoutWidth != width || ev.layoutWordWrap != ev.WordWrap || ev.layoutTabSize != ev.TabSize
+	if ev.reflow != nil && ev.reflow.session != ev.editSession {
+		ev.reflow = nil
 	}
-	if width < 1 {
-		width = 1
+	if changed && ev.reflow == nil && ev.layoutWidth > 0 && (ev.layoutWordWrap || ev.WordWrap) {
+		ev.reflow = &editorReflow{top: ev.ScrollTopRow, session: ev.editSession}
+	}
+	if pending := ev.reflow; pending != nil && !pending.anchorReady {
+		mapping := ev.engine.AdvanceToVisualRow(pending.top, editorMappingWorkBytes)
+		if !mapping.Ready {
+			ev.continueEditorMapping(mapping.Progress, mapping.Err)
+			return false
+		}
+		pending.anchor, pending.anchorReady = mapping.Offset, true
 	}
 	ev.engine.SetWidth(width)
 	ev.engine.ToggleWrap(ev.WordWrap)
+	ev.engine.SetTabSize(ev.TabSize)
+	if changed {
+		ev.layoutWidth, ev.layoutWordWrap, ev.layoutTabSize = width, ev.WordWrap, ev.TabSize
+		ev.invalidateDocumentMapping()
+	}
+	if pending := ev.reflow; pending != nil {
+		mapping := ev.engine.AdvanceToOffset(pending.anchor, editorMappingWorkBytes)
+		if !mapping.Ready {
+			ev.continueEditorMapping(mapping.Progress, mapping.Err)
+			return false
+		}
+		ev.ScrollTopRow = mapping.Row
+		ev.reflow = nil
+	}
+	return true
 }
 
 func (ev *EditorView) updateDesiredVisualCol() {
@@ -1265,7 +1328,9 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		return
 	}
 
-	ev.ensureEngineWidth()
+	if !ev.ensureEngineWidth() || nativeDocumentCellPaintOwned(scr) {
+		return
+	}
 	height := ev.Y2 - ev.Y1
 	width := ev.X2 - ev.X1 + 1
 	if ev.scrollBar != nil {
@@ -1396,224 +1461,37 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 
 	scr.PushClipRect(ev.X1, ev.Y1+1, ev.X1+width-1, ev.Y2)
 
-	// 2. Отрисовка
-	startLogLine, startFragIdx := ev.engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
-	rowsRendered := 0
-
-	for logIdx := startLogLine; logIdx < ev.li.LineCount(); logIdx++ {
-		lineStart := ev.li.GetLineOffset(logIdx)
-		lineLen := 0
-		if logIdx+1 < ev.li.LineCount() {
-			lineLen = ev.li.GetLineOffset(logIdx+1) - lineStart
-		} else {
-			lineLen = ev.pt.Size() - lineStart
-		}
-
-		// Stateful Highlighting
-		var lineSyntax []uint64
-		if ch, isColorer := ev.highlighter.(*ColorerHighlighter); isColorer {
-			// Colorer is addressed by line number: its parser state cannot
-			// be carried in ev.lineStates, so it keeps its own anchor near
-			// the viewport instead. See HIGHLIGHT.md, phase 5.
-			if text, ok := ev.lineTextForHighlight(logIdx); ok {
-				lineSyntax = ch.HighlightLine(logIdx, text, bgAttr)
-			}
-		} else if ev.highlighter != nil {
-			// Catch up synchronously only if the uncomputed gap is small (<= 50 lines).
-			// For large jumps, render unhighlighted immediately and compute in background.
-			const syncHighlightGapLimit = 50
-			if logIdx >= len(ev.lineStates)+syncHighlightGapLimit {
-				ev.startHighlighting()
-
-				// Allow stateless highlighters (like Chroma) to provide instant colors
-				if _, isColorer := ev.highlighter.(*ColorerHighlighter); !isColorer {
-					lStart := ev.li.GetLineOffset(logIdx)
-					highlightLen := lineLen
-					if highlightLen > 64*1024 {
-						highlightLen = 64 * 1024
-					}
-					lineData, _ := ev.pt.GetRange(lStart, highlightLen)
-					lineSyntax, _ = ev.highlighter.Highlight(string(lineData), nil, bgAttr)
-				}
+	style := editorTextProjectionStyle{
+		background: bgAttr, selected: selAttr,
+		paintStreamSelection: true,
+		cursorRow:            curVRow, cursorColumn: curVCol,
+		crossRow: crossVRow, crossColumn: crossVCol,
+		horizontalCross: horzCrossAttr, verticalCross: vertCrossAttr,
+	}
+	ev.projectTextRows(ev.ScrollTopRow, width, height, style, func(row editorProjectedTextRow) {
+		currY := ev.Y1 + 1 + row.visualRow - ev.ScrollTopRow
+		scr.Write(ev.X1, currY, row.cells)
+		if row.visualRow == curVRow {
+			scr.SetCursorPos(ev.X1+curVCol+ev.CursorVirtualSpaces-ev.ScrollLeft, currY)
+			scr.SetCursorVisible(true)
+			if ev.overtype {
+				scr.SetCursorShape(vtui.CursorShapeBlock)
 			} else {
-				for len(ev.lineStates) <= logIdx {
-					currIdx := len(ev.lineStates)
-					lStart := ev.li.GetLineOffset(currIdx)
-					lEnd := ev.pt.Size()
-					if currIdx+1 < ev.li.LineCount() {
-						lEnd = ev.li.GetLineOffset(currIdx + 1)
-					}
-					// Prevent highlighter from crashing on huge binary lines
-					if lEnd-lStart > 64*1024 {
-						lEnd = lStart + 64*1024
-					}
-
-					var prevState any
-					if currIdx > 0 {
-						prevState = ev.lineStates[currIdx-1]
-					}
-
-					lineData, err := ev.pt.GetRange(lStart, lEnd-lStart)
-					if err == piecetable.ErrLoading {
-						break // Wait for data
-					}
-
-					attrs, nextState := ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
-					ev.lineStates = append(ev.lineStates, nextState)
-					if currIdx == logIdx {
-						lineSyntax = attrs
-					}
-				}
-				if logIdx < len(ev.lineStates) && lineSyntax == nil {
-					// State was already cached, but we need the actual attributes for the current visible line
-					lStart := ev.li.GetLineOffset(logIdx)
-					// Re-apply highlighter OOM protection for the rendering path
-					highlightLen := lineLen
-					if highlightLen > 64*1024 {
-						highlightLen = 64 * 1024
-					}
-					lineData, _ := ev.pt.GetRange(lStart, highlightLen)
-					var prevState any
-					if logIdx > 0 {
-						prevState = ev.lineStates[logIdx-1]
-					}
-					lineSyntax, _ = ev.highlighter.Highlight(string(lineData), prevState, bgAttr)
-				}
+				scr.SetCursorShape(vtui.CursorShapeUnderline)
 			}
 		}
-
-		frags := ev.engine.GetFragments(logIdx)
-		baseVRow := ev.engine.GetRowOffset(logIdx)
-		// vtui.DebugLog("EDITOR_RENDER: Line %d, Frags: %d, BaseVRow: %d", logIdx, len(frags), baseVRow)
-		runesProcessedInLine := 0
-
-		for fIdx, frag := range frags {
-			if logIdx == startLogLine && fIdx < startFragIdx {
-				// Пропускаем подсветку для фрагментов выше области видимости
-				fragData, _ := ev.pt.GetRange(frag.ByteOffsetStart, frag.ByteOffsetEnd-frag.ByteOffsetStart)
-				runesProcessedInLine += len([]rune(string(fragData)))
-				continue
-			}
-
-			absVRow := baseVRow + fIdx
-			currY := ev.Y1 + 1 + rowsRendered
-
-			ev.renderBytes = ev.renderBytes[:0]
-			var err error
-			ev.renderBytes, err = ev.pt.AppendRange(ev.renderBytes, frag.ByteOffsetStart, frag.ByteOffsetEnd-frag.ByteOffsetStart)
-
-			fragRuneCount := len([]rune(string(ev.renderBytes)))
-
-			if err == piecetable.ErrLoading {
-				scr.Write(ev.X1-ev.ScrollLeft, currY, vtui.StringToCharInfo(" [ Loading... ] ", bgAttr))
-				runesProcessedInLine += fragRuneCount
-				rowsRendered++
-				if rowsRendered >= height {
-					goto DoneRendering
-				}
-				continue
-			}
-
-			selMin, selMax := ev.getSelectionRange()
-
-			// Вырезаем кусок атрибутов именно для этого фрагмента
-			var fragSyntax []uint64
-			if runesProcessedInLine < len(lineSyntax) {
-				end := runesProcessedInLine + fragRuneCount
-				if end > len(lineSyntax) {
-					end = len(lineSyntax)
-				}
-				fragSyntax = lineSyntax[runesProcessedInLine:end]
-			}
-			runesProcessedInLine += fragRuneCount
-
-			_, startVCol := ev.engine.LogicalToVisual(frag.ByteOffsetStart)
-			isCrossRow := (absVRow == crossVRow)
-			ev.renderCells = ev.fillCells(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.selActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), startVCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
-
-			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
-
-			lineBg := bgAttr
-			if logIdx < len(ev.lineStates) {
-				if ch, ok := ev.highlighter.(*ColorerHighlighter); ok {
-					lineBg = ch.GetLineBackground(logIdx, bgAttr)
-				}
-			}
-			fillBg := lineBg
-			if isCrossRow && horzCrossAttr != 0 {
-				if horzCrossAttr&vtui.IsBgRGB != 0 {
-					fillBg = vtui.SetRGBBack(fillBg, vtui.GetRGBBack(horzCrossAttr))
-				} else {
-					fillBg = vtui.SetIndexBack(fillBg, vtui.GetIndexBack(horzCrossAttr))
-				}
-			}
-			startX := ev.X1 - ev.ScrollLeft + len(ev.renderCells)
-			if startX < ev.X1 {
-				startX = ev.X1
-			}
-			maxX := ev.X1 + width - 1
-			if startX <= maxX {
-				scr.FillRect(startX, currY, maxX, currY, ' ', fillBg)
-			}
-
-			if absVRow == curVRow {
-				scr.SetCursorPos(ev.X1+curVCol+ev.CursorVirtualSpaces-ev.ScrollLeft, currY)
-				scr.SetCursorVisible(true)
-				if ev.overtype {
-					scr.SetCursorShape(vtui.CursorShapeBlock)
-				} else {
-					scr.SetCursorShape(vtui.CursorShapeUnderline)
-				}
-			}
-
-			rowsRendered++
-			if rowsRendered >= height {
-				goto DoneRendering
-			}
-		}
-	}
-
-DoneRendering:
-	// 3. Draw Autocomplete Ghost Text
-	if ev.acEnabled && len(ev.acMatches) > 0 && ev.IsFocused() && !ev.pasting {
-		match := ev.acMatches[ev.acCurrentIdx]
-		if len(match) > len(ev.acPrefix) {
-			tail := match[len(ev.acPrefix):]
-			// Calculate exact visual position of cursor
-			curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
-			vRow, vCol := ev.engine.LogicalToVisual(curOffset)
-
-			drawY := ev.Y1 + 1 + vRow - ev.ScrollTopRow
-			drawX := ev.X1 + vCol - ev.ScrollLeft
-
-			// Draw if visible
-			if drawY >= ev.Y1+1 && drawY <= ev.Y2 {
-				// We use DimColor of the standard text to make it look like a ghost suggestion
-				ghostAttr := vtui.DimColor(vtui.Palette[ColCommandLineUserScreen])
-				// Ensure it doesn't leak out of the editor frame
-				maxLen := ev.X2 - drawX
-				if ev.scrollBar != nil {
-					maxLen--
-				}
-
-				if maxLen > 0 {
-					displayTail := tail
-					if len([]rune(displayTail)) > maxLen {
-						displayTail = string([]rune(displayTail)[:maxLen])
-					}
-					scr.Write(drawX, drawY, vtui.StringToCharInfo(displayTail, ghostAttr))
-				}
-			}
-		}
-	}
+	})
 
 	scr.PopClipRect()
 
-	if ev.scrollBar != nil {
-		totalRows := ev.engine.GetTotalVisualRows()
-		if totalRows > height {
+	if ev.scrollBar != nil && ev.nativeViewportColumns == 0 {
+		totalRows, complete := ev.engine.KnownVisualRows()
+		if complete && totalRows > height {
 			ev.scrollBar.SetParams(ev.ScrollTopRow, 0, totalRows-height)
 			ev.scrollBar.Show(scr)
+		}
+		if !complete {
+			ev.scheduleNativeVisualExtent()
 		}
 	}
 }
@@ -1650,6 +1528,7 @@ type editorCursorPatchGuard struct {
 	scrollTop, scrollLeft     int
 	windowGeneration          uint64
 	windowRequestGeneration   uint64
+	layoutRevision            uint64
 	extentKnown               bool
 	wordWrap, overtype        bool
 	modified, pasting, saving bool
@@ -1675,12 +1554,23 @@ func (ev *EditorView) editorCursorPatchGuard(e *vtinput.InputEvent) editorCursor
 	default:
 		return guard
 	}
-	if e.ControlKeyState&(vtinput.ShiftPressed|vtinput.LeftAltPressed|
-		vtinput.RightAltPressed) != 0 {
+	if e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 {
+		return guard
+	}
+	return ev.editorCursorStateGuard()
+}
+
+// editorCursorStateGuard proves that an input can publish only caret/status
+// state. Regular stream selection is a bounded overlay in the native client,
+// so its anchor/focus can travel with the caret scalars. Rectangular selection
+// still belongs to the styled row projection.
+func (ev *EditorView) editorCursorStateGuard() editorCursorPatchGuard {
+	guard := editorCursorPatchGuard{}
+	if ev == nil || ev.pt == nil || ev.li == nil || ev.engine == nil {
 		return guard
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	if showHorzCross || showVertCross || ev.selActive || ev.rectSelActive ||
+	if showHorzCross || showVertCross || ev.rectSelActive ||
 		len(ev.acMatches) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 ||
 		ev.HexMode || ev.DecodeMode || ev.DisasmMode != 0 {
 		return guard
@@ -1692,6 +1582,7 @@ func (ev *EditorView) editorCursorPatchGuard(e *vtinput.InputEvent) editorCursor
 		scrollLeft:              ev.ScrollLeft,
 		windowGeneration:        ev.semanticWindowGeneration,
 		windowRequestGeneration: ev.semanticWindowRequestGeneration,
+		layoutRevision:          ev.semanticLayoutRevision,
 		extentKnown:             ev.semanticExtentKnown,
 		wordWrap:                ev.WordWrap,
 		overtype:                ev.overtype,
@@ -1722,11 +1613,11 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 		guard.scrollTop == ev.ScrollTopRow && guard.scrollLeft == ev.ScrollLeft &&
 		guard.windowGeneration == ev.semanticWindowGeneration &&
 		guard.windowRequestGeneration == ev.semanticWindowRequestGeneration &&
+		guard.layoutRevision == ev.semanticLayoutRevision &&
 		guard.extentKnown == ev.semanticExtentKnown &&
 		guard.wordWrap == ev.WordWrap && guard.overtype == ev.overtype &&
 		guard.modified == ev.modified && guard.pasting == ev.pasting &&
-		guard.saving == ev.saving && guard.selection == ev.selActive &&
-		guard.rectSelection == ev.rectSelActive && !ev.selActive &&
+		guard.saving == ev.saving && guard.rectSelection == ev.rectSelActive &&
 		!ev.rectSelActive && guard.hexMode == ev.HexMode &&
 		guard.decodeMode == ev.DecodeMode && guard.disasmMode == ev.DisasmMode &&
 		guard.showWhitespaces == ev.ShowWhitespaces &&
@@ -1737,6 +1628,12 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 }
 
 func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
+	if editorNavigationKey(e) {
+		ev.fenceSemanticNavigation()
+	}
+	// Take the publication snapshot after fencing. The fence intentionally
+	// advances the window generation, and that generation belongs to this
+	// keyboard move rather than making the scalar cursor patch ineligible.
 	guard := ev.editorCursorPatchGuard(e)
 	var handled bool
 	if ev.targetLine == -1 {
@@ -1753,6 +1650,51 @@ func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
 		ev.queueSemanticCursorState()
 	}
 	return handled
+}
+
+func editorNavigationKey(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown {
+		return false
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT,
+		vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT:
+		return true
+	case vtinput.VK_E, vtinput.VK_X:
+		// Ctrl+E/Ctrl+X are the editor's alternate vertical movement keys.
+		return e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	default:
+		return false
+	}
+}
+
+// fenceSemanticNavigation makes a direct keyboard move newer than every
+// native scroll intent that could still be in flight. Qt may still have a
+// replaceable destination or an acknowledgement queued; advancing the
+// generation and dropping that destination prevents it from moving the
+// viewport back over the caret (or the active Shift selection).
+func (ev *EditorView) fenceSemanticNavigation() {
+	// A normal keyboard move does not need a new window identity when there is
+	// no native destination in flight. Keeping the installed generation in that
+	// case lets the cursor-only fast path publish its scalar patch against the
+	// scene that is already on screen. Only an outstanding/replacable native
+	// request needs to be retired with a successor generation.
+	nativeRequestOutstanding := ev.semanticPendingScroll ||
+		ev.semanticPendingGeneration != 0 ||
+		ev.semanticWindowRequestGeneration != ev.semanticWindowGeneration
+	generation := max(ev.semanticWindowGeneration,
+		ev.semanticWindowRequestGeneration, ev.semanticPendingGeneration)
+	if nativeRequestOutstanding && generation != ^uint64(0) {
+		generation++
+	}
+	if nativeRequestOutstanding {
+		ev.semanticWindowGeneration = generation
+		ev.semanticWindowRequestGeneration = generation
+	}
+	ev.semanticPendingScroll = false
+	ev.semanticPendingTop = ev.ScrollTopRow
+	ev.semanticPendingGeneration = 0
+	ev.semanticPointerActive = false
 }
 
 func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
@@ -2043,8 +1985,9 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 		vRow, _ := ev.engine.LogicalToVisual(curOffset)
 		newVRow := vRow + height
-		totalVRows := ev.engine.GetTotalVisualRows()
-		if newVRow >= totalVRows {
+		ev.engine.GetLogLineAtVisualRow(newVRow)
+		totalVRows, complete := ev.engine.KnownVisualRows()
+		if complete && newVRow >= totalVRows {
 			newVRow = totalVRows - 1
 		}
 		newOffset := ev.engine.VisualToLogical(newVRow, ev.DesiredVisualCol)
@@ -2555,6 +2498,14 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 }
 
 func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+	return ev.fillCellsSpan(target, data, defaultAttr, selAttr, offset, selActive, selMin, selMax, syntax, startVisualCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow, 0, 0, int(^uint(0)>>1))
+}
+
+// fillCellsSpan is the shared console/native row projection. It scans source
+// only up to the right edge and allocates cells only for the visible span.
+// tabOrigin belongs to the logical line; crosshair/selection columns belong to
+// the visual fragment. Keeping them distinct prevents wrapped tabs from moving.
+func (ev *EditorView) fillCellsSpan(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow, tabOrigin, clipLeft, clipRight int) []vtui.CharInfo {
 	target = target[:0]
 	currByte := 0
 	charIdx := 0
@@ -2564,13 +2515,13 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 		tabSize = 8
 	}
 
-	for len(data) > 0 {
+	for len(data) > 0 && visualCol < clipRight {
 		r, size := utf8.DecodeRune(data)
 		data = data[size:]
 
 		displayRune, w := vtui.SanitizeRune(r)
 		if r == '\t' {
-			w = tabSize - (visualCol % tabSize)
+			w = tabSize - ((tabOrigin + visualCol) % tabSize)
 			displayRune = ' '
 			if ev.ShowWhitespaces {
 				displayRune = '→'
@@ -2585,6 +2536,12 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 		}
 		if w <= 0 {
 			w = 1
+		}
+		if visualCol+w <= clipLeft {
+			charIdx++
+			currByte += size
+			visualCol += w
+			continue
 		}
 
 		attr := defaultAttr
@@ -2634,7 +2591,9 @@ func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr
 						cellAttr = vtui.SetIndexBack(cellAttr, vtui.GetIndexBack(vertCrossAttr))
 					}
 				}
-				target = append(target, vtui.CharInfo{Char: charVal, Attributes: cellAttr})
+				if visualCol+j >= clipLeft && visualCol+j < clipRight {
+					target = append(target, vtui.CharInfo{Char: charVal, Attributes: cellAttr})
+				}
 				charVal = uint64(vtui.WideCharFiller)
 				if r == '\t' {
 					charVal = ' '
@@ -2675,15 +2634,18 @@ func (ev *EditorView) scrollViewBy(delta int) {
 	}
 	curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	vRow, _ := ev.engine.LogicalToVisual(curOffset)
-	totalRows := ev.engine.GetTotalVisualRows()
+	ev.engine.GetLogLineAtVisualRow(max(vRow+delta, ev.ScrollTopRow+delta+height-1))
+	totalRows, complete := ev.engine.KnownVisualRows()
 
 	targetRow := vRow + delta
 	if targetRow < 0 || targetRow >= totalRows {
 		return
 	}
 
-	maxTop := max(totalRows-height, 0)
-	ev.ScrollTopRow = min(max(ev.ScrollTopRow+delta, 0), maxTop)
+	ev.ScrollTopRow = max(ev.ScrollTopRow+delta, 0)
+	if complete {
+		ev.ScrollTopRow = min(ev.ScrollTopRow, max(totalRows-height, 0))
+	}
 
 	newOffset := ev.engine.VisualToLogical(targetRow, ev.DesiredVisualCol)
 	ev.CursorLine = ev.li.GetLineAtOffset(newOffset)
@@ -2696,6 +2658,12 @@ func (ev *EditorView) scrollViewBy(delta int) {
 func (ev *EditorView) ensureCursorVisible() {
 	if ev.targetLine != -1 {
 		return // Skip clamping and scrolling while waiting for the target line to be indexed
+	}
+	// A wrap/tab/width action may call this before the next paint. Resolve the
+	// caret in the new layout, rather than scrolling with the old mapping and
+	// only reflowing it later in SemanticNode/DisplayObject.
+	if !ev.ensureEngineWidth() {
+		return
 	}
 
 	if ev.HexMode || ev.DecodeMode {
@@ -2766,12 +2734,8 @@ func (ev *EditorView) ensureCursorVisible() {
 	vRow, vCol := ev.engine.LogicalToVisual(curOffset)
 	vCol += ev.CursorVirtualSpaces
 
-	width := ev.X2 - ev.X1 + 1
+	width := ev.viewportWidth()
 	height := ev.viewportHeight()
-
-	if ev.scrollBar != nil {
-		width--
-	}
 	if width <= 0 || height <= 0 {
 		return
 	}
@@ -2853,7 +2817,11 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					ev.updateDesiredVisualCol()
 				}
 			}
+			// A hit on a shorter line must not reset a horizontally scrolled
+			// viewport to that line's beginning while the pointer stays inside.
+			left := ev.ScrollLeft
 			ev.ensureCursorVisible()
+			ev.ScrollLeft = left
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -2881,7 +2849,9 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				ev.CursorPos = offset - ev.li.GetLineOffset(ev.CursorLine)
 				ev.updateDesiredVisualCol()
 			}
+			left := ev.ScrollLeft
 			ev.ensureCursorVisible()
+			ev.ScrollLeft = left
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -2897,6 +2867,120 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 
 	return false
+}
+
+// processDocumentPointer consumes source-addressed coordinates from the native
+// document surface. scrollLeft belongs to the displayed window, not to a newer
+// server-side scroll request that may still be in flight. Its result describes
+// presentation changes, not pointer capture: a stale release always clears
+// capture but does not itself require another document projection.
+func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffset int64, column, scrollLeft int, layoutRevision uint64) (changed bool) {
+	if e == nil || e.Type != vtinput.MouseEventType {
+		return false
+	}
+	before := ev.documentPointerPresentation()
+	defer func() {
+		changed = before != ev.documentPointerPresentation()
+		if changed {
+			vtui.FrameManager.Redraw()
+		}
+	}()
+	if e.ButtonState == 0 {
+		// Always release capture, even if geometry changed during the drag.
+		ev.semanticPointerActive = false
+		if ev.selActive && ev.selAnchorOffset == ev.li.GetLineOffset(ev.CursorLine)+ev.CursorPos {
+			ev.selActive = false
+		}
+		if ev.rectSelActive && ev.rectSelStartLine == ev.CursorLine && ev.rectSelStartCol == ev.getVisualColOf(ev.CursorLine, ev.CursorPos) {
+			ev.rectSelActive = false
+		}
+		return false
+	}
+	ev.ensureEngineWidth()
+	if layoutRevision == 0 || layoutRevision != ev.semanticLayoutRevision || fragmentOffset < 0 || fragmentOffset > int64(ev.pt.Size()) {
+		ev.semanticPointerActive = false
+		return false
+	}
+	moved := e.MouseEventFlags&vtinput.MouseMoved != 0
+	if moved && (!ev.semanticPointerActive || ev.semanticPointerRevision != layoutRevision) {
+		return false
+	}
+	line := ev.li.GetLineAtOffset(int(fragmentOffset))
+	var fragment *textlayout.LineFragment
+	fragments := ev.engine.GetFragmentsForOffset(line, int(fragmentOffset))
+	if !ev.WordWrap {
+		fragments = ev.engine.GetProjectionFragments(line, 1, max(1, scrollLeft+column+1))
+	}
+	for _, candidate := range fragments {
+		if candidate.ByteOffsetStart == int(fragmentOffset) && !candidate.Loading {
+			copy := candidate
+			fragment = &copy
+			break
+		}
+	}
+	if fragment == nil {
+		return false
+	}
+	// A source-addressed pointer belongs to the window actually displayed by
+	// Qt and supersedes an earlier destination that has not been published.
+	ev.semanticPendingScroll = false
+	visualCol := max(0, scrollLeft+column)
+	offset := ev.engine.FragmentColumnToLogical(*fragment, visualCol)
+	ev.targetLine = -1
+	ev.CursorLine = ev.li.GetLineAtOffset(offset)
+	ev.CursorPos = offset - ev.li.GetLineOffset(ev.CursorLine)
+	ev.CursorVirtualSpaces = 0
+	ev.updateDesiredVisualCol()
+	if !moved {
+		ev.semanticPointerActive = true
+		ev.semanticPointerRevision = layoutRevision
+		ev.selActive, ev.rectSelActive = false, false
+		if e.ButtonState == vtinput.FromLeft1stButtonPressed {
+			if e.MouseEventFlags&vtinput.DoubleClick != 0 {
+				ev.selectWordUnderCursor()
+			} else {
+				ev.selActive = true
+				ev.selAnchorOffset = offset
+			}
+		} else if e.ButtonState == vtinput.RightmostButtonPressed {
+			ev.rectSelActive = true
+			ev.rectSelStartLine, ev.rectSelStartCol = ev.CursorLine, visualCol
+		}
+	}
+	left := ev.ScrollLeft
+	ev.ensureCursorVisible()
+	if column >= 0 && column < ev.viewportWidth() {
+		ev.ScrollLeft = left
+	} else if !ev.WordWrap {
+		// The pointer, not a short line's clamped cursor, drives edge scrolling.
+		if column < 0 {
+			ev.ScrollLeft = max(0, scrollLeft+column)
+		} else {
+			ev.ScrollLeft = max(0, scrollLeft+column-ev.viewportWidth()+1)
+		}
+	}
+	return true
+}
+
+// This is a per-input value, not retained document state. Different pointer
+// columns can resolve to the same source offset on short/empty lines or inside
+// a tab/wide cell. Such input still updates capture/navigation bookkeeping but
+// must not reconstruct and serialize the identical scene.
+type editorPointerPresentation struct {
+	line, pos, virtualSpaces, top, left, targetLine int
+	selection, rectSelection                        bool
+	anchor, rectLine, rectColumn                    int
+	layoutRevision                                  uint64
+}
+
+func (ev *EditorView) documentPointerPresentation() editorPointerPresentation {
+	return editorPointerPresentation{
+		line: ev.CursorLine, pos: ev.CursorPos, virtualSpaces: ev.CursorVirtualSpaces,
+		top: ev.ScrollTopRow, left: ev.ScrollLeft, targetLine: ev.targetLine,
+		selection: ev.selActive, rectSelection: ev.rectSelActive,
+		anchor: ev.selAnchorOffset, rectLine: ev.rectSelStartLine, rectColumn: ev.rectSelStartCol,
+		layoutRevision: ev.semanticLayoutRevision,
+	}
 }
 
 func (ev *EditorView) SetPosition(x1, y1, x2, y2 int) {
@@ -2921,10 +3005,54 @@ func (ev *EditorView) SetPosition(x1, y1, x2, y2 int) {
 // to render its overscan window.
 func (ev *EditorView) viewportHeight() int {
 	height := ev.Y2 - ev.Y1
-	if ev.nativeViewportRows > 0 && ev.nativeViewportRows < height {
+	if ev.nativeViewportRows > 0 {
 		return ev.nativeViewportRows
 	}
 	return height
+}
+
+func (ev *EditorView) viewportWidth() int {
+	if ev.nativeViewportColumns > 0 {
+		return ev.nativeViewportColumns
+	}
+	width := ev.X2 - ev.X1 + 1
+	if ev.scrollBar != nil {
+		width--
+	}
+	return width
+}
+
+// scheduleNativeVisualExtent finishes the document's wrap extent after the
+// first viewport has been produced. Each task advances existing layout state
+// only on the UI thread, yielding to priority native input between batches.
+// There is no timer, speculative read-ahead, or independently cached layout.
+func (ev *EditorView) scheduleNativeVisualExtent() {
+	if !ev.WordWrap || ev.engine == nil || vtui.FrameManager == nil || ev.IsDone() {
+		return
+	}
+	if _, complete := ev.engine.KnownVisualRows(); complete {
+		return
+	}
+	revision, session := ev.semanticLayoutRevision, ev.editSession
+	if ev.semanticExtentTaskPending && ev.semanticExtentTaskRevision == revision {
+		return
+	}
+	ev.semanticExtentTaskPending = true
+	ev.semanticExtentTaskRevision = revision
+	vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+		if ev.semanticExtentTaskRevision != revision {
+			return false
+		}
+		ev.semanticExtentTaskPending = false
+		if ev.IsDone() || ev.editSession != session || ev.semanticLayoutRevision != revision {
+			return false
+		}
+		progressed, complete := ev.engine.AdvanceVisualRows(64, 64*1024)
+		if progressed && !complete {
+			ev.scheduleNativeVisualExtent()
+		}
+		return complete && ev.semanticExtentKnown
+	})
 }
 
 func (ev *EditorView) ResizeConsole(w, h int) {
@@ -2938,27 +3066,6 @@ func (ev *EditorView) ResizeConsole(w, h int) {
 func (ev *EditorView) GetMenuBar() *vtui.MenuBar {
 	ev.menuBar.Items = BuildMenuBarItems("Editor")
 	return ev.menuBar
-}
-
-// The async buffer hands data over as it loads. A single fixed sleep is a
-// hard cap on indexing throughput: when the loader delivers pieces smaller
-// than one chunk, the indexer spends the whole load asleep rather than
-// scanning. Backing off geometrically from a short first wait keeps that loss
-// bounded without turning a slow VFS into a busy loop.
-const (
-	indexPollMin = 200 * time.Microsecond
-	indexPollMax = 5 * time.Millisecond
-)
-
-func nextIndexPoll(cur time.Duration) time.Duration {
-	next := cur * 2
-	if next < indexPollMin {
-		next = indexPollMin
-	}
-	if next > indexPollMax {
-		next = indexPollMax
-	}
-	return next
 }
 
 // applyPendingTarget restores the position saved for this document once the
@@ -2996,6 +3103,7 @@ func (ev *EditorView) applyPendingTarget() bool {
 }
 
 func (ev *EditorView) StartIndexing() {
+	ev.semanticLoadError = ""
 	if ev.asyncBuf == nil {
 		ev.semanticExtentKnown = true
 		// NewEditorView builds the complete line index synchronously for an
@@ -3009,6 +3117,7 @@ func (ev *EditorView) StartIndexing() {
 		ev.indexCancel()
 	}
 
+	ev.cancelHighlighting()
 	ev.editSession++
 	ev.semanticExtentKnown = false
 	sessionID := ev.editSession
@@ -3021,40 +3130,45 @@ func (ev *EditorView) StartIndexing() {
 	ctx, cancel := context.WithCancel(context.Background())
 	ev.indexCancel = cancel
 	ev.indexing = true
+	// Capture live UI state before starting the worker. Published batches are
+	// immutable; the worker never consults mutable editor/line-layout state.
+	buf, li := ev.asyncBuf, ev.li
+	filesystem, path, codepage := ev.vfs, ev.filePath, ev.Codepage
+	targetLine := ev.targetLine
+	initialLineCount := li.LineCount()
+	initialOffset := max(0, li.GetLineOffset(initialLineCount-1))
 
 	go func() {
 		startedAt := time.Now()
-		vtui.DebugLog("EDITOR_INDEX: Start indexing with targetLine=%d", ev.targetLine)
+		vtui.DebugLog("EDITOR_INDEX: Start indexing with targetLine=%d", targetLine)
 		indexed, batches := 0, 0
 		var waited time.Duration
 
 		// Runs on completion and on cancellation alike, so the flag the
 		// highlight walker throttles on can never stay stuck at true.
 		defer func() {
-			vtui.FrameManager.PostTask(func() {
+			vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 				if ev.editSession == sessionID {
 					ev.indexing = false
 				}
 				vtui.DebugLog("EDITOR: Indexer stopped: %d lines in %v, %v of it waiting for data, %d UI batches",
 					indexed, time.Since(startedAt), waited, batches)
+				return false
 			})
 		}()
 
-		poll := indexPollMin
-		buf := ev.asyncBuf
-		li := ev.li
 		maxSize := buf.Size()
 
-		if indexer, ok := ev.vfs.(vfs.LineIndexer); ok && ev.Codepage == 65001 {
+		if indexer, ok := filesystem.(vfs.LineIndexer); ok && codepage == 65001 {
 			vtui.DebugLog("EDITOR_INDEX: Using remote LineIndexer")
-			var currentLine int64 = int64(li.LineCount() + 1)
+			var currentLine int64 = int64(initialLineCount + 1)
 			const batchSize = 100000
 			remoteSuccess := true
 			for {
-				if ctx.Err() != nil || ev.IsDone() {
+				if ctx.Err() != nil {
 					return
 				}
-				res, err := indexer.LineIndex(ctx, ev.filePath, currentLine, batchSize)
+				res, err := indexer.LineIndex(ctx, path, currentLine, batchSize)
 				if err != nil {
 					vtui.DebugLog("EDITOR_INDEX: Remote LineIndex failed: %v, falling back to local", err)
 					remoteSuccess = false
@@ -3062,28 +3176,36 @@ func (ev *EditorView) StartIndexing() {
 				}
 
 				if len(res.Offsets) > 0 {
+					batchFinished := len(res.Offsets) < batchSize || (res.Total >= 0 && currentLine+int64(len(res.Offsets)) > res.Total)
 					batchOffsets := make([]int, 0, len(res.Offsets))
 					for _, off := range res.Offsets {
 						batchOffsets = append(batchOffsets, int(off))
 					}
 
-					vtui.FrameManager.PostTask(func() {
+					applied := make(chan struct{})
+					vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+						defer close(applied)
 						if ctx.Err() != nil || ev.edited || ev.editSession != sessionID {
-							return
+							return false
 						}
 						lastLineBefore := li.LineCount() - 1
 						li.AppendOffsets(batchOffsets, maxSize)
+						ev.engine.InvalidateFrom(lastLineBefore)
 
-						if ev.targetLine != -1 && (li.LineCount() > ev.targetLine || len(res.Offsets) < batchSize) {
+						if ev.targetLine != -1 && (ev.targetLine < li.LineCount()-1 || batchFinished) {
 							ev.applyPendingTarget()
 						}
 
-						ev.engine.InvalidateFrom(lastLineBefore)
 						if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 							ev.startHighlighting()
 						}
-						vtui.FrameManager.Redraw()
+						return true
 					})
+					select {
+					case <-ctx.Done():
+						return
+					case <-applied:
+					}
 
 					indexed += len(batchOffsets)
 					batches++
@@ -3096,27 +3218,26 @@ func (ev *EditorView) StartIndexing() {
 			}
 
 			if remoteSuccess {
-				vtui.FrameManager.PostTask(func() {
+				vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 					if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
-						if ev.applyPendingTarget() {
-							vtui.FrameManager.Redraw()
-						}
+						ev.semanticExtentKnown = true
+						ev.applyPendingTarget()
 						if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 							ev.startHighlighting()
 						}
+						return true
 					}
+					return false
 				})
 				return
 			}
 		}
 
-		absPos := 0
-		if li.LineCount() > 1 {
-			absPos = li.GetLineOffset(li.LineCount() - 1)
-		}
-		chunkSize := 256 * 1024 // 256KB chunks to match AsyncBuffer
+		absPos := initialOffset
+		chunkSize := buf.chunkSize
 
 		pendingOffsets := make([]int, 0, 10000)
+		var indexError error
 
 		for absPos < maxSize {
 			select {
@@ -3124,29 +3245,14 @@ func (ev *EditorView) StartIndexing() {
 				return
 			default:
 			}
-			if ev.IsDone() {
-				return
-			}
-
-			// Pre-fetch ahead to keep AsyncBuffer busy and avoid sequential latency.
-			// 16 chunks of 256KB = 4MB read-ahead sliding window.
-			readAhead := 16
-			for i := 0; i < readAhead; i++ {
-				p := absPos + i*chunkSize
-				if p < maxSize {
-					_, _ = buf.Read(p, chunkSize)
+			waitStart := time.Now()
+			data, err := buf.ReadContext(ctx, absPos, chunkSize)
+			waited += time.Since(waitStart)
+			if len(data) == 0 {
+				indexError = err
+				if indexError == nil {
+					indexError = io.ErrNoProgress
 				}
-			}
-
-			data, err := buf.Read(absPos, chunkSize)
-			if err == piecetable.ErrLoading {
-				time.Sleep(poll)
-				waited += poll
-				poll = nextIndexPoll(poll)
-				continue
-			}
-			poll = indexPollMin
-			if err != nil {
 				break
 			}
 
@@ -3164,44 +3270,70 @@ func (ev *EditorView) StartIndexing() {
 			absPos += len(data)
 
 			// Update UI in 5000-line batches, or immediately when targetLine is reached, to avoid UI thread congestion
-			if len(pendingOffsets) >= 5000 || absPos >= maxSize || (ev.targetLine != -1 && li.LineCount()+len(pendingOffsets) > ev.targetLine) {
+			if len(pendingOffsets) >= 5000 || absPos >= maxSize || err != nil || (targetLine != -1 && initialLineCount+indexed+len(pendingOffsets) > targetLine) {
 				currentBatch := pendingOffsets
 				batchEnd := absPos
 				indexed += len(currentBatch)
 				batches++
 				pendingOffsets = make([]int, 0, 10000)
 
-				vtui.FrameManager.PostTask(func() {
+				applied := make(chan struct{})
+				vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+					defer close(applied)
 					if ctx.Err() != nil || ev.edited || ev.editSession != sessionID {
-						return
+						return false
 					}
 					// Incremental update: we only need to invalidate visual cache
 					// from the line that was previously the "last" one.
 					lastLineBefore := li.LineCount() - 1
 					li.AppendOffsets(currentBatch, maxSize)
+					// Restoration immediately asks the engine for source-to-row
+					// coordinates. Drop the old unindexed-tail layout first.
+					ev.engine.InvalidateFrom(lastLineBefore)
 
-					if ev.targetLine != -1 && (li.LineCount() > ev.targetLine || batchEnd >= maxSize) {
+					if ev.targetLine != -1 && (ev.targetLine < li.LineCount()-1 || batchEnd >= maxSize) {
 						ev.applyPendingTarget()
 					}
 
-					ev.engine.InvalidateFrom(lastLineBefore)
 					if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 						ev.startHighlighting()
 					}
-					vtui.FrameManager.Redraw()
+					return true
 				})
+				// One immutable batch may be pending. Do not fill the input queue
+				// with obsolete index/redraw work while the user scrolls or closes.
+				select {
+				case <-ctx.Done():
+					return
+				case <-applied:
+				}
+			}
+			if err != nil {
+				indexError = err
+				break
 			}
 		}
 
-		vtui.FrameManager.PostTask(func() {
+		vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
 			if ctx.Err() == nil && !ev.edited && ev.editSession == sessionID {
-				ev.semanticExtentKnown = true
-				ev.applyPendingTarget()
+				if len(pendingOffsets) > 0 {
+					previousLast := li.LineCount() - 1
+					li.AppendOffsets(pendingOffsets, maxSize)
+					ev.engine.InvalidateFrom(previousLast)
+				}
+				ev.semanticExtentKnown = absPos >= maxSize
+				if indexError != nil {
+					ev.semanticLoadError = indexError.Error()
+				}
+				if ev.semanticExtentKnown || (ev.targetLine >= 0 && ev.targetLine < li.LineCount()-1) {
+					ev.applyPendingTarget()
+				}
 				if ev.highlighter != nil && !ev.highlighting && len(ev.lineStates) < li.LineCount() {
 					ev.startHighlighting()
 				}
-				vtui.FrameManager.Redraw()
+				return true
 			}
+			return false
 		})
 	}()
 }
@@ -3518,6 +3650,16 @@ func (ev *EditorView) noteBufferEdit() {
 		}
 	}
 	ev.editSession++
+	ev.invalidateDocumentMapping()
+}
+
+// Pending visual-row destinations and pointer capture belong to the mapping
+// in which they were created, never to a later edit or layout epoch.
+func (ev *EditorView) invalidateDocumentMapping() {
+	ev.semanticLayoutRevision++
+	ev.semanticPointerActive = false
+	ev.semanticPendingScroll = false
+	ev.semanticPendingGeneration = 0
 }
 
 // replaceRange replaces bytes [min, max) with repBytes as a single

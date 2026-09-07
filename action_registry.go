@@ -2086,6 +2086,7 @@ func init() {
 			} else {
 				ev.DecodeMode = false
 			}
+			ev.invalidateDocumentMapping()
 			ev.ensureCursorVisible()
 			vtui.FrameManager.Redraw()
 		}),
@@ -2232,7 +2233,13 @@ func init() {
 		DefaultKeys: []string{"F2"},
 		MenuPath:    "View",
 		Checked:     viewerState(func(vv *ViewerView) bool { return vv.WrapMode }),
-		Handler:     withViewer(func(vv *ViewerView) { vv.WrapMode = !vv.WrapMode }),
+		Handler: withViewer(func(vv *ViewerView) {
+			vv.WrapMode = !vv.WrapMode
+			vv.semanticLayoutRevision++
+			vv.semanticNeedsReflow = true
+			vv.semanticPendingScroll = false
+			vv.semanticWrapSeek = semanticWrapSeekState{}
+		}),
 	})
 	RegisterAction(Action{
 		Name:        "Viewer.HexMode",
@@ -2245,6 +2252,11 @@ func init() {
 		MenuPath:    "View",
 		Checked:     viewerState(func(vv *ViewerView) bool { return vv.HexMode || vv.DecodeMode }),
 		Handler: withViewer(func(vv *ViewerView) {
+			vv.semanticLayoutRevision++
+			vv.semanticNeedsReflow = true
+			vv.semanticPendingScroll = false
+			vv.semanticProjection, vv.consoleProjection = nil, nil
+			vv.semanticWrapSeek = semanticWrapSeekState{}
 			if !vv.HexMode && !vv.DecodeMode {
 				vv.HexMode = true
 				vv.TopOffset &= ^int64(0xF)

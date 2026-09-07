@@ -5,6 +5,7 @@ import QtQuick.Controls
 
 Item {
     id: store
+    objectName: "shellSceneStore"
 
     required property ApplicationWindow hostWindow
     required property var shellController
@@ -14,6 +15,17 @@ Item {
     readonly property var chromeState: shellController.chromeState
     readonly property var workspaceState: shellController.workspaceState
     readonly property var overlayState: shellController.overlayState
+    // A popup frame is exposed through overlayFrames(), which is a helper
+    // function rather than a QML property.  Keep an explicit revision for
+    // bindings that consume that helper; otherwise a menu opened/closed while
+    // the fallback (console) surface is visible can leave the hidden overlay
+    // model unchanged until an unrelated binding happens to reevaluate.
+    readonly property string overlayFramesRevision:
+        String(overlayState ? overlayState.menuRevision : 0) + ":"
+        + String(overlayState ? overlayState.dialogRevision : 0)
+        + ":" + String(chromeState ? chromeState.revision : 0)
+    readonly property bool hasDialogs:
+        (overlayState.dialogs || []).length > 0
     readonly property var commandLineState: shellController.commandLineState
     readonly property var surfaceRegistry: shellController.surfaceRegistry
     property var workspaceTabsOverride: null
@@ -35,6 +47,7 @@ Item {
     property var documentSurfaceStateOverride: null
     property bool retainedShellSurfaceCreated: false
     property bool retainedDocumentSurfaceCreated: false
+    property bool documentSurfaceActive: false
     property bool documentSurfacePrewarmed: false
     property bool retainedOperationsQueueCreated: false
     property int panelActivationOverride: -1
@@ -54,6 +67,14 @@ Item {
     signal activePanelAcknowledged(int side)
     signal structuralSurfaceUpdated()
     signal commandMenusUpdated()
+
+    // Dialogs are part of the Go-owned input stack, but their typed state is
+    // stored independently from shell/document surfaces.  Crossing the
+    // no-dialog/dialog boundary must therefore participate in the same focus
+    // hand-off as other structural surfaces; otherwise a native panel keeps
+    // Qt active focus and consumes navigation keys before the grid can forward
+    // them to the modal vtui frame.
+    onHasDialogsChanged: structuralSurfaceUpdated()
 
     visible: false
     width: 0
@@ -110,7 +131,7 @@ Item {
         }
         if (!surfaceRegistry.hasDocument)
             return null
-        const frame = surfaceRegistry.document
+        const frame = surfaceRegistry.documentMetadata
         return isDocumentSurface(frame) ? frame : null
     }
 
@@ -124,6 +145,7 @@ Item {
 
     function captureDocumentSurface() {
         const document = currentDocumentFrame()
+        documentSurfaceActive = document !== null
         if (document !== null) {
             retainedDocumentFrame = document
             retainedDocumentSurfaceCreated = true
@@ -152,10 +174,14 @@ Item {
         const result = []
         const menus = overlayState.commandMenus || []
         const dialogs = overlayState.dialogs || []
-        for (let index = 0; index < menus.length; ++index)
-            result.push(menus[index])
+        // Command menus belong to the currently focused Go frame. A ComboBox
+        // inside a dialog therefore pushes its VMenu after the dialog. Keep
+        // that input-stack order in QML: DialogOverlay fills the window and
+        // would otherwise paint over (and intercept input from) the dropdown.
         for (let index = 0; index < dialogs.length; ++index)
             result.push(dialogs[index])
+        for (let index = 0; index < menus.length; ++index)
+            result.push(menus[index])
         return result
     }
 
@@ -164,7 +190,11 @@ Item {
     }
 
     function shellFrame() {
-        return currentShellFrame() || retainedShellFrame || ({})
+        // Every non-null shell publication is captured here already. Keep
+        // hidden panels on that one presentation object when the active
+        // shell is cleared for a standalone document; switching from the
+        // native map to its equivalent retained map invalidates every panel.
+        return retainedShellFrame || ({})
     }
 
     function quickViewForSide(side) {
@@ -339,11 +369,22 @@ Item {
     }
 
     function resetDocumentProjection() {
+        const previous = retainedDocumentFrame || ({})
+        const wasActive = documentSurfaceActive
         documentPresentationOverrideSet = false
         documentPresentationOverride = null
         documentSurfaceStateOverride = null
+        const current = currentDocumentFrame()
         captureDocumentSurface()
-        sceneReset()
+        // A ready row/style window is not a new shell interaction context.
+        // Only opening, closing or switching documents needs focus/gallery
+        // coordination; command-line/autocomplete state is unaffected.
+        if (wasActive !== documentSurfaceActive
+                || (current !== null
+                    && (String(previous.documentKey || previous.id || "")
+                        !== String(current.documentKey || current.id || "")
+                        || previous.kind !== current.kind)))
+            structuralSurfaceUpdated()
     }
 
     function resetOperationsQueueProjection() {
@@ -473,4 +514,5 @@ Item {
         function onKeyBarChanged() { store.keyBarOverride = null }
         function onToastChanged() { store.toastOverride = null }
     }
+
 }

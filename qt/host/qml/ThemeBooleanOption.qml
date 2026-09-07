@@ -93,15 +93,21 @@ Rectangle {
             border.color: checkBox.checked || checkBox.activeFocus
                           ? option.hostWindow.dialogAccent : option.hostWindow.controlBorder
 
-            Rectangle {
+            HostPixelAlignedImage {
                 objectName: option.namePrefix + "CheckMark"
-                width: option.hostWindow.snapPx(6)
-                height: width
-                x: option.hostWindow.snapPx((parent.width - width) / 2)
-                y: option.hostWindow.snapPx((parent.height - height) / 2)
-                radius: option.hostWindow.snapPx(1)
+                readonly property real opticalVerticalOffset:
+                    1 / Math.max(1, option.hostWindow.iconDevicePixelRatio)
+                hostWindow: option.hostWindow
+                width: option.hostWindow.snapPx(12)
+                height: option.hostWindow.snapPx(12)
+                anchors.centerIn: parent
+                anchors.verticalCenterOffset: opticalVerticalOffset
+                sourceSize: Qt.size(12, 12)
+                source: option.hostWindow.lucideIconSource(
+                            "check", 12, option.hostWindow.dialogBg)
                 visible: checkBox.checked
-                color: option.hostWindow.dialogBg
+                smooth: false
+                mipmap: false
             }
         }
         contentItem: Text {

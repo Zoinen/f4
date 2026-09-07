@@ -118,8 +118,10 @@ Rectangle {
         if (!widget || widget.visible === false)
             return 0
 
-        var bottom = hostWindow.pxY(Number(widget.y || 0) - Number(frame.y || 0) - 1)
-                     + Math.max(22, hostWindow.pxH(Number(widget.h || 1)))
+        const relativeRow = Number(widget.y || 0)
+                - Number(frame.y || 0) - 1
+        var bottom = hostWindow.dialogWidgetVisualTop(relativeRow, widget)
+                + hostWindow.dialogWidgetVisualHeight(widget)
         var children = widget.children || []
         for (var i = 0; i < children.length; ++i)
             bottom = Math.max(bottom, widgetBottom(children[i]))
@@ -155,8 +157,10 @@ Rectangle {
         if (!widget)
             return
 
-        var top = hostWindow.pxY(Number(widget.y || 0) - Number(frame.y || 0) - 1)
-        var bottom = top + Math.max(22, hostWindow.pxH(Number(widget.h || 1)))
+        const relativeRow = Number(widget.y || 0)
+                - Number(frame.y || 0) - 1
+        var top = hostWindow.dialogWidgetVisualTop(relativeRow, widget)
+        var bottom = top + hostWindow.dialogWidgetVisualHeight(widget)
         var maximum = Math.max(0, dialogBody.contentHeight - dialogBody.height)
         if (top < dialogBody.contentY)
             dialogBody.contentY = Math.max(0, top - 6)

@@ -399,6 +399,7 @@ class F4DocumentSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void documentLeavesStayOnPhysicalPixelGridAt175Percent();
     void styledDocumentRunsAreVisible_data();
     void styledDocumentRunsAreVisible();
     void compactDocumentUpdatesKeepViewportActive();
@@ -428,6 +429,116 @@ private slots:
     void terminalDoubleAndTripleClickSelectWordAndParagraph();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
 };
+
+void F4DocumentSurfaceTests::documentLeavesStayOnPhysicalPixelGridAt175Percent()
+{
+    if (qAbs(qGuiApp->devicePixelRatio() - 1.75) > 0.01)
+        QSKIP("Run this regression with QT_SCALE_FACTOR=1.75");
+
+    QVariantMap frame = editorFrame(0, 60, 0, 1);
+    QVariantList rows = frame.value(QStringLiteral("windowRows")).toList();
+    QVariantMap first = rows[0].toMap();
+    first.insert(QStringLiteral("runs"), QVariantList{
+        // Use the same glyph as the cell probe. Arbitrary letters can have
+        // tiny font-specific advance differences even in a monospace font;
+        // the invariant here is the measured cell width, not a glyph sample.
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("MMM")},
+                    {QStringLiteral("foreground"), QStringLiteral("#39dc85")}},
+        QVariantMap{{QStringLiteral("text"), QStringLiteral(" secondary")},
+                    {QStringLiteral("foreground"), QStringLiteral("#ffffff")}},
+    });
+    first.insert(QStringLiteral("visualWidth"), 13);
+    rows[0] = first;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    frame.insert(QStringLiteral("selection"), true);
+    frame.insert(QStringLiteral("selectionAnchorRow"), 0);
+    frame.insert(QStringLiteral("selectionAnchorColumn"), 0);
+    frame.insert(QStringLiteral("cursorAbsoluteRow"), 0);
+    frame.insert(QStringLiteral("cursorAbsoluteColumn"), 3);
+    frame.insert(QStringLiteral("selectionForeground"), QStringLiteral("#ffffff"));
+    frame.insert(QStringLiteral("selectionBackground"), QStringLiteral("#3b6290"));
+    frame.insert(QStringLiteral("selectionBold"), false);
+    frame.insert(QStringLiteral("selectionUnderline"), false);
+    frame.insert(QStringLiteral("selectionStrikeout"), false);
+    auto scene = documentScene(frame);
+    scene.insert(QStringLiteral("menuBar"), QVariantMap{
+        {QStringLiteral("items"), QVariantList{}}});
+
+    DocumentFixture fixture(scene, 599);
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QTest::qWait(80);
+
+    int textLeaves = 0;
+    QList<QQuickItem *> pending{fixture.surface};
+    while (!pending.isEmpty()) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        if (!item->isVisible())
+            continue;
+        const QByteArray type = item->metaObject()->className();
+        if (!type.startsWith("QQuickText") && !type.contains("Image")
+            && item->objectName() != QStringLiteral("documentHeaderLucideIcon"))
+            continue;
+
+        const QPointF origin = item->mapToItem(
+            fixture.window->contentItem(), QPointF());
+        const qreal dpr = fixture.window->devicePixelRatio();
+        const QPointF physical = origin * dpr;
+		QVERIFY2(!item->objectName().isEmpty(),
+                 "Every document text/image leaf needs an objectName");
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < 0.001
+                     && qAbs(physical.y() - qRound64(physical.y())) < 0.001,
+                 qPrintable(QString("%1 physical origin (%2,%3)")
+                                .arg(item->objectName())
+                                .arg(physical.x())
+                                .arg(physical.y())));
+
+        const QPointF unitX = item->mapToItem(
+                                   fixture.window->contentItem(), QPointF(1, 0))
+                              - origin;
+        const QPointF unitY = item->mapToItem(
+                                   fixture.window->contentItem(), QPointF(0, 1))
+                              - origin;
+        QVERIFY(qAbs(unitX.x() - 1) < 0.001 && qAbs(unitX.y()) < 0.001);
+        QVERIFY(qAbs(unitY.y() - 1) < 0.001 && qAbs(unitY.x()) < 0.001);
+        ++textLeaves;
+    }
+    QVERIFY(textLeaves > 4);
+
+    // Moving an ancestor by a fractional logical amount must still leave
+    // every actual text/image leaf on the physical grid.
+    auto *pixelAncestor = fixture.surface->parentItem();
+    pixelAncestor->setPosition(pixelAncestor->position() + QPointF(.17, .29));
+    QTest::qWait(30);
+    QList<QQuickItem *> movedItems{fixture.surface};
+    while (!movedItems.isEmpty()) {
+        auto *item = movedItems.takeLast();
+        movedItems.append(item->childItems());
+        const QByteArray type = item->metaObject()->className();
+        if (!item->isVisible()
+            || (!type.startsWith("QQuickText") && !type.contains("Image")
+                && item->objectName()
+                       != QStringLiteral("documentHeaderLucideIcon")))
+            continue;
+        const QPointF physical = item->mapToItem(
+                                      fixture.window->contentItem(), QPointF())
+                                  * fixture.window->devicePixelRatio();
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                     && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(QString("moved %1 origin (%2,%3)")
+                                .arg(item->objectName())
+                                .arg(physical.x())
+                                .arg(physical.y())));
+    }
+
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const QString capturePath = qEnvironmentVariable(
+        "F4_DOCUMENT_PIXEL_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(capture.save(capturePath));
+}
 
 void F4DocumentSurfaceTests::styledDocumentRunsAreVisible_data()
 {
@@ -474,8 +585,31 @@ void F4DocumentSurfaceTests::styledDocumentRunsAreVisible()
     QVERIFY(styled->mapToItem(fixture.list, QPointF()).y() < fixture.list->height());
     auto *themed = findRun(QStringLiteral(" theme content"));
     QVERIFY(themed);
+    const qreal styledX = styled->mapToItem(fixture.list, QPointF()).x();
+    const qreal themedX = themed->mapToItem(fixture.list, QPointF()).x();
+    QVERIFY(themedX > styledX);
+    QVERIFY(themedX >= styledX + styled->width() - 1.0);
     QVERIFY(fixture.window->setProperty("textColor", QColor("#e39142")));
     QTRY_COMPARE(themed->property("color").value<QColor>(), QColor("#e39142"));
+
+    // Updating row runs dynamically (as during fast scrolling) must place
+    // run segments synchronously without overlap or reset to x=0.
+    first.insert(QStringLiteral("runs"), QVariantList{
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("000001EE90: ")}},
+        QVariantMap{{QStringLiteral("text"), QStringLiteral("00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|")}},
+    });
+    rows[0] = first;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(findRun(QStringLiteral("000001EE90: ")), 1000);
+    auto *addrRun = findRun(QStringLiteral("000001EE90: "));
+    auto *bytesRun = findRun(QStringLiteral("00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00 |................|"));
+    QVERIFY(addrRun);
+    QVERIFY(bytesRun);
+    const qreal addrX = addrRun->mapToItem(fixture.list, QPointF()).x();
+    const qreal bytesX = bytesRun->mapToItem(fixture.list, QPointF()).x();
+    QVERIFY(bytesX > addrX);
+    QVERIFY(bytesX >= addrX + addrRun->width() - 1.0);
     QVERIFY(!fixture.window->grabWindow().isNull());
 }
 
@@ -733,18 +867,23 @@ void F4DocumentSurfaceTests::nativeViewportExcludesHeaderAndKeepsBottomCursorVis
     QVERIFY(cursorTop >= 0.0);
     QVERIFY(cursorTop + cursor->height() <= fixture.list->height() + 0.001);
 
+    const int reportedRows = fixture.surface->property("reportedViewportRows").toInt();
+    QCOMPARE(fixture.surface->property("reportedViewportTarget").toString(),
+             QStringLiteral("app"));
+    QVERIFY(reportedRows > 0);
     fixture.shell.clearActions();
     fixture.surface->setProperty("interactionActive", false);
-    QTRY_VERIFY_WITH_TIMEOUT([&] {
-        for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
-            if (action.value(QStringLiteral("action")).toString()
-                    == QStringLiteral("document.viewport")
-                && action.value(QStringLiteral("rows")).toInt() == 0) {
-                return true;
-            }
-        }
-        return false;
-    }(), 3000);
+    QTest::qWait(100);
+    // Standalone geometry is negotiated for the window session, rather than
+    // owned by the currently displayed file. Deactivating/closing a document
+    // must not clear the app viewport and make the next document inherit a
+    // zero-row layout.
+    for (const QVariantMap &action : std::as_const(fixture.shell.actions)) {
+        QVERIFY2(action.value(QStringLiteral("rows")).toInt() != 0,
+                 "standalone document deactivation cleared app viewport");
+    }
+    QCOMPARE(fixture.surface->property("reportedViewportRows").toInt(),
+             reportedRows);
 }
 
 void F4DocumentSurfaceTests::standaloneDocumentsEndAtSharedKeyBarSeparator()
@@ -1453,7 +1592,8 @@ void F4DocumentSurfaceTests::editorCursorTracksAbsoluteWindowRowAndVisibility()
     fixture.shell.setScene(documentScene(frame));
     QTRY_COMPARE_WITH_TIMEOUT(cursor->width(), 2.0, 3000);
     QVERIFY(cursor->height() > cursor->width());
-    QCOMPARE(cursor->property("color").value<QColor>(), QColor(Qt::white));
+    QCOMPARE(cursor->property("color").value<QColor>(),
+             fixture.window->property("textColor").value<QColor>());
     cursor->setProperty("blinkOn", false);
     auto *grid = fixture.window->findChild<TestGrid *>();
     QVERIFY(grid);

@@ -164,6 +164,9 @@ F4HostWindow {
         function onKeyboardActivity() {
             ++root.keyboardActivityRevision
         }
+        function onEdgeNavigationAboutToForward(key) {
+            shellSurfaces.cancelDocumentWindowIntentForEdgeNavigation()
+        }
     }
 
     ThemeEditor {

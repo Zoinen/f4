@@ -11,6 +11,8 @@ T.ComboBox {
 
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
+    property bool externallyOwnedPopup: false
+    signal externalPopupRequested()
 
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
@@ -18,6 +20,7 @@ T.ComboBox {
 
     focusPolicy: Qt.NoFocus
     hoverEnabled: true
+    font: control.hostWindow ? control.hostWindow.font : Qt.font({})
     padding: 0
     implicitHeight: snap(30)
     implicitWidth: snap(160)
@@ -30,17 +33,29 @@ T.ComboBox {
         ? "themeFontRenderType" : control.objectName
 
     contentItem: Text {
+        id: comboText
+        objectName: control.objectName ? (control.objectName + "Text")
+                                       : "comboBoxText"
         leftPadding: control.snap(10)
         rightPadding: control.snap(30)
         text: control.displayText
         color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
-        font.family: control.hostWindow ? control.hostWindow.guiMonospaceFontFamily : "monospace"
-        font.pixelSize: 11
+        font: control.font
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
+        transform: Translate {
+            x: control.hostWindow
+               ? control.hostWindow.dialogPixelOffsetX(
+                     comboText, control.hostWindow.contentItem) : 0
+            y: control.hostWindow
+               ? control.hostWindow.dialogPixelOffsetY(
+                     comboText, control.hostWindow.contentItem) : 0
+        }
+
     }
 
     indicator: IconLabel {
+        id: comboIndicator
         objectName: control.objectName ? (control.objectName + "Indicator") : ""
         readonly property url rasterizedIconSource:
             control.hostWindow
@@ -58,6 +73,14 @@ T.ComboBox {
         icon.color: control.hovered
                     ? (control.hostWindow ? control.hostWindow.textColor : "#ffffff")
                     : (control.hostWindow ? control.hostWindow.mutedText : "#888888")
+        transform: Translate {
+            x: control.hostWindow
+               ? control.hostWindow.dialogPixelOffsetX(
+                     comboIndicator, control.hostWindow.contentItem) : 0
+            y: control.hostWindow
+               ? control.hostWindow.dialogPixelOffsetY(
+                     comboIndicator, control.hostWindow.contentItem) : 0
+        }
     }
 
     background: Rectangle {
@@ -82,6 +105,7 @@ T.ComboBox {
     }
 
     popup: T.Popup {
+        enabled: !control.externallyOwnedPopup
         y: control.snap(control.height + 4)
         width: control.snap(control.width)
         implicitHeight: control.snap(Math.min(contentItem.implicitHeight + 8, 240))
@@ -122,6 +146,11 @@ T.ComboBox {
         highlighted: control.highlightedIndex === index
 
         contentItem: Text {
+            id: comboPopupText
+            objectName: control.popupObjectNamePrefix
+                        ? (control.popupObjectNamePrefix + "PopupItemText-"
+                           + itemDelegate.index)
+                        : "comboBoxPopupItemText-" + itemDelegate.index
             leftPadding: control.snap(8)
             text: {
                 if (itemDelegate.model && itemDelegate.model.name !== undefined)
@@ -131,10 +160,17 @@ T.ComboBox {
                 return String(itemDelegate.model || "")
             }
             color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
-            font.family: control.hostWindow ? control.hostWindow.guiMonospaceFontFamily : "monospace"
-            font.pixelSize: 11
+            font: control.font
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+            transform: Translate {
+                x: control.hostWindow
+                   ? control.hostWindow.dialogPixelOffsetX(
+                         comboPopupText, control.hostWindow.contentItem) : 0
+                y: control.hostWindow
+                   ? control.hostWindow.dialogPixelOffsetY(
+                         comboPopupText, control.hostWindow.contentItem) : 0
+            }
         }
 
         background: Rectangle {
@@ -145,4 +181,32 @@ T.ComboBox {
                      ? (control.hostWindow ? control.hostWindow.controlHoverBg : "#223344") : "transparent"
         }
     }
+
+    MouseArea {
+        id: editableCursorArea
+        objectName: control.objectName
+                    ? (control.objectName + "EditableCursorArea") : ""
+        anchors.fill: parent
+        z: 10
+        enabled: control.editable && control.enabled
+        acceptedButtons: Qt.NoButton
+        hoverEnabled: true
+        // Qt's template content is intentionally a projection of Go's
+        // semantic model.  This no-button hover area still exposes the
+        // correct native text-edit cursor for editable combos without
+        // intercepting the click/key path.
+        cursorShape: Qt.IBeamCursor
+    }
+
+    MouseArea {
+        anchors.fill: parent
+        z: 20
+        enabled: control.externallyOwnedPopup && control.enabled
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        preventStealing: true
+        onClicked: control.externalPopupRequested()
+    }
+
 }

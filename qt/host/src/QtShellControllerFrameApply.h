@@ -27,6 +27,11 @@ struct QtShellController::FrameApplyTrace
     qint64 panelCatalogSignalDurationNs = 0;
     qint64 catalogPresentationSignalDurationNs = 0;
     qint64 scenePatchCoreDurationNs = 0;
+    // Production-only sub-stages of scenePatchCoreDurationNs. The reducer
+    // includes prior-state projection and validation; typed commit includes
+    // synchronous store notifications and their QML binding fan-out.
+    qint64 scenePatchReducerDurationNs = 0;
+    qint64 scenePatchTypedCommitDurationNs = 0;
     qint64 scenePatchCompactApplyingDurationNs = 0;
     qint64 scenePatchPanelCatalogDurationNs = 0;
     qint64 scenePatchPanelStateDurationNs = 0;

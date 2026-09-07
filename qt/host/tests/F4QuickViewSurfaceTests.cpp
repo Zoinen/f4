@@ -4,17 +4,21 @@
 
 #include <QCoreApplication>
 #include <QColor>
+#include <QElapsedTimer>
 #include <QFont>
+#include <QGuiApplication>
 #include <QImage>
 #include <QMetaProperty>
 #include <QPainter>
 #include <QPointF>
+#include <QPointer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QStyleHints>
 #include <QStringList>
 #include <QSvgRenderer>
 #include <QUrl>
@@ -26,6 +30,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <algorithm>
 
 namespace
 {
@@ -107,7 +112,11 @@ public:
     {
         applyCommandLine(commandLine);
     }
-    void clearActions() { actions.clear(); }
+    void clearActions()
+    {
+        actions.clear();
+        standaloneViewportActions.clear();
+    }
     void clearKeyEvents() { keyEvents.clear(); }
     void activatePanel(int side, qulonglong revision)
     {
@@ -134,6 +143,21 @@ public:
 
     Q_INVOKABLE void sendUiAction(const QVariantMap &action)
     {
+        // Standalone document geometry is negotiated as soon as the persistent
+        // document surface has been measured, even while these tests are
+        // showing panels or Quick View.  Keep that session protocol traffic
+        // observable without mixing it into assertions about the one user
+        // interaction each Quick View test sends.
+        if (action.value(QStringLiteral("target")).toString()
+                    == QStringLiteral("app")
+            && action.value(QStringLiteral("action")).toString()
+                    == QStringLiteral("document.viewport")
+            && action.value(QStringLiteral("scope")).toString()
+                    == QStringLiteral("standalone")) {
+            standaloneViewportActions.append(action);
+            emit uiActionSent(action);
+            return;
+        }
         actions.append(action);
         emit uiActionSent(action);
     }
@@ -149,6 +173,7 @@ public:
     }
 
     QVector<QVariantMap> actions;
+    QVector<QVariantMap> standaloneViewportActions;
     QVector<QVariantMap> keyEvents;
 
 signals:
@@ -437,6 +462,25 @@ QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
     return nullptr;
 }
 
+QVariantMap keyBarModel(int count, bool alternate = false)
+{
+    QVariantList items;
+    for (int index = 0; index < count; ++index) {
+        items.append(QVariantMap{
+            {QStringLiteral("key"), QStringLiteral("F%1").arg(index + 1)},
+            {QStringLiteral("text"), QStringLiteral("%1 %2")
+                .arg(alternate ? QStringLiteral("Edit") : QStringLiteral("Open"))
+                .arg(index + 1)},
+            {QStringLiteral("icon"), alternate ? QStringLiteral("pencil")
+                                               : QStringLiteral("circle-play")},
+            {QStringLiteral("alternatives"), QVariantList{}},
+        });
+    }
+    return {{QStringLiteral("visible"), true},
+            {QStringLiteral("modifier"), QStringLiteral("normal")},
+            {QStringLiteral("items"), items}};
+}
+
 QVariantMap qmlObjectProperties(const QVariant &value)
 {
     if (QObject *object = value.value<QObject *>())
@@ -465,6 +509,19 @@ QQuickItem *visualItemWithObjectNamePrefix(QQuickItem *root,
         return root;
     for (QQuickItem *child : root->childItems()) {
         if (QQuickItem *match = visualItemWithObjectNamePrefix(child, prefix))
+            return match;
+    }
+    return nullptr;
+}
+
+QQuickItem *visualItemWithObjectName(QQuickItem *root, const QString &name)
+{
+    if (!root)
+        return nullptr;
+    if (root->objectName() == name)
+        return root;
+    for (QQuickItem *child : root->childItems()) {
+        if (QQuickItem *match = visualItemWithObjectName(child, name))
             return match;
     }
     return nullptr;
@@ -573,7 +630,8 @@ struct QuickViewFixture
 
     explicit QuickViewFixture(const QVariantMap &scene,
                               bool galleryAvailable = false,
-                              bool usesQwk = false)
+                              bool usesQwk = false,
+                              QString worktreeBranch = {})
         : gallery(galleryAvailable)
     {
         shell.setScene(scene);
@@ -592,6 +650,10 @@ struct QuickViewFixture
             QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontPixelSize"), 13);
+        if (!worktreeBranch.isEmpty()) {
+            engine.rootContext()->setContextProperty(
+                QStringLiteral("f4WorktreeBranch"), worktreeBranch);
+        }
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
                                                   usesQwk);
         DummyQWK::registerTypes(&engine);
@@ -624,6 +686,8 @@ private slots:
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
+    void functionBarSameCountUpdatesPreserveDelegates();
+    void functionBarLeavesStaySharpAndThemeLiveAt175Percent();
     void readyUnifiedRendererLoaderIsVisible();
     void panelFileInfoSettingTogglesFooterWithoutRebuildingPanel();
     void fastFindOverlayIsIndependentFromPanelFooter();
@@ -646,9 +710,11 @@ private slots:
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
+    void worktreeBranchIsCenteredInTitleBar();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void menuScrollBarUsesNativeExtentAndCommitsMouseDrag();
     void menuBarPopupStartsUnderClickedItem();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
@@ -661,6 +727,7 @@ private slots:
     void previewKindsSelectExactlyOneNativeBody();
     void commandLineUsesOriginalSemanticRendererAndCursor();
     void commandLineCursorTracksFirstTextPatch();
+    void panelCursorBlinkSettlesAndBlockingMenuStopsIt();
     void autocompleteReturnTargetsShellCommandHandler();
     void widePanelDoesNotRevealTerminalBackdrop();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
@@ -669,7 +736,37 @@ private slots:
 void F4QuickViewSurfaceTests::initTestCase()
 {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+    QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4QuickViewSurfaceTests::worktreeBranchIsCenteredInTitleBar()
+{
+    QuickViewFixture fixture(shellScene(), false, true,
+                             QStringLiteral("feature/worktree-test"));
+    QVERIFY(fixture.window);
+
+    QQuickItem *const titleBar = fixture.item(QStringLiteral("titleBar"));
+    QQuickItem *const branchLabel = fixture.item(
+        QStringLiteral("worktreeBranchLabel"));
+    QVERIFY(titleBar);
+    QVERIFY(branchLabel);
+    QTRY_VERIFY_WITH_TIMEOUT(branchLabel->isVisible(), 1000);
+    QCOMPARE(branchLabel->property("text").toString(),
+             QStringLiteral("feature/worktree-test"));
+
+    const QPointF titleBarOrigin = titleBar->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const QPointF branchOrigin = branchLabel->mapToItem(
+        fixture.window->contentItem(), QPointF{});
+    const qreal titleBarCenterX = titleBarOrigin.x() + titleBar->width() / 2;
+    const qreal branchCenterX = branchOrigin.x() + branchLabel->width() / 2;
+    QVERIFY2(qAbs(titleBarCenterX - branchCenterX) <= 0.51,
+             qPrintable(QStringLiteral("title=%1 branch=%2 labelX=%3 labelWidth=%4")
+                            .arg(titleBarCenterX)
+                            .arg(branchCenterX)
+                            .arg(branchOrigin.x())
+                            .arg(branchLabel->width())));
 }
 
 void F4QuickViewSurfaceTests::semanticSceneGatesOnlyGridRendering()
@@ -1773,6 +1870,137 @@ void F4QuickViewSurfaceTests::themeSelectionBordersAreLiveAndPersisted()
     dialog->hide();
 }
 
+void F4QuickViewSurfaceTests::functionBarSameCountUpdatesPreserveDelegates()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("keyBar"), keyBarModel(12));
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    const auto itemNamed = [&fixture](const QString &name) {
+        return visualItemWithObjectName(fixture.window->contentItem(), name);
+    };
+    QVector<QPointer<QQuickItem>> delegates;
+    for (int index = 1; index <= 12; ++index) {
+        auto *item = itemNamed(QStringLiteral("key-bar-action-%1").arg(index));
+        QVERIFY(item);
+        delegates.append(item);
+    }
+
+    QVector<qint64> timings;
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        QElapsedTimer timer;
+        timer.start();
+        fixture.shell.chromeState()->applyState(
+            {{QStringLiteral("keyBar"), keyBarModel(12, iteration % 2 == 0)}},
+            iteration + 2);
+        timings.append(timer.nsecsElapsed());
+        QCoreApplication::processEvents();
+    }
+    std::sort(timings.begin(), timings.end());
+    qInfo("KEYBAR_UPDATE n=100 synchronous_ms p50=%.6f p95=%.6f max=%.6f",
+          timings[49] / 1e6, timings[94] / 1e6, timings[99] / 1e6);
+    for (int index = 1; index <= delegates.size(); ++index) {
+        QVERIFY2(delegates[index - 1],
+                 "same-count keybar update destroyed an existing F-key delegate");
+        QCOMPARE(itemNamed(QStringLiteral("key-bar-action-%1").arg(index)),
+                 delegates[index - 1].data());
+        QCOMPARE(itemNamed(QStringLiteral("key-bar-label-%1").arg(index))
+                     ->property("text").toString(),
+                 QStringLiteral("Open %1").arg(index));
+    }
+
+    // The actual item count remains authoritative, including empty or
+    // nonstandard keybars. There is no fixed-size replacement model.
+    for (int count : {5, 14, 0, 7}) {
+        fixture.shell.chromeState()->applyState(
+            {{QStringLiteral("keyBar"), keyBarModel(count, true)}}, 200 + count);
+        QCoreApplication::processEvents();
+        for (int index = 1; index <= count; ++index) {
+            auto *item = itemNamed(QStringLiteral("key-bar-action-%1").arg(index));
+            QVERIFY(item);
+            QCOMPARE(item->property("functionIndex").toInt(), index - 1);
+            QCOMPARE(itemNamed(QStringLiteral("key-bar-label-%1").arg(index))
+                         ->property("text").toString(),
+                     QStringLiteral("Edit %1").arg(index));
+        }
+        QVERIFY(!itemNamed(QStringLiteral("key-bar-action-%1").arg(count + 1)));
+    }
+}
+
+void F4QuickViewSurfaceTests::functionBarLeavesStaySharpAndThemeLiveAt175Percent()
+{
+    QVariantMap scene = shellScene();
+    scene.insert(QStringLiteral("menuBar"), QVariantMap{{QStringLiteral("items"), QVariantList{}}});
+    scene.insert(QStringLiteral("keyBar"), keyBarModel(12));
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) > 0.001)
+        QSKIP("175% DPR invocation required");
+    auto *keyBar = fixture.item(QStringLiteral("keyBar"));
+    QVERIFY(keyBar);
+    auto *root = fixture.window->contentItem();
+
+    for (int theme = 0; theme < 2; ++theme) {
+        const QColor background(theme ? QStringLiteral("#213546") : QStringLiteral("#654321"));
+        const QColor foreground(theme ? QStringLiteral("#f0d0a0") : QStringLiteral("#b8e2fa"));
+        const QColor secondary(theme ? QStringLiteral("#9ab8d6") : QStringLiteral("#d8b0e0"));
+        QVERIFY(fixture.window->setProperty("fBarBg", background));
+        QVERIFY(fixture.window->setProperty("chromeText", foreground));
+        QVERIFY(fixture.window->setProperty("mutedText", secondary));
+        fixture.shell.chromeState()->applyState(
+            {{QStringLiteral("keyBar"), keyBarModel(12, theme != 0)}}, 500 + theme);
+        fixture.window->resize(theme ? 937 : 900, 640);
+        QTest::mouseMove(fixture.window, QPoint(450, 300));
+        QCoreApplication::processEvents();
+        fixture.window->requestUpdate();
+        QImage frame;
+        QTRY_VERIFY_WITH_TIMEOUT(!(frame = fixture.window->grabWindow()).isNull(), 3000);
+        const QString capture = qEnvironmentVariable("F4_KEYBAR_TEST_CAPTURE");
+        if (!capture.isEmpty())
+            QVERIFY(frame.save(capture + QStringLiteral("-%1.png").arg(theme)));
+        QCOMPARE(keyBar->property("color").value<QColor>(), background);
+
+        for (int index = 1; index <= 12; ++index) {
+            for (const QString &prefix : {QStringLiteral("key-bar-label-"),
+                                          QStringLiteral("key-bar-shortcut-"),
+                                          QStringLiteral("key-bar-icon-")}) {
+                auto *leaf = visualItemWithObjectName(root, prefix + QString::number(index));
+                QVERIFY(leaf);
+                QVERIFY(leaf->isVisible());
+                const QPointF origin = leaf->mapToItem(root, QPointF{});
+                const QPointF xAxis = leaf->mapToItem(root, QPointF(1, 0)) - origin;
+                const QPointF yAxis = leaf->mapToItem(root, QPointF(0, 1)) - origin;
+                const QByteArray details = QStringLiteral("%1 origin=(%2,%3) physical at DPR %4")
+                    .arg(leaf->objectName()).arg(origin.x() * dpr, 0, 'f', 6)
+                    .arg(origin.y() * dpr, 0, 'f', 6).arg(dpr).toUtf8();
+                QVERIFY2(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001, details.constData());
+                QVERIFY2(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001, details.constData());
+                QVERIFY2(qAbs(xAxis.x() - 1) < 0.001 && qAbs(xAxis.y()) < 0.001 &&
+                         qAbs(yAxis.x()) < 0.001 && qAbs(yAxis.y() - 1) < 0.001,
+                         "keybar visual leaf inherited a non-unit scene transform");
+                if (prefix == QStringLiteral("key-bar-label-")) {
+                    QCOMPARE(leaf->property("color").value<QColor>(), foreground);
+                    QCOMPARE(leaf->property("renderType").toInt(), int(QQuickWindow::NativeTextRendering));
+                } else if (prefix == QStringLiteral("key-bar-shortcut-")) {
+                    QCOMPARE(leaf->property("color").value<QColor>(), secondary);
+                } else {
+                    QCOMPARE(QUrlQuery(leaf->property("source").toUrl())
+                                 .queryItemValue(QStringLiteral("color")), foreground.name(QColor::HexArgb));
+                }
+            }
+        }
+        const QPointF origin = keyBar->mapToItem(root, QPointF{});
+        const QRect crop(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                         qRound(keyBar->width() * dpr), qRound(keyBar->height() * dpr));
+        QVERIFY(frame.rect().contains(crop));
+        const QImage keybarFrame = frame.copy(crop);
+        QVERIFY(imageContainsColor(keybarFrame, background));
+        QVERIFY2(imageContainsColor(keybarFrame, foreground), "keybar action text did not render in the live theme");
+        QVERIFY2(imageContainsColor(keybarFrame, secondary), "small function-key captions did not render in the live theme");
+    }
+}
+
 void F4QuickViewSurfaceTests::themeBooleanOptionsFollowLivePalette()
 {
     QuickViewFixture fixture(shellScene());
@@ -2030,6 +2258,24 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     };
     for (const QString &name : controlNames)
         verifyItem(dialog->findChild<QQuickItem *>(name), name);
+
+    for (const QString &name : {
+             QStringLiteral("themeNeutralFileTextCheckMark"),
+             QStringLiteral("themeSelectionBorderCheckMark"),
+         }) {
+        QQuickItem *const mark = dialog->findChild<QQuickItem *>(name);
+        QVERIFY(mark);
+        const QUrl source = mark->property("source").toUrl();
+        QVERIFY(source.isValid());
+        QCOMPARE(source.fileName(), QStringLiteral("check.svg"));
+        QCOMPARE(QUrlQuery(source).queryItemValue(QStringLiteral("size")),
+                 QStringLiteral("12"));
+        QCOMPARE(QUrlQuery(source).queryItemValue(QStringLiteral("dpr")),
+                 QStringLiteral("1.75"));
+        QCOMPARE(mark->property("opticalVerticalOffset").toReal() * dpr,
+                 1.0);
+        QCOMPARE(mark->property("sourceSize").toSize(), QSize(12, 12));
+    }
 
     const QStringList optionVisualNames{
         QStringLiteral("themeFontRenderTypeLabels"),
@@ -3493,17 +3739,20 @@ void F4QuickViewSurfaceTests::panelDriveButtonUsesPathIconAndRequestsDriveMenu()
     QuickViewFixture fixture(shellScene({}, 0), true, true);
     QVERIFY(fixture.window);
 
+    // Side 0 is active in this fixture. Exercise the button on side 1 so a
+    // parent panel-focus handler cannot consume the first click before the
+    // semantic drive-menu action reaches Go.
     auto *const pathControl = fixture.item(
-        QStringLiteral("panelPathTitle-0"));
+        QStringLiteral("panelPathTitle-1"));
     auto *const driveButton = fixture.item(
-        QStringLiteral("panelDriveButton-0"));
+        QStringLiteral("panelDriveButton-1"));
     QVERIFY(pathControl);
     QVERIFY(driveButton);
 
     auto *const embeddedIcon = visualItemWithObjectNamePrefix(
         pathControl, QStringLiteral("pathDriveIcon"));
     auto *const buttonIcon = visualItemWithObjectNamePrefix(
-        driveButton, QStringLiteral("panelDriveButtonIcon-0"));
+        driveButton, QStringLiteral("panelDriveButtonIcon-1"));
     QVERIFY(embeddedIcon);
     QVERIFY(buttonIcon);
     QVERIFY(!embeddedIcon->isVisible());
@@ -3537,7 +3786,7 @@ void F4QuickViewSurfaceTests::panelDriveButtonUsesPathIconAndRequestsDriveMenu()
     const QVariantMap action = fixture.shell.actions.constFirst();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.driveMenu"));
-    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 0);
+    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 1);
 }
 
 void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
@@ -3667,6 +3916,149 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
     QVERIFY(imageContainsColor(rendered, themedSelected));
 }
 
+void F4QuickViewSurfaceTests::menuScrollBarUsesNativeExtentAndCommitsMouseDrag()
+{
+    const auto menuWithRows = [](int count, bool withSeparators = false) {
+        QVariantList items;
+        items.reserve(count);
+        for (int index = 0; index < count; ++index) {
+            const bool separator = withSeparators && index > 0
+                && index % 5 == 0;
+            items.append(QVariantMap{
+                {QStringLiteral("index"), index},
+                {QStringLiteral("text"),
+                 QStringLiteral("Language row %1").arg(index)},
+                {QStringLiteral("separator"), separator},
+                {QStringLiteral("disabled"), false},
+            });
+        }
+        return QVariantMap{
+            {QStringLiteral("id"), QStringLiteral("language-menu")},
+            {QStringLiteral("kind"), QStringLiteral("menu")},
+            {QStringLiteral("role"), QStringLiteral("vmenu")},
+            {QStringLiteral("x"), 20},
+            {QStringLiteral("y"), 4},
+            {QStringLiteral("w"), 30},
+            {QStringLiteral("h"), 4},
+            {QStringLiteral("selected"), 0},
+            // Deliberately contradict the native popup. The old indicator used
+            // this console-derived value and appeared even though every row fit.
+            {QStringLiteral("viewHeight"), 1},
+            {QStringLiteral("top"), 0},
+            {QStringLiteral("items"), items},
+        };
+    };
+
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"),
+                 QVariantList{menuWithRows(18, true)});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+
+    QQuickItem *const visualRoot = fixture.window->contentItem();
+    QQuickItem *popup = nullptr;
+    QQuickItem *list = nullptr;
+    QQuickItem *scrollBar = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (popup = visualItemWithObjectName(
+             visualRoot, QStringLiteral("semanticMenuPopup-language-menu"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (list = visualItemWithObjectName(
+             visualRoot, QStringLiteral("semanticMenuList-language-menu"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (scrollBar = visualItemWithObjectName(
+             visualRoot,
+             QStringLiteral("semanticMenuScrollBar-language-menu"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(list->property("contentHeight").toReal() > 0,
+                             3000);
+    const qreal exactContentHeight = popup->parentItem()
+        ->property("menuContentHeight").toReal();
+    const QString extentDetails = QStringLiteral(
+        "exact=%1, estimated=%2, list=%3, popup=%4")
+        .arg(exactContentHeight)
+        .arg(list->property("contentHeight").toReal())
+        .arg(list->height())
+        .arg(popup->height());
+    QVERIFY2(!scrollBar->property("nativeOverflow").toBool(),
+             qPrintable(extentDetails));
+    QVERIFY2(!scrollBar->isVisible(),
+             "a native popup that fits every item must not show a scrollbar");
+
+    fixture.shell.setCommandMenus(QVariantList{menuWithRows(80)});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        list->property("contentHeight").toReal() > list->height(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(scrollBar->isVisible(), 3000);
+    QCOMPARE(scrollBar->property("thickness").toReal(), 8.0);
+    const QPointF scrollBarRight = scrollBar->mapToItem(
+        popup, QPointF(scrollBar->width(), 0));
+    QVERIFY2(qAbs(scrollBarRight.x() - popup->width()) < 0.01,
+             "menu scrollbar must be flush with the popup's right edge");
+
+    const QColor themedHandle(QStringLiteral("#ff6a5acd"));
+    QVERIFY(fixture.window->setProperty("galleryScrollBarHandleColor",
+                                        themedHandle));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        scrollBar->property("handleColor").value<QColor>(),
+        themedHandle, 3000);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF scrollOrigin = scrollBar->mapToItem(visualRoot, QPointF{});
+    for (const qreal coordinate : {scrollOrigin.x(), scrollOrigin.y(),
+                                   scrollBar->width(), scrollBar->height()}) {
+        QVERIFY2(qAbs(coordinate * dpr - qRound(coordinate * dpr)) < 0.001,
+                 "menu scrollbar geometry must remain on physical pixels");
+    }
+
+    auto *const handle = qobject_cast<QQuickItem *>(
+        scrollBar->property("contentItem").value<QObject *>());
+    QVERIFY(handle);
+    QTRY_VERIFY_WITH_TIMEOUT(handle->height() > 1, 3000);
+    const QPoint start = handle->mapToScene(
+        QPointF(handle->width() / 2, handle->height() / 2)).toPoint();
+    const QPoint end = scrollBar->mapToScene(
+        QPointF(scrollBar->width() / 2,
+                scrollBar->height() - handle->height() / 2 - 2)).toPoint();
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QTRY_VERIFY_WITH_TIMEOUT(scrollBar->property("pressed").toBool(), 1500);
+    QTest::mouseMove(fixture.window, end, 30);
+    QTRY_VERIFY_WITH_TIMEOUT(list->property("contentY").toReal() > 1, 1500);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+    QTRY_VERIFY_WITH_TIMEOUT(!scrollBar->property("pressed").toBool(), 1500);
+
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
+    const QVariantMap action = fixture.shell.actions.constFirst();
+    QCOMPARE(action.value(QStringLiteral("target")).toString(),
+             QStringLiteral("language-menu"));
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.scroll"));
+    QVERIFY(action.contains(QStringLiteral("top")));
+    QVERIFY(action.value(QStringLiteral("top")).toInt() > 0);
+    QVERIFY(!action.contains(QStringLiteral("delta")));
+
+    // ListView's estimated contentHeight may lag or overshoot after replacing
+    // a long uniform model with the real menu shape (short separators mixed
+    // with normal rows). Visibility follows exact semantic row geometry.
+    fixture.shell.setCommandMenus(
+        QVariantList{menuWithRows(18, true)});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !scrollBar->property("nativeOverflow").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!scrollBar->isVisible(), 3000);
+
+    // The larger Options-shaped menu also needs no scrollbar in a window
+    // whose native body can present every row.
+    fixture.window->resize(900, 1000);
+    fixture.shell.setCommandMenus(
+        QVariantList{menuWithRows(26, true)});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !scrollBar->property("nativeOverflow").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!scrollBar->isVisible(), 3000);
+}
+
 void F4QuickViewSurfaceTests::menuBarPopupStartsUnderClickedItem()
 {
     const QVariantMap menuBar = QVariantMap{
@@ -3734,6 +4126,15 @@ void F4QuickViewSurfaceTests::menuBarPopupStartsUnderClickedItem()
                  "popup x=%1, menu item x=%2")
                             .arg(popupX, 0, 'f', 3)
                             .arg(menuItemX, 0, 'f', 3)));
+
+    // The semantic menu stays open until explicit input. Its one-shot hover
+    // synchronization may run during construction, but an untouched open
+    // menu must not keep Qt Quick's render loop alive.
+    QTest::qWait(200);
+    QSignalSpy idleMenuFrames(fixture.window, &QQuickWindow::frameSwapped);
+    QVERIFY(idleMenuFrames.isValid());
+    QTest::qWait(160);
+    QCOMPARE(idleMenuFrames.size(), 0);
 }
 
 void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels()
@@ -3748,15 +4149,25 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
         {QStringLiteral("h"), 4},
         {QStringLiteral("selected"), 0},
         {QStringLiteral("viewHeight"), 1},
-        {QStringLiteral("items"), QVariantList{QVariantMap{
-             {QStringLiteral("index"), 0},
-             {QStringLiteral("id"), QStringLiteral("macos-locations")},
-             {QStringLiteral("text"), QStringLiteral("macOS Locations")},
-             {QStringLiteral("icon"), QStringLiteral("folder")},
-             {QStringLiteral("hasSubmenu"), true},
-             {QStringLiteral("separator"), false},
-             {QStringLiteral("disabled"), false},
-         }}},
+        {QStringLiteral("items"), QVariantList{
+             QVariantMap{
+                 {QStringLiteral("index"), 0},
+                 {QStringLiteral("id"), QStringLiteral("macos-locations")},
+                 {QStringLiteral("text"), QStringLiteral("macOS Locations")},
+                 {QStringLiteral("icon"), QStringLiteral("folder")},
+                 {QStringLiteral("hasSubmenu"), true},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("disabled"), false},
+             },
+             QVariantMap{
+                 {QStringLiteral("index"), 1},
+                 {QStringLiteral("id"), QStringLiteral("local-drive")},
+                 {QStringLiteral("text"), QStringLiteral("C: Local")},
+                 {QStringLiteral("icon"), QStringLiteral("hard-drive")},
+                 {QStringLiteral("separator"), false},
+                 {QStringLiteral("disabled"), false},
+             },
+         }},
     };
     const QVariantMap childMenu = {
         {QStringLiteral("id"), QStringLiteral("locations-menu")},
@@ -3807,6 +4218,7 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QQuickItem *parentPopup = nullptr;
     QQuickItem *childPopup = nullptr;
     QQuickItem *parentRow = nullptr;
+    QQuickItem *secondParentRow = nullptr;
     QQuickItem *headerText = nullptr;
     QQuickItem *tagDot = nullptr;
     QQuickItem *parentChevron = nullptr;
@@ -3820,6 +4232,9 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QTRY_VERIFY_WITH_TIMEOUT(
         (parentRow = visualItemWithObjectNamePrefix(
              visualRoot, QStringLiteral("semanticMenuItem-drive-menu-0"))), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (secondParentRow = visualItemWithObjectNamePrefix(
+             visualRoot, QStringLiteral("semanticMenuItem-drive-menu-1"))), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(
         (headerText = visualItemWithObjectNamePrefix(
              visualRoot, QStringLiteral("semanticMenuItemText-locations-menu-0"))), 3000);
@@ -3858,11 +4273,32 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
         QVERIFY(qAbs(item->height() * dpr - qRound(item->height() * dpr)) < 0.001);
     }
 
+    // A nested popup must not install another full-window backdrop above its
+    // parent. The second parent row remains clickable while the child is open.
+    fixture.shell.clearActions();
+    const QPoint secondParentCenter = secondParentRow->mapToScene(
+        QPointF(secondParentRow->width() / 2,
+                secondParentRow->height() / 2)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      secondParentCenter);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("target")).toString(),
+             QStringLiteral("drive-menu"));
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("action")).toString(),
+             QStringLiteral("menu.activate"));
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("index")).toInt(), 1);
+
     fixture.shell.clearActions();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       QPoint(2, 2));
-    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1500);
-    QCOMPARE(fixture.shell.actions.constLast()
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
+    QCOMPARE(fixture.shell.actions.constFirst()
+                 .value(QStringLiteral("target")).toString(),
+             QStringLiteral("drive-menu"));
+    QCOMPARE(fixture.shell.actions.constFirst()
                  .value(QStringLiteral("action")).toString(),
              QStringLiteral("menu.closeChain"));
 }
@@ -4385,6 +4821,110 @@ void F4QuickViewSurfaceTests::commandLineCursorTracksFirstTextPatch()
     fixture.shell.setCommandLine(commandLine);
     QTRY_COMPARE_WITH_TIMEOUT(input->property("cursorPosition").toInt(), 2,
                               1000);
+}
+
+void F4QuickViewSurfaceTests::panelCursorBlinkSettlesAndBlockingMenuStopsIt()
+{
+    QVariantMap scene = shellScene({}, 0);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+    QVariantMap leftPanel = panels.at(0).toMap();
+    leftPanel.insert(QStringLiteral("fastFind"), true);
+    leftPanel.insert(QStringLiteral("fastFindText"), QStringLiteral("needle"));
+    panels[0] = leftPanel;
+    shell.insert(QStringLiteral("panels"), panels);
+    shell.insert(QStringLiteral("commandLine"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("prompt"), QStringLiteral("> ")},
+        {QStringLiteral("text"), QStringLiteral("find needle")},
+        {QStringLiteral("cursorPosition"), 11},
+        {QStringLiteral("cursorShape"), QStringLiteral("underline")},
+        {QStringLiteral("cursorVisible"), true},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
+    auto *commandCursor = fixture.item(QStringLiteral("commandLineCursor"));
+    auto *fastFindCursor = fixture.item(
+        QStringLiteral("panelFastFindCursor-0"));
+    QVERIFY(commandCursor);
+    QVERIFY(fastFindCursor);
+    QTRY_VERIFY_WITH_TIMEOUT(commandCursor->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(fastFindCursor->isVisible(), 3000);
+    QVERIFY(commandCursor->setProperty("blinkInterval", 20));
+    QVERIFY(fastFindCursor->setProperty("blinkInterval", 20));
+    QVERIFY(QMetaObject::invokeMethod(commandCursor, "restartBlink"));
+    QVERIFY(QMetaObject::invokeMethod(fastFindCursor, "restartBlink"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        commandCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fastFindCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !commandCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fastFindCursor->property("blinkTimerRunning").toBool(), 500);
+    QVERIFY(commandCursor->property("blinkOn").toBool());
+    QVERIFY(fastFindCursor->property("blinkOn").toBool());
+
+    QSignalSpy settledFrames(fixture.window, &QQuickWindow::frameSwapped);
+    QVERIFY(settledFrames.isValid());
+    QElapsedTimer settleDeadline;
+    QElapsedTimer quietPeriod;
+    settleDeadline.start();
+    quietPeriod.start();
+    int observedFrames = 0;
+    while (quietPeriod.elapsed() < 300 && settleDeadline.elapsed() < 3000) {
+        QTest::qWait(10);
+        if (settledFrames.size() != observedFrames) {
+            observedFrames = settledFrames.size();
+            quietPeriod.restart();
+        }
+    }
+    QVERIFY2(quietPeriod.elapsed() >= 300,
+             "panel surface never reached frame quiescence");
+    settledFrames.clear();
+    QTest::qWait(700);
+    QCOMPARE(settledFrames.size(), 0);
+
+    auto *grid = fixture.item<TestGrid>(QStringLiteral("vtuiGrid"));
+    QVERIFY(grid);
+    emit grid->keyboardActivity();
+    QTRY_VERIFY_WITH_TIMEOUT(
+        commandCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fastFindCursor->property("blinkTimerRunning").toBool(), 500);
+
+    const QVariantMap menu{
+        {QStringLiteral("id"), QStringLiteral("blink-blocking-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("x"), 4},
+        {QStringLiteral("y"), 4},
+        {QStringLiteral("w"), 20},
+        {QStringLiteral("h"), 3},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("items"), QVariantList{QVariantMap{
+             {QStringLiteral("index"), 0},
+             {QStringLiteral("text"), QStringLiteral("Menu item")},
+             {QStringLiteral("disabled"), false},
+             {QStringLiteral("separator"), false},
+         }}},
+    };
+    fixture.shell.setCommandMenus(QVariantList{menu});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !commandCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !fastFindCursor->property("blinkTimerRunning").toBool(), 500);
+    QVERIFY(commandCursor->property("blinkOn").toBool());
+    QVERIFY(fastFindCursor->property("blinkOn").toBool());
+
+    fixture.shell.setCommandMenus({});
+    QTRY_VERIFY_WITH_TIMEOUT(
+        commandCursor->property("blinkTimerRunning").toBool(), 500);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fastFindCursor->property("blinkTimerRunning").toBool(), 500);
 }
 
 void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()

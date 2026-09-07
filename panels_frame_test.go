@@ -1091,12 +1091,44 @@ func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
 		t.Fatal("fast-find state used the panel activation fast path")
 	}
 	pf.panels[0].(*FileSystemPanel).fastFindMode = false
+	pf.panels[0].(*FileSystemPanel).fastFindStr = "stale"
+	if pf.panelActivationFastPathEligible() {
+		t.Fatal("stale fast-find query used the panel activation fast path")
+	}
+	pf.panels[0].(*FileSystemPanel).fastFindStr = ""
 
 	AppConfig.NavigationMode = NavigationSearchFirst
 	if !pf.panelActivationFastPathEligible() {
 		t.Fatal("panel-focused search mode was excluded from the activation fast path")
 	}
 }
+
+func TestPanelsFrame_SemanticSwitchInvalidatesUnsafeCompactActivation(t *testing.T) {
+	oldMode := AppConfig.NavigationMode
+	defer func() { AppConfig.NavigationMode = oldMode }()
+	AppConfig.NavigationMode = NavigationClassic
+
+	screen := vtui.NewSilentScreenBuf()
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+	renderer := &searchFirstActivationRenderer{side: -1}
+	screen.Renderer = renderer
+	left := &FileSystemPanel{fastFindMode: true, fastFindStr: "abc"}
+	right := &FileSystemPanel{}
+	pf := &PanelsFrame{
+		showPanels: true, showLeftPanel: true, showRightPanel: true,
+		panels: [2]Panel{left, right}, activeIdx: 0,
+	}
+
+	if !pf.switchActivePanel(1) {
+		t.Fatal("semantic switch did not activate the requested panel")
+	}
+	if renderer.calls != 0 || renderer.invalidations != 1 {
+		t.Fatalf("unsafe activation used compact=%d invalidations=%d, want 0/1",
+			renderer.calls, renderer.invalidations)
+	}
+}
+
 func TestPanelsFrame_MenuCommands(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/winshell"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -25,6 +26,91 @@ func TestWindowsLocationsDriveItemUsesWindowsLogo(t *testing.T) {
 	}
 	if got := menu.Items[0].Icon; got != driveMenuIconWindows {
 		t.Fatalf("Windows locations icon = %q, want %q", got, driveMenuIconWindows)
+	}
+	if !menu.HasSubmenu(0) || menu.Items[0].SubmenuFrame == nil {
+		t.Fatalf("Windows locations item is not a semantic submenu: %#v", menu.Items[0])
+	}
+	if menu.Items[0].Shortcut != "" {
+		t.Fatalf("Windows locations uses a painted shortcut instead of submenu semantics: %q",
+			menu.Items[0].Shortcut)
+	}
+}
+
+func TestWindowsLocationsDriveSubmenuUsesNativeCascadeAndWrapperActions(t *testing.T) {
+	screen := vtui.NewSilentScreenBuf()
+	screen.AllocBuf(100, 30)
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+
+	root := vtui.NewVMenu(" Drives ")
+	root.SetId("drive-menu-test")
+	root.SetPosition(4, 3, 29, 10)
+	child := &windowsLocationsMenu{
+		VMenu:    vtui.NewVMenu(" Windows locations "),
+		parent:   root,
+		expanded: make(map[string]bool),
+	}
+	child.SetId("windows-locations-test")
+	child.rebuild([]windowsLocationRow{{node: winshell.Node{
+		URI: "shell:test", Name: "Not a folder",
+	}}})
+
+	previousFactory := windowsLocationsSubmenuFactory
+	windowsLocationsSubmenuFactory = func(_ *PanelsFrame, panelIdx int, parent *vtui.VMenu) vtui.Frame {
+		if panelIdx != 1 || parent != root {
+			t.Fatalf("submenu factory arguments = panel %d, parent %p; want 1, %p",
+				panelIdx, parent, root)
+		}
+		return child
+	}
+	t.Cleanup(func() { windowsLocationsSubmenuFactory = previousFactory })
+
+	addWindowsLocationsDriveItem(nil, 1, root)
+	vtui.FrameManager.PushMenu(root)
+	if !handleSemanticFrameAction(root, vtui.SemanticID(root), map[string]any{
+		"action": "menu.openSubmenu", "index": 0,
+	}) {
+		t.Fatal("menu.openSubmenu did not open the Windows cascade")
+	}
+	if got := vtui.FrameManager.GetTopFrame(); got != child {
+		t.Fatalf("submenu pushed %T instead of the custom Windows frame", got)
+	}
+	menus := appActiveVMenus()
+	if len(menus) != 2 {
+		t.Fatalf("semantic menu count = %d, want drive parent and Windows child", len(menus))
+	}
+	rootModel := menus[0].model().ToMap()
+	rootItems := rootModel["items"].([]map[string]any)
+	if rootItems[0]["hasSubmenu"] != true {
+		t.Fatalf("drive row did not export hasSubmenu: %#v", rootItems[0])
+	}
+	childModel := menus[1].model().ToMap()
+	if childModel["parentId"] != vtui.SemanticID(root) || childModel["anchorIndex"] != 0 {
+		t.Fatalf("child cascade identity = parent %#v anchor %#v, want %q/0",
+			childModel["parentId"], childModel["anchorIndex"], vtui.SemanticID(root))
+	}
+
+	// A semantic click must go through windowsLocationsMenu.ProcessKey, not
+	// directly through the embedded VMenu. This non-folder row is deliberately
+	// a no-op; base VMenu activation would incorrectly mark the child done.
+	if !handleSemanticFrameAction(child, vtui.SemanticID(child), map[string]any{
+		"action": "menu.activate", "index": 0,
+	}) {
+		t.Fatal("semantic child activation was not handled")
+	}
+	if child.IsDone() || root.IsDone() {
+		t.Fatalf("wrapper action bypassed: root done=%v child done=%v",
+			root.IsDone(), child.IsDone())
+	}
+
+	if !child.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE,
+	}) {
+		t.Fatal("Escape was not handled by Windows submenu")
+	}
+	if vtui.FrameManager.GetTopFrame() != root || root.IsDone() || !child.IsDone() {
+		t.Fatalf("Escape did not restore the drive menu: top=%T rootDone=%v childDone=%v",
+			vtui.FrameManager.GetTopFrame(), root.IsDone(), child.IsDone())
 	}
 }
 

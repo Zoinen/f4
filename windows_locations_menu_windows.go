@@ -65,23 +65,27 @@ type shellContextMenu struct {
 	invoking bool
 }
 
+var windowsLocationsSubmenuFactory = func(pf *PanelsFrame, panelIdx int, parent *vtui.VMenu) vtui.Frame {
+	return newWindowsLocationsMenu(pf, panelIdx, parent)
+}
+
 func addWindowsLocationsDriveItem(pf *PanelsFrame, panelIdx int, menu *vtui.VMenu) bool {
 	menu.AddItem(vtui.MenuItem{
-		Text:     Msg("WindowsLocations.DriveItem"),
-		Icon:     driveMenuIconWindows,
-		Shortcut: "▶",
-		UserData: driveMenuCascadeAction(func(parent *vtui.VMenu) {
-			showWindowsLocationsMenu(pf, panelIdx, parent)
-		}),
+		ID:   "windows-locations",
+		Text: Msg("WindowsLocations.DriveItem"),
+		Icon: driveMenuIconWindows,
+		SubmenuFrame: func() vtui.Frame {
+			return windowsLocationsSubmenuFactory(pf, panelIdx, menu)
+		},
 	})
 	return true
 }
 
-func showWindowsLocationsMenu(pf *PanelsFrame, panelIdx int, parent *vtui.VMenu) {
+func newWindowsLocationsMenu(pf *PanelsFrame, panelIdx int, parent *vtui.VMenu) vtui.Frame {
 	client, err := winshell.DefaultClient()
 	if err != nil {
 		vtui.ShowMessage(" Windows locations ", err.Error(), []string{"&Ok"})
-		return
+		return nil
 	}
 	menu := &windowsLocationsMenu{
 		VMenu:    vtui.NewVMenu(" " + Msg("WindowsLocations.Title") + " "),
@@ -93,11 +97,12 @@ func showWindowsLocationsMenu(pf *PanelsFrame, panelIdx int, parent *vtui.VMenu)
 		expanded: make(map[string]bool),
 		loading:  make(map[string]bool),
 	}
+	menu.SetId(fmt.Sprintf("windows-locations-%d", panelIdx))
 	configureWindowsShellMenu(menu.VMenu)
 	menu.HideShadow = false
+	menu.OnClose = menu.cancelTasks
 	menu.rebuild([]windowsLocationRow{{loading: true}})
 	menu.positionBesideParent()
-	vtui.FrameManager.Push(menu)
 
 	task := vtui.RunAsync(func(task *vtui.TaskContext) {
 		roots, loadErr := client.Roots(task.Context)
@@ -116,6 +121,15 @@ func showWindowsLocationsMenu(pf *PanelsFrame, panelIdx int, parent *vtui.VMenu)
 		})
 	})
 	menu.tasks = append(menu.tasks, task)
+	return menu
+}
+
+func (m *windowsLocationsMenu) cancelTasks() {
+	for _, task := range m.tasks {
+		if task != nil && task.Cancel != nil {
+			task.Cancel()
+		}
+	}
 }
 
 func (m *windowsLocationsMenu) reloadRoots() {
@@ -145,6 +159,10 @@ func (m *windowsLocationsMenu) reloadRoots() {
 }
 
 func (m *windowsLocationsMenu) positionBesideParent() {
+	if m.ParentMenu() != nil {
+		m.RepositionSubmenu()
+		return
+	}
 	screenW := vtui.FrameManager.GetScreenSize()
 	screenH := vtui.FrameManager.GetScreenHeight()
 	w, h := m.desiredSize(screenW, screenH)
@@ -220,15 +238,21 @@ func (m *windowsLocationsMenu) rebuildFromModel(preferredURI string) {
 }
 
 func (m *windowsLocationsMenu) rebuild(rows []windowsLocationRow) {
-	m.rows = rows
-	m.Items = m.Items[:0]
-	for _, row := range rows {
+	m.rows = append(m.rows[:0], rows...)
+	items := make([]vtui.MenuItem, 0, len(rows))
+	for index, row := range rows {
 		if row.node.Separator {
-			m.Items = append(m.Items, vtui.MenuItem{Separator: true})
+			items = append(items, vtui.MenuItem{
+				ID: fmt.Sprintf("separator:%d", index), Separator: true,
+			})
 			continue
 		}
 		if row.loading {
-			m.Items = append(m.Items, vtui.MenuItem{Text: strings.Repeat("  ", row.depth) + "◌ Loading…"})
+			items = append(items, vtui.MenuItem{
+				ID:       "loading:" + row.parentURI,
+				Text:     strings.Repeat("  ", row.depth) + "◌ Loading…",
+				Disabled: true,
+			})
 			continue
 		}
 		prefix := strings.Repeat("  ", row.depth)
@@ -246,17 +270,19 @@ func (m *windowsLocationsMenu) rebuild(rows []windowsLocationRow) {
 		if row.node.Pinned {
 			shortcut = "⌖"
 		}
-		m.Items = append(m.Items, vtui.MenuItem{
+		items = append(items, vtui.MenuItem{
+			ID:       row.node.URI,
 			Text:     prefix + fallbackIcon + " " + escapeAmpersand(row.node.Name),
 			Shortcut: shortcut,
 		})
 	}
-	m.ItemCount = len(m.Items)
-	if m.ItemCount == 0 {
-		m.Items = append(m.Items, vtui.MenuItem{Text: "No Windows Shell locations"})
+	if len(items) == 0 {
+		items = append(items, vtui.MenuItem{
+			ID: "empty", Text: "No Windows Shell locations", Disabled: true,
+		})
 		m.rows = append(m.rows, windowsLocationRow{})
-		m.ItemCount = 1
 	}
+	m.ReplaceItems(items)
 	if m.SelectPos < 0 || m.SelectPos >= m.ItemCount || m.Items[m.SelectPos].Separator {
 		m.SetSelectPos(0)
 	}
@@ -434,7 +460,6 @@ func (m *windowsLocationsMenu) activateSelected() bool {
 	}
 	if row.node.RequiresIndexing {
 		m.Close()
-		m.parent.Close()
 		vtui.FrameManager.PostTask(func() { showGalleryIndexingRequired(m.pf) })
 		return true
 	}
@@ -443,7 +468,6 @@ func (m *windowsLocationsMenu) activateSelected() bool {
 		target = row.node.FileSystemPath
 	}
 	m.Close()
-	m.parent.Close()
 	vtui.FrameManager.PostTask(func() {
 		fsp, ok := m.pf.panels[m.panelIdx].(*FileSystemPanel)
 		if ok && !m.pf.NavigateToPath(fsp, target) {
@@ -676,7 +700,10 @@ func (m *windowsLocationsMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		return false
 	}
 	switch e.VirtualKeyCode {
-	case vtinput.VK_ESCAPE, vtinput.VK_F10:
+	case vtinput.VK_ESCAPE:
+		m.closeLevel()
+		return true
+	case vtinput.VK_F10:
 		m.Close()
 		return true
 	case vtinput.VK_RIGHT:
@@ -687,7 +714,7 @@ func (m *windowsLocationsMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		if m.collapseSelected() {
 			return true
 		}
-		m.Close()
+		m.closeLevel()
 		return true
 	case vtinput.VK_RETURN:
 		return m.activateSelected()
@@ -771,7 +798,6 @@ func (m *windowsLocationsMenu) executeInternalDrop(target winshell.Node, move bo
 	m.dragSource, m.dragNames = nil, nil
 	if target.RequiresIndexing {
 		m.Close()
-		m.parent.Close()
 		vtui.FrameManager.PostTask(func() { showGalleryIndexingRequired(m.pf) })
 		return
 	}
@@ -779,7 +805,6 @@ func (m *windowsLocationsMenu) executeInternalDrop(target winshell.Node, move bo
 		return
 	}
 	m.Close()
-	m.parent.Close()
 	start := func(destination vfs.VFS) {
 		if destination == nil {
 			return
@@ -850,10 +875,16 @@ func (m *windowsLocationsMenu) Show(scr *vtui.ScreenBuf) {
 }
 
 func (m *windowsLocationsMenu) Close() {
-	for _, task := range m.tasks {
-		if task != nil && task.Cancel != nil {
-			task.Cancel()
-		}
+	m.VMenu.Close()
+}
+
+// closeLevel is the nested-menu Back/Escape operation: dismiss only this
+// child and restore the drive menu. Explicit Close and leaf activation still
+// close the complete cascade through VMenu.CloseChain.
+func (m *windowsLocationsMenu) closeLevel() {
+	if parent := m.ParentMenu(); parent != nil {
+		parent.CloseSubmenu()
+		return
 	}
 	m.VMenu.Close()
 }

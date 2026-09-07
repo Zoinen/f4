@@ -70,11 +70,15 @@ Rectangle {
         anchors.topMargin: hostWindow.actionBarVerticalMargin
         anchors.bottomMargin: hostWindow.actionBarVerticalMargin
         Repeater {
-            model: keyBar.items || []
+            // The slots are stable while only their labels/actions change.
+            // A list-valued model recreates every visual delegate on each
+            // viewer/editor transition, even when its size is unchanged.
+            model: (keyBar.items || []).length
             delegate: Rectangle {
                 id: actionButton
-                required property var modelData
                 required property int index
+                readonly property var modelData:
+                    (keyBarRoot.keyBar.items || [])[index] || ({})
                 readonly property string functionKey:
                     hostWindow.cleanText(modelData.key) !== ""
                     ? hostWindow.cleanText(modelData.key)
@@ -120,6 +124,12 @@ Rectangle {
 
                 Text {
                     id: actionTextLabel
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(actionTextLabel,
+                                                         hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(actionTextLabel,
+                                                         hostWindow.contentItem)
+                    }
                     objectName: "key-bar-label-"
                                 + (actionButton.functionIndex + 1)
                     anchors.left: actionIcon.visible
@@ -140,6 +150,12 @@ Rectangle {
 
                 Text {
                     id: functionKeyLabel
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(functionKeyLabel,
+                                                         hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(functionKeyLabel,
+                                                         hostWindow.contentItem)
+                    }
                     objectName: "key-bar-shortcut-"
                                 + (actionButton.functionIndex + 1)
                     anchors.right: parent.right

@@ -243,7 +243,7 @@ func navigationBenchmarkTraceID(outer, action map[string]any) string {
 
 func navigationBenchmarkIsNavigationAction(action string) bool {
 	switch action {
-	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh":
+	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh", "editor.mouse":
 		return true
 	default:
 		return false
@@ -300,6 +300,8 @@ func navigationBenchmarkTraceForKey(message map[string]any, timing *navigationBe
 		action = "key.tab"
 	case vtinput.VK_F4:
 		action = "key.f4"
+	case vtinput.VK_F3:
+		action = "key.f3"
 	case vtinput.VK_ESCAPE:
 		action = "key.escape"
 	case vtinput.VK_RIGHT:
@@ -691,21 +693,45 @@ func navigationBenchmarkPrepareRenderMessage(messageMap map[string]any) *navigat
 	if marker == nil || marker.trace == nil {
 		return nil
 	}
+	navigationBenchmarkState.Lock()
+	if marker.sceneSequence == 0 {
+		navigationBenchmarkState.nextSceneSeq++
+		marker.sceneSequence = navigationBenchmarkState.nextSceneSeq
+	}
+	sequence := marker.sceneSequence
+	navigationBenchmarkState.Unlock()
 	message := &navigationBenchmarkMessage{
 		traceID:       marker.trace.id,
 		phase:         marker.phase,
 		phaseSequence: marker.phaseSequence,
-		sceneSequence: marker.sceneSequence,
+		sceneSequence: sequence,
 		messageType:   navigationBenchmarkString(messageMap["type"]),
+	}
+	// v4 scene exports are split into typed stream envelopes. Their benchmark
+	// metadata lives in the payload, so keep the assigned scene sequence on the
+	// payload as well as in the transport trace used by Flush.
+	if payload, ok := messageMap["payload"].(map[string]any); ok {
+		if meta, ok := payload["benchmark"].(map[string]any); ok {
+			meta["sceneSequence"] = sequence
+		}
 	}
 	// Compact render messages do not pass through SemanticBenchmarkHooks, so
 	// add the correlation field here in trace mode. The strict Qt envelope
 	// explicitly permits benchmark-prefixed diagnostics.
 	messageMap["benchmarkTraceId"] = marker.trace.id
-	navigationBenchmarkEmit(message.traceID, "message.send.queued", "go.render",
+	event := "message.send.queued"
+	if navigationBenchmarkIsSceneMessageType(message.messageType) {
+		event = "scene.send.queued"
+	}
+	navigationBenchmarkEmit(message.traceID, event, "go.render",
 		"phase", message.phase, "phaseSequence", message.phaseSequence,
 		"sceneSequence", message.sceneSequence, "messageType", message.messageType)
 	return message
+}
+
+func navigationBenchmarkIsSceneMessageType(messageType string) bool {
+	return messageType == "scene" || messageType == "semantic_stream_snapshot" ||
+		messageType == "scene_patch"
 }
 
 // navigationBenchmarkPrepareImmediateMessage gives compact state messages
@@ -750,7 +776,7 @@ func navigationBenchmarkMessageSent(message *navigationBenchmarkMessage, err err
 	if message == nil {
 		return
 	}
-	if err == nil && message.messageType == "scene" {
+	if err == nil && navigationBenchmarkIsSceneMessageType(message.messageType) {
 		navigationBenchmarkState.Lock()
 		marker := navigationBenchmarkState.currentScene
 		if marker != nil && marker.trace != nil && marker.trace.id == message.traceID &&
@@ -770,7 +796,7 @@ func navigationBenchmarkMessageSent(message *navigationBenchmarkMessage, err err
 		fields = append(fields, "error", err.Error())
 	}
 	event := "message.send.done"
-	if message.messageType == "scene" {
+	if navigationBenchmarkIsSceneMessageType(message.messageType) {
 		event = "scene.send.done"
 	}
 	navigationBenchmarkEmit(message.traceID, event, "go.transport", fields...)

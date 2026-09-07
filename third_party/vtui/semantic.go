@@ -96,14 +96,15 @@ func (fm *frameManager) ExportSemanticScene() map[string]any {
 	return scene
 }
 
-// ExportSemanticSceneHeader exports only bounded global chrome. It never
-// visits screen frame stacks or calls application SemanticProvider methods, so
-// its cost is independent of file-catalog and document sizes.
+// ExportSemanticSceneHeader exports only bounded global chrome. It resolves
+// chrome ownership/labels from the active stack but never calls application
+// SemanticProvider methods, so its cost is independent of catalogs/documents.
 func (fm *frameManager) ExportSemanticSceneHeader() map[string]any {
 	if fm == nil || fm.scr == nil {
 		return nil
 	}
 	fm.SyncCurrentScreen()
+	fm.refreshKeyBarState()
 	scene := map[string]any{
 		"type":          "scene",
 		"version":       SemanticSceneVersion,
@@ -488,19 +489,41 @@ func (g *Group) SemanticNode(ctx *SemanticContext) map[string]any {
 	}
 }
 
+// SemanticNode preserves the visual frame metadata that distinguishes a
+// GroupBox from the borderless Group embedded inside it.  Without this
+// override Go promotes Group.SemanticNode, so semantic frontends receive the
+// children but cannot render either the box or its caption.
+func (gb *GroupBox) SemanticNode(ctx *SemanticContext) map[string]any {
+	node := gb.Group.SemanticNode(ctx)
+	node["title"] = strings.TrimSpace(gb.cleanText)
+	node["hotkey"] = stringOrEmpty(gb.hotkey)
+	node["bordered"] = true
+	return node
+}
+
 func (g *Group) HandleSemanticAction(action map[string]any) bool {
 	target := semanticString(action["target"])
+	actionName := semanticString(action["action"])
 	if SemanticID(g) == target {
-		switch semanticString(action["action"]) {
+		switch actionName {
 		case "focus", "control.focus":
 			g.SetFocus(true)
 			return true
 		}
 	}
 
-	for _, child := range g.items {
+	for index, child := range g.items {
 		if SemanticID(child) == target {
 			if h, ok := child.(SemanticActionHandler); ok {
+				// Semantic mouse actions bypass Group.ProcessMouse, which is
+				// normally responsible for moving the focus index.  Opening a
+				// combo from Qt must therefore perform that transfer here,
+				// before the control handles the action.
+				if (actionName == "focus" || actionName == "control.focus" ||
+					actionName == "open" || actionName == "control.open") &&
+					child.CanFocus() && !child.IsDisabled() {
+					g.setFocus(index)
+				}
 				return h.HandleSemanticAction(action)
 			}
 		}
@@ -687,6 +710,9 @@ func (cb *ComboBox) SemanticNode(ctx *SemanticContext) map[string]any {
 
 func (cb *ComboBox) HandleSemanticAction(action map[string]any) bool {
 	switch semanticString(action["action"]) {
+	case "open", "control.open":
+		cb.Open()
+		return true
 	case "select", "control.select":
 		idx := semanticInt(action["index"])
 		if cb.Menu != nil && idx >= 0 && idx < len(cb.Menu.Items) {

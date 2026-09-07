@@ -10,7 +10,11 @@ Item {
     property real rowHeight: 20
     property real viewportHeight: 0
     property int slotWriteCount: 0
-    readonly property alias rowsModel: rowsModel
+    property bool nativeRows: false
+    // Exactly one model belongs to this physical pool, even if its surface
+    // mode changes. Rebinding nativeRows must not allocate another row store.
+    readonly property var nativeModel: qtShell.surfaceRegistry.createDocumentRowsModel(pool)
+    readonly property var rowsModel: nativeRows ? nativeModel : legacyRowsModel
     readonly property int count: rowsModel.count
 
     visible: false
@@ -27,11 +31,11 @@ Item {
         return { "loaded": false, "rowData": ({}) }
     }
 
-    function setSlot(slot, row) {
+    function setSlot(slot, row, forceReplacement) {
         if (slot < 0 || slot >= rowsModel.count)
             return false
         const current = rowsModel.get(slot)
-        if (current.loaded === true
+        if (forceReplacement !== true && current.loaded === true
                 && rowSignature(current.rowData)
                    === rowSignature(row || ({})))
             return false
@@ -62,13 +66,33 @@ Item {
     }
 
     function ensureCapacity(capacity) {
+        if (nativeRows) {
+            rowsModel.ensureCapacity(capacity)
+            return
+        }
         while (rowsModel.count < capacity)
             rowsModel.append(emptySlot())
     }
 
+    function commit() {
+        if (nativeRows)
+            rowsModel.commit()
+    }
+
+    function replaceWindow(start, rows, previousStart, previousEnd,
+                           forceReplacement, clearOutside) {
+        if (!nativeRows)
+            return -1
+        const writes = rowsModel.replaceWindow(start, rows,
+            previousStart, previousEnd, forceReplacement === true,
+            clearOutside === true)
+        slotWriteCount += writes
+        return writes
+    }
+
     ListModel {
-        id: rowsModel
-        objectName: "documentRowsModel"
+        id: legacyRowsModel
+        objectName: pool.nativeRows ? "legacyDocumentRowsModel" : "documentRowsModel"
         dynamicRoles: true
     }
 }

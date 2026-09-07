@@ -393,6 +393,9 @@ func TestAsyncBuffer_ErrorRecovery(t *testing.T) {
 	if isFetching {
 		t.Error("Fetching flag was not cleared after read error")
 	}
+	if _, err := buf.Read(0, 5); err != io.ErrUnexpectedEOF {
+		t.Fatalf("Read must surface the completed error, got %v", err)
+	}
 
 	// 4. Fix the error in mock and retry
 	f.errToReturn = nil

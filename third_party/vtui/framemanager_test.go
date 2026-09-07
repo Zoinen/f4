@@ -22,7 +22,10 @@ type mockFrame struct {
 	resizedW, resizedH int
 }
 
-type periodicRedrawTestRenderer struct{ wants bool }
+type periodicRedrawTestRenderer struct {
+	wants             bool
+	eventDrivenResize bool
+}
 
 func (*periodicRedrawTestRenderer) Render([]CharInfo, []CharInfo, int, int, bool) {}
 func (*periodicRedrawTestRenderer) SetCursor(int, int, bool, CursorShape)         {}
@@ -30,6 +33,7 @@ func (*periodicRedrawTestRenderer) SetPalette(*[256]uint32)                     
 func (*periodicRedrawTestRenderer) SetWindowTitle(string)                         {}
 func (*periodicRedrawTestRenderer) Flush()                                        {}
 func (r *periodicRedrawTestRenderer) WantsPeriodicRedraw() bool                   { return r.wants }
+func (r *periodicRedrawTestRenderer) UsesEventDrivenResize() bool                 { return r.eventDrivenResize }
 
 type defaultRedrawTestRenderer struct{}
 
@@ -170,6 +174,19 @@ func TestPeriodicRedrawRendererCapability(t *testing.T) {
 	var renderer SurfaceRenderer = &defaultRedrawTestRenderer{}
 	if !rendererWantsPeriodicRedraw(renderer) {
 		t.Fatal("legacy renderer did not retain the terminal heartbeat")
+	}
+}
+
+func TestEventDrivenResizeRendererCapability(t *testing.T) {
+	if !rendererUsesEventDrivenResize(&periodicRedrawTestRenderer{eventDrivenResize: true}) {
+		t.Fatal("native renderer did not disable terminal-size polling")
+	}
+	if rendererUsesEventDrivenResize(&periodicRedrawTestRenderer{}) {
+		t.Fatal("renderer without authoritative resize events disabled polling")
+	}
+	var renderer SurfaceRenderer = &defaultRedrawTestRenderer{}
+	if rendererUsesEventDrivenResize(renderer) {
+		t.Fatal("legacy renderer did not retain terminal-size polling")
 	}
 }
 
@@ -2327,6 +2344,43 @@ func TestFrameManager_SizePolling(t *testing.T) {
 	if scr.Width() != 100 || scr.Height() != 30 {
 		t.Errorf("Polling failed to resize ScreenBuf. Got %dx%d", scr.Width(), scr.Height())
 	}
+}
+
+func TestFrameManager_EventDrivenResizeDoesNotPollWhileIdle(t *testing.T) {
+	oldGetSize := GetTerminalSize
+	defer func() { GetTerminalSize = oldGetSize }()
+
+	var sizeReads atomic.Int32
+	GetTerminalSize = func() (int, int, error) {
+		sizeReads.Add(1)
+		return 80, 24, nil
+	}
+
+	fm := &frameManager{}
+	scr := NewSilentScreenBuf()
+	scr.Renderer = &periodicRedrawTestRenderer{eventDrivenResize: true}
+	scr.AllocBuf(80, 24)
+	fm.Init(scr)
+	fm.Push(&mockFrame{})
+
+	done := make(chan struct{})
+	pr, pw := io.Pipe()
+	go func() {
+		fm.Run(vtinput.NewReader(pr, false))
+		close(done)
+	}()
+
+	// Span three complete legacy 200 ms polling intervals. The platform reader
+	// may synthesize one startup resize, but an event-driven host must not add a
+	// periodic stream of terminal-size reads after it settles.
+	time.Sleep(650 * time.Millisecond)
+	if got := sizeReads.Load(); got > 1 {
+		t.Fatalf("event-driven renderer repeatedly polled terminal size %d times", got)
+	}
+
+	fm.Stop()
+	_ = pw.Close()
+	<-done
 }
 func TestFrameManager_ResizeRobustness(t *testing.T) {
 	oldGetSize := GetTerminalSize

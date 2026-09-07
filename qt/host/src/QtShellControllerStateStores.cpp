@@ -130,6 +130,41 @@ void replaceOrAppendPanel(QVariantMap *shell, int side,
     panels.push_back(panel);
     shell->insert(QStringLiteral("panels"), panels);
 }
+
+void applyDocumentPatch(SurfaceRegistry *registry,
+                        const AppliedScenePatch &applied)
+{
+    const QVariantMap document = applied.scene.value(
+        QStringLiteral("surface")).toMap();
+    if (applied.rootKeys.contains(QStringLiteral("surface"))) {
+        registry->applyDocument(document, applied.revision);
+        return;
+    }
+    if (applied.surfaceKeys.isEmpty()) {
+        return;
+    }
+
+    const QSet<QString> stateKeys{
+        QStringLiteral("cursorLine"), QStringLiteral("cursorPos"),
+        QStringLiteral("cursorVisualRow"), QStringLiteral("cursorVisualColumn"),
+        QStringLiteral("cursorVisible"), QStringLiteral("cursorShape"),
+        QStringLiteral("cursorAbsoluteRow"),
+        QStringLiteral("cursorAbsoluteColumn"), QStringLiteral("selection"),
+        QStringLiteral("selectionAnchorRow"),
+        QStringLiteral("selectionAnchorColumn"),
+        QStringLiteral("selectionForeground"),
+        QStringLiteral("selectionBackground"),
+        QStringLiteral("selectionBold"),
+        QStringLiteral("selectionUnderline"),
+        QStringLiteral("selectionStrikeout"), QStringLiteral("topBarRight"),
+    };
+    QSet<QString> contentKeys = applied.surfaceKeys;
+    contentKeys.subtract(stateKeys);
+    if (contentKeys.isEmpty())
+        registry->applyDocumentState(document, applied.revision);
+    else
+        registry->applyDocument(document, applied.revision);
+}
 }
 
 QVariantMap QtShellController::streamReducerScene(
@@ -230,12 +265,7 @@ void QtShellController::commitTypedScenePatch(
                 revision);
         }
     }
-    if (applied.rootKeys.contains(QStringLiteral("surface"))
-        || !applied.surfaceKeys.isEmpty()) {
-        m_surfaceRegistry->applyDocument(
-            applied.scene.value(QStringLiteral("surface")).toMap(),
-            revision);
-    }
+    applyDocumentPatch(m_surfaceRegistry, applied);
 
     QSet<int> changedPanelSides;
     for (const QVariantMap &panel : applied.catalogPanels) {
@@ -251,9 +281,24 @@ void QtShellController::commitTypedScenePatch(
         QVariantMap panel;
         if (side >= 0 && side < 2
             && shellPanelAtSide(applied.scene, side, &panel)) {
-            m_panelCatalogSnapshots[static_cast<size_t>(side)] = panel;
+            storePanelCatalogSnapshot(side, panel);
         }
     }
+}
+
+void QtShellController::storePanelCatalogSnapshot(
+    int side, const QVariantMap &panel)
+{
+    if (side < 0 || side >= static_cast<int>(m_panelCatalogSnapshots.size())
+        || panel.isEmpty()) {
+        return;
+    }
+    m_panelCatalogSnapshots[static_cast<size_t>(side)] = panel;
+    // Catalog signals are intentionally separate from shellChanged so normal
+    // navigation does not invalidate both panel trees. Still advance the
+    // retained row-free shell backing: QML construction may occur after the
+    // compact signal, and must then observe this authoritative descriptor.
+    m_surfaceRegistry->adoptShellPanelDescriptor(side, panel);
 }
 
 void QtShellController::applyCompactFieldsToTypedState(

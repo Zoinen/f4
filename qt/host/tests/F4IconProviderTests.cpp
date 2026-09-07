@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIconEngine>
@@ -237,6 +238,7 @@ private slots:
     void largeLucideRouteRendersAVisibleDprAwareFallback();
     void chromeLucideRoutesRenderNamedResources();
     void lucideRoutesPreserveRequestedTint();
+    void checkGlyphIsBoldAndOpticallyCentered();
     void lucideFramebufferMatchesDirectSvgRender();
     void iconSetPropertiesAndRevision();
     void diagnosticPatternIsOptInAndDprAware();
@@ -453,6 +455,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("binary"),
         QStringLiteral("check"),
         QStringLiteral("chevron-down"),
+        QStringLiteral("chevron-up"),
         QStringLiteral("chevron-right"),
         QStringLiteral("circle-question-mark"),
         QStringLiteral("clock-3"),
@@ -560,6 +563,43 @@ void F4IconProviderTests::lucideRoutesPreserveRequestedTint()
     QVERIFY(!exactImageDifference(blueImage, amberImage).isEmpty());
 }
 
+void F4IconProviderTests::checkGlyphIsBoldAndOpticallyCentered()
+{
+    QFile source(QStringLiteral(":/F4QtHost/icons/lucide/check.svg"));
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    const QByteArray svg = source.readAll();
+    QVERIFY(svg.contains("stroke-width=\"3\""));
+    QVERIFY(svg.contains("M20 7 9 18l-5-5"));
+    QVERIFY(svg.contains("shape-rendering=\"crispEdges\""));
+
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const QUrl route = icons.rasterizedLucideSource(
+        QStringLiteral("check"), 12, 1.75, QColor(Qt::white));
+    const QImage image = provider.requestImage(
+        F4IconProvider::routeId(route), nullptr, {});
+    QCOMPARE(image.size(), QSize(21, 21));
+
+    int top = image.height();
+    int bottom = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (image.pixelColor(x, y).alpha() < 16) {
+                continue;
+            }
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+        }
+    }
+    QVERIFY(bottom >= top);
+    const int doubledGlyphCenter = top + bottom;
+    const int doubledImageCenter = image.height() - 1;
+    QVERIFY2(std::abs(doubledGlyphCenter - doubledImageCenter) <= 1,
+             qPrintable(QStringLiteral(
+                 "check glyph vertical bounds %1..%2 are not centered in %3 px")
+                            .arg(top).arg(bottom).arg(image.height())));
+}
+
 void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
 {
     constexpr int iconPosition = 8;
@@ -620,8 +660,10 @@ void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
     icon->setProperty("y", snappedPosition);
 
     const QList<QPair<QString, int>> cases{
+        {QStringLiteral("check"), 12},
         {QStringLiteral("chevron-right"), 12},
         {QStringLiteral("chevron-down"), 11},
+        {QStringLiteral("chevron-up"), 11},
         {QStringLiteral("arrow-up"), 14},
         {QStringLiteral("columns-2"), 16},
         {QStringLiteral("hard-drive"), 16},
@@ -632,6 +674,8 @@ void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
         const qreal snappedLogicalSize = physicalIconSize.width() / dpr;
         icon->setProperty("width", snappedLogicalSize);
         icon->setProperty("height", snappedLogicalSize);
+        icon->setProperty("sourceSize",
+                          QSize(logicalIconSize, logicalIconSize));
         icon->setProperty("source", QUrl());
         QCoreApplication::processEvents();
 
