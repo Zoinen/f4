@@ -78,7 +78,9 @@ func (s *ImageSurface) ToRGBA() *image.RGBA {
 	if !s.Valid() {
 		return nil
 	}
-	if s.Stride == s.Width*4 && isOpaque(s) {
+	// Decoders and the scaler already know the answer; the scan is only the
+	// fallback for surfaces nobody flagged.
+	if s.Stride == s.Width*4 && (s.Opaque || isOpaque(s)) {
 		return &image.RGBA{
 			Pix:    s.Pix[:s.Width*s.Height*4],
 			Stride: s.Stride,

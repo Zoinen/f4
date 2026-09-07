@@ -2,7 +2,9 @@ package fishplus
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -346,6 +348,13 @@ func (c *Client) info(ctx context.Context, cmd, p string) (Entry, error) {
 		return Entry{}, err
 	}
 	if err := resp.Err(cmd + " " + p); err != nil {
+		// A missing path is not a failure: an upload target is not there
+		// yet, a move may have removed it. The helper reports it with a
+		// fixed marker so it maps to os.ErrNotExist, the answer the VFS
+		// contract expects and the caller uses to decide to create it.
+		if isRemoteNotFound(err) {
+			return Entry{}, os.ErrNotExist
+		}
 		return Entry{}, err
 	}
 	_, entries, err := ParseListing(resp.Lines)
@@ -360,6 +369,18 @@ func (c *Client) info(ctx context.Context, cmd, p string) (Entry, error) {
 	// name, so the name is taken from the request instead.
 	e.Name = path.Base(p)
 	return e, nil
+}
+
+// isRemoteNotFound reports whether a remote error means the requested path is
+// absent rather than the host being broken. The helper emits a fixed marker
+// for the missing-path case, but older helpers let find's own words through,
+// so both spellings are recognised.
+func isRemoteNotFound(err error) bool {
+	var re *RemoteError
+	if !errors.As(err, &re) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(re.Msg), "no such file or directory")
 }
 
 // ReadLink returns the target of a symlink exactly as stored on the host.

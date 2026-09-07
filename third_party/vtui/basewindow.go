@@ -182,7 +182,15 @@ func (bw *BaseWindow) Show(scr *ScreenBuf) {
 		scr.Write(bw.X1+2, bw.Y1, StringToCharInfo(numStr, Palette[bw.frame.ColorBoxIdx]))
 	}
 
-	// Delegate drawing of children to the root group
+	// A short modal dialog can retain full-size contents and scroll them
+	// through its smaller visible viewport. Normal windows keep their existing
+	// drawing behaviour.
+	if bw.Modal {
+		scr.PushClipRect(bw.X1+1, bw.Y1+1, bw.X2-1, bw.Y2-1)
+		bw.rootGroup.Show(scr)
+		scr.PopClipRect()
+		return
+	}
 	bw.rootGroup.Show(scr)
 }
 
@@ -391,6 +399,28 @@ func (bw *BaseWindow) MoveRelative(dx, dy int) {
 	bw.Y2 += dy
 	bw.frame.SetPosition(bw.X1, bw.Y1, bw.X2, bw.Y2)
 	bw.rootGroup.MoveRelative(dx, dy)
+}
+
+// setViewportSize changes only the visible window bounds. Unlike ChangeSize,
+// it deliberately does not resize or reflow child controls: a modal dialog
+// uses it to expose a scrolling viewport for controls that do not fit.
+func (bw *BaseWindow) setViewportSize(width, height int) {
+	if width < 3 {
+		width = 3
+	}
+	if height < 3 {
+		height = 3
+	}
+	bw.X2 = bw.X1 + width - 1
+	bw.Y2 = bw.Y1 + height - 1
+	bw.ScreenObject.SetPosition(bw.X1, bw.Y1, bw.X2, bw.Y2)
+	if bw.frame != nil {
+		bw.frame.SetPosition(bw.X1, bw.Y1, bw.X2, bw.Y2)
+	}
+	if bw.rootGroup != nil {
+		bw.rootGroup.SetPosition(bw.X1+1, bw.Y1+1, bw.X2-1, bw.Y2-1)
+	}
+	bw.lastW, bw.lastH = width, height
 }
 
 // HandleCommand implements Turbo Vision style command routing for Windows/Dialogs.

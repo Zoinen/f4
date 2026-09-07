@@ -26,7 +26,7 @@ func TestGoogleProfileAuthorizationSecretsDoNotCrossOAuthAudience(t *testing.T) 
 	})
 	t.Cleanup(func() { _ = plugin.Close() })
 
-	oldValues := SecretValues{
+	oldValues := SecretValues{ // #nosec G101 -- synthetic OAuth credentials verify that secrets do not cross an edited client-ID boundary.
 		"client_secret": "old-client-secret",
 		"access_token":  "old-access-token",
 		"refresh_token": "old-refresh-token",
@@ -42,7 +42,7 @@ func TestGoogleProfileAuthorizationSecretsDoNotCrossOAuthAudience(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(sameAudience, SecretValues{"client_secret": "old-client-secret"}) {
+	if !reflect.DeepEqual(sameAudience, SecretValues{"client_secret": "old-client-secret"}) { // #nosec G101 -- this is the synthetic secret expected from the fixture above.
 		t.Fatalf("same-audience authorization secrets = %#v", sameAudience)
 	}
 
@@ -56,7 +56,7 @@ func TestGoogleProfileAuthorizationSecretsDoNotCrossOAuthAudience(t *testing.T) 
 		t.Fatalf("new-audience authorization inherited old credentials: %#v", newAudience)
 	}
 
-	typed := SecretValues{"client_secret": "new-client-secret"}
+	typed := SecretValues{"client_secret": "new-client-secret"} // #nosec G101 -- synthetic user input verifies that only the newly typed secret is retained.
 	newAudience, err = dialog.googleSecretsForAuthorization(context.Background(), updated, typed)
 	if err != nil {
 		t.Fatal(err)

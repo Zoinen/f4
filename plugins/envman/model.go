@@ -312,7 +312,7 @@ func (engine *Engine) Baseline() []string {
 
 func (engine *Engine) Evaluate(config Config) (Result, error) {
 	if engine == nil || engine.base == nil {
-		return Result{}, errors.New("Environment Manager engine is unavailable")
+		return Result{}, errors.New("environment manager engine is unavailable")
 	}
 	if err := config.Validate(engine.opts); err != nil {
 		return Result{}, err

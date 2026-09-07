@@ -11,7 +11,11 @@ func TestStagedFileTakesWritesInAnyOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newStagedFile: %v", err)
 	}
-	defer sf.Close()
+	t.Cleanup(func() {
+		if err := sf.Close(); err != nil {
+			t.Errorf("close staged file: %v", err)
+		}
+	})
 
 	// The kernel does not promise to write a file front to back, which is
 	// the whole reason this staging file exists.
@@ -52,7 +56,11 @@ func TestStagedFileTruncateAndSecondCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sf.Close()
+	t.Cleanup(func() {
+		if err := sf.Close(); err != nil {
+			t.Errorf("close staged file: %v", err)
+		}
+	})
 
 	if _, err := sf.WriteAt([]byte("0123456789"), 0); err != nil {
 		t.Fatal(err)
@@ -86,7 +94,11 @@ func TestStagedFileIsUnlinked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sf.Close()
+	t.Cleanup(func() {
+		if err := sf.Close(); err != nil {
+			t.Errorf("close staged file: %v", err)
+		}
+	})
 	// Unlinked at creation, so a crash cannot leave it behind: the name is
 	// already gone while the handle still works.
 	if _, err := sf.f.Stat(); err != nil {

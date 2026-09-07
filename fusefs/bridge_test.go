@@ -28,6 +28,43 @@ type fakeVFS struct {
 	statErr  bool
 }
 
+type concurrentStatVFS struct {
+	*fakeVFS
+	entered chan struct{}
+	release chan struct{}
+}
+
+type closeErrorVFS struct {
+	*fakeVFS
+	err    error
+	closes int
+}
+
+func (v *closeErrorVFS) Close() error {
+	v.closed = true
+	v.closes++
+	return v.err
+}
+
+type immediateMountServer struct{}
+
+func (immediateMountServer) Unmount() error { return nil }
+func (immediateMountServer) Wait()          {}
+
+func (*concurrentStatVFS) SupportsConcurrentCalls() bool { return true }
+
+func (f *concurrentStatVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
+	f.entered <- struct{}{}
+	<-f.release
+	if f.dirs[p] {
+		return vfs.VFSItem{Name: path.Base(p), IsDir: true}, nil
+	}
+	if data, ok := f.files[p]; ok {
+		return vfs.VFSItem{Name: path.Base(p), Size: int64(len(data))}, nil
+	}
+	return vfs.VFSItem{}, os.ErrNotExist
+}
+
 func newFakeVFS(random bool) *fakeVFS {
 	return &fakeVFS{
 		files: map[string]string{
@@ -249,7 +286,7 @@ func TestReadRandomAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer h.release()
+	defer func() { _ = h.release() }()
 
 	buf := make([]byte, 3)
 	n, err := h.readAt(context.Background(), buf, 2)
@@ -270,7 +307,7 @@ func TestSequentialBackendIsSpooled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer h.release()
+	defer func() { _ = h.release() }()
 
 	if h.tmp == nil {
 		t.Fatalf("a backend without random access must be spooled")
@@ -297,8 +334,12 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	h.release()
-	h.release()
+	if err := h.release(); err != nil {
+		t.Fatalf("first release: %v", err)
+	}
+	if err := h.release(); err != nil {
+		t.Fatalf("second release: %v", err)
+	}
 	if _, err := h.readAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, errClosed) {
 		t.Fatalf("read after release = %v, want errClosed", err)
 	}
@@ -317,11 +358,81 @@ func TestCloseReleasesTheBackend(t *testing.T) {
 	}
 }
 
+func TestMountVFSEarlyFailureClosesVFSOnce(t *testing.T) {
+	v := &closeErrorVFS{fakeVFS: newFakeVFS(true)}
+	if _, err := MountVFS(context.Background(), v, Options{}); err == nil {
+		t.Fatal("MountVFS without a mount point succeeded")
+	}
+	if v.closes != 1 {
+		t.Fatalf("early MountVFS failure closed the VFS %d times, want once", v.closes)
+	}
+}
+
+func TestCleanupErrorReachesOnExitButNotUnmount(t *testing.T) {
+	want := errors.New("backend close failed")
+	v := &closeErrorVFS{fakeVFS: newFakeVFS(true), err: want}
+	var exitErr error
+	m := &Mount{
+		ID:     "cleanup-error-test",
+		server: immediateMountServer{},
+		bridge: newBridge(v, "/root", Options{}),
+		done:   make(chan struct{}),
+		onExit: func(_ *Mount, err error) { exitErr = err },
+	}
+
+	m.watch()
+	if !errors.Is(exitErr, want) {
+		t.Fatalf("OnExit error = %v, want backend close error", exitErr)
+	}
+	if err := m.Unmount(); err != nil {
+		t.Fatalf("Unmount after successful detach = %v, want nil", err)
+	}
+	if v.closes != 1 {
+		t.Fatalf("watch closed the VFS %d times, want once", v.closes)
+	}
+}
+
+func TestConcurrentBackendReadsOverlap(t *testing.T) {
+	fake := &concurrentStatVFS{
+		fakeVFS: newFakeVFS(true),
+		entered: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+	b := newBridge(fake, "/root", Options{})
+	defer b.close()
+
+	results := make(chan error, 2)
+	go func() {
+		_, err := b.stat(context.Background(), "/root/a.txt")
+		results <- err
+	}()
+	go func() {
+		_, err := b.stat(context.Background(), "/root/sub/c.txt")
+		results <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-fake.entered:
+		case <-time.After(time.Second):
+			close(fake.release)
+			t.Fatalf("concurrent backend call %d did not overlap", i+1)
+		}
+	}
+	close(fake.release)
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("stat %d: %v", i+1, err)
+		}
+	}
+}
+
 func TestInodeOfIsStableAndReserved(t *testing.T) {
-	if inodeOf("/root/a") != inodeOf("/root/a") {
+	first := inodeOf("/root/a")
+	if second := inodeOf("/root/a"); first != second {
 		t.Fatalf("inode numbers must be stable for a path")
 	}
-	if inodeOf("/root/a") == inodeOf("/root/b") {
+	if first == inodeOf("/root/b") {
 		t.Fatalf("different paths should not collide this easily")
 	}
 	for _, p := range []string{"", "/", "/root", "x"} {
@@ -428,7 +539,13 @@ func TestMountAndUnmount(t *testing.T) {
 		// FUSE mounts can fail in environments without /dev/fuse access (like CI)
 		t.Skipf("Mount failed (missing FUSE privileges?): %v", err)
 	}
-	defer m.Unmount()
+	t.Cleanup(func() {
+		if m.Active() {
+			if err := m.Unmount(); err != nil {
+				t.Errorf("cleanup unmount: %v", err)
+			}
+		}
+	})
 
 	if m.MountPoint != mountPoint {
 		t.Errorf("expected mount point %s, got %s", mountPoint, m.MountPoint)

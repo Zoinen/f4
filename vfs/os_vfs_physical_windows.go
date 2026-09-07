@@ -8,7 +8,10 @@ import (
 	"syscall"
 	"unsafe"
 
+	winescape "github.com/unxed/libwinescape/go"
 	"golang.org/x/sys/windows"
+
+	"github.com/unxed/f4/vfs/hostmode"
 )
 
 // fileStandardInfo mirrors the Win32 FILE_STANDARD_INFO struct.
@@ -26,13 +29,36 @@ type fileStandardInfo struct {
 	_              [2]byte // pad to the struct's natural 8-byte alignment
 }
 
-// fillPhysicalSizeCheap is a no-op on Windows — there's no way to get
-// on-disk allocation size from FileInfo alone; GetCompressedFileSize
+// fillPhysicalSizeCheap is a no-op on native Windows — there's no way to
+// get on-disk allocation size from FileInfo alone; GetCompressedFileSize
 // is a separate syscall we don't want to pay in the ReadDir path (an
 // extra kernel round-trip per file, and on SMB an extra network
 // round-trip too). Consumers that actually need PhysicalSize (the
 // QuickView scan) go through fillPhysicalSize / Stat instead.
-func fillPhysicalSizeCheap(_ *VFSItem, _ os.FileInfo) {}
+//
+// In posix mode, the answer is already free exactly like on real Unix:
+// hostfs's wineFileInfo.Sys() returns *winescape.Stat_t, which already
+// carries Blocks/Dev/Ino from the Lstat the ReadDir loop had to do
+// anyway (see vfs/hostfs/hostfs_winescape.go). This is the fix for the
+// gotcha WINE.md §14.2 flagged: the old code here only ever tried
+// *syscall.Stat_t (the standard-library Unix type), which posix mode's
+// *winescape.Stat_t is never assignable to -- the assertion silently
+// failed and PhysicalSize stayed zero for every file under Wine's posix
+// mode. Checking hostmode.Posix() explicitly makes the two cases
+// unambiguous instead of relying on a type assertion falling through by
+// accident.
+func fillPhysicalSizeCheap(item *VFSItem, info os.FileInfo) {
+	if info == nil {
+		return
+	}
+	if hostmode.Posix() {
+		if stat, ok := info.Sys().(*winescape.Stat_t); ok {
+			item.PhysicalSize = stat.Blocks * 512
+			item.Device = stat.Dev
+			item.Inode = stat.Ino
+		}
+	}
+}
 
 // fillPhysicalSize asks NTFS for the on-disk allocation of path via
 // GetFileInformationByHandleEx(FileStandardInfo).AllocationSize. This
@@ -150,6 +176,12 @@ func (v *OSVFS) FileIdentity(ctx context.Context, path string) (device, inode ui
 // FILE_ATTRIBUTE_REPARSE_POINT is the authoritative NTFS bit.
 func isReparsePoint(info os.FileInfo) bool {
 	if info == nil {
+		return false
+	}
+	// No such concept in posix mode -- only real symlinks exist there,
+	// already covered by Mode()&ModeSymlink at the caller. Matches the
+	// Unix stub below verbatim.
+	if hostmode.Posix() {
 		return false
 	}
 	if a, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {

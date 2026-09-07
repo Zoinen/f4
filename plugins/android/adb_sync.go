@@ -195,7 +195,7 @@ func (c *SyncClient) List(ctx context.Context, path string) ([]SyncEntry, error)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // The protocol response determines metadata success.
 
 	v2 := c.hasFeature("ls_v2")
 	requestID := syncIDListV1
@@ -265,7 +265,7 @@ func (c *SyncClient) stat(ctx context.Context, path, requestID string) (SyncEntr
 	if err != nil {
 		return SyncEntry{}, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // The protocol response determines metadata success.
 
 	if err := writeSyncRequest(conn, requestID, path); err != nil {
 		return SyncEntry{}, syncContextError(ctx, fmt.Errorf("adb sync stat request: %w", err))
@@ -325,7 +325,7 @@ func (c *SyncClient) Receive(ctx context.Context, path string) (*SyncReceiveRead
 		requestID = syncIDRecvV2
 	}
 	if err := writeSyncRequest(conn, requestID, path); err != nil {
-		conn.Close()
+		_ = conn.Close() // Preserve the receive-request failure.
 		return nil, syncContextError(ctx, fmt.Errorf("adb sync receive request: %w", err))
 	}
 	if v2 {
@@ -333,7 +333,7 @@ func (c *SyncClient) Receive(ctx context.Context, path string) (*SyncReceiveRead
 		copy(setup[:4], syncIDRecvV2)
 		// flags remains zero: no compression is requested.
 		if err := writeSyncFull(conn, setup[:]); err != nil {
-			conn.Close()
+			_ = conn.Close() // Preserve the receive-setup failure.
 			return nil, syncContextError(ctx, fmt.Errorf("adb sync receive setup: %w", err))
 		}
 	}
@@ -381,7 +381,7 @@ func (c *SyncClient) Send(ctx context.Context, path string, mode uint32, mtime t
 		return nil, err
 	}
 	if err := writeSyncRequest(conn, requestID, payload); err != nil {
-		conn.Close()
+		_ = conn.Close() // Preserve the send-request failure.
 		return nil, syncContextError(ctx, fmt.Errorf("adb sync send request: %w", err))
 	}
 	if v2 {
@@ -390,7 +390,7 @@ func (c *SyncClient) Send(ctx context.Context, path string, mode uint32, mtime t
 		binary.LittleEndian.PutUint32(setup[4:8], mode)
 		// flags remains zero: no compression and no dry-run.
 		if err := writeSyncFull(conn, setup[:]); err != nil {
-			conn.Close()
+			_ = conn.Close() // Preserve the send-setup failure.
 			return nil, syncContextError(ctx, fmt.Errorf("adb sync send setup: %w", err))
 		}
 	}
@@ -465,10 +465,11 @@ func (r *SyncReceiveReader) Read(p []byte) (int, error) {
 		}
 		if r.remaining != 0 {
 			want := len(p)
-			if uint32(want) > r.remaining {
+			if want > int(r.remaining) {
 				want = int(r.remaining)
 			}
 			n, err := io.ReadFull(r.conn, p[:want])
+			// #nosec G115 -- io.ReadFull cannot return more than want, which is capped at r.remaining.
 			r.remaining -= uint32(n)
 			if err != nil {
 				err = syncContextError(r.ctx, fmt.Errorf("adb sync receive data: %w", err))
@@ -687,6 +688,7 @@ func writeSyncRequest(w io.Writer, id, path string) error {
 	}
 	var header [8]byte
 	copy(header[:4], id)
+	// #nosec G115 -- SyncMaxPath is 1024, and the length was checked above.
 	binary.LittleEndian.PutUint32(header[4:], uint32(len(path)))
 	if err := writeSyncFull(w, header[:]); err != nil {
 		return err
@@ -735,6 +737,18 @@ func readSyncStatV2AfterID(r io.Reader) (SyncEntry, error) {
 	if _, err := io.ReadFull(r, body[:]); err != nil {
 		return SyncEntry{}, err
 	}
+	accessTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[44:52]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
+	modTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[52:60]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
+	changeTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[60:68]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
 	return SyncEntry{
 		metadataV2: true,
 		Errno:      binary.LittleEndian.Uint32(body[0:4]),
@@ -745,9 +759,9 @@ func readSyncStatV2AfterID(r io.Reader) (SyncEntry, error) {
 		UID:        binary.LittleEndian.Uint32(body[28:32]),
 		GID:        binary.LittleEndian.Uint32(body[32:36]),
 		Size:       binary.LittleEndian.Uint64(body[36:44]),
-		AccessTime: time.Unix(int64(binary.LittleEndian.Uint64(body[44:52])), 0),
-		ModTime:    time.Unix(int64(binary.LittleEndian.Uint64(body[52:60])), 0),
-		ChangeTime: time.Unix(int64(binary.LittleEndian.Uint64(body[60:68])), 0),
+		AccessTime: accessTime,
+		ModTime:    modTime,
+		ChangeTime: changeTime,
 	}, nil
 }
 
@@ -779,6 +793,18 @@ func readSyncDentV2AfterID(r io.Reader) (SyncEntry, error) {
 	if err != nil {
 		return SyncEntry{}, err
 	}
+	accessTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[44:52]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
+	modTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[52:60]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
+	changeTime, err := syncUnixTime(binary.LittleEndian.Uint64(body[60:68]))
+	if err != nil {
+		return SyncEntry{}, err
+	}
 	return SyncEntry{
 		Name:       name,
 		metadataV2: true,
@@ -790,10 +816,18 @@ func readSyncDentV2AfterID(r io.Reader) (SyncEntry, error) {
 		UID:        binary.LittleEndian.Uint32(body[28:32]),
 		GID:        binary.LittleEndian.Uint32(body[32:36]),
 		Size:       binary.LittleEndian.Uint64(body[36:44]),
-		AccessTime: time.Unix(int64(binary.LittleEndian.Uint64(body[44:52])), 0),
-		ModTime:    time.Unix(int64(binary.LittleEndian.Uint64(body[52:60])), 0),
-		ChangeTime: time.Unix(int64(binary.LittleEndian.Uint64(body[60:68])), 0),
+		AccessTime: accessTime,
+		ModTime:    modTime,
+		ChangeTime: changeTime,
 	}, nil
+}
+
+func syncUnixTime(seconds uint64) (time.Time, error) {
+	if seconds > math.MaxInt64 {
+		return time.Time{}, &SyncProtocolError{Operation: "metadata", Detail: fmt.Sprintf("timestamp %d is outside the int64 range", seconds)}
+	}
+	// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
+	return time.Unix(int64(seconds), 0), nil
 }
 
 func readSyncName(r io.Reader, size uint32) (string, error) {

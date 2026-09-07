@@ -1,0 +1,7 @@
+# This file is part of the test job's Go cache key (see build.yml).
+# Bump the number when the cache *location* changes -- e.g. the move of
+# GOCACHE/GOMODCACHE to D: on Windows -- so stale caches with the old
+# absolute paths rotate out. Do not bump it for ordinary CI edits: a
+# rotation costs every test cell a cold compile, ~9 minutes on the
+# darwin/amd64 runner alone.
+1

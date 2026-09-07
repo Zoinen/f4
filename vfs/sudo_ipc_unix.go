@@ -5,8 +5,10 @@ package vfs
 import (
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"github.com/unxed/vtui"
 	"io"
+	"math"
 	"net"
 	"os"
 	"syscall"
@@ -18,8 +20,12 @@ func sendMsg(conn *net.UnixConn, msg any, fd int) error {
 	if err != nil {
 		return err
 	}
+	if uint64(len(data)) > math.MaxUint32 {
+		return fmt.Errorf("sudo IPC message is too large: %d bytes", len(data))
+	}
 
 	lenBuf := make([]byte, 4)
+	// #nosec G115 -- the message length was checked against MaxUint32 above.
 	binary.LittleEndian.PutUint32(lenBuf, uint32(len(data)))
 	if _, err := conn.Write(lenBuf); err != nil {
 		return err
@@ -56,13 +62,13 @@ func recvMsg(conn *net.UnixConn, msg any) (*os.File, error) {
 	}
 
 	// Guarantee we read the full payload if fragmented
-	if uint32(n) < length {
-		if _, err := io.ReadFull(conn, buf[n:length]); err != nil {
+	if n < len(buf) {
+		if _, err := io.ReadFull(conn, buf[n:]); err != nil {
 			return nil, err
 		}
 	}
 
-	if err = json.Unmarshal(buf[:length], msg); err != nil {
+	if err = json.Unmarshal(buf, msg); err != nil {
 		return nil, err
 	}
 

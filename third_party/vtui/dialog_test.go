@@ -5,6 +5,76 @@ import (
 	"testing"
 )
 
+func TestCenteredDialogScrollsToItsFocusedControlInAShortViewport(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(40, 8)
+	FrameManager.Init(scr)
+
+	dialog := NewCenteredDialog(30, 14, "Panel settings")
+	first := NewButton(dialog.X1+2, dialog.Y1+2, "First")
+	last := NewButton(dialog.X1+2, dialog.Y1+11, "Last")
+	last.IsDefault = true
+	dialog.AddItem(first)
+	dialog.AddItem(last)
+	dialog.Show(scr)
+
+	if dialog.Y1 != 0 || dialog.Y2 != 7 {
+		t.Fatalf("visible dialog bounds = (%d,%d), want (0,7)", dialog.Y1, dialog.Y2)
+	}
+	if dialog.scrollMax == 0 {
+		t.Fatal("short dialog viewport did not enable scrolling")
+	}
+
+	dialog.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
+	_, _, _, lastY := last.GetPosition()
+	if lastY > dialog.Y2-1 {
+		t.Fatalf("default button stayed below viewport at row %d (bottom %d)", lastY, dialog.Y2-1)
+	}
+}
+
+func TestCenteredDialogScrollsWithMouseWheelInAShortViewport(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(40, 8)
+	FrameManager.Init(scr)
+
+	dialog := NewCenteredDialog(30, 14, "Panel settings")
+	last := NewButton(dialog.X1+2, dialog.Y1+11, "Last")
+	dialog.AddItem(last)
+	dialog.Show(scr)
+
+	for range 8 {
+		if !dialog.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, WheelDirection: -1}) {
+			t.Fatal("mouse wheel was not handled by a short modal dialog")
+		}
+	}
+	_, _, _, lastY := last.GetPosition()
+	if lastY > dialog.Y2-1 {
+		t.Fatalf("mouse wheel did not reveal the last control: row %d, bottom %d", lastY, dialog.Y2-1)
+	}
+}
+
+func TestCenteredDialogKeepsFocusedControlVisibleAfterResize(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(40, 8)
+	FrameManager.Init(scr)
+
+	dialog := NewCenteredDialog(30, 14, "Panel settings")
+	first := NewButton(dialog.X1+2, dialog.Y1+2, "First")
+	last := NewButton(dialog.X1+2, dialog.Y1+11, "Last")
+	last.IsDefault = true
+	dialog.AddItem(first)
+	dialog.AddItem(last)
+	dialog.Show(scr)
+
+	dialog.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
+	dialog.ResizeConsole(40, 6)
+
+	_, y1, _, y2 := last.GetPosition()
+	if y1 < dialog.Y1+1 || y2 > dialog.Y2-1 {
+		t.Fatalf("focused control is outside resized viewport: (%d,%d), viewport (%d,%d)", y1, y2, dialog.Y1+1, dialog.Y2-1)
+	}
+}
+
 func TestDialog_HotkeyCaseInsensitivity(t *testing.T) {
 	d := NewDialog(0, 0, 40, 10, "Case Test")
 	btn := NewButton(1, 1, "&File")
@@ -570,9 +640,10 @@ func TestDialog_ShadowAndFocusColors(t *testing.T) {
 
 	// 3. Test shadow rendering of d2
 	baseAttr := Palette[ColDesktopBackground]
-	shadowedFg := GetRGBFore(baseAttr) / 2
-	shadowedBg := GetRGBBack(baseAttr) / 2
-	expectedShadowAttr := SetRGBBoth(baseAttr, shadowedFg, shadowedBg)
+	dimRGB := func(c uint32) uint32 {
+		return (((c>>16&0xFF)*3)/8)<<16 | (((c>>8&0xFF)*3)/8)<<8 | (((c & 0xFF) * 3) / 8)
+	}
+	expectedShadowAttr := SetRGBBoth(baseAttr, dimRGB(GetRGBFore(baseAttr)), dimRGB(GetRGBBack(baseAttr)))
 
 	// Check a cell inside the shadow of d2. It should be over the desktop background.
 	// d2 is (10,10)-(15,15). Shadow bottom is at Y=16, X=12..17.

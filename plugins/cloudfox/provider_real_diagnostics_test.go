@@ -151,7 +151,7 @@ func TestRealSavedCloudConnectionDiagnostics(t *testing.T) {
 			cancelResult <- openErr
 			return
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 		buffer := make([]byte, 1<<20)
 		for {
 			_, readErr := reader.Read(cancelCtx, buffer)
@@ -241,7 +241,7 @@ func measureRealDiagnosticDownload(ctx context.Context, backend Backend, locatio
 		result.totalDuration = time.Since(started)
 		return result
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	h := sha256.New()
 	buffer := make([]byte, 1<<20)
 	for {

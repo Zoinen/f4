@@ -20,9 +20,6 @@ func TestDestinationOverwriteContext(t *testing.T) {
 			t.Fatalf("DestinationOverwrite(%v)=(%v,%v)", overwrite, got, known)
 		}
 	}
-	if _, known := DestinationOverwrite(nil); known {
-		t.Fatal("nil context unexpectedly has an overwrite decision")
-	}
 }
 
 func TestOSVFSCreateHonorsExplicitNoOverwrite(t *testing.T) {

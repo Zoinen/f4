@@ -82,7 +82,7 @@ func edgeReadWebDAVFile(t *testing.T, backend *webDAVBackend, location string) [
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	data := make([]byte, r.Size())
 	if len(data) == 0 {
 		return data
@@ -112,7 +112,7 @@ func TestWebDAVEdgeSettingsAndAuthenticationMatrix(t *testing.T) {
 		{name: "anonymous over HTTP", settings: WebDAVSettings{BaseURL: "http://dav.example/dav", Auth: "anonymous"}},
 		{name: "missing host", settings: WebDAVSettings{BaseURL: "https:///dav"}, wantErr: "invalid WebDAV base URL"},
 		{name: "unsupported scheme", settings: WebDAVSettings{BaseURL: "ftp://dav.example/dav"}, wantErr: "invalid WebDAV base URL"},
-		{name: "userinfo", settings: WebDAVSettings{BaseURL: "https://alice:secret@dav.example/dav"}, wantErr: "invalid WebDAV base URL"},
+		{name: "userinfo", settings: WebDAVSettings{BaseURL: "https://alice:secret@dav.example/dav"}, wantErr: "invalid WebDAV base URL"}, // #nosec G101 -- credential-like userinfo is an invalid-input fixture whose rejection is under test.
 		{name: "query", settings: WebDAVSettings{BaseURL: "https://dav.example/dav?token=secret"}, wantErr: "invalid WebDAV base URL"},
 		{name: "fragment", settings: WebDAVSettings{BaseURL: "https://dav.example/dav#fragment"}, wantErr: "invalid WebDAV base URL"},
 		{name: "encoded base separator", settings: WebDAVSettings{BaseURL: "https://dav.example/dav%2Ftenant"}, wantErr: "ambiguous WebDAV base URL path"},
@@ -188,7 +188,11 @@ func TestWebDAVEdgeSettingsAndAuthenticationMatrix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer opened.Close()
+			t.Cleanup(func() {
+				if err := opened.Close(); err != nil {
+					t.Errorf("close test resource: %v", err)
+				}
+			})
 			backend := opened.(*webDAVBackend)
 			switch test.transport.(type) {
 			case *webDAVStaticAuthTransport:
@@ -588,7 +592,7 @@ func TestWebDAVEdgeMissingPROPFINDLengthUsesActualFullSize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if reader.Size() != int64(len(content)) {
 		t.Fatalf("reader size=%d, want %d", reader.Size(), len(content))
 	}
@@ -664,7 +668,7 @@ func TestWebDAVEdgeWildcardETagDoesNotEnableRangeReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if n, err := reader.ReadAt(context.Background(), buffer, 0); err != nil || n != 5 || string(buffer) != "world" {
 		t.Fatalf("second wildcard response=%d, %v, %q", n, err, buffer)
 	}

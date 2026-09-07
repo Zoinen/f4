@@ -3,8 +3,10 @@ package netfox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path"
@@ -22,13 +24,53 @@ import (
 import "golang.org/x/text/encoding"
 
 type FTPVFS struct {
-	mu      sync.Mutex
-	parent  vfs.VFS
-	conn    *ftp.ServerConn
-	cwd     string
-	title   string
-	decoder *encoding.Decoder
-	encoder *encoding.Encoder
+	mu        sync.Mutex
+	parent    vfs.VFS
+	conn      *ftp.ServerConn
+	session   *ftpSession
+	cwd       string
+	title     string
+	decoder   *encoding.Decoder
+	encoder   *encoding.Encoder
+	closeOnce sync.Once
+}
+
+// ftpSession owns one control connection shared by independent VFS views.
+// FTP keeps a current directory on the control connection itself, so opening
+// a second view must at least serialize every command and keep the view's cwd
+// outside the shared object. Reference counting also prevents a cloned
+// workspace from quitting the connection still used by its source.
+type ftpSession struct {
+	mu     sync.Mutex
+	conn   *ftp.ServerConn
+	refs   int
+	closed bool
+}
+
+func (s *ftpSession) retain() {
+	s.mu.Lock()
+	if !s.closed {
+		s.refs++
+	}
+	s.mu.Unlock()
+}
+
+func (s *ftpSession) release() error {
+	s.mu.Lock()
+	if s.refs > 0 {
+		s.refs--
+	}
+	if s.refs != 0 || s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	return conn.Quit()
 }
 
 type timeoutConn struct {
@@ -37,12 +79,14 @@ type timeoutConn struct {
 }
 
 func (c *timeoutConn) Read(b []byte) (int, error) {
-	c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+	// Only fails on a connection already closed, which the Read below
+	// reports properly; swallowing it here would hide nothing.
+	_ = c.SetReadDeadline(time.Now().Add(c.timeout))
 	return c.Conn.Read(b)
 }
 
 func (c *timeoutConn) Write(b []byte) (int, error) {
-	c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	_ = c.SetWriteDeadline(time.Now().Add(c.timeout))
 	return c.Conn.Write(b)
 }
 
@@ -91,7 +135,7 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 
 	err = c.Login(user, pass)
 	if err != nil {
-		c.Quit()
+		_ = c.Quit() // Preserve the authentication failure.
 		return nil, err
 	}
 	vtui.DebugLog("NET: FTP logged in successfully")
@@ -110,6 +154,7 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 	return &FTPVFS{
 		parent:  parent,
 		conn:    c,
+		session: &ftpSession{conn: c, refs: 1},
 		cwd:     pwd,
 		title:   title,
 		decoder: dec,
@@ -118,19 +163,60 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 }
 
 func (v *FTPVFS) GetTitle() string { return v.title }
-func (v *FTPVFS) SessionKey() any  { return v.conn }
-
-func (v *FTPVFS) IsAtRoot() bool      { return v.cwd == "/" || v.cwd == "" || v.cwd == "." }
-func (v *FTPVFS) GetPath() string     { return v.cwd }
-func (v *FTPVFS) IsAbs(p string) bool { return path.IsAbs(p) }
-func (v *FTPVFS) SetPath(p string) error {
+func (v *FTPVFS) SessionKey() any {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	target := p
-	if !path.IsAbs(p) {
-		target = path.Join(v.cwd, p)
+	if v.conn != nil {
+		return v.conn
 	}
-	if err := v.conn.ChangeDir(v.encodePath(target)); err != nil {
+	if v.session != nil {
+		return v.session
+	}
+	return nil
+}
+
+func (v *FTPVFS) operationLock() func() {
+	v.mu.Lock()
+	if v.session != nil {
+		v.session.mu.Lock()
+		return func() {
+			v.session.mu.Unlock()
+			v.mu.Unlock()
+		}
+	}
+	return v.mu.Unlock
+}
+
+func (v *FTPVFS) operationConn() *ftp.ServerConn {
+	if v.session != nil {
+		return v.session.conn
+	}
+	return v.conn
+}
+
+func (v *FTPVFS) pathLocked(p string) string {
+	if path.IsAbs(p) {
+		return path.Clean(p)
+	}
+	return path.Join(v.cwd, p)
+}
+
+func (v *FTPVFS) IsAtRoot() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cwd == "/" || v.cwd == "" || v.cwd == "."
+}
+func (v *FTPVFS) GetPath() string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.cwd
+}
+func (v *FTPVFS) IsAbs(p string) bool { return path.IsAbs(p) }
+func (v *FTPVFS) SetPath(p string) error {
+	unlock := v.operationLock()
+	defer unlock()
+	target := v.pathLocked(p)
+	if err := v.operationConn().ChangeDir(v.encodePath(target)); err != nil {
 		return err
 	}
 	v.cwd = target
@@ -138,14 +224,11 @@ func (v *FTPVFS) SetPath(p string) error {
 }
 
 func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	target := p
-	if target == "/" || target == "." {
-		target = ""
-	}
+	unlock := v.operationLock()
+	defer unlock()
+	target := v.pathLocked(p)
 	vtui.DebugLog("FTP: ReadDir(%q) starting...", target)
-	entries, err := v.conn.List(v.encodePath(target))
+	entries, err := v.operationConn().List(v.encodePath(target))
 	if err != nil {
 		vtui.DebugLog("FTP: ReadDir(%q) failed: %v", target, err)
 		return err
@@ -166,9 +249,14 @@ func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIt
 				name = string(decoded)
 			}
 		}
+		if e.Size > math.MaxInt64 {
+			return fmt.Errorf("FTP entry %q is too large: %d bytes exceeds the supported size", name, e.Size)
+		}
 
+		// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
+		size := int64(e.Size)
 		items = append(items, vfs.VFSItem{
-			Name: name, Size: int64(e.Size),
+			Name: name, Size: size,
 			IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 			IsHidden: strings.HasPrefix(name, "."),
 		})
@@ -182,17 +270,23 @@ func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIt
 }
 
 func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	dir, base := path.Dir(p), path.Base(p)
-	entries, err := v.conn.List(v.encodePath(dir))
+	unlock := v.operationLock()
+	defer unlock()
+	fullPath := v.pathLocked(p)
+	dir, base := path.Dir(fullPath), path.Base(fullPath)
+	entries, err := v.operationConn().List(v.encodePath(dir))
 	if err != nil {
 		return vfs.VFSItem{}, err
 	}
 	for _, e := range entries {
 		if e.Name == base {
+			if e.Size > math.MaxInt64 {
+				return vfs.VFSItem{}, fmt.Errorf("FTP entry %q is too large: %d bytes exceeds the supported size", e.Name, e.Size)
+			}
+			// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
+			size := int64(e.Size)
 			return vfs.VFSItem{
-				Name: e.Name, Size: int64(e.Size),
+				Name: e.Name, Size: size,
 				IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 				IsHidden: strings.HasPrefix(e.Name, "."),
 			}, nil
@@ -203,28 +297,37 @@ func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 
 func (v *FTPVFS) Join(e ...string) string { return path.Join(e...) }
 func (v *FTPVFS) Abs(p string) (string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	if path.IsAbs(p) {
 		return path.Clean(p), nil
 	}
 	return path.Join(v.cwd, p), nil
 }
-func (v *FTPVFS) Base(p string) string                      { return path.Base(p) }
-func (v *FTPVFS) Dir(p string) string                       { return path.Dir(p) }
-func (v *FTPVFS) MkDir(ctx context.Context, p string) error { return v.conn.MakeDir(v.encodePath(p)) }
+func (v *FTPVFS) Base(p string) string { return path.Base(p) }
+func (v *FTPVFS) Dir(p string) string  { return path.Dir(p) }
+func (v *FTPVFS) MkDir(ctx context.Context, p string) error {
+	unlock := v.operationLock()
+	defer unlock()
+	return v.operationConn().MakeDir(v.encodePath(v.pathLocked(p)))
+}
 func (v *FTPVFS) Remove(ctx context.Context, p string) error {
-	return v.removeRecursive(ctx, p)
+	unlock := v.operationLock()
+	defer unlock()
+	return v.removeRecursiveLocked(ctx, v.pathLocked(p))
 }
 
-func (v *FTPVFS) removeRecursive(ctx context.Context, p string) error {
+func (v *FTPVFS) removeRecursiveLocked(ctx context.Context, p string) error {
 	enc := v.encodePath(p)
-	err := v.conn.Delete(enc)
+	conn := v.operationConn()
+	err := conn.Delete(enc)
 	if err == nil {
 		return nil
 	}
 
-	entries, err := v.conn.List(enc)
+	entries, err := conn.List(enc)
 	if err != nil {
-		return v.conn.RemoveDir(enc)
+		return conn.RemoveDir(enc)
 	}
 
 	for _, e := range entries {
@@ -236,20 +339,22 @@ func (v *FTPVFS) removeRecursive(ctx context.Context, p string) error {
 		}
 		full := path.Join(p, e.Name)
 		if e.Type == ftp.EntryTypeFolder {
-			if err := v.removeRecursive(ctx, full); err != nil {
+			if err := v.removeRecursiveLocked(ctx, full); err != nil {
 				return err
 			}
 		} else {
-			if err := v.conn.Delete(v.encodePath(full)); err != nil {
+			if err := conn.Delete(v.encodePath(full)); err != nil {
 				return err
 			}
 		}
 	}
 
-	return v.conn.RemoveDir(enc)
+	return conn.RemoveDir(enc)
 }
 func (v *FTPVFS) Rename(ctx context.Context, o, n string) error {
-	return v.conn.Rename(v.encodePath(o), v.encodePath(n))
+	unlock := v.operationLock()
+	defer unlock()
+	return v.operationConn().Rename(v.encodePath(v.pathLocked(o)), v.encodePath(v.pathLocked(n)))
 }
 
 func (v *FTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
@@ -264,32 +369,80 @@ func (v *FTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) 
 }
 
 func (v *FTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	vtui.DebugLog("FTP: Opening file %q for reading...", p)
-	resp, err := v.conn.Retr(v.encodePath(p))
+	unlock := v.operationLock()
+	defer unlock()
+	fullPath := v.pathLocked(p)
+	vtui.DebugLog("FTP: Opening file %q for reading...", fullPath)
+	resp, err := v.operationConn().Retr(v.encodePath(fullPath))
 	if err != nil {
 		return nil, err
 	}
-	tmp, _ := os.CreateTemp("", "f4ftp-*")
-	io.Copy(tmp, &ioCtxReader{r: resp, ctx: ctx})
-	resp.Close()
-	tmp.Seek(0, 0)
-	stat, _ := tmp.Stat()
-	return &ftpFileWrapper{File: tmp, size: stat.Size(), path: tmp.Name()}, nil
+	tmp, err := os.CreateTemp("", "f4ftp-*")
+	if err != nil {
+		_ = resp.Close() // Preserve the temp-file creation failure.
+		return nil, err
+	}
+	cleanup := func() error {
+		return errors.Join(tmp.Close(), os.Remove(tmp.Name()))
+	}
+	size, copyErr := io.Copy(tmp, &ioCtxReader{r: resp, ctx: ctx})
+	if err := errors.Join(copyErr, resp.Close()); err != nil {
+		return nil, errors.Join(err, cleanup())
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return nil, errors.Join(err, cleanup())
+	}
+	return &ftpFileWrapper{File: tmp, size: size, path: tmp.Name()}, nil
 }
 
 func (v *FTPVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
+	v.mu.Lock()
+	conn := v.operationConn()
+	encodedPath := v.encodePath(v.pathLocked(p))
+	session := v.session
+	v.mu.Unlock()
 	pr, pw := io.Pipe()
 	go func() {
-		err := v.conn.Stor(v.encodePath(p), pr)
-		pr.CloseWithError(err)
+		if session != nil {
+			session.mu.Lock()
+			defer session.mu.Unlock()
+		}
+		err := conn.Stor(encodedPath, pr)
+		_ = pr.CloseWithError(err) // io.PipeReader.CloseWithError always returns nil.
 	}()
 	return pw, nil
 }
 
 func (v *FTPVFS) ParentVFS() vfs.VFS { return v.parent }
-func (v *FTPVFS) Close() error       { return v.conn.Quit() }
+func (v *FTPVFS) Close() error {
+	if v == nil {
+		return nil
+	}
+	var err error
+	v.closeOnce.Do(func() {
+		if v.session != nil {
+			err = v.session.release()
+		} else if v.conn != nil {
+			err = v.conn.Quit()
+		}
+	})
+	return err
+}
 func (v *FTPVFS) Clone() vfs.VFS {
-	return v
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	session := v.session
+	if session == nil && v.conn != nil {
+		session = &ftpSession{conn: v.conn, refs: 1}
+		v.session = session
+	}
+	if session != nil {
+		session.retain()
+	}
+	return &FTPVFS{
+		parent: v.parent, conn: v.conn, session: session, cwd: v.cwd,
+		title: v.title, decoder: v.decoder, encoder: v.encoder,
+	}
 }
 
 type ftpProvider struct{}
@@ -309,17 +462,24 @@ func (p *ftpProvider) CanOpen(ctx context.Context, parent vfs.VFS, pth string) b
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // The configuration file is read-only.
 	var cfg NetFoxConfig
-	json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg)
+	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
+		return false
+	}
 	return cfg.Type == "ftp"
 }
 func (p *ftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs.VFS, error) {
 	w := parent.(*netFoxVFSWrapper)
-	f, _ := w.Open(ctx, pth)
-	defer f.Close()
+	f, err := w.Open(ctx, pth)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }() // The configuration file is read-only.
 	var cfg NetFoxConfig
-	json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg)
+	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("netfox: decode FTP connection: %w", err)
+	}
 	port := cfg.Port
 	if port == "" {
 		port = "21"
@@ -330,7 +490,11 @@ func (p *ftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs
 			timeout = t
 		}
 	}
-	return NewFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Options, cfg.Codepage, cfg.Proxy())
+	res, err := NewFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Options, cfg.Codepage, cfg.Proxy())
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 type ftpProtocolHandler struct{}
@@ -383,4 +547,4 @@ func (w *ftpFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, 
 	return w.File.ReadAt(p, off)
 }
 func (w *ftpFileWrapper) Read(ctx context.Context, p []byte) (int, error) { return w.File.Read(p) }
-func (w *ftpFileWrapper) Close() error                                    { w.File.Close(); return os.Remove(w.path) }
+func (w *ftpFileWrapper) Close() error                                    { return errors.Join(w.File.Close(), os.Remove(w.path)) }

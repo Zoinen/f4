@@ -1,8 +1,15 @@
 package fusefs
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
 	"sync"
 	"testing"
+
+	"github.com/unxed/f4/vfs"
 )
 
 func newWriterTestBridge() *bridge {
@@ -93,5 +100,261 @@ func TestWriterTableUnderConcurrentOpens(t *testing.T) {
 	}
 	if b.openWriters() != 0 {
 		t.Fatal("the table did not empty")
+	}
+}
+
+type lifecycleVFS struct {
+	*fakeVFS
+	mu        sync.Mutex
+	data      []byte
+	handles   []*lifecycleWriter
+	closeErrs []error
+}
+
+func newLifecycleVFS(closeErrs ...error) *lifecycleVFS {
+	return &lifecycleVFS{fakeVFS: newFakeVFS(true), closeErrs: closeErrs}
+}
+
+func (v *lifecycleVFS) GetCapabilities() vfs.VFSCapabilities {
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasWrite: true}
+}
+
+func (v *lifecycleVFS) OpenWriteAt(ctx context.Context, path string) (vfs.WriterAtCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	w := &lifecycleWriter{owner: v}
+	if len(v.closeErrs) > len(v.handles) {
+		w.closeErr = v.closeErrs[len(v.handles)]
+	}
+	v.handles = append(v.handles, w)
+	return w, nil
+}
+
+type lifecycleWriter struct {
+	owner    *lifecycleVFS
+	closed   bool
+	closes   int
+	closeErr error
+}
+
+func (w *lifecycleWriter) WriteAt(p []byte, off int64) (int, error) {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	if w.closed {
+		return 0, os.ErrClosed
+	}
+	end := int(off) + len(p)
+	if end > len(w.owner.data) {
+		w.owner.data = append(w.owner.data, make([]byte, end-len(w.owner.data))...)
+	}
+	return copy(w.owner.data[int(off):], p), nil
+}
+
+func (w *lifecycleWriter) Truncate(size int64) error {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	if w.closed {
+		return os.ErrClosed
+	}
+	if size < int64(len(w.owner.data)) {
+		w.owner.data = w.owner.data[:size]
+	} else {
+		w.owner.data = append(w.owner.data, make([]byte, int(size)-len(w.owner.data))...)
+	}
+	return nil
+}
+
+func (w *lifecycleWriter) Close() error {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	w.closes++
+	w.closed = true
+	return w.closeErr
+}
+
+type stagedLifecycleVFS struct {
+	*fakeVFS
+	mu      sync.Mutex
+	commits []string
+}
+
+func newStagedLifecycleVFS() *stagedLifecycleVFS {
+	return &stagedLifecycleVFS{fakeVFS: newFakeVFS(true)}
+}
+
+func (v *stagedLifecycleVFS) GetCapabilities() vfs.VFSCapabilities {
+	return vfs.VFSCapabilities{HasRandomAccess: true, HasWrite: true}
+}
+
+func (v *stagedLifecycleVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &stagedLifecycleWriter{owner: v}, nil
+}
+
+type stagedLifecycleWriter struct {
+	bytes.Buffer
+	owner *stagedLifecycleVFS
+}
+
+func (w *stagedLifecycleWriter) Close() error {
+	w.owner.mu.Lock()
+	defer w.owner.mu.Unlock()
+	w.owner.commits = append(w.owner.commits, w.String())
+	return nil
+}
+
+func TestWriteHandleMultipleFlushAndWriteAfterFlush(t *testing.T) {
+	ctx := context.Background()
+	v := newLifecycleVFS()
+	b := newBridge(v, "/root", Options{})
+	t.Cleanup(b.close)
+
+	wh, _, err := b.acquireWriteHandle(ctx, "/root/out.txt")
+	if err != nil {
+		t.Fatalf("acquire writer: %v", err)
+	}
+	if _, err := wh.writeAt(ctx, b, []byte("a"), 0); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("first Flush: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("second Flush: %v", err)
+	}
+	if len(v.handles) != 1 {
+		t.Fatalf("two Flush calls used %d handles, want one", len(v.handles))
+	}
+	if v.handles[0].closes != 1 {
+		t.Fatalf("two Flush calls closed the handle %d times, want once", v.handles[0].closes)
+	}
+
+	if _, err := wh.writeAt(ctx, b, []byte("b"), 1); err != nil {
+		t.Fatalf("write after Flush: %v", err)
+	}
+	if len(v.handles) != 2 {
+		t.Fatalf("write after Flush opened %d handles, want 2", len(v.handles))
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("Flush after another write: %v", err)
+	}
+	if err := b.finishWriter(ctx, wh); err != nil {
+		t.Fatalf("Release after Flush: %v", err)
+	}
+	if got := string(v.data); got != "ab" {
+		t.Fatalf("backend data = %q, want %q", got, "ab")
+	}
+	if v.handles[1].closes != 1 {
+		t.Fatalf("reopened handle closed %d times, want once", v.handles[1].closes)
+	}
+}
+
+func TestWriteHandleFlushErrorReturnedOnce(t *testing.T) {
+	ctx := context.Background()
+	v := newLifecycleVFS(os.ErrPermission)
+	b := newBridge(v, "/root", Options{})
+	t.Cleanup(b.close)
+
+	wh, _, err := b.acquireWriteHandle(ctx, "/root/out.txt")
+	if err != nil {
+		t.Fatalf("acquire writer: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("first Flush = %v, want os.ErrPermission", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("second Flush = %v, want success", err)
+	}
+	if err := b.finishWriter(ctx, wh); err != nil {
+		t.Fatalf("Release after failed Flush = %v", err)
+	}
+	if v.handles[0].closes != 1 {
+		t.Fatalf("failed close was retried %d times, want once", v.handles[0].closes)
+	}
+}
+
+func TestWriteHandleReleaseWithoutFlushClosesWriter(t *testing.T) {
+	ctx := context.Background()
+	v := newLifecycleVFS()
+	b := newBridge(v, "/root", Options{})
+	t.Cleanup(b.close)
+
+	wh, _, err := b.acquireWriteHandle(ctx, "/root/out.txt")
+	if err != nil {
+		t.Fatalf("acquire writer: %v", err)
+	}
+	if _, err := wh.writeAt(ctx, b, []byte("saved"), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := b.finishWriter(ctx, wh); err != nil {
+		t.Fatalf("Release without Flush: %v", err)
+	}
+	if len(v.handles) != 1 {
+		t.Fatalf("Release used %d handles, want one", len(v.handles))
+	}
+	if v.handles[0].closes != 1 {
+		t.Fatalf("Release closed the handle %d times, want once", v.handles[0].closes)
+	}
+}
+
+func TestStagedWriteAfterFlushIsCommittedAgain(t *testing.T) {
+	ctx := context.Background()
+	v := newStagedLifecycleVFS()
+	b := newBridge(v, "/root", Options{})
+	t.Cleanup(b.close)
+
+	wh, _, err := b.acquireWriteHandle(ctx, "/root/out.txt")
+	if err != nil {
+		t.Fatalf("acquire writer: %v", err)
+	}
+	if _, err := wh.writeAt(ctx, b, []byte("a"), 0); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("first Flush: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("second Flush: %v", err)
+	}
+	if _, err := wh.writeAt(ctx, b, []byte("b"), 1); err != nil {
+		t.Fatalf("write after Flush: %v", err)
+	}
+	if err := b.flushWriter(ctx, wh); err != nil {
+		t.Fatalf("Flush after another write: %v", err)
+	}
+	if err := b.finishWriter(ctx, wh); err != nil {
+		t.Fatalf("Release after Flush: %v", err)
+	}
+	if len(v.commits) != 2 || v.commits[0] != "a" || v.commits[1] != "ab" {
+		t.Fatalf("commits = %q, want [a ab]", v.commits)
+	}
+}
+
+func TestStagedReleaseWithoutFlushCommitsAndCloses(t *testing.T) {
+	ctx := context.Background()
+	v := newStagedLifecycleVFS()
+	b := newBridge(v, "/root", Options{})
+	t.Cleanup(b.close)
+
+	wh, _, err := b.acquireWriteHandle(ctx, "/root/out.txt")
+	if err != nil {
+		t.Fatalf("acquire writer: %v", err)
+	}
+	if _, err := wh.writeAt(ctx, b, []byte("saved"), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := b.finishWriter(ctx, wh); err != nil {
+		t.Fatalf("Release without Flush: %v", err)
+	}
+	if len(v.commits) != 1 || v.commits[0] != "saved" {
+		t.Fatalf("commits = %q, want [saved]", v.commits)
+	}
+	if _, err := wh.staged.Size(); err == nil {
+		t.Fatal("staging file remained usable after Release")
 	}
 }

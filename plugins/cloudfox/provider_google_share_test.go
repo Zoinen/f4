@@ -629,10 +629,11 @@ func TestGoogleShareMutationsAreSerialized(t *testing.T) {
 			writeGoogleShareJSON(t, writer, `{"permissions":[]}`)
 		case request.Method == http.MethodPost:
 			number := mutations.Add(1)
-			if number == 1 {
+			switch number {
+			case 1:
 				close(firstMutation)
 				<-release
-			} else if number == 2 {
+			case 2:
 				close(secondMutation)
 			}
 			writeGoogleShareJSON(t, writer, `{"id":"anyone-id","type":"anyone","role":"reader"}`)

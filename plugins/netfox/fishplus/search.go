@@ -326,7 +326,8 @@ func parseFindProgress(line string) (FindProgress, bool) {
 // backend selection as ParseFoundListing; kept separate because the job
 // stream interleaves M/P/T/entry lines and the caller needs to pick.
 func parseFoundEntry(line, mode string) (Entry, error) {
-	switch mode {
+	m, variant, _ := strings.Cut(mode, " ")
+	switch m {
 	case "find":
 		return parseFindEntry(line)
 	case "stat":
@@ -334,7 +335,7 @@ func parseFoundEntry(line, mode string) (Entry, error) {
 	case "statbsd":
 		return parseStatLike(line, 8, "bsd stat listing", true)
 	case "ls":
-		return parseLsEntry(line, "", true)
+		return parseLsEntry(line, variant, true)
 	default:
 		return Entry{}, fmt.Errorf("fishplus: unknown ffind listing mode %q", mode)
 	}

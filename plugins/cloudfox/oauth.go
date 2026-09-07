@@ -63,7 +63,7 @@ func AuthorizeGoogleDesktop(ctx context.Context, connection Connection, secrets 
 	if err != nil {
 		return nil, fmt.Errorf("cloudfox: start Google OAuth callback: %w", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }() // Listener teardown is best effort.
 
 	state, err := randomOAuthState()
 	if err != nil {
@@ -251,7 +251,7 @@ func ExchangeYandexAuthorizationCode(ctx context.Context, client *http.Client, o
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }() // Response-body cleanup is best effort.
 	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
 		return nil, err

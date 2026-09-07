@@ -42,3 +42,22 @@ func TestMyNewDialog_Layout(t *testing.T) {
 
 ## AI Instructions
 When generating code for new dialogs, you **MUST** include a test file using `AssertLayout`. If the validation fails, you must adjust the dialog dimensions or margins until the test passes.
+
+## Debug logging from tests
+
+Production code must use `DebugLog` for diagnostic output; do not add direct
+`fmt.Fprintf(os.Stderr, ...)` calls just to make a failing test observable.
+
+Use `VTUI_DEBUG=stderr` when a local run should keep the normal timestamped
+debug records on standard error. For test output, install the test logger in a
+scoped setup and use the `test` mode:
+
+```go
+restore := vtui.SetTestLogger(t.Logf)
+defer restore()
+t.Setenv("VTUI_DEBUG", "test")
+```
+
+The callback is safe to use from background goroutines. `VTUI_DEBUG=test`
+falls back to standard error when no test logger is installed, which keeps
+manual `go test -v` diagnostics useful.

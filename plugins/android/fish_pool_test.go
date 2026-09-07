@@ -33,7 +33,9 @@ func newPoolTestFish(t *testing.T, parent vfs.VFS, blockNoop ...<-chan struct{})
 	}
 	go func() {
 		defer close(peer.closed)
-		defer peerConn.Close()
+		defer func() {
+			_ = peerConn.Close() // connection cleanup only
+		}()
 		scanner := bufio.NewScanner(peerConn)
 		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		if !scanner.Scan() {
@@ -78,7 +80,7 @@ func newPoolTestFish(t *testing.T, parent vfs.VFS, blockNoop ...<-chan struct{})
 
 	fish, err := netfox.NewFishVFSOnStream(context.Background(), parent, clientConn, clientConn, clientConn, "pool-test")
 	if err != nil {
-		clientConn.Close()
+		_ = clientConn.Close() // connection cleanup only
 		t.Fatalf("create test FishVFS: %v", err)
 	}
 	return fish, peer
@@ -138,7 +140,11 @@ func TestFishSessionPoolReusesConnectionAndReparentsView(t *testing.T) {
 
 func TestFishSessionPoolDoesNotRetainNonFishVFS(t *testing.T) {
 	pool := newFishSessionPool()
-	defer pool.Close()
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Errorf("close FISH+ session pool: %v", err)
+		}
+	})
 	var opens atomic.Int64
 	open := func(context.Context, vfs.VFS, DeviceInfo) (vfs.VFS, error) {
 		opens.Add(1)
@@ -221,7 +227,11 @@ func TestFishSessionPoolDoesNotWaitBehindBusyConnection(t *testing.T) {
 
 func TestFishSessionPoolReopensClosingConnection(t *testing.T) {
 	pool := newFishSessionPool()
-	defer pool.Close()
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Errorf("close FISH+ session pool: %v", err)
+		}
+	})
 	device := DeviceInfo{Serial: "serial", State: DeviceStateOnline}
 	var opens atomic.Int64
 	open := func(_ context.Context, parent vfs.VFS, _ DeviceInfo) (vfs.VFS, error) {
@@ -244,7 +254,11 @@ func TestFishSessionPoolReopensClosingConnection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen closing pooled session: %v", err)
 	}
-	defer second.Close()
+	t.Cleanup(func() {
+		if err := second.Close(); err != nil {
+			t.Errorf("close reopened pooled session: %v", err)
+		}
+	})
 	if got := opens.Load(); got != 2 {
 		t.Fatalf("backend opens = %d, want 2", got)
 	}

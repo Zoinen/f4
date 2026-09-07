@@ -4,7 +4,7 @@
   author: "f4 Team"
   description: "A test plugin to verify single-file mechanics and hotkeys."
   category: "tools"
-  url: "file://plugring/hello_plugring.lua"
+  url: "https://raw.githubusercontent.com/unxed/f4/main/plugring/hello_plugring.lua"
   entrypoint: "hello_plugring.lua"
   runtimes:
     - embedded

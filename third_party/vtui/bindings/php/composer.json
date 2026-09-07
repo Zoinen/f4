@@ -1,0 +1,22 @@
+{
+  "name": "unxed/vtui",
+  "description": "Declarative, stateful Desktop-class TUI framework for PHP",
+  "type": "library",
+  "license": "BSD-3-Clause",
+  "authors": [
+    {
+      "name": "unxed"
+    }
+  ],
+  "require": {
+    "php": ">=7.4"
+  },
+  "autoload": {
+    "psr-4": {
+      "Vtui\\": "src/"
+    },
+    "files": [
+      "src/Vtui.php"
+    ]
+  }
+}

@@ -2,11 +2,8 @@ package vtui
 
 import (
 	"unicode"
-	"unicode/utf8"
 
-	"github.com/rivo/uniseg"
 	"github.com/unxed/vtinput"
-	"golang.org/x/text/unicode/bidi"
 )
 
 type Edit struct {
@@ -35,7 +32,12 @@ type Edit struct {
 	ColorUnchangedIdx  int
 	ColorSelectedIdx   int
 	HistoryID          string
-	OnTextChange       func(string)
+	// NoAutoComplete opts this field out of the completion menu, the
+	// equivalent of Far's DIF_NOAUTOCOMPLETE. Far uses it for the editor's
+	// go-to-line prompt, where a drop-down over a few digits is only in the
+	// way.
+	NoAutoComplete bool
+	OnTextChange   func(string)
 	// PathHintsEnabled lets the autocomplete menu ask PathHintProvider for
 	// file path suggestions in addition to history matches.
 	PathHintsEnabled  bool
@@ -51,13 +53,53 @@ type HistoryProvider interface {
 
 var GlobalHistoryProvider HistoryProvider
 
+// AutoCompleteEnabled gates the completion menu that opens while typing.
+// It mirrors Opt.Dialogs.AutoComplete in Far: a subtractive switch only. A
+// field still has to qualify on its own -- history entries, or path hints
+// with a provider installed, matching DIF_HISTORY and DIF_EDITPATH -- and
+// turning this on can never bring the menu to a field that does not.
+var AutoCompleteEnabled = true
+
+// autoCompletes reports whether typing in this field may open the menu.
+func (e *Edit) autoCompletes() bool {
+	if !AutoCompleteEnabled || e.NoAutoComplete || e.IsDisabled() {
+		return false
+	}
+	// A drop-down listing what was typed into a masked field would put the
+	// secret on screen in clear text.
+	if e.PasswordMode {
+		return false
+	}
+	return len(e.History) > 0 || (e.PathHintsEnabled && PathHintProvider != nil)
+}
+
+// maybeOpenAutoComplete opens the completion menu after typed was inserted,
+// when the field qualifies and anything matches. A field with history opens
+// on any character, as in Far; a path-only field keeps its old behaviour of
+// waiting for a separator, so that typing a long path does not rebuild the
+// menu on every keystroke.
+func (e *Edit) maybeOpenAutoComplete(typed rune) {
+	if FrameManager == nil || !e.autoCompletes() {
+		return
+	}
+	if len(e.History) == 0 && typed != '/' && typed != '\\' {
+		return
+	}
+	if _, isAc := FrameManager.GetTopFrame().(*AutoCompleteMenu); isAc {
+		return
+	}
+	if ac := NewAutoCompleteMenu(e); ac.HasMatches() {
+		FrameManager.Push(ac)
+	}
+}
+
 func NewEdit(x, y, width int, defaultText string) *Edit {
 	e := &Edit{
 		text:               []rune(defaultText),
 		HistoryPos:         -1,
 		selStart:           -1,
 		selAnchor:          -1,
-		clearFlag:          false,
+		clearFlag:          len(defaultText) > 0,
 		ColorTextIdx:       ColDialogEdit,
 		ColorUnchangedIdx:  ColDialogEditUnchanged,
 		ColorSelectedIdx:   ColDialogEditSelected,
@@ -99,26 +141,21 @@ func (e *Edit) Show(scr *ScreenBuf) {
 		}
 		vis, _ := VisualStringWithRuneMap(string(e.text))
 		width := 0
-		g := uniseg.NewGraphemes(vis)
 		vIdx := 0
-		for g.Next() {
-			from, to := g.Positions()
+		forEachTerminalCluster(vis, func(_ string, w, _, _ int) {
 			if vIdx >= e.leftPos && vIdx < vPos {
-				width += ClusterWidth(vis[from:to])
+				width += w
 			}
 			vIdx++
-		}
+		})
 		for e.leftPos < vPos && width >= visibleWidth {
-			g2 := uniseg.NewGraphemes(vis)
 			vIdx2 := 0
-			for g2.Next() {
-				from, to := g2.Positions()
+			forEachTerminalCluster(vis, func(_ string, w, _, _ int) {
 				if vIdx2 == e.leftPos {
-					width -= ClusterWidth(vis[from:to])
-					break
+					width -= w
 				}
 				vIdx2++
-			}
+			})
 			e.leftPos++
 		}
 	} else {
@@ -159,19 +196,16 @@ func (e *Edit) Show(scr *ScreenBuf) {
 			cmap := e.caretMap()
 			vPos := cmap.LogicalToVisual[e.curPos]
 			vis, _ := VisualStringWithRuneMap(string(e.text))
-			g := uniseg.NewGraphemes(vis)
 			vIdx := 0
-			for g.Next() {
+			forEachTerminalCluster(vis, func(_ string, w, _, _ int) {
 				if vIdx >= vPos {
-					break
+					return
 				}
-				from, to := g.Positions()
-				w := ClusterWidth(vis[from:to])
 				if vIdx >= e.leftPos {
 					vOffset += w
 				}
 				vIdx++
-			}
+			})
 		} else {
 			headText := string(e.text[e.leftPos:e.curPos])
 			vOffset = StringWidth(headText)
@@ -183,13 +217,20 @@ func (e *Edit) Show(scr *ScreenBuf) {
 func (e *Edit) caretMap() CaretMap {
 	return BuildCaretMap(string(e.text))
 }
+
+// prevClusterBoundary and nextClusterBoundary must walk the *terminal*
+// clusters, the same units DisplayObject paints and columnToLogicalPos
+// resolves. ForEachClusterAt stops at the raw UAX #29 boundaries, which split
+// an Indic virama from the consonant that follows it; the caret would then
+// land inside a shaped glyph and Backspace/Delete would eat a fraction of a
+// cell. See TEXTSEG.md and unxed/f4#546.
 func (e *Edit) prevClusterBoundary(pos int) int {
 	if pos <= 0 {
 		return 0
 	}
 	s := string(e.text)
 	lastBoundary := 0
-	ForEachClusterAt(s, func(cluster string, w, offset, runeIndex int) {
+	forEachTerminalCluster(s, func(cluster string, w, offset, runeIndex int) {
 		if runeIndex < pos {
 			lastBoundary = runeIndex
 		}
@@ -201,7 +242,7 @@ func (e *Edit) nextClusterBoundary(pos int) int {
 	s := string(e.text)
 	nextBoundary := len(e.text)
 	found := false
-	ForEachClusterAt(s, func(cluster string, w, offset, runeIndex int) {
+	forEachTerminalCluster(s, func(cluster string, w, offset, runeIndex int) {
 		if !found && runeIndex > pos {
 			nextBoundary = runeIndex
 			found = true
@@ -227,16 +268,13 @@ func (e *Edit) DisplayObject(scr *ScreenBuf) {
 	type logicalCluster struct {
 		text    string
 		runeIdx int
+		width   int
 		attr    uint64
 	}
 
 	var logicalClusters []logicalCluster
-	runeIdx := 0
 	sText := string(e.text)
-	g := uniseg.NewGraphemes(sText)
-	for g.Next() {
-		from, to := g.Positions()
-		clText := sText[from:to]
+	forEachTerminalCluster(sText, func(clText string, width, _, runeIdx int) {
 
 		attr := defaultAttr
 		if e.selStart != -1 && runeIdx >= e.selStart && runeIdx < e.selEnd {
@@ -253,50 +291,26 @@ func (e *Edit) DisplayObject(scr *ScreenBuf) {
 		logicalClusters = append(logicalClusters, logicalCluster{
 			text:    clText,
 			runeIdx: runeIdx,
+			width:   width,
 			attr:    attr,
 		})
-		runeIdx += utf8.RuneCountInString(clText)
+	})
+
+	visualClusters := make([]logicalCluster, 0, len(logicalClusters))
+	byRuneIndex := make(map[int]logicalCluster, len(logicalClusters))
+	for _, c := range logicalClusters {
+		byRuneIndex[c.runeIdx] = c
 	}
-
-	var visualClusters []logicalCluster
-	s := string(e.text)
-	if DefaultBidiMode != BidiOff && HasRTL(s) {
-		p := bidi.Paragraph{}
-		_, err := p.SetString(s)
-		if err == nil {
-			order, err := p.Order()
-			if err == nil {
-				numRuns := order.NumRuns()
-				for i := 0; i < numRuns; i++ {
-					run := order.Run(i)
-					start, end := run.Pos()
-
-					var runClusters []logicalCluster
-					for _, c := range logicalClusters {
-						if c.runeIdx >= start && c.runeIdx <= end {
-							runClusters = append(runClusters, c)
-						}
-					}
-
-					isRTL := run.Direction() == bidi.RightToLeft
-					if isRTL {
-						for i, j := 0, len(runClusters)-1; i < j; i, j = i+1, j-1 {
-							runClusters[i], runClusters[j] = runClusters[j], runClusters[i]
-						}
-						for i := range runClusters {
-							if utf8.RuneCountInString(runClusters[i].text) == 1 {
-								runClusters[i].text = bidi.ReverseString(runClusters[i].text)
-							}
-						}
-					}
-
-					visualClusters = append(visualClusters, runClusters...)
-				}
-			}
+	// The cells are painted in the order the line is read on screen, which
+	// ForEachVisualCluster resolves with the full bidi algorithm; the
+	// per-cluster attributes computed above travel with their clusters.
+	ForEachVisualCluster(string(e.text), func(text string, _, _, runeIdx int) {
+		if c, ok := byRuneIndex[runeIdx]; ok {
+			c.text = text
+			visualClusters = append(visualClusters, c)
 		}
-	}
-
-	if len(visualClusters) == 0 {
+	})
+	if len(visualClusters) != len(logicalClusters) {
 		visualClusters = logicalClusters
 	}
 
@@ -305,7 +319,7 @@ func (e *Edit) DisplayObject(scr *ScreenBuf) {
 		if i < e.leftPos {
 			continue
 		}
-		w := ClusterWidth(c.text)
+		w := c.width
 		if currX+w > visibleWidth {
 			break
 		}
@@ -340,6 +354,18 @@ func (e *Edit) SetText(text string) {
 	e.leftPos = 0
 	e.selStart = -1
 	e.selAnchor = -1
+	e.NotifyChange()
+}
+
+func (e *Edit) NotifyChange() {
+	e.ScreenObject.NotifyChange()
+	if FrameManager != nil && e.ID() != "" {
+		FrameManager.emitEventSink(UIEvent{
+			Kind:  "changed",
+			SrcID: e.ID(),
+			Value: PropValString(e.GetText()),
+		})
+	}
 }
 
 // SelectAll selects the entire text and sets the clear flag,
@@ -365,6 +391,34 @@ func (e *Edit) SetData(val any) {
 }
 func (e *Edit) WantsChars() bool {
 	return true
+}
+func (e *Edit) SizeSpecH() SizeSpec {
+	if e.sizeSpecH != nil {
+		return *e.sizeSpecH
+	}
+	hint := 20
+	textW := StringWidth(e.cleanText)
+	if textW > hint {
+		hint = textW
+	}
+	return SizeSpec{
+		Hint:    hint,
+		Min:     3,
+		Policy:  PolicyExpanding,
+		Stretch: 1,
+	}
+}
+
+func (e *Edit) SizeSpecV() SizeSpec {
+	if e.sizeSpecV != nil {
+		return *e.sizeSpecV
+	}
+	return SizeSpec{
+		Hint:    1,
+		Min:     1,
+		Policy:  PolicyFixed,
+		Stretch: 1,
+	}
 }
 func (e *Edit) Valid(cmd int) bool {
 	if e.Validator != nil && (cmd == CmOK || cmd == CmDefault) {
@@ -399,6 +453,7 @@ func (e *Edit) InsertString(text string) {
 	if e.OnTextChange != nil {
 		e.OnTextChange(string(e.text))
 	}
+	e.NotifyChange()
 }
 
 func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
@@ -454,6 +509,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 				if e.OnTextChange != nil {
 					e.OnTextChange(string(e.text))
 				}
+				e.NotifyChange()
 			}
 		}
 		return true
@@ -543,9 +599,15 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		return e.FireAction(e.OnAction, nil)
 
 	case vtinput.VK_LEFT:
+		// zoin-bot: A full edit selection starts at the right edge. When
+		// Ctrl+Shift+Left reaches the beginning of an undivided value, keep
+		// that full selection so the next character replaces the value.
+		fullSelectionAtEnd := e.selStart == 0 && e.selEnd == len(e.text) && e.curPos == len(e.text)
 		isAtStart := false
 		var cmap CaretMap
-		if DefaultBidiMode == BidiFull {
+		// Keep Ctrl+Left/Right on the logical word-navigation path; see the
+		// corresponding branch above.
+		if DefaultBidiMode == BidiFull && !ctrl {
 			cmap = e.caretMap()
 			isAtStart = cmap.LogicalToVisual[e.curPos] == 0
 		} else {
@@ -563,7 +625,10 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 			e.selAnchor = -1
 		}
 
-		if DefaultBidiMode == BidiFull {
+		// Plain arrows follow visual caret order in full bidi mode. Word
+		// navigation is a logical-text operation, so Ctrl+Left/Right must
+		// stay on the branch below even when full bidi input is enabled.
+		if DefaultBidiMode == BidiFull && !ctrl {
 			vPos := cmap.LogicalToVisual[e.curPos]
 			if vPos > 0 {
 				vPos--
@@ -595,6 +660,11 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		}
 		if shift {
 			e.endSelection()
+			if ctrl && fullSelectionAtEnd && e.curPos == 0 {
+				e.selStart = 0
+				e.selEnd = len(e.text)
+				e.selAnchor = 0
+			}
 		}
 		e.clearFlag = false
 		return true
@@ -602,7 +672,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 	case vtinput.VK_RIGHT:
 		isAtEnd := false
 		var cmap CaretMap
-		if DefaultBidiMode == BidiFull {
+		if DefaultBidiMode == BidiFull && !ctrl {
 			cmap = e.caretMap()
 			isAtEnd = cmap.LogicalToVisual[e.curPos] == len(cmap.VisualToLogical)-1
 		} else {
@@ -628,7 +698,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 			e.selAnchor = -1
 		}
 
-		if DefaultBidiMode == BidiFull {
+		if DefaultBidiMode == BidiFull && !ctrl {
 			vPos := cmap.LogicalToVisual[e.curPos]
 			N := len(cmap.VisualToLogical) - 1
 			if vPos < N {
@@ -720,11 +790,12 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 				if start > end {
 					start, end = end, start
 				}
+				start = backspaceStart(e.text, start, end)
 				e.text = append(e.text[:start], e.text[end:]...)
-				e.curPos = cmap.VisualToLogical[vPos-1]
+				e.curPos = start
 			}
 		} else if e.curPos > 0 {
-			prevBoundary := e.prevClusterBoundary(e.curPos)
+			prevBoundary := backspaceStart(e.text, e.prevClusterBoundary(e.curPos), e.curPos)
 			e.text = append(e.text[:prevBoundary], e.text[e.curPos:]...)
 			e.curPos = prevBoundary
 		}
@@ -732,6 +803,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		if e.OnTextChange != nil {
 			e.OnTextChange(string(e.text))
 		}
+		e.NotifyChange()
 		return true
 
 	case vtinput.VK_DELETE:
@@ -762,6 +834,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		if e.OnTextChange != nil {
 			e.OnTextChange(string(e.text))
 		}
+		e.NotifyChange()
 		return true
 
 	case vtinput.VK_INSERT:
@@ -840,15 +913,8 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		if e.OnTextChange != nil {
 			e.OnTextChange(string(e.text))
 		}
-		// Path hints: typing a path separator in an enabled edit opens the
-		// autocomplete menu when the host provider has anything to suggest.
-		if (testChar == '/' || testChar == '\\') && e.PathHintsEnabled && PathHintProvider != nil && FrameManager != nil {
-			if _, isAc := FrameManager.GetTopFrame().(*AutoCompleteMenu); !isAc {
-				if ac := NewAutoCompleteMenu(e); ac.HasMatches() {
-					FrameManager.Push(ac)
-				}
-			}
-		}
+		e.NotifyChange()
+		e.maybeOpenAutoComplete(testChar)
 		return true
 	}
 
@@ -1196,28 +1262,25 @@ func (e *Edit) cursorPositionAtX(x int) int {
 	if DefaultBidiMode == BidiFull {
 		cmap := e.caretMap()
 		vis, _ := VisualStringWithRuneMap(string(e.text))
-		g := uniseg.NewGraphemes(vis)
 		vIdx := 0
-		for g.Next() {
+		forEachTerminalCluster(vis, func(_ string, w, _, _ int) {
 			if found || vIdx < e.leftPos {
 				vIdx++
-				continue
+				return
 			}
-			from, to := g.Positions()
-			w := ClusterWidth(vis[from:to])
 			if currX+w > column {
 				result = cmap.VisualToLogical[vIdx]
 				found = true
-				break
+				return
 			}
 			currX += w
 			vIdx++
-		}
+		})
 		if !found {
 			result = cmap.VisualToLogical[vIdx]
 		}
 	} else {
-		ForEachClusterAt(string(e.text), func(cluster string, w, _, runeIndex int) {
+		forEachTerminalCluster(string(e.text), func(cluster string, w, _, runeIndex int) {
 			if found || runeIndex < e.leftPos {
 				return
 			}

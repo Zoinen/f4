@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"bytes"
 	"image"
 	"testing"
 )
@@ -303,5 +304,129 @@ func TestGraphicsLayerRepaintRequest(t *testing.T) {
 	g.Remove(id)
 	if !g.TakeRepaintRequest() {
 		t.Error("removing an image must ask for a text repaint")
+	}
+}
+
+func TestBlitSurfaceOpaqueRowCopyMatchesPerPixel(t *testing.T) {
+	// A padded source, the shape a working-copy cut has: the row copy must
+	// honour the stride just like the per-pixel path does.
+	src := NewImageSurfaceFromPix(6, 4, 6*4+8, make([]byte, (6*4+8)*4))
+	if src == nil {
+		t.Fatal("padded surface failed")
+	}
+	for y := 0; y < 4; y++ {
+		for x := 0; x < 6; x++ {
+			src.SetPixel(x, y, byte(10+x*7), byte(20+y*13), byte(5+x*3+y*17), 255)
+		}
+	}
+	src.Opaque = true
+
+	row := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	alpha := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	opaque := *src
+	nonOpaque := *src
+	nonOpaque.Opaque = false
+	// Partly offscreen, to send both paths through the same clipping.
+	blitSurface(row, &opaque, 3, 2)
+	blitSurface(alpha, &nonOpaque, 3, 2)
+	if !bytes.Equal(row.Pix, alpha.Pix) {
+		t.Error("the row-copy path and the per-pixel path disagree")
+	}
+}
+
+// nativeGradient paints every pixel with a colour that encodes its position.
+func nativeGradient(w, h int) *ImageSurface {
+	s := NewImageSurface(w, h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			s.SetPixel(x, y, byte(x&255), byte(y&255), byte((x+y)&255), 255)
+		}
+	}
+	s.Opaque = true
+	return s
+}
+
+func TestNativeCacheWorkingCopyCutsInsideTheMargin(t *testing.T) {
+	src := nativeGradient(400, 300)
+	var cache nativeGraphicsCache
+
+	// A zoomed view of 200x150 source pixels shown 1:1.
+	p := ImagePlacement{Surface: src, SrcX: 100, SrcY: 60, SrcW: 200, SrcH: 150}
+	first := cache.scaled(&p, 200, 150)
+	if first == nil {
+		t.Fatal("the first placement failed")
+	}
+	if cache.workSurf == nil {
+		t.Fatal("the working copy was not created")
+	}
+
+	// A pan inside the margin must be answered by the copy, not by a
+	// fresh resample, and must carry the exact source pixels (scale 1).
+	workRect := cache.workRect
+	p.SrcX, p.SrcY = 140, 90
+	second := cache.scaled(&p, 200, 150)
+	if second == nil {
+		t.Fatal("the panned placement failed")
+	}
+	if cache.workRect != workRect {
+		t.Error("a pan inside the margin must reuse the working copy")
+	}
+	want := src.Crop(140, 90, 200, 150)
+	for y := 0; y < 150; y++ {
+		for x := 0; x < 200; x++ {
+			r1, g1, b1, a1 := second.surf.PixelAt(x, y)
+			r2, g2, b2, a2 := want.PixelAt(x, y)
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				t.Fatalf("cut pixel %d,%d = %d,%d,%d,%d, want %d,%d,%d,%d",
+					x, y, r1, g1, b1, a1, r2, g2, b2, a2)
+			}
+		}
+	}
+}
+
+func TestNativeCacheWorkingCopyRebuildsWhenThePanLeavesIt(t *testing.T) {
+	src := nativeGradient(400, 300)
+	var cache nativeGraphicsCache
+
+	p := ImagePlacement{Surface: src, SrcX: 50, SrcY: 40, SrcW: 200, SrcH: 150}
+	cache.scaled(&p, 200, 150)
+	before := cache.workRect
+
+	// A jump far past the margin has to start a fresh working copy and
+	// still answer with a valid window.
+	p.SrcX, p.SrcY = 160, 140
+	entry := cache.scaled(&p, 200, 150)
+	if entry == nil || entry.surf.Width != 200 || entry.surf.Height != 150 {
+		t.Fatalf("the panned placement failed: %+v", entry)
+	}
+	if cache.workRect == before {
+		t.Error("a pan outside the margin must rebuild the working copy")
+	}
+}
+
+func TestNativeCacheWorkingCopySkipsExtremeZoom(t *testing.T) {
+	src := nativeGradient(800, 600)
+	var cache nativeGraphicsCache
+
+	// At 8x zoom a margin wide enough for a pan step would make the copy
+	// several times larger than the window, so the exact path must answer.
+	p := ImagePlacement{Surface: src, SrcX: 100, SrcY: 50, SrcW: 100, SrcH: 75}
+	entry := cache.scaled(&p, 200, 150)
+	if entry == nil {
+		t.Fatal("the placement failed")
+	}
+	if cache.workSurf != nil {
+		t.Error("extreme zoom must not build a working copy")
+	}
+	want := ScaleSurface(src.Crop(100, 50, 100, 75), 200, 150)
+	for y := 0; y < 150; y++ {
+		for x := 0; x < 200; x++ {
+			r1, g1, b1, a1 := entry.surf.PixelAt(x, y)
+			r2, g2, b2, a2 := want.PixelAt(x, y)
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				t.Fatalf("exact path pixel %d,%d = %d,%d,%d,%d, want %d,%d,%d,%d",
+					x, y, r1, g1, b1, a1, r2, g2, b2, a2)
+			}
+		}
 	}
 }

@@ -1,4 +1,4 @@
-//go:build linux || openbsd || netbsd || dragonfly || darwin || freebsd || windows || illumos || solaris
+//go:build (linux || openbsd || netbsd || dragonfly || darwin || freebsd || windows || illumos || solaris) && !android
 
 package vtui
 
@@ -122,7 +122,7 @@ func NewX11Host(cols, rows, cellW, cellH int) (*X11Host, error) {
 		uint32(xproto.EventMaskKeyPress | xproto.EventMaskKeyRelease |
 			xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease |
 			xproto.EventMaskPointerMotion | xproto.EventMaskExposure |
-			xproto.EventMaskStructureNotify),
+			xproto.EventMaskStructureNotify | xproto.EventMaskFocusChange),
 		uint32(cmap),
 	}
 
@@ -166,16 +166,11 @@ func NewX11Host(cols, rows, cellW, cellH int) (*X11Host, error) {
 			xproto.AtomAtom, 32, 1, data)
 	}
 
-	stateAtom, _ := xproto.InternAtom(conn, false, 13, "_NET_WM_STATE").Reply()
-	maxVertAtom, _ := xproto.InternAtom(conn, false, 28, "_NET_WM_STATE_MAXIMIZED_VERT").Reply()
-	maxHorzAtom, _ := xproto.InternAtom(conn, false, 28, "_NET_WM_STATE_MAXIMIZED_HORZ").Reply()
-	if stateAtom != nil && maxVertAtom != nil && maxHorzAtom != nil {
-		data := make([]byte, 8)
-		xgb.Put32(data, uint32(maxVertAtom.Atom))
-		xgb.Put32(data[4:], uint32(maxHorzAtom.Atom))
-		xproto.ChangeProperty(conn, xproto.PropModeReplace, host.wid, stateAtom.Atom, xproto.AtomAtom, 32, 2, data)
-	}
-
+	// Map the window at the geometry requested by the caller. In particular,
+	// do not seed _NET_WM_STATE with the maximized flags here: that state makes
+	// the window manager replace the requested dimensions before the first
+	// configure event. Native maximize/restore transitions are handled by the
+	// renderer when the window is resized.
 	xproto.MapWindow(conn, host.wid)
 	_, _ = xproto.GetInputFocus(conn).Reply()
 	host.dnd = newX11Dnd(host)
@@ -271,6 +266,11 @@ func (h *X11Host) RunEventLoop() {
 				h.sendEvent(&vtinput.InputEvent{Type: vtinput.ResizeEventType})
 			}
 
+		case xproto.FocusInEvent:
+			h.handleFocusEvent(true)
+		case xproto.FocusOutEvent:
+			h.handleFocusEvent(false)
+
 		case xproto.MappingNotifyEvent:
 			h.mu.Lock()
 			if h.translator != nil {
@@ -326,7 +326,7 @@ func (h *X11Host) RunEventLoop() {
 				continue
 			}
 			if e.Data.Data32[0] == uint32(h.atomDelete) {
-				FrameManager.EmitCommand(CmQuit, nil)
+				postQuitCommand()
 			}
 
 		case xproto.SelectionNotifyEvent:
@@ -339,6 +339,83 @@ func (h *X11Host) RunEventLoop() {
 			}
 		}
 	}
+}
+
+func (h *X11Host) handleFocusEvent(focused bool) {
+	if !focused {
+		h.mu.Lock()
+		h.resetKeyboardStateLocked()
+		h.mu.Unlock()
+	}
+	h.sendEvent(&vtinput.InputEvent{Type: vtinput.FocusEventType, SetFocus: focused})
+}
+
+func (h *X11Host) resetKeyboardStateLocked() {
+	h.currentMods = 0
+	h.lCtrl, h.rCtrl = false, false
+	h.lAlt, h.rAlt = false, false
+	h.lShift, h.rShift = false, false
+}
+
+func isX11ModifierVK(vk uint16) bool {
+	switch vk {
+	case vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT,
+		vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL,
+		vtinput.VK_MENU, vtinput.VK_LMENU, vtinput.VK_RMENU:
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *X11Host) syncModifierStateLocked(state uint16, vk uint16, isDown bool) vtinput.ControlKeyState {
+	assumeActive := !isX11ModifierVK(vk)
+	keepShift := isDown && (vk == vtinput.VK_SHIFT || vk == vtinput.VK_LSHIFT || vk == vtinput.VK_RSHIFT)
+	keepCtrl := isDown && (vk == vtinput.VK_CONTROL || vk == vtinput.VK_LCONTROL || vk == vtinput.VK_RCONTROL)
+	keepAlt := isDown && (vk == vtinput.VK_MENU || vk == vtinput.VK_LMENU || vk == vtinput.VK_RMENU)
+
+	if state&xproto.ModMaskShift == 0 && !keepShift {
+		h.lShift, h.rShift = false, false
+	} else if state&xproto.ModMaskShift != 0 && assumeActive && !h.lShift && !h.rShift {
+		h.lShift = true
+	}
+	if state&xproto.ModMaskControl == 0 && !keepCtrl {
+		h.lCtrl, h.rCtrl = false, false
+	} else if state&xproto.ModMaskControl != 0 && assumeActive && !h.lCtrl && !h.rCtrl {
+		h.lCtrl = true
+	}
+	if state&xproto.ModMask1 == 0 && !keepAlt {
+		h.lAlt, h.rAlt = false, false
+	} else if state&xproto.ModMask1 != 0 && assumeActive && !h.lAlt && !h.rAlt {
+		h.lAlt = true
+	}
+
+	var mods vtinput.ControlKeyState
+	if state&xproto.ModMaskShift != 0 {
+		mods |= vtinput.ShiftPressed
+	}
+	if state&xproto.ModMaskControl != 0 {
+		if h.rCtrl {
+			mods |= vtinput.RightCtrlPressed
+		} else {
+			mods |= vtinput.LeftCtrlPressed
+		}
+	}
+	if state&xproto.ModMask1 != 0 {
+		if h.rAlt {
+			mods |= vtinput.RightAltPressed
+		} else {
+			mods |= vtinput.LeftAltPressed
+		}
+	}
+	if state&xproto.ModMaskLock != 0 {
+		mods |= vtinput.CapsLockOn
+	}
+	if state&xproto.ModMask2 != 0 {
+		mods |= vtinput.NumLockOn
+	}
+	h.currentMods = mods
+	return mods
 }
 
 func (h *X11Host) handleKeyEvent(detail xproto.Keycode, state uint16, isDown bool) {
@@ -390,31 +467,7 @@ func (h *X11Host) handleKeyEvent(detail xproto.Keycode, state uint16, isDown boo
 			}
 		}
 
-		var sysMods vtinput.ControlKeyState
-		if state&1 != 0 {
-			sysMods |= vtinput.ShiftPressed
-		}
-		if state&4 != 0 {
-			if h.rCtrl {
-				sysMods |= vtinput.RightCtrlPressed
-			} else {
-				sysMods |= vtinput.LeftCtrlPressed
-			}
-		}
-		if state&8 != 0 {
-			if h.rAlt {
-				sysMods |= vtinput.RightAltPressed
-			} else {
-				sysMods |= vtinput.LeftAltPressed
-			}
-		}
-		if state&2 != 0 {
-			sysMods |= vtinput.CapsLockOn
-		}
-		if state&16 != 0 {
-			sysMods |= vtinput.NumLockOn
-		}
-		h.currentMods = sysMods
+		sysMods := h.syncModifierStateLocked(state, vk, isDown)
 		h.mu.Unlock()
 
 		event := &vtinput.InputEvent{
@@ -475,37 +528,9 @@ func (h *X11Host) handleButtonEvent(x, y int16, detail xproto.Button, state uint
 }
 
 func (h *X11Host) translateModifiers(state uint16) vtinput.ControlKeyState {
-	var mods vtinput.ControlKeyState
-	if state&1 != 0 {
-		mods |= vtinput.ShiftPressed
-	}
-	if state&4 != 0 {
-		h.mu.Lock()
-		rCtrl := h.rCtrl
-		h.mu.Unlock()
-		if rCtrl {
-			mods |= vtinput.RightCtrlPressed
-		} else {
-			mods |= vtinput.LeftCtrlPressed
-		}
-	}
-	if state&8 != 0 {
-		h.mu.Lock()
-		rAlt := h.rAlt
-		h.mu.Unlock()
-		if rAlt {
-			mods |= vtinput.RightAltPressed
-		} else {
-			mods |= vtinput.LeftAltPressed
-		}
-	}
-	if state&2 != 0 {
-		mods |= vtinput.CapsLockOn
-	}
-	if state&16 != 0 {
-		mods |= vtinput.NumLockOn
-	}
-	return mods
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.syncModifierStateLocked(state, 0, false)
 }
 
 func (h *X11Host) flushImage() int {

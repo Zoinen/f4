@@ -131,16 +131,18 @@ func TestArchivePluginRegistersDiscoverableCommands(t *testing.T) {
 		id             string
 		label          string
 		labelKey       string
+		menuPath       string
 		descriptionKey string
+		shortcut       string
 	}{
-		{id: archiveAddCommandID, label: "Add to archive", labelKey: "Archive.Command.Add", descriptionKey: "Archive.Command.Add.Desc"},
-		{id: archiveExtractCommandID, label: "Extract files", labelKey: "Archive.Command.Extract", descriptionKey: "Archive.Command.Extract.Desc"},
+		{id: archiveAddCommandID, label: "Add to archive", labelKey: "Archive.Command.Add", menuPath: "Files", descriptionKey: "Archive.Command.Add.Desc", shortcut: "Shift+F1"},
+		{id: archiveExtractCommandID, label: "Extract files", labelKey: "Archive.Command.Extract", menuPath: "Files", descriptionKey: "Archive.Command.Extract.Desc", shortcut: "Shift+F2"},
 	}
 	for index, expected := range want {
 		command := host.commands[index]
-		if command.ID != expected.id || command.Location != vfs.PluginCommandPanel || command.Label != expected.label ||
+		if command.ID != expected.id || command.Location != vfs.PluginCommandPanel || command.Label != expected.label || command.MenuPath != expected.menuPath ||
 			command.LabelKey != expected.labelKey || command.Description == "" || command.DescriptionKey != expected.descriptionKey ||
-			!reflect.DeepEqual(command.SearchKeys, []string{"Attributes.Archive"}) || command.Shortcut != "" {
+			!reflect.DeepEqual(command.SearchKeys, []string{"Attributes.Archive"}) || command.Shortcut != expected.shortcut {
 			t.Errorf("command %d = %#v, want id=%q location=Panel label=%q", index, command, expected.id, expected.label)
 		}
 		if strings.Contains(command.Label, "&") {
@@ -164,31 +166,40 @@ func TestArchivePluginRegistersDiscoverableCommands(t *testing.T) {
 	}
 }
 
-func TestArchivePluginKeepsShiftF1MenuWithoutContributionHost(t *testing.T) {
+func TestArchivePluginRegistersFar2lFileShortcutsWithoutContributionHost(t *testing.T) {
 	host := &archivePluginLegacyTestHost{}
 	plugin := &ArchivePlugin{}
 	if err := plugin.Init(host); err != nil {
 		t.Fatal(err)
 	}
-	defer plugin.Close()
+	t.Cleanup(func() {
+		if err := plugin.Close(); err != nil {
+			t.Errorf("close archive plugin: %v", err)
+		}
+	})
 
 	if host.providers != 1 {
 		t.Fatalf("registered archive providers = %d, want 1", host.providers)
 	}
-	if len(host.hotkeys) != 1 {
-		t.Fatalf("registered global hotkeys = %d, want 1", len(host.hotkeys))
+	if len(host.hotkeys) != 3 {
+		t.Fatalf("registered global hotkeys = %d, want 3", len(host.hotkeys))
 	}
-	hotkey := host.hotkeys[0]
-	if hotkey.vk != vtinput.VK_F1 || hotkey.mods != vtinput.ShiftPressed || hotkey.handler == nil {
-		t.Fatalf("legacy archive hotkey = %#v, want Shift+F1 with a handler", hotkey)
+	if host.hotkeys[0].vk != vtinput.VK_F1 || host.hotkeys[0].mods != vtinput.ShiftPressed || host.hotkeys[0].handler == nil {
+		t.Fatalf("add archive hotkey = %#v, want Shift+F1 with a handler", host.hotkeys[0])
+	}
+	if host.hotkeys[1].vk != vtinput.VK_F2 || host.hotkeys[1].mods != vtinput.ShiftPressed || host.hotkeys[1].handler == nil {
+		t.Fatalf("extract archive hotkey = %#v, want Shift+F2 with a handler", host.hotkeys[1])
+	}
+	if host.hotkeys[2].vk != vtinput.VK_F3 || host.hotkeys[2].mods != vtinput.ShiftPressed || host.hotkeys[2].handler == nil {
+		t.Fatalf("legacy archive hotkey = %#v, want Shift+F3 with a handler", host.hotkeys[2])
 	}
 
 	app := &archivePluginMenuTestApp{}
-	hotkey.handler(app)
+	host.hotkeys[2].handler(app)
 	if app.title != " Archive Commands " {
 		t.Errorf("legacy menu title = %q", app.title)
 	}
-	wantItems := []string{"&1. Add to archive", "&2. Extract files"}
+	wantItems := []string{"&1. Add to archive", "&2. Extract files", "&3. Test archive"}
 	if len(app.items) != len(wantItems) {
 		t.Fatalf("legacy menu items = %#v", app.items)
 	}

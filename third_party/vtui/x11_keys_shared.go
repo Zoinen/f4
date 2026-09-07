@@ -23,6 +23,28 @@ func keysymToVK(keysym uint32) uint16 {
 	return 0
 }
 
+// enhancedKeyForX11Keysym preserves the physical navigation-cluster bit that
+// XKB exposes separately from keypad keysyms. Wayland delivers the keysym
+// directly to its host, while the X11 host receives the same bit from
+// github.com/unxed/keytrans.
+func enhancedKeyForX11Keysym(keysym uint32) vtinput.ControlKeyState {
+	switch keysym {
+	case 0xff50, // XK_Home
+		0xff51, // XK_Left
+		0xff52, // XK_Up
+		0xff53, // XK_Right
+		0xff54, // XK_Down
+		0xff55, // XK_Prior
+		0xff56, // XK_Next
+		0xff57, // XK_End
+		0xff63, // XK_Insert
+		0xffff: // XK_Delete
+		return vtinput.EnhancedKey
+	default:
+		return 0
+	}
+}
+
 var x11KeysymToVK = map[uint32]uint16{
 	0xff08: vtinput.VK_BACK,
 	0xff09: vtinput.VK_TAB,

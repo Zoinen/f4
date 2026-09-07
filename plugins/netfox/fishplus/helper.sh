@@ -569,6 +569,15 @@ f4_cmd_info() {
   f4_end err "no supported stat tool on remote host"
   return
  fi
+ # A path that is neither a real entry nor a symlink simply does not exist.
+ # That is an expected answer -- an upload target is not there yet, a move
+ # may have already removed it -- not a tool failure, so report it
+ # distinctly instead of letting find's stderr leak through as a generic
+ # error the client cannot tell apart from a broken remote host.
+ if [ ! -e "$F4PATH" ] && [ ! -L "$F4PATH" ]; then
+  f4_end err "no such file or directory"
+  return
+ fi
  F4RV=
  case $F4MODE in
   find ) F4OUT=`find $1 "$F4PATH" -mindepth 0 -maxdepth 0 -printf "$F4FMT_FIND" 2>&1`; F4RV=$? ;;
@@ -1017,7 +1026,10 @@ f4_cmd_chown() {
   f4_end err "nothing to change"
   return
  fi
- f4_do chown "$F4SPEC" -- "$F4PATH"
+ # "--" must come before the owner spec: GNU getopt permutes arguments,
+ # but BSD and macOS stop option parsing at the first operand, so a
+ # trailing "--" is taken as a file name there.
+ f4_do chown -- "$F4SPEC" "$F4PATH"
 }
 # grep <mode><i?> <limit>, then a pattern line and a path line. The reply is
 # one byte offset per match: the point of doing this remotely is that a

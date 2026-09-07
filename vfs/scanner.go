@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -157,7 +158,16 @@ func genericScan(ctx context.Context, v VFS, basePath string, names []string, op
 		if err != nil {
 			// If we can't stat the root item, we abort.
 			// (During actual copy, AskError handles this, but for pre-scan we just return the error).
-			return totalStats, err
+			//
+			// Name the path. A bare errno from a scan of several names
+			// says which thing went wrong but not which of them, and
+			// that is the whole question when the path arrived from
+			// somewhere else. Cancellation passes through untouched:
+			// callers compare it against context.Canceled directly.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return totalStats, err
+			}
+			return totalStats, fmt.Errorf("%s: %w", fullPath, err)
 		}
 
 		err = scanRecursive(ctx, v, fullPath, itemStat, &totalStats, cb, 0, opts, seen)

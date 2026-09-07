@@ -802,12 +802,10 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
                         return root.panelState
                     })
                     item.panelActive = true
-                    item.theme = ({
-                        "panelBackground": "#141922",
-                        "text": "#e8edf2",
-                        "cursor": "#285d8f",
-                        "selection": "#ffd43b"
-                    })
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
                 }
             }
         }
@@ -866,6 +864,7 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
     rootObject->setProperty("searchVisible", false);
     QTRY_COMPARE_WITH_TIMEOUT(labelForRow(1)->property("text").toString(),
                               QStringLiteral("folder-01"), 3000);
+    delete rootObject;
 }
 
 void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
@@ -906,12 +905,10 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
                     item.bridge = pointerBridge
                     item.panel = ({ "catalogRevision": 5 })
                     item.panelActive = true
-                    item.theme = ({
-                        "panelBackground": "#141922",
-                        "text": "#e8edf2",
-                        "cursor": "#285d8f",
-                        "selection": "#ffd43b"
-                    })
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
                 }
             }
             Rectangle {
@@ -1107,6 +1104,7 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     QCOMPARE(rootObject->property("footerPresses").toInt(), 1);
     QCOMPARE(actions.size(), first);
 
+    delete rootObject;
 }
 
 void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
@@ -1138,12 +1136,10 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
                     item.panelActive = Qt.binding(function() {
                         return root.panelIsActive
                     })
-                    item.theme = ({
-                        "panelBackground": "#141922",
-                        "text": "#e8edf2",
-                        "cursor": "#285d8f",
-                        "selection": "#ffd43b"
-                    })
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
                 }
             }
         }
@@ -1288,12 +1284,10 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesStaleLoaderRevisionAndFocus
                     item.panelActive = Qt.binding(function() {
                         return root.panelIsActive
                     })
-                    item.theme = ({
-                        "panelBackground": "#141922",
-                        "text": "#e8edf2",
-                        "cursor": "#285d8f",
-                        "selection": "#ffd43b"
-                    })
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
                 }
             }
         }
@@ -1503,12 +1497,10 @@ void F4GalleryPointerTests::doubleClickNonCurrentImageOpensViewer()
                     item.bridge = doubleClickBridge
                     item.panel = ({ "catalogRevision": 5 })
                     item.panelActive = true
-                    item.theme = ({
-                        "panelBackground": "#141922",
-                        "text": "#e8edf2",
-                        "cursor": "#285d8f",
-                        "selection": "#ffd43b"
-                    })
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
                 }
             }
         }
@@ -2046,6 +2038,7 @@ void F4GalleryPointerTests::pixelWheelAndLoaderRecreationPreserveScroll()
     QCOMPARE(session->property("panelViewportCursorEntryId").toString(),
              QStringLiteral("entry-50"));
 
+    delete rootObject;
 }
 
 void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
@@ -2314,6 +2307,7 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     QVERIFY(!session->viewerOpen());
     QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
 
+    delete rootObject;
 }
 
 QTEST_MAIN(F4GalleryPointerTests)

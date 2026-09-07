@@ -228,7 +228,7 @@ func (s *Server) openServiceConn(ctx context.Context, serial, service string) (n
 	defer func() {
 		stop()
 		if !ok {
-			conn.Close()
+			_ = conn.Close() // Preserve the service-selection error.
 		}
 	}()
 	if err := requestService(conn, "host:transport:"+serial); err != nil {
@@ -311,7 +311,7 @@ func (s *Server) runLegacyShellStream(ctx context.Context, serial, command strin
 	if err != nil {
 		return -1, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // The shell connection is read-only here.
 	stop := interruptConnOnCancel(ctx, conn)
 	defer stop()
 
@@ -401,7 +401,7 @@ func (s *Server) runShellV2Stream(ctx context.Context, serial, command string, c
 	if err != nil {
 		return -1, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // The shell connection is read-only here.
 	stop := interruptConnOnCancel(ctx, conn)
 	defer stop()
 
@@ -473,7 +473,7 @@ func (s *Server) runShell(ctx context.Context, serial, command string, maxStdout
 		if openErr != nil {
 			return nil, nil, -1, openErr
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }() // The shell connection is read-only here.
 		stop := interruptConnOnCancel(ctx, conn)
 		defer stop()
 		out, readErr := readAllWithLimit(conn, maxStdout)
@@ -489,7 +489,7 @@ func (s *Server) runShell(ctx context.Context, serial, command string, maxStdout
 	if openErr != nil {
 		return nil, nil, -1, openErr
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }() // The shell stream is read-only here.
 	stop := stream.InterruptOnCancel(ctx)
 	defer stop()
 	out, readErr := readAllWithLimit(stream, maxStdout)
@@ -525,7 +525,7 @@ func (s *Server) hostQuery(ctx context.Context, service string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }() // The query result determines success.
 	stop := interruptConnOnCancel(ctx, conn)
 	defer stop()
 	if err := requestService(conn, service); err != nil {
@@ -870,6 +870,7 @@ func writeShellPacket(w io.Writer, id byte, payload []byte) error {
 	}
 	var header [5]byte
 	header[0] = id
+	// #nosec G115 -- the payload length was checked against the uint32 wire limit above.
 	binary.LittleEndian.PutUint32(header[1:], uint32(len(payload)))
 	if err := writeFull(w, header[:]); err != nil {
 		return fmt.Errorf("adb shell-v2: write packet header: %w", err)
@@ -968,6 +969,7 @@ func findADBExecutable() (string, error) {
 			continue
 		}
 		candidate := filepath.Join(root, "platform-tools", name)
+		// #nosec G703 -- root is an explicit local SDK path from the user's environment, and name is a fixed adb executable basename.
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			if path, lookErr := exec.LookPath(candidate); lookErr == nil {
 				return path, nil

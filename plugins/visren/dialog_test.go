@@ -136,9 +136,9 @@ func TestPreviewShowsAndOperatesScrollbarWhenRowsOverflow(t *testing.T) {
 	scr.AllocBuf(80, 25)
 	d.preview.Show(scr)
 	if got := scr.GetCell(d.preview.X2, d.preview.Y1).Char; got != vtui.ScrollUpArrow {
-		t.Fatalf("scrollbar top char=%q, want %q", rune(got), rune(vtui.ScrollUpArrow))
+		t.Fatalf("scrollbar top char=%#x, want %#x", got, vtui.ScrollUpArrow)
 	}
-	down := &vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true, MouseX: int16(d.preview.X2), MouseY: int16(d.preview.Y2), ButtonState: vtinput.FromLeft1stButtonPressed}
+	down := &vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true, MouseX: visrenMouseCoordinate(d.preview.X2), MouseY: visrenMouseCoordinate(d.preview.Y2), ButtonState: vtinput.FromLeft1stButtonPressed}
 	if !d.preview.ProcessMouse(down) {
 		t.Fatal("scrollbar down arrow click was not handled")
 	}
@@ -155,6 +155,10 @@ func TestPreviewShowsAndOperatesScrollbarWhenRowsOverflow(t *testing.T) {
 	if got, want := d.preview.divider, d.preview.contentWidth()/2; got != want {
 		t.Fatalf("divider=%d, want %d after scrollbar disappeared", got, want)
 	}
+}
+
+func visrenMouseCoordinate(value int) int16 {
+	return int16(value) // #nosec G115 -- this test dialog is allocated inside an 80x25 screen.
 }
 
 func TestPreviewHighlightsSearchMatchesInSourceColumn(t *testing.T) {

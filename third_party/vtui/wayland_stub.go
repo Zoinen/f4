@@ -1,4 +1,4 @@
-//go:build darwin || freebsd || dragonfly || openbsd || netbsd || arm
+//go:build darwin || freebsd || dragonfly || openbsd || netbsd || android || !(amd64 || arm64)
 
 package vtui
 

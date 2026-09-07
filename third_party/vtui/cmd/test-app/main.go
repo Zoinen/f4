@@ -11,7 +11,7 @@ import (
 
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
-	"golang.org/x/term"
+	"github.com/unxed/vtui/vreactive"
 )
 
 // localVFS is a minimal stub to satisfy vtui dialogs without relying on external VFS.
@@ -68,6 +68,12 @@ func (d *DemoWindow) HandleCommand(cmd int, args any) bool {
 		return true
 	case 1004: // Add a workspace-tab demo screen
 		addDemoWorkspace()
+		return true
+	case 1005: // AutoLayout demo dialog
+		showAutoLayoutDialog()
+		return true
+	case 1006: // Reactive Demo dialog
+		showReactiveDemoDialog()
 		return true
 	}
 	// Fallback to default window behavior (e.g. CmClose, CmZoom)
@@ -273,12 +279,92 @@ func buildTableDialog() *vtui.Window {
 	return dlg
 }
 
+func showAutoLayoutDialog() {
+	vtui.FrameManager.Push(buildAutoLayoutDialog())
+}
+
+func buildAutoLayoutDialog() *vtui.Window {
+	dlg := vtui.NewCenteredDialog(68, 18, " AutoLayout (Discrete Cassowary) Demo ")
+	dlg.ShowClose = true
+
+	x, y := dlg.X1, dlg.Y1
+
+	// Left group: Form with vertical stack and filled inputs
+	groupForm := vtui.NewGroupBox(x+2, y+2, x+33, y+12, "Constraint Form")
+	groupForm.SetGrowMode(vtui.GrowHiY)
+	lbl1 := vtui.NewLabel(0, 0, "Username:", nil)
+	edit1 := vtui.NewEdit(0, 0, 10, "alex_dev")
+	lbl2 := vtui.NewLabel(0, 0, "Role:", nil)
+	combo2 := vtui.NewComboBox(0, 0, 10, []string{"Developer", "Admin", "Auditor"})
+
+	dlg.AddItem(groupForm)
+	groupForm.AddItem(lbl1)
+	groupForm.AddItem(edit1)
+	groupForm.AddItem(lbl2)
+	groupForm.AddItem(combo2)
+
+	formLayout := vtui.NewAutoLayout(groupForm.X1+2, groupForm.Y1+1, 27, 9)
+	formLayout.
+		PinTop(lbl1, 0).PinLeft(lbl1, 0).
+		StackVertical(1, lbl1, edit1).FillWidth(edit1, 0, 0).
+		StackVertical(1, edit1, lbl2).PinLeft(lbl2, 0).
+		StackVertical(1, lbl2, combo2).FillWidth(combo2, 0, 0)
+	formLayout.Apply()
+	formLayout.SetGrowMode(vtui.GrowHiY)
+	dlg.AddItem(formLayout)
+
+	// Right group: Apportioned & Equalized Columns
+	groupCols := vtui.NewGroupBox(x+35, y+2, x+65, y+12, "FreeType Autohinting")
+	groupCols.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
+	col1 := vtui.NewEdit(0, 0, 5, "25%")
+	col2 := vtui.NewEdit(0, 0, 5, "50%")
+	col3 := vtui.NewEdit(0, 0, 5, "25%")
+	lblHint := vtui.NewLabel(0, 0, "Apportioned w/ 1-cell air:", nil)
+
+	dlg.AddItem(groupCols)
+	groupCols.AddItem(lblHint)
+	groupCols.AddItem(col1)
+	groupCols.AddItem(col2)
+	groupCols.AddItem(col3)
+
+	colsLayout := vtui.NewAutoLayout(groupCols.X1+2, groupCols.Y1+1, 26, 9)
+	colsLayout.
+		PinTop(lblHint, 0).PinLeft(lblHint, 0).
+		StackVertical(1, lblHint, col1).AlignTop(col1, col2, col3).
+		PinLeft(col1, 0).
+		StackHorizontal(1, col1, col2, col3).
+		ApportionWidths(24, col1, col2, col3)
+	colsLayout.Apply()
+	colsLayout.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
+	dlg.AddItem(colsLayout)
+
+	// Bottom Buttons
+	btnOk := vtui.NewButton(0, 0, "&Ok")
+	btnOk.OnClick = func() { dlg.Close() }
+	btnCancel := vtui.NewButton(0, 0, "&Cancel")
+	btnCancel.OnClick = func() { dlg.Close() }
+
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+
+	bottomLayout := vtui.NewAutoLayout(x+2, y+14, 64, 2)
+	bottomLayout.
+		PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
+		StackHorizontal(2, btnOk, btnCancel).
+		CenterHorizontalGroup(btnOk, btnCancel)
+	bottomLayout.Apply()
+	bottomLayout.SetGrowMode(vtui.GrowLoY | vtui.GrowHiY | vtui.GrowHiX)
+	dlg.AddItem(bottomLayout)
+
+	return dlg
+}
 func main() {
 	guiMode := false
 	guiBackend := ""
 	ttyMode := false
 	fontName := ""
 	fontSize := 18.0
+	ttyBackend := ""
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -318,6 +404,12 @@ func main() {
 			}
 		case "--tty":
 			ttyMode = true
+			if flagVal != "" {
+				ttyBackend = flagVal
+			} else if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
+				ttyBackend = os.Args[i+1]
+				i++
+			}
 		case "--debug":
 			os.Setenv("VTUI_DEBUG", "1")
 		}
@@ -353,7 +445,9 @@ func main() {
 				{Separator: true},
 				{Text: "UI S&howcase", Command: 1002},
 				{Text: "&Table Demo", Command: 1003},
+				{Text: "&AutoLayout Demo", Command: 1005},
 				{Text: "New Workspace &Tab", Command: 1004},
+				{Text: "&Reactive Demo", Command: 1006},
 			}},
 			{Label: "&Right", SubItems: []vtui.MenuItem{{Text: "Command &2"}}},
 		}
@@ -422,7 +516,9 @@ func main() {
 		opMenu.AddItem(vtui.MenuItem{Text: "&Attributes"})
 		dlg.AddItem(opMenu)
 
-		dlg.AddItem(vtui.NewSeparator(x1, y1+13, 76, true, true))
+		separator := vtui.NewSeparator(x1, y1+13, 76, true, true)
+		separator.SetGrowMode(vtui.GrowHiX)
+		dlg.AddItem(separator)
 
 		table := vtui.NewTable(x1+2, y1+14, 72, 5, []vtui.TableColumn{{Title: "Filename", Width: 48}, {Title: "Size", Width: 12, Alignment: vtui.AlignRight}})
 		table.SetRows([]vtui.TableRow{
@@ -500,7 +596,7 @@ func main() {
 		vtui.FrameManager.SwitchScreen(0)
 	}
 
-	runConsole := func() {
+	runConsole := func(backend string) {
 		restore, err := vtui.PrepareTerminal()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -508,8 +604,14 @@ func main() {
 		}
 		defer restore()
 
-		width, height, _ := term.GetSize(int(os.Stdin.Fd()))
+		width, height, _ := vtui.GetTerminalSize()
+		if width <= 0 || height <= 0 {
+			width, height = 80, 25
+		}
 		scr := vtui.NewScreenBuf()
+		if backend == "winapi" || backend == "win32" {
+			scr.Renderer = vtui.NewWin32ConsoleRenderer(scr)
+		}
 		scr.AllocBuf(width, height)
 		vtui.FrameManager.Init(scr)
 
@@ -525,7 +627,21 @@ func main() {
 
 	tryRunDefaultGui := func() error {
 		var errs []string
+		if vtui.IsWine() {
+			if err := runGuiWithBackend("win32"); err == nil {
+				return nil
+			} else {
+				errs = append(errs, fmt.Sprintf("win32: %v", err))
+			}
+		}
 		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+			if runtime.GOOS == "windows" {
+				if err := runGuiWithBackend("win32"); err == nil {
+					return nil
+				} else {
+					errs = append(errs, fmt.Sprintf("win32: %v", err))
+				}
+			}
 			if err := runGuiWithBackend("gogpu"); err == nil {
 				return nil
 			} else {
@@ -568,8 +684,12 @@ func main() {
 		return fmt.Errorf("no suitable GUI environment detected")
 	}
 
+	if ttyBackend == "" {
+		ttyBackend = vtui.DefaultConsoleBackend()
+	}
+
 	if ttyMode {
-		runConsole()
+		runConsole(ttyBackend)
 		return
 	}
 
@@ -589,7 +709,158 @@ func main() {
 	}
 
 	// Default auto-detect mode (neither --gui nor --tty specified)
-	if err := tryRunDefaultGui(); err != nil {
-		runConsole()
+	if err := tryRunDefaultGui(); err == nil {
+		return
 	}
+	runConsole(ttyBackend)
+}
+
+func showReactiveDemoDialog() {
+	dlg := buildReactiveDemoDialog()
+	vtui.FrameManager.Push(dlg)
+}
+
+func buildReactiveDemoDialog() *vtui.Window {
+	dlg := vtui.NewCenteredDialog(56, 20, " Reactive Demo ")
+	dlg.ShowClose = true
+
+	// 1. Reactive Model
+	nameProp := vreactive.NewProperty("Alice")
+	vipProp := vreactive.NewProperty(false)
+	statusProp := vreactive.NewProperty("Ready to start.")
+
+	// 2. Computed & ComputedIf
+	greetingProp := vreactive.Computed(nameProp, func(name string) string {
+		if name == "" {
+			return "Please enter your name!"
+		}
+		return "Hello, " + name + "!"
+	})
+	vipBadgeProp := vreactive.ComputedIf(vipProp, "⭐ VIP Status: Priority Level 1", "Standard Member")
+	hasNameProp := vreactive.Computed(nameProp, func(n string) bool { return len(n) > 0 })
+
+	// 3. StateMachine
+	sm := vreactive.NewStateMachine("idle")
+	sm.AddState("idle", vreactive.SetProp(statusProp, "Ready to start."))
+	sm.AddState("running", vreactive.SetProp(statusProp, "Running... Please wait."))
+	sm.AddState("done", vreactive.SetProp(statusProp, "Task completed successfully."))
+	sm.State.Set("idle")
+
+	// 4. Signals Effect (Side-effect reacting to multi-property dependencies)
+	effectSummary := vreactive.NewProperty("")
+	vreactive.Effect(func() {
+		mode := "Standard"
+		if vipProp.Get() {
+			mode = "VIP"
+		}
+		effectSummary.Set(fmt.Sprintf("Effect summary: User=%q, Mode=%s", nameProp.Get(), mode))
+	}, nameProp, vipProp)
+
+	// --- UI Elements ---
+	x := dlg.X1
+
+	// Row 1: Label + Edit (TwoWayBind) + Clear Button (BindEnabled)
+	edit := vtui.NewEdit(x+8, dlg.Y1+2, 24, "")
+	vreactive.TwoWayBind(
+		nameProp,
+		edit.GetText,
+		edit.SetText,
+		func(onChange func(string)) func() {
+			edit.OnTextChange = onChange
+			return func() { edit.OnTextChange = nil }
+		},
+	)
+	lblTitle := vtui.NewLabel(x+2, dlg.Y1+2, "&Name:", edit)
+
+	btnClear := vtui.NewButton(x+33, dlg.Y1+2, "&Clear")
+	vreactive.BindEnabled(hasNameProp, btnClear)
+	btnClear.OnClick = func() {
+		nameProp.Set("")
+	}
+
+	// Row 2: Greeting (Computed)
+	lblGreeting := vtui.NewDynamicText(x+2, dlg.Y1+4, 51, vtui.Palette[vtui.ColDialogText], func() string {
+		return greetingProp.Get()
+	})
+
+	// Row 3: Status (StateMachine)
+	lblStatus := vtui.NewDynamicText(x+2, dlg.Y1+6, 51, vtui.Palette[vtui.ColDialogHighlightText], func() string {
+		return "Status: " + statusProp.Get()
+	})
+
+	// Row 4: Buttons (Start with BindEnabled, Animate with Easing.EaseOutBounce)
+	btnStart := vtui.NewButton(x+2, dlg.Y1+8, "&Start Task")
+	isIdleOrDone := vreactive.Computed(sm.State, func(s string) bool {
+		return s == "idle" || s == "done"
+	})
+	vreactive.BindEnabled(isIdleOrDone, btnStart)
+	btnStart.OnClick = func() {
+		if sm.State.Get() != "idle" && sm.State.Get() != "done" {
+			return
+		}
+		sm.State.Set("running")
+		vtui.RunAsync(func(ctx *vtui.TaskContext) {
+			time.Sleep(2 * time.Second)
+			ctx.RunOnUI(func() {
+				sm.State.Set("done")
+			})
+		})
+	}
+
+	// Behavior animation using EaseOutBounce
+	progressProp := vreactive.NewProperty(0.0)
+	progressProp.SetBehavior(&vreactive.SmoothBehavior[float64]{
+		Duration: 1.5,
+		Easing:   vreactive.EaseOutBounce,
+		Interp:   vreactive.Float64Interpolator,
+	})
+
+	btnAnimate := vtui.NewButton(x+20, dlg.Y1+8, "&Animate (Bounce)")
+	btnAnimate.OnClick = func() {
+		if progressProp.Get() < 100 {
+			progressProp.Set(100.0)
+		} else {
+			progressProp.Set(0.0)
+		}
+	}
+
+	// Row 5: ProgressBar
+	pb := vtui.NewProgressBar(x+2, dlg.Y1+10, 51)
+	progressProp.OnChange(func(val float64) {
+		pb.SetPercent(int(val))
+	})
+
+	// Row 6: Checkbox + ComputedIf Badge
+	chkVIP := vtui.NewCheckbox(x+2, dlg.Y1+12, "&VIP Mode", false)
+	chkVIP.OnChange = func(state int) {
+		vipProp.Set(state == 1)
+	}
+
+	lblVIP := vtui.NewDynamicText(x+15, dlg.Y1+12, 38, vtui.Palette[vtui.ColDialogHighlightText], func() string {
+		return vipBadgeProp.Get()
+	})
+
+	// Row 7: Effect Summary display
+	lblAudit := vtui.NewDynamicText(x+2, dlg.Y1+14, 51, vtui.Palette[vtui.ColDialogText], func() string {
+		return effectSummary.Get()
+	})
+
+	// Row 8: Close Button
+	btnClose := vtui.NewButton(x+22, dlg.Y1+16, "&Close")
+	btnClose.OnClick = func() { dlg.Close() }
+
+	dlg.AddItem(lblTitle)
+	dlg.AddItem(edit)
+	dlg.AddItem(btnClear)
+	dlg.AddItem(lblGreeting)
+	dlg.AddItem(lblStatus)
+	dlg.AddItem(btnStart)
+	dlg.AddItem(btnAnimate)
+	dlg.AddItem(pb)
+	dlg.AddItem(chkVIP)
+	dlg.AddItem(lblVIP)
+	dlg.AddItem(lblAudit)
+	dlg.AddItem(btnClose)
+
+	return dlg
 }

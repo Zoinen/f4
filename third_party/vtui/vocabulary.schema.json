@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vtui Vocabulary Schema",
+  "type": "object",
+  "required": ["version", "widgets", "layouts", "commands", "paletteRoles"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "widgets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["summary", "properties"],
+        "properties": {
+          "extends": { "type": "string" },
+          "summary": { "type": "string" },
+          "properties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": ["type", "default"],
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["string", "int", "bool", "color", "stringList", "rect"]
+                },
+                "default": {},
+                "summary": { "type": "string" }
+              }
+            }
+          },
+          "signals": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "localizable": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "sizeHint": {
+            "type": "object",
+            "properties": {
+              "w": { "type": "integer" },
+              "h": { "type": "integer" }
+            }
+          },
+          "minSize": {
+            "type": "object",
+            "properties": {
+              "w": { "type": "integer" },
+              "h": { "type": "integer" }
+            }
+          },
+          "sizePolicy": {
+            "type": "object",
+            "properties": {
+              "h": { "type": "string", "enum": ["fixed", "minimum", "maximum", "preferred", "expanding"] },
+              "v": { "type": "string", "enum": ["fixed", "minimum", "maximum", "preferred", "expanding"] }
+            }
+          }
+        }
+      }
+    },
+    "layouts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["summary", "properties"],
+        "properties": {
+          "summary": { "type": "string" },
+          "properties": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "paletteRoles": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

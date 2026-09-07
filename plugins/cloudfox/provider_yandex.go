@@ -105,7 +105,8 @@ type yandexDiskBackend struct {
 // do applies one redirect policy to every request issued by a backend,
 // including backends constructed directly in tests. Authenticated API/status
 // calls and write methods never follow redirects. Unauthenticated temporary
-// downloads may follow redirects, but never downgrade HTTPS.
+// downloads may follow redirects only within the API or Yandex.Disk transfer
+// origins.
 func (b *yandexDiskBackend) do(req *http.Request) (*http.Response, error) {
 	client := b.client
 	if client == nil {
@@ -125,7 +126,7 @@ func (b *yandexDiskBackend) do(req *http.Request) (*http.Response, error) {
 		if initial.Header.Get("Authorization") != "" || (initial.Method != http.MethodGet && initial.Method != http.MethodHead) || next.Method != previous.Method {
 			return http.ErrUseLastResponse
 		}
-		if strings.EqualFold(initial.URL.Scheme, "https") && !strings.EqualFold(next.URL.Scheme, "https") {
+		if _, err := b.validateTemporaryURL(next.URL.String()); err != nil {
 			return http.ErrUseLastResponse
 		}
 		if previousRedirectPolicy != nil {
@@ -145,10 +146,20 @@ func (b *yandexDiskBackend) validateTemporaryURL(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.EqualFold(base.Scheme, "https") && !strings.EqualFold(target.Scheme, "https") {
-		return "", errors.New("cloudfox: Yandex.Disk temporary URL downgraded HTTPS")
+	if sameWebDAVOrigin(target, base) {
+		return target.String(), nil
+	}
+	if !strings.EqualFold(target.Scheme, "https") || (target.Port() != "" && target.Port() != "443") || !isYandexDiskTransferHost(target.Hostname()) {
+		return "", errors.New("cloudfox: Yandex.Disk returned a temporary URL outside its transfer service")
 	}
 	return target.String(), nil
+}
+
+func isYandexDiskTransferHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "disk.yandex.net" || strings.HasSuffix(host, ".disk.yandex.net") ||
+		host == "disk.yandex.ru" || strings.HasSuffix(host, ".disk.yandex.ru") ||
+		strings.HasSuffix(host, ".storage.yandex.net")
 }
 
 func sanitizeYandexTransferError(err error) error {
@@ -226,9 +237,7 @@ func normalizeYandexPath(raw string) (string, error) {
 		cleaned := path.Clean("/" + strings.TrimPrefix(raw, "app:/"))
 		return "app:" + cleaned, nil
 	}
-	if strings.HasPrefix(raw, "disk:/") {
-		raw = strings.TrimPrefix(raw, "disk:/")
-	}
+	raw = strings.TrimPrefix(raw, "disk:/")
 	cleaned := path.Clean("/" + strings.TrimPrefix(raw, "/"))
 	if cleaned == "/" {
 		return "disk:/", nil
@@ -317,7 +326,7 @@ func (b *yandexDiskBackend) apiRequest(ctx context.Context, method, endpoint str
 		return nil, err
 	}
 	if resp.Request != nil && resp.Request.Method != method {
-		resp.Body.Close()
+		_ = resp.Body.Close() // Response-body cleanup is best effort.
 		return nil, fmt.Errorf("cloudfox: Yandex.Disk %s completed as %s after a redirect", method, resp.Request.Method)
 	}
 	return resp, nil
@@ -341,7 +350,7 @@ func (b *yandexDiskBackend) getResource(ctx context.Context, location string, li
 	if err != nil {
 		return yandexResource{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return yandexResource{}, mapProviderHTTPError(resp, readSmallResponse(resp))
 	}
@@ -444,7 +453,7 @@ func (b *yandexDiskBackend) MkDir(ctx context.Context, location string) error {
 		// retry could race or turn a committed create into a misleading conflict.
 		return &vfs.UnknownOperationStateError{Operation: "Yandex.Disk create directory", Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
 		return providerHTTPMutationError("Yandex.Disk create directory", resp, readSmallResponse(resp))
 	}
@@ -456,7 +465,7 @@ func (b *yandexDiskBackend) mutation(ctx context.Context, method, endpoint strin
 	if err != nil {
 		return &vfs.UnknownOperationStateError{Operation: "Yandex.Disk " + method, Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusAccepted {
 		return nil
 	}
@@ -513,19 +522,19 @@ func (b *yandexDiskBackend) waitOperation(ctx context.Context, href string) erro
 			return err
 		}
 		if resp.Request != nil && resp.Request.Method != http.MethodGet {
-			resp.Body.Close()
+			_ = resp.Body.Close() // Response-body cleanup is best effort.
 			return fmt.Errorf("cloudfox: Yandex.Disk status GET completed as %s after a redirect", resp.Request.Method)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			message := readSmallResponse(resp)
-			resp.Body.Close()
+			_ = resp.Body.Close() // Response-body cleanup is best effort.
 			return mapProviderHTTPError(resp, message)
 		}
 		var status struct {
 			Status string `json:"status"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&status)
-		resp.Body.Close()
+		_ = resp.Body.Close() // Response-body cleanup is best effort.
 		if err != nil {
 			return fmt.Errorf("cloudfox: decode Yandex.Disk operation status: %w", err)
 		}
@@ -627,7 +636,7 @@ func (b *yandexDiskBackend) getLink(ctx context.Context, endpoint, location, ove
 	if err != nil {
 		return yandexLink{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return yandexLink{}, mapProviderHTTPError(resp, readSmallResponse(resp))
 	}
@@ -676,7 +685,7 @@ func (b *yandexDiskBackend) Open(ctx context.Context, location string) (vfs.Read
 	if err != nil {
 		return nil, sanitizeYandexTransferError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.Request != nil && resp.Request.Method != http.MethodGet {
 		return nil, fmt.Errorf("cloudfox: Yandex.Disk download GET completed as %s after a redirect", resp.Request.Method)
 	}
@@ -747,7 +756,7 @@ func (b *yandexDiskBackend) Create(ctx context.Context, location string) (io.Wri
 		if err != nil {
 			return &vfs.UnknownOperationStateError{Operation: "Yandex.Disk upload", Err: sanitizeYandexTransferError(err)}
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 		if resp.Request != nil && resp.Request.Method != http.MethodPut {
 			return &vfs.UnknownOperationStateError{
 				Operation: "Yandex.Disk upload",

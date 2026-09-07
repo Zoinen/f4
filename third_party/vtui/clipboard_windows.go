@@ -3,9 +3,20 @@
 package vtui
 
 import (
+	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 )
+
+// osClipMu serializes every raw Win32 clipboard transaction. OpenClipboard
+// ties ownership to the calling thread, so the sequence also pins its
+// goroutine to one OS thread: without both, two concurrent writers (or a
+// goroutine migrating threads mid-transaction) corrupt handle ownership --
+// SetClipboardData transfers the HGLOBAL to the system, and a racing failure
+// path then GlobalFrees memory the system already owns, killing the process
+// with no Go-visible error.
+var osClipMu sync.Mutex
 
 var (
 	user32               = syscall.NewLazyDLL("user32.dll")
@@ -28,6 +39,10 @@ const (
 )
 
 func setOSClipboard(text string) bool {
+	osClipMu.Lock()
+	defer osClipMu.Unlock()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := procOpenClipboard.Find(); err != nil {
 		return false
 	}
@@ -73,6 +88,10 @@ func setOSClipboard(text string) bool {
 }
 
 func getOSClipboard() (string, bool) {
+	osClipMu.Lock()
+	defer osClipMu.Unlock()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := procOpenClipboard.Find(); err != nil {
 		return "", false
 	}

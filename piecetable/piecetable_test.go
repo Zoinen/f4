@@ -400,3 +400,45 @@ func TestPieceTable_Delete_PieceRemoval(t *testing.T) {
 		t.Errorf("Piece was not removed from table, count: %d", len(pt.pieces))
 	}
 }
+
+// TestPieceTable_OriginalRange covers the promise the indexer leans on: a
+// position in the original buffer is only handed out for text that is still
+// the original's, so a caller reading the file at that position reads the
+// bytes of that range and not something that was typed over them.
+func TestPieceTable_OriginalRange(t *testing.T) {
+	pt := New([]byte("one\ntwo\nthree\n"))
+
+	off, ok := pt.OriginalRange(4, 4)
+	if !ok || off != 4 {
+		t.Fatalf("OriginalRange(4,4) on an unedited table = %d,%v, want 4,true", off, ok)
+	}
+	if _, ok := pt.OriginalRange(0, pt.Size()+1); ok {
+		t.Error("a range past the end was accepted")
+	}
+	if _, ok := pt.OriginalRange(0, 0); ok {
+		t.Error("an empty range was accepted")
+	}
+
+	// "one\nXX" + "two\nthree\n": the inserted text is not in the original at
+	// all, and the tail has moved away from the offset it reads at.
+	pt.Insert(4, []byte("XX"))
+	if _, ok := pt.OriginalRange(4, 2); ok {
+		t.Error("inserted text was reported as living in the original")
+	}
+	if _, ok := pt.OriginalRange(3, 4); ok {
+		t.Error("a range crossing into the inserted text was accepted")
+	}
+	off, ok = pt.OriginalRange(6, 4)
+	if !ok || off != 4 {
+		t.Fatalf("OriginalRange(6,4) after the insert = %d,%v, want 4,true", off, ok)
+	}
+
+	// What the caller would read there is what the range says it is.
+	view, viewOK := pt.View(6, 4)
+	if !viewOK || string(view) != "two\n" {
+		t.Fatalf("View(6,4) = %q,%v", string(view), viewOK)
+	}
+	if got := string([]byte("one\ntwo\nthree\n")[off : off+4]); got != string(view) {
+		t.Errorf("the original at %d holds %q, but the range there is %q", off, got, string(view))
+	}
+}

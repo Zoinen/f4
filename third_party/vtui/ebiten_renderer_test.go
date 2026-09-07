@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !arm
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
 
 package vtui
 
@@ -9,16 +9,6 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/unxed/vtinput"
 )
-
-// mkGrid builds a buf/shadow pair of w*h cells filled with ch and attributes.
-func mkGrid(w, h int, ch uint64, attr uint64) (buf, shadow []CharInfo) {
-	buf = make([]CharInfo, w*h)
-	shadow = make([]CharInfo, w*h)
-	for i := range buf {
-		buf[i] = CharInfo{Char: ch, Attributes: attr}
-	}
-	return buf, shadow
-}
 
 func TestEbitenRenderer_AllocatesFramebufferForGrid(t *testing.T) {
 	r := NewEbitenRenderer(nil, nil, 8, 16, 1)
@@ -319,6 +309,7 @@ func pixelAt(t *testing.T, r *EbitenRenderer, x, y int) (rr, g, b uint8) {
 // Frame characters must go through the geometric path, not the font, so that
 // neighbouring cells join. A font glyph would leave the seam column unlit.
 func TestEbitenRenderer_BoxCharsJoinAcrossCells(t *testing.T) {
+	preserveTestPalette(t)
 	// A nil face proves the point twice over: if the box path were not taken
 	// these cells would render as nothing at all.
 	r := NewEbitenRenderer(nil, nil, 8, 16, 1)

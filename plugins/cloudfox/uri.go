@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 )
 
@@ -74,11 +73,12 @@ func EncodeLocation(location string) string {
 	leading := strings.HasPrefix(location, "/")
 	segments := strings.Split(strings.TrimPrefix(location, "/"), "/")
 	for i, segment := range segments {
-		if segment == "." {
+		switch segment {
+		case ".":
 			segments[i] = "%2E"
-		} else if segment == ".." {
+		case "..":
 			segments[i] = "%2E%2E"
-		} else {
+		default:
 			segments[i] = url.PathEscape(segment)
 		}
 	}
@@ -135,18 +135,9 @@ func validUUID(s string) bool {
 			continue
 		}
 		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}
 	return true
-}
-
-func cleanDisplayPath(p string) string {
-	p = strings.ReplaceAll(p, "\\", "/")
-	cleaned := path.Clean("/" + strings.TrimPrefix(p, "/"))
-	if cleaned == "/." {
-		return "/"
-	}
-	return cleaned
 }

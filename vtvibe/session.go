@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +49,10 @@ type Status struct {
 // A single Session is shared by every ai:// panel, so both panes and both
 // panels of a split view look at the same conversation.
 type Session struct {
+	// treeMu protects only the identity of tree: Reset takes the write lock
+	// while AIVFS operations, Draft, ClearDraft and Pack take the read lock.
+	// memTree.mu separately protects the tree contents.
+	treeMu sync.RWMutex
 	mu     sync.Mutex
 	tree   *memTree
 	turns  []Turn
@@ -137,6 +140,8 @@ by typing "ai:" in the command line with nothing after the colon.
 func (s *Session) Reset(keepContext bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.treeMu.Lock()
+	defer s.treeMu.Unlock()
 	var keep map[string][]byte
 	if keepContext {
 		keep = map[string][]byte{}
@@ -191,6 +196,8 @@ func (s *Session) LastPatch() *Patch {
 }
 
 func (s *Session) Draft() string {
+	s.treeMu.RLock()
+	defer s.treeMu.RUnlock()
 	data, _ := s.tree.readFile(draftFile)
 	text := strings.TrimSpace(string(data))
 	if text == strings.TrimSpace(draftTemplate) {
@@ -201,6 +208,8 @@ func (s *Session) Draft() string {
 
 // ClearDraft empties the draft after it has been sent.
 func (s *Session) ClearDraft() {
+	s.treeMu.RLock()
+	defer s.treeMu.RUnlock()
 	_ = s.tree.writeFile(draftFile, []byte(draftTemplate))
 }
 
@@ -288,10 +297,6 @@ func (s *Session) Turns() []Turn {
 	defer s.mu.Unlock()
 	return append([]Turn(nil), s.turns...)
 }
-
-// fenceRe matches an opening fence with an optional info string. The part
-// after a colon is treated as a file path: ```go:vtvibe/pack.go
-var fenceRe = regexp.MustCompile("(?m)^```([^\n`]*)$")
 
 // saveArtifacts drops every named code block of the answer into out/, so the
 // user copies a finished file back to disk with F5 instead of selecting text.

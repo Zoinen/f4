@@ -12,6 +12,10 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func managerMouseCoordinate(value int) int16 {
+	return int16(value) // #nosec G115 -- manager tests allocate dialogs inside screens no larger than 120x60.
+}
+
 func TestManagerOperationsPreserveLegacyOrderingSemantics(t *testing.T) {
 	config := Config{
 		Version: CurrentConfigVersion,
@@ -249,8 +253,8 @@ func TestManagerMouseWheelRefreshesInlineEditor(t *testing.T) {
 
 	if !controller.dialog.ProcessMouse(&vtinput.InputEvent{
 		Type:           vtinput.MouseEventType,
-		MouseX:         int16(controller.list.X1 + 1),
-		MouseY:         int16(controller.list.Y1 + 1),
+		MouseX:         managerMouseCoordinate(controller.list.X1 + 1),
+		MouseY:         managerMouseCoordinate(controller.list.Y1 + 1),
 		WheelDirection: -1,
 	}) {
 		t.Fatal("profile-list mouse wheel was not handled")
@@ -283,15 +287,15 @@ func TestManagerScrollbarMouseScrollsProfileList(t *testing.T) {
 		Type:        vtinput.MouseEventType,
 		KeyDown:     true,
 		ButtonState: vtinput.FromLeft1stButtonPressed,
-		MouseX:      int16(controller.list.ScrollBar.X1),
-		MouseY:      int16(controller.list.ScrollBar.Y2),
+		MouseX:      managerMouseCoordinate(controller.list.ScrollBar.X1),
+		MouseY:      managerMouseCoordinate(controller.list.ScrollBar.Y2),
 	}) {
 		t.Fatal("scrollbar down-arrow click was not handled")
 	}
 	controller.dialog.ProcessMouse(&vtinput.InputEvent{
 		Type:    vtinput.MouseEventType,
-		MouseX:  int16(controller.list.ScrollBar.X1),
-		MouseY:  int16(controller.list.ScrollBar.Y2),
+		MouseX:  managerMouseCoordinate(controller.list.ScrollBar.X1),
+		MouseY:  managerMouseCoordinate(controller.list.ScrollBar.Y2),
 		KeyDown: false,
 	})
 	if controller.list.TopPos == 0 {
@@ -309,20 +313,20 @@ func TestManagerScrollbarMouseScrollsProfileList(t *testing.T) {
 		Type:        vtinput.MouseEventType,
 		KeyDown:     true,
 		ButtonState: vtinput.FromLeft1stButtonPressed,
-		MouseX:      int16(controller.list.ScrollBar.X1),
-		MouseY:      int16(thumbY),
+		MouseX:      managerMouseCoordinate(controller.list.ScrollBar.X1),
+		MouseY:      managerMouseCoordinate(thumbY),
 	})
 	controller.dialog.ProcessMouse(&vtinput.InputEvent{
 		Type:            vtinput.MouseEventType,
 		ButtonState:     vtinput.FromLeft1stButtonPressed,
 		MouseEventFlags: vtinput.MouseMoved,
-		MouseX:          int16(controller.list.ScrollBar.X1),
-		MouseY:          int16(thumbY + 3),
+		MouseX:          managerMouseCoordinate(controller.list.ScrollBar.X1),
+		MouseY:          managerMouseCoordinate(thumbY + 3),
 	})
 	controller.dialog.ProcessMouse(&vtinput.InputEvent{
 		Type:   vtinput.MouseEventType,
-		MouseX: int16(controller.list.ScrollBar.X1),
-		MouseY: int16(thumbY + 3),
+		MouseX: managerMouseCoordinate(controller.list.ScrollBar.X1),
+		MouseY: managerMouseCoordinate(thumbY + 3),
 	})
 	if controller.list.TopPos == 0 {
 		t.Fatal("dragging the scrollbar thumb did not scroll the profile list")
@@ -340,8 +344,8 @@ func TestManagerCheckboxClickTogglesWithoutEditing(t *testing.T) {
 		Type:        vtinput.MouseEventType,
 		KeyDown:     true,
 		ButtonState: vtinput.FromLeft1stButtonPressed,
-		MouseX:      int16(controller.list.X1 + 1),
-		MouseY:      int16(controller.list.Y1),
+		MouseX:      managerMouseCoordinate(controller.list.X1 + 1),
+		MouseY:      managerMouseCoordinate(controller.list.Y1),
 	}) {
 		t.Fatal("checkbox click was not handled")
 	}
@@ -356,8 +360,8 @@ func TestManagerCheckboxClickTogglesWithoutEditing(t *testing.T) {
 		Type:        vtinput.MouseEventType,
 		KeyDown:     true,
 		ButtonState: vtinput.FromLeft1stButtonPressed,
-		MouseX:      int16(controller.list.X1 + 5),
-		MouseY:      int16(controller.list.Y1 + 1),
+		MouseX:      managerMouseCoordinate(controller.list.X1 + 5),
+		MouseY:      managerMouseCoordinate(controller.list.Y1 + 1),
 	})
 	if controller.list.SelectPos != 1 || store.Snapshot().Entries[1].Enabled {
 		t.Fatal("clicking the profile label should select it without toggling")
@@ -571,11 +575,11 @@ func TestManagerVisualStatesAndOverflowFollowDialogTheme(t *testing.T) {
 	splitX := x1 + dialog.splitOffset
 	leftHeaderX := x1 + 1 + ((splitX-1)-(x1+1)+1-(runewidth.StringWidth(dialog.profilesTitle)+2))/2
 	rightHeaderX := splitX + 1 + ((x2-1)-(splitX+1)+1-(runewidth.StringWidth(dialog.detailsTitle)+2))/2
-	if cell := screen.GetCell(leftHeaderX, y1+1); cell.Attributes != selected || rune(cell.Char) != ' ' {
-		t.Fatalf("browse-mode Profiles left margin = %q/%#x, want active blank/%#x", rune(cell.Char), cell.Attributes, selected)
+	if cell := screen.GetCell(leftHeaderX, y1+1); cell.Attributes != selected || cell.Char != ' ' {
+		t.Fatalf("browse-mode Profiles left margin = %#x/%#x, want active blank/%#x", cell.Char, cell.Attributes, selected)
 	}
-	if cell := screen.GetCell(leftHeaderX+runewidth.StringWidth(dialog.profilesTitle)+1, y1+1); cell.Attributes != selected || rune(cell.Char) != ' ' {
-		t.Fatalf("browse-mode Profiles right margin = %q/%#x", rune(cell.Char), cell.Attributes)
+	if cell := screen.GetCell(leftHeaderX+runewidth.StringWidth(dialog.profilesTitle)+1, y1+1); cell.Attributes != selected || cell.Char != ' ' {
+		t.Fatalf("browse-mode Profiles right margin = %#x/%#x", cell.Char, cell.Attributes)
 	}
 	if got := screen.GetCell(rightHeaderX, y1+1).Attributes; got != title {
 		t.Fatalf("browse-mode details margin = %#x, want inactive %#x", got, title)
@@ -602,9 +606,9 @@ func TestManagerVisualStatesAndOverflowFollowDialogTheme(t *testing.T) {
 	if got := vtui.GetRGBBack(screen.GetCell(controller.enabledEdit.X1, controller.enabledEdit.Y1).Attributes); got != vtui.GetRGBBack(normal) {
 		t.Fatalf("Enabled background = %#x, want unchanged dialog background %#x", got, vtui.GetRGBBack(normal))
 	}
-	if cell := screen.GetCell(controller.list.X2, controller.list.Y1); rune(cell.Char) != rune(vtui.ScrollUpArrow) ||
+	if cell := screen.GetCell(controller.list.X2, controller.list.Y1); cell.Char != vtui.ScrollUpArrow ||
 		cell.Attributes != managerHintWithBackground(box, managerInputBackground(true)) {
-		t.Fatalf("active scrollbar top cell = %q/%#x", rune(cell.Char), cell.Attributes)
+		t.Fatalf("active scrollbar top cell = %#x/%#x", cell.Char, cell.Attributes)
 	}
 	controller.dialog.SetFocusedItem(controller.addButton)
 	dialog.Show(screen)
@@ -618,8 +622,8 @@ func TestManagerVisualStatesAndOverflowFollowDialogTheme(t *testing.T) {
 		t.Fatalf("edit-mode Profiles margin = %#x, want inactive %#x", got, title)
 	}
 	editingHeaderX := splitX + 1 + ((x2-1)-(splitX+1)+1-(runewidth.StringWidth(dialog.editingTitle)+2))/2
-	if cell := screen.GetCell(editingHeaderX, y1+1); cell.Attributes != selected || rune(cell.Char) != ' ' {
-		t.Fatalf("edit-mode right header margin = %q/%#x, want active blank/%#x", rune(cell.Char), cell.Attributes, selected)
+	if cell := screen.GetCell(editingHeaderX, y1+1); cell.Attributes != selected || cell.Char != ' ' {
+		t.Fatalf("edit-mode right header margin = %#x/%#x, want active blank/%#x", cell.Char, cell.Attributes, selected)
 	}
 
 	if got, want := screen.GetCell(controller.variablesEdit.X1, controller.variablesEdit.Y1).Attributes, edit; got != want {
@@ -638,9 +642,9 @@ func TestManagerVisualStatesAndOverflowFollowDialogTheme(t *testing.T) {
 	if !controller.list.ShowScrollBar || controller.list.ItemCount <= controller.list.ViewHeight {
 		t.Fatal("overflowing profile list did not enable its scrollbar")
 	}
-	if cell := screen.GetCell(controller.list.X2, controller.list.Y1); rune(cell.Char) != rune(vtui.ScrollUpArrow) ||
+	if cell := screen.GetCell(controller.list.X2, controller.list.Y1); cell.Char != vtui.ScrollUpArrow ||
 		cell.Attributes != managerHintWithBackground(box, inactiveBackground) {
-		t.Fatalf("inactive scrollbar top cell = %q/%#x", rune(cell.Char), cell.Attributes)
+		t.Fatalf("inactive scrollbar top cell = %#x/%#x", cell.Char, cell.Attributes)
 	}
 
 	parts := parseManagerHint(dialog.bottomHint)
@@ -706,20 +710,20 @@ func TestManagerHintBackgroundMatchesOnlyRenderedTextWidth(t *testing.T) {
 			t.Fatalf("hint background at x=%d = %#x, want %#x", x, got, wantBackground)
 		}
 	}
-	if cell := screen.GetCell(start, 2); rune(cell.Char) != ' ' {
-		t.Fatalf("left hint margin = %q, want a space", rune(cell.Char))
+	if cell := screen.GetCell(start, 2); cell.Char != ' ' {
+		t.Fatalf("left hint margin = %#x, want a space", cell.Char)
 	}
-	if cell := screen.GetCell(end, 2); rune(cell.Char) != ' ' {
-		t.Fatalf("right hint margin = %q, want a space", rune(cell.Char))
+	if cell := screen.GetCell(end, 2); cell.Char != ' ' {
+		t.Fatalf("right hint margin = %#x, want a space", cell.Char)
 	}
-	if cell := screen.GetCell(start+1, 2); rune(cell.Char) != 'F' {
-		t.Fatalf("hint text begins at %q after left margin, want F", rune(cell.Char))
+	if cell := screen.GetCell(start+1, 2); cell.Char != 'F' {
+		t.Fatalf("hint text begins at %#x after left margin, want F", cell.Char)
 	}
-	if cell := screen.GetCell(start-1, 2); rune(cell.Char) != '─' || cell.Attributes != base {
-		t.Fatalf("left cell outside hint was changed to %q/%#x", rune(cell.Char), cell.Attributes)
+	if cell := screen.GetCell(start-1, 2); cell.Char != '─' || cell.Attributes != base {
+		t.Fatalf("left cell outside hint was changed to %#x/%#x", cell.Char, cell.Attributes)
 	}
-	if cell := screen.GetCell(end+1, 2); rune(cell.Char) != '─' || cell.Attributes != base {
-		t.Fatalf("right cell outside hint was changed to %q/%#x", rune(cell.Char), cell.Attributes)
+	if cell := screen.GetCell(end+1, 2); cell.Char != '─' || cell.Attributes != base {
+		t.Fatalf("right cell outside hint was changed to %#x/%#x", cell.Char, cell.Attributes)
 	}
 }
 
@@ -738,10 +742,10 @@ func TestManagerDividerMovesWithDialog(t *testing.T) {
 	screen.AllocBuf(120, 60)
 	dialog.Show(screen)
 	newSplit := originalSplit + delta
-	if cell := screen.GetCell(newSplit, y1+1); rune(cell.Char) != '│' || cell.Attributes != vtui.Palette[vtui.ColDialogBox] {
-		t.Fatalf("moved divider cell = %q/%#x at x=%d", rune(cell.Char), cell.Attributes, newSplit)
+	if cell := screen.GetCell(newSplit, y1+1); cell.Char != '│' || cell.Attributes != vtui.Palette[vtui.ColDialogBox] {
+		t.Fatalf("moved divider cell = %#x/%#x at x=%d", cell.Char, cell.Attributes, newSplit)
 	}
-	if cell := screen.GetCell(originalSplit, y1+1); rune(cell.Char) == '│' {
+	if cell := screen.GetCell(originalSplit, y1+1); cell.Char == '│' {
 		t.Fatalf("divider remained at its old absolute x=%d", originalSplit)
 	}
 }

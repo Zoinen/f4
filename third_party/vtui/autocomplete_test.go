@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+func TestAutoComplete_SelectPos(t *testing.T) {
+	SetDefaultPalette()
+	edit := NewEdit(0, 0, 20, "l")
+	edit.History = []string{"ls -la", "ls"}
+	ac := NewAutoCompleteMenu(edit)
+	if ac.SelectPos() != 0 {
+		t.Errorf("Expected initial SelectPos 0, got %d", ac.SelectPos())
+	}
+}
+func TestAutoComplete_IsBusyInheritance(t *testing.T) {
+	SetDefaultPalette()
+	fm := NewFrameManager()
+	fm.Init(NewSilentScreenBuf())
+	FrameManager = fm
+
+	busyUnder := &busyFrame{Busy: true}
+	fm.Push(busyUnder)
+
+	edit := NewEdit(0, 0, 20, "l")
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	if !ac.IsBusy() {
+		t.Error("AutoCompleteMenu should inherit busy state when underlying frame is busy")
+	}
+
+	busyUnder.Busy = false
+	if ac.IsBusy() {
+		t.Error("AutoCompleteMenu should not be busy when underlying frame is not busy")
+	}
+}
+
 func TestAutoComplete_Matching(t *testing.T) {
 	SetDefaultPalette()
 	edit := NewEdit(0, 0, 20, "l")
@@ -19,6 +51,29 @@ func TestAutoComplete_Matching(t *testing.T) {
 
 	if ac.Matches[0] != "ls -la" || ac.Matches[1] != "ls" {
 		t.Errorf("Wrong matches order or content: %v", ac.Matches)
+	}
+}
+
+func TestAutoComplete_MatchRanking(t *testing.T) {
+	SetDefaultPalette()
+	edit := NewEdit(0, 0, 20, "git")
+	edit.History = []string{
+		"got",        // fuzzy: 1 error (k = 1)
+		"a git x",    // substring at 2
+		"git status", // prefix
+		"git",        // exact, must win despite being last in history
+	}
+
+	ac := NewAutoCompleteMenu(edit)
+
+	want := []string{"git", "git status", "a git x", "got"}
+	if len(ac.Matches) != len(want) {
+		t.Fatalf("expected %d matches, got %d: %v", len(want), len(ac.Matches), ac.Matches)
+	}
+	for i := range want {
+		if ac.Matches[i] != want[i] {
+			t.Errorf("match %d: expected %q, got %q (all: %v)", i, want[i], ac.Matches[i], ac.Matches)
+		}
 	}
 }
 

@@ -4,11 +4,11 @@ import "testing"
 
 func TestQuoteShellArg(t *testing.T) {
 	for input, want := range map[string]string{
-		"":                         "''",
-		"plain":                    "'plain'",
-		"white space":              "'white space'",
-		"a'b":                      "'a'\"'\"'b'",
-		"$(touch /data/local/pwn)": "'$(touch /data/local/pwn)'",
+		"":                              "''",
+		"plain":                         "'plain'",
+		"white space":                   "'white space'",
+		"a'b":                           "'a'\"'\"'b'",
+		"$(touch /data/local/injected)": "'$(touch /data/local/injected)'",
 	} {
 		if got := quoteShellArg(input); got != want {
 			t.Errorf("quoteShellArg(%q) = %q, want %q", input, got, want)

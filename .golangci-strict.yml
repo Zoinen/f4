@@ -1,0 +1,32 @@
+# Linters that have no backlog left, checked across the whole tree.
+#
+# The main .golangci.yml is paired with --new-from-rev, so it only ever reports
+# findings on lines a pull request touched and says nothing about existing code.
+# A linter moves here once its backlog is genuinely zero, and from then on it is
+# checked everywhere and cannot regrow. Adding one means clearing its debt in
+# the same change.
+#
+# This list is a subset of .golangci.yml's, not a separate set: everything here
+# is also enabled there, so a local `golangci-lint run` with no arguments still
+# covers it. The two files answer different questions — the main one is what we
+# lint at all, this one is which of those we hold at zero everywhere. Running
+# both costs about a second, because the second invocation reuses the first's
+# analysis cache.
+#
+# No exclusion presets here on purpose: this is meant to be the strict end, and
+# a preset silently dropping findings would defeat it.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - ineffassign
+    - staticcheck
+    - unused
+
+  settings:
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003", "-ST1005", "-ST1016", "-ST1020", "-ST1021", "-ST1022"]
+
+  exclusions:
+    generated: lax

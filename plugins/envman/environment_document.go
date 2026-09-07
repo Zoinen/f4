@@ -8,7 +8,7 @@ import (
 )
 
 func decodeEnvironmentBytes(data []byte) (string, error) {
-	codepage := vfs.DetectEncoding(data, true, 22222)
+	codepage := vfs.DetectEncoding(data, true, vfs.SystemOEMCodepage())
 	decoded, err := vfs.DecodeBytes(data, codepage)
 	if err != nil {
 		return "", fmt.Errorf("decode environment file: %w", err)

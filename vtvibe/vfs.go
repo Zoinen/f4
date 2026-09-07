@@ -39,6 +39,8 @@ func (v *AIVFS) IsAbs(p string) bool {
 
 func (v *AIVFS) SetPath(p string) error {
 	target := v.normalize(p)
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	if n, ok := v.s.tree.stat(target); !ok || !n.isDir {
 		return os.ErrNotExist
 	}
@@ -65,14 +67,18 @@ func (v *AIVFS) normalize(p string) string {
 func (v *AIVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	v.s.refresh()
 	target := v.normalize(p)
+	v.s.treeMu.RLock()
 	n, ok := v.s.tree.stat(target)
 	if !ok || !n.isDir {
+		v.s.treeMu.RUnlock()
 		return os.ErrNotExist
 	}
 	if onChunk == nil {
+		v.s.treeMu.RUnlock()
 		return nil
 	}
 	children := v.s.tree.list(target)
+	v.s.treeMu.RUnlock()
 	items := make([]vfs.VFSItem, 0, len(children))
 	for _, c := range children {
 		items = append(items, toItem(c))
@@ -86,6 +92,8 @@ func (v *AIVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIte
 func (v *AIVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	v.s.refresh()
 	target := v.normalize(p)
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	n, ok := v.s.tree.stat(target)
 	if !ok {
 		if altNode, altOk := v.s.tree.stat(path.Join(ctxDir, path.Base(target))); altOk {
@@ -156,6 +164,8 @@ func (v *AIVFS) MkDir(ctx context.Context, p string) error {
 	if !writable(target) {
 		return os.ErrPermission
 	}
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	return v.s.tree.mkdirAll(target)
 }
 
@@ -164,7 +174,9 @@ func (v *AIVFS) Remove(ctx context.Context, p string) error {
 	if !writable(target) || target == ctxDir || target == outDir {
 		return os.ErrPermission
 	}
+	v.s.treeMu.RLock()
 	err := v.s.tree.remove(target)
+	v.s.treeMu.RUnlock()
 	v.s.refresh()
 	return err
 }
@@ -174,6 +186,8 @@ func (v *AIVFS) Rename(ctx context.Context, oldPath, newPath string) error {
 	if !writable(from) || !writable(to) {
 		return os.ErrPermission
 	}
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	return v.s.tree.rename(from, to)
 }
 
@@ -192,6 +206,8 @@ func (v *AIVFS) Search(ctx context.Context, p string, pattern string) (chan int6
 func (v *AIVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
 	v.s.refresh()
 	target := v.normalize(p)
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	data, ok := v.s.tree.readFile(target)
 	if !ok {
 		if altData, altOk := v.s.tree.readFile(path.Join(ctxDir, path.Base(target))); altOk {
@@ -219,6 +235,8 @@ func (v *AIVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
 	if !writable(target) {
 		return nil, os.ErrPermission
 	}
+	v.s.treeMu.RLock()
+	defer v.s.treeMu.RUnlock()
 	if n, ok := v.s.tree.stat(target); ok && n.isDir {
 		return nil, os.ErrExist
 	}
@@ -288,7 +306,10 @@ func (w *memWriter) Close() error {
 	if w.failed != nil {
 		return w.failed
 	}
-	if err := w.v.s.tree.writeFile(w.path, w.buf); err != nil {
+	w.v.s.treeMu.RLock()
+	err := w.v.s.tree.writeFile(w.path, w.buf)
+	w.v.s.treeMu.RUnlock()
+	if err != nil {
 		return err
 	}
 	w.v.s.refresh()

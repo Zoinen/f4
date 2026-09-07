@@ -105,7 +105,7 @@ func scanTree(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "tree")
 	sub := filepath.Join(root, "a sub dir")
-	if err := os.MkdirAll(filepath.Join(sub, "deeper"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(sub, "deeper"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	files := []struct {
@@ -117,7 +117,7 @@ func scanTree(t *testing.T) string {
 		{filepath.Join(sub, "deeper", "smallest"), 7},
 	}
 	for _, f := range files {
-		if err := os.WriteFile(f.name, make([]byte, f.size), 0644); err != nil {
+		if err := os.WriteFile(f.name, make([]byte, f.size), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -176,12 +176,12 @@ func bigTree(t *testing.T) string {
 	root := filepath.Join(t.TempDir(), "big")
 	for i := 0; i < 10; i++ {
 		dir := filepath.Join(root, "d"+strconv.Itoa(i))
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
 		for j := 0; j < 300; j++ {
 			name := filepath.Join(dir, "f"+strconv.Itoa(j)+".txt")
-			if err := os.WriteFile(name, make([]byte, j%16), 0644); err != nil {
+			if err := os.WriteFile(name, make([]byte, j%16), 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -343,7 +343,7 @@ func TestScanFailureIsReported(t *testing.T) {
 		t.Skip("this host cannot run scan jobs")
 	}
 	file := filepath.Join(t.TempDir(), "not a directory.txt")
-	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := c.Scan(ctx, file, nil)

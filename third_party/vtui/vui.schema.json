@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vtui .vui Document Schema",
+  "type": "object",
+  "required": ["vuiVersion", "root"],
+  "properties": {
+    "vuiVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "root": {
+      "$ref": "#/definitions/vuiNode"
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "signal"],
+        "properties": {
+          "from": { "type": "string" },
+          "signal": { "type": "string" },
+          "command": { "type": ["string", "integer"] },
+          "emit": { "type": "bool" }
+        }
+      }
+    },
+    "tabOrder": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "palette": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "paletteFile": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "vuiNode": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string" },
+        "id": { "type": "string" },
+        "props": { "type": "object" },
+        "layout": {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["VBox", "HBox", "Grid", "Form", "Stack", "Absolute"] },
+            "spacing": {},
+            "margins": {
+              "type": "array",
+              "items": { "type": "integer" }
+            },
+            "align": { "type": "string", "enum": ["fill", "start", "center", "end", "left", "right", "top", "bottom"] }
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/vuiNode" }
+        },
+        "row": { "type": "integer" },
+        "col": { "type": "integer" },
+        "rowSpan": { "type": "integer" },
+        "colSpan": { "type": "integer" }
+      }
+    }
+  }
+}

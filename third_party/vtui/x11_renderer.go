@@ -1,4 +1,4 @@
-//go:build linux || openbsd || netbsd || dragonfly || darwin || freebsd || windows || illumos || solaris
+//go:build (linux || openbsd || netbsd || dragonfly || darwin || freebsd || windows || illumos || solaris) && !android
 
 package vtui
 
@@ -189,18 +189,25 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 
 	cursorVisible := r.cursorVis && r.blinkState
 
-	reqWidth := uint16(w * r.host.cellW)
-	reqHeight := uint16(h * r.host.cellH)
-	if r.host.imgBuf == nil || uint16(r.host.imgBuf.Bounds().Dx()) != reqWidth || uint16(r.host.imgBuf.Bounds().Dy()) != reqHeight {
-		r.host.width = reqWidth
-		r.host.height = reqHeight
-		r.host.cols = w
-		r.host.rows = h
-		r.host.imgBuf = image.NewRGBA(image.Rect(0, 0, int(reqWidth), int(reqHeight)))
+	// Keep the backing image at the native window size, not at the nearest
+	// cell-aligned size. X11 configure events may describe a window with a
+	// partial cell at the right or bottom edge. If the image were truncated to
+	// w*cellW by h*cellH, PutImage would leave the old pixels in those partial
+	// margins visible after a resize.
+	windowWidth := int(r.host.width)
+	windowHeight := int(r.host.height)
+	if windowWidth <= 0 {
+		windowWidth = w * r.host.cellW
+	}
+	if windowHeight <= 0 {
+		windowHeight = h * r.host.cellH
+	}
+	if r.host.imgBuf == nil || r.host.imgBuf.Bounds().Dx() != windowWidth || r.host.imgBuf.Bounds().Dy() != windowHeight {
+		r.host.imgBuf = image.NewRGBA(image.Rect(0, 0, windowWidth, windowHeight))
 		if r.host.shmSeg == 0 {
 			r.host.bgraBuf = make([]byte, len(r.host.imgBuf.Pix))
 		}
-		r.host.dirtyLines = make([]bool, int(reqHeight))
+		r.host.dirtyLines = make([]bool, windowHeight)
 		for i := range r.host.dirtyLines {
 			r.host.dirtyLines[i] = true
 		}
@@ -301,9 +308,12 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 
 				if char != 0 && char != ' ' {
 					r.stats.glyphs++
-					if !r.drawCustomChar(img, char, cpx, py, cw, ch, fgColor) {
+					if !r.drawCustomChar(img, char, cpx, py, cw, ch, cfg) {
 						r.drawCachedGlyph(img, currCell.Char, cpx, py, rw, cfg, cbg, fgColor, bgColor)
 					}
+				}
+				if currCell.Attributes&CommonLvbUnderscore != 0 {
+					drawUnderline(img, cpx, py, cw*rw, ch, r.host.scale, cfg)
 				}
 
 				if cursorVisible && y == r.cursorY && r.cursorX >= currX && r.cursorX < currX+rw {
@@ -425,6 +435,10 @@ func (r *X11Renderer) reportStats() {
 	r.stats = renderStats{lastReport: time.Now()}
 }
 
-func (r *X11Renderer) drawCustomChar(img *image.RGBA, char rune, px, py, cw, ch int, col color.Color) bool {
-	return drawBoxGlyph(img, char, px, py, cw, ch, r.host.scale, col)
+func (r *X11Renderer) drawCustomChar(img *image.RGBA, char rune, px, py, cw, ch int, fg uint32) bool {
+	return drawBoxGlyph(img, char, px, py, cw, ch, r.host.scale, fg)
 }
+
+// needsIdleBlinkHeartbeat marks X11Renderer as needing the idle blink
+// heartbeat in FrameManager.Run(). See softwareBlinkRenderer.
+func (r *X11Renderer) needsIdleBlinkHeartbeat() {}

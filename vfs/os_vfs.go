@@ -2,16 +2,18 @@ package vfs
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"os"
 	"time"
 
-	"path/filepath"
 	"strings"
 
 	"runtime"
 
+	"github.com/unxed/f4/vfs/hostfs"
+	"github.com/unxed/f4/vfs/hostmode"
+	"github.com/unxed/f4/vfs/hostpath"
 	"github.com/unxed/vtui"
 )
 
@@ -119,12 +121,12 @@ func osVFSSetPathBenchmarkEvent(event string, fields ...any) {
 }
 
 func NewOSVFS(initialPath string) *OSVFS {
-	abs, _ := filepath.Abs(initialPath)
+	abs, _ := hostpath.Abs(initialPath)
 	return &OSVFS{currentPath: abs}
 }
 
 func (v *OSVFS) GetPath() string        { return v.currentPath }
-func (v *OSVFS) IsAbs(path string) bool { return filepath.IsAbs(path) }
+func (v *OSVFS) IsAbs(path string) bool { return hostpath.IsAbs(path) }
 
 func (v *OSVFS) PhasedDirectoryReader() PhasedDirectoryReader { return v }
 
@@ -138,10 +140,10 @@ func (v *OSVFS) WindowedDirectoryReader() WindowedDirectoryReader { return v }
 // recovery restores the parent and reports the error.
 func (v *OSVFS) SetPathOptimistic(path string) error {
 	target := path
-	if !filepath.IsAbs(path) && filepath.VolumeName(path) == "" {
-		target = filepath.Join(v.currentPath, path)
+	if !hostpath.IsAbs(path) && hostpath.VolumeName(path) == "" {
+		target = hostpath.Join(v.currentPath, path)
 	}
-	abs, err := filepath.Abs(target)
+	abs, err := hostpath.Abs(target)
 	if err != nil {
 		return err
 	}
@@ -150,9 +152,9 @@ func (v *OSVFS) SetPathOptimistic(path string) error {
 }
 
 func (v *OSVFS) IsAtRoot() bool {
-	if runtime.GOOS == "windows" {
-		vol := filepath.VolumeName(v.currentPath)
-		p := filepath.Clean(v.currentPath)
+	if runtime.GOOS == "windows" && !hostmode.Posix() {
+		vol := hostpath.VolumeName(v.currentPath)
+		p := hostpath.Clean(v.currentPath)
 		// Standardize to backslash for comparison on Windows
 		p = strings.ReplaceAll(p, "/", "\\")
 		vol = strings.ReplaceAll(vol, "/", "\\")
@@ -164,10 +166,10 @@ func (v *OSVFS) IsAtRoot() bool {
 func (v *OSVFS) SetPath(path string) error {
 	vtui.DebugLog("VFS: SetPath(%q) called", path)
 	target := path
-	if !filepath.IsAbs(path) && filepath.VolumeName(path) == "" {
-		target = filepath.Join(v.currentPath, path)
+	if !hostpath.IsAbs(path) && hostpath.VolumeName(path) == "" {
+		target = hostpath.Join(v.currentPath, path)
 	}
-	abs, err := filepath.Abs(target)
+	abs, err := hostpath.Abs(target)
 	if err != nil {
 		return err
 	}
@@ -186,48 +188,19 @@ func (v *OSVFS) SetPath(path string) error {
 		goto verify
 	}
 
-	// Если мы получили ошибку (например, Permission Denied на системном джанкшене Windows
-	// "Documents and Settings"), то только тогда пытаемся принудительно разыменовать симлинк.
-	if resolved, errEval := filepath.EvalSymlinks(prepareOSPath(abs)); errEval == nil {
-		resolved = stripExtendedPrefix(resolved)
-		if runtime.GOOS == "windows" {
-			origVol := filepath.VolumeName(abs)
-			resVol := filepath.VolumeName(resolved)
-			// Prevent resolving mapped drives (e.g. T:\) into UNC paths (\\server\share)
-			if len(origVol) == 2 && origVol[1] == ':' && len(resVol) > 2 && strings.HasPrefix(resVol, `\\`) {
-				abs = origVol + strings.TrimPrefix(resolved, resVol)
-			} else {
-				abs = resolved
-			}
-		} else {
-			abs = resolved
-		}
-		goto verify
-	}
-
-	// Windows fallbacks when EvalSymlinks fails (e.g. protected junctions)
+	// If direct access failed (e.g. Permission Denied on the Windows system
+	// junction "Documents and Settings" or on a nested per-user profile
+	// junction like "Application Data"), force-resolve the reparse points.
+	// Resolution runs on the PLAIN path (no \\?\ prefix): the prefix disables
+	// Win32's transparent reparse redirection, so "Documents and Settings"
+	// is opened directly and yields Access Denied.
 	if runtime.GOOS == "windows" {
-		// 1. wellKnownJunction (string comparison, no syscall)
-		if link, ok := wellKnownJunction(abs); ok {
-			vtui.DebugLog("VFS: SetPath: resolved via wellKnownJunction: %q -> %q", abs, link)
-			abs = link
-			goto verify
-		}
-		// 2. os.Readlink
-		if link, errRead := os.Readlink(abs); errRead == nil {
-			vtui.DebugLog("VFS: SetPath: resolved via Readlink: %q -> %q", abs, link)
-			if filepath.IsAbs(link) {
-				abs = link
-			} else {
-				abs = filepath.Join(filepath.Dir(abs), link)
+		for _, candidate := range resolveReparseCandidates(abs) {
+			vtui.DebugLog("VFS: SetPath: trying reparse candidate %q -> %q", abs, candidate)
+			if st, errStat := hostfs.Stat(prepareOSPath(candidate)); errStat == nil && st.IsDir() {
+				abs = candidate
+				goto verify
 			}
-			goto verify
-		}
-		// 3. Direct syscall (CreateFile + DeviceIoControl)
-		if link, errJunc := resolveWindowsJunction(abs); errJunc == nil {
-			vtui.DebugLog("VFS: SetPath: resolved via resolveWindowsJunction: %q -> %q", abs, link)
-			abs = link
-			goto verify
 		}
 	}
 
@@ -266,15 +239,19 @@ verify:
 }
 
 func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem)) error {
-	// Try to open the directory
 	dirPath := path
-	f, err := os.Open(prepareOSPath(dirPath))
+	entries, err := hostfs.ReadDir(prepareOSPath(dirPath))
 	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
-		// Try to resolve protected junctions (e.g. "Documents and Settings")
-		if resolved, ok := wellKnownJunction(dirPath); ok {
-			vtui.DebugLog("VFS: ReadDir: resolved junction %q -> %q", dirPath, resolved)
-			dirPath = resolved
-			f, err = os.Open(prepareOSPath(dirPath))
+		// Resolve protected/per-user junctions (e.g. "Documents and
+		// Settings", "<user>\Application Data") the same way SetPath does.
+		for _, candidate := range resolveReparseCandidates(dirPath) {
+			vtui.DebugLog("VFS: ReadDir: trying reparse candidate %q -> %q", dirPath, candidate)
+			if e, eErr := hostfs.ReadDir(prepareOSPath(candidate)); eErr == nil {
+				vtui.DebugLog("VFS: ReadDir: resolved junction %q -> %q", dirPath, candidate)
+				dirPath = candidate
+				entries, err = e, nil
+				break
+			}
 		}
 	}
 	if err != nil {
@@ -294,22 +271,27 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 		}
 		return err
 	}
-	defer f.Close()
 
-	for {
+	// hostfs.ReadDir returns the whole directory at once (both the posix
+	// os.ReadDir backend and, from Stage E3, the libwinescape backend do),
+	// unlike the old *os.File.ReadDir(1000) this replaces, which streamed
+	// incrementally straight from the OS. True incremental disk reading is
+	// gone; what's kept is chunked *delivery* to onChunk, so a huge
+	// directory still arrives to the UI in batches instead of one giant
+	// slice that blocks a single redraw.
+	const chunkSize = 1000
+	for start := 0; start < len(entries); start += chunkSize {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		entries, err := f.ReadDir(1000)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
+		end := start + chunkSize
+		if end > len(entries) {
+			end = len(entries)
 		}
+		batch := entries[start:end]
 
-		items := make([]VFSItem, 0, len(entries))
-		for _, e := range entries {
+		items := make([]VFSItem, 0, len(batch))
+		for _, e := range batch {
 			info, _ := e.Info()
 			var size int64
 			var mtime time.Time
@@ -334,12 +316,12 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 			// If it's not a direct directory, it might be a symlink or a Windows Junction.
 			// If it's not a regular file, ask the OS to resolve the final target.
 			if !isDir && !e.Type().IsRegular() {
-				if target, err := os.Stat(filepath.Join(dirPath, e.Name())); err == nil {
+				if target, err := hostfs.Stat(hostpath.Join(dirPath, e.Name())); err == nil {
 					isDir = target.IsDir()
 				}
 			}
 
-			entryPath := filepath.Join(dirPath, e.Name())
+			entryPath := hostpath.Join(dirPath, e.Name())
 			item := VFSItem{
 				Name:         e.Name(),
 				Size:         size,
@@ -566,11 +548,11 @@ func phasedOSDirectoryBase(dirPath string, entry os.DirEntry) (VFSItem, os.FileI
 		}
 	}
 	if !isDir && (isSymlink || !entryType.IsRegular() || (info != nil && !info.Mode().IsRegular())) {
-		if target, statErr := os.Stat(filepath.Join(dirPath, entry.Name())); statErr == nil {
+		if target, statErr := os.Stat(hostpath.Join(dirPath, entry.Name())); statErr == nil {
 			isDir = target.IsDir()
 		}
 	}
-	entryPath := filepath.Join(dirPath, entry.Name())
+	entryPath := hostpath.Join(dirPath, entry.Name())
 	item := VFSItem{
 		Name:      entry.Name(),
 		IsDir:     isDir,
@@ -613,7 +595,7 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 		return VFSItem{}, ctx.Err()
 	}
 	preparedPath := prepareOSPath(path)
-	linkInfo, err := os.Lstat(preparedPath)
+	linkInfo, err := hostfs.Lstat(preparedPath)
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Stat(%q), attempting sudo...", path)
@@ -632,7 +614,7 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 		// Preserve the historical Stat view of the target while exposing that
 		// the selected entry itself is a link/junction. Broken links remain
 		// addressable as leaf entries.
-		if targetInfo, targetErr := os.Stat(preparedPath); targetErr == nil {
+		if targetInfo, targetErr := hostfs.Stat(preparedPath); targetErr == nil {
 			info = targetInfo
 		}
 	}
@@ -656,14 +638,58 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	return item, nil
 }
 
-func (v *OSVFS) Join(elem ...string) string { return filepath.Join(elem...) }
+func (v *OSVFS) Join(elem ...string) string { return hostpath.Join(elem...) }
 
 func (v *OSVFS) Abs(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), nil
+	if hostpath.IsAbs(path) {
+		return hostpath.Clean(path), nil
 	}
-	// Correctly resolve relative to the VFS current path, not process CWD
-	return filepath.Join(v.currentPath, path), nil
+	return hostpath.Join(v.currentPath, path), nil
+}
+
+func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
+	if ctx.Err() != nil {
+		return VFSItem{}, ctx.Err()
+	}
+	absPath, err := v.Abs(path)
+	if err != nil {
+		return VFSItem{}, err
+	}
+	preparedPath := prepareOSPath(absPath)
+	info, err := hostfs.Lstat(preparedPath)
+	if err != nil {
+		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+			item, sudoErr := globalSudoClient.Stat(prepareOSPath(path))
+			if sudoErr == nil {
+				return item, nil
+			}
+		}
+		return VFSItem{}, err
+	}
+	isSymlink := info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info)
+	isDir := info.IsDir()
+	if isSymlink {
+		if target, err := hostfs.Stat(preparedPath); err == nil {
+			isDir = target.IsDir()
+		}
+	}
+
+	item := VFSItem{
+		Name:         info.Name(),
+		Size:         info.Size(),
+		SizeKnown:    true,
+		IsDir:        isDir,
+		IsSymlink:    isSymlink,
+		MTime:        info.ModTime(),
+		UnixMode:     uint32(info.Mode().Perm()),
+		IsExecutable: info.Mode().Perm()&0111 != 0,
+		IsHidden:     isHidden(path, info.Name(), info),
+	}
+
+	fillPlatformTimes(&item, info)
+	fillPhysicalSize(&item, info, preparedPath)
+
+	return item, nil
 }
 
 // LocalPath exposes the native path for frontends which can decode local files
@@ -673,13 +699,13 @@ func (v *OSVFS) LocalPath(path string) (string, error) {
 	return v.Abs(path)
 }
 
-func (v *OSVFS) Base(path string) string { return filepath.Base(path) }
-func (v *OSVFS) Dir(path string) string  { return filepath.Dir(path) }
+func (v *OSVFS) Base(path string) string { return hostpath.Base(path) }
+func (v *OSVFS) Dir(path string) string  { return hostpath.Dir(path) }
 func (v *OSVFS) MkDir(ctx context.Context, path string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	err := os.MkdirAll(prepareOSPath(path), 0755)
+	err := hostfs.MkdirAll(prepareOSPath(path), 0755)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for MkDir(%q), attempting sudo...", path)
 		return globalSudoClient.MkDir(prepareOSPath(path), 0755)
@@ -691,7 +717,7 @@ func (v *OSVFS) Remove(ctx context.Context, path string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	err := os.RemoveAll(prepareOSPath(path))
+	err := hostfs.RemoveAll(prepareOSPath(path))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		return globalSudoClient.Remove(prepareOSPath(path))
 	}
@@ -705,7 +731,7 @@ func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 	if overwrite, known := DestinationOverwrite(ctx); known && !overwrite {
 		return v.RenameNoReplace(ctx, old, new)
 	}
-	err := os.Rename(prepareOSPath(old), prepareOSPath(new))
+	err := hostfs.Rename(prepareOSPath(old), prepareOSPath(new))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		return globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new))
 	}
@@ -730,13 +756,17 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	// Try native first
 	var errMode error
 	if item.UnixMode != 0 {
-		errMode = os.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
+		errMode = hostfs.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
 	}
 
 	var errOwn error
 	if runtime.GOOS != "windows" {
 		if item.Uid != -1 && item.Gid != -1 {
-			errOwn = os.Chown(prepareOSPath(path), item.Uid, item.Gid)
+			if item.IsSymlink {
+				errOwn = hostfs.Lchown(prepareOSPath(path), item.Uid, item.Gid)
+			} else {
+				errOwn = hostfs.Chown(prepareOSPath(path), item.Uid, item.Gid)
+			}
 		}
 	}
 
@@ -750,7 +780,7 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 		if mtime.IsZero() {
 			mtime = atime
 		}
-		errTime = os.Chtimes(prepareOSPath(path), atime, mtime)
+		errTime = hostfs.Chtimes(prepareOSPath(path), atime, mtime)
 	}
 
 	errPlat := applyPlatformAttributes(prepareOSPath(path), item)
@@ -773,23 +803,25 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	return errPlat
 }
 
-func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) error {
-	// This path is for devices, which cannot have a temporary sibling. Normal
-	// files must use the editor's staged save: a prefix write followed by an
-	// unsupported shifted piece otherwise corrupts the source before fallback,
-	// and a shortened piece table would leave the old tail on disk.
+func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) (returnErr error) {
+	// Reject an unrepresentable patch before touching the source. This matters
+	// both for regular files and devices: discovering a shifted original piece
+	// after an earlier write would leave the source partially corrupted.
+	if err := ValidateInPlacePieces(pieces); err != nil {
+		return err
+	}
+
 	info, err := os.Stat(prepareOSPath(path))
 	if err != nil {
 		return err
 	}
-	if info.Mode().IsRegular() {
-		return fmt.Errorf("in-place patching is only supported for devices")
-	}
-	f, err := os.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
+	f, err := hostfs.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		returnErr = errors.Join(returnErr, f.Close())
+	}()
 
 	var newOffset int64 = 0
 	for _, p := range pieces {
@@ -800,13 +832,14 @@ func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPie
 			if _, err := f.WriteAt(p.Data, newOffset); err != nil {
 				return err
 			}
-		} else {
-			if p.Offset != newOffset {
-				return fmt.Errorf("in-place patching requires unchanged pieces to remain at their original offsets (no insertions/deletions allowed on raw disks)")
-			}
 		}
 		newOffset += p.Length
 	}
+	if info.Mode().IsRegular() {
+		// WriteAt does not remove a stale tail after a shorter replacement.
+		return f.Truncate(newOffset)
+	}
+	// Block/character devices have a fixed extent and generally reject truncate.
 	return nil
 }
 func (v *OSVFS) GetCapabilities() VFSCapabilities {
@@ -829,12 +862,13 @@ func (v *OSVFS) Search(ctx context.Context, path string, pattern string) (chan i
 }
 
 type osFileWrapper struct {
-	*os.File
-	size int64
+	hostfs.File
+	size      int64
+	localPath string
 }
 
 func (f *osFileWrapper) Size() int64                          { return f.size }
-func (f *osFileWrapper) LocalPath() (string, bool)            { return f.Name(), f.Name() != "" }
+func (f *osFileWrapper) LocalPath() (string, bool)            { return f.localPath, f.localPath != "" }
 func (f *osFileWrapper) ReadAccessProfile() ReadAccessProfile { return ReadAccessDirectLocal }
 func (f *osFileWrapper) Read(ctx context.Context, p []byte) (n int, err error) {
 	if ctx.Err() != nil {
@@ -849,18 +883,24 @@ func (f *osFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (n int,
 	}
 	return f.File.ReadAt(p, off)
 }
+func (f *osFileWrapper) Fd() uintptr {
+	if f.File != nil {
+		return f.File.Fd()
+	}
+	return 0
+}
 
 func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	fi, err := os.Stat(prepareOSPath(path))
+	fi, err := hostfs.Stat(prepareOSPath(path))
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := os.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
+	f, err := hostfs.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
 	if err != nil {
-		f, err = os.Open(prepareOSPath(path))
+		f, err = hostfs.Open(prepareOSPath(path))
 	}
 	if err != nil {
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
@@ -870,13 +910,15 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 				info, _ := sudoF.Stat()
 				size := info.Size()
 				if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
-					if pos, err := sudoF.Seek(0, io.SeekEnd); err == nil && pos > 0 {
-						size = pos
-						sudoF.Seek(0, io.SeekStart)
+					if probedSize, found, err := probeSeekSize(sudoF); err != nil {
+						_ = sudoF.Close() // The read handle cannot be returned at the wrong offset.
+						return nil, err
+					} else if found {
+						size = probedSize
 					}
 				}
 				vtui.DebugLog("VFS: Sudo Open(%q) SUCCESS, size: %d", path, size)
-				return &osFileWrapper{File: sudoF, size: size}, nil
+				return &osFileWrapper{File: sudoF, size: size, localPath: prepareOSPath(path)}, nil
 			}
 			vtui.DebugLog("VFS: Sudo Open(%q) FAILED: %v", path, sudoErr)
 		}
@@ -884,17 +926,19 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close() // No writes occurred before the failed metadata read.
 		return nil, err
 	}
 	size := info.Size()
 	if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
-		if pos, err := f.Seek(0, io.SeekEnd); err == nil && pos > 0 {
-			size = pos
-			f.Seek(0, io.SeekStart)
+		if probedSize, found, err := probeSeekSize(f); err != nil {
+			_ = f.Close() // The handle cannot be returned at the wrong offset.
+			return nil, err
+		} else if found {
+			size = probedSize
 		}
 	}
-	return &osFileWrapper{File: f, size: size}, nil
+	return &osFileWrapper{File: f, size: size, localPath: prepareOSPath(path)}, nil
 }
 
 func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
@@ -902,7 +946,7 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 		return nil, ctx.Err()
 	}
 	prepared := prepareOSPath(path)
-	fi, err := os.Stat(prepared)
+	fi, err := hostfs.Stat(prepared)
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 		return nil, os.ErrInvalid
 	}
@@ -920,7 +964,7 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 		// umask window before the caller restores its final metadata.
 		createMode = 0o600
 	}
-	f, err := os.OpenFile(prepared, flags, createMode)
+	f, err := hostfs.OpenFile(prepared, flags, createMode)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for Create(%q), attempting sudo...", path)
 		return globalSudoClient.Open(prepared, flags, uint32(createMode))
@@ -949,26 +993,74 @@ func wellKnownJunction(path string) (string, bool) {
 	if runtime.GOOS != "windows" {
 		return "", false
 	}
-	parent := filepath.Dir(path)
-	name := strings.ToLower(filepath.Base(path))
-	parentBase := strings.ToLower(filepath.Base(parent))
+	parent := hostpath.Dir(path)
+	name := strings.ToLower(hostpath.Base(path))
+	parentBase := strings.ToLower(hostpath.Base(parent))
 
 	// Documents and Settings at drive root -> Users
 	if len(path) >= 3 && path[1] == ':' && path[2] == '\\' && name == "documents and settings" {
-		return filepath.Join(parent, "Users"), true
+		return hostpath.Join(parent, "Users"), true
 	}
 
 	// C:\Users\All Users -> C:\ProgramData
 	if name == "all users" {
-		return filepath.Join(filepath.Dir(parent), "ProgramData"), true
+		return hostpath.Join(hostpath.Dir(parent), "ProgramData"), true
 	}
 
 	// C:\Users\Default User -> C:\Users\Default
 	if name == "default user" && parentBase == "users" {
-		return filepath.Join(parent, "Default"), true
+		return hostpath.Join(parent, "Default"), true
 	}
 
 	return "", false
+}
+
+// resolveReparseCandidates returns candidate paths to retry a failed
+// operation on when the original Windows path could not be opened directly
+// because of a reparse point (junction or symlink) in its components. This
+// covers the compatibility shim "C:\Documents and Settings" (junction to
+// "C:\Users") and the per-user profile junctions such as "Application Data"
+// (-> "AppData\Roaming"), "Local Settings", "My Documents", etc.
+//
+// The first candidate is a full EvalSymlinks resolution of the PLAIN path:
+// the "\\?\" long-path prefix disables Win32's transparent reparse
+// redirection, so resolution must run on the unprefixed path. The remaining
+// candidates handle cases where EvalSymlinks itself is blocked (protected
+// reparse points): the hard-coded well-known junctions, Readlink on the
+// final component, and a raw DeviceIoControl reparse read.
+func resolveReparseCandidates(abs string) []string {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	var out []string
+	if resolved, errEval := hostpath.EvalSymlinks(abs); errEval == nil {
+		resolved = stripExtendedPrefix(resolved)
+		// Prevent resolving mapped drives (e.g. T:\) into UNC paths (\\server\share).
+		origVol := hostpath.VolumeName(abs)
+		resVol := hostpath.VolumeName(resolved)
+		if len(origVol) == 2 && origVol[1] == ':' && len(resVol) > 2 && strings.HasPrefix(resVol, `\\`) {
+			resolved = origVol + strings.TrimPrefix(resolved, resVol)
+		}
+		out = append(out, resolved)
+	}
+	if link, ok := wellKnownJunction(abs); ok {
+		out = append(out, link)
+	}
+	if link, errRead := hostfs.Readlink(abs); errRead == nil {
+		if hostpath.IsAbs(link) {
+			out = append(out, link)
+		} else {
+			out = append(out, hostpath.Join(hostpath.Dir(abs), link))
+		}
+	}
+	if link, errJunc := resolveWindowsJunction(abs); errJunc == nil {
+		if hostpath.IsAbs(link) {
+			out = append(out, link)
+		} else {
+			out = append(out, hostpath.Join(hostpath.Dir(abs), link))
+		}
+	}
+	return out
 }
 
 // prepareOSPath adds the \\?\ prefix on Windows to prevent the Win32 API
@@ -977,7 +1069,16 @@ func prepareOSPath(p string) string {
 	if runtime.GOOS != "windows" {
 		return p
 	}
-	abs, err := filepath.Abs(p)
+	if hostmode.Posix() {
+		// The \\?\ long-path prefix is a Win32 convention with no meaning
+		// to libwinescape's raw syscalls, which expect the plain POSIX
+		// string as-is. Prepending it here would silently corrupt every
+		// path in posix mode (open("\\?\/home/user/foo") is nonsense to a
+		// real open(2) -- backslashes are ordinary filename bytes on
+		// Linux, not separators).
+		return p
+	}
+	abs, err := hostpath.Abs(p)
 	if err != nil {
 		return p
 	}
@@ -1016,7 +1117,7 @@ func (v *OSVFS) Readlink(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return os.Readlink(prepareOSPath(abs))
+	return hostfs.Readlink(prepareOSPath(abs))
 }
 
 func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
@@ -1027,7 +1128,7 @@ func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
 	if err != nil {
 		return err
 	}
-	return os.Symlink(target, prepareOSPath(abs))
+	return hostfs.Symlink(target, prepareOSPath(abs))
 }
 
 // OpenWriteAt makes OSVFS a RandomWriteVFS. A local file is the case where
@@ -1040,5 +1141,35 @@ func (v *OSVFS) OpenWriteAt(ctx context.Context, path string) (WriterAtCloser, e
 	if err != nil {
 		return nil, err
 	}
-	return os.OpenFile(prepareOSPath(abs), os.O_RDWR|os.O_CREATE, 0o644)
+	return hostfs.OpenFile(prepareOSPath(abs), os.O_RDWR|os.O_CREATE, 0o644)
+}
+
+func (v *OSVFS) Hardlink(ctx context.Context, target, linkPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	absTarget, err := v.Abs(target)
+	if err != nil {
+		return err
+	}
+	absLink, err := v.Abs(linkPath)
+	if err != nil {
+		return err
+	}
+	return hostfs.Link(prepareOSPath(absTarget), prepareOSPath(absLink))
+}
+
+func (v *OSVFS) Junction(ctx context.Context, target, linkPath string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	absTarget, err := v.Abs(target)
+	if err != nil {
+		return err
+	}
+	absLink, err := v.Abs(linkPath)
+	if err != nil {
+		return err
+	}
+	return hostfs.Symlink(absTarget, prepareOSPath(absLink))
 }

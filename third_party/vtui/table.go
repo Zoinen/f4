@@ -25,6 +25,37 @@ type TableRow interface {
 	GetCellText(col int) string
 }
 
+// TableCellProvider provides direct cell data without allocating TableRow wrappers.
+type TableCellProvider interface {
+	RowCount() int
+	GetCellText(row, col int) string
+}
+
+// TableCellAttrProvider allows cell-specific attributes via TableCellProvider.
+type TableCellAttrProvider interface {
+	GetCellAttr(row, col int, defaultAttr uint64) uint64
+}
+
+// TableCellSelectProvider allows row/cell selection via TableCellProvider.
+// IsRowSelected(row) only sees a row number, so it cannot tell apart cells
+// in grid layouts where several data items share one row across different
+// columns (e.g. a multi-column file panel). Implementers of such layouts
+// should also implement TableCellColSelectProvider, which the table prefers
+// whenever both are present.
+type TableCellSelectProvider interface {
+	IsRowSelected(row int) bool
+}
+
+// TableCellColSelectProvider is the column-aware counterpart of
+// TableCellSelectProvider, for TableCellProvider-backed tables whose cells
+// at the same row but different columns can belong to different, separately
+// selectable data items (grid/multi-column layouts). When a cellProvider
+// implements this, the table calls IsCellSelected(row, col) instead of
+// IsRowSelected(row).
+type TableCellColSelectProvider interface {
+	IsCellSelected(row, col int) bool
+}
+
 // Table is a generic control for displaying tabular data.
 // SelectableRow is an optional interface for rows that can be selected.
 type SelectableRow interface {
@@ -44,13 +75,9 @@ type CellColorableRow interface {
 // Table is a generic control for displaying tabular data.
 type Table struct {
 	ScrollView
-	Columns []TableColumn
-	Rows    []TableRow
-	// rowProvider supplies rows lazily for large externally sorted models.
-	// It is mutually exclusive with Rows and lets a hidden/native-backed table
-	// keep exact scroll/cursor metrics without allocating one wrapper per item.
-	rowProvider func(index int) TableRow
-	rowCount    int
+	Columns      []TableColumn
+	Rows         []TableRow
+	cellProvider TableCellProvider
 
 	SelectCol        int
 	CellSelection    bool
@@ -70,13 +97,17 @@ type Table struct {
 	SortCompare   func(a, b TableRow, col int) int
 
 	// QuickSearch enables type-to-filter: while the table is focused,
-	// printable characters go into a search string shown in a line below the
-	// table, and rows are filtered by fuzzy match (Myers' bit-vector
+	// printable characters go into a search string shown in a line above the
+	// table header, and rows are filtered by fuzzy match (Myers' bit-vector
 	// algorithm) against all columns, best match wins. The filtered list is
-	// ranked by (edit distance, match position). Default is false.
+	// ranked by (edit distance, match position), best match at the top —
+	// closest to the search line. Default is false.
 	QuickSearch bool
 	// SearchCaseSensitive makes QuickSearch case-sensitive (default false).
 	SearchCaseSensitive bool
+	// SearchExactOnHit keeps only exact matches when at least one exact match
+	// exists. Fuzzy matches remain available while no exact result is present.
+	SearchExactOnHit bool
 	// OnSearchChange is called whenever the search string changes.
 	OnSearchChange func(text string)
 
@@ -86,6 +117,9 @@ type Table struct {
 	ColorItemSelectCursorIdx int
 	ColorTitleIdx            int
 	ColorBoxIdx              int
+	// ColorHighlightIdx is the QuickSearch match highlight; applied last, on
+	// top of every other cell color. Defaults to ColMenuHighlight.
+	ColorHighlightIdx int
 
 	// colWidths caches the resolved column widths (flexible columns expanded);
 	// reused across frames to avoid allocations in the render hot path.
@@ -103,6 +137,7 @@ type Table struct {
 	// matchSpans holds the matched cell span per Rows index for needle
 	// highlighting; col == -1 means the row is not matched.
 	matchSpans []cellHighlight
+	cellBuf    []CharInfo
 }
 
 // searchMatch is one row passing the QuickSearch filter.
@@ -128,6 +163,7 @@ func NewTable(x, y, w, h int, columns []TableColumn) *Table {
 		ColorItemSelectCursorIdx: ColTableSelectedText,
 		ColorTitleIdx:            ColTableColumnTitle,
 		ColorBoxIdx:              ColTableBox,
+		ColorHighlightIdx:        ColMenuHighlight,
 		SortColumn:               -1,
 	}
 	t.canFocus = true
@@ -200,31 +236,11 @@ func (c *TableColumn) minWidth() int {
 }
 
 func (t *Table) SetRows(rows []TableRow) {
-	t.Rows = rows
 	t.rowProvider = nil
-	t.rowCount = len(rows)
+	t.cellProvider = nil
+	t.Rows = rows
 	t.ItemCount = len(rows)
 	t.resort()
-	t.clampSelectionAfterRowsChanged()
-	t.EnsureVisible()
-}
-
-// SetRowProvider installs an externally ordered virtual row source. Only rows
-// touched by rendering, sorting, or quick search are materialized.
-func (t *Table) SetRowProvider(count int, provider func(index int) TableRow) {
-	if count < 0 {
-		count = 0
-	}
-	t.Rows = nil
-	t.rowProvider = provider
-	t.rowCount = count
-	t.ItemCount = count
-	t.resort()
-	t.clampSelectionAfterRowsChanged()
-	t.EnsureVisible()
-}
-
-func (t *Table) clampSelectionAfterRowsChanged() {
 	if t.ItemCount == 0 {
 		t.SelectPos = 0
 	} else if t.SelectPos >= t.ItemCount {
@@ -232,23 +248,93 @@ func (t *Table) clampSelectionAfterRowsChanged() {
 	} else if t.SelectPos < 0 {
 		t.SelectPos = 0
 	}
+	t.EnsureVisible()
 }
 
-func (t *Table) sourceRowCount() int {
-	if t.rowProvider != nil {
-		return t.rowCount
-	}
-	return len(t.Rows)
+// tableRowProviderAdapter retains the richer TableRow contract while using
+// the current zero-allocation TableCellProvider virtualization path.
+type tableRowProviderAdapter struct {
+	count int
+	row   func(index int) TableRow
 }
 
-func (t *Table) sourceRow(index int) TableRow {
-	if index < 0 || index >= t.sourceRowCount() {
+func (p *tableRowProviderAdapter) RowCount() int { return p.count }
+
+func (p *tableRowProviderAdapter) tableRow(index int) TableRow {
+	if p == nil || p.row == nil || index < 0 || index >= p.count {
 		return nil
 	}
-	if t.rowProvider != nil {
-		return t.rowProvider(index)
+	return p.row(index)
+}
+
+func (p *tableRowProviderAdapter) GetCellText(row, col int) string {
+	if item := p.tableRow(row); item != nil {
+		return item.GetCellText(col)
 	}
-	return t.Rows[index]
+	return ""
+}
+
+func (p *tableRowProviderAdapter) GetCellAttr(row, col int, defaultAttr uint64) uint64 {
+	if item, ok := p.tableRow(row).(CellColorableRow); ok {
+		return item.GetCellAttr(col, defaultAttr)
+	}
+	return defaultAttr
+}
+
+func (p *tableRowProviderAdapter) IsCellSelected(row, col int) bool {
+	item := p.tableRow(row)
+	if selectable, ok := item.(MultiColSelectableRow); ok {
+		return selectable.IsColSelected(col)
+	}
+	if selectable, ok := item.(SelectableRow); ok {
+		return selectable.IsSelected()
+	}
+	return false
+}
+
+// SetTableRowProvider installs an externally ordered rich virtual row source.
+// Only rows touched by rendering or search are materialized.
+func (t *Table) SetTableRowProvider(count int, provider func(index int) TableRow) {
+	if count < 0 {
+		count = 0
+	}
+	t.SetCellProvider(&tableRowProviderAdapter{count: count, row: provider})
+}
+
+// SetRowProvider configures an on-demand data source for virtualized table display.
+func (t *Table) SetRowProvider(p RowProvider) {
+	t.Rows = nil
+	t.cellProvider = nil
+	t.ScrollView.SetRowProvider(p)
+	t.resort()
+	t.EnsureVisible()
+}
+
+// SetCellProvider configures a direct zero-alloc cell provider.
+func (t *Table) SetCellProvider(p TableCellProvider) {
+	t.Rows = nil
+	t.rowProvider = nil
+	t.cellProvider = p
+	if p != nil {
+		t.ItemCount = p.RowCount()
+	} else {
+		t.ItemCount = 0
+	}
+	t.resort()
+	t.EnsureVisible()
+}
+
+// SetRowCount sets the total logical row count for cell providers.
+func (t *Table) SetRowCount(n int) {
+	t.ItemCount = n
+	if t.ItemCount == 0 {
+		t.SelectPos = 0
+	} else if t.SelectPos >= t.ItemCount {
+		t.SelectPos = t.ItemCount - 1
+	} else if t.SelectPos < 0 {
+		t.SelectPos = 0
+	}
+	t.EnsureVisible()
 }
 
 // SetSort sorts rows by the given column. A negative col disables sorting.
@@ -268,50 +354,72 @@ func (t *Table) ClearSort() {
 // resort rebuilds the display-to-row index mapping. With no active sort it
 // is the identity mapping; the Rows slice itself is never reordered.
 func (t *Table) resort() {
-	n := t.sourceRowCount()
-	if len(t.searchRunes) == 0 &&
-		(t.SortColumn < 0 || t.SortColumn >= len(t.Columns) || n < 2) {
-		t.order = t.order[:0]
-		t.ItemCount = n
-		if t.SelectPos >= t.ItemCount {
-			t.SelectPos = t.ItemCount - 1
-		}
-		if t.SelectPos < 0 {
-			t.SelectPos = 0
-		}
-		return
+	n := len(t.Rows)
+	if t.cellProvider != nil {
+		n = t.cellProvider.RowCount()
+	} else if t.rowProvider != nil {
+		n = t.rowProvider.RowCount()
 	}
-	if cap(t.order) < n {
-		t.order = make([]int, n)
-	} else {
-		t.order = t.order[:n]
-	}
-	for i := range t.order {
-		t.order[i] = i
-	}
+	t.ItemCount = n
 
 	if len(t.searchRunes) > 0 {
-		// While searching, the column sort gives way to match ranking.
 		t.applySearchFilter()
 	} else if col := t.SortColumn; col >= 0 && col < len(t.Columns) && n >= 2 {
+		if cap(t.order) < n {
+			t.order = make([]int, n)
+		} else {
+			t.order = t.order[:n]
+		}
+		for i := range t.order {
+			t.order[i] = i
+		}
 		ascending := t.SortAscending
 		cmp := t.SortCompare
 		sort.SliceStable(t.order, func(i, j int) bool {
-			a, b := t.sourceRow(t.order[i]), t.sourceRow(t.order[j])
-			c := 0
-			if cmp != nil {
-				c = cmp(a, b, col)
-			} else {
-				c = strings.Compare(a.GetCellText(col), b.GetCellText(col))
+			aIdx, bIdx := t.order[i], t.order[j]
+			if cmp != nil && len(t.Rows) == n {
+				c := cmp(t.Rows[aIdx], t.Rows[bIdx], col)
+				if !ascending {
+					c = -c
+				}
+				return c < 0
 			}
+			var aText, bText string
+			if t.cellProvider != nil {
+				aText = t.cellProvider.GetCellText(aIdx, col)
+				bText = t.cellProvider.GetCellText(bIdx, col)
+			} else if t.rowProvider != nil {
+				aCells := t.rowProvider.Row(aIdx)
+				bCells := t.rowProvider.Row(bIdx)
+				if col < len(aCells) {
+					aText = aCells[col]
+				}
+				if col < len(bCells) {
+					bText = bCells[col]
+				}
+			} else {
+				aText = t.Rows[aIdx].GetCellText(col)
+				bText = t.Rows[bIdx].GetCellText(col)
+			}
+			c := strings.Compare(aText, bText)
 			if !ascending {
 				c = -c
 			}
 			return c < 0
 		})
+	} else {
+		t.order = t.order[:0]
 	}
 
-	t.ItemCount = len(t.order)
+	if len(t.searchRunes) > 0 {
+		t.ItemCount = len(t.order)
+		// While a query is being typed, keep the focus on the most
+		// relevant row (the top one, right below the search line).
+		t.SelectPos = 0
+	} else {
+		t.ItemCount = n
+	}
+
 	if t.SelectPos >= t.ItemCount {
 		t.SelectPos = t.ItemCount - 1
 	}
@@ -324,35 +432,76 @@ func (t *Table) resort() {
 // match across all columns wins) and ranks them by (distance, position).
 // The matched cell span is remembered per row for needle highlighting.
 func (t *Table) applySearchFilter() {
-	matcher := newFuzzyMatcher(string(t.searchRunes), t.SearchCaseSensitive)
+	matcher := NewFuzzyMatcher(string(t.searchRunes), t.SearchCaseSensitive)
 	t.matchBuf = t.matchBuf[:0]
-	rowCount := t.sourceRowCount()
+	rowCount := len(t.Rows)
+
+	if t.cellProvider != nil {
+		rowCount = t.cellProvider.RowCount()
+	} else if t.rowProvider != nil {
+		rowCount = t.rowProvider.RowCount()
+	}
+
 	if cap(t.matchSpans) < rowCount {
 		t.matchSpans = make([]cellHighlight, rowCount)
 	} else {
 		t.matchSpans = t.matchSpans[:rowCount]
 	}
+
 	for i := range t.matchSpans {
 		t.matchSpans[i].col = -1
 	}
+
+	hasExact := false
+
 	for i := 0; i < rowCount; i++ {
-		row := t.sourceRow(i)
-		if row == nil {
-			continue
-		}
 		bestScore := -1
 		bestStart, bestEnd, bestCol := 0, 0, 0
+		exactHit := false
+
 		for col := range t.Columns {
-			score, start, end, ok := matcher.match(row.GetCellText(col))
+			cellText := ""
+			if t.cellProvider != nil {
+				cellText = t.cellProvider.GetCellText(i, col)
+			} else if t.rowProvider != nil {
+				cells := t.rowProvider.Row(i)
+				if col < len(cells) {
+					cellText = cells[col]
+				}
+			} else {
+				cellText = t.Rows[i].GetCellText(col)
+			}
+
+			score, start, end, ok := matcher.Match(cellText)
 			if ok && (bestScore < 0 || score < bestScore || (score == bestScore && start < bestStart)) {
 				bestScore, bestStart, bestEnd, bestCol = score, start, end, col
 			}
+
+			exactHit = exactHit || matcher.IsMatchExact()
 		}
+
 		if bestScore >= 0 {
+			if exactHit {
+				bestScore = -1 // exact match always wins sort
+				hasExact = true
+			}
 			t.matchBuf = append(t.matchBuf, searchMatch{i, bestScore, bestStart})
 			t.matchSpans[i] = cellHighlight{bestCol, bestStart, bestEnd}
 		}
 	}
+
+	if t.SearchExactOnHit && hasExact {
+		// Exact matches exist: drop rows with a greater distance as irrelevant.
+		write := 0
+		for _, m := range t.matchBuf {
+			if m.score == -1 {
+				t.matchBuf[write] = m
+				write++
+			}
+		}
+		t.matchBuf = t.matchBuf[:write]
+	}
+
 	sort.Slice(t.matchBuf, func(a, b int) bool {
 		ma, mb := t.matchBuf[a], t.matchBuf[b]
 		if ma.score != mb.score {
@@ -363,7 +512,13 @@ func (t *Table) applySearchFilter() {
 		}
 		return ma.idx < mb.idx
 	})
-	t.order = t.order[:len(t.matchBuf)]
+
+	if cap(t.order) < len(t.matchBuf) {
+		t.order = make([]int, len(t.matchBuf))
+	} else {
+		t.order = t.order[:len(t.matchBuf)]
+	}
+
 	for i, m := range t.matchBuf {
 		t.order[i] = m.idx
 	}
@@ -405,7 +560,7 @@ func (t *Table) fireSearchChange() {
 // rowAt maps a display position to the index in Rows, accounting for the
 // active sorting. Out-of-range positions are returned unchanged.
 func (t *Table) rowAt(pos int) int {
-	if pos >= 0 && pos < len(t.order) {
+	if len(t.order) > 0 && pos >= 0 && pos < len(t.order) {
 		return t.order[pos]
 	}
 	return pos
@@ -432,90 +587,99 @@ func (t *Table) DisplayObject(scr *ScreenBuf) {
 
 	yOffset := 0
 
-	// 1. Draw Header
-	if t.ShowHeader {
-		t.drawRow(scr, t.Y1, -1, Palette[t.ColorTitleIdx])
+	// 1. Draw the QuickSearch line above everything else
+	if t.QuickSearch {
+		t.drawSearchLine(scr)
 		yOffset++
 	}
 
-	// 2. Draw Data Rows (ViewHeight already excludes header and search line).
-	// While a search is active, results are shown bottom-up (best match right
-	// above the search line), telescope-style.
+	// 2. Draw Header
+	widths := t.resolvedWidths()
+	if t.ShowHeader {
+		t.drawRow(scr, t.Y1+yOffset, -1, -1, Palette[t.ColorTitleIdx], widths)
+		yOffset++
+	}
+
+	// 3. Draw Data Rows (ViewHeight already excludes header and search line).
+	// Search results rank top-down: the best match sits right below the
+	// header, closest to the search line.
 	dataHeight := t.ViewHeight
 	if dataHeight < 0 {
 		dataHeight = 0
 	}
-	bottomUp := len(t.searchRunes) > 0
-	dataBottom := t.Y1 + yOffset + dataHeight - 1
 	for i := 0; i < dataHeight; i++ {
 		displayPos := t.TopPos + i
 		currY := t.Y1 + yOffset + i
-		if bottomUp {
-			currY = dataBottom - i
-		}
 
 		if displayPos < t.ItemCount {
 			rowIdx := t.rowAt(displayPos)
 			//isSelected := false
 			// Calculate standard attribute as a fallback (passed into drawRow)
 			attr := Palette[t.ColorTextIdx]
-			t.drawRow(scr, currY, rowIdx, attr)
+			t.drawRow(scr, currY, rowIdx, displayPos, attr, widths)
 		} else {
 			// Fill empty space with background color
 			scr.FillRect(t.X1, currY, t.X2, currY, ' ', Palette[t.ColorTextIdx])
 		}
 	}
 
-	// 3. Draw Vertical Separators if needed
+	// 4. Draw Vertical Separators if needed
 	if t.ShowSeparators {
 		p := NewPainter(scr)
-		widths := t.resolvedWidths()
 		currX := t.X1
-		sepChar := boxSymbols[bsV]     // │
-		sepY2 := t.Y2 - t.MarginBottom // do not cross the search line
+		sepChar := boxSymbols[bsV] // │
+		sepY1 := t.Y1
+		if t.QuickSearch {
+			sepY1++ // do not cross the search line
+		}
 		for i := 0; i < len(t.Columns)-1; i++ {
 			currX += widths[i]
-			p.Fill(currX, t.Y1, currX, sepY2, sepChar, Palette[t.ColorBoxIdx])
+			p.Fill(currX, sepY1, currX, t.Y2, sepChar, Palette[t.ColorBoxIdx])
 			currX++
 		}
 	}
 
-	// 4. Draw Scrollbar
+	// 5. Draw Scrollbar
 	t.DrawScrollBar(scr)
-
-	// 5. Draw the QuickSearch line
-	if t.QuickSearch {
-		t.drawSearchLine(scr)
-	}
 }
 
-func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, attr uint64) {
+func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, displayPos int, attr uint64, widths []int) {
 	endX := t.X1 + t.GetContentWidth() - 1
-	widths := t.resolvedWidths()
 
 	currX := t.X1
-	var row TableRow
-	if rowIdx >= 0 {
-		row = t.sourceRow(rowIdx)
-	}
 	for colIdx, col := range t.Columns {
 		text := ""
 		if rowIdx == -1 {
 			text = col.Title
-		} else if row != nil {
-			text = row.GetCellText(colIdx)
+		} else if t.cellProvider != nil {
+			text = t.cellProvider.GetCellText(rowIdx, colIdx)
+		} else if t.rowProvider != nil {
+			cells := t.rowProvider.Row(rowIdx)
+			if colIdx < len(cells) {
+				text = cells[colIdx]
+			}
+		} else if rowIdx < len(t.Rows) {
+			text = t.Rows[rowIdx].GetCellText(colIdx)
 		}
 
 		isSelected := false
-		if row != nil {
-			if mcsr, ok := row.(MultiColSelectableRow); ok {
-				isSelected = mcsr.IsColSelected(colIdx)
-			} else if selRow, ok := row.(SelectableRow); ok {
-				isSelected = selRow.IsSelected()
+		if rowIdx != -1 {
+			if t.cellProvider != nil {
+				if csp, ok := t.cellProvider.(TableCellColSelectProvider); ok {
+					isSelected = csp.IsCellSelected(rowIdx, colIdx)
+				} else if sp, ok := t.cellProvider.(TableCellSelectProvider); ok {
+					isSelected = sp.IsRowSelected(rowIdx)
+				}
+			} else if rowIdx < len(t.Rows) {
+				if mcsr, ok := t.Rows[rowIdx].(MultiColSelectableRow); ok {
+					isSelected = mcsr.IsColSelected(colIdx)
+				} else if selRow, ok := t.Rows[rowIdx].(SelectableRow); ok {
+					isSelected = selRow.IsSelected()
+				}
 			}
 		}
 
-		isCursorHere := rowIdx == t.SelectPos && (!t.CellSelection || colIdx == t.SelectCol)
+		isCursorHere := displayPos == t.SelectPos && (!t.CellSelection || colIdx == t.SelectCol)
 
 		stateAttr := attr
 		if rowIdx != -1 {
@@ -537,27 +701,33 @@ func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, attr uint64) {
 				stateAttr = Palette[t.ColorItemSelectTextIdx]
 			}
 
-			if cr, ok := row.(CellColorableRow); ok {
-				stateAttr = cr.GetCellAttr(colIdx, stateAttr)
+			if t.cellProvider != nil {
+				if ap, ok := t.cellProvider.(TableCellAttrProvider); ok {
+					stateAttr = ap.GetCellAttr(rowIdx, colIdx, stateAttr)
+				}
+			} else if rowIdx < len(t.Rows) {
+				if cr, ok := t.Rows[rowIdx].(CellColorableRow); ok {
+					stateAttr = cr.GetCellAttr(colIdx, stateAttr)
+				}
 			}
 		}
 
 		cellAttr := stateAttr
 
-		// Prepare cell text with alignment. The sorted column's header gets a
-		// direction arrow appended at the right edge of the cell.
-		cellText := t.formatCell(text, widths[colIdx], col.Alignment)
 		if rowIdx == -1 && colIdx == t.SortColumn {
-			cellText = t.formatSortedHeader(text, widths[colIdx], col.Alignment)
+			cellText := t.formatSortedHeader(text, widths[colIdx], col.Alignment)
+			t.cellBuf = FillCharInfoString(t.cellBuf, cellText, cellAttr)
+		} else {
+			t.cellBuf = FillCharInfoAligned(t.cellBuf, text, widths[colIdx], col.Alignment, cellAttr)
 		}
-		cis := StringToCharInfo(cellText, cellAttr)
-		// Invert the colors of the matched substring (QuickSearch highlight).
+		// Paint the matched substring with the highlight color (QuickSearch).
+		// Goes last, on top of all other colors.
 		if rowIdx >= 0 && len(t.searchRunes) > 0 && rowIdx < len(t.matchSpans) {
 			if span := t.matchSpans[rowIdx]; span.col == colIdx {
-				t.applyCellHighlight(cis, text, widths[colIdx], col.Alignment, span)
+				t.applyCellHighlight(t.cellBuf, text, widths[colIdx], col.Alignment, span)
 			}
 		}
-		scr.Write(currX, y, cis)
+		scr.Write(currX, y, t.cellBuf)
 		currX += widths[colIdx]
 
 		// Skip separator space if not the last column
@@ -573,9 +743,10 @@ func (t *Table) drawRow(scr *ScreenBuf, y int, rowIdx int, attr uint64) {
 	}
 }
 
-// applyCellHighlight inverts the colors of the cells covered by the matched
-// substring. span.start/span.end are rune indices in the original cell text;
-// they are mapped to display cells accounting for truncation, alignment
+// applyCellHighlight repaints the cells covered by the matched substring with
+// the highlight color, overriding whatever state/selection attributes were
+// resolved before. span.start/span.end are rune indices in the original cell
+// text; they are mapped to display cells accounting for truncation, alignment
 // padding and wide runes.
 func (t *Table) applyCellHighlight(cis []CharInfo, text string, width int, align Alignment, span cellHighlight) {
 	truncated := TruncateString(text, width, "")
@@ -600,7 +771,7 @@ func (t *Table) applyCellHighlight(cis []CharInfo, text string, width int, align
 		}
 		if runeIdx >= span.start && runeIdx <= span.end {
 			for k := 0; k < w && cellPos+k < len(cis); k++ {
-				cis[cellPos+k].Attributes = InvertColors(cis[cellPos+k].Attributes)
+				cis[cellPos+k].Attributes = Palette[t.ColorHighlightIdx]
 			}
 		}
 		cellPos += w
@@ -624,8 +795,8 @@ func (t *Table) formatSortedHeader(title string, width int, align Alignment) str
 }
 
 func (t *Table) formatCell(text string, width int, align Alignment) string {
-	text = TruncateString(text, width, "")
-	vLen := StringWidth(text)
+	var vLen int
+	text, vLen = truncateStringWidth(text, width, "")
 	if vLen >= width {
 		return text
 	}
@@ -649,33 +820,14 @@ func (t *Table) ProcessKey(e *vtinput.InputEvent) bool {
 		return false
 	}
 
-	searchActive := len(t.searchRunes) > 0
 	switch e.VirtualKeyCode {
 	case vtinput.VK_UP:
-		// With bottom-up search results Up moves towards worse matches.
-		if searchActive {
-			if t.SelectPos == t.ItemCount-1 {
-				return false
-			}
-		} else if t.SelectPos == 0 {
+		if t.SelectPos == 0 {
 			return false
 		}
 	case vtinput.VK_DOWN:
-		if searchActive {
-			if t.SelectPos == 0 {
-				return false
-			}
-		} else if t.SelectPos == t.ItemCount-1 {
+		if t.SelectPos == t.ItemCount-1 {
 			return false
-		}
-	}
-
-	if searchActive {
-		switch e.VirtualKeyCode {
-		case vtinput.VK_UP:
-			return t.MoveSelection(1)
-		case vtinput.VK_DOWN:
-			return t.MoveSelection(-1)
 		}
 	}
 
@@ -845,31 +997,6 @@ func (t *Table) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	// With bottom-up search results, clicks in the data area map to rows
-	// counted from the bottom; consume them all so the generic handler does
-	// not mis-map empty rows above the results.
-	if len(t.searchRunes) > 0 && e.Type == vtinput.MouseEventType && e.ButtonState != 0 && e.KeyDown {
-		dataTop := t.Y1 + t.MarginTop
-		dataBottom := dataTop + t.ViewHeight - 1
-		mx, my := int(e.MouseX), int(e.MouseY)
-		if my >= dataTop && my <= dataBottom && mx >= t.X1 && mx < t.X1+t.GetContentWidth() {
-			idx := t.TopPos + (dataBottom - my)
-			if idx >= 0 && idx < t.ItemCount {
-				oldPos := t.SelectPos
-				t.SelectPos = idx
-				if t.SelectPos != oldPos && t.OnSelect != nil {
-					t.OnSelect(t.SelectPos)
-				}
-				isLeftDoubleClick := e.ButtonState == vtinput.FromLeft1stButtonPressed && (e.MouseEventFlags&vtinput.DoubleClick) != 0
-				isMiddleClick := e.ButtonState == vtinput.FromLeft2ndButtonPressed
-				if (isLeftDoubleClick || isMiddleClick) && t.OnAction != nil {
-					t.OnAction(t.SelectPos)
-				}
-			}
-			return true
-		}
-	}
-
 	handled := t.HandleMouse(e)
 	if !handled && colChanged {
 		t.SelectCol = originalCol
@@ -878,15 +1005,16 @@ func (t *Table) ProcessMouse(e *vtinput.InputEvent) bool {
 }
 
 func (t *Table) SetPosition(x1, y1, x2, y2 int) {
-	t.MarginTop = map[bool]int{true: 1, false: 0}[t.ShowHeader]
-	t.MarginBottom = map[bool]int{true: 1, false: 0}[t.QuickSearch]
+	t.MarginTop = map[bool]int{true: 1, false: 0}[t.ShowHeader] + map[bool]int{true: 1, false: 0}[t.QuickSearch]
+	t.MarginBottom = 0
 	t.ScrollView.SetPosition(x1, y1, x2, y2)
 }
 
-// drawSearchLine renders the QuickSearch string in the bottom line of the
-// table: "> text" with a hardware cursor while the table is focused.
+// drawSearchLine renders the QuickSearch string in the top line of the
+// table, above the header: "> text" with a hardware cursor while the table
+// is focused.
 func (t *Table) drawSearchLine(scr *ScreenBuf) {
-	y := t.Y2
+	y := t.Y1
 	attr := Palette[t.ColorTextIdx]
 	scr.FillRect(t.X1, y, t.X2, y, ' ', attr)
 

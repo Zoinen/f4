@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/plugins/netfox/fishplus"
@@ -177,14 +176,14 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 	// One round trip before anything is promised: a handshake that answered
 	// says the helper is there, and a noop says the request loop is running.
 	if err := sess.Noop(ctx); err != nil {
-		sess.Close()
+		_ = sess.Close() // Preserve the failed readiness check.
 		return nil, err
 	}
 
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		sess.Close()
+		_ = sess.Close() // Preserve the connection-closed result.
 		return nil, fishplus.ErrBroken
 	}
 	if dead != nil && c.client != dead {
@@ -192,7 +191,7 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 		// good as this one and is already in use, so this one is dropped.
 		fresh := c.client
 		c.mu.Unlock()
-		sess.Close()
+		_ = sess.Close() // The concurrently installed session remains authoritative.
 		return fresh, nil
 	}
 	old, oldKA := c.client, c.ka
@@ -209,7 +208,7 @@ func (c *fishConn) reconnect(ctx context.Context, dead *fishplus.Client) (*fishp
 
 	oldKA.Stop()
 	if old != nil {
-		old.Session().Close() // This also closes its session's closer automatically
+		_ = old.Session().Close() // The replaced broken session is best-effort cleanup.
 	}
 	return client, nil
 }
@@ -289,7 +288,7 @@ func NewFishVFSOnDialers(ctx context.Context, parent vfs.VFS, dial FishDialer, o
 func newFishVFSOnStream(ctx context.Context, parent vfs.VFS, stdin io.Writer, stdout io.Reader, closer io.Closer, title string, dial FishDialer, opts fishplus.HandshakeOptions) (*FishVFS, error) {
 	sess := fishplus.NewSession(stdin, stdout, closer)
 	if err := sess.HandshakeWithOptions(ctx, opts); err != nil {
-		sess.Close()
+		_ = sess.Close() // Preserve the handshake failure.
 		return nil, err
 	}
 	return newFishVFSFromSession(parent, sess, closer, title, dial, opts, nil, fishplus.HandshakeOptions{}), nil
@@ -331,7 +330,7 @@ func establishSession(ctx context.Context, dial FishDialer, opts fishplus.Handsh
 	}
 	sess := fishplus.NewSession(stdin, stdout, closer)
 	if err := sess.HandshakeWithOptions(ctx, opts); err != nil {
-		sess.Close()
+		_ = sess.Close() // Preserve the handshake failure.
 		return nil, nil, err
 	}
 	return sess, closer, nil
@@ -407,8 +406,7 @@ type sshShell struct {
 }
 
 func (s *sshShell) Close() error {
-	s.sess.Close()
-	return s.client.Close()
+	return errors.Join(s.sess.Close(), s.client.Close())
 }
 
 func (s *sshShell) OpenPty(cols, rows int) (any, error) {
@@ -417,7 +415,9 @@ func (s *sshShell) OpenPty(cols, rows int) (any, error) {
 		return nil, err
 	}
 	pty.SetSize(cols, rows)
-	pty.Run("")
+	if err := pty.Run(""); err != nil {
+		return nil, fmt.Errorf("fishplus: start SSH PTY: %w", errors.Join(err, pty.Close()))
+	}
 	return pty, nil
 }
 
@@ -435,8 +435,8 @@ func (s *sshShell) OpenPty(cols, rows int) (any, error) {
 // The command is "exec /bin/sh" rather than a plain shell request, because the
 // account's login shell may well be csh, fish or something else that does not
 // speak the POSIX syntax the helper is written in.
-func sshFishDialer(host, port, user, pass string, timeout int, px netproxy.Settings) FishDialer {
-	return sshFishDialerWith(host, port, user, pass, timeout, px, func(s *ssh.Session) error {
+func sshFishDialer(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) FishDialer {
+	return sshFishDialerWith(host, port, user, pass, keyPath, timeout, px, func(s *ssh.Session) error {
 		return s.Start("exec /bin/sh")
 	})
 }
@@ -453,8 +453,8 @@ func sshFishDialer(host, port, user, pass string, timeout int, px netproxy.Setti
 // on both. No pseudo-terminal is requested for the same reason as the
 // POSIX side: a ConPTY would echo every request back and inject VT
 // sequences.
-func sshFishDialerPwsh(host, port, user, pass string, timeout int, px netproxy.Settings) FishDialer {
-	return sshFishDialerWith(host, port, user, pass, timeout, px, func(s *ssh.Session) error {
+func sshFishDialerPwsh(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) FishDialer {
+	return sshFishDialerWith(host, port, user, pass, keyPath, timeout, px, func(s *ssh.Session) error {
 		return s.Start("powershell.exe -NoLogo -NoProfile")
 	})
 }
@@ -463,7 +463,7 @@ func sshFishDialerPwsh(host, port, user, pass string, timeout int, px netproxy.S
 // disagree about is how they ask sshd to give them the shell: exec+cmd
 // on POSIX (which bypasses an exotic login shell), plain shell on
 // Windows (which respects DefaultShell).
-func sshFishDialerWith(host, port, user, pass string, timeout int, px netproxy.Settings, startShell func(*ssh.Session) error) FishDialer {
+func sshFishDialerWith(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings, startShell func(*ssh.Session) error) FishDialer {
 	return func(ctx context.Context) (io.Writer, io.Reader, io.Closer, error) {
 		// DialSSH carries a timeout of its own and cannot be interrupted, so
 		// the context is honoured where it can be: before the dial, and again
@@ -472,40 +472,33 @@ func sshFishDialerWith(host, port, user, pass string, timeout int, px netproxy.S
 		if err := ctx.Err(); err != nil {
 			return nil, nil, nil, err
 		}
-		client, err := DialSSH(host, port, user, pass, timeout, px)
+		client, err := DialSSH(host, port, user, pass, keyPath, timeout, px)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		sess, err := client.NewSession()
 		if err != nil {
-			client.Close()
+			_ = client.Close() // Preserve the session-creation failure.
 			return nil, nil, nil, err
-		}
-		if sock := os.Getenv("SSH_AUTH_SOCK"); sock != "" {
-			if err := agent.RequestAgentForwarding(sess); err != nil {
-				vtui.DebugLog("SSH: Failed to request agent forwarding: %v", err)
-			} else {
-				vtui.DebugLog("SSH: Requested agent forwarding")
-			}
 		}
 		shell := &sshShell{sess: sess, client: client}
 		stdin, err := sess.StdinPipe()
 		if err != nil {
-			shell.Close()
+			_ = shell.Close() // Preserve the pipe-creation failure.
 			return nil, nil, nil, err
 		}
 		stdout, err := sess.StdoutPipe()
 		if err != nil {
-			shell.Close()
+			_ = shell.Close() // Preserve the pipe-creation failure.
 			return nil, nil, nil, err
 		}
 		sess.Stderr = io.Discard
 		if err := startShell(sess); err != nil {
-			shell.Close()
+			_ = shell.Close() // Preserve the remote-shell startup failure.
 			return nil, nil, nil, err
 		}
 		if err := ctx.Err(); err != nil {
-			shell.Close()
+			_ = shell.Close() // Preserve cancellation as the primary error.
 			return nil, nil, nil, err
 		}
 		return stdin, stdout, shell, nil
@@ -516,7 +509,7 @@ func sshFishDialerWith(host, port, user, pass string, timeout int, px netproxy.S
 // through a pair of streams, so the session it hands back is one that can be
 // rebuilt after the connection drops; a site opened any other way would have
 // to be reopened by hand.
-func NewFishVFS(parent vfs.VFS, host, port, user, pass string, timeout int, px netproxy.Settings) (*FishVFS, error) {
+func NewFishVFS(parent vfs.VFS, host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) (*FishVFS, error) {
 	key := fishPoolKey{host: host, port: port, user: user, proxy: px}
 	if conn := globalFishPool.take(key); conn != nil {
 		return newFishVFSFromPooledConn(parent, conn, host, port, user), nil
@@ -537,8 +530,8 @@ func NewFishVFS(parent vfs.VFS, host, port, user, pass string, timeout int, px n
 	// asks sshd for a plain shell (which resolves to PowerShell on
 	// Windows), and delivers the base64-encoded helper.ps1 through it.
 	v, err := NewFishVFSOnDialers(ctx, parent,
-		sshFishDialer(host, port, user, pass, timeout, px), fishplus.HandshakeOptions{},
-		sshFishDialerPwsh(host, port, user, pass, timeout, px), fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapBase64LinePwsh},
+		sshFishDialer(host, port, user, pass, keyPath, timeout, px), fishplus.HandshakeOptions{},
+		sshFishDialerPwsh(host, port, user, pass, keyPath, timeout, px), fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapBase64LinePwsh},
 		title)
 	if err != nil {
 		return nil, err
@@ -1039,10 +1032,18 @@ func (v *FishVFS) Search(ctx context.Context, p, pattern string) (chan int64, er
 // A symlink is reported as found without resolving it: the alternative is a
 // round trip per hit, which would give back what the whole command saves.
 func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([]vfs.FoundEntry, error) {
+	// The ffind wire command can grep fixed strings or regular expressions,
+	// but it cannot express the richer local semantics without changing the
+	// helper protocol (folders, symlink leaves, whole words, and inverted
+	// matches). Let the caller fall back to the normal VFS walk for those
+	// queries instead of silently returning a different result set.
+	if q.WholeWords || q.NotContaining || q.FindFolders || q.FindSymlinks {
+		return nil, vfs.ErrFindOptionsUnsupported
+	}
 	opts := fishplus.FindOptions{
 		Masks:      q.Masks,
 		Text:       q.Text,
-		Fixed:      true,
+		Fixed:      !q.Regex,
 		IgnoreCase: q.IgnoreCase,
 		Limit:      q.Limit,
 	}
@@ -1095,7 +1096,9 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 // wants (C:\Users\foo for cmd, /c/Users/foo unchanged for POSIX).
 //
 // f4_sync is a stray marker helper.sh's own log filter can strip: cmd
-// keeps it as a rem comment, POSIX keeps it as a shell comment.
+// keeps it as a rem comment, POSIX carries it as "&& true f4_sync" —
+// not a "#" comment, because stock zsh ships with interactive_comments
+// off and would feed the tail to cd as extra arguments.
 func (v *FishVFS) PtyChangeDirCommand(dir string) []byte {
 	if v.peerIsWindows() {
 		winDir := fishplus.WirePathToWindows(dir)
@@ -1105,7 +1108,7 @@ func (v *FishVFS) PtyChangeDirCommand(dir string) []byte {
 		return []byte(fmt.Sprintf("cd /d \"%s\" & rem f4_sync\r", winDir))
 	}
 	sq := strings.ReplaceAll(dir, "'", "'\\''")
-	return []byte(fmt.Sprintf(" cd '%s' # f4_sync\r", sq))
+	return []byte(fmt.Sprintf(" cd '%s' && true f4_sync\r", sq))
 }
 
 // PtyRunCommand implements vfs.PtyShellIntegration. Same shell-flavor
@@ -1263,8 +1266,12 @@ func (v *FishVFS) CommandRunnerAvailable() bool {
 // CommandRunnerInfo reports the remote shell syntax and the transport's real
 // concurrency limit. A FISH+ connection serializes protocol requests, so
 // advertising more workers would only reorder queued requests locally.
-func (*FishVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
-	return vfs.CommandRunnerInfo{Dialect: vfs.CommandDialectPOSIX, MaxParallel: 1}
+func (v *FishVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
+	dialect := vfs.CommandDialectPOSIX
+	if v != nil && v.peerIsWindows() {
+		dialect = vfs.CommandDialectCmd
+	}
+	return vfs.CommandRunnerInfo{Dialect: dialect, MaxParallel: 1}
 }
 
 // FindDuplicates implements vfs.DuplicateFinder. Only the paths of the files
@@ -1424,6 +1431,9 @@ var (
 // user, and closing the same view twice is harmless: a panel may well be
 // closed by both its own teardown and the frame that owned it.
 func (v *FishVFS) Close() error {
+	if v == nil {
+		return nil
+	}
 	var err error
 	v.once.Do(func() {
 		if v.conn != nil {
@@ -1454,7 +1464,7 @@ func netFoxConfigAt(ctx context.Context, parent vfs.VFS, pth string) (NetFoxConf
 	if err != nil {
 		return NetFoxConfig{}, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // The configuration file is read-only.
 	var cfg NetFoxConfig
 	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
 		return NetFoxConfig{}, false
@@ -1487,7 +1497,11 @@ func (p *fishProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 			timeout = t
 		}
 	}
-	return NewFishVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, timeout, cfg.Proxy())
+	res, err := NewFishVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Proxy())
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 type fishProtocolHandler struct{}

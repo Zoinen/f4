@@ -205,8 +205,10 @@ func archiveFixtureZIPWithSeed(t *testing.T, payloadSize int, seed byte) []byte 
 		t.Fatal(err)
 	}
 	payload := make([]byte, payloadSize)
+	value := seed
 	for index := range payload {
-		payload[index] = byte(index*31) + seed
+		payload[index] = value
+		value += 31
 	}
 	if _, err := member.Write(payload); err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ package fusefs
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"syscall"
 	"time"
@@ -41,21 +42,21 @@ func startServer(ctx context.Context, m *Mount, opts Options) error {
 			Ino: inodeOf(m.RootPath),
 		},
 	}
-	fsOpts.MountOptions.FsName = m.Source
-	fsOpts.MountOptions.Name = "f4"
-	fsOpts.MountOptions.AllowOther = opts.AllowOther
-	fsOpts.MountOptions.Debug = opts.Debug
+	fsOpts.FsName = m.Source
+	fsOpts.Name = "f4"
+	fsOpts.AllowOther = opts.AllowOther
+	fsOpts.Debug = opts.Debug
 	// A VFS round trip costs far more than a memory copy, so the fewer and
 	// larger the requests, the better. go-fuse defaults to 128 KiB writes
 	// and 12 background requests, which were chosen for local file systems.
-	fsOpts.MountOptions.MaxWrite = 1 << 20
-	fsOpts.MountOptions.MaxBackground = 64
+	fsOpts.MaxWrite = 1 << 20
+	fsOpts.MaxBackground = 64
 	// Nothing here has extended attributes, and without this a single ls
 	// produces a burst of getxattr calls that all have to be refused one at
 	// a time, each behind the bridge lock.
-	fsOpts.MountOptions.DisableXAttrs = true
+	fsOpts.DisableXAttrs = true
 	if opts.ReadOnly {
-		fsOpts.MountOptions.Options = append(fsOpts.MountOptions.Options, "ro")
+		fsOpts.Options = append(fsOpts.Options, "ro")
 	}
 
 	root := &node{b: m.bridge, path: m.RootPath}
@@ -97,13 +98,12 @@ var (
 )
 
 // writeFileHandle is one open handle on a file being written. The data goes
-// into the staging file shared by every handle on that path, and reaches the
-// backend once, when the last of them closes.
+// into the write handle shared by every FUSE open on that path. Flush makes
+// the current data durable; Release performs the same work if Flush was
+// skipped.
 type writeFileHandle struct {
-	b         *bridge
-	wh        *writeHandle
-	path      string
-	committed bool
+	b  *bridge
+	wh *writeHandle
 }
 
 // Create makes a new file. The file exists in the mount immediately — the
@@ -123,15 +123,27 @@ func (n *node) Create(ctx context.Context, name string, flags uint32, mode uint3
 	fillAttr(&out.Attr, item, childPath)
 	stable := fs.StableAttr{Ino: inodeOf(childPath), Mode: typeBits(item)}
 	inode := n.NewInode(ctx, &node{b: n.b, path: childPath}, stable)
-	return inode, &writeFileHandle{b: n.b, wh: wh, path: childPath}, 0, 0
+	return inode, &writeFileHandle{b: n.b, wh: wh}, 0, 0
 }
 
 func (f *writeFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
-	written, err := f.wh.writeAt(data, off)
-	if err != nil {
-		return uint32(written), errnoOf(err)
+	written, err := f.wh.writeAt(ctx, f.b, data, off)
+	count, ok := fuseWriteCount(written)
+	if !ok {
+		return 0, syscall.EOVERFLOW
 	}
-	return uint32(written), 0
+	if err != nil {
+		return count, errnoOf(err)
+	}
+	return count, 0
+}
+
+func fuseWriteCount(written int) (uint32, bool) {
+	if written < 0 || uint64(written) > math.MaxUint32 {
+		return 0, false
+	}
+	// #nosec G115 -- written was checked against the uint32 FUSE result range above.
+	return uint32(written), true
 }
 
 // Fsync is a no-op on purpose. Committing per fsync would turn a tool that
@@ -145,46 +157,11 @@ func (f *writeFileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno
 // program that wrote the file, so the commit happens here when this is the
 // last handle. Release does it again only if Flush never ran.
 func (f *writeFileHandle) Flush(ctx context.Context) syscall.Errno {
-	if !f.wh.needsCommit() || f.committed || !f.b.isLastWriter(f.wh) {
-		return 0
-	}
-	if errno := f.commit(ctx); errno != 0 {
-		return errno
-	}
-	return 0
+	return errnoOf(f.b.flushWriter(ctx, f.wh))
 }
 
 func (f *writeFileHandle) Release(ctx context.Context) syscall.Errno {
-	last := f.b.releaseWriter(f.wh)
-	if last {
-		if f.wh.needsCommit() && !f.committed {
-			f.commit(ctx)
-		}
-		f.wh.close()
-		if !f.wh.needsCommit() {
-			// A direct write never went through commit(), which is
-			// where the parent listing is normally dropped.
-			f.b.invalidate(f.b.parentOf(f.path))
-		}
-	}
-	return 0
-}
-
-func (f *writeFileHandle) commit(ctx context.Context) syscall.Errno {
-	r, err := f.wh.staged.Reader()
-	if err != nil {
-		return errnoOf(err)
-	}
-	if err := f.b.commit(ctx, f.path, r); err != nil {
-		return errnoOf(err)
-	}
-	f.committed = true
-	// The kernel may still be holding attributes from before the write, and
-	// AttrTimeout is measured in seconds. Dropping the entry the file was
-	// listed under is the cheap half of the answer; the Getattr override
-	// above is the other half, for as long as the handle is open.
-	f.b.invalidate(f.b.parentOf(f.path))
-	return 0
+	return errnoOf(f.b.finishWriter(ctx, f.wh))
 }
 
 // writeRefusal reports why a write cannot happen, or 0 when it can. The mount
@@ -349,8 +326,7 @@ func (f *fileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.Rea
 }
 
 func (f *fileHandle) Release(ctx context.Context) syscall.Errno {
-	f.h.release()
-	return 0
+	return errnoOf(f.h.release())
 }
 
 func typeBits(item vfs.VFSItem) uint32 {
@@ -378,7 +354,9 @@ func fillAttr(out *fuse.Attr, item vfs.VFSItem, itemPath string) {
 		// and cp -a cannot copy.
 		out.Mode = fuse.S_IFLNK | perm
 		out.Nlink = 1
-		out.Size = uint64(item.Size)
+		if item.Size > 0 {
+			out.Size = uint64(item.Size)
+		}
 	} else {
 		out.Mode = fuse.S_IFREG | perm
 		out.Nlink = 1
@@ -401,17 +379,25 @@ func fillAttr(out *fuse.Attr, item vfs.VFSItem, itemPath string) {
 	}
 	out.SetTimes(&atime, &mtime, &ctime)
 
-	if item.Uid > 0 {
-		out.Uid = uint32(item.Uid)
-	} else {
-		out.Uid = uint32(os.Getuid())
+	if uid, ok := fuseID(item.Uid); ok && uid > 0 {
+		out.Uid = uid
+	} else if uid, ok := fuseID(os.Getuid()); ok {
+		out.Uid = uid
 	}
-	if item.Gid > 0 {
-		out.Gid = uint32(item.Gid)
-	} else {
-		out.Gid = uint32(os.Getgid())
+	if gid, ok := fuseID(item.Gid); ok && gid > 0 {
+		out.Gid = gid
+	} else if gid, ok := fuseID(os.Getgid()); ok {
+		out.Gid = gid
 	}
 	out.Blksize = 4096
+}
+
+func fuseID(value int) (uint32, bool) {
+	if value < 0 || uint64(value) > math.MaxUint32 {
+		return 0, false
+	}
+	// #nosec G115 -- value was checked against the uint32 uid/gid range above.
+	return uint32(value), true
 }
 
 // errnoOf maps VFS errors onto errno values. Backends return plain errors,
@@ -499,9 +485,9 @@ func (n *node) openForWrite(ctx context.Context, flags uint32) (fs.FileHandle, u
 		return nil, 0, errnoOf(err)
 	}
 	if flags&uint32(syscall.O_TRUNC) != 0 {
-		if err := wh.truncate(0); err != nil {
+		if err := wh.truncate(ctx, n.b, 0); err != nil {
 			if n.b.releaseWriter(wh) {
-				wh.close()
+				err = errors.Join(err, wh.close())
 			}
 			return nil, 0, errnoOf(err)
 		}
@@ -517,13 +503,13 @@ func (n *node) openForWrite(ctx context.Context, flags uint32) (fs.FileHandle, u
 				// commit a file with a hole where the old
 				// contents should have been.
 				if n.b.releaseWriter(wh) {
-					wh.close()
+					err = errors.Join(err, wh.close())
 				}
 				return nil, 0, errnoOf(err)
 			}
 		}
 	}
-	return &writeFileHandle{b: n.b, wh: wh, path: n.path}, 0, 0
+	return &writeFileHandle{b: n.b, wh: wh}, 0, 0
 }
 
 // Setattr answers chmod and touch. Size is not handled here yet: truncating
@@ -551,6 +537,10 @@ func (n *node) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn,
 		wanted = true
 	}
 	if size, ok := in.GetSize(); ok {
+		if size > math.MaxInt64 {
+			return syscall.EFBIG
+		}
+		// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
 		if errno := n.truncate(ctx, int64(size)); errno != 0 {
 			return errno
 		}
@@ -575,9 +565,9 @@ func (n *node) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn,
 // file closed — `truncate -s 0 x`, or a shell redirect onto an existing
 // file — the whole round trip happens here, because there is no close coming
 // that would otherwise do it.
-func (n *node) truncate(ctx context.Context, size int64) syscall.Errno {
+func (n *node) truncate(ctx context.Context, size int64) (errno syscall.Errno) {
 	if wh := n.b.writerFor(n.path); wh != nil {
-		if err := wh.truncate(size); err != nil {
+		if err := wh.truncate(ctx, n.b, size); err != nil {
 			return errnoOf(err)
 		}
 		return 0
@@ -589,14 +579,16 @@ func (n *node) truncate(ctx context.Context, size int64) syscall.Errno {
 	}
 	defer func() {
 		if n.b.releaseWriter(wh) {
-			wh.close()
+			if err := wh.close(); errno == 0 {
+				errno = errnoOf(err)
+			}
 		}
 	}()
 
 	// A backend written at an offset resizes its own file; there is nothing
 	// to fetch and nothing to send back.
 	if !wh.needsCommit() {
-		if err := wh.truncate(size); err != nil {
+		if err := wh.truncate(ctx, n.b, size); err != nil {
 			return errnoOf(err)
 		}
 		n.b.invalidate(n.b.parentOf(n.path))
@@ -613,7 +605,7 @@ func (n *node) truncate(ctx context.Context, size int64) syscall.Errno {
 			}
 		}
 	}
-	if err := wh.staged.Truncate(size); err != nil {
+	if err := wh.truncate(ctx, n.b, size); err != nil {
 		return errnoOf(err)
 	}
 	r, err := wh.staged.Reader()

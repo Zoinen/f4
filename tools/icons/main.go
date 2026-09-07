@@ -1,5 +1,5 @@
-// Command icons regenerates every platform icon from assets/icon/f4.svg and
-// optional size-specific assets/icon/f4-N.svg overrides.
+// Command icons regenerates every platform icon from cmd/f4/assets/icon/f4.svg
+// and optional size-specific cmd/f4/assets/icon/f4-N.svg overrides.
 //
 // Run it from anywhere in the repository with:
 //
@@ -34,8 +34,8 @@ var windowsSizes = []int{16, 24, 28, 30, 32, 36, 42, 48, 56, 64, 128, 256}
 func main() {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	check(err)
-	iconDir := filepath.Join(root, "assets", "icon")
-	outDir := filepath.Join(root, "assets", "icon", "generated")
+	iconDir := filepath.Join(root, "cmd", "f4", "assets", "icon")
+	outDir := filepath.Join(root, "cmd", "f4", "assets", "icon", "generated")
 	check(os.MkdirAll(outDir, 0o755))
 
 	pngs := make(map[int][]byte, len(sizes))
@@ -156,7 +156,8 @@ func makeWindowsResources(root, icon string) error {
 		"--icon", icon,
 	}
 	cmd := exec.Command("go", args...)
-	cmd.Dir = root
+	// rsrc_windows_*.syso must sit in the main package directory to be linked.
+	cmd.Dir = filepath.Join(root, "cmd", "f4")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

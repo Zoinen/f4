@@ -132,7 +132,11 @@ func TestGoogleMyDriveListingNeverExposesOpaqueRootID(t *testing.T) {
 		names: make(map[string]string), transferNames: make(map[string]string),
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 
 	root := cloud.GetPath()
 	if err := cloud.ReadDir(context.Background(), root, func([]vfs.VFSItem) {}); err != nil {
@@ -189,7 +193,7 @@ func TestGoogleRangeReaderPinsETagAndValidatesContentRange(t *testing.T) {
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	reader := &googleRangeReader{service: service, fileID: "file-id", size: 6, etag: `"generation-one"`, ctx: lifetime, cancel: cancel}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	buffer := make([]byte, 3)
 	if n, err := reader.ReadAt(context.Background(), buffer, 2); err != nil || n != 3 || string(buffer) != "cde" {
 		t.Fatalf("ReadAt = %d, %v, %q", n, err, buffer)
@@ -226,11 +230,11 @@ func TestGoogleRangeReaderFallsBackWhenRangeIsIgnored(t *testing.T) {
 	}
 	lifetime, cancel := context.WithCancel(context.Background())
 	reader := &googleRangeReader{service: service, fileID: "file-id", size: int64(len(content)), etag: `"generation-one"`, ctx: lifetime, cancel: cancel}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	buffer := make([]byte, 4)
 	readCtx := context.WithValue(context.Background(), vfs.ProgressKey, vfs.ProgressCallback(func(_ string, percent int) {
-		progress.Store(int32(percent))
+		progress.Store(int32(percent)) // #nosec G115 -- progress callbacks are bounded to percentages from 0 through 100.
 	}))
 	if n, err := reader.ReadAt(readCtx, buffer, 2); err != nil || n != 4 || string(buffer) != "mple" {
 		t.Fatalf("first ReadAt = %d, %v, %q", n, err, buffer)
@@ -255,13 +259,21 @@ func TestGoogleSessionDownloadCacheReusesOnlyMatchingRevision(t *testing.T) {
 	}
 	path := f.Name()
 	if _, err := io.WriteString(f, "cached payload"); err != nil {
-		f.Close()
-		os.Remove(path)
+		if closeErr := f.Close(); closeErr != nil {
+			t.Errorf("close failed cache fixture: %v", closeErr)
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			t.Errorf("remove failed cache fixture: %v", removeErr)
+		}
 		t.Fatal(err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		os.Remove(path)
+		if closeErr := f.Close(); closeErr != nil {
+			t.Errorf("close failed cache fixture: %v", closeErr)
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			t.Errorf("remove failed cache fixture: %v", removeErr)
+		}
 		t.Fatal(err)
 	}
 	handle, err := cache.install("file-id", "revision-1", newProviderTempReader(f, path, int64(len("cached payload"))))
@@ -554,7 +566,9 @@ func TestAuthorizeGoogleDesktopCompletesLoopbackWithoutExternalNetwork(t *testin
 		if err != nil {
 			return err
 		}
-		defer response.Body.Close()
+		defer func() {
+			_ = response.Body.Close() // response body cleanup only
+		}()
 		if response.StatusCode != http.StatusOK {
 			t.Errorf("callback status = %s", response.Status)
 		}

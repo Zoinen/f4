@@ -21,8 +21,10 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	smithytime "github.com/aws/smithy-go/time"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/unxed/f4/vfs"
 )
@@ -219,8 +221,6 @@ const (
 	s3MaxMultipartParts          = 10_000
 )
 
-var errS3MultipartCleanup = errors.New("cloudfox: S3 multipart cleanup failed")
-
 type s3Backend struct {
 	client        s3API
 	clientRaw     *awss3.Client
@@ -353,6 +353,16 @@ func s3RequestOptions(region string) []func(*awss3.Options) {
 		return nil
 	}
 	return []func(*awss3.Options){func(options *awss3.Options) { options.Region = region }}
+}
+
+func s3ClientForRegion(client *awss3.Client, region string) *awss3.Client {
+	region = strings.TrimSpace(region)
+	if client == nil || region == "" {
+		return client
+	}
+	return awss3.New(client.Options(), func(options *awss3.Options) {
+		options.Region = region
+	})
 }
 
 func (b *s3Backend) validateOpaqueKey(key string) error {
@@ -1419,6 +1429,17 @@ func boolToInt64(value bool) int64 {
 	return 0
 }
 
+func parseS3Expires(value *string) *time.Time {
+	if value == nil {
+		return nil
+	}
+	expires, err := smithytime.ParseHTTPDate(*value)
+	if err != nil {
+		return nil
+	}
+	return &expires
+}
+
 func (b *s3Backend) copyMultipart(ctx context.Context, destination s3Target, copySource string, size int64, source *awss3.HeadObjectOutput) (retErr error) {
 	destinationKey := destination.key
 	partSize, err := s3MultipartCopyPartSize(size)
@@ -1434,7 +1455,7 @@ func (b *s3Backend) copyMultipart(ctx context.Context, destination s3Target, cop
 		ContentEncoding:         source.ContentEncoding,
 		ContentLanguage:         source.ContentLanguage,
 		ContentType:             source.ContentType,
-		Expires:                 source.Expires,
+		Expires:                 parseS3Expires(source.ExpiresString),
 		Metadata:                source.Metadata,
 		SSEKMSKeyId:             source.SSEKMSKeyId,
 		ServerSideEncryption:    source.ServerSideEncryption,
@@ -1582,7 +1603,7 @@ func (r *s3RangeReader) ReadAt(ctx context.Context, p []byte, off int64) (int, e
 	if output == nil || output.Body == nil {
 		return 0, errors.New("cloudfox: S3 GetObject returned no response body")
 	}
-	defer output.Body.Close()
+	defer func() { _ = output.Body.Close() }() // Response-body cleanup is best effort.
 	if r.etag != "" && strings.TrimSpace(aws.ToString(output.ETag)) != r.etag {
 		return 0, ErrRemoteObjectChanged
 	}
@@ -1671,7 +1692,7 @@ func (b *s3Backend) openS3Snapshot(ctx context.Context, target s3Target) (_ vfs.
 	if output == nil || output.Body == nil {
 		return nil, errors.New("cloudfox: S3 GetObject returned no response body")
 	}
-	defer output.Body.Close()
+	defer func() { _ = output.Body.Close() }() // Response-body cleanup is best effort.
 
 	file, err := os.CreateTemp("", "f4-cloudfox-s3-read-*")
 	if err != nil {
@@ -1749,7 +1770,7 @@ func (w *s3UploadWriter) Abort() error {
 		w.cancel()
 		pipeErr := w.pipe.CloseWithError(context.Canceled)
 		uploadErr := <-w.done
-		if uploadErr != nil && (errors.Is(uploadErr, errS3MultipartCleanup) || !errors.Is(uploadErr, context.Canceled)) {
+		if uploadErr != nil && !errors.Is(uploadErr, context.Canceled) {
 			w.err = uploadErr
 		} else if pipeErr != nil && !errors.Is(pipeErr, io.ErrClosedPipe) {
 			w.err = pipeErr
@@ -1782,39 +1803,26 @@ func (b *s3Backend) Create(ctx context.Context, location string) (io.WriteCloser
 	uploadCtx, cancel := context.WithCancel(ctx)
 	reader, writer := io.Pipe()
 	done := make(chan error, 1)
-	uploader := manager.NewUploader(b.clientRaw, func(u *manager.Uploader) {
-		u.PartSize = 8 << 20
-		u.Concurrency = 2
-		// Manager aborts with the upload context. On user cancellation that
-		// context is already dead, so its cleanup request never leaves the
-		// process and uploaded parts remain billable. Keep the ID and abort below
-		// with a detached, bounded cleanup context instead.
-		u.LeavePartsOnError = true
-		u.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-		u.ClientOptions = append(u.ClientOptions, s3RequestOptions(target.region)...)
+	uploader := transfermanager.New(s3ClientForRegion(b.clientRaw, target.region), func(options *transfermanager.Options) {
+		options.PartSizeBytes = 8 << 20
+		options.MultipartUploadThreshold = 8 << 20
+		options.Concurrency = 2
+		// Let the replacement transfer manager finish its own multipart abort
+		// request even when the source context was canceled.
+		options.FailTimeout = 15 * time.Second
+		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
 	go func() {
 		// If-None-Match is the only race-free S3 no-replace primitive. The
 		// transfer manager propagates it both to PutObject and, for large files,
 		// to CompleteMultipartUpload. Never fall back to HeadObject + PutObject:
 		// another writer could create the key between those requests.
-		_, uploadErr := uploader.Upload(uploadCtx, &awss3.PutObjectInput{
+		_, uploadErr := uploader.UploadObject(uploadCtx, &transfermanager.UploadObjectInput{
 			Bucket:      aws.String(target.bucket),
 			Key:         aws.String(key),
 			Body:        reader,
 			IfNoneMatch: s3DestinationIfNoneMatch(uploadCtx),
 		})
-		var multipartFailure manager.MultiUploadFailure
-		if errors.As(uploadErr, &multipartFailure) && strings.TrimSpace(multipartFailure.UploadID()) != "" {
-			cleanupCtx, cleanupDone := providerDetachedCleanupContext(uploadCtx, 15*time.Second)
-			_, abortErr := b.client.AbortMultipartUpload(cleanupCtx, &awss3.AbortMultipartUploadInput{
-				Bucket: aws.String(target.bucket), Key: aws.String(key), UploadId: aws.String(multipartFailure.UploadID()),
-			}, s3RequestOptions(target.region)...)
-			cleanupDone()
-			if abortErr != nil {
-				uploadErr = errors.Join(uploadErr, fmt.Errorf("%w: %v", errS3MultipartCleanup, mapS3Error(abortErr)))
-			}
-		}
 		_ = reader.CloseWithError(uploadErr)
 		done <- s3MutationError("upload", uploadErr)
 	}()

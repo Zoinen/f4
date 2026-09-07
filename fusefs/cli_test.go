@@ -459,7 +459,7 @@ func TestAwaitReadySuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	go reportReady(w, readyMessage{OK: true, MountPoint: "/mnt/x", PID: 42})
 
 	msg, err := awaitReady(r, 2*time.Second)
@@ -476,8 +476,10 @@ func TestAwaitReadyChildDiedSilently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
-	w.Close() // the child exited without saying anything
+	defer func() { _ = r.Close() }()
+	if err := w.Close(); err != nil { // the child exited without saying anything
+		t.Fatalf("close readiness pipe: %v", err)
+	}
 
 	if _, err := awaitReady(r, 2*time.Second); err == nil {
 		t.Fatal("a silent child must be reported as a failure, not as success")
@@ -489,8 +491,12 @@ func TestAwaitReadyTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
-	defer w.Close() // held open: the child is up but wedged
+	defer func() { _ = r.Close() }()
+	t.Cleanup(func() {
+		if err := w.Close(); err != nil { // held open: the child is up but wedged
+			t.Errorf("close readiness pipe: %v", err)
+		}
+	})
 
 	start := time.Now()
 	_, err = awaitReady(r, 50*time.Millisecond)

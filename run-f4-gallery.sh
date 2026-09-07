@@ -63,7 +63,7 @@ echo "Building f4 Qt host..."
 cmake --build "$host_build_dir" --config "$build_type" --parallel
 
 echo "Building f4 Go core..."
-(cd "$repo_dir" && go build -o "$f4_bin" .)
+(cd "$repo_dir" && go build -o "$f4_bin" ./cmd/f4)
 
 require_file "$qt_host" "f4 Qt host executable"
 if [[ ! -x "$qt_host" ]]; then

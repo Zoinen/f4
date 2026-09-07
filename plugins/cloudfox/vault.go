@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"golang.org/x/crypto/argon2"
@@ -459,8 +458,4 @@ func zero(b []byte) {
 	}
 	// Keep the wipe observable to the compiler.
 	_ = subtle.ConstantTimeByteEq(0, 0)
-}
-
-func (v *VaultStore) ensureDirectory() error {
-	return os.MkdirAll(filepath.Dir(v.path), 0o700)
 }

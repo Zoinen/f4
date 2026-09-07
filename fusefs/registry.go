@@ -108,18 +108,14 @@ func Register(rec Record) (Record, error) {
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(append(blob, '\n')); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return rec, err
+		return rec, errors.Join(err, tmp.Close(), os.Remove(tmpName))
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return rec, err
+		return rec, errors.Join(err, os.Remove(tmpName))
 	}
 	// Rename so a reader never sees a half-written record.
 	if err := os.Rename(tmpName, final); err != nil {
-		os.Remove(tmpName)
-		return rec, err
+		return rec, errors.Join(err, os.Remove(tmpName))
 	}
 	return rec, nil
 }
@@ -165,11 +161,11 @@ func Mounts() ([]Record, error) {
 		}
 		var rec Record
 		if err := json.Unmarshal(blob, &rec); err != nil {
-			os.Remove(path) // corrupt: no reader can do anything with it
+			_ = os.Remove(path) // Corrupt registry cleanup is best effort; the entry is already filtered.
 			continue
 		}
 		if !processAlive(rec.PID) {
-			os.Remove(path)
+			_ = os.Remove(path) // Stale registry cleanup is best effort; the entry is already filtered.
 			continue
 		}
 		out = append(out, rec)

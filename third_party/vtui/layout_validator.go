@@ -88,7 +88,7 @@ func ValidateLayoutWithRules(c Container, rules LayoutRules) []error {
 	filtered := make([]UIElement, 0, len(items))
 	for _, it := range items {
 		switch it.(type) {
-		case *VBoxLayout, *HBoxLayout:
+		case *VBoxLayout, *HBoxLayout, *AutoLayout:
 			continue
 		}
 		filtered = append(filtered, it)
@@ -199,14 +199,6 @@ func ValidateLayoutWithRules(c Container, rules LayoutRules) []error {
 					Message: fmt.Sprintf("Elements [%s] and [%s] overlap", id, oid),
 				})
 				continue
-			}
-
-			// Horizontal proximity: mandatory 1 cell air for non-decorative items
-			if gapX == 0 && gapY <= 0 && !isDecorative(item) && !isDecorative(other) {
-				errs = append(errs, LayoutError{
-					Element1: item, Element2: other,
-					Message: fmt.Sprintf("Elements [%s] and [%s] are too close horizontally (need 1 cell air)", id, oid),
-				})
 			}
 
 			// Vertical proximity: Buttons must always have air

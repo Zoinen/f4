@@ -2,7 +2,6 @@ package vtui
 
 import (
 	"context"
-	"github.com/mattn/go-runewidth"
 	"sort"
 	"strings"
 )
@@ -26,6 +25,7 @@ type FSProvider interface {
 
 // SelectDirDialog creates a standard directory selection dialog.
 func SelectDirDialog(title string, initialPath string, vfs FSProvider) *Window {
+	fm := FrameManager
 	width := 50
 	height := 18
 	dlg := NewCenteredDialog(width, height, title)
@@ -45,7 +45,7 @@ func SelectDirDialog(title string, initialPath string, vfs FSProvider) *Window {
 					}
 				}
 			})
-			FrameManager.PostTask(func() {
+			fm.PostTask(func() {
 				if dlg.IsDone() {
 					return
 				}
@@ -63,7 +63,7 @@ func SelectDirDialog(title string, initialPath string, vfs FSProvider) *Window {
 				} else {
 					lb.SetSelectPos(0)
 				}
-				FrameManager.Redraw()
+				fm.Redraw()
 			})
 		}()
 	}
@@ -105,19 +105,18 @@ func SelectDirDialog(title string, initialPath string, vfs FSProvider) *Window {
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	vbox.Add(pathEdit, Margins{Bottom: 1}, AlignFill)
-	vbox.Add(lb, Margins{Bottom: 1}, AlignFill)
-	hbox := NewHBoxLayout(0, 0, width-4, 1)
-	hbox.HorizontalAlign = AlignCenter
-	hbox.Spacing = 2
-	hbox.Add(btnOk, Margins{}, AlignTop)
-	hbox.Add(btnCancel, Margins{}, AlignTop)
-	vbox.Add(hbox, Margins{}, AlignFill)
-	vbox.Apply()
+	layout := NewAutoLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	layout.
+		PinTop(pathEdit, 0).FillWidth(pathEdit, 0, 0).
+		StackVertical(1, pathEdit, lb).FillWidth(lb, 0, 0).
+		PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
+		StackHorizontal(2, btnOk, btnCancel).
+		CenterHorizontalGroup(btnOk, btnCancel).
+		StackVertical(1, lb, btnOk)
+	layout.Apply()
 
 	updateList(vfs.GetPath(), "")
-	FrameManager.Push(dlg)
+	fm.Push(dlg)
 	return dlg
 }
 
@@ -198,7 +197,7 @@ func createMessageDialog(title string, text string, buttons []string, kind Messa
 	btnsWidth := 0
 	for _, b := range buttons {
 		clean, _, _ := ParseAmpersandString(b)
-		btnsWidth += runewidth.StringWidth(clean) + 4
+		btnsWidth += StringWidth(clean) + 4
 	}
 	spacing := 2
 	totalBtnsWidth := 0
@@ -213,7 +212,7 @@ func createMessageDialog(title string, text string, buttons []string, kind Messa
 	lines := WrapText(text, maxDialogWidth-sidePadding)
 	textWidth := 0
 	for _, l := range lines {
-		w := runewidth.StringWidth(l)
+		w := StringWidth(l)
 		if w > textWidth {
 			textWidth = w
 		}
@@ -224,7 +223,7 @@ func createMessageDialog(title string, text string, buttons []string, kind Messa
 		dlgWidth = totalBtnsWidth + sidePadding
 	}
 	if title != "" {
-		tw := runewidth.StringWidth(title) + 6
+		tw := StringWidth(title) + 6
 		if tw > dlgWidth {
 			dlgWidth = tw
 		}
@@ -298,47 +297,64 @@ func createMessageDialog(title string, text string, buttons []string, kind Messa
 		}
 	}
 
-	// 4. Use Layout Engine for positioning
-	vbox := NewVBoxLayout(dlg.X1+2, dlg.Y1+2, dlgWidth-4, dlgHeight-4)
+	layout := NewAutoLayout(dlg.X1+2, dlg.Y1+2, dlgWidth-4, dlgHeight-4)
 
+	var lastTextUI UIElement
 	for _, l := range lines {
 		txt := NewText(0, 0, l, Palette[ColDialogText])
-		vbox.Add(txt, Margins{}, AlignCenter)
+		layout.CenterHorizontal(txt)
 		dlg.AddItem(txt)
+		if lastTextUI != nil {
+			layout.StackVertical(0, lastTextUI, txt)
+		} else {
+			layout.PinTop(txt, 0)
+		}
+		lastTextUI = txt
 	}
 
 	if len(buttons) > 0 {
+		btnElems := make([]UIElement, len(buttons))
+		for i, b := range buttons {
+			btnID := i
+			btn := NewButton(0, 0, b)
+			btn.OnClick = func() { dlg.SetExitCode(btnID) }
+			dlg.AddItem(btn)
+			btnElems[i] = btn
+		}
+
 		if stackButtons {
-			// Add stacked buttons
-			for i, b := range buttons {
-				btnID := i
-				btn := NewButton(0, 0, b)
-				btn.OnClick = func() { dlg.SetExitCode(btnID) }
-				vbox.Add(btn, Margins{Top: 1}, AlignCenter)
-				dlg.AddItem(btn)
+			for i, btn := range btnElems {
+				layout.CenterHorizontal(btn)
+				if i == 0 {
+					if lastTextUI != nil {
+						layout.StackVertical(1, lastTextUI, btn)
+					} else {
+						layout.PinTop(btn, 0)
+					}
+				} else {
+					layout.StackVertical(1, btnElems[i-1], btn)
+				}
 			}
 		} else {
-			// Add horizontal button row
-			hbox := NewHBoxLayout(0, 0, dlgWidth-4, 1)
-			hbox.HorizontalAlign = AlignCenter
-			hbox.Spacing = spacing
-			for i, b := range buttons {
-				btnID := i
-				btn := NewButton(0, 0, b)
-				btn.OnClick = func() { dlg.SetExitCode(btnID) }
-				hbox.Add(btn, Margins{}, AlignTop)
-				dlg.AddItem(btn)
+			if len(btnElems) == 1 {
+				layout.CenterHorizontal(btnElems[0])
+			} else {
+				layout.StackHorizontal(spacing, btnElems...)
+				layout.CenterHorizontalGroup(btnElems[0], btnElems[len(btnElems)-1])
 			}
-			vbox.Add(hbox, Margins{Top: 1}, AlignFill)
+			for _, btn := range btnElems {
+				layout.PinBottom(btn, 0)
+			}
 		}
 	}
 
-	vbox.Apply()
+	layout.Apply()
 	return dlg
 }
 
 // SelectFileDialog creates a standard file selection dialog.
 func SelectFileDialog(title string, initialPath string, vfs FSProvider, onOk func(string)) *Window {
+	fm := FrameManager
 	width := 55
 	height := 20
 	dlg := NewCenteredDialog(width, height, title)
@@ -361,7 +377,7 @@ func SelectFileDialog(title string, initialPath string, vfs FSProvider, onOk fun
 			vfs.ReadDir(context.Background(), p, func(chunk []FSItem) {
 				allEntries = append(allEntries, chunk...)
 			})
-			FrameManager.PostTask(func() {
+			fm.PostTask(func() {
 				if dlg.IsDone() {
 					return
 				}
@@ -395,7 +411,7 @@ func SelectFileDialog(title string, initialPath string, vfs FSProvider, onOk fun
 				} else {
 					lb.SetSelectPos(0)
 				}
-				FrameManager.Redraw()
+				fm.Redraw()
 			})
 		}()
 	}
@@ -443,26 +459,23 @@ func SelectFileDialog(title string, initialPath string, vfs FSProvider, onOk fun
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	rowPath := NewHBoxLayout(0, 0, width-4, 1)
-	rowPath.Add(lblPath, Margins{Right: 1}, AlignTop)
-	rowPath.Add(pathEdit, Margins{}, AlignFill)
-	vbox.Add(rowPath, Margins{}, AlignFill)
-	vbox.Add(lb, Margins{Top: 1, Bottom: 1}, AlignFill)
-	rowFile := NewHBoxLayout(0, 0, width-4, 1)
-	rowFile.Add(lblFile, Margins{Right: 1}, AlignTop)
-	rowFile.Add(fileEdit, Margins{}, AlignFill)
-	vbox.Add(rowFile, Margins{}, AlignFill)
-	rowBtns := NewHBoxLayout(0, 0, width-4, 1)
-	rowBtns.HorizontalAlign = AlignCenter
-	rowBtns.Spacing = 2
-	rowBtns.Add(btnOk, Margins{}, AlignTop)
-	rowBtns.Add(btnCancel, Margins{}, AlignTop)
-	vbox.Add(rowBtns, Margins{Top: 1}, AlignFill)
-	vbox.Apply()
+	layout := NewAutoLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	layout.
+		PinTop(lblPath, 0).PinLeft(lblPath, 0).
+		AlignTop(lblPath, pathEdit).
+		StackHorizontal(1, lblPath, pathEdit).PinRight(pathEdit, 0).
+		StackVertical(1, pathEdit, lb).FillWidth(lb, 0, 0).
+		StackVertical(1, lb, fileEdit).
+		PinLeft(lblFile, 0).AlignTop(lblFile, fileEdit).
+		StackHorizontal(1, lblFile, fileEdit).PinRight(fileEdit, 0).
+		PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
+		StackHorizontal(2, btnOk, btnCancel).
+		CenterHorizontalGroup(btnOk, btnCancel).
+		StackVertical(1, fileEdit, btnOk)
+	layout.Apply()
 
 	updateList(vfs.GetPath(), "")
-	FrameManager.Push(dlg)
+	fm.Push(dlg)
 	return dlg
 }
 
@@ -496,19 +509,14 @@ func InputBoxOn(anchor Frame, title, prompt, defaultText string, onOk func(strin
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	// Layout construction
-	vbox := NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	vbox.Add(lbl, Margins{}, AlignLeft)
-	vbox.Add(edit, Margins{Top: 1}, AlignFill)
-
-	rowBtns := NewHBoxLayout(0, 0, width-4, 1)
-	rowBtns.HorizontalAlign = AlignCenter
-	rowBtns.Spacing = 2
-	rowBtns.Add(btnOk, Margins{}, AlignTop)
-	rowBtns.Add(btnCancel, Margins{}, AlignTop)
-
-	vbox.Add(rowBtns, Margins{Top: 1}, AlignFill)
-	vbox.Apply()
+	layout := NewAutoLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	layout.
+		PinTop(lbl, 0).PinLeft(lbl, 0).
+		StackVertical(1, lbl, edit).FillWidth(edit, 0, 0).
+		PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
+		StackHorizontal(2, btnOk, btnCancel).
+		CenterHorizontalGroup(btnOk, btnCancel)
+	layout.Apply()
 
 	if anchor != nil {
 		FrameManager.PushToFrameScreen(anchor, dlg)

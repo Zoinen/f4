@@ -38,6 +38,7 @@ func TestComboBox_DropdownUsesComboPalette(t *testing.T) {
 // The visible symptom the indices above are there to prevent: a dropdown
 // painted in the dialog's own background, indistinguishable from it.
 func TestComboBox_DropdownStandsApartFromDialog(t *testing.T) {
+	preserveTestPalette(t)
 	SetDefaultPalette()
 	Palette[ColDialogText] = SetRGBBoth(0, 0x2E3436, 0xD3D7CF)
 	Palette[ColDialogComboText] = SetRGBBoth(0, 0xEEEEEC, 0x06989A)
@@ -86,7 +87,8 @@ func TestVMenu_DefaultsToMenuPalette(t *testing.T) {
 			m.ColorTextIdx, m.ColorBoxIdx, m.ColorTitleIdx)
 	}
 }
-func TestComboBox_DropdownOnlyFocusedColorsOnlyTextPortion(t *testing.T) {
+func TestComboBox_DropdownOnlyFocusedFillsSelectionContinuously(t *testing.T) {
+	preserveTestPalette(t)
 	SetDefaultPalette()
 	Palette[ColDialogComboText] = SetRGBBoth(0, 0xEEEEEC, 0x37322C)
 	Palette[ColDialogComboSelectedText] = SetRGBBoth(0, 0x1E1A16, 0xE6B450)
@@ -101,20 +103,12 @@ func TestComboBox_DropdownOnlyFocusedColorsOnlyTextPortion(t *testing.T) {
 	cb.SetFocus(true)
 	cb.Show(scr)
 
-	normalBg := GetRGBBack(Palette[ColDialogComboText])
 	selectedBg := GetRGBBack(Palette[ColDialogComboSelectedText])
 
-	for x := cb.X1; x < cb.X1+3; x++ {
+	for x := cb.X1; x < cb.X2; x++ {
 		cellBg := GetRGBBack(scr.GetCell(x, cb.Y1).Attributes)
 		if cellBg != selectedBg {
 			t.Errorf("text cell X=%d background = #%06x, want selected background #%06x", x, cellBg, selectedBg)
-		}
-	}
-
-	for x := cb.X1 + 3; x < cb.X2; x++ {
-		cellBg := GetRGBBack(scr.GetCell(x, cb.Y1).Attributes)
-		if cellBg != normalBg {
-			t.Errorf("trailing cell X=%d background = #%06x, want normal combo background #%06x", x, cellBg, normalBg)
 		}
 	}
 
@@ -125,6 +119,7 @@ func TestComboBox_DropdownOnlyFocusedColorsOnlyTextPortion(t *testing.T) {
 }
 
 func TestComboBox_UnfocusedArrowIsVisible(t *testing.T) {
+	preserveTestPalette(t)
 	SetDefaultPalette()
 	Palette[ColDialogComboText] = SetRGBBoth(0, 0xEEEEEC, 0x37322C)
 	Palette[ColDialogComboHighlight] = SetRGBBoth(0, 0xE6CF70, 0x37322C)

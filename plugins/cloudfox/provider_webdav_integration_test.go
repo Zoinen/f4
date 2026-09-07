@@ -79,7 +79,7 @@ func readWebDAVFile(t *testing.T, backend *webDAVBackend, location string) strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	data := make([]byte, r.Size())
 	if len(data) == 0 {
 		return ""
@@ -572,9 +572,12 @@ func TestWebDAVFullDownloadReportsProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = r.Close()
-	if len(reporter.updates) < 2 || !strings.HasPrefix(reporter.updates[0], "Downloading:file.bin:") ||
-		!strings.HasSuffix(reporter.updates[len(reporter.updates)-1], ":100") {
-		t.Fatalf("download progress updates = %v", reporter.updates)
+	// zoin-bot: Copy progress under the capture mutex before asserting; the
+	// HTTP transport may still be delivering callbacks on another goroutine.
+	updates := reporter.snapshot()
+	if len(updates) < 2 || !strings.HasPrefix(updates[0], "Downloading:file.bin:") ||
+		!strings.HasSuffix(updates[len(updates)-1], ":100") {
+		t.Fatalf("download progress updates = %v", updates)
 	}
 }
 
@@ -1160,7 +1163,7 @@ func TestWebDAVRangeReaderContinuesShortPartialResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	buffer := make([]byte, 6)
 	if n, err := r.ReadAt(context.Background(), buffer, 2); err != nil || n != 6 || string(buffer) != "234567" {
 		t.Fatalf("short-part continuation = %d, %v, %q", n, err, buffer)
@@ -1183,7 +1186,7 @@ func TestWebDAVRangeReaderDetectsChangedSizeFrom416(t *testing.T) {
 	defer server.Close()
 	readerCtx, cancel := context.WithCancel(context.Background())
 	reader := &webDAVRangeReader{client: server.Client(), url: server.URL, size: 5, etag: `"one"`, ctx: readerCtx, cancel: cancel}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if _, err := reader.ReadAt(context.Background(), make([]byte, 1), 0); !errors.Is(err, ErrRemoteObjectChanged) {
 		t.Fatalf("416 after size change = %v", err)
 	}
@@ -1273,7 +1276,7 @@ func TestWebDAVDirectoryMutationsUseCollectionURLs(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = io.WriteString(w, davMultiStatusXML(davResponseXML(r.URL.Path+"/", "source", "0", true)))
+			_, _ = io.WriteString(w, davMultiStatusXML(davResponseXML(r.URL.Path+"/", "source", "0", true))) // #nosec G705 -- the local test server returns its controlled request path to exercise collection-URL handling.
 			return
 		}
 		requests = append(requests, mutationRequest{method: r.Method, path: r.URL.Path, destination: r.Header.Get("Destination"), overwrite: r.Header.Get("Overwrite")})
@@ -1454,9 +1457,10 @@ func TestWebDAVDigestUploadReplaysBodyAndReportsProgress(t *testing.T) {
 	if requests != 2 || uploaded != "digest payload" {
 		t.Fatalf("requests=%d uploaded=%q", requests, uploaded)
 	}
-	if len(reporter.updates) < 2 || reporter.updates[0] != "Uploading:upload.txt:0" ||
-		!strings.HasSuffix(reporter.updates[len(reporter.updates)-1], ":100") {
-		t.Fatalf("upload progress = %v", reporter.updates)
+	updates := reporter.snapshot()
+	if len(updates) < 2 || updates[0] != "Uploading:upload.txt:0" ||
+		!strings.HasSuffix(updates[len(updates)-1], ":100") {
+		t.Fatalf("upload progress = %v", updates)
 	}
 }
 
@@ -1550,12 +1554,13 @@ func TestWebDAVFailedUploadDoesNotReportCompletion(t *testing.T) {
 	if err := w.Close(); !errors.Is(err, vfs.ErrOperationStateUnknown) {
 		t.Fatalf("failed PUT = %v", err)
 	}
-	if len(reporter.updates) < 2 || reporter.updates[0] != "Uploading:failed.bin:0" {
-		t.Fatalf("failed upload progress = %v", reporter.updates)
+	updates := reporter.snapshot()
+	if len(updates) < 2 || updates[0] != "Uploading:failed.bin:0" {
+		t.Fatalf("failed upload progress = %v", updates)
 	}
-	for _, update := range reporter.updates {
+	for _, update := range updates {
 		if strings.HasSuffix(update, ":100") {
-			t.Fatalf("failed upload reported completion: %v", reporter.updates)
+			t.Fatalf("failed upload reported completion: %v", updates)
 		}
 	}
 }

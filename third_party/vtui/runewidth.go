@@ -1,8 +1,6 @@
 package vtui
 
 import (
-	"github.com/rivo/uniseg"
-	"golang.org/x/text/unicode/bidi"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -72,90 +70,14 @@ func ParseAmpersandString(s string) (clean string, hotkey rune, hotkeyPos int) {
 // StringToCharInfoHighlighted works like StringToCharInfo but highlights the letter after &.
 func StringToCharInfoHighlighted(s string, normalAttr, highAttr uint64) ([]CharInfo, rune) {
 	clean, hk, hkPos := ParseAmpersandString(s)
-	if DefaultBidiMode == BidiOff || !HasRTL(clean) {
-		res := make([]CharInfo, 0, len(clean))
-		ForEachClusterAt(clean, func(cluster string, w, _, runeIdx int) {
-			attr := normalAttr
-			if hkPos >= runeIdx && hkPos < runeIdx+utf8.RuneCountInString(cluster) {
-				attr = highAttr
-			}
-			res = AppendCluster(res, cluster, w, attr)
-		})
-		return res, hk
-	}
-
-	type logicalCluster struct {
-		text    string
-		runeIdx int
-		attr    uint64
-	}
-
-	var logicalClusters []logicalCluster
-	runeIdx := 0
-	g := uniseg.NewGraphemes(clean)
-	for g.Next() {
-		from, to := g.Positions()
-		clText := clean[from:to]
+	res := make([]CharInfo, 0, len(clean))
+	ForEachVisualCluster(clean, func(cluster string, w, _, runeIdx int) {
 		attr := normalAttr
-		if hkPos >= runeIdx && hkPos < runeIdx+utf8.RuneCountInString(clText) {
+		if hkPos >= runeIdx && hkPos < runeIdx+utf8.RuneCountInString(cluster) {
 			attr = highAttr
 		}
-		logicalClusters = append(logicalClusters, logicalCluster{
-			text:    clText,
-			runeIdx: runeIdx,
-			attr:    attr,
-		})
-		runeIdx += utf8.RuneCountInString(clText)
-	}
-
-	p := bidi.Paragraph{}
-	_, err := p.SetString(clean)
-	if err != nil {
-		res := make([]CharInfo, 0, len(clean))
-		for _, c := range logicalClusters {
-			res = AppendCluster(res, c.text, ClusterWidth(c.text), c.attr)
-		}
-		return res, hk
-	}
-	order, err := p.Order()
-	if err != nil {
-		res := make([]CharInfo, 0, len(clean))
-		for _, c := range logicalClusters {
-			res = AppendCluster(res, c.text, ClusterWidth(c.text), c.attr)
-		}
-		return res, hk
-	}
-
-	var res []CharInfo
-	numRuns := order.NumRuns()
-	for i := 0; i < numRuns; i++ {
-		run := order.Run(i)
-		start, end := run.Pos()
-
-		var runClusters []logicalCluster
-		for _, c := range logicalClusters {
-			if c.runeIdx >= start && c.runeIdx <= end {
-				runClusters = append(runClusters, c)
-			}
-		}
-
-		isRTL := run.Direction() == bidi.RightToLeft
-		if isRTL {
-			for i, j := 0, len(runClusters)-1; i < j; i, j = i+1, j-1 {
-				runClusters[i], runClusters[j] = runClusters[j], runClusters[i]
-			}
-			for i := range runClusters {
-				if utf8.RuneCountInString(runClusters[i].text) == 1 {
-					runClusters[i].text = bidi.ReverseString(runClusters[i].text)
-				}
-			}
-		}
-
-		for _, c := range runClusters {
-			res = AppendCluster(res, c.text, ClusterWidth(c.text), c.attr)
-		}
-	}
-
+		res = AppendCluster(res, cluster, w, attr)
+	})
 	return res, hk
 }
 
@@ -171,7 +93,7 @@ func SanitizeRune(r rune) (rune, int) {
 	if r == '\uFFFD' {
 		return '?', 1
 	}
-	if r < 0x20 || r == 0x7F {
+	if isControlRune(r) {
 		return '·', 1
 	}
 	w := runewidth.RuneWidth(r)
@@ -184,7 +106,7 @@ func SanitizeRune(r rune) (rune, int) {
 func StringToCharInfo(s string, attr uint64) []CharInfo {
 	s = VisualString(s)
 	res := make([]CharInfo, 0, len(s))
-	ForEachCluster(s, func(cluster string, w, _ int) {
+	forEachDisplayCluster(s, func(cluster string, w, _, _ int) {
 		res = AppendCluster(res, cluster, w, attr)
 	})
 	return res
@@ -192,7 +114,17 @@ func StringToCharInfo(s string, attr uint64) []CharInfo {
 
 func FillCharInfo(target []CharInfo, data []byte, attr uint64) []CharInfo {
 	target = target[:0]
-	ForEachCluster(string(data), func(cluster string, w, _ int) {
+	forEachDisplayCluster(string(data), func(cluster string, w, _, _ int) {
+		target = AppendCluster(target, cluster, w, attr)
+	})
+	return target
+}
+
+// FillCharInfoString fills target with CharInfo for s with attr, reusing target capacity.
+func FillCharInfoString(target []CharInfo, s string, attr uint64) []CharInfo {
+	s = VisualString(s)
+	target = target[:0]
+	forEachDisplayCluster(s, func(cluster string, w, _, _ int) {
 		target = AppendCluster(target, cluster, w, attr)
 	})
 	return target
@@ -203,7 +135,7 @@ func FillCharInfo(target []CharInfo, data []byte, attr uint64) []CharInfo {
 // when the byte its first rune starts at falls inside them.
 func FillCharInfoWithSelection(target []CharInfo, data []byte, defaultAttr, selAttr uint64, fragStartOffset, selMin, selMax int) []CharInfo {
 	target = target[:0]
-	ForEachCluster(string(data), func(cluster string, w, offset int) {
+	forEachDisplayCluster(string(data), func(cluster string, w, offset, _ int) {
 		attr := defaultAttr
 		absPos := fragStartOffset + offset
 		if absPos >= selMin && absPos < selMax {
@@ -216,4 +148,85 @@ func FillCharInfoWithSelection(target []CharInfo, data []byte, defaultAttr, selA
 
 func RunesToCharInfo(runes []rune, attr uint64) []CharInfo {
 	return StringToCharInfo(string(runes), attr)
+}
+
+// FillCharInfoAligned fills target with CharInfo for s with width and alignment under attr.
+func FillCharInfoAligned(target []CharInfo, text string, width int, align Alignment, attr uint64) []CharInfo {
+	if width <= 0 {
+		return target[:0]
+	}
+	isASCII := true
+	for i := 0; i < len(text); i++ {
+		if text[i] >= 0x80 || text[i] < 0x20 {
+			isASCII = false
+			break
+		}
+	}
+	if isASCII {
+		vLen := len(text)
+		if vLen > width {
+			vLen = width
+			text = text[:width]
+		}
+		space := width - vLen
+		var leftSpace, rightSpace int
+		switch align {
+		case AlignLeft:
+			rightSpace = space
+		case AlignRight:
+			leftSpace = space
+		case AlignCenter:
+			leftSpace = space / 2
+			rightSpace = space - leftSpace
+		}
+		if cap(target) < width {
+			target = make([]CharInfo, width)
+		} else {
+			target = target[:width]
+		}
+		idx := 0
+		for i := 0; i < leftSpace; i++ {
+			target[idx] = CharInfo{Char: ' ', Attributes: attr}
+			idx++
+		}
+		for i := 0; i < vLen; i++ {
+			target[idx] = CharInfo{Char: uint64(text[i]), Attributes: attr}
+			idx++
+		}
+		for i := 0; i < rightSpace; i++ {
+			target[idx] = CharInfo{Char: ' ', Attributes: attr}
+			idx++
+		}
+		return target
+	}
+
+	truncated, vLen := truncateStringWidth(text, width, "")
+	if vLen >= width {
+		return FillCharInfoString(target, truncated, attr)
+	}
+
+	space := width - vLen
+	var leftSpace, rightSpace int
+	switch align {
+	case AlignLeft:
+		rightSpace = space
+	case AlignRight:
+		leftSpace = space
+	case AlignCenter:
+		leftSpace = space / 2
+		rightSpace = space - leftSpace
+	}
+
+	target = target[:0]
+	for i := 0; i < leftSpace; i++ {
+		target = append(target, CharInfo{Char: ' ', Attributes: attr})
+	}
+	s := VisualString(truncated)
+	forEachDisplayCluster(s, func(cluster string, w, _, _ int) {
+		target = AppendCluster(target, cluster, w, attr)
+	})
+	for i := 0; i < rightSpace; i++ {
+		target = append(target, CharInfo{Char: ' ', Attributes: attr})
+	}
+	return target
 }

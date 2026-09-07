@@ -39,6 +39,7 @@ func NewItem(path, name string, mtime time.Time, isDir bool) *Item {
 		Source: name,
 		MTime:  mtime,
 		IsDir:  isDir,
+		// #nosec G404 -- this value expands the user's random rename mask and has no security role.
 		Random: rand.IntN(32768),
 		path:   filepath.Join(path, name),
 	}

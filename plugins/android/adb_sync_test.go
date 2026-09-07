@@ -104,7 +104,7 @@ func (o *syncTestOpener) OpenService(_ context.Context, serial, service string) 
 func syncTestRequest(id, payload string) []byte {
 	var result bytes.Buffer
 	result.WriteString(id)
-	_ = binary.Write(&result, binary.LittleEndian, uint32(len(payload)))
+	_ = binary.Write(&result, binary.LittleEndian, syncTestStringLength(payload))
 	result.WriteString(payload)
 	return result.Bytes()
 }
@@ -122,7 +122,7 @@ func syncTestDentV1(name string, mode, size, mtime uint32) []byte {
 	_ = binary.Write(&result, binary.LittleEndian, mode)
 	_ = binary.Write(&result, binary.LittleEndian, size)
 	_ = binary.Write(&result, binary.LittleEndian, mtime)
-	_ = binary.Write(&result, binary.LittleEndian, uint32(len(name)))
+	_ = binary.Write(&result, binary.LittleEndian, syncTestStringLength(name))
 	result.WriteString(name)
 	return result.Bytes()
 }
@@ -161,9 +161,13 @@ func syncTestDentV2(name string, meta syncTestV2Metadata) []byte {
 	var result bytes.Buffer
 	result.WriteString(syncIDDentV2)
 	result.Write(syncTestV2Body(meta))
-	_ = binary.Write(&result, binary.LittleEndian, uint32(len(name)))
+	_ = binary.Write(&result, binary.LittleEndian, syncTestStringLength(name))
 	result.WriteString(name)
 	return result.Bytes()
+}
+
+func syncTestStringLength(value string) uint32 {
+	return uint32(len(value)) // #nosec G115 -- sync protocol test strings are bounded well below its uint32 length field.
 }
 
 func TestSyncListV1HandlesFragmentedResponses(t *testing.T) {
@@ -270,7 +274,7 @@ func TestSyncListRejectsMalformedResponseAndFAIL(t *testing.T) {
 
 	t.Run("remote fail", func(t *testing.T) {
 		message := "permission denied"
-		response := append(syncTestHeader(syncIDFail, uint32(len(message))), message...)
+		response := append(syncTestHeader(syncIDFail, syncTestStringLength(message)), message...)
 		client := NewSyncClient(&syncTestOpener{conn: &syncTestConn{response: response, readChunk: 1}}, "serial", nil)
 		_, err := client.List(context.Background(), "/root")
 		var remoteErr *SyncRemoteError
@@ -386,7 +390,7 @@ func TestSyncReceiveV1AndV2(t *testing.T) {
 
 	t.Run("v2 request and remote fail", func(t *testing.T) {
 		message := "not a file"
-		response := append(syncTestHeader(syncIDFail, uint32(len(message))), message...)
+		response := append(syncTestHeader(syncIDFail, syncTestStringLength(message)), message...)
 		conn := &syncTestConn{response: response, readChunk: 2}
 		client := NewSyncClient(&syncTestOpener{conn: conn}, "serial", map[string]bool{"sendrecv_v2": true})
 		reader, err := client.Receive(context.Background(), "/dir")
@@ -452,7 +456,7 @@ func TestSyncSendV1SplitsLargeWritesAndFinalizes(t *testing.T) {
 
 func TestSyncSendV2SetupAndFAIL(t *testing.T) {
 	message := "read-only file system"
-	response := append(syncTestHeader(syncIDFail, uint32(len(message))), message...)
+	response := append(syncTestHeader(syncIDFail, syncTestStringLength(message)), message...)
 	conn := &syncTestConn{response: response, readChunk: 2, writeChunk: 2}
 	client := NewSyncClient(&syncTestOpener{conn: conn}, "serial", map[string]bool{"sendrecv_v2": true})
 	writer, err := client.Send(context.Background(), "/system/file", 0100600, time.Unix(99, 0))

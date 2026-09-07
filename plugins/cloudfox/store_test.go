@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -179,7 +180,7 @@ func TestConnectionStoreConcurrentCreatorsDoNotLoseUpdates(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := store.Create(ctx, testConnection(string(rune('A'+i))+" profile", ProviderS3))
+			_, err := store.Create(ctx, testConnection(fmt.Sprintf("%c profile", 'A'+i), ProviderS3))
 			errs <- err
 		}()
 	}

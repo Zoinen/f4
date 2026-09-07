@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !arm
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
 
 package vtui
 
@@ -21,6 +21,19 @@ func isNumLockEffective(mods vtinput.ControlKeyState) bool {
 	numLock := (mods & vtinput.NumLockOn) != 0
 	shift := (mods & vtinput.ShiftPressed) != 0
 	return numLock != shift
+}
+
+// isEbitenEnhancedNavKey reports whether k is part of the "enhanced"
+// navigation cluster, so a consumer can tell it from the numpad arrows that
+// reuse the same virtual key codes with NumLock off.
+func isEbitenEnhancedNavKey(k ebiten.Key) bool {
+	switch k {
+	case ebiten.KeyArrowUp, ebiten.KeyArrowDown, ebiten.KeyArrowLeft, ebiten.KeyArrowRight,
+		ebiten.KeyHome, ebiten.KeyEnd, ebiten.KeyPageUp, ebiten.KeyPageDown,
+		ebiten.KeyInsert, ebiten.KeyDelete:
+		return true
+	}
+	return false
 }
 
 func ebitenKeyToVK(k ebiten.Key, mods vtinput.ControlKeyState) uint16 {

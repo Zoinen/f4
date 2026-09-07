@@ -1,4 +1,4 @@
-//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !arm
+//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64)
 
 package vtui
 
@@ -89,6 +89,8 @@ func TestGogpuKeyToVK_Numpad(t *testing.T) {
 		// Lock keys themselves were unmapped too.
 		{"numlock key", gpucontext.KeyNumLock, off, vtinput.VK_NUMLOCK},
 		{"capslock key", gpucontext.KeyCapsLock, off, vtinput.VK_CAPITAL},
+		{"pause key", gpucontext.KeyPause, off, vtinput.VK_PAUSE},
+		{"cancel key", gpucontext.KeyCancel, vtinput.LeftCtrlPressed, vtinput.VK_CANCEL},
 	}
 
 	for _, tt := range tests {
@@ -151,6 +153,32 @@ func TestIsGogpuKeypadKey(t *testing.T) {
 	for _, k := range no {
 		if isGogpuKeypadKey(k) {
 			t.Errorf("isGogpuKeypadKey(%v) = true, want false", k)
+		}
+	}
+}
+
+// TestIsGogpuEnhancedNavKey pins the enhanced-key split: the picture viewer
+// pans with the four arrows on gogpu, so they stay plain, while the rest of
+// the navigation cluster is flagged like the Windows console flags it.
+func TestIsGogpuEnhancedNavKey(t *testing.T) {
+	plain := []gpucontext.Key{
+		gpucontext.KeyUp, gpucontext.KeyDown, gpucontext.KeyLeft, gpucontext.KeyRight,
+		gpucontext.KeyNumpad2, gpucontext.KeyNumpad4, gpucontext.KeyNumpad6, gpucontext.KeyNumpad8,
+		gpucontext.KeyA, gpucontext.KeyEnter,
+	}
+	enhanced := []gpucontext.Key{
+		gpucontext.KeyHome, gpucontext.KeyEnd, gpucontext.KeyPageUp, gpucontext.KeyPageDown,
+		gpucontext.KeyInsert, gpucontext.KeyDelete,
+	}
+
+	for _, k := range plain {
+		if isGogpuEnhancedNavKey(k) {
+			t.Errorf("isGogpuEnhancedNavKey(%v) = true, want false", k)
+		}
+	}
+	for _, k := range enhanced {
+		if !isGogpuEnhancedNavKey(k) {
+			t.Errorf("isGogpuEnhancedNavKey(%v) = false, want true", k)
 		}
 	}
 }

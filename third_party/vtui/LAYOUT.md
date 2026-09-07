@@ -3,6 +3,42 @@
 The `vtui` Layout Engine provides a simple, declarative way to arrange UI elements inside dialogs and windows. It eliminates the need for manual coordinate math (e.g., `x = dlg.X1 + 2; y = dlg.Y1 + 5`), making your UI code cleaner, easier to maintain, and less prone to overlapping bugs.
 
 ## Core Concepts
+## Constraint Auto Layout (Discrete Cassowary)
+
+In addition to `VBoxLayout` and `HBoxLayout`, `vtui` provides `AutoLayout`, a declarative constraint layout engine powered by **Discrete Cassowary** (`github.com/unxed/kiwi-go`).
+
+`AutoLayout` combines linear constraint solving (equalities and inequalities with symbolic strengths) with **TUI font-hinting heuristics**:
+* **FreeType-style Autohinting (`ApportionWidths`)**: Distributes integer rounding remainders across columns or groups so that component sizes sum to container totals with **zero character gaps or screen overflows**.
+* **TrueType-style Rule Directives (`SnapWidthToGrid`, `EqualizeWidthsGroup`)**: Enforces double-width grid snapping or equalizes sibling dimensions.
+
+### Usage Example
+
+```go
+dlg := vtui.NewCenteredDialog(50, 15, " User Profile ")
+
+lbl := vtui.NewLabel(0, 0, "Name:", nil)
+edit := vtui.NewEdit(0, 0, 10, "John")
+btnOk := vtui.NewButton(0, 0, "&Save")
+btnCancel := vtui.NewButton(0, 0, "&Cancel")
+
+dlg.AddItem(lbl)
+dlg.AddItem(edit)
+dlg.AddItem(btnOk)
+dlg.AddItem(btnCancel)
+
+// Define auto layout area
+layout := vtui.NewAutoLayout(dlg.X1+2, dlg.Y1+2, 50-4, 15-4)
+
+layout.
+    PinTop(lbl, 0).PinLeft(lbl, 0).
+    StackVertical(1, lbl, edit).
+    FillWidth(edit, 0, 0).
+    PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
+    StackHorizontal(2, btnOk, btnCancel).
+    CenterHorizontalGroup(btnOk, btnCancel)
+
+layout.Apply()
+```
 
 The engine is based on two primary containers:
 1. **`VBoxLayout`**: Stacks elements vertically (top to bottom).

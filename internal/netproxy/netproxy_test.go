@@ -59,7 +59,9 @@ func TestHTTPClientGoesThroughTheProxyWithAuth(t *testing.T) {
 	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Proxy-Authorization")
 		gotHost = r.Host
-		w.Write([]byte("through the proxy"))
+		if _, err := w.Write([]byte("through the proxy")); err != nil {
+			t.Errorf("write proxy response: %v", err)
+		}
 	}))
 	defer proxySrv.Close()
 
@@ -71,7 +73,9 @@ func TestHTTPClientGoesThroughTheProxyWithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request through the proxy failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close() // response body cleanup errors are uninteresting
+	}()
 	body, _ := io.ReadAll(resp.Body)
 
 	if string(body) != "through the proxy" {
@@ -92,7 +96,7 @@ func TestHTTPClientGoesThroughTheProxyWithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anonymous request through the proxy failed: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close() // response body cleanup errors are uninteresting
 	if gotAuth != "" {
 		t.Errorf("unexpected Proxy-Authorization: %q", gotAuth)
 	}
@@ -103,7 +107,9 @@ func TestDirectModeIgnoresTheEnvironment(t *testing.T) {
 	t.Setenv("http_proxy", "http://127.0.0.1:1/")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("direct"))
+		if _, err := w.Write([]byte("direct")); err != nil {
+			t.Errorf("write direct response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -111,7 +117,9 @@ func TestDirectModeIgnoresTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("direct mode should have bypassed the env proxy: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close() // response body cleanup errors are uninteresting
+	}()
 	if body, _ := io.ReadAll(resp.Body); string(body) != "direct" {
 		t.Errorf("body: %q", body)
 	}
@@ -134,29 +142,43 @@ func fakeConnectProxy(t *testing.T, wantAuth string, target string) net.Listener
 				br := bufio.NewReader(c)
 				req, err := http.ReadRequest(br)
 				if err != nil {
-					c.Close()
+					_ = c.Close() // connection cleanup errors are uninteresting
 					return
 				}
 				if req.Method != http.MethodConnect || (wantAuth != "" && req.Header.Get("Proxy-Authorization") != wantAuth) {
-					io.WriteString(c, "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n")
-					c.Close()
+					if _, err := io.WriteString(c, "HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n"); err != nil {
+						_ = c.Close() // connection cleanup errors are uninteresting
+						return
+					}
+					_ = c.Close() // connection cleanup errors are uninteresting
 					return
 				}
 				up, err := net.Dial("tcp", target)
 				if err != nil {
-					io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-					c.Close()
+					if _, err := io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"); err != nil {
+						_ = c.Close() // connection cleanup errors are uninteresting
+						return
+					}
+					_ = c.Close() // connection cleanup errors are uninteresting
 					return
 				}
-				io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n")
-				go io.Copy(up, c)
-				io.Copy(c, up)
-				up.Close()
-				c.Close()
+				if _, err := io.WriteString(c, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+					_ = up.Close() // connection cleanup errors are uninteresting
+					_ = c.Close()  // connection cleanup errors are uninteresting
+					return
+				}
+				go func() {
+					_, _ = io.Copy(up, c) // tunnel shutdown errors are uninteresting
+				}()
+				_, _ = io.Copy(c, up) // tunnel shutdown errors are uninteresting
+				_ = up.Close()        // connection cleanup errors are uninteresting
+				_ = c.Close()         // connection cleanup errors are uninteresting
 			}(c)
 		}
 	}()
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		_ = ln.Close() // listener cleanup errors are uninteresting
+	})
 	return ln
 }
 
@@ -167,15 +189,20 @@ func TestDialContextTunnelsRawTCPThroughCONNECT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer site.Close()
+	defer func() {
+		_ = site.Close() // listener cleanup errors are uninteresting
+	}()
 	go func() {
 		for {
 			c, err := site.Accept()
 			if err != nil {
 				return
 			}
-			io.WriteString(c, "220 hello\r\n")
-			c.Close()
+			if _, err := io.WriteString(c, "220 hello\r\n"); err != nil {
+				_ = c.Close() // connection cleanup errors are uninteresting
+				continue
+			}
+			_ = c.Close() // connection cleanup errors are uninteresting
 		}
 	}()
 
@@ -191,7 +218,9 @@ func TestDialContextTunnelsRawTCPThroughCONNECT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CONNECT tunnel failed: %v", err)
 	}
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close() // connection cleanup errors are uninteresting
+	}()
 	greeting, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil || !strings.HasPrefix(greeting, "220 hello") {
 		t.Errorf("greeting through the tunnel: %q, %v", greeting, err)

@@ -1,7 +1,7 @@
 debug*log
 .DS_Store
 plugins/dummy/f4-dummy-plugin
-f4
+/f4
 f4.exe
 *.exe~
 f4-gui.exe
@@ -30,3 +30,12 @@ afailed.*
 .qa-gallery-modes/
 __pycache__/
 *.py[cod]
+
+# tools/ttytest scratch: the sandbox HOME and a locally built binary
+tools/ttytest/sandbox/
+tools/ttytest/f4
+tools/ttytest/__pycache__/
+
+# сборки standalone-пробника
+tools/conptyreconcile/conptyreconcile
+tools/conptyreconcile/conptyreconcile.exe

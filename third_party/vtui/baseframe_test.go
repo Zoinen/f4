@@ -13,3 +13,13 @@ func TestBaseFrame_OnResult(t *testing.T) {
 		t.Errorf("OnResult callback failed, expected 42, got %d", result)
 	}
 }
+func TestBaseFrame_SetBusy(t *testing.T) {
+	bf := &BaseFrame{}
+	if bf.IsBusy() {
+		t.Fatal("expected IsBusy() to be false initially")
+	}
+	bf.SetBusy(true)
+	if !bf.IsBusy() {
+		t.Fatal("expected IsBusy() to be true after SetBusy(true)")
+	}
+}

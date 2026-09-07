@@ -71,7 +71,7 @@ func (b *yandexDiskBackend) shareResource(ctx context.Context, location string) 
 	if err != nil {
 		return yandexShareResource{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// A public URL is a bearer-like credential. Do not include an arbitrary
 		// provider response body in an error which can reach logs or history.
@@ -94,7 +94,7 @@ func (b *yandexDiskBackend) shareMutation(ctx context.Context, location, endpoin
 	if err != nil {
 		return &vfs.UnknownOperationStateError{Operation: operation, Err: err}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Response-body cleanup is best effort.
 	// Yandex documents publish and unpublish as synchronous operations which
 	// return 200 and a metadata Link. The Link is deliberately ignored: it is
 	// not the public URL, and following an API-provided URL would add an SSRF and

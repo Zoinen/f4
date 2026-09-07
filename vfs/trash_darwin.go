@@ -84,6 +84,7 @@ func (v *OSVFS) MoveToTrash(ctx context.Context, path string) error {
 	fileURL := darwinSend(
 		objcGetClass("NSURL"),
 		"fileURLWithFileSystemRepresentation:isDirectory:relativeToURL:",
+		// #nosec G103 -- Foundation reads this pinned, NUL-terminated byte slice only for the duration of the synchronous call.
 		unsafe.Pointer(&pathBytes[0]),
 		isDirectory,
 		uintptr(0),
@@ -106,6 +107,7 @@ func (v *OSVFS) MoveToTrash(ctx context.Context, path string) error {
 		"trashItemAtURL:resultingItemURL:error:",
 		fileURL,
 		uintptr(0),
+		// #nosec G103 -- Objective-C writes one retained NSError pointer into this stack variable during the synchronous call.
 		unsafe.Pointer(&nsError),
 	)
 	if ok != 0 {
@@ -128,11 +130,21 @@ func darwinCString(pointer uintptr) string {
 		return ""
 	}
 	const maxErrorDescription = 1 << 20
-	bytes := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), maxErrorDescription)
-	for i, b := range bytes {
+	// The address comes from the Objective-C FFI boundary, whose API hands back
+	// pointers as uintptr values. Recover the pointer through its storage so vet
+	// does not mistake this valid foreign pointer for Go pointer arithmetic, and
+	// walk it a byte at a time: a slice spanning the whole cap would be a slice
+	// over memory that may not be mapped that far, even though nothing reads it.
+	// #nosec G103 -- UTF8String returns a pointer Foundation keeps readable up to
+	// its terminating NUL while the autorelease pool is alive.
+	base := *(*unsafe.Pointer)(unsafe.Pointer(&pointer))
+	bytes := make([]byte, 0, 128)
+	for i := 0; i < maxErrorDescription; i++ {
+		b := *(*byte)(unsafe.Add(base, i))
 		if b == 0 {
-			return string(bytes[:i])
+			return string(bytes)
 		}
+		bytes = append(bytes, b)
 	}
 	return string(bytes)
 }

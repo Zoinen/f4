@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !arm
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
 
 package vtui
 
@@ -325,6 +325,9 @@ func (g *ebitenGame) Update() error {
 			VirtualKeyCode:  vk,
 			Char:            h.charForVK(vk),
 			ControlKeyState: mods,
+		}
+		if isEbitenEnhancedNavKey(k) {
+			ev.ControlKeyState |= vtinput.EnhancedKey
 		}
 		DebugLog("EBITEN_HOST: key vk=%d char=%q mods=%d held=%d", vk, ev.Char, mods, d)
 

@@ -183,15 +183,15 @@ func (r *providerTempReader) detach() (string, int64, error) {
 // known Content-Length. Close is the commit point and must propagate the
 // remote upload error to the editor/file-operation caller.
 type providerSpoolWriter struct {
-	ctx       context.Context
-	file      *os.File
-	path      string
-	name      string
-	upload    func(context.Context, *os.File, int64) error
-	mu        sync.Mutex
-	closed    bool
-	closeDone chan struct{}
-	writeErr  error
+	ctx            context.Context
+	file           *os.File
+	path           string
+	upload         func(context.Context, *os.File, int64) error
+	uploadProgress *providerUploadProgress
+	mu             sync.Mutex
+	closed         bool
+	closeDone      chan struct{}
+	writeErr       error
 }
 
 func (*providerSpoolWriter) TransferProgressManaged() bool { return true }
@@ -206,7 +206,14 @@ func newProviderSpoolWriter(ctx context.Context, name string, upload func(contex
 		_ = os.Remove(f.Name())
 		return nil, err
 	}
-	return &providerSpoolWriter{ctx: ctx, file: f, path: f.Name(), name: name, upload: upload, closeDone: make(chan struct{})}, nil
+	return &providerSpoolWriter{
+		ctx:            ctx,
+		file:           f,
+		path:           f.Name(),
+		upload:         upload,
+		uploadProgress: newProviderUploadProgress(ctx, name),
+		closeDone:      make(chan struct{}),
+	}, nil
 }
 
 func (w *providerSpoolWriter) Write(p []byte) (int, error) {
@@ -282,9 +289,18 @@ func (w *providerSpoolWriter) Abort() error {
 	return err
 }
 
-func (w *providerSpoolWriter) finishClose() error {
-	defer func() { _ = os.Remove(w.path) }()
-	defer func() { _ = w.file.Close() }()
+func (w *providerSpoolWriter) finishClose() (result error) {
+	defer func() {
+		closeErr := w.file.Close()
+		removeErr := os.Remove(w.path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		// The upload already committed on success, so deliberately ignore local cleanup errors.
+		if cleanupErr := errors.Join(closeErr, removeErr); result != nil && cleanupErr != nil {
+			result = errors.Join(result, cleanupErr)
+		}
+	}()
 	w.mu.Lock()
 	writeErr := w.writeErr
 	w.mu.Unlock()
@@ -304,22 +320,66 @@ func (w *providerSpoolWriter) finishClose() error {
 	if _, err := w.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if reporter, ok := w.ctx.Value(vfs.ReporterKey).(vfs.TaskReporter); ok {
-		reporter.UpdateTransfer("Uploading", w.name, 0, "", 0, "")
+	w.uploadProgress.update(0)
+	uploadCtx := w.ctx
+	if w.uploadProgress != nil {
+		uploadCtx = context.WithValue(uploadCtx, providerUploadProgressContextKey{}, w.uploadProgress)
 	}
-	if err := w.upload(w.ctx, w.file, st.Size()); err != nil {
+	if err := w.upload(uploadCtx, w.file, st.Size()); err != nil {
 		return err
 	}
-	if reporter, ok := w.ctx.Value(vfs.ReporterKey).(vfs.TaskReporter); ok {
-		reporter.UpdateTransfer("Uploading", w.name, 100, "", 100, "")
-	}
+	w.uploadProgress.complete()
 	return nil
+}
+
+type providerUploadProgressContextKey struct{}
+
+type providerUploadProgress struct {
+	mu        sync.Mutex
+	reporter  vfs.TaskReporter
+	action    string
+	name      string
+	completed bool
+}
+
+func newProviderUploadProgress(ctx context.Context, name string) *providerUploadProgress {
+	reporter, ok := ctx.Value(vfs.ReporterKey).(vfs.TaskReporter)
+	if !ok || reporter == nil {
+		return nil
+	}
+	return &providerUploadProgress{reporter: reporter, action: "Uploading", name: name}
+}
+
+func (p *providerUploadProgress) update(percent int) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.completed {
+		return
+	}
+	p.reporter.UpdateTransfer(p.action, p.name, percent, "", percent, "")
+}
+
+func (p *providerUploadProgress) complete() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.completed {
+		return
+	}
+	p.completed = true
+	p.reporter.UpdateTransfer(p.action, p.name, 100, "", 100, "")
 }
 
 type providerProgressReader struct {
 	r        io.Reader
 	ctx      context.Context
 	reporter vfs.TaskReporter
+	progress *providerUploadProgress
 	action   string
 	name     string
 	total    int64
@@ -373,7 +433,11 @@ func (r *providerProgressReader) Read(p []byte) (int, error) {
 		if action == "" {
 			action = "Uploading"
 		}
-		r.reporter.UpdateTransfer(action, r.name, 0, "", 0, "")
+		if r.progress != nil {
+			r.progress.update(0)
+		} else {
+			r.reporter.UpdateTransfer(action, r.name, 0, "", 0, "")
+		}
 		r.started = true
 	}
 	n, err := r.r.Read(p)
@@ -386,11 +450,15 @@ func (r *providerProgressReader) Read(p []byte) (int, error) {
 		if pct >= 100 {
 			pct = 99
 		}
-		action := r.action
-		if action == "" {
-			action = "Uploading"
+		if r.progress != nil {
+			r.progress.update(pct)
+		} else {
+			action := r.action
+			if action == "" {
+				action = "Uploading"
+			}
+			r.reporter.UpdateTransfer(action, r.name, pct, "", pct, "")
 		}
-		r.reporter.UpdateTransfer(action, r.name, pct, "", pct, "")
 	}
 	return n, err
 }

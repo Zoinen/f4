@@ -201,6 +201,8 @@ endif()
 
 set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ApplicationIcon.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ApplicationIcon.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtShellController.cpp"
@@ -669,6 +671,29 @@ if(BUILD_TESTING)
   add_test(NAME PanelIntentControllerTest COMMAND PanelIntentControllerTests)
 
   if(APPLE)
+    add_executable(MacApplicationIconTests
+      tests/MacApplicationIconTests.mm
+      src/F4ApplicationIcon.h
+      src/F4ApplicationIcon.cpp
+    )
+    target_include_directories(MacApplicationIconTests PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(MacApplicationIconTests PRIVATE
+      Qt6::Core
+      Qt6::Gui
+      Qt6::Test
+      "-framework AppKit"
+    )
+    target_compile_definitions(MacApplicationIconTests PRIVATE
+      F4_MACOS_APP_BUNDLE="$<TARGET_FILE_DIR:f4-qt-host>/f4-qt-host.app"
+    )
+    add_dependencies(MacApplicationIconTests f4-qt-host)
+    add_test(NAME MacApplicationIconTest COMMAND MacApplicationIconTests)
+    set_tests_properties(MacApplicationIconTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    )
+
     add_executable(MacApplicationMenuTests
       tests/MacApplicationMenuTests.mm
       src/MacApplicationMenu.h
@@ -718,8 +743,8 @@ if(BUILD_TESTING)
     )
     qt6_add_resources(${target} ${target}_f4_app_icon
       PREFIX "/F4QtHost/icons/app"
-      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon"
-      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../assets/icon/f4.svg"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon"
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/f4.svg"
     )
   endfunction()
 

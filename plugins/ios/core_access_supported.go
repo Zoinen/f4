@@ -327,21 +327,23 @@ func developerImagePath(device goios.DeviceEntry, version *semver.Version) (stri
 }
 
 func validateDeveloperImagePath(imagePath string, version *semver.Version) error {
+	// #nosec G703 -- imagePath is either an explicit user-configured local path or a fixed path returned by the bounded developer-image cache.
 	info, err := os.Stat(imagePath)
 	if err != nil {
 		return fmt.Errorf("invalid Developer Disk Image path %q: %w", imagePath, err)
 	}
 	if version.Major() >= 17 {
 		if !info.IsDir() {
-			return fmt.Errorf("Developer Disk Image path %q must be a Restore directory", imagePath)
+			return fmt.Errorf("developer disk image path %q must be a Restore directory", imagePath)
 		}
+		// #nosec G703 -- the child name is fixed and imagePath was selected from the user's local configuration/cache above.
 		if _, err := os.Stat(filepath.Join(imagePath, "BuildManifest.plist")); err != nil {
-			return fmt.Errorf("Developer Disk Image path %q has no BuildManifest.plist: %w", imagePath, err)
+			return fmt.Errorf("developer disk image path %q has no BuildManifest.plist: %w", imagePath, err)
 		}
 		return nil
 	}
 	if info.IsDir() || !strings.EqualFold(filepath.Ext(imagePath), ".dmg") {
-		return fmt.Errorf("Developer Disk Image path %q must be a .dmg file", imagePath)
+		return fmt.Errorf("developer disk image path %q must be a .dmg file", imagePath)
 	}
 	return nil
 }

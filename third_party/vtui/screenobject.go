@@ -16,13 +16,9 @@ type CommandHandler interface {
 // ScreenObject is the base class for all visible UI elements,
 // analog of ScreenObject from scrobj.hpp.
 type ScreenObject struct {
-	X1, Y1, X2, Y2 int
-	owner          CommandHandler
-	visible        bool
-	// visibilityExplicit distinguishes a widget which has not reached its
-	// first Show yet from one which the application deliberately hid.  Both
-	// states historically share visible=false, but semantic frontends can be
-	// asked to present a newly pushed window before the first cell render.
+	X1, Y1, X2, Y2     int
+	owner              CommandHandler
+	visible            bool
 	visibilityExplicit bool
 	focused            bool
 	canFocus           bool
@@ -36,6 +32,24 @@ type ScreenObject struct {
 	text               string
 	cleanText          string
 	hotkeyPos          int
+	align              string
+	stretch            int
+	minW               int
+	minH               int
+	maxW               int
+	maxH               int
+	sizeSpecH          *SizeSpec
+	sizeSpecV          *SizeSpec
+}
+
+// SetID sets the stable identifier for the element.
+func (so *ScreenObject) SetID(id string) {
+	so.Id = id
+}
+
+// ID returns the stable identifier for the element.
+func (so *ScreenObject) ID() string {
+	return so.Id
 }
 
 // GetHotkey returns the assigned hotkey rune for the object.
@@ -309,7 +323,15 @@ func (so *ScreenObject) FireAction(callback func(), args any) bool {
 		return true
 	}
 	if so.Command != 0 {
-		return so.HandleCommand(so.Command, args)
+		if args == nil && so.ID() != "" {
+			args = so.ID()
+		}
+		if so.HandleCommand(so.Command, args) {
+			return true
+		}
+		if FrameManager != nil {
+			return FrameManager.EmitCommand(so.Command, args)
+		}
 	}
 	return false
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/vfs"
@@ -21,6 +22,7 @@ type NetFoxConfig struct {
 	Port     string            `json:"Port"`
 	User     string            `json:"User"`
 	Pass     string            `json:"Pass"`
+	KeyPath  string            `json:"KeyPath,omitempty"`
 	Timeout  string            `json:"Timeout,omitempty"`
 	Codepage string            `json:"Codepage,omitempty"`
 	Options  map[string]string `json:"Options,omitempty"`
@@ -53,24 +55,27 @@ type NetFoxVFS struct {
 }
 
 func NewNetFoxVFS(dbPath string) *NetFoxVFS {
-	os.MkdirAll(filepath.Dir(dbPath), 0755)
+	_ = os.MkdirAll(filepath.Dir(dbPath), 0700)
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		os.WriteFile(dbPath, []byte("{}"), 0644)
+		_ = writeNetFoxFile(dbPath, []byte("{}\n"))
 	}
 	return &NetFoxVFS{path: dbPath}
 }
 
-func (v *NetFoxVFS) getConfigs() map[string]NetFoxConfig {
-	v.mu.Lock()
-	defer v.mu.Unlock()
+func (v *NetFoxVFS) readConfigsLocked() (map[string]NetFoxConfig, error) {
 	data, err := os.ReadFile(v.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return make(map[string]NetFoxConfig), nil
+	}
 	if err != nil {
-		return make(map[string]NetFoxConfig)
+		return nil, fmt.Errorf("netfox: read connections: %w", err)
 	}
 	var configs map[string]NetFoxConfig
-	json.Unmarshal(data, &configs)
+	if err := json.Unmarshal(data, &configs); err != nil {
+		return nil, fmt.Errorf("netfox: damaged connections file: %w", err)
+	}
 	if configs == nil {
-		configs = make(map[string]NetFoxConfig)
+		return nil, errors.New("netfox: connections file is not a JSON object")
 	}
 
 	// Transparently decrypt passwords
@@ -89,14 +94,20 @@ func (v *NetFoxVFS) getConfigs() map[string]NetFoxConfig {
 			configs[k] = cfg
 		}
 	}
+	return configs, nil
+}
+
+func (v *NetFoxVFS) getConfigs() map[string]NetFoxConfig {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	configs, err := v.readConfigsLocked()
+	if err != nil {
+		return make(map[string]NetFoxConfig)
+	}
 	return configs
 }
 
-func (v *NetFoxVFS) saveConfigs(configs map[string]NetFoxConfig) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	os.MkdirAll(filepath.Dir(v.path), 0755)
-
+func saveNetFoxConfigs(configs map[string]NetFoxConfig) ([]byte, error) {
 	// Encrypt passwords before saving
 	encodedConfigs := make(map[string]NetFoxConfig)
 	for k, cfg := range configs {
@@ -109,14 +120,85 @@ func (v *NetFoxVFS) saveConfigs(configs map[string]NetFoxConfig) {
 		encodedConfigs[k] = cfg
 	}
 
-	data, _ := json.MarshalIndent(encodedConfigs, "", "  ")
-	os.WriteFile(v.path, data, 0644)
+	// Password fields have already been obfuscated above; this is the
+	// persistence boundary for the encoded representation.
+	data, err := json.MarshalIndent(encodedConfigs, "", "  ") // #nosec G117 -- secrets are obfuscated before serialization.
+	if err != nil {
+		return nil, fmt.Errorf("netfox: encode connections: %w", err)
+	}
+	return append(data, '\n'), nil
 }
 
-func (v *NetFoxVFS) SaveConfig(name string, cfg NetFoxConfig) {
-	configs := v.getConfigs()
-	configs[name] = cfg
-	v.saveConfigs(configs)
+func writeNetFoxFile(path string, data []byte) (returnErr error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("netfox: create connections directory: %w", err)
+	}
+	f, err := os.CreateTemp(dir, ".netfox-*.tmp")
+	if err != nil {
+		return fmt.Errorf("netfox: create temporary connections file: %w", err)
+	}
+	tmpPath := f.Name()
+	closed := false
+	defer func() {
+		if !closed {
+			if closeErr := f.Close(); returnErr == nil && closeErr != nil {
+				returnErr = closeErr
+			}
+		}
+		if returnErr != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	for len(data) > 0 {
+		written, err := f.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		closed = true
+		return err
+	}
+	closed = true
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (v *NetFoxVFS) updateConfigs(mutate func(map[string]NetFoxConfig) error) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	configs, err := v.readConfigsLocked()
+	if err != nil {
+		return err
+	}
+	if err := mutate(configs); err != nil {
+		return err
+	}
+	data, err := saveNetFoxConfigs(configs)
+	if err != nil {
+		return err
+	}
+	return writeNetFoxFile(v.path, data)
+}
+
+func (v *NetFoxVFS) SaveConfig(name string, cfg NetFoxConfig) error {
+	return v.updateConfigs(func(configs map[string]NetFoxConfig) error {
+		configs[name] = cfg
+		return nil
+	})
 }
 
 func (v *NetFoxVFS) IsAtRoot() bool         { return true }
@@ -163,22 +245,22 @@ func (v *NetFoxVFS) Remove(ctx context.Context, p string) error {
 	if name == "<Add connection>" {
 		return fmt.Errorf("cannot remove <Add connection>")
 	}
-	configs := v.getConfigs()
-	delete(configs, name)
-	v.saveConfigs(configs)
-	return nil
+	return v.updateConfigs(func(configs map[string]NetFoxConfig) error {
+		delete(configs, name)
+		return nil
+	})
 }
 
 func (v *NetFoxVFS) Rename(ctx context.Context, old, new string) error {
 	oldName := v.Base(old)
 	newName := v.Base(new)
-	configs := v.getConfigs()
-	if cfg, ok := configs[oldName]; ok {
-		configs[newName] = cfg
-		delete(configs, oldName)
-		v.saveConfigs(configs)
-	}
-	return nil
+	return v.updateConfigs(func(configs map[string]NetFoxConfig) error {
+		if cfg, ok := configs[oldName]; ok {
+			configs[newName] = cfg
+			delete(configs, oldName)
+		}
+		return nil
+	})
 }
 
 func (v *NetFoxVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
@@ -199,7 +281,7 @@ func (b *bufferReadAtCloser) Read(ctx context.Context, p []byte) (int, error) {
 func (b *bufferReadAtCloser) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	return b.Reader.ReadAt(p, off)
 }
-func (b *bufferReadAtCloser) Size() int64 { return int64(b.Reader.Len()) }
+func (b *bufferReadAtCloser) Size() int64 { return int64(b.Len()) }
 
 func (v *NetFoxVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
 	name := v.Base(p)
@@ -211,6 +293,7 @@ func (v *NetFoxVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error
 	if !ok {
 		return nil, os.ErrNotExist
 	}
+	// #nosec G117 -- this user-opened virtual connection file intentionally exposes the owning user's editable connection fields.
 	data, _ := json.MarshalIndent(cfg, "", "  ")
 	return &bufferReadAtCloser{Reader: bytes.NewReader(data)}, nil
 }
@@ -224,11 +307,13 @@ type netfoxWriter struct {
 func (w *netfoxWriter) Write(p []byte) (int, error) { return w.buf.Write(p) }
 func (w *netfoxWriter) Close() error {
 	var cfg NetFoxConfig
-	json.Unmarshal(w.buf.Bytes(), &cfg)
-	configs := w.v.getConfigs()
-	configs[w.name] = cfg
-	w.v.saveConfigs(configs)
-	return nil
+	if err := json.Unmarshal(w.buf.Bytes(), &cfg); err != nil {
+		return fmt.Errorf("netfox: invalid connection JSON: %w", err)
+	}
+	return w.v.updateConfigs(func(configs map[string]NetFoxConfig) error {
+		configs[w.name] = cfg
+		return nil
+	})
 }
 func (v *NetFoxVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
 	return &netfoxWriter{v: v, name: v.Base(p)}, nil

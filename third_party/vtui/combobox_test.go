@@ -137,6 +137,37 @@ func TestComboBox_SemanticOpenTransfersGroupFocus(t *testing.T) {
 	}
 }
 
+func TestComboBox_MouseClickAnywhereOpens(t *testing.T) {
+	for _, dropdownOnly := range []bool{false, true} {
+		SetDefaultPalette()
+		FrameManager.Init(NewSilentScreenBuf())
+
+		cb := NewComboBox(10, 3, 20, []string{"A", "B"})
+		cb.DropdownOnly = dropdownOnly
+
+		// The click is in the edit portion, not on the one-cell arrow.
+		handled := cb.ProcessMouse(&vtinput.InputEvent{
+			Type:        vtinput.MouseEventType,
+			KeyDown:     true,
+			ButtonState: vtinput.FromLeft1stButtonPressed,
+			MouseX:      12,
+			MouseY:      3,
+		})
+		if !handled {
+			t.Fatalf("clicking the ComboBox edit portion should be handled (DropdownOnly=%v)", dropdownOnly)
+		}
+		cb.ProcessMouse(&vtinput.InputEvent{
+			Type:        vtinput.MouseEventType,
+			MouseX:      12,
+			MouseY:      3,
+			KeyDown:     false,
+			ButtonState: 0,
+		})
+		if top := FrameManager.GetTopFrame(); top == nil || top.GetType() != TypeMenu {
+			t.Fatalf("clicking the ComboBox edit portion should open its menu (DropdownOnly=%v)", dropdownOnly)
+		}
+	}
+}
 func TestComboBox_OpenFlip(t *testing.T) {
 	SetDefaultPalette()
 	scr := NewSilentScreenBuf()

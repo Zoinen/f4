@@ -36,5 +36,12 @@ func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path stri
 }
 
 func (p *ArchiveProvider) Open(ctx context.Context, parent vfs.VFS, path string) (vfs.VFS, error) {
-	return NewArchiveVFSContext(ctx, parent, path)
+	v, err := NewArchiveVFSContext(ctx, parent, path)
+	if err != nil {
+		// Return an untyped nil so the interface itself is nil: a typed
+		// (*ArchiveVFS)(nil) would still compare != nil to callers, and a
+		// later Close() on it panics (nil dereference in v.mu.Lock()).
+		return nil, err
+	}
+	return v, nil
 }

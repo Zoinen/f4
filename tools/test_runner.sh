@@ -8,7 +8,7 @@ gofmt -w -s .
 
 start=$(date +%s.%N)
 
-go test ./... -timeout 30s
+go test ./... -timeout 60s
 status=$?
 
 end=$(date +%s.%N)

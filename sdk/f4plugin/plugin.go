@@ -129,6 +129,55 @@ type PluginRunCommandRequest struct {
 	ID string
 }
 
+// PanelState and PanelContext are the transport-safe snapshot delivered to a
+// panel plugin. They intentionally contain no host pointers or VFS handles.
+type PanelState struct {
+	Side          int
+	Active        bool
+	Path          string
+	SelectedName  string
+	SelectedNames []string
+}
+
+type PanelContext struct {
+	Side       int
+	ActiveSide int
+	Bounds     [4]int
+	Current    PanelState
+	Other      PanelState
+}
+
+type PanelDescriptor struct {
+	ID          string
+	Title       string
+	Description string
+}
+
+type PanelEventRequest struct {
+	ID      string
+	Kind    string
+	Event   vtinput.InputEvent
+	Context PanelContext
+}
+
+type PanelEventResponse struct {
+	Handled bool
+	// Document is UTF-8 JSON in the vtui .vui format. An empty value keeps the
+	// current document, which is useful for events that only need consuming.
+	Document []byte
+	Close    bool
+}
+
+// PanelProvider is an optional extension for plugins that own a full panel
+// surface. The host sends raw input and a fresh context snapshot; the plugin
+// may return a new .vui document after each event.
+type PanelProvider interface {
+	PanelDescriptors() []PanelDescriptor
+	OpenPanel(id string, context PanelContext) ([]byte, error)
+	HandlePanelEvent(request PanelEventRequest) (PanelEventResponse, error)
+	ClosePanel(id string) error
+}
+
 // CommandProvider is an optional extension. Existing Plugin implementations
 // remain source-compatible; implementations that opt in get commands in f4's
 // plugin menus and command palette.
@@ -161,14 +210,27 @@ type Plugin interface {
 // Run attaches the plugin to stdin/stdout and starts the RPC server loop.
 func Run(p Plugin) {
 	sess := f4rpc.NewSession(os.Stdin, os.Stdout)
+	sess.OnError = func(err error) {
+		_, _ = fmt.Fprintf(os.Stderr, "f4rpc: %v\n", err)
+	}
 	host := &Host{sess: sess}
 
 	sess.Register("Plugin.Init", func(data msgpack.RawMessage) (any, error) {
 		drives, err := p.Init(host)
 		if commands, ok := p.(CommandProvider); ok {
-			return map[string]any{
+			response := map[string]any{
 				"Drives":   drives,
 				"Commands": commands.PluginCommands(),
+			}
+			if panels, ok := p.(PanelProvider); ok {
+				response["Panels"] = panels.PanelDescriptors()
+			}
+			return response, err
+		}
+		if panels, ok := p.(PanelProvider); ok {
+			return map[string]any{
+				"Drives": drives,
+				"Panels": panels.PanelDescriptors(),
 			}, err
 		}
 		// Preserve the original wire shape unless the plugin opts into the
@@ -186,6 +248,49 @@ func Run(p Plugin) {
 			return nil, err
 		}
 		return nil, commands.RunPluginCommand(request.ID)
+	})
+
+	sess.Register("Plugin.OpenPanel", func(data msgpack.RawMessage) (any, error) {
+		panels, ok := p.(PanelProvider)
+		if !ok {
+			return nil, fmt.Errorf("plugin does not implement PanelProvider")
+		}
+		var request struct {
+			ID      string
+			Context PanelContext
+		}
+		if err := msgpack.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		document, err := panels.OpenPanel(request.ID, request.Context)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"Document": document}, nil
+	})
+
+	sess.Register("Plugin.PanelEvent", func(data msgpack.RawMessage) (any, error) {
+		panels, ok := p.(PanelProvider)
+		if !ok {
+			return nil, fmt.Errorf("plugin does not implement PanelProvider")
+		}
+		var request PanelEventRequest
+		if err := msgpack.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		return panels.HandlePanelEvent(request)
+	})
+
+	sess.Register("Plugin.ClosePanel", func(data msgpack.RawMessage) (any, error) {
+		panels, ok := p.(PanelProvider)
+		if !ok {
+			return nil, fmt.Errorf("plugin does not implement PanelProvider")
+		}
+		var request struct{ ID string }
+		if err := msgpack.Unmarshal(data, &request); err != nil {
+			return nil, err
+		}
+		return nil, panels.ClosePanel(request.ID)
 	})
 
 	sess.Register("VFS.ReadDir", func(data msgpack.RawMessage) (any, error) {

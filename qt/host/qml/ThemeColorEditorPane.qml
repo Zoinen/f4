@@ -573,7 +573,11 @@ ColumnLayout {
     RowLayout {
         id: themeRgbHexRow
         objectName: "themeRgbHexRow"
-        Layout.fillWidth: true
+        Layout.fillWidth: false
+        Layout.preferredWidth: hostWindow.snapPx(320)
+        Layout.minimumWidth: hostWindow.snapPx(320)
+        Layout.maximumWidth: hostWindow.snapPx(320)
+        width: hostWindow.snapPx(320)
         Layout.preferredHeight: hostWindow.snapPx(20)
         spacing: hostWindow.snapPx(6)
         transform: Translate {

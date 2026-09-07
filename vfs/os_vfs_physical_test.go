@@ -58,7 +58,7 @@ func TestFillPhysicalSize_RealFile(t *testing.T) {
 	if _, err := rand.Read(buf); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, buf, 0644); err != nil {
+	if err := os.WriteFile(path, buf, 0600); err != nil {
 		t.Fatal(err)
 	}
 	v := NewOSVFS(tmp)

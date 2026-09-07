@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec
+
+  settings:
+    staticcheck:
+      # ST1005 is cosmetic: it keeps wrapped errors from reading with a capital
+      # mid-sentence. Both findings are the product name "Far Manager 3", and
+      # error strings here routinely become dialog text the user reads.
+      checks: ["all", "-ST1000", "-ST1003", "-ST1005", "-ST1016", "-ST1020", "-ST1021", "-ST1022"]
+
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - legacy

@@ -321,22 +321,22 @@ func (d *connectDialer) DialContext(ctx context.Context, network, addr string) (
 		req.Header.Set("Proxy-Authorization", "Basic "+cred)
 	}
 	if err := req.Write(conn); err != nil {
-		conn.Close()
+		_ = conn.Close() // Preserve the CONNECT write failure.
 		return nil, fmt.Errorf("netproxy: CONNECT to %s failed: %w", addr, err)
 	}
 
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close() // Preserve the response-read failure.
 		return nil, fmt.Errorf("netproxy: proxy %s gave no answer: %w", d.addr, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Only a refusal has a body worth looking at; on success the rest
 		// of the stream is the tunnel and must not be touched.
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
-		conn.Close()
+		_ = resp.Body.Close() // Response-body cleanup is best effort.
+		_ = conn.Close()      // The proxy refusal remains authoritative.
 		if resp.StatusCode == http.StatusProxyAuthRequired {
 			return nil, fmt.Errorf("netproxy: proxy %s wants credentials (407)", d.addr)
 		}

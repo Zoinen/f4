@@ -888,6 +888,98 @@ func TestTable_QuickSearchFuzzyRanking(t *testing.T) {
 	}
 }
 
+func TestTable_QuickSearchExactOnHit(t *testing.T) {
+	SetDefaultPalette()
+
+	cols := []TableColumn{{Title: "Key", Width: 10}}
+	tbl := NewTable(0, 0, 11, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SearchExactOnHit = true
+	tbl.SetRows([]TableRow{
+		mockRow{"CtrlUp", ""},
+		mockRow{"CtrlA", ""},
+		mockRow{"CtrlAltA", ""},
+		mockRow{"CtrlPgUp", ""},
+	})
+
+	typeSearch(tbl, "ctrla")
+	if tbl.ItemCount != 1 {
+		t.Fatalf("expected only the exact key match, got %d rows", tbl.ItemCount)
+	}
+	if got := tbl.Rows[tbl.RowAt(0)].(mockRow).col1; got != "CtrlA" {
+		t.Fatalf("exact match = %q, want CtrlA", got)
+	}
+
+	tbl.SetSearchText("ctrlx")
+	if tbl.ItemCount == 0 {
+		t.Fatal("fuzzy matches should remain available when no exact result exists")
+	}
+}
+
+func TestTable_QuickSearchExactRanksFirst(t *testing.T) {
+	SetDefaultPalette()
+
+	cols := []TableColumn{{Title: "C1", Width: 10}}
+	tbl := NewTable(0, 0, 11, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SetRows([]TableRow{
+		mockRow{"файлы", ""}, // exact substring at 0, but longer than the needle
+		mockRow{"файл", ""},  // full-cell equality, must win despite the position
+	})
+
+	typeSearch(tbl, "файл") // non-ASCII: guards against rune/byte unit mixups
+
+	if tbl.ItemCount != 2 {
+		t.Fatalf("expected 2 rows, got %d", tbl.ItemCount)
+	}
+	if got := tbl.Rows[tbl.RowAt(0)].(mockRow).col1; got != "файл" {
+		t.Errorf("full-cell exact match must rank first, got %q", got)
+	}
+}
+
+func TestTable_QuickSearchExactOnHitNonASCII(t *testing.T) {
+	SetDefaultPalette()
+
+	cols := []TableColumn{{Title: "C1", Width: 10}}
+	tbl := NewTable(0, 0, 11, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SearchExactOnHit = true
+	tbl.SetRows([]TableRow{
+		mockRow{"файлы", ""},
+		mockRow{"файл", ""},
+	})
+
+	typeSearch(tbl, "файл")
+	if tbl.ItemCount != 1 {
+		t.Fatalf("expected only the exact match, got %d rows", tbl.ItemCount)
+	}
+	if got := tbl.Rows[tbl.RowAt(0)].(mockRow).col1; got != "файл" {
+		t.Fatalf("exact match = %q, want файл", got)
+	}
+}
+
+func TestTable_QuickSearchExactInAnyColumn(t *testing.T) {
+	SetDefaultPalette()
+
+	cols := []TableColumn{{Title: "C1", Width: 10}, {Title: "C2", Width: 10}}
+	tbl := NewTable(0, 0, 21, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SearchExactOnHit = true
+	tbl.SetRows([]TableRow{
+		mockRow{"abc", "zzz"},  // exact in column 0, no match in the last column
+		mockRow{"xabc", "zzz"}, // substring only
+	})
+
+	typeSearch(tbl, "abc")
+
+	if tbl.ItemCount != 1 {
+		t.Fatalf("expected only the row with an exact cell, got %d", tbl.ItemCount)
+	}
+	if got := tbl.Rows[tbl.RowAt(0)].(mockRow).col1; got != "abc" {
+		t.Fatalf("kept row = %q, want abc", got)
+	}
+}
+
 func TestTable_QuickSearchCaseInsensitive(t *testing.T) {
 	SetDefaultPalette()
 
@@ -1026,9 +1118,10 @@ func TestTable_QuickSearchLineRendering(t *testing.T) {
 		t.Errorf("expected ViewHeight 3 (5 - header - search line), got %d", tbl.ViewHeight)
 	}
 
-	checkCell(t, scr, 0, 4, '>', Palette[ColTableText])
-	checkCell(t, scr, 2, 4, 'a', Palette[ColTableText])
-	checkCell(t, scr, 3, 4, 'b', Palette[ColTableText])
+	// The search line sits at the very top, above the header.
+	checkCell(t, scr, 0, 0, '>', Palette[ColTableText])
+	checkCell(t, scr, 2, 0, 'a', Palette[ColTableText])
+	checkCell(t, scr, 3, 0, 'b', Palette[ColTableText])
 }
 
 func TestTable_QuickSearchDisabledByDefault(t *testing.T) {
@@ -1090,15 +1183,15 @@ func TestTable_QuickSearchHighlight(t *testing.T) {
 	typeSearch(tbl, "abc")
 	tbl.Show(scr)
 
-	// Single match drawn bottom-up: ViewHeight=3, data rows y=1..3, row at y=3.
+	// Single match: ViewHeight=3, data rows y=2..4, the row at the top (y=2).
 	base := Palette[ColTableText]
-	inv := InvertColors(base)
-	checkCell(t, scr, 0, 3, 'x', base)
-	checkCell(t, scr, 1, 3, 'x', base)
-	checkCell(t, scr, 2, 3, 'a', inv)
-	checkCell(t, scr, 3, 3, 'b', inv)
-	checkCell(t, scr, 4, 3, 'c', inv)
-	checkCell(t, scr, 5, 3, 'x', base)
+	hl := Palette[ColMenuHighlight]
+	checkCell(t, scr, 0, 2, 'x', base)
+	checkCell(t, scr, 1, 2, 'x', base)
+	checkCell(t, scr, 2, 2, 'a', hl)
+	checkCell(t, scr, 3, 2, 'b', hl)
+	checkCell(t, scr, 4, 2, 'c', hl)
+	checkCell(t, scr, 5, 2, 'x', base)
 }
 
 func TestTable_QuickSearchHighlightFuzzySpan(t *testing.T) {
@@ -1116,15 +1209,14 @@ func TestTable_QuickSearchHighlightFuzzySpan(t *testing.T) {
 	typeSearch(tbl, "abc")
 	tbl.Show(scr)
 
-	base := Palette[ColTableText]
-	inv := InvertColors(base)
-	checkCell(t, scr, 0, 3, 'a', inv)
-	checkCell(t, scr, 1, 3, 'b', inv)
-	checkCell(t, scr, 2, 3, 'x', inv)
-	checkCell(t, scr, 3, 3, 'c', inv)
+	hl := Palette[ColMenuHighlight]
+	checkCell(t, scr, 0, 2, 'a', hl)
+	checkCell(t, scr, 1, 2, 'b', hl)
+	checkCell(t, scr, 2, 2, 'x', hl)
+	checkCell(t, scr, 3, 2, 'c', hl)
 }
 
-func TestTable_QuickSearchBottomUp(t *testing.T) {
+func TestTable_QuickSearchTopDown(t *testing.T) {
 	SetDefaultPalette()
 	scr := NewSilentScreenBuf()
 	scr.AllocBuf(11, 6)
@@ -1141,18 +1233,41 @@ func TestTable_QuickSearchBottomUp(t *testing.T) {
 	typeSearch(tbl, "ab")
 	tbl.Show(scr)
 
-	// ViewHeight = 6 - header - search = 4; data rows y=1..4, bottom y=4.
-	// Best match ("abx", displayPos 0) at the bottom, next one above it.
+	// ViewHeight = 6 - search line - header = 4; data rows y=2..5.
+	// Best match ("abx", displayPos 0) at the top, next one below it.
 	base := Palette[ColTableText]
-	inv := InvertColors(base)
-	checkCell(t, scr, 0, 4, 'a', inv)  // "abx" at the bottom, needle highlighted
-	checkCell(t, scr, 2, 4, 'x', base) // 'x' is outside the match span
-	checkCell(t, scr, 0, 3, 'x', base) // "xab" above
-	checkCell(t, scr, 0, 2, ' ', base) // empty space at the top
-	checkCell(t, scr, 0, 1, ' ', base)
+	hl := Palette[ColMenuHighlight]
+	checkCell(t, scr, 0, 2, 'a', hl)   // "abx" at the top, needle highlighted
+	checkCell(t, scr, 2, 2, 'x', base) // 'x' is outside the match span
+	checkCell(t, scr, 0, 3, 'x', base) // "xab" below
+	checkCell(t, scr, 0, 4, ' ', base) // empty space at the bottom
+	checkCell(t, scr, 0, 5, ' ', base)
 }
 
-func TestTable_QuickSearchBottomUpKeys(t *testing.T) {
+func TestTable_QuickSearchCursorFollowsFilteredPosition(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(11, 5)
+
+	cols := []TableColumn{{Title: "C1", Width: 10}}
+	tbl := NewTable(0, 0, 11, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SetFocus(true)
+	tbl.SetRows([]TableRow{
+		mockRow{"xab", ""}, // underlying row 0, second match
+		mockRow{"abx", ""}, // underlying row 1, best match at display position 0
+	})
+
+	typeSearch(tbl, "ab")
+	tbl.Show(scr)
+
+	// Search results are drawn top-down. The selected display position 0 is
+	// the underlying row 1, so the cursor must be on the top "abx" data row.
+	checkCell(t, scr, 2, 2, 'x', Palette[ColTableSelectedText])
+	checkCell(t, scr, 0, 3, 'x', Palette[ColTableText])
+}
+
+func TestTable_QuickSearchKeys(t *testing.T) {
 	SetDefaultPalette()
 
 	cols := []TableColumn{{Title: "C1", Width: 10}}
@@ -1169,22 +1284,51 @@ func TestTable_QuickSearchBottomUpKeys(t *testing.T) {
 		return tbl.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
 	}
 
-	// Up moves to the next (worse) match, Down moves back.
-	if !key(vtinput.VK_UP) || tbl.SelectPos != 1 {
-		t.Errorf("Up must move to the next match, SelectPos=%d", tbl.SelectPos)
-	}
-	if key(vtinput.VK_UP) {
-		t.Error("Up past the last match must propagate")
-	}
-	if !key(vtinput.VK_DOWN) || tbl.SelectPos != 0 {
-		t.Errorf("Down must move back towards the best match, SelectPos=%d", tbl.SelectPos)
+	// Down moves to the next (worse) match, Up moves back.
+	if !key(vtinput.VK_DOWN) || tbl.SelectPos != 1 {
+		t.Errorf("Down must move to the next match, SelectPos=%d", tbl.SelectPos)
 	}
 	if key(vtinput.VK_DOWN) {
-		t.Error("Down below the best match must propagate")
+		t.Error("Down past the last match must propagate")
+	}
+	if !key(vtinput.VK_UP) || tbl.SelectPos != 0 {
+		t.Errorf("Up must move back towards the best match, SelectPos=%d", tbl.SelectPos)
+	}
+	if key(vtinput.VK_UP) {
+		t.Error("Up above the best match must propagate")
 	}
 }
 
-func TestTable_QuickSearchBottomUpMouse(t *testing.T) {
+func TestTable_QuickSearchFocusFollowsBestMatch(t *testing.T) {
+	SetDefaultPalette()
+
+	cols := []TableColumn{{Title: "C1", Width: 10}}
+	tbl := NewTable(0, 0, 11, 5, cols)
+	tbl.QuickSearch = true
+	tbl.SetRows([]TableRow{mockRow{"xab", ""}, mockRow{"abx", ""}, mockRow{"abz", ""}})
+
+	typeSearch(tbl, "ab")
+	if tbl.SelectPos != 0 {
+		t.Fatalf("cursor must start at the best match, got %d", tbl.SelectPos)
+	}
+
+	// Navigate away from the best match...
+	tbl.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if tbl.SelectPos != 1 {
+		t.Fatalf("Down must move to the second match, got %d", tbl.SelectPos)
+	}
+
+	// ...typing another character must refocus the new best match.
+	typeSearch(tbl, "x")
+	if tbl.SelectPos != 0 {
+		t.Errorf("typing must refocus the best match, got SelectPos=%d", tbl.SelectPos)
+	}
+	if got := tbl.Rows[tbl.RowAt(0)].(mockRow).col1; got != "abx" {
+		t.Errorf("best match for %q = %q, want abx", tbl.SearchText(), got)
+	}
+}
+
+func TestTable_QuickSearchMouse(t *testing.T) {
 	SetDefaultPalette()
 
 	cols := []TableColumn{{Title: "C1", Width: 10}}
@@ -1204,51 +1348,56 @@ func TestTable_QuickSearchBottomUpMouse(t *testing.T) {
 		})
 	}
 
-	// Data rows y=1..3 (ViewHeight 3); the best match is at the bottom (y=3).
-	click(3)
-	if tbl.SelectPos != 0 {
-		t.Errorf("click on the bottom row must select the best match, got %d", tbl.SelectPos)
-	}
+	// Data rows y=2..4 (ViewHeight 3); the best match is at the top (y=2).
 	click(2)
-	if tbl.SelectPos != 1 {
-		t.Errorf("click one row above must select the second match, got %d", tbl.SelectPos)
+	if tbl.SelectPos != 0 {
+		t.Errorf("click on the top row must select the best match, got %d", tbl.SelectPos)
 	}
-	// Click on the empty area above the results must not move the cursor.
-	click(1)
+	click(3)
+	if tbl.SelectPos != 1 {
+		t.Errorf("click one row below must select the second match, got %d", tbl.SelectPos)
+	}
+	// Click on the empty area below the results must not move the cursor.
+	click(4)
 	if tbl.SelectPos != 1 {
 		t.Errorf("click on empty space must be ignored, got %d", tbl.SelectPos)
 	}
 }
 
-func TestTable_VirtualRowsMaterializeOnlyVisibleRange(t *testing.T) {
+// mockGridCellProvider is a TableCellProvider for a grid layout where two
+// display columns each hold an independently selectable item on the same
+// row (e.g. a two-column file panel). It implements both
+// TableCellSelectProvider (row-only, always wrong here) and
+// TableCellColSelectProvider (row+col, correct), to prove the table prefers
+// the column-aware one when both are present.
+type mockGridCellProvider struct {
+	// items[col] is the selection state of the item shown in that column.
+	items [2]bool
+}
+
+func (m mockGridCellProvider) RowCount() int                    { return 1 }
+func (m mockGridCellProvider) GetCellText(row, col int) string  { return "X" }
+func (m mockGridCellProvider) IsRowSelected(row int) bool       { return false }
+func (m mockGridCellProvider) IsCellSelected(row, col int) bool { return m.items[col] }
+
+func TestTable_ColSelectProviderPreferredOverRowSelectProvider(t *testing.T) {
 	SetDefaultPalette()
-	scr := NewScreenBuf()
-	scr.AllocBuf(24, 8)
-	tbl := NewTable(0, 0, 24, 8, []TableColumn{{Title: "Name", Width: 20}})
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(20, 3)
 
-	calls := 0
-	tbl.SetRowProvider(30_000, func(index int) TableRow {
-		calls++
-		return mockRow{col1: "row-" + strconv.Itoa(index)}
-	})
-	if tbl.ItemCount != 30_000 || len(tbl.Rows) != 0 {
-		t.Fatalf("virtual table state: count=%d materialized=%d",
-			tbl.ItemCount, len(tbl.Rows))
+	cols := []TableColumn{
+		{Title: "L", Width: 5, Alignment: AlignLeft},
+		{Title: "R", Width: 5, Alignment: AlignLeft},
 	}
-	if calls != 0 {
-		t.Fatalf("installing an unsorted provider materialized %d rows", calls)
-	}
+	tbl := NewTable(0, 0, 10, 2, cols)
+	tbl.ColorTextIdx = ColTableText
+	tbl.ColorItemSelectTextIdx = ColDialogHighlightText
 
+	// Left column's item is selected, right column's is not.
+	tbl.SetCellProvider(mockGridCellProvider{items: [2]bool{true, false}})
+	tbl.SetRowCount(1)
 	tbl.Show(scr)
-	if calls == 0 || calls > tbl.ViewHeight {
-		t.Fatalf("first viewport materialized %d rows for height %d",
-			calls, tbl.ViewHeight)
-	}
-	firstViewportCalls := calls
-	tbl.TopPos = tbl.ItemCount - tbl.ViewHeight
-	tbl.Show(scr)
-	if calls-firstViewportCalls > tbl.ViewHeight {
-		t.Fatalf("last viewport materialized %d rows for height %d",
-			calls-firstViewportCalls, tbl.ViewHeight)
-	}
+
+	checkCell(t, scr, 0, 1, 'X', Palette[ColDialogHighlightText])
+	checkCell(t, scr, 6, 1, 'X', Palette[ColTableText])
 }

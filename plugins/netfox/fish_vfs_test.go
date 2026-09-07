@@ -196,8 +196,8 @@ func TestFishVFSReadDirResolvesAllSymlinksInOneRequest(t *testing.T) {
 	clientR, peerW := io.Pipe()
 	sess := fishplus.NewSession(clientW, clientR, nil)
 	t.Cleanup(func() {
-		clientW.Close()
-		peerW.Close()
+		_ = clientW.Close() // pipe cleanup only
+		_ = peerW.Close()   // pipe cleanup only
 	})
 
 	done := make(chan error, 1)
@@ -216,11 +216,26 @@ func TestFishVFSReadDirResolvesAllSymlinksInOneRequest(t *testing.T) {
 			done <- fmt.Errorf("enum path = %q, want /", scanner.Text())
 			return
 		}
-		fmt.Fprintln(peerW, "M stat")
-		fmt.Fprintln(peerW, "a1ff 8 1 1 1 0 0 /directory-link")
-		fmt.Fprintln(peerW, "a1ff 8 1 1 1 0 0 /file-link")
-		fmt.Fprintln(peerW, "81a4 1 1 1 1 0 0 /ordinary")
-		fmt.Fprintf(peerW, ".%s %s ok\n", sess.Token(), enumHeader[0])
+		if _, err := fmt.Fprintln(peerW, "M stat"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintln(peerW, "a1ff 8 1 1 1 0 0 /directory-link"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintln(peerW, "a1ff 8 1 1 1 0 0 /file-link"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintln(peerW, "81a4 1 1 1 1 0 0 /ordinary"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintf(peerW, ".%s %s ok\n", sess.Token(), enumHeader[0]); err != nil {
+			done <- err
+			return
+		}
 
 		if !scanner.Scan() {
 			done <- fmt.Errorf("missing isdirs header: %v", scanner.Err())
@@ -238,9 +253,18 @@ func TestFishVFSReadDirResolvesAllSymlinksInOneRequest(t *testing.T) {
 				return
 			}
 		}
-		fmt.Fprintln(peerW, "1")
-		fmt.Fprintln(peerW, "0")
-		fmt.Fprintf(peerW, ".%s %s ok\n", sess.Token(), batchHeader[0])
+		if _, err := fmt.Fprintln(peerW, "1"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintln(peerW, "0"); err != nil {
+			done <- err
+			return
+		}
+		if _, err := fmt.Fprintf(peerW, ".%s %s ok\n", sess.Token(), batchHeader[0]); err != nil {
+			done <- err
+			return
+		}
 		done <- nil
 	}()
 
@@ -301,23 +325,25 @@ func newLocalFishVFSWithTitle(t *testing.T, title string) *FishVFS {
 	}
 	v, err := NewFishVFSOnStream(context.Background(), nil, stdin, stdout, stdin, title)
 	if err != nil {
-		cmd.Process.Kill()
+		_ = cmd.Process.Kill() // process cleanup only
 		if strings.Contains(err.Error(), "base64") {
 			t.Skipf("no base64 on this host: %v", err)
 		}
 		t.Fatalf("handshake: %v", err)
 	}
 	t.Cleanup(func() {
-		v.Close()
+		if err := v.Close(); err != nil {
+			t.Errorf("close local FISH+ filesystem: %v", err)
+		}
 		done := make(chan struct{})
 		go func() {
-			cmd.Wait()
+			_ = cmd.Wait() // process cleanup only
 			close(done)
 		}()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			cmd.Process.Kill()
+			_ = cmd.Process.Kill() // process cleanup only
 		}
 	})
 	return v
@@ -345,13 +371,13 @@ func TestFishVFSBrowsesLocalShell(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "a file.txt"), []byte("hello"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "a file.txt"), []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(dir, "sub dir"), 0755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "sub dir"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink("sub dir", filepath.Join(dir, "link to dir")); err != nil {
@@ -387,8 +413,8 @@ func TestFishVFSBrowsesLocalShell(t *testing.T) {
 	if file.Size != 5 || file.IsDir || file.IsSymlink {
 		t.Errorf("file mapped wrong: %+v", file)
 	}
-	if file.UnixMode&0777 != 0644 {
-		t.Errorf("UnixMode = %o, want 644 in the low bits", file.UnixMode)
+	if file.UnixMode&0777 != 0600 {
+		t.Errorf("UnixMode = %o, want 600 in the low bits", file.UnixMode)
 	}
 	if time.Since(file.MTime) > time.Hour {
 		t.Errorf("MTime = %v, which is nowhere near now", file.MTime)
@@ -423,7 +449,7 @@ func TestFishVFSStatAndOpen(t *testing.T) {
 	dir := t.TempDir()
 	body := strings.Repeat("0123456789", 5000)
 	p := filepath.Join(dir, "payload.bin")
-	if err := os.WriteFile(p, []byte(body), 0755); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0700); err != nil { // #nosec G306 -- executable detection is the behavior under test.
 		t.Fatal(err)
 	}
 
@@ -445,7 +471,7 @@ func TestFishVFSStatAndOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if f.Size() != int64(len(body)) {
 		t.Errorf("Size = %d, want %d", f.Size(), len(body))
 	}
@@ -476,7 +502,7 @@ func TestFishVFSMutations(t *testing.T) {
 	}
 
 	file := filepath.Join(dir, "payload.txt")
-	if err := os.WriteFile(file, []byte("hello"), 0644); err != nil {
+	if err := os.WriteFile(file, []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	moved := filepath.Join(dir, "renamed.txt")
@@ -569,7 +595,7 @@ func TestFishVFSSearch(t *testing.T) {
 	ctx := context.Background()
 	file := filepath.Join(t.TempDir(), "log.txt")
 	content := "alpha\nbeta\ngamma beta\n"
-	if err := os.WriteFile(file, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(file, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -661,7 +687,7 @@ func TestFishVFSClonesShareOneSessionSafely(t *testing.T) {
 	v := newLocalFishVFS(t)
 	dir := t.TempDir()
 	for _, name := range []string{"one", "two", "three"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -746,9 +772,9 @@ func TestSSHTimeoutDefaults(t *testing.T) {
 }
 
 func TestDialSSHFailsOnAClosedPort(t *testing.T) {
-	client, err := DialSSH("127.0.0.1", "1", "nobody", "", 2, netproxy.Settings{})
+	client, err := DialSSH("127.0.0.1", "1", "nobody", "", "", 2, netproxy.Settings{})
 	if err == nil {
-		client.Close()
+		_ = client.Close() // unexpected dial cleanup only
 		t.Fatal("dialing a closed port succeeded")
 	}
 }
@@ -761,7 +787,7 @@ func TestFishVFSLineIndex(t *testing.T) {
 
 	dir := t.TempDir()
 	p := filepath.Join(dir, "log with spaces.txt")
-	if err := os.WriteFile(p, []byte("alpha\nbeta\ngamma\n"), 0644); err != nil {
+	if err := os.WriteFile(p, []byte("alpha\nbeta\ngamma\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -803,7 +829,7 @@ func TestFishVFSScan(t *testing.T) {
 	ctx := context.Background()
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "tree", "a deep dir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "tree", "a deep dir"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	for name, size := range map[string]int{
@@ -812,7 +838,7 @@ func TestFishVFSScan(t *testing.T) {
 		"tree/a deep dir/three.txt": 1000,
 		"loose.txt":                 7,
 	} {
-		if err := os.WriteFile(filepath.Join(root, name), make([]byte, size), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), make([]byte, size), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -858,7 +884,7 @@ func TestFishVFSFindDuplicates(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "sub dir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "sub dir"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
@@ -867,7 +893,7 @@ func TestFishVFSFindDuplicates(t *testing.T) {
 		"different.txt":    "the same lengthX\n",
 		"alone.txt":        "on its own\n",
 	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -904,7 +930,7 @@ func TestFishVFSPatchFile(t *testing.T) {
 	src := filepath.Join(dir, "original.txt")
 	dst := filepath.Join(dir, "rebuilt.txt")
 	body := []byte("the quick brown fox jumps over the lazy dog")
-	if err := os.WriteFile(src, body, 0644); err != nil {
+	if err := os.WriteFile(src, body, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -934,13 +960,13 @@ func TestFishVFSFindFiles(t *testing.T) {
 	ctx := context.Background()
 
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "nested dir"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "nested dir"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "top.txt"), []byte("needle here\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "top.txt"), []byte("needle here\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "nested dir", "deep.txt"), []byte("nothing\n"), 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "nested dir", "deep.txt"), []byte("nothing\n"), 0700); err != nil { // #nosec G306 -- result mapping of an executable file is the behavior under test.
 		t.Fatal(err)
 	}
 
@@ -990,7 +1016,7 @@ func TestFishVFSServerSideCopyAndMove(t *testing.T) {
 	tmpDir := t.TempDir()
 	srcPath := filepath.Join(tmpDir, "source.txt")
 	content := []byte("Hello Server-Side Copy/Move")
-	if err := os.WriteFile(srcPath, content, 0644); err != nil {
+	if err := os.WriteFile(srcPath, content, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1025,7 +1051,11 @@ func TestFishVFSServerSideCopyAndMove(t *testing.T) {
 
 	// Test SameSession helper
 	v2 := v1.Clone()
-	defer v2.Close()
+	defer func() {
+		if err := v2.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	if !vfs.SameSession(v1, v2) {
 		t.Error("expected SameSession to be true for clones")
@@ -1033,7 +1063,11 @@ func TestFishVFSServerSideCopyAndMove(t *testing.T) {
 
 	// Test different session (with different titles)
 	v3 := newLocalFishVFSWithTitle(t, "local-diff")
-	defer v3.Close()
+	defer func() {
+		if err := v3.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	if vfs.SameSession(v1, v3) {
 		t.Error("expected SameSession to be false for distinct sessions with different titles")
@@ -1042,7 +1076,11 @@ func TestFishVFSServerSideCopyAndMove(t *testing.T) {
 
 func TestFishVFSServerToServerInfo(t *testing.T) {
 	v1 := newLocalFishVFS(t)
-	defer v1.Close()
+	defer func() {
+		if err := v1.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	v1.host = "runcity.org"
 	v1.port = "22"
@@ -1059,10 +1097,64 @@ func TestFishVFSServerToServerInfo(t *testing.T) {
 	}
 
 	v2 := v1.Clone().(*FishVFS)
-	defer v2.Close()
+	defer func() {
+		if err := v2.Close(); err != nil {
+			t.Errorf("close FISH+ filesystem: %v", err)
+		}
+	}()
 
 	h2, p2, u2, ok2 := interface{}(v2).(vfs.ConnectionInfoProvider).ConnectionInfo()
 	if !ok2 || h2 != h || p2 != p || u2 != u {
 		t.Errorf("cloned ConnectionInfo mismatch: (%q, %q, %q, %t)", h2, p2, u2, ok2)
+	}
+}
+func TestFishVFSPtyRunCommandWindowsRoot(t *testing.T) {
+	sess := fishplus.NewSession(nil, nil, nil)
+	v := &FishVFS{
+		conn: &fishConn{
+			client: fishplus.NewClient(sess),
+		},
+	}
+	// Default (non-Windows peer)
+	cmd := string(v.PtyRunCommand("/", "ls"))
+	if !strings.Contains(cmd, "cd '/' && ls") {
+		t.Errorf("POSIX PtyRunCommand = %q", cmd)
+	}
+
+	// Fake features banner for Windows peer
+	sessFeatures, err := fishplus.ParseBannerForTest("FISHPLUS 1 flavor:pwsh")
+	if err == nil {
+		sess.SetFeaturesForTest(sessFeatures)
+		if !v.peerIsWindows() {
+			t.Fatal("expected peerIsWindows to be true")
+		}
+		info := v.CommandRunnerInfo()
+		if info.Dialect != vfs.CommandDialectCmd {
+			t.Errorf("Windows runner dialect = %v, want CommandDialectCmd", info.Dialect)
+		}
+		// At virtual root "/", winDir is "" so command runs directly without cd
+		winCmdRoot := string(v.PtyRunCommand("/", "dir"))
+		if winCmdRoot != "dir\r" {
+			t.Errorf("Windows root PtyRunCommand = %q, want \"dir\\r\"", winCmdRoot)
+		}
+		// Inside /c/Users, cd /d "C:\Users" & dir
+		winCmdSub := string(v.PtyRunCommand("/c/Users", "dir"))
+		if !strings.Contains(winCmdSub, `cd /d "C:\Users" & dir`) {
+			t.Errorf("Windows subfolder PtyRunCommand = %q", winCmdSub)
+		}
+	}
+}
+func TestFishVFSCloseNilReceiver(t *testing.T) {
+	var v *FishVFS
+	if err := v.Close(); err != nil {
+		t.Errorf("nil FishVFS.Close() returned error: %v", err)
+	}
+	var s *SFTPVFS
+	if err := s.Close(); err != nil {
+		t.Errorf("nil SFTPVFS.Close() returned error: %v", err)
+	}
+	var f *FTPVFS
+	if err := f.Close(); err != nil {
+		t.Errorf("nil FTPVFS.Close() returned error: %v", err)
 	}
 }

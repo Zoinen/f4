@@ -16,6 +16,8 @@ import (
 // Two runs over the same tree produce byte identical output: there is no
 // timestamp in the header on purpose.
 func (s *Session) Pack() string {
+	s.treeMu.RLock()
+	defer s.treeMu.RUnlock()
 	files := s.tree.walkFiles(ctxDir)
 	var body bytes.Buffer
 	var tree bytes.Buffer

@@ -53,7 +53,7 @@ func TestRealSavedS3DiscoveryVisualHistoryReadOnly(t *testing.T) {
 	if !filepath.IsAbs(configDir) {
 		t.Fatal("real read-only S3 config directory must be absolute")
 	}
-	info, err := os.Stat(configDir)
+	info, err := os.Stat(configDir) // #nosec G703 -- the opted-in read-only test intentionally loads the operator-supplied absolute config directory.
 	if err != nil || !info.IsDir() {
 		t.Fatal("real read-only S3 config directory is unavailable")
 	}

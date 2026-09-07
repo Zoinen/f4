@@ -84,7 +84,7 @@ func (p *fishPool) take(key fishPoolKey) *fishConn {
 		// The idle timer had not fired yet, but the far side is already
 		// gone — a keepalive failure, the remote host rebooting. Finish
 		// tearing it down rather than leaving it half closed.
-		e.conn.shutdown()
+		_ = e.conn.shutdown() // Dead pooled-session teardown is best effort.
 		return nil
 	}
 	return e.conn
@@ -102,7 +102,7 @@ func (p *fishPool) park(conn *fishConn, key fishPoolKey) {
 		}
 		p.mu.Unlock()
 		if ok {
-			conn.shutdown()
+			_ = conn.shutdown() // Idle-session teardown is best effort.
 		}
 	})
 
@@ -117,7 +117,7 @@ func (p *fishPool) park(conn *fishConn, key fishPoolKey) {
 		// that connection can exist — but a session left behind by this
 		// race is worth closing rather than leaking.
 		old.timer.Stop()
-		old.conn.shutdown()
+		_ = old.conn.shutdown() // Superseded-session teardown is best effort.
 	}
 }
 
@@ -131,7 +131,7 @@ func (p *fishPool) closeAll() {
 	p.mu.Unlock()
 	for _, e := range entries {
 		e.timer.Stop()
-		e.conn.shutdown()
+		_ = e.conn.shutdown() // Process-exit session teardown is best effort.
 	}
 }
 

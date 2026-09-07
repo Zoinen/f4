@@ -112,7 +112,14 @@ func Supported() bool { return supported }
 // MountVFS takes ownership of v unconditionally: it is closed when the mount
 // ends, and also when mounting fails. Callers pass a VFS opened for this
 // mount alone and never one a panel is browsing.
-func MountVFS(ctx context.Context, v vfs.VFS, opts Options) (*Mount, error) {
+func MountVFS(ctx context.Context, v vfs.VFS, opts Options) (mount *Mount, err error) {
+	if v != nil {
+		defer func() {
+			if mount == nil {
+				err = errors.Join(err, v.Close())
+			}
+		}()
+	}
 	if !supported {
 		return nil, ErrUnsupported
 	}
@@ -120,14 +127,13 @@ func MountVFS(ctx context.Context, v vfs.VFS, opts Options) (*Mount, error) {
 		return nil, errors.New("mount: no file system given")
 	}
 	if !opts.ReadOnly && !v.GetCapabilities().HasWrite {
-		v.Close()
 		return nil, errors.New("mount: this file system cannot be written through")
 	}
 	point := strings.TrimSpace(opts.MountPoint)
 	if point == "" {
 		return nil, errors.New("mount: no mount point given")
 	}
-	point, err := filepath.Abs(point)
+	point, err = filepath.Abs(point)
 	if err != nil {
 		return nil, err
 	}
@@ -162,11 +168,11 @@ func MountVFS(ctx context.Context, v vfs.VFS, opts Options) (*Mount, error) {
 	registry.Unlock()
 
 	if err := startServer(ctx, m, opts); err != nil {
-		m.bridge.close()
+		var removeErr error
 		if created {
-			os.Remove(point)
+			removeErr = os.Remove(point)
 		}
-		return nil, err
+		return nil, errors.Join(err, removeErr)
 	}
 
 	registry.Lock()
@@ -267,13 +273,14 @@ func (m *Mount) watch() {
 	registry.Unlock()
 
 	m.bridge.close()
+	cleanupErr := m.bridge.closeError()
 	if m.createdDir {
-		os.Remove(m.MountPoint)
+		cleanupErr = errors.Join(cleanupErr, os.Remove(m.MountPoint))
 	}
 
 	m.mu.Lock()
 	m.stopped = true
-	err := m.err
+	err := errors.Join(m.err, cleanupErr)
 	m.mu.Unlock()
 
 	close(m.done)

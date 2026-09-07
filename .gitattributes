@@ -1,0 +1,4 @@
+# ConPTY captures are byte streams; Git must never normalize CRLF in them.
+*.raw binary
+# Dialog-title values intentionally retain padding spaces for the terminal UI.
+*.lng whitespace=-trailing-space

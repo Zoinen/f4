@@ -112,7 +112,11 @@ func TestGoogleFreshCanonicalStatHydratesFullPanelTitle(t *testing.T) {
 		}
 	})
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	location := googleItemLocation("", "second-id")
 	if err := cloud.SetPath(cloud.canonicalURI(location)); err != nil {
 		t.Fatal(err)
@@ -333,7 +337,11 @@ func TestGoogleIdentityPreservingWriteUpdatesExistingIDInPlace(t *testing.T) {
 		transferNames: map[string]string{location: "editable.bin"}, resolved: make(map[string]string), downloads: newGoogleDownloadCache(),
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if !cloud.GetCapabilities().HasIdentityPreservingWrite {
 		t.Fatal("Google CloudVFS did not advertise identity-preserving writes")
 	}
@@ -436,7 +444,11 @@ func TestGoogleIdentityPreservingWriteUpdatesShortcutTargetNotShortcut(t *testin
 		transferNames: map[string]string{shortcutLocation: "editable-link.bin"}, resolved: make(map[string]string), downloads: newGoogleDownloadCache(),
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	file, err := cloud.Create(vfs.WithDestinationOverwrite(context.Background(), true), cloud.canonicalURI(shortcutLocation))
 	if err != nil {
 		t.Fatal(err)
@@ -545,7 +557,11 @@ func TestGoogleRenameReplacementRemapsDeletedDestinationIdentity(t *testing.T) {
 		t.Fatalf("reopen replaced destination = %#v, %v", file, err)
 	}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	resolved, err := cloud.resolvePath(cloud.canonicalURI(destination))
 	if err != nil || resolved != source {
 		t.Fatalf("CloudVFS replacement remap = %q, %v; want %q", resolved, err, source)
@@ -626,7 +642,7 @@ func TestGoogleNativeExportRefreshesRevisionBeforeUsingSessionCache(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer r.Close()
+		defer func() { _ = r.Close() }()
 		data := make([]byte, r.Size())
 		n, err := r.ReadAt(context.Background(), data, 0)
 		if err != nil && !errors.Is(err, io.EOF) {
@@ -793,7 +809,11 @@ func TestCloudVFSReadDirReplacesStaleAliasSnapshot(t *testing.T) {
 		VFSItem: vfs.VFSItem{Name: "gone.txt"}, Location: "/ids/gone",
 	}}}}
 	cloud := testCloudVFS(t, backend)
-	defer cloud.Close()
+	t.Cleanup(func() {
+		if err := cloud.Close(); err != nil {
+			t.Errorf("close test resource: %v", err)
+		}
+	})
 	if err := cloud.ReadDir(context.Background(), cloud.GetPath(), func([]vfs.VFSItem) {}); err != nil {
 		t.Fatal(err)
 	}

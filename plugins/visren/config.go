@@ -2,6 +2,7 @@ package visren
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -48,5 +49,35 @@ func saveConfig(cfg config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".visren-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	for len(data) > 0 {
+		written, err := tmp.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

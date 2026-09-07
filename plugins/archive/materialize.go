@@ -479,13 +479,20 @@ func materializeArchiveSource(ctx context.Context, parent vfs.VFS, archivePath, 
 		_ = cleanupTemp()
 		return "", 0, nil, io.ErrUnexpectedEOF
 	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		_ = cleanupTemp()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath) // The failed private materialization cannot be reused.
 		return "", 0, nil, err
 	}
 	if err := reportArchiveMaterializationProgress(ctx, displayName, copied, copied); err != nil {
-		_ = cleanupTemp()
+		_ = os.Remove(tmpPath) // The canceled private materialization cannot be reused.
 		return "", 0, nil, err
+	}
+	cleanupTemp = func() error {
+		removeErr := os.Remove(tmpPath)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
+		}
+		return nil
 	}
 	return tmpPath, copied, cleanupTemp, nil
 }

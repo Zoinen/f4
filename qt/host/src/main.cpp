@@ -1,3 +1,4 @@
+#include "F4ApplicationIcon.h"
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
@@ -20,7 +21,6 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QGuiApplication>
-#include <QIcon>
 #include <QKeySequence>
 #include <QProcess>
 #include <QPointer>
@@ -169,19 +169,9 @@ int main(int argc, char *argv[])
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     QGuiApplication::setApplicationName(QStringLiteral("f4 Qt Host"));
     QGuiApplication::setOrganizationName(QStringLiteral("f4"));
-#if defined(Q_OS_WIN)
-    // The Windows executable embeds the same multi-resolution ICO in its PE
-    // resource. Load that ICO for QWindow as well, so title-bar and taskbar
-    // requests select the prepared size instead of scaling the SVG fallback.
-    const QIcon applicationIcon(
-        QStringLiteral(":/F4QtHost/icons/app/f4.ico"));
-#else
-    const QIcon applicationIcon(
-        QStringLiteral(":/F4QtHost/icons/app/f4.svg"));
-#endif
-    if (!applicationIcon.isNull()) {
-        QGuiApplication::setWindowIcon(applicationIcon);
-    }
+    // On macOS this is deliberately a no-op: LaunchServices must keep the
+    // adaptive Icon Composer asset from the application bundle authoritative.
+    F4ApplicationIcon::installRuntimeFallback();
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Qt/QML sidecar renderer for f4"));

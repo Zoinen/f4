@@ -34,7 +34,9 @@ func IsTerminalRunnable(ctx context.Context, v VFS, path string) bool {
 	// 3. Check for Shebang
 	f, err := v.Open(ctx, path)
 	if err == nil {
-		defer f.Close()
+		defer func() {
+			_ = f.Close() // The shebang probe is read-only.
+		}()
 		buf := make([]byte, 2)
 		n, _ := f.Read(ctx, buf)
 		if n == 2 && string(buf) == "#!" {

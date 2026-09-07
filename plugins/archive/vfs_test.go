@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"sync"
+	"sync/atomic"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/tar"
@@ -29,6 +31,69 @@ func TestArchiveVFS_PathSlashes(t *testing.T) {
 
 	if path != expected {
 		t.Errorf("ArchiveVFS.GetPath slashes mismatch.\nGot:      %q\nExpected: %q", path, expected)
+	}
+}
+
+func TestArchiveVFS_SkipsExplicitRootEntryDuringScan(t *testing.T) {
+	tmpDir := t.TempDir()
+	tarPath := filepath.Join(tmpDir, "root-entry.tar")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(f)
+	entries := []struct {
+		name string
+		mode int64
+		body string
+	}{
+		{name: "./", mode: 0755 | int64(fs.ModeDir)},
+		{name: "./nested/", mode: 0755 | int64(fs.ModeDir)},
+		{name: "./nested/file.txt", mode: 0644, body: "hello"},
+	}
+	for _, entry := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: entry.name, Mode: entry.mode, Size: int64(len(entry.body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tw, entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveVFS, err := NewArchiveVFS(vfs.NewOSVFS(tmpDir), tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := archiveVFS.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
+
+	var items []vfs.VFSItem
+	if err := archiveVFS.ReadDir(context.Background(), archiveVFS.GetPath(), func(chunk []vfs.VFSItem) {
+		items = append(items, chunk...)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Name == "" || item.Name == "." || item.Name == ".." {
+			t.Fatalf("root placeholder leaked into archive listing: %#v", item)
+		}
+	}
+
+	stats, err := vfs.CalculateStats(context.Background(), archiveVFS, archiveVFS.GetPath(), []string{""}, nil)
+	if err != nil {
+		t.Fatalf("scanning archive with explicit root entry: %v", err)
+	}
+	if stats.Files != 1 || stats.Dirs != 2 || stats.Bytes != int64(len("hello")) {
+		t.Fatalf("archive stats = %+v, want one file, two directories, and five bytes", stats)
 	}
 }
 
@@ -92,21 +157,29 @@ func TestArchiveVFS_AtomicWrite(t *testing.T) {
 	tmp := t.TempDir()
 	arcPath := filepath.Join(tmp, "test.zip")
 
-	os.WriteFile(arcPath, []byte("PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), 0644)
+	if err := os.WriteFile(arcPath, []byte("PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	origInfo, _ := os.Stat(arcPath)
 
 	v, err := NewArchiveVFS(&vfs.OSVFS{}, arcPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer v.Close()
+	t.Cleanup(func() {
+		if err := v.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	wc, err := v.Create(context.Background(), v.Join(arcPath, "newfile.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	wc.Write([]byte("some data"))
+	if _, err := wc.Write([]byte("some data")); err != nil {
+		t.Fatal(err)
+	}
 
 	currentInfo, _ := os.Stat(arcPath)
 	if currentInfo.Size() != origInfo.Size() {
@@ -130,15 +203,25 @@ func TestArchiveVFS_TempFileLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("hello world"))
-	zw.Close()
-	f.Close()
+	if _, err := w.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	vOuter, err := NewArchiveVFS(&vfs.OSVFS{}, zipPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer vOuter.Close()
+	t.Cleanup(func() {
+		if err := vOuter.Close(); err != nil {
+			t.Errorf("close outer archive VFS: %v", err)
+		}
+	})
 
 	rc, err := vOuter.Open(context.Background(), vOuter.Join(zipPath, "file.txt"))
 	if err != nil {
@@ -146,7 +229,9 @@ func TestArchiveVFS_TempFileLeak(t *testing.T) {
 	}
 
 	// Trigger lazy extraction which creates the temp file
-	rc.ReadAt(context.Background(), make([]byte, 1), 0)
+	if _, err := rc.ReadAt(context.Background(), make([]byte, 1), 0); err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
 
 	var tempFilePath string
 	if wrapper, ok := rc.(*vfs.TempFileWrapper); ok {
@@ -162,10 +247,12 @@ func TestArchiveVFS_TempFileLeak(t *testing.T) {
 	}
 	t.Logf("Temp file created successfully at: %s", tempFilePath)
 
-	rc.Close()
+	if err := rc.Close(); err != nil {
+		t.Fatalf("close extracted temporary file: %v", err)
+	}
 
 	if _, err := os.Stat(tempFilePath); err == nil {
-		os.Remove(tempFilePath)
+		_ = os.Remove(tempFilePath) // t.TempDir cleanup will retry
 		t.Fatalf("TEST FAILED: Temp file %s was not deleted after Close()! Leak detected.", tempFilePath)
 	}
 
@@ -175,6 +262,10 @@ func TestArchiveVFS_TempFileLeak(t *testing.T) {
 // TestArchiveVFS_DeferredClose verifies that closing the ArchiveVFS is deferred
 // while there are active readers or writers (grace period of inactivity).
 func TestArchiveVFS_DeferredClose(t *testing.T) {
+	oldIdleTTL := archiveVFSIdleTTL
+	archiveVFSIdleTTL = 50 * time.Millisecond
+	t.Cleanup(func() { archiveVFSIdleTTL = oldIdleTTL })
+
 	tmpDir := t.TempDir()
 	zipPath := filepath.Join(tmpDir, "test.zip")
 
@@ -189,16 +280,24 @@ func TestArchiveVFS_DeferredClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w1.Write([]byte("content1"))
+	if _, err := w1.Write([]byte("content1")); err != nil {
+		t.Fatal(err)
+	}
 
 	w2, err := zw.Create("file2.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	w2.Write([]byte("content2"))
+	if _, err := w2.Write([]byte("content2")); err != nil {
+		t.Fatal(err)
+	}
 
-	zw.Close()
-	f.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// 1. Open the archive VFS
 	vArc, err := NewArchiveVFS(&vfs.OSVFS{}, zipPath)
@@ -209,10 +308,12 @@ func TestArchiveVFS_DeferredClose(t *testing.T) {
 	// 2. Open the first file (simulates beginning of copy/extraction)
 	rc1, err := vArc.Open(context.Background(), vArc.Join(zipPath, "file1.txt"))
 	if err != nil {
-		vArc.Close()
+		_ = vArc.Close() // preserve the open failure
 		t.Fatal(err)
 	}
-	rc1.Close()
+	if err := rc1.Close(); err != nil {
+		t.Fatalf("close first archive reader: %v", err)
+	}
 
 	// 3. Simulate exiting the panel (closing the VFS) while extraction is active
 	errClose := vArc.Close()
@@ -225,10 +326,12 @@ func TestArchiveVFS_DeferredClose(t *testing.T) {
 	if errRead2 != nil {
 		t.Fatalf("BUG: Open file2 failed after VFS Close: %v. Expected to succeed due to active copy grace period.", errRead2)
 	}
-	rc2.Close()
+	if err := rc2.Close(); err != nil {
+		t.Fatalf("close second archive reader: %v", err)
+	}
 
-	// 5. Wait for the inactivity timer to expire and perform cleanup (2-second grace period)
-	time.Sleep(2500 * time.Millisecond)
+	// 5. Wait for the shortened test TTL to expire and perform cleanup.
+	time.Sleep(2 * archiveVFSIdleTTL)
 
 	// 6. Try to open the file again. It should fail now as the VFS has been fully cleaned up.
 	_, errRead3 := vArc.Open(context.Background(), vArc.Join(zipPath, "file1.txt"))
@@ -282,15 +385,16 @@ func TestArchiveReadWrapper_CloseNonBlocking(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	closeDone := make(chan struct{})
+	closeDone := make(chan error, 1)
 	go func() {
-		w.Close()
-		close(closeDone)
+		closeDone <- w.Close()
 	}()
 
 	select {
-	case <-closeDone:
-		// Success
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close archive read wrapper: %v", err)
+		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("archiveReadWrapper.Close() blocked because of active extraction holding the mutex!")
 	}
@@ -330,16 +434,19 @@ func TestArchiveVFS_OpenCloseNonBlocking(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	closeDone := make(chan struct{})
+	closeDone := make(chan error, 1)
 	go func() {
-		v.Close()
-		close(closeDone)
+		closeDone <- v.Close()
 	}()
 
 	select {
-	case <-closeDone:
-		// Success
-	case <-time.After(500 * time.Millisecond):
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close archive VFS: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		// Generous: on the happy path Close returns immediately, and a bound
+		// this loose still catches the regression — Close blocking forever.
 		t.Fatal("BUG REPRODUCED: ArchiveVFS.Close() blocked because v.Open() holds the mutex during extraction/seeking!")
 	}
 
@@ -349,7 +456,10 @@ func TestArchiveVFS_OpenCloseNonBlocking(t *testing.T) {
 	_ = openErr
 }
 
+// mockSeekingReporter is written from the progress ticker goroutine and read
+// from the test goroutine, so its fields live behind a mutex.
 type mockSeekingReporter struct {
+	mu            sync.Mutex
 	lastAction    string
 	lastFilename  string
 	lastTotalText string
@@ -358,12 +468,36 @@ type mockSeekingReporter struct {
 
 func (r *mockSeekingReporter) UpdateScan(currentPath string, files, dirs int64) {}
 func (r *mockSeekingReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.lastAction = action
 	r.lastFilename = filename
 	r.lastTotalText = totalText
 	r.lastSpeedText = speedText
 }
 func (r *mockSeekingReporter) IsCancelled() bool { return false }
+
+// waitForStatus waits until the reporter shows a status with the given prefix
+// alongside an elapsed-time field. The progress ticker fires every 250ms for
+// as long as the phase lasts, so on any machine the status arrives eventually;
+// sleeping a fixed interval and asserting — what this test used to do — is a
+// bet on the scheduler that a loaded CI runner loses.
+func (r *mockSeekingReporter) waitForStatus(t *testing.T, prefix string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		total, speed := r.lastTotalText, r.lastSpeedText
+		r.mu.Unlock()
+		if strings.HasPrefix(total, prefix) && strings.Contains(speed, "Time:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t.Fatalf("no %q status with elapsed time; last total %q, speed %q", prefix, r.lastTotalText, r.lastSpeedText)
+}
 
 func TestArchiveVFS_Open_SeekingProgress(t *testing.T) {
 	openBlock := make(chan struct{})
@@ -383,24 +517,13 @@ func TestArchiveVFS_Open_SeekingProgress(t *testing.T) {
 		close(openDone)
 	}()
 
-	// 1. Verify "Locating file..." status and elapsed time presence
-	time.Sleep(400 * time.Millisecond)
-	if !strings.HasPrefix(reporter.lastTotalText, "Locating file") {
-		t.Errorf("Expected 'Locating file...' status while Open is blocked, got %q", reporter.lastTotalText)
-	}
-	if !strings.Contains(reporter.lastSpeedText, "Time:") {
-		t.Errorf("Expected elapsed time in 'Locating' phase, got %q", reporter.lastSpeedText)
-	}
+	// 1. While Open is blocked the ticker must report "Locating file..."
+	// with an elapsed-time field.
+	reporter.waitForStatus(t, "Locating file")
 	close(openBlock)
 
-	// 2. Verify "Seeking/Decompressing..." status and elapsed time presence
-	time.Sleep(400 * time.Millisecond)
-	if !strings.HasPrefix(reporter.lastTotalText, "Seeking/Decompressing") {
-		t.Errorf("Expected 'Seeking/Decompressing...' status while Read is blocked, got %q", reporter.lastTotalText)
-	}
-	if !strings.Contains(reporter.lastSpeedText, "Time:") {
-		t.Errorf("Expected elapsed time in 'Seeking' phase, got %q", reporter.lastSpeedText)
-	}
+	// 2. While Read is blocked it must report "Seeking/Decompressing...".
+	reporter.waitForStatus(t, "Seeking/Decompressing")
 
 	close(readBlock)
 	<-openDone
@@ -432,15 +555,25 @@ func TestArchiveVFS_Open_ProgressReporting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("Progress test data"))
-	zw.Close()
-	f.Close()
+	if _, err := w.Write([]byte("Progress test data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	vArc, err := NewArchiveVFS(&vfs.OSVFS{}, zipPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer vArc.Close()
+	t.Cleanup(func() {
+		if err := vArc.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	callbackCalled := false
 	var lastCallbackPct int
@@ -459,7 +592,7 @@ func TestArchiveVFS_Open_ProgressReporting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	if !callbackCalled {
 		t.Error("ProgressCallback was not invoked during Open")
@@ -502,23 +635,35 @@ func TestArchiveVFSCopyBulk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w1.Write([]byte("content1"))
+	if _, err := w1.Write([]byte("content1")); err != nil {
+		t.Fatal(err)
+	}
 
 	w2, err := zw.Create("folder/file2.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	w2.Write([]byte("content2"))
+	if _, err := w2.Write([]byte("content2")); err != nil {
+		t.Fatal(err)
+	}
 
-	zw.Close()
-	f.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	parentVFS := vfs.NewOSVFS(tmpDir)
 	archiveVFS, err := NewArchiveVFS(parentVFS, "test.zip")
 	if err != nil {
 		t.Fatalf("failed to create ArchiveVFS: %v", err)
 	}
-	defer archiveVFS.Close()
+	t.Cleanup(func() {
+		if err := archiveVFS.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	dstDir := filepath.Join(tmpDir, "extracted")
 	dstVFS := vfs.NewOSVFS(dstDir)
@@ -541,7 +686,7 @@ func TestArchiveVFSCopyBulk(t *testing.T) {
 	if err != nil {
 		t.Fatal("file1.txt was not extracted")
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }()
 	data1, _ := io.ReadAll(ctxReader{r: f1, ctx: context.Background()})
 	if string(data1) != "content1" {
 		t.Errorf("expected content1, got %q", string(data1))
@@ -551,7 +696,7 @@ func TestArchiveVFSCopyBulk(t *testing.T) {
 	if err != nil {
 		t.Fatal("folder/file2.txt was not extracted")
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	data2, _ := io.ReadAll(ctxReader{r: f2, ctx: context.Background()})
 	if string(data2) != "content2" {
 		t.Errorf("expected content2, got %q", string(data2))
@@ -575,7 +720,9 @@ func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
 	if err := tw.WriteHeader(hdr1); err != nil {
 		t.Fatal(err)
 	}
-	tw.Write([]byte("content1"))
+	if _, err := tw.Write([]byte("content1")); err != nil {
+		t.Fatal(err)
+	}
 
 	hdr2 := &tar.Header{
 		Name: "folder/file2.txt",
@@ -585,17 +732,27 @@ func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
 	if err := tw.WriteHeader(hdr2); err != nil {
 		t.Fatal(err)
 	}
-	tw.Write([]byte("content2"))
+	if _, err := tw.Write([]byte("content2")); err != nil {
+		t.Fatal(err)
+	}
 
-	tw.Close()
-	f.Close()
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	parentVFS := vfs.NewOSVFS(tmpDir)
 	archiveVFS, err := NewArchiveVFS(parentVFS, "test.tar")
 	if err != nil {
 		t.Fatalf("failed to create ArchiveVFS: %v", err)
 	}
-	defer archiveVFS.Close()
+	t.Cleanup(func() {
+		if err := archiveVFS.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	dstDir := filepath.Join(tmpDir, "extracted")
 	dstVFS := vfs.NewOSVFS(dstDir)
@@ -618,7 +775,7 @@ func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
 	if err != nil {
 		t.Fatal("file1.txt was not extracted")
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }()
 	data1, _ := io.ReadAll(ctxReader{r: f1, ctx: context.Background()})
 	if string(data1) != "content1" {
 		t.Errorf("expected content1, got %q", string(data1))
@@ -628,10 +785,61 @@ func TestArchiveVFSCopyBulk_Tar(t *testing.T) {
 	if err != nil {
 		t.Fatal("folder/file2.txt was not extracted")
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 	data2, _ := io.ReadAll(ctxReader{r: f2, ctx: context.Background()})
 	if string(data2) != "content2" {
 		t.Errorf("expected content2, got %q", string(data2))
+	}
+}
+
+func TestArchiveVFSCopyBulk_CompressedTar(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tarPath := filepath.Join(tmpDir, "test.tar.gz")
+	f, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "file.txt", Mode: 0644, Size: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("content")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveVFS, err := NewArchiveVFS(vfs.NewOSVFS(tmpDir), "test.tar.gz")
+	if err != nil {
+		t.Fatalf("failed to create ArchiveVFS: %v", err)
+	}
+	t.Cleanup(func() { _ = archiveVFS.Close() })
+
+	dstDir := filepath.Join(tmpDir, "extracted")
+	dstVFS := vfs.NewOSVFS(dstDir)
+	if err := dstVFS.MkDir(context.Background(), dstDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := archiveVFS.CopyBulk(context.Background(), []string{"file.txt"}, dstVFS, dstDir, &dummyReporter{}); err != nil {
+		t.Fatalf("bulk copy from compressed tar failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dstDir, "file.txt"))
+	if err != nil {
+		t.Fatal("file.txt was not extracted:", err)
+	}
+	if string(data) != "content" {
+		t.Fatalf("extracted content = %q, want %q", data, "content")
 	}
 }
 
@@ -645,16 +853,26 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 	}
 	zw := zip.NewWriter(f)
 	w1, _ := zw.Create("file1.txt")
-	w1.Write([]byte("content1"))
-	zw.Close()
-	f.Close()
+	if _, err := w1.Write([]byte("content1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	parentVFS := vfs.NewOSVFS(tmpDir)
 	archiveVFS, err := NewArchiveVFS(parentVFS, "test.zip")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer archiveVFS.Close()
+	t.Cleanup(func() {
+		if err := archiveVFS.Close(); err != nil {
+			t.Errorf("close archive VFS: %v", err)
+		}
+	})
 
 	absPath := archiveVFS.activePath()
 
@@ -665,7 +883,9 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 
 	dstDir := filepath.Join(tmpDir, "extracted")
 	dstVFS := vfs.NewOSVFS(dstDir)
-	dstVFS.MkDir(context.Background(), dstDir)
+	if err := dstVFS.MkDir(context.Background(), dstDir); err != nil {
+		t.Fatal(err)
+	}
 
 	copier := interface{}(archiveVFS).(vfs.BulkCopier)
 
@@ -677,8 +897,8 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		// Inject AutoQueue into the context so the VFS doesn't block waiting for UI interaction
-		ctx := context.WithValue(context.Background(), "AutoQueue", true)
+		// Auto-queue so the VFS doesn't block waiting for UI interaction.
+		ctx := WithAutoQueue(context.Background())
 		err := copier.CopyBulk(ctx, []string{"file1.txt"}, dstVFS, dstDir, &dummyReporter{})
 		if err != nil {
 			t.Errorf("expected no error, got %v", err)
@@ -705,7 +925,7 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal("file1.txt was not extracted")
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }()
 	data1, _ := io.ReadAll(ctxReader{r: f1, ctx: context.Background()})
 	if string(data1) != "content1" {
 		t.Errorf("expected content1, got %q", string(data1))
@@ -713,12 +933,19 @@ func TestArchiveVFSCopyBulk_ConcurrentQueue(t *testing.T) {
 }
 
 type mockTickerReporter struct {
-	calls int
+	calls atomic.Int32
+	ticks chan struct{}
 }
 
 func (m *mockTickerReporter) UpdateScan(string, int64, int64) {}
 func (m *mockTickerReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
-	m.calls++
+	m.calls.Add(1)
+	if m.ticks != nil {
+		select {
+		case m.ticks <- struct{}{}:
+		default:
+		}
+	}
 }
 func (m *mockTickerReporter) IsCancelled() bool { return false }
 
@@ -728,7 +955,7 @@ func (m *mockTickerReporter) IsCancelled() bool { return false }
 func TestIssue149_TimeTicksDuringBlockingIO(t *testing.T) {
 	ctx := context.Background()
 	done := make(chan struct{})
-	rep := &mockTickerReporter{}
+	rep := &mockTickerReporter{ticks: make(chan struct{}, 4)}
 
 	getStatus := func() (string, string, int) {
 		return "Extracting", "file.txt", 50
@@ -736,12 +963,23 @@ func TestIssue149_TimeTicksDuringBlockingIO(t *testing.T) {
 
 	go runProgressTicker(ctx, done, rep, getStatus)
 
-	// Simulate blocking I/O for 1.2 seconds
-	time.Sleep(1200 * time.Millisecond)
+	// Wait for four updates while the ticker remains blocked in its simulated
+	// I/O phase. Waiting for actual ticks avoids coupling this test to scheduler
+	// timing on slower CI runners.
+	const expectedTicks = 4
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for i := 0; i < expectedTicks; i++ {
+		select {
+		case <-rep.ticks:
+		case <-timeout.C:
+			close(done)
+			t.Fatalf("Expected progress ticker to fire at least %d times during blocking I/O, but got %d", expectedTicks, rep.calls.Load())
+		}
+	}
 	close(done)
 
-	// The ticker runs every 250ms. In 1.2 seconds, it should tick at least 4 times.
-	if rep.calls < 4 {
-		t.Errorf("Expected progress ticker to fire at least 4 times during blocking I/O, but got %d", rep.calls)
+	if calls := rep.calls.Load(); calls < expectedTicks {
+		t.Errorf("Expected progress ticker to fire at least %d times during blocking I/O, but got %d", expectedTicks, calls)
 	}
 }
