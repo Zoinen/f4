@@ -793,6 +793,36 @@ if(BUILD_TESTING)
     endif()
   endfunction()
 
+  if(WIN32)
+    add_executable(F4WindowsApplicationIconTests
+      tests/F4WindowsApplicationIconTests.cpp
+      src/F4ApplicationIcon.cpp)
+    target_include_directories(F4WindowsApplicationIconTests PRIVATE src)
+    target_link_libraries(F4WindowsApplicationIconTests PRIVATE
+      Qt6::Core Qt6::Gui Qt6::Svg Qt6::Test)
+    f4_add_windows_app_icon(F4WindowsApplicationIconTests)
+    # Exercise the same native LoadImage resource path as the host.
+    set(F4_WINDOWS_ICON_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/generated/f4.ico")
+    configure_file(packaging/f4-qt-host.rc.in
+      "${CMAKE_CURRENT_BINARY_DIR}/f4-icon-test.rc" @ONLY)
+    target_sources(F4WindowsApplicationIconTests PRIVATE
+      "${CMAKE_CURRENT_BINARY_DIR}/f4-icon-test.rc")
+    f4_link_static_test_platform(F4WindowsApplicationIconTests)
+    f4_link_static_test_image_plugins(F4WindowsApplicationIconTests)
+    target_compile_definitions(F4WindowsApplicationIconTests PRIVATE
+      F4_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/generated/f4.ico"
+      F4_ICON_HOST="$<TARGET_FILE:f4-qt-host>")
+    add_dependencies(F4WindowsApplicationIconTests f4-qt-host)
+    add_test(NAME F4WindowsApplicationIconTest COMMAND F4WindowsApplicationIconTests)
+    set_tests_properties(F4WindowsApplicationIconTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_SCALE_FACTOR=1.75")
+    add_test(NAME F4WindowsNativeTaskbarIconTest
+      COMMAND F4WindowsApplicationIconTests nativeTaskbarUsesGoIconSize)
+    set_tests_properties(F4WindowsNativeTaskbarIconTest PROPERTIES
+      ENVIRONMENT "QT_QPA_PLATFORM=windows;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough"
+      LABELS "native-windows")
+  endif()
+
   if(USE_QWK AND UNIX AND NOT APPLE)
     add_executable(QWindowKitTitleBarTests
       tests/QWindowKitTitleBarTests.cpp
