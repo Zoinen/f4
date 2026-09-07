@@ -471,6 +471,92 @@ func TestSemanticPagedPanelExportsViewportAndServesOnlyRequestedRows(t *testing.
 	}
 }
 
+func TestSemanticPagedPanelServesPendingAuthoritativeSource(t *testing.T) {
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	const sourceCount = 96
+	directory := t.TempDir()
+	fullSource := make([]*fileEntry, sourceCount)
+	for index := range fullSource {
+		fullSource[index] = &fileEntry{VFSItem: vfs.VFSItem{
+			Name: fmt.Sprintf("image-%03d.jpg", index),
+		}}
+	}
+	prefix := make([]*fileEntry, 0, initialPanelCatalogRowsLimit+1)
+	prefix = append(prefix, &fileEntry{VFSItem: vfs.VFSItem{
+		Name: "..", IsDir: true,
+	}})
+	prefix = append(prefix, fullSource[:initialPanelCatalogRowsLimit-1]...)
+	panel := &FileSystemPanel{
+		vfs:                 vfs.NewOSVFS(directory),
+		table:               vtui.NewTable(0, 0, 80, 40, nil),
+		selectedItems:       make(map[string]bool),
+		entries:             prefix,
+		catalogLogicalCount: sourceCount + 1,
+		isLoading:           true,
+		loadGeneration:      9,
+	}
+	t.Cleanup(panel.unpublishSemanticMetadataSnapshot)
+	panel.resetSemanticPendingSource(panel.loadGeneration)
+	panel.setSemanticPendingSource(panel.loadGeneration, fullSource, true)
+
+	model := panel.semanticPanelModel(nil, 0, true)
+	if model.TotalCount != sourceCount+1 {
+		t.Fatalf("pending source total = %d, want %d", model.TotalCount, sourceCount+1)
+	}
+	const offset = initialPanelCatalogRowsLimit + 7
+	response, ok := BuildLivePanelCatalogRows(
+		model.ID, directory, model.CatalogRevision, offset, 16)
+	if !ok {
+		t.Fatalf("pending authoritative source rejected row request at %d", offset)
+	}
+	rows := appMapSlice(response["entries"])
+	if len(rows) != 16 || semanticString(rows[0]["name"]) != "image-054.jpg" {
+		t.Fatalf("pending source page = %d rows, first=%q",
+			len(rows), semanticString(rows[0]["name"]))
+	}
+}
+
+func TestSemanticPagedPanelUsesDenseCatalogForSettledSmallDirectory(t *testing.T) {
+	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })
+
+	const imageCount = 297
+	directory := t.TempDir()
+	entries := make([]*fileEntry, 0, imageCount+1)
+	entries = append(entries, &fileEntry{VFSItem: vfs.VFSItem{
+		Name: "..", IsDir: true,
+	}})
+	for index := 0; index < imageCount; index++ {
+		entries = append(entries, &fileEntry{VFSItem: vfs.VFSItem{
+			Name: fmt.Sprintf("image-%03d.jpg", index),
+		}})
+	}
+	panel := &FileSystemPanel{
+		vfs:               vfs.NewOSVFS(directory),
+		table:             vtui.NewTable(0, 0, 80, 40, nil),
+		selectedItems:     make(map[string]bool),
+		entries:           entries,
+		galleryLayoutMode: GalleryLayoutMasonry,
+	}
+	t.Cleanup(panel.unpublishSemanticMetadataSnapshot)
+
+	model := panel.semanticPanelModel(nil, 1, false)
+	if model.CatalogRowsDeferred {
+		t.Fatal("settled small catalog was left in sparse mode")
+	}
+	if model.TotalCount != imageCount+1 || len(model.Entries) != imageCount+1 {
+		t.Fatalf("dense catalog = %d/%d rows, want %d/%d",
+			len(model.Entries), model.TotalCount, imageCount+1, imageCount+1)
+	}
+	if model.Entries[0].Name != ".." ||
+		model.Entries[len(model.Entries)-1].Name != "image-296.jpg" {
+		t.Fatalf("dense catalog endpoints = %q/%q",
+			model.Entries[0].Name, model.Entries[len(model.Entries)-1].Name)
+	}
+}
+
 func TestSemanticPagedFastFindHeaderMatchesOnlyViewportWindow(t *testing.T) {
 	previousRowsCapability := setExtUiPanelCatalogRowsEnabled(true)
 	t.Cleanup(func() { setExtUiPanelCatalogRowsEnabled(previousRowsCapability) })

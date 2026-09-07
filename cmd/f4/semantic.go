@@ -1953,6 +1953,11 @@ const (
 	// bounded to rows which can affect the first frame.
 	initialPanelCatalogRowsLimit = 48
 	maxPanelCatalogRowsLimit     = 256
+	// Completed folders below this size are sent as a dense catalog. Masonry
+	// needs every image row in one model so ZoinGallery can use the decoded
+	// natural dimensions instead of its uniform sparse-grid geometry. Larger
+	// folders keep the sparse protocol and its bounded memory cost.
+	completePanelCatalogRowsLimit = 512
 	// Fast Find is transient viewport decoration. Keep its exported match map
 	// bounded to painted/buffered rows instead of serializing one entry for an
 	// entire large directory on every keystroke.
@@ -1965,6 +1970,100 @@ const (
 // no converted catalog survives a navigation and no second 30k-row copy is
 // retained merely for the native frontend.
 var semanticLivePanels sync.Map // panel semantic ID -> *FileSystemPanel
+
+// semanticPagedEntrySource describes the source visible to live sparse row
+// requests. During a windowed load, entries contains the complete directory
+// source produced by the worker while up is the synthetic parent row which
+// the panel prepends to that source. Keeping the parent separate avoids
+// allocating a second full pointer slice solely to make row indexes line up.
+type semanticPagedEntrySource struct {
+	entries []*fileEntry
+	up      *fileEntry
+}
+
+func (source semanticPagedEntrySource) count() int {
+	count := len(source.entries)
+	if source.up != nil {
+		count++
+	}
+	return count
+}
+
+func (source semanticPagedEntrySource) entryAt(index int) *fileEntry {
+	if index < 0 {
+		return nil
+	}
+	if source.up != nil {
+		if index == 0 {
+			return source.up
+		}
+		index--
+	}
+	if index >= len(source.entries) {
+		return nil
+	}
+	return source.entries[index]
+}
+
+func (fp *FileSystemPanel) resetSemanticPendingSource(generation uint64) {
+	if fp == nil {
+		return
+	}
+	fp.semanticPendingMu.Lock()
+	fp.semanticPendingLoadGeneration = generation
+	fp.semanticPendingEntries = nil
+	fp.semanticPendingUpEntry = nil
+	fp.semanticPendingMu.Unlock()
+}
+
+func (fp *FileSystemPanel) setSemanticPendingSource(
+	generation uint64, entries []*fileEntry, includeUp bool,
+) {
+	if fp == nil {
+		return
+	}
+	var up *fileEntry
+	if includeUp {
+		up = &fileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}
+	}
+	fp.semanticPendingMu.Lock()
+	if fp.semanticPendingLoadGeneration == generation {
+		fp.semanticPendingEntries = entries
+		fp.semanticPendingUpEntry = up
+	}
+	fp.semanticPendingMu.Unlock()
+}
+
+func (fp *FileSystemPanel) clearSemanticPendingSource(generation uint64) {
+	if fp == nil {
+		return
+	}
+	fp.semanticPendingMu.Lock()
+	if fp.semanticPendingLoadGeneration == generation {
+		fp.semanticPendingEntries = nil
+		fp.semanticPendingUpEntry = nil
+	}
+	fp.semanticPendingMu.Unlock()
+}
+
+func (fp *FileSystemPanel) semanticPagedEntrySource() semanticPagedEntrySource {
+	if fp == nil {
+		return semanticPagedEntrySource{}
+	}
+	fp.semanticPendingMu.RLock()
+	pendingGeneration := fp.semanticPendingLoadGeneration
+	pendingEntries := fp.semanticPendingEntries
+	pendingUpEntry := fp.semanticPendingUpEntry
+	fp.semanticPendingMu.RUnlock()
+	if pendingGeneration == fp.loadGeneration &&
+		(pendingEntries != nil || pendingUpEntry != nil) {
+		return semanticPagedEntrySource{
+			entries: pendingEntries,
+			up:      pendingUpEntry,
+		}
+	}
+	return semanticPagedEntrySource{entries: fp.entries}
+}
 
 func (fp *FileSystemPanel) markSemanticCatalogMutation() {
 	if fp == nil {
@@ -2037,10 +2136,39 @@ func (fp *FileSystemPanel) semanticCatalogTotalCount() int {
 	if fp == nil {
 		return 0
 	}
-	if fp.catalogLogicalCount > len(fp.entries) {
+	materializedCount := len(fp.entries)
+	if pending := fp.semanticPagedEntrySource().count(); pending > materializedCount {
+		materializedCount = pending
+	}
+	if fp.catalogLogicalCount > materializedCount {
 		return fp.catalogLogicalCount
 	}
-	return len(fp.entries)
+	return materializedCount
+}
+
+// semanticCatalogCanBeDense reports whether the panel owns the complete,
+// settled catalog. A non-zero logical count means the windowed reader has
+// only published its authoritative prefix; catalogProvisional and isLoading
+// cover the other transient states during navigation. The source-size cap
+// keeps large directories on the sparse Masonry path, where uniform virtual
+// cells are intentional.
+func (fp *FileSystemPanel) semanticCatalogCanBeDense() bool {
+	if fp == nil || fp.vfs == nil || fp.isLoading || fp.catalogProvisional ||
+		fp.catalogLogicalCount != 0 || len(fp.entries) > completePanelCatalogRowsLimit {
+		return false
+	}
+	source := fp.semanticPagedEntrySource()
+	return source.count() == len(fp.entries)
+}
+
+func (fp *FileSystemPanel) semanticPageStartsBeyondMaterializedSource(
+	offset, sourceCount int,
+) bool {
+	if fp == nil || offset < 0 || sourceCount < 0 {
+		return true
+	}
+	return offset > sourceCount ||
+		(offset < fp.semanticCatalogTotalCount() && offset >= sourceCount)
 }
 
 func (fp *FileSystemPanel) semanticFastFindRange() (int, int, bool) {
@@ -2117,18 +2245,22 @@ func (fp *FileSystemPanel) semanticFastFindMatches(
 func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 	[]extui.FileEntryModel, map[string]extui.HighlightStyleModel, bool,
 ) {
-	if fp == nil || fp.vfs == nil || offset < 0 || offset > len(fp.entries) {
+	if fp == nil || fp.vfs == nil || offset < 0 {
+		return nil, nil, false
+	}
+	source := fp.semanticPagedEntrySource()
+	if fp.semanticPageStartsBeyondMaterializedSource(offset, source.count()) {
 		return nil, nil, false
 	}
 	if limit <= 0 {
 		limit = initialPanelCatalogRowsLimit
 	}
-	if limit > maxPanelCatalogRowsLimit {
+	if limit > maxPanelCatalogRowsLimit && !fp.semanticCatalogCanBeDense() {
 		limit = maxPanelCatalogRowsLimit
 	}
 	end := offset + limit
-	if end > len(fp.entries) {
-		end = len(fp.entries)
+	if end > source.count() {
+		end = source.count()
 	}
 	sourceKind, _ := fp.semanticSourceInfo()
 	imageExtensions := semanticImageExtensions()
@@ -2142,7 +2274,7 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 	}
 	caps := fp.vfs.GetCapabilities()
 	for index := offset; index < end; index++ {
-		entry := fp.entries[index]
+		entry := source.entryAt(index)
 		if entry == nil {
 			return nil, nil, false
 		}
@@ -2223,11 +2355,15 @@ func BuildLivePanelCatalogRows(panelID, path string, catalogRevision int64,
 	}
 	fp, ok := loaded.(*FileSystemPanel)
 	if !ok || fp == nil || fp.vfs == nil || fp.vfs.GetPath() != path ||
-		fp.catalogRevision != catalogRevision || offset < 0 || offset > len(fp.entries) {
+		fp.catalogRevision != catalogRevision || offset < 0 {
+		return nil, false
+	}
+	source := fp.semanticPagedEntrySource()
+	if fp.semanticPageStartsBeyondMaterializedSource(offset, source.count()) {
 		return nil, false
 	}
 	rows, styles, ok := fp.semanticPagedRows(offset, limit)
-	if !ok || len(rows) == 0 && offset != len(fp.entries) {
+	if !ok || len(rows) == 0 && offset != source.count() {
 		return nil, false
 	}
 	return extui.PanelCatalogRowsModel{
@@ -2235,6 +2371,23 @@ func BuildLivePanelCatalogRows(panelID, path string, catalogRevision int64,
 		Offset: offset, Limit: len(rows), Total: fp.semanticCatalogTotalCount(),
 		Entries: rows, HighlightStyles: styles,
 	}.ToMap(), true
+}
+
+// LivePanelCatalogRowsRetryable reports the only rejection which a native
+// sparse client should retry: the panel has advertised an exact logical count
+// but the asynchronous full source has not reached fp.entries yet. This is
+// intentionally separate from BuildLivePanelCatalogRows so stale revisions
+// remain ordinary terminal rejections.
+func LivePanelCatalogRowsRetryable(panelID, path string,
+	catalogRevision int64) bool {
+	loaded, ok := semanticLivePanels.Load(panelID)
+	if !ok {
+		return false
+	}
+	fp, ok := loaded.(*FileSystemPanel)
+	return ok && fp != nil && fp.vfs != nil && fp.vfs.GetPath() == path &&
+		fp.catalogRevision == catalogRevision && fp.isLoading &&
+		fp.catalogLogicalCount > len(fp.entries)
 }
 
 func BuildLivePanelCatalogMetadataChunk(panelID, path string,
@@ -2247,7 +2400,11 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 	fp, ok := loaded.(*FileSystemPanel)
 	if !ok || fp == nil || fp.vfs == nil || fp.vfs.GetPath() != path ||
 		fp.catalogRevision != catalogRevision || fp.metadataRevision != metadataRevision ||
-		offset < 0 || offset > len(fp.entries) {
+		offset < 0 {
+		return nil, false
+	}
+	source := fp.semanticPagedEntrySource()
+	if fp.semanticPageStartsBeyondMaterializedSource(offset, source.count()) {
 		return nil, false
 	}
 	if limit <= 0 {
@@ -2257,8 +2414,8 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 		limit = maxPanelCatalogMetadataChunkLimit
 	}
 	end := offset + limit
-	if end > len(fp.entries) {
-		end = len(fp.entries)
+	if end > source.count() {
+		end = source.count()
 	}
 	sourceKind, _ := fp.semanticSourceInfo()
 	provider, _ := fp.vfs.(vfs.LocalPathProvider)
@@ -2272,7 +2429,7 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 		HighlightStyles: make(map[string]extui.HighlightStyleModel),
 	}
 	for index := offset; index < end; index++ {
-		entry := fp.entries[index]
+		entry := source.entryAt(index)
 		if entry == nil {
 			return nil, false
 		}
@@ -2311,8 +2468,12 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 	semanticLivePanels.Store(panelID, fp)
 	cursor := fp.GetCursorIndex()
 	totalCount := fp.semanticCatalogTotalCount()
-	offset, end := semanticPanelCatalogRange(
-		totalCount, cursor, initialPanelCatalogRowsLimit)
+	denseCatalog := fp.semanticCatalogCanBeDense()
+	limit := initialPanelCatalogRowsLimit
+	if denseCatalog {
+		limit = totalCount
+	}
+	offset, end := semanticPanelCatalogRange(totalCount, cursor, limit)
 	entries, highlightStyles, _ := fp.semanticPagedRows(offset, end-offset)
 	cursorEntryID := ""
 	if cursor >= 0 && cursor < len(fp.entries) {
@@ -2340,10 +2501,11 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
-		CatalogRevision:   fp.catalogRevision,
-		SelectionRevision: fp.selectionRevision,
-		MetadataDeferred:  true, MetadataRevision: fp.metadataRevision,
-		CatalogRowsDeferred: true,
+		CatalogRevision:     fp.catalogRevision,
+		SelectionRevision:   fp.selectionRevision,
+		MetadataDeferred:    true,
+		MetadataRevision:    fp.metadataRevision,
+		CatalogRowsDeferred: !denseCatalog,
 		HighlightRevision:   semanticHighlighterRevision(),
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
@@ -2558,6 +2720,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 	if semanticTitle == "" {
 		semanticTitle = fp.currentTitle
 	}
+	denseCatalog := fp.semanticCatalogCanBeDense()
 	return extui.PanelModel{
 		ID: panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: AppConfig.ShowPanelFileInfo,
@@ -2567,10 +2730,11 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
-		CatalogRevision:   fp.catalogRevision,
-		SelectionRevision: fp.selectionRevision,
-		MetadataDeferred:  true, MetadataRevision: fp.metadataRevision,
-		CatalogRowsDeferred: true,
+		CatalogRevision:     fp.catalogRevision,
+		SelectionRevision:   fp.selectionRevision,
+		MetadataDeferred:    true,
+		MetadataRevision:    fp.metadataRevision,
+		CatalogRowsDeferred: !denseCatalog,
 		HighlightRevision:   semanticHighlighterRevision(),
 		CursorEntryID:       cursorEntryID,
 		SortMode:            sortModeName(fp.sortMode), SortReverse: fp.sortReverse,

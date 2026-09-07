@@ -136,6 +136,7 @@ private slots:
     void panelCatalogPatchLeavesOtherSessionUntouched();
     void sparsePanelSelectionPatchKeepsCatalogImmutable();
     void panelCatalogRowsRequestStartsAtFirstMissingRow();
+    void rejectedPanelCatalogRowsRetryWhileSourceLoads();
     void deferredCatalogApplyStaysWithinKeyboardFrame();
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
@@ -4086,6 +4087,51 @@ void F4GalleryBridgeTests::panelCatalogRowsRequestStartsAtFirstMissingRow()
     const QVariantMap request = requests.constFirst().at(0).toMap();
     QCOMPARE(request.value(QStringLiteral("offset")).toInt(), 48);
     QCOMPARE(request.value(QStringLiteral("limit")).toInt(), 64);
+    QCOMPARE(state.catalogRowsRequestOffset, 48);
+    QCOMPARE(state.catalogRowsRequestLimit, 64);
+}
+
+void F4GalleryBridgeTests::rejectedPanelCatalogRowsRetryWhileSourceLoads()
+{
+    F4GalleryBridge bridge(nullptr);
+    F4GalleryBridge::SideState &state = bridge.m_panelSessions.catalog(0);
+    state.initialized = true;
+    state.panelId = QStringLiteral("paged-loading");
+    state.currentPath = QStringLiteral("/Users/zoin/Photos");
+    state.catalogRevision = 23;
+    state.catalogRowsDeferred = true;
+    state.totalCount = 297;
+    state.cursorIndex = 0;
+    state.catalogRowsVisibleFirst = 0;
+    state.catalogRowsVisibleLast = 39;
+    for (int row = 0; row < 48; ++row) {
+        QVERIFY(F4GalleryBridge::setCatalogEntry(
+            state, row, QVariantMap{
+                {QStringLiteral("entryId"),
+                 QStringLiteral("preview-%1").arg(row)},
+                {QStringLiteral("index"), row},
+            }));
+    }
+
+    QSignalSpy requests(
+        &bridge, &F4GalleryBridge::panelCatalogRowsRequested);
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 1);
+    QCOMPARE(state.catalogRowsRequestOffset, 48);
+
+    bridge.handlePanelCatalogRowsMessage({
+        {QStringLiteral("type"),
+         QStringLiteral("panel_catalog_rows_rejected")},
+        {QStringLiteral("panelId"), state.panelId},
+        {QStringLiteral("path"), state.currentPath},
+        {QStringLiteral("catalogRevision"),
+         QVariant::fromValue<qulonglong>(state.catalogRevision)},
+        {QStringLiteral("offset"), 48},
+        {QStringLiteral("retry"), true},
+    });
+    QVERIFY(!state.catalogRowsRequestInFlight);
+
+    QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 2, 1000);
     QCOMPARE(state.catalogRowsRequestOffset, 48);
     QCOMPARE(state.catalogRowsRequestLimit, 64);
 }

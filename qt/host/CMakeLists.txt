@@ -1139,6 +1139,11 @@ if(BUILD_TESTING)
     set_property(TEST F4KeyBarPixelGridTest APPEND PROPERTY
       ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
   endif()
+  add_test(NAME F4ViewerWorkspaceChromeTest
+    COMMAND F4QuickViewSurfaceTests expandedViewerKeepsWorkspaceChromeAccessible)
+  set_tests_properties(F4ViewerWorkspaceChromeTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4QuickViewPanelDriveButtonTest
     COMMAND F4QuickViewSurfaceTests
       panelDriveButtonUsesPathIconAndRequestsDriveMenu)

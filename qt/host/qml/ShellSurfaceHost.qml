@@ -126,7 +126,12 @@ Item {
 
     Loader {
         id: galleryViewerLayer
-        anchors.fill: parent
+        objectName: "galleryViewerLayer"
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: titleBar.bottom
+        anchors.bottom: parent.bottom
+        clip: true
         active: surfaces.galleryController.viewerVisible
                 && !surfaces.hostWindow.hasDocumentSurface()
                 && !surfaces.hostWindow.needsFallbackGrid()

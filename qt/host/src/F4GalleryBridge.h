@@ -335,6 +335,7 @@ private:
     int matchingMetadataSide(const QVariantMap &message) const;
     void requestPanelCatalogRows(int side);
     void schedulePanelCatalogRowsRequest(int side);
+    void schedulePanelCatalogRowsRetry(int side);
     int matchingCatalogRowsSide(const QVariantMap &message) const;
     bool catalogRowLoaded(const SideState &state, int row) const;
     static int catalogEntryCount(const SideState &state);

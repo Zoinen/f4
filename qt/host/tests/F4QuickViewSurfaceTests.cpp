@@ -186,17 +186,19 @@ class TestGallery final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ nullObject CONSTANT)
-    Q_PROPERTY(bool viewerVisible READ viewerVisible CONSTANT)
+    Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide CONSTANT)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
-    Q_PROPERTY(QUrl viewerComponentUrl READ emptyUrl CONSTANT)
+    Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl NOTIFY viewerChanged)
 
 public:
     explicit TestGallery(bool available = false) : m_available(available) {}
 
     bool available() const { return m_available; }
     QObject *nullObject() const { return nullptr; }
-    bool viewerVisible() const { return false; }
+    bool viewerVisible() const { return m_viewerUrl.isValid(); }
+    QUrl viewerComponentUrl() const { return m_viewerUrl; }
+    void showViewer(const QUrl &url) { m_viewerUrl = url; emit viewerChanged(); }
     int viewerSide() const { return 0; }
     QUrl emptyUrl() const { return {}; }
     QUrl panelComponentUrl() const
@@ -214,6 +216,7 @@ signals:
 
 private:
     bool m_available = false;
+    QUrl m_viewerUrl;
 };
 
 class TestIcons final : public QObject
@@ -685,6 +688,7 @@ class F4QuickViewSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void expandedViewerKeepsWorkspaceChromeAccessible();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
@@ -3264,6 +3268,89 @@ void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
     sendAngleWheel(fixture.window, position, -120);
     QTest::qWait(50);
     QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::expandedViewerKeepsWorkspaceChromeAccessible()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{
+        {"visible", true}, {"activeIndex", 0},
+        {"tabs", QVariantList{
+            QVariantMap{{"id", "workspace-tab-1"}, {"text", "Photos"},
+                        {"index", 0}, {"action", "workspace.activate"},
+                        {"number", 1}, {"surfaceKind", "panels"},
+                        {"active", true}, {"closable", true}},
+            QVariantMap{{"id", "workspace-tab-2"}, {"text", "Other"},
+                        {"index", 1}, {"action", "workspace.activate"},
+                        {"number", 2}, {"surfaceKind", "panels"},
+                        {"active", false}, {"closable", true}}}},
+        {"newTab", QVariantMap{}}, {"counter", QVariantMap{}}
+    });
+    QTemporaryDir directory;
+    QFile viewerFile(directory.filePath("Viewer.qml"));
+    QVERIFY(viewerFile.open(QIODevice::WriteOnly));
+    viewerFile.write(R"QML(import QtQuick
+Rectangle {
+    color: "#e01080"
+    property var session
+    property var sourcePanel
+    property var bridge
+    property var keySink
+    property var theme
+    property bool surfaceActive
+    property real devicePixelRatio
+    property real surfaceProgress: 1
+    MouseArea { anchors.fill: parent }
+})QML");
+    viewerFile.close();
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.gallery.showViewer(QUrl::fromLocalFile(viewerFile.fileName()));
+    QTRY_COMPARE(fixture.window->property("galleryViewerProgress").toReal(), 1.0);
+    auto *layer = fixture.item("galleryViewerLayer");
+    auto *tabs = fixture.item("workspaceBar");
+    auto *second = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-2");
+    QVERIFY(layer && tabs && second);
+    auto *root = fixture.window->contentItem();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QRectF viewerRect = layer->mapRectToItem(root, layer->boundingRect());
+    QVERIFY(viewerRect.top() > 0);
+    QVERIFY(layer->clip());
+    const auto verifyLeaf = [root, dpr](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToItem(root, QPointF{});
+        for (qreal coordinate : {origin.x(), origin.y()}) {
+            const qreal physical = coordinate * dpr;
+            QVERIFY2(qAbs(physical - qRound(physical)) < 0.001,
+                     qPrintable(QStringLiteral("%1: %2 physical px")
+                         .arg(leaf->objectName()).arg(physical, 0, 'f', 6)));
+        }
+        QCOMPARE(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1));
+        QVERIFY(leaf->opacity() > 0.0);
+        for (auto *item = leaf->parentItem(); item; item = item->parentItem())
+            QCOMPARE(item->opacity(), 1.0);
+    };
+    for (const QString &id : {QStringLiteral("workspace-tab-1"),
+                              QStringLiteral("workspace-tab-2")}) {
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-title-" + id));
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-number-" + id));
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-icon-" + id));
+    }
+    const QImage rendered = fixture.window->grabWindow();
+    QVERIFY(!rendered.isNull());
+    QVERIFY(rendered.save(directory.filePath("viewer-chrome.png")));
+    const QString capturePath = qEnvironmentVariable("F4_VIEWER_CHROME_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(rendered.save(capturePath));
+    const auto center = second->mapToItem(root, second->boundingRect().center());
+    QVERIFY(center.y() < viewerRect.top());
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, center.toPoint());
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(),
+             QStringLiteral("workspace.activate"));
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 1);
 }
 
 void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()

@@ -175,7 +175,12 @@ void F4GalleryRowsResponseReducer::run()
         return;
     }
     if (m_type == QStringLiteral("panel_catalog_rows_rejected")) {
+        const bool retry = m_message.value(
+            QStringLiteral("retry")).toBool();
         clearRequest();
+        if (retry) {
+            m_bridge.schedulePanelCatalogRowsRetry(m_side);
+        }
         return;
     }
     if (!parseEnvelope() || !validateRows() || !normalizeRows()

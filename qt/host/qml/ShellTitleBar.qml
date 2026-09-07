@@ -136,7 +136,6 @@ Item {
                              : hostWindow.useMacNativeTitleBar
                                ? -windowButtons.width : 0
         height: parent.height
-        opacity: hostWindow.normalSurfaceOpacity
     }
 
 

@@ -595,9 +595,10 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 			break
 		}
 	}
-	if side < 0 || side != owner.activeIdx {
+	if side < 0 {
 		return false
 	}
+	activeSide := owner.activeIdx
 	screen := vtui.FrameManager.Screen()
 	if screen == nil {
 		return false
@@ -619,7 +620,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 		modelStartedNs = navigationBenchmarkMonotonicNs()
 	}
 	previousBenchmark := navigationBenchmarkSetCurrentUI(benchmark)
-	model := fp.semanticPanelModel(nil, side, true)
+	model := fp.semanticPanelModel(nil, side, side == activeSide)
 	navigationBenchmarkSetCurrentUI(previousBenchmark)
 	if benchmark != nil {
 		modelBuiltNs := navigationBenchmarkMonotonicNs()
@@ -628,7 +629,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 	}
 	queued := false
 	presentationComplete := false
-	if typedCompleteOK {
+	if side == activeSide && typedCompleteOK {
 		var commandLine map[string]any
 		if owner.cmdLine != nil {
 			owner.cmdLine.SetRichPrompt(owner.buildPrompt())
@@ -639,8 +640,15 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 			navigationBenchmarkTraceName(benchmark))
 		presentationComplete = queued
 	} else if typedOK {
+		// An inactive panel is still allowed to receive an atomic catalog
+		// replacement, but it must not carry shell chrome or claim that the
+		// native frame is complete for the active panel.
+		shellTitle := ""
+		if side == activeSide {
+			shellTitle = strings.TrimSpace(owner.GetTitle())
+		}
 		queued = typedRenderer.QueuePanelCatalogModelState(side, model,
-			strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
+			shellTitle, navigationBenchmarkTraceName(benchmark))
 	} else {
 		mapStartedNs := int64(0)
 		if benchmark != nil {
@@ -652,8 +660,12 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navigationBenc
 			benchmark.eventAt("model.semantic_panel.mapped", "go.ui", mappedNs,
 				"entries", len(model.Entries), "durationNs", mappedNs-mapStartedNs)
 		}
+		shellTitle := ""
+		if side == activeSide {
+			shellTitle = strings.TrimSpace(owner.GetTitle())
+		}
 		queued = mapRenderer.QueuePanelCatalogState(side, panel,
-			strings.TrimSpace(owner.GetTitle()), navigationBenchmarkTraceName(benchmark))
+			shellTitle, navigationBenchmarkTraceName(benchmark))
 	}
 	if queued {
 		fp.acknowledgeSemanticSelection(fp.selectionRevision)

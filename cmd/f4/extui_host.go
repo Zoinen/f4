@@ -1833,8 +1833,15 @@ func (r *ExtUiRenderer) queuePanelCatalogState(side int, panel map[string]any,
 	}
 	activeSide, activeOK := semanticSceneActivePanel(r.lastScene)
 	panels, panelsOK := semanticScenePanelMaps(r.lastScene)
-	if !activeOK || activeSide != side || !panelsOK || side >= len(panels) ||
+	if !activeOK || !panelsOK || side >= len(panels) ||
 		!semanticPanelCatalogTransitionSafe(panels[side], panel, side) {
+		return false
+	}
+	// The wire envelope carries the shell's real active side, so Qt can
+	// atomically replace an inactive panel without changing focus. Only the
+	// active side may carry shell chrome or suppress the following presentation
+	// render; an inactive catalog is a normal catalog-only update.
+	if activeSide != side && (presentationComplete || commandLine != nil || shellTitle != "") {
 		return false
 	}
 	baseCatalogRevision := semanticInt64(panels[side]["catalogRevision"])
@@ -4814,6 +4821,11 @@ func (h *ExtUiHost) queuePanelCatalogRows(msg map[string]any) bool {
 				"path":            extUiString(request, "path"),
 				"catalogRevision": catalogRevision,
 				"offset":          extUiInt(request, "offset"),
+			}
+			if LivePanelCatalogRowsRetryable(
+				extUiString(request, "panelId"),
+				extUiString(request, "path"), catalogRevision) {
+				response["retry"] = true
 			}
 		}
 		if traceID := extUiString(request, "benchmarkTraceId"); traceID != "" {
