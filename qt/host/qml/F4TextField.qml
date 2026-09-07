@@ -255,7 +255,7 @@ Item {
         visible: control.hasBackground
         radius: control.snap(4)
         color: control.hostWindow
-               ? (control.hovered ? control.hostWindow.controlHoverBg
+               ? (control.hovered ? control.hostWindow.inputHoverBg
                                   : control.hostWindow.controlPressedBg)
                : "#18202a"
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1

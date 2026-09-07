@@ -216,7 +216,7 @@ T.ComboBox {
         enabled: control.externallyOwnedPopup && control.enabled
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
+        cursorShape: Qt.ArrowCursor
         preventStealing: true
         onClicked: control.externalPopupRequested()
     }

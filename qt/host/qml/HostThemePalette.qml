@@ -30,6 +30,19 @@ Item {
     property color controlBg: "#222c38"
     property color controlHoverBg: "#2a3745"
     property color controlPressedBg: "#10161e"
+    // Recessed inputs retain their darker base while receiving the same
+    // proportional brightness change as raised buttons and combo boxes.
+    readonly property color inputHoverBg: {
+        const baseValue = controlBg.hsvValue
+        const hoverValue = controlHoverBg.hsvValue
+        const inputValue = controlPressedBg.hsvValue
+        const value = baseValue > 0
+            ? inputValue * hoverValue / baseValue
+            : inputValue + hoverValue
+        return Qt.hsva(controlPressedBg.hsvHue,
+                       controlPressedBg.hsvSaturation,
+                       Math.max(0, Math.min(1, value)), controlPressedBg.a)
+    }
     property color controlBorder: "#3a495b"
     property color separatorColor: "#2d3642"
     property color separatorHoverColor: "#464d55"

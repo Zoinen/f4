@@ -141,6 +141,7 @@ ApplicationWindow {
     property alias dialogHeaderBg: themePalette.dialogHeaderBg
     property alias controlBg: themePalette.controlBg
     property alias controlHoverBg: themePalette.controlHoverBg
+    readonly property color inputHoverBg: themePalette.inputHoverBg
     property alias controlPressedBg: themePalette.controlPressedBg
     property alias controlBorder: themePalette.controlBorder
     property alias separatorColor: themePalette.separatorColor
