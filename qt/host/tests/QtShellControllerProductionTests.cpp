@@ -145,6 +145,7 @@ private slots:
     void patchPresentationIsDemandShapedAndSanitized();
     void catalogCompletionSurvivesLateQmlConstruction();
     void streamUpdatesNeverAssembleMasterScene();
+    void mixedOverlayPatchDoesNotPoisonDialogStream();
     void pagedSelectionKeepsBoundedCatalog();
 };
 
@@ -741,6 +742,73 @@ void QtShellControllerProductionTests::streamUpdatesNeverAssembleMasterScene()
     QVERIFY(invalidation.value(QStringLiteral("replaceShell")).toBool());
     QVERIFY(!invalidation.contains(QStringLiteral("shell")));
     QVERIFY(!invalidation.contains(QStringLiteral("shellPresent")));
+}
+
+void QtShellControllerProductionTests::mixedOverlayPatchDoesNotPoisonDialogStream()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = QStringLiteral("production-overlay-streams");
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        nonce, 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+
+    QVERIFY(sendFrame(peer, {
+        {QStringLiteral("type"), QStringLiteral("hello")},
+        {QStringLiteral("protocol"), 4},
+        {QStringLiteral("nonce"), nonce},
+    }));
+    QVERIFY(sendFrame(peer, envelope(1, QStringLiteral("menus"), 1,
+                        QStringLiteral("snapshot"), {
+        {QStringLiteral("type"), QStringLiteral("menus_snapshot")},
+        {QStringLiteral("state"), QVariantMap{
+            {QStringLiteral("menuBar"), QVariantMap{}},
+            {QStringLiteral("menus"), QVariantList{}},
+        }},
+    })));
+    QTRY_COMPARE(controller.overlayState()->menuRevision(), quint64(1));
+
+    // Older Go peers could bundle both overlay payloads in the menus stream.
+    // The dialog payload must still be applied, but its independent revision
+    // cursor must remain available for the first real dialogs-stream patch.
+    const QVariantMap dialog{{QStringLiteral("id"),
+                              QStringLiteral("panel-settings")}};
+    QVERIFY(sendFrame(peer, envelope(2, QStringLiteral("menus"), 2,
+                        QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{
+            {QStringLiteral("set"), QVariantMap{
+                {QStringLiteral("menus"), QVariantList{
+                    QVariantMap{{QStringLiteral("id"),
+                                 QStringLiteral("options")}}
+                }},
+                {QStringLiteral("dialogs"), QVariantList{dialog}},
+            }},
+        }},
+    }, 1)));
+    QTRY_COMPARE(controller.overlayState()->dialogs().size(), 1);
+    QCOMPARE(controller.overlayState()->dialogRevision(), quint64(0));
+
+    QVERIFY(sendFrame(peer, envelope(3, QStringLiteral("dialogs"), 1,
+                        QStringLiteral("patch"), {
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("schema"), QStringLiteral("app")},
+        {QStringLiteral("version"), 4},
+        {QStringLiteral("root"), QVariantMap{
+            {QStringLiteral("set"), QVariantMap{
+                {QStringLiteral("dialogs"), QVariantList{}},
+            }},
+        }},
+    }, 0)));
+    QTRY_COMPARE(controller.overlayState()->dialogs().size(), 0);
+    QCOMPARE(controller.overlayState()->dialogRevision(), quint64(1));
 }
 
 void QtShellControllerProductionTests::pagedSelectionKeepsBoundedCatalog()

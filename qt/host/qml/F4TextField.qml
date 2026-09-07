@@ -35,6 +35,10 @@ Item {
     signal accepted()
     signal textEdited()
     signal editingFinished()
+    // Semantic dialog fields still use the native TextInput for pointer
+    // selection.  The surrounding semantic layer may ask Go to focus the
+    // control, but it must not take the press away from TextInput itself.
+    signal pointerFocusRequested()
 
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
@@ -42,10 +46,196 @@ Item {
 
     function selectAll() { innerInput.selectAll() }
     function select(start, end) { innerInput.select(start, end) }
+    function deselect() { innerInput.deselect() }
     function copy() { innerInput.copy() }
     function cut() { innerInput.cut() }
     function paste() { innerInput.paste() }
     function forceActiveFocus() { innerInput.forceActiveFocus() }
+
+    // The visual text input is inset by the field's RowLayout margins. Keep
+    // those margins interactive as well: when a drag starts just inside the
+    // border, Qt otherwise has no TextInput hit target and cannot establish a
+    // selection anchor even though the cursor is already shown as an I-beam.
+    // mapToItem() itself is not a reactive dependency. Include the complete
+    // layout chain in a revision so the margin hit areas are recomputed after
+    // the RowLayout has received its real width/height (rather than staying
+    // at the zero-sized value observed during component construction).
+    readonly property real textInputLayoutRevision: {
+        var revision = control.width + control.height
+        var item = innerInput
+        for (var depth = 0; item && depth < 10; ++depth) {
+            revision += item.x + item.y + item.width + item.height
+            item = item.parent
+        }
+        return revision
+    }
+    readonly property real textInputLeftEdge: {
+        const revision = textInputLayoutRevision
+        return innerInput.mapToItem(control, 0, 0).x + revision * 0
+    }
+    readonly property real textInputRightEdge:
+        textInputLeftEdge + innerInput.width
+
+    function textPositionAtControlPoint(pointX, pointY) {
+        const point = innerInput.mapFromItem(control, pointX, pointY)
+        const x = Math.max(0, Math.min(innerInput.width, Number(point.x)))
+        if (typeof innerInput.positionAt === "function") {
+            const position = Number(innerInput.positionAt(x))
+            if (isFinite(position))
+                return Math.max(0, Math.min(innerInput.length, position))
+        }
+        return x <= 0 ? 0 : innerInput.length
+    }
+
+    // TextInput does not expose its native word/paragraph gesture handling
+    // through the QML API.  The side hit areas below intentionally mirror
+    // that behavior for clicks which land in the field's visual padding:
+    // the second click selects the word under the pointer and the third
+    // selects the complete value.  Keep the calculation in UTF-16 offsets,
+    // since TextInput.selectionStart/End use those offsets even when the
+    // displayed value contains non-BMP characters.
+    function selectWordAtPosition(position) {
+        const value = String(innerInput.text || "")
+        if (value.length === 0) {
+            innerInput.deselect()
+            return
+        }
+
+        const codePoints = Array.from(value)
+        const offsets = [0]
+        for (var offsetIndex = 0; offsetIndex < codePoints.length;
+             ++offsetIndex) {
+            offsets.push(offsets[offsets.length - 1]
+                         + codePoints[offsetIndex].length)
+        }
+
+        const bounded = Math.max(0, Math.min(value.length,
+                                              Number(position || 0)))
+        let codePointIndex = codePoints.length - 1
+        for (var index = 0; index < codePoints.length; ++index) {
+            if (bounded < offsets[index + 1]) {
+                codePointIndex = index
+                break
+            }
+        }
+
+        function characterKind(character) {
+            if (/\s/.test(character))
+                return "space"
+            // Treat letters, numbers and underscore as a word.  The case
+            // comparison covers non-ASCII letters without splitting their
+            // UTF-16 representation; punctuation remains its own token.
+            if (character === "_"
+                    || character.toUpperCase() !== character.toLowerCase()
+                    || /^[0-9]$/.test(character))
+                return "word"
+            return "punctuation"
+        }
+
+        const kind = characterKind(codePoints[codePointIndex])
+        let start = codePointIndex
+        let end = codePointIndex + 1
+        while (start > 0
+               && characterKind(codePoints[start - 1]) === kind)
+            --start
+        while (end < codePoints.length
+               && characterKind(codePoints[end]) === kind)
+            ++end
+        innerInput.select(offsets[start], offsets[end])
+    }
+
+    function marginClickInterval() {
+        const hints = Qt.styleHints
+        const interval = hints ? Number(hints.mouseDoubleClickInterval) : 0
+        return isFinite(interval) && interval > 0 ? interval : 400
+    }
+
+    function beginMarginPress(area, mouse) {
+        area.pressX = mouse.x
+        area.pressY = mouse.y
+        area.dragMoved = false
+        control.beginMarginSelection(area, mouse)
+    }
+
+    function updateMarginPress(area, mouse) {
+        if (!area.dragging)
+            return
+        const dx = mouse.x - area.pressX
+        const dy = mouse.y - area.pressY
+        if (dx * dx + dy * dy > 9)
+            area.dragMoved = true
+        control.updateMarginSelection(area, mouse)
+    }
+
+    function finishMarginPress(area, mouse) {
+        if (!area.dragging)
+            return
+        control.updateMarginSelection(area, mouse)
+        const moved = area.dragMoved
+        area.dragging = false
+        if (moved) {
+            // A drag is a distinct gesture.  Do not let its release become
+            // the first click of a later double-click sequence.
+            area.clickCount = 0
+            area.lastClickAt = 0
+            return
+        }
+
+        const point = area.mapToItem(control, mouse.x, mouse.y)
+        const now = Date.now()
+        const sameSpot = area.clickCount > 0
+                && now >= area.lastClickAt
+                && now - area.lastClickAt <= control.marginClickInterval()
+                && Math.abs(point.x - area.lastClickX) <= control.snap(6)
+                && Math.abs(point.y - area.lastClickY) <= control.snap(6)
+        area.clickCount = sameSpot
+                ? Math.min(3, area.clickCount + 1) : 1
+        area.lastClickAt = now
+        area.lastClickX = point.x
+        area.lastClickY = point.y
+
+        const position = control.textPositionAtControlPoint(point.x, point.y)
+        if (area.clickCount === 2)
+            control.selectWordAtPosition(position)
+        else if (area.clickCount >= 3) {
+            innerInput.selectAll()
+            area.clickCount = 0
+        }
+    }
+
+    function cancelMarginPress(area) {
+        area.dragging = false
+        area.dragMoved = false
+        area.clickCount = 0
+        area.lastClickAt = 0
+    }
+
+    function beginMarginSelection(area, mouse) {
+        area.dragging = true
+        area.anchorPosition = 0
+        const point = area.mapToItem(control, mouse.x, mouse.y)
+        control.pointerFocusRequested()
+        innerInput.forceActiveFocus()
+        area.anchorPosition = textPositionAtControlPoint(point.x, point.y)
+        innerInput.deselect()
+        innerInput.cursorPosition = area.anchorPosition
+        mouse.accepted = true
+    }
+
+    function updateMarginSelection(area, mouse) {
+        if (!area.dragging)
+            return
+        const point = area.mapToItem(control, mouse.x, mouse.y)
+        const position = textPositionAtControlPoint(point.x, point.y)
+        if (position === area.anchorPosition) {
+            innerInput.deselect()
+            innerInput.cursorPosition = position
+        } else {
+            innerInput.select(Math.min(area.anchorPosition, position),
+                              Math.max(area.anchorPosition, position))
+        }
+        mouse.accepted = true
+    }
 
     implicitHeight: snap(32)
     implicitWidth: snap(180)
@@ -126,7 +316,11 @@ Item {
                 selectionColor: control.hostWindow ? control.hostWindow.selectedBg : "#2c7be5"
                 selectedTextColor: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
                 font: control.hostWindow ? control.hostWindow.font : Qt.font({})
-                selectByMouse: !control.remoteControlled
+                // A remote-controlled field is normally read-only because Go
+                // owns editing.  Read-only TextInput still provides native
+                // selection, so keep that path enabled for semantic dialog
+                // fields instead of making their text impossible to select.
+                selectByMouse: !control.remoteControlled || innerInput.readOnly
                 clip: true
                 transform: Translate {
                     x: control.hostWindow
@@ -151,6 +345,10 @@ Item {
                 }
 
                 onAccepted: control.accepted()
+                onActiveFocusChanged: {
+                    if (innerInput.activeFocus)
+                        control.pointerFocusRequested()
+                }
                 onTextEdited: {
                     ++control.cursorActivityRevision
                     control.textEdited()
@@ -228,6 +426,78 @@ Item {
                 editMenu.popup()
             }
         }
+    }
+
+    MouseArea {
+        id: leftMarginSelectionArea
+        objectName: control.objectName
+                    ? (control.objectName + "LeftMarginSelectionArea")
+                    : "textFieldLeftMarginSelectionArea"
+        x: 0
+        y: 0
+        width: Math.max(0, Math.min(control.width, control.textInputLeftEdge))
+        height: control.height
+        z: 1
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        preventStealing: true
+        cursorShape: Qt.IBeamCursor
+        property bool dragging: false
+        property bool dragMoved: false
+        property real pressX: 0
+        property real pressY: 0
+        property int clickCount: 0
+        property double lastClickAt: 0
+        property real lastClickX: 0
+        property real lastClickY: 0
+        property int anchorPosition: 0
+        onPressed: function(mouse) {
+            control.beginMarginPress(leftMarginSelectionArea, mouse)
+        }
+        onPositionChanged: function(mouse) {
+            control.updateMarginPress(leftMarginSelectionArea, mouse)
+        }
+        onReleased: function(mouse) {
+            control.finishMarginPress(leftMarginSelectionArea, mouse)
+            mouse.accepted = true
+        }
+        onCanceled: control.cancelMarginPress(leftMarginSelectionArea)
+    }
+
+    MouseArea {
+        id: rightMarginSelectionArea
+        objectName: control.objectName
+                    ? (control.objectName + "RightMarginSelectionArea")
+                    : "textFieldRightMarginSelectionArea"
+        x: Math.max(0, Math.min(control.width, control.textInputRightEdge))
+        y: 0
+        width: Math.max(0, control.width - x)
+        height: control.height
+        z: 1
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        preventStealing: true
+        cursorShape: Qt.IBeamCursor
+        property bool dragging: false
+        property bool dragMoved: false
+        property real pressX: 0
+        property real pressY: 0
+        property int clickCount: 0
+        property double lastClickAt: 0
+        property real lastClickX: 0
+        property real lastClickY: 0
+        property int anchorPosition: 0
+        onPressed: function(mouse) {
+            control.beginMarginPress(rightMarginSelectionArea, mouse)
+        }
+        onPositionChanged: function(mouse) {
+            control.updateMarginPress(rightMarginSelectionArea, mouse)
+        }
+        onReleased: function(mouse) {
+            control.finishMarginPress(rightMarginSelectionArea, mouse)
+            mouse.accepted = true
+        }
+        onCanceled: control.cancelMarginPress(rightMarginSelectionArea)
     }
 
     T.Menu {

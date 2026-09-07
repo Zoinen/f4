@@ -133,7 +133,11 @@ Rectangle {
                                + hostWindow.panelSplitRatio
             breadcrumbSeparatorIconSource:
                 hostWindow.lucideIconSource(
-                    "chevron-right", 12, hostWindow.galleryPathTextColor)
+                    "chevron-right", 12,
+                    Qt.rgba(hostWindow.galleryPathTextColor.r,
+                            hostWindow.galleryPathTextColor.g,
+                            hostWindow.galleryPathTextColor.b,
+                            hostWindow.galleryPathTextColor.a * 0.5))
             localDriveIconSource:
                 hostWindow.lucideIconSource(
                     "hard-drive", 18, hostWindow.galleryPathTextColor)

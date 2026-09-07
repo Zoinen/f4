@@ -1030,7 +1030,8 @@ if(BUILD_TESTING)
   )
   add_test(NAME F4SemanticDialogControlsPixelGridTest
     COMMAND F4OperationsQueueTests
-      semanticDialogControlsUseWindowFontAndStayPixelAligned)
+      semanticDialogControlsUseWindowFontAndStayPixelAligned
+      semanticDialogComboBoxFollowsGoOwnedMenuState)
   set_tests_properties(F4SemanticDialogControlsPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
@@ -1118,6 +1119,11 @@ if(BUILD_TESTING)
     COMMAND F4QuickViewSurfaceTests
       workspaceTabTextParentsStayOnPhysicalPixelGrid)
   set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4QuickViewWorktreeBranchTitleTest
+    COMMAND F4QuickViewSurfaceTests worktreeBranchAppearsCenteredInTitleBar)
+  set_tests_properties(F4QuickViewWorktreeBranchTitleTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewPathBreadcrumbPixelGridTest

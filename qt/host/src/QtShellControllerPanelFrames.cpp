@@ -309,7 +309,10 @@ bool QtShellController::applyCommandLineFrame(
             {QStringLiteral("menuBar"), m_overlayState->menuBar()},
             {QStringLiteral("menus"), menus},
         };
-        m_overlayState->applyMenuState(state, envelope.revision, true);
+        // This is a command-line stream payload; menuRevision is owned by
+        // the menus stream even when an older peer bundles the projection.
+        m_overlayState->applyMenuState(state, m_overlayState->menuRevision(),
+                                       true);
     }
 #endif
     return true;

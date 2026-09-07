@@ -15,6 +15,7 @@ private slots:
     void surfaceRegistryRejectsCatalogPayloads();
     void overlayUpdatesDoNotInvalidateSurfaces();
     void staleDialogRevisionDoesNotRestoreOlderGeometry();
+    void overlayRevisionIsPublishedAfterDialogPayload();
 };
 
 void ShellStateStoreTests::extractsOnlyFixedShellRoles()
@@ -204,6 +205,36 @@ void ShellStateStoreTests::staleDialogRevisionDoesNotRestoreOlderGeometry()
     QCOMPARE(stored.value(QStringLiteral("h")).toInt(), 25);
     QCOMPARE(dialogsChanged.count(), 0);
     QCOMPARE(revisionChanged.count(), 0);
+}
+
+void ShellStateStoreTests::overlayRevisionIsPublishedAfterDialogPayload()
+{
+    OverlayStateStore overlays;
+    const QVariantMap dialog{
+        {QStringLiteral("id"), QStringLiteral("panel-settings")},
+    };
+    bool openingRevisionSawPayload = false;
+    bool closingRevisionSawEmpty = false;
+    QObject::connect(&overlays, &OverlayStateStore::dialogRevisionChanged,
+                     [&]() {
+                         if (overlays.dialogRevision() == 1) {
+                             openingRevisionSawPayload =
+                                 overlays.dialogs().size() == 1;
+                         } else if (overlays.dialogRevision() == 2) {
+                             closingRevisionSawEmpty =
+                                 overlays.dialogs().isEmpty();
+                         }
+                     });
+
+    overlays.applyDialogsState({
+        {QStringLiteral("dialogs"), QVariantList{dialog}},
+    }, 1);
+    overlays.applyDialogsState({
+        {QStringLiteral("dialogs"), QVariantList{}},
+    }, 2);
+
+    QVERIFY(openingRevisionSawPayload);
+    QVERIFY(closingRevisionSawEmpty);
 }
 
 QTEST_GUILESS_MAIN(ShellStateStoreTests)

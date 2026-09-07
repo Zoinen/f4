@@ -205,6 +205,7 @@ Rectangle {
     clip: true
 
     MouseArea {
+        z: -1
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
         hoverEnabled: true

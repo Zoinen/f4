@@ -760,22 +760,26 @@ func (cb *ComboBox) HandleSemanticAction(action map[string]any) bool {
 func (e *Edit) SemanticNode(ctx *SemanticContext) map[string]any {
 	x1, y1, x2, y2 := e.GetPosition()
 	return map[string]any{
-		"id":             SemanticID(e),
-		"kind":           "edit",
-		"x":              x1,
-		"y":              y1,
-		"w":              x2 - x1 + 1,
-		"h":              y2 - y1 + 1,
-		"visible":        e.IsVisible(),
-		"focused":        e.IsFocused(),
-		"disabled":       e.IsDisabled(),
-		"text":           e.GetText(),
-		"cursor":         e.curPos,
-		"left":           e.leftPos,
-		"password":       e.PasswordMode,
-		"selectionStart": e.selStart,
-		"selectionEnd":   e.selEnd,
-		"history":        e.ShowHistoryButton,
+		"id":       SemanticID(e),
+		"kind":     "edit",
+		"x":        x1,
+		"y":        y1,
+		"w":        x2 - x1 + 1,
+		"h":        y2 - y1 + 1,
+		"visible":  e.IsVisible(),
+		"focused":  e.IsFocused(),
+		"disabled": e.IsDisabled(),
+		"text":     e.GetText(),
+		"cursor":   e.curPos,
+		"left":     e.leftPos,
+		"password": e.PasswordMode,
+		// NewEdit starts with a dormant SelectAll range so the first character
+		// replaces the default value. It is not painted as an active selection
+		// until the control owns semantic focus.
+		"selectionActive": e.IsFocused() && e.selStart >= 0 && e.selEnd > e.selStart,
+		"selectionStart":  e.selStart,
+		"selectionEnd":    e.selEnd,
+		"history":         e.ShowHistoryButton,
 	}
 }
 

@@ -630,7 +630,8 @@ struct QuickViewFixture
 
     explicit QuickViewFixture(const QVariantMap &scene,
                               bool galleryAvailable = false,
-                              bool usesQwk = false)
+                              bool usesQwk = false,
+                              QString worktreeBranch = {})
         : gallery(galleryAvailable)
     {
         shell.setScene(scene);
@@ -649,6 +650,8 @@ struct QuickViewFixture
             QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontPixelSize"), 13);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4WorktreeBranchName"), worktreeBranch);
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
                                                   usesQwk);
         DummyQWK::registerTypes(&engine);
@@ -705,6 +708,7 @@ private slots:
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
+    void worktreeBranchAppearsCenteredInTitleBar();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
@@ -3304,6 +3308,54 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
                                   QStringLiteral("workspace title scene y"));
     verifyWholePhysicalCoordinate(numberOrigin.y(),
                                   QStringLiteral("workspace number scene y"));
+}
+
+void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
+{
+    QuickViewFixture fixture(shellScene(), false, true,
+                             QStringLiteral("zoin"));
+    QVERIFY(fixture.window);
+    QQuickItem *const rootItem = fixture.window->contentItem();
+    QQuickItem *const titleBar = fixture.item(QStringLiteral("titleBar"));
+    QQuickItem *const branchLabel = fixture.item(
+        QStringLiteral("worktreeBranchLabel"));
+    QVERIFY(titleBar);
+    QVERIFY(branchLabel);
+    QTRY_VERIFY_WITH_TIMEOUT(branchLabel->isVisible(), 3000);
+    QCOMPARE(branchLabel->property("text").toString(),
+             QStringLiteral("zoin"));
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF titleBarOrigin = titleBar->mapToItem(
+        rootItem, QPointF{});
+    const QPointF branchOrigin = branchLabel->mapToItem(
+        rootItem, QPointF{});
+    const qreal titleBarCenter = titleBarOrigin.x() + titleBar->width() / 2;
+    const qreal branchCenter = branchOrigin.x() + branchLabel->width() / 2;
+    QVERIFY2(qAbs(branchCenter - titleBarCenter) <= 0.5 / dpr + 0.001,
+             "worktree branch label is not centered in the title bar");
+
+    const auto verifyWholePhysicalCoordinate = [dpr](
+            qreal logicalCoordinate, const QString &description) {
+        const qreal physicalCoordinate = logicalCoordinate * dpr;
+        const QByteArray details = QStringLiteral(
+            "%1 is %2 physical pixels at DPR %3")
+                                       .arg(description)
+                                       .arg(physicalCoordinate, 0, 'f', 6)
+                                       .arg(dpr, 0, 'f', 2)
+                                       .toUtf8();
+        QVERIFY2(qAbs(physicalCoordinate - qRound(physicalCoordinate))
+                     < 0.001,
+                 details.constData());
+    };
+    verifyWholePhysicalCoordinate(branchOrigin.x(),
+                                  QStringLiteral("branch label scene x"));
+    verifyWholePhysicalCoordinate(branchOrigin.y(),
+                                  QStringLiteral("branch label scene y"));
+    QVERIFY2(qAbs(branchLabel->scale() - 1.0) < 0.001,
+             "worktree branch label must not be scaled");
+    QVERIFY2(qAbs(branchLabel->rotation()) < 0.001,
+             "worktree branch label must not be rotated");
 }
 
 void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()

@@ -44,6 +44,7 @@ T.ComboBox {
         leftPadding: control.snap(10)
         rightPadding: control.snap(30)
         text: control.displayText
+        textFormat: Text.PlainText
         color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
         font: control.font
         verticalAlignment: Text.AlignVCenter

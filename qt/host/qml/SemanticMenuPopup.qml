@@ -32,7 +32,27 @@ Item {
         return revision >= 0 && dropdownMode
                 ? hostWindow.dropdownAnchorForId(frame.ownerId) : null
     }
+    // Do not paint a guessed chevron while the owning combo is still being
+    // incubated.  The guess is often one physical pixel away from the final
+    // indicator at 175% DPR, so showing it first creates a visible jump when
+    // the anchor registration arrives a turn later.
+    property bool dropdownAnchorIndicatorReady: false
+    property rect dropdownAnchorIndicatorStableRect: Qt.rect(0, 0, 0, 0)
+    property bool dropdownAnchorGeometryReady: false
+    property rect dropdownAnchorStableRect: Qt.rect(0, 0, 0, 0)
+    readonly property bool dropdownAnchorReady:
+        dropdownAnchor !== null && dropdownAnchorIndicatorReady
+    function fallbackDropdownAnchorRect() {
+        const fallbackHeight = hostWindow.dialogControlHeight
+        return Qt.rect(hostWindow.snapPx(hostWindow.pxX(frame.x)),
+                       hostWindow.snapPx(hostWindow.pxY(frame.y)
+                                         - fallbackHeight),
+                       hostWindow.snapPx(hostWindow.pxW(frame.w)),
+                       hostWindow.snapPx(fallbackHeight))
+    }
     readonly property rect dropdownAnchorRect: {
+        if (dropdownAnchorGeometryReady)
+            return dropdownAnchorStableRect
         const anchor = dropdownAnchor
         if (anchor) {
             const mapped = anchor.mapToItem(hostWindow.contentItem, 0, 0)
@@ -41,12 +61,106 @@ Item {
                            hostWindow.snapPx(anchor.width),
                            hostWindow.snapPx(anchor.height))
         }
-        const fallbackHeight = hostWindow.dialogControlHeight
-        return Qt.rect(hostWindow.snapPx(hostWindow.pxX(frame.x)),
-                       hostWindow.snapPx(hostWindow.pxY(frame.y)
-                                         - fallbackHeight),
-                       hostWindow.snapPx(hostWindow.pxW(frame.w)),
-                       hostWindow.snapPx(fallbackHeight))
+        return fallbackDropdownAnchorRect()
+    }
+    // Read the indicator after the combo template has laid it out, then snap
+    // its *scene* position once. The stable value is deliberately retained
+    // while the native ComboBox template is being reparented (for example
+    // when the host window loses activation). During that short interval
+    // mapToItem can report (0, 0); publishing that transient result is what
+    // makes the expanded chevron jump to the popup's top-left corner.
+    readonly property rect dropdownAnchorIndicatorRect: {
+        if (dropdownAnchorIndicatorReady)
+            return dropdownAnchorIndicatorStableRect
+        const size = hostWindow.snapPx(14)
+        const rightInset = hostWindow.snapPx(10)
+        return Qt.rect(
+            hostWindow.snapPx(dropdownAnchorRect.x
+                              + hostWindow.snapPx(dropdownAnchorRect.width - size
+                                                  - rightInset)),
+            hostWindow.snapPx(dropdownAnchorRect.y
+                              + (dropdownAnchorRect.height - size) / 2),
+            size, size)
+    }
+
+    function refreshDropdownAnchorIndicator() {
+        // QQuickItem mapping is not stable while the native window is
+        // deactivated.  In particular, the ComboBox template can briefly
+        // report its indicator at (0, 0) while it is detached from the scene
+        // graph.  Keep the last coherent presentation geometry until the
+        // window is active again instead of publishing that transient point.
+        if (!hostWindow || !hostWindow.active)
+            return
+        const anchor = dropdownAnchor
+        if (!anchor || !anchor.parent || !hostWindow.contentItem
+                || typeof anchor.mapToItem !== "function")
+            return
+        const anchorMapped = anchor.mapToItem(hostWindow.contentItem, 0, 0)
+        const anchorX = Number(anchorMapped.x)
+        const anchorY = Number(anchorMapped.y)
+        const anchorWidth = Number(anchor.width)
+        const anchorHeight = Number(anchor.height)
+        if (!isFinite(anchorX) || !isFinite(anchorY)
+                || !isFinite(anchorWidth) || !isFinite(anchorHeight)
+                || anchorWidth <= 0 || anchorHeight <= 0)
+            return
+        const nextAnchor = Qt.rect(hostWindow.snapPx(anchorX),
+                                   hostWindow.snapPx(anchorY),
+                                   hostWindow.snapPx(anchorWidth),
+                                   hostWindow.snapPx(anchorHeight))
+        const previousAnchor = dropdownAnchorStableRect
+        const anchorChanged = !dropdownAnchorGeometryReady
+                || Math.abs(previousAnchor.x - nextAnchor.x) > 0.0001
+                || Math.abs(previousAnchor.y - nextAnchor.y) > 0.0001
+                || Math.abs(previousAnchor.width - nextAnchor.width) > 0.0001
+                || Math.abs(previousAnchor.height - nextAnchor.height) > 0.0001
+        if (anchorChanged)
+            dropdownAnchorStableRect = nextAnchor
+        dropdownAnchorGeometryReady = true
+
+        const indicator = anchor ? anchor.indicator : null
+        if (!indicator || !indicator.parent || !hostWindow.contentItem
+                || typeof indicator.mapToItem !== "function"
+                || Number(indicator.width) <= 0
+                || Number(indicator.height) <= 0)
+            return
+        const mapped = indicator.mapToItem(hostWindow.contentItem, 0, 0)
+        const x = Number(mapped.x)
+        const y = Number(mapped.y)
+        const width = Number(indicator.width)
+        const height = Number(indicator.height)
+        if (!isFinite(x) || !isFinite(y) || !isFinite(width)
+                || !isFinite(height) || width <= 0 || height <= 0)
+            return
+        // A detached ComboBox can briefly map both the indicator and its
+        // owner to (0, 0) while the host window is being deactivated.  That
+        // pair is finite and positive, but it is not a usable presentation
+        // coordinate.  The indicator is right-aligned by F4ComboBox, so it
+        // must remain inside the owner and in its trailing half.  Rejecting
+        // impossible mappings keeps the last coherent rect instead of
+        // moving the chevron to the popup's top-left corner.
+        const tolerance = hostWindow.snapPx(1)
+        const insideAnchor = x >= anchorX - tolerance
+                && y >= anchorY - tolerance
+                && x + width <= anchorX + anchorWidth + tolerance
+                && y + height <= anchorY + anchorHeight + tolerance
+        const inTrailingHalf = x + width / 2
+                >= anchorX + anchorWidth / 2 - tolerance
+        if (!insideAnchor || !inTrailingHalf)
+            return
+        const next = Qt.rect(hostWindow.snapPx(x),
+                             hostWindow.snapPx(y),
+                             hostWindow.snapPx(width),
+                             hostWindow.snapPx(height))
+        const previous = dropdownAnchorIndicatorStableRect
+        const changed = !dropdownAnchorIndicatorReady
+                || Math.abs(previous.x - next.x) > 0.0001
+                || Math.abs(previous.y - next.y) > 0.0001
+                || Math.abs(previous.width - next.width) > 0.0001
+                || Math.abs(previous.height - next.height) > 0.0001
+        if (changed)
+            dropdownAnchorIndicatorStableRect = next
+        dropdownAnchorIndicatorReady = true
     }
     readonly property bool fromMenuBar: frame.menuBarSubmenu === true
     readonly property bool hasParentMenu:
@@ -140,26 +254,21 @@ Item {
     readonly property real dropdownContentShift:
         dropdownMode && closing
         ? (1 - revealProgress) * closeContentShiftTarget : 0
-    // The list has a five-pixel presentation inset on its left edge.  Make
-    // the expanding frame one inset wider and move it left by that same
-    // amount.  This keeps the selected row's text and the collapsed combo's
-    // text on the exact same screen x while preserving the chevron's x.
+    // The list has a presentation inset on both sides of the expanded
+    // control.  Keep the selected row exactly the collapsed control's size,
+    // then leave one inset visible at the popup's right edge as well.  The
+    // frame is moved left by the leading inset so the selected row remains
+    // anchored to the collapsed control's screen x.
     readonly property real dropdownFrameWidth:
-        hostWindow.snapPx(dropdownAnchorRect.width + menuEdgeInset)
+        hostWindow.snapPx(dropdownAnchorRect.width + 2 * menuEdgeInset)
     readonly property real dropdownFrameX:
         hostWindow.snapPx(dropdownAnchorRect.x - menuEdgeInset)
-    readonly property real dropdownAnchorTextPadding: {
-        const anchor = dropdownAnchor
-        const content = anchor ? anchor.contentItem : null
-        return content && content.leftPadding !== undefined
-                ? Number(content.leftPadding) : hostWindow.snapPx(10)
-    }
-    readonly property real dropdownMenuTextMargin:
-        hasLeadingIndicator ? 32 : 10
     readonly property real dropdownListX:
-        hostWindow.snapPx(Math.max(0, menuEdgeInset
-                                   + dropdownAnchorTextPadding
-                                   - dropdownMenuTextMargin))
+        // Both values are already snapped to the same physical grid.  Taking
+        // their difference keeps the first delegate's left edge exactly at
+        // the collapsed control's left edge instead of introducing a second
+        // rounding error.
+        hostWindow.snapPx(dropdownAnchorRect.x - dropdownFrameX)
     property int pointerSelectedIndex: -1
     property int semanticSelectedIndex: 0
     property int semanticTopIndex: 0
@@ -356,10 +465,20 @@ Item {
             pointerSelectedIndex = -1
         else
             Qt.callLater(reconcilePointerState)
+        Qt.callLater(refreshDropdownAnchorIndicator)
         initializeDropdownPresentation()
     }
+    onDropdownAnchorChanged: {
+        // A new owner must not inherit the previous combo's indicator until
+        // its own template has produced a valid scene mapping.
+        dropdownAnchorIndicatorReady = false
+        dropdownAnchorGeometryReady = false
+        Qt.callLater(refreshDropdownAnchorIndicator)
+    }
+    onDropdownAnchorRectChanged: Qt.callLater(refreshDropdownAnchorIndicator)
     onDropdownModeChanged: {
         if (dropdownMode) {
+            Qt.callLater(refreshDropdownAnchorIndicator)
             Qt.callLater(initializeDropdownPresentation)
             return
         }
@@ -367,6 +486,8 @@ Item {
         dropdownCloseAnimation.stop()
         dropdownPresentationInitialized = false
         dropdownOpenSettled = false
+        dropdownAnchorIndicatorReady = false
+        dropdownAnchorGeometryReady = false
         revealProgress = 1
     }
     onVisualSelectedIndexChanged: Qt.callLater(syncListSelection)
@@ -381,9 +502,45 @@ Item {
     Component.onCompleted: {
         syncFrameState()
         componentReady = true
+        Qt.callLater(refreshDropdownAnchorIndicator)
         Qt.callLater(syncListSelection)
         Qt.callLater(reconcilePointerState)
         initializeDropdownPresentation()
+    }
+
+    Connections {
+        target: menuOverlay.dropdownAnchor
+        ignoreUnknownSignals: true
+        function onIndicatorChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onXChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onYChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onWidthChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onHeightChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onVisibleChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+        function onParentChanged() {
+            Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
+    }
+
+    Connections {
+        target: menuOverlay.hostWindow
+        ignoreUnknownSignals: true
+        function onActiveChanged() {
+            if (menuOverlay.hostWindow.active)
+                Qt.callLater(menuOverlay.refreshDropdownAnchorIndicator)
+        }
     }
 
     NumberAnimation {
@@ -426,7 +583,7 @@ Item {
 
     FontMetrics {
         id: popupMenuMetrics
-        font.pixelSize: 13
+        font: hostWindow.font
     }
 
     function preferredMenuWidth() {
@@ -693,24 +850,17 @@ Item {
             readonly property url rasterizedIconSource:
                 hostWindow.lucideIconSource(
                     "chevron-down", 14, hostWindow.textColor)
-            x: hostWindow.snapPx(parent.width - width - 10)
-            y: menuOverlay.dropdownAnchorRect.y - popupSurface.y
-               + hostWindow.snapPx(
-                   (menuOverlay.dropdownAnchorRect.height - height) / 2)
-            width: hostWindow.snapPx(14)
-            height: hostWindow.snapPx(14)
+            x: menuOverlay.dropdownAnchorIndicatorRect.x - popupSurface.x
+            y: menuOverlay.dropdownAnchorIndicatorRect.y - popupSurface.y
+            width: menuOverlay.dropdownAnchorIndicatorRect.width
+            height: menuOverlay.dropdownAnchorIndicatorRect.height
             icon.source: rasterizedIconSource
             icon.width: hostWindow.snapPx(14)
             icon.height: hostWindow.snapPx(14)
             icon.color: hostWindow.textColor
             opacity: 1 - menuOverlay.revealProgress
-            visible: menuOverlay.dropdownMode && opacity > 0
-            transform: Translate {
-                x: hostWindow.dialogPixelOffsetX(
-                       dropdownChevronDown, hostWindow.contentItem)
-                y: hostWindow.dialogPixelOffsetY(
-                       dropdownChevronDown, hostWindow.contentItem)
-            }
+            visible: menuOverlay.dropdownMode
+                     && menuOverlay.dropdownAnchorReady && opacity > 0
             z: 5
         }
 
@@ -721,24 +871,17 @@ Item {
             readonly property url rasterizedIconSource:
                 hostWindow.lucideIconSource(
                     "chevron-up", 14, hostWindow.textColor)
-            x: hostWindow.snapPx(parent.width - width - 10)
-            y: menuOverlay.dropdownAnchorRect.y - popupSurface.y
-               + hostWindow.snapPx(
-                   (menuOverlay.dropdownAnchorRect.height - height) / 2)
-            width: hostWindow.snapPx(14)
-            height: hostWindow.snapPx(14)
+            x: menuOverlay.dropdownAnchorIndicatorRect.x - popupSurface.x
+            y: menuOverlay.dropdownAnchorIndicatorRect.y - popupSurface.y
+            width: menuOverlay.dropdownAnchorIndicatorRect.width
+            height: menuOverlay.dropdownAnchorIndicatorRect.height
             icon.source: rasterizedIconSource
             icon.width: hostWindow.snapPx(14)
             icon.height: hostWindow.snapPx(14)
             icon.color: hostWindow.textColor
             opacity: menuOverlay.revealProgress
-            visible: menuOverlay.dropdownMode && opacity > 0
-            transform: Translate {
-                x: hostWindow.dialogPixelOffsetX(
-                       dropdownChevronUp, hostWindow.contentItem)
-                y: hostWindow.dialogPixelOffsetY(
-                       dropdownChevronUp, hostWindow.contentItem)
-            }
+            visible: menuOverlay.dropdownMode
+                     && menuOverlay.dropdownAnchorReady && opacity > 0
             z: 5
         }
 

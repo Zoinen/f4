@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QQuickItem>
+#include <QQuickItemGrabResult>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QPointer>
@@ -491,6 +492,7 @@ QVariantMap dialogControlsScene(bool focused, bool dropdownOnly = false)
         {QStringLiteral("kind"), QStringLiteral("edit")},
         {QStringLiteral("text"), QStringLiteral("C:\\Windows")},
         {QStringLiteral("focused"), focused},
+        {QStringLiteral("selectionActive"), focused},
         {QStringLiteral("cursor"), 10},
         {QStringLiteral("x"), 2},
         {QStringLiteral("y"), 12},
@@ -763,8 +765,11 @@ private slots:
     void semanticDialogKeyboardFocusFramesAreDistinctAndThemeLive();
     void semanticDialogComboBoxFollowsGoOwnedMenuState();
     void semanticOverlayMenuStreamClearsWhileFallbackSurfaceIsHidden();
+    void semanticOverlayDialogStreamClearsWithoutStaleOverlay();
     void semanticDialogInteractiveControlsOverflowOneRowWithoutReflow();
     void semanticDialogControlsUseWindowFontAndStayPixelAligned();
+    void semanticDialogEditShowsRemoteAndNativeSelection();
+    void semanticDialogEditSelectionWaitsForSemanticFocus();
     void dialogTextCursorBlinkSettlesAndFocusStopsIt();
 };
 
@@ -1973,6 +1978,8 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
     // This is the response produced by ComboBox.ProcessKey in Go. QML must
     // present that semantic menu above its owning full-window dialog rather
     // than opening a second, Qt-owned popup beneath or outside the Go stack.
+    // Compare actual glyph pixels, not just the Text item's origin: internal
+    // padding and external margins can have different raster rounding.
     fixture.shell.setScene(dialogComboMenuScene(1));
     QVariant overlayFrames;
     QVERIFY(QMetaObject::invokeMethod(
@@ -2019,18 +2026,34 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
     const QPointF selectedTop = selectedRow->mapToItem(rootItem, QPointF{});
     const qreal dpr = fixture.window->devicePixelRatio();
     const qreal snappedComboTop = qRound(comboTop.y() * dpr) / dpr;
+    QVERIFY2(qAbs((selectedTop.x() - comboTop.x()) * dpr) < 0.01,
+             qPrintable(QStringLiteral(
+                 "selected dropdown row changed physical x: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(selectedTop.x())
+                            .arg(comboTop.x())));
     QVERIFY2(qAbs(selectedTop.y() - snappedComboTop) < 0.01,
              qPrintable(QStringLiteral(
                  "selected dropdown row moved from its control: %1 vs %2")
                              .arg(selectedTop.y()).arg(snappedComboTop)));
+    QVERIFY2(qAbs((selectedRow->width() - combo->width()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "selected dropdown row width does not match the collapsed "
+                 "control: row=%1 combo=%2")
+                             .arg(selectedRow->width()).arg(combo->width())));
+    QVERIFY2(qAbs((selectedRow->height() - combo->height()) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "selected dropdown row height does not match the collapsed "
+                 "control: row=%1 combo=%2")
+                             .arg(selectedRow->height()).arg(combo->height())));
     const qreal menuEdgeInset = semanticMenuOverlay->property(
         "menuEdgeInset").toReal();
     const QPointF popupTopBeforeWidth = semanticPopup->mapToItem(
         rootItem, QPointF{});
     QVERIFY2(qAbs((semanticPopup->width()
-                   - combo->width() - menuEdgeInset) * dpr) <= 0.51,
+                   - combo->width() - 2 * menuEdgeInset) * dpr) <= 0.51,
              qPrintable(QStringLiteral(
-                 "dropdown frame width did not include the presentation inset: "
+                 "dropdown frame width did not include both presentation insets: "
                  "popup=%1 combo=%2 inset=%3")
                             .arg(semanticPopup->width())
                             .arg(combo->width())
@@ -2043,6 +2066,23 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
                             .arg(popupTopBeforeWidth.x())
                             .arg(comboTop.x())
                             .arg(menuEdgeInset)));
+    QVERIFY2(qAbs((popupTopBeforeWidth.x() + menuEdgeInset - comboTop.x())
+                  * dpr) < 0.01,
+             qPrintable(QStringLiteral(
+                 "dropdown frame left edge changed physical x: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(popupTopBeforeWidth.x() + menuEdgeInset)
+                            .arg(comboTop.x())));
+    const qreal selectedRight = selectedRow->mapToItem(
+        rootItem, QPointF(selectedRow->width(), 0)).x();
+    const qreal popupRight = popupTopBeforeWidth.x() + semanticPopup->width();
+    QVERIFY2(qAbs((popupRight - selectedRight - menuEdgeInset) * dpr) <= 0.51,
+             qPrintable(QStringLiteral(
+                 "dropdown frame lost its trailing presentation inset: "
+                 "popupRight=%1 selectedRight=%2 inset=%3")
+                            .arg(popupRight)
+                            .arg(selectedRight)
+                            .arg(menuEdgeInset)));
     const QPointF popupTop = semanticPopup->mapToItem(rootItem, QPointF{});
     QVERIFY(popupTop.y() < comboTop.y());
     QVERIFY(popupTop.y() + semanticPopup->height()
@@ -2052,6 +2092,7 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
 
     QQuickItem *selectedText = nullptr;
     QQuickItem *comboText = nullptr;
+    QQuickItem *comboIndicator = nullptr;
     QQuickItem *expandedChevron = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
         (selectedText = visualItem(rootItem, QStringLiteral(
@@ -2061,11 +2102,42 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
         (comboText = visualItem(rootItem, QStringLiteral(
              "dialogWidget-appearance-comboComboBoxText"))),
         1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (comboIndicator = visualItem(rootItem, QStringLiteral(
+             "dialogWidget-appearance-comboComboBoxIndicator"))),
+        1000);
     const QPointF comboTextTop = comboText->mapToItem(rootItem, QPointF{});
+    const auto closedGrab = comboText->grabToImage();
+    QVERIFY(closedGrab);
+    QTRY_VERIFY_WITH_TIMEOUT(!closedGrab->image().isNull(), 1000);
+    const auto openedGrab = selectedText->grabToImage();
+    QVERIFY(openedGrab);
+    QTRY_VERIFY_WITH_TIMEOUT(!openedGrab->image().isNull(), 1000);
+    QVERIFY2(openedGrab->image() == closedGrab->image(),
+             "Opening the dropdown changed rasterized text (padding/layout rounding)");
     const QPointF selectedTextTop = selectedText->mapToItem(rootItem, QPointF{});
     const qreal comboGlyphX = comboTextTop.x()
             + comboText->property("leftPadding").toReal();
-    QVERIFY2(qAbs((selectedTextTop.x() - comboGlyphX) * dpr) <= 0.51,
+    QCOMPARE(selectedText->property("font").value<QFont>(),
+             comboText->property("font").value<QFont>());
+    const QPointF comboTextGlyphOrigin = comboText->mapToItem(
+        rootItem, QPointF(comboText->property("leftPadding").toReal(), 0));
+    const QPointF selectedTextGlyphOrigin = selectedText->mapToItem(
+        rootItem, QPointF(selectedText->property("leftPadding").toReal(), 0));
+    QVERIFY2(qAbs((selectedTextGlyphOrigin.x()
+                   - comboTextGlyphOrigin.x()) * dpr) < 0.01,
+             qPrintable(QStringLiteral(
+                 "selected dropdown text changed physical x: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(selectedTextGlyphOrigin.x())
+                            .arg(comboTextGlyphOrigin.x())));
+    QVERIFY2(qAbs((selectedTextTop.y() - comboTextTop.y()) * dpr) < 0.01,
+             qPrintable(QStringLiteral(
+                 "selected dropdown text changed physical y: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(selectedTextTop.y())
+                            .arg(comboTextTop.y())));
+    QVERIFY2(qAbs((selectedTextGlyphOrigin.x() - comboGlyphX) * dpr) <= 0.51,
              qPrintable(QStringLiteral(
                  "selected dropdown text moved horizontally: popup=%1 combo=%2 "
                  "combo-item=%3 padding=%4")
@@ -2077,6 +2149,24 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
         (expandedChevron = visualItem(rootItem, QStringLiteral(
              "semanticDropdownChevronUp-appearance-combo-menu"))),
         1000);
+    const QPointF comboIndicatorTop = comboIndicator->mapToItem(
+        rootItem, QPointF{});
+    const QPointF expandedChevronTop = expandedChevron->mapToItem(
+        rootItem, QPointF{});
+    QVERIFY2(qAbs((expandedChevronTop.x() - comboIndicatorTop.x()) * dpr)
+                 < 0.01,
+             qPrintable(QStringLiteral(
+                 "expanded dropdown chevron changed physical x: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(expandedChevronTop.x())
+                            .arg(comboIndicatorTop.x())));
+    QVERIFY2(qAbs((expandedChevronTop.y() - comboIndicatorTop.y()) * dpr)
+                 < 0.01,
+             qPrintable(QStringLiteral(
+                 "expanded dropdown chevron changed physical y: expanded=%1 "
+                 "collapsed=%2")
+                            .arg(expandedChevronTop.y())
+                            .arg(comboIndicatorTop.y())));
     if (qAbs(dpr - 1.75) >= 0.001)
         QSKIP("175% scale invocation required for the dropdown pixel gate");
     const auto verifyPixelAlignedLeaf = [rootItem, dpr](QQuickItem *leaf) {
@@ -2100,7 +2190,7 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
                  qPrintable(QStringLiteral("%1 has a non-translation transform")
                                 .arg(leaf->objectName())));
     };
-    for (QQuickItem *leaf : {selectedRow, selectedText, expandedChevron})
+    for (QQuickItem *leaf : {selectedRow, comboText, selectedText, comboIndicator, expandedChevron})
         verifyPixelAlignedLeaf(leaf);
     const QPointF physicalPopupTop = popupTop * dpr;
     const qreal physicalPopupWidth = semanticPopup->width() * dpr;
@@ -2208,7 +2298,6 @@ void F4OperationsQueueTests::semanticOverlayMenuStreamClearsWhileFallbackSurface
     scene.insert(QStringLiteral("presentation"), QStringLiteral("text"));
     QueueFixture fixture(scene);
     QVERIFY(fixture.window);
-
     // In console/text presentation the native surface is hidden, but the
     // overlay model still receives the same Go-owned menu stream.  Closing
     // that stream must retire the retained dropdown before a later GUI
@@ -2222,6 +2311,37 @@ void F4OperationsQueueTests::semanticOverlayMenuStreamClearsWhileFallbackSurface
     QTRY_VERIFY_WITH_TIMEOUT(
         !visualItem(fixture.window->contentItem(), QStringLiteral(
             "semanticMenuPopup-appearance-combo-menu")),
+        1000);
+}
+
+void F4OperationsQueueTests::semanticOverlayDialogStreamClearsWithoutStaleOverlay()
+{
+    QueueFixture fixture(dialogControlsScene(true));
+    QVERIFY(fixture.window);
+
+    QQuickItem *const overlayHost = fixture.item(
+        QStringLiteral("semanticOverlayHost"));
+    QVERIFY(overlayHost);
+    QObject *const frameModel = overlayHost->findChild<QObject *>(
+        QStringLiteral("semanticOverlayFrameModel"));
+    QVERIFY(frameModel);
+    QTRY_COMPARE_WITH_TIMEOUT(frameModel->property("count").toInt(), 1,
+                              1000);
+    QVERIFY(visualItem(fixture.window->contentItem(),
+                       QStringLiteral("semanticDialog-appearance-dialog")));
+
+    // This is the production transition emitted when Go closes a dialog.
+    // The QML overlay must retire it even if the native panel remains alive
+    // below the overlay and no unrelated scene change follows.
+    fixture.shell.overlayState()->applyDialogsState({
+        {QStringLiteral("dialogs"), QVariantList{}},
+    }, 2);
+
+    QTRY_COMPARE_WITH_TIMEOUT(frameModel->property("count").toInt(), 0,
+                              1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !visualItem(fixture.window->contentItem(),
+                    QStringLiteral("semanticDialog-appearance-dialog")),
         1000);
 }
 
@@ -2913,6 +3033,232 @@ void F4OperationsQueueTests::dialogTextCursorBlinkSettlesAndFocusStopsIt()
     QTRY_VERIFY_WITH_TIMEOUT(
         !cursor->property("blinkTimerRunning").toBool(), 500);
     QVERIFY(cursor->property("blinkOn").toBool());
+}
+
+void F4OperationsQueueTests::semanticDialogEditShowsRemoteAndNativeSelection()
+{
+    QVariantMap scene = dialogControlsScene(true);
+    QVariantList dialogs = scene.value(QStringLiteral("dialogs")).toList();
+    QVariantMap dialog = dialogs.constFirst().toMap();
+    QVariantList children = dialog.value(QStringLiteral("children")).toList();
+    for (qsizetype index = 0; index < children.size(); ++index) {
+        QVariantMap child = children.at(index).toMap();
+        if (child.value(QStringLiteral("id")).toString()
+            == QStringLiteral("appearance-edit")) {
+            child.insert(QStringLiteral("selectionStart"), 1);
+            child.insert(QStringLiteral("selectionEnd"), 4);
+            // Keep the test control inside the dialog's native geometry. The
+            // fixture's frame starts at column 18, while the shared scene
+            // places most sample controls at column 2 for the grid renderer.
+            child.insert(QStringLiteral("x"), 20);
+            children[index] = child;
+            break;
+        }
+    }
+    dialog.insert(QStringLiteral("children"), children);
+    dialogs[0] = dialog;
+    scene.insert(QStringLiteral("dialogs"), dialogs);
+
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *const root = fixture.window->contentItem();
+    QVERIFY(root);
+    QQuickItem *editInput = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editInput = visualItem(root, QStringLiteral(
+             "dialogWidget-appearance-editEditTextInput"))),
+        3000);
+
+    // A Go-owned/read-only field must still expose Qt's native selection
+    // surface.  The semantic focus click is delivered by TextInput itself;
+    // no left-button overlay is allowed to swallow the drag.
+    QVERIFY(editInput->property("readOnly").toBool());
+    QVERIFY(editInput->property("selectByMouse").toBool());
+    QCOMPARE(editInput->property("selectedText").toString(),
+             QStringLiteral(":\\W"));
+    QCOMPARE(editInput->property("selectionStart").toInt(), 1);
+    QCOMPARE(editInput->property("selectionEnd").toInt(), 4);
+
+    // Replace the remote selection with a real pointer drag.  The selection
+    // must be painted by TextInput immediately, without waiting for a Go
+    // round trip.
+    const QPoint startPoint = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(2, editInput->height() / 2.0))).toPoint();
+    const QPoint endPoint = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(editInput->width() - 2,
+                                       editInput->height() / 2.0))).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      startPoint);
+    QTest::mouseMove(fixture.window, endPoint, 100);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        endPoint);
+    QVERIFY2(editInput->property("selectedText").toString().size() > 0,
+             "native TextInput drag did not produce a visible selection");
+
+    // A press in the field's visual margin must behave like a press on the
+    // text itself.  The native TextInput is inset by the control's padding,
+    // so without the explicit margin hit areas this common I-beam starting
+    // position never establishes an anchor and the drag produces no range.
+    QQuickItem *const editControl = visualItem(
+        root, QStringLiteral("dialogWidget-appearance-editEdit"));
+    QVERIFY(editControl);
+    QQuickItem *const leftMargin = visualItem(
+        root, QStringLiteral(
+            "dialogWidget-appearance-editEditLeftMarginSelectionArea"));
+    QQuickItem *const rightMargin = visualItem(
+        root, QStringLiteral(
+            "dialogWidget-appearance-editEditRightMarginSelectionArea"));
+    QVERIFY(leftMargin);
+    QVERIFY(rightMargin);
+
+    const qreal controlCenterY = editControl->height() / 2.0;
+    const QPoint leftMarginStart = fixture.window->mapFromGlobal(
+        editControl->mapToGlobal(QPointF(2, controlCenterY))).toPoint();
+    const QPoint textMiddle = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(editInput->width() / 2.0,
+                                       editInput->height() / 2.0))).toPoint();
+    const QPoint textInputLeft = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(0, 0))).toPoint();
+    const QPoint textInputRight = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(editInput->width(), 0))).toPoint();
+    QVERIFY(leftMarginStart.x() < textInputLeft.x());
+    QVERIFY(QMetaObject::invokeMethod(editInput, "deselect"));
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      leftMarginStart);
+    QTest::mouseMove(fixture.window, textMiddle, 100);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        textMiddle);
+    QVERIFY2(editInput->property("selectedText").toString().size() > 0,
+             "drag beginning in the left text-field margin did not select");
+
+    const QPoint rightMarginStart = fixture.window->mapFromGlobal(
+        editControl->mapToGlobal(QPointF(editControl->width() - 2,
+                                          controlCenterY))).toPoint();
+    const QPoint textStart = fixture.window->mapFromGlobal(
+        editInput->mapToGlobal(QPointF(2, editInput->height() / 2.0))).toPoint();
+    QVERIFY(rightMarginStart.x() > textInputRight.x());
+    QVERIFY(QMetaObject::invokeMethod(editInput, "deselect"));
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      rightMarginStart);
+    QTest::mouseMove(fixture.window, textStart, 100);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        textStart);
+    QVERIFY2(editInput->property("selectedText").toString().size() > 0,
+             "drag beginning in the right text-field margin did not select");
+
+    // Margin clicks must retain the same word/line gesture semantics as the
+    // native TextInput.  In particular, the hit target is intentionally just
+    // outside the text, so these clicks exercise the forwarding area rather
+    // than the input itself.
+    QVERIFY(QMetaObject::invokeMethod(editInput, "deselect"));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      leftMarginStart);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      leftMarginStart);
+    QCOMPARE(editInput->property("selectedText").toString(),
+             QStringLiteral("C"));
+
+    QVERIFY(QMetaObject::invokeMethod(editInput, "deselect"));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      rightMarginStart);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      rightMarginStart);
+    QCOMPARE(editInput->property("selectedText").toString(),
+             QStringLiteral("Windows"));
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                      rightMarginStart);
+    QCOMPARE(editInput->property("selectedText").toString(),
+             QStringLiteral("C:\\Windows"));
+    QCOMPARE(editInput->property("selectionStart").toInt(), 0);
+    QCOMPARE(editInput->property("selectionEnd").toInt(), 10);
+}
+
+void F4OperationsQueueTests::semanticDialogEditSelectionWaitsForSemanticFocus()
+{
+    QVariantMap scene = dialogControlsScene(false);
+    QVariantList dialogs = scene.value(QStringLiteral("dialogs")).toList();
+    QVariantMap dialog = dialogs.constFirst().toMap();
+    QVariantList children = dialog.value(QStringLiteral("children")).toList();
+    for (qsizetype index = 0; index < children.size(); ++index) {
+        QVariantMap child = children.at(index).toMap();
+        if (child.value(QStringLiteral("id")).toString()
+            == QStringLiteral("appearance-edit")) {
+            child.insert(QStringLiteral("selectionStart"), 1);
+            child.insert(QStringLiteral("selectionEnd"), 4);
+            child.insert(QStringLiteral("x"), 20);
+            children[index] = child;
+            break;
+        }
+    }
+    dialog.insert(QStringLiteral("children"), children);
+    dialogs[0] = dialog;
+    scene.insert(QStringLiteral("dialogs"), dialogs);
+
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *editInput = nullptr;
+    QQuickItem *editField = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editInput = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("dialogWidget-appearance-editEditTextInput"))),
+        3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editField = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("dialogWidget-appearance-editEdit"))),
+        1000);
+
+    // New semantic edits may carry an initial SelectAll range, but that range
+    // is dormant until Go activates the control.  The Qt field must therefore
+    // remain visually unselected while the dialog is only being displayed.
+    QCOMPARE(editField->property("remoteSelectionActivated").toBool(),
+             false);
+    QCOMPARE(editInput->property("selectedText").toString(), QString());
+
+    QVariantMap focusedScene = dialogControlsScene(true);
+    QVariantList focusedDialogs = focusedScene.value(
+        QStringLiteral("dialogs")).toList();
+    QVariantMap focusedDialog = focusedDialogs.constFirst().toMap();
+    QVariantList focusedChildren = focusedDialog.value(
+        QStringLiteral("children")).toList();
+    for (qsizetype index = 0; index < focusedChildren.size(); ++index) {
+        QVariantMap child = focusedChildren.at(index).toMap();
+        if (child.value(QStringLiteral("id")).toString()
+            == QStringLiteral("appearance-edit")) {
+            child.insert(QStringLiteral("selectionStart"), 1);
+            child.insert(QStringLiteral("selectionEnd"), 4);
+            child.insert(QStringLiteral("x"), 20);
+            focusedChildren[index] = child;
+            break;
+        }
+    }
+    focusedDialog.insert(QStringLiteral("children"), focusedChildren);
+    focusedDialogs[0] = focusedDialog;
+    focusedScene.insert(QStringLiteral("dialogs"), focusedDialogs);
+    fixture.shell.overlayState()->applyDialogsState({
+        {QStringLiteral("dialogs"), focusedScene.value(
+             QStringLiteral("dialogs")).toList()},
+    }, 2);
+
+    editInput = nullptr;
+    editField = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editInput = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("dialogWidget-appearance-editEditTextInput"))),
+        1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (editField = visualItem(
+             fixture.window->contentItem(),
+             QStringLiteral("dialogWidget-appearance-editEdit"))),
+        1000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        editField->property("remoteSelectionActivated").toBool(), true,
+        1000);
+    QTRY_COMPARE_WITH_TIMEOUT(editInput->property("selectedText").toString(),
+                              QStringLiteral(":\\W"), 1000);
 }
 
 QTEST_MAIN(F4OperationsQueueTests)

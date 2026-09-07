@@ -201,6 +201,10 @@ int main(int argc, char *argv[])
         QStringLiteral("f4-window-geometry-file"),
         QStringLiteral("INI file used to persist the main-window geometry."),
         QStringLiteral("path"));
+    const QCommandLineOption worktreeBranchOption(
+        QStringLiteral("f4-worktree-branch"),
+        QStringLiteral("Current Git worktree branch name."),
+        QStringLiteral("branch"));
     const QCommandLineOption legacyConnectOption(QStringLiteral("f4-qt-connect"), QStringLiteral("Legacy host:port option."), QStringLiteral("address"));
     const QCommandLineOption legacyNonceOption(QStringLiteral("f4-qt-nonce"), QStringLiteral("Legacy nonce option."), QStringLiteral("nonce"));
     const QCommandLineOption legacyColsOption(QStringLiteral("f4-qt-cols"), QStringLiteral("Legacy initial grid columns."), QStringLiteral("cols"));
@@ -213,6 +217,7 @@ int main(int argc, char *argv[])
                        fontFamilyOption,
                        fontSizeOption,
                        windowGeometryFileOption,
+                       worktreeBranchOption,
                        legacyConnectOption,
                        legacyNonceOption,
                        legacyColsOption,
@@ -419,6 +424,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontFamily"), guiFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4WorktreeBranchName"),
+        parser.value(worktreeBranchOption).trimmed());
 #if defined(__USE_QWK)
     const QString platformName = QGuiApplication::platformName();
     const bool useQwkAtRuntime = platformName != QStringLiteral("offscreen")

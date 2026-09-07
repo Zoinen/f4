@@ -43,6 +43,31 @@ Item {
         z: -1
     }
 
+    Text {
+        id: worktreeBranchLabel
+        objectName: "worktreeBranchLabel"
+        property real alignmentRevision: titleBar.width + titleBar.height
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.verticalCenter: parent.verticalCenter
+        width: hostWindow.snapPx(Math.min(
+            Math.max(0, parent.width - hostWindow.contentSpacing * 2),
+            implicitWidth))
+        height: hostWindow.snapPx(implicitHeight)
+        text: hostWindow.worktreeBranchName
+        visible: text !== ""
+        color: hostWindow.chromeText
+        font.pixelSize: hostWindow.semanticTextFontPixelSize
+        renderType: hostWindow.fontRenderType
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideMiddle
+        transform: Translate {
+            x: hostWindow.iconPixelOffsetX(worktreeBranchLabel)
+            y: hostWindow.iconPixelOffsetY(worktreeBranchLabel)
+        }
+        z: 3
+    }
+
     Item {
         id: macSystemButtonArea
         visible: false

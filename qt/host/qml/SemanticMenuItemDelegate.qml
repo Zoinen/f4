@@ -12,10 +12,15 @@ Rectangle {
     required property Item popupList
     required property var scrollBar
     required property var modelData
+    readonly property var dropdownTextLayout: overlayController.dropdownMode
+        && overlayController.dropdownAnchor
+        ? overlayController.dropdownAnchor.contentItem : null
     objectName: "semanticMenuItem-"
                 + hostWindow.cleanText(overlayController.frame.id)
                 + "-" + Number(modelData.index)
-    width: ListView.view.width - overlayController.menuEdgeInset
+    width: overlayController.dropdownMode
+           ? overlayController.dropdownAnchorRect.width
+           : ListView.view.width - overlayController.menuEdgeInset
     height: modelData.separator
             ? overlayController.menuSeparatorHeight
             : modelData.header === true
@@ -45,34 +50,52 @@ Rectangle {
                     + hostWindow.cleanText(overlayController.frame.id)
                     + "-" + Number(modelData.index)
         anchors.left: parent.left
-        anchors.right: shortcut.left
-        anchors.verticalCenter: modelData.header === true
-                               ? undefined
-                               : parent.verticalCenter
-        anchors.top: modelData.header === true
-                     ? parent.top : undefined
-        anchors.bottom: modelData.header === true
-                        ? parent.bottom : undefined
-        anchors.topMargin: modelData.header === true
+        anchors.right: overlayController.dropdownMode ? parent.right : shortcut.left
+        anchors.rightMargin: menuItem.dropdownTextLayout
+            ? parent.width - menuItem.dropdownTextLayout.x
+              - menuItem.dropdownTextLayout.width : 0
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.topMargin: menuItem.dropdownTextLayout
+                           ? menuItem.dropdownTextLayout.y
+                           : modelData.header === true
                            ? overlayController.menuHeaderTopPadding
                            : 0
-        anchors.leftMargin: modelData.header === true
-                            ? 10
+        // Match the collapsed ComboBox's Text layout exactly. Moving the
+        // padding into an anchor margin changes Qt's glyph raster origin at
+        // fractional DPR even when the two mapped origins compare equal.
+        anchors.bottomMargin: menuItem.dropdownTextLayout
+            ? parent.height - menuItem.dropdownTextLayout.y
+              - menuItem.dropdownTextLayout.height : 0
+        leftPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.leftPadding : 0
+        rightPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.rightPadding : 0
+        anchors.leftMargin: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.x
+                            : overlayController.dropdownMode ? 0
+                            : modelData.header === true
+                            ? hostWindow.snapPx(10)
                             : overlayController.hasLeadingIndicator
-                            ? 32 : 10
+                            ? hostWindow.snapPx(32)
+                            : hostWindow.snapPx(10)
         verticalAlignment: Text.AlignVCenter
         text: {
             var label = hostWindow.cleanText(modelData.text)
             if (overlayController.hasLeadingIndicator)
                 label = label.replace(/^\s+/, "")
+            if (overlayController.dropdownMode)
+                return label
             return hostWindow.mnemonicText(label,
                                      modelData.hotkey)
         }
-        textFormat: Text.StyledText
+        textFormat: overlayController.dropdownMode ? Text.PlainText : Text.StyledText
         color: modelData.disabled || modelData.header === true
                ? hostWindow.mutedText : hostWindow.textColor
-        font.pixelSize: modelData.header === true ? 12 : 13
-        font.bold: modelData.header === true
+        font: {
+            if (menuItem.dropdownTextLayout)
+                return menuItem.dropdownTextLayout.font
+            var defaultFont = hostWindow.font
+            defaultFont.bold = modelData.header === true
+            return defaultFont
+        }
         visible: !modelData.separator
         elide: Text.ElideRight
         transform: Translate {
@@ -189,7 +212,7 @@ Rectangle {
                ? scrollBar.width : 0)
         text: hostWindow.cleanText(modelData.shortcut)
         color: hostWindow.mutedText
-        font.pixelSize: 12
+        font: hostWindow.font
         visible: !modelData.separator
                  && modelData.header !== true
     }

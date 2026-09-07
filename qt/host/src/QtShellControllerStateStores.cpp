@@ -236,12 +236,26 @@ void QtShellController::commitTypedScenePatch(
                                      revision);
     }
     if (intersects(applied.rootKeys, {"menuBar", "menus"})) {
-        m_overlayState->applyMenuState(menuState(applied.scene), revision,
-                                       true);
+        // A scene patch can be carried by a stream whose payload also
+        // contains a bounded menu projection (for example a legacy popup
+        // transaction). Only the menus stream owns menuRevision; using the
+        // carrier revision here would make a later real menu update look
+        // stale. Keep the payload, but retain the menu stream's revision.
+        const qulonglong menuRevision = streamId == QStringLiteral("menus")
+            ? revision : m_overlayState->menuRevision();
+        m_overlayState->applyMenuState(menuState(applied.scene),
+                                       menuRevision, true);
     }
     if (applied.rootKeys.contains(QStringLiteral("dialogs"))) {
+        // Dialogs have the same ownership rule as menus. This matters when
+        // an older Go peer bundles dialogs with a menu patch: the payload is
+        // still useful, but that menu revision must not poison the dialogs
+        // stream's ordering guard.
+        const qulonglong dialogRevision = streamId
+                                                == QStringLiteral("dialogs")
+            ? revision : m_overlayState->dialogRevision();
         m_overlayState->applyDialogsState(dialogState(applied.scene),
-                                          revision);
+                                          dialogRevision);
     }
     if (applied.rootKeys.contains(QStringLiteral("operationsQueue"))) {
         m_surfaceRegistry->applyOperationsQueue(
@@ -356,7 +370,10 @@ void QtShellController::applyCompactFieldsToTypedState(
         QVariantMap menus = menuStoreState(m_overlayState);
         menus.insert(QStringLiteral("menus"),
                      message.value(QStringLiteral("menus")));
-        m_overlayState->applyMenuState(menus, revision, true);
+        // Compact panel frames are not menu-stream revisions. Keep their
+        // bounded menu payload useful without poisoning menu ordering.
+        m_overlayState->applyMenuState(menus, m_overlayState->menuRevision(),
+                                       true);
     }
 }
 
@@ -454,7 +471,11 @@ void QtShellController::synchronizeTypedStreamOwnedState(
         m_commandLineState->applyFrame(shell.value(
             QStringLiteral("commandLine")).toMap(), revision);
         if (message.contains(QStringLiteral("menus"))) {
-            m_overlayState->applyMenuState(menuState(m_scene), revision,
+            // A command-line frame may carry a compact menu projection for
+            // legacy peers. Its envelope belongs to command-line, so it
+            // must not advance the independent menus stream revision.
+            m_overlayState->applyMenuState(menuState(m_scene),
+                                           m_overlayState->menuRevision(),
                                            true);
         }
     } else if (stream == QStringLiteral("shell")) {
@@ -510,11 +531,13 @@ void QtShellController::synchronizeTypedCrossStreamPatch(
     }
     if (intersects(rootKeys, {"menuBar", "menus"})
         && stream != QStringLiteral("menus")) {
-        m_overlayState->applyMenuState(menuState(m_scene), revision, true);
+        m_overlayState->applyMenuState(menuState(m_scene),
+                                       m_overlayState->menuRevision(), true);
     }
     if (rootKeys.contains(QStringLiteral("dialogs"))
         && stream != QStringLiteral("dialogs")) {
-        m_overlayState->applyDialogsState(dialogState(m_scene), revision);
+        m_overlayState->applyDialogsState(dialogState(m_scene),
+                                          m_overlayState->dialogRevision());
     }
     if (rootKeys.contains(QStringLiteral("operationsQueue"))
         && stream != QStringLiteral("operations")) {

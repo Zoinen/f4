@@ -86,6 +86,30 @@ func TestSemantic_GroupBoxExportsVisualFrameAndChildren(t *testing.T) {
 	}
 }
 
+func TestSemantic_EditSelectionActivationFollowsFocus(t *testing.T) {
+	e := NewEdit(0, 0, 20, "initial path")
+
+	node := e.SemanticNode(nil)
+	if node["selectionActive"] != false {
+		t.Fatalf("dormant initial selection was exported as active: %#v", node)
+	}
+	if node["selectionStart"] != 0 || node["selectionEnd"] != len(e.text) {
+		t.Fatalf("initial replacement range was lost: %#v", node)
+	}
+
+	e.SetFocus(true)
+	node = e.SemanticNode(nil)
+	if node["selectionActive"] != true {
+		t.Fatalf("focused initial selection was not activated: %#v", node)
+	}
+
+	e.ClearSelection()
+	node = e.SemanticNode(nil)
+	if node["selectionActive"] != false {
+		t.Fatalf("cleared selection remained active: %#v", node)
+	}
+}
+
 func TestSemantic_DialogPreservesExplicitlyHiddenChildBeforeFirstRender(t *testing.T) {
 	SetDefaultPalette()
 	dlg := NewCenteredDialog(40, 10, "Test Dlg")

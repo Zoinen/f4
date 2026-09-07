@@ -180,8 +180,21 @@ Item {
         // becomes visible again: the overlay model must not resurrect that
         // old frame on the next GUI presentation change.
         frames: {
+            const sceneStore = surfaces.hostWindow.sceneStoreApi
+            // Keep the payload properties as direct dependencies as well.
+            // A legacy peer can deliver a cross-stream overlay payload at the
+            // current owner revision; the helper revision string then keeps
+            // the same value even though its frame list changed.
+            const overlayState = sceneStore ? sceneStore.overlayState : null
+            const menuPayload = overlayState
+                    ? overlayState.commandMenus : []
+            const dialogPayload = overlayState ? overlayState.dialogs : []
             if (surfaces.hostWindow.overlayFramesRevision === "")
                 return []
+            // The reads above intentionally participate in this binding's
+            // dependency graph; frames() remains the single projection path.
+            void menuPayload
+            void dialogPayload
             return surfaces.hostWindow.overlayFrames()
         }
         anchors.fill: parent

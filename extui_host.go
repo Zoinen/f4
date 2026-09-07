@@ -521,8 +521,16 @@ func extUiSplitScenePatch(msg map[string]any) []extUiSemanticDispatch {
 		msg["shell"] == nil && msg["surface"] == nil {
 		// Popup lifecycle is one bounded visual transaction. Contextual keybar
 		// and workspace-title changes belong to that menu transaction too; a
-		// second envelope would expose an avoidable intermediate frame.
-		rootRoute = func(string) string { return "menus" }
+		// second envelope would expose an avoidable intermediate frame. Dialogs
+		// remain on their own stream, however. They have an independent overlay
+		// lifetime and revision domain; putting them on the menu stream lets a
+		// later dialog patch look stale after a menu+dialog transition.
+		rootRoute = func(key string) string {
+			if key == "dialogs" {
+				return "dialogs"
+			}
+			return "menus"
+		}
 	}
 	appendGroupedMapPatch("root", msg["root"], rootRoute)
 	if surface, ok := msg["surface"].(map[string]any); ok {
@@ -4809,13 +4817,17 @@ func externalUIBackendArgs(backend string) []string {
 	if backend != "qt" {
 		return nil
 	}
-	return []string{
+	args := []string{
 		"--f4-icon-set=" + string(parseQmlIconSetMode(string(AppConfig.QmlIconSet))),
 		"--f4-font-family=" + effectiveGuiFont(),
 		"--f4-font-size=" + strconv.Itoa(AppConfig.GuiFontSize),
 		"--f4-window-geometry-file=" + filepath.Join(
 			GetF4ConfigDir(), "window-geometry.ini"),
 	}
+	if branch := currentWorktreeBranchName(); branch != "" {
+		args = append(args, "--f4-worktree-branch="+branch)
+	}
+	return args
 }
 
 func findExtUiPath(backend string) (string, error) {

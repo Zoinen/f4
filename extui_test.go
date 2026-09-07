@@ -2080,6 +2080,37 @@ func TestExtUiScenePatchSplitsCanonicalStreamsBeforeSerialization(t *testing.T) 
 	}
 }
 
+func TestExtUiScenePatchKeepsDialogsOnDialogStreamAlongsideMenus(t *testing.T) {
+	patch := extui.ScenePatch{
+		BaseRevision: 4,
+		Revision:     5,
+		Root: &extui.MapPatch{Set: extui.M{
+			"menus":   []map[string]any{{"id": "options"}},
+			"dialogs": []map[string]any{{"id": "panel-settings"}},
+		}},
+	}.ToMap()
+
+	dispatches := extUiSemanticDispatches(patch)
+	if len(dispatches) != 2 {
+		t.Fatalf("dispatch count = %d, want 2: %#v", len(dispatches), dispatches)
+	}
+	if dispatches[0].streamID != "dialogs" || dispatches[1].streamID != "menus" {
+		t.Fatalf("dispatch streams = %q, %q, want dialogs, menus",
+			dispatches[0].streamID, dispatches[1].streamID)
+	}
+
+	dialogRoot := dispatches[0].payload["root"].(map[string]any)
+	dialogSet := dialogRoot["set"].(map[string]any)
+	if _, ok := dialogSet["menus"]; ok {
+		t.Fatal("dialog stream carried menu state")
+	}
+	menuRoot := dispatches[1].payload["root"].(map[string]any)
+	menuSet := menuRoot["set"].(map[string]any)
+	if _, ok := menuSet["dialogs"]; ok {
+		t.Fatal("menu stream carried dialog state")
+	}
+}
+
 func TestExtUiInitialSceneSplitsCanonicalSnapshotsBeforeSerialization(t *testing.T) {
 	scene := map[string]any{
 		"type": "scene", "schema": "app", "version": 4,

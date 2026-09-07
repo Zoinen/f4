@@ -17,9 +17,15 @@ F4HostWindow {
     rightPadding: 0
     bottomPadding: 0
     visible: false
-    title: fallbackExplanation !== ""
-           ? "f4 [Using text presentation: " + fallbackExplanation + "]"
-           : "f4"
+    worktreeBranchName: typeof f4WorktreeBranchName === "undefined"
+                        ? "" : String(f4WorktreeBranchName).trim()
+    title: {
+        const base = fallbackExplanation !== ""
+                     ? "f4 [Using text presentation: "
+                       + fallbackExplanation + "]" : "f4"
+        return worktreeBranchName === ""
+               ? base : base + " [" + worktreeBranchName + "]"
+    }
 
     titleBarItem: shellSurfaces.titleBarItem
     appIconItem: shellSurfaces.appIconButton

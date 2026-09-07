@@ -164,8 +164,10 @@ void OverlayStateStore::applyMenuState(const QVariantMap &state,
                                        qulonglong revision,
                                        bool allowStateOnlyUpdate)
 {
-    advanceRevision(revision, &m_menuRevision,
-                    [this] { emit menuRevisionChanged(); });
+    // Update the payload before publishing its revision.  QML consumers use
+    // menuRevision as the dependency for overlayFrames(); emitting it first
+    // lets that binding observe the previous menu list and cache a stale
+    // popup until some unrelated property changes.
     const QVariantMap menuBar = state.value(
         QStringLiteral("menuBar")).toMap();
     if (menuBar != m_menuBar) {
@@ -178,9 +180,19 @@ void OverlayStateStore::applyMenuState(const QVariantMap &state,
     const QVariantList states = projectMenuStates(menus);
     if (allowStateOnlyUpdate
         && menuStructuresEqual(m_commandMenus, menus)) {
-        if (states != m_commandMenuStates) {
+        const bool stateChanged = states != m_commandMenuStates;
+        if (stateChanged) {
             m_commandMenuStates = states;
             emit commandMenuStatesChanged(m_commandMenuStates);
+        }
+        if (revision > m_menuRevision) {
+            advanceRevision(revision, &m_menuRevision,
+                            [this] { emit menuRevisionChanged(); });
+        } else if (stateChanged) {
+            // A state-only update can share the current stream revision
+            // during a cross-stream reconciliation. The menu payload still
+            // changed and overlayFrames() needs an invalidation notification.
+            emit menuRevisionChanged();
         }
         return;
     }
@@ -194,6 +206,14 @@ void OverlayStateStore::applyMenuState(const QVariantMap &state,
     if (stateChanged) {
         emit commandMenuStatesChanged(m_commandMenuStates);
     }
+    if (revision > m_menuRevision) {
+        advanceRevision(revision, &m_menuRevision,
+                        [this] { emit menuRevisionChanged(); });
+    } else if (structureChanged || stateChanged) {
+        // Keep the helper-function binding live even when an accepted payload
+        // does not advance the wire revision.
+        emit menuRevisionChanged();
+    }
 }
 
 void OverlayStateStore::applyDialogsState(const QVariantMap &state,
@@ -205,13 +225,24 @@ void OverlayStateStore::applyDialogsState(const QVariantMap &state,
     if (revision < m_dialogRevision) {
         return;
     }
-    advanceRevision(revision, &m_dialogRevision,
-                    [this] { emit dialogRevisionChanged(); });
+    // Dialogs and their revision form one observable state transition.  The
+    // revision is used by QML as the invalidation key for overlayFrames(); it
+    // must not be signalled while m_dialogs still contains the prior frame.
     const QVariantList dialogs = state.value(
         QStringLiteral("dialogs")).toList();
-    if (dialogs != m_dialogs) {
+    const bool payloadChanged = dialogs != m_dialogs;
+    if (payloadChanged) {
         m_dialogs = dialogs;
         emit dialogsChanged();
+    }
+    if (revision > m_dialogRevision) {
+        advanceRevision(revision, &m_dialogRevision,
+                        [this] { emit dialogRevisionChanged(); });
+    } else if (payloadChanged) {
+        // Revisions identify the wire stream, while the payload is the QML
+        // invalidation source. A same-revision accepted replacement must
+        // still force overlayFrames() to reevaluate.
+        emit dialogRevisionChanged();
     }
 }
 

@@ -13,6 +13,7 @@ ApplicationWindow {
     property Item appIconItem: null
     property Item workspaceBarItem: null
     property Item macSystemButtonAreaItem: null
+    property string worktreeBranchName: ""
     property Item galleryViewerLayer: null
     property Item operationsQueueLayer: null
     property Item focusTarget: null
