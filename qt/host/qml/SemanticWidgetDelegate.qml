@@ -8,6 +8,39 @@ Item {
     id: widgetRoot
     required property ApplicationWindow hostWindow
     property var widget: ({})
+    property var dialogLayout: null
+    property var siblingWidgets: []
+    readonly property var inlineLabel: {
+        if (widget.kind !== "edit" && widget.kind !== "comboBox")
+            return null
+        let previous = null
+        for (const sibling of siblingWidgets) {
+            if (!sibling || sibling.visible === false || sibling.y !== widget.y
+                    || Number(sibling.x) >= Number(widget.x))
+                continue
+            if (!previous || Number(sibling.x) > Number(previous.x))
+                previous = sibling
+        }
+        if (!previous || previous.kind !== "text" || Number(previous.h || 1) !== 1)
+            return null
+        const gap = Number(widget.x) - Number(previous.x) - Number(previous.w || 1)
+        return gap >= 0 && gap <= 3 ? previous : null
+    }
+    // Use the same styled text and font as the visible label, including mnemonics.
+    Text {
+        id: inlineLabelMeasure
+        visible: false
+        width: widgetRoot.inlineLabel ? hostWindow.pxW(widgetRoot.inlineLabel.w || 1) : 0
+        elide: Text.ElideRight
+        text: widgetRoot.inlineLabel
+              ? hostWindow.mnemonicText(widgetRoot.inlineLabel.text, widgetRoot.inlineLabel.hotkey) : ""
+        textFormat: Text.StyledText
+        font: hostWindow.font
+    }
+    readonly property real horizontalPosition: inlineLabel
+        ? hostWindow.snapPx(hostWindow.pxX(Number(inlineLabel.x) - originX)
+                            + inlineLabelMeasure.contentWidth + 12)
+        : hostWindow.pxX((widget.x || 0) - originX)
     property int originX: 0
     property int originY: 0
     property real maximumWidth: Number.POSITIVE_INFINITY
@@ -16,23 +49,23 @@ Item {
     readonly property real semanticHeight:
         hostWindow.dialogWidgetSemanticHeight(widget)
     readonly property real visualHeight:
-        hostWindow.dialogWidgetVisualHeight(widget)
+        dialogLayout ? dialogLayout.widgetHeight(widget)
+                     : hostWindow.dialogWidgetVisualHeight(widget)
     readonly property bool visuallyOverflows:
         visualHeight > semanticHeight + 0.001
 
     objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "Root"
 
-    x: hostWindow.pxX((widget.x || 0) - originX)
-    y: hostWindow.dialogWidgetVisualTop(
+    x: horizontalPosition
+    y: dialogLayout ? dialogLayout.widgetTop(widget) - dialogLayout.rowTop(originY + 1)
+                    : hostWindow.dialogWidgetVisualTop(
            (widget.y || 0) - originY - 1, widget)
     width: Math.min(hostWindow.pxW(widget.w || 1), maximumWidth)
     height: visualHeight
     visible: widget.visible !== false
     clip: false
 
-    // A one-row semantic rectangle remains the stable layout anchor. Only
-    // its native control paints and receives input outside that rectangle.
-    // Correct the whole overflowing subtree in scene space so backgrounds,
+    // Correct the whole control subtree in scene space so backgrounds,
     // hit regions, text, and icons share the same physical-pixel origin.
     transform: Translate {
         x: widgetRoot.visuallyOverflows
@@ -155,7 +188,9 @@ Item {
                     text: hostWindow.cleanText(modelData)
                     checked: widget.kind === "radioGroup" ? index === widget.selected : !!(widget.states && widget.states[index])
                     semanticFocus: widget.focused === true
-                                   && (index === widget.selected || widget.selected === undefined)
+                                   && index === (widget.focusIndex !== undefined
+                                                 ? widget.focusIndex
+                                                 : (widget.selected !== undefined ? widget.selected : 0))
                     onClicked: hostWindow.action({ "target": widget.id, "action": "control.select", "index": index })
                 }
             }
@@ -320,6 +355,8 @@ Item {
                     Component.onCompleted: setSource(
                         Qt.resolvedUrl("SemanticWidgetDelegate.qml"), {
                             "hostWindow": widgetRoot.hostWindow,
+                            "dialogLayout": widgetRoot.dialogLayout,
+                            "siblingWidgets": widgetRoot.widget.children || [],
                             "widget": modelData,
                             // Nested semantic coordinates remain absolute in
                             // the frame. Rebase them to this group; the -1

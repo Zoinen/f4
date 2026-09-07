@@ -21,6 +21,16 @@ Rectangle {
     property real userWidth: 0
     property real userHeight: 0
     property rect restoredGeometry: Qt.rect(0, 0, 0, 0)
+    readonly property real contentLeft: {
+        const items = (frame.children || []).filter(isContent)
+        return items.length ? Math.min(...items.map(w => Number(w.x || 0))) : Number(frame.x || 0)
+    }
+    readonly property real contentRight: {
+        const items = (frame.children || []).filter(isContent)
+        return items.length ? Math.max(...items.map(w => Number(w.x || 0) + Math.max(1, Number(w.w || 1)))) : contentLeft
+    }
+    readonly property real contentPadding: hostWindow.snapPx(24)
+    readonly property var rowEdges: calculateRowEdges()
     readonly property real bodyContentHeight: calculateBodyContentHeight()
     readonly property real geometryLeft: 12
     readonly property real geometryTop: menuBar.height + 8
@@ -33,11 +43,16 @@ Rectangle {
     readonly property real minimumDialogWidth: Math.min(320, availableWidth)
     readonly property real minimumDialogHeight: Math.min(160, availableHeight)
     readonly property real preferredWidth: nativeLayout
-        ? Math.min(availableWidth, Math.max(420, hostWindow.pxW(frame.w || 60)))
+        ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
     readonly property real preferredHeight: nativeLayout
-        ? Math.min(availableHeight, Math.max(180, hostWindow.pxH(frame.h)))
+        ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
+
+    function isContent(widget) {
+        return widget && widget.visible !== false
+                && (widget.kind !== "text" || String(widget.text || widget.typeName || "").trim().length > 0)
+    }
 
     function clamped(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value))
@@ -115,17 +130,85 @@ Rectangle {
     }
 
     function widgetBottom(widget) {
-        if (!widget || widget.visible === false)
+        if (!isContent(widget))
             return 0
 
-        const relativeRow = Number(widget.y || 0)
-                - Number(frame.y || 0) - 1
-        var bottom = hostWindow.dialogWidgetVisualTop(relativeRow, widget)
-                + hostWindow.dialogWidgetVisualHeight(widget)
+        var bottom = widgetTop(widget) + widgetHeight(widget)
         var children = widget.children || []
         for (var i = 0; i < children.length; ++i)
             bottom = Math.max(bottom, widgetBottom(children[i]))
         return bottom
+    }
+
+    function calculateRowEdges() {
+        const rows = []
+        const controls = []
+        const base = hostWindow.snapPx(Math.max(22, hostWindow.ch))
+        function collect(widgets) {
+            for (const widget of widgets) {
+                if (!isContent(widget))
+                    continue
+                const start = Math.max(0, Number(widget.y || 0) - Number(frame.y || 0) - 1)
+                const span = Math.max(1, Number(widget.h || 1))
+                while (rows.length < start + span)
+                    rows.push(0)
+                for (let row = start; row < start + span; ++row)
+                    rows[row] = base
+                if (widget.kind !== "group")
+                    controls.push({start: start, span: span, widget: widget})
+                collect(widget.children || [])
+            }
+        }
+        collect(frame.children || [])
+        // Trim outer whitespace; each internal blank run becomes one section
+        // gap (twice the 8-DIP allowance used by native controls).
+        const first = rows.findIndex(height => height > 0)
+        for (let row = Math.max(0, first); row < rows.length; ++row) {
+            if (rows[row] === 0) {
+                rows[row] = hostWindow.snapPx(16)
+                while (row + 1 < rows.length && rows[row + 1] === 0)
+                    ++row
+            }
+        }
+        // Shared rows reserve the tallest control once.
+        controls.sort((a, b) => a.span - b.span)
+        for (const control of controls) {
+            let allocated = 0
+            for (let i = control.start; i < control.start + control.span; ++i)
+                allocated += rows[i]
+            const needed = hostWindow.dialogWidgetVisualHeight(control.widget)
+                    + (hostWindow.dialogWidgetUsesControlHeight(control.widget) ? 8 : 0)
+            if (needed > allocated)
+                rows[control.start + control.span - 1] += needed - allocated
+        }
+        const edges = [0]
+        for (const height of rows)
+            edges.push(hostWindow.snapPx(edges[edges.length - 1] + height))
+        return edges
+    }
+
+    function rowTop(absoluteRow) {
+        const row = Number(absoluteRow) - Number(frame.y || 0) - 1
+        const base = hostWindow.snapPx(Math.max(22, hostWindow.ch))
+        if (row < 0)
+            return 0
+        if (row < rowEdges.length)
+            return rowEdges[row]
+        return rowEdges[rowEdges.length - 1]
+    }
+
+    function widgetHeight(widget) {
+        return widget.kind === "group"
+                ? rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
+                  - rowTop(Number(widget.y || 0))
+                : hostWindow.dialogWidgetVisualHeight(widget)
+    }
+
+    function widgetTop(widget) {
+        const start = rowTop(Number(widget.y || 0))
+        const end = rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
+        return hostWindow.snapPx(start + (widget.kind === "group"
+                                         ? 0 : (end - start - widgetHeight(widget)) / 2))
     }
 
     function calculateBodyContentHeight() {
@@ -133,13 +216,13 @@ Rectangle {
         var children = frame.children || []
         for (var i = 0; i < children.length; ++i)
             bottom = Math.max(bottom, widgetBottom(children[i]))
-        return bottom + 14
+        return bottom + contentPadding
     }
 
     function focusedWidget(widgets) {
         for (var i = 0; i < widgets.length; ++i) {
             var widget = widgets[i]
-            if (!widget || widget.visible === false)
+            if (!isContent(widget))
                 continue
             if (widget.focused === true)
                 return widget
@@ -157,10 +240,8 @@ Rectangle {
         if (!widget)
             return
 
-        const relativeRow = Number(widget.y || 0)
-                - Number(frame.y || 0) - 1
-        var top = hostWindow.dialogWidgetVisualTop(relativeRow, widget)
-        var bottom = top + hostWindow.dialogWidgetVisualHeight(widget)
+        var top = widgetTop(widget)
+        var bottom = top + widgetHeight(widget)
         var maximum = Math.max(0, dialogBody.contentHeight - dialogBody.height)
         if (top < dialogBody.contentY)
             dialogBody.contentY = Math.max(0, top - 6)
@@ -279,11 +360,17 @@ Rectangle {
     }
 
     Text {
+        id: dialogTitle
+        objectName: "semanticDialogTitle"
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(dialogTitle, hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(dialogTitle, hostWindow.contentItem)
+        }
         anchors.left: parent.left
         anchors.right: dialogWindowButtons.left
         anchors.top: parent.top
         height: dialogHeader.height
-        anchors.leftMargin: 18
+        anchors.leftMargin: dialogRoot.contentPadding
         verticalAlignment: Text.AlignVCenter
         text: hostWindow.cleanText(frame.title)
         color: hostWindow.textColor
@@ -302,6 +389,7 @@ Rectangle {
         ZG.TitleButton {
             id: dialogMaximizeButton
             objectName: "dialogMaximizeButton"
+            visible: false
             implicitWidth: 42
             implicitHeight: dialogHeader.height
             opacity: 1
@@ -344,7 +432,7 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.topMargin: dialogHeader.height + 10
+        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
         anchors.bottom: parent.bottom
         clip: true
         contentWidth: width
@@ -373,13 +461,14 @@ Rectangle {
                 delegate: SemanticWidgetDelegate {
                     required property var modelData
                     hostWindow: dialogRoot.hostWindow
+                    dialogLayout: dialogRoot
+                    siblingWidgets: frame.children || []
                     widget: modelData
-                    originX: frame.x || 0
+                    visible: dialogRoot.isContent(modelData)
+                    originX: dialogRoot.contentLeft
                     originY: frame.y || 0
-                    maximumWidth: Math.max(1, dialogBody.width
-                                          - hostWindow.pxX((modelData.x || 0)
-                                                     - (frame.x || 0))
-                                          - 16)
+                    x: dialogRoot.contentPadding + horizontalPosition
+                    maximumWidth: Math.max(1, dialogBody.width - x - dialogRoot.contentPadding)
                 }
             }
         }

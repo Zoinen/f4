@@ -42,3 +42,22 @@ func TestRadioGroup_MouseEdgeCases(t *testing.T) {
 		t.Error("RadioGroup should ignore out-of-bounds clicks")
 	}
 }
+
+// Arrow navigation moves the semantic cursor independently from selection.
+func TestRadioGroupSemanticArrowFocus(t *testing.T) {
+	rg := NewRadioGroup(0, 0, 1, []string{"First", "Second"})
+	for _, step := range []struct {
+		key   uint16
+		focus int
+	}{
+		{vtinput.VK_DOWN, 1}, {vtinput.VK_UP, 0}, {vtinput.VK_DOWN, 1},
+	} {
+		if !rg.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: step.key}) {
+			t.Fatal("arrow key was not handled")
+		}
+		node := rg.SemanticNode(&SemanticContext{Width: 80, Height: 25})
+		if node["focusIndex"] != step.focus || node["selected"] != 0 {
+			t.Fatalf("arrow navigation exported incorrect focus/selection: %#v", node)
+		}
+	}
+}

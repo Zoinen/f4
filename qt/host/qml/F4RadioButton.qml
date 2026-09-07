@@ -31,10 +31,13 @@ T.RadioButton {
                                        : "radioButtonFocusFrame"
         readonly property color testBorderColor: border.color
         readonly property real testBorderWidth: border.width
-        x: 0
-        y: 0
-        width: control.snap(control.width)
-        height: control.snap(control.height)
+        // Derive the ring from the indicator, not the row: fractional-DPR
+        // centering can otherwise split its vertical space into unequal pixels.
+        readonly property real indicatorGap: control.snap(2)
+        x: control.indicator.x - indicatorGap
+        y: control.indicator.y - indicatorGap
+        width: control.snap(control.width) + indicatorGap
+        height: control.indicator.height + 2 * indicatorGap
         color: "transparent"
         radius: control.snap(4)
         border.width: control.focusHighlighted
