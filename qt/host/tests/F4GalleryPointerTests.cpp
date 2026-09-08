@@ -2789,6 +2789,37 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     auto &sourceState=bridge.m_panelSessions.catalog(0);
     sourceState.selectedEntryIdList={"entry-1","off-page-entry"};
     sourceState.selectedEntryIds={"entry-1","off-page-entry"};
+    // Snapshot selection at press: unselected rows drag alone; the single-item
+    // modifier overrides a marked set, while copy/move modifiers preserve it.
+#ifdef Q_OS_MACOS
+    const auto singleItemModifier = Qt::MetaModifier;
+#else
+    const auto singleItemModifier = Qt::AltModifier;
+#endif
+    for (int row : {1, 2}) {
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(layout,"indexGeometry",Q_RETURN_ARG(QRectF,rect),Q_ARG(int,row)));
+        const QPoint point=layout->mapToScene(rect.center()-QPointF(0,layout->property("contentY").toReal())).toPoint();
+        for (Qt::KeyboardModifiers modifiers : {Qt::KeyboardModifiers(Qt::NoModifier),
+                Qt::KeyboardModifiers(Qt::ShiftModifier), Qt::KeyboardModifiers(Qt::ControlModifier),
+                Qt::KeyboardModifiers(singleItemModifier), Qt::KeyboardModifiers(singleItemModifier | Qt::ShiftModifier)}) {
+            const QStringList expected = row == 1 && !modifiers.testFlag(singleItemModifier)
+                ? sourceState.selectedEntryIdList : QStringList{QString("entry-%1").arg(row)};
+            actions.clear();
+            QTest::mousePress(&view,Qt::LeftButton,modifiers,point);
+            QCOMPARE(bridge.m_dragSource.value("entryIds").toStringList(),expected);
+            int prepareCount = 0;
+            for (const auto &arguments : actions) {
+                const auto action = arguments.at(0).toMap();
+                if (action.value("action") != "panel.prepareDrag") continue;
+                QCOMPARE(action.value("entryIds").toStringList(),expected);
+                ++prepareCount;
+            }
+            QCOMPARE(prepareCount,1);
+            QCOMPARE(bridge.m_dragPrepared,expected.size()==1);
+            QTest::mouseRelease(&view,Qt::LeftButton,modifiers,point);
+        }
+    }
     QTest::mousePress(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
     QVERIFY(!bridge.m_dragPrepared);
     bridge.handleDragPrepared({{"type","drag_prepared"},{"requestId",bridge.m_dragRequestId},

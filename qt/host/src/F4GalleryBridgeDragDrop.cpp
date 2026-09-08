@@ -322,16 +322,20 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         m_dragThresholdPassed = false;
         m_preparedDragUrls.clear();
         m_dragRequestId.clear();
-        if (mouse->button() != Qt::LeftButton || mouse->modifiers() != Qt::NoModifier) return false;
+        if (mouse->button() != Qt::LeftButton) return false;
         int side;
         auto source = dragHit(object, mouse->position(), &side);
         const auto id = source.value("entryId").toString();
         if (id.isEmpty() || source.value("name").toString() == "..") return false;
         const auto &state = m_panelSessions.catalog(side);
         QStringList ids;
-        if (state.selectedEntryIds.contains(id)) ids = state.selectedEntryIdList;
-        else if (state.selectedEntryIds.isEmpty()) ids.append(id);
-        else return false;
+#ifdef Q_OS_MACOS
+        const bool singleItem = mouse->modifiers().testFlag(Qt::MetaModifier);
+#else
+        const bool singleItem = mouse->modifiers().testFlag(Qt::AltModifier);
+#endif
+        if (!singleItem && state.selectedEntryIds.contains(id)) ids = state.selectedEntryIdList;
+        else ids.append(id);
         source.insert("entryIds", ids);
         m_dragSource = source;
         m_dragArmedSide = side;

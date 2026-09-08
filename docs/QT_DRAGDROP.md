@@ -5,10 +5,12 @@ dropped on a directory go into that directory; `..` targets the parent directory
 Files and empty panel space target the current directory. Hidden panels, document surfaces, blocking
 overlays, and known read-only destinations refuse drops.
 
-Drag a marked entry to carry the marked set. With no marks, drag one entry.
-Pressing an unmarked entry while other entries are marked retains cursor
-navigation. Ctrl/Shift selection presses retain their existing meaning; change
-modifiers after starting the drag. Qt's system drag-distance threshold applies.
+Drag a marked entry to carry the marked set. Drag an unmarked entry to carry
+only that entry, even when other entries are marked. Hold Alt at mouse press
+(Command on macOS) to drag only the pressed entry regardless of marks.
+The dragged set is captured at mouse press; Ctrl/Shift may be held from the
+start or changed during the drag to choose copy/move. Qt's system drag-distance
+threshold applies.
 
 Between panels in the same Qt host, the default is copy and Shift selects move
 (Ctrl takes precedence). Both use Go's VFS file-operation engine, including its
