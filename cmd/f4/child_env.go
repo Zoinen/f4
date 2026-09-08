@@ -36,6 +36,55 @@ const kittyTermName = "xterm-kitty"
 // that missed the news would keep the wrong environment for its whole life.
 var terminalGraphicsSeen atomic.Bool
 
+// privateToThisProcess lists variables that describe how *this* process was
+// started and are meaningless -- or fatal -- to anything it starts.
+//
+// The universal Linux build (-tags goffi_universal, the single artifact that
+// runs on glibc and musl alike) carries no PT_INTERP and no DT_NEEDED, so
+// nothing maps a libc into it. goffi's bridge re-execs the process through
+// the host dynamic loader with the host libc pre-loaded, before main, and
+// leaves GOFFI_UNIVERSAL_REEXEC behind to say the job is done. The bridge in
+// a child reads that variable, concludes it too already came through the
+// loader, and binds no libc -- so the child dies before main, on the first
+// libc symbol it touches. selfCommand already knows this and starts copies of
+// f4 through the loader itself; the terminal starts other people's programs,
+// which have no such arrangement, and the one program most likely to be a
+// universal build is f4 itself (issue #87: `./f4` from f4's own terminal died
+// with SIGSEGV, frame #0 at address zero -- a call through the function
+// pointer the bridge never filled in).
+//
+// GOFFI_UNIVERSAL_EXE and _ARGV0 are the identity the re-exec destroyed,
+// recorded before it happened. They are tagged with the pid they describe, so
+// a child cannot mistake them for its own, but they describe a process the
+// child has nothing to do with either. F4_EXE is f4's own version of the same
+// record and is not tagged: passing it on would tell a *different* f4 binary
+// that it lives at this one's path, which is an answer the updater acts on.
+//
+// The names are goffi's. A rename there leaves this list stripping nothing
+// rather than stripping the wrong thing; the ones f4 itself reads are tied to
+// the constants that read them by a test in the linux build, so those cannot
+// drift apart unnoticed.
+var privateToThisProcess = []string{
+	"GOFFI_UNIVERSAL_REEXEC",
+	"GOFFI_UNIVERSAL_EXE",
+	"GOFFI_UNIVERSAL_ARGV0",
+	"F4_EXE",
+}
+
+// privateEnvEntry reports whether an environment entry names one of them.
+func privateEnvEntry(kv string) bool {
+	name, _, ok := strings.Cut(kv, "=")
+	if !ok {
+		return false
+	}
+	for _, key := range privateToThisProcess {
+		if name == key {
+			return true
+		}
+	}
+	return false
+}
+
 var currentHostShellMode = func() ShellMode {
 	return resolveShellMode(ShellModeConfig{
 		ConsoleMode:      AppConfig.ConsoleMode,
@@ -66,6 +115,9 @@ func buildChildEnv(env []string, graphics, kittyTerm bool) []string {
 			continue
 		}
 		if kittyTerm && strings.HasPrefix(kv, "TERM=") {
+			continue
+		}
+		if privateEnvEntry(kv) {
 			continue
 		}
 		out = append(out, kv)

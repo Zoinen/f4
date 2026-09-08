@@ -119,11 +119,11 @@ func actionPlugRing(pf *PanelsFrame) {
 	btnClose := vtui.NewButton(0, 0, Msg("PlugRing.BtnClose"))
 
 	dlg, table := vtui.NewTableDialog(w, h, Msg("PlugRing.Title"), []vtui.TableColumn{
-		{Title: "Name", Width: 16},
-		{Title: "Version", Width: 8},
-		{Title: "Status", Width: 13},
-		{Title: "Author", Width: 10},
-		{Title: "Description", Width: 0},
+		{Title: Msg("PlugRing.ColName"), Width: 16},
+		{Title: Msg("PlugRing.ColVersion"), Width: 8},
+		{Title: Msg("PlugRing.ColStatus"), Width: 13},
+		{Title: Msg("PlugRing.ColAuthor"), Width: 10},
+		{Title: Msg("PlugRing.ColDescription"), Width: 0},
 	}, btnInstall, btnRemove, btnRefresh, btnClose)
 	useDialogTableColors(table)
 	table.Sortable = true    // click a column header to sort, again to reverse

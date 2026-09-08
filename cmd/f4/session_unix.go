@@ -102,6 +102,7 @@ func removeSessionInfo(sockPath string) {
 }
 
 func ManageSessions() {
+	runningGUI = false
 	if len(os.Args) > 1 && os.Args[1] == "--server" {
 		runServer(os.Args[2])
 		return
@@ -320,7 +321,8 @@ func runClient(sockPath string, serverPID int) {
 	oob := syscall.UnixRights(0, 1, notifyPipe[1])
 	vtui.DebugLog("CLIENT: FDs to send: In:0 Out:1 Pipe:%d", notifyPipe[1])
 
-	n, oobn, err := conn.WriteMsgUnix(attachPayload(editFilePath), oob, raddr)
+	startLeft, startRight := startupDirs()
+	n, oobn, err := conn.WriteMsgUnix(attachPayload(editFilePath, startLeft, startRight), oob, raddr)
 	if err != nil {
 		vtui.DebugLog("CLIENT: ATTACH FAILURE: Failed to send FDs to daemon at %s: %v", sockPath, err)
 		fmt.Fprintf(os.Stderr, "f4: failed to attach to session at %s: %v\n", sockPath, err)
@@ -380,6 +382,8 @@ type attachRequest struct {
 	notifyPipeWriteEnd int
 	rawFds             []int
 	editPath           string
+	startLeft          string
+	startRight         string
 }
 
 // attachPayload builds the ATTACH datagram body. Plain "ATTACH" when no
@@ -387,11 +391,40 @@ type attachRequest struct {
 // binary already speaks, so an old client can still attach to a new
 // server and vice versa); "ATTACH <path>" when -e named a file, parsed
 // back out in runServer's accept loop below.
-func attachPayload(editPath string) []byte {
-	if editPath == "" {
+//
+// The panel directories ride on further lines, so an older server still reads
+// exactly "ATTACH" on the first. They are left out next to -e, where that
+// server would take the whole datagram as the file name.
+func attachPayload(editPath, left, right string) []byte {
+	if editPath != "" {
+		return []byte("ATTACH " + editPath)
+	}
+	if left == "" {
 		return []byte("ATTACH")
 	}
-	return []byte("ATTACH " + editPath)
+	msg := "ATTACH\nCWD " + left
+	if right != "" && right != left {
+		msg += "\nCWD2 " + right
+	}
+	return []byte(msg)
+}
+
+// parseAttachPayload reads back what attachPayload wrote. Unknown lines are
+// ignored rather than refused, so a future client stays attachable.
+func parseAttachPayload(msg string) (editPath, left, right string) {
+	lines := strings.Split(msg, "\n")
+	if strings.HasPrefix(lines[0], "ATTACH ") {
+		editPath = lines[0][len("ATTACH "):]
+	}
+	for _, line := range lines[1:] {
+		switch {
+		case strings.HasPrefix(line, "CWD2 "):
+			right = line[len("CWD2 "):]
+		case strings.HasPrefix(line, "CWD "):
+			left = line[len("CWD "):]
+		}
+	}
+	return editPath, left, right
 }
 
 func runServer(sockPath string) {
@@ -460,10 +493,7 @@ func runServer(sockPath string) {
 
 			setCloseOnExec(fds)
 
-			var editPath string
-			if msg := string(buf[:n]); strings.HasPrefix(msg, "ATTACH ") {
-				editPath = msg[len("ATTACH "):]
-			}
+			editPath, startLeft, startRight := parseAttachPayload(string(buf[:n]))
 
 			req := attachRequest{
 				in:                 os.NewFile(uintptr(fds[0]), "/dev/stdin"),
@@ -471,6 +501,8 @@ func runServer(sockPath string) {
 				notifyPipeWriteEnd: fds[2],
 				rawFds:             fds,
 				editPath:           editPath,
+				startLeft:          startLeft,
+				startRight:         startRight,
 			}
 
 			// Preempt the current attached session (if any) so the new client takes over.
@@ -499,24 +531,14 @@ func runServer(sockPath string) {
 		newStdout := req.out
 		notifyPipeWriteEnd := req.notifyPipeWriteEnd
 		attachEditPath := req.editPath
+		attachStartLeft, attachStartRight := req.startLeft, req.startRight
 
 		vtui.DebugLog("SERVER: FDs received (In:%d Out:%d Pipe:%d). Goroutines: %d. Attaching terminal.", fds[0], fds[1], fds[2], runtime.NumGoroutine())
 
 		oldStdin, oldStdout := os.Stdin, os.Stdout
 		os.Stdin, os.Stdout = newStdin, newStdout
 
-		var restore func()
-		if term.IsTerminal(int(os.Stdin.Fd())) {
-			r, err := vtui.PrepareTerminal()
-			if err != nil {
-				vtui.DebugLog("SERVER: WARNING: Failed to prepare terminal: %v", err)
-			} else {
-				restore = r
-				vtui.DebugLog("SERVER: Raw mode and environment enabled successfully.")
-			}
-		} else {
-			vtui.DebugLog("SERVER: FD %d is NOT a terminal, raw mode skipped.", os.Stdin.Fd())
-		}
+		restore := adoptClientTerminal(os.Stdin)
 
 		// Sync terminal size
 		if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
@@ -598,6 +620,16 @@ func runServer(sockPath string) {
 			}
 		}
 
+		// A client that attached to a running daemon moves its workspace to its
+		// own directory, as a normal start would.
+		if attachStartLeft != "" {
+			if top := vtui.FrameManager.GetTopFrame(); top != nil {
+				if pf, ok := top.(*PanelsFrame); ok && pf != nil {
+					applyStartupDirs(pf, attachStartLeft, attachStartRight)
+				}
+			}
+		}
+
 		if attachEditPath != "" {
 			// -e's actual open, deferred all the way to here: the terminal
 			// is attached, sized, and drawing (scr.HardReset()+Redraw()
@@ -673,6 +705,37 @@ func runServer(sockPath string) {
 
 		os.Stdin, os.Stdout = oldStdin, oldStdout
 	}
+}
+
+// resetFar2lNegotiation is a variable so the attach path can be exercised
+// without a terminal to negotiate with.
+var resetFar2lNegotiation = vtui.ResetFar2lNegotiation
+
+// adoptClientTerminal puts the terminal of a client that has just attached to
+// the daemon into the state f4 draws in, and returns the call that gives it
+// back -- nil when there is nothing to give back.
+//
+// The far2l acknowledgement is forgotten first. It belongs to the terminal
+// that sent it, and this is a different terminal. PrepareTerminal announces
+// the protocols again right below, so a client that speaks far2l has the
+// extensions back a moment later; a client that does not -- a plain SSH
+// session where the last client was a far2l-capable emulator -- must not be
+// addressed in far2l at all, or every clipboard call sits out its timeout
+// waiting for a reply that is never coming (#922).
+func adoptClientTerminal(in *os.File) func() {
+	resetFar2lNegotiation()
+
+	if !term.IsTerminal(int(in.Fd())) {
+		vtui.DebugLog("SERVER: FD %d is NOT a terminal, raw mode skipped.", in.Fd())
+		return nil
+	}
+	restore, err := vtui.PrepareTerminal()
+	if err != nil {
+		vtui.DebugLog("SERVER: WARNING: Failed to prepare terminal: %v", err)
+		return nil
+	}
+	vtui.DebugLog("SERVER: Raw mode and environment enabled successfully.")
+	return restore
 }
 
 const sessionPickerDialogPreferredWidth = 100

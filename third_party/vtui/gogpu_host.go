@@ -83,6 +83,15 @@ type GogpuHost struct {
 	// dragOut is the gesture waiting for the main loop to hand it to
 	// gogpu, or nil. One pointer, so one gesture at a time.
 	dragOut *gogpuDragRequest
+
+	// lastMouseCellX/Y is the cell the last reported pointer motion landed
+	// in. gogpu reports motion per pixel; the UI works in cells, so a move
+	// is forwarded only when the pointer enters another cell. Hover motion
+	// (no button held) goes through here as well: text views underline the
+	// URL under the pointer and need to see the pointer arrive on it.
+	lastMouseCellX int
+	lastMouseCellY int
+	mouseCellKnown bool
 }
 
 func (h *GogpuHost) sendEvent(ev *vtinput.InputEvent) {
@@ -442,6 +451,10 @@ func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp fu
 	// application registered as its target.
 	app.OnDragDrop(host.handleFileDrop)
 	SetDragBackend(host)
+	// Copy and paste go through the OS clipboard helpers and the internal
+	// buffer; UseWindowClipboard decides what becomes of the OSC 52 fallback,
+	// which a window needs only when there is no helper to be had.
+	UseWindowClipboard()
 	logGogpuDragEnvironment()
 	// A drag out has to begin on this loop: on Windows and X11 gogpu's
 	// drag source is a modal loop of its own, and everywhere the window
@@ -642,18 +655,29 @@ func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp fu
 		btn := host.mouseBtn
 		cW := host.cellW
 		cH := host.cellH
+		mods := host.currentMods
+		cellX, cellY := int(x/float64(cW)), int(y/float64(cH))
+		moved := !host.mouseCellKnown || cellX != host.lastMouseCellX || cellY != host.lastMouseCellY
+		host.lastMouseCellX, host.lastMouseCellY = cellX, cellY
+		host.mouseCellKnown = true
 		host.mu.Unlock()
 
-		if btn != 0 {
-			host.sendEvent(&vtinput.InputEvent{
-				Type:            vtinput.MouseEventType,
-				MouseX:          int16(x / float64(cW)),
-				MouseY:          int16(y / float64(cH)),
-				MouseEventFlags: vtinput.MouseMoved,
-				ButtonState:     btn,
-				ControlKeyState: host.currentMods,
-			})
+		// Motion is reported per cell, whether or not a button is held:
+		// the terminal, the viewer and the editor underline the URL under
+		// the pointer (f4 #459) and need hover motion for that, exactly as
+		// the tty backend delivers it through any-event tracking (?1003).
+		// Coalescing by cell keeps a fast sweep from flooding the queue.
+		if !moved {
+			return
 		}
+		host.sendEvent(&vtinput.InputEvent{
+			Type:            vtinput.MouseEventType,
+			MouseX:          int16(cellX),
+			MouseY:          int16(cellY),
+			MouseEventFlags: vtinput.MouseMoved,
+			ButtonState:     btn,
+			ControlKeyState: mods,
+		})
 	})
 
 	app.EventSource().OnScroll(func(dx float64, dy float64) {
@@ -851,23 +875,23 @@ func loadGogpuFont(fontName string, size float64) (text.Face, *fontFallbackChain
 	// list is ~400 MB of font files and gg holds each twice) in sessions that
 	// never drew a single glyph from them. Whether gg can actually open a file
 	// is still logged — by the chain's warm() sweep, shortly after startup.
+	//
+	// The chain is built even when none of the listed paths exists: its
+	// discovery step still finds the per-script fonts no curated list can
+	// enumerate, and those are installed independently of the CJK ones.
 	var chain *fontFallbackChain
 	if noFallback {
 		DebugLog("GOGPU_DIAG_FONT: fallback chain disabled by VTUI_GOGPU_NO_FALLBACK")
 	} else {
+		chain = newGogpuFallbackChain(size)
 		for _, p := range fallbackPathsForGUI() {
 			if _, err := os.Stat(p); err != nil {
 				continue
 			}
 			DebugLog("GOGPU_DIAG_FONT: fallback present, deferred until first use: %s", p)
-			if chain == nil {
-				chain = newGogpuFallbackChain(size)
-			}
 			chain.entries = append(chain.entries, fontFallbackEntry{path: p})
 		}
-		if chain != nil {
-			chain.warm()
-		}
+		chain.warm()
 	}
 
 	// text.MultiFace stays out of this backend deliberately. It reports no

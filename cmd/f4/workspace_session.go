@@ -9,12 +9,13 @@ import (
 )
 
 type panelSessionState struct {
-	Path        string
-	Cursor      string
-	ViewMode    int
-	Gallery     panelGallerySessionState
-	SortMode    int
-	SortReverse bool
+	Path          string
+	Cursor        string
+	ViewMode      int
+	Gallery       panelGallerySessionState
+	SortMode      int
+	SortReverse   bool
+	UseSortGroups bool
 }
 
 type workspaceSessionState struct {
@@ -51,11 +52,13 @@ func legacyWorkspaceSession() workspaceSessionState {
 			Path: LastLeftPath, Cursor: LastLeftCursor, ViewMode: LastLeftViewMode,
 			Gallery:  clonePanelGallerySessionState(LastLeftGalleryState),
 			SortMode: LastLeftSortMode, SortReverse: LastLeftSortRev,
+			UseSortGroups: LastLeftSortGroups,
 		},
 		Right: panelSessionState{
 			Path: LastRightPath, Cursor: LastRightCursor, ViewMode: LastRightViewMode,
 			Gallery:  clonePanelGallerySessionState(LastRightGalleryState),
 			SortMode: LastRightSortMode, SortReverse: LastRightSortRev,
+			UseSortGroups: LastRightSortGroups,
 		},
 		ActivePanel: LastActivePanel,
 		WidePanel:   LastWidePanel,
@@ -72,6 +75,7 @@ func setLegacyWorkspaceSession(state workspaceSessionState) {
 	LastLeftGalleryState, LastRightGalleryState = clonePanelGallerySessionState(state.Left.Gallery), clonePanelGallerySessionState(state.Right.Gallery)
 	LastLeftSortMode, LastRightSortMode = state.Left.SortMode, state.Right.SortMode
 	LastLeftSortRev, LastRightSortRev = state.Left.SortReverse, state.Right.SortReverse
+	LastLeftSortGroups, LastRightSortGroups = state.Left.UseSortGroups, state.Right.UseSortGroups
 	LastActivePanel, LastWidePanel = state.ActivePanel, state.WidePanel
 	LastShowPanels, LastShowLeft, LastShowRight = state.ShowPanels, state.ShowLeft, state.ShowRight
 }
@@ -123,6 +127,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 			Path: path, Cursor: cursor, ViewMode: int(left.viewMode),
 			Gallery:  capturePanelGallerySessionState(left),
 			SortMode: int(left.sortMode), SortReverse: left.sortReverse,
+			UseSortGroups: left.useSortGroups,
 		}
 	}
 	if right, ok := pf.panels[1].(*FileSystemPanel); ok {
@@ -139,6 +144,7 @@ func captureWorkspaceSession(pf *PanelsFrame) workspaceSessionState {
 			Path: path, Cursor: cursor, ViewMode: int(right.viewMode),
 			Gallery:  capturePanelGallerySessionState(right),
 			SortMode: int(right.sortMode), SortReverse: right.sortReverse,
+			UseSortGroups: right.useSortGroups,
 		}
 	}
 	return state
@@ -208,17 +214,19 @@ func loadWorkspaceSessions(ini *IniFile) ([]workspaceSessionState, int) {
 			ShowRight:   ini.GetString(section, "ShowRight", "1") == "1",
 			Left: panelSessionState{
 				Path: ini.GetString(leftSection, "Folder", ""), Cursor: ini.GetString(leftSection, "CurFile", ""),
-				Gallery:     loadUnifiedPanelGallerySessionState(ini, leftSection, validSessionViewMode(leftViewMode)),
-				ViewMode:    leftViewMode,
-				SortMode:    parseSessionInt(ini, leftSection, "SortMode", int(SortName)),
-				SortReverse: ini.GetString(leftSection, "SortReverse", "0") == "1",
+				Gallery:       loadUnifiedPanelGallerySessionState(ini, leftSection, validSessionViewMode(leftViewMode)),
+				ViewMode:      leftViewMode,
+				SortMode:      parseSessionInt(ini, leftSection, "SortMode", int(SortName)),
+				SortReverse:   ini.GetString(leftSection, "SortReverse", "0") == "1",
+				UseSortGroups: ini.GetString(leftSection, "UseSortGroups", "0") == "1",
 			},
 			Right: panelSessionState{
 				Path: ini.GetString(rightSection, "Folder", ""), Cursor: ini.GetString(rightSection, "CurFile", ""),
-				Gallery:     loadUnifiedPanelGallerySessionState(ini, rightSection, validSessionViewMode(rightViewMode)),
-				ViewMode:    rightViewMode,
-				SortMode:    parseSessionInt(ini, rightSection, "SortMode", int(SortName)),
-				SortReverse: ini.GetString(rightSection, "SortReverse", "0") == "1",
+				Gallery:       loadUnifiedPanelGallerySessionState(ini, rightSection, validSessionViewMode(rightViewMode)),
+				ViewMode:      rightViewMode,
+				SortMode:      parseSessionInt(ini, rightSection, "SortMode", int(SortName)),
+				SortReverse:   ini.GetString(rightSection, "SortReverse", "0") == "1",
+				UseSortGroups: ini.GetString(rightSection, "UseSortGroups", "0") == "1",
 			},
 		}
 		if state.ActivePanel < 0 || state.ActivePanel > 1 {
@@ -273,6 +281,7 @@ func writePanelSession(sb *strings.Builder, section string, state panelSessionSt
 	writePanelGallerySessionState(sb, state.Gallery)
 	fmt.Fprintf(sb, "SortMode = %d\n", state.SortMode)
 	fmt.Fprintf(sb, "SortReverse = %d\n", map[bool]int{true: 1}[state.SortReverse])
+	fmt.Fprintf(sb, "UseSortGroups = %d\n", map[bool]int{true: 1}[state.UseSortGroups])
 }
 
 func writeWorkspaceSessions(sb *strings.Builder, states []workspaceSessionState, active int) {
@@ -299,6 +308,52 @@ func validSessionViewMode(mode int) ViewMode {
 	return viewMode
 }
 
+// navigatePanelTo moves a panel to path. What does not open as an object of its
+// own (an archive, a provider resource) stays a plain path in the current VFS;
+// a URI without its plugin is not even that.
+func navigatePanelTo(pf *PanelsFrame, panel *FileSystemPanel, path string) {
+	if path == "" || pf.NavigateToPath(panel, path) {
+		return
+	}
+	if vfs.IsURIPath(path) {
+		return
+	}
+	// A path that no longer exists leaves the VFS where it was, so re-reading
+	// the directory would only redraw the one already on screen.
+	if err := panel.vfs.SetPath(path); err != nil {
+		vtui.DebugLog("SESSION: cannot open %s: %v", path, err)
+		return
+	}
+	panel.ReadDirectory()
+}
+
+// applyStartupDirs opens left and right in the two panels, so `cd dir && f4`
+// shows dir and `f4 dir1 dir2` shows both, rather than session.ini's paths. It
+// runs after applyWorkspaceSession and therefore wins; an empty left changes
+// nothing, and an empty right sends both panels to left.
+//
+// A right that differs from left only ever comes from the command line, so it
+// also says the focus belongs on the directory named first.
+func applyStartupDirs(pf *PanelsFrame, left, right string) {
+	if pf == nil || left == "" {
+		return
+	}
+	fromCommandLine := right != "" && right != left
+	if right == "" {
+		right = left
+	}
+	for idx, dir := range [2]string{left, right} {
+		if fsp, ok := pf.panels[idx].(*FileSystemPanel); ok && fsp != nil {
+			navigatePanelTo(pf, fsp, dir)
+			// The pending cursor names a file of the directory just left.
+			fsp.pendingSelection = ""
+		}
+	}
+	if fromCommandLine {
+		pf.activeIdx = 0
+	}
+}
+
 func applyWorkspaceSession(pf *PanelsFrame, state workspaceSessionState, width, height int, restorePaths bool) {
 	if pf == nil {
 		return
@@ -323,19 +378,11 @@ func applyWorkspaceSession(pf *PanelsFrame, state workspaceSessionState, width, 
 	restorePanelGallerySessionState(right, state.Right.Gallery)
 	left.sortMode, right.sortMode = SortMode(state.Left.SortMode), SortMode(state.Right.SortMode)
 	left.sortReverse, right.sortReverse = state.Left.SortReverse, state.Right.SortReverse
+	left.useSortGroups, right.useSortGroups = state.Left.UseSortGroups, state.Right.UseSortGroups
 
-	navigate := func(panel *FileSystemPanel, path string) {
-		if path == "" || pf.NavigateToPath(panel, path) {
-			return
-		}
-		if !vfs.IsURIPath(path) {
-			panel.vfs.SetPath(path)
-			panel.ReadDirectory()
-		}
-	}
 	if restorePaths {
-		navigate(left, state.Left.Path)
-		navigate(right, state.Right.Path)
+		navigatePanelTo(pf, left, state.Left.Path)
+		navigatePanelTo(pf, right, state.Right.Path)
 		left.pendingSelection, right.pendingSelection = state.Left.Cursor, state.Right.Cursor
 	}
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,7 +29,6 @@ import (
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
-import "golang.org/x/arch/x86/x86asm"
 
 var (
 	LastEditorSearch          string
@@ -87,13 +87,14 @@ type EditorView struct {
 	semanticStyledRowsRendered     uint64
 
 	WordWrap           bool
+	wordWrapWanted     bool // The choice made for this file, which is what gets remembered.
 	wordWrapSuppressed bool // Unsafe binary/long-line content forbids re-enabling wrapping.
 	binaryFile         bool // Binary files stay editable as text, but syntax parsers must not scan them.
 	HexMode            bool
 	DecodeMode         bool
 	HexTopOffset       int
 	HexNibble          int // 0 = high nibble, 1 = low nibble
-	DisasmMode         int // 16, 32, or 64
+	DisasmMode         int // 16, 32 or 64; 0 while undecided (see disasm.go)
 	overtype           bool
 	modified           bool
 	closeDlg           *vtui.Window
@@ -101,9 +102,15 @@ type EditorView struct {
 	CursorPos          int // Позиция в байтах (для плагинов)
 	DesiredVisualCol   int // Колонка, в которую мы хотим попасть при навигации Up/Down
 
-	ShowWhitespaces    bool
-	selActive          bool
-	selAnchorOffset    int // Абсолютное смещение начала выделения
+	ShowWhitespaces bool
+	selActive       bool
+	selAnchorOffset int // Абсолютное смещение начала выделения
+	// extraCursors holds the secondary carets of a multi-caret edit, sorted
+	// by offset and without duplicates. The primary caret stays in
+	// CursorLine/CursorPos and is never listed here, so every existing
+	// single-caret path keeps working untouched. Selections are still the
+	// primary caret's alone.
+	extraCursors       []extraCaret
 	rectSelActive      bool
 	rectSelStartLine   int
 	rectSelStartCol    int
@@ -153,6 +160,18 @@ type EditorView struct {
 
 	renderBytes []byte          // Reusable buffer for text data
 	renderCells []vtui.CharInfo // Reusable buffer for row rendering
+	// occSpans holds the occurrences of the selected text inside the
+	// fragment being painted, and occBytes the window they were searched
+	// in. Both are reused across fragments and rows: highlighting must not
+	// allocate per painted line.
+	occSpans []matchSpan
+	occBytes []byte
+	// caretSearchBuf is the scratch the occurrence commands scan the text
+	// in, kept between calls so walking a file does not allocate per press.
+	caretSearchBuf []byte
+	// extraSelSpans is what the secondary carets have selected, collected
+	// once per paint: a handful of ranges checked against each cluster.
+	extraSelSpans []matchSpan
 
 	vfs         vfs.VFS
 	filePath    string
@@ -183,6 +202,9 @@ type EditorView struct {
 	// utf8BOM records that the source file had a UTF-8 BOM. The marker is
 	// hidden from the logical editor buffer but is preserved when saving.
 	utf8BOM bool
+	// omitUnicodeBOM is the Save As dialog's BOM checkbox turned off for a
+	// UTF-16/UTF-32 codepage, whose encoders otherwise always write one.
+	omitUnicodeBOM bool
 
 	// Autocomplete state
 	acEnabled    bool
@@ -309,10 +331,40 @@ const (
 	opOther
 )
 
+// extraCaret is one secondary caret: where it sits, and the column it aims for
+// when it moves between lines. That column is what keeps a caret from losing
+// its place to a short line on the way past — the job DesiredVisualCol does
+// for the primary caret.
+type extraCaret struct {
+	off        int
+	desiredCol int
+	// anchor is the other end of this caret's own selection, and hasSel
+	// says whether there is one. A caret with no selection is the zero
+	// value of both, so a caret built without thinking about selections
+	// simply has none.
+	anchor int
+	hasSel bool
+}
+
+// selRange is the caret's selection as an ordered pair, empty when it has no
+// selection of its own.
+func (c extraCaret) selRange() (int, int) {
+	if !c.hasSel || c.anchor == c.off {
+		return c.off, c.off
+	}
+	if c.anchor < c.off {
+		return c.anchor, c.off
+	}
+	return c.off, c.anchor
+}
+
 type editorState struct {
 	table piecetable.TableState
 	line  int
 	pos   int
+	// carets are the extra carets as they stood before the change, so that
+	// undoing a multi-caret edit gives back the set that made it.
+	carets []extraCaret
 }
 
 func (ev *EditorView) ConfirmClose() bool {
@@ -328,7 +380,7 @@ func (ev *EditorView) Close() {
 	ev.semanticPointerActive = false
 	ev.editSession++
 	if GlobalFileState != nil && ev.filePath != "" {
-		GlobalFileState.SaveEditorStateAsync(FileStateKey(ev.vfs, ev.filePath), ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.WordWrap)
+		GlobalFileState.SaveEditorStateAsync(FileStateKey(ev.vfs, ev.filePath), ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.wordWrapWanted)
 	}
 	ev.cancelHighlighting()
 	if ev.indexCancel != nil {
@@ -561,6 +613,7 @@ func (ev *EditorView) GetTopBar() *TopBar {
 // SetText replaces the entire content of the editor.
 func (ev *EditorView) SetText(text string) {
 	ev.cancelIndexing()
+	ev.clearExtraCursors()
 	ev.edited = true
 	ev.retireEditSession()
 	ev.codepageRaw = nil
@@ -602,9 +655,10 @@ func (ev *EditorView) saveUndo(op undoOpType) {
 	}
 
 	state := editorState{
-		table: ev.pt.GetState(),
-		line:  line,
-		pos:   pos,
+		table:  ev.pt.GetState(),
+		line:   line,
+		pos:    pos,
+		carets: append([]extraCaret(nil), ev.extraCursors...),
 	}
 
 	// Simple grouping for typing: don't push new state if we are just typing characters consecutively
@@ -633,9 +687,10 @@ func (ev *EditorView) Undo() {
 
 	// Save current state to redo stack
 	ev.redoStack = append(ev.redoStack, editorState{
-		table: ev.pt.GetState(),
-		line:  ev.CursorLine,
-		pos:   ev.CursorPos,
+		table:  ev.pt.GetState(),
+		line:   ev.CursorLine,
+		pos:    ev.CursorPos,
+		carets: append([]extraCaret(nil), ev.extraCursors...),
 	})
 
 	// Restore last state
@@ -647,6 +702,7 @@ func (ev *EditorView) Undo() {
 	ev.noteIndexRebuilt(ev.li.Rebuild(ev.pt))
 	ev.CursorLine = state.line
 	ev.CursorPos = state.pos
+	ev.extraCursors = append(ev.extraCursors[:0], state.carets...)
 
 	ev.clearCaches()
 	// Intelligent modified flag: if structure matches clean state, it's not modified
@@ -669,9 +725,10 @@ func (ev *EditorView) Redo() {
 
 	// Save current state to undo stack
 	ev.undoStack = append(ev.undoStack, editorState{
-		table: ev.pt.GetState(),
-		line:  ev.CursorLine,
-		pos:   ev.CursorPos,
+		table:  ev.pt.GetState(),
+		line:   ev.CursorLine,
+		pos:    ev.CursorPos,
+		carets: append([]extraCaret(nil), ev.extraCursors...),
 	})
 
 	last := len(ev.redoStack) - 1
@@ -682,6 +739,7 @@ func (ev *EditorView) Redo() {
 	ev.noteIndexRebuilt(ev.li.Rebuild(ev.pt))
 	ev.CursorLine = state.line
 	ev.CursorPos = state.pos
+	ev.extraCursors = append(ev.extraCursors[:0], state.carets...)
 
 	ev.clearCaches()
 	// Intelligent modified flag
@@ -1037,6 +1095,29 @@ func (ev *EditorView) ensureEngineWidth() bool {
 	return true
 }
 
+// setWordWrap turns wrapping on or off because the user asked for it, and
+// remembers the choice for this file straight away rather than at close.
+// An editor left open when f4 exits never reaches Close, and the file the
+// user was reading is exactly the one they are most likely to open next.
+//
+// The choice is written on its own, without the cursor position: a restore
+// that has not finished yet would otherwise have the position it is on its
+// way to restoring overwritten with the top of the file.
+func (ev *EditorView) setWordWrap(on bool) {
+	ev.WordWrap = on
+	ev.wordWrapWanted = on
+	if GlobalFileState != nil && ev.filePath != "" {
+		GlobalFileState.SaveEditorWrapAsync(FileStateKey(ev.vfs, ev.filePath), on)
+	}
+}
+
+// applyRememberedWordWrap opens a file with the wrapping it was left with.
+// The value came from the store, so it is not written back to it.
+func (ev *EditorView) applyRememberedWordWrap(on bool) {
+	ev.WordWrap = on
+	ev.wordWrapWanted = on
+}
+
 func (ev *EditorView) updateDesiredVisualCol() {
 	curOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	_, vCol := ev.engine.LogicalToVisual(curOffset)
@@ -1139,39 +1220,22 @@ func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 			}
 		}
 
-		take := 15
-		if currOffset+take > ev.pt.Size() {
-			take = ev.pt.Size() - currOffset
-		}
-
-		var data []byte
-		if take > 0 {
-			var err error
-			data, err = ev.pt.GetRange(currOffset, take)
-			if err == piecetable.ErrLoading {
-				scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", bgAttr))
-				break
-			}
+		data, err := ev.decodeBytes(currOffset, disasmMaxInstLen)
+		if err == piecetable.ErrLoading {
+			scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", bgAttr))
+			break
 		}
 
 		if len(data) == 0 && currOffset < ev.pt.Size() {
 			break
 		}
 
-		if ev.DisasmMode == 0 {
-			header, _ := ev.pt.GetRange(0, 1024)
-			ev.DisasmMode = detectX86Mode(header)
-		}
-
+		// Bytes the piece table would not hand over still take a line one
+		// byte wide, so the walk cannot stall on them.
 		instLen := 1
 		asmStr := ""
 		if len(data) > 0 {
-			inst, err := x86asm.Decode(data, ev.DisasmMode)
-			asmStr = fmt.Sprintf("db 0x%02X", data[0])
-			if err == nil {
-				instLen = inst.Len
-				asmStr = x86asm.IntelSyntax(inst, nonNegativeUint64(int64(currOffset)), nil)
-			}
+			asmStr, instLen = disasmInstruction(data, ev.disasmMode(), int64(currOffset))
 		}
 
 		line := fmt.Sprintf("%010X: ", currOffset)
@@ -1208,27 +1272,50 @@ func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 	}
 }
 
-func detectX86Mode(data []byte) int {
-	if len(data) >= 6 && bytes.HasPrefix(data, []byte("\x7fELF")) {
-		if data[4] == 1 {
-			return 32
-		}
-		return 64
+// decodeBytes reads up to n bytes at off for the decode view. GetRange
+// answers a range that runs past the end of the buffer with nothing at
+// all, so the request is cut to what is there first: an instruction
+// window at the last bytes of a file must still see those bytes.
+func (ev *EditorView) decodeBytes(off, n int) ([]byte, error) {
+	if size := ev.pt.Size(); off+n > size {
+		n = size - off
 	}
-	if len(data) >= 0x40 && bytes.HasPrefix(data, []byte("MZ")) {
-		peOff := int(data[0x3C]) | (int(data[0x3D]) << 8) | (int(data[0x3E]) << 16) | (int(data[0x3F]) << 24)
-		if peOff > 0 && peOff+6 <= len(data) && bytes.Equal(data[peOff:peOff+4], []byte("PE\x00\x00")) {
-			machine := uint16(data[peOff+4]) | (uint16(data[peOff+5]) << 8)
-			if machine == 0x014C { // IMAGE_FILE_MACHINE_I386
-				return 32
-			}
-			if machine == 0x8664 { // IMAGE_FILE_MACHINE_AMD64
-				return 64
-			}
-		}
+	if n <= 0 {
+		return nil, nil
 	}
-	return 64 // Default
+	return ev.pt.GetRange(off, n)
 }
+
+// disasmMode returns the processor mode the decode view uses. An editor
+// opened without a header (showEditor reads one) decides it here, from the
+// buffer's first bytes, the first time an instruction is needed.
+func (ev *EditorView) disasmMode() int {
+	if !disasmModeValid(ev.DisasmMode) {
+		header, _ := ev.decodeBytes(0, 1024)
+		ev.DisasmMode = detectX86Mode(header)
+	}
+	return ev.DisasmMode
+}
+
+// cycleDisasmMode switches the decode view to the next processor mode in
+// the 64 -> 32 -> 16 -> 64 cycle and returns the mode now in effect. The
+// cursor keeps its byte offset; the line it lands on is whatever
+// instruction the new mode reads there.
+func (ev *EditorView) cycleDisasmMode() int {
+	ev.DisasmMode = nextDisasmMode(ev.disasmMode())
+	ev.ensureCursorVisible()
+	return ev.DisasmMode
+}
+
+// decodeStep returns how many bytes the instruction at off occupies in the
+// current mode: the distance to the next line of the decode view. It is
+// zero at the end of the buffer or while the bytes at off are still being
+// fetched.
+func (ev *EditorView) decodeStep(off int) int {
+	data, _ := ev.decodeBytes(off, disasmMaxInstLen)
+	return disasmInstLen(data, ev.disasmMode())
+}
+
 func hexCharToByte(c rune) byte {
 	if c >= '0' && c <= '9' {
 		return byte(c - '0')
@@ -1300,19 +1387,7 @@ func (ev *EditorView) processKeyHex(e *vtinput.InputEvent) bool {
 		return true
 	case vtinput.VK_DOWN:
 		if ev.DecodeMode {
-			data, _ := ev.pt.GetRange(absPos, 15)
-			if len(data) > 0 {
-				if ev.DisasmMode == 0 {
-					header, _ := ev.pt.GetRange(0, 1024)
-					ev.DisasmMode = detectX86Mode(header)
-				}
-				inst, err := x86asm.Decode(data, ev.DisasmMode)
-				if err == nil {
-					absPos += int(inst.Len)
-				} else {
-					absPos += 1
-				}
-			}
+			absPos += ev.decodeStep(absPos)
 		} else {
 			absPos += 16
 		}
@@ -1424,6 +1499,54 @@ func (ev *EditorView) processKeyHex(e *vtinput.InputEvent) bool {
 	}
 
 	return false
+}
+
+func (ev *EditorView) askGoto() {
+	if ev.HexMode || ev.DecodeMode {
+		current := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+		title, prompt := gotoText("Editor.GotoOffsetTitle", " Go to offset "), gotoText("Editor.GotoOffsetPrompt", "Byte offset:")
+		showGotoOffsetDialog(ev, title, prompt, int64(current), func(offset int64) {
+			ev.gotoOffset(int(offset))
+		})
+		return
+	}
+	showEditorPositionDialog(ev, ev.CursorLine+1, ev.CursorPos+1, func(line, position int) {
+		ev.gotoLinePosition(line, position)
+	})
+}
+
+func (ev *EditorView) gotoOffset(offset int) {
+	if offset < 0 {
+		offset = 0
+	}
+	if size := ev.pt.Size(); offset > size {
+		offset = size
+	}
+	ev.targetLine = -1
+	ev.targetOffset = -1
+	ev.CursorLine = 0
+	ev.CursorPos = offset
+	if ev.HexMode {
+		ev.HexTopOffset = offset &^ 0xF
+	} else {
+		ev.HexTopOffset = offset
+	}
+	ev.HexNibble = 0
+	ev.ensureCursorVisible()
+	vtui.FrameManager.Redraw()
+}
+
+func (ev *EditorView) gotoLinePosition(line, position int) {
+	ev.targetLine = line - 1
+	ev.targetPos = position - 1
+	ev.targetOffset = -1
+	ev.targetTopRow = 0
+	ev.targetLeft = 0
+	ev.CursorLine = 0
+	ev.CursorPos = 0
+	ev.StartIndexing()
+	ev.ensureCursorVisible()
+	vtui.FrameManager.Redraw()
 }
 
 func (ev *EditorView) Show(scr *vtui.ScreenBuf) {
@@ -1590,6 +1713,12 @@ func (ev *EditorView) VetoActionKey(e *vtinput.InputEvent) bool {
 	if e.VirtualKeyCode == vtinput.VK_ESCAPE && (ev.colorerIndexing || ev.indexing) {
 		return true
 	}
+	// Escape puts down the extra carets rather than closing the editor: the
+	// caret set is the state the user is most likely aiming at, and the
+	// editor is still one Escape away once it is gone.
+	if e.VirtualKeyCode == vtinput.VK_ESCAPE && len(ev.extraCursors) > 0 {
+		return true
+	}
 	if !ev.acEnabled || len(ev.acMatches) == 0 {
 		return false
 	}
@@ -1656,7 +1785,7 @@ func (ev *EditorView) editorCursorStateGuard() editorCursorPatchGuard {
 		return guard
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	if showHorzCross || showVertCross || ev.rectSelActive ||
+	if (AppConfig.EditorMarkOccurrences && ev.selActive) || len(ev.extraCursors) != 0 || showHorzCross || showVertCross || ev.rectSelActive ||
 		len(ev.acMatches) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 ||
 		ev.HexMode || ev.DecodeMode || ev.DisasmMode != 0 {
 		return guard
@@ -1694,7 +1823,7 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 		return false
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	return !showHorzCross && !showVertCross &&
+	return !(AppConfig.EditorMarkOccurrences && ev.selActive) && len(ev.extraCursors) == 0 && !showHorzCross && !showVertCross &&
 		guard.editSession == ev.editSession &&
 		guard.scrollTop == ev.ScrollTopRow && guard.scrollLeft == ev.ScrollLeft &&
 		guard.windowGeneration == ev.semanticWindowGeneration &&
@@ -1790,6 +1919,28 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 	}
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+
+	// Escape puts the extra carets down. Keys that know how to act on the
+	// whole set are handled by processMultiCursorKey; anything else collapses
+	// the set on its way through, because carets that a keystroke would
+	// silently ignore are worse than no carets at all.
+	if len(ev.extraCursors) > 0 {
+		switch {
+		case e.Type == vtinput.KeyEventType && e.KeyDown && e.VirtualKeyCode == vtinput.VK_ESCAPE:
+			ev.clearExtraCursors()
+			vtui.FrameManager.Redraw()
+			return true
+		case e.Type == vtinput.KeyEventType && e.KeyDown:
+			if ev.processMultiCursorKey(e) {
+				return true
+			}
+			if !multiCursorKeepsSet(e) {
+				ev.clearExtraCursors()
+			}
+		case e.Type == vtinput.PasteEventType:
+			ev.clearExtraCursors()
+		}
+	}
 
 	// 1. Processing Bracketed Paste (events arrive outside KeyDown)
 	if e.Type == vtinput.PasteEventType {
@@ -2620,6 +2771,13 @@ func (ev *EditorView) fillCellsSpan(target []vtui.CharInfo, data []byte, default
 	if tabSize <= 0 {
 		tabSize = 8
 	}
+	// The slot is read only when there is something to mark: direct callers
+	// of fillCells (tests, tools) may run against a palette that was never
+	// grown to the f4 slots.
+	var occAttr uint64
+	if len(ev.occSpans) > 0 {
+		occAttr = vtui.Palette[ColEditorOccurrence]
+	}
 
 	for _, cluster := range clusters {
 		if visualCol >= clipRight {
@@ -2665,6 +2823,30 @@ func (ev *EditorView) fillCellsSpan(target []vtui.CharInfo, data []byte, default
 				attr = vtui.SetRGBBack(attr, vtui.GetRGBBack(horzCrossAttr))
 			} else {
 				attr = vtui.SetIndexBack(attr, vtui.GetIndexBack(horzCrossAttr))
+			}
+		}
+
+		absStart := offset + cluster.byteStart
+		absEnd := offset + cluster.byteEnd
+
+		// Other occurrences of the selected text are marked before the
+		// selection itself is applied: where the two meet, the selection
+		// wins, as it is the thing the user is actually holding.
+		if len(ev.occSpans) > 0 {
+			for _, span := range ev.occSpans {
+				if absStart < span.Off+span.Len && absEnd > span.Off {
+					attr = occAttr
+					break
+				}
+			}
+		}
+
+		// What the secondary carets have selected is the same selection,
+		// drawn the same way; only its offsets live elsewhere.
+		for _, span := range ev.extraSelSpans {
+			if absStart < span.Off+span.Len && absEnd > span.Off {
+				attr = selAttr
+				break
 			}
 		}
 
@@ -2900,17 +3082,9 @@ func (ev *EditorView) ensureCursorVisible() {
 				if curr >= ev.pt.Size() {
 					break
 				}
-				data, _ := ev.pt.GetRange(curr, 15)
-				instLen := 1
-				if len(data) > 0 {
-					if ev.DisasmMode == 0 {
-						header, _ := ev.pt.GetRange(0, 1024)
-						ev.DisasmMode = detectX86Mode(header)
-					}
-					inst, err := x86asm.Decode(data, ev.DisasmMode)
-					if err == nil {
-						instLen = inst.Len
-					}
+				instLen := ev.decodeStep(curr)
+				if instLen == 0 {
+					instLen = 1
 				}
 				if absPos >= curr && absPos < curr+instLen {
 					visible = true
@@ -3042,6 +3216,11 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	case vtinput.FromLeft1stButtonPressed:
 		mx, my := int(e.MouseX), int(e.MouseY)
 		if mx >= ev.X1 && mx <= ev.X2 && my >= ev.Y1+1 && my <= ev.Y2 {
+			// Clicking somewhere is asking for one caret there; only the
+			// Alt+click gesture below adds to the set.
+			if !editorAddCursorClick(e) {
+				ev.clearExtraCursors()
+			}
 			visualCol := mx - ev.X1 + ev.ScrollLeft
 			visualRow := my - (ev.Y1 + 1) + ev.ScrollTopRow
 			offset := ev.snapMouseOffsetToClusterBoundary(ev.engine.VisualToLogical(visualRow, visualCol))
@@ -3050,6 +3229,9 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				ev.CursorLine = ev.li.GetLineAtOffset(offset)
 				ev.CursorPos = offset - ev.li.GetLineOffset(ev.CursorLine)
 				ev.selectWordUnderCursor()
+			} else if editorAddCursorClick(e) {
+				ev.toggleCursorAt(offset)
+				ev.updateDesiredVisualCol()
 			} else if editorBlockMouseSelection(e) {
 				ev.selActive = false
 				ev.rectSelActive = false
@@ -3092,6 +3274,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	case vtinput.RightmostButtonPressed:
 		mx, my := int(e.MouseX), int(e.MouseY)
 		if mx >= ev.X1 && mx <= ev.X2 && my >= ev.Y1+1 && my <= ev.Y2 {
+			ev.clearExtraCursors()
 			visualCol := mx - ev.X1 + ev.ScrollLeft
 			visualRow := my - (ev.Y1 + 1) + ev.ScrollTopRow
 			offset := ev.snapMouseOffsetToClusterBoundary(ev.engine.VisualToLogical(visualRow, visualCol))
@@ -3144,8 +3327,9 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 		return false
 	}
 	before := ev.documentPointerPresentation()
+	beforeCaretCount := len(ev.extraCursors)
 	defer func() {
-		changed = before != ev.documentPointerPresentation()
+		changed = beforeCaretCount != len(ev.extraCursors) || before != ev.documentPointerPresentation()
 		if changed {
 			vtui.FrameManager.Redraw()
 		}
@@ -3191,6 +3375,18 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 	ev.semanticPendingScroll = false
 	visualCol := max(0, scrollLeft+column)
 	offset := ev.engine.FragmentColumnToLogical(*fragment, visualCol)
+	if !moved {
+		if e.ButtonState == vtinput.FromLeft1stButtonPressed && editorAddCursorClick(e) {
+			changed = ev.toggleCursorAt(offset)
+			if changed {
+				vtui.FrameManager.Redraw()
+			}
+			return changed
+		}
+		if ev.clearExtraCursors() {
+			vtui.FrameManager.Redraw()
+		}
+	}
 	ev.targetLine = -1
 	ev.CursorLine = ev.li.GetLineAtOffset(offset)
 	ev.CursorPos = offset - ev.li.GetLineOffset(ev.CursorLine)
@@ -3246,6 +3442,20 @@ func (ev *EditorView) documentPointerPresentation() editorPointerPresentation {
 		anchor: ev.selAnchorOffset, rectLine: ev.rectSelStartLine, rectColumn: ev.rectSelStartCol,
 		layoutRevision: ev.semanticLayoutRevision,
 	}
+}
+
+// editorAddCursorClick reports the gesture that places or removes an extra
+// caret. Alt+click is what VS Code uses and what is left here: Ctrl+click
+// opens the URL under the pointer and Alt+Shift+click starts a block
+// selection, so both modifiers have to be absent.
+func editorAddCursorClick(e *vtinput.InputEvent) bool {
+	mods := e.ControlKeyState
+	return e.KeyDown &&
+		e.MouseEventFlags&vtinput.MouseMoved == 0 &&
+		e.MouseEventFlags&vtinput.DoubleClick == 0 &&
+		mods&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 &&
+		mods&vtinput.ShiftPressed == 0 &&
+		mods&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) == 0
 }
 
 func editorBlockMouseSelection(e *vtinput.InputEvent) bool {
@@ -3936,6 +4146,7 @@ func (ev *EditorView) GetKeyLabels() *vtui.KeySet {
 		NormalIcons: vtui.KeyBarIconNames{
 			"circle-question-mark", "save", "text-wrap", "", "space", "", "search", "languages", "", "x", "", "",
 		},
+		Alt: vtui.KeyBarLabels{"", "", "", "", "", "", "", Msg("KeyBar.EditorAltF8"), "", "", "", ""},
 	}
 	res := KeyBarLabelsForArea("Editor", fallbacks)
 	if hm := GlobalHotkeysMgr; hm != nil {
@@ -4813,6 +5024,167 @@ func (ev *EditorView) showConvertCodepageDialog() {
 	vtui.FrameManager.PushMenu(menu)
 }
 
+// caretOffset is the absolute offset of the primary caret.
+func (ev *EditorView) caretOffset() int {
+	return ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+}
+
+// toggleCursorAt places an extra caret at offset, or removes the one already
+// there. It reports whether anything changed.
+//
+// The primary caret cannot be removed this way: something has to stay in
+// CursorLine/CursorPos, and clicking it again is a likelier slip than a
+// deliberate request to promote a different caret.
+func (ev *EditorView) toggleCursorAt(offset int) bool {
+	if offset < 0 || offset > ev.pt.Size() {
+		return false
+	}
+	if offset == ev.caretOffset() {
+		return false
+	}
+	for i, cur := range ev.extraCursors {
+		if cur.off == offset {
+			ev.extraCursors = append(ev.extraCursors[:i], ev.extraCursors[i+1:]...)
+			return true
+		}
+	}
+	// A selection describes one caret's range and has no meaning next to a
+	// set of them, so building a set puts it down.
+	ev.selActive = false
+	ev.rectSelActive = false
+
+	ev.extraCursors = append(ev.extraCursors, extraCaret{off: offset, desiredCol: ev.visualColAt(offset)})
+	ev.sortExtraCarets()
+	return true
+}
+
+// clearExtraCursors drops back to a single caret and reports whether there was
+// anything to drop.
+func (ev *EditorView) clearExtraCursors() bool {
+	if len(ev.extraCursors) == 0 {
+		return false
+	}
+	ev.extraCursors = ev.extraCursors[:0]
+	return true
+}
+
+// multiCursor reports whether more than one caret is on the screen.
+func (ev *EditorView) multiCursor() bool { return len(ev.extraCursors) > 0 }
+
+// caretOffsets returns every caret, primary included, in ascending order and
+// without duplicates. Offsets past the end of the buffer are dropped: an edit
+// can shorten the text under a caret that is no longer being tracked.
+func (ev *EditorView) caretOffsets() []int {
+	offsets := make([]int, 0, len(ev.extraCursors)+1)
+	offsets = append(offsets, ev.caretOffset())
+	size := ev.pt.Size()
+	for _, cur := range ev.extraCursors {
+		if cur.off >= 0 && cur.off <= size {
+			offsets = append(offsets, cur.off)
+		}
+	}
+	sort.Ints(offsets)
+	out := offsets[:0]
+	for i, off := range offsets {
+		if i == 0 || off != offsets[i-1] {
+			out = append(out, off)
+		}
+	}
+	return out
+}
+
+// Highlighting every occurrence of the selected text is meant for a word or a
+// short phrase. A one-character selection lights up half the screen and says
+// nothing, and a long one is a paragraph the user is about to cut, not a term
+// they are tracking, so both ends are cut off.
+const (
+	editorOccurrenceMinLen = 2
+	editorOccurrenceMaxLen = 256
+)
+
+// occurrenceNeedle returns the text whose other occurrences should be marked
+// while painting, or nil when nothing should be. The selection qualifies when
+// it is an ordinary one-line selection of a sensible length that is not all
+// whitespace — selecting an indent would otherwise light up the whole file.
+//
+// The returned bytes alias the piece table's own buffer for the duration of
+// one paint, which is why nothing here keeps them.
+func (ev *EditorView) occurrenceNeedle() []byte {
+	if !AppConfig.EditorMarkOccurrences {
+		return nil
+	}
+	if !ev.selActive || ev.rectSelActive || ev.HexMode || ev.DecodeMode {
+		return nil
+	}
+	selMin, selMax := ev.getSelectionRange()
+	length := selMax - selMin
+	if length < editorOccurrenceMinLen || length > editorOccurrenceMaxLen {
+		return nil
+	}
+	needle, err := ev.pt.GetRange(selMin, length)
+	if err != nil || len(needle) != length {
+		return nil
+	}
+	meaningful := false
+	for _, b := range needle {
+		switch b {
+		case '\n', '\r':
+			// A selection spanning lines is a block, not a term.
+			return nil
+		case ' ', '\t':
+		default:
+			meaningful = true
+		}
+	}
+	if !meaningful {
+		return nil
+	}
+	return needle
+}
+
+// appendOccurrenceSpans collects the occurrences of needle that overlap the
+// byte range [start, end) of one painted fragment, in absolute offsets.
+//
+// The search window is the fragment padded by len(needle)-1 on each side and
+// clipped to the logical line, so a match split across a wrapped row is found
+// from both of its halves. Searching per fragment rather than per line is what
+// keeps this bounded by the width of the screen: a logical line can be
+// megabytes long, and only a screenful of it is ever painted.
+func (ev *EditorView) appendOccurrenceSpans(dst []matchSpan, needle []byte, start, end, lineStart, lineEnd int) []matchSpan {
+	dst = dst[:0]
+	if len(needle) == 0 || end <= start {
+		return dst
+	}
+	pad := len(needle) - 1
+	from, to := start-pad, end+pad
+	if from < lineStart {
+		from = lineStart
+	}
+	if to > lineEnd {
+		to = lineEnd
+	}
+	if to-from < len(needle) {
+		return dst
+	}
+
+	var err error
+	ev.occBytes, err = ev.pt.AppendRange(ev.occBytes[:0], from, to-from)
+	if err != nil {
+		return dst
+	}
+
+	for pos := 0; ; {
+		idx := bytes.Index(ev.occBytes[pos:], needle)
+		if idx < 0 {
+			break
+		}
+		off := from + pos + idx
+		dst = append(dst, matchSpan{Off: off, Len: len(needle)})
+		pos += idx + 1
+	}
+	return dst
+}
+
 func (ev *EditorView) selectWordUnderCursor() {
 	lineStart := ev.li.GetLineOffset(ev.CursorLine)
 	lineRunes := ev.getLogicalLineRunes(ev.CursorLine)
@@ -4989,6 +5361,16 @@ func editorTempSibling(filesystem vfs.VFS, filePath string) (string, error) {
 }
 
 func (ev *EditorView) SaveToFile(afterSave func()) {
+	ev.saveToFile(afterSave, false)
+}
+
+// saveToFile writes the buffer to ev.filePath. fullWrite disables the
+// in-place and delta paths that describe the edit as pieces of the file on
+// disk: after Save As (#899) the pieces still point into the file that was
+// opened, while ev.filePath is a different file, or the same file that is
+// about to change codepage or BOM. Sending such pieces to the destination
+// would assemble it from the wrong bytes.
+func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 	if ev.filePath == "" || ev.vfs == nil || ev.saving {
 		return
 	}
@@ -5003,6 +5385,7 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 	// Capture visible offset for preloading before we destroy the current engine
 	visStart := ev.engine.VisualToLogical(ev.ScrollTopRow, 0)
 	createNewTarget := ev.createNewTarget
+	filePath := ev.filePath
 
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		// The writer reads the unchanged pieces straight out of the mapping.
@@ -5015,7 +5398,7 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 
 		capabilities := ev.vfs.GetCapabilities()
 		// Capture original metadata to restore it after atomic rename
-		originalStat, statErr := ev.vfs.Stat(ctx.Context, ev.filePath)
+		originalStat, statErr := ev.vfs.Stat(ctx.Context, filePath)
 		if createNewTarget {
 			var destinationErr error
 			switch {
@@ -5047,12 +5430,13 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		// A colon denotes an NTFS alternate stream only for a local OS VFS.
 		// Treating cloud:// as an ADS used to bypass staging and overwrite remote
 		// objects directly on Windows.
-		useTemp := !identityPreservingWrite && (!isLocalOSVFS(ev.vfs) || !isAlternateDataStream(ev.filePath))
+		useTemp := !identityPreservingWrite && (!isLocalOSVFS(ev.vfs) || !isAlternateDataStream(filePath))
 		tempPath := ""
+		finalFilePath := filePath
 		var f io.WriteCloser
 		var err error
 		if useTemp {
-			tempPath, err = editorTempSibling(ev.vfs, ev.filePath)
+			tempPath, err = editorTempSibling(ev.vfs, filePath)
 		}
 
 		// A file system that can assemble a file out of pieces of another
@@ -5062,9 +5446,9 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		// disk, which is only true for a raw UTF-8 load.
 		saved := false
 		if err == nil {
-			if patcher, ok := ev.vfs.(vfs.InPlacePatcher); ok && ev.Codepage == 65001 && !ev.utf8BOM && !createNewTarget {
+			if patcher, ok := ev.vfs.(vfs.InPlacePatcher); ok && ev.Codepage == 65001 && !ev.utf8BOM && !createNewTarget && !fullWrite {
 				if pieces, ok := patchPiecesFromTable(ev.pt); ok {
-					perr := patcher.PatchInPlace(ctx.Context, ev.filePath, pieces)
+					perr := patcher.PatchInPlace(ctx.Context, filePath, pieces)
 					if perr == nil {
 						saved = true
 						// The original was committed directly; there is no staged
@@ -5079,9 +5463,9 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		}
 
 		if !saved && err == nil {
-			if delta, isDelta := ev.vfs.(vfs.DeltaWriter); isDelta && useTemp && ev.Codepage == 65001 && !ev.utf8BOM {
+			if delta, isDelta := ev.vfs.(vfs.DeltaWriter); isDelta && useTemp && ev.Codepage == 65001 && !ev.utf8BOM && !fullWrite {
 				if pieces, ok := patchPiecesFromTable(ev.pt); ok {
-					perr := delta.PatchFile(vfs.WithDestinationOverwrite(ctx.Context, false), ev.filePath, tempPath, pieces)
+					perr := delta.PatchFile(vfs.WithDestinationOverwrite(ctx.Context, false), filePath, tempPath, pieces)
 					if perr == nil {
 						saved = true
 					} else {
@@ -5096,7 +5480,7 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		} else if useTemp && err == nil {
 			f, err = ev.vfs.Create(vfs.WithDestinationOverwrite(ctx.Context, false), tempPath)
 		} else if err == nil {
-			f, err = ev.vfs.Create(vfs.WithDestinationOverwrite(ctx.Context, !createNewTarget), ev.filePath)
+			f, err = ev.vfs.Create(vfs.WithDestinationOverwrite(ctx.Context, !createNewTarget), filePath)
 		}
 		if err == nil && useTemp && !saved {
 			// os.Create-style APIs commonly start at 0666/umask (often 0644).
@@ -5169,6 +5553,9 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 				if errEnc != nil {
 					saveErr = errEnc
 				} else {
+					if ev.omitUnicodeBOM {
+						encoded = stripEncodedBOM(encoded, ev.Codepage)
+					}
 					_, saveErr = f.Write(encoded)
 				}
 			}
@@ -5215,7 +5602,7 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 				oldBackingClosed = true
 			}
 			renameCtx := vfs.WithDestinationOverwrite(ctx.Context, !createNewTarget)
-			if err := ev.vfs.Rename(renameCtx, tempPath, ev.filePath); err != nil {
+			if err := ev.vfs.Rename(renameCtx, tempPath, filePath); err != nil {
 				// Do not remove the staged path after an uncertain/partial rename.
 				// A remote provider may have committed the move and merely lost the
 				// response (or failed while removing its backup). In that state the
@@ -5237,8 +5624,8 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 			// Drive moves the new temp object into place and deletes the old ID).
 			// Persist the VFS-remapped canonical path so reopen/history survives a
 			// later session instead of retaining the deleted object URI.
-			if canonical, absErr := ev.vfs.Abs(ev.filePath); absErr == nil && canonical != "" {
-				ev.filePath = canonical
+			if canonical, absErr := ev.vfs.Abs(filePath); absErr == nil && canonical != "" {
+				finalFilePath = canonical
 			}
 		}
 
@@ -5247,12 +5634,12 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 		// user-visible partial save and must not be silently ignored.
 		var metadataErr error
 		if statErr == nil {
-			if attrErr := ev.vfs.SetAttributes(ctx.Context, ev.filePath, originalStat); attrErr != nil && isLocalOSVFS(ev.vfs) {
+			if attrErr := ev.vfs.SetAttributes(ctx.Context, finalFilePath, originalStat); attrErr != nil && isLocalOSVFS(ev.vfs) {
 				metadataErr = attrErr
 			}
 		}
 
-		newFile, err := ev.vfs.Open(ctx.Context, ev.filePath)
+		newFile, err := ev.vfs.Open(ctx.Context, finalFilePath)
 		var newPt *piecetable.PieceTable
 		var newEngine *textlayout.WrapEngine
 		var newBuf *AsyncBuffer
@@ -5323,6 +5710,7 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 
 		ctx.RunOnUI(func() {
 			ev.saving = false
+			ev.filePath = finalFilePath
 			if err == nil {
 				vtui.DebugLog("EDITOR: Successfully saved %s (%d bytes)", ev.filePath, ev.pt.Size())
 			}
@@ -5617,7 +6005,7 @@ func (ev *EditorView) CopySelection() {
 		}
 
 		text := strings.Join(lines, "\n")
-		vtui.SetClipboard(text)
+		setF4Clipboard(text)
 		return
 	}
 
@@ -5627,7 +6015,7 @@ func (ev *EditorView) CopySelection() {
 		data, _ := ev.pt.GetRange(min, max-min)
 		if data != nil {
 			text := string(data)
-			vtui.SetClipboard(text)
+			setF4Clipboard(text)
 			vtui.DebugLog("EDITOR: Copied %d bytes to clipboard", max-min)
 		}
 	}
@@ -5846,6 +6234,319 @@ func (ev *EditorView) DeleteSelection() {
 	}
 }
 
+// lineTerminator returns the end-of-line bytes that terminate the given
+// logical line, or nil when the line carries no terminator of its own — the
+// last line of a file that does not end with a line break.
+//
+// Line breaks are kept in the buffer exactly as the file had them, so this is
+// how a CRLF file is told from an LF one without scanning it.
+func (ev *EditorView) lineTerminator(line int) []byte {
+	if line < 0 || line+1 >= ev.li.LineCount() {
+		return nil
+	}
+	start := ev.li.GetLineOffset(line)
+	end := ev.li.GetLineOffset(line + 1)
+	n := 2
+	if end-start < n {
+		n = end - start
+	}
+	if n <= 0 {
+		return nil
+	}
+	data, err := ev.pt.GetRange(end-n, n)
+	if err != nil || len(data) == 0 || data[len(data)-1] != '\n' {
+		return nil
+	}
+	if len(data) > 1 && data[len(data)-2] == '\r' {
+		return []byte("\r\n")
+	}
+	return []byte("\n")
+}
+
+// preferredLineEnding picks the terminator a newly appended line should use,
+// copying the style of the nearest line at or above the given one that has
+// one. Appending to a CRLF file otherwise leaves a lone LF behind.
+func (ev *EditorView) preferredLineEnding(line int) []byte {
+	for l := line; l >= 0 && line-l < 8; l-- {
+		if term := ev.lineTerminator(l); term != nil {
+			return term
+		}
+	}
+	return []byte("\n")
+}
+
+// selectedLineSpan reports the first and last logical line the selection
+// touches, or the cursor line twice when nothing is selected.
+//
+// A stream selection that ends exactly at the start of a line does not count
+// that line: Shift+Down over one line selects one line, not two.
+func (ev *EditorView) selectedLineSpan() (int, int) {
+	if ev.rectSelActive {
+		first, last := ev.rectSelStartLine, ev.CursorLine
+		if first > last {
+			first, last = last, first
+		}
+		return first, last
+	}
+	if !ev.selActive {
+		return ev.CursorLine, ev.CursorLine
+	}
+	minOff, maxOff := ev.getSelectionRange()
+	first := ev.li.GetLineAtOffset(minOff)
+	last := ev.li.GetLineAtOffset(maxOff)
+	if last > first && maxOff == ev.li.GetLineOffset(last) {
+		last--
+	}
+	return first, last
+}
+
+// DuplicateLines copies the current line, or every line the selection touches,
+// and inserts the copy directly below the original block.
+//
+// The copy is taken as a raw byte range, so whatever line breaks the file uses
+// survive untouched. The cursor, and the selection when there is one, land on
+// the copy rather than staying on the original: repeating the key duplicates
+// what was just made, which is how the same key behaves elsewhere and what
+// makes holding it produce a run of copies instead of an ever-growing block.
+func (ev *EditorView) DuplicateLines() {
+	if ev.li.LineCount() == 0 {
+		return
+	}
+
+	first, last := ev.selectedLineSpan()
+	if first < 0 {
+		first = 0
+	}
+	ev.ensureIndexedToLine(last + 1)
+	if last >= ev.li.LineCount() {
+		last = ev.li.LineCount() - 1
+	}
+	if last < first {
+		return
+	}
+
+	start := ev.li.GetLineOffset(first)
+	end := ev.pt.Size()
+	terminated := last+1 < ev.li.LineCount()
+	if terminated {
+		end = ev.li.GetLineOffset(last + 1)
+	}
+	if end < start {
+		return
+	}
+
+	block, err := ev.pt.GetRange(start, end-start)
+	if err != nil {
+		return
+	}
+
+	// The final line of a file need not end with a line break. Duplicating it
+	// has to supply one, or the copy would be glued onto the original.
+	data := block
+	if !terminated {
+		eol := ev.preferredLineEnding(last)
+		data = make([]byte, 0, len(eol)+len(block))
+		data = append(data, eol...)
+		data = append(data, block...)
+	}
+	if len(data) == 0 {
+		return
+	}
+
+	cursorOffset := ev.li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+
+	ev.noteBufferEdit()
+	ev.saveUndo(opOther)
+	ev.lastOp = opOther
+	ev.modified = true
+
+	ev.pt.Insert(end, data)
+	ev.li.UpdateAfterInsert(end, data)
+	ev.invalidateStates(first)
+	ev.engine.InvalidateFrom(first)
+
+	// Every position in the original block has its twin exactly len(data)
+	// bytes further on, which moves the cursor and the selection anchor onto
+	// the copy without re-deriving either from line numbers and columns.
+	shift := len(data)
+	if ev.rectSelActive {
+		ev.rectSelStartLine += last - first + 1
+	}
+	if ev.selActive {
+		ev.selAnchorOffset += shift
+	}
+
+	newOffset := cursorOffset + shift
+	if newOffset > ev.pt.Size() {
+		newOffset = ev.pt.Size()
+	}
+	ev.CursorLine = ev.li.GetLineAtOffset(newOffset)
+	ev.CursorPos = newOffset - ev.li.GetLineOffset(ev.CursorLine)
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+}
+
+// trailingLineTerminator returns the end-of-line bytes data ends with, or nil
+// when it ends with none.
+func trailingLineTerminator(data []byte) []byte {
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return nil
+	}
+	if len(data) > 1 && data[len(data)-2] == '\r' {
+		return data[len(data)-2:]
+	}
+	return data[len(data)-1:]
+}
+
+// MoveLines swaps the current line, or every line the selection touches, with
+// the single line above (delta -1) or below (delta +1) the block.
+//
+// Both lines are rewritten in one edit, as raw bytes, so their contents and
+// their line breaks come through untouched. The one thing that does not travel
+// with a line is the missing terminator of a file that does not end with a
+// line break: it belongs to whichever line ends up last, so it is left behind
+// rather than carried along, and the file keeps not ending with a line break.
+//
+// The cursor and the selection follow the text they were on, keeping their
+// columns, so a selected block can be walked up or down by holding the key.
+func (ev *EditorView) MoveLines(delta int) {
+	if delta != -1 && delta != 1 {
+		return
+	}
+	if ev.li.LineCount() == 0 {
+		return
+	}
+
+	first, last := ev.selectedLineSpan()
+	if first < 0 {
+		first = 0
+	}
+	ev.ensureIndexedToLine(last + 2)
+	if last >= ev.li.LineCount() {
+		last = ev.li.LineCount() - 1
+	}
+	if last < first {
+		return
+	}
+
+	// The neighbour the block trades places with. There is none at either
+	// end of the file, and then the keypress does nothing.
+	neighbour := first - 1
+	if delta > 0 {
+		neighbour = last + 1
+	}
+	if neighbour < 0 || neighbour >= ev.li.LineCount() {
+		return
+	}
+
+	// The two chunks are adjacent, so one region covers both: head is the
+	// upper one, tail the lower one, and the edit puts them back the other
+	// way round.
+	regionFirst, regionLast := first, last
+	if delta > 0 {
+		regionLast = neighbour
+	} else {
+		regionFirst = neighbour
+	}
+	regionStart := ev.li.GetLineOffset(regionFirst)
+	mid := ev.li.GetLineOffset(regionFirst + 1)
+	if delta > 0 {
+		mid = ev.li.GetLineOffset(neighbour)
+	}
+	regionEnd := ev.pt.Size()
+	if regionLast+1 < ev.li.LineCount() {
+		regionEnd = ev.li.GetLineOffset(regionLast + 1)
+	}
+	if mid <= regionStart || regionEnd < mid {
+		return
+	}
+
+	region, err := ev.pt.GetRange(regionStart, regionEnd-regionStart)
+	if err != nil {
+		return
+	}
+	head := region[:mid-regionStart]
+	tail := region[mid-regionStart:]
+
+	swapped := make([]byte, 0, len(region))
+	if len(tail) > 0 && tail[len(tail)-1] == '\n' {
+		swapped = append(swapped, tail...)
+		swapped = append(swapped, head...)
+	} else {
+		// The region ends the file without a line break. The head needs
+		// one now that it no longer comes first, and the tail must give
+		// up nothing but its place: the terminator stays at the end.
+		term := trailingLineTerminator(head)
+		if len(term) == 0 {
+			return
+		}
+		swapped = append(swapped, tail...)
+		swapped = append(swapped, term...)
+		swapped = append(swapped, head[:len(head)-len(term)]...)
+	}
+
+	blockLen := last - first + 1
+	// A selection that stops at the start of the line after the block ends
+	// the block rather than starting that line, and has to be mapped as
+	// such or moving down would leave it one line short.
+	blockEnd := -1
+	if ev.selActive && !ev.rectSelActive {
+		if minOff, maxOff := ev.getSelectionRange(); maxOff > minOff {
+			end := ev.pt.Size()
+			if last+1 < ev.li.LineCount() {
+				end = ev.li.GetLineOffset(last + 1)
+			}
+			if maxOff == end {
+				blockEnd = maxOff
+			}
+		}
+	}
+	mapLine := func(line, offset int) int {
+		if offset >= 0 && offset == blockEnd {
+			return last + delta + 1
+		}
+		switch {
+		case line >= first && line <= last:
+			return line + delta
+		case line == neighbour:
+			return line - delta*blockLen
+		}
+		return line
+	}
+
+	cursorLine := ev.CursorLine
+	cursorPos := ev.CursorPos
+	cursorOffset := ev.li.GetLineOffset(cursorLine) + cursorPos
+	anchorLine, anchorPos := 0, 0
+	if ev.selActive {
+		anchorLine = ev.li.GetLineAtOffset(ev.selAnchorOffset)
+		anchorPos = ev.selAnchorOffset - ev.li.GetLineOffset(anchorLine)
+	}
+
+	ev.noteBufferEdit()
+	ev.saveUndo(opOther)
+	ev.lastOp = opOther
+	ev.modified = true
+
+	ev.pt.Delete(regionStart, len(region))
+	ev.li.UpdateAfterDelete(regionStart, len(region))
+	ev.pt.Insert(regionStart, swapped)
+	ev.li.UpdateAfterInsert(regionStart, swapped)
+	ev.invalidateStates(regionFirst)
+	ev.engine.InvalidateFrom(regionFirst)
+
+	if ev.selActive {
+		ev.selAnchorOffset = ev.li.GetLineOffset(mapLine(anchorLine, ev.selAnchorOffset)) + anchorPos
+	}
+	if ev.rectSelActive {
+		ev.rectSelStartLine = mapLine(ev.rectSelStartLine, -1)
+	}
+	ev.CursorLine = mapLine(cursorLine, cursorOffset)
+	ev.CursorPos = cursorPos
+	ev.updateDesiredVisualCol()
+	ev.ensureCursorVisible()
+}
+
 func (ev *EditorView) DeleteCurrentLine() {
 	if ev.pt.Size() == 0 {
 		return
@@ -5964,7 +6665,7 @@ func buildSearchRegex(pattern string, caseSensitive, useRegex, wholeWord bool) (
 // by Find and Find All while the buffer scan runs in the background.
 func showSearchProgressDialog(pattern string) (dlg *vtui.Window, btnCancel *vtui.Button) {
 	dlg = vtui.NewCenteredDialog(50, 8, Msg("Search.Searching"))
-	lbl := vtui.NewLabel(0, 0, fmt.Sprintf("Looking for: %s", pattern), nil)
+	lbl := vtui.NewLabel(0, 0, fmt.Sprintf(Msg("Search.LookingFor"), pattern), nil)
 	dlg.AddItem(lbl)
 	btnCancel = vtui.NewButton(0, 0, Msg("vtui.Cancel"))
 	dlg.AddItem(btnCancel)

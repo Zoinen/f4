@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/netproxy"
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
@@ -193,6 +194,7 @@ type F4Config struct {
 	AltNumberSwitchesTabs    bool
 	RestoreWorkspaceTabs     bool
 	WorkspaceTabNumbering    WorkspaceTabNumberingMode
+	MacKeyboard              string
 	ShowHiddenFiles          bool
 	ShowDirPrefix            bool
 	ShowHighlightMarks       bool
@@ -200,10 +202,11 @@ type F4Config struct {
 	PanelScrollbarMode       PanelScrollbarMode
 	ShowPanelFileInfo        bool
 	SavePanelPaths           bool
-	InfoPanelBytes           bool // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
-	InfoPanelCPUGPU          bool // Ctrl+L info panel: show CPU and GPU sections (off by default)
-	EscTogglePanels          bool // ESC toggles panels visibility (Far ships this as a macro; on by default)
-	TerminalCtrlNWorkspace   bool // reserve Ctrl+N in terminal views for cloning panels to a workspace
+	DriveMenuOptions         uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
+	InfoPanelBytes           bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
+	InfoPanelCPUGPU          bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
+	EscTogglePanels          bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
+	TerminalCtrlNWorkspace   bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
 	KeepTerminalCursor       bool
 	ConsoleMode              string // "own" | "host" (default "own")
 	ConsoleOverlayUI         bool   // Show f4 command line and keybar overlay on top of host console (default false)
@@ -222,8 +225,11 @@ type F4Config struct {
 	EditorTabSize            int
 	EditorUseEditorConfig    bool
 	EditorCrosshair          bool
+	EditorMarkOccurrences    bool
 	UseExternalEditor        bool
 	ExternalEditorCommand    string
+	ExternalEditorConsole    string
+	ExternalEditorGUI        string
 	EditorAutodetectCodePage bool
 	EditorHighlighter        string
 	EditorSyntaxAnimation    bool
@@ -239,6 +245,11 @@ type F4Config struct {
 	EditorMemoryMap          bool
 	ViewerAutodetectCodePage bool
 	ViewerDefaultCodePage    int
+	// SystemANSICodePage and SystemOEMCodePage pin what "ANSI" and "OEM"
+	// mean on a system that cannot be asked. 0 keeps the codepage deduced
+	// from the locale.
+	SystemANSICodePage int
+	SystemOEMCodePage  int
 	// Wheel scroll speed (lines per notch) per area and direction.
 	// 0 = follow the system setting.
 	WheelPanelUp    int
@@ -334,6 +345,10 @@ type F4Config struct {
 	// back verbatim on SaveConfig so f4 doesn't strip far2l-only options
 	// from a shared config file.
 	LayoutExtras map[string]string
+
+	// Compare keeps what the folder comparison dialog was last set to,
+	// the way Far3's Advanced Compare remembers its own options.
+	Compare compareOptions
 }
 
 type GuiPresentationMode string
@@ -385,6 +400,7 @@ var AppConfig = F4Config{
 	AltNumberSwitchesTabs:    true,
 	RestoreWorkspaceTabs:     true,
 	WorkspaceTabNumbering:    WorkspaceTabNumbersAlways,
+	MacKeyboard:              MacKeysAuto,
 	ShowHiddenFiles:          true,
 	ShowDirPrefix:            false,
 	ShowHighlightMarks:       false,
@@ -392,6 +408,7 @@ var AppConfig = F4Config{
 	PanelScrollbarMode:       PanelScrollbarMinimal,
 	ShowPanelFileInfo:        false,
 	SavePanelPaths:           true,
+	DriveMenuOptions:         defaultDriveMenuOptions,
 	InfoPanelBytes:           false,
 	InfoPanelCPUGPU:          false,
 	EscTogglePanels:          true,
@@ -414,8 +431,11 @@ var AppConfig = F4Config{
 	EditorTabSize:            4,
 	EditorUseEditorConfig:    true,
 	EditorCrosshair:          false,
+	EditorMarkOccurrences:    true,
 	UseExternalEditor:        false,
 	ExternalEditorCommand:    "",
+	ExternalEditorConsole:    "",
+	ExternalEditorGUI:        "",
 	EditorAutodetectCodePage: true,
 	EditorHighlighter:        "Chroma",
 	EditorSyntaxAnimation:    false,
@@ -487,6 +507,7 @@ var AppConfig = F4Config{
 	HighlightPriority:        0,
 	LastUpdateCheck:          0,
 	LastUpdateVersion:        "",
+	Compare:                  defaultCompareOptions(),
 }
 
 var getUserConfigIniPath = func() string {
@@ -564,6 +585,7 @@ func LoadConfig() {
 	AppConfig.AltNumberSwitchesTabs = ini.GetString("Interface", "AltNumberSwitchesTabs", "1") != "0"
 	AppConfig.RestoreWorkspaceTabs = ini.GetString("Interface", "RestoreWorkspaceTabs", "1") != "0"
 	AppConfig.WorkspaceTabNumbering = ParseWorkspaceTabNumberingMode(ini.GetString("Interface", "WorkspaceTabNumbering", "always"))
+	AppConfig.MacKeyboard = ParseMacKeysMode(ini.GetString("Interface", "MacKeyboard", MacKeysAuto))
 	if AppConfig.ConsoleTitleTemplate == "f4 - %State" {
 		AppConfig.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
@@ -586,6 +608,7 @@ func LoadConfig() {
 	}
 	AppConfig.ShowPanelFileInfo = ini.GetString("Panel", "ShowPanelFileInfo", "0") == "1"
 	AppConfig.SavePanelPaths = ini.GetString("Panel", "SavePanelPaths", "1") == "1"
+	AppConfig.DriveMenuOptions = parseDriveMenuOptions(ini.GetString("Panel", "DriveMenuOptions", ""))
 	AppConfig.InfoPanelBytes = ini.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	AppConfig.InfoPanelCPUGPU = ini.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
 	AppConfig.EscTogglePanels = ini.GetString("Panel", "EscTogglePanels", "1") == "1"
@@ -629,6 +652,9 @@ func LoadConfig() {
 	AppConfig.AutoSaveGUIWindow = ini.GetString("System", "AutoSaveGUIWindow", autoSaveDefault) != "0"
 	AppConfig.AnnounceKittyTerm = ini.GetString("System", "AnnounceKittyTerm", "1") == "1"
 	fmt.Sscanf(ini.GetString("System", "MacroRecordFormat", "0"), "%d", &AppConfig.MacroRecordFormat)
+	AppConfig.SystemANSICodePage = parseForcedCodePage(ini.GetString("System", "ANSICodePage", ""))
+	AppConfig.SystemOEMCodePage = parseForcedCodePage(ini.GetString("System", "OEMCodePage", ""))
+	applyForcedCodePages()
 	fmt.Sscanf(ini.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &AppConfig.FileOpPathDisplay)
 	AppConfig.GuiFont = ini.GetString("Appearance", "GuiFont", "")
 	AppConfig.GuiUseSystemMonospace = ini.GetString("Appearance", "GuiUseSystemMonospace", "1") == "1"
@@ -685,6 +711,7 @@ func LoadConfig() {
 	AppConfig.EditorCursorBeyondEOL = ini.GetString("Editor", "CursorBeyondEOL", "0") == "1"
 	AppConfig.EditorUseEditorConfig = ini.GetString("Editor", "UseEditorConfig", "1") == "1"
 	AppConfig.EditorCrosshair = ini.GetString("Editor", "Crosshair", "0") == "1"
+	AppConfig.EditorMarkOccurrences = ini.GetString("Editor", "MarkOccurrences", "1") == "1"
 	AppConfig.EditorAutodetectCodePage = ini.GetString("Editor", "AutodetectCodePage", "1") == "1"
 	AppConfig.EditorMemoryMap = ini.GetString("Editor", "MemoryMap", "1") == "1"
 	AppConfig.EditorHighlighter = normalizeHighlighter(ini.GetString("Editor", "Highlighter", "Chroma"))
@@ -758,10 +785,13 @@ func LoadConfig() {
 	fmt.Sscanf(ini.GetString("Images", "X11OverlayOffsetY", "0"), "%d", &AppConfig.ImageX11OffsetY)
 	AppConfig.TTYXKeys = ini.GetString("TTYXi", "Keys", "1") == "1"
 	AppConfig.TTYXKeyList = ini.GetString("TTYXi", "KeyList", defaultTTYXKeyList)
+	AppConfig.Compare = loadCompareOptions(ini)
 	AppConfig.ImageDecoderPriority = ini.GetString("Images", "DecoderPriority", "")
 	SetImageDecoderPriorities(ParseImageDecoderPriorities(AppConfig.ImageDecoderPriority))
 	AppConfig.UseExternalEditor = ini.GetString("Editor", "UseExternalEditor", "0") == "1"
 	AppConfig.ExternalEditorCommand = ini.GetString("Editor", "ExternalEditorCommand", "")
+	AppConfig.ExternalEditorConsole = ini.GetString("Editor", "ExternalEditorCommandConsole", AppConfig.ExternalEditorCommand)
+	AppConfig.ExternalEditorGUI = ini.GetString("Editor", "ExternalEditorCommandGUI", AppConfig.ExternalEditorCommand)
 	plugStr := ini.GetString("Plugins", "List", "")
 	if plugStr != "" {
 		AppConfig.RegisteredPlugins = strings.Split(plugStr, "|")
@@ -785,6 +815,34 @@ func LoadConfig() {
 			}
 			AppConfig.LayoutExtras[k] = v
 		}
+	}
+}
+
+// parseForcedCodePage reads [System] ANSICodePage / OEMCodePage. Empty, zero,
+// or "auto" all mean "keep what the locale said"; anything unparsable means
+// the same, because a typo here must not leave f4 decoding with a codepage
+// nobody chose.
+func parseForcedCodePage(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "auto") {
+		return 0
+	}
+	id, err := strconv.Atoi(value)
+	if err != nil || id < 0 {
+		return 0
+	}
+	return id
+}
+
+// applyForcedCodePages hands the two settings to vfs, which owns what ANSI and
+// OEM mean. On Linux neither is a system property -- they are guessed from
+// LC_ALL/LC_CTYPE/LANG -- and the guess is wrong on every machine whose locale
+// says nothing about the legacy encodings its user actually meets, so far2l
+// lets ~/.config/far2l/cp override it and f4 lets settings.ini do the same
+// (#368).
+func applyForcedCodePages() {
+	if err := vfs.SetSystemCodepages(AppConfig.SystemANSICodePage, AppConfig.SystemOEMCodePage); err != nil {
+		vtui.DebugLog("CONFIG: forced ANSI/OEM codepage ignored: %v", err)
 	}
 }
 
@@ -833,7 +891,8 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "CtrlTabMode = %s\n", ctrlTabMode)
 	fmt.Fprintf(&sb, "AltNumberSwitchesTabs = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AltNumberSwitchesTabs])
 	fmt.Fprintf(&sb, "RestoreWorkspaceTabs = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.RestoreWorkspaceTabs])
-	fmt.Fprintf(&sb, "WorkspaceTabNumbering = %s\n\n", AppConfig.WorkspaceTabNumbering.String())
+	fmt.Fprintf(&sb, "WorkspaceTabNumbering = %s\n", AppConfig.WorkspaceTabNumbering.String())
+	fmt.Fprintf(&sb, "MacKeyboard = %s\n\n", ParseMacKeysMode(AppConfig.MacKeyboard))
 	sb.WriteString("[Panel]\n")
 	fmt.Fprintf(&sb, "ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowHiddenFiles])
 	fmt.Fprintf(&sb, "ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowDirPrefix])
@@ -842,6 +901,7 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "PanelScrollbarMode = %s\n", AppConfig.PanelScrollbarMode.String())
 	fmt.Fprintf(&sb, "ShowPanelFileInfo = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.ShowPanelFileInfo])
 	fmt.Fprintf(&sb, "SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.SavePanelPaths])
+	fmt.Fprintf(&sb, "DriveMenuOptions = %d\n", AppConfig.DriveMenuOptions)
 	fmt.Fprintf(&sb, "InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelBytes])
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.InfoPanelCPUGPU])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EscTogglePanels])
@@ -874,6 +934,8 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "AutoSaveGUIWindow = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AutoSaveGUIWindow])
 	fmt.Fprintf(&sb, "AnnounceKittyTerm = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AnnounceKittyTerm])
 	fmt.Fprintf(&sb, "MacroRecordFormat = %d\n", AppConfig.MacroRecordFormat)
+	fmt.Fprintf(&sb, "ANSICodePage = %d\n", AppConfig.SystemANSICodePage)
+	fmt.Fprintf(&sb, "OEMCodePage = %d\n", AppConfig.SystemOEMCodePage)
 
 	sb.WriteString("\n[Dialogs]\n")
 	fmt.Fprintf(&sb, "EnforceColorCorrection = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EnforceColorCorrection])
@@ -918,9 +980,16 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "CursorBeyondEOL = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorCursorBeyondEOL])
 	fmt.Fprintf(&sb, "UseEditorConfig = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorUseEditorConfig])
 	fmt.Fprintf(&sb, "Crosshair = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorCrosshair])
+	fmt.Fprintf(&sb, "MarkOccurrences = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorMarkOccurrences])
 	fmt.Fprintf(&sb, "TabSize = %d\n", AppConfig.EditorTabSize)
 	fmt.Fprintf(&sb, "UseExternalEditor = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.UseExternalEditor])
-	fmt.Fprintf(&sb, "ExternalEditorCommand = %s\n", AppConfig.ExternalEditorCommand)
+	legacyExternalEditorCommand := AppConfig.ExternalEditorConsole
+	if legacyExternalEditorCommand == "" {
+		legacyExternalEditorCommand = AppConfig.ExternalEditorCommand
+	}
+	fmt.Fprintf(&sb, "ExternalEditorCommand = %s\n", legacyExternalEditorCommand)
+	fmt.Fprintf(&sb, "ExternalEditorCommandConsole = %s\n", AppConfig.ExternalEditorConsole)
+	fmt.Fprintf(&sb, "ExternalEditorCommandGUI = %s\n", AppConfig.ExternalEditorGUI)
 	fmt.Fprintf(&sb, "AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorAutodetectCodePage])
 	fmt.Fprintf(&sb, "MemoryMap = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.EditorMemoryMap])
 	fmt.Fprintf(&sb, "Highlighter = %s\n", AppConfig.EditorHighlighter)
@@ -961,6 +1030,8 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "SlideShowDelay = %d\n", AppConfig.SlideShowDelay)
 	fmt.Fprintf(&sb, "ExternalTimeout = %d\n", AppConfig.ImageExternalTimeout)
 	fmt.Fprintf(&sb, "DecoderPriority = %s\n", AppConfig.ImageDecoderPriority)
+	sb.WriteString("\n[Compare]\n")
+	writeCompareOptions(&sb, AppConfig.Compare)
 	sb.WriteString("\n[Plugins]\n")
 	fmt.Fprintf(&sb, "List = %s\n", strings.Join(AppConfig.RegisteredPlugins, "|"))
 
@@ -1230,7 +1301,7 @@ func applyWheelSettings() {
 }
 
 func createDefaultHighlightIni(path string) {
-	content := `# User highlight rules.
+	content := `# User highlight rules and sort groups.
 #
 # f4 applies file highlighting rules from both the active Color Style (Theme)
 # and this file. By default, rules in this file have higher priority.
@@ -1239,7 +1310,90 @@ func createDefaultHighlightIni(path string) {
 # Default groups (Hidden, Executables, Directories) are already defined
 # by the active Color Style, so you don't need to duplicate them unless
 # you specifically want to override the theme's colors.
+#
+# A [Highlight_N] section matches an item by its Mask, attributes, size or
+# date. Name is a label for you, not a matcher. The four color keys are
+# selected independently:
+#   NormalColor          - an ordinary, unselected item
+#   SelectedColor        - a selected item
+#   CursorColor          - an ordinary item under the cursor
+#   SelectedCursorColor  - a selected item under the cursor
+# The same four can be spelled the way Far Manager names them in its Files
+# highlighting dialog, which is what a group copied from Far will use:
+#   NormalFileName, SelectedFileName, FileNameUnderCursor,
+#   FileNameSelectedUnderCursor
+# The cursor-specific keys are also accepted as NormalColorUnderCursor and
+# SelectedColorUnderCursor. If a specialized color is omitted, f4 falls back
+# to the corresponding ordinary color. Every one of the four takes a
+# foreground, a background, or both:
+#   foreground:#FF00FF | background:#008080
+# Other useful keys are IncludeAttributes/ExcludeAttributes (Directory,
+# Hidden, Executable, ReadOnly, System, Archive, Symlink), SizeAbove,
+# SizeBelow, DateType, DateAfter, DateBefore, Mark, and ContinueProcessing.
+#
+# Sections are tried in the order of their numbers and the first match wins,
+# unless it sets ContinueProcessing = 1. A section without a Mask matches
+# every name, so a rule meant for folders needs IncludeAttributes = Directory
+# and a rule meant for files needs ExcludeAttributes = Directory -- a rule
+# with neither repaints the whole panel and hides every rule below it.
+#
+# A comment takes a whole line. There are no trailing comments: '#' also
+# opens a color literal, so anything after a value stays part of that value.
+#
+# Uncomment and adapt these complete examples to add custom rules. The
+# sections are commented out deliberately, so they do not change the panel.
+# [Highlight_100]
+# Name = Archives
+# Mask = *.zip, *.rar, *.7z
+# ExcludeAttributes = Directory
+# NormalColor = foreground:#FF00FF | background:#000000
+# SelectedColor = foreground:#FFFF00 | background:#000000
+# CursorColor = foreground:#FFFFFF | background:#008080
+# SelectedCursorColor = foreground:#FFFF00 | background:#008080
+#
+# The same four colors for folders, written with the Far key names. Note the
+# attribute: without it the section would color the files as well.
+# [Highlight_101]
+# Name = Directories
+# IncludeAttributes = Directory
+# NormalFileName = foreground:#FFFFFF | background:#000000
+# SelectedFileName = foreground:#FFFF00 | background:#000000
+# FileNameUnderCursor = foreground:#FFFFFF | background:#008080
+# FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
+#
+# [SortGroup_N] sections below define sort groups. They accept the same
+# matching keys as a highlight rule (Mask, IncludeAttributes,
+# ExcludeAttributes, SizeAbove/SizeBelow, DateAfter/DateBefore) and are
+# used only when a panel has "Use sort groups" switched on: files are then
+# clustered by group first and sorted by the current sort mode inside each
+# group. Group decides where a cluster goes; sections that share a number
+# form one group, and files matching no group land after all of them.
 
+[SortGroup_1]
+Name = Executables
+Group = 0
+IncludeAttributes = executable
+ExcludeAttributes = directory
+
+[SortGroup_2]
+Name = Executables (by name)
+Group = 0
+Mask = *.exe, *.com, *.bat, *.cmd, *.ps1, *.sh
+
+[SortGroup_3]
+Name = Archives
+Group = 1
+Mask = *.zip, *.7z, *.rar, *.tar, *.tgz, *.gz, *.bz2, *.xz, *.zst
+
+[SortGroup_4]
+Name = Images
+Group = 2
+Mask = *.png, *.jpg, *.jpeg, *.gif, *.bmp, *.webp, *.svg, *.ico, *.tif, *.tiff
+
+[SortGroup_5]
+Name = Media
+Group = 3
+Mask = *.mp3, *.flac, *.ogg, *.wav, *.mp4, *.mkv, *.avi, *.webm, *.mov
 `
 	_ = os.WriteFile(path, []byte(content), 0600)
 	_ = os.Chmod(path, 0600)

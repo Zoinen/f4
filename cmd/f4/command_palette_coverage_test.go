@@ -93,6 +93,9 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"cmd/f4/hotkeys_ui.go:(*HotkeyAssignFrame).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the hotkey-capture dialog must consume the next key locally and is not a global command surface",
 	},
+	"cmd/f4/plugin_hotkeys.go:(*PluginHotkeyAssignFrame).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the plugin hotkey assignment dialog captures its next key locally and is not a global command surface",
+	},
 	"cmd/f4/image_view.go:(*ImageView).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "image-viewer commands are supplied by commandPaletteImageEntries",
 	},
@@ -110,6 +113,15 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"cmd/f4/panels_frame.go:(*PanelsFrame).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "PanelsFrame combines registered actions with audited transient panel-context entries",
+	},
+	"cmd/f4/panels_frame.go:(*menuKeyLabelsFrame).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the key-label menu wrapper only forwards menu navigation and local cancellation handling",
+	},
+	"cmd/f4/drive_bookmarks_ui.go:(*driveBookmarkEditDialog).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the drive-bookmark editor captures its optional hotkey and delegates the remaining field and button handling locally",
+	},
+	"cmd/f4/drive_bookmarks_ui.go:(*driveMenuFrame).ProcessKey": {
+		class: paletteAuditDynamicProvider, rationale: "the drive menu wrapper preserves local menu handling while its runtime drive and bookmark entries come from dynamic providers",
 	},
 	"cmd/f4/panel_plugins.go:(*pluginPanelInstance).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "native panel plugins receive raw input inside their registered panel surface; their semantic commands are plugin-owned",
@@ -192,8 +204,8 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"cmd/f4/fuse_mount_list.go:showMountList#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered mount-list action opens the current mount inventory",
 	},
-	"cmd/f4/panels_frame.go:(*PanelsFrame).Menu#1": {
-		class: paletteAuditPluginDialogBridge, rationale: "vfs.App.Menu is the generic callback-based plugin dialog bridge; its rows are not globally enumerable commands",
+	"cmd/f4/panels_frame.go:(*PanelsFrame).menuItemsWithKeyLabels#1": {
+		class: paletteAuditPluginDialogBridge, rationale: "the generic callback-based plugin menu bridge adds runtime plugin rows and optional key labels that are not globally enumerable commands",
 	},
 	"cmd/f4/panels_frame.go:(*PanelsFrame).showDriveMenuAt#1": {
 		class: paletteAuditDynamicProvider, rationale: "registered drives are mirrored by commandPaletteDriveEntries with live factory re-resolution",
@@ -255,11 +267,23 @@ func TestCommandPaletteResolvesEveryActionGeneratedMenuLeafByID(t *testing.T) {
 
 			for groupIndex, group := range expected {
 				var leaves []vtui.MenuItem
-				for _, item := range actual[groupIndex].SubItems {
-					if !item.Separator {
+				// A submenu heading is not a leaf of its own: it stands for
+				// the actions folded under it, which the palette must still
+				// resolve one by one.
+				var collect func(items []vtui.MenuItem)
+				collect = func(items []vtui.MenuItem) {
+					for _, item := range items {
+						if item.Separator {
+							continue
+						}
+						if len(item.SubItems) > 0 {
+							collect(item.SubItems)
+							continue
+						}
 						leaves = append(leaves, item)
 					}
 				}
+				collect(actual[groupIndex].SubItems)
 				if len(leaves) != len(group.actions) {
 					t.Fatalf("menu group %q has %d non-separator leaves, want %d action leaves", group.path, len(leaves), len(group.actions))
 				}
@@ -409,7 +433,7 @@ func commandPaletteParseProductionGo(t *testing.T) []commandPaletteParsedGo {
 				}
 			}
 			switch entry.Name() {
-			case ".git", "testdata", "third_party", "vendor":
+			case ".git", ".diagnostics", "testdata", "third_party", "vendor":
 				if path != root {
 					return fs.SkipDir
 				}

@@ -28,21 +28,23 @@ func runGuiWithStartupRecovery(backend string, startupComplete *atomic.Bool, run
 }
 
 func RunGui(backend string) error {
-	if backend == "qt" || strings.HasPrefix(backend, "ext:") {
-		return RunExternalUIWithMapping(backend)
-	}
-	if err := checkGUIBackendAvailability(backend); err != nil {
-		return err
-	}
+	return withGUIRuntime(func() error {
+		if backend == "qt" || strings.HasPrefix(backend, "ext:") {
+			return RunExternalUIWithMapping(backend)
+		}
+		if err := checkGUIBackendAvailability(backend); err != nil {
+			return err
+		}
 
-	var startupComplete atomic.Bool
-	return runGuiWithStartupRecovery(backend, &startupComplete, func() error {
-		applyDarwinDockIcon(backend)
-		return vtui.RunInGUIWindow(AppConfig.GuiCols, AppConfig.GuiRows, backend, effectiveGuiFont(), float64(AppConfig.GuiFontSize), func() {
-			SetupUI()
-			openDashEFileIfRequested()
-			restoreGuiWindowPosition()
-			startupComplete.Store(true)
+		var startupComplete atomic.Bool
+		return runGuiWithStartupRecovery(backend, &startupComplete, func() error {
+			applyDarwinDockIcon(backend)
+			return vtui.RunInGUIWindow(AppConfig.GuiCols, AppConfig.GuiRows, backend, effectiveGuiFont(), float64(AppConfig.GuiFontSize), func() {
+				SetupUI()
+				openDashEFileIfRequested()
+				restoreGuiWindowPosition()
+				startupComplete.Store(true)
+			})
 		})
 	})
 }

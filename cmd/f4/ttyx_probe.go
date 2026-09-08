@@ -18,7 +18,9 @@ package main
 // once, at startup, and is remembered.
 
 import (
+	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/unxed/f4/internal/ttyx"
@@ -72,7 +74,61 @@ func ProbeHostTextArea() {
 	hostCellW, hostCellH, hostCellKnown = cw, ch, cellOK
 	hostTextW, hostTextH, hostTextKnown = tw, th, areaOK
 	hostTextMu.Unlock()
+	restoreFar2lAfterProbe(os.Stdout)
 	publishCellSize()
+}
+
+// What the questions above read and did not use.
+//
+// Reading standard input is destructive, and the terminal has usually put
+// something there already: the protocols are announced just before this runs,
+// and a far2l terminal answers the announcement straight away. That answer
+// arrives in the same buffer as the answer being waited for, is not the one
+// with the prefix, and is dropped -- and with it the only notice that the
+// extensions are live. The clipboard then has no far2l to use in either
+// direction, which is what #922 turned out to be.
+var (
+	swallowedMu sync.Mutex
+	swallowed   strings.Builder
+)
+
+// noteProbeInput records everything a question read, answer and all.
+func noteProbeInput(s string) {
+	if s == "" {
+		return
+	}
+	swallowedMu.Lock()
+	swallowed.WriteString(s)
+	swallowedMu.Unlock()
+}
+
+func takeProbeInput() string {
+	swallowedMu.Lock()
+	defer swallowedMu.Unlock()
+	s := swallowed.String()
+	swallowed.Reset()
+	return s
+}
+
+// far2lAck is what a far2l terminal sends when it accepts the announcement,
+// and far2lAnnounce is the announcement itself -- the same sequence vtinput
+// writes when it enables the protocols.
+const (
+	far2lAck      = "\x1b_far2lok"
+	far2lAnnounce = "\x1b_far2l1\x1b\\"
+)
+
+// restoreFar2lAfterProbe asks again when the acknowledgement was among what
+// the questions ate, so that the reader gets one it can see. Asking is cheap
+// and the terminal answers every time; a terminal that never acknowledged is
+// not asked again, so nothing is sent to one that would not understand it.
+func restoreFar2lAfterProbe(out io.Writer) bool {
+	if !strings.Contains(takeProbeInput(), far2lAck) {
+		return false
+	}
+	vtui.DebugLog("TTYX: the probe ate the far2l acknowledgement; announcing again")
+	_, err := io.WriteString(out, far2lAnnounce)
+	return err == nil
 }
 
 // publishCellSize tells vtui the real size of a character cell. Without it the

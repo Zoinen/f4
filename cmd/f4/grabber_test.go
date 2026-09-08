@@ -17,10 +17,16 @@ func waitForClipboard(t *testing.T, want string) string {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := vtui.GetClipboard(); got == want {
+			// The worker updates the process-local clipboard before it finishes
+			// reading other global state. Join it before the next test changes
+			// those globals, otherwise the race detector can report a false
+			// cross-test failure.
+			waitForAsyncClipboard()
 			return got
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	waitForAsyncClipboard()
 	return vtui.GetClipboard()
 }
 

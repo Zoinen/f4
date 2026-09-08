@@ -42,6 +42,18 @@ func resetConsoleWindowPos(hConsole syscall.Handle, w, h int16) {
 		Right:  w - 1,
 		Bottom: h - 1,
 	}
+	// Skip the call when the window already sits where we want it. On
+	// legacy conhost (Windows 7) SetConsoleWindowInfo is not a no-op even
+	// then: the host re-lays out the window and the OS re-posts
+	// WM_MOUSEMOVE while the pointer rests over it, which the console turns
+	// into a MOUSE_EVENT at the unchanged cell -- one more wake-up for the
+	// event loop after every single frame.
+	var csbi consoleScreenBufferInfo
+	if ok, _, _ := procGetConsoleScreenBufferInfo.Call(uintptr(hConsole), uintptr(unsafe.Pointer(&csbi))); ok != 0 {
+		if csbi.srWindow == rect {
+			return
+		}
+	}
 	procSetConsoleWindowInfo.Call(
 		uintptr(hConsole),
 		uintptr(1), // TRUE = absolute

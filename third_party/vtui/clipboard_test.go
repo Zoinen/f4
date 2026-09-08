@@ -64,3 +64,49 @@ func TestClipboard_Truncation(t *testing.T) {
 		t.Errorf("Expected OSC 52 payload in stdout, got %q", output[:min(len(output), 100)])
 	}
 }
+
+// The clipboard read has two sources and one rule: whatever the OS clipboard
+// said stands, and the process buffer is what is left when there is no OS
+// clipboard to ask.
+func TestResolveClipboardRead(t *testing.T) {
+	cases := []struct {
+		name     string
+		osText   string
+		osOK     bool
+		internal string
+		want     string
+	}{
+		{
+			name:     "no graphical driver leaves the process buffer",
+			internal: "copied here",
+			want:     "copied here",
+		},
+		{
+			name:     "a graphical answer with text wins",
+			osText:   "copied elsewhere",
+			osOK:     true,
+			internal: "copied here",
+			want:     "copied elsewhere",
+		},
+		{
+			name:     "an empty clipboard is an answer, not a miss",
+			osOK:     true,
+			internal: "copied here",
+			want:     "",
+		},
+		{
+			name: "nothing anywhere is still nothing",
+			osOK: true,
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveClipboardRead(tc.osText, tc.osOK, tc.internal)
+			if got != tc.want {
+				t.Fatalf("resolveClipboardRead = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

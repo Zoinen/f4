@@ -48,6 +48,11 @@ func editorWrapIntervalUnsafe(lineStart, nextLineStart int64) bool {
 	return nextLineStart > lineStart && nextLineStart-lineStart-1 > maxWordWrapLineBytes
 }
 
+// disableUnsafeWordWrap turns wrapping off for content it cannot lay out.
+// It deliberately leaves wordWrapWanted alone: the user's choice for this file
+// is still their choice, and the file may not contain the offending line the
+// next time it is opened. Persisting the suppressed value instead would let a
+// single overlong line erase a setting the user never changed.
 func (ev *EditorView) disableUnsafeWordWrap() {
 	if ev.wordWrapSuppressed {
 		return
@@ -93,13 +98,26 @@ func (ev *EditorView) probeUnsafeWordWrap() bool {
 	return unsafe
 }
 
+// lineIndexStillGrowing reports whether the line index may yet gain lines:
+// the buffer is one the background scan indexes, and that scan has not
+// finished.
+func (ev *EditorView) lineIndexStillGrowing() bool {
+	return (ev.asyncBuf != nil || ev.mapped != nil) && !ev.indexIsComplete()
+}
+
 func (ev *EditorView) currentLineUnsafeForWordWrap() bool {
 	if ev.CursorLine < 0 || ev.CursorLine >= ev.li.LineCount() {
 		return false
 	}
-	// The last line in a lazy buffer may still be an unindexed prefix of the
-	// whole file. Its apparent length is therefore not a real line length yet.
-	if ev.asyncBuf != nil && !ev.indexIsComplete() && ev.CursorLine == ev.li.LineCount()-1 {
+	// The last line of an index that is still filling may be an unindexed
+	// prefix of the whole file rather than a line, so its apparent length is
+	// not a real line length yet. That is true of every buffer the background
+	// scan indexes — a mapped file starts with an empty index just as a lazy
+	// buffer does, and a mapped file is how a local file opens by default —
+	// so the question is whether the scan has finished, not how the bytes
+	// arrive. A fully decoded file is left out: its index was built with it,
+	// and it never reaches IndexComplete.
+	if ev.lineIndexStillGrowing() && ev.CursorLine == ev.li.LineCount()-1 {
 		return false
 	}
 	lineLen := ev.getLineLength(ev.CursorLine)

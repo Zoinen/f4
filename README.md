@@ -1,5 +1,7 @@
 # f4 — efficient and cozy file manager in go
 
+[![codecov](https://codecov.io/gh/unxed/f4/branch/main/graph/badge.svg)](https://codecov.io/gh/unxed/f4)
+
 ![](https://raw.githubusercontent.com/unxed/f4/refs/heads/main/screenshot.png)
 ### ⚡ Quick Download (Nightly Builds)
 
@@ -8,6 +10,7 @@
 | **Windows** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-amd64.zip) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-arm64.zip) |
 | **Windows 7/8/8.1** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows7-amd64.zip) |
 | **macOS** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-arm64.tar.gz) |
+| **Android (Termux)** | .tar.gz / .deb | [arm64 archive](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.tar.gz) / [arm64 package](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.deb) |
 | **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) / [386](https://github.com/unxed/f4/releases/download/nightly/f4-linux-386.tar.gz) / [mips](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips.tar.gz) / [mipsle](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mipsle.tar.gz) / [mips64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64.tar.gz) / [mips64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64le.tar.gz) / [riscv64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-riscv64.tar.gz) / [loong64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-loong64.tar.gz) / [ppc64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64.tar.gz) / [ppc64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64le.tar.gz) |
 | **FreeBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-arm64.tar.gz) |
 | **DragonflyBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-dragonfly-amd64.tar.gz) |
@@ -18,6 +21,30 @@
 
 *These builds are automated and represent the current state of the `main` branch.*
 
+An installed f4 updates itself from the command line, no browser needed:
+
+```sh
+f4 --update nightly   # newest nightly build
+f4 --update stable    # newest tagged release
+f4 --update           # whichever channel is configured (Options > Auto update)
+```
+
+A named channel also becomes the one f4 checks automatically from then on.
+
+### 📱 Install on Android via Termux
+
+The Android build currently targets **arm64 in Termux**. Download the `.deb`
+package above and install it from Termux:
+
+```sh
+pkg install ./f4-termux-arm64.deb
+```
+
+Alternatively, extract the `.tar.gz` archive and run `./f4`. Both artifacts
+are linked against Termux's libraries and are intended to run inside Termux;
+they are not standalone Android APKs. Other Android architectures are not
+published yet.
+
 ### 🍺 Install on macOS via Homebrew
 
 Tagged releases (`vX.Y.Z`) are published to a Homebrew tap, so you can install with one command:
@@ -27,6 +54,8 @@ brew install unxed/tap/f4
 ```
 
 To upgrade later: `brew upgrade f4`. Both Apple Silicon (arm64) and Intel (amd64) Macs are supported.
+
+The tap carries tagged releases only, so a nightly build has to come from f4 itself: `f4 --update nightly` writes it into the Cellar directory brew installed to. That works, and `brew upgrade` or `brew reinstall` puts the tagged release back whenever you want it.
 
 **The Core:** Creating an experimental, cross-platform TUI (Terminal User Interface) file manager that aims to fully replicate the features, UX, data structures, and rendering logic of `far2l` and Far Manager, but implemented entirely in Go.
 
@@ -50,6 +79,8 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 *   **Input (`vtinput`):** Built as a separate library to handle advanced protocols like the [Kitty Keyboard Protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) and [Win32 Input Mode](https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md). This is strictly required for distinguishing combinations like `Ctrl+Enter` or `Shift+Tab`.
 *   **Framework (`vtui`):** A custom UI framework built from scratch in the style of Far, borrowing responsive layout features (like window resizing and anchors) from Turbo Vision. Ideally, it should cover all capabilities of Far's UI kit and Turbo Vision (excluding non-relevant features like custom serialization engines).
 *   **Word Navigation:** `Ctrl+Left`/`Ctrl+Right` and their `Shift` variants follow the exact word boundary rules of `far2l`, down to its intentional asymmetry between moving and selecting. See [Word Navigation Rules](WORDNAV.md).
+*   **Command Palette:** `Ctrl+Shift+P` finds any command by name and shows the key it sits on. It needs no configuration and works when a chord does not, which makes it the first answer to "my terminal ate that shortcut".
+*   **Changing Keys:** `Options > Hotkey Configuration` rebinds a *command*: pick it in the list, press *Assign*, press the new chord. Under it sits `keymap.ini`, which substitutes one *key* for another before f4 looks at the event — for chords a multiplexer (tmux, zellij, screen) claims first, for keyboards with no F-row, and for keys that belong to a dialog rather than to a command. See [Key Remapping](docs/KEYMAP.md).
 
 ### GUI Mode & Backends
 

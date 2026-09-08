@@ -52,7 +52,7 @@ func NewTreeView(x, y, w, h int, root *TreeNode) *TreeView {
 		ShowRoot:             true,
 		ColorTextIdx:         ColTableText,
 		ColorSelectedTextIdx: ColTableSelectedText,
-		ColorTreeLineIdx:     ColTableBox,
+		ColorTreeLineIdx:     ColTreeLine,
 		ColorBoxIdx:          ColTableBox,
 	}
 	tv.canFocus = true

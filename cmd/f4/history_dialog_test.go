@@ -372,3 +372,31 @@ func TestHistorySearchShowsNewestAtBottomAndScrollsToIt(t *testing.T) {
 		t.Fatalf("scrollbar top cell = %#x, want up arrow %#x", got, vtui.ScrollUpArrow)
 	}
 }
+
+// TestHistorySearchPadsRowsWithoutTimestamp guards the alignment of a history
+// that mixes stamped and unstamped records — everything saved before the
+// timestamp column existed still has to line up with the rows around it.
+func TestHistorySearchPadsRowsWithoutTimestamp(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	menu := vtui.NewVMenu("History")
+	stamp := time.Date(2026, time.August, 24, 12, 34, 56, 0, time.UTC)
+	search := newHistorySearch(menu, []HistoryRecord{
+		{Name: "legacy.txt"},
+		{Name: "stamped.txt", Timestamp: stamp},
+	}, "")
+	defer search.cleanup()
+	search.showTimes = true
+	search.timeMode = historyShowDateTime
+	search.applyFilter()
+
+	dated := search.displayText(search.all[1])
+	undated := search.displayText(search.all[0])
+	if strings.Index(dated, "stamped.txt") != strings.Index(undated, "legacy.txt") {
+		t.Fatalf("undated row %q is not aligned with dated row %q", undated, dated)
+	}
+
+	search.timeMode = historyShowNone
+	if got := search.displayText(search.all[0]); got != "legacy.txt" {
+		t.Fatalf("hidden time column still padded the row: %q", got)
+	}
+}

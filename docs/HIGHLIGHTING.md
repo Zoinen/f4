@@ -18,11 +18,13 @@ On the very first launch, `f4` automatically generates a default, balanced `high
 
 The file is parsed as a standard INI file. Rules are defined in sections starting with `[Highlight_N]`, where `N` is a non-negative integer indicating the rule's precedence (lower indices are evaluated first).
 
+A comment occupies a whole line and starts with `#`. There are no trailing comments: `#` also opens a color literal, so anything written after a value stays part of that value.
+
 ### Available Parameters per Rule
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
-| `Name` | String | A descriptive label for the rule (used for logging and human reference). |
+| `Name` | String | A descriptive label for the rule (used for logging and human reference). It plays no part in matching. |
 | `Mask` | String | Comma-separated list of glob patterns (e.g., `*.zip, *.tar.gz`). |
 | `IncludeAttributes` | String | Comma-separated attributes that **must** be present (see below). |
 | `ExcludeAttributes` | String | Comma-separated attributes that **must not** be present. |
@@ -34,10 +36,44 @@ The file is parsed as a standard INI file. Rules are defined in sections startin
 | `DateBefore` | String | Match if file timestamp is before this. |
 | `Mark` (or `MarkChar`) | String | A single character/glyph to prepend before the filename on panels. |
 | `ContinueProcessing`| Boolean | If `1`, matching continues to subsequent rules, merging colors. |
-| `NormalColor` | String | Color expression for unmodified files. |
-| `SelectedColor` | String | Color expression for selected files. |
-| `CursorColor` | String | Color expression for files currently under the cursor. |
-| `SelectedCursorColor` | String| Color expression for selected files under the cursor. |
+| `NormalColor` (or `NormalFileName`) | String | Color expression for unmodified files. |
+| `SelectedColor` (or `SelectedFileName`) | String | Color expression for selected files. |
+| `CursorColor` (or `NormalColorUnderCursor`, `FileNameUnderCursor`) | String | Color expression for unselected files currently under the cursor. |
+| `SelectedCursorColor` (or `SelectedColorUnderCursor`, `FileNameSelectedUnderCursor`) | String| Color expression for selected files under the cursor. |
+
+Each of the four colors takes a foreground, a background, or both, so a rule
+can set the background of an ordinary name just as it sets the background of a
+selected one. The alternative spellings are the names Far Manager gives the
+same four colors in its *Files highlighting* dialog (*Normal file name*,
+*Selected file name*, *File name under cursor*, *File name selected under
+cursor*); a group copied from Far therefore works here as written.
+
+The cursor-specific keys are optional. If one is omitted, the corresponding
+ordinary color (`NormalColor` or `SelectedColor`) is used. This makes it
+possible to keep the cursor visible on selected files without changing the
+normal selected-file color.
+
+### Matching Order and the Missing Mask
+
+Rules are evaluated in the order of their section numbers and the **first
+match wins**, unless that rule sets `ContinueProcessing = 1`.
+
+A rule without a `Mask` matches every name, and `Name` is only a label, so a
+section that describes folders but filters by neither mask nor attribute
+colorizes the entire panel and shadows every rule after it:
+
+```ini
+[Highlight_1]
+Name = Directory
+NormalColor = foreground:#FFFFFF
+```
+
+`Name = Directory` is a caption, `#FFFFFF` is the color every file on the
+panel now gets.
+
+Adding `ExcludeAttributes = Directory` to the *other* rules does not help:
+they are never reached. What the rule needs is its own filter,
+`IncludeAttributes = Directory`.
 
 ---
 
@@ -69,9 +105,11 @@ Dates can be evaluated either absolutely or relatively:
   Matches files modified/created recently. The values are parsed as Go-style durations (`h` for hours, `m` for minutes, `s` for seconds) or with the custom `d` suffix representing days (e.g., `2d` or `7d`).
   ```ini
   DateRelative = 1
-  DateAfter = 48h    # Modified within the last 48 hours
-  DateBefore = 2h    # But excluding those modified in the last 2 hours
+  DateAfter = 48h
+  DateBefore = 2h
   ```
+  The pair above matches files touched in the last 48 hours but not in the
+  last 2.
 
 ---
 
@@ -99,7 +137,7 @@ NormalColor = foreground:#888888
 [Highlight_1]
 Name = Huge Logs
 Mask = *.log
-SizeAbove = 104857600   # > 100MB
+SizeAbove = 104857600
 NormalColor = foreground:#FF5555 | background:#220000
 SelectedColor = foreground:#FF5555 | background:#0000A0
 
@@ -116,11 +154,92 @@ Name = Read-Only Files
 IncludeAttributes = ReadOnly
 Mark = 🔒
 NormalColor = foreground:#D3D7CF
-ContinueProcessing = 1   # Apply the lock marker but let other extensions colorize
+ContinueProcessing = 1
 
 [Highlight_4]
 Name = Archives
 Mask = *.zip, *.tar, *.gz, *.7z
 NormalColor = foreground:#AD7FA8
 SelectedColor = foreground:#AD7FA8 | background:#0000A0
+
+[Highlight_5]
+Name = Directories
+IncludeAttributes = Directory
+NormalFileName = foreground:#FFFFFF | background:#000000
+SelectedFileName = foreground:#FFFF00 | background:#000000
+FileNameUnderCursor = foreground:#FFFFFF | background:#008080
+FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
 ```
+
+The last rule spells its colors the Far way and covers all four states of a
+folder name: ordinary, selected, under the cursor, and selected under the
+cursor. Because the cursor keys keep their own background, the cursor stays
+visible on a selected folder instead of merging into the selection color.
+
+---
+
+## 7. Sort Groups
+
+Sort groups reuse this file and this rule syntax to answer a different
+question: not *what colour is a file*, but *where on the panel does it belong*.
+A panel with sort groups switched on clusters its files by group first and
+applies the current sort mode inside each cluster — "all images together",
+"executables at the top".
+
+### Configuration
+
+Groups are `[SortGroup_N]` sections of the same `highlight.ini`. They accept
+every matching parameter of a highlight rule (`Mask`, `IncludeAttributes`,
+`ExcludeAttributes`, `SizeAbove`, `SizeBelow`, `DateType`, `DateRelative`,
+`DateAfter`, `DateBefore`) and ignore the colour ones. Two keys are specific to
+groups:
+
+| Parameter | Type | Description |
+| :--- | :--- | :--- |
+| `Name` | String | Label for the group. Defaults to its mask list. |
+| `Group` | Integer | Position of the cluster on the panel. Defaults to the section's position in the file. |
+
+Rules are tried in section order and the first match wins, so a narrow rule
+placed before a broad one carves items out of it. Sections that share a `Group`
+number form a single cluster — that is how a group can match either by
+attribute or by name:
+
+```ini
+[SortGroup_1]
+Name = Executables
+Group = 0
+IncludeAttributes = Executable
+ExcludeAttributes = Directory
+
+[SortGroup_2]
+Name = Executables (by name)
+Group = 0
+Mask = *.exe, *.com, *.bat, *.cmd, *.ps1, *.sh
+
+[SortGroup_3]
+Name = Images
+Group = 2
+Mask = *.png, *.jpg, *.jpeg, *.gif, *.webp
+```
+
+Files that match no group fall into the default group, number `10000`, which
+puts them after every configured cluster. A group meant to sit *below* the
+unclassified files therefore just needs a larger number, e.g. `Group = 20000`.
+
+### Using them
+
+Grouping is a per-panel switch, off by default, and the panel remembers it
+across restarts:
+
+* **Left**/**Right** menu → *Use sort groups*
+* the sort menu (`Ctrl+F12`) → *Use sort groups*
+* action `Panel.SortUseGroups` (and `Panel.Left.SortUseGroups` /
+  `Panel.Right.SortUseGroups`), bindable from the hotkey settings and reachable
+  from the command palette
+
+Two properties are worth knowing. Directories still come first: a group never
+pulls a folder down among the files. And the group order is not flipped by the
+reverse-sort toggle — "executables first" stays first when the name order is
+reversed, only the contents of each cluster turn around. Switching a grouped
+panel to *Unsorted* keeps the filesystem order inside every cluster instead of
+sorting it.

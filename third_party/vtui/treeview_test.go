@@ -136,21 +136,40 @@ func TestTreeView_Rendering(t *testing.T) {
 
 	// Row 1: Child 1 "  ├─[+] Child 1"
 	// ├ is boxSymbols[6]
-	checkCell(t, scr, 0, 1, ' ', Palette[ColTableBox])
-	checkCell(t, scr, 1, 1, ' ', Palette[ColTableBox])
-	checkCell(t, scr, 2, 1, uint64(boxSymbols[6]), Palette[ColTableBox])
-	checkCell(t, scr, 3, 1, uint64(boxSymbols[bsH]), Palette[ColTableBox])
+	checkCell(t, scr, 0, 1, ' ', Palette[ColTreeLine])
+	checkCell(t, scr, 1, 1, ' ', Palette[ColTreeLine])
+	checkCell(t, scr, 2, 1, uint64(boxSymbols[6]), Palette[ColTreeLine])
+	checkCell(t, scr, 3, 1, uint64(boxSymbols[bsH]), Palette[ColTreeLine])
 	checkCell(t, scr, 4, 1, '[', Palette[ColTableText])
 	checkCell(t, scr, 5, 1, '+', Palette[ColTableText])
 
 	// Row 2: Child 2 "  └─[-] Child 2"
 	// └ is boxSymbols[4]
-	checkCell(t, scr, 0, 2, ' ', Palette[ColTableBox])
-	checkCell(t, scr, 1, 2, ' ', Palette[ColTableBox])
-	checkCell(t, scr, 2, 2, uint64(boxSymbols[4]), Palette[ColTableBox])
-	checkCell(t, scr, 3, 2, uint64(boxSymbols[bsH]), Palette[ColTableBox])
+	checkCell(t, scr, 0, 2, ' ', Palette[ColTreeLine])
+	checkCell(t, scr, 1, 2, ' ', Palette[ColTreeLine])
+	checkCell(t, scr, 2, 2, uint64(boxSymbols[4]), Palette[ColTreeLine])
+	checkCell(t, scr, 3, 2, uint64(boxSymbols[bsH]), Palette[ColTreeLine])
 	checkCell(t, scr, 4, 2, '[', Palette[ColTableText])
 	checkCell(t, scr, 5, 2, '-', Palette[ColTableText])
+}
+
+// Tree lines and table column separators used to share one palette slot, which
+// made the f4 color key look like it covered unrelated widgets (f4 issue #261).
+func TestTreeView_LinesUseTreeLineColorNotTableBox(t *testing.T) {
+	SetDefaultPalette()
+	Palette[ColTableBox] = SetRGBBoth(0, 0xC0C0C0, 0x0000A0)
+	Palette[ColTreeLine] = SetRGBBoth(0, 0x123456, 0xABCDEF)
+	t.Cleanup(SetDefaultPalette)
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(30, 10)
+
+	tree := NewTreeView(0, 0, 30, 10, createTestTree())
+	tree.Show(scr)
+
+	// "  ├─" of the first child is the tree line prefix.
+	checkCell(t, scr, 2, 1, uint64(boxSymbols[6]), Palette[ColTreeLine])
+	checkCell(t, scr, 3, 1, uint64(boxSymbols[bsH]), Palette[ColTreeLine])
 }
 
 func TestTreeView_FullCoverage(t *testing.T) {

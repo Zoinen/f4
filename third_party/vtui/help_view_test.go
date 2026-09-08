@@ -423,6 +423,36 @@ func TestHelpView_EscapeClosesWithoutGoingBack(t *testing.T) {
 		t.Fatal("Escape did not close HelpView")
 	}
 }
+
+// The help window has its own background, so its scrollbar must follow the
+// help palette instead of the shared list scrollbar color (f4 issue #261).
+func TestHelpView_ScrollBarUsesHelpScrollbarColor(t *testing.T) {
+	SetDefaultPalette()
+	shared := SetRGBBoth(0, 0xC0C0C0, 0x0000A0)
+	own := SetRGBBoth(0, 0x123456, 0xABCDEF)
+	Palette[ColScrollBar] = shared
+	Palette[ColHelpScrollbar] = own
+	t.Cleanup(SetDefaultPalette)
+
+	engine := NewHelpEngine(&mockHelpVFS{})
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = "help line"
+	}
+	engine.AddTopic(&HelpTopic{Name: "Long", Lines: lines})
+	hv := NewHelpView(engine, "Long")
+	hv.SetPosition(0, 0, 30, 8)
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(32, 10)
+	hv.Show(scr)
+
+	if !hv.layout().showScrollBar {
+		t.Fatal("long topic did not request a scrollbar")
+	}
+	checkCell(t, scr, hv.scrollBar.X1, hv.scrollBar.Y1, ScrollUpArrow, own)
+}
+
 func TestHelpView_BorderColors(t *testing.T) {
 	SetDefaultPalette()
 	engine := NewHelpEngine(&mockHelpVFS{})

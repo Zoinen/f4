@@ -24,6 +24,7 @@ type MenuItem struct {
 	// IconColor is an optional graphical-frontend color (for example a Finder
 	// tag color). Terminal rendering keeps using the configured menu palette.
 	IconColor string
+	SubItems  []MenuItem
 	Shortcut  string // Optional right-aligned hotkey hint (e.g. "F3")
 	Command   int    // TV-style Command ID to emit when selected
 	OnClick   func() // Closure called when selected
@@ -84,6 +85,12 @@ type VMenu struct {
 	hoverMu       sync.Mutex
 	hoverTimer    *time.Timer
 	hoverGen      uint64
+
+	// parentMenu and activeSub link a chain of nested menus. Only the
+	// deepest one is on top of the frame stack and sees input, so closing
+	// or confirming has to walk the chain explicitly: a submenu left
+	// behind would keep painting over the screen with nothing to close it.
+	activeSub *VMenu
 
 	// Palette entries the menu paints with. They default to the Menu.* group;
 	// a ComboBox points them at Dialog.Combo.* so its dropdown stands apart
@@ -261,7 +268,7 @@ func bindMenuFrame(frame Frame) *VMenu {
 
 func (m *VMenu) HasSubmenu(index int) bool {
 	return index >= 0 && index < len(m.Items) &&
-		(m.Items[index].Submenu != nil || m.Items[index].SubmenuFrame != nil)
+		(m.Items[index].Submenu != nil || m.Items[index].SubmenuFrame != nil || len(m.Items[index].SubItems) > 0)
 }
 
 func (m *VMenu) positionSubmenu(child *VMenu, index int) {
@@ -330,6 +337,19 @@ func (m *VMenu) OpenSubmenu(index int) bool {
 		childFrame = item.SubmenuFrame()
 	} else if item.Submenu != nil {
 		childFrame = item.Submenu()
+	} else if len(item.SubItems) > 0 {
+		sub := NewVMenu(item.Text)
+		for _, nested := range item.SubItems {
+			sub.AddItem(nested)
+		}
+		sub.OnAction = func(int) {
+			m.CloseChain()
+			FrameManager.RemoveFrame(m.menuFrame())
+			if m.OnAction != nil {
+				m.OnAction(m.SelectPos)
+			}
+		}
+		childFrame = sub
 	}
 	child := bindMenuFrame(childFrame)
 	if child == nil {
@@ -342,6 +362,7 @@ func (m *VMenu) OpenSubmenu(index int) bool {
 	child.ClearDone()
 	m.positionSubmenu(child, index)
 	m.childMenu = child
+	m.activeSub = child
 	m.childFrame = childFrame
 	m.childIndex = index
 	FrameManager.PushMenu(childFrame)
@@ -380,6 +401,7 @@ func (m *VMenu) CloseSubmenu() {
 		childFrame = child.menuFrame()
 	}
 	m.childMenu = nil
+	m.activeSub = nil
 	m.childFrame = nil
 	m.childIndex = -1
 	child.finish(-1, false)
@@ -424,6 +446,62 @@ func (m *VMenu) handleSemanticNavigation(e *vtinput.InputEvent) bool {
 	return handled
 }
 
+// menuItemHint returns the text drawn right-aligned on a menu row: the
+// shortcut, or the marker that says the row opens a nested menu.
+func menuItemHint(item MenuItem) string {
+	if item.Shortcut != "" {
+		return item.Shortcut
+	}
+	if len(item.SubItems) > 0 {
+		return SubMenuMarker
+	}
+	return ""
+}
+
+// menuItemsWidth returns the box width the items need: the widest row plus
+// its hint column, never below minWidth.
+func menuItemsWidth(items []MenuItem, minWidth int) int {
+	width := minWidth
+	for _, item := range items {
+		if item.Separator {
+			continue
+		}
+		clean, _, _ := ParseAmpersandString(" " + item.Text)
+		w := StringWidth(clean)
+		if hint := menuItemHint(item); hint != "" {
+			w += StringWidth(hint + " ")
+		}
+		w += 4 // Minimum visual padding between text and shortcut/border
+		if w > width {
+			width = w
+		}
+	}
+	return width
+}
+
+// HasSubMenu reports whether the item at index opens a nested menu.
+func (m *VMenu) HasSubMenu(index int) bool { return m.HasSubmenu(index) }
+
+// OpenSubMenu is the upstream spelling of the shared semantic submenu path.
+func (m *VMenu) OpenSubMenu(index int) bool { return m.OpenSubmenu(index) }
+
+func (m *VMenu) CloseSubMenu() { m.CloseSubmenu() }
+
+// closeAncestors dismisses the menus this one was opened from. A nested
+// menu that finishes -- an item chosen, F10, a click outside -- ends the
+// whole construction, and the parents are not on top to notice it
+// themselves.
+func (m *VMenu) closeAncestors() {
+	for parent := m.parentMenu; parent != nil; parent = parent.parentMenu {
+		parent.activeSub = nil
+		parent.done = true
+		parent.exitCode = -1
+		if FrameManager != nil {
+			FrameManager.RemoveFrame(parent)
+		}
+	}
+}
+
 // ProcessKey processes navigation keys.
 func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	if m.IsDisabled() || !e.KeyDown {
@@ -458,6 +536,11 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			FrameManager.EmitCommand(CmMenuRight, nil)
 			return true
 		}
+		if m.parentMenu != nil {
+			// Inside a nested menu Right is the open gesture; with nothing
+			// to open it must not walk the selection sideways.
+			return true
+		}
 		// If last item in standalone menu, let focus cycle (unless wrapping is on)
 		if m.SelectPos == m.ItemCount-1 && !m.Wrap {
 			return false
@@ -484,6 +567,10 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		m.declareSemanticMenuState()
 		return FrameManager.GetTopFrame() == Frame(m)
 	case vtinput.VK_RETURN:
+		if m.HasSubMenu(m.SelectPos) {
+			m.OpenSubMenu(m.SelectPos)
+			return true
+		}
 		if m.SelectPos >= 0 && m.SelectPos < m.ItemCount {
 			keepOpen := false
 			// Virtual consumers size the menu via ItemCount without backing
@@ -596,6 +683,8 @@ func (m *VMenu) GetType() FrameType {
 }
 
 func (m *VMenu) SetExitCode(code int) {
+	m.CloseSubMenu()
+	m.closeAncestors()
 	m.done = true
 	m.exitCode = code
 	if code == -1 {
@@ -835,11 +924,11 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 		// Calculate layout
 		//clean, _, _ := ParseAmpersandString(item.Text)
 		//vLenText := StringWidth(clean) + 1 // +1 for leading space
-		shortcutText := ""
-		vLenShortcut := 0
-		if item.Shortcut != "" {
-			shortcutText = item.Shortcut + " "
-			vLenShortcut = StringWidth(shortcutText)
+		hintText := ""
+		vLenHint := 0
+		if hint := menuItemHint(item); hint != "" {
+			hintText = hint + " "
+			vLenHint = StringWidth(hintText)
 		}
 
 		// Draw background and text
@@ -859,8 +948,8 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 			itemAttr, hiAttr = DimColor(itemAttr), DimColor(hiAttr)
 		}
 		p.DrawControlText(textX, currY, item.Text, itemAttr, hiAttr)
-		if shortcutText != "" {
-			p.DrawString(m.X2-vLenShortcut, currY, shortcutText, itemAttr)
+		if hintText != "" {
+			p.DrawString(m.X2-vLenHint, currY, hintText, itemAttr)
 		}
 		if m.HasSubmenu(itemIdx) {
 			p.DrawString(m.X2-2, currY, "▶", itemAttr)

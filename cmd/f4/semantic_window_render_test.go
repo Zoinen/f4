@@ -239,6 +239,9 @@ func TestSemanticStyledEditorWindowRowsMatchesDisplayObjectAndRestoresState(t *t
 }
 
 func TestSemanticStyledEditorWindowRowsRepaintsOnlyChangedOverlap(t *testing.T) {
+	oldMarkOccurrences := AppConfig.EditorMarkOccurrences
+	AppConfig.EditorMarkOccurrences = false
+	t.Cleanup(func() { AppConfig.EditorMarkOccurrences = oldMarkOccurrences })
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 
@@ -315,5 +318,25 @@ func TestSemanticStyledEditorWindowRowsRepaintsOnlyChangedOverlap(t *testing.T) 
 	}
 	if want := semanticRenderStyledEditorWindowRows(editor, window, width); !reflect.DeepEqual(themed, want) {
 		t.Fatal("theme-invalidated cache differs from the canonical full render")
+	}
+}
+
+func TestSemanticEditorOccurrenceSelectionInvalidatesCachedRows(t *testing.T) {
+	old := AppConfig.EditorMarkOccurrences
+	AppConfig.EditorMarkOccurrences = true
+	t.Cleanup(func() { AppConfig.EditorMarkOccurrences = old })
+	ev := projectionTestEditor(t, "word word\nword word")
+	ev.highlighter = nil
+	window := ev.semanticWindow()
+	width := ev.semanticSurfaceWidth()
+	semanticStyledEditorWindowRows(ev, window, width)
+	ev.selActive, ev.selAnchorOffset, ev.CursorPos = true, 0, 4
+	got := semanticStyledEditorWindowRows(ev, window, width)
+	want := semanticRenderStyledEditorWindowRows(ev, window, width)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("occurrence selection reused stale base rows")
+	}
+	if ev.editorCursorStateGuard().eligible {
+		t.Fatal("occurrence selection allowed scalar-only cursor update")
 	}
 }

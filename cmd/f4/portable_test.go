@@ -5,21 +5,69 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/unxed/vtui"
 )
+
+func TestPortableSettingsDialogUsesContextHelp(t *testing.T) {
+	initFrameworkActionTestScreen(t)
+	tmpDir := t.TempDir()
+	exe := filepath.Join(tmpDir, "f4")
+	if err := os.WriteFile(exe, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldExecutable := osExecutable
+	oldUserConfigDir := userConfigDir
+	osExecutable = func() (string, error) { return exe, nil }
+	userConfigDir = func() (string, error) { return tmpDir, nil }
+	resetConfigDirForTest()
+	t.Cleanup(func() {
+		osExecutable = oldExecutable
+		userConfigDir = oldUserConfigDir
+		resetConfigDirForTest()
+	})
+
+	actionPortableSettings(nil)
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil {
+		t.Fatal("portable settings did not open a dialog")
+	}
+	if got := top.GetHelp(); got != "PortableSettings" {
+		t.Fatalf("portable settings help topic = %q, want PortableSettings", got)
+	}
+}
+
+func TestPortableSettingsHelpTopicIsRegistered(t *testing.T) {
+	engine := vtui.NewHelpEngine(&memoryHelpVFS{files: map[string]string{
+		"help.hlf": defaultHelpData,
+	}})
+	if err := engine.LoadFile("help.hlf"); err != nil {
+		t.Fatal(err)
+	}
+	topic := engine.GetTopic("PortableSettings")
+	if topic == nil {
+		t.Fatal("PortableSettings help topic is missing")
+	}
+	content := strings.Join(topic.Lines, "\n")
+	for _, want := range []string{"UseSystemProfiles=0", "f4.exe.ini", "Restart f4"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("PortableSettings help does not mention %q", want)
+		}
+	}
+}
 
 func TestConfig_PortableProfile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Имитируем путь исполняемого файла в тестовой директории
 	origExeFunc := osExecutable
-	origConfigDir := GetF4ConfigDir()
-	origPortable := cachedF4Portable
 	t.Cleanup(func() {
 		osExecutable = origExeFunc
+		// Do not restore cachedF4ConfigDir by hand: the preceding test may
+		// have left configDirOnce completed with an empty cache.  A fresh
+		// detection is the only valid state after changing osExecutable.
 		resetConfigDirForTest()
-		cachedF4ConfigDir = origConfigDir
-		cachedF4Portable = origPortable
-		configDirOnce.Do(func() {})
 	})
 	mockExe := filepath.Join(tmpDir, "f4.exe")
 	if err := os.WriteFile(mockExe, []byte(""), 0600); err != nil {

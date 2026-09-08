@@ -5,11 +5,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/unxed/f4/vfs"
 )
 
 type TerminalLogVFS struct {
+	fallback          func() []byte
 	tv                *TerminalView
 	data              []byte
 	initialOffset     int64
@@ -88,21 +90,53 @@ func (v *TerminalLogVFS) Open(ctx context.Context, path string) (vfs.ReadAtClose
 	if v.immutableSnapshot {
 		return &terminalLogWrapper{data: v.data}, nil
 	}
-	if v.tv == nil {
+	if v.tv == nil && v.fallback == nil {
 		return &terminalLogWrapper{}, nil
 	}
-	return &terminalLogWrapper{data: v.tv.GetAllLogBytes()}, nil
+	src := func() []byte { return v.tv.GetAllLogBytes() }
+	if v.fallback != nil {
+		src = v.fallback
+	}
+	return &terminalLogWrapper{data: src(), src: src}, nil
 }
 
 type terminalLogWrapper struct {
+	// mu guards data, which RefreshSize replaces while the viewer's
+	// background fetches are reading it.
+	mu   sync.Mutex
 	data []byte
+	// src re-reads the log. The wrapper holds a snapshot so that offsets stay
+	// put while the viewer pages around; this is how it asks for a newer one.
+	src func() []byte
 }
 
 func (w *terminalLogWrapper) Size() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return int64(len(w.data))
 }
 
+// RefreshSize takes a fresh snapshot of the terminal log, so a viewer opened
+// on it follows output that arrives after it was opened.
+func (w *terminalLogWrapper) RefreshSize(ctx context.Context) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return w.Size(), err
+	}
+	if w.src == nil {
+		return w.Size(), nil
+	}
+	next := w.src()
+	w.mu.Lock()
+	w.data = next
+	size := int64(len(w.data))
+	w.mu.Unlock()
+	return size, nil
+}
+
 func (w *terminalLogWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if off >= int64(len(w.data)) {
 		return 0, io.EOF
 	}

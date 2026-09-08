@@ -507,9 +507,8 @@ func (ip *InfoPanel) setCursorToNearestCopyable(index int) bool {
 //   - Otherwise: copies the current row's raw value (no label),
 //     which is what single-row-copy has always done.
 //
-// vtui.SetClipboard already tries far2l IPC → OS clipboard →
-// OSC 52 in order, so a single call covers every terminal case f4
-// supports.
+// setF4Clipboard keeps vtui's far2l/OS integrations and mirrors the result to
+// OSC 52 when the application is attached to a Unix terminal.
 func (ip *InfoPanel) copyCurrent() {
 	var selRows []infoRow
 	for _, r := range ip.rows {
@@ -525,7 +524,7 @@ func (ip *InfoPanel) copyCurrent() {
 		if !r.copyable || r.value == "" {
 			return
 		}
-		vtui.SetClipboard(r.value)
+		setF4Clipboard(r.value)
 		showToast(fmt.Sprintf("%s: %s", Msg("InfoPanel.Copied"), r.value), 2*time.Second)
 		return
 	}
@@ -534,7 +533,7 @@ func (ip *InfoPanel) copyCurrent() {
 		lines = append(lines, r.label+": "+r.value)
 	}
 	joined := strings.Join(lines, "\n")
-	vtui.SetClipboard(joined)
+	setF4Clipboard(joined)
 	showToast(fmt.Sprintf("%s: %d", Msg("InfoPanel.CopiedRows"), len(selRows)), 2*time.Second)
 }
 

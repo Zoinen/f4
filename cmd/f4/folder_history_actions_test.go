@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/unxed/vtui"
 )
 
 // Alt+Left/Right folder history navigation is a pair of actions, not
@@ -23,11 +25,16 @@ func TestFolderHistoryActionsRegistered(t *testing.T) {
 	// Both appear in the generated Commands menu.
 	items := BuildMenuBarItems("Shell")
 	var commands []string
+	var collect func([]vtui.MenuItem)
+	collect = func(items []vtui.MenuItem) {
+		for _, item := range items {
+			commands = append(commands, item.Text)
+			collect(item.SubItems)
+		}
+	}
 	for _, m := range items {
 		if m.Label == "&Commands" {
-			for _, it := range m.SubItems {
-				commands = append(commands, it.Text)
-			}
+			collect(m.SubItems)
 		}
 	}
 	var back, fwd bool

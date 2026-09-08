@@ -69,7 +69,7 @@ func NewArkanoidFrame() *ArkanoidFrame {
 	x1 := (scrW - width) / 2
 
 	af := &ArkanoidFrame{
-		BaseWindow: *vtui.NewBaseWindow(x1, 2, x1+width-1, 2+height-1, " A R K A N O I D "),
+		BaseWindow: *vtui.NewBaseWindow(x1, 2, x1+width-1, 2+height-1, " "+Msg("Arkanoid.Title")+" "),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 		lives:      3,

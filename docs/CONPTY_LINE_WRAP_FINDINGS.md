@@ -7,7 +7,7 @@ from memory.
 
 ## Decision
 
-Ship the current ConPTY redistributable with f4, compiled into the binary.
+Ship the current ConPTY redistributable with f4, packaged beside the binary.
 No markers, no protocol change, no request pending on Microsoft, and
 explicitly **not** an old pinned build - an old build is the thing that
 breaks long lines.

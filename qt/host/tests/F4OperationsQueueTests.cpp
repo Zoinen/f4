@@ -3069,7 +3069,7 @@ void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAlig
         3000);
 
     QTRY_COMPARE_WITH_TIMEOUT(buttonBackground->property("color").value<QColor>(),
-                              secondPressed, 3000);
+                              secondControl, 3000);
     QTRY_COMPARE_WITH_TIMEOUT(
         buttonBackground->property("testBorderColor").value<QColor>(),
         secondAccent, 3000);

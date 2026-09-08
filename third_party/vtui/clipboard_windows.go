@@ -38,6 +38,11 @@ const (
 	GMEM_MOVEABLE  = 0x0002
 )
 
+// osClipboardAvailable reports whether the Win32 clipboard can be reached.
+// Only a system without user32 answers no, and there the OSC 52 fallback is
+// no use either, since a Windows console does not act on it.
+func osClipboardAvailable() bool { return procOpenClipboard.Find() == nil }
+
 func setOSClipboard(text string) bool {
 	osClipMu.Lock()
 	defer osClipMu.Unlock()

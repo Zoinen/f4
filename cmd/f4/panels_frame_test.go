@@ -495,7 +495,7 @@ func TestPanelsFrame_DriveMenuListsAssignedBookmarks(t *testing.T) {
 	vtui.FrameManager.Push(pf)
 
 	pf.showDriveMenu(1)
-	menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	menu, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame())
 	if !ok {
 		t.Fatalf("drive menu not shown, top frame is %T", vtui.FrameManager.GetTopFrame())
 	}
@@ -588,7 +588,7 @@ func TestPanelsFrame_DriveMenuExpandsBookmarkPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			pf.showDriveMenu(1)
-			menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+			menu, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame())
 			if !ok {
 				t.Fatalf("drive menu not shown, top frame is %T", vtui.FrameManager.GetTopFrame())
 			}
@@ -635,7 +635,7 @@ func findDriveMenu(t *testing.T) *vtui.VMenu {
 	t.Helper()
 	frames := openFrames()
 	for i := len(frames) - 1; i >= 0; i-- {
-		if m, ok := frames[i].(*vtui.VMenu); ok && m.GetTitle() == Msg("Drive.Title") {
+		if m, ok := driveMenuFromFrame(frames[i]); ok && m.GetTitle() == Msg("Drive.Title") {
 			return m
 		}
 	}
@@ -643,27 +643,15 @@ func findDriveMenu(t *testing.T) *vtui.VMenu {
 	return nil
 }
 
-func findBookmarksDialog(t *testing.T) *bookmarksFrame {
-	t.Helper()
-	frames := openFrames()
-	for i := len(frames) - 1; i >= 0; i-- {
-		if d, ok := frames[i].(*bookmarksFrame); ok {
-			return d
-		}
+func driveMenuFromFrame(frame vtui.Frame) (*vtui.VMenu, bool) {
+	switch f := frame.(type) {
+	case *vtui.VMenu:
+		return f, true
+	case *driveMenuFrame:
+		return f.VMenu, true
+	default:
+		return nil, false
 	}
-	t.Fatalf("bookmarks dialog not on the frame stack: %#v", frames)
-	return nil
-}
-
-func bookmarkRow(t *testing.T, menu *vtui.VMenu) int {
-	t.Helper()
-	for i, it := range menu.Items {
-		if strings.HasPrefix(it.Text, "&6  ") {
-			return i
-		}
-	}
-	t.Fatalf("bookmark row missing: %#v", menu.Items)
-	return -1
 }
 
 // wantDriveMenuRow re-derives from the rendered menu the row the cursor is
@@ -696,15 +684,11 @@ func TestPanelsFrame_DriveMenuBookmarkKeys(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cfg, "f4", "settings"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ini := filepath.Join(cfg, "f4", "settings", "bookmarks.ini")
+	ini := filepath.Join(cfg, "f4", "settings", "drive-bookmarks.ini")
 	target := t.TempDir()
-	write := func() {
-		if err := os.WriteFile(ini,
-			[]byte("[6]\nPath="+target+"\nPlugin=\nPluginData=\nPluginFile=\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if err := SaveDriveBookmarks(ini, []DriveBookmark{{Name: "Favorite folder", Path: target, Hotkey: "Ф"}}); err != nil {
+		t.Fatal(err)
 	}
-	write()
 
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := NewPanelsFrame()
@@ -718,59 +702,89 @@ func TestPanelsFrame_DriveMenuBookmarkKeys(t *testing.T) {
 		})
 	}
 
-	// F4 on the bookmark row opens the dialog on that slot, and closing
-	// the dialog brings the drive menu back.
+	// The drive menu shows the named link, not its path, after the Bookmarks
+	// section caption. The Cyrillic hotkey is an actual menu accelerator.
 	pf.showDriveMenu(1)
 	menu := findDriveMenu(t)
-	menu.SetSelectPos(bookmarkRow(t, menu))
+	row := -1
+	for i, item := range menu.Items {
+		if strings.Contains(item.Text, "Favorite folder") {
+			row = i
+			if strings.Contains(item.Text, target) {
+				t.Fatalf("named bookmark leaked its path into menu text: %q", item.Text)
+			}
+		}
+	}
+	if row < 0 || row == 0 || menu.Items[row-1].Text != Msg("Drive.Links") {
+		t.Fatalf("named bookmark section is malformed: row=%d items=%#v", row, menu.Items)
+	}
+	fsp := pf.panels[1].(*FileSystemPanel)
+	menu.SetSelectPos(0)
+	menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'ф'})
+	if got := fsp.vfs.GetPath(); got != target {
+		t.Errorf("Cyrillic bookmark opened %q, want %q", got, target)
+	}
+	settleFrames(t)
+
+	// F4 on the named link opens the editor with its fields pre-filled.
+	pf.showDriveMenu(1)
+	menu = findDriveMenu(t)
+	menu.SetSelectPos(row)
 	press(menu, vtinput.VK_F4)
 	settleFrames(t)
-	dlg := findBookmarksDialog(t)
-	if dlg.SelectPos != 6 {
-		t.Errorf("dialog opened on slot %d, want 6", dlg.SelectPos)
+	dlg, ok := vtui.FrameManager.GetTopFrame().(*driveBookmarkEditDialog)
+	if !ok {
+		t.Fatalf("F4 did not open drive bookmark editor: %T", vtui.FrameManager.GetTopFrame())
 	}
-	press(dlg.VMenu, vtinput.VK_ESCAPE)
-	settleFrames(t)
-	if !dlg.IsDone() {
-		t.Fatal("Esc did not close the dialog")
+	if dlg.nameEdit.GetText() != "Favorite folder" || dlg.pathEdit.GetText() != target || dlg.hotkeyEdit.GetText() != "Ф" {
+		t.Fatalf("editor fields = name %q path %q hotkey %q", dlg.nameEdit.GetText(), dlg.pathEdit.GetText(), dlg.hotkeyEdit.GetText())
 	}
+	dlg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE})
 	settleFrames(t)
-	menu = findDriveMenu(t) // reopened by the dialog's close hook
-	if menu.IsDone() {
-		t.Fatal("drive menu did not come back after the dialog closed")
+	menu = findDriveMenu(t)
+
+	// Del asks for confirmation and removes the named entry only after Yes.
+	menu.SetSelectPos(row)
+	press(menu, vtinput.VK_DELETE)
+	settleFrames(t)
+	confirmation, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if !ok || confirmation.GetTitle() != Msg("DriveLink.DeleteTitle") {
+		t.Fatalf("Del did not open delete confirmation: %T", vtui.FrameManager.GetTopFrame())
+	}
+	confirmation.OnResult(1)
+	settleFrames(t)
+	menu = findDriveMenu(t)
+	menu.SetSelectPos(row)
+	press(menu, vtinput.VK_DELETE)
+	settleFrames(t)
+	confirmation, ok = vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if !ok {
+		t.Fatalf("second Del did not open confirmation: %T", vtui.FrameManager.GetTopFrame())
+	}
+	confirmation.OnResult(0)
+	settleFrames(t)
+	bookmarks, err := LoadDriveBookmarks(ini)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bookmarks) != 0 {
+		t.Fatalf("deleted named bookmarks = %#v", bookmarks)
 	}
 
-	// Ins opens the dialog from any row, always at the first slot.
+	// Ins opens the named-link editor from any row and pre-fills the active
+	// panel path when creating a new entry.
 	menu.SetSelectPos(0)
 	press(menu, vtinput.VK_INSERT)
 	settleFrames(t)
-	dlg = findBookmarksDialog(t)
-	if dlg.SelectPos != 0 {
-		t.Errorf("Ins opened the dialog on slot %d, want 0", dlg.SelectPos)
+	newDlg, ok := vtui.FrameManager.GetTopFrame().(*driveBookmarkEditDialog)
+	if !ok {
+		t.Fatalf("Ins did not open drive bookmark editor: %T", vtui.FrameManager.GetTopFrame())
 	}
-	press(dlg.VMenu, vtinput.VK_ESCAPE)
+	if newDlg.pathEdit.GetText() == "" {
+		t.Fatal("Ins did not pre-fill the panel path")
+	}
+	newDlg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE})
 	settleFrames(t)
-	dlg.IsDone()
-	settleFrames(t)
-
-	// Del clears the slot, and the menu that comes back no longer lists it.
-	menu = findDriveMenu(t)
-	menu.SetSelectPos(bookmarkRow(t, menu))
-	press(menu, vtinput.VK_DELETE)
-	settleFrames(t)
-	data, err := os.ReadFile(ini)
-	if err != nil {
-		t.Fatalf("read ini: %v", err)
-	}
-	if strings.Contains(string(data), "[6]") {
-		t.Errorf("Del did not clear the slot on disk:\n%s", data)
-	}
-	menu = findDriveMenu(t)
-	for _, it := range menu.Items {
-		if strings.HasPrefix(it.Text, "&6  ") {
-			t.Errorf("cleared bookmark still listed: %q", it.Text)
-		}
-	}
 }
 
 func TestPanelsFrame_GetActivePTY(t *testing.T) {
@@ -1384,12 +1398,16 @@ func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 	if !ok {
 		t.Fatalf("Ctrl+F12 top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
 	}
-	if len(menu.Items) != 5 {
-		t.Fatalf("sort menu has %d items, want 5", len(menu.Items))
+	// Five sort modes plus the sort-group toggle on the last row.
+	if len(menu.Items) != 6 {
+		t.Fatalf("sort menu has %d items, want 6", len(menu.Items))
+	}
+	if !strings.Contains(menu.Items[5].Text, Msg("Menu.SortUseGroups")) {
+		t.Fatalf("last sort menu row = %q, want the sort-group toggle", menu.Items[5].Text)
 	}
 	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
 	menuX1, menuY1, menuX2, menuY2 := menu.GetPosition()
-	if menuX1+menuX2 != panelX1+panelX2 || menuY1+menuY2 != panelY1+panelY2 {
+	if !menuIsCenteredIn(menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2) {
 		t.Fatalf("sort menu (%d,%d)-(%d,%d) is not centered in panel (%d,%d)-(%d,%d)",
 			menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2)
 	}
@@ -1447,12 +1465,26 @@ func TestPanelsFrame_RightClickHeaderOpensPanelCenteredSortMenu(t *testing.T) {
 	}
 	panelX1, panelY1, panelX2, panelY2 := left.GetPosition()
 	menuX1, menuY1, menuX2, menuY2 := menu.GetPosition()
-	if menuX1+menuX2 != panelX1+panelX2 || menuY1+menuY2 != panelY1+panelY2 {
+	if !menuIsCenteredIn(menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2) {
 		t.Fatalf("context sort menu (%d,%d)-(%d,%d) is not centered in left panel (%d,%d)-(%d,%d)",
 			menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2)
 	}
 	menu.Close()
 	vtui.FrameManager.Pop()
+}
+
+// menuIsCenteredIn allows the half-cell that integer centring cannot avoid: a
+// menu whose height parity differs from the panel's can only sit one row above
+// or below the exact centre.
+func menuIsCenteredIn(menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2 int) bool {
+	offBy := func(menuLow, menuHigh, panelLow, panelHigh int) int {
+		delta := (menuLow + menuHigh) - (panelLow + panelHigh)
+		if delta < 0 {
+			return -delta
+		}
+		return delta
+	}
+	return offBy(menuX1, menuX2, panelX1, panelX2) <= 1 && offBy(menuY1, menuY2, panelY1, panelY2) <= 1
 }
 
 func TestPanelsFrame_RightClickPanelPathOpensDriveMenuForThatPanel(t *testing.T) {
@@ -4013,7 +4045,7 @@ func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 	pf.showDriveMenu(0)
 
 	top := vtui.FrameManager.GetTopFrame()
-	menu, ok := top.(*vtui.VMenu)
+	menu, ok := driveMenuFromFrame(top)
 	if !ok {
 		t.Fatal("Drive menu not opened")
 	}
@@ -4040,6 +4072,7 @@ func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 }
 
 func TestPanelsFrame_DriveMenu_TerminalBusy(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -4113,7 +4146,7 @@ func TestDriveMenu_SmartHotkeys(t *testing.T) {
 
 	pf.showDriveMenu(0)
 	top := vtui.FrameManager.GetTopFrame()
-	menu, ok := top.(*vtui.VMenu)
+	menu, ok := driveMenuFromFrame(top)
 	if !ok {
 		t.Fatalf("Expected VMenu on top, got %T", top)
 	}
@@ -4192,7 +4225,10 @@ func TestDriveMenu_PhysicalKeys(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 
 	pf.showDriveMenu(0)
-	menu := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	menu, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame())
+	if !ok {
+		t.Fatalf("Expected drive menu on top, got %T", vtui.FrameManager.GetTopFrame())
+	}
 
 	// Inject VK_OEM_3 (tilde/backtick key)
 	// It should find the Home item and trigger selection
@@ -4916,6 +4952,45 @@ func TestPanelsFrame_MouseForwarding_ToPTY(t *testing.T) {
 	}
 	if got := pty.String(); got != beforeMove {
 		t.Errorf("PTY received hover motion in normal tracking mode: got %q, want %q", got, beforeMove)
+	}
+}
+
+// Button-event tracking (1002) reports motion only while a button is held.
+// A GUI backend delivering hover motion for URL underlining (#459) must not
+// leak it into a TUI that asked for 1002 -- xterm would not send it either.
+func TestPanelsFrame_MouseForwarding_ButtonEventTracking(t *testing.T) {
+	pf := setupMockPanelsFrame(t)
+	pty := pf.pty.(*mockPty)
+	defer pf.Close()
+
+	pf.showPanels = false
+	pf.termView.MouseTrackingMode = 1002
+	pf.termView.MouseSGRMode = true
+
+	hover := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		MouseX:          12,
+		MouseY:          11,
+		MouseEventFlags: vtinput.MouseMoved,
+	}
+	before := pty.String()
+	pf.ProcessMouse(hover)
+	if got := pty.String(); got != before {
+		t.Errorf("PTY received hover motion in button-event tracking mode: got %q, want %q", got, before)
+	}
+
+	drag := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		MouseX:          12,
+		MouseY:          11,
+		MouseEventFlags: vtinput.MouseMoved,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+	}
+	if !pf.ProcessMouse(drag) {
+		t.Fatal("Button-event mouse tracking must capture drag motion")
+	}
+	if dragExpected := "\x1b[<32;13;12M"; !strings.Contains(pty.String(), dragExpected) {
+		t.Errorf("PTY did not receive expected drag sequence. Got: %q, want to contain: %q", pty.String(), dragExpected)
 	}
 }
 
@@ -6291,5 +6366,47 @@ func TestFilePanel_WheelScrollSpeed(t *testing.T) {
 	wheel(1) // up: 2 lines
 	if got := p.GetCursorIndex(); got != 1 {
 		t.Errorf("Expected cursor at 1 after wheel up, got %d", got)
+	}
+}
+
+func TestPanelsFrame_SyncPassivePanel(t *testing.T) {
+	scr := vtui.NewScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	tmpDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(tmpDir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := &PanelsFrame{}
+	lp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(sub))
+	rp := NewFileSystemPanel(40, 0, 40, 20, vfs.NewOSVFS(tmpDir))
+	pf.panels[0] = lp
+	pf.panels[1] = rp
+	pf.activeIdx = 0
+	defer pf.Close()
+
+	waitForLoad(t, lp)
+	waitForLoad(t, rp)
+
+	if !pf.syncPassivePanel() {
+		t.Fatal("syncPassivePanel returned false for a differing passive panel")
+	}
+	waitForLoad(t, rp)
+	if got, want := filepath.Clean(rp.vfs.GetPath()), filepath.Clean(sub); got != want {
+		t.Fatalf("passive panel path = %q, want %q", got, want)
+	}
+	if got, want := filepath.Clean(lp.vfs.GetPath()), filepath.Clean(sub); got != want {
+		t.Fatalf("active panel moved to %q, want %q", got, want)
+	}
+
+	// Already in sync: nothing to do.
+	if pf.syncPassivePanel() {
+		t.Fatal("syncPassivePanel should be a no-op when both panels show the same directory")
 	}
 }

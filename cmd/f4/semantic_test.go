@@ -1880,7 +1880,7 @@ func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
 		t.Fatalf("inactive drive click published activation/menu contract = %d/%d/%d, want 1/0/1",
 			renderer.calls, renderer.side, renderer.activationMenus)
 	}
-	if menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu); !ok {
+	if menu, _ := appFrameVMenu(vtui.FrameManager.GetTopFrame()); menu == nil {
 		t.Fatalf("drive menu action opened %T instead of VMenu",
 			vtui.FrameManager.GetTopFrame())
 	} else if menu.GetTitle() != Msg("Drive.Title") {
@@ -2903,9 +2903,8 @@ func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
 	if !HandleSemanticAction(map[string]any{
 		"action":    "menuBar.itemActivate",
 		"menuIndex": 0,
-		// The upstream action registry inserts Switch to Viewer between Save
-		// and Quit; semantic menu indices follow that generated order.
-		"index": 2,
+		// Save, Save As, Switch to Viewer, Quit follow registry order.
+		"index": 3,
 	}) {
 		t.Fatal("editor Exit menu item was not activated")
 	}

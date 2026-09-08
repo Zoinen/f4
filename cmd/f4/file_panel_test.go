@@ -1354,22 +1354,27 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 	fp.entries = []*fileEntry{
 		{VFSItem: vfs.VFSItem{Name: ".."}},
 		{VFSItem: vfs.VFSItem{Name: "file1.txt", Size: 1234567, IsDir: false}, Selected: true},
-		{VFSItem: vfs.VFSItem{Name: "folder1", IsDir: true}, Selected: true},
+		{VFSItem: vfs.VFSItem{Name: "folder1", Size: 200, IsDir: true}, SizeCalculated: true, Selected: true},
 		{VFSItem: vfs.VFSItem{Name: "file2.txt", Size: 50, IsDir: false}, Selected: false},
 	}
 	fp.Refresh()
 
 	fp.Show(scr)
 
-	// Verify that the color of the bottom bar is ColPanelSelectedInfo when items are selected
-	cell := scr.GetCell(40, 23)
+	// With the status line on, the selection summary is drawn on the
+	// separator above it (#394) while the panel total keeps the bottom
+	// border, so the two never overlap.
+	cell := scr.GetCell(40, 21)
 	if cell.Attributes != vtui.Palette[ColPanelSelectedInfo] {
 		t.Errorf("Expected Selected Info color %X, got %X", vtui.Palette[ColPanelSelectedInfo], cell.Attributes)
+	}
+	if cell = scr.GetCell(40, 23); cell.Attributes != vtui.Palette[ColPanelTotalInfo] {
+		t.Errorf("Expected Total Info color %X on the bottom border, got %X", vtui.Palette[ColPanelTotalInfo], cell.Attributes)
 	}
 
 	var sb strings.Builder
 	for x := 0; x < 80; x++ {
-		cell := scr.GetCell(x, 23)
+		cell := scr.GetCell(x, 21)
 		if cell.Char != 0 && cell.Char != ' ' {
 			if _, err := sb.WriteRune(vtui.CellBaseRune(cell.Char)); err != nil {
 				t.Fatal(err)
@@ -1378,7 +1383,7 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 	}
 
 	result := sb.String()
-	expectedBytes := "1234567"
+	expectedBytes := "1234767"
 	if !strings.Contains(result, "Bytes:") || !strings.Contains(result, expectedBytes) {
 		t.Errorf("Expected bottom bar to contain formatted bytes %q, got: %q", expectedBytes, result)
 	}
@@ -1387,6 +1392,28 @@ func TestFileSystemPanel_SelectedInfo(t *testing.T) {
 	}
 	if !strings.Contains(result, "folders:1") {
 		t.Errorf("Expected bottom bar to contain 'folders:1', got: %q", result)
+	}
+
+	var status strings.Builder
+	for x := 0; x < 80; x++ {
+		cell := scr.GetCell(x, 22)
+		if cell.Char != 0 && cell.Char != ' ' {
+			if _, err := status.WriteRune(vtui.CellBaseRune(cell.Char)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	statusResult := status.String()
+	if !strings.Contains(statusResult, "(2/1)") {
+		t.Errorf("Expected status line to contain file/directory counts, got: %q", statusResult)
+	}
+	info, ok := fsInfo(fp.vfs.GetPath())
+	if !ok {
+		t.Fatal("fsInfo failed for the local test directory")
+	}
+	freeSpace := strings.ReplaceAll(formatBytes(info.Free), " ", "")
+	if !strings.Contains(statusResult, freeSpace) {
+		t.Errorf("Expected status line to contain free space %q, got: %q", freeSpace, statusResult)
 	}
 
 	// Hiding the separate file-information line must not hide the selection
@@ -3057,6 +3084,55 @@ func TestFileSystemPanel_GetSuccessorName(t *testing.T) {
 		t.Errorf("Case 5 failed: expected '..', got %q", res)
 	}
 }
+
+func TestFileSystemPanel_GetPredecessorName(t *testing.T) {
+	fp := &FileSystemPanel{}
+
+	setupEntries := func(names ...string) {
+		fp.cursorIdx = 0
+		fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+		for _, n := range names {
+			fp.entries = append(fp.entries, &fileEntry{VFSItem: vfs.VFSItem{Name: n}})
+		}
+	}
+
+	// A single removal normally moves the cursor to the item above it.
+	setupEntries("A", "B", "C")
+	fp.cursorIdx = 2 // B
+	if res := fp.GetPredecessorName(); res != "A" {
+		t.Errorf("middle item: expected 'A', got %q", res)
+	}
+
+	// At the first item there is no predecessor, so keep the cursor on the
+	// first item that will remain after the removal.
+	setupEntries("A", "B")
+	fp.cursorIdx = 1 // A
+	if res := fp.GetPredecessorName(); res != "B" {
+		t.Errorf("first item: expected 'B', got %q", res)
+	}
+
+	// The same rule applies to a selected range: use the row before its first
+	// member, then fall back to the first remaining row.
+	setupEntries("A", "B", "C", "D")
+	fp.entries[2].Selected = true // B
+	fp.entries[3].Selected = true // C
+	if res := fp.GetPredecessorName(); res != "A" {
+		t.Errorf("selected range: expected 'A', got %q", res)
+	}
+
+	setupEntries("A", "B", "C")
+	fp.entries[1].Selected = true // A
+	fp.entries[2].Selected = true // B
+	if res := fp.GetPredecessorName(); res != "C" {
+		t.Errorf("selected range at start: expected 'C', got %q", res)
+	}
+
+	setupEntries()
+	if res := fp.GetPredecessorName(); res != ".." {
+		t.Errorf("empty list: expected '..', got %q", res)
+	}
+}
+
 func TestGetSelectedNames_ParentSafety(t *testing.T) {
 	fp := &FileSystemPanel{}
 	// Setup entries: 0: "..", 1: "file.txt"
@@ -5390,6 +5466,47 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	}
 	if got := entryDir.displayName(entryDir.Name); !strings.Contains(got, "→") {
 		t.Errorf("Symlink dir displayName = %q, want it to contain '→'", got)
+	}
+}
+
+func TestFileSystemPanel_SymlinkTargetReplacesStatusSize(t *testing.T) {
+	oldCfg := AppConfig
+	defer func() { AppConfig = oldCfg }()
+	AppConfig.ShowPanelFileInfo = true
+
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 25)
+	vtui.FrameManager.Init(scr)
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.txt")
+	link := filepath.Join(tmp, "link.txt")
+	if err := os.WriteFile(target, []byte("target"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target.txt", link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	fp := NewFileSystemPanel(0, 0, 90, 20, vfs.NewOSVFS(tmp))
+	waitForLoad(t, fp)
+	fp.entries = []*fileEntry{{VFSItem: vfs.VFSItem{Name: "link.txt", IsSymlink: true}}}
+	fp.isLoading = false
+	if fp.loadingTimer != nil {
+		fp.loadingTimer.Stop()
+	}
+	fp.Refresh()
+	fp.SetCursorIndex(0)
+	fp.Show(scr)
+
+	status := ScreenRow(scr, fp.Y2-1, fp.X1, fp.X2)
+	if !strings.Contains(status, "→ target.txt") {
+		t.Fatalf("symlink status = %q, want target in place of the link marker", status)
+	}
+	if strings.Contains(status, "<LNK") {
+		t.Fatalf("symlink status still contains a link-size placeholder: %q", status)
 	}
 }
 

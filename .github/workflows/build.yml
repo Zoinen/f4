@@ -189,6 +189,7 @@ jobs:
         # Build GUI-only binary for Windows (no console flash)
         if [ "$GOOS" = "windows" ]; then
           go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$APP_LDFLAGS -H windowsgui" -o build/f4-gui$EXT ./cmd/f4
+
         fi
 
         # Copy language and help assets
@@ -1177,7 +1178,11 @@ jobs:
         Homepage: https://github.com/unxed/f4
         Description: efficient and cozy two-panel file manager
         EOF
-        dpkg-deb --build --root-owner-group "$DEB" "$ASSET.deb"
+        # -Zxz: apt in Termux reads only control.tar{.zst,.lz4,.xz,.lzma,} and
+        # rejects the zstd member dpkg-deb writes by default with "Could not
+        # read meta data", which leaves `pkg install ./file.deb` broken. Only
+        # `dpkg -i` takes the default.
+        dpkg-deb -Zxz --build --root-owner-group "$DEB" "$ASSET.deb"
         dpkg-deb --info "$ASSET.deb"
         dpkg-deb --contents "$ASSET.deb"
 
@@ -1661,7 +1666,7 @@ jobs:
       # the isolated TestAllDialogs_LayoutValidation pass a second time.
       # The first regex also covers an exact "Test" name; the negated class
       # puts every other non-standard Test* suffix in the second shard.
-      matrix: ${{ github.event_name == 'pull_request' && fromJSON('{"include":[{"os":"ubuntu-latest","target":"linux/amd64"},{"os":"ubuntu-24.04-arm","target":"linux/arm64"},{"os":"macos-latest","target":"darwin/arm64","shard":"A-D","run":"^Test([A-D]|$)"},{"os":"macos-latest","target":"darwin/arm64","shard":"rest","run":"^Test[^A-D]"},{"os":"windows-latest","target":"windows/amd64","shard":"A-D","run":"^Test([A-D]|$)"},{"os":"windows-latest","target":"windows/amd64","shard":"rest","run":"^Test[^A-D]"}]}') || fromJSON('{"include":[{"os":"ubuntu-latest","target":"linux/amd64"},{"os":"ubuntu-24.04-arm","target":"linux/arm64"},{"os":"macos-latest","target":"darwin/arm64","shard":"A-D","run":"^Test([A-D]|$)"},{"os":"macos-latest","target":"darwin/arm64","shard":"rest","run":"^Test[^A-D]"},{"os":"macos-15-intel","target":"darwin/amd64"},{"os":"windows-latest","target":"windows/amd64","shard":"A-D","run":"^Test([A-D]|$)"},{"os":"windows-latest","target":"windows/amd64","shard":"rest","run":"^Test[^A-D]"},{"os":"windows-11-arm","target":"windows/arm64"}]}') }}
+      matrix: ${{ github.event_name == 'pull_request' && fromJSON('{"include":[{"os":"ubuntu-latest","target":"linux/amd64","cover":"linux"},{"os":"ubuntu-24.04-arm","target":"linux/arm64"},{"os":"macos-latest","target":"darwin/arm64","shard":"A-D","run":"^Test([A-D]|$)","cover":"macos"},{"os":"macos-latest","target":"darwin/arm64","shard":"rest","run":"^Test[^A-D]","cover":"macos"},{"os":"windows-latest","target":"windows/amd64","shard":"A-D","run":"^Test([A-D]|$)","cover":"windows"},{"os":"windows-latest","target":"windows/amd64","shard":"rest","run":"^Test[^A-D]","cover":"windows"}]}') || fromJSON('{"include":[{"os":"ubuntu-latest","target":"linux/amd64","cover":"linux"},{"os":"ubuntu-24.04-arm","target":"linux/arm64"},{"os":"macos-latest","target":"darwin/arm64","shard":"A-D","run":"^Test([A-D]|$)","cover":"macos"},{"os":"macos-latest","target":"darwin/arm64","shard":"rest","run":"^Test[^A-D]","cover":"macos"},{"os":"macos-15-intel","target":"darwin/amd64"},{"os":"windows-latest","target":"windows/amd64","shard":"A-D","run":"^Test([A-D]|$)","cover":"windows"},{"os":"windows-latest","target":"windows/amd64","shard":"rest","run":"^Test[^A-D]","cover":"windows"},{"os":"windows-11-arm","target":"windows/arm64"}]}') }}
     env:
       CGO_ENABLED: 0
       TEST_SHUFFLE: ${{ inputs.shuffle || 'on' }}
@@ -1670,6 +1675,26 @@ jobs:
       uses: actions/checkout@v7
       with:
         submodules: recursive
+
+    - name: Install the bundled ConPTY for native Windows tests
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $runtime = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+        $url = 'https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
+        $expected = '05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692'
+        $package = Join-Path $env:RUNNER_TEMP 'Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
+        $zip = "$package.zip"
+        & curl.exe -fL --retry 5 --retry-delay 10 --retry-all-errors -o $package $url
+        if ((Get-FileHash -Algorithm SHA256 $package).Hash -ne $expected.ToUpperInvariant()) {
+          throw "ConPTY package SHA-256 mismatch"
+        }
+        Copy-Item $package $zip -Force
+        $extract = Join-Path $env:RUNNER_TEMP 'conpty-package'
+        Expand-Archive -Path $zip -DestinationPath $extract -Force
+        Copy-Item (Join-Path $extract "runtimes/win-$runtime/native/conpty.dll") 'cmd/f4/conpty.dll' -Force
+        Copy-Item (Join-Path $extract "build/native/runtimes/$runtime/OpenConsole.exe") 'cmd/f4/OpenConsole.exe' -Force
+        Get-Item cmd/f4/conpty.dll, cmd/f4/OpenConsole.exe | Format-Table Name,Length
 
     - name: Move Go caches to the fast disk (Windows)
       # C: is the OS disk and glacial at unpacking the ~650 MB Go cache --
@@ -1707,6 +1732,10 @@ jobs:
       env:
         AFFECTED: ${{ steps.affected.outputs.packages }}
         RUN_FILTER: ${{ matrix.run || '' }}
+        # Coverage is collected on one Linux cell and both shards of each
+        # split desktop cell. Reusing an OS flag lets Codecov combine the two
+        # shard profiles without spending another full test matrix.
+        COVER: ${{ matrix.cover && '-coverpkg=./... -coverprofile=cover.out' || '' }}
       run: |
         # Pull requests test only the packages their diff reaches through
         # the import graph (see the affected-packages action); pushes, tags
@@ -1730,7 +1759,11 @@ jobs:
         if [ -n "$RUN_FILTER" ]; then
           run_args=(-run "$RUN_FILTER")
         fi
-        go test -shuffle="$TEST_SHUFFLE" -timeout 15m -skip '^TestAllDialogs_LayoutValidation$' "${run_args[@]}" "${targets[@]}"
+        cover_args=()
+        if [ -n "$COVER" ]; then
+          read -r -a cover_args <<< "$COVER"
+        fi
+        go test "${cover_args[@]}" -shuffle="$TEST_SHUFFLE" -timeout 15m -skip '^TestAllDialogs_LayoutValidation$' "${run_args[@]}" "${targets[@]}"
         # Layout validation mutates shared UI registries from parallel
         # subtests. Go 1.26 schedules them aggressively enough to expose the
         # upstream race, so isolate that test in a single-threaded process.
@@ -1740,6 +1773,21 @@ jobs:
               GOMAXPROCS=1 go test -timeout 15m -run '^TestAllDialogs_LayoutValidation$' ./cmd/f4 ;;
           esac
         fi
+
+    - name: Upload coverage to Codecov
+      if: matrix.cover && hashFiles('cover.out') != ''
+      uses: codecov/codecov-action@v7
+      with:
+        files: cover.out
+        # Without this the uploader also sweeps the tree for anything that
+        # looks like a report and picks up cmd/f4/lang/coverage_baseline.txt,
+        # which counts translation keys, not statements.
+        disable_search: true
+        flags: ${{ matrix.cover }}
+        token: ${{ secrets.CODECOV_TOKEN }}
+        # Coverage is a report, not a gate: a failed upload (or a repository
+        # with no token yet) must not turn the test run red.
+        fail_ci_if_error: false
 
     - name: Dump crash reports on failure
       if: failure()
@@ -2053,10 +2101,25 @@ jobs:
         path: dist
         merge-multiple: true
 
-    # Updating an existing release changes its assets and body but keeps its
-    # original published_at, so a long-lived nightly release stays near the
-    # bottom of the Releases page. Recreate only the release to publish it at
-    # the top again; deliberately keep the floating nightly tag in place.
+    # The Releases page is sorted by each release's created_at, and GitHub
+    # sets that to the date of the tagged commit, not to the moment the
+    # release was created or last edited. Recreating the release alone
+    # therefore changes nothing while the nightly tag keeps pointing at the
+    # commit that introduced it: the nightly stays pinned below every stable
+    # release. Move the tag to the commit being built first, so the recreated
+    # release inherits the newest commit date on main and sorts above every
+    # v* tag on older commits. The push trigger only matches v*.*.* tags,
+    # so pushing nightly does not start another run.
+    - name: Move Nightly Tag to HEAD
+      run: |
+        set -euo pipefail
+        git tag -f nightly HEAD
+        git push -f origin refs/tags/nightly
+
+    # created_at is fixed when the release object is created and does not
+    # follow the tag afterwards, so an update in place would keep the old
+    # date. Delete and recreate the release; the tag stays where the step
+    # above put it.
     - name: Refresh Nightly Release Position
       env:
         GH_TOKEN: ${{ github.token }}

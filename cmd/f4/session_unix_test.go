@@ -233,3 +233,30 @@ func TestWatchdog_DetectsClientDisconnect(t *testing.T) {
 		t.Fatalf("watchdog failed to detect closed read end: revents = %x", pfds[0].Revents)
 	}
 }
+
+// A client that has just attached is a terminal the daemon has never spoken
+// to: whatever the previous client acknowledged says nothing about this one,
+// so the far2l state is dropped before the protocols are announced again
+// (#922).
+func TestAdoptClientTerminal_ForgetsFar2lNegotiation(t *testing.T) {
+	calls := 0
+	oldReset := resetFar2lNegotiation
+	resetFar2lNegotiation = func() { calls++ }
+	t.Cleanup(func() { resetFar2lNegotiation = oldReset })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		r.Close()
+		w.Close()
+	})
+
+	if restore := adoptClientTerminal(r); restore != nil {
+		t.Error("a pipe has no raw mode to restore")
+	}
+	if calls != 1 {
+		t.Fatalf("far2l negotiation was forgotten %d times, want once", calls)
+	}
+}

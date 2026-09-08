@@ -76,4 +76,16 @@ const (
 	// Appended to preserve numeric values of existing public commands.
 	CmLeftGallery
 	CmRightGallery
+	// CmDriveBookmarksHeader marks the non-selectable section caption in the
+	// drive menu. It is kept separate from empty folder-bookmark rows so the
+	// two menus can be shown in any order.
+	CmDriveBookmarksHeader
+	// Sort-group toggles are appended here rather than next to the other sort
+	// commands so the existing command numbers keep their values.
+	CmSortGroups
+	CmLeftSortGroups
+	CmRightSortGroups
+	// Appended for the same reason: opening the terminal in a workspace of
+	// its own is new, and the commands above keep the numbers they had.
+	CmWorkspaceNewTerminal
 )

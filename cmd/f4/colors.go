@@ -47,6 +47,7 @@ const (
 	ColViewerScrollbar
 
 	ColEditorText
+	ColEditorOccurrence
 	ColEditorCrosshair
 	ColEditorStatus
 	ColEditorScrollbar
@@ -121,6 +122,9 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColViewerScrollbar] = vtui.SetIndexBoth(0, 8, 0)
 
 	vtui.Palette[ColEditorText] = vtui.SetIndexBoth(0, 7, 0)
+	// Other occurrences of the selected text: readable, but clearly a
+	// weaker mark than the selection itself (black on light grey).
+	vtui.Palette[ColEditorOccurrence] = vtui.SetRGBBoth(0, 0x2E3436, 0xC4A000)
 	vtui.Palette[ColEditorCrosshair] = vtui.SetRGBBoth(0, 0xD3D7CF, 0x222222)
 	vtui.Palette[ColEditorStatus] = vtui.Palette[ColViewerStatus]
 	vtui.Palette[ColEditorScrollbar] = vtui.Palette[ColPanelScrollbar]
@@ -136,6 +140,7 @@ type ColorSlot struct {
 
 var ColorGroups = []string{
 	"Panel",
+	"Lists and tables",
 	"Dialog",
 	"Warning message",
 	"Menu",
@@ -185,12 +190,19 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "Panel.Tabs.Active", Index: ColPanelWorkspaceTabsActive, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsActive"},
 	{Canonical: "Panel.Tabs.Accent", Index: ColPanelWorkspaceTabsAccent, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsAccent"},
 	{Canonical: "Panel.Tabs.Attention", Index: ColPanelWorkspaceTabsAttention, Group: "Panel", ConstantName: "ColPanelWorkspaceTabsAttention"},
-	// Table.Box is the separator/tree-line attribute used by generic tables;
-	// it is not the outer frame of a panel or dialog.
-	{Canonical: "Table.Box", Index: vtui.ColTableBox, Group: "Panel", ConstantName: "ColTableBox"},
-	// Scrollbar is the shared fallback for list and menu scrollbars. Widgets
-	// with their own semantic palette slot override it explicitly.
-	{Canonical: "Scrollbar", Index: vtui.ColScrollBar, Group: "Panel", ConstantName: "ColScrollBar"},
+
+	// Lists and tables Group: the generic widgets that belong to neither a
+	// panel nor a dialog, such as the find results list.
+	//
+	// Table.Separator is the column separator drawn between table columns. It
+	// used to be called Table.Box and also carried the tree lines of a tree
+	// view, which is why one key appeared to control unrelated elements; the
+	// tree lines now sit in a vtui slot of their own.
+	{Canonical: "Table.Separator", Index: vtui.ColTableBox, Group: "Lists and tables", ConstantName: "ColTableBox", Aliases: []string{"Table.Box"}},
+	// Scrollbar is the fallback for the scrollbars that have no semantic slot
+	// of their own: generic lists and menus. Panel, Viewer, Editor, Help and
+	// combo dropdowns all carry their own key and never read this one.
+	{Canonical: "Scrollbar", Index: vtui.ColScrollBar, Group: "Lists and tables", ConstantName: "ColScrollBar"},
 
 	// Dialog Group
 	{Canonical: "Dialog.Text", Index: vtui.ColDialogText, Group: "Dialog", ConstantName: "ColDialogText"},
@@ -247,6 +259,7 @@ var ColorSlots = []ColorSlot{
 
 	// Editor Group
 	{Canonical: "Editor.Text", Index: ColEditorText, Group: "Editor", ConstantName: "ColEditorText"},
+	{Canonical: "Editor.Occurrence", Index: ColEditorOccurrence, Group: "Editor", ConstantName: "ColEditorOccurrence", Aliases: []string{"Editor.Text.Occurrence"}},
 	{Canonical: "Editor.Scrollbar", Index: ColEditorScrollbar, Group: "Editor", ConstantName: "ColEditorScrollbar"},
 	{Canonical: "Editor.Status", Index: ColEditorStatus, Group: "Editor", ConstantName: "ColEditorStatus"},
 
@@ -257,6 +270,7 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "Help.Topic.Selected", Index: vtui.ColHelpSelectedLink, Group: "Help", ConstantName: "ColHelpSelectedLink", Aliases: []string{"Help.SelectedLink"}},
 	{Canonical: "Help.Box", Index: vtui.ColHelpBox, Group: "Help", ConstantName: "ColHelpBox"},
 	{Canonical: "Help.Box.Title", Index: vtui.ColHelpBoxTitle, Group: "Help", ConstantName: "ColHelpBoxTitle"},
+	{Canonical: "Help.Scrollbar", Index: vtui.ColHelpScrollbar, Group: "Help", ConstantName: "ColHelpScrollbar"},
 }
 
 // colorMap links farcolors.ini keys to vtui.Palette indices dynamically.
@@ -358,9 +372,10 @@ func ExportColors(path string) error {
 
 	for _, group := range ColorGroups {
 		fmt.Fprintf(&sb, "\n# %s\n", group)
-		if group == "Panel" {
-			sb.WriteString("# Table.Box colors table column separators and tree lines, not the outer frame.\n")
-			sb.WriteString("# Scrollbar is the shared fallback for generic lists and menus.\n")
+		if group == "Lists and tables" {
+			sb.WriteString("# Table.Separator colors the column separators of a table, not the outer frame.\n")
+			sb.WriteString("# Scrollbar is the shared fallback for generic lists and menus; panels, the\n")
+			sb.WriteString("# viewer, the editor, help and combo dropdowns have scrollbar keys of their own.\n")
 		}
 		var slots []ColorSlot
 		for _, slot := range ColorSlots {

@@ -58,7 +58,7 @@ func handleTranslatorMouseEvent(e *vtinput.InputEvent) bool {
 		return false
 	}
 
-	vtui.SetClipboard(formatTranslatorReport(target))
+	setF4Clipboard(formatTranslatorReport(target))
 	vtui.ShowToast("Translator info copied to clipboard", 3*time.Second)
 	return true
 }

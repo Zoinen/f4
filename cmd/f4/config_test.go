@@ -485,6 +485,53 @@ func TestConfig_PanelFileInfoDefaultsHiddenWhenKeyIsAbsent(t *testing.T) {
 	}
 }
 
+func TestCreateDefaultHighlightIniDocumentsColorOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "highlight.ini")
+	createDefaultHighlightIni(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, key := range []string{
+		"# [Highlight_100]",
+		"# NormalColor =",
+		"# SelectedColor =",
+		"# CursorColor =",
+		"# SelectedCursorColor =",
+		"NormalColorUnderCursor",
+		"SelectedColorUnderCursor",
+		// Far Manager spellings of the same four colors, and the folder
+		// example that shows why a rule needs an attribute of its own.
+		"# NormalFileName =",
+		"# SelectedFileName =",
+		"# FileNameUnderCursor =",
+		"# FileNameSelectedUnderCursor =",
+		"# IncludeAttributes = Directory",
+	} {
+		if !strings.Contains(content, key) {
+			t.Errorf("generated highlight.ini is missing documented %q", key)
+		}
+	}
+
+	// The ordinary colors take a background just like the cursor ones, and the
+	// example is the only place a reader sees that (#912).
+	for _, key := range []string{"# NormalColor = ", "# SelectedColor = "} {
+		idx := strings.Index(content, key)
+		if idx < 0 {
+			continue
+		}
+		line := content[idx:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		if !strings.Contains(line, "background:") {
+			t.Errorf("example %q shows no background: %s", key, line)
+		}
+	}
+}
+
 func TestConfig_ApplyCommandParallelismDefaultsToLogicalCPUs(t *testing.T) {
 	tmpDir := t.TempDir()
 	userIniPath := filepath.Join(tmpDir, "settings.ini")

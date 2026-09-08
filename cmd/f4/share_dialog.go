@@ -710,7 +710,7 @@ func (d *shareLinkDialog) copyLinkToClipboard(link string) {
 		if current {
 			setClipboard := d.setClipboard
 			if setClipboard == nil {
-				setClipboard = vtui.SetClipboard
+				setClipboard = setF4Clipboard
 			}
 			setClipboard(link)
 		}

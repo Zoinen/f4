@@ -110,3 +110,62 @@ func TestSetClipboard_TruncatesOversizedTextInGUIMode(t *testing.T) {
 		t.Errorf("stored %d bytes, want the %d byte cap", got, limit)
 	}
 }
+
+// A window suppresses the OSC 52 fallback only where the escape cannot help:
+// with an OS clipboard driver the fallback is never reached anyway, and with
+// no terminal on standard output it goes nowhere. The remaining case -- a
+// window with no clipboard helper, started from a terminal -- keeps it, and
+// that is the case a Wayland session with no wl-copy actually lives in.
+func TestWindowSuppressesTerminalClipboard(t *testing.T) {
+	cases := []struct {
+		name      string
+		osDriver  bool
+		stdoutTTY bool
+		want      bool
+	}{
+		{name: "driver and a terminal: the fallback is never reached", osDriver: true, stdoutTTY: true, want: true},
+		{name: "driver, no terminal", osDriver: true, want: true},
+		{name: "no driver, no terminal: the escape goes nowhere", want: true},
+		{name: "no driver but a terminal: the escape still works", stdoutTTY: true, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := windowSuppressesTerminalClipboard(tc.osDriver, tc.stdoutTTY); got != tc.want {
+				t.Fatalf("windowSuppressesTerminalClipboard(%v, %v) = %v, want %v", tc.osDriver, tc.stdoutTTY, got, tc.want)
+			}
+		})
+	}
+}
+
+// Every GUI host has to go through UseWindowClipboard, and three of them used
+// to reach for DisableTerminalClipboard directly while gogpu, X11 and Wayland
+// did nothing at all.
+//
+// The check reads the sources because the hosts themselves cannot run here:
+// each one needs a display, a GPU stack or a compositor. A new backend is not
+// covered until it is added to this list, which is the point at which someone
+// has to think about the question.
+func TestGUIHostsGoThroughUseWindowClipboard(t *testing.T) {
+	hosts := []string{
+		"ebiten_host.go",
+		"gogpu_host.go",
+		"wayland_host.go",
+		"win32_gui_windows.go",
+		"x11_host.go",
+	}
+
+	for _, name := range hosts {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(src)
+		if !strings.Contains(text, "UseWindowClipboard()") {
+			t.Errorf("%s never calls UseWindowClipboard: nothing decides what its window does with OSC 52", name)
+		}
+		if strings.Contains(text, "DisableTerminalClipboard()") {
+			t.Errorf("%s disables the fallback itself instead of letting UseWindowClipboard judge it", name)
+		}
+	}
+}

@@ -216,6 +216,7 @@ func actionPortableSettings(pf *PanelsFrame) {
 	width, height := 70, 14
 	dlg := vtui.NewCenteredDialog(width, height, Msg("PortableSettings.Title"))
 	dlg.ShowClose = true
+	dlg.SetHelp("PortableSettings")
 
 	chkPortable := vtui.NewCheckbox(0, 0, Msg("PortableSettings.Enable"), false)
 	if wasPortable {

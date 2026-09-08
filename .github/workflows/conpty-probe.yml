@@ -43,22 +43,23 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch a post-rewrite ConPTY from a Windows Terminal release
+      - name: Fetch the ConPTY pair shipped with f4
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path probe-out, conpty | Out-Null
-          $tag = gh release list --repo microsoft/terminal --limit 60 --json tagName `
-                 | ConvertFrom-Json `
-                 | Where-Object { $_.tagName -match '^v1\.(2[2-9]|[3-9][0-9])\.' } `
-                 | Select-Object -First 1 -ExpandProperty tagName
-          if (-not $tag) { throw "no release >= v1.22 found" }
+          $tag = 'v1.25.1912.0'
+          $asset = 'Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
+          $expected = '05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692'
           "release: $tag" | Tee-Object -FilePath probe-out/bundle.txt
-          gh release download $tag --repo microsoft/terminal --pattern "*ConPTY*.nupkg" --dir dl
-          $pkg = Get-ChildItem dl -Filter *.nupkg | Select-Object -First 1
-          if (-not $pkg) { throw "no ConPTY nupkg asset in $tag" }
-          "package: $($pkg.Name)" | Tee-Object -FilePath probe-out/bundle.txt -Append
-          Copy-Item $pkg.FullName dl/pkg.zip
+          "package: $asset" | Tee-Object -FilePath probe-out/bundle.txt -Append
+          gh release download $tag --repo microsoft/terminal --pattern $asset --dir dl
+          $pkg = Join-Path 'dl' $asset
+          if (-not (Test-Path $pkg)) { throw "ConPTY package was not downloaded" }
+          if ((Get-FileHash -Algorithm SHA256 $pkg).Hash -ne $expected.ToUpperInvariant()) {
+            throw "ConPTY package SHA-256 mismatch"
+          }
+          Copy-Item $pkg dl/pkg.zip
           Expand-Archive dl/pkg.zip -DestinationPath dl/pkg -Force
           Get-ChildItem dl/pkg -Recurse -File | ForEach-Object {
             $_.FullName.Substring((Resolve-Path dl/pkg).Path.Length + 1)

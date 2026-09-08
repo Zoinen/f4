@@ -17,7 +17,88 @@ import (
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
+	"golang.org/x/term"
 )
+
+// startupDirEnv and startupDirRightEnv carry the panel directories of this
+// start to the process that draws them. That process cannot work them out
+// itself: the GUI restarts detached, the daemon is spawned by the client, and a
+// Dock start would answer with the bundle's own directory. The right-hand one
+// is set only when the command line named a directory, which is also what tells
+// the panels that the left one was asked for rather than merely inherited.
+const (
+	startupDirEnv      = "F4_STARTUP_DIR"
+	startupDirRightEnv = "F4_STARTUP_DIR_RIGHT"
+)
+
+// startupDirsFor resolves what `f4`, `f4 dir` and `f4 dir1 dir2` mean, in the
+// order the panels are drawn: left first. One directory leaves the right panel
+// in the current one, matching mc. Relative paths are resolved here, while cwd
+// is still the shell's; a third argument and beyond has no panel to go to.
+func startupDirsFor(cwd string, args []string) (left, right string) {
+	abs := func(path string) string {
+		if filepath.IsAbs(path) {
+			return filepath.Clean(path)
+		}
+		return filepath.Join(cwd, path)
+	}
+	switch len(args) {
+	case 0:
+		return cwd, ""
+	case 1:
+		return abs(args[0]), cwd
+	default:
+		return abs(args[0]), abs(args[1])
+	}
+}
+
+// startupDirArgs picks the panel directories out of a command line: the words
+// before the first switch, plus everything after a "--" separator. --gui and
+// --tty take their backend as a separate word, so a word after a switch could
+// be either that backend or a directory; f4 does not guess between them.
+func startupDirArgs(args []string) []string {
+	var dirs []string
+	beforeSwitches := true
+	for i, arg := range args {
+		switch {
+		case arg == "--":
+			return append(dirs, args[i+1:]...)
+		case strings.HasPrefix(arg, "-"):
+			beforeSwitches = false
+		case beforeSwitches:
+			dirs = append(dirs, arg)
+		}
+	}
+	return dirs
+}
+
+// rememberStartupDirs records those directories, but only for a start from a
+// terminal. It must run before checkAndDetach and before the daemon is spawned:
+// both hand the next process /dev/null on stdin. Values inherited from the
+// parent win, they are the answer that process already worked out.
+func rememberStartupDirs(args []string) {
+	if os.Getenv(startupDirEnv) != "" {
+		return
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	left, right := startupDirsFor(cwd, args)
+	_ = os.Setenv(startupDirEnv, left)
+	if right != "" {
+		_ = os.Setenv(startupDirRightEnv, right)
+	}
+}
+
+// startupDirs are those directories; an empty left one means the panels keep
+// the restored paths, and an empty right one means both take the left.
+func startupDirs() (left, right string) {
+	return os.Getenv(startupDirEnv), os.Getenv(startupDirRightEnv)
+}
 
 // SelectedTTYBackend holds the user-chosen or auto-detected console renderer name ("ansi" or "winapi").
 var SelectedTTYBackend string
@@ -209,6 +290,8 @@ func main() {
 	var attachedMode bool
 	var wineProbe bool
 	var dumpScreenAfter float64
+	var updateRequested bool
+	var updateChannelArg string
 
 	exeName := filepath.Base(absExecPath)
 	if strings.Contains(strings.ToLower(exeName), "gui") {
@@ -234,7 +317,15 @@ func main() {
 			version = true
 		case "--debug":
 			os.Setenv("VTUI_DEBUG", "1")
-		case "--gui":
+		case "--update":
+			updateRequested = true
+			if flagVal != "" {
+				updateChannelArg = flagVal
+			} else if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
+				updateChannelArg = os.Args[i+1]
+				i++
+			}
+		case "-gui", "--gui":
 			guiMode = true
 			startupChoiceGiven = true
 			if flagVal != "" {
@@ -348,6 +439,7 @@ func main() {
 			}
 		}
 	}
+	rememberStartupDirs(startupDirArgs(os.Args[1:]))
 	configureF4DebugLogPath(GetF4ConfigDir())
 
 	if version {
@@ -357,7 +449,10 @@ func main() {
 	if print_help {
 		fmt.Printf(`f4 version: %s
 f4 is efficient and cozy two-panel file manager in go
-Usage: f4 [switches]
+Usage: f4 [folder1 [folder2]] [switches]
+Folders come before the switches, or after a "--" separator. Without them both
+panels open the current directory; folder1 alone opens in the left panel and
+leaves the right one on the current directory.
 The following switches may be used in the command line:
  -h, -?, --help         This help and exit
  -v, --version          Displays the current version and exit
@@ -372,7 +467,7 @@ The following switches may be used in the command line:
  -e [filename]          Open filename directly in the editor on startup
                          (far2l-compatible; useful for scripted/headless
                          testing where interactive navigation is unreliable)
- --gui [Backend]        Force run in GUI-mode
+ -gui, --gui [Backend]  Force run in GUI-mode
                          [Backend] values: "win32" (or "winapi", "gdi"),
                          "gogpu", "ebiten", "x11", "wayland", "auto",
                          if Backend omited, the configured default is used
@@ -389,6 +484,11 @@ The following switches may be used in the command line:
                          [Backend] values: "ansi", "winapi" (or "win32"),
                          "auto"; if Backend omited, the configured default
                          is used ([Startup] TTYBackend)
+ --update [Channel]     Download and install the newest build, then exit;
+                         [Channel] values: "stable" (or "latest"), "nightly";
+                         if Channel omited, the configured update channel is
+                         used ([Update] Channel, Options > Auto update), and
+                         a named channel becomes the configured one
  --wine-probe           Print console/terminal environment facts and exit
                          (renderer backend, console geometry, shell mode)
 
@@ -409,6 +509,13 @@ see in vtinput project: https://github.com/unxed/vtinput
 `,
 			getFormattedVersionInfo())
 		return
+	}
+
+	// Updating is a command, not a way to start the file manager: no panels
+	// and no session come up here. os.Exit skips the deferred SaveSession on
+	// purpose, this run never touched the session.
+	if updateRequested {
+		os.Exit(runUpdateCLI(updateChannelArg))
 	}
 
 	for _, arg := range os.Args {
@@ -536,6 +643,13 @@ func shouldTryGui() bool {
 	if runtime.GOOS == "windows" {
 		// On native Windows, we compile separate binaries for console (f4.exe) and GUI (f4-gui.exe).
 		// We do not auto-detect GUI mode; it must be requested via filename or --gui flag.
+		return false
+	}
+	// A terminal launch must stay in console mode even when the shell has a
+	// display environment (for example, an SSH session into a desktop or a
+	// terminal opened under X11). The desktop launcher has no host TTY and can
+	// still select the GUI from the display variables below.
+	if probeHostTTY() {
 		return false
 	}
 	if runtime.GOOS == "darwin" {
@@ -689,6 +803,9 @@ func SetupUI() {
 	if _, err := os.Stat(highlightPath); err == nil {
 		highlightIni := LoadIni(highlightPath)
 		GlobalFileHighlighter.LoadFromIni(highlightIni)
+		// Sort groups share the file (and the rule syntax) with highlighting,
+		// the way far keeps both in one dialog. Themes may not define them.
+		GlobalSortGroups.LoadFromIni(highlightIni)
 	}
 
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная
@@ -700,6 +817,13 @@ func SetupUI() {
 
 	os.MkdirAll(configDir, 0755)
 	GlobalHotkeysMgr = NewHotkeyManager(filepath.Join(configDir, "hotkeys.ini"))
+	keymapPath := filepath.Join(configDir, "keymap.ini")
+	if _, err := os.Stat(keymapPath); os.IsNotExist(err) {
+		// The file is the documentation: a user fighting a multiplexer has to
+		// find it in the profile without knowing it exists first.
+		createDefaultKeymapIni(keymapPath)
+	}
+	GlobalKeyRemap = NewKeyRemap(keymapPath)
 	MacroMgr = NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
 	MacroMgr.LoadLuaMacros(filepath.Join(configDir, "Macros", "scripts"))
 	// Help is initialized after the hotkey manager: key binding topics
@@ -743,6 +867,10 @@ func SetupUI() {
 	if len(states) > 0 {
 		applyWorkspaceSession(panels, states[0], width, height, AppConfig.SavePanelPaths)
 	}
+	// The startup directories outrank the restored paths. A client attaching to
+	// a running daemon brings its own instead -- see attachPayload.
+	startLeft, startRight := startupDirs()
+	applyStartupDirs(panels, startLeft, startRight)
 	vtui.FrameManager.Push(panels)
 	if len(states) > 1 {
 		// AddScreenBackground inserts immediately after the active workspace;
@@ -868,6 +996,9 @@ func configureNestedInputMode() {
 	vtinput.InputMode = nestedInputMode(vtinput.InputMode, nested, runtime.GOOS == "windows")
 	if nested && runtime.GOOS == "windows" && vtinput.InputMode == "ansi" {
 		vtui.DebugLog("INPUT: nested f4 uses ANSI reader to preserve ConPTY mouse buttons")
+		// The reader parses bytes; the console host only sends them once it
+		// has been asked to. See prepareNestedConsoleInput.
+		prepareNestedConsoleInput()
 	}
 }
 
@@ -875,7 +1006,14 @@ var getSessionIniPath = func() string {
 	return filepath.Join(GetF4ConfigDir(), "session.ini")
 }
 
+// sessionLoaded marks the process that read the session and may write it back.
+// LoadSession runs only from SetupUI, but main's defer reaches SaveSession from
+// processes with no UI at all -- the session client, --version, --help -- whose
+// Last* globals are defaults that would overwrite the daemon's file.
+var sessionLoaded bool
+
 func LoadSession() {
+	sessionLoaded = true
 	path := getSessionIniPath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return
@@ -906,6 +1044,7 @@ func LoadSession() {
 		ini, "Panel/Left", validSessionViewMode(LastLeftViewMode))
 	fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &LastLeftSortMode)
 	LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
+	LastLeftSortGroups = ini.GetString("Panel/Left", "UseSortGroups", "0") == "1"
 
 	// Восстанавливаем состояние правой панели
 	LastRightPath = ini.GetString("Panel/Right", "Folder", "")
@@ -915,6 +1054,7 @@ func LoadSession() {
 		ini, "Panel/Right", validSessionViewMode(LastRightViewMode))
 	fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &LastRightSortMode)
 	LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
+	LastRightSortGroups = ini.GetString("Panel/Right", "UseSortGroups", "0") == "1"
 
 	// Восстанавливаем глобальное состояние сессии
 	activeStr := ini.GetString("Session", "ActivePanel", "1")
@@ -933,6 +1073,10 @@ func LoadSession() {
 }
 
 func SaveSession() {
+	if !sessionLoaded {
+		vtui.DebugLog("SESSION: State was never loaded, nothing to save")
+		return
+	}
 	if !AppConfig.AutoSaveSettings {
 		vtui.DebugLog("SESSION: Automatic saving is disabled")
 		return
@@ -1092,20 +1236,22 @@ func saveSessionFileWithOptions(path string, savePanelSettings, saveCurrentPanel
 	fmt.Fprintf(&sb, "ShowRight = %d\n", map[bool]int{true: 1, false: 0}[LastShowRight])
 
 	sb.WriteString("\n[Panel/Left]\n")
-	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastLeftPath))
-	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastLeftCursor))
-	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastLeftViewMode))
+	fmt.Fprintf(&sb, "Folder = %s\n", LastLeftPath)
+	fmt.Fprintf(&sb, "CurFile = %s\n", LastLeftCursor)
+	fmt.Fprintf(&sb, "ViewMode = %d\n", LastLeftViewMode)
+	fmt.Fprintf(&sb, "SortMode = %d\n", LastLeftSortMode)
+	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortRev])
+	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortGroups])
 	writePanelGallerySessionState(&sb, LastLeftGalleryState)
-	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastLeftSortMode))
-	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastLeftSortRev]))
 
 	sb.WriteString("\n[Panel/Right]\n")
-	sb.WriteString(fmt.Sprintf("Folder = %s\n", LastRightPath))
-	sb.WriteString(fmt.Sprintf("CurFile = %s\n", LastRightCursor))
-	sb.WriteString(fmt.Sprintf("ViewMode = %d\n", LastRightViewMode))
+	fmt.Fprintf(&sb, "Folder = %s\n", LastRightPath)
+	fmt.Fprintf(&sb, "CurFile = %s\n", LastRightCursor)
+	fmt.Fprintf(&sb, "ViewMode = %d\n", LastRightViewMode)
+	fmt.Fprintf(&sb, "SortMode = %d\n", LastRightSortMode)
+	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev])
+	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortGroups])
 	writePanelGallerySessionState(&sb, LastRightGalleryState)
-	sb.WriteString(fmt.Sprintf("SortMode = %d\n", LastRightSortMode))
-	sb.WriteString(fmt.Sprintf("SortReverse = %d\n", map[bool]int{true: 1, false: 0}[LastRightSortRev]))
 	writeWorkspaceSessions(&sb, LastWorkspaceSessions, LastActiveWorkspace)
 
 	err := os.WriteFile(path, []byte(sb.String()), 0600)

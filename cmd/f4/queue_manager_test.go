@@ -321,10 +321,10 @@ func TestQueueManagerTaskCompletionWakesResourceWaiter(t *testing.T) {
 	}
 	// Synchronize with the dispatch pass that observes the occupied resource,
 	// so the only subsequent event capable of starting waiter is blocker release.
-	waiter.mu.Lock()
+	blocker.mu.Lock()
 	qm.Enqueue(waiter)
 	waitForQueueManagerMutexHeld(t, qm)
-	waiter.mu.Unlock()
+	blocker.mu.Unlock()
 	waitForQueueManagerMutexReleased(t, qm)
 
 	select {

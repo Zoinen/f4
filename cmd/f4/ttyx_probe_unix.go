@@ -54,6 +54,9 @@ func queryPixels(ask, prefix string) (int, int, bool) {
 
 	const budget = 300 * time.Millisecond
 	answer, ok := readAnswer(in, budget, prefix)
+	// Everything read is gone from standard input whether it was the answer
+	// or not, so the caller is told what went with it.
+	noteProbeInput(answer)
 	if !ok {
 		return 0, 0, false
 	}

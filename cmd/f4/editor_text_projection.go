@@ -51,6 +51,20 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 	if width <= 0 || height <= 0 || emit == nil {
 		return
 	}
+	occNeedle := ev.occurrenceNeedle()
+	ev.occSpans = ev.occSpans[:0]
+	ev.extraSelSpans = ev.extraSelSpans[:0]
+	type projectedCaret struct{ row, column int }
+	carets := make([]projectedCaret, 0, len(ev.extraCursors))
+	for _, caret := range ev.extraCursors {
+		if start, end := caret.selRange(); end > start {
+			ev.extraSelSpans = append(ev.extraSelSpans, matchSpan{Off: start, Len: end - start})
+		}
+		if caret.off >= 0 && caret.off <= ev.pt.Size() {
+			row, column := ev.engine.LogicalToVisual(caret.off)
+			carets = append(carets, projectedCaret{row, column - ev.ScrollLeft})
+		}
+	}
 	bgAttr, selAttr := style.background, style.selected
 	crossVRow, crossVCol := style.crossRow, style.crossColumn
 	horzCrossAttr, vertCrossAttr := style.horizontalCross, style.verticalCross
@@ -194,6 +208,7 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 			}
 
 			selMin, selMax := ev.getSelectionRange()
+			ev.occSpans = ev.appendOccurrenceSpans(ev.occSpans, occNeedle, frag.ByteOffsetStart, frag.ByteOffsetStart+readLength, lineStart, lineStart+lineLen)
 
 			// Вырезаем кусок атрибутов именно для этого фрагмента
 			var fragSyntax []uint64
@@ -227,6 +242,11 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 			}
 			if absVRow == autocompleteRow {
 				copy(ev.renderCells[autocompleteColumn:], autocompleteCells)
+			}
+			for _, caret := range carets {
+				if caret.row == absVRow && caret.column >= 0 && caret.column < len(ev.renderCells) {
+					ev.renderCells[caret.column].Attributes = selAttr
+				}
 			}
 			emit(editorProjectedTextRow{logicalLine: logIdx, visualRow: absVRow, fragment: frag, cells: ev.renderCells, err: err})
 

@@ -52,3 +52,48 @@ unchanged, and non-F4 programs still receive the ordinary terminal protocol.
 The added pure mode-selection tests cover nested, explicit, top-level, and
 Unix cases. Native validation must confirm that a nested F4 receives distinct
 left/right SGR events and that wheel, F9, and progress rendering remain usable.
+
+## Follow-up: what the ANSI reader was still missing
+
+Native validation of the build above found the nested session no better: the
+wheel did nothing, left and right click selected and pasted in the outer f4
+rather than reaching the nested one, letters did not arrive, and only some
+function keys did.
+
+Selecting the ANSI reader turned out to be half a fix. A pseudoconsole is a
+console, and the console host parses everything the outer f4 writes into
+`INPUT_RECORD`s before the child sees it. What the child gets back depends on
+`ENABLE_VIRTUAL_TERMINAL_INPUT`: without it a read is answered with the *text*
+of those records -- nothing for a wheel notch, a button, or a function key,
+and nothing for a letter sent in a protocol the host does not read as text --
+and with it the host re-encodes them as the VT stream the reader parses.
+Nothing set the flag: `vtinput`'s Windows reader clears it on the native path
+and leaves the console mode untouched on the ANSI one, and an input stream
+that stays empty is indistinguishable from a user who is not typing.
+
+`prepareNestedConsoleInput` (cmd/f4/nested_input_windows.go) sets it, before
+the reader's raw-mode switch so that switch preserves it, and only for a
+nested f4 -- a top-level one is reading a console that belongs to whoever
+started it. The mouse is asked for through the console mode as well as
+through the reader's DECSET sequences, because the host announces its client's
+mouse mode to the terminal by watching those flags (microsoft/terminal#9970),
+which is how the outer f4 learns to stop keeping the mouse for itself.
+
+Two of the report's items are not addressed here. The F9 menu of a nested f4
+is missing "Left" and "Right" because `buildMenuItems` drops the side menus
+whenever the panels are hidden, which they are while a program runs; that is
+deliberate today and a decision rather than a defect. Progress-bar rendering
+was last seen in the original report and has not been re-tested since.
+
+## Follow-up: the segmentation fault on Linux
+
+Starting f4 from f4 on Ubuntu 26.04 dumped core with frame #0 at address zero.
+The universal Linux build reaches its libc by re-execing through the host
+loader and leaves `GOFFI_UNIVERSAL_REEXEC` behind; a child that inherits it is
+told the loader has already run when it has not, binds no libc, and dies
+before `main`. `selfCommand` has known this since #402 and starts copies of f4
+through the loader itself, but the terminal starts other people's programs,
+and the program most likely to be a universal build is f4. `buildChildEnv` now
+drops the bridge's variables, so a child does its own libc binding -- and with
+them `F4_EXE`, which is untagged and would tell a different f4 binary that it
+lives at this one's path.

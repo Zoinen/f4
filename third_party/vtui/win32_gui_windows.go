@@ -170,6 +170,11 @@ type Win32GuiHost struct {
 	// brush (black) is used instead of the undefined -- in practice white --
 	// initial content of the window's redirection surface.
 	everPainted bool
+	// lastMouseCellX/Y is the cell of the last WM_MOUSEMOVE; hover motion
+	// (no button held) is forwarded only when the pointer enters another
+	// cell, so a sweep across the window does not flood the event queue.
+	lastMouseCellX, lastMouseCellY int16
+	mouseCellKnown                 bool
 }
 
 type win32DragRequest struct {
@@ -738,6 +743,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		cellY := int16(int(y) / h.cellH)
 		h.mu.Lock()
 		btn := h.mouseBtn
+		moved := !h.mouseCellKnown || cellX != h.lastMouseCellX || cellY != h.lastMouseCellY
+		h.lastMouseCellX, h.lastMouseCellY = cellX, cellY
+		h.mouseCellKnown = true
 		h.mu.Unlock()
 		if btn != 0 {
 			h.postMouseMove(&vtinput.InputEvent{
@@ -746,6 +754,20 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 				MouseY:          cellY,
 				MouseEventFlags: vtinput.MouseMoved,
 				ButtonState:     btn,
+				ControlKeyState: h.getModifiers(),
+			})
+		} else if moved {
+			// Hover motion lets text views underline the URL under the
+			// pointer (f4 #459), as the tty backend's any-event tracking
+			// (?1003) does. It bypasses postMouseMove: the rate limiter
+			// there only flushes a pending move on the next event, and a
+			// pointer that comes to rest on a link would leave its last
+			// cell stuck in pendingMouse with nothing to flush it.
+			h.sendEvent(&vtinput.InputEvent{
+				Type:            vtinput.MouseEventType,
+				MouseX:          cellX,
+				MouseY:          cellY,
+				MouseEventFlags: vtinput.MouseMoved,
 				ControlKeyState: h.getModifiers(),
 			})
 		}
@@ -1120,7 +1142,7 @@ func RunWin32GuiHost(cols, rows int, fontName string, fontSize float64, setupApp
 		return cols, rows, nil
 	}
 
-	DisableTerminalClipboard()
+	UseWindowClipboard()
 	SetDragBackend(host)
 	setupApp()
 	SetActiveBackend("win32", fmt.Sprintf("cell %dx%d, font %q", cellW, cellH, fontName), "GDI SetDIBitsToDevice")

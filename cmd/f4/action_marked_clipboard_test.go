@@ -22,10 +22,14 @@ func waitForMarkedClipboard(t *testing.T, want string) string {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := vtui.GetClipboard(); got == want {
+			// The worker may update the clipboard before it finishes reading
+			// shared f4 state. Join it before the next test replaces that state.
+			waitForAsyncClipboard()
 			return got
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	waitForAsyncClipboard()
 	return vtui.GetClipboard()
 }
 

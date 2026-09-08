@@ -653,6 +653,11 @@ func runInX11Window(cols, rows int, fontName string, fontSize float64, setupApp 
 		return host.cols, host.rows, nil
 	}
 
+	// A window works from the OS clipboard helpers and the internal buffer;
+	// UseWindowClipboard decides what becomes of the OSC 52 fallback, which is
+	// worth keeping only where there is no helper to be had.
+	UseWindowClipboard()
+
 	go host.RunEventLoop()
 	setupApp()
 	// After setupApp: the application installs the debug log sink during

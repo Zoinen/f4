@@ -189,10 +189,25 @@ func resolveShellMode(cfg ShellModeConfig) ShellMode
 `leaveHostConsole()`:
 1. выключить роутер, дождаться слива текущего чанка;
 2. защитный сброс того, что мог оставить ребёнок: если по зеркалу `UseAltScreen` — шлём
-   `\x1b[?1049l`; далее `\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l` (мышь),
-   `\x1b[?2004l` (bracketed paste), `\x1b[r` (scroll region), `\x1b[0m`, `\x1b[?25h`;
-3. `vtui.SetAltScreen(true)`, `scr.HardReset()`, `pf.SetBusy(false)`,
-   `FrameManager.Redraw()`.
+   `\x1b[?1049l`; далее `\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l` (мышь) и
+   `\x1b[?2004l` (bracketed paste) — их пропускаем под Windows Terminal (`WT_SESSION`),
+   там они путают маршрутизацию ввода WT (#923); затем `\x1b[r` (scroll region),
+   `\x1b[0m`, `\x1b[?25h`;
+3. `vtui.SetAltScreen(true)`;
+4. **вернуть себе ввод** (`restoreHostInputModes()`): пока была видна консоль хоста,
+   трекинг мыши у терминала мог выключить и ребёнок, и — на Windows — консольный хост
+   от его имени (`ENABLE_MOUSE_INPUT` без quick edit транслируется в DECSET 1003/1006,
+   microsoft/terminal#9970), а объявления вложенного ConPTY уезжают в терминал прямо
+   через passthrough. При VT-вводе шлём заново то же, что `vtinput` шлёт на старте
+   (`\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h\x1b[?1004h\x1b[?2004h`); при нативном
+   вводе Windows VT-последовательности запрещены (ConPTY превращает SGR-репорты в
+   lossy `MOUSE_EVENT` — это перепутанные кнопки #923), поэтому снимаем и снова ставим
+   `ENABLE_MOUSE_INPUT` (+ `EXTENDED_FLAGS`, quick edit off), чтобы хост повторил запрос
+   терминалу; остальные биты режима, включая `VIRTUAL_TERMINAL_INPUT`, не трогаем.
+   Без этого шага мышь в панелях умирала после любой команды и до перезапуска не
+   возвращалась (#924);
+5. `scr.HardReset()`, `pf.SetBusy(false)`, `FrameManager.Redraw()` — запись кадра заодно
+   доносит запрос до терминала на сборках до WT 1.19 (microsoft/terminal#15711).
 
 **Primary screen не очищается ни при входе, ни при выходе** — в этом весь смысл: там копится
 история, как в Far.

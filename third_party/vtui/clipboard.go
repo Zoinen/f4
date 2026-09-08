@@ -5,6 +5,8 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/term"
 )
 
 var (
@@ -33,6 +35,30 @@ func DisableTerminalClipboard() { noTerminalBehind.Store(true) }
 
 // TerminalClipboardDisabled reports whether the OSC 52 fallback is suppressed.
 func TerminalClipboardDisabled() bool { return noTerminalBehind.Load() }
+
+// UseWindowClipboard is what a GUI host calls at startup instead of reaching
+// for DisableTerminalClipboard itself.
+//
+// The escape is turned off only where it has nothing to offer. With an OS
+// clipboard driver present SetClipboard returns before ever reaching the
+// fallback, so suppressing it changes nothing; with no terminal on standard
+// output the escape goes into a pipe or a log and helps nobody. What is left
+// is the one case where it still works: a window with no clipboard helper
+// installed, started from a terminal. There the escape reaches that terminal
+// and the copy arrives in the system clipboard after all -- a Wayland session
+// with neither wl-copy nor XWayland behind it is exactly that case, and
+// turning the fallback off for it was a real loss.
+func UseWindowClipboard() {
+	if windowSuppressesTerminalClipboard(osClipboardAvailable(), stdoutIsTerminal()) {
+		DisableTerminalClipboard()
+	}
+}
+
+func windowSuppressesTerminalClipboard(osDriver, stdoutTTY bool) bool {
+	return osDriver || !stdoutTTY
+}
+
+func stdoutIsTerminal() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
 // SkipOSClipboard routes Set/GetClipboard past the OS clipboard helpers so
 // all traffic stays in the process-local buffer. Test suites set it (together
@@ -88,6 +114,32 @@ func SetOSClipboard(text string) bool {
 	return setOSClipboard(text)
 }
 
+// resolveClipboardRead picks between what the OS clipboard answered and the
+// buffer this process keeps.
+//
+// Whenever the OS clipboard answered, that answer wins -- empty included. An
+// empty clipboard is a state the user can see and act on, while falling
+// through to the process buffer would make the same clipboard paste different
+// things depending on whether this process happened to copy something earlier
+// in the session. The buffer is for when there is no OS clipboard to ask at
+// all, which is where it has always been the only thing left.
+func resolveClipboardRead(osText string, osOK bool, internal string) string {
+	if osOK {
+		return osText
+	}
+	return internal
+}
+
+func readClipboardSources() (osText string, osOK bool, internal string) {
+	if !testSkipOSClipboard {
+		osText, osOK = getOSClipboard()
+	}
+	internalClipMu.Lock()
+	internal = internalClipboard
+	internalClipMu.Unlock()
+	return osText, osOK, internal
+}
+
 // GetClipboard retrieves text from the system clipboard.
 func GetClipboard() string {
 	DebugLog("CLIPBOARD: GetClipboard called")
@@ -96,28 +148,15 @@ func GetClipboard() string {
 		return text
 	}
 	DebugLog("CLIPBOARD: GetFar2lClipboard FAILED or DISABLED")
-	if !testSkipOSClipboard {
-		if text, ok := getOSClipboard(); ok {
-			DebugLog("CLIPBOARD: getOSClipboard SUCCESS, len: %d", len(text))
-			return text
-		}
-	}
-	internalClipMu.Lock()
-	fallback := internalClipboard
-	internalClipMu.Unlock()
-	DebugLog("CLIPBOARD: Returning internal buffer, len: %d", len(fallback))
-	return fallback
+	osText, osOK, internal := readClipboardSources()
+	DebugLog("CLIPBOARD: getOSClipboard ok=%v, len: %d", osOK, len(osText))
+	text := resolveClipboardRead(osText, osOK, internal)
+	DebugLog("CLIPBOARD: Returning %d bytes", len(text))
+	return text
 }
 
 // GetOSClipboard bypasses terminal extensions and reads directly from the OS clipboard.
 func GetOSClipboard() string {
-	if !testSkipOSClipboard {
-		if text, ok := getOSClipboard(); ok {
-			return text
-		}
-	}
-	internalClipMu.Lock()
-	fallback := internalClipboard
-	internalClipMu.Unlock()
-	return fallback
+	osText, osOK, internal := readClipboardSources()
+	return resolveClipboardRead(osText, osOK, internal)
 }

@@ -237,6 +237,8 @@
     ├── gui_boxdraw.go
     ├── gui_boxdraw_test.go
     ├── gui_font.go
+    ├── gui_font_scripts.go
+    ├── gui_font_scripts_test.go
     ├── gui_font_test.go
     ├── help_engine.go
     ├── help_engine_test.go

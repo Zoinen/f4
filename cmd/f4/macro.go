@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/unxed/vtinput"
@@ -112,6 +113,12 @@ func EventToFarString(e *vtinput.InputEvent) string {
 		sb.WriteString(name)
 	} else if vk >= vtinput.VK_F1 && vk <= vtinput.VK_F24 {
 		fmt.Fprintf(&sb, "F%d", vk-vtinput.VK_F1+1)
+	} else if unicode.IsLetter(e.Char) || unicode.IsDigit(e.Char) {
+		// Terminal readers expose non-Latin input as a text-only event, while
+		// Win32 supplies both the physical VK and the translated character.
+		// The translated rune is the only stable identity for a Cyrillic
+		// shortcut, so prefer it whenever it is a Unicode letter or digit.
+		sb.WriteRune(unicode.ToUpper(e.Char))
 	} else if vk >= 'A' && vk <= 'Z' {
 		// Hotkey key strings are always uppercase for A-Z ("CtrlV",
 		// "ShiftA"). Wayland/X11 gui backends deliver Ctrl+letter events
@@ -315,7 +322,7 @@ func ParseFarKey(s string) *vtinput.InputEvent {
 	}
 
 	if len(s) > 0 {
-		char := rune(s[0])
+		char := []rune(s)[0]
 		e.Char = char
 		if char >= 'a' && char <= 'z' {
 			e.VirtualKeyCode = uint16(char - 'a' + 'A')
@@ -448,6 +455,15 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 		return false
 	}
 
+	// The user's key remap (keymap.ini) substitutes the key before anything
+	// else sees the event, so macros, plugin interception, configurable
+	// hotkeys and the frames themselves all agree on which key was pressed.
+	if !applyKeyRemap(m.GetCurrentArea(), e) {
+		// The built-in Mac layout only sees what keymap.ini left behind, so
+		// a rule the user wrote by hand still wins over it.
+		applyMacKeys(m.GetCurrentArea(), e)
+	}
+
 	// Ctrl+. toggles recording. We check both VK and Char for better terminal compatibility.
 	isCtrlDot := (e.VirtualKeyCode == vtinput.VK_OEM_PERIOD || e.Char == '.') &&
 		(e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0
@@ -572,6 +588,15 @@ func (m *MacroManager) Filter(e *vtinput.InputEvent) bool {
 	if hm := GlobalHotkeysMgr; hm != nil {
 		keyStr := EventToHotkeyString(e)
 		if actionName := configuredHotkeyAction(hm, currentArea, keyStr); actionName != "" {
+			// F4-assigned plugin shortcuts are menu accelerators, matching
+			// far2l: the F11 plugin menu renders them as ampersand hotkeys.
+			// They must not steal printable characters from the panel command
+			// line while remaining persisted for that menu and its display.
+			// A chord assigned in the hotkey dialog (Ctrl+F9 and friends) is a
+			// real hotkey and keeps being dispatched here.
+			if isPluginActionName(actionName) && isPluginMenuHotkey(keyStr) {
+				return false
+			}
 			if strings.EqualFold(actionName, "none") {
 				return true // Intercept and silence (explicitly unbound)
 			}
@@ -626,6 +651,12 @@ func (m *MacroManager) LookupHotkey(e *vtinput.InputEvent) bool {
 	area := m.GetCurrentArea()
 	actionName := configuredHotkeyAction(hm, area, keyStr)
 	if actionName == "" {
+		return false
+	}
+	// Plugin menu accelerators are activated by the F11 menu's ampersand
+	// hotkeys. They are deliberately not global Shell hotkeys, so an injected
+	// key (for example from a key-bar click) must not bypass that rule either.
+	if isPluginActionName(actionName) && isPluginMenuHotkey(keyStr) {
 		return false
 	}
 	if strings.EqualFold(actionName, "none") {

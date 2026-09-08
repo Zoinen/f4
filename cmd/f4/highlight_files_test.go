@@ -164,6 +164,23 @@ func TestHighlightRule_CompiledMaskIndexMatchesGlobFallback(t *testing.T) {
 	}
 }
 
+func TestHighlightRule_CursorColorAliases(t *testing.T) {
+	ini := ParseIni(strings.NewReader(`[Highlight_0]
+NormalColorUnderCursor = foreground:#112233
+SelectedColorUnderCursor = background:#445566
+`))
+	rules := parseHighlightRules(ini)
+	if len(rules) != 1 {
+		t.Fatalf("parseHighlightRules returned %d rules, want 1", len(rules))
+	}
+	if rules[0].CursorStr != "foreground:#112233" {
+		t.Errorf("CursorStr = %q, want alias value", rules[0].CursorStr)
+	}
+	if rules[0].SelectedCursorStr != "background:#445566" {
+		t.Errorf("SelectedCursorStr = %q, want alias value", rules[0].SelectedCursorStr)
+	}
+}
+
 func TestHighlightRule_MatchAttributes(t *testing.T) {
 	ruleDir := HighlightRule{
 		AttrSet: AttrDirectory,
@@ -780,5 +797,105 @@ func TestFileHighlighterCachesMatchesByEntryMetadata(t *testing.T) {
 	}
 	if got := len(highlighter.matchCache); got != 2 {
 		t.Fatalf("changed metadata did not create a distinct cache entry: %d", got)
+	}
+}
+
+func TestHighlightRule_FarColorKeyNames(t *testing.T) {
+	ini := ParseIni(strings.NewReader(`[Highlight_0]
+NormalFileName = foreground:#111111
+SelectedFileName = foreground:#222222
+FileNameUnderCursor = foreground:#333333
+FileNameSelectedUnderCursor = foreground:#444444
+`))
+	rules := parseHighlightRules(ini)
+	if len(rules) != 1 {
+		t.Fatalf("parseHighlightRules returned %d rules, want 1", len(rules))
+	}
+	rule := rules[0]
+	for _, tt := range []struct {
+		key  string
+		got  string
+		want string
+	}{
+		{"NormalFileName", rule.NormalStr, "foreground:#111111"},
+		{"SelectedFileName", rule.SelectedStr, "foreground:#222222"},
+		{"FileNameUnderCursor", rule.CursorStr, "foreground:#333333"},
+		{"FileNameSelectedUnderCursor", rule.SelectedCursorStr, "foreground:#444444"},
+	} {
+		if tt.got != tt.want {
+			t.Errorf("%s parsed as %q, want %q", tt.key, tt.got, tt.want)
+		}
+	}
+}
+
+func TestHighlightRule_NativeColorKeysWinOverFarNames(t *testing.T) {
+	ini := ParseIni(strings.NewReader(`[Highlight_0]
+NormalColor = foreground:#101010
+NormalFileName = foreground:#202020
+CursorColor = foreground:#303030
+FileNameUnderCursor = foreground:#404040
+`))
+	rules := parseHighlightRules(ini)
+	if len(rules) != 1 {
+		t.Fatalf("parseHighlightRules returned %d rules, want 1", len(rules))
+	}
+	if rules[0].NormalStr != "foreground:#101010" {
+		t.Errorf("NormalStr = %q, want the NormalColor value", rules[0].NormalStr)
+	}
+	if rules[0].CursorStr != "foreground:#303030" {
+		t.Errorf("CursorStr = %q, want the CursorColor value", rules[0].CursorStr)
+	}
+}
+
+func TestFileHighlighter_NormalColorKeepsItsBackground(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
+
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ParseIni(strings.NewReader(`[Highlight_0]
+Name = Archives
+Mask = *.zip
+NormalColor = foreground:#FF00FF | background:#008080
+`)))
+
+	item := vfs.VFSItem{Name: "Autoruns.zip"}
+	got := highlighter.GetColor(&item, vtui.Palette[ColPanelText], false, false)
+	if fg := vtui.GetRGBFore(got); fg != 0xFF00FF {
+		t.Errorf("foreground = #%06x, want #FF00FF", fg)
+	}
+	if bg := vtui.GetRGBBack(got); bg != 0x008080 {
+		t.Errorf("background = #%06x, want #008080", bg)
+	}
+}
+
+func TestFileHighlighter_DirectoryRuleLeavesFilesAlone(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	oldCfg := AppConfig
+	AppConfig.EnforceColorCorrection = false
+	defer func() { AppConfig = oldCfg }()
+
+	// A rule for folders carries no mask, so only IncludeAttributes keeps it
+	// off the files; Name is a caption and matches nothing by itself (#912).
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ParseIni(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+NormalFileName = foreground:#FFFFFF
+`)))
+
+	base := vtui.Palette[ColPanelText]
+	dir := vfs.VFSItem{Name: "src", IsDir: true}
+	if fg := vtui.GetRGBFore(highlighter.GetColor(&dir, base, false, false)); fg != 0xFFFFFF {
+		t.Errorf("directory foreground = #%06x, want #FFFFFF", fg)
+	}
+	file := vfs.VFSItem{Name: "readme.txt"}
+	if got := highlighter.GetColor(&file, base, false, false); got != base {
+		t.Errorf("file color = %#x, want the untouched panel color %#x", got, base)
 	}
 }

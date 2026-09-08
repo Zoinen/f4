@@ -50,6 +50,7 @@ func init() {
 		Description: "Mount what the active panel shows as an ordinary directory",
 		DefaultKeys: []string{"CtrlAltM"},
 		MenuPath:    "Commands",
+		MenuSubPath: "Mounts",
 		// Hidden where nothing can be mounted, rather than offered and refused.
 		Visible: fusefs.Supported,
 		Handler: func() bool {
@@ -90,6 +91,7 @@ func init() {
 		Label:       "Mount via FUSE (read-write)",
 		Description: "Mount what the active panel shows as a writable directory",
 		MenuPath:    "Commands",
+		MenuSubPath: "Mounts",
 		Visible:     fusefs.Supported,
 		Handler: func() bool {
 			pf := findPanelsFrameAnyScreen()

@@ -1116,7 +1116,7 @@ func (p *AnsiParser) handleOSC() {
 			} else {
 				decoded, err := base64.StdEncoding.DecodeString(subparts[1])
 				if err == nil {
-					vtui.SetClipboard(string(decoded))
+					setF4Clipboard(string(decoded))
 				}
 			}
 		}

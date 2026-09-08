@@ -214,6 +214,13 @@ func TestHotkeyManager_Conditions(t *testing.T) {
 // and therefore no way for a foreign app to own the console view, so the
 // condition must return true unconditionally once panels are hidden.
 func TestNoAltScreenApp_SimpleInline_IgnoresBackgroundTermView(t *testing.T) {
+	// The frame pushed below is never popped, so on the shared manager it
+	// stays on top for the rest of the process -- and it is precisely the
+	// state keyRemapSuspended() reads as "a foreign application owns the
+	// keyboard": panels hidden, a PTY shell mode, UseAltScreen set. Every
+	// later test that expects a key substitution to happen then silently
+	// gets none. Take a manager of our own so the frame leaves with it.
+	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := setupMockPanelsFrame(t)
 	defer pf.Close()

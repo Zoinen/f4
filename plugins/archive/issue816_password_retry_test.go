@@ -80,32 +80,43 @@ func runIssue816Scenario(t *testing.T, p string, answers []any, withProgress boo
 
 	done := make(chan string, 1)
 	go func() {
+		// Report the outcome from the first deferred call, so it runs after
+		// v.Close() and f.Close() below rather than before them. Sending it
+		// inline let this goroutine keep working -- ArchiveVFS.Close() reads
+		// archiveVFSIdleTTL, and the deferred restore of
+		// archivePasswordPrompt above is already on its way -- while the
+		// scenario had returned and the next test was free to write those
+		// package variables. That is the race the detector reported against
+		// TestArchiveVFS_DeferredClose.
+		outcome := ""
+		defer func() { done <- outcome }()
+
 		ctx := context.Background()
 		if withProgress {
 			ctx = context.WithValue(ctx, vfs.ProgressKey, vfs.ProgressCallback(func(string, int) {}))
 		}
 		v, err := NewArchiveVFSContext(ctx, vfs.NewOSVFS(filepath.Dir(p)), p)
 		if err != nil {
-			done <- "open: " + err.Error()
+			outcome = "open: " + err.Error()
 			return
 		}
 		defer v.Close()
 		if err := v.ReadDir(ctx, v.GetPath(), func([]vfs.VFSItem) {}); err != nil {
-			done <- "readdir: " + err.Error()
+			outcome = "readdir: " + err.Error()
 			return
 		}
 		f, err := v.Open(ctx, v.Join(p, "secret.txt"))
 		if err != nil {
-			done <- "member: " + err.Error()
+			outcome = "member: " + err.Error()
 			return
 		}
 		defer f.Close()
 		data, err := io.ReadAll(ctxReader{r: f, ctx: ctx})
 		if err != nil {
-			done <- "read: " + err.Error()
+			outcome = "read: " + err.Error()
 			return
 		}
-		done <- fmt.Sprintf("data=%q", data)
+		outcome = fmt.Sprintf("data=%q", data)
 	}()
 	select {
 	case s := <-done:

@@ -42,7 +42,7 @@ func showYandexAuthorizationCodeDialog(ctx context.Context, result chan<- yandex
 	x := dlg.X1 + 2
 	y := dlg.Y1 + 2
 
-	instructions := vtui.NewText(x, y, "Authorize in the browser, then paste the displayed code here:", vtui.Palette[vtui.ColDialogText])
+	instructions := vtui.NewText(x, y, vtui.Msg("CloudFox.YandexAuthorizationPrompt"), vtui.Palette[vtui.ColDialogText])
 	instructions.SetPosition(x, y, dlg.X2-2, y)
 	dlg.AddItem(instructions)
 

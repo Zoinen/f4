@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,26 @@ type mockMetadataVFS struct {
 type lstatMetadataVFS struct {
 	*mockMetadataVFS
 	item vfs.VFSItem
+}
+
+type symlinkTargetVFS struct {
+	*vfs.OSVFS
+	failTarget  string
+	removeCalls int
+	symlinkArgs []string
+}
+
+func (v *symlinkTargetVFS) Remove(ctx context.Context, path string) error {
+	v.removeCalls++
+	return v.OSVFS.Remove(ctx, path)
+}
+
+func (v *symlinkTargetVFS) Symlink(ctx context.Context, target, linkPath string) error {
+	v.symlinkArgs = append(v.symlinkArgs, target)
+	if target == v.failTarget {
+		return errors.New("test symlink failure")
+	}
+	return v.OSVFS.Symlink(ctx, target, linkPath)
 }
 
 func (m *lstatMetadataVFS) Lstat(context.Context, string) (vfs.VFSItem, error) {
@@ -992,6 +1013,85 @@ func TestAttributesDialog_SymlinkToDirectoryIsIdentifiedAsLink(t *testing.T) {
 	}
 	fm.GetTopFrame().SetExitCode(-1)
 	fm.Pop()
+}
+
+func TestReplaceSymlinkTargetRestoresOriginalOnCreateFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink replacement test requires symlink privileges on Windows")
+	}
+
+	root := t.TempDir()
+	linkPath := filepath.Join(root, "link")
+	if err := os.Symlink("old-target", linkPath); err != nil {
+		t.Skipf("Symlink creation not supported: %v", err)
+	}
+	v := &symlinkTargetVFS{OSVFS: vfs.NewOSVFS(root), failTarget: "new-target"}
+
+	err := replaceSymlinkTarget(context.Background(), v, linkPath, "new-target")
+	if err == nil || !strings.Contains(err.Error(), "original target restored") {
+		t.Fatalf("replaceSymlinkTarget error = %v, want restored-target error", err)
+	}
+	got, readErr := os.Readlink(linkPath)
+	if readErr != nil {
+		t.Fatalf("read restored link: %v", readErr)
+	}
+	if got != "old-target" {
+		t.Fatalf("restored target = %q, want %q", got, "old-target")
+	}
+	if v.removeCalls != 1 || strings.Join(v.symlinkArgs, ",") != "new-target,old-target" {
+		t.Fatalf("replacement calls: removes=%d symlinks=%v, want one remove and create/restore", v.removeCalls, v.symlinkArgs)
+	}
+}
+
+func TestReplaceSymlinkTargetPreservesTargetSpelling(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink replacement test requires symlink privileges on Windows")
+	}
+
+	root := t.TempDir()
+	linkPath := filepath.Join(root, "link")
+	if err := os.Symlink("initial-target", linkPath); err != nil {
+		t.Skipf("Symlink creation not supported: %v", err)
+	}
+	v := &symlinkTargetVFS{OSVFS: vfs.NewOSVFS(root)}
+
+	targets := []string{"relative-target", filepath.Join(root, "absolute-target"), "missing-target"}
+	for _, want := range targets {
+		if err := replaceSymlinkTarget(context.Background(), v, linkPath, want); err != nil {
+			t.Fatalf("replaceSymlinkTarget(%q): %v", want, err)
+		}
+		got, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("read link after %q: %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("target after %q = %q, want exact spelling %q", want, got, want)
+		}
+	}
+}
+
+func TestReplaceSymlinkTargetRejectsEmptyTargetWithoutMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink replacement test requires symlink privileges on Windows")
+	}
+
+	root := t.TempDir()
+	linkPath := filepath.Join(root, "link")
+	if err := os.Symlink("old-target", linkPath); err != nil {
+		t.Skipf("Symlink creation not supported: %v", err)
+	}
+	v := &symlinkTargetVFS{OSVFS: vfs.NewOSVFS(root)}
+
+	if err := replaceSymlinkTarget(context.Background(), v, linkPath, ""); err == nil {
+		t.Fatal("replaceSymlinkTarget accepted an empty target")
+	}
+	got, readErr := os.Readlink(linkPath)
+	if readErr != nil {
+		t.Fatalf("read unchanged link: %v", readErr)
+	}
+	if got != "old-target" || v.removeCalls != 0 {
+		t.Fatalf("empty-target edit mutated link: target=%q removes=%d", got, v.removeCalls)
+	}
 }
 
 func TestAttributesDialog_WindowsSetTime(t *testing.T) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/unxed/vtinput"
@@ -444,10 +445,26 @@ func (pf *PanelsFrame) leaveHostConsole() {
 	if pf.termView != nil && pf.termView.UseAltScreen {
 		resetSeq.WriteString("\x1b[?1049l")
 	}
-	resetSeq.WriteString("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[r\x1b[0m\x1b[?25h")
+	// In Windows Terminal, sending VT mouse tracking disable sequences
+	// (1000/1002/1003/1006) before switching back to the alt screen
+	// confuses WT's internal input routing: mouse buttons get swapped
+	// and the Shift modifier gets stuck.  Skip them when running inside
+	// WT; the basic resets (scroll region, attributes, cursor) are safe.
+	if os.Getenv("WT_SESSION") == "" {
+		resetSeq.WriteString("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l")
+	}
+	resetSeq.WriteString("\x1b[r\x1b[0m\x1b[?25h")
 	vtui.WritePassthrough([]byte(resetSeq.String()))
 
 	vtui.SetAltScreen(true)
+
+	// The reset above only undoes what f4 sent. Whatever ran in the host
+	// console spoke to the terminal directly, and the mouse tracking it (or,
+	// on Windows, the console host on its behalf) turned off stays off until
+	// somebody asks for it again -- so f4 asks here, before the redraw, and
+	// gets its clicks back.
+	restoreHostInputModes()
+
 	if vtui.FrameManager != nil && vtui.FrameManager.Screen() != nil {
 		vtui.FrameManager.Screen().HardReset()
 	}

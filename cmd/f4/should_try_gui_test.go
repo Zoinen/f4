@@ -21,3 +21,15 @@ func TestShouldTryGui_WindowsDefaultsToConsole(t *testing.T) {
 		}
 	}
 }
+
+func TestShouldTryGui_TTYTakesPrecedenceOverDisplay(t *testing.T) {
+	oldProbeTTY := probeHostTTY
+	t.Cleanup(func() { probeHostTTY = oldProbeTTY })
+	probeHostTTY = func() bool { return true }
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", ":0")
+
+	if shouldTryGui() {
+		t.Error("shouldTryGui() must keep a terminal launch in console mode when DISPLAY is set")
+	}
+}

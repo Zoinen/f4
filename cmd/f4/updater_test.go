@@ -764,7 +764,12 @@ func TestUpdater_PerformUpdate(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
 
-	performUpdate(pf, ts.URL, "targz", "v9.9.9", "2026-01-01")
+	performUpdate(pf, updateCandidate{
+		downloadURL: ts.URL,
+		archiveKind: "targz",
+		updateKey:   "v9.9.9",
+		needsUpdate: true,
+	})
 
 	timeout := time.After(3 * time.Second)
 	successDialogFound := false

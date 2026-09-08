@@ -275,6 +275,14 @@ type frameManager struct {
 	// started, so its result belongs to this manager rather than that global.
 	far2lEnabled    atomic.Bool
 	far2lConfigured atomic.Bool
+	// far2lNegotiated records that a terminal acknowledged the extensions.
+	// Init resets the rest of this manager for a fresh screen, and used to
+	// reset far2lEnabled with it: a second Init -- the session picker before
+	// the main screen, a host that re-inits for its own buffer -- silently
+	// put the process back to no far2l at all, because the terminal only
+	// acknowledges once. The acknowledgement outlives the screen it arrived
+	// on, so it is kept here and Init honours it.
+	far2lNegotiated atomic.Bool
 
 	// Global standard UI components
 	DisabledCommands CommandSet
@@ -815,7 +823,7 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.semanticMenuTailModifiers = 0
 	fm.semanticMenuDeclared = false
 	fm.needsRender.Store(true)
-	fm.far2lEnabled.Store(Far2lEnabled)
+	fm.far2lEnabled.Store(Far2lEnabled || fm.far2lNegotiated.Load())
 	fm.far2lConfigured.Store(true)
 
 	if fm.RedrawChan == nil {
@@ -1511,12 +1519,7 @@ func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int,
 	fm.injectedMu.Unlock()
 
 	if injected {
-		if e != nil {
-			if e.Type == vtinput.ResizeEventType {
-				fm.handleResizeWith(getSize)
-			} else {
-				fm.dispatchEvent(e, true)
-			}
+		if fm.consumeEvent(e, true, getSize) {
 			fm.needsRender.Store(true)
 		}
 		fm.cleanupDoneFrames()
@@ -1542,12 +1545,7 @@ func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int,
 			if !ok {
 				return false
 			}
-			if ev != nil {
-				if ev.Type == vtinput.ResizeEventType {
-					fm.handleResizeWith(getSize)
-				} else {
-					fm.dispatchEvent(ev, false)
-				}
+			if fm.consumeEvent(ev, false, getSize) {
 				fm.needsRender.Store(true)
 			}
 		default:
@@ -1575,12 +1573,7 @@ func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int,
 			if !ok {
 				return false
 			}
-			if ev != nil {
-				if ev.Type == vtinput.ResizeEventType {
-					fm.handleResizeWith(getSize)
-				} else {
-					fm.dispatchEvent(ev, false)
-				}
+			if fm.consumeEvent(ev, false, getSize) {
 				fm.needsRender.Store(true)
 			}
 		}
@@ -1603,17 +1596,27 @@ func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int,
 		if !ok {
 			return false
 		}
-		if ev != nil {
-			if ev.Type == vtinput.ResizeEventType {
-				fm.handleResizeWith(getSize)
-			} else {
-				fm.dispatchEvent(ev, false)
-			}
+		if fm.consumeEvent(ev, false, getSize) {
 			fm.needsRender.Store(true)
 		}
 	}
 	fm.cleanupDoneFrames()
 	return !fm.IsShutdown() && len(fm.frames) > 0
+}
+
+// consumeEvent feeds one event from the input queue into the frame manager
+// and reports whether it may have changed something on screen. Resizes and
+// delivered events do; a nil event or a repeated stationary mouse move does
+// not, and must not cost a frame.
+func (fm *frameManager) consumeEvent(ev *vtinput.InputEvent, injected bool, getSize func() (int, int, error)) bool {
+	if ev == nil {
+		return false
+	}
+	if ev.Type == vtinput.ResizeEventType {
+		fm.handleResizeWith(getSize)
+		return true
+	}
+	return fm.dispatchEvent(ev, injected)
 }
 
 func (fm *frameManager) handleResize() {
@@ -1908,6 +1911,22 @@ func (fm *frameManager) drawWorkspaceCounter() {
 	fm.scr.Write(x, 0, StringToCharInfo(current, currentAttr))
 	x += runewidth.StringWidth(current)
 	fm.scr.Write(x, 0, StringToCharInfo("/"+total+"]", baseAttr))
+}
+
+// syncTransientWorkspaceTabs relayouts and repaints only when the transient
+// WorkspaceTabsOnCtrl strip actually appeared or disappeared. The strip takes
+// and releases the top row as Ctrl is held after the first Ctrl+Tab, so frames
+// must relayout then; a plain redraw would leave the image where it was and let
+// it paint over the tabs. Ctrl alone never reveals the strip, and resizing every
+// frame of every workspace for an unchanged picture is expensive for embedders
+// that carry a terminal: each pass reaches the PTY behind the frame, so a stray
+// Ctrl tap made a shell repaint its prompt.
+func (fm *frameManager) syncTransientWorkspaceTabs(wasVisible bool) {
+	if wasVisible == fm.workspaceTabsVisible() {
+		return
+	}
+	fm.ResizeAllScreens()
+	fm.Redraw()
 }
 
 func (fm *frameManager) workspaceTabsVisible() bool {
@@ -3562,7 +3581,7 @@ func (fm *frameManager) isDuplicateMouseMove(ev *vtinput.InputEvent) bool {
 	return duplicate
 }
 
-func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) {
+func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) bool {
 	menuStateBefore := fm.semanticMenuInputState()
 	fm.semanticMenuDeclared = false
 	previousInputUpdateActive := fm.inputUpdateActive
@@ -3587,7 +3606,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		defer benchmarkHooks.DispatchEnd(ev)
 	}
 	if fm.isDuplicateMouseMove(ev) {
-		return
+		return false
 	}
 	DebugLog("FM_DISPATCH: Received event: %s", ev.String())
 	// Translator Tool: Ctrl+Alt+RightClick
@@ -3660,7 +3679,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 
 					SetClipboard(report)
 					ShowToast("Translator info copied to clipboard", 3*time.Second)
-					return // Consume event
+					return true // Consume event
 				}
 			}
 		}
@@ -3670,6 +3689,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		DebugLog("FM_DISPATCH: Processing Far2l event: cmd=%q", ev.Far2lCommand)
 		if ev.Far2lCommand == "ok" {
 			DebugLog("FM_DISPATCH: Far2l extensions successfully negotiated with host")
+			fm.far2lNegotiated.Store(true)
 			fm.far2lEnabled.Store(true)
 			// A screen may have asked for its graphics protocol before the
 			// asynchronous far2l acknowledgement arrived. Switch it now so
@@ -3677,7 +3697,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 			if fm.scr != nil {
 				fm.scr.Graphics().SetProtocol(GraphicsFar2l)
 			}
-			return
+			return true
 		}
 		if ev.Far2lCommand == "reply" {
 			DebugLog("FM_DISPATCH: Processing Far2l reply...")
@@ -3691,7 +3711,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 				}
 			}
 			fm.far2lMu.Unlock()
-			return
+			return true
 		}
 
 		// Interaction requests (from remote terminal to app) are handled by the active frame
@@ -3699,7 +3719,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 	}
 
 	if len(fm.frames) == 0 {
-		return
+		return true
 	}
 
 	fm.markMultiClick(ev, time.Now())
@@ -3759,7 +3779,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		// Filters may execute actions that close a frame. Preserve the normal
 		// end-of-dispatch cleanup even though the event itself is consumed.
 		fm.cleanupDoneFrames()
-		return
+		return true
 	}
 
 	// Track Ctrl state for Switcher logic
@@ -3768,8 +3788,10 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		// keyboard focus. Clear the manager-side state as well as the backend
 		// tracker, otherwise the transient workspace UI can remain visible
 		// until an unrelated key event arrives.
+		wasTabsVisible := fm.workspaceTabsVisible()
 		fm.ctrlPressed = false
 		fm.workspaceTabPreview = false
+		fm.syncTransientWorkspaceTabs(wasTabsVisible)
 	} else if ev.Type == vtinput.KeyEventType {
 		wasCtrlPressed := fm.ctrlPressed
 		ctrl := (ev.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
@@ -3778,15 +3800,11 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		}
 		fm.ctrlPressed = ctrl
 		if wasCtrlPressed != fm.ctrlPressed && fm.WorkspaceTabMode == WorkspaceTabsOnCtrl {
+			wasTabsVisible := wasCtrlPressed && fm.workspaceTabPreview
 			if !fm.ctrlPressed {
 				fm.workspaceTabPreview = false
 			}
-			// The overlay tab strip takes and releases the top row as Ctrl is
-			// held after the first Ctrl+Tab, so frames must relayout; a plain
-			// redraw would leave the image where it was and let it paint over
-			// the tabs.
-			fm.ResizeAllScreens()
-			fm.Redraw()
+			fm.syncTransientWorkspaceTabs(wasTabsVisible)
 		}
 
 		// Commit Switcher selection on Ctrl release
@@ -3820,19 +3838,19 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 					if menuFrame.IsDone() {
 						fm.RemoveFrame(menuFrame)
 					}
-					return
+					return true
 				}
 			}
 			// Otherwise, MenuBar processes keys (Arrows, Esc, Hotkeys)
 			if ev.VirtualKeyCode == vtinput.VK_ESCAPE || ev.VirtualKeyCode == vtinput.VK_F10 {
 				activeMenu.Active = false
 				fm.declareSemanticMenuState()
-				return
+				return true
 			}
 			if activeMenu.ProcessKey(ev) {
-				return
+				return true
 			}
-			return // Don't pass keys to background frames when menu is active
+			return true // Don't pass keys to background frames when menu is active
 		}
 	} else if ev.Type == vtinput.KeyEventType && !ev.KeyDown {
 		DebugLog("INPUT: KeyRelease VK=%s Char=%d (Stack: %d frames, ActiveIdx: %d)", vtinput.VKString(ev.VirtualKeyCode), ev.Char, len(fm.frames), fm.ActiveIdx)
@@ -3854,7 +3872,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		validModifiers := alt && !shift && (!ctrl || fm.WorkspaceTabMode == WorkspaceTabsOnCtrl)
 		if validModifiers {
 			if fm.switchScreenNumber(int(ev.VirtualKeyCode - vtinput.VK_0)) {
-				return
+				return true
 			}
 		}
 	}
@@ -3887,22 +3905,29 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 		// it before bounds checks so releasing outside the window still clears
 		// the capture.
 		if fm.processWorkspaceTabDrag(ev, mx) {
-			return
+			return true
 		}
 
 		if mx < -1 || my < -1 {
-			return
+			return true
 		}
 		if fm.scr != nil && fm.scr.width > 0 && fm.scr.height > 0 {
 			if mx > fm.scr.width || my > fm.scr.height {
-				return
+				return true
 			}
 		}
 
 		// 3.1. Active Mouse Capture (Dragging/Resizing)
 		if fm.capturedFrame != nil {
 			handled = fm.capturedFrame.ProcessMouse(ev)
-			if ev.ButtonState == 0 {
+			// A release is !KeyDown, not an empty ButtonState. The SGR mouse
+			// report names the button that was let go, so vtinput hands the
+			// release on with that button still in ButtonState; reading the
+			// release out of ButtonState alone therefore never sees one, and
+			// the capture is held forever. That is fatal where a tap is the
+			// only input there is: the first tap captures, and nothing but a
+			// wheel event -- which carries no button at all -- lets go again.
+			if ev.ButtonState == 0 || !ev.KeyDown {
 				fm.capturedFrame = nil // Release capture
 			}
 		} else {
@@ -3910,7 +3935,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 				for _, hit := range fm.workspaceTabHits {
 					if mx >= hit.x1 && mx <= hit.x2 {
 						fm.CloseScreen(hit.index)
-						return
+						return true
 					}
 				}
 			}
@@ -3920,34 +3945,34 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 				if mx >= fm.scr.width-indicatorLen && mx < fm.scr.width {
 					if ev.ButtonState == vtinput.FromLeft1stButtonPressed && ev.KeyDown {
 						fm.showScreensMenu()
-						return
+						return true
 					}
 				}
 			}
 			if my == 0 && ev.ButtonState == vtinput.FromLeft1stButtonPressed && ev.KeyDown {
 				if mx == fm.workspaceNewTabX {
 					fm.EmitCommand(CmResize, "fork")
-					return
+					return true
 				}
 				for _, hit := range fm.workspaceTabHits {
 					if mx >= hit.x1 && mx <= hit.x2 {
 						fm.workspaceTabDrag = fm.Screens[hit.index]
 						fm.workspaceTabDragHits = append(fm.workspaceTabDragHits[:0], fm.workspaceTabHits...)
 						fm.SwitchScreen(hit.index)
-						return
+						return true
 					}
 				}
 			}
 			// 3.1.5. Global UI components hit-testing (MenuBar, KeyBar)
 			if fm.KeyBar != nil && fm.KeyBar.IsVisible() && fm.KeyBar.HitTest(mx, my) {
 				if fm.KeyBar.ProcessMouse(ev) {
-					return
+					return true
 				}
 			}
 			canActivateMenu := !topFrame.IsModal() || topFrame.GetType() == TypeMenu || topFrame.GetMenuBar() == activeMenu
 			if activeMenu != nil && canActivateMenu && activeMenu.HitTest(mx, my) {
 				if activeMenu.ProcessMouse(ev) {
-					return
+					return true
 				}
 			}
 
@@ -4049,7 +4074,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 				cycled = fm.cycleScreensDirect(!shift)
 			}
 			if cycled {
-				return
+				return true
 			}
 		}
 		// Screen Dump (Ctrl+Shift+P)
@@ -4064,7 +4089,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 					DebugLog("FM: Screen dump saved to %s", dumpPath)
 				}
 			}
-			return
+			return true
 		}
 
 		// Ctrl+N - Fork Active Frame into new Screen
@@ -4073,14 +4098,14 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 			// We need a way to clone the top-level frame.
 			// For now, let's trigger a Command that Panels can handle.
 			fm.EmitCommand(CmResize, "fork") // Temporary hack or use specialized Command
-			return
+			return true
 		}
 
 		// Ctrl+W - Close Active Screen
 		if ev.VirtualKeyCode == vtinput.VK_W && fm.ctrlPressed {
 			fm.Flash()
 			fm.CloseActiveScreen()
-			return
+			return true
 		}
 
 		// F12 - Screens Menu (Window List)
@@ -4100,13 +4125,13 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 			if topic != "" && GlobalHelpEngine != nil {
 				hv := NewHelpView(GlobalHelpEngine, topic)
 				fm.Push(hv)
-				return
+				return true
 			}
 		}
 		if ev.VirtualKeyCode == vtinput.VK_F12 && (ev.ControlKeyState&modifierMask) == 0 {
 			if fm.GetTopFrameType() != TypeMenu {
 				fm.showScreensMenu()
-				return
+				return true
 			}
 		}
 
@@ -4128,14 +4153,14 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 					}
 					activeMenu.ActivateSubMenu(activeMenu.SelectPos)
 				}
-				return
+				return true
 			}
 		}
 		if activeMenu != nil && !activeMenu.Active && canActivateMenu {
 			alt := (ev.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 			if alt && ev.Char != 0 {
 				if activeMenu.ProcessKey(ev) {
-					return
+					return true
 				}
 				DebugLog("FM: Hotkey Alt+%c matched MenuBar item.", ev.Char)
 			}
@@ -4154,6 +4179,7 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 
 	// 4. Cleanup: Remove all frames that are marked as done.
 	fm.cleanupDoneFrames()
+	return true
 }
 
 func (fm *frameManager) markMultiClick(ev *vtinput.InputEvent, now time.Time) {

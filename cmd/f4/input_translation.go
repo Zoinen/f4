@@ -29,6 +29,41 @@ func formatTilde(mod int, code int) string {
 	return fmt.Sprintf("\x1b[%d~", code)
 }
 
+// rebaseTerminalMouseEvent converts a screen-coordinate mouse event into the
+// coordinate space of the terminal viewport before it is handed to the child
+// process. The viewport does not start at the top-left corner of the screen
+// whenever rows above it are taken by the workspace tab bar or by an
+// always-visible menu bar, while the PTY is sized to the viewport alone: a
+// child therefore reads the raw screen row as its own row and acts on the
+// cell below the one that was clicked. That is the "nested f4 misses by one
+// row while tabs are shown, and stops missing when they are hidden" report in
+// issue #87.
+//
+// The event is copied rather than adjusted in place, because the caller keeps
+// using the original screen coordinates for hit-testing and selection.
+func rebaseTerminalMouseEvent(e *vtinput.InputEvent, x1, y1, width, height int) *vtinput.InputEvent {
+	if e == nil || (x1 == 0 && y1 == 0) {
+		return e
+	}
+	local := *e
+	local.MouseX = int16(clampMouseCoord(int(e.MouseX)-x1, width))
+	local.MouseY = int16(clampMouseCoord(int(e.MouseY)-y1, height))
+	return &local
+}
+
+// clampMouseCoord keeps a rebased coordinate inside the viewport. Events can
+// legitimately arrive from the rows above it (the tab bar itself), and a
+// negative column or row would be encoded as a wildly out-of-range cell.
+func clampMouseCoord(v, size int) int {
+	if v < 0 {
+		return 0
+	}
+	if size > 0 && v > size-1 {
+		return size - 1
+	}
+	return v
+}
+
 func TranslateMouseInput(e *vtinput.InputEvent) string {
 	cb := 0
 	isRelease := false

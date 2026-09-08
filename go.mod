@@ -23,9 +23,11 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/hanwen/go-fuse/v2 v2.11.0
 	github.com/jezek/xgb v1.3.1
+	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/jlaffaye/ftp v0.2.0
 	github.com/kbolino/pageant v0.0.0-20180919004629-179b60797d9f
 	github.com/mattn/go-runewidth v0.0.15
+	github.com/mewkiz/flac v1.0.14
 	github.com/mholt/archives v0.1.5
 	github.com/pkg/sftp v1.13.6
 	github.com/tetratelabs/wazero v1.12.0
@@ -37,8 +39,8 @@ require (
 	github.com/unxed/localecp v0.1.6
 	github.com/unxed/sevenzip v0.0.0-20260826171606-a536eac9d163
 	github.com/unxed/tar v0.1.128
-	github.com/unxed/vtinput v0.1.7
-	github.com/unxed/vtui v0.1.316
+	github.com/unxed/vtinput v0.1.8
+	github.com/unxed/vtui v0.1.328
 	github.com/unxed/zip v0.1.131
 	github.com/unxed/zipper v0.1.153
 	github.com/vmihailenco/msgpack/v5 v5.4.1
@@ -87,7 +89,11 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.7 // indirect
 	github.com/googleapis/gax-go/v2 v2.16.0 // indirect
 	github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.13.0.20260811162617-464c2ddfc34c // indirect
+	github.com/icza/bitio v1.1.0 // indirect
 	github.com/jfreymuth/pulse v0.1.2 // indirect
+	github.com/jfreymuth/vorbis v1.0.2 // indirect
+	github.com/mewkiz/pkg v0.0.0-20250417130911-3f050ff8c56d // indirect
+	github.com/mewpkg/term v0.0.0-20241026122259-37a80af23985 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/unxed/goclip v0.1.2 // indirect
 	github.com/unxed/kiwi-go v0.1.0 // indirect
@@ -187,4 +193,4 @@ replace github.com/unxed/vtui => ./third_party/vtui
 // replace github.com/unxed/colorer4go => ../../../dev/colorer4go
 // replace github.com/unxed/vtui => ../../../dev/vtui
 
-replace github.com/neurlang/wayland => github.com/unxed/wayland v0.0.0-20260904142929-d13d49067138
+replace github.com/neurlang/wayland => github.com/unxed/wayland v0.0.0-20260906012106-4096eafdd7f4

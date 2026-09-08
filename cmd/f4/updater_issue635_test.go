@@ -40,7 +40,12 @@ func TestIssue635NetworkDropWhileProgressScreenIsBackground(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
-	performUpdate(pf, ts.URL, "zip", "v9.9.9", "2026-08-22")
+	performUpdate(pf, updateCandidate{
+		downloadURL: ts.URL,
+		archiveKind: "zip",
+		updateKey:   "v9.9.9",
+		needsUpdate: true,
+	})
 
 	backgrounded := false
 	deadline := time.After(5 * time.Second)

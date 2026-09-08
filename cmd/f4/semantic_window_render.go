@@ -10,6 +10,7 @@ import (
 )
 
 type semanticEditorStyledRowsContext struct {
+	occurrenceNeedle  string
 	editSession       int
 	width             int
 	scrollLeft        int
@@ -252,7 +253,7 @@ func semanticRowsWithContentKeys(rows []extui.TextRowModel) []extui.TextRowModel
 
 func semanticEditorStyledRowsCacheEligible(ev *EditorView) bool {
 	if ev == nil || ev.pt == nil || ev.li == nil || ev.engine == nil ||
-		ev.pasting || ev.saving || ev.targetLine != -1 || ev.HexMode ||
+		len(ev.extraCursors) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 || ev.HexMode ||
 		ev.DecodeMode || ev.DisasmMode != 0 || ev.highlighting ||
 		(ev.acEnabled && len(ev.acMatches) > 0) {
 		return false
@@ -278,6 +279,7 @@ func semanticEditorStyledRowsContextFor(ev *EditorView, width int) semanticEdito
 		}
 	}
 	return semanticEditorStyledRowsContext{
+		occurrenceNeedle:  string(ev.occurrenceNeedle()),
 		editSession:       ev.editSession,
 		width:             width,
 		scrollLeft:        ev.ScrollLeft,

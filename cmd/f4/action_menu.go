@@ -16,9 +16,18 @@ import (
 // the *active* bindings, including user overrides from hotkeys.ini.
 func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 	type menu struct {
-		title  string
-		items  []vtui.MenuItem
-		pinned []vtui.MenuItem
+		title string
+		items []vtui.MenuItem
+		// pluginSeparator records that plugin-contributed commands have
+		// already been set off from the built-in ones, so a menu fed by
+		// several plugins gets one dividing line rather than one per
+		// command.
+		pluginSeparator bool
+		pinned          []vtui.MenuItem
+		// subMenus maps a MenuSubPath to the index of its heading in items,
+		// so every action of a group lands under the one heading no matter
+		// how the registration order interleaves them.
+		subMenus map[string]int
 	}
 	var order []string
 	menus := make(map[string]*menu)
@@ -59,6 +68,34 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 			m.pinned = append(m.pinned, item)
 			return
 		}
+		if a.MenuSubPath != "" {
+			heading, ok := m.subMenus[a.MenuSubPath]
+			if !ok {
+				if a.MenuSeparatorBefore {
+					m.items = append(m.items, vtui.MenuItem{Separator: true})
+				}
+				subTitle := Msg("Menu." + area + "." + a.MenuPath + "." + a.MenuSubPath)
+				if strings.HasPrefix(subTitle, "{") {
+					subTitle = a.MenuSubPath
+				}
+				if !strings.Contains(subTitle, "&") {
+					subTitle = "&" + subTitle
+				}
+				m.items = append(m.items, vtui.MenuItem{
+					Text:     subTitle,
+					UserData: menuHistoryItemKey("submenu:" + a.MenuPath + "." + a.MenuSubPath),
+				})
+				heading = len(m.items) - 1
+				if m.subMenus == nil {
+					m.subMenus = make(map[string]int)
+				}
+				m.subMenus[a.MenuSubPath] = heading
+			} else if a.MenuSeparatorBefore {
+				m.items[heading].SubItems = append(m.items[heading].SubItems, vtui.MenuItem{Separator: true})
+			}
+			m.items[heading].SubItems = append(m.items[heading].SubItems, item)
+			return
+		}
 		if a.MenuSeparatorBefore {
 			m.items = append(m.items, vtui.MenuItem{Separator: true})
 		}
@@ -80,9 +117,17 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		if !strings.Contains(text, "&") {
 			text = "&" + text
 		}
+		if !m.pluginSeparator {
+			m.pluginSeparator = true
+			// A menu a plugin created itself opens with its own commands,
+			// so there is nothing above them to divide from.
+			if len(m.items) > 0 {
+				m.items = append(m.items, vtui.MenuItem{Separator: true})
+			}
+		}
 		m.items = append(m.items, vtui.MenuItem{
 			Text:     text,
-			Shortcut: command.Shortcut,
+			Shortcut: pluginCommandShortcut(command),
 			UserData: menuHistoryItemKey("plugin:" + command.ID),
 			OnClick: func() {
 				if pf := findPanelsFrameAnyScreen(); pf != nil {
@@ -127,7 +172,29 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		items := make([]vtui.MenuItem, 0, len(m.items)+len(m.pinned))
 		items = append(items, m.items...)
 		items = append(items, m.pinned...)
-		result = append(result, vtui.MenuBarItem{Label: m.title, SubItems: items})
+		result = append(result, vtui.MenuBarItem{Label: m.title, SubItems: normalizeMenuSeparators(items)})
+	}
+	return result
+}
+
+// normalizeMenuSeparators removes separators that would draw a line with
+// nothing to divide: a leading or trailing one, and any run left behind
+// when every item of a group is hidden. A separator belongs to the item
+// below it, so it disappears together with that item; without this pass
+// the neighbouring groups would silently merge into a doubled line.
+func normalizeMenuSeparators(items []vtui.MenuItem) []vtui.MenuItem {
+	result := make([]vtui.MenuItem, 0, len(items))
+	for _, item := range items {
+		if item.Separator && (len(result) == 0 || result[len(result)-1].Separator) {
+			continue
+		}
+		if len(item.SubItems) > 0 {
+			item.SubItems = normalizeMenuSeparators(item.SubItems)
+		}
+		result = append(result, item)
+	}
+	for len(result) > 0 && result[len(result)-1].Separator {
+		result = result[:len(result)-1]
 	}
 	return result
 }

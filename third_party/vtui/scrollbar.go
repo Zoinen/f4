@@ -130,7 +130,7 @@ type ScrollBar struct {
 
 	repeatTimer  *time.Timer
 	repeatAction int // -1, 1, -2, 2
-	ColorIdx     int // Palette index for the scrollbar colors (defaults to ColTableBox)
+	ColorIdx     int // Palette index for the scrollbar colors (defaults to ColScrollBar)
 }
 
 func NewScrollBar(x, y, h int) *ScrollBar {

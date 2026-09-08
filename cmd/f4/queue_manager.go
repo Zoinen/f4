@@ -814,7 +814,7 @@ func NewQueueFrame() *QueueFrame {
 	}
 
 	qf := &QueueFrame{
-		BaseWindow: *vtui.NewBaseWindow(0, 2, scrW-1, scrH-1, " Operations Queue "),
+		BaseWindow: *vtui.NewBaseWindow(0, 2, scrW-1, scrH-1, " "+Msg("Queue.Title")+" "),
 	}
 	qf.ShowClose = true
 	qf.ShowZoom = true
@@ -824,12 +824,12 @@ func NewQueueFrame() *QueueFrame {
 	btnClear := vtui.NewButton(0, 0, Msg("Queue.BtnClear"))
 
 	qf.table = vtui.NewTableWithButtons(&qf.BaseWindow, []vtui.TableColumn{
-		{Title: "ID", Width: 4},
-		{Title: "State", Width: 10},
-		{Title: "Type", Width: 8},
-		{Title: "Description / Current File", MinWidth: 10},
-		{Title: "Progress", Width: 24},
-		{Title: "Speed", Width: 12},
+		{Title: Msg("Queue.ColID"), Width: 4},
+		{Title: Msg("Queue.ColState"), Width: 10},
+		{Title: Msg("Queue.ColType"), Width: 8},
+		{Title: Msg("Queue.ColDescription"), MinWidth: 10},
+		{Title: Msg("Queue.ColProgress"), Width: 24},
+		{Title: Msg("Queue.ColSpeed"), Width: 12},
 	}, btnCancel, btnClear)
 	useDialogTableColors(qf.table)
 	qf.table.Sortable = true

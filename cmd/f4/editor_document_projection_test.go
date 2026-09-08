@@ -255,6 +255,9 @@ func TestEditorDocumentPointerNoOpDoesNotRedraw(t *testing.T) {
 }
 
 func TestEditorDocumentPointerCursorOnlyUsesScalarPatch(t *testing.T) {
+	oldMarkOccurrences := AppConfig.EditorMarkOccurrences
+	AppConfig.EditorMarkOccurrences = false
+	t.Cleanup(func() { AppConfig.EditorMarkOccurrences = oldMarkOccurrences })
 	previousCrosshair := AppConfig.EditorCrosshair
 	AppConfig.EditorCrosshair = false
 	t.Cleanup(func() { AppConfig.EditorCrosshair = previousCrosshair })
@@ -571,5 +574,37 @@ func BenchmarkEditorVisibleRowProjection(b *testing.B) {
 				cells = ev.fillCellsSpan(cells, data, 1, 2, 0, false, 0, 0, nil, 0, false, -1, 0, 0, 0, 0, 120, tc.end)
 			}
 		})
+	}
+}
+
+func TestEditorNativePointerAddsAndClearsSecondaryCaret(t *testing.T) {
+	ev := projectionTestEditor(t, "first\nsecond")
+	ev.ensureEngineWidth()
+	guard := ev.editorCursorStateGuard()
+	click := &vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.FromLeft1stButtonPressed, ControlKeyState: vtinput.LeftAltPressed}
+	if !ev.processDocumentPointer(click, 6, 2, 0, ev.semanticLayoutRevision) {
+		t.Fatal("Alt+click did not change native caret state")
+	}
+	if len(ev.extraCursors) != 1 || ev.extraCursors[0].off != 8 || ev.caretOffset() != 0 {
+		t.Fatalf("native Alt+click moved primary or missed secondary: primary=%d secondary=%v", ev.caretOffset(), extraCaretOffsets(ev))
+	}
+	if guard.canPublish(ev, true) {
+		t.Fatal("secondary caret was reduced to a primary-only scalar patch")
+	}
+	style := ev.textProjectionStyle()
+	found := false
+	ev.projectTextRows(0, 20, 2, style, func(row editorProjectedTextRow) {
+		if row.visualRow == 1 {
+			found = row.cells[2].Attributes == style.selected
+		}
+	})
+	if !found {
+		t.Fatal("secondary caret missing from shared native/console projection")
+	}
+	click.ControlKeyState = 0
+	ev.processDocumentPointer(click, 6, 1, 0, ev.semanticLayoutRevision)
+	if len(ev.extraCursors) != 0 || ev.caretOffset() != 7 {
+		t.Fatal("plain click did not restore a single caret")
 	}
 }

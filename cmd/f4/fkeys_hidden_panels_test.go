@@ -48,8 +48,11 @@ func TestHotkeys_ShellActionsBoundInTerminalArea_Issue354(t *testing.T) {
 // The gate is NoAltScreenApp, which returns true when panels are
 // shown OR no AltScreen mode is engaged.
 func TestHotkeys_ShellActions_TerminalArea_GatedByAltScreen_Issue354(t *testing.T) {
-	// Reset the global frame manager and register a hidden-panels PanelsFrame
-	// with an AltScreen app active — that's the state where the condition must fail.
+	// Register a hidden-panels PanelsFrame with an AltScreen app active —
+	// that's the state where the condition must fail. It is never popped, so
+	// it needs a manager of its own: left on the shared one it would keep
+	// answering for the top frame in every test that runs afterwards.
+	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := setupMockPanelsFrame(t)
 	defer pf.Close()

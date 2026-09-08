@@ -80,6 +80,57 @@ func build() {
 	}
 }
 
+func TestScanFindsWidenedCaptions(t *testing.T) {
+	root := t.TempDir()
+
+	writeFile(t, filepath.Join(root, "widgets.go"), `package sample
+
+func build() {
+	vtui.NewText(0, 0, "Ready", color)
+	vtui.NewText(0, 0, Msg("Status.Ready"), color)
+	vtui.NewGroupBox(0, 0, 10, 4, " Flags ")
+	vtui.NewBaseWindow(0, 2, 10, 20, " Queue ")
+	vtui.NewCenteredDialog(20, 8, " Prefix: "+name+" ")
+	vtui.NewListBox(0, 0, 10, 4, []string{"First", Msg("List.Second")})
+	vtui.NewMenuBar([]string{"&File"})
+	menu.AddItem(vtui.MenuItem{Text: fmt.Sprintf("Unmount all (%d)", n), UserData: -1})
+	menu.AddItem(vtui.MenuItem{Text: fmt.Sprintf(Msg("Mounts.UnmountAll"), n)})
+	vtui.NewTable(0, 0, 10, 4, []vtui.TableColumn{
+		{Title: "Size", Width: 10},
+		{Title: Msg("FindFile.ColPath"), Width: 38},
+	})
+	win.SetTitle(" Attributes ")
+	vtui.NewLabel(0, 0, padLabel("O&ct:"), edit)
+	vtui.NewLabel(0, 0, fmt.Sprintf("%s", value), nil)
+	vtui.NewEdit(0, 0, 20, "SELECT 1")
+}
+`)
+
+	findings, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	got := make([]string, 0, len(findings))
+	for _, f := range findings {
+		got = append(got, f.Literal)
+	}
+	sort.Strings(got)
+
+	want := []string{
+		" Attributes ", " Flags ", " Prefix: ", " Queue ", "&File",
+		"First", "O&ct:", "Ready", "Size", "Unmount all (%d)",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Scan found %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Scan found %v, want %v", got, want)
+		}
+	}
+}
+
 func TestBaselineRoundTrip(t *testing.T) {
 	findings := []Finding{
 		{File: "b.go", Line: 3, Func: "NewButton", Literal: "Two\tTabbed"},

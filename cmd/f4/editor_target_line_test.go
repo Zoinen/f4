@@ -95,6 +95,7 @@ func TestEditorView_InMemoryStartIndexingAppliesSavedPosition(t *testing.T) {
 // waits for that immutable batch to be applied before producing another, so
 // there cannot be a backlog of stale updates after a close or navigation.
 func TestEditorView_IndexerRestoresTargetLineAfterLateDrain(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	drainPendingTasks()
 

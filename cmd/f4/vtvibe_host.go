@@ -119,6 +119,7 @@ func init() {
 		DescKey:     "Action.AI.TogglePanel.Desc",
 		DefaultKeys: []string{"RCtrlA"},
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Handler:     withAI(func(pf *PanelsFrame) { aiTogglePanel(pf) }),
 	})
 	RegisterAction(Action{
@@ -139,6 +140,7 @@ func init() {
 		Description: "Clear the AI dialog history and artifacts, keeping the context files",
 		DescKey:     "Action.AI.NewSession.Desc",
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Visible:     func() bool { return isAIPanelActive() },
 		Handler:     withAI(func(pf *PanelsFrame) { aiNewSession(pf) }),
 	})
@@ -151,6 +153,7 @@ func init() {
 		DescKey:     "Action.AI.ApplyPatch.Desc",
 		DefaultKeys: []string{"RCtrlP"},
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Visible:     func() bool { return aiSession().LastPatch() != nil },
 		Handler:     withAI(func(pf *PanelsFrame) { aiApplyPatch(pf) }),
 	})
@@ -172,6 +175,7 @@ func init() {
 		Description: "Show the available AI commands and command-line forms",
 		DescKey:     "Action.AI.Help.Desc",
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Handler:     withAI(func(pf *PanelsFrame) { aiCommand(pf, "help") }),
 	})
 	RegisterAction(Action{
@@ -182,6 +186,7 @@ func init() {
 		Description: "Attach the current project's AP specification to the AI context",
 		DescKey:     "Action.AI.AttachAPSpec.Desc",
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Handler:     withAI(func(pf *PanelsFrame) { aiAttachAPSpec(pf) }),
 	})
 	RegisterAction(Action{
@@ -192,6 +197,7 @@ func init() {
 		Description: "Query and show the AI models available from the configured provider",
 		DescKey:     "Action.AI.ListModels.Desc",
 		MenuPath:    "Commands",
+		MenuSubPath: "AI",
 		Handler:     withAI(func(pf *PanelsFrame) { aiListModels(pf) }),
 	})
 }

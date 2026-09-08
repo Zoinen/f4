@@ -190,9 +190,35 @@ func GetFar2lClipboard() (string, bool) {
 	return "", false
 }
 
+// ResetFar2lNegotiation forgets that a terminal acknowledged the extensions.
+// A process that changes the terminal under itself -- a session daemon taking
+// over a new client's PTY -- calls this before re-announcing the protocols, so
+// a client that never answers is not talked to in far2l anyway.
+func ResetFar2lNegotiation() {
+	fm := FrameManager
+	if fm == nil {
+		return
+	}
+	fm.far2lNegotiated.Store(false)
+	fm.far2lEnabled.Store(Far2lEnabled)
+}
+
 func far2lEnabledFor(fm *frameManager) bool {
-	if fm != nil && fm.far2lConfigured.Load() {
-		return fm.far2lEnabled.Load()
+	// A native window has no terminal to answer an APC request, and every
+	// far2l clipboard call would spend its full timeout waiting for a reply
+	// that cannot arrive. This matters because the acknowledgement now
+	// survives Init: a process that started in a terminal and then opened a
+	// GUI window must not keep the negotiated state.
+	if noTerminalBehind.Load() {
+		return false
+	}
+	if fm != nil {
+		if fm.far2lNegotiated.Load() {
+			return true
+		}
+		if fm.far2lConfigured.Load() {
+			return fm.far2lEnabled.Load()
+		}
 	}
 	return Far2lEnabled
 }

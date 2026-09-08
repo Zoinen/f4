@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -292,6 +293,7 @@ type PanelsFrame struct {
 	activeIdx             int    // 0 for left, 1 for right
 	folderHistoryPos      [2]int // position in provider's newest-first folder history
 	executing             bool
+	afterExecution        func() // run once by endExecution; queues the next user-menu step
 	shellPromptReady      bool
 	ignoreNextPrompt      bool
 	returnToPanels        bool
@@ -388,6 +390,7 @@ type PanelsFrame struct {
 	// mouse routing lives here; the highlight and text extraction
 	// live on the TerminalView itself.
 	termSelDragging bool      // LMB gesture is waiting for its release
+	termSelEscHeld  bool      // Esc key-down dismissed a highlight; swallow its key-up
 	termSelClickN   int       // 1 / 2 / 3 for triple-click detection
 	termSelClickAt  time.Time // time of the last click
 	termSelClickX   int
@@ -780,6 +783,7 @@ func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
 			{Separator: true},
 			{Text: Msg("FileOp.BtnBackground"), Command: CmBackground},
 			{Text: Msg("Action.Workspace.New"), Command: CmWorkspaceNew, Shortcut: "Ctrl+N"},
+			{Text: Msg("Action.Workspace.NewTerminal"), Command: CmWorkspaceNewTerminal, Shortcut: "Ctrl+Shift+O"},
 			{Text: Msg("Action.Workspace.Close"), Command: CmWorkspaceClose, Shortcut: "Ctrl+W"},
 			{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
 		}}
@@ -796,11 +800,13 @@ func (pf *PanelsFrame) leftMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.SortTime"), Command: CmLeftSortTime},
 		{Text: "&" + Msg("Menu.SortSize"), Command: CmLeftSortSize},
 		{Text: "&" + Msg("Menu.SortUnsorted"), Command: CmLeftSortUnsorted},
+		{Text: "&" + Msg("Menu.SortUseGroups"), Command: CmLeftSortGroups},
 		{Separator: true},
 		{Text: Msg("Menu.Left.DriveMenu"), Command: CmLeftDriveMenu, Shortcut: "Alt+F1"},
 		{Separator: true},
 		{Text: Msg("FileOp.BtnBackground"), Command: CmBackground},
 		{Text: Msg("Action.Workspace.New"), Command: CmWorkspaceNew, Shortcut: "Ctrl+N"},
+		{Text: Msg("Action.Workspace.NewTerminal"), Command: CmWorkspaceNewTerminal, Shortcut: "Ctrl+Shift+O"},
 		{Text: Msg("Action.Workspace.Close"), Command: CmWorkspaceClose, Shortcut: "Ctrl+W"},
 		{Text: Msg("Menu.Exit"), Command: vtui.CmQuit},
 	}}
@@ -830,6 +836,7 @@ func (pf *PanelsFrame) rightMenu() vtui.MenuBarItem {
 		{Text: "&" + Msg("Menu.SortTime"), Command: CmRightSortTime},
 		{Text: "&" + Msg("Menu.SortSize"), Command: CmRightSortSize},
 		{Text: "&" + Msg("Menu.SortUnsorted"), Command: CmRightSortUnsorted},
+		{Text: "&" + Msg("Menu.SortUseGroups"), Command: CmRightSortGroups},
 		{Separator: true},
 		{Text: Msg("Menu.Right.DriveMenu"), Command: CmRightDriveMenu, Shortcut: "Alt+F2"},
 	}}
@@ -895,6 +902,15 @@ func getSortMenuText(current, target SortMode, label string) string {
 	return " " + label
 }
 
+// getToggleMenuText marks an on/off menu row the same way the mode rows are
+// marked, so the side menus stay visually consistent.
+func getToggleMenuText(on bool, label string) string {
+	if on {
+		return "√" + label
+	}
+	return " " + label
+}
+
 var commandToActionName = map[int]string{
 	CmLeftBrief:             "Panel.Left.ViewBrief",
 	CmLeftMedium:            "Panel.Left.ViewMedium",
@@ -911,11 +927,13 @@ var commandToActionName = map[int]string{
 	CmLeftSortTime:          "Panel.Left.SortByTime",
 	CmLeftSortSize:          "Panel.Left.SortBySize",
 	CmLeftSortUnsorted:      "Panel.Left.SortUnsorted",
+	CmLeftSortGroups:        "Panel.Left.SortUseGroups",
 	CmRightSortName:         "Panel.Right.SortByName",
 	CmRightSortExt:          "Panel.Right.SortByExt",
 	CmRightSortTime:         "Panel.Right.SortByTime",
 	CmRightSortSize:         "Panel.Right.SortBySize",
 	CmRightSortUnsorted:     "Panel.Right.SortUnsorted",
+	CmRightSortGroups:       "Panel.Right.SortUseGroups",
 	CmLeftAIContext:         "AI.Left.ViewContext",
 	CmLeftAIChat:            "AI.Left.ViewChat",
 	CmLeftAIOut:             "AI.Left.ViewOut",
@@ -926,6 +944,7 @@ var commandToActionName = map[int]string{
 	CmRightAIMem:            "AI.Right.ViewMem",
 	CmBackground:            "App.Background",
 	CmWorkspaceNew:          "Workspace.New",
+	CmWorkspaceNewTerminal:  "Workspace.NewTerminal",
 	CmWorkspaceClose:        "Workspace.Close",
 	CmLeftDriveMenu:         "Panel.LeftDriveMenu",
 	CmRightDriveMenu:        "Panel.RightDriveMenu",
@@ -968,11 +987,13 @@ var commandShortcutActionName = map[int]string{
 	CmLeftSortTime:      "Panel.SortByTime",
 	CmLeftSortSize:      "Panel.SortBySize",
 	CmLeftSortUnsorted:  "Panel.SortUnsorted",
+	CmLeftSortGroups:    "Panel.SortUseGroups",
 	CmRightSortName:     "Panel.SortByName",
 	CmRightSortExt:      "Panel.SortByExt",
 	CmRightSortTime:     "Panel.SortByTime",
 	CmRightSortSize:     "Panel.SortBySize",
 	CmRightSortUnsorted: "Panel.SortUnsorted",
+	CmRightSortGroups:   "Panel.SortUseGroups",
 }
 
 func (pf *PanelsFrame) updateMenuCheckmarks() {
@@ -987,15 +1008,18 @@ func (pf *PanelsFrame) updateMenuCheckmarks() {
 	lSort, rSort := SortName, SortName
 	lGalleryMode, rGalleryMode := GalleryLayoutMasonry, GalleryLayoutMasonry
 	lGalleryColumns, rGalleryColumns := defaultGalleryColumnCount, defaultGalleryColumnCount
+	lGroups, rGroups := false, false
 	if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
 		lSort = fsp.sortMode
 		lGalleryMode = fsp.effectiveGalleryLayoutMode()
 		lGalleryColumns = fsp.effectiveGalleryColumnCount()
+		lGroups = fsp.useSortGroups
 	}
 	if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
 		rSort = fsp.sortMode
 		rGalleryMode = fsp.effectiveGalleryLayoutMode()
 		rGalleryColumns = fsp.effectiveGalleryColumnCount()
+		rGroups = fsp.useSortGroups
 	}
 
 	modeItems := []struct {
@@ -1024,6 +1048,18 @@ func (pf *PanelsFrame) updateMenuCheckmarks() {
 	}{{SortName, "SortName"}, {SortExt, "SortExt"}, {SortTime, "SortTime"}, {SortSize, "SortSize"}, {SortUnsorted, "SortUnsorted"}} {
 		pf.menuBar.Items[0].SubItems[i+6].Text = getSortMenuText(lSort, item.mode, "&"+Msg("Menu."+item.key))
 		pf.menuBar.Items[rightMenuIdx].SubItems[i+6].Text = getSortMenuText(rSort, item.mode, "&"+Msg("Menu."+item.key))
+	}
+
+	for _, side := range []struct {
+		index   int
+		enabled bool
+	}{{0, lGroups}, {rightMenuIdx, rGroups}} {
+		for i := range pf.menuBar.Items[side.index].SubItems {
+			item := &pf.menuBar.Items[side.index].SubItems[i]
+			if item.Command == CmLeftSortGroups || item.Command == CmRightSortGroups {
+				item.Text = getToggleMenuText(side.enabled, "&"+Msg("Menu.SortUseGroups"))
+			}
+		}
 	}
 
 	// Update shortcuts dynamically from the action registry. Framework-owned
@@ -1188,6 +1224,40 @@ var spawnLocalShellPTY = true
 // is deliberately explicit so a plain `exit` can clear all shell-local state
 // without asking the parent process that launched f4 to do anything.
 func (pf *PanelsFrame) resetLocalShell() bool {
+	return pf.restartLocalShell(false)
+}
+
+// localShellGone is what the read loop reports when the local shell's output
+// ends: the shell process has exited on its own. On Windows that is what
+// `exit` inside a batch file does -- cmd runs batch files in-process, so the
+// exit ends cmd itself, not just the batch (issue #409; `exit /b` ends only
+// the batch). Nothing can come back from that shell: no prompt to end the
+// command, no process for Ctrl+C or Ctrl+Break to reach. So the execution is
+// ended here, the panels come back, and a fresh shell is started with the
+// screen left as the old one left it, so the batch's output stays readable.
+//
+// Runs on the UI goroutine. A shell that was replaced deliberately
+// (resetLocalShell) or taken by shutdown is no longer the local PTY by the
+// time its read loop ends, and is left alone.
+func (pf *PanelsFrame) localShellGone(p PtyBackend) {
+	if !pf.isLocalPTY(p) {
+		return
+	}
+	vtui.DebugLog("PTY: local shell exited on its own; ending the command and starting a fresh shell")
+	// Whatever was queued behind the running command belongs to the shell
+	// that just died; it is not replayed into the fresh one.
+	pf.afterExecution = nil
+	if pf.executing {
+		pf.endExecution()
+	}
+	pf.restartLocalShell(true)
+}
+
+// restartLocalShell replaces the local shell. keepScreen leaves the terminal
+// contents in place (with the cursor moved to a fresh line) instead of
+// clearing them; a typed `exit` wants a clean screen, a shell that died under
+// a batch file wants the batch's output kept.
+func (pf *PanelsFrame) restartLocalShell(keepScreen bool) bool {
 	pf.processEnvironmentWriteMu.Lock()
 	pty := pf.localPTY()
 	if pty == nil {
@@ -1239,6 +1309,7 @@ func (pf *PanelsFrame) resetLocalShell() bool {
 	_ = pty.Close()
 
 	pf.executing = false
+	pf.afterExecution = nil
 	pf.termView.ResetKeyboardProtocols()
 	pf.shellPromptReady = false
 	pf.ignoreNextPrompt = false
@@ -1253,7 +1324,16 @@ func (pf *PanelsFrame) resetLocalShell() bool {
 	if pf.termView != nil {
 		pf.termView.SetMuted(false)
 		pf.termView.pty = nil
-		pf.termView.ResetBuffer(pf.termView.Width, pf.termView.Height)
+		if keepScreen {
+			if pf.termView.UseAltScreen {
+				pf.termView.ResetBuffer(pf.termView.Width, pf.termView.Height)
+			} else if pf.termView.CursorX != 0 {
+				parser := NewAnsiParser(pf.termView, nil)
+				parser.Process([]byte("\r\n"))
+			}
+		} else {
+			pf.termView.ResetBuffer(pf.termView.Width, pf.termView.Height)
+		}
 	}
 	pf.parser = NewAnsiParser(pf.termView, nil)
 	pf.parser.replyTo = pf.activeReplyPTY
@@ -1338,12 +1418,8 @@ func (pf *PanelsFrame) initPTY() {
 			if err != nil {
 				vtui.DebugLog("PTY: Local read loop exited: %v", err)
 				// A shell that is gone cannot print the prompt that would
-				// end the command; do not leave the panels hidden for it.
-				uiFrames.PostTask(func() {
-					if pf.executing && pf.isLocalPTY(p) {
-						pf.endExecution()
-					}
-				})
+				// end the command, and cannot take another one either.
+				uiFrames.PostTask(func() { pf.localShellGone(p) })
 				return
 			}
 			pf.consumeLocalOutput(p, buf[:n])
@@ -1935,6 +2011,10 @@ func (pf *PanelsFrame) endExecution() {
 		pf.RefreshAll()
 		vtui.FrameManager.Redraw()
 	}
+	if next := pf.afterExecution; next != nil {
+		pf.afterExecution = nil
+		next()
+	}
 }
 
 // logWindowsReflowRemoved says once per session that the Windows reflow
@@ -2331,6 +2411,28 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 
+	// Plain Esc on a highlighted mouse selection only dismisses the
+	// highlight (#881). The key is consumed instead of reaching the shell,
+	// so a selection can be backed out of without the running command
+	// seeing an escape (readline/zsh treat it as a line reset, much like
+	// Ctrl+C). The matching key-up is swallowed too, so win32-input-mode
+	// and kitty-protocol apps never receive a release without its press.
+	if !pf.showPanels && e.Type == vtinput.KeyEventType &&
+		e.VirtualKeyCode == vtinput.VK_ESCAPE && !ctrl && !alt && !shift {
+		if e.KeyDown && pf.termView.HasSelection() {
+			pf.termView.ClearSelection()
+			pf.termSelEscHeld = true
+			if vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
+			return true
+		}
+		if !e.KeyDown && pf.termSelEscHeld {
+			pf.termSelEscHeld = false
+			return true
+		}
+	}
+
 	// A keyboard action starts a new terminal interaction. Clear the old
 	// mouse highlight before forwarding the key to a shell or terminal app.
 	if !pf.showPanels && e.Type == vtinput.KeyEventType && e.KeyDown && pf.termView.HasSelection() {
@@ -2725,9 +2827,6 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 				return true
 			}
-			isDirChange := false
-			targetPath := ""
-
 			if lowerCmd == "exit f4" {
 				pf.cmdLine.Clear()
 				if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
@@ -2737,39 +2836,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				return true
 			}
 
-			// Intercept drive letter changes (e.g., "C:", "D:\") on Windows
-			if runtime.GOOS == "windows" && len(trimmedCmd) >= 2 && len(trimmedCmd) <= 3 && trimmedCmd[1] == ':' {
-				if lowerCmd[0] >= 'a' && lowerCmd[0] <= 'z' {
-					isDirChange = true
-					targetPath = trimmedCmd
-					if len(trimmedCmd) == 2 {
-						targetPath += string(os.PathSeparator)
-					}
-				}
-				// Intercept standard 'cd' commands
-			} else if strings.HasPrefix(lowerCmd, "cd ") || strings.HasPrefix(lowerCmd, "chdir ") || (runtime.GOOS == "windows" && strings.HasPrefix(lowerCmd, "cd /d ")) {
-				prefixLen := 3
-				if strings.HasPrefix(lowerCmd, "cd /d ") {
-					prefixLen = 6
-				} else if strings.HasPrefix(lowerCmd, "chdir ") {
-					prefixLen = 6
-				}
-				isDirChange = true
-				targetPath = strings.TrimSpace(trimmedCmd[prefixLen:])
-				// Remove quotes if user typed: cd "C:\My Folder" or cd '/tmp/a b'
-				if len(targetPath) >= 2 && targetPath[0] == '\'' && targetPath[len(targetPath)-1] == '\'' {
-					targetPath = targetPath[1 : len(targetPath)-1]
-					targetPath = strings.ReplaceAll(targetPath, "'\\''", "'")
-				} else if len(targetPath) >= 2 && targetPath[0] == '"' && targetPath[len(targetPath)-1] == '"' {
-					targetPath = targetPath[1 : len(targetPath)-1]
-				}
-			} else if lowerCmd == "cd.." || lowerCmd == "cd .." {
-				isDirChange = true
-				targetPath = ".."
-			} else if lowerCmd == "cd\\" || lowerCmd == "cd/" {
-				isDirChange = true
-				targetPath = string(os.PathSeparator)
-			} else if lowerCmd == "exit" {
+			// Intercept directory changes (cd, chdir, drive letters on
+			// Windows) so the panel follows them instead of the shell.
+			targetPath, isDirChange := parseDirChangeCommand(trimmedCmd)
+			if !isDirChange && lowerCmd == "exit" {
 				pf.cmdLine.Clear()
 				if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
 					pf.setCommandLineFocus(false)
@@ -3416,12 +3486,26 @@ func (pf *PanelsFrame) processMiddleMouseGesture(e *vtinput.InputEvent) (handled
 // terminalWantsMouseEvent applies the DEC mouse-tracking mode selected by
 // the terminal application. SGR (1006) chooses the wire format; it does not
 // itself request mouse events. In normal tracking mode (1000), applications
-// receive button presses and releases only, not hover motion.
+// receive button presses and releases only, not hover motion. Button-event
+// tracking (1002) adds motion while a button is held; only any-event
+// tracking (1003) reports the pointer moving with no button down. Every
+// backend now delivers that hover motion (it is what underlines a URL under
+// the pointer, #459), so a vim or mc that asked for 1002 must not see it.
 func terminalWantsMouseEvent(mode int, e *vtinput.InputEvent) bool {
 	if mode == 0 || e == nil {
 		return false
 	}
-	return mode != 1000 || e.MouseEventFlags&vtinput.MouseMoved == 0
+	if e.MouseEventFlags&vtinput.MouseMoved == 0 {
+		return true
+	}
+	switch mode {
+	case 1000:
+		return false
+	case 1002:
+		return e.ButtonState != 0
+	default:
+		return true
+	}
 }
 
 func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
@@ -3441,7 +3525,11 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 		active := pf.getActivePTY()
 		if active != nil && terminalWantsMouseEvent(pf.termView.MouseTrackingMode, e) {
-			seq := TranslateMouseInput(e)
+			seq := TranslateMouseInput(rebaseTerminalMouseEvent(
+				e,
+				pf.termView.X1, pf.termView.Y1,
+				pf.termView.Width, pf.termView.Height,
+			))
 			pf.writePTY(active, []byte(seq))
 			return true
 		}
@@ -3923,6 +4011,8 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return actionBackground()
 	case CmWorkspaceNew:
 		return actionWorkspaceNew()
+	case CmWorkspaceNewTerminal:
+		return actionWorkspaceNewTerminal()
 	case CmWorkspaceClose:
 		return actionWorkspaceClose()
 	case CmLeftDriveMenu:
@@ -3933,21 +4023,7 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		return true
 	case vtui.CmResize: // Used as a hack for 'fork' command from FrameManager
 		if s, ok := args.(string); ok && s == "fork" {
-			clone := pf.Clone()
-			// Ctrl+N means "fork the panels", including when it is invoked
-			// while the terminal is visible. Copying showPanels=false creates
-			// two visually identical cmd.exe workspaces and makes a successful
-			// switch look like it did nothing. Keep the running terminal in the
-			// original workspace and expose the cloned panels in the new one.
-			if !pf.showPanels {
-				clone.showPanels = true
-				if clone.lastW > 0 && clone.lastH > 0 {
-					clone.ResizeConsole(clone.lastW, clone.lastH)
-				} else {
-					clone.updateMenuCheckmarks()
-				}
-			}
-			vtui.FrameManager.AddScreen(clone)
+			vtui.FrameManager.AddScreen(pf.forkPanelsClone())
 			return true
 		}
 
@@ -4088,6 +4164,18 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		}
 		pf.updateMenuCheckmarks()
 		return true
+	case CmLeftSortGroups:
+		if fsp, ok := pf.panels[0].(*FileSystemPanel); ok {
+			fsp.ToggleSortGroups()
+		}
+		pf.updateMenuCheckmarks()
+		return true
+	case CmRightSortGroups:
+		if fsp, ok := pf.panels[1].(*FileSystemPanel); ok {
+			fsp.ToggleSortGroups()
+		}
+		pf.updateMenuCheckmarks()
+		return true
 	case CmSwapPanels:
 		pf.panels[0], pf.panels[1] = pf.panels[1], pf.panels[0]
 		pf.activeIdx = 1 - pf.activeIdx
@@ -4123,6 +4211,12 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 	case CmSortUnsorted:
 		if fsp := pf.getActivePanel(); fsp != nil {
 			fsp.SetSortMode(SortUnsorted)
+		}
+		pf.updateMenuCheckmarks()
+		return true
+	case CmSortGroups:
+		if fsp := pf.getActivePanel(); fsp != nil {
+			fsp.ToggleSortGroups()
 		}
 		pf.updateMenuCheckmarks()
 		return true
@@ -4270,6 +4364,13 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 // runProgressTaskAfter starts the worker immediately but postpones showing its
 // dialog. A task that completes before delay never creates a visible screen,
 // avoiding a one-frame flash for fast remote operations.
+// progressBlockedByModal reports whether a modal frame currently owns the
+// active screen, so a progress screen must not be placed over it.
+func progressBlockedByModal(frames interface{ GetTopFrame() vtui.Frame }) bool {
+	top := frames.GetTopFrame()
+	return top != nil && top.IsModal()
+}
+
 func (pf *PanelsFrame) runProgressTaskAfter(delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
 	pf.runProgressTaskAfterContext(nil, delay, title, startMsg, forked, worker, onComplete)
 }
@@ -4339,8 +4440,11 @@ func (pf *PanelsFrame) runProgressTaskAfterContext(lifetime context.Context, del
 		// password) before this delayed progress screen is due to appear.
 		// Do not put the progress screen on a new active screen while that
 		// prompt is waiting on the old one: it would hide the prompt and leave
-		// the worker blocked forever. Retry after the modal dialog is dismissed.
-		if top := uiFrames.GetTopFrame(); top != nil && top.IsModal() {
+		// the worker blocked forever. The prompt cycle is also held by the
+		// worker itself (vfs.HoldInteractivePrompt), which covers the gap
+		// between a rejected answer and the next dialog, when no modal frame
+		// is on screen yet. Retry after the prompt is over.
+		if vfs.InteractivePromptPending() || progressBlockedByModal(uiFrames) {
 			time.AfterFunc(50*time.Millisecond, func() {
 				uiFrames.PostTaskWithRedrawDecision(showDialog)
 			})
@@ -4455,8 +4559,9 @@ func (pf *PanelsFrame) RunAdvancedProgressTask(title string, forked bool, worker
 		default:
 		}
 		// Keep a password or other modal prompt reachable if the worker posts
-		// it before this progress screen reaches the UI queue.
-		if top := uiFrames.GetTopFrame(); top != nil && top.IsModal() {
+		// it before this progress screen reaches the UI queue, and stay away
+		// while the worker is between two prompts of the same cycle.
+		if vfs.InteractivePromptPending() || progressBlockedByModal(uiFrames) {
 			time.AfterFunc(50*time.Millisecond, func() {
 				uiFrames.PostTask(showDialog)
 			})
@@ -4607,16 +4712,47 @@ func (pf *PanelsFrame) InputBox(title, prompt, defaultText string, callback func
 	})
 }
 
+type menuKeyLabelsFrame struct {
+	*vtui.VMenu
+	keyLabels *vtui.KeySet
+}
+
+func (f *menuKeyLabelsFrame) GetKeyLabels() *vtui.KeySet { return f.keyLabels }
+
+func (f *menuKeyLabelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
+	handled := f.VMenu.ProcessKey(e)
+	// VMenu compares FrameManager.GetTopFrame with its embedded menu when
+	// deciding whether Esc/F10 is consumed. The wrapper is the actual frame,
+	// so complete the same contract after forwarding the event.
+	if e != nil && e.KeyDown && f.IsDone() &&
+		(e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_F10) {
+		return true
+	}
+	return handled
+}
+
 func (pf *PanelsFrame) Menu(title string, items []string, callback func(int)) {
+	menuItems := make([]vtui.MenuItem, 0, len(items))
+	for _, item := range items {
+		menuItems = append(menuItems, vtui.MenuItem{Text: item})
+	}
+	pf.menuItems(title, menuItems, nil, callback)
+}
+
+func (pf *PanelsFrame) menuItems(title string, items []vtui.MenuItem, onKeyDown func(*vtui.VMenu, *vtinput.InputEvent) bool, callback func(int)) {
+	pf.menuItemsWithKeyLabels(title, items, onKeyDown, callback, nil)
+}
+
+func (pf *PanelsFrame) menuItemsWithKeyLabels(title string, items []vtui.MenuItem, onKeyDown func(*vtui.VMenu, *vtinput.InputEvent) bool, callback func(int), keyLabels *vtui.KeySet) {
 	vtui.FrameManager.PostTask(func() {
 		menu := vtui.NewVMenu(title)
 
 		// Calculate dynamic width based on items and title
 		maxW := runewidth.StringWidth(title) + 10
-		for _, itm := range items {
-			menu.AddItem(vtui.MenuItem{Text: itm})
-			clean, _, _ := vtui.ParseAmpersandString(itm)
-			w := runewidth.StringWidth(clean) + 8 // padding for markers and borders
+		for _, item := range items {
+			menu.AddItem(item)
+			clean, _, _ := vtui.ParseAmpersandString(item.Text)
+			w := runewidth.StringWidth(clean) + runewidth.StringWidth(item.Shortcut) + 8 // padding for markers and borders
 			if w > maxW {
 				maxW = w
 			}
@@ -4645,6 +4781,11 @@ func (pf *PanelsFrame) Menu(title string, items []string, callback func(int)) {
 		}
 
 		menu.SetPosition(x, y, x+maxW-1, y+h-1)
+		if onKeyDown != nil {
+			menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
+				return onKeyDown(menu, e)
+			}
+		}
 
 		menu.OnAction = func(idx int) {
 			menu.Close()
@@ -4652,7 +4793,11 @@ func (pf *PanelsFrame) Menu(title string, items []string, callback func(int)) {
 				callback(idx)
 			}
 		}
-		vtui.FrameManager.PushMenu(menu)
+		if keyLabels != nil {
+			vtui.FrameManager.PushMenu(&menuKeyLabelsFrame{VMenu: menu, keyLabels: keyLabels})
+		} else {
+			vtui.FrameManager.PushMenu(menu)
+		}
 	})
 }
 
@@ -5066,7 +5211,7 @@ func executeCapturedCommand(pf *PanelsFrame, action string, cmdStr string) {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Execution failed:\n%v", err), []string{"&Ok"})
 					return
 				}
-				vtui.SetClipboard(string(out))
+				setF4Clipboard(string(out))
 				showToast("Command output copied to clipboard", 3*time.Second)
 				pf.RefreshAll()
 			})
@@ -5125,6 +5270,27 @@ func executeCapturedCommand(pf *PanelsFrame, action string, cmdStr string) {
 		}
 		pf.RefreshAll()
 	})
+}
+
+// forkPanelsClone builds the copy of these panels that gets handed to
+// AddScreen as a new workspace. Both Ctrl+N and the terminal-workspace action
+// go through it, so the two agree on what a fork looks like.
+func (pf *PanelsFrame) forkPanelsClone() *PanelsFrame {
+	clone := pf.Clone()
+	// Ctrl+N means "fork the panels", including when it is invoked
+	// while the terminal is visible. Copying showPanels=false creates
+	// two visually identical cmd.exe workspaces and makes a successful
+	// switch look like it did nothing. Keep the running terminal in the
+	// original workspace and expose the cloned panels in the new one.
+	if !pf.showPanels {
+		clone.showPanels = true
+		if clone.lastW > 0 && clone.lastH > 0 {
+			clone.ResizeConsole(clone.lastW, clone.lastH)
+		} else {
+			clone.updateMenuCheckmarks()
+		}
+	}
+	return clone
 }
 
 func (pf *PanelsFrame) Clone() *PanelsFrame {
@@ -5226,14 +5392,72 @@ func (pf *PanelsFrame) showPluginMenu() {
 		vtui.ShowMessage(" Plugins ", "No plugins registered for F11 menu.", []string{"&Ok"})
 		return
 	}
-	labels := make([]string, 0, len(items)+len(commands))
-	for _, itm := range items {
-		labels = append(labels, itm.Label)
+	entries := buildPluginMenuEntries(items, commands)
+	shortcutWidth := pluginMenuShortcutWidth(entries)
+	menuItems := make([]vtui.MenuItem, 0, len(entries))
+	for _, entry := range entries {
+		menuItems = append(menuItems, vtui.MenuItem{
+			Text: pluginMenuItemText(entry.Label, entry.Shortcut(), shortcutWidth),
+		})
 	}
-	for _, command := range commands {
-		labels = append(labels, pluginCommandDisplayLabel(command))
+
+	// Assigning or dropping a letter moves it between rows, so the whole menu
+	// is rebuilt rather than the single row F4 was pressed on. The hot key
+	// lives in the left-hand column only: MenuItem.Shortcut would print it a
+	// second time on the right.
+	refresh := func(menu *vtui.VMenu) {
+		if menu == nil {
+			return
+		}
+		refreshPluginMenuEntries(entries)
+		for i := range entries {
+			if i >= len(menu.Items) {
+				break
+			}
+			menu.Items[i].Text = pluginMenuItemText(entries[i].Label, entries[i].Shortcut(), shortcutWidth)
+			menu.Items[i].Shortcut = ""
+		}
+		if vtui.FrameManager != nil {
+			vtui.FrameManager.Redraw()
+		}
 	}
-	pf.Menu(" Plugins ", labels, func(idx int) {
+
+	pf.menuItemsWithKeyLabels(" Plugins ", menuItems, func(menu *vtui.VMenu, e *vtinput.InputEvent) bool {
+		if !e.KeyDown {
+			return false
+		}
+		idx := menu.SelectPos
+		switch e.VirtualKeyCode {
+		case vtinput.VK_F4:
+			if idx >= 0 && idx < len(entries) {
+				assignPluginHotkey(entries[idx].ActionName, entries[idx].Label, func() { refresh(menu) })
+			}
+			return true
+		case vtinput.VK_DELETE:
+			// Del always means "take this hot key back", which is why it can
+			// never be assigned as one.
+			if idx < 0 || idx >= len(entries) {
+				return true
+			}
+			area, key := configuredHotkeyBinding(GlobalHotkeysMgr, entries[idx].ActionName)
+			if area == "" || key == "" {
+				return true
+			}
+			question := pluginHotkeyDeleteQuestion(key, entries[idx].Label)
+			buttons := []string{Msg("Plugins.HotkeyRemoveBtn"), Msg("Plugins.HotkeyKeepBtn")}
+			vtui.ShowMessageOn(menu, Msg("Plugins.HotkeyRemoveTitle"), question, buttons).OnResult = func(choice int) {
+				if choice != 0 || GlobalHotkeysMgr == nil {
+					return
+				}
+				if !deletePluginHotkey(GlobalHotkeysMgr, area, key) {
+					return
+				}
+				refresh(menu)
+			}
+			return true
+		}
+		return false
+	}, func(idx int) {
 		switch {
 		case idx >= 0 && idx < len(items):
 			handler := items[idx].Handler
@@ -5246,7 +5470,7 @@ func (pf *PanelsFrame) showPluginMenu() {
 				executeRegisteredPluginCommand(vfs.PluginCommandPanel, commandID, pf)
 			})
 		}
-	})
+	}, pluginMenuKeyLabels(pf))
 }
 
 func (pf *PanelsFrame) showDriveMenu(panelIdx int) {
@@ -5269,12 +5493,20 @@ func (pf *PanelsFrame) driveMenuDefaultPos(panelIdx int) int {
 		return 0
 	}
 	cur := osVFS.GetPath()
-	for i, drv := range getPlatformDrives() {
+	row := 2
+	if runtime.GOOS == "windows" {
+		row += 2
+	} // Shell locations and its separator.
+	for _, drv := range getPlatformDrives() {
+		if !driveMenuPlatformItemVisible(drv, AppConfig.DriveMenuOptions) {
+			continue
+		}
 		if driveMatchesPath(drv, cur) {
 			// The "Other panel" and "Temporary panel" entries precede
 			// platform drives.
-			return i + 2
+			return row
 		}
+		row++
 	}
 	return 0
 }
@@ -5325,22 +5557,41 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		pf.switchToVFS(fsp, newTempPanelVFS(nil, globalTempPanelStore, 0))
 	}})
 
-	// 2. Fixed platform paths (Root, Home)
+	// 2. Fixed platform paths (Root, Home, physical disks). The metadata is
+	// rendered at menu-open time, just like Far's ChangeDiskMenu, so labels,
+	// filesystem types and free space reflect the current state. Collect all
+	// rows first: the formatter needs the whole list to align its columns.
+	driveMenuOptions := AppConfig.DriveMenuOptions
+	platformDrives := make([]DriveEntry, 0)
 	for _, drv := range getPlatformDrives() {
+		if !driveMenuPlatformItemVisible(drv, driveMenuOptions) {
+			continue
+		}
+		platformDrives = append(platformDrives, drv)
+	}
+	platformNames := driveMenuPlatformRowsText(func() []driveMenuPlatformRow {
+		rows := make([]driveMenuPlatformRow, len(platformDrives))
+		for i, drv := range platformDrives {
+			rows[i] = driveMenuPlatformRowFor(drv, driveMenuOptions)
+		}
+		return rows
+	}(), driveMenuOptions)
+	for i, drv := range platformDrives {
 		factory := drv.Factory
-		name := drv.Name
+		name := platformNames[i]
 		if runtime.GOOS != "windows" {
-			if strings.HasPrefix(name, "/") {
+			if strings.HasPrefix(driveMenuNameWithoutMarker(drv.Name), "/") {
 				name = "&" + name
 				usedHotkeys['/'] = true
-			} else if strings.HasPrefix(name, "~") {
+			} else if strings.HasPrefix(driveMenuNameWithoutMarker(drv.Name), "~") {
 				name = "&" + name
 				usedHotkeys['~'] = true
 			}
 		} else {
-			if len(name) >= 2 && name[1] == ':' {
+			cleanName := driveMenuNameWithoutMarker(drv.Name)
+			if len(cleanName) >= 2 && cleanName[1] == ':' {
 				name = "&" + name
-				usedHotkeys[unicode.ToLower(rune(name[0]))] = true
+				usedHotkeys[unicode.ToLower(rune(cleanName[0]))] = true
 			}
 		}
 
@@ -5357,32 +5608,43 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// digit as the hotkey, so Alt+F1 followed by 6 lands on slot 6.
 	// Unassigned slots are left out.
 	bookmarkRows := map[int]int{} // menu row -> slot, for the keys below
-	if set, err := LoadBookmarks(BookmarksFilePath()); err == nil {
-		firstBookmark := true
-		for i := range set {
-			if set[i].IsEmpty() {
-				continue
+	if driveMenuOptionEnabled(driveMenuOptions, driveMenuShowBookmarks) {
+		if set, err := LoadBookmarks(BookmarksFilePath()); err == nil {
+			firstBookmark := true
+			for i := range set {
+				if set[i].IsEmpty() {
+					continue
+				}
+				if firstBookmark {
+					menu.AddSeparator()
+					firstBookmark = false
+				}
+				bookmark := set[i]
+				path := bookmark.Path
+				usedHotkeys[rune('0'+i)] = true
+				bookmarkRows[menu.GetItemCount()] = i
+				menu.AddItem(vtui.MenuItem{
+					Text: fmt.Sprintf("&%d  %s", i, escapeAmpersand(truncPathLeft(path, 64))),
+					Icon: driveMenuIconBookmark,
+					UserData: func(fsp *FileSystemPanel) {
+						pf.navigateToBookmark(fsp, bookmark)
+					},
+				})
 			}
-			if firstBookmark {
-				menu.AddSeparator()
-				firstBookmark = false
-			}
-			bookmark := set[i]
-			path := bookmark.Path
-			usedHotkeys[rune('0'+i)] = true
-			bookmarkRows[menu.GetItemCount()] = i
-			menu.AddItem(vtui.MenuItem{
-				Text: fmt.Sprintf("&%d  %s", i, escapeAmpersand(truncPathLeft(path, 64))),
-				Icon: driveMenuIconBookmark,
-				UserData: func(fsp *FileSystemPanel) {
-					pf.navigateToBookmark(fsp, bookmark)
-				},
-			})
 		}
 	}
 
 	// 4. Plugins & custom drives
-	drives := driveRegistrySnapshot()
+	drives := []DriveEntry(nil)
+	if driveMenuOptionEnabled(driveMenuOptions, driveMenuShowPlugins) {
+		drives = driveRegistrySnapshot()
+		if driveMenuOptionEnabled(driveMenuOptions, driveMenuSortPluginsByHotkey) {
+			sort.SliceStable(drives, func(i, j int) bool {
+				return strings.ToLower(driveMenuNameWithoutMarker(drives[i].Name)) <
+					strings.ToLower(driveMenuNameWithoutMarker(drives[j].Name))
+			})
+		}
+	}
 	if len(drives) > 0 {
 		menu.AddSeparator()
 		for _, drv := range drives {
@@ -5420,6 +5682,40 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 	}
 
+	// 5. Named folder links. These are deliberately separate from
+	// bookmarks.ini: the latter is far2l's ten-slot RCtrl bookmark table,
+	// while this list is the DiskMenuEditor-style, unbounded drive-menu list.
+	driveBookmarkRows := map[int]int{} // menu row -> named bookmark index
+	driveBookmarks := []DriveBookmark(nil)
+	headerRow := -1
+	if driveMenuOptionEnabled(driveMenuOptions, driveMenuShowBookmarks) {
+		var err error
+		driveBookmarks, err = LoadDriveBookmarks(DriveBookmarksFilePath())
+		if err != nil {
+			vtui.DebugLog("DRIVE BOOKMARKS: load %q failed: %v", DriveBookmarksFilePath(), err)
+			driveBookmarks = nil
+		}
+		menu.AddSeparator()
+		headerRow = menu.GetItemCount()
+		menu.AddItem(vtui.MenuItem{Text: Msg("Drive.Links"), Icon: driveMenuIconBookmark, Header: true, Command: CmDriveBookmarksHeader})
+		for index, bookmark := range driveBookmarks {
+			bookmark := bookmark
+			driveBookmarkRows[menu.GetItemCount()] = index
+			menu.AddItem(vtui.MenuItem{
+				Text: driveBookmarkMenuText(bookmark),
+				Icon: driveMenuIconBookmark,
+				UserData: func(fsp *FileSystemPanel) {
+					pf.navigateToBookmark(fsp, Bookmark{Path: bookmark.Path})
+				},
+			})
+		}
+		vtui.FrameManager.DisabledCommands.Disable(CmDriveBookmarksHeader)
+	}
+	oldSelectable := menu.IsSelectable
+	menu.IsSelectable = func(index int) bool {
+		return index != headerRow && oldSelectable(index)
+	}
+
 	// Обработка физических клавиш / и ~ (layout-independent)
 	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
 		// far2l binds three keys on the bookmark rows of this menu
@@ -5431,25 +5727,55 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		if e.KeyDown && e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|
 			vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
 			pos := menu.SelectPos
+			driveBookmarkIndex, onDriveBookmark := driveBookmarkRows[pos]
 			slot, onBookmark := bookmarkRows[pos]
 			reopen := func() { pf.showDriveMenuAt(panelIdx, pos) }
 
 			switch e.VirtualKeyCode {
+			case vtinput.VK_F9:
+				// Far uses F9 for the drive-menu options dialog. Consume it
+				// here so the global F9 main-menu action never sees it.
+				pf.openDriveMenuOptions(panelIdx, menu)
+				return true
 			case vtinput.VK_INSERT:
-				// far2l opens the dialog from any row here, not just a
-				// bookmark one, and always at the first slot.
-				menu.Close()
-				vtui.FrameManager.PostTask(func() { ShowBookmarksDialogAt(pf, 0, reopen) })
+				// Ins adds a named drive-menu link from any row. The path
+				// defaults to the panel directory, while the user chooses
+				// the name and optional shortcut in the dialog.
+				pf.openDriveBookmarkEditor(panelIdx, menu, driveBookmarks, -1, reopen)
 				return true
 			case vtinput.VK_F4:
+				if onDriveBookmark {
+					pf.openDriveBookmarkEditor(panelIdx, menu, driveBookmarks, driveBookmarkIndex, reopen)
+					return true
+				}
 				if onBookmark {
 					menu.Close()
 					vtui.FrameManager.PostTask(func() { ShowBookmarksDialogAt(pf, slot, reopen) })
 					return true
 				}
 			case vtinput.VK_DELETE:
+				if onDriveBookmark {
+					pf.deleteDriveBookmark(menu, driveBookmarks, driveBookmarkIndex, reopen)
+					return true
+				}
 				if onBookmark {
 					pf.clearBookmarkSlot(slot, menu, reopen)
+					return true
+				}
+			}
+
+			// Chords and non-Latin keys cannot be represented by VMenu's
+			// ampersand accelerator. Match them against the same Far-style
+			// spelling captured by the editor.
+			key := EventToHotkeyString(e)
+			for row := 0; row < len(menu.Items); row++ {
+				index, ok := driveBookmarkRows[row]
+				if !ok {
+					continue
+				}
+				if index < len(driveBookmarks) && driveBookmarkKeyMatches(driveBookmarks[index], key) {
+					menu.SetSelectPos(row)
+					menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 					return true
 				}
 			}
@@ -5532,7 +5858,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			action(fsp)
 		}
 	}
-	vtui.FrameManager.PushMenu(menu)
+	vtui.FrameManager.PushMenu(&driveMenuFrame{VMenu: menu, bottomHint: Msg("Drive.BottomHint")})
 }
 
 // clearBookmarkSlot empties one slot straight from the drive menu, which
@@ -5591,6 +5917,22 @@ func (pf *PanelsFrame) switchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 }
 func (pf *PanelsFrame) navigateToBookmark(fsp *FileSystemPanel, bookmark Bookmark) bool {
 	return pf.NavigateToPath(fsp, expandPathEnv(bookmark.Path))
+}
+
+// syncPassivePanel opens the active panel's directory in the passive panel,
+// like mc's Alt+I (#892). It goes through NavigateToPath so archives, remote
+// and provider paths take the same route as folder history and bookmarks.
+func (pf *PanelsFrame) syncPassivePanel() bool {
+	src := pf.getActivePanel()
+	dst := pf.getInactivePanel()
+	if src == nil || dst == nil || isAIPanel(src) || isAIPanel(dst) {
+		return false
+	}
+	target := src.persistentPath()
+	if target == "" || sameFolderHistoryPath(target, dst.persistentPath()) {
+		return false
+	}
+	return pf.NavigateToPath(dst, target)
 }
 
 func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) bool {
@@ -5907,6 +6249,54 @@ func (pf *PanelsFrame) moveFolderHistory(fsp *FileSystemPanel, direction int) bo
 		step = 1
 	}
 	return pf.navigateAvailableFolderHistory(fsp, history, targetPos, step)
+}
+
+// parseDirChangeCommand recognizes the directory-change commands the command
+// line intercepts itself rather than handing to the shell: "cd <path>",
+// "chdir <path>", "cd /d <path>" (Windows), "cd..", "cd\\", "cd/" and bare
+// drive letters ("C:", "D:\\") on Windows. It returns the target path with
+// surrounding quotes removed. The user menu uses the same test so that a
+// "cd" line inside a multi-command menu item moves the panel exactly like a
+// "cd" typed on the command line.
+func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
+	lowerCmd := strings.ToLower(trimmedCmd)
+
+	// Drive letter changes (e.g., "C:", "D:\") on Windows
+	if runtime.GOOS == "windows" && len(trimmedCmd) >= 2 && len(trimmedCmd) <= 3 && trimmedCmd[1] == ':' {
+		if lowerCmd[0] >= 'a' && lowerCmd[0] <= 'z' {
+			targetPath = trimmedCmd
+			if len(trimmedCmd) == 2 {
+				targetPath += string(os.PathSeparator)
+			}
+			return targetPath, true
+		}
+		return "", false
+	}
+
+	if strings.HasPrefix(lowerCmd, "cd ") || strings.HasPrefix(lowerCmd, "chdir ") || (runtime.GOOS == "windows" && strings.HasPrefix(lowerCmd, "cd /d ")) {
+		prefixLen := 3
+		if strings.HasPrefix(lowerCmd, "cd /d ") {
+			prefixLen = 6
+		} else if strings.HasPrefix(lowerCmd, "chdir ") {
+			prefixLen = 6
+		}
+		targetPath = strings.TrimSpace(trimmedCmd[prefixLen:])
+		// Remove quotes if user typed: cd "C:\My Folder" or cd '/tmp/a b'
+		if len(targetPath) >= 2 && targetPath[0] == '\'' && targetPath[len(targetPath)-1] == '\'' {
+			targetPath = targetPath[1 : len(targetPath)-1]
+			targetPath = strings.ReplaceAll(targetPath, "'\\''", "'")
+		} else if len(targetPath) >= 2 && targetPath[0] == '"' && targetPath[len(targetPath)-1] == '"' {
+			targetPath = targetPath[1 : len(targetPath)-1]
+		}
+		return targetPath, true
+	}
+	if lowerCmd == "cd.." || lowerCmd == "cd .." {
+		return "..", true
+	}
+	if lowerCmd == "cd\\" || lowerCmd == "cd/" {
+		return string(os.PathSeparator), true
+	}
+	return "", false
 }
 
 func expandPathEnv(s string) string {

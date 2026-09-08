@@ -25,6 +25,7 @@ func init() {
 		Description: "List the live FUSE mounts, go to one or unmount it",
 		DefaultKeys: []string{"CtrlAltL"},
 		MenuPath:    "Commands",
+		MenuSubPath: "Mounts",
 		Visible:     fusefs.Supported,
 		Handler: func() bool {
 			pf := findPanelsFrameAnyScreen()
@@ -124,7 +125,7 @@ func showMountList(pf *PanelsFrame) {
 	menu := vtui.NewVMenu(Msg("Mounts.Title"))
 	if live := liveRows(rows); len(live) > 1 {
 		menu.AddItem(vtui.MenuItem{
-			Text:     fmt.Sprintf("Unmount all (%d)", len(live)),
+			Text:     fmt.Sprintf(Msg("Mounts.UnmountAll"), len(live)),
 			UserData: -1,
 		})
 	}

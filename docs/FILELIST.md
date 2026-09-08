@@ -2,6 +2,16 @@
 
     .
     ├── AGENTS.md
+    ├── artifacts
+    │   ├── native-openconsole-probe.json
+    │   ├── native-openconsole-probe.json.sessions
+    │   │   ├── 121x40.raw
+    │   │   ├── 1x1.raw
+    │   │   └── 80x25.raw
+    │   ├── native-openconsole-probe-static.json
+    │   ├── native-openconsole-probe-static.json.sessions
+    │   │   └── 80x25.raw
+    │   └── README.md
     ├── cmd
     │   └── f4
     │       ├── action_copyname_parent_test.go
@@ -78,11 +88,15 @@
     │       ├── attributes_dialog_windows.go
     │       ├── attributes_dialog_windows_test.go
     │       ├── attributes_test.go
+    │       ├── audio_engine.go
+    │       ├── audio_engine_oto.go
+    │       ├── audio_engine_stub.go
     │       ├── autosave_settings_test.go
     │       ├── background_jobs.go
     │       ├── background_jobs_session_test.go
     │       ├── background_jobs_test.go
     │       ├── background_jobs_window.go
+    │       ├── bom_test.go
     │       ├── bookmarks_dialog.go
     │       ├── bookmarks_dialog_test.go
     │       ├── bookmarks.go
@@ -96,6 +110,10 @@
     │       ├── cloudfox_real_ui_test.go
     │       ├── cmd_session.go
     │       ├── cmd_session_test.go
+    │       ├── codepage_issue875_sticky_test.go
+    │       ├── codepage_issue875_test.go
+    │       ├── codepage_settings.go
+    │       ├── codepage_state.go
     │       ├── colorer_async.go
     │       ├── colorer_downloader.go
     │       ├── colorer_plugin.go
@@ -153,6 +171,7 @@
     │       ├── config_test.go
     │       ├── console_ctrl_handler_other.go
     │       ├── console_ctrl_handler_windows.go
+    │       ├── console_host_windows.go
     │       ├── console_overlay_other.go
     │       ├── console_overlay_windows.go
     │       ├── console_passthrough.go
@@ -162,6 +181,8 @@
     │       ├── cpu_info_linux.go
     │       ├── cpu_info_other.go
     │       ├── cpu_info_windows.go
+    │       ├── debug_log.go
+    │       ├── debug_log_test.go
     │       ├── delete_trash_test.go
     │       ├── detach_unix.go
     │       ├── detach_windows.go
@@ -195,6 +216,7 @@
     │       ├── editor_search_remote_test.go
     │       ├── editor_search_zerocopy_test.go
     │       ├── editor_shiftdel_test.go
+    │       ├── editor_status.go
     │       ├── editor_target_line_test.go
     │       ├── editor_veto_test.go
     │       ├── editor_view_ads_test.go
@@ -238,6 +260,7 @@
     │       ├── file_state.go
     │       ├── file_state_key_test.go
     │       ├── file_state_test.go
+    │       ├── file_title.go
     │       ├── find_file.go
     │       ├── find_file_test.go
     │       ├── fkeys_hidden_panels_test.go
@@ -261,9 +284,13 @@
     │       ├── gpu_info_other.go
     │       ├── gpu_info_windows.go
     │       ├── grabber.go
+    │       ├── grabber_mouse_test.go
     │       ├── grabber_test.go
     │       ├── graphics_compat.go
     │       ├── graphics_compat_test.go
+    │       ├── graphics_probe_decision.go
+    │       ├── graphics_probe_decision_test.go
+    │       ├── graphics_probe_windows.go
     │       ├── gui_backend_capability_ffi.go
     │       ├── gui_backend_capability.go
     │       ├── gui_backend_capability_stub.go
@@ -326,6 +353,10 @@
     │       ├── history_hint_test.go
     │       ├── history_provider.go
     │       ├── history_provider_test.go
+    │       ├── host_input_modes.go
+    │       ├── host_input_modes_other.go
+    │       ├── host_input_modes_test.go
+    │       ├── host_input_modes_windows.go
     │       ├── hotkeys.go
     │       ├── hotkeys_test.go
     │       ├── hotkeys_ui.go
@@ -370,6 +401,10 @@
     │       ├── issue561_test.go
     │       ├── issue631_test.go
     │       ├── issue815_test.go
+    │       ├── issue821_test.go
+    │       ├── issue856_mouse_capture_test.go
+    │       ├── issue863_terminal_test.go
+    │       ├── issue95_followup_test.go
     │       ├── keybar_injected_test.go
     │       ├── kitty_graphics.go
     │       ├── kitty_graphics_test.go
@@ -463,6 +498,10 @@
     │       ├── path_hints_test.go
     │       ├── path_identity.go
     │       ├── path_identity_test.go
+    │       ├── pe_subsystem.go
+    │       ├── pe_subsystem_test.go
+    │       ├── player_panel.go
+    │       ├── player_panel_test.go
     │       ├── plughost_ffi.go
     │       ├── plughost_ffi_test.go
     │       ├── plughost.go
@@ -484,6 +523,8 @@
     │       ├── plugring_test.go
     │       ├── plugring_ui.go
     │       ├── plugring_ui_test.go
+    │       ├── portable.go
+    │       ├── portable_paths_test.go
     │       ├── portable_test.go
     │       ├── process_environment.go
     │       ├── process_environment_runtime_unix.go
@@ -536,8 +577,14 @@
     │       ├── rsrc_windows_arm64.syso
     │       ├── search_history.go
     │       ├── search_history_test.go
+    │       ├── self_exec.go
+    │       ├── self_exec_linux.go
+    │       ├── self_exec_linux_test.go
+    │       ├── self_exec_other.go
+    │       ├── self_exec_test.go
     │       ├── semantic.go
     │       ├── semantic_test.go
+    │       ├── session_daemon_test.go
     │       ├── session_test.go
     │       ├── session_unix.go
     │       ├── session_unix_test.go
@@ -581,6 +628,7 @@
     │       ├── static_direct_actions_test.go
     │       ├── style_combo_colors_test.go
     │       ├── style_completeness_test.go
+    │       ├── style_custom_test.go
     │       ├── style_default_dark_test.go
     │       ├── style.go
     │       ├── style_overrides_test.go
@@ -592,6 +640,8 @@
     │       │   └── radiola.md
     │       ├── style_test.go
     │       ├── sudo_dispatcher_args_test.go
+    │       ├── temp_panel.go
+    │       ├── temp_panel_test.go
     │       ├── terminal_log_console_other.go
     │       ├── terminal_log_console_windows.go
     │       ├── terminal_log_vfs.go
@@ -610,14 +660,18 @@
     │       ├── title_test.go
     │       ├── title_unix.go
     │       ├── title_windows.go
+    │       ├── toast.go
     │       ├── top_bar.go
     │       ├── top_bar_test.go
     │       ├── translate_kitty.go
     │       ├── translate_kitty_test.go
+    │       ├── translator.go
+    │       ├── translator_test.go
     │       ├── ttyx_keys.go
     │       ├── ttyx_keys_test.go
     │       ├── ttyx_probe.go
     │       ├── ttyx_probe_parse.go
+    │       ├── ttyx_probe_test.go
     │       ├── ttyx_probe_unix.go
     │       ├── ttyx_probe_windows.go
     │       ├── ttyx_session.go
@@ -685,15 +739,15 @@
     │                   └── radiola.hrd
     ├── docs
     │   ├── COLORS.md
-    │   ├── CONSOLE_MODES.md
+    │   ├── CONPTY_FUTURE_IDEAS.md
     │   ├── CONPTY_GATE_REQUIREMENTS.md
+    │   ├── CONPTY_GATE_STATUS.md
+    │   ├── CONPTY_LINE_WRAP_FINDINGS.md
     │   ├── CONPTY_NATIVE_AGENT.md
     │   ├── CONPTY_NATIVE_AUDIT.md
     │   ├── CONPTY_NATIVE_PROBE.md
-    │   ├── CONPTY_FUTURE_IDEAS.md
     │   ├── CONPTY_NATIVE_TEST.md
-    │   ├── PINNED_CONSOLE.md
-    │   ├── PINNED_HOST_FACTS.md
+    │   ├── CONSOLE_MODES.md
     │   ├── CURSOR.md
     │   ├── DRAGDROP.md
     │   ├── FFI.md
@@ -713,6 +767,7 @@
     │   │   ├── ISSUE_247_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_248_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_260_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_261_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_262_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_264_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_266_SOLUTION_REVIEW.md
@@ -741,11 +796,18 @@
     │   │   ├── ISSUE_744_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_793_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_807_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_816_FOLLOWUP_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_833_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_834_SOLUTION_REVIEW.md
     │   │   ├── ISSUE_87_SOLUTION_REVIEW.md
+    │   │   ├── ISSUE_91_FREEBSD_CONSOLE_DIAGNOSIS.md
     │   │   └── ISSUE_95_SOLUTION_REVIEW.md
     │   ├── L10N_REPORT_GUIDE.md
     │   ├── LUA.md
     │   ├── MACROS.md
+    │   ├── PINNED_CONSOLE.md
+    │   ├── PINNED_HOST_FACTS.md
+    │   ├── PLAYER.md
     │   ├── PLUGIN_PLAN.md
     │   ├── PLUGINS.md
     │   ├── PLUGRING.md
@@ -760,9 +822,11 @@
     │   ├── VIDEO.md
     │   ├── VTML.md
     │   ├── VTVIBE.md
+    │   ├── WINCON_805_HANDOVER.md
     │   ├── WINCON.md
     │   └── WINE.md
     ├── embedded.go
+    ├── f4.example.ini
     ├── filelist_update.sh
     ├── fusefs
     │   ├── bench-all.sh
@@ -782,9 +846,15 @@
     │   ├── registry.go
     │   ├── staged_test.go
     │   └── writers_test.go
+    ├── .gitattributes
     ├── .github
+    │   ├── actions
+    │   │   └── affected-packages
+    │   │       └── action.yml
     │   └── workflows
-    │       └── build.yml
+    │       ├── build.yml
+    │       ├── conpty-probe.yml
+    │       └── go-cache-salt
     ├── .gitignore
     ├── .golangci-strict.yml
     ├── .golangci.yml
@@ -808,6 +878,8 @@
     │   └── wincon
     │       ├── blit_test.go
     │       ├── geometry.go
+    │       ├── layered.go
+    │       ├── layered_test.go
     │       ├── overlay_other.go
     │       ├── overlay_state.go
     │       ├── overlay_state_test.go
@@ -815,6 +887,8 @@
     │       ├── stats.go
     │       ├── stats_windows.go
     │       └── wincon_test.go
+    ├── issue-703-solution.md
+    ├── ISSUE_95_FOLLOWUP_SOLUTION_REVIEW.md
     ├── LICENSE
     ├── luaplug
     │   ├── convert.go
@@ -870,7 +944,10 @@
     │   │   ├── compressed_regular_test.go
     │   │   ├── extraction_security_test.go
     │   │   ├── issue815_f3_test.go
+    │   │   ├── issue816_multivolume_test.go
+    │   │   ├── issue816_password_retry_test.go
     │   │   ├── materialize.go
+    │   │   ├── multivolume_rar.go
     │   │   ├── password.go
     │   │   ├── password_test.go
     │   │   ├── production_regression_test.go
@@ -881,6 +958,7 @@
     │   │   ├── vfs.go
     │   │   ├── vfs_nested_test.go
     │   │   ├── vfs_test.go
+    │   │   ├── zipcrypto_checkbyte_test.go
     │   │   └── zip_encoding.go
     │   ├── chroma
     │   │   ├── chroma.go
@@ -1131,8 +1209,13 @@
     │   │   ├── sftp_uri.go
     │   │   ├── sftp_vfs.go
     │   │   ├── ssh_agent_forwarding_test.go
+    │   │   ├── ssh_agent_unix.go
+    │   │   ├── ssh_agent_windows.go
+    │   │   ├── ssh_agent_windows_test.go
     │   │   ├── ssh_dial.go
     │   │   ├── ssh_dial_test.go
+    │   │   ├── ssh_known_hosts.go
+    │   │   ├── ssh_known_hosts_test.go
     │   │   ├── ssh_pty.go
     │   │   ├── vfs_abs_test.go
     │   │   └── vfs.go
@@ -1193,6 +1276,58 @@
     │   └── wrap_test.go
     ├── time.txt
     ├── tools
+    │   ├── conpty_probe_child.py
+    │   ├── conpty_probe.py
+    │   ├── conptyreconcile
+    │   │   ├── capture.go
+    │   │   ├── clear_probe_windows.go
+    │   │   ├── command_compare_windows.go
+    │   │   ├── command_probe_windows.go
+    │   │   ├── command_suite_windows.go
+    │   │   ├── control_stream.go
+    │   │   ├── control_stream_test.go
+    │   │   ├── edge_probe_windows.go
+    │   │   ├── emitter.go
+    │   │   ├── empty_probe_windows.go
+    │   │   ├── gate.go
+    │   │   ├── gate_nonwindows.go
+    │   │   ├── gate_windows.go
+    │   │   ├── go.mod
+    │   │   ├── go.sum
+    │   │   ├── hash.go
+    │   │   ├── host_constants.go
+    │   │   ├── host_history.go
+    │   │   ├── host_history_test.go
+    │   │   ├── host_stream_chunking.go
+    │   │   ├── host_stream_chunking_test.go
+    │   │   ├── host_stream.go
+    │   │   ├── host_stream_test.go
+    │   │   ├── lifecycle_probe_windows.go
+    │   │   ├── line_diff.go
+    │   │   ├── logical_lines.go
+    │   │   ├── logical_lines_test.go
+    │   │   ├── main.go
+    │   │   ├── native_probe.go
+    │   │   ├── native_probe_nonwindows.go
+    │   │   ├── native_probe_windows.go
+    │   │   ├── payload_assertions.go
+    │   │   ├── payload_assertions_test.go
+    │   │   ├── pinned_host.go
+    │   │   ├── pinned_host_nonwindows.go
+    │   │   ├── pinned_host_windows.go
+    │   │   ├── probe.go
+    │   │   ├── quirk_probe_windows.go
+    │   │   ├── reflow_probe.go
+    │   │   ├── reflow_probe_windows.go
+    │   │   ├── scrollback.go
+    │   │   ├── scrollback_test.go
+    │   │   ├── scroll_probe_windows.go
+    │   │   ├── seeds.go
+    │   │   ├── semantic_probe.go
+    │   │   └── semantic_probe_windows.go
+    │   ├── f4imgprobe
+    │   │   ├── main.go
+    │   │   └── README.txt
     │   ├── find_hardcoded.go
     │   ├── fishplus_probe.sh
     │   ├── fishplus_testlab
@@ -1226,12 +1361,14 @@
     │   ├── langfmt
     │   │   ├── main.go
     │   │   └── main_test.go
+    │   ├── sanitize_native_probe_report.ps1
     │   ├── test_runner.sh
     │   ├── ttytest
     │   │   ├── analyze_log.py
     │   │   ├── README.md
     │   │   ├── scenarios.py
     │   │   └── ttytest.py
+    │   ├── verify_native_probe_artifacts.ps1
     │   ├── wine_color_probe
     │   │   ├── main.go
     │   │   └── main_other.go
@@ -1242,10 +1379,14 @@
     ├── vfs
     │   ├── bulk_copy_test.go
     │   ├── codepages.go
+    │   ├── codepages_iconv_unix.go
+    │   ├── codepages_issue875_test.go
     │   ├── codepages_test.go
     │   ├── codepages_unix.go
     │   ├── codepages_unix_test.go
+    │   ├── codepages_utf8_system_test.go
     │   ├── codepages_windows.go
+    │   ├── codepages_windows_test.go
     │   ├── contributions.go
     │   ├── destination_overwrite_test.go
     │   ├── device_size_test.go
@@ -1274,6 +1415,7 @@
     │   ├── os_vfs_dot_test.go
     │   ├── os_vfs.go
     │   ├── os_vfs_junction_stub.go
+    │   ├── os_vfs_junction_test.go
     │   ├── os_vfs_noreplace_test.go
     │   ├── os_vfs_physical_other.go
     │   ├── os_vfs_physical_test.go
@@ -1338,4 +1480,4 @@
         ├── session_test.go
         └── vfs.go
 
-    72 directories, 1259 files
+    79 directories, 1395 files

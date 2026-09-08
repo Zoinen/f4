@@ -427,9 +427,10 @@ func TestTable_OptionalScrollBar(t *testing.T) {
 		tbl.ShowScrollBar = true
 		tbl.Show(scr)
 
-		// X=10 (last column) should be a scrollbar arrow or track
-		checkCell(t, scr, 10, 1, ScrollUpArrow, Palette[ColTableBox])
-		checkCell(t, scr, 10, 2, ScrollBlockDark, Palette[ColTableBox])
+		// X=10 (last column) should be a scrollbar arrow or track, painted
+		// with the shared scrollbar slot rather than the column separator one.
+		checkCell(t, scr, 10, 1, ScrollUpArrow, Palette[ColScrollBar])
+		checkCell(t, scr, 10, 2, ScrollBlockDark, Palette[ColScrollBar])
 	})
 
 	t.Run("Mouse on ScrollBar without ShowScrollBar", func(t *testing.T) {

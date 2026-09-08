@@ -17,8 +17,13 @@ var boxSymbols = []rune{
 	'╟', '╢', // U+255F, U+2562 (Double Vertical, Single Horizontal)
 }
 
+// SubMenuMarker is drawn where a shortcut would go on a menu item that
+// opens a nested menu.
+var SubMenuMarker = "►"
+
 func init() {
 	if IsFreeBSDConsole {
+		SubMenuMarker = ">"
 		boxSymbols = []rune{
 			// Single Box (0-10)
 			'|', '-', '+', '+', '+', '+', '+', '+', '+', '+', '+',

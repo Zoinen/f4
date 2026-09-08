@@ -48,6 +48,13 @@ var conditionRegistry = map[string]func() bool{
 			if pf.termView == nil {
 				return false
 			}
+			// A highlighted terminal selection owns plain Esc. PanelsFrame clears
+			// that selection and swallows the matching key-up; letting EscToggle
+			// run first would show the panels and leave the selected text copied
+			// or otherwise handled by the terminal path (#881).
+			if pf.termView.HasSelection() {
+				return false
+			}
 			return !pf.termView.UseAltScreen && !pf.isPtyBusy()
 		}
 		return false
@@ -534,6 +541,8 @@ func (hm *HotkeyManager) Load() {
 			}
 		}
 	}
+
+	hm.dropReservedPluginBindings()
 }
 
 // Save writes only overridden or new bindings to the INI file.

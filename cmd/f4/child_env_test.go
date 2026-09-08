@@ -160,3 +160,51 @@ func TestChildEnvDropsInheritedKittyPid(t *testing.T) {
 		}
 	}
 }
+
+// A universal build reaches its libc by re-execing through the host loader
+// and says so in its own environment. A child that inherits the guard is told
+// the loader has already run when it has not, and dies before main -- which
+// is what starting f4 from f4 did on Linux in issue #87.
+func TestChildEnvDropsUniversalBridgeVariables(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"GOFFI_UNIVERSAL_REEXEC=1",
+		"GOFFI_UNIVERSAL_EXE=42:/home/u/f4",
+		"GOFFI_UNIVERSAL_ARGV0=42:/proc/self/fd/3",
+		"F4_EXE=/home/u/f4",
+	}
+	env := buildChildEnv(base, false, false)
+
+	if !envHas(env, "PATH=/usr/bin") {
+		t.Error("the inherited environment must otherwise survive")
+	}
+	for _, key := range privateToThisProcess {
+		if envHasKey(env, key) {
+			t.Errorf("%s describes this process and must not be passed on: %v", key, env)
+		}
+	}
+}
+
+// The same holds when the host console, rather than the built-in terminal,
+// hands the child its environment: the program still gets a libc of its own
+// or none at all.
+func TestChildEnvDropsUniversalBridgeVariablesInHostMode(t *testing.T) {
+	env := buildChildEnv([]string{"GOFFI_UNIVERSAL_REEXEC=1", "PATH=/usr/bin"}, false, false)
+	if envHasKey(env, "GOFFI_UNIVERSAL_REEXEC") {
+		t.Errorf("host mode must drop the guard too: %v", env)
+	}
+}
+
+// A partial entry has no name to match, and dropping it would quietly lose
+// something the child was meant to have.
+func TestPrivateEnvEntryIgnoresEntriesWithoutAName(t *testing.T) {
+	if privateEnvEntry("GOFFI_UNIVERSAL_REEXEC") {
+		t.Error("an entry with no '=' names no variable")
+	}
+	if privateEnvEntry("F4_EXECUTABLE=/home/u/f4") {
+		t.Error("only the exact names are private, not everything starting with one")
+	}
+	if !privateEnvEntry("F4_EXE=") {
+		t.Error("an empty value is still that variable")
+	}
+}

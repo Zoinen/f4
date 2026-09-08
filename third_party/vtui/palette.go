@@ -67,6 +67,16 @@ const (
 	ColDialogComboTitle
 	ColDialogComboScrollbar
 
+	// The help viewer draws its scrollbar inside its own window, so it needs a
+	// slot of its own instead of the shared list color: far2l splits the same
+	// way (Help.Scrollbar next to Menu.Scrollbar and Dialog.List.Scrollbar).
+	ColHelpScrollbar
+
+	// Tree lines are drawn by TreeView only. Keeping them apart from
+	// ColTableBox lets that slot mean exactly one thing, the column separator
+	// of a table.
+	ColTreeLine
+
 	// Helper for array size
 	LastPaletteColor
 )
@@ -104,6 +114,7 @@ func SetDefaultPalette() {
 	Palette[ColTableBox] = SetRGBBoth(0, lightGray, blue)
 	Palette[ColTableColumnTitle] = SetRGBBoth(0, yellow, blue)
 	Palette[ColScrollBar] = SetRGBBoth(0, lightGray, blue)
+	Palette[ColTreeLine] = Palette[ColTableBox]
 
 	// Dialogs (Black on LightGray)
 	Palette[ColDialogText] = SetRGBBoth(0, black, lightGray)
@@ -155,6 +166,9 @@ func SetDefaultPalette() {
 	Palette[ColHelpSelectedLink] = SetRGBBoth(0, white, 0x0000A0) // White on Blue
 	Palette[ColHelpBox] = Palette[ColHelpText]
 	Palette[ColHelpBoxTitle] = Palette[ColHelpText]
+	// The shared list scrollbar sits on blue, which does not belong in the
+	// light help window, so the help scrollbar follows the help frame instead.
+	Palette[ColHelpScrollbar] = Palette[ColHelpBox]
 
 	red := uint32(0x800000)
 	// Warnings (White/Yellow on Red)

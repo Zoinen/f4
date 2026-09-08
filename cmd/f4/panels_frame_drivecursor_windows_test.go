@@ -42,7 +42,7 @@ func TestPanelsFrame_DriveMenu_CursorOnCurrentDrive(t *testing.T) {
 	pf.showDriveMenu(0)
 
 	top := vtui.FrameManager.GetTopFrame()
-	menu, ok := top.(*vtui.VMenu)
+	menu, ok := driveMenuFromFrame(top)
 	if !ok {
 		t.Fatal("Drive menu not opened")
 	}

@@ -82,7 +82,7 @@ func showCloudProfileDialog(app vfs.App, manager *ManagerVFS, plugin *Plugin, pr
 		clone := existing.Clone()
 		d.original = &clone
 	}
-	d.dialog = vtui.NewCenteredDialog(78, 24, " CloudFox: "+providerLabel(provider)+" ")
+	d.dialog = vtui.NewCenteredDialog(78, 24, " "+fmt.Sprintf(vtui.Msg("CloudFox.ProfileTitle"), providerLabel(provider))+" ")
 	d.dialog.ShowClose = true
 	d.fieldX = d.dialog.X1 + 23
 	d.fieldWidth = 51

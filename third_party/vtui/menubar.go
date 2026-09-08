@@ -111,6 +111,12 @@ func (mb *MenuBar) SetSubMenu(f Frame) {
 
 func (mb *MenuBar) closeSub() {
 	if mb.activeSubMenu != nil {
+		// A dropdown may have nested menus of its own open on top of it;
+		// they have to go first, or they stay on screen with their owner
+		// gone.
+		if vm, ok := mb.activeSubMenu.(*VMenu); ok {
+			vm.CloseSubMenu()
+		}
 		// Use RemoveFrame instead of Pop to ensure the menu is gone
 		// even if a dialog popped up on top of it.
 		FrameManager.RemoveFrame(mb.activeSubMenu)
@@ -149,20 +155,7 @@ func (mb *MenuBar) ActivateSubMenu(index int) {
 	x := mb.GetItemX(index)
 
 	// Dynamically calculate required width for the submenu
-	maxWidth := 24
-	for _, itm := range items {
-		if !itm.Separator {
-			clean, _, _ := ParseAmpersandString(" " + itm.Text)
-			w := StringWidth(clean)
-			if itm.Shortcut != "" {
-				w += StringWidth(itm.Shortcut + " ")
-			}
-			w += 4 // Minimum visual padding between text and shortcut/border
-			if w > maxWidth {
-				maxWidth = w
-			}
-		}
-	}
+	maxWidth := menuItemsWidth(items, 24)
 
 	menuY := mb.Y1 + 1
 	menuBottom := menuY + m.GetItemCount() + 1
@@ -197,12 +190,7 @@ func (mb *MenuBar) ProcessKey(e *vtinput.InputEvent) bool {
 
 	// Helper to close current submenu before switching or closing
 	closeSub := func() {
-		if mb.activeSubMenu != nil {
-			if FrameManager.GetTopFrameType() == TypeMenu {
-				FrameManager.Pop()
-			}
-			mb.activeSubMenu = nil
-		}
+		mb.closeSub()
 	}
 
 	// 1. Logic when menu is already active

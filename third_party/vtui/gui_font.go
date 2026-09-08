@@ -216,8 +216,48 @@ func (c *fontFallbackChain) faceFor(r rune) any {
 	return f
 }
 
+// resolveLocked walks the entries, and when none of them renders r asks
+// discoverFallbackPaths which fonts on this machine carry r's script. The
+// static list cannot hold one font per script — warm() parses every entry on
+// it — so the scripts outside it arrive here, once per script, and only in a
+// session that actually draws one.
 func (c *fontFallbackChain) resolveLocked(r rune) any {
-	for i := range c.entries {
+	if face := c.walkLocked(r, 0); face != nil {
+		return face
+	}
+	discovered := len(c.entries)
+	c.discoverLocked(r)
+	if len(c.entries) == discovered {
+		return nil
+	}
+	return c.walkLocked(r, discovered)
+}
+
+// discoverLocked appends the not-yet-known font files that cover r. Paths
+// already in the chain are skipped: they have answered for r above.
+func (c *fontFallbackChain) discoverLocked(r rune) {
+	for _, path := range discoverFallbackPaths(r) {
+		known := false
+		for i := range c.entries {
+			if c.entries[i].path == path {
+				known = true
+				break
+			}
+		}
+		if known {
+			continue
+		}
+		c.entries = append(c.entries, fontFallbackEntry{path: path})
+		DebugLog("%s: fallback discovered for U+%04X: %s", c.logTag, r, path)
+	}
+}
+
+// walkLocked consults the entries from index start onwards, in list order,
+// and returns the first face that renders r. start lets resolveLocked replay
+// the walk over freshly discovered entries without re-probing the ones that
+// have already said no.
+func (c *fontFallbackChain) walkLocked(r rune, start int) any {
+	for i := start; i < len(c.entries); i++ {
 		e := &c.entries[i]
 		if e.failed {
 			continue
@@ -593,20 +633,20 @@ func loadBestFont(fontName string, size float64, dpi float64) (font.Face, int, i
 	// opened by the chain on first use. The old loop read and parsed every
 	// fallback font here, which held hundreds of megabytes for glyphs most
 	// sessions never draw.
-	var chain *fontFallbackChain
+	//
+	// The chain is built even when none of the listed paths exists: its
+	// discovery step still finds the per-script fonts (Nirmala UI, Noto
+	// Devanagari, Ebrima) that no curated list can enumerate, and a machine
+	// without a single CJK font can still have those.
+	chain := newGUIFallbackChain(size, dpi)
 	for _, path := range fallbackPathsForGUI() {
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
 		DebugLog("GUI_FONT: fallback present, deferred until first use: %s", path)
-		if chain == nil {
-			chain = newGUIFallbackChain(size, dpi)
-		}
 		chain.entries = append(chain.entries, fontFallbackEntry{path: path})
 	}
-	if chain != nil {
-		chain.warm()
-	}
+	chain.warm()
 
 	return &fallbackFace{faces: []font.Face{primaryFace}, chain: chain}, cellW, cellH
 }

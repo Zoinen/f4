@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -28,6 +29,11 @@ type viewerEditorHistoryEntry struct {
 	VFSType  string                  `json:"vfs_type,omitempty"`
 	VFSTitle string                  `json:"vfs_title,omitempty"`
 	Lock     bool                    `json:"lock,omitempty"`
+	// Timestamp is when the file was last opened. far2l stamps every
+	// history record it stores; the dialog shows the stamp so a file can be
+	// found by when it was opened rather than by its name (#408). Records
+	// written before this existed have a zero timestamp and keep working.
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 func loadViewerEditorHistory() []viewerEditorHistoryEntry {
@@ -76,10 +82,11 @@ func rememberViewerEditorHistory(fs vfs.VFS, path string, mode viewerEditorHisto
 	}
 
 	entry := viewerEditorHistoryEntry{
-		Path:    path,
-		Display: path,
-		Mode:    mode,
-		VFSType: fmt.Sprintf("%T", fs),
+		Path:      path,
+		Display:   path,
+		Mode:      mode,
+		VFSType:   fmt.Sprintf("%T", fs),
+		Timestamp: time.Now(),
 	}
 	if local, ok := fs.(*vfs.OSVFS); ok {
 		if absolute, err := local.Abs(path); err == nil {
@@ -188,7 +195,7 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 	paths := make([]HistoryRecord, len(entries))
 	modes := make([]string, len(entries))
 	for i, entry := range entries {
-		paths[i] = HistoryRecord{Name: entry.Display, Lock: entry.Lock}
+		paths[i] = HistoryRecord{Name: entry.Display, Lock: entry.Lock, Timestamp: entry.Timestamp}
 		if entry.Mode == historyModeEdit {
 			modes[i] = Msg("History.Mode.Edit")
 		} else {
@@ -200,6 +207,15 @@ func actionViewerEditorHistory(pf *PanelsFrame) {
 	menu.SetHelp("HistoryViewEdit")
 	search := newHistorySearch(menu, paths, Msg("History.ViewEditHint"))
 	search.supportsLocks = true
+	// Same timestamp column the command and folder histories use, with its
+	// own Ctrl+T mode remembered separately — far2l keeps one setting per
+	// history type too.
+	search.showTimes = true
+	search.timeMode = AppConfig.HistoryShowTimes[historyTypeViewEdit]
+	search.onTimesChanged = func(mode int) {
+		AppConfig.HistoryShowTimes[historyTypeViewEdit] = mode
+		SaveConfig()
+	}
 	search.onLockToggled = func() {
 		for i := range entries {
 			entries[i].Lock = search.all[i].Lock

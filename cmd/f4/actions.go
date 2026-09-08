@@ -61,6 +61,9 @@ var (
 	LastLeftSortRev       = false
 	LastRightSortRev      = false
 
+	LastLeftSortGroups  = false
+	LastRightSortGroups = false
+
 	LastShowPanels = true
 	LastShowLeft   = true
 	LastShowRight  = true
@@ -88,6 +91,20 @@ func actionFoldersHistory(pf *PanelsFrame) {
 		return
 	}
 	richFolders, folderHP := loadFolderHistoryRecords(vtui.GlobalHistoryProvider)
+	// Folder bookmarks and folder history are one list now (#407). Fold the
+	// bookmark table in before the emptiness check, so a profile whose only
+	// saved folders are bookmarks still opens the dialog, and hand the marks
+	// their digits straight away — a folder locked before this existed picks
+	// up a hotkey the first time the dialog is opened.
+	var pins *folderPins
+	if folderHP != nil {
+		if pins = loadFolderPins(); pins != nil {
+			richFolders = mergeFolderPins(richFolders, pins)
+			if pins.reconcile(richFolders) {
+				pins.save()
+			}
+		}
+	}
 	h := extractNames(richFolders)
 	if len(richFolders) == 0 {
 		vtui.ShowMessage(Msg("History.Title"), Msg("History.EmptyFolders"), []string{Msg("vtui.Ok")})
@@ -101,16 +118,32 @@ func actionFoldersHistory(pf *PanelsFrame) {
 	search.supportsLocks = folderHP != nil
 	search.showTimes = true
 	search.timeMode = AppConfig.HistoryShowTimes[historyTypeFolders]
+	if pins != nil {
+		search.pinSlotOf = func(rec HistoryRecord) int { return pins.slotOf(rec.Name) }
+	}
 	search.onTimesChanged = func(mode int) {
 		AppConfig.HistoryShowTimes[historyTypeFolders] = mode
 		SaveConfig()
 	}
-	search.onLockToggled = func() {
+
+	// persist writes the folder list back and keeps the bookmark table in
+	// step with it: pinning an entry claims a digit, unpinning gives it back.
+	persist := func() {
+		richFolders = append([]HistoryRecord(nil), search.all...)
+		h = extractNames(richFolders)
 		if folderHP != nil {
-			richFolders = append([]HistoryRecord(nil), search.all...)
-			h = extractNames(richFolders)
 			saveFolderHistoryRecords(folderHP, richFolders)
+		} else if vtui.GlobalHistoryProvider != nil {
+			vtui.GlobalHistoryProvider.SaveHistory("folders", h)
 		}
+		if pins != nil && pins.reconcile(richFolders) {
+			pins.save()
+		}
+	}
+	search.onLockToggled = func() {
+		persist()
+		// The row has just moved into or out of the pinned area.
+		search.refreshKeepingSelection()
 	}
 	search.applyFilter()
 
@@ -153,6 +186,21 @@ func actionFoldersHistory(pf *PanelsFrame) {
 			return false
 		}
 
+		// Alt+digit reaches the pinned folders by their slot digit, the same
+		// table RightCtrl+digit uses from the panel — that hotkey cannot get
+		// through while this dialog is on top of the frame stack (#407).
+		if pins != nil && alt && !shift &&
+			e.VirtualKeyCode >= vtinput.VK_0 && e.VirtualKeyCode <= vtinput.VK_9 {
+			if path := pins.slotAt(int(e.VirtualKeyCode - vtinput.VK_0)); path != "" {
+				search.cleanup()
+				menu.Close()
+				if targetPanel := pf.getActivePanel(); targetPanel != nil {
+					pf.NavigateToPath(targetPanel, path)
+				}
+			}
+			return true
+		}
+
 		// Ctrl+R: drop entries whose path no longer exists on disk (far2l).
 		if e.VirtualKeyCode == vtinput.VK_R && ctrl && !alt && !shift {
 			confirmAndPruneMissingFolderHistory(&h, &richFolders, folderHP, search, menu)
@@ -188,13 +236,7 @@ func actionFoldersHistory(pf *PanelsFrame) {
 		if (e.VirtualKeyCode == vtinput.VK_DELETE || e.VirtualKeyCode == vtinput.VK_BACK) && shift {
 			// Delete item
 			if search.deleteSelected() {
-				richFolders = append([]HistoryRecord(nil), search.all...)
-				h = extractNames(richFolders)
-				if folderHP != nil {
-					saveFolderHistoryRecords(folderHP, richFolders)
-				} else {
-					vtui.GlobalHistoryProvider.SaveHistory("folders", h)
-				}
+				persist()
 			}
 			if len(search.all) == 0 {
 				search.cleanup()
@@ -561,17 +603,33 @@ func actionSortMenuForPanel(pf *PanelsFrame, fsp *FileSystemPanel) {
 			Shortcut: entry.shortcut,
 		})
 	}
+
+	// The last row is a toggle rather than a mode, the way far puts "use sort
+	// groups" below the mode list. Its index is len(entries).
+	groupsPrefix := "  "
+	if fsp.useSortGroups {
+		groupsPrefix = "✓ "
+	}
+	menu.AddItem(vtui.MenuItem{
+		Text:     groupsPrefix + Msg("Menu.SortUseGroups"),
+		Shortcut: MenuShortcutsForAction("Shell", "Panel.SortUseGroups"),
+	})
+
 	menu.SetSelectPos(selected)
 	menu.OnAction = func(idx int) {
-		if idx < 0 || idx >= len(entries) {
+		switch {
+		case idx >= 0 && idx < len(entries):
+			fsp.SetSortMode(entries[idx].mode)
+		case idx == len(entries):
+			fsp.ToggleSortGroups()
+		default:
 			return
 		}
-		fsp.SetSortMode(entries[idx].mode)
 		pf.updateMenuCheckmarks()
 		vtui.FrameManager.Redraw()
 	}
 
-	w, h := 36, len(entries)+2
+	w, h := 36, len(entries)+3
 	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
 	panelW := panelX2 - panelX1 + 1
 	panelH := panelY2 - panelY1 + 1
@@ -593,7 +651,7 @@ func actionSortMenuForPanel(pf *PanelsFrame, fsp *FileSystemPanel) {
 
 func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64) {
 	rememberViewerEditorHistory(v, path, historyModeEdit)
-	cmdStr := AppConfig.ExternalEditorCommand
+	cmdStr := configuredExternalEditorCommand()
 	if cmdStr == "" {
 		cmdStr = os.Getenv("EDITOR")
 		if cmdStr == "" {
@@ -741,6 +799,21 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 	})
 }
 
+// configuredExternalEditorCommand selects the editor configured for the
+// renderer family that started this f4 session. The old single command
+// remains a fallback so existing settings continue to work after the split
+// configuration is introduced.
+func configuredExternalEditorCommand() string {
+	if runningGUI {
+		if AppConfig.ExternalEditorGUI != "" {
+			return AppConfig.ExternalEditorGUI
+		}
+	} else if AppConfig.ExternalEditorConsole != "" {
+		return AppConfig.ExternalEditorConsole
+	}
+	return AppConfig.ExternalEditorCommand
+}
+
 func runExternalEditor(pf *PanelsFrame, cmdStr, path string) {
 	parts := strings.Fields(cmdStr)
 	if len(parts) == 0 {
@@ -752,6 +825,7 @@ func runExternalEditor(pf *PanelsFrame, cmdStr, path string) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	configureExternalEditorProcess(cmd)
 	if fsp := pf.getActivePanel(); fsp != nil {
 		if _, isLocal := fsp.vfs.(*vfs.OSVFS); isLocal {
 			cmd.Dir = fsp.vfs.GetPath()
@@ -865,6 +939,7 @@ func applyInitialViewerOffset(viewer *ViewerView) bool {
 }
 
 type preparedEditorDocument struct {
+	disasmMode int
 	mapped     *MappedFile
 	binary     bool
 	dataOffset int64
@@ -921,6 +996,7 @@ func prepareEditorDocumentWithEncoding(ctx context.Context, v vfs.VFS, path stri
 	cpID := encoding.defaultCodepage
 	fileSize := int64(0)
 	probeBytes := 0
+	var header []byte
 
 	if f != nil {
 		size := f.Size()
@@ -929,7 +1005,7 @@ func prepareEditorDocumentWithEncoding(ctx context.Context, v vfs.VFS, path stri
 		if int64(detectLen) > size {
 			detectLen = int(size)
 		}
-		header := make([]byte, detectLen)
+		header = make([]byte, detectLen)
 		n, err := readDocumentBytes(ctx, f, header, 0)
 		if err != nil {
 			return nil, fmt.Errorf("read file header: %w", err)
@@ -1002,7 +1078,7 @@ func prepareEditorDocumentWithEncoding(ctx context.Context, v vfs.VFS, path stri
 		"codepage", cpID,
 		"asyncBuffer", buf != nil,
 		"pieceTableSize", pt.Size())
-	return &preparedEditorDocument{pt: pt, buf: buf, file: f, codepage: cpID, mapped: mapped, binary: binary, dataOffset: dataOffset}, nil
+	return &preparedEditorDocument{disasmMode: detectX86Mode(header), pt: pt, buf: buf, file: f, codepage: cpID, mapped: mapped, binary: binary, dataOffset: dataOffset}, nil
 }
 
 // showEditor remains the synchronous adapter for callers that already own a
@@ -1032,6 +1108,7 @@ func showPreparedEditor(pf *PanelsFrame, v vfs.VFS, path string, prepared *prepa
 	editor.Codepage = prepared.codepage
 	editor.binaryFile = prepared.binary
 	editor.utf8BOM = prepared.codepage == 65001 && prepared.dataOffset != 0
+	editor.DisasmMode = prepared.disasmMode
 	// StartIndexing skips hex, so binary files open without a line scan.
 	if _, isDisks := v.(*vfs.DisksVFS); isDisks || prepared.binary {
 		editor.HexMode = true
@@ -1039,7 +1116,7 @@ func showPreparedEditor(pf *PanelsFrame, v vfs.VFS, path string, prepared *prepa
 	// A saved position is a line number, meaningless for a hex view.
 	if GlobalFileState != nil && path != "" && !prepared.binary {
 		if state := GlobalFileState.GetState(FileStateKey(v, path)); state != nil {
-			editor.WordWrap = state.EditorWrap
+			editor.applyRememberedWordWrap(state.EditorWrap)
 			editor.targetLine = state.EditorLine
 			editor.targetPos = state.EditorPos
 			editor.targetTopRow = state.EditorTopRow
@@ -1405,7 +1482,12 @@ func actionSwitchEditorToViewer(ev *EditorView) {
 		viewer.ReloadWithCodepage(ev.Codepage)
 		viewer.HexMode = ev.HexMode
 		viewer.DecodeMode = ev.DecodeMode
-		viewer.DisasmMode = ev.DisasmMode
+		// A decided mode travels with the switch, whether the header or
+		// the user decided it; an undecided one must not undo the
+		// viewer's own detection.
+		if ev.DisasmMode != 0 {
+			viewer.DisasmMode = ev.DisasmMode
+		}
 		viewer.WrapMode = ev.WordWrap
 		if viewer.HexMode {
 			viewer.TopOffset = targetOffset &^ 0xF
@@ -1557,7 +1639,7 @@ func actionSwitchViewerToEditor(vv *ViewerView) {
 	editor.Codepage = cpID
 	editor.binaryFile = vv.HexMode
 	editor.utf8BOM = cpID == 65001 && vv.backend != nil && vv.backend.dataOffset != 0
-	editor.WordWrap = vv.WrapMode
+	editor.applyRememberedWordWrap(vv.WrapMode)
 	editor.HexMode = vv.HexMode
 	editor.DecodeMode = vv.DecodeMode
 	editor.DisasmMode = vv.DisasmMode
@@ -2116,11 +2198,61 @@ func readViewerSearchData(ctx context.Context, backend *ViewerBackend, progress 
 	return data, nil
 }
 
+// openPlayerPanel is the player when it is open on the passive side, which
+// is the only side it can be on while a file panel is active.
+func openPlayerPanel(pf *PanelsFrame) *PlayerPanel {
+	if pf == nil || !pf.showPanels || pf.activeIdx < 0 || pf.activeIdx > 1 {
+		return nil
+	}
+	player, _ := pf.altPanels[1-pf.activeIdx].(*PlayerPanel)
+	return player
+}
+
+// tryPlayInPlayerPanel is Enter on a recording while the player panel is
+// open: the file plays there at once, the file panel keeps the cursor, and
+// the rest of the panel's audio files become the queue. Without the player
+// open, Enter keeps its usual meaning — associations, then the system
+// opener — so the rule costs nobody anything they did not ask for.
+func tryPlayInPlayerPanel(pf *PanelsFrame, v vfs.VFS, path string) bool {
+	player := openPlayerPanel(pf)
+	if player == nil || !IsAudioFile(path) {
+		return false
+	}
+	osv, isLocal := v.(*vfs.OSVFS)
+	if !isLocal {
+		vtui.ShowMessage(Msg("Player.Title"), Msg("Player.LocalOnly"), []string{Msg("vtui.Ok")})
+		return true
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return false
+	}
+	dir := v.Dir(path)
+	names, index := fsp.AudioSiblings()
+	if index < 0 || fsp.vfs.GetPath() != dir {
+		names, index = []string{v.Base(path)}, 0
+	}
+	files := make([]string, 0, len(names))
+	for _, n := range names {
+		abs, err := osv.Abs(filepath.Join(dir, n))
+		if err != nil {
+			abs = filepath.Join(dir, n)
+		}
+		files = append(files, abs)
+	}
+	player.PlayFile(files, index)
+	vtui.FrameManager.Redraw()
+	return true
+}
+
 func actionExecute(pf *PanelsFrame, v vfs.VFS, dir, name, path string) {
 	// User-defined file associations for Enter (mirrors far2l F9 →
 	// Commands → File associations). A matching association intercepts
 	// before the runnable / xdg-open fallback; no match → default flow.
 	if tryFileAssociation(pf, AssocExecute) {
+		return
+	}
+	if tryPlayInPlayerPanel(pf, v, path) {
 		return
 	}
 	if _, isDisks := v.(*vfs.DisksVFS); isDisks {
@@ -2220,6 +2352,9 @@ func actionExecute(pf *PanelsFrame, v vfs.VFS, dir, name, path string) {
 					}
 					pf.writePTY(activePty, []byte(cmdToWire))
 					if isWindowsShell {
+						if isBatchCommand(historyCmd) {
+							pf.cmdSession.noteBatchExecution()
+						}
 						pf.noteLocalShellLineSent(activePty)
 					}
 					pf.showPanels = false
@@ -2288,11 +2423,19 @@ func actionNewFile(pf *PanelsFrame) {
 
 func actionViewTerminalLog(pf *PanelsFrame) {
 	v := NewTerminalLogVFS(pf.termView)
+	if fallback := pf.hostConsoleLogFallback(); fallback != nil {
+		v.data, v.initialOffset = fallback(), 0
+		v.immutableSnapshot = true
+	}
 	actionOpenViewer(pf, v, "Terminal Log")
 }
 
 func actionEditTerminalLog(pf *PanelsFrame) {
 	v := NewTerminalLogVFS(pf.termView)
+	if fallback := pf.hostConsoleLogFallback(); fallback != nil {
+		v.data, v.initialOffset = fallback(), 0
+		v.immutableSnapshot = true
+	}
 	actionOpenEditor(pf, v, "Terminal Log")
 }
 
@@ -2521,8 +2664,8 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 		return
 	}
 
-	dlg := vtui.NewCenteredDialog(50, 11, title)
-	dlg.ShowClose = true
+	dlg := newFileDialog(title, copyDialogHeight)
+	width, height := dlg.size()
 
 	promptLbl := vtui.NewLabel(0, 0, fmt.Sprintf(prompt, len(names)), nil)
 	dlg.AddItem(promptLbl)
@@ -2565,11 +2708,11 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 	dlg.AddItem(comboMode)
 
 	// Layout Engine
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, 11-4)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
 	vbox.Add(promptLbl, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(editDest, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	hbox := vtui.NewHBoxLayout(0, 0, 50-4, 1)
+	hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
 	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
@@ -2579,7 +2722,14 @@ func actionCopyMove(pf *PanelsFrame, isMove bool) {
 	// popup below the field, so the popup cannot cover these buttons.
 	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Add(comboMode, vtui.Margins{Top: 1}, vtui.AlignCenter)
-	vbox.Apply()
+
+	// The same VBox re-applied to the new dialog rectangle is what stretches
+	// the destination field when the f4 window is resized; the button row
+	// re-centers itself from HBoxLayout.SetPosition.
+	dlg.setLayout(func() {
+		vbox.SetPosition(dlg.X1+2, dlg.Y1+2, dlg.X2-2, dlg.Y2-2)
+		vbox.Apply()
+	})
 	dlg.SetFocusedItem(editDest)
 
 	vtui.FrameManager.Push(dlg)
@@ -2595,7 +2745,7 @@ func actionRename(pf *PanelsFrame) {
 		return
 	}
 
-	vtui.InputBox(Msg("Dialog.RenameTitle"), fmt.Sprintf(Msg("Dialog.RenamePrompt"), name), name, func(newName string) {
+	fileInputBox(Msg("Dialog.RenameTitle"), fmt.Sprintf(Msg("Dialog.RenamePrompt"), name), name, func(newName string) {
 		if newName == "" || newName == name {
 			return
 		}
@@ -2773,7 +2923,7 @@ func actionCopyInPlace(pf *PanelsFrame) {
 
 	sourceVFS := fsp.vfs
 	sourceBasePath := sourceVFS.GetPath()
-	vtui.InputBox(" Copy ", "Copy '"+name+"' to:", name, func(newName string) {
+	fileInputBox(" Copy ", "Copy '"+name+"' to:", name, func(newName string) {
 		if newName == "" || newName == name {
 			return
 		}
@@ -2801,6 +2951,7 @@ func actionEditorSettings(pf *PanelsFrame) {
 		Msg("EditorSettings.UseEditorConfig"),
 		Msg("EditorSettings.AutoComplete"),
 		Msg("EditorSettings.Crosshair"),
+		Msg("EditorSettings.HighlightOccurrences"),
 		Msg("EditorSettings.ColorerBg"),
 		Msg("EditorSettings.SyntaxAnimation"),
 	}
@@ -2819,29 +2970,32 @@ func actionEditorSettings(pf *PanelsFrame) {
 		checkRows = len(checkCaptions)
 	}
 
-	// The external editor row is a checkbox, a label and an input field on
-	// one line. How much of it the two captions take depends on the
-	// language, so the field is sized from what they leave rather than from
-	// a constant that happens to fit in English: a translation whose
-	// captions are wider (Bengali, for one) pushed the field onto the
-	// dialog frame. When even a usable field does not fit, the row is
-	// stacked over three lines instead, and the dialog grows to match.
+	// The external editor has separate commands for the console and GUI. How
+	// much of each row the captions take depends on the language, so the
+	// fields are sized from what the captions leave rather than from a
+	// constant that happens to fit in English.
 	captionWidth := func(key string) int {
 		clean, _, _ := vtui.ParseAmpersandString(Msg(key))
 		return vtui.StringWidth(clean)
 	}
 	const minExternalCommandWidth = 20
 	extCheckWidth := 4 + captionWidth("EditorSettings.UseExternalEditor")
-	extLabelWidth := captionWidth("EditorSettings.ExternalCommand")
-	// The row spends, left to right: the checkbox, its right margin, the
-	// layout's spacing, the label's left margin, the label, its right
-	// margin, the spacing again; whatever is left over is the field.
+	extConsoleLabelWidth := captionWidth("EditorSettings.ExternalCommandConsole")
+	extGUILabelWidth := captionWidth("EditorSettings.ExternalCommandGUI")
+	// The first row spends, left to right: the checkbox, its right margin,
+	// the layout's spacing, the label's left margin, the label, its right
+	// margin, the spacing again; whatever is left over is the field. The
+	// second row has no checkbox, so it gets the full dialog width.
 	const extRowSpacing = 1
-	extCmdWidth := (width - 4) - extCheckWidth - 1 - extRowSpacing - 2 - extLabelWidth - 1 - extRowSpacing
-	stackExternalRow := extCmdWidth < minExternalCommandWidth
-	if stackExternalRow {
+	extConsoleCmdWidth := (width - 4) - extCheckWidth - 1 - extRowSpacing - 2 - extConsoleLabelWidth - 1 - extRowSpacing
+	extGUICmdWidth := (width - 4) - extGUILabelWidth - 1 - extRowSpacing
+	stackExternalRows := extConsoleCmdWidth < minExternalCommandWidth || extGUICmdWidth < minExternalCommandWidth
+	extCmdWidth := extConsoleCmdWidth
+	if stackExternalRows {
 		extCmdWidth = width - 4
-		height += 2
+		height += 4
+	} else {
+		height++
 	}
 	dlg := vtui.NewCenteredDialog(width, height, Msg("EditorSettings.Title"))
 	dlg.ShowClose = true
@@ -2936,6 +3090,11 @@ func actionEditorSettings(pf *PanelsFrame) {
 		chkColorerBg.State = 1
 	}
 
+	chkHighlightOccurrences := vtui.NewCheckbox(0, 0, Msg("EditorSettings.HighlightOccurrences"), false)
+	if AppConfig.EditorMarkOccurrences {
+		chkHighlightOccurrences.State = 1
+	}
+
 	chkSyntaxAnimation := vtui.NewCheckbox(0, 0, Msg("EditorSettings.SyntaxAnimation"), false)
 	if AppConfig.EditorSyntaxAnimation {
 		chkSyntaxAnimation.State = 1
@@ -2949,10 +3108,19 @@ func actionEditorSettings(pf *PanelsFrame) {
 		chkExtEdit.State = 1
 	}
 
-	editExtCmd := vtui.NewEdit(0, 0, extCmdWidth, AppConfig.ExternalEditorCommand)
-	editExtCmd.PathHintsEnabled = true
-	attachHistory(editExtCmd, externalEditorHistoryID)
-	lblExtCmd := vtui.NewLabel(0, 0, Msg("EditorSettings.ExternalCommand"), editExtCmd)
+	editExtCmdConsole := vtui.NewEdit(0, 0, extCmdWidth, AppConfig.ExternalEditorConsole)
+	editExtCmdConsole.PathHintsEnabled = true
+	attachHistory(editExtCmdConsole, externalEditorHistoryID)
+	lblExtCmdConsole := vtui.NewLabel(0, 0, Msg("EditorSettings.ExternalCommandConsole"), editExtCmdConsole)
+	editExtCmdGUI := vtui.NewEdit(0, 0, func() int {
+		if stackExternalRows {
+			return extCmdWidth
+		}
+		return extGUICmdWidth
+	}(), AppConfig.ExternalEditorGUI)
+	editExtCmdGUI.PathHintsEnabled = true
+	attachHistory(editExtCmdGUI, externalEditorHistoryID)
+	lblExtCmdGUI := vtui.NewLabel(0, 0, Msg("EditorSettings.ExternalCommandGUI"), editExtCmdGUI)
 
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 	btnOk.IsDefault = true
@@ -2975,16 +3143,20 @@ func actionEditorSettings(pf *PanelsFrame) {
 	dlg.AddItem(chkEditorConfig)
 	dlg.AddItem(chkAuto)
 	dlg.AddItem(chkCrosshair)
+	dlg.AddItem(chkHighlightOccurrences)
 	dlg.AddItem(chkColorerBg)
 	dlg.AddItem(chkSyntaxAnimation)
 	dlg.AddItem(lblMask)
 	dlg.AddItem(editMask)
 	dlg.AddItem(chkExtEdit)
-	dlg.AddItem(lblExtCmd)
-	dlg.AddItem(editExtCmd)
+	dlg.AddItem(lblExtCmdConsole)
+	dlg.AddItem(editExtCmdConsole)
+	dlg.AddItem(lblExtCmdGUI)
+	dlg.AddItem(editExtCmdGUI)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
-	dlg.AddLink(chkExtEdit, editExtCmd, vtui.LinkEnableIfChecked)
+	dlg.AddLink(chkExtEdit, editExtCmdConsole, vtui.LinkEnableIfChecked)
+	dlg.AddLink(chkExtEdit, editExtCmdGUI, vtui.LinkEnableIfChecked)
 
 	// 3. Layout Configuration
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
@@ -3016,7 +3188,8 @@ func actionEditorSettings(pf *PanelsFrame) {
 		checkColumn := vtui.NewVBoxLayout(0, 0, width-4, checkRows)
 		for _, check := range []*vtui.Checkbox{
 			chkAutoIndent, chkCursorEOL, chkEditorConfig,
-			chkAuto, chkCrosshair, chkColorerBg, chkSyntaxAnimation,
+			chkAuto, chkCrosshair, chkHighlightOccurrences,
+			chkColorerBg, chkSyntaxAnimation,
 		} {
 			checkColumn.Add(check, vtui.Margins{}, vtui.AlignLeft)
 		}
@@ -3026,6 +3199,7 @@ func actionEditorSettings(pf *PanelsFrame) {
 		col1.Add(chkAutoIndent, vtui.Margins{}, vtui.AlignLeft)
 		col1.Add(chkEditorConfig, vtui.Margins{}, vtui.AlignLeft)
 		col1.Add(chkColorerBg, vtui.Margins{}, vtui.AlignLeft)
+		col1.Add(chkHighlightOccurrences, vtui.Margins{}, vtui.AlignLeft)
 
 		col2 := vtui.NewVBoxLayout(0, 0, (width-4)/2, checkRows)
 		col2.Add(chkCursorEOL, vtui.Margins{}, vtui.AlignLeft)
@@ -3042,16 +3216,22 @@ func actionEditorSettings(pf *PanelsFrame) {
 	vbox.Add(lblMask, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(editMask, vtui.Margins{}, vtui.AlignFill)
 
-	if stackExternalRow {
+	if stackExternalRows {
 		vbox.Add(chkExtEdit, vtui.Margins{Top: 1}, vtui.AlignLeft)
-		vbox.Add(lblExtCmd, vtui.Margins{}, vtui.AlignLeft)
-		vbox.Add(editExtCmd, vtui.Margins{}, vtui.AlignFill)
+		vbox.Add(lblExtCmdConsole, vtui.Margins{}, vtui.AlignLeft)
+		vbox.Add(editExtCmdConsole, vtui.Margins{}, vtui.AlignFill)
+		vbox.Add(lblExtCmdGUI, vtui.Margins{Top: 1}, vtui.AlignLeft)
+		vbox.Add(editExtCmdGUI, vtui.Margins{}, vtui.AlignFill)
 	} else {
-		rowExt := vtui.NewHBoxLayout(0, 0, width-4, 1)
-		rowExt.Add(chkExtEdit, vtui.Margins{Right: 1}, vtui.AlignLeft)
-		rowExt.Add(lblExtCmd, vtui.Margins{Right: 1, Left: 2}, vtui.AlignLeft)
-		rowExt.Add(editExtCmd, vtui.Margins{}, vtui.AlignFill)
-		vbox.Add(rowExt, vtui.Margins{Top: 1}, vtui.AlignFill)
+		rowExtConsole := vtui.NewHBoxLayout(0, 0, width-4, 1)
+		rowExtConsole.Add(chkExtEdit, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowExtConsole.Add(lblExtCmdConsole, vtui.Margins{Right: 1, Left: 2}, vtui.AlignLeft)
+		rowExtConsole.Add(editExtCmdConsole, vtui.Margins{}, vtui.AlignFill)
+		vbox.Add(rowExtConsole, vtui.Margins{Top: 1}, vtui.AlignFill)
+		rowExtGUI := vtui.NewHBoxLayout(0, 0, width-4, 1)
+		rowExtGUI.Add(lblExtCmdGUI, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowExtGUI.Add(editExtCmdGUI, vtui.Margins{}, vtui.AlignFill)
+		vbox.Add(rowExtGUI, vtui.Margins{}, vtui.AlignFill)
 	}
 
 	hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
@@ -3089,17 +3269,45 @@ func actionEditorSettings(pf *PanelsFrame) {
 		AppConfig.EditorUseEditorConfig = chkEditorConfig.State == 1
 		AppConfig.EditorAutoComplete = chkAuto.State == 1
 		AppConfig.EditorCrosshair = chkCrosshair.State == 1
+		AppConfig.EditorMarkOccurrences = chkHighlightOccurrences.State == 1
 		AppConfig.EditorColorerBackground = chkColorerBg.State == 1
 		AppConfig.EditorSyntaxAnimation = chkSyntaxAnimation.State == 1
 		AppConfig.EditorAutoCompleteMask = editMask.GetText()
 		AppConfig.UseExternalEditor = chkExtEdit.State == 1
-		AppConfig.ExternalEditorCommand = editExtCmd.GetText()
-		commitHistory(editExtCmd, AppConfig.ExternalEditorCommand)
+		AppConfig.ExternalEditorConsole = editExtCmdConsole.GetText()
+		AppConfig.ExternalEditorGUI = editExtCmdGUI.GetText()
+		// Keep the legacy key useful for older f4 versions.
+		AppConfig.ExternalEditorCommand = AppConfig.ExternalEditorConsole
+		commitHistory(editExtCmdConsole, AppConfig.ExternalEditorConsole)
+		commitHistory(editExtCmdGUI, AppConfig.ExternalEditorGUI)
 		SaveConfig()
 		dlg.Close()
 	}
 
 	vtui.FrameManager.Push(dlg)
+}
+
+// stopPlayerForDelete lets go of a file the player is reading when it is
+// about to be deleted, so the delete succeeds on Windows and the player does
+// not stay on a file that is gone. Nothing happens for other files.
+func stopPlayerForDelete(pf *PanelsFrame, v vfs.VFS, basePath string, names []string) {
+	player := openPlayerPanel(pf)
+	if player == nil {
+		return
+	}
+	osv, isLocal := v.(*vfs.OSVFS)
+	if !isLocal {
+		return
+	}
+	paths := make([]string, 0, len(names))
+	for _, n := range names {
+		p := filepath.Join(basePath, n)
+		if abs, err := osv.Abs(p); err == nil {
+			p = abs
+		}
+		paths = append(paths, p)
+	}
+	player.StopIfPlaying(paths)
 }
 
 // actionDelete follows the global trash preference. The disposition is
@@ -3149,6 +3357,7 @@ func actionDeleteWithDisposition(pf *PanelsFrame, disposition vfs.DeleteDisposit
 
 	if !AppConfig.ConfirmDelete {
 		fsp.pendingSelection = fsp.GetSuccessorName()
+		stopPlayerForDelete(pf, activeVfs, basePath, names)
 		go ExecuteDeleteOpWithDispositionAt(pf, activeVfs, basePath, names, AppConfig.DefaultFileOpMode, disposition, pf.RefreshAll)
 		return
 	}
@@ -3214,6 +3423,7 @@ func actionDeleteWithDisposition(pf *PanelsFrame, disposition vfs.DeleteDisposit
 		mode := comboMode.Menu.SelectPos
 		fsp.pendingSelection = fsp.GetSuccessorName()
 		dlg.Close()
+		stopPlayerForDelete(pf, activeVfs, basePath, names)
 		go ExecuteDeleteOpWithDispositionAt(pf, activeVfs, basePath, names, mode, disposition, pf.RefreshAll)
 	}
 
@@ -3235,7 +3445,14 @@ func actionMkDir(pf *PanelsFrame) {
 		// F7 removes references from TempPanel. Do this at the concrete F7
 		// action boundary: PanelActionCreate is also used by Shift+F4 for
 		// creating a new file and must keep its ordinary meaning.
-		if temp.removePanelReferences(selectedPanelActionPaths(panel)) {
+		paths := selectedPanelActionPaths(panel)
+		if len(paths) > 0 {
+			// Unlike a real delete, removing a TempPanel reference is immediate.
+			// Preserve the row above the removed item before the refresh resets
+			// the asynchronously loaded panel contents.
+			panel.pendingSelection = panel.GetPredecessorName()
+		}
+		if temp.removePanelReferences(paths) {
 			pf.RefreshAll()
 			return
 		}
@@ -3473,6 +3690,26 @@ func actionFindDuplicates(pf *PanelsFrame) {
 	})
 }
 
+// elementWidth returns the number of columns an element occupies at its
+// current position.
+func elementWidth(el vtui.UIElement) int {
+	x1, _, x2, _ := el.GetPosition()
+	return x2 - x1 + 1
+}
+
+// checkboxColumnWidth returns the width of the widest checkbox, i.e. the
+// width a shared column has to be for a second column placed after it
+// to line up across rows.
+func checkboxColumnWidth(items ...*vtui.Checkbox) int {
+	w := 0
+	for _, cb := range items {
+		if cw := elementWidth(cb); cw > w {
+			w = cw
+		}
+	}
+	return w
+}
+
 func boolToCheckboxState(value bool) int {
 	if value {
 		return 1
@@ -3538,10 +3775,16 @@ func actionFindFile(pf *PanelsFrame) {
 	vbox.Add(lblText, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(editText, vtui.Margins{Top: 1}, vtui.AlignFill)
 
+	// Each row is its own HBox, so the right checkbox would otherwise
+	// land wherever its left neighbour ends and the column would
+	// zigzag with the caption lengths (#903). Pad every left-column
+	// cell to the widest left caption so the right column starts at
+	// one X in every row, whatever language the captions come in.
+	leftColumn := checkboxColumnWidth(chkCase, chkRegexp, chkFolders)
 	optionsRow := func(left, right *vtui.Checkbox) *vtui.HBoxLayout {
 		row := vtui.NewHBoxLayout(0, 0, width-4, 1)
 		row.Spacing = 8
-		row.Add(left, vtui.Margins{}, vtui.AlignTop)
+		row.Add(left, vtui.Margins{Right: leftColumn - elementWidth(left)}, vtui.AlignTop)
 		row.Add(right, vtui.Margins{}, vtui.AlignTop)
 		return row
 	}

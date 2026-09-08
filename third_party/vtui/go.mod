@@ -16,7 +16,7 @@ require (
 	github.com/unxed/goclip v0.1.2
 	github.com/unxed/keytrans v0.1.33
 	github.com/unxed/kiwi-go v0.1.0
-	github.com/unxed/vtinput v0.1.7
+	github.com/unxed/vtinput v0.1.8
 	golang.org/x/image v0.45.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.40.0
@@ -52,4 +52,4 @@ replace github.com/go-webgpu/goffi => github.com/unxed/goffi v0.1.8
 
 replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 
-replace github.com/neurlang/wayland => github.com/unxed/wayland v0.0.0-20260904142929-d13d49067138
+replace github.com/neurlang/wayland => github.com/unxed/wayland v0.0.0-20260906012106-4096eafdd7f4

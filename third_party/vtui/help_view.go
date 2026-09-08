@@ -48,6 +48,7 @@ func NewHelpView(engine *HelpEngine, startTopic string) *HelpView {
 
 	hv.rootGroup.SetOwner(hv)
 	hv.scrollBar = NewScrollBar(0, 0, 0)
+	hv.scrollBar.ColorIdx = ColHelpScrollbar
 	hv.scrollBar.SetOwner(hv)
 	hv.scrollBar.OnScroll = func(v int) {
 		hv.scrollTop = v

@@ -295,34 +295,49 @@ func (rig *dialogLayoutRig) reset(t *testing.T) {
 	for i, screen := range rig.manager.Screens {
 		if screen == rig.baseScreen {
 			baseIdx = i
-			continue
 		}
-		closeFrameManagerScreens([]*vtui.AppScreen{screen})
 	}
 	if baseIdx < 0 {
 		t.Fatal("layout validation action removed the shared panels workspace")
 	}
 
-	// Drop any editor/viewer or action-created workspaces without rebuilding
-	// the shared panel fixture. Their frames have already been closed above.
-	for i := len(rig.manager.Screens) - 1; i >= 0; i-- {
-		if rig.manager.Screens[i] == rig.baseScreen {
+	// Close non-base workspaces directly. CloseScreen intentionally asks for
+	// confirmation when an editor has unsaved changes, but these fixtures are
+	// discarded between checks and must not open a confirmation dialog while
+	// the test is trying to restore its panels workspace.
+	screens := append([]*vtui.AppScreen(nil), rig.manager.Screens...)
+	for _, screen := range screens {
+		if screen == rig.baseScreen {
 			continue
 		}
-		before := len(rig.manager.Screens)
-		rig.manager.CloseScreen(i)
-		if len(rig.manager.Screens) != before-1 {
-			t.Fatal("layout validation action left an extra workspace that could not be closed")
+		for i, candidate := range rig.manager.Screens {
+			if candidate != screen {
+				continue
+			}
+			rig.manager.SwitchScreen(i)
+			closeFrameManagerScreens([]*vtui.AppScreen{screen})
+			break
+		}
+		for i, candidate := range rig.manager.Screens {
+			if candidate == rig.baseScreen {
+				rig.manager.SwitchScreen(i)
+				break
+			}
 		}
 	}
-
 	for i, screen := range rig.manager.Screens {
 		if screen == rig.baseScreen {
 			baseIdx = i
 			break
 		}
 	}
-	rig.manager.SwitchScreen(baseIdx)
+	rig.manager.Screens = []*vtui.AppScreen{rig.baseScreen}
+	rig.manager.ActiveIdx = 0
+	rig.manager.Screens[0].Frames = rig.manager.GetActiveFrames(0)
+
+	if baseIdx < 0 {
+		t.Fatal("layout validation action removed the shared panels workspace")
+	}
 	frames := append([]vtui.Frame(nil), rig.baseScreen.Frames...)
 	foundPanels := false
 	for i := len(frames) - 1; i >= 0; i-- {

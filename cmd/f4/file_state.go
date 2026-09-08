@@ -151,6 +151,28 @@ func (fs *F4FileStateProvider) updateEditorState(path string, line, pos, top, le
 	fs.mu.Unlock()
 }
 
+// SaveEditorWrap records the editor's word-wrap choice for a file on its own.
+// The choice is made in the middle of a session, when the cursor may still be
+// on its way back to the saved position, so it must not carry the position
+// with it the way SaveEditorState does — that would write the position the
+// restore has not applied yet over the one it is restoring.
+func (fs *F4FileStateProvider) SaveEditorWrap(path string, wrap bool) {
+	fs.updateEditorWrap(path, wrap)
+	fs.save()
+}
+
+func (fs *F4FileStateProvider) SaveEditorWrapAsync(path string, wrap bool) {
+	fs.updateEditorWrap(path, wrap)
+	fs.saveAsync()
+}
+
+func (fs *F4FileStateProvider) updateEditorWrap(path string, wrap bool) {
+	fs.mu.Lock()
+	state := fs.touch(path)
+	state.EditorWrap = wrap
+	fs.mu.Unlock()
+}
+
 func (fs *F4FileStateProvider) SaveViewerState(path string, offset int64, wrap, hex bool) {
 	fs.updateViewerState(path, offset, wrap, hex)
 	fs.save()

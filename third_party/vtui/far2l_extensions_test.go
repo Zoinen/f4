@@ -280,3 +280,81 @@ func TestIssue117_WaitFar2lResponse_TimeoutCleanup(t *testing.T) {
 		Far2lData:    resp,
 	}, false)
 }
+
+// A terminal acknowledges the far2l extensions once, when the protocols are
+// announced. Init must not put the manager back to "never negotiated": a
+// second Init -- the session picker handing over to the main screen, a host
+// that inits for its own buffer -- would otherwise leave the process without
+// the extensions for the rest of the session, because no second
+// acknowledgement is ever sent (f4#922).
+func TestFar2lNegotiationSurvivesReInit(t *testing.T) {
+	oldEnabled := Far2lEnabled
+	Far2lEnabled = false
+	t.Cleanup(func() { Far2lEnabled = oldEnabled })
+
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	if far2lEnabledFor(fm) {
+		t.Fatal("far2l must stay off until a terminal acknowledges it")
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{Type: vtinput.Far2lEventType, Far2lCommand: "ok"}, false)
+	if !far2lEnabledFor(fm) {
+		t.Fatal("the acknowledgement did not enable far2l")
+	}
+
+	fm.Init(NewSilentScreenBuf())
+	if !far2lEnabledFor(fm) {
+		t.Fatal("a second Init dropped the negotiated far2l state")
+	}
+}
+
+// The negotiated state must not follow the process into a native window: an
+// APC request there waits out its whole timeout for a reply nobody will send.
+func TestFar2lIsOffBehindANativeWindow(t *testing.T) {
+	oldEnabled := Far2lEnabled
+	Far2lEnabled = false
+	t.Cleanup(func() { Far2lEnabled = oldEnabled })
+	withTerminalClipboard(t, false)
+
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	fm.dispatchEvent(&vtinput.InputEvent{Type: vtinput.Far2lEventType, Far2lCommand: "ok"}, false)
+	if !far2lEnabledFor(fm) {
+		t.Fatal("the acknowledgement did not enable far2l")
+	}
+
+	DisableTerminalClipboard()
+	if far2lEnabledFor(fm) {
+		t.Fatal("far2l stayed on with no terminal behind the application")
+	}
+}
+
+// ResetFar2lNegotiation is the lever for a process that changes the terminal
+// under itself, such as a session daemon adopting a new client's PTY.
+func TestResetFar2lNegotiation(t *testing.T) {
+	oldEnabled, oldFM := Far2lEnabled, FrameManager
+	Far2lEnabled = false
+	fm := &frameManager{}
+	FrameManager = fm
+	t.Cleanup(func() {
+		Far2lEnabled = oldEnabled
+		FrameManager = oldFM
+	})
+
+	fm.Init(NewSilentScreenBuf())
+	fm.dispatchEvent(&vtinput.InputEvent{Type: vtinput.Far2lEventType, Far2lCommand: "ok"}, false)
+	if !far2lEnabledFor(fm) {
+		t.Fatal("the acknowledgement did not enable far2l")
+	}
+
+	ResetFar2lNegotiation()
+	if far2lEnabledFor(fm) {
+		t.Fatal("far2l survived an explicit reset")
+	}
+
+	fm.Init(NewSilentScreenBuf())
+	if far2lEnabledFor(fm) {
+		t.Fatal("Init brought far2l back after the negotiation was forgotten")
+	}
+}

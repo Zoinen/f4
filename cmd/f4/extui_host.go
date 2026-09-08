@@ -4725,7 +4725,7 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 			"text": vtui.GetClipboard(),
 		})
 	case "clipboard_set":
-		vtui.SetClipboard(extUiString(msg, "text"))
+		setF4Clipboard(extUiString(msg, "text"))
 	case "panel_catalog_metadata_request":
 		h.queuePanelCatalogMetadata(msg)
 	case "panel_catalog_rows_request":

@@ -249,21 +249,42 @@ func (fh *FileHighlighter) CombineRules() {
 	vtui.DebugLog("HIGHLIGHT: Loaded %d file highlighting rules", len(fh.Rules))
 }
 
-func parseHighlightRules(ini *IniFile) []HighlightRule {
-	return parseHighlightRulesAt(ini, "")
+// ruleSection pairs a parsed rule with the ini section it came from, so a
+// caller that needs section-local keys (sort groups read Name and Group) can
+// still reach them after the shared matcher fields have been parsed.
+type ruleSection struct {
+	Section string
+	Rule    HighlightRule
 }
 
+func parseHighlightRules(ini *IniFile) []HighlightRule { return parseHighlightRulesAt(ini, "") }
 func parseHighlightRulesAt(ini *IniFile, baseDir string) []HighlightRule {
-	var rules []HighlightRule
+	sections := parseRuleSectionsAt(ini, "highlight_", baseDir)
+	rules := make([]HighlightRule, 0, len(sections))
+	for _, section := range sections {
+		rules = append(rules, section.Rule)
+	}
+	return rules
+}
+
+// parseRuleSections reads every "<prefix>N" section into a HighlightRule,
+// ordered by the numeric suffix. Highlighting and sort groups share this
+// parser so both accept the same mask, attribute, size and date keys; the
+// colour keys are simply left empty for rules that do not use them.
+func parseRuleSections(ini *IniFile, prefix string) []ruleSection {
+	return parseRuleSectionsAt(ini, prefix, "")
+}
+func parseRuleSectionsAt(ini *IniFile, prefix, baseDir string) []ruleSection {
+	var rules []ruleSection
 	var sections []string
 	for secName := range ini.data {
-		if strings.HasPrefix(strings.ToLower(secName), "highlight_") {
+		if strings.HasPrefix(strings.ToLower(secName), prefix) {
 			sections = append(sections, secName)
 		}
 	}
 	sort.Slice(sections, func(i, j int) bool {
-		idxI, _ := strconv.Atoi(strings.TrimPrefix(strings.ToLower(sections[i]), "highlight_"))
-		idxJ, _ := strconv.Atoi(strings.TrimPrefix(strings.ToLower(sections[j]), "highlight_"))
+		idxI, _ := strconv.Atoi(strings.TrimPrefix(strings.ToLower(sections[i]), prefix))
+		idxJ, _ := strconv.Atoi(strings.TrimPrefix(strings.ToLower(sections[j]), prefix))
 		return idxI < idxJ
 	})
 
@@ -365,11 +386,17 @@ func parseHighlightRulesAt(ini *IniFile, baseDir string) []HighlightRule {
 		rule.IconURL = normalizeHighlightIconURL(
 			ini.GetString(secName, "Icon", ""), baseDir)
 
-		rule.NormalStr = ini.GetString(secName, "NormalColor", "")
-		rule.SelectedStr = ini.GetString(secName, "SelectedColor", "")
-		rule.CursorStr = ini.GetString(secName, "CursorColor", "")
-		rule.SelectedCursorStr = ini.GetString(secName, "SelectedCursorColor", "")
-		rules = append(rules, rule)
+		// Each of the four colours answers to several spellings. Far Manager
+		// names them after what they paint ("File name under cursor") and a
+		// group copied out of its Files highlighting dialog should work here
+		// as written, so those names are accepted next to f4's own (#912).
+		rule.NormalStr = firstIniValue(ini, secName, "NormalColor", "NormalFileName")
+		rule.SelectedStr = firstIniValue(ini, secName, "SelectedColor", "SelectedFileName")
+		rule.CursorStr = firstIniValue(ini, secName,
+			"CursorColor", "NormalColorUnderCursor", "FileNameUnderCursor")
+		rule.SelectedCursorStr = firstIniValue(ini, secName,
+			"SelectedCursorColor", "SelectedColorUnderCursor", "FileNameSelectedUnderCursor")
+		rules = append(rules, ruleSection{Section: secName, Rule: rule})
 	}
 	return rules
 }
@@ -537,6 +564,19 @@ func highlightRulesRevision(rules []HighlightRule) int64 {
 		return 1
 	}
 	return revision
+}
+
+// firstIniValue returns the value of the first of the given keys that the
+// section actually sets, so one setting can be written under any of its
+// accepted names. Keys are tried in order, the earlier name winning when a
+// section spells the same colour twice.
+func firstIniValue(ini *IniFile, section string, keys ...string) string {
+	for _, key := range keys {
+		if val := ini.GetString(section, key, ""); val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 func parseAttrFlags(s string) AttrFlags {

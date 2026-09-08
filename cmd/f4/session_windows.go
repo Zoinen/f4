@@ -29,6 +29,7 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 }
 
 func ManageSessions() {
+	runningGUI = false
 	stopWindowAppearanceManager := startWindowsConsoleWindowAppearanceManager()
 	defer stopWindowAppearanceManager()
 

@@ -31,6 +31,11 @@ func graphicalClipboard() goclip.Driver {
 	return nil
 }
 
+// osClipboardAvailable reports whether there is a graphical clipboard to talk
+// to at all. It decides, in a window, whether the OSC 52 fallback is still
+// worth keeping: with a driver here the fallback is never reached.
+func osClipboardAvailable() bool { return graphicalClipboard() != nil }
+
 func setOSClipboard(text string) bool {
 	d := graphicalClipboard()
 	if d == nil {

@@ -215,6 +215,155 @@ func selectedHotkeyRow(table *vtui.Table, rows []hotkeyRow) (hotkeyRow, bool) {
 	return selectedHotkeyRowAt(table, rows, table.SelectPos)
 }
 
+// buildHotkeyRows assembles the shortcut inventory the hotkey settings dialog
+// shows: one editable row per configurable binding, one read-only row per
+// framework-owned native chord, and one editable row for every action that has
+// no configurable binding yet.
+func buildHotkeyRows(draft *HotkeyManager) []hotkeyRow {
+	if draft == nil {
+		return nil
+	}
+
+	var hkRows []hotkeyRow
+	activeBinds := draft.GetActiveBindings()
+	actions := GetActions()
+	// Only configurable bindings count as assigned here. Native chords are
+	// documented below but deliberately stay out of this set.
+	assignedActions := make(map[string]bool)
+
+	for area, binds := range activeBinds {
+		for key, binding := range binds {
+			parts := strings.SplitN(binding, ":", 2)
+			actName := parts[0]
+			cond := ""
+			if len(parts) == 2 {
+				cond = parts[1]
+			}
+			act, ok := GetAction(actName)
+			if !ok {
+				act = Action{Name: actName, Label: actName, Description: "Unknown action"}
+			}
+			hkRows = append(hkRows, hotkeyRow{
+				Action:    act.Name,
+				Label:     plainLabel(act.DisplayLabel()),
+				Area:      area,
+				Key:       FormatKeyForUI(key),
+				RawKey:    key,
+				Editable:  true,
+				Condition: cond,
+				Desc:      act.DisplayDescription(),
+			})
+			assignedActions[strings.ToLower(act.Name)] = true
+		}
+	}
+
+	// Native shortcuts are handled by the focused frame rather than the
+	// configurable hotkey manager. They still belong in this inventory so
+	// the dialog describes every shortcut the user can press. Keep these
+	// rows read-only: assigning them would create a misleading binding that
+	// cannot replace the frame-owned behavior.
+	//
+	// They must not mark the action as assigned, though. An action whose only
+	// shortcut is native -- Next Workspace on Ctrl+Tab -- would otherwise get
+	// no editable row at all from the loop below, and both Assign and Enter
+	// gate on hotkeyRow.Editable, so the dialog offered no way to give it a
+	// second key. That is exactly the case a user hits when the host swallows
+	// the native chord: Ctrl+Tab switches browser tabs when f4 runs in a
+	// browser, and iTerm2 over ssh does not deliver it either (issue #72).
+	// Dispatch already honors such a binding -- MacroManager.Filter resolves
+	// it through configuredHotkeyAction and RunAction, with Common as the
+	// fallback area -- so only this inventory stood in the way. The read-only
+	// native row stays alongside the editable one.
+	for _, act := range actions {
+		seenNative := make(map[string]bool)
+		for _, spec := range act.NativeKeys {
+			key, cond, _ := strings.Cut(spec, ":")
+			key = strings.TrimSpace(key)
+			displayKey := FormatKeyForUI(key)
+			if key == "" || seenNative[displayKey] {
+				continue
+			}
+			if draft.GetAction(act.Area, key) != "" {
+				continue
+			}
+			seenNative[displayKey] = true
+			hkRows = append(hkRows, hotkeyRow{
+				Action:    act.Name,
+				Label:     plainLabel(act.DisplayLabel()),
+				Area:      act.Area,
+				Key:       displayKey,
+				RawKey:    key,
+				Condition: cond,
+				Desc:      act.DisplayDescription(),
+			})
+		}
+	}
+
+	for _, act := range actions {
+		if !assignedActions[strings.ToLower(act.Name)] {
+			hkRows = append(hkRows, hotkeyRow{
+				Action:    act.Name,
+				Label:     plainLabel(act.DisplayLabel()),
+				Area:      act.Area, // unassigned, shown under the action's native area
+				Key:       "",
+				Editable:  true,
+				Condition: "",
+				Desc:      act.DisplayDescription(),
+			})
+		}
+	}
+
+	// Plugin menu commands live outside the built-in action registry, but they
+	// use the same persisted binding format. Show every loaded command so a
+	// shortcut can be prepared even while its context-sensitive menu item is
+	// currently hidden.
+	for _, act := range pluginHotkeyActionsSnapshot() {
+		if assignedActions[strings.ToLower(act.Name)] {
+			continue
+		}
+		key := pluginActionShortcut(act.Name)
+		if key == "" {
+			key = pluginActionDefaultShortcut(act.Name)
+		}
+		rawKey := ""
+		if configured := pluginActionConfiguredKey(act.Name); configured != "" {
+			rawKey = configured
+		}
+		hkRows = append(hkRows, hotkeyRow{
+			Action:   act.Name,
+			Label:    plainLabel(act.DisplayLabel()),
+			Area:     act.Area,
+			Key:      key,
+			RawKey:   rawKey,
+			Editable: true,
+			Desc:     act.DisplayDescription(),
+		})
+	}
+
+	sort.Slice(hkRows, func(i, j int) bool {
+		if hkRows[i].Area != hkRows[j].Area {
+			// Rows without an area (shouldn't happen) go last
+			if hkRows[i].Area == "" {
+				return false
+			}
+			if hkRows[j].Area == "" {
+				return true
+			}
+			return hkRows[i].Area < hkRows[j].Area
+		}
+		if hkRows[i].Label != hkRows[j].Label {
+			return hkRows[i].Label < hkRows[j].Label
+		}
+		// One action can now contribute both a native row and the empty
+		// row that offers an extra key. Order that pair deterministically,
+		// chord first, so the empty row reads as "and you may add one here"
+		// instead of appearing above the shortcut it complements.
+		return hkRows[i].Key > hkRows[j].Key
+	})
+
+	return hkRows
+}
+
 func actionHotkeyConfig(pf *PanelsFrame) {
 	w, h := 120, 48
 	if vtui.FrameManager != nil {
@@ -234,11 +383,11 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 	draft := original.CloneForEdit()
 
 	dlg, table := vtui.NewTableDialog(w, h, Msg("Hotkeys.Title"), []vtui.TableColumn{
-		{Title: "Command", Width: 23},
-		{Title: "Key", Width: 14},
-		{Title: "Area", Width: 10},
-		{Title: "When", Width: 17},
-		{Title: "Description", Width: 0},
+		{Title: Msg("Hotkeys.ColCommand"), Width: 23},
+		{Title: Msg("Hotkeys.ColKey"), Width: 14},
+		{Title: Msg("Hotkeys.ColArea"), Width: 10},
+		{Title: Msg("Hotkeys.ColWhen"), Width: 17},
+		{Title: Msg("Hotkeys.ColDescription"), Width: 0},
 	}, btnAssign, btnUnbind, btnSave, btnCancel)
 	useDialogTableColors(table)
 	table.ShowScrollBar = true
@@ -250,97 +399,8 @@ func actionHotkeyConfig(pf *PanelsFrame) {
 	var hkRows []hotkeyRow
 
 	refresh := func() {
-		hkRows = nil
 		rows = nil
-
-		activeBinds := draft.GetActiveBindings()
-		actions := GetActions()
-		assignedActions := make(map[string]bool)
-
-		for area, binds := range activeBinds {
-			for key, binding := range binds {
-				parts := strings.SplitN(binding, ":", 2)
-				actName := parts[0]
-				cond := ""
-				if len(parts) == 2 {
-					cond = parts[1]
-				}
-				act, ok := GetAction(actName)
-				if !ok {
-					act = Action{Name: actName, Label: actName, Description: "Unknown action"}
-				}
-				hkRows = append(hkRows, hotkeyRow{
-					Action:    act.Name,
-					Label:     plainLabel(act.DisplayLabel()),
-					Area:      area,
-					Key:       FormatKeyForUI(key),
-					RawKey:    key,
-					Editable:  true,
-					Condition: cond,
-					Desc:      act.DisplayDescription(),
-				})
-				assignedActions[strings.ToLower(act.Name)] = true
-			}
-		}
-
-		// Native shortcuts are handled by the focused frame rather than the
-		// configurable hotkey manager. They still belong in this inventory so
-		// the dialog describes every shortcut the user can press. Keep these
-		// rows read-only: assigning them would create a misleading binding that
-		// cannot replace the frame-owned behavior.
-		for _, act := range actions {
-			seenNative := make(map[string]bool)
-			for _, spec := range act.NativeKeys {
-				key, cond, _ := strings.Cut(spec, ":")
-				key = strings.TrimSpace(key)
-				displayKey := FormatKeyForUI(key)
-				if key == "" || seenNative[displayKey] {
-					continue
-				}
-				if draft.GetAction(act.Area, key) != "" {
-					continue
-				}
-				seenNative[displayKey] = true
-				hkRows = append(hkRows, hotkeyRow{
-					Action:    act.Name,
-					Label:     plainLabel(act.DisplayLabel()),
-					Area:      act.Area,
-					Key:       displayKey,
-					RawKey:    key,
-					Condition: cond,
-					Desc:      act.DisplayDescription(),
-				})
-				assignedActions[strings.ToLower(act.Name)] = true
-			}
-		}
-
-		for _, act := range actions {
-			if !assignedActions[strings.ToLower(act.Name)] {
-				hkRows = append(hkRows, hotkeyRow{
-					Action:    act.Name,
-					Label:     plainLabel(act.DisplayLabel()),
-					Area:      act.Area, // unassigned, shown under the action's native area
-					Key:       "",
-					Editable:  true,
-					Condition: "",
-					Desc:      act.DisplayDescription(),
-				})
-			}
-		}
-
-		sort.Slice(hkRows, func(i, j int) bool {
-			if hkRows[i].Area != hkRows[j].Area {
-				// Rows without an area (shouldn't happen) go last
-				if hkRows[i].Area == "" {
-					return false
-				}
-				if hkRows[j].Area == "" {
-					return true
-				}
-				return hkRows[i].Area < hkRows[j].Area
-			}
-			return hkRows[i].Label < hkRows[j].Label
-		})
+		hkRows = buildHotkeyRows(draft)
 
 		for _, r := range hkRows {
 			rows = append(rows, r)
@@ -499,19 +559,26 @@ func NewHotkeyAssignFrame(hm *HotkeyManager, actionName, area string, onComplete
 		onComplete: onComplete,
 	}
 
-	lblAction := vtui.NewText(0, 0, "Action: "+actionName, vtui.Palette[vtui.ColDialogText])
-	lblArea := vtui.NewText(0, 0, "Area: "+area, vtui.Palette[vtui.ColDialogText])
-	prompt := vtui.NewText(0, 0, "Press the desired key combination...", vtui.Palette[vtui.ColDialogText])
-	cancelPrompt := vtui.NewText(0, 0, "Press Esc to cancel", vtui.Palette[vtui.ColDialogText])
+	lblAction := vtui.NewText(0, 0, fmt.Sprintf(Msg("Hotkeys.AssignAction"), actionName), vtui.Palette[vtui.ColDialogText])
+	lblArea := vtui.NewText(0, 0, fmt.Sprintf(Msg("Hotkeys.AssignArea"), area), vtui.Palette[vtui.ColDialogText])
+	currentText := fmt.Sprintf(Msg("Hotkeys.AssignCurrent"), Msg("Hotkeys.AssignNone"))
+	if _, currentKey := configuredHotkeyBinding(hm, strings.SplitN(actionName, ":", 2)[0]); currentKey != "" {
+		currentText = fmt.Sprintf(Msg("Hotkeys.AssignCurrent"), FormatKeyForUI(currentKey))
+	}
+	lblCurrent := vtui.NewText(0, 0, currentText, vtui.Palette[vtui.ColDialogText])
+	prompt := vtui.NewText(0, 0, Msg("Hotkeys.AssignPrompt"), vtui.Palette[vtui.ColDialogText])
+	cancelPrompt := vtui.NewText(0, 0, Msg("Hotkeys.AssignCancel"), vtui.Palette[vtui.ColDialogText])
 
 	f.AddItem(lblAction)
 	f.AddItem(lblArea)
+	f.AddItem(lblCurrent)
 	f.AddItem(prompt)
 	f.AddItem(cancelPrompt)
 
 	vbox := vtui.NewVBoxLayout(f.X1+2, f.Y1+2, width-4, height-4)
 	vbox.Add(lblAction, vtui.Margins{}, vtui.AlignCenter)
 	vbox.Add(lblArea, vtui.Margins{Top: 1}, vtui.AlignCenter)
+	vbox.Add(lblCurrent, vtui.Margins{Top: 1}, vtui.AlignCenter)
 	vbox.Add(prompt, vtui.Margins{Top: 1}, vtui.AlignCenter)
 	vbox.Add(cancelPrompt, vtui.Margins{Top: 1}, vtui.AlignCenter)
 	vbox.Apply()

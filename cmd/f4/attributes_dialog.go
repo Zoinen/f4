@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -92,6 +93,42 @@ func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attri
 	return nil
 }
 
+// replaceSymlinkTarget changes the link itself, never the object it points at.
+// The new link is created only after the old one has been removed because the
+// optional VFS API does not promise replace semantics. If creation fails, put
+// the original link back before returning the error so a failed edit cannot
+// silently delete the user's link.
+func replaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if newTarget == "" {
+		return errors.New("symlink target cannot be empty")
+	}
+	symVFS, ok := v.(vfs.SymlinkVFS)
+	if !ok {
+		return errors.New("VFS does not support symbolic links")
+	}
+	oldTarget, err := symVFS.Readlink(ctx, path)
+	if err != nil {
+		return fmt.Errorf("read symlink %q: %w", path, err)
+	}
+	if oldTarget == newTarget {
+		return nil
+	}
+	if err := v.Remove(ctx, path); err != nil {
+		return fmt.Errorf("remove symlink %q: %w", path, err)
+	}
+	createErr := symVFS.Symlink(ctx, newTarget, path)
+	if createErr == nil {
+		return nil
+	}
+	if restoreErr := symVFS.Symlink(ctx, oldTarget, path); restoreErr != nil {
+		return fmt.Errorf("create symlink %q: %w; restore original target %q: %v", path, createErr, oldTarget, restoreErr)
+	}
+	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
+}
+
 func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attributesTarget, edited vfs.VFSItem) error {
 	const editableWinAttrs = uint32(1 | 2 | 4 | 32)
 	for _, target := range targets {
@@ -143,7 +180,7 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 	if item.IsSymlink && len(targets) == 1 {
 		targetVal, _ := vfs.Readlink(context.Background(), v, path)
 		editTarget = vtui.NewEdit(0, 0, 35, targetVal)
-		lblTarget := vtui.NewLabel(0, 0, padLabel("T&arget:"), editTarget)
+		lblTarget := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.Target")), editTarget)
 		rowTarget := vtui.NewHBoxLayout(0, 0, 66, 1)
 		rowTarget.Add(lblTarget, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
 		rowTarget.Add(editTarget, vtui.Margins{}, vtui.AlignFill)
@@ -153,19 +190,19 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 	}
 
 	// Ownership Group
-	gbOwnership := vtui.NewGroupBox(0, 0, 66, 4, " Ownership ")
+	gbOwnership := vtui.NewGroupBox(0, 0, 66, 4, " "+Msg("Attributes.Ownership")+" ")
 	dlg.AddItem(gbOwnership)
 	mainVBox.Add(gbOwnership, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	// Permissions Group
 	// Permissions Group
-	gbPerms := vtui.NewGroupBox(0, 0, 66, 7, " Permissions ")
+	gbPerms := vtui.NewGroupBox(0, 0, 66, 7, " "+Msg("Attributes.Permissions")+" ")
 	dlg.AddItem(gbPerms)
 	mainVBox.Add(gbPerms, vtui.Margins{Top: 0}, vtui.AlignFill)
 
 	// Time Row
 	editMTime := vtui.NewEdit(0, 0, 20, item.MTime.Format(timeFormat))
-	lblTime := vtui.NewLabel(0, 0, padLabel("M-Time:"), editMTime)
+	lblTime := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.MTime")), editMTime)
 	rowTime := vtui.NewHBoxLayout(0, 0, 66, 1)
 	rowTime.Add(lblTime, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
 	rowTime.Add(editMTime, vtui.Margins{}, vtui.AlignLeft)
@@ -209,7 +246,7 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 	vboxOwner := vtui.NewVBoxLayout(gbOwnership.X1+2, gbOwnership.Y1+1, gbOwnership.X2-gbOwnership.X1-4, 2)
 
 	r1 := vtui.NewHBoxLayout(0, 0, 60, 1)
-	l1 := vtui.NewLabel(0, 0, padLabel("Owne&r:"), editOwner)
+	l1 := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.Owner")), editOwner)
 	r1.Add(l1, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	r1.Add(editOwner, vtui.Margins{}, vtui.AlignFill)
 	gbOwnership.AddItem(l1)
@@ -217,7 +254,7 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 	vboxOwner.Add(r1, vtui.Margins{}, vtui.AlignFill)
 
 	r2 := vtui.NewHBoxLayout(0, 0, 60, 1)
-	l2 := vtui.NewLabel(0, 0, padLabel("&Group:"), editGroup)
+	l2 := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.Group")), editGroup)
 	r2.Add(l2, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	r2.Add(editGroup, vtui.Margins{}, vtui.AlignFill)
 	gbOwnership.AddItem(l2)
@@ -253,15 +290,15 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 		allChecks = append(allChecks, r, w, x_)
 		row.Apply()
 	}
-	makeRow("User:", 0)
-	makeRow("Group:", 3)
-	makeRow("Other:", 6)
+	makeRow(Msg("Attributes.PermUser"), 0)
+	makeRow(Msg("Attributes.PermGroup"), 3)
+	makeRow(Msg("Attributes.PermOther"), 6)
 
 	editOctal := vtui.NewEdit(0, 0, 6, fmt.Sprintf("%04o", item.UnixMode))
 	editOctal.Validator = &vtui.OctalValidator{MaxDigits: 4}
 	editOctal.ClearSelection()
 	rowOct := vtui.NewHBoxLayout(0, 0, 60, 1)
-	lblOct := vtui.NewLabel(0, 0, padLabel("O&ct:"), editOctal)
+	lblOct := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.Octal")), editOctal)
 	rowOct.Add(lblOct, vtui.Margins{Right: 2}, vtui.AlignLeft)
 	rowOct.Add(editOctal, vtui.Margins{}, vtui.AlignLeft)
 	gbPerms.AddItem(lblOct)
@@ -315,18 +352,13 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 		vtui.FrameManager.Redraw()
 	}
 
-	btnSet.OnClick = func() {
-		if item.IsSymlink && editTarget != nil && len(targets) == 1 {
-			newTarget := editTarget.GetText()
-			oldTarget, _ := vfs.Readlink(context.Background(), v, path)
-			if newTarget != "" && newTarget != oldTarget {
-				if symVFS, ok := v.(vfs.SymlinkVFS); ok {
-					_ = v.Remove(context.Background(), path)
-					_ = symVFS.Symlink(context.Background(), newTarget, path)
-				}
-			}
-		}
+	targetEdited := item.IsSymlink && editTarget != nil && len(targets) == 1
 
+	btnSet.OnClick = func() {
+		newTarget := ""
+		if targetEdited {
+			newTarget = editTarget.GetText()
+		}
 		uidStr := editOwner.GetText()
 		if u, err := user.Lookup(uidStr); err == nil {
 			item.Uid, _ = strconv.Atoi(u.Uid)
@@ -351,6 +383,14 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 			item.MTime = t
 		}
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
+			if targetEdited {
+				if err := replaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
+					ctx.RunOnUI(func() {
+						vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+					})
+					return
+				}
+			}
 			err := setUnixAttributesForTargets(ctx.Context, v, targets, item)
 			ctx.RunOnUI(func() {
 				if err != nil {
@@ -408,20 +448,20 @@ func showAttributesWindowsWithPropertiesForTargets(
 
 	mainVBox := vtui.NewVBoxLayout(x+3, y+2, width-6, height-4)
 
-	lblFile := vtui.NewText(0, 0, "File: "+vtui.TruncateMiddle(v.Base(path), 46), vtui.Palette[vtui.ColDialogText])
+	lblFile := vtui.NewText(0, 0, fmt.Sprintf(Msg("Attributes.File"), vtui.TruncateMiddle(v.Base(path), 46)), vtui.Palette[vtui.ColDialogText])
 	dlg.AddItem(lblFile)
 	mainVBox.Add(lblFile, vtui.Margins{}, vtui.AlignLeft)
 
-	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " Flags ")
+	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " "+Msg("Attributes.Flags")+" ")
 	dlg.AddItem(gbAttr)
 	mainVBox.Add(gbAttr, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	gbAdv := vtui.NewGroupBox(0, 0, 54, 3, " Advanced NTFS Flags ")
+	gbAdv := vtui.NewGroupBox(0, 0, 54, 3, " "+Msg("Attributes.AdvancedFlags")+" ")
 	dlg.AddItem(gbAdv)
 	mainVBox.Add(gbAdv, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	editMTime := vtui.NewEdit(0, 0, 20, item.MTime.Format(timeFormat))
-	lblTime := vtui.NewLabel(0, 0, padLabel("Last write:"), editMTime)
+	lblTime := vtui.NewLabel(0, 0, padLabel(Msg("Attributes.LastWrite")), editMTime)
 	rowTime := vtui.NewHBoxLayout(0, 0, 54, 1)
 	rowTime.Add(lblTime, vtui.Margins{Right: 1}, vtui.AlignLeft)
 	rowTime.Add(editMTime, vtui.Margins{}, vtui.AlignLeft)
