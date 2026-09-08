@@ -2548,6 +2548,9 @@ void F4GalleryPointerTests::upstreamDragArtwork()
         const auto named=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),8,dark);
         QCOMPARE(named.devicePixelRatio(),dpr);
         QVERIFY(named.height()>preview.height());
+        const int captionTop=preview.height()+qRound(4*dpr);
+        QCOMPARE(named.toImage().pixelColor(0,captionTop).alpha(),0);
+        QCOMPARE(named.toImage().pixelColor(qRound(8*dpr),captionTop+qRound(4*dpr)).alpha(),195);
         // The added caption must never scale or translate the existing artwork.
         QCOMPARE(named.toImage().copy(QRect(QPoint(0,0),preview.size())),preview.toImage());
         const auto single=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),1,dark);

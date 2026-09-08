@@ -31,9 +31,11 @@ inline QPixmap withFileName(const QPixmap &preview, const QString &name, int tot
     QImage pixels = preview.toImage();
     pixels.setDevicePixelRatio(1);
     painter.drawImage(QPoint(0, 0), pixels);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(dark ? "#303030" : "#eeeeee"));
-    painter.drawRect(caption);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(dark ? QColor(255,255,255,70) : QColor(0,0,0,55),1));
+    painter.setBrush(dark ? QColor(48,48,48,195) : QColor(238,238,238,195));
+    const int radius = qRound(6 * dpr);
+    painter.drawRoundedRect(QRectF(caption).adjusted(0.5,0.5,-0.5,-0.5),radius,radius);
     painter.setFont(font);
     painter.setPen(dark ? Qt::white : Qt::black);
     painter.drawText(QPoint(padding, caption.top() + padding + metrics.ascent()), label);
