@@ -149,6 +149,23 @@ func TestSemanticDropPlan(t *testing.T) {
 		a["operation"] = "move"
 		return a
 	}
+	t.Run("same directory silently skipped", func(t *testing.T) {
+		for _, operation := range []string{"copy", "move"} {
+			a := endpoint(src, 0)
+			source := endpoint(src, 0)
+			source["entryIds"] = []string{id(src, 0)}
+			a["source"], a["operation"] = source, operation
+			plan, err := pf.planSemanticDrop(a)
+			if err != nil || !plan.skip {
+				t.Fatalf("same-directory %s must be a silent no-op: %+v, %v", operation, plan, err)
+			}
+			// The handler must return synchronously without opening a dialog
+			// or starting the transfer pipeline.
+			if !pf.handleSemanticDrop(a) {
+				t.Fatal("drop not handled")
+			}
+		}
+	})
 	t.Run("directory and source snapshot", func(t *testing.T) {
 		a := makeAction()
 		a["entryId"] = id(dst, 0)

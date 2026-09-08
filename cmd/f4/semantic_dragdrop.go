@@ -100,6 +100,7 @@ func handleSemanticWorkspaceDrag(a map[string]any) bool {
 }
 
 type semanticDropPlan struct {
+	skip        bool
 	target      dropTargetInfo
 	source      vfs.VFS
 	sourceOwner *PanelsFrame
@@ -233,7 +234,8 @@ func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, err
 			return p, fmt.Errorf("The source is read-only")
 		}
 		if src.vfs == fp.vfs && src.vfs.GetPath() == p.target.dir {
-			return p, fmt.Errorf("Source and destination are the same directory")
+			p.skip = true
+			return p, nil
 		}
 	} else {
 		// Desktop moves need a separately negotiated completion/deletion protocol.
@@ -258,6 +260,9 @@ func (pf *PanelsFrame) handleSemanticDrop(a map[string]any) bool {
 	p, err := pf.planSemanticDrop(a)
 	if err != nil {
 		vtui.ShowMessage(" Drag and Drop ", err.Error(), []string{"&Ok"})
+		return true
+	}
+	if p.skip {
 		return true
 	}
 	if p.references != nil {
