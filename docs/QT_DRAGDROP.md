@@ -76,14 +76,14 @@ IDs are MessagePack arrays rather than scalar strings.
 
 Windows validation included launching the embedded static host from its cache,
 copying a file between the two live panels and comparing SHA-256 hashes.
-Explorer round trips and native macOS/Linux desktop gestures still require
-platform-specific manual verification.
+Explorer round trips were subsequently exercised on Windows at 175% (below).
+Native macOS/Linux desktop gestures still require platform-specific verification.
 
 ## Follow-up verification, Windows 175%, 2026-09-08
 
 The worktree is `zoin_branch/qt-drag-drop`. These results distinguish semantic
-file-operation checks from actual desktop gestures; the full matrix is still
-in progress.
+file-operation checks from actual desktop gestures. Virtual-panel coverage uses
+TempPanel and ZIP; remote-service coverage is not implied.
 
 | Scenario | Evidence so far |
 | --- | --- |
@@ -96,12 +96,12 @@ in progress.
 | Drop after dialog/full scene rebuild | Regression reproduced `dropAllowed` changing from true to false; `TestSemanticDropCapabilitySurvivesFullSceneRebuild` now preserves both writable and read-only capabilities |
 | Nested TempPanel paths | Matrix reproduced failure on the second directory level; resolver now follows each `/c/<component>` segment |
 | TempPanel reference onto its original | Regression reproduced truncation before fix; `TestTemporaryPanelCannotOverwriteItsReferencedSource` now verifies unchanged original |
-| TempPanel local desktop URLs | `TestTemporaryPanelDragExportsRealLocalPaths`; actual Explorer export unverified |
+| TempPanel local desktop URLs | `TestTemporaryPanelDragExportsRealLocalPaths`, plus live file/folder export to Explorer and hash comparisons |
 | Cancel multi-directory external payload | Regression reproduced copying later groups after cancellation; `TestExternalDropCancelStopsRemainingGroups` now passes |
 | External file and folder payloads | `TestSemanticDropExternalFilesAndDirectories`: local directory, TempPanel root and referenced directory; original contents preserved |
 | Drag after catalog publication | `TestSemanticDragPreparationAfterPublishedCatalog`, paged and non-paged catalogs, three successive preparations each |
 | Panel identity mismatch | Old live stderr ended with this error. Protocol and controller regressions verify snapshot recovery without closing or advancing rejected revision; original producer-side ordering cause remains to be isolated |
-| Explorer to/from real and virtual panels | Test folder prepared; native automation rejects drag endpoints outside the source window. Real Explorer round trips remain unverified |
+| Explorer to/from real and virtual panels | Live file/folder copies in both directions at 175%, including TempPanel references; Cancel, retry, overwrite, file-in-use failures and Escape verified (details below) |
 | Real/ZIP to real/ZIP | Six semantic/VFS file copy/move combinations in `TestSemanticDropArchiveMatrix`; live file copies in both real/ZIP directions at 175%, plus ZIP-to-real Cancel followed by a new drag and Overwrite |
 | File/folder conflicts | 72 combinations in `TestSemanticDropConflictMatrix`: local/TempPanel/ZIP source, local/ZIP target, copy/move, Cancel/Skip/Overwrite; contents, source retention and workspace checked |
 | Destination write failure | 18 combinations in `TestSemanticDropWriteFailurePreservesSource`: local/TempPanel/ZIP source, copy/move, Abort/Skip/Retry then Abort; source contents preserved and error dialog remains on originating workspace |
@@ -127,3 +127,42 @@ subtree and removes exact archive records, handling implicit directory markers.
 Latest validation: Go drag/drop, transfer, TempPanel and scene rebuild regressions
 pass; all 19 pointer tests pass at both 100% and 175%, with the rendered outline
 capture inspected. The current static Windows host import audit passes.
+
+## Native Explorer verification, Windows 175%, 2026-09-08
+
+Using direct Windows mouse-input emulation explicitly authorized by the user,
+place Explorer and the worktree Qt host side by side on the 175% display. Both
+windows reported DPI 168. Generate only disposable data under `.diagnostics`.
+The gestures cross actual window boundaries and invoke native OLE drag/drop;
+no filesystem copy command substitutes for a gesture.
+
+| Native case | Observed result |
+| --- | --- |
+| Explorer -> real panel, file and nested folder | Copy completes; original and destination hashes match |
+| Real panel -> Explorer, file and nested folder | Copy completes; original and destination hashes match |
+| Explorer -> TempPanel root, file and nested folder | References appear; originals remain |
+| TempPanel -> Explorer, file and nested folder | Original paths resolve correctly; exported contents match |
+| Explorer -> referenced directory in TempPanel | File is copied inside the underlying directory, not added at the TempPanel root |
+| Explorer -> real panel, existing file | Cancel leaves the originating panels visible; a new drag opens the conflict again and Overwrite succeeds |
+| TempPanel -> Explorer, existing file | Explorer's Replace or Skip Files dialog appears; Escape cancels it; a new drag and Replace succeeds |
+| Locked source, Explorer -> real panel | Cannot open source file dialog; Retry repeats the error; Abort exits without creating the destination or switching to Queue |
+| Locked source, Explorer -> TempPanel root | Reference insertion succeeds without reading file contents |
+| Locked source, TempPanel/real panel -> Explorer | Explorer reports File In Use; cancelling leaves F4 usable and source contents intact |
+| Retry after removing the lock, TempPanel -> Explorer | A new drag copies the file successfully; contents match |
+| Locked destination, Explorer -> real panel | Overwrite leads to Cannot create destination file; Skip leaves the existing file unchanged and retains the workspace |
+| Escape during real-panel export | No destination file is created; the next ordinary drag succeeds |
+| Incoming Shift, Explorer -> real panel / TempPanel root | F4 accepts Copy / reference insertion; source remains |
+| Outgoing Shift, real panel -> Explorer | Explorer refuses Move because only Copy is offered; no folder is created. Repeating without Shift copies the folder |
+| Internal Shift, real panel -> TempPanel root | Adds a reference and preserves the original |
+| Internal Shift, TempPanel -> real directory | Moves the file, preserving its contents and removing the original |
+| Internal Shift, real panel -> referenced directory | Moves a nested folder into the underlying directory and removes the source subtree |
+
+Final assertions compared ten SHA-256 source/destination pairs and the contents
+and source removal of both internal moves. The same F4 process remained alive
+through the error/cancellation/retry series. The pre-existing Go conflict and
+failure matrices provide broader combinations than these native gestures.
+
+External Move/Link, exporting archive/remote contents to the desktop, live
+remote services and native macOS/Linux gestures are outside the verified
+Windows Copy contract. Incoming Shift and outgoing Shift have different
+observed behavior as recorded above; do not describe external moves as working.
