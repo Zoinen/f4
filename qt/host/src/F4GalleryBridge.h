@@ -155,6 +155,10 @@ private:
     QVariantMap dragWorkspaceHit(QObject *window, const QPointF &position) const;
     QPointer<QQuickItem> m_dragWorkspaceBar;
     QString m_dragHoveredWorkspace;
+    QTimer *m_workspaceDropTimer = nullptr;
+    bool m_workspaceDropInternal = false;
+    bool dropTargetAllowed(const QVariantMap &target, bool internal) const;
+    void refreshWorkspaceDropHighlight();
     QPixmap m_dragPreviewPixmap;
     QPoint m_dragPreviewHotSpot;
     bool m_dragPreviewPending = false;

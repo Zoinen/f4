@@ -263,6 +263,7 @@ private slots:
     void nativeDragListsSurviveWireEncoding();
     void nativeDropUsesIdentityAndSnappedOutline();
     void nativeWorkspaceHoverAndDrop();
+    void dropTargetsRejectSourceAndOutlineActiveTab();
     void upstreamDragArtwork();
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
@@ -2443,6 +2444,57 @@ void F4GalleryPointerTests::upstreamDragArtwork()
 #endif
 }
 
+void F4GalleryPointerTests::dropTargetsRejectSourceAndOutlineActiveTab()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QQmlComponent component(view.engine());
+    component.setData(R"(import QtQuick
+Item {
+ width:400; height:200
+ property bool dropInputEnabled:true
+ property int dropHoverIndex:-2
+ property bool dropTabHover:false
+ function dragWorkspaceHit(x,y) { return {target:"workspace-tab-7",active:true} }
+})",QUrl());
+    auto *panel=qobject_cast<QQuickItem *>(component.create());
+    QVERIFY(panel);
+    view.setContent(QUrl(),&component,panel);
+    view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    bridge.registerDragPanel(0,panel); bridge.registerDragWorkspaceBar(panel);
+    auto &catalog=bridge.m_panelSessions.catalog(0);
+    catalog.initialized=true; catalog.panelId="destination"; catalog.currentPath="/target";
+    catalog.active=true; catalog.dropAllowed=true; catalog.sourceKind="local";
+    bridge.m_dragSource={{"panelId","source"},{"path","/source"},{"sourceKind","local"},{"entryIds",QStringList{"folder"}}};
+    auto target=bridge.dragEndpoint(0);
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["path"]="/source";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["panelId"]="source";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["isDir"]=true; target["name"]="nested"; target["entryId"]="nested";
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["entryId"]="folder";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    bridge.m_dragHoveredWorkspace="workspace-tab-7";
+    bridge.m_workspaceDropInternal=true;
+    QCursor::setPos(view.mapToGlobal(QPoint(50,20)));
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-1);
+    QVERIFY(panel->property("dropTabHover").toBool());
+    catalog.currentPath="/source";
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-2);
+    bridge.m_dragHoveredWorkspace.clear();
+    panel->setProperty("dropHoverIndex",42);
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),42); // do not erase a subsequent panel hover
+    bridge.m_dragHoveredWorkspace="workspace-tab-7";
+    catalog.currentPath="/target"; catalog.dropAllowed=false;
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-2);
+}
+
 void F4GalleryPointerTests::nativeWorkspaceHoverAndDrop()
 {
     QQuickView view;
@@ -2525,6 +2577,9 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     view.setContent(bridge.panelComponentUrl(), &component, host);
     view.show();
     QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *surface = new QQuickItem(view.contentItem());
+    surface->setWidth(680); surface->setHeight(360);
+    host->setProperty("dropPanelSurface",QVariant::fromValue(surface));
     // Exercise a fractional ancestor offset, not only an integer root.
     host->setX(0.25);
     host->setY(0.25);
@@ -2577,6 +2632,19 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
         QVERIFY(!blocked.isAccepted());
         host->setProperty("dropInputEnabled", true);
     }
+    host->setProperty("dropHoverIndex",-1);
+    auto *wholeOutline=host->findChild<QQuickItem *>("panelDropOutline-0");
+    QVERIFY(wholeOutline);
+    QTRY_VERIFY(wholeOutline->isVisible());
+    QCOMPARE(wholeOutline->parentItem(),surface);
+    const qreal outlineDpr=view.devicePixelRatio();
+    const QPointF left=wholeOutline->mapToScene(QPointF{});
+    const QPointF right=wholeOutline->mapToScene(QPointF(wholeOutline->width(),0));
+    QCOMPARE(qRound(left.x()*outlineDpr),qRound(surface->mapToScene(QPointF{}).x()*outlineDpr));
+    QCOMPARE(qRound(right.x()*outlineDpr),qRound(surface->mapToScene(QPointF(surface->width(),0)).x()*outlineDpr));
+    QVERIFY(qAbs(left.x()*outlineDpr-qRound(left.x()*outlineDpr))<0.001);
+    QVERIFY(qAbs(right.x()*outlineDpr-qRound(right.x()*outlineDpr))<0.001);
+    host->setProperty("dropHoverIndex",-2);
     QMimeData remote;
     remote.setUrls({QUrl("https://example.org/file")});
     QDragEnterEvent refused(QPoint(100,100), Qt::CopyAction, &remote, Qt::LeftButton, Qt::NoModifier);
@@ -2638,7 +2706,7 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     bridge.m_nativeDragActive = false;
     bridge.m_nativeDragCancelled = false;
     bridge.m_dragSource = bridge.dragEndpoint(0);
-    bridge.m_dragSource.insert("entryIds", QStringList{"entry-1"});
+    bridge.m_dragSource.insert("entryIds", QStringList{"entry-2"});
     const auto beforeFallback = actions.size();
     QVERIFY(bridge.finishInternalDrop(&view, point, Qt::ShiftModifier));
     QCOMPARE(actions.size(), beforeFallback + 1);

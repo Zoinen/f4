@@ -7,6 +7,8 @@ import ZoinGallery.Native 1.0 as ZGN
 FocusScope {
     id: host
     property bool dropInputEnabled: true
+    property Item dropPanelSurface: null
+    property bool dropTabHover: false
     property int dropHoverIndex: -2
     property point dropPointer: Qt.point(0, 0)
     function dragHit(x, y) {
@@ -31,6 +33,7 @@ FocusScope {
     // existing text and icons retain their original transforms.
     Rectangle {
         id: dropOutline
+        parent: host.dropPanelSurface || host
         objectName: "panelDropOutline-" + host.side
         z: 100
         visible: host.dropInputEnabled && host.dropHoverIndex !== -2
@@ -56,13 +59,19 @@ FocusScope {
             r = Qt.rect(Math.max(0, r.x), Math.max(0, r.y),
                         Math.max(0, right - Math.max(0, r.x)),
                         Math.max(0, bottom - Math.max(0, r.y)))
-            const p = layout.mapToItem(host, r.x, r.y)
-            const scene = host.mapToItem(null, p.x, p.y)
+            let p = layout.mapToItem(dropOutline.parent, r.x, r.y)
+            if (host.dropHoverIndex < 0 && host.dropPanelSurface) {
+                p.x = 0
+                r.width = host.dropPanelSurface.width
+            }
+            const scene = dropOutline.parent.mapToItem(null, p.x, p.y)
             const dpr = host.devicePixelRatio
-            const a = host.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
+            const a = dropOutline.parent.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
                                        Math.round(scene.y * dpr) / dpr)
-            return Qt.rect(a.x, a.y, Math.round(r.width * dpr) / dpr,
-                           Math.round(r.height * dpr) / dpr)
+            const end = dropOutline.parent.mapFromItem(null,
+                Math.round((scene.x + r.width) * dpr) / dpr,
+                Math.round((scene.y + r.height) * dpr) / dpr)
+            return Qt.rect(a.x, a.y, end.x - a.x, end.y - a.y)
         }
         x: targetRect.x
         y: targetRect.y
@@ -72,7 +81,7 @@ FocusScope {
     Timer {
         interval: 60
         repeat: true
-        running: host.dropInputEnabled && host.dropHoverIndex !== -2
+        running: host.dropInputEnabled && !host.dropTabHover && host.dropHoverIndex !== -2
         onTriggered: {
             const layout = embeddedGalleryPanel.galleryLayout
             const y = host.dropPointer.y

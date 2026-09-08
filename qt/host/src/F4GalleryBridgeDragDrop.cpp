@@ -40,6 +40,11 @@ void F4GalleryBridge::registerDragPanel(int side, QQuickItem *item)
 void F4GalleryBridge::registerDragWorkspaceBar(QQuickItem *item)
 {
     m_dragWorkspaceBar = item;
+    if (!m_workspaceDropTimer) {
+        m_workspaceDropTimer = new QTimer(this);
+        m_workspaceDropTimer->setInterval(16);
+        connect(m_workspaceDropTimer, &QTimer::timeout, this, &F4GalleryBridge::refreshWorkspaceDropHighlight);
+    }
     qApp->installEventFilter(this);
 }
 
@@ -62,7 +67,7 @@ QVariantMap F4GalleryBridge::dragEndpoint(int side, int sourceIndex) const
     const auto &state = m_panelSessions.catalog(side);
     if (!state.initialized || state.loading) return {};
     QVariantMap result{{"side", side}, {"panelId", state.panelId},
-        {"path", state.currentPath}, {"catalogRevision", state.catalogRevision}};
+        {"path", state.currentPath}, {"sourceKind", state.sourceKind}, {"catalogRevision", state.catalogRevision}};
     if (sourceIndex >= 0) {
         // sourceIndex is the Go index returned by GalleryPanelController.
         for (const auto &value : state.entries) {
@@ -120,9 +125,55 @@ Qt::DropAction F4GalleryBridge::acceptNativeDrop(const QMimeData *mime,
     return Qt::CopyAction;
 }
 
+bool F4GalleryBridge::dropTargetAllowed(const QVariantMap &target, bool internal) const
+{
+    const int side=target.value("side",-1).toInt();
+    if (target.isEmpty() || !validSide(side) || !m_panelSessions.catalog(side).dropAllowed) return false;
+    if (!internal) return true;
+    const bool samePanel=target.value("panelId")==m_dragSource.value("panelId");
+    const bool folder=target.value("isDir").toBool() && target.value("name").toString()!="..";
+    if (samePanel && folder && m_dragSource.value("entryIds").toStringList().contains(target.value("entryId").toString())) return false;
+    QString destination=target.value("path").toString();
+    if (folder) destination=QDir(destination).filePath(target.value("name").toString());
+    const bool local=m_dragSource.value("sourceKind").toString()=="local"
+        && target.value("sourceKind").toString()=="local";
+    if (samePanel || local) {
+#ifdef Q_OS_WIN
+        constexpr auto sensitivity=Qt::CaseInsensitive;
+#else
+        constexpr auto sensitivity=Qt::CaseSensitive;
+#endif
+        if (QDir::cleanPath(destination).compare(QDir::cleanPath(m_dragSource.value("path").toString()),sensitivity)==0) return false;
+    }
+    return true;
+}
+
+void F4GalleryBridge::refreshWorkspaceDropHighlight()
+{
+    if (m_dragHoveredWorkspace.isEmpty() || !m_dragWorkspaceBar || !m_dragWorkspaceBar->window()) {
+        if (m_workspaceDropTimer) m_workspaceDropTimer->stop();
+        return;
+    }
+    clearDropHighlight();
+    auto *window=m_dragWorkspaceBar->window();
+    const auto hit=dragWorkspaceHit(window,window->mapFromGlobal(QCursor::pos()));
+    if (hit.value("target").toString()!=m_dragHoveredWorkspace) return;
+    // Wait for the activated tab's scene; never outline the old workspace.
+    if (!hit.value("active").toBool()) return;
+    for (int side=0;side<2;++side) {
+        auto *panel=m_dragPanels[side].data();
+        if (!panel || !panel->isVisible() || !panel->property("dropInputEnabled").toBool()
+            || !m_panelSessions.catalog(side).active) continue;
+        if (!dropTargetAllowed(dragEndpoint(side),m_workspaceDropInternal)) continue;
+        panel->setProperty("dropTabHover",true);
+        panel->setProperty("dropHoverIndex",-1);
+        break;
+    }
+}
+
 void F4GalleryBridge::clearDropHighlight()
 {
-    for (auto &item : m_dragPanels) if (item) item->setProperty("dropHoverIndex", -2);
+    for (auto &item : m_dragPanels) if (item) { item->setProperty("dropHoverIndex", -2); item->setProperty("dropTabHover",false); }
 }
 
 bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &position, Qt::KeyboardModifiers modifiers)
@@ -144,7 +195,7 @@ bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &positio
     auto target = dragWorkspaceHit(window, position);
     const bool workspace = !target.isEmpty();
     if (!workspace) target = dragHit(window, position, &targetSide);
-    if (target.isEmpty() || (!workspace && !m_panelSessions.catalog(targetSide).dropAllowed)) {
+    if (target.isEmpty() || (!workspace && !dropTargetAllowed(target,true))) {
         if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish invalid target" << position << targetSide << QGuiApplication::modalWindow();
         return false;
     }
@@ -176,6 +227,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
     if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
         || event->type() == QEvent::Drop) {
         auto *drop = static_cast<QDropEvent *>(event);
+        const bool internal=!m_dragToken.isEmpty() && drop->mimeData()->data(sessionMime)==m_dragToken.toUtf8();
         const auto workspace = dragWorkspaceHit(object, drop->position());
         const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
         if (!workspace.isEmpty() && action != Qt::IgnoreAction) {
@@ -201,6 +253,11 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
                 if (!workspace.value("active").toBool())
                     emit uiActionRequested({{"action", "workspace.dragActivate"}, {"target", id}});
             }
+            if (event->type()!=QEvent::Drop) {
+                m_workspaceDropInternal=internal;
+                if (m_workspaceDropTimer) m_workspaceDropTimer->start();
+                refreshWorkspaceDropHighlight();
+            }
             drop->setDropAction(action);
             drop->accept();
             return true;
@@ -213,7 +270,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
                     << "target" << side << "action" << action << "identity" << target.value("panelId");
         clearDropHighlight();
         if (target.isEmpty() || action == Qt::IgnoreAction
-            || !m_panelSessions.catalog(side).dropAllowed) { drop->ignore(); return true; }
+            || !dropTargetAllowed(target,internal)) { drop->ignore(); return true; }
         if (event->type() != QEvent::Drop) {
             m_dragPanels[side]->setProperty("dropHoverIndex", target.value("isDir").toBool()
                 && target.value("name").toString() != ".." ? target.value("index").toInt() : -1);
@@ -458,7 +515,7 @@ void F4GalleryBridge::startPreparedDrag()
                 internalTarget=!dragWorkspaceHit(window,point).isEmpty();
                 if (!internalTarget) {
                     const auto target=dragHit(window,point,&targetSide);
-                    internalTarget=!target.isEmpty() && m_panelSessions.catalog(targetSide).dropAllowed;
+                    internalTarget=dropTargetAllowed(target,true);
                 }
             }
             const bool move=internalTarget && (mods&Qt::ShiftModifier) && !(mods&Qt::ControlModifier);

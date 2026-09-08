@@ -209,3 +209,21 @@ Verified at 100% and 175%: preview image/count rendering and identical action cu
 canvas sizes. Native Windows testing also verified the selected image preview,
 eight-file strip (five matching thumbnails +3), and stationary Shift changing
 Copy to Move. These visuals do not alter drop operation ownership.
+
+## Drop destination outlines
+
+Whole-panel outlines span the owning FilePanelView's full width, outside the
+Gallery content gutters. Both edges are snapped in scene space at the current
+DPR. Folder outlines retain their item bounds. Native hover rejects the source
+catalog (including another local panel showing the same path) and a selected
+source folder itself; a different child folder remains a valid destination.
+
+Hovering a panel workspace tab outlines that workspace's active, writable panel
+as soon as activation is reflected in the scene, even without another mouse move.
+Tab hover does not auto-scroll the panel. Leaving the tab preserves the next
+panel/folder hover indicator; leaving or finishing the drag clears it.
+
+Regression tests cover these target rules, tab hover, and full-width physical
+edges at 100%/175%. Windows native drags confirmed full-edge outlines while
+hovering a tab and then its panel, and no outline when dropping back into the
+source panel's current directory.

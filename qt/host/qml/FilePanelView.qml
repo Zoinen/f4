@@ -389,6 +389,8 @@ Rectangle {
             item.panel = Qt.binding(() => panelRoot.panel)
             if (typeof item.layoutState !== "undefined")
                 item.layoutState = Qt.binding(() => panelRoot.layoutState)
+            if (typeof item.dropPanelSurface !== "undefined")
+                item.dropPanelSurface = panelRoot
             item.bridge = panelRoot.galleryController
             if (typeof item.dropInputEnabled !== "undefined")
                 item.dropInputEnabled = Qt.binding(() => panelRoot.visible
