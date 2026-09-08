@@ -2067,13 +2067,14 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 				vfsPath := fsp.vfs.GetPath()
 				vfsInst := fsp.vfs
 				lastKnown := fsp.lastDirMTime
+				generation := fsp.loadGeneration
 				vtui.RunAsync(func(ctx *vtui.TaskContext) {
 					stat, err := vfsInst.Stat(ctx.Context, vfsPath)
 					ctx.RunOnUIWithRedrawDecision(func() bool {
 						fsp.isCheckingRefresh = false
 						if err == nil && !stat.MTime.IsZero() {
-							if !fsp.isLoading && fsp.vfs.GetPath() == vfsPath {
-								if !lastKnown.IsZero() && stat.MTime != lastKnown {
+							if !pf.closed && !fsp.isLoading && fsp.loadGeneration == generation && fsp.vfs == vfsInst && fsp.vfs.GetPath() == vfsPath {
+								if !lastKnown.IsZero() && !stat.MTime.Equal(lastKnown) {
 									vtui.DebugLog("PANELS: Auto-refreshing %q due to MTime change", vfsPath)
 									fsp.ReadDirectory()
 									return true

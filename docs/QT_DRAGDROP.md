@@ -14,7 +14,7 @@ Between panels in the same Qt host, the default is copy and Shift selects move
 (Ctrl takes precedence). Both use Go's VFS file-operation engine, including its
 queue, overwrite/error dialogs, cancellation and progress. The native desktop
 transaction remains Copy: only the Go operation owns an internal move and source
-deletion. The system copy badge therefore also appears during an internal move.
+deletion. The drag artwork follows the internal Copy/Move action.
 Dragging local files to another application offers Copy only. Remote/archive
 entries can be dragged between panels without materializing temporary files;
 exporting them to other applications is not implemented in this first stage.
@@ -178,7 +178,7 @@ and blocking overlays retain their existing input guards.
 Internal drags retain the source panel identity, path, catalog revision and entry
 IDs across tab changes. Go resolves that source only among still-owned workspace
 panels and rejects closed, removed or changed sources. Copy and Shift-move use the
-existing transfer pipeline; completion refreshes both workspace owners. External
+existing transfer pipeline; completion refreshes views of the affected directories. External
 file drops retain Copy-only semantics.
 
 Verified on Windows at 175% with native mouse gestures: copy through an inactive
@@ -233,3 +233,42 @@ both content gutters. Gutter drops target the panel directory; item hit testing 
 only used inside the gallery viewport. Tests exercise the first/last interior
 physical pixels and rejection beyond all four edges at 100% and 175%. Native
 Windows drops into both side gutters were accepted by the destination panel.
+
+## Same-directory refresh
+
+Refresh keeps the last successful listing visible until the latest read completes.
+Failed and superseded reads cannot replace it. A no-op observation retains entry
+objects and the catalog revision. Insertions, removals and ordering changes retain
+surviving identities, selection and cursor; deleting the cursor row falls back to
+the next row, or the previous row at the end. Calculated directory sizes survive
+when the directory metadata is unchanged. Access-time changes do not invalidate
+previews. Unknown content versions are revalidated on each observation.
+
+Clients advertising `panelCatalogDeltaV1` receive an optional `catalogDelta` in
+the existing catalog transaction. Its `baseCatalogRevision`, `oldTotalCount` and
+`ranges` (`oldIndex`, `index`, `count`) map unchanged rows to their new positions.
+The delta never enters `state_update`. Catalogs with at most 512 rows retain the
+existing complete payload; larger catalogs keep bounded page requests and send
+retained ranges instead of a second full list of file objects. Missing/stale base
+revisions use the existing authoritative catalog replacement path.
+
+Gallery uses insert/remove/move signals for complete catalogs and persistent-index
+remapping for sparse catalogs, retaining materialized rows and decoded media.
+Crossing the paging threshold also preserves surviving objects. Changed content
+invalidates its versioned source; unchanged rows retain their preview work. The
+existing incremental MasonryLayout path restores viewport anchors and delegates.
+
+Operation completion refreshes matching live directory views and their parent
+views (folder metadata), including other workspaces. Copy does not refresh an
+unrelated source. Move deduplicates source/destination views. Background MTime
+polls from an older load generation cannot cause another read after completion.
+On Windows, cached preview readers use read-only handles with delete sharing so
+they do not block the application's own move/delete/replace operations.
+
+Regression coverage includes no-op/error/stale reads, cursor fallback, affected
+view deduplication, catalog-only delta transport, Qt model signal consistency,
+100,000-row sparse updates, paging-threshold transitions, and preview handle
+sharing with replacement-content validation. Gallery session tests and F4 pointer
+tests pass; pointer tests run at both 100% and 175%. Native Windows gestures at
+175% verified copy with overwrite confirmation and a successful Shift-move into
+`test`, with the unrelated panel unchanged.

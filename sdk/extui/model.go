@@ -137,7 +137,10 @@ type PanelModel struct {
 	// CatalogRowsDeferred means Entries is a bounded, absolute-indexed window
 	// into TotalCount. Native clients keep a sparse model and request only
 	// ranges which enter the viewport.
-	CatalogRowsDeferred    bool
+	CatalogRowsDeferred bool
+	// CatalogDelta maps unchanged rows from baseCatalogRevision. It travels
+	// with a catalog transaction, never in a row-free state_update.
+	CatalogDelta           M
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
@@ -854,6 +857,9 @@ func (p PanelModel) ToMap() M {
 		out["selectedSize"] = p.SelectedSize
 		out["totalSize"] = p.TotalSize
 		out["entries"] = entriesToMaps(p.Entries)
+	}
+	if p.CatalogDelta != nil {
+		out["catalogDelta"] = p.CatalogDelta
 	}
 	if p.CatalogRowsDeferred {
 		out["catalogRowsDeferred"] = true

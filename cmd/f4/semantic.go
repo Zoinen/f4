@@ -2512,6 +2512,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		MetadataDeferred:    true,
 		MetadataRevision:    fp.metadataRevision,
 		CatalogRowsDeferred: !denseCatalog,
+		CatalogDelta:        fp.semanticCatalogDelta(),
 		HighlightRevision:   semanticHighlighterRevision(),
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
@@ -4364,4 +4365,15 @@ func semanticBool(v any) bool {
 		return f != 0
 	}
 	return false
+}
+
+func (fp *FileSystemPanel) semanticCatalogDelta() extui.M {
+	if !extUiPanelCatalogDeltaEnabled.Load() || fp.catalogRefreshDelta == nil {
+		return nil
+	}
+	base, _ := fp.catalogRefreshDelta["baseCatalogRevision"].(int64)
+	if base+1 != fp.catalogRevision {
+		return nil
+	}
+	return fp.catalogRefreshDelta
 }

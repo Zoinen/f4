@@ -41,6 +41,7 @@ const (
 // model directly opt in from TestMain.
 var extUiPanelCatalogMetadataEnabled atomic.Bool
 var extUiPanelCatalogRowsEnabled atomic.Bool
+var extUiPanelCatalogDeltaEnabled atomic.Bool
 
 func setExtUiPanelCatalogMetadataEnabled(enabled bool) bool {
 	return extUiPanelCatalogMetadataEnabled.Swap(enabled)
@@ -2727,8 +2728,8 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 var semanticPanelCatalogMutableKeys = map[string]struct{}{
 	"path": {}, "title": {}, "catalogRevision": {}, "selectionRevision": {},
 	"cursorEntryId": {}, "cursor": {}, "loading": {}, "catalogProvisional": {},
-	"catalogRowsDeferred": {},
-	"fastFind":            {}, "fastFindText": {}, "fastFindMatchColor": {},
+	"catalogRowsDeferred": {}, "catalogDelta": {},
+	"fastFind": {}, "fastFindText": {}, "fastFindMatchColor": {},
 	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
 	"metadataRevision": {}, "entries": {}, "highlightStyles": {},
 }
@@ -4517,6 +4518,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	previousPanelCatalogRows := setExtUiPanelCatalogRowsEnabled(
 		panelCatalogRowsV1)
 	defer setExtUiPanelCatalogRowsEnabled(previousPanelCatalogRows)
+	previousDelta := extUiPanelCatalogDeltaEnabled.Swap(extUiHelloCapability(hello, "panelCatalogDeltaV1"))
+	defer extUiPanelCatalogDeltaEnabled.Store(previousDelta)
 	previousDocumentViewport := nativeDocumentViewport
 	nativeDocumentViewport.enabled = extUiHelloCapability(hello, "documentViewportV1")
 	nativeDocumentViewport.geometry = nativeDocumentGeometry{}

@@ -739,7 +739,10 @@ type FileSystemPanel struct {
 	// lastLoadedPath is the path readDirectoryEx last saw; used to
 	// detect a directory switch so selectedItems can be dropped
 	// (selection is per-directory, matches far/far2l).
-	lastLoadedPath string
+	lastLoadedPath       string
+	committedListingVFS  vfs.VFS
+	committedListingPath string
+	catalogRefreshDelta  map[string]any
 
 	// shiftSessionActive / shiftSessionMode implement FAR-style
 	// Shift+nav selection. The mode (select vs deselect) is
@@ -2588,7 +2591,8 @@ func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
-	fp.readDirectoryEx(false)
+	fp.readDirectoryEx(fp.vfs != nil && sameVFSInstance(fp.committedListingVFS, fp.vfs) &&
+		fp.committedListingPath == fp.vfs.GetPath())
 }
 
 // enqueueDirectoryLoad keeps at most one backend read running and one newer
@@ -2977,6 +2981,9 @@ func (fp *FileSystemPanel) moveToParentAfterLoadFailure(loadVFS vfs.VFS, failedP
 }
 
 func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
+	if !keepEntries {
+		fp.catalogRefreshDelta = nil
+	}
 	benchmark := navigationBenchmarkCurrentUI()
 	if previous := fp.benchmarkLoadTrace; previous != nil && previous != benchmark {
 		previous.event("navigation.cancelled", "go.ui",
@@ -3002,7 +3009,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	path := loadVFS.GetPath()
 	// Background directory work must use one immutable settings/renderer
 	// snapshot; tests and runtime settings can replace the globals meanwhile.
-	loadSyncPanel := AppConfig.SyncPanelLoad
+	loadSyncPanel := AppConfig.SyncPanelLoad || keepEntries
 	loadShowHidden := AppConfig.ShowHiddenFiles
 	loadFrames := vtui.FrameManager
 	if benchmark != nil {
@@ -3058,7 +3065,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		benchmark.event("history.persist.skipped", "go.ui", "path", path, "reason", reason)
 	}
 
-	if fp.pendingSelection == "" {
+	if !keepEntries && fp.pendingSelection == "" {
 		oldName := fp.getRawSelectedName()
 		if oldName != "" && oldName != ".." {
 			fp.pendingSelection = oldName
@@ -3116,14 +3123,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	}
 
 	phasedReader := phasedDirectoryReaderFor(loadVFS)
-	usePhasedRead := phasedReader != nil && !keepEntries &&
-		!loadSyncPanel && panelSortSupportsPhasedDirectoryRead(fp.sortMode)
+	usePhasedRead := phasedReader != nil && (keepEntries ||
+		(!loadSyncPanel && panelSortSupportsPhasedDirectoryRead(fp.sortMode)))
 	loadSortMode, loadSortReverse := fp.sortMode, fp.sortReverse
 	loadSortGroups := fp.useSortGroups
 	previewEligible := !fp.sortGroupsActive() && loadSortMode == SortName && !loadSortReverse &&
 		!loadSyncPanel
 	windowedReader := windowedDirectoryReaderFor(loadVFS)
-	useWindowedRead := windowedReader != nil && usePhasedRead && previewEligible &&
+	useWindowedRead := windowedReader != nil && !keepEntries && usePhasedRead && previewEligible &&
 		extUiPanelCatalogRowsIsEnabled()
 	loadPendingSelection := fp.pendingSelection
 	loadIsCurrent := func() bool {
@@ -3621,7 +3628,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			onPhasedChunk := func(phase vfs.DirectoryReadPhase, chunk []vfs.VFSItem) {
 				switch phase {
 				case vfs.DirectoryReadPreview:
-					publishCatalogPreview(chunk)
+					if !keepEntries {
+						publishCatalogPreview(chunk)
+					}
 				case vfs.DirectoryReadBase:
 					publishCatalogChunk(chunk, true)
 				case vfs.DirectoryReadMetadata:
@@ -3764,15 +3773,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 			needsRedraw = true
 
+			refreshChanged := !keepEntries
 			if loadSyncPanel && err == nil {
-				completionPresentationChanged = true
-				advanceSourceEpoch()
-				fp.entries = nil
+				newEntries := make([]*fileEntry, 0, len(accumulated)+1)
 				if showUpEntry {
-					fp.entries = []*fileEntry{{VFSItem: upItem}}
+					newEntries = append(newEntries, &fileEntry{VFSItem: upItem})
 				}
-
-				newEntries := make([]*fileEntry, 0, len(accumulated))
 				for _, item := range accumulated {
 					if !loadShowHidden && item.Name != ".." && item.IsHidden {
 						continue
@@ -3781,8 +3787,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.applyPersistentSelection(entry, loadVFS, path)
 					newEntries = append(newEntries, entry)
 				}
-				fp.entries = append(fp.entries, newEntries...)
-				fp.sortEntries()
+				fp.sortEntrySlice(newEntries)
+				if keepEntries {
+					refreshChanged = fp.reconcileDirectoryEntries(newEntries)
+				} else {
+					fp.entries = newEntries
+				}
+				if refreshChanged {
+					completionPresentationChanged = true
+					advanceSourceEpoch()
+					fp.markSemanticCatalogMutation()
+				}
 
 				if fp.pendingSelection != "" {
 					fp.SelectName(fp.pendingSelection)
@@ -3884,6 +3899,8 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.updateTitle(nil)
 			}
 			if err == nil {
+				fp.committedListingVFS = loadVFS
+				fp.committedListingPath = path
 				fp.watchDirectoryChanges(ctx, loadVFS, path, loadIsCurrent)
 			}
 
@@ -3902,7 +3919,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.SelectName(fp.pendingSelection)
 				fp.pendingSelection = ""
 			}
-			if !authoritativeCatalogQueued {
+			if keepEntries {
+				fp.Refresh()
+				if refreshChanged {
+					authoritativePresentationComplete = publishPanelCatalogImmediate(fp, benchmark)
+				}
+			} else if !authoritativeCatalogQueued {
 				// ReadDir is the compatibility path used by size/time sorts. Its
 				// callback is intentionally non-authoritative while chunks are
 				// arriving, so the completed full catalog must replace the bounded
@@ -3952,7 +3974,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		// Publish enrichment only after the complete listing task has been queued.
 		// The base catalog is the interactive result; metadata is decoration and
 		// must never sit in front of the navigation commit in the UI queue.
-		if usePhasedRead && err == nil {
+		if usePhasedRead && !keepEntries && err == nil {
 			publishMetadata(pendingMetadata)
 		}
 	})

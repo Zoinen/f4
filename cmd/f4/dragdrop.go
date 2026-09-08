@@ -292,7 +292,7 @@ func (pf *PanelsFrame) dropExternalFiles(info dropTargetInfo, paths []string, is
 	run = func(i int) {
 		if i >= len(groups) {
 			vtui.FrameManager.PostTask(func() {
-				pf.RefreshAll()
+				refreshOperationLocations(pf, dst, dstDir)
 				vtui.FrameManager.Redraw()
 			})
 			return
@@ -303,7 +303,7 @@ func (pf *PanelsFrame) dropExternalFiles(info dropTargetInfo, paths []string, is
 		go ExecuteFileOpWithResult(pf, src, dst, g.names, dstDir, isMove, AppConfig.DefaultFileOpMode, func(err error) {
 			if err != nil {
 				vtui.DebugLog("DND: stopping remaining source groups: %v", err)
-				vtui.FrameManager.PostTask(func() { pf.RefreshAll(); vtui.FrameManager.Redraw() })
+				vtui.FrameManager.PostTask(func() { refreshOperationLocations(pf, dst, dstDir); vtui.FrameManager.Redraw() })
 				return
 			}
 			run(i + 1)

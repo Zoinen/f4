@@ -393,6 +393,34 @@ void F4GalleryBridge::preparePanelCatalogData(PanelSyncContext *context)
                  context->incomingEntries.size()},
             });
         context->entries = normalizedEntries(context->panel);
+        const QVariantMap delta = context->panel.value(QStringLiteral("catalogDelta")).toMap();
+        if (context->catalogRowsDeferred
+            && !context->identityChanged && context->currentPath == context->state->currentPath
+            && delta.value(QStringLiteral("baseCatalogRevision")).toULongLong() == context->state->catalogRevision) {
+            const QVariantList ranges = delta.value(QStringLiteral("ranges")).toList();
+            QMap<int, QVariantMap> retained;
+            for (const QVariant &value : std::as_const(context->state->entries)) {
+                QVariantMap row = value.toMap();
+                const int oldIndex = row.value(QStringLiteral("index")).toInt();
+                for (const QVariant &rangeValue : ranges) {
+                    const QVariantMap range = rangeValue.toMap();
+                    const int oldStart = range.value(QStringLiteral("oldIndex")).toInt();
+                    const int count = range.value(QStringLiteral("count")).toInt();
+                    if (oldIndex < oldStart || oldIndex-oldStart >= count) continue;
+                    const int nextIndex = range.value(QStringLiteral("index")).toInt()+oldIndex-oldStart;
+                    row.insert(QStringLiteral("index"), nextIndex);
+                    retained.insert(nextIndex, row);
+                    break;
+                }
+            }
+            for (const QVariant &value : std::as_const(context->entries)) {
+                const QVariantMap row = value.toMap();
+                const int index = row.value(QStringLiteral("index")).toInt();
+                if (!retained.contains(index)) retained.insert(index, row);
+            }
+            context->entries.clear();
+            for (const auto &row : std::as_const(retained)) context->entries.append(row);
+        }
         span.set(QStringLiteral("outputEntries"), context->entries.size());
     } else {
         context->entries = context->state->entries;
@@ -459,6 +487,7 @@ void F4GalleryBridge::applyPanelSessionData(PanelSyncContext *context)
                 {QStringLiteral("catalogRowsDeferred"),
                  context->catalogRowsDeferred},
                 {QStringLiteral("totalCount"), context->incomingTotalCount},
+                {QStringLiteral("catalogDelta"), context->panel.value(QStringLiteral("catalogDelta"))},
                 {QStringLiteral("catalogStreaming"),
                  context->catalogStreamStart},
                 {QStringLiteral("cursorEntryId"),
@@ -467,6 +496,7 @@ void F4GalleryBridge::applyPanelSessionData(PanelSyncContext *context)
                  context->appliedCursorIndex},
                 {QStringLiteral("deferCatalogReady"),
                  context->catalogPayloadChanged
+                     && (context->identityChanged || context->currentPath != context->state->currentPath)
                      && !context->catalogProvisional},
             });
         if (context->traceCatalogStages) {

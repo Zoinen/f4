@@ -261,6 +261,8 @@ class F4GalleryPointerTests final : public QObject
 
 private slots:
     void nativeDragListsSurviveWireEncoding();
+    void sameFolderRefreshKeepsGalleryObjects();
+    void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
     void nativeDropUsesIdentityAndSnappedOutline();
     void nativeWorkspaceHoverAndDrop();
     void dropTargetsRejectSourceAndOutlineActiveTab();
@@ -1735,6 +1737,101 @@ void F4GalleryPointerTests::galleryModeSwitchPositionsCursorImmediately()
     QCOMPARE(session->panelViewportCursorEntryId(), QStringLiteral("entry-50"));
 
     delete rootObject;
+}
+
+void F4GalleryPointerTests::sameFolderRefreshKeepsGalleryObjects()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    auto scene = galleryScene(4);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    auto *model = session->model();
+    const int role = model->roleNames().key("imageFileRole", -1);
+    QVERIFY(role >= 0);
+    const QVariant survivor = model->data(model->index(2,0),role);
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    QSignalSpy ready(session, &ZoinGallery::GallerySession::catalogReadyChanged);
+    session->setPanelScrollOffset(31.0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panel = panels[0].toMap();
+    auto entries = panel.value("entries").toList();
+    entries.removeAt(1);
+    for (int row=0; row<entries.size(); ++row) {
+        auto entry = entries[row].toMap(); entry["index"]=row; entries[row]=entry;
+    }
+    panel["entries"]=entries; panel["totalCount"]=entries.size(); panel["catalogRevision"]=6;
+    panels[0]=panel; shell["panels"]=panels; scene["shell"]=shell;
+    bridge.synchronizeScene(scene);
+    QCOMPARE(resets.size(),0);
+    QCOMPARE(ready.size(),0);
+    QCOMPARE(model->rowCount(),3);
+    QCOMPARE(model->data(model->index(1,0),role),survivor);
+    QCOMPARE(session->panelScrollOffset(),31.0);
+}
+
+void F4GalleryPointerTests::sparseRefreshReachesGalleryAndCrossesPagingThreshold()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(3);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    auto entries = panel.value("entries").toList();
+    for (int row = 0; row < entries.size(); ++row) {
+        auto entry = entries[row].toMap();
+        entry["index"] = row;
+        entries[row] = entry;
+    }
+    panel["entries"] = entries;
+    panel["cursor"] = 2;
+    panel["cursorEntryId"] = "entry-2";
+    const auto sync = [&] {
+        shell["panels"] = QVariantList{panel};
+        scene["shell"] = shell;
+        bridge.synchronizeScene(scene);
+    };
+    sync();
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    auto *model = session->model();
+    const int role = model->roleNames().key("imageFileRole", -1);
+    QVERIFY(role >= 0);
+    const QVariant survivor = model->data(model->index(2, 0), role);
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    QSignalSpy ready(session, &ZoinGallery::GallerySession::catalogReadyChanged);
+    auto inserted = entries.first().toMap();
+    inserted["entryId"] = "inserted";
+    inserted["name"] = "inserted";
+    panel["entries"] = QVariantList{inserted};
+    panel["catalogRowsDeferred"] = true;
+    panel["totalCount"] = 100000;
+    panel["catalogRevision"] = 6;
+    panel["cursor"] = 3;
+    panel["catalogDelta"] = QVariantMap{
+        {"baseCatalogRevision", 5}, {"oldTotalCount", 3},
+        {"ranges", QVariantList{QVariantMap{{"oldIndex", 0}, {"index", 1}, {"count", 3}}}}};
+    sync();
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(model->rowCount(), 100000);
+    QCOMPARE(model->data(model->index(3, 0), role), survivor);
+    // A sparse-to-dense transition must also retain the surviving objects.
+    panel["entries"] = entries;
+    panel["catalogRowsDeferred"] = false;
+    panel["totalCount"] = 3;
+    panel["catalogRevision"] = 7;
+    panel["cursor"] = 2;
+    panel["catalogDelta"] = QVariantMap{
+        {"baseCatalogRevision", 6}, {"oldTotalCount", 100000},
+        {"ranges", QVariantList{QVariantMap{{"oldIndex", 1}, {"index", 0}, {"count", 3}}}}};
+    sync();
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(ready.size(), 0);
+    QCOMPARE(model->rowCount(), 3);
+    QCOMPARE(model->data(model->index(2, 0), role), survivor);
 }
 
 void F4GalleryPointerTests::panelVisibilityKeepsLiveGalleryViewport()

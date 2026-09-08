@@ -4482,6 +4482,10 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 		t.Errorf("Anti-spam failed: Stat called %d more times while one was pending", after-before)
 	}
 
+	// A completed operation refresh supersedes this older poll, even if the
+	// provider/path are unchanged and its result would otherwise trigger a read.
+	fsp.loadGeneration++
+	completedGeneration := fsp.loadGeneration
 	// Unblock Stat and verify the flag is reset.
 	close(block)
 	deadline = time.Now().Add(1 * time.Second)
@@ -4493,6 +4497,9 @@ func TestPanelsFrame_AutoRefresh_Locking(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 		if !fsp.isCheckingRefresh {
+			if fsp.loadGeneration != completedGeneration || fsp.isLoading {
+				t.Fatal("stale auto-refresh poll started a duplicate directory read")
+			}
 			return
 		}
 	}

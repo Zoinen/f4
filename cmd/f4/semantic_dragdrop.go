@@ -288,12 +288,11 @@ func (pf *PanelsFrame) handleSemanticDrop(a map[string]any) bool {
 	}
 	go ExecuteFileOpAt(pf, p.source, p.target.fs, p.sourceDir, p.names, p.target.dir, p.move, AppConfig.DefaultFileOpMode, func() {
 		vtui.FrameManager.PostTask(func() {
-			if !pf.closed {
-				pf.RefreshAll()
+			locations := []panelOperationLocation{{pf, p.target.fs, p.target.dir}}
+			if p.move {
+				locations = append(locations, panelOperationLocation{p.sourceOwner, p.source, p.sourceDir})
 			}
-			if p.sourceOwner != nil && p.sourceOwner != pf && !p.sourceOwner.closed {
-				p.sourceOwner.RefreshAll()
-			}
+			refreshOperationViews(locations...)
 			vtui.FrameManager.Redraw()
 		})
 	})

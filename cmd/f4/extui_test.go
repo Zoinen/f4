@@ -1290,6 +1290,12 @@ func TestExtUiRenderer_PanelCatalogUsesSmallAuthoritativePatch(t *testing.T) {
 			}},
 			"sourceKind": "vfs", "sortModeName": "name", "sortReverse": false,
 		}
+		if revision > 10 {
+			left["catalogDelta"] = map[string]any{
+				"baseCatalogRevision": revision - 1, "oldTotalCount": 1,
+				"ranges": []map[string]any{},
+			}
+		}
 		right := map[string]any{
 			"id": "right", "kind": "filePanel", "side": 1, "active": false,
 			"path": `D:\large`, "title": `D:\large`, "catalogRevision": int64(44),
@@ -1361,6 +1367,9 @@ func TestExtUiRenderer_PanelCatalogUsesSmallAuthoritativePatch(t *testing.T) {
 		t.Fatalf("unexpected panel catalog envelope: %#v", patchMessage)
 	}
 	panel := patchMessage["panel"].(map[string]any)
+	if _, present := panel["catalogDelta"]; !present {
+		t.Fatal("catalog transaction dropped its reconciliation delta")
+	}
 	if panel["id"] != "left" || panel["path"] != `D:\Code\f4\plugins` ||
 		extUiInt(panel, "catalogRevision") != 11 {
 		t.Fatalf("patch did not carry the latest authoritative panel: %#v", panel)
