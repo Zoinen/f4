@@ -11,13 +11,31 @@ FocusScope {
     property bool dropTabHover: false
     property int dropHoverIndex: -2
     property point dropPointer: Qt.point(0, 0)
+    // Shared scene-space bounds for painting and hit testing, including gutters.
+    readonly property rect wholeDropSceneRect: {
+        const layout = embeddedGalleryPanel.galleryLayout
+        const surface = host.dropPanelSurface || host
+        const top = layout.mapToItem(null, 0, 0)
+        const left = host.dropPanelSurface ? surface.mapToItem(null, 0, 0).x : top.x
+        const right = host.dropPanelSurface
+            ? surface.mapToItem(null, surface.width, 0).x : top.x + layout.width
+        const dpr = host.devicePixelRatio
+        const x = Math.round(left * dpr) / dpr
+        const y = Math.round(top.y * dpr) / dpr
+        return Qt.rect(x, y, Math.round(right * dpr) / dpr - x,
+                       Math.round((top.y + layout.height) * dpr) / dpr - y)
+    }
     function dragHit(x, y) {
         const layout = embeddedGalleryPanel.galleryLayout
         const p = layout.mapFromItem(host, x, y)
-        dropPointer = p
-        if (p.x < 0 || p.y < 0 || p.x >= layout.width || p.y >= layout.height)
+        const scene = host.mapToItem(null, x, y)
+        const bounds = host.wholeDropSceneRect
+        if (scene.x < bounds.x || scene.y < bounds.y
+                || scene.x >= bounds.x + bounds.width || scene.y >= bounds.y + bounds.height)
             return { valid: false }
-        const index = layout.indexAtViewport(p.x, p.y)
+        dropPointer = p
+        const inViewport = p.x >= 0 && p.y >= 0 && p.x < layout.width && p.y < layout.height
+        const index = inViewport ? layout.indexAtViewport(p.x, p.y) : -1
         return { valid: true, index: index < 0 ? -1
                  : embeddedGalleryPanel.controller.sourceIndexAt(index) }
     }
@@ -41,6 +59,12 @@ FocusScope {
         border.color: host.theme.selection
         border.width: 2 / host.devicePixelRatio
         readonly property rect targetRect: {
+            if (host.dropHoverIndex < 0) {
+                const bounds = host.wholeDropSceneRect
+                const a = dropOutline.parent.mapFromItem(null, bounds.x, bounds.y)
+                const b = dropOutline.parent.mapFromItem(null, bounds.x + bounds.width, bounds.y + bounds.height)
+                return Qt.rect(a.x, a.y, b.x - a.x, b.y - a.y)
+            }
             const layout = embeddedGalleryPanel.galleryLayout
             const revision = layout.layoutRevision
             const contentY = layout.contentY
@@ -60,10 +84,6 @@ FocusScope {
                         Math.max(0, right - Math.max(0, r.x)),
                         Math.max(0, bottom - Math.max(0, r.y)))
             let p = layout.mapToItem(dropOutline.parent, r.x, r.y)
-            if (host.dropHoverIndex < 0 && host.dropPanelSurface) {
-                p.x = 0
-                r.width = host.dropPanelSurface.width
-            }
             const scene = dropOutline.parent.mapToItem(null, p.x, p.y)
             const dpr = host.devicePixelRatio
             const a = dropOutline.parent.mapFromItem(null, Math.round(scene.x * dpr) / dpr,

@@ -227,3 +227,9 @@ Regression tests cover these target rules, tab hover, and full-width physical
 edges at 100%/175%. Windows native drags confirmed full-edge outlines while
 hovering a tab and then its panel, and no outline when dropping back into the
 source panel's current directory.
+
+The drop hit area now shares the outline's snapped scene-space rectangle, including
+both content gutters. Gutter drops target the panel directory; item hit testing is
+only used inside the gallery viewport. Tests exercise the first/last interior
+physical pixels and rejection beyond all four edges at 100% and 175%. Native
+Windows drops into both side gutters were accepted by the destination panel.

@@ -2581,7 +2581,7 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     surface->setWidth(680); surface->setHeight(360);
     host->setProperty("dropPanelSurface",QVariant::fromValue(surface));
     // Exercise a fractional ancestor offset, not only an integer root.
-    host->setX(0.25);
+    host->setX(16.25);
     host->setY(0.25);
     auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
     QVERIFY(panel);
@@ -2644,6 +2644,27 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     QCOMPARE(qRound(right.x()*outlineDpr),qRound(surface->mapToScene(QPointF(surface->width(),0)).x()*outlineDpr));
     QVERIFY(qAbs(left.x()*outlineDpr-qRound(left.x()*outlineDpr))<0.001);
     QVERIFY(qAbs(right.x()*outlineDpr-qRound(right.x()*outlineDpr))<0.001);
+    const auto bounds=host->property("wholeDropSceneRect").toRectF();
+    // The first and last physical pixels inside the outline both accept drops.
+    for (qreal x : {bounds.left()+0.5/outlineDpr,bounds.right()-0.5/outlineDpr}) {
+        const QPointF point(x,bounds.center().y());
+        int hitSide=-1;
+        const auto target=bridge.dragHit(&view,point,&hitSide);
+        QCOMPARE(hitSide,0); QVERIFY(!target.isEmpty());
+        QVERIFY(!target.contains("entryId")); // gutter targets the directory
+        QDropEvent drop(point,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+        const auto before=actions.size();
+        QCoreApplication::sendEvent(&view,&drop);
+        QVERIFY(drop.isAccepted()); QCOMPARE(actions.size(),before+1);
+        QVERIFY(!actions.last().at(0).toMap().contains("entryId"));
+    }
+    for (const QPointF point : {QPointF(bounds.left()-0.5/outlineDpr,bounds.center().y()),
+                               QPointF(bounds.right()+0.5/outlineDpr,bounds.center().y()),
+                               QPointF(bounds.center().x(),bounds.top()-0.5/outlineDpr),
+                               QPointF(bounds.center().x(),bounds.bottom()+0.5/outlineDpr)}) {
+        int hitSide=-1;
+        QVERIFY(bridge.dragHit(&view,point,&hitSide).isEmpty());
+    }
     host->setProperty("dropHoverIndex",-2);
     QMimeData remote;
     remote.setUrls({QUrl("https://example.org/file")});

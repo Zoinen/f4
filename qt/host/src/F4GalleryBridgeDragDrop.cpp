@@ -93,7 +93,8 @@ QVariantMap F4GalleryBridge::dragHit(QObject *window, const QPointF &pos, int *s
         if (!item || item->window() != window || !item->isVisible() || !item->isEnabled()
             || !item->property("dropInputEnabled").toBool()) continue;
         const auto point = item->mapFromScene(pos);
-        if (!item->contains(point)) continue;
+        // QML tests the same full-panel bounds used by the outline. The
+        // content host itself excludes the gutters, so contains() is too narrow.
         QVariant hit;
         if (!QMetaObject::invokeMethod(item, "dragHit", Q_RETURN_ARG(QVariant, hit),
                 Q_ARG(QVariant, point.x()), Q_ARG(QVariant, point.y()))) continue;
