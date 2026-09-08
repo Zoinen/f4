@@ -1,8 +1,8 @@
 # Qt drag and drop
 
 The Qt frontend accepts local file URLs from the desktop as copies. Files
-dropped on a directory go into that directory; files, `..`, and empty panel
-space target the current directory. Hidden panels, document surfaces, blocking
+dropped on a directory go into that directory; `..` targets the parent directory.
+Files and empty panel space target the current directory. Hidden panels, document surfaces, blocking
 overlays, and known read-only destinations refuse drops.
 
 Drag a marked entry to carry the marked set. With no marks, drag one entry.

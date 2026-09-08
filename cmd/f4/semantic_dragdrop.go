@@ -180,8 +180,12 @@ func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, err
 			return p, fmt.Errorf("The destination changed during dragging")
 		}
 		e := fp.entries[idx]
-		if e.IsDir && e.Name != ".." {
-			p.target.dir = fp.vfs.Join(p.target.dir, e.Name)
+		if e.IsDir {
+			if e.Name == ".." {
+				p.target.dir = fp.vfs.Dir(p.target.dir)
+			} else {
+				p.target.dir = fp.vfs.Join(p.target.dir, e.Name)
+			}
 			p.target.entryIdx = idx
 		}
 	}

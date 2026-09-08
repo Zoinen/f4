@@ -166,6 +166,18 @@ func TestSemanticDropPlan(t *testing.T) {
 			}
 		}
 	})
+	t.Run("same panel parent directory", func(t *testing.T) {
+		for _, operation := range []string{"copy", "move"} {
+			a := endpoint(src, 0)
+			source := endpoint(src, 0)
+			source["entryIds"] = []string{id(src, 0)}
+			a["source"], a["operation"], a["entryId"] = source, operation, id(src, 1)
+			plan, err := pf.planSemanticDrop(a)
+			if err != nil || plan.skip || plan.target.dir != src.vfs.Dir(src.vfs.GetPath()) || plan.target.entryIdx != 1 || plan.move != (operation == "move") {
+				t.Fatalf("parent %s: %+v, %v", operation, plan, err)
+			}
+		}
+	})
 	t.Run("directory and source snapshot", func(t *testing.T) {
 		a := makeAction()
 		a["entryId"] = id(dst, 0)
@@ -182,7 +194,11 @@ func TestSemanticDropPlan(t *testing.T) {
 			a := makeAction()
 			a["entryId"] = id(dst, idx)
 			p, err := pf.planSemanticDrop(a)
-			if err != nil || p.target.dir != dst.vfs.GetPath() {
+			expected := dst.vfs.GetPath()
+			if idx == 2 {
+				expected = dst.vfs.Dir(expected)
+			}
+			if err != nil || p.target.dir != expected {
 				t.Fatalf("file/parent drop: %+v %v", p, err)
 			}
 		})

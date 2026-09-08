@@ -216,8 +216,12 @@ func (pf *PanelsFrame) resolveDropTarget(mx, my int) (dropTargetInfo, bool) {
 
 		if idx := fsp.mouseEntryIndex(mx, my); idx >= 0 && idx < len(fsp.entries) {
 			e := fsp.entries[idx]
-			if e.IsDir && e.Name != ".." {
-				info.dir = fsp.vfs.Join(fsp.vfs.GetPath(), e.Name)
+			if e.IsDir {
+				if e.Name == ".." {
+					info.dir = fsp.vfs.Dir(fsp.vfs.GetPath())
+				} else {
+					info.dir = fsp.vfs.Join(fsp.vfs.GetPath(), e.Name)
+				}
 				info.entryIdx = idx
 			}
 		}

@@ -2573,6 +2573,10 @@ Item {
     QVERIFY(bridge.dropTargetAllowed(target,true));
     target["entryId"]="folder";
     QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["entryId"]="up"; target["name"]="..";
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["path"]="/source/child";
+    QVERIFY(!bridge.dropTargetAllowed(target,true)); // parent is the source directory
     bridge.m_dragHoveredWorkspace="workspace-tab-7";
     bridge.m_workspaceDropInternal=true;
     QCursor::setPos(view.mapToGlobal(QPoint(50,20)));
@@ -2691,43 +2695,45 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     for (const auto &mode : {"details", "columns", "grid", "icons", "masonry"}) {
         panel->setProperty("presentationMode", mode);
         QTest::qWait(250);
-        QRectF geometry;
-        QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, 1)));
-        const QPoint point = layout->mapToScene(geometry.center()
-            - QPointF(0, layout->property("contentY").toReal())).toPoint();
-        QDragEnterEvent enter(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(&view, &enter);
-        QVERIFY2(enter.isAccepted(), mode);
-        QCOMPARE(enter.dropAction(), Qt::CopyAction);
-        QCOMPARE(host->property("dropHoverIndex").toInt(), 101);
-        auto *outline = host->findChild<QQuickItem *>("panelDropOutline-0");
-        QVERIFY(outline);
-        QTRY_VERIFY(outline->isVisible());
-        const qreal dpr = view.devicePixelRatio();
-        for (const auto &p : {QPointF(0,0), QPointF(outline->width(),outline->height())}) {
-            const QPointF physical = outline->mapToScene(p) * dpr;
-            QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001, qPrintable(QString::number(physical.x())));
-            QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001, qPrintable(QString::number(physical.y())));
+        for (int targetRow : {0, 1}) {
+            QRectF geometry;
+            QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, targetRow)));
+            const QPoint point = layout->mapToScene(geometry.center()
+                - QPointF(0, layout->property("contentY").toReal())).toPoint();
+            QDragEnterEvent enter(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&view, &enter);
+            QVERIFY2(enter.isAccepted(), mode);
+            QCOMPARE(enter.dropAction(), Qt::CopyAction);
+            QCOMPARE(host->property("dropHoverIndex").toInt(), 100 + targetRow);
+            auto *outline = host->findChild<QQuickItem *>("panelDropOutline-0");
+            QVERIFY(outline);
+            QTRY_VERIFY(outline->isVisible());
+            const qreal dpr = view.devicePixelRatio();
+            for (const auto &p : {QPointF(0,0), QPointF(outline->width(),outline->height())}) {
+                const QPointF physical = outline->mapToScene(p) * dpr;
+                QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001, qPrintable(QString::number(physical.x())));
+                QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001, qPrintable(QString::number(physical.y())));
+            }
+            const auto capture = view.grabWindow();
+            QVERIFY(!capture.isNull());
+            if (QString::fromLatin1(mode) == "details")
+                QVERIFY(capture.save(QDir::current().filePath("drop-details-175.png")));
+            QDropEvent drop(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&view, &drop);
+            QVERIFY(drop.isAccepted());
+            const auto action = actions.last().at(0).toMap();
+            QCOMPARE(action.value("action").toString(), QString("panel.dropFiles"));
+            QCOMPARE(action.value("entryId").toString(), QString("entry-%1").arg(targetRow));
+            QCOMPARE(action.value("index").toInt(), 100 + targetRow);
+            QCOMPARE(action.value("operation").toString(), QString("copy"));
+            QCOMPARE(action.value("paths").toStringList().constFirst(), mime.urls().first().toLocalFile());
+            QCOMPARE(host->property("dropHoverIndex").toInt(), -2);
+            host->setProperty("dropInputEnabled", false);
+            QDragEnterEvent blocked(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&view, &blocked);
+            QVERIFY(!blocked.isAccepted());
+            host->setProperty("dropInputEnabled", true);
         }
-        const auto capture = view.grabWindow();
-        QVERIFY(!capture.isNull());
-        if (QString::fromLatin1(mode) == "details")
-            QVERIFY(capture.save(QDir::current().filePath("drop-details-175.png")));
-        QDropEvent drop(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::ShiftModifier);
-        QCoreApplication::sendEvent(&view, &drop);
-        QVERIFY(drop.isAccepted());
-        const auto action = actions.last().at(0).toMap();
-        QCOMPARE(action.value("action").toString(), QString("panel.dropFiles"));
-        QCOMPARE(action.value("entryId").toString(), QString("entry-1"));
-        QCOMPARE(action.value("index").toInt(), 101);
-        QCOMPARE(action.value("operation").toString(), QString("copy"));
-        QCOMPARE(action.value("paths").toStringList().constFirst(), mime.urls().first().toLocalFile());
-        QCOMPARE(host->property("dropHoverIndex").toInt(), -2);
-        host->setProperty("dropInputEnabled", false);
-        QDragEnterEvent blocked(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(&view, &blocked);
-        QVERIFY(!blocked.isAccepted());
-        host->setProperty("dropInputEnabled", true);
     }
     host->setProperty("dropHoverIndex",-1);
     auto *wholeOutline=host->findChild<QQuickItem *>("panelDropOutline-0");

@@ -111,7 +111,6 @@ FocusScope {
                                                       layout.contentY + direction * 18))
                 const index = layout.indexAtViewport(host.dropPointer.x, y)
                 host.dropHoverIndex = index >= 0 && host.session.isDirectoryAt(index)
-                    && host.session.entryNameAt(index) !== ".."
                     ? embeddedGalleryPanel.controller.sourceIndexAt(index) : -1
             }
         }

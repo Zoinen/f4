@@ -132,7 +132,7 @@ bool F4GalleryBridge::dropTargetAllowed(const QVariantMap &target, bool internal
     if (target.isEmpty() || !validSide(side) || !m_panelSessions.catalog(side).dropAllowed) return false;
     if (!internal) return true;
     const bool samePanel=target.value("panelId")==m_dragSource.value("panelId");
-    const bool folder=target.value("isDir").toBool() && target.value("name").toString()!="..";
+    const bool folder=target.value("isDir").toBool();
     if (samePanel && folder && m_dragSource.value("entryIds").toStringList().contains(target.value("entryId").toString())) return false;
     QString destination=target.value("path").toString();
     if (folder) destination=QDir(destination).filePath(target.value("name").toString());
@@ -273,8 +273,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         if (target.isEmpty() || action == Qt::IgnoreAction
             || !dropTargetAllowed(target,internal)) { drop->ignore(); return true; }
         if (event->type() != QEvent::Drop) {
-            m_dragPanels[side]->setProperty("dropHoverIndex", target.value("isDir").toBool()
-                && target.value("name").toString() != ".." ? target.value("index").toInt() : -1);
+            m_dragPanels[side]->setProperty("dropHoverIndex", target.value("isDir").toBool() ? target.value("index").toInt() : -1);
         } else {
             target.insert("action", "panel.dropFiles");
             target.insert("operation", "copy");
