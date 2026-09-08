@@ -260,6 +260,7 @@ class F4GalleryPointerTests final : public QObject
 private slots:
     void nativeDragListsSurviveWireEncoding();
     void nativeDropUsesIdentityAndSnappedOutline();
+    void nativeWorkspaceHoverAndDrop();
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
@@ -2413,6 +2414,67 @@ void F4GalleryPointerTests::nativeDragListsSurviveWireEncoding()
     QCOMPARE(source.at("entryIds").type,msgpack::type::ARRAY);
     QCOMPARE(message.at("paths").as<std::vector<std::string>>().size(),size_t(2));
     QCOMPARE(source.at("entryIds").as<std::vector<std::string>>().at(1),std::string("two"));
+}
+
+void F4GalleryPointerTests::nativeWorkspaceHoverAndDrop()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QQmlComponent component(view.engine());
+    component.setData(R"(import QtQuick
+Item {
+    width: 400; height: 40
+    property bool blocked: false
+    function dragWorkspaceHit(x,y) {
+        if (blocked || x >= 200) return ({})
+        return {target: x < 100 ? "workspace-tab-7" : "workspace-tab-19", active: x < 100}
+    }
+})", QUrl());
+    auto *bar = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(bar, qPrintable(component.errorString()));
+    view.setContent(QUrl(), &component, bar);
+    view.resize(400, 100);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    bridge.registerDragWorkspaceBar(bar);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("tab-drop.txt"))});
+    QDragEnterEvent enter(QPoint(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&enter);
+    QVERIFY(enter.isAccepted());
+    QCOMPARE(actions.size(),1); // immediate, without a timer or event-loop turn
+    QCOMPARE(actions.last().at(0).toMap().value("action").toString(),QString("workspace.dragActivate"));
+    QDragMoveEvent hover(QPoint(151,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&hover);
+    QVERIFY(hover.isAccepted());
+    QCOMPARE(actions.size(),1);
+    QDropEvent drop(QPointF(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&drop);
+    QVERIFY(drop.isAccepted());
+    const auto request=actions.last().at(0).toMap();
+    QCOMPARE(request.value("action").toString(),QString("workspace.dropFiles"));
+    QCOMPARE(request.value("target").toString(),QString("workspace-tab-19"));
+    QCOMPARE(request.value("paths").toStringList().size(),1);
+    bridge.m_dragToken="cross-workspace";
+    bridge.m_dragSource={{"panelId","old-workspace-panel"},{"side",0},{"entryIds",QStringList{"old-file"}}};
+    QMimeData internal;
+    internal.setData("application/x-f4-drag-session","cross-workspace");
+    QDragEnterEvent again(QPoint(150,20),Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&again);
+    QDropEvent move(QPointF(150,20),Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&move);
+    QVERIFY(move.isAccepted());
+    QCOMPARE(actions.last().at(0).toMap().value("source").toMap(),bridge.m_dragSource);
+    QCOMPARE(actions.last().at(0).toMap().value("operation").toString(),QString("move"));
+    bar->setProperty("blocked",true);
+    QDragEnterEvent blocked(QPoint(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&blocked);
+    QVERIFY(!blocked.isAccepted());
+    bar->setProperty("blocked",false);
+    QDragEnterEvent nonPanel(QPoint(250,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&nonPanel);
+    QVERIFY(!nonPanel.isAccepted());
 }
 
 void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()

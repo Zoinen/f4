@@ -30,6 +30,25 @@ void F4GalleryBridge::registerDragPanel(int side, QQuickItem *item)
     qApp->installEventFilter(this);
 }
 
+void F4GalleryBridge::registerDragWorkspaceBar(QQuickItem *item)
+{
+    m_dragWorkspaceBar = item;
+    qApp->installEventFilter(this);
+}
+
+QVariantMap F4GalleryBridge::dragWorkspaceHit(QObject *window, const QPointF &position) const
+{
+    auto *bar = m_dragWorkspaceBar.data();
+    if (!bar || bar->window() != window || !bar->isVisible() || !bar->isEnabled()
+        || QGuiApplication::modalWindow()) return {};
+    const auto point = bar->mapFromScene(position);
+    if (!bar->contains(point)) return {};
+    QVariant hit;
+    if (!QMetaObject::invokeMethod(bar, "dragWorkspaceHit", Q_RETURN_ARG(QVariant, hit),
+            Q_ARG(QVariant, point.x()), Q_ARG(QVariant, point.y()))) return {};
+    return hit.toMap();
+}
+
 QVariantMap F4GalleryBridge::dragEndpoint(int side, int sourceIndex) const
 {
     if (!validSide(side)) return {};
@@ -106,18 +125,23 @@ bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &positio
         return false;
     }
     const auto source = dragEndpoint(m_dragSource.value("side", -1).toInt());
+    // After switching workspaces the visible side belongs to a different panel.
+    // Go revalidates the captured source against its owning workspace.
+    if (source.value("panelId") == m_dragSource.value("panelId"))
     for (const auto *key : {"panelId", "path", "catalogRevision"})
         if (source.value(key) != m_dragSource.value(key)) {
             if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish stale" << key << source.value(key) << m_dragSource.value(key);
             return false;
         }
-    int targetSide;
-    auto target = dragHit(window, position, &targetSide);
-    if (target.isEmpty() || !m_panelSessions.catalog(targetSide).dropAllowed) {
+    int targetSide = -1;
+    auto target = dragWorkspaceHit(window, position);
+    const bool workspace = !target.isEmpty();
+    if (!workspace) target = dragHit(window, position, &targetSide);
+    if (target.isEmpty() || (!workspace && !m_panelSessions.catalog(targetSide).dropAllowed)) {
         if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish invalid target" << position << targetSide << QGuiApplication::modalWindow();
         return false;
     }
-    target.insert("action", "panel.dropFiles");
+    target.insert("action", workspace ? "workspace.dropFiles" : "panel.dropFiles");
     target.insert("source", m_dragSource);
     target.insert("operation", (modifiers & Qt::ShiftModifier)
         && !(modifiers & Qt::ControlModifier) ? "move" : "copy");
@@ -128,7 +152,7 @@ bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &positio
 bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
 {
     if (!qobject_cast<QQuickWindow *>(object)) return QObject::eventFilter(object, event);
-    bool ownsWindow = false;
+    bool ownsWindow = m_dragWorkspaceBar && m_dragWorkspaceBar->window() == object;
     for (const auto &item : m_dragPanels)
         ownsWindow = ownsWindow || (item && item->window() == object);
     if (!ownsWindow) return QObject::eventFilter(object, event);
@@ -141,13 +165,42 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
             && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape)
             m_nativeDragCancelled = true;
     }
-    if (event->type() == QEvent::DragLeave) { clearDropHighlight(); return false; }
+    if (event->type() == QEvent::DragLeave) { clearDropHighlight(); m_dragHoveredWorkspace.clear(); return false; }
     if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
         || event->type() == QEvent::Drop) {
         auto *drop = static_cast<QDropEvent *>(event);
+        const auto workspace = dragWorkspaceHit(object, drop->position());
+        const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
+        if (!workspace.isEmpty() && action != Qt::IgnoreAction) {
+            clearDropHighlight();
+            const QString id = workspace.value("target").toString();
+            if (event->type() == QEvent::Drop) {
+                auto request = workspace;
+                request.insert("action", "workspace.dropFiles");
+                request.insert("operation", "copy");
+                if (!m_dragToken.isEmpty() && drop->mimeData()->data(sessionMime) == m_dragToken.toUtf8()) {
+                    request.insert("source", m_dragSource);
+                    if ((drop->modifiers() & Qt::ShiftModifier) && !(drop->modifiers() & Qt::ControlModifier))
+                        request.insert("operation", "move");
+                } else {
+                    QStringList paths;
+                    for (const auto &url : drop->mimeData()->urls()) paths.append(url.toLocalFile());
+                    request.insert("paths", paths);
+                }
+                emit uiActionRequested(request);
+                m_dragHoveredWorkspace.clear();
+            } else if (id != m_dragHoveredWorkspace) {
+                m_dragHoveredWorkspace = id;
+                if (!workspace.value("active").toBool())
+                    emit uiActionRequested({{"action", "workspace.dragActivate"}, {"target", id}});
+            }
+            drop->setDropAction(action);
+            drop->accept();
+            return true;
+        }
+        m_dragHoveredWorkspace.clear();
         int side;
         auto target = dragHit(object, drop->position(), &side);
-        const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
         if (qEnvironmentVariableIsSet("VTUI_DEBUG") && event->type() != QEvent::DragMove)
             qInfo() << "QT_DND: native event" << event->type() << drop->position()
                     << "target" << side << "action" << action << "identity" << target.value("panelId");
@@ -368,6 +421,7 @@ void F4GalleryBridge::startPreparedDrag()
             qInfo() << "QT_DND: native drag finished" << finished << "cursor" << window->mapFromGlobal(QCursor::pos())
                     << "entered/released/cancelled" << m_nativeDragEntered << m_nativeDragReleased << m_nativeDragCancelled;
         m_nativeDragActive = false;
+        m_dragHoveredWorkspace.clear();
         m_dragToken.clear();
         clearDropHighlight();
 #ifdef Q_OS_WIN

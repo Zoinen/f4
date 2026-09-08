@@ -29,6 +29,26 @@ Item {
     property int wheelNavigationIndex: -1
     property int wheelNavigationAuthoritativeIndex: -1
 
+    Component.onCompleted: {
+        if (typeof qtGallery !== "undefined"
+                && typeof qtGallery.registerDragWorkspaceBar === "function")
+            qtGallery.registerDragWorkspaceBar(workspaceBar)
+    }
+
+    function dragWorkspaceHit(x, y) {
+        if (hostWindow.hasBlockingOverlay())
+            return ({})
+        for (var i = 0; i < workspaceTabsRepeater.count; ++i) {
+            var tab = workspaceTabsRepeater.itemAt(i)
+            if (!tab || !tab.visible || tab.modelData.surfaceKind !== "panels")
+                continue
+            var p = tab.mapFromItem(workspaceBar, x, y)
+            if (p.x >= 0 && p.y >= 0 && p.x < tab.width && p.y < tab.height)
+                return { target: String(tab.modelData.id), active: tab.current }
+        }
+        return ({})
+    }
+
     function registerNativeHitTargets() {
         if (!usesQwk || !nativeWindowAgentReady)
             return

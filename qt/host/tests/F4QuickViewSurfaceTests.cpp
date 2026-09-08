@@ -713,6 +713,7 @@ private slots:
     void pointerActivationPreviewHandsOffBothPanelCursors();
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
+    void workspaceDragHitOnlyAcceptsPanelTabs();
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
@@ -2867,6 +2868,39 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QCOMPARE(fixture.item(QStringLiteral("filePanel-1")), rightPanel);
     QCOMPARE(leftLoader->property("item").value<QObject *>(), leftHost);
     QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
+}
+
+void F4QuickViewSurfaceTests::workspaceDragHitOnlyAcceptsPanelTabs()
+{
+    QVariantList tabs;
+    const QStringList kinds = {"panels", "panels", "operationsQueue", "editor"};
+    for (int i = 0; i < kinds.size(); ++i)
+        tabs.append(QVariantMap{{"id", QString("workspace-tab-%1").arg(i)},
+                                {"text", QString::number(i)}, {"surfaceKind", kinds[i]},
+                                {"active", i == 0}, {"closable", false}});
+    auto scene = shellScene({}, 0);
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", tabs}});
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1800, 900);
+    auto *bar = fixture.item("workspaceBar");
+    QVERIFY(bar);
+    QTRY_VERIFY(bar->width() > 0);
+    for (int i = 0; i < kinds.size(); ++i) {
+        auto *tab = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QString("workspace-tab-%1").arg(i));
+        QVERIFY(tab);
+        const auto point = tab->mapToItem(bar, QPointF(tab->width()/2, tab->height()/2));
+        QVariant result;
+        QVERIFY(QMetaObject::invokeMethod(bar, "dragWorkspaceHit", Q_RETURN_ARG(QVariant, result),
+                                         Q_ARG(QVariant, point.x()), Q_ARG(QVariant, point.y())));
+        const auto hit = result.toMap();
+        if (i < 2) {
+            QCOMPARE(hit.value("target").toString(), QString("workspace-tab-%1").arg(i));
+            QCOMPARE(hit.value("active").toBool(), i == 0);
+        } else {
+            QVERIFY(hit.isEmpty());
+        }
+    }
 }
 
 void F4QuickViewSurfaceTests::compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels()

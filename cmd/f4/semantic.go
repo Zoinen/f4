@@ -312,6 +312,9 @@ func HandleSemanticAction(action map[string]any) bool {
 	}
 	actionName := semanticString(action["action"])
 	target := semanticString(action["target"])
+	if actionName == "workspace.dragActivate" || actionName == "workspace.dropFiles" {
+		return handleSemanticWorkspaceDrag(action)
+	}
 	if actionName == "toast.dismiss" {
 		return vtui.FrameManager.HandleSemanticAction(action)
 	}

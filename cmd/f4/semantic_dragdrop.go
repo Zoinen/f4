@@ -12,6 +12,9 @@ import (
 // Native drops use identities, never console cells or a view's row number.
 // Both ends are revalidated when the UI queue actually processes the drop.
 func (pf *PanelsFrame) semanticDragPanel(a map[string]any) *FileSystemPanel {
+	if pf.closed {
+		return nil
+	}
 	fp := pf.panelForSemanticAction(a)
 	if fp == nil || fp.vfs == nil || semanticString(a["panelId"]) != vtui.SemanticID(fp) {
 		return nil
@@ -23,14 +26,88 @@ func (pf *PanelsFrame) semanticDragPanel(a map[string]any) *FileSystemPanel {
 	return fp
 }
 
+// A drag keeps its original panel identity when hover activates another tab.
+// Search only still-owned panels, never a retained metadata cache or side alone.
+func (pf *PanelsFrame) semanticDragSource(a map[string]any) (*FileSystemPanel, *PanelsFrame) {
+	if source := pf.semanticDragPanel(a); source != nil {
+		return source, pf
+	}
+	if vtui.FrameManager == nil {
+		return nil, nil
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		if screen == nil {
+			continue
+		}
+		for _, frame := range screen.Frames {
+			if owner, ok := frame.(*PanelsFrame); ok {
+				if source := owner.semanticDragPanel(a); source != nil {
+					return source, owner
+				}
+			}
+		}
+	}
+	return nil, nil
+}
+
+func semanticWorkspaceDragTarget(id string) *PanelsFrame {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		if screen == nil {
+			continue
+		}
+		if workspaceSemanticTarget(screen.Number) != id || len(screen.Frames) == 0 {
+			continue
+		}
+		// A document or modal on top is not a file-panel destination.
+		pf, ok := screen.Frames[len(screen.Frames)-1].(*PanelsFrame)
+		if ok && !pf.closed && pf.GetWorkspaceTabSurfaceKind() == "panels" {
+			return pf
+		}
+	}
+	return nil
+}
+
+func handleSemanticWorkspaceDrag(a map[string]any) bool {
+	pf := semanticWorkspaceDragTarget(semanticString(a["target"]))
+	if pf == nil {
+		return true
+	}
+	vtui.FrameManager.HandleSemanticAction(map[string]any{"action": "workspace.activate", "target": a["target"]})
+	if semanticString(a["action"]) == "workspace.dragActivate" {
+		return true
+	}
+	// A drop on the tab itself targets its active panel's current directory.
+	// Resolve it here, even if the hover's new scene has not reached Qt yet.
+	fp := pf.panelForSemanticAction(nil)
+	if fp == nil || fp.vfs == nil {
+		return true
+	}
+	fp.updateSemanticRevisions()
+	request := make(map[string]any, len(a)+4)
+	for key, value := range a {
+		request[key] = value
+	}
+	request["action"] = "panel.dropFiles"
+	request["side"] = pf.activeIdx
+	request["panelId"] = vtui.SemanticID(fp)
+	request["path"] = fp.vfs.GetPath()
+	request["catalogRevision"] = fp.catalogRevision
+	delete(request, "entryId")
+	return pf.handleSemanticDrop(request)
+}
+
 type semanticDropPlan struct {
-	target     dropTargetInfo
-	source     vfs.VFS
-	sourceDir  string
-	names      []string
-	paths      []string
-	move       bool
-	references *TempPanelVFS
+	target      dropTargetInfo
+	source      vfs.VFS
+	sourceOwner *PanelsFrame
+	sourceDir   string
+	names       []string
+	paths       []string
+	move        bool
+	references  *TempPanelVFS
 }
 
 // Resolve the entire marked set in Go, including entries outside Qt's sparse
@@ -126,7 +203,8 @@ func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, err
 		}
 	}
 	if source, ok := a["source"].(map[string]any); ok {
-		src := pf.semanticDragPanel(source)
+		src, owner := pf.semanticDragSource(source)
+		p.sourceOwner = owner
 		if src == nil {
 			return p, fmt.Errorf("The source changed during dragging")
 		}
@@ -204,7 +282,15 @@ func (pf *PanelsFrame) handleSemanticDrop(a map[string]any) bool {
 		return true
 	}
 	go ExecuteFileOpAt(pf, p.source, p.target.fs, p.sourceDir, p.names, p.target.dir, p.move, AppConfig.DefaultFileOpMode, func() {
-		vtui.FrameManager.PostTask(func() { pf.RefreshAll(); vtui.FrameManager.Redraw() })
+		vtui.FrameManager.PostTask(func() {
+			if !pf.closed {
+				pf.RefreshAll()
+			}
+			if p.sourceOwner != nil && p.sourceOwner != pf && !p.sourceOwner.closed {
+				p.sourceOwner.RefreshAll()
+			}
+			vtui.FrameManager.Redraw()
+		})
 	})
 	return true
 }

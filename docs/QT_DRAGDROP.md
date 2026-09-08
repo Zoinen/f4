@@ -166,3 +166,24 @@ External Move/Link, exporting archive/remote contents to the desktop, live
 remote services and native macOS/Linux gestures are outside the verified
 Windows Copy contract. Incoming Shift and outgoing Shift have different
 observed behavior as recorded above; do not describe external moves as working.
+
+## Panel workspace tabs
+
+Dragging a supported file payload over a visible panel tab activates it immediately,
+without a hover timer. The drag can then continue into either visible panel in that
+workspace. Dropping on the tab itself targets the current directory of its active
+panel. Editor, terminal and operations-queue tabs are not file drop targets; modal
+and blocking overlays retain their existing input guards.
+
+Internal drags retain the source panel identity, path, catalog revision and entry
+IDs across tab changes. Go resolves that source only among still-owned workspace
+panels and rejects closed, removed or changed sources. Copy and Shift-move use the
+existing transfer pipeline; completion refreshes both workspace owners. External
+file drops retain Copy-only semantics.
+
+Verified on Windows at 175% with native mouse gestures: copy through an inactive
+tab into its other directory, Shift-move directly onto the tab, source-panel refresh,
+Escape cancellation followed by a successful repeat, and Explorer file drop onto an
+inactive tab. Internal and Explorer copies matched SHA-256 hashes. Qt pointer and
+actual WorkspaceTabs hit tests passed at 100% and 175%; Go regressions cover stable
+tab/source identities, immediate activation and the active-panel destination.
