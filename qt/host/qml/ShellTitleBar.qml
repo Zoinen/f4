@@ -155,7 +155,8 @@ Item {
         objectName: "operationsQueueButton"
         x: hostWindow.snapPx((hostWindow.useMacNativeTitleBar ? titleBar.width : windowButtons.x) - width - hostWindow.contentSpacing)
         y: hostWindow.snapPx((titleBar.height - height) / 2)
-        width: hostWindow.snapPx(42)
+        visible: hostWindow.nativeQueueDropdownEnabled
+        width: visible ? hostWindow.snapPx(42) : 0
         height: hostWindow.snapPx(32)
         z: 3
         focusPolicy: Qt.StrongFocus

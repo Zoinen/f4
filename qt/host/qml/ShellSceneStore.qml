@@ -63,7 +63,9 @@ Item {
         toastOverride !== null ? toastOverride : (chromeState.toast || ({}))
     readonly property var workspaces: workspaceTabs.tabs || []
     property string lastContentWorkspace: ""
-    onWorkspacesChanged: {
+    onWorkspacesChanged: syncQueueWorkspacePresentation()
+    function syncQueueWorkspacePresentation() {
+        if (!hostWindow.nativeQueueDropdownEnabled) return
         const active = workspaces.find(tab => tab.active === true)
         if (!active) return
         if (active.surfaceKind !== "operationsQueue") {
@@ -74,8 +76,16 @@ Item {
         const previous = workspaces.find(tab => String(tab.id) === lastContentWorkspace)
                 || workspaces.find(tab => tab.surfaceKind !== "operationsQueue")
         if (previous) Qt.callLater(function() {
-            hostWindow.action({action: "workspace.activate", target: String(previous.id)}, true)
+            if (hostWindow.nativeQueueDropdownEnabled)
+                hostWindow.action({action: "workspace.activate", target: String(previous.id)}, true)
         })
+    }
+
+    Connections {
+        target: store.hostWindow
+        function onNativeQueueDropdownEnabledChanged() {
+            store.syncQueueWorkspacePresentation()
+        }
     }
 
     signal sceneReset()

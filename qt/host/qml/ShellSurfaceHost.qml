@@ -130,7 +130,7 @@ Item {
             enabled: queueDropdown.visible
             onActivated: surfaces.hostWindow.queueDropdownOpen = false
         }
-        visible: surfaces.hostWindow.queueDropdownOpen && !surfaces.hostWindow.hasBlockingOverlay()
+        visible: surfaces.hostWindow.nativeQueueDropdownEnabled && surfaces.hostWindow.queueDropdownOpen && !surfaces.hostWindow.hasBlockingOverlay()
         // Synchronize at the start of dismissal. A delayed closed signal can
         // otherwise clear a newer open request from the title-bar button.
         onAboutToHide: if (!surfaces.hostWindow.hasBlockingOverlay()) surfaces.hostWindow.queueDropdownOpen = false

@@ -23,7 +23,7 @@ Item {
     visible: hostWindow.workspaceTabs.visible === true
     z: 2
     property string dragSourceWorkspace: ""
-    readonly property var panelTabs: (hostWindow.workspaces || []).filter(tab => tab.surfaceKind !== "operationsQueue")
+    readonly property var panelTabs: (hostWindow.workspaces || []).filter(tab => !hostWindow.nativeQueueDropdownEnabled || tab.surfaceKind !== "operationsQueue")
 
     function beginWorkspaceDrag() {
         dragSourceWorkspace = ""

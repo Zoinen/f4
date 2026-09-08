@@ -751,6 +751,7 @@ class F4OperationsQueueTests final : public QObject
 
 private slots:
     void queueDropdownKeepsPanelsAndAlignsLeaves();
+    void consoleModeRestoresQueueWorkspace();
     void initTestCase();
     void queueUsesNativeAccessibleSurfaceAndGuardsActiveClose();
     void plusButtonIsInteractiveInsideQwkTitleBar();
@@ -783,6 +784,38 @@ void F4OperationsQueueTests::initTestCase()
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4OperationsQueueTests::consoleModeRestoresQueueWorkspace()
+{
+    auto scene=queueScene(queueModel({task(1,"Running",35)},1,true));
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    scene.insert("presentation","text");
+    fixture.shell.actions.clear();
+    fixture.shell.setScene(scene);
+    QTest::qWait(150);
+    QVERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    QVERIFY(!fixture.item("operationsQueueButton")->isVisible());
+    // Console mode renders its own tabs in the grid. QML must neither cover
+    // them with a popup nor redirect activation of the console queue workspace.
+    QVERIFY(fixture.item("vtuiGrid")->property("renderingEnabled").toBool());
+    auto *popup=fixture.window->findChild<QObject *>("operationsQueueDropdown");
+    QVERIFY(popup && !popup->property("visible").toBool());
+    for (bool queueActive : {false,true,false,true}) {
+        scene.insert("workspaceTabs",workspaceTabs(queueActive,false));
+        fixture.shell.setScene(scene);
+        QTest::qWait(50);
+        QVERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+        QVERIFY(!popup->property("visible").toBool());
+        for(const auto &action:fixture.shell.actions) QVERIFY(action.value("action")!="workspace.activate");
+    }
+    scene.remove("presentation");
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    QVERIFY(fixture.item("operationsQueueButton")->isVisible());
+    QTRY_VERIFY(!fixture.item("queue-tab"));
 }
 
 void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
