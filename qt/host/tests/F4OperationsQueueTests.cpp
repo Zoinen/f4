@@ -855,6 +855,24 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
     QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
     QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,QPoint(10,600));
     QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    auto *popup = fixture.window->findChild<QObject *>("operationsQueueDropdown");
+    QVERIFY(popup);
+    // Model native title-bar delivery: the press starts on the trigger,
+    // outside dismissal occurs, then the trigger receives its release/click.
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    QTRY_VERIFY(popup->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(button,"pressed"));
+    QVERIFY(QMetaObject::invokeMethod(popup,"close"));
+    QVERIFY(QMetaObject::invokeMethod(button,"clicked"));
+    QTRY_VERIFY(!popup->property("visible").toBool());
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    for (int attempt=0; attempt<8; ++attempt) {
+        QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        QTRY_VERIFY(popup->property("visible").toBool());
+        QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        QTRY_VERIFY(!popup->property("visible").toBool());
+        QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    }
 }
 
 void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClose()

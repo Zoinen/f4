@@ -131,7 +131,9 @@ Item {
             onActivated: surfaces.hostWindow.queueDropdownOpen = false
         }
         visible: surfaces.hostWindow.queueDropdownOpen && !surfaces.hostWindow.hasBlockingOverlay()
-        onClosed: if (!surfaces.hostWindow.hasBlockingOverlay()) surfaces.hostWindow.queueDropdownOpen = false
+        // Synchronize at the start of dismissal. A delayed closed signal can
+        // otherwise clear a newer open request from the title-bar button.
+        onAboutToHide: if (!surfaces.hostWindow.hasBlockingOverlay()) surfaces.hostWindow.queueDropdownOpen = false
         background: Rectangle {
             color: surfaces.hostWindow.windowBackgroundColor
             border.color: surfaces.hostWindow.separatorColor

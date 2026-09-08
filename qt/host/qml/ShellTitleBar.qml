@@ -162,7 +162,14 @@ Item {
         Accessible.name: "Operations Queue"
         ToolTip.visible: hovered
         ToolTip.text: "Operations Queue"
-        onClicked: hostWindow.toggleQueueDropdown()
+        property bool closeQueueOnRelease: false
+        onPressed: closeQueueOnRelease = hostWindow.queueDropdownOpen
+        onClicked: {
+            // An outside press may dismiss the popup before this release.
+            // Preserve the intent of the original press instead of reopening it.
+            if (closeQueueOnRelease) hostWindow.queueDropdownOpen = false
+            else if (!hostWindow.queueDropdownOpen) hostWindow.toggleQueueDropdown()
+        }
         function registerNativeHitTarget() {
             if (titleBar.usesQwk && titleBar.nativeWindowAgentReady)
                 titleBar.nativeWindowAgent.setHitTestVisible(queueButton, true)
