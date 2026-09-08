@@ -2529,6 +2529,21 @@ void F4GalleryPointerTests::upstreamDragArtwork()
     for (int i=0;i<5;++i)
         QCOMPARE(preview.toImage().pixelColor(qRound((29+i*52)*dpr),qRound(29*dpr)),images[i].pixelColor(20,20));
     QVERIFY(preview.save(QString(".diagnostics/drag-strip-%1.png").arg(dpr)));
+    for (const QSize sourceSize : {QSize(80,40),QSize(40,80)}) {
+        QImage source(sourceSize,QImage::Format_ARGB32);
+        source.fill(Qt::red);
+        QPainter paint(&source);
+        paint.fillRect(QRect(QPoint(0,0),sourceSize/2),Qt::green);
+        paint.end();
+        const auto fitted=F4NativeDragVisuals::compactPreview({source},1,dpr,true);
+        const auto pixels=fitted.toImage();
+        const bool wide=sourceSize.width()>sourceSize.height();
+        // Both opposite corners survive, with empty space on the short axis.
+        QCOMPARE(pixels.pixelColor(qRound((wide?11:21)*dpr),qRound((wide?21:11)*dpr)),QColor(Qt::green));
+        QCOMPARE(pixels.pixelColor(qRound((wide?47:37)*dpr),qRound((wide?37:47)*dpr)),QColor(Qt::red));
+        QVERIFY(pixels.pixelColor(qRound((wide?29:11)*dpr),qRound((wide?11:29)*dpr))!=QColor(Qt::red));
+        QVERIFY(fitted.save(QString(".diagnostics/drag-aspect-%1-%2.png").arg(dpr).arg(wide)));
+    }
     for (const bool dark : {false, true}) {
         const auto named=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),8,dark);
         QCOMPARE(named.devicePixelRatio(),dpr);

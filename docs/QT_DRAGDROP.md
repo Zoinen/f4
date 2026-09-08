@@ -12,7 +12,8 @@ The dragged set is captured at mouse press; Ctrl/Shift may be held from the
 start or changed during the drag to choose copy/move. Qt's system drag-distance
 threshold applies.
 
-Single-item and group drags both use compact thumbnails. The drag preview
+Single-item and group drags both use compact thumbnails that fit the whole
+source image while preserving its aspect ratio. The drag preview
 includes the pressed file's name below the artwork, with a
 `+N` count for additional dragged items. Long names are elided in the middle.
 

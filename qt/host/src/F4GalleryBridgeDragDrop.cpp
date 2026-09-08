@@ -415,10 +415,8 @@ void F4GalleryBridge::prepareDragPreview(QQuickItem *host)
             if (provider && provider->imageType()==QQmlImageProviderBase::Image) {
                 QSize size;
                 image=provider->requestImage(url.path().mid(1),&size,QSize(qCeil(40*dpr),qCeil(40*dpr)));
-                if (!image.isNull()) { // upstream thumbnails use PreserveAspectCrop
-                    image=image.scaled(qCeil(40*dpr),qCeil(40*dpr),Qt::KeepAspectRatioByExpanding,Qt::SmoothTransformation);
-                    image=image.copy((image.width()-qCeil(40*dpr))/2,(image.height()-qCeil(40*dpr))/2,qCeil(40*dpr),qCeil(40*dpr));
-                }
+                // Keep the complete provider image; compactPreview fits it
+                // inside the tile while preserving its source aspect ratio.
             }
         }
         if (image.isNull()) {
