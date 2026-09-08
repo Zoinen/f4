@@ -1778,17 +1778,62 @@ func (v *ArchiveVFS) Remove(ctx context.Context, path string) error {
 	if fsPath == "." {
 		return fmt.Errorf("cannot remove archive root")
 	}
+	info, err := v.fsys.Stat(fsPath)
+	if err != nil {
+		return err
+	}
+	type member struct {
+		name      string
+		directory bool
+	}
+	members := []member{{fsPath, false}}
+	if info.IsDir() {
+		members = nil
+		if err := fs.WalkDir(v.fsys, fsPath, func(name string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			members = append(members, member{name, entry.IsDir()})
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 
 	upd, err := archive.NewUpdater(v.activePath(), archive.Options{})
 	if err != nil {
 		return err
 	}
 
-	err = joinArchiveCloseError(upd.Remove(fsPath), upd.Close())
-	if err != nil {
-		return err
+	// Updater.Remove handles exact archive entries, not recursive directories.
+	// Walk first, then remove children before explicit directory markers. An
+	// implicit directory has no marker to remove and is not an error.
+	for i := len(members) - 1; i >= 0; i-- {
+		if err = ctx.Err(); err != nil {
+			break
+		}
+		item := members[i]
+		name := item.name
+		if item.directory {
+			name = strings.TrimSuffix(name, "/") + "/"
+		}
+		err = upd.Remove(name)
+		if item.directory && errors.Is(err, os.ErrNotExist) {
+			err = upd.Remove(item.name)
+			if errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
+		if err != nil {
+			break
+		}
 	}
-	return v.reloadFS()
+	// Closing may commit a partial removal; refresh the index on errors too.
+	err = joinArchiveCloseError(err, upd.Close())
+	return errors.Join(err, v.reloadFS())
 }
 
 func (v *ArchiveVFS) reloadFS() error {

@@ -102,8 +102,11 @@ in progress.
 | Drag after catalog publication | `TestSemanticDragPreparationAfterPublishedCatalog`, paged and non-paged catalogs, three successive preparations each |
 | Panel identity mismatch | Old live stderr ended with this error. Protocol and controller regressions verify snapshot recovery without closing or advancing rejected revision; original producer-side ordering cause remains to be isolated |
 | Explorer to/from real and virtual panels | Test folder prepared; native automation rejects drag endpoints outside the source window. Real Explorer round trips remain unverified |
-| Real/ZIP to real/ZIP | Six semantic/VFS file copy/move combinations in `TestSemanticDropArchiveMatrix`; no live archive gesture or archive conflict coverage yet |
-| Remote providers and remaining conflict matrix | Not fully verified; external remote/archive materialization and external moves are not implemented |
+| Real/ZIP to real/ZIP | Six semantic/VFS file copy/move combinations in `TestSemanticDropArchiveMatrix`; live file copies in both real/ZIP directions at 175%, plus ZIP-to-real Cancel followed by a new drag and Overwrite |
+| File/folder conflicts | 72 combinations in `TestSemanticDropConflictMatrix`: local/TempPanel/ZIP source, local/ZIP target, copy/move, Cancel/Skip/Overwrite; contents, source retention and workspace checked |
+| Destination write failure | 18 combinations in `TestSemanticDropWriteFailurePreservesSource`: local/TempPanel/ZIP source, copy/move, Abort/Skip/Retry then Abort; source contents preserved and error dialog remains on originating workspace |
+| ZIP directory move cleanup | `TestRemoveDirectoryPreservesOtherArchiveMembers` covers explicit and implicit directory records, nested entries and preservation of similarly prefixed siblings |
+| Remote providers | Not verified against a live remote service; external remote/archive materialization and external moves are not implemented |
 
 Queued transfer dialogs now anchor to their originating panels. Unpublishing a
 metadata snapshot no longer unregisters the newly published live panel. On a
@@ -115,6 +118,11 @@ closing a dialog was the reproduced cause of subsequent drops being ignored.
 The Windows drag bridge records startup release/cancellation separately from
 native target entry so an asynchronous preparation can finish its internal
 gesture without treating Escape as a drop.
+
+Archive bulk copying is used only when the selected destination names are
+absent. Otherwise the regular recursive engine owns overwrite decisions,
+including nested conflicts. Archive directory removal enumerates the selected
+subtree and removes exact archive records, handling implicit directory markers.
 
 Latest validation: Go drag/drop, transfer, TempPanel and scene rebuild regressions
 pass; all 19 pointer tests pass at both 100% and 175%, with the rendered outline

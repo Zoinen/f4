@@ -671,7 +671,7 @@ func executeFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 		// API remains restricted to foreground work because it is relative to
 		// mutable VFS state.
 		// Bulk copy keeps the source names, so it cannot serve a mask.
-		if bulkCopyEligible {
+		if bulkCopyEligible && bulkCopyTargetsAbsent(ctx, dstVfs, destPath, names) {
 			var bulkErr error
 			bulkAttempted := false
 			if bulkCopier, ok := srcVfs.(vfs.BulkCopierAt); ok {
@@ -1213,6 +1213,17 @@ func transferIdentity(filesystem vfs.VFS, itemPath string) (vfs.VFS, string) {
 		}
 	}
 	return filesystem, itemPath
+}
+
+// BulkCopier has no overwrite-choice callback. Existing top-level directories
+// also require the normal recursive path so nested conflicts remain interactive.
+func bulkCopyTargetsAbsent(ctx context.Context, destination vfs.VFS, directory string, names []string) bool {
+	for _, name := range names {
+		if _, err := destination.Stat(ctx, destination.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
