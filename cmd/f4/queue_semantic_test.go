@@ -220,3 +220,27 @@ func TestSplitQueueTimeSpeedTextRetainsETA(t *testing.T) {
 		t.Fatalf("plain speed = (%q, %q, %q)", elapsed, eta, speed)
 	}
 }
+
+func TestQueueSemanticPauseTargetsOneOperation(t *testing.T) {
+	withSemanticQueueTestState(t)
+	qf := NewQueueFrame()
+	tasks := []*QueueTask{{ID: 1, State: "Queued"}, {ID: 2, State: "Queued"}}
+	GlobalQueueManager = &OpQueueManager{tasks: tasks, frame: qf}
+	qf.UpdateTasks(tasks)
+	action := map[string]any{"target": vtui.SemanticID(qf), "action": "queue.pause", "taskId": 2}
+	if !qf.HandleSemanticAction(action) {
+		t.Fatal("pause rejected")
+	}
+	model := qf.semanticModel()
+	if tasks[0].State != "Queued" || model.Items[1].State != "Paused" || !model.Items[1].Resumable || model.Items[1].Pausable || !model.Items[1].Cancellable || model.CanClose {
+		t.Fatalf("wrong paused model: %+v", model)
+	}
+	action["action"] = "queue.resume"
+	if !qf.HandleSemanticAction(action) || tasks[1].State != "Queued" {
+		t.Fatal("resume rejected")
+	}
+	action["taskId"] = 99
+	if qf.HandleSemanticAction(action) {
+		t.Fatal("stale task accepted")
+	}
+}

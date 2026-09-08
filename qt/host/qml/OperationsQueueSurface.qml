@@ -18,6 +18,7 @@ Rectangle {
         surfaceWidth: queueRoot.width
         headerClearButton: headerClearButton
         cancelButton: cancelButton
+        pauseButton: pauseButton
     }
 
     property alias queue: queueController.queue
@@ -670,6 +671,20 @@ Rectangle {
             Accessible.description: hostWindow.cleanText(queue.cancelDescription)
             onClicked: queueController.cancelSelection()
         }
+        QueueActionButton {
+            id: pauseButton
+            objectName: "operationsQueuePauseButton"
+            hostWindow: queueController.hostWindow
+            anchors.left: cancelButton.right
+            anchors.leftMargin: hostWindow.snapPx(10)
+            anchors.verticalCenter: parent.verticalCenter
+            text: queueController.selectedItem()?.resumable ? qsTr("Resume") : qsTr("Pause")
+            iconName: queueController.selectedItem()?.resumable ? "circle-play" : "circle-pause"
+            enabled: !!queueController.selectedItem()
+                     && (queueController.selectedItem().pausable || queueController.selectedItem().resumable)
+            Accessible.name: text
+            onClicked: queueController.pauseSelection()
+        }
         Text {
             id: queueLeaf18
             objectName: "operationsQueue-queueLeaf18"
@@ -677,7 +692,7 @@ Rectangle {
                 x: hostWindow.dialogPixelOffsetX(queueLeaf18,hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(queueLeaf18,hostWindow.contentItem)
             }
-            anchors.left: cancelButton.right
+            anchors.left: pauseButton.right
             anchors.leftMargin: 14
             anchors.right: parent.right
             anchors.rightMargin: hostWindow.contentSpacing

@@ -125,6 +125,11 @@ Item {
         dim: false
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Shortcut {
+            sequence: "Escape"
+            enabled: queueDropdown.visible
+            onActivated: surfaces.hostWindow.queueDropdownOpen = false
+        }
         visible: surfaces.hostWindow.queueDropdownOpen && !surfaces.hostWindow.hasBlockingOverlay()
         onClosed: if (!surfaces.hostWindow.hasBlockingOverlay()) surfaces.hostWindow.queueDropdownOpen = false
         background: Rectangle {

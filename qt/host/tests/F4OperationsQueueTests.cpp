@@ -788,7 +788,9 @@ void F4OperationsQueueTests::initTestCase()
 void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
 {
     auto scene=panelScene();
-    scene.insert("operationsQueue",queueModel({task(1,"Running",35),task(2,"Error",20)},1,true));
+    auto running = task(1,"Running",35);
+    running.insert("pausable",true);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
     QueueFixture fixture(scene);
     QVERIFY(fixture.window);
     QVERIFY(!fixture.item("queue-tab"));
@@ -821,6 +823,32 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
     }
     QVERIFY(leaves>10);
     QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-dropdown-%1.png").arg(dpr)));
+    auto *pause = fixture.item("operationsQueuePauseButton");
+    QVERIFY(pause && pause->isEnabled());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(),QString("queue.pause"));
+    QCOMPARE(fixture.shell.actions.last().value("taskId").toInt(),1);
+    running.insert("state","Paused"); running.insert("stateClass","paused");
+    running.insert("pausable",false); running.insert("resumable",true);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(pause->property("text").toString(),QString("Resume"));
+    QTest::qWait(150);
+    QList<QQuickItem *> resumedLeaves{pause};
+    while (!resumedLeaves.isEmpty()) {
+        auto *leaf = resumedLeaves.takeLast(); resumedLeaves.append(leaf->childItems());
+        const QString type = leaf->metaObject()->className();
+        if (!leaf->isVisible() || (!type.startsWith("QQuickText") && !type.startsWith("QQuickImage"))) continue;
+        QVERIFY(!leaf->objectName().isEmpty());
+        const auto origin = leaf->mapToScene(QPointF());
+        const auto physical = origin*dpr;
+        QVERIFY(qAbs(physical.x()-qRound(physical.x()))<0.001 && qAbs(physical.y()-qRound(physical.y()))<0.001);
+        QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+    }
+    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-resume-%1.png").arg(dpr)));
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(),QString("queue.resume"));
     QTest::keyClick(fixture.window,Qt::Key_Escape);
     QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
     QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));

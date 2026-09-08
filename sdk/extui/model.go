@@ -495,6 +495,8 @@ type OperationsQueueItemModel struct {
 	Speed           string
 	Error           string
 	Cancellable     bool
+	Pausable        bool
+	Resumable       bool
 	HasDetails      bool
 	Terminal        bool
 	Active          bool
@@ -1247,6 +1249,8 @@ func (i OperationsQueueItemModel) ToMap() M {
 		"speed":           i.Speed,
 		"error":           i.Error,
 		"cancellable":     i.Cancellable,
+		"pausable":        i.Pausable,
+		"resumable":       i.Resumable,
 		"hasDetails":      i.HasDetails,
 		"terminal":        i.Terminal,
 		"active":          i.Active,

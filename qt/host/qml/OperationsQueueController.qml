@@ -11,6 +11,7 @@ Item {
     required property real surfaceWidth
     property Item headerClearButton: null
     property Item cancelButton: null
+    property Item pauseButton: null
     readonly property alias rowsModel: queueRowsModel
     visible: false
     width: 0
@@ -61,6 +62,8 @@ Item {
             "speed": hostWindow.cleanText(item.speed),
             "error": hostWindow.cleanText(item.error),
             "cancellable": item.cancellable === true,
+            "pausable": item.pausable === true,
+            "resumable": item.resumable === true,
             "hasDetails": item.hasDetails === true,
             "terminal": item.terminal === true,
             "active": item.active === true
@@ -105,6 +108,8 @@ Item {
         updateRole(index, "speed", row.speed)
         updateRole(index, "error", row.error)
         updateRole(index, "cancellable", row.cancellable)
+        updateRole(index, "pausable", row.pausable)
+        updateRole(index, "resumable", row.resumable)
         updateRole(index, "hasDetails", row.hasDetails)
         updateRole(index, "terminal", row.terminal)
         updateRole(index, "active", row.active)
@@ -184,7 +189,7 @@ Item {
     }
 
     function controlOwnsActivation() {
-        return headerClearButton.activeFocus || cancelButton.activeFocus
+        return headerClearButton.activeFocus || cancelButton.activeFocus || (pauseButton && pauseButton.activeFocus)
     }
 
     function delegateForTaskId(taskId) {
@@ -274,6 +279,14 @@ Item {
         return true
     }
 
+    function pauseSelection() {
+        const row = selectedItem()
+        if (!row || (!row.pausable && !row.resumable)) return false
+        hostWindow.action({target: hostWindow.cleanText(queue.id),
+            action: row.resumable ? "queue.resume" : "queue.pause", taskId: Number(row.taskId)}, true)
+        return true
+    }
+
     function clearCompleted() {
         if (queue.canClear !== true)
             return false
@@ -309,6 +322,7 @@ Item {
         if (value === "running" || value === "scanning"
                 || value === "active")
             return "loader-circle"
+        if (value === "paused" || value === "pausing") return "circle-pause"
         if (value === "queued" || value === "starting")
             return "clock-3"
         if (value === "cancelled" || value === "cancelling")

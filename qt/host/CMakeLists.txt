@@ -284,6 +284,7 @@ set(F4_LUCIDE_ICON_NAMES
   book-open.svg
   check.svg
   circle-check.svg
+  circle-pause.svg
   circle-play.svg
   circle-question-mark.svg
   circle-x.svg
