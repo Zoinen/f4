@@ -23,27 +23,21 @@ DialogButton {
             anchors.centerIn: parent
             spacing: 7
 
-            IconLabel {
+            Image {
                 id: queueActionIcon
                 objectName: queueActionButton.objectName
                             ? (queueActionButton.objectName + "Icon")
                             : "queueActionButtonIcon"
                 visible: queueActionButton.iconName !== ""
-                width: visible ? 15 : 0
-                height: 15
+                width: visible ? hostWindow.snapPx(15) : 0
+                height: hostWindow.snapPx(15)
                 anchors.verticalCenter: parent.verticalCenter
-                icon.source: hostWindow.lucideIconSource(
+                source: hostWindow.lucideIconSource(
                                  queueActionButton.iconName, 15,
                                  queueActionButton.enabled
                                  ? (queueActionButton.semanticFocus
                                     ? "#f4f8fc" : hostWindow.textColor)
                                  : hostWindow.mutedText)
-                icon.width: 15
-                icon.height: 15
-                icon.color: queueActionButton.enabled
-                            ? (queueActionButton.semanticFocus
-                               ? "#f4f8fc" : hostWindow.textColor)
-                            : hostWindow.mutedText
                 opacity: queueActionButton.enabled ? 1 : 0.52
                 transform: Translate {
                     x: queueActionButton.hostWindow

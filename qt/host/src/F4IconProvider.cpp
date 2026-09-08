@@ -91,6 +91,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("book-open"),
         QStringLiteral("check"),
         QStringLiteral("circle-check"),
+        QStringLiteral("circle-pause"),
         QStringLiteral("circle-play"),
         QStringLiteral("circle-question-mark"),
         QStringLiteral("circle-x"),

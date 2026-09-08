@@ -308,6 +308,7 @@ void F4GalleryBridge::commitPanelStatePatch(
     state.cursorIndex = context->cursorIndex;
     state.currentPath = context->nextCurrentPath;
     state.sourceKind = context->nextSourceKind;
+    state.dropAllowed = context->panel.value("dropAllowed", state.dropAllowed).toBool();
     state.previewCapable = context->nextPreviewCapable;
     state.active = context->panel.value(
         QStringLiteral("active"), state.active).toBool();

@@ -45,6 +45,7 @@ public:
     Inspection inspect(const QVariantMap &wireMessage);
     void commit(const Envelope &envelope);
     void reset();
+    QVariantMap requestSnapshot(const QString &streamId);
 
     quint64 revision(const QString &streamId) const;
     quint64 nextSequence() const { return m_nextSequence; }

@@ -7,6 +7,115 @@ import ZoinGallery.Native 1.0 as ZGN
 
 FocusScope {
     id: host
+    property bool dropInputEnabled: true
+    property Item dropPanelSurface: null
+    property bool dropTabHover: false
+    property int dropHoverIndex: -2
+    property point dropPointer: Qt.point(0, 0)
+    // Shared scene-space bounds for painting and hit testing, including gutters.
+    readonly property rect wholeDropSceneRect: {
+        const layout = embeddedGalleryPanel.galleryLayout
+        const surface = host.dropPanelSurface || host
+        const top = layout.mapToItem(null, 0, 0)
+        const left = host.dropPanelSurface ? surface.mapToItem(null, 0, 0).x : top.x
+        const right = host.dropPanelSurface
+            ? surface.mapToItem(null, surface.width, 0).x : top.x + layout.width
+        const dpr = host.devicePixelRatio
+        const x = Math.round(left * dpr) / dpr
+        const y = Math.round(top.y * dpr) / dpr
+        return Qt.rect(x, y, Math.round(right * dpr) / dpr - x,
+                       Math.round((top.y + layout.height) * dpr) / dpr - y)
+    }
+    function dragHit(x, y) {
+        const layout = embeddedGalleryPanel.galleryLayout
+        const p = layout.mapFromItem(host, x, y)
+        const scene = host.mapToItem(null, x, y)
+        const bounds = host.wholeDropSceneRect
+        if (scene.x < bounds.x || scene.y < bounds.y
+                || scene.x >= bounds.x + bounds.width || scene.y >= bounds.y + bounds.height)
+            return { valid: false }
+        dropPointer = p
+        const inViewport = p.x >= 0 && p.y >= 0 && p.x < layout.width && p.y < layout.height
+        const index = inViewport ? layout.indexAtViewport(p.x, p.y) : -1
+        return { valid: true, index: index < 0 ? -1
+                 : embeddedGalleryPanel.controller.sourceIndexAt(index) }
+    }
+    function endNativeDragPointer() { embeddedGalleryPanel.endPointerDrag() }
+    function registerDragPanel() {
+        if (bridge && typeof bridge.registerDragPanel === "function")
+            bridge.registerDragPanel(side, host)
+    }
+    onBridgeChanged: registerDragPanel()
+    onSideChanged: registerDragPanel()
+
+    // Only this new outline is painted. Its edges are snapped in scene space;
+    // existing text and icons retain their original transforms.
+    Rectangle {
+        id: dropOutline
+        parent: host.dropPanelSurface || host
+        objectName: "panelDropOutline-" + host.side
+        z: 100
+        visible: host.dropInputEnabled && host.dropHoverIndex !== -2
+        color: "transparent"
+        border.color: host.theme.selection
+        border.width: 2 / host.devicePixelRatio
+        readonly property rect targetRect: {
+            if (host.dropHoverIndex < 0) {
+                const bounds = host.wholeDropSceneRect
+                const a = dropOutline.parent.mapFromItem(null, bounds.x, bounds.y)
+                const b = dropOutline.parent.mapFromItem(null, bounds.x + bounds.width, bounds.y + bounds.height)
+                return Qt.rect(a.x, a.y, b.x - a.x, b.y - a.y)
+            }
+            const layout = embeddedGalleryPanel.galleryLayout
+            const revision = layout.layoutRevision
+            const contentY = layout.contentY
+            let r = Qt.rect(0, 0, layout.width, layout.height)
+            if (host.dropHoverIndex >= 0) {
+                for (const idx of layout.visibleIndexes) {
+                    if (embeddedGalleryPanel.controller.sourceIndexAt(idx) === host.dropHoverIndex) {
+                        const g = layout.indexGeometry(idx)
+                        r = Qt.rect(g.x, g.y - contentY, g.width, g.height)
+                        break
+                    }
+                }
+            }
+            const right = Math.min(layout.width, r.x + r.width)
+            const bottom = Math.min(layout.height, r.y + r.height)
+            r = Qt.rect(Math.max(0, r.x), Math.max(0, r.y),
+                        Math.max(0, right - Math.max(0, r.x)),
+                        Math.max(0, bottom - Math.max(0, r.y)))
+            let p = layout.mapToItem(dropOutline.parent, r.x, r.y)
+            const scene = dropOutline.parent.mapToItem(null, p.x, p.y)
+            const dpr = host.devicePixelRatio
+            const a = dropOutline.parent.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
+                                       Math.round(scene.y * dpr) / dpr)
+            const end = dropOutline.parent.mapFromItem(null,
+                Math.round((scene.x + r.width) * dpr) / dpr,
+                Math.round((scene.y + r.height) * dpr) / dpr)
+            return Qt.rect(a.x, a.y, end.x - a.x, end.y - a.y)
+        }
+        x: targetRect.x
+        y: targetRect.y
+        width: targetRect.width
+        height: targetRect.height
+    }
+    Timer {
+        interval: 60
+        repeat: true
+        running: host.dropInputEnabled && !host.dropTabHover && host.dropHoverIndex !== -2
+        onTriggered: {
+            const layout = embeddedGalleryPanel.galleryLayout
+            const y = host.dropPointer.y
+            const direction = y < 28 ? -1 : y > layout.height - 28 ? 1 : 0
+            if (direction) {
+                layout.contentY = Math.max(0, Math.min(layout.contentHeight - layout.height,
+                                                      layout.contentY + direction * 18))
+                const index = layout.indexAtViewport(host.dropPointer.x, y)
+                host.dropHoverIndex = index >= 0 && host.session.isDirectoryAt(index)
+                    ? embeddedGalleryPanel.controller.sourceIndexAt(index) : -1
+            }
+        }
+    }
 
     property int side: 0
     property var panel: ({})
@@ -229,6 +338,7 @@ FocusScope {
     }
 
     Component.onCompleted: {
+        registerDragPanel()
         panelAdapter.refreshPanelSession(host.panel)
         panelAdapter.synchronizeLayout(host.panel, host.layoutState)
     }

@@ -327,6 +327,20 @@ bool QtShellController::applyScenePatchFrame(const QVariantMap &message,
     QVariantMap reducerMessage = message;
     AppliedScenePatch applied;
     QString error;
+    const auto requestPanelResync = [&] {
+        if (!hasSemanticEnvelope
+            || !(envelope.streamId.startsWith(QStringLiteral("panel/"))
+                 || envelope.streamId.startsWith(QStringLiteral("panel-id/")))
+            || !error.startsWith(QStringLiteral("Scene patch panel identity mismatch")))
+            return false;
+        // Do not apply a delta to another catalog after a workspace change.
+        // The stream's authoritative snapshot can repair this without closing
+        // the application or accepting stale file identities.
+        qWarning().noquote() << error << "-- requesting panel snapshot";
+        const auto request = m_streamRegistry.requestSnapshot(envelope.streamId);
+        if (!request.isEmpty()) sendMessage(request);
+        return true;
+    };
 #if defined(F4_QT_SCENE_TEST_API)
     if (hasSemanticEnvelope) {
         reducerMessage.insert(QStringLiteral("baseRevision"), m_sceneRevision);
@@ -334,6 +348,7 @@ bool QtShellController::applyScenePatchFrame(const QVariantMap &message,
     }
     if (!applyScenePatch(reducerMessage, m_scene, m_presentationScene,
                          m_sceneRevision, &applied, &error)) {
+        if (requestPanelResync()) return false;
         failProtocol(error.isEmpty() ? QStringLiteral("Invalid app scene patch")
                                      : error);
         return false;
@@ -358,6 +373,7 @@ bool QtShellController::applyScenePatchFrame(const QVariantMap &message,
     if (!applyScenePatch(reducerMessage, reducerScene,
                          makePatchPresentationScene(reducerScene, reducerMessage),
                          envelope.baseRevision, &applied, &error)) {
+        if (requestPanelResync()) return false;
         failProtocol(error.isEmpty() ? QStringLiteral("Invalid app scene patch")
                                      : error);
         return false;

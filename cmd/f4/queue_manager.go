@@ -198,7 +198,7 @@ type QueueTask struct {
 	ID              int
 	Type            string
 	Desc            string
-	State           string // Queued, Starting, Scanning, Running, Cancelling, Done, Error, Cancelled
+	State           string // Queued, Starting, Scanning, Running, Pausing, Paused, Cancelling, Done, Error, Cancelled
 	Action          string
 	CurrentProgress int
 	Progress        int
@@ -223,6 +223,9 @@ type QueueTask struct {
 	// is already scheduled from a running task in the ordinary Cancelling state.
 	queuedFinalizing bool
 
+	pauseWait   chan struct{}
+	resumeState string
+
 	completionOnce sync.Once
 	finalizeOnce   sync.Once
 }
@@ -239,6 +242,9 @@ func (t *QueueTask) finalize() {
 }
 
 func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
+	if t.IsCancelled() {
+		return
+	}
 	t.mu.Lock()
 	if queueTaskTerminal(t.State) || t.State == "Cancelling" {
 		vtui.DebugLog("QUEUE_DEBUG: UpdateScan ignored for Task %d (State: %s)", t.ID, t.State)
@@ -246,7 +252,7 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 		return
 	}
 	vtui.DebugLog("QUEUE_DEBUG: Task %d Scanning -> %s", t.ID, currentPath)
-	t.State = "Scanning"
+	t.setProgressStateLocked("Scanning")
 	t.Action = "Scanning"
 	t.CurrentProgress = -1
 	t.CurrentFile = currentPath
@@ -256,12 +262,15 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 	GlobalQueueManager.RequestRefresh()
 }
 func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct int, totalText string, totalPct int, speedText string) {
+	if t.IsCancelled() {
+		return
+	}
 	t.mu.Lock()
 	if queueTaskTerminal(t.State) || t.State == "Cancelling" {
 		t.mu.Unlock()
 		return
 	}
-	t.State = "Running"
+	t.setProgressStateLocked("Running")
 	t.Action = action
 	t.CurrentFile = filename
 	t.CurrentProgress = currentPct
@@ -285,11 +294,81 @@ func splitQueueTimeSpeedText(value string) (elapsed, eta, speed string) {
 	return strings.TrimSpace(value[:16]), strings.TrimSpace(value[16:37]), strings.TrimSpace(value[37:])
 }
 
+// Progress callbacks and cancellation checkpoints run on operation workers, never
+// on the UI thread. Waiting retains resource reservations until resume/cancel.
 func (t *QueueTask) IsCancelled() bool {
-	if t.ctx != nil {
-		return t.ctx.Err() != nil
+	for {
+		t.mu.Lock()
+		ctx, wait := t.ctx, t.pauseWait
+		if t.State == "Cancelling" || (ctx != nil && ctx.Err() != nil) {
+			t.mu.Unlock()
+			return true
+		}
+		if wait == nil {
+			t.mu.Unlock()
+			return false
+		}
+		changed := t.State == "Pausing"
+		if changed {
+			t.State = "Paused"
+		}
+		t.mu.Unlock()
+		if changed && GlobalQueueManager != nil {
+			GlobalQueueManager.RequestRefresh()
+		}
+		var done <-chan struct{}
+		if ctx != nil {
+			done = ctx.Done()
+		}
+		select {
+		case <-wait:
+		case <-done:
+			return true
+		}
 	}
-	return false
+}
+
+func (t *QueueTask) setProgressStateLocked(state string) {
+	if t.pauseWait != nil {
+		t.resumeState = state
+	} else {
+		t.State = state
+	}
+}
+
+// SetPaused is idempotent; stale repeated UI requests cannot toggle a task back.
+func (qm *OpQueueManager) SetPaused(id int, paused bool) bool {
+	qm.mu.Lock()
+	found := false
+	for _, t := range qm.tasks {
+		if t.ID != id {
+			continue
+		}
+		t.mu.Lock()
+		if paused && queueTaskCancellable(t.State) && t.pauseWait == nil {
+			t.resumeState = t.State
+			t.pauseWait = make(chan struct{})
+			if t.State == "Queued" {
+				t.State = "Paused"
+			} else {
+				t.State = "Pausing"
+			}
+			found = true
+		} else if !paused && t.pauseWait != nil {
+			t.State = t.resumeState
+			close(t.pauseWait)
+			t.pauseWait = nil
+			found = true
+		}
+		t.mu.Unlock()
+		break
+	}
+	qm.mu.Unlock()
+	if found {
+		qm.RequestRefresh()
+		qm.wakeWorker()
+	}
+	return found
 }
 
 func queueTaskTerminal(state string) bool {
@@ -297,11 +376,11 @@ func queueTaskTerminal(state string) bool {
 }
 
 func queueTaskActive(state string) bool {
-	return state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running" || state == "Cancelling"
+	return state == "Paused" || state == "Pausing" || state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running" || state == "Cancelling"
 }
 
 func queueTaskCancellable(state string) bool {
-	return state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running"
+	return state == "Paused" || state == "Pausing" || state == "Queued" || state == "Starting" || state == "Scanning" || state == "Running"
 }
 
 type OpQueueManager struct {
@@ -465,6 +544,11 @@ func (qm *OpQueueManager) Cancel(id int) bool {
 			continue
 		}
 		t.mu.Lock()
+		if t.pauseWait != nil {
+			t.State = t.resumeState
+			close(t.pauseWait)
+			t.pauseWait = nil
+		}
 		switch t.State {
 		case "Queued":
 			// Stay active while asynchronous Finalize releases resources captured
@@ -666,6 +750,9 @@ func (qm *OpQueueManager) workerLoopOn(wake <-chan struct{}, stop <-chan struct{
 func (qm *OpQueueManager) executeTask(t *QueueTask) {
 	vtui.DebugLog("QUEUE_DEBUG: Executing Task %d (%s)", t.ID, t.Type)
 	var taskErr error
+	if t.IsCancelled() {
+		taskErr = context.Canceled
+	}
 	if t.Run == nil {
 		taskErr = fmt.Errorf("internal error: task run function is nil")
 	}
@@ -709,6 +796,11 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 		taskErr = t.Run(runCtx, t, anchor)
 	}
 
+	// A final progress checkpoint also honors a late pause request.
+	if taskErr == nil && t.IsCancelled() {
+		taskErr = context.Canceled
+	}
+
 	// Finalize before publishing a terminal state. Shutdown waits by counting
 	// active states, so this ordering guarantees captured VFS sessions and
 	// other task-owned resources are gone when the count reaches zero.
@@ -727,6 +819,10 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 		t.State = "Done"
 		t.Progress = 100
 		t.ErrorMsg = nil
+	}
+	if t.pauseWait != nil {
+		close(t.pauseWait)
+		t.pauseWait = nil
 	}
 	finalState := t.State
 	finalError := t.ErrorMsg
@@ -849,6 +945,15 @@ func NewQueueFrame() *QueueFrame {
 	return qf
 }
 
+func (qf *QueueFrame) dialogAnchor() vtui.Frame {
+	if vtui.FrameManager != nil {
+		if active := vtui.FrameManager.GetTopFrame(); active != nil {
+			return active
+		}
+	}
+	return qf
+}
+
 func (qf *QueueFrame) requestCancelTask(idx int) bool {
 	if idx < 0 || idx >= len(qf.tasks) {
 		return false
@@ -861,7 +966,7 @@ func (qf *QueueFrame) requestCancelTask(idx int) bool {
 	if !cancellable {
 		return false
 	}
-	vtui.ShowMessageOn(qf, " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", id)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
+	vtui.ShowMessageOn(qf.dialogAnchor(), " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", id)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
 		if c == 0 && GlobalQueueManager != nil {
 			GlobalQueueManager.Cancel(id)
 		}
@@ -902,9 +1007,9 @@ func (qf *QueueFrame) openTaskDetails(idx int) {
 	t.mu.Unlock()
 
 	if openDetails != nil {
-		openDetails(qf)
+		openDetails(qf.dialogAnchor())
 	} else if isErr && errMsg != nil {
-		dlg := vtui.ShowMessageOn(qf, " Error Details ", errMsg.Error(), []string{"&Ok"})
+		dlg := vtui.ShowMessageOn(qf.dialogAnchor(), " Error Details ", errMsg.Error(), []string{"&Ok"})
 		dlg.IsWarning = true
 	}
 }

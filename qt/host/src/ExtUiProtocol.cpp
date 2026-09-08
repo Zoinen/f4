@@ -107,6 +107,11 @@ Inspection StreamRegistry::inspect(const QVariantMap &wireMessage)
         return result;
     }
 
+    if (m_resyncPending.contains(envelope.streamId)) {
+        result.disposition = Disposition::RequestSnapshot;
+        return result;
+    }
+
     if (!envelope.hasBaseRevision
         || !nonNegativeInteger(
             wireMessage.value(QStringLiteral("baseRevision")),
@@ -137,6 +142,15 @@ Inspection StreamRegistry::inspect(const QVariantMap &wireMessage)
 
     result.disposition = Disposition::Apply;
     return result;
+}
+
+QVariantMap StreamRegistry::requestSnapshot(const QString &streamId)
+{
+    if (streamId.isEmpty() || m_resyncPending.contains(streamId)) return {};
+    m_resyncPending.insert(streamId);
+    return {{QStringLiteral("type"), QStringLiteral("stream_snapshot_request")},
+            {QStringLiteral("streamId"), streamId},
+            {QStringLiteral("revision"), QVariant::fromValue<qulonglong>(revision(streamId))}};
 }
 
 void StreamRegistry::commit(const Envelope &envelope)

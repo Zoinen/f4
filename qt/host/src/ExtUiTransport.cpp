@@ -55,6 +55,12 @@ void packVariant(msgpack::packer<msgpack::sbuffer> &packer,
     case QMetaType::QString:
         packString(packer, value.toString());
         return;
+    case QMetaType::QStringList: {
+        const QStringList list = value.toStringList();
+        packer.pack_array(static_cast<uint32_t>(list.size()));
+        for (const QString &item : list) packString(packer, item);
+        return;
+    }
     case QMetaType::QVariantList: {
         const QVariantList list = value.toList();
         packer.pack_array(static_cast<uint32_t>(list.size()));

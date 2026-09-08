@@ -172,7 +172,7 @@ Item {
     }
 
     function activeOperationsQueueView() {
-        if (!sceneStore.hasOperationsQueueSurface()
+        if (!hostWindow.queueDropdownOpen
                 || sceneStore.hasBlockingOverlay())
             return null
         return operationsQueueLayer ? operationsQueueLayer.item : null
@@ -285,6 +285,10 @@ Item {
     }
 
     function restoreSurfaceFocus() {
+        // Deferred panel/shell updates must not take focus from a native queue
+        // popup. Go-owned dialogs still need their normal focus hand-off.
+        if (hostWindow.queueDropdownOpen && !sceneStore.hasBlockingOverlay())
+            return
         if (sceneStore.hasBlockingOverlay() || sceneStore.needsFallbackGrid()
                 || sceneStore.hasDocumentSurface()
                 || sceneStore.hasOperationsQueueSurface()) {

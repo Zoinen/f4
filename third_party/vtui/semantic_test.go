@@ -261,3 +261,29 @@ func TestSemanticClickActionsTransferKeyboardFocus(t *testing.T) {
 		}
 	}
 }
+
+func TestSemantic_ListBoxExportsRowsAndRoutesSelection(t *testing.T) {
+	dlg := NewDialog(0, 0, 59, 14, "Deletion Errors")
+	lb := NewListBox(2, 2, 56, 3, []string{"Skipped 'photo-1.png':", "unlinkat", "The file is used by another process.", "last error"})
+	dlg.AddItem(lb)
+	node := dlg.SemanticNode(&SemanticContext{Width: 80, Height: 25})
+	list := node["children"].([]map[string]any)[0]
+	if list["kind"] != "listBox" || list["id"] != SemanticID(lb) || list["visible"] != true {
+		t.Fatalf("unexpected list export: %#v", list)
+	}
+	items := list["items"].([]string)
+	if len(items) != len(lb.Items) || items[2] != lb.Items[2] {
+		t.Fatalf("lost error rows: %#v", items)
+	}
+	selected := -1
+	lb.OnSelect = func(index int) { selected = index }
+	if !dlg.HandleSemanticAction(map[string]any{"target": SemanticID(lb), "action": "control.select", "index": 3}) {
+		t.Fatal("list selection was not routed")
+	}
+	if selected != 3 || lb.SelectPos != 3 || lb.TopPos != 1 || !lb.IsFocused() {
+		t.Fatalf("selection did not update callback/focus/viewport: %d, %#v", selected, lb)
+	}
+	if lb.HandleSemanticAction(map[string]any{"action": "control.select", "index": 4}) {
+		t.Fatal("out-of-range selection accepted")
+	}
+}

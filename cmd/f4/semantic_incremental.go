@@ -246,6 +246,9 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 	appAppendAutocompleteMenus(&scene, autocompletes)
 	semanticIncrementalStageDone("projection.menu_models", started)
 	started = semanticIncrementalStageStart()
+	if scene.OperationsQueue == nil {
+		scene.OperationsQueue = backgroundOperationsQueue()
+	}
 	result.Scene = compactAppSemanticScene(scene.ToMap())
 	semanticIncrementalStageDone("projection.compact", started)
 	semanticIncrementalStageDone("projection.total", totalStarted)
@@ -393,7 +396,8 @@ func semanticPanelStateForPatch(panel map[string]any) map[string]any {
 		// Selection revisions are advanced by selection_delta/replace. Keeping
 		// them out of state_update makes the two operations independently
 		// ordered and lets the frontend reject a stale delta atomically.
-		if key == "selectionRevision" {
+		// Retained catalog ranges likewise belong only to panel_catalog.
+		if key == "selectionRevision" || key == "catalogDelta" {
 			continue
 		}
 		state[key] = value

@@ -77,6 +77,9 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	if scene.OperationsQueue == nil {
+		scene.OperationsQueue = backgroundOperationsQueue()
+	}
 	commitMediaPanelsForSemanticScene(legacy)
 	return scene.ToMap()
 }
@@ -811,6 +814,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		GalleryDensities:       galleryDensities,
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		SourceKind:             sourceKind,
+		DropAllowed:            appBool(node["dropAllowed"]),
 		PreviewCapable:         appBool(node["previewCapable"]),
 		CatalogRevision:        appInt64(node["catalogRevision"]),
 		SelectionRevision:      appInt64(node["selectionRevision"]),

@@ -40,6 +40,23 @@ type globalAwareReporter struct {
 	fileSize         int64
 }
 
+// deletionErrorList preserves console rows while exporting complete messages
+// for frontends that lay out text using their own font and available width.
+type deletionErrorList struct {
+	*vtui.ListBox
+	messages []string
+}
+
+func (list *deletionErrorList) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
+	node := list.ListBox.SemanticNode(ctx)
+	node["id"] = vtui.SemanticID(list)
+	node["items"] = append([]string{}, list.messages...)
+	node["wrapText"] = true
+	node["readOnly"] = true
+	node["cursor"] = -1
+	return node
+}
+
 func (w *globalAwareReporter) StartFile(name string, size int64) {
 	w.StartFileKnown(name, size, true, 1, 0)
 }
@@ -481,6 +498,11 @@ func executeFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 		actionDesc, srcVfs, srcBasePath, names, dstVfs, destPath, isTargetDir, mask, mode)
 
 	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
+		// An interactive transfer belongs to its originating panels. Queue
+		// bookkeeping must not move overwrite/error dialogs to the queue tab.
+		if pf != nil {
+			anchor = pf
+		}
 		startTime := time.Now()
 		dirToEnsure := destPath
 		if !isTargetDir {
@@ -666,7 +688,7 @@ func executeFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 		// API remains restricted to foreground work because it is relative to
 		// mutable VFS state.
 		// Bulk copy keeps the source names, so it cannot serve a mask.
-		if bulkCopyEligible {
+		if bulkCopyEligible && bulkCopyTargetsAbsent(ctx, dstVfs, destPath, names) {
 			var bulkErr error
 			bulkAttempted := false
 			if bulkCopier, ok := srcVfs.(vfs.BulkCopierAt); ok {
@@ -1029,7 +1051,7 @@ func ExecuteDeleteOpWithDispositionAt(pf *PanelsFrame, activeVfs vfs.VFS, basePa
 					listItems = listItems[:len(listItems)-1]
 				}
 
-				lb := vtui.NewListBox(0, 0, dlgW-4, dlgH-6, listItems)
+				lb := &deletionErrorList{ListBox: vtui.NewListBox(0, 0, dlgW-4, dlgH-6, listItems), messages: append([]string{}, allErrors...)}
 				btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 				btnOk.IsDefault = true
 				btnOk.OnClick = func() { dlg.Close() }
@@ -1198,6 +1220,29 @@ func resolveSymlinksForCompare(p string) string {
 	}
 }
 
+// References and their underlying files share an identity even though their
+// visible panel paths differ. Keep I/O on the original VFS so move cleanup
+// still removes the reference only after the underlying operation succeeds.
+func transferIdentity(filesystem vfs.VFS, itemPath string) (vfs.VFS, string) {
+	if temp, ok := filesystem.(*TempPanelVFS); ok {
+		if ref, realPath, _, valid := temp.resolve(itemPath); valid && ref.source != nil {
+			return ref.source, realPath
+		}
+	}
+	return filesystem, itemPath
+}
+
+// BulkCopier has no overwrite-choice callback. Existing top-level directories
+// also require the normal recursive path so nested conflicts remain interactive.
+func bulkCopyTargetsAbsent(ctx context.Context, destination vfs.VFS, directory string, names []string) bool {
+	for _, name := range names {
+		if _, err := destination.Stat(ctx, destination.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
+}
+
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
@@ -1211,14 +1256,16 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		return err
 	}
 
-	absSrc, _ := srcVfs.Abs(srcPath)
-	absDst, _ := dstVfs.Abs(destPath)
+	identitySource, identitySourcePath := transferIdentity(srcVfs, srcPath)
+	identityTarget, identityTargetPath := transferIdentity(dstVfs, destPath)
+	absSrc, _ := identitySource.Abs(identitySourcePath)
+	absDst, _ := identityTarget.Abs(identityTargetPath)
 
 	realSrc := absSrc
 	realDst := absDst
 
-	_, srcIsOS := srcVfs.(*vfs.OSVFS)
-	_, dstIsOS := dstVfs.(*vfs.OSVFS)
+	_, srcIsOS := identitySource.(*vfs.OSVFS)
+	_, dstIsOS := identityTarget.(*vfs.OSVFS)
 	if srcIsOS {
 		realSrc = resolveSymlinksForCompare(absSrc)
 	}
@@ -1242,7 +1289,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		cleanSrc = strings.ToLower(cleanSrc)
 		cleanDst = strings.ToLower(cleanDst)
 	}
-	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(srcVfs, dstVfs)
+	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(identitySource, identityTarget)
 
 	if sameNamespace && cleanSrc == cleanDst {
 		if stat.IsDir {

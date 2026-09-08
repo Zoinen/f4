@@ -81,6 +81,33 @@ func TestQueueSemanticModelExportsNativeQueueState(t *testing.T) {
 	}
 }
 
+func TestQueueDropdownPublishesAndControlsBackgroundQueue(t *testing.T) {
+	withSemanticQueueTestState(t)
+	panels := setupMockPanelsFrame(t)
+	defer panels.Close()
+	vtui.FrameManager.Push(panels)
+	GlobalQueueManager = &OpQueueManager{activeKeys: make(map[string]bool)}
+	active := vtui.FrameManager.GetTopFrame()
+	if !handleQueueDropdownAction(map[string]any{"action": "queue.ensure"}) {
+		t.Fatal("queue not created")
+	}
+	GlobalQueueManager.tasks = []*QueueTask{{ID: 1, State: "Done", Type: "Copy"}}
+	GlobalQueueManager.RefreshUI()
+	model := backgroundOperationsQueue()
+	if model == nil || len(model.Items) != 1 {
+		t.Fatalf("missing background queue: %+v", model)
+	}
+	if !HandleSemanticAction(map[string]any{"action": "queue.clearCompleted", "target": model.ID}) {
+		t.Fatal("background clear not routed")
+	}
+	if len(GlobalQueueManager.tasks) != 0 {
+		t.Fatal("completed task not cleared")
+	}
+	if vtui.FrameManager.GetTopFrame() != active {
+		t.Fatal("dropdown switched workspace")
+	}
+}
+
 func TestQueueSemanticCancelConfirmsAndClearKeepsActiveTasks(t *testing.T) {
 	withSemanticQueueTestState(t)
 	qf := NewQueueFrame()
@@ -191,5 +218,29 @@ func TestSplitQueueTimeSpeedTextRetainsETA(t *testing.T) {
 	elapsed, eta, speed = splitQueueTimeSpeedText("3 files/s")
 	if elapsed != "" || eta != "" || speed != "3 files/s" {
 		t.Fatalf("plain speed = (%q, %q, %q)", elapsed, eta, speed)
+	}
+}
+
+func TestQueueSemanticPauseTargetsOneOperation(t *testing.T) {
+	withSemanticQueueTestState(t)
+	qf := NewQueueFrame()
+	tasks := []*QueueTask{{ID: 1, State: "Queued"}, {ID: 2, State: "Queued"}}
+	GlobalQueueManager = &OpQueueManager{tasks: tasks, frame: qf}
+	qf.UpdateTasks(tasks)
+	action := map[string]any{"target": vtui.SemanticID(qf), "action": "queue.pause", "taskId": 2}
+	if !qf.HandleSemanticAction(action) {
+		t.Fatal("pause rejected")
+	}
+	model := qf.semanticModel()
+	if tasks[0].State != "Queued" || model.Items[1].State != "Paused" || !model.Items[1].Resumable || model.Items[1].Pausable || !model.Items[1].Cancellable || model.CanClose {
+		t.Fatalf("wrong paused model: %+v", model)
+	}
+	action["action"] = "queue.resume"
+	if !qf.HandleSemanticAction(action) || tasks[1].State != "Queued" {
+		t.Fatal("resume rejected")
+	}
+	action["taskId"] = 99
+	if qf.HandleSemanticAction(action) {
+		t.Fatal("stale task accepted")
 	}
 }

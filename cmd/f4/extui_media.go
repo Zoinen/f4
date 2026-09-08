@@ -646,7 +646,13 @@ func (r *extUiMediaResource) performOpen(ctx context.Context, flight *mediaOpenF
 	if err == nil {
 		openStartedNs := navigationBenchmarkMonotonicNs()
 		mediaTimingResourceEmitAt(ctx, "broker.vfs_open.begin", "go.media", openStartedNs, r)
-		handle, err = r.fs.Open(ctx, r.path)
+		if preview, ok := r.fs.(interface {
+			OpenPreview(context.Context, string) (vfs.ReadAtCloser, error)
+		}); ok {
+			handle, err = preview.OpenPreview(ctx, r.path)
+		} else {
+			handle, err = r.fs.Open(ctx, r.path)
+		}
 		openFinishedNs := navigationBenchmarkMonotonicNs()
 		mediaTimingResourceEmitAt(ctx, "broker.vfs_open.end", "go.media", openFinishedNs, r,
 			"durationNs", openFinishedNs-openStartedNs, "ok", err == nil,

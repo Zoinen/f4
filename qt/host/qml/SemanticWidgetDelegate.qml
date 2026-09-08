@@ -214,9 +214,12 @@ Item {
                     required property var modelData
                     required property int index
                     width: ListView.view.width
-                    height: Math.max(21, hostWindow.ch)
+                    height: widget.wrapText === true
+                            ? hostWindow.snapPx(Math.max(21, listRowText.contentHeight) + 12)
+                            : Math.max(21, hostWindow.ch)
                     radius: 4
-                    color: index === widget.cursor
+                    color: widget.readOnly === true ? "transparent"
+                           : index === widget.cursor
                            ? hostWindow.selectedBg
                            : listMouse.containsMouse
                              ? hostWindow.controlHoverBg : "transparent"
@@ -229,12 +232,14 @@ Item {
                         anchors.fill: parent
                         anchors.leftMargin: 8
                         anchors.rightMargin: 8
-                        text: hostWindow.mnemonicText(modelData, "")
-                        textFormat: Text.StyledText
+                        text: widget.wrapText === true ? String(modelData)
+                              : hostWindow.mnemonicText(modelData, "")
+                        textFormat: widget.wrapText === true ? Text.PlainText : Text.StyledText
+                        wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
                         color: hostWindow.textColor
                         font: hostWindow.font
                         verticalAlignment: Text.AlignVCenter
-                        elide: Text.ElideRight
+                        elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
                                    listRowText, hostWindow.contentItem)
@@ -244,6 +249,7 @@ Item {
                     }
                     MouseArea {
                         id: listMouse
+                        enabled: widget.readOnly !== true
                         anchors.fill: parent
                         hoverEnabled: true
                         onClicked: hostWindow.action({

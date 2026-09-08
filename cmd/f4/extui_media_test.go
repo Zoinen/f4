@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -681,7 +682,7 @@ func TestExtUiMediaBrokerMaterializationUsesRangePrefixAndSingleFlight(t *testin
 }
 
 func TestExtUiMediaBrokerReusesProviderLocalBacking(t *testing.T) {
-	backing := path.Join(t.TempDir(), "cached.jpg")
+	backing := filepath.Join(t.TempDir(), "cached.jpg")
 	if err := os.WriteFile(backing, []byte("provider-cache"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1189,7 +1190,7 @@ func TestExtUiMediaBrokerLargeCatalogAvoidsBelowThresholdSweeps(t *testing.T) {
 }
 
 func TestExtUiMediaBrokerLargeCatalogChurnSweepsOnlyOpenCandidates(t *testing.T) {
-	backing := path.Join(t.TempDir(), "provider-cache.jpg")
+	backing := filepath.Join(t.TempDir(), "provider-cache.jpg")
 	if err := os.WriteFile(backing, []byte("provider-cache"), 0o600); err != nil {
 		t.Fatal(err)
 	}

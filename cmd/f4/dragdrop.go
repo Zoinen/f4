@@ -216,8 +216,12 @@ func (pf *PanelsFrame) resolveDropTarget(mx, my int) (dropTargetInfo, bool) {
 
 		if idx := fsp.mouseEntryIndex(mx, my); idx >= 0 && idx < len(fsp.entries) {
 			e := fsp.entries[idx]
-			if e.IsDir && e.Name != ".." {
-				info.dir = fsp.vfs.Join(fsp.vfs.GetPath(), e.Name)
+			if e.IsDir {
+				if e.Name == ".." {
+					info.dir = fsp.vfs.Dir(fsp.vfs.GetPath())
+				} else {
+					info.dir = fsp.vfs.Join(fsp.vfs.GetPath(), e.Name)
+				}
 				info.entryIdx = idx
 			}
 		}
@@ -292,7 +296,7 @@ func (pf *PanelsFrame) dropExternalFiles(info dropTargetInfo, paths []string, is
 	run = func(i int) {
 		if i >= len(groups) {
 			vtui.FrameManager.PostTask(func() {
-				pf.RefreshAll()
+				refreshOperationLocations(pf, dst, dstDir)
 				vtui.FrameManager.Redraw()
 			})
 			return
@@ -300,7 +304,12 @@ func (pf *PanelsFrame) dropExternalFiles(info dropTargetInfo, paths []string, is
 		g := groups[i]
 		vtui.DebugLog("DND: dropExternalFiles group %d: srcDir=%q names=%v -> dstDir=%q", i, g.dir, g.names, dstDir)
 		src := vfs.NewOSVFS(g.dir)
-		go ExecuteFileOp(pf, src, dst, g.names, dstDir, isMove, AppConfig.DefaultFileOpMode, func() {
+		go ExecuteFileOpWithResult(pf, src, dst, g.names, dstDir, isMove, AppConfig.DefaultFileOpMode, func(err error) {
+			if err != nil {
+				vtui.DebugLog("DND: stopping remaining source groups: %v", err)
+				vtui.FrameManager.PostTask(func() { refreshOperationLocations(pf, dst, dstDir); vtui.FrameManager.Redraw() })
+				return
+			}
 			run(i + 1)
 		})
 	}
@@ -523,13 +532,31 @@ func (pf *PanelsFrame) startDragOut(fsp *FileSystemPanel, names []string) bool {
 // a temporary directory, which is a copy nobody asked for and needs its own
 // progress and cleanup - see DRAGDROP.md.
 func localDragPaths(fsp *FileSystemPanel, names []string) ([]string, bool) {
+	if temp, ok := fsp.vfs.(*TempPanelVFS); ok {
+		paths := make([]string, 0, len(names))
+		for _, name := range names {
+			ref, realPath, _, valid := temp.resolve(temp.Join(temp.GetPath(), name))
+			if !valid {
+				return nil, false
+			}
+			resolved, local := localDragPaths(&FileSystemPanel{vfs: ref.source}, []string{realPath})
+			if !local || len(resolved) != 1 {
+				return nil, false
+			}
+			paths = append(paths, resolved[0])
+		}
+		return paths, true
+	}
 	local, ok := fsp.vfs.(*vfs.OSVFS)
 	if !ok {
 		return nil, false
 	}
 	paths := make([]string, 0, len(names))
 	for _, n := range names {
-		p := local.Join(local.GetPath(), n)
+		p := n
+		if !local.IsAbs(p) {
+			p = local.Join(local.GetPath(), n)
+		}
 		if hostmode.Posix() && runtime.GOOS == "windows" {
 			// CF_HDROP carries DOS paths, so a posix path has to be
 			// translated before anything else can open it. Wine does the

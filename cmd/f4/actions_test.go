@@ -253,6 +253,20 @@ Loop:
 	// Validate layout of the Deletion Errors dialog
 	vtui.AssertLayout(t, fm.GetTopFrame().(vtui.Container))
 
+	// The native dialog must receive the actual errors, not an empty widget.
+	node := fm.GetTopFrame().(vtui.SemanticProvider).SemanticNode(&vtui.SemanticContext{Width: 80, Height: 25})
+	children := node["children"].([]map[string]any)
+	if children[0]["kind"] != "listBox" {
+		t.Fatalf("deletion errors exported as %v instead of listBox", children[0]["kind"])
+	}
+	if children[0]["wrapText"] != true || children[0]["readOnly"] != true {
+		t.Fatalf("error summary must wrap original messages in the frontend: %#v", children[0])
+	}
+	lines, ok := children[0]["items"].([]string)
+	if !ok || len(lines) != 1 || !strings.Contains(lines[0], "fail.txt") {
+		t.Fatalf("deletion summary lost its error text: %#v", children[0])
+	}
+
 	// 4. Проверяем результаты
 	// Должно быть 2 успешных удаления (f1.txt и f2.txt)
 	if len(mv.deletedFiles) != 2 {
@@ -522,7 +536,7 @@ Loop:
 	top := fm.GetTopFrame().(vtui.Container)
 	foundErrors := 0
 	for _, itm := range top.GetChildren() {
-		if lb, ok := itm.(*vtui.ListBox); ok {
+		if lb, ok := itm.(*deletionErrorList); ok {
 			for _, line := range lb.Items {
 				if strings.Contains(line, "Skipped") {
 					foundErrors++
@@ -3307,5 +3321,18 @@ func TestActionSwitchEditorViewer_HeightPreserved(t *testing.T) {
 		if evCurrent.Y1 != initialY1 || evCurrent.Y2 != initialY2 {
 			t.Fatalf("Iteration %d: Editor height changed! Y1: %d (want %d), Y2: %d (want %d)", i, evCurrent.Y1, initialY1, evCurrent.Y2, initialY2)
 		}
+	}
+}
+
+func TestDeletionErrorListPreservesUnwrappedSemanticMessages(t *testing.T) {
+	message := "Skipped 'photo & notes.png': " + strings.Repeat("long path segment ", 12)
+	list := &deletionErrorList{ListBox: vtui.NewListBox(0, 0, 56, 9, vtui.WrapText(message, 54)), messages: []string{message}}
+	if len(list.Items) < 2 {
+		t.Fatal("fixture did not wrap console rows")
+	}
+	node := list.SemanticNode(&vtui.SemanticContext{})
+	items := node["items"].([]string)
+	if len(items) != 1 || items[0] != message {
+		t.Fatalf("console wrapping leaked into semantic data: %#v", items)
 	}
 }

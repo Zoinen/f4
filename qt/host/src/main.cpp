@@ -361,6 +361,8 @@ int main(int argc, char *argv[])
     QObject::connect(&controller, &QtShellController::compactMessageApplied,
                      &galleryBridge,
                      &F4GalleryBridge::handleCompactProtocolMessage);
+    QObject::connect(&controller, &QtShellController::messageReceived,
+                     &galleryBridge, &F4GalleryBridge::handleDragPrepared);
     QObject::connect(&controller, &QtShellController::panelCatalogChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelCatalog);

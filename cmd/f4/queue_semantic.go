@@ -27,13 +27,56 @@ func queueSemanticStateClass(state string) string {
 		return "error"
 	case "cancelled":
 		return "cancelled"
+	case "pausing":
+		return "pausing"
 	case "paused":
-		// No built-in queue action creates this state, but retaining its
-		// semantic meaning lets a task supplied by a plugin render honestly.
 		return "paused"
 	default:
 		return "unknown"
 	}
+}
+
+// Native dropdowns observe and control the queue without activating its
+// console workspace or replacing the current file/document surface.
+func backgroundOperationsQueue() *extui.OperationsQueueModel {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok {
+				model := queue.semanticModel()
+				model.TabID = workspaceSemanticTarget(screen.Number)
+				return &model
+			}
+		}
+	}
+	return nil
+}
+
+func handleQueueDropdownAction(action map[string]any) bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	if semanticString(action["action"]) == "queue.ensure" {
+		if GlobalQueueManager != nil {
+			GlobalQueueManager.EnsureQueueWorkspace()
+			GlobalQueueManager.RefreshUI()
+		}
+		vtui.FrameManager.Redraw()
+		return true
+	}
+	if !strings.HasPrefix(semanticString(action["action"]), "queue.") {
+		return false
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok && semanticString(action["target"]) == vtui.SemanticID(queue) {
+				return queue.HandleSemanticAction(action)
+			}
+		}
+	}
+	return false
 }
 
 func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
@@ -89,6 +132,8 @@ func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
 			ETA:             task.ETA,
 			Speed:           task.Speed,
 			Cancellable:     queueTaskCancellable(task.State),
+			Pausable:        queueTaskCancellable(task.State) && task.pauseWait == nil,
+			Resumable:       task.pauseWait != nil,
 			Terminal:        queueTaskTerminal(task.State),
 			Active:          queueTaskActive(task.State),
 			CancelPrompt:    fmt.Sprintf("Cancel task ID %d?", task.ID),
@@ -97,10 +142,14 @@ func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
 			item.Error = task.ErrorMsg.Error()
 		}
 		item.HasDetails = task.OpenDetails != nil || (task.State == "Error" && task.ErrorMsg != nil)
-		if task.State == "Running" || task.State == "Scanning" || task.State == "Cancelling" {
+		if task.State == "Running" || task.State == "Scanning" || task.State == "Cancelling" || task.State == "Paused" || task.State == "Pausing" {
 			item.DisplayText = task.CurrentFile
 		} else {
 			item.DisplayText = task.Desc
+		}
+		if task.pauseWait != nil {
+			item.Speed = ""
+			item.ETA = ""
 		}
 		task.mu.Unlock()
 
@@ -289,6 +338,12 @@ func (qf *QueueFrame) HandleSemanticAction(action map[string]any) bool {
 		}
 		qf.openTaskDetails(index)
 		return true
+	case "queue.pause", "queue.resume":
+		index, ok := qf.semanticTaskIndex(action)
+		if !ok || GlobalQueueManager == nil {
+			return false
+		}
+		return GlobalQueueManager.SetPaused(qf.tasks[index].ID, semanticString(action["action"]) == "queue.pause")
 	case "queue.cancel":
 		index, ok := qf.semanticTaskIndex(action)
 		if !ok || !qf.selectSemanticTask(index) {

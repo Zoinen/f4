@@ -284,6 +284,10 @@ func TestAppScenePatchFileInfoSettingUsesCatalogFreePanelState(t *testing.T) {
 	currentPanel := semanticShallowMapCopy(
 		semanticPanelsBySide(previous)[0])
 	currentPanel["showFileInfo"] = true
+	currentPanel["catalogDelta"] = map[string]any{
+		"baseCatalogRevision": 1, "oldTotalCount": 1,
+		"ranges": []map[string]any{{"oldIndex": 0, "index": 0, "count": 1}},
+	}
 	currentScene := semanticShallowMapCopy(previous)
 	currentShell := semanticShallowMapCopy(previous["shell"].(map[string]any))
 	currentShell["panels"] = []map[string]any{currentPanel}
@@ -319,7 +323,7 @@ func TestAppScenePatchFileInfoSettingUsesCatalogFreePanelState(t *testing.T) {
 		}
 	}
 	wire := patch.ToMap()
-	if semanticValueContainsKey(wire, "entries") ||
+	if semanticValueContainsKey(wire, "entries") || semanticValueContainsKey(wire, "catalogDelta") ||
 		semanticValueContainsKey(wire, "highlightStyles") {
 		t.Fatalf("file-information state leaked catalog data: %#v", wire)
 	}

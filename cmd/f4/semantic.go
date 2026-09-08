@@ -311,7 +311,13 @@ func HandleSemanticAction(action map[string]any) bool {
 		return true
 	}
 	actionName := semanticString(action["action"])
+	if strings.HasPrefix(actionName, "queue.") && handleQueueDropdownAction(action) {
+		return true
+	}
 	target := semanticString(action["target"])
+	if actionName == "workspace.dragActivate" || actionName == "workspace.dropFiles" {
+		return handleSemanticWorkspaceDrag(action)
+	}
 	if actionName == "toast.dismiss" {
 		return vtui.FrameManager.HandleSemanticAction(action)
 	}
@@ -668,6 +674,8 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semanticString(action["action"]) {
+	case "panel.dropFiles":
+		return pf.handleSemanticDrop(action)
 	case "activate_panel", "panel.activate":
 		side := semanticInt(action["side"])
 		if side >= 0 && side < len(pf.panels) {
@@ -2512,12 +2520,14 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
+		DropAllowed:           vfsAcceptsDrop(fp.vfs),
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
 		MetadataDeferred:    true,
 		MetadataRevision:    fp.metadataRevision,
 		CatalogRowsDeferred: !denseCatalog,
+		CatalogDelta:        fp.semanticCatalogDelta(),
 		HighlightRevision:   semanticHighlighterRevision(),
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
@@ -2655,6 +2665,9 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	} else {
 		fp.unpublishSemanticMetadataSnapshot()
 	}
+	// Publishing a catalog keeps the drag/request owner alive even when
+	// deferred metadata is disabled and its separate snapshot was released.
+	semanticLivePanels.Store(panelID, fp)
 	return extui.PanelModel{
 		PathIcon:               semanticPanelIcon(fp.vfs),
 		ID:                     panelID,
@@ -2668,6 +2681,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            vfsAcceptsDrop(fp.vfs),
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
 		CatalogRevision:        fp.catalogRevision,
@@ -2745,6 +2759,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
+		DropAllowed:           vfsAcceptsDrop(fp.vfs),
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
@@ -2835,6 +2850,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            vfsAcceptsDrop(fp.vfs),
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
 		CatalogRevision:        fp.catalogRevision,
@@ -4403,4 +4419,15 @@ func semanticPanelIcon(filesystem vfs.VFS) string {
 		return ""
 	}
 	return "plug"
+}
+
+func (fp *FileSystemPanel) semanticCatalogDelta() extui.M {
+	if !extUiPanelCatalogDeltaEnabled.Load() || fp.catalogRefreshDelta == nil {
+		return nil
+	}
+	base, _ := fp.catalogRefreshDelta["baseCatalogRevision"].(int64)
+	if base+1 != fp.catalogRevision {
+		return nil
+	}
+	return fp.catalogRefreshDelta
 }

@@ -133,6 +133,7 @@ type PanelModel struct {
 	GalleryDensities      map[string]int
 	GalleryLayoutRevision int64
 	SourceKind            string
+	DropAllowed           bool
 	PreviewCapable        bool
 	CatalogRevision       int64
 	SelectionRevision     int64
@@ -144,7 +145,10 @@ type PanelModel struct {
 	// CatalogRowsDeferred means Entries is a bounded, absolute-indexed window
 	// into TotalCount. Native clients keep a sparse model and request only
 	// ranges which enter the viewport.
-	CatalogRowsDeferred    bool
+	CatalogRowsDeferred bool
+	// CatalogDelta maps unchanged rows from baseCatalogRevision. It travels
+	// with a catalog transaction, never in a row-free state_update.
+	CatalogDelta           M
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
@@ -519,6 +523,8 @@ type OperationsQueueItemModel struct {
 	Speed           string
 	Error           string
 	Cancellable     bool
+	Pausable        bool
+	Resumable       bool
 	HasDetails      bool
 	Terminal        bool
 	Active          bool
@@ -850,6 +856,7 @@ func (p PanelModel) ToMap() M {
 		"galleryDensities":       galleryDensities,
 		"galleryLayoutRevision":  p.GalleryLayoutRevision,
 		"sourceKind":             p.SourceKind,
+		"dropAllowed":            p.DropAllowed,
 		"previewCapable":         p.PreviewCapable,
 		"catalogRevision":        p.CatalogRevision,
 		"selectionRevision":      p.SelectionRevision,
@@ -890,6 +897,9 @@ func (p PanelModel) ToMap() M {
 		out["selectedSize"] = p.SelectedSize
 		out["totalSize"] = p.TotalSize
 		out["entries"] = entriesToMaps(p.Entries)
+	}
+	if p.CatalogDelta != nil {
+		out["catalogDelta"] = p.CatalogDelta
 	}
 	if p.CatalogRowsDeferred {
 		out["catalogRowsDeferred"] = true
@@ -1278,6 +1288,8 @@ func (i OperationsQueueItemModel) ToMap() M {
 		"speed":           i.Speed,
 		"error":           i.Error,
 		"cancellable":     i.Cancellable,
+		"pausable":        i.Pausable,
+		"resumable":       i.Resumable,
 		"hasDetails":      i.HasDetails,
 		"terminal":        i.Terminal,
 		"active":          i.Active,

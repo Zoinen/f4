@@ -22,12 +22,46 @@ Item {
     height: hostWindow.snapPx(36)
     visible: hostWindow.workspaceTabs.visible === true
     z: 2
+    property string dragSourceWorkspace: ""
+    readonly property var panelTabs: (hostWindow.workspaces || []).filter(tab => !hostWindow.nativeQueueDropdownEnabled || tab.surfaceKind !== "operationsQueue")
+
+    function beginWorkspaceDrag() {
+        dragSourceWorkspace = ""
+        for (var i = 0; i < workspaceBar.panelTabs.length; ++i) {
+            var tab = workspaceBar.panelTabs[i]
+            if (tab.active === true && tab.surfaceKind === "panels") {
+                dragSourceWorkspace = String(tab.id)
+                break
+            }
+        }
+    }
+
     property Item activeWorkspaceTab: null
     property int activeWorkspaceTabSeparatorRevision: 0
     property bool activeWorkspaceTabUpdatePending: false
     property string wheelNavigationModelSignature: ""
     property int wheelNavigationIndex: -1
     property int wheelNavigationAuthoritativeIndex: -1
+
+    Component.onCompleted: {
+        if (typeof qtGallery !== "undefined"
+                && typeof qtGallery.registerDragWorkspaceBar === "function")
+            qtGallery.registerDragWorkspaceBar(workspaceBar)
+    }
+
+    function dragWorkspaceHit(x, y) {
+        if (hostWindow.hasBlockingOverlay())
+            return ({})
+        for (var i = 0; i < workspaceTabsRepeater.count; ++i) {
+            var tab = workspaceTabsRepeater.itemAt(i)
+            if (!tab || !tab.visible || tab.modelData.surfaceKind !== "panels")
+                continue
+            var p = tab.mapFromItem(workspaceBar, x, y)
+            if (p.x >= 0 && p.y >= 0 && p.x < tab.width && p.y < tab.height)
+                return { target: String(tab.modelData.id), active: tab.current }
+        }
+        return ({})
+    }
 
     function registerNativeHitTargets() {
         if (!usesQwk || !nativeWindowAgentReady)
@@ -52,11 +86,6 @@ Item {
     }
 
     function authoritativeWorkspaceIndex(tabs) {
-        var activeIndex = Number(hostWindow.workspaceTabs.activeIndex)
-        if (Math.floor(activeIndex) === activeIndex
-                && activeIndex >= 0
-                && activeIndex < tabs.length)
-            return activeIndex
         for (var i = 0; i < tabs.length; ++i) {
             if (tabs[i] && tabs[i].active === true)
                 return i
@@ -65,7 +94,7 @@ Item {
     }
 
     function activateAdjacentWorkspaceTab(direction) {
-        var tabs = hostWindow.workspaces || []
+        var tabs = workspaceBar.panelTabs || []
         if (tabs.length < 2)
             return false
 
@@ -102,12 +131,6 @@ Item {
 
     function updateActiveWorkspaceTabNow() {
         var nextTab = null
-        var activeIndex = Number(hostWindow.workspaceTabs.activeIndex)
-        if (Math.floor(activeIndex) === activeIndex
-                && activeIndex >= 0
-                && activeIndex < workspaceTabsRepeater.count) {
-            nextTab = workspaceTabsRepeater.itemAt(activeIndex)
-        }
         if (!nextTab) {
             for (var i = 0; i < workspaceTabsRepeater.count; ++i) {
                 var candidate = workspaceTabsRepeater.itemAt(i)
@@ -204,7 +227,7 @@ Item {
 
             Repeater {
                 id: workspaceTabsRepeater
-                model: hostWindow.workspaces
+                model: workspaceBar.panelTabs
                 onItemAdded: workspaceBar.updateActiveWorkspaceTab()
                 onItemRemoved: workspaceBar.updateActiveWorkspaceTab()
 
@@ -237,7 +260,10 @@ Item {
                     bottomRightRadius: 0
                     antialiasing: true
                     smooth: true
-                    color: current
+                    readonly property bool dragSourceHighlighted:
+                        !current && workspaceBar.dragSourceWorkspace !== ""
+                        && workspaceBar.dragSourceWorkspace === String(modelData.id)
+                    color: dragSourceHighlighted ? "#245c38" : current
                            ? hostWindow.panelPathBg
                            : workspaceHover.hovered
                              ? hostWindow.controlHoverBg : "transparent"

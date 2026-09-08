@@ -513,6 +513,7 @@ void QtShellController::onConnected()
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
              {QStringLiteral("panelCatalogRowsV1"), true},
+             {QStringLiteral("panelCatalogDeltaV1"), true},
              {QStringLiteral("documentViewportV1"), true},
 #if defined(Q_OS_MACOS)
              {QStringLiteral("macPlatformServicesV1"), true},

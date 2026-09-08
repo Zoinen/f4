@@ -296,7 +296,11 @@ bool validPanelIdentity(const QVariantMap &operation,
             panel.value(QStringLiteral("catalogRevision")),
             &currentCatalogRevision)
         || catalogRevision != currentCatalogRevision) {
-        *error = QStringLiteral("Scene patch panel identity mismatch");
+        *error = QStringLiteral("Scene patch panel identity mismatch: side %1, received %2@%3, current %4@%5")
+            .arg(side).arg(operation.value(QStringLiteral("panelId")).toString())
+            .arg(operation.value(QStringLiteral("catalogRevision")).toString())
+            .arg(panel.value(QStringLiteral("id")).toString())
+            .arg(panel.value(QStringLiteral("catalogRevision")).toString());
         return false;
     }
     if (catalogRevisionOut) {
@@ -321,6 +325,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
     };
     static const QSet<QString> boolKeys = {
         QStringLiteral("active"), QStringLiteral("previewCapable"),
+        QStringLiteral("dropAllowed"),
         QStringLiteral("metadataDeferred"),
         QStringLiteral("catalogRowsDeferred"),
         QStringLiteral("sortReverse"),

@@ -236,6 +236,13 @@ func (s *tempPanelStore) searchSlot() int {
 }
 
 func (s *tempPanelStore) addReferences(ctx context.Context, slot int, source vfs.VFS, names []string) error {
+	if source == nil {
+		return errors.New("temporary panel has no source file system")
+	}
+	return s.addReferencesAt(ctx, slot, source, source.GetPath(), names)
+}
+
+func (s *tempPanelStore) addReferencesAt(ctx context.Context, slot int, source vfs.VFS, sourceDir string, names []string) error {
 	if s == nil || source == nil {
 		return errors.New("temporary panel has no source file system")
 	}
@@ -250,7 +257,7 @@ func (s *tempPanelStore) addReferences(ctx context.Context, slot int, source vfs
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			entryPath := sourcePanel.Join(sourcePanel.GetPath(), name)
+			entryPath := sourcePanel.Join(sourceDir, name)
 			ref, _, top, ok := sourcePanel.resolve(entryPath)
 			if !ok || !top {
 				if firstErr == nil {
@@ -269,7 +276,7 @@ func (s *tempPanelStore) addReferences(ctx context.Context, slot int, source vfs
 			if name == "" || name == ".." {
 				continue
 			}
-			path := source.Join(source.GetPath(), name)
+			path := source.Join(sourceDir, name)
 			item, err := source.Stat(ctx, path)
 			if err != nil {
 				if firstErr == nil {
@@ -385,12 +392,16 @@ func (t *TempPanelVFS) resolve(path string) (tempPanelReference, string, bool, b
 	if len(parts) == 1 {
 		return ref, ref.path, true, true
 	}
-	if len(parts) < 3 || parts[1] != "c" {
+	if len(parts) < 3 || len(parts)%2 != 1 {
 		return tempPanelReference{}, "", false, false
 	}
 	realPath := ref.path
-	for _, component := range parts[2:] {
-		name, err := decodeTempPanelComponent(component)
+	// Join appends /c/<encoded-name> for each directory level.
+	for i := 1; i < len(parts); i += 2 {
+		if parts[i] != "c" {
+			return tempPanelReference{}, "", false, false
+		}
+		name, err := decodeTempPanelComponent(parts[i+1])
 		if err != nil || name == "" {
 			return tempPanelReference{}, "", false, false
 		}
@@ -450,6 +461,16 @@ func (t *TempPanelVFS) Base(path string) string {
 		return name
 	}
 	return filepath.Base(path)
+}
+
+// A reference's display label can be an absolute path. Transfers use the
+// underlying item's filename (or its provider's export name), not that label.
+func (t *TempPanelVFS) TransferName(path string, destination vfs.VFS) string {
+	ref, realPath, _, ok := t.resolve(path)
+	if !ok {
+		return ""
+	}
+	return transferItemName(ref.source, realPath, destination, ref.source.Base(realPath))
 }
 
 func (t *TempPanelVFS) Dir(path string) string {

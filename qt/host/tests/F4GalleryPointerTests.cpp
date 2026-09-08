@@ -1,8 +1,13 @@
 #include "F4GalleryBridge.h"
+#include "F4NativeDragVisuals.h"
+#include <QScreen>
 #include "QtShellController.h"
 #include "VtuiGridItem.h"
 
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
@@ -265,6 +270,13 @@ private slots:
         QCOMPARE(VtuiGridItem::protocolModifiers(Qt::ControlModifier, false), 8);
         QCOMPARE(VtuiGridItem::protocolModifiers(Qt::MetaModifier, false), 0);
     }
+    void nativeDragListsSurviveWireEncoding();
+    void sameFolderRefreshKeepsGalleryObjects();
+    void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
+    void nativeDropUsesIdentityAndSnappedOutline();
+    void nativeWorkspaceHoverAndDrop();
+    void dropTargetsRejectSourceAndOutlineActiveTab();
+    void upstreamDragArtwork();
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
@@ -1737,6 +1749,101 @@ void F4GalleryPointerTests::galleryModeSwitchPositionsCursorImmediately()
     delete rootObject;
 }
 
+void F4GalleryPointerTests::sameFolderRefreshKeepsGalleryObjects()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    auto scene = galleryScene(4);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    auto *model = session->model();
+    const int role = model->roleNames().key("imageFileRole", -1);
+    QVERIFY(role >= 0);
+    const QVariant survivor = model->data(model->index(2,0),role);
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    QSignalSpy ready(session, &ZoinGallery::GallerySession::catalogReadyChanged);
+    session->setPanelScrollOffset(31.0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panel = panels[0].toMap();
+    auto entries = panel.value("entries").toList();
+    entries.removeAt(1);
+    for (int row=0; row<entries.size(); ++row) {
+        auto entry = entries[row].toMap(); entry["index"]=row; entries[row]=entry;
+    }
+    panel["entries"]=entries; panel["totalCount"]=entries.size(); panel["catalogRevision"]=6;
+    panels[0]=panel; shell["panels"]=panels; scene["shell"]=shell;
+    bridge.synchronizeScene(scene);
+    QCOMPARE(resets.size(),0);
+    QCOMPARE(ready.size(),0);
+    QCOMPARE(model->rowCount(),3);
+    QCOMPARE(model->data(model->index(1,0),role),survivor);
+    QCOMPARE(session->panelScrollOffset(),31.0);
+}
+
+void F4GalleryPointerTests::sparseRefreshReachesGalleryAndCrossesPagingThreshold()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(3);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    auto entries = panel.value("entries").toList();
+    for (int row = 0; row < entries.size(); ++row) {
+        auto entry = entries[row].toMap();
+        entry["index"] = row;
+        entries[row] = entry;
+    }
+    panel["entries"] = entries;
+    panel["cursor"] = 2;
+    panel["cursorEntryId"] = "entry-2";
+    const auto sync = [&] {
+        shell["panels"] = QVariantList{panel};
+        scene["shell"] = shell;
+        bridge.synchronizeScene(scene);
+    };
+    sync();
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    auto *model = session->model();
+    const int role = model->roleNames().key("imageFileRole", -1);
+    QVERIFY(role >= 0);
+    const QVariant survivor = model->data(model->index(2, 0), role);
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    QSignalSpy ready(session, &ZoinGallery::GallerySession::catalogReadyChanged);
+    auto inserted = entries.first().toMap();
+    inserted["entryId"] = "inserted";
+    inserted["name"] = "inserted";
+    panel["entries"] = QVariantList{inserted};
+    panel["catalogRowsDeferred"] = true;
+    panel["totalCount"] = 100000;
+    panel["catalogRevision"] = 6;
+    panel["cursor"] = 3;
+    panel["catalogDelta"] = QVariantMap{
+        {"baseCatalogRevision", 5}, {"oldTotalCount", 3},
+        {"ranges", QVariantList{QVariantMap{{"oldIndex", 0}, {"index", 1}, {"count", 3}}}}};
+    sync();
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(model->rowCount(), 100000);
+    QCOMPARE(model->data(model->index(3, 0), role), survivor);
+    // A sparse-to-dense transition must also retain the surviving objects.
+    panel["entries"] = entries;
+    panel["catalogRowsDeferred"] = false;
+    panel["totalCount"] = 3;
+    panel["catalogRevision"] = 7;
+    panel["cursor"] = 2;
+    panel["catalogDelta"] = QVariantMap{
+        {"baseCatalogRevision", 6}, {"oldTotalCount", 100000},
+        {"ranges", QVariantList{QVariantMap{{"oldIndex", 1}, {"index", 0}, {"count", 3}}}}};
+    sync();
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(ready.size(), 0);
+    QCOMPARE(model->rowCount(), 3);
+    QCOMPARE(model->data(model->index(2, 0), role), survivor);
+}
+
 void F4GalleryPointerTests::panelVisibilityKeepsLiveGalleryViewport()
 {
     QQuickView view;
@@ -2395,6 +2502,452 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
 
     delete rootObject;
+}
+
+void F4GalleryPointerTests::nativeDragListsSurviveWireEncoding()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost,0));
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),"drag-test",80,24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer=server.nextPendingConnection();
+    QByteArray buffer,payload;
+    QVERIFY(takeProtocolPayload(peer,buffer,payload));
+    controller.sendUiAction({{"action","panel.dropFiles"},{"paths",QStringList{"C:/space #/one","//server/share/two"}},
+        {"source",QVariantMap{{"entryIds",QStringList{"one","two"}}}}});
+    QVERIFY(takeProtocolPayload(peer,buffer,payload));
+    const auto decoded=msgpack::unpack(payload.constData(),static_cast<size_t>(payload.size()));
+    std::map<std::string,msgpack::object> message,source;
+    decoded.get().convert(message);
+    QCOMPARE(message.at("paths").type,msgpack::type::ARRAY);
+    message.at("source").convert(source);
+    QCOMPARE(source.at("entryIds").type,msgpack::type::ARRAY);
+    QCOMPARE(message.at("paths").as<std::vector<std::string>>().size(),size_t(2));
+    QCOMPARE(source.at("entryIds").as<std::vector<std::string>>().at(1),std::string("two"));
+}
+
+void F4GalleryPointerTests::upstreamDragArtwork()
+{
+    const qreal dpr=QGuiApplication::primaryScreen()->devicePixelRatio();
+    QQmlEngine iconEngine;
+    class IconProvider : public QQuickImageProvider {
+    public:
+        IconProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
+        QString request;
+        QImage requestImage(const QString &id,QSize *,const QSize &size) override {
+            request=id;
+            QImage image(size,QImage::Format_ARGB32); image.fill(Qt::magenta); return image;
+        }
+    };
+    auto *provider=new IconProvider;
+    iconEngine.addImageProvider("drag-test-icons",provider);
+    const auto systemIcon=F4NativeDragVisuals::fileIcon(&iconEngine,
+        {{"iconPath","image://drag-test-icons/file/archive.zip?size=16&dpr=1&revision=7"}},dpr,true);
+    QVERIFY(!systemIcon.isNull());
+    QCOMPARE(systemIcon.pixelColor(0,0),QColor(Qt::magenta));
+    QVERIFY(provider->request.contains("size=40"));
+    QVERIFY(provider->request.contains("revision=7"));
+    const auto archive=F4NativeDragVisuals::fileIcon(&iconEngine,{{"iconKey","archive"}},dpr,true);
+    const auto generic=F4NativeDragVisuals::fileIcon(&iconEngine,{{"iconKey","file"}},dpr,true);
+    QVERIFY(!archive.isNull());
+    QVERIFY(archive!=generic);
+    QVERIFY(F4NativeDragVisuals::withFileName(F4NativeDragVisuals::compactPreview({archive},1,dpr,true),
+        "z-ufc-ql-4x-textures.zip",1,true).save(QString(".diagnostics/drag-zip-%1.png").arg(dpr)));
+    QList<QImage> images;
+    for (const QColor color : {Qt::red,Qt::green,Qt::blue,Qt::yellow,Qt::magenta}) {
+        QImage image(40,40,QImage::Format_ARGB32); image.fill(color); images.append(image);
+    }
+    const auto preview=F4NativeDragVisuals::compactPreview(images,8,dpr,true);
+    QCOMPARE(preview.size(),QSize(qCeil(318*dpr),qCeil(58*dpr)));
+    for (int i=0;i<5;++i)
+        QCOMPARE(preview.toImage().pixelColor(qRound((29+i*52)*dpr),qRound(29*dpr)),images[i].pixelColor(20,20));
+    QVERIFY(preview.save(QString(".diagnostics/drag-strip-%1.png").arg(dpr)));
+    for (const QSize sourceSize : {QSize(80,40),QSize(40,80)}) {
+        QImage source(sourceSize,QImage::Format_ARGB32);
+        source.fill(Qt::red);
+        QPainter paint(&source);
+        paint.fillRect(QRect(QPoint(0,0),sourceSize/2),Qt::green);
+        paint.end();
+        const auto fitted=F4NativeDragVisuals::compactPreview({source},1,dpr,true);
+        const auto pixels=fitted.toImage();
+        const bool wide=sourceSize.width()>sourceSize.height();
+        // Both opposite corners survive, with empty space on the short axis.
+        QCOMPARE(pixels.pixelColor(qRound((wide?11:21)*dpr),qRound((wide?21:11)*dpr)),QColor(Qt::green));
+        QCOMPARE(pixels.pixelColor(qRound((wide?47:37)*dpr),qRound((wide?37:47)*dpr)),QColor(Qt::red));
+        QVERIFY(pixels.pixelColor(qRound((wide?29:11)*dpr),qRound((wide?11:29)*dpr))!=QColor(Qt::red));
+        QVERIFY(fitted.save(QString(".diagnostics/drag-aspect-%1-%2.png").arg(dpr).arg(wide)));
+    }
+    for (const bool dark : {false, true}) {
+        const auto named=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),8,dark);
+        QCOMPARE(named.devicePixelRatio(),dpr);
+        QVERIFY(named.height()>preview.height());
+        const int captionTop=preview.height()+qRound(4*dpr);
+        QCOMPARE(named.toImage().pixelColor(0,captionTop).alpha(),0);
+        QCOMPARE(named.toImage().pixelColor(qRound(8*dpr),captionTop+qRound(4*dpr)).alpha(),195);
+        // The added caption must never scale or translate the existing artwork.
+        QCOMPARE(named.toImage().copy(QRect(QPoint(0,0),preview.size())),preview.toImage());
+        const auto single=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),1,dark);
+        QVERIFY(single.toImage()!=named.toImage());
+        const auto longName=F4NativeDragVisuals::withFileName(preview,QString(500,'w')+".png",1,dark);
+        QVERIFY(longName.width()<=qRound(360*dpr));
+        QVERIFY(named.save(QString(".diagnostics/drag-filename-%1-%2.png").arg(dpr).arg(dark)));
+    }
+#ifdef Q_OS_WIN
+    const auto copy=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::CopyAction);
+    const auto move=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::MoveAction);
+    const auto no=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::IgnoreAction);
+    QCOMPARE(copy.size(),move.size()); QCOMPARE(copy.size(),no.size());
+    QCOMPARE(copy.devicePixelRatio(),1.0);
+    QVERIFY(copy.toImage()!=move.toImage()); QVERIFY(copy.toImage()!=no.toImage());
+    QVERIFY(copy.save(QString(".diagnostics/drag-copy-%1.png").arg(dpr)));
+    QVERIFY(move.save(QString(".diagnostics/drag-move-%1.png").arg(dpr)));
+#endif
+}
+
+void F4GalleryPointerTests::dropTargetsRejectSourceAndOutlineActiveTab()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QQmlComponent component(view.engine());
+    component.setData(R"(import QtQuick
+Item {
+ width:400; height:200
+ property bool dropInputEnabled:true
+ property int dropHoverIndex:-2
+ property bool dropTabHover:false
+ function dragWorkspaceHit(x,y) { return {target:"workspace-tab-7",active:true} }
+})",QUrl());
+    auto *panel=qobject_cast<QQuickItem *>(component.create());
+    QVERIFY(panel);
+    view.setContent(QUrl(),&component,panel);
+    view.show(); QVERIFY(QTest::qWaitForWindowExposed(&view));
+    bridge.registerDragPanel(0,panel); bridge.registerDragWorkspaceBar(panel);
+    auto &catalog=bridge.m_panelSessions.catalog(0);
+    catalog.initialized=true; catalog.panelId="destination"; catalog.currentPath="/target";
+    catalog.active=true; catalog.dropAllowed=true; catalog.sourceKind="local";
+    bridge.m_dragSource={{"panelId","source"},{"path","/source"},{"sourceKind","local"},{"entryIds",QStringList{"folder"}}};
+    auto target=bridge.dragEndpoint(0);
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["path"]="/source";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["panelId"]="source";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["isDir"]=true; target["name"]="nested"; target["entryId"]="nested";
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["entryId"]="folder";
+    QVERIFY(!bridge.dropTargetAllowed(target,true));
+    target["entryId"]="up"; target["name"]="..";
+    QVERIFY(bridge.dropTargetAllowed(target,true));
+    target["path"]="/source/child";
+    QVERIFY(!bridge.dropTargetAllowed(target,true)); // parent is the source directory
+    bridge.m_dragHoveredWorkspace="workspace-tab-7";
+    bridge.m_workspaceDropInternal=true;
+    QCursor::setPos(view.mapToGlobal(QPoint(50,20)));
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-1);
+    QVERIFY(panel->property("dropTabHover").toBool());
+    catalog.currentPath="/source";
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-2);
+    bridge.m_dragHoveredWorkspace.clear();
+    panel->setProperty("dropHoverIndex",42);
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),42); // do not erase a subsequent panel hover
+    bridge.m_dragHoveredWorkspace="workspace-tab-7";
+    catalog.currentPath="/target"; catalog.dropAllowed=false;
+    bridge.refreshWorkspaceDropHighlight();
+    QCOMPARE(panel->property("dropHoverIndex").toInt(),-2);
+}
+
+void F4GalleryPointerTests::nativeWorkspaceHoverAndDrop()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QQmlComponent component(view.engine());
+    component.setData(R"(import QtQuick
+Item {
+    width: 400; height: 40
+    property bool blocked: false
+    function dragWorkspaceHit(x,y) {
+        if (blocked || x >= 200) return ({})
+        return {target: x < 100 ? "workspace-tab-7" : "workspace-tab-19", active: x < 100}
+    }
+})", QUrl());
+    auto *bar = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(bar, qPrintable(component.errorString()));
+    view.setContent(QUrl(), &component, bar);
+    view.resize(400, 100);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    bridge.registerDragWorkspaceBar(bar);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("tab-drop.txt"))});
+    QDragEnterEvent enter(QPoint(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&enter);
+    QVERIFY(enter.isAccepted());
+    QCOMPARE(actions.size(),1); // immediate, without a timer or event-loop turn
+    QCOMPARE(actions.last().at(0).toMap().value("action").toString(),QString("workspace.dragActivate"));
+    QDragMoveEvent hover(QPoint(151,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&hover);
+    QVERIFY(hover.isAccepted());
+    QCOMPARE(actions.size(),1);
+    QDropEvent drop(QPointF(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&drop);
+    QVERIFY(drop.isAccepted());
+    const auto request=actions.last().at(0).toMap();
+    QCOMPARE(request.value("action").toString(),QString("workspace.dropFiles"));
+    QCOMPARE(request.value("target").toString(),QString("workspace-tab-19"));
+    QCOMPARE(request.value("paths").toStringList().size(),1);
+    bridge.m_dragToken="cross-workspace";
+    bridge.m_dragSource={{"panelId","old-workspace-panel"},{"side",0},{"entryIds",QStringList{"old-file"}}};
+    QMimeData internal;
+    internal.setData("application/x-f4-drag-session","cross-workspace");
+    QDragEnterEvent again(QPoint(150,20),Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&again);
+    QDropEvent move(QPointF(150,20),Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&move);
+    QVERIFY(move.isAccepted());
+    QCOMPARE(actions.last().at(0).toMap().value("source").toMap(),bridge.m_dragSource);
+    QCOMPARE(actions.last().at(0).toMap().value("operation").toString(),QString("move"));
+    bar->setProperty("blocked",true);
+    QDragEnterEvent blocked(QPoint(150,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&blocked);
+    QVERIFY(!blocked.isAccepted());
+    bar->setProperty("blocked",false);
+    QDragEnterEvent nonPanel(QPoint(250,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&nonPanel);
+    QVERIFY(!nonPanel.isAccepted());
+}
+
+void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    view.resize(640, 360);
+    F4GalleryBridge bridge(view.engine());
+    bridge.synchronizeScene(galleryScene(4));
+    QVERIFY(QFileInfo::exists(":/data/shaders/multieffect_cm0.frag.qsb"));
+    QVERIFY(QFileInfo::exists(":/data/shaders/multieffect_c.vert.qsb"));
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(host, qPrintable(component.errorString()));
+    host->setWidth(640); host->setHeight(360);
+    host->setProperty("bridge", QVariant::fromValue(&bridge));
+    host->setProperty("panel", QVariantMap{{"id", "pointer-left"}, {"catalogRevision", 5}});
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *surface = new QQuickItem(view.contentItem());
+    surface->setWidth(680); surface->setHeight(360);
+    host->setProperty("dropPanelSurface",QVariant::fromValue(surface));
+    // Exercise a fractional ancestor offset, not only an integer root.
+    host->setX(16.25);
+    host->setY(0.25);
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    auto *layout = panel->findChild<QQuickItem *>("galleryViewportItem");
+    QVERIFY(layout);
+    QTRY_COMPARE(layout->property("count").toInt(), 4);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("drag space # тест.txt"))});
+    for (const auto &mode : {"details", "columns", "grid", "icons", "masonry"}) {
+        panel->setProperty("presentationMode", mode);
+        QTest::qWait(250);
+        for (int targetRow : {0, 1}) {
+            QRectF geometry;
+            QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, targetRow)));
+            const QPoint point = layout->mapToScene(geometry.center()
+                - QPointF(0, layout->property("contentY").toReal())).toPoint();
+            QDragEnterEvent enter(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&view, &enter);
+            QVERIFY2(enter.isAccepted(), mode);
+            QCOMPARE(enter.dropAction(), Qt::CopyAction);
+            QCOMPARE(host->property("dropHoverIndex").toInt(), 100 + targetRow);
+            auto *outline = host->findChild<QQuickItem *>("panelDropOutline-0");
+            QVERIFY(outline);
+            QTRY_VERIFY(outline->isVisible());
+            const qreal dpr = view.devicePixelRatio();
+            for (const auto &p : {QPointF(0,0), QPointF(outline->width(),outline->height())}) {
+                const QPointF physical = outline->mapToScene(p) * dpr;
+                QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001, qPrintable(QString::number(physical.x())));
+                QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001, qPrintable(QString::number(physical.y())));
+            }
+            const auto capture = view.grabWindow();
+            QVERIFY(!capture.isNull());
+            if (QString::fromLatin1(mode) == "details")
+                QVERIFY(capture.save(QDir::current().filePath("drop-details-175.png")));
+            QDropEvent drop(point, Qt::CopyAction | Qt::MoveAction, &mime, Qt::LeftButton, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(&view, &drop);
+            QVERIFY(drop.isAccepted());
+            const auto action = actions.last().at(0).toMap();
+            QCOMPARE(action.value("action").toString(), QString("panel.dropFiles"));
+            QCOMPARE(action.value("entryId").toString(), QString("entry-%1").arg(targetRow));
+            QCOMPARE(action.value("index").toInt(), 100 + targetRow);
+            QCOMPARE(action.value("operation").toString(), QString("copy"));
+            QCOMPARE(action.value("paths").toStringList().constFirst(), mime.urls().first().toLocalFile());
+            QCOMPARE(host->property("dropHoverIndex").toInt(), -2);
+            host->setProperty("dropInputEnabled", false);
+            QDragEnterEvent blocked(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+            QCoreApplication::sendEvent(&view, &blocked);
+            QVERIFY(!blocked.isAccepted());
+            host->setProperty("dropInputEnabled", true);
+        }
+    }
+    host->setProperty("dropHoverIndex",-1);
+    auto *wholeOutline=host->findChild<QQuickItem *>("panelDropOutline-0");
+    QVERIFY(wholeOutline);
+    QTRY_VERIFY(wholeOutline->isVisible());
+    QCOMPARE(wholeOutline->parentItem(),surface);
+    const qreal outlineDpr=view.devicePixelRatio();
+    const QPointF left=wholeOutline->mapToScene(QPointF{});
+    const QPointF right=wholeOutline->mapToScene(QPointF(wholeOutline->width(),0));
+    QCOMPARE(qRound(left.x()*outlineDpr),qRound(surface->mapToScene(QPointF{}).x()*outlineDpr));
+    QCOMPARE(qRound(right.x()*outlineDpr),qRound(surface->mapToScene(QPointF(surface->width(),0)).x()*outlineDpr));
+    QVERIFY(qAbs(left.x()*outlineDpr-qRound(left.x()*outlineDpr))<0.001);
+    QVERIFY(qAbs(right.x()*outlineDpr-qRound(right.x()*outlineDpr))<0.001);
+    const auto bounds=host->property("wholeDropSceneRect").toRectF();
+    // The first and last physical pixels inside the outline both accept drops.
+    for (qreal x : {bounds.left()+0.5/outlineDpr,bounds.right()-0.5/outlineDpr}) {
+        const QPointF point(x,bounds.center().y());
+        int hitSide=-1;
+        const auto target=bridge.dragHit(&view,point,&hitSide);
+        QCOMPARE(hitSide,0); QVERIFY(!target.isEmpty());
+        QVERIFY(!target.contains("entryId")); // gutter targets the directory
+        QDropEvent drop(point,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+        const auto before=actions.size();
+        QCoreApplication::sendEvent(&view,&drop);
+        QVERIFY(drop.isAccepted()); QCOMPARE(actions.size(),before+1);
+        QVERIFY(!actions.last().at(0).toMap().contains("entryId"));
+    }
+    for (const QPointF point : {QPointF(bounds.left()-0.5/outlineDpr,bounds.center().y()),
+                               QPointF(bounds.right()+0.5/outlineDpr,bounds.center().y()),
+                               QPointF(bounds.center().x(),bounds.top()-0.5/outlineDpr),
+                               QPointF(bounds.center().x(),bounds.bottom()+0.5/outlineDpr)}) {
+        int hitSide=-1;
+        QVERIFY(bridge.dragHit(&view,point,&hitSide).isEmpty());
+    }
+    host->setProperty("dropHoverIndex",-2);
+    QMimeData remote;
+    remote.setUrls({QUrl("https://example.org/file")});
+    QDragEnterEvent refused(QPoint(100,100), Qt::CopyAction, &remote, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&view, &refused);
+    QVERIFY(!refused.isAccepted());
+
+    QRectF sourceRect;
+    QVERIFY(QMetaObject::invokeMethod(layout,"indexGeometry",Q_RETURN_ARG(QRectF,sourceRect),Q_ARG(int,1)));
+    const QPoint sourcePoint=layout->mapToScene(sourceRect.center()-QPointF(0,layout->property("contentY").toReal())).toPoint();
+    QTest::mousePress(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
+    QVERIFY(bridge.m_dragPrepared);
+    QCOMPARE(bridge.m_preparedDragUrls.size(),1);
+    QTest::qWait(50); // a late delegate grab must not replace the compact tile
+    QCOMPARE(bridge.m_dragPreviewPixmap.size(),QSize(qCeil(58*view.devicePixelRatio()),qCeil(58*view.devicePixelRatio())));
+    QCOMPARE(bridge.m_dragPreviewHotSpot,QPoint(18,18));
+    const QString releasedRequest = bridge.m_dragRequestId;
+    QTest::mouseRelease(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
+    bridge.handleDragPrepared({{"type","drag_prepared"},{"requestId",releasedRequest},{"ok",true}});
+    QCOMPARE(bridge.m_dragArmedSide,-1);
+
+    auto &sourceState=bridge.m_panelSessions.catalog(0);
+    sourceState.selectedEntryIdList={"entry-1","off-page-entry"};
+    sourceState.selectedEntryIds={"entry-1","off-page-entry"};
+    // Snapshot selection at press: unselected rows drag alone; the single-item
+    // modifier overrides a marked set, while copy/move modifiers preserve it.
+#ifdef Q_OS_MACOS
+    const auto singleItemModifier = Qt::MetaModifier;
+#else
+    const auto singleItemModifier = Qt::AltModifier;
+#endif
+    for (int row : {1, 2}) {
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(layout,"indexGeometry",Q_RETURN_ARG(QRectF,rect),Q_ARG(int,row)));
+        const QPoint point=layout->mapToScene(rect.center()-QPointF(0,layout->property("contentY").toReal())).toPoint();
+        for (Qt::KeyboardModifiers modifiers : {Qt::KeyboardModifiers(Qt::NoModifier),
+                Qt::KeyboardModifiers(Qt::ShiftModifier), Qt::KeyboardModifiers(Qt::ControlModifier),
+                Qt::KeyboardModifiers(singleItemModifier), Qt::KeyboardModifiers(singleItemModifier | Qt::ShiftModifier)}) {
+            const QStringList expected = row == 1 && !modifiers.testFlag(singleItemModifier)
+                ? sourceState.selectedEntryIdList : QStringList{QString("entry-%1").arg(row)};
+            actions.clear();
+            QTest::mousePress(&view,Qt::LeftButton,modifiers,point);
+            QCOMPARE(bridge.m_dragSource.value("entryIds").toStringList(),expected);
+            int prepareCount = 0;
+            for (const auto &arguments : actions) {
+                const auto action = arguments.at(0).toMap();
+                if (action.value("action") != "panel.prepareDrag") continue;
+                QCOMPARE(action.value("entryIds").toStringList(),expected);
+                ++prepareCount;
+            }
+            QCOMPARE(prepareCount,1);
+            QCOMPARE(bridge.m_dragPrepared,expected.size()==1);
+            QTest::mouseRelease(&view,Qt::LeftButton,modifiers,point);
+        }
+    }
+    QTest::mousePress(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
+    QVERIFY(!bridge.m_dragPrepared);
+    bridge.handleDragPrepared({{"type","drag_prepared"},{"requestId",bridge.m_dragRequestId},
+        {"ok",true},{"paths",QVariantList{QDir::temp().filePath("one"),QDir::temp().filePath("two")}}});
+    QVERIFY(bridge.m_dragPrepared);
+    QCOMPARE(bridge.m_preparedDragUrls.size(),2);
+    QTest::mouseRelease(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
+
+    // Only a session created by this bridge can request a Go-owned move.
+    bridge.m_dragToken = "test-live-session";
+    bridge.m_dragSource = {{"side",0},{"panelId","source"},{"entryIds",QStringList{"one","two"}}};
+    QMimeData internal;
+    internal.setData("application/x-f4-drag-session", "test-live-session");
+    QRectF g;
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF,g), Q_ARG(int,1)));
+    const QPoint point = layout->mapToScene(g.center()-QPointF(0,layout->property("contentY").toReal())).toPoint();
+    QDragEnterEvent internalEnter(point,Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&internalEnter);
+    QVERIFY(internalEnter.isAccepted());
+    QDropEvent internalDrop(point,Qt::CopyAction,&internal,Qt::LeftButton,Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&view,&internalDrop);
+    QVERIFY(internalDrop.isAccepted());
+    QCOMPARE(actions.last().at(0).toMap().value("operation").toString(),QString("move"));
+    QCOMPARE(actions.last().at(0).toMap().value("source").toMap(),bridge.m_dragSource);
+    bridge.m_dragToken.clear();
+    // Async preparation may start the Windows transaction after the last
+    // held-button move. A release during startup is recoverable; Escape or
+    // an OLE transaction which already reached a target must not be replayed.
+    bridge.m_nativeDragActive = true;
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, point);
+    QVERIFY(bridge.nativeDragStartupWasReleased());
+    QTest::keyPress(&view, Qt::Key_Escape);
+    QVERIFY(!bridge.nativeDragStartupWasReleased());
+    QTest::keyRelease(&view, Qt::Key_Escape);
+    bridge.m_nativeDragCancelled = false;
+    QDragEnterEvent observedEnter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&view, &observedEnter);
+    QVERIFY(!bridge.nativeDragStartupWasReleased());
+    bridge.m_nativeDragActive = false;
+    bridge.m_nativeDragCancelled = false;
+    bridge.m_dragSource = bridge.dragEndpoint(0);
+    bridge.m_dragSource.insert("entryIds", QStringList{"entry-2"});
+    const auto beforeFallback = actions.size();
+    QVERIFY(bridge.finishInternalDrop(&view, point, Qt::ShiftModifier));
+    QCOMPARE(actions.size(), beforeFallback + 1);
+    QCOMPARE(actions.last().at(0).toMap().value("operation").toString(), QString("move"));
+    bridge.m_dragSource.insert("catalogRevision", -1);
+    QVERIFY(!bridge.finishInternalDrop(&view, point, Qt::NoModifier));
+    QCOMPARE(actions.size(), beforeFallback + 1);
+    bridge.m_nativeDragStartupPending = true;
+    QTest::keyPress(&view, Qt::Key_Escape);
+    QVERIFY(!bridge.m_nativeDragStartupPending);
+    QVERIFY(bridge.m_dragSource.isEmpty());
+    QTest::keyRelease(&view, Qt::Key_Escape);
+    QDragEnterEvent forged(point,Qt::CopyAction,&internal,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&forged);
+    QVERIFY(!forged.isAccepted());
+    bridge.m_panelSessions.catalog(0).dropAllowed = false;
+    QDragEnterEvent readonlyDrop(point,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
+    QCoreApplication::sendEvent(&view,&readonlyDrop);
+    QVERIFY(!readonlyDrop.isAccepted());
 }
 
 QTEST_MAIN(F4GalleryPointerTests)

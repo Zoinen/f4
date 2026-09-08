@@ -708,6 +708,50 @@ func (rg *RadioGroup) HandleSemanticAction(action map[string]any) bool {
 	return false
 }
 
+// ListBox needs its own semantic contract: the embedded Table has no
+// semantic provider, so exporting it as a generic widget loses every row.
+func (lb *ListBox) SemanticNode(ctx *SemanticContext) map[string]any {
+	x1, y1, x2, y2 := lb.GetPosition()
+	items := append([]string{}, lb.Items...)
+	if provider := lb.GetRowProvider(); provider != nil {
+		items = make([]string, provider.RowCount())
+		for i := range items {
+			if row := provider.Row(i); len(row) > 0 {
+				items[i] = row[0]
+			}
+		}
+	}
+	return map[string]any{
+		"id": SemanticID(lb), "kind": "listBox",
+		"x": x1, "y": y1, "w": x2 - x1 + 1, "h": y2 - y1 + 1,
+		"visible": lb.IsVisible(), "focused": lb.IsFocused(),
+		"disabled": lb.IsDisabled(), "items": items,
+		"cursor": lb.SelectPos, "top": lb.TopPos,
+	}
+}
+
+func (lb *ListBox) HandleSemanticAction(action map[string]any) bool {
+	if lb.IsDisabled() {
+		return false
+	}
+	switch semanticString(action["action"]) {
+	case "select", "control.select":
+		idx := semanticInt(action["index"])
+		if idx >= 0 && idx < lb.ItemCount {
+			previous := lb.SelectPos
+			lb.SetSelectPos(idx)
+			if lb.SelectPos != previous && lb.OnSelect != nil {
+				lb.OnSelect(lb.SelectPos)
+			}
+			return true
+		}
+	case "focus", "control.focus":
+		lb.SetFocus(true)
+		return true
+	}
+	return false
+}
+
 func (cb *ComboBox) SemanticNode(ctx *SemanticContext) map[string]any {
 	x1, y1, x2, y2 := cb.GetPosition()
 	var items []map[string]any

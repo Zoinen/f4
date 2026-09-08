@@ -70,6 +70,7 @@ Item {
             visible: !surfaces.hostWindow.hasOperationsQueueSurface()
             opacity: surfaces.hostWindow.hasStandaloneDocumentSurface() ? 0 : 1
             sourceComponent: PanelsSurface {
+                enabled: !surfaces.hostWindow.queueDropdownOpen
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar
                 focusTarget: surfaces.focusTarget
@@ -87,6 +88,7 @@ Item {
                     || surfaces.hostWindow.documentSurfacePrewarmed
             visible: surfaces.hostWindow.hasStandaloneDocumentSurface()
             sourceComponent: DocumentSurface {
+                enabled: !surfaces.hostWindow.queueDropdownOpen
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar
                 // The store publishes each non-null document here. Closing
@@ -107,20 +109,47 @@ Item {
             onTriggered: surfaces.hostWindow.documentSurfacePrewarmed = true
         }
 
-        Loader {
+    }
+
+    Popup {
+        id: queueDropdown
+        objectName: "operationsQueueDropdown"
+        parent: Overlay.overlay
+        x: surfaces.hostWindow.snapPx(Math.max(8, parent.width - width - 8))
+        y: surfaces.hostWindow.menuBarHeight
+        width: surfaces.hostWindow.snapPx(Math.min(880, parent.width - 16))
+        height: surfaces.hostWindow.snapPx(Math.min(520, parent.height - y - 16,
+            160 + Math.max(1,(surfaces.hostWindow.operationsQueueFrame().items || []).length) * 60))
+        padding: surfaces.hostWindow.snapPx(1)
+        modal: true
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Shortcut {
+            sequence: "Escape"
+            enabled: queueDropdown.visible
+            onActivated: surfaces.hostWindow.queueDropdownOpen = false
+        }
+        visible: surfaces.hostWindow.nativeQueueDropdownEnabled && surfaces.hostWindow.queueDropdownOpen && !surfaces.hostWindow.hasBlockingOverlay()
+        // Synchronize at the start of dismissal. A delayed closed signal can
+        // otherwise clear a newer open request from the title-bar button.
+        onAboutToHide: if (!surfaces.hostWindow.hasBlockingOverlay()) surfaces.hostWindow.queueDropdownOpen = false
+        background: Rectangle {
+            color: surfaces.hostWindow.windowBackgroundColor
+            border.color: surfaces.hostWindow.separatorColor
+            radius: surfaces.hostWindow.snapPx(8)
+        }
+        contentItem: Loader {
             id: operationsQueueLayer
             objectName: "operationsQueueLayer"
-            anchors.fill: parent
-            active: surfaces.hostWindow.retainedOperationsQueueCreated
-            visible: surfaces.hostWindow.hasOperationsQueueSurface()
+            active: surfaces.hostWindow.retainedOperationsQueueCreated || surfaces.hostWindow.queueDropdownOpen
             sourceComponent: OperationsQueueSurface {
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar
                 queue: surfaces.hostWindow.operationsQueueFrame()
-                interactionActive:
-                    surfaces.hostWindow.hasOperationsQueueSurface()
+                dropdown: true
+                interactionActive: surfaces.hostWindow.queueDropdownOpen
             }
-            z: 20
         }
     }
 

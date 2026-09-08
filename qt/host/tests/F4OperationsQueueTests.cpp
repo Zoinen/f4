@@ -751,6 +751,8 @@ class F4OperationsQueueTests final : public QObject
 
 private slots:
     void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
+    void queueDropdownKeepsPanelsAndAlignsLeaves();
+    void consoleModeRestoresQueueWorkspace();
     void initTestCase();
     void queueUsesNativeAccessibleSurfaceAndGuardsActiveClose();
     void plusButtonIsInteractiveInsideQwkTitleBar();
@@ -772,6 +774,7 @@ private slots:
     void environmentManagerDialogUsesExpandedRows();
     void semanticInlineLabelsKeepControlsClose();
     void semanticDialogControlsUseWindowFontAndStayPixelAligned();
+    void errorMessagesWrapToNativeWidth();
     void semanticDialogEditShowsRemoteAndNativeSelection();
     void semanticDialogEditSelectionWaitsForSemanticFocus();
     void dialogTextCursorBlinkSettlesAndFocusStopsIt();
@@ -782,6 +785,149 @@ void F4OperationsQueueTests::initTestCase()
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4OperationsQueueTests::consoleModeRestoresQueueWorkspace()
+{
+    auto scene=queueScene(queueModel({task(1,"Running",35)},1,true));
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    scene.insert("presentation","text");
+    fixture.shell.actions.clear();
+    fixture.shell.setScene(scene);
+    QTest::qWait(150);
+    QVERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    QVERIFY(!fixture.item("operationsQueueButton")->isVisible());
+    // Console mode renders its own tabs in the grid. QML must neither cover
+    // them with a popup nor redirect activation of the console queue workspace.
+    QVERIFY(fixture.item("vtuiGrid")->property("renderingEnabled").toBool());
+    auto *popup=fixture.window->findChild<QObject *>("operationsQueueDropdown");
+    QVERIFY(popup && !popup->property("visible").toBool());
+    for (bool queueActive : {false,true,false,true}) {
+        scene.insert("workspaceTabs",workspaceTabs(queueActive,false));
+        fixture.shell.setScene(scene);
+        QTest::qWait(50);
+        QVERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+        QVERIFY(!popup->property("visible").toBool());
+        for(const auto &action:fixture.shell.actions) QVERIFY(action.value("action")!="workspace.activate");
+    }
+    scene.remove("presentation");
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    QVERIFY(fixture.item("operationsQueueButton")->isVisible());
+    QTRY_VERIFY(!fixture.item("queue-tab"));
+}
+
+void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
+{
+    auto scene=panelScene();
+    auto running = task(1,"Running",35);
+    running.insert("pausable",true);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QVERIFY(!fixture.item("queue-tab"));
+    auto *button=fixture.item("operationsQueueButton");
+    QVERIFY(button);
+    // A copy progress publication can arrive between native press and release.
+    QTest::mousePress(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    running.insert("progress",36);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+    fixture.shell.setScene(scene);
+    QTest::qWait(150);
+    QVERIFY2(button->hasActiveFocus(),"Queue progress stole focus from the pressed trigger");
+    QTest::mouseRelease(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    auto *surface=fixture.item("operationsQueueSurface");
+    QVERIFY(surface && surface->isVisible());
+    QVERIFY(fixture.item("persistentPanelsLayer")->isVisible());
+    for (const auto &action : fixture.shell.actions) QVERIFY(action.value("action")!="workspace.activate");
+    QTest::qWait(150);
+    const qreal dpr=fixture.window->devicePixelRatio();
+    QList<QQuickItem *> pending{surface,button};
+    int leaves=0;
+    while (!pending.isEmpty()) {
+        auto *item=pending.takeLast(); pending.append(item->childItems());
+        if (!item->isVisible()) continue;
+        const QString type=item->metaObject()->className();
+        if (!type.startsWith("QQuickText") && !type.startsWith("QQuickImage") && !type.startsWith("QQuickIconImage")) continue;
+        if (item->property("text").isValid() && item->property("text").toString().isEmpty()) continue;
+        QVERIFY2(!item->objectName().isEmpty(),qPrintable(type));
+        const auto origin=item->mapToScene(QPointF());
+        const auto physical=origin*dpr;
+        QVERIFY2(qAbs(physical.x()-qRound(physical.x()))<0.001 && qAbs(physical.y()-qRound(physical.y()))<0.001,
+            qPrintable(QString("%1 %2 physical=(%3,%4)").arg(item->objectName(),type).arg(physical.x()).arg(physical.y())));
+        QCOMPARE(item->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(item->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+        ++leaves;
+    }
+    QVERIFY(leaves>10);
+    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-dropdown-%1.png").arg(dpr)));
+    auto *pause = fixture.item("operationsQueuePauseButton");
+    QVERIFY(pause && pause->isEnabled());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(),QString("queue.pause"));
+    QCOMPARE(fixture.shell.actions.last().value("taskId").toInt(),1);
+    running.insert("state","Paused"); running.insert("stateClass","paused");
+    running.insert("pausable",false); running.insert("resumable",true);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(pause->property("text").toString(),QString("Resume"));
+    QTest::qWait(150);
+    QList<QQuickItem *> resumedLeaves{pause};
+    while (!resumedLeaves.isEmpty()) {
+        auto *leaf = resumedLeaves.takeLast(); resumedLeaves.append(leaf->childItems());
+        const QString type = leaf->metaObject()->className();
+        if (!leaf->isVisible() || (!type.startsWith("QQuickText") && !type.startsWith("QQuickImage"))) continue;
+        QVERIFY(!leaf->objectName().isEmpty());
+        const auto origin = leaf->mapToScene(QPointF());
+        const auto physical = origin*dpr;
+        QVERIFY(qAbs(physical.x()-qRound(physical.x()))<0.001 && qAbs(physical.y()-qRound(physical.y()))<0.001);
+        QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+    }
+    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-resume-%1.png").arg(dpr)));
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(),QString("queue.resume"));
+    QTest::keyClick(fixture.window,Qt::Key_Escape);
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,QPoint(10,600));
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    auto *popup = fixture.window->findChild<QObject *>("operationsQueueDropdown");
+    QVERIFY(popup);
+    // Model native title-bar delivery: the press starts on the trigger,
+    // outside dismissal occurs, then the trigger receives its release/click.
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    QTRY_VERIFY(popup->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(button,"pressed"));
+    QVERIFY(QMetaObject::invokeMethod(popup,"close"));
+    QVERIFY(QMetaObject::invokeMethod(button,"clicked"));
+    QTRY_VERIFY(!popup->property("visible").toBool());
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    for (int attempt=0; attempt<8; ++attempt) {
+        QTest::mousePress(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        running.insert("progress",40+attempt);
+        scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+        fixture.shell.setScene(scene);
+        QTest::qWait(110);
+        QVERIFY(button->hasActiveFocus());
+        QTest::mouseRelease(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        QTRY_VERIFY(popup->property("visible").toBool());
+        pause->forceActiveFocus();
+        running.insert("progress",50+attempt);
+        scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+        fixture.shell.setScene(scene);
+        QTest::qWait(110);
+        QVERIFY(pause->hasActiveFocus());
+        QVERIFY(popup->property("visible").toBool());
+        QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        QTRY_VERIFY(!popup->property("visible").toBool());
+        QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    }
 }
 
 void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClose()
@@ -904,15 +1050,8 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
 
     QQuickItem *workspaceBar = fixture.item(QStringLiteral("workspaceBar"));
     QVERIFY(workspaceBar);
-    QQuickItem *queueTitle = visualItemWithText(workspaceBar,
-                                                QStringLiteral("Queue"));
-    QQuickItem *queueNumber = visualItemWithText(workspaceBar,
-                                                 QStringLiteral("2"));
-    QVERIFY(queueTitle);
-    QVERIFY(queueNumber);
-    QCOMPARE(queueNumber->property("text").toString(), QStringLiteral("2"));
-    QVERIFY(queueTitle->mapToScene(QPointF{}).x()
-            < queueNumber->mapToScene(QPointF{}).x());
+    QVERIFY(!visualItemWithText(workspaceBar, QStringLiteral("Queue")));
+    QVERIFY(fixture.item(QStringLiteral("operationsQueueButton")));
     QVariant naturalTabWidth;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "preferredWorkspaceTabWidth",
@@ -971,7 +1110,7 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
 
 void F4OperationsQueueTests::plusButtonIsInteractiveInsideQwkTitleBar()
 {
-    QueueFixture fixture(queueScene(queueModel({}, -1, false)), true);
+    QueueFixture fixture(panelScene(), true);
     QVERIFY(fixture.window);
     QQuickItem *plusButton = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -983,11 +1122,13 @@ void F4OperationsQueueTests::plusButtonIsInteractiveInsideQwkTitleBar()
     fixture.shell.clearActions();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       itemCenter(plusButton));
-    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1000);
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("target")),
-             QVariant(QStringLiteral("workspace-new")));
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("action")),
-             QVariant(QStringLiteral("workspace.new")));
+    int newTabActions=0;
+    for (const auto &action : fixture.shell.actions) {
+        if (action.value("action")!="workspace.new") continue;
+        QCOMPARE(action.value("target"),QVariant("workspace-new"));
+        ++newTabActions;
+    }
+    QCOMPARE(newTabActions,1);
 }
 
 void F4OperationsQueueTests::progressUpdatesKeepModelAndDelegateIdentity()
@@ -1230,6 +1371,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
                                       Q_ARG(qreal, -900.0)));
     QTRY_VERIFY_WITH_TIMEOUT(queueList->property("flicking").toBool(), 1000);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(panelScene());
     QTRY_VERIFY_WITH_TIMEOUT(panelPair->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1263,6 +1405,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QCOMPARE(fixture.item(QStringLiteral("operationsQueueList")), queueList);
     QCOMPARE(queueList->property("contentY").toReal(), frozenQueueY);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(documentScene());
     QQuickItem *document = prewarmedDocument;
     QQuickItem *documentList = nullptr;
@@ -1294,6 +1437,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QTest::qWait(60);
     QCOMPARE(documentList->property("contentY").toReal(), frozenDocumentY);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(documentScene());
     QTRY_VERIFY_WITH_TIMEOUT(document->isVisible(), 1000);
     QCOMPARE(fixture.item(QStringLiteral("documentList")), documentList);
@@ -2779,6 +2923,50 @@ void F4OperationsQueueTests::semanticDialogRowsExpandForNativeControls()
                  qPrintable(QStringLiteral("%1 has a non-translation transform")
                                 .arg(leaf->objectName())));
     }
+}
+
+void F4OperationsQueueTests::errorMessagesWrapToNativeWidth()
+{
+    auto scene = dialogScene();
+    auto dialogs = scene.value("dialogs").toList();
+    auto dialog = dialogs[0].toMap();
+    dialog["title"] = "Deletion Errors";
+    const QString message = QStringLiteral("Skipped 'photo & notes.png': unlinkat D:/Code/f4-qt-drag-drop/.diagnostics/visual-drag/test/photo & notes.png: The process cannot access the file because it is being used by another process.");
+    dialog["children"] = QVariantList{QVariantMap{
+        {"id", "error-list"}, {"kind", "listBox"}, {"x", 20}, {"y", 7},
+        {"w", 50}, {"h", 12}, {"wrapText", true}, {"readOnly", true},
+        {"items", QVariantList{message, QStringLiteral("Second complete error message.")}}
+    }};
+    dialogs[0] = dialog;
+    scene["dialogs"] = dialogs;
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *root = fixture.window->contentItem();
+    QQuickItem *first = nullptr;
+    QTRY_VERIFY((first = visualItem(root, QStringLiteral("dialogWidget-error-listListItemText-0"))));
+    QQuickItem *second = nullptr;
+    QTRY_VERIFY((second = visualItem(root, QStringLiteral("dialogWidget-error-listListItemText-1"))));
+    QCOMPARE(first->property("text").toString(), message);
+    QTRY_VERIFY(first->property("lineCount").toInt() > 1);
+    const int wideLines = first->property("lineCount").toInt();
+    auto *control = visualItem(root, QStringLiteral("dialogWidget-error-listRoot"));
+    QVERIFY(control);
+    QVERIFY(control->setProperty("maximumWidth", 180.0));
+    QTRY_VERIFY(first->property("lineCount").toInt() > wideLines);
+    QTest::qWait(100);
+    for (auto *leaf : {first, second}) {
+        const QPointF origin = leaf->mapToItem(root, QPointF());
+        const qreal dpr = fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(origin.x()*dpr - qRound(origin.x()*dpr)) < 0.001);
+        QVERIFY(qAbs(origin.y()*dpr - qRound(origin.y()*dpr)) < 0.001);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+        QVERIFY(leaf->height() >= leaf->property("contentHeight").toReal());
+    }
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    if (!qEnvironmentVariable("F4_DIALOG_CAPTURE").isEmpty())
+        QVERIFY(capture.save(qEnvironmentVariable("F4_DIALOG_CAPTURE")));
 }
 
 void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAligned()

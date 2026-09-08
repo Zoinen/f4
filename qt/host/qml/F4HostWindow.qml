@@ -16,6 +16,17 @@ ApplicationWindow {
     property string worktreeBranchName: ""
     property Item galleryViewerLayer: null
     property Item operationsQueueLayer: null
+    readonly property bool nativeQueueDropdownEnabled:
+        sceneStoreApi !== null && sceneStoreApi.chromeState.presentation !== "text"
+    onNativeQueueDropdownEnabledChanged: {
+        if (!nativeQueueDropdownEnabled) queueDropdownOpen = false
+    }
+    property bool queueDropdownOpen: false
+    function toggleQueueDropdown() {
+        if (!nativeQueueDropdownEnabled) return
+        queueDropdownOpen = !queueDropdownOpen
+        if (queueDropdownOpen) action({action: "queue.ensure"}, true)
+    }
     property Item focusTarget: null
     property var sceneStoreApi: null
     property var interactionControllerApi: null

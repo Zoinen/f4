@@ -41,6 +41,7 @@ const (
 // model directly opt in from TestMain.
 var extUiPanelCatalogMetadataEnabled atomic.Bool
 var extUiPanelCatalogRowsEnabled atomic.Bool
+var extUiPanelCatalogDeltaEnabled atomic.Bool
 
 func setExtUiPanelCatalogMetadataEnabled(enabled bool) bool {
 	return extUiPanelCatalogMetadataEnabled.Swap(enabled)
@@ -2754,8 +2755,8 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 var semanticPanelCatalogMutableKeys = map[string]struct{}{
 	"path": {}, "title": {}, "pathIcon": {}, "catalogRevision": {}, "selectionRevision": {},
 	"cursorEntryId": {}, "cursor": {}, "loading": {}, "catalogProvisional": {},
-	"catalogRowsDeferred": {},
-	"fastFind":            {}, "fastFindText": {}, "fastFindMatchColor": {},
+	"catalogRowsDeferred": {}, "catalogDelta": {},
+	"fastFind": {}, "fastFindText": {}, "fastFindMatchColor": {},
 	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
 	"selectedFiles": {}, "selectedDirectories": {}, "selectedSize": {}, "totalSize": {},
 	"freeSpace": {}, "freeSpaceKnown": {}, "symlinkTarget": {}, "useSortGroups": {},
@@ -4546,6 +4547,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	previousPanelCatalogRows := setExtUiPanelCatalogRowsEnabled(
 		panelCatalogRowsV1)
 	defer setExtUiPanelCatalogRowsEnabled(previousPanelCatalogRows)
+	previousDelta := extUiPanelCatalogDeltaEnabled.Swap(extUiHelloCapability(hello, "panelCatalogDeltaV1"))
+	defer extUiPanelCatalogDeltaEnabled.Store(previousDelta)
 	previousDocumentViewport := nativeDocumentViewport
 	nativeDocumentViewport.enabled = extUiHelloCapability(hello, "documentViewportV1")
 	nativeDocumentViewport.geometry = nativeDocumentGeometry{}
@@ -4780,6 +4783,11 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		}
 		if vtui.FrameManager != nil {
 			vtui.FrameManager.PostPriorityTask(func() {
+				if semanticString(action["action"]) == "panel.prepareDrag" {
+					response := prepareSemanticDrag(action)
+					go func() { _ = h.send.Send(response) }()
+					return
+				}
 				if benchmark != nil {
 					startedNs := navigationBenchmarkMonotonicNs()
 					benchmark.eventAt("ui_task.started", "go.ui", startedNs,
