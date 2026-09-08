@@ -400,8 +400,10 @@ Item {
     }
 
     function resetOperationsQueueProjection() {
+        // Queue progress is background data, not a change of interaction
+        // surface. Resetting the scene here steals focus during button presses
+        // and while the user is interacting with the queue dropdown.
         captureOperationsSurface()
-        sceneReset()
     }
 
     function applyCompactPatch(patch) {

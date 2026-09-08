@@ -796,7 +796,15 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
     QVERIFY(!fixture.item("queue-tab"));
     auto *button=fixture.item("operationsQueueButton");
     QVERIFY(button);
-    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    // A copy progress publication can arrive between native press and release.
+    QTest::mousePress(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    running.insert("progress",36);
+    scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+    fixture.shell.setScene(scene);
+    QTest::qWait(150);
+    QVERIFY2(button->hasActiveFocus(),"Queue progress stole focus from the pressed trigger");
+    QTest::mouseRelease(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+
     QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
     auto *surface=fixture.item("operationsQueueSurface");
     QVERIFY(surface && surface->isVisible());
@@ -867,8 +875,21 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
     QTRY_VERIFY(!popup->property("visible").toBool());
     QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
     for (int attempt=0; attempt<8; ++attempt) {
-        QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        QTest::mousePress(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+        running.insert("progress",40+attempt);
+        scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+        fixture.shell.setScene(scene);
+        QTest::qWait(110);
+        QVERIFY(button->hasActiveFocus());
+        QTest::mouseRelease(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
         QTRY_VERIFY(popup->property("visible").toBool());
+        pause->forceActiveFocus();
+        running.insert("progress",50+attempt);
+        scene.insert("operationsQueue",queueModel({running,task(2,"Error",20)},1,true));
+        fixture.shell.setScene(scene);
+        QTest::qWait(110);
+        QVERIFY(pause->hasActiveFocus());
+        QVERIFY(popup->property("visible").toBool());
         QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
         QTRY_VERIFY(!popup->property("visible").toBool());
         QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
