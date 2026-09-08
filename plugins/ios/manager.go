@@ -476,3 +476,5 @@ func (*deviceProvider) Open(ctx context.Context, parent vfs.VFS, p string) (vfs.
 	}
 	return manager.opener.OpenDevice(ctx, manager, device)
 }
+
+func (*ManagerVFS) PanelIcon() string { return "apple-logo" }

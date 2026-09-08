@@ -57,6 +57,9 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 	type projectedCaret struct{ row, column int }
 	carets := make([]projectedCaret, 0, len(ev.extraCursors))
 	for _, caret := range ev.extraCursors {
+		if !style.paintStreamSelection {
+			break
+		}
 		if start, end := caret.selRange(); end > start {
 			ev.extraSelSpans = append(ev.extraSelSpans, matchSpan{Off: start, Len: end - start})
 		}

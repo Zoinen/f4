@@ -37,7 +37,9 @@ func driveMenuPlatformKind(path string) driveMenuKind {
 		return driveMenuKindUnknown
 	}
 	switch windows.GetDriveType(root) {
-	case windows.DRIVE_FIXED, windows.DRIVE_RAMDISK:
+	case windows.DRIVE_RAMDISK:
+		return driveMenuKindRAM
+	case windows.DRIVE_FIXED:
 		return driveMenuKindFixed
 	case windows.DRIVE_REMOVABLE:
 		return driveMenuKindRemovable

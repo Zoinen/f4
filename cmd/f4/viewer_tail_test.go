@@ -263,3 +263,56 @@ func screenContains(scr *vtui.ScreenBuf, text string) bool {
 	}
 	return false
 }
+
+func TestNativeViewerReloadReplacesSameSizeRows(t *testing.T) {
+	vv := cachedSemanticViewer([]byte("old text"))
+	defer vv.Close()
+	vv.SetPosition(0, 0, 30, 4)
+	first := vv.SemanticNode(nil)
+	copy(vv.backend.file.(*vfs.MemoryReadAtCloser).Data, []byte("new text"))
+	vv.eofVisible = false
+	vv.reload()
+	var next map[string]any
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		next = vv.SemanticNode(nil)
+		if next["layoutPending"] == false {
+			break
+		}
+		drainFrameTasks()
+		time.Sleep(time.Millisecond)
+	}
+	if first["windowContentKey"] == next["windowContentKey"] {
+		t.Fatal("same-size reload retained native row content")
+	}
+}
+
+func TestNativeViewerRefreshFollowsWithoutConsolePaint(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	root := t.TempDir()
+	path := filepath.Join(root, "log.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	vv, err := NewViewerView(context.Background(), vfs.NewOSVFS(root), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vv.Close()
+	vv.stopTailWatch()
+	applyNativeDocumentViewport(vv, nativeDocumentGeometry{columns: 20, rows: 2, revision: 1})
+	vv.eofVisible = true
+	vv.lastKnownSize = vv.backend.Size()
+	appendTo(t, path, "three\nfour\nfive\n")
+	vv.refreshFromFile()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		drainFrameTasks()
+		vv.SemanticNode(nil)
+		if !vv.Busy && vv.TopOffset > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("native viewer did not follow appended data without DisplayObject")
+}

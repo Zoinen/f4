@@ -156,7 +156,7 @@ void applyDocumentPatch(SurfaceRegistry *registry,
         QStringLiteral("selectionBackground"),
         QStringLiteral("selectionBold"),
         QStringLiteral("selectionUnderline"),
-        QStringLiteral("selectionStrikeout"), QStringLiteral("topBarRight"),
+        QStringLiteral("selectionStrikeout"), QStringLiteral("secondaryCarets"), QStringLiteral("topBarRight"),
     };
     QSet<QString> contentKeys = applied.surfaceKeys;
     contentKeys.subtract(stateKeys);

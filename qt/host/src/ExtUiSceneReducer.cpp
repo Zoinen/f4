@@ -160,7 +160,7 @@ QVariantMap makePatchPresentationScene(const QVariantMap &scene,
                   "cursorAbsoluteRow", "cursorAbsoluteColumn", "selection",
                   "selectionAnchorRow", "selectionAnchorColumn",
                   "selectionForeground", "selectionBackground",
-                  "selectionBold", "selectionUnderline", "selectionStrikeout",
+                  "selectionBold", "selectionUnderline", "selectionStrikeout", "secondaryCarets",
                   "topBarRight"}) {
             const QString key = QString::fromLatin1(name);
             const auto value = surface.constFind(key);
@@ -523,9 +523,7 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
         return false;
     }
     for (const QString &heavyKey : {
-             QStringLiteral("highlightRevision"),
-             QStringLiteral("selectedSize"),
-             QStringLiteral("totalSize")}) {
+             QStringLiteral("highlightRevision")}) {
         if (panel.contains(heavyKey)) {
             return false;
         }

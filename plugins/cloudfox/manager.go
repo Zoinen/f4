@@ -341,3 +341,5 @@ var (
 	_ vfs.PanelTitleProvider = (*ManagerVFS)(nil)
 	_ vfs.PanelActionHandler = (*ManagerVFS)(nil)
 )
+
+func (*ManagerVFS) PanelIcon() string { return "cloud" }

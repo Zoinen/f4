@@ -914,6 +914,17 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			persistNativePanelLayoutSession(pf)
 		}
 		return true
+	case "panel.sortGroups":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			enabled, ok := action["enabled"].(bool)
+			if !ok {
+				return false
+			}
+			pf.setActivePanelForAction(action)
+			fsp.SetUseSortGroups(enabled)
+			pf.updateMenuCheckmarks()
+			return true
+		}
 	case "panel_sort", "panel.sort":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			mode, ok := parseSortModeName(semanticString(action["mode"]))
@@ -2493,7 +2504,8 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		semanticTitle = fp.currentTitle
 	}
 	return extui.PanelModel{
-		ID: panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
+		PathIcon: semanticPanelIcon(fp.vfs),
+		ID:       panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: AppConfig.ShowPanelFileInfo,
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
@@ -2530,7 +2542,9 @@ func (fp *FileSystemPanel) semanticLoading() bool {
 	return fp != nil && fp.isLoading && !fp.catalogInteractive
 }
 
-func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
+func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) (model extui.PanelModel) {
+	defer func() { fp.enrichNativePanelStatus(&model) }()
+
 	if extUiPanelCatalogRowsIsEnabled() {
 		return fp.semanticPagedPanelModel(ctx, side, active)
 	}
@@ -2642,6 +2656,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		fp.unpublishSemanticMetadataSnapshot()
 	}
 	return extui.PanelModel{
+		PathIcon:               semanticPanelIcon(fp.vfs),
 		ID:                     panelID,
 		Side:                   side,
 		Active:                 active,
@@ -2722,7 +2737,8 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 	}
 	denseCatalog := fp.semanticCatalogCanBeDense()
 	return extui.PanelModel{
-		ID: panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
+		PathIcon: semanticPanelIcon(fp.vfs),
+		ID:       panelID, Side: side, Active: active, Path: fp.vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: AppConfig.ShowPanelFileInfo,
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
@@ -2753,7 +2769,13 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 // immutable catalog stays in the renderer/Qt cache until CatalogRevision
 // changes. Returning false requests a complete fallback because no validated
 // catalog has been published for this panel yet.
-func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, side int, active bool) (extui.PanelModel, bool) {
+func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, side int, active bool) (model extui.PanelModel, valid bool) {
+	defer func() {
+		if valid {
+			fp.enrichNativePanelStatus(&model)
+		}
+	}()
+
 	if extUiPanelCatalogRowsIsEnabled() {
 		return fp.semanticPagedPanelHeaderModel(ctx, side, active)
 	}
@@ -2801,6 +2823,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		semanticTitle = fp.currentTitle
 	}
 	return extui.PanelModel{
+		PathIcon:               semanticPanelIcon(fp.vfs),
 		ID:                     vtui.SemanticID(fp),
 		Side:                   side,
 		Active:                 active,
@@ -3489,6 +3512,7 @@ func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, text
 }
 
 type semanticEditorCursorState struct {
+	secondaryCarets       []extui.CaretModel
 	line                  int
 	pos                   int
 	visualRow             int
@@ -3538,6 +3562,7 @@ func (state semanticEditorCursorState) ToMap() map[string]any {
 		"selectionBold":         state.selectionBold,
 		"selectionUnderline":    state.selectionUnderline,
 		"selectionStrikeout":    state.selectionStrikeout,
+		"secondaryCarets":       extui.CaretsToMaps(state.secondaryCarets),
 	}
 }
 
@@ -3577,6 +3602,16 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 		selectionBold:       selected.Bold,
 		selectionUnderline:  selected.Underline,
 		selectionStrikeout:  selected.Strikeout,
+	}
+	if !ev.HexMode && !ev.DecodeMode && ev.DisasmMode == 0 && !ev.saving && !ev.pasting {
+		for _, caret := range ev.extraCursors {
+			row, column := ev.engine.LogicalToVisual(caret.off)
+			anchorRow, anchorColumn := ev.engine.LogicalToVisual(caret.anchor)
+			state.secondaryCarets = append(state.secondaryCarets, extui.CaretModel{
+				CursorAbsoluteRow: int64(row), CursorAbsoluteColumn: column,
+				Selection: caret.hasSel, SelectionAnchorRow: int64(anchorRow), SelectionAnchorColumn: anchorColumn,
+			})
+		}
 	}
 	if state.selection {
 		anchorRow, anchorColumn := ev.engine.LogicalToVisual(ev.selAnchorOffset)
@@ -3700,6 +3735,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		SelectionBold:           cursor.selectionBold,
 		SelectionUnderline:      cursor.selectionUnderline,
 		SelectionStrikeout:      cursor.selectionStrikeout,
+		SecondaryCarets:         cursor.secondaryCarets,
 		Rows:                    visibleRows,
 		WindowRows:              window.rows,
 		Autocomplete:            ev.semanticAutocomplete(),
@@ -4352,4 +4388,19 @@ func semanticBool(v any) bool {
 		return f != 0
 	}
 	return false
+}
+
+func semanticPanelIcon(filesystem vfs.VFS) string {
+	if provider, ok := filesystem.(vfs.PanelIconProvider); ok {
+		if icon := strings.TrimSpace(provider.PanelIcon()); icon != "" {
+			return icon
+		}
+	}
+	if filesystem == nil {
+		return ""
+	}
+	if _, ok := filesystem.(*vfs.OSVFS); ok {
+		return ""
+	}
+	return "plug"
 }

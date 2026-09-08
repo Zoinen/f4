@@ -32,6 +32,7 @@ type viewerRowConstruction struct {
 
 type viewerWindowConstructionKey struct {
 	backend                   *ViewerBackend
+	contentRevision           uint64
 	top, size                 int64
 	width, height, overscan   int
 	tabSize                   int
@@ -231,7 +232,8 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 
 func (vv *ViewerView) constructionKey(top int64, width, height, overscan int) viewerWindowConstructionKey {
 	return viewerWindowConstructionKey{backend: vv.backend, top: top,
-		size: vv.backend.Size(), width: width, height: height, overscan: overscan,
+		contentRevision: vv.backend.ContentRevision(),
+		size:            vv.backend.Size(), width: width, height: height, overscan: overscan,
 		tabSize: effectiveViewerTabSize(),
 		layout:  vv.semanticLayoutRevision, geometry: vv.nativeViewportRevision,
 		request: vv.semanticWindowRequestGeneration,

@@ -52,7 +52,7 @@ func getPlatformDrives() []DriveEntry {
 	})
 	drives = append(drives, DriveEntry{
 		Name:    "Windows Registry",
-		Icon:    "settings",
+		Icon:    "blocks",
 		Factory: func() vfs.VFS { return vfs.NewRegistryVFS() },
 	})
 	return drives

@@ -968,3 +968,5 @@ var (
 	_ vfs.SessionIdentity      = (*AFCVFS)(nil)
 	_ vfs.SessionReconnector   = (*AFCVFS)(nil)
 )
+
+func (*AFCVFS) PanelIcon() string { return "apple-logo" }

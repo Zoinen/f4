@@ -786,3 +786,5 @@ func (f *syncReadFile) Close() error {
 	}
 	return err
 }
+
+func (*SyncVFS) PanelIcon() string { return "android-logo" }

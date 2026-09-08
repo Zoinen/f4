@@ -489,3 +489,5 @@ var _ vfs.PanelTitleProvider = (*CoreVFS)(nil)
 var _ vfs.PanelInfoProvider = (*CoreVFS)(nil)
 var _ vfs.SessionIdentity = (*CoreVFS)(nil)
 var _ vfs.SessionReconnector = (*CoreVFS)(nil)
+
+func (*CoreVFS) PanelIcon() string { return "apple-logo" }

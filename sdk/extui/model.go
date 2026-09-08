@@ -113,6 +113,14 @@ type QuickViewModel struct {
 }
 
 type PanelModel struct {
+	PathIcon            string
+	UseSortGroups       bool
+	SelectedFiles       int
+	SelectedDirectories int
+	FreeSpace           uint64
+	FreeSpaceKnown      bool
+	SymlinkTarget       string
+
 	ID                    string
 	Side                  int
 	Active                bool
@@ -351,7 +359,27 @@ type TerminalModel struct {
 	WindowRows         []TextRowModel
 }
 
+// CaretModel carries a secondary editor caret and its independent selection.
+type CaretModel struct {
+	CursorAbsoluteRow     int64
+	CursorAbsoluteColumn  int
+	Selection             bool
+	SelectionAnchorRow    int64
+	SelectionAnchorColumn int
+}
+
+func CaretsToMaps(carets []CaretModel) []map[string]any {
+	result := make([]map[string]any, 0, len(carets))
+	for _, c := range carets {
+		result = append(result, map[string]any{"cursorAbsoluteRow": c.CursorAbsoluteRow,
+			"cursorAbsoluteColumn": c.CursorAbsoluteColumn, "selection": c.Selection,
+			"selectionAnchorRow": c.SelectionAnchorRow, "selectionAnchorColumn": c.SelectionAnchorColumn})
+	}
+	return result
+}
+
 type SurfaceModel struct {
+	SecondaryCarets   []CaretModel
 	ID                string
 	Kind              string
 	DefaultBackground string
@@ -542,6 +570,7 @@ type MenuModel struct {
 }
 
 type MenuItemModel struct {
+	Details    map[string]string
 	Index      int
 	ID         string
 	Text       string
@@ -806,7 +835,14 @@ func (p PanelModel) ToMap() M {
 		"side":                   p.Side,
 		"active":                 p.Active,
 		"path":                   p.Path,
+		"pathIcon":               p.PathIcon,
 		"title":                  p.Title,
+		"useSortGroups":          p.UseSortGroups,
+		"selectedFiles":          p.SelectedFiles,
+		"selectedDirectories":    p.SelectedDirectories,
+		"freeSpace":              p.FreeSpace,
+		"freeSpaceKnown":         p.FreeSpaceKnown,
+		"symlinkTarget":          p.SymlinkTarget,
 		"showFileInfo":           p.ShowFileInfo,
 		"galleryLayoutMode":      p.GalleryLayoutMode,
 		"galleryColumnCount":     p.GalleryColumnCount,
@@ -827,6 +863,8 @@ func (p PanelModel) ToMap() M {
 		"fastFind":               p.FastFind,
 		"fastFindText":           p.FastFindText,
 		"selectedCount":          p.SelectedCount,
+		"selectedSize":           p.SelectedSize,
+		"totalSize":              p.TotalSize,
 		"totalCount":             p.TotalCount,
 		"galleryColumns":         columnsToMaps(p.GalleryColumns),
 	}
@@ -1165,6 +1203,7 @@ func (d SurfaceModel) ToMap() M {
 		"selectionBold":           d.SelectionBold,
 		"selectionUnderline":      d.SelectionUnderline,
 		"selectionStrikeout":      d.SelectionStrikeout,
+		"secondaryCarets":         CaretsToMaps(d.SecondaryCarets),
 		"rows":                    rowsToMaps(d.Rows),
 		"windowRows":              rowsToMaps(d.WindowRows),
 	}
@@ -1434,6 +1473,10 @@ func (i MenuItemModel) ToMap() M {
 			out[k] = v
 		}
 	}
+	if len(i.Details) > 0 {
+		out["details"] = i.Details
+	}
+
 	return out
 }
 

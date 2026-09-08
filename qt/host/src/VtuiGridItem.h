@@ -36,6 +36,8 @@ class VtuiGridItem : public QQuickItem
 public:
     explicit VtuiGridItem(QQuickItem *parent = nullptr);
 
+    static int protocolModifiers(Qt::KeyboardModifiers modifiers, bool macOS);
+
     QObject *controller() const { return m_controllerObject; }
     void setController(QObject *controller);
     QString fontFamily() const { return m_font.family(); }

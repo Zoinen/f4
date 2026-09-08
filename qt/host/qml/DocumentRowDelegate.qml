@@ -175,72 +175,81 @@ Rectangle {
             loaded ? Number(rowData.visualRow || 0) : -1,
             loaded ? Number(rowData.visualWidth || 0) : 0)
 
-    Rectangle {
-        id: editorSelectionClip
-        objectName: "documentEditorSelectionClip"
-        readonly property real rawStartX:
-            documentRow.documentRoot.textHorizontalInset
-            + documentRow.editorSelectionRange.start
-              * documentRow.documentRoot.terminalCellWidth
-        readonly property real rawEndX:
-            documentRow.documentRoot.textHorizontalInset
-            + documentRow.editorSelectionRange.end
-              * documentRow.documentRoot.terminalCellWidth
-        readonly property real snappedEndX:
-            rawEndX + documentRow.documentRoot.bodyPixelOffsetX(
+    Repeater {
+        model: 1 + (documentRow.documentRoot.cursorFrame.secondaryCarets || []).length
+        delegate: Rectangle {
+            required property int index
+            readonly property var modelData: documentRow.documentRoot.editorSelectionRangeForRow(
+                documentRow.loaded ? Number(documentRow.rowData.visualRow || 0) : -1,
+                documentRow.loaded ? Number(documentRow.rowData.visualWidth || 0) : 0,
+                index === 0 ? documentRow.documentRoot.cursorFrame
+                            : (documentRow.documentRoot.cursorFrame.secondaryCarets || [])[index - 1])
+            id: editorSelectionClip
+            objectName: index === 0 ? "documentEditorSelectionClip" : "documentEditorSecondarySelectionClip-" + index
+            readonly property real rawStartX:
+                documentRow.documentRoot.textHorizontalInset
+                + editorSelectionClip.modelData.start
+                  * documentRow.documentRoot.terminalCellWidth
+            readonly property real rawEndX:
+                documentRow.documentRoot.textHorizontalInset
+                + editorSelectionClip.modelData.end
+                  * documentRow.documentRoot.terminalCellWidth
+            readonly property real snappedEndX:
+                rawEndX + documentRow.documentRoot.bodyPixelOffsetX(
+                    documentRow.documentList.x
+                    + documentRow.documentList.contentItem.x + documentRow.x
+                    + rawEndX)
+            x: rawStartX + documentRow.documentRoot.bodyPixelOffsetX(
                 documentRow.documentList.x
                 + documentRow.documentList.contentItem.x + documentRow.x
-                + rawEndX)
-        x: rawStartX + documentRow.documentRoot.bodyPixelOffsetX(
-            documentRow.documentList.x
-            + documentRow.documentList.contentItem.x + documentRow.x
-            + rawStartX)
-        y: 0
-        width: Math.max(0, snappedEndX - x)
-        height: parent.height
-        visible: documentRow.loaded && documentRow.editorSelectionRange.valid
-        color: documentRow.hostWindow.cleanText(
-                   documentRow.documentRoot.cursorFrame.selectionBackground)
-               !== ""
-               ? documentRow.documentRoot.cursorFrame.selectionBackground
-               : documentRow.hostWindow.selectedBg
-        clip: true
-        z: 2
+                + rawStartX)
+            y: 0
+            width: Math.max(0, snappedEndX - x)
+            height: parent.height
+            visible: documentRow.loaded && editorSelectionClip.modelData.valid
+            color: documentRow.hostWindow.cleanText(
+                       documentRow.documentRoot.cursorFrame.selectionBackground)
+                   !== ""
+                   ? documentRow.documentRoot.cursorFrame.selectionBackground
+                   : documentRow.hostWindow.selectedBg
+            clip: true
+            z: 2
 
             Text {
-            id: editorSelectedText
-            objectName: "documentEditorSelectedText"
-            x: documentRow.documentRoot.textHorizontalInset
-               - editorSelectionClip.x
-            anchors.verticalCenter: parent.verticalCenter
-            text: documentRow.contentActive && editorSelectionClip.visible
-                  ? documentRow.hostWindow.rowText(documentRow.rowData) : ""
-            textFormat: Text.PlainText
-            renderType: documentRow.hostWindow.fontRenderType
-            color: documentRow.hostWindow.cleanText(
-                       documentRow.documentRoot.cursorFrame.selectionForeground)
-                   !== ""
-                   ? documentRow.documentRoot.cursorFrame.selectionForeground
-                   : documentRow.hostWindow.textColor
-            font.family: documentRow.hostWindow.guiMonospaceFontFamily
-            font.pixelSize: documentRow.hostWindow.semanticTextFontPixelSize
-            font.bold:
-                documentRow.documentRoot.cursorFrame.selectionBold === true
-            font.underline:
-                documentRow.documentRoot.cursorFrame.selectionUnderline
-                === true
-            font.strikeout:
-                documentRow.documentRoot.cursorFrame.selectionStrikeout
-                === true
-            transform: Translate {
-                x: documentRow.documentRoot.bodyPixelOffsetX(
-                       documentRow.documentList.x
-                       + documentRow.documentList.contentItem.x + documentRow.x
-                       + editorSelectionClip.x + editorSelectedText.x)
-                y: documentRow.documentRoot.bodyPixelOffsetY(
-                       documentRow.documentList.y
-                       + documentRow.documentList.contentItem.y + documentRow.y
-                       + editorSelectionClip.y + editorSelectedText.y)
+                id: editorSelectedText
+                objectName: editorSelectionClip.index === 0 ? "documentEditorSelectedText" : "documentEditorSecondarySelectedText-" + editorSelectionClip.index
+                x: documentRow.documentRoot.textHorizontalInset
+                   - editorSelectionClip.x
+                anchors.verticalCenter: parent.verticalCenter
+                text: documentRow.contentActive && editorSelectionClip.visible
+                      ? documentRow.hostWindow.rowText(documentRow.rowData) : ""
+                textFormat: Text.PlainText
+                renderType: documentRow.hostWindow.fontRenderType
+                color: documentRow.hostWindow.cleanText(
+                           documentRow.documentRoot.cursorFrame.selectionForeground)
+                       !== ""
+                       ? documentRow.documentRoot.cursorFrame.selectionForeground
+                       : documentRow.hostWindow.textColor
+                font.family: documentRow.hostWindow.guiMonospaceFontFamily
+                font.pixelSize: documentRow.hostWindow.semanticTextFontPixelSize
+                font.bold:
+                    documentRow.documentRoot.cursorFrame.selectionBold === true
+                font.underline:
+                    documentRow.documentRoot.cursorFrame.selectionUnderline
+                    === true
+                font.strikeout:
+                    documentRow.documentRoot.cursorFrame.selectionStrikeout
+                    === true
+                transform: Translate {
+                    x: documentRow.documentRoot.bodyPixelOffsetX(
+                           documentRow.documentList.x
+                           + documentRow.documentList.contentItem.x + documentRow.x
+                           + editorSelectionClip.x + editorSelectedText.x)
+                    y: documentRow.documentRoot.bodyPixelOffsetY(
+                           documentRow.documentList.y
+                           + documentRow.documentList.contentItem.y + documentRow.y
+                           + editorSelectionClip.y + editorSelectedText.y)
+                }
             }
         }
     }

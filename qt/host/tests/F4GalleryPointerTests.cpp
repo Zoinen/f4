@@ -16,6 +16,7 @@
 #include <QQuickItem>
 #include <QQuickView>
 #include <QSignalSpy>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTcpServer>
@@ -255,6 +256,15 @@ class F4GalleryPointerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void fullNameTooltipUsesCompleteCatalogNameAndPhysicalPixels();
+    void macCommandAndControlRemainDistinct()
+    {
+        QCOMPARE(VtuiGridItem::protocolModifiers(Qt::ControlModifier, true), 8);
+        QCOMPARE(VtuiGridItem::protocolModifiers(Qt::MetaModifier, true), 4);
+        QCOMPARE(VtuiGridItem::protocolModifiers(Qt::ControlModifier | Qt::MetaModifier, true), 12);
+        QCOMPARE(VtuiGridItem::protocolModifiers(Qt::ControlModifier, false), 8);
+        QCOMPARE(VtuiGridItem::protocolModifiers(Qt::MetaModifier, false), 0);
+    }
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
@@ -2390,3 +2400,68 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
 QTEST_MAIN(F4GalleryPointerTests)
 
 #include "F4GalleryPointerTests.moc"
+
+void F4GalleryPointerTests::fullNameTooltipUsesCompleteCatalogNameAndPhysicalPixels()
+{
+    QQuickView view;
+    view.resize(640, 360);
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    const QString fullName = QString("a complete long filename with spaces and Unicode ") + QString::fromUtf8("тест") + QString(100, 'x');
+    auto scene = galleryScene(4);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panelData = panels[0].toMap();
+    auto entries = panelData.value("entries").toList();
+    auto entry = entries[1].toMap();
+    entry.insert("name", fullName);
+    entries[1] = entry;
+    panelData.insert("entries", entries);
+    panels[0] = panelData;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    bridge.synchronizeScene(scene);
+    view.engine()->rootContext()->setContextProperty("nameBridge", &bridge);
+    view.engine()->rootContext()->setContextProperty("testDpr", view.devicePixelRatio());
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+      import QtQuick
+      Item {
+        width: 640; height: 360
+        Loader {
+          objectName: "nameLoader"
+          anchors.fill: parent
+          source: nameBridge.panelComponentUrl
+          onLoaded: {
+            item.side = 0
+            item.bridge = nameBridge
+            item.panel = { "catalogRevision": 5 }
+            item.devicePixelRatio = testDpr
+          }
+        }
+      }
+    )QML", QUrl("inline:FullNameTest.qml"));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *root = component.create();
+    QVERIFY(root);
+    const auto cleanup = qScopeGuard([&] { delete root; });
+    view.setContent(QUrl("inline:FullNameTest.qml"), &component, root);
+    view.show();
+    QObject *loader = root->findChild<QObject *>("nameLoader");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = loader->property("item").value<QObject *>();
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    QQuickItem *label = nullptr;
+    QTRY_VERIFY((label = panel->findChild<QQuickItem *>("galleryMasonryLabel-1")) && label->isVisible());
+    QTest::qWait(100);
+    QTest::mouseMove(&view, label->mapToScene(QPointF(label->width()/2, label->height()/2)).toPoint());
+    QTRY_COMPARE(panel->property("hoveredIndex").toInt(), 1);
+    auto *tip = host->findChild<QObject *>("galleryFullNameTooltip-0");
+    QVERIFY(tip);
+    QTest::qWait(750);
+    QVERIFY(!tip->property("opened").toBool());
+    QVERIFY(!tip->property("visible").toBool());
+}

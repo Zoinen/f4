@@ -610,3 +610,9 @@ var (
 	_ vfs.VirtualDirectoryProvider = (*ApplicationProvider)(nil)
 	_ vfs.VirtualDirectoryProvider = (*GroupProvider)(nil)
 )
+
+func (*DeviceRootVFS) PanelIcon() string { return "apple-logo" }
+
+func (*ApplicationsVFS) PanelIcon() string { return "apple-logo" }
+
+func (*AppGroupsVFS) PanelIcon() string { return "apple-logo" }

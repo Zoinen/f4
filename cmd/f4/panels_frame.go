@@ -5569,13 +5569,11 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 		platformDrives = append(platformDrives, drv)
 	}
-	platformNames := driveMenuPlatformRowsText(func() []driveMenuPlatformRow {
-		rows := make([]driveMenuPlatformRow, len(platformDrives))
-		for i, drv := range platformDrives {
-			rows[i] = driveMenuPlatformRowFor(drv, driveMenuOptions)
-		}
-		return rows
-	}(), driveMenuOptions)
+	platformRows := make([]driveMenuPlatformRow, len(platformDrives))
+	for i, drv := range platformDrives {
+		platformRows[i] = driveMenuPlatformRowFor(drv, driveMenuOptions)
+	}
+	platformNames := driveMenuPlatformRowsText(platformRows, driveMenuOptions)
 	for i, drv := range platformDrives {
 		factory := drv.Factory
 		name := platformNames[i]
@@ -5595,7 +5593,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			}
 		}
 
-		menu.AddItem(vtui.MenuItem{Text: name, Icon: drv.Icon, UserData: func(fsp *FileSystemPanel) {
+		menu.AddItem(vtui.MenuItem{Text: name, Icon: drv.Icon, Details: platformRows[i].semanticDetails(), UserData: func(fsp *FileSystemPanel) {
 			pf.switchToVFS(fsp, factory())
 		}})
 	}

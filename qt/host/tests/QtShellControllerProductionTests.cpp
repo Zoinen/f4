@@ -194,6 +194,8 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
                 {"text", QString(310, QLatin1Char('x'))},
                 {"foreground", "#d3d7cf"}, {"background", "#2e3436"}}}}});
     }
+    const QVariantList carets{QVariantMap{{"cursorAbsoluteRow", 1}, {"cursorAbsoluteColumn", 9},
+        {"selection", true}, {"selectionAnchorRow", 1}, {"selectionAnchorColumn", 2}}};
     const QVariantMap document{{"id", "state-editor"}, {"kind", "editor"},
                                {"documentKey", "editor-instance-4"},
                                {"windowRows", rows}, {"layoutRevision", 3},
@@ -222,7 +224,7 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
                 {"selectionForeground", "#ffffff"},
                 {"selectionBackground", "#3b6290"},
                 {"selectionBold", false}, {"selectionUnderline", false},
-                {"selectionStrikeout", false},
+                {"selectionStrikeout", false}, {"secondaryCarets", carets},
                 {"topBarRight", " UTF-8 | 1,6"}}}}},
     }, 1)));
     QTRY_COMPARE(compact.size(), 1);
@@ -246,6 +248,7 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
     QCOMPARE(selectionState.value("cursorAbsoluteColumn").toInt(), 5);
     QCOMPARE(selectionState.value("selection").toBool(), true);
     QCOMPARE(selectionState.value("selectionAnchorColumn").toInt(), 2);
+    QCOMPARE(selectionState.value("secondaryCarets").toList(), carets);
     QCOMPARE(selectionState.value("selectionForeground").toString(),
              QString("#ffffff"));
     QCOMPARE(selectionState.value("selectionBackground").toString(),
@@ -262,6 +265,7 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
     QCOMPARE(ExtUiSceneReducer::presentationDocumentRowVisitsForTesting(), quint64(0));
     QCOMPARE(compact.last().first().toMap().value("surfaceState").toMap()
                  .value("selection").toBool(), true);
+    QCOMPARE(compact.last().first().toMap().value("surfaceState").toMap().value("secondaryCarets").toList(), carets);
     QVERIFY(!controller.retainsMasterSceneForTesting());
 
     // Clearing a stream selection is a set-to-false update. The demand-shaped
@@ -272,7 +276,7 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
         {"surface", QVariantMap{{"id", "state-editor"},
             {"set", QVariantMap{{"layoutRevision", 3}, {"windowGeneration", 7},
                 {"documentKey", "editor-instance-4"},
-                {"selection", false}}}}},
+                {"selection", false}, {"secondaryCarets", QVariantList{}}}}}},
     }, 3)));
     QTRY_COMPARE(compact.size(), 3);
     QCOMPARE(changed.size(), 1);
@@ -280,6 +284,7 @@ void QtShellControllerProductionTests::documentCursorStateDoesNotInvalidateRows(
     const QVariantMap clearedState = compact.last().first().toMap()
                                          .value("surfaceState").toMap();
     QVERIFY(clearedState.contains("selection"));
+    QVERIFY(clearedState.value("secondaryCarets").toList().isEmpty());
     QCOMPARE(clearedState.value("selection").toBool(), false);
     QCOMPARE(controller.surfaceRegistry()->document().value("windowRows").toList(),
              rows);

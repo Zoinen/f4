@@ -539,6 +539,9 @@ func TestSemanticWindowProtocol_EditorArrowAndWheelNavigationFencePendingScroll(
 }
 
 func TestSemanticWindowProtocol_ContentKeyIgnoresCursorAndStreamSelection(t *testing.T) {
+	previous := AppConfig.EditorMarkOccurrences
+	AppConfig.EditorMarkOccurrences = false
+	t.Cleanup(func() { AppConfig.EditorMarkOccurrences = previous })
 	vtui.SetDefaultPalette()
 	editor := NewEditorView(piecetable.New([]byte("alpha\nbeta\ngamma\ndelta\n")), nil,
 		"content-key.txt")

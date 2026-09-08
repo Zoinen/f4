@@ -1785,7 +1785,7 @@ func (ev *EditorView) editorCursorStateGuard() editorCursorPatchGuard {
 		return guard
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	if (AppConfig.EditorMarkOccurrences && ev.selActive) || len(ev.extraCursors) != 0 || showHorzCross || showVertCross || ev.rectSelActive ||
+	if (AppConfig.EditorMarkOccurrences && ev.selActive) || showHorzCross || showVertCross || ev.rectSelActive ||
 		len(ev.acMatches) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 ||
 		ev.HexMode || ev.DecodeMode || ev.DisasmMode != 0 {
 		return guard
@@ -1823,7 +1823,7 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 		return false
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	return !(AppConfig.EditorMarkOccurrences && ev.selActive) && len(ev.extraCursors) == 0 && !showHorzCross && !showVertCross &&
+	return !(AppConfig.EditorMarkOccurrences && ev.selActive) && !showHorzCross && !showVertCross &&
 		guard.editSession == ev.editSession &&
 		guard.scrollTop == ev.ScrollTopRow && guard.scrollLeft == ev.ScrollLeft &&
 		guard.windowGeneration == ev.semanticWindowGeneration &&

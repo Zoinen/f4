@@ -102,7 +102,7 @@ void addSurfaceState(QVariantMap *patch,
                                QStringLiteral("selectionBackground"),
                                QStringLiteral("selectionBold"),
                                QStringLiteral("selectionUnderline"),
-                               QStringLiteral("selectionStrikeout"),
+                               QStringLiteral("selectionStrikeout"), QStringLiteral("secondaryCarets"),
                                QStringLiteral("topBarRight")}) {
         state.insert(key, surface.value(key));
     }

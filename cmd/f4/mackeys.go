@@ -86,6 +86,7 @@ func macKeysEnabled() bool {
 // whether it may trust the distinction.
 var macCommandBackends = map[string]bool{
 	"gogpu": true,
+	"qt":    true,
 }
 
 // macCommandIsDistinct reports whether a chord on the left Ctrl channel is

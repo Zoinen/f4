@@ -880,16 +880,26 @@ QPoint VtuiGridItem::cellForPosition(const QPointF &position) const
 
 int VtuiGridItem::modifiersFromEvent(Qt::KeyboardModifiers modifiers) const
 {
+#ifdef Q_OS_MACOS
+    return protocolModifiers(modifiers, true);
+#else
+    return protocolModifiers(modifiers, false);
+#endif
+}
+
+int VtuiGridItem::protocolModifiers(Qt::KeyboardModifiers modifiers, bool macOS)
+{
     int result = 0;
     if (modifiers.testFlag(Qt::ShiftModifier)) {
         result |= ShiftPressed;
     }
-    if (modifiers.testFlag(Qt::ControlModifier)
-#ifdef Q_OS_MACOS
-        || modifiers.testFlag(Qt::MetaModifier)
-#endif
-    ) {
+    if (modifiers.testFlag(Qt::ControlModifier)) {
         result |= LeftCtrlPressed;
+    }
+    // Qt names Command ControlModifier on macOS; MetaModifier is the
+    // physical Control key. Preserve both channels for the core Mac key map.
+    if (macOS && modifiers.testFlag(Qt::MetaModifier)) {
+        result |= 0x0004; // RIGHT_CTRL_PRESSED
     }
     if (modifiers.testFlag(Qt::AltModifier)) {
         result |= LeftAltPressed;

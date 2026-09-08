@@ -93,7 +93,7 @@ Rectangle {
         interactionActive && visible && hostWindow.active
         && !hostWindow.hasBlockingOverlay()
     readonly property bool middleAutoScrollAllowed:
-        standaloneViewport && inputPresentationActive
+        (standaloneViewport || terminalSurface) && inputPresentationActive
         && hostWindow.mouseWheelMode === "gui"
     readonly property bool terminalSelectionEnabled:
         terminalSurface && frame.selectionEnabled === true
@@ -215,16 +215,17 @@ Rectangle {
         return background !== "" ? value : "transparent"
     }
 
-    function editorSelectionRangeForRow(visualRow, visualWidth) {
+    function editorSelectionRangeForRow(visualRow, visualWidth, caretState) {
+        const caret = caretState || cursorFrame
         let empty = ({ "valid": false, "start": 0, "end": 0 })
         if (frame.kind !== "editor" || presentationFrame.hexMode === true
                 || presentationFrame.decodeMode === true
-                || cursorFrame.selection !== true || visualRow < 0)
+                || caret.selection !== true || visualRow < 0)
             return empty
-        let anchorRow = Number(cursorFrame.selectionAnchorRow || 0)
-        let anchorColumn = Number(cursorFrame.selectionAnchorColumn || 0)
-        let focusRow = Number(cursorFrame.cursorAbsoluteRow || 0)
-        let focusColumn = Number(cursorFrame.cursorAbsoluteColumn || 0)
+        let anchorRow = Number(caret.selectionAnchorRow || 0)
+        let anchorColumn = Number(caret.selectionAnchorColumn || 0)
+        let focusRow = Number(caret.cursorAbsoluteRow || 0)
+        let focusColumn = Number(caret.cursorAbsoluteColumn || 0)
         if (anchorRow > focusRow
                 || (anchorRow === focusRow && anchorColumn > focusColumn)) {
             let swapRow = anchorRow
@@ -464,6 +465,38 @@ Rectangle {
             active: editorCursor.visible
                     && documentRoot.inputPresentationActive
             activityRevision: hostWindow.keyboardActivityRevision
+        }
+    }
+
+    Repeater {
+        model: frame.kind === "editor" ? (documentRoot.cursorFrame.secondaryCarets || []).length : 0
+        delegate: Rectangle {
+            id: secondaryCursor
+            required property int index
+            readonly property var modelData: (documentRoot.cursorFrame.secondaryCarets || [])[index] || {}
+            objectName: "editorSecondaryCursor-" + index
+            parent: documentList.contentItem
+            readonly property int windowRow: documentRoot.indexForExtent(
+                Number(modelData.cursorAbsoluteRow), documentRoot.displayedRows)
+            readonly property var rowDelegate: windowRow >= 0 ? viewportController.rowItem(windowRow) : null
+            readonly property real column: Number(modelData.cursorAbsoluteColumn)
+                - Number(documentRoot.presentationFrame.scrollLeft || 0)
+            x: documentRoot.textHorizontalInset + column * documentRoot.terminalCellWidth
+            y: rowDelegate !== null ? rowDelegate.y + (editorCursor.block ? 1 : 2) : 0
+            width: hostWindow.snapPx(editorCursor.width)
+            height: hostWindow.snapPx(editorCursor.height)
+            color: editorCursor.color
+            opacity: editorCursor.opacity
+            visible: rowDelegate !== null && column >= 0
+                && column < Number(documentRoot.presentationFrame.viewportColumns || 1000000)
+                && (!documentRoot.standaloneViewport
+                    || documentRoot.cursorFrame.layoutRevision === undefined
+                    || Number(documentRoot.cursorFrame.layoutRevision) === documentRoot.appliedLayoutRevision)
+            z: 5
+            transform: Translate {
+                x: documentRoot.pixelOffsetX(secondaryCursor)
+                y: documentRoot.pixelOffsetY(secondaryCursor)
+            }
         }
     }
 

@@ -241,8 +241,8 @@ public:
                                             qreal devicePixelRatio,
                                             const QColor &tint) const
     {
-        QUrl source(QStringLiteral("qrc:/F4QtHost/icons/lucide/%1.svg")
-                        .arg(name));
+        QUrl source(QStringLiteral("qrc:/F4QtHost/icons/%1/%2.svg")
+                        .arg(name == "android-logo" || name == "apple-logo" ? "streamline" : "lucide", name));
         QUrlQuery query;
         query.addQueryItem(QStringLiteral("size"),
                            QString::number(logicalSize));
@@ -696,6 +696,8 @@ private slots:
     void functionBarLeavesStaySharpAndThemeLiveAt175Percent();
     void readyUnifiedRendererLoaderIsVisible();
     void panelFileInfoSettingTogglesFooterWithoutRebuildingPanel();
+    void panelStatusLeavesStayOnPhysicalPixelGrid();
+    void sortGroupLeavesStayOnPhysicalPixelGrid();
     void fastFindOverlayIsIndependentFromPanelFooter();
     void galleryPanelColorsAreGroupedAndRemainLive();
     void themeConfiguratorExposesOnlyLiveColorProperties();
@@ -728,6 +730,8 @@ private slots:
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
+    void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
+    void pluginPathIconFollowsPanelOnPhysicalGrid();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
     void clickActivatesCoveredSideAndFocusStaysOutOfHiddenPanel();
@@ -5169,6 +5173,26 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
                                  QPointF(scrollBar->width(), 0)).x()
              - backdrop->width()) < 0.01,
         3000);
+    // Exercise the real terminal backdrop with both panels hidden, not only
+    // a standalone document fixture with its embedded flag set.
+    shell.insert("showLeftPanel", false);
+    shell.insert("showRightPanel", false);
+    shell.insert("terminalActive", true);
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(surface->property("middleAutoScrollAllowed").toBool());
+    auto *middle = surface->findChild<QQuickItem *>("documentMiddleButtonArea");
+    QVERIFY(middle);
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier,
+        middle->mapToItem(fixture.window->contentItem(), QPointF(middle->width()/2,middle->height()/2)).toPoint());
+    QTRY_VERIFY(surface->property("middleAutoScrollActive").toBool());
+    shell.insert("showLeftPanel", true);
+    shell.insert("showRightPanel", true);
+    shell.insert("terminalActive", false);
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!surface->property("middleAutoScrollActive").toBool());
+
 }
 
 void F4QuickViewSurfaceTests::autocompleteReturnTargetsShellCommandHandler()
@@ -5391,3 +5415,175 @@ void F4QuickViewSurfaceTests::previewKindsSelectExactlyOneNativeBody()
 
 QTEST_MAIN(F4QuickViewSurfaceTests)
 #include "F4QuickViewSurfaceTests.moc"
+
+void F4QuickViewSurfaceTests::panelStatusLeavesStayOnPhysicalPixelGrid()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto status = panels[0].toMap();
+    status.insert("selectedCount", 3);
+    status.insert("selectedFiles", 2);
+    status.insert("selectedDirectories", 1);
+    status.insert("selectedSize", 1536);
+    status.insert("totalCount", 12);
+    status.insert("totalSize", 4096);
+    status.insert("freeSpaceKnown", true);
+    status.insert("freeSpace", 1048576);
+    panels[0] = status;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *footer = fixture.item("panelStatus-0");
+    QVERIFY(footer);
+    QTest::qWait(80);
+    int leaves = 0;
+    QList<QQuickItem *> pending{footer};
+    while (!pending.isEmpty()) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        if (!QByteArray(item->metaObject()->className()).startsWith("QQuickText")) continue;
+        const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        qInfo() << "panel status leaf" << item->objectName() << physical;
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+             && qAbs(physical.y() - qRound64(physical.y())) < .001,
+             qPrintable(QString("%1 origin %2,%3").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+        QVERIFY(!item->objectName().isEmpty());
+        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
+        ++leaves;
+    }
+    QCOMPARE(leaves, 2);
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/qt-upstream-panel-status.png");
+}
+
+void F4QuickViewSurfaceTests::sortGroupLeavesStayOnPhysicalPixelGrid()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    auto *menu = fixture.window->findChild<QObject *>("panelSortMenu-0");
+    QVERIFY(menu);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTest::qWait(100);
+    auto verifyLeaf = [&](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        qInfo() << leaf->objectName() << physical;
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001 && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(QString("%1 %2,%3").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
+    };
+    auto *group = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelSortChoice-groups-0");
+    QVERIFY(group);
+    QList<QQuickItem *> pending{group};
+    while (!pending.isEmpty()) {
+        auto *leaf = pending.takeLast();
+        pending.append(leaf->childItems());
+        const QByteArray type = leaf->metaObject()->className();
+        if (leaf->isVisible() && (type.startsWith("QQuickText") || type.contains("Image"))) verifyLeaf(leaf);
+    }
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/qt-upstream-sort.png");
+    QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+}
+
+void F4QuickViewSurfaceTests::uriBreadcrumbKeepsSchemeTogetherAndNavigates()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1800, 640);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    // The software renderer cannot render the optional shader fade mask.
+    control->setProperty("breadcrumbMaskEnabled", false);
+    const QString path = "registry://HKEY_LOCAL_MACHINE/SOFTWARE";
+    control->setProperty("text", path);
+    control->setProperty("navigationPath", path);
+    QQuickItem *root = nullptr;
+    QTRY_VERIFY((root = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-text")));
+    QTRY_COMPARE(root->property("text").toString(), QString("registry://"));
+    QTest::qWait(100);
+    for (int i = -1; i < 2; ++i) {
+        const QString id = i < 0 ? "pathBreadcrumbRoot" : QString("pathBreadcrumb-%1").arg(i);
+        const QString label = i < 0 ? "registry://" : i == 0 ? "HKEY_LOCAL_MACHINE" : "SOFTWARE";
+        auto *text = visualItemWithObjectNamePrefix(control, id + "-text");
+        QVERIFY(text);
+        QCOMPARE(text->property("text").toString(), label);
+        for (const QString &suffix : {"-text", "-separator"}) {
+            auto *leaf = visualItemWithObjectNamePrefix(control, id + suffix);
+            QVERIFY(leaf);
+            if (!leaf->isVisible()) continue;
+            const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+            const auto physical = origin * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001 && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                     qPrintable(QString("%1 %2,%3").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
+        }
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            text->mapToItem(fixture.window->contentItem(), QPointF(text->width()/2, text->height()/2)).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions[0].value("path").toString(), i < 0 ? QString("registry://")
+                 : i == 0 ? QString("registry://HKEY_LOCAL_MACHINE") : path);
+    }
+    QVERIFY(!visualItemWithObjectNamePrefix(control, "pathBreadcrumb-2-text"));
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    capture.save("D:/Code/f4-zoin/.diagnostics/uri-breadcrumb-175.png");
+    for (const QString &prefix : {"registry://", "sftp://", "custom+v1.test://"}) {
+        control->setProperty("text", prefix);
+        control->setProperty("navigationPath", "");
+        QCoreApplication::processEvents();
+        QCOMPARE(root->property("text").toString(), prefix);
+        fixture.shell.clearActions();
+        QVERIFY(QMetaObject::invokeMethod(control, "folderClicked", Q_ARG(QVariant, QVariant(""))));
+        QCOMPARE(fixture.shell.actions.last().value("path").toString(), prefix);
+    }
+}
+
+void F4QuickViewSurfaceTests::pluginPathIconFollowsPanelOnPhysicalGrid()
+{
+    auto sceneWithIcon = [](const QString &icon) {
+        auto scene = shellScene({}, 0);
+        auto shell = scene.value("shell").toMap();
+        auto panels = shell.value("panels").toList();
+        auto panel = panels[0].toMap();
+        panel.insert("pathIcon", icon);
+        panel.insert("path", "registry://HKEY_LOCAL_MACHINE/SOFTWARE");
+        panel.insert("title", "registry://HKEY_LOCAL_MACHINE/SOFTWARE");
+        panels[0] = panel; shell.insert("panels", panels); scene.insert("shell", shell);
+        return scene;
+    };
+    QuickViewFixture fixture(sceneWithIcon("blocks"), true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1800, 640);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    control->setProperty("breadcrumbMaskEnabled", false);
+    for (const QString &name : {"blocks", "android-logo", "apple-logo", "cloud", "network", "archive", "plug", ""}) {
+        fixture.shell.setScene(sceneWithIcon(name));
+        QTest::qWait(80);
+        auto *leaf = fixture.item("panelDriveButtonIcon-0");
+        QVERIFY(leaf);
+        QVERIFY2(leaf->property("source").toUrl().toString().contains(name.isEmpty() ? "hard-drive" : name),
+                 qPrintable(leaf->property("source").toUrl().toString()));
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY2(qAbs(physical.x()-qRound64(physical.x()))<.001 && qAbs(physical.y()-qRound64(physical.y()))<.001,
+            qPrintable(QString("%1 %2,%3").arg(name).arg(physical.x()).arg(physical.y())));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin,QPointF(0,1));
+        QVERIFY(qAbs(leaf->width()*fixture.window->devicePixelRatio()-qRound64(leaf->width()*fixture.window->devicePixelRatio()))<.001);
+        if (name == "blocks" || name == "android-logo") {
+            auto capture = fixture.window->grabWindow();
+            QVERIFY(!capture.isNull());
+            capture.save("D:/Code/f4-zoin/.diagnostics/path-icon-"+name+"-175.png");
+        }
+    }
+}

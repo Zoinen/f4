@@ -61,6 +61,7 @@ const (
 	driveMenuKindRemote
 	driveMenuKindSubstitute
 	driveMenuKindPhysical
+	driveMenuKindRAM
 )
 
 type driveMenuOptionSpec struct {
@@ -133,7 +134,7 @@ func driveMenuKindFor(name, path string) driveMenuKind {
 
 func driveMenuKindLabel(kind driveMenuKind) string {
 	switch kind {
-	case driveMenuKindFixed:
+	case driveMenuKindFixed, driveMenuKindRAM:
 		return Msg("Drive.TypeFixed")
 	case driveMenuKindRemovable:
 		return Msg("Drive.TypeRemovable")
@@ -168,8 +169,11 @@ func driveMenuSize(b uint64, decimal bool) string {
 }
 
 type driveMenuPlatformRow struct {
+	isDrive                       bool
 	base, kind, label, filesystem string
 	total, free, network          string
+	icon                          string
+	totalBytes, freeBytes         uint64
 }
 
 type driveMenuPlatformColumn struct {
@@ -183,7 +187,12 @@ type driveMenuPlatformColumn struct {
 func driveMenuPlatformRowFor(drv DriveEntry, options uint32) driveMenuPlatformRow {
 	row := driveMenuPlatformRow{base: driveMenuBaseName(drv.Name)}
 	path := driveMenuInfoPath(drv.Name)
+	row.isDrive = path != ""
 	kind := driveMenuKindFor(drv.Name, path)
+	row.icon = driveMenuKindIcon(kind)
+	if path == "" && drv.Icon != "" {
+		row.icon = drv.Icon
+	}
 
 	if driveMenuOptionEnabled(options, driveMenuShowType) {
 		row.kind = driveMenuKindLabel(kind)
@@ -202,6 +211,7 @@ func driveMenuPlatformRowFor(drv DriveEntry, options uint32) driveMenuPlatformRo
 		}
 		if driveMenuOptionEnabled(options, driveMenuShowSize) {
 			decimal := driveMenuOptionEnabled(options, driveMenuShowSizeFloat)
+			row.totalBytes, row.freeBytes = info.Total, info.Free
 			row.total = driveMenuSize(info.Total, decimal)
 			row.free = driveMenuSize(info.Free, decimal)
 		}
@@ -387,4 +397,38 @@ func (pf *PanelsFrame) openDriveMenuOptions(panelIdx int, menu *vtui.VMenu) {
 	}
 
 	vtui.FrameManager.Push(dlg)
+}
+
+// Preserve the named fields before the console renderer pads them to cells.
+func driveMenuKindIcon(kind driveMenuKind) string {
+	switch kind {
+	case driveMenuKindFixed:
+		return "hard-drive"
+	case driveMenuKindRemovable:
+		return "usb-flash-drive"
+	case driveMenuKindCD:
+		return "disc"
+	case driveMenuKindRemote:
+		return "network"
+	case driveMenuKindSubstitute:
+		return "folder-symlink"
+	case driveMenuKindPhysical:
+		return "database"
+	case driveMenuKindRAM:
+		return "memory-stick"
+	default:
+		return "circle-question-mark"
+	}
+}
+
+func (row driveMenuPlatformRow) semanticDetails() map[string]string {
+	details := map[string]string{"name": row.base, "type": row.kind, "label": row.label,
+		"filesystem": row.filesystem, "total": row.total, "free": row.free, "network": row.network,
+		"icon": row.icon, "isDrive": fmt.Sprint(row.isDrive)}
+	// Send a bounded ratio from raw bytes, never from rounded display strings.
+	if row.totalBytes > 0 && row.total != "" {
+		free := min(row.freeBytes, row.totalBytes)
+		details["usedFraction"] = fmt.Sprintf("%.9f", float64(row.totalBytes-free)/float64(row.totalBytes))
+	}
+	return details
 }

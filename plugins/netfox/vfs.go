@@ -324,3 +324,5 @@ func (v *NetFoxVFS) IsReadOnly() bool   { return true }
 func (v *NetFoxVFS) Clone() vfs.VFS {
 	return NewNetFoxVFS(v.path)
 }
+
+func (*NetFoxVFS) PanelIcon() string { return "network" }

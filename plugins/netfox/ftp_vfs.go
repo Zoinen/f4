@@ -548,3 +548,5 @@ func (w *ftpFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, 
 }
 func (w *ftpFileWrapper) Read(ctx context.Context, p []byte) (int, error) { return w.File.Read(p) }
 func (w *ftpFileWrapper) Close() error                                    { return errors.Join(w.File.Close(), os.Remove(w.path)) }
+
+func (*FTPVFS) PanelIcon() string { return "network" }

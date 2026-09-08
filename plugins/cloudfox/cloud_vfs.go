@@ -1204,3 +1204,5 @@ var (
 	_ vfs.ShareLinkProvider    = (*CloudVFS)(nil)
 	_ vfs.TrashVFS             = (*trashCloudVFS)(nil)
 )
+
+func (*CloudVFS) PanelIcon() string { return "cloud" }

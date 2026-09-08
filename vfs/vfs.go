@@ -1140,3 +1140,9 @@ type WriterAtCloser interface {
 	Truncate(size int64) error
 	Close() error
 }
+
+// PanelIconProvider supplies a semantic icon name for the mounted filesystem.
+// It must be cheap and must not access the device or network.
+type PanelIconProvider interface {
+	PanelIcon() string
+}

@@ -809,3 +809,5 @@ func (v *SFTPVFS) OpenWriteAt(ctx context.Context, p string) (vfs.WriterAtCloser
 	}
 	return v.client.OpenFile(v.encodePath(p), os.O_RDWR|os.O_CREATE)
 }
+
+func (*SFTPVFS) PanelIcon() string { return "network" }

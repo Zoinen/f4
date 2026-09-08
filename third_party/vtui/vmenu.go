@@ -11,6 +11,10 @@ import (
 
 // MenuItem represents a single menu item.
 type MenuItem struct {
+	// Details contains named display fields for native renderers. Console Text
+	// remains authoritative for terminal layout and keyboard mnemonics.
+	Details map[string]string
+
 	// ID is a stable identity used to preserve selection while an asynchronous
 	// menu snapshot is replaced. It is optional for legacy callers.
 	ID string

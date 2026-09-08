@@ -433,6 +433,7 @@ func (item appVMenu) model() extui.MenuModel {
 		menu.Items = append(menu.Items, extui.MenuItemModel{
 			Index:      i,
 			ID:         source.ID,
+			Details:    source.Details,
 			Text:       clean,
 			RawText:    source.Text,
 			Hotkey:     hotkeyText,
@@ -790,6 +791,14 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		galleryLayoutRevision = 1
 	}
 	panel := extui.PanelModel{
+		PathIcon:            semanticString(node["pathIcon"]),
+		UseSortGroups:       appBool(node["useSortGroups"]),
+		SelectedFiles:       semanticInt(node["selectedFiles"]),
+		SelectedDirectories: semanticInt(node["selectedDirectories"]),
+		FreeSpace:           uint64(appInt64(node["freeSpace"])),
+		FreeSpaceKnown:      appBool(node["freeSpaceKnown"]),
+		SymlinkTarget:       semanticString(node["symlinkTarget"]),
+
 		ID:                     semanticString(node["id"]),
 		Side:                   semanticInt(node["side"]),
 		Active:                 appBool(node["active"]),
@@ -1058,6 +1067,16 @@ func appSurfaceFromLegacy(node map[string]any) extui.SurfaceModel {
 	for _, row := range appMapSlice(node["windowRows"]) {
 		surface.WindowRows = append(surface.WindowRows, appTextRowFromLegacy(row))
 	}
+	for _, caret := range appMapSlice(node["secondaryCarets"]) {
+		surface.SecondaryCarets = append(surface.SecondaryCarets, extui.CaretModel{
+			CursorAbsoluteRow:     semanticInt64(caret["cursorAbsoluteRow"]),
+			CursorAbsoluteColumn:  semanticInt(caret["cursorAbsoluteColumn"]),
+			Selection:             appBool(caret["selection"]),
+			SelectionAnchorRow:    semanticInt64(caret["selectionAnchorRow"]),
+			SelectionAnchorColumn: semanticInt(caret["selectionAnchorColumn"]),
+		})
+	}
+
 	return surface
 }
 
@@ -1181,6 +1200,16 @@ func appMenuItemFromLegacy(node map[string]any) extui.MenuItemModel {
 		Checked:   checked || appBool(node["checked"]),
 		Legacy:    node,
 	}
+	switch details := node["details"].(type) {
+	case map[string]string:
+		item.Details = details
+	case map[string]any:
+		item.Details = make(map[string]string, len(details))
+		for key, value := range details {
+			item.Details[key] = semanticString(value)
+		}
+	}
+
 	for _, child := range appMapSlice(node["items"]) {
 		item.Items = append(item.Items, appMenuItemFromLegacy(child))
 	}

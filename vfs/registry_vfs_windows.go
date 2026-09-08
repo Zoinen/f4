@@ -657,3 +657,5 @@ func (r *registryReader) Close() error {
 	r.mu.Unlock()
 	return nil
 }
+
+func (*RegistryVFS) PanelIcon() string { return "blocks" }

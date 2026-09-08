@@ -479,6 +479,7 @@ private slots:
     void finalViewportAlignsLastRowBelowFractionalBottom();
     void middleButtonAutoScrollsStandaloneDocuments_data();
     void middleButtonAutoScrollsStandaloneDocuments();
+    void middleButtonAutoScrollsEmbeddedTerminal();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void editorEdgeSelectionUsesCommittedSourceFragments();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
@@ -527,6 +528,10 @@ void F4DocumentSurfaceTests::documentLeavesStayOnPhysicalPixelGridAt175Percent()
     frame.insert("selectionBold", false);
     frame.insert("selectionUnderline", false);
     frame.insert("selectionStrikeout", false);
+    frame.insert("secondaryCarets", QVariantList{
+        QVariantMap{{"cursorAbsoluteRow", 0}, {"cursorAbsoluteColumn", 12},
+                    {"selection", true}, {"selectionAnchorRow", 0}, {"selectionAnchorColumn", 5}},
+    });
     auto scene = documentScene(frame);
     // Include the production menu lane so the titlebar reserves its height;
     // otherwise its empty mock background covers the document header capture.
@@ -542,6 +547,14 @@ void F4DocumentSurfaceTests::documentLeavesStayOnPhysicalPixelGridAt175Percent()
         pending.append(item->childItems());
         if (!item->isVisible())
             continue;
+        if (item->objectName() == "editorSecondaryCursor-0") {
+            const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF()) * fixture.window->devicePixelRatio();
+            const qreal physicalWidth = item->width() * fixture.window->devicePixelRatio();
+            const qreal physicalHeight = item->height() * fixture.window->devicePixelRatio();
+            qInfo() << "secondary caret" << origin << physicalWidth << physicalHeight;
+            QVERIFY(qAbs(origin.x() - qRound64(origin.x())) < .001 && qAbs(origin.y() - qRound64(origin.y())) < .001);
+            QVERIFY(qAbs(physicalWidth - qRound64(physicalWidth)) < .001 && qAbs(physicalHeight - qRound64(physicalHeight)) < .001);
+        }
         const QByteArray type = item->metaObject()->className();
         if (!type.startsWith("QQuickText") && !type.contains("Image")
             && item->objectName() != "documentHeaderLucideIcon")
@@ -4109,3 +4122,41 @@ void F4DocumentSurfaceTests::legacyRowsRemainScrollableWithoutWindowProtocol()
 QTEST_MAIN(F4DocumentSurfaceTests)
 
 #include "F4DocumentSurfaceTests.moc"
+
+void F4DocumentSurfaceTests::middleButtonAutoScrollsEmbeddedTerminal()
+{
+    auto frame = terminalFrame(0, 140, 40, 7, 140, true);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    fixture.surface->setProperty("embedded", true);
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *scroll = fixture.surface->findChild<QObject *>("documentMouseAutoScrollController");
+    QVERIFY(scroll);
+    const QPoint center = fixture.list->mapToItem(fixture.window->contentItem(),
+        QPointF(fixture.list->width()/2,fixture.list->height()/2)).toPoint();
+    const QPoint upper = center - QPoint(0, 90);
+    fixture.shell.clearActions();
+    fixture.gallery.clearScrollingCursorRequests();
+    const qreal before = fixture.list->property("contentY").toReal();
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, center);
+    QTRY_VERIFY_WITH_TIMEOUT(scroll->property("scrollingMode").toBool(), 1000);
+    QVERIFY(!fixture.gallery.scrollingCursorRequests.isEmpty());
+    QVERIFY(fixture.gallery.scrollingCursorRequests.last().value("scrollingMode").toBool());
+    QTest::mouseMove(fixture.window, upper, 20);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.list->property("contentY").toReal() < before - 1, 1500);
+    bool requested = false;
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        for (const auto &action : std::as_const(fixture.shell.actions)) {
+            if (action.value("action").toString() == "terminal.scroll" && !action.value("followTail").toBool())
+                requested = true;
+        }
+        return requested;
+    })(), 1500);
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, upper);
+    QTRY_VERIFY(!scroll->property("scrollingMode").toBool());
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, center);
+    QTRY_VERIFY(scroll->property("scrollingMode").toBool());
+    fixture.surface->setProperty("interactionActive", false);
+    QTRY_VERIFY(!scroll->property("scrollingMode").toBool());
+    QVERIFY(!fixture.gallery.scrollingCursorRequests.last().value("scrollingMode").toBool());
+}

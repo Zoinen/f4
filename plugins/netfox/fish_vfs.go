@@ -1516,3 +1516,5 @@ func init() {
 	vfs.RegisterProvider(&fishProvider{})
 	RegisterProtocol(&fishProtocolHandler{})
 }
+
+func (*FishVFS) PanelIcon() string { return "network" }

@@ -750,6 +750,7 @@ class F4OperationsQueueTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
     void initTestCase();
     void queueUsesNativeAccessibleSurfaceAndGuardsActiveClose();
     void plusButtonIsInteractiveInsideQwkTitleBar();
@@ -3510,3 +3511,101 @@ void F4OperationsQueueTests::semanticDialogEditSelectionWaitsForSemanticFocus()
 QTEST_MAIN(F4OperationsQueueTests)
 
 #include "F4OperationsQueueTests.moc"
+
+void F4OperationsQueueTests::driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid()
+{
+    auto scene = panelScene();
+    auto menu = dialogComboMenu(0);
+    menu.insert("id", "drives"); menu.remove("ownerId"); menu.remove("presentation");
+    QVariantList rows;
+    const QStringList icons{"hard-drive", "usb-flash-drive", "disc", "network", "memory-stick", "folder-symlink", "database", "circle-question-mark"};
+    for (int i = 0; i < icons.size(); ++i) {
+        QVariantMap details{{"isDrive", "true"}, {"name", QString(QChar('C' + i)) + ":"}, {"label", "Work disk"}, {"icon", icons[i]},
+            {"filesystem", "NTFS"}, {"total", "2 TB"}, {"free", "1 TB"}, {"network", "server"}};
+        if (i != 7) details.insert("usedFraction", i == 0 ? "0.5" : i == 1 ? "0" : "1");
+        rows.append(QVariantMap{{"index", i}, {"separator", false}, {"header", false}, {"text", "padded console text"}, {"details", details}});
+    }
+    rows.append(QVariantMap{{"index", 8}, {"separator", false}, {"header", false}, {"text", "Ordinary menu item"}});
+    rows.append(QVariantMap{{"index", 9}, {"separator", false}, {"header", false},
+        {"details", QVariantMap{{"isDrive", "false"}, {"name", "A very long virtual provider title that must not widen the drive caption column"}, {"icon", "blocks"}}}});
+    menu.insert("items", rows); scene.insert("menus", QVariantList{menu});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *label = nullptr;
+    QTRY_VERIFY((label = visualItem(fixture.window->contentItem(), "semanticMenuDetail-drives-0-name")) && label->isVisible());
+    QTest::qWait(150);
+    auto checkGrid = [&](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001 && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(QString("%1 %2,%3").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
+    };
+    qreal widestCaption = 0;
+    for (int i = 0; i < icons.size(); ++i) {
+        auto *caption = visualItem(fixture.window->contentItem(), QString("semanticMenuDetail-drives-%1-name").arg(i));
+        QVERIFY(caption);
+        widestCaption = qMax(widestCaption, caption->property("implicitWidth").toReal());
+    }
+    for (int i = 0; i < icons.size(); ++i) {
+        const auto prefix = QString("semanticMenuDetail-drives-%1-").arg(i);
+        for (const QString &field : {"name", "filesystem", "capacity"})
+            checkGrid(visualItem(fixture.window->contentItem(), prefix + field));
+        auto *icon = visualItem(fixture.window->contentItem(), QString("semanticMenuItemIcon-drives-%1").arg(i));
+        checkGrid(icon);
+        QCOMPARE(icon->property("semanticIconName").toString(), icons[i]);
+        auto *track = visualItem(fixture.window->contentItem(), QString("semanticMenuCapacity-drives-%1").arg(i));
+        QVERIFY(track); checkGrid(track);
+        QCOMPARE(track->isVisible(), i != 7);
+        auto *fill = visualItem(fixture.window->contentItem(), track->objectName() + "-used");
+        checkGrid(fill);
+        QVERIFY(qAbs(fill->width() * fixture.window->devicePixelRatio() - qRound64(fill->width() * fixture.window->devicePixelRatio())) < .001);
+        QCOMPARE(fill->property("color").value<QColor>(), fixture.window->property("dialogAccent").value<QColor>());
+        QCOMPARE(fill->opacity(), 1.0);
+        QVERIFY(fill->width() <= track->width());
+        if (i == 1) QCOMPARE(fill->width(), 0.0);
+        if (i == 2) QCOMPARE(fill->width(), track->width());
+        auto *fs = visualItem(fixture.window->contentItem(), prefix + "filesystem");
+        QVERIFY(fs->x() > track->x() + track->width());
+        auto *capacity = visualItem(fixture.window->contentItem(), prefix + "capacity");
+        QVERIFY(capacity);
+        QVERIFY(!capacity->property("truncated").toBool());
+        const auto sizeColor = fixture.window->property("textColor").value<QColor>().name();
+        QCOMPARE(capacity->property("text").toString(),
+                 QString("<font color=\"%1\">1 TB</font> free of <font color=\"%1\">2 TB</font>").arg(sizeColor));
+        QCOMPARE(capacity->property("color").value<QColor>(), fixture.window->property("mutedText").value<QColor>());
+        QVERIFY(fs->x() >= capacity->x() + capacity->width());
+        auto *caption = visualItem(fixture.window->contentItem(), prefix + "name");
+        QVERIFY(caption);
+        QVERIFY(!caption->property("truncated").toBool());
+        // Only glyph measurement, a rounding allowance, and a 16 DIP gap.
+        const qreal captionGap = track->x() - caption->x() - widestCaption;
+        QVERIFY2(captionGap >= 16 && captionGap < 21, qPrintable(QString::number(captionGap)));
+        const qreal labelGap = capacity->x() - track->x() - track->width();
+        QVERIFY(labelGap >= 7 && labelGap <= 9);
+        QVERIFY(labelGap < captionGap);
+        QVERIFY(labelGap < fs->x() - capacity->x() - capacity->width());
+        auto *row = visualItem(fixture.window->contentItem(), QString("semanticMenuItem-drives-%1").arg(i));
+        auto *ordinary = visualItem(fixture.window->contentItem(), "semanticMenuItem-drives-8");
+        QVERIFY(row && ordinary);
+        QCOMPARE(row->height(), ordinary->height());
+        auto *ordinaryText = visualItem(fixture.window->contentItem(), "semanticMenuItemText-drives-8");
+        auto *driveName = visualItem(fixture.window->contentItem(), prefix + "name");
+        QVERIFY(ordinaryText && driveName);
+        checkGrid(ordinaryText);
+        QCOMPARE(driveName->mapToItem(fixture.window->contentItem(), QPointF()).x(),
+                 ordinaryText->mapToItem(fixture.window->contentItem(), QPointF()).x());
+        QVERIFY(qAbs(capacity->y() + capacity->height()/2 - track->y() - track->height()/2) * fixture.window->devicePixelRatio() <= 1);
+
+    }
+    auto *virtualCaption = visualItem(fixture.window->contentItem(), "semanticMenuDetail-drives-9-name");
+    QVERIFY(virtualCaption);
+    checkGrid(virtualCaption);
+    QVERIFY(!virtualCaption->property("truncated").toBool());
+    QVERIFY(label->property("text").toString().contains("C: (Work disk)"));
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    capture.save("D:/Code/f4-zoin/.diagnostics/qt-drive-menu-175.png");
+}

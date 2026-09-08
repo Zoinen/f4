@@ -115,6 +115,22 @@ bool validShellPatchValue(const QString &key, const QVariant &value)
 
 bool validSurfaceStatePatchValue(const QString &key, const QVariant &value)
 {
+    if (key == QStringLiteral("secondaryCarets")) {
+        if (!valueHasType(value, QMetaType::QVariantList)) return false;
+        for (const QVariant &entry : value.toList()) {
+            if (!valueHasType(entry, QMetaType::QVariantMap)) return false;
+            const auto caret = entry.toMap();
+            if (caret.size() != 5) return false;
+            for (const QString &field : {QStringLiteral("cursorAbsoluteRow"),
+                 QStringLiteral("cursorAbsoluteColumn"), QStringLiteral("selectionAnchorRow"),
+                 QStringLiteral("selectionAnchorColumn")}) {
+                if (!nonNegativeInteger(caret.value(field))) return false;
+            }
+            if (!valueHasType(caret.value(QStringLiteral("selection")), QMetaType::Bool)) return false;
+        }
+        return true;
+    }
+
     if (key == QStringLiteral("layoutRevision")
         || key == QStringLiteral("windowGeneration")) {
         return nonNegativeInteger(value);
@@ -294,12 +310,13 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
 {
     static const QSet<QString> stringKeys = {
         QStringLiteral("id"), QStringLiteral("kind"),
-        QStringLiteral("path"), QStringLiteral("title"),
+        QStringLiteral("path"), QStringLiteral("title"), QStringLiteral("pathIcon"),
         QStringLiteral("galleryLayoutMode"),
         QStringLiteral("sourceKind"),
         QStringLiteral("cursorEntryId"),
         QStringLiteral("sortModeName"),
         QStringLiteral("fastFindText"),
+        QStringLiteral("symlinkTarget"),
         QStringLiteral("fastFindMatchColor"),
     };
     static const QSet<QString> boolKeys = {
@@ -307,6 +324,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("metadataDeferred"),
         QStringLiteral("catalogRowsDeferred"),
         QStringLiteral("sortReverse"),
+        QStringLiteral("useSortGroups"), QStringLiteral("freeSpaceKnown"),
         QStringLiteral("separateFileExtensions"),
         QStringLiteral("loading"),
         QStringLiteral("catalogProvisional"),
@@ -320,6 +338,8 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("catalogRevision"),
         QStringLiteral("metadataRevision"),
         QStringLiteral("selectedCount"),
+        QStringLiteral("selectedFiles"), QStringLiteral("selectedDirectories"),
+        QStringLiteral("selectedSize"), QStringLiteral("totalSize"), QStringLiteral("freeSpace"),
         QStringLiteral("totalCount"),
     };
     for (auto it = state.cbegin(); it != state.cend(); ++it) {
@@ -1289,6 +1309,7 @@ bool applyScenePatch(const QVariantMap &message,
             QStringLiteral("selectionBold"),
             QStringLiteral("selectionUnderline"),
             QStringLiteral("selectionStrikeout"),
+            QStringLiteral("secondaryCarets"),
             QStringLiteral("documentKey"),
             QStringLiteral("topBarRight"),
         };

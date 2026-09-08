@@ -1515,6 +1515,7 @@ var semanticEditorSurfaceStateKeys = []string{
 	"selectionBold",
 	"selectionUnderline",
 	"selectionStrikeout",
+	"secondaryCarets",
 	"topBarRight",
 }
 
@@ -1542,7 +1543,11 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 	// These are identity preconditions, not mutable cursor/selection fields.
 	// Carry all three on every compact update because QML replaces its compact
 	// override atomically instead of merging it with the previous one.
-	if len(state) != len(semanticEditorSurfaceStateKeys)+len(semanticEditorSurfaceIdentityKeys) {
+	expected := len(semanticEditorSurfaceStateKeys) + len(semanticEditorSurfaceIdentityKeys)
+	if _, present := state["secondaryCarets"]; !present {
+		expected--
+	}
+	if len(state) != expected {
 		return false
 	}
 	for _, key := range semanticEditorSurfaceIdentityKeys {
@@ -1561,10 +1566,32 @@ func semanticEditorSurfaceStateValid(state map[string]any) bool {
 	}
 	for _, key := range semanticEditorSurfaceStateKeys {
 		value, present := state[key]
+		if !present && key == "secondaryCarets" {
+			continue
+		}
 		if !present {
 			return false
 		}
 		switch key {
+		case "secondaryCarets":
+			carets, ok := value.([]map[string]any)
+			if !ok {
+				return false
+			}
+			for _, caret := range carets {
+				if len(caret) != 5 {
+					return false
+				}
+				if _, ok := caret["selection"].(bool); !ok {
+					return false
+				}
+				for _, coordinate := range []string{"cursorAbsoluteRow", "cursorAbsoluteColumn", "selectionAnchorRow", "selectionAnchorColumn"} {
+					if !integer(caret[coordinate], true) {
+						return false
+					}
+				}
+			}
+
 		case "cursorVisible", "selection", "selectionBold",
 			"selectionUnderline", "selectionStrikeout":
 			if _, ok := value.(bool); !ok {
@@ -2725,11 +2752,13 @@ func (r *ExtUiRenderer) SetSemanticScene(scene map[string]any) {
 }
 
 var semanticPanelCatalogMutableKeys = map[string]struct{}{
-	"path": {}, "title": {}, "catalogRevision": {}, "selectionRevision": {},
+	"path": {}, "title": {}, "pathIcon": {}, "catalogRevision": {}, "selectionRevision": {},
 	"cursorEntryId": {}, "cursor": {}, "loading": {}, "catalogProvisional": {},
 	"catalogRowsDeferred": {},
 	"fastFind":            {}, "fastFindText": {}, "fastFindMatchColor": {},
 	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
+	"selectedFiles": {}, "selectedDirectories": {}, "selectedSize": {}, "totalSize": {},
+	"freeSpace": {}, "freeSpaceKnown": {}, "symlinkTarget": {}, "useSortGroups": {},
 	"metadataRevision": {}, "entries": {}, "highlightStyles": {},
 }
 
@@ -4917,6 +4946,7 @@ func RunExternalUIWithMapping(backend string) error {
 	if err != nil {
 		return err
 	}
+	vtui.SetActiveBackend(backend)
 	return RunExternalUI(100, 30, path, externalUIBackendArgs(backend))
 }
 

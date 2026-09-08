@@ -84,7 +84,8 @@ Rectangle {
                                        + panelDriveButton.height
                                        + panelPathArea.width
                                        + panelPathArea.height
-                    source: panelPathControl.currentDriveIconSource
+                    source: panel.pathIcon ? hostWindow.semanticMenuIconSource(String(panel.pathIcon), 18, hostWindow.galleryPathTextColor)
+                            : panelPathControl.currentDriveIconSource
                 }
             }
 
@@ -365,7 +366,8 @@ Rectangle {
                     height: 31
                     radius: 5
                     readonly property bool choiceActive:
-                        panelView.sortModeName()
+                        modelData.mode === "groups" ? panel.useSortGroups === true
+                        : panelView.sortModeName()
                         === hostWindow.cleanText(modelData.mode)
                     color: sortChoicePointer.containsMouse
                            ? hostWindow.controlHoverBg : "transparent"
@@ -424,6 +426,11 @@ Rectangle {
                         }
 
                         Text {
+                            id: sortChoiceLabel
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(sortChoiceLabel, hostWindow.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(sortChoiceLabel, hostWindow.contentItem)
+                            }
                             objectName: "panelSortChoiceLabel-"
                                         + hostWindow.cleanText(
                                               sortChoice.modelData.mode)
@@ -437,6 +444,11 @@ Rectangle {
 
                     Text {
                         id: sortChoiceShortcut
+                        objectName: "panelSortChoiceShortcut-" + sortChoice.modelData.mode + "-" + Number(panel.side || 0)
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(sortChoiceShortcut, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(sortChoiceShortcut, hostWindow.contentItem)
+                        }
                         anchors.right: parent.right
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter

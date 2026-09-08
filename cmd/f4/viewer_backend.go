@@ -39,6 +39,7 @@ type ViewerBackend struct {
 	fetchLen               int
 	fetchCancel            context.CancelFunc
 	fetchSerial            uint64
+	contentRevision        uint64
 	readNotificationWanted bool
 	ready                  chan struct{}
 	closeOnce              sync.Once
@@ -126,8 +127,21 @@ func (b *ViewerBackend) DropCache() {
 	b.mu.Lock()
 	b.cacheData = nil
 	b.totalLines = -1
+	b.contentRevision++
+	b.fetchSerial++
+	if b.fetchCancel != nil {
+		b.fetchCancel()
+	}
+	b.readErr = nil
+	b.lineSeekActive = false
 	b.totalForSize = -1
 	b.mu.Unlock()
+}
+
+func (b *ViewerBackend) ContentRevision() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.contentRevision
 }
 
 // Refresh re-measures the file and reports whether its length changed. This is
@@ -305,7 +319,7 @@ func (b *ViewerBackend) fetchLatest(post func(func() bool)) {
 		data := make([]byte, length)
 		n, err := readDocumentBytes(ctx, b.file, data, b.dataOffset+off)
 		b.mu.Lock()
-		stale := off != b.fetchOff || length != b.fetchLen || ctx.Err() != nil
+		stale := serial != b.fetchSerial || off != b.fetchOff || length != b.fetchLen || ctx.Err() != nil
 		cancel()
 		b.fetchCancel = nil
 		if b.ctx.Err() != nil {

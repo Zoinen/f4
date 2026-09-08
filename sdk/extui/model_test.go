@@ -262,7 +262,7 @@ func TestDeferredPanelToMapKeepsBaseCatalogMinimal(t *testing.T) {
 	if out["metadataDeferred"] != true || out["metadataRevision"] != int64(9) {
 		t.Fatalf("missing deferred metadata envelope: %#v", out)
 	}
-	for _, key := range []string{"highlightRevision", "totalSize", "selectedSize"} {
+	for _, key := range []string{"highlightRevision"} {
 		if _, ok := out[key]; ok {
 			t.Fatalf("deferred panel leaked %q: %#v", key, out)
 		}

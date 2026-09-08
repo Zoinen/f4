@@ -67,8 +67,16 @@ Rectangle {
         { "label": "Extension", "mode": "extension", "icon": "file-type", "shortcut": "Ctrl+F4" },
         { "label": "Time", "mode": "time", "icon": "clock-3", "shortcut": "Ctrl+F5" },
         { "label": "Size", "mode": "size", "icon": "arrow-down-wide-narrow", "shortcut": "Ctrl+F6" },
-        { "label": "Unsorted", "mode": "unsorted", "icon": "list", "shortcut": "Ctrl+F7" }
+        { "label": "Unsorted", "mode": "unsorted", "icon": "list", "shortcut": "Ctrl+F7" },
+        { "label": "Use sort groups", "mode": "groups", "icon": "list", "shortcut": "" }
     ]
+
+    function statusBytes(value) {
+        const bytes = Math.max(0, Number(value || 0))
+        const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+        const unit = bytes > 0 ? Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024))) : 0
+        return (bytes / Math.pow(1024, unit)).toLocaleString(Qt.locale(), 'f', unit > 0 ? 1 : 0) + " " + units[unit]
+    }
 
     function rendererChoiceEnabled(choice) {
         if (!choice || choice.heading === true)
@@ -127,6 +135,12 @@ Rectangle {
     }
 
     function chooseSort(choice) {
+        if (choice.mode === "groups") {
+            hostWindow.action({ "action": "panel.sortGroups", "side": panel.side,
+                                "enabled": panel.useSortGroups !== true })
+            return
+        }
+
         hostWindow.action({
             "action": "panel.sort",
             "side": panel.side,
@@ -628,21 +642,41 @@ Rectangle {
         }
 
         Text {
+            id: statusSelection
             objectName: "panelStatusSelection-"
                         + Number(panel.side || 0)
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             anchors.leftMargin: hostWindow.panelTextInset
-            text: hostWindow.cleanText(panel.selectedCount) + " selected"
+            width: Math.max(0, statusTotals.x - x - hostWindow.panelTextInset)
+            elide: Text.ElideMiddle
+            text: Number(panel.selectedCount || 0) > 0
+                ? (Number(panel.selectedFiles || 0) + (Number(panel.selectedFiles || 0) === 1 ? " file, " : " files, ")
+                   + Number(panel.selectedDirectories || 0) + (Number(panel.selectedDirectories || 0) === 1 ? " folder · " : " folders · ")
+                   + panelRoot.statusBytes(panel.selectedSize) + " selected")
+                : String(panel.symlinkTarget || "") !== ""
+                  ? "→ " + String(panel.symlinkTarget) : ""
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(statusSelection, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(statusSelection, hostWindow.contentItem)
+            }
             color: hostWindow.mutedText
             font.pixelSize: 12
         }
 
         Text {
+            id: statusTotals
+            objectName: "panelStatusTotals-" + Number(panel.side || 0)
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: hostWindow.panelTextInset
-            text: hostWindow.cleanText(panel.totalCount) + " items"
+            text: String(Number(panel.totalCount || 0)) + " items · "
+                  + panelRoot.statusBytes(panel.totalSize)
+                  + (panel.freeSpaceKnown === true ? " · " + panelRoot.statusBytes(panel.freeSpace) + " free" : "")
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(statusTotals, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(statusTotals, hostWindow.contentItem)
+            }
             color: hostWindow.mutedText
             font.pixelSize: 12
         }

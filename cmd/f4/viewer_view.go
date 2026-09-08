@@ -312,10 +312,8 @@ func (vv *ViewerView) stopTailWatch() {
 	vv.tailStop = nil
 }
 
-// refreshFromFile re-measures the file and redraws when it moved. The
-// auto-scroll in DisplayObject does the rest: a viewer sitting at the end of
-// the file follows it, and one parked further up stays exactly where the
-// reader left it and only gets an honest scrollbar and percentage.
+// Following belongs to the viewer lifecycle: native frontends may publish
+// semantic state without ever calling the console painter.
 func (vv *ViewerView) refreshFromFile() {
 	if vv.backend == nil || vv.Busy {
 		return
@@ -323,12 +321,19 @@ func (vv *ViewerView) refreshFromFile() {
 	if !vv.backend.Refresh(context.Background()) {
 		return
 	}
-	if size := vv.backend.Size(); vv.TopOffset > size {
+	size := vv.backend.Size()
+	follow := vv.eofVisible && size > vv.lastKnownSize
+	vv.lastKnownSize = size
+	if vv.TopOffset > size {
 		// The file was truncated or rotated away under the viewport, and the
 		// offset it was showing no longer exists.
 		vv.TopOffset = 0
 		vv.lastKnownSize = size
 		vv.eofVisible = false
+	}
+	if follow {
+		vv.jumpToEnd()
+		return
 	}
 	vtui.FrameManager.Redraw()
 }
@@ -342,6 +347,8 @@ func (vv *ViewerView) reload() {
 	}
 	vv.backend.Refresh(context.Background())
 	vv.backend.DropCache()
+	vv.beginViewerNavigationIntent()
+	vv.lineOffsets = nil
 	if size := vv.backend.Size(); vv.TopOffset > size {
 		vv.TopOffset = 0
 		vv.eofVisible = false

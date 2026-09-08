@@ -2708,3 +2708,5 @@ func (v *ArchiveVFS) copyBulkFallback(ctx context.Context, f vfs.ReadAtCloser, s
 		return nil
 	})
 }
+
+func (*ArchiveVFS) PanelIcon() string { return "archive" }

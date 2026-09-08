@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic as T
 import ZoinGallery 1.0 as ZG
 import ZoinGallery.Native 1.0 as ZGN
 
@@ -230,6 +231,57 @@ FocusScope {
     Component.onCompleted: {
         panelAdapter.refreshPanelSession(host.panel)
         panelAdapter.synchronizeLayout(host.panel, host.layoutState)
+    }
+
+    // Read the complete name from the native catalog, independent of the
+    // console's horizontal name offset and the current gallery presentation.
+    readonly property string hoveredEntryName: session !== null
+        && embeddedGalleryPanel.hoveredIndex >= 0
+        ? session.entryNameAt(embeddedGalleryPanel.hoveredIndex) : ""
+    TextMetrics {
+        id: fullNameMetrics
+        text: host.hoveredEntryName
+        font: fullNameTip.font
+    }
+    T.ToolTip {
+        id: fullNameTip
+        objectName: "galleryFullNameTooltip-" + host.side
+        parent: host
+        visible: false // Full-name hover tooltips are disabled for now.
+        delay: 650
+        timeout: 6000
+        text: host.hoveredEntryName
+        x: Math.min(host.width - width, Math.max(0, embeddedGalleryPanel.hoverPointerX))
+        y: Math.max(0, Math.min(host.height - height, embeddedGalleryPanel.hoverPointerY + 20))
+        padding: 8
+        width: Math.round(Math.min(host.width, 480, fullNameMetrics.advanceWidth + 2 * padding)
+                          * host.devicePixelRatio) / host.devicePixelRatio
+        function pixelOffset(item, horizontal) {
+            const revision = x + y + host.x + host.y + width + height
+            const origin = item.parent.mapToItem(null, item.x, item.y)
+            const coordinate = horizontal ? origin.x : origin.y
+            const dpr = host.devicePixelRatio > 0 ? host.devicePixelRatio : 1
+            return Math.round(coordinate * dpr) / dpr - coordinate
+        }
+        background: Rectangle {
+            color: host.theme.dialogBackground
+            border.color: host.theme.separator
+            border.width: 1 / host.devicePixelRatio
+            radius: 4
+        }
+        contentItem: Text {
+            id: fullNameText
+            objectName: "galleryFullNameText-" + host.side
+            text: fullNameTip.text
+            textFormat: Text.PlainText
+            font: fullNameTip.font
+            color: host.theme.text
+            wrapMode: Text.WrapAnywhere
+            transform: Translate {
+                x: fullNameTip.pixelOffset(fullNameText, true)
+                y: fullNameTip.pixelOffset(fullNameText, false)
+            }
+        }
     }
 
     ZG.GalleryPanel {

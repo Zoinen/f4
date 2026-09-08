@@ -25,7 +25,7 @@ Rectangle {
             ? overlayController.menuSeparatorHeight
             : modelData.header === true
               ? overlayController.menuHeaderHeight
-              : overlayController.effectiveMenuRowHeight
+              : modelData.details ? overlayController.driveRowHeight : overlayController.effectiveMenuRowHeight
     radius: 4
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator
@@ -73,9 +73,7 @@ Rectangle {
                             : overlayController.dropdownMode ? 0
                             : modelData.header === true
                             ? hostWindow.snapPx(10)
-                            : overlayController.hasLeadingIndicator
-                            ? hostWindow.snapPx(32)
-                            : hostWindow.snapPx(10)
+                            : overlayController.menuLabelInset
         verticalAlignment: Text.AlignVCenter
         text: {
             var label = hostWindow.cleanText(modelData.text)
@@ -96,13 +94,89 @@ Rectangle {
             defaultFont.bold = modelData.header === true
             return defaultFont
         }
-        visible: !modelData.separator
+        visible: !modelData.separator && !modelData.details
         elide: Text.ElideRight
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(
                    menuItemText, hostWindow.contentItem)
             y: hostWindow.dialogPixelOffsetY(
                    menuItemText, hostWindow.contentItem)
+        }
+    }
+
+    Item {
+        id: driveContent
+        visible: !!menuItem.modelData.details
+        readonly property var details: menuItem.modelData.details || ({})
+        readonly property real gap: hostWindow.snapPx(24)
+        readonly property real captionGap: hostWindow.snapPx(16)
+        readonly property real nameX: overlayController.menuLabelInset
+        readonly property real fsWidth: overlayController.driveFilesystemWidth
+        readonly property real fsX: hostWindow.snapPx(menuItem.width - 16 - fsWidth)
+        readonly property real columnNameWidth: hostWindow.snapPx(Math.min(overlayController.driveNameWidth,
+            Math.max(0, fsX - nameX - captionGap - gap - Math.min(overlayController.driveCapacityWidth, hostWindow.snapPx(220)))))
+        readonly property real capacityX: nameX + columnNameWidth + captionGap
+        readonly property real capacityWidth: hostWindow.snapPx(Math.max(0, fsX - (fsWidth > 0 ? gap : 0) - capacityX))
+        readonly property real capacityTextWidth: hostWindow.snapPx(Math.min(overlayController.driveCapacityTextWidth, capacityWidth * 0.8))
+        readonly property real barGap: hostWindow.snapPx(Math.min(8, capacityWidth * 0.05))
+        readonly property real barX: capacityX
+        readonly property real barWidth: hostWindow.snapPx(Math.max(0, capacityWidth - capacityTextWidth - barGap))
+        readonly property real nameWidth: overlayController.isDriveDetails(details)
+            ? columnNameWidth : hostWindow.snapPx(Math.max(0, menuItem.width - nameX - 16))
+        readonly property bool capacityKnown: details.usedFraction !== undefined && isFinite(Number(details.usedFraction))
+        width: menuItem.width
+        height: menuItem.height
+
+        Repeater {
+            model: ["name", "capacity", "filesystem"]
+            delegate: Text {
+                id: driveText
+                required property string modelData
+                objectName: "semanticMenuDetail-" + hostWindow.cleanText(overlayController.frame.id)
+                            + "-" + Number(menuItem.modelData.index) + "-" + modelData
+                readonly property bool capacity: modelData === "capacity"
+                x: modelData === "filesystem" ? driveContent.fsX
+                   : capacity ? driveContent.barX + driveContent.barWidth + driveContent.barGap
+                   : driveContent.nameX
+                y: hostWindow.snapPx((driveContent.height - height) / 2)
+                width: modelData === "filesystem" ? driveContent.fsWidth
+                       : capacity ? driveContent.capacityTextWidth : driveContent.nameWidth
+                text: modelData === "name" ? hostWindow.mnemonicText(overlayController.driveName(driveContent.details), menuItem.modelData.hotkey)
+                      : capacity ? overlayController.driveCapacityText(driveContent.details, true)
+                      : String(driveContent.details[modelData] || "")
+                textFormat: modelData === "name" || capacity ? Text.StyledText : Text.PlainText
+                horizontalAlignment: Text.AlignLeft
+                font: hostWindow.font
+                color: modelData === "name" ? hostWindow.textColor : hostWindow.mutedText
+                elide: Text.ElideMiddle
+                visible: capacity ? !!driveContent.details.total : text !== ""
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(driveText, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(driveText, hostWindow.contentItem)
+                }
+            }
+        }
+        Rectangle {
+            id: capacityTrack
+            objectName: "semanticMenuCapacity-" + hostWindow.cleanText(overlayController.frame.id) + "-" + Number(menuItem.modelData.index)
+            x: driveContent.barX
+            y: hostWindow.snapPx((driveContent.height - height) / 2)
+            width: driveContent.barWidth
+            height: hostWindow.snapPx(5)
+            radius: height / 2
+            color: hostWindow.separatorColor
+            visible: driveContent.capacityKnown
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(capacityTrack, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(capacityTrack, hostWindow.contentItem)
+            }
+            Rectangle {
+                objectName: capacityTrack.objectName + "-used"
+                width: hostWindow.snapPx(parent.width * Math.max(0, Math.min(1, Number(driveContent.details.usedFraction || 0))))
+                height: parent.height
+                radius: parent.radius
+                color: hostWindow.dialogAccent
+            }
         }
     }
 
@@ -113,6 +187,7 @@ Rectangle {
                     + "-" + Number(modelData.index)
         readonly property string semanticIconName:
             modelData.checked === true ? "check"
+            : modelData.details ? String(modelData.details.icon || "hard-drive")
             : hostWindow.cleanText(modelData.icon)
         readonly property url semanticIconSource:
             semanticIconName === ""

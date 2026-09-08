@@ -193,6 +193,7 @@ Item {
     readonly property bool hasLeadingIndicator: {
         for (var i = 0; i < effectiveItems.length; ++i) {
             if (effectiveItems[i].checked === true
+                    || (effectiveItems[i].details && effectiveItems[i].details.icon)
                     || hostWindow.cleanText(effectiveItems[i].icon) !== ""
                     || hostWindow.cleanText(effectiveItems[i].iconColor) !== "")
                 return true
@@ -215,10 +216,7 @@ Item {
     readonly property real menuContentHeight: {
         var height = 0
         for (var i = 0; i < effectiveItems.length; ++i) {
-            height += effectiveItems[i].separator
-                      ? menuSeparatorHeight
-                      : effectiveItems[i].header === true
-                        ? menuHeaderHeight : effectiveMenuRowHeight
+            height += itemHeightAt(i)
         }
         return height
     }
@@ -298,7 +296,7 @@ Item {
         const item = effectiveItems[index]
         return item.separator ? menuSeparatorHeight
              : item.header === true ? menuHeaderHeight
-             : effectiveMenuRowHeight
+             : item.details ? driveRowHeight : effectiveMenuRowHeight
     }
 
     function heightBeforeIndex(index) {
@@ -586,7 +584,68 @@ Item {
         font: hostWindow.font
     }
 
+    readonly property real menuLabelInset: hostWindow.snapPx(hasLeadingIndicator ? 32 : 10)
+    readonly property real driveRowHeight: effectiveMenuRowHeight
+    function driveName(details) {
+        return String(details.name || "") + (details.label ? " (" + details.label + ")" : "")
+            + (details.network ? " — " + details.network : "")
+    }
+    function isDriveDetails(details) {
+        return details && details.isDrive === "true"
+    }
+    property int captionMetricsRevision: 0
+    Repeater {
+        id: driveCaptionMetrics
+        model: effectiveItems.filter(item => isDriveDetails(item.details))
+        onItemAdded: menuOverlay.captionMetricsRevision++
+        onItemRemoved: menuOverlay.captionMetricsRevision++
+        delegate: Text {
+            required property var modelData
+            objectName: "driveCaptionMeasurement-" + Number(modelData.index)
+            visible: false
+            font: hostWindow.font
+            textFormat: Text.StyledText
+            text: hostWindow.mnemonicText(menuOverlay.driveName(modelData.details), modelData.hotkey)
+        }
+    }
+    readonly property real driveNameWidth: {
+        const revision = captionMetricsRevision
+        let width = 0
+        for (let i = 0; i < driveCaptionMetrics.count; ++i) {
+            const item = driveCaptionMetrics.itemAt(i)
+            if (item) width = Math.max(width, item.implicitWidth)
+        }
+        return hostWindow.snapPx(width + 2) + revision * 0
+    }
+    readonly property real driveFilesystemWidth: hostWindow.snapPx(Math.max(0,
+        ...effectiveItems.map(item => item.details ? popupMenuMetrics.advanceWidth(String(item.details.filesystem || "")) : 0)))
+    readonly property bool driveHasCapacity: effectiveItems.some(item => item.details && item.details.total)
+    function driveCapacityText(details, styled = false) {
+        const format = qsTr("%1 free of %2")
+        if (!styled) return format.arg(details.free || "").arg(details.total || "")
+        function size(value) {
+            return '<font color="' + hostWindow.textColor + '">'
+                + hostWindow.richTextEscape(value || "") + '</font>'
+        }
+        return hostWindow.richTextEscape(format).arg(size(details.free)).arg(size(details.total))
+    }
+    readonly property real driveCapacityTextWidth: hostWindow.snapPx(Math.max(0,
+        ...effectiveItems.map(item => item.details && item.details.total
+            ? popupMenuMetrics.advanceWidth(driveCapacityText(item.details)) + 2 : 0)))
+    readonly property real driveCapacityWidth: driveHasCapacity
+        ? hostWindow.snapPx(108) + driveCapacityTextWidth : 0
+
     function preferredMenuWidth() {
+        if (effectiveItems.some(item => item.details !== undefined)) {
+            let preferred = menuLabelInset + hostWindow.snapPx(16 + 16 + 24) + driveNameWidth + driveCapacityWidth + driveFilesystemWidth
+            for (const item of effectiveItems) {
+                if (!isDriveDetails(item.details)) preferred = Math.max(preferred, popupMenuMetrics.advanceWidth(
+                    item.details ? driveName(item.details) : String(item.text || ""))
+                    + menuLabelInset + hostWindow.snapPx(24) + 2 * menuEdgeInset)
+            }
+            return Math.min(hostWindow.width - 12, preferred)
+        }
+
         if (!fromMenuBar || !previewMenuItem) {
             var semanticWidth = hostWindow.pxW(frame.w)
             return Math.min(hostWindow.width - 8, Math.max(150, semanticWidth))
@@ -623,10 +682,7 @@ Item {
         var y = popupSurface.y + popupMenuList.y
                 - popupMenuList.contentY
         for (var i = 0; i < effectiveItems.length && i < index; ++i) {
-            y += effectiveItems[i].separator
-                 ? menuSeparatorHeight
-                 : effectiveItems[i].header === true
-                   ? menuHeaderHeight : menuRowHeight
+            y += itemHeightAt(i)
         }
         return y
     }

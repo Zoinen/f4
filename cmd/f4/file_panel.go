@@ -616,6 +616,7 @@ type directoryLoadRequest struct {
 }
 
 type FileSystemPanel struct {
+	nativeStatus nativePanelStatusCache
 	vtui.ScreenObject
 	table                 *vtui.Table
 	scrollBar             *vtui.ScrollBar

@@ -319,6 +319,11 @@ set(F4_LUCIDE_ICON_NAMES
   image.svg
   images.svg
   grid-3x3.svg
+  disc.svg
+  memory-stick.svg
+  folder-symlink.svg
+  usb-flash-drive.svg
+  blocks.svg
   hard-drive.svg
   house.svg
   layout-dashboard.svg
@@ -1098,6 +1103,7 @@ if(BUILD_TESTING)
   f4_link_static_zoingallery_plugin(F4OperationsQueueTests)
   f4_link_static_test_platform(F4OperationsQueueTests)
   f4_link_static_test_qml_plugins(F4OperationsQueueTests)
+  f4_link_static_test_image_plugins(F4OperationsQueueTests)
   add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"

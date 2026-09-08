@@ -386,7 +386,7 @@ Item {
     }
 
     function beginMiddleAutoScroll() {
-        if (!middleAutoScrollAllowed || !standaloneViewport
+        if (!middleAutoScrollAllowed || (!standaloneViewport && !terminalSurface)
                 || !windowInitialized || middleAutoScrollActive)
             return false
 
@@ -418,7 +418,7 @@ Item {
     }
 
     function cancelPendingIntent() {
-        if (!standaloneViewport)
+        if (!standaloneViewport && !terminalSurface)
             return
         if (windowRequestPending)
             canceledWindowGeneration = Math.max(canceledWindowGeneration,
@@ -503,6 +503,8 @@ Item {
             // destination immediately; while it is in flight,
             // sendWindowRequest keeps exactly one replaceable latest intent.
             const middleState = topState()
+            if (terminalSurface)
+                setTerminalFollowTailIntent(requestReachesContentEnd(middleState.extent), true)
             sendWindowRequest(middleState.extent, middleState.fraction,
                               0, true)
         }

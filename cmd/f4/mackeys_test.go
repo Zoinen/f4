@@ -30,6 +30,9 @@ func withMacKeys(t *testing.T, commandIsDistinct bool) {
 // The probe still has to name a backend that exists, or the mode would be
 // unreachable on the machine it was written for.
 func TestMacCommandBackendsNamesTheMacOSDefault(t *testing.T) {
+	if !macCommandBackends["qt"] {
+		t.Error("Qt must preserve Command and physical Control for native dialog and editor keys")
+	}
 	if !macCommandBackends["gogpu"] {
 		t.Error("the macOS GUI backend is not listed as separating Command from Control")
 	}
