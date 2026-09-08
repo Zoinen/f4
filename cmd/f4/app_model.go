@@ -77,6 +77,9 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	if scene.OperationsQueue == nil {
+		scene.OperationsQueue = backgroundOperationsQueue()
+	}
 	commitMediaPanelsForSemanticScene(legacy)
 	return scene.ToMap()
 }

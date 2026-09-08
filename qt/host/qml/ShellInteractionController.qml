@@ -172,7 +172,7 @@ Item {
     }
 
     function activeOperationsQueueView() {
-        if (!sceneStore.hasOperationsQueueSurface()
+        if (!hostWindow.queueDropdownOpen
                 || sceneStore.hasBlockingOverlay())
             return null
         return operationsQueueLayer ? operationsQueueLayer.item : null

@@ -130,7 +130,7 @@ Item {
         anchors.left: appIcon.right
         anchors.leftMargin: hostWindow.macTitleBarLeftPadding
         anchors.right: workspaceBar.visible
-                       ? workspaceBar.left : windowButtons.left
+                       ? workspaceBar.left : queueButton.left
         anchors.rightMargin: workspaceBar.visible
                              ? 8
                              : hostWindow.useMacNativeTitleBar
@@ -147,11 +147,52 @@ Item {
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk
-        x: hostWindow.snapPx(windowButtons.x - width
-                             - (hostWindow.useMacNativeTitleBar
-                                ? -windowButtons.width
-                                  + hostWindow.contentSpacing
-                                : hostWindow.contentSpacing))
+        x: hostWindow.snapPx(queueButton.x - width - hostWindow.snapPx(4))
+    }
+
+    ToolButton {
+        id: queueButton
+        objectName: "operationsQueueButton"
+        x: hostWindow.snapPx((hostWindow.useMacNativeTitleBar ? titleBar.width : windowButtons.x) - width - hostWindow.contentSpacing)
+        y: hostWindow.snapPx((titleBar.height - height) / 2)
+        width: hostWindow.snapPx(42)
+        height: hostWindow.snapPx(32)
+        z: 3
+        focusPolicy: Qt.StrongFocus
+        Accessible.name: "Operations Queue"
+        ToolTip.visible: hovered
+        ToolTip.text: "Operations Queue"
+        onClicked: hostWindow.toggleQueueDropdown()
+        function registerNativeHitTarget() {
+            if (titleBar.usesQwk && titleBar.nativeWindowAgentReady)
+                titleBar.nativeWindowAgent.setHitTestVisible(queueButton, true)
+        }
+        Component.onCompleted: registerNativeHitTarget()
+        Connections {
+            target: titleBar
+            function onNativeWindowAgentReadyChanged() { queueButton.registerNativeHitTarget() }
+        }
+        background: Rectangle {
+            radius: hostWindow.snapPx(5)
+            color: queueButton.hovered || hostWindow.queueDropdownOpen ? hostWindow.selectedBg : "transparent"
+        }
+        contentItem: Item {
+          Image {
+            id: queueButtonIcon
+            objectName: "operationsQueueButtonIcon"
+            source: hostWindow.lucideIconSource("list-checks", 18, hostWindow.textColor)
+            fillMode: Image.PreserveAspectFit
+            sourceSize: Qt.size(18,18)
+            width: hostWindow.snapPx(18)
+            height: width
+            x: hostWindow.snapPx((parent.width-width)/2)
+            y: hostWindow.snapPx((parent.height-height)/2)
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueButtonIcon,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueButtonIcon,hostWindow.contentItem)
+            }
+          }
+        }
     }
 
     Rectangle {

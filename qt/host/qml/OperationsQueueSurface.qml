@@ -21,6 +21,7 @@ Rectangle {
     }
 
     property alias queue: queueController.queue
+    property alias dropdown: queueController.dropdown
     property alias interactionActive: queueController.interactionActive
     property alias localSelectedTaskId: queueController.localSelectedTaskId
     property alias pendingSelectedTaskId: queueController.pendingSelectedTaskId
@@ -59,8 +60,13 @@ Rectangle {
         anchors.topMargin: queueController.topInset
         height: 62
         color: hostWindow.titleBarBg
-
         Text {
+            id: queueLeaf1
+            objectName: "operationsQueue-queueLeaf1"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf1,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf1,hostWindow.contentItem)
+            }
             anchors.left: parent.left
             anchors.leftMargin: hostWindow.contentSpacing
             anchors.top: parent.top
@@ -141,8 +147,13 @@ Rectangle {
         anchors.top: queueChrome.bottom
         height: 34
         color: hostWindow.titleBarBg
-
         Text {
+            id: queueLeaf2
+            objectName: "operationsQueue-queueLeaf2"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf2,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf2,hostWindow.contentItem)
+            }
             x: hostWindow.contentSpacing
             width: queueController.idColumnWidth
             anchors.verticalCenter: parent.verticalCenter
@@ -153,6 +164,12 @@ Rectangle {
             font.weight: Font.DemiBold
         }
         Text {
+            id: queueLeaf3
+            objectName: "operationsQueue-queueLeaf3"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf3,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf3,hostWindow.contentItem)
+            }
             x: hostWindow.contentSpacing + queueController.idColumnWidth
             width: queueController.stateColumnWidth
             anchors.verticalCenter: parent.verticalCenter
@@ -162,6 +179,12 @@ Rectangle {
             font.weight: Font.DemiBold
         }
         Text {
+            id: queueLeaf4
+            objectName: "operationsQueue-queueLeaf4"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf4,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf4,hostWindow.contentItem)
+            }
             x: hostWindow.contentSpacing + queueController.idColumnWidth
                + queueController.stateColumnWidth
             width: queueController.typeColumnWidth
@@ -172,6 +195,12 @@ Rectangle {
             font.weight: Font.DemiBold
         }
         Text {
+            id: queueLeaf5
+            objectName: "operationsQueue-queueLeaf5"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf5,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf5,hostWindow.contentItem)
+            }
             anchors.left: parent.left
             anchors.leftMargin: hostWindow.contentSpacing
                                 + queueController.idColumnWidth
@@ -189,6 +218,11 @@ Rectangle {
         }
         Text {
             id: progressHeader
+            objectName: "operationsQueue-progressHeader"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(progressHeader,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(progressHeader,hostWindow.contentItem)
+            }
             anchors.right: speedHeader.left
             width: queueController.progressColumnWidth
             anchors.verticalCenter: parent.verticalCenter
@@ -199,6 +233,11 @@ Rectangle {
         }
         Text {
             id: speedHeader
+            objectName: "operationsQueue-speedHeader"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(speedHeader,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(speedHeader,hostWindow.contentItem)
+            }
             anchors.right: parent.right
             anchors.rightMargin: hostWindow.contentSpacing
             width: queueController.speedColumnWidth
@@ -278,8 +317,13 @@ Rectangle {
             }
 
             HoverHandler { id: rowHover }
-
             Text {
+                id: queueLeaf8
+                objectName: "operationsQueue-queueLeaf8"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(queueLeaf8,hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(queueLeaf8,hostWindow.contentItem)
+                }
                 x: hostWindow.contentSpacing
                 width: queueController.idColumnWidth - 8
                 anchors.verticalCenter: parent.verticalCenter
@@ -294,12 +338,18 @@ Rectangle {
                 x: hostWindow.contentSpacing + queueController.idColumnWidth
                 width: queueController.stateColumnWidth - 8
                 height: parent.height
-                IconLabel {
+                Image {
+                    id: queueLeaf9
+                    objectName: "operationsQueue-queueLeaf9"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf9,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf9,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 14
-                    height: 14
-                    icon.source: hostWindow.lucideIconSource(
+                    width: hostWindow.snapPx(14)
+                    height: hostWindow.snapPx(14)
+                    source: hostWindow.lucideIconSource(
                                      queueController.stateIconName(
                                          queueRow.stateClass,
                                          queueRow.state),
@@ -307,12 +357,14 @@ Rectangle {
                                      queueController.stateColor(
                                          queueRow.stateClass,
                                          queueRow.state))
-                    icon.width: 14
-                    icon.height: 14
-                    icon.color: queueController.stateColor(queueRow.stateClass,
-                                                     queueRow.state)
                 }
                 Text {
+                    id: queueLeaf10
+                    objectName: "operationsQueue-queueLeaf10"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf10,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf10,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.leftMargin: 15
                     anchors.right: parent.right
@@ -326,8 +378,13 @@ Rectangle {
                                  ? Font.DemiBold : Font.Normal
                 }
             }
-
             Text {
+                id: queueLeaf11
+                objectName: "operationsQueue-queueLeaf11"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(queueLeaf11,hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(queueLeaf11,hostWindow.contentItem)
+                }
                 x: hostWindow.contentSpacing + queueController.idColumnWidth
                    + queueController.stateColumnWidth
                 width: queueController.typeColumnWidth - 8
@@ -347,8 +404,13 @@ Rectangle {
                 anchors.right: progressCell.left
                 anchors.rightMargin: 8
                 height: parent.height
-
                 Text {
+                    id: queueLeaf12
+                    objectName: "operationsQueue-queueLeaf12"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf12,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf12,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -365,6 +427,12 @@ Rectangle {
                     font.pixelSize: 13
                 }
                 Text {
+                    id: queueLeaf13
+                    objectName: "operationsQueue-queueLeaf13"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf13,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf13,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
@@ -407,6 +475,12 @@ Rectangle {
                     Accessible.name: queueRow.taskType
                 }
                 Text {
+                    id: queueLeaf14
+                    objectName: "operationsQueue-queueLeaf14"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf14,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf14,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.leftMargin: rowBusy.visible ? 28 : 0
                     anchors.right: parent.right
@@ -444,6 +518,12 @@ Rectangle {
                 height: parent.height
                 visible: width > 0
                 Text {
+                    id: queueLeaf15
+                    objectName: "operationsQueue-queueLeaf15"
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(queueLeaf15,hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(queueLeaf15,hostWindow.contentItem)
+                    }
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
@@ -533,6 +613,11 @@ Rectangle {
             spacing: 8
             Text {
                 id: emptyLabel
+                objectName: "operationsQueue-emptyLabel"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(emptyLabel,hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(emptyLabel,hostWindow.contentItem)
+                }
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: hostWindow.cleanText(queue.error) !== ""
                       ? hostWindow.cleanText(queue.error)
@@ -542,6 +627,12 @@ Rectangle {
                 font.pixelSize: 16
             }
             Text {
+                id: queueLeaf17
+                objectName: "operationsQueue-queueLeaf17"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(queueLeaf17,hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(queueLeaf17,hostWindow.contentItem)
+                }
                 anchors.horizontalCenter: parent.horizontalCenter
                 text: hostWindow.cleanText(queue.emptyDescription)
                 visible: text !== ""
@@ -579,8 +670,13 @@ Rectangle {
             Accessible.description: hostWindow.cleanText(queue.cancelDescription)
             onClicked: queueController.cancelSelection()
         }
-
         Text {
+            id: queueLeaf18
+            objectName: "operationsQueue-queueLeaf18"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(queueLeaf18,hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(queueLeaf18,hostWindow.contentItem)
+            }
             anchors.left: cancelButton.right
             anchors.leftMargin: 14
             anchors.right: parent.right

@@ -36,6 +36,49 @@ func queueSemanticStateClass(state string) string {
 	}
 }
 
+// Native dropdowns observe and control the queue without activating its
+// console workspace or replacing the current file/document surface.
+func backgroundOperationsQueue() *extui.OperationsQueueModel {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok {
+				model := queue.semanticModel()
+				model.TabID = workspaceSemanticTarget(screen.Number)
+				return &model
+			}
+		}
+	}
+	return nil
+}
+
+func handleQueueDropdownAction(action map[string]any) bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	if semanticString(action["action"]) == "queue.ensure" {
+		if GlobalQueueManager != nil {
+			GlobalQueueManager.EnsureQueueWorkspace()
+			GlobalQueueManager.RefreshUI()
+		}
+		vtui.FrameManager.Redraw()
+		return true
+	}
+	if !strings.HasPrefix(semanticString(action["action"]), "queue.") {
+		return false
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok && semanticString(action["target"]) == vtui.SemanticID(queue) {
+				return queue.HandleSemanticAction(action)
+			}
+		}
+	}
+	return false
+}
+
 func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
 	model := extui.OperationsQueueModel{
 		ID:          vtui.SemanticID(qf),

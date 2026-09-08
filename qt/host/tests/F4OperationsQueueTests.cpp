@@ -750,6 +750,7 @@ class F4OperationsQueueTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void queueDropdownKeepsPanelsAndAlignsLeaves();
     void initTestCase();
     void queueUsesNativeAccessibleSurfaceAndGuardsActiveClose();
     void plusButtonIsInteractiveInsideQwkTitleBar();
@@ -782,6 +783,50 @@ void F4OperationsQueueTests::initTestCase()
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
+{
+    auto scene=panelScene();
+    scene.insert("operationsQueue",queueModel({task(1,"Running",35),task(2,"Error",20)},1,true));
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QVERIFY(!fixture.item("queue-tab"));
+    auto *button=fixture.item("operationsQueueButton");
+    QVERIFY(button);
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    auto *surface=fixture.item("operationsQueueSurface");
+    QVERIFY(surface && surface->isVisible());
+    QVERIFY(fixture.item("persistentPanelsLayer")->isVisible());
+    for (const auto &action : fixture.shell.actions) QVERIFY(action.value("action")!="workspace.activate");
+    QTest::qWait(150);
+    const qreal dpr=fixture.window->devicePixelRatio();
+    QList<QQuickItem *> pending{surface,button};
+    int leaves=0;
+    while (!pending.isEmpty()) {
+        auto *item=pending.takeLast(); pending.append(item->childItems());
+        if (!item->isVisible()) continue;
+        const QString type=item->metaObject()->className();
+        if (!type.startsWith("QQuickText") && !type.startsWith("QQuickImage") && !type.startsWith("QQuickIconImage")) continue;
+        if (item->property("text").isValid() && item->property("text").toString().isEmpty()) continue;
+        QVERIFY2(!item->objectName().isEmpty(),qPrintable(type));
+        const auto origin=item->mapToScene(QPointF());
+        const auto physical=origin*dpr;
+        QVERIFY2(qAbs(physical.x()-qRound(physical.x()))<0.001 && qAbs(physical.y()-qRound(physical.y()))<0.001,
+            qPrintable(QString("%1 %2 physical=(%3,%4)").arg(item->objectName(),type).arg(physical.x()).arg(physical.y())));
+        QCOMPARE(item->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(item->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+        ++leaves;
+    }
+    QVERIFY(leaves>10);
+    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-dropdown-%1.png").arg(dpr)));
+    QTest::keyClick(fixture.window,Qt::Key_Escape);
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(button));
+    QTRY_VERIFY(fixture.window->property("queueDropdownOpen").toBool());
+    QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,QPoint(10,600));
+    QTRY_VERIFY(!fixture.window->property("queueDropdownOpen").toBool());
 }
 
 void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClose()
@@ -904,15 +949,8 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
 
     QQuickItem *workspaceBar = fixture.item(QStringLiteral("workspaceBar"));
     QVERIFY(workspaceBar);
-    QQuickItem *queueTitle = visualItemWithText(workspaceBar,
-                                                QStringLiteral("Queue"));
-    QQuickItem *queueNumber = visualItemWithText(workspaceBar,
-                                                 QStringLiteral("2"));
-    QVERIFY(queueTitle);
-    QVERIFY(queueNumber);
-    QCOMPARE(queueNumber->property("text").toString(), QStringLiteral("2"));
-    QVERIFY(queueTitle->mapToScene(QPointF{}).x()
-            < queueNumber->mapToScene(QPointF{}).x());
+    QVERIFY(!visualItemWithText(workspaceBar, QStringLiteral("Queue")));
+    QVERIFY(fixture.item(QStringLiteral("operationsQueueButton")));
     QVariant naturalTabWidth;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "preferredWorkspaceTabWidth",
@@ -971,7 +1009,7 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
 
 void F4OperationsQueueTests::plusButtonIsInteractiveInsideQwkTitleBar()
 {
-    QueueFixture fixture(queueScene(queueModel({}, -1, false)), true);
+    QueueFixture fixture(panelScene(), true);
     QVERIFY(fixture.window);
     QQuickItem *plusButton = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -983,11 +1021,13 @@ void F4OperationsQueueTests::plusButtonIsInteractiveInsideQwkTitleBar()
     fixture.shell.clearActions();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
                       itemCenter(plusButton));
-    QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1000);
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("target")),
-             QVariant(QStringLiteral("workspace-new")));
-    QCOMPARE(fixture.shell.actions.constFirst().value(QStringLiteral("action")),
-             QVariant(QStringLiteral("workspace.new")));
+    int newTabActions=0;
+    for (const auto &action : fixture.shell.actions) {
+        if (action.value("action")!="workspace.new") continue;
+        QCOMPARE(action.value("target"),QVariant("workspace-new"));
+        ++newTabActions;
+    }
+    QCOMPARE(newTabActions,1);
 }
 
 void F4OperationsQueueTests::progressUpdatesKeepModelAndDelegateIdentity()
@@ -1230,6 +1270,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
                                       Q_ARG(qreal, -900.0)));
     QTRY_VERIFY_WITH_TIMEOUT(queueList->property("flicking").toBool(), 1000);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(panelScene());
     QTRY_VERIFY_WITH_TIMEOUT(panelPair->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1263,6 +1304,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QCOMPARE(fixture.item(QStringLiteral("operationsQueueList")), queueList);
     QCOMPARE(queueList->property("contentY").toReal(), frozenQueueY);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(documentScene());
     QQuickItem *document = prewarmedDocument;
     QQuickItem *documentList = nullptr;
@@ -1294,6 +1336,7 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
     QTest::qWait(60);
     QCOMPARE(documentList->property("contentY").toReal(), frozenDocumentY);
 
+    fixture.window->setProperty("queueDropdownOpen",false);
     fixture.shell.setScene(documentScene());
     QTRY_VERIFY_WITH_TIMEOUT(document->isVisible(), 1000);
     QCOMPARE(fixture.item(QStringLiteral("documentList")), documentList);

@@ -22,9 +22,10 @@ Item {
     property int pendingSelectedTaskId: -1
     property int lastSemanticSelectedTaskId: -1
     property bool syncingModel: false
-    readonly property real topInset: menuBar.visible ? menuBar.height : 0
+    property bool dropdown: false
+    readonly property real topInset: dropdown ? 0 : menuBar.visible ? menuBar.height : 0
     readonly property real bottomInset:
-                                         Object.keys(hostWindow.keyBarModel).length > 0
+                                         !dropdown && Object.keys(hostWindow.keyBarModel).length > 0
                                          ? hostWindow.keyBarHeight() : 0
     readonly property real rowHeight: Math.max(60, hostWindow.ch * 2.8)
     readonly property bool compactColumns: surfaceWidth < 900

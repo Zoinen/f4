@@ -1100,9 +1100,12 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4OperationsQueueTests)
+  f4_link_static_test_image_plugins(F4OperationsQueueTests)
   f4_link_static_test_platform(F4OperationsQueueTests)
   f4_link_static_test_qml_plugins(F4OperationsQueueTests)
   add_test(NAME F4OperationsQueueTest COMMAND F4OperationsQueueTests)
+  add_test(NAME F4QueueDropdownPixelGridTest COMMAND F4OperationsQueueTests queueDropdownKeepsPanelsAndAlignsLeaves)
+  set_tests_properties(F4QueueDropdownPixelGridTest PROPERTIES ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )

@@ -311,6 +311,9 @@ func HandleSemanticAction(action map[string]any) bool {
 		return true
 	}
 	actionName := semanticString(action["action"])
+	if strings.HasPrefix(actionName, "queue.") && handleQueueDropdownAction(action) {
+		return true
+	}
 	target := semanticString(action["target"])
 	if actionName == "workspace.dragActivate" || actionName == "workspace.dropFiles" {
 		return handleSemanticWorkspaceDrag(action)

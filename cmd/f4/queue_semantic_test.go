@@ -81,6 +81,33 @@ func TestQueueSemanticModelExportsNativeQueueState(t *testing.T) {
 	}
 }
 
+func TestQueueDropdownPublishesAndControlsBackgroundQueue(t *testing.T) {
+	withSemanticQueueTestState(t)
+	panels := setupMockPanelsFrame(t)
+	defer panels.Close()
+	vtui.FrameManager.Push(panels)
+	GlobalQueueManager = &OpQueueManager{activeKeys: make(map[string]bool)}
+	active := vtui.FrameManager.GetTopFrame()
+	if !handleQueueDropdownAction(map[string]any{"action": "queue.ensure"}) {
+		t.Fatal("queue not created")
+	}
+	GlobalQueueManager.tasks = []*QueueTask{{ID: 1, State: "Done", Type: "Copy"}}
+	GlobalQueueManager.RefreshUI()
+	model := backgroundOperationsQueue()
+	if model == nil || len(model.Items) != 1 {
+		t.Fatalf("missing background queue: %+v", model)
+	}
+	if !HandleSemanticAction(map[string]any{"action": "queue.clearCompleted", "target": model.ID}) {
+		t.Fatal("background clear not routed")
+	}
+	if len(GlobalQueueManager.tasks) != 0 {
+		t.Fatal("completed task not cleared")
+	}
+	if vtui.FrameManager.GetTopFrame() != active {
+		t.Fatal("dropdown switched workspace")
+	}
+}
+
 func TestQueueSemanticCancelConfirmsAndClearKeepsActiveTasks(t *testing.T) {
 	withSemanticQueueTestState(t)
 	qf := NewQueueFrame()

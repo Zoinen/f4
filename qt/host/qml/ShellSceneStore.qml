@@ -62,6 +62,21 @@ Item {
     readonly property var toastModel:
         toastOverride !== null ? toastOverride : (chromeState.toast || ({}))
     readonly property var workspaces: workspaceTabs.tabs || []
+    property string lastContentWorkspace: ""
+    onWorkspacesChanged: {
+        const active = workspaces.find(tab => tab.active === true)
+        if (!active) return
+        if (active.surfaceKind !== "operationsQueue") {
+            lastContentWorkspace = String(active.id)
+            return
+        }
+        hostWindow.queueDropdownOpen = true
+        const previous = workspaces.find(tab => String(tab.id) === lastContentWorkspace)
+                || workspaces.find(tab => tab.surfaceKind !== "operationsQueue")
+        if (previous) Qt.callLater(function() {
+            hostWindow.action({action: "workspace.activate", target: String(previous.id)}, true)
+        })
+    }
 
     signal sceneReset()
     signal activePanelAcknowledged(int side)
@@ -108,8 +123,8 @@ Item {
     }
 
     function hasOperationsQueueSurface() {
-        const queue = currentOperationsQueue()
-        return queue !== null && queue.kind === "operationsQueue"
+        // Queue data is also published while a file/document tab is active.
+        return false
     }
 
     function currentShellFrame() {
@@ -223,13 +238,10 @@ Item {
     }
 
     function activeSurface() {
-        const queue = currentOperationsQueue()
-        if (queue)
-            return queue
         const document = currentDocumentFrame()
         if (document)
             return document
-        return shellFrame()
+        return shellFrame() || (hostWindow.queueDropdownOpen ? currentOperationsQueue() : null)
     }
 
     function isDocumentSurface(frame) {
@@ -273,7 +285,7 @@ Item {
     function needsFallbackGrid() {
         if (chromeState.presentation === "text")
             return true
-        if (hasOperationsQueueSurface())
+        if (hostWindow.queueDropdownOpen && currentOperationsQueue())
             return false
         const shell = shellFrame()
         if (shell && shell.fallback === true)

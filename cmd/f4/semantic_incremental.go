@@ -246,6 +246,9 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 	appAppendAutocompleteMenus(&scene, autocompletes)
 	semanticIncrementalStageDone("projection.menu_models", started)
 	started = semanticIncrementalStageStart()
+	if scene.OperationsQueue == nil {
+		scene.OperationsQueue = backgroundOperationsQueue()
+	}
 	result.Scene = compactAppSemanticScene(scene.ToMap())
 	semanticIncrementalStageDone("projection.compact", started)
 	semanticIncrementalStageDone("projection.total", totalStarted)

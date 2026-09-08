@@ -849,6 +849,15 @@ func NewQueueFrame() *QueueFrame {
 	return qf
 }
 
+func (qf *QueueFrame) dialogAnchor() vtui.Frame {
+	if vtui.FrameManager != nil {
+		if active := vtui.FrameManager.GetTopFrame(); active != nil {
+			return active
+		}
+	}
+	return qf
+}
+
 func (qf *QueueFrame) requestCancelTask(idx int) bool {
 	if idx < 0 || idx >= len(qf.tasks) {
 		return false
@@ -861,7 +870,7 @@ func (qf *QueueFrame) requestCancelTask(idx int) bool {
 	if !cancellable {
 		return false
 	}
-	vtui.ShowMessageOn(qf, " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", id)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
+	vtui.ShowMessageOn(qf.dialogAnchor(), " Confirm ", "Cancel task ID "+fmt.Sprintf("%d", id)+"?", []string{"&Yes", "&No"}).OnResult = func(c int) {
 		if c == 0 && GlobalQueueManager != nil {
 			GlobalQueueManager.Cancel(id)
 		}
@@ -902,9 +911,9 @@ func (qf *QueueFrame) openTaskDetails(idx int) {
 	t.mu.Unlock()
 
 	if openDetails != nil {
-		openDetails(qf)
+		openDetails(qf.dialogAnchor())
 	} else if isErr && errMsg != nil {
-		dlg := vtui.ShowMessageOn(qf, " Error Details ", errMsg.Error(), []string{"&Ok"})
+		dlg := vtui.ShowMessageOn(qf.dialogAnchor(), " Error Details ", errMsg.Error(), []string{"&Ok"})
 		dlg.IsWarning = true
 	}
 }

@@ -17,19 +17,28 @@ Row {
     Accessible.role: Accessible.StaticText
     Accessible.name: statusName + ": " + count
 
-    IconLabel {
-        width: 14
-        height: 14
+    Image {
+        id: summaryIconLabel
+        objectName: queueSummaryItem.objectName + "IconLabel"
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(summaryIconLabel,hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(summaryIconLabel,hostWindow.contentItem)
+        }
+        width: hostWindow.snapPx(14)
+        height: hostWindow.snapPx(14)
         anchors.verticalCenter: parent.verticalCenter
-        icon.source: hostWindow.lucideIconSource(
+        source: hostWindow.lucideIconSource(
                          queueSummaryItem.iconName, 14,
                          queueSummaryItem.accent)
-        icon.width: 14
-        icon.height: 14
-        icon.color: queueSummaryItem.accent
     }
 
     Text {
+        id: summaryText
+        objectName: queueSummaryItem.objectName + "Text"
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(summaryText,hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(summaryText,hostWindow.contentItem)
+        }
         anchors.verticalCenter: parent.verticalCenter
         text: String(queueSummaryItem.count)
         color: hostWindow.mutedText

@@ -23,11 +23,12 @@ Item {
     visible: hostWindow.workspaceTabs.visible === true
     z: 2
     property string dragSourceWorkspace: ""
+    readonly property var panelTabs: (hostWindow.workspaces || []).filter(tab => tab.surfaceKind !== "operationsQueue")
 
     function beginWorkspaceDrag() {
         dragSourceWorkspace = ""
-        for (var i = 0; i < hostWindow.workspaces.length; ++i) {
-            var tab = hostWindow.workspaces[i]
+        for (var i = 0; i < workspaceBar.panelTabs.length; ++i) {
+            var tab = workspaceBar.panelTabs[i]
             if (tab.active === true && tab.surfaceKind === "panels") {
                 dragSourceWorkspace = String(tab.id)
                 break
@@ -85,11 +86,6 @@ Item {
     }
 
     function authoritativeWorkspaceIndex(tabs) {
-        var activeIndex = Number(hostWindow.workspaceTabs.activeIndex)
-        if (Math.floor(activeIndex) === activeIndex
-                && activeIndex >= 0
-                && activeIndex < tabs.length)
-            return activeIndex
         for (var i = 0; i < tabs.length; ++i) {
             if (tabs[i] && tabs[i].active === true)
                 return i
@@ -98,7 +94,7 @@ Item {
     }
 
     function activateAdjacentWorkspaceTab(direction) {
-        var tabs = hostWindow.workspaces || []
+        var tabs = workspaceBar.panelTabs || []
         if (tabs.length < 2)
             return false
 
@@ -135,12 +131,6 @@ Item {
 
     function updateActiveWorkspaceTabNow() {
         var nextTab = null
-        var activeIndex = Number(hostWindow.workspaceTabs.activeIndex)
-        if (Math.floor(activeIndex) === activeIndex
-                && activeIndex >= 0
-                && activeIndex < workspaceTabsRepeater.count) {
-            nextTab = workspaceTabsRepeater.itemAt(activeIndex)
-        }
         if (!nextTab) {
             for (var i = 0; i < workspaceTabsRepeater.count; ++i) {
                 var candidate = workspaceTabsRepeater.itemAt(i)
@@ -237,7 +227,7 @@ Item {
 
             Repeater {
                 id: workspaceTabsRepeater
-                model: hostWindow.workspaces
+                model: workspaceBar.panelTabs
                 onItemAdded: workspaceBar.updateActiveWorkspaceTab()
                 onItemRemoved: workspaceBar.updateActiveWorkspaceTab()
 

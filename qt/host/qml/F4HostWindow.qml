@@ -16,6 +16,11 @@ ApplicationWindow {
     property string worktreeBranchName: ""
     property Item galleryViewerLayer: null
     property Item operationsQueueLayer: null
+    property bool queueDropdownOpen: false
+    function toggleQueueDropdown() {
+        queueDropdownOpen = !queueDropdownOpen
+        if (queueDropdownOpen) action({action: "queue.ensure"}, true)
+    }
     property Item focusTarget: null
     property var sceneStoreApi: null
     property var interactionControllerApi: null
