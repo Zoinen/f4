@@ -1,4 +1,6 @@
 #include "F4GalleryBridge.h"
+#include "F4NativeDragVisuals.h"
+#include <QScreen>
 #include "QtShellController.h"
 #include "VtuiGridItem.h"
 
@@ -261,6 +263,7 @@ private slots:
     void nativeDragListsSurviveWireEncoding();
     void nativeDropUsesIdentityAndSnappedOutline();
     void nativeWorkspaceHoverAndDrop();
+    void upstreamDragArtwork();
     void initTestCase();
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
@@ -2414,6 +2417,30 @@ void F4GalleryPointerTests::nativeDragListsSurviveWireEncoding()
     QCOMPARE(source.at("entryIds").type,msgpack::type::ARRAY);
     QCOMPARE(message.at("paths").as<std::vector<std::string>>().size(),size_t(2));
     QCOMPARE(source.at("entryIds").as<std::vector<std::string>>().at(1),std::string("two"));
+}
+
+void F4GalleryPointerTests::upstreamDragArtwork()
+{
+    const qreal dpr=QGuiApplication::primaryScreen()->devicePixelRatio();
+    QList<QImage> images;
+    for (const QColor color : {Qt::red,Qt::green,Qt::blue,Qt::yellow,Qt::magenta}) {
+        QImage image(40,40,QImage::Format_ARGB32); image.fill(color); images.append(image);
+    }
+    const auto preview=F4NativeDragVisuals::compactPreview(images,8,dpr,true);
+    QCOMPARE(preview.size(),QSize(qCeil(318*dpr),qCeil(58*dpr)));
+    for (int i=0;i<5;++i)
+        QCOMPARE(preview.toImage().pixelColor(qRound((29+i*52)*dpr),qRound(29*dpr)),images[i].pixelColor(20,20));
+    QVERIFY(preview.save(QString(".diagnostics/drag-strip-%1.png").arg(dpr)));
+#ifdef Q_OS_WIN
+    const auto copy=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::CopyAction);
+    const auto move=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::MoveAction);
+    const auto no=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::IgnoreAction);
+    QCOMPARE(copy.size(),move.size()); QCOMPARE(copy.size(),no.size());
+    QCOMPARE(copy.devicePixelRatio(),1.0);
+    QVERIFY(copy.toImage()!=move.toImage()); QVERIFY(copy.toImage()!=no.toImage());
+    QVERIFY(copy.save(QString(".diagnostics/drag-copy-%1.png").arg(dpr)));
+    QVERIFY(move.save(QString(".diagnostics/drag-move-%1.png").arg(dpr)));
+#endif
 }
 
 void F4GalleryPointerTests::nativeWorkspaceHoverAndDrop()

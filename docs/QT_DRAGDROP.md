@@ -187,3 +187,25 @@ Escape cancellation followed by a successful repeat, and Explorer file drop onto
 inactive tab. Internal and Explorer copies matched SHA-256 hashes. Qt pointer and
 actual WorkspaceTabs hit tests passed at 100% and 175%; Go regressions cover stable
 tab/source identities, immediate activation and the active-panel destination.
+
+## Standalone Gallery drag visuals
+
+The Windows action-cursor artwork is ported from standalone ZoinGallery master
+`fc1d150254f192da61f1848fc8a2e2a9932a1102` (`FileListModel.cpp`). It uses the native
+arrow/forbidden cursor and the original Copy/Move pill, including equal cursor
+canvas dimensions across actions. Modifier changes update the Copy-action cursor
+bitmap for an internal Go-owned Shift-move; the external OLE contract stays Copy-only.
+Qt Windows GiveFeedback observes cursor pixmap cache-key changes even while the
+pointer is stationary.
+
+Single-item previews capture the panel's actual rendered preview and preserve the
+pointer hotspot, as standalone `BrickDelegate.qml` does. Multiple selections use
+its 46px thumbnail/icon tiles, 6px spacing, 58px strip and a +N overflow tile after
+five items. Cached Gallery thumbnails supply the images; icons cover uncached or
+non-image entries. The compact strip is painted natively using the standalone
+style colors, so it survives unloading a panel when hovering another workspace.
+
+Verified at 100% and 175%: preview image/count rendering and identical action cursor
+canvas sizes. Native Windows testing also verified the selected image preview,
+eight-file strip (five matching thumbnails +3), and stationary Shift changing
+Copy to Move. These visuals do not alter drop operation ownership.

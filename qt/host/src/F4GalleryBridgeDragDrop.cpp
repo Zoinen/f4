@@ -1,4 +1,11 @@
 #include "F4GalleryBridge.h"
+#include "F4NativeDragVisuals.h"
+#include <ZoinGallery/GallerySession.h>
+#include <QAbstractItemModel>
+#include <QQmlEngine>
+#include <QQuickImageProvider>
+#include <QQuickItemGrabResult>
+#include <QIcon>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -287,6 +294,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
             m_dragPrepared = m_preparedDragUrls.size() == ids.size();
         }
         m_dragRequestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        prepareDragPreview(m_dragPanels[side]);
         auto request = source;
         request.insert("action", "panel.prepareDrag");
         request.insert("requestId", m_dragRequestId);
@@ -315,10 +323,91 @@ void F4GalleryBridge::handleDragPrepared(const QVariantMap &message)
     QTimer::singleShot(0, this, &F4GalleryBridge::startPreparedDrag);
 }
 
+void F4GalleryBridge::prepareDragPreview(QQuickItem *host)
+{
+    m_dragPreviewPixmap = {};
+    m_dragPreviewPending = false;
+    m_dragPreviewHotSpot = QPoint(18,18);
+    if (!host || !host->window()) return;
+    const int side = m_dragSource.value("side").toInt();
+    const auto ids = m_dragSource.value("entryIds").toStringList();
+    const qreal dpr = host->window()->devicePixelRatio();
+    QList<QImage> images;
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(sessionForSide(side));
+    auto *model = session ? session->model() : nullptr;
+    auto *engine = qmlEngine(host);
+    int visualRole = -1;
+    if (model) {
+        const auto roles = model->roleNames();
+        for (auto it=roles.begin(); it!=roles.end(); ++it)
+            if (it.value()=="visualSnapshot") visualRole=it.key();
+    }
+
+    for (const auto &id : ids.mid(0,5)) {
+        QVariantMap visual;
+        if (model && visualRole>=0) {
+            const int row=session->indexForEntryId(id);
+            if (row>=0) visual=model->data(model->index(row,0),visualRole).toMap();
+        }
+        QImage image;
+        const QUrl url(visual.value("imageIdUrl").toString());
+        if (engine && url.scheme()=="image") {
+            auto *provider=dynamic_cast<QQuickImageProvider *>(engine->imageProvider(url.host()));
+            if (provider && provider->imageType()==QQmlImageProviderBase::Image) {
+                QSize size;
+                image=provider->requestImage(url.path().mid(1),&size,QSize(qCeil(40*dpr),qCeil(40*dpr)));
+                if (!image.isNull()) { // upstream thumbnails use PreserveAspectCrop
+                    image=image.scaled(qCeil(40*dpr),qCeil(40*dpr),Qt::KeepAspectRatioByExpanding,Qt::SmoothTransformation);
+                    image=image.copy((image.width()-qCeil(40*dpr))/2,(image.height()-qCeil(40*dpr))/2,qCeil(40*dpr),qCeil(40*dpr));
+                }
+            }
+        }
+        if (image.isNull()) {
+            QString path=visual.value("iconPath").toString();
+            if (path.startsWith("qrc:/")) path=":"+path.mid(4);
+            QIcon icon(path);
+            if (icon.isNull()) icon=QIcon(visual.value("isFolder").toBool()
+                ? ":/F4QtHost/icons/lucide-gallery/folder.svg" : ":/F4QtHost/icons/lucide-gallery/file.svg");
+            image=icon.pixmap(QSize(qCeil(40*dpr),qCeil(40*dpr))).toImage();
+        }
+        images.append(image);
+    }
+    m_dragPreviewPixmap=F4NativeDragVisuals::compactPreview(images,ids.size(),dpr,
+        QGuiApplication::styleHints()->colorScheme()==Qt::ColorScheme::Dark);
+    // Standalone single-item drags use the actual rendered image/icon, with
+    // the original pointer hotspot; preserve that in every gallery layout.
+    if (ids.size()!=1) return;
+    QList<QQuickItem *> pending{host};
+    while (!pending.isEmpty()) {
+        auto *item=pending.takeLast();
+        pending.append(item->childItems());
+        if (item->property("entryId").toString()!=ids.first()) continue;
+        auto *preview=item->property("previewContainerItem").value<QQuickItem *>();
+        if (!preview || !preview->isVisible() || preview->width()<=0 || preview->height()<=0) continue;
+        auto grab=preview->grabToImage();
+        if (!grab) break;
+        m_dragPreviewHotSpot=preview->mapFromScene(m_dragPress).toPoint();
+        m_dragPreviewPending=true;
+        const QString request=m_dragRequestId;
+        connect(grab.data(),&QQuickItemGrabResult::ready,this,[this,grab,request,dpr] {
+            // Break the connection/captured shared-pointer ownership cycle.
+            disconnect(grab.data(), nullptr, this, nullptr);
+            if (request!=m_dragRequestId) return;
+            if (!grab->image().isNull()) {
+                m_dragPreviewPixmap=QPixmap::fromImage(grab->image());
+                m_dragPreviewPixmap.setDevicePixelRatio(dpr);
+            }
+            m_dragPreviewPending=false;
+            startPreparedDrag();
+        });
+        break;
+    }
+}
+
 void F4GalleryBridge::startPreparedDrag()
 {
         if (!m_dragPrepared || !m_dragThresholdPassed || m_dragArmedSide < 0
-            || m_nativeDragActive || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) return;
+            || m_nativeDragActive || m_dragPreviewPending || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) return;
         const int side = m_dragArmedSide;
         m_dragArmedSide = -1;
         auto *host = m_dragPanels[side].data();
@@ -346,24 +435,39 @@ void F4GalleryBridge::startPreparedDrag()
         QDrag drag(window);
         drag.setMimeData(mime);
         const qreal dpr = window->devicePixelRatio();
-        QPixmap preview(qCeil(220 * dpr), qCeil(36 * dpr));
-        preview.fill(QColor(32, 36, 44, 235));
-        QPainter painter(&preview);
-        painter.setPen(Qt::white);
-        QFont font = QGuiApplication::font();
-        const qreal logicalSize = font.pixelSize() > 0 ? font.pixelSize() : font.pointSizeF() * 96.0 / 72.0;
-        font.setPixelSize(qMax(1, qRound(logicalSize * dpr)));
-        painter.setFont(font);
-        const QString title = ids.size() == 1 ? m_dragSource.value("name").toString()
-                                              : tr("%1 files").arg(ids.size());
-        const QFontMetrics metrics(font);
-        const int baseline = (preview.height() - metrics.height()) / 2 + metrics.ascent();
-        painter.drawText(QPoint(qRound(10 * dpr), baseline),
-                         metrics.elidedText(title, Qt::ElideMiddle, qRound(200 * dpr)));
-        painter.end();
-        preview.setDevicePixelRatio(dpr);
-        drag.setPixmap(preview);
-        drag.setHotSpot(QPoint(0, 0));
+        drag.setPixmap(m_dragPreviewPixmap);
+        drag.setHotSpot(m_dragPreviewHotSpot);
+#ifdef Q_OS_WIN
+        const auto previewSize=drag.pixmap().deviceIndependentSize();
+        const auto copyCursor=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::CopyAction);
+        const auto moveCursor=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::MoveAction);
+        drag.setDragCursor(copyCursor,Qt::CopyAction);
+        drag.setDragCursor(moveCursor,Qt::MoveAction);
+        drag.setDragCursor(F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::IgnoreAction),Qt::IgnoreAction);
+        // Internal Shift-move is Go-owned. Keep external OLE Copy-only, but
+        // replace its cursor artwork when the internal receiver will move.
+        // Qt Windows GiveFeedback checks the pixmap cache key on every poll.
+        QTimer actionFeedback;
+        actionFeedback.setInterval(16);
+        auto updateFeedback=[&] {
+            const auto mods=QGuiApplication::queryKeyboardModifiers();
+            bool internalTarget=false;
+            if (QGuiApplication::topLevelAt(QCursor::pos())==window) {
+                const QPointF point=window->mapFromGlobal(QCursor::pos());
+                int targetSide=-1;
+                internalTarget=!dragWorkspaceHit(window,point).isEmpty();
+                if (!internalTarget) {
+                    const auto target=dragHit(window,point,&targetSide);
+                    internalTarget=!target.isEmpty() && m_panelSessions.catalog(targetSide).dropAllowed;
+                }
+            }
+            const bool move=internalTarget && (mods&Qt::ShiftModifier) && !(mods&Qt::ControlModifier);
+            drag.setDragCursor(move?moveCursor:copyCursor,Qt::CopyAction);
+        };
+        connect(&actionFeedback,&QTimer::timeout,&drag,updateFeedback);
+        updateFeedback();
+        actionFeedback.start();
+#endif
         // The desktop may only copy. Internal Shift-move is selected by our
         // receiver; a native move is never advertised to external receivers.
         Qt::DropAction finished = Qt::IgnoreAction;

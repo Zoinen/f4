@@ -6,6 +6,7 @@
 
 #include <QObject>
 #include <QPointF>
+#include <QPixmap>
 #include <QQuickItem>
 #include <QPointer>
 #include <QHash>
@@ -154,6 +155,10 @@ private:
     QVariantMap dragWorkspaceHit(QObject *window, const QPointF &position) const;
     QPointer<QQuickItem> m_dragWorkspaceBar;
     QString m_dragHoveredWorkspace;
+    QPixmap m_dragPreviewPixmap;
+    QPoint m_dragPreviewHotSpot;
+    bool m_dragPreviewPending = false;
+    void prepareDragPreview(QQuickItem *host);
     Qt::DropAction acceptNativeDrop(const QMimeData *mime, Qt::DropActions actions,
                                    Qt::KeyboardModifiers modifiers) const;
     void clearDropHighlight();
