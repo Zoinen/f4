@@ -36,6 +36,26 @@ class ExtUiProtocolTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void catalogRecoveryWaitsForSnapshotWithoutAdvancingRevision()
+    {
+        ExtUiProtocol::StreamRegistry registry;
+        auto first = registry.inspect(envelope(1, "panel/0", 1, "snapshot", {}));
+        registry.commit(first.envelope);
+        QCOMPARE(registry.requestSnapshot("panel/0").value("revision").toULongLong(), quint64(1));
+        QVERIFY(registry.requestSnapshot("panel/0").isEmpty());
+        auto pending = registry.inspect(envelope(2, "panel/0", 2, "patch", {}, 1));
+        QCOMPARE(pending.disposition, ExtUiProtocol::Disposition::RequestSnapshot);
+        QCOMPARE(registry.revision("panel/0"), quint64(1));
+        auto other = registry.inspect(envelope(3, "shell", 1, "snapshot", {}));
+        QCOMPARE(other.disposition, ExtUiProtocol::Disposition::Apply);
+        registry.commit(other.envelope);
+        auto recovered = registry.inspect(envelope(4, "panel/0", 3, "snapshot", {}));
+        QCOMPARE(recovered.disposition, ExtUiProtocol::Disposition::Apply);
+        registry.commit(recovered.envelope);
+        auto next = registry.inspect(envelope(5, "panel/0", 4, "patch", {}, 3));
+        QCOMPARE(next.disposition, ExtUiProtocol::Disposition::Apply);
+    }
+
     void decodesGoGeneratedGoldenFixtures()
     {
         QFile fixture(QString::fromUtf8(F4_EXTUI_GOLDEN_FIXTURE));

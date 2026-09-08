@@ -2533,6 +2533,35 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     QCOMPARE(actions.last().at(0).toMap().value("operation").toString(),QString("move"));
     QCOMPARE(actions.last().at(0).toMap().value("source").toMap(),bridge.m_dragSource);
     bridge.m_dragToken.clear();
+    // Async preparation may start the Windows transaction after the last
+    // held-button move. A release during startup is recoverable; Escape or
+    // an OLE transaction which already reached a target must not be replayed.
+    bridge.m_nativeDragActive = true;
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, point);
+    QVERIFY(bridge.nativeDragStartupWasReleased());
+    QTest::keyPress(&view, Qt::Key_Escape);
+    QVERIFY(!bridge.nativeDragStartupWasReleased());
+    QTest::keyRelease(&view, Qt::Key_Escape);
+    bridge.m_nativeDragCancelled = false;
+    QDragEnterEvent observedEnter(point, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&view, &observedEnter);
+    QVERIFY(!bridge.nativeDragStartupWasReleased());
+    bridge.m_nativeDragActive = false;
+    bridge.m_nativeDragCancelled = false;
+    bridge.m_dragSource = bridge.dragEndpoint(0);
+    bridge.m_dragSource.insert("entryIds", QStringList{"entry-1"});
+    const auto beforeFallback = actions.size();
+    QVERIFY(bridge.finishInternalDrop(&view, point, Qt::ShiftModifier));
+    QCOMPARE(actions.size(), beforeFallback + 1);
+    QCOMPARE(actions.last().at(0).toMap().value("operation").toString(), QString("move"));
+    bridge.m_dragSource.insert("catalogRevision", -1);
+    QVERIFY(!bridge.finishInternalDrop(&view, point, Qt::NoModifier));
+    QCOMPARE(actions.size(), beforeFallback + 1);
+    bridge.m_nativeDragStartupPending = true;
+    QTest::keyPress(&view, Qt::Key_Escape);
+    QVERIFY(!bridge.m_nativeDragStartupPending);
+    QVERIFY(bridge.m_dragSource.isEmpty());
+    QTest::keyRelease(&view, Qt::Key_Escape);
     QDragEnterEvent forged(point,Qt::CopyAction,&internal,Qt::LeftButton,Qt::NoModifier);
     QCoreApplication::sendEvent(&view,&forged);
     QVERIFY(!forged.isAccepted());

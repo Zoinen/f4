@@ -481,6 +481,11 @@ func executeFileOpAt(pf *PanelsFrame, srcVfs, dstVfs vfs.VFS, srcBasePath string
 		actionDesc, srcVfs, srcBasePath, names, dstVfs, destPath, isTargetDir, mask, mode)
 
 	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
+		// An interactive transfer belongs to its originating panels. Queue
+		// bookkeeping must not move overwrite/error dialogs to the queue tab.
+		if pf != nil {
+			anchor = pf
+		}
 		startTime := time.Now()
 		dirToEnsure := destPath
 		if !isTargetDir {
@@ -1198,6 +1203,18 @@ func resolveSymlinksForCompare(p string) string {
 	}
 }
 
+// References and their underlying files share an identity even though their
+// visible panel paths differ. Keep I/O on the original VFS so move cleanup
+// still removes the reference only after the underlying operation succeeds.
+func transferIdentity(filesystem vfs.VFS, itemPath string) (vfs.VFS, string) {
+	if temp, ok := filesystem.(*TempPanelVFS); ok {
+		if ref, realPath, _, valid := temp.resolve(itemPath); valid && ref.source != nil {
+			return ref.source, realPath
+		}
+	}
+	return filesystem, itemPath
+}
+
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
@@ -1211,14 +1228,16 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		return err
 	}
 
-	absSrc, _ := srcVfs.Abs(srcPath)
-	absDst, _ := dstVfs.Abs(destPath)
+	identitySource, identitySourcePath := transferIdentity(srcVfs, srcPath)
+	identityTarget, identityTargetPath := transferIdentity(dstVfs, destPath)
+	absSrc, _ := identitySource.Abs(identitySourcePath)
+	absDst, _ := identityTarget.Abs(identityTargetPath)
 
 	realSrc := absSrc
 	realDst := absDst
 
-	_, srcIsOS := srcVfs.(*vfs.OSVFS)
-	_, dstIsOS := dstVfs.(*vfs.OSVFS)
+	_, srcIsOS := identitySource.(*vfs.OSVFS)
+	_, dstIsOS := identityTarget.(*vfs.OSVFS)
 	if srcIsOS {
 		realSrc = resolveSymlinksForCompare(absSrc)
 	}
@@ -1242,7 +1261,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		cleanSrc = strings.ToLower(cleanSrc)
 		cleanDst = strings.ToLower(cleanDst)
 	}
-	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(srcVfs, dstVfs)
+	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(identitySource, identityTarget)
 
 	if sameNamespace && cleanSrc == cleanDst {
 		if stat.IsDir {

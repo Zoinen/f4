@@ -802,6 +802,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		GalleryDensities:       galleryDensities,
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		SourceKind:             sourceKind,
+		DropAllowed:            appBool(node["dropAllowed"]),
 		PreviewCapable:         appBool(node["previewCapable"]),
 		CatalogRevision:        appInt64(node["catalogRevision"]),
 		SelectionRevision:      appInt64(node["selectionRevision"]),

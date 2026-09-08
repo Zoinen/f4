@@ -143,6 +143,7 @@ signals:
 
 private:
     void startPreparedDrag();
+    bool finishInternalDrop(QObject *window, const QPointF &position, Qt::KeyboardModifiers modifiers);
     QString m_dragRequestId;
     QList<QUrl> m_preparedDragUrls;
     bool m_dragPrepared = false;
@@ -158,6 +159,13 @@ private:
     QPointF m_dragPress;
     int m_dragArmedSide = -1;
     bool m_nativeDragActive = false;
+    bool m_nativeDragEntered = false;
+    bool m_nativeDragReleased = false;
+    bool m_nativeDragCancelled = false;
+    bool m_nativeDragStartupPending = false;
+    bool nativeDragStartupWasReleased() const {
+        return m_nativeDragReleased && !m_nativeDragEntered && !m_nativeDragCancelled;
+    }
     friend class F4GalleryBridgeTests;
     friend class F4GalleryPointerTests;
     friend class F4GalleryRowsResponseReducer;

@@ -7,6 +7,7 @@
 #include <QGuiApplication>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QStyleHints>
@@ -98,6 +99,32 @@ void F4GalleryBridge::clearDropHighlight()
     for (auto &item : m_dragPanels) if (item) item->setProperty("dropHoverIndex", -2);
 }
 
+bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &position, Qt::KeyboardModifiers modifiers)
+{
+    if (m_nativeDragCancelled || m_dragSource.isEmpty()) {
+        if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish cancelled/empty" << m_nativeDragCancelled << m_dragSource.isEmpty();
+        return false;
+    }
+    const auto source = dragEndpoint(m_dragSource.value("side", -1).toInt());
+    for (const auto *key : {"panelId", "path", "catalogRevision"})
+        if (source.value(key) != m_dragSource.value(key)) {
+            if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish stale" << key << source.value(key) << m_dragSource.value(key);
+            return false;
+        }
+    int targetSide;
+    auto target = dragHit(window, position, &targetSide);
+    if (target.isEmpty() || !m_panelSessions.catalog(targetSide).dropAllowed) {
+        if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish invalid target" << position << targetSide << QGuiApplication::modalWindow();
+        return false;
+    }
+    target.insert("action", "panel.dropFiles");
+    target.insert("source", m_dragSource);
+    target.insert("operation", (modifiers & Qt::ShiftModifier)
+        && !(modifiers & Qt::ControlModifier) ? "move" : "copy");
+    emit uiActionRequested(target);
+    return true;
+}
+
 bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
 {
     if (!qobject_cast<QQuickWindow *>(object)) return QObject::eventFilter(object, event);
@@ -105,6 +132,15 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
     for (const auto &item : m_dragPanels)
         ownsWindow = ownsWindow || (item && item->window() == object);
     if (!ownsWindow) return QObject::eventFilter(object, event);
+    if (m_nativeDragActive) {
+        if (event->type() == QEvent::DragEnter) m_nativeDragEntered = true;
+        if (event->type() == QEvent::MouseButtonRelease
+            && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton)
+            m_nativeDragReleased = true;
+        if (event->type() == QEvent::KeyPress
+            && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape)
+            m_nativeDragCancelled = true;
+    }
     if (event->type() == QEvent::DragLeave) { clearDropHighlight(); return false; }
     if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
         || event->type() == QEvent::Drop) {
@@ -112,6 +148,9 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         int side;
         auto target = dragHit(object, drop->position(), &side);
         const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
+        if (qEnvironmentVariableIsSet("VTUI_DEBUG") && event->type() != QEvent::DragMove)
+            qInfo() << "QT_DND: native event" << event->type() << drop->position()
+                    << "target" << side << "action" << action << "identity" << target.value("panelId");
         clearDropHighlight();
         if (target.isEmpty() || action == Qt::IgnoreAction
             || !m_panelSessions.catalog(side).dropAllowed) { drop->ignore(); return true; }
@@ -137,7 +176,22 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         return true;
     }
     if (m_nativeDragActive) return false;
+    if (m_nativeDragStartupPending && event->type() == QEvent::KeyPress
+        && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+        m_nativeDragStartupPending = false;
+        m_dragArmedSide = -1;
+        m_dragSource.clear();
+        m_dragRequestId.clear();
+        return true;
+    }
     if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::WindowDeactivate) {
+        if (m_nativeDragStartupPending && event->type() == QEvent::MouseButtonRelease) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton
+                && QGuiApplication::topLevelAt(mouse->globalPosition().toPoint()) == object)
+                finishInternalDrop(object, mouse->position(), mouse->modifiers());
+        }
+        m_nativeDragStartupPending = false;
         m_dragArmedSide = -1;
         m_dragSource.clear();
         m_dragRequestId.clear();
@@ -145,6 +199,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
     if (event->type() == QEvent::MouseButtonPress) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         m_dragArmedSide = -1;
+        m_nativeDragStartupPending = false;
         m_dragSource.clear();
         m_dragPrepared = false;
         m_dragThresholdPassed = false;
@@ -225,6 +280,10 @@ void F4GalleryBridge::startPreparedDrag()
         const auto ids = m_dragSource.value("entryIds").toStringList();
         if (m_preparedDragUrls.size() == ids.size()) mime->setUrls(m_preparedDragUrls);
         m_nativeDragActive = true;
+        m_nativeDragEntered = false;
+        m_nativeDragReleased = false;
+        m_nativeDragCancelled = false;
+        m_nativeDragStartupPending = false;
         if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
             qInfo() << "QT_DND: native drag starting, files" << ids.size();
         auto *window = host->window();
@@ -274,15 +333,12 @@ void F4GalleryBridge::startPreparedDrag()
         // held button and waits for a second click. Complete only an internal
         // drop in that case; there is no desktop transaction to acknowledge.
         auto finishReleasedInternalDrop = [&] {
-            int targetSide;
-            auto target = dragHit(window, window->mapFromGlobal(QCursor::pos()), &targetSide);
-            if (!target.isEmpty() && m_panelSessions.catalog(targetSide).dropAllowed) {
-                const auto modifiers = QGuiApplication::queryKeyboardModifiers();
-                target.insert("action", "panel.dropFiles");
-                target.insert("source", m_dragSource);
-                target.insert("operation", (modifiers & Qt::ShiftModifier)
-                    && !(modifiers & Qt::ControlModifier) ? "move" : "copy");
-                emit uiActionRequested(target);
+            if (m_nativeDragCancelled || (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+                || QGuiApplication::topLevelAt(QCursor::pos()) != window) {
+                if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish wrong window/cancel" << m_nativeDragCancelled << QGuiApplication::topLevelAt(QCursor::pos()) << window;
+                return;
+            }
+            if (finishInternalDrop(window, window->mapFromGlobal(QCursor::pos()), QGuiApplication::queryKeyboardModifiers())) {
                 finished = Qt::CopyAction;
             }
         };
@@ -297,15 +353,33 @@ void F4GalleryBridge::startPreparedDrag()
             finished = drag.exec(Qt::CopyAction, Qt::CopyAction);
 #ifdef Q_OS_WIN
             releaseWatchdog.stop();
-            if (missedRelease && finished == Qt::IgnoreAction)
+            if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+                m_nativeDragReleased = true;
+            // Qt's Windows startup waits for a further WM_MOUSEMOVE. If the
+            // async preparation consumed the last held-button move, it can
+            // process the release and return E_FAIL before OLE ever starts.
+            // Recover that observed release, never an Escape or rejected OLE drop.
+            if ((missedRelease || nativeDragStartupWasReleased()) && finished == Qt::IgnoreAction)
                 finishReleasedInternalDrop();
 #endif
         }
         if (auto *grabber = window->mouseGrabberItem()) grabber->ungrabMouse();
         if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
-            qInfo() << "QT_DND: native drag finished" << finished;
+            qInfo() << "QT_DND: native drag finished" << finished << "cursor" << window->mapFromGlobal(QCursor::pos())
+                    << "entered/released/cancelled" << m_nativeDragEntered << m_nativeDragReleased << m_nativeDragCancelled;
         m_nativeDragActive = false;
-        m_dragSource.clear();
         m_dragToken.clear();
         clearDropHighlight();
+#ifdef Q_OS_WIN
+        // A stale no-button WM_MOUSEMOVE can also fail Qt startup while the
+        // actual button is still held. Keep this gesture for the next move or
+        // its release, instead of discarding an otherwise valid internal drop.
+        if (finished == Qt::IgnoreAction && !m_nativeDragEntered && !m_nativeDragCancelled
+            && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) && !(GetAsyncKeyState(VK_ESCAPE) & 0x8000)) {
+            m_nativeDragStartupPending = true;
+            m_dragArmedSide = side;
+            return;
+        }
+#endif
+        m_dragSource.clear();
 }

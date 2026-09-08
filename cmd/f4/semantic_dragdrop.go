@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -23,12 +24,13 @@ func (pf *PanelsFrame) semanticDragPanel(a map[string]any) *FileSystemPanel {
 }
 
 type semanticDropPlan struct {
-	target    dropTargetInfo
-	source    vfs.VFS
-	sourceDir string
-	names     []string
-	paths     []string
-	move      bool
+	target     dropTargetInfo
+	source     vfs.VFS
+	sourceDir  string
+	names      []string
+	paths      []string
+	move       bool
+	references *TempPanelVFS
 }
 
 // Resolve the entire marked set in Go, including entries outside Qt's sparse
@@ -40,6 +42,7 @@ func prepareSemanticDrag(a map[string]any) map[string]any {
 	}()
 	value, exists := semanticLivePanels.Load(semanticString(a["panelId"]))
 	if !exists {
+		vtui.DebugLog("QT_DND: panel not registered: %v", a["panelId"])
 		return result
 	}
 	fp, ok := value.(*FileSystemPanel)
@@ -48,6 +51,7 @@ func prepareSemanticDrag(a map[string]any) map[string]any {
 	}
 	fp.updateSemanticRevisions()
 	if fp.vfs.GetPath() != semanticString(a["path"]) || fp.catalogRevision != semanticInt64(a["catalogRevision"]) {
+		vtui.DebugLog("QT_DND: stale prepare: received %v@%v path=%v current=%v path=%v", a["panelId"], a["catalogRevision"], a["path"], fp.catalogRevision, fp.vfs.GetPath())
 		return result
 	}
 	ids := semanticStringSlice(a["entryIds"])
@@ -108,6 +112,19 @@ func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, err
 		return p, fmt.Errorf("Unsupported drop operation")
 	}
 	p.move = operation == "move"
+	if temp, ok := p.target.fs.(*TempPanelVFS); ok {
+		if p.target.dir == temp.root() {
+			p.references = temp
+			// Like F5/F6, adding references never deletes the originals.
+			p.move = false
+		} else {
+			ref, path, _, valid := temp.resolve(p.target.dir)
+			if !valid || !vfsAcceptsDrop(ref.source) {
+				return p, fmt.Errorf("The referenced destination is unavailable or read-only")
+			}
+			p.target.fs, p.target.dir = ref.source, path
+		}
+	}
 	if source, ok := a["source"].(map[string]any); ok {
 		src := pf.semanticDragPanel(source)
 		if src == nil {
@@ -163,6 +180,23 @@ func (pf *PanelsFrame) handleSemanticDrop(a map[string]any) bool {
 	p, err := pf.planSemanticDrop(a)
 	if err != nil {
 		vtui.ShowMessage(" Drag and Drop ", err.Error(), []string{"&Ok"})
+		return true
+	}
+	if p.references != nil {
+		if p.source != nil {
+			err = p.references.store.addReferencesAt(context.Background(), p.references.slot, p.source, p.sourceDir, p.names)
+		} else {
+			for _, group := range groupDropSources(p.paths) {
+				if addErr := p.references.AddReferences(context.Background(), vfs.NewOSVFS(group.dir), group.names); err == nil {
+					err = addErr
+				}
+			}
+		}
+		if err != nil {
+			vtui.ShowMessage(" Drag and Drop ", err.Error(), []string{"&Ok"})
+		}
+		pf.RefreshAll()
+		vtui.FrameManager.Redraw()
 		return true
 	}
 	if p.source == nil {

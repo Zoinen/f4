@@ -2534,7 +2534,6 @@ func (fp *FileSystemPanel) semanticLoading() bool {
 }
 
 func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
-	semanticLivePanels.Store(vtui.SemanticID(fp), fp)
 	if extUiPanelCatalogRowsIsEnabled() {
 		return fp.semanticPagedPanelModel(ctx, side, active)
 	}
@@ -2645,6 +2644,9 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 	} else {
 		fp.unpublishSemanticMetadataSnapshot()
 	}
+	// Publishing a catalog keeps the drag/request owner alive even when
+	// deferred metadata is disabled and its separate snapshot was released.
+	semanticLivePanels.Store(panelID, fp)
 	return extui.PanelModel{
 		ID:                     panelID,
 		Side:                   side,

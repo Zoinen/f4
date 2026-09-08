@@ -507,6 +507,7 @@ private slots:
     void panelChromePatchUpdatesOnlyChromeWithoutCatalogSignals();
     void panelActivationPatchIsRevisionedAndCatalogFree();
     void revisionGapRequestsAndAppliesOnlyOneStreamSnapshot();
+    void mismatchedPanelCatalogRecoversWithoutClosing();
     void destructionWithQueuedDecodeIsSafe();
 };
 
@@ -3049,6 +3050,61 @@ void QtShellControllerTests::revisionGapRequestsAndAppliesOnlyOneStreamSnapshot(
         QStringLiteral("resynchronized"), 3000);
     QCOMPARE(commandLineChanged.size(), 2);
     QCOMPARE(fatal.size(), 0);
+}
+
+void QtShellControllerTests::mismatchedPanelCatalogRecoversWithoutClosing()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()), "catalog-recovery", 80, 24);
+    QSignalSpy fatal(&controller, &QtShellController::fatalError);
+    QSignalSpy catalogs(&controller, &QtShellController::panelCatalogChanged);
+    QSignalSpy states(&controller, &QtShellController::panelStateChanged);
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *peer = server.nextPendingConnection();
+    QByteArray hello;
+    QVERIFY(takeFrame(peer, hello));
+    auto write = [&](const QByteArray &frame) { peer->write(frame); peer->flush(); };
+    write(variantFrame({{"type", "hello"}, {"nonce", "catalog-recovery"}, {"protocol", 4}}));
+    write(variantFrame({{"type", "scene"}, {"schema", "app"}, {"version", 4}, {"revision", qulonglong(1)}, {"shell", QVariantMap{}}}));
+    QVariantMap panel{{"id", "left"}, {"kind", "filePanel"}, {"side", 0},
+        {"catalogRevision", qulonglong(10)}, {"selectionRevision", qulonglong(1)},
+        {"metadataDeferred", true}, {"metadataRevision", qulonglong(1)},
+        {"catalogProvisional", false}, {"totalCount", 1},
+        {"entries", QVariantList{QVariantMap{{"index", 0}, {"entryId", "entry"}, {"name", "file.txt"}, {"selected", false}}}}};
+    auto snapshot = [&](quint64 sequence, quint64 revision) {
+        return semanticFrame(sequence, "panel/0", revision, "snapshot",
+            {{"type", "panel_catalog_snapshot"}, {"state", QVariantMap{{"side", 0}, {"panel", panel}}}});
+    };
+    write(snapshot(1, 1));
+    QTRY_COMPARE(catalogs.size(), 1);
+    auto delta = [&](quint64 sequence, quint64 revision) {
+        const QVariantMap operation{
+            {"op", "selection_delta"}, {"side", 0}, {"panelId", "left"},
+            {"catalogRevision", qulonglong(11)}, {"baseSelectionRevision", qulonglong(1)},
+            {"selectionRevision", qulonglong(2)},
+            {"changes", QVariantList{QVariantMap{{"index", 0}, {"entryId", "entry"}, {"selected", true}}}}};
+        return semanticFrame(sequence, "panel/0", revision, "patch",
+            {{"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+             {"shell", QVariantMap{{"panels", QVariantList{operation}}}}}, revision - 1);
+    };
+    write(delta(2, 2));
+    QByteArray payload;
+    QVERIFY(takePayload(peer, payload));
+    auto object = msgpack::unpack(payload.constData(), static_cast<size_t>(payload.size()));
+    std::map<std::string, msgpack::object> request;
+    object.get().convert(request);
+    QCOMPARE(request.at("type").as<std::string>(), std::string("stream_snapshot_request"));
+    QCOMPARE(request.at("streamId").as<std::string>(), std::string("panel/0"));
+    QCOMPARE(states.size(), 0);
+    QCOMPARE(fatal.size(), 0);
+    panel.insert("catalogRevision", qulonglong(11));
+    write(snapshot(3, 3));
+    QTRY_COMPARE(catalogs.size(), 2);
+    write(delta(4, 4));
+    QTRY_COMPARE(states.size(), 1);
+    QCOMPARE(fatal.size(), 0);
+    QVERIFY(controller.connected());
 }
 
 QTEST_GUILESS_MAIN(QtShellControllerTests)
