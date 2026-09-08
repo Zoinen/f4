@@ -253,6 +253,17 @@ Loop:
 	// Validate layout of the Deletion Errors dialog
 	vtui.AssertLayout(t, fm.GetTopFrame().(vtui.Container))
 
+	// The native dialog must receive the actual errors, not an empty widget.
+	node := fm.GetTopFrame().(vtui.SemanticProvider).SemanticNode(&vtui.SemanticContext{Width: 80, Height: 25})
+	children := node["children"].([]map[string]any)
+	if children[0]["kind"] != "listBox" {
+		t.Fatalf("deletion errors exported as %v instead of listBox", children[0]["kind"])
+	}
+	lines, ok := children[0]["items"].([]string)
+	if !ok || !strings.Contains(strings.Join(lines, "\n"), "fail.txt") {
+		t.Fatalf("deletion summary lost its error text: %#v", children[0])
+	}
+
 	// 4. Проверяем результаты
 	// Должно быть 2 успешных удаления (f1.txt и f2.txt)
 	if len(mv.deletedFiles) != 2 {
