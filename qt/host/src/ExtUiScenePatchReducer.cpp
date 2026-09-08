@@ -304,6 +304,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
     };
     static const QSet<QString> boolKeys = {
         QStringLiteral("active"), QStringLiteral("previewCapable"),
+        QStringLiteral("dropAllowed"),
         QStringLiteral("metadataDeferred"),
         QStringLiteral("catalogRowsDeferred"),
         QStringLiteral("sortReverse"),

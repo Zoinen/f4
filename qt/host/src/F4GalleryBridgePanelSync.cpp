@@ -565,6 +565,7 @@ void F4GalleryBridge::commitPanelSyncState(PanelSyncContext *context)
     state.iconRevision = context->iconRevision;
     state.currentPath = context->currentPath;
     state.sourceKind = context->sourceKind;
+    state.dropAllowed = context->panel.value("dropAllowed", true).toBool();
     state.cursorEntryId = context->cursorEntryId;
     state.cursorIndex = context->cursorIndex;
     state.previewCapable = context->previewCapable;

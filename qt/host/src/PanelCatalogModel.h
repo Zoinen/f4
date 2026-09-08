@@ -39,6 +39,7 @@ public:
     QString cursorEntryId;
     int cursorIndex = -1;
     bool previewCapable = false;
+    bool dropAllowed = true;
     bool active = false;
     bool loading = false;
     bool catalogProvisional = false;

@@ -668,6 +668,8 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semanticString(action["action"]) {
+	case "panel.dropFiles":
+		return pf.handleSemanticDrop(action)
 	case "activate_panel", "panel.activate":
 		side := semanticInt(action["side"])
 		if side >= 0 && side < len(pf.panels) {
@@ -2500,6 +2502,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
+		DropAllowed:           vfsAcceptsDrop(fp.vfs),
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
@@ -2531,6 +2534,7 @@ func (fp *FileSystemPanel) semanticLoading() bool {
 }
 
 func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side int, active bool) extui.PanelModel {
+	semanticLivePanels.Store(vtui.SemanticID(fp), fp)
 	if extUiPanelCatalogRowsIsEnabled() {
 		return fp.semanticPagedPanelModel(ctx, side, active)
 	}
@@ -2653,6 +2657,7 @@ func (fp *FileSystemPanel) semanticPanelModel(ctx *vtui.SemanticContext, side in
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            vfsAcceptsDrop(fp.vfs),
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
 		CatalogRevision:        fp.catalogRevision,
@@ -2729,6 +2734,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:      fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision: galleryLayoutRevision,
+		DropAllowed:           vfsAcceptsDrop(fp.vfs),
 		SourceKind:            sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
@@ -2812,6 +2818,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
 		GalleryDensities:       fp.galleryDensitiesSnapshot(),
 		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            vfsAcceptsDrop(fp.vfs),
 		SourceKind:             sourceKind,
 		PreviewCapable:         previewCapable,
 		CatalogRevision:        fp.catalogRevision,

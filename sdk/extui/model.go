@@ -125,6 +125,7 @@ type PanelModel struct {
 	GalleryDensities      map[string]int
 	GalleryLayoutRevision int64
 	SourceKind            string
+	DropAllowed           bool
 	PreviewCapable        bool
 	CatalogRevision       int64
 	SelectionRevision     int64
@@ -814,6 +815,7 @@ func (p PanelModel) ToMap() M {
 		"galleryDensities":       galleryDensities,
 		"galleryLayoutRevision":  p.GalleryLayoutRevision,
 		"sourceKind":             p.SourceKind,
+		"dropAllowed":            p.DropAllowed,
 		"previewCapable":         p.PreviewCapable,
 		"catalogRevision":        p.CatalogRevision,
 		"selectionRevision":      p.SelectionRevision,

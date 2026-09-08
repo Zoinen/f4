@@ -234,6 +234,7 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeDragDrop.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeSceneSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalogAppend.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelState.cpp"
@@ -778,7 +779,10 @@ if(BUILD_TESTING)
         src/StaticQmlPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
+        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+      set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+        "WHOLE_ARCHIVE,Qt6::QuickEffects")
     endif()
   endfunction()
 
@@ -1429,6 +1433,7 @@ if(BUILD_TESTING)
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
+    src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp
     src/F4GalleryBridgeSceneSync.cpp
     src/F4GalleryBridgeCatalogAppend.cpp
@@ -1497,6 +1502,7 @@ if(BUILD_TESTING)
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
     src/F4GalleryBridge.h
+    src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp
     src/F4GalleryBridgeSceneSync.cpp
     src/F4GalleryBridgeCatalogAppend.cpp
@@ -1568,6 +1574,7 @@ if(BUILD_TESTING)
   f4_link_static_zoingallery_plugin(F4GalleryPointerTests)
   f4_link_static_test_platform(F4GalleryPointerTests)
   f4_link_static_test_qml_plugins(F4GalleryPointerTests)
+  f4_link_static_test_image_plugins(F4GalleryPointerTests)
   if(TARGET msgpack-cxx)
     target_link_libraries(F4GalleryPointerTests PRIVATE msgpack-cxx)
   elseif(TARGET msgpack-cxx::msgpack-cxx)

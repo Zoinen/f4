@@ -676,13 +676,17 @@ if(F4_QT_STATIC)
   target_sources(f4-qt-host PRIVATE
     "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp"
     "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
+  # The effects shader resources have no ordinary symbol references. Keep
+  # them in the single-file host, including transitive plugin references.
+  set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+    "WHOLE_ARCHIVE,Qt6::QuickEffects")
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>"
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl
-    Qt6::QuickEffects
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
     Qt6::QuickLayouts)
 
   # Conan exposes Qt's Linux platform and graphics integrations as separate

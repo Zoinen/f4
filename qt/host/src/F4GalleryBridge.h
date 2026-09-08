@@ -5,6 +5,8 @@
 #include "PanelSessionRegistry.h"
 
 #include <QObject>
+#include <QPointF>
+#include <QQuickItem>
 #include <QPointer>
 #include <QHash>
 #include <QList>
@@ -24,6 +26,8 @@ class QtMediaClient;
 class ViewerCoordinator;
 class F4GalleryRowsResponseReducer;
 class F4GalleryMetadataResponseReducer;
+class QQuickItem;
+class QMimeData;
 
 class F4GalleryBridge final : public QObject
 {
@@ -38,6 +42,8 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(bool benchmarkTraceEnabled READ benchmarkTraceEnabled CONSTANT)
 
 public:
+    Q_INVOKABLE void registerDragPanel(int side, QQuickItem *item);
+    bool eventFilter(QObject *object, QEvent *event) override;
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
                              F4IconSet *iconSet = nullptr,
                              QtMediaClient *mediaClient = nullptr);
@@ -101,6 +107,7 @@ public:
     Q_INVOKABLE void closeViewer();
 
 public slots:
+    void handleDragPrepared(const QVariantMap &message);
     void synchronizeScene(const QVariantMap &scene);
     void synchronizePanelCatalog(const QVariantMap &panel);
     void synchronizePanelCatalogAppend(const QVariantMap &append);
@@ -135,7 +142,24 @@ signals:
     void benchmarkFrameSwapped(qulonglong serial);
 
 private:
+    void startPreparedDrag();
+    QString m_dragRequestId;
+    QList<QUrl> m_preparedDragUrls;
+    bool m_dragPrepared = false;
+    bool m_dragThresholdPassed = false;
+    QVariantMap dragEndpoint(int side, int sourceIndex = -1) const;
+    QVariantMap dragHit(QObject *window, const QPointF &position, int *side) const;
+    Qt::DropAction acceptNativeDrop(const QMimeData *mime, Qt::DropActions actions,
+                                   Qt::KeyboardModifiers modifiers) const;
+    void clearDropHighlight();
+    std::array<QPointer<QQuickItem>, 2> m_dragPanels;
+    QVariantMap m_dragSource;
+    QString m_dragToken;
+    QPointF m_dragPress;
+    int m_dragArmedSide = -1;
+    bool m_nativeDragActive = false;
     friend class F4GalleryBridgeTests;
+    friend class F4GalleryPointerTests;
     friend class F4GalleryRowsResponseReducer;
     friend class F4GalleryMetadataResponseReducer;
     using MetadataRange = PanelCatalogModel::MetadataRange;

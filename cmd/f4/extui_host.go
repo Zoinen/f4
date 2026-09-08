@@ -4751,6 +4751,11 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navig
 		}
 		if vtui.FrameManager != nil {
 			vtui.FrameManager.PostPriorityTask(func() {
+				if semanticString(action["action"]) == "panel.prepareDrag" {
+					response := prepareSemanticDrag(action)
+					go func() { _ = h.send.Send(response) }()
+					return
+				}
 				if benchmark != nil {
 					startedNs := navigationBenchmarkMonotonicNs()
 					benchmark.eventAt("ui_task.started", "go.ui", startedNs,

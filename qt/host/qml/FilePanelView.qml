@@ -390,6 +390,11 @@ Rectangle {
             if (typeof item.layoutState !== "undefined")
                 item.layoutState = Qt.binding(() => panelRoot.layoutState)
             item.bridge = panelRoot.galleryController
+            if (typeof item.dropInputEnabled !== "undefined")
+                item.dropInputEnabled = Qt.binding(() => panelRoot.visible
+                    && !galleryController.viewerVisible && !hostWindow.needsFallbackGrid()
+                    && !hostWindow.hasDocumentSurface() && !hostWindow.hasOperationsQueueSurface()
+                    && !hostWindow.hasBlockingOverlay())
             item.keySink = panelRoot.focusTarget
             item.theme = Qt.binding(() => panelRoot.galleryTheme)
             item.metrics = Qt.binding(() => panelRoot.galleryMetrics)

@@ -6,6 +6,87 @@ import ZoinGallery.Native 1.0 as ZGN
 
 FocusScope {
     id: host
+    property bool dropInputEnabled: true
+    property int dropHoverIndex: -2
+    property point dropPointer: Qt.point(0, 0)
+    function dragHit(x, y) {
+        const layout = embeddedGalleryPanel.galleryLayout
+        const p = layout.mapFromItem(host, x, y)
+        dropPointer = p
+        if (p.x < 0 || p.y < 0 || p.x >= layout.width || p.y >= layout.height)
+            return { valid: false }
+        const index = layout.indexAtViewport(p.x, p.y)
+        return { valid: true, index: index < 0 ? -1
+                 : embeddedGalleryPanel.controller.sourceIndexAt(index) }
+    }
+    function endNativeDragPointer() { embeddedGalleryPanel.endPointerDrag() }
+    function registerDragPanel() {
+        if (bridge && typeof bridge.registerDragPanel === "function")
+            bridge.registerDragPanel(side, host)
+    }
+    onBridgeChanged: registerDragPanel()
+    onSideChanged: registerDragPanel()
+
+    // Only this new outline is painted. Its edges are snapped in scene space;
+    // existing text and icons retain their original transforms.
+    Rectangle {
+        id: dropOutline
+        objectName: "panelDropOutline-" + host.side
+        z: 100
+        visible: host.dropInputEnabled && host.dropHoverIndex !== -2
+        color: "transparent"
+        border.color: host.theme.selection
+        border.width: 2 / host.devicePixelRatio
+        readonly property rect targetRect: {
+            const layout = embeddedGalleryPanel.galleryLayout
+            const revision = layout.layoutRevision
+            const contentY = layout.contentY
+            let r = Qt.rect(0, 0, layout.width, layout.height)
+            if (host.dropHoverIndex >= 0) {
+                for (const idx of layout.visibleIndexes) {
+                    if (embeddedGalleryPanel.controller.sourceIndexAt(idx) === host.dropHoverIndex) {
+                        const g = layout.indexGeometry(idx)
+                        r = Qt.rect(g.x, g.y - contentY, g.width, g.height)
+                        break
+                    }
+                }
+            }
+            const right = Math.min(layout.width, r.x + r.width)
+            const bottom = Math.min(layout.height, r.y + r.height)
+            r = Qt.rect(Math.max(0, r.x), Math.max(0, r.y),
+                        Math.max(0, right - Math.max(0, r.x)),
+                        Math.max(0, bottom - Math.max(0, r.y)))
+            const p = layout.mapToItem(host, r.x, r.y)
+            const scene = host.mapToItem(null, p.x, p.y)
+            const dpr = host.devicePixelRatio
+            const a = host.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
+                                       Math.round(scene.y * dpr) / dpr)
+            return Qt.rect(a.x, a.y, Math.round(r.width * dpr) / dpr,
+                           Math.round(r.height * dpr) / dpr)
+        }
+        x: targetRect.x
+        y: targetRect.y
+        width: targetRect.width
+        height: targetRect.height
+    }
+    Timer {
+        interval: 60
+        repeat: true
+        running: host.dropInputEnabled && host.dropHoverIndex !== -2
+        onTriggered: {
+            const layout = embeddedGalleryPanel.galleryLayout
+            const y = host.dropPointer.y
+            const direction = y < 28 ? -1 : y > layout.height - 28 ? 1 : 0
+            if (direction) {
+                layout.contentY = Math.max(0, Math.min(layout.contentHeight - layout.height,
+                                                      layout.contentY + direction * 18))
+                const index = layout.indexAtViewport(host.dropPointer.x, y)
+                host.dropHoverIndex = index >= 0 && host.session.isDirectoryAt(index)
+                    && host.session.entryNameAt(index) !== ".."
+                    ? embeddedGalleryPanel.controller.sourceIndexAt(index) : -1
+            }
+        }
+    }
 
     property int side: 0
     property var panel: ({})
@@ -228,6 +309,7 @@ FocusScope {
     }
 
     Component.onCompleted: {
+        registerDragPanel()
         panelAdapter.refreshPanelSession(host.panel)
         panelAdapter.synchronizeLayout(host.panel, host.layoutState)
     }
