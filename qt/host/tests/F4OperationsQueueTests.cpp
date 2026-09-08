@@ -771,6 +771,7 @@ private slots:
     void environmentManagerDialogUsesExpandedRows();
     void semanticInlineLabelsKeepControlsClose();
     void semanticDialogControlsUseWindowFontAndStayPixelAligned();
+    void errorMessagesWrapToNativeWidth();
     void semanticDialogEditShowsRemoteAndNativeSelection();
     void semanticDialogEditSelectionWaitsForSemanticFocus();
     void dialogTextCursorBlinkSettlesAndFocusStopsIt();
@@ -2778,6 +2779,50 @@ void F4OperationsQueueTests::semanticDialogRowsExpandForNativeControls()
                  qPrintable(QStringLiteral("%1 has a non-translation transform")
                                 .arg(leaf->objectName())));
     }
+}
+
+void F4OperationsQueueTests::errorMessagesWrapToNativeWidth()
+{
+    auto scene = dialogScene();
+    auto dialogs = scene.value("dialogs").toList();
+    auto dialog = dialogs[0].toMap();
+    dialog["title"] = "Deletion Errors";
+    const QString message = QStringLiteral("Skipped 'photo & notes.png': unlinkat D:/Code/f4-qt-drag-drop/.diagnostics/visual-drag/test/photo & notes.png: The process cannot access the file because it is being used by another process.");
+    dialog["children"] = QVariantList{QVariantMap{
+        {"id", "error-list"}, {"kind", "listBox"}, {"x", 20}, {"y", 7},
+        {"w", 50}, {"h", 12}, {"wrapText", true}, {"readOnly", true},
+        {"items", QVariantList{message, QStringLiteral("Second complete error message.")}}
+    }};
+    dialogs[0] = dialog;
+    scene["dialogs"] = dialogs;
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *root = fixture.window->contentItem();
+    QQuickItem *first = nullptr;
+    QTRY_VERIFY((first = visualItem(root, QStringLiteral("dialogWidget-error-listListItemText-0"))));
+    QQuickItem *second = nullptr;
+    QTRY_VERIFY((second = visualItem(root, QStringLiteral("dialogWidget-error-listListItemText-1"))));
+    QCOMPARE(first->property("text").toString(), message);
+    QTRY_VERIFY(first->property("lineCount").toInt() > 1);
+    const int wideLines = first->property("lineCount").toInt();
+    auto *control = visualItem(root, QStringLiteral("dialogWidget-error-listRoot"));
+    QVERIFY(control);
+    QVERIFY(control->setProperty("maximumWidth", 180.0));
+    QTRY_VERIFY(first->property("lineCount").toInt() > wideLines);
+    QTest::qWait(100);
+    for (auto *leaf : {first, second}) {
+        const QPointF origin = leaf->mapToItem(root, QPointF());
+        const qreal dpr = fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(origin.x()*dpr - qRound(origin.x()*dpr)) < 0.001);
+        QVERIFY(qAbs(origin.y()*dpr - qRound(origin.y()*dpr)) < 0.001);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+        QVERIFY(leaf->height() >= leaf->property("contentHeight").toReal());
+    }
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    if (!qEnvironmentVariable("F4_DIALOG_CAPTURE").isEmpty())
+        QVERIFY(capture.save(qEnvironmentVariable("F4_DIALOG_CAPTURE")));
 }
 
 void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAligned()

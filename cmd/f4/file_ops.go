@@ -40,6 +40,23 @@ type globalAwareReporter struct {
 	fileSize         int64
 }
 
+// deletionErrorList preserves console rows while exporting complete messages
+// for frontends that lay out text using their own font and available width.
+type deletionErrorList struct {
+	*vtui.ListBox
+	messages []string
+}
+
+func (list *deletionErrorList) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
+	node := list.ListBox.SemanticNode(ctx)
+	node["id"] = vtui.SemanticID(list)
+	node["items"] = append([]string{}, list.messages...)
+	node["wrapText"] = true
+	node["readOnly"] = true
+	node["cursor"] = -1
+	return node
+}
+
 func (w *globalAwareReporter) StartFile(name string, size int64) {
 	w.StartFileKnown(name, size, true, 1, 0)
 }
@@ -1034,7 +1051,7 @@ func ExecuteDeleteOpWithDispositionAt(pf *PanelsFrame, activeVfs vfs.VFS, basePa
 					listItems = listItems[:len(listItems)-1]
 				}
 
-				lb := vtui.NewListBox(0, 0, dlgW-4, dlgH-6, listItems)
+				lb := &deletionErrorList{ListBox: vtui.NewListBox(0, 0, dlgW-4, dlgH-6, listItems), messages: append([]string{}, allErrors...)}
 				btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 				btnOk.IsDefault = true
 				btnOk.OnClick = func() { dlg.Close() }
