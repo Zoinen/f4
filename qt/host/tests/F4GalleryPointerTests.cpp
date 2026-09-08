@@ -2529,6 +2529,18 @@ void F4GalleryPointerTests::upstreamDragArtwork()
     for (int i=0;i<5;++i)
         QCOMPARE(preview.toImage().pixelColor(qRound((29+i*52)*dpr),qRound(29*dpr)),images[i].pixelColor(20,20));
     QVERIFY(preview.save(QString(".diagnostics/drag-strip-%1.png").arg(dpr)));
+    for (const bool dark : {false, true}) {
+        const auto named=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),8,dark);
+        QCOMPARE(named.devicePixelRatio(),dpr);
+        QVERIFY(named.height()>preview.height());
+        // The added caption must never scale or translate the existing artwork.
+        QCOMPARE(named.toImage().copy(QRect(QPoint(0,0),preview.size())),preview.toImage());
+        const auto single=F4NativeDragVisuals::withFileName(preview,QString::fromUtf8("photo-01 — снимок.png"),1,dark);
+        QVERIFY(single.toImage()!=named.toImage());
+        const auto longName=F4NativeDragVisuals::withFileName(preview,QString(500,'w')+".png",1,dark);
+        QVERIFY(longName.width()<=qRound(360*dpr));
+        QVERIFY(named.save(QString(".diagnostics/drag-filename-%1-%2.png").arg(dpr).arg(dark)));
+    }
 #ifdef Q_OS_WIN
     const auto copy=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::CopyAction);
     const auto move=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,preview.deviceIndependentSize(),QPoint(18,18),Qt::MoveAction);

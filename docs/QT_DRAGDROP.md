@@ -12,6 +12,9 @@ The dragged set is captured at mouse press; Ctrl/Shift may be held from the
 start or changed during the drag to choose copy/move. Qt's system drag-distance
 threshold applies.
 
+The drag preview includes the pressed file's name below the artwork, with a
+`+N` count for additional dragged items. Long names are elided in the middle.
+
 Between panels in the same Qt host, the default is copy and Shift selects move
 (Ctrl takes precedence). Both use Go's VFS file-operation engine, including its
 queue, overwrite/error dialogs, cancellation and progress. The native desktop

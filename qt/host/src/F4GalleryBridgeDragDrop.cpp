@@ -496,7 +496,9 @@ void F4GalleryBridge::startPreparedDrag()
         QDrag drag(window);
         drag.setMimeData(mime);
         const qreal dpr = window->devicePixelRatio();
-        drag.setPixmap(m_dragPreviewPixmap);
+        drag.setPixmap(F4NativeDragVisuals::withFileName(m_dragPreviewPixmap,
+            m_dragSource.value("name").toString(), ids.size(),
+            QGuiApplication::styleHints()->colorScheme()==Qt::ColorScheme::Dark));
         drag.setHotSpot(m_dragPreviewHotSpot);
 #ifdef Q_OS_WIN
         const auto previewSize=drag.pixmap().deviceIndependentSize();

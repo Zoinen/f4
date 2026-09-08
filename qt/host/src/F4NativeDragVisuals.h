@@ -8,6 +8,39 @@
 #include <qt_windows.h>
 #endif
 namespace F4NativeDragVisuals {
+// Paint the caption directly on the physical pixel grid, without resampling
+// either the existing preview or native text at fractional display scales.
+inline QPixmap withFileName(const QPixmap &preview, const QString &name, int total, bool dark)
+{
+    if (preview.isNull() || name.isEmpty()) return preview;
+    const qreal dpr = preview.devicePixelRatio();
+    const int padding = qRound(8 * dpr);
+    const int gap = qRound(4 * dpr);
+    QFont font = QGuiApplication::font();
+    font.setPixelSize(qRound(13 * dpr));
+    const QFontMetrics metrics(font);
+    const QString suffix = total > 1 ? QStringLiteral("  (+%1)").arg(total - 1) : QString();
+    const QString label = metrics.elidedText(name, Qt::ElideMiddle,
+        qRound(360 * dpr) - 2 * padding - metrics.horizontalAdvance(suffix)) + suffix;
+    const int width = metrics.horizontalAdvance(label) + 2 * padding;
+    const QRect caption(0, preview.height() + gap, width, metrics.height() + 2 * padding);
+    QPixmap result(qMax(preview.width(), width), caption.bottom() + 1);
+    result.fill(Qt::transparent);
+    QPainter painter(&result);
+    // Both source and destination extents are physical pixels; copy 1:1.
+    QImage pixels = preview.toImage();
+    pixels.setDevicePixelRatio(1);
+    painter.drawImage(QPoint(0, 0), pixels);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(dark ? "#303030" : "#eeeeee"));
+    painter.drawRect(caption);
+    painter.setFont(font);
+    painter.setPen(dark ? Qt::white : Qt::black);
+    painter.drawText(QPoint(padding, caption.top() + padding + metrics.ascent()), label);
+    painter.end();
+    result.setDevicePixelRatio(dpr);
+    return result;
+}
 #ifdef Q_OS_WIN
 inline QPixmap systemCursorPixmap(LPCWSTR cursorId, qreal dpr) {
     const HCURSOR cursor = LoadCursorW(nullptr, cursorId);
