@@ -1,6 +1,8 @@
 package vtui
 
 import (
+	"fmt"
+	"github.com/unxed/vtinput"
 	"testing"
 )
 
@@ -197,5 +199,65 @@ func TestSemantic_DialogGeometryActionMovesAndResizesWindow(t *testing.T) {
 		"h":      10,
 	}) {
 		t.Fatal("invalid zero-width geometry action was accepted")
+	}
+}
+
+func TestSemanticClickActionsTransferKeyboardFocus(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		for _, kind := range []string{"checkbox", "radio", "button"} {
+			t.Run(fmt.Sprintf("%s/nested=%v", kind, nested), func(t *testing.T) {
+				root := NewGroup(0, 0, 60, 20)
+				old := NewCheckbox(1, 1, "Old", false)
+				root.AddItem(old)
+				owner := root
+				if nested {
+					owner = NewGroup(1, 3, 50, 12)
+					owner.AddItem(NewCheckbox(1, 3, "Other", false))
+					root.AddItem(owner)
+				}
+				var control UIElement
+				action := map[string]any{}
+				switch kind {
+				case "checkbox":
+					control = NewCheckbox(2, 5, "Clicked", false)
+					action["action"] = "control.toggle"
+				case "radio":
+					control = NewRadioGroup(2, 5, 1, []string{"First", "Second"})
+					action["action"] = "control.select"
+					action["index"] = 1
+				case "button":
+					button := NewButton(2, 5, "Clicked")
+					button.OnClick = func() {}
+					control = button
+					action["action"] = "control.activate"
+				}
+				owner.AddItem(control)
+				root.SetFocus(true)
+				root.SetFocusedItem(old)
+				action["target"] = SemanticID(control)
+				if !root.HandleSemanticAction(action) {
+					t.Fatal("click not handled")
+				}
+				if owner.GetFocusedItem() != control || !control.IsFocused() || old.IsFocused() {
+					t.Fatal("click did not transfer keyboard focus")
+				}
+				if nested && root.GetFocusedItem() != owner {
+					t.Fatal("ancestor focus not transferred")
+				}
+				if kind == "checkbox" {
+					root.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE})
+					if control.(*Checkbox).State != 0 {
+						t.Fatal("Space did not reach clicked checkbox")
+					}
+				}
+				if kind == "radio" {
+					root.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+					node := control.(*RadioGroup).SemanticNode(nil)
+					if node["focusIndex"] != 0 || node["selected"] != 1 {
+						t.Fatal("Up did not reach clicked radio group")
+					}
+				}
+			})
+		}
 	}
 }

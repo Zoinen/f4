@@ -368,9 +368,9 @@ Rectangle {
         }
         anchors.left: parent.left
         anchors.right: dialogWindowButtons.left
-        anchors.top: parent.top
+        anchors.top: dialogHeader.top
         height: dialogHeader.height
-        anchors.leftMargin: dialogRoot.contentPadding
+        anchors.leftMargin: hostWindow.snapPx(18)
         verticalAlignment: Text.AlignVCenter
         text: hostWindow.cleanText(frame.title)
         color: hostWindow.textColor
@@ -382,7 +382,7 @@ Rectangle {
     Row {
         id: dialogWindowButtons
         anchors.top: dialogHeader.top
-        anchors.right: parent.right
+        anchors.right: dialogHeader.right
         height: dialogHeader.height
         spacing: 0
 
@@ -403,7 +403,14 @@ Rectangle {
         ZG.TitleButton {
             id: dialogCloseButton
             objectName: "dialogCloseButton"
-            implicitWidth: 42
+            devicePixelRatio: hostWindow.iconDevicePixelRatio
+            function iconPixelOffsetX(item) {
+                return hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
+            }
+            function iconPixelOffsetY(item) {
+                return hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
+            }
+            implicitWidth: hostWindow.snapPx(42)
             implicitHeight: dialogHeader.height
             opacity: 1
             visible: frame.showClose === true
@@ -418,6 +425,16 @@ Rectangle {
                 if (hovered)
                     return ZG.Style.closeButtonHovered
                 return "transparent"
+            }
+            background: Rectangle {
+                id: closeBackground
+                objectName: "dialogCloseBackground"
+                color: dialogCloseButton.backgroundColor
+                topRightRadius: hostWindow.snapPx(dialogHeader.radius)
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(closeBackground, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(closeBackground, hostWindow.contentItem)
+                }
             }
             onClicked: hostWindow.action({
                 "target": frame.id,

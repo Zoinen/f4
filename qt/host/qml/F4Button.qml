@@ -16,6 +16,7 @@ T.Button {
     property bool colorfulIcon: false
     property string toolTipText: ""
     property bool semanticFocus: false
+    readonly property bool focusHighlighted: semanticFocus || visualFocus || activeFocus
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
     }
@@ -86,14 +87,10 @@ T.Button {
                 id: btnText
                 objectName: control.objectName
                             ? (control.objectName + "Text") : "buttonText"
-                text: {
-                    if (control.hostWindow && control.mnemonic !== "")
-                        return control.hostWindow.mnemonicText(
-                                    control.text, control.mnemonic)
-                    return control.text
-                }
-                textFormat: control.mnemonic !== ""
-                            ? Text.StyledText : Text.PlainText
+                text: control.hostWindow
+                      ? control.hostWindow.mnemonicText(control.text, control.mnemonicHotkey)
+                      : control.text
+                textFormat: control.hostWindow ? Text.StyledText : Text.PlainText
                 color: control.variant === "accent"
                        ? "#ffffff"
                        : (control.enabled
@@ -147,20 +144,18 @@ T.Button {
                 return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
             if (control.hovered)
                 return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
-            if (control.semanticFocus)
-                return control.hostWindow ? control.hostWindow.controlPressedBg : "#274b68"
             return control.hostWindow ? control.hostWindow.controlBg : "#18202a"
         }
 
         border.width: {
             if (control.flat)
                 return 0
-            if (control.variant === "flat" && !control.hovered && !control.semanticFocus)
+            if (control.variant === "flat" && !control.hovered && !control.focusHighlighted)
                 return 0
             return control.hostWindow ? control.hostWindow.separatorWidth : 1
         }
         border.color: {
-            if (control.semanticFocus || control.highlighted || control.variant === "accent")
+            if (control.focusHighlighted || control.highlighted || control.variant === "accent")
                 return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
             if (control.hovered)
                 return control.hostWindow ? control.hostWindow.controlHoverBg : "#334455"

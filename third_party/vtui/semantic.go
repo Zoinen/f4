@@ -515,6 +515,16 @@ func (gb *GroupBox) SemanticNode(ctx *SemanticContext) map[string]any {
 	return node
 }
 
+// Semantic control interactions bypass the console mouse focus path.
+func semanticActionMovesFocus(action string) bool {
+	switch action {
+	case "focus", "control.focus", "open", "control.open",
+		"activate", "control.activate", "toggle", "control.toggle", "select", "control.select":
+		return true
+	}
+	return false
+}
+
 func (g *Group) HandleSemanticAction(action map[string]any) bool {
 	target := semanticString(action["target"])
 	actionName := semanticString(action["action"])
@@ -530,11 +540,10 @@ func (g *Group) HandleSemanticAction(action map[string]any) bool {
 		if SemanticID(child) == target {
 			if h, ok := child.(SemanticActionHandler); ok {
 				// Semantic mouse actions bypass Group.ProcessMouse, which is
-				// normally responsible for moving the focus index.  Opening a
-				// combo from Qt must therefore perform that transfer here,
+				// normally responsible for moving the focus index. Qt control
+				// interactions must therefore perform that transfer here,
 				// before the control handles the action.
-				if (actionName == "focus" || actionName == "control.focus" ||
-					actionName == "open" || actionName == "control.open") &&
+				if semanticActionMovesFocus(actionName) &&
 					child.CanFocus() && !child.IsDisabled() {
 					g.setFocus(index)
 				}
@@ -548,8 +557,7 @@ func (g *Group) HandleSemanticAction(action map[string]any) bool {
 			// group so subsequent keyboard events reach the same control.
 			if h, ok := child.(SemanticActionHandler); ok &&
 				h.HandleSemanticAction(action) {
-				if (actionName == "focus" || actionName == "control.focus" ||
-					actionName == "open" || actionName == "control.open") &&
+				if semanticActionMovesFocus(actionName) &&
 					child.CanFocus() && !child.IsDisabled() {
 					g.setFocus(index)
 				}

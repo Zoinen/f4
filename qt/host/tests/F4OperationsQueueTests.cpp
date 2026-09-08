@@ -2486,7 +2486,7 @@ void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
     const auto control = [](const char *id, const char *kind, int x, int row,
                             int width, const char *text) -> QVariantMap {
         return {{"id", id}, {"kind", kind}, {"x", 18 + x}, {"y", 3 + row},
-                {"w", width}, {"h", 1}, {"text", text}};
+                {"w", width}, {"h", 1}, {"text", text}, {"hotkey", QString(id) == "env-save" ? "s" : ""}};
     };
     dialog.insert("children", QVariantList{
         control("env-label", "text", 2, 2, 60, "Ignored variables (comma-separated):"),
@@ -2495,7 +2495,7 @@ void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
         control("env-prefix", "text", 2, 7, 60, "Command prefix: envman"),
         control("env-import", "button", 5, 13, 32, "Import from Far Manager 3..."),
         control("env-save", "button", 39, 13, 9, "Save"),
-        control("env-cancel", "button", 50, 13, 11, "Cancel"),
+        control("env-cancel", "button", 50, 13, 11, "&Cancel"),
     });
     dialogs[0] = dialog;
     scene.insert("dialogs", dialogs);
@@ -2508,6 +2508,11 @@ void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
     auto *save = visualItem(fixture.window->contentItem(), "dialogWidget-env-saveButton");
     auto *cancel = visualItem(fixture.window->contentItem(), "dialogWidget-env-cancelButton");
     QVERIFY(label); QVERIFY(save); QVERIFY(cancel);
+    const auto accent = fixture.window->property("dialogAccent").value<QColor>().name();
+    QTRY_COMPARE(visualItem(fixture.window->contentItem(), "dialogWidget-env-saveButtonText")->property("text").toString(),
+                 QString("<font color=\"%1\">S</font>ave").arg(accent));
+    QTRY_COMPARE(visualItem(fixture.window->contentItem(), "dialogWidget-env-cancelButtonText")->property("text").toString(),
+                 QString("<font color=\"%1\">C</font>ancel").arg(accent));
     QVERIFY(edit->mapToScene(QPointF{}).y()
             >= label->mapToScene(QPointF(0, label->height())).y() + 2);
     QCOMPARE(save->mapToScene(QPointF{}).y(), cancel->mapToScene(QPointF{}).y());
@@ -2551,6 +2556,47 @@ void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
         QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
         QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
     }
+    auto *title = visualItem(fixture.window->contentItem(), "semanticDialogTitle");
+    auto *header = visualItem(fixture.window->contentItem(), "dialogMoveHandle");
+    QVERIFY(title); QVERIFY(header);
+    const qreal titleCenter = title->mapToScene(QPointF(0, title->height() / 2)).y();
+    const qreal headerCenter = header->mapToScene(QPointF(0, header->height() / 2)).y();
+    QVERIFY2(qAbs(titleCenter - headerCenter) * dpr <= 0.501,
+             qPrintable(QString("title center=%1 header center=%2 physical px")
+                        .arg(titleCenter * dpr).arg(headerCenter * dpr)));
+    auto *closeButton = visualItem(fixture.window->contentItem(), "dialogCloseButton");
+    QVERIFY(closeButton);
+    const qreal closeRight = closeButton->mapToScene(QPointF(closeButton->width(), 0)).x();
+    const qreal dialogRight = dialogItem->mapToScene(QPointF(dialogItem->width(), 0)).x();
+    QVERIFY2((dialogRight - closeRight) * dpr >= 1,
+             qPrintable(QString("close right=%1 dialog right=%2 physical px")
+                        .arg(closeRight * dpr).arg(dialogRight * dpr)));
+    // Exercise the hover paint deterministically even on the offscreen platform.
+    QVERIFY(closeButton->setProperty("backgroundColor", QColor("#c42b1c")));
+    auto *closeBackground = visualItem(closeButton, "dialogCloseBackground");
+    QVERIFY(closeBackground);
+    const qreal highlightRight = closeBackground->mapToScene(QPointF(closeBackground->width(), 0)).x() * dpr;
+    const qreal innerRight = qRound(header->mapToScene(QPointF(header->width(), 0)).x() * dpr);
+    QVERIFY2(qAbs(highlightRight - innerRight) < 0.001,
+             qPrintable(QString("highlight right=%1 border inner edge=%2 physical px").arg(highlightRight).arg(innerRight)));
+    QVERIFY(closeBackground->property("topRightRadius").toReal() > 0);
+    auto *closeIcon = visualItem(closeButton, "titleBarButtonIcon");
+    QVERIFY(closeIcon);
+    const auto iconOrigin = closeIcon->mapToScene(QPointF{});
+    QVERIFY2(qAbs(iconOrigin.x() * dpr - qRound(iconOrigin.x() * dpr)) < 0.001, qPrintable(QString::number(iconOrigin.x() * dpr, 'f', 6)));
+    QVERIFY(qAbs(iconOrigin.y() * dpr - qRound(iconOrigin.y() * dpr)) < 0.001);
+    QCOMPARE(closeIcon->mapToScene(QPointF(1, 0)) - iconOrigin, QPointF(1, 0));
+    QCOMPARE(closeIcon->mapToScene(QPointF(0, 1)) - iconOrigin, QPointF(0, 1));
+    save = visualItem(fixture.window->contentItem(), "dialogWidget-env-saveButton");
+    QVERIFY(save);
+    auto *saveBackground = visualItem(save, "dialogWidget-env-saveButtonBackground");
+    QVERIFY(saveBackground);
+    const auto normalFill = saveBackground->property("color").value<QColor>();
+    QVERIFY(save->setProperty("semanticFocus", true));
+    QTRY_COMPARE(saveBackground->property("testBorderColor").value<QColor>(),
+                 fixture.window->property("dialogAccent").value<QColor>());
+    QTest::qWait(120);
+    QCOMPARE(saveBackground->property("color").value<QColor>(), normalFill);
     const QImage rendered = fixture.window->grabWindow();
     QVERIFY(!rendered.isNull());
     if (!qEnvironmentVariable("F4_DIALOG_CAPTURE").isEmpty())
