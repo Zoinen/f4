@@ -3345,6 +3345,26 @@ Rectangle {
     auto *tabs = fixture.item("workspaceBar");
     auto *second = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-2");
     QVERIFY(layer && tabs && second);
+    QVERIFY(QMetaObject::invokeMethod(tabs, "beginWorkspaceDrag"));
+    QCOMPARE(tabs->property("dragSourceWorkspace").toString(), QString("workspace-tab-1"));
+    auto *first = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-1");
+    QVERIFY(first);
+    QVERIFY(!first->property("dragSourceHighlighted").toBool());
+    // Simulate the active destination changing while preserving the source ID.
+    auto tabModel = scene.value("workspaceTabs").toMap();
+    auto models = tabModel.value("tabs").toList();
+    auto a = models[0].toMap(); a["active"] = false; models[0] = a;
+    auto b = models[1].toMap(); b["active"] = true; models[1] = b;
+    tabModel["tabs"] = models; tabModel["activeIndex"] = 1;
+    auto destinationScene = scene;
+    destinationScene["workspaceTabs"] = tabModel;
+    fixture.shell.setScene(destinationScene);
+    QTRY_VERIFY((first = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-1"))
+                && first->property("dragSourceHighlighted").toBool());
+    second = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-2");
+    QVERIFY(second);
+    QCOMPARE(first->property("color").value<QColor>(), QColor("#245c38"));
+    QVERIFY(!second->property("dragSourceHighlighted").toBool());
     auto *root = fixture.window->contentItem();
     const qreal dpr = fixture.window->devicePixelRatio();
     const QRectF viewerRect = layer->mapRectToItem(root, layer->boundingRect());
@@ -3377,6 +3397,12 @@ Rectangle {
     const QString capturePath = qEnvironmentVariable("F4_VIEWER_CHROME_CAPTURE");
     if (!capturePath.isEmpty())
         QVERIFY(rendered.save(capturePath));
+    tabs->setProperty("dragSourceWorkspace", QString());
+    QVERIFY(!first->property("dragSourceHighlighted").toBool());
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY((second = visualItemWithObjectNamePrefix(root, "workspace-tab-2"))
+                && !second->property("current").toBool());
+    QTest::qWait(100); // settle the restored tab row before mouse hit testing
     const auto center = second->mapToItem(root, second->boundingRect().center());
     QVERIFY(center.y() < viewerRect.top());
     fixture.shell.clearActions();

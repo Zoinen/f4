@@ -22,6 +22,19 @@ Item {
     height: hostWindow.snapPx(36)
     visible: hostWindow.workspaceTabs.visible === true
     z: 2
+    property string dragSourceWorkspace: ""
+
+    function beginWorkspaceDrag() {
+        dragSourceWorkspace = ""
+        for (var i = 0; i < hostWindow.workspaces.length; ++i) {
+            var tab = hostWindow.workspaces[i]
+            if (tab.active === true && tab.surfaceKind === "panels") {
+                dragSourceWorkspace = String(tab.id)
+                break
+            }
+        }
+    }
+
     property Item activeWorkspaceTab: null
     property int activeWorkspaceTabSeparatorRevision: 0
     property bool activeWorkspaceTabUpdatePending: false
@@ -257,7 +270,10 @@ Item {
                     bottomRightRadius: 0
                     antialiasing: true
                     smooth: true
-                    color: current
+                    readonly property bool dragSourceHighlighted:
+                        !current && workspaceBar.dragSourceWorkspace !== ""
+                        && workspaceBar.dragSourceWorkspace === String(modelData.id)
+                    color: dragSourceHighlighted ? "#245c38" : current
                            ? hostWindow.panelPathBg
                            : workspaceHover.hovered
                              ? hostWindow.controlHoverBg : "transparent"

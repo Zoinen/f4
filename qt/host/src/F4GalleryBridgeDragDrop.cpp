@@ -332,6 +332,8 @@ void F4GalleryBridge::startPreparedDrag()
         mime->setData(sessionMime, m_dragToken.toUtf8());
         const auto ids = m_dragSource.value("entryIds").toStringList();
         if (m_preparedDragUrls.size() == ids.size()) mime->setUrls(m_preparedDragUrls);
+        if (m_dragWorkspaceBar)
+            QMetaObject::invokeMethod(m_dragWorkspaceBar, "beginWorkspaceDrag");
         m_nativeDragActive = true;
         m_nativeDragEntered = false;
         m_nativeDragReleased = false;
@@ -420,6 +422,8 @@ void F4GalleryBridge::startPreparedDrag()
         if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
             qInfo() << "QT_DND: native drag finished" << finished << "cursor" << window->mapFromGlobal(QCursor::pos())
                     << "entered/released/cancelled" << m_nativeDragEntered << m_nativeDragReleased << m_nativeDragCancelled;
+        if (m_dragWorkspaceBar)
+            m_dragWorkspaceBar->setProperty("dragSourceWorkspace", QString());
         m_nativeDragActive = false;
         m_dragHoveredWorkspace.clear();
         m_dragToken.clear();
