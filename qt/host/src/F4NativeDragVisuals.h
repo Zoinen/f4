@@ -4,10 +4,49 @@
 #include <QPainter>
 #include <QFontMetricsF>
 #include <QPixmap>
+#include <QIcon>
+#include <QQmlEngine>
+#include <QQuickImageProvider>
+#include <ZoinGallery/GalleryIconResolver.h>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #endif
 namespace F4NativeDragVisuals {
+inline QImage fileIcon(QQmlEngine *engine, const QVariantMap &visual, qreal dpr, bool dark)
+{
+    ZoinGallery::GalleryIconResolver resolver;
+    resolver.setCompactPrefix("qrc:/F4QtHost/icons/lucide");
+    resolver.setLargePrefix("qrc:/F4QtHost/icons/lucide-gallery");
+    const QString key=visual.value("iconKey").toString();
+    QString source=resolver.resolve(key,visual.value("iconPath").toString(),true,
+        visual.value("isFolder").toBool(),visual.value("isImage").toBool(),false);
+    const bool monochrome=resolver.isMonochrome(key,source);
+    const QColor tint(dark ? "#e0e0e0" : "#303030");
+    source=resolver.retargetProviderSource(source,40,dpr,tint.name(),monochrome);
+    const QUrl url(source);
+    const QSize size(qCeil(40*dpr),qCeil(40*dpr));
+    QImage image;
+    if (engine && url.scheme()=="image") {
+        auto *provider=dynamic_cast<QQuickImageProvider *>(engine->imageProvider(url.host()));
+        QString request=url.path().mid(1);
+        if (url.hasQuery()) request+='?'+url.query(QUrl::FullyEncoded);
+        QSize actual;
+        if (provider && provider->imageType()==QQmlImageProviderBase::Image)
+            image=provider->requestImage(request,&actual,size);
+        else if (provider && provider->imageType()==QQmlImageProviderBase::Pixmap)
+            image=provider->requestPixmap(request,&actual,size).toImage();
+    } else {
+        if (source.startsWith("qrc:/")) source=":"+source.mid(4);
+        else if (url.isLocalFile()) source=url.toLocalFile();
+        image=QIcon(source).pixmap(size).toImage();
+    }
+    if (!image.isNull() && monochrome) {
+        QPainter painter(&image);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(image.rect(),tint);
+    }
+    return image;
+}
 // Paint the caption directly on the physical pixel grid, without resampling
 // either the existing preview or native text at fractional display scales.
 inline QPixmap withFileName(const QPixmap &preview, const QString &name, int total, bool dark)

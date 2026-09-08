@@ -420,9 +420,11 @@ void F4GalleryBridge::prepareDragPreview(QQuickItem *host)
             }
         }
         if (image.isNull()) {
-            QString path=visual.value("iconPath").toString();
-            if (path.startsWith("qrc:/")) path=":"+path.mid(4);
-            QIcon icon(path);
+            image=F4NativeDragVisuals::fileIcon(engine,visual,dpr,
+                QGuiApplication::styleHints()->colorScheme()==Qt::ColorScheme::Dark);
+        }
+        if (image.isNull()) {
+            QIcon icon;
             if (icon.isNull()) icon=QIcon(visual.value("isFolder").toBool()
                 ? ":/F4QtHost/icons/lucide-gallery/folder.svg" : ":/F4QtHost/icons/lucide-gallery/file.svg");
             image=icon.pixmap(QSize(qCeil(40*dpr),qCeil(40*dpr))).toImage();

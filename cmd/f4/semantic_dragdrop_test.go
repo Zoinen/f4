@@ -189,6 +189,34 @@ func TestSemanticDropPlan(t *testing.T) {
 			t.Fatalf("bad plan: %+v", p)
 		}
 	})
+	t.Run("retry after cancelled copy refresh", func(t *testing.T) {
+		a := makeAction()
+		folder := makeAction()
+		folder["entryId"] = id(dst, 0)
+		original := dst.entries
+		defer func() { dst.entries = original; dst.updateSemanticRevisions() }()
+		// A cancelled transfer adds/removes a partial destination and can leave
+		// a previously rendered endpoint behind the current catalog revision.
+		dst.entries = append([]*fileEntry{{VFSItem: vfs.VFSItem{Name: "partial.zip"}}}, original...)
+		dst.updateSemanticRevisions()
+		for _, action := range []map[string]any{a, folder} {
+			plan, err := pf.planSemanticDrop(action)
+			if err != nil || plan.skip {
+				t.Fatalf("retry rejected: %+v %v", plan, err)
+			}
+			if semanticString(action["entryId"]) != "" && (plan.target.entryIdx != 1 || plan.target.dir != dst.vfs.Join(dst.vfs.GetPath(), "folder")) {
+				t.Fatalf("drop followed stale row: %+v", plan)
+			}
+		}
+		dst.entries = original[1:]
+		dst.updateSemanticRevisions()
+		if _, err := pf.planSemanticDrop(folder); err == nil {
+			t.Fatal("removed folder accepted")
+		}
+		if _, err := pf.planSemanticDrop(a); err != nil {
+			t.Fatalf("directory retry rejected: %v", err)
+		}
+	})
 	for _, idx := range []int{1, 2} {
 		t.Run(dst.entries[idx].Name, func(t *testing.T) {
 			a := makeAction()

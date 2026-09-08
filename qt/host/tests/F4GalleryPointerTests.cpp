@@ -2520,6 +2520,30 @@ void F4GalleryPointerTests::nativeDragListsSurviveWireEncoding()
 void F4GalleryPointerTests::upstreamDragArtwork()
 {
     const qreal dpr=QGuiApplication::primaryScreen()->devicePixelRatio();
+    QQmlEngine iconEngine;
+    class IconProvider : public QQuickImageProvider {
+    public:
+        IconProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
+        QString request;
+        QImage requestImage(const QString &id,QSize *,const QSize &size) override {
+            request=id;
+            QImage image(size,QImage::Format_ARGB32); image.fill(Qt::magenta); return image;
+        }
+    };
+    auto *provider=new IconProvider;
+    iconEngine.addImageProvider("drag-test-icons",provider);
+    const auto systemIcon=F4NativeDragVisuals::fileIcon(&iconEngine,
+        {{"iconPath","image://drag-test-icons/file/archive.zip?size=16&dpr=1&revision=7"}},dpr,true);
+    QVERIFY(!systemIcon.isNull());
+    QCOMPARE(systemIcon.pixelColor(0,0),QColor(Qt::magenta));
+    QVERIFY(provider->request.contains("size=40"));
+    QVERIFY(provider->request.contains("revision=7"));
+    const auto archive=F4NativeDragVisuals::fileIcon(&iconEngine,{{"iconKey","archive"}},dpr,true);
+    const auto generic=F4NativeDragVisuals::fileIcon(&iconEngine,{{"iconKey","file"}},dpr,true);
+    QVERIFY(!archive.isNull());
+    QVERIFY(archive!=generic);
+    QVERIFY(F4NativeDragVisuals::withFileName(F4NativeDragVisuals::compactPreview({archive},1,dpr,true),
+        "z-ufc-ql-4x-textures.zip",1,true).save(QString(".diagnostics/drag-zip-%1.png").arg(dpr)));
     QList<QImage> images;
     for (const QColor color : {Qt::red,Qt::green,Qt::blue,Qt::yellow,Qt::magenta}) {
         QImage image(40,40,QImage::Format_ARGB32); image.fill(color); images.append(image);

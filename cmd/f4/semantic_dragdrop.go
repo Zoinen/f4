@@ -165,9 +165,16 @@ func prepareSemanticDrag(a map[string]any) map[string]any {
 
 func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, error) {
 	var p semanticDropPlan
-	fp := pf.semanticDragPanel(a)
-	if !pf.showPanels || fp == nil || !vfsAcceptsDrop(fp.vfs) {
+	fp := pf.panelForSemanticAction(a)
+	if pf.closed || !pf.showPanels || fp == nil || fp.vfs == nil || !vfsAcceptsDrop(fp.vfs) {
 		return p, fmt.Errorf("The destination is no longer available or is read-only")
+	}
+	if semanticString(a["panelId"]) != vtui.SemanticID(fp) || semanticString(a["path"]) != fp.vfs.GetPath() {
+		return p, fmt.Errorf("The destination changed during dragging")
+	}
+	fp.updateSemanticRevisions()
+	if revision := semanticInt64(a["catalogRevision"]); revision <= 0 || revision > fp.catalogRevision {
+		return p, fmt.Errorf("The destination changed during dragging")
 	}
 	side := pf.panelIndexForSemanticAction(a)
 	if pf.altPanels[side] != nil || (pf.wide && side != pf.widePanel) || (!pf.wide && ((side == 0 && !pf.showLeftPanel) || (side == 1 && !pf.showRightPanel))) {
@@ -175,7 +182,10 @@ func (pf *PanelsFrame) planSemanticDrop(a map[string]any) (semanticDropPlan, err
 	}
 	p.target = dropTargetInfo{panelIdx: side, panel: fp, fs: fp.vfs, dir: fp.vfs.GetPath(), entryIdx: -1}
 	if semanticString(a["entryId"]) != "" {
-		idx, ok := fp.semanticEntryIndex(a)
+		// A copy (including a cancelled copy) can refresh the destination while
+		// the drop is in transit. Resolve its stable ID in the current listing;
+		// never reuse an old row index or redirect to a different panel/path.
+		idx, ok := fp.semanticEntryIndex(map[string]any{"entryId": a["entryId"], "catalogRevision": fp.catalogRevision})
 		if !ok || idx < 0 || idx >= len(fp.entries) {
 			return p, fmt.Errorf("The destination changed during dragging")
 		}
