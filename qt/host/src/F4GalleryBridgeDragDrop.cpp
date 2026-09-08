@@ -4,7 +4,6 @@
 #include <QAbstractItemModel>
 #include <QQmlEngine>
 #include <QQuickImageProvider>
-#include <QQuickItemGrabResult>
 #include <QIcon>
 
 #include <QCoreApplication>
@@ -387,7 +386,6 @@ void F4GalleryBridge::handleDragPrepared(const QVariantMap &message)
 void F4GalleryBridge::prepareDragPreview(QQuickItem *host)
 {
     m_dragPreviewPixmap = {};
-    m_dragPreviewPending = false;
     m_dragPreviewHotSpot = QPoint(18,18);
     if (!host || !host->window()) return;
     const int side = m_dragSource.value("side").toInt();
@@ -435,40 +433,13 @@ void F4GalleryBridge::prepareDragPreview(QQuickItem *host)
     }
     m_dragPreviewPixmap=F4NativeDragVisuals::compactPreview(images,ids.size(),dpr,
         QGuiApplication::styleHints()->colorScheme()==Qt::ColorScheme::Dark);
-    // Standalone single-item drags use the actual rendered image/icon, with
-    // the original pointer hotspot; preserve that in every gallery layout.
-    if (ids.size()!=1) return;
-    QList<QQuickItem *> pending{host};
-    while (!pending.isEmpty()) {
-        auto *item=pending.takeLast();
-        pending.append(item->childItems());
-        if (item->property("entryId").toString()!=ids.first()) continue;
-        auto *preview=item->property("previewContainerItem").value<QQuickItem *>();
-        if (!preview || !preview->isVisible() || preview->width()<=0 || preview->height()<=0) continue;
-        auto grab=preview->grabToImage();
-        if (!grab) break;
-        m_dragPreviewHotSpot=preview->mapFromScene(m_dragPress).toPoint();
-        m_dragPreviewPending=true;
-        const QString request=m_dragRequestId;
-        connect(grab.data(),&QQuickItemGrabResult::ready,this,[this,grab,request,dpr] {
-            // Break the connection/captured shared-pointer ownership cycle.
-            disconnect(grab.data(), nullptr, this, nullptr);
-            if (request!=m_dragRequestId) return;
-            if (!grab->image().isNull()) {
-                m_dragPreviewPixmap=QPixmap::fromImage(grab->image());
-                m_dragPreviewPixmap.setDevicePixelRatio(dpr);
-            }
-            m_dragPreviewPending=false;
-            startPreparedDrag();
-        });
-        break;
-    }
+
 }
 
 void F4GalleryBridge::startPreparedDrag()
 {
         if (!m_dragPrepared || !m_dragThresholdPassed || m_dragArmedSide < 0
-            || m_nativeDragActive || m_dragPreviewPending || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) return;
+            || m_nativeDragActive || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) return;
         const int side = m_dragArmedSide;
         m_dragArmedSide = -1;
         auto *host = m_dragPanels[side].data();

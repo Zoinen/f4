@@ -161,7 +161,6 @@ private:
     void refreshWorkspaceDropHighlight();
     QPixmap m_dragPreviewPixmap;
     QPoint m_dragPreviewHotSpot;
-    bool m_dragPreviewPending = false;
     void prepareDragPreview(QQuickItem *host);
     Qt::DropAction acceptNativeDrop(const QMimeData *mime, Qt::DropActions actions,
                                    Qt::KeyboardModifiers modifiers) const;

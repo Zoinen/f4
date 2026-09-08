@@ -2793,6 +2793,9 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     QTest::mousePress(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
     QVERIFY(bridge.m_dragPrepared);
     QCOMPARE(bridge.m_preparedDragUrls.size(),1);
+    QTest::qWait(50); // a late delegate grab must not replace the compact tile
+    QCOMPARE(bridge.m_dragPreviewPixmap.size(),QSize(qCeil(58*view.devicePixelRatio()),qCeil(58*view.devicePixelRatio())));
+    QCOMPARE(bridge.m_dragPreviewHotSpot,QPoint(18,18));
     const QString releasedRequest = bridge.m_dragRequestId;
     QTest::mouseRelease(&view,Qt::LeftButton,Qt::NoModifier,sourcePoint);
     bridge.handleDragPrepared({{"type","drag_prepared"},{"requestId",releasedRequest},{"ok",true}});
