@@ -39,3 +39,7 @@ tools/ttytest/__pycache__/
 # сборки standalone-пробника
 tools/conptyreconcile/conptyreconcile
 tools/conptyreconcile/conptyreconcile.exe
+tools/icons/icons
+tools/icons/icons.exe
+tools/wine_syscall_probe/wineprobe
+tools/wine_syscall_probe/wineprobe.exe

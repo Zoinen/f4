@@ -733,10 +733,6 @@ func (pf *PanelsFrame) insertSelectedFileName() bool {
 			name = "'" + strings.ReplaceAll(name, "'", "'\\''") + "'"
 		}
 	}
-	txt := pf.cmdLine.Edit.GetText()
-	if len(txt) > 0 && txt[len(txt)-1] != ' ' {
-		pf.cmdLine.InsertString(" ")
-	}
 	pf.cmdLine.InsertString(name)
 	return true
 }
@@ -2614,6 +2610,30 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 	}
 
+	// Char fallbacks for terminals that report Ctrl+\\ / Ctrl+[ / Ctrl+]
+	// with an unexpected character or virtual key code. The canonical bindings
+	// live in the action registry (Panel.GoRoot / Panel.InsertLeftPath /
+	// Panel.InsertRightPath). Keep these before raw terminal forwarding so the
+	// f4-owned command line still receives the shortcuts while panels are
+	// hidden; a busy terminal process keeps ownership of the key.
+	if pf.showPanels || !pf.isPtyBusy() {
+		if (e.VirtualKeyCode == vtinput.VK_OEM_5 || e.Char == '\\') && ctrl && !alt && !shift && e.KeyDown {
+			if RunAction("Panel.GoRoot") {
+				return true
+			}
+		}
+		if (e.VirtualKeyCode == vtinput.VK_OEM_4 || e.Char == '[') && ctrl && !alt && !shift && e.KeyDown {
+			if RunAction("Panel.InsertLeftPath") {
+				return true
+			}
+		}
+		if (e.VirtualKeyCode == vtinput.VK_OEM_6 || e.Char == ']') && ctrl && !alt && !shift && e.KeyDown {
+			if RunAction("Panel.InsertRightPath") {
+				return true
+			}
+		}
+	}
+
 	// Raw input mode fallback for active shell commands (non-AltScreen, e.g. ping),
 	// and for any interactive shell session when host console mode is active.
 	// We forward text and navigation to PTY, but let global shortcuts (Ctrl+O) fall through.
@@ -2633,22 +2653,6 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// with an unexpected virtual key code: the canonical bindings live
 	// in the action registry (Panel.GoRoot / Panel.InsertLeftPath /
 	// Panel.InsertRightPath).
-	if e.Char == '\\' && ctrl && !alt && !shift && e.KeyDown {
-		if RunAction("Panel.GoRoot") {
-			return true
-		}
-	}
-	if e.Char == '[' && ctrl && !alt && !shift && e.KeyDown {
-		if RunAction("Panel.InsertLeftPath") {
-			return true
-		}
-	}
-	if e.Char == ']' && ctrl && !alt && !shift && e.KeyDown {
-		if RunAction("Panel.InsertRightPath") {
-			return true
-		}
-	}
-
 	// Folder bookmarks, far2l's hotkey scheme: [RightCtrl | Ctrl+Alt] + N
 	// jumps to slot N, Ctrl+Shift+N stores the current directory there, and
 	// [RightCtrl | Ctrl+Alt] + ~ goes home. The ctrl local above merges both
@@ -2860,6 +2864,21 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 					pf.setCommandLineFocus(false)
 				}
 				executeCapturedCommand(pf, action, actualCmd)
+				return true
+			}
+
+			// A plain edit:<path> opens the named file. Keep this after
+			// edit:<< so captured command output keeps its existing meaning.
+			if editPath, ok := parsePlainEditCommand(trimmedCmd); ok {
+				pf.cmdLine.Clear()
+				if pf.searchFirstMode() && !AppConfig.SearchCommandStayFocused {
+					pf.setCommandLineFocus(false)
+				}
+				editPath = expandPathEnv(editPath)
+				if fsp := pf.getActivePanel(); fsp != nil && isLocalOSVFS(fsp.vfs) && !filepath.IsAbs(editPath) {
+					editPath = fsp.vfs.Join(fsp.vfs.GetPath(), editPath)
+				}
+				openEditFileIn(pf, editPath)
 				return true
 			}
 
@@ -4698,7 +4717,7 @@ func (pf *PanelsFrame) RefreshAll() {
 func (pf *PanelsFrame) Message(title, msg string, buttons []string) int {
 	resChan := make(chan int, 1)
 	vtui.FrameManager.PostTask(func() {
-		dlg := vtui.ShowMessage(title, msg, buttons)
+		dlg := vtui.ShowMessageOn(pf, title, msg, buttons)
 		dlg.OnResult = func(code int) { resChan <- code }
 	})
 	return <-resChan
@@ -4709,7 +4728,7 @@ func (pf *PanelsFrame) Message(title, msg string, buttons []string) int {
 // the same value travels as InputBoxReq.Default.
 func (pf *PanelsFrame) InputBox(title, prompt, defaultText string, callback func(string)) {
 	vtui.FrameManager.PostTask(func() {
-		vtui.InputBox(title, prompt, defaultText, callback)
+		vtui.InputBoxOn(pf, title, prompt, defaultText, callback)
 	})
 }
 
@@ -4795,10 +4814,11 @@ func (pf *PanelsFrame) menuItemsWithKeyLabels(title string, items []vtui.MenuIte
 			}
 		}
 		if keyLabels != nil {
-			vtui.FrameManager.PushMenu(&menuKeyLabelsFrame{VMenu: menu, keyLabels: keyLabels})
+			vtui.FrameManager.PushToFrameScreen(pf, &menuKeyLabelsFrame{VMenu: menu, keyLabels: keyLabels})
 		} else {
-			vtui.FrameManager.PushMenu(menu)
+			vtui.FrameManager.PushToFrameScreen(pf, menu)
 		}
+		vtui.FrameManager.DeclareSemanticMenuState()
 	})
 }
 
@@ -6296,6 +6316,23 @@ func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
 		return string(os.PathSeparator), true
 	}
 	return "", false
+}
+
+// parsePlainEditCommand recognizes the file-opening form of the edit:
+// command. The edit:<< capture form is handled before this helper, but it is
+// excluded here as well so the two forms cannot drift into one another.
+func parsePlainEditCommand(trimmedCmd string) (path string, ok bool) {
+	const prefix = "edit:"
+	trimmedCmd = strings.TrimSpace(trimmedCmd)
+	if len(trimmedCmd) <= len(prefix) || !strings.EqualFold(trimmedCmd[:len(prefix)], prefix) {
+		return "", false
+	}
+
+	path = strings.TrimSpace(trimmedCmd[len(prefix):])
+	if path == "" || strings.HasPrefix(path, "<<") {
+		return "", false
+	}
+	return path, true
 }
 
 func expandPathEnv(s string) string {

@@ -150,6 +150,23 @@ func TestStartupChoiceHelpers(t *testing.T) {
 	}
 }
 
+func TestStartupBackendLabels(t *testing.T) {
+	choices := []string{"", "x11", "wayland"}
+	labels := startupBackendLabels(choices)
+
+	if got, want := labels[0], Msg("StartupSettings.BackendAuto"); got != want {
+		t.Errorf("startupBackendLabels(auto) = %q, want %q", got, want)
+	}
+	if labels[1] != "x11" || labels[2] != "wayland" {
+		t.Errorf("startupBackendLabels = %q, want translated auto plus backend names", labels)
+	}
+
+	labels[1] = "changed"
+	if choices[1] != "x11" {
+		t.Error("startupBackendLabels returned an alias of the input slice")
+	}
+}
+
 func TestStartupSettingsConfigRoundtrip(t *testing.T) {
 	tmpDir := t.TempDir()
 

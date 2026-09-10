@@ -677,7 +677,7 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 		return
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close() // Will be reopened by VFS/editor
+	_ = tmpFile.Close() // Will be reopened by VFS/editor
 
 	pf.RunProgressTask(" Downloading... ", "Preparing to download...", false, func(ctx context.Context, update func(msg string, percent int)) error {
 		src, err := v.Open(ctx, path)
@@ -688,14 +688,14 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 			}
 			return err
 		}
-		defer src.Close()
+		defer func() { _ = src.Close() }()
 
 		dst, err := os.Create(tmpPath)
 		if err != nil {
 			return err
 		}
 		closeDst := closeOnce(dst)
-		defer closeDst()
+		defer func() { _ = closeDst() }()
 
 		buf := make([]byte, 128*1024)
 		var downloaded int64
@@ -726,17 +726,17 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 	}, func(err error) {
 		if err != nil && err != context.Canceled {
 			vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to download file:\n%v", err), []string{"&Ok"})
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 			return
 		}
 		if err == context.Canceled {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 			return
 		}
 
 		stBefore, err := os.Stat(tmpPath)
 		if err != nil {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 			return
 		}
 		modTimeBefore := stBefore.ModTime()
@@ -750,14 +750,14 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 				if err != nil {
 					return err
 				}
-				defer src.Close()
+				defer func() { _ = src.Close() }()
 
 				dst, err := v.Create(ctx, path)
 				if err != nil {
 					return err
 				}
 				closeDst := closeOnce(dst)
-				defer closeDst()
+				defer func() { _ = closeDst() }()
 
 				buf := make([]byte, 128*1024)
 				var uploaded int64
@@ -786,14 +786,14 @@ func actionEditFileExternal(pf *PanelsFrame, v vfs.VFS, path string, size int64)
 				}
 				return closeDst()
 			}, func(err error) {
-				os.Remove(tmpPath)
+				_ = os.Remove(tmpPath)
 				if err != nil && err != context.Canceled {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to upload file:\n%v", err), []string{"&Ok"})
 				}
 				pf.RefreshAll()
 			})
 		} else {
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 			pf.RefreshAll()
 		}
 	})
@@ -834,7 +834,7 @@ func runExternalEditor(pf *PanelsFrame, cmdStr, path string) {
 
 	vtui.Suspend()
 	err := cmd.Run()
-	vtui.Resume()
+	_ = vtui.Resume()
 
 	if err != nil {
 		vtui.FrameManager.PostTask(func() {
@@ -5398,6 +5398,49 @@ func actionFileAttributes(pf *PanelsFrame) {
 	})
 }
 
+func actionEditSymlink(pf *PanelsFrame) {
+	fsp := pf.getActivePanel()
+	if fsp == nil || fsp.vfs == nil {
+		return
+	}
+
+	names := fsp.GetSelectedNames()
+	if len(names) != 1 {
+		vtui.ShowMessage(Msg("SymlinkEdit.ErrorTitle"), Msg("SymlinkEdit.OneFile"), []string{"&Ok"})
+		return
+	}
+
+	v := fsp.vfs
+	path := v.Join(v.GetPath(), names[0])
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		item, err := vfs.Lstat(ctx.Context, v, path)
+		if err == nil && !item.IsSymlink {
+			err = fmt.Errorf("%s", Msg("SymlinkEdit.NotSymlink"))
+		}
+		if err == nil {
+			if _, ok := v.(vfs.SymlinkVFS); !ok {
+				err = fmt.Errorf("%s", Msg("SymlinkEdit.Unsupported"))
+			}
+		}
+		if err != nil {
+			ctx.RunOnUI(func() {
+				vtui.ShowMessage(Msg("SymlinkEdit.ErrorTitle"), err.Error(), []string{"&Ok"})
+			})
+			return
+		}
+		target, err := vfs.Readlink(ctx.Context, v, path)
+		if err != nil {
+			ctx.RunOnUI(func() {
+				vtui.ShowMessage(Msg("SymlinkEdit.ErrorTitle"), err.Error(), []string{"&Ok"})
+			})
+			return
+		}
+		ctx.RunOnUI(func() {
+			showSymlinkTargetDialog(pf, v, path, target)
+		})
+	})
+}
+
 type langInfo struct {
 	code string
 	name string
@@ -5488,7 +5531,7 @@ func actionLanguage(pf *PanelsFrame) {
 	uiLangs := listAvailableUILanguages()
 	helpLangs := listAvailableHelpLanguages()
 
-	width, height := 54, 13
+	width, height := 54, 15
 	dlg := vtui.NewCenteredDialog(width, height, Msg("LanguageSettings.Title"))
 	dlg.ShowClose = true
 
@@ -5519,6 +5562,8 @@ func actionLanguage(pf *PanelsFrame) {
 	comboHelp.Menu.SetSelectPos(selectedHelp)
 	comboHelp.Edit.SetText(helpNames[selectedHelp])
 	lblHelp := vtui.NewLabel(0, 0, Msg("HelpLanguage.Title")+":", comboHelp)
+	chkLocalFiles := vtui.NewCheckbox(0, 0, Msg("LanguageSettings.UseLocalFiles"), false)
+	chkLocalFiles.State = boolToCheckboxState(AppConfig.UseLocalLanguageFiles)
 
 	btnOk := vtui.NewButton(0, 0, Msg("vtui.Ok"))
 	btnOk.IsDefault = true
@@ -5528,6 +5573,7 @@ func actionLanguage(pf *PanelsFrame) {
 	dlg.AddItem(comboUI)
 	dlg.AddItem(lblHelp)
 	dlg.AddItem(comboHelp)
+	dlg.AddItem(chkLocalFiles)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
@@ -5543,6 +5589,8 @@ func actionLanguage(pf *PanelsFrame) {
 	rowHelp.Add(comboHelp, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(rowHelp, vtui.Margins{Top: 1}, vtui.AlignFill)
 
+	vbox.Add(chkLocalFiles, vtui.Margins{Top: 1}, vtui.AlignFill)
+
 	hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
@@ -5556,6 +5604,7 @@ func actionLanguage(pf *PanelsFrame) {
 	btnOk.OnClick = func() {
 		uiChanged := false
 		helpChanged := false
+		localFilesChanged := AppConfig.UseLocalLanguageFiles != (chkLocalFiles.State != 0)
 		suggestFontChoice := false
 		if idx := comboUI.Menu.SelectPos; idx >= 0 && idx < len(uiLangs) {
 			if AppConfig.Language != uiLangs[idx].code {
@@ -5570,7 +5619,10 @@ func actionLanguage(pf *PanelsFrame) {
 				helpChanged = true
 			}
 		}
-		if uiChanged || helpChanged {
+		if localFilesChanged {
+			AppConfig.UseLocalLanguageFiles = chkLocalFiles.State != 0
+		}
+		if uiChanged || helpChanged || localFilesChanged {
 			SaveConfig()
 			InitLang()
 			InitHelpSystem()

@@ -123,6 +123,8 @@ Move.Btn=&Перенести
 
 Action.File.CreateLink=Создать &ссылку
 Action.File.CreateLink.Desc=Создать символическую ссылку, соединение каталогов или жесткую ссылку
+Action.File.EditSymlink=Изменить символьную &ссылку
+Action.File.EditSymlink.Desc=Изменить цель выбранной символической ссылки
 Action.File.ApplyCommand.Desc=Применить шаблон команды к отмеченным или текущему файлу
 Action.File.ApplyCommand=Применить команду
 Action.App.ScreenGrab=&Захват экрана
@@ -446,6 +448,16 @@ Link.TypeSymlink=Символическая ссылка
 Link.TypeJunction=Соединение каталогов
 Link.TypeHardlink=Жесткая ссылка
 Link.Btn=&Создать ссылку
+
+SymlinkEdit.Title= Изменить символическую ссылку
+SymlinkEdit.File=Файл: %s
+SymlinkEdit.Target=&Цель:
+SymlinkEdit.Save=&Сохранить
+SymlinkEdit.Cancel=&Отмена
+SymlinkEdit.ErrorTitle= Ошибка символической ссылки
+SymlinkEdit.OneFile=Выберите ровно один файл.
+SymlinkEdit.NotSymlink=Выбранный объект не является символической ссылкой.
+SymlinkEdit.Unsupported=Эта файловая система не поддерживает символические ссылки.
 
 Btn.OverwriteAll=Переписать &все
 Btn.SkipAll=П&ропустить все
@@ -882,7 +894,9 @@ PortableSettings.Title= Портабельный режим
 PortableSettings.Current=Текущий профиль: %s
 PortableSettings.IniFile=Файл режима: %s
 PortableSettings.Enable=&Хранить настройки рядом с программой (портабельный режим)
-PortableSettings.CopyProfile=&Скопировать текущий профиль в новое место
+PortableSettings.Transfer=&Перенос текущего профиля:
+PortableSettings.Copy=Копировать
+PortableSettings.Move=Переместить
 PortableSettings.Note=Применится при следующем запуске. Режим читается из
 PortableSettings.Note2=файла выше, поэтому внутри профиля храниться не может.
 PortableSettings.Restart=Настройка сохранена.\nПерезапустите f4, чтобы перейти на новое расположение профиля.
@@ -960,6 +974,7 @@ LanguageSettings.Title= Настройки языка
 LanguageSettings.Primary=Основной язык:
 LanguageSettings.Fallback=Резервный язык:
 LanguageSettings.None=<нет>
+LanguageSettings.UseLocalFiles=Использовать локальные файлы языков
 
 HelpLanguage.Title=Язык справки
 HelpLanguage.Changed=Язык справки изменен.

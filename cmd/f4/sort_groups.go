@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strconv"
 	"strings"
 
 	"github.com/unxed/f4/vfs"
@@ -13,10 +12,9 @@ import (
 // while a user who wants a group *below* them can still say Group = 20000.
 const defaultSortGroupOrder = 10000
 
-// SortGroupRule is one entry of the sort-group list. The matching criteria are
-// exactly those of a highlight rule (mask, attributes, size, dates), so a user
-// who already knows highlight.ini needs no second syntax; only the colour keys
-// are ignored here.
+// SortGroupRule is one entry of the sort-group list. A rule can come directly
+// from a coloured [Highlight_N] section, which is how f4 follows Far's model:
+// the same matcher paints the file and places it in a sort group.
 type SortGroupRule struct {
 	Name   string
 	Order  int
@@ -38,11 +36,17 @@ func init() {
 	GlobalSortGroups = &SortGroupSet{}
 }
 
-func (s *SortGroupSet) LoadFromIni(ini *IniFile) {
+func (s *SortGroupSet) LoadFromIni(ini *IniFile, sharedRules ...[]HighlightRule) {
 	if s == nil {
 		return
 	}
-	s.Groups = parseSortGroups(ini)
+	s.Groups = nil
+	if len(sharedRules) > 0 {
+		s.Groups = append(s.Groups, sortGroupsFromHighlightRules(sharedRules[0])...)
+	}
+	// Keep accepting the original [SortGroup_N] sections so existing profiles
+	// continue to work while users migrate matching fields into Highlight_N.
+	s.Groups = append(s.Groups, parseSortGroups(ini)...)
 }
 
 // Configured reports whether any group is defined. Grouping a panel by an
@@ -67,22 +71,39 @@ func (s *SortGroupSet) GroupOf(item *vfs.VFSItem) int {
 	return defaultSortGroupOrder
 }
 
-// parseSortGroups reads the [SortGroup_N] sections. The section number decides
-// the default order, so the plain case — SortGroup_1, SortGroup_2, … — needs no
-// Group key at all.
+func sortGroupsFromHighlightRules(rules []HighlightRule) []SortGroupRule {
+	groups := make([]SortGroupRule, 0, len(rules))
+	for _, rule := range rules {
+		if !rule.HasSortGroup {
+			continue
+		}
+		name := rule.Name
+		if name == "" {
+			name = strings.Join(rule.Masks, ", ")
+		}
+		groups = append(groups, SortGroupRule{
+			Name:   name,
+			Order:  rule.SortGroup,
+			Filter: rule,
+		})
+	}
+	return groups
+}
+
+// parseSortGroups reads the legacy [SortGroup_N] sections. The section number
+// decides the default order, so the plain case — SortGroup_1, SortGroup_2, … —
+// needs no Group key.
 func parseSortGroups(ini *IniFile) []SortGroupRule {
 	sections := parseRuleSections(ini, "sortgroup_")
 	groups := make([]SortGroupRule, 0, len(sections))
 	for i, section := range sections {
 		group := SortGroupRule{
-			Name:   ini.GetString(section.Section, "Name", ""),
+			Name:   section.Rule.Name,
 			Order:  i,
 			Filter: section.Rule,
 		}
-		if raw := strings.TrimSpace(ini.GetString(section.Section, "Group", "")); raw != "" {
-			if order, err := strconv.Atoi(raw); err == nil {
-				group.Order = order
-			}
+		if section.Rule.HasSortGroup {
+			group.Order = section.Rule.SortGroup
 		}
 		if group.Name == "" {
 			group.Name = strings.Join(group.Filter.Masks, ", ")

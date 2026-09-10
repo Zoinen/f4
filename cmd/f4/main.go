@@ -811,9 +811,9 @@ func SetupUI() {
 	if _, err := os.Stat(highlightPath); err == nil {
 		highlightIni := LoadIni(highlightPath)
 		GlobalFileHighlighter.LoadFromIni(highlightIni)
-		// Sort groups share the file (and the rule syntax) with highlighting,
-		// the way far keeps both in one dialog. Themes may not define them.
-		GlobalSortGroups.LoadFromIni(highlightIni)
+		// Sort groups reuse coloured highlight rules when they carry Group, as
+		// in Far. Legacy [SortGroup_N] sections remain accepted by the loader.
+		GlobalSortGroups.LoadFromIni(highlightIni, GlobalFileHighlighter.Rules)
 	}
 
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная

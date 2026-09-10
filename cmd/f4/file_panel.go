@@ -723,8 +723,8 @@ type FileSystemPanel struct {
 
 	sortMode    SortMode
 	sortReverse bool
-	// useSortGroups clusters the panel by the [SortGroup_N] rules from
-	// highlight.ini before the sort mode is applied (far's Shift+F11).
+	// useSortGroups clusters the panel by the Group-bearing highlight.ini
+	// rules before the sort mode is applied (far's Shift+F11).
 	useSortGroups bool
 
 	lastDirMTime time.Time
@@ -2740,7 +2740,11 @@ func (fp *FileSystemPanel) persistentPath() string {
 	if fp == nil || fp.vfs == nil {
 		return ""
 	}
-	return fp.vfs.GetPath()
+	path := fp.vfs.GetPath()
+	if !shouldPersistPanelPath(fp, path) {
+		return ""
+	}
+	return path
 }
 
 // openVFSAsync runs a provider or URI mount without allowing a slow or
@@ -2927,6 +2931,20 @@ func (fp *FileSystemPanel) consumeFolderHistorySuppression(path string, token ui
 	}
 	fp.suppressFolderHistoryPath = ""
 	return true
+}
+
+// shouldPersistPanelPath keeps paths that can be restored without the VFS
+// instance that produced them. A nested provider may expose an absolute
+// remote path such as /home/user, but saving it in session.ini would make the
+// next startup interpret that path as a local OS directory.
+func shouldPersistPanelPath(fp *FileSystemPanel, path string) bool {
+	if fp == nil || fp.vfs == nil || path == "" {
+		return false
+	}
+	if fp.vfs.ParentVFS() == nil {
+		return true
+	}
+	return isPersistentURIPath(path) || vfs.FindStandaloneProvider(context.Background(), nil, path) != nil
 }
 
 // shouldRecordFolderHistory prevents an internal path of a nested VFS from
@@ -4109,6 +4127,12 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			totSize += e.Size
 		}
 	}
+	freeSpaceStr := ""
+	if _, isLocal := fp.vfs.(*vfs.OSVFS); isLocal {
+		if info, ok := fsInfo(fp.vfs.GetPath()); ok {
+			freeSpaceStr = formatBytes(info.Free)
+		}
+	}
 
 	if AppConfig.ShowPanelFileInfo && fp.Y2-fp.Y1+1 > 6 {
 		p := vtui.NewPainter(scr)
@@ -4158,11 +4182,6 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			}
 
 			rightStr := fmt.Sprintf("%s  %s", sizeStr, dateStr)
-			if _, isLocal := fp.vfs.(*vfs.OSVFS); isLocal {
-				if info, ok := fsInfo(fp.vfs.GetPath()); ok {
-					rightStr = fmt.Sprintf("(%d/%d) %s  %s", totFiles, totDirs, formatBytes(info.Free), rightStr)
-				}
-			}
 
 			if fp.vfs != nil && fp.vfs.GetPath() == "net://" {
 				rightStr = ""
@@ -4224,7 +4243,10 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		totalStr = selStr
 		attrTotal = vtui.Palette[ColPanelSelectedInfo]
 	} else if totCount > 0 {
-		totalStr = fmt.Sprintf(" %s (%d) ", formatIntWithSpaces(totSize), totCount)
+		totalStr = fmt.Sprintf(" %s (%d/%d) ", formatIntWithSpaces(totSize), totFiles, totDirs)
+		if freeSpaceStr != "" {
+			totalStr = fmt.Sprintf(" %s (%d/%d) — %s ", formatIntWithSpaces(totSize), totFiles, totDirs, freeSpaceStr)
+		}
 		attrTotal = vtui.Palette[ColPanelTotalInfo]
 	}
 
@@ -4262,8 +4284,16 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 					curStr = "UP-DIR"
 				}
 			}
+			if e.IsSymlink && fp.vfs != nil {
+				if target, err := vfs.Readlink(context.Background(), fp.vfs, fp.vfs.Join(fp.vfs.GetPath(), e.Name)); err == nil && target != "" {
+					curStr = "→ " + target
+				}
+			}
 			curStr = " ▸ " + curStr + " "
-			if curW := runewidth.StringWidth(curStr); fp.X1+1+curW < totalStart {
+			if maxCurW := totalStart - (fp.X1 + 1); maxCurW > 0 {
+				if runewidth.StringWidth(curStr) > maxCurW {
+					curStr = runewidth.Truncate(curStr, maxCurW, "")
+				}
 				p := vtui.NewPainter(scr)
 				p.DrawString(fp.X1+1, fp.Y2, curStr, vtui.Palette[ColPanelText])
 			}

@@ -827,5 +827,24 @@ macros, plugins and styles should be available there. Existing files are
 kept, and crash logs are not copied. Switching back does not delete the
 portable profile.
 
+A commented template named f4.example.ini ships with f4. Copy it next to the
+executable and uncomment the options you need. The file is UTF-8; a byte order
+mark is accepted. A portable profile has this layout:
+
+  Profile/
+    settings.ini, hotkeys.ini, keymap.ini, highlight.ini, farcolors.ini
+    history.json, session.ini
+    Macros/scripts/       Lua macros (Far-compatible)
+    plugring/             installed plugins
+    settings/             menus, associations and bookmarks
+    styles/, lang/, help/
+    logs/                 debug.log from --debug or VTUI_DEBUG=1
+    crashes/              crash reports
+
+Lua is built into f4; no separate Lua installation is needed. Put scripts
+under Macros/scripts/ and use Ctrl+Alt+Shift+M, or the Command Palette, to
+reload them. The profile directory and this layout are also described in
+f4.example.ini.
+
 Restart f4 after saving. The mode file is read before the profile is located,
 so this setting cannot be stored inside the profile itself.

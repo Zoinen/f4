@@ -138,9 +138,11 @@ func (r *commandPrefixRegistration) Unregister() {
 	})
 }
 
-// dispatchCommandPrefix consumes input only when the text before its first
-// colon names a registered prefix. The argument is deliberately left raw so
-// each plugin can apply its own quoting rules.
+// dispatchCommandPrefix consumes input when the text before its first colon
+// names either a registered prefix or a plugin/platform drive. Registered
+// prefixes get the raw argument so each plugin can apply its own quoting
+// rules; drive prefixes intentionally accept only the bare form (for example,
+// "Android:" or the platform alias "reg:").
 func dispatchCommandPrefix(app vfs.App, input string) bool {
 	colon := strings.IndexByte(input, ':')
 	if colon <= 0 {
@@ -156,5 +158,66 @@ func dispatchCommandPrefix(app vfs.App, input string) bool {
 		return true
 	}
 	commandPrefixRegistry.RUnlock()
+	return dispatchDriveCommandPrefix(app, normalized, input[colon+1:])
+}
+
+// dispatchDriveCommandPrefix opens a registered plugin drive in the active
+// panel. Drive names are already the user-facing names shown by the drive
+// menu, so exposing the same names as command prefixes keeps the two entry
+// points consistent. The AI drive is deliberately excluded: its ai: prefix
+// is an established command language of its own.
+func dispatchDriveCommandPrefix(app vfs.App, prefix, argument string) bool {
+	if strings.TrimSpace(argument) != "" || prefix == "ai" {
+		return false
+	}
+
+	pf, ok := app.(*PanelsFrame)
+	if !ok || pf == nil || pf.closed {
+		return false
+	}
+	fsp := pf.getActivePanel()
+	if fsp == nil {
+		return false
+	}
+
+	if prefix == "tmp" {
+		actionOpenTempPanel(pf)
+		return true
+	}
+
+	for _, drive := range driveRegistrySnapshot() {
+		if strings.ToLower(strings.TrimSpace(drive.Name)) != prefix || drive.Factory == nil {
+			continue
+		}
+		newVFS := drive.Factory()
+		if newVFS == nil {
+			return false
+		}
+		pf.switchToVFS(fsp, newVFS)
+		return true
+	}
+
+	for _, drive := range getPlatformDrives() {
+		if platformDriveCommandPrefix(drive.Name) != prefix || drive.Factory == nil {
+			continue
+		}
+		newVFS := drive.Factory()
+		if newVFS == nil {
+			return false
+		}
+		pf.switchToVFS(fsp, newVFS)
+		return true
+	}
 	return false
+}
+
+// platformDriveCommandPrefix exposes the short command-line aliases for
+// platform drives that cannot use their menu labels as bare prefixes.
+func platformDriveCommandPrefix(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "windows registry":
+		return "reg"
+	default:
+		return ""
+	}
 }

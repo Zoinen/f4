@@ -123,6 +123,8 @@ Move.Btn=&Rename
 
 Action.File.CreateLink=Create &link
 Action.File.CreateLink.Desc=Create symbolic link, directory junction or hard link
+Action.File.EditSymlink=Edit symbolic &link
+Action.File.EditSymlink.Desc=Edit the target of the selected symbolic link
 Action.File.ApplyCommand.Desc=Apply a command template to selected files or the current file
 Action.File.ApplyCommand=Apply command
 Action.App.ScreenGrab=Screen &grab
@@ -455,6 +457,16 @@ Link.TypeSymlink=Symbolic link
 Link.TypeJunction=Directory junction
 Link.TypeHardlink=Hard link
 Link.Btn=&Create link
+
+SymlinkEdit.Title= Edit symbolic link
+SymlinkEdit.File=File: %s
+SymlinkEdit.Target=&Target:
+SymlinkEdit.Save=&Save
+SymlinkEdit.Cancel=&Cancel
+SymlinkEdit.ErrorTitle= Symbolic link error
+SymlinkEdit.OneFile=Select exactly one file.
+SymlinkEdit.NotSymlink=The selected item is not a symbolic link.
+SymlinkEdit.Unsupported=This file system does not support symbolic links.
 
 Btn.OverwriteAll=Overwrite &All
 Btn.SkipAll=S&kip All
@@ -897,7 +909,9 @@ PortableSettings.Title= Portable mode
 PortableSettings.Current=Profile in use: %s
 PortableSettings.IniFile=Mode file: %s
 PortableSettings.Enable=&Store settings next to the program (portable mode)
-PortableSettings.CopyProfile=&Copy the current profile to the new location
+PortableSettings.Transfer=&Transfer current profile:
+PortableSettings.Copy=Copy
+PortableSettings.Move=Move
 PortableSettings.Note=Applies on next start. The mode is read from the file above,
 PortableSettings.Note2=so it cannot be stored inside the profile itself.
 PortableSettings.Restart=Portable mode setting saved.\nRestart f4 to switch to the new profile location.
@@ -978,6 +992,7 @@ LanguageSettings.Title= Language Settings
 LanguageSettings.Primary=Primary language:
 LanguageSettings.Fallback=Fallback language:
 LanguageSettings.None=<none>
+LanguageSettings.UseLocalFiles=Use local language files
 
 HelpLanguage.Title=Help Languages
 HelpLanguage.Changed=Help language changed.

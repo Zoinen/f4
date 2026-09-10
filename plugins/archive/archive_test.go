@@ -156,6 +156,7 @@ type mockAppForProgress struct {
 	activeVfs   vfs.VFS
 	passiveVfs  vfs.VFS
 	names       []string
+	inputBoxes  int
 	progressPct []int
 	progressMsg []string
 	done        chan struct{}
@@ -210,9 +211,23 @@ func (m *mockAppForProgress) RunAdvancedProgressTask(title string, forked bool, 
 
 func (m *mockAppForProgress) Message(title, msg string, buttons []string) int { return 0 }
 func (m *mockAppForProgress) InputBox(title, prompt, defaultText string, callback func(string)) {
+	m.inputBoxes++
 	callback(defaultText)
 }
 func (m *mockAppForProgress) Menu(title string, items []string, callback func(int)) {}
+
+func TestActionAddArchiveIgnoresParentDirectoryRow(t *testing.T) {
+	app := &mockAppForProgress{
+		activeVfs: vfs.NewOSVFS(t.TempDir()),
+		names:     []string{".."},
+	}
+
+	actionAddArchive(app)
+
+	if app.inputBoxes != 0 {
+		t.Fatalf("parent directory row opened %d archive prompts, want none", app.inputBoxes)
+	}
+}
 
 func TestActionExtractArchive_ProgressUpdates(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())

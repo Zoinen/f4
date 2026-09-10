@@ -145,6 +145,27 @@ func TestAction_PanelInsertPath_CursorOnFile(t *testing.T) {
 	}
 }
 
+func TestAction_PanelInsertFileName_DoesNotAddSeparator(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "a.txt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := seedPanelForCopyName(t, tmp)
+	fsp := p.getActivePanel()
+	fsp.SetCursorIndex(1) // "a.txt"
+
+	base := tmp + string(filepath.Separator)
+	p.cmdLine.Edit.SetText(base)
+	if !RunAction("Panel.InsertFileName") {
+		t.Fatal("Panel.InsertFileName did not run")
+	}
+
+	want := base + "a.txt"
+	if got := p.cmdLine.Edit.GetText(); got != want {
+		t.Errorf("command line = %q, want %q", got, want)
+	}
+}
+
 func TestAction_PanelCopyName_CursorOnParentUsesCurrentFolderName(t *testing.T) {
 	// t.TempDir() returns a stable, existing dir; take its basename to know
 	// what the far2l "cursor on .. = current folder name" rule should yield.

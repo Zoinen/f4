@@ -169,6 +169,47 @@ func TestSSHHostKeyCallbackAsksForAKnownHostWithANewKeyType(t *testing.T) {
 	}
 }
 
+func TestSSHHostKeyCallbackIgnoresUnrelatedKnownHostsParseErrors(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	key := testSSHHostKey(t)
+	contents := "unrelated.test ssh-dss not-a-key\n" + knownhosts.Line([]string{"[example.test]:2222"}, key) + "\n"
+	if err := os.WriteFile(filepath.Join(sshDir, "known_hosts"), []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	callback, err := sshHostKeyCallbackForHome(home)
+	if err != nil {
+		t.Fatalf("an unrelated malformed entry must not reject the known_hosts file: %v", err)
+	}
+	if err := callback("example.test:2222", testSSHRemoteAddr{}, key); err != nil {
+		t.Fatalf("the valid entry was not checked after filtering: %v", err)
+	}
+}
+
+func TestSSHHostKeyCallbackReportsRelevantKnownHostsParseErrors(t *testing.T) {
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "known_hosts"), []byte("[example.test]:2222 ssh-dss not-a-key\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	callback, err := sshHostKeyCallbackForHome(home)
+	if err != nil {
+		t.Fatalf("parse errors should be deferred until the target host is known: %v", err)
+	}
+	err = callback("example.test:2222", testSSHRemoteAddr{}, testSSHHostKey(t))
+	if err == nil || !strings.Contains(err.Error(), "known_hosts:1") {
+		t.Fatalf("relevant malformed entry was not reported with its source location: %v", err)
+	}
+}
+
 func TestAppendKnownHostKeepsAnUnterminatedFileParsable(t *testing.T) {
 	home := t.TempDir()
 	sshDir := filepath.Join(home, ".ssh")

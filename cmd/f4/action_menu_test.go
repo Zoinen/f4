@@ -134,6 +134,20 @@ func TestBuildMenuBarItems_Shell(t *testing.T) {
 	if !foundAttributes {
 		t.Errorf("Files menu is missing %q", attrAction.DisplayLabel())
 	}
+	editSymlinkAction, ok := GetAction("File.EditSymlink")
+	if !ok {
+		t.Fatal("File.EditSymlink action is not registered")
+	}
+	var foundEditSymlink bool
+	for _, item := range files {
+		if item.Text == editSymlinkAction.DisplayLabel() || item.Text == "&"+editSymlinkAction.DisplayLabel() {
+			foundEditSymlink = true
+			break
+		}
+	}
+	if !foundEditSymlink {
+		t.Errorf("Files menu is missing %q", editSymlinkAction.DisplayLabel())
+	}
 
 	// Options menu honors MenuSeparatorBefore.
 	var sawSeparator bool

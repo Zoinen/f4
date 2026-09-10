@@ -75,6 +75,8 @@ type ArchiveVFS struct {
 	backingPath string
 	displayName string
 	format      string
+	sfxOffset   int64
+	sfxSuffix   string
 	innerPath   string
 	password    string
 	// passwordGen counts installed password changes so a concurrent operation
@@ -158,11 +160,30 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 	format := archive.DetectFormat(displayName)
 	var finalPath string
 	var closer io.Closer
+	var sfxOffset int64
+	var sfxSuffix string
 	if osvfs, ok := parent.(*vfs.OSVFS); ok {
 		var err error
 		finalPath, err = osvfs.Abs(archivePath)
 		if err != nil {
 			return nil, err
+		}
+		// SFX files commonly have an executable extension, so the regular
+		// extension-based archive detector never sees them. Probe local files
+		// and normalize a discovered archive to a private backing file; the
+		// original executable remains untouched.
+		if format == "" {
+			if embedded, found, probeErr := findEmbeddedArchive(finalPath); probeErr != nil {
+				return nil, probeErr
+			} else if found && embedded.offset > 0 {
+				format = embedded.format
+				sfxOffset = embedded.offset
+				sfxSuffix = embedded.suffix
+				finalPath, closer, err = materializeEmbeddedArchive(finalPath, embedded)
+				if err != nil {
+					return nil, err
+				}
+			}
 		}
 	} else {
 		lease, err := acquireArchiveMaterialization(ctx, parent, archivePath, displayName)
@@ -183,7 +204,8 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 
 	return &ArchiveVFS{
 		parent: parent, arcPath: canonicalPath, backingPath: finalPath, displayName: displayName,
-		format: format, password: password, innerPath: ".", fsys: fsys, closer: closer,
+		format: format, sfxOffset: sfxOffset, sfxSuffix: sfxSuffix,
+		password: password, innerPath: ".", fsys: fsys, closer: closer,
 	}, nil
 }
 
@@ -1933,19 +1955,35 @@ func (v *ArchiveVFS) Clone() vfs.VFS {
 	}
 	parent, arcPath, backingPath := v.parent, v.arcPath, v.backingPath
 	displayName, format, password, innerPath := v.displayName, v.format, v.password, v.innerPath
+	sfxOffset, sfxSuffix := v.sfxOffset, v.sfxSuffix
 	v.mu.Unlock()
 
 	var finalPath string
 	var closer io.Closer
 	if osvfs, ok := parent.(*vfs.OSVFS); ok {
-		// The local archive file is already independently owned by its parent
-		// VFS, so a second decoder can use the same immutable path safely.
-		finalPath = backingPath
-		if finalPath == "" {
-			var err error
-			finalPath, err = osvfs.Abs(arcPath)
+		if sfxOffset > 0 {
+			originalPath, err := osvfs.Abs(arcPath)
 			if err != nil {
 				return vfs.NewNullVFS(0)
+			}
+			finalPath, closer, err = materializeEmbeddedArchive(originalPath, embeddedArchive{
+				format: format,
+				suffix: sfxSuffix,
+				offset: sfxOffset,
+			})
+			if err != nil {
+				return vfs.NewNullVFS(0)
+			}
+		} else {
+			// The local archive file is already independently owned by its
+			// parent VFS, so a second decoder can use the same immutable path.
+			finalPath = backingPath
+			if finalPath == "" {
+				var err error
+				finalPath, err = osvfs.Abs(arcPath)
+				if err != nil {
+					return vfs.NewNullVFS(0)
+				}
 			}
 		}
 	} else {
@@ -1968,7 +2006,8 @@ func (v *ArchiveVFS) Clone() vfs.VFS {
 	}
 	return &ArchiveVFS{
 		parent: parent, arcPath: arcPath, backingPath: finalPath, displayName: displayName,
-		format: format, password: password, innerPath: innerPath, fsys: fsys, closer: closer,
+		format: format, sfxOffset: sfxOffset, sfxSuffix: sfxSuffix,
+		password: password, innerPath: innerPath, fsys: fsys, closer: closer,
 	}
 }
 
@@ -2228,8 +2267,11 @@ func (v *ArchiveVFS) copyBulkFrom(ctx context.Context, srcDir string, useSrcDir 
 
 func (v *ArchiveVFS) openArchiveFile(ctx context.Context) (vfs.ReadAtCloser, error) {
 	if osvfs, ok := v.parent.(*vfs.OSVFS); ok {
-		absPath, _ := osvfs.Abs(v.arcPath)
-		f, err := os.Open(absPath)
+		archivePath := v.backingPath
+		if archivePath == "" {
+			archivePath, _ = osvfs.Abs(v.arcPath)
+		}
+		f, err := os.Open(archivePath)
 		if err != nil {
 			return nil, err
 		}

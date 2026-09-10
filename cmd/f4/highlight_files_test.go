@@ -277,6 +277,7 @@ func TestFileHighlighter_GetColor(t *testing.T) {
 
 	iniData := `[Highlight_0]
 Name = Executables
+Group = 0
 Mask = *.exe, *.sh
 NormalColor = foreground:#00FF00
 SelectedColor = foreground:#00FF00 | background:#0000FF

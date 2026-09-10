@@ -79,18 +79,74 @@ func showAttributesDialogForTargets(pf *PanelsFrame, v vfs.VFS, targets []attrib
 	}
 }
 
-func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attributesTarget, edited vfs.VFSItem) error {
+func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attributesTarget, edited vfs.VFSItem, preserveUnixMode uint32) error {
 	for _, target := range targets {
 		item := target.item
 		item.Uid = edited.Uid
 		item.Gid = edited.Gid
-		item.UnixMode = edited.UnixMode
+		item.UnixMode = (item.UnixMode & preserveUnixMode) | (edited.UnixMode &^ preserveUnixMode)
 		item.MTime = edited.MTime
 		if err := v.SetAttributes(ctx, target.path, item); err != nil {
 			return fmt.Errorf("%s: %w", target.path, err)
 		}
 	}
 	return nil
+}
+
+func showSymlinkTargetDialog(pf *PanelsFrame, v vfs.VFS, path, target string) {
+	const width, height = 72, 9
+	dlg := vtui.NewCenteredDialog(width, height, Msg("SymlinkEdit.Title"))
+	dlg.ShowClose = true
+
+	fileText := vtui.NewText(0, 0,
+		fmt.Sprintf(Msg("SymlinkEdit.File"), vtui.TruncateMiddle(v.Base(path), width-8)),
+		vtui.Palette[vtui.ColDialogText])
+	editTarget := vtui.NewEdit(0, 0, width-10, target)
+	lblTarget := vtui.NewLabel(0, 0, Msg("SymlinkEdit.Target"), editTarget)
+	btnSave := vtui.NewButton(0, 0, Msg("SymlinkEdit.Save"))
+	btnSave.IsDefault = true
+	btnCancel := vtui.NewButton(0, 0, Msg("SymlinkEdit.Cancel"))
+
+	dlg.AddItem(fileText)
+	dlg.AddItem(lblTarget)
+	dlg.AddItem(editTarget)
+	dlg.AddItem(btnSave)
+	dlg.AddItem(btnCancel)
+
+	btnSave.OnClick = func() {
+		newTarget := editTarget.GetText()
+		vtui.RunAsync(func(ctx *vtui.TaskContext) {
+			if err := replaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
+				ctx.RunOnUI(func() {
+					vtui.ShowMessage(Msg("SymlinkEdit.ErrorTitle"), err.Error(), []string{"&Ok"})
+				})
+				return
+			}
+			ctx.RunOnUI(func() {
+				dlg.Close()
+				if pf != nil {
+					pf.RefreshAll()
+				}
+			})
+		})
+	}
+	btnCancel.OnClick = func() { dlg.Close() }
+
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-3)
+	vbox.Add(fileText, vtui.Margins{}, vtui.AlignLeft)
+	rowTarget := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowTarget.Add(lblTarget, vtui.Margins{Right: 1}, vtui.AlignLeft)
+	rowTarget.Add(editTarget, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(rowTarget, vtui.Margins{Top: 1}, vtui.AlignFill)
+	rowButtons := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowButtons.HorizontalAlign = vtui.AlignCenter
+	rowButtons.Spacing = 2
+	rowButtons.Add(btnSave, vtui.Margins{}, vtui.AlignTop)
+	rowButtons.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+	vbox.Add(rowButtons, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Apply()
+	dlg.SetFocusedItem(editTarget)
+	vtui.FrameManager.Push(dlg)
 }
 
 // replaceSymlinkTarget changes the link itself, never the object it points at.
@@ -129,16 +185,19 @@ func replaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
 }
 
-func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attributesTarget, edited vfs.VFSItem) error {
+func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []attributesTarget, edited vfs.VFSItem, preserveWinAttrs uint32) error {
 	const editableWinAttrs = uint32(1 | 2 | 4 | 32)
 	for _, target := range targets {
 		item := target.item
 		item.MTime = edited.MTime
-		item.UnixMode = edited.UnixMode
+		if preserveWinAttrs&1 == 0 {
+			item.UnixMode = edited.UnixMode
+		}
 		// The dialog edits only the four ordinary Windows flags. Keep
 		// directory/reparse/compression and other provider-specific flags from
 		// each target instead of copying those of the first selected object.
-		item.WinAttrs = (item.WinAttrs &^ editableWinAttrs) | (edited.WinAttrs & editableWinAttrs)
+		editable := editableWinAttrs &^ preserveWinAttrs
+		item.WinAttrs = (item.WinAttrs &^ editable) | (edited.WinAttrs & editable)
 		if err := v.SetAttributes(ctx, target.path, item); err != nil {
 			return fmt.Errorf("%s: %w", target.path, err)
 		}
@@ -268,16 +327,17 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 	// Наполнение Permissions
 	vboxPerms := vtui.NewVBoxLayout(gbPerms.X1+2, gbPerms.Y1+1, gbPerms.X2-gbPerms.X1-4, 5)
 	allChecks := []*vtui.Checkbox{}
+	threeState := len(targets) > 1
 
 	makeRow := func(label string, bitOff uint) {
 		row := vtui.NewHBoxLayout(0, 0, 60, 1)
 		lbl := vtui.NewText(0, 0, padLabel(label), vtui.Palette[vtui.ColDialogText])
-		r := vtui.NewCheckbox(0, 0, Msg("Attributes.Read"), false)
-		r.State = map[bool]int{true: 1}[(item.UnixMode&(0400>>bitOff)) != 0]
-		w := vtui.NewCheckbox(0, 0, Msg("Attributes.Write"), false)
-		w.State = map[bool]int{true: 1}[(item.UnixMode&(0200>>bitOff)) != 0]
-		x_ := vtui.NewCheckbox(0, 0, Msg("Attributes.Execute"), false)
-		x_.State = map[bool]int{true: 1}[(item.UnixMode&(0100>>bitOff)) != 0]
+		r := vtui.NewCheckbox(0, 0, Msg("Attributes.Read"), threeState)
+		r.State = mixedAttributeState(targets, uint32(0400>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
+		w := vtui.NewCheckbox(0, 0, Msg("Attributes.Write"), threeState)
+		w.State = mixedAttributeState(targets, uint32(0200>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
+		x_ := vtui.NewCheckbox(0, 0, Msg("Attributes.Execute"), threeState)
+		x_.State = mixedAttributeState(targets, uint32(0100>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
 		row.Add(lbl, vtui.Margins{Right: 1}, vtui.AlignLeft)
 		row.Add(r, vtui.Margins{Right: 1}, vtui.AlignLeft)
 		row.Add(w, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -379,6 +439,13 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 		var m uint64
 		fmt.Sscanf(editOctal.GetText(), "%o", &m)
 		item.UnixMode = uint32(m)
+		preserveUnixMode := uint32(0)
+		modeBits := []uint32{0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001}
+		for i, check := range allChecks {
+			if check.State == 2 {
+				preserveUnixMode |= modeBits[i]
+			}
+		}
 		if t, err := time.ParseInLocation(timeFormat, editMTime.GetText(), time.Local); err == nil {
 			item.MTime = t
 		}
@@ -391,7 +458,7 @@ func showAttributesUnixForTargets(pf *PanelsFrame, v vfs.VFS, targets []attribut
 					return
 				}
 			}
-			err := setUnixAttributesForTargets(ctx.Context, v, targets, item)
+			err := setUnixAttributesForTargets(ctx.Context, v, targets, item, preserveUnixMode)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
@@ -414,6 +481,22 @@ func showAttributesWindows(pf *PanelsFrame, v vfs.VFS, path string, item vfs.VFS
 
 func showAttributesWindowsForTargets(pf *PanelsFrame, v vfs.VFS, targets []attributesTarget) {
 	showAttributesWindowsWithPropertiesForTargets(pf, v, targets, defaultNativePropertiesOpener)
+}
+
+func mixedAttributeState(targets []attributesTarget, bit uint32, value func(vfs.VFSItem) uint32) int {
+	if len(targets) == 0 {
+		return 0
+	}
+	wantSet := value(targets[0].item)&bit != 0
+	for _, target := range targets[1:] {
+		if (value(target.item)&bit != 0) != wantSet {
+			return 2
+		}
+	}
+	if wantSet {
+		return 1
+	}
+	return 0
 }
 
 var defaultNativePropertiesOpener = showNativePropertiesOS
@@ -519,23 +602,16 @@ func showAttributesWindowsWithPropertiesForTargets(
 
 	// Apply second pass for GroupBox
 	gbVBox := vtui.NewVBoxLayout(gbAttr.X1+2, gbAttr.Y1+1, gbAttr.X2-gbAttr.X1-4, 4)
-	chkRO := vtui.NewCheckbox(0, 0, Msg("Attributes.ReadOnly"), false)
-	chkHD := vtui.NewCheckbox(0, 0, Msg("Attributes.Hidden"), false)
-	chkSY := vtui.NewCheckbox(0, 0, Msg("Attributes.System"), false)
-	chkAR := vtui.NewCheckbox(0, 0, Msg("Attributes.Archive"), false)
+	threeState := len(targets) > 1
+	chkRO := vtui.NewCheckbox(0, 0, Msg("Attributes.ReadOnly"), threeState)
+	chkHD := vtui.NewCheckbox(0, 0, Msg("Attributes.Hidden"), threeState)
+	chkSY := vtui.NewCheckbox(0, 0, Msg("Attributes.System"), threeState)
+	chkAR := vtui.NewCheckbox(0, 0, Msg("Attributes.Archive"), threeState)
 
-	if (item.WinAttrs & 1) != 0 {
-		chkRO.State = 1
-	}
-	if (item.WinAttrs & 2) != 0 {
-		chkHD.State = 1
-	}
-	if (item.WinAttrs & 4) != 0 {
-		chkSY.State = 1
-	}
-	if (item.WinAttrs & 32) != 0 {
-		chkAR.State = 1
-	}
+	chkRO.State = mixedAttributeState(targets, 1, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+	chkHD.State = mixedAttributeState(targets, 2, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+	chkSY.State = mixedAttributeState(targets, 4, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+	chkAR.State = mixedAttributeState(targets, 32, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
 
 	gbAttr.AddItem(chkRO)
 	gbAttr.AddItem(chkHD)
@@ -598,35 +674,41 @@ func showAttributesWindowsWithPropertiesForTargets(
 		// defaults to unchecked on a native Linux build too, meaning Set
 		// already reset every file's mode to 0666 there before this fix.
 		posixSemantics := runtime.GOOS != "windows" || hostmode.Posix()
-		if chkRO.State == 1 {
+		preserveWinAttrs := uint32(0)
+		switch chkRO.State {
+		case 2:
+			preserveWinAttrs |= 1
+		case 1:
 			item.WinAttrs |= 1
 			if !posixSemantics {
 				item.UnixMode = 0444
 			}
-		} else {
+		default:
 			item.WinAttrs &= ^uint32(1)
 			if !posixSemantics {
 				item.UnixMode = 0666
 			}
 		}
-		if chkHD.State == 1 {
-			item.WinAttrs |= 2
-		} else {
-			item.WinAttrs &= ^uint32(2)
-		}
-		if chkSY.State == 1 {
-			item.WinAttrs |= 4
-		} else {
-			item.WinAttrs &= ^uint32(4)
-		}
-		if chkAR.State == 1 {
-			item.WinAttrs |= 32
-		} else {
-			item.WinAttrs &= ^uint32(32)
+		for _, flag := range []struct {
+			state int
+			bit   uint32
+		}{
+			{chkHD.State, 2},
+			{chkSY.State, 4},
+			{chkAR.State, 32},
+		} {
+			switch flag.state {
+			case 2:
+				preserveWinAttrs |= flag.bit
+			case 1:
+				item.WinAttrs |= flag.bit
+			default:
+				item.WinAttrs &^= flag.bit
+			}
 		}
 
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			err := setWindowsAttributesForTargets(ctx.Context, v, targets, item)
+			err := setWindowsAttributesForTargets(ctx.Context, v, targets, item, preserveWinAttrs)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})

@@ -121,11 +121,13 @@ func loadHelpLangStrings(code string) map[string]string {
 		return nil
 	}
 	exeDir := filepath.Dir(os.Args[0])
-	userDir := filepath.Join(GetF4ConfigDir(), "lang")
 	candidates := []string{
-		filepath.Join(userDir, code+".lng"),
 		filepath.Join(exeDir, "lang", code+".lng"),
 		filepath.Join("lang", code+".lng"),
+	}
+	if AppConfig.UseLocalLanguageFiles {
+		userDir := filepath.Join(GetF4ConfigDir(), "lang")
+		candidates = append([]string{filepath.Join(userDir, code+".lng")}, candidates...)
 	}
 	for _, cand := range candidates {
 		// #nosec G703 -- safeLanguageCode rejects separators and ".." before code is used as a path component.
@@ -151,14 +153,18 @@ func InitHelpSystem() {
 	}
 
 	hasLocalHelp := false
-	if lang != "en" && lang != "eng" {
+	// An explicitly enabled profile overlay also applies to English. The
+	// embedded English help remains the baseline, while help/en.hlf can provide
+	// user-specific topics and corrections.
+	if AppConfig.UseLocalLanguageFiles || (lang != "en" && lang != "eng") {
 		exeDir := filepath.Dir(os.Args[0])
-		userDir := filepath.Join(GetF4ConfigDir(), "help")
-
 		candidates := []string{
-			filepath.Join(userDir, lang+".hlf"),
 			filepath.Join(exeDir, "help", lang+".hlf"),
 			filepath.Join("help", lang+".hlf"), // Fallback for "go run ." development
+		}
+		if AppConfig.UseLocalLanguageFiles {
+			userDir := filepath.Join(GetF4ConfigDir(), "help")
+			candidates = append([]string{filepath.Join(userDir, lang+".hlf")}, candidates...)
 		}
 
 		var helpContent string

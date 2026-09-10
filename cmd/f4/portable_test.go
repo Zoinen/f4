@@ -6,8 +6,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+func portableSettingsMouseCoordinate(value int) int16 {
+	return int16(value) // #nosec G115 -- the test dialog is inside the test screen.
+}
+
+func portableSettingsDialogButtonBounds(t *testing.T, dlg *portableSettingsDialog) (int, int) {
+	t.Helper()
+	minX, maxX := 0, 0
+	buttonCount := 0
+	for _, child := range dlg.GetChildren() {
+		button, ok := child.(*vtui.Button)
+		if !ok {
+			continue
+		}
+		x1, _, x2, _ := button.GetPosition()
+		if buttonCount == 0 || x1 < minX {
+			minX = x1
+		}
+		if buttonCount == 0 || x2 > maxX {
+			maxX = x2
+		}
+		buttonCount++
+	}
+	if buttonCount != 2 {
+		t.Fatalf("portable settings has %d buttons, want 2", buttonCount)
+	}
+	return minX, maxX
+}
 
 func TestPortableSettingsDialogUsesContextHelp(t *testing.T) {
 	initFrameworkActionTestScreen(t)
@@ -36,6 +65,56 @@ func TestPortableSettingsDialogUsesContextHelp(t *testing.T) {
 	if got := top.GetHelp(); got != "PortableSettings" {
 		t.Fatalf("portable settings help topic = %q, want PortableSettings", got)
 	}
+	dlg, ok := top.(*portableSettingsDialog)
+	if !ok {
+		t.Fatalf("portable settings frame has type %T, want *portableSettingsDialog", top)
+	}
+	startX1, startX2, startY2 := dlg.X1, dlg.X2, dlg.Y2
+	if !dlg.ProcessMouse(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		KeyDown:     true,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseX:      portableSettingsMouseCoordinate(startX2),
+		MouseY:      portableSettingsMouseCoordinate(startY2),
+	}) {
+		t.Fatal("portable settings resize corner was not handled")
+	}
+	dlg.ProcessMouse(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseX:      portableSettingsMouseCoordinate(startX2 + 8),
+		MouseY:      portableSettingsMouseCoordinate(startY2 + 4),
+	})
+	dlg.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if dlg.X1 != startX1-8 {
+		t.Errorf("portable settings left edge = %d, want %d", dlg.X1, startX1-8)
+	}
+	if dlg.X2 != startX2+8 {
+		t.Errorf("portable settings right edge = %d, want %d", dlg.X2, startX2+8)
+	}
+	if dlg.X1+dlg.X2 != startX1+startX2 {
+		t.Errorf("portable settings center moved from %d to %d", startX1+startX2, dlg.X1+dlg.X2)
+	}
+	if dlg.Y2 != startY2 {
+		t.Errorf("portable settings bottom edge = %d, want fixed %d", dlg.Y2, startY2)
+	}
+	buttonX1, buttonX2 := portableSettingsDialogButtonBounds(t, dlg)
+	if buttonX1+buttonX2 != dlg.X1+dlg.X2 {
+		t.Fatalf("portable settings buttons center = %d, dialog center = %d before screen resize", buttonX1+buttonX2, dlg.X1+dlg.X2)
+	}
+
+	width := dlg.X2 - dlg.X1 + 1
+	vtui.FrameManager.Resize(120, 30)
+	if got := dlg.X2 - dlg.X1 + 1; got != width {
+		t.Errorf("portable settings width after screen resize = %d, want %d", got, width)
+	}
+	if got := dlg.X1 + dlg.X2; got != 119 {
+		t.Errorf("portable settings center after screen resize = %d, want 119", got)
+	}
+	buttonX1, buttonX2 = portableSettingsDialogButtonBounds(t, dlg)
+	if got := buttonX1 + buttonX2; got != dlg.X1+dlg.X2 {
+		t.Errorf("portable settings buttons center after screen resize = %d, dialog center = %d", got, dlg.X1+dlg.X2)
+	}
 }
 
 func TestPortableSettingsHelpTopicIsRegistered(t *testing.T) {
@@ -50,7 +129,15 @@ func TestPortableSettingsHelpTopicIsRegistered(t *testing.T) {
 		t.Fatal("PortableSettings help topic is missing")
 	}
 	content := strings.Join(topic.Lines, "\n")
-	for _, want := range []string{"UseSystemProfiles=0", "f4.exe.ini", "Restart f4"} {
+	for _, want := range []string{
+		"UseSystemProfiles=0",
+		"f4.exe.ini",
+		"f4.example.ini",
+		"Macros/scripts",
+		"logs/",
+		"crashes/",
+		"Restart f4",
+	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("PortableSettings help does not mention %q", want)
 		}
@@ -231,6 +318,73 @@ func TestCopyProfileDir_NoClobberSkipsCrashes(t *testing.T) {
 	}
 	if err := copyProfileDir(filepath.Join(src, "missing"), dst); err != nil {
 		t.Errorf("missing source is not an error: %v", err)
+	}
+}
+
+func TestTransferProfileDir_MoveKeepsSourceOnTransferFailure(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(src, "Profile")
+	if err := os.MkdirAll(src, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(src, "settings.ini")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveProfileDir(src, dst); err == nil {
+		t.Fatal("copying a profile into itself should fail before a move can remove the source")
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "keep" {
+		t.Fatalf("source profile changed after failed transfer: %q, %v", got, err)
+	}
+}
+
+func TestMoveProfileDir_RejectsDestinationConflict(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	for root, contents := range map[string]string{src: "source", dst: "destination"} {
+		if err := os.MkdirAll(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "settings.ini"), []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.ini"), []byte("must not be copied"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveProfileDir(src, dst); err == nil {
+		t.Fatal("moving over an existing profile file should fail")
+	}
+	if got, err := os.ReadFile(filepath.Join(src, "settings.ini")); err != nil || string(got) != "source" {
+		t.Fatalf("source profile changed after destination conflict: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "settings.ini")); err != nil || string(got) != "destination" {
+		t.Fatalf("destination profile changed after conflict: %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "a.ini")); !os.IsNotExist(err) {
+		t.Fatalf("move copied files before discovering destination conflict: %v", err)
+	}
+}
+
+func TestTransferProfileDir_MoveIncludesCrashLogs(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	crash := filepath.Join(src, "crashes", "1.log")
+	if err := os.MkdirAll(filepath.Dir(crash), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(crash, []byte("diagnostic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := moveProfileDir(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "crashes", "1.log")); err != nil || string(got) != "diagnostic" {
+		t.Fatalf("crash log was not transferred for Move: %q, %v", got, err)
 	}
 }
 

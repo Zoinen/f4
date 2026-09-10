@@ -1,8 +1,12 @@
 package netfox
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,6 +54,7 @@ var hostKeyPromptGrace = 3 * time.Second
 // below asks the user and records the answer.
 type sshKnownHosts struct {
 	verify ssh.HostKeyCallback
+	files  []string
 	path   string // The file a newly trusted key is appended to.
 }
 
@@ -80,10 +85,16 @@ func newSSHKnownHosts(home string) (*sshKnownHosts, error) {
 	}
 
 	verify, err := knownhosts.New(files...)
-	if err != nil {
+	if err == nil {
+		return &sshKnownHosts{verify: verify, files: files, path: filepath.Join(sshDir, "known_hosts")}, nil
+	}
+	// knownhosts.New parses every line before it returns. A stale key format in
+	// a line for another host must not prevent this connection from checking its
+	// own entries, so defer parse errors until the target address is known.
+	if !strings.Contains(err.Error(), "knownhosts:") {
 		return nil, fmt.Errorf("SSH host-key verification: read known_hosts: %w", err)
 	}
-	return &sshKnownHosts{verify: verify, path: filepath.Join(sshDir, "known_hosts")}, nil
+	return &sshKnownHosts{files: files, path: filepath.Join(sshDir, "known_hosts")}, nil
 }
 
 // check is the ssh.HostKeyCallback. It follows what OpenSSH does on a first
@@ -91,7 +102,15 @@ func newSSHKnownHosts(home string) (*sshKnownHosts, error) {
 // replaces a recorded one of the same type is refused outright, and anything
 // else is put to the user.
 func (kh *sshKnownHosts) check(hostname string, remote net.Addr, key ssh.PublicKey) error {
-	err := kh.verify(hostname, remote, key)
+	verify := kh.verify
+	if verify == nil {
+		var err error
+		verify, err = kh.verifyFor(hostname, remote)
+		if err != nil {
+			return fmt.Errorf("SSH host-key verification: read known_hosts: %w", err)
+		}
+	}
+	err := verify(hostname, remote, key)
 	if err == nil {
 		return nil
 	}
@@ -132,6 +151,186 @@ func (kh *sshKnownHosts) check(hostname string, remote net.Addr, key ssh.PublicK
 		vtui.DebugLog("NET: cannot record the host key of %s in %s: %v", address, kh.path, err)
 	}
 	return nil
+}
+
+func (kh *sshKnownHosts) verifyFor(hostname string, remote net.Addr) (ssh.HostKeyCallback, error) {
+	address := hostname
+	if address == "" {
+		if remote == nil {
+			return nil, errors.New("knownhosts: remote address is nil")
+		}
+		address = remote.String()
+	}
+
+	type temporaryFile struct {
+		path   string
+		source string
+	}
+	temporary := make([]temporaryFile, 0, len(kh.files))
+	cleanup := func() {
+		for _, file := range temporary {
+			_ = os.Remove(file.path)
+		}
+	}
+	for _, source := range kh.files {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		file, err := os.CreateTemp("", "f4-known-hosts-")
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		name := file.Name()
+		temporary = append(temporary, temporaryFile{path: name, source: source})
+		if err := filterKnownHosts(file, data, address); err != nil {
+			_ = file.Close()
+			cleanup()
+			return nil, err
+		}
+		if err := file.Close(); err != nil {
+			cleanup()
+			return nil, err
+		}
+	}
+
+	files := make([]string, 0, len(temporary))
+	lineSources := make(map[string]string, len(temporary))
+	for _, file := range temporary {
+		files = append(files, file.path)
+		lineSources[file.path] = file.source
+	}
+	verify, err := knownhosts.New(files...)
+	cleanup()
+	if err != nil {
+		return nil, remapKnownHostsError(err, lineSources)
+	}
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		return remapKnownHostsError(verify(hostname, remote, key), lineSources)
+	}, nil
+}
+
+func filterKnownHosts(w io.Writer, data []byte, address string) error {
+	for len(data) > 0 {
+		line := data
+		if end := bytes.IndexByte(data, '\n'); end >= 0 {
+			line, data = data[:end+1], data[end+1:]
+		} else {
+			data = nil
+		}
+		trimmed := strings.Trim(string(line), " \t\r\n")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || knownHostLineApplies(trimmed, address) {
+			if _, err := w.Write(line); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := io.WriteString(w, "# ignored by f4\n"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var knownHostProbeKey = func() ssh.PublicKey {
+	key, err := ssh.NewPublicKey(ed25519.PublicKey(make([]byte, ed25519.PublicKeySize)))
+	if err != nil {
+		panic(err)
+	}
+	return key
+}()
+
+func knownHostLineApplies(line, address string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	patternIndex := 0
+	if strings.HasPrefix(fields[0], "@") && fields[0] != "@cert-authority" && fields[0] != "@revoked" {
+		return true
+	}
+	switch fields[0] {
+	case "@revoked":
+		// Revoked keys are checked globally by knownhosts, without a host
+		// pattern, so an invalid entry can affect this connection regardless
+		// of the address in its first field.
+		return true
+	case "@cert-authority":
+		patternIndex = 1
+	case "@unknown":
+		return true
+	}
+	if len(fields) <= patternIndex {
+		return true
+	}
+
+	probe, err := os.CreateTemp("", "f4-known-host-probe-")
+	if err != nil {
+		return true
+	}
+	name := probe.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := fmt.Fprintf(probe, "%s %s %s\n", fields[patternIndex], knownHostProbeKey.Type(),
+		base64.StdEncoding.EncodeToString(knownHostProbeKey.Marshal())); err != nil {
+		_ = probe.Close()
+		return true
+	}
+	if err := probe.Close(); err != nil {
+		return true
+	}
+
+	verify, err := knownhosts.New(name)
+	if err != nil {
+		// A malformed pattern is kept in the filtered file so the real parser
+		// still reports it instead of silently dropping a line we could not
+		// classify.
+		return true
+	}
+	err = verify(address, knownHostProbeAddr(address), knownHostProbeKey)
+	var keyErr *knownhosts.KeyError
+	if errors.As(err, &keyErr) {
+		return len(keyErr.Want) != 0
+	}
+	// A matching key, a revoked key, or any non-standard callback error keeps
+	// the line. Only a definite "unknown host" result lets us ignore it.
+	return true
+}
+
+type knownHostProbeAddr string
+
+func (a knownHostProbeAddr) Network() string { return "tcp" }
+
+func (a knownHostProbeAddr) String() string { return string(a) }
+
+func remapKnownHostsError(err error, sources map[string]string) error {
+	if err == nil {
+		return nil
+	}
+	var keyErr *knownhosts.KeyError
+	if errors.As(err, &keyErr) {
+		want := append([]knownhosts.KnownKey(nil), keyErr.Want...)
+		for i := range want {
+			if source, ok := sources[want[i].Filename]; ok {
+				want[i].Filename = source
+			}
+		}
+		return &knownhosts.KeyError{Want: want}
+	}
+	var revokedErr *knownhosts.RevokedError
+	if errors.As(err, &revokedErr) {
+		revoked := revokedErr.Revoked
+		if source, ok := sources[revoked.Filename]; ok {
+			revoked.Filename = source
+		}
+		return &knownhosts.RevokedError{Revoked: revoked}
+	}
+	message := err.Error()
+	for temporary, source := range sources {
+		message = strings.ReplaceAll(message, temporary, source)
+	}
+	return errors.New(message)
 }
 
 // recordedKeysOfType picks the entries that could have been superseded by a

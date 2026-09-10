@@ -107,7 +107,15 @@ func ManageSessions() {
 		runServer(os.Args[2])
 		return
 	}
-
+	// FreeBSD does not let a new session steal a terminal that is already
+	// controlled by the shell session. The normal Unix session daemon would
+	// therefore leave external TTY editors without /dev/tty. Keep the TTY
+	// session attached on FreeBSD so both f4 and its editor stay in the shell's
+	// controlling session.
+	if runtime.GOOS == "freebsd" {
+		runAttachedSession()
+		return
+	}
 	if os.Getenv("F4_NESTED") != "" {
 		startNewSession()
 		return
@@ -135,6 +143,36 @@ func ManageSessions() {
 		}
 	}
 	startNewSession()
+}
+
+// runAttachedSession is the Unix equivalent of the Windows one-process TTY
+// path. It is used on FreeBSD because its TIOCSCTTY rules reject acquiring a
+// terminal that is already the controlling terminal of the shell session;
+// keeping this process attached lets external editors inherit the real TTY.
+func runAttachedSession() {
+	scr := InitCore()
+
+	restore, err := vtui.PrepareTerminal()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return
+	}
+	if restore != nil {
+		defer restore()
+	}
+
+	ProbeHostTextArea()
+	PreferCompatibleGraphicsProtocol(scr)
+	InstallX11Overlay()
+	openDashEFileIfRequested()
+
+	ttyxKeys := startTTYXKeyboard()
+	if ttyxKeys != nil {
+		defer ttyxKeys.Close()
+	}
+
+	reader := vtinput.NewReader(os.Stdin, false)
+	vtui.FrameManager.Run(reader)
 }
 
 func startNewSession() {

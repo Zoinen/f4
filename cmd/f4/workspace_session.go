@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
@@ -308,23 +307,13 @@ func validSessionViewMode(mode int) ViewMode {
 	return viewMode
 }
 
-// navigatePanelTo moves a panel to path. What does not open as an object of its
-// own (an archive, a provider resource) stays a plain path in the current VFS;
-// a URI without its plugin is not even that.
+// navigatePanelTo moves a panel to a saved path. A failed restore is left
+// alone: retrying the same path through the current VFS can turn a provider's
+// internal path into a local OS path during startup.
 func navigatePanelTo(pf *PanelsFrame, panel *FileSystemPanel, path string) {
-	if path == "" || pf.NavigateToPath(panel, path) {
-		return
+	if path != "" {
+		pf.NavigateToPath(panel, path)
 	}
-	if vfs.IsURIPath(path) {
-		return
-	}
-	// A path that no longer exists leaves the VFS where it was, so re-reading
-	// the directory would only redraw the one already on screen.
-	if err := panel.vfs.SetPath(path); err != nil {
-		vtui.DebugLog("SESSION: cannot open %s: %v", path, err)
-		return
-	}
-	panel.ReadDirectory()
 }
 
 // applyStartupDirs opens left and right in the two panels, so `cd dir && f4`

@@ -9,9 +9,6 @@
 
 ## Последний проверенный прогон
 
-- `34194464508` — commit `561da80e197d14522af3093e08fadc1e8916eafe`; завершён
-  с ошибкой в двух независимых shuffled-проверках: `Race (cmd/f4 rest)` —
-  `TestMacKeysSkipsCommandRulesWithoutTheChannelSplit`, `Test (linux/amd64)` —
-  `TestMainMenuFilePath_HasExpectedSuffix`. Clipboard race из предыдущего
-  прогона этим результатом не подтверждена; follow-up исправляет оставшийся
-  такой же асинхронный helper `waitForMarkedClipboard`.
+- `34217962338` — commit `f98ecf5772408c66ad65c74a83f6b6804956b776`; завершён
+  с результатом `success`. Все 26 jobs PR #982 завершились без ошибок:
+  сборки, vet, quality, lint, тесты и race-проверки.

@@ -100,7 +100,6 @@ func InitLang() {
 	vtui.ReplaceStrings(allBaseStrings)
 
 	exeDir := filepath.Dir(os.Args[0])
-	userDir := filepath.Join(GetF4ConfigDir(), "lang")
 
 	loadLang := func(code string) {
 		if !safeLanguageCode(code) {
@@ -114,9 +113,12 @@ func InitLang() {
 			vtui.AddStrings(embedded)
 		}
 		candidates := []string{
-			filepath.Join(userDir, code+".lng"),
 			filepath.Join(exeDir, "lang", code+".lng"),
 			filepath.Join("lang", code+".lng"), // Fallback for "go run ." development
+		}
+		if AppConfig.UseLocalLanguageFiles {
+			userDir := filepath.Join(GetF4ConfigDir(), "lang")
+			candidates = append([]string{filepath.Join(userDir, code+".lng")}, candidates...)
 		}
 		var langIni *IniFile
 		for _, cand := range candidates {

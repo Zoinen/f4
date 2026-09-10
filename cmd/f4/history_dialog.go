@@ -572,6 +572,11 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 		cells := make([]vtui.CharInfo, 0, len([]rune(text))+1)
 		if s.supportsLocks {
 			cells = append(cells, vtui.CharInfo{Char: markChar, Attributes: baseAttr})
+			// Keep the bookmark digit/star separate from the first character of
+			// the row. Folder history may start with a timestamp or a directory
+			// prefix, so placing the marker directly against it makes the hotkey
+			// look like part of the value (issue #407).
+			cells = append(cells, vtui.CharInfo{Char: ' ', Attributes: baseAttr})
 		}
 		for i, r := range []rune(text) {
 			attr := baseAttr

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtui"
 )
 
 func TestSwapSlots_MovesItemAndPreservesOthers(t *testing.T) {
@@ -108,4 +111,132 @@ func TestBookmarksDialog_RowTextShowsPathOrEmptyMarker(t *testing.T) {
 	if empty := d.rowText(0); !strings.Contains(empty, Msg("Bookmarks.EmptySlot")) {
 		t.Errorf("row 0 = %q, want the empty marker", empty)
 	}
+}
+
+func TestBookmarksDialog_SlotAtValidatesMenuData(t *testing.T) {
+	menu := vtui.NewVMenu("Bookmarks")
+	menu.Items = []vtui.MenuItem{
+		{UserData: 3},
+		{UserData: "not a slot"},
+		{UserData: 10},
+	}
+	d := &bookmarksDialog{menu: menu}
+
+	if got := d.slotAt(0); got != 3 {
+		t.Fatalf("valid menu slot = %d, want 3", got)
+	}
+	for _, pos := range []int{-1, 1, 2, 3} {
+		if got := d.slotAt(pos); got != -1 {
+			t.Errorf("slotAt(%d) = %d, want -1", pos, got)
+		}
+	}
+
+	d.menu = nil
+	if got := d.slotAt(0); got != -1 {
+		t.Fatalf("slotAt without menu = %d, want -1", got)
+	}
+}
+
+func TestBookmarksDialog_SizeHonorsConsoleBounds(t *testing.T) {
+	d := &bookmarksDialog{pf: &PanelsFrame{lastW: 10, lastH: 8}}
+	width, height := d.size()
+	if width < 24 {
+		t.Fatalf("minimum dialog width = %d, want at least 24", width)
+	}
+	if height != 5 {
+		t.Fatalf("short-console dialog height = %d, want 5", height)
+	}
+
+	d.pf = &PanelsFrame{lastW: 200, lastH: 40}
+	_, height = d.size()
+	if height != len(d.set)+2 {
+		t.Fatalf("normal dialog height = %d, want %d", height, len(d.set)+2)
+	}
+}
+
+func TestBookmarksDialog_RenderPersistAndMutate(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	path := filepath.Join(t.TempDir(), "bookmarks.ini")
+	d := &bookmarksDialog{
+		file: path,
+		set: BookmarkSet{
+			1: {Path: "/one"},
+			2: {Path: "/two", Plugin: "old"},
+		},
+		menu: vtui.NewVMenu("Bookmarks"),
+	}
+	d.render()
+	if len(d.menu.Items) != len(d.set) {
+		t.Fatalf("rendered %d rows, want %d", len(d.menu.Items), len(d.set))
+	}
+	if got := d.slotAt(2); got != 2 {
+		t.Fatalf("rendered row user data = %d, want 2", got)
+	}
+
+	d.moveSlot(1, 1)
+	if d.set[2].Path != "/one" || d.menu.SelectPos != 2 {
+		t.Fatalf("move result = %#v, cursor %d; want /one in slot 2 and cursor 2", d.set, d.menu.SelectPos)
+	}
+	d.moveSlot(0, -1)
+	if d.set[0].Path != "" {
+		t.Fatal("out-of-range move changed slot 0")
+	}
+
+	d.clearSlot(2)
+	if !d.set[2].IsEmpty() {
+		t.Fatal("clearSlot did not empty slot 2")
+	}
+	d.clearSlot(-1)
+
+	got, err := LoadBookmarks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[2].IsEmpty() || got[1].Path != "/two" {
+		t.Fatalf("persisted bookmarks = %#v, want slot 1 /two and empty slot 2", got)
+	}
+}
+
+func TestBookmarksDialog_SaveCurrentDirReplacesPluginBookmark(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	pf := &PanelsFrame{activeIdx: 0}
+	pf.panels[0] = &FileSystemPanel{vfs: vfs.NewNullVFS(0)}
+	wantPath := pf.panels[0].(*FileSystemPanel).vfs.GetPath()
+	path := filepath.Join(t.TempDir(), "bookmarks.ini")
+	d := &bookmarksDialog{
+		pf:   pf,
+		file: path,
+		set:  BookmarkSet{4: {Path: "/old", Plugin: "NetRocks", PluginData: "sftp://host"}},
+		menu: vtui.NewVMenu("Bookmarks"),
+	}
+
+	d.saveCurrentDir(4)
+	if got := d.set[4]; got != (Bookmark{Path: wantPath}) {
+		t.Fatalf("saved active directory = %#v, want local root %q bookmark", got, wantPath)
+	}
+	d.saveCurrentDir(-1)
+}
+
+func TestBookmarksDialog_OpenBuildsMenu(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	path := filepath.Join(t.TempDir(), "bookmarks.ini")
+	d := &bookmarksDialog{
+		pf:   &PanelsFrame{lastW: 80, lastH: 25},
+		file: path,
+		set:  BookmarkSet{4: {Path: "/work"}},
+	}
+	d.open(4, nil)
+	if d.menu == nil || len(d.menu.Items) != len(d.set) {
+		t.Fatalf("open menu = %#v, want %d rows", d.menu, len(d.set))
+	}
+	if d.menu.SelectPos != 4 {
+		t.Fatalf("open cursor = %d, want 4", d.menu.SelectPos)
+	}
+	vtui.FrameManager.Pop()
 }

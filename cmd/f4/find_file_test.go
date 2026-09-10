@@ -4,12 +4,57 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
+
+type findFileFinderProbeVFS struct {
+	vfs.VFS
+	called bool
+}
+
+func (v *findFileFinderProbeVFS) FindFiles(context.Context, string, vfs.FindQuery) ([]vfs.FoundEntry, error) {
+	v.called = true
+	return nil, nil
+}
+
+func TestSplitFindMasks(t *testing.T) {
+	cases := []struct {
+		name         string
+		input        string
+		wantIncludes []string
+		wantExcludes []string
+	}{
+		{name: "ordinary masks", input: " *.go, *.txt ", wantIncludes: []string{"*.go", "*.txt"}},
+		{name: "included and excluded", input: "*.txt | .git, skip.txt", wantIncludes: []string{"*.txt"}, wantExcludes: []string{".git", "skip.txt"}},
+		{name: "empty include defaults to all", input: " | .git", wantIncludes: []string{"*"}, wantExcludes: []string{".git"}},
+		{name: "far star dot star", input: "*.* | *.tmp", wantIncludes: []string{"*"}, wantExcludes: []string{"*.tmp"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			includes, excludes := splitFindMasks(tc.input)
+			if strings.Join(includes, ",") != strings.Join(tc.wantIncludes, ",") {
+				t.Fatalf("includes = %#v, want %#v", includes, tc.wantIncludes)
+			}
+			if strings.Join(excludes, ",") != strings.Join(tc.wantExcludes, ",") {
+				t.Fatalf("excludes = %#v, want %#v", excludes, tc.wantExcludes)
+			}
+		})
+	}
+}
+
+func TestFindFileMaskMatches(t *testing.T) {
+	if !findFileMaskMatches(".git", []string{"*.git", ".git"}) {
+		t.Fatal("an excluded directory mask did not match")
+	}
+	if findFileMaskMatches("keep.txt", []string{".git", "skip.txt"}) {
+		t.Fatal("an unrelated name matched an excluded mask")
+	}
+}
 
 func TestFileContainsText_ChunkOverlap(t *testing.T) {
 	// The word "SECRETPASSWORD" is 14 bytes long.
@@ -135,6 +180,47 @@ func TestExecuteFindFile_MaskMatching(t *testing.T) {
 
 	if !isDone {
 		t.Error("Search did not complete successfully")
+	}
+}
+
+func TestExecuteFindFile_ExcludesFilesAndDirectories(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "keep.txt"), []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "skip.txt"), []byte("skip"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	excludedDir := filepath.Join(tmpDir, ".git")
+	if err := os.Mkdir(excludedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(excludedDir, "inside.txt"), []byte("inside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &findFileFinderProbeVFS{VFS: vfs.NewOSVFS(tmpDir)}
+	ExecuteFindFile(nil, provider, tmpDir, "*.txt | .git, skip.txt", "", FindFileOptions{})
+	var results *SearchResultsWindow
+	deadline := time.After(2 * time.Second)
+	for results == nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			if top, ok := vtui.FrameManager.GetTopFrame().(*SearchResultsWindow); ok {
+				results = top
+			}
+		case <-deadline:
+			t.Fatal("search operation timed out")
+		}
+	}
+	defer results.Close()
+	if len(results.found) != 1 || results.found[0].Item.Name != "keep.txt" {
+		t.Fatalf("found = %#v, want only keep.txt", results.found)
+	}
+	if provider.called {
+		t.Fatal("excluded-mask search must use the generic VFS walk")
 	}
 }
 

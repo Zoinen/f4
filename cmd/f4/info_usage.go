@@ -7,7 +7,7 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
-// infoUsageMeter is the reusable two-line capacity element used by provider
+// infoUsageMeter is the reusable three-line capacity element used by provider
 // data (such as Android), local filesystems, physical memory and paging space.
 // It owns both layout and copy semantics; InfoPanel only decides where the
 // element belongs and how its filled/unfilled cells are painted.
@@ -28,9 +28,11 @@ func (meter infoUsageMeter) rowsWithWidth(section string, innerW, y, requestedMe
 	used := panelInfoUsedBytes(meter.Total, meter.Available)
 	usedText := formatBytes(used)
 	totalText := formatBytes(meter.Total)
+	freeText := formatBytes(meter.Available)
 	usedLabel := Msg("InfoPanel.UsedShort")
 	totalLabel := Msg("InfoPanel.TotalShort")
-	copyValue := fmt.Sprintf("%s: %s; %s: %s", usedLabel, usedText, totalLabel, totalText)
+	freeLabel := Msg("InfoPanel.Free")
+	copyValue := fmt.Sprintf("%s: %s; %s: %s; %s: %s", totalLabel, totalText, usedLabel, usedText, freeLabel, freeText)
 
 	labelPad := " " + meter.Label
 	labelWidth := runewidth.StringWidth(labelPad)
@@ -60,7 +62,7 @@ func (meter infoUsageMeter) rowsWithWidth(section string, innerW, y, requestedMe
 	}
 	if meterWidth < 1 {
 		// Degenerate one-cell interiors cannot display a meaningful meter,
-		// but still retain the semantic two-line row without crossing a border.
+		// but still retain the semantic three-line row without crossing a border.
 		meterX = innerW
 		meterWidth = 0
 	}
@@ -76,13 +78,27 @@ func (meter infoUsageMeter) rowsWithWidth(section string, innerW, y, requestedMe
 		barFilled, _ = panelInfoUsageMetrics(meter.Total, meter.Available, barWidth)
 	}
 
-	secondText := ""
+	totalLine := ""
 	if meterWidth > 0 {
-		secondText = strings.Repeat(" ", meterX) + panelInfoUsageLegend(
-			usedLabel, usedText, totalLabel, totalText, meterWidth)
+		totalLine = strings.Repeat(" ", meterX) + panelInfoUsageCentered(totalLabel+": "+totalText, meterWidth)
+	}
+
+	freeLine := ""
+	if meterWidth > 0 {
+		freeLine = strings.Repeat(" ", meterX) + panelInfoUsageLegend(usedLabel, usedText, freeLabel, freeText, meterWidth)
 	}
 
 	return []infoRow{
+		{
+			section:           section,
+			label:             meter.Label,
+			text:              runewidth.Truncate(totalLine, innerW, "…"),
+			usageMeterWidth:   meterWidth,
+			usageTotal:        meter.Total,
+			usageAvailable:    meter.Available,
+			usageContinuation: true,
+			y:                 y,
+		},
 		{
 			section: section,
 			label:   meter.Label, value: copyValue, copyable: true,
@@ -93,17 +109,17 @@ func (meter infoUsageMeter) rowsWithWidth(section string, innerW, y, requestedMe
 			usageMeterWidth: meterWidth,
 			usageTotal:      meter.Total,
 			usageAvailable:  meter.Available,
-			y:               y,
+			y:               y + 1,
 		},
 		{
 			section:           section,
 			label:             meter.Label,
-			text:              runewidth.Truncate(secondText, innerW, "…"),
+			text:              runewidth.Truncate(freeLine, innerW, "…"),
 			usageMeterWidth:   meterWidth,
 			usageTotal:        meter.Total,
 			usageAvailable:    meter.Available,
 			usageContinuation: true,
-			y:                 y + 1,
+			y:                 y + 2,
 		},
 	}
 }
@@ -124,15 +140,14 @@ func alignInfoUsageMeters(rows []infoRow, innerW int) {
 	if minWidth == 0 {
 		return
 	}
-	for i := 0; i+1 < len(rows); i++ {
-		row := rows[i]
-		if row.usageContinuation || row.usageMeterWidth <= 0 {
+	for i := 0; i < len(rows); i++ {
+		r := rows[i]
+		if r.usageContinuation || r.usageMeterWidth <= 0 || i < 1 || i+1 >= len(rows) {
 			continue
 		}
-		meter := infoUsageMeter{Label: row.label, Total: row.usageTotal, Available: row.usageAvailable}
-		aligned := meter.rowsWithWidth(row.section, innerW, row.y, minWidth)
-		rows[i], rows[i+1] = aligned[0], aligned[1]
-		i++
+		meter := infoUsageMeter{Label: r.label, Total: r.usageTotal, Available: r.usageAvailable}
+		aligned := meter.rowsWithWidth(r.section, innerW, r.y-1, minWidth)
+		rows[i-1], rows[i], rows[i+1] = aligned[0], aligned[1], aligned[2]
 	}
 }
 
@@ -173,6 +188,16 @@ func panelInfoUsageBar(total, available uint64, width int) string {
 		copy(cells[start:], percentText)
 	}
 	return string(cells)
+}
+
+func panelInfoUsageCentered(text string, width int) string {
+	text = runewidth.Truncate(text, width, "…")
+	gap := width - runewidth.StringWidth(text)
+	if gap <= 0 {
+		return text
+	}
+	left := gap / 2
+	return strings.Repeat(" ", left) + text + strings.Repeat(" ", gap-left)
 }
 
 func panelInfoUsageLegend(usedLabel, used, totalLabel, total string, width int) string {

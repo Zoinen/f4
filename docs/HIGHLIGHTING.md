@@ -182,17 +182,33 @@ visible on a selected folder instead of merging into the selection color.
 
 Sort groups reuse this file and this rule syntax to answer a different
 question: not *what colour is a file*, but *where on the panel does it belong*.
+A coloured rule can do both jobs, just as in Far: add `Group` to the existing
+`[Highlight_N]` section instead of copying its mask and attributes into a
+second section.
 A panel with sort groups switched on clusters its files by group first and
 applies the current sort mode inside each cluster — "all images together",
 "executables at the top".
 
 ### Configuration
 
-Groups are `[SortGroup_N]` sections of the same `highlight.ini`. They accept
-every matching parameter of a highlight rule (`Mask`, `IncludeAttributes`,
-`ExcludeAttributes`, `SizeAbove`, `SizeBelow`, `DateType`, `DateRelative`,
-`DateAfter`, `DateBefore`) and ignore the colour ones. Two keys are specific to
-groups:
+The preferred form is an existing `[Highlight_N]` section with one additional
+key. The rule's matcher and its colours are then shared:
+
+```ini
+[Highlight_100]
+Name = Archives
+Group = 1
+Mask = *.zip, *.rar, *.7z
+ExcludeAttributes = Directory
+NormalColor = foreground:#FF00FF | background:#000000
+```
+
+`Group` is the position of the cluster on the panel. Rules with the same
+number form one cluster. The legacy `[SortGroup_N]` sections are still
+accepted for existing profiles; they have the same matching keys and can be
+removed after their rules are folded into `[Highlight_N]` sections.
+
+Two keys are specific to group configuration:
 
 | Parameter | Type | Description |
 | :--- | :--- | :--- |
@@ -205,21 +221,24 @@ number form a single cluster — that is how a group can match either by
 attribute or by name:
 
 ```ini
-[SortGroup_1]
+[Highlight_101]
 Name = Executables
 Group = 0
 IncludeAttributes = Executable
 ExcludeAttributes = Directory
+NormalColor = foreground:#00FF00
 
-[SortGroup_2]
+[Highlight_102]
 Name = Executables (by name)
 Group = 0
 Mask = *.exe, *.com, *.bat, *.cmd, *.ps1, *.sh
+NormalColor = foreground:#00FF00
 
-[SortGroup_3]
+[Highlight_103]
 Name = Images
 Group = 2
 Mask = *.png, *.jpg, *.jpeg, *.gif, *.webp
+NormalColor = foreground:#00FFFF
 ```
 
 Files that match no group fall into the default group, number `10000`, which

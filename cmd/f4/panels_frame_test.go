@@ -1700,6 +1700,55 @@ func TestPanelsFrame_CtrlBrackets_Insertion(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_CtrlBrackets_InsertionWhenPanelsHidden(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	SetDefaultF4Palette()
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	lp := pf.panels[0].(*FileSystemPanel)
+	rp := pf.panels[1].(*FileSystemPanel)
+	tmp := t.TempDir()
+	leftPath := filepath.Join(tmp, "left")
+	rightPath := filepath.Join(tmp, "right")
+	if err := os.MkdirAll(leftPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rightPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := lp.vfs.SetPath(leftPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := rp.vfs.SetPath(rightPath); err != nil {
+		t.Fatal(err)
+	}
+
+	pf.showPanels = false
+	pf.cmdLine.Clear()
+	pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_OEM_4,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if got := pf.cmdLine.Edit.GetText(); got != leftPath {
+		t.Errorf("hidden-panels Ctrl+[ inserted %q, want %q", got, leftPath)
+	}
+
+	pf.cmdLine.Clear()
+	pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_OEM_6,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if got := pf.cmdLine.Edit.GetText(); got != rightPath {
+		t.Errorf("hidden-panels Ctrl+] inserted %q, want %q", got, rightPath)
+	}
+}
+
 func TestCtrlBracketsInsertPanelPathsIntoFocusedEdit(t *testing.T) {
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)

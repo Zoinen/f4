@@ -187,6 +187,7 @@ type F4Config struct {
 	Language                 string
 	FallbackLanguage         string
 	HelpLanguage             string
+	UseLocalLanguageFiles    bool
 	AlwaysShowMenuBar        bool
 	WorkspaceTabMode         int
 	WorkspaceTabsOverlay     bool
@@ -393,6 +394,7 @@ var AppConfig = F4Config{
 	Language:                 "en",
 	FallbackLanguage:         "",
 	HelpLanguage:             "en",
+	UseLocalLanguageFiles:    false,
 	AlwaysShowMenuBar:        false,
 	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
 	WorkspaceTabsOverlay:     true,
@@ -567,6 +569,7 @@ func LoadConfig() {
 	AppConfig.Language = ini.GetString("Interface", "Language", "en")
 	AppConfig.FallbackLanguage = ini.GetString("Interface", "FallbackLanguage", "")
 	AppConfig.HelpLanguage = ini.GetString("Interface", "HelpLanguage", "en")
+	AppConfig.UseLocalLanguageFiles = ini.GetString("Interface", "UseLocalLanguageFiles", "0") == "1"
 	AppConfig.ConsoleTitleTemplate = ini.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
 	AppConfig.DisplayFullPathInTitle = ini.GetString("Interface", "DisplayFullPathInTitle", "0") == "1"
 	AppConfig.AlwaysShowMenuBar = ini.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
@@ -871,6 +874,7 @@ func saveConfigWithWindowSize(windowSize bool) {
 	fmt.Fprintf(&sb, "Language = %s\n", AppConfig.Language)
 	fmt.Fprintf(&sb, "FallbackLanguage = %s\n", AppConfig.FallbackLanguage)
 	fmt.Fprintf(&sb, "HelpLanguage = %s\n", AppConfig.HelpLanguage)
+	fmt.Fprintf(&sb, "UseLocalLanguageFiles = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.UseLocalLanguageFiles])
 	fmt.Fprintf(&sb, "ConsoleTitleTemplate = %s\n", AppConfig.ConsoleTitleTemplate)
 	fmt.Fprintf(&sb, "DisplayFullPathInTitle = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.DisplayFullPathInTitle])
 	fmt.Fprintf(&sb, "AlwaysShowMenuBar = %d\n", map[bool]int{true: 1, false: 0}[AppConfig.AlwaysShowMenuBar])
@@ -1361,13 +1365,10 @@ func createDefaultHighlightIni(path string) {
 # FileNameUnderCursor = foreground:#FFFFFF | background:#008080
 # FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
 #
-# [SortGroup_N] sections below define sort groups. They accept the same
-# matching keys as a highlight rule (Mask, IncludeAttributes,
-# ExcludeAttributes, SizeAbove/SizeBelow, DateAfter/DateBefore) and are
-# used only when a panel has "Use sort groups" switched on: files are then
-# clustered by group first and sorted by the current sort mode inside each
-# group. Group decides where a cluster goes; sections that share a number
-# form one group, and files matching no group land after all of them.
+# To use one coloured rule for sorting too, add Group to that Highlight
+# section. The same mask and attributes then control both its colour and its
+# position; sections with the same Group number form one cluster. Legacy
+# [SortGroup_N] sections are still accepted for old profiles.
 
 [SortGroup_1]
 Name = Executables

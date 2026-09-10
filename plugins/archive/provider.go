@@ -32,7 +32,18 @@ func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path stri
 		}
 	}
 	format := archive.DetectFormat(name)
-	return format != ""
+	if format != "" {
+		return true
+	}
+	if osvfs, ok := parent.(*vfs.OSVFS); ok {
+		localPath, err := osvfs.Abs(path)
+		if err != nil {
+			return false
+		}
+		_, found, err := findEmbeddedArchive(localPath)
+		return err == nil && found
+	}
+	return false
 }
 
 func (p *ArchiveProvider) Open(ctx context.Context, parent vfs.VFS, path string) (vfs.VFS, error) {

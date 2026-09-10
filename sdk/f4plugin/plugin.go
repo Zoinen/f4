@@ -2,6 +2,7 @@ package f4plugin
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -209,9 +210,13 @@ type Plugin interface {
 
 // Run attaches the plugin to stdin/stdout and starts the RPC server loop.
 func Run(p Plugin) {
-	sess := f4rpc.NewSession(os.Stdin, os.Stdout)
+	_ = run(p, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
+	sess := f4rpc.NewSession(stdin, stdout)
 	sess.OnError = func(err error) {
-		_, _ = fmt.Fprintf(os.Stderr, "f4rpc: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "f4rpc: %v\n", err)
 	}
 	host := &Host{sess: sess}
 
@@ -407,7 +412,7 @@ func Run(p Plugin) {
 		return nil, p.OnProgressTask()
 	})
 
-	_ = sess.Serve()
+	return sess.Serve()
 }
 
 func (h *Host) RegisterHighlighter() {

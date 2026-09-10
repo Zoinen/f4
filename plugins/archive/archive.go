@@ -418,6 +418,16 @@ func actionAddArchive(app vfs.App) {
 	}
 
 	names := app.GetSelectedNames()
+	// The parent row is navigation, not an archive input. Treating ".." as a
+	// selected file opened the archive prompt for an invalid operation and
+	// could leave a modal overlay without a useful target (#983).
+	validNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != ".." {
+			validNames = append(validNames, name)
+		}
+	}
+	names = validNames
 	if len(names) == 0 {
 		return
 	}

@@ -1783,8 +1783,15 @@ func TestActionLanguage_Flow(t *testing.T) {
 
 	foundUICombo := false
 	foundHelpCombo := false
+	foundLocalFilesCheckbox := false
 
 	for _, child := range dlg.GetChildren() {
+		if checkbox, ok := child.(*vtui.Checkbox); ok {
+			foundLocalFilesCheckbox = true
+			if checkbox.State != boolToCheckboxState(AppConfig.UseLocalLanguageFiles) {
+				t.Errorf("local language files checkbox state = %d, want %d", checkbox.State, boolToCheckboxState(AppConfig.UseLocalLanguageFiles))
+			}
+		}
 		if combo, ok := child.(*vtui.ComboBox); ok {
 			for _, item := range combo.Menu.Items {
 				if item.Text == "English" {
@@ -1799,8 +1806,8 @@ func TestActionLanguage_Flow(t *testing.T) {
 		}
 	}
 
-	if !foundUICombo || !foundHelpCombo {
-		t.Errorf("Language dialog missing UI/Help comboboxes. UICombo: %v, HelpCombo: %v", foundUICombo, foundHelpCombo)
+	if !foundUICombo || !foundHelpCombo || !foundLocalFilesCheckbox {
+		t.Errorf("Language dialog missing UI/Help controls. UICombo: %v, HelpCombo: %v, local-files checkbox: %v", foundUICombo, foundHelpCombo, foundLocalFilesCheckbox)
 	}
 
 	top.SetExitCode(-1)

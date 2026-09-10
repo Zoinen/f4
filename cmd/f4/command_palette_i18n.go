@@ -85,9 +85,11 @@ func buildCommandPaletteTranslationIndex(packs []vtui.LanguagePack) map[string][
 func loadInstalledCommandPaletteLanguagePacks() []vtui.LanguagePack {
 	exeDir := filepath.Dir(os.Args[0])
 	directories := []string{
-		filepath.Join(GetF4ConfigDir(), "lang"),
 		filepath.Join(exeDir, "lang"),
 		"lang",
+	}
+	if AppConfig.UseLocalLanguageFiles {
+		directories = append([]string{filepath.Join(GetF4ConfigDir(), "lang")}, directories...)
 	}
 
 	seenPaths := make(map[string]bool)
