@@ -135,9 +135,9 @@ jobs:
 
         # Preserve the zoin build metadata while using upstream's portable
         # goffi-universal Linux profile.
-        VERSION_LDFLAGS="-X main.buildRevision=$F4_BUILD_REVISION -X main.buildTime=$F4_BUILD_TIME -X main.buildModified=$F4_BUILD_MODIFIED"
+        VERSION_LDFLAGS="-X github.com/unxed/f4/internal/app.buildRevision=$F4_BUILD_REVISION -X github.com/unxed/f4/internal/app.buildTime=$F4_BUILD_TIME -X github.com/unxed/f4/internal/app.buildModified=$F4_BUILD_MODIFIED"
         if [ -n "$F4_BUILD_VERSION" ]; then
-          VERSION_LDFLAGS="$VERSION_LDFLAGS -X main.buildVersion=$F4_BUILD_VERSION"
+          VERSION_LDFLAGS="$VERSION_LDFLAGS -X github.com/unxed/f4/internal/app.buildVersion=$F4_BUILD_VERSION"
         fi
 
         # One Linux binary per architecture, with FFI, for glibc and musl
@@ -465,9 +465,9 @@ jobs:
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           executable_suffix=".exe"
         fi
-        version_ldflags="-X main.buildRevision=$F4_BUILD_REVISION -X main.buildTime=$F4_BUILD_TIME -X main.buildModified=$F4_BUILD_MODIFIED"
+        version_ldflags="-X github.com/unxed/f4/internal/app.buildRevision=$F4_BUILD_REVISION -X github.com/unxed/f4/internal/app.buildTime=$F4_BUILD_TIME -X github.com/unxed/f4/internal/app.buildModified=$F4_BUILD_MODIFIED"
         if [ -n "$F4_BUILD_VERSION" ]; then
-          version_ldflags="$version_ldflags -X main.buildVersion=$F4_BUILD_VERSION"
+          version_ldflags="$version_ldflags -X github.com/unxed/f4/internal/app.buildVersion=$F4_BUILD_VERSION"
         fi
         CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $version_ldflags" \
           -o "qt/host/stage-ci/bin/f4${executable_suffix}" .
@@ -940,7 +940,7 @@ jobs:
 
           APP_LDFLAGS="$LDFLAGS"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+            APP_LDFLAGS="$APP_LDFLAGS -X github.com/unxed/f4/internal/app.buildVersion=$GITHUB_REF_NAME"
           fi
 
           # fakecgo supplies environ/__progname (and __ps_strings on NetBSD)
@@ -1135,7 +1135,7 @@ jobs:
 
         APP_LDFLAGS="-s -w -r $TERMUX_PREFIX/lib"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+          APP_LDFLAGS="$APP_LDFLAGS -X github.com/unxed/f4/internal/app.buildVersion=$GITHUB_REF_NAME"
         fi
 
         mkdir -p build
@@ -1365,7 +1365,7 @@ jobs:
         LDFLAGS="-s -w"
         APP_LDFLAGS="$LDFLAGS"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+          APP_LDFLAGS="$APP_LDFLAGS -X github.com/unxed/f4/internal/app.buildVersion=$GITHUB_REF_NAME"
         fi
 
         go build -trimpath -ldflags="$APP_LDFLAGS" -o build/f4.exe ./cmd/f4
