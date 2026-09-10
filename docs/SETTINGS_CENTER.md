@@ -426,3 +426,27 @@ override so default chords cannot reappear after saving. The existing settings
 provider checks concurrent changes and saves before replacing runtime bindings.
 SearchExactOnHit is available under Keyboard & shortcuts and takes effect when
 the configurator is next opened; it never changes sidebar search behavior.
+
+
+## Contextual editor restoration
+
+The Center consolidates global configuration menu entries, not in-place editing
+commands. The consolidation introduced early Settings redirects in the following
+workflows; those redirects are removed:
+
+| Context | Local interaction | Shared Settings storage/logic |
+| --- | --- | --- |
+| Drive chooser Insert / edit link | Name, path and shortcut dialog; returns to drive chooser | `panel.DriveBookmark`, `LoadDriveBookmarks`, `SaveDriveBookmarks`; History drive links |
+| Numbered bookmarks edit | Path input for the selected slot | `panel.BookmarkSet`, `SaveBookmarks`; History bookmarks |
+| User menu create/edit item or submenu | Original entry editor with source/scope retained | User-menu tree and source-specific writers; User menus |
+| NetFox add/edit connection | Original connection dialog | NetFox configuration store; Network connections |
+| CloudFox add/edit profile | Provider chooser and original profile editor | Credential validation, scope checks and repository; Network connections |
+| Visual Renamer word delimiters | Small prompt within the active rename operation | `loadConfig`/`saveConfig`; File operations |
+
+The two UI surfaces continue to use their existing domain models and persistence
+routines. Contextual saves are immediate; Settings edits remain staged until
+Apply. This restores the original forms without introducing another record format
+or replacing the Settings inline editors. Global drive options, plugin
+configuration (including Environment Manager), and application preference actions
+still open the Center. Environment Manager's contextual profile editor was not
+redirected and needs no rollback.
