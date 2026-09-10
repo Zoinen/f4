@@ -60,7 +60,8 @@ Item {
     y: dialogLayout ? dialogLayout.widgetTop(widget) - dialogLayout.rowTop(originY + 1)
                     : hostWindow.dialogWidgetVisualTop(
            (widget.y || 0) - originY - 1, widget)
-    width: Math.min(hostWindow.pxW(widget.w || 1), maximumWidth)
+    width: widget.kind === "text" && widget.wrapText === true
+           ? maximumWidth : Math.min(hostWindow.pxW(widget.w || 1), maximumWidth)
     height: visualHeight
     visible: widget.visible !== false
     clip: false
@@ -88,9 +89,140 @@ Item {
             case "radioGroup": return choiceDelegate
             case "checkGroup": return choiceDelegate
             case "listBox": return listDelegate
+            case "table": return tableDelegate
             case "comboBox": return comboDelegate
             case "group": return groupDelegate
             default: return textDelegate
+            }
+        }
+    }
+
+    Component {
+        id: tableDelegate
+        Item {
+            id: tableControl
+            objectName: "dialogWidget-" + widget.id + "Table"
+            readonly property var columns: widget.columns || []
+            readonly property real rowHeight: hostWindow.snapPx(hostWindow.ch + 8)
+            function columnWidth(index) {
+                let weight = 0
+                for (const col of columns) weight += Math.max(8, Number(col.width) > 0 ? Number(col.width) : Number(col.minWidth || 24))
+                return hostWindow.snapPx(width * Math.max(8, Number(columns[index].width) > 0 ? Number(columns[index].width) : Number(columns[index].minWidth || 24)) / Math.max(1, weight))
+            }
+            function columnX(index) {
+                let result = 0
+                for (let i = 0; i < index; ++i) result += columnWidth(i)
+                return result
+            }
+            Text {
+                id: tableSearch
+                objectName: "dialogWidget-" + widget.id + "TableSearch"
+                visible: widget.quickSearch === true
+                width: parent.width
+                height: visible ? tableControl.rowHeight : 0
+                text: widget.searchText ? "Search: " + widget.searchText : "Type to search"
+                font: hostWindow.font
+                color: hostWindow.textColor
+                verticalAlignment: Text.AlignVCenter
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(tableSearch, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(tableSearch, hostWindow.contentItem)
+                }
+                MouseArea { anchors.fill: parent; onClicked: hostWindow.action({target: widget.id, action: "control.focus"}) }
+            }
+            Item {
+                id: tableHeader
+                y: tableSearch.height
+                width: parent.width
+                height: widget.showHeader === false ? 0 : tableControl.rowHeight
+                visible: height > 0
+                Repeater {
+                    model: tableControl.columns
+                    Text {
+                        id: headerText
+                        required property var modelData
+                        required property int index
+                        objectName: "dialogWidget-" + widget.id + "TableHeader-" + index
+                        x: tableControl.columnX(index) + hostWindow.snapPx(6)
+                        width: Math.max(0, tableControl.columnWidth(index) - hostWindow.snapPx(12))
+                        height: tableHeader.height
+                        text: modelData.title + (widget.sortColumn === index ? (widget.sortAscending ? " ↑" : " ↓") : "")
+                        font: hostWindow.font
+                        color: hostWindow.textColor
+                        elide: Text.ElideRight
+                        verticalAlignment: Text.AlignVCenter
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(headerText, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(headerText, hostWindow.contentItem)
+                        }
+                        MouseArea { anchors.fill: parent; onClicked: hostWindow.action({target: widget.id, action: "control.sort", index: headerText.index}) }
+                    }
+                }
+            }
+            ListView {
+                id: tableRows
+                objectName: "dialogWidget-" + widget.id + "TableRows"
+                y: tableHeader.y + tableHeader.height
+                width: parent.width
+                height: Math.max(0, parent.height - y)
+                clip: true
+                model: widget.rows || []
+                currentIndex: Number(widget.cursor || 0)
+                onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                onModelChanged: Qt.callLater(function() { positionViewAtIndex(currentIndex, ListView.Contain) })
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Rectangle {
+                    id: tableRow
+                    required property var modelData
+                    required property int index
+                    width: tableRows.width
+                    height: tableControl.rowHeight
+                    color: index === tableRows.currentIndex ? hostWindow.selectedBg : "transparent"
+                    Repeater {
+                        model: tableControl.columns
+                        Text {
+                            id: cellText
+                            required property int index
+                            objectName: "dialogWidget-" + widget.id + "TableCell-" + tableRow.index + "-" + index
+                            x: tableControl.columnX(index) + hostWindow.snapPx(6)
+                            width: Math.max(0, tableControl.columnWidth(index) - hostWindow.snapPx(12))
+                            height: tableRow.height
+                            text: tableRow.modelData.cells[index] || ""
+                            font: hostWindow.font
+                            color: hostWindow.textColor
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(cellText, hostWindow.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(cellText, hostWindow.contentItem)
+                            }
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: hostWindow.action({target: widget.id, action: "control.select", index: tableRow.index})
+                        onDoubleClicked: hostWindow.action({target: widget.id, action: "control.activate", index: tableRow.index})
+                    }
+                }
+            }
+            // A single overlay keeps column boundaries continuous while rows scroll.
+            Repeater {
+                model: Math.max(0, tableControl.columns.length - 1)
+                Rectangle {
+                    id: tableDivider
+                    required property int index
+                    objectName: "dialogWidget-" + widget.id + "TableDivider-" + (index + 1)
+                    x: tableControl.columnX(index + 1)
+                    y: tableHeader.y
+                    width: 1 / hostWindow.dpr
+                    height: hostWindow.snapPx(Math.max(0, tableControl.height - y))
+                    color: hostWindow.controlBorder
+                    z: 3
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(tableDivider, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(tableDivider, hostWindow.contentItem)
+                    }
+                }
             }
         }
     }
@@ -101,12 +233,13 @@ Item {
             id: dialogText
             objectName: "dialogWidget-" + hostWindow.cleanText(widget.id)
                         + "Text"
-            text: hostWindow.mnemonicText(widget.text || widget.typeName,
-                                    widget.hotkey)
-            textFormat: Text.StyledText
+            text: widget.wrapText === true ? String(widget.text || "")
+                  : hostWindow.mnemonicText(widget.text || widget.typeName, widget.hotkey)
+            textFormat: widget.wrapText === true ? Text.PlainText : Text.StyledText
+            wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
             color: widget.disabled ? hostWindow.mutedText : hostWindow.textColor
             font: hostWindow.font
-            elide: Text.ElideRight
+            elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(

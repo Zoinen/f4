@@ -635,6 +635,11 @@ func runGuiBackend(backend string, fromConfig bool) error {
 }
 
 func shouldTryGui() bool {
+	// Portable Qt builds carry their own frontend, including on Windows
+	// where a plain console build historically stays in the terminal.
+	if portableQtDefault() {
+		return true
+	}
 	if vtui.IsWine() {
 		// Under Wine, default to console mode (wineconsole / terminal).
 		// Win32 GUI mode is available via --gui=win32, --gui, or f4-gui.exe.
@@ -659,6 +664,9 @@ func shouldTryGui() bool {
 }
 
 func tryRunDefaultGui() error {
+	if portableQtDefault() {
+		return RunGui("qt")
+	}
 	if vtui.IsWine() {
 		vtui.DebugLog("GUI_AUTO: Under Wine, trying win32 GUI backend...")
 		if err := RunGui("win32"); err == nil {

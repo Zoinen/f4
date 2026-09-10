@@ -49,6 +49,25 @@ Rectangle {
         ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
 
+    Text {
+        id: messageMeasure
+        visible: false
+        width: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
+        font: hostWindow.font
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        text: {
+            const body = (frame.children || []).find(w => w.kind === "text" && w.wrapText === true)
+            return body ? String(body.text || "") : ""
+        }
+    }
+
+    function visualHeight(widget) {
+        return widget.kind === "text" && widget.wrapText === true
+            ? hostWindow.snapPx(messageMeasure.implicitHeight)
+            : hostWindow.dialogWidgetVisualHeight(widget)
+    }
+
     function isContent(widget) {
         return widget && widget.visible !== false
                 && (widget.kind !== "text" || String(widget.text || widget.typeName || "").trim().length > 0)
@@ -176,7 +195,7 @@ Rectangle {
             let allocated = 0
             for (let i = control.start; i < control.start + control.span; ++i)
                 allocated += rows[i]
-            const needed = hostWindow.dialogWidgetVisualHeight(control.widget)
+            const needed = visualHeight(control.widget)
                     + (hostWindow.dialogWidgetUsesControlHeight(control.widget) ? 8 : 0)
             if (needed > allocated)
                 rows[control.start + control.span - 1] += needed - allocated
@@ -201,7 +220,7 @@ Rectangle {
         return widget.kind === "group"
                 ? rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
                   - rowTop(Number(widget.y || 0))
-                : hostWindow.dialogWidgetVisualHeight(widget)
+                : visualHeight(widget)
     }
 
     function widgetTop(widget) {

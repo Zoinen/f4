@@ -232,7 +232,7 @@ Rectangle {
     width: nativeLayout
            ? hostWindow.nativePanelWidth(Number(panel.side || 0))
            : hostWindow.pxW(panel.w)
-    height: nativeLayout ? Math.max(1, hostWindow.height - menuBar.height - hostWindow.commandLineHeight(hostWindow.shellFrame()) - hostWindow.keyBarHeight()) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
+    height: nativeLayout ? hostWindow.nativePanelHeight(Number(panel.side || 0), menuBar.height) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
     color: "transparent"
     border.width: 0
     clip: true

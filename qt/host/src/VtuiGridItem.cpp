@@ -395,6 +395,7 @@ void VtuiGridItem::sendQtKeyEvent(int key, const QString &text, bool down,
                     key, qtModifiers, nativeScanCode, nativeScanCode, 0,
                     down ? text : QString(), autoRepeat);
     int nativeModifiers = modifiersFromEvent(qtModifiers);
+    if (key == Qt::Key_Backtab) nativeModifiers |= ShiftPressed;
     if (isEnhancedQtKey(key)) {
         nativeModifiers |= EnhancedKey;
     }
@@ -560,6 +561,7 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
 
     if (m_controller) {
         int mods = modifiersFromEvent(event->modifiers());
+        if (event->key() == Qt::Key_Backtab) mods |= ShiftPressed;
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
         }
@@ -585,6 +587,7 @@ void VtuiGridItem::keyReleaseEvent(QKeyEvent *event)
 {
     if (m_controller) {
         int mods = modifiersFromEvent(event->modifiers());
+        if (event->key() == Qt::Key_Backtab) mods |= ShiftPressed;
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
         }
@@ -936,7 +939,8 @@ int VtuiGridItem::keyToVk(const QKeyEvent *event) const
 
     switch (key) {
     case Qt::Key_Backspace: return 0x08;
-    case Qt::Key_Tab: return 0x09;
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab: return 0x09;
     case Qt::Key_Return:
     case Qt::Key_Enter: return 0x0d;
     case Qt::Key_Escape: return 0x1b;
@@ -986,7 +990,7 @@ int VtuiGridItem::keyChar(const QKeyEvent *event) const
         return 0;
     }
     const char32_t codepoint = text.toUcs4().isEmpty() ? 0 : text.toUcs4().front();
-    if (codepoint < 0x20 && event->key() != Qt::Key_Tab && event->key() != Qt::Key_Return && event->key() != Qt::Key_Enter) {
+    if (codepoint < 0x20 && event->key() != Qt::Key_Tab && event->key() != Qt::Key_Backtab && event->key() != Qt::Key_Return && event->key() != Qt::Key_Enter) {
         return 0;
     }
     return static_cast<int>(codepoint);

@@ -452,6 +452,7 @@ private slots:
     void realEditorFirstViewportStartsOnExactRowBoundary();
     void nativeDocumentSlotsKeepNestedValuesAndBatchNotifications();
     void editorCursorFollowsActiveTheme();
+    void shortEditorSelectionDoesNotScroll();
     void nativeDocumentModelLifetimeMatchesPhysicalPool();
     void standaloneMetadataDoesNotCarryRowPayload();
     void sameDocumentWindowsDoNotResetShellInteraction();
@@ -4159,4 +4160,102 @@ void F4DocumentSurfaceTests::middleButtonAutoScrollsEmbeddedTerminal()
     fixture.surface->setProperty("interactionActive", false);
     QTRY_VERIFY(!scroll->property("scrollingMode").toBool());
     QVERIFY(!fixture.gallery.scrollingCursorRequests.last().value("scrollingMode").toBool());
+}
+
+void F4DocumentSurfaceTests::shortEditorSelectionDoesNotScroll()
+{
+    auto frame = editorFrame(0, 12, 0, 1, 12);
+    frame.insert("viewportRows", 45);
+    frame.insert("viewportSpan", 12);
+    auto rows = frame.value("windowRows").toList();
+    for (int i = 0; i < rows.size(); ++i) {
+        auto row = rows[i].toMap();
+        row.insert("visualWidth", 20);
+        rows[i] = row;
+    }
+    frame.insert("windowRows", rows);
+    DocumentFixture fixture(documentScene(QVariantMap{}), 600);
+    QVERIFY(fixture.ready());
+    QVERIFY(fixture.window->setProperty("ch", 23.0));
+    QTest::qWait(100);
+    fixture.window->resize(1200, 1186);
+    QTest::qWait(100);
+    frame.insert("layoutRevision", 2);
+    frame.insert("geometryRevision", 100);
+    fixture.shell.setScene(documentScene(frame));
+    QTest::qWait(100);
+    const auto firstRowY = [&fixture]() {
+        QList<QQuickItem *> pending{fixture.list};
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            pending.append(item->childItems());
+            if (item->objectName() == "documentRowDelegate"
+                    && item->property("loaded").toBool()
+                    && item->property("rowData").toMap().value("visualRow").toInt() == 0)
+                return item->mapToItem(fixture.list, QPointF()).y();
+        }
+        return -99999.0;
+    };
+    const qreal initialRowY = firstRowY();
+    // At 175%, the old contentY/rowHeight calculation reported row 1.54375
+    // here and moved the actual first row from 0 to -35.2857 logical px.
+    // A real delegate coordinate catches this even if the reported top clamps.
+
+    QVERIFY(qAbs(initialRowY) < 0.001);
+    for (int step = 0; step < 30; ++step) {
+        const int row = step < 15 ? qMin(step, 11) : qMax(0, 26 - step);
+        frame.insert("selection", true);
+        frame.insert("selectionAnchorRow", 0);
+        frame.insert("selectionAnchorColumn", 0);
+        frame.insert("cursorAbsoluteRow", row);
+        frame.insert("cursorAbsoluteColumn", 5);
+        // Occurrence highlighting changes base row styles while selecting.
+        auto styledRows = frame.value("windowRows").toList();
+        for (int i = 0; i < styledRows.size(); ++i) {
+            auto styledRow = styledRows[i].toMap();
+            styledRow.remove("text");
+            styledRow.insert("contentKey", QString("selection-%1-%2").arg(step).arg(i));
+            styledRow.insert("runs", QVariantList{QVariantMap{
+                {"text", "repeated selection text"},
+                {"foreground", "#ffffff"},
+                {"background", step % 2 ? "#663366" : "#222222"}}});
+            styledRows[i] = styledRow;
+        }
+        frame.insert("windowRows", styledRows);
+        frame.insert("windowContentKey", QString("selection-%1").arg(step));
+        // Exercise both full publication and the keyboard's compact update.
+        if (step % 2 == 0)
+            fixture.shell.setScene(documentScene(frame));
+        else {
+            fixture.shell.surfaceRegistry()->applyDocumentState(frame, step + 2);
+            emit fixture.shell.compactPresentationChanged({{"surfaceState", frame}});
+        }
+        QTest::qWait(30);
+        QVERIFY2(qAbs(firstRowY() - initialRowY) < 0.001,
+                 qPrintable(QString("First row jumped from %1 to %2").arg(initialRowY).arg(firstRowY())));
+        QCOMPARE(topExtent(fixture.surface, fixture.list), 0.0);
+        int visibleClips = 0;
+        QList<QQuickItem *> pending{fixture.surface};
+        while (!pending.isEmpty()) {
+            auto *leaf = pending.takeLast();
+            pending.append(leaf->childItems());
+            if (leaf->isVisible() && (leaf->objectName() == "documentRunText"
+                    || leaf->objectName() == "documentPlainText"
+                    || leaf->objectName() == "documentEditorSelectedText")) {
+                const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+                const qreal dpr = fixture.window->devicePixelRatio();
+                QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001);
+                QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001);
+                const auto dx = leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin;
+                const auto dy = leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin;
+                QVERIFY(QLineF(dx, QPointF(1, 0)).length() < 0.001);
+                QVERIFY(QLineF(dy, QPointF(0, 1)).length() < 0.001);
+            }
+            if (leaf->objectName() == "documentEditorSelectionClip"
+                    && leaf->isVisible() && leaf->width() > 0)
+                ++visibleClips;
+        }
+        QVERIFY(visibleClips > 0);
+    }
+    QVERIFY(fixture.window->grabWindow().save(".diagnostics/short-editor-selection-175.png"));
 }

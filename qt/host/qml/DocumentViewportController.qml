@@ -13,6 +13,9 @@ Item {
     required property Item middleAutoScrollController
     property var frame: ({})
     property bool embedded: false
+    property bool reportsNativeViewport: true
+    property real nativeViewportHeight: -1
+    onNativeViewportHeightChanged: Qt.callLater(syncNativeViewport)
     property bool interactionActive: true
     property bool showsConsoleTopBar: false
     property bool terminalSurface: false
@@ -84,13 +87,15 @@ Item {
     visible: false; width: 0; height: 0
 
     function completeViewportRows() {
-        if (rowHeight <= 0 || documentList.height <= 0)
+        const viewportHeight = nativeViewportHeight >= 0 ? nativeViewportHeight : documentList.height
+        if (rowHeight <= 0 || viewportHeight <= 0)
             return 0
         return Math.max(1, Math.floor(
-                            (documentList.height + 0.001) / rowHeight))
+                            (viewportHeight + 0.001) / rowHeight))
     }
 
     function clearNativeViewport() {
+        if (!reportsNativeViewport) return
         // Standalone geometry belongs to the window session, not to a file.
         // Closing a document must not clear the next document's layout.
         if (standaloneViewport)
@@ -110,6 +115,7 @@ Item {
     }
 
     function syncNativeViewport() {
+        if (!reportsNativeViewport) return
         if (standaloneViewport) {
             const columns = Math.max(1, Math.floor(
                 standaloneViewportWidth / Math.max(1, documentCellWidth)))

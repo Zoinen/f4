@@ -275,7 +275,16 @@ void QtShellController::commitTypedScenePatch(
         const QVariantMap shell = applied.scene.value(
             QStringLiteral("shell")).toMap();
         m_shellState->applyShell(shell, revision);
-        if (rootShell || streamId == QStringLiteral("shell")) {
+        // Go may attach shell fields to the first affected panel stream.
+        // Layout/surface changes must reach QML regardless of their envelope's
+        // stream. Title, activation and command-line changes already have
+        // compact projections and must not reset the retained panel surface.
+        QSet<QString> surfaceKeys = applied.shellKeys;
+        surfaceKeys.remove(QStringLiteral("title"));
+        surfaceKeys.remove(QStringLiteral("activePanel"));
+        surfaceKeys.remove(QStringLiteral("commandLine"));
+        if (rootShell || streamId == QStringLiteral("shell")
+            || !surfaceKeys.isEmpty()) {
             m_surfaceRegistry->applyShell(shell, revision);
         }
         if (rootShell

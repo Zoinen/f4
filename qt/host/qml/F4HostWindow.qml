@@ -513,6 +513,10 @@ ApplicationWindow {
         return presentationUtilities.panelSideVisible(side)
     }
     function nativePanelX(side) { return presentationUtilities.nativePanelX(side) }
+    function panelBottomInset(side) { return presentationUtilities.panelBottomInset(side) }
+    function nativePanelHeight(side, topInset) {
+        return presentationUtilities.nativePanelHeight(side, topInset)
+    }
     function nativePanelWidth(side) {
         return presentationUtilities.nativePanelWidth(side)
     }

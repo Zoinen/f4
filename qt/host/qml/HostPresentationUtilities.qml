@@ -111,6 +111,19 @@ QtObject {
         return Number(side) === 0 ? 0 : nativePanelSplitPosition()
     }
 
+    function panelBottomInset(side) {
+        const layout = hostWindow.shellFrame().panelLayout || ({})
+        const rows = Number((Number(side) === 0 ? layout.leftBottomInsetRows
+                                               : layout.rightBottomInsetRows) || 0)
+        return snapPx(Math.max(0, rows) * hostWindow.ch)
+    }
+
+    function nativePanelHeight(side, topInset) {
+        return snapPx(Math.max(1, hostWindow.height - topInset
+                      - hostWindow.commandLineHeight(hostWindow.shellFrame())
+                      - hostWindow.keyBarHeight() - panelBottomInset(side)))
+    }
+
     function nativePanelWidth(side) {
         if (widePanelSide() >= 0)
             return hostWindow.width

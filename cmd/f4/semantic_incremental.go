@@ -308,7 +308,7 @@ var incrementalShellPatchKeys = []string{
 	"id", "kind", "title", "mode", "activePanel", "showPanels",
 	"showLeftPanel", "showRightPanel", "wide", "widePanel", "showKeyBar",
 	"terminalBusy", "terminalActive", "macroRecording", "fallback", "reason",
-	"infoPanels", "quickViews", "commandLine", "terminal",
+	"infoPanels", "quickViews", "commandLine", "terminal", "panelLayout",
 }
 
 func compactAppSemanticScene(scene map[string]any) map[string]any {

@@ -2144,7 +2144,7 @@ func TestPanelsFrameSemanticGridFallbackForUnsupportedPanelLayouts(t *testing.T)
 	}
 	pf.widthDecrement = 0
 	pf.leftHeightDecrement = 1
-	if reason := pf.semanticGridFallbackReason(); !strings.Contains(reason, "shortened-panel") {
+	if reason := pf.semanticGridFallbackReason(); reason != "" {
 		t.Fatalf("shortened panel fallback reason = %q", reason)
 	}
 	pf.leftHeightDecrement = 0

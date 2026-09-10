@@ -707,3 +707,14 @@ func TestAppDetectsMenuBarSubmenuByAuthoritativeGeometry(t *testing.T) {
 		t.Fatal("standalone menu was mistaken for a menu-bar submenu")
 	}
 }
+
+func TestAppShellPreservesShortenedPanelLayout(t *testing.T) {
+	layout := map[string]any{"columns": 100, "splitColumn": 44, "leftBottomInsetRows": 2, "rightBottomInsetRows": 4}
+	got := appShellFromLegacy(map[string]any{"panelLayout": layout}).PanelLayout
+	if got.Columns != 100 || got.SplitColumn != 44 || got.LeftBottomInsetRows != 2 || got.RightBottomInsetRows != 4 {
+		t.Fatalf("panel layout lost in app projection: %#v", got)
+	}
+	if !incrementalTestContainsString(incrementalShellPatchKeys, "panelLayout") {
+		t.Fatal("panel layout must also travel through incremental shell patches")
+	}
+}

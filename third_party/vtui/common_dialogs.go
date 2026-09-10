@@ -272,6 +272,7 @@ func createMessageDialog(title string, text string, buttons []string, kind Messa
 	}
 
 	dlg := NewCenteredDialog(dlgWidth, dlgHeight, title)
+	dlg.messageText = &text
 	if kind == MessageWarn {
 		dlg.IsWarning = true
 	}

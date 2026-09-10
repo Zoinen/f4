@@ -143,13 +143,6 @@ func (pf *PanelsFrame) semanticGridFallbackReason() string {
 			return "the QML presentation does not yet support the " + panel.Kind() + " panel"
 		}
 	}
-	// Horizontal split geometry is part of the bounded shell contract and is
-	// rendered natively. Shortened panels expose live terminal rows, which need
-	// their own incremental terminal patch before that layout can leave the
-	// compatibility grid without regressing correctness.
-	if pf.showPanels && (pf.leftHeightDecrement != 0 || pf.rightHeightDecrement != 0) {
-		return "the QML presentation does not yet support shortened-panel layouts"
-	}
 	return ""
 }
 
@@ -3600,6 +3593,8 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 	if ev.overtype {
 		cursorShape = "block"
 	}
+	// DisasmMode is the remembered CPU bitness, also detected for plain text
+	// files. Only DecodeMode/HexMode indicate a non-text presentation.
 	selected := semanticRunModel("", vtui.Palette[vtui.ColDialogEditSelected])
 	state := semanticEditorCursorState{
 		line:           ev.CursorLine,
@@ -3611,7 +3606,7 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 		absoluteRow:    int64(cursorAbsoluteRow),
 		absoluteColumn: cursorAbsoluteColumn + ev.CursorVirtualSpaces,
 		selection: ev.selActive && !ev.rectSelActive && !ev.HexMode &&
-			!ev.DecodeMode && ev.DisasmMode == 0 && !ev.saving &&
+			!ev.DecodeMode && !ev.saving &&
 			!ev.pasting && ev.targetLine == -1,
 		selectionForeground: selected.Foreground,
 		selectionBackground: selected.Background,
@@ -3619,7 +3614,7 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 		selectionUnderline:  selected.Underline,
 		selectionStrikeout:  selected.Strikeout,
 	}
-	if !ev.HexMode && !ev.DecodeMode && ev.DisasmMode == 0 && !ev.saving && !ev.pasting {
+	if !ev.HexMode && !ev.DecodeMode && !ev.saving && !ev.pasting {
 		for _, caret := range ev.extraCursors {
 			row, column := ev.engine.LogicalToVisual(caret.off)
 			anchorRow, anchorColumn := ev.engine.LogicalToVisual(caret.anchor)

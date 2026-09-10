@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime"
 	"strings"
 )
 
@@ -167,4 +168,10 @@ func startupChoiceAt[T any](choices []T, pos int) T {
 		return zero
 	}
 	return choices[pos]
+}
+
+// Only the Windows portable Qt product changes the historical console default.
+// Explicit --tty/--gui and configured startup choices are resolved first.
+func portableQtDefault() bool {
+	return runtime.GOOS == "windows" && len(embeddedQtHostGzip) > 0
 }

@@ -15,9 +15,7 @@ Rectangle {
     x: hostWindow.nativePanelX(side)
     y: menuBar.height
     width: hostWindow.nativePanelWidth(side)
-    height: Math.max(1, hostWindow.height - menuBar.height
-                     - hostWindow.commandLineHeight(hostWindow.shellFrame())
-                     - hostWindow.keyBarHeight())
+    height: hostWindow.nativePanelHeight(side, menuBar.height)
     color: "transparent"
     border.width: 0
     clip: true
@@ -117,6 +115,12 @@ Rectangle {
         color: "transparent"
 
         Text {
+            id: infoPanelFooterText
+            objectName: "infoPanelFooterText-" + side
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(infoPanelFooterText, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(infoPanelFooterText, hostWindow.contentItem)
+            }
             anchors.fill: parent
             anchors.leftMargin: 8
             anchors.rightMargin: 8

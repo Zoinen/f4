@@ -179,11 +179,23 @@ Item {
         return itemForModelIndex(loadedSlotStart + index)
     }
 
+    // ListView may rebase originY and round its estimated slot stride.
+    // contentY / rowHeight is therefore not a document row coordinate.
+    function windowPositionAtContentY(contentY) {
+        const y = Number(contentY || 0)
+        let slot = modelIndexAtContentY(y)
+        if (slot < 0)
+            slot = loadedSlotStart
+        const origin = modelCoordinateForIndex(slot)
+        const stride = modelCoordinateForIndex(slot + 1) - origin
+        return slot - loadedSlotStart
+                + (y - origin) / (stride > 0 ? stride : rowHeight)
+    }
+
     function topState() {
         if (!displayedRows || displayedRows.length === 0)
             return { "index": 0, "fraction": 0, "extent": 0 }
-        const raw = Math.max(0, documentList.contentY) / rowHeight
-                - loadedSlotStart
+        const raw = windowPositionAtContentY(documentList.contentY)
         const index = clamp(Math.floor(raw), 0, displayedRows.length - 1)
         const fraction = clamp(raw - index, 0, 0.999999)
         const start = rowExtent(index)
@@ -198,8 +210,7 @@ Item {
     function extentAtContentY(contentY) {
         if (!displayedRows || displayedRows.length === 0)
             return 0
-        const raw = Math.max(0, Number(contentY || 0)) / rowHeight
-                - loadedSlotStart
+        const raw = windowPositionAtContentY(contentY)
         const bounded = clamp(raw, 0, displayedRows.length)
         if (bounded >= displayedRows.length)
             return rowEndExtent(displayedRows.length - 1)

@@ -107,7 +107,8 @@ bool validShellPatchValue(const QString &key, const QVariant &value)
         return valueHasType(value, QMetaType::QVariantList);
     }
     if (key == QStringLiteral("commandLine")
-        || key == QStringLiteral("terminal")) {
+        || key == QStringLiteral("terminal")
+        || key == QStringLiteral("panelLayout")) {
         return valueHasType(value, QMetaType::QVariantMap);
     }
     return valueHasType(value, QMetaType::Bool);
@@ -450,6 +451,7 @@ bool applyScenePatch(const QVariantMap &message,
         QStringLiteral("fallback"), QStringLiteral("reason"),
         QStringLiteral("infoPanels"), QStringLiteral("quickViews"),
         QStringLiteral("commandLine"), QStringLiteral("terminal"),
+        QStringLiteral("panelLayout"),
     };
     for (auto it = message.cbegin(); it != message.cend(); ++it) {
         if (!envelopeKeys.contains(it.key())

@@ -1787,7 +1787,7 @@ func (ev *EditorView) editorCursorStateGuard() editorCursorPatchGuard {
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
 	if (AppConfig.EditorMarkOccurrences && ev.selActive) || showHorzCross || showVertCross || ev.rectSelActive ||
 		len(ev.acMatches) != 0 || ev.pasting || ev.saving || ev.targetLine != -1 ||
-		ev.HexMode || ev.DecodeMode || ev.DisasmMode != 0 {
+		ev.HexMode || ev.DecodeMode {
 		return guard
 	}
 	guard = editorCursorPatchGuard{

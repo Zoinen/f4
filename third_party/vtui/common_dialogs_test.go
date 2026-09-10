@@ -561,3 +561,15 @@ func TestShowMessageEx_ExplicitKindOverridesTitle(t *testing.T) {
 		t.Error("ShowMessageEx(MessageWarn) must set IsWarning regardless of title")
 	}
 }
+
+func TestMessageSemanticPreservesOriginalBody(t *testing.T) {
+	body := "Heading\n\n" + strings.Repeat("long message with & and <literal> text ", 150)
+	dlg := createMessageDialog("Error", body, []string{"OK"}, MessageWarn)
+	children := dlg.SemanticNode(nil)["children"].([]map[string]any)
+	if len(children) != 2 || children[0]["text"] != body || children[0]["wrapText"] != true {
+		t.Fatalf("message was wrapped or truncated: %#v", children)
+	}
+	if children[1]["kind"] != "button" {
+		t.Fatal("button missing")
+	}
+}

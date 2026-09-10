@@ -457,7 +457,28 @@ func (w *Window) SemanticNode(ctx *SemanticContext) map[string]any {
 		"showZoom":  w.ShowZoom,
 	}
 	if w.rootGroup != nil {
-		node["children"] = semanticChildren(ctx, w.rootGroup.GetChildren())
+		children := semanticChildren(ctx, w.rootGroup.GetChildren())
+		if w.messageText != nil {
+			// Export one original paragraph block; console labels are presentation
+			// artifacts, including any truncation imposed by terminal height.
+			body := map[string]any{"id": SemanticID(w) + "-message", "kind": "text",
+				"text": *w.messageText, "wrapText": true, "visible": true,
+				"x": x1 + 2, "y": y1 + 1, "w": max(1, x2-x1-3), "h": 1}
+			semantic := []map[string]any{body}
+			firstButtonY := -1
+			for _, child := range children {
+				if child["kind"] != "button" {
+					continue
+				}
+				if firstButtonY < 0 {
+					firstButtonY = semanticInt(child["y"])
+				}
+				child["y"] = y1 + 3 + semanticInt(child["y"]) - firstButtonY
+				semantic = append(semantic, child)
+			}
+			children = semantic
+		}
+		node["children"] = children
 	}
 	return node
 }
@@ -519,7 +540,7 @@ func (gb *GroupBox) SemanticNode(ctx *SemanticContext) map[string]any {
 func semanticActionMovesFocus(action string) bool {
 	switch action {
 	case "focus", "control.focus", "open", "control.open",
-		"activate", "control.activate", "toggle", "control.toggle", "select", "control.select":
+		"activate", "control.activate", "toggle", "control.toggle", "select", "control.select", "control.sort", "control.search":
 		return true
 	}
 	return false
@@ -708,8 +729,7 @@ func (rg *RadioGroup) HandleSemanticAction(action map[string]any) bool {
 	return false
 }
 
-// ListBox needs its own semantic contract: the embedded Table has no
-// semantic provider, so exporting it as a generic widget loses every row.
+// ListBox retains its single-column semantic contract independently of Table.
 func (lb *ListBox) SemanticNode(ctx *SemanticContext) map[string]any {
 	x1, y1, x2, y2 := lb.GetPosition()
 	items := append([]string{}, lb.Items...)

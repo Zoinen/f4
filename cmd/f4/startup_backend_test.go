@@ -224,3 +224,12 @@ func TestStartupConfigDefaultsAreAuto(t *testing.T) {
 			AppConfig.GuiBackend, AppConfig.TTYBackend)
 	}
 }
+
+func TestPortableQtBuildDefaultsToGui(t *testing.T) {
+	if !portableQtDefault() {
+		t.Skip("requires Windows embedded Qt build")
+	}
+	if !shouldTryGui() {
+		t.Fatal("portable Qt executable defaults to console")
+	}
+}

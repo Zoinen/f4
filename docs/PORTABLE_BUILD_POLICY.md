@@ -72,6 +72,36 @@ single-file runtime contract.
   directories beside it.
 - Audit imports so only Windows system DLLs remain.
 
+## Static QML resource verification
+
+Static plugin registration alone is insufficient. Preserve the module `qmldir`
+resources and their transitive imports as well as the C++ types. The explicit
+resource initializers live in `qt/host/src/StaticQmlPluginImports.cpp`; keep them
+in sync with the static plugin set when adding or upgrading Qt modules.
+
+The Windows 10 VM exposed this failure on 2026-09-09: the host exited while
+loading `main.qml` with `Connections is not a type`. The development machine
+masked the missing resources by finding `qmldir` files in its Conan Qt package.
+Retaining the embedded module resources fixed startup without installing Qt in
+the guest.
+
+For every static build:
+
+- Run `F4QuickViewSurfaceTests qmlImportsWithoutInstalledQt`. This regression
+  restricts the engine's import paths to embedded resources and must pass on a
+  static Qt build. It also runs as part of `F4QuickViewSurfaceTest` in CTest.
+- Run the packaged executable in an environment without the build machine's
+  Qt installation. On Windows, verify that double-clicking the single Go
+  executable opens the Qt frontend and that its child is the newly embedded
+  host extracted into the cache. Clear `F4_EXT_UI_PATH` and do not supply a
+  sibling host for this check.
+- Regenerate the compressed payload after rebuilding the Qt host, then rebuild
+  the Go executable with `CGO_ENABLED=0` and the `f4_embedded_qt_host` tag. An old
+  embedded payload does not acquire native fixes by rebuilding Go alone.
+
+`F4_QT_HOST_STARTUP_SMOKE_ONLY` exits before QML/window creation. Passing that
+probe or the DLL import audit does not replace either of the checks above.
+
 ## macOS contract
 
 - Use the repository deployment target consistently for Qt and every native

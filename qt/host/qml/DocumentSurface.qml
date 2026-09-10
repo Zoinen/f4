@@ -15,6 +15,8 @@ Rectangle {
     // Standalone F3/F4 owns the full application surface. Embedded
     // Quick View is already laid out between its own header and footer,
     // so applying the global menu/keybar insets there would double-pad it.
+    property bool reportsNativeViewport: true
+    property real nativeViewportHeight: -1
     property bool embedded: false
     property bool interactionActive: true
     property real scrollBarRightInset: 0
@@ -186,19 +188,19 @@ Rectangle {
 
     function bodyPixelOffsetX(localX) {
         const origin = pixelGridOrigin.x + localX
-        return standaloneViewport && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
+        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
     }
     function bodyPixelOffsetY(localY) {
         const origin = pixelGridOrigin.y + localY
-        return standaloneViewport && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
+        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
     }
 
     function pixelOffsetX(item) {
-        return standaloneViewport && !kineticActive
+        return (standaloneViewport || terminalSurface) && !kineticActive
                 ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem) : 0
     }
     function pixelOffsetY(item) {
-        return standaloneViewport && !kineticActive
+        return (standaloneViewport || terminalSurface) && !kineticActive
                 ? hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem) : 0
     }
 
@@ -746,6 +748,8 @@ Rectangle {
         interactionActive: documentRoot.interactionActive
         showsConsoleTopBar: documentRoot.showsConsoleTopBar
         terminalSurface: documentRoot.terminalSurface
+        reportsNativeViewport: documentRoot.reportsNativeViewport
+        nativeViewportHeight: documentRoot.nativeViewportHeight
         rowHeight: documentRoot.rowHeight
         standaloneViewport: documentRoot.standaloneViewport
         standaloneViewportWidth: documentRoot.prospectiveViewportWidth

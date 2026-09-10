@@ -54,7 +54,7 @@ Item {
             implicitWidth))
         height: hostWindow.snapPx(implicitHeight)
         text: hostWindow.worktreeBranchName
-        visible: text !== ""
+        visible: text !== "" && text !== "zoin"
         color: hostWindow.chromeText
         font.pixelSize: hostWindow.semanticTextFontPixelSize
         renderType: hostWindow.fontRenderType

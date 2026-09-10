@@ -632,6 +632,7 @@ type DialogModel struct {
 }
 
 type ControlModel struct {
+	WrapText   bool
 	ID         string
 	Kind       string
 	Visible    bool
@@ -1555,6 +1556,7 @@ func (c ControlModel) ToMap() M {
 		"hotkey":     c.Hotkey,
 		"state":      c.State,
 		"threeState": c.ThreeState,
+		"wrapText":   c.WrapText,
 		"default":    c.Default,
 		"password":   c.Password,
 		"cursor":     c.Cursor,

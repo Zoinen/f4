@@ -501,6 +501,17 @@ void F4GalleryPointerTests::semanticKeyRepeatSuppressesSyntheticRelease()
                         Qt::NoModifier, 0, false);
     QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
     verifyKey(payload, false, false);
+
+    for (bool down : {true, false}) {
+        grid.sendQtKeyEvent(Qt::Key_Backtab, QStringLiteral("\t"), down,
+                            Qt::ShiftModifier, 0, false);
+        QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+        verifyKey(payload, down, false);
+        const auto handle = msgpack::unpack(payload.constData(), payload.size());
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QVERIFY((message.at("mods").as<qint64>() & 0x10) != 0);
+    }
 }
 
 void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()

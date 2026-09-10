@@ -688,6 +688,7 @@ class F4QuickViewSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void qmlImportsWithoutInstalledQt();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
@@ -742,8 +743,38 @@ private slots:
     void panelCursorBlinkSettlesAndBlockingMenuStopsIt();
     void autocompleteReturnTargetsShellCommandHandler();
     void widePanelDoesNotRevealTerminalBackdrop();
+    void shortenedPanelsRevealTerminalRows();
+    void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
 };
+
+void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
+{
+#ifndef QT_STATIC
+    QSKIP("Shared Qt builds intentionally load installed QML modules");
+#endif
+    QQmlEngine engine;
+    engine.setImportPathList({QStringLiteral("qrc:/qt-project.org/imports"),
+                              QStringLiteral("qrc:/qt/qml")});
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import QtQuick.Controls
+        import QtQuick.Layouts
+        import QtQuick.Shapes
+        import QtQuick.Effects
+        Item {
+            Connections { target: null }
+            Timer { interval: 100 }
+            ListModel { ListElement { title: "item" } }
+            RowLayout { Button { text: "OK" } ComboBox { model: ["one", "two"] } }
+            Shape { }
+            MultiEffect { }
+        }
+    )", QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+}
 
 void F4QuickViewSurfaceTests::initTestCase()
 {
@@ -3498,7 +3529,7 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
 void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
 {
     QuickViewFixture fixture(shellScene(), false, true,
-                             QStringLiteral("zoin"));
+                             QStringLiteral("zoin-feature"));
     QVERIFY(fixture.window);
     QQuickItem *const rootItem = fixture.window->contentItem();
     QQuickItem *const titleBar = fixture.item(QStringLiteral("titleBar"));
@@ -3508,7 +3539,7 @@ void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
     QVERIFY(branchLabel);
     QTRY_VERIFY_WITH_TIMEOUT(branchLabel->isVisible(), 3000);
     QCOMPARE(branchLabel->property("text").toString(),
-             QStringLiteral("zoin"));
+             QStringLiteral("zoin-feature"));
 
     const qreal dpr = fixture.window->devicePixelRatio();
     const QPointF titleBarOrigin = titleBar->mapToItem(
@@ -3541,6 +3572,15 @@ void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
              "worktree branch label must not be scaled");
     QVERIFY2(qAbs(branchLabel->rotation()) < 0.001,
              "worktree branch label must not be rotated");
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(1, 0)) - branchOrigin, QPointF(1, 0));
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(0, 1)) - branchOrigin, QPointF(0, 1));
+    fixture.window->setProperty("worktreeBranchName", QStringLiteral("zoin"));
+    QTRY_VERIFY(!branchLabel->isVisible());
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    capture.save("D:/Code/f4-zoin/.diagnostics/hidden-zoin-title-175.png");
+    fixture.window->setProperty("worktreeBranchName", QStringLiteral("Zoin"));
+    QTRY_VERIFY(branchLabel->isVisible());
 }
 
 void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
@@ -5139,6 +5179,132 @@ void F4QuickViewSurfaceTests::panelCursorBlinkSettlesAndBlockingMenuStopsIt()
         fastFindCursor->property("blinkTimerRunning").toBool(), 500);
 }
 
+void F4QuickViewSurfaceTests::shortenedPanelsRevealTerminalRows()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto rows = visualRows(0, 90);
+    for (int i = 1; i < rows.size(); i += 2) {
+        auto row = rows[i].toMap();
+        row.insert("runs", QVariantList{QVariantMap{{"text", row.value("text")}, {"foreground", "#80c0ff"}}});
+        rows[i] = row;
+    }
+    shell.insert("terminal", QVariantMap{
+        {"id", "terminal-shortened"}, {"kind", "terminal"}, {"scrollUnit", "rows"},
+        {"windowRows", rows}, {"windowStart", 0}, {"windowEnd", 90},
+        {"viewportStart", 30}, {"viewportSpan", 24}, {"viewportRow", 30},
+        {"viewportRows", 24}, {"contentExtent", 90},
+        {"contentExtentKnown", true}, {"windowGeneration", 1},
+    });
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *left = fixture.item("filePanel-0");
+    auto *right = fixture.item("filePanel-1");
+    auto *backdrop = fixture.item("terminalBackdrop");
+    QVERIFY(left && right && backdrop);
+    const qreal fullHeight = left->height();
+    shell.insert("panelLayout", QVariantMap{
+        {"columns", 100}, {"splitColumn", 50},
+        {"leftBottomInsetRows", 2}, {"rightBottomInsetRows", 4},
+    });
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(left->height() < fullHeight);
+    QVERIFY(right->height() < left->height());
+    QVERIFY(backdrop->isVisible());
+    QVERIFY(fixture.item("terminalDocumentSurface"));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (auto *panel : {left, right}) {
+        const QPointF bottom = panel->mapToItem(fixture.window->contentItem(), QPointF(0, panel->height()));
+        QVERIFY(qAbs(bottom.y()*dpr - qRound64(bottom.y()*dpr)) < .001);
+        auto *footer = fixture.item(panel == left ? "panelStatus-0" : "panelStatus-1");
+        QVERIFY(footer);
+        QList<QQuickItem *> pending{footer};
+        int leaves = 0;
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            pending.append(item->childItems());
+            if (!QByteArray(item->metaObject()->className()).startsWith("QQuickText")) continue;
+            const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+            qInfo() << item->objectName() << origin*dpr;
+            QVERIFY(!item->objectName().isEmpty());
+            QVERIFY(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001);
+            QVERIFY(qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001);
+            QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+            ++leaves;
+        }
+        QVERIFY(leaves > 0);
+    }
+    auto *terminal = fixture.item("terminalDocumentSurface");
+    QCOMPARE(terminal->height(), fixture.item("terminalExposedLeft")->height());
+    QCOMPARE(fixture.item("terminalDocumentSurfaceRight")->height(), fixture.item("terminalExposedRight")->height());
+    QCOMPARE(terminal->mapToItem(fixture.window->contentItem(), QPointF()).y(),
+             fixture.item("terminalExposedLeft")->mapToItem(fixture.window->contentItem(), QPointF()).y());
+    QTRY_COMPARE(terminal->property("reportedViewportRows").toInt(), 4);
+    for (auto *surface : {terminal, fixture.item("terminalDocumentSurfaceRight")}) {
+        auto *bar = surface->findChild<QQuickItem *>("documentScrollBar");
+        QVERIFY(bar);
+        const auto top = bar->mapToItem(surface, QPointF()).y();
+        QVERIFY(top >= -.001);
+        QVERIFY(top + bar->height() <= surface->height() + .001);
+    }
+    auto terminalLeaves = [&]() {
+        QList<QQuickItem *> result;
+        QList<QQuickItem *> pending{terminal, fixture.item("terminalDocumentSurfaceRight")};
+        while (!pending.isEmpty()) {
+            auto *leaf = pending.takeLast();
+            pending.append(leaf->childItems());
+            if ((leaf->objectName() == "documentPlainText" || leaf->objectName() == "documentRunText") && leaf->isVisible()
+                && !leaf->property("text").toString().isEmpty()) result.append(leaf);
+        }
+        return result;
+    };
+    QTRY_VERIFY(!terminalLeaves().isEmpty());
+    for (auto *leaf : terminalLeaves()) {
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        qInfo() << "terminal leaf" << origin*dpr;
+        QVERIFY(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001);
+        QVERIFY(qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001);
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+    }
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    capture.save("D:/Code/f4-zoin/.diagnostics/shortened-panels-175.png");
+    shell.insert("wide", true);
+    shell.insert("widePanel", 1);
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!left->isVisible());
+    QVERIFY(backdrop->isVisible());
+    shell.insert("panelLayout", QVariantMap{{"leftBottomInsetRows", 0}, {"rightBottomInsetRows", 0}});
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!backdrop->isVisible());
+    QCOMPARE(right->height(), fullHeight);
+    shell.insert("wide", false);
+    shell.insert("panelLayout", QVariantMap{{"leftBottomInsetRows", 2}, {"rightBottomInsetRows", 4}});
+    shell.insert("infoPanels", QVariantList{QVariantMap{{"side", 0}, {"title", "Information"}, {"bottomHint", "Bytes"}}});
+    auto preview = quickView(1, true, "shortened-preview", 0, 0, 1);
+    preview.insert("bottomHint", "Quick View");
+    shell.insert("quickViews", QVariantList{preview});
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    for (const auto &name : {"infoPanelFooterText-0", "quickViewFooterText-1"}) {
+        QQuickItem *leaf = nullptr;
+        QTRY_VERIFY((leaf = fixture.item(name)) != nullptr && leaf->isVisible());
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        qInfo() << name << origin*dpr;
+        QVERIFY(qAbs(origin.x()*dpr-qRound64(origin.x()*dpr)) < .001);
+        QVERIFY(qAbs(origin.y()*dpr-qRound64(origin.y()*dpr)) < .001);
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+    }
+    fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/shortened-alternate-panels-175.png");
+}
+
 void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
 {
     QVariantMap scene = shellScene();
@@ -5166,6 +5332,13 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     QVERIFY(!backdrop->isVisible());
     QCOMPARE(widePanel->x(), 0.0);
     QCOMPARE(widePanel->width(), fixture.window->width());
+
+    shell.insert(QStringLiteral("wide"), false);
+    shell.remove(QStringLiteral("widePanel"));
+    scene.insert(QStringLiteral("shell"), shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY_WITH_TIMEOUT(passivePanel->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(widePanel->width() < fixture.window->width(), 3000);
 }
 
 void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
@@ -5228,9 +5401,15 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(backdrop->property("scrollBarRightInset").toReal()) < 0.01,
         3000);
+    QTest::qWait(100);
+    auto *rightSurface = fixture.item("terminalDocumentSurfaceRight");
+    QVERIFY(rightSurface);
+    auto *rightBar = rightSurface->findChild<QQuickItem *>("documentScrollBar");
+    QVERIFY(rightBar);
+    qInfo() << "right bar" << rightBar->mapToItem(backdrop, QPointF(rightBar->width(),0)) << backdrop->width() << rightSurface->width() << rightSurface->property("scrollBarRightInset");
     QTRY_VERIFY_WITH_TIMEOUT(
-        qAbs(scrollBar->mapToItem(backdrop,
-                                 QPointF(scrollBar->width(), 0)).x()
+        qAbs(rightBar->mapToItem(backdrop,
+                                 QPointF(rightBar->width(), 0)).x()
              - backdrop->width()) < 0.01,
         3000);
     // Exercise the real terminal backdrop with both panels hidden, not only
@@ -5240,7 +5419,9 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
     shell.insert("terminalActive", true);
     scene.insert("shell", shell);
     fixture.shell.setScene(scene);
+    QTRY_VERIFY((surface = fixture.item("terminalDocumentSurface")) != nullptr);
     QTRY_VERIFY(surface->property("middleAutoScrollAllowed").toBool());
+    QTest::qWait(100);
     auto *middle = surface->findChild<QQuickItem *>("documentMiddleButtonArea");
     QVERIFY(middle);
     QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier,
@@ -5251,7 +5432,7 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
     shell.insert("terminalActive", false);
     scene.insert("shell", shell);
     fixture.shell.setScene(scene);
-    QTRY_VERIFY(!surface->property("middleAutoScrollActive").toBool());
+    QTRY_VERIFY(!fixture.item("terminalDocumentSurface"));
 
 }
 
@@ -5646,4 +5827,52 @@ void F4QuickViewSurfaceTests::pluginPathIconFollowsPanelOnPhysicalGrid()
             capture.save("D:/Code/f4-zoin/.diagnostics/path-icon-"+name+"-175.png");
         }
     }
+}
+
+void F4QuickViewSurfaceTests::semanticTableDialog()
+{
+    auto scene = shellScene({}, 0);
+    QVariantList rows;
+    for (int i=0; i<50; ++i) rows.append(QVariantMap{{"cells", QStringList{QString("Command %1").arg(i), "Ctrl+F1", "Shell"}}});
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "hotkeys"}, {"kind", "dialog"}, {"title", "Hotkey configuration"},
+        {"x", 2}, {"y", 2}, {"w", 80}, {"h", 25}, {"modal", true},
+        {"children", QVariantList{QVariantMap{
+            {"id", "keys"}, {"kind", "table"}, {"x", 4}, {"y", 4}, {"w", 74}, {"h", 18},
+            {"visible", true}, {"focused", true}, {"quickSearch", true}, {"showHeader", true}, {"cursor", 0},
+            {"columns", QVariantList{QVariantMap{{"title", "Command"}, {"width", 30}}, QVariantMap{{"title", "Key"}, {"width", 20}}, QVariantMap{{"title", "Area"}, {"width", 10}}}},
+            {"rows", rows}
+        }}}
+    }});
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    QTRY_VERIFY(visualItemWithText(fixture.window->contentItem(), "Command 0"));
+    QTest::qWait(150);
+    const auto dpr=fixture.window->devicePixelRatio();
+    for (int column = 1; column < 3; ++column) {
+        auto *divider = visualItemWithObjectName(fixture.window->contentItem(),
+            QString("dialogWidget-keysTableDivider-%1").arg(column));
+        QVERIFY(divider);
+        const auto origin = divider->mapToItem(fixture.window->contentItem(), QPointF());
+        QVERIFY(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001);
+        QVERIFY(qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001);
+        QCOMPARE(divider->width()*dpr, 1.0);
+        QVERIFY(qAbs(divider->height()*dpr - qRound64(divider->height()*dpr)) < .001);
+    }
+
+    QList<QQuickItem*> pending{fixture.window->contentItem()};
+    int leaves=0;
+    while (!pending.isEmpty()) {
+        auto *leaf=pending.takeLast(); pending.append(leaf->childItems());
+        if (!leaf->objectName().startsWith("dialogWidget-keysTable") || !QByteArray(leaf->metaObject()->className()).startsWith("QQuickText")) continue;
+        const auto origin=leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        qInfo()<<leaf->objectName()<<origin*dpr;
+        QVERIFY(qAbs(origin.x()*dpr-qRound64(origin.x()*dpr))<.001);
+        QVERIFY(qAbs(origin.y()*dpr-qRound64(origin.y()*dpr))<.001);
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin,QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin,QPointF(0,1));
+        ++leaves;
+    }
+    QVERIFY(leaves>=7);
+    QVERIFY(fixture.window->grabWindow().save(".diagnostics/hotkey-table-175.png"));
 }

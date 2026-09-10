@@ -207,6 +207,11 @@ func TestActionHotkeyConfigBuildsNativeRowsAndFitsScreen(t *testing.T) {
 		t.Fatal("hotkey dialog has no table")
 	}
 
+	semantic := appControlFromLegacy(table.SemanticNode(nil)).ToMap()
+	if semantic["kind"] != "table" || len(appMapSlice(semantic["columns"])) != 5 || len(appMapSlice(semantic["rows"])) != table.ItemCount {
+		t.Fatal("hotkey table lost columns or rows in the Qt semantic adapter")
+	}
+
 	selectInsert := false
 	toggleFocus := false
 	for _, row := range table.Rows {

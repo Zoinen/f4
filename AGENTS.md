@@ -9,12 +9,35 @@
   do not replace them with a directory bundle on Linux or Windows, and do not
   replace the signed application bundle with runtime extraction on macOS.
 
-## Mandatory build-and-run cycle
+## Build and launch rules
 
-- After every change to workspace files, always produce a fresh canonical build of the affected application, including the Go core and QML/Qt frontend when either participates in the result.
-- Only after the fresh build succeeds, close every already-running `f4` instance that belongs to this workspace together with its Qt host child, then launch the newly built canonical QML frontend.
-- Never leave the previous application instance running after a successful rebuild. Verify that the old processes exited and that the new Go and Qt host processes are alive.
-- If the build fails, keep the last working application instance alive, fix the build, and repeat the cycle before handing the task back to the user.
+- After making changes in the main checkout, normally replace the running
+  canonical build: terminate the process tree for
+  `D:\Code\f4\f4.exe`, build the new binary, and launch its Qt frontend
+  with `--gui=qt`.
+- When working in a Git worktree, build and launch the worktree's own binary
+  inside that worktree. Its filename must include a sanitized worktree or
+  branch identifier (for example, `f4-<worktree-name>.exe`) so binaries from
+  multiple worktrees can run in parallel. Do not overwrite
+  `D:\Code\f4\f4.exe` from a worktree.
+- When restarting a worktree build, terminate only the process tree whose
+  executable path resolves to that worktree-specific binary. Never terminate
+  a same-named or canonical F4 process belonging to another worktree or
+  checkout.
+- This workspace develops the Qt frontend. Always launch F4 directly with
+  `--gui=qt`, unless the user explicitly requests another frontend. Do not
+  launch it through GoGPU, Windows Terminal, or another wrapper or terminal
+  host. Use the current worktree's freshly built Qt host.
+- If a build fails, keep the last working application instance alive, fix the
+  build, and repeat the cycle before handing the task back to the user.
+
+## Worktree identity in the UI
+
+- The top header line must show the current Git worktree branch name centered
+  horizontally. Resolve it from the active checkout at runtime; do not
+  hard-code a branch name or reuse a value from another worktree.
+- If the current checkout is not a worktree with a distinct branch identity,
+  preserve the existing header content and centering behavior.
 
 ## Mandatory static physical-pixel alignment
 
@@ -63,9 +86,3 @@
   on the offending leaf coordinate, record the measured physical coordinate
   that caused it, and only then apply the fix. A test that would have passed the
   broken hierarchy is not an acceptable regression test.
-
-## Canonical f4 binary
-
-- Always build the user-facing Go application binary only as `/Users/zoin/Documents/f4/f4` in the project root.
-- Never create, build, copy, or launch alternate `f4` application binaries in subdirectories, temporary directories, or under any other filename.
-- Supporting Qt/QML build artifacts may remain in their one canonical configured CMake build directory, but the application must always be launched through the root `/Users/zoin/Documents/f4/f4` binary.

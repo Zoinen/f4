@@ -145,6 +145,7 @@ private slots:
     void patchPresentationIsDemandShapedAndSanitized();
     void catalogCompletionSurvivesLateQmlConstruction();
     void streamUpdatesNeverAssembleMasterScene();
+    void panelStreamPublishesShellLayout();
     void mixedOverlayPatchDoesNotPoisonDialogStream();
     void pagedSelectionKeepsBoundedCatalog();
 };
@@ -499,6 +500,54 @@ void QtShellControllerProductionTests::catalogCompletionSurvivesLateQmlConstruct
     QVERIFY(!retainedDescriptor.contains(QStringLiteral("entries")));
     QCOMPARE(controller.panelCatalogSnapshot(0)
                  .value(QStringLiteral("entries")).toList().size(), 3);
+    QVERIFY(!controller.retainsMasterSceneForTesting());
+}
+
+void QtShellControllerProductionTests::panelStreamPublishesShellLayout()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    const QString nonce = QStringLiteral("panel-shell-layout");
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()), nonce, 100, 40);
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QTRY_VERIFY(peer->bytesAvailable() > 0);
+    peer->readAll();
+    QVERIFY(sendFrame(peer, {{"type", "hello"}, {"protocol", 4}, {"nonce", nonce}}));
+    const QVariantMap panel = panelWithRows(2);
+    QVERIFY(sendFrame(peer, envelope(1, "panel/0", 1, "snapshot", {
+        {"type", "panel_catalog_snapshot"},
+        {"state", QVariantMap{{"side", 0}, {"panel", panel}}},
+    })));
+    QVERIFY(sendFrame(peer, envelope(2, "shell", 1, "snapshot", {
+        {"type", "shell_snapshot"},
+        {"state", QVariantMap{{"shell", QVariantMap{
+            {"id", "shell"}, {"kind", "shell"}, {"mode", "panels"},
+            {"showPanels", true}, {"showLeftPanel", true}, {"showRightPanel", true},
+            {"wide", true}, {"widePanel", 0},
+        }}}},
+    })));
+    QTRY_VERIFY(controller.surfaceRegistry()->shell().value("wide").toBool());
+    QSignalSpy changes(controller.surfaceRegistry(), &SurfaceRegistry::shellChanged);
+    // Go groups shell layout changes with the first affected panel stream.
+    // Exercise production reduction, not the test-only complete scene oracle.
+    QVERIFY(sendFrame(peer, envelope(3, "panel/0", 2, "patch", {
+        {"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"shell", QVariantMap{
+            {"set", QVariantMap{{"wide", false}, {"panelLayout", QVariantMap{
+                {"columns", 100}, {"splitColumn", 50},
+                {"leftBottomInsetRows", 2}, {"rightBottomInsetRows", 4},
+            }}}},
+            {"clear", QVariantList{"widePanel"}},
+        }},
+    }, 1)));
+    QTRY_VERIFY(!controller.shellState()->wide());
+    QVERIFY(!controller.surfaceRegistry()->shell().value("wide").toBool());
+    QVERIFY(!controller.surfaceRegistry()->shell().contains("widePanel"));
+    QCOMPARE(changes.size(), 1);
+    QCOMPARE(controller.surfaceRegistry()->shell().value("panelLayout").toMap()
+                 .value("rightBottomInsetRows").toInt(), 4);
     QVERIFY(!controller.retainsMasterSceneForTesting());
 }
 

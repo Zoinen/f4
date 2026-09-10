@@ -664,6 +664,7 @@ func (item appAutocompleteMenu) model() extui.MenuModel {
 }
 
 func appShellFromLegacy(node map[string]any) extui.ShellModel {
+	layout := appMap(node["panelLayout"])
 	shell := extui.ShellModel{
 		ID:             semanticString(node["id"]),
 		Title:          semanticString(node["title"]),
@@ -674,6 +675,12 @@ func appShellFromLegacy(node map[string]any) extui.ShellModel {
 		ShowRightPanel: appBoolDefault(node["showRightPanel"], true),
 		Wide:           appBool(node["wide"]),
 		WidePanel:      semanticInt(node["widePanel"]),
+		PanelLayout: extui.PanelLayoutModel{
+			Columns:              semanticInt(layout["columns"]),
+			SplitColumn:          semanticInt(layout["splitColumn"]),
+			LeftBottomInsetRows:  semanticInt(layout["leftBottomInsetRows"]),
+			RightBottomInsetRows: semanticInt(layout["rightBottomInsetRows"]),
+		},
 		ShowKeyBar:     appBoolDefault(node["showKeyBar"], true),
 		TerminalBusy:   appBool(node["terminalBusy"]),
 		TerminalActive: appBool(node["terminalActive"]),
@@ -1265,6 +1272,7 @@ func appDialogFromLegacy(node map[string]any) extui.DialogModel {
 
 func appControlFromLegacy(node map[string]any) extui.ControlModel {
 	ctrl := extui.ControlModel{
+		WrapText:   appBool(node["wrapText"]),
 		ID:         semanticString(node["id"]),
 		Kind:       semanticString(node["kind"]),
 		Visible:    appBoolDefault(node["visible"], true),

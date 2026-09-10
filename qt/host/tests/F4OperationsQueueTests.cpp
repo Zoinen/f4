@@ -751,6 +751,7 @@ class F4OperationsQueueTests final : public QObject
 
 private slots:
     void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
+    void messageBodyWrapsToGuiWidth();
     void queueDropdownKeepsPanelsAndAlignsLeaves();
     void consoleModeRestoresQueueWorkspace();
     void initTestCase();
@@ -3796,4 +3797,38 @@ void F4OperationsQueueTests::driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid()
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
     capture.save("D:/Code/f4-zoin/.diagnostics/qt-drive-menu-175.png");
+}
+
+void F4OperationsQueueTests::messageBodyWrapsToGuiWidth()
+{
+    auto scene = dialogScene();
+    auto dialog = scene.value("dialogs").toList().first().toMap();
+    const QString body = QString("Heading\n\n") + QString("A long message with <literal> & text. ").repeated(12);
+    dialog.insert("children", QVariantList{
+        QVariantMap{{"id", "message-body"}, {"kind", "text"}, {"text", body}, {"wrapText", true}, {"x", 20}, {"y", 4}, {"w", 60}, {"h", 1}},
+        QVariantMap{{"id", "message-ok"}, {"kind", "button"}, {"text", "OK"}, {"x", 46}, {"y", 6}, {"w", 8}, {"h", 1}}});
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *bodyItem = nullptr;
+    QTRY_VERIFY((bodyItem = visualItem(root, "dialogWidget-message-bodyText")) && bodyItem->isVisible());
+    QTest::qWait(150);
+    QCOMPARE(bodyItem->property("text").toString(), body);
+    QVERIFY(!bodyItem->property("truncated").toBool());
+    QVERIFY(bodyItem->property("lineCount").toInt() > 3);
+    auto *button = visualItem(root, "dialogWidget-message-okButtonText");
+    QVERIFY(button);
+    QVERIFY(button->mapToItem(root, QPointF()).y() > bodyItem->mapToItem(root, QPointF(0, bodyItem->height())).y());
+    for (auto *leaf : {bodyItem, button, visualItem(root, "semanticDialogTitle")}) {
+        QVERIFY(leaf);
+        const auto origin = leaf->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .001 && qAbs(physical.y()-qRound64(physical.y())) < .001, qPrintable(leaf->objectName()));
+        QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+    }
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    capture.save("D:/Code/f4-zoin/.diagnostics/message-wrap-175.png");
 }

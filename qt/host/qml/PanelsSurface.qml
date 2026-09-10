@@ -62,13 +62,13 @@ Item {
         anchors.bottomMargin: panels.hostWindow.keyBarHeight()
                               + panels.hostWindow.commandLineHeight(panels.frame)
         visible: panels.frame.terminalActive === true
+                 || (panels.hostWindow.panelSideVisible(0)
+                     && panels.hostWindow.panelBottomInset(0) > 0)
+                 || (panels.hostWindow.panelSideVisible(1)
+                     && panels.hostWindow.panelBottomInset(1) > 0)
                  || (panels.hostWindow.widePanelSide() < 0
                      && (panels.frame.showLeftPanel === false
-                         || panels.frame.showRightPanel === false
-                         || Number((panels.frame.panelLayout || {})
-                                      .leftBottomInsetRows || 0) > 0
-                         || Number((panels.frame.panelLayout || {})
-                                      .rightBottomInsetRows || 0) > 0))
+                         || panels.frame.showRightPanel === false))
         shell: panels.frame
         terminal: panels.frame.terminal || ({})
     }
