@@ -3,9 +3,8 @@
 package winshell
 
 import (
-	"unsafe"
-
 	"github.com/zzl/go-win32api/v2/win32"
+	"unsafe"
 )
 
 const shellIconSize = 16

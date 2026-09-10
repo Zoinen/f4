@@ -163,6 +163,25 @@ type mockAppForProgress struct {
 	mu          sync.Mutex
 }
 
+func TestResolveLocalArchivePathFromInsideLocalArchive(t *testing.T) {
+	root := t.TempDir()
+	archiveVFS := &ArchiveVFS{
+		parent:    vfs.NewOSVFS(root),
+		arcPath:   filepath.Join("archives", "bundle.zip"),
+		innerPath: "folder",
+	}
+	app := &mockAppForProgress{
+		activeVfs: archiveVFS,
+		names:     []string{"file.txt"},
+	}
+
+	got, ok := resolveLocalArchivePath(app)
+	want := filepath.Join(root, "archives", "bundle.zip")
+	if !ok || got != want {
+		t.Fatalf("resolveLocalArchivePath() = (%q, %t), want (%q, true)", got, ok, want)
+	}
+}
+
 func (m *mockAppForProgress) GetActivePanelVFS() vfs.VFS      { return m.activeVfs }
 func (m *mockAppForProgress) GetPassivePanelVFS() vfs.VFS     { return m.passiveVfs }
 func (m *mockAppForProgress) GetSelectedNames() []string      { return m.names }

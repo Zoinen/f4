@@ -790,6 +790,9 @@ func fixedLines(value string, width, count int) []string {
 }
 
 func (d *Dialog) editWordDiv() {
+	if host, ok := d.host.(vfs.SettingsNavigationHost); ok && host.OpenSettings("operations", "", "", false) {
+		return
+	}
 	d.host.InputBox(tr("VisRen.WordDivTitle", "Word delimiters"), tr("VisRen.WordDivPrompt", "Characters separating words (maximum 18):"), d.wordDiv, func(value string) {
 		runes := []rune(value)
 		if len(runes) > 18 {
@@ -799,7 +802,9 @@ func (d *Dialog) editWordDiv() {
 			return
 		}
 		d.wordDiv = string(runes)
-		if err := saveConfig(config{WordDiv: d.wordDiv}); err != nil {
+		cfg := loadConfig()
+		cfg.WordDiv = d.wordDiv
+		if err := saveConfig(cfg); err != nil {
 			vtui.ShowMessageOn(d, " "+tr("VisRen.WordDivTitle", "Word delimiters")+" ", err.Error(), []string{"&Ok"})
 		}
 		d.refreshPreview()

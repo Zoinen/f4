@@ -1,0 +1,372 @@
+package fileops
+
+import (
+	"fmt"
+	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/sdk/extui"
+	"github.com/unxed/vtui"
+	"strings"
+	"time"
+)
+
+func queueSemanticStateClass(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "queued":
+		return "queued"
+	case "starting":
+		return "starting"
+	case "scanning":
+		return "scanning"
+	case "running":
+		return "running"
+	case "cancelling":
+		return "cancelling"
+	case "done":
+		return "completed"
+	case "error":
+		return "error"
+	case "cancelled":
+		return "cancelled"
+	case "pausing":
+		return "pausing"
+	case "paused":
+		return "paused"
+	default:
+		return "unknown"
+	}
+}
+
+// Native dropdowns observe and control the queue without activating its
+// console workspace or replacing the current file/document surface.
+func BackgroundOperationsQueue() *extui.OperationsQueueModel {
+	if vtui.FrameManager == nil {
+		return nil
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok {
+				model := queue.semanticModel()
+				model.TabID = semantic.WorkspaceSemanticTarget(screen.Number)
+				return &model
+			}
+		}
+	}
+	return nil
+}
+
+func HandleQueueDropdownAction(action map[string]any) bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	if semantic.String(action["action"]) == "queue.ensure" {
+		if GlobalQueueManager != nil {
+			GlobalQueueManager.EnsureQueueWorkspace()
+			GlobalQueueManager.RefreshUI()
+		}
+		vtui.FrameManager.Redraw()
+		return true
+	}
+	if !strings.HasPrefix(semantic.String(action["action"]), "queue.") {
+		return false
+	}
+	for _, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok && semantic.String(action["target"]) == vtui.SemanticID(queue) {
+				return queue.HandleSemanticAction(action)
+			}
+		}
+	}
+	return false
+}
+
+func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
+	model := extui.OperationsQueueModel{
+		ID:          vtui.SemanticID(qf),
+		Title:       strings.TrimSpace(qf.GetTitle()),
+		Selected:    qf.Table.SelectPos,
+		Top:         qf.Table.TopPos,
+		CancelText:  i18n.Msg("Queue.BtnCancel"),
+		ClearText:   i18n.Msg("Queue.BtnClear"),
+		EmptyText:   i18n.Msg("Jobs.Empty"),
+		DetailsText: i18n.Msg("Jobs.BtnShow"),
+	}
+
+	columnIDs := []string{"id", "state", "type", "description", "progress", "speed"}
+	for index, column := range qf.Table.Columns {
+		id := fmt.Sprintf("column-%d", index)
+		if index < len(columnIDs) {
+			id = columnIDs[index]
+		}
+		alignment := "left"
+		if column.Alignment == vtui.AlignRight {
+			alignment = "right"
+		} else if column.Alignment == vtui.AlignCenter {
+			alignment = "center"
+		}
+		model.Columns = append(model.Columns, extui.OperationsQueueColumnModel{
+			ID:        id,
+			Title:     column.Title,
+			Width:     column.Width,
+			Alignment: alignment,
+		})
+	}
+
+	tasks := qf.authoritativeTasksSnapshot()
+	model.Items = make([]extui.OperationsQueueItemModel, 0, len(tasks))
+	for index, task := range tasks {
+		task.Mu.Lock()
+		item := extui.OperationsQueueItemModel{
+			ID:              fmt.Sprintf("queue-task-%d", task.ID),
+			TaskID:          task.ID,
+			Index:           index,
+			Type:            task.Type,
+			Description:     task.Desc,
+			State:           task.State,
+			StateClass:      queueSemanticStateClass(task.State),
+			Action:          task.Action,
+			CurrentFile:     task.CurrentFile,
+			CurrentProgress: task.CurrentProgress,
+			Progress:        task.Progress,
+			TotalText:       task.TotalText,
+			Elapsed:         task.Elapsed,
+			ETA:             task.ETA,
+			Speed:           task.Speed,
+			Cancellable:     QueueTaskCancellable(task.State),
+			Pausable:        QueueTaskCancellable(task.State) && task.pauseWait == nil,
+			Resumable:       task.pauseWait != nil,
+			Terminal:        QueueTaskTerminal(task.State),
+			Active:          queueTaskActive(task.State),
+			CancelPrompt:    fmt.Sprintf("Cancel task ID %d?", task.ID),
+		}
+		if task.ErrorMsg != nil {
+			item.Error = task.ErrorMsg.Error()
+		}
+		item.HasDetails = task.OpenDetails != nil || (task.State == "Error" && task.ErrorMsg != nil)
+		if task.State == "Running" || task.State == "Scanning" || task.State == "Cancelling" || task.State == "Paused" || task.State == "Pausing" {
+			item.DisplayText = task.CurrentFile
+		} else {
+			item.DisplayText = task.Desc
+		}
+		if task.pauseWait != nil {
+			item.Speed = ""
+			item.ETA = ""
+		}
+		task.Mu.Unlock()
+
+		if item.Active {
+			model.ActiveCount++
+		}
+		switch item.State {
+		case "Queued":
+			model.QueuedCount++
+		case "Starting", "Scanning", "Running", "Cancelling":
+			model.RunningCount++
+		case "Done":
+			model.CompletedCount++
+		case "Error":
+			model.ErrorCount++
+		case "Cancelled":
+			model.CancelledCount++
+		}
+		model.Items = append(model.Items, item)
+	}
+
+	if model.Selected >= 0 && model.Selected < len(model.Items) {
+		model.SelectedTaskID = model.Items[model.Selected].TaskID
+	} else if len(model.Items) == 0 {
+		model.Selected = -1
+	}
+	model.HasActive = model.ActiveCount > 0
+	model.CanClear = model.CompletedCount+model.ErrorCount+model.CancelledCount > 0
+	model.CanClose = !model.HasActive
+	return model
+}
+
+func (qf *QueueFrame) SemanticNode(_ *vtui.SemanticContext) map[string]any {
+	return qf.semanticModel().ToMap()
+}
+
+func (qf *QueueFrame) semanticTaskIndex(action map[string]any) (int, bool) {
+	index := -1
+	if rawID, present := action["taskId"]; present {
+		taskID := semantic.Int(rawID)
+		for candidate, task := range qf.Tasks {
+			task.Mu.Lock()
+			matches := task.ID == taskID
+			task.Mu.Unlock()
+			if matches {
+				index = candidate
+				break
+			}
+		}
+		if index < 0 {
+			return 0, false
+		}
+	}
+	if rawIndex, present := action["index"]; present {
+		candidate := semantic.Int(rawIndex)
+		if candidate < 0 || candidate >= len(qf.Tasks) || (index >= 0 && candidate != index) {
+			return 0, false
+		}
+		index = candidate
+	}
+	return index, index >= 0
+}
+
+func (qf *QueueFrame) selectSemanticTask(index int) bool {
+	if index < 0 || index >= len(qf.Tasks) {
+		return false
+	}
+	qf.Table.SelectPos = index
+	qf.Table.EnsureVisible()
+	return true
+}
+
+func (qf *QueueFrame) hasActiveTasks() bool {
+	for _, task := range qf.authoritativeTasksSnapshot() {
+		task.Mu.Lock()
+		active := queueTaskActive(task.State)
+		task.Mu.Unlock()
+		if active {
+			return true
+		}
+	}
+	return false
+}
+
+// authoritativeTasksSnapshot closes the small Enqueue -> UI refresh window:
+// the manager already owns a new Queued task while QueueFrame.tasks can still
+// contain the previous table rows.  TUI close validation reads the manager;
+// semantic state and close validation must use the same source of truth.
+func (qf *QueueFrame) authoritativeTasksSnapshot() []*QueueTask {
+	if GlobalQueueManager != nil {
+		GlobalQueueManager.Mu.Lock()
+		if GlobalQueueManager.frame == qf {
+			tasks := append([]*QueueTask(nil), GlobalQueueManager.tasks...)
+			GlobalQueueManager.Mu.Unlock()
+			return tasks
+		}
+		GlobalQueueManager.Mu.Unlock()
+	}
+	return append([]*QueueTask(nil), qf.Tasks...)
+}
+
+// handleOperationsQueueWorkspaceClose intercepts the generic workspace close
+// path because vtui's semantic workspace.close removes a screen directly and
+// therefore cannot call QueueFrame.ProcessKey.  claimed is true whenever the
+// request identifies a queue workspace, including a mismatched/stale request
+// that must be rejected rather than delegated to the generic closer.
+func HandleOperationsQueueWorkspaceClose(action map[string]any) (handled, claimed bool) {
+	if vtui.FrameManager == nil || action == nil {
+		return false, false
+	}
+	actionName := semantic.String(action["action"])
+	target := semantic.String(action["target"])
+	if actionName != "queue.close" && actionName != "workspace.close" && actionName != "tab.close" &&
+		!(actionName == "close" && strings.HasPrefix(target, "workspace-tab-")) {
+		return false, false
+	}
+
+	queueAt := make(map[int]*QueueFrame)
+	targetIndex := -1
+	for screenIndex, screen := range vtui.FrameManager.Screens {
+		for _, frame := range screen.Frames {
+			if queue, ok := frame.(*QueueFrame); ok {
+				queueAt[screenIndex] = queue
+				if target == vtui.SemanticID(queue) {
+					targetIndex = screenIndex
+				}
+			}
+		}
+		if target == fmt.Sprintf("workspace-tab-%d", screen.Number) {
+			targetIndex = screenIndex
+		}
+	}
+
+	requestedIndex := -1
+	indexPresent := false
+	if raw, present := action["index"]; present {
+		requestedIndex = semantic.Int(raw)
+		indexPresent = true
+	}
+	if targetIndex >= 0 && indexPresent && requestedIndex != targetIndex {
+		if queueAt[targetIndex] != nil || queueAt[requestedIndex] != nil {
+			return false, true
+		}
+		return false, false
+	}
+	index := targetIndex
+	if index < 0 && indexPresent {
+		index = requestedIndex
+	}
+	queue := queueAt[index]
+	if queue == nil {
+		return false, false
+	}
+	if queue.hasActiveTasks() {
+		vtui.ShowToast("Cannot close queue while operations are active. Use Ctrl+Tab to switch.", 3*time.Second)
+		return true, true
+	}
+
+	if GlobalQueueManager != nil {
+		GlobalQueueManager.Mu.Lock()
+		if GlobalQueueManager.frame == queue {
+			GlobalQueueManager.frame = nil
+		}
+		GlobalQueueManager.Mu.Unlock()
+	}
+	if len(vtui.FrameManager.Screens) > 1 {
+		vtui.FrameManager.CloseScreen(index)
+	} else {
+		queue.Close()
+	}
+	return true, true
+}
+
+func (qf *QueueFrame) HandleSemanticAction(action map[string]any) bool {
+	if action == nil || semantic.String(action["target"]) != vtui.SemanticID(qf) {
+		return false
+	}
+	switch semantic.String(action["action"]) {
+	case "queue.select":
+		index, ok := qf.semanticTaskIndex(action)
+		return ok && qf.selectSemanticTask(index)
+	case "queue.activate":
+		index, ok := qf.semanticTaskIndex(action)
+		if !ok || !qf.selectSemanticTask(index) {
+			return false
+		}
+		qf.OpenTaskDetails(index)
+		return true
+	case "queue.pause", "queue.resume":
+		index, ok := qf.semanticTaskIndex(action)
+		if !ok || GlobalQueueManager == nil {
+			return false
+		}
+		return GlobalQueueManager.SetPaused(qf.Tasks[index].ID, semantic.String(action["action"]) == "queue.pause")
+	case "queue.cancel":
+		index, ok := qf.semanticTaskIndex(action)
+		if !ok || !qf.selectSemanticTask(index) {
+			return false
+		}
+		return qf.requestCancelTask(index)
+	case "queue.clearCompleted":
+		if _, hasTaskID := action["taskId"]; hasTaskID {
+			return false
+		}
+		if GlobalQueueManager == nil {
+			return false
+		}
+		GlobalQueueManager.ClearCompleted()
+		return true
+	case "queue.close":
+		if qf.hasActiveTasks() {
+			vtui.ShowToast("Cannot close queue while operations are active. Use Ctrl+Tab to switch.", 3*time.Second)
+			return true
+		}
+		qf.Close()
+		return true
+	}
+	return false
+}

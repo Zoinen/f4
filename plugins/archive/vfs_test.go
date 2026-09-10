@@ -34,6 +34,28 @@ func TestArchiveVFS_PathSlashes(t *testing.T) {
 	}
 }
 
+func TestArchiveVFS_LocalArchivePath(t *testing.T) {
+	root := t.TempDir()
+	v := &ArchiveVFS{
+		parent:    vfs.NewOSVFS(root),
+		arcPath:   filepath.Join("archives", "bundle.zip"),
+		innerPath: "folder",
+	}
+
+	got, ok := v.LocalArchivePath()
+	want := filepath.Join(root, "archives", "bundle.zip")
+	if !ok || got != want {
+		t.Fatalf("LocalArchivePath() = (%q, %t), want (%q, true)", got, ok, want)
+	}
+}
+
+func TestArchiveVFS_LocalArchivePathRejectsNonLocalParent(t *testing.T) {
+	v := &ArchiveVFS{arcPath: "remote.zip"}
+	if got, ok := v.LocalArchivePath(); ok || got != "" {
+		t.Fatalf("LocalArchivePath() = (%q, %t), want (empty, false)", got, ok)
+	}
+}
+
 func TestArchiveVFS_SkipsExplicitRootEntryDuringScan(t *testing.T) {
 	tmpDir := t.TempDir()
 	tarPath := filepath.Join(tmpDir, "root-entry.tar")

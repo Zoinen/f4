@@ -3,13 +3,75 @@
 package vfs
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunSudoDispatcherHelperProcess(t *testing.T) {
+	if os.Getenv("F4_RUN_SUDO_DISPATCHER") != "1" {
+		return
+	}
+	RunSudoDispatcher(filepath.Join(os.TempDir(), "f4-sudo-dispatcher-test.sock"))
+}
+
+func TestRunSudoDispatcherRejectsInvalidIdentity(t *testing.T) {
+	cmd := sudoDispatcherHelperCommand(t, "not-a-uid", "not-a-gid")
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("dispatcher exit error = %v, output = %q; want exit status 1", err, output)
+	}
+	if !strings.Contains(string(output), "Invalid SUDO_UID/SUDO_GID") {
+		t.Fatalf("dispatcher output = %q, want invalid identity diagnostic", output)
+	}
+}
+
+func TestRunSudoDispatcherRejectsNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("RunSudoDispatcher would enter its root-only socket server")
+	}
+	uid := strconv.Itoa(os.Getuid())
+	gid := strconv.Itoa(os.Getgid())
+	debugPath := filepath.Join(os.TempDir(), "f4-sudo-debug-"+uid+".txt")
+	_ = os.Remove(debugPath)
+	t.Cleanup(func() { _ = os.Remove(debugPath) })
+
+	cmd := sudoDispatcherHelperCommand(t, uid, gid)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("dispatcher exit error = %v, output = %q; want exit status 1", err, output)
+	}
+	if !strings.Contains(string(output), "f4 dispatcher must run as root") {
+		t.Fatalf("dispatcher output = %q, want root diagnostic", output)
+	}
+}
+
+func sudoDispatcherHelperCommand(t *testing.T, uid, gid string) *exec.Cmd {
+	t.Helper()
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, value := range os.Environ() {
+		if strings.HasPrefix(value, "F4_RUN_SUDO_DISPATCHER=") ||
+			strings.HasPrefix(value, "SUDO_UID=") || strings.HasPrefix(value, "SUDO_GID=") {
+			continue
+		}
+		env = append(env, value)
+	}
+	env = append(env, "F4_RUN_SUDO_DISPATCHER=1", "SUDO_UID="+uid, "SUDO_GID="+gid)
+
+	// #nosec G204 G702 -- os.Args[0] is the current test binary and the arguments are fixed.
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunSudoDispatcherHelperProcess", "--")
+	cmd.Env = env
+	return cmd
+}
 
 func TestHandleSudoClientDispatchesFilesystemCommands(t *testing.T) {
 	tmpDir := shortSocketDir(t)

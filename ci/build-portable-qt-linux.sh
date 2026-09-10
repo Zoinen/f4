@@ -287,7 +287,7 @@ bash ci/audit-portable-qt-linux.sh "$host" 2.27
 python ci/package-embedded-qt-host.py "$host"
 echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
-    -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' .
+    -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
@@ -299,7 +299,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH="${TARGET_ARCH}" go build -trimpath \
     -buildmode=exe \
     -tags 'goffi_static f4_embedded_qt_host' \
     -ldflags='-s -w' \
-    -o "${launcher_output}" .
+    -o "${launcher_output}" ./cmd/f4
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
 # link.  The goffi_static build normally prevents that; keep this guard for
 # toolchain drift.

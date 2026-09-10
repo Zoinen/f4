@@ -84,7 +84,7 @@ child-окна, при которой conhost перестаёт обслужи�
 `pump=0` в строке — снимок на момент flush, сам по себе не доказательство;
 доказательство — обрыв лога.
 
-**F9. Побочное:** `cmd/f4/window_icon_windows.go` делает синхронный
+**F9. Побочное:** `internal/gui/icon_windows.go` делает синхронный
 `SendMessageW(WM_SETICON)` в окно консоли из произвольной горутины —
 ещё одна точка, где f4 повиснет, если conhost заклинило. Под WT это
 уходит в псевдо-окно и безвредно.
@@ -382,7 +382,7 @@ F7: сцеплен именно тот поток, который шлёт со�
 `internal/wincon/overlay_windows.go`. Никаких CGO. Логика без syscalls —
 в файлах без build-tag с тестами, как `overlay_state.go`/`geometry.go`.
 Каждый шаг — отдельный коммит, `go vet ./...` и `go test ./internal/wincon/
-./cmd/f4/ -run 'Console|Overlay|Graphics'` зелёные на Linux.
+./internal/terminal/ ./internal/wincon/ -run 'Console|Overlay|Graphics'` зелёные на Linux.
 
 ### Шаг 1. Не доверять псевдо-окну ConPTY (чинит случай (a) наполовину)
 **Сделано.** `ClassifyConsoleWindow(class, visible)` в `internal/wincon/geometry.go`
@@ -415,22 +415,22 @@ pseudo console window`, оверлей не создаётся.
 
 ### Шаг 2. Спросить терминал через DA1, если окружение молчит (вторая половина (a))
 **Сделано.** Решение «спрашивать ли» — чистая функция `shouldProbeGraphics`
-(`cmd/f4/graphics_probe_decision.go`, тесты рядом): спрашиваем только если
+(`internal/terminal/graphics_probe.go`, тесты рядом): спрашиваем только если
 протокол ещё не выбран, `VTUI_GRAPHICS` пуст, бэкенд не `winapi`/`win32` и это
 Windows. Сам вызов — `probeGraphicsIfUnknown` в
-`cmd/f4/graphics_probe_windows.go`, подключён в `ManageSessions` после
+`internal/terminal/graphics_probe_windows.go`, подключён в `ManageSessions` после
 `PrepareTerminal` и до `InstallConsoleOverlay` и `vtinput.NewReader` (иначе
 ответ терминала съел бы читатель ввода).
 Подход подтверждён замерами (F13, F14) — WT отвечает `4`, conhost 22000
 отвечает `?1;0c`. Различение работает, ложных срабатываний в обе стороны нет.
 
-Файл `cmd/f4/session_windows.go`, в `ManageSessions` **после**
+Файл `internal/terminal/session_windows.go`, в `ManageSessions` **после**
 `PrepareTerminal` (VT-вывод уже включён) и **до** `InstallConsoleOverlay`
 и `vtinput.NewReader`:
 ```go
 probeGraphicsIfUnknown(scr)
 ```
-Новая функция (файл `cmd/f4/graphics_probe_windows.go`, tag windows;
+Новая функция (файл `internal/terminal/graphics_probe_windows.go`, tag windows;
 чистую часть решения — «зондировать ли» — в файл без тега с тестом):
 - условия: `scr.Graphics().Protocol() == vtui.GraphicsNone`,
   бэкенд VT (`SelectedTTYBackend` не `winapi`/`win32`),

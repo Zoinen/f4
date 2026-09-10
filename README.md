@@ -2,7 +2,7 @@
 
 [![codecov](https://codecov.io/gh/unxed/f4/branch/main/graph/badge.svg)](https://codecov.io/gh/unxed/f4)
 
-![](https://raw.githubusercontent.com/unxed/f4/refs/heads/main/screenshot.png)
+![](https://raw.githubusercontent.com/unxed/f4/refs/heads/main/.github/assets/screenshot.png)
 ### ⚡ Quick Download (Nightly Builds)
 
 | Platform | Format | Link |
@@ -31,6 +31,18 @@ f4 --update           # whichever channel is configured (Options > Auto update)
 
 A named channel also becomes the one f4 checks automatically from then on.
 
+### 🍺 Install on macOS via Homebrew
+
+Tagged releases (`vX.Y.Z`) are published to a Homebrew tap, so you can install with one command:
+
+```sh
+brew install unxed/tap/f4
+```
+
+To upgrade later: `brew upgrade f4`. Both Apple Silicon (arm64) and Intel (amd64) Macs are supported.
+
+The tap carries tagged releases only, so a nightly build has to come from f4 itself: `f4 --update nightly` writes it into the Cellar directory brew installed to. That works, and `brew upgrade` or `brew reinstall` puts the tagged release back whenever you want it.
+
 ### 📱 Install on Android via Termux
 
 The Android build currently targets **arm64 in Termux**. Download the `.deb`
@@ -44,18 +56,6 @@ Alternatively, extract the `.tar.gz` archive and run `./f4`. Both artifacts
 are linked against Termux's libraries and are intended to run inside Termux;
 they are not standalone Android APKs. Other Android architectures are not
 published yet.
-
-### 🍺 Install on macOS via Homebrew
-
-Tagged releases (`vX.Y.Z`) are published to a Homebrew tap, so you can install with one command:
-
-```sh
-brew install unxed/tap/f4
-```
-
-To upgrade later: `brew upgrade f4`. Both Apple Silicon (arm64) and Intel (amd64) Macs are supported.
-
-The tap carries tagged releases only, so a nightly build has to come from f4 itself: `f4 --update nightly` writes it into the Cellar directory brew installed to. That works, and `brew upgrade` or `brew reinstall` puts the tagged release back whenever you want it.
 
 **The Core:** Creating an experimental, cross-platform TUI (Terminal User Interface) file manager that aims to fully replicate the features, UX, data structures, and rendering logic of `far2l` and Far Manager, but implemented entirely in Go.
 
@@ -251,7 +251,7 @@ CGO_ENABLED=0 go build ./cmd/f4
 ```
 
 The generated platform icons are committed to the repository, so a normal
-build does not need an image converter. If `cmd/f4/assets/icon/f4.svg` is changed,
+build does not need an image converter. If `internal/gui/assets/icon/f4.svg` is changed,
 regenerate PNG, ICO, ICNS, and Windows resources on any supported OS with:
 
 ```bash

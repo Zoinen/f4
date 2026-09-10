@@ -13,8 +13,14 @@ const (
 	seqAutoWrapOn        = "\x1b[?7h"
 	seqBlinkingUnderline = "\x1b[3 q"
 	seqDefaultCursor     = "\x1b[0 q"
-	seqResetPalette      = "\x1b]104\x07"
-	seqResetAttributes   = "\x1b[0m"
+	// The cursor is the one glyph on screen the application does not paint
+	// itself, so its color comes from the terminal's own theme and can land
+	// anywhere -- including on top of the background the application chose.
+	// OSC 12 names it, OSC 112 hands it back.
+	seqCursorColor      = "\x1b]12;#%06X\x07"
+	seqResetCursorColor = "\x1b]112\x07"
+	seqResetPalette     = "\x1b]104\x07"
+	seqResetAttributes  = "\x1b[0m"
 	// vtui hands the terminal rows in visual order (see bidi.go), so a
 	// terminal that runs the bidi algorithm itself (VTE, and everything
 	// following the terminal-wg BiDi recommendation) must be told not to
@@ -34,6 +40,17 @@ var (
 	isPrepared        bool
 	inAltScreen       bool
 	ManageCursorStyle bool = true
+
+	// CursorColor is the color the terminal is asked to paint the cursor
+	// with, packed as 0xRRGGBB. A negative value leaves the terminal's own
+	// cursor color alone. It is honored on the ANSI backend only: the GUI
+	// renderers draw the caret themselves.
+	CursorColor int = -1
+
+	// cursorColorSent is what the terminal was last told, or -2 when that is
+	// unknown -- at start, and after every Resume, because whatever ran while
+	// vtui was suspended may have sent OSC 12 or OSC 112 of its own.
+	cursorColorSent = -2
 
 	// consoleCursorTypeStale is set whenever something other than vtui may
 	// have changed the console's cursor *type* (Legacy, Underscore,
@@ -215,6 +232,11 @@ func Suspend() {
 					out.WriteString(seqDefaultCursor)
 				}
 			}
+			if cursorColorSent >= 0 {
+				_, _ = out.WriteString(seqResetCursorColor)
+				DebugLog("CURSOR: OSC 112, cursor color handed back to the terminal")
+			}
+			cursorColorSent = -2
 			out.WriteString(seqResetPalette + seqResetAttributes)
 		} else if vt {
 			// syscons' native local-cursor command.  Unlike DECTCEM it is
@@ -320,6 +342,7 @@ func resumeLocked(withAltScreen bool) error {
 		// Whatever ran while f4 was suspended may have restyled the
 		// console cursor; the next SetCursorStyleOS has to assume so.
 		consoleCursorTypeStale = true
+		cursorColorSent = -2
 		if modernVT && ManageCursorStyle && !cursorStyleViaConsoleAPI() {
 			out.WriteString(seqBlinkingUnderline)
 		}

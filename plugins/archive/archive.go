@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtinput"
+	"github.com/unxed/vtui"
 	"github.com/unxed/zipper/archive"
 )
 
@@ -96,12 +98,15 @@ func actionArchiveCommands(app vfs.App) {
 	})
 }
 
-// resolveLocalArchivePath returns the absolute path of the selected archive
-// when the active panel is a local filesystem.
+// resolveLocalArchivePath returns the absolute path of the archive to operate
+// on when the active panel is a local filesystem or a local ArchiveVFS.
 func resolveLocalArchivePath(app vfs.App) (string, bool) {
 	srcVfs := app.GetActivePanelVFS()
 	if srcVfs == nil {
 		return "", false
+	}
+	if archiveVFS, ok := srcVfs.(*ArchiveVFS); ok {
+		return archiveVFS.LocalArchivePath()
 	}
 	name := app.GetSelectedName()
 	if name == "" || name == ".." {
@@ -211,9 +216,9 @@ func extractArchiveWithPasswordPrompt(ctx context.Context, srcPath, destDir stri
 	}
 }
 
-// actionTestArchive verifies that every member of the selected archive can
-// be extracted and passes its size/CRC checks, without writing anything to
-// the panels. Password prompts behave like everywhere else in the plugin.
+// actionTestArchive verifies every regular member of the selected archive by
+// reading it to completion, without writing anything to the panels. Password
+// prompts behave like everywhere else in the plugin.
 func actionTestArchive(app vfs.App) {
 	srcPath, ok := resolveLocalArchivePath(app)
 	if !ok {
@@ -223,23 +228,102 @@ func actionTestArchive(app vfs.App) {
 		return
 	}
 	go func() {
-		tempDir, err := os.MkdirTemp("", "f4arc-test-*")
-		if err != nil {
-			app.Message(" Error ", fmt.Sprintf("Test failed:\n%v", err), []string{"&Ok"})
-			return
-		}
 		app.RunAdvancedProgressTask(" Testing... ", false, func(ctx context.Context, reporter vfs.TaskReporter) error {
 			reporter.UpdateTransfer("Testing", filepath.Base(srcPath), -1, "", -1, "")
-			return extractArchiveWithPasswordPrompt(ctx, srcPath, tempDir, reporter)
+			return testArchiveWithPasswordPrompt(ctx, srcPath, reporter)
 		}, func(err error) {
-			_ = os.RemoveAll(tempDir)
 			if err == nil {
 				go app.Message(" Test archive ", fmt.Sprintf("%s\nNo errors found.", filepath.Base(srcPath)), []string{"&Ok"})
 			} else if err != context.Canceled {
-				go app.Message(" Error ", fmt.Sprintf("Test failed:\n%v", err), []string{"&Ok"})
+				go showArchiveTestFailure(app, srcPath, err)
 			}
 		})
 	}()
+}
+
+func testArchiveWithPasswordPrompt(ctx context.Context, srcPath string, reporter vfs.TaskReporter) error {
+	var password string
+	var release func()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
+
+	for {
+		err := testArchiveOnce(ctx, srcPath, password, reporter)
+		if err == nil || !isArchivePasswordRetryError(err) {
+			return err
+		}
+
+		if release == nil {
+			release = vfs.HoldInteractivePrompt()
+		}
+		password, err = promptArchivePasswordUntilProvided(ctx, filepath.Base(srcPath))
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func testArchiveOnce(ctx context.Context, srcPath, password string, reporter vfs.TaskReporter) error {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	format, stream, err := archives.Identify(ctx, srcPath, f)
+	if err != nil {
+		return err
+	}
+	if configured, ok := configureRARArchiveFormat(format, srcPath, password); ok {
+		format = configured
+	} else {
+		format, _ = archivePasswordFormat(format, password)
+	}
+	extractor, ok := format.(archives.Extractor)
+	if !ok {
+		return fmt.Errorf("format %T does not support testing", format)
+	}
+
+	var failures []error
+	err = extractor.Extract(ctx, stream, func(ctx context.Context, info archives.FileInfo) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		reporter.UpdateTransfer("Testing", info.NameInArchive, -1, "", -1, "")
+		if info.IsDir() || !info.Mode().IsRegular() {
+			return nil
+		}
+
+		member, openErr := info.Open()
+		if openErr != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", info.NameInArchive, openErr))
+			return nil
+		}
+		_, readErr := io.Copy(io.Discard, member)
+		closeErr := member.Close()
+		if failure := errors.Join(readErr, closeErr); failure != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", info.NameInArchive, failure))
+		}
+		return nil
+	})
+	if err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+func showArchiveTestFailure(app vfs.App, srcPath string, err error) {
+	report := formatArchiveTestFailure(srcPath, err)
+	if app.Message(" Test archive ", report, []string{"&Copy list", "&Close"}) == 0 {
+		go vtui.SetClipboard(report)
+	}
+}
+
+func formatArchiveTestFailure(srcPath string, err error) string {
+	return fmt.Sprintf("Test failed for %s:\n%s", filepath.Base(srcPath), err)
 }
 
 func extractArchiveOnce(ctx context.Context, srcPath, destDir, password string, reporter vfs.TaskReporter) error {

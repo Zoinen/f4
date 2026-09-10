@@ -1,5 +1,6 @@
-// Command icons regenerates every platform icon from cmd/f4/assets/icon/f4.svg
-// and optional size-specific cmd/f4/assets/icon/f4-N.svg overrides.
+// Command icons regenerates every platform icon from
+// internal/gui/assets/icon/f4.svg and optional size-specific
+// internal/gui/assets/icon/f4-N.svg overrides.
 //
 // Run it from anywhere in the repository with:
 //
@@ -34,8 +35,8 @@ var windowsSizes = []int{16, 24, 28, 30, 32, 36, 42, 48, 56, 64, 128, 256}
 func main() {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	check(err)
-	iconDir := filepath.Join(root, "cmd", "f4", "assets", "icon")
-	outDir := filepath.Join(root, "cmd", "f4", "assets", "icon", "generated")
+	iconDir := filepath.Join(root, "internal", "gui", "assets", "icon")
+	outDir := filepath.Join(root, "internal", "gui", "assets", "icon", "generated")
 	check(os.MkdirAll(outDir, 0o755))
 
 	pngs := make(map[int][]byte, len(sizes))

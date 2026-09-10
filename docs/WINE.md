@@ -4296,9 +4296,9 @@ bisectHardcodeSyntax`, без единого вызова функции) и «�
 
 **Инструментарий и мутированное дерево** — только в песочнице
 (`/home/claude/f4`, `/home/claude/vtui`), не закоммичены; точка входа для
-продолжения — `cmd/f4/editor_view.go`, блок вокруг строки ~1460 (замена
+продолжения — `internal/editor/view.go`, блок вокруг строки ~1460 (замена
 всего «Stateful Highlighting» блока на минимальный прямой путь, см.
-§15.17), и `cmd/f4/main.go` (`bisectTrivialHighlighter`,
+§15.17), и `internal/app/bootstrap.go` (`bisectTrivialHighlighter`,
 `bisectHighlight`, флаги `F4_BISECT_*`).
 
 ### 15.21. Побитовый бинарный поиск между рабочим и ломающимся значением

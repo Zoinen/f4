@@ -1176,6 +1176,7 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     projectedPanel.insert(QStringLiteral("fastFind"), false);
     projectedPanel.insert(QStringLiteral("fastFindText"), QString{});
     projectedPanel.insert(QStringLiteral("selectedCount"), 7);
+    projectedPanel.insert(QStringLiteral("selectedFiles"), 7);
     fixture.shell.deliverCompactPresentation({
         {QStringLiteral("type"), QStringLiteral("scene_patch")},
         {QStringLiteral("side"), 0},
@@ -1206,7 +1207,7 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     QCOMPARE(overlayCursor->width(), expectedCursorWidth);
     QVERIFY(overlayCursor->height() > 0.0);
     QCOMPARE(footerSelection->property("text").toString(),
-             QStringLiteral("7 selected"));
+             QStringLiteral("7 files, 0 folders · 0 B selected"));
     QVERIFY(!footer->isVisible());
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(overlay->x() + overlay->width() / 2.0
@@ -2923,6 +2924,11 @@ void F4QuickViewSurfaceTests::workspaceDragHitOnlyAcceptsPanelTabs()
     QTRY_VERIFY(bar->width() > 0);
     for (int i = 0; i < kinds.size(); ++i) {
         auto *tab = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QString("workspace-tab-%1").arg(i));
+        if (kinds[i] == "operationsQueue") {
+            // Native queues live in the title-bar dropdown, never a drag target tab.
+            QVERIFY(!tab);
+            continue;
+        }
         QVERIFY(tab);
         const auto point = tab->mapToItem(bar, QPointF(tab->width()/2, tab->height()/2));
         QVariant result;
@@ -4446,6 +4452,7 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
                  {QStringLiteral("index"), 1},
                  {QStringLiteral("id"), QStringLiteral("red")},
                  {QStringLiteral("text"), QStringLiteral("Red")},
+                 {QStringLiteral("shortcut"), QStringLiteral("Ctrl+R")},
                  {QStringLiteral("icon"), QStringLiteral("tag-dot")},
                  {QStringLiteral("iconColor"), QStringLiteral("#ff453a")},
                  {QStringLiteral("disabled"), false},
@@ -4505,7 +4512,7 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QVERIFY(tagDot->isVisible());
     QCOMPARE(tagDot->property("color").value<QColor>(), QColor("#ff453a"));
     QVERIFY(headerText->property("font").value<QFont>().bold());
-    QCOMPARE(headerText->x(), qreal(10));
+    QCOMPARE(headerText->x(), qRound(10 * fixture.window->devicePixelRatio()) / fixture.window->devicePixelRatio());
     QVERIFY(headerText->y() > 0);
 
     const QPointF parentOrigin = parentPopup->mapToItem(visualRoot, QPointF{});
@@ -4516,13 +4523,35 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QVERIFY(qAbs(childOrigin.y() - rowOrigin.y()) < 1.0);
 
     const qreal dpr = fixture.window->devicePixelRatio();
-    for (QQuickItem *item : {parentPopup, childPopup, tagDot,
-                             parentChevron, childChevron}) {
+    QList<QQuickItem *> pixelItems = {parentPopup, childPopup, tagDot,
+                                     parentChevron, childChevron, headerText};
+    for (const QString &name : {
+             QStringLiteral("semanticMenuItemText-drive-menu-0"),
+             QStringLiteral("semanticMenuItemText-drive-menu-1"),
+             QStringLiteral("semanticMenuItemText-locations-menu-1"),
+             QStringLiteral("semanticMenuItemText-locations-menu-2"),
+             QStringLiteral("semanticMenuItemShortcut-locations-menu-1")}) {
+        auto *leaf = visualItemWithObjectNamePrefix(visualRoot, name);
+        QVERIFY2(leaf, qPrintable(name));
+        pixelItems.append(leaf);
+    }
+    for (QQuickItem *item : pixelItems) {
         const QPointF origin = item->mapToItem(visualRoot, QPointF{});
         QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001);
         QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001);
-        QVERIFY(qAbs(item->width() * dpr - qRound(item->width() * dpr)) < 0.001);
+        QVERIFY2(qAbs(item->width() * dpr - qRound(item->width() * dpr)) < 0.001,
+                 qPrintable(QString("%1 origin=(%2,%3) physical size=(%4,%5)").arg(item->objectName()).arg(origin.x()*dpr).arg(origin.y()*dpr).arg(item->width()*dpr).arg(item->height()*dpr)));
         QVERIFY(qAbs(item->height() * dpr - qRound(item->height() * dpr)) < 0.001);
+        const QPointF ux = item->mapToItem(visualRoot, QPointF(1, 0)) - origin;
+        const QPointF uy = item->mapToItem(visualRoot, QPointF(0, 1)) - origin;
+        QVERIFY((ux - QPointF(1, 0)).manhattanLength() < 0.001);
+        QVERIFY((uy - QPointF(0, 1)).manhattanLength() < 0.001);
+    }
+    QVERIFY(!fixture.window->property("font").value<QFont>().bold());
+    if (qEnvironmentVariableIsSet("F4_MENU_PIXEL_GRID_CAPTURE")) {
+        const QImage capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        QVERIFY(capture.save(qEnvironmentVariable("F4_MENU_PIXEL_GRID_CAPTURE")));
     }
 
     // A nested popup must not install another full-window backdrop above its
@@ -5488,6 +5517,12 @@ void F4QuickViewSurfaceTests::embeddedWheelCoalescesAndUsesQuickViewContract()
     sendPixelWheel(fixture.window, center.toPoint(), -13);
     QTRY_VERIFY_WITH_TIMEOUT(qAbs(topVisualRow(surface, list) - 20.65) < 0.02,
                              1000);
+    // A fractional movement inside row 20 must not request that same row.
+    QTest::qWait(260);
+    QCOMPARE(fixture.shell.actions.size(), 0);
+    sendPixelWheel(fixture.window, center.toPoint(), -7);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(topVisualRow(surface, list) - 21.0) < 0.02,
+                             1000);
     QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
     const QVariantMap request = fixture.shell.actions.constFirst();
     QCOMPARE(request.value(QStringLiteral("action")).toString(),
@@ -5496,18 +5531,16 @@ void F4QuickViewSurfaceTests::embeddedWheelCoalescesAndUsesQuickViewContract()
              QStringLiteral("quick-view-0"));
     QCOMPARE(request.value(QStringLiteral("contentKey")).toString(),
              QStringLiteral("file-A"));
-    QCOMPARE(request.value(QStringLiteral("visualRow")).toInt(), 20);
+    QCOMPARE(request.value(QStringLiteral("visualRow")).toInt(), 21);
     QCOMPARE(request.value(QStringLiteral("generation")).toInt(), 5);
     QVERIFY(surface->property("windowRequestPending").toBool());
 
-    sendPixelWheel(fixture.window, center.toPoint(), -7);
-    QTRY_VERIFY_WITH_TIMEOUT(qAbs(topVisualRow(surface, list) - 21.0) < 0.02,
-                             1000);
     QTest::qWait(260);
     QCOMPARE(fixture.shell.actions.size(), 1);
 
     QVariantMap surfaceMap = qv.value(QStringLiteral("surface")).toMap();
     surfaceMap.insert(QStringLiteral("windowGeneration"), 5);
+    surfaceMap.insert(QStringLiteral("viewportStart"), 21);
     qv.insert(QStringLiteral("surface"), surfaceMap);
     fixture.shell.setScene(shellScene(QVariantList{qv}));
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -5534,7 +5567,7 @@ void F4QuickViewSurfaceTests::contentKeyChangeDropsOldGestureAndAnchor()
     fixture.shell.clearActions();
     const QPointF center = surface->mapToScene(
         QPointF(surface->width() / 2, surface->height() / 2));
-    sendPixelWheel(fixture.window, center.toPoint(), -13);
+    sendPixelWheel(fixture.window, center.toPoint(), -40);
     QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
     QVERIFY(surface->property("windowRequestPending").toBool());
     QVERIFY(QMetaObject::invokeMethod(list, "flick", Qt::DirectConnection,

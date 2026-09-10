@@ -16,7 +16,7 @@ def main() -> None:
         "output",
         nargs="?",
         type=pathlib.Path,
-        default=pathlib.Path("embedded/f4-qt-host.gz"),
+        default=pathlib.Path("internal/plughost/embedded/f4-qt-host.gz"),
     )
     args = parser.parse_args()
 

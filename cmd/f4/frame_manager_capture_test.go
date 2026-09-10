@@ -31,7 +31,7 @@ func TestBackgroundWorkCapturesTheFrameManager(t *testing.T) {
 	var found []string
 
 	for _, source := range commandPaletteParseProductionGo(t) {
-		aliases, dotImport := commandPaletteVTUIImportAliases(source.file)
+		aliases, dotImport := commandPaletteVTUIImportAliases(source.File)
 		if len(aliases) == 0 && !dotImport {
 			continue
 		}
@@ -55,7 +55,7 @@ func TestBackgroundWorkCapturesTheFrameManager(t *testing.T) {
 				return true
 			})
 		}
-		walk(source.file, false)
+		walk(source.File, false)
 	}
 
 	var unexpected []string

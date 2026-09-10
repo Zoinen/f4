@@ -4,9 +4,8 @@ package winshell
 
 import (
 	"fmt"
-	"runtime"
-
 	"github.com/zzl/go-win32api/v2/win32"
+	"runtime"
 )
 
 type staResult struct {

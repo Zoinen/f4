@@ -1,6 +1,8 @@
 package ttyx
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestOverlayLifecycleWithoutDisplay(t *testing.T) {
 	s := &Session{}

@@ -166,7 +166,7 @@ static/dynamic стадий с сообщением `native gate incomplete ...`
 
 Измерение выполнено разово тестом, который читал артефакт пробника и подавал
 его через `PanelsFrame.consumeLocalOutput` и `AnsiParser` в `TerminalView`.
-Тест удалён: код гейта в `cmd/f4` не живёт (см. запрет в начале
+Тест удалён: код гейта в приложении не живёт (см. запрет в начале
 `CONPTY_GATE_REQUIREMENTS.md`). Он появился потому, что пункт D1 требовал
 прогона «через настоящий путь f4» — формулировка от старой постановки,
 противоречившая запрету; D1 переписан.
@@ -177,7 +177,7 @@ static/dynamic стадий с сообщением `native gate incomplete ...`
 Команда на Windows:
 
 ```text
-F4_NATIVE_CONPTY_REPLAY=<absolute path to pinned-conpty-probe-static-v6.json> go test ./cmd/f4 -run '^TestNativeConPTYReplay$' -count=1 -v
+F4_NATIVE_CONPTY_REPLAY=<absolute path to pinned-conpty-probe-static-v6.json> go test ./internal/terminal -run '^TestNativeConPTYReplay$' -count=1 -v
 ```
 
 Прогон получил `raw=2852`, `f4_log=1293`, `begin=1`, `end=1`, но завершился

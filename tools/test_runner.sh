@@ -4,7 +4,7 @@ cd f4 || exit 1
 
 gofmt -w -s .
 
-./filelist_update.sh
+./scripts/filelist_update.sh
 
 start=$(date +%s.%N)
 

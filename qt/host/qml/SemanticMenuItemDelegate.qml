@@ -90,7 +90,8 @@ Rectangle {
         font: {
             if (menuItem.dropdownTextLayout)
                 return menuItem.dropdownTextLayout.font
-            var defaultFont = hostWindow.font
+            // Clone the value: mutating a QML font reference changes its owner.
+            var defaultFont = Qt.font(hostWindow.font)
             defaultFont.bold = modelData.header === true
             return defaultFont
         }
@@ -278,18 +279,28 @@ Rectangle {
 
     Text {
         id: shortcut
+        objectName: "semanticMenuItemShortcut-"
+                    + hostWindow.cleanText(overlayController.frame.id)
+                    + "-" + Number(modelData.index)
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin:
+        anchors.alignWhenCentered: false
+        anchors.rightMargin: hostWindow.snapPx(
             (modelData.hasSubmenu === true ? 28 : 10)
             + (overlayController.dropdownMode ? 26 : 0)
             + (scrollBar.visible
-               ? scrollBar.width : 0)
+               ? scrollBar.width : 0))
+        width: hostWindow.snapPx(implicitWidth)
+        height: hostWindow.snapPx(implicitHeight)
         text: hostWindow.cleanText(modelData.shortcut)
         color: hostWindow.mutedText
         font: hostWindow.font
         visible: !modelData.separator
                  && modelData.header !== true
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(shortcut, hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(shortcut, hostWindow.contentItem)
+        }
     }
 
     Timer {

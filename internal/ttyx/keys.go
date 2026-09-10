@@ -1,5 +1,15 @@
 package ttyx
 
+import (
+	"errors"
+	"github.com/jezek/xgb/xproto"
+	"github.com/unxed/keytrans"
+	"github.com/unxed/vtinput"
+	"math"
+	"os"
+	"sync"
+)
+
 // The keyboard, issue #662. A TTY carries a small and lossy subset of what the
 // user pressed: Ctrl+Shift+Up and Ctrl+Up are the same three bytes unless the
 // terminal implements one of the modern keyboard protocols, and most do not.
@@ -10,17 +20,6 @@ package ttyx
 // desktop no longer receives, so the grab is taken when the terminal has the
 // focus and dropped the moment it does not. The event loop does that; nothing
 // here has to be remembered by the caller.
-
-import (
-	"errors"
-	"math"
-	"os"
-	"sync"
-
-	"github.com/jezek/xgb/xproto"
-	"github.com/unxed/keytrans"
-	"github.com/unxed/vtinput"
-)
 
 // Modifier is a set of the modifiers a combination needs held down.
 type Modifier uint16

@@ -4,10 +4,9 @@ package winshell
 
 import (
 	"errors"
+	"github.com/zzl/go-win32api/v2/win32"
 	"strings"
 	"testing"
-
-	"github.com/zzl/go-win32api/v2/win32"
 )
 
 func TestShellEnumerationEnd(t *testing.T) {

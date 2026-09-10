@@ -1,12 +1,11 @@
 package ttyx
 
 import (
+	"github.com/jezek/xgb/xproto"
+	"github.com/jezek/xgb/xtest"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/jezek/xgb/xproto"
-	"github.com/jezek/xgb/xtest"
 )
 
 // waitFor polls, because the event loop is a goroutine and the X server is on

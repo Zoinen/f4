@@ -1,15 +1,15 @@
 package ttyx
 
+import (
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
+)
+
 // The event loop. Everything else in this package is built on it: focus and
 // geometry stop being round trips taken whenever somebody remembers to ask,
 // the overlay follows the terminal window and goes away when the terminal
 // does, and the selection and key handling have somewhere for their replies
 // to arrive.
-
-import (
-	"github.com/jezek/xgb"
-	"github.com/jezek/xgb/xproto"
-)
 
 // watch selects the events we care about on the terminal window and starts
 // the goroutine that reads them. It runs for the life of the session.

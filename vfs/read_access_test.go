@@ -43,8 +43,22 @@ func TestOSVFSReaderExposesDirectLocalBackingLease(t *testing.T) {
 	if !ok {
 		t.Fatal("OS reader does not implement LocalBackingReader")
 	}
-	if got, ok := backing.LocalPath(); !ok || got != filePath {
+	got, ok := backing.LocalPath()
+	if !ok {
 		t.Fatalf("local backing = %q, %v", got, ok)
+	}
+	// Native Windows paths may carry the extended-length prefix. The lease
+	// must still identify the exact source file, with no copy or re-encoding.
+	expected, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.Stat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(expected, actual) {
+		t.Fatalf("local backing %q is a different file", got)
 	}
 	profiler, ok := reader.(ReadAccessProfiler)
 	if !ok || profiler.ReadAccessProfile() != ReadAccessDirectLocal {

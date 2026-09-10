@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/unxed/f4/vfs"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/unxed/f4/vfs"
 )
 
 type shellClient interface {

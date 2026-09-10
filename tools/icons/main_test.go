@@ -68,7 +68,7 @@ func TestRenderScalesStrokesAndGradients(t *testing.T) {
 	if oksvg.DefaultStyle.LineWidth != 1 {
 		t.Fatalf("SVG default stroke width = %v, want 1", oksvg.DefaultStyle.LineWidth)
 	}
-	source := filepath.Join("..", "..", "assets", "icon", "f4.svg")
+	source := filepath.Join("..", "..", "internal", "gui", "assets", "icon", "f4.svg")
 	data24, err := renderPNG(source, 24)
 	if err != nil {
 		t.Fatal(err)

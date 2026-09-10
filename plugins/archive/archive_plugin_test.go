@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -207,5 +208,18 @@ func TestArchivePluginRegistersFar2lFileShortcutsWithoutContributionHost(t *test
 		if app.items[index] != wantItems[index] {
 			t.Errorf("legacy menu item %d = %q, want %q", index, app.items[index], wantItems[index])
 		}
+	}
+}
+
+func TestFormatArchiveTestFailureIncludesArchiveAndMemberErrors(t *testing.T) {
+	err := errors.Join(
+		errors.New("broken.txt: checksum mismatch"),
+		errors.New("missing.bin: read failed"),
+	)
+
+	got := formatArchiveTestFailure(filepath.Join("/tmp", "sample.zip"), err)
+	want := "Test failed for sample.zip:\nbroken.txt: checksum mismatch\nmissing.bin: read failed"
+	if got != want {
+		t.Fatalf("formatArchiveTestFailure() = %q, want %q", got, want)
 	}
 }

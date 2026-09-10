@@ -43,6 +43,28 @@ func TestArchiveProvider_CanOpen(t *testing.T) {
 		t.Errorf("Expected CanOpen=false for %q", tmpTxt)
 	}
 }
+
+func TestArchiveProvider_PanelEnterAllowedRejectsSFXOnly(t *testing.T) {
+	root := t.TempDir()
+	sfxPath := filepath.Join(root, "bundle.exe")
+	if err := os.WriteFile(sfxPath, []byte("stubPK\x03\x04"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plainPath := filepath.Join(root, "bundle.zip")
+	if err := os.WriteFile(plainPath, []byte("PK\x03\x04"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &ArchiveProvider{}
+	parent := vfs.NewOSVFS(root)
+	if provider.PanelEnterAllowed(context.Background(), parent, "bundle.exe") {
+		t.Fatal("SFX must not open through ordinary panel Enter")
+	}
+	if !provider.PanelEnterAllowed(context.Background(), parent, "bundle.zip") {
+		t.Fatal("ordinary archive must keep ordinary panel Enter")
+	}
+}
+
 func TestArchiveProvider_Open(t *testing.T) {
 	p := &ArchiveProvider{}
 	ctx := context.Background()

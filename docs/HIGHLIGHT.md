@@ -14,11 +14,11 @@ and 600 000 lines, opened with F4.
 
 Four things cooperate, and all four run on the UI thread.
 
-**Piece table** (`piecetable/piecetable.go`) holds the text. For an unedited
+**Piece table** (`internal/piecetable/piecetable.go`) holds the text. For an unedited
 file it is one piece over the loading buffer, so `GetRange` is cheap. It can
 return `piecetable.ErrLoading` when the data has not arrived yet.
 
-**Line index** (`piecetable/lineindex.go`) maps line numbers to byte offsets.
+**Line index** (`internal/piecetable/lineindex.go`) maps line numbers to byte offsets.
 It is built in the background by `EditorView.StartIndexing`
 (`editor_view.go`), which scans the file in 64 KB chunks off-thread and
 publishes batches of offsets through `vtui.FrameManager.PostTask`. Until it
@@ -26,7 +26,7 @@ finishes, `li.LineCount()` keeps growing. `ev.indexing` says whether it is
 still running. The scroll bar, `Ctrl+End` and any restore of a saved position
 all wait for it.
 
-**Wrap engine** (`textlayout/wrap.go`) turns logical lines into visual rows.
+**Wrap engine** (`internal/textlayout/wrap.go`) turns logical lines into visual rows.
 Word wrap is off by default, in which case its row bookkeeping is a trivial
 `rowOffsets[i] = i` loop. It is not involved in any problem described here.
 

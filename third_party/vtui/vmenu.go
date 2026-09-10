@@ -1,11 +1,11 @@
 package vtui
 
 import (
-	"github.com/mattn/go-runewidth"
 	"sync"
 	"time"
 	"unicode"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
 )
 
@@ -69,11 +69,12 @@ type VMenu struct {
 	// back: dialogs read SelectPos as the confirmed choice, and without the
 	// restore an Esc'd dropdown silently commits whatever row the user
 	// happened to stop on.
-	selectAtOpen int
-	OnAction     func(int)
-	OnKeyDown    func(*vtinput.InputEvent) bool
-	HideShadow   bool
-	BoxType      int
+	mouseSelecting bool
+	selectAtOpen   int
+	OnAction       func(int)
+	OnKeyDown      func(*vtinput.InputEvent) bool
+	HideShadow     bool
+	BoxType        int
 	// OnClose is invoked exactly once for one shown lifetime. Dynamic menus use
 	// it to cancel native requests and live queries when their chain closes.
 	OnClose func()
@@ -687,6 +688,7 @@ func (m *VMenu) GetType() FrameType {
 }
 
 func (m *VMenu) SetExitCode(code int) {
+	m.mouseSelecting = false
 	m.CloseSubMenu()
 	m.closeAncestors()
 	m.done = true
@@ -711,15 +713,37 @@ func (m *VMenu) HasShadow() bool       { return !m.HideShadow }
 
 // ClearDone resets the menu state, allowing it to be shown again.
 func (m *VMenu) ClearDone() {
+	m.mouseSelecting = false
 	m.done = false
 	m.exitCode = -1
 	m.selectAtOpen = m.SelectPos
 }
 
+// BeginMouseSelection transfers the opening press to the popup.
+func (m *VMenu) BeginMouseSelection() { m.mouseSelecting = true }
+
 // ProcessMouse handles mouse wheel scrolling, menu item hover, and clicks.
 func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 	if m.IsDisabled() || e.Type != vtinput.MouseEventType {
 		return false
+	}
+	if m.mouseSelecting {
+		index := m.GetClickIndex(int(e.MouseY))
+		inside := int(e.MouseX) > m.X1 && int(e.MouseX) < m.X2 && index >= 0 && index < len(m.Items) && !m.Items[index].Separator
+		if inside {
+			m.SetSelectPos(index)
+		}
+		if IsMouseRelease(e) {
+			m.mouseSelecting = false
+			if inside {
+				click := *e
+				click.KeyDown = true
+				click.ButtonState = vtinput.FromLeft1stButtonPressed
+				click.MouseEventFlags = 0
+				return m.ProcessMouse(&click)
+			}
+		}
+		return true
 	}
 	if m.HandleMouseScroll(e) {
 		m.declareSemanticMenuState()

@@ -1,6 +1,8 @@
 package wincon
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestPremultiplyBGRAConvertsOrderAndScalesByAlpha(t *testing.T) {
 	// One opaque, one transparent, one half-transparent pixel: the three cases

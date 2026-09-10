@@ -1,6 +1,8 @@
 package wincon
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestSourceStringCoversUnknownAndPseudoSources(t *testing.T) {
 	for _, test := range []struct {

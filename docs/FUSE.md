@@ -19,15 +19,15 @@ is to connect the two and to decide who owns what.
 
 ## Layout
 
-    fusefs/fusefs.go            mount manager: Options, Mount, MountVFS,
-                                List/Find/Unmount/UnmountAll, mount point
-                                naming. No FUSE types, builds everywhere.
-    fusefs/bridge.go            the VFS side: call serialization, directory
-                                cache, lookup, open, spooling. No FUSE types,
-                                builds everywhere.
-    fusefs/node_fuse.go         the FUSE side: go-fuse nodes and the server.
-                                Built on linux, darwin and freebsd.
-    fusefs/node_unsupported.go  everything else: Supported() == false.
+    internal/fusefs/fusefs.go            mount manager: Options, Mount, MountVFS,
+                                         List/Find/Unmount/UnmountAll, mount point
+                                         naming. No FUSE types, builds everywhere.
+    internal/fusefs/bridge.go            the VFS side: call serialization, directory
+                                         cache, lookup, open, spooling. No FUSE types,
+                                         builds everywhere.
+    internal/fusefs/node_fuse.go         the FUSE side: go-fuse nodes and the server.
+                                         Built on linux, darwin and freebsd.
+    internal/fusefs/node_unsupported.go  everything else: Supported() == false.
 
 The split matters. Only `node_fuse.go` knows that FUSE exists, so the manager,
 the cache, the path handling and their tests compile and run on Windows too —

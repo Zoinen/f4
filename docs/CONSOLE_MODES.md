@@ -51,7 +51,7 @@ Unix.** Основной режим обязан сохранять PTY.
 
 ### 2.2. GUI-бэкенды
 
-`gui_unix.go`/`gui_windows.go` → `vtui.RunInGUIWindow(...)`; GUI-хосты вызывают
+`internal/gui/run_unix.go`/`run_windows.go` → `vtui.RunInGUIWindow(...)`; GUI-хосты вызывают
 `vtui.SetActiveBackend("x11"|"wayland"|"gogpu"|"ebiten"|"win32")`, в чистом терминале
 `vtui.ActiveBackend() == ""`. Плюс `checkAndDetach()` переоткрывает процесс с
 `stdin/stdout/stderr → /dev/null`. Хостового терминала физически нет → **в GUI всегда
@@ -394,7 +394,8 @@ func (s *ScreenBuf) WritePassthrough(p []byte)
 **f4, обязательно:** `panels_frame.go`, `terminal_view.go`, `ansi_parser.go`,
 `input_translation.go`, `pty_interface.go`, `pty_unix.go`, `pty_windows.go`, `child_env.go`,
 `process_environment_shell.go`, `config.go`, `action_registry.go`, `hotkeys.go`, `actions.go`,
-`main.go`, `session_unix.go`, `session_windows.go`, `gui_unix.go`, `gui_windows.go`,
+`main.go`, `session_unix.go`, `session_windows.go`, `internal/gui/run_unix.go`,
+`internal/gui/run_windows.go`,
 `detach_unix.go`, `command_runner.go`, `remote_command.go`, `terminal_log_vfs.go`,
 `commands.go`.
 

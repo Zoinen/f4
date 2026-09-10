@@ -5,13 +5,12 @@ package winshell
 import (
 	"context"
 	"fmt"
+	"github.com/unxed/f4/sdk/f4rpc"
 	"io"
 	"os"
 	"os/exec"
 	"sync"
 	"syscall"
-
-	"github.com/unxed/f4/sdk/f4rpc"
 )
 
 const createNoWindow = 0x08000000

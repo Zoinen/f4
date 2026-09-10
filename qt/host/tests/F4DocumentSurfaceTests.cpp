@@ -1761,6 +1761,7 @@ void F4DocumentSurfaceTests::homeEndKeepsPendingScrollWhenOverlayOwnsInput()
                 {QStringLiteral("title"), QStringLiteral("Operations")},
                 {QStringLiteral("items"), QVariantList{}},
             }, 100);
+            fixture.window->setProperty("queueDropdownOpen", true);
         } else {
             fixture.shell.overlayState()->applyDialogsState({
                 {QStringLiteral("dialogs"), QVariantList{QVariantMap{
@@ -1803,6 +1804,7 @@ void F4DocumentSurfaceTests::homeEndKeepsPendingScrollWhenOverlayOwnsInput()
 
         if (operationsOverlay) {
             fixture.shell.surfaceRegistry()->applyOperationsQueue({}, 102);
+            fixture.window->setProperty("queueDropdownOpen", false);
         } else {
             fixture.shell.overlayState()->applyDialogsState({
                 {QStringLiteral("dialogs"), QVariantList{}},

@@ -18,6 +18,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"golang.org/x/net/http/httpproxy"
+	xproxy "golang.org/x/net/proxy"
 	"io"
 	"net"
 	"net/http"
@@ -27,9 +29,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/http/httpproxy"
-	xproxy "golang.org/x/net/proxy"
 )
 
 // Proxy modes. ModeGlobal is the zero value on purpose: a freshly added

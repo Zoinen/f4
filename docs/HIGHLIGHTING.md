@@ -117,6 +117,32 @@ Dates can be evaluated either absolutely or relatively:
 
 Color expressions match the standard f4 format: `foreground:<color> | background:<color>`, where `<color>` is a hex RGB value (e.g. `#8AE234` or `#0000FF`).
 
+### Theme rules and `highlight.ini`
+
+The active Color Style and the user's `highlight.ini` contribute separate
+rule lists; sections with the same number are not merged key by key. By
+default the user's list is placed first, so a matching user rule wins before
+the theme is considered. `Appearance.HighlightPriority = 0` in `settings.ini`
+selects this order. Set it to `1` when the theme should be tried first.
+
+A rule that matches an item normally ends the search, even if it does not set
+a colour for the current state. Use `ContinueProcessing = 1` when a later
+matching rule should fill in or blend the remaining colour components. This is
+also how a user rule can override only the foreground while retaining a
+background supplied by a later theme rule:
+
+```ini
+[Highlight_100]
+Mask = *.log
+NormalColor = foreground:#FF5555
+ContinueProcessing = 1
+```
+
+Conversely, a broad user rule without a mask or attribute filter can stop all
+theme rules below it. For a folder-only override include
+`IncludeAttributes = Directory`; for a file-only override exclude that
+attribute.
+
 ### Cascade Blending (`ContinueProcessing = 1`)
 
 Normally, `f4` evaluates rules from top to bottom and stops on the first match. However, if `ContinueProcessing = 1` is specified, `f4` merges the colors of this rule with subsequent matches.

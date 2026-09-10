@@ -44,7 +44,7 @@ func main() {
 	)
 	flag.BoolVar(&write, "w", false, "rewrite files in place")
 	flag.BoolVar(&check, "check", false, "report files that are not formatted")
-	flag.StringVar(&source, "source", "cmd/f4/lang/en.lng", "English source-of-truth language file")
+	flag.StringVar(&source, "source", "internal/i18n/lang/en.lng", "English source-of-truth language file")
 	flag.Parse()
 
 	if write && check {

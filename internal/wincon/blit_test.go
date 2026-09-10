@@ -1,6 +1,8 @@
 package wincon
 
-import "testing"
+import (
+	"testing"
+)
 
 // The frame buffer is bottom-up with its channels the other way round, and it
 // is also where a picture that arrives in overlapping pieces is composed. Both

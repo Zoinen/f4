@@ -17,14 +17,13 @@ package ttyx
 import (
 	"errors"
 	"fmt"
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
 	"math"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/jezek/xgb"
-	"github.com/jezek/xgb/xproto"
 )
 
 var (

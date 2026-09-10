@@ -2,7 +2,9 @@
 
 package wincon
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
 // counters is the live form. atomic.Uint64 rather than a plain one because f4
 // is built for 32-bit ARM, where a bare 64-bit atomic has to be aligned by

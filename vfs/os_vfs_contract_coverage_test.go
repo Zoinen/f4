@@ -122,6 +122,17 @@ func TestOSVFSLinksAndDirectoryChunkDelivery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ".hidden"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		item, err := filesystem.Stat(context.Background(), filepath.Join(root, ".hidden"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		item.IsHidden = true
+		item.WinAttrs |= 0x2 // FILE_ATTRIBUTE_HIDDEN
+		if err := filesystem.SetAttributes(context.Background(), filepath.Join(root, ".hidden"), item); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := os.Chmod(filepath.Join(root, "file-0000"), 0700); err != nil { // #nosec G302 -- executable detection is the behavior under test.
 		t.Fatal(err)
 	}

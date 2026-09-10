@@ -47,11 +47,11 @@ runs:
           case "$f" in
             go.mod|go.sum|vtui|vtinput|.github/*|.golangci*)
               all "$f changes what every package sees" ;;
-            cmd/f4/*)
-              # Language files, help pages, icons and testdata are read by
-              # cmd/f4's tests at run time; attribute the whole subtree to
-              # the package rather than reasoning per file type.
-              dirs="$dirs cmd/f4" ;;
+            *.syso)
+              # A resource object is linked into the binary built from its own
+              # directory and nowhere else, so it belongs to that package the
+              # same way a .go file does.
+              dirs="$dirs $(dirname "$f")" ;;
             */testdata/*)
               dirs="$dirs ${f%%/testdata/*}" ;;
             *.go)
@@ -62,9 +62,8 @@ runs:
         done <<<"$files"
 
         # Classify build impact separately from test impact above. Tests and
-        # testdata never enter a shipped binary; cmd/f4's other files always
-        # do because that package embeds non-Go resources. For Go elsewhere,
-        # resolve the owning package and check only main packages' production
+        # testdata never enter a shipped binary. For everything else, resolve
+        # the owning package and check only main packages' production
         # dependency graph -- Deps deliberately excludes test imports.
         build=no
         build_all() { build=yes; echo "build affected: yes ($1)"; }
@@ -73,9 +72,7 @@ runs:
           case "$f" in
             *_test.go|*/testdata/*)
               ;;
-            cmd/f4/*)
-              build=yes ;;
-            *.go)
+            *.go|*.syso)
               build_dirs="$build_dirs $(dirname "$f")" ;;
             *)
               build_all "cannot attribute $f to a compiled binary" ;;

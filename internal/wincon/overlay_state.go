@@ -1,5 +1,9 @@
 package wincon
 
+import (
+	"sync"
+)
+
 // The overlay's state machine, minus the system calls.
 //
 // Every window call on a child of the console window is a call into a window
@@ -14,8 +18,6 @@ package wincon
 // The split lives in its own file for the same reason geometry.go does: it is
 // arithmetic and judgement, it has no system calls in it, and it is therefore
 // testable on a machine with no Windows console anywhere near it.
-
-import "sync"
 
 // overlayOps is what the pump thread has to do to make the window agree with
 // what was asked for. Everything zero means there is nothing to do.

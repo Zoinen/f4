@@ -1,9 +1,8 @@
 package ttyx
 
 import (
-	"testing"
-
 	"github.com/jezek/xgb/xproto"
+	"testing"
 )
 
 func TestFocusEventFilter(t *testing.T) {

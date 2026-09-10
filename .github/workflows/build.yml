@@ -99,15 +99,27 @@ jobs:
     - name: Check language file formatting
       # One cell carries the repo-wide checks; linux/amd64 is the fastest.
       if: steps.affected.outputs.build == 'yes' && matrix.goos == 'linux' && matrix.goarch == 'amd64'
-      run: go run ./tools/langfmt -check cmd/f4/lang/*.lng
+      run: go run ./tools/langfmt -check internal/i18n/lang/*.lng
 
     - name: Verify generated application icons
       # One cell carries the repo-wide checks; linux/amd64 is the fastest.
       if: steps.affected.outputs.build == 'yes' && matrix.goos == 'linux' && matrix.goarch == 'amd64'
       run: |
+        # `go generate` on a package with no directives prints nothing and
+        # exits 0, so the git diff below would pass by having regenerated
+        # nothing at all. That is not hypothetical: the directive lives in the
+        # main package because the toolchain links a .syso only from there, and
+        # it travels with whatever file it sits in.
+        #
+        # -n prints the commands it would run to STDERR, not stdout, so the
+        # redirect is the check rather than decoration.
+        go generate -n ./cmd/f4 2>&1 | grep -q . || {
+          echo "::error::no //go:generate directive under cmd/f4; the icon and .syso generator would silently not run"
+          exit 1
+        }
         go generate ./cmd/f4
         git diff --exit-code -- \
-          cmd/f4/assets/icon/generated \
+          internal/gui/assets/icon/generated \
           cmd/f4/rsrc_windows_amd64.syso \
           cmd/f4/rsrc_windows_arm64.syso
 
@@ -193,7 +205,7 @@ jobs:
         fi
 
         # Copy language and help assets
-        cp -r cmd/f4/lang cmd/f4/help build/
+        cp -r internal/i18n/lang internal/dialog/help build/
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
@@ -206,11 +218,11 @@ jobs:
           for size in 16 24 28 30 32 36 42 48 56 64 128 256 512 1024; do
             icon_dir="build/share/icons/hicolor/${size}x${size}/apps"
             mkdir -p "$icon_dir"
-            cp "cmd/f4/assets/icon/generated/f4-${size}.png" \
+            cp "internal/gui/assets/icon/generated/f4-${size}.png" \
               "$icon_dir/io.github.unxed.f4.png"
           done
           mkdir -p build/share/icons/hicolor/scalable/apps
-          cp cmd/f4/assets/icon/f4.svg \
+          cp internal/gui/assets/icon/f4.svg \
             build/share/icons/hicolor/scalable/apps/io.github.unxed.f4.svg
         fi
 
@@ -319,7 +331,7 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp build/f4 "$APP/Contents/MacOS/f4"
           chmod +x "$APP/Contents/MacOS/f4"
-          cp cmd/f4/assets/icon/generated/f4.icns "$APP/Contents/Resources/f4.icns"
+          cp internal/gui/assets/icon/generated/f4.icns "$APP/Contents/Resources/f4.icns"
           sed -e "s/__VERSION__/$VERSION/g" \
               -e "s/__BUILD_VERSION__/$GITHUB_RUN_NUMBER/g" \
               packaging/macos/Info.plist > "$APP/Contents/Info.plist"
@@ -819,13 +831,13 @@ jobs:
 
         python ci/package-embedded-qt-host.py $qtHost
         go test -tags f4_embedded_qt_host `
-          -run "TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload" .
+          -run "TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload" ./internal/plughost
         New-Item -ItemType Directory -Force $distDir | Out-Null
         $env:CGO_ENABLED = "0"
         $env:GOOS = "windows"
         $env:GOARCH = "${{ matrix.goarch }}"
         go build -trimpath -tags f4_embedded_qt_host -ldflags="-s -w" `
-          -o $distDir/f4.exe .
+          -o $distDir/f4.exe ./cmd/f4
         $files = @(Get-ChildItem $distDir -File)
         if ($files.Count -ne 1 -or $files[0].Name -ne "f4.exe") {
           throw "Portable Windows artifact must contain only f4.exe"
@@ -954,7 +966,7 @@ jobs:
             go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$APP_LDFLAGS -H windowsgui" -o "$BUILD_DIR/f4-gui$EXT" ./cmd/f4 </dev/null
           fi
 
-          cp -r cmd/f4/lang cmd/f4/help "$BUILD_DIR/"
+          cp -r internal/i18n/lang internal/dialog/help "$BUILD_DIR/"
           cp f4.example.ini "$BUILD_DIR/"
           mkdir -p "$BUILD_DIR/licenses"
           cp plugins/visren/LICENSE.upstream "$BUILD_DIR/licenses/VisRen-BSD-3-Clause.txt"
@@ -966,11 +978,11 @@ jobs:
             for size in 16 24 28 30 32 36 42 48 56 64 128 256 512 1024; do
               icon_dir="$BUILD_DIR/share/icons/hicolor/${size}x${size}/apps"
               mkdir -p "$icon_dir"
-              cp "cmd/f4/assets/icon/generated/f4-${size}.png" \
+              cp "internal/gui/assets/icon/generated/f4-${size}.png" \
                 "$icon_dir/io.github.unxed.f4.png"
             done
             mkdir -p "$BUILD_DIR/share/icons/hicolor/scalable/apps"
-            cp cmd/f4/assets/icon/f4.svg \
+            cp internal/gui/assets/icon/f4.svg \
               "$BUILD_DIR/share/icons/hicolor/scalable/apps/io.github.unxed.f4.svg"
           fi
 
@@ -1128,7 +1140,7 @@ jobs:
 
         mkdir -p build
         go build -buildmode=pie -trimpath -ldflags="$APP_LDFLAGS" -o build/f4 ./cmd/f4
-        cp -r cmd/f4/lang cmd/f4/help build/
+        cp -r internal/i18n/lang internal/dialog/help build/
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
@@ -1147,7 +1159,7 @@ jobs:
         grep -q "RUNPATH.*$TERMUX_PREFIX/lib" /tmp/dyn
 
     # Two artifacts. The tarball mirrors the other platforms and is what
-    # the in-app updater picks up (updateAssetSuffixes maps GOOS=android
+    # the in-app updater picks up (internal/update assetSuffixes maps GOOS=android
     # to the termux name). The .deb is the
     # native way to install in Termux: `pkg install ./f4-termux-arm64.deb`.
     # Termux runs with no chroot, so the paths inside are absolute
@@ -1360,7 +1372,7 @@ jobs:
         # GUI-only binary (no console flash), same as in the main matrix.
         go build -trimpath -ldflags="$APP_LDFLAGS -H windowsgui" -o build/f4-gui.exe ./cmd/f4
 
-        cp -r cmd/f4/lang cmd/f4/help build/
+        cp -r internal/i18n/lang internal/dialog/help build/
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
@@ -1531,7 +1543,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: { include: [{ shard: 'cmd/f4', cache-key: cmd-f4 }, { shard: rest, cache-key: rest }] }
+      # Numbered, not named. A shard that names a package path has to be
+      # edited by every restructuring, and the one that did -- `cmd/f4` --
+      # went on carrying the whole application in its name for three phases
+      # after the application left it. The assignment is computed below from
+      # `go list`, so a package that moves lands in a shard by itself.
+      matrix: { include: [{ shard: 0, cache-key: lint-0 }, { shard: 1, cache-key: lint-1 }] }
     env:
       CGO_ENABLED: 0
     steps:
@@ -1568,63 +1585,38 @@ jobs:
       uses: ./.github/actions/affected-packages
 
     - name: Select incremental lint packages
+      id: shard
+      uses: ./.github/actions/shard-packages
+      with:
+        shard: ${{ matrix.shard }}
+        shards: '2'
+        packages: ${{ steps.affected.outputs.packages }}
+
+    - name: Convert import paths to package arguments
       id: lint-packages
+      if: steps.shard.outputs.count != '0'
       shell: bash
       env:
-        AFFECTED: ${{ steps.affected.outputs.packages }}
-        SHARD: ${{ matrix.shard }}
+        PACKAGES: ${{ steps.shard.outputs.packages }}
       run: |
         set -euo pipefail
-
         module=$(go list -m)
-        if [ "$AFFECTED" = "all" ]; then
-          packages=$(go list ./...)
-        elif [ -z "$AFFECTED" ]; then
-          packages=""
-        else
-          packages=$(tr ' ' '\n' <<<"$AFFECTED")
-        fi
-
-        cmd_affected=no
-        rest_args=""
-        while IFS= read -r package; do
-          [ -n "$package" ] || continue
+        args=""
+        read -r -a shard_packages <<<"$PACKAGES"
+        for package in "${shard_packages[@]}"; do
           case "$package" in
-            "$module/cmd/f4"|"$module/cmd/f4"/*)
-              cmd_affected=yes
-              continue ;;
-            "$module")
-              relative=./ ;;
-            "$module"/*)
-              relative="./${package#"$module"/}" ;;
+            "$module")   relative=./ ;;
+            "$module"/*) relative="./${package#"$module"/}" ;;
             *)
-              echo "::error::affected package is outside $module: $package"
+              echo "::error::package is outside $module: $package"
               exit 1 ;;
           esac
-          rest_args="${rest_args:+$rest_args }$relative"
-        done <<<"$packages"
-
-        if [ "$SHARD" = "cmd/f4" ]; then
-          if [ "$cmd_affected" != "yes" ]; then
-            echo "cmd/f4 is not affected by this diff; skipping incremental lint."
-            echo "run=no" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "args=./cmd/f4/..." >> "$GITHUB_OUTPUT"
-          echo "run=yes" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
-        if [ -z "$rest_args" ]; then
-          echo "No affected packages outside cmd/f4; skipping incremental lint."
-          echo "run=no" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        echo "args=$rest_args" >> "$GITHUB_OUTPUT"
-        echo "run=yes" >> "$GITHUB_OUTPUT"
+          args="${args:+$args }$relative"
+        done
+        echo "args=$args" >> "$GITHUB_OUTPUT"
 
     - name: Run incremental golangci-lint
-      if: steps.lint-packages.outputs.run == 'yes'
+      if: steps.shard.outputs.count != '0'
       uses: golangci/golangci-lint-action@v9.3.0
       with:
         version: v2.13.1
@@ -1637,8 +1629,11 @@ jobs:
     # and from then on it is checked across the whole tree and cannot regrow.
     # Adding a linter to this list means clearing its debt first, in the same
     # change.
+    # Shard 0 carries it, not because of what it holds -- the shards are
+    # numbered and their contents computed -- but because exactly one runner
+    # must, and zero is the one that always exists.
     - name: Run whole-tree golangci-lint for the linters with no backlog
-      if: matrix.shard == 'rest'
+      if: matrix.shard == 0
       uses: golangci/golangci-lint-action@v9.3.0
       with:
         version: v2.13.1
@@ -1692,9 +1687,14 @@ jobs:
         Copy-Item $package $zip -Force
         $extract = Join-Path $env:RUNNER_TEMP 'conpty-package'
         Expand-Archive -Path $zip -DestinationPath $extract -Force
-        Copy-Item (Join-Path $extract "runtimes/win-$runtime/native/conpty.dll") 'cmd/f4/conpty.dll' -Force
-        Copy-Item (Join-Path $extract "build/native/runtimes/$runtime/OpenConsole.exe") 'cmd/f4/OpenConsole.exe' -Force
-        Get-Item cmd/f4/conpty.dll, cmd/f4/OpenConsole.exe | Format-Table Name,Length
+        # cmd/f4 is where the built binary looks for its bundle;
+        # internal/terminal is where the test that checks the bundle now runs,
+        # and go test makes a package's own directory the working directory.
+        foreach ($dest in 'cmd/f4', 'internal/terminal') {
+          Copy-Item (Join-Path $extract "runtimes/win-$runtime/native/conpty.dll") "$dest/conpty.dll" -Force
+          Copy-Item (Join-Path $extract "build/native/runtimes/$runtime/OpenConsole.exe") "$dest/OpenConsole.exe" -Force
+        }
+        Get-Item cmd/f4/conpty.dll, cmd/f4/OpenConsole.exe, internal/terminal/conpty.dll, internal/terminal/OpenConsole.exe | Format-Table Name,Length
 
     - name: Move Go caches to the fast disk (Windows)
       # C: is the OS disk and glacial at unpacking the ~650 MB Go cache --
@@ -1769,8 +1769,35 @@ jobs:
         # upstream race, so isolate that test in a single-threaded process.
         if [ -z "$RUN_FILTER" ] || [[ "TestAllDialogs_LayoutValidation" =~ $RUN_FILTER ]]; then
           case " ${targets[*]} " in
-            *" ./... "*|*" github.com/unxed/f4/cmd/f4 "*)
-              GOMAXPROCS=1 go test -timeout 15m -run '^TestAllDialogs_LayoutValidation$' ./cmd/f4 ;;
+            *" ./... "*|*" github.com/unxed/f4/internal/app "*)
+              # -v and the PASS check are the point: the -skip above removes
+              # this test from every other target, so if this line names a
+              # package that does not hold it, `go test -run` prints
+              # "[no tests to run]" and exits 0 -- excluded everywhere, re-run
+              # nowhere, cell still green.
+              #
+              # What is asserted is "=== RUN", not "--- PASS": the test skips
+              # itself when nothing a layout depends on changed, and a skip is
+              # a deliberate behaviour, not a failure. What must never happen
+              # is the test not being *found* -- then `go test -run` prints
+              # "[no tests to run]" and exits 0, and the -skip above has
+              # already removed it from every other target.
+              #
+              # -count=1 because a cached result prints neither line, and
+              # captured rather than piped because `... | grep -q` exits at
+              # the first match, closes the pipe, and pipefail then fails the
+              # step over the SIGPIPE it caused.
+              if ! layout=$(GOMAXPROCS=1 go test -v -count=1 -timeout 15m -run '^TestAllDialogs_LayoutValidation$' ./internal/app 2>&1); then
+                printf '%s\n' "$layout"
+                exit 1
+              fi
+              printf '%s\n' "$layout"
+              case "$layout" in
+                *"=== RUN   TestAllDialogs_LayoutValidation"*) ;;
+                *)
+                  echo "::error::TestAllDialogs_LayoutValidation was not found in ./internal/app"
+                  exit 1 ;;
+              esac ;;
           esac
         fi
 
@@ -1780,7 +1807,7 @@ jobs:
       with:
         files: cover.out
         # Without this the uploader also sweeps the tree for anything that
-        # looks like a report and picks up cmd/f4/lang/coverage_baseline.txt,
+        # looks like a report and picks up internal/i18n/lang/coverage_baseline.txt,
         # which counts translation keys, not statements.
         disable_search: true
         flags: ${{ matrix.cover }}
@@ -1847,25 +1874,23 @@ jobs:
         exit 0
 
   race:
-    name: Race (${{ matrix.scope }})
+    name: Race (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # cmd/f4's suite alone takes as long under the detector as every
-        # other package combined, so it gets runners of its own -- split in
-        # three by test-name letter, because even alone it sat on the critical
-        # path. TestAllDialogs_LayoutValidation dominates the A range under
-        # the detector, so A cannot be split any further by first letter;
-        # B-L/rest is the closest split of the remaining measured time. The
-        # three app shards share a cache key on purpose: they compile identical
-        # objects, so whichever saves first serves all three.
+        # Four numbered shards, filled by measured weight rather than by name.
+        # The heaviest package lands alone in one of them and that is the floor:
+        # a package cannot be split across runners without a test-name filter,
+        # and a filter has to name the package it filters. Measured, the floor
+        # is under the Test cells' wall clock, so the race job is no longer on
+        # the critical path and does not need one.
         include:
-          - { scope: 'cmd/f4 A', cache-key: app, run: '^TestA' }
-          - { scope: 'cmd/f4 B-L', cache-key: app, run: '^Test[B-L]' }
-          - { scope: 'cmd/f4 rest', cache-key: app, run: '^Test([^A-L]|$)' }
-          - { scope: packages, cache-key: packages }
+          - { shard: 0 }
+          - { shard: 1 }
+          - { shard: 2 }
+          - { shard: 3 }
     env:
       # The race detector requires cgo and the Ubuntu runner provides the
       # native compiler needed by the instrumented test binary.
@@ -1880,16 +1905,18 @@ jobs:
       # The shared setup-go cache key is claimed by whichever ubuntu job
       # saves first -- always one without -race -- so these jobs recompiled
       # the whole tree under the detector on every run, ~2 minutes each.
-      # Race-instrumented objects get a key of their own; the app shards and
-      # package scope compile different package sets, so the key includes it.
+      # Race-instrumented objects get a key of their own, shared by every
+      # shard: they compile overlapping dependency sets, so whichever saves
+      # first serves the rest. Which packages land in which shard is computed
+      # at job time and would make a per-shard key rotate on every move.
       uses: actions/cache@v4
       with:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: race-${{ matrix.cache-key }}-go-${{ hashFiles('go.sum') }}
+        key: race-go-${{ hashFiles('go.sum') }}
         restore-keys: |
-          race-${{ matrix.cache-key }}-go-
+          race-go-
 
     - name: Set up Go
       uses: actions/setup-go@v7
@@ -1901,52 +1928,41 @@ jobs:
       id: affected
       uses: ./.github/actions/affected-packages
 
+    - name: Select race packages
+      id: shard
+      uses: ./.github/actions/shard-packages
+      with:
+        shard: ${{ matrix.shard }}
+        shards: '4'
+        packages: ${{ steps.affected.outputs.packages }}
+
     - name: Run race detector
+      if: steps.shard.outputs.count != '0'
       shell: bash
       env:
-        SCOPE: ${{ matrix.scope }}
-        RUN_FILTER: ${{ matrix.run || '' }}
-        AFFECTED: ${{ steps.affected.outputs.packages }}
+        PACKAGES: ${{ steps.shard.outputs.packages }}
       run: |
-        if [ -n "$RUN_FILTER" ]; then
-          if [ "$AFFECTED" != "all" ] && [[ " $AFFECTED " != *" github.com/unxed/f4/cmd/f4 "* ]]; then
-            echo "cmd/f4 is not affected by this diff; skipping."
-            exit 0
-          fi
-          # 5m, not 15m: a warm shard runs in about a minute, and the known
-          # cmd/f4 hang (leaked FrameManager task pumps; TestMain stuck in a
-          # chan receive) otherwise burns the full timeout before the job
-          # can go red and be retried.
-          go test -race -shuffle=on -timeout 5m -run "$RUN_FILTER" ./cmd/f4
-          exit 0
-        fi
-        # The FFI dependencies now keep Go-owned pointers typed and isolate
-        # the genuinely foreign-pointer conversions behind nocheckptr helpers,
-        # so luaplug can execute its FFI tests under the detector as well.
-        mapfile -t packages < <(go list ./... | grep -Ev '^github.com/unxed/f4/cmd/f4$')
-        # The bare $packages this replaced failed the step when the list came
-        # out empty, because set -e sees the assignment's exit status. mapfile
-        # swallows it, and go test with no arguments would quietly fall back to
-        # the current directory, so check explicitly.
-        if [ ${#packages[@]} -eq 0 ]; then
-          echo "::error::no packages left to run under the race detector"
-          exit 1
-        fi
-        if [ "$AFFECTED" != "all" ]; then
-          mapfile -t packages < <(printf '%s\n' "${packages[@]}" | grep -Fx -f <(tr ' ' '\n' <<<"$AFFECTED") || true)
-          if [ ${#packages[@]} -eq 0 ] || [ -z "${packages[0]}" ]; then
-            echo "No affected packages outside cmd/f4; skipping."
-            exit 0
-          fi
-        fi
+        set -euo pipefail
+        # The FFI dependencies keep Go-owned pointers typed and isolate the
+        # genuinely foreign-pointer conversions behind nocheckptr helpers, so
+        # luaplug can execute its FFI tests under the detector as well.
+        #
         # TestSeedSweep in tools/conptyreconcile runs 3000 seeds through the
         # reconcile pipeline -- pure CPU work. The detector makes it roughly
-        # 7x more expensive, holding this whole job to ~7 minutes while the
-        # other ~40 packages finish in ~40s combined. The full sweep still
-        # runs in the regular non-race jobs; the race-detector pipeline remains
-        # covered by the other ConPTY tests, including
-        # TestRandomisedRoundsAgainstTheMock, TestKnownSeedsAgainstTheMock,
-        # and others.
+        # 7x more expensive, holding a whole shard to ~7 minutes while its
+        # neighbours finish in seconds. The full sweep still runs in the
+        # regular non-race jobs; the race-detector pipeline remains covered by
+        # the other ConPTY tests, including TestRandomisedRoundsAgainstTheMock
+        # and TestKnownSeedsAgainstTheMock.
+        #
+        # No package name appears here. The shard action decides what this
+        # runner gets, and an empty shard skipped the step above rather than
+        # falling through to `go test` with no arguments, which would quietly
+        # test the current directory.
+        # An array, not a bare expansion: the list has to word-split into
+        # separate arguments, and shellcheck is right that a bare $PACKAGES
+        # would also glob.
+        read -r -a packages <<<"$PACKAGES"
         go test -race -shuffle=on -timeout 15m -skip '^TestSeedSweep$' "${packages[@]}"
 
   release:

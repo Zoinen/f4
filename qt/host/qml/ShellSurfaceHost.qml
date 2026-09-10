@@ -12,6 +12,7 @@ Item {
         const document = documentLayer.item
         if (document && document.interactionActive
                 && !surfaces.hostWindow.hasBlockingOverlay()
+                && !surfaces.hostWindow.queueDropdownOpen
                 && !surfaces.hostWindow.hasOperationsQueueSurface()
                 && (document.frame.kind === "viewer"
                     || document.frame.kind === "editor"))

@@ -363,6 +363,13 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 			registrations = append(registrations, registration)
 		}
 	}
+	if host, ok := api.(vfs.SettingsContributionHost); ok {
+		reg, err := host.RegisterSettingsProvider(&centerSettingsProvider{plugin: p})
+		if err != nil {
+			return rollback(err)
+		}
+		registrations = append(registrations, reg)
+	}
 	if err := api.RegisterURIProvider(&cloudURIProvider{plugin: p}); err != nil {
 		return rollback(err)
 	}

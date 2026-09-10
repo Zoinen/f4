@@ -131,6 +131,13 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	}
 	registrations = append(registrations, macroRegistration)
 
+	if settingsHost, ok := api.(vfs.SettingsContributionHost); ok {
+		reg, err := settingsHost.RegisterSettingsProvider(plugin.settingsProvider())
+		if err != nil {
+			return rollback(err)
+		}
+		registrations = append(registrations, reg)
+	}
 	plugin.mu.Lock()
 	plugin.registrars = registrations
 	plugin.initialized = true

@@ -1,0 +1,254 @@
+package app
+
+import (
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/i18n"
+	"path/filepath"
+	"testing"
+)
+
+func TestParseStartupModeRoundTrip(t *testing.T) {
+	for _, mode := range []config.StartupMode{config.StartupModeAuto, config.StartupModeTTY, config.StartupModeGui} {
+		if got := config.ParseStartupMode(mode.String()); got != mode {
+			t.Errorf("config.ParseStartupMode(%q) = %v, want %v", mode.String(), got, mode)
+		}
+	}
+
+	for _, tt := range []struct {
+		value string
+		want  config.StartupMode
+	}{
+		{value: "TTY", want: config.StartupModeTTY},
+		{value: " console ", want: config.StartupModeTTY},
+		{value: "terminal", want: config.StartupModeTTY},
+		{value: "GUI", want: config.StartupModeGui},
+		{value: "graphics", want: config.StartupModeGui},
+		{value: "window", want: config.StartupModeGui},
+		{value: "", want: config.StartupModeAuto},
+		{value: "auto", want: config.StartupModeAuto},
+		// A value this build does not know must degrade to auto-detection
+		// rather than leave f4 with no way to start.
+		{value: "holographic", want: config.StartupModeAuto},
+	} {
+		if got := config.ParseStartupMode(tt.value); got != tt.want {
+			t.Errorf("config.ParseStartupMode(%q) = %v, want %v", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeStartupGuiBackend(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  string
+	}{
+		{value: "", want: ""},
+		{value: "auto", want: ""},
+		{value: " AUTO ", want: ""},
+		{value: "gogpu", want: "gogpu"},
+		{value: " GoGPU ", want: "gogpu"},
+		{value: "x11", want: "x11"},
+		{value: "wayland", want: "wayland"},
+		{value: "ebiten", want: "ebiten"},
+		// Every documented Win32 spelling collapses to one stored name.
+		{value: "win32", want: "win32"},
+		{value: "winapi", want: "win32"},
+		{value: "gdi", want: "win32"},
+		{value: "win32gui", want: "win32"},
+		// External UI integrations are not part of the dialog's list, but a
+		// hand-written config naming one must keep working.
+		{value: "qt", want: "qt"},
+		{value: "ext:myui", want: "ext:myui"},
+		// Unknown names fall back to detection.
+		{value: "vulkan", want: ""},
+		{value: "ansi", want: ""},
+	} {
+		if got := config.NormalizeStartupGuiBackend(tt.value); got != tt.want {
+			t.Errorf("config.NormalizeStartupGuiBackend(%q) = %q, want %q", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeStartupTTYBackend(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  string
+	}{
+		{value: "", want: ""},
+		{value: "auto", want: ""},
+		{value: "ansi", want: "ansi"},
+		{value: " ANSI ", want: "ansi"},
+		{value: "winapi", want: "winapi"},
+		{value: "win32", want: "winapi"},
+		{value: "gogpu", want: ""},
+		{value: "nonsense", want: ""},
+	} {
+		if got := config.NormalizeStartupTTYBackend(tt.value); got != tt.want {
+			t.Errorf("config.NormalizeStartupTTYBackend(%q) = %q, want %q", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestResolveStartupBackendPrecedence(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		flagValue  string
+		flagGiven  bool
+		configured string
+		want       string
+	}{
+		{name: "flag wins over config", flagValue: "x11", flagGiven: true, configured: "gogpu", want: "x11"},
+		{name: "config fills in when no flag", flagValue: "", flagGiven: false, configured: "gogpu", want: "gogpu"},
+		{name: "config alias is canonicalized", flagValue: "", flagGiven: false, configured: "gdi", want: "win32"},
+		{name: "explicit auto overrides config", flagValue: "auto", flagGiven: true, configured: "gogpu", want: ""},
+		{name: "explicit auto is case insensitive", flagValue: "Auto", flagGiven: true, configured: "gogpu", want: ""},
+		{name: "nothing anywhere means detect", flagValue: "", flagGiven: false, configured: "", want: ""},
+		// A mistyped flag reaches RunGui unchanged so the user sees an error,
+		// while the same typo in settings.ini would have been dropped.
+		{name: "flag typo is not swallowed", flagValue: "gogpuu", flagGiven: true, configured: "", want: "gogpuu"},
+		{name: "config typo falls back to detect", flagValue: "", flagGiven: false, configured: "gogpuu", want: ""},
+	} {
+		got := resolveStartupBackend(tt.flagValue, tt.flagGiven, tt.configured, config.NormalizeStartupGuiBackend)
+		if got != tt.want {
+			t.Errorf("%s: resolveStartupBackend(%q, %v, %q) = %q, want %q",
+				tt.name, tt.flagValue, tt.flagGiven, tt.configured, got, tt.want)
+		}
+	}
+}
+
+func TestStartupChoiceHelpers(t *testing.T) {
+	if got := startupModeChoiceIndex(config.StartupModeGui); startupModeChoices[got] != config.StartupModeGui {
+		t.Errorf("startupModeChoiceIndex(gui) = %d, which maps back to %v", got, startupModeChoices[got])
+	}
+	if got := startupModeChoiceIndex(config.StartupMode(42)); got != 0 {
+		t.Errorf("startupModeChoiceIndex(unknown) = %d, want 0 (auto)", got)
+	}
+
+	guiChoices := startupBackendChoices(startupGuiBackends)
+	if len(guiChoices) != len(startupGuiBackends)+1 || guiChoices[0] != "" {
+		t.Fatalf("startupBackendChoices = %q, want a leading auto entry", guiChoices)
+	}
+	// The helper must not alias the package-level slice it copies from.
+	guiChoices[1] = "mutated"
+	if startupGuiBackends[0] == "mutated" {
+		t.Fatal("startupBackendChoices aliases startupGuiBackends")
+	}
+
+	choices := startupBackendChoices(startupTTYBackends)
+	if got := startupBackendChoiceIndex(choices, "winapi"); choices[got] != "winapi" {
+		t.Errorf("startupBackendChoiceIndex(winapi) = %d, which maps back to %q", got, choices[got])
+	}
+	if got := startupBackendChoiceIndex(choices, "no-such-backend"); got != 0 {
+		t.Errorf("startupBackendChoiceIndex(unknown) = %d, want 0 (auto)", got)
+	}
+
+	if got := startupChoiceAt(choices, -1); got != "" {
+		t.Errorf("startupChoiceAt(-1) = %q, want the auto entry", got)
+	}
+	if got := startupChoiceAt(choices, len(choices)); got != "" {
+		t.Errorf("startupChoiceAt(out of range) = %q, want the auto entry", got)
+	}
+	if got := startupChoiceAt(startupModeChoices, 1); got != config.StartupModeTTY {
+		t.Errorf("startupChoiceAt(modes, 1) = %v, want tty", got)
+	}
+}
+
+func TestStartupBackendLabels(t *testing.T) {
+	choices := []string{"", "x11", "wayland"}
+	labels := startupBackendLabels(choices)
+
+	if got, want := labels[0], i18n.Msg("StartupSettings.BackendAuto"); got != want {
+		t.Errorf("startupBackendLabels(auto) = %q, want %q", got, want)
+	}
+	if labels[1] != "x11" || labels[2] != "wayland" {
+		t.Errorf("startupBackendLabels = %q, want translated auto plus backend names", labels)
+	}
+
+	labels[1] = "changed"
+	if choices[1] != "x11" {
+		t.Error("startupBackendLabels returned an alias of the input slice")
+	}
+}
+
+func TestStartupSettingsConfigRoundtrip(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldCfg := config.App
+	oldGetConfig := config.GetUserConfigIniPath
+	defer func() {
+		config.App = oldCfg
+		config.GetUserConfigIniPath = oldGetConfig
+	}()
+	config.GetUserConfigIniPath = func() string {
+		return filepath.Join(tmpDir, "settings.ini")
+	}
+
+	config.App.StartupMode = config.StartupModeGui
+	config.App.GuiBackend = "gogpu"
+	config.App.TTYBackend = "winapi"
+	config.SaveConfig()
+
+	config.LoadConfig()
+	if config.App.StartupMode != config.StartupModeGui {
+		t.Errorf("config.StartupMode = %v, want gui", config.App.StartupMode)
+	}
+	if config.App.GuiBackend != "gogpu" {
+		t.Errorf("GuiBackend = %q, want gogpu", config.App.GuiBackend)
+	}
+	if config.App.TTYBackend != "winapi" {
+		t.Errorf("TTYBackend = %q, want winapi", config.App.TTYBackend)
+	}
+
+	// Clearing the backends back to automatic selection has to survive the
+	// round trip too, otherwise a user could never undo a pinned backend.
+	config.App.StartupMode = config.StartupModeTTY
+	config.App.GuiBackend = ""
+	config.App.TTYBackend = ""
+	config.SaveConfig()
+
+	config.LoadConfig()
+	if config.App.StartupMode != config.StartupModeTTY {
+		t.Errorf("config.StartupMode = %v, want tty", config.App.StartupMode)
+	}
+	if config.App.GuiBackend != "" || config.App.TTYBackend != "" {
+		t.Errorf("backends = (%q, %q), want both empty", config.App.GuiBackend, config.App.TTYBackend)
+	}
+}
+
+// TestStartupConfigDefaultsAreAuto pins the out-of-the-box behavior: a config
+// with no [Startup] section must behave exactly as f4 did before the section
+// existed.
+func TestStartupConfigDefaultsAreAuto(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldCfg := config.App
+	oldGetConfig := config.GetUserConfigIniPath
+	defer func() {
+		config.App = oldCfg
+		config.GetUserConfigIniPath = oldGetConfig
+	}()
+	config.GetUserConfigIniPath = func() string {
+		return filepath.Join(tmpDir, "settings.ini")
+	}
+
+	config.App.StartupMode = config.StartupModeGui
+	config.App.GuiBackend = "x11"
+	config.App.TTYBackend = "ansi"
+
+	config.LoadConfig()
+	if config.App.StartupMode != config.StartupModeAuto {
+		t.Errorf("config.StartupMode = %v, want auto for an absent [Startup] section", config.App.StartupMode)
+	}
+	if config.App.GuiBackend != "" || config.App.TTYBackend != "" {
+		t.Errorf("backends = (%q, %q), want both empty for an absent [Startup] section",
+			config.App.GuiBackend, config.App.TTYBackend)
+	}
+}
+
+func TestPortableQtBuildDefaultsToGui(t *testing.T) {
+	if !portableQtDefault() {
+		t.Skip("requires Windows embedded Qt build")
+	}
+	if !shouldTryGui() {
+		t.Fatal("portable Qt executable defaults to console")
+	}
+}

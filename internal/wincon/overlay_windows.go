@@ -2,6 +2,15 @@
 
 package wincon
 
+import (
+	"fmt"
+	"runtime"
+	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+)
+
 // A picture over a classic Windows console.
 //
 // Windows Terminal renders sixel itself, so nothing here runs there and
@@ -40,15 +49,6 @@ package wincon
 // GetWindow and GetWindowLongPtrW, none of which sends it a message. Never
 // SendMessage, SetWindowPos, ShowWindow or anything else that would wait on
 // conhost -- that is the wait the child window used to be stuck in.
-
-import (
-	"fmt"
-	"runtime"
-	"sync"
-	"syscall"
-	"time"
-	"unsafe"
-)
 
 var (
 	user32   = syscall.NewLazyDLL("user32.dll")
@@ -591,12 +591,12 @@ func (o *Overlay) push(hwnd uintptr) {
 	premultiplyBGRA(dst, scaled, rect.W, rect.H, rect.W*4)
 
 	old, _, _ := procSelectObject.Call(memDC, dib)
-	pt := point{X: int32(x), Y: int32(y)}
+	Pt := point{X: int32(x), Y: int32(y)}
 	sz := size{Cx: int32(rect.W), Cy: int32(rect.H)}
 	src := point{}
 	bf := blendFunction{BlendOp: acSrcOver, SourceConstantAlpha: 255, AlphaFormat: acSrcAlpha}
 	r, _, _ := procUpdateLayeredWindow.Call(hwnd, screenDC,
-		uintptr(unsafe.Pointer(&pt)), uintptr(unsafe.Pointer(&sz)),
+		uintptr(unsafe.Pointer(&Pt)), uintptr(unsafe.Pointer(&sz)),
 		memDC, uintptr(unsafe.Pointer(&src)), 0,
 		uintptr(unsafe.Pointer(&bf)), ulwAlpha)
 	procSelectObject.Call(memDC, old)
@@ -643,8 +643,8 @@ func (o *Overlay) track(hwnd uintptr) {
 	}
 	if ops.MoveTo && o.shown {
 		o.stats.moves.Add(1)
-		pt := point{X: int32(ops.X), Y: int32(ops.Y)}
-		procUpdateLayeredWindow.Call(hwnd, 0, uintptr(unsafe.Pointer(&pt)), 0, 0, 0, 0, 0, 0)
+		Pt := point{X: int32(ops.X), Y: int32(ops.Y)}
+		procUpdateLayeredWindow.Call(hwnd, 0, uintptr(unsafe.Pointer(&Pt)), 0, 0, 0, 0, 0, 0)
 		o.tracker.X, o.tracker.Y = ops.X, ops.Y
 	}
 	if ops.Restack && o.shown {

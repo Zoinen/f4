@@ -117,7 +117,7 @@ Before finalizing the `f4` architecture, we analyzed the source code of the most
 1.  **Domain-Specific Optimization:** `f4` is a file manager, not just a terminal emulator. It already possesses a highly optimized, zero-allocation `PieceTable` engine used for its Editor and Viewer. Extruding the terminal log directly into a `PieceTable` allows the internal Viewer (`F3`) to open a 10-gigabyte terminal log instantly without allocating memory for millions of `Cell` structs.
 2.  **Active Reflow on Unix, native validation on Windows:** on Unix a width
     change re-wraps the live 2D grid (`reflowLocked` in
-    `cmd/f4/terminal_view.go`). On Windows, resize and reflow behavior is
+    `internal/terminal/view.go`). On Windows, resize and reflow behavior is
     changed only after a run through the native ConPTY test described in
     [`CONPTY_NATIVE_TEST.md`](CONPTY_NATIVE_TEST.md). A height-only change
     never reflows on either platform: it moves rows between the viewport and

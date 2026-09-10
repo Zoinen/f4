@@ -27,8 +27,8 @@ X11 backend already depends on.
   focus.
 - `GrabKeys` — the key combinations a TTY cannot carry, taken from the X server
   and delivered as ordinary `vtinput` events.
-- `image_x11_overlay.go` in `cmd/f4` — the image viewer's use of the overlay.
-- `ttyx_keys.go` in `cmd/f4` — the configured combinations, forwarded into the
+- `overlay_x11.go` in `internal/media` — the image viewer's use of the overlay.
+- `ttyx.go` in `internal/keymap` — the configured combinations, forwarded into the
   stream the frame manager dispatches from.
 
 **The clipboard is not here, deliberately.** Issue #599 decided that all
@@ -289,7 +289,7 @@ switching one — and `Session.Keys()` delivers them as `vtinput.InputEvent`
 values, translated by `keytrans`, the same translator vtui's X11 backend uses.
 A key arriving this way is indistinguishable from one arriving in GUI mode.
 
-`cmd/f4/ttyx_keys.go` reads the configuration, asks for the combinations and
+`internal/keymap/ttyx.go` reads the configuration, asks for the combinations and
 forwards the events onto `vtui.FrameManager.EventChan`, which is the same
 channel the terminal's own keys arrive on. Past that point nothing can tell
 the two apart, and no change to vtui was needed: the channel was already

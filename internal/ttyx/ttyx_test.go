@@ -1,12 +1,11 @@
 package ttyx
 
 import (
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/jezek/xgb"
-	"github.com/jezek/xgb/xproto"
 )
 
 func TestAncestorPIDs(t *testing.T) {

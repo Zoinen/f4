@@ -2,7 +2,9 @@
 
 package wincon
 
-import "errors"
+import (
+	"errors"
+)
 
 // There is no Windows console anywhere else, so nothing here finds one. The
 // stubs exist so that the geometry above, and everything that calls into this

@@ -443,6 +443,23 @@ func (v *ArchiveVFS) GetPath() string {
 	// Мы возвращаем нативный путь ОС, объединяя путь к архиву и внутренний путь
 	return archivePathJoin(v.arcPath, v.innerPath)
 }
+
+// LocalArchivePath returns the original archive path when this VFS was opened
+// from the local filesystem. A materialized remote or nested archive is not
+// exposed as local here: testing it through this action belongs to a separate
+// operation with different lifecycle and error-reporting rules.
+func (v *ArchiveVFS) LocalArchivePath() (string, bool) {
+	osvfs, ok := v.parent.(*vfs.OSVFS)
+	if !ok {
+		return "", false
+	}
+	path, err := osvfs.Abs(v.arcPath)
+	if err != nil || path == "" {
+		return "", false
+	}
+	return path, true
+}
+
 func (v *ArchiveVFS) IsAbs(candidate string) bool {
 	return archivePathHasPrefix(candidate, v.arcPath) || (!vfs.IsURIPath(candidate) && (filepath.IsAbs(candidate) || path.IsAbs(candidate)))
 }

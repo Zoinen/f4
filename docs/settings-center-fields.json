@@ -1,0 +1,1792 @@
+[
+  {
+    "category": "appearance",
+    "description": "Choose the language of the interface. Applying reloads resources and rebuilds Settings Center captions.",
+    "group": "Language",
+    "id": "Language",
+    "kind": "choice",
+    "label": "Interface language",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Choose the built-in help language independently of the interface language.",
+    "group": "Language",
+    "id": "HelpLanguage",
+    "kind": "choice",
+    "label": "Help language",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Allow local language files to override bundled interface and help translations.",
+    "group": "Language",
+    "id": "UseLocalLanguageFiles",
+    "kind": "boolean",
+    "label": "Use local translations",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Select the application palette. Preview is reversible until Apply. Existing custom palette overrides are preserved on Cancel.",
+    "group": "Colors",
+    "id": "ColorStyle",
+    "kind": "choice",
+    "label": "Color theme",
+    "timing": "preview",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Adjust insufficient foreground and background contrast in supported palette and file-highlight colors. Box slots are excluded from the global correction pass.",
+    "group": "Colors",
+    "id": "EnforceColorCorrection",
+    "kind": "boolean",
+    "label": "Correct low contrast",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Use the platform monospace font on supported Windows and macOS graphical frontends instead of the custom font.",
+    "group": "Font",
+    "id": "GuiUseSystemMonospace",
+    "kind": "boolean",
+    "label": "Use system monospace font",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Choose a font for supported graphical frontends. A custom font can be entered manually.",
+    "group": "Font",
+    "id": "GuiFont",
+    "kind": "choice",
+    "label": "Graphical font",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Set graphical font size. This does not change the font of an external terminal emulator.",
+    "group": "Font",
+    "id": "GuiFontSize",
+    "kind": "integer",
+    "label": "Font size",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Keep the main menu bar visible instead of showing it only when activated.",
+    "group": "Titles and menus",
+    "id": "AlwaysShowMenuBar",
+    "kind": "boolean",
+    "label": "Always show menu bar",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Format the host title with %State, %Ver, %Platform, %Backend, %Host, %User and %Admin.",
+    "group": "Titles and menus",
+    "id": "ConsoleTitleTemplate",
+    "kind": "string",
+    "label": "Window title template",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "appearance",
+    "description": "Show the complete file identity in editor and viewer title bars instead of only the basename.",
+    "group": "Titles and menus",
+    "id": "DisplayFullPathInTitle",
+    "kind": "boolean",
+    "label": "Full file paths in titles",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "startup",
+    "description": "Choose how plain f4 launches. Explicit --gui or --tty arguments override this default for that launch.",
+    "group": "Launch defaults",
+    "id": "StartupMode",
+    "kind": "choice",
+    "label": "Startup mode",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "startup",
+    "description": "Default graphical renderer. Automatic uses startup detection. Command-line choices override this value; unknown external renderer IDs are preserved.",
+    "group": "Launch defaults",
+    "id": "GuiBackend",
+    "kind": "choice",
+    "label": "Graphical renderer",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "startup",
+    "description": "Default terminal renderer. Command-line renderer choices override this preference.",
+    "group": "Launch defaults",
+    "id": "TTYBackend",
+    "kind": "choice",
+    "label": "Terminal renderer",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Show tabs always, only with multiple workspaces, while Ctrl is held, or never.",
+    "group": "Tab presentation",
+    "id": "WorkspaceTabMode",
+    "kind": "choice",
+    "label": "Show workspace tabs",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Draw workspace tabs over the content instead of reserving a layout row.",
+    "group": "Tab presentation",
+    "id": "WorkspaceTabsOverlay",
+    "kind": "boolean",
+    "label": "Overlay workspace tabs",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Keep numbers permanently, keep them during this session, or renumber to match the current tab order.",
+    "group": "Tab presentation",
+    "id": "WorkspaceTabNumbering",
+    "kind": "choice",
+    "label": "Workspace numbering",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Open the workspace chooser with Ctrl+Tab instead of switching directly.",
+    "group": "Switching",
+    "id": "CtrlTabShowsMenu",
+    "kind": "boolean",
+    "label": "Ctrl+Tab opens chooser",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Reserve Alt+number shortcuts for workspace selection.",
+    "group": "Switching",
+    "id": "AltNumberSwitchesTabs",
+    "kind": "boolean",
+    "label": "Alt+number switches tabs",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Recreate saved workspaces at startup instead of restoring only the initial workspace.",
+    "group": "Restoration",
+    "id": "RestoreWorkspaceTabs",
+    "kind": "boolean",
+    "label": "Restore workspace tabs",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Save panel folders and focused files. Turning this off omits these values from subsequently saved workspace sessions.",
+    "group": "Restoration",
+    "id": "SavePanelPaths",
+    "kind": "boolean",
+    "label": "Save and restore panel paths",
+    "timing": "next session save",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Automatically persist configuration and dialog-related changes. Explicit Apply still saves when this is off.",
+    "group": "Automatic saving",
+    "id": "AutoSaveDialogSettings",
+    "kind": "boolean",
+    "label": "Save preferences automatically",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Remember panel view modes, sorting, visibility, active workspace and workspace layout.",
+    "group": "Automatic saving",
+    "id": "AutoSavePanelSettings",
+    "kind": "boolean",
+    "label": "Save panel layout automatically",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Remember locations and focused files for both sides of saved workspaces. Save and restore panel paths must also be enabled.",
+    "group": "Automatic saving",
+    "id": "AutoSaveCurrentPanel",
+    "kind": "boolean",
+    "label": "Save panel locations automatically",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "workspaces",
+    "description": "Remember supported graphical-window dimensions and position, not external terminal geometry.",
+    "group": "Automatic saving",
+    "id": "AutoSaveGUIWindow",
+    "kind": "boolean",
+    "label": "Save graphical window automatically",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Include hidden files and folders in the listing. The parent-directory entry remains visible.",
+    "group": "File listing",
+    "id": "ShowHiddenFiles",
+    "kind": "boolean",
+    "label": "Show hidden files",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Prefix folder names with a slash, unless a highlight rule already supplies one.",
+    "group": "File listing",
+    "id": "ShowDirPrefix",
+    "kind": "boolean",
+    "label": "Prefix folder names",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Show markers from matching file-highlight rules. Also affects path suggestions; symlinks retain their fallback arrow.",
+    "group": "File listing",
+    "id": "ShowHighlightMarks",
+    "kind": "boolean",
+    "label": "Show highlight marks",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Align the final extension separately in the name column. Excludes folders, extensionless names and leading dots alone.",
+    "group": "File listing",
+    "id": "SeparateFileExtensions",
+    "kind": "boolean",
+    "label": "Separate filename extensions",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Reserve a bottom row for the focused name, size and modification time. Short panels suppress this row.",
+    "group": "File listing",
+    "id": "ShowPanelFileInfo",
+    "kind": "boolean",
+    "label": "Focused-file status row",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Hide the scrollbar, show a minimal one, or show the full scrollbar with arrows.",
+    "group": "File listing",
+    "id": "PanelScrollbarMode",
+    "kind": "choice",
+    "label": "Panel scrollbar",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Replace the listing only when all directory results are ready and bypass cached previews. Off permits incremental results. It does not block all UI work.",
+    "group": "Directory loading",
+    "id": "SyncPanelLoad",
+    "kind": "boolean",
+    "label": "Wait for complete directory listing",
+    "timing": "next directory load",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Include locally collected CPU and GPU sections when the information provider does not supply authoritative information.",
+    "group": "Information panels",
+    "id": "InfoPanelCPUGPU",
+    "kind": "boolean",
+    "label": "Show CPU and GPU information",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Display raw bytes instead of human-readable sizes in information and quick-view panels.",
+    "group": "Information panels",
+    "id": "InfoPanelBytes",
+    "kind": "boolean",
+    "label": "Show sizes in bytes",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.",
+    "group": "Typing and focus",
+    "id": "NavigationMode",
+    "kind": "choice",
+    "label": "Panel navigation",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.",
+    "group": "Typing and focus",
+    "id": "SearchCommandStayFocused",
+    "kind": "boolean",
+    "label": "Keep command input focused",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Enable filesystem path suggestions in the command line and path-enabled dialog fields.",
+    "group": "Path suggestions",
+    "id": "CommandLineAutoComplete",
+    "kind": "boolean",
+    "label": "Enable filesystem suggestions",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Show completion while typing in fields with history or path suggestions. Does not add sources to arbitrary fields.",
+    "group": "Path suggestions",
+    "id": "DialogAutoComplete",
+    "kind": "boolean",
+    "label": "Show dialog completion dropdowns",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Display complete paths rather than only the final filename or folder component.",
+    "group": "Path suggestions",
+    "id": "PathHintFullPath",
+    "kind": "boolean",
+    "label": "Show full suggestion paths",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Resolve suggestions from the active panel, passive panel, or both. Both searches active first.",
+    "group": "Path suggestions",
+    "id": "PathHintSource",
+    "kind": "choice",
+    "label": "Suggestion source",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Maximum time allowed for a filesystem directory read behind suggestions. This is not a delay before suggestions appear. Minimum 1 second.",
+    "group": "Path suggestions",
+    "id": "PathHintTimeout",
+    "kind": "integer",
+    "label": "Directory read timeout (seconds)",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Maximum number of visible suggestion rows. Minimum 1.",
+    "group": "Path suggestions",
+    "id": "PathHintMaxVisible",
+    "kind": "integer",
+    "label": "Maximum visible suggestions",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "navigation",
+    "description": "Apply the visible-row limit separately to active-panel, passive-panel and history suggestions.",
+    "group": "Path suggestions",
+    "id": "PathHintPerCategory",
+    "kind": "boolean",
+    "label": "Separate suggestion limits",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Send ordinary Delete operations to trash where supported. Explicit permanent-delete commands still delete permanently.",
+    "group": "Deletion",
+    "id": "UseTrash",
+    "kind": "boolean",
+    "label": "Use trash or recycle bin",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Start operations in Queue, Background or Foreground mode. Individual operation dialogs can override it.",
+    "group": "Execution",
+    "id": "DefaultFileOpMode",
+    "kind": "choice",
+    "label": "Default operation mode",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Show the current name, full path, or source and destination paths in operation progress.",
+    "group": "Execution",
+    "id": "FileOpPathDisplay",
+    "kind": "choice",
+    "label": "Progress path display",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Maximum concurrent commands in Apply command. Zero means unlimited. The initial default is the logical CPU count.",
+    "group": "Execution",
+    "id": "ApplyCommandParallelism",
+    "kind": "integer",
+    "label": "Concurrent Apply commands",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Show the copy destination and options dialog before an ordinary copy.",
+    "group": "Confirmations",
+    "id": "ConfirmCopy",
+    "kind": "boolean",
+    "label": "Confirm copy",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Show the move destination and options dialog before an ordinary move.",
+    "group": "Confirmations",
+    "id": "ConfirmMove",
+    "kind": "boolean",
+    "label": "Confirm move",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Ask before deleting selected items.",
+    "group": "Confirmations",
+    "id": "ConfirmDelete",
+    "kind": "boolean",
+    "label": "Confirm deletion",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Place initial keyboard focus on Cancel in deletion confirmations.",
+    "group": "Confirmations",
+    "id": "DeleteCancelFocused",
+    "kind": "boolean",
+    "label": "Initially focus Cancel for deletion",
+    "timing": "new operations",
+    "unavailable": ""
+  },
+  {
+    "category": "startup",
+    "description": "Ask before exiting f4.",
+    "group": "Exit",
+    "id": "ConfirmExit",
+    "kind": "boolean",
+    "label": "Confirm exit",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Walk subfolders instead of comparing only the two panel folders.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.Recursive",
+    "kind": "boolean",
+    "label": "Compare subfolders",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Stop recursive comparison at the maximum depth below the panel folders.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.LimitDepth",
+    "kind": "boolean",
+    "label": "Limit recursion depth",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Maximum folder depth when recursion limiting is enabled, from 1 to 99.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.MaxDepth",
+    "kind": "integer",
+    "label": "Maximum comparison depth",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Limit comparison to items marked in the panels.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.MarkedOnly",
+    "kind": "boolean",
+    "label": "Compare marked items only",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Report files as different when modification times differ beyond enabled tolerances.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.ByTime",
+    "kind": "boolean",
+    "label": "Compare modification times",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Treat modification times up to two seconds apart as equal, accommodating FAT timestamp precision.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.TimeSlack",
+    "kind": "boolean",
+    "label": "Allow two-second time difference",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Ignore time differences in whole quarter hours up to 26 hours.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.IgnoreZones",
+    "kind": "boolean",
+    "label": "Ignore timezone offsets",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Report files as different when their byte sizes differ.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.BySize",
+    "kind": "boolean",
+    "label": "Compare file sizes",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Read and compare file contents using the selected content normalization.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.ByContent",
+    "kind": "boolean",
+    "label": "Compare file contents",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Enable the selected whitespace or line-ending normalization before comparing contents.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.Ignore",
+    "kind": "boolean",
+    "label": "Normalize compared contents",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Normalize line endings or remove whitespace bytes before content comparison.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.IgnoreMode",
+    "kind": "choice",
+    "label": "Content normalization",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "operations",
+    "description": "Show a message when comparison finds no differences.",
+    "group": "Folder comparison defaults",
+    "id": "Compare.ReportEqual",
+    "kind": "boolean",
+    "label": "Report equal folders",
+    "timing": "new comparisons",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Set tab-stop width for newly opened editors. Viewer text rendering also uses this setting.",
+    "group": "Text input",
+    "id": "EditorTabSize",
+    "kind": "integer",
+    "label": "Tab width",
+    "timing": "new editors; viewer live",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Insert a literal tab or spaces to the next tab stop. Legacy New and All modes currently have identical insertion behavior; existing tabs are not converted.",
+    "group": "Text input",
+    "id": "EditorExpandTabs",
+    "kind": "choice",
+    "label": "Tab key inserts",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Copy the current line's leading spaces and tabs when inserting a newline.",
+    "group": "Text input",
+    "id": "EditorAutoIndent",
+    "kind": "boolean",
+    "label": "Automatic indentation",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Allow virtual space after the line end. Inserting text pads the gap with spaces.",
+    "group": "Text input",
+    "id": "EditorCursorBeyondEOL",
+    "kind": "boolean",
+    "label": "Cursor beyond end of line",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Apply matching indent_style, indent_size and tab_width from .editorconfig beside the opened file. Parent-directory discovery and the full standard are not implemented.",
+    "group": "Text input",
+    "id": "EditorUseEditorConfig",
+    "kind": "boolean",
+    "label": "Read adjacent .editorconfig",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Enable completion in newly opened named files whose basenames match the configured masks.",
+    "group": "Completion",
+    "id": "EditorAutoComplete",
+    "kind": "boolean",
+    "label": "Editor completion",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Semicolon-separated, case-insensitive filename patterns selecting files eligible for editor completion.",
+    "group": "Completion",
+    "id": "EditorAutoCompleteMask",
+    "kind": "string",
+    "label": "Completion filename masks",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Draw cursor guide lines using the selected axis mode.",
+    "group": "Visual aids",
+    "id": "EditorCrosshair",
+    "kind": "boolean",
+    "label": "Show cursor crosshair",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Select no guide, a vertical guide, a horizontal guide, or both. Colorer can supply guide colors but the behavior is editor-wide.",
+    "group": "Visual aids",
+    "id": "EditorCrossMode",
+    "kind": "choice",
+    "label": "Crosshair axes",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Highlight other exact occurrences of an ordinary single-line selection of 2-256 bytes containing non-whitespace. This does not automatically highlight the cursor word.",
+    "group": "Visual aids",
+    "id": "EditorMarkOccurrences",
+    "kind": "boolean",
+    "label": "Highlight selected-text occurrences",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Detect text encoding when opening a file in the editor.",
+    "group": "Text encoding",
+    "id": "EditorAutodetectCodePage",
+    "kind": "boolean",
+    "label": "Detect editor encoding",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Fallback encoding when detection is disabled or cannot determine a better result. Per-file overrides remain separate.",
+    "group": "Text encoding",
+    "id": "EditorDefaultCodePage",
+    "kind": "choice",
+    "label": "Default editor encoding",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Detect encoding when opening the viewer or a quick-view preview.",
+    "group": "Text encoding",
+    "id": "ViewerAutodetectCodePage",
+    "kind": "boolean",
+    "label": "Detect viewer encoding",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Fallback viewer and quick-view encoding when detection is disabled or inconclusive.",
+    "group": "Text encoding",
+    "id": "ViewerDefaultCodePage",
+    "kind": "choice",
+    "label": "Default viewer encoding",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Route ordinary Edit commands to an external editor. Remote files are temporarily downloaded and changes can be uploaded afterward.",
+    "group": "External editor",
+    "id": "UseExternalEditor",
+    "kind": "boolean",
+    "label": "Use external editor",
+    "timing": "new edit commands",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Command for terminal sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser.",
+    "group": "External editor",
+    "id": "ExternalEditorConsole",
+    "kind": "string",
+    "label": "Console editor command",
+    "timing": "new edit commands",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "Command for graphical sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser.",
+    "group": "External editor",
+    "id": "ExternalEditorGUI",
+    "kind": "string",
+    "label": "Graphical editor command",
+    "timing": "new edit commands",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Choose Chroma, Colorer or no highlighting for newly opened editors. Colorer needs installed schemas and may fall back when unavailable.",
+    "group": "Engine",
+    "id": "EditorHighlighter",
+    "kind": "choice",
+    "label": "Syntax highlighter",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Fade arriving RGB syntax colors over about 400 milliseconds. Indexed colors are unchanged.",
+    "group": "Engine",
+    "id": "EditorSyntaxAnimation",
+    "kind": "boolean",
+    "label": "Animate syntax colors",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Select the HRD scheme used for syntax, guide and editor base colors. Empty uses the built-in default.",
+    "group": "Colorer",
+    "id": "EditorColorerScheme",
+    "kind": "choice",
+    "label": "Colorer scheme",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Enable Colorer syntax coloring while retaining its other style facilities.",
+    "group": "Colorer",
+    "id": "EditorColorerSyntax",
+    "kind": "boolean",
+    "label": "Colorer syntax colors",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Use foreground and background fields supplied by the Colorer scheme instead of only the general editor palette.",
+    "group": "Colorer",
+    "id": "EditorColorerBackground",
+    "kind": "boolean",
+    "label": "Use Colorer base colors",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Directory containing Colorer configuration data. Empty uses the profile's colorer/configs directory; this is not a catalog XML filename.",
+    "group": "Colorer",
+    "id": "EditorColorerCatalog",
+    "kind": "path",
+    "label": "Colorer configuration directory",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Use Mac-style editing chords in editors and dialog fields. Auto enables them on macOS; panels retain Far navigation. Command translation requires backend support.",
+    "group": "Editing chords",
+    "id": "MacKeyboard",
+    "kind": "choice",
+    "label": "Mac keyboard mode",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "The old hotkey table used this to narrow exact search hits. Settings Center uses dim-only search and does not consume this preference. Its saved value is retained.",
+    "group": "Compatibility",
+    "id": "SearchExactOnHit",
+    "kind": "boolean",
+    "label": "Legacy exact-hit preference",
+    "timing": "unavailable",
+    "unavailable": "The old hotkey table used this to narrow exact search hits. Settings Center uses dim-only search and does not consume this preference. Its saved value is retained."
+  },
+  {
+    "category": "terminal",
+    "description": "Allow Escape to show or hide the file panels to access the terminal.",
+    "group": "Terminal input",
+    "id": "EscTogglePanels",
+    "kind": "boolean",
+    "label": "Escape toggles panels",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "terminal",
+    "description": "Reserve Ctrl+N while terminal input has focus to create a workspace. Off sends the chord to the terminal program.",
+    "group": "Terminal input",
+    "id": "TerminalCtrlNWorkspace",
+    "kind": "boolean",
+    "label": "Ctrl+N creates workspace",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "terminal",
+    "description": "Leave cursor-style management to the terminal instead of letting f4 change it.",
+    "group": "Terminal input",
+    "id": "KeepTerminalCursor",
+    "kind": "boolean",
+    "label": "Preserve terminal cursor style",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "terminal",
+    "description": "Use the embedded terminal, host terminal with f4 overlay, or host terminal without overlay. Unsupported host styles fall back according to terminal capabilities.",
+    "group": "Presentation",
+    "id": "ConsoleMode",
+    "kind": "choice",
+    "label": "Terminal presentation",
+    "timing": "new workspaces",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Width of the command-history directory prefix while date-and-time display is active. Minimum four characters.",
+    "group": "Presentation",
+    "id": "HistoryDirsPrefixLen",
+    "kind": "integer",
+    "label": "Command directory column width",
+    "timing": "new history dialogs",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Save recorded key macros in the legacy key_macros.ini format or as Lua scripts under Macros/scripts.",
+    "group": "Macro recording",
+    "id": "MacroRecordFormat",
+    "kind": "choice",
+    "label": "Record macros as",
+    "timing": "new recordings",
+    "unavailable": ""
+  },
+  {
+    "category": "network",
+    "description": "Use system/environment proxy settings, direct connections, or an HTTP/SOCKS5 proxy for downloads and network providers unless overridden per connection.",
+    "group": "Global proxy",
+    "id": "ProxyMode",
+    "kind": "choice",
+    "label": "Proxy mode",
+    "timing": "new requests",
+    "unavailable": ""
+  },
+  {
+    "category": "network",
+    "description": "Hostname or address of the configured HTTP or SOCKS5 proxy.",
+    "group": "Global proxy",
+    "id": "ProxyHost",
+    "kind": "string",
+    "label": "Proxy host",
+    "timing": "new requests",
+    "unavailable": ""
+  },
+  {
+    "category": "network",
+    "description": "Port of the configured HTTP or SOCKS5 proxy.",
+    "group": "Global proxy",
+    "id": "ProxyPort",
+    "kind": "string",
+    "label": "Proxy port",
+    "timing": "new requests",
+    "unavailable": ""
+  },
+  {
+    "category": "network",
+    "description": "Username used to authenticate to the configured proxy.",
+    "group": "Global proxy",
+    "id": "ProxyUser",
+    "kind": "string",
+    "label": "Proxy username",
+    "timing": "new requests",
+    "unavailable": ""
+  },
+  {
+    "category": "network",
+    "description": "Password used to authenticate to the configured proxy. Its value is excluded from search.",
+    "group": "Global proxy",
+    "id": "ProxyPass",
+    "kind": "secret",
+    "label": "Proxy password",
+    "timing": "new requests",
+    "unavailable": ""
+  },
+  {
+    "category": "updates",
+    "description": "Check stable releases or nightly builds.",
+    "group": "Automatic checks",
+    "id": "UpdateChannel",
+    "kind": "choice",
+    "label": "Update channel",
+    "timing": "next check",
+    "unavailable": ""
+  },
+  {
+    "category": "updates",
+    "description": "Check never, every start, after at least 24 hours, or after at least seven days. Checks run at startup, not on a continuous timer.",
+    "group": "Automatic checks",
+    "id": "UpdateInterval",
+    "kind": "choice",
+    "label": "Check for updates at startup",
+    "timing": "next launch",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of panel rows per upward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelPanelUp",
+    "kind": "integer",
+    "label": "Panel wheel up",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of panel rows per downward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelPanelDown",
+    "kind": "integer",
+    "label": "Panel wheel down",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of editor rows per upward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelEditorUp",
+    "kind": "integer",
+    "label": "Editor wheel up",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of editor rows per downward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelEditorDown",
+    "kind": "integer",
+    "label": "Editor wheel down",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of viewer rows per upward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelViewerUp",
+    "kind": "integer",
+    "label": "Viewer wheel up",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of viewer rows per downward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelViewerDown",
+    "kind": "integer",
+    "label": "Viewer wheel down",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of menu rows per upward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelMenuUp",
+    "kind": "integer",
+    "label": "Menu wheel up",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of menu rows per downward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelMenuDown",
+    "kind": "integer",
+    "label": "Menu wheel down",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of table rows per upward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelTableUp",
+    "kind": "integer",
+    "label": "Table wheel up",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Number of table rows per downward wheel notch. Zero follows the system setting.",
+    "group": "Mouse wheel",
+    "id": "WheelTableDown",
+    "kind": "integer",
+    "label": "Table wheel down",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Choose the timestamp presentation independently for this history.",
+    "group": "Presentation",
+    "id": "HistoryShowTimes.0",
+    "kind": "choice",
+    "label": "Command history timestamps",
+    "timing": "new history dialogs",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Choose the timestamp presentation independently for this history.",
+    "group": "Presentation",
+    "id": "HistoryShowTimes.1",
+    "kind": "choice",
+    "label": "Folder history timestamps",
+    "timing": "new history dialogs",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Choose the timestamp presentation independently for this history.",
+    "group": "Presentation",
+    "id": "HistoryShowTimes.2",
+    "kind": "choice",
+    "label": "Viewer/editor history timestamps",
+    "timing": "new history dialogs",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Add the drive-kind column.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.0",
+    "kind": "boolean",
+    "label": "ShowType",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Display the filesystem volume label.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.1",
+    "kind": "boolean",
+    "label": "ShowLabel",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "This stored compatibility flag currently has no consumer.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.2",
+    "kind": "boolean",
+    "label": "UseShellName",
+    "timing": "next drive menu",
+    "unavailable": "This stored compatibility flag currently has no consumer."
+  },
+  {
+    "category": "drives",
+    "description": "Display filesystem type.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.3",
+    "kind": "boolean",
+    "label": "ShowFilesystem",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Display total and free capacity columns.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.4",
+    "kind": "boolean",
+    "label": "ShowSize",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Use fractional human-readable capacity instead of integer binary units.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.5",
+    "kind": "boolean",
+    "label": "ShowSizeFloat",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Display the mount target when different from the drive path.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.6",
+    "kind": "boolean",
+    "label": "ShowNetworkName",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Include registered plugin drives and providers.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.7",
+    "kind": "boolean",
+    "label": "ShowPlugins",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Order plugin drive rows by their assigned shortcut.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.8",
+    "kind": "boolean",
+    "label": "SortPluginsByHotkey",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Include removable drives.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.9",
+    "kind": "boolean",
+    "label": "ShowRemovable",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Include optical drives.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.10",
+    "kind": "boolean",
+    "label": "ShowCD",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "Include mapped and network drives.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.11",
+    "kind": "boolean",
+    "label": "ShowRemote",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "drives",
+    "description": "This stored compatibility flag has no consumer. SUBST detection runs independently.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.12",
+    "kind": "boolean",
+    "label": "DetectVirtual",
+    "timing": "next drive menu",
+    "unavailable": "This stored compatibility flag has no consumer. SUBST detection runs independently."
+  },
+  {
+    "category": "drives",
+    "description": "Include saved bookmarks and links.",
+    "group": "Drive entries",
+    "id": "DriveMenuOptions.13",
+    "kind": "boolean",
+    "label": "ShowBookmarks",
+    "timing": "next drive menu",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Select filenames for which this association is considered.",
+    "group": "File associations",
+    "id": "assoc.Mask",
+    "kind": "string",
+    "label": "Filename mask",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Name shown when several associations match.",
+    "group": "File associations",
+    "id": "assoc.Description",
+    "kind": "string",
+    "label": "Description",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.ExecuteEnabled",
+    "kind": "boolean",
+    "label": "Enable Execute",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.Execute",
+    "kind": "multiline",
+    "label": "Execute command",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.AltExecEnabled",
+    "kind": "boolean",
+    "label": "Enable AltExec",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.AltExec",
+    "kind": "multiline",
+    "label": "AltExec command",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.ViewEnabled",
+    "kind": "boolean",
+    "label": "Enable View",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.View",
+    "kind": "multiline",
+    "label": "View command",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.AltViewEnabled",
+    "kind": "boolean",
+    "label": "Enable AltView",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.AltView",
+    "kind": "multiline",
+    "label": "AltView command",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.EditEnabled",
+    "kind": "boolean",
+    "label": "Enable Edit",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.Edit",
+    "kind": "multiline",
+    "label": "Edit command",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "associations",
+    "description": "Enable this association command slot. An empty command is skipped.",
+    "group": "File associations",
+    "id": "assoc.AltEditEnabled",
+    "kind": "boolean",
+    "label": "Enable AltEdit",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "associations",
+    "description": "Command dispatched for this slot, using the existing user-menu substitution machinery.",
+    "group": "File associations",
+    "id": "assoc.AltEdit",
+    "kind": "multiline",
+    "label": "AltEdit command",
+    "timing": "Apply",
+    "unavailable": "Reserved compatibility slot; no current dispatcher."
+  },
+  {
+    "category": "history",
+    "description": "Directory path or expandable path expression for this numbered slot.",
+    "group": "Folder bookmark slots",
+    "id": "bookmark.Path",
+    "kind": "path",
+    "label": "Folder path",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Display name in the drive chooser.",
+    "group": "Drive links",
+    "id": "link.Name",
+    "kind": "string",
+    "label": "Link name",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Directory or provider path opened by the link.",
+    "group": "Drive links",
+    "id": "link.Path",
+    "kind": "path",
+    "label": "Link path",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "history",
+    "description": "Far-style shortcut spelling, such as Q or CtrlF5.",
+    "group": "Drive links",
+    "id": "link.Hotkey",
+    "kind": "string",
+    "label": "Shortcut",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Visible command or submenu name.",
+    "group": "Global user menu",
+    "id": "menu.main.Label",
+    "kind": "string",
+    "label": "Label",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Menu activation key. Use -- for a separator.",
+    "group": "Global user menu",
+    "id": "menu.main.HotKey",
+    "kind": "string",
+    "label": "Activation key",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Group child entries under this item instead of executing commands.",
+    "group": "Global user menu",
+    "id": "menu.main.Submenu",
+    "kind": "boolean",
+    "label": "Is a submenu",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Empty places the item at the root. Otherwise select the ID of a submenu entry.",
+    "group": "Global user menu",
+    "id": "menu.main.Parent",
+    "kind": "string",
+    "label": "Parent entry ID",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Multiline shell commands using existing user-menu substitutions.",
+    "group": "Global user menu",
+    "id": "menu.main.Commands",
+    "kind": "multiline",
+    "label": "Commands",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Visible command or submenu name.",
+    "group": "Executable user menu",
+    "id": "menu.binary.Label",
+    "kind": "string",
+    "label": "Label",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Menu activation key. Use -- for a separator.",
+    "group": "Executable user menu",
+    "id": "menu.binary.HotKey",
+    "kind": "string",
+    "label": "Activation key",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Group child entries under this item instead of executing commands.",
+    "group": "Executable user menu",
+    "id": "menu.binary.Submenu",
+    "kind": "boolean",
+    "label": "Is a submenu",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Empty places the item at the root. Otherwise select the ID of a submenu entry.",
+    "group": "Executable user menu",
+    "id": "menu.binary.Parent",
+    "kind": "string",
+    "label": "Parent entry ID",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Multiline shell commands using existing user-menu substitutions.",
+    "group": "Executable user menu",
+    "id": "menu.binary.Commands",
+    "kind": "multiline",
+    "label": "Commands",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Visible command or submenu name.",
+    "group": "Local/ancestor user menu",
+    "id": "menu.local.Label",
+    "kind": "string",
+    "label": "Label",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Menu activation key. Use -- for a separator.",
+    "group": "Local/ancestor user menu",
+    "id": "menu.local.HotKey",
+    "kind": "string",
+    "label": "Activation key",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Group child entries under this item instead of executing commands.",
+    "group": "Local/ancestor user menu",
+    "id": "menu.local.Submenu",
+    "kind": "boolean",
+    "label": "Is a submenu",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Empty places the item at the root. Otherwise select the ID of a submenu entry.",
+    "group": "Local/ancestor user menu",
+    "id": "menu.local.Parent",
+    "kind": "string",
+    "label": "Parent entry ID",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "menus",
+    "description": "Multiline shell commands using existing user-menu substitutions.",
+    "group": "Local/ancestor user menu",
+    "id": "menu.local.Commands",
+    "kind": "multiline",
+    "label": "Commands",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Stable action identifier to invoke. Existing action IDs and plugin actions remain supported.",
+    "group": "Key bindings",
+    "id": "binding.Action",
+    "kind": "choice",
+    "label": "Action",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Far-style chord spelling, such as CtrlShiftF. An empty chord leaves the action unassigned.",
+    "group": "Key bindings",
+    "id": "binding.Key",
+    "kind": "chord",
+    "label": "Chord",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Input context in which this binding is considered. Common is the fallback for other areas.",
+    "group": "Key bindings",
+    "id": "binding.Area",
+    "kind": "choice",
+    "label": "Area",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "keyboard",
+    "description": "Optional registered condition checked when dispatching the action. Empty means unconditional.",
+    "group": "Key bindings",
+    "id": "binding.Condition",
+    "kind": "string",
+    "label": "Condition",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "plugins",
+    "description": "Path to the external Lua, WASM or executable plugin. This list preserves startup ordering.",
+    "group": "Registered plugins",
+    "id": "plugin.Path",
+    "kind": "path",
+    "label": "Plugin path",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "plugins",
+    "description": "Clear to revoke this remembered answer on Apply. The next protected request asks again. This control cannot create grants.",
+    "group": "Remembered permissions",
+    "id": "grant.Keep",
+    "kind": "boolean",
+    "label": "Remember permission",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "ai",
+    "description": "Used only when GEMINI_API_KEY, GOOGLE_API_KEY and OPENAI_API_KEY are all empty, in that precedence order. Effective source: GEMINI_API_KEY. The key is stored in the local vtvibe.ini file.",
+    "group": "Credentials",
+    "id": "ai.key",
+    "kind": "secret",
+    "label": "Saved API key",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "ai",
+    "description": "Model identifier sent with subsequent AI requests. The configured API endpoint must support it.",
+    "group": "Model",
+    "id": "ai.model",
+    "kind": "string",
+    "label": "Model",
+    "timing": "Apply",
+    "unavailable": ""
+  },
+  {
+    "category": "startup",
+    "description": "Resolved configuration location for the running process. Profile transfers take effect on restart.",
+    "group": "Configuration locations",
+    "id": "profile.path",
+    "kind": "path",
+    "label": "Current configuration directory",
+    "timing": "Apply",
+    "unavailable": "Informational location"
+  },
+  {
+    "category": "startup",
+    "description": "Resolved configuration location for the running process. Profile transfers take effect on restart.",
+    "group": "Configuration locations",
+    "id": "profile.ini",
+    "kind": "path",
+    "label": "Main settings file",
+    "timing": "Apply",
+    "unavailable": "Informational location"
+  },
+  {
+    "category": "startup",
+    "description": "Resolved configuration location for the running process. Profile transfers take effect on restart.",
+    "group": "Configuration locations",
+    "id": "profile.session",
+    "kind": "path",
+    "label": "Session file",
+    "timing": "Apply",
+    "unavailable": "Informational location"
+  },
+  {
+    "category": "startup",
+    "description": "Resolved configuration location for the running process. Profile transfers take effect on restart.",
+    "group": "Configuration locations",
+    "id": "profile.portable",
+    "kind": "path",
+    "label": "Portable profile directory",
+    "timing": "Apply",
+    "unavailable": "Informational location"
+  },
+  {
+    "category": "startup",
+    "description": "Resolved configuration location for the running process. Profile transfers take effect on restart.",
+    "group": "Configuration locations",
+    "id": "profile.system",
+    "kind": "path",
+    "label": "User profile directory",
+    "timing": "Apply",
+    "unavailable": "Informational location"
+  },
+  {
+    "category": "updates",
+    "description": "Timestamp of the latest attempted update check. Frequency is evaluated on application startup, not by a continuously running timer.",
+    "group": "Updates",
+    "id": "updates.status",
+    "kind": "string",
+    "label": "Last startup/manual check",
+    "timing": "Apply",
+    "unavailable": "Status"
+  },
+  {
+    "category": "plugins",
+    "description": "Catalog description supplied by the publisher.",
+    "group": "Plugin catalog",
+    "id": "catalog.Description",
+    "kind": "string",
+    "label": "Description",
+    "timing": "Apply",
+    "unavailable": "Catalog information"
+  },
+  {
+    "category": "plugins",
+    "description": "Version available in the refreshed catalog.",
+    "group": "Plugin catalog",
+    "id": "catalog.Version",
+    "kind": "string",
+    "label": "Catalog version",
+    "timing": "Apply",
+    "unavailable": "Catalog information"
+  },
+  {
+    "category": "plugins",
+    "description": "Installed version from the local plugin manifest, or not installed.",
+    "group": "Plugin catalog",
+    "id": "catalog.Status",
+    "kind": "string",
+    "label": "Installation status",
+    "timing": "Apply",
+    "unavailable": "Catalog information"
+  }
+]

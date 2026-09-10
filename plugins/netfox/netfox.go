@@ -116,12 +116,18 @@ func editNetFoxConnection(app vfs.App) {
 	if name == "" || name == ".." || name == "<Add connection>" {
 		return
 	}
+	if host, ok := app.(vfs.SettingsNavigationHost); ok && host.OpenSettings("network", "netfox.connections", name, false) {
+		return
+	}
 	showConnectionDialog(app, netFoxVFS, name)
 }
 
 func addNetFoxConnection(app vfs.App) {
 	netFoxVFS, ok := activeNetFoxVFS(app)
 	if !ok {
+		return
+	}
+	if host, ok := app.(vfs.SettingsNavigationHost); ok && host.OpenSettings("network", "netfox.connections", "", true) {
 		return
 	}
 	showConnectionDialog(app, netFoxVFS, "")
@@ -184,6 +190,13 @@ func (p *NetFoxPlugin) Init(api vfs.HostAPI) error {
 		}
 		return &netFoxVFSWrapper{NewNetFoxVFS(filepath.Join(cfgDir, "NetFox.json"))}
 	})
+	if host, ok := api.(vfs.SettingsContributionHost); ok {
+		reg, err := host.RegisterSettingsProvider(newSettingsProvider())
+		if err != nil {
+			return rollback(err)
+		}
+		registrations = append(registrations, reg)
+	}
 	p.registrations = append(p.registrations, registrations...)
 	return nil
 }

@@ -103,6 +103,9 @@ func (plugin *Plugin) openProfileDialog(app vfs.App, initial Entry, onSave func(
 }
 
 func (plugin *Plugin) configure(app vfs.App) {
+	if host, ok := app.(vfs.SettingsNavigationHost); ok && host.OpenSettings("terminal", "envman.profiles", "", false) {
+		return
+	}
 	if err := plugin.reloadConfig(); err != nil {
 		plugin.showError(app, err)
 	}

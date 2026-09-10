@@ -57,8 +57,18 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 			registration.Unregister()
 			return fmt.Errorf("VisRen: register configuration command: %w", err)
 		}
+		registrations := []vfs.Registration{registration, configRegistration}
+		if settingsHost, ok := api.(vfs.SettingsContributionHost); ok {
+			reg, err := settingsHost.RegisterSettingsProvider(settingsProvider())
+			if err != nil {
+				registration.Unregister()
+				configRegistration.Unregister()
+				return err
+			}
+			registrations = append(registrations, reg)
+		}
 		p.mu.Lock()
-		p.registrations = []vfs.Registration{registration, configRegistration}
+		p.registrations = registrations
 		p.mu.Unlock()
 		return nil
 	}

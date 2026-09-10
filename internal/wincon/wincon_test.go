@@ -1,6 +1,8 @@
 package wincon
 
-import "testing"
+import (
+	"testing"
+)
 
 // Windows Terminal hosts the console in a pseudoconsole whose window exists
 // and is never shown. Drawing over it would put the picture nowhere, and it

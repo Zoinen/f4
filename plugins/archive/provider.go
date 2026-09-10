@@ -13,6 +13,25 @@ type ArchiveProvider struct{}
 func (p *ArchiveProvider) Name() string  { return "zipper/archive" }
 func (p *ArchiveProvider) Priority() int { return 10 }
 
+// PanelEnterAllowed keeps self-extracting archives out of the ordinary Enter
+// and double-click path. They remain available through the explicit
+// Ctrl+PgDn action, which is the deliberate archive-entry gesture.
+func (p *ArchiveProvider) PanelEnterAllowed(ctx context.Context, parent vfs.VFS, path string) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	osvfs, ok := parent.(*vfs.OSVFS)
+	if !ok {
+		return true
+	}
+	localPath, err := osvfs.Abs(path)
+	if err != nil {
+		return true
+	}
+	embedded, found, err := findEmbeddedArchive(localPath)
+	return err != nil || !found || embedded.offset <= 0
+}
+
 func (p *ArchiveProvider) CanOpen(ctx context.Context, parent vfs.VFS, path string) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return false

@@ -29,17 +29,17 @@ on disk.
 
 Files:
 
-- `cmd/f4/audio_engine.go` — `audioEngine`: one `oto` output context per
+- `internal/media/audio.go` — `audioEngine`: one `oto` output context per
   process, one `go-mp3` decoder at a time, a `pcmTap` between them that
   counts bytes for the clock and keeps 512 subsampled samples for the
   spectrum, and a linear resampler for tracks whose rate differs from the
   context's.
-- `cmd/f4/player_panel.go` — `PlayerPanel` (`Kind() == "player"`): the
+- `internal/panel/player.go` — `PlayerPanel` (`Kind() == "player"`): the
   WinAmp-shaped control block, the playlist tree, keyboard handling,
   persistence to `<config dir>/playlist.json`.
-- `cmd/f4/actions.go` — the `F5`/`F6` intercept at the top of
+- `internal/app/actions.go` — the `F5`/`F6` intercept at the top of
   `actionCopyMove`, next to the temp-panel one it mirrors.
-- `cmd/f4/panels_frame.go` — plain characters go to the player while it has
+- `internal/panel/frame.go` — plain characters go to the player while it has
   the cursor (WinAmp's `Z X C V B`, `+`/`-`), same mechanism as `ai_chat`.
 
 ### 1.1 Libraries and platforms

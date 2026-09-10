@@ -4,16 +4,14 @@ package winshell
 
 import (
 	"fmt"
+	"github.com/zzl/go-win32api/v2/win32"
+	"golang.org/x/sys/windows/registry"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 	"unsafe"
-
-	"golang.org/x/sys/windows/registry"
-
-	"github.com/zzl/go-win32api/v2/win32"
 )
 
 var clsidFileOperation = syscall.GUID{

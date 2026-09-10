@@ -1,6 +1,8 @@
 package wincon
 
-import "testing"
+import (
+	"testing"
+)
 
 // Issue #805. The overlay is a child of a window in another process, so every
 // call that moves or reshapes it is a synchronous call into another thread

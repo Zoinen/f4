@@ -38,7 +38,7 @@ The built-in help pages for key bindings are generated from the same registry, s
    `Label`/`Description` remain the English fallbacks. Menus get a
    first-letter hotkey automatically unless the label carries its own
    `&` marker. New keys belong inside their namespace group, not at the
-   end of the file; run `go run ./tools/langfmt -w cmd/f4/lang/*.lng`
+   end of the file; run `go run ./tools/langfmt -w internal/i18n/lang/*.lng`
    afterwards, because CI runs the same tool with `-check` and a block
    appended at the end fails it. See [I18N.md](I18N.md).
 4. **Guard the shortcut and the menu entry, not the top frame.**

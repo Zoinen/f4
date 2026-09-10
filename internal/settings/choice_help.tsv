@@ -1,0 +1,89 @@
+GuiBackend||Choose a renderer using startup detection. Avoids pinning a backend that may be unavailable on another machine; the selected backend can change with the environment. Applies on the next graphical launch.
+GuiBackend|win32|Native Windows graphical window using GDI drawing. Does not require the GoGPU or Ebitengine graphics stack; useful when those backends have driver problems. Windows only, and drawing performance differs from GPU backends. This is a separate window, not the Windows console renderer.
+GuiBackend|gogpu|Graphical window rendered through GoGPU. Uses a GPU drawing pipeline for text and graphics. Requires compatible graphics drivers and FFI support in this build; graphics initialization can fail where the native or terminal renderer works. No universal speed advantage is guaranteed.
+GuiBackend|ebiten|Graphical window using Ebitengine's rendering and input loop. Provides an alternative graphics stack when another GUI backend behaves poorly. Requires graphics-driver and FFI support; window, input and performance behavior can differ from the native backend.
+GuiBackend|x11|Connect directly to an X11 display server. Useful in an X11 desktop or an environment with an accessible X server; does not require the GoGPU graphics stack. Requires an X server and display access. On a Wayland desktop it needs an X11 compatibility service such as XWayland.
+GuiBackend|wayland|Connect to a Wayland compositor instead of an X server. Fits a native Wayland session without requiring XWayland for this window. Requires a compatible Wayland session and FFI support; it cannot serve as the native Windows GUI backend.
+StartupMode|auto|Follow startup environment detection. May choose a graphical window where supported; native Windows and Wine retain terminal startup by default. Explicit command-line mode takes precedence.
+StartupMode|tty|Start inside a terminal even when a graphical desktop is available. Uses the terminal renderer preference; the terminal host controls its own font and window.
+StartupMode|gui|Start in a separate graphical window, including on Windows. Uses the graphical renderer preference and requires that backend to be available.
+TTYBackend||Detect the appropriate terminal output method at startup. Convenient across different hosts; choose an explicit renderer if detection gives unsuitable colors or behavior.
+TTYBackend|ansi|Write ANSI/VT escape sequences to the terminal. Suitable for modern terminal emulators, including Windows Terminal; available colors and input features depend on the host.
+TTYBackend|winapi|Use the Windows console API rather than ANSI output. Intended for Windows console compatibility. Color representation and behavior differ from ANSI output; prefer ANSI when using a modern terminal's extended capabilities.
+WorkspaceTabMode|0|Keep the workspace tab bar visible even with one workspace. Easier to discover, but occupies space unless tabs overlay the content.
+WorkspaceTabMode|1|Show the tab bar only when multiple workspaces exist. Saves space while working in a single workspace.
+WorkspaceTabMode|2|Show the tab bar while Ctrl is held. Keeps the display compact but hides workspace labels the rest of the time.
+WorkspaceTabMode|3|Hide the workspace tab bar. Workspaces remain accessible through their switching commands and shortcuts.
+WorkspaceTabNumbering|0|Keep workspace numbers stable and restore them with saved workspaces. Reordering tabs does not renumber them.
+WorkspaceTabNumbering|1|Keep workspace numbers stable during the current run without preserving that numbering across restarts.
+WorkspaceTabNumbering|2|Number workspaces by their current order. Moving or removing a tab can change the numbers used for switching.
+PanelScrollbarMode|0|Do not draw a panel scrollbar. Navigation still works with the keyboard and mouse wheel.
+PanelScrollbarMode|1|Show a compact scrollbar without the full arrow decoration. Provides position feedback with less visual detail.
+PanelScrollbarMode|2|Show the complete panel scrollbar, including arrows. Makes scrolling controls more explicit.
+NavigationMode|0|Typing goes to the command line while ordinary panel navigation keys move the file cursor. Familiar Far-style behavior.
+NavigationMode|1|Enable Vim-style panel navigation, including j/k and double dd/cc/mm actions. Letter keys can invoke panel actions instead of entering command text.
+NavigationMode|2|Separate filename-search focus from command-entry focus. Convenient for finding files by typing; entering shell commands requires command focus.
+PathHintSource|0|Read path suggestions from the active panel's filesystem and location.
+PathHintSource|1|Read path suggestions from the passive panel's filesystem and location.
+PathHintSource|2|Read suggestions from both panels, active first. Offers more candidates but may require reading two locations.
+DefaultFileOpMode|0|Put a new operation in the operation queue. Useful for controlling simultaneous work instead of starting every operation independently.
+DefaultFileOpMode|1|Start in the background so panel work can continue. Several operations may compete for the same disk or connection.
+DefaultFileOpMode|2|Start with the operation progress in the foreground. Keeps progress and prompts in view while the operation runs.
+FileOpPathDisplay|0|Show only the current item's name. Compact, but identical names in different folders are harder to distinguish.
+FileOpPathDisplay|1|Show the current item's full path. Identifies its folder, but long paths need more display space.
+FileOpPathDisplay|2|Show source and destination paths. Useful for checking where files go, at the cost of more progress text.
+Compare.IgnoreMode|0|When content normalization is enabled, ignore differences in line endings while retaining other whitespace differences.
+Compare.IgnoreMode|1|When content normalization is enabled, ignore all whitespace differences. May treat files with meaningfully different spacing as equal.
+EditorExpandTabs|0|Pressing Tab inserts a tab character. Its displayed width follows tab stops; the file keeps a literal tab.
+EditorExpandTabs|1|Pressing Tab inserts spaces up to the next tab stop. Existing tab characters are not converted.
+EditorExpandTabs|2|Legacy All value: currently inserts spaces exactly like Spaces. It does not convert existing tabs; the legacy value is preserved until you change it.
+EditorCrossMode|0|Draw no cursor guide lines, even if the crosshair switch is enabled.
+EditorCrossMode|1|Draw a vertical guide through the cursor column when crosshair display is enabled.
+EditorCrossMode|2|Draw a horizontal guide through the cursor row when crosshair display is enabled.
+EditorCrossMode|3|Draw both cursor guides when crosshair display is enabled. Makes row and column alignment explicit, but adds more lines to the text area.
+EditorHighlighter|Chroma|Use the bundled Chroma syntax engine. Does not require Colorer's external schemas; its language rules and colors differ from Colorer.
+EditorHighlighter|Colorer|Use Colorer syntax schemas and styles. Supports its configurable scheme data, but needs installed schemas and can fall back if they are unavailable.
+EditorHighlighter|None|Disable syntax highlighting in newly opened editors. Avoids syntax coloring work and shows text using the ordinary editor palette.
+EditorColorerScheme||Use the built-in default Colorer scheme rather than a named installed HRD scheme.
+MacKeyboard|auto|Enable Mac-style editing chords on macOS and ordinary editing chords elsewhere. Backend support is still needed for Command-key translation.
+MacKeyboard|on|Force Mac-style editing chords in supported editors and dialog fields. Panel navigation stays Far-style; Command translation depends on the backend.
+MacKeyboard|off|Use ordinary editing chords even on macOS. Does not change the panel navigation model.
+ConsoleMode|own|Use f4's embedded terminal. Keeps terminal presentation inside the workspace rather than relying on a host-terminal overlay.
+ConsoleMode|far|Use the host terminal with f4's overlay where supported. Resembles Far-style interaction; unsupported hosts can fall back to another presentation.
+ConsoleMode|mc|Use the host terminal without f4's overlay where supported. Resembles MC-style presentation; availability depends on terminal capabilities.
+HistoryShowTimes|0|Show both date and time for entries in this history.
+HistoryShowTimes|1|Show only the date for entries in this history, reducing timestamp detail.
+HistoryShowTimes|2|Hide timestamps in this history. Entries remain stored; only their presentation changes.
+MacroRecordFormat|0|Save newly recorded key macros in key_macros.ini. Keeps the legacy recording format.
+MacroRecordFormat|1|Save newly recorded macros as Lua scripts under Macros/scripts. Produces script files that can be edited afterward.
+ProxyMode|1|Use system or environment proxy configuration. Convenient for managed environments; the actual route can change with those external settings.
+ProxyMode|2|Connect directly, without the configured proxy. A destination that requires a proxy may be unreachable.
+ProxyMode|3|Route supported requests through the HTTP proxy at the configured host and port. Optional proxy credentials apply to this route.
+ProxyMode|4|Route supported connections through the SOCKS5 proxy at the configured host and port. Requires a reachable SOCKS5 server.
+UpdateChannel|0|Look for stable releases. Favors published release versions over the latest development builds.
+UpdateChannel|1|Look for nightly builds. Gets newer development changes earlier, with a greater chance of regressions than stable releases.
+UpdateInterval|0|Do not check automatically at startup. The explicit Check Now command remains available.
+UpdateInterval|1|Check whenever f4 starts. Does not create a continuously running update scheduler.
+UpdateInterval|2|At startup, check if at least 24 hours have elapsed since the previous check. Keeping f4 open does not trigger another check by itself.
+UpdateInterval|3|At startup, check if at least seven days have elapsed since the previous check. This is not a weekly background timer.
+envman.Kind|profile|An environment profile contains variable assignments. When enabled, it participates in ordered environment reconciliation after Apply.
+envman.Kind|separator|An organizational separator in the profile list. Does not apply variable assignments to the process or shells.
+visren.EditorFormat|source_target|Show original and target names together in the rename editor. Easier to compare each proposed name with its source.
+visren.EditorFormat|targets_only|Show only target names in the rename editor. More compact and easier to transform as a plain list, but original names are not alongside them.
+netfox.Type|ftp|Use FTP. Suitable for FTP servers, but ordinary FTP does not encrypt credentials or file data. Do not assume SSH protection from this protocol.
+netfox.Type|sftp|Use the SSH file-transfer subsystem. Encrypts the connection and requires an SSH server with SFTP support.
+netfox.Type|fish|Transfer files through commands in a remote SSH shell. Useful when SFTP is unavailable, but requires a compatible remote shell and utilities.
+netfox.ProxyMode|0|Use f4's applied global proxy settings for this connection. Later global proxy changes also affect this connection.
+cloudfox.storage|keyring|Store credentials in the operating system's keyring. Integrates with the current user's secret store; this is not the portable-profile storage option.
+cloudfox.storage|vault|Store credentials in CloudFox's encrypted vault. Used for portable profiles; access follows the vault's unlocking workflow.
+cloudfox.credentials|keep|Retain existing secrets and merge nonempty replacements entered in this draft. Blank secret fields do not clear saved credentials.
+cloudfox.credentials|replace|Replace the complete saved credential bundle with the entered values. Credentials omitted from the replacement are not retained.
+cloudfox.credentials|clear|Explicitly remove all stored credentials for this connection on Apply. Reauthentication may be needed before connecting again.
+cloudfox.s3.auth|default|Let the AWS SDK resolve credentials through its default chain. Useful for configured environments or machine roles; the effective identity can come from outside this saved connection.
+cloudfox.s3.auth|profile|Use the named AWS profile. Convenient for shared AWS configuration; requires that profile to exist on this machine.
+cloudfox.s3.auth|static|Use the explicitly supplied access key, secret key and optional session token. Predictable identity, but expiring credentials must be updated.
+cloudfox.s3.auth|anonymous|Send S3 requests without signing them with credentials. Works only for resources that allow anonymous access.
+cloudfox.webdav.auth|basic|Authenticate with a username and password using HTTP Basic. Requires protected transport according to the provider's connection policy.
+cloudfox.webdav.auth|digest|Use HTTP Digest challenge-response authentication. The server must support it; unencrypted transport requires the separate permission setting.
+cloudfox.webdav.auth|bearer|Authenticate with the supplied Bearer token instead of a username/password exchange. Access depends on the token's permissions and lifetime.
+cloudfox.webdav.auth|anonymous|Do not send authentication credentials. Use only for WebDAV resources that permit anonymous access.

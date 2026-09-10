@@ -4,7 +4,6 @@ package winshell
 
 import (
 	"fmt"
-
 	"github.com/unxed/f4/vfs"
 )
 

@@ -751,8 +751,8 @@ if(BUILD_TESTING)
     )
     qt6_add_resources(${target} ${target}_f4_app_icon
       PREFIX "/F4QtHost/icons/app"
-      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon"
-      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/f4.svg"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/../../internal/gui/assets/icon"
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../internal/gui/assets/icon/f4.svg"
     )
   endfunction()
 
@@ -813,7 +813,7 @@ if(BUILD_TESTING)
       Qt6::Core Qt6::Gui Qt6::Svg Qt6::Test)
     f4_add_windows_app_icon(F4WindowsApplicationIconTests)
     # Exercise the same native LoadImage resource path as the host.
-    set(F4_WINDOWS_ICON_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/generated/f4.ico")
+    set(F4_WINDOWS_ICON_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../internal/gui/assets/icon/generated/f4.ico")
     configure_file(packaging/f4-qt-host.rc.in
       "${CMAKE_CURRENT_BINARY_DIR}/f4-icon-test.rc" @ONLY)
     target_sources(F4WindowsApplicationIconTests PRIVATE
@@ -821,7 +821,7 @@ if(BUILD_TESTING)
     f4_link_static_test_platform(F4WindowsApplicationIconTests)
     f4_link_static_test_image_plugins(F4WindowsApplicationIconTests)
     target_compile_definitions(F4WindowsApplicationIconTests PRIVATE
-      F4_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../../cmd/f4/assets/icon/generated/f4.ico"
+      F4_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/../../internal/gui/assets/icon/generated/f4.ico"
       F4_ICON_HOST="$<TARGET_FILE:f4-qt-host>")
     add_dependencies(F4WindowsApplicationIconTests f4-qt-host)
     add_test(NAME F4WindowsApplicationIconTest COMMAND F4WindowsApplicationIconTests)
@@ -1055,6 +1055,7 @@ if(BUILD_TESTING)
   )
   f4_link_static_zoingallery_plugin(F4DocumentSurfaceTests)
   f4_link_static_test_platform(F4DocumentSurfaceTests)
+  f4_link_static_test_image_plugins(F4DocumentSurfaceTests)
   f4_link_static_test_qml_plugins(F4DocumentSurfaceTests)
   set(F4_HOST_QML_TEST_ENV
     "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
@@ -1062,6 +1063,10 @@ if(BUILD_TESTING)
   set(F4_HOST_QML_DPR_TEST_ENV
     "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
   )
+  if(WIN32)
+    list(APPEND F4_HOST_QML_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
+    list(APPEND F4_HOST_QML_DPR_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
+  endif()
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"

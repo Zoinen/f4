@@ -1,9 +1,8 @@
 package ttyx
 
 import (
-	"testing"
-
 	"github.com/jezek/xgb"
+	"testing"
 )
 
 func TestSourceNames(t *testing.T) {

@@ -1,0 +1,94 @@
+name: Shard packages
+description: >-
+  Split a list of Go packages across N shards, balanced by how much test code
+  each one holds. Nothing here names a package: a shard is a number, and a
+  package that moves lands wherever its weight puts it. The named shards this
+  replaces had to be edited by every restructuring, and the one called `cmd/f4`
+  went on carrying the application in its name for three phases after the
+  application had left it.
+inputs:
+  shard:
+    description: Which shard to emit, counting from zero
+    required: true
+  shards:
+    description: How many shards there are
+    required: true
+  packages:
+    description: >-
+      Space- or newline-separated import paths to split, or the literal "all"
+      for every package in the module.
+    required: true
+outputs:
+  packages:
+    description: The import paths belonging to this shard, space-separated
+    value: ${{ steps.split.outputs.packages }}
+  count:
+    description: How many packages this shard got
+    value: ${{ steps.split.outputs.count }}
+runs:
+  using: composite
+  steps:
+    - id: split
+      shell: bash
+      env:
+        SHARD: ${{ inputs.shard }}
+        SHARDS: ${{ inputs.shards }}
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+
+        case "$PACKAGES" in
+          all) selected=$(go list ./...) ;;
+          "")  selected="" ;;
+          *)   selected=$(tr ' ' '\n' <<<"$PACKAGES" | sed '/^$/d') ;;
+        esac
+
+        if [ -z "$selected" ]; then
+          echo "packages=" >> "$GITHUB_OUTPUT"
+          echo "count=0" >> "$GITHUB_OUTPUT"
+          echo "shard $SHARD of $SHARDS: nothing to do"
+          exit 0
+        fi
+
+        # Weight is the number of test files a package holds, which is what a
+        # test or race job spends its time on. Longest-processing-time first:
+        # sort by weight descending and give each package to whichever shard is
+        # lightest so far. One package can still dominate a shard -- a package
+        # is indivisible here -- and that is the floor, not a defect.
+        assignment=$(go list -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' ./... \
+          | awk -v n="$SHARDS" '
+              { w = $2 + $3; pkg[NR] = $1; weight[NR] = w; order[NR] = NR }
+              END {
+                for (i = 1; i <= NR; i++) for (j = i + 1; j <= NR; j++)
+                  if (weight[order[j]] > weight[order[i]]) { t = order[i]; order[i] = order[j]; order[j] = t }
+                for (s = 0; s < n; s++) load[s] = 0
+                for (k = 1; k <= NR; k++) {
+                  best = 0
+                  for (s = 1; s < n; s++) if (load[s] < load[best]) best = s
+                  print load[best] = load[best] + weight[order[k]], best, pkg[order[k]]
+                }
+              }' | awk '{ print $2, $3 }')
+
+        mine=$(awk -v s="$SHARD" '$1 == s { print $2 }' <<<"$assignment" \
+          | grep -Fx -f <(printf '%s\n' "$selected") || true)
+
+        if [ -z "$mine" ]; then
+          # An empty shard is only legitimate when the input was a filtered
+          # subset: nothing this diff touched landed here. An empty shard of
+          # the *whole* module means the split dropped packages, which is the
+          # failure a computed assignment has to be loud about -- a job that
+          # runs nothing and reports success is the shape this branch has been
+          # finding all along.
+          if [ "$PACKAGES" = "all" ]; then
+            echo "::error::shard $SHARD of $SHARDS got no packages out of the whole module"
+            exit 1
+          fi
+          echo "packages=" >> "$GITHUB_OUTPUT"
+          echo "count=0" >> "$GITHUB_OUTPUT"
+          echo "shard $SHARD of $SHARDS: no affected package landed here"
+          exit 0
+        fi
+        echo "packages=$(tr '\n' ' ' <<<"$mine" | sed 's/ $//')" >> "$GITHUB_OUTPUT"
+        echo "count=$(wc -l <<<"$mine" | tr -d ' ')" >> "$GITHUB_OUTPUT"
+        echo "shard $SHARD of $SHARDS: $(wc -l <<<"$mine" | tr -d ' ') packages"
+        sed 's/^/  /' <<<"$mine"

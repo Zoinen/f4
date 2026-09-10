@@ -47,6 +47,8 @@ Item {
         id: worktreeBranchLabel
         objectName: "worktreeBranchLabel"
         property real alignmentRevision: titleBar.width + titleBar.height
+        // Center in scene space before the physical-pixel correction below.
+        anchors.alignWhenCentered: false
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
         width: hostWindow.snapPx(Math.min(

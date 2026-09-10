@@ -43,7 +43,7 @@ plugin ABI.
 
 The consequences are the point: one SDK surface, one set of documentation, one
 set of host methods, and a plugin that moves between transports without being
-rewritten. `PluginTransport` in `plughost.go` is the whole seam, a single
+rewritten. `PluginTransport` in `internal/plughost/host.go` is the whole seam, a single
 `Call(method, params, result)`; `newHostMethods` is the host side, shared by
 every transport.
 
@@ -127,7 +127,7 @@ trade.
 
 The catalog dialog groups by category and greys out what this build cannot
 run, so the constraint is visible before the install rather than discovered
-after it. `plugring_meta.go` holds the vocabulary: categories following
+after it. `internal/plughost/plugring_meta.go` holds the vocabulary: categories following
 plugring.farmanager.com so that somebody arriving from there recognises the
 shelves, and a `runtimes` field so a plugin can say which interpreter it needs.
 That last one exists because a plugin using LuaJIT's `cdef` genuinely has
@@ -165,7 +165,7 @@ Done:
   working and take precedence, as in Far.
   Documented for users in `MACROS.md`.
 - **Step 4: embedded wasm on wazero.** The guest is a WASI command over stdio,
-  so `startPluginSession` in `plughost.go` now holds everything a transport
+  so `startPluginSession` in `internal/plughost/host.go` now holds everything a transport
   does once it has two byte streams, and the wasm transport is just the
   streams. The guest gets no filesystem, making this the first transport that
   is actually a sandbox. `Plugin.Init` gained a timeout along the way: a valid

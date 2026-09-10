@@ -159,6 +159,13 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	if err := plugin.applyStoredConfig(); err != nil {
 		return rollback(fmt.Errorf("environment manager: apply startup profiles: %w", err))
 	}
+	if settingsHost, ok := api.(vfs.SettingsContributionHost); ok {
+		reg, err := settingsHost.RegisterSettingsProvider(&settingsProvider{plugin: plugin})
+		if err != nil {
+			return rollback(err)
+		}
+		registrations = append(registrations, reg)
+	}
 	plugin.mu.Lock()
 	plugin.registrations = registrations
 	plugin.initialized = true

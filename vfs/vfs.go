@@ -585,6 +585,14 @@ type ProviderOpenStatusProvider interface {
 	ProviderOpenStatus(parent VFS, path string) (ProviderOpenStatus, bool)
 }
 
+// PanelEnterPolicyProvider lets a provider keep ordinary panel activation
+// separate from its explicit action. A provider may reject Enter/double-click
+// for a path while still allowing an action such as Ctrl+PgDn to call Open.
+type PanelEnterPolicyProvider interface {
+	VFSProvider
+	PanelEnterAllowed(ctx context.Context, parent VFS, path string) bool
+}
+
 // StandalonePathProvider can restore a virtual filesystem from its own
 // user-facing absolute path even when the current panel belongs to another
 // VFS. Implementations must recognize only paths they own.

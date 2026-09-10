@@ -25,7 +25,7 @@ afix.ap
 afailed.*
 .codex-build/
 /build/
-/embedded/f4-qt-host.gz
+/internal/plughost/embedded/f4-qt-host.gz
 /dist/
 .qa-gallery-modes/
 __pycache__/
@@ -43,3 +43,7 @@ tools/icons/icons
 tools/icons/icons.exe
 tools/wine_syscall_probe/wineprobe
 tools/wine_syscall_probe/wineprobe.exe
+
+# Native ConPTY bundle installed locally by the same setup as Windows CI
+/internal/terminal/conpty.dll
+/internal/terminal/OpenConsole.exe

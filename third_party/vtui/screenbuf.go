@@ -1063,7 +1063,22 @@ func (r *AnsiRenderer) Flush() {
 
 // PrepareFlush appends the cursor state and mode 2026 termination to the pending frame.
 func (r *AnsiRenderer) PrepareFlush() func() {
-	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape {
+	// The cursor color is tracked package-wide, not per renderer: there is one
+	// terminal, and Suspend/Resume are what invalidate the value. It is only
+	// consumed once actually written, so flipping ManageCursorStyle back on at
+	// runtime still delivers the color.
+	colorPending := ManageCursorStyle && !cursorStyleViaConsoleAPI() && CursorColor != cursorColorSent
+	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape || colorPending {
+		if colorPending {
+			if CursorColor >= 0 {
+				_, _ = fmt.Fprintf(&r.frameOut, seqCursorColor, CursorColor&0xFFFFFF)
+				DebugLog("CURSOR: OSC 12 #%06X", CursorColor&0xFFFFFF)
+			} else {
+				_, _ = r.frameOut.WriteString(seqResetCursorColor)
+				DebugLog("CURSOR: OSC 112, cursor color handed back to the terminal")
+			}
+			cursorColorSent = CursorColor
+		}
 		r.writeCursorPos(r.cursorY+1, r.cursorX+1)
 		if IsFreeBSDConsole {
 			if r.cursorVis {

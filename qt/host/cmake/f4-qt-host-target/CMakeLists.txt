@@ -1,5 +1,5 @@
 set(F4_QT_HOST_ROOT "${CMAKE_CURRENT_LIST_DIR}/../..")
-set(F4_APP_ICON_ROOT "${F4_QT_HOST_ROOT}/../../cmd/f4/assets/icon")
+set(F4_APP_ICON_ROOT "${F4_QT_HOST_ROOT}/../../internal/gui/assets/icon")
 
 if(WIN32)
   set(F4_WINDOWS_ICON_FILE
@@ -363,7 +363,7 @@ if(WIN32)
   # Use a separate BASE so the qrc URL remains /icons/app/f4.ico instead of
   # exposing the generated/ directory in the runtime resource path.
   function(f4_add_windows_app_icon target)
-    set(icon_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../../cmd/f4/assets/icon/generated")
+    set(icon_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../../../../internal/gui/assets/icon/generated")
     qt6_add_resources(${target} ${target}_windows_app_icon
       PREFIX "/F4QtHost/icons/app"
       BASE "${icon_dir}"

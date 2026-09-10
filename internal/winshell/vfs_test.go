@@ -2,13 +2,12 @@ package winshell
 
 import (
 	"context"
+	"github.com/unxed/f4/vfs"
 	"io"
 	"os"
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/unxed/f4/vfs"
 )
 
 type fakeShellClient struct {

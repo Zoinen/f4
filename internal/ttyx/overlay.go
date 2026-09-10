@@ -22,7 +22,7 @@ type Overlay struct {
 	s      *Session
 	win    xproto.Window
 	gc     xproto.Gcontext
-	mapped bool
+	Mapped bool
 	shaped bool
 	buf    []byte
 
@@ -191,9 +191,9 @@ func (o *Overlay) Place(r Rect) error {
 	}
 
 	o.wanted = true
-	if !o.mapped && o.s.focused {
+	if !o.Mapped && o.s.focused {
 		xproto.MapWindow(o.s.conn, o.win)
-		o.mapped = true
+		o.Mapped = true
 	}
 	return nil
 }
@@ -205,11 +205,11 @@ func (o *Overlay) Place(r Rect) error {
 func (o *Overlay) Suspend() {
 	o.s.mu.Lock()
 	defer o.s.mu.Unlock()
-	if o.s.conn == nil || !o.mapped {
+	if o.s.conn == nil || !o.Mapped {
 		return
 	}
 	xproto.UnmapWindow(o.s.conn, o.win)
-	o.mapped = false
+	o.Mapped = false
 }
 
 // followedParent records that the terminal window moved and took the overlay
@@ -353,11 +353,11 @@ func (o *Overlay) Hide() {
 
 func (o *Overlay) hide() {
 	o.wanted = false
-	if o.s.conn == nil || !o.mapped {
+	if o.s.conn == nil || !o.Mapped {
 		return
 	}
 	xproto.UnmapWindow(o.s.conn, o.win)
-	o.mapped = false
+	o.Mapped = false
 }
 
 // Visible reports whether the overlay is currently on the screen, which is not
@@ -366,7 +366,7 @@ func (o *Overlay) hide() {
 func (o *Overlay) Visible() bool {
 	o.s.mu.Lock()
 	defer o.s.mu.Unlock()
-	return o.mapped
+	return o.Mapped
 }
 
 // Close destroys the window.
@@ -380,5 +380,5 @@ func (o *Overlay) Close() {
 	}
 	xproto.FreeGC(o.s.conn, o.gc)
 	xproto.DestroyWindow(o.s.conn, o.win)
-	o.mapped = false
+	o.Mapped = false
 }

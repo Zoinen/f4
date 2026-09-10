@@ -4,11 +4,10 @@ package winshell
 
 import (
 	"fmt"
+	"github.com/zzl/go-win32api/v2/win32"
 	"strings"
 	"syscall"
 	"unsafe"
-
-	"github.com/zzl/go-win32api/v2/win32"
 )
 
 const contextCommandFirst uint32 = 1

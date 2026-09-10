@@ -226,11 +226,22 @@ func (s *ConnectionStore) ReplaceSecretRefIfCurrent(ctx context.Context, id, exp
 }
 
 func (s *ConnectionStore) Delete(ctx context.Context, id string) (Connection, error) {
+	return s.deleteCurrent(ctx, id, nil)
+}
+
+func (s *ConnectionStore) DeleteIfCurrent(ctx context.Context, expected Connection) (Connection, error) {
+	return s.deleteCurrent(ctx, expected.ID, &expected)
+}
+
+func (s *ConnectionStore) deleteCurrent(ctx context.Context, id string, expected *Connection) (Connection, error) {
 	var deleted Connection
 	err := s.update(ctx, func(doc *connectionDocument) error {
 		for i, existing := range doc.Connections {
 			if strings.EqualFold(existing.ID, id) {
 				deleted = existing.Clone()
+				if expected != nil && (!existing.UpdatedAt.Equal(expected.UpdatedAt) || existing.SecretRef != expected.SecretRef) {
+					return ErrConnectionChanged
+				}
 				doc.Connections = append(doc.Connections[:i], doc.Connections[i+1:]...)
 				return nil
 			}
