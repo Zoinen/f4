@@ -161,8 +161,8 @@ Every listed field is independently described in its provider catalog. Ordered s
 | Canonical collection / fields | Original menu → dialog → subdialog | New category | Store and consuming implementation |
 |---|---|---|---|
 | `associations`: mask, description; Enter/AltEnter/F3/AltF3/F4/AltF4 commands and enable flags | Files → File associations → Edit association | associations | `settings/associations.ini`; `file_associations.go`, `file_associations_ui.go`. Alternate slots remain stored and unavailable because current dispatch has no consumer. |
-| `bookmarks`: ten paths; retained plugin/file/data metadata | Drive chooser → bookmarks; numbered folder shortcuts | history | Existing bookmark file; `bookmarks.go`. Reordering changes digit slots. |
-| `drive-links`: name, path, hotkey | Drive chooser → named links → edit | history | Existing links file; `drive_bookmarks.go`. |
+| `bookmarks`: ten paths; retained plugin/file/data metadata | Drive chooser → bookmarks; numbered folder shortcuts | drives | Existing bookmark file; `bookmarks.go`. Reordering changes digit slots. |
+| `drive-links`: name, path, hotkey | Drive chooser → named links → edit | drives | Existing links file; `drive_bookmarks.go`. |
 | `usermenu.*`: label, activation key, submenu flag, parent, multiline commands | User menu → F4 / Insert → item/submenu editor | menus | Global INI, executable-scoped and ancestor-local FarMenu files remain separate sources and separate drafts; `user_menu_ui.go`. |
 | `bindings`: action, chord, area, condition | Options → Hotkey configurator → assign → area/condition → chord | hotkeys | `hotkeys.ini`; `hotkeys.go`. Native frame-owned chords are not editable bindings. |
 | `envman.profiles`: kind, name, enabled, ordered variable lines | Environment Manager → profile editor | terminal | Environment Manager JSON; `plugins/envman`. Apply reconciles the environment only after a successful save. Separators are preserved. |
@@ -436,8 +436,8 @@ workflows; those redirects are removed:
 
 | Context | Local interaction | Shared Settings storage/logic |
 | --- | --- | --- |
-| Drive chooser Insert / edit link | Name, path and shortcut dialog; returns to drive chooser | `panel.DriveBookmark`, `LoadDriveBookmarks`, `SaveDriveBookmarks`; History drive links |
-| Numbered bookmarks edit | Path input for the selected slot | `panel.BookmarkSet`, `SaveBookmarks`; History bookmarks |
+| Drive chooser Insert / edit link | Name, path and shortcut dialog; returns to drive chooser | `panel.DriveBookmark`, `LoadDriveBookmarks`, `SaveDriveBookmarks`; Drive chooser drive links |
+| Numbered bookmarks edit | Path input for the selected slot | `panel.BookmarkSet`, `SaveBookmarks`; Drive chooser bookmark slots |
 | User menu create/edit item or submenu | Original entry editor with source/scope retained | User-menu tree and source-specific writers; User menus |
 | NetFox add/edit connection | Original connection dialog | NetFox configuration store; Network connections |
 | CloudFox add/edit profile | Provider chooser and original profile editor | Credential validation, scope checks and repository; Network connections |

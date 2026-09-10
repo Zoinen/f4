@@ -20,7 +20,7 @@ var Categories = []f4settings.Category{
 	{ID: "keyboard", Label: f4settings.Text{English: "Keyboard & shortcuts"}},
 	{ID: "hotkeys", Label: f4settings.Text{Key: "Hotkeys.Title", English: "Hotkey Configurator"}},
 	{ID: "terminal", Label: f4settings.Text{English: "Terminal & environment"}},
-	{ID: "history", Label: f4settings.Text{English: "History & bookmarks"}},
+	{ID: "history", Label: f4settings.Text{English: "History"}},
 	{ID: "associations", Label: f4settings.Text{English: "File associations"}},
 	{ID: "menus", Label: f4settings.Text{English: "User menus & macros"}},
 	{ID: "network", Label: f4settings.Text{English: "Network & connections"}},
