@@ -358,8 +358,11 @@ func newSettingsHelp() *settingsHelp {
 	h.bar.OnScroll = func(n int) { h.top = n }
 	return h
 }
-func (h *settingsHelp) CanFocus() bool { return true }
+func (h *settingsHelp) CanFocus() bool { return !h.IsDisabled() }
 func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
+	if h.IsDisabled() {
+		return
+	}
 	h.ScreenObject.Show(scr)
 	scr.PushClipRect(h.X1, h.Y1, h.X2, h.Y2)
 	defer scr.PopClipRect()
@@ -378,6 +381,9 @@ func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
 	}
 }
 func (h *settingsHelp) ProcessKey(e *vtinput.InputEvent) bool {
+	if h.IsDisabled() {
+		return false
+	}
 	if !e.KeyDown {
 		return false
 	}
@@ -396,6 +402,9 @@ func (h *settingsHelp) ProcessKey(e *vtinput.InputEvent) bool {
 	return true
 }
 func (h *settingsHelp) ProcessMouse(e *vtinput.InputEvent) bool {
+	if h.IsDisabled() {
+		return false
+	}
 	if h.bar.IsMouseCaptured() {
 		h.bar.ProcessMouse(e)
 		return true
