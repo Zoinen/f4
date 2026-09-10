@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -54,5 +55,42 @@ func TestContextEditorsRemainLocalWithSettingsAvailable(t *testing.T) {
 				t.Fatalf("expected local editor, got %T", vtui.FrameManager.GetTopFrame())
 			}
 		})
+	}
+}
+
+func TestDriveLinkHotkeyRemainsVisible(t *testing.T) {
+	palette := append([]uint64(nil), vtui.Palette...)
+	defer copy(vtui.Palette, palette)
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	for _, initial := range []DriveBookmark{{}, {Name: "Link", Path: "/folder", Hotkey: "Ф"}} {
+		d := NewDriveBookmarkEditDialog(initial, "/folder", nil)
+		for iteration := 0; iteration < 2; iteration++ {
+			vtui.Palette[vtui.ColDialogEdit] = vtui.SetRGBBoth(0, testutil.Uint32(0xc0d0e0+iteration), 0x202020)
+			vtui.Palette[vtui.ColDialogEditUnchanged] = vtui.Palette[vtui.ColDialogEdit]
+			vtui.Palette[vtui.ColDialogBox] = vtui.SetRGBBoth(0, testutil.Uint32(0x8090a0+iteration), 0x303030)
+			d.SetFocusedItem(d.HotkeyEdit)
+			for _, char := range []rune{'ф', 'a'} {
+				d.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: char})
+				for _, focus := range []vtui.UIElement{d.HotkeyEdit, d.nameEdit} {
+					d.SetFocusedItem(focus)
+					d.Show(scr)
+					x, y, x2, _ := d.HotkeyEdit.GetPosition()
+					cell := scr.GetCell(x, y)
+					if x2 != x || testutil.Rune(cell.Char) != []rune(d.HotkeyEdit.GetText())[0] || cell.Attributes != vtui.Palette[vtui.ColDialogEdit] {
+						t.Fatalf("hotkey invisible or wrong palette: %+v", cell)
+					}
+				}
+				d.SetFocusedItem(d.HotkeyEdit)
+			}
+			d.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_BACK})
+			if d.HotkeyEdit.GetText() != "A" {
+				t.Fatal("Backspace changed hotkey")
+			}
+			d.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DELETE})
+			if d.HotkeyEdit.GetText() != "" {
+				t.Fatal("Del did not clear hotkey")
+			}
+		}
 	}
 }
