@@ -3142,3 +3142,8 @@ SettingsCenter.Text.2da370fe1bd734d8be879c0af32adee32a2c4d659b1a8bd536a189cf1a15
 SettingsCenter.Text.a2d419499f292a30e04544f5785aaebc51ccf4e777d251f9cb2bfe818a781064=Do not send authentication credentials. Use only for WebDAV resources that permit anonymous access.
 SettingsCenter.Matches=Matches: %d
 SettingsCenter.ClearSearch=Clear search
+SettingsCenter.Category.hotkeys=Hotkey Configurator
+SettingsCenter.Text.8802174070f1412801a7f0343b685b2031869bce18833d79e48e7a712ab59883=Prefer exact shortcut search matches
+SettingsCenter.Text.c0010901537ebb36a8ae08ecdecf613679d66a4f8dcad5856094bc3752fcbf1d=In the Hotkey Configurator table, narrow the search to exact matches when available. This does not affect the Settings Center sidebar search.
+SettingsCenter.Text.ac559d59a8e0f357fa1fc6da653bff0feb6a2f4aaf219e4ac9adf0b68e1c2128=next open
+SettingsCenter.Text.a3a43e00b84aa7aca574eafb93a4feaf77b4287a615be9a7434ae99552df13e3=The Hotkey Configurator lists configurable, native and plugin shortcuts. Use Assign or Unbind; native shortcuts are read-only. Changes are saved with Apply or OK.
