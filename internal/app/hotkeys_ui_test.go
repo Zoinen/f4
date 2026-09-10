@@ -565,3 +565,43 @@ func TestEmbeddedHotkeyPageUsesLiveDialogPalette(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsHotkeyFirstRowUp(t *testing.T) {
+	previous := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager(filepath.Join(t.TempDir(), "hotkeys.ini"))
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = previous })
+	t.Cleanup(testutil.SwapFrameManager(t))
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(140, 35)
+	vtui.FrameManager.Init(scr)
+	settings.OpenAt("hotkeys", "", "", false)
+	center := vtui.FrameManager.GetTopFrame().(*settings.Center)
+	defer center.Close()
+	page := findEmbeddedHotkeys(t, center)
+	for _, child := range center.GetChildren() {
+		if container, ok := child.(vtui.Container); ok {
+			for _, nested := range container.GetChildren() {
+				if nested == page {
+					center.SetFocusedItem(child)
+				}
+			}
+		}
+	}
+	page.SetFocusedItem(page.table)
+	page.table.SetSelectPos(0)
+	center.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	center.Show(scr)
+	if page.GetFocusedItem() != page.unbind {
+		t.Fatal("Up at first row did not wrap inside the configurator")
+	}
+	center.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if page.GetFocusedItem() != page.table || page.table.SelectPos != 0 {
+		t.Fatal("Down did not return to the first row")
+	}
+	page.table.SetSelectPos(page.table.ItemCount - 1)
+	center.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if page.GetFocusedItem() != page.assign {
+		t.Fatal("Down at last row did not reach Assign")
+	}
+	center.Show(scr)
+}

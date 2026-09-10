@@ -300,6 +300,11 @@ func (v *settingsViewport) notifyFocus() {
 	}
 }
 func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
+	// Embedded pages own navigation; wrapping the single child can re-enter
+	// that same group while it is preparing a backwards focus transition.
+	if v.fullPage != nil {
+		return v.fullPage.ProcessKey(e)
+	}
 	v.WrapFocus = true
 	handled := v.Group.ProcessKey(e)
 	v.notifyFocus()

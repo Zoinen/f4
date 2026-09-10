@@ -14,6 +14,7 @@ import (
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -570,6 +571,14 @@ type hotkeyPage struct {
 	*vtui.Group
 	table          *vtui.Table
 	assign, unbind *vtui.Button
+}
+
+// Keep vertical navigation inside the configurator, while Tab can still leave it.
+func (p *hotkeyPage) ProcessKey(e *vtinput.InputEvent) bool {
+	previous := p.WrapFocus
+	p.WrapFocus = e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN)
+	defer func() { p.WrapFocus = previous }()
+	return p.Group.ProcessKey(e)
 }
 
 func (p *hotkeyPage) SetPosition(x1, y1, x2, y2 int) {
