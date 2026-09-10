@@ -4813,14 +4813,6 @@ func findExtUiPath(backend string) (string, error) {
 		}
 	}
 
-	if cwd, err := os.Getwd(); err == nil {
-		for _, cfg := range []string{"RelWithDebInfo", "Release", "Debug"} {
-			appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin", cfg))
-		}
-		appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin"))
-		appendFromDir(filepath.Join(cwd, "qt", "host", "build"))
-	}
-
 	for _, path := range candidates {
 		if extUiFileExists(path) {
 			return path, nil
@@ -4833,6 +4825,23 @@ func findExtUiPath(backend string) (string, error) {
 		}
 		if embeddedPath != "" {
 			return embeddedPath, nil
+		}
+	}
+
+	// Development trees are a fallback only for builds without a payload.
+	// A portable launcher must run the host embedded in that exact build.
+	candidates = nil
+	if cwd, err := os.Getwd(); err == nil {
+		for _, cfg := range []string{"RelWithDebInfo", "Release", "Debug"} {
+			appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin", cfg))
+		}
+		appendFromDir(filepath.Join(cwd, "qt", "host", "build", "bin"))
+		appendFromDir(filepath.Join(cwd, "qt", "host", "build"))
+	}
+
+	for _, path := range candidates {
+		if extUiFileExists(path) {
+			return path, nil
 		}
 	}
 	return "", fmt.Errorf("external UI executable %q not found", binName)

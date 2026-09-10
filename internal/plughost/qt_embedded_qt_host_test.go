@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -117,5 +118,45 @@ func TestMaterializeEmbeddedQtHostConcurrentFirstLaunch(t *testing.T) {
 func TestMaterializeEmbeddedQtHostRejectsCorruptPayload(t *testing.T) {
 	if _, err := materializeEmbeddedQtHost([]byte("not gzip"), t.TempDir(), "linux"); err == nil {
 		t.Fatal("corrupt embedded payload was accepted")
+	}
+}
+
+func TestFindExtUiPathPrefersEmbeddedHostOverDevelopmentBuild(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
+		t.Skip("macOS uses a signed application bundle")
+	}
+	root := t.TempDir()
+	t.Chdir(root)
+	t.Setenv("F4_EXT_UI_PATH", "")
+	t.Setenv(embeddedQtHostCacheEnv, filepath.Join(root, "cache"))
+	name := "f4-qt-host"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	stale := filepath.Join(root, "qt", "host", "build", "bin", "Release", name)
+	if err := os.MkdirAll(filepath.Dir(stale), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("stale development host"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := embeddedQtHostGzip
+	t.Cleanup(func() { embeddedQtHostGzip = original })
+	embeddedQtHostGzip = gzipQtHostFixture(t, "matching embedded host")
+	got, err := findExtUiPath("qt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "matching embedded host" {
+		t.Fatalf("selected %q (%q) instead of the embedded host", got, content)
+	}
+	embeddedQtHostGzip = nil
+	got, err = findExtUiPath("qt")
+	if err != nil || got != stale {
+		t.Fatalf("non-portable development fallback = %q, %v; want %q", got, err, stale)
 	}
 }
