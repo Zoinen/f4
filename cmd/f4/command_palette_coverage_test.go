@@ -112,6 +112,7 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"settings.(*settingsCenter).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsEdit).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"app.(*hotkeyPage).ProcessKey":            {class: paletteAuditModalLocal, rationale: "the embedded Hotkey Configurator wraps local vertical focus; Settings.Open is its registered entry point"},
 	"settings.(*settingsHelp).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsRadios).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsViewport).ProcessKey": {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
