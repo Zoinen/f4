@@ -6,6 +6,7 @@ import QtQuick.Controls
 F4ComboBox {
     id: dialogCombo
     required property var widget
+    enabled: widget.disabled !== true
     property string registeredOwnerId: ""
 
     function syncDropdownRegistration() {
@@ -22,7 +23,8 @@ F4ComboBox {
             hostWindow.registerDropdownAnchor(registeredOwnerId, dialogCombo)
     }
 
-    model: widget.items || []
+    // Dropdown-only choices belong to the separate semantic menu.
+    model: externallyOwnedPopup ? [] : (widget.items || [])
     textRole: "text"
     currentIndex: Math.max(0, Number(widget.selected || 0))
     displayText: hostWindow.cleanText(widget.text)

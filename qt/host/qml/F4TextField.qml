@@ -255,12 +255,13 @@ Item {
         visible: control.hasBackground
         radius: control.snap(4)
         color: control.hostWindow
-               ? (control.hovered ? control.hostWindow.inputHoverBg
+               ? (!control.enabled ? control.hostWindow.dialogBg
+                  : control.hovered ? control.hostWindow.inputHoverBg
                                   : control.hostWindow.controlPressedBg)
                : "#18202a"
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
-            if (innerInput.activeFocus || control.semanticFocus)
+            if (control.enabled && (innerInput.activeFocus || control.semanticFocus))
                 return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
             return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
         }
@@ -321,7 +322,9 @@ Item {
                             : "textFieldTextInput"
                 anchors.fill: parent
                 verticalAlignment: TextInput.AlignVCenter
-                color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
+                color: control.hostWindow
+                       ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
+                       : (control.enabled ? "#ffffff" : "#666666")
                 selectionColor: control.hostWindow ? control.hostWindow.selectedBg : "#2c7be5"
                 selectedTextColor: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
                 font: control.hostWindow ? control.hostWindow.font : Qt.font({})
@@ -377,7 +380,9 @@ Item {
                         textCursorBlinkController.running
                     width: control.hostWindow
                            ? control.hostWindow.separatorWidth : 1
-                    color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
+                    color: control.hostWindow
+                       ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
+                       : (control.enabled ? "#ffffff" : "#666666")
                     opacity: blinkOn ? 1.0 : 0.0
                     function restartBlink() {
                         textCursorBlinkController.restart()

@@ -83,6 +83,9 @@ func TestSettingsDropdownHoverHelpDoesNotChangeDraft(t *testing.T) {
 			t.Fatal("opening dropdown did not explain initial choice")
 		}
 		combo.Menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+		if !strings.Contains(c.help.text, "FFI") {
+			t.Fatal("choice callback did not update help before repaint")
+		}
 		c.Show(scr)
 		combo.Menu.Show(scr)
 		if !strings.Contains(c.help.text, "GoGPU") || !strings.Contains(c.help.text, "FFI") {

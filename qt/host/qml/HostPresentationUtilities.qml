@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import F4QtHost 1.0
 import QtQuick.Controls
 
 QtObject {
@@ -17,34 +18,14 @@ QtObject {
         return Math.round(Number(value || 0) * hostWindow.dpr) / hostWindow.dpr
     }
 
+    // The attached property observes the final scene in one native pass after
+    // layout. Reading it does not subscribe every leaf to every ancestor size.
     function dialogPixelOffsetX(item, target) {
-        if (!item || !item.parent || !target)
-            return 0
-        let layoutRevision = target.width + target.height
-        let ancestor = item
-        for (let depth = 0; ancestor && depth < 12; ++depth) {
-            layoutRevision += ancestor.x + ancestor.y
-                    + ancestor.width + ancestor.height
-            ancestor = ancestor.parent
-        }
-        const windowRoot = item.window ? item.window.contentItem : target
-        const localPoint = item.parent.mapToItem(windowRoot, item.x, item.y)
-        return snapPx(localPoint.x) - localPoint.x + layoutRevision * 0
+        return item && target ? item.ScenePixelAlignment.offset.x : 0
     }
 
     function dialogPixelOffsetY(item, target) {
-        if (!item || !item.parent || !target)
-            return 0
-        let layoutRevision = target.width + target.height
-        let ancestor = item
-        for (let depth = 0; ancestor && depth < 12; ++depth) {
-            layoutRevision += ancestor.x + ancestor.y
-                    + ancestor.width + ancestor.height
-            ancestor = ancestor.parent
-        }
-        const windowRoot = item.window ? item.window.contentItem : target
-        const localPoint = item.parent.mapToItem(windowRoot, item.x, item.y)
-        return snapPx(localPoint.y) - localPoint.y + layoutRevision * 0
+        return item && target ? item.ScenePixelAlignment.offset.y : 0
     }
 
     function iconPixelOffsetX(item) {

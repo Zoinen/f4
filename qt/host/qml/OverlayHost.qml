@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import F4QtHost 1.0
 import QtQuick.Controls
 
 Item {
@@ -13,108 +14,28 @@ Item {
     required property QtObject shellController
     property var frames: []
 
-    // Keep the overlay rows stable while their semantic payload changes.
-    // Repeater models backed by a freshly-created JS array can tear down and
-    // recreate every Loader on each scene update. That loses local dialog
-    // interaction state (most notably the geometry kept during a drag), even
-    // when the incoming frame is for the same overlay id.
-    ListModel {
+    SemanticOverlayModel {
         id: overlayFrameModel
         objectName: "semanticOverlayFrameModel"
+        frames: overlayHost.frames
     }
 
     function frameKey(frame) {
-        if (!frame)
-            return ""
-        return String(frame.kind || "") + "|"
-                + String(frame.role || "") + "|"
-                + String(frame.id || "")
+        return String(frame.kind || "") + "|" + String(frame.role || "")
+                + "|" + String(frame.id || "")
     }
 
-    function modelIndexForKey(key) {
-        if (key === "")
-            return -1
-        for (let index = 0; index < overlayFrameModel.count; ++index) {
-            if (String(overlayFrameModel.get(index).key || "") === key)
-                return index
+    function routeMenuBarPointer(windowX, windowY, released) {
+        let handled = false
+        for (let i = overlayRepeater.count - 1; i >= 0; --i) {
+            const loader = overlayRepeater.itemAt(i)
+            const popup = loader ? loader.item : null
+            if (!popup || typeof popup.handleGrabbedPointer !== "function") continue
+            if (!handled) handled = popup.handleGrabbedPointer(windowX, windowY, released)
+            else popup.clearGrabbedPointer()
         }
-        return -1
+        return handled
     }
-
-    function frameIsWanted(key) {
-        const wanted = frames || []
-        for (let index = 0; index < wanted.length; ++index) {
-            if (frameKey(wanted[index]) === key)
-                return true
-        }
-        return false
-    }
-
-    function finishFrameExit(key) {
-        if (frameIsWanted(key))
-            return
-        const index = modelIndexForKey(key)
-        if (index >= 0 && overlayFrameModel.get(index).isClosing === true)
-            overlayFrameModel.remove(index)
-    }
-
-    function syncFrameModel() {
-        const wanted = frames || []
-
-        // Remove rows that no longer exist. Work backwards so indexes stay
-        // valid and existing Loader instances are left untouched.
-        for (let index = overlayFrameModel.count - 1; index >= 0; --index) {
-            const key = String(overlayFrameModel.get(index).key || "")
-            let present = false
-            for (let wantedIndex = 0; wantedIndex < wanted.length;
-                 ++wantedIndex) {
-                if (frameKey(wanted[wantedIndex]) === key) {
-                    present = true
-                    break
-                }
-            }
-            if (!present) {
-                const row = overlayFrameModel.get(index)
-                const frame = row.modelFrame || ({})
-                if (String(frame.presentation || "") === "dropdown") {
-                    if (row.isClosing !== true)
-                        overlayFrameModel.setProperty(index, "isClosing", true)
-                } else {
-                    overlayFrameModel.remove(index)
-                }
-            }
-        }
-
-        // Reorder, insert, and update only the rows whose semantic payload
-        // actually changed. ListModel.move preserves the delegate identity.
-        for (let index = 0; index < wanted.length; ++index) {
-            const wantedFrame = wanted[index] || ({})
-            const key = frameKey(wantedFrame)
-            if (key === "")
-                continue
-            let currentIndex = modelIndexForKey(key)
-            if (currentIndex < 0) {
-                overlayFrameModel.insert(index, {
-                    "key": key,
-                    "modelFrame": wantedFrame,
-                    "isClosing": false
-                })
-                continue
-            }
-            if (currentIndex !== index) {
-                overlayFrameModel.move(currentIndex, index, 1)
-                currentIndex = index
-            }
-            if (overlayFrameModel.get(currentIndex).modelFrame !== wantedFrame)
-                overlayFrameModel.setProperty(currentIndex, "modelFrame",
-                                               wantedFrame)
-            if (overlayFrameModel.get(currentIndex).isClosing === true)
-                overlayFrameModel.setProperty(currentIndex, "isClosing", false)
-        }
-    }
-
-    onFramesChanged: syncFrameModel()
-    Component.onCompleted: syncFrameModel()
 
     function menuOverlayForId(menuId) {
         const wanted = String(menuId || "")
@@ -200,7 +121,7 @@ Item {
                 target: overlayLoader.item
                 ignoreUnknownSignals: true
                 function onCloseAnimationFinished() {
-                    overlayHost.finishFrameExit(
+                    overlayFrameModel.finishExit(
                                 overlayHost.frameKey(overlayLoader.frame))
                 }
             }

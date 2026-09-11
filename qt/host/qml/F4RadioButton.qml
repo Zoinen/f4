@@ -9,6 +9,8 @@ T.RadioButton {
 
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
+    property bool wrapText: false
+    property bool plainText: false
     property string mnemonicHotkey: ""
     readonly property bool focusHighlighted:
         control.enabled
@@ -34,10 +36,11 @@ T.RadioButton {
         // Derive the ring from the indicator, not the row: fractional-DPR
         // centering can otherwise split its vertical space into unequal pixels.
         readonly property real indicatorGap: control.snap(2)
+        readonly property bool multiline: control.wrapText && radioButtonText.lineCount > 1
         x: control.indicator.x - indicatorGap
-        y: control.indicator.y - indicatorGap
+        y: (multiline ? 0 : control.indicator.y) - indicatorGap
         width: control.snap(control.width) + indicatorGap
-        height: control.indicator.height + 2 * indicatorGap
+        height: (multiline ? control.snap(control.height) : control.indicator.height) + 2 * indicatorGap
         color: "transparent"
         radius: control.snap(4)
         border.width: control.focusHighlighted
@@ -121,10 +124,11 @@ T.RadioButton {
         objectName: control.objectName ? (control.objectName + "Text")
                                        : "radioButtonText"
         leftPadding: control.indicator.width + control.spacing
-        text: control.hostWindow
+        text: control.plainText ? control.text : control.hostWindow
               ? control.hostWindow.mnemonicText(control.text, control.mnemonicHotkey)
               : control.text
-        textFormat: Text.StyledText
+        textFormat: control.plainText ? Text.PlainText : Text.StyledText
+        wrapMode: control.wrapText ? Text.Wrap : Text.NoWrap
         color: {
             if (!control.enabled)
                 return control.hostWindow ? control.hostWindow.mutedText : "#666666"
@@ -133,7 +137,7 @@ T.RadioButton {
         opacity: control.enabled ? 1.0 : 0.55
         font: control.font
         verticalAlignment: Text.AlignVCenter
-        elide: Text.ElideRight
+        elide: control.wrapText ? Text.ElideNone : Text.ElideRight
         transform: Translate {
             x: control.hostWindow
                ? control.hostWindow.dialogPixelOffsetX(

@@ -550,3 +550,24 @@ func TestCommandSubmitWithoutPTYKeepsCommandAndPanels(t *testing.T) {
 		t.Fatalf("missing PTY discarded command %q", got)
 	}
 }
+
+func TestSemanticMenuHoverNotifiesOwner(t *testing.T) {
+	oldFM := *vtui.FrameManager
+	t.Cleanup(func() { *vtui.FrameManager = oldFM })
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 40)
+	vtui.FrameManager.Init(scr)
+	menu := vtui.NewVMenu("Choices")
+	menu.AddItem(vtui.MenuItem{Text: "First"})
+	menu.AddItem(vtui.MenuItem{Text: "Second"})
+	vtui.FrameManager.Push(menu)
+	calls, explained := 0, -1
+	menu.OnSelect = func(index int) { calls++; explained = index }
+	action := map[string]any{"target": vtui.SemanticID(menu), "action": "menu.select", "index": 1}
+	if !HandleSemanticAction(action) || explained != 1 || calls != 1 {
+		t.Fatalf("hover did not notify menu owner: explained=%d calls=%d", explained, calls)
+	}
+	if !HandleSemanticAction(action) || calls != 1 {
+		t.Fatal("unchanged hover repeated owner callback")
+	}
+}

@@ -288,8 +288,16 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 				idx := semantic.Int(action["index"])
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator &&
 					!menu.Items[idx].Header && !menu.Items[idx].Disabled {
+					previous := menu.SelectPos
 					menu.SetSelectPos(idx)
-					vtui.FrameManager.DeclareSemanticMenuState()
+					if previous != menu.SelectPos && menu.OnSelect != nil {
+						menu.OnSelect(menu.SelectPos)
+						// Owner callbacks can change another surface (Settings
+						// help, for example); a menu-only update would lose it.
+						vtui.FrameManager.Redraw()
+					} else {
+						vtui.FrameManager.DeclareSemanticMenuState()
+					}
 					return true
 				}
 			}

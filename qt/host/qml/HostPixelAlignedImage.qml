@@ -10,7 +10,7 @@ Image {
     property real alignmentRevision: 0
 
     transform: Translate {
-        x: image.hostWindow.iconPixelOffsetX(image)
-        y: image.hostWindow.iconPixelOffsetY(image)
+        x: image.hostWindow.dialogPixelOffsetX(image, image.hostWindow.contentItem)
+        y: image.hostWindow.dialogPixelOffsetY(image, image.hostWindow.contentItem)
     }
 }

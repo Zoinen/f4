@@ -49,8 +49,20 @@ T.ScrollBar {
         acceptedButtons: Qt.NoButton
 
         Rectangle {
-            anchors.fill: parent
-            anchors.margins: control.snap(control.margin)
+            id: handleFill
+            objectName: control.objectName ? control.objectName + "Handle" : "scrollBarHandle"
+            x: control.snap(control.margin)
+            y: control.snap(control.margin)
+            width: Math.max(0, control.snap(parent.width - 2 * x))
+            height: Math.max(0, control.snap(parent.height - 2 * y))
+            // The template derives the handle from scroll ratios; both its
+            // extent and scene origin can fall between physical pixels.
+            transform: Translate {
+                x: control.hostWindow ? control.hostWindow.dialogPixelOffsetX(
+                    handleFill, control.hostWindow.contentItem) : 0
+                y: control.hostWindow ? control.hostWindow.dialogPixelOffsetY(
+                    handleFill, control.hostWindow.contentItem) : 0
+            }
             radius: control.snap(control.radius)
             color: control.pressed ? control.handlePressedColor
                    : control.hovered

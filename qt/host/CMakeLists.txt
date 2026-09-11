@@ -201,6 +201,12 @@ endif()
 
 set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/SemanticChildrenModel.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/SemanticOverlayModel.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/SemanticChildrenModel.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/SemanticOverlayModel.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ScenePixelAlignment.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ScenePixelAlignment.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ApplicationIcon.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ApplicationIcon.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/DummyQWK.h"
@@ -328,6 +334,7 @@ set(F4_LUCIDE_ICON_NAMES
   blocks.svg
   hard-drive.svg
   house.svg
+  keyboard.svg
   layout-dashboard.svg
   languages.svg
   library.svg
@@ -951,80 +958,8 @@ if(BUILD_TESTING)
   # production host. Keep one resource manifest so extracting a QML type can
   # never silently leave one of the fixture executables with an incomplete
   # lexical module.
-  set(F4_HOST_TEST_QML_FILES
-    qml/main.qml
-    qml/F4HostWindow.qml
-    qml/PanelSplitter.qml
-    qml/GalleryPanelHost.qml
-    qml/GalleryPanelHostAdapter.qml
-    qml/GalleryPanelInputRouter.qml
-    qml/GalleryViewerHost.qml
-    qml/HostPixelAlignedImage.qml
-    qml/HostPresentationUtilities.qml
-    qml/FilePanelView.qml
-    qml/PanelPairSurface.qml
-    qml/PanelsSurface.qml
-    qml/ShellSurfaceHost.qml
-    qml/ShellShortcuts.qml
-    qml/ShellSceneStore.qml
-    qml/ShellInteractionController.qml
-    qml/FilePanelChrome.qml
-    qml/PanelRendererMenu.qml
-    qml/QuickViewPanelView.qml
-    qml/InfoPanelView.qml
-    qml/CommandLineView.qml
-    qml/ActivityBoundedCursorBlink.qml
-    qml/ConsoleRunRow.qml
-    qml/DocumentSurface.qml
-    qml/DocumentHeader.qml
-    qml/DocumentRowDelegate.qml
-    qml/DocumentViewportController.qml
-    qml/DocumentWindowPresenter.qml
-    qml/DocumentRowPool.qml
-    qml/DocumentTerminalSelectionController.qml
-    qml/DocumentEditorPointerController.qml
-    qml/TerminalBackdrop.qml
-    qml/OperationsQueueSurface.qml
-    qml/OperationsQueueController.qml
-    qml/F4Button.qml
-    qml/F4TextField.qml
-    qml/F4CheckBox.qml
-    qml/F4RadioButton.qml
-    qml/F4ComboBox.qml
-    qml/F4ScrollBar.qml
-    qml/F4Slider.qml
-    qml/F4ToolTip.qml
-    qml/DialogButton.qml
-    qml/QueueActionButton.qml
-    qml/QueueSummaryItem.qml
-    qml/ConfigDialogButton.qml
-    qml/ThemeRenderTypeComboBox.qml
-    qml/ThemeBooleanOption.qml
-    qml/ThemeEditor.qml
-    qml/ThemeDraftModel.qml
-    qml/HostThemePalette.qml
-    qml/ThemeColorWheel.qml
-    qml/ThemeColorEditorPane.qml
-    qml/ThemeEditorFooter.qml
-    qml/SemanticMenuBar.qml
-    qml/ShellTitleBar.qml
-    qml/WorkspaceTabs.qml
-    qml/DialogCheckBox.qml
-    qml/DialogRadioButton.qml
-    qml/DialogProgressBar.qml
-    qml/DialogTextField.qml
-    qml/DialogComboBox.qml
-    qml/DialogResizeHandle.qml
-    qml/SemanticWidgetDelegate.qml
-    qml/GenericDialog.qml
-    qml/DialogOverlay.qml
-    qml/AutocompletePopup.qml
-    qml/SemanticMenuItemDelegate.qml
-    qml/SemanticMenuPopup.qml
-    qml/OverlayHost.qml
-    qml/KeyBarView.qml
-    qml/ToastView.qml
-  )
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/F4HostQmlFiles.cmake")
+  set(F4_HOST_TEST_QML_FILES ${F4_HOST_QML_FILES})
 
   add_executable(F4DocumentSurfaceTests
     tests/F4DocumentSurfaceTests.cpp
@@ -1085,6 +1020,8 @@ if(BUILD_TESTING)
 
   add_executable(F4OperationsQueueTests
     tests/F4OperationsQueueTests.cpp
+    src/F4IconProvider.h
+    src/F4IconProvider.cpp
     tests/TestExtUiStateController.h
     tests/TestExtUiStateController.cpp
     src/DummyQWK.h
@@ -1104,12 +1041,26 @@ if(BUILD_TESTING)
   target_link_libraries(F4OperationsQueueTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Svg
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
     Qt6::Test
     ZoinGallery::Qml
   )
+  option(F4_QML_PROFILE_TESTS "Enable Qt QML profiler in the replay test executable" OFF)
+  if(F4_QML_PROFILE_TESTS)
+    target_compile_definitions(F4OperationsQueueTests PRIVATE QT_QML_DEBUG)
+    if(F4_QT_STATIC)
+      # Conan exposes Qml but not its optional profiling service targets.
+      set(F4_QML_TOOLING_ROOT "${qt_PACKAGE_FOLDER_RELEASE}" CACHE PATH "Static Qt package with QML tooling")
+      foreach(plugin IN ITEMS qmldbg_tcp qmldbg_server qmldbg_profiler qmldbg_quickprofiler)
+        target_link_libraries(F4OperationsQueueTests PRIVATE "${F4_QML_TOOLING_ROOT}/plugins/qmltooling/${CMAKE_STATIC_LIBRARY_PREFIX}${plugin}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      endforeach()
+      target_link_libraries(F4OperationsQueueTests PRIVATE "${F4_QML_TOOLING_ROOT}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}Qt6PacketProtocol${CMAKE_STATIC_LIBRARY_SUFFIX}" Qt6::Network)
+      target_sources(F4OperationsQueueTests PRIVATE tests/QmlProfilerPlugins.cpp)
+    endif()
+  endif()
   f4_link_static_zoingallery_plugin(F4OperationsQueueTests)
   f4_link_static_test_image_plugins(F4OperationsQueueTests)
   f4_link_static_test_platform(F4OperationsQueueTests)
@@ -1128,8 +1079,16 @@ if(BUILD_TESTING)
   set_tests_properties(F4SemanticDialogControlsPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4SettingsCategoryInteractionPixelGridTest
+    COMMAND F4OperationsQueueTests settingsResizeKeepsChromeAndScrollsContent adaptiveChoicesAndFilledFields multilineDialogEditor
+      settingsCategoryListSelectsDuringMouseDrag
+      settingsListScrollingAndTouch
+      settingsCategoryIconsStayPixelAligned)
+  set_tests_properties(F4SettingsCategoryInteractionPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   if(WIN32)
-    set_property(TEST F4SemanticDialogControlsPixelGridTest APPEND PROPERTY
+    set_property(TEST F4SemanticDialogControlsPixelGridTest F4SettingsCategoryInteractionPixelGridTest APPEND PROPERTY
       ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
   endif()
 
@@ -1599,4 +1558,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4GalleryPointerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
+endif()
+
+if(BUILD_TESTING)
+  foreach(target IN ITEMS F4DocumentSurfaceTests F4OperationsQueueTests F4QuickViewSurfaceTests)
+    target_sources(${target} PRIVATE src/SemanticChildrenModel.h src/SemanticChildrenModel.cpp src/SemanticOverlayModel.h src/SemanticOverlayModel.cpp
+      src/ScenePixelAlignment.h src/ScenePixelAlignment.cpp
+      tests/SemanticPresentationTypes.cpp)
+  endforeach()
 endif()

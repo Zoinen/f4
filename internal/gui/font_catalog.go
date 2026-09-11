@@ -2,7 +2,6 @@ package gui
 
 import (
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 )
@@ -19,17 +18,18 @@ func guiFontChoices(language, current string) []string {
 }
 
 func GuiFontChoicesFromInstalled(current string, installed []string) []string {
-	choices := make([]string, 0)
+	choices := make([]string, 0, len(installed)+1)
+	seen := make(map[string]struct{}, len(installed)+1)
 	appendUnique := func(value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			return
 		}
-		for _, existing := range choices {
-			if sameGuiFontValue(existing, value) {
-				return
-			}
+		key := guiFontValueKey(value)
+		if _, exists := seen[key]; exists {
+			return
 		}
+		seen[key] = struct{}{}
 		choices = append(choices, value)
 	}
 
@@ -83,17 +83,25 @@ var newGuiFontDisplayNameResolver = func(installed []string) func(string) string
 
 func GuiFontDisplayValuesFromInstalled(values, installed []string) []string {
 	resolve := newGuiFontDisplayNameResolver(installed)
+	known := guiFontValueSet(installed)
 	labels := make([]string, len(values))
 	for i, value := range values {
 		labels[i] = value
-		for _, path := range installed {
-			if sameGuiFontValue(value, path) {
-				labels[i] = resolve(value)
-				break
-			}
+		if _, exists := known[guiFontValueKey(value)]; exists {
+			labels[i] = resolve(value)
 		}
 	}
 	return labels
+}
+
+// Normalize each catalog path once per call. Scanning and cleaning the whole
+// catalog for every choice made constructing a large font picker quadratic.
+func guiFontValueSet(values []string) map[string]struct{} {
+	known := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		known[guiFontValueKey(value)] = struct{}{}
+	}
+	return known
 }
 
 // guiFontDisplayChoices returns the strings shown in the font picker. On
@@ -143,13 +151,6 @@ func GuiFontValueForDisplay(language, current, display string) string {
 		}
 	}
 	return display
-}
-
-func sameGuiFontValue(left, right string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func ShouldSuggestFontForLanguage(language, current string) bool {

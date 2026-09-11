@@ -45,7 +45,9 @@ T.ComboBox {
         rightPadding: control.snap(30)
         text: control.displayText
         textFormat: Text.PlainText
-        color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
+        color: control.hostWindow
+               ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
+               : (control.enabled ? "#ffffff" : "#666666")
         font: control.font
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
@@ -104,7 +106,7 @@ T.ComboBox {
         }
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
-            if (control.semanticFocus || control.visualFocus || control.activeFocus)
+            if (control.enabled && (control.semanticFocus || control.visualFocus || control.activeFocus))
                 return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
             return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
         }
@@ -171,7 +173,9 @@ T.ComboBox {
                     return itemDelegate.model.text
                 return String(itemDelegate.model || "")
             }
-            color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
+            color: control.hostWindow
+               ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
+               : (control.enabled ? "#ffffff" : "#666666")
             font: control.font
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight

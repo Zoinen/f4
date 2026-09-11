@@ -5,6 +5,13 @@
 #include <QCoreApplication>
 #include <QColor>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QProcess>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QFont>
 #include <QGuiApplication>
 #include <QImage>
@@ -689,6 +696,7 @@ class F4QuickViewSurfaceTests final : public QObject
 private slots:
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
+    void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
@@ -774,6 +782,54 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     )", QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
+}
+
+void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
+{
+    const QString hostPath = qEnvironmentVariable("F4_COMPILED_QT_HOST");
+    if (hostPath.isEmpty()) QSKIP("Set F4_COMPILED_QT_HOST to validate the production executable");
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QString tracePath = temporary.filePath(QStringLiteral("startup.jsonl"));
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+    QProcess host;
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
+    environment.insert(QStringLiteral("QT_QUICK_BACKEND"), QStringLiteral("software"));
+    environment.insert(QStringLiteral("F4_NAV_BENCHMARK_TRACE"), QStringLiteral("1"));
+    environment.insert(QStringLiteral("F4_NAV_BENCHMARK_QT_OUTPUT"), tracePath);
+    environment.remove(QStringLiteral("F4_QT_HOST_STARTUP_SMOKE_ONLY"));
+    host.setProcessEnvironment(environment);
+    host.setProcessChannelMode(QProcess::MergedChannels);
+    const auto stopHost = qScopeGuard([&host] {
+        host.kill();
+        host.waitForFinished(1000);
+    });
+    host.start(hostPath, {QStringLiteral("--f4-ext-connect=127.0.0.1:%1").arg(server.serverPort()),
+                          QStringLiteral("--f4-ext-nonce=qml-module-test")});
+    QVERIFY(host.waitForStarted());
+    QTRY_VERIFY_WITH_TIMEOUT(server.hasPendingConnections(), 5000);
+    QScopedPointer<QTcpSocket> peer(server.nextPendingConnection());
+    QVERIFY(peer);
+    QJsonObject loaded;
+    const auto readLoadedEvent = [&] {
+        QFile trace(tracePath);
+        if (!trace.open(QIODevice::ReadOnly)) return false;
+        for (const auto &line : trace.readAll().split('\n')) {
+            const auto start = line.indexOf('{');
+            if (start < 0) continue;
+            const auto event = QJsonDocument::fromJson(line.mid(start)).object();
+            if (event.value(QStringLiteral("event")).toString() == QStringLiteral("qt.startup.qml.loaded")) {
+                loaded = event;
+                return true;
+            }
+        }
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(readLoadedEvent(), 5000);
+    QCOMPARE(loaded.value(QStringLiteral("rootObjectCount")).toInt(), 1);
+    QCOMPARE(host.state(), QProcess::Running);
 }
 
 void F4QuickViewSurfaceTests::initTestCase()

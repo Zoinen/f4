@@ -1,11 +1,89 @@
 package gui
 
 import (
-	"github.com/unxed/f4/internal/testutil"
-	"github.com/unxed/vtui"
+	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/vtui"
 )
+
+func TestGuiFontChoicesPreserveFirstSpellingAndOrder(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		current   string
+		installed []string
+		want      []string
+	}{
+		{
+			name:      "current path precedes installed equivalent",
+			current:   " /fonts/sub/../Mono.ttf ",
+			installed: []string{"/fonts/Mono.ttf", " /fonts/Other.ttf ", "/fonts/./Other.ttf", "", "  "},
+			want:      []string{"/fonts/sub/../Mono.ttf", "/fonts/Other.ttf"},
+		},
+		{
+			name:      "discovery order is preserved",
+			installed: []string{"/fonts/Zeta.ttf", "/fonts/Alpha.ttf", "/fonts/Zeta.ttf"},
+			want:      []string{"/fonts/Zeta.ttf", "/fonts/Alpha.ttf"},
+		},
+		{
+			name:      "empty catalog",
+			current:   "  ",
+			installed: []string{"", " "},
+			want:      []string{},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := GuiFontChoicesFromInstalled(test.current, test.installed)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("choices = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGuiFontBatchLabelsMatchCleanPathsAndRefreshCatalog(t *testing.T) {
+	previous := newGuiFontDisplayNameResolver
+	t.Cleanup(func() { newGuiFontDisplayNameResolver = previous })
+	newGuiFontDisplayNameResolver = func([]string) func(string) string {
+		return func(value string) string { return "Family: " + value }
+	}
+	values := []string{"/fonts/sub/../Mono.ttf", "/custom/Mono.ttf"}
+	installed := []string{"/fonts/Mono.ttf"}
+	got := GuiFontDisplayValuesFromInstalled(values, installed)
+	want := []string{"Family: /fonts/sub/../Mono.ttf", "/custom/Mono.ttf"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("labels = %q, want %q", got, want)
+	}
+	installed[0] = "/custom/Mono.ttf"
+	got = GuiFontDisplayValuesFromInstalled(values, installed)
+	want = []string{"/fonts/sub/../Mono.ttf", "Family: /custom/Mono.ttf"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("labels after catalog change = %q, want %q", got, want)
+	}
+}
+
+func BenchmarkGuiFontCatalogMapping(b *testing.B) {
+	previous := newGuiFontDisplayNameResolver
+	b.Cleanup(func() { newGuiFontDisplayNameResolver = previous })
+	newGuiFontDisplayNameResolver = func([]string) func(string) string {
+		return func(value string) string { return value }
+	}
+	for _, count := range []int{64, 256, 1024} {
+		installed := make([]string, count)
+		for i := range installed {
+			installed[i] = fmt.Sprintf("/fonts/Family-%04d.ttf", i)
+		}
+		b.Run(fmt.Sprintf("%d", count), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				choices := GuiFontChoicesFromInstalled("/custom/Current.ttf", installed)
+				_ = GuiFontDisplayValuesFromInstalled(choices, installed)
+			}
+		})
+	}
+}
 
 func TestGuiFontBatchLabelsUseOneSnapshotAndPreserveManualValues(t *testing.T) {
 	previous := newGuiFontDisplayNameResolver

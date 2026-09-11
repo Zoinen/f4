@@ -398,6 +398,35 @@ Item {
         }
     }
 
+    property Item grabbedPointerItem: null
+    function clearGrabbedPointer() {
+        if (grabbedPointerItem) grabbedPointerItem.setGrabHover(false)
+        grabbedPointerItem = null
+    }
+    function handleGrabbedPointer(windowX, windowY, released) {
+        if (closing || !visible) return false
+        const point = popupMenuList.mapFromItem(hostWindow.contentItem, windowX, windowY)
+        if (point.x < 0 || point.x >= popupMenuList.width
+                || point.y < 0 || point.y >= popupMenuList.height) {
+            clearGrabbedPointer()
+            return false
+        }
+        const index = popupMenuList.indexAt(point.x + popupMenuList.contentX,
+                                            point.y + popupMenuList.contentY)
+        const item = popupMenuList.itemAtIndex(index)
+        if (item !== grabbedPointerItem) {
+            clearGrabbedPointer()
+            grabbedPointerItem = item
+            if (item) item.setGrabHover(true)
+        }
+        if (item) {
+            item.selectFromGrab()
+            if (released) item.activateFromPointer()
+        }
+        if (released) clearGrabbedPointer()
+        return true
+    }
+
     function pointerActuallyMoved(area, mouse) {
         // MouseArea.positionChanged is expressed in delegate-local
         // coordinates. Qt also emits it when ListView moves that

@@ -1,5 +1,11 @@
+#include <QQmlProperty>
+#include "SemanticOverlayModel.h"
 #include "DummyQWK.h"
 #include "TestExtUiStateController.h"
+#include "SemanticChildrenModel.h"
+#include "F4IconProvider.h"
+#include <QAbstractItemModelTester>
+#include <QPersistentModelIndex>
 
 #include <QAccessible>
 #include <QColor>
@@ -7,9 +13,12 @@
 #include <QElapsedTimer>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QFile>
+#include <QDir>
 #include <QFont>
 #include <QGuiApplication>
 #include <QImage>
+#include <QJsonDocument>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickStyle>
@@ -701,10 +710,11 @@ struct QueueFixture
     TestShell shell;
     TestGallery gallery;
     TestIcons icons;
+    F4IconSet productionIcons;
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
 
-    explicit QueueFixture(const QVariantMap &scene, bool usesQwk = false)
+    explicit QueueFixture(const QVariantMap &scene, bool usesQwk = false, bool realIcons = false)
     {
         shell.setScene(scene);
         engine.addImportPath(QStringLiteral(":"));
@@ -713,7 +723,9 @@ struct QueueFixture
         engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"),
                                                   &gallery);
         engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"),
-                                                  &icons);
+                                                  realIcons ? static_cast<QObject *>(&productionIcons) : &icons);
+        if (realIcons)
+            engine.addImageProvider(F4IconSet::defaultProviderId(), new F4IconProvider);
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
         engine.rootContext()->setContextProperty(
@@ -752,6 +764,24 @@ class F4OperationsQueueTests final : public QObject
 private slots:
     void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
     void messageBodyWrapsToGuiWidth();
+    void settingsSceneReplayProfile();
+    void settingsHelpUpdatePreservesControlIdentity();
+    void semanticChildrenModelReportsOnlyChangedRows();
+    void pixelAlignmentUsesSettledAncestorTransforms();
+    void settingsDecorationsAndViewportStayPixelAligned();
+    void settingsListsAndDisabledInputs();
+    void settingsCategoryListSelectsDuringMouseDrag();
+    void settingsCategoryListSelectsDuringMouseDrag_data();
+    void settingsListScrollingAndTouch();
+    void settingsCategoryIconsStayPixelAligned();
+    void settingsResizeKeepsChromeAndScrollsContent();
+    void overlayModelPreservesIdentityAndExitLifecycle();
+    void adaptiveChoicesAndFilledFields();
+    void multilineDialogEditor();
+    void menuBarPressDragReleaseActivatesItem();
+    void menuBarPressDragReleaseActivatesItem_data();
+    void settingsHoverExplainsWithoutFocus();
+    void settingsRadiosExpandAndStayPixelAligned();
     void queueDropdownKeepsPanelsAndAlignsLeaves();
     void consoleModeRestoresQueueWorkspace();
     void initTestCase();
@@ -865,7 +895,9 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
         ++leaves;
     }
     QVERIFY(leaves>10);
-    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-dropdown-%1.png").arg(dpr)));
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    if (qEnvironmentVariableIsSet("F4_QUEUE_CAPTURE_DIR"))
+        QVERIFY(fixture.window->grabWindow().save(QDir(qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR")).filePath(QString("queue-dropdown-%1.png").arg(dpr))));
     auto *pause = fixture.item("operationsQueuePauseButton");
     QVERIFY(pause && pause->isEnabled());
     QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
@@ -889,7 +921,9 @@ void F4OperationsQueueTests::queueDropdownKeepsPanelsAndAlignsLeaves()
         QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
         QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
     }
-    QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/queue-resume-%1.png").arg(dpr)));
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    if (qEnvironmentVariableIsSet("F4_QUEUE_CAPTURE_DIR"))
+        QVERIFY(fixture.window->grabWindow().save(QDir(qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR")).filePath(QString("queue-resume-%1.png").arg(dpr))));
     QTest::mouseClick(fixture.window,Qt::LeftButton,Qt::NoModifier,itemCenter(pause));
     QCOMPARE(fixture.shell.actions.last().value("action").toString(),QString("queue.resume"));
     QTest::keyClick(fixture.window,Qt::Key_Escape);
@@ -1729,7 +1763,7 @@ void F4OperationsQueueTests::semanticDialogsMoveResizeAndUseZoinWindowButtons()
         QStringLiteral("semanticOverlayRepeater"));
     QVERIFY(frameModel);
     QVERIFY(frameRepeater);
-    QTRY_COMPARE(frameModel->property("count").toInt(), 1);
+    QTRY_COMPARE(qobject_cast<QAbstractItemModel *>(frameModel)->rowCount(), 1);
     QQuickItem *overlayLoader = nullptr;
     QVERIFY(QMetaObject::invokeMethod(
         frameRepeater, "itemAt", Q_RETURN_ARG(QQuickItem *, overlayLoader),
@@ -2156,7 +2190,7 @@ void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
     QTRY_VERIFY_WITH_TIMEOUT(grid->hasActiveFocus(), 1000);
     QVERIFY(combo->property("semanticFocus").toBool());
     QVERIFY(!combo->hasActiveFocus());
-    QCOMPARE(combo->property("count").toInt(), 3);
+    QCOMPARE(combo->property("count").toInt(), 0);
     QVERIFY(combo->property("externallyOwnedPopup").toBool());
     QVERIFY(!combo->property("editable").toBool());
 
@@ -2549,7 +2583,7 @@ void F4OperationsQueueTests::semanticOverlayDialogStreamClearsWithoutStaleOverla
     QObject *const frameModel = overlayHost->findChild<QObject *>(
         QStringLiteral("semanticOverlayFrameModel"));
     QVERIFY(frameModel);
-    QTRY_COMPARE_WITH_TIMEOUT(frameModel->property("count").toInt(), 1,
+    QTRY_COMPARE_WITH_TIMEOUT(qobject_cast<QAbstractItemModel *>(frameModel)->rowCount(), 1,
                               1000);
     QVERIFY(visualItem(fixture.window->contentItem(),
                        QStringLiteral("semanticDialog-appearance-dialog")));
@@ -2561,7 +2595,7 @@ void F4OperationsQueueTests::semanticOverlayDialogStreamClearsWithoutStaleOverla
         {QStringLiteral("dialogs"), QVariantList{}},
     }, 2);
 
-    QTRY_COMPARE_WITH_TIMEOUT(frameModel->property("count").toInt(), 0,
+    QTRY_COMPARE_WITH_TIMEOUT(qobject_cast<QAbstractItemModel *>(frameModel)->rowCount(), 0,
                               1000);
     QTRY_VERIFY_WITH_TIMEOUT(
         !visualItem(fixture.window->contentItem(),
@@ -3796,7 +3830,8 @@ void F4OperationsQueueTests::driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid()
     QVERIFY(label->property("text").toString().contains("C: (Work disk)"));
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
-    capture.save("D:/Code/f4-zoin/.diagnostics/qt-drive-menu-175.png");
+    if (qEnvironmentVariableIsSet("F4_DRIVE_MENU_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_DRIVE_MENU_CAPTURE")));
 }
 
 void F4OperationsQueueTests::messageBodyWrapsToGuiWidth()
@@ -3830,5 +3865,1135 @@ void F4OperationsQueueTests::messageBodyWrapsToGuiWidth()
     }
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
-    capture.save("D:/Code/f4-zoin/.diagnostics/message-wrap-175.png");
+    if (qEnvironmentVariableIsSet("F4_MESSAGE_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_MESSAGE_CAPTURE")));
+}
+
+
+void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
+{
+    // Same nested, absolute-coordinate contract as settingsViewport.SemanticNode.
+    auto dialog = QJsonDocument::fromJson(R"({
+        "id":"settings-center","kind":"dialog","title":"Settings",
+        "x":0,"y":0,"w":100,"h":27,"showClose":true,"children":[
+          {"id":"search-label","kind":"text","text":"Search:","x":2,"y":1,"w":24,"h":1},
+          {"id":"search","kind":"edit","text":"","x":2,"y":2,"w":24,"h":1},
+          {"id":"category-title","kind":"text","text":"Appearance & language","x":29,"y":1,"w":67,"h":1},
+          {"id":"categories","kind":"listBox","items":["Appearance & language","Startup & profile"],"x":2,"y":4,"w":24,"h":17},
+          {"id":"settings-page","kind":"group","x":29,"y":3,"w":67,"h":15,
+           "scrollable":true,"scrollTop":0,"contentHeight":32,"children":[
+             {"id":"language","kind":"group","title":"Language","bordered":true,"x":29,"y":3,"w":64,"h":5,"children":[
+               {"id":"interface-label","kind":"text","text":"Interface language","x":31,"y":4,"w":19,"h":1},
+               {"id":"interface","kind":"comboBox","items":["English"],"text":"English","selected":0,"x":51,"y":4,"w":40,"h":1},
+               {"id":"help-label","kind":"text","text":"Help language","x":31,"y":5,"w":14,"h":1},
+               {"id":"help","kind":"comboBox","items":["English"],"text":"English","selected":0,"x":46,"y":5,"w":45,"h":1},
+               {"id":"local","kind":"checkbox","text":"Use local translations","x":31,"y":6,"w":60,"h":1}
+             ]},
+             {"id":"colors","kind":"group","title":"Colors","bordered":true,"x":29,"y":10,"w":64,"h":4,"children":[
+               {"id":"theme-label","kind":"text","text":"Color theme","x":31,"y":11,"w":12,"h":1},
+               {"id":"theme","kind":"comboBox","items":["Modern"],"text":"Modern","selected":0,"x":44,"y":11,"w":47,"h":1},
+               {"id":"contrast","kind":"checkbox","text":"Correct low contrast","state":1,"x":31,"y":12,"w":60,"h":1}
+             ]},
+             {"id":"font","kind":"group","title":"Font","bordered":true,"x":29,"y":16,"w":64,"h":4,"children":[
+               {"id":"font-label","kind":"text","text":"Graphical font","x":31,"y":17,"w":15,"h":1},
+               {"id":"font-edit","kind":"edit","text":"Monospace","x":47,"y":17,"w":44,"h":1}
+             ]},
+             {"id":"titles","kind":"group","title":"Titles and menus","bordered":true,"x":29,"y":29,"w":64,"h":5,"children":[
+               {"id":"title-label","kind":"text","text":"Window title template","x":31,"y":30,"w":60,"h":1},
+               {"id":"title-edit","kind":"edit","text":"f4 %Ver %Platform","x":31,"y":31,"w":60,"h":1}
+             ]}
+           ]},
+          {"id":"description","kind":"group","x":29,"y":19,"w":67,"h":4,"scrollable":true,"scrollTop":0,"contentHeight":3,"children":[
+            {"id":"description-text","kind":"text","text":"Select a setting to read what it does. This explanation wraps to the available GUI width, without terminal line breaks.","wrapText":true,"x":29,"y":19,"w":65,"h":3}
+          ]},
+          {"id":"apply","kind":"button","text":"Apply","x":62,"y":25,"w":10,"h":1},
+          {"id":"ok","kind":"button","text":"Ok","x":74,"y":25,"w":8,"h":1},
+          {"id":"cancel","kind":"button","text":"Cancel","x":84,"y":25,"w":12,"h":1}
+        ]})").toVariant().toMap();
+    QVariantMap scene = panelScene();
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *root = fixture.window->contentItem();
+    QQuickItem *viewport = nullptr;
+    QTRY_VERIFY((viewport = visualItem(root, "dialogWidget-settings-pageViewport")));
+    QVERIFY(viewport->clip());
+    QVERIFY(viewport->property("contentHeight").toReal() > viewport->height());
+    // List entries still use mnemonic markup; passive captions use plain text.
+    auto *categoryEntry = visualItem(root, "dialogWidget-categoriesListItemText-0");
+    QVERIFY(categoryEntry);
+    QCOMPARE(categoryEntry->property("textFormat").toInt(), 4); // Text.StyledText
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto checkGrid = [&](QQuickItem *item) {
+        const QPointF origin = item->mapToItem(root, QPointF{});
+        const QPointF physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.02,
+                 qPrintable(QString("%1 x=%2 px").arg(item->objectName()).arg(physical.x(), 0, 'f', 4)));
+        QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.02,
+                 qPrintable(QString("%1 y=%2 px").arg(item->objectName()).arg(physical.y(), 0, 'f', 4)));
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0)).length() < 0.0001);
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1)).length() < 0.0001);
+    };
+    const QStringList names{
+        "search-labelText", "searchEditTextInput", "category-titleText",
+        "categoriesListItemText-0", "categoriesListItemText-1",
+        "languageGroupTitle", "interface-labelText", "interfaceComboBoxText",
+        "help-labelText", "helpComboBoxText", "localCheckBoxText",
+        "interfaceComboBoxIndicator", "helpComboBoxIndicator", "localCheckBoxIndicator",
+        "colorsGroupTitle", "theme-labelText", "themeComboBoxText", "contrastCheckBoxText",
+        "themeComboBoxIndicator", "contrastCheckBoxIndicator", "contrastCheckBoxCheckMark",
+        "fontGroupTitle", "font-labelText", "font-editEditTextInput",
+        "titlesGroupTitle", "title-labelText", "title-editEditTextInput",
+        "description-textText", "applyButtonText", "okButtonText", "cancelButtonText"
+    };
+    for (const auto &name : names) {
+        QQuickItem *leaf = nullptr;
+        QTRY_VERIFY2((leaf = visualItem(root, "dialogWidget-" + name)), qPrintable(name));
+        checkGrid(leaf);
+    }
+    for (const auto &group : {"language", "colors", "font", "titles"}) {
+        for (const auto &part : {"GroupBorder", "GroupTitleBackground"}) {
+            auto *item = visualItem(root, "dialogWidget-" + QString(group) + part);
+            QVERIFY(item);
+            checkGrid(item);
+            QVERIFY2(qAbs(item->width() * dpr - qRound(item->width() * dpr)) < 0.02, qPrintable(item->objectName() + " width"));
+            QVERIFY2(qAbs(item->height() * dpr - qRound(item->height() * dpr)) < 0.02, qPrintable(item->objectName() + " height"));
+        }
+    }
+    QCOMPARE(visualItem(root, "dialogWidget-category-titleText")->property("text").toString(), QString("Appearance & language"));
+    auto *firstLabel = visualItem(root, "dialogWidget-interface-labelText");
+    auto *firstControl = visualItem(root, "dialogWidget-interfaceComboBox");
+    QVERIFY(firstControl->mapToItem(root, QPointF{}).x()
+            >= firstLabel->mapToItem(root, QPointF{}).x() + firstLabel->property("contentWidth").toReal());
+    QImage capture;
+    QTRY_VERIFY(!(capture = fixture.window->grabWindow()).isNull());
+    if (!qEnvironmentVariable("F4_SETTINGS_CAPTURE").isEmpty())
+        QVERIFY(capture.save(qEnvironmentVariable("F4_SETTINGS_CAPTURE")));
+    const qreal fixedHelpY = visualItem(root, "dialogWidget-descriptionRoot")->mapToItem(root, QPointF{}).y();
+    // A fractional scroll position must not blur resting text descendants.
+    QVERIFY(viewport->setProperty("contentY", 137.3));
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    for (const auto &name : names)
+        checkGrid(visualItem(root, "dialogWidget-" + name));
+    QCOMPARE(visualItem(root, "dialogWidget-descriptionRoot")->mapToItem(root, QPointF{}).y(), fixedHelpY);
+    fixture.shell.clearActions();
+    auto *controller = visualItem(root, "dialogWidget-settings-pageViewportController");
+    QVERIFY(controller);
+    QVERIFY(QMetaObject::invokeMethod(controller, "commitScroll"));
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.constLast().value("target").toString(), QString("settings-page"));
+    QCOMPARE(fixture.shell.actions.constLast().value("action").toString(), QString("control.scroll"));
+    QVERIFY(fixture.shell.actions.constLast().value("value").toInt() > 0);
+    QVERIFY(viewport->setProperty("contentY", viewport->property("contentHeight").toReal() - viewport->height()));
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    for (const auto &name : names)
+        checkGrid(visualItem(root, "dialogWidget-" + name));
+    QTRY_VERIFY(!(capture = fixture.window->grabWindow()).isNull());
+    if (!qEnvironmentVariable("F4_SETTINGS_CAPTURE").isEmpty())
+        QVERIFY(capture.save(qEnvironmentVariable("F4_SETTINGS_CAPTURE") + ".scrolled.png"));
+}
+
+
+void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({
+        "id":"resizable-settings","kind":"dialog","layout":"settings","title":"Settings","x":0,"y":0,"w":110,"h":50,
+        "children":[
+          {"id":"search-label","kind":"text","layoutRole":"search-label","text":"Search:","x":2,"y":1,"w":25,"h":1},
+          {"id":"search","kind":"edit","layoutRole":"search","x":2,"y":2,"w":25,"h":1},
+          {"id":"categories","kind":"table","layoutRole":"navigation","x":2,"y":4,"w":25,"h":43,"showHeader":false,"columns":[{"width":0}],"rows":[{"cells":["Appearance"]},{"cells":["Editor"]}],"itemIcons":["palette","file-pen-line"]},
+          {"id":"category-title","kind":"text","layoutRole":"content-title","text":"Appearance","x":29,"y":1,"w":50,"h":1},
+          {"id":"page","kind":"group","layoutRole":"content","scrollable":true,"x":29,"y":3,"w":50,"h":43,"contentHeight":70,"children":[
+            {"id":"box","kind":"group","bordered":true,"title":"Language","x":29,"y":3,"w":49,"h":5,"children":[
+              {"id":"language","kind":"edit","text":"English","x":31,"y":4,"w":40,"h":1}]},
+            {"id":"last","kind":"edit","text":"Last setting","x":31,"y":68,"w":40,"h":1}]},
+          {"id":"help","kind":"group","layoutRole":"description","scrollable":true,"x":82,"y":1,"w":26,"h":45,"contentHeight":6,"children":[{"id":"help-text","kind":"text","wrapText":true,"text":"Description of the selected setting.","x":82,"y":1,"w":26,"h":3}]},
+          {"id":"apply","kind":"button","layoutRole":"apply","text":"Apply","x":78,"y":48,"w":9,"h":1},
+          {"id":"ok","kind":"button","layoutRole":"accept","text":"OK","x":88,"y":48,"w":9,"h":1},
+          {"id":"cancel","kind":"button","layoutRole":"cancel","text":"Cancel","x":98,"y":48,"w":9,"h":1}
+        ]})").toVariant().toMap();
+    auto children = dialog.value("children").toList();
+    auto pageModel = children[4].toMap();
+    auto settings = pageModel.value("children").toList();
+    for (int row = 10; row < 65; row += 2)
+        settings.append(QVariantMap{{"id", QString("setting-%1").arg(row)}, {"kind", "edit"},
+            {"text", QString("Setting %1").arg(row)}, {"x", 31}, {"y", row}, {"w", 40}, {"h", 1}});
+    pageModel.insert("children", settings);
+    children[4] = pageModel;
+    dialog.insert("children", children);
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1500, 1000);
+    QTest::qWait(100);
+    auto *root = fixture.window->contentItem();
+    auto *surface = visualItem(root, "semanticDialog-resizable-settings");
+    QVERIFY(surface);
+    for (const auto &size : {QSize(680, 520), QSize(1250, 830), QSize(730, 610)}) {
+        auto helpModel = children[5].toMap();
+        auto helpChildren = helpModel.value("children").toList();
+        auto paragraph = helpChildren[0].toMap();
+        paragraph.insert("h", size.width() > 1000 ? 18 : 3);
+        paragraph.insert("text", size.width() > 1000
+            ? "Help language\n\nChoose the built-in help language independently of the interface language.\n\nTakes effect: live"
+            : "Description of the selected setting.");
+        helpChildren[0] = paragraph;
+        helpModel.insert("children", helpChildren);
+        children[5] = helpModel;
+        dialog.insert("children", children);
+        scene.insert("dialogs", QVariantList{dialog});
+        fixture.shell.setScene(scene);
+        QVERIFY(QMetaObject::invokeMethod(surface, "setUserGeometry", Q_ARG(QVariant, 30), Q_ARG(QVariant, 50),
+            Q_ARG(QVariant, size.width()), Q_ARG(QVariant, size.height())));
+        QTest::qWait(80);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        auto *button = visualItem(root, "dialogWidget-cancelButton");
+        QVERIFY(button);
+        const auto buttonRect = button->mapRectToItem(surface, QRectF(0, 0, button->width(), button->height()));
+        QVERIFY2(buttonRect.bottom() <= surface->height()-8 && buttonRect.top() >= surface->height()-100,
+                 qPrintable(QString("footer bottom=%1, dialog height=%2").arg(buttonRect.bottom()).arg(surface->height())));
+        auto *body = visualItem(root, "settingsDialogBody");
+        QVERIFY(body && body->isVisible());
+        auto *page = visualItem(root, "dialogWidget-pageViewport");
+        QVERIFY(page && page->height() > 50);
+        QVERIFY(page->property("contentHeight").toReal() > page->height());
+        auto *box = visualItem(root, "dialogWidget-boxRoot");
+        auto *field = visualItem(root, "dialogWidget-languageRoot");
+        QVERIFY(box && field);
+        const auto inset = field->mapToItem(box, QPointF()).y();
+        QVERIFY2(inset >= 12 && inset <= 20, qPrintable(QString("group top inset=%1").arg(inset)));
+        auto *helpRoot = visualItem(root, "dialogWidget-helpRoot");
+        auto *helpText = visualItem(root, "dialogWidget-help-textText");
+        QVERIFY(helpRoot && helpText);
+        const auto helpOrigin = helpText->mapToItem(helpRoot, QPointF());
+        QVERIFY2(qAbs(helpOrigin.y()) < 1, qPrintable(QString("help top inset=%1").arg(helpOrigin.y())));
+        QVERIFY(qAbs(helpOrigin.x()) < 1);
+        QVERIFY(helpRoot->width() - helpText->width() <= 9);
+        if (body->property("wideHelp").toBool()) {
+            auto *title = visualItem(root, "dialogWidget-category-titleRoot");
+            QVERIFY(title);
+            const auto gap = helpRoot->mapToItem(root, QPointF()).x()
+                - box->mapToItem(root, QPointF(box->width(), 0)).x();
+            QVERIFY2(gap >= 11 && gap <= 30, qPrintable(QString("page/help gap=%1").arg(gap)));
+            QVERIFY(qAbs(helpText->mapToItem(root, QPointF()).y() - title->mapToItem(root, QPointF()).y()) < 1);
+        }
+        const auto footerOrigin = button->mapToItem(root, QPointF());
+        auto *search = visualItem(root, "dialogWidget-searchEditTextInput");
+        QVERIFY(search);
+        const auto searchOrigin = search->mapToItem(root, QPointF());
+        page->setProperty("contentY", 31.3);
+        QCoreApplication::processEvents();
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        QCOMPARE(button->mapToItem(root, QPointF()), footerOrigin);
+        QCOMPARE(search->mapToItem(root, QPointF()), searchOrigin);
+        const auto checkLeaves = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->isVisible() && item->objectName().startsWith("dialogWidget-")
+                && (item->inherits("QQuickText") || item->inherits("QQuickTextInput") || item->inherits("QQuickImage"))) {
+                const auto origin = item->mapToItem(root, QPointF());
+                const auto physical = origin * fixture.window->devicePixelRatio();
+                QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+                    qPrintable(QString("%1 at %2,%3").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+                QVERIFY(QLineF(item->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0)).length() < .0001);
+                QVERIFY(QLineF(item->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1)).length() < .0001);
+            }
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        checkLeaves(checkLeaves, surface);
+        if (qEnvironmentVariableIsSet("F4_SETTINGS_RESIZE_CAPTURE"))
+            QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_SETTINGS_RESIZE_CAPTURE")
+                + QString(".%1.png").arg(size.width())));
+
+    }
+    if (qEnvironmentVariableIsSet("F4_SETTINGS_RESIZE_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_SETTINGS_RESIZE_CAPTURE")));
+}
+
+static QVariantMap settingsControlsScene()
+{
+    auto dialog = QJsonDocument::fromJson(R"({
+      "id":"settings-controls","kind":"dialog","title":"Settings","x":0,"y":0,"w":90,"h":26,"children":[
+        {"id":"list","kind":"listBox","x":2,"y":2,"w":26,"h":5,"items":["First","Second","Third","Fourth","Fifth","Sixth","Seventh","Eighth","Ninth","Tenth"]},
+        {"id":"table","kind":"table","x":32,"y":2,"w":50,"h":5,"showHeader":true,"columns":[{"title":"Setting","width":20},{"title":"Value","width":20}],"rows":[{"cells":["First","One"]},{"cells":["Second","Two"]},{"cells":["Third","Three"]},{"cells":["Fourth","Four"]},{"cells":["Fifth","Five"]},{"cells":["Sixth","Six"]}]},
+        {"id":"enabled-edit","kind":"edit","x":2,"y":8,"w":26,"h":1,"text":"Editable"},
+        {"id":"disabled-label","kind":"text","x":32,"y":8,"w":12,"h":1,"text":"Disabled input","explainTarget":"disabled-edit"},
+        {"id":"disabled-edit","kind":"edit","x":46,"y":8,"w":36,"h":1,"text":"Unavailable value","disabled":true,"explainTarget":"disabled-edit"},
+        {"id":"enabled-combo","kind":"comboBox","x":2,"y":10,"w":26,"h":1,"text":"Enabled","items":["Enabled"],"dropdownOnly":true},
+        {"id":"disabled-combo","kind":"comboBox","x":32,"y":10,"w":50,"h":1,"text":"Unavailable choice","items":["Unavailable choice"],"dropdownOnly":true,"disabled":true,"explainTarget":"disabled-combo"},
+        {"id":"radios","kind":"radioGroup","x":32,"y":12,"w":50,"h":1,"items":["First choice","Second choice with a caption that wraps naturally within the available width","Unavailable choice"],"selected":0,"focusIndex":1,"focused":true,"wrapText":true,"disabledItems":[2],"explainTarget":"radios"},
+        {"id":"after-radios","kind":"checkbox","x":32,"y":13,"w":50,"h":1,"text":"After the choices","explainTarget":"after-radios"},
+        {"id":"ok","kind":"button","x":36,"y":23,"w":10,"h":1,"text":"OK"}
+      ]})").toVariant().toMap();
+    auto scene = panelScene();
+    scene.insert("dialogs", QVariantList{dialog});
+    return scene;
+}
+
+void F4OperationsQueueTests::settingsCategoryListSelectsDuringMouseDrag_data()
+{
+    QTest::addColumn<bool>("table");
+    QTest::newRow("listBox") << false;
+    QTest::newRow("category-table") << true;
+}
+
+void F4OperationsQueueTests::settingsCategoryListSelectsDuringMouseDrag()
+{
+    QFETCH(bool, table);
+    auto scene = settingsControlsScene();
+    if (table) {
+        auto dialog = scene.value("dialogs").toList().first().toMap();
+        auto children = dialog.value("children").toList();
+        auto list = children[0].toMap();
+        QVariantList rows;
+        for (const auto &caption : list.value("items").toList())
+            rows.append(QVariantMap{{"cells", QVariantList{caption}}});
+        list.insert("kind", "table");
+        list.insert("columns", QVariantList{QVariantMap{{"width", 0}}});
+        list.insert("rows", rows);
+        list.insert("showHeader", false);
+        list.insert("h", 6);
+        list.remove("items");
+        children[0] = list;
+        dialog.insert("children", children);
+        scene.insert("dialogs", QVariantList{dialog});
+    }
+    const QString viewName = table ? "TableRows" : "ListView";
+    const QString pointerName = table ? "TablePointer" : "ListPointer";
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(800, 540);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *view = nullptr;
+    QTRY_VERIFY((view = visualItem(root, "dialogWidget-list" + viewName)));
+    auto *body = visualItem(root, "dialogBody");
+    auto *dialog = visualItem(root, "semanticDialog-settings-controls");
+    QVERIFY(body && dialog);
+    QVERIFY(QMetaObject::invokeMethod(dialog, "setUserGeometry",
+        Q_ARG(QVariant, dialog->x()), Q_ARG(QVariant, dialog->y()),
+        Q_ARG(QVariant, dialog->width()), Q_ARG(QVariant, 250)));
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    QVERIFY(body->property("contentHeight").toReal() > body->height());
+    const qreal bodyY = body->property("contentY").toReal();
+    QPointer<QQuickItem> pointerOwner = visualItem(root, "dialogWidget-list" + pointerName);
+    QVERIFY(pointerOwner);
+    auto *dragHandler = pointerOwner->findChild<QObject *>(pointerOwner->objectName() + "Drag");
+    QVERIFY(dragHandler);
+    QVector<int> selected;
+    QObject::connect(&fixture.shell, &TestShell::uiActionSent, fixture.window,
+        [&](const QVariantMap &action) {
+            if (action.value("target") != "list" || action.value("action") != "control.select") return;
+            const int index = action.value("index").toInt();
+            selected.append(index);
+            // Acknowledge each selection through the same full snapshot path as
+            // Go. The pointer grab must survive replacement of item delegates.
+            auto dialogs = scene.value("dialogs").toList();
+            auto dialog = dialogs[0].toMap();
+            auto children = dialog.value("children").toList();
+            auto list = children[0].toMap();
+            list.insert("cursor", index);
+            list.insert("focused", true);
+            children[0] = list;
+            dialog.insert("children", children);
+            dialogs[0] = dialog;
+            scene.insert("dialogs", dialogs);
+            fixture.shell.setScene(scene);
+        }, Qt::QueuedConnection);
+    const auto rowPoint = [&](int index) {
+        const auto suffix = table ? "TableCell-" + QString::number(index) + "-0"
+                                  : "ListItemText-" + QString::number(index);
+        auto *label = visualItem(root, "dialogWidget-list" + suffix);
+        return label ? label->mapToItem(root, QPointF(20, label->height() / 2)).toPoint() : QPoint{};
+    };
+    QPoint pointer = rowPoint(1);
+    QVERIFY(!pointer.isNull());
+    bool pressed = true;
+    const auto release = qScopeGuard([&] {
+        if (pressed) QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, pointer);
+    });
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, pointer);
+    QTRY_COMPARE(selected, QVector<int>({1}));
+    QCOMPARE(view->property("currentIndex").toInt(), 1);
+    for (int index : {3, 2, 0}) {
+        pointer = rowPoint(index);
+        QVERIFY(!pointer.isNull());
+        QTest::mouseMove(fixture.window, pointer, 30);
+        QTRY_COMPARE(selected.constLast(), index);
+        QVERIFY(pointerOwner);
+        QCOMPARE(pointerOwner.data(), visualItem(root, "dialogWidget-list" + pointerName));
+        QVERIFY(dragHandler->property("active").toBool());
+        QCOMPARE(body->property("contentY").toReal(), bodyY);
+        QVERIFY(!body->property("dragging").toBool());
+        QVERIFY(!view->property("dragging").toBool());
+    }
+    const int changes = selected.size();
+    QTest::mouseMove(fixture.window, pointer + QPoint(4, 0), 20);
+    QCoreApplication::processEvents();
+    QCOMPARE(selected.size(), changes);
+    // Like the captured TUI list, follow Y when X leaves the list. Moving
+    // vertically outside the viewport must not select or scroll anything.
+    pointer = rowPoint(3);
+    pointer.setX(view->mapToItem(root, QPointF(view->width() + 30, 0)).toPoint().x());
+    QTest::mouseMove(fixture.window, pointer, 20);
+    QTRY_COMPARE(selected.constLast(), 3);
+    const int outsideChanges = selected.size();
+    pointer = view->mapToItem(root, QPointF(30, -10)).toPoint();
+    QTest::mouseMove(fixture.window, pointer, 20);
+    QCoreApplication::processEvents();
+    QCOMPARE(selected.size(), outsideChanges);
+    QCOMPARE(body->property("contentY").toReal(), bodyY);
+    pointer = rowPoint(2);
+    QTest::mouseMove(fixture.window, pointer, 20);
+    QTRY_COMPARE(selected.constLast(), 2);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, pointer);
+    pressed = false;
+    const int finalChanges = selected.size();
+    QTest::mouseMove(fixture.window, rowPoint(1), 20);
+    QCoreApplication::processEvents();
+    QCOMPARE(selected.size(), finalChanges);
+    for (const auto &action : std::as_const(fixture.shell.actions))
+        QVERIFY(action.value("action") != "control.activate");
+    if (table) {
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier, rowPoint(1));
+        QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
+            return action.value("action") == "control.activate" && action.value("index") == 1;
+        }));
+    }
+    qInfo() << "[FIX:listbox-drag] selection sequence" << selected
+            << "dialog scroll" << body->property("contentY");
+}
+
+void F4OperationsQueueTests::settingsListScrollingAndTouch()
+{
+    QueueFixture fixture(settingsControlsScene());
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *view = nullptr;
+    QTRY_VERIFY((view = visualItem(root, "dialogWidget-listListView")));
+    QTest::qWait(100); // settle initial dialog geometry/focus before targeting a wheel event
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    auto *body = visualItem(root, "dialogBody");
+    const qreal bodyY = body->property("contentY").toReal();
+    const auto point = [&](qreal y) { return view->mapToItem(root, QPointF(30, y)).toPoint(); };
+    const auto resetScroll = [&] {
+        QMetaObject::invokeMethod(view, "cancelFlick");
+        view->setProperty("contentY", 0);
+        QCoreApplication::processEvents();
+        fixture.window->grabWindow();
+        fixture.shell.clearActions();
+    };
+    const auto wheelPosition = itemCenter(view);
+    QWheelEvent wheel(wheelPosition, fixture.window->mapToGlobal(wheelPosition), {}, QPoint(0, -120),
+                      Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(fixture.window, &wheel);
+    QTRY_VERIFY(view->property("contentY").toReal() > 0);
+    QCOMPARE(body->property("contentY").toReal(), bodyY);
+    resetScroll();
+    auto *bar = visualItem(root, "dialogWidget-listListScrollBar");
+    auto *handle = bar->property("contentItem").value<QQuickItem *>();
+    QVERIFY(handle && handle->isVisible());
+    const auto start = itemCenter(handle);
+    const auto end = start + QPoint(0, 35);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(fixture.window, end, 30);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+    QTRY_VERIFY(view->property("contentY").toReal() > 0);
+    QVERIFY(fixture.shell.actions.isEmpty());
+    QCOMPARE(body->property("contentY").toReal(), bodyY);
+    resetScroll();
+    auto *touch = QTest::createTouchDevice();
+    QTest::touchEvent(fixture.window, touch).press(0, point(30), fixture.window).commit();
+    QVERIFY(fixture.shell.actions.isEmpty());
+    QTest::touchEvent(fixture.window, touch).release(0, point(30), fixture.window).commit();
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(), QString("control.select"));
+    QCOMPARE(fixture.shell.actions.first().value("index").toInt(), 1);
+    resetScroll();
+    QTest::touchEvent(fixture.window, touch).press(0, point(90), fixture.window).commit();
+    for (int y : {70, 45, 20}) {
+        QTest::qWait(20);
+        QTest::touchEvent(fixture.window, touch).move(0, point(y), fixture.window).commit();
+    }
+    QTest::touchEvent(fixture.window, touch).release(0, point(20), fixture.window).commit();
+    QTRY_VERIFY(view->property("contentY").toReal() > 0);
+    QVERIFY(fixture.shell.actions.isEmpty());
+    QCOMPARE(body->property("contentY").toReal(), bodyY);
+    resetScroll();
+    // Disabled/read-only lists must reject selection without mutating the model.
+    for (const auto &flag : {"readOnly", "disabled"}) {
+        auto scene = settingsControlsScene();
+        auto dialog = scene.value("dialogs").toList().first().toMap();
+        auto children = dialog.value("children").toList();
+        auto list = children[0].toMap();
+        list.insert(flag, true);
+        children[0] = list;
+        dialog.insert("children", children);
+        scene.insert("dialogs", QVariantList{dialog});
+        fixture.shell.setScene(scene);
+        QCoreApplication::processEvents();
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point(30));
+        QVERIFY(fixture.shell.actions.isEmpty());
+    }
+}
+
+void F4OperationsQueueTests::settingsCategoryIconsStayPixelAligned()
+{
+    const QStringList icons{"palette", "circle-play", "panels-top-left", "columns-2", "hard-drive", "copy",
+        "file-pen-line", "file-code", "keyboard", "square-terminal", "clock-3", "file-type", "menu", "network",
+        "file-text", "refresh-cw", "plug", "sparkles", "file-cog"};
+    const QStringList captions{"Appearance & language", "Startup & profile", "Workspaces & saving", "Panels",
+        "Drive chooser", "File operations", "Editor & viewer", "Syntax highlighting", "Keyboard & shortcuts",
+        "Terminal & environment", "History & bookmarks", "File associations", "User menus & macros",
+        "Network & connections", "Metadata & reports", "Updates", "Plugins", "AI", "Contributed settings"};
+    QVariantList rows;
+    for (const auto &caption : captions)
+        rows.append(QVariantMap{{"cells", QStringList{caption}}});
+    auto scene = panelScene();
+    QVariantMap table{{"id", "categories"}, {"kind", "table"}, {"x", 2}, {"y", 2}, {"w", 34}, {"h", 28},
+        {"showHeader", false}, {"cursor", 8}, {"columns", QVariantList{QVariantMap{{"width", 0}}}},
+        {"rows", rows}, {"itemIcons", icons}};
+    QVariantMap list{{"id", "sample-list"}, {"kind", "listBox"}, {"x", 39}, {"y", 2}, {"w", 25}, {"h", 12},
+        {"items", QStringList{"Appearance", "Plain row", "Keyboard"}}, {"itemIcons", QStringList{"palette", "", "keyboard"}}};
+    scene.insert("dialogs", QVariantList{QVariantMap{{"id", "category-icons"}, {"kind", "dialog"}, {"title", "Settings"},
+        {"x", 0}, {"y", 0}, {"w", 67}, {"h", 32}, {"children", QVariantList{table, list}}}});
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(900, 850);
+    auto *root = fixture.window->contentItem();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto checkGrid = [&](QQuickItem *item) {
+        QVERIFY(item);
+        const QPointF origin = item->mapToItem(root, QPointF());
+        const QPointF physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+            qPrintable(QString("%1 at (%2, %3) px").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0)).length() < .0001);
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1)).length() < .0001);
+    };
+    for (const auto &size : {QSize(900, 850), QSize(753, 797)}) {
+        fixture.window->resize(size);
+        QTest::qWait(40);
+        auto *selectedRow = visualItem(root, "dialogWidget-categoriesTableRow-8");
+        QVERIFY(selectedRow);
+        QVERIFY(selectedRow->property("radius").toReal() >= 3);
+        QTest::qWait(100);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        for (int i = 0; i < icons.size(); ++i) {
+            auto *icon = visualItem(root, "dialogWidget-categoriesTableItemIcon-" + QString::number(i));
+            auto *label = visualItem(root, "dialogWidget-categoriesTableCell-" + QString::number(i) + "-0");
+            checkGrid(icon);
+            checkGrid(label);
+            QVERIFY(icon && label);
+            QCOMPARE(icon->property("status").toInt(), 1); // Image.Ready: embedded asset and raster provider.
+            QCOMPARE(F4IconProvider::decodeRouteValue(icon->property("source").toUrl().path().section('/', -1)), icons[i]);
+            QVERIFY(QFile::exists(":/F4QtHost/icons/lucide/" + icons[i] + ".svg"));
+            QVERIFY(!label->property("truncated").toBool());
+            QVERIFY(label->mapToItem(root, QPointF()).x()
+                    >= icon->mapToItem(root, QPointF(icon->width(), 0)).x() + 7);
+            QVERIFY(qAbs(icon->width()*dpr-qRound64(icon->width()*dpr)) < .02);
+            QVERIFY(qAbs(icon->height()*dpr-qRound64(icon->height()*dpr)) < .02);
+        }
+        for (int i = 0; i < 3; ++i) {
+            checkGrid(visualItem(root, "dialogWidget-sample-listListItemText-" + QString::number(i)));
+            auto *icon = visualItem(root, "dialogWidget-sample-listListItemIcon-" + QString::number(i));
+            QVERIFY(icon);
+            QCOMPARE(icon->isVisible(), i != 1);
+            if (i != 1) {
+                checkGrid(icon);
+                QCOMPARE(icon->property("status").toInt(), 1);
+            }
+        }
+    }
+    if (qEnvironmentVariableIsSet("F4_SETTINGS_CATEGORIES_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_SETTINGS_CATEGORIES_CAPTURE")));
+}
+
+void F4OperationsQueueTests::settingsListsAndDisabledInputs()
+{
+    QueueFixture fixture(settingsControlsScene());
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *list = nullptr;
+    QTRY_VERIFY((list = visualItem(root, "dialogWidget-listListBox")));
+    QTest::qWait(700); // past Basic ScrollBar's idle fade
+    auto *inputBg = visualItem(root, "dialogWidget-enabled-editEditBackground");
+    QVERIFY(inputBg);
+    for (const auto &name : {"listListBackground", "tableTableBackground"}) {
+        auto *background = visualItem(root, "dialogWidget-" + QString(name));
+        QVERIFY2(background, name);
+        QCOMPARE(background->property("color"), inputBg->property("color"));
+    }
+    for (const auto &name : {"listListScrollBar", "tableTableScrollBar"}) {
+        auto *bar = visualItem(root, "dialogWidget-" + QString(name));
+        QVERIFY2(bar, name);
+        QVERIFY(bar->isVisible());
+        QVERIFY(bar->property("size").toReal() < 1);
+        auto *handle = bar->property("contentItem").value<QQuickItem *>();
+        QVERIFY(handle && handle->isVisible());
+        QVERIFY(handle->opacity() > .99);
+    }
+    for (const auto &name : {"disabled-editEdit", "disabled-comboComboBox"}) {
+        auto *control = visualItem(root, "dialogWidget-" + QString(name));
+        QVERIFY2(control, name);
+        QVERIFY2(!control->isEnabled(), name);
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                         control->mapToItem(root, QPointF(control->width()/2, control->height()/2)).toPoint());
+        for (const auto &action : std::as_const(fixture.shell.actions))
+            QCOMPARE(action.value("action").toString(), QString("control.explain"));
+    }
+    QVERIFY(visualItem(root, "dialogWidget-disabled-editEditTextInput")->property("color")
+            != visualItem(root, "dialogWidget-enabled-editEditTextInput")->property("color"));
+    QVERIFY(visualItem(root, "dialogWidget-disabled-comboComboBoxText")->property("color")
+            != visualItem(root, "dialogWidget-enabled-comboComboBoxText")->property("color"));
+    // Replace overflowing content with a short result (e.g. filtered settings).
+    auto compact = settingsControlsScene();
+    auto dialog = compact.value("dialogs").toList().first().toMap();
+    auto children = dialog.value("children").toList();
+    auto listModel = children[0].toMap();
+    listModel.insert("items", QStringList{"Only result"});
+    children[0] = listModel;
+    auto tableModel = children[1].toMap();
+    tableModel.insert("rows", QVariantList{tableModel.value("rows").toList().first()});
+    children[1] = tableModel;
+    dialog.insert("children", children);
+    compact.insert("dialogs", QVariantList{dialog});
+    fixture.shell.setScene(compact);
+    QTRY_VERIFY(!visualItem(root, "dialogWidget-listListScrollBar")->isVisible());
+    QTRY_VERIFY(!visualItem(root, "dialogWidget-tableTableScrollBar")->isVisible());
+}
+
+void F4OperationsQueueTests::settingsHoverExplainsWithoutFocus()
+{
+    QueueFixture fixture(settingsControlsScene());
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    const QList<QPair<QString, QString>> targets{
+        {"disabled-labelText", "disabled-edit"}, {"disabled-editEdit", "disabled-edit"},
+        {"disabled-comboComboBox", "disabled-combo"}, {"after-radiosCheckBox", "after-radios"},
+        {"radiosRadio-0", "radios"}, {"radiosRadio-2", "radios"}};
+    for (const auto &target : targets) {
+        QQuickItem *item = nullptr;
+        QTRY_VERIFY((item = visualItem(root, "dialogWidget-" + target.first)));
+        QTest::mouseMove(fixture.window, QPoint(1,1), 40);
+        auto *focusedInput = visualItem(root, "dialogWidget-enabled-comboComboBox");
+        QVERIFY(focusedInput);
+        focusedInput->forceActiveFocus();
+        QCoreApplication::processEvents();
+        QCOMPARE(fixture.window->activeFocusItem(), focusedInput);
+        fixture.shell.clearActions();
+        QTest::mouseMove(fixture.window,
+            item->mapToItem(root, QPointF(item->width()/2, item->height()/2)).toPoint(), 50);
+        QTRY_VERIFY2(!fixture.shell.actions.isEmpty(), qPrintable(target.first));
+        for (const auto &action : std::as_const(fixture.shell.actions)) {
+            QCOMPARE(action.value("action").toString(), QString("control.explain"));
+            QCOMPARE(action.value("target").toString(), target.second);
+        }
+        QCOMPARE(fixture.window->activeFocusItem(), focusedInput);
+        if (target.first.startsWith("radios"))
+            QCOMPARE(fixture.shell.actions.constLast().value("index").toInt(), target.first.right(1).toInt());
+    }
+}
+
+void F4OperationsQueueTests::settingsRadiosExpandAndStayPixelAligned()
+{
+    QueueFixture fixture(settingsControlsScene());
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *radio = nullptr;
+    QTRY_VERIFY((radio = visualItem(root, "dialogWidget-radiosRadio-0")));
+    QTest::qWait(150);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto checkGrid = [&](QQuickItem *item) {
+        QVERIFY(item);
+        const QPointF origin = item->mapToItem(root, QPointF());
+        const QPointF physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+                 qPrintable(QString("%1 at (%2, %3) px").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0)).length() < .0001);
+        QVERIFY(QLineF(item->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1)).length() < .0001);
+    };
+    for (int i=0; i<3; ++i) {
+        const QString prefix = "dialogWidget-radiosRadio-" + QString::number(i);
+        for (const auto &part : {"Text", "Indicator", "SelectionMark", "FocusFrame"})
+            checkGrid(visualItem(root, prefix + part));
+        auto *choice = visualItem(root, prefix);
+        QVERIFY2(choice->height() >= 24, qPrintable(QString("choice %1 height=%2").arg(i).arg(choice->height())));
+        QVERIFY(!visualItem(root, prefix+"Text")->property("truncated").toBool());
+    }
+    auto *wrappedText = visualItem(root, "dialogWidget-radiosRadio-1Text");
+    auto *wrappedFrame = visualItem(root, "dialogWidget-radiosRadio-1FocusFrame");
+    QVERIFY(wrappedText->property("lineCount").toInt() > 1);
+    QVERIFY(wrappedFrame->mapToItem(root, QPointF()).y() < wrappedText->mapToItem(root, QPointF()).y());
+    QVERIFY(wrappedFrame->mapToItem(root, QPointF(0, wrappedFrame->height())).y()
+            > wrappedText->mapToItem(root, QPointF(0, wrappedText->height())).y());
+    QVERIFY(!visualItem(root, "dialogWidget-radiosRadio-2")->isEnabled());
+    auto *last = visualItem(root, "dialogWidget-radiosRadio-2");
+    auto *after = visualItem(root, "dialogWidget-after-radiosCheckBoxText");
+    QVERIFY(after->mapToItem(root,QPointF()).y() >= last->mapToItem(root,QPointF(0,last->height())).y());
+    for (const auto &name : {"disabled-labelText", "enabled-editEditTextInput", "disabled-editEditTextInput",
+            "enabled-comboComboBoxText", "disabled-comboComboBoxText", "enabled-comboComboBoxIndicator",
+            "disabled-comboComboBoxIndicator", "after-radiosCheckBoxText", "after-radiosCheckBoxIndicator",
+            "okButtonText", "listListItemText-0", "listListItemText-1", "tableTableHeader-0", "tableTableHeader-1",
+            "tableTableCell-0-0", "tableTableCell-0-1", "tableTableCell-1-0", "tableTableCell-1-1"})
+        checkGrid(visualItem(root, "dialogWidget-" + QString(name)));
+    for (const auto &name : {"listListView", "tableTableRows"}) {
+        auto *view = visualItem(root, "dialogWidget-" + QString(name));
+        QVERIFY(view && view->setProperty("contentY", 11.3));
+    }
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    for (const auto &name : {"listListItemText-1", "tableTableCell-1-0", "tableTableCell-1-1"})
+        checkGrid(visualItem(root, "dialogWidget-" + QString(name)));
+    for (const auto &name : {"listListScrollBar", "tableTableScrollBar"}) {
+        auto *bar = visualItem(root, "dialogWidget-" + QString(name));
+        checkGrid(bar);
+        auto *handle = bar->property("contentItem").value<QQuickItem *>();
+        QVERIFY(handle && !handle->childItems().isEmpty());
+        auto *shape = handle->childItems().first();
+        checkGrid(shape);
+        QVERIFY2(qAbs(shape->width()*dpr-qRound64(shape->width()*dpr)) < .02, name);
+        QVERIFY2(qAbs(shape->height()*dpr-qRound64(shape->height()*dpr)) < .02, name);
+    }
+    fixture.window->setWidth(520);
+    QTest::qWait(120);
+    QVERIFY2(after->mapToItem(root,QPointF()).y() >= last->mapToItem(root,QPointF(0,last->height())).y(),
+             "narrow dialog overlaps the following setting");
+    for (int i=0; i<3; ++i) {
+        const QString prefix = "dialogWidget-radiosRadio-" + QString::number(i);
+        for (const auto &part : {"Text", "Indicator", "SelectionMark", "FocusFrame"})
+            checkGrid(visualItem(root, prefix + part));
+    }
+    QImage capture;
+    QTRY_VERIFY(!(capture=fixture.window->grabWindow()).isNull());
+    if (qEnvironmentVariableIsSet("F4_SETTINGS_CONTROLS_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_SETTINGS_CONTROLS_CAPTURE")));
+}
+
+
+// Replay the actual settings owner exports, not a reduced synthetic dialog.
+// Export with TestSettingsProfileFixtures (F4_SETTINGS_PROFILE_DIR).
+// Run with F4_SETTINGS_REPLAY_DIR; ordinary regression runs skip this benchmark.
+void F4OperationsQueueTests::settingsSceneReplayProfile()
+{
+    const auto directory = qEnvironmentVariable("F4_SETTINGS_REPLAY_DIR");
+    if (directory.isEmpty())
+        QSKIP("Opt-in real Settings scene profiling");
+    QHash<QString, QVariantMap> scenes;
+    for (const auto &name : {"appearance", "hover-a", "hover-b", "startup", "operations", "editor", "resized"}) {
+        QFile file(QDir(directory).filePath(QString::fromLatin1(name) + ".json"));
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.errorString()));
+        auto scene = panelScene();
+        scene.insert("dialogs", QVariantList{QJsonDocument::fromJson(file.readAll()).object().toVariantMap()});
+        scenes.insert(QString::fromLatin1(name), scene);
+    }
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+    fixture.window->resize(1500, 1100);
+    const auto settle = [&] {
+        for (int i = 0; i < 3; ++i) {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QCoreApplication::processEvents();
+        }
+        fixture.window->grabWindow();
+    };
+    settle();
+    const auto leaves = [&] {
+        QList<QPointer<QQuickItem>> result;
+        const auto visit = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->objectName().startsWith("dialogWidget-"))
+                result.append(item);
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        visit(visit, fixture.window->contentItem());
+        return result;
+    };
+    const int repetitions = qMax(1, qEnvironmentVariableIntValue("F4_SETTINGS_REPLAY_REPETITIONS"));
+    const auto measure = [&](const char *operation, const auto &change) {
+        const auto previous = leaves();
+        QElapsedTimer timer;
+        timer.start();
+        change();
+        const auto applyNs = timer.nsecsElapsed();
+        settle();
+        const auto totalNs = timer.nsecsElapsed();
+        int removed = 0;
+        for (const auto &item : previous) if (item.isNull()) ++removed;
+        qInfo().noquote() << QString("SETTINGS_PROFILE %1 apply_ms=%2 frame_ms=%3 removed=%4 items=%5")
+            .arg(operation).arg(applyNs / 1e6, 0, 'f', 3).arg(totalNs / 1e6, 0, 'f', 3)
+            .arg(removed).arg(leaves().size());
+    };
+    measure("open", [&] { fixture.shell.setScene(scenes["appearance"]); });
+    for (int i = 0; i < repetitions; ++i) {
+        measure("hover-a", [&] { fixture.shell.setScene(scenes["hover-a"]); });
+        measure("hover-b", [&] { fixture.shell.setScene(scenes["hover-b"]); });
+    }
+    for (int i = 0; i < repetitions; ++i) {
+        for (const auto &name : {"startup", "operations", "editor", "appearance"})
+            measure(name, [&] { fixture.shell.setScene(scenes[QString::fromLatin1(name)]); });
+    }
+    fixture.shell.setScene(scenes["editor"]);
+    settle();
+    for (int i = 0; i < repetitions; ++i) {
+        measure("resize-native-small", [&] { fixture.window->resize(1100, 800); });
+        measure("resize-native-large", [&] { fixture.window->resize(1500, 1100); });
+        measure("resize-semantic-large", [&] { fixture.shell.setScene(scenes["resized"]); });
+        measure("resize-semantic-small", [&] { fixture.shell.setScene(scenes["editor"]); });
+    }
+    if (qEnvironmentVariableIsSet("F4_SETTINGS_REPLAY_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_SETTINGS_REPLAY_CAPTURE")));
+}
+
+
+void F4OperationsQueueTests::settingsHelpUpdatePreservesControlIdentity()
+{
+    auto scene = settingsControlsScene();
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTest::qWait(40);
+    // Use the complete set of control leaves, including nested group controls.
+    QHash<QString, QPointer<QQuickItem>> items;
+    const auto collect = [&](auto &&self, QQuickItem *item) -> void {
+        if (item->objectName().startsWith("dialogWidget-"))
+            items.insert(item->objectName(), item);
+        for (auto *child : item->childItems()) self(self, child);
+    };
+    collect(collect, fixture.window->contentItem());
+    QVERIFY(items.size() > 20);
+    auto dialogs = scene.value("dialogs").toList();
+    auto dialog = dialogs[0].toMap();
+    auto children = dialog.value("children").toList();
+    // An independent explanatory paragraph updates in the same dialog snapshot.
+    children.append(QVariantMap{{"kind","text"},{"id","perf-help"},{"x",3},{"y",25},
+                                {"w",30},{"h",1},{"text","Changed help paragraph"}});
+    dialog.insert("children", children);
+    dialogs[0] = dialog;
+    scene.insert("dialogs", dialogs);
+    fixture.shell.setScene(scene);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    for (auto it = items.cbegin(); it != items.cend(); ++it) {
+        QVERIFY2(!it.value().isNull(), qPrintable("Recreated on help update: " + it.key()));
+        QCOMPARE(visualItem(fixture.window->contentItem(), it.key()), it.value().data());
+    }
+}
+
+
+
+void F4OperationsQueueTests::semanticChildrenModelReportsOnlyChangedRows()
+{
+    SemanticChildrenModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+    const QVariantMap label{{"id","label"},{"kind","text"},{"x",2},{"y",1},{"w",5},{"h",1},{"text","Name:"}};
+    const QVariantMap edit{{"id","edit"},{"kind","edit"},{"x",8},{"y",1},{"text","before"}};
+    QVariantList widgets{label,edit,QVariantMap{{"id","help"},{"kind","text"},{"text","Explanation"}}};
+    model.setWidgets(widgets);
+    QPersistentModelIndex editIndex(model.index(1));
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+    QCOMPARE(model.data(editIndex,Qt::UserRole+1).toMap().value("text").toString(), QString("Name:"));
+    auto help=widgets[2].toMap(); help["text"]="Updated explanation"; widgets[2]=help;
+    model.setWidgets(widgets);
+    QCOMPARE(changed.size(),1);
+    QCOMPARE(changed[0][0].value<QModelIndex>().row(),2);
+    QCOMPARE(editIndex.row(),1);
+    QCOMPARE(reset.size(),0);
+    changed.clear();
+    model.setWidgets(widgets);
+    QVERIFY(changed.isEmpty());
+    // Reorder and remove while preserving the persistent index for the edit.
+    widgets.move(1,0);
+    model.setWidgets(widgets);
+    QVERIFY(editIndex.isValid());
+    QCOMPARE(editIndex.row(),0);
+    widgets.removeLast();
+    model.setWidgets(widgets);
+    QVERIFY(editIndex.isValid());
+    // A new control kind with the same ID needs a different visual delegate.
+    auto replacement=widgets[0].toMap(); replacement["kind"]="checkbox"; widgets[0]=replacement;
+    model.setWidgets(widgets);
+    QVERIFY(!editIndex.isValid());
+    QCOMPARE(reset.size(),0);
+}
+
+void F4OperationsQueueTests::pixelAlignmentUsesSettledAncestorTransforms()
+{
+    QQmlEngine engine;
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import QtQuick.Window
+        import F4QtHost 1.0
+        Window {
+            id: window; width: 260; height: 200; color: "#18202a"
+            property real shift: 0.3
+            Item {
+                x: 12.7 + window.shift; y: 10.3; width: 199.5; height: 177.1
+                transform: Translate { x: window.shift; y: window.shift * 3 }
+                Item {
+                    id: group; anchors.centerIn: parent; width: 190.3; height: 159.3
+                    transform: Translate {
+                        x: group.ScenePixelAlignment.offset.x
+                        y: group.ScenePixelAlignment.offset.y
+                    }
+                    Text {
+                        id: caption; objectName: "alignmentCaption"
+                        anchors.horizontalCenter: parent.horizontalCenter; y: 25.3
+                        font.pixelSize: 17; text: "Settings"; color: "white"
+                        renderType: Text.NativeRendering
+                        transform: Translate { x: caption.ScenePixelAlignment.offset.x; y: caption.ScenePixelAlignment.offset.y }
+                    }
+                    Text {
+                        id: secondary; objectName: "alignmentSecondary"
+                        anchors.centerIn: parent; font.pixelSize: 11
+                        text: "Small explanation"; color: "#abb8c5"; renderType: Text.NativeRendering
+                        transform: Translate { x: secondary.ScenePixelAlignment.offset.x; y: secondary.ScenePixelAlignment.offset.y }
+                    }
+                    Image {
+                        id: icon; objectName: "alignmentIcon"
+                        x: 34.1; y: 118.9; width: 16; height: 16
+                        source: "qrc:/F4QtHost/icons/lucide/check.svg"
+                        transform: Translate { x: icon.ScenePixelAlignment.offset.x; y: icon.ScenePixelAlignment.offset.y }
+                    }
+                }
+            }
+        }
+    )",QUrl("qrc:/alignment-regression.qml"));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *window=qobject_cast<QQuickWindow *>(object.data());
+    QVERIFY(window);
+    window->show();
+    for (const qreal shift : {0.3, 14.17, -0.33, 1.75, 0.0}) {
+        window->setProperty("shift",shift);
+        QCoreApplication::processEvents();
+        const auto capture=window->grabWindow();
+        QVERIFY(!capture.isNull());
+        for (const auto &name : {"alignmentCaption","alignmentSecondary","alignmentIcon"}) {
+            auto *leaf=visualItem(window->contentItem(),QString::fromLatin1(name));
+            QVERIFY(leaf);
+            const auto origin=leaf->mapToItem(window->contentItem(),QPointF{});
+            const auto physical=origin*window->devicePixelRatio();
+            QVERIFY2(qAbs(physical.x()-qRound(physical.x())) < .001
+                     && qAbs(physical.y()-qRound(physical.y())) < .001,
+                     qPrintable(QString("%1 (%2, %3) physical px").arg(name).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(leaf->mapToItem(window->contentItem(),QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(window->contentItem(),QPointF(0,1))-origin,QPointF(0,1));
+        }
+        if (qEnvironmentVariableIsSet("F4_PIXEL_ALIGNMENT_CAPTURE"))
+            QVERIFY(capture.save(qEnvironmentVariable("F4_PIXEL_ALIGNMENT_CAPTURE")));
+    }
+}
+
+void F4OperationsQueueTests::overlayModelPreservesIdentityAndExitLifecycle()
+{
+    SemanticOverlayModel model;
+    const QVariantMap dialog{{"id", "settings"}, {"kind", "dialog"}};
+    const QVariantMap menu{{"id", "choice"}, {"kind", "menu"}, {"presentation", "dropdown"}};
+    model.setFrames({dialog, menu});
+    QPersistentModelIndex dialogIndex(model.index(0));
+    QPersistentModelIndex menuIndex(model.index(1));
+    QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+    model.setFrames({dialog});
+    QCOMPARE(model.rowCount(), 2);
+    QVERIFY(model.data(menuIndex, Qt::UserRole + 1).toBool());
+    model.setFrames({menu, dialog});
+    QCOMPARE(menuIndex.row(), 0);
+    QCOMPARE(dialogIndex.row(), 1);
+    QVERIFY(!model.data(menuIndex, Qt::UserRole + 1).toBool());
+    model.finishExit("menu||choice"); // An old animation cannot remove a reopened menu.
+    QCOMPARE(model.rowCount(), 2);
+    model.setFrames({dialog});
+    model.finishExit("menu||choice");
+    QCOMPARE(model.rowCount(), 1);
+    QVERIFY(dialogIndex.isValid());
+    QCOMPARE(dialogIndex.row(), 0);
+    QVERIFY(!menuIndex.isValid());
+    QCOMPARE(reset.size(), 0);
+    model.setFrames({});
+    QCOMPARE(model.rowCount(), 0);
+}
+
+void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem()
+{
+    QFETCH(int, releaseIndex);
+    auto scene = panelScene();
+    QVariantMap bar{{"id", "main-menu"}, {"kind", "menu"}, {"active", false}, {"selected", 0},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Files"}}}}};
+    scene.insert("menuBar", bar);
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTest::qWait(80);
+    auto *root = fixture.window->contentItem();
+    auto *caption = visualItem(root, "semanticMenuBarItem-0");
+    QVERIFY(caption);
+    const auto start = caption->mapToScene(QPointF(caption->width()/2, caption->height()/2)).toPoint();
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY2(!fixture.shell.actions.isEmpty(), "Menu must open before mouse release");
+    QVERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+        [](const QVariantMap &action) { return action.value("action") == "menuBar.toggle"; }));
+    bar.insert("active", true);
+    scene.insert("menuBar", bar);
+    scene.insert("menus", QVariantList{QVariantMap{{"id", "files-menu"}, {"kind", "menu"},
+        {"role", "vmenu"}, {"menuBarSubmenu", true}, {"selected", 0},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Open"}},
+            QVariantMap{{"index", 1}, {"text", "Edit"}},
+            QVariantMap{{"index", 2}, {"text", "Disabled"}, {"disabled", true}},
+            QVariantMap{{"index", 3}, {"separator", true}}}}}});
+    fixture.shell.setScene(scene);
+    QTest::qWait(50);
+    auto *row = visualItem(root, QString("semanticMenuItem-files-menu-%1").arg(qMax(0, releaseIndex)));
+    QVERIFY(row);
+    auto end = row->mapToScene(QPointF(row->width()/2, row->height()/2)).toPoint();
+    if (releaseIndex == -1) end = QPoint(fixture.window->width()-10, fixture.window->height()-10);
+    if (releaseIndex == -2) end = start;
+    fixture.shell.clearActions();
+    QTest::mouseMove(fixture.window, end);
+    QTest::qWait(30);
+    if (releaseIndex == 1) QVERIFY(fixture.window->property("menuBarPointerHasSelectedItem").toBool());
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+    int activations = 0;
+    for (const auto &action : std::as_const(fixture.shell.actions)) {
+        if (action.value("action") != "menuBar.itemActivate") continue;
+        ++activations;
+        QCOMPARE(action.value("index").toInt(), 1);
+        QCOMPARE(action.value("menuIndex").toInt(), 0);
+    }
+    QCOMPARE(activations, releaseIndex == 1 ? 1 : 0);
+}
+
+void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem_data()
+{
+    QTest::addColumn<int>("releaseIndex");
+    QTest::newRow("choose") << 1;
+    QTest::newRow("disabled") << 2;
+    QTest::newRow("separator") << 3;
+    QTest::newRow("outside") << -1;
+    QTest::newRow("click-opens") << -2;
+}
+
+void F4OperationsQueueTests::adaptiveChoicesAndFilledFields()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({"id":"adaptive","kind":"dialog","w":100,"h":25,"children":[
+      {"id":"box","kind":"group","bordered":true,"x":2,"y":2,"w":90,"h":15,"children":[
+        {"id":"modes","kind":"radioGroup","title":"Terminal renderer","fillWidth":true,"wrapText":true,"x":4,"y":3,"w":86,"h":3,"items":["ANSI","Windows console"],"selected":0},
+        {"id":"path","kind":"edit","fillWidth":true,"x":4,"y":7,"w":86,"h":1,"text":"Profile directory"},
+        {"id":"copy","kind":"button","fillWidth":true,"x":4,"y":9,"w":86,"h":1,"text":"Copy profile"}]}]})").toVariant().toMap();
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QTest::qWait(60);
+    auto *root = fixture.window->contentItem();
+    auto *box = visualItem(root, "dialogWidget-boxRoot");
+    auto *modes = visualItem(root, "dialogWidget-modesRoot");
+    QVERIFY(box && modes);
+    for (const auto width : {700., 330., 180.}) {
+        box->setWidth(width);
+        auto *metrics = box->property("dialogLayout").value<QObject *>();
+        QVERIFY(metrics);
+        QQmlProperty::write(metrics, "width", width + 2 * metrics->property("contentPadding").toReal());
+        QTest::qWait(60);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        for (const auto &id : {"path", "copy"}) {
+            auto *field = visualItem(root, QString("dialogWidget-%1Root").arg(id));
+            QVERIFY(field);
+            const auto rect = field->mapRectToItem(box, QRectF(0,0,field->width(),field->height()));
+            QVERIFY2(qAbs(rect.left() - (box->width()-rect.right())) < 1,
+                qPrintable(QString("%1 left=%2 right=%3").arg(id).arg(rect.left()).arg(box->width()-rect.right())));
+        }
+        if (width == 700) {
+            const auto original = modes->property("widget").toMap();
+            const auto originalFont = fixture.window->property("font").value<QFont>();
+            for (const auto &title : {"Startup mode", "Terminal renderer", "Launch defaults"}) {
+                for (const int pixels : {12, 13, 14, 16, 18}) {
+                    auto font = originalFont;
+                    font.setPixelSize(pixels);
+                    fixture.window->setProperty("font", font);
+                    auto data = original;
+                    data["title"] = title;
+                    modes->setProperty("widget", data);
+                    QTest::qWait(20);
+                    auto *label = visualItem(root, "dialogWidget-modesChoiceCaption");
+                    QVERIFY(label);
+                    QCOMPARE(label->property("lineCount").toInt(), 1);
+                    QVERIFY2(label->width() + .001 >= label->implicitWidth(),
+                        qPrintable(QString("%1 font=%2 allocated=%3 natural=%4")
+                            .arg(title).arg(pixels).arg(label->width()).arg(label->implicitWidth())));
+                }
+            }
+            fixture.window->setProperty("font", originalFont);
+            modes->setProperty("widget", original);
+            QTest::qWait(30);
+        }
+        auto *a = visualItem(root, "dialogWidget-modesRadio-0");
+        auto *b = visualItem(root, "dialogWidget-modesRadio-1");
+        auto *caption = visualItem(root, "dialogWidget-modesChoiceCaption");
+        QVERIFY(a && b && caption);
+        const auto pa = a->mapToItem(modes, QPointF());
+        const auto pb = b->mapToItem(modes, QPointF());
+        auto *path = visualItem(root, "dialogWidget-pathRoot");
+        QVERIFY(path->mapToItem(box, QPointF()).y() >= b->mapToItem(box, QPointF(0,b->height())).y());
+
+        if (width == 700) { QVERIFY(pa.x() > 100); QVERIFY(qAbs(pa.y()-pb.y()) < 1); }
+        else if (width == 330) { QVERIFY(pa.y() >= caption->height()); QVERIFY(qAbs(pa.y()-pb.y()) < 1); }
+        else { QVERIFY(pb.y() > pa.y()); QVERIFY(qAbs(pa.x()-pb.x()) < 1); }
+        const auto check = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->isVisible() && (item->inherits("QQuickText") || item->inherits("QQuickTextInput"))
+                && item->objectName().startsWith("dialogWidget-")) {
+                const auto origin = item->mapToItem(root, QPointF());
+                const auto p = origin * fixture.window->devicePixelRatio();
+                QVERIFY2(qAbs(p.x()-qRound64(p.x())) < .02 && qAbs(p.y()-qRound64(p.y())) < .02,
+                    qPrintable(QString("%1 %2,%3").arg(item->objectName()).arg(p.x()).arg(p.y())));
+                QVERIFY(QLineF(item->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length()<.001);
+                QVERIFY(QLineF(item->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length()<.001);
+            }
+            for (auto *child : item->childItems()) self(self,child);
+        };
+        check(check,box);
+        if (qEnvironmentVariableIsSet("F4_ADAPTIVE_CAPTURE"))
+            QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_ADAPTIVE_CAPTURE")+QString::number(width)+".png"));
+    }
+}
+
+void F4OperationsQueueTests::multilineDialogEditor()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({"kind":"dialog","id":"multiline","title":"Commands","x":2,"y":2,"w":65,"h":20,"children":[
+      {"kind":"multiLineEdit","id":"command","x":4,"y":4,"w":45,"h":4,"visible":true,"focused":true,"text":"echo 😀\necho second\nthird\nfourth\nfifth\nsixth","cursor":8,"selectionActive":true,"selectionStart":5,"selectionEnd":8}
+    ]})").object().toVariantMap();
+    scene["dialogs"] = QVariantList{dialog};
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *edit = nullptr;
+    QTRY_VERIFY((edit = visualItem(root, "dialogWidget-commandMultiLineTextEdit")));
+    QTRY_COMPARE(edit->property("selectedText").toString(), QString::fromUtf8("😀\ne"));
+    QVERIFY(edit->property("readOnly").toBool());
+    QVERIFY(edit->property("text").toString().contains("\n"));
+    auto *scroll = visualItem(root, "dialogWidget-commandMultiLineVerticalScroll");
+    QVERIFY(scroll); QTRY_VERIFY(scroll->isVisible());
+    QTest::qWait(100);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        edit->mapToScene(QPointF(10,10)).toPoint());
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &a) {
+        return a.value("action") == "control.select" && a.value("target") == "command";
+    }));
+    auto *viewport = visualItem(root, "dialogWidget-commandMultiLineViewport");
+    QVERIFY(viewport);
+    viewport->setProperty("contentY", 13.3);
+    QTest::qWait(80);
+    const auto origin = edit->mapToItem(root, QPointF());
+    const auto physical = origin * fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+        qPrintable(QString("TextEdit physical origin %1,%2").arg(physical.x()).arg(physical.y())));
+    QVERIFY(QLineF(edit->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length()<.001);
+    QVERIFY(QLineF(edit->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length()<.001);
+    QVERIFY(fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/multiline.png"));
 }

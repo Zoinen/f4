@@ -218,7 +218,8 @@ Rectangle {
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
-        onClicked: (mouse) => {
+        preventStealing: true
+        onPressed: (mouse) => {
             if (!parent.activateAt(mouse.x, false) && menu.active === true) {
                 menuBarHoverSyncTimer.stop()
                 hostWindow.menuBarPreviewIndex = -1
@@ -229,7 +230,19 @@ Rectangle {
                 }, true)
             }
         }
-        onPositionChanged: (mouse) => parent.activateAt(mouse.x, true)
+        onPositionChanged: (mouse) => {
+            if (mouse.y >= 0 && mouse.y < height)
+                parent.activateAt(mouse.x, true)
+            if (pressed) {
+                const point = mapToItem(hostWindow.contentItem, mouse.x, mouse.y)
+                hostWindow.overlayHost.routeMenuBarPointer(point.x, point.y, false)
+            }
+        }
+        onReleased: (mouse) => {
+            const point = mapToItem(hostWindow.contentItem, mouse.x, mouse.y)
+            hostWindow.overlayHost.routeMenuBarPointer(point.x, point.y, true)
+        }
+        onCanceled: hostWindow.overlayHost.routeMenuBarPointer(-1, -1, true)
         onExited: parent.pointerHoverIndex = -1
     }
 }

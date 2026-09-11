@@ -967,6 +967,7 @@ func (c *settingsCenter) selectCategory(id string) {
 	}
 	c.category = id
 	c.page.Group = vtui.NewGroup(c.page.X1, c.page.Y1, c.page.X2-c.page.X1+1, c.page.Y2-c.page.Y1+1)
+	c.page.SetId("settings-page")
 	c.page.SetOwner(c.Window)
 	c.page.rows = nil
 	group := ""
@@ -1078,6 +1079,17 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 				change(text)
 			}
 		}
+		// Menu browsing is informational. It must update help even when a
+		// semantic frontend publishes only a menu selection change.
+		b.Menu.OnSelect = func(int) { c.refreshChoiceHelp() }
+		previousClose := b.Menu.OnClose
+		b.Menu.OnClose = func() {
+			if previousClose != nil {
+				previousClose()
+			}
+			c.choiceHelpRow = nil
+			c.describe(r)
+		}
 		b.Menu.OnAction = func(i int) {
 			if i >= 0 && i < len(choices) {
 				b.Edit.SetText(labels[i])
@@ -1095,6 +1107,7 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		e.OnTextChange = change
 		control = &settingsEdit{Edit: e}
 	}
+	r.unavailableReason = f.Unavailable
 	control.SetDisabled(f.Unavailable != "")
 	return control
 }

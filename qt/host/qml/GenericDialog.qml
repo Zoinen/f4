@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import F4QtHost 1.0
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
 import QtQuick.Controls.impl
@@ -13,6 +14,7 @@ Rectangle {
     required property Item menuBar
     objectName: "semanticDialog-" + hostWindow.cleanText(frame.id)
     property var frame: ({})
+    readonly property bool settingsLayout: frame.layout === "settings"
     property bool nativeLayout: hostWindow.isAppScene()
     property bool userGeometrySet: false
     property bool maximized: false
@@ -31,7 +33,7 @@ Rectangle {
     }
     readonly property real contentPadding: hostWindow.snapPx(24)
     readonly property var rowEdges: calculateRowEdges()
-    readonly property real bodyContentHeight: calculateBodyContentHeight()
+    readonly property real bodyContentHeight: settingsLayout ? 0 : calculateBodyContentHeight()
     readonly property real geometryLeft: 12
     readonly property real geometryTop: menuBar.height + 8
     readonly property real geometryRight: hostWindow.width - 12
@@ -42,36 +44,26 @@ Rectangle {
                                                 1, geometryBottom - geometryTop)
     readonly property real minimumDialogWidth: Math.min(320, availableWidth)
     readonly property real minimumDialogHeight: Math.min(160, availableHeight)
-    readonly property real preferredWidth: nativeLayout
+    readonly property real preferredWidth: settingsLayout
+        ? Math.min(availableWidth, Math.max(640, hostWindow.pxW(frame.w))) : nativeLayout
         ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
-    readonly property real preferredHeight: nativeLayout
+    readonly property real preferredHeight: settingsLayout
+        ? Math.min(availableHeight, Math.max(400, hostWindow.pxH(frame.h))) : nativeLayout
         ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
 
-    Text {
-        id: messageMeasure
-        visible: false
-        width: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
-        font: hostWindow.font
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        text: {
-            const body = (frame.children || []).find(w => w.kind === "text" && w.wrapText === true)
-            return body ? String(body.text || "") : ""
-        }
+    SemanticDialogLayout {
+        id: contentLayout
+        hostWindow: dialogRoot.hostWindow
+        widgets: dialogRoot.settingsLayout ? [] : frame.children || []
+        originX: dialogRoot.contentLeft
+        originY: Number(frame.y || 0) + 1
+        maximumWidth: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
     }
 
-    function visualHeight(widget) {
-        return widget.kind === "text" && widget.wrapText === true
-            ? hostWindow.snapPx(messageMeasure.implicitHeight)
-            : hostWindow.dialogWidgetVisualHeight(widget)
-    }
-
-    function isContent(widget) {
-        return widget && widget.visible !== false
-                && (widget.kind !== "text" || String(widget.text || widget.typeName || "").trim().length > 0)
-    }
+    function isContent(widget) { return contentLayout.isContent(widget) }
+    function visualHeight(widget) { return contentLayout.visualHeight(widget) }
 
     function clamped(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value))
@@ -148,87 +140,11 @@ Rectangle {
         Qt.callLater(commitGeometry)
     }
 
-    function widgetBottom(widget) {
-        if (!isContent(widget))
-            return 0
-
-        var bottom = widgetTop(widget) + widgetHeight(widget)
-        var children = widget.children || []
-        for (var i = 0; i < children.length; ++i)
-            bottom = Math.max(bottom, widgetBottom(children[i]))
-        return bottom
-    }
-
-    function calculateRowEdges() {
-        const rows = []
-        const controls = []
-        const base = hostWindow.snapPx(Math.max(22, hostWindow.ch))
-        function collect(widgets) {
-            for (const widget of widgets) {
-                if (!isContent(widget))
-                    continue
-                const start = Math.max(0, Number(widget.y || 0) - Number(frame.y || 0) - 1)
-                const span = Math.max(1, Number(widget.h || 1))
-                while (rows.length < start + span)
-                    rows.push(0)
-                for (let row = start; row < start + span; ++row)
-                    rows[row] = base
-                if (widget.kind !== "group")
-                    controls.push({start: start, span: span, widget: widget})
-                collect(widget.children || [])
-            }
-        }
-        collect(frame.children || [])
-        // Trim outer whitespace; each internal blank run becomes one section
-        // gap (twice the 8-DIP allowance used by native controls).
-        const first = rows.findIndex(height => height > 0)
-        for (let row = Math.max(0, first); row < rows.length; ++row) {
-            if (rows[row] === 0) {
-                rows[row] = hostWindow.snapPx(16)
-                while (row + 1 < rows.length && rows[row + 1] === 0)
-                    ++row
-            }
-        }
-        // Shared rows reserve the tallest control once.
-        controls.sort((a, b) => a.span - b.span)
-        for (const control of controls) {
-            let allocated = 0
-            for (let i = control.start; i < control.start + control.span; ++i)
-                allocated += rows[i]
-            const needed = visualHeight(control.widget)
-                    + (hostWindow.dialogWidgetUsesControlHeight(control.widget) ? 8 : 0)
-            if (needed > allocated)
-                rows[control.start + control.span - 1] += needed - allocated
-        }
-        const edges = [0]
-        for (const height of rows)
-            edges.push(hostWindow.snapPx(edges[edges.length - 1] + height))
-        return edges
-    }
-
-    function rowTop(absoluteRow) {
-        const row = Number(absoluteRow) - Number(frame.y || 0) - 1
-        const base = hostWindow.snapPx(Math.max(22, hostWindow.ch))
-        if (row < 0)
-            return 0
-        if (row < rowEdges.length)
-            return rowEdges[row]
-        return rowEdges[rowEdges.length - 1]
-    }
-
-    function widgetHeight(widget) {
-        return widget.kind === "group"
-                ? rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
-                  - rowTop(Number(widget.y || 0))
-                : visualHeight(widget)
-    }
-
-    function widgetTop(widget) {
-        const start = rowTop(Number(widget.y || 0))
-        const end = rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
-        return hostWindow.snapPx(start + (widget.kind === "group"
-                                         ? 0 : (end - start - widgetHeight(widget)) / 2))
-    }
+    function widgetBottom(widget) { return contentLayout.widgetBottom(widget) }
+    function calculateRowEdges() { return contentLayout.rowEdges }
+    function rowTop(row) { return contentLayout.rowTop(row) }
+    function widgetHeight(widget) { return contentLayout.widgetHeight(widget) }
+    function widgetTop(widget) { return contentLayout.widgetTop(widget) }
 
     function calculateBodyContentHeight() {
         var bottom = 0
@@ -243,7 +159,7 @@ Rectangle {
             var widget = widgets[i]
             if (!isContent(widget))
                 continue
-            if (widget.focused === true)
+            if (widget.focused === true || (widget.scrollable === true && contentLayout.focusedWidget(widget.children || [])))
                 return widget
             var nested = focusedWidget(widget.children || [])
             if (nested)
@@ -253,7 +169,7 @@ Rectangle {
     }
 
     function ensureFocusedWidgetVisible() {
-        if (!dialogBody || dialogBody.height <= 0)
+        if (settingsLayout || !dialogBody || dialogBody.height <= 0)
             return
         var widget = focusedWidget(frame.children || [])
         if (!widget)
@@ -462,8 +378,18 @@ Rectangle {
         }
     }
 
+    SettingsDialogBody {
+        hostWindow: dialogRoot.hostWindow
+        visible: dialogRoot.settingsLayout
+        widgets: visible ? dialogRoot.frame.children || [] : []
+        anchors.fill: parent
+        anchors.margins: dialogRoot.contentPadding
+        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
+    }
+
     Flickable {
         id: dialogBody
+        visible: !dialogRoot.settingsLayout
         objectName: "dialogBody"
         anchors.left: parent.left
         anchors.right: parent.right
@@ -493,14 +419,14 @@ Rectangle {
             height: dialogBody.contentHeight
 
             Repeater {
-                model: frame.children || []
+                model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout ? [] : frame.children || [] }
                 delegate: SemanticWidgetDelegate {
-                    required property var modelData
+                    required property var widgetData
+                    required labelData
                     hostWindow: dialogRoot.hostWindow
                     dialogLayout: dialogRoot
-                    siblingWidgets: frame.children || []
-                    widget: modelData
-                    visible: dialogRoot.isContent(modelData)
+                    widget: widgetData
+                    visible: dialogRoot.isContent(widgetData)
                     originX: dialogRoot.contentLeft
                     originY: frame.y || 0
                     x: dialogRoot.contentPadding + horizontalPosition

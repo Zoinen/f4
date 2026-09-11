@@ -620,6 +620,8 @@ type KeyBarAlternativeModel struct {
 }
 
 type DialogModel struct {
+	// Layout selects an owner-declared native layout instead of terminal rows.
+	Layout    string
 	ID        string
 	Kind      string
 	Title     string
@@ -632,26 +634,41 @@ type DialogModel struct {
 }
 
 type ControlModel struct {
-	WrapText   bool
-	ID         string
-	Kind       string
-	Visible    bool
-	Focused    bool
-	Disabled   bool
-	Text       string
-	Title      string
-	Hotkey     string
-	State      int
-	ThreeState bool
-	Default    bool
-	Password   bool
-	Cursor     int
-	Left       int
-	Selected   []int
-	Items      []string
-	Rows       []M
-	Children   []ControlModel
-	Legacy     M
+	LayoutRole string
+	FillWidth  bool
+	// ExplainTarget identifies the owner of contextual help; hover never focuses it.
+	ExplainTarget string
+	DisabledItems []int
+	// Scrollable groups expose full content in unscrolled character coordinates.
+	// ScrollTop and ContentHeight use rows; each frontend lays them out in pixels.
+	Scrollable    bool
+	ScrollTop     int
+	ContentHeight int
+	Bordered      bool
+	Dimmed        bool
+	WrapText      bool
+	ID            string
+	Kind          string
+	Visible       bool
+	Focused       bool
+	Disabled      bool
+	Text          string
+	Title         string
+	Hotkey        string
+	State         int
+	ThreeState    bool
+	Default       bool
+	Password      bool
+	Cursor        int
+	Left          int
+	Selected      []int
+	Items         []string
+	// ItemIcons contains optional Lucide names in list-item or table-row display
+	// order. Empty entries have no icon; table icons precede the first cell.
+	ItemIcons []string
+	Rows      []M
+	Children  []ControlModel
+	Legacy    M
 }
 
 type ToastModel struct {
@@ -1541,32 +1558,51 @@ func (d DialogModel) ToMap() M {
 			out[k] = v
 		}
 	}
+	if d.Layout != "" {
+		out["layout"] = d.Layout
+	}
 	return out
 }
 
 func (c ControlModel) ToMap() M {
 	out := M{
-		"id":         c.ID,
-		"kind":       c.Kind,
-		"visible":    c.Visible,
-		"focused":    c.Focused,
-		"disabled":   c.Disabled,
-		"text":       c.Text,
-		"title":      c.Title,
-		"hotkey":     c.Hotkey,
-		"state":      c.State,
-		"threeState": c.ThreeState,
-		"wrapText":   c.WrapText,
-		"default":    c.Default,
-		"password":   c.Password,
-		"cursor":     c.Cursor,
-		"left":       c.Left,
+		"id":            c.ID,
+		"kind":          c.Kind,
+		"visible":       c.Visible,
+		"focused":       c.Focused,
+		"disabled":      c.Disabled,
+		"text":          c.Text,
+		"title":         c.Title,
+		"hotkey":        c.Hotkey,
+		"state":         c.State,
+		"threeState":    c.ThreeState,
+		"wrapText":      c.WrapText,
+		"scrollable":    c.Scrollable,
+		"scrollTop":     c.ScrollTop,
+		"contentHeight": c.ContentHeight,
+		"bordered":      c.Bordered,
+		"dimmed":        c.Dimmed,
+		"explainTarget": c.ExplainTarget,
+		"disabledItems": c.DisabledItems,
+		"default":       c.Default,
+		"password":      c.Password,
+		"cursor":        c.Cursor,
+		"left":          c.Left,
 	}
 	if len(c.Selected) > 0 {
 		out["selected"] = c.Selected
 	}
+	if c.FillWidth {
+		out["fillWidth"] = true
+	}
+	if c.LayoutRole != "" {
+		out["layoutRole"] = c.LayoutRole
+	}
 	if len(c.Items) > 0 {
 		out["items"] = c.Items
+	}
+	if len(c.ItemIcons) > 0 {
+		out["itemIcons"] = c.ItemIcons
 	}
 	if len(c.Rows) > 0 {
 		out["rows"] = c.Rows

@@ -7,6 +7,7 @@ F4TextField {
     id: dialogEdit
 
     required property var widget
+    enabled: widget.disabled !== true
     remoteControlled: true
     readOnly: true
     text: hostWindow.cleanText(widget.text)

@@ -3,9 +3,12 @@
 package gui
 
 import (
-	"golang.org/x/sys/windows/registry"
+	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 func init() {
@@ -17,6 +20,7 @@ func init() {
 
 func windowsGuiFontDisplayNameResolver(installed []string) func(string) string {
 	paths, names := map[string]string{}, map[string]string{}
+	known := guiFontValueSet(installed)
 	for _, entry := range windowsFontEntries() {
 		path := strings.ToLower(fontFilePath(entry.File))
 		name := normalizeFontName(entry.base)
@@ -34,13 +38,29 @@ func windowsGuiFontDisplayNameResolver(installed []string) func(string) string {
 		if name, ok := names[normalizeFontName(value)]; ok {
 			return name
 		}
-		for _, path := range installed {
-			if sameGuiFontValue(value, path) {
-				return defaultGuiFontDisplayName(value)
-			}
+		if _, exists := known[guiFontValueKey(value)]; exists {
+			return defaultGuiFontDisplayName(value)
 		}
 		return value
 	}
+}
+
+func guiFontValueKey(value string) string {
+	// EqualFold includes Unicode pairs such as sigma/final sigma and K/Kelvin;
+	// lowercasing alone is not an equivalent key for the existing path equality.
+	return strings.Map(func(r rune) rune {
+		key := r
+		for folded := unicode.SimpleFold(r); folded != r; folded = unicode.SimpleFold(folded) {
+			if folded < key {
+				key = folded
+			}
+		}
+		return key
+	}, filepath.Clean(value))
+}
+
+func sameGuiFontValue(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }
 
 func windowsFontEntries() []fontEntry {

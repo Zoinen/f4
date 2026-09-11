@@ -10,6 +10,64 @@ Numeric fields use compact inline inputs. Providers can set the optional InputWi
 
 Russian labels, descriptions, choices, group names and operation messages are provided in `cmd/f4/lang/ru.lng`. Unkeyed provider text can resolve through `f4settings.ResourceKey`; provider-owned translations take precedence. Literal user values and external identifiers bypass translation. Formatted descriptions preserve arguments such as profile paths, and provider errors retain their English diagnostics and error chains while exposing localized display text. Russian coverage tests exercise core and all bundled providers.
 
+## Semantic GUI presentation
+
+`internal/settings/center_semantic.go` exports the labels, category heading,
+search match count, status, group frames and contextual help that the terminal
+renderer paints directly. Text comes from the original translated descriptors;
+terminal wrapping is not inserted into the semantic strings. Decorations are
+presentation nodes, not new focus containers or owners of live controls.
+
+The page and help are independently scrollable semantic groups. Their child
+coordinates describe the complete, unscrolled content. `scrollTop` and
+`contentHeight` are character rows; `control.scroll` updates the owning core
+viewport. Qt uses `SemanticDialogLayout.qml` for both dialog and viewport row
+metrics and clips each viewport independently in `SemanticGroupViewport.qml`.
+Group frames and search dimming survive the typed `extui.ControlModel` boundary.
+Original control IDs continue to route editing, selection and keyboard focus.
+
+Settings radio choices use the shared `radioGroup` contract with original labels,
+separate `selected` and `focusIndex` values, and `disabledItems` indices. Qt measures
+and renders them through the same `SemanticChoiceGroup` component; native wrapping
+and row height do not depend on terminal line breaks or inline placement.
+
+Controls and captions expose `explainTarget`. A `control.explain` action updates
+contextual help without moving keyboard focus, scrolling the page or changing a
+draft; radio choices include an `index`. Disabled controls still explain their
+unavailability. Dropdown selection notifications update the owning Settings help
+before publication, so an unrelated menu-only update cannot leave it stale.
+
+Listboxes and tables use the input surface color. Their scrollbars stay visible
+while content overflows and disappear when it fits. Disabled edits and dropdowns
+are noninteractive and use muted text with the disabled background. Static list
+text and scrollbar handles are aligned to physical pixels after scrolling.
+
+Mouse press and held dragging select list/table rows through `control.select`,
+including the category sidebar. A persistent viewport-level `SemanticListPointer`
+owns the gesture across semantic updates, excluding the scrollbar and table
+header. Its mouse-only `DragHandler` prevents ancestor Flickables from taking
+the grab. Selection follows Y even outside the side edges, stops outside the
+vertical viewport, and does not auto-scroll. Wheel/scrollbar input and touch
+flicking retain native scrolling; a touch tap selects on release. Table double
+clicks still activate, while a selection drag never activates a row.
+
+`extui.ControlModel.ItemIcons` / `itemIcons` carries optional Lucide names in
+list-item or table-row display order. Icons precede captions (the first cell in
+a table) without changing row height; blank entries have no icon. Settings owns
+the mapping from stable category IDs, preserving localized labels and search
+counts. All 18 core categories have distinct icons; contributed categories use
+`file-cog`. The additional `keyboard.svg` is from the same pinned Lucide 1.27.0
+subset. `F4SettingsCategoryInteractionPixelGridTest` covers mouse capture,
+selection acknowledgements, touch/scrollbar routing, and every icon/text leaf's
+scene origin and unit transform at 175% scale. `F4_SETTINGS_CATEGORIES_CAPTURE`
+optionally writes a rendered image using the production raster icon provider.
+
+Regressions cover descriptor captions, group membership, category switches,
+scroll coordinates, focus/help updates and the typed wire roundtrip. The Qt
+Settings fixture verifies native text and icons, group title backgrounds and
+borders at 175% scale, including fractional resting scroll positions. Optional
+`F4_SETTINGS_CAPTURE` saves the rendered initial and scrolled pages.
+
 ## Entry points and editing contract
 
 `Settings.Open` is the single menu entry in every application menu context. Legacy settings action IDs are hidden from menus and remain category deep links. `vfs.SettingsNavigationHost` optionally targets a collection and record for contextual editing. File encoding for the current document, connection opening, user-menu execution, history navigation, and operation dialogs remain contextual operations.
@@ -409,3 +467,145 @@ captured menu scope and update its tree only after a successful Apply. The publi
 plugin contribution and opening capabilities remain optional. Explicit Copy/Move
 uses the upstream profile transfer helpers, selects the target only after success,
 and a conflicting move preserves both the source and current profile selection.
+
+
+## Qt Settings update cost (2026-09-11)
+
+The Qt renderer keeps each semantic node's children in `SemanticChildrenModel`.
+The model compares current and incoming children by kind and stable ID, announces
+inserts/removals/moves, and emits data changes only for the affected row and role.
+Unchanged native controls retain their identity, focus and scrolling when help or
+terminal geometry changes. Each delegate receives its own widget and optional
+adjacent label; passing every sibling (including full font/encoding arrays) to
+all delegates previously multiplied QVariant-to-JavaScript conversion work.
+This is the live presentation model, with no memoized dialog or catalog snapshots.
+
+`ScenePixelAlignment` performs the final translation correction on the GUI thread
+at `QQuickWindow::afterAnimating`, after layout polish and before scene graph
+synchronization. Ancestors are corrected before descendants. This replaces the
+JavaScript ancestor-walking bindings that repeatedly invalidated one another
+through a whole Settings update. Native text and raster images retain unit scale.
+The attached type and children model belong to the generated `F4QtHost` QML module;
+manual early registration in that URI can suppress the module's generated types.
+
+On Windows, font path comparison now normalizes once and uses sets within each
+catalog construction, instead of repeatedly cleaning paths in quadratic scans.
+Windows Unicode case folding, discovery order, current/manual choices and the
+first spelling are preserved. Installed font discovery still runs on every open.
+
+Real owner exports were replayed through the Qt scene stores at DPR 1.75 using
+Qt 6.11.1 static Release on Windows, with an offscreen window and software
+rendering. Measured Qt update-through-frame times changed as follows:
+
+| Action | Before | After |
+| --- | ---: | ---: |
+| Open Appearance | 279 ms | 61–67 ms |
+| Change hover help | 175–179 ms | 19–30 ms |
+| Change category | 184–270 ms | 38–69 ms |
+| Resize native window | 156–157 ms | 12–38 ms |
+| Apply resized semantic geometry | 403–406 ms | 40–71 ms |
+
+The frame measurement includes image readback and is not end-to-end input latency.
+The separate Go owner benchmark reduced open/export from 25.8 to 9.0 ms. Hover
+export remained about 0.42 ms, so the scene wire format was not changed. These
+measurements must not be added together as an end-to-end latency claim.
+
+Reproduce from the repository root (use the normal system Go cache):
+
+```powershell
+$env:GOWORK='off'
+$env:CGO_ENABLED='0'
+$env:F4_SETTINGS_PROFILE_DIR="$PWD/.diagnostics/settings-perf"
+go test ./internal/settings -run '^TestSettingsProfileFixtures$' -count=1
+go test ./internal/settings -run '^$' -bench '^BenchmarkSettingsSemanticProfile$' -benchmem -count=3
+$env:QT_QPA_PLATFORM='offscreen'
+$env:QT_QUICK_BACKEND='software'
+$env:QT_SCALE_FACTOR='1.75'
+$env:F4_SETTINGS_REPLAY_DIR=$env:F4_SETTINGS_PROFILE_DIR
+$env:F4_SETTINGS_REPLAY_REPETITIONS='3'
+./qt/host/build-static-host/F4OperationsQueueTests.exe settingsSceneReplayProfile
+```
+
+The replay reports synchronous application time, settled frame time, and destroyed
+control counts. Use a built Qt test executable appropriate to the current
+platform. `F4_QML_PROFILE_TESTS=ON` enables QML debugger services for this test
+executable only; it defaults off and does not enable debugging in the application.
+Profiler timings include substantial instrumentation overhead: compare normal
+replay timings separately. `F4_SETTINGS_REPLAY_CAPTURE` optionally writes the
+rendered frame. The regular regression suite checks retained control identity,
+precise model notifications, and actual text/icon scene origins and unit vectors
+at DPR 1.75. `F4_COMPILED_QT_HOST` selects the freshly built production executable
+for `F4QuickViewSurfaceTests compiledHostLoadsItsQmlModule`, which checks module
+loading after a real ExtUI connection instead of substituting the test grid.
+
+
+## Native docking and overlay transport
+
+The Settings owner exports `layout: "settings"` and stable `layoutRole` values
+on its direct children: search controls, navigation, content title, content,
+description and footer actions/status. These are typed `DialogModel.Layout` and
+`ControlModel.LayoutRole` fields, not inferred from translated captions or IDs.
+Terminal coordinates remain unchanged. `SettingsDialogBody.qml` docks these
+regions using the live native rectangle throughout a resize, before the owner
+acknowledges the geometry. Search, navigation and footer do not participate in
+an outer Flickable. Content, description and the category list own their scroll
+ranges; help moves below content in a narrow window. Bordered group rows use
+12 DIP for the title and 8 DIP for otherwise empty rows, while actual controls
+still determine their required height.
+
+`SemanticOverlayModel` retains window identity and closing dropdowns in a native
+QAbstractListModel. Its QVariant payload does not pass through QML ListModel's
+recursive nested-model conversion. Reopening a closing menu cancels retirement;
+a stale animation callback cannot delete the reopened menu. No page cache is
+used. Dropdown-only choices belong to the separate Go-owned semantic menu:
+native control projection omits their duplicate `items`, and DialogComboBox does
+not instantiate a second popup's delegates. Editable combos retain their model.
+
+For native replay fixtures, after generating owner fixtures above, run:
+
+```powershell
+$env:F4_SETTINGS_NATIVE_PROFILE_DIR=$env:F4_SETTINGS_PROFILE_DIR
+go test ./internal/nativeui -run '^TestSettingsNativeProfileFixtures$' -count=1
+```
+
+September 11 follow-up, 8 repetitions at DPR 1.75, static Release/software:
+Editor settled frame median 63.04 -> 52.78 ms; Appearance 51.20 -> 36.27 ms;
+hover 24.19/22.04 -> 14.65/12.25 ms. Startup 43.33 -> 46.30 ms and Operations
+45.50 -> 50.70 ms did not improve; the new responsive layout performs different
+work, so this is not a claim that every category got faster. Go category/export
+remained about 0.42 ms. Frame timings include event processing and image readback.
+Regression coverage includes unacknowledged live resizing, fixed footer/search,
+independent page scroll, actual leaf transforms at DPR 1.75, and overlay identity,
+reordering and close/reopen lifecycle.
+
+
+Settings descriptions use natural paragraph height and the live pane width,
+independent of the console's wrapped row count. The right-hand help starts at the
+same top edge as the category heading; narrow layouts retain the help area below
+content. Scrollable child widths are assigned to their Loader so they keep
+following viewport resizes. Hidden scrollbars reserve no horizontal space.
+
+
+Settings radio fields export their complete caption as `title` on the radioGroup,
+with no duplicate sibling label. QML measures native glyph widths and chooses
+caption + choices on one row, choices on a row below the caption, or a vertical
+choice list. The same choice component supplies height to the dialog metrics;
+its terminal row span is replaced by the native height. Focus/selection/actions
+still belong to the original settingsRadios control.
+
+`ControlModel.FillWidth` (`fillWidth`) marks elastic fields. Settings exports it
+for controls without a fixed input width. Nested group loaders resize those
+fields to the right inner edge, retaining symmetric two-cell padding; bounded
+inputs retain their preferred width. Category table selection uses the standard
+rounded highlight. DPR 1.75 tests cover each choice mode, following-control
+clearance, fill-field margins, captions and radio text transforms.
+
+Multiline command fields use the `multiLineEdit` semantic kind. The owner exports
+unwrapped document text and absolute rune offsets (including newline characters)
+for `cursor`, `selectionStart`, and `selectionEnd`. `control.select` carries an
+`anchor` and `cursor` in those same units. Qt converts its UTF-16 hit-test positions
+before sending the action; Go retains keyboard editing, clipboard operations,
+selection replacement, and draft updates. The native view uses a plain TextEdit
+with independent horizontal/vertical scrollbars and the same disabled/focus colors
+as single-line inputs. Settings marks these fields `fillWidth`, preserving group
+padding while the dialog resizes.

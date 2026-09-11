@@ -133,6 +133,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("folder-symlink"),
         QStringLiteral("usb-flash-drive"),
         QStringLiteral("house"),
+        QStringLiteral("keyboard"),
         QStringLiteral("image"),
         QStringLiteral("images"),
         QStringLiteral("layout-dashboard"),

@@ -93,3 +93,27 @@ func TestUserMenu_EditItemStripsBlankLines(t *testing.T) {
 		t.Fatalf("command lines = %q", got)
 	}
 }
+
+func TestUserMenuMultilineSemanticCommand(t *testing.T) {
+	_, center, session := userMenuSettingsTestDraft(t, []string{"echo first", "echo second"})
+	center.SetPosition(0, 0, 99, 49)
+	var node map[string]any
+	for _, candidate := range settingsSemanticNodes(center.SemanticNode(&vtui.SemanticContext{Width: 100, Height: 50})) {
+		if candidate["kind"] == "multiLineEdit" {
+			node = candidate
+			break
+		}
+	}
+	if node == nil || node["text"] != "echo first\necho second" || node["fillWidth"] != true {
+		t.Fatalf("missing full-width multiline command: %#v", node)
+	}
+	if !center.HandleSemanticAction(map[string]any{"target": node["id"], "action": "control.select", "anchor": 0, "cursor": 22}) {
+		t.Fatal("selection not routed")
+	}
+	if !center.HandleSemanticAction(map[string]any{"target": node["id"], "action": "control.insertText", "text": "one\ntwo"}) {
+		t.Fatal("edit not routed")
+	}
+	if got := session.draft.Records["usermenu.local"][0].Values["menu.local.Commands"]; got != "one\ntwo" {
+		t.Fatalf("draft = %v", got)
+	}
+}

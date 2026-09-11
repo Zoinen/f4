@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
+	"maps"
 	"strings"
 )
 
@@ -1238,6 +1239,7 @@ func appKeyBarFromLegacy(node map[string]any) extui.KeyBarModel {
 
 func appDialogFromLegacy(node map[string]any) extui.DialogModel {
 	dlg := extui.DialogModel{
+		Layout:    semantic.String(node["layout"]),
 		ID:        semantic.String(node["id"]),
 		Kind:      semantic.String(node["kind"]),
 		Title:     semantic.String(node["title"]),
@@ -1255,25 +1257,42 @@ func appDialogFromLegacy(node map[string]any) extui.DialogModel {
 
 func appControlFromLegacy(node map[string]any) extui.ControlModel {
 	ctrl := extui.ControlModel{
-		WrapText:   semantic.AppBool(node["wrapText"]),
-		ID:         semantic.String(node["id"]),
-		Kind:       semantic.String(node["kind"]),
-		Visible:    semantic.AppBoolDefault(node["visible"], true),
-		Focused:    semantic.AppBool(node["focused"]),
-		Disabled:   semantic.AppBool(node["disabled"]),
-		Text:       semantic.String(node["text"]),
-		Title:      semantic.String(node["title"]),
-		Hotkey:     semantic.String(node["hotkey"]),
-		State:      semantic.Int(node["state"]),
-		ThreeState: semantic.AppBool(node["threeState"]),
-		Default:    semantic.AppBool(node["default"]),
-		Password:   semantic.AppBool(node["password"]),
-		Cursor:     semantic.Int(node["cursor"]),
-		Left:       semantic.Int(node["left"]),
-		Selected:   semantic.AppIntSlice(node["selected"]),
-		Items:      semantic.AppStringSlice(node["items"]),
-		Rows:       semantic.AppMapSlice(node["rows"]),
-		Legacy:     node,
+		LayoutRole:    semantic.String(node["layoutRole"]),
+		FillWidth:     semantic.AppBool(node["fillWidth"]),
+		ExplainTarget: semantic.String(node["explainTarget"]),
+		DisabledItems: semantic.AppIntSlice(node["disabledItems"]),
+		Scrollable:    semantic.AppBool(node["scrollable"]),
+		ScrollTop:     semantic.Int(node["scrollTop"]),
+		ContentHeight: semantic.Int(node["contentHeight"]),
+		Bordered:      semantic.AppBool(node["bordered"]),
+		Dimmed:        semantic.AppBool(node["dimmed"]),
+		WrapText:      semantic.AppBool(node["wrapText"]),
+		ID:            semantic.String(node["id"]),
+		Kind:          semantic.String(node["kind"]),
+		Visible:       semantic.AppBoolDefault(node["visible"], true),
+		Focused:       semantic.AppBool(node["focused"]),
+		Disabled:      semantic.AppBool(node["disabled"]),
+		Text:          semantic.String(node["text"]),
+		Title:         semantic.String(node["title"]),
+		Hotkey:        semantic.String(node["hotkey"]),
+		State:         semantic.Int(node["state"]),
+		ThreeState:    semantic.AppBool(node["threeState"]),
+		Default:       semantic.AppBool(node["default"]),
+		Password:      semantic.AppBool(node["password"]),
+		Cursor:        semantic.Int(node["cursor"]),
+		Left:          semantic.Int(node["left"]),
+		Selected:      semantic.AppIntSlice(node["selected"]),
+		Items:         semantic.AppStringSlice(node["items"]),
+		ItemIcons:     semantic.AppStringSlice(node["itemIcons"]),
+		Rows:          semantic.AppMapSlice(node["rows"]),
+		Legacy:        node,
+	}
+	// Go-owned dropdowns publish choices in their separate menu scene. Avoid
+	// sending them twice and instantiating an unused native popup model.
+	if ctrl.Kind == "comboBox" && semantic.AppBool(node["dropdownOnly"]) {
+		ctrl.Items = nil
+		ctrl.Legacy = maps.Clone(node)
+		delete(ctrl.Legacy, "items")
 	}
 	for _, child := range semantic.AppMapSlice(node["children"]) {
 		ctrl.Children = append(ctrl.Children, appControlFromLegacy(child))

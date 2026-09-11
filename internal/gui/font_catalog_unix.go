@@ -17,6 +17,14 @@ var runFontconfigList = func(pattern string) ([]string, error) {
 	return parseFontconfigPaths(string(output)), nil
 }
 
+func guiFontValueKey(value string) string {
+	return filepath.Clean(value)
+}
+
+func sameGuiFontValue(left, right string) bool {
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
 func platformGuiFontFiles(language string) []string {
 	if runtime.GOOS == "linux" {
 		if paths, err := runFontconfigList(cjkFontconfigPattern(language)); err == nil && len(paths) > 0 {

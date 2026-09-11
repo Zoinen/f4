@@ -41,7 +41,7 @@ Rectangle {
         height: 1
         color: hostWindow.separatorColor
         opacity: 0.68
-        visible: modelData.separator
+        visible: modelData.separator === true
     }
 
     Text {
@@ -303,6 +303,32 @@ Rectangle {
         }
     }
 
+    // Both ordinary clicks and a gesture captured by the menu bar use the
+    // same semantic selection/activation path.
+    function selectFromGrab() {
+        if (itemMouse.enabled) itemMouse.selectFromPointer()
+    }
+    function setGrabHover(hovered) {
+        if (hovered && itemMouse.enabled && modelData.hasSubmenu === true)
+            submenuHoverTimer.restart()
+        else
+            submenuHoverTimer.stop()
+    }
+    function activateFromPointer() {
+        if (!itemMouse.enabled) return
+        submenuHoverTimer.stop()
+        if (overlayController.fromMenuBar) {
+            hostWindow.action({"action": "menuBar.itemActivate",
+                "menuIndex": overlayController.effectiveMenuIndex,
+                "index": modelData.index}, true)
+        } else {
+            hostWindow.action({"target": overlayController.frame.id,
+                "action": "menu.activate", "index": modelData.index}, true)
+        }
+        hostWindow.menuBarPreviewIndex = -1
+        hostWindow.clearMenuPointerSelection()
+    }
+
     Timer {
         id: submenuHoverTimer
         interval: 180
@@ -371,23 +397,6 @@ Rectangle {
             if (overlayController.dropdownMode)
                 selectFromPointer()
         }
-        onClicked: {
-            submenuHoverTimer.stop()
-            if (overlayController.fromMenuBar) {
-                hostWindow.action({
-                    "action": "menuBar.itemActivate",
-                    "menuIndex": overlayController.effectiveMenuIndex,
-                    "index": modelData.index
-                }, true)
-            } else {
-                hostWindow.action({
-                    "target": overlayController.frame.id,
-                    "action": "menu.activate",
-                    "index": modelData.index
-                }, true)
-            }
-            hostWindow.menuBarPreviewIndex = -1
-            hostWindow.clearMenuPointerSelection()
-        }
+        onClicked: menuItem.activateFromPointer()
     }
 }
